@@ -24005,3 +24005,29 @@ The self-hosted JVM backend now mirrors the MSIL projectable path shipped in D-p
 `lyric-compiler/msil/msil_self_test_m87.l` is converted from a manual-run `func main` program to a `@test_module` and wired into CI via native `lyric test --target dotnet` (the bitwise_self_test pattern — it imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`; the in-process `Msil.Bridge` codegen performs the @projectable lowering under test). The JVM twin `lyric-compiler/jvm/projectable_jvm_self_test.l` runs the same ten checks via `lyric test --target jvm` (in-process `Jvm.Bridge` `compileToJarBundled`, executed under `java`). Both cover: basic `toView()` projection, `tryInto()` round-trip, `@hidden` suppression, `@projectionBoundary` type preservation, nested recursive projection, and two-level transitive projection.
 
 docs/41 §3 H2 is marked RESOLVED (MSIL in PR #3015, JVM here). Closes #3044, #3045.
+
+### D-progress-494 — Call-site named-arg reorder + default-param fill; wire topo sort + cycle detection on both targets; formatter `@provided`/`wire` fixes (#1502, #1503)
+
+**Status:** Shipped (2026-06-10).
+
+**Issue #1503 — Named-arg reorder and default-param fill (JVM)** (`jvm/codegen/04_calls.l`, `jvm/codegen/01_types.l`, `jvm/codegen/06_items.l`):
+
+`JvmFuncSig` gained two new fields: `paramNames: List[String]` (declared parameter names, empty when unknown) and `paramDefaults: List[Option[Expr]]` (per-param default expression, `None` = no default). `collectFileSigs` populates both from `IFunc` items' `Param.name` / `Param.dflt`. A new `reorderAndFillJvmArgs` function in `04_calls.l` accepts a `JvmFuncSig` and a raw `List[CallArg]`, detects whether any `CANamed` args are present, and if so: (a) maps each named arg to its declared position, (b) fills any absent positional that has a default, and (c) returns a positional `List[CallArg]` in declaration order for subsequent lowering. Called from `lowerBuiltinOrStaticCall` before argument lowering. Fixed a T0068 type-mismatch in the named-arg detection loop (`case CANamed -> anyNamed = true` returned `Bool`, while `case CAPositional -> ()` returned `Unit`; wrapped in a block `{ anyNamed = true }`).
+
+**Issue #1502 — Wire/DI: `@provided` params, `WMBind`, topological ordering, cycle detection (both targets):**
+
+*MSIL (`msil/codegen.l`)*: `lowerWireMsil` now calls `wireTopoSortMsil` (Kahn's BFS) before emitting any binding. The helper suite — `wireExprDepsMsil`, `wireExprOrBlockDepsMsil`, `wireBlockDepsMsil`, `wireStmtDepsMsil`, `wireMemberInitMsil`, `wireMemberNameMsil` — walks each member's init expression collecting name refs against the known-member set, builds the dependency DAG, and returns `WTRSorted(members)` in emission order or `WTRCycle(path)` on a cycle (which panics with `W0001`).
+
+*JVM (`jvm/codegen/06_items.l`, `jvm/lowering.l`)*: Equivalent JVM suite — `wireExprDepsJvm`, `wireBlockDepsJvm`, `wireStmtDepsJvm`, `wireMemberInitJvm`, `wireMemberNameJvm`, `wireTopoSortJvm`, `WireTopoResult` union — mirrors the MSIL implementation. `buildWire` calls `wireTopoSortJvm` at the top; the sorted member list replaces `decl.members` in both the `@provided` pre-pass and the main binding loop. `LWire` gained a `providedParams: List[LWireParam]` field; `lowerWire` emits `ACC_PRIVATE + ACC_STATIC` fields for each provided param and includes them in the `bootstrap()` parameter list and the `putstatic` preamble. `WMBind` lowers as a static field binding under the interface's simple name. `WMScoped` remains stubbed pending #2972. `self_test_b6.l` and `self_test_b94.l` updated to pass the new `providedParams = newList()` field.
+
+**Formatter fixes** (`lyric-compiler/lyric/fmt/fmt_items.l`):
+
+Two pre-existing formatter bugs fixed as part of this PR:
+- `WMProvided` was emitted as `"provided name: type"` (missing `@`); the parser requires `@provided name: type`. Fixed to `"@provided " + n + ": " + typeStr(ty)`.
+- `wireDoc` always emitted `wire Name(...) {` even when there are no wire parameters; the parser expects `wire Name {` for the no-params form. Fixed to emit `wire Name(params) {` only when `params.length > 0`, otherwise `wire Name {`.
+
+**New self-tests** (`lyric-compiler/lyric/`):
+- `func_default_args_self_test.l` — `@test_module` exercising named-arg reorder and default-param fill (8 test cases; imports `Std.*` only; CI-wired pending).
+- `wire_di_self_test.l` — `@test_module` exercising `@provided`, singleton-with-dependency, and topo sort (placeholder assertions; CI-wired pending, blocked on self-hosted parser gap for wire blocks in `lyric test`).
+
+Closes #1502, #1503.

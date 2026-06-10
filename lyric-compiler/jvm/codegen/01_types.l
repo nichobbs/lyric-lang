@@ -41,6 +41,8 @@ pub record JvmFuncSig {
   owner: String          // JVM internal host-class name, e.g. "Std/Testing"
   params: List[JvmType]   // declared parameter types, in order
   ret: JvmType         // declared return type (JVoid for Unit)
+  paramNames: List[String]              // declared parameter names (empty = unknown)
+  paramDefaults: List[Option[Expr]]     // default expr per param (None = no default)
 }
 
 // One field of a union case class, in declaration order.  A match binding

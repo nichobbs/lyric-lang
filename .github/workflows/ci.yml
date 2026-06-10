@@ -1042,6 +1042,25 @@ jobs:
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/outparam_self_test.l
           echo "out/inout-parameter self-test ran: outparam_self_test.l (--target dotnet)" >> "$GITHUB_STEP_SUMMARY"
 
+      # Named-arg/default-param self-test — pins call-site named-arg reorder and
+      # default-param fill (#1503).  MSIL target only; JVM parity for out/inout
+      # byref is tracked in #1763.
+      - name: Named-arg/default-param self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping named-arg self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping named-arg self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/func_default_args_self_test.l
+          echo "named-arg/default-param self-test ran: func_default_args_self_test.l (--target dotnet)" >> "$GITHUB_STEP_SUMMARY"
+
       # Nested-generic self-test — pins #1687 on the MSIL target.  JVM-target
       # parity is gated on the union case-factory gap, tracked in #1707 (so this
       # step is `--target dotnet` only, unlike the bitwise self-test above).
@@ -1644,6 +1663,23 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/bitwise_self_test.l
+
+      # Named-arg/default-param self-test on JVM — pins call-site reorder and
+      # default fill on the JVM target (#1503).  Imports only `Std.*`.
+      - name: Named-arg/default-param self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping named-arg JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping named-arg JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/func_default_args_self_test.l
 
       # Numeric / character conversion-method self-test (#1901, Band-1 of epic
       # #1470).  Exercises `.toByte()` / `.toInt()` / `.toLong()` / `.toChar()`

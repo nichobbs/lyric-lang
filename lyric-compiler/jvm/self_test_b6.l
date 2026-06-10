@@ -102,7 +102,7 @@ func makeServicesWire(): LWire {
   val exposes: List[String] = newList()
   exposes.add("counter")
 
-  LWire(className = "B6Services", bindings = bindings, exposes = exposes)
+  LWire(className = "B6Services", providedParams = newList(), bindings = bindings, exposes = exposes)
 }
 
 // ── B6Driver (test driver) ────────────────────────────────────────────────────

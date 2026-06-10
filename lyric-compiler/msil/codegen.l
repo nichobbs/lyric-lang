@@ -189,6 +189,11 @@ pub record CodegenCtx {
   // Used to reorder named-arg calls (`foo(b = 2, a = 1)`) to declaration
   // order at the static-call site.  Mirrors fieldDeclaredNames / #1503.
   funcParamNames: Map[String, String]
+  // Default value expressions for function parameters with `= expr` defaults.
+  // Keyed `<fqn>/param<i>` and `<arityKey>/param<i>` (same key space as
+  // funcParamNames).  Populated by addPackageTokens.  Lets reorderFuncNamedArgs
+  // fill a missing named-arg slot from the declared default (#1503).
+  funcDefaultExprs: Map[String, Expr]
   // Inner parameter MsilTypes of a function-typed parameter (`(A,B) -> R` ⇒
   // [MsilType(A), MsilType(B)]), keyed `"<fqn>#<paramIdx>"` (both the
   // arity-qualified and bare-FQN aliases).  Only function-typed parameters have
@@ -1323,6 +1328,7 @@ pub func newCodegenCtx(
     funcParamTypes = newMap(),
     funcParamModes = newMap(),
     funcParamNames = newMap(),
+    funcDefaultExprs = newMap(),
     // flat "fqn/paramN" → name
     funcParamFnInner = newMap(),
     lambdaParamTypes = newMap(),
@@ -2494,6 +2500,17 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           }
           if not cctx.funcParamNames.containsKey(pnKeyA) {
             cctx.funcParamNames.add(pnKeyA, decl.params[pmi].name)
+          }
+          match decl.params[pmi].dflt {
+            case Some(dfltExpr) -> {
+              if not cctx.funcDefaultExprs.containsKey(pnKey) {
+                cctx.funcDefaultExprs.add(pnKey, dfltExpr)
+              }
+              if not cctx.funcDefaultExprs.containsKey(pnKeyA) {
+                cctx.funcDefaultExprs.add(pnKeyA, dfltExpr)
+              }
+            }
+            case None -> ()
           }
           pmi = pmi + 1
         }
@@ -7059,26 +7076,73 @@ func reorderFuncNamedArgs(cctx: in CodegenCtx, tokKey: in String, args: in List[
     }
     i = i + 1
   }
-  // Reassemble in parameter-declaration order using the flat name map
-  // (keyed "<tokKey>/param<i>").  The arity guard: if param<0> is absent, this
-  // function has no recorded param names (e.g. cross-package restored) — bail.
-  if not cctx.funcParamNames.containsKey(tokKey + "/param0") {
-    return args
+  // Count total declared params by probing the flat map until a key is absent.
+  var totalParams = 0
+  while cctx.funcParamNames.containsKey(tokKey + "/param" + toString(totalParams)) {
+    totalParams = totalParams + 1
+  }
+  if totalParams == 0 {
+    return args  // no param-order info — preserve current behaviour
   }
   val ordered: List[CallArg] = newList()
   var pi = 0
-  while pi < args.count {
+  while pi < totalParams {
     val pnKey = tokKey + "/param" + toString(pi)
     match mapGet(cctx.funcParamNames, pnKey) {
-      case None -> return args  // fewer declared params than args — bail
+      case None -> return args  // defensive
       case Some(pname) -> match mapGet(nameToArg, pname) {
-        case None -> return args  // call arg name not in declared params — bail
         case Some(a) -> ordered.add(a)
+        case None -> match mapGet(cctx.funcDefaultExprs, pnKey) {
+          case Some(dflt) -> ordered.add(CAPositional(expr = dflt))
+          case None -> return args  // required param missing — bail
+        }
       }
     }
     pi = pi + 1
   }
   ordered
+}
+
+// Fill in trailing default arguments for a positional call site that provides
+// fewer arguments than the declared parameter count (#1503).  Returns `args`
+// unchanged when: all args are positional but count already matches declared
+// params, no param-name info is available for this function, or a missing
+// trailing param has no registered default.
+func fillPositionalFuncDefaults(cctx: in CodegenCtx, tokKey: in String, args: in List[CallArg]): List[CallArg] {
+  // Only applies when args.count < declared param count.
+  var totalParams = 0
+  while cctx.funcParamNames.containsKey(tokKey + "/param" + toString(totalParams)) {
+    totalParams = totalParams + 1
+  }
+  if totalParams <= args.count {
+    return args
+  }
+  // Verify all provided args are positional (mixed calls are already in order).
+  var i = 0
+  while i < args.count {
+    match args[i] {
+      case CAPositional(_) -> ()
+      case CANamed(_, _, _) -> return args  // named args handled by reorderFuncNamedArgs
+    }
+    i = i + 1
+  }
+  // Copy existing positional args then append defaults for trailing params.
+  val filled: List[CallArg] = newList()
+  var j = 0
+  while j < args.count {
+    filled.add(args[j])
+    j = j + 1
+  }
+  var k = args.count
+  while k < totalParams {
+    val pnKey = tokKey + "/param" + toString(k)
+    match mapGet(cctx.funcDefaultExprs, pnKey) {
+      case Some(dflt) -> filled.add(CAPositional(expr = dflt))
+      case None -> return args  // required param with no default — bail
+    }
+    k = k + 1
+  }
+  filled
 }
 
 // Lower a function call expression.
@@ -7719,7 +7783,8 @@ func lowerBuiltinOrStaticCallMsil(
                 case Some(tok) -> {
                   val callParamTys = match mapGet(cctx.funcParamTypes, tokKey) { case Some(pts) -> pts; case None -> newList() }
                   val callParamModes = match mapGet(cctx.funcParamModes, tokKey) { case Some(ms) -> ms; case None -> newList() }
-                  val callArgs = reorderFuncNamedArgs(cctx, tokKey, args)
+                  val reorderedArgs = reorderFuncNamedArgs(cctx, tokKey, args)
+                  val callArgs = fillPositionalFuncDefaults(cctx, tokKey, reorderedArgs)
                   var i = 0
                   while i < callArgs.count {
                     // #1939: a lambda passed *directly* to a function-typed
@@ -14208,12 +14273,298 @@ func lowerProtectedMsil(
   )
 }
 
+// ── Wire dependency extraction and topological sort ──────────────────────────
+// Extract the set of wire member names that an expression directly references.
+// Walks EPath nodes with a single segment; any name matching a known wire
+// member name is recorded as a dependency.
+func wireExprDepsMsil(e: in Expr, knownNames: in Map[String, Bool], acc: in List[String]): Unit {
+  match e.kind {
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        val name = path.segments[0]
+        if knownNames.containsKey(name) {
+          acc.add(name)
+        }
+      }
+    }
+    case ECall(fn, args) -> {
+      wireExprDepsMsil(fn, knownNames, acc)
+      var ai = 0
+      while ai < args.count {
+        match args[ai] {
+          case CAPositional(expr) -> wireExprDepsMsil(expr, knownNames, acc)
+          case CANamed(_, value, _) -> wireExprDepsMsil(value, knownNames, acc)
+        }
+        ai = ai + 1
+      }
+    }
+    case EMember(receiver, _) -> wireExprDepsMsil(receiver, knownNames, acc)
+    case EBlock(block) -> wireBlockDepsMsil(block, knownNames, acc)
+    case EIf(cond, thenBranch, elseBranch, _) -> {
+      wireExprDepsMsil(cond, knownNames, acc)
+      wireExprOrBlockDepsMsil(thenBranch, knownNames, acc)
+      match elseBranch {
+        case Some(eb) -> wireExprOrBlockDepsMsil(eb, knownNames, acc)
+        case None -> ()
+      }
+    }
+    case EParen(inner) -> wireExprDepsMsil(inner, knownNames, acc)
+    case EBinop(_, lhs, rhs) -> {
+      wireExprDepsMsil(lhs, knownNames, acc)
+      wireExprDepsMsil(rhs, knownNames, acc)
+    }
+    case EPrefix(_, operand) -> wireExprDepsMsil(operand, knownNames, acc)
+    case _ -> ()
+  }
+}
+
+func wireExprOrBlockDepsMsil(eob: in ExprOrBlock, knownNames: in Map[String, Bool], acc: in List[String]): Unit {
+  match eob {
+    case EOBExpr(expr) -> wireExprDepsMsil(expr, knownNames, acc)
+    case EOBBlock(block) -> wireBlockDepsMsil(block, knownNames, acc)
+  }
+}
+
+func wireBlockDepsMsil(blk: in Block, knownNames: in Map[String, Bool], acc: in List[String]): Unit {
+  var si = 0
+  while si < blk.statements.count {
+    wireStmtDepsMsil(blk.statements[si], knownNames, acc)
+    si = si + 1
+  }
+}
+
+func wireStmtDepsMsil(s: in Statement, knownNames: in Map[String, Bool], acc: in List[String]): Unit {
+  match s.kind {
+    case SExpr(expr) -> wireExprDepsMsil(expr, knownNames, acc)
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(_, _, init) -> wireExprDepsMsil(init, knownNames, acc)
+        case LBLet(_, _, init) -> wireExprDepsMsil(init, knownNames, acc)
+        case LBVar(_, _, initOpt) -> match initOpt { case Some(init) -> wireExprDepsMsil(init, knownNames, acc); case None -> () }
+      }
+    }
+    case SAssign(target, _, value) -> {
+      wireExprDepsMsil(target, knownNames, acc)
+      wireExprDepsMsil(value, knownNames, acc)
+    }
+    case SReturn(valOpt) -> match valOpt { case Some(e) -> wireExprDepsMsil(e, knownNames, acc); case None -> () }
+    case _ -> ()
+  }
+}
+
+// Result of wire topological sort.
+union WireTopoResult {
+  case WTRSorted(members: List[WireMember])
+  case WTRCycle(path: List[String])
+}
+
+// Extract the init expression from a WireMember (None for members with no init).
+func wireMemberInitMsil(m: in WireMember): Option[Expr] {
+  match m {
+    case WMSingleton(_, _, init, _) -> Some(value = init)
+    case WMLocal(_, _, init, _) -> Some(value = init)
+    case WMScoped(_, _, _, init, _) -> Some(value = init)
+    case WMBind(_, provider, _) -> Some(value = provider)
+    case WMProvided(_, _, _) -> None
+    case WMExpose(_, _) -> None
+  }
+}
+
+// Name of a WireMember, or "" for unnamed members.
+func wireMemberNameMsil(m: in WireMember): String {
+  match m {
+    case WMSingleton(name, _, _, _) -> name
+    case WMLocal(name, _, _, _) -> name
+    case WMScoped(_, name, _, _, _) -> name
+    case WMBind(iface, _, _) -> match iface.kind { case TRef(path) -> lastSegmentMsil(path); case _ -> "__bind" }
+    case WMProvided(name, _, _) -> name
+    case WMExpose(name, _) -> name
+  }
+}
+
+// Topologically sort wire members by their init-expression dependencies using
+// Kahn's BFS algorithm.  Returns WTRSorted with members in dependency order,
+// or WTRCycle with the names of members involved in the cycle.
+// WMProvided and WMExpose have no deps and appear in their original relative
+// positions (provided first because they have zero in-degree).
+func wireTopoSortMsil(members: in List[WireMember]): WireTopoResult {
+  // Build name → member index and known-name set.
+  val nameToIdx: Map[String, Int] = newMap()
+  val knownNames: Map[String, Bool] = newMap()
+  var i = 0
+  while i < members.count {
+    val n = wireMemberNameMsil(members[i])
+    if n.length > 0 and not nameToIdx.containsKey(n) {
+      nameToIdx.add(n, i)
+      knownNames.add(n, true)
+    }
+    i = i + 1
+  }
+
+  // Build adjacency list: name → list of dependency names (deps it references).
+  val depsOf: Map[String, List[String]] = newMap()
+  var j = 0
+  while j < members.count {
+    val n = wireMemberNameMsil(members[j])
+    val initDeps: List[String] = newList()
+    match wireMemberInitMsil(members[j]) {
+      case Some(e) -> {
+        val raw: List[String] = newList()
+        wireExprDepsMsil(e, knownNames, raw)
+        var di = 0
+        while di < raw.count {
+          if raw[di] != n {
+            initDeps.add(raw[di])
+          }
+          di = di + 1
+        }
+      }
+      case None -> ()
+    }
+    if not depsOf.containsKey(n) {
+      depsOf.add(n, initDeps)
+    }
+    j = j + 1
+  }
+
+  // Compute in-degree: for each name, how many other members list it as a dep.
+  // (In-degree = number of edges pointing TO this node.)
+  val inDegree: Map[String, Int] = newMap()
+  var k = 0
+  while k < members.count {
+    val n = wireMemberNameMsil(members[k])
+    if not inDegree.containsKey(n) {
+      inDegree.add(n, 0)
+    }
+    k = k + 1
+  }
+  // For each member m, increment in-degree of each dep of m (because m depends on dep,
+  // meaning dep must come before m — dep has a "must precede" edge TO m,
+  // but for Kahn's we track: in-degree of a node = how many nodes it depends on that
+  // haven't been emitted yet).
+  // Actually: Kahn's uses the standard graph direction.  We want to order members such
+  // that if m depends on d, d appears before m.  So we build: edge d → m (d must precede m).
+  // in-degree[m] = number of distinct deps of m (in the known set).
+  var m2 = 0
+  while m2 < members.count {
+    val n = wireMemberNameMsil(members[m2])
+    match mapGet(depsOf, n) {
+      case Some(dList) -> {
+        // Use a set to avoid counting a dep twice.
+        val seen: Map[String, Bool] = newMap()
+        var di = 0
+        while di < dList.count {
+          val dep = dList[di]
+          if not seen.containsKey(dep) {
+            seen.add(dep, true)
+            match mapGet(inDegree, n) {
+              case Some(cur) -> inDegree.add(n, cur + 1)
+              case None -> inDegree.add(n, 1)
+            }
+          }
+          di = di + 1
+        }
+      }
+      case None -> ()
+    }
+    m2 = m2 + 1
+  }
+
+  // Kahn's BFS: start with all nodes with in-degree 0.
+  val queue: List[String] = newList()
+  var qi = 0
+  while qi < members.count {
+    val n = wireMemberNameMsil(members[qi])
+    match mapGet(inDegree, n) {
+      case Some(deg) -> {
+        if deg == 0 {
+          queue.add(n)
+        }
+      }
+      case None -> queue.add(n)
+    }
+    qi = qi + 1
+  }
+
+  val sortedNames: List[String] = newList()
+  var head = 0
+  while head < queue.count {
+    val current = queue[head]
+    sortedNames.add(current)
+    // For each member that lists `current` as a dep, decrement its in-degree.
+    var ri = 0
+    while ri < members.count {
+      val rn = wireMemberNameMsil(members[ri])
+      match mapGet(depsOf, rn) {
+        case Some(dList) -> {
+          var found = false
+          var dj = 0
+          while dj < dList.count {
+            if dList[dj] == current {
+              found = true
+            }
+            dj = dj + 1
+          }
+          if found {
+            match mapGet(inDegree, rn) {
+              case Some(deg) -> {
+                val newDeg = deg - 1
+                inDegree.add(rn, newDeg)
+                if newDeg == 0 {
+                  queue.add(rn)
+                }
+              }
+              case None -> ()
+            }
+          }
+        }
+        case None -> ()
+      }
+      ri = ri + 1
+    }
+    head = head + 1
+  }
+
+  // If sortedNames has fewer entries than members, there is a cycle.
+  if sortedNames.count < members.count {
+    val sortedSet: Map[String, Bool] = newMap()
+    var si = 0
+    while si < sortedNames.count {
+      sortedSet.add(sortedNames[si], true)
+      si = si + 1
+    }
+    val cyclePath: List[String] = newList()
+    var ci = 0
+    while ci < members.count {
+      val cn = wireMemberNameMsil(members[ci])
+      if not sortedSet.containsKey(cn) {
+        cyclePath.add(cn)
+      }
+      ci = ci + 1
+    }
+    return WTRCycle(path = cyclePath)
+  }
+
+  // Reassemble in sorted order.
+  val sorted: List[WireMember] = newList()
+  var sni = 0
+  while sni < sortedNames.count {
+    val sn = sortedNames[sni]
+    match mapGet(nameToIdx, sn) {
+      case Some(idx) -> sorted.add(members[idx])
+      case None -> ()
+    }
+    sni = sni + 1
+  }
+  WTRSorted(members = sorted)
+}
+
 // ── Wire block lowering ───────────────────────────────────────────────────────
 // Lower a wire block to a static factory class with a `<wireName>_create()`
 // method that instantiates the dependency graph in topological order.
 // Supported member kinds:
 //   singleton / local — evaluated once, stored as a local
-//   scoped[X]         — bootstrap: treated as local (true async-local scoping deferred)
+//   scoped[X]         — AsyncLocal<T>-backed scoping deferred to #2972
 //   bind I -> impl    — impl evaluated and stored under interface's simple name
 //   @provided n: T    — becomes a parameter of the create() function
 //   expose n          — loads n and leaves it on the stack for return
@@ -14224,12 +14575,21 @@ func lowerWireMsil(
   items: in List[MPackageItem],
   fns: in List[MFunc],
 ): Unit {
+  // Topologically sort members and detect dependency cycles before emitting code.
+  val sortedMembers: List[WireMember] = match wireTopoSortMsil(decl.members) {
+    case WTRSorted(sm) -> sm
+    case WTRCycle(path) -> {
+      val cycleStr = if path.count > 0 { path[0] } else { "<unknown>" }
+      panic("W0001: wire '" + decl.name + "' has a dependency cycle involving: " + cycleStr)
+    }
+  }
+
   // Pre-pass: collect @provided members to determine the factory's param count.
   val providedNames: List[String] = newList()
   val providedTypes: List[MsilType] = newList()
   var fpi = 0
-  while fpi < decl.members.count {
-    match decl.members[fpi] {
+  while fpi < sortedMembers.count {
+    match sortedMembers[fpi] {
       case WMProvided(pname, pty, _) -> {
         providedNames.add(pname)
         providedTypes.add(typeExprToMsil(pty, pkgName))
@@ -14256,8 +14616,8 @@ func lowerWireMsil(
   }
 
   var mi = 0
-  while mi < decl.members.count {
-    match decl.members[mi] {
+  while mi < sortedMembers.count {
+    match sortedMembers[mi] {
       case WMProvided(_, _, _) -> {
         // Already registered as a param above; no instructions needed.
       }

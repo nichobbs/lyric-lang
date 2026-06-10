@@ -905,7 +905,7 @@ func wireDoc(wd: in WireDecl, ctx: inout FmtCtx): List[String] {
   var i = 0
   while i < wd.members.count {
     match wd.members[i] {
-      case WMProvided(n, ty, _) -> mLines.add("provided " + n + ": " + typeStr(ty))
+      case WMProvided(n, ty, _) -> mLines.add("@provided " + n + ": " + typeStr(ty))
       case WMSingleton(n, ty, init, _) -> mLines.add("singleton " + n + ": " + typeStr(ty) + " = " + exprInline(0, init))
       case WMScoped(sk, n, ty, init, _) -> mLines.add("scoped " + sk + " " + n + ": " + typeStr(ty) + " = " + exprInline(0, init))
       case WMBind(iface, prov, _) -> mLines.add("bind " + typeStr(iface) + " = " + exprInline(0, prov))
@@ -918,7 +918,8 @@ func wireDoc(wd: in WireDecl, ctx: inout FmtCtx): List[String] {
     i = i + 1
   }
   val acc: List[String] = newList()
-  acc.add("wire " + wd.name + "(" + params + ") {")
+  val wireHeader = if params.length > 0 { "wire " + wd.name + "(" + params + ") {" } else { "wire " + wd.name + " {" }
+  acc.add(wireHeader)
   val ind = indentDoc(2, mLines)
   i = 0
   while i < ind.count {

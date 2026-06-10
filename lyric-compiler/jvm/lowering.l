@@ -1595,8 +1595,16 @@ pub record LWireBinding {
   // push the constructed value; no return insn
 }
 
+// A @provided parameter to the wire's bootstrap() method.
+pub record LWireParam {
+  name: String
+  valType: JvmType
+}
+
 pub record LWire {
   className: String
+  providedParams: List[LWireParam]
+  // @provided parameters, in declaration order — become bootstrap() args
   bindings: List[LWireBinding]
   exposes: List[String]
   // binding names to expose as public static accessors
@@ -1804,7 +1812,15 @@ pub func lowerWire(w: in LWire, pool: in Pool): ClassFile {
   val methods: List[MethodInfo] = newList()
   val cfFields: List[FieldInfo] = newList()
 
-  // Static fields (private static), one per binding
+  // Static fields (private static) for @provided params and each binding.
+  // Provided-param fields must exist so bootstrap() can putstatic them.
+  var pfIdx = 0
+  while pfIdx < w.providedParams.count {
+    val pf = w.providedParams[pfIdx]
+    val pfAttrs: List[Attribute] = newList()
+    cfFields.add(makeFieldInfo(ACC_PRIVATE + ACC_STATIC, pf.name, typeDescriptor(pf.valType), pfAttrs))
+    pfIdx = pfIdx + 1
+  }
   for b in w.bindings.toArray() {
     val fa: List[Attribute] = newList()
     cfFields.add(makeFieldInfo(ACC_PRIVATE + ACC_STATIC, b.name, typeDescriptor(b.valType), fa))
@@ -1823,8 +1839,22 @@ pub func lowerWire(w: in LWire, pool: in Pool): ClassFile {
   val ctorMethod = makeMethodInfo(ACC_PRIVATE, "<init>", buildDescriptor(ctorParamsEmpty, JVoid), ctorAttrs)
   methods.add(ctorMethod)
 
-  // bootstrap()V — run each binding's insns and store to the static field
+  // bootstrap(provided...)V — first store any @provided params to static fields,
+  // then run each remaining binding's insns and store to its static field.
   val bsAsm = newAssembler(pool)
+
+  // Store each @provided param (slot 0..n-1 in a static method) to its static field.
+  var bsSlot = 0
+  var bspi = 0
+  while bspi < w.providedParams.count {
+    val p = w.providedParams[bspi]
+    lowerInsn(loadInsn(p.valType, bsSlot), bsAsm)
+    lowerInsn(LPutstatic(owner = w.className, name = p.name, t = p.valType), bsAsm)
+    bsSlot = bsSlot + fieldSlotSize(p.valType)
+    bspi = bspi + 1
+  }
+
+  // Run remaining bindings (WMSingleton / WMLocal / WMBind etc.).
   for b in w.bindings.toArray() {
     for insn in b.insns.toArray() {
       lowerInsn(insn, bsAsm)
@@ -1832,11 +1862,19 @@ pub func lowerWire(w: in LWire, pool: in Pool): ClassFile {
     lowerInsn(LPutstatic(owner = w.className, name = b.name, t = b.valType), bsAsm)
   }
   lowerInsn(LReturn, bsAsm)
-  val bsCode = assembleCode(bsAsm, 3, 0)
+
+  val bsMaxStack = 3
+  val bsMaxLocals = if w.providedParams.count > 0 { w.providedParams.count } else { 0 }
+  val bsCode = assembleCode(bsAsm, bsMaxStack, bsMaxLocals)
   val bsAttrs: List[Attribute] = newList()
   bsAttrs.add(bsCode)
-  val bsParamsEmpty: List[JvmType] = newList()
-  val bsMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "bootstrap", buildDescriptor(bsParamsEmpty, JVoid), bsAttrs)
+  val bsParamTypes: List[JvmType] = newList()
+  var bspt = 0
+  while bspt < w.providedParams.count {
+    bsParamTypes.add(w.providedParams[bspt].valType)
+    bspt = bspt + 1
+  }
+  val bsMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "bootstrap", buildDescriptor(bsParamTypes, JVoid), bsAttrs)
   methods.add(bsMethod)
 
   // Public static accessor for each exposed binding: getstatic + return

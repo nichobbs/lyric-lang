@@ -893,6 +893,273 @@ func buildProtected(
   LPRecord(rec = LRecord(className = className, fields = fields, methods = methods, implementsIfaces = newList()))
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §10c. Wire topological sort (JVM) — mirrors MSIL `wireTopoSortMsil`.
+// ─────────────────────────────────────────────────────────────────────────────
+// Result of wire topological sort.
+union WireTopoResult {
+  case WTRSorted(members: List[WireMember])
+  case WTRCycle(path: List[String])
+}
+
+// Extract the set of wire member names that an expression directly references.
+func wireExprDepsJvm(e: in Expr, knownNames: in Map[String, Bool], acc: in List[String]): Unit {
+  match e.kind {
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        val name = path.segments[0]
+        if knownNames.containsKey(name) {
+          acc.add(name)
+        }
+      }
+    }
+    case ECall(fn, args) -> {
+      wireExprDepsJvm(fn, knownNames, acc)
+      var ai = 0
+      while ai < args.count {
+        match args[ai] {
+          case CAPositional(expr) -> wireExprDepsJvm(expr, knownNames, acc)
+          case CANamed(_, value, _) -> wireExprDepsJvm(value, knownNames, acc)
+        }
+        ai = ai + 1
+      }
+    }
+    case EMember(receiver, _) -> wireExprDepsJvm(receiver, knownNames, acc)
+    case EBlock(block) -> wireBlockDepsJvm(block, knownNames, acc)
+    case EIf(cond, thenBranch, elseBranch, _) -> {
+      wireExprDepsJvm(cond, knownNames, acc)
+      wireExprOrBlockDepsJvm(thenBranch, knownNames, acc)
+      match elseBranch {
+        case Some(eb) -> wireExprOrBlockDepsJvm(eb, knownNames, acc)
+        case None -> ()
+      }
+    }
+    case EParen(inner) -> wireExprDepsJvm(inner, knownNames, acc)
+    case EBinop(_, lhs, rhs) -> {
+      wireExprDepsJvm(lhs, knownNames, acc)
+      wireExprDepsJvm(rhs, knownNames, acc)
+    }
+    case EPrefix(_, operand) -> wireExprDepsJvm(operand, knownNames, acc)
+    case _ -> ()
+  }
+}
+
+func wireExprOrBlockDepsJvm(eob: in ExprOrBlock, knownNames: in Map[String, Bool], acc: in List[String]): Unit {
+  match eob {
+    case EOBExpr(expr) -> wireExprDepsJvm(expr, knownNames, acc)
+    case EOBBlock(block) -> wireBlockDepsJvm(block, knownNames, acc)
+  }
+}
+
+func wireBlockDepsJvm(block: in Block, knownNames: in Map[String, Bool], acc: in List[String]): Unit {
+  var si = 0
+  while si < block.statements.count {
+    wireStmtDepsJvm(block.statements[si], knownNames, acc)
+    si = si + 1
+  }
+}
+
+func wireStmtDepsJvm(s: in Statement, knownNames: in Map[String, Bool], acc: in List[String]): Unit {
+  match s.kind {
+    case SExpr(expr) -> wireExprDepsJvm(expr, knownNames, acc)
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(_, _, init) -> wireExprDepsJvm(init, knownNames, acc)
+        case LBLet(_, _, init) -> wireExprDepsJvm(init, knownNames, acc)
+        case LBVar(_, _, initOpt) -> match initOpt { case Some(init) -> wireExprDepsJvm(init, knownNames, acc); case None -> () }
+      }
+    }
+    case SAssign(target, _, value) -> {
+      wireExprDepsJvm(target, knownNames, acc)
+      wireExprDepsJvm(value, knownNames, acc)
+    }
+    case SReturn(valOpt) -> match valOpt { case Some(e) -> wireExprDepsJvm(e, knownNames, acc); case None -> () }
+    case _ -> ()
+  }
+}
+
+// Extract the init expression from a WireMember (None for members with no init).
+func wireMemberInitJvm(m: in WireMember): Option[Expr] {
+  match m {
+    case WMSingleton(_, _, init, _) -> Some(value = init)
+    case WMLocal(_, _, init, _) -> Some(value = init)
+    case WMScoped(_, _, _, init, _) -> Some(value = init)
+    case WMBind(_, provider, _) -> Some(value = provider)
+    case WMProvided(_, _, _) -> None
+    case WMExpose(_, _) -> None
+  }
+}
+
+// Name of a WireMember, or "" for unnamed members.
+func wireMemberNameJvm(m: in WireMember): String {
+  match m {
+    case WMSingleton(name, _, _, _) -> name
+    case WMLocal(name, _, _, _) -> name
+    case WMScoped(_, name, _, _, _) -> name
+    case WMBind(iface, _, _) -> match iface.kind { case TRef(path) -> lastSegment(path); case _ -> "__bind" }
+    case WMProvided(name, _, _) -> name
+    case WMExpose(name, _) -> name
+  }
+}
+
+// Topologically sort wire members using Kahn's BFS algorithm.  Returns
+// WTRSorted with members in dependency order, or WTRCycle when a cycle exists.
+func wireTopoSortJvm(members: in List[WireMember]): WireTopoResult {
+  val nameToIdx: Map[String, Int] = newMap()
+  val knownNames: Map[String, Bool] = newMap()
+  var i = 0
+  while i < members.count {
+    val n = wireMemberNameJvm(members[i])
+    if n.length > 0 and not nameToIdx.containsKey(n) {
+      nameToIdx.add(n, i)
+      knownNames.add(n, true)
+    }
+    i = i + 1
+  }
+
+  val depsOf: Map[String, List[String]] = newMap()
+  var j = 0
+  while j < members.count {
+    val n = wireMemberNameJvm(members[j])
+    val initDeps: List[String] = newList()
+    match wireMemberInitJvm(members[j]) {
+      case Some(e) -> {
+        val raw: List[String] = newList()
+        wireExprDepsJvm(e, knownNames, raw)
+        var di = 0
+        while di < raw.count {
+          if raw[di] != n {
+            initDeps.add(raw[di])
+          }
+          di = di + 1
+        }
+      }
+      case None -> ()
+    }
+    if not depsOf.containsKey(n) {
+      depsOf.add(n, initDeps)
+    }
+    j = j + 1
+  }
+
+  val inDegree: Map[String, Int] = newMap()
+  var k = 0
+  while k < members.count {
+    val n = wireMemberNameJvm(members[k])
+    if not inDegree.containsKey(n) {
+      inDegree.add(n, 0)
+    }
+    k = k + 1
+  }
+  var m2 = 0
+  while m2 < members.count {
+    val n = wireMemberNameJvm(members[m2])
+    match mapGet(depsOf, n) {
+      case Some(dList) -> {
+        val seen: Map[String, Bool] = newMap()
+        var di = 0
+        while di < dList.count {
+          val dep = dList[di]
+          if not seen.containsKey(dep) {
+            seen.add(dep, true)
+            match mapGet(inDegree, n) {
+              case Some(cur) -> inDegree.add(n, cur + 1)
+              case None -> inDegree.add(n, 1)
+            }
+          }
+          di = di + 1
+        }
+      }
+      case None -> ()
+    }
+    m2 = m2 + 1
+  }
+
+  val queue: List[String] = newList()
+  var qi = 0
+  while qi < members.count {
+    val n = wireMemberNameJvm(members[qi])
+    match mapGet(inDegree, n) {
+      case Some(deg) -> {
+        if deg == 0 {
+          queue.add(n)
+        }
+      }
+      case None -> queue.add(n)
+    }
+    qi = qi + 1
+  }
+
+  val sortedNames: List[String] = newList()
+  var head = 0
+  while head < queue.count {
+    val current = queue[head]
+    sortedNames.add(current)
+    var ri = 0
+    while ri < members.count {
+      val rn = wireMemberNameJvm(members[ri])
+      match mapGet(depsOf, rn) {
+        case Some(dList) -> {
+          var found = false
+          var dj = 0
+          while dj < dList.count {
+            if dList[dj] == current {
+              found = true
+            }
+            dj = dj + 1
+          }
+          if found {
+            match mapGet(inDegree, rn) {
+              case Some(deg) -> {
+                val newDeg = deg - 1
+                inDegree.add(rn, newDeg)
+                if newDeg == 0 {
+                  queue.add(rn)
+                }
+              }
+              case None -> ()
+            }
+          }
+        }
+        case None -> ()
+      }
+      ri = ri + 1
+    }
+    head = head + 1
+  }
+
+  if sortedNames.count < members.count {
+    val sortedSet: Map[String, Bool] = newMap()
+    var si = 0
+    while si < sortedNames.count {
+      sortedSet.add(sortedNames[si], true)
+      si = si + 1
+    }
+    val cyclePath: List[String] = newList()
+    var ci = 0
+    while ci < members.count {
+      val cn = wireMemberNameJvm(members[ci])
+      if not sortedSet.containsKey(cn) {
+        cyclePath.add(cn)
+      }
+      ci = ci + 1
+    }
+    return WTRCycle(path = cyclePath)
+  }
+
+  val sorted: List[WireMember] = newList()
+  var sni = 0
+  while sni < sortedNames.count {
+    val sn = sortedNames[sni]
+    match mapGet(nameToIdx, sn) {
+      case Some(idx) -> sorted.add(members[idx])
+      case None -> ()
+    }
+    sni = sni + 1
+  }
+  WTRSorted(members = sorted)
+}
+
 // Build a wire-block DI factory class.  Each `singleton` / `local` binding's
 // initialiser is lowered to instructions that push the constructed value (no
 // return); `lowerWire` emits a private static field per binding, a `bootstrap()`
@@ -900,7 +1167,8 @@ func buildProtected(
 // accessor for each `expose`d binding.  A binding initialiser may reference an
 // earlier binding by name — the shared `wireCtx` resolves such a reference to a
 // `getstatic` on the wire class so the dependency graph wires up in order.
-// Mirrors the MSIL `lowerWireMsil` member subset (singleton / local / expose).
+// Also handles WMProvided (@provided params become bootstrap() arguments stored
+// to private static fields) and WMBind (registers interface → provider mapping).
 func buildWire(
   decl: in WireDecl,
   pkgName: in String,
@@ -917,12 +1185,48 @@ func buildWire(
   val className = pkgName + "/" + decl.name
   val bindings: List[LWireBinding] = newList()
   val exposes: List[String] = newList()
+  val providedParams: List[LWireParam] = newList()
   // Track binding name → static-field type so a later binding referencing an
   // earlier one resolves to `getstatic <wire>.<name>`.
   val bindingTypes: Map[String, JvmType] = newMap()
+
+  // Topologically sort members so init-expression dependencies always refer to
+  // fields that have already been stored (mirrors `wireTopoSortMsil` in the MSIL
+  // backend).  A cycle produces W0001.
+  val sortedMembers: List[WireMember] = match wireTopoSortJvm(decl.members) {
+    case WTRSorted(sm) -> sm
+    case WTRCycle(path) -> {
+      val cycleStr = if path.count > 0 { path[0] } else { "<unknown>" }
+      panic("W0001: wire '" + decl.name + "' has a dependency cycle involving: " + cycleStr)
+    }
+  }
+
+  // Pre-pass: collect @provided members so their types are in bindingTypes before
+  // the main loop processes bindings that may reference them.
+  var ppi = 0
+  while ppi < sortedMembers.count {
+    match sortedMembers[ppi] {
+      case WMProvided(pname, pty, _) -> {
+        val bty = typeExprToJvm(pty, pkgName)
+        providedParams.add(LWireParam(name = pname, valType = bty))
+        // Register in bindingTypes so later init expressions that reference `pname`
+        // resolve to `getstatic <wire>.<pname>` (the field that bootstrap() stores to).
+        if not bindingTypes.containsKey(pname) {
+          bindingTypes.add(pname, bty)
+        }
+      }
+      case _ -> ()
+    }
+    ppi = ppi + 1
+  }
+
   var mi = 0
-  while mi < decl.members.count {
-    match decl.members[mi] {
+  while mi < sortedMembers.count {
+    match sortedMembers[mi] {
+      case WMProvided(_, _, _) -> {
+        // Already captured into providedParams in the pre-pass.  No binding insns
+        // needed — lowerWire stores the bootstrap param to the field directly.
+      }
       case WMSingleton(name, ty, init, _) -> {
         val bty = typeExprToJvm(ty, pkgName)
         val initInsns: List[LInsn] = newList()
@@ -973,12 +1277,42 @@ func buildWire(
           bindingTypes.add(name, bty)
         }
       }
+      case WMBind(iface, provider, _) -> {
+        // WMBind registers the provider expression as the resolution of the interface.
+        // The binding is stored under the interface's simple name as a static field.
+        val ifaceName = match iface.kind { case TRef(path) -> lastSegment(path); case _ -> "__bind" }
+        val bty = typeExprToJvm(iface, pkgName)
+        val initInsns: List[LInsn] = newList()
+        lowerWireBindingInit(
+          className,
+          bindingTypes,
+          pkgName,
+          funcSigs,
+          caseFields,
+          ctors,
+          externTypes,
+          autoFfi,
+          moduleVals,
+          opaqueTypes,
+          closureAcc,
+          closureCounter,
+          initInsns,
+          provider,
+          bty
+        )
+        bindings.add(LWireBinding(name = ifaceName, valType = bty, insns = initInsns))
+        if not bindingTypes.containsKey(ifaceName) {
+          bindingTypes.add(ifaceName, bty)
+        }
+      }
       case WMExpose(name, _) -> exposes.add(name)
-      case _ -> ()
+      case WMScoped(_, _, _, _, _) -> {
+        // ThreadLocal-backed scoping deferred to #2972; not lowered until then.
+      }
     }
     mi = mi + 1
   }
-  LWire(className = className, bindings = bindings, exposes = exposes)
+  LWire(className = className, providedParams = providedParams, bindings = bindings, exposes = exposes)
 }
 
 // Lower a wire-binding initialiser so it pushes the constructed value (no return
@@ -1399,9 +1733,13 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
     match file.items[i].kind {
       case IFunc(decl) -> {
         val params: List[JvmType] = newList()
+        val paramNames: List[String] = newList()
+        val paramDefaults: List[Option[Expr]] = newList()
         var pi = 0
         while pi < decl.params.count {
           params.add(typeExprToJvm(decl.params[pi].ty, owner))
+          paramNames.add(decl.params[pi].name)
+          paramDefaults.add(decl.params[pi].dflt)
           pi = pi + 1
         }
         // An async generator's *factory* returns the synthesised generator
@@ -1417,7 +1755,13 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
             case None -> JVoid
           }
         }
-        val sig = JvmFuncSig(owner = owner, params = params, ret = ret)
+        val sig = JvmFuncSig(
+          owner = owner,
+          params = params,
+          ret = ret,
+          paramNames = paramNames,
+          paramDefaults = paramDefaults
+        )
         // Qualified key (`Std/Testing/assertEqualInt`) is unique across the
         // bundle, so two packages exporting the same short name (e.g.
         // `fromString` in `Std.Json` and `Std.Yaml`) no longer collide
@@ -1488,7 +1832,16 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
                 val fkey = "field:" + f.name
                 if not into.containsKey(fkey) {
                   val fPs: List[JvmType] = newList()
-                  into.add(fkey, JvmFuncSig(owner = opqCls, params = fPs, ret = typeExprToJvm(f.ty, owner)))
+                  into.add(
+                    fkey,
+                    JvmFuncSig(
+                      owner = opqCls,
+                      params = fPs,
+                      ret = typeExprToJvm(f.ty, owner),
+                      paramNames = newList(),
+                      paramDefaults = newList()
+                    )
+                  )
                 }
               }
               case OMInvariant(_) -> ()
@@ -1571,7 +1924,10 @@ func registerInstanceSigErased(
   val ret = match retOpt { case Some(te) -> typeExprToJvmErased(te, owner, typeParams); case None -> JVoid }
   val key = className + "#" + methodName
   if not into.containsKey(key) {
-    into.add(key, JvmFuncSig(owner = className, params = ps, ret = ret))
+    into.add(
+      key,
+      JvmFuncSig(owner = className, params = ps, ret = ret, paramNames = newList(), paramDefaults = newList())
+    )
   }
 }
 
@@ -1587,7 +1943,10 @@ func registerStaticWireSig(
 ): Unit {
   val key = wireShortName + "." + methodName
   if not into.containsKey(key) {
-    into.add(key, JvmFuncSig(owner = wireClass, params = params, ret = ret))
+    into.add(
+      key,
+      JvmFuncSig(owner = wireClass, params = params, ret = ret, paramNames = newList(), paramDefaults = newList())
+    )
   }
 }
 
@@ -1935,13 +2294,31 @@ pub func registerProjectableViews(
           val tvKey = cls + "#toView"
           if not funcSigs.containsKey(tvKey) {
             val tvPs: List[JvmType] = newList()
-            funcSigs.add(tvKey, JvmFuncSig(owner = cls, params = tvPs, ret = JRef(className = viewCls)))
+            funcSigs.add(
+              tvKey,
+              JvmFuncSig(
+                owner = cls,
+                params = tvPs,
+                ret = JRef(className = viewCls),
+                paramNames = newList(),
+                paramDefaults = newList()
+              )
+            )
           }
           if projCanTryInto(infos) {
             val tiKey = viewCls + "#tryInto"
             if not funcSigs.containsKey(tiKey) {
               val tiPs: List[JvmType] = newList()
-              funcSigs.add(tiKey, JvmFuncSig(owner = viewCls, params = tiPs, ret = JRef(className = "Std/Core/Result")))
+              funcSigs.add(
+                tiKey,
+                JvmFuncSig(
+                  owner = viewCls,
+                  params = tiPs,
+                  ret = JRef(className = "Std/Core/Result"),
+                  paramNames = newList(),
+                  paramDefaults = newList()
+                )
+              )
             }
           }
         }
