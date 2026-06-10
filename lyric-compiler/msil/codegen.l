@@ -11881,13 +11881,91 @@ func synthesizeGeneratorMsil(
   mnInsns.add(MLabel(id = afterTryL))
   mnInsns.add(MRet)
 
+  // ── Hoist loop-carried locals to generator fields ─────────────────────────
+  // Locals that survive across yield points are zeroed on each MoveNext call;
+  // they must be stored in instance fields and saved/restored at each yield
+  // boundary.  Local indices 0..decl.params.count-1 are param aliases that the
+  // preamble re-loads from __pN fields on every call, so they are excluded.
+  // All other locals (user body locals + __gen_ex) are hoisted.
+  val hoistParamCount = decl.params.count
+  val hoistSeen: Map[Int, Bool] = newMap()
+  val hoistLocalIndices: List[Int] = newList()
+  var hsiScan = 0
+  while hsiScan < mnInsns.count {
+    val hInsn = mnInsns[hsiScan]
+    val hSlot = match hInsn {
+      case MLdloc(s) -> s
+      case MStloc(s) -> s
+      case _ -> -1
+    }
+    if hSlot >= hoistParamCount {
+      if not hoistSeen.containsKey(hSlot) {
+        hoistSeen.add(hSlot, true)
+        hoistLocalIndices.add(hSlot)
+      }
+    }
+    hsiScan = hsiScan + 1
+  }
+  val hoistFieldNames: List[String] = newList()
+  var hfScan = 0
+  while hfScan < hoistLocalIndices.count {
+    val localIdx = hoistLocalIndices[hfScan]
+    val fname = "__local_" + toString(localIdx)
+    val fty = mnFctx.locals[localIdx]
+    genFields.add(MField(flags = FDA_PUBLIC, name = fname, fieldType = fty))
+    hoistFieldNames.add(fname)
+    hfScan = hfScan + 1
+  }
+  // Rebuild instruction list with save/restore inserted at each yield boundary.
+  val hoistedInsns: List[MInsn] = newList()
+  var hriScan = 0
+  while hriScan < mnInsns.count {
+    val hInsn = mnInsns[hriScan]
+    match hInsn {
+      case MLeave(lbl) -> {
+        // Yield-leave: MLeave(afterTryL) immediately followed by a resume MLabel.
+        val isYieldLeave =
+          lbl == afterTryL and
+          hriScan + 1 < mnInsns.count and
+          (match mnInsns[hriScan + 1] {
+            case MLabel(nxtId) -> resumeLabels.contains(nxtId)
+            case _ -> false
+          })
+        if isYieldLeave {
+          var sv = 0
+          while sv < hoistLocalIndices.count {
+            hoistedInsns.add(MLdarg(slot = 0))
+            hoistedInsns.add(MLdloc(slot = hoistLocalIndices[sv]))
+            hoistedInsns.add(MStfldByName(ownerFqn = genFqn, fieldName = hoistFieldNames[sv]))
+            sv = sv + 1
+          }
+        }
+        hoistedInsns.add(hInsn)
+      }
+      case MLabel(labelId) -> {
+        hoistedInsns.add(hInsn)
+        if resumeLabels.contains(labelId) {
+          var rv = 0
+          while rv < hoistLocalIndices.count {
+            hoistedInsns.add(MLdarg(slot = 0))
+            hoistedInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = hoistFieldNames[rv]))
+            hoistedInsns.add(MStloc(slot = hoistLocalIndices[rv]))
+            rv = rv + 1
+          }
+        }
+      }
+      case _ -> hoistedInsns.add(hInsn)
+    }
+    hriScan = hriScan + 1
+  }
+
   val mnFunc = MFunc(
     flags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG + MDA_FINAL,
     name = "MoveNext",
     params = newList(),
     ret = MVoid,
-    insns = mnInsns,
-    maxStack = computeMaxStackMsil(mnInsns),
+    insns = hoistedInsns,
+    maxStack = computeMaxStackMsil(hoistedInsns),
     locals = mnFctx.locals
   )
 
