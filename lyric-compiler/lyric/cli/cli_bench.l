@@ -19,11 +19,105 @@ import Lyric.Discovery as Disc
 // ─────────────────────────────────────────────────────────────────────────────
 // §11d. Bench command
 // ─────────────────────────────────────────────────────────────────────────────
+// Run bench synthesis and execution for a single source file with pre-read source.
+func runBenchOnSource(
+  sourcePath: in String,
+  source: in String,
+  runsArg: in Int,
+  warmupArg: in Int,
+  filterArg: in String,
+  targetJvm: in Bool,
+): Int {
+  val stem = stemOf(Path.basename(sourcePath), 2)
+  val benchExt = if targetJvm { ".jar" } else { ".dll" }
+  val outPath = Path.join(Path.join(Path.dirname(sourcePath), ".lyric-bench"), stem + benchExt)
+
+  match BenchSynth.synthesizeBench(source, runsArg, warmupArg, filterArg) {
+    case NoBenchModule(span) -> {
+      printErr(sourcePath + ":" + toString(span.startPos.line) + ": not a @bench_module — add @bench_module annotation")
+      return 1
+    }
+    case BenchUserMainExists(span) -> {
+      printErr(sourcePath + ":" + toString(span.startPos.line) + ": @bench_module cannot define func main()")
+      return 1
+    }
+    case BenchParseFailures(diags) -> {
+      for d in diags.toArray() {
+        printDiag(d)
+      }
+      return 1
+    }
+    case BenchSynthesised(rewritten, benchCount) -> {
+      Console.println(toString(benchCount) + " benchmark(s)")
+
+      match File.createDir(Path.dirname(outPath)) {
+        case Ok(_) -> ()
+        case Err(_) -> ()
+      }
+
+      val benchTarget: CompileTarget = if targetJvm { Jvm } else { Dotnet }
+      val req = EmitRequest(
+        source = rewritten,
+        assemblyName = stem,
+        outputPath = outPath,
+        target = benchTarget,
+        packageVersion = ""
+      )
+      val result = Emitter.emit(req)
+      var hadError = false
+      for d in result.diagnostics.toArray() {
+        match d.severity {
+          case DiagError -> {
+            hadError = true
+          }
+          case DiagWarning -> ()
+        }
+        printDiag(d)
+      }
+      if hadError {
+        return 1
+      }
+      match result.outputPath {
+        case None -> {
+          printErr("bench: build failed")
+          return 1
+        }
+        case Some(_) -> ()
+      }
+      if targetJvm {
+        val jvmArgs: List[String] = newList()
+        jvmArgs.add("-jar")
+        jvmArgs.add(outPath)
+        match Process.run("java", jvmArgs) {
+          case Ok(code) -> code
+          case Err(e) -> {
+            printErr("bench: failed to start java: " + IOError.message(e))
+            1
+          }
+        }
+      } else {
+        writeRuntimeConfig(outPath)
+        val execArgs: List[String] = newList()
+        execArgs.add("exec")
+        execArgs.add(outPath)
+        match Process.run("dotnet", execArgs) {
+          case Ok(code) -> code
+          case Err(e) -> {
+            printErr("bench: failed to start dotnet: " + IOError.message(e))
+            1
+          }
+        }
+      }
+    }
+  }
+}
+
 func cmdBench(argv: in slice[String]): Int {
   var runsArg = 100
   var warmupArg = 5
   var filterArg = ""
   var manifestArg: Option[String] = None
+  var targetJvm = false
   val positional: List[String] = newList()
 
   var i = 1
@@ -77,6 +171,22 @@ func cmdBench(argv: in slice[String]): Int {
         printErr("bench: --manifest requires a path")
         return 1
       }
+    } else if arg == "--target" {
+      if i + 1 < argv.length {
+        val t = argv[i + 1]
+        if t == "jvm" {
+          targetJvm = true
+        } else if t == "dotnet" {
+          targetJvm = false
+        } else {
+          printErr("bench: --target must be 'dotnet' or 'jvm'")
+          return 1
+        }
+        i += 2
+      } else {
+        printErr("bench: --target requires an argument (dotnet|jvm)")
+        return 1
+      }
     } else {
       positional.add(arg)
       i += 1
@@ -98,6 +208,7 @@ func cmdBench(argv: in slice[String]): Int {
       return 1
     }
     val benchFiles: List[String] = newList()
+    val benchSources: List[String] = newList()
     var pi = 0
     while pi < sourcePaths.count {
       val sp = sourcePaths[pi]
@@ -119,6 +230,7 @@ func cmdBench(argv: in slice[String]): Int {
         }
         if hasBench {
           benchFiles.add(sp)
+          benchSources.add(source)
         }
       }
     }
@@ -130,20 +242,10 @@ func cmdBench(argv: in slice[String]): Int {
     var bi = 0
     while bi < benchFiles.count {
       val bPath = benchFiles[bi]
+      val bSource = benchSources[bi]
       bi += 1
       Console.println("== bench: " + bPath)
-      val benchArgv: List[String] = newList()
-      benchArgv.add("bench")
-      benchArgv.add(bPath)
-      benchArgv.add("--runs")
-      benchArgv.add(toString(runsArg))
-      benchArgv.add("--warmup")
-      benchArgv.add(toString(warmupArg))
-      if filterArg.length > 0 {
-        benchArgv.add("--filter")
-        benchArgv.add(filterArg)
-      }
-      val rc = cmdBench(benchArgv.toArray())
+      val rc = runBenchOnSource(bPath, bSource, runsArg, warmupArg, filterArg, targetJvm)
       if rc != 0 {
         anyFailed = true
       }
@@ -163,72 +265,5 @@ func cmdBench(argv: in slice[String]): Int {
     }
   }
 
-  val stem = stemOf(Path.basename(sourcePath), 2)
-  val outPath = Path.join(Path.join(Path.dirname(sourcePath), ".lyric-bench"), stem + ".dll")
-
-  match BenchSynth.synthesizeBench(source, runsArg, warmupArg, filterArg) {
-    case NoBenchModule(span) -> {
-      printErr(sourcePath + ":" + toString(span.startPos.line) + ": not a @bench_module — add @bench_module annotation")
-      return 1
-    }
-    case BenchUserMainExists(span) -> {
-      printErr(sourcePath + ":" + toString(span.startPos.line) + ": @bench_module cannot define func main()")
-      return 1
-    }
-    case BenchParseFailures(diags) -> {
-      for d in diags.toArray() {
-        printDiag(d)
-      }
-      return 1
-    }
-    case BenchSynthesised(rewritten, benchCount) -> {
-      Console.println(toString(benchCount) + " benchmark(s)")
-
-      match File.createDir(Path.dirname(outPath)) {
-        case Ok(_) -> ()
-        case Err(_) -> ()
-      }
-
-      val req = EmitRequest(
-        source = rewritten,
-        assemblyName = stem,
-        outputPath = outPath,
-        target = Dotnet,
-        packageVersion = ""
-      )
-      val result = Emitter.emit(req)
-      var hadError = false
-      for d in result.diagnostics.toArray() {
-        match d.severity {
-          case DiagError -> {
-            hadError = true
-          }
-          case DiagWarning -> ()
-        }
-        printDiag(d)
-      }
-      if hadError {
-        return 1
-      }
-      match result.outputPath {
-        case None -> {
-          printErr("bench: build failed")
-          return 1
-        }
-        case Some(_) -> ()
-      }
-      writeRuntimeConfig(outPath)
-
-      val execArgs: List[String] = newList()
-      execArgs.add("exec")
-      execArgs.add(outPath)
-      match Process.run("dotnet", execArgs) {
-        case Ok(code) -> code
-        case Err(e) -> {
-          printErr("bench: failed to start dotnet: " + IOError.message(e))
-          1
-        }
-      }
-    }
-  }
+  runBenchOnSource(sourcePath, source, runsArg, warmupArg, filterArg, targetJvm)
 }

@@ -9,13 +9,17 @@
 //! Commands (project-aware: omit source file to auto-discover from lyric.toml):
 //!   build   [<source.l>] [-o <output>] [--force] [--manifest <lyric.toml>]
 //!              [--target dotnet|jvm]
+//!   check   [<source.l>...] [--manifest <lyric.toml>] [--target dotnet|jvm]
+//!   clean   [<dir>] [--manifest <lyric.toml>]
 //!   run     [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm] [--watch] [-- <args>...]
-//!   fmt     [<source.l>] [--manifest <lyric.toml>] [--check] [--write]
+//!   fmt     [<source.l>...] [--manifest <lyric.toml>] [--check] [--write] [--stdin]
 //!   lint    [<source.l>] [--manifest <lyric.toml>] [--error-on-warning]
 //!   prove   [<source.l>] [--manifest <lyric.toml>] [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]
 //!   doc     [<source.l>] [--manifest <lyric.toml>] [-o <out.md|dir>]
 //!   public-api-diff <old.dll> <new.dll>
 //!   restore [--manifest <lyric.toml>]
+//!   update  [--manifest <lyric.toml>]
+//!   deps    [--manifest <lyric.toml>]
 //!   publish [--manifest <lyric.toml>] [--dll <path>] [-o <dir>]
 //!   test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list]
 //!   bench   [<source.l>] [--manifest <lyric.toml>] [--runs N] [--warmup N] [--filter <prefix>]
@@ -115,7 +119,15 @@ func usageText(): String {
     "                 auto-restores deps when lyric.lock is missing or stale unless --no-restore)\n" +
     "  lyric build   --release [<source.l>] [--rid <rid>] [-o <bin>]\n" +
     "                (self-contained Native AOT binary; single-file today, see #1975)\n" +
+    "  lyric check   [<source.l>...] [--manifest <lyric.toml>] [--target dotnet|jvm]\n" +
+    "                (type-check without producing a usable output artifact)\n" +
+    "  lyric clean   [<dir>] [--manifest <lyric.toml>]\n" +
+    "                (remove bin/, .lyric-run/, .lyric-test/, .lyric-bench/, .lyric-check/, .lyric-release/)\n" +
     "  lyric restore [--manifest <lyric.toml>] [--locked]\n" +
+    "  lyric update  [--manifest <lyric.toml>]\n" +
+    "                (re-resolve all deps to latest compatible versions and rewrite lyric.lock)\n" +
+    "  lyric deps    [--manifest <lyric.toml>]\n" +
+    "                (print the resolved dependency tree from lyric.lock)\n" +
     "  lyric add     <name>[@<version>] [--path <dir>] [--git <url> [--tag|--rev|--branch <ref>]]\n" +
     "                [--nuget] [--manifest <lyric.toml>] [--no-restore]\n" +
     "                (adds/updates a dependency in [dependencies] (or [nuget]) and restores)\n" +
@@ -127,16 +139,17 @@ func usageText(): String {
     "                (no source: builds and runs the discovered project;\n" +
     "                 --watch: rebuild & re-run on source changes; Ctrl-C to stop)\n" +
     "  lyric test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list] [--target dotnet|jvm]\n" +
-    "                (no source: runs all [project.tests] from the discovered project)\n" +
-    "  lyric bench   [<source.l>] [--manifest <lyric.toml>] [--runs N] [--warmup N] [--filter <prefix>]\n" +
+    "                (no source: runs all [project.tests]; falls back to scanning [project.packages] for @test_module)\n" +
+    "  lyric bench   [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm] [--runs N] [--warmup N] [--filter <prefix>]\n" +
     "                (no source: benchmarks all @bench_module files in the discovered project)\n" +
     "  lyric repl\n" +
     "\n" +
     "Quality:\n" +
-    "  lyric fmt     [<source.l>] [--manifest <lyric.toml>] [--check] [--write]\n" +
-    "                (no source: dry-run shows what would change; --write to apply; --check exits 1 if any would change)\n" +
+    "  lyric fmt     [<source.l>...] [--manifest <lyric.toml>] [--check] [--write] [--stdin]\n" +
+    "                (no source: dry-run shows what would change; --write to apply; --check exits 1 if any would change;\n" +
+    "                 --stdin reads from stdin and writes formatted output to stdout)\n" +
     "  lyric lint    [<source.l>] [--manifest <lyric.toml>] [--error-on-warning]\n" +
-    "                (no source: lints all project source files)\n" +
+    "                (no source: lints all project source files; prints summary at end)\n" +
     "  lyric prove   [<source.l>] [--manifest <lyric.toml>] [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]\n" +
     "                (no source: proves contracts in all project source files)\n" +
     "  lyric doc     [<source.l>] [--manifest <lyric.toml>] [-o <out.md|dir>]\n" +
@@ -151,10 +164,11 @@ func usageText(): String {
     "\n" +
     "Notes:\n" +
     "  build is incremental — same source + stdlib skips emit; --force rebuilds.\n" +
-    "  build/restore/run/fmt/lint/prove/doc/test/bench all discover the nearest\n" +
+    "  build/restore/run/fmt/lint/prove/doc/test/bench/check/clean/update/deps all discover the nearest\n" +
     "  lyric.toml by walking up from the current directory when no source file is given.\n" +
     "  fmt:  no-arg project mode dry-run shows what would change; --write applies; --check exits 1 if any would change.\n" +
-    "        Non-doc comments (//) are not preserved — only /// and //!.\n" +
+    "        --stdin reads stdin and writes formatted output to stdout (editor integration).\n" +
+    "        All comment forms (//, ///, //!) are preserved by the CST formatter.\n" +
     "  lint: L001-L005 style checks. --error-on-warning exits 1 on warnings."
 }
 

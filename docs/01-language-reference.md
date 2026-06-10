@@ -1424,6 +1424,8 @@ is fixed. The watch loop runs in the CLI process (always the .NET host).
 
 **Project mode.** When invoked with no source file, `lyric test` discovers the nearest `lyric.toml` and runs every `[project.tests]` entry in sequence. Pass `--manifest <lyric.toml>` to override discovery. The command exits non-zero if any test entry fails.
 
+**`[project.tests]` fallback.** When the manifest has a `[project]` section but no `[project.tests]` entries, `lyric test` scans all source files listed in `[project.packages]` for the `@test_module` annotation and runs each found file as a standalone single-file test. This allows projects that co-locate test modules with their source packages to run tests without explicit `[project.tests]` entries in `lyric.toml`.
+
 `--filter <substring>` runs only tests whose title contains `<substring>`; non-matching tests are reported as `# skip` lines. `--list` prints titles only without compiling. `property` declarations parse but skip at runtime in v1 (`# skip` line); `fixture name[: T] = expr` declarations are rewritten to module-level `val` declarations in the synthesised source (D-progress-474). v2 adds cross-package non-`pub` access (§3.2), property execution (`--properties`), and doctest extraction. See `docs/24-test-runner-plan.md` for the v1 design and v2 scope.
 
 ### 13.3 Verifier
@@ -1476,21 +1478,25 @@ The bootstrap formatter works directly from the parsed AST; it does not require 
 
 **Project mode.** `lyric fmt` with no source file discovers the nearest `lyric.toml` and operates over every `[project.packages]` source. Pass `--manifest <lyric.toml>` to override discovery. Behaviour depends on flags: the default is a **dry-run** (lists files that would change without writing them); `--write` applies changes in place; `--check` is the silent CI gate.
 
+**Multi-file mode.** `lyric fmt <file1.l> <file2.l> …` accepts multiple positional source arguments and applies the same formatting logic to each file. Combined with `--write`, this is equivalent to running `lyric fmt --write` on each file individually.
+
+**Stdin mode.** `lyric fmt --stdin` reads the entire source from standard input, formats it, and writes the result to standard output. Intended for editor integrations that pipe the current buffer through the formatter. Combines with `--check` to check without writing.
+
 **Flags:**
 
 | Flag | Scope | Effect |
 |------|-------|--------|
-| _(default, single-file)_ | Single file | Print formatted source to stdout |
+| _(default, single/multi-file)_ | File(s) | Print formatted source to stdout |
 | _(default, project mode)_ | Project | Dry-run: print which files would change; exit 1 if any; does **not** write |
-| `--write` | Single file or project | Overwrite file(s) in place; print each reformatted path |
-| `--check` | Single file or project | Exit 1 if any file would change; prints the unformatted paths |
-| `--legacy` | Single file | **Deprecated — removed in v1.1.** Falls back to the AST-only formatter (`Fmt.fs`). Drops all non-doc `//` comments. |
+| `--write` | File(s) or project | Overwrite file(s) in place; print each reformatted path |
+| `--check` | File(s) or project | Exit 1 if any file would change; prints the unformatted paths |
+| `--stdin` | — | Read from stdin, write formatted output to stdout (editor integration) |
 
 ### 13.8 Linter
 
 `lyric lint [<source.l>]` checks source code for style and quality issues. It works entirely from the parsed AST — no type-checker context is needed — so it is fast and runs on files that do not yet compile.
 
-**Project mode.** When invoked with no source file, `lyric lint` discovers the nearest `lyric.toml` and lints every `[project.packages]` source file, prefixing each diagnostic with its source path. Pass `--manifest <lyric.toml>` to override discovery.
+**Project mode.** When invoked with no source file, `lyric lint` discovers the nearest `lyric.toml` and lints every `[project.packages]` source file, prefixing each diagnostic with its source path. At the end of the run, `lyric lint` prints a summary line: either `"lint: N error(s), M warning(s) in K file(s)"` or `"lint: K file(s) clean"`. Pass `--manifest <lyric.toml>` to override discovery.
 
 **Diagnostic codes:**
 
@@ -1509,15 +1515,15 @@ The bootstrap formatter works directly from the parsed AST; it does not require 
 | _(default)_ | Print diagnostics; exit 0 if only warnings |
 | `--error-on-warning` | Treat warnings as errors; exit 1 |
 
-**Exit codes:** 0 = clean (or warnings-only without `--error-on-warning`); 1 = at least one error (or warning with the flag); 2 = usage/IO error.
+**Exit codes:** 0 = clean (or warnings-only without `--error-on-warning`); 1 = at least one error (or warning with the flag).
 
 **Output format:** `<code> <severity> [<line>:<col>]: <message>`, matching the compiler's own diagnostic shape.
 
 ### 13.9 Benchmark runner
 
-`lyric bench [<source.l>]` compiles a `@bench_module` file, synthesises a timing harness around each `@bench`-annotated function, and reports wall-clock statistics to stdout.
+`lyric bench [<source.l>] [--target dotnet|jvm]` compiles a `@bench_module` file, synthesises a timing harness around each `@bench`-annotated function, and reports wall-clock statistics to stdout. `--target dotnet` (default) runs via `dotnet exec`; `--target jvm` produces a self-contained JAR and runs via `java -jar`.
 
-**Project mode.** When invoked with no source file, `lyric bench` discovers the nearest `lyric.toml` and runs benchmarks for every `[project.packages]` source file that contains a `@bench_module` annotation. Pass `--manifest <lyric.toml>` to override discovery.
+**Project mode.** When invoked with no source file, `lyric bench` discovers the nearest `lyric.toml` and runs benchmarks for every `[project.packages]` source file that contains a `@bench_module` annotation. Pass `--manifest <lyric.toml>` to override discovery. `--target` applies to all files in the project.
 
 **Annotations:**
 
@@ -1552,9 +1558,40 @@ funcName  min=Xms  max=Xms  mean=Xms
 
 A `@bench` function whose signature does not match `func name(): Unit` passes through the synthesiser as-is; the mismatch is reported by the type checker with a standard `T`-series diagnostic.
 
-### 13.10 Package manager
+### 13.10 Type checker (check only)
+
+`lyric check [<source.l>…] [--target dotnet|jvm] [--manifest <lyric.toml>]` type-checks source files (or the discovered project) without producing a usable output artifact. Output is written to `.lyric-check/` beside the source file (or project manifest). Only diagnostics with `DiagError` severity cause exit 1; the artifact is intentionally discarded.
+
+**Use cases:** pre-commit type validation, IDE on-save checks, faster feedback in CI when the output binary is not needed.
+
+**Project mode.** When invoked with no source file, `lyric check` discovers the nearest `lyric.toml` and type-checks all `[project.packages]` entries (calls `buildProject` with output directed to `.lyric-check/`). `--no-restore` is implied in project check mode to avoid slow lock checks on each save; run `lyric restore` explicitly when dependencies change.
+
+**Exit codes:** 0 = no type errors; 1 = type errors or build failure.
+
+### 13.11 Clean
+
+`lyric clean [<dir>] [--manifest <lyric.toml>]` removes the build artifact directories produced by the dev-loop commands from the project root (or the directory specified by the positional argument):
+
+| Directory | Produced by |
+|-----------|-------------|
+| `bin/` | `lyric build` (project mode) |
+| `.lyric-run/` | `lyric run` |
+| `.lyric-test/` | `lyric test` |
+| `.lyric-bench/` | `lyric bench` |
+| `.lyric-check/` | `lyric check` |
+| `.lyric-release/` | `lyric build --release` |
+
+**Exit codes:** 0 = nothing to remove or all directories removed successfully; 1 = at least one removal failed.
+
+### 13.12 Package manager
 
 `lyric.toml` is the project manifest. Dependencies use SemVer 2.0.0. Registry: NuGet piggyback (D-progress-030); see `docs/21-nuget-linking.md`.
+
+`lyric restore [--manifest <lyric.toml>] [--locked]` resolves and locks all dependencies declared in `lyric.toml`, writing `lyric.lock`. `--locked` verifies the existing lock rather than rewriting it (for reproducible CI builds).
+
+`lyric update [--manifest <lyric.toml>]` re-resolves all dependencies from scratch: deletes the existing `lyric.lock` (workspace-root-aware), then runs a full restore to produce a fresh lock with the latest compatible versions. For git dependencies, this fetches the latest revision of the specified branch/tag.
+
+`lyric deps [--manifest <lyric.toml>]` prints the resolved dependency list from `lyric.lock` (one line per package: `<name> [<version>]  [<source>]`). Exits 1 if no lock file exists; run `lyric restore` first.
 
 `lyric add <name>[@<version>] [--path <dir>] [--git <url> [--tag|--rev|--branch <ref>]] [--nuget] [--manifest <lyric.toml>] [--no-restore]` adds or updates a dependency in the discovered manifest and then restores (unless `--no-restore`):
 

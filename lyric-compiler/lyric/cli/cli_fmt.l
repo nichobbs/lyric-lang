@@ -17,6 +17,7 @@ import Lyric.Discovery as Disc
 func cmdFmt(argv: in slice[String]): Int {
   var checkMode = false
   var writeMode = false
+  var stdinMode = false
   var manifestArg: Option[String] = None
   val positional: List[String] = newList()
 
@@ -28,6 +29,9 @@ func cmdFmt(argv: in slice[String]): Int {
       i += 1
     } else if arg == "--write" {
       writeMode = true
+      i += 1
+    } else if arg == "--stdin" {
+      stdinMode = true
       i += 1
     } else if arg == "--manifest" {
       if i + 1 < argv.length {
@@ -41,6 +45,42 @@ func cmdFmt(argv: in slice[String]): Int {
       positional.add(arg)
       i += 1
     }
+  }
+
+  // --stdin: read all of stdin, format, write to stdout.
+  if stdinMode {
+    if writeMode {
+      printErr("fmt: --stdin and --write are mutually exclusive — --write has no effect on stdin")
+      return 1
+    }
+    val stdinLines: List[String] = newList()
+    var reading = true
+    while reading {
+      match Console.readLine() {
+        case Err(_) -> {
+          reading = false
+        }
+        case Ok(line) -> {
+          stdinLines.add(line)
+        }
+      }
+    }
+    val source = if stdinLines.count > 0 { Str.joinList("\n", stdinLines) + "\n" } else { "" }
+    if checkMode {
+      if Fmt.isFormattedSource(source) {
+        return 0
+      } else {
+        printErr("fmt: stdin: not formatted")
+        return 1
+      }
+    }
+    val checkResult = Fmt.formatSourceChecked(source)
+    if not Fmt.fmtCheckIsOk(checkResult) {
+      printErr("fmt: stdin: " + Fmt.fmtCheckMessage(checkResult))
+      return 1
+    }
+    Console.print(Fmt.fmtCheckText(checkResult))
+    return 0
   }
 
   // Project-mode: no explicit source file — discover or use --manifest.
@@ -151,51 +191,60 @@ func cmdFmt(argv: in slice[String]): Int {
     return 0
   }
 
-  // Single-file mode (existing behaviour):
-  val sourcePath = positional[0]
-  val source = match File.readText(sourcePath) {
-    case Ok(text) -> text
-    case Err(e) -> {
-      printErr("fmt: " + IOError.message(e))
-      return 1
-    }
-  }
-
-  // `--check` is a read-only "is this already formatted?" probe: it must
-  // never abort on a file the formatter cannot round-trip (it writes
-  // nothing), so it stays on the plain `isFormattedSource` comparison.
-  if checkMode {
-    if Fmt.isFormattedSource(source) {
-      return 0
-    } else {
-      printErr(sourcePath + ": not formatted — run `lyric fmt --write`")
-      return 1
-    }
-  }
-
-  // Write / print: route through the loss-checked path so we never emit
-  // or persist output that would drop a comment, change the code-token
-  // sequence, or fail to re-parse.  See `Lyric.Fmt.formatSourceChecked`.
-  val checkResult = Fmt.formatSourceChecked(source)
-  if not Fmt.fmtCheckIsOk(checkResult) {
-    printErr(sourcePath + ": " + Fmt.fmtCheckMessage(checkResult))
-    return 1
-  }
-  val formatted = Fmt.fmtCheckText(checkResult)
-
-  if writeMode {
-    match File.writeText(sourcePath, formatted) {
-      case Ok(_) -> {
-        Console.println("formatted " + sourcePath)
-        return 0
-      }
+  // Multi-file mode: apply formatting to each positional argument.
+  var anyFailed = false
+  var fi = 0
+  while fi < positional.count {
+    val sourcePath = positional[fi]
+    fi += 1
+    val source = match File.readText(sourcePath) {
+      case Ok(text) -> text
       case Err(e) -> {
         printErr("fmt: " + IOError.message(e))
-        return 1
+        anyFailed = true
+        continue
       }
     }
+
+    // `--check` is a read-only "is this already formatted?" probe: it must
+    // never abort on a file the formatter cannot round-trip (it writes
+    // nothing), so it stays on the plain `isFormattedSource` comparison.
+    if checkMode {
+      if not Fmt.isFormattedSource(source) {
+        printErr(sourcePath + ": not formatted — run `lyric fmt --write`")
+        anyFailed = true
+      }
+      continue
+    }
+
+    // Write / print: route through the loss-checked path so we never emit
+    // or persist output that would drop a comment, change the code-token
+    // sequence, or fail to re-parse.  See `Lyric.Fmt.formatSourceChecked`.
+    val checkResult = Fmt.formatSourceChecked(source)
+    if not Fmt.fmtCheckIsOk(checkResult) {
+      printErr(sourcePath + ": " + Fmt.fmtCheckMessage(checkResult))
+      anyFailed = true
+      continue
+    }
+    val formatted = Fmt.fmtCheckText(checkResult)
+
+    if writeMode {
+      match File.writeText(sourcePath, formatted) {
+        case Ok(_) -> Console.println("formatted " + sourcePath)
+        case Err(e) -> {
+          printErr("fmt: " + IOError.message(e))
+          anyFailed = true
+        }
+      }
+      continue
+    }
+
+    Console.print(formatted)
   }
 
-  Console.print(formatted)
-  0
+  if anyFailed {
+    1
+  } else {
+    0
+  }
 }
