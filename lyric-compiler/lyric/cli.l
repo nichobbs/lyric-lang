@@ -4427,9 +4427,21 @@ func cmdBench(argv: in slice[String]): Int {
       pi += 1
       val source = match File.readText(sp) { case Ok(t) -> t; case Err(_) -> "" }
       if source.length > 0 {
-        match Str.indexOf(source, "@bench_module") {
-          case Some(_) -> benchFiles.add(sp)
-          case None -> ()
+        // Detect @bench_module by checking that some source line, stripped of
+        // leading/trailing whitespace, is exactly "@bench_module".  This avoids
+        // false-positives from the text appearing inside string literals or
+        // comments that happen to contain the annotation.
+        val lines = Str.split(source, "\n")
+        var hasBench = false
+        var li = 0
+        while li < lines.length {
+          if Str.trim(lines[li]) == "@bench_module" {
+            hasBench = true
+          }
+          li += 1
+        }
+        if hasBench {
+          benchFiles.add(sp)
         }
       }
     }
