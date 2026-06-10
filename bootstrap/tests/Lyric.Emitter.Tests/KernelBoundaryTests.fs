@@ -192,7 +192,12 @@ let tests =
             //               preserved (#3027 tracks the follow-up that replaces
             //               this with a pure-Lyric `ldsfld` path once the F#
             //               emitter gains module-val `ldsfld` support).
-            Expect.isLessThanOrEqual total 335
+            //   335 → 334 — `Lyric.Emitter.HttpClientHost.defaultClient` @externTarget
+            //               removed: F# emitter EPath handler now emits `ldsfld` for
+            //               reference-typed module-level `pub val` fields (#3027).
+            //               `hostDefaultClient()` returns the `defaultClient` singleton
+            //               directly; `HttpClientHost.fs` deleted.
+            Expect.isLessThanOrEqual total 334
                 "total extern surface unexpectedly large"
         }
     ]

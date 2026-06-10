@@ -23945,3 +23945,15 @@ Fix: `typeExprToMsilCtx` now checks `externTypeNames` first; reference-typed ext
 `reorderCtorNamedArgs` bailed when a field had no matching arg, returning the partial arg list; then `newobj .ctor(N params)` with fewer values on the stack caused "Common Language Runtime detected an invalid program" for all 8 `stubbable_self_test.l` tests.  Replaced with `fillCtorDefaultArgs`: counts total fields via `fieldDeclaredNames`, injects default exprs from new `ctorDefaultExprs: Map[String, Expr]` (populated in `addPackageTokens` from `FieldDecl.dflt`), falls back to original args when a required field has no default.  All 8 `stubbable_self_test.l` cases pass via `lyric test`.
 
 **`docs/23-fsharp-shim-elimination.md`** — `Lyric.Session.Host` removed from active shim table; `HttpClientHost` entry updated to note deletion is deferred to #3027.
+
+### D-progress-491 — F# emitter EPath `ldsfld` for reference-typed module vals; `HttpClientHost.fs` deleted (PR #3027)
+
+**Status:** Shipped (PR #3027, 2026-06-10).
+
+**F# emitter `EPath` handler gains `ldsfld` for reference-typed module-level `pub val` fields (#3027):**
+`Emitter.fs` Pass A.4b expanded to a combined Pass A.4b+4c.  Non-`@asyncLocal` `IVal` bindings that are not pure integer constants (already in `constsTable`) are now collected into `moduleValItems` and emitted as private `static readonly` fields (`__val_<name>`) on `programTy`, initialised in the same `.cctor`.  The init expression is emitted via `Codegen.emitExpr` using a fresh `FunctionCtx` with the `.cctor` IL generator.  A new `moduleValsTable: Dictionary<string, FieldInfo>` is threaded through all `emitFunctionBody` call sites and `Codegen.FunctionCtx`.  The `EPath` handler in `Codegen.fs` now checks `ModuleVals` after `AsyncLocalFields` and before `Consts`, emitting `ldsfld <field>` for any name found in the table.
+
+**`HttpClientHost.fs` deleted (#3027):**
+`bootstrap/src/Lyric.Emitter/HttpClientHost.fs` deleted.  The `@externTarget("Lyric.Emitter.HttpClientHost.defaultClient")` binding in `lyric-stdlib/std/_kernel/http_host.l` is replaced with a pure-Lyric `pub val defaultClient: HttpClient = newClient()` field (initialised in `.cctor` via the new A.4c path) and `pub func hostDefaultClient(): HttpClient { defaultClient }` which emits `ldsfld` to load the singleton.  The extern count drops from 335 to 334 (`KernelBoundaryTests.fs` updated).
+
+**`docs/23-fsharp-shim-elimination.md`** — `HttpClientHost` row marked done (strikethrough); deletion recorded as PR #3027.

@@ -109,6 +109,11 @@ type FunctionCtx =
       /// package's program type.  Reading the name in an expression emits
       /// `ldsfld <field>` which pushes the `AsyncLocal<T>` object.
       AsyncLocalFields: Dictionary<string, System.Reflection.FieldInfo>
+      /// Module-level `pub val` fields (non-`@asyncLocal`, non-int-constant).
+      /// Keyed by Lyric name; value is the static `readonly` field on the
+      /// package's program type.  Reading the name in an expression emits
+      /// `ldsfld <field>`.
+      ModuleVals: Dictionary<string, System.Reflection.FieldInfo>
       /// `true` when emitting an instance method (impl method) — at
       /// CLR level arg 0 is `self` and named params shift by one.
       IsInstance: bool
@@ -210,6 +215,7 @@ module FunctionCtx =
             (lookup: Lyric.TypeChecker.TypeId -> System.Type option)
             (consts: Dictionary<string, int64>)
             (asyncLocalFields: Dictionary<string, System.Reflection.FieldInfo>)
+            (moduleVals: Dictionary<string, System.Reflection.FieldInfo>)
             (diags: ResizeArray<Lyric.Lexer.Diagnostic>) : FunctionCtx =
         let s = Stack<Dictionary<string, LocalBuilder>>()
         s.Push(Dictionary())
@@ -242,6 +248,7 @@ module FunctionCtx =
           ExternTypeNames = externTypeNames
           Consts       = consts
           AsyncLocalFields = asyncLocalFields
+          ModuleVals   = moduleVals
           IsInstance   = isInstance
           SelfType     = selfType
           ReturnLabel  = None
@@ -784,6 +791,9 @@ let rec peekExprType (ctx: FunctionCtx) (e: Lyric.Parser.Ast.Expr) : ClrType =
                     else t
                 | _ ->
                     match ctx.AsyncLocalFields.TryGetValue name with
+                    | true, fb -> fb.FieldType
+                    | _ ->
+                    match ctx.ModuleVals.TryGetValue name with
                     | true, fb -> fb.FieldType
                     | _ ->
                     match ctx.Consts.TryGetValue name with
@@ -2606,6 +2616,11 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                                 info.Type.MakeGenericType typeArgs
                         | _ ->
                             match ctx.AsyncLocalFields.TryGetValue name with
+                            | true, fb ->
+                                il.Emit(OpCodes.Ldsfld, fb)
+                                fb.FieldType
+                            | _ ->
+                            match ctx.ModuleVals.TryGetValue name with
                             | true, fb ->
                                 il.Emit(OpCodes.Ldsfld, fb)
                                 fb.FieldType
@@ -4542,7 +4557,7 @@ and private emitLambdaWith
             ctx.Projectables
             ctx.ImportedRecords ctx.ImportedUnions ctx.ImportedUnionCases
             ctx.ImportedFuncs ctx.ImportedDistinctTypes ctx.ExternTypeNames
-            false None ctx.ProgramType ctx.ResolveType ctx.Lookup ctx.Consts ctx.AsyncLocalFields ctx.Diags
+            false None ctx.ProgramType ctx.ResolveType ctx.Lookup ctx.Consts ctx.AsyncLocalFields ctx.ModuleVals ctx.Diags
     // Emit the body. For non-void lambdas, the last statement must leave
     // its value on the IL stack for `ret` — mirror emitFunctionBody's
     // single-exit discipline.
