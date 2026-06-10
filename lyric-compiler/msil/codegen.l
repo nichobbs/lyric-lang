@@ -3036,10 +3036,35 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
         // `extern type Uuid = "System.Guid"`) must carry its valuetype
         // identity so cross-package signatures encode VALUETYPE + TypeRef
         // rather than degrading to `object` (#1602).  Reference-typed
-        // externs and ordinary user types fall through to MClass.
+        // externs (e.g. `extern type SB = "System.Text.StringBuilder"`)
+        // similarly must carry their identity so field/method signatures
+        // encode CLASS + TypeRef rather than degrading to `object` (#1576).
+        // Ordinary user types fall through to MClass.
         match externValueTypeMsil(cctx, seg) {
           case Some(vt) -> vt
-          case None -> MClass(className = resolveTypeFqn(cctx, pkgName, seg))
+          case None -> {
+            match mapGet(cctx.externTypeNames, seg) {
+              case Some(clrFqn) -> {
+                // Lyric-internal extern types (CLR FQN starts with "Lyric.") are
+                // in-process Lyric packages, not BCL assemblies.  assemblyForTypeMsil
+                // returns "Lyric.Emitter" for them as a fallback, and internFfiAssemblyRef
+                // would then create AssemblyRef with the Microsoft signing key (Version=10.0,
+                // PublicKeyToken=b03f5f7f11d50a3a), which is wrong for a Lyric DLL.
+                // Fall through to MClass for these — MClass is the correct encoding for
+                // in-bundle and cross-Lyric-package types.
+                if startsWith(clrFqn, "Lyric.") {
+                  MClass(className = resolveTypeFqn(cctx, pkgName, seg))
+                } else {
+                  ensureMetadataIndex(cctx)
+                  val sp = splitTypeFqn(clrFqn)
+                  val asm = assemblyForTypeMsil(cctx, clrFqn)
+                  val refRow = internFfiTypeRef(cctx, asm, sp.ns, sp.name)
+                  MClassRef(typeRefCode = tdrTypeRef(refRow), clrFqn = clrFqn)
+                }
+              }
+              case None -> MClass(className = resolveTypeFqn(cctx, pkgName, seg))
+            }
+          }
         }
       }
     }
@@ -16132,7 +16157,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
         val initFctx = makeFuncCtxMsil(pkgName, pkgName, "__val_init", 0, MVoid)
         val initInsns: List[MInsn] = newList()
         val valTy = lowerExprMsil(cctx, initFctx, initInsns, decl.init)
-        val fieldTy = match decl.ty { case Some(te) -> typeExprToMsil(te, pkgName); case None -> valTy }
+        val fieldTy = match decl.ty { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> valTy }
         val fieldName = match decl.pattern.kind {
           case PBinding(name, _) -> name
           case _ -> "__val_" + toString(staticFields.count)
