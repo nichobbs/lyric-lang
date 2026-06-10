@@ -3985,7 +3985,7 @@ func lowerMConfig(
         }
         cctorInsns.add(MStsfld(fieldToken = fieldTok))
       } else {
-        // Required field: print error to stderr and exit with code 78.
+        // Required field: print error to stderr and exit with code 78 (POSIX EX_CONFIG).
         cctorInsns.add(MCall(methodToken = configToks.tokConsoleError))
         cctorInsns.add(MLdStr(token = f.requiredMsgTok))
         cctorInsns.add(MCallvirt(methodToken = configToks.tokTwWriteLine))

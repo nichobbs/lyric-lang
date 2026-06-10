@@ -23884,13 +23884,13 @@ The contract elaborator inserts `let __old_N = expr` snapshot bindings before an
 Replaced the no-op `lowerProtectedMsil` stub with production `Monitor.Enter`/`Monitor.Exit` wrapping. Uses `this` as the CLR sync-block object. Each `PMEntry` body is wrapped in a try/finally EH region: Enter before the try, Exit in the finally. Non-void entries stash the return value before `leave` and reload after the merge label. 3/3 protected-type emitter tests pass.
 
 **Range-subtype construction validation** (`lowering.l`):
-`lowerMRangeType` now emits a bounds-checking `.ctor(value)` that throws `System.ArgumentOutOfRangeException` with a descriptive message when the value is outside `[minVal, maxVal]`. `MInt` inner types use `ldc.i4`; other types use `ldc.i8`. 15/15 range-type emitter tests pass.
+`lowerMRangeType` now emits a bounds-checking `.ctor(value)` that throws `System.ArgumentOutOfRangeException` with a descriptive message when the value is outside `[minVal, maxVal]`. `MInt` inner types use `ldc.i4`; other types use `ldc.i8`. 15/15 range-type emitter tests pass. **JVM parity not yet implemented; tracked in #2997.**
 
 **`@generate(Pkg.Name)` source-generator pre-processing wired** (`cli.l`):
 `buildProject` now calls `Generator.preprocess` before type-checking on both single-file and directory-scan code paths.
 
 **IConfig (`config {}`) block lowering** (`codegen.l`, `lowering.l`):
-Full implementation of `config BlockName { field: Type = default }` lowering. Each block emits a sealed static TypeDef with FieldDef rows and a `.cctor` that reads `LYRIC_CONFIG_<PKG>_<BLOCK>_<FIELD>` from the environment, uses the declared default when absent/empty, or calls `Environment.Exit(1)` for required fields. Supports `Int`, `Bool`, and `String` fields. `msil_self_test_m85.l` verifies default-value behavior.
+Full implementation of `config BlockName { field: Type = default }` lowering for .NET. Each block emits a sealed static TypeDef with FieldDef rows and a `.cctor` that reads `LYRIC_CONFIG_<PKG>_<BLOCK>_<FIELD>` from the environment, uses the declared default when absent/empty, or calls `Environment.Exit(78)` (POSIX `EX_CONFIG`) for required fields. Supports `Int`, `Bool`, and `String` fields. `msil_self_test_m85.l` verifies default-value behavior. **JVM parity not yet implemented; tracked in #2998.**
 
 **`WMScoped` no-op arm** (`codegen.l`):
 The bootstrap-grade per-call allocation arm for scoped wire members was removed. `WMScoped` now emits nothing until `AsyncLocal<T>`-backed scoping lands in #2972.
