@@ -680,6 +680,20 @@ func collectOldExprStmt(s: in Statement, acc: inout List[Expr]) {
       collectOldExpr(t, acc)
       collectOldExpr(v, acc)
     }
+    case SFor(_, _, iter, body) -> {
+      collectOldExpr(iter, acc)
+      collectOldExprBlock(body, acc)
+    }
+    case SWhile(_, cond, body) -> {
+      collectOldExpr(cond, acc)
+      collectOldExprBlock(body, acc)
+    }
+    case SLoop(_, body) -> collectOldExprBlock(body, acc)
+    case SInvariant(x) -> collectOldExpr(x, acc)
+    case SRule(l, r) -> {
+      collectOldExpr(l, acc)
+      collectOldExpr(r, acc)
+    }
     case _ -> ()
   }
 }
@@ -698,7 +712,6 @@ func replaceOldExpr(e: in Expr, counter: inout RenameCounter): Expr {
     case ESelf -> e
     case EResult -> e
     case EError -> e
-    case ERange(_) -> e
     case EParen(inner) -> mkExpr(EParen(inner = replaceOldExpr(inner, counter)), e.span)
     case ETuple(exprs) -> {
       val outs: List[Expr] = newList()

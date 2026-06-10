@@ -773,3 +773,23 @@ test "multiple old() snapshots get distinct names" {
   assertEqual(letName(blk.statements[0]), "__old_0", "multi-old: stmt[0] is __old_0")
   assertEqual(letName(blk.statements[1]), "__old_1", "multi-old: stmt[1] is __old_1")
 }
+
+test "old() in range bounds creates snapshot" {
+  // Regression for #2990: replaceOldExpr had a shadowing `case ERange(_) -> e`
+  // arm that prevented the recursive arm from ever running, leaving EOld nodes
+  // unreplaced inside range bound expressions.
+  val src = "package P\n" + "func clamp(x: in Int, lo: in Int, hi: in Int): Int\n" +
+    "  ensures: result >= old(lo) and result <= old(hi)\n" +
+    "{\n" +
+    "  if x < lo { lo } else { if x > hi { hi } else { x } }\n" +
+    "}\n"
+  val file = parseAndElaborate(src)
+  val fn = firstFunction(file, "clamp")
+  val blk = bodyBlockOf(fn)
+  // Two old() (lo and hi) → two snapshot bindings at positions 0 and 1.
+  assertTrue(blk.statements.count >= 2, "old-range: at least 2 stmts")
+  assertTrue(isLetBinding(blk.statements[0]), "old-range: stmt[0] is let binding")
+  assertTrue(isLetBinding(blk.statements[1]), "old-range: stmt[1] is let binding")
+  assertEqual(letName(blk.statements[0]), "__old_0", "old-range: stmt[0] is __old_0")
+  assertEqual(letName(blk.statements[1]), "__old_1", "old-range: stmt[1] is __old_1")
+}

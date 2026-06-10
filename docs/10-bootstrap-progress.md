@@ -23867,3 +23867,32 @@ bodies remain deferred.").  This entry ships the backend slice.
 (Front-end soundness CRITICAL band) are now resolved — the C11 entry now
 reads "C11 DONE"; `docs/41-self-hosted-compiler-gap-analysis.md` §3 table
 and §10 bottom-line updated accordingly.
+
+### D-progress-488 — MSIL self-hosted backend: derives-Ord, old() snapshots, protected-type Monitor, range-subtype validation, IConfig lowering (PR #2966)
+
+**Status:** Shipped (PR #2966, 2026-06-10).
+
+Eight HIGH-priority Band 4 features shipped in the self-hosted MSIL compiler pipeline:
+
+**`@derive(Ord)` for unions, enums, records, and distinct types** (`derives.l`):
+Synthesises `compare(self, other): Int` returning a negative/zero/positive integer. Union and enum comparison orders by case declaration index first, then by field-by-field lexicographic comparison within the same case. 36 `derives_self_test.l` cases pass.
+
+**`old()` pre-state snapshot in `@runtime_checked` contracts** (`contract_elaborator/elaborator.l`, `codegen.l`):
+The contract elaborator inserts `let __old_N = expr` snapshot bindings before any `requires` assertions. `replaceOldExpr` substitutes each `EOld` with the captured name. `forall`/`exists` in `@runtime_checked` modules emit `ldc.i4 1` (sound true over-approximation). `EOld` nodes reaching codegen without elaboration panic with a clear diagnostic. 29 `contract_elaborator_self_test.l` cases pass.
+
+**Protected-type Monitor locking** (`codegen.l`):
+Replaced the no-op `lowerProtectedMsil` stub with production `Monitor.Enter`/`Monitor.Exit` wrapping. Uses `this` as the CLR sync-block object. Each `PMEntry` body is wrapped in a try/finally EH region: Enter before the try, Exit in the finally. Non-void entries stash the return value before `leave` and reload after the merge label. 3/3 protected-type emitter tests pass.
+
+**Range-subtype construction validation** (`lowering.l`):
+`lowerMRangeType` now emits a bounds-checking `.ctor(value)` that throws `System.ArgumentOutOfRangeException` with a descriptive message when the value is outside `[minVal, maxVal]`. `MInt` inner types use `ldc.i4`; other types use `ldc.i8`. 15/15 range-type emitter tests pass.
+
+**`@generate(Pkg.Name)` source-generator pre-processing wired** (`cli.l`):
+`buildProject` now calls `Generator.preprocess` before type-checking on both single-file and directory-scan code paths.
+
+**IConfig (`config {}`) block lowering** (`codegen.l`, `lowering.l`):
+Full implementation of `config BlockName { field: Type = default }` lowering. Each block emits a sealed static TypeDef with FieldDef rows and a `.cctor` that reads `LYRIC_CONFIG_<PKG>_<BLOCK>_<FIELD>` from the environment, uses the declared default when absent/empty, or calls `Environment.Exit(1)` for required fields. Supports `Int`, `Bool`, and `String` fields. `msil_self_test_m85.l` verifies default-value behavior.
+
+**`WMScoped` no-op arm** (`codegen.l`):
+The bootstrap-grade per-call allocation arm for scoped wire members was removed. `WMScoped` now emits nothing until `AsyncLocal<T>`-backed scoping lands in #2972.
+
+All 827 emitter tests and 85 CLI tests pass.

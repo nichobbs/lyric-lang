@@ -120,9 +120,9 @@ Option[T]       // case Some(value: T)| case None
 
 ### Available `derives` markers
 
-`Add` `Sub` `Mul` `Div` `Mod` `Compare` `Hash` `Equals` `Default`
+`Add` `Sub` `Mul` `Div` `Mod` `Compare` `Ord` `Hash` `Equals` `Default`
 
-`Copyable` is structural (asserts CLR value-type lowering); not valid in `derives`.
+`Ord` synthesises `compare(self, other): Int` (negative/zero/positive); valid on records, unions, enums, and distinct types. `Copyable` is structural (asserts CLR value-type lowering); not valid in `derives`.
 
 ---
 
