@@ -15,10 +15,10 @@
 //! `Lyric.Emitter.emitProject`, then builds a CONSUMER that imports the producer
 //! as a restored dep, runs it, and asserts the printed output.
 //!
-//! Run via native `lyric test`:
-//!   lyric test lyric-compiler/lyric/cross_package_generics_self_test.l
+//! Run via native `lyric test` with LYRIC_LOAD_COMPILER=1 (required because
+//! the test imports `Lyric.Emitter`, a compiler package):
+//!   LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/lyric/cross_package_generics_self_test.l
 //!
-//! Imports only Std.* and Lyric.Emitter, so no LYRIC_LOAD_COMPILER=1 is needed.
 @test_module
 package Lyric.CrossPackageGenericsSelfTest
 

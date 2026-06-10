@@ -5791,7 +5791,9 @@ Concretely:
 
 **Rationale.** The arity suffix on a TypeRef's `Name` field is what `findTypeRefRowByName` matches against when resolving `MNewobjGenericByName`. Without it the lowering falls back to a wrong TypeRef (or finds none), and the resulting `.ctor` MemberRef carries a non-generic sig that mismatches the VAR-form ctor in the DLL — producing "Method not found" at runtime. The `fieldSigBytes` gap caused `MLdfldGeneric` to fall through to a plain `ldfld` on an `MObject`-typed field, silently returning 0. The `MTypeVar` → `MObject` substitution in `fieldMsilTypes` prevents `pushCollExpect` from routing a scalar constructor argument through the collection-element path, which was causing an `InvalidCastException` (String → IList) at runtime.
 
-**Related:** D096, D-progress-495, epic #1470 Band 4, issue #1496.
+**JVM parity.** The JVM `compileToJarBundledWithFeatures` entry point has no restored-dep pipeline (no `restoredDllPaths` parameter), so the cross-package generic registration fix does not apply to the JVM target. JVM parity is tracked in issue #3094.
+
+**Related:** D096, D-progress-495, epic #1470 Band 4, issues #1496 and #3094.
 
 ---
 
