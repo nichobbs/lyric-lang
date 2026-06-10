@@ -179,7 +179,14 @@ let tests =
             //   322 → 323 — `Std.HashHost.hostSha256Bytes`:
             //               `@externTarget("System.Security.Cryptography.SHA256.HashData")`
             //               for SHA-256 hashing infrastructure (Std.Hash.sha256OfBytes).
-            Expect.isLessThanOrEqual total 323
+            //   323 → 334 — `Std.ProcessCaptureHost` BCL-direct rewrite (#1489):
+            //               replaces the F# `ProcessCapture` shim with direct
+            //               `@externTarget` bindings to `ProcessStartInfo`,
+            //               `Process`, `StreamWriter`, `StreamReader`, and
+            //               `Task<string>` (5 extern types + 19 extern funcs).
+            //               `ProcessCaptureResult` promoted from opaque F#-shim
+            //               extern type to a native Lyric `pub record`.
+            Expect.isLessThanOrEqual total 334
                 "total extern surface unexpectedly large"
         }
     ]

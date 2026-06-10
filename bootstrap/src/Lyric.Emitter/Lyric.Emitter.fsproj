@@ -13,7 +13,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Include="ProcessCapture.fs" />
     <Compile Include="Backend.fs" />
     <Compile Include="TypeMap.fs" />
     <Compile Include="Records.fs" />
