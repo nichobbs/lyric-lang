@@ -1937,32 +1937,11 @@ jobs:
           # The `mkdir` stays because the Session.Host pre-copy below runs
           # before `lyric test` creates the directory.
           mkdir -p lyric-session/.lyric-test
-          # lyric-session's compiled test DLL carries @externTarget
-          # references into its F# host shim (Session.Host).
-          # `additionalProbingPaths` in the runtimeconfig only resolves
-          # NuGet-style versioned layouts, so the host DLL must live
-          # alongside the test DLL itself for `dotnet exec` to load it.
-          # Session.Host is `dotnet publish`-ed by bootstrap.sh into
-          # .bootstrap/stage1/, so we copy from there.
-          #
-          # lyric-auth no longer needs a host shim: its kernel binds
-          # HMAC-SHA256 directly to System.Security.Cryptography.HMACSHA256
-          # and implements constant-time comparison in pure Lyric.
+          # lyric-session no longer needs a host shim: Session.Kernel.Net
+          # binds StackExchange.Redis directly via @externTarget in native
+          # Lyric (#1777). lyric-auth likewise needs no shim (pure Lyric
+          # HMAC-SHA256 + constant-time comparison).
           cli_bin_dir="$(pwd)/bootstrap/src/Lyric.Cli/bin/${BUILD_CONFIG}/net10.0"
-          if [ -f .bootstrap/stage1/Lyric.Session.Host.dll ]; then
-            cp .bootstrap/stage1/Lyric.Session.Host.dll lyric-session/.lyric-test/
-          else
-            echo "::error::Lyric.Session.Host.dll missing from .bootstrap/stage1"
-            exit 1
-          fi
-          # StackExchange.Redis ships next to Session.Host (bootstrap.sh
-          # copies it from the publish output).  Load is lazy — copy
-          # if present so Redis-backed tests can run. Silent skip is
-          # acceptable: if the DLL is absent, Redis-backed tests skip
-          # gracefully via the SessionStore factory (#1145).
-          if [ -f .bootstrap/stage1/StackExchange.Redis.dll ]; then
-            cp .bootstrap/stage1/StackExchange.Redis.dll lyric-session/.lyric-test/
-          fi
           # Route emitProject subprocess calls to the F# bootstrap CLI, which
           # handles --internal-project-build.  The AOT binary is a pure trampoline
           # into the Lyric CLI dispatcher and does not handle internal flags
