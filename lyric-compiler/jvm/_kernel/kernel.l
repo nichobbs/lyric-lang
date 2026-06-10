@@ -89,6 +89,19 @@ func longGetBytes(v: in Long): slice[Byte] = ()
 @externTarget("System.Convert.ToByte")
 func intToByte(v: in Int): Byte = ()
 
+// MemoryStream externs used by writerToBytes to materialise internal List[Int]
+// storage as a slice[Byte] without an intermediate allocation.
+extern type MemStream = "System.IO.MemoryStream"
+
+@externTarget("System.IO.MemoryStream..ctor")
+func newMemStream(): MemStream = ()
+
+@externTarget("System.IO.Stream.WriteByte")
+func memStreamWriteByte(s: in MemStream, b: in Byte): Unit = ()
+
+@externTarget("System.IO.MemoryStream.ToArray")
+func memStreamToArray(s: in MemStream): slice[Byte] = ()
+
 /// Append an 8-byte big-endian long (class-file CONSTANT_Long/Double values).
 pub func writerU8(w: in ByteWriter, v: in Long): Unit {
   val bs = longGetBytes(v)
@@ -200,11 +213,14 @@ pub func writerPatchU4(w: in ByteWriter, offset: in Int, v: in Int): Unit {
 }
 
 /// Materialise all written bytes as a slice[Byte].
-/// Not called in the current JVM emitter path-finder scope; returns an
-/// empty slice.  Proper implementation deferred until List[Byte].toArray()
-/// is wired through as a BCL extern.
 pub func writerToBytes(w: in ByteWriter): slice[Byte] {
-  []
+  val ms = newMemStream()
+  var i = 0
+  while i < w.data.count {
+    memStreamWriteByte(ms, intToByte(w.data[i]))
+    i = i + 1
+  }
+  memStreamToArray(ms)
 }
 
 /// Append a 2-byte little-endian unsigned integer (ZIP local/central headers).
