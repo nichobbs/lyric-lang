@@ -131,24 +131,22 @@ async func contentReadAsBytesCancel(c: in HttpContent, token: in CancellationTok
 // `import Std.HttpHost as HostHttp`.  Each is either a thin alias or
 // a multi-step composition that wraps the primitives above.
 // =====================================================================
-// #333: process-wide HttpClient singleton — initialized once in the host
-// class .cctor (#1576).  Creating a new HttpClient per call is the canonical
-// .NET anti-pattern: under load the per-call clients exhaust the TCP socket
-// pool because sockets stay in TIME_WAIT for two MSL after the client is
-// GC'd.  The singleton field is a `val` of a reference-typed `extern type`,
-// which requires the .cctor codegen fix in Msil.Codegen to encode the field
-// signature as ELEMENT_TYPE_CLASS + TypeRef rather than ELEMENT_TYPE_OBJECT.
+// #333: process-wide HttpClient singleton.  `hostDefaultClient()` routes through
+// the F# `Lazy<HttpClient>` in `Lyric.Emitter.HttpClientHost` so the same client
+// instance is reused across all requests — per-call construction exhausts the TCP
+// socket pool (sockets stay in TIME_WAIT for two MSL after GC).
 //
-// `hostDefaultClient()` calls `newClient()` rather than returning `defaultClient`
-// directly because the F# bootstrap emitter's EPath handler resolves only locals,
-// params, integer-literal vals, and @asyncLocal vals; it has no ldsfld path for
-// arbitrary reference-typed module-level vals.  Tracked in #3027, which details
-// the exact emitter fix needed and the follow-on inlining of this wrapper.
+// `pub val defaultClient` below proves the .cctor encoding fix (#1576) is correct:
+// a reference-typed `extern type` val is initialised once as CLASS+TypeRef (not
+// ELEMENT_TYPE_OBJECT).  It is NOT the singleton used by callers — they go through
+// `hostDefaultClient()` → F# `HttpClientHost.defaultClient()`.  Once the F#
+// bootstrap emitter gains `ldsfld` support for reference-typed module vals (#3027),
+// `hostDefaultClient()` will be rewritten to `return defaultClient` and
+// `HttpClientHost.fs` deleted.
 pub val defaultClient: HttpClient = newClient()
 
-pub func hostDefaultClient(): HttpClient {
-  newClient()
-}
+@externTarget("Lyric.Emitter.HttpClientHost.defaultClient")
+pub func hostDefaultClient(): HttpClient = ()
 
 pub func hostMakeRequest(httpMethod: in String, url: in String): HttpRequestMessage {
   newRequest(newHttpMethod(httpMethod), url)
