@@ -261,8 +261,13 @@ pub func readPe(bytes: in slice[Byte]): Result[PeImage, String] {
     sections = sections
   )
   val cliOff = rvaToOffset(partial, cliRva)
-  if cliOff < 0 or cliOff + 16 > bytes.length {
-    return Err(error = "metadata: CLI header RVA " + toString(cliRva) + " not mapped by any section")
+  // Guard every field this function reads out of the CLI header: MetaData
+  // (RVA/Size at +8/+12), Flags (+16), EntryPointToken (+20), and Resources
+  // (RVA/Size at +24/+28) — the last byte read is at +31, so the header must
+  // span at least 32 bytes.  A truncated image in this window must return Err
+  // rather than slice-panic, preserving the None-on-bad-input contract.
+  if cliOff < 0 or cliOff + 32 > bytes.length {
+    return Err(error = "metadata: CLI header RVA " + toString(cliRva) + " not mapped by any section, or header truncated")
   }
   // CLI header: cb u32, runtime ver u16+u16, then MetaData (RVA u32, Size u32)
   // at +8/+12, Flags at +16, EntryPointToken at +20, then Resources (RVA u32,
