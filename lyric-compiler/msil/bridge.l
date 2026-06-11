@@ -156,6 +156,21 @@ pub func compileToMsilWithVersion(
       case None -> ()
     }
   }
+  // Seed Result_Err too so a range subtype's `tryFrom` factory (#1501) can wrap
+  // an out-of-range value in `Err(message)`.
+  if cctx.lctx.stdCoreResultErr2Row.count == 0 {
+    match mapGet(cctx.ffiTypeRefs, "Std.Core/Std.Core.Result_Err") {
+      case Some(row) -> cctx.lctx.stdCoreResultErr2Row.add(row)
+      case None -> ()
+    }
+  }
+  // Base Result union TypeRef — the declared return type of a synthesised tryFrom.
+  if cctx.lctx.stdCoreResultRow.count == 0 {
+    match mapGet(cctx.ffiTypeRefs, "Std.Core/Std.Core.Result") {
+      case Some(row) -> cctx.lctx.stdCoreResultRow.add(row)
+      case None -> ()
+    }
+  }
 
   // Run the aspect weaver before the token pre-scan so that the pre-scan
   // sees the post-weave function list (renamed originals + synthesised wrappers).
@@ -556,6 +571,21 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   if cctx.lctx.stdCoreResultOk2Row.count == 0 {
     match mapGet(cctx.ffiTypeRefs, "Std.Core/Std.Core.Result_Ok") {
       case Some(row) -> cctx.lctx.stdCoreResultOk2Row.add(row)
+      case None -> ()
+    }
+  }
+  // Seed Result_Err too so a range subtype's `tryFrom` factory (#1501) can wrap
+  // an out-of-range value in `Err(message)`.
+  if cctx.lctx.stdCoreResultErr2Row.count == 0 {
+    match mapGet(cctx.ffiTypeRefs, "Std.Core/Std.Core.Result_Err") {
+      case Some(row) -> cctx.lctx.stdCoreResultErr2Row.add(row)
+      case None -> ()
+    }
+  }
+  // Base Result union TypeRef — the declared return type of a synthesised tryFrom.
+  if cctx.lctx.stdCoreResultRow.count == 0 {
+    match mapGet(cctx.ffiTypeRefs, "Std.Core/Std.Core.Result") {
+      case Some(row) -> cctx.lctx.stdCoreResultRow.add(row)
       case None -> ()
     }
   }

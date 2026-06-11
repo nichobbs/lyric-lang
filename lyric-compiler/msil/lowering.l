@@ -824,6 +824,19 @@ pub record MDistinctType {
   className: String
   namespace: String
   inner: MsilType    // the wrapped primitive or class type
+  // Range-subtype validation (#1501).  When `hasRange` is true the synthesised
+  // `from`/`tryFrom` factories bounds-check the incoming value against
+  // [minI, maxI] (integer inner) or [minF, maxF] (Double inner) and either throw
+  // (`from`) or return `Err` (`tryFrom`).  `upperExclusive` distinguishes
+  // `a ..< b` (half-open) from `a ..= b` (closed).  Bounds are folded by the
+  // codegen layer from the `rangeClause` literals before lowering.
+  hasRange: Bool
+  rangeIsFloat: Bool
+  minI: Long
+  maxI: Long
+  minF: Double
+  maxF: Double
+  upperExclusive: Bool
 }
 
 pub record MRangeType {
@@ -1005,6 +1018,14 @@ pub record LoweringCtx {
   // after stdlib registration.  Empty list = stdlib not imported; skip
   // tryInto() generation in that case.
   stdCoreResultOk2Row: List[Int]
+  // Stdlib TypeRef row for `Std.Core.Result_Err` open generic, seeded alongside
+  // `stdCoreResultOk2Row`.  Required (in addition to Ok) before a range
+  // subtype's `tryFrom` factory can be synthesised (#1501).
+  stdCoreResultErr2Row: List[Int]
+  // Stdlib TypeRef row for the base `Std.Core.Result` union — the declared
+  // return type of a synthesised `tryFrom` (which yields either an `Ok` or an
+  // `Err`, both subclasses of `Result`).
+  stdCoreResultRow: List[Int]
   // Complete set of in-bundle @projectable type FQNs, pre-populated by
   // discoverTypeDefRowsInto before any lowering pass starts.  Used for
   // declaration-order-independent hasNestedProjField checks in lowerMOpaque so
@@ -1150,6 +1171,8 @@ pub func newLoweringCtx(packageName: in String, major: in Int, minor: in Int): L
     projectableCtorMDef = newMap(),
     projectableCtorMDefKeys = newList(),
     stdCoreResultOk2Row = newList(),
+    stdCoreResultErr2Row = newList(),
+    stdCoreResultRow = newList(),
     allProjFqns = newMap(),
     allProjFqnKeys = newList()
   )
@@ -2849,21 +2872,282 @@ pub func lowerMUnion(u: in MUnion, ctx: in LoweringCtx): Int {
 }
 
 // ── Distinct / Range type lowering ────────────────────────────────────────────
-// Lower an MDistinctType as a sealed wrapper class with a single `value` field
-// and a .ctor(inner) constructor.
-pub func lowerMDistinctType(d: in MDistinctType, ctx: in LoweringCtx): Int {
-  val rec = MRecord(
-    className = d.className,
-    namespace = d.namespace,
-    baseClass = "System.Object",
-    fields = newList(),
-    methods = newList(),
-    useDefaultCtor = false,
-    generics = newList()
+// Inherent conversion method name for a distinct type's underlying primitive
+// (`type UserId = Int` ⇒ `toInt(): Int`).  Empty when the underlying type has
+// no canonical projection (e.g. a class-typed newtype).
+pub func distinctConvName(inner: in MsilType): String {
+  match inner {
+    case MInt -> "toInt"
+    case MLong -> "toLong"
+    case MDouble -> "toDouble"
+    case MByte -> "toByte"
+    case _ -> ""
+  }
+}
+
+// Add one synthesised method (body + a placeholder Param row + MethodDef row).
+// Mirrors the per-method emission the union/record lowerers use.
+func addSynthMethodDef(ctx: in LoweringCtx, mb: in MethodBody, name: in String, sigBlob: in Int, flags: in Int): Unit {
+  ctx.bodies.add(mb)
+  val rvas = methodBodyRvas(ctx.bodies)
+  val rva = rvas[ctx.bodies.count - 1]
+  val fp = ctx.tables.params_.count + 1
+  addParam(ctx.tables, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+  val _ = addMethodDef(
+    ctx.tables,
+    MethodDefRow(
+      rva = rva,
+      implFlags = 0,
+      flags = flags,
+      name = internString(ctx.strings, name),
+      signature = sigBlob,
+      paramList = fp
+    )
   )
-  val valueField = MField(flags = FDA_PUBLIC + FDA_INIT_ONLY, name = "value", fieldType = d.inner)
-  rec.fields.add(valueField)
-  lowerMRecord(rec, ctx)
+}
+
+// Emit the range bounds test for a distinct type into `mb`, branching to
+// `failLabel` on any violation (value below min, or above/at max).  Operates on
+// the value in arg 0 (the static `from`/`tryFrom` factories take the underlying
+// value as their sole argument).  No-op when the type carries no range (#1501).
+func emitDistinctBoundsToFail(mb: in MethodBody, d: in MDistinctType, failLabel: in Int): Unit {
+  if not d.hasRange {
+    return
+  }
+  // min check: fail if value < min.
+  emitLdarg_0(mb)
+  if d.rangeIsFloat {
+    emitLdc_R8(mb, d.minF)
+  } else {
+    match d.inner {
+      case MInt -> emitLdc_I4(mb, longToInt(d.minI))
+      case _ -> emitLdc_I8(mb, d.minI)
+    }
+  }
+  emitClt(mb)
+  emitBrtrue(mb, failLabel)
+  // max check: closed (`..=`) fails if value > max; half-open (`..<`) fails if
+  // value >= max ⟺ not(value < max).
+  emitLdarg_0(mb)
+  if d.rangeIsFloat {
+    emitLdc_R8(mb, d.maxF)
+  } else {
+    match d.inner {
+      case MInt -> emitLdc_I4(mb, longToInt(d.maxI))
+      case _ -> emitLdc_I8(mb, d.maxI)
+    }
+  }
+  if d.upperExclusive {
+    emitClt(mb)
+    emitBrfalse(mb, failLabel)
+  } else {
+    emitCgt(mb)
+    emitBrtrue(mb, failLabel)
+  }
+}
+
+// Human-readable range description for the bounds-violation message.
+func distinctRangeDesc(d: in MDistinctType): String {
+  val lo = if d.rangeIsFloat { d.minF.toString() } else { d.minI.toString() }
+  val hi = if d.rangeIsFloat { d.maxF.toString() } else { d.maxI.toString() }
+  val close = if d.upperExclusive { ")" } else { "]" }
+  "[" + lo + ", " + hi + close
+}
+
+// Lower an MDistinctType as a sealed reference type wrapping one `value` field,
+// with the construction API the language reference defines for distinct and
+// range subtypes (#1501): a `.ctor(value)`, a static `from(x)` factory (which
+// throws `System.ArgumentOutOfRangeException` on a range violation), a static
+// `tryFrom(x): Result[Self, String]` (which returns `Err(message)` instead of
+// throwing — emitted only when `Std.Core.Result` is imported), and an inherent
+// `toInt`/`toLong`/… projection back to the underlying primitive.
+//
+// Method emission order is fixed — `.ctor`, `from`, `tryFrom`, `toX` — and the
+// codegen pass-1 token budget (`addPackageTokens`, IDistinctType arm) reserves
+// MethodDef rows in exactly this order so call sites resolve to the right token.
+pub func lowerMDistinctType(d: in MDistinctType, ctx: in LoweringCtx): Int {
+  val sh = ctx.strings
+  val bh = ctx.blobs
+  val t = ctx.tables
+  val isDiscover = ctx.discovering.count > 0
+
+  val simpleName = if d.namespace.length == 0 {
+    d.className
+  } else {
+    d.className.substring(d.namespace.length + 1, d.className.length - d.namespace.length - 1)
+  }
+  val sName = internString(sh, simpleName)
+  val sNs = internString(sh, d.namespace)
+
+  val firstField = t.fields.count + 1
+  val firstMethod = t.methodDefs.count + 1
+
+  // ── value field ──
+  val fSig = buildFieldSigWithCtx(d.inner, ctx)
+  val bFSig = internBlob(bh, "dval_" + d.className, fSig)
+  addField(t, FieldRow(flags = FDA_PUBLIC + FDA_INIT_ONLY, name = internString(sh, "value"), signature = bFSig))
+  val valueFieldTok = 0x04000000 + firstField
+
+  val hasTryFrom = ctx.stdCoreResultOk2Row.count > 0 and ctx.stdCoreResultErr2Row.count > 0 and
+    ctx.stdCoreResultRow.count > 0
+  val convName = distinctConvName(d.inner)
+  val rangeMsg = simpleName + ".from: value out of range " + (if d.hasRange { distinctRangeDesc(d) } else { "" })
+  val tryFromMsg = simpleName + ".tryFrom: value out of range " + (if d.hasRange { distinctRangeDesc(d) } else { "" })
+
+  val singleParam: List[MsilType] = newList()
+  singleParam.add(d.inner)
+
+  // ── Method 0: .ctor(value) ──
+  val ctorSig = buildInstanceMethodSigWithCtx(singleParam, MVoid, ctx)
+  val bCtorSig = internBlob(bh, "dctor_" + d.className, ctorSig)
+  val mbCtor = newMethodBody()
+  if not isDiscover {
+    mbCtor.maxStack = 2
+    emitLdarg_0(mbCtor)
+    emitCall(mbCtor, 0x0A000000 + ctx.mrObjectCtor)
+    emitLdarg_0(mbCtor)
+    emitLdarg(mbCtor, 1)
+    emitStfld(mbCtor, valueFieldTok)
+    emitRet(mbCtor)
+  }
+  addSynthMethodDef(
+    ctx,
+    mbCtor,
+    ".ctor",
+    bCtorSig,
+    MDA_PUBLIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME
+  )
+  val ctorTok = 0x06000000 + firstMethod
+
+  // ── Method 1: static from(x): Self ──
+  val fromSig = buildStaticMethodSigWithCtx(singleParam, MClass(className = d.className), ctx)
+  val bFromSig = internBlob(bh, "dfrom_" + d.className, fromSig)
+  val mbFrom = newMethodBody()
+  if not isDiscover {
+    mbFrom.maxStack = 4
+    if d.hasRange {
+      val failL = mbNewLabel(mbFrom)
+      emitDistinctBoundsToFail(mbFrom, d, failL)
+      emitLdarg_0(mbFrom)
+      emitNewobj(mbFrom, ctorTok)
+      emitRet(mbFrom)
+      mbMarkLabel(mbFrom, failL)
+      val trExc = ctxAddTypeRef(ctx, "System", "ArgumentOutOfRangeException", ctx.arRuntime)
+      val mrExcCtor = 0x0A000000 +
+        ctxAddMemberRef(
+          ctx,
+          trExc,
+          ".ctor",
+          "dexc_ctor",
+          buildInstanceMethodSig(singleStringParam(), MVoid)
+        )
+      emitLdstr(mbFrom, ctxInternUs(ctx, rangeMsg))
+      emitNewobj(mbFrom, mrExcCtor)
+      emitThrow(mbFrom)
+    } else {
+      emitLdarg_0(mbFrom)
+      emitNewobj(mbFrom, ctorTok)
+      emitRet(mbFrom)
+    }
+  }
+  addSynthMethodDef(ctx, mbFrom, "from", bFromSig, MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG)
+
+  // ── Method 2: static tryFrom(x): Result[Self, String] (Result imported only) ──
+  if hasTryFrom {
+    val resTyArgs: List[MsilType] = newList()
+    resTyArgs.add(MClass(className = d.className))
+    resTyArgs.add(MString)
+    val resRetTy = MGenericInst(
+      typeRefCode = tdrTypeRef(ctx.stdCoreResultRow[0]),
+      headFqn = "Std.Core.Result",
+      typeArgs = resTyArgs
+    )
+    val tryFromSig = buildStaticMethodSigWithCtx(singleParam, resRetTy, ctx)
+    val bTryFromSig = internBlob(bh, "dtryfrom_" + d.className, tryFromSig)
+    val mbTry = newMethodBody()
+    if not isDiscover {
+      mbTry.maxStack = 4
+      // Ok ctor MemberRef on closed Result_Ok<Self, String>.
+      val okBlob = buildGenericInstBlobWithCtx(ctx, tdrTypeRef(ctx.stdCoreResultOk2Row[0]), resTyArgs)
+      val tsOk = ctxAddTypeSpec(ctx, "ts_dtryfrom_ok_" + d.className, okBlob)
+      val okCtorPs: List[MsilType] = newList()
+      okCtorPs.add(MTypeVar(index = 0))
+      val mrOk = 0x0A000000 +
+        ctxAddMemberRefForTypeSpec(
+          ctx,
+          tsOk,
+          ".ctor",
+          "mr_dtryfrom_ok_" + d.className,
+          buildInstanceMethodSig(okCtorPs, MVoid)
+        )
+      if d.hasRange {
+        val failL = mbNewLabel(mbTry)
+        emitDistinctBoundsToFail(mbTry, d, failL)
+        emitLdarg_0(mbTry)
+        emitNewobj(mbTry, ctorTok)
+        emitNewobj(mbTry, mrOk)
+        emitRet(mbTry)
+        mbMarkLabel(mbTry, failL)
+        // Err ctor MemberRef on closed Result_Err<Self, String>.
+        val errBlob = buildGenericInstBlobWithCtx(ctx, tdrTypeRef(ctx.stdCoreResultErr2Row[0]), resTyArgs)
+        val tsErr = ctxAddTypeSpec(ctx, "ts_dtryfrom_err_" + d.className, errBlob)
+        val errCtorPs: List[MsilType] = newList()
+        errCtorPs.add(MTypeVar(index = 1))
+        val mrErr = 0x0A000000 +
+          ctxAddMemberRefForTypeSpec(
+            ctx,
+            tsErr,
+            ".ctor",
+            "mr_dtryfrom_err_" + d.className,
+            buildInstanceMethodSig(errCtorPs, MVoid)
+          )
+        emitLdstr(mbTry, ctxInternUs(ctx, tryFromMsg))
+        emitNewobj(mbTry, mrErr)
+        emitRet(mbTry)
+      } else {
+        emitLdarg_0(mbTry)
+        emitNewobj(mbTry, ctorTok)
+        emitNewobj(mbTry, mrOk)
+        emitRet(mbTry)
+      }
+    }
+    addSynthMethodDef(ctx, mbTry, "tryFrom", bTryFromSig, MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG)
+  }
+
+  // ── Method 3: instance toX(): Underlying ──
+  if convName.length > 0 {
+    val convSig = buildInstanceMethodSigWithCtx(newList(), d.inner, ctx)
+    val bConvSig = internBlob(bh, "dconv_" + d.className, convSig)
+    val mbConv = newMethodBody()
+    if not isDiscover {
+      mbConv.maxStack = 1
+      emitLdarg_0(mbConv)
+      emitLdfld(mbConv, valueFieldTok)
+      emitRet(mbConv)
+    }
+    addSynthMethodDef(ctx, mbConv, convName, bConvSig, MDA_PUBLIC + MDA_HIDE_BY_SIG)
+  }
+
+  val typeRow = addTypeDef(
+    t,
+    TypeDefRow(
+      flags = TDF_PUBLIC + TDF_SEALED + TDF_BEFORE_FIELD_INIT,
+      typeName = sName,
+      typeNamespace = sNs,
+      extends = objectTypeToken(ctx),
+      fieldList = firstField,
+      methodList = firstMethod
+    )
+  )
+  recordUserTypeDefRow(ctx, d.namespace, simpleName, typeRow)
+  typeRow
+}
+
+// One-element `[String]` param list (for the ArgumentOutOfRangeException ctor).
+func singleStringParam(): List[MsilType] {
+  val ps: List[MsilType] = newList()
+  ps.add(MString)
+  ps
 }
 
 // Lower an MRangeType as a distinct type with range validation in .ctor.
@@ -3309,6 +3593,15 @@ pub func discoverTypeDefRowsInto(dst: in LoweringCtx, pkgs: in List[MPackage], h
   // so should the discover context.
   if hasResultOk and dctx.stdCoreResultOk2Row.count == 0 {
     dctx.stdCoreResultOk2Row.add(1)
+  }
+  // Mirror Result_Err too so a range subtype's `tryFrom` row budget (#1501)
+  // agrees between the discover and real passes.  Ok and Err are registered
+  // together (both Result cases), so `hasResultOk` gates both.
+  if hasResultOk and dctx.stdCoreResultErr2Row.count == 0 {
+    dctx.stdCoreResultErr2Row.add(1)
+  }
+  if hasResultOk and dctx.stdCoreResultRow.count == 0 {
+    dctx.stdCoreResultRow.add(1)
   }
   var pi = 0
   while pi < pkgs.count {
