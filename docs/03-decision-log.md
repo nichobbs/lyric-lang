@@ -5887,6 +5887,85 @@ inlining the test helper.  Tracked separately.
 
 ---
 
+### D-progress-502: Reproducible-emit gate on the self-hosted MSIL backend (Q-dist-001 prerequisite)
+
+**Date:** 2026-06-11
+
+**Context.** `scripts/bootstrap.sh` stage 2 was marked BLOCKED and ran with
+`SKIP_VERIFY=1`: its comparison normalized intrinsic identity fields with a
+fragile "16-byte differing run" heuristic that false-failed whenever two random
+Module MVIDs coincidentally shared a byte (the differing run then split into
+sub-16-byte pieces, which the heuristic rejected as a "non-GUID diff").  It also
+conflated two different questions — *is the F# stage-0 emitter reproducible?*
+and *is the self-hosted emitter reproducible?* — by compiling both stages
+through the F# `--internal-build` path.
+
+**Findings (verified empirically, 2026-06-11).**
+
+1. The **self-hosted MSIL backend is deterministic by construction**: the Module
+   MVID is a fixed all-zero GUID (`lyric-compiler/msil/lowering.l`), the PE
+   `TimeDateStamp` is zero (`lyric-compiler/msil/assembler.l`), and no wall-clock
+   value is baked into any heap or resource.  Building the full 56-package stdlib
+   bundle (`lyric-stdlib/lyric.full.toml`) twice yields **byte-for-byte identical**
+   images (exact `cmp`, no normalization).  Moreover, self-host-compiling the
+   *entire* `Lyric.Cli` closure — all 103 DLLs, every `Lyric.*` / `Msil.*` /
+   `Jvm.*` compiler package plus its stdlib import closure, via
+   `--internal-perpackage-build` — is **also byte-for-byte reproducible
+   run-to-run** (103/103 DLLs match).  So the determinism property holds for the
+   whole self-hosted compiler, not just the stdlib.
+2. The **F# stage-0 emitter is non-reproducible by design**: it emits a random
+   MVID, a real PE timestamp, and a `DateTime.UtcNow` `build_date` embedded in the
+   `Lyric.SdkVersion` resource (`bootstrap/src/Lyric.Emitter/Emitter.fs`).  It is
+   frozen on a deletion schedule (no new F#; the `build_date` fix is not a
+   bootstrap-blocking bugfix), so it cannot be made byte-stable and is **not the
+   trust anchor**.
+
+**Decision.** The reproducibility gate measures the trust anchor — the
+self-hosted emitter that produces the shipped binary — not the disposable F#
+stage 0.
+
+- **MVID strategy.** Keep the self-hosted Module MVID fixed (all-zero) for now.
+  A fixed MVID is a legitimate deterministic choice (the MVID is module-identity
+  metadata, *not* assembly-binding identity, and the self-hosted backend emits no
+  PDB), and it makes the image byte-stable so a signature over the bytes is
+  stable.  Upgrading to a *content-derived* deterministic MVID (Roslyn
+  `/deterministic` style — real, meaningful, and reproducible) is the preferred
+  end state but touches `lowering.l` plumbing and ~84 byte-exact MSIL self-tests,
+  so it is tracked as a follow-up rather than bundled into this gate.
+- **Stage 2 (a) — STRICT gate.** `scripts/verify-reproducible-emit.sh` has two
+  modes: `manifest` (build a `lyric.toml`/`lyric.full.toml` bundle twice, compare
+  the single output) and `closure` (self-host-compile the whole `Lyric.Cli`
+  closure twice via `--internal-perpackage-build`, compare every DLL).  Both run
+  via the AOT `lyric` binary (self-hosted `Msil.Bridge`) and assert an exact
+  `cmp`.  Wired into `bootstrap.sh` stage 2 (a) and a dedicated CI step covering
+  the full stdlib bundle AND the whole compiler closure.  A regression fails the
+  build.
+- **Stage 2 (b) — informational diagnostic.** The stage-1-vs-stage-2 F#-bundle
+  comparison is retained but reframed as non-fatal stage-0 drift tracking.  Its
+  normalizer was rewritten to locate the COFF `TimeDateStamp`, optional-header
+  `CheckSum`, and the Module MVID (first 16 bytes of the `#GUID` heap, reached via
+  the CLI header → metadata root → stream table) by **parsing** the PE rather than
+  guessing.  It masks only those intrinsic fields, so the F# `build_date` wall-clock
+  surfaces as the one honest remaining DIFF (on `Lyric.Stdlib.dll`); 104/105
+  per-package DLLs match exactly.
+
+**Remaining gap (the long pole), restated.** The self-hosted front-end already
+*compiles* the whole compiler closure (the `--internal-perpackage-build` path
+CI's "Whole compiler self-host-compiles" gate validates), and — per finding 1 —
+that closure now also *emits reproducibly* run-to-run.  What is NOT yet a fixed
+point is the **cross-emitter byte-match**: the self-hosted compiler emitted by
+the F# stage 0 vs. the self-hosted compiler emitted by a prior self-hosted stage
+are not byte-identical, because (a) the F# stage-0 emitter is non-reproducible
+(finding 2) and (b) the two emitters' codegen still diverges in places
+(docs/43 — e.g. the generic arity-suffix correctness fix the self-hosted emitter
+carries and F# omits).  Closing that is the residual §R7 work; this gate proves
+and locks in the determinism *foundation* it depends on.
+
+**Related:** docs/34 (distribution), docs/36 §R7 / G5 / Q-dist-001, docs/41 §R7,
+`scripts/verify-reproducible-emit.sh`, `scripts/bootstrap.sh`.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

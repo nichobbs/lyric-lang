@@ -319,6 +319,22 @@ Gaps below are now closed.
 pipeline.  Depends on G5.  This is a Phase-7 deliverable and does NOT block
 1.0 — `dotnet tool install lyric` is the primary channel.
 
+_Progress (2026-06-11, D-progress-502):_ the **determinism foundation** is
+shipped and CI-enforced, and it already spans the **whole self-hosted compiler**,
+not just the stdlib.  The self-hosted MSIL backend is reproducible by
+construction (fixed Module MVID in `lowering.l`, zero PE `TimeDateStamp` in
+`assembler.l`, no embedded wall-clock).  `scripts/verify-reproducible-emit.sh`
+(wired into `bootstrap.sh` stage 2 (a) and a dedicated CI step) double-builds and
+exact-`cmp`s two corpora: the `lyric-stdlib/lyric.full.toml` bundle AND the
+entire `Lyric.Cli` closure (103/103 DLLs via `--internal-perpackage-build`).  The
+F# stage-0 emitter remains non-reproducible by design (random MVID + PE timestamp
++ a `Lyric.SdkVersion` `build_date` wall-clock) and frozen on a deletion
+schedule, so it is *not* the trust anchor; stage 2 (b) tracks its drift
+informationally.  The residual work for Q-dist-001 is the **cross-emitter
+byte-match** — making the F#-emitted and self-hosted-emitted compilers
+byte-identical — which is gated on §R7 (front-end completeness / codegen
+convergence; see docs/43) below, not on compilability.
+
 ---
 
 ### R7 — Self-hosted `--target dotnet` soundness & correctness floor  *(NEW; the real v1.0 blocker)*

@@ -2300,6 +2300,26 @@ jobs:
           fi
           echo "full self-hosted stdlib bundle built"
 
+      # Trust-anchor reproducibility gate (Q-dist-001 prerequisite): the
+      # self-hosted MSIL emitter must be byte-for-byte reproducible.  Build each
+      # corpus twice and assert an exact `cmp` (no normalization — the
+      # self-hosted backend fixes the Module MVID and zeroes the PE timestamp,
+      # so identical sources MUST produce identical bytes).  A regression here
+      # means the shipped binary is no longer reproducible.
+      #
+      #   (i)  the full stdlib bundle, and
+      #   (ii) the WHOLE Lyric.Cli compiler closure (every Lyric.* / Msil.* /
+      #        Jvm.* package + its stdlib import closure) — the strongest
+      #        property available today: the entire self-hosted compiler emits
+      #        byte-identically run-to-run.
+      - name: Verify reproducible self-hosted emit (byte-identical double-build)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          ./scripts/verify-reproducible-emit.sh manifest "$lyric_bin" lyric-stdlib/lyric.full.toml
+          ./scripts/verify-reproducible-emit.sh closure  "$lyric_bin"
+
       # Multi-file example packages — builds each showcase service in
       # examples/{rbac,ledger,jobqueue,product-catalog} end-to-end via
       # `lyric build --manifest` (#2514).  Unlike the single-file AOT
