@@ -395,7 +395,9 @@ func sum[T](xs: slice[T]): T
 }
 ```
 
-Constraints may be user-defined interfaces or built-in trait-like markers. The closed set of built-in markers is `Equals`, `Compare`, `Hash`, `Default`, `Copyable`, `Add`, `Sub`, `Mul`, `Div`, `Mod` (see decision log D034). All but `Copyable` are also valid in `derives` clauses; `Copyable` is structural — it asserts the type lowers to a CLR value type.
+Constraints may be user-defined interfaces or built-in trait-like markers. The closed set of built-in markers is `Equals`, `Compare`, `Hash`, `Default`, `Copyable`, `Add`, `Sub`, `Mul`, `Div`, `Mod` (see decision log D034). All but `Copyable` are also valid in `derives` clauses; `Copyable` is structural — it asserts the type lowers to a CLR value type. An unrecognised constraint name in a `where` clause (e.g. a typo) produces a **T0111** warning — the constraint is treated as satisfied at compile time, but the warning surfaces likely typos without breaking code that references cross-package interfaces not yet visible.
+
+Type arguments in instantiations (e.g. `Box[Int]`) must be type expressions. Writing a value expression where a type argument is expected is a compile error (**T0109**). Generic record and union constructors require explicit type arguments; calling a generic constructor without them is a compile error (**T0110**) — type-argument inference for constructors is not yet supported.
 
 Value generics:
 
