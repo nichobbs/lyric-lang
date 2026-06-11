@@ -137,6 +137,23 @@ impl MailSender for NativeSender {
   /// `filename` and `contentType` become the BCL `Attachment` name and
   /// media type respectively.  Fixes #1118.
   func send(msg: in EmailMessage): Result[Unit, MailError] {
+    // Defense-in-depth (#3181): the Mail.send wrapper runs the full
+    // header-injection guard, but the MailSender interface is callable
+    // directly, so attachment metadata is re-checked here before any
+    // BCL header is constructed.
+    var gi = 0
+    while gi < msg.attachments.length {
+      if containsHeaderInjection(msg.attachments[gi].filename) or containsHeaderInjection(msg.attachments[gi].contentType) {
+        return Err(
+          MailError(
+            message = "attachments[" + ("" + gi) +
+              "] filename/contentType contains CR/LF/NUL — header injection rejected",
+            code = "HEADER_INJECTION"
+          )
+        )
+      }
+      gi = gi + 1
+    }
     try {
       val mailMsg = MailKernel.newMailMessage()
       val fromAddr = MailKernel.newMailAddress(msg.from.address)
