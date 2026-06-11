@@ -313,9 +313,10 @@ func selfDllPath(): String {
 }
 
 // `readAllContractsFromFile` reads the embedded contract JSON in-process via
-// `Std.AssemblyResources` (no subprocess).  The bytes must round-trip through
-// `parseFromJson` cleanly — pinning the read + parse pipeline used by the
-// bridge's restored-dep loader.
+// the metadata-direct reader (`Msil.MetadataReader`, no subprocess and no
+// runtime `Assembly.Load`).  The bytes must round-trip through `parseFromJson`
+// cleanly — pinning the read + parse pipeline used by the bridge's restored-dep
+// loader.
 func testReadFromFileInProcess(): Unit {
   val entries = readAllContractsFromFile(selfDllPath())
   assertTrue(entries.count >= 1, "read_from_file_in_process: at least one contract entry")

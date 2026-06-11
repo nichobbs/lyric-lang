@@ -1728,9 +1728,12 @@ jobs:
       # Lyric-emitted compiler (stage-1 DLL closure).  The step then runs a
       # REAL `lyric build` through the published native binary and executes
       # the result — proving the self-hosted pipeline works without the CLR
-      # JIT.  Restored-dependency builds are out of AOT scope until the
-      # metadata-direct contract reader lands (Std.AssemblyResources uses
-      # Assembly.Load(byte[]), unsupported under Native AOT — docs/45).
+      # JIT.  It then exercises a RESTORED-DEPENDENCY build (the constdep/app
+      # cross-package const-inlining scenario) through the same native binary:
+      # reading the dependency DLL's embedded `Lyric.Contract` metadata now
+      # goes through the metadata-direct reader (`Msil.MetadataReader`, pure
+      # byte reading), not `Assembly.Load(byte[])`, so it works under Native
+      # AOT where the IL loader is unavailable (#3201 / docs/45 / docs/42).
       - name: Native AOT publish of the lyric CLI (#1494)
         working-directory: ${{ github.workspace }}
         run: |
@@ -1761,8 +1764,61 @@ jobs:
             echo "::error::lyric build through the native CLI produced unexpected output: '$out'"
             exit 1
           fi
+
+          # Restored-dependency build through the native binary (#3201).  A
+          # local-path `[dependencies]` entry threads the producer DLL as a
+          # restored dep; the consumer build must read the producer's embedded
+          # `Lyric.Contract` metadata to inline its `pub val ANSWER`.  Under
+          # Native AOT this previously threw `PlatformNotSupportedException`
+          # (no IL loader for `Assembly.Load(byte[])`); the metadata-direct
+          # reader makes it pure byte reading, so it now works.
+          work="$(mktemp -d)"
+          mkdir -p "$work/constdep/src" "$work/app/src"
+          cat > "$work/constdep/lyric.toml" <<'TOML'
+          [package]
+          name = "constdep"
+          version = "0.1.0"
+          [project]
+          name = "ConstDep"
+          output_assembly = "Lyric.ConstDep.dll"
+          [project.packages]
+          "ConstDep" = "src"
+          TOML
+          cat > "$work/constdep/src/constdep.l" <<'LYR'
+          package ConstDep
+          pub val ANSWER: Int = 0x002A
+          LYR
+          cat > "$work/app/lyric.toml" <<'TOML'
+          [package]
+          name = "app"
+          version = "0.1.0"
+          [project]
+          name = "App"
+          [project.packages]
+          "App" = "src"
+          [dependencies]
+          constdep = { path = "../constdep" }
+          TOML
+          cat > "$work/app/src/app.l" <<'LYR'
+          package App
+          import ConstDep
+          import Std.Console as Console
+          func main(): Unit {
+            Console.println(toString(ANSWER))
+          }
+          LYR
+          "$native_cli" build --manifest "$work/constdep/lyric.toml"
+          "$native_cli" build --manifest "$work/app/lyric.toml"
+          cp bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/Lyric.Stdlib*.dll "$work/app/bin/"
+          dep_out="$(cd "$work/app/bin" && dotnet exec App.dll | tr -d '\r\n')"
+          echo "restored-dep consumer printed: '$dep_out'"
+          if [ "$dep_out" != "42" ]; then
+            echo "::error::restored-dep build through the native CLI returned '$dep_out', expected '42' (metadata-direct contract read regressed under AOT)"
+            exit 1
+          fi
+
           size_kb=$(du -k "$native_cli" | cut -f1)
-          echo "OK: Native AOT lyric CLI published (${size_kb} KB) and built+ran an example end-to-end." >> "$GITHUB_STEP_SUMMARY"
+          echo "OK: Native AOT lyric CLI published (${size_kb} KB), built+ran an example and a restored-dependency build end-to-end." >> "$GITHUB_STEP_SUMMARY"
 
       # IConfig (config block) lowering self-test (#2983, #2992).
       # Wires `lyric-compiler/msil/msil_self_test_m85.l` via `lyric run` (the
