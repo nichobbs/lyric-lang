@@ -104,6 +104,13 @@ pub func storageKeyHasDotDot(s: in String): Bool {
 //     **filenames whose intended characters include a literal `%`
 //     are rejected**; callers that need raw `%` (rare) should
 //     bypass `isSafeKey` and call the backend method directly.
+//   * keys whose final path component ends in `.meta.json` — the
+//     local-fs backend stores sidecar metadata under that suffix.
+//     Allowing such keys as user-chosen storage keys would silently
+//     conflict with or overwrite the sidecar, causing data corruption
+//     and incorrect `list` results (#1911).  This rejection is
+//     applied uniformly across `put`/`get`/`exists`/`list` so the
+//     contract is: no `.meta.json`-suffixed keys ever.
 // Used as a `requires:` precondition on every `StorageBucket` method
 // that accepts a key.
 pub func isSafeKey(key: in String): Bool {
@@ -119,6 +126,14 @@ pub func isSafeKey(key: in String): Bool {
   // the backend would reconstitute `../../etc/passwd`.
   val lk = Str.toLower(key)
   if Str.contains(lk, "%25") {
+    return false
+  }
+  // Reject keys whose basename ends in `.meta.json` (#1911).  The
+  // local-fs backend stores sidecar metadata under that suffix;
+  // accepting such keys as user-chosen storage keys would silently
+  // corrupt the sidecar and produce incorrect `list` results.
+  val base = basenameOf(normalisedStorageKey(key))
+  if Str.endsWith(base, ".meta.json") {
     return false
   }
   val n = normalisedStorageKey(key)
@@ -217,13 +232,11 @@ pub interface StorageBucket {
   /// reject `maxKeys > 1000` at the interface contract before reaching
   /// the per-backend implementation (#1456).
   ///
-  /// Key restriction: any key whose basename ends in `.meta.json` is
-  /// silently omitted from `list` results (the local-fs backend stores
-  /// sidecar metadata under that suffix, which the lister filters).
-  /// `put`/`get`/`exists` still accept such keys, so the inconsistency
-  /// can surprise callers using `list` for inventory — avoid the
-  /// `.meta.json` suffix in user-chosen keys.  Tracker #1911 covers the
-  /// behavioural fix that unifies handling across put/get/exists/list.
+  /// Key restriction: keys whose basename ends in `.meta.json` are
+  /// rejected by `isSafeKey` and therefore cannot be stored or retrieved
+  /// via any method on this interface (#1911).  The `.meta.json` suffix
+  /// is reserved for local-fs sidecar metadata files and is not visible
+  /// in `list` results.
   func list(prefix: in String, continuationToken: in String, maxKeys: in Int): Result[ListResult, StorageError]
     requires: maxKeys >= 1
     requires: maxKeys <= 1000
