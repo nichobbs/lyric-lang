@@ -209,36 +209,44 @@ func cmdBench(argv: in slice[String]): Int {
     }
     val benchFiles: List[String] = newList()
     val benchSources: List[String] = newList()
+    var anyFailed = false
     var pi = 0
     while pi < sourcePaths.count {
       val sp = sourcePaths[pi]
       pi += 1
-      val source = match File.readText(sp) { case Ok(t) -> t; case Err(_) -> "" }
-      if source.length > 0 {
-        // Detect @bench_module by checking that some source line, stripped of
-        // leading/trailing whitespace, is exactly "@bench_module".  This avoids
-        // false-positives from the text appearing inside string literals or
-        // comments that happen to contain the annotation.
-        val lines = Str.split(source, "\n")
-        var hasBench = false
-        var li = 0
-        while li < lines.length {
-          if Str.trim(lines[li]) == "@bench_module" {
-            hasBench = true
+      match File.readText(sp) {
+        case Ok(source) -> {
+          // Detect @bench_module by checking that some source line, stripped of
+          // leading/trailing whitespace, is exactly "@bench_module".  This avoids
+          // false-positives from the text appearing inside string literals or
+          // comments that happen to contain the annotation.
+          val lines = Str.split(source, "\n")
+          var hasBench = false
+          var li = 0
+          while li < lines.length {
+            if Str.trim(lines[li]) == "@bench_module" {
+              hasBench = true
+            }
+            li += 1
           }
-          li += 1
+          if hasBench {
+            benchFiles.add(sp)
+            benchSources.add(source)
+          }
         }
-        if hasBench {
-          benchFiles.add(sp)
-          benchSources.add(source)
+        case Err(e) -> {
+          printErr("bench: cannot read '" + sp + "': " + IOError.message(e))
+          anyFailed = true
         }
       }
+    }
+    if anyFailed {
+      return 1
     }
     if benchFiles.count == 0 {
       printErr("bench: no @bench_module files found in project")
       return 1
     }
-    var anyFailed = false
     var bi = 0
     while bi < benchFiles.count {
       val bPath = benchFiles[bi]
