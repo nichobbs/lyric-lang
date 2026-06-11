@@ -3118,6 +3118,9 @@ jobs:
           LYR
           # Capture stdout and stderr separately so a trailing compiler warning
           # printed to stderr does not replace the program output in the comparison.
+          # `lyric run` also prints its "built <path> in <N>ms" progress line to
+          # stdout before the program output, so drop those lines explicitly
+          # (the old `tail -1` was filtering them implicitly).
           s4_stderr="$work/s4.err"
           out="$("$lyric_bin" run "$work/s4.l" 2>"$s4_stderr")"
           if [ $? -ne 0 ]; then
@@ -3125,8 +3128,8 @@ jobs:
             cat "$s4_stderr" >&2
             exit 1
           fi
-          # Trim trailing whitespace/newlines to normalise output.
-          out="$(printf '%s' "$out" | tr -d '\r\n')"
+          # Drop build-progress lines, then trim newlines to normalise output.
+          out="$(printf '%s\n' "$out" | grep -v '^built ' | tr -d '\r\n')"
           echo "slice-4 program printed: '$out'"
           if [ "$out" != "alpha.l beta.l gamma.l" ]; then
             echo "::error::Sort.sortStrings(list.toArray()) returned '$out' (expected 'alpha.l beta.l gamma.l'); #2592 slice-4 regressed"
