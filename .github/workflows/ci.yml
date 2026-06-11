@@ -2558,12 +2558,14 @@ jobs:
             Console.println(acc)
           }
           LYR
-          # LYRIC_STD_PATH is set explicitly to $work/out so the build uses the
-          # self-hosted-emitted stdlib DLLs above, not the shipped stdlib dir.
-          # Std.Sort.dll is absent from the shipped stdlib, making the path
-          # ambiguous without this override; the explicit path also documents
-          # that the test is validating the self-hosted-emitted set.
-          LYRIC_STD_PATH="$work/out" "$lyric_bin" build "$work/sorttest.l" -o "$work/out/sorttest.dll"
+          # Resolution note (#2787): the build below intentionally relies on the
+          # default stdlib resolution (walking up from the lyric binary to
+          # lyric-stdlib/std).  LYRIC_STD_PATH points at a stdlib *source*
+          # directory, so overriding it to $work/out (a DLL output dir) changes
+          # which artifacts get linked and miscompiles the program — making the
+          # emitted-DLL set the linked target needs first-class support, tracked
+          # in #2787.
+          "$lyric_bin" build "$work/sorttest.l" -o "$work/out/sorttest.dll"
           got="$(cd "$work/out" && dotnet sorttest.dll | tr -d '\r\n')"
           echo "self-hosted Std.Sort printed: '$got'"
           if [ "$got" != "1 2 3 4 5" ]; then
