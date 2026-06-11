@@ -1427,6 +1427,9 @@ func ctorGenericNames(sym: in Symbol): List[String] {
 func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[String]): List[Type] {
   val ctx = newGenericContext()
   gctxPush(ctx, genericNames)
+  // Inference probe only: resolution diagnostics are deliberately discarded
+  // (the authoritative field-type check runs later in inferConstruction);
+  // this pass exists solely to surface TyVar positions for inferGenericArgs.
   val scratch: List[Diagnostic] = newList()
   val result: List[Type] = newList()
   match sym.kind {
