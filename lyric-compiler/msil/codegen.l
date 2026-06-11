@@ -6229,11 +6229,16 @@ func lowerMatchExprMsil(
         // regression reached codegen.
         // Compare canonical keys, not structure: MsilType has multiple
         // representations (by-name vs by-row generic instances) for the
-        // same type.  A divergence here is usually a type-checker bug, but
-        // legitimate erased-vs-concrete arm mixes exist, so warn loudly
+        // same type.  Erased-object arms (bare O, or O inside a generic
+        // instance) legitimately mix with concrete arms under erasure, so
+        // only a concrete-vs-concrete divergence is suspicious; warn loudly
         // rather than abort the build (#1663).
-        if msilTypeKey(armTys[av]) != msilTypeKey(firstFallTy) {
-          println("warning[W0004]: Msil.Codegen: lowerMatchExprMsil fall-through arm type mismatch: first arm " + msilTypeKey(firstFallTy) + " vs later arm " + msilTypeKey(armTys[av]) + " — result uses the first arm's type (possible type-checker regression, #1663)")
+        val k1w = msilTypeKey(firstFallTy)
+        val k2w = msilTypeKey(armTys[av])
+        val erased1w = k1w == "O" or contains(k1w, "<O,") or contains(k1w, "[O]")
+        val erased2w = k2w == "O" or contains(k2w, "<O,") or contains(k2w, "[O]")
+        if k1w != k2w and not erased1w and not erased2w {
+          println("warning[W0004]: Msil.Codegen: lowerMatchExprMsil fall-through arm type mismatch: first arm " + k1w + " vs later arm " + k2w + " — result uses the first arm's type (possible type-checker regression, #1663)")
         }
       }
       if armTys[av] == MVoid {
@@ -10714,6 +10719,8 @@ func countYieldsInExpr(e: in Expr): Int {
       match bound {
         case RBClosed(lo, hi) -> countYieldsInExpr(lo) + countYieldsInExpr(hi)
         case RBHalfOpen(lo, hi) -> countYieldsInExpr(lo) + countYieldsInExpr(hi)
+        case RBLowerOpen(hi) -> countYieldsInExpr(hi)
+        case RBUpperOpen(lo) -> countYieldsInExpr(lo)
       }
     }
     case _ -> 0
