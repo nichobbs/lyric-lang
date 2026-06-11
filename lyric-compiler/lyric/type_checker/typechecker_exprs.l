@@ -2901,6 +2901,37 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
     case _ -> {
     }
   }
+  // A function argument returning `Never` (bottom) satisfies a function
+  // parameter with any return type: the body diverges, so the "missing"
+  // return value is unobservable — e.g. `{ -> panic("x") }` typed as
+  // `() -> Never` passed to `assertPanics(label, fn: in () -> Unit)`.
+  // Parameter lists must still match positionally (typeEquiv keeps the
+  // call ABI sound).
+  match unrefine(argTy) {
+    case TyFunction(aps, ar, _) -> {
+      match unrefine(paramTy) {
+        case TyFunction(pps, _, _) -> {
+          if aps.count == pps.count and isNeverType(ar) {
+            var fi = 0
+            var allOk = true
+            while fi < aps.count {
+              if not typeEquiv(pps[fi], aps[fi]) {
+                allOk = false
+              }
+              fi = fi + 1
+            }
+            if allOk {
+              return true
+            }
+          }
+        }
+        case _ -> {
+        }
+      }
+    }
+    case _ -> {
+    }
+  }
   match typeIdOfType(paramTy) {
     case Some(ifaceId) -> match typeIdOfType(argTy) { case Some(argId) -> symTableTypeImplements(tbl, argId, ifaceId); case None -> false }
     case None -> false

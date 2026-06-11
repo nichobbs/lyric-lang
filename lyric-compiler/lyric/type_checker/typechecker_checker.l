@@ -1132,6 +1132,192 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §8b. Declaration-position type-reference validation (#1228).
+// ─────────────────────────────────────────────────────────────────────────────
+// Function signatures already surface unknown type names via
+// `resolveFunctionSig`.  Record / exposed-record / opaque / protected fields,
+// union case fields, interface member signatures, member functions, type-alias
+// targets, and module-level val/const annotations were never resolved unless a
+// body expression happened to touch them, so a misspelled or un-imported type
+// silently degraded to `System.Object` and surfaced as a codegen failure far
+// from the declaration.  Resolve every declared type reference here — the
+// resolved types are discarded; only the T0010/T0013/T0014 diagnostics matter.
+func declGenericContext(generics: in Option[GenericParams]): GenericContext {
+  val names = extractGenericNames(generics)
+  val ctx = newGenericContext()
+  if names.count > 0 {
+    gctxPush(ctx, names)
+  }
+  ctx
+}
+
+// Validate the parameter and return types of a member signature, with the
+// owner type's generic parameters (`outerGenerics`) and the member's own
+// generic parameters both in scope.
+func checkMemberSigTypes(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  outerGenerics: in Option[GenericParams],
+  generics: in Option[GenericParams],
+  params: in List[Param],
+  ret: in Option[TypeExpr],
+): Unit {
+  val ctx = declGenericContext(outerGenerics)
+  val names = extractGenericNames(generics)
+  if names.count > 0 {
+    gctxPush(ctx, names)
+  }
+  var i = 0
+  while i < params.count {
+    val _ = resolveType(tbl, ctx, diag, params[i].ty)
+    i = i + 1
+  }
+  match ret {
+    case Some(te) -> {
+      val _ = resolveType(tbl, ctx, diag, te)
+    }
+    case None -> {
+    }
+  }
+}
+
+func checkRecordDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in RecordDecl): Unit {
+  val ctx = declGenericContext(decl.generics)
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case RMField(field) -> {
+        val _ = resolveType(tbl, ctx, diag, field.ty)
+      }
+      case RMFunc(fn) -> checkMemberSigTypes(tbl, diag, decl.generics, fn.generics, fn.params, fn.ret)
+      case RMInvariant(_) -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
+func checkUnionDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in UnionDecl): Unit {
+  val ctx = declGenericContext(decl.generics)
+  var i = 0
+  while i < decl.cases.count {
+    val c = decl.cases[i]
+    var j = 0
+    while j < c.fields.count {
+      match c.fields[j] {
+        case UFNamed(_, ty, _) -> {
+          val _ = resolveType(tbl, ctx, diag, ty)
+        }
+        case UFPos(ty, _) -> {
+          val _ = resolveType(tbl, ctx, diag, ty)
+        }
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+}
+
+func checkInterfaceDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in InterfaceDecl): Unit {
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case IMSig(sig) -> checkMemberSigTypes(tbl, diag, decl.generics, sig.generics, sig.params, sig.ret)
+      case IMFunc(fn) -> checkMemberSigTypes(tbl, diag, decl.generics, fn.generics, fn.params, fn.ret)
+      case IMAssoc(_) -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
+func checkOpaqueDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in OpaqueTypeDecl): Unit {
+  val ctx = declGenericContext(decl.generics)
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case OMField(field) -> {
+        val _ = resolveType(tbl, ctx, diag, field.ty)
+      }
+      case OMInvariant(_) -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
+func checkProtectedDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in ProtectedTypeDecl): Unit {
+  val ctx = declGenericContext(decl.generics)
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case PMField(field) -> {
+        match field {
+          case PFVar(_, ty, _, _) -> {
+            val _ = resolveType(tbl, ctx, diag, ty)
+          }
+          case PFLet(_, ty, _, _) -> {
+            val _ = resolveType(tbl, ctx, diag, ty)
+          }
+        }
+      }
+      case PMEntry(entryDecl) -> {
+        var j = 0
+        while j < entryDecl.params.count {
+          val _ = resolveType(tbl, ctx, diag, entryDecl.params[j].ty)
+          j = j + 1
+        }
+        match entryDecl.ret {
+          case Some(te) -> {
+            val _ = resolveType(tbl, ctx, diag, te)
+          }
+          case None -> {
+          }
+        }
+      }
+      case PMFunc(fn) -> checkMemberSigTypes(tbl, diag, decl.generics, fn.generics, fn.params, fn.ret)
+      case PMInvariant(_) -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
+func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in List[Item]): Unit {
+  val emptyCtx = newGenericContext()
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IRecord(decl) -> checkRecordDeclTypes(tbl, diag, decl)
+      case IExposedRec(decl) -> checkRecordDeclTypes(tbl, diag, decl)
+      case IUnion(decl) -> checkUnionDeclTypes(tbl, diag, decl)
+      case IInterface(decl) -> checkInterfaceDeclTypes(tbl, diag, decl)
+      case IOpaque(decl) -> checkOpaqueDeclTypes(tbl, diag, decl)
+      case IProtected(decl) -> checkProtectedDeclTypes(tbl, diag, decl)
+      case ITypeAlias(decl) -> {
+        val ctx = declGenericContext(decl.generics)
+        val _ = resolveType(tbl, ctx, diag, decl.rhs)
+      }
+      case IConst(decl) -> {
+        val _ = resolveType(tbl, emptyCtx, diag, decl.ty)
+      }
+      case IVal(decl) -> {
+        match decl.ty {
+          case Some(te) -> {
+            val _ = resolveType(tbl, emptyCtx, diag, te)
+          }
+          case None -> {
+          }
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §9. Public entry points.
 // ─────────────────────────────────────────────────────────────────────────────
 // Imported items tagged with their declaring package, so each package's
@@ -1237,6 +1423,11 @@ pub func checkWithImportedPackages(file: in SourceFile, importedPackages: in Lis
   symTableSetScope(tbl, userPkg, userImports)
   addSigsFromItems(tbl, diag, sigs, file.items, false, userPkg)
   registerImplsFromItems(tbl, newGenericContext(), implDiag, file.items)
+
+  // T4: validate declaration-position type references (#1228) so an unknown
+  // type in a record/union/interface/opaque/protected/alias/val declaration
+  // errors at the declaration instead of silently degrading to Object.
+  checkDeclTypeRefs(tbl, diag, file.items)
 
   // T5: check user function bodies.
   var m = 0
