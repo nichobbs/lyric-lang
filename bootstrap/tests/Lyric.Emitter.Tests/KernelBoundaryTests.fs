@@ -206,7 +206,7 @@ let tests =
             //               The embedded contract-metadata read is now
             //               metadata-direct (`Msil.MetadataReader`, pure byte
             //               reading, AOT-safe), needing no host extern at all.
-            Expect.isLessThanOrEqual total 335
+            Expect.isLessThanOrEqual total 324
                 "total extern surface unexpectedly large"
         }
     ]
