@@ -230,6 +230,16 @@ jobs:
             "$lyric_bin" build "$ex" -o "$out" --force
           done
 
+      # Band 5 invariant guardrail (#3067): assert that no stage-1 DLL carries
+      # an AssemblyRef entry for Lyric.Emitter or FSharp.Core.  These were
+      # removed in #3062; a future kernel module accidentally reintroducing an
+      # @externTarget to either assembly would otherwise only fail at program
+      # startup with a FileNotFoundException.  The check parses ECMA-335 metadata
+      # (#Strings heap) via Python — no external tooling required.
+      - name: Check stage-1 DLLs have no AssemblyRef to Lyric.Emitter or FSharp.Core (#3067)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        run: bash scripts/check_assembly_refs.sh .bootstrap/stage1
+
       # Ecosystem security regression tests — exercises lyric-auth (#315, #360)
       # and lyric-session (#316) through the multi-package test runner added in
       # #465.  Skipped silently if the stage-1 bundle or AOT binary is absent
@@ -1622,11 +1632,15 @@ jobs:
 
       # ILCompiler package cache — keyed on the .NET SDK version so the
       # ~200 MB compiler package is not re-downloaded on every run.
+      # restore-keys fallback on the runner.os prefix so a SDK patch-version bump
+      # in global.json reuses the previous cache rather than downloading 200 MB.
       - name: Cache ILCompiler NuGet packages
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: ~/.nuget/packages/microsoft.dotnet.ilcompiler
           key: ${{ runner.os }}-ilcompiler-${{ hashFiles('bootstrap/global.json') }}
+          restore-keys: |
+            ${{ runner.os }}-ilcompiler-
 
       # clang and zlib1g-dev are required by the ILCompiler linker pass on Linux.
       - name: Install native-AOT linker prerequisites
@@ -1730,6 +1744,7 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/func_default_args_self_test.l
+          echo "named-arg/default-param self-test ran: func_default_args_self_test.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
 
       # Numeric / character conversion-method self-test (#1901, Band-1 of epic
       # #1470).  Exercises `.toByte()` / `.toInt()` / `.toLong()` / `.toChar()`
@@ -2474,6 +2489,7 @@ jobs:
             exit 1
           fi
           work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
           st="lyric-compiler/lyric/typechecker_self_test.l"
           "$lyric_bin" --internal-perpackage-build "$st" "$work/out"
           for dll in Lyric.Lyric.Lexer.dll Lyric.Lyric.Parser.dll Lyric.Lyric.TypeChecker.dll; do
@@ -2512,6 +2528,7 @@ jobs:
             exit 1
           fi
           work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
           mods="$(grep -rhoE '^package Std\.[A-Za-z.]+' lyric-stdlib/std/*.l | sed 's/^package //' | sort -u)"
           {
             echo "package StdAll"
@@ -2541,7 +2558,12 @@ jobs:
             Console.println(acc)
           }
           LYR
-          "$lyric_bin" build "$work/sorttest.l" -o "$work/out/sorttest.dll"
+          # LYRIC_STD_PATH is set explicitly to $work/out so the build uses the
+          # self-hosted-emitted stdlib DLLs above, not the shipped stdlib dir.
+          # Std.Sort.dll is absent from the shipped stdlib, making the path
+          # ambiguous without this override; the explicit path also documents
+          # that the test is validating the self-hosted-emitted set.
+          LYRIC_STD_PATH="$work/out" "$lyric_bin" build "$work/sorttest.l" -o "$work/out/sorttest.dll"
           got="$(cd "$work/out" && dotnet sorttest.dll | tr -d '\r\n')"
           echo "self-hosted Std.Sort printed: '$got'"
           if [ "$got" != "1 2 3 4 5" ]; then
@@ -3071,6 +3093,7 @@ jobs:
             exit 1
           fi
           work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
           cat > "$work/s4.l" <<'LYR'
           package S4
           import Std.Sort as Sort
@@ -3091,10 +3114,21 @@ jobs:
             Console.println(acc)
           }
           LYR
-          out="$("$lyric_bin" run "$work/s4.l" 2>&1 | tail -1)"
+          # Capture stdout and stderr separately so a trailing compiler warning
+          # printed to stderr does not replace the program output in the comparison.
+          s4_stderr="$work/s4.err"
+          out="$("$lyric_bin" run "$work/s4.l" 2>"$s4_stderr")"
+          if [ $? -ne 0 ]; then
+            echo "::error::lyric run failed for slice-4 test"
+            cat "$s4_stderr" >&2
+            exit 1
+          fi
+          # Trim trailing whitespace/newlines to normalise output.
+          out="$(printf '%s' "$out" | tr -d '\r\n')"
           echo "slice-4 program printed: '$out'"
           if [ "$out" != "alpha.l beta.l gamma.l" ]; then
             echo "::error::Sort.sortStrings(list.toArray()) returned '$out' (expected 'alpha.l beta.l gamma.l'); #2592 slice-4 regressed"
+            cat "$s4_stderr" >&2
             exit 1
           fi
           echo "Sort.sortStrings(list.toArray()) returns lexicographically sorted result"
@@ -3636,9 +3670,10 @@ jobs:
       contents: read
     steps:
       - name: Aggregate CI results
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
         run: |
-          results='${{ toJSON(needs.*.result) }}'
-          if echo "$results" | grep -qE '"failure"|"cancelled"'; then
+          if echo "$RESULTS" | grep -qE '"failure"|"cancelled"'; then
             echo "One or more CI jobs failed"
             exit 1
           fi
@@ -3661,20 +3696,44 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         with:
           script: |
-            const prNumber = parseInt(process.env.PR_NUMBER);
+            const prNumber = parseInt(process.env.PR_NUMBER, 10);
+            if (!prNumber || isNaN(prNumber)) {
+              console.log('[auto-promote] PR_NUMBER env var is missing or invalid — skipping');
+              return;
+            }
             console.log(`[auto-promote] PR #${prNumber}: All CI passed, checking quality gates before promotion`);
 
-            // Fetch fresh PR state to verify mergeable_state
-            const freshPr = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber
-            });
+            // Fetch fresh PR state to verify mergeable_state.
+            // GitHub computes mergeable_state asynchronously; it may be 'unknown'
+            // immediately after CI completes.  Re-poll up to 3 times (5 s apart)
+            // before giving up so a transient 'unknown' does not permanently block
+            // promotion.  If the state remains 'unknown' after all retries we skip
+            // this run (it will retry on the next CI event) rather than risk
+            // promoting a PR whose conflict state has not yet been computed.
+            let freshPr;
+            let mergeableState;
+            const MAX_POLLS = 3;
+            for (let poll = 1; poll <= MAX_POLLS; poll++) {
+              freshPr = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber
+              });
+              mergeableState = freshPr.data.mergeable_state;
+              if (mergeableState !== 'unknown') break;
+              if (poll < MAX_POLLS) {
+                console.log(`[auto-promote] PR #${prNumber}: mergeable_state is 'unknown' (poll ${poll}/${MAX_POLLS}), retrying in 5 s...`);
+                await new Promise(r => setTimeout(r, 5000));
+              }
+            }
 
-            // Check for merge conflicts (mergeable_state: dirty)
-            // Only skip if there are actual conflicts; 'unknown' means GitHub is still computing
-            if (freshPr.data.mergeable_state === 'dirty') {
-              console.log(`[auto-promote] PR #${prNumber}: ⚠ Merge conflicts detected — skipping promotion`);
+            // Check for merge conflicts (mergeable_state: dirty).
+            if (mergeableState === 'dirty') {
+              console.log(`[auto-promote] PR #${prNumber}: WARN merge conflicts detected (mergeable_state=dirty) — skipping promotion to avoid promoting a conflicted PR`);
+              return;
+            }
+            if (mergeableState === 'unknown') {
+              console.log(`[auto-promote] PR #${prNumber}: WARN mergeable_state still 'unknown' after ${MAX_POLLS} polls — skipping promotion this run (will retry on next CI event)`);
               return;
             }
 
@@ -3694,19 +3753,19 @@ jobs:
               `, { prId: prNodeId });
               const prResult = result?.markPullRequestReadyForReview?.pullRequest;
               if (!prResult) {
-                core.setFailed(`[auto-promote] PR #${prNumber}: ✗ Mutation returned an unexpected response shape: ${JSON.stringify(result)}`);
+                core.setFailed(`[auto-promote] PR #${prNumber}: ERR mutation returned an unexpected response shape: ${JSON.stringify(result)}`);
               } else if (!prResult.isDraft) {
-                console.log(`[auto-promote] PR #${prNumber}: ✓ Successfully promoted to ready for review`);
+                console.log(`[auto-promote] PR #${prNumber}: OK successfully promoted to ready for review`);
               } else {
-                core.setFailed(`[auto-promote] PR #${prNumber}: ✗ Mutation succeeded but PR is still draft — promotion did not take effect`);
+                core.setFailed(`[auto-promote] PR #${prNumber}: ERR mutation succeeded but PR is still draft — promotion did not take effect`);
               }
             } catch (error) {
               const isSoftError =
                 error.status === 403 ||
                 (Array.isArray(error.errors) && error.errors.some(e => e.type === 'FORBIDDEN' || e.type === 'NOT_FOUND'));
               if (isSoftError) {
-                console.log(`[auto-promote] PR #${prNumber}: ⚠ Skipping promotion — permission denied or PR not found (check that the workflow token has pull-requests:write scope and that org policy permits the workflow to update PRs)`);
+                console.log(`[auto-promote] PR #${prNumber}: WARN skipping promotion — permission denied or PR not found (check that the workflow token has pull-requests:write scope and that org policy permits the workflow to update PRs)`);
               } else {
-                core.setFailed(`[auto-promote] PR #${prNumber}: ✗ GraphQL error: ${error.message}`);
+                core.setFailed(`[auto-promote] PR #${prNumber}: ERR GraphQL error: ${error.message}`);
               }
             }
