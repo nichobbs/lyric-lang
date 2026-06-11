@@ -374,9 +374,13 @@ pub func lowerFunc(
 
   LFunc(
     flags = 0x0009,
-    // public static; dots forbidden in JVM unqualified names (JVMS §4.2.2), so
-    // synthesised derive names like "Point.equals" are sanitised to "Point_equals".
-    name = decl.name.replace(".", "_"),
+    // public static; dots are forbidden in JVM unqualified names (JVMS §4.2.2).
+    // Synthesised @derive names like "Point.equals" use only the short segment
+    // ("equals") so the call site can use the plain member name as the JVM method name.
+    name = match lastIndexOf(decl.name, ".") {
+      case Some(dotIdx) -> substring(decl.name, dotIdx + 1)
+      case None -> decl.name
+    },
     params = paramTypes,
     ret = retTy,
     insns = insns,
