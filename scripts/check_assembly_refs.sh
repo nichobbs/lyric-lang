@@ -262,6 +262,10 @@ if violations:
     sys.exit(1)
 
 n = sum(1 for _ in stage1_dir.glob('*.dll'))
+if n == 0:
+    print("FAIL: check_assembly_refs: stage1 directory exists but contains zero DLLs — stage-1 build is broken",
+          file=sys.stderr)
+    sys.exit(1)
 print(f"check_assembly_refs: {n} stage-1 DLL(s) scanned — no forbidden AssemblyRef entries")
 sys.exit(0)
 PY
