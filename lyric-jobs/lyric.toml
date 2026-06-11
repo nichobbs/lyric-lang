@@ -15,6 +15,9 @@ output_assembly = "Jobs.dll"
 "Jobs.Aspects"    = "src/jobs_aspects.l"
 "Jobs.Kernel.Net" = "src/_kernel/net/jobs_kernel.l"
 
+[project.tests]
+"Jobs.JobsTests" = "tests/jobs_tests.l"
+
 [features]
 hangfire = []   # Hangfire backend for .NET (Hangfire.Core + Hangfire.SqlServer)
 quartz   = []   # Quartz.NET scheduler

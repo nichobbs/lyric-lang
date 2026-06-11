@@ -209,6 +209,10 @@ pub func status(schedulerId: in Int, jobId: in String): Result[String, String]
   }
   var rec: JobRecord = default()
   if cdTryGetValue(jobMap, jobId, rec) {
+    monitorEnter(rec)
+    defer {
+      monitorExit(rec)
+    }
     return Ok(rec.status)
   }
   Err("unknown job ID '" + jobId + "'")
@@ -225,6 +229,10 @@ pub func results(schedulerId: in Int, jobId: in String): Result[String, String]
   var rec: JobRecord = default()
   if not cdTryGetValue(jobMap, jobId, rec) {
     return Ok("[]")
+  }
+  monitorEnter(rec)
+  defer {
+    monitorExit(rec)
   }
   val json = "[{\"jobId\":" + jobJsonStr(jobId) + ",\"status\":" + jobJsonStr(rec.status) + ",\"output\":" +
     jobJsonStr(rec.output) +
