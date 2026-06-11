@@ -1472,6 +1472,167 @@ func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[S
   result
 }
 
+// Re-resolve constructor field types into `diag` so genuine field-type errors
+// (e.g. references to unknown types) surface even when T0110 fires early.
+// Uses a plain generic context (no type-var names pushed), so generic-position
+// fields silently produce TyError rather than spurious diagnostics.  Called
+// only on the T0110 early-return path (#3155).
+func surfaceCtorFieldTypeErrors(tbl: in SymbolTable, sym: in Symbol, diag: in List[Diagnostic]): Unit {
+  val ctx = newGenericContext()
+  match sym.kind {
+    case DKRecord(_, rd) -> {
+      var i = 0
+      while i < rd.members.count {
+        match rd.members[i] {
+          case RMField(fd) -> {
+            val _ = resolveType(tbl, ctx, diag, fd.ty)
+          }
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case DKExposedRec(_, rd) -> {
+      var i = 0
+      while i < rd.members.count {
+        match rd.members[i] {
+          case RMField(fd) -> {
+            val _ = resolveType(tbl, ctx, diag, fd.ty)
+          }
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case DKOpaque(_, od) -> {
+      var i = 0
+      while i < od.members.count {
+        match od.members[i] {
+          case OMField(fd) -> {
+            val _ = resolveType(tbl, ctx, diag, fd.ty)
+          }
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case _ -> {
+    }
+  }
+}
+
+// Return the field names of a constructor symbol in declaration order.
+// Used alongside ctorFieldTypes to reorder named-arg types to declaration
+// order before passing to inferGenericArgs (#3157).
+func ctorFieldNames(sym: in Symbol): List[String] {
+  val result: List[String] = newList()
+  match sym.kind {
+    case DKRecord(_, rd) -> {
+      var i = 0
+      while i < rd.members.count {
+        match rd.members[i] {
+          case RMField(fd) -> result.add(fd.name)
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case DKExposedRec(_, rd) -> {
+      var i = 0
+      while i < rd.members.count {
+        match rd.members[i] {
+          case RMField(fd) -> result.add(fd.name)
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case DKOpaque(_, od) -> {
+      var i = 0
+      while i < od.members.count {
+        match od.members[i] {
+          case OMField(fd) -> result.add(fd.name)
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case _ -> {
+    }
+  }
+  result
+}
+
+// Reorder argTypes to match declaration order so inferGenericArgs can pair
+// each field type with the type of the argument that initialises it (#3157).
+// Named args are placed at their declared-field index; positional args fill
+// unoccupied slots left to right; any unmatched slot gets TyError so
+// inferOneGenericArg simply skips it.
+func argTypesInFieldOrder(args: in List[CallArg], argTypes: in List[Type], fieldNames: in List[String]): List[Type] {
+  val result: List[Type] = newList()
+  val occupied: List[Bool] = newList()
+  var fi = 0
+  while fi < fieldNames.count {
+    result.add(TyError)
+    occupied.add(false)
+    fi = fi + 1
+  }
+  // Place named args at their declared slot first.
+  var i = 0
+  while i < args.count {
+    val ty = if i < argTypes.count { argTypes[i] } else { TyError }
+    match args[i] {
+      case CANamed(nm, _, _) -> {
+        var j = 0
+        while j < fieldNames.count {
+          if fieldNames[j] == nm {
+            result[j] = ty
+            occupied[j] = true
+            j = fieldNames.count
+          } else {
+            j = j + 1
+          }
+        }
+      }
+      case CAPositional(_) -> {
+      }
+    }
+    i = i + 1
+  }
+  // Place positional args into the first unoccupied slots, left to right.
+  var posIdx = 0
+  var i2 = 0
+  while i2 < args.count {
+    val ty = if i2 < argTypes.count { argTypes[i2] } else { TyError }
+    match args[i2] {
+      case CAPositional(_) -> {
+        // Advance posIdx past any slots already filled by named args.
+        var placed = false
+        while posIdx < fieldNames.count and not placed {
+          if not occupied[posIdx] {
+            result[posIdx] = ty
+            occupied[posIdx] = true
+            posIdx = posIdx + 1
+            placed = true
+          } else {
+            posIdx = posIdx + 1
+          }
+        }
+      }
+      case CANamed(_, _, _) -> {
+      }
+    }
+    i2 = i2 + 1
+  }
+  result
+}
+
 func fieldHasName(fields: in List[CtorField], name: in String): Bool {
   var i = 0
   while i < fields.count {
@@ -1599,10 +1760,68 @@ func inferConstruction(
   // one or more type parameters remain unresolved after inference.
   if ctorIsGeneric(sym) {
     val gnames = ctorGenericNames(sym)
+    val fieldNames = ctorFieldNames(sym)
+    // #3156: check for missing required fields before attempting inference so
+    // under-application is reported with a precise per-field diagnostic rather
+    // than the confusing "cannot infer type arguments" T0110.
+    val prelimFields: List[CtorField] = newList()
+    val _ = collectCtorFields(tbl, sym, prelimFields)
+    // Only perform the missing-field check when all supplied args are named
+    // (no positional args).  Positional args cover fields by declaration index
+    // and the interaction with named args is complex; mixed-mode under-application
+    // is rare and falls through to T0110 as before.
+    var hasPositional = false
+    var ani = 0
+    while ani < args.count {
+      match args[ani] {
+        case CAPositional(_) -> {
+          hasPositional = true
+        }
+        case CANamed(_, _, _) -> {
+        }
+      }
+      ani = ani + 1
+    }
+    val missing: List[String] = newList()
+    if not hasPositional {
+      var mfi = 0
+      while mfi < prelimFields.count {
+        val f = prelimFields[mfi]
+        if not f.hasDefault {
+          var supplied = false
+          var si = 0
+          while si < args.count {
+            match args[si] {
+              case CANamed(nm, _, _) -> if nm == f.name { supplied = true }
+              case CAPositional(_) -> {
+              }
+            }
+            si = si + 1
+          }
+          if not supplied {
+            missing.add(f.name)
+          }
+        }
+        mfi = mfi + 1
+      }
+    }
+    if missing.count > 0 {
+      var mi = 0
+      while mi < missing.count {
+        diag.add(
+          errorDiagnostic("T0105", "constructor '" + sym.name + "' is missing required field '" + missing[mi] + "'", span)
+        )
+        mi = mi + 1
+      }
+      return TyError
+    }
     // Collect field types with generic names in context so type-param fields
     // resolve to TyVar("T") (not TyError), enabling inference from arg types.
+    // Reorder argTypes to declaration order (#3157): named args are matched by
+    // field name, positional args fill remaining slots left to right.
     val fieldTypes = ctorFieldTypes(tbl, sym, gnames)
-    val targs = inferGenericArgs(gnames, fieldTypes, argTypes)
+    val orderedArgTypes = argTypesInFieldOrder(args, argTypes, fieldNames)
+    val targs = inferGenericArgs(gnames, fieldTypes, orderedArgTypes)
     // Collect names of parameters that could not be inferred.
     val unresolved: List[String] = newList()
     var gi = 0
@@ -1614,6 +1833,9 @@ func inferConstruction(
       gi = gi + 1
     }
     if unresolved.count > 0 {
+      // #3155: surface genuine field-type resolution errors (e.g. unknown type
+      // names in field declarations) that were swallowed by the inference probe.
+      surfaceCtorFieldTypeErrors(tbl, sym, diag)
       var msg = "cannot infer type argument(s) for generic constructor '" + sym.name + "': "
       var ui = 0
       while ui < unresolved.count {

@@ -1847,3 +1847,32 @@ test "union case with nested generic field infers parent type" {
   val cr = parseCheck(src)
   assertEqualInt(diagCount(cr), 0, "nested Seq[T] field: type inferred correctly, no errors")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3157: named constructor args may be supplied in any order — the type
+// checker must pair each named arg's type with its declared field by name,
+// not positionally.  Pair[A, B] { first: A; second: B } constructed as
+// Pair(second = "x", first = 1) must infer A=Int, B=String, not A=String, B=Int.
+// ─────────────────────────────────────────────────────────────────────────────
+test "generic ctor named args in reverse order infer correct type args" {
+  val src = "package P\nrecord Pair[A, B] { first: A; second: B }\nfunc f(): Pair[Int, String] { Pair(second = \"x\", first = 1) }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "named args in reverse order: no errors")
+}
+
+test "generic ctor named args in declaration order also work" {
+  val src = "package P\nrecord Pair[A, B] { first: A; second: B }\nfunc f(): Pair[Int, String] { Pair(first = 1, second = \"x\") }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "named args in declaration order: no errors")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3156: missing a required field on a generic constructor should emit T0105
+// (missing required field), not T0110 (cannot infer type arguments).
+// ─────────────────────────────────────────────────────────────────────────────
+test "generic ctor missing required field emits T0105 not T0110" {
+  val src = "package P\nrecord Pair[A, B] { first: A; second: B }\nfunc f(): Unit { val _ = Pair(first = 1) }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0105"), "missing required field: T0105")
+  assertTrue(not hasDiagCode(cr, "T0110"), "missing required field: not T0110")
+}
