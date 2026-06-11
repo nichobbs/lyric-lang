@@ -72,16 +72,22 @@ fi
 # not necessarily ship.  Unused hosts are harmless (never loaded without their
 # consumer package).
 to_stage=()
+missing_curated=0
 for p in "${CURATED_PACKAGES[@]}"; do
   dll="$out/Lyric.Stdlib.$p.dll"
   if [[ ! -f "$dll" ]]; then
-    echo "stage-selfhosted-stdlib: WARNING: expected $dll was not emitted after a successful build." >&2
-    echo "  This is unexpected — the build succeeded but '$p' is missing from the output." >&2
-    echo "  The curated package will NOT be staged.  Tracking: #2824." >&2
+    echo "stage-selfhosted-stdlib: ERROR: expected $dll was not emitted after a successful build." >&2
+    echo "  The build succeeded but '$p' is missing from the output (#2824)." >&2
+    missing_curated=1
     continue
   fi
   to_stage+=("$dll")
 done
+# Report every missing package above, then fail: staging must not exit 0
+# with an incomplete curated set (#3185).
+if (( missing_curated )); then
+  exit 1
+fi
 for h in "$out"/Lyric.Stdlib.*Host.dll; do
   [[ -f "$h" ]] && to_stage+=("$h")
 done
