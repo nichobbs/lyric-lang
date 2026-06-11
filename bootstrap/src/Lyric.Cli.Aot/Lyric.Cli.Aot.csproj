@@ -6,6 +6,24 @@
     <AssemblyName>lyric</AssemblyName>
     <RootNamespace>Lyric.Cli.Aot</RootNamespace>
     <Nullable>enable</Nullable>
+    <!-- Native AOT publish (#1494).  Only `dotnet publish` honours
+         PublishAot; regular `dotnet build` output stays a framework-
+         dependent app, so the dev inner loop is unaffected.  The Lyric
+         compile pipeline is culture-invariant (ordinal string handling
+         throughout), so invariant globalization is safe and trims ICU.
+         Restored-dependency builds need `Assembly.Load(byte[])` for the
+         embedded contract-metadata read (Std.AssemblyResources), which
+         Native AOT does not support - single-file / no-dependency builds
+         are the supported AOT surface until the metadata-direct reader
+         (docs/45 phases 2-5 / docs/42) replaces runtime assembly loading. -->
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Directory.Build.props sets TreatWarningsAsErrors=true, which ILC
+         inherits and which would fail the publish on the known IL2104 trim
+         rollup from Std.AssemblyResources' documented Assembly.Load usage.
+         Keep ILC diagnostics as warnings; the compile-time policy for C#/F#
+         warnings is unchanged. -->
+    <IlcTreatWarningsAsErrors>false</IlcTreatWarningsAsErrors>
   </PropertyGroup>
 
   <!-- Stage-1 DLL references.  The wildcard pulls in every artefact

@@ -405,6 +405,7 @@ jobs:
             lyric-compiler/lyric/class_encoding_self_test.l \
             lyric-compiler/lyric/hof_type_propagation_self_test.l \
             lyric-compiler/lyric/typechecker_extern_dedup_self_test.l \
+            lyric-compiler/lyric/enum_msil_self_test.l \
             lyric-compiler/lyric/contract_meta_self_test.l \
             lyric-compiler/lyric/restored_packages_self_test.l \
             lyric-compiler/lyric/test_synth_self_test.l \
@@ -1686,6 +1687,48 @@ jobs:
             exit 1
           fi
           echo "OK: native AOT binary produced and executed correctly." >> "$GITHUB_STEP_SUMMARY"
+
+      # Native AOT publish of the `lyric` CLI itself (#1494 / Band 5).
+      # `dotnet publish` honours the csproj's `<PublishAot>true</PublishAot>`,
+      # producing a self-contained native ELF that AOT-compiles the whole
+      # Lyric-emitted compiler (stage-1 DLL closure).  The step then runs a
+      # REAL `lyric build` through the published native binary and executes
+      # the result — proving the self-hosted pipeline works without the CLR
+      # JIT.  Restored-dependency builds are out of AOT scope until the
+      # metadata-direct contract reader lands (Std.AssemblyResources uses
+      # Assembly.Load(byte[]), unsupported under Native AOT — docs/45).
+      - name: Native AOT publish of the lyric CLI (#1494)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          publish_dir="$(mktemp -d)"
+          dotnet publish bootstrap/src/Lyric.Cli.Aot -c Release -r linux-x64 -o "$publish_dir"
+          native_cli="$publish_dir/lyric"
+          if [ ! -x "$native_cli" ]; then
+            echo "::error::native lyric CLI not produced at $native_cli"
+            exit 1
+          fi
+          file "$native_cli" | grep -q ELF || { echo "::error::published lyric CLI is not a native ELF"; exit 1; }
+          "$native_cli" --version
+          dir="$(mktemp -d)"
+          cat > "$dir/hello.l" <<'LYRIC'
+          package Hello
+          import Std.Core
+          func main(): Int {
+            println("hello-native-cli")
+            0
+          }
+          LYRIC
+          "$native_cli" build "$dir/hello.l" -o "$dir/bin/Hello.dll"
+          cp bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/Lyric.Stdlib*.dll "$dir/bin/"
+          out="$(cd "$dir/bin" && dotnet exec Hello.dll)"
+          echo "native CLI build output: $out"
+          if [ "$out" != "hello-native-cli" ]; then
+            echo "::error::lyric build through the native CLI produced unexpected output: '$out'"
+            exit 1
+          fi
+          size_kb=$(du -k "$native_cli" | cut -f1)
+          echo "OK: Native AOT lyric CLI published (${size_kb} KB) and built+ran an example end-to-end." >> "$GITHUB_STEP_SUMMARY"
 
       # IConfig (config block) lowering self-test (#2983, #2992).
       # Wires `lyric-compiler/msil/msil_self_test_m85.l` via `lyric run` (the
