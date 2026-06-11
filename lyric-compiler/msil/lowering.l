@@ -1459,6 +1459,21 @@ pub func ctxAddMemberRefForTypeSpec(
   }
 }
 
+// Extract the simple name from a "Namespace.SimpleName" FQN string.
+// When namespace is empty the whole string is the simple name.
+// Equivalent to the last dot-segment: substring(ns.length + 1, …).
+// Used consistently everywhere a struct/class className needs to be split
+// (#2978: replaces ad-hoc manual substring arithmetic).
+pub func simpleNameFromFqn(namespace: in String, className: in String): String {
+  if namespace.length == 0 {
+    className
+  } else {
+    // start = namespace.length + 1 (skip "Namespace.")
+    // length = className.length - namespace.length - 1
+    className.substring(namespace.length + 1, className.length - namespace.length - 1)
+  }
+}
+
 // Produce a unique string key for an MsilType, for TypeSpec blob deduplication.
 // Must distinguish every concrete encoding produced by bufMsilType.
 // INVARIANT: the output must never contain `|` — `dictTokensForLowering` joins
@@ -1861,6 +1876,15 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
         if refRow > 0 {
           0x01000000 + refRow                   // TypeRef token (foreign assembly)
         } else {
+          // W0003: type name could not be resolved — falling back to System.Object
+          // makes `isinst` always return non-null (every reference type is an Object),
+          // so any pattern arm guarded by this isinst unconditionally matches.  Likely
+          // cause: cross-bundle union case whose TypeRef was not registered via
+          // registerRestoredArtifactTokens, or a misspelled case name.
+          println(
+            "W0003: MIsinstByName: could not resolve type '" + name +
+              "' — falling back to System.Object (isinst will always succeed; check for a misspelled case name or a missing restored-package registration)"
+          )
           0x01000000 + ctx.trObject             // Last resort: System.Object
         }
       }
@@ -2347,11 +2371,7 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
   // namespace-qualified name.  r.className = "Pkg.Name" but the TypeDef must
   // store "Name" in typeName and "Pkg" in typeNamespace so the CLR type loader
   // can resolve the type by (namespace, simpleName) without a dot-split issue.
-  val simpleBaseRec = if r.namespace.length == 0 {
-    r.className
-  } else {
-    r.className.substring(r.namespace.length + 1, r.className.length - r.namespace.length - 1)
-  }
+  val simpleBaseRec = simpleNameFromFqn(r.namespace, r.className)
   // A generic TypeDef's name carries the CLR arity suffix (`Box`1`), matching
   // the .NET naming convention C# emits.  Without it, the runtime mis-lays-out
   // multi-field value-type instantiations (e.g. `Pair<Int,Int>` silently drops
@@ -2625,11 +2645,7 @@ pub func lowerMNullaryUnionCase(r: in MRecord, ctx: in LoweringCtx): Int {
   val bh = ctx.blobs
   val t = ctx.tables
 
-  val simpleNameRec = if r.namespace.length == 0 {
-    r.className
-  } else {
-    r.className.substring(r.namespace.length + 1, r.className.length - r.namespace.length - 1)
-  }
+  val simpleNameRec = simpleNameFromFqn(r.namespace, r.className)
   val sName = internString(sh, simpleNameRec)
   val sNs = internString(sh, r.namespace)
 
@@ -2971,11 +2987,7 @@ pub func lowerMDistinctType(d: in MDistinctType, ctx: in LoweringCtx): Int {
   val t = ctx.tables
   val isDiscover = ctx.discovering.count > 0
 
-  val simpleName = if d.namespace.length == 0 {
-    d.className
-  } else {
-    d.className.substring(d.namespace.length + 1, d.className.length - d.namespace.length - 1)
-  }
+  val simpleName = simpleNameFromFqn(d.namespace, d.className)
   val sName = internString(sh, simpleName)
   val sNs = internString(sh, d.namespace)
 
@@ -3159,11 +3171,7 @@ pub func lowerMRangeType(r: in MRangeType, ctx: in LoweringCtx): Int {
   val bh = ctx.blobs
   val t = ctx.tables
 
-  val simpleName = if r.namespace.length == 0 {
-    r.className
-  } else {
-    r.className.substring(r.namespace.length + 1, r.className.length - r.namespace.length - 1)
-  }
+  val simpleName = simpleNameFromFqn(r.namespace, r.className)
   val sName = internString(sh, simpleName)
   val sNs = internString(sh, r.namespace)
 
@@ -3351,11 +3359,7 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
   val bh = ctx.blobs
   val t = ctx.tables
 
-  val simpleNameIface = if iface.namespace.length == 0 {
-    iface.className
-  } else {
-    iface.className.substring(iface.namespace.length + 1, iface.className.length - iface.namespace.length - 1)
-  }
+  val simpleNameIface = simpleNameFromFqn(iface.namespace, iface.className)
   val sName = internString(sh, simpleNameIface)
   val sNs = internString(sh, iface.namespace)
 
@@ -4002,17 +4006,16 @@ pub func lowerMImpl(d: in MImplData, ctx: in LoweringCtx): Int {
 // The `toView()` method may call a sibling projectable's `toView()` even when
 // that sibling is lowered later; the MethodDef row is pre-computed from the
 // discovery pass and copied by `discoverTypeDefRowsInto`.
+// SYNC-POINT: addPackageTokens in codegen.l (IOpaque handler, ~line 2048) pre-allocates
+// MethodDef row numbers by mirroring this function's emission order exactly.  Any change
+// to the Phase 1 / Phase 2 method sequence here MUST be mirrored there (#3046).
 pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
   val sh = ctx.strings
   val bh = ctx.blobs
   val t = ctx.tables
   val isDiscover = ctx.discovering.count > 0
 
-  val simpleNameOpaque = if op.namespace.length == 0 {
-    op.className
-  } else {
-    op.className.substring(op.namespace.length + 1, op.className.length - op.namespace.length - 1)
-  }
+  val simpleNameOpaque = simpleNameFromFqn(op.namespace, op.className)
   val sName = internString(sh, simpleNameOpaque)
   val sNs = internString(sh, op.namespace)
 

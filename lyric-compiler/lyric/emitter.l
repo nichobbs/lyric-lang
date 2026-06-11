@@ -295,12 +295,24 @@ func findStdlibSourcesForTarget(forJvm: in Bool): List[String] {
 // typechecker's last-registered-wins `symTableTryFindOne` would pick
 // different declarations on each.  Sorting by basename makes the build
 // reproducible.
-func appendLyricFiles(sources: in List[String], dir: in String, skipJvmKernel: in Bool): Unit {
+// Scan `dir` for `.l` files, apply a basename-level skip predicate
+// (`skipBase(basename) -> Bool`), sort by basename, read each file, and
+// append text+path pairs to `out` (parallel lists).  Returns immediately
+// when `dir` does not exist.  Shared core for `appendLyricFiles`,
+// `appendLyricFilesCollect`, and `appendLyricFilesExcluding` (#2750).
+func collectLyricFileTexts(
+  dir: in String,
+  skipBase: in List[String],
+  excludeList: in List[String],
+  skipJvmKernel: in Bool,
+  texts: in List[String],
+  paths: in List[String],
+): Unit {
   if not File.dirExists(dir) {
     return
   }
   val files = match File.listFiles(dir) { case Ok(fs) -> fs; case Err(_) -> newList() }
-  // Filter (`.l` + JVM-kernel skip) then sort by basename.  See
+  // Filter (`.l` + skip predicate) then sort by basename.  See
   // `sortPathsByBasename` below for the sort algorithm and rationale.
   val keep: List[String] = newList()
   var fi = 0
@@ -308,43 +320,9 @@ func appendLyricFiles(sources: in List[String], dir: in String, skipJvmKernel: i
     val f = files[fi]
     if Str.endsWith(f, ".l") {
       val base = Path.basename(f)
-      val skip = skipJvmKernel and Str.startsWith(base, "jvm")
-      if not skip {
-        keep.add(f)
-      }
-    }
-    fi = fi + 1
-  }
-  val sorted = sortPathsByBasename(keep)
-  var si = 0
-  while si < sorted.count {
-    match File.readText(sorted[si]) {
-      case Ok(text) -> sources.add(text)
-      case Err(_) -> ()
-    }
-    si = si + 1
-  }
-}
-
-// Like `appendLyricFiles` but also returns the list of basenames it
-// appended.  Used by the JVM loader (J6 M-10) to record which kernel
-// modules `_kernel_jvm/` provides, so the `.NET` kernel fallback can
-// skip the files those supersede.  `skipJvmKernel` matches
-// `appendLyricFiles`.
-func appendLyricFilesCollect(sources: in List[String], dir: in String, skipJvmKernel: in Bool): List[String] {
-  val basenames: List[String] = newList()
-  if not File.dirExists(dir) {
-    return basenames
-  }
-  val files = match File.listFiles(dir) { case Ok(fs) -> fs; case Err(_) -> newList() }
-  val keep: List[String] = newList()
-  var fi = 0
-  while fi < files.count {
-    val f = files[fi]
-    if Str.endsWith(f, ".l") {
-      val base = Path.basename(f)
-      val skip = skipJvmKernel and Str.startsWith(base, "jvm")
-      if not skip {
+      val skipJvm = skipJvmKernel and Str.startsWith(base, "jvm")
+      val skipExcl = listContainsStr(excludeList, base)
+      if not skipJvm and not skipExcl {
         keep.add(f)
       }
     }
@@ -355,12 +333,43 @@ func appendLyricFilesCollect(sources: in List[String], dir: in String, skipJvmKe
   while si < sorted.count {
     match File.readText(sorted[si]) {
       case Ok(text) -> {
-        sources.add(text)
-        basenames.add(Path.basename(sorted[si]))
+        texts.add(text)
+        paths.add(sorted[si])
       }
       case Err(_) -> ()
     }
     si = si + 1
+  }
+}
+
+func appendLyricFiles(sources: in List[String], dir: in String, skipJvmKernel: in Bool): Unit {
+  val texts: List[String] = newList()
+  val paths: List[String] = newList()
+  val noExclude: List[String] = newList()
+  collectLyricFileTexts(dir, noExclude, noExclude, skipJvmKernel, texts, paths)
+  var i = 0
+  while i < texts.count {
+    sources.add(texts[i])
+    i = i + 1
+  }
+}
+
+// Like `appendLyricFiles` but also returns the list of basenames it
+// appended.  Used by the JVM loader (J6 M-10) to record which kernel
+// modules `_kernel_jvm/` provides, so the `.NET` kernel fallback can
+// skip the files those supersede.  `skipJvmKernel` matches
+// `appendLyricFiles`.
+func appendLyricFilesCollect(sources: in List[String], dir: in String, skipJvmKernel: in Bool): List[String] {
+  val basenames: List[String] = newList()
+  val texts: List[String] = newList()
+  val paths: List[String] = newList()
+  val noExclude: List[String] = newList()
+  collectLyricFileTexts(dir, noExclude, noExclude, skipJvmKernel, texts, paths)
+  var i = 0
+  while i < texts.count {
+    sources.add(texts[i])
+    basenames.add(Path.basename(paths[i]))
+    i = i + 1
   }
   basenames
 }
@@ -370,30 +379,13 @@ func appendLyricFilesCollect(sources: in List[String], dir: in String, skipJvmKe
 // `_kernel/` host files that have no `_kernel_jvm/` counterpart, so the
 // JVM-specific hosts win and their `.NET` twins don't double-register.
 func appendLyricFilesExcluding(sources: in List[String], dir: in String, exclude: in List[String]): Unit {
-  if not File.dirExists(dir) {
-    return
-  }
-  val files = match File.listFiles(dir) { case Ok(fs) -> fs; case Err(_) -> newList() }
-  val keep: List[String] = newList()
-  var fi = 0
-  while fi < files.count {
-    val f = files[fi]
-    if Str.endsWith(f, ".l") {
-      val base = Path.basename(f)
-      if not listContainsStr(exclude, base) {
-        keep.add(f)
-      }
-    }
-    fi = fi + 1
-  }
-  val sorted = sortPathsByBasename(keep)
-  var si = 0
-  while si < sorted.count {
-    match File.readText(sorted[si]) {
-      case Ok(text) -> sources.add(text)
-      case Err(_) -> ()
-    }
-    si = si + 1
+  val texts: List[String] = newList()
+  val paths: List[String] = newList()
+  collectLyricFileTexts(dir, newList(), exclude, false, texts, paths)
+  var i = 0
+  while i < texts.count {
+    sources.add(texts[i])
+    i = i + 1
   }
 }
 
@@ -1029,18 +1021,11 @@ func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): List[Proj
   payloads
 }
 
-/// Compile `entrySource`'s transitive `Std.*` import closure into separate
-/// per-package `Lyric.Stdlib.<X>.dll` assemblies in `outDir`, in dependency
-/// order.  Returns the first failing package's diagnostics, or an empty
-/// success result once every package emits.  This is the linchpin of the
-/// self-hosted stdlib bundle (#2592 stage-2): it produces, via the self-hosted
-/// emitter, the per-package DLLs the toolchain links — including packages the
-/// F# stage-0 emitter cannot compile.
+// Locate the self-hosted compiler tree (`lyric-compiler/lyric`) the same way
+// `compilerClosureDllPaths` does: walk up from the binary base dir, then the
+// CWD.  Empty when not found (e.g. a deployed binary without the source tree),
+// in which case per-package emit covers stdlib only.
 func locateCompilerDir(): String {
-  // Locate the self-hosted compiler tree (`lyric-compiler/lyric`) the same way
-  // `compilerClosureDllPaths` does: walk up from the binary base dir, then the
-  // CWD.  Empty when not found (e.g. a deployed binary without the source tree),
-  // in which case per-package emit covers stdlib only.
   var d = walkUpForCompilerDir(Environment.appBaseDirectory())
   if d.length == 0 {
     d = walkUpForCompilerDir(Environment.currentDirectory())
@@ -1244,7 +1229,9 @@ pub func emitPerPackageClosure(entrySource: in String, outDir: in String, target
           val nd = cDeps[depIdx]
           var ndi = 0
           while ndi < nd.count {
-            if indexOfString(closure, nd[ndi]) < 0 {
+            // Guard both closure and queue to avoid redundant re-exploration when
+            // a package is reachable via multiple paths (#2768).
+            if indexOfString(closure, nd[ndi]) < 0 and indexOfString(queue, nd[ndi]) < 0 {
               queue.add(nd[ndi])
             }
             ndi = ndi + 1
