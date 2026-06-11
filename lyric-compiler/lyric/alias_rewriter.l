@@ -1043,7 +1043,13 @@ func rewritePropertyDecl(aliases: in List[String], d: in PropertyDecl): Property
 }
 
 func rewriteFixtureDecl(aliases: in List[String], d: in FixtureDecl): FixtureDecl {
-  FixtureDecl(name = d.name, ty = rewriteOptType(aliases, d.ty), init = rewriteExpr(aliases, d.init), span = d.span)
+  FixtureDecl(
+    name = d.name,
+    nameSpan = d.nameSpan,
+    ty = rewriteOptType(aliases, d.ty),
+    init = rewriteExpr(aliases, d.init),
+    span = d.span
+  )
 }
 
 // IConfig / IAspect ──────────────────────────────────────────────────────────────

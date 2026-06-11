@@ -81,39 +81,7 @@ func mkProjectPkg(name: in String, source: in String): Emitter.ProjectPackage {
   Emitter.ProjectPackage(name = name, sources = srcs)
 }
 
-func runEmitProject(
-  label: in String, projectPkgs: in List[Emitter.ProjectPackage], assemblyName: in String
-): Capture.CaptureResult {
-  val dir = freshTempDir(label)
-  val dllPath = Path.join(dir, assemblyName + ".dll")
-  val req = Emitter.EmitProjectRequest(
-    packages = projectPkgs,
-    assemblyName = assemblyName,
-    outputPath = dllPath,
-    target = Emitter.Dotnet,
-    restoredDllPaths = newList(),
-    activeFeatures = newList(),
-    declaredFeatures = newList(),
-    packageVersion = ""
-  )
-  val result = Emitter.emitProject(req)
-  match result.outputPath {
-    case None -> {
-      cleanup(dir)
-      panic(label + ": emitProject produced no output (diagnostics on stderr)")
-    }
-    case Some(_) -> ()
-  }
-  writeRuntimeConfig(dllPath)
-  val args: List[String] = newList()
-  args.add("exec")
-  args.add(dllPath)
-  val captured = Capture.runCaptureWithDiagnostics("dotnet", args, "")
-  cleanup(dir)
-  captured
-}
-
-func runEmitProjectWithFeatures(
+func runEmitProjectOpts(
   label: in String,
   projectPkgs: in List[Emitter.ProjectPackage],
   assemblyName: in String,
@@ -147,6 +115,22 @@ func runEmitProjectWithFeatures(
   val captured = Capture.runCaptureWithDiagnostics("dotnet", args, "")
   cleanup(dir)
   captured
+}
+
+func runEmitProject(
+  label: in String, projectPkgs: in List[Emitter.ProjectPackage], assemblyName: in String
+): Capture.CaptureResult {
+  runEmitProjectOpts(label, projectPkgs, assemblyName, newList(), newList())
+}
+
+func runEmitProjectWithFeatures(
+  label: in String,
+  projectPkgs: in List[Emitter.ProjectPackage],
+  assemblyName: in String,
+  features: in List[String],
+  declared: in List[String],
+): Capture.CaptureResult {
+  runEmitProjectOpts(label, projectPkgs, assemblyName, features, declared)
 }
 
 // ─── In-process routing: basic cases ─────────────────────────────────────────

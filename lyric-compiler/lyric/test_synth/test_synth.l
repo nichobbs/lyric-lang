@@ -283,19 +283,22 @@ pub func synthesize(source: in String, filter: in Option[String]): Outcome {
         skipped.add(SkipSlot(title = p.title, reason = "property: not implemented in v1"))
       }
       case IFixture(f) -> {
-        // Preserve any annotations before the `fixture` keyword, then
-        // rewrite "fixture " (8 chars) to "val " so the initialiser
-        // becomes a module-level val in scope for all test functions.
+        // Preserve any annotations before the `fixture` keyword, then replace
+        // "fixture <name>" with "val <name>" so the initialiser becomes a
+        // module-level val in scope for all test functions.  Use the AST
+        // nameSpan to locate the name start rather than a magic byte offset,
+        // so the rewrite is correct regardless of the whitespace between
+        // `fixture` and the name.
         val fixStart = f.span.startPos.offset
         val annLen = fixStart - s
         if annLen > 0 {
           sb = sb + source.substring(s, annLen)
         }
         sb = sb + "val "
-        val afterKw = fixStart + 8
+        val nameStart = f.nameSpan.startPos.offset
         val fixEnd = f.span.endPos.offset
-        if fixEnd > afterKw {
-          sb = sb + source.substring(afterKw, fixEnd - afterKw)
+        if fixEnd > nameStart {
+          sb = sb + source.substring(nameStart, fixEnd - nameStart)
         }
       }
       case _ -> {

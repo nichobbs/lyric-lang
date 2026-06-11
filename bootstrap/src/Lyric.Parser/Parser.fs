@@ -4314,7 +4314,7 @@ and private parseFixtureBody
         (diags:  ResizeArray<Diagnostic>)
         : FixtureDecl =
     let startTok = Cursor.advance cursor   // 'fixture'
-    let name, _ = readIdent cursor diags "fixture"
+    let name, nameSpan = readIdent cursor diags "fixture"
     let ty =
         match Cursor.tryEatPunct Colon cursor with
         | Some _ -> Some (parseTypeExpr cursor diags)
@@ -4326,6 +4326,7 @@ and private parseFixtureBody
             (Cursor.peekSpan cursor)
     let init = parseExpr cursor diags
     { Name = name
+      NameSpan = nameSpan
       Type = ty
       Init = init
       Span = joinSpans startTok.Span init.Span }

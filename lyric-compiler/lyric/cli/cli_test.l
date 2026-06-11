@@ -361,6 +361,32 @@ func cmdTest(argv: in slice[String]): Int {
 // `Lyric.CfgGate` (#1123, #1124) so they're independently testable and
 // the duplicate-`package`-declaration bug for multi-file directory
 // packages is fixed at the assembly level.
+// Resolve the output DLL path and package name for a local-path dependency
+// from its lyric.toml path and target file extension.  Both the pre-build
+// topo loop and the post-build resolve loop share this derivation.
+record DepDllInfo {
+  dllPath: String
+  pkgName: String
+}
+
+func resolveDepDllPath(tomlPath: in String, ext: in String): Result[DepDllInfo, String] {
+  val mfText = match File.readText(tomlPath) {
+    case Ok(t) -> t
+    case Err(e) -> return Err(error = "cannot read manifest at '" + tomlPath + "': " + IOError.message(e))
+  }
+  val mf = match Mf.parseManifest(mfText, tomlPath) {
+    case Ok(m) -> m
+    case Err(e) -> return Err(error = "malformed lyric.toml at '" + tomlPath + "': " + ManifestError.message(e))
+  }
+  val pkgName = mf.packageSection.name
+  val dllName = match mf.project {
+    case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ext }
+    case None -> pkgName + ext
+  }
+  val binDir = Path.join(Path.dirname(tomlPath), "bin")
+  Ok(value = DepDllInfo(dllPath = Path.join(binDir, dllName), pkgName = pkgName))
+}
+
 func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm: in Bool, failFast: in Bool): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
@@ -457,6 +483,7 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
         anyFailed = true
       }
       if failFast and anyFailed {
+        Console.println("== test: stopped early (--fail-fast)")
         return 1
       }
     }
@@ -647,10 +674,20 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
               childIdx -= 1
             }
           }
-          case Err(_) -> ()
+          case Err(e) -> {
+            Console.println(
+              "test: warning: cannot parse manifest at '" + dfsToml + "': " + ManifestError.message(e) +
+                "; transitive deps may be missing from build order"
+            )
+          }
         }
       }
-      case Err(_) -> ()
+      case Err(e) -> {
+        Console.println(
+          "test: warning: cannot read manifest at '" + dfsToml + "': " + IOError.message(e) +
+            "; transitive deps may be missing from build order"
+        )
+      }
     }
   }
 
@@ -658,32 +695,19 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
   var topoIdx = 0
   while topoIdx < topoOrder.count {
     val buildToml = topoOrder[topoIdx]
-    match File.readText(buildToml) {
-      case Ok(buildText) -> {
-        match Mf.parseManifest(buildText, buildToml) {
-          case Ok(buildMf) -> {
-            val buildDllName = match buildMf.project {
-              case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + testExt }
-              case None -> buildMf.packageSection.name + testExt
-            }
-            val buildDllPath = Path.join(Path.join(Path.dirname(buildToml), "bin"), buildDllName)
-            if not File.fileExists(buildDllPath) {
-              Console.println("test: building dep '" + buildMf.packageSection.name + "' ...")
-              val buildRc = buildProject(buildToml, None, testTarget, newList(), false, false, false)
-              if buildRc != 0 {
-                printErr("test: failed to build dep '" + buildMf.packageSection.name + "'")
-                return 1
-              }
-            }
-          }
-          case Err(e) -> {
-            printErr("test: malformed lyric.toml at '" + buildToml + "': " + ManifestError.message(e))
+    match resolveDepDllPath(buildToml, testExt) {
+      case Ok(info) -> {
+        if not File.fileExists(info.dllPath) {
+          Console.println("test: building dep '" + info.pkgName + "' ...")
+          val buildRc = buildProject(buildToml, None, testTarget, newList(), false, false, false)
+          if buildRc != 0 {
+            printErr("test: failed to build dep '" + info.pkgName + "'")
             return 1
           }
         }
       }
       case Err(e) -> {
-        printErr("test: cannot read dep manifest at '" + buildToml + "': " + IOError.message(e))
+        printErr("test: " + e)
         return 1
       }
     }
@@ -704,43 +728,31 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
       case Path(dir) -> {
         val depDir = if Path.isAbsolute(dir) { dir } else { Path.join(mfDir, dir) }
         val depToml = Path.join(depDir, "lyric.toml")
-        val depBinDir = Path.join(depDir, "bin")
         if File.fileExists(depToml) {
-          match File.readText(depToml) {
-            case Ok(depMfText) -> {
-              match Mf.parseManifest(depMfText, depToml) {
-                case Ok(depMf) -> {
-                  val dllName = match depMf.project {
-                    case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + testExt }
-                    case None -> depMf.packageSection.name + testExt
+          match resolveDepDllPath(depToml, testExt) {
+            case Ok(info) -> {
+              val depBinDir = Path.dirname(info.dllPath)
+              if File.fileExists(info.dllPath) {
+                restoredDlls.add(dep.name + "\t" + info.dllPath)
+                // Collect unique dep bin directories for runtime probing.
+                var alreadyHave = false
+                var ddi = 0
+                while ddi < depBinDirs.count {
+                  if depBinDirs[ddi] == depBinDir {
+                    alreadyHave = true
                   }
-                  val dllPath = Path.join(depBinDir, dllName)
-                  if File.fileExists(dllPath) {
-                    restoredDlls.add(dep.name + "\t" + dllPath)
-                    // Collect unique dep bin directories for runtime probing.
-                    var alreadyHave = false
-                    var ddi = 0
-                    while ddi < depBinDirs.count {
-                      if depBinDirs[ddi] == depBinDir {
-                        alreadyHave = true
-                      }
-                      ddi += 1
-                    }
-                    if not alreadyHave {
-                      depBinDirs.add(depBinDir)
-                    }
-                  } else {
-                    printErr("test: local dep '" + dep.name + "' could not be built")
-                    return 1
-                  }
+                  ddi += 1
                 }
-                case Err(e) -> {
-                  printErr("test: local dep '" + dep.name + "': malformed lyric.toml: " + ManifestError.message(e))
+                if not alreadyHave {
+                  depBinDirs.add(depBinDir)
                 }
+              } else {
+                printErr("test: local dep '" + dep.name + "' could not be built")
+                return 1
               }
             }
             case Err(e) -> {
-              printErr("test: local dep '" + dep.name + "': cannot read " + depToml + ": " + IOError.message(e))
+              printErr("test: local dep '" + dep.name + "': " + e)
             }
           }
         } else {
