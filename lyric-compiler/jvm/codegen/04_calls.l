@@ -1674,9 +1674,9 @@ func lowerMethodCall(
       // @derive(Equals/Hash/Show/Ord) appends free functions TypeName.method(self, args...)
       // registered in funcSigs as `cls + "." + memberName` (matching the qkey in
       // collectFileSigs: owner + "/" + decl.name).  The receiver is already on the stack
-      // as arg 0 (self); the remaining args correspond to sig.params[1..].  The JVM
-      // method name stored in the classfile is the decl.name, which equals the key with
-      // the owner prefix stripped: (cls + "." + memberName).replace(sig.owner + "/", "").
+      // as arg 0 (self); the remaining args correspond to sig.params[1..].
+      // The JVM classfile method name is decl.name with dots replaced by underscores
+      // (JVMS §4.2.2 forbids dots in unqualified names), matching what lowerFunc emits.
       match mapGet(ctx.funcSigs, cls + "." + memberName) {
         case Some(sig) -> {
           var ai = 0
@@ -1687,7 +1687,8 @@ func lowerMethodCall(
             }
             ai = ai + 1
           }
-          val jvmMethodName = (cls + "." + memberName).replace(sig.owner + "/", "")
+          val lyricFnName = (cls + "." + memberName).replace(sig.owner + "/", "")
+          val jvmMethodName = lyricFnName.replace(".", "_")
           insns.add(LInvokestatic(owner = sig.owner, name = jvmMethodName, params = sig.params, ret = sig.ret))
           return sig.ret
         }

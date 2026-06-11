@@ -20,12 +20,16 @@
 //!   — `addPackageTokens` IProtected arm now registers PMEntry/PMFunc in methodTokens.
 //!   — `lowerMethodCallMsil` MClass arm now falls back to funcTokens on miss.
 //!
-//! The JVM counterpart fix is in `lyric-compiler/jvm/codegen/04_calls.l`:
+//! The JVM counterpart fixes are in `lyric-compiler/jvm/codegen/04_calls.l` and
+//! `lyric-compiler/jvm/codegen/06_items.l`:
 //!   — `lowerMethodCall` JRef arm now tries the free-function key `cls + "." + memberName`
 //!     after the instance-method `cls + "#" + memberName` lookup misses.
+//!   — `lowerFunc` now emits method names with `.` replaced by `_` (JVMS §4.2.2
+//!     forbids `.` in unqualified names); the call site applies the same sanitisation.
 //!
-//! Compile and run via native `lyric test`:
+//! Compile and run via native `lyric test` (both targets):
 //!   lyric test lyric-compiler/lyric/synthesized_method_self_test.l
+//!   lyric test --target jvm lyric-compiler/lyric/synthesized_method_self_test.l
 //!
 //! No LYRIC_LOAD_COMPILER=1 needed — imports only Std.*.
 @test_module
@@ -40,14 +44,11 @@ import Std.Testing
 // A minimal counter wrapped in a protected type.  The `bump` entry is emitted
 // with Monitor.Enter/Exit locking by `lowerProtectedMsil`.  Before the fix,
 // calling `c.bump()` threw at runtime with "unsupported method 'bump'".
-
 protected type Counter {
   var count: Int = 0
-
   entry bump(): Unit {
     count = count + 1
   }
-
   entry get(): Int {
     count
   }
@@ -71,14 +72,11 @@ test "protected entry: multiple bumps accumulate" {
 // §2. Protected-type helper func dispatch
 // ─────────────────────────────────────────────────────────────────────────────
 // A PMFunc (non-entry helper) registered alongside an entry.
-
 protected type Accumulator {
   var total: Int = 0
-
   entry add(n: in Int): Unit {
     total = total + n
   }
-
   func value(): Int {
     total
   }
@@ -97,9 +95,11 @@ test "protected func: value() dispatches" {
 // `p.equals(q)` calls the synthesized free function `Point.equals(self, other)`
 // registered in funcTokens.  Before the fix it fell through to the "unsupported
 // method" stub.
-
 @derive(Equals)
-record Point { x: Int; y: Int }
+record Point {
+  x: Int
+  y: Int
+}
 
 test "derive Equals: equals() same values" {
   val p = Point(x = 1, y = 2)
@@ -116,9 +116,12 @@ test "derive Equals: equals() different values" {
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. @derive(Show) — explicit .show() call (#1507)
 // ─────────────────────────────────────────────────────────────────────────────
-
 @derive(Show)
-record Color { r: Int; g: Int; b: Int }
+record Color {
+  r: Int
+  g: Int
+  b: Int
+}
 
 test "derive Show: show() returns non-empty string" {
   val c = Color(r = 255, g = 128, b = 0)
@@ -129,7 +132,6 @@ test "derive Show: show() returns non-empty string" {
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. @derive(Equals) consistency: == agrees with .equals() (#1507)
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "derive Equals: == agrees with .equals()" {
   val p = Point(x = 7, y = 9)
   val q = Point(x = 7, y = 9)

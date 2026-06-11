@@ -14553,7 +14553,7 @@ func lowerProtectedMsil(
         }
         // Desugar bare field references in the body to EMember(ESelf, fieldName)
         // so lowerExprMsil/lowerStmtMsil can emit ldarg.0 + ldfld/stfld.
-        val desugarredEntryBody = desugarProtectedFuncBody(fieldNames, ed.body)
+        val desugaredEntryBody = desugarProtectedFuncBody(fieldNames, ed.body)
         val entryInsns: List[MInsn] = newList()
 
         // Monitor.Enter(this): acquire the per-instance lock.
@@ -14573,7 +14573,7 @@ func lowerProtectedMsil(
 
         // Shared helper: emit the try/finally EH structure and afterL epilogue.
         // Inlined per arm since each arm builds its own finallyStart/End labels.
-        match desugarredEntryBody {
+        match desugaredEntryBody {
           case FBBlock(block) -> {
             if retTy != MVoid {
               // Non-void block body.  Lower the block; if it fell through normally
@@ -14689,8 +14689,8 @@ func lowerProtectedMsil(
         // Desugar bare field references in the func body then lower as an
         // instance method (lowerImplMethodMsil sets paramCount = 1 + params,
         // reserves slot 0 for `this`, and handles ESelf/EMember correctly).
-        val desugarredFn = desugarProtectedFuncDecl(fieldNames, fn)
-        val mf = lowerImplMethodMsil(cctx, desugarredFn, pkgName, typeFqn)
+        val desugaredFn = desugarProtectedFuncDecl(fieldNames, fn)
+        val mf = lowerImplMethodMsil(cctx, desugaredFn, pkgName, typeFqn)
         recMethods.add(
           MFunc(
             flags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG,

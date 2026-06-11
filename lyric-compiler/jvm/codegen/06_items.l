@@ -374,8 +374,9 @@ pub func lowerFunc(
 
   LFunc(
     flags = 0x0009,
-    // public static
-    name = decl.name,
+    // public static; dots forbidden in JVM unqualified names (JVMS §4.2.2), so
+    // synthesised derive names like "Point.equals" are sanitised to "Point_equals".
+    name = decl.name.replace(".", "_"),
     params = paramTypes,
     ret = retTy,
     insns = insns,
