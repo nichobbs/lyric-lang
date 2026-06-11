@@ -24120,12 +24120,22 @@ the F# writer:
   subdirectory, deliberately leaving the F#-emitted DLLs beside the AOT
   binary untouched as the toolchain's own runtime.
 - `Emitter.compilerClosureDllPaths` prefers the staged self-hosted set when
-  (a) the test's compiler closure exports module-level `pub val`s (the exact
-  condition under which the F#-emitted metadata cannot serve it; detected
-  from the payload sources by `closureExportsModuleVals`) and (b) the
+  (a) the test SOURCE references a module-level `pub val` name exported by
+  its compiler closure (the exact condition under which the F#-emitted
+  metadata cannot serve it; `closureModuleValNames` +
+  `sourceReferencesAnyName` over the payload sources) and (b) the
   `selfhosted/` dir covers the WHOLE closure, so a single test never links a
-  mix of the two emitters' outputs.  Closures without module vals keep the
-  F#-built DLLs — no behaviour change for the existing native self-tests.
+  mix of the two emitters' outputs.  The gate is the test's own references —
+  not merely "the closure exports vals" — because constants used internally
+  by the precompiled DLLs need no metadata, and tests whose closure pulls in
+  val-exporting packages they never name (e.g.
+  `msil_project_bridge_self_test.l`, whose `Msil.Bridge` closure includes
+  `Msil.Opcodes`) must keep linking the F#-built DLLs: the full self-hosted
+  compiler stack is not yet execution-clean (docs/41 R7; running
+  `Msil.Bridge` from the self-hosted set currently throws
+  `TypeLoadException: The signature is incorrect`).  Tests that reference no
+  closure vals keep the F#-built DLLs — no behaviour change for the
+  existing native self-tests.
 - `make lyric` runs the staging step (opt out with
   `SKIP_SELFHOSTED_COMPILER=1`; re-stage alone with
   `make selfhosted-compiler`); the CI step stages before running the M2
