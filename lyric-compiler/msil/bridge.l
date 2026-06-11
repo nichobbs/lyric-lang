@@ -589,6 +589,14 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // Without this pre-pass the lookup falls back to pkgName + "." + seg,
   // producing the wrong FQN (e.g. Validation.ValidationTests.ValidationError)
   // and a "match not exhaustive" panic at run time (#2932).
+  //
+  // INVARIANT: first-registered-wins (#2941).  If two in-bundle packages
+  // declare a type with the same unqualified name the package iterated first
+  // owns the short-name mapping; the second package's type is still reachable
+  // via its FQN but not via short-name lookup.  This is intentional: Lyric
+  // source code that is ambiguous (two `Error` types in scope) should use
+  // fully-qualified names, and the monomorphizer already emits FQNs for
+  // specialised copies.  A diagnostic on collision is tracked in #2941.
   var prtpi = 0
   while prtpi < perPkgFiles.count {
     val prtFile = perPkgFiles[prtpi]
@@ -1139,6 +1147,7 @@ pub func collectStdlibPackages(stdlibSources: in List[String]): List[StdlibPkg] 
 // un-specialised and are emitted directly by codegen's extern path.  Missing
 // a legitimately-specialisable generic here is safe (the call just stays
 // un-specialised, the status quo); including a non-specialisable one is not.
+// Mirrors `collectInBundleGenericFuncs` / `collectRestoredGenericFuncs` — keep filter criteria in sync (#2940).
 pub func collectStdlibGenericFuncs(pkgs: in List[StdlibPkg]): List[FunctionDecl] {
   val genFuncs: List[FunctionDecl] = newList()
   var pi = 0

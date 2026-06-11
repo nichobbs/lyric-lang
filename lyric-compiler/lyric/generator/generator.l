@@ -765,7 +765,7 @@ pub func checkGeneratorDeclaredIn(
 // mismatches: the F# and self-hosted emitters encode Unit and bool differently
 // in generic instantiation signatures (Unit → ValueTuple vs Object; bool →
 // TypeRef(System.Boolean) vs ELEMENT_TYPE_BOOLEAN).  String is a reference
-// type with unambiguous encoding across both emitters.
+// type with unambiguous encoding across both emitters.  Tracked in #2557.
 pub func checkGeneratorKind(
   generatorArg: in String, depMfPath: in String, depMf: in Manifest.Manifest
 ): Result[String, String] {
@@ -873,7 +873,7 @@ func buildCaptureArgs(dllPath: in String): List[String] {
 /// custom @generate directives are present.  The Option[String] overload was
 /// retired to avoid a cross-assembly ABI mismatch between the F# and
 /// self-hosted emitters for nullary generic union cases (None ≡ null in F#
-/// vs newobj in self-hosted).
+/// vs newobj in self-hosted; tracked in #2557).
 pub func preprocess(source: in String, manifestPath: in String, sourceFilePath: in String): Result[String, String] {
   val pkgName = extractPackageName(source)
   val directives = scanDirectives(source, pkgName)

@@ -1075,15 +1075,23 @@ func isAllDigits(s: in String): Bool {
   true
 }
 
-// Natural-order "greater than": compare dot-separated components, numerically
-// when both are all-digits (so `10.0.10` > `10.0.9`, which a plain
-// lexicographic compare gets wrong), otherwise by code point.
-//
-// KNOWN LIMITATION (#1813): TFM monikers like `net10.0` / `net9.0` split into `net10`
-// / `net9`, which aren't all-digits, so the fallback lexicographic compare
-// gets them backwards (`net10` < `net9`).  Today this doesn't trigger because
-// `ref/` typically contains a single TFM subdir; if multiple TFMs ever
-// co-install, strip the leading non-digit prefix before comparing.
+// Strip a leading run of non-digit characters from `s` (e.g. "net10" → "10").
+// Used by `dirVersionGreater` so TFM monikers compare numerically (#1813).
+func stripLeadingAlpha(s: in String): String {
+  var i = 0
+  while i < s.length and not Ch.isDigit(s[i]) {
+    i = i + 1
+  }
+  if i == 0 {
+    s
+  } else {
+    Str.substring(s, i, s.length - i)
+  }
+}
+
+// Natural-order "greater than": compare dot-separated components numerically
+// after stripping any leading alpha prefix (so "net10" > "net9" — fixes #1813),
+// falling back to code-point order when neither stripped form is all-digits.
 func dirVersionGreater(a: in String, b: in String): Bool {
   val pa = Str.split(a, ".")
   val pb = Str.split(b, ".")
@@ -1092,8 +1100,10 @@ func dirVersionGreater(a: in String, b: in String): Bool {
     val x = pa[i]
     val y = pb[i]
     if x != y {
-      if isAllDigits(x) and isAllDigits(y) {
-        return Parse.parseInt(x) > Parse.parseInt(y)
+      val xs = stripLeadingAlpha(x)
+      val ys = stripLeadingAlpha(y)
+      if isAllDigits(xs) and isAllDigits(ys) {
+        return Parse.parseInt(xs) > Parse.parseInt(ys)
       } else {
         return x > y
       }

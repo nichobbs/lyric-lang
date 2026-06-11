@@ -896,6 +896,7 @@ pub union DictOp {
   case DoContainsKey // callvirt ContainsKey(!0) -> bool
   case DoRemove      // callvirt Remove(!0) -> bool
   case DoCastclass   // castclass Dictionary`2<k,v>
+  case DoTryGetValue // callvirt TryGetValue(!0, !1&) -> bool  (#2474)
 }
 
 // Operation tokens (0x0A000000 | MemberRef row) for a closed `List`1<elemTy>` /
@@ -925,6 +926,7 @@ pub record DictTokens {
   getCount: Int
   containsKey: Int
   remove: Int
+  tryGetValue: Int  // TryGetValue(!0, !1&) -> bool  (#2474)
 }
 
 // ── LoweringCtx — mutable accumulator for a single-assembly lowering ──────────
@@ -1556,8 +1558,8 @@ pub func buildGenericInstBlob(typeDefOrRef: in Int, argTypes: in List[MsilType])
 // Context-aware variant of bufMsilType.  For MClass types, looks up the
 // TypeDef row first (in-bundle) then the TypeRef row (cross-assembly) and
 // encodes as ELEMENT_TYPE_CLASS + compressed TypeDefOrRef coded index.
-// Falls back to ELEMENT_TYPE_OBJECT (0x1C) when no row is found so the
-// output is always valid (matches the context-free path).
+// Falls back to ELEMENT_TYPE_OBJECT (0x1C) when no row is found; a W0005 comment marks the fallback
+// for MConcreteList/MConcreteDict (per-package builds omit those TypeRefs legitimately) and MGenericInstByName (#2494).
 func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): Unit {
   match t {
     case MClass(name) -> {
@@ -1571,7 +1573,7 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
           bufU1(w, 0x12)  // ELEMENT_TYPE_CLASS
           writeCompressedInt(w, tdrTypeRef(refRow))
         } else {
-          bufU1(w, 0x1C)  // ELEMENT_TYPE_OBJECT (fallback)
+          bufU1(w, 0x1C)  // ELEMENT_TYPE_OBJECT (fallback; expected for unregistered type params)
         }
       }
     }
@@ -1626,9 +1628,7 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
     // `Dictionary`2<k,v>` instantiation as GENERICINST CLASS + TypeRef so a
     // self-hosted-compiled signature matches the F# emitter's byte-for-byte
     // and a returned `List<Foo>` binds against an F#-compiled consumer.  The
-    // open generic TypeRef is seeded for every assembly; fall back to object
-    // only if it is somehow missing (keeps the blob valid rather than emitting
-    // a dangling GENERICINST prefix).
+    // open generic TypeRef is seeded for every assembly; W0005 if missing (#2494).
     case MConcreteList(elem) -> {
       val trList1 = findTypeRefRowByName(ctx, "System.Collections.Generic.List`1")
       if trList1 > 0 {
@@ -1638,6 +1638,7 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
         bufU1(w, 1)
         bufMsilTypeWithCtx(w, genericArgType(elem), ctx)
       } else {
+        // W0005: List`1 TypeRef absent — seeding bug; per-package builds legitimately omit it (#2494).
         bufU1(w, 0x1C)
       }
     }
@@ -1651,14 +1652,14 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
         bufMsilTypeWithCtx(w, genericArgType(keyT), ctx)
         bufMsilTypeWithCtx(w, genericArgType(valT), ctx)
       } else {
+        // W0005: Dictionary`2 TypeRef absent — seeding bug; per-package builds legitimately omit it (#2494).
         bufU1(w, 0x1C)
       }
     }
     // In-bundle generic instantiation (#2362).  Resolve the head's TypeDef row
     // first (in-bundle generic record/union), then a TypeRef fallback (the head
     // came from another assembly after all), and encode the closed GENERICINST.
-    // Degrade to ELEMENT_TYPE_OBJECT only if neither resolves, keeping the blob
-    // valid rather than emitting a dangling GENERICINST prefix.
+    // W0005 if neither resolves — missing TypeRef seeding bug (#2494).
     case MGenericInstByName(headFqn, typeArgs) -> {
       val defRow = resolveSigTypeDefRow(ctx, headFqn)
       val coded = if defRow > 0 {
@@ -1682,6 +1683,10 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
           gi = gi + 1
         }
       } else {
+        println(
+          "W0005: bufMsilTypeWithCtx: TypeRef/TypeDef not found for MGenericInstByName '" + headFqn +
+            "' — signature degraded to System.Object (#2494)"
+        )
         bufU1(w, 0x1C)
       }
     }
@@ -1850,6 +1855,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
         case DoContainsKey -> emitCallvirt(mb, dt.containsKey)
         case DoRemove -> emitCallvirt(mb, dt.remove)
         case DoCastclass -> emitCastclass(mb, dt.typeSpec)
+        case DoTryGetValue -> emitCallvirt(mb, dt.tryGetValue)
       }
     }
     case MCastclassByName(name) -> {
@@ -2367,17 +2373,9 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
   val bh = ctx.blobs
   val t = ctx.tables
 
-  // TypeDef typeName must be the SIMPLE (unqualified) type name, not the full
-  // namespace-qualified name.  r.className = "Pkg.Name" but the TypeDef must
-  // store "Name" in typeName and "Pkg" in typeNamespace so the CLR type loader
-  // can resolve the type by (namespace, simpleName) without a dot-split issue.
+  // TypeDef must store simple name (no namespace); CLR loader resolves by (namespace, simpleName).
   val simpleBaseRec = simpleNameFromFqn(r.namespace, r.className)
-  // A generic TypeDef's name carries the CLR arity suffix (`Box`1`), matching
-  // the .NET naming convention C# emits.  Without it, the runtime mis-lays-out
-  // multi-field value-type instantiations (e.g. `Pair<Int,Int>` silently drops
-  // the second field) — #2362.  By-name resolution (recordUserTypeDefRow /
-  // findTypeDefRowByName) uses this same suffixed name, and codegen carries the
-  // suffixed FQN in its generic by-name instructions, so lookups stay consistent.
+  // Generic TypeDef name carries arity suffix (Box`1) — without it multi-field value-type layouts break silently (#2362; D-progress-471).
   val simpleNameRec = if r.generics.count > 0 {
     simpleBaseRec + "`" + toString(r.generics.count)
   } else {
@@ -2389,18 +2387,7 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
   val firstField = t.fields.count + 1
   val firstMethod = t.methodDefs.count + 1
 
-  // TypeDef row must be registered BEFORE fields and method bodies are emitted so
-  // that deferred `MLdfldByName`/`MStfldByName` instructions inside `lowerMFunc`
-  // can resolve the field tokens via `findTypeDefRowByName` + `findFieldDefRowOfType`.
-  // For async SM classes, `MoveNext` uses `MLdfldByName` to load the SM's own fields
-  // (e.g., `__p0`, `__state`) — without the TypeDef being in the table beforehand,
-  // `findTypeDefRowByName` returns 0 and the `ldfld` is silently dropped, producing
-  // an `UnrecognizedLocalNumber` or `StackUnexpected` IL verification error.
-  // The TypeDef row values are identical to the previous order; only the insertion
-  // point moves earlier.  ECMA-335 §II.22.37 only requires `fieldList` values to
-  // be non-decreasing across adjacent TypeDef rows — the TypeDef being written here
-  // before its fields are added is fine because `firstField` is captured before any
-  // add operations and all subsequent fields for this type are added next.
+  // TypeDef row registered before fields so MLdfldByName in MoveNext can resolve tokens; ECMA-335 §II.22.37 only requires fieldList to be non-decreasing (#2827; D-progress-471).
   val recBaseRow = if r.baseClass.length > 0 and r.baseClass != "System.Object" {
     findTypeDefRowByName(ctx, r.baseClass)
   } else {
@@ -3864,6 +3851,18 @@ pub func dictTokensForLowering(ctx: in LoweringCtx, keyTy: in MsilType, valTy: i
   rmP.add(MTypeVar(0))
   val rmTok = 0x0A000000 +
     ctxAddMemberRefForTypeSpec(ctx, tsRow, "Remove", "dict_rm_" + key, buildInstanceMethodSig(rmP, MBool))
+  // TryGetValue(!0, !1&) -> bool: out-param is ByRef so one hash lookup atomically returns presence + value (#2474).
+  val tgvP: List[MsilType] = newList()
+  tgvP.add(MTypeVar(0))
+  tgvP.add(MByRef(inner = MTypeVar(1)))
+  val tgvTok = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      ctx,
+      tsRow,
+      "TryGetValue",
+      "dict_tgv_" + key,
+      buildInstanceMethodSig(tgvP, MBool)
+    )
   val t = DictTokens(
     typeSpec = 0x1B000000 + tsRow,
     ctor = ctorTok,
@@ -3872,7 +3871,8 @@ pub func dictTokensForLowering(ctx: in LoweringCtx, keyTy: in MsilType, valTy: i
     setItem = setTok,
     getCount = cntTok,
     containsKey = ckTok,
-    remove = rmTok
+    remove = rmTok,
+    tryGetValue = tgvTok
   )
   ctx.dictTokenCache.add(key, t)
   t
