@@ -237,6 +237,8 @@ All fields must be named at construction. Positional construction is rejected by
 
 Constructor calls must use an unqualified type name — `Point(x = 1.0, y = 2.0)`, not `Pkg.Point(x = 1.0, y = 2.0)`. A qualified path is not recognised as a constructor call; use `import` to bring the type name into scope.
 
+Every type reference in a declaration position is validated when the package is checked: record and exposed-record fields, union case fields, interface member signatures, opaque and protected type fields, member function signatures, `alias` targets, and module-level `val`/`const` annotations. A name that resolves to no type in scope is a compile error at the declaration (**T0010** for an unknown simple name, **T0014** for an unknown qualified path, **T0013** when the name resolves to a non-type) — it never degrades silently to a host `Object`.
+
 **Mutable record fields (`var`):** A field may be prefixed with `var` to signal that it is intended to be mutated by the record's owning code:
 
 ```
@@ -779,6 +781,8 @@ val doubled = numbers.map { x -> x * 2 }
 ```
 
 Closures capture values by reference for `var` bindings, by value for `val` bindings (this matters across thread boundaries; capturing `var` across an `async` boundary requires explicit `mut` synchronization — see `docs/09-msil-emission.md` §11.5).
+
+A lambda whose body diverges (every path panics, throws, or returns out of the enclosing function) types as `() -> Never`. Because `Never` is the bottom type, such a function value satisfies a function-typed parameter with **any** declared return type, provided the parameter lists match — `assertPanics("boom", { -> panic("x") })` passes a `() -> Never` lambda where `() -> Unit` is expected. The parameter types themselves are matched invariantly (the call ABI must agree).
 
 ## 6. Contracts
 

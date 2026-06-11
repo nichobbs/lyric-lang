@@ -1764,7 +1764,85 @@ test "long in int ctor field rejected" {
 test "slice literal in list ctor field ok" {
   val src = "package P\nimport Std.Collections\nrecord R { items: List[Int] }\nfunc f(): R { R(items = [1, 2, 3]) }\n"
   val cr = parseCheck(src)
-  assertEqualInt(diagCount(cr), 0, "slice[Int] satisfies List[Int] in ctor field")
+  // The bare `check()` harness registers no stdlib items, so the field's
+  // `List` reference itself is unknown here (T0010 via #1228 declaration
+  // validation); the assertion targets the ctor-argument check only.
+  assertTrue(not hasDiagCode(cr, "T0104"), "slice[Int] satisfies List[Int] in ctor field")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #1228: declaration-position type references are validated (no silent
+// degradation to Object for unknown type names in declarations).
+// ─────────────────────────────────────────────────────────────────────────────
+test "record field unknown type emits T0010" {
+  val src = "package P\nrecord H { a: Nonexistent }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0010"), "record field unknown type: T0010")
+}
+
+test "union case field unknown type emits T0010" {
+  val src = "package P\nunion U { case A(payload: Nonexistent) case B }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0010"), "union case field unknown type: T0010")
+}
+
+test "interface method unknown return type emits T0010" {
+  val src = "package P\ninterface I { func get(): Nonexistent }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0010"), "interface return unknown type: T0010")
+}
+
+test "type alias unknown target emits T0010" {
+  val src = "package P\nalias A2 = Nonexistent\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0010"), "alias target unknown type: T0010")
+}
+
+test "module val unknown annotation emits T0010" {
+  val src = "package P\nval g: Nonexistent = 1\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0010"), "module val unknown annotation: T0010")
+}
+
+test "generic record field referencing its type param ok" {
+  val src = "package P\nrecord Box[T] { value: T }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "Box[T] field T resolves to the type param")
+}
+
+test "recursive record field referencing own type ok" {
+  val src = "package P\nrecord Node { name: String }\nrecord Tree { root: Node }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "sibling record reference resolves")
+}
+
+test "interface method Self return ok" {
+  val src = "package P\ninterface Cloneable { func clone(): Self }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "Self in interface return resolves")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `Never` (bottom) function subtyping: a lambda whose body diverges types as
+// `() -> Never` and must satisfy a `() -> Unit` (or any-return) function
+// parameter — the assertPanics shape from #1854's acceptance test.
+// ─────────────────────────────────────────────────────────────────────────────
+test "never-returning lambda satisfies unit-function param" {
+  val src = "package P\nfunc run(fn: in () -> Unit): Unit { fn() }\nfunc f(): Unit { run({ -> panic(\"x\") }) }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0043"), "() -> Never satisfies () -> Unit")
+}
+
+test "never-returning lambda satisfies int-function param" {
+  val src = "package P\nfunc pick(fn: in () -> Int): Int { fn() }\nfunc f(): Int { pick({ -> panic(\"x\") }) }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0043"), "() -> Never satisfies () -> Int")
+}
+
+test "param-count mismatch still rejected for never lambda" {
+  val src = "package P\nfunc run(fn: in (Int) -> Unit): Unit { fn(1) }\nfunc f(): Unit { run({ -> panic(\"x\") }) }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0043"), "arity mismatch keeps T0043")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
