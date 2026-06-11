@@ -1515,6 +1515,17 @@ func inferConstruction(
   argTypes: in List[Type],
   span: in Span,
 ): Type {
+  if ctorIsGeneric(sym) {
+    diag.add(
+      errorDiagnostic(
+        "T0110",
+        "generic constructor '" + sym.name +
+          "' requires explicit type arguments (type argument inference for constructors is not yet supported)",
+        span
+      )
+    )
+    return TyError
+  }
   val resultTy = ctorResultType(sym)
   // #1485: an opaque type's representation is hidden — it cannot be constructed
   // from outside its declaring package.
@@ -1658,24 +1669,15 @@ func unionCaseFieldTypes(
   result
 }
 
-// For each parent generic name, take the argument type at the field position
-// that is exactly `TyVar(name)` (single-level inference; nested generic
-// positions fall back to `TyError`).
+// For each parent generic name, infer the concrete type argument from the
+// supplied field/arg pairs.  Uses `findGenericInPair` (the deep recursive
+// matcher already used by `inferGenericArgsDeep`) so nested generic positions
+// such as `List[T]` or `(T, U)` are handled (#2179).
 func inferGenericArgs(genericNames: in List[String], fieldTypes: in List[Type], argTypes: in List[Type]): List[Type] {
   val result: List[Type] = newList()
   var g = 0
   while g < genericNames.count {
-    var found: Type = TyError
-    var i = 0
-    while i < fieldTypes.count and i < argTypes.count {
-      match fieldTypes[i] {
-        case TyVar(nm) -> if nm == genericNames[g] { found = argTypes[i] }
-        case _ -> {
-        }
-      }
-      i = i + 1
-    }
-    result.add(found)
+    result.add(inferOneGenericArg(genericNames[g], fieldTypes, argTypes))
     g = g + 1
   }
   result
@@ -1897,6 +1899,16 @@ func checkBoundsSatisfied(
               match symTableTryFindOne(tbl, cname) {
                 case Some(ifaceSym) -> match ifaceSym.kind { case DKInterface(ifaceId, _) -> match typeIdOfType(concreteTy) { case Some(concreteId) -> { satisfied = symTableTypeImplements(tbl, concreteId, ifaceId) }; case None -> { satisfied = true } }; case _ -> { satisfied = true } }
                 case None -> {
+                  // Unknown constraint names are treated as satisfied to preserve
+                  // cross-package leniency, but emit T0111 so typos are visible.
+                  diag.add(
+                    warningDiagnostic(
+                      "T0111",
+                      "unknown constraint '" + cname + "' in where-clause for type parameter '" + bound.name +
+                        "' — treating as satisfied (cross-package interface or typo?)",
+                      span
+                    )
+                  )
                   satisfied = true
                 }
               }
@@ -2142,18 +2154,22 @@ pub func inferExpr(
       // Numeric / character conversion-method intrinsics (#1901): `x.toInt()`,
       // `b.toLong()`, etc.  Recognised only on a numeric/char receiver so a
       // user-defined method of the same name on some other type still falls
-      // through to the general (lenient) dispatch.  A non-numeric receiver
-      // yields `TyError`, exactly what the general path would produce — so the
-      // receiver is inferred once, with no duplicate diagnostics.
+      // through to the general (lenient) dispatch.  The receiver is inferred
+      // once here and reused below to avoid emitting diagnostics twice when a
+      // user-type receiver falls through to the general EMember path (#2700).
+      var cachedRecvType: Option[Type] = None
       match fn.kind {
-        case EMember(recvE, mname) -> match numericConvTarget(mname) { case Some(target) -> if args.count == 0 { val rt = inferExpr(sc, tbl, sigs, diag, recvE); if isNumericOrCharType(rt) { return TyPrim(pt = target) }; if isNonConvertiblePrimitive(rt) { diag.add(errorDiagnostic("T0103", "conversion method '" + mname + "' is not applicable to " + renderType(rt), recvE.span)); return TyError }; match rt { case TyError -> return TyError; case _ -> {  } } }; case None -> {  } }
-        // Non-numeric, non-primitive receiver: fall through to general dispatch so
-        // a user-defined method named toInt/toLong/etc. on a user type is not
-        // silently shadowed by this intrinsic path once C2 method resolution lands.
+        case EMember(recvE, mname) -> match numericConvTarget(mname) { case Some(target) -> if args.count == 0 { val rt = inferExpr(sc, tbl, sigs, diag, recvE); if isNumericOrCharType(rt) { return TyPrim(pt = target) }; if isNonConvertiblePrimitive(rt) { diag.add(errorDiagnostic("T0103", "conversion method '" + mname + "' is not applicable to " + renderType(rt), recvE.span)); return TyError }; match rt { case TyError -> return TyError; case _ -> {  } }; cachedRecvType = Some(value = rt) }; case None -> {  } }
         case _ -> {
         }
       }
-      val fnT = inferExpr(sc, tbl, sigs, diag, fn)
+      // Use the cached receiver type (if the intrinsics check already inferred it)
+      // to avoid a second inference of the receiver expression, which would emit
+      // diagnostics again for any problematic sub-expressions.
+      val fnT = match cachedRecvType {
+        case Some(rt) -> match fn.kind { case EMember(_, mname2) -> inferMember(tbl, diag, rt, mname2, fn.span); case _ -> inferExpr(sc, tbl, sigs, diag, fn) }
+        case None -> inferExpr(sc, tbl, sigs, diag, fn)
+      }
       val argTypes: List[Type] = newList()
       var i = 0
       while i < args.count {
@@ -2183,13 +2199,7 @@ pub func inferExpr(
             } else {
               toString(minRequired) + "–" + toString(sig.params.count) + " argument(s)"
             }
-            diag.add(
-              errorDiagnostic(
-                "T0042",
-                "expected " + expectedMsg + ", got " + toString(args.count),
-                e.span
-              )
-            )
+            diag.add(errorDiagnostic("T0042", "expected " + expectedMsg + ", got " + toString(args.count), e.span))
           } else {
             // Only validate the args that were actually supplied; missing
             // trailing params with defaults are filled in by codegen.
@@ -2351,8 +2361,17 @@ pub func inferExpr(
         scopePush(sc)
         bindPatternTyped(sc, tbl, diag, arms[ai].pattern, st)
         match arms[ai].guard {
-          case Some(g) -> inferExpr(sc, tbl, sigs, diag, g)
-          case None -> TyError
+          case Some(g) -> {
+            val guardT = inferExpr(sc, tbl, sigs, diag, g)
+            match guardT {
+              case TyError -> {
+              }
+              case TyPrim(pt) -> match pt { case PtBool -> {  }; case PtNever -> {  }; case _ -> diag.add(errorDiagnostic("T0066", "match-arm guard must be Bool (got " + renderType(guardT) + ")", g.span)) }
+              case _ -> diag.add(errorDiagnostic("T0066", "match-arm guard must be Bool (got " + renderType(guardT) + ")", g.span))
+            }
+          }
+          case None -> {
+          }
         }
         val bt = inferExprOrBlock(sc, tbl, sigs, diag, arms[ai].body)
         val armSpan = match arms[ai].body { case EOBExpr(ae) -> ae.span; case EOBBlock(ab) -> ab.span }
@@ -2424,7 +2443,7 @@ pub func inferExpr(
     case EAssign(target, _, value) -> {
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
       val valueType = inferExpr(sc, tbl, sigs, diag, value)
-      if not typeEquiv(targetType, valueType) {
+      if not argSatisfiesParam(tbl, targetType, valueType) {
         diag.add(
           errorDiagnostic(
             "T0063",
