@@ -3122,8 +3122,7 @@ jobs:
           # stdout before the program output, so drop those lines explicitly
           # (the old `tail -1` was filtering them implicitly).
           s4_stderr="$work/s4.err"
-          out="$("$lyric_bin" run "$work/s4.l" 2>"$s4_stderr")"
-          if [ $? -ne 0 ]; then
+          if ! out="$("$lyric_bin" run "$work/s4.l" 2>"$s4_stderr")"; then
             echo "::error::lyric run failed for slice-4 test"
             cat "$s4_stderr" >&2
             exit 1

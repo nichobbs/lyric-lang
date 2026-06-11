@@ -622,10 +622,26 @@ func cmdAdd(argv: in slice[String]): Int {
     }
   }
 
+  // Build the git-form RHS outside of the match so the appends are readable.
+  var gitTomlRhs = ""
+  match gitArg {
+    case Some(url) -> {
+      gitTomlRhs = "{ git = \"" + url + "\""
+      if gitRefKind != "" {
+        gitTomlRhs = gitTomlRhs + ", " + gitRefKind + " = \"" + gitRef + "\""
+      }
+      if Str.length(gitSubdir) > 0 {
+        gitTomlRhs = gitTomlRhs + ", subdir = \"" + gitSubdir + "\""
+      }
+      gitTomlRhs = gitTomlRhs + " }"
+    }
+    case None -> ()
+  }
+
   // Render the TOML right-hand side for the chosen source form.
   val rhs = match pathArg {
     case Some(p) -> "{ path = \"" + p + "\" }"
-    case None -> match gitArg { case Some(url) -> { var gitRhs = "{ git = \"" + url + "\""; if gitRefKind != "" { gitRhs = gitRhs + ", " + gitRefKind + " = \"" + gitRef + "\"" }; if Str.length(gitSubdir) > 0 { gitRhs = gitRhs + ", subdir = \"" + gitSubdir + "\"" }; gitRhs + " }" }; case None -> "\"" + (if Str.length(version) > 0 { version } else { "*" }) + "\"" }
+    case None -> match gitArg { case Some(_) -> gitTomlRhs; case None -> "\"" + (if Str.length(version) > 0 { version } else { "*" }) + "\"" }
   }
 
   val table = if isNuget { "nuget" } else { "dependencies" }

@@ -2166,8 +2166,8 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                 val triRetArgs: List[MsilType] = newList()
                 triRetArgs.add(MClass(className = className))
                 triRetArgs.add(MString)
-                // typeRefCode uses stdCoreResultRow[0] (non-empty: guarded by stdCoreResultOk2Row.count > 0
-                // above which implies the Result row was also seeded in seedResultTypeRefs).
+                // typeRefCode uses stdCoreResultRow[0]: both stdCoreResultOk2Row and
+                // stdCoreResultRow are non-empty, checked independently by the enclosing guard.
                 cctx.methodRetTypes.add(
                   tryIntoKey,
                   MGenericInst(
@@ -6229,16 +6229,32 @@ func lowerMatchExprMsil(
         // regression reached codegen.
         // Compare canonical keys, not structure: MsilType has multiple
         // representations (by-name vs by-row generic instances) for the
-        // same type.  Erased-object arms (bare O, or O inside a generic
-        // instance) legitimately mix with concrete arms under erasure, so
-        // only a concrete-vs-concrete divergence is suspicious; warn loudly
-        // rather than abort the build (#1663).
+        // same type.  Erased-object arms legitimately mix with concrete
+        // arms under erasure, so only a concrete-vs-concrete divergence is
+        // suspicious; warn loudly rather than abort the build (#1663).
+        //
+        // Suppression heuristic: a key is treated as "erased" when it is
+        // exactly "O" (bare Object), contains "<O," (a generic instantiation
+        // whose first type argument is Object, e.g. Result<O,...>), or
+        // contains "[O]" (an array of Object).  These patterns cover the
+        // common erasure cases produced by the self-hosted emitter.
+        //
+        // Caveat: "<O," and "[O]" may also match concrete Object
+        // instantiations (e.g. a user type genuinely parameterised with
+        // Object).  The W0004 diagnostic is advisory — a missed warning for
+        // a legitimate erased arm is acceptable; a noisy warning for a
+        // correctly-typed arm is not.
         val k1w = msilTypeKey(firstFallTy)
         val k2w = msilTypeKey(armTys[av])
         val erased1w = k1w == "O" or contains(k1w, "<O,") or contains(k1w, "[O]")
         val erased2w = k2w == "O" or contains(k2w, "<O,") or contains(k2w, "[O]")
         if k1w != k2w and not erased1w and not erased2w {
-          println("warning[W0004]: Msil.Codegen: lowerMatchExprMsil fall-through arm type mismatch: first arm " + k1w + " vs later arm " + k2w + " — result uses the first arm's type (possible type-checker regression, #1663)")
+          println(
+            "warning[W0004]: Msil.Codegen: lowerMatchExprMsil fall-through arm type mismatch: first arm " + k1w +
+              " vs later arm " +
+              k2w +
+              " — result uses the first arm's type (possible type-checker regression, #1663)"
+          )
         }
       }
       if armTys[av] == MVoid {

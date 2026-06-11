@@ -214,15 +214,15 @@ pub func mapResultErr[T, E, F](r: in Result[T, E], f: in (E) -> F): Result[T, F]
 /// Only appropriate when the `Err` case is impossible by construction (e.g.
 /// parsing a compile-time constant string). For user input, use match or `?`.
 ///
-/// When `E` is `String`, the panic message includes the error payload so the
-/// caller has actionable information at the crash site.  For other `E` types
-/// the message remains generic because Lyric does not have a universal
-/// `toString` constraint on generic type parameters today (#2229).
+/// The panic message is generic regardless of `E` — Lyric has no universal
+/// `toString` constraint on generic type parameters (#2229).  When `E = String`
+/// and you want the error text in the panic message, use `unwrapResultStr`
+/// instead.
 @stable(since = "1.0")
 pub func unwrapResult[T, E](r: in Result[T, E]): T {
   match r {
     case Ok(v) -> v
-    case Err(e) -> panic("unwrapResult called on Err")
+    case Err(_) -> panic("unwrapResult called on Err")
   }
 }
 

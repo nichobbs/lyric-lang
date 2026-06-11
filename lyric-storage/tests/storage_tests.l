@@ -300,6 +300,23 @@ test "put rejects .meta.json-suffixed key" {
              "put must reject .meta.json key at the isSafeKey contract gate")
 }
 
+test "get rejects .meta.json-suffixed key" {
+  val bRes = freshBucket()
+  assertTrue(isOk(bRes), "fresh bucket must connect")
+  val bucket = unwrapResultOr(bRes, defaultBucket())
+  assertTrue(isErr(get(bucket, "archive.meta.json")),
+             "get must reject .meta.json key at the isSafeKey contract gate")
+}
+
+test "exists rejects .meta.json-suffixed key" {
+  val bRes = freshBucket()
+  assertTrue(isOk(bRes), "fresh bucket must connect")
+  val bucket = unwrapResultOr(bRes, defaultBucket())
+  // Use the method-call form to avoid the `exists` soft-keyword parse ambiguity.
+  assertTrue(isErr(bucket.exists("archive.meta.json")),
+             "exists must reject .meta.json key at the isSafeKey contract gate")
+}
+
 // Sentinel bucket used by `unwrapResultOr` fallbacks — never read
 // because every test gates on `isOk(bRes)` before calling the unwrap.
 // Concrete type is forced to `StorageBucket` via the interface, with a

@@ -299,6 +299,17 @@ func scanJsonString(json: in String, quotePos: in Int): Int {
 //   (b) the same form appears more than once (first != last occurrence).
 // Used by `validatePayload` to reject duplicate-aud tokens before audience
 // matching (#2714).
+//
+// Parsing-model assumption: this function — like the rest of the file — scans
+// the raw base64url-decoded payload string for the literal byte sequences
+// `"aud":"` and `"aud":[` rather than constructing a full JSON parse tree.
+// The assumption holds when claim *values* do not themselves embed those exact
+// byte patterns (e.g. a string claim whose decoded value contains the substring
+// `"aud":"`).  In the worst case a crafted claim value could trigger a false
+// positive (incorrectly reporting a duplicate and denying a valid token) — this
+// is an availability-only risk, not a security risk, because the function fails
+// closed on any ambiguity.  A full structural JSON parser would eliminate the
+// false-positive surface; tracked for a future hardening pass.
 func audHasDuplicates(json: in String): Bool {
   val pfxStr = "\"aud\":\""
   val pfxArr = "\"aud\":["
