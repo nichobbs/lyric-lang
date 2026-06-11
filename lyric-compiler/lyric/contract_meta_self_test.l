@@ -387,6 +387,14 @@ func testReadErrorPathsGraceful(): Unit {
     case Some(_) -> panic("read_error_paths: readFromFile(non-PE) should be None")
   }
   assertEqualInt(readAllContractsFromFile(notDll).count, 0, "read_error_paths: readAllContractsFromFile(non-PE) empty")
+
+  // Best-effort cleanup so the fixture does not linger in the test output
+  // directory (where the running test DLL lives) across runs.  A failed
+  // delete is non-fatal — the assertions above have already run.
+  match File.deleteFile(notDll) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
 }
 
 // Note: the `readAllContractsFromFile` step-2 path — per-package
