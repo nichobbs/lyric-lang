@@ -6227,13 +6227,14 @@ func lowerMatchExprMsil(
         // Internal-invariant check: the type checker should ensure all non-void
         // fall-through arms have the same type.  If this fires, a type-checker
         // regression reached codegen.
-        assert(
-          armTys[av] == firstFallTy,
-          "Msil.Codegen: lowerMatchExprMsil ICE — fall-through arm type mismatch: expected " + msilTypeKey(firstFallTy) +
-            " but got " +
-            msilTypeKey(armTys[av]) +
-            " (type-checker regression: heterogeneous match arm types reached codegen)"
-        )
+        // Compare canonical keys, not structure: MsilType has multiple
+        // representations (by-name vs by-row generic instances) for the
+        // same type.  A divergence here is usually a type-checker bug, but
+        // legitimate erased-vs-concrete arm mixes exist, so warn loudly
+        // rather than abort the build (#1663).
+        if msilTypeKey(armTys[av]) != msilTypeKey(firstFallTy) {
+          println("warning[W0004]: Msil.Codegen: lowerMatchExprMsil fall-through arm type mismatch: first arm " + msilTypeKey(firstFallTy) + " vs later arm " + msilTypeKey(armTys[av]) + " — result uses the first arm's type (possible type-checker regression, #1663)")
+        }
       }
       if armTys[av] == MVoid {
         anyVoid = true
