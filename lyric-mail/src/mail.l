@@ -88,15 +88,6 @@ pub record MailError {
 // ─── Sender interface ─────────────────────────────────────────────────────────
 /// An email sender.  Obtain one with `connectSmtp()`, `connectSes()`, or
 /// `connectSendGrid()`.  Close it with `sender.close()` when done.
-///
-/// **Provider-capability gaps.**  The SMTP backend (`NativeSender`)
-/// does not yet forward `EmailMessage.attachments` — the BCL
-/// `Attachment` extern type and the `ContentDisposition` wiring needed
-/// to compose MIME parts are still pending.  Callers passing a
-/// non-empty `attachments` slice through the SMTP backend will trip
-/// the `requires:` clause on `NativeSender.send` and panic at the
-/// contract boundary instead of silently dropping the data (#1118).
-/// Tracked end-to-end in #780.
 @stable(since = "0.1")
 pub interface MailSender {
   /// Send a single email message.
@@ -108,6 +99,28 @@ pub interface MailSender {
   func close(): Unit
 }
 
+// ─── No-op sender for testing guard-only call paths ──────────────────────────
+// Records the number of delegate calls without touching any transport.  The
+// `Mail.send` header-injection guard fires before `send` is ever reached, so
+// injection tests can use this without a live SMTP server.
+/// A no-op `MailSender` that records call counts and always returns `Ok`.
+/// Intended for unit tests that need to exercise the `Mail.send` guard path
+/// without an SMTP/SES/SendGrid connection.  Lives here rather than in
+/// lyric-testing because the MSIL lowering requires an interface's TypeDef
+/// to precede its implementors; not part of the stable API surface.
+pub record MailSenderStub {
+  var callCount: Int
+}
+
+impl MailSender for MailSenderStub {
+  func send(msg: in EmailMessage): Result[Unit, MailError] {
+    self.callCount = self.callCount + 1
+    return Ok(())
+  }
+  func close(): Unit {
+  }
+}
+
 // ─── Native sender wrapper (internal) ────────────────────────────────────────
 // The SmtpClient is held directly as an opaque extern type — no integer
 // handle registry needed (Gap 1: BCL reference type storage via extern type).
@@ -117,19 +130,30 @@ record NativeSender {
 
 impl MailSender for NativeSender {
   /// Build a `MailMessage` from `msg` and dispatch it through the
-  /// SMTP client.  Recipients (`to`, `cc`, `bcc`) and `replyTo` are
-  /// forwarded to the corresponding `MailAddressCollection`s.
-  ///
-  /// `attachments` are currently **not** forwarded — they require a
-  /// new BCL `Attachment` extern type and ContentDisposition wiring,
-  /// tracked in #780.  Until the kernel surface lands, the
-  /// `requires: msg.attachments.length == 0` clause below trips on
-  /// attempted use so callers see a contract violation rather than
-  /// silently lose attachments at the SMTP boundary (#1118).
-  func send(msg: in EmailMessage): Result[Unit, MailError]
-    requires: msg.attachments.length == 0
-  {
-    // Gap 2: try/catch wraps BCL calls into Result[T, MailError].
+  /// SMTP client.  Recipients (`to`, `cc`, `bcc`), `replyTo`, and
+  /// `attachments` are all forwarded to the underlying BCL MailMessage.
+  /// Each attachment's `dataBase64` field is decoded with
+  /// `Convert.FromBase64String` and wrapped in a `MemoryStream`; the
+  /// `filename` and `contentType` become the BCL `Attachment` name and
+  /// media type respectively.  Fixes #1118.
+  func send(msg: in EmailMessage): Result[Unit, MailError] {
+    // Defense-in-depth (#3181): the Mail.send wrapper runs the full
+    // header-injection guard, but the MailSender interface is callable
+    // directly, so attachment metadata is re-checked here before any
+    // BCL header is constructed.
+    var gi = 0
+    while gi < msg.attachments.length {
+      if containsHeaderInjection(msg.attachments[gi].filename) or containsHeaderInjection(msg.attachments[gi].contentType) {
+        return Err(
+          MailError(
+            message = "attachments[" + ("" + gi) +
+              "] filename/contentType contains CR/LF/NUL — header injection rejected",
+            code = "HEADER_INJECTION"
+          )
+        )
+      }
+      gi = gi + 1
+    }
     try {
       val mailMsg = MailKernel.newMailMessage()
       val fromAddr = MailKernel.newMailAddress(msg.from.address)
@@ -140,7 +164,6 @@ impl MailSender for NativeSender {
       while i < msg.to.length {
         if msg.to[i].address.length > 0 {
           val addr = MailKernel.newMailAddress(msg.to[i].address)
-          // Gap 3: instance method dispatch via callvirt.
           MailKernel.mailAddressCollectionAdd(toCollection, addr)
         }
         i = i + 1
@@ -179,6 +202,21 @@ impl MailSender for NativeSender {
       } else {
         MailKernel.mailSetIsBodyHtml(mailMsg, false)
         MailKernel.mailSetBody(mailMsg, msg.textBody)
+      }
+      // Decode each base64 attachment payload and append it to the BCL
+      // MailMessage.Attachments collection.
+      // MemoryStreams created here are never explicitly disposed: they are
+      // byte-array-backed (no unmanaged resources), so the GC reclaims them
+      // safely on both the success and the throw path.
+      val attColl = MailKernel.mailGetAttachments(mailMsg)
+      var ai = 0
+      while ai < msg.attachments.length {
+        val att = msg.attachments[ai]
+        val bytes = MailKernel.base64Decode(att.dataBase64)
+        val stream = MailKernel.newMemoryStream(bytes)
+        val bclAtt = MailKernel.newBclAttachment(stream, att.filename, att.contentType)
+        MailKernel.attachmentCollectionAdd(attColl, bclAtt)
+        ai = ai + 1
       }
       MailKernel.smtpClientSend(self.client, mailMsg)
       Ok(())

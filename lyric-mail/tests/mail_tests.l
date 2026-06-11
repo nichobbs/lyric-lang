@@ -74,11 +74,18 @@ test "makeAttachment returns Attachment with the correct dataBase64" {
   assertEqual(att.dataBase64, "SGVsbG8=", "dataBase64 field")
 }
 
-test "makeAttachment with empty base64 data is valid" {
-  val att = Mail.makeAttachment("empty.txt", "text/plain", "")
-  assertEqual(att.filename, "empty.txt", "filename")
-  assertEqual(att.contentType, "text/plain", "contentType")
-  assertEqual(att.dataBase64, "", "empty dataBase64")
+test "makeAttachment with non-empty base64 data is valid" {
+  val att = Mail.makeAttachment("data.bin", "application/octet-stream", "AQID")
+  assertEqual(att.filename, "data.bin", "filename")
+  assertEqual(att.contentType, "application/octet-stream", "contentType")
+  assertEqual(att.dataBase64, "AQID", "dataBase64 preserved")
+}
+
+// Zero-byte attachments are legal: Convert.FromBase64String("") yields
+// byte[0], a valid (if empty) attachment payload (#3173).
+test "makeAttachment accepts empty base64 (zero-byte attachment)" {
+  val att = Mail.makeAttachment("empty.bin", "application/octet-stream", "")
+  assertEqual(att.dataBase64, "", "empty dataBase64 preserved")
 }
 
 test "makeAttachment with a PNG MIME type" {
@@ -187,4 +194,176 @@ test "EmailMessage to list length is preserved" {
     replyTo = None
   )
   assertEqualInt(msg.to.length, 2, "to list length")
+}
+
+// ─── Attachment fields in EmailMessage ───────────────────────────────────────
+test "EmailMessage with multiple attachments preserves attachment count" {
+  val att1 = Mail.makeAttachment("a.txt", "text/plain", "SGVsbG8=")
+  val att2 = Mail.makeAttachment("b.png", "image/png", "iVBORw0KGgo=")
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = ""),
+    to = [EmailAddress(address = "r@example.com", displayName = "")],
+    cc = [],
+    bcc = [],
+    subject = "Files",
+    textBody = "two files",
+    htmlBody = "",
+    attachments = [att1, att2],
+    replyTo = None
+  )
+  assertEqualInt(msg.attachments.length, 2, "two attachments in message")
+  assertEqual(msg.attachments[0].filename, "a.txt", "first attachment filename")
+  assertEqual(msg.attachments[1].filename, "b.png", "second attachment filename")
+  assertEqual(msg.attachments[0].contentType, "text/plain", "first attachment contentType")
+  assertEqual(msg.attachments[1].dataBase64, "iVBORw0KGgo=", "second attachment dataBase64")
+}
+
+test "EmailMessage attachment fields are independent from other messages" {
+  val attA = Mail.makeAttachment("a.pdf", "application/pdf", "AAAA")
+  val attB = Mail.makeAttachment("b.pdf", "application/pdf", "BBBB")
+  val msgA = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = ""),
+    to = [EmailAddress(address = "r@example.com", displayName = "")],
+    cc = [],
+    bcc = [],
+    subject = "A",
+    textBody = "",
+    htmlBody = "",
+    attachments = [attA],
+    replyTo = None
+  )
+  val msgB = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = ""),
+    to = [EmailAddress(address = "r@example.com", displayName = "")],
+    cc = [],
+    bcc = [],
+    subject = "B",
+    textBody = "",
+    htmlBody = "",
+    attachments = [attB],
+    replyTo = None
+  )
+  assertEqual(msgA.attachments[0].dataBase64, "AAAA", "msgA attachment data")
+  assertEqual(msgB.attachments[0].dataBase64, "BBBB", "msgB attachment data")
+}
+
+// ─── containsHeaderInjection via Mail.send ───────────────────────────────────
+// Mail.MailSenderStub records call counts and always returns Ok.
+// The header-injection guard in Mail.send fires before sender.send is reached,
+// so no live SMTP connection is needed.
+// Verify that Mail.send rejects an attachment with an injected filename before
+// delegating to the sender — the guard in the public wrapper fires first.
+test "Mail.send rejects an attachment whose filename contains a CR character" {
+  var sender = Mail.MailSenderStub(callCount = 0)
+  val attBad = Attachment(filename = "report\r.pdf", contentType = "application/pdf", dataBase64 = "SGVsbG8=")
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = ""),
+    to = [EmailAddress(address = "r@example.com", displayName = "")],
+    cc = [],
+    bcc = [],
+    subject = "Injected",
+    textBody = "body",
+    htmlBody = "",
+    attachments = [attBad],
+    replyTo = None
+  )
+  val result = Mail.send(sender, msg)
+  match result {
+    case Err(e) -> {
+      assertEqual(e.code, "HEADER_INJECTION", "error code is HEADER_INJECTION")
+      assertEqualInt(sender.callCount, 0, "sender.send never called — guard fires first")
+    }
+    case Ok(_) -> assertTrue(false, "expected Err but got Ok")
+  }
+}
+
+test "Mail.send rejects an attachment whose filename contains an LF character" {
+  var sender = Mail.MailSenderStub(callCount = 0)
+  val attBad = Attachment(filename = "report\n.pdf", contentType = "application/pdf", dataBase64 = "SGVsbG8=")
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = ""),
+    to = [EmailAddress(address = "r@example.com", displayName = "")],
+    cc = [],
+    bcc = [],
+    subject = "Injected",
+    textBody = "body",
+    htmlBody = "",
+    attachments = [attBad],
+    replyTo = None
+  )
+  match Mail.send(sender, msg) {
+    case Err(e) -> {
+      assertEqual(e.code, "HEADER_INJECTION", "LF filename: error code is HEADER_INJECTION")
+      assertEqualInt(sender.callCount, 0, "LF filename: sender.send never called")
+    }
+    case Ok(_) -> assertTrue(false, "LF filename: expected Err but got Ok")
+  }
+}
+
+test "Mail.send rejects an attachment whose contentType contains a CR character" {
+  var sender = Mail.MailSenderStub(callCount = 0)
+  val attBad = Attachment(filename = "report.pdf", contentType = "application/pdf\rX-Evil: 1", dataBase64 = "SGVsbG8=")
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = ""),
+    to = [EmailAddress(address = "r@example.com", displayName = "")],
+    cc = [],
+    bcc = [],
+    subject = "Injected",
+    textBody = "body",
+    htmlBody = "",
+    attachments = [attBad],
+    replyTo = None
+  )
+  match Mail.send(sender, msg) {
+    case Err(e) -> {
+      assertEqual(e.code, "HEADER_INJECTION", "contentType: error code is HEADER_INJECTION")
+      assertEqualInt(sender.callCount, 0, "contentType: sender.send never called")
+    }
+    case Ok(_) -> assertTrue(false, "contentType injection: expected Err but got Ok")
+  }
+}
+
+test "Mail.send rejects an attachment whose contentType contains a LF character" {
+  var sender = Mail.MailSenderStub(callCount = 0)
+  val attBad = Attachment(filename = "report.pdf", contentType = "application/pdf\nX-Evil: 1", dataBase64 = "SGVsbG8=")
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = ""),
+    to = [EmailAddress(address = "r@example.com", displayName = "")],
+    cc = [],
+    bcc = [],
+    subject = "Injected",
+    textBody = "body",
+    htmlBody = "",
+    attachments = [attBad],
+    replyTo = None
+  )
+  match Mail.send(sender, msg) {
+    case Err(e) -> {
+      assertEqual(e.code, "HEADER_INJECTION", "contentType LF: error code is HEADER_INJECTION")
+      assertEqualInt(sender.callCount, 0, "contentType LF: sender.send never called")
+    }
+    case Ok(_) -> assertTrue(false, "contentType injection: expected Err but got Ok")
+  }
+}
+
+// Control case: a clean-filename attachment passes all guards without Err.
+test "Mail.send accepts an attachment with a clean filename" {
+  var sender = Mail.MailSenderStub(callCount = 0)
+  val attGood = Attachment(filename = "report.pdf", contentType = "application/pdf", dataBase64 = "SGVsbG8=")
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = ""),
+    to = [EmailAddress(address = "r@example.com", displayName = "")],
+    cc = [],
+    bcc = [],
+    subject = "Clean",
+    textBody = "body",
+    htmlBody = "",
+    attachments = [attGood],
+    replyTo = None
+  )
+  val result = Mail.send(sender, msg)
+  match result {
+    case Ok(_) -> assertTrue(true, "clean attachment passes header-injection guard")
+    case Err(e) -> assertTrue(false, "expected Ok but got Err: " + e.message)
+  }
 }

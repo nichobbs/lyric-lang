@@ -309,7 +309,7 @@ func scanJsonString(json: in String, quotePos: in Int): Int {
 // positive (incorrectly reporting a duplicate and denying a valid token) — this
 // is an availability-only risk, not a security risk, because the function fails
 // closed on any ambiguity.  A full structural JSON parser would eliminate the
-// false-positive surface; tracked for a future hardening pass.
+// false-positive surface; tracked for a future hardening pass (#3165).
 func audHasDuplicates(json: in String): Bool {
   val pfxStr = "\"aud\":\""
   val pfxArr = "\"aud\":["
