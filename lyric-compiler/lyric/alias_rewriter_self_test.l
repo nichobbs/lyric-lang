@@ -137,11 +137,7 @@ test "IUnion: aliased case-payload type resolves and round-trips" {
 //
 // We test the new code path via `rewriteFile` directly: parse a source that
 // uses `import Foo` (one segment, no `as`) followed by a `Foo.bar()` call, and
-// verify that `rewriteFile` produces a file with the same item count (no crash,
-// no AST corruption) and — importantly — that the rewrite transforms the
-// EMember into an EPath so downstream compilation can resolve it.  The second
-// assertion uses `formatSourceChecked` on the *rewritten* source to confirm it
-// round-trips, which only works if the rewrite didn't produce invalid AST.
+// verify that `rewriteFile` collapses the `EMember` receiver into an `EPath`.
 test "bare single-segment import X registers implicit X=X alias (#2930)" {
   // Source uses `import Foo` (1 segment) and `Foo.bar()` in a function body.
   // After `rewriteFile`, the `Foo.bar()` EMember should become an EPath so
@@ -157,4 +153,40 @@ test "bare single-segment import X registers implicit X=X alias (#2930)" {
     pr.file.imports.count,
     "single-seg alias: import count preserved after rewrite"
   )
+  // The `Foo.bar()` call in the function body must have been rewritten from
+  // `ECall(fn=EMember(EPath(["Foo"]), "bar"), ...)` to
+  // `ECall(fn=EPath(["Foo","bar"]), ...)`.
+  // Navigate: items[0] -> IFunc -> body -> FBBlock -> statements[0] -> SExpr -> expr.
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IFunc(decl) -> {
+      match decl.body {
+        case Some(fb) -> {
+          match fb {
+            case FBBlock(block) -> {
+              val stmt = block.statements[0]
+              match stmt.kind {
+                case SExpr(callExpr) -> {
+                  match callExpr.kind {
+                    case ECall(fn, _) -> {
+                      match fn.kind {
+                        case EPath(_) -> assertTrue(true, "call fn is EPath after rewrite")
+                        case EMember(_, _) -> assertTrue(false, "call fn is still EMember — rewrite did not collapse single-seg alias")
+                        case _ -> assertTrue(false, "call fn is unexpected ExprKind after rewrite")
+                      }
+                    }
+                    case _ -> assertTrue(false, "statement expression is not ECall")
+                  }
+                }
+                case _ -> assertTrue(false, "first statement is not SExpr")
+              }
+            }
+            case FBExpr(_) -> assertTrue(false, "function body is FBExpr, expected FBBlock")
+          }
+        }
+        case None -> assertTrue(false, "function decl has no body")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IFunc")
+  }
 }
