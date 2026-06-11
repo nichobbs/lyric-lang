@@ -123,9 +123,10 @@ EOF
     fi
   done
 
-  local total=0 match=0 diffs=0 missing=0
+  local total=0 match=0 diffs=0 missing=0 extra=0
   local f n
   shopt -s nullglob
+  # Forward: every pass-a DLL must exist in pass-b and be byte-identical.
   for f in "$work/a"/*.dll; do
     n="$(basename "$f")"
     total=$((total + 1))
@@ -141,17 +142,27 @@ EOF
       diffs=$((diffs + 1))
     fi
   done
+  # Reverse: pass-b must not contain any DLL absent from pass-a.  Without this
+  # the set comparison is one-sided — a non-deterministic *set* of emitted
+  # packages (not just their bytes) would slip through.
+  for f in "$work/b"/*.dll; do
+    n="$(basename "$f")"
+    if [[ ! -f "$work/a/$n" ]]; then
+      echo "[repro]   EXTRA in pass b: $n (absent from pass a)" >&2
+      extra=$((extra + 1))
+    fi
+  done
   shopt -u nullglob
 
   if [[ $total -eq 0 ]]; then
     echo "FATAL: per-package emit produced no DLLs" >&2
     exit 1
   fi
-  if [[ $diffs -eq 0 && $missing -eq 0 ]]; then
+  if [[ $diffs -eq 0 && $missing -eq 0 && $extra -eq 0 ]]; then
     echo "[repro] OK: whole self-hosted compiler closure is byte-for-byte reproducible ($match/$total DLLs)"
     return 0
   fi
-  echo "[repro] FAIL: self-hosted compiler closure is NOT reproducible ($diffs diff, $missing missing of $total)" >&2
+  echo "[repro] FAIL: self-hosted compiler closure is NOT reproducible ($diffs diff, $missing missing, $extra extra of $total)" >&2
   exit 1
 }
 

@@ -473,10 +473,14 @@ verify_selfhosted_reproducible() {
   # The AOT entry-point binary routes `--target dotnet` through the self-hosted
   # Msil.Bridge.  It embeds the stage-1 DLLs at C#-build time, so rebuild it
   # (clean) now that stage 1 has just produced fresh outputs.
+  # Honour $BUILD_CONFIG (CI's convention) so the binary path matches however
+  # the AOT project was configured; default to Release for standalone runs
+  # (stage 0 publishes Release).
+  local build_config="${BUILD_CONFIG:-Release}"
   local aot_proj="$COMPILER_DIR/src/Lyric.Cli.Aot"
-  local aot_bin="$aot_proj/bin/Release/net10.0/lyric"
-  info "  building AOT entry-point (Lyric.Cli.Aot) against the fresh stage-1 DLLs"
-  dotnet build "$aot_proj" --configuration Release --no-incremental \
+  local aot_bin="$aot_proj/bin/$build_config/net10.0/lyric"
+  info "  building AOT entry-point (Lyric.Cli.Aot, $build_config) against the fresh stage-1 DLLs"
+  dotnet build "$aot_proj" --configuration "$build_config" --no-incremental \
     > "$BUILD_DIR/aot-build.log" 2>&1 || \
     die "AOT entry-point build failed (see $BUILD_DIR/aot-build.log)"
   [[ -x "$aot_bin" ]] || die "AOT lyric binary not found at $aot_bin after build"
