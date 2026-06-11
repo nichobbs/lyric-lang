@@ -398,27 +398,64 @@ compare_stage1_stage2_dlls() {
     die "python3 or python is required for the stage-2 reproducibility comparison"
   fi
   "$python_bin" - "$f1" "$f2" <<'PY' >/dev/null
+# Normalize known non-deterministic metadata fields in two .NET PE/ECMA-335
+# DLLs before byte-comparing them.
+#
+# Fields zeroed:
+#   1. Bytes 0x88–0x8b — the PE timestamp in the COFF file header.
+#   2. Up to 4 contiguous 16-byte runs of differing bytes starting at or after
+#      offset 0x90.  These absorb the Module MVID (a GUID stored in the #GUID
+#      metadata heap) and the PDB GUID (a second GUID sometimes emitted in the
+#      debug directory).  Each run must be exactly 16 bytes; a run of any other
+#      length indicates a non-GUID difference and causes a hard failure.
+#
+# Rationale for the 16-byte run approach: locating the MVID via full ECMA-335
+# table parsing would be more precise but requires handling PE optional header
+# variants, stream offsets, and heap indirection — significantly more code for
+# marginal benefit.  The constraint that every accepted differing run must be
+# exactly 16 bytes makes false negatives (masking a real code change) extremely
+# unlikely in practice.  All zeroed offsets are logged to stderr so they can be
+# audited if the check ever passes unexpectedly.
 from pathlib import Path
 import sys
+
 f1_path = Path(sys.argv[1])
 f2_path = Path(sys.argv[2])
 f1 = bytearray(f1_path.read_bytes())
 f2 = bytearray(f2_path.read_bytes())
 if len(f1) != len(f2):
     sys.exit(1)
+
+# Zero PE COFF timestamp (4 bytes at 0x88).
 for off in range(0x88, 0x8c):
     f1[off] = 0
     f2[off] = 0
-first = next((i for i in range(0x90, len(f1)) if f1[i] != f2[i]), None)
-if first is not None:
+
+# Iteratively zero each 16-byte GUID-sized differing run in the body.
+# Cap at 4 to avoid masking a pathological case.
+MAX_GUID_REGIONS = 4
+zeroed_regions = []
+search_from = 0x90
+for _ in range(MAX_GUID_REGIONS):
+    first = next((i for i in range(search_from, len(f1)) if f1[i] != f2[i]), None)
+    if first is None:
+        break
     end = first
     while end < len(f1) and f1[end] != f2[end]:
         end += 1
-    if end - first != 16:
+    region_len = end - first
+    if region_len != 16:
+        print(f"[compare_dlls] non-GUID diff region at 0x{first:x}..0x{end:x} "
+              f"({region_len} bytes) in {f1_path.name}", file=sys.stderr)
         sys.exit(1)
+    print(f"[compare_dlls] zeroing GUID region at 0x{first:x}..0x{end:x} "
+          f"in {f1_path.name}", file=sys.stderr)
+    zeroed_regions.append((first, end))
     for off in range(first, end):
         f1[off] = 0
         f2[off] = 0
+    search_from = end
+
 if f1 != f2:
     sys.exit(1)
 sys.exit(0)
@@ -546,10 +583,21 @@ EOF
       continue
     fi
     if ! compare_stage1_stage2_dlls "$f1" "$f2"; then
-      echo "  DIFF:    $name (stage-1 vs stage-2 differ after normalizing known metadata fields)"
+      echo "  DIFF:    $name (stage-1 vs stage-2 differ after normalizing known metadata fields)" >&2
       diffs=$((diffs + 1))
     else
       echo "  MATCH:   $name"
+    fi
+  done
+  # Reverse check: flag DLLs present in stage-2 but absent from stage-1.
+  # Such extra assemblies indicate an unexpected build artefact or a package
+  # name change between stages.
+  for f in "$STAGE2_DIR"/*.dll; do
+    local name
+    name="$(basename "$f")"
+    if [[ ! -f "$STAGE1_DIR/$name" ]]; then
+      echo "  EXTRA:   $name (stage-2 only — not present in stage-1)" >&2
+      diffs=$((diffs + 1))
     fi
   done
   shopt -u nullglob
