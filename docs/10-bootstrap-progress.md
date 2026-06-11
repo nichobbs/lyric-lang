@@ -5186,9 +5186,9 @@ single-package library path.
 
 **Deferred.**
 
-* `--aot` for project-mode bundles: requires the AOT publish
-  wrapper to handle multi-resource DLLs and the synthetic
-  entry-point class lookup.  Tracked as a follow-up Q.
+* ~~`--aot` for project-mode bundles~~ — **shipped in D-progress-501** (#3206):
+  `lyric build --release` now works in project mode; entry package is
+  auto-detected via `declaresEntryMain`.
 * `output = "per-package"` dispatch: the legacy bootstrap stdlib
   flow is the only consumer today and it stays on the
   per-source-file `lyric build` path.
@@ -24146,3 +24146,39 @@ module vals, so it links the F#-emitted DLLs and pins the #3085 codegen fix
 against the F# producer ABI; M2b–M2d import val-exporting packages
 (`Msil.Opcodes`, `Msil.Tables`, `Msil.Assembler`) and pin the #3086
 self-hosted-DLL staging path.
+
+### D-progress-501 — Multi-package `lyric build --release` (Native AOT project mode) (#1975, #3206)
+
+`lyric build --release` now works in project mode (a `lyric.toml` with `[project.packages]`), not just for single `.l` files.
+
+**What ships.**
+
+`buildReleaseProject` in `lyric-compiler/lyric/cli/cli_build.l`:
+
+1. Parses the manifest and validates `[project]` + `[project.packages]`.
+2. Scans each package's sources with `Release.declaresEntryMain` to identify
+   the entry package (the one declaring a zero-argument `func main()`).
+   Exactly one package must match — zero or multiple matches are a hard error
+   naming the conflicting packages.
+3. Builds the project to `.lyric-release/<assembly>.dll` via the existing
+   `buildProject` helper (all `--features` / `--no-restore` flags forwarded).
+4. Re-resolves local `path = "..."` dependency DLL paths from the manifest as
+   `extraRefs` for the AOT linker.  A dep with a missing `lyric.toml` or
+   unbuilt output DLL is a hard error with a clear "run `lyric build ...`
+   first" diagnostic.
+5. Calls `Release.buildRelease` — the same .NET Native AOT pipeline used by
+   single-file `--release` (host project generation, `dotnet publish
+   -p:PublishAot=true`, native binary copy).
+
+The default native-binary output path is `<mfDir>/<stem>` (beside the
+manifest, no extension), matching the single-file convention.  `-o`,
+`--rid`, `--features`, `--no-default-features`, `--all-features`, and
+`--no-restore` all pass through unchanged.
+
+`--release --target jvm` still fails loud via the existing `JvmNativeImage`
+arm — GraalVM `native-image` support remains unimplemented (#1975).
+
+**Docs updated:** `docs/01-language-reference.md` §13.1 (removed single-file
+limitation caveat), `book/chapters/appendix-b-quick-reference.md` (added
+project-mode examples), `docs/10-bootstrap-progress.md` D-progress-103
+deferred item marked shipped.
