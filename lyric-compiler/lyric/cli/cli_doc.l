@@ -97,14 +97,24 @@ func cmdDoc(argv: in slice[String]): Int {
       val mdRel = stemOf(relPath, 2) + ".md"
       val outPath = Path.join(outDir, mdRel)
       val outParent = Path.dirname(outPath)
+      var subdirOk = true
       if outParent != outDir {
-        val _ = File.createDir(outParent)
+        match File.createDir(outParent) {
+          case Ok(_) -> ()
+          case Err(e) -> {
+            printErr("doc: cannot create output directory '" + outParent + "': " + IOError.message(e))
+            anyFailed = true
+            subdirOk = false
+          }
+        }
       }
-      match File.writeText(outPath, md) {
-        case Ok(_) -> Console.println("wrote " + outPath)
-        case Err(e) -> {
-          printErr("doc: " + IOError.message(e))
-          anyFailed = true
+      if subdirOk {
+        match File.writeText(outPath, md) {
+          case Ok(_) -> Console.println("wrote " + outPath)
+          case Err(e) -> {
+            printErr("doc: " + IOError.message(e))
+            anyFailed = true
+          }
         }
       }
     }
