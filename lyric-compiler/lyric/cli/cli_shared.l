@@ -22,7 +22,7 @@
 //!   deps    [--manifest <lyric.toml>]
 //!   publish [--manifest <lyric.toml>] [--dll <path>] [-o <dir>]
 //!   test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list]
-//!   bench   [<source.l>] [--manifest <lyric.toml>] [--runs N] [--warmup N] [--filter <prefix>]
+//!   bench   [<source.l>] [--manifest <lyric.toml>] [--runs N] [--warmup N] [--filter <prefix>] [--target dotnet|jvm]
 //!   openapi <spec.json> [-o <out.l>] [--client-name <Name>] [--package <Pkg>]
 //!   --version / -v
 //!

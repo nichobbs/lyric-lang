@@ -1,4 +1,4 @@
-//! jvm/codegen_5_stmts.l — Jvm.Codegen: statement and block lowering.
+//! jvm/codegen/05_stmts.l — Jvm.Codegen: statement and block lowering.
 //!
 //! Part of the Jvm.Codegen package (split from codegen.l; see docs/44 J0).
 //! Assignment-expression lowering, statement lowering, local pattern binding,

@@ -1107,11 +1107,13 @@ func checkImportLevels(
 // The CLR verifier rejects AwaitUnsafeOnCompleted inside a protected region;
 // diagnose at compile time instead of emitting invalid IL.
 //
-// Scope: all @runtime_checked and @proof_required packages.  @axiom kernel
-// files are excluded because they compile through the F# bootstrap emitter
-// which can hoist awaits out of protected regions; the self-hosted emitter
-// that compiles user code cannot.  Stdlib.Http was restructured to hoist all
-// awaits before try blocks (issue #2985).
+// Scope: all packages except @axiom kernel files.  @axiom files are excluded
+// because they compile through the F# bootstrap emitter which can hoist awaits
+// out of protected regions; the self-hosted emitter that compiles user code
+// cannot.  The guard covers @runtime_checked, @proof_required,
+// @proof_required_unsafe, @proof_required_checked, and unannotated packages.
+// Stdlib.Http was restructured to hoist all awaits before try blocks (issue
+// #2985).
 // ─────────────────────────────────────────────────────────────────────────────
 record AwaitTryCtx {
   fnName: String

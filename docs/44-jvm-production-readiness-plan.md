@@ -151,11 +151,11 @@ tracking issue today (band J0 files them).
 | B-1 | ~~Closures / lambdas panic on the user path (`ELambda` unhandled in `codegen.l`)~~ **Fixed (D-progress-474):** `ELambda` lowers to a `<pkg>$Lambda$<n>` inner class implementing a package-shared `Lyric$Lambda` functional interface (uniform `Object[]`-packing ABI); capture analysis binds free `val`/param references as ctor fields; call sites route lambda-typed callees through `invokeinterface`. `val`/param by-value capture done; by-reference `var` capture deferred. **#2864 (resolved):** lambdas inside record-method / protected-entry / wire-binding bodies now thread the real package closure accumulator (no more throwaway → no silent dropped closure class); bare-field captures inside instance-method bodies are captured by value via `selfFieldType`. | `codegen/02_exprs.l` (`lowerLambda`), `codegen/04_calls.l` (`lowerLambdaInvoke`), `codegen/06_items.l` (`lowerRecord`/`buildProtected`/`buildWire`), `lowering.l` (`lowerClosure`) | #2665, #2864 (resolved) |
 | B-2 | `async`/`await`/`spawn`/`?` lower to **synchronous pass-throughs** — wrong semantics, not just missing (no future, no Err/None short-circuit) | `codegen.l:912-941` | #2469 (generators), (new: sync-stub) |
 | B-3 | Aspects are **not woven** on JVM (`bridge.l` never imports `Lyric.Weaver`); `IAspect` no-ops | `bridge.l:8-25`; `codegen.l:4994` vs `msil/bridge.l:168` | (new) |
-| B-4 | ~~`Float` emitted as JVM `double` — silent precision/semantics bug~~ **Fixed (D-progress-463):** real 32-bit `float`. | `codegen/01_types.l`,`02_exprs.l` | #1615, #2664 |
-| B-5 | ~~Complex assignment targets (`obj.field = …`, `arr[i] = …`) silently dropped (value popped)~~ **Fixed (D-progress-463).** | `codegen/05_stmts.l` | #2664 |
+| B-4 | ~~`Float` emitted as JVM `double` — silent precision/semantics bug~~ **Fixed (D-progress-464):** real 32-bit `float`. | `codegen/01_types.l`,`02_exprs.l` | #1615, #2664 |
+| B-5 | ~~Complex assignment targets (`obj.field = …`, `arr[i] = …`) silently dropped (value popped)~~ **Fixed (D-progress-464).** | `codegen/05_stmts.l` | #2664 |
 | B-6 | ~~stdlib packages that fail JVM codegen are swallowed → runtime `NoSuchMethodError` instead of build error~~ **Fixed (D-progress-465):** function-level call reachability + fatal `error[J002]` for referenced packages. | `bridge.l` `compileToJarBundled` | #2664 |
-| B-7 | ~~Named-argument record construction can corrupt cross-typed fields (MSIL `reorderCtorNamedArgs` pass not ported)~~ **Fixed (D-progress-463):** `orderCtorArgs` permutes named args to field order. | `codegen/04_calls.l` | #1793, #2664 |
-| B-8 | ~~Union construction emits a call to a non-existent factory in some paths → `NoSuchMethodError`~~ **Fixed (D-progress-463):** field-bearing + nullary cases emit `new`+`invokespecial`. | `codegen/02_exprs.l`,`04_calls.l` | #1675, #2664 |
+| B-7 | ~~Named-argument record construction can corrupt cross-typed fields (MSIL `reorderCtorNamedArgs` pass not ported)~~ **Fixed (D-progress-464):** `orderCtorArgs` permutes named args to field order. | `codegen/04_calls.l` | #1793, #2664 |
+| B-8 | ~~Union construction emits a call to a non-existent factory in some paths → `NoSuchMethodError`~~ **Fixed (D-progress-464):** field-bearing + nullary cases emit `new`+`invokespecial`. | `codegen/02_exprs.l`,`04_calls.l` | #1675, #2664 |
 | B-9 | No auto-FFI resolution for `extern type` method calls beyond the JDK-class fast path on some receivers; user `extern type` libraries mis-bind | #1708; `auto_ffi.l` JDK-first | #1708 |
 | B-10 | ~~`lyric build --target jvm foo.l` (no `-o`) writes the JAR as `foo.dll`; spurious .NET `runtimeconfig.json` emitted~~ **RESOLVED** | `cli.l:712`, `cli.l:545`; observed | #2664 (resolved) |
 | B-11 | JUnit tests do not actually execute on JVM — `lyric test --jvm` annotates `@LyricTest` but `LyricTestEngine` is deferred; generated test bodies are stub `return` | `test_engine.l:17-21`; `docs/18` Q-J007 | #676 |
@@ -227,7 +227,7 @@ self-test enforces in CI on `--target jvm`.
   existing self-tests. It is the **prerequisite that makes Track A
   parallelizable** (§6) — land it *before* J1–J4 branch off so everyone
   rebases onto the new layout once. Residual hotspot after the split: the
-  `lowerExpr` mega-function (~600 lines, `codegen.l:439-1034`) that J2
+  `lowerExpr` mega-function (~600 lines, `codegen/02_exprs.l:124-912`) that J2
   (`ELambda`) and J4 (async) both edit — decompose by expr-kind sub-dispatch
   only if that contention actually bites.
 - Resolve the doc contradictions (m-11): reconcile Q-J012/Q-J013 to their true
@@ -241,12 +241,12 @@ self-test enforces in CI on `--target jvm`.
 ### J1 — Stop the silent miscompiles (highest priority, scoped, low-risk)
 These produce wrong-but-running output today and must fail loudly or be fixed:
 - [x] B-4: emit `Float` as JVM `float` (`freturn`/`fload`/`F` descriptors), not
-  `double`; add a Float round-trip self-test. **Done (D-progress-463):**
+  `double`; add a Float round-trip self-test. **Done (D-progress-464):**
   `typeExprToJvm` maps `Float`→`JFloat`; float load/store/return/arith/compare
   opcodes + `d2f`/`f2d`/`i2f` conversions; `1.0f32` literal emits `LFconst`.
 - [x] B-5: implement `member =` / `index =` assignment lowering (or, if genuinely
   out of scope short-term, emit a hard error — never a silent pop).
-  **Done (D-progress-463):** `obj.field = e` → `putfield`; `arr[i] = e` →
+  **Done (D-progress-464):** `obj.field = e` → `putfield`; `arr[i] = e` →
   `Xastore` / ArrayList `set`; compound forms supported.
 - [x] B-6: make stdlib codegen failures **fatal** for the packages a build
   actually references; surface which symbol failed.  **Done (D-progress-465):**
@@ -449,7 +449,7 @@ most of the available parallelism; do it first.
 - **J7's acceptance gate (Track D) depends on everything** and runs last.
 
 **Residual serial core (irreducible):** even after the codegen split, the
-`lowerExpr` function (`codegen.l:439-1034`) is edited by both J2 (`ELambda`)
+`lowerExpr` function (`codegen/02_exprs.l:124-912`) is edited by both J2 (`ELambda`)
 and J4 (async), and the J2→J4 logical dependency holds — so Track A
 (J1→J2→J4) is the critical path. Realistic throughput is ~3 tracks in flight
 (≈3× over strict sequential), bounded by Track A's length.
@@ -491,4 +491,4 @@ Major clusters: generics (#1707, #2574), kernel parity (#1444, #1840, #1065,
 #2592), async/generators (#2469, #2070), FFI/Maven (#1622, #673, #2215, #2219),
 distribution (#674, #675, #1975, #680), F#-host elimination (`docs/41` H12,
 #1470 parity). Gating: #1495 (per-feature parity suite), #859 (Band-7
-acceptance gate). There is currently **no** JVM umbrella epic — J0 creates it.
+acceptance gate). The JVM production-readiness epic is #2663 (with band sub-tasks #2664–#2670).

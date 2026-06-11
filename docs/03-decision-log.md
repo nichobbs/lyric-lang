@@ -818,7 +818,21 @@ interface, write an `impl` block.
   rules).
 - Closes Q004 from `06-open-questions.md`.
 
-**Revisions:** None.
+**Revisions:**
+
+**2026-06-10 — `Ord` added to closed marker set (PR #2966).** `Ord` was
+added as an eleventh marker. It generates a total-order comparison (a single
+`compare(other: T): Int` method returning negative/zero/positive) and is
+derivable for records (lexicographic by field declaration order, same ordering
+policy as `Compare`). Unlike `Compare`, `Ord` does not auto-generate the
+four relational operators (`<`/`<=`/`>`/`>=`) — those are the domain of
+`Compare`. Rationale: the stdlib `Std.Sort` generic sort and similar
+higher-order utilities need a caller-supplied or derived total-ordering
+function; `Ord` is the canonical way to express that constraint. The addition
+is within the spirit of the closed list (specific lowering, CLR backing
+member) and does not open the list to arbitrary user-defined additions.
+Alternatives considered and rejected: re-using `Compare` (conflates operator
+synthesis with ordering), a plain interface `Ordering` (not derivable).
 
 ---
 

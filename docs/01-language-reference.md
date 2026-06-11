@@ -672,8 +672,8 @@ This is a common source of confusion with `in List[T]` parameters: callers may
 expect the list to be read-only, but the callee can still append, remove, or clear
 it.  If you need a read-only view of a collection, accept `in slice[T]` (slices do
 not expose mutation methods) or copy on entry.  For the full mode rules see §5.2.
-Attempting to rebind an `in` parameter (e.g. `param = otherList`) is a compile
-error (**T0087**).
+Attempting to rebind any immutable binding — a `val`, `let`, or `in` parameter
+(e.g. `param = otherList`) — is a compile error (**T0087**).
 
 ### 4.5 Error propagation
 
@@ -1490,7 +1490,7 @@ The bootstrap formatter works directly from the parsed AST; it does not require 
 | _(default, project mode)_ | Project | Dry-run: print which files would change; exit 1 if any; does **not** write |
 | `--write` | File(s) or project | Overwrite file(s) in place; print each reformatted path |
 | `--check` | File(s) or project | Exit 1 if any file would change; prints the unformatted paths |
-| `--diff` | File(s) or project | Print a unified diff of what would change without writing; works in dry-run mode, single-file mode, and combined with `--write` (shows diff then applies changes) |
+| `--diff` | File(s) or project | Print a unified diff of what would change without writing; works in dry-run mode, single-file mode, and combined with `--write` (shows diff then applies changes). Exits 1 if any file would change (same as `--check`), useful as a CI gate that also shows what changed. |
 | `--stdin` | — | Read from stdin, write formatted output to stdout (editor integration) |
 
 ### 13.8 Linter

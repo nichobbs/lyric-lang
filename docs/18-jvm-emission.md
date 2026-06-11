@@ -2006,7 +2006,13 @@ contract from it, generate FFI shims.  This is parallel to the
 
 The following items deferred during this design pass.  Each carries a
 recommended default the implementer should adopt absent contrary
-evidence:
+evidence.
+
+**See also:** `docs/44-jvm-production-readiness-plan.md` — the
+production-readiness audit and remediation plan that directly addresses
+Q-J001, Q-J003, Q-J007, Q-J008 and the broader JVM-backend correctness
+and parity gaps (bands J0–J7).  `docs/44` is the JVM counterpart to
+this document for implementation work on `--target jvm`.
 
 ### Q-J001: Project Valhalla migration path
 

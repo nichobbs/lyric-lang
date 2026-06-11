@@ -1,4 +1,4 @@
-//! jvm/codegen_3_match.l — Jvm.Codegen: match-expression lowering.
+//! jvm/codegen/03_match.l — Jvm.Codegen: match-expression lowering.
 //!
 //! Part of the Jvm.Codegen package (split from codegen.l; see docs/44 J0).
 //! Match lowering plus pattern test/bind helpers.

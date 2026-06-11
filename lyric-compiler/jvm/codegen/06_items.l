@@ -1,4 +1,4 @@
-//! jvm/codegen_6_items.l — Jvm.Codegen: function/record/union lowering and package entry.
+//! jvm/codegen/06_items.l — Jvm.Codegen: function/record/union lowering and package entry.
 //!
 //! Part of the Jvm.Codegen package (split from codegen.l; see docs/44 J0).
 //! lowerFunc/lowerRecord/lowerUnion, makeFuncCtx helpers, async-generator

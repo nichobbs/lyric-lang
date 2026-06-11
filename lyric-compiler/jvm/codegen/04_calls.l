@@ -1,4 +1,4 @@
-//! jvm/codegen_4_calls.l — Jvm.Codegen: call lowering.
+//! jvm/codegen/04_calls.l — Jvm.Codegen: call lowering.
 //!
 //! Part of the Jvm.Codegen package (split from codegen.l; see docs/44 J0).
 //! Std.Jvm.catch intrinsic, @externTarget call-site lowering, builtin/general/

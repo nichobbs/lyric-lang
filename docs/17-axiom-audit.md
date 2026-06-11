@@ -850,7 +850,7 @@ entries) moved every BCL extern to `lyric-stdlib/std/_kernel/`, replacing
 per-function `@axiom` annotations with package-level annotations that
 cover the entire extern boundary of each kernel file.  The axiom count
 grew from 11 (M4.3 baseline) → 16 (after D-progress-140) → 22 + 2 JVM
-→ 25 + 22 + 2 → 27 + 23 + 2 → 26 + 23 + 2 (current) as additional BCL surfaces
+→ 25 + 22 + 2 → 27 + 23 + 2 → 26 + 23 + 2 → 24 + 23 + 2 (current) as additional BCL surfaces
 were added (Console, Path, ProcessCapture, VerifierEnv, Random, SecureRandom,
 Hash, Regex/RegexHost) and the JVM target boundary was brought under the
 same audit framework, the JVM kernel gaining its own SHA-512 `Std.HashHost`.
