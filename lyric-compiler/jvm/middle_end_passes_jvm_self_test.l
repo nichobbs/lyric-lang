@@ -32,6 +32,16 @@
 //!     resolved to the bound argument), so the function returns the template's
 //!     computed value at runtime.
 //!
+//! NOTE on cross-package generic mono (M-5): `collectStdlibGenericFuncsJvm`
+//! + `monoFileWithImports` ARE wired into the JVM bridge (see `runMiddleEnd`
+//! and `compileToJarBundledWithFeatures`), but a runtime-observable assertion
+//! (e.g. calling `unwrapOr[Int]`) fails with a NoSuchMethodError because the
+//! monomorphized copy is emitted with wrong primitive/erased parameter types
+//! (docs/44 §5 M-1, a MAJOR finding, #2574/#1707; scheduled for band J4).
+//! Until JVM generics land, the M-5 wiring is verified end-to-end on MSIL via
+//! `lyric-compiler/lyric/mono_self_test.l`.  A JVM runtime assertion is deferred
+//! to J4 alongside the generics fix (#2839).
+//!
 //! NOTE on `?`/`try` error-propagation (also wired by J2): the `?` pass IS
 //! wired into both JVM bridge paths (and verified against the MSIL bridge by
 //! `lyric-compiler/lyric/propagate_self_test.l`).  Its lowered output, however,

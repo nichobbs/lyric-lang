@@ -515,7 +515,10 @@ func ownerOfSegments(segments: in List[String], upTo: in Int): String {
 // Resolve a call target expression `fn` to the callee's canonical registry key
 // (`owner/name`), or "" when it is not a registered Lyric function.
 func resolveCallKey(fn: in Expr, registry: in Map[String, JvmFuncSig]): String {
-  match fn.kind {
+  // Peel ETypeApp so explicit generic calls (foo[T](…)) resolve via their inner
+  // path rather than falling through to `case _ -> ""` (#2780).
+  val inner = match fn.kind { case ETypeApp(f, _) -> f; case _ -> fn }
+  match inner.kind {
     case EPath(path) -> {
       if path.segments.count == 0 {
         ""
@@ -637,7 +640,18 @@ func collectExprOrBlockNames(eob: in ExprOrBlock, acc: in List[String], registry
 
 func collectStmtNames(s: in Statement, acc: in List[String], registry: in Map[String, JvmFuncSig]): Unit {
   match s.kind {
-    case SLocal(binding) -> match binding { case LBVal(_, _, init) -> collectExprNames(init, acc, registry); case LBLet(_, _, init) -> collectExprNames(init, acc, registry); case LBVar(_, _, init) -> match init { case Some(ie) -> collectExprNames(ie, acc, registry); case None -> () } }
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(_, _, init) -> collectExprNames(init, acc, registry)
+        case LBLet(_, _, init) -> collectExprNames(init, acc, registry)
+        case LBVar(_, _, init) -> {
+          match init {
+            case Some(ie) -> collectExprNames(ie, acc, registry)
+            case None -> ()
+          }
+        }
+      }
+    }
     case SAssign(target, _, value) -> {
       collectExprNames(target, acc, registry)
       collectExprNames(value, acc, registry)
@@ -700,6 +714,53 @@ func collectFuncCallKeys(decl: in FunctionDecl, registry: in Map[String, JvmFunc
     case None -> ()
   }
   acc
+}
+
+// Detect a derive-synthesised free-function name: `deriveFile` emits names of
+// the form `TypeName.method` (e.g. `Point.equals`, `Color.show`), which always
+// contain a dot.  Bare names (e.g. `classify`, `main`) are not derive-free.
+func isDeriveFreeName(name: in String): Bool {
+  match lastIndexOf(name, ".") {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+// Register IFunc items whose name contains a "." — the `TypeName.method` form
+// that `deriveFile` synthesises for `@derive(Equals/Show/Hash/Ord)` free
+// functions (e.g. `Point.equals`, `Color.show`).  Called after `runMiddleEnd`
+// to patch the registry built from the pre-derive `userFile` (#3139).
+// Only processes new keys (first-wins guard, same as `collectFileSigs`).
+func collectDeriveFreeSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]): Unit {
+  val owner = pkgJvmOwner(file.packageDecl.path)
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(decl) -> {
+        if isDeriveFreeName(decl.name) {
+          val params: List[JvmType] = newList()
+          val paramNames: List[String] = newList()
+          var pi = 0
+          while pi < decl.params.count {
+            params.add(typeExprToJvm(decl.params[pi].ty, owner))
+            paramNames.add(decl.params[pi].name)
+            pi = pi + 1
+          }
+          val ret = match decl.ret { case Some(te) -> typeExprToJvm(te, owner); case None -> JVoid }
+          // paramDefaults intentionally empty: derive-synthesized free functions have
+          // no default values.  Using an empty list avoids the stage-0 bootstrap
+          // List[Option[Expr]] miscompile on .add() (#3139).
+          val sig = JvmFuncSig(owner = owner, params = params, ret = ret, paramNames = paramNames, paramDefaults = newList())
+          val qkey = owner + "/" + decl.name
+          if not into.containsKey(qkey) {
+            into.add(qkey, sig)
+          }
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
 }
 
 // Back-compat forwarder: no feature flags, so no `@cfg` erasure runs.  Callers
@@ -968,7 +1029,19 @@ pub func compileToJarBundledWithFeatures(
   // User package first (its codegen failing is always fatal).  Its type-check
   // advisories are echoed (they are about the program the user actually wrote).
   match runMiddleEnd(userFile, importedPkgs, stdlibGenFuncs, true) {
-    case Some(f) -> codegenPackageInto(f, registry, caseReg, ctorReg, autoFfi, allProjFqns, allClasses)
+    case Some(f) -> {
+      // Register sigs synthesised by `deriveFile` (inside `runMiddleEnd`) so
+      // that call-site resolution in `codegenPackageInto` can find them.  The
+      // `collectFileSigs(userFile, registry)` above ran on the pre-derive file
+      // and therefore missed free functions like `Point.equals` / `Color.show`,
+      // causing the call sites to fall through to the `invokevirtual Object`
+      // guess — a NoSuchMethodError at runtime (#3139).
+      // Use the narrow `collectDeriveFreeSigs` (only `.`-named items) rather
+      // than the full `collectFileSigs` to avoid the stage-0 bootstrap
+      // List[Option[Expr]] miscompile on paramDefaults.add().
+      collectDeriveFreeSigs(f, registry)
+      codegenPackageInto(f, registry, caseReg, ctorReg, autoFfi, allProjFqns, allClasses)
+    }
     case None -> return false
   }
 
@@ -987,6 +1060,7 @@ pub func compileToJarBundledWithFeatures(
   // unrelated stdlib code.  Real errors still surface — referenced-package
   // codegen panics are echoed via the fatal J002 path below.
   var bi = 0
+  var skippedCount = 0
   while bi < toBundle.count {
     val f = toBundle[bi]
     val pkgName = dottedPath(f.packageDecl.path)
@@ -1011,9 +1085,10 @@ pub func compileToJarBundledWithFeatures(
         )
         false
       } else {
-        // Unreached package whose codegen failed: not a build error (its bytecode
-        // is never invoked), and not the success path either — so this never
-        // reintroduces the noisy per-package skip note J1c removed.  Suppressed.
+        // Unreached package whose codegen failed: not a build error because its
+        // bytecode is never invoked, but counted so we can surface a summary note
+        // pointing users toward the root cause if they hit a runtime failure.
+        skippedCount = skippedCount + 1
         true
       }
     }
@@ -1021,6 +1096,13 @@ pub func compileToJarBundledWithFeatures(
       return false
     }
     bi = bi + 1
+  }
+  if skippedCount > 0 {
+    Console.error(
+      "note[J003]: " + skippedCount.toString() + " stdlib package(s) could not be bundled (JVM backend gap); " +
+        "runtime calls into them will fail with NoClassDefFoundError — " +
+        "if that happens, please file an issue"
+    )
   }
 
   // Main-Class from the user package declaration.

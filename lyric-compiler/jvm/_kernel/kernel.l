@@ -79,15 +79,83 @@ pub func writerU4(w: in ByteWriter, v: in Int): Unit {
   writerByte(w, v)
 }
 
-// BitConverter.GetBytes(long) returns a little-endian slice[Byte] on the host
-// (x64 / arm64 targets supported by the self-hosted pipeline are LE).
-@externTarget("System.BitConverter.GetBytes")
-func longGetBytes(v: in Long): slice[Byte] = ()
-
 // Convert.ToByte(int) truncates to [0..255]; used to materialise List[Int]
 // internal buffers into the List[Byte] / slice[Byte] surfaces expected by callers.
 @externTarget("System.Convert.ToByte")
 func intToByte(v: in Int): Byte = ()
+
+// Floor-division right shifts for Long values.  Lyric `/` truncates toward zero;
+// the remainder correction converts truncation to floor division (arithmetic shift).
+// Used to extract big-endian bytes from a Long without endian-dependent externs.
+func lshr8(v: in Long): Long {
+  val q = v / 256i64
+  val r = v % 256i64
+  if r < 0i64 {
+    q - 1i64
+  } else {
+    q
+  }
+}
+
+func lshr16(v: in Long): Long {
+  val q = v / 65536i64
+  val r = v % 65536i64
+  if r < 0i64 {
+    q - 1i64
+  } else {
+    q
+  }
+}
+
+func lshr24(v: in Long): Long {
+  val q = v / 16777216i64
+  val r = v % 16777216i64
+  if r < 0i64 {
+    q - 1i64
+  } else {
+    q
+  }
+}
+
+func lshr32(v: in Long): Long {
+  val q = v / 4294967296i64
+  val r = v % 4294967296i64
+  if r < 0i64 {
+    q - 1i64
+  } else {
+    q
+  }
+}
+
+func lshr40(v: in Long): Long {
+  val q = v / 1099511627776i64
+  val r = v % 1099511627776i64
+  if r < 0i64 {
+    q - 1i64
+  } else {
+    q
+  }
+}
+
+func lshr48(v: in Long): Long {
+  val q = v / 281474976710656i64
+  val r = v % 281474976710656i64
+  if r < 0i64 {
+    q - 1i64
+  } else {
+    q
+  }
+}
+
+func lshr56(v: in Long): Long {
+  val q = v / 72057594037927936i64
+  val r = v % 72057594037927936i64
+  if r < 0i64 {
+    q - 1i64
+  } else {
+    q
+  }
+}
 
 // MemoryStream externs used by writerToBytes to materialise internal List[Int]
 // storage as a slice[Byte] without an intermediate allocation.
@@ -104,15 +172,14 @@ func memStreamToArray(s: in MemStream): slice[Byte] = ()
 
 /// Append an 8-byte big-endian long (class-file CONSTANT_Long/Double values).
 pub func writerU8(w: in ByteWriter, v: in Long): Unit {
-  val bs = longGetBytes(v)
-  writerByte(w, bs[7].toInt())
-  writerByte(w, bs[6].toInt())
-  writerByte(w, bs[5].toInt())
-  writerByte(w, bs[4].toInt())
-  writerByte(w, bs[3].toInt())
-  writerByte(w, bs[2].toInt())
-  writerByte(w, bs[1].toInt())
-  writerByte(w, bs[0].toInt())
+  writerByte(w, lshr56(v).toInt())
+  writerByte(w, lshr48(v).toInt())
+  writerByte(w, lshr40(v).toInt())
+  writerByte(w, lshr32(v).toInt())
+  writerByte(w, lshr24(v).toInt())
+  writerByte(w, lshr16(v).toInt())
+  writerByte(w, lshr8(v).toInt())
+  writerByte(w, v.toInt())
 }
 
 /// Append a JVMS §4.4.7 modified-UTF-8 encoded string (no length prefix).
@@ -161,9 +228,34 @@ pub func writerModifiedUtf8(w: in ByteWriter, s: in String): Unit {
 /// The w parameter is unused; retained for API compatibility with callers
 /// that pass an existing writer to avoid allocating a separate object.
 pub func modifiedUtf8Length(w: in ByteWriter, s: in String): Int {
-  val tmp = writerNew()
-  writerModifiedUtf8(tmp, s)
-  writerPos(tmp)
+  var n = 0
+  var i = 0
+  while i < s.length {
+    val c = toInt(s[i])
+    if c == 0 {
+      n = n + 2
+      i = i + 1
+    } else if c <= 127 {
+      n = n + 1
+      i = i + 1
+    } else if c <= 2047 {
+      n = n + 2
+      i = i + 1
+    } else if c >= 55296 and c <= 56319 and i + 1 < s.length {
+      val low = toInt(s[i + 1])
+      if low >= 56320 and low <= 57343 {
+        n = n + 6
+        i = i + 2
+      } else {
+        n = n + 3
+        i = i + 1
+      }
+    } else {
+      n = n + 3
+      i = i + 1
+    }
+  }
+  n
 }
 
 /// Append a raw slice[Byte].
@@ -410,15 +502,14 @@ func poolAppendU4(ent: in List[Int], v: in Int): Unit {
 }
 
 func poolAppendU8(ent: in List[Int], v: in Long): Unit {
-  val bs = longGetBytes(v)
-  ent.add(bs[7].toInt())
-  ent.add(bs[6].toInt())
-  ent.add(bs[5].toInt())
-  ent.add(bs[4].toInt())
-  ent.add(bs[3].toInt())
-  ent.add(bs[2].toInt())
-  ent.add(bs[1].toInt())
-  ent.add(bs[0].toInt())
+  ent.add((((lshr56(v) % 256i64) + 256i64) % 256i64).toInt())
+  ent.add((((lshr48(v) % 256i64) + 256i64) % 256i64).toInt())
+  ent.add((((lshr40(v) % 256i64) + 256i64) % 256i64).toInt())
+  ent.add((((lshr32(v) % 256i64) + 256i64) % 256i64).toInt())
+  ent.add((((lshr24(v) % 256i64) + 256i64) % 256i64).toInt())
+  ent.add((((lshr16(v) % 256i64) + 256i64) % 256i64).toInt())
+  ent.add((((lshr8(v) % 256i64) + 256i64) % 256i64).toInt())
+  ent.add((((v % 256i64) + 256i64) % 256i64).toInt())
 }
 
 /// Intern a JVMS §4.4.7 Utf8 constant.  Returns the 1-based pool index.

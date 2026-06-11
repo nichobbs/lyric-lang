@@ -150,3 +150,48 @@ test "record method returning Result Err" {
   val s = match r { case Ok(_) -> "no"; case Err(m) -> m }
   assertEqual(s, "div by zero", "SafeDivider(100).divide(0) -> Err(div by zero)")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Generic record method: typeParams erasure path (#2873).
+// The `get()` return type is `T`, erased to `Object` in the method descriptor;
+// `lowerRecordMethod` / `registerInstanceSigErased` must agree on the erased
+// signature, and `getfield this.value` must read through the Object-typed field.
+// ─────────────────────────────────────────────────────────────────────────────
+record ValHolder[T] {
+  value: T
+  func get(): T {
+    return self.value
+  }
+}
+
+test "generic record method returns its T-typed field (Int instantiation)" {
+  val h = ValHolder(value = 42)
+  val v = h.get()
+  assertEqualInt(v, 42, "ValHolder[Int](42).get() == 42")
+}
+
+test "generic record method returns its T-typed field (String instantiation)" {
+  val h = ValHolder(value = "hello")
+  val s = h.get()
+  assertEqual(s, "hello", "ValHolder[String](hello).get() == hello")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Intra-record self.method() call (#2875): one record method calls another
+// method on `self`, exercising the `selfClass` context for call-site resolution.
+// ─────────────────────────────────────────────────────────────────────────────
+record Chain {
+  n: Int
+  func step(): Int {
+    return self.n + 1
+  }
+  func jump(): Int {
+    return self.step() + 1
+  }
+}
+
+test "record method calls another method on self (intra-record dispatch)" {
+  val c = Chain(n = 10)
+  assertEqualInt(c.step(), 11, "Chain(10).step() == 11")
+  assertEqualInt(c.jump(), 12, "Chain(10).jump() == step() + 1 == 12")
+}
