@@ -1084,6 +1084,40 @@ jobs:
       - name: Restore executable permissions
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
 
+      # MSIL backend self-tests M2a-M2d (native lyric test, D-progress-474 / #66)
+      # — replaces the deleted F# MsilSelfTestM2{a,b,c,d}.fs Expecto wrappers.
+      # M2a pins the #3085 fix (short-name collision `Msil.Kernel.ByteWriter`
+      # vs `Std.Stream.ByteWriter` resolved by codegen scope tiers).  M2b-M2d
+      # import packages exporting module-level `pub val` constants, so
+      # `compilerClosureDllPaths` links the self-hosted-emitted compiler DLLs
+      # staged under `<libdir>/selfhosted` by stage-selfhosted-compiler.sh —
+      # the F#-emitted stage-1 metadata omits `pub val` decls (#3086).
+      - name: MSIL backend self-tests M2a-M2d (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping MSIL backend self-tests"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping MSIL backend self-tests"
+            exit 1
+          fi
+          bash scripts/stage-selfhosted-compiler.sh "$lyric_bin" "$(dirname "$lyric_bin")" .bootstrap/stage1
+          ran=""
+          for t in \
+            lyric-compiler/msil/msil_self_test_m2a.l \
+            lyric-compiler/msil/msil_self_test_m2b.l \
+            lyric-compiler/msil/msil_self_test_m2c.l \
+            lyric-compiler/msil/msil_self_test_m2d.l ; do
+            echo "=== $t ==="
+            "$lyric_bin" test --target dotnet "$t"
+            ran="$ran $t"
+          done
+          echo "MSIL backend self-tests ran:$ran" >> "$GITHUB_STEP_SUMMARY"
+
       # Out/inout-parameter self-test — pins the self-hosted MSIL byref calling
       # convention (#1761): `out`/`inout` parameters are passed by managed
       # pointer so a callee's write reaches the caller.  MSIL target only; JVM

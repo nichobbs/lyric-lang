@@ -3,40 +3,31 @@
 //! Exercises Msil.Tables: row records, MetadataTables accumulator, row-index
 //! allocators (addXxx), coded-index helpers, and the #~ stream serializer.
 //!
-//! Checks emitted (one per line, key=value):
-//!   row_idx_ok         — addXxx returns 1-based indices (1, 2, 3 …)
-//!   count_ok           — table counts match added rows
-//!   coded_rs_ok        — ResolutionScope coded indices are correct
-//!   coded_tdr_ok       — TypeDefOrRef coded indices are correct
-//!   coded_mrp_ok       — MemberRefParent coded indices are correct
-//!   stream_header_ok   — #~ stream header bytes are correct
-//!   stream_valid_ok    — valid bitmask encodes the correct tables
-//!   stream_rowcnt_ok   — row count bytes appear after the bitmasks
-//!   stream_module_ok   — Module row bytes are correct
-//!   stream_assembly_ok — Assembly row bytes appear at correct offset
+//! Run in CI via native `lyric test` (D-progress-474 / #66), linking the
+//! already-compiled compiler DLLs as restored deps:
+//!
+//!   lyric test --target dotnet lyric-compiler/msil/msil_self_test_m2c.l
+//!
+//! Regression coverage for #3086: `Msil.Tables` exports module-level
+//! `pub val` flag constants (MIA_*, MDA_*, TDF_*, HASH_ALG_SHA1, ASF_NONE);
+//! the F#-emitted stage-1 metadata omits `pub val` decls, so this test
+//! links the self-hosted-emitted compiler DLLs staged under
+//! `<libdir>/selfhosted` — without them every constant reference is a
+//! T0020 "unknown name".
+@test_module
 package Msil.SelfTestM2c
 
 import Msil.Tables
 import Msil.Kernel
 import Std.Core
 import Std.Collections
+import Std.Testing
 
-func check(label: in String, ok: in Bool): Unit {
-  if ok {
-    println(label + "=true")
-  } else {
-    println(label + "=false")
-  }
-}
-
-func main(): Unit {
-  // ── Row index allocators ──────────────────────────────────────────────────
-
+test "row-index allocators return 1-based indices" {
   val t = newMetadataTables()
 
   // Add two TypeRef rows; should get indices 1 and 2.
   val tr1 = addTypeRef(t, TypeRefRow(resolutionScope = rsAssemblyRef(1), typeName = 10, typeNamespace = 20))
-
   val tr2 = addTypeRef(t, TypeRefRow(resolutionScope = rsAssemblyRef(1), typeName = 11, typeNamespace = 20))
 
   // Add one MethodDef row; should get index 1.
@@ -52,30 +43,38 @@ func main(): Unit {
     )
   )
 
-  check("row_idx_ok", tr1 == 1 and tr2 == 2 and md1 == 1)
-  check("count_ok", t.typeRefs.count == 2 and t.methodDefs.count == 1)
+  assertEqualInt(tr1, 1, "first TypeRef index")
+  assertEqualInt(tr2, 2, "second TypeRef index")
+  assertEqualInt(md1, 1, "first MethodDef index")
+  assertEqualInt(t.typeRefs.count, 2, "TypeRef row count")
+  assertEqualInt(t.methodDefs.count, 1, "MethodDef row count")
+}
 
-  // ── Coded-index helpers ───────────────────────────────────────────────────
-
+test "coded-index helpers encode tag bits" {
   // ResolutionScope: tag bits=2
   //   rsModule(1) = 1*4+0 = 4
   //   rsAssemblyRef(2) = 2*4+2 = 10
   //   rsTypeRef(3) = 3*4+3 = 15
-  check("coded_rs_ok", rsModule(1) == 4 and rsAssemblyRef(2) == 10 and rsTypeRef(3) == 15)
+  assertEqualInt(rsModule(1), 4, "rsModule")
+  assertEqualInt(rsAssemblyRef(2), 10, "rsAssemblyRef")
+  assertEqualInt(rsTypeRef(3), 15, "rsTypeRef")
 
   // TypeDefOrRef: tag bits=2
   //   tdrTypeDef(1) = 1*4+0 = 4
   //   tdrTypeRef(2) = 2*4+1 = 9
   //   tdrTypeSpec(1) = 1*4+2 = 6
-  check("coded_tdr_ok", tdrTypeDef(1) == 4 and tdrTypeRef(2) == 9 and tdrTypeSpec(1) == 6)
+  assertEqualInt(tdrTypeDef(1), 4, "tdrTypeDef")
+  assertEqualInt(tdrTypeRef(2), 9, "tdrTypeRef")
+  assertEqualInt(tdrTypeSpec(1), 6, "tdrTypeSpec")
 
   // MemberRefParent: tag bits=3
   //   mrpTypeRef(1) = 1*8+1 = 9
   //   mrpMethodDef(2) = 2*8+3 = 19
-  check("coded_mrp_ok", mrpTypeRef(1) == 9 and mrpMethodDef(2) == 19)
+  assertEqualInt(mrpTypeRef(1), 9, "mrpTypeRef")
+  assertEqualInt(mrpMethodDef(2), 19, "mrpMethodDef")
+}
 
-  // ── Stream serializer ─────────────────────────────────────────────────────
-
+test "#~ stream serializer lays out header, bitmasks, and rows" {
   // Build a minimal MetadataTables with one Module row and one Assembly row.
   val t2 = newMetadataTables()
   addModule(t2, ModuleRow(generation = 0, name = 5, mvid = 1, encId = 0, encBaseId = 0))
@@ -99,29 +98,29 @@ func main(): Unit {
   val bs = bufToList(buf)
 
   // Header: bytes[0..3]=reserved=0, [4]=2, [5]=0, [6]=heapSizes=0, [7]=1
-  check(
-    "stream_header_ok",
-    bs[0] == 0 and bs[1] == 0 and bs[2] == 0 and bs[3] == 0 and bs[4] == 2 and bs[5] == 0 and bs[6] == 0 and bs[7] == 1
+  assertTrue(
+    bs[0] == 0 and bs[1] == 0 and bs[2] == 0 and bs[3] == 0 and bs[4] == 2 and bs[5] == 0 and bs[6] == 0 and bs[7] == 1,
+    "stream header bytes"
   )
 
   // Valid bitmask: Module(bit 0)=1 + Assembly(bit 32)=4294967296
   // LE bytes[8..15] encode this 64-bit value.
   // valid = 1 + 4294967296 = 4294967297
   // Bytes: 0x01 0x00 0x00 0x00 0x01 0x00 0x00 0x00
-  check(
-    "stream_valid_ok",
+  assertTrue(
     bs[8] == 1 and bs[9] == 0 and bs[10] == 0 and bs[11] == 0 and bs[12] == 1 and bs[13] == 0 and bs[14] == 0 and
-      bs[15] == 0
+      bs[15] == 0,
+    "valid bitmask bytes"
   )
 
   // Sorted bitmask (bytes[16..23]) = all zeros.
   // Then row counts: Module=1 (4 bytes), Assembly=1 (4 bytes).
   // bytes[24..27] = LE(1) for Module count
   // bytes[28..31] = LE(1) for Assembly count
-  check(
-    "stream_rowcnt_ok",
+  assertTrue(
     bs[24] == 1 and bs[25] == 0 and bs[26] == 0 and bs[27] == 0 and bs[28] == 1 and bs[29] == 0 and bs[30] == 0 and
-      bs[31] == 0
+      bs[31] == 0,
+    "row count bytes"
   )
 
   // Module row starts at byte 32.
@@ -131,12 +130,12 @@ func main(): Unit {
   //   mvid=1       → bytes[36..37]=0x01 0x00
   //   encId=0      → bytes[38..39]=0x00 0x00
   //   encBaseId=0  → bytes[40..41]=0x00 0x00
-  check(
-    "stream_module_ok",
+  assertTrue(
     bs[32] == 0 and bs[33] == 0 and bs[34] == 5 and bs[35] == 0 and bs[36] == 1 and bs[37] == 0 and bs[38] == 0 and
       bs[39] == 0 and
       bs[40] == 0 and
-      bs[41] == 0
+      bs[41] == 0,
+    "Module row bytes"
   )
 
   // Assembly row starts at byte 42.
@@ -145,9 +144,9 @@ func main(): Unit {
   //   hashAlgId=0x8004=32772 → bytes[42..45] LE: 0x04 0x80 0x00 0x00
   //   major=1      → bytes[46..47]=0x01 0x00
   //   minor=0      → bytes[48..49]=0x00 0x00
-  check(
-    "stream_assembly_ok",
+  assertTrue(
     bs[42] == 4 and bs[43] == 128 and bs[44] == 0 and bs[45] == 0 and bs[46] == 1 and bs[47] == 0 and bs[48] == 0 and
-      bs[49] == 0
+      bs[49] == 0,
+    "Assembly row bytes"
   )
 }

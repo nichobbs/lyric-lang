@@ -69,10 +69,6 @@ let main argv =
             KernelBoundaryTests.tests
             JvmSelfTest.tests
             MsilSelfTestM1.tests
-            MsilSelfTestM2a.tests
-            MsilSelfTestM2b.tests
-            MsilSelfTestM2c.tests
-            MsilSelfTestM2d.tests
             MsilSelfTestM3.tests
             MsilSelfTestM4.tests
             MsilSelfTestM5.tests
