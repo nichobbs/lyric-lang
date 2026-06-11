@@ -10,21 +10,36 @@
 #           the full CLI dependency closure (cli/ + ~25 Lyric packages)
 #           and copies the artefacts into `.bootstrap/stage1/`.  These are
 #           the DLLs Track A's AOT entry-point project will reference.
-# Stage 2:  [BLOCKED — A1.2 stage-2 rewrite pending: snapshot the
-#           `Lyric.Lyric.*.dll` outputs from stage 1, recompile the
-#           CLI-bundle driver via stage-1 lyric, then compare bundles
-#           file-by-file.  The current `stage2()` hard-fails because
-#           the COMPILER_SOURCES loop assumes per-source DLL names
-#           (`lexer.dll`, …) that no longer match stage 1's per-
-#           package output.  Set `SKIP_VERIFY=1` to bypass until the
-#           rewrite lands.]
+# Stage 2:  Reproducibility verification, in two parts:
+#
+#           (a) TRUST-ANCHOR GATE (STRICT) — build the full self-hosted stdlib
+#               bundle (`lyric-stdlib/lyric.full.toml`) TWICE via the AOT
+#               `lyric` binary (which routes `--target dotnet` through the
+#               self-hosted `Msil.Bridge`) and assert the two images are
+#               byte-for-byte identical with an exact `cmp`.  The self-hosted
+#               emitter is deterministic by construction — fixed Module MVID
+#               (lowering.l) and zero PE TimeDateStamp (assembler.l), no
+#               wall-clock baked into any heap or resource — so this passes
+#               with no normalization.  This is the property a signed,
+#               reproducible release depends on (Q-dist-001); a regression
+#               here FAILS the build.  See scripts/verify-reproducible-emit.sh.
+#
+#           (b) STAGE-0 DIAGNOSTIC (informational) — compare the stage-1 and
+#               stage-2 F#-emitted CLI-bundle DLLs after precisely zeroing the
+#               intrinsic identity fields (Module MVID via the #GUID heap, PE
+#               TimeDateStamp, PE checksum) using an ECMA-335-aware normalizer.
+#               The F# stage-0 emitter is non-reproducible BY DESIGN — random
+#               MVID, real PE timestamp, and a `DateTime.UtcNow` `build_date`
+#               embedded in `Lyric.SdkVersion` — and is frozen on a deletion
+#               schedule (no new F#), so this part is reported but NEVER fatal.
+#               It exists to track stage-0 drift until the F# path is deleted.
 #
 # Usage:
-#   ./scripts/bootstrap.sh              # all stages (stage 2 fails unless SKIP_VERIFY=1)
+#   ./scripts/bootstrap.sh              # all stages; stage 2 gate (a) is STRICT
 #   ./scripts/bootstrap.sh --stage 0   # build F# compiler only
 #   ./scripts/bootstrap.sh --stage 1   # stages 0 + 1
-#   ./scripts/bootstrap.sh --stage 2   # all stages; stage 2 currently blocked
-#   SKIP_VERIFY=1 ./scripts/bootstrap.sh  # skip the (blocked) reproducibility check
+#   ./scripts/bootstrap.sh --stage 2   # all stages incl. reproducibility gate
+#   SKIP_VERIFY=1 ./scripts/bootstrap.sh  # skip ALL of stage-2 verification
 #   SKIP_CLI_BUNDLE=1 ./scripts/bootstrap.sh  # stage 1 stops after the compiler-package
 #                                              loop; the CLI bundle step is skipped.
 #                                              Useful when iterating on a single
@@ -110,63 +125,6 @@ WRAPPER
 
   ok "Stage 0 complete — $STAGE0_BIN"
 }
-
-# ---------------------------------------------------------------------------
-# Compile a list of Lyric source files with a given lyric binary.
-# compile_files <lyric-bin> <out-dir> <file1> [file2 ...]
-# ---------------------------------------------------------------------------
-compile_files() {
-  local lyric_bin="$1" out_dir="$2"; shift 2
-  mkdir -p "$out_dir"
-  for src in "$@"; do
-    local pkg_dir
-    pkg_dir="$(dirname "$src")"
-    local base
-    base="$(basename "$src" .l)"
-    local out="$out_dir/$base.dll"
-    info "  compile $src -> $out"
-    "$lyric_bin" build "$src" -o "$out" --target dotnet-legacy 2>&1 || \
-      die "compile failed: $src"
-  done
-}
-
-# List of self-hosted compiler source files in dependency order.
-# Each entry is relative to $REPO_ROOT.
-COMPILER_SOURCES=(
-  # Stdlib bundle — built via lyric.toml manifest
-  # (handled separately below via `lyric build --manifest`)
-
-  # Self-hosted lexer/parser/type-checker
-  "lyric-compiler/lyric/lexer.l"
-  "lyric-compiler/lyric/parser/parser_ast.l"
-  "lyric-compiler/lyric/parser/parser_core.l"
-  "lyric-compiler/lyric/parser/parser_exprs.l"
-  "lyric-compiler/lyric/parser/parser_items.l"
-  "lyric-compiler/lyric/type_checker/typechecker_checker.l"
-  "lyric-compiler/lyric/type_checker/typechecker_constfold.l"
-  "lyric-compiler/lyric/type_checker/typechecker_exprs.l"
-  "lyric-compiler/lyric/type_checker/typechecker_resolver.l"
-  "lyric-compiler/lyric/type_checker/typechecker_scope.l"
-  "lyric-compiler/lyric/type_checker/typechecker_signature.l"
-  "lyric-compiler/lyric/type_checker/typechecker_stmts.l"
-  "lyric-compiler/lyric/type_checker/typechecker_symbols.l"
-  "lyric-compiler/lyric/type_checker/typechecker_types.l"
-  "lyric-compiler/lyric/mode_checker/modechecker_mode.l"
-  "lyric-compiler/lyric/mode_checker/modechecker_check.l"
-  "lyric-compiler/lyric/contract_elaborator/elaborator.l"
-  "lyric-compiler/lyric/propagate.l"
-  "lyric-compiler/lyric/test_synth/test_synth.l"
-
-  # MSIL backend
-  "lyric-compiler/msil/heaps.l"
-  "lyric-compiler/msil/tables.l"
-  "lyric-compiler/msil/opcodes.l"
-  "lyric-compiler/msil/pe.l"
-  "lyric-compiler/msil/assembler.l"
-  "lyric-compiler/msil/lowering.l"
-  "lyric-compiler/msil/codegen.l"
-  "lyric-compiler/msil/bridge.l"
-)
 
 # ---------------------------------------------------------------------------
 # Stage 1 — compile the Lyric compiler using the F# bootstrap (stage 0)
@@ -398,63 +356,99 @@ compare_stage1_stage2_dlls() {
     die "python3 or python is required for the stage-2 reproducibility comparison"
   fi
   "$python_bin" - "$f1" "$f2" <<'PY' >/dev/null
-# Normalize known non-deterministic metadata fields in two .NET PE/ECMA-335
-# DLLs before byte-comparing them.
+# Precisely normalize the INTRINSIC IDENTITY fields of two .NET PE/ECMA-335
+# images before byte-comparing them, by parsing the PE + metadata layout
+# rather than guessing at "16-byte differing runs".  This avoids the
+# false-positive failure mode of a heuristic mask (a run can split when two
+# random GUIDs coincidentally share a byte) AND the false-negative risk of
+# masking a real diff that merely happens to be 16 bytes long.
 #
-# Fields zeroed:
-#   1. Bytes 0x88–0x8b — the PE timestamp in the COFF file header.
-#   2. Up to 4 contiguous 16-byte runs of differing bytes starting at or after
-#      offset 0x90.  These absorb the Module MVID (a GUID stored in the #GUID
-#      metadata heap) and the PDB GUID (a second GUID sometimes emitted in the
-#      debug directory).  Each run must be exactly 16 bytes; a run of any other
-#      length indicates a non-GUID difference and causes a hard failure.
+# Fields zeroed (located, not guessed):
+#   * PE COFF TimeDateStamp (4 bytes in the COFF file header).
+#   * PE optional-header CheckSum (4 bytes).
+#   * The Module MVID — the first 16-byte GUID in the #GUID metadata heap,
+#     reached via the CLI header -> metadata root -> stream table.
 #
-# Rationale for the 16-byte run approach: locating the MVID via full ECMA-335
-# table parsing would be more precise but requires handling PE optional header
-# variants, stream offsets, and heap indirection — significantly more code for
-# marginal benefit.  The constraint that every accepted differing run must be
-# exactly 16 bytes makes false negatives (masking a real code change) extremely
-# unlikely in practice.  All zeroed offsets are logged to stderr so they can be
-# audited if the check ever passes unexpectedly.
+# Everything else is compared byte-for-byte.  In particular a genuine
+# nondeterminism such as the F# stage-0 emitter's `build_date` wall-clock
+# (embedded in the `Lyric.SdkVersion` resource of the bundle) is NOT masked
+# and will surface as a real difference — which is the intended behaviour for
+# this informational stage-0 diagnostic.
 from pathlib import Path
 import sys
 
-f1_path = Path(sys.argv[1])
-f2_path = Path(sys.argv[2])
+def u16(b, o): return int.from_bytes(b[o:o+2], 'little')
+def u32(b, o): return int.from_bytes(b[o:o+4], 'little')
+
+def identity_regions(b):
+    """Return [(offset, length), ...] for TimeDateStamp, CheckSum, MVID."""
+    regions = []
+    if b[0:2] != b'MZ':
+        return regions
+    pe = u32(b, 0x3c)
+    if b[pe:pe+4] != b'PE\x00\x00':
+        return regions
+    coff = pe + 4
+    # COFF header: Machine[2], NumberOfSections[2], TimeDateStamp[4], ...
+    regions.append((coff + 4, 4))                 # COFF TimeDateStamp
+    num_sections = u16(b, coff + 2)
+    opt_size = u16(b, coff + 16)
+    opt = coff + 20
+    magic = u16(b, opt)
+    regions.append((opt + 64, 4))                 # optional-header CheckSum
+    # Data directories: PE32 -> dirs at opt+96, PE32+ -> dirs at opt+112.
+    dd = opt + (96 if magic == 0x10b else 112)
+    cli_rva = u32(b, dd + 14 * 8)                  # data dir 14 = CLI header
+    if cli_rva == 0:
+        return regions
+    sections = opt + opt_size
+    def rva_to_off(rva):
+        for i in range(num_sections):
+            s = sections + i * 40
+            va = u32(b, s + 12)
+            vsz = u32(b, s + 8)
+            rawsz = u32(b, s + 16)
+            raw = u32(b, s + 20)
+            if va <= rva < va + max(vsz, rawsz):
+                return raw + (rva - va)
+        return None
+    cli = rva_to_off(cli_rva)
+    if cli is None:
+        return regions
+    md = rva_to_off(u32(b, cli + 8))              # CLI header -> Metadata RVA
+    if md is None or b[md:md+4] != b'BSJB':
+        return regions
+    ver_len = u32(b, md + 12)
+    p = md + 16 + ((ver_len + 3) // 4 * 4)
+    p += 2                                         # flags
+    n_streams = u16(b, p); p += 2
+    for _ in range(n_streams):
+        s_off = u32(b, p); p += 4
+        u32(b, p); p += 4                          # stream size (unused)
+        name_start = p
+        while b[p] != 0:
+            p += 1
+        name = b[name_start:p]
+        p += 1
+        while (p - name_start) % 4 != 0:           # pad name to 4-byte boundary
+            p += 1
+        if name == b'#GUID':
+            # The module Mvid is GUID index 1 = the first 16 bytes of the heap.
+            regions.append((md + s_off, 16))
+            break
+    return regions
+
+f1_path = Path(sys.argv[1]); f2_path = Path(sys.argv[2])
 f1 = bytearray(f1_path.read_bytes())
 f2 = bytearray(f2_path.read_bytes())
 if len(f1) != len(f2):
     sys.exit(1)
 
-# Zero PE COFF timestamp (4 bytes at 0x88).
-for off in range(0x88, 0x8c):
-    f1[off] = 0
-    f2[off] = 0
-
-# Iteratively zero each 16-byte GUID-sized differing run in the body.
-# Cap at 4 to avoid masking a pathological case.
-MAX_GUID_REGIONS = 4
-zeroed_regions = []
-search_from = 0x90
-for _ in range(MAX_GUID_REGIONS):
-    first = next((i for i in range(search_from, len(f1)) if f1[i] != f2[i]), None)
-    if first is None:
-        break
-    end = first
-    while end < len(f1) and f1[end] != f2[end]:
-        end += 1
-    region_len = end - first
-    if region_len != 16:
-        print(f"[compare_dlls] non-GUID diff region at 0x{first:x}..0x{end:x} "
-              f"({region_len} bytes) in {f1_path.name}", file=sys.stderr)
-        sys.exit(1)
-    print(f"[compare_dlls] zeroing GUID region at 0x{first:x}..0x{end:x} "
-          f"in {f1_path.name}", file=sys.stderr)
-    zeroed_regions.append((first, end))
-    for off in range(first, end):
-        f1[off] = 0
-        f2[off] = 0
-    search_from = end
+for buf in (f1, f2):
+    for off, length in identity_regions(buf):
+        for i in range(off, off + length):
+            if 0 <= i < len(buf):
+                buf[i] = 0
 
 if f1 != f2:
     sys.exit(1)
@@ -463,44 +457,98 @@ PY
 }
 
 # ---------------------------------------------------------------------------
-# Stage 2 — recompile using the stage-1 self-hosted MSIL emitter
+# Stage 2 (a) — trust-anchor reproducibility gate (STRICT)
+#
+# Build two corpora TWICE through the self-hosted MSIL backend and assert each
+# is byte-for-byte identical: (i) the full stdlib bundle, and (ii) the WHOLE
+# Lyric.Cli compiler closure (every Lyric.* / Msil.* / Jvm.* package + its
+# stdlib import closure).  This is the property a signed, reproducible release
+# depends on (Q-dist-001).  The self-hosted emitter is deterministic by
+# construction, so this passes with an exact `cmp` — no normalization — and a
+# regression FAILS the build.
+# ---------------------------------------------------------------------------
+verify_selfhosted_reproducible() {
+  info "Stage 2 (a): self-hosted reproducibility gate (STRICT)"
+
+  # The AOT entry-point binary routes `--target dotnet` through the self-hosted
+  # Msil.Bridge.  It embeds the stage-1 DLLs at C#-build time, so rebuild it
+  # (clean) now that stage 1 has just produced fresh outputs.
+  # Honour $BUILD_CONFIG (CI's convention) so the binary path matches however
+  # the AOT project was configured; default to Release for standalone runs
+  # (stage 0 publishes Release).
+  local build_config="${BUILD_CONFIG:-Release}"
+  local aot_proj="$COMPILER_DIR/src/Lyric.Cli.Aot"
+  local aot_bin="$aot_proj/bin/$build_config/net10.0/lyric"
+  info "  building AOT entry-point (Lyric.Cli.Aot, $build_config) against the fresh stage-1 DLLs"
+  dotnet build "$aot_proj" --configuration "$build_config" --no-incremental \
+    > "$BUILD_DIR/aot-build.log" 2>&1 || \
+    die "AOT entry-point build failed (see $BUILD_DIR/aot-build.log)"
+  [[ -x "$aot_bin" ]] || die "AOT lyric binary not found at $aot_bin after build"
+
+  # (i) Stdlib bundle: build lyric.full.toml twice; the single output must be
+  # byte-identical.
+  "$REPO_ROOT/scripts/verify-reproducible-emit.sh" \
+    manifest "$aot_bin" "$STDLIB_DIR/lyric.full.toml" || \
+    die "self-hosted reproducibility gate FAILED — the stdlib bundle is not byte-stable"
+
+  # (ii) Whole compiler: self-host-compile the entire Lyric.Cli closure twice;
+  # every emitted DLL must be byte-identical.  This extends the reproducible
+  # corpus from the stdlib to the entire self-hosted compiler.
+  "$REPO_ROOT/scripts/verify-reproducible-emit.sh" \
+    closure "$aot_bin" || \
+    die "self-hosted reproducibility gate FAILED — the compiler closure is not byte-stable"
+
+  ok "Self-hosted emit is byte-for-byte reproducible (trust-anchor gate passed)"
+}
+
+# ---------------------------------------------------------------------------
+# Stage 2 (b) — stage-0 reproducibility diagnostic (INFORMATIONAL)
+#
+# Reproduce the F# stage-0 CLI-bundle precompile and compare the stage-1 and
+# stage-2 DLLs after precisely normalizing the intrinsic identity fields (MVID,
+# PE timestamp, checksum).  The F# emitter is non-reproducible by design (it
+# bakes a `build_date` wall-clock into the bundle's `Lyric.SdkVersion`) and is
+# frozen on a deletion schedule, so this is reported but NEVER fatal — it
+# tracks stage-0 drift until the F# path is deleted.
 # ---------------------------------------------------------------------------
 stage2() {
-  info "Stage 2: recompiling Lyric compiler packages with stage-1 self-hosted emitter"
-
-  # New approach: reproduce the CLI-bundle precompile under the
-  # stage-1 self-hosted layout and compare the per-package DLLs
-  # produced by stage-1 and stage-2 file-by-file.
-
   if [[ "$SKIP_VERIFY" == "1" ]]; then
-    info "SKIP_VERIFY=1; skipping stage-2 reproducibility check"
+    info "SKIP_VERIFY=1; skipping all stage-2 reproducibility verification"
     return 0
   fi
 
+  # (a) The real gate: the self-hosted emitter must be byte-stable.
+  verify_selfhosted_reproducible
+
+  # (b) Informational stage-0 diagnostic.
+  info "Stage 2 (b): stage-0 (F#) reproducibility diagnostic (informational)"
+
   mkdir -p "$STAGE2_DIR"
 
-  # First, compile the stdlib bundle via the self-hosted path so we
+  # First, compile the stdlib bundle via the F# stage-0 path so we
   # produce the top-level Lyric.Stdlib.dll the stage-1 bundle contains.
-  info "  compiling stdlib bundle (self-hosted MSIL path)"
+  info "  compiling stdlib bundle (F# stage-0 path)"
   LYRIC_STD_PATH="$STAGE1_DIR" \
     "$STAGE0_BIN" --internal-manifest-build "$STDLIB_DIR/lyric.toml" \
     -o "$STAGE2_DIR/Lyric.Stdlib.dll" --target dotnet 2>&1 || \
     die "stage-2 stdlib bundle build failed"
 
-  # Create a short driver (same as stage1_cli_bundle) but run it with
-  # LYRIC_STD_PATH pointing at $STAGE1_DIR so the SelfHostedMsil bridge
-  # loads the stage-1 DLLs and the emitted cache contains the per-package
-  # outputs we want to compare.
+  # Re-run the same CLI-bundle precompile the stage-1 step used (identical
+  # driver, including the direct Std.Testing.Mocking import) so the two bundles
+  # contain exactly the same set of DLLs and the comparison is apples-to-apples.
   local driver_dir="$BUILD_DIR/stage2-cli-driver"
   rm -rf "$driver_dir"
   mkdir -p "$driver_dir"
 
   cat > "$driver_dir/driver.l" <<'EOF'
 // Auto-generated driver for the stage-2 CLI-bundle precompile.
+// Mirrors the stage-1 driver exactly (same import closure) so the stage-1 vs
+// stage-2 DLL sets line up one-to-one.
 package Lyric.CliBundleStage2
 import Lyric.Cli
 import Std.Time
 import Std.Math
+import Std.Testing.Mocking
 func main(): Unit { }
 EOF
 
@@ -567,9 +615,12 @@ EOF
     die "stage-2 CLI bundle: Lyric.Lyric.Cli.dll not found in $STAGE2_DIR after copy"
 
   # -------------------------------------------------------------------------
-  # Compare stage-1 and stage-2 outputs file-by-file.
+  # Compare stage-1 and stage-2 outputs file-by-file (informational).
+  # Intrinsic identity fields (MVID, PE timestamp, checksum) are precisely
+  # normalized; a genuine nondeterminism such as the F# `build_date` wall-clock
+  # is NOT masked and surfaces as a real DIFF.
   # -------------------------------------------------------------------------
-  info "Reproducibility check: comparing stage-1 and stage-2 bundle outputs"
+  info "  comparing stage-1 vs stage-2 F# bundle outputs (identity fields normalized)"
   local diffs=0
   shopt -s nullglob
   for f in "$STAGE1_DIR"/*.dll; do
@@ -583,7 +634,7 @@ EOF
       continue
     fi
     if ! compare_stage1_stage2_dlls "$f1" "$f2"; then
-      echo "  DIFF:    $name (stage-1 vs stage-2 differ after normalizing known metadata fields)" >&2
+      echo "  DIFF:    $name (stage-1 vs stage-2 differ after normalizing identity fields)" >&2
       diffs=$((diffs + 1))
     else
       echo "  MATCH:   $name"
@@ -603,88 +654,12 @@ EOF
   shopt -u nullglob
 
   if [[ $diffs -eq 0 ]]; then
-    ok "Reproducible bootstrap: all DLLs match between stage-1 and stage-2"
+    ok "Stage-0 diagnostic: all F# bundle DLLs match (modulo intrinsic identity fields)"
   else
-    echo "[bootstrap] $diffs DLL(s) differ between stage-1 and stage-2"
-    if [[ "${STRICT_VERIFY:-0}" == "1" ]]; then
-      die "reproducibility check failed ($diffs diffs)"
-    fi
-  fi
-}
-
-# The legacy stage 2 body — kept for reference until the A1.2 stage-2
-# rewrite lands.  Not currently reachable because
-# stage2() above hard-fails (or returns when SKIP_VERIFY=1); delete
-# this function entirely once the A1.2 rewrite ships its replacement
-# (`import Lyric.Cli` bundle compile + per-package byte-for-byte diff).
-_stage2_legacy() {
-  info "Stage 2: recompiling Lyric compiler packages with stage-1 self-hosted emitter"
-
-  # The stage-1 lyric binary: same F# host, but --target dotnet now routes
-  # through SelfHostedMsil which loads Msil.Bridge from the stage-1 DLLs.
-  # We point LYRIC_STD_PATH at stage1/ so the bridge can find stdlib DLLs.
-  local stage1_lyric="$STAGE0_BIN"   # same host binary
-  mkdir -p "$STAGE2_DIR"
-
-  info "  compiling stdlib bundle (self-hosted MSIL path)"
-  LYRIC_STD_PATH="$STAGE1_DIR" \
-    "$stage1_lyric" --internal-manifest-build "$STDLIB_DIR/lyric.toml" \
-    -o "$STAGE2_DIR/Lyric.Stdlib.dll" --target dotnet 2>&1 || \
-    die "stage-2 stdlib bundle build failed"
-
-  for rel in "${COMPILER_SOURCES[@]}"; do
-    local src="$REPO_ROOT/$rel"
-    local base
-    base="$(basename "$src" .l)"
-    local out="$STAGE2_DIR/$base.dll"
-    [[ -f "$src" ]] || die "source not found: $src"
-    info "  compile $rel -> $STAGE2_DIR/$base.dll"
-    LYRIC_STD_PATH="$STAGE2_DIR" \
-      "$stage1_lyric" build "$src" -o "$out" --target dotnet 2>&1 || \
-      die "compile failed (stage 2): $rel"
-  done
-
-  ok "Stage 2 complete — output in $STAGE2_DIR"
-
-  if [[ "$SKIP_VERIFY" == "1" ]]; then
-    info "SKIP_VERIFY=1; skipping byte-for-byte reproducibility check"
-    return
-  fi
-
-  # ---------------------------------------------------------------------------
-  # Reproducibility check: stage-1 and stage-2 DLLs must be identical.
-  # A mismatch means the self-hosted emitter produces different output from
-  # the F# emitter — this is expected until full MSIL parity is reached.
-  # The script reports diffs but does not fail on them; set STRICT_VERIFY=1
-  # to treat any diff as a fatal error.
-  # ---------------------------------------------------------------------------
-  info "Reproducibility check: comparing stage-1 and stage-2 outputs"
-  local diffs=0
-  for rel in "${COMPILER_SOURCES[@]}"; do
-    local base
-    base="$(basename "$rel" .l)"
-    local f1="$STAGE1_DIR/$base.dll"
-    local f2="$STAGE2_DIR/$base.dll"
-    if [[ ! -f "$f1" || ! -f "$f2" ]]; then
-      echo "  MISSING: $base.dll (one or both stages)" >&2
-      diffs=$((diffs + 1))
-      continue
-    fi
-    if ! cmp -s "$f1" "$f2"; then
-      echo "  DIFF:    $base.dll (stage-1 vs stage-2 not identical)"
-      diffs=$((diffs + 1))
-    else
-      echo "  MATCH:   $base.dll"
-    fi
-  done
-
-  if [[ $diffs -eq 0 ]]; then
-    ok "Reproducible bootstrap: all DLLs match between stage-1 and stage-2"
-  else
-    echo "[bootstrap] $diffs DLL(s) differ between stage-1 and stage-2"
-    if [[ "${STRICT_VERIFY:-0}" == "1" ]]; then
-      die "reproducibility check failed ($diffs diffs)"
-    fi
+    # NEVER fatal: the F# stage-0 emitter is non-reproducible by design (it
+    # embeds a `build_date` wall-clock in `Lyric.SdkVersion`) and is frozen on
+    # a deletion schedule.  The STRICT gate is the self-hosted check in (a).
+    info "  stage-0 diagnostic: $diffs F# bundle DLL(s) differ (expected — see Lyric.Stdlib.dll build_date)"
   fi
 }
 

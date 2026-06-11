@@ -24182,3 +24182,39 @@ arm — GraalVM `native-image` support remains unimplemented (#1975).
 limitation caveat), `book/chapters/appendix-b-quick-reference.md` (added
 project-mode examples), `docs/10-bootstrap-progress.md` D-progress-103
 deferred item marked shipped.
+
+### D-progress-502 — Reproducible-emit gate on the self-hosted MSIL backend (Q-dist-001 prerequisite)
+
+`scripts/bootstrap.sh` stage 2 is no longer BLOCKED.  It now runs a STRICT
+reproducibility gate against the *trust anchor* — the self-hosted MSIL emitter
+that produces the shipped binary — plus an informational stage-0 diagnostic.
+
+- **Stage 2 (a), STRICT.** `scripts/verify-reproducible-emit.sh` (modes
+  `manifest` and `closure`) builds two corpora twice via the AOT `lyric` binary
+  (self-hosted `Msil.Bridge`) and asserts a byte-for-byte exact `cmp` — no
+  normalization: (i) the full stdlib bundle `lyric-stdlib/lyric.full.toml`, and
+  (ii) the WHOLE `Lyric.Cli` compiler closure (103/103 DLLs — every `Lyric.*` /
+  `Msil.*` / `Jvm.*` package + stdlib import closure, via
+  `--internal-perpackage-build`).  The self-hosted backend is deterministic by
+  construction (fixed all-zero Module MVID in `lyric-compiler/msil/lowering.l`,
+  zero PE `TimeDateStamp` in `assembler.l`, no embedded wall-clock).  Wired into
+  CI as a dedicated step ("Verify reproducible self-hosted emit").  A regression
+  fails the build.
+- **Stage 2 (b), informational.** The stage-1-vs-stage-2 F#-bundle comparison is
+  retained but non-fatal.  Its normalizer was rewritten from a fragile
+  "16-byte differing run" heuristic to a precise ECMA-335 parse that zeroes only
+  the COFF `TimeDateStamp`, optional-header `CheckSum`, and the Module MVID
+  (first 16 bytes of the `#GUID` heap).  104/105 per-package DLLs now match
+  exactly; the lone DIFF (`Lyric.Stdlib.dll`) is the F# emitter's
+  `DateTime.UtcNow` `build_date` baked into `Lyric.SdkVersion` — a
+  non-reproducibility that is *by design* in the frozen F# stage 0 and cannot
+  be fixed without new F#.
+
+**Still open (the long pole):** the self-hosted front-end already *compiles* the
+whole compiler closure and (per this gate) emits it reproducibly run-to-run.
+What remains is the cross-emitter byte-match — the F#-emitted self-hosted
+compiler vs. a self-hosted-emitted one are not byte-identical (the F# stage-0
+emitter is non-reproducible, and the two emitters' codegen still diverges, e.g.
+the generic arity-suffix fix the self-hosted emitter carries; docs/43).  That
+residual fixed point tracks docs/41 §R7.  See D-progress-502 in
+`docs/03-decision-log.md`.
