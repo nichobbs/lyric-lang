@@ -39,6 +39,13 @@ pub func vlIsProofRequired(lvl: in VerificationLevel): Bool {
   }
 }
 
+pub func vlIsAxiom(lvl: in VerificationLevel): Bool {
+  match lvl {
+    case VLAxiom -> true
+    case _ -> false
+  }
+}
+
 // callee dominates caller iff callee.rank >= caller.rank (callee is at least as strict).
 pub func vlDominates(callee: in VerificationLevel, caller: in VerificationLevel): Bool {
   vlRank(callee) >= vlRank(caller)

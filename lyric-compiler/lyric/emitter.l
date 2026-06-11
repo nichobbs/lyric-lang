@@ -509,6 +509,34 @@ func extractPackageName(source: in String): String {
 // removed.  Used to strip the redundant preamble from files 2-N when
 // merging a multi-file package (e.g. `Lyric.Parser`'s five `.l` files)
 // into a single source string for the bridge.
+// Extract file-level annotation lines (the `@...` lines that appear before
+// the `package` declaration) from a Lyric source file.  These are stripped by
+// `stripPackageAndImports` so they don't dangle mid-concatenation; they must
+// be re-added to the reconstructed payload header so the mode checker sees the
+// correct verification level (e.g. `@axiom` for kernel packages).
+func extractFileLevelAnnotations(source: in String): String {
+  val lines: List[String] = newList()
+  var lineStart = 0
+  var pos = 0
+  var done = false
+  while pos <= source.length and not done {
+    val atEnd = pos == source.length
+    val isNewline = not atEnd and source.substring(pos, 1) == "\n"
+    if atEnd or isNewline {
+      val lineLen = pos - lineStart
+      val line = if lineLen > 0 { source.substring(lineStart, lineLen) } else { "" }
+      if Str.startsWith(line, "package ") {
+        done = true
+      } else if Str.startsWith(line, "@") {
+        lines.add(line)
+      }
+      lineStart = pos + 1
+    }
+    pos = pos + 1
+  }
+  Str.joinList("\n", lines)
+}
+
 func stripPackageAndImports(source: in String): String {
   val lines: List[String] = newList()
   var lineStart = 0
@@ -641,10 +669,12 @@ func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[P
 
   // Pass 1: build a registry of every compiler package, grouping each
   // package's source files (sorted for determinism) into parallel
-  // lists: name, accumulated body text, and the union of import lines.
+  // lists: name, accumulated body text, the union of import lines, and
+  // the file-level verification annotation (from the first file).
   val regNames: List[String] = newList()
   val regBodies: List[String] = newList()
   val regImports: List[List[String]] = newList()
+  val regAnnotations: List[String] = newList()
 
   val sortedFiles = sortStrings(files)
   var fi = 0
@@ -672,6 +702,7 @@ func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[P
       regBodies.add("")
       val imps: List[String] = newList()
       regImports.add(imps)
+      regAnnotations.add(extractFileLevelAnnotations(src))
       idx = regNames.count - 1
     }
     val body = stripPackageAndImports(src)
@@ -767,13 +798,15 @@ func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[P
   }
 
   // Pass 4: materialise a payload per package in dependency order —
-  // `package <name>`, the unioned import preamble, then merged bodies.
+  // optional file-level annotation, `package <name>`, import preamble, bodies.
   val payloads: List[ProjectPackagePayload] = newList()
   var ni = 0
   while ni < ordered.count {
     val name = ordered[ni]
     val ridx = indexOfString(regNames, name)
-    val combined = "package " + name + "\n" + Str.joinList("\n", regImports[ridx]) + "\n" + regBodies[ridx]
+    val ann = regAnnotations[ridx]
+    val header = if Str.length(ann) > 0 { ann + "\n" + "package " + name + "\n" } else { "package " + name + "\n" }
+    val combined = header + Str.joinList("\n", regImports[ridx]) + "\n" + regBodies[ridx]
     payloads.add(ProjectPackagePayload(name = name, source = combined))
     ni = ni + 1
   }
@@ -865,6 +898,7 @@ func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): List[Proj
   val regNames: List[String] = newList()
   val regBodies: List[String] = newList()
   val regImports: List[List[String]] = newList()
+  val regAnnotations: List[String] = newList()
 
   val sortedFiles = sortStrings(files)
   var fi = 0
@@ -900,6 +934,7 @@ func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): List[Proj
       regBodies.add("")
       val imps: List[String] = newList()
       regImports.add(imps)
+      regAnnotations.add(extractFileLevelAnnotations(src))
       idx = regNames.count - 1
     }
     val body = stripPackageAndImports(src)
@@ -985,7 +1020,9 @@ func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): List[Proj
   while ni < ordered.count {
     val name = ordered[ni]
     val ridx = indexOfString(regNames, name)
-    val combined = "package " + name + "\n" + Str.joinList("\n", regImports[ridx]) + "\n" + regBodies[ridx]
+    val ann = regAnnotations[ridx]
+    val header = if Str.length(ann) > 0 { ann + "\n" + "package " + name + "\n" } else { "package " + name + "\n" }
+    val combined = header + Str.joinList("\n", regImports[ridx]) + "\n" + regBodies[ridx]
     payloads.add(ProjectPackagePayload(name = name, source = combined))
     ni = ni + 1
   }

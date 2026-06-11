@@ -167,11 +167,10 @@ pub func withTextBody(request: in HttpRequest, text: in String): HttpRequest {
 /// helpers or `ensureSuccess`.
 @stable(since = "1.0")
 pub async func sendAsync(request: in HttpRequest): Result[HttpResponse, HttpError] {
-  return try {
-    val response = await HostHttp.hostSend(HostHttp.hostDefaultClient(), request.handle)
-    Ok(value = HttpResponse(handle = response, url = request.url))
-  } catch Bug as b {
-    Err(error = ConnectionFailed(url = request.url, message = b.message))
+  val result = await HostHttp.hostSendSafe(HostHttp.hostDefaultClient(), request.handle)
+  match result {
+    case Err(message) -> return Err(error = ConnectionFailed(url = request.url, message = message))
+    case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = request.url))
   }
 }
 
@@ -187,11 +186,12 @@ pub async func sendAsync(request: in HttpRequest): Result[HttpResponse, HttpErro
 pub async func getAsync(url: in String): Result[HttpResponse, HttpError] {
   match Url.tryFrom(url) {
     case Err(e) -> return Err(error = e)
-    case Ok(parsed) -> return try {
-      val response = await HostHttp.hostGet(HostHttp.hostDefaultClient(), parsed.value)
-      Ok(value = HttpResponse(handle = response, url = parsed.value))
-    } catch Bug as b {
-      Err(error = ConnectionFailed(url = parsed.value, message = b.message))
+    case Ok(parsed) -> {
+      val result = await HostHttp.hostGetSafe(HostHttp.hostDefaultClient(), parsed.value)
+      match result {
+        case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
+        case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = parsed.value))
+      }
     }
   }
 }
@@ -205,11 +205,12 @@ pub async func getAsync(url: in String): Result[HttpResponse, HttpError] {
 pub async func postAsync(url: in String, body: in String): Result[HttpResponse, HttpError] {
   match Url.tryFrom(url) {
     case Err(e) -> return Err(error = e)
-    case Ok(parsed) -> return try {
-      val response = await HostHttp.hostPostString(HostHttp.hostDefaultClient(), parsed.value, body, "text/plain; charset=utf-8")
-      Ok(value = HttpResponse(handle = response, url = parsed.value))
-    } catch Bug as b {
-      Err(error = ConnectionFailed(url = parsed.value, message = b.message))
+    case Ok(parsed) -> {
+      val result = await HostHttp.hostPostStringSafe(HostHttp.hostDefaultClient(), parsed.value, body, "text/plain; charset=utf-8")
+      match result {
+        case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
+        case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = parsed.value))
+      }
     }
   }
 }
@@ -267,10 +268,10 @@ pub func HttpResponse.ensureSuccess(response: in HttpResponse): Result[HttpRespo
 ///   failures.
 @stable(since = "1.0")
 pub async func HttpResponse.bodyText(response: in HttpResponse): Result[String, IOError] {
-  return try {
-    Ok(value = await HostHttp.hostReadBodyText(response.handle))
-  } catch Bug as b {
-    Err(error = IoError(path = response.url, message = b.message))
+  val result = await HostHttp.hostReadBodyTextSafe(response.handle)
+  match result {
+    case Err(message) -> return Err(error = IoError(path = response.url, message = message))
+    case Ok(text) -> return Ok(value = text)
   }
 }
 
@@ -280,10 +281,10 @@ pub async func HttpResponse.bodyText(response: in HttpResponse): Result[String, 
 /// - `IoError`: host body read, cancellation, or stream failures.
 @stable(since = "1.0")
 pub async func HttpResponse.bodyBytes(response: in HttpResponse): Result[slice[Byte], IOError] {
-  return try {
-    Ok(value = await HostHttp.hostReadBodyBytes(response.handle))
-  } catch Bug as b {
-    Err(error = IoError(path = response.url, message = b.message))
+  val result = await HostHttp.hostReadBodyBytesSafe(response.handle)
+  match result {
+    case Err(message) -> return Err(error = IoError(path = response.url, message = message))
+    case Ok(bytes) -> return Ok(value = bytes)
   }
 }
 
@@ -329,11 +330,10 @@ pub async func retry(request: in HttpRequest, maxAttempts: in Int, backoffMs: in
 pub async func sendWithCancelAsync(
   request: in HttpRequest, token: in CancellationToken
 ): Result[HttpResponse, HttpError] {
-  return try {
-    val response = await HostHttp.hostSendWithCancel(HostHttp.hostDefaultClient(), request.handle, token)
-    Ok(value = HttpResponse(handle = response, url = request.url))
-  } catch Bug as b {
-    Err(error = ConnectionFailed(url = request.url, message = b.message))
+  val result = await HostHttp.hostSendWithCancelSafe(HostHttp.hostDefaultClient(), request.handle, token)
+  match result {
+    case Err(message) -> return Err(error = ConnectionFailed(url = request.url, message = message))
+    case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = request.url))
   }
 }
 
@@ -350,11 +350,10 @@ pub async func sendWithTimeoutAsync(request: in HttpRequest, timeoutMs: in Int):
   defer {
     disposeSource(src)
   }
-  return try {
-    val response = await HostHttp.hostSendWithCancel(HostHttp.hostDefaultClient(), request.handle, tok)
-    Ok(value = HttpResponse(handle = response, url = request.url))
-  } catch Bug as b {
-    Err(error = ConnectionFailed(url = request.url, message = b.message))
+  val result = await HostHttp.hostSendWithCancelSafe(HostHttp.hostDefaultClient(), request.handle, tok)
+  match result {
+    case Err(message) -> return Err(error = ConnectionFailed(url = request.url, message = message))
+    case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = request.url))
   }
 }
 
@@ -363,11 +362,12 @@ pub async func sendWithTimeoutAsync(request: in HttpRequest, timeoutMs: in Int):
 pub async func getWithCancelAsync(url: in String, token: in CancellationToken): Result[HttpResponse, HttpError] {
   match Url.tryFrom(url) {
     case Err(e) -> return Err(error = e)
-    case Ok(parsed) -> return try {
-      val response = await HostHttp.hostGetWithCancel(HostHttp.hostDefaultClient(), parsed.value, token)
-      Ok(value = HttpResponse(handle = response, url = parsed.value))
-    } catch Bug as b {
-      Err(error = ConnectionFailed(url = parsed.value, message = b.message))
+    case Ok(parsed) -> {
+      val result = await HostHttp.hostGetWithCancelSafe(HostHttp.hostDefaultClient(), parsed.value, token)
+      match result {
+        case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
+        case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = parsed.value))
+      }
     }
   }
 }
@@ -392,11 +392,12 @@ pub async func postWithCancelAsync(
 ): Result[HttpResponse, HttpError] {
   match Url.tryFrom(url) {
     case Err(e) -> return Err(error = e)
-    case Ok(parsed) -> return try {
-      val response = await HostHttp.hostPostStringWithCancel(HostHttp.hostDefaultClient(), parsed.value, body, "text/plain; charset=utf-8", token)
-      Ok(value = HttpResponse(handle = response, url = parsed.value))
-    } catch Bug as b {
-      Err(error = ConnectionFailed(url = parsed.value, message = b.message))
+    case Ok(parsed) -> {
+      val result = await HostHttp.hostPostStringWithCancelSafe(HostHttp.hostDefaultClient(), parsed.value, body, "text/plain; charset=utf-8", token)
+      match result {
+        case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
+        case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = parsed.value))
+      }
     }
   }
 }
@@ -420,10 +421,10 @@ pub async func postWithTimeoutAsync(url: in String, body: in String, timeoutMs: 
 pub async func HttpResponse.bodyTextWithCancel(
   response: in HttpResponse, token: in CancellationToken
 ): Result[String, IOError] {
-  return try {
-    Ok(value = await HostHttp.hostReadBodyTextWithCancel(response.handle, token))
-  } catch Bug as b {
-    Err(error = IoError(path = response.url, message = b.message))
+  val result = await HostHttp.hostReadBodyTextWithCancelSafe(response.handle, token)
+  match result {
+    case Err(message) -> return Err(error = IoError(path = response.url, message = message))
+    case Ok(text) -> return Ok(value = text)
   }
 }
 
