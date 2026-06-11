@@ -165,8 +165,8 @@ supporting all language features."
 | C1 | Type checker is advisory on the single-file build path (`reportDiagnostics`), fatal on the project path (`reportAndAbort`). Type-broken single files compile to broken IL silently; same source diverges between paths. **Gate progress (#1488):** the single-file false-positive surface is being closed category by category before the flip. **(A) `result` contextual-keyword shadowing cleared (D086, D-progress-420):** a local named `result` now types as its binding, not the return type, clearing the `T0032`/`T0060` swarm on `environment_tests`/`path_tests`. **(C) argument-type overload resolution cleared (D-progress-421):** same-name/same-arity overloads (`toUpper` Char-vs-String, `join` String-vs-slice) now dispatch by argument type, clearing `string_tests`. **(B) generic return-type instantiation cleared (D-progress-424):** a generic call's return is inferred from its arguments (`unwrapOr(…): T` → `Int`), clearing `parse_tests`. With A/B/C done, `environment_tests`/`path_tests`/`string_tests`/`parse_tests` single-file builds are clean. **(D) cross-package name collision cleared (D-progress-427, superseded by D-progress-429):** the initial fix spread the file's imported packages last (`orderStdlibPkgsByImports`) so the imported package won last-registered-wins resolution; this was superseded by proper **package-scoped name resolution** (#2271, D-progress-429), where each imported package resolves against its own decls — so a file importing only `Std.Regex` resolves `RegexError` to `Std.Regex`'s union, clearing the phantom-`RegexBug` `T0016` and `RegexError`-vs-`RegexError` `T0043` on `regex_tests`. **(E) range-subtype arithmetic cleared (D-progress-431):** `isNumericType`/`isOrderedType` now recurse through `TyRefined`, so an inline `Int range 0 ..= 100` parameter is numeric/ordered — clearing the spurious `T0030`/`T0031`/`T0033` on `examples/prove_demo.l`. Remaining: **(F) interface subtyping at argument positions cleared (D-progress-432):** a `TrackedFeed` that `impl`s `PriceFeed` is now accepted where `PriceFeed` is expected (`argSatisfiesParam` + `SymbolTable.impls`), clearing the `T0043` half of `mocking_tests`. **(G) `@stubbable` synthesis ported (D-progress-433):** `Lyric.Stubbable` synthesises the `<Name>Stub` record + impl before type-check (`Msil.Bridge.stubbableRewriteFile`), so `PriceFeedStub`/`TaxProviderStub` resolve — `mocking_tests` now builds clean self-hosted. **(H) alias-aware qualified-call resolution (D-progress-434):** the alias rewriter now rewrites `Rx.tryCompile` to the fully-qualified `Std.RegexSafe.tryCompile` (instead of dropping the package), `ResolvedSignature` carries `originPackage`, and `findDirectSig` prefers the same-arity overload whose package matches the call's prefix — so `regex_safe_tests` (two identically-signatured `tryCompile` overloads disambiguated only by alias) builds clean. **(I) Byte/Int conversion surface cleared (D-progress-436/437):** the stage-0 emitter gained the spec §541 primitive conversion methods (`.toInt()` etc.) so spec-correct code compiles on both paths; `encoding_tests` and `metadata_reader_tests` (the latter via `LYRIC_LOAD_COMPILER`) are now clean. **FLIP DONE (D-progress-438):** with every single-file-buildable surface diagnostic-clean (all stdlib tests bar the two `LYRIC_LOAD_COMPILER`-only compiler-internal ones, all `examples/`), `bridge.l`'s single-file type-check is now `reportAndAbort` — type errors in `lyric build <file>` abort instead of emitting broken IL, matching the project path. Verified: emitter 843/843, cli 84/84, weaver/cfg_gate/bitwise/conv_methods self-tests green, examples + stdlib single-file sweep clean. Remaining (not flip blockers, tracked separately): `msil_project_bridge_tests` needs cross-target JVM-kernel `extern type` resolution in the `LYRIC_LOAD_COMPILER` loader (its closure pulls in `Jvm.Bridge`→`Jvm.Kernel`), and the JVM single-file path (`jvm/bridge.l`) flip. | `bridge.l` single-file path now `reportAndAbort` | **DONE** |
 | C2 | Type checker is unsound: several expr forms infer `TyError`, a universal unifier; no record-ctor checking; `index`/`lambda`/`if`/`match`-branch results untyped. **Shipped:** match exhaustiveness (T0016, #1483 split 1: unions/enums/`Bool`/unbounded scalars; `EMatch` infers its scrutinee); `EPropagate` (`?`) unwrap typing (#1483 split 2a). **`EIndex` unblocker shipped (2b, #1901, D-progress-405):** the numeric/character conversion-method family `.toByte()`/`.toInt()`/`.toLong()`/`.toChar()`/`.toDouble()` now type-checks (target primitive) and codegens to native width conversions on **both** targets (MSIL `conv.*`; JVM `i2l`/`l2i`/… with `.toByte()` masked to MSIL's unsigned `conv.u1` semantics), replacing the throw-stub. **`EIndex` element typing shipped (2b, #1901, D-progress-407):** `recv[i]` now carries the receiver's element type — `slice[T]`/`array[N,T]` → `T`, `String` → `Char`, `List[T]` → `T`, `Map[K,V]` → `V` — so byte/char indexing is sound (`a[i].toInt()` migrations in `lyric-auth`). **`EBlock`/`EUnsafe`/`EResult` shipped (D-progress-408, D081):** enclosing-function context (`returnTy`/`genericNames`) is now carried on `Scope`, so a value-position brace/`unsafe` block types as its trailing expression via a divergence-aware `checkBlock` (a `return`/`throw`/`break`/`continue`-terminated block is `Never`), and `result` types as the return type. **Parser statement-end fix shipped (#1943, D-progress-410):** a brace-terminated `if`/`match` in statement position is now a complete statement (not a binary-operator LHS), fixing the `if { return … }`-then-`-1` mis-parse that silently miscompiled the fall-through value — clearing the prerequisite for `EIf`-branch typing. **`EIf`-branch typing shipped (#1943, D-progress-414):** an `if`/`else` takes the unified type of its branches (T0067 on a mismatch); an `if` without `else` is `Unit`; a diverging branch is `Never` and is absorbed. **Generic union-constructor typing shipped (#2142 prereq, D-progress-418):** `Some(value=x)`/`Ok(v)`/`None` now type as the parent union instantiated from the argument types (`Some(value: String)` → `Option[String]`), not `TyError` — the prerequisite for `EMatch`-branch unification. **`EMatch`-branch typing shipped (#2142, D-progress-419):** a value-position `match` now takes the unified type of its arm bodies (T0067 on a genuine mismatch); each arm is checked with its pattern variables bound to their destructured types (`bindPatternTyped` — `Some(ns)` on `Option[T]` binds `ns:T`, constructor sub-patterns instantiate field types against the scrutinee's type args), nullary constructor patterns don't shadow the constructor in the arm body, and still-generic field types are erased to `TyError` (lenient) rather than tripping a false mismatch. **Argument-type overload resolution shipped (#1488 category C, D-progress-421):** same-name/same-arity functions that differ only in parameter types (`Std.Char.toUpper(Char)` vs `Std.String.toUpper(String)`; `Std.Path.join(String,String)` vs `Std.String.join(String,slice[String])`) no longer collide under first-in-wins — each non-generic sig registers under an indexed `arityKey@i` slot and `findDirectSig` picks the candidate whose params `typeEquiv`-match the args, after trying the shadow-preserving primary first. **Generic return-type instantiation shipped (#1488 category B, D-progress-424):** a generic call's return type is now inferred from the argument types (`unwrapOr(o: Option[T], default: T): T` on an `Option[Int]` returns `Int`, not the raw `TyVar("T")`) via `instantiateReturnType` (deep param/arg structural matching + `substituteTyVars`), clearing the `T0033` on `unwrapOr(…) < 0`. Remaining `TyError` forms: `ELambda`, `ETypeApp`, `EForall`/`EExists`, `EAssign`, tuple-destructure sub-bindings, record-ctor argument checking. | `typechecker_exprs.l`, `typechecker_types.l:130-131`, `typechecker_stmts.l:14-51` | L |
 | C3 | ~~`?` propagation (`EPropagate`) is a no-op — `x?` compiles as `x`, no unwrap, no early-return.~~ **RESOLVED (#1475).** The `Lyric.Propagate` middle-end pass (`lyric-compiler/lyric/propagate.l`, run from `bridge.l` after the elaborator) rewrites `e?` into a `match` that unwraps `Ok`/`Some` and early-returns `Err`/`None`, keyed off the enclosing function's declared return type; a non-`Result`/`Option` enclosing function is rejected with `F0020`. (`try?`/`ETry` is never produced by the self-hosted parser, so its codegen arm is dead.) Verified by `propagate_self_test.l` (incl. `?` inside a `while` loop, after #1779 fixed the `List[ValueType]` element-comparison miscompile). Note: `?` inside an impl/interface method body is still blocked by a pre-existing early-`return` codegen defect, #1784. | `propagate.l`; `bridge.l` | M |
-| C4 | ~~Silent miscompile of `@externTarget async func`~~ **Phase A shipped (D-progress-415 / D085):** `@externTarget async func` now correctly unwraps `Task<T>→T` via `Task<T>::get_Result()` / `Task::Wait()` after the BCL call; `EAwait` is correct as a no-op (all callees return T synchronously). **Remaining:** user-defined `async func` still returns T (not `Task<T>`), so C# interop and proper concurrent async are blocked; no `IAsyncStateMachine` synthesis; `ESpawn` no-op. Phase B (SM synthesis, `Task<T>` return, concurrency) tracked in epic #2070. | `codegen.l` `EAwait`/`ESpawn`; `async_sm.l` not yet created | L (#2070 Phase B) |
-| C5 | Async generators use eager collect-all into `List<object>`, not lazy `IEnumerable`/`IAsyncEnumerable`; return type forced to List; unbounded generators buffer forever. **Planned in epic #2070** (slice 5: eager-producer `IAsyncEnumerable[T]` class first, then async-iterator on the await engine). | `codegen.l` generator path (6953-7135) | XL (#2070) |
+| C4 | ~~Silent miscompile of `async func`~~ **RESOLVED (D085–D091, Phases A–4, #2070):** `@externTarget async func` correctly unwraps `Task<T>→T` (Phase A, D-progress-415). User-defined `async func` synthesises a real `IAsyncStateMachine` + `AsyncTaskMethodBuilder<T>` state machine with genuine non-blocking suspend/resume (Phases B.0–B.3, D-progress-430–439). `ESpawn` lowers to the kickoff's `Task<T>` (Phase 4, D-progress-441, D091). Verified by `async_sm_self_test.l` (29 tests) and `async_extern_self_test.l` (4 tests). Known correctness gaps tracked separately: `await` inside `try` block emits invalid IL (#2725), hardcoded `maxStack=8` (#2712). | `codegen.l` | RESOLVED |
+| C5 | ~~Async generators used eager collect-all into `List<object>`.~~ **RESOLVED (Phase 5, D-progress-444/445, D092, #2070):** `async func` bodies containing `yield` are synthesised as a `<FuncName>__Gen_N` class implementing `IAsyncEnumerable<object>` / `IAsyncEnumerator<object>` / `IAsyncDisposable`. Eager-producer pattern: kickoff allocates the class, copies params to fields, calls `RunBody()` (which collects all yields into `_values`), and returns `this`. `emitCollectionForMsil` dispatches via `GetAsyncEnumerator`/`MoveNextAsync`/`get_Current`; element-type unboxing via `castObjectToMsil` on each `get_Current()` result. Verified by `async_generator_self_test.l` (8 tests). JVM parity tracked in #2469; async-iterator (`await`+`yield`) deferred. | `codegen.l` `synthesizeGeneratorMsil`; `lowering.l` `MIAsyncEnumerable` | RESOLVED (MSIL); JVM #2469 |
 | C6 | **Fixed (#1530).** Indexed assignment `a[i] = v` previously silently discarded the store (value evaluated then popped); the `EIndex` assignment target now emits `List[object]::set_Item`. Compound indexed forms (`a[i] += v`) hard-fail with a clear build error pending element-type plumbing (#1481). | `codegen.l` `lowerAssignExprMsil` EIndex arm | Resolved |
 | C7 | ~~`defer` runs its body inline immediately, not at scope exit.~~ **Resolved (#1477 / D-progress-374):** `defer { D }` lowers the rest of its scope to `try { rest } finally { D }`, so D runs on fall-off, early `return` (via the function epilogue, #1477 foundation), `break`/`continue` (via `leave`), and exception unwind; multiple defers nest in reverse order. | `codegen.l` `lowerStmtsFromMsil` / `lowerStmtsExprFromMsil` | ✅ |
 | C8 | **Fixed for in-bundle types (#2362 — D-progress-453 records, D-progress-455 unions).** In-bundle generic *records and unions* are reified: GenericParam rows (table 0x2A), VAR-typed fields (`value: T` → `FIELD VAR(0)`), arity-suffixed CLR type names (`Box`1`, `Maybe`1`, `Maybe_Just`1`), AutoLayout, construction via closed-instantiation TypeSpec `.ctor` MemberRefs, and TypeSpec-parented field reads — verified for multi-field value-type instantiations (`Pair[Int,Int]`, `Pairish[Int,Int]`). Unions: each case extends the open base instantiation (`Maybe`1<!0>`, a TypeSpec); nullary cases are `newobj`-each-time (no singleton — Q-GEN-001 resolved); matching via closed-TypeSpec isinst/castclass/ldfld. #2362 closed here: an exact stage-3 stdlib byte-match was **not pursued** (the self-hosted emitter already produces structurally-correct generic `Option`/`Result` but with the arity-suffix correctness fix F# omits, and self-compiling the whole stdlib is blocked on front-end completeness — §R7); see `docs/43`. **JVM parity gap (2026-06-07):** the JVM backend does not yet emit truly generic TypeDefs for in-bundle generic records/unions (no JVM equivalent of GenericParam rows, open-type field descriptors, or TypeSpec-parented construction); JVM generic-type emission is deferred and tracked under Band 4 of this doc and epic #2359. | `codegen.l` (`lowerRecordMsil`/`lowerUnionMsil`, `typeExprToMsilCtx`, `buildInBundleGenericCtorTok`, EMember, pattern test/bind); `lowering.l` (`lowerMRecord`/`lowerMUnion`, GenericParam emit); `tables.l` (GenericParam 0x2A) | In-bundle MSIL ✅; JVM deferred (#2359); stdlib self-compile under §R7 |
@@ -369,29 +369,37 @@ should precede feature-completion work, because they stop *silent* wrongness.
 - Wire `==`/`GetHashCode` (and `Object.Equals` overrides) to the derived methods
   so structural equality and hashing actually work (H1).
 
-### Band 3 — Async (HIGH, Phase A complete)
+### Band 3 — Async (RESOLVED for MSIL, #2070)
 
-**Phase A shipped (D-progress-415):** `@externTarget async func` silent
-miscompile fixed.  `MLdflda` instruction added.  `Task`/`Task`1` TypeRefs and
-`Task::Wait()` MemberRef registered.  `emitExternTargetBody` now unwraps
-`Task<T>→T` synchronously after the BCL call.  All 847 stdlib tests pass.
+**All five phases shipped (D085–D092, Phases A–5):**
+- **Phase A (D-progress-415, D085):** `@externTarget async func` silent
+  miscompile fixed — `Task<T>→T` unwrapping via `get_Result()`/`Wait()` after
+  the BCL call.  `MLdflda` instruction added.
+- **Phase B.0 (D-progress-430, D086):** `IAsyncStateMachine` synthesis for
+  no-await `async func`: SM TypeDef + `AsyncTaskMethodBuilder<T>` + `SetResult`
+  epilogue + kickoff.
+- **Phase B.1 (D-progress-431, D087):** Single-await SM: `switch`-dispatch
+  `MoveNext`, `AwaitUnsafeOnCompleted`, suspend/resume state transitions,
+  `SetException` path.
+- **Phase B.2/B.2+/B.3 (D-progress-433/434/439, D088–D090):** Promoted
+  locals (local→field hoisting), `var` binding promotion, while/for/loop await
+  scan completeness fix, stack-spill for `EAwait` in expression-position binary
+  operands.
+- **Phase 4 (D-progress-441, D091):** `ESpawn` lowers to the kickoff's
+  `Task<T>`; `await` on `@externTarget` externs is a pass-through (non-Task
+  values bypass `.get_Result()`).
+- **Phase 5 (D-progress-444/445, D092):** `yield`-bearing `async func`
+  synthesised as eager-producer `IAsyncEnumerable<object>` class;
+  `emitCollectionForMsil` uses async-enumerator protocol with element-type
+  unboxing.
 
-**Remaining for Phase B (still tracked in #2070):**
-- Port `AsyncStateMachine.fs` to self-hosted MSIL codegen: synthesise
-  `IAsyncStateMachine`-implementing SM struct TypeDef + fields + MoveNext (with
-  `GetAwaiter()`/`GetResult()` for each inner await) + kickoff that returns
-  `Task<T>`.
-- `AsyncTaskMethodBuilder<T>`: `Create()`, `Start<SM>(ref SM)`, `SetResult(T)`,
-  `SetException(Exception)`, `get_Task()` MemberRef/MethodSpec tokens.
-- `Task<T>`-returning user-defined `async func` (needed for C# interop and
-  concurrent async).
-- `MethodImpl` rows for `IAsyncStateMachine::MoveNext` /
-  `IAsyncStateMachine::SetStateMachine`.
-- `ESpawn` implementation.
-- Lazy `IAsyncEnumerable<T>` generators (C5).
+Verified by `async_sm_self_test.l` (29 tests), `async_extern_self_test.l` (4
+tests), `async_generator_self_test.l` (8 tests).
 
-The `addMethodImpl` function in `lowering.l` exists but is never called; wiring
-it for SM synthesis is the main remaining lowering gap.
+**Remaining correctness gaps (tracked separately):**
+- `await` inside `try` block emits invalid IL (#2725).
+- Hardcoded `maxStack=8` risks `VerificationException` (#2712).
+- JVM generator synthesis (#2469).
 
 ### Band 4 — Feature completion (HIGH)
 - User generic types (monomorphize or reify — decision required), protected-type
@@ -519,13 +527,14 @@ The authoritative tactical task list is `docs/12-todo-plan.md`._
   lowered by the elaborator; `SItem` never produced by the parser). Remaining
   tracked items: multi-level nested closure capture (#1479), lambdas in
   `@test_module` bodies (#1854).
-- **Band 3 (async, CRITICAL):** Async SM synthesis **shipped** (Epic #2070
-  Phases B.0–B.3 + spawn): `IAsyncStateMachine` / `AsyncTaskMethodBuilder` /
-  `Task[T]` returns and `ESpawn` are implemented (verified by
-  `async_sm_self_test.l`). Remaining correctness gaps: `await` inside a `try`
-  block emits invalid IL (#2725, recent open); hardcoded `maxStack=8` risks
-  `VerificationException` (#2712); lazy `IAsyncEnumerable[T]` generator
-  synthesis (C5, Phase 5, #1490).
+- **Band 3 (async, CRITICAL): COMPLETE for MSIL.** All five phases of Epic
+  #2070 shipped (D085–D092): extern async unwrapping (Phase A), `IAsyncStateMachine`
+  synthesis with multi-await, promoted locals, and stack-spill (Phases B.0–B.3),
+  `ESpawn` (Phase 4), and eager-producer `IAsyncEnumerable<object>` generator
+  synthesis (Phase 5, D-progress-444/445, D092).  Verified by
+  `async_sm_self_test.l` (29), `async_extern_self_test.l` (4),
+  `async_generator_self_test.l` (8).  Open correctness bugs tracked separately:
+  #2725 (await-in-try), #2712 (maxStack).  JVM generator parity: #2469.
 - **Band 4 (feature completion, HIGH):** C8 (cross-package generic-type
   reification — in-bundle MSIL records/unions done #2362; cross-package remains,
   #1496), C12 (protected-type locking — zero mutual exclusion emitted, #1499),
@@ -552,15 +561,16 @@ The authoritative tactical task list is `docs/12-todo-plan.md`._
 
 ### Bottom line (updated 2026-06-09)
 
-Since the 2026-06-03 snapshot, significant further progress has landed: async SM
-synthesis shipped (Epic #2070 Phases B.0–B.3 + spawn), the advisory→fatal
-typecheck gate flipped (C1, D-progress-438), visibility enforcement (#1484),
-opaque hiding (#1485), parameter-mode front-end (#1487), TyError expression forms
-(C2, #2939), full impl conformance including DIM body lowering (C11, #1486/#2939),
-`where`-bound satisfaction (H15, #2939), alias-as-type (H16, #2939), numeric
-widening (M6, #2939), and AOT wired via `release.l`.  **Band 1 (front-end
-soundness) is now complete.**  The remaining v1.0 blockers are async correctness
-tail (#2725 await-in-try, #2712 maxStack, C5 generators) and Band-4 feature gaps.
-Band 2 is substantially resolved.  `docs/12-todo-plan.md` is the authoritative
-task list; `docs/36-v1-roadmap.md` §R1–R6 are all done and tracking has moved to
-docs/12.
+Since the 2026-06-03 snapshot, significant further progress has landed: full async
+shipped (Epic #2070 Phases A–5 complete: SM synthesis, spawn, and
+`IAsyncEnumerable[T]` generator synthesis — C4 and C5 both resolved), the
+advisory→fatal typecheck gate flipped (C1, D-progress-438), visibility enforcement
+(#1484), opaque hiding (#1485), parameter-mode front-end (#1487), TyError
+expression forms (C2, #2939), full impl conformance including DIM body lowering
+(C11, #1486/#2939), `where`-bound satisfaction (H15, #2939), alias-as-type (H16,
+#2939), numeric widening (M6, #2939), and AOT wired via `release.l`.  **Band 1
+(front-end soundness) is now complete.**  **Band 3 (async) is now complete for
+MSIL.**  The remaining v1.0 blockers are async correctness tail (#2725
+await-in-try, #2712 maxStack) and Band-4 feature gaps.  Band 2 is substantially
+resolved.  `docs/12-todo-plan.md` is the authoritative task list;
+`docs/36-v1-roadmap.md` §R1–R6 are all done and tracking has moved to docs/12.
