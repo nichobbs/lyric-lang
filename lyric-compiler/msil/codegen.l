@@ -4082,7 +4082,15 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             }
           }
           // Check for a module-level compile-time const (inline ldc.i4).
-          match mapGet(cctx.constValues, name) {
+          // Package-qualified key first (#2627): the consuming package's own
+          // constant always wins, so a same-named, different-valued const in
+          // another package can never silently inline the wrong value here.
+          // The bare-name key remains the cross-package fallback (first-wins).
+          val constHit = match mapGet(cctx.constValues, fctx.pkgName + "/" + name) {
+            case Some(qv) -> Some(value = qv)
+            case None -> mapGet(cctx.constValues, name)
+          }
+          match constHit {
             case Some(v) -> {
               insns.add(MLdcI4(v = v))
               MInt
@@ -8083,7 +8091,10 @@ func lowerBuiltinOrStaticCallMsil(
               // Bare call to a sibling instance method (implicit `self`, slot 0).
               // Emit the callvirt the unresolved-call fallback below would have
               // dropped — leaving args on the stack with no call.
-              val sibKey = fctx.className + "/" + funcName
+              // Arity-qualified key first (#2713) so a same-name, different-
+              // arity sibling overload binds the right MethodDef.
+              val sibArityKey = fctx.className + "/" + funcName + "/" + toString(args.count)
+              val sibKey = if cctx.methodTokens.containsKey(sibArityKey) { sibArityKey } else { fctx.className + "/" + funcName }
               val sibTok = match mapGet(cctx.methodTokens, sibKey) {
                 case Some(t) -> t
                 case None -> panic("Msil.Codegen: sibling method token vanished after containsKey for " + sibKey)
@@ -8214,12 +8225,20 @@ func lowerMethodCallMsil(
   // User-defined instance / interface dispatch path (#878).
   match recvTy {
     case MClass(cls) -> {
-      match mapGet(cctx.methodTokens, cls + "/" + memberName) {
+      // Arity-qualified key first (#2713): the bare `class/name` key maps to
+      // whichever overload registered first, so a call to a same-name,
+      // different-arity overload through the bare key would silently bind the
+      // wrong MethodDef.  The registration side writes `class/name/arity`
+      // for every overload; prefer it when present.
+      val arityDispatchKey = cls + "/" + memberName + "/" + toString(args.count)
+      val dispatchKey = if cctx.methodTokens.containsKey(arityDispatchKey) {
+        arityDispatchKey
+      } else {
+        cls + "/" + memberName
+      }
+      match mapGet(cctx.methodTokens, dispatchKey) {
         case Some(tok) -> {
-          val methodModes = match mapGet(cctx.methodParamModes, cls + "/" + memberName) {
-            case Some(ms) -> ms
-            case None -> newList()
-          }
+          val methodModes = match mapGet(cctx.methodParamModes, dispatchKey) { case Some(ms) -> ms; case None -> newList() }
           var i = 0
           while i < args.count {
             // `out`/`inout` argument: load the argument's address (a managed
@@ -8237,7 +8256,7 @@ func lowerMethodCallMsil(
               // parameter passed `object` where `bool`/`int32` was expected, which
               // is invalid IL (#1784).  A missing registry entry falls back to the
               // conservative box-if-value behaviour.
-              val paramIsValue = match mapGet(cctx.methodParamTypes, cls + "/" + memberName + "#" + toString(i)) {
+              val paramIsValue = match mapGet(cctx.methodParamTypes, dispatchKey + "#" + toString(i)) {
                 case Some(pt) -> isValueType(pt)
                 case None -> false
               }
@@ -8253,7 +8272,7 @@ func lowerMethodCallMsil(
           // type rather than `object`.  Tracking `object` made union pattern
           // tests/binds mis-extract the payload (the wrong arm fired) (#1602).
           // Falls back to MObject when the return type was not pre-registered.
-          return match mapGet(cctx.methodRetTypes, cls + "/" + memberName) { case Some(rty) -> rty; case None -> MObject }
+          return match mapGet(cctx.methodRetTypes, dispatchKey) { case Some(rty) -> rty; case None -> MObject }
         }
         case None -> {
           // Synthesized free functions callable as instance methods (#1507):
@@ -17402,7 +17421,13 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
               initInsns = newList()
             )
           )
-          // Register inlined value so EPath emits ldc.i4 directly (first-wins).
+          // Register inlined value so EPath emits ldc.i4 directly.  The
+          // package-qualified key makes same-package reads exact (#2627);
+          // the bare name stays as the cross-package fallback (first-wins).
+          val qualConstKey = pkgName + "/" + decl.name
+          if not cctx.constValues.containsKey(qualConstKey) {
+            cctx.constValues.add(qualConstKey, constVal)
+          }
           if not cctx.constValues.containsKey(decl.name) {
             cctx.constValues.add(decl.name, constVal)
           }
@@ -17440,7 +17465,12 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
               // Guard with containsKey: same first-wins semantics as IConst above.
               // Only suppress the .cctor when we successfully register the inline
               // value; if the name is already taken, keep initInsns so the field
-              // receives its proper runtime initialization.
+              // receives its proper runtime initialization.  The package-
+              // qualified key makes same-package reads exact (#2627).
+              val qualValKey = pkgName + "/" + fieldName
+              if not cctx.constValues.containsKey(qualValKey) {
+                cctx.constValues.add(qualValKey, v)
+              }
               if not cctx.constValues.containsKey(fieldName) {
                 cctx.constValues.add(fieldName, v)
                 sfInitInsns = newList()

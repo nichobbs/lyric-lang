@@ -1259,6 +1259,9 @@ func checkProtectedDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], dec
           case PFLet(_, ty, _, _) -> {
             val _ = resolveType(tbl, ctx, diag, ty)
           }
+          case PFImmutable(fd) -> {
+            val _ = resolveType(tbl, ctx, diag, fd.ty)
+          }
         }
       }
       case PMEntry(entryDecl) -> {

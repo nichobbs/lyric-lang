@@ -589,13 +589,24 @@ func importLinePackage(line: in String): String {
   Str.trim(parts[0])
 }
 
+// The alias an `import ... as X` line binds, or "" for the bare form.
+// Used so import dedup keys on (package, alias): two files importing the
+// same module under different aliases each keep their form (#2699) while
+// byte-duplicate import lines still collapse to one.
+func importLineAlias(line: in String): String {
+  val trimmed = Str.trim(line)
+  val parts = Str.split(trimmed, " as ")
+  if parts.length < 2 {
+    return ""
+  }
+  Str.trim(parts[parts.length - 1])
+}
+
 // Append every distinct `import ...` line in `source` to `acc`,
-// deduplicating by the module path token (the first whitespace-delimited
-// token after `import`).  This means `import Std.Core` and
-// `import Std.Core as C` are treated as the same module and only the
-// first occurrence is kept — preventing a double-import of the same module
-// with two different aliases when source files in a multi-file package use
-// different alias styles for shared stdlib imports.
+// deduplicating by the (module path, alias) pair.  Byte-duplicate import
+// lines collapse to one, while `import Std.Core` and `import Std.Core as C`
+// are distinct binding forms that both survive — each contributing file's
+// alias references stay resolvable in the merged preamble (#2699).
 func collectImportLines(source: in String, acc: in List[String]) {
   val lines = Str.split(source, "\n")
   var i = 0
@@ -603,11 +614,16 @@ func collectImportLines(source: in String, acc: in List[String]) {
     val line = lines[i]
     val trimmed = Str.trim(line)
     if Str.startsWith(trimmed, "import ") {
+      // Dedup on the (package, alias) pair: identical import lines collapse,
+      // but `import Std.Core` and `import Std.Core as C` are distinct binding
+      // forms and must BOTH survive — dropping the aliased form breaks every
+      // `C.foo` reference in the file that wrote it (#2699).
       val pkg = importLinePackage(trimmed)
+      val aliasName = importLineAlias(trimmed)
       var seen = false
       var j = 0
       while j < acc.count {
-        if importLinePackage(acc[j]) == pkg {
+        if importLinePackage(acc[j]) == pkg and importLineAlias(acc[j]) == aliasName {
           seen = true
         }
         j = j + 1
