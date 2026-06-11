@@ -18,6 +18,12 @@
          (docs/45 phases 2-5 / docs/42) replaces runtime assembly loading. -->
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Directory.Build.props sets TreatWarningsAsErrors=true, which ILC
+         inherits and which would fail the publish on the known IL2104 trim
+         rollup from Std.AssemblyResources' documented Assembly.Load usage.
+         Keep ILC diagnostics as warnings; the compile-time policy for C#/F#
+         warnings is unchanged. -->
+    <IlcTreatWarningsAsErrors>false</IlcTreatWarningsAsErrors>
   </PropertyGroup>
 
   <!-- Stage-1 DLL references.  The wildcard pulls in every artefact
