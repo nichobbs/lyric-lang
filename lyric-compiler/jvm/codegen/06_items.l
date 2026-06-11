@@ -372,10 +372,22 @@ pub func lowerFunc(
     pi2 = pi2 + 1
   }
 
+  // Synthesised @derive names like "Point.equals" carry a "TypeName." prefix
+  // that JVMS §4.2.2 forbids in unqualified method names.  Strip everything up
+  // to and including the last dot so the classfile method name is just the
+  // short member name ("equals").  The call site in lowerMethodCall uses the
+  // plain Lyric memberName as the invokestatic target — both sides must agree.
+  var jvmFuncName = decl.name
+  match lastIndexOf(decl.name, ".") {
+    case Some(dotIdx) -> {
+      jvmFuncName = decl.name.substring(dotIdx + 1, decl.name.length - dotIdx - 1)
+    }
+    case None -> ()
+  }
+
   LFunc(
     flags = 0x0009,
-    // public static
-    name = decl.name,
+    name = jvmFuncName,
     params = paramTypes,
     ret = retTy,
     insns = insns,
