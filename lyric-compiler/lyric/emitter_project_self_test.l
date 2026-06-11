@@ -454,3 +454,83 @@ test "emitProject subprocess fallback on restored dep" {
   }
   cleanup(tmpDir)
 }
+
+// ─── perPackageAssemblyName multi-segment coverage (#2653) ───────────────────
+// Verifies that multi-segment Std.* and non-Std package names map to the
+// expected assembly name on both targets, matching the F# emitter's convention.
+test "perPackageAssemblyName single segment Std" {
+  assertEqual(
+    Emitter.perPackageAssemblyName("Std.Core", Emitter.Dotnet),
+    "Lyric.Stdlib.Core",
+    "perPackageAssemblyName: Std.Core -> Lyric.Stdlib.Core"
+  )
+}
+
+test "perPackageAssemblyName multi-segment Std" {
+  assertEqual(
+    Emitter.perPackageAssemblyName("Std.Testing.Mocking", Emitter.Dotnet),
+    "Lyric.Stdlib.TestingMocking",
+    "perPackageAssemblyName: Std.Testing.Mocking -> Lyric.Stdlib.TestingMocking"
+  )
+}
+
+test "perPackageAssemblyName multi-segment Std JVM" {
+  assertEqual(
+    Emitter.perPackageAssemblyName("Std.Testing.Mocking", Emitter.Jvm),
+    "Lyric.Stdlib.TestingMocking.Jvm",
+    "perPackageAssemblyName: Std.Testing.Mocking/Jvm -> Lyric.Stdlib.TestingMocking.Jvm"
+  )
+}
+
+test "perPackageAssemblyName non-Std single segment" {
+  assertEqual(
+    Emitter.perPackageAssemblyName("Lyric", Emitter.Dotnet),
+    "Lyric.Lyric",
+    "perPackageAssemblyName: Lyric -> Lyric.Lyric"
+  )
+}
+
+test "perPackageAssemblyName non-Std multi-segment" {
+  assertEqual(
+    Emitter.perPackageAssemblyName("Msil.Bridge", Emitter.Dotnet),
+    "Lyric.Msil.Bridge",
+    "perPackageAssemblyName: Msil.Bridge -> Lyric.Msil.Bridge"
+  )
+}
+
+// ─── Same-named pub const across packages regression (#2628) ─────────────────
+// Two packages each define a `pub const` with the same name.  The per-package
+// symbol-table isolation must prevent T0001 (duplicate name) at type-check
+// and the consuming package must read the value from its own import, not the
+// sibling's.  Regression for const-inlining collision in multi-package closure.
+test "same-named pub const in sibling packages" {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "ConstSame.Alpha",
+      "package ConstSame.Alpha\n" + "\n" + "pub const VALUE: Int = 10\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "ConstSame.Beta",
+      "package ConstSame.Beta\n" + "\n" + "pub const VALUE: Int = 20\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "ConstSame.App",
+      "package ConstSame.App\n" + "\n" + "import ConstSame.Alpha\n" + "import ConstSame.Beta as B\n" + "\n" +
+        "func main(): Unit {\n" +
+        "  println(VALUE)\n" +
+        "  println(B.VALUE)\n" +
+        "}\n"
+    )
+  )
+  val result = runEmitProject("const-same", pkgs, "ConstSame")
+  assertEqualInt(result.exitCode, 0, "same_named_pub_const: exit 0 (stderr=" + result.stderr + ")")
+  val lines = result.stdout.split("\n")
+  assertEqualInt(lines.length, 3, "same_named_pub_const: two output lines + trailing newline")
+  assertEqual(Str.trim(lines[0]), "10", "same_named_pub_const: Alpha.VALUE = 10")
+  assertEqual(Str.trim(lines[1]), "20", "same_named_pub_const: B.VALUE = 20")
+}

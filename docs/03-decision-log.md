@@ -5862,6 +5862,31 @@ inlining the test helper.  Tracked separately.
 
 ---
 
+## D098 — Contract metadata format version 3 with SHA-256 integrity hashing (docs/45)
+
+**Context.** docs/45 proposed migrating from the per-consumer synthesis → parse → re-typecheck path to metadata-direct symbol table construction for restored Lyric packages.  The proposal was accepted in full.  Phase 1 — the `Lyric.ContractMetaEmit` package (`lyric-compiler/lyric/contract_meta_emit.l`) — shipped in D-progress-471.  This entry codifies the design decisions from docs/45 so the sketch carries a backing decision-log reference.
+
+**Decisions adopted from docs/45:**
+
+- **D1 — Metadata-direct symbol table construction**: chosen over the synthesis/parse/recheck cycle for performance, simplicity, and consistency with the auto-FFI approach.  Direct JSON → symbol table, no per-consumer recheck.
+- **D2 — Contract hash required**: every emitted contract carries a SHA-256 hash of its own JSON (two-pass protocol: serialize with blank hash, compute SHA-256, re-serialize with hash embedded).  Required, not optional.
+- **D3 — v2 support dropped immediately**: breaking change.  The CLI rejects contracts with `formatVersion` less than 3 with the message `"Contract metadata format v2 is no longer supported. Rebuild the library with the latest compiler and re-publish."` No dual-path support.
+- **D4 — Explicit `visibility` field**: `ContractDecl` carries a `visibility: String` field (`"pub"` | `"internal"` | `""`) extracted from the parsed AST, not derived from `repr` string parsing.
+- **D5 — New fields are `@stable(since = "X.Y")`**: `visibility`, `dependencies`, and `contractHash` did not exist before format version 3 and carry the release version that ships format version 3.
+- **D6 — v2 rejection error message**: verbatim as stated in D3.
+- **D7 — Bundled DLL dependency manifest structure**: per-package manifests within the bundled DLL; merged at load time.
+
+**Current implementation state (Phase 1.2b shipped; phases 2–5 pending):**
+
+- `lyric-compiler/lyric/contract_meta_emit.l` (`Lyric.ContractMetaEmit`) — the v3 emitter entry point `emitContractMetadata(contract): String`.  Ships the two-pass SHA-256 protocol.
+- The bootstrap F# emitter (`ContractMeta.fs`) continues to emit v2 metadata for backward compatibility until issue #2580 (in-process MSIL bridge) lands.  Phase 2 (bridge wiring), Phase 3 (direct symbol table builder), Phase 4 (bridge migration), and Phase 5 (synthesis-path removal) are deferred.
+
+**JVM parity.** Not in scope for Phase 1.  The JVM `compileToJarBundledWithFeatures` path does not have a restored-dep pipeline; JVM parity for contract metadata direct resolution is deferred.
+
+**Related:** docs/45, D-progress-471, issue #2580 (in-process MSIL bridge prerequisite for phases 2–5).
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

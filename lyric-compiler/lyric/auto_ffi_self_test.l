@@ -164,10 +164,28 @@ func externStrConcat(a: in String, b: in String): String = ()
 @externStatic
 func externMaxLong(a: in Long, b: in Long): Long = ()
 
+// Phase 3c static-class-return path (#1568): an @externStatic wrapper that
+// takes a String and returns a class-typed String via the static-method branch
+// of buildFfiMethodSigCtx (hasThis = false, class return).  `String.Intern`
+// is a deterministic, side-effect-free static that returns its argument when
+// the interned form is identical.
+@externTarget("System.String.Intern")
+@externStatic
+func externStrIntern(s: in String): String = ()
+
 test "@externTarget with verified signatures compile and run correctly" {
   assertEqualInt(externAbsInt(-12), 12, "externAbsInt(-12)")
   assertEqualInt(externAbsInt(7), 7, "externAbsInt(7)")
   assertEqual(externStrConcat("hello", " world"), "hello world", "externStrConcat")
   assertTrue(externMaxLong(3i64, 9i64) == 9i64, "externMaxLong(3, 9)")
   assertTrue(externMaxLong(100i64, 2i64) == 100i64, "externMaxLong(100, 2)")
+}
+
+// @externStatic + class-typed return: `String.Intern` returns the interned
+// String instance.  Exercises the static-method + class-return branch of
+// buildFfiMethodSigCtx (r.isStatic and not r.isCtor, class return) end-to-end
+// via @externTarget declaration (#1568).
+test "@externStatic static method with class-typed return" {
+  val interned = externStrIntern("hello-intern")
+  assertEqual(interned, "hello-intern", "Intern returns interned value")
 }

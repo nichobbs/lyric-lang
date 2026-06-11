@@ -636,6 +636,14 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
     }
 
     // "open": skip if already visited (handles diamond deps and back edges).
+    // Deduplication uses raw string equality.  Paths are constructed by
+    // Path.join against an absolute base directory (mfDir / dfsMfDir), so
+    // any `../` segments are inherited from the manifest's `path =` value.
+    // Two manifests that refer to the same dep at different relative paths
+    // may produce syntactically-distinct strings for the same filesystem
+    // entry and would be visited twice.  Path.normalize (which resolves
+    // `../` without a syscall) does not yet exist in Std.Path; when it
+    // lands, normalize dfsToml here before the seen-set check (#2916).
     var dfsAlreadySeen = false
     var dfsSeenIdx = 0
     while dfsSeenIdx < dfsSeen.count {

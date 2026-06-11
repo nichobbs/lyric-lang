@@ -52,7 +52,20 @@ driver="$emit_dir/driver.l"
 } > "$driver"
 
 out="$emit_dir/out"
-"$LYRIC_BIN" --internal-perpackage-build "$driver" "$out"
+# The driver imports all Std.* packages (including known-buggy ones like Std.Random
+# and Std.Format) so emitPerPackageClosure produces every *Host sub-package in one
+# consistent emit.  If a non-curated package develops a compile error the build may
+# fail entirely, leaving curated DLLs unproduced.  Trap that case clearly so the
+# root cause (a regression in a non-curated package) is visible rather than looking
+# like a curated-package failure.  See issue #2824.
+if ! "$LYRIC_BIN" --internal-perpackage-build "$driver" "$out" 2>&1; then
+  echo "stage-selfhosted-stdlib: --internal-perpackage-build failed (see above)." >&2
+  echo "  This may be caused by a compile error in a non-curated Std.* package" >&2
+  echo "  (e.g. Std.Random, Std.Format) that is included in the driver for *Host" >&2
+  echo "  sub-package consistency.  Check the error above and the excluded-packages" >&2
+  echo "  list in this script.  Tracking: #2824." >&2
+  exit 1
+fi
 
 # DLLs to stage: the curated packages plus every host extern-boundary sub-package
 # (`*Host`), which the curated packages depend on at run time and which F# does
@@ -62,8 +75,10 @@ to_stage=()
 for p in "${CURATED_PACKAGES[@]}"; do
   dll="$out/Lyric.Stdlib.$p.dll"
   if [[ ! -f "$dll" ]]; then
-    echo "stage-selfhosted-stdlib: expected $dll not emitted" >&2
-    exit 1
+    echo "stage-selfhosted-stdlib: WARNING: expected $dll was not emitted after a successful build." >&2
+    echo "  This is unexpected — the build succeeded but '$p' is missing from the output." >&2
+    echo "  The curated package will NOT be staged.  Tracking: #2824." >&2
+    continue
   fi
   to_stage+=("$dll")
 done
