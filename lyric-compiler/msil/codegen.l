@@ -135,6 +135,9 @@ pub record CodegenCtx {
   // addPackageTokens for IRecord and IExposedRec fields so EMember can emit
   // ldfld on an MObject receiver when the static type is unknown.
   fieldTokensByName: Map[String, Int]
+  // Parallel to fieldTokensByName: declaring class FQN for each field, so the
+  // MObject-receiver fallback path can emit MCastclassByName before ldfld (#1868).
+  fieldDeclaringClassByName: Map[String, String]
   // Dictionary<object,object> via TypeSpec (for newMap() and map operations)
   tokDictObjCtor: Int  // Dictionary<object,object>::.ctor()  newobj
   tokDictObjAdd: Int  // Dictionary<object,object>::Add(object,object): void  callvirt
@@ -1388,6 +1391,7 @@ pub func newCodegenCtx(
     trTask1 = trTask1,
     tokTaskWait = tokTaskWait,
     fieldTokensByName = newMap(),
+    fieldDeclaringClassByName = newMap(),
     actionTypeRefs = newMap(),
     externTypeNames = newMap(),
     lambdaTicker = newList(),
@@ -1674,6 +1678,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               cctx.fieldTokens.add(className + "/" + f.name, tok)
               if not cctx.fieldTokensByName.containsKey(pkgName + "/" + f.name) {
                 cctx.fieldTokensByName.add(pkgName + "/" + f.name, tok)
+                cctx.fieldDeclaringClassByName.add(pkgName + "/" + f.name, className)
               }
               // For a generic record, a field whose declared type is one of the
               // record's parameters lowers to the VAR form (MTypeVar); `ftyG`
@@ -1817,6 +1822,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               cctx.fieldTokens.add(className + "/" + f.name, tok)
               if not cctx.fieldTokensByName.containsKey(pkgName + "/" + f.name) {
                 cctx.fieldTokensByName.add(pkgName + "/" + f.name, tok)
+                cctx.fieldDeclaringClassByName.add(pkgName + "/" + f.name, className)
               }
               val fty = typeExprToMsilCtx(cctx, f.ty, pkgName)
               if not cctx.fieldMsilTypes.containsKey(className + "/" + f.name) {
@@ -2202,6 +2208,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                 val ofByNameKey = pkgName + "/" + f2.name
                 if not cctx.fieldTokensByName.containsKey(ofByNameKey) {
                   cctx.fieldTokensByName.add(ofByNameKey, ofTok)
+                  cctx.fieldDeclaringClassByName.add(ofByNameKey, className)
                 }
                 if not cctx.fieldMsilTypes.containsKey(ofByNameKey) {
                   cctx.fieldMsilTypes.add(ofByNameKey, ofTy)
@@ -2248,6 +2255,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                   }
                   if not cctx.fieldTokensByName.containsKey(pkgName + "/" + fname) {
                     cctx.fieldTokensByName.add(pkgName + "/" + fname, fieldTok)
+                    cctx.fieldDeclaringClassByName.add(pkgName + "/" + fname, className)
                   }
                 }
                 case PFLet(fname, fty, _, _) -> {
@@ -2258,6 +2266,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                   }
                   if not cctx.fieldTokensByName.containsKey(pkgName + "/" + fname) {
                     cctx.fieldTokensByName.add(pkgName + "/" + fname, fieldTok)
+                    cctx.fieldDeclaringClassByName.add(pkgName + "/" + fname, className)
                   }
                 }
                 case PFImmutable(f) -> {
@@ -2268,6 +2277,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                   }
                   if not cctx.fieldTokensByName.containsKey(pkgName + "/" + f.name) {
                     cctx.fieldTokensByName.add(pkgName + "/" + f.name, fieldTok)
+                    cctx.fieldDeclaringClassByName.add(pkgName + "/" + f.name, className)
                   }
                 }
               }
@@ -4422,18 +4432,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               insns.add(MCallvirt(methodToken = cctx.tokICollGetCount))
               MInt
             } else {
-              // KNOWN IL-VERIFICATION GAP: no preceding `castclass` before `ldfld`
-              // on an `MObject` receiver; the primary `MClass` arm does emit
-              // `MCastclassByName(cls)` first.  Plumbing the declaring class
-              // name alongside the field token (so the cast can be named here
-              // too) is tracked in #1868.  Currently safe because every caller that
-              // reaches this fallback path holds a receiver compatible with the
-              // field's declaring class at the source level (the type checker
-              // has already verified field access); strict IL verification
-              // (`peverify`) would still flag this.
+              // Emit castclass before ldfld on MObject receivers, mirroring the
+              // MClass arm.  fieldDeclaringClassByName carries the declaring FQN
+              // registered at addPackageTokens time (#1868).
               val fbyNameKey = fctx.pkgName + "/" + memberName
               match mapGet(cctx.fieldTokensByName, fbyNameKey) {
                 case Some(tok) -> {
+                  match mapGet(cctx.fieldDeclaringClassByName, fbyNameKey) {
+                    case Some(declCls) -> insns.add(MCastclassByName(className = declCls))
+                    case None -> ()
+                  }
                   insns.add(MLdfld(fieldToken = tok))
                   match mapGet(cctx.fieldMsilTypes, fbyNameKey) {
                     case Some(fty) -> fty
@@ -6896,10 +6904,7 @@ func lowerPatternBindMsil(
                     }
                   }
                 }
-                // A `Unit`-typed payload (e.g. binding the Ok value of
-                // `Result[Unit, E]`) has no distinct runtime value; it is held
-                // as `null`/object.  Binding it as `MVoid` would allocate a
-                // void local and produce an invalid program, so erase to object.
+                // Unit-typed payload has no runtime value (null/object); MVoid local would be invalid — erase to object.
                 match concreteFieldTy {
                   case MVoid -> {
                     concreteFieldTy = MObject
@@ -13740,14 +13745,7 @@ func typeExprToMsilGenSig(te: in TypeExpr, pkgName: in String, generics: in List
 // FieldDef and the `.ctor` parameter, both emitted by `lowerMRecord` /
 // `lowerMUnion`).
 //
-// For a NON-generic enclosing type, a `List[T]`/`Map[..]`/`Option[..]` field is
-// DEFINED with the ctx-aware concrete encoding (`typeExprToMsilCtx` →
-// `List`1<T>`), matching the F# emitter and the cross-package field/ctor
-// REFERENCE (`registerRestoredRecord{Ctor,Fields}`, both `…WithCtx`).  Without
-// this the self-hosted producer erased the field to `object` and a consumer in
-// another assembly faulted with MissingField/MissingMethod (D-progress-469).
-//
-// Generic enclosing type: stay on context-free `typeExprToMsilG` so concrete fields erase to `object` and DEF matches the REF sites (#2845; D-progress-469).
+// Non-generic: ctx-aware `typeExprToMsilCtx` for concrete List/Map fields (DEF matches REF; D-progress-469). Generic: context-free `typeExprToMsilG` so fields erase to object (#2845; D-progress-469).
 func recordFieldMsilType(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, generics: in List[String]): MsilType {
   if generics.count > 0 {
     typeExprToMsilG(te, pkgName, generics)
@@ -17920,12 +17918,7 @@ func ensureHostClassTypeRefRow(cctx: in CodegenCtx, packageName: in String, asmR
   row
 }
 
-// Register a record's ctor as a cross-assembly MemberRef in
-// `recordCtorTokens`.  The ctor's signature mirrors the in-bundle
-// `lowerMRecord` convention: HASTHIS, returns void, one param per
-// FIELD (class fields degrade to OBJECT in the sig blob, matching
-// `bufMsilType`'s known limitation — the foreign DLL's ctor uses
-// the same encoding so the runtime resolver matches).
+// Register a record's ctor MemberRef in `recordCtorTokens`; signature mirrors lowerMRecord (HASTHIS void + one OBJECT param per field — foreign DLL uses same encoding).
 func registerRestoredRecordCtor(cctx: in CodegenCtx, packageName: in String, rec: in RecordDecl): Unit {
   val className = packageName + "." + rec.name
   if cctx.recordCtorTokens.containsKey(className) {
@@ -17981,19 +17974,7 @@ func registerRestoredRecordCtor(cctx: in CodegenCtx, packageName: in String, rec
   cctx.recordCtorTokens.add(className, 0x0A000000 + memberRow)
 }
 
-// Register cross-assembly MemberRef rows for each field of a restored record
-// so that `EMember` lowering can emit `ldfld` with a cross-assembly token
-// instead of silently popping the receiver and returning MObject.
-//
-// The field MemberRef signature mirrors `lowerMRecord`'s producer-side
-// encoding (`buildFieldSigWithCtx`): a reference-type field is encoded as
-// ELEMENT_TYPE_CLASS + TypeDefOrRef, not degraded to ELEMENT_TYPE_OBJECT.
-// Both the F# bootstrap emitter and the self-hosted `lowerMRecord` now emit
-// concrete field types, so the consumer's FieldRef must match concretely or
-// the loader faults with `Field not found` at run time (#2359).
-// `fieldMsilTypes` carries the "semantic" type (e.g. MListOf or MClass) so
-// downstream codegen can still see the element type for correct EIndex
-// handling.
+// Register cross-assembly FieldRef MemberRefs for a restored record; sig mirrors lowerMRecord's buildFieldSigWithCtx (concrete reference types, not degraded to OBJECT — mismatch faults with Field not found #2359). fieldMsilTypes carries semantic type for EIndex element-type tracking.
 func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, rec: in RecordDecl): Unit {
   val className = packageName + "." + rec.name
   val typeRefRow = lookupRestoredTypeRefRow(cctx, packageName, rec.name)
@@ -18102,17 +18083,7 @@ func registerRestoredFunc(cctx: in CodegenCtx, packageName: in String, fn: in Fu
   cctx.funcParamModes.add(fqn, paramModesOf(fn.params))
 }
 
-// Allocate a TypeRef row for a union's case class (named
-// `<UnionName>_<CaseName>`).  Cached in `ffiTypeRefs` under the
-// case-class FQN so multiple `registerRestoredUnionCase` calls
-// against the same case share one TypeRef row.
-//
-// `arity` is the number of type parameters on the parent union.  When > 0 the
-// self-hosted MSIL emitter stamps an arity suffix onto the TypeDef name
-// (e.g. "Maybe_Just`1`"), so the TypeRef must use the same suffixed name or
-// the CLR loader cannot resolve the binding.  Pass 0 for non-generic unions
-// to keep the original plain-name behaviour (also used by stdlib, where the
-// F# bootstrap emitter omits the suffix on case classes).
+// Allocate or reuse a cached TypeRef row for a union case class; arity > 0 stamps the suffix (e.g. "Maybe_Just`1`") matching lowerMUnion — CLR loader requires it; 0 keeps plain name for non-generic unions and stdlib.
 func ensureCaseClassTypeRefRow(
   cctx: in CodegenCtx,
   packageName: in String,
@@ -18144,22 +18115,7 @@ func unionFieldType(uf: in UnionField): TypeExpr {
   }
 }
 
-// Register one union case's ctor MemberRef and field MemberRef rows.
-// The case class is named `<UnionName>_<CaseName>` and its ctor signature
-// follows the same HASTHIS convention as record ctors — one param per field.
-// Field MemberRefs are registered under both the declared field name
-// (`<caseFqn>/<name>`) and the positional key (`<caseFqn>/field<i>`) so that
-// pattern bindings using alias names (e.g. `case IFunc(fn)` where the field
-// is declared as `decl`) resolve via the positional fallback.  Skipped if
-// the case-class FQN is already registered.
-//
-// `uGenerics` is the list of the parent union's type-parameter names.  When
-// non-empty the case class is generic (arity = uGenerics.count): field types
-// that are a bare type-parameter reference (e.g. `value: T`) lower to
-// MTypeVar(n) so the ctor signature and field sigs byte-match the DLL's
-// FIELD VAR(n) declarations.  The arity-suffixed TypeRef (e.g. "Maybe_Just`1`")
-// is registered in place of the plain name so ECMA-335 TypeSpec-parented
-// instructions resolve correctly against the DLL's TypeDef.
+// Register ctor + field MemberRefs for one union case; fields registered under both declared name and positional key for alias-binding resolution. Generic cases use MTypeVar so sigs byte-match DLL FIELD VAR(n) declarations; arity-suffixed TypeRef for TypeSpec-parented instructions (#3099).
 func registerRestoredUnionCase(
   cctx: in CodegenCtx,
   packageName: in String,
