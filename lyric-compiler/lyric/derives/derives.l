@@ -634,6 +634,22 @@ func synthesizeOrdUnion(typeName: in String, decl: in UnionDecl, vis: in Option[
   var selfIdx = 0
   while selfIdx < decl.cases.count {
     val sc = decl.cases[selfIdx]
+    // Emit D0001 for non-primitive case fields before synthesizing BLt/BGt comparisons (#2969).
+    var fwi = 0
+    while fwi < sc.fields.count {
+      val fwTyName = match sc.fields[fwi] {
+        case UFNamed(_, fty, _) -> match fty.kind { case TRef(p) -> if p.segments.count > 0 { p.segments[p.segments.count - 1] } else { "" }; case _ -> "" }
+        case UFPos(fty, _) -> match fty.kind { case TRef(p) -> if p.segments.count > 0 { p.segments[p.segments.count - 1] } else { "" }; case _ -> "" }
+      }
+      if not isOrdPrimitiveTypeName(fwTyName) {
+        println(
+          "D0001: @derive(Ord) on '" + typeName + "' case '" + sc.name + "': field " + toString(fwi) + " has type '" +
+            fwTyName +
+            "' which does not support `<`/`>` operators — comparison will fail; use a custom `compare` implementation instead (#2969)"
+        )
+      }
+      fwi = fwi + 1
+    }
     val selfNames = caseBindingNames(sc, "_s")
     val selfPats = caseBindingPats(selfNames)
     val innerArms: List[MatchArm] = newList()
@@ -762,12 +778,38 @@ func synthesizeOrdEnum(typeName: in String, decl: in EnumDecl, vis: in Option[Vi
 // ─────────────────────────────────────────────────────────────────────────────
 // §7d. @derive(Ord) for records and distinct types.
 // ─────────────────────────────────────────────────────────────────────────────
+// True for the built-in types that have `<`/`>` operators in the MSIL/JVM backends.
+// Custom record/union types do not have these operators; using BLt/BGt on them would
+// produce a type error or wrong semantics (#2969).
+func isOrdPrimitiveTypeName(name: in String): Bool {
+  name == "Int" or name == "Float" or name == "String" or name == "Bool" or name == "Char" or name == "Byte" or
+    name == "Long" or
+    name == "Short" or
+    name == "Int64" or
+    name == "Double"
+}
+
 // Field-by-field lexicographic comparison using `<`/`>` with early return.
+// Emits D0001 for any field whose type is not an Ord primitive; such fields require
+// a recursive `compare` call which is not yet synthesized (#2969).
 func synthesizeOrdRecord(typeName: in String, decl: in RecordDecl, vis: in Option[Visibility]): Item {
   val fields = collectFields(decl)
   val stmts: List[Statement] = newList()
   var i = 0
   while i < fields.count {
+    val fTyName = match fields[i].ty.kind {
+      case TRef(path) -> if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "" }
+      case _ -> ""
+    }
+    if not isOrdPrimitiveTypeName(fTyName) {
+      // D0001: @derive(Ord) on a record field of non-primitive type — `<`/`>` operators
+      // are not defined for custom types; comparison will fail at type-check time (#2969).
+      // Recursive `compare` call synthesis is not yet implemented.
+      println(
+        "D0001: @derive(Ord) on '" + typeName + "': field '" + fields[i].name + "' has type '" + fTyName +
+          "' which does not support `<`/`>` operators — comparison will fail; use a custom `compare` implementation instead (#2969)"
+      )
+    }
     val sf = memberOf(pathExpr("self"), fields[i].name)
     val of_ = memberOf(pathExpr("other"), fields[i].name)
     stmts.add(stmtIf(binop(BLt, sf, of_), blockReturn(longLitOf(-1i64))))
