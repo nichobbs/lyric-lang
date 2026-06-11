@@ -2735,7 +2735,7 @@ func parseFixtureBody(st: inout ParseState): FixtureDecl {
     }
   }
   val init = parseExpr(st)
-  FixtureDecl(name = ns.name, ty = ty, init = init, span = joinSpans(startTok.span, init.span))
+  FixtureDecl(name = ns.name, nameSpan = ns.span, ty = ty, init = init, span = joinSpans(startTok.span, init.span))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

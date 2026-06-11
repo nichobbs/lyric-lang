@@ -621,6 +621,7 @@ pub record PropertyDecl {
 
 pub record FixtureDecl {
   name: String
+  nameSpan: Span
   ty: Option[TypeExpr]
   init: Expr
   span: Span
