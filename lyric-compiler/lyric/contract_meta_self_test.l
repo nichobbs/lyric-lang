@@ -10,6 +10,8 @@ package Lyric.ContractMeta.SelfTest
 
 import Std.Core
 import Std.Collections
+import Std.Errors
+import Std.File as File
 import Std.Testing
 import Std.String as Str
 import Std.Path as Path
@@ -313,9 +315,10 @@ func selfDllPath(): String {
 }
 
 // `readAllContractsFromFile` reads the embedded contract JSON in-process via
-// `Std.AssemblyResources` (no subprocess).  The bytes must round-trip through
-// `parseFromJson` cleanly — pinning the read + parse pipeline used by the
-// bridge's restored-dep loader.
+// the metadata-direct reader (`Msil.MetadataReader`, no subprocess and no
+// runtime `Assembly.Load`).  The bytes must round-trip through `parseFromJson`
+// cleanly — pinning the read + parse pipeline used by the bridge's restored-dep
+// loader.
 func testReadFromFileInProcess(): Unit {
   val entries = readAllContractsFromFile(selfDllPath())
   assertTrue(entries.count >= 1, "read_from_file_in_process: at least one contract entry")
@@ -350,6 +353,48 @@ func testReadAllContractsFromFileSinglePkg(): Unit {
     i = i + 1
   }
   assertTrue(foundEntry, "read_all_single_pkg: at least one entry with non-empty JSON")
+}
+
+// Error-path contract (#3201): the metadata-direct readers return `None` / `[]`
+// — never throw — on a missing file or a present-but-not-a-managed-PE file.
+// This pins the graceful-failure behaviour the bridge's restored-dep loader
+// relies on (it pre-checks existence but treats a non-Lyric DLL as "no
+// contract"), and guards against a regression back to the old throwing
+// `Assembly.Load(byte[])` shape, which raised `FileNotFoundException` /
+// `BadImageFormatException` on these same inputs.
+func testReadErrorPathsGraceful(): Unit {
+  // (1) Missing file: openResourceImage's File.readBytes errors -> None / [].
+  val missing = Path.join(Environment.appBaseDirectory(), "__cm_selftest_missing.dll")
+  match readFromFile(missing) {
+    case None -> ()
+    case Some(_) -> panic("read_error_paths: readFromFile(missing) should be None")
+  }
+  assertEqualInt(
+    readAllContractsFromFile(missing).count,
+    0,
+    "read_error_paths: readAllContractsFromFile(missing) empty"
+  )
+
+  // (2) Present file that is not a managed PE image: readPe rejects the bytes
+  //     (no 'MZ' signature) -> None / [].
+  val notDll = Path.join(Environment.appBaseDirectory(), "__cm_selftest_notdll.bin")
+  match File.writeText(notDll, "this is not a PE image") {
+    case Ok(_) -> ()
+    case Err(e) -> panic("read_error_paths: could not write fixture: " + IOError.message(e))
+  }
+  match readFromFile(notDll) {
+    case None -> ()
+    case Some(_) -> panic("read_error_paths: readFromFile(non-PE) should be None")
+  }
+  assertEqualInt(readAllContractsFromFile(notDll).count, 0, "read_error_paths: readAllContractsFromFile(non-PE) empty")
+
+  // Best-effort cleanup so the fixture does not linger in the test output
+  // directory (where the running test DLL lives) across runs.  A failed
+  // delete is non-fatal — the assertions above have already run.
+  match File.deleteFile(notDll) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
 }
 
 // Note: the `readAllContractsFromFile` step-2 path — per-package
@@ -733,6 +778,10 @@ test "readFromFile in process" {
 
 test "readAllContractsFromFile single pkg" {
   testReadAllContractsFromFileSinglePkg()
+}
+
+test "read error paths graceful (missing + non-PE)" {
+  testReadErrorPathsGraceful()
 }
 
 test "non-object param entry skipped" {

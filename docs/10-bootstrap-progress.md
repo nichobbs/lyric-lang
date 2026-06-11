@@ -24218,3 +24218,44 @@ emitter is non-reproducible, and the two emitters' codegen still diverges, e.g.
 the generic arity-suffix fix the self-hosted emitter carries; docs/43).  That
 residual fixed point tracks docs/41 §R7.  See D-progress-502 in
 `docs/03-decision-log.md`.
+
+### D-progress-503 — metadata-direct contract-resource reader; Native AOT restored-dependency builds (#3201)
+
+The NativeAOT-published `lyric` CLI (#1494) could not run restored-dependency
+builds: reading a dependency DLL's embedded `Lyric.Contract` metadata went
+through `Std.AssemblyResources`, whose kernel extern was
+`System.Reflection.Assembly.Load(byte[])` — and Native AOT has no IL loader, so
+that call threw `PlatformNotSupportedException` at runtime.  The embedded read
+is now **metadata-direct**: it parses the dependency DLL's PE/CLI metadata bytes
+and extracts the resource straight out of the ManifestResource table + the CLI
+Resources data region, with no reflection and no runtime assembly load.
+
+- **`lyric-compiler/msil/metadata_reader.l` (Layer 6 added).**  `Msil.MetadataReader`
+  now reads the CLI header's Resources directory (`readPe` records
+  `resourcesRva`/`resourcesSize`/`resourcesOff`), computes the full ECMA-335
+  §II.22 table layout (`computeLayout` was extended from tables 0x00–0x08 to all
+  64 tables, with every §II.24.2.6 coded-index width, so higher tables such as
+  ManifestResource 0x28 can be located), and exposes `openResourceImage(path)` /
+  `resourceNamesIn(ri)` / `tryReadResourceIn(ri, name)` plus the
+  `readManifestResource` / `extractResourceBytes` primitives.  This is the
+  byte-level inverse of the emitter's resource writer (`assembler.l`), which lays
+  each resource down as a 4-byte length prefix + payload in the Resources region.
+- **`lyric-compiler/lyric/contract_meta.l`.**  `readFromFile` /
+  `readAllContractsFromFile` now call `Msil.MetadataReader` instead of
+  `Std.AssemblyResources`; they return `None` / an empty list (rather than
+  throwing) on a missing, unreadable, or non-managed image.
+- **`Std.AssemblyResources` deleted.**  `lyric-stdlib/std/assembly_resources.l`,
+  `lyric-stdlib/std/_kernel/assembly_resources_host.l`, and
+  `lyric-stdlib/tests/assembly_resources_tests.l` are removed — the loader-based
+  externs (3 extern types + 8 host functions) had no remaining consumer.  The
+  kernel extern survey drops by 11; the IL2104 trim rollup the `Assembly.Load`
+  path produced disappears from the AOT publish (#3200 tracks re-arming
+  `IlcTreatWarningsAsErrors`).
+- **CI.**  `aot-smoke`'s native-CLI publish step now also runs a
+  restored-dependency build (the constdep/app cross-package const-inlining
+  scenario) through the published native binary and asserts the inlined `42`.
+
+Verified end-to-end through the framework-dependent `./bin/lyric` (constdep/app
+prints `42` across the assembly boundary).  Implements the docs/42 §5 /
+docs/45-direction resource-read slice; the broader D098 metadata-direct
+symbol-table construction (docs/45 phases 2–5) remains tracked under #2580.

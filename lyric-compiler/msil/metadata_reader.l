@@ -62,6 +62,9 @@ pub record PeImage {
   metadataRva: Int           // RVA of the BSJB metadata root
   metadataSize: Int
   metadataOff: Int           // file offset of the BSJB metadata root
+  resourcesRva: Int          // RVA of the CLI Resources data region (0 = none)
+  resourcesSize: Int
+  resourcesOff: Int          // file offset of the Resources data region (-1 if none)
   sections: List[SectionHeader]
 }
 
@@ -252,19 +255,35 @@ pub func readPe(bytes: in slice[Byte]): Result[PeImage, String] {
     metadataRva = 0,
     metadataSize = 0,
     metadataOff = -1,
+    resourcesRva = 0,
+    resourcesSize = 0,
+    resourcesOff = -1,
     sections = sections
   )
   val cliOff = rvaToOffset(partial, cliRva)
-  if cliOff < 0 or cliOff + 16 > bytes.length {
-    return Err(error = "metadata: CLI header RVA " + toString(cliRva) + " not mapped by any section")
+  // Guard every field this function reads out of the CLI header: MetaData
+  // (RVA/Size at +8/+12), Flags (+16), EntryPointToken (+20), and Resources
+  // (RVA/Size at +24/+28) — the last byte read is at +31, so the header must
+  // span at least 32 bytes.  A truncated image in this window must return Err
+  // rather than slice-panic, preserving the None-on-bad-input contract.
+  if cliOff < 0 or cliOff + 32 > bytes.length {
+    return Err(error = "metadata: CLI header RVA " + toString(cliRva) + " not mapped by any section, or header truncated")
   }
-  // CLI header: cb u32, runtime ver u16+u16, then MetaData (RVA u32, Size u32).
+  // CLI header: cb u32, runtime ver u16+u16, then MetaData (RVA u32, Size u32)
+  // at +8/+12, Flags at +16, EntryPointToken at +20, then Resources (RVA u32,
+  // Size u32) at +24/+28 — the data directory of the embedded managed-resource
+  // region the emitter (`assembler.l`) lays down as length-prefixed payloads.
   val mdRva = rdU32(bytes, cliOff + 8)
   val mdSize = rdU32(bytes, cliOff + 12)
   val mdOff = rvaToOffset(partial, mdRva)
   if mdOff < 0 or mdOff + 16 > bytes.length {
     return Err(error = "metadata: metadata root RVA " + toString(mdRva) + " not mapped by any section")
   }
+  // Resources directory is optional: an RVA of 0 means the assembly carries no
+  // embedded managed resources, in which case the file offset stays -1.
+  val rsrcRva = rdU32(bytes, cliOff + 24)
+  val rsrcSize = rdU32(bytes, cliOff + 28)
+  val rsrcOff = if rsrcRva == 0 { -1 } else { rvaToOffset(partial, rsrcRva) }
   Ok(
     value = PeImage(
       bytes = bytes,
@@ -277,6 +296,9 @@ pub func readPe(bytes: in slice[Byte]): Result[PeImage, String] {
       metadataRva = mdRva,
       metadataSize = mdSize,
       metadataOff = mdOff,
+      resourcesRva = rsrcRva,
+      resourcesSize = rsrcSize,
+      resourcesOff = rsrcOff,
       sections = sections
     )
   )
@@ -455,6 +477,7 @@ pub record TableLayout {
   blobIdx: Int
   typeDefOrRefIdx: Int          // TypeDefOrRef coded-index width
   resolutionScopeIdx: Int       // ResolutionScope coded-index width (TypeRef col 0)
+  implementationIdx: Int        // Implementation coded-index width (ManifestResource col 3)
   fieldIdx: Int          // Field simple-index width
   methodIdx: Int          // MethodDef simple-index width
   paramIdx: Int          // Param simple-index width
@@ -513,39 +536,106 @@ func simpleWidth(th: in TablesHeader, tableId: in Int): Int {
   }
 }
 
-func maxOf4(a: in Int, b: in Int, c: in Int, d: in Int): Int {
-  var m = a
-  if b > m {
-    m = b
-  }
-  if c > m {
-    m = c
-  }
-  if d > m {
-    m = d
+// Largest row count among a set of table ids (the input to a coded-index
+// width decision).  Absent tables read 0.
+func maxRowsOf(th: in TablesHeader, ids: in List[Int]): Int {
+  var m = 0
+  var i = 0
+  while i < ids.count {
+    val rc = rowCountOf(th, ids[i])
+    if rc > m {
+      m = rc
+    }
+    i = i + 1
   }
   m
 }
 
+// Coded-index width (2 or 4 bytes) for a tag family: 2 bytes when the largest
+// referenced table fits in (16 - tagBits) bits.
+func codedWidthFor(th: in TablesHeader, ids: in List[Int], tagBits: in Int): Int {
+  codedWidth(maxRowsOf(th, ids), tagBits)
+}
+
+// Build a List[Int] of the given table ids — one small constructor per coded
+// family so the width computations below read declaratively.
+func tableIds(items: in slice[Int]): List[Int] {
+  val l: List[Int] = newList()
+  var i = 0
+  while i < items.length {
+    l.add(items[i])
+    i = i + 1
+  }
+  l
+}
+
 // Compute the physical column widths, per-table row sizes, and table data
-// offsets.  Only tables 0x00..0x08 (Module..Param) are schema-modelled —
-// enough to locate and read TypeDef/MethodDef/Param, which is all the metadata
-// reader needs.  Rows of higher tables follow these and never shift their
-// offsets, so their sizes are not required here.
+// offsets for every ECMA-335 §II.22 table (ids 0x00..0x2C).  The earlier
+// reader modelled only 0x00..0x08 (enough for TypeDef/MethodDef/Param); the
+// full schema is needed to locate higher tables such as ManifestResource
+// (0x28), whose offset is the cumulative size of every preceding present
+// table.  Coded-index widths follow §II.24.2.6; the per-table column layouts
+// follow §II.22.  Tables above 0x2C are never present in a regular assembly's
+// `#~` stream, so their row sizes stay 0 (and contribute 0 to any offset).
 pub func computeLayout(img: in PeImage, root: in MetadataRoot, th: in TablesHeader): Result[TableLayout, String] {
   val stringIdx = if th.stringsWide { 4 } else { 2 }
   val guidIdx = if th.guidWide { 4 } else { 2 }
   val blobIdx = if th.blobWide { 4 } else { 2 }
+
+  // Simple (single-table) index widths.
   val fieldIdx = simpleWidth(th, 0x04)
   val methodIdx = simpleWidth(th, 0x06)
   val paramIdx = simpleWidth(th, 0x08)
-  // ResolutionScope: Module(0x00), ModuleRef(0x1A), AssemblyRef(0x23), TypeRef(0x01).
-  val rsIdx = codedWidth(
-    maxOf4(rowCountOf(th, 0x00), rowCountOf(th, 0x1A), rowCountOf(th, 0x23), rowCountOf(th, 0x01)),
-    2
-  )
-  // TypeDefOrRef: TypeDef(0x02), TypeRef(0x01), TypeSpec(0x1B).
-  val tdrIdx = codedWidth(maxOf4(rowCountOf(th, 0x02), rowCountOf(th, 0x01), rowCountOf(th, 0x1B), 0), 2)
+  val typeDefIdx = simpleWidth(th, 0x02)
+  val eventIdx = simpleWidth(th, 0x14)
+  val propertyIdx = simpleWidth(th, 0x17)
+  val moduleRefIdx = simpleWidth(th, 0x1A)
+  val assemblyRefIdx = simpleWidth(th, 0x23)
+  val genericParamIdx = simpleWidth(th, 0x2A)
+
+  // Coded-index widths (ECMA-335 §II.24.2.6).
+  val rsIdx = codedWidthFor(th, tableIds([0x00, 0x1A, 0x23, 0x01]), 2)              // ResolutionScope
+  val tdrIdx = codedWidthFor(th, tableIds([0x02, 0x01, 0x1B]), 2)                   // TypeDefOrRef
+  val hasConstIdx = codedWidthFor(th, tableIds([0x04, 0x08, 0x17]), 2)             // HasConstant
+  val hasCAIdx = codedWidthFor(
+    th,
+    tableIds(
+      [
+        0x06,
+        0x04,
+        0x01,
+        0x02,
+        0x08,
+        0x09,
+        0x0A,
+        0x00,
+        0x0E,
+        0x17,
+        0x14,
+        0x11,
+        0x1A,
+        0x1B,
+        0x20,
+        0x23,
+        0x26,
+        0x27,
+        0x28,
+        0x2A,
+        0x2C,
+        0x2B
+      ]
+    ),
+    5
+  )                                                                                 // HasCustomAttribute
+  val hasFMIdx = codedWidthFor(th, tableIds([0x04, 0x08]), 1)                       // HasFieldMarshal
+  val hasDeclSecIdx = codedWidthFor(th, tableIds([0x02, 0x06, 0x20]), 2)           // HasDeclSecurity
+  val memberRefParentIdx = codedWidthFor(th, tableIds([0x02, 0x01, 0x1A, 0x06, 0x1B]), 3)  // MemberRefParent
+  val hasSemanticsIdx = codedWidthFor(th, tableIds([0x14, 0x17]), 1)               // HasSemantics
+  val methodDefOrRefIdx = codedWidthFor(th, tableIds([0x06, 0x0A]), 1)             // MethodDefOrRef
+  val memberForwardedIdx = codedWidthFor(th, tableIds([0x04, 0x06]), 1)            // MemberForwarded
+  val implementationIdx = codedWidthFor(th, tableIds([0x26, 0x23, 0x27]), 2)       // Implementation
+  val custAttrTypeIdx = codedWidthFor(th, tableIds([0x06, 0x0A]), 3)               // CustomAttributeType
+  val typeOrMethodDefIdx = codedWidthFor(th, tableIds([0x02, 0x06]), 1)            // TypeOrMethodDef
 
   val rowSize: List[Int] = newList()
   var z = 0
@@ -562,6 +652,42 @@ pub func computeLayout(img: in PeImage, root: in MetadataRoot, th: in TablesHead
   rowSize[0x06] = 4 + 2 + 2 + stringIdx + blobIdx + paramIdx               // MethodDef
   rowSize[0x07] = paramIdx                                                 // ParamPtr
   rowSize[0x08] = 2 + 2 + stringIdx                                        // Param
+  rowSize[0x09] = typeDefIdx + tdrIdx                                      // InterfaceImpl
+  rowSize[0x0A] = memberRefParentIdx + stringIdx + blobIdx                 // MemberRef
+  rowSize[0x0B] = 2 + hasConstIdx + blobIdx                                // Constant (Type u1 + pad u1)
+  rowSize[0x0C] = hasCAIdx + custAttrTypeIdx + blobIdx                     // CustomAttribute
+  rowSize[0x0D] = hasFMIdx + blobIdx                                       // FieldMarshal
+  rowSize[0x0E] = 2 + hasDeclSecIdx + blobIdx                              // DeclSecurity
+  rowSize[0x0F] = 2 + 4 + typeDefIdx                                       // ClassLayout
+  rowSize[0x10] = 4 + fieldIdx                                             // FieldLayout
+  rowSize[0x11] = blobIdx                                                  // StandAloneSig
+  rowSize[0x12] = typeDefIdx + eventIdx                                    // EventMap
+  rowSize[0x13] = eventIdx                                                 // EventPtr
+  rowSize[0x14] = 2 + stringIdx + tdrIdx                                   // Event
+  rowSize[0x15] = typeDefIdx + propertyIdx                                 // PropertyMap
+  rowSize[0x16] = propertyIdx                                              // PropertyPtr
+  rowSize[0x17] = 2 + stringIdx + blobIdx                                  // Property
+  rowSize[0x18] = 2 + methodIdx + hasSemanticsIdx                          // MethodSemantics
+  rowSize[0x19] = typeDefIdx + 2 * methodDefOrRefIdx                       // MethodImpl
+  rowSize[0x1A] = stringIdx                                                // ModuleRef
+  rowSize[0x1B] = blobIdx                                                  // TypeSpec
+  rowSize[0x1C] = 2 + memberForwardedIdx + stringIdx + moduleRefIdx        // ImplMap
+  rowSize[0x1D] = 4 + fieldIdx                                             // FieldRVA
+  rowSize[0x1E] = 4 + 4                                                    // EncLog
+  rowSize[0x1F] = 4                                                        // EncMap
+  rowSize[0x20] = 4 + 2 + 2 + 2 + 2 + 4 + blobIdx + 2 * stringIdx          // Assembly
+  rowSize[0x21] = 4                                                        // AssemblyProcessor
+  rowSize[0x22] = 4 + 4 + 4                                                // AssemblyOS
+  rowSize[0x23] = 2 + 2 + 2 + 2 + 4 + blobIdx + 2 * stringIdx + blobIdx    // AssemblyRef
+  rowSize[0x24] = 4 + assemblyRefIdx                                       // AssemblyRefProcessor
+  rowSize[0x25] = 4 + 4 + 4 + assemblyRefIdx                               // AssemblyRefOS
+  rowSize[0x26] = 4 + stringIdx + blobIdx                                  // File
+  rowSize[0x27] = 4 + 4 + 2 * stringIdx + implementationIdx                // ExportedType
+  rowSize[0x28] = 4 + 4 + stringIdx + implementationIdx                    // ManifestResource
+  rowSize[0x29] = 2 * typeDefIdx                                           // NestedClass
+  rowSize[0x2A] = 2 + 2 + typeOrMethodDefIdx + stringIdx                   // GenericParam
+  rowSize[0x2B] = methodDefOrRefIdx + blobIdx                              // MethodSpec
+  rowSize[0x2C] = genericParamIdx + tdrIdx                                 // GenericParamConstraint
 
   val dataStart: List[Int] = newList()
   var z2 = 0
@@ -571,7 +697,7 @@ pub func computeLayout(img: in PeImage, root: in MetadataRoot, th: in TablesHead
   }
   var off = th.tablesDataOff
   var tid = 0
-  while tid <= 0x08 {
+  while tid < 64 {
     dataStart[tid] = off
     off = off + rowCountOf(th, tid) * rowSize[tid]
     tid = tid + 1
@@ -586,6 +712,7 @@ pub func computeLayout(img: in PeImage, root: in MetadataRoot, th: in TablesHead
       blobIdx = blobIdx,
       typeDefOrRefIdx = tdrIdx,
       resolutionScopeIdx = rsIdx,
+      implementationIdx = implementationIdx,
       fieldIdx = fieldIdx,
       methodIdx = methodIdx,
       paramIdx = paramIdx,
@@ -1643,4 +1770,129 @@ pub func resolveExtern(
     case None -> None
     case Some(asmName) -> match mapGet(pathIndex, asmName) { case None -> None; case Some(asmPath) -> match resolveOverload(asmPath, typeFqn, member, argTypes) { case None -> None; case Some(m) -> Some(value = ResolvedExtern(assemblyName = asmName, sig = m)) } }
   }
+}
+
+// ── Layer 6: embedded managed resources ──────────────────────────────────────
+//
+// Read a named entry out of the ManifestResource table (0x28) and extract its
+// payload bytes from the CLI Resources data region.  This is the metadata-
+// direct inverse of the emitter's resource writer (`assembler.l`): the writer
+// concatenates each resource as a 4-byte little-endian length prefix followed
+// by the payload into the Resources region, and records the per-resource byte
+// offset into that region in each ManifestResource row.  Reading the same
+// structures back needs no runtime assembly load — it is pure byte reading, so
+// it works under Native AOT where `System.Reflection.Assembly.Load(byte[])` is
+// unsupported.  ECMA-335 §II.22.24 (ManifestResource), §II.25.3.3.3 (Resources).
+// One ManifestResource row (table 0x28).  `implementation` is the coded
+// Implementation index: 0 means the resource is embedded in this assembly (the
+// only kind a Lyric-emitted DLL carries); non-zero points into the File /
+// AssemblyRef tables for a linked external resource.
+pub record ManifestResourceEntry {
+  resourceOffset: Int    // byte offset of the payload into the Resources region
+  flags: Int             // ManifestResourceAttributes (1 = Public, 2 = Private)
+  name: String           // resource name (from #Strings)
+  implementation: Int    // coded Implementation (0 = embedded in this assembly)
+}
+
+// Read ManifestResource row `row` (1-based).  Columns (ECMA §II.22.24):
+// Offset(u4), Flags(u4), Name(#String), Implementation(coded Implementation).
+pub func readManifestResource(img: in PeImage, layout: in TableLayout, row: in Int): ManifestResourceEntry {
+  if row < 1 {
+    panic("Msil.MetadataReader.readManifestResource: row must be >= 1, got " + toString(row))
+  }
+  val b = img.bytes
+  val o = layout.dataStart[0x28] + (row - 1) * layout.rowSize[0x28]
+  val resOff = rdU32(b, o)
+  val flags = rdU32(b, o + 4)
+  var p = o + 8
+  val nameI = rdIdx(b, p, layout.stringIdx)
+  p = p + layout.stringIdx
+  val implIdx = rdIdx(b, p, layout.implementationIdx)
+  ManifestResourceEntry(
+    resourceOffset = resOff,
+    flags = flags,
+    name = stringAt(img, layout, nameI),
+    implementation = implIdx
+  )
+}
+
+// Extract the payload bytes of an embedded resource whose `resOffset` is the
+// byte offset into the Resources region.  Reads the 4-byte length prefix at
+// `resourcesOff + resOffset`, then that many payload bytes.  Returns an empty
+// slice when the image declares no Resources region (offset -1) or the read
+// would run past the image.
+pub func extractResourceBytes(img: in PeImage, resOffset: in Int): slice[Byte] {
+  val empty: List[Byte] = newList()
+  if img.resourcesOff < 0 {
+    return empty.toArray()
+  }
+  val b = img.bytes
+  val base = img.resourcesOff + resOffset
+  if base + 4 > b.length {
+    return empty.toArray()
+  }
+  val len = rdU32(b, base)
+  val acc: List[Byte] = newList()
+  var i = 0
+  while i < len and base + 4 + i < b.length {
+    acc.add(b[base + 4 + i])
+    i = i + 1
+  }
+  acc.toArray()
+}
+
+// A parsed assembly image prepared for resource reads: the PE container plus
+// the computed table layout and `#~` header.  Built once per DLL by
+// `openResourceImage`, then queried by `resourceNamesIn` / `tryReadResourceIn`.
+pub record ResourceImage {
+  img: PeImage
+  layout: TableLayout
+  th: TablesHeader
+}
+
+// Open `path` as a .NET assembly and prepare it for embedded-resource reads.
+// Returns `None` when the file is unreadable or not a well-formed managed PE
+// image (the caller treats a non-Lyric / unreadable DLL as "no contract
+// resources", matching the previous loader-based behaviour).  Pure byte
+// reading — no runtime assembly load, so it is Native-AOT-safe.
+pub func openResourceImage(path: in String): Option[ResourceImage] {
+  match File.readBytes(path) {
+    case Err(_) -> None
+    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> None; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> None; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> None; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> None; case Ok(layout) -> Some(value = ResourceImage(img = img, layout = layout, th = th)) } } } }
+  }
+}
+
+// Every embedded-resource name in the assembly (resources whose Implementation
+// is 0 — i.e. carried in this assembly, not linked from another file).  Order
+// matches the ManifestResource table row order, which the emitter writes in
+// declaration order (deterministic per build).
+pub func resourceNamesIn(ri: in ResourceImage): List[String] {
+  val names: List[String] = newList()
+  val n = rowCountOf(ri.th, 0x28)
+  var i = 1
+  while i <= n {
+    val r = readManifestResource(ri.img, ri.layout, i)
+    if r.implementation == 0 {
+      names.add(r.name)
+    }
+    i = i + 1
+  }
+  names
+}
+
+// Read the payload bytes of the embedded resource named `name`, or `None` when
+// no embedded resource has that name.  Scans the ManifestResource table for a
+// name match, then extracts the length-prefixed payload from the Resources
+// region.
+pub func tryReadResourceIn(ri: in ResourceImage, name: in String): Option[slice[Byte]] {
+  val n = rowCountOf(ri.th, 0x28)
+  var i = 1
+  while i <= n {
+    val r = readManifestResource(ri.img, ri.layout, i)
+    if r.implementation == 0 and r.name == name {
+      return Some(value = extractResourceBytes(ri.img, r.resourceOffset))
+    }
+    i = i + 1
+  }
+  None
 }

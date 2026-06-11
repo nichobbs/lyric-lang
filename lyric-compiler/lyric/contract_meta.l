@@ -9,12 +9,15 @@
 //!   diffContracts(oldJson, newJson)— rendered diff entries.
 //!   hasBreakingChanges(entries)    — pure check on the diff entries.
 //!
-//! IN-PROCESS RESOURCE READS (#1229 Phase A.3): `readFromFile` and
-//! `readAllContractsFromFile` now use `Std.AssemblyResources` to walk
-//! embedded resources directly via `System.Reflection.Assembly`, with
-//! `Std.Encoding.tryDecodeUtf8` converting the bytes to JSON strings
-//! in-process.  Replaces the `lyric --internal-contract-meta read`
-//! subprocess shellout that the previous versions used.  Mirrors
+//! IN-PROCESS RESOURCE READS (#1229 Phase A.3, #3201): `readFromFile`
+//! and `readAllContractsFromFile` walk embedded resources via the
+//! metadata-direct reader (`Msil.MetadataReader`) — pure byte reading of
+//! the PE/CLI metadata (ManifestResource table + Resources data region),
+//! with `Std.Encoding.tryDecodeUtf8` converting the bytes to JSON strings
+//! in-process.  No subprocess and no runtime `Assembly.Load`, so it works
+//! under Native AOT (which has no IL loader).  Replaces the
+//! `lyric --internal-contract-meta read` subprocess shellout that the
+//! earliest versions used.  Mirrors
 //! `bootstrap/src/Lyric.Emitter/ContractMeta.fs::readFromAssembly` and
 //! `readAllContractsFromAssembly`.
 //!
@@ -39,7 +42,7 @@ import Std.Json
 import Std.Encoding as Encoding
 import Lyric.Lexer
 import Lyric.Parser
-import Std.AssemblyResources as AsmRes
+import Msil.MetadataReader as Mdr
 import Lyric.CliShell as CliShell
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -83,23 +86,21 @@ func decodeUtf8Resource(bytes: in slice[Byte]): Option[String] {
 /// Read the embedded `Lyric.Contract` JSON resource from `dllPath`.
 /// Returns `Some(json)` if the resource is present, `None` otherwise.
 ///
-/// Walks the assembly's manifest resources directly via
-/// `Std.AssemblyResources` — no subprocess.  When the assembly is a
-/// project-as-DLL bundle (no top-level `Lyric.Contract`, only
-/// `Lyric.Contract.<Pkg>` resources), callers should use
-/// `readAllContractsFromFile` instead.
+/// Walks the assembly's manifest resources via the metadata-direct
+/// reader (`Msil.MetadataReader`) — pure byte reading of the PE/CLI
+/// metadata, no subprocess and no runtime `Assembly.Load`, so it works
+/// under Native AOT.  When the assembly is a project-as-DLL bundle (no
+/// top-level `Lyric.Contract`, only `Lyric.Contract.<Pkg>` resources),
+/// callers should use `readAllContractsFromFile` instead.
 ///
-/// **Throws** on missing or unreadable `path` (the underlying BCL
-/// `File.ReadAllBytes` raises `FileNotFoundException`, and
-/// `Assembly.Load(byte[])` raises `BadImageFormatException` on a
-/// malformed image); callers that need a typed-error shape should wrap
-/// the call in `try` (#1252).
+/// Returns `None` (rather than throwing) when `path` is missing,
+/// unreadable, or not a well-formed managed PE image — the same outcome
+/// as a present DLL that carries no `Lyric.Contract` resource.
 @stable(since = "0.1")
 pub func readFromFile(path: in String): Option[String] {
-  val ar = AsmRes.openAssembly(path)
-  match AsmRes.tryReadResource(ar, "Lyric.Contract") {
+  match Mdr.openResourceImage(path) {
     case None -> None
-    case Some(bytes) -> decodeUtf8Resource(bytes)
+    case Some(ri) -> match Mdr.tryReadResourceIn(ri, "Lyric.Contract") { case None -> None; case Some(bytes) -> decodeUtf8Resource(bytes) }
   }
 }
 
@@ -110,51 +111,55 @@ pub func readFromFile(path: in String): Option[String] {
 /// an empty list when no contract resources are present (e.g. a
 /// non-Lyric assembly).
 ///
-/// In-process via `Std.AssemblyResources`.  Mirrors F#
-/// `Lyric.Emitter.ContractMeta.readAllContractsFromAssembly`.
+/// In-process via the metadata-direct reader (`Msil.MetadataReader`).
+/// Mirrors F# `Lyric.Emitter.ContractMeta.readAllContractsFromAssembly`.
 @stable(since = "0.1")
 pub func readAllContractsFromFile(path: in String): List[ContractEntry] {
-  val ar = AsmRes.openAssembly(path)
-  val names = AsmRes.resourceNames(ar)
   val result: List[ContractEntry] = newList()
+  match Mdr.openResourceImage(path) {
+    case None -> result
+    case Some(ri) -> {
+      val names = Mdr.resourceNamesIn(ri)
 
-  // 1. Legacy single-package form: a bare `Lyric.Contract`.
-  match AsmRes.tryReadResource(ar, "Lyric.Contract") {
-    case Some(bytes) -> {
-      match decodeUtf8Resource(bytes) {
-        case Some(json) -> result.add(ContractEntry(packageName = "", json = json))
-        case None -> ()
-      }
-    }
-    case None -> ()
-  }
-
-  // 2. Per-package form: `Lyric.Contract.<Pkg>`.  Strip the prefix to
-  //    recover the package name.  Both forms can co-exist in
-  //    pathological assemblies; we surface both.
-  val prefix = "Lyric.Contract."
-  var i = 0
-  while i < names.length {
-    val name = names[i]
-    if Str.startsWith(name, prefix) {
-      // `String.substring(start, count)`: the second arg is a length, NOT an
-      // end-index — passing `name.length` directly triggered an
-      // `ArgumentOutOfRangeException` (`requires: start + count <= s.length`).
-      val pkgName = name.substring(prefix.length, name.length - prefix.length)
-      match AsmRes.tryReadResource(ar, name) {
+      // 1. Legacy single-package form: a bare `Lyric.Contract`.
+      match Mdr.tryReadResourceIn(ri, "Lyric.Contract") {
         case Some(bytes) -> {
           match decodeUtf8Resource(bytes) {
-            case Some(json) -> result.add(ContractEntry(packageName = pkgName, json = json))
+            case Some(json) -> result.add(ContractEntry(packageName = "", json = json))
             case None -> ()
           }
         }
         case None -> ()
       }
-    }
-    i = i + 1
-  }
 
-  result
+      // 2. Per-package form: `Lyric.Contract.<Pkg>`.  Strip the prefix to
+      //    recover the package name.  Both forms can co-exist in
+      //    pathological assemblies; we surface both.
+      val prefix = "Lyric.Contract."
+      var i = 0
+      while i < names.count {
+        val name = names[i]
+        if Str.startsWith(name, prefix) {
+          // `String.substring(start, count)`: the second arg is a length, NOT
+          // an end-index — passing `name.length` directly triggered an
+          // `ArgumentOutOfRangeException` (`requires: start + count <= s.length`).
+          val pkgName = name.substring(prefix.length, name.length - prefix.length)
+          match Mdr.tryReadResourceIn(ri, name) {
+            case Some(bytes) -> {
+              match decodeUtf8Resource(bytes) {
+                case Some(json) -> result.add(ContractEntry(packageName = pkgName, json = json))
+                case None -> ()
+              }
+            }
+            case None -> ()
+          }
+        }
+        i = i + 1
+      }
+
+      result
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

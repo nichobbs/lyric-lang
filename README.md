@@ -112,8 +112,7 @@ text matching (`Std.Regex`, `Std.RegexSafe`, `Std.Parse`),
 time/identity (`Std.Time`, `Std.Uuid`), diagnostics
 (`Std.Errors`, `Std.Log`), testing (`Std.Testing`,
 `Std.Testing.Property`, `Std.Testing.Snapshot`,
-`Std.Testing.Mocking`), and reflection-on-self
-(`Std.AssemblyResources`).  See `docs/10-stdlib-plan.md` for the
+`Std.Testing.Mocking`).  See `docs/10-stdlib-plan.md` for the
 stability cut table.
 
 Codegen builtins (no import needed): `println`, `panic`, `expect`,

@@ -11,18 +11,20 @@
          dependent app, so the dev inner loop is unaffected.  The Lyric
          compile pipeline is culture-invariant (ordinal string handling
          throughout), so invariant globalization is safe and trims ICU.
-         Restored-dependency builds need `Assembly.Load(byte[])` for the
-         embedded contract-metadata read (Std.AssemblyResources), which
-         Native AOT does not support - single-file / no-dependency builds
-         are the supported AOT surface until the metadata-direct reader
-         (docs/45 phases 2-5 / docs/42) replaces runtime assembly loading. -->
+         Restored-dependency builds are AOT-supported: the embedded
+         contract-metadata read goes through the metadata-direct reader
+         (`Msil.MetadataReader`, pure byte reading of the PE/CLI metadata),
+         not `Assembly.Load(byte[])`, so no IL loader is required at runtime
+         (#3201 / docs/45 / docs/42). -->
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
     <!-- Directory.Build.props sets TreatWarningsAsErrors=true, which ILC
-         inherits and which would fail the publish on the known IL2104 trim
-         rollup from Std.AssemblyResources' documented Assembly.Load usage.
-         Keep ILC diagnostics as warnings; the compile-time policy for C#/F#
-         warnings is unchanged. -->
+         inherits.  The metadata-direct contract reader (#3201) removed the
+         `Assembly.Load` path that produced the IL2104 trim rollup, so the
+         publish is expected to be warning-clean; flipping this back to
+         inherit (re-arming warn-as-error as a tripwire) is tracked in #3200.
+         Keep ILC diagnostics as warnings until then; the compile-time policy
+         for C#/F# warnings is unchanged. -->
     <IlcTreatWarningsAsErrors>false</IlcTreatWarningsAsErrors>
   </PropertyGroup>
 

@@ -200,7 +200,13 @@ let tests =
             //   334 → 335 — `taskWaitMs` extern added to
             //               `Std.ProcessCaptureHost` so pipe-drain collection
             //               has a bounded timeout after process kill (#3029).
-            Expect.isLessThanOrEqual total 335
+            //   335 → 324 — `Std.AssemblyResourcesHost` deleted (#3201): the
+            //               3 extern types + 8 host functions backing the
+            //               `Assembly.Load(byte[])` resource read are gone.
+            //               The embedded contract-metadata read is now
+            //               metadata-direct (`Msil.MetadataReader`, pure byte
+            //               reading, AOT-safe), needing no host extern at all.
+            Expect.isLessThanOrEqual total 324
                 "total extern surface unexpectedly large"
         }
     ]

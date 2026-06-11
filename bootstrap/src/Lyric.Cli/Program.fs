@@ -130,8 +130,9 @@ let private internalBuild (rest: string list) : int =
 ///
 /// The former `read` subcommand was removed: the self-hosted
 /// `Lyric.ContractMeta` package now reads embedded contract resources
-/// in-process via `Std.AssemblyResources` (D-progress-302), so no caller
-/// shells out for `read` any more.  `diff` is the last remaining hop.
+/// in-process via the metadata-direct reader (`Msil.MetadataReader`,
+/// no runtime `Assembly.Load` — AOT-safe), so no caller shells out for
+/// `read` any more.  `diff` is the last remaining hop.
 let private internalContractMeta (rest: string list) : int =
     match rest with
     | "diff" :: _ ->

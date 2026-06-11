@@ -97,7 +97,7 @@ The kernel is the floor. Every language has one (Rust's `std` calls
 (`@externTarget`, `extern type`, `extern package`) in
 `lyric-stdlib/std/_kernel/*.l`.  The original ≤120 estimate predated
 the full stdlib scope; the stdlib subsequently added `Std.Http.Server`
-(ASP.NET Core), `Std.Char` / `Std.Unicode`, `Std.AssemblyResources`,
+(ASP.NET Core), `Std.Char` / `Std.Unicode`,
 `Std.Task` (async-local ambient slot), and testing-mock surfaces — all
 beyond the §3 table's original inventory.  The `KernelBoundaryTests.fs`
 CI ratchet enforces "no unreviewed growth": any addition must update the
