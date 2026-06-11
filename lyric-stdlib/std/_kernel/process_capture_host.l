@@ -99,6 +99,14 @@ func startReadAll(r: in ProcReader): TaskStr = ()
 @externTarget("System.Threading.Tasks.Task`1[System.String].Result")
 func taskStrResult(t: in TaskStr): String = ()
 
+// Blocks the calling thread for up to `milliseconds`.  Returns true if the
+// task completed within the timeout, false if the timeout elapsed first.
+// Used to cap pipe-drain collection after a process kill so a slow kernel
+// reap or a race between kill and child writes cannot hang the caller
+// indefinitely (#3029).
+@externTarget("System.Threading.Tasks.Task.Wait")
+func taskWaitMs(t: in TaskStr, milliseconds: in Int): Bool = ()
+
 // ── Public result record ───────────────────────────────────────────────────
 // Replaces the former opaque `extern type ProcessCaptureResult =
 // "Lyric.Emitter.ProcessCapture+CaptureResult"`.
@@ -164,14 +172,35 @@ func runImpl(exe: in String, args: in String, stdinContent: in String, timeoutMs
   }
 
   // Collect task results.  The child has either exited or been killed, so
-  // both pipe write-ends are closed and the tasks complete immediately.
+  // both pipe write-ends are closed and the tasks normally complete immediately.
+  // When the child was killed, apply a 5-second fallback timeout per task so
+  // a slow kernel reap or a race between kill and child writes cannot block
+  // the calling thread indefinitely (#3029 — mirrors the F# original's
+  // `task.Wait(5000)` guard).
+  val drainTimeoutMs = 5000
   val stdout = try {
-    taskStrResult(stdoutTask)
+    if timedOut {
+      if taskWaitMs(stdoutTask, drainTimeoutMs) {
+        taskStrResult(stdoutTask)
+      } else {
+        ""
+      }
+    } else {
+      taskStrResult(stdoutTask)
+    }
   } catch Bug as _ {
     ""
   }
   val stderr = try {
-    taskStrResult(stderrTask)
+    if timedOut {
+      if taskWaitMs(stderrTask, drainTimeoutMs) {
+        taskStrResult(stderrTask)
+      } else {
+        ""
+      }
+    } else {
+      taskStrResult(stderrTask)
+    }
   } catch Bug as _ {
     ""
   }

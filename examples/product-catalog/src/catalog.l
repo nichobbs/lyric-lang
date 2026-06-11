@@ -20,6 +20,7 @@ package ProductCatalog.Catalog
 
 import Std.Core
 import Std.Collections
+import Std.Iter
 import Grpc
 import Grpc.Aspects
 import Db
@@ -148,10 +149,7 @@ pub func listProducts(req: in ListProductsRequest, authToken: in String): Result
       match result {
         case Err(e) -> return Err(dbErrToStatus(e))
         case Ok(rows) -> {
-          var products: slice[Product] = []
-          for row in rows {
-            products = concat(products, [rowToProduct(row)])
-          }
+          val products = map(rows, rowToProduct)
           return Ok(ListProductsResponse(products = products, total = products.count))
         }
       }

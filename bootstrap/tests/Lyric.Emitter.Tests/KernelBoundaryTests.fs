@@ -197,7 +197,10 @@ let tests =
             //               reference-typed module-level `pub val` fields (#3027).
             //               `hostDefaultClient()` returns the `defaultClient` singleton
             //               directly; `HttpClientHost.fs` deleted.
-            Expect.isLessThanOrEqual total 334
+            //   334 → 335 — `taskWaitMs` extern added to
+            //               `Std.ProcessCaptureHost` so pipe-drain collection
+            //               has a bounded timeout after process kill (#3029).
+            Expect.isLessThanOrEqual total 335
                 "total extern surface unexpectedly large"
         }
     ]

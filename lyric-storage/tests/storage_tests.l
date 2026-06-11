@@ -268,6 +268,38 @@ test "get rejects unsafe key with absolute path" {
              "get must reject absolute key at the safety gate")
 }
 
+// ─── .meta.json key rejection (#1911) ────────────────────────────────────────
+//
+// Keys whose basename ends in `.meta.json` are reserved for the local-fs
+// sidecar metadata files and must be uniformly rejected across all
+// operations.  `isSafeKey` is the single source of truth; the four
+// data-plane methods all carry `requires: isSafeKey(key)` so the rejection
+// surfaces as a contract violation.
+
+test "isSafeKey rejects .meta.json-suffixed key" {
+  assertTrue(not isSafeKey("archive.meta.json"),
+             "bare .meta.json key must be rejected")
+  assertTrue(not isSafeKey("uploads/photo.meta.json"),
+             "nested .meta.json key must be rejected")
+  assertTrue(not isSafeKey("a/b/c.meta.json"),
+             "deeply nested .meta.json key must be rejected")
+}
+
+test "isSafeKey accepts keys that merely contain meta.json" {
+  assertTrue(isSafeKey("meta.json.bak"),
+             "meta.json.bak is not a sidecar suffix")
+  assertTrue(isSafeKey("meta.json"),
+             "bare meta.json (no leading dot on suffix) is safe")
+}
+
+test "put rejects .meta.json-suffixed key" {
+  val bRes = freshBucket()
+  assertTrue(isOk(bRes), "fresh bucket must connect")
+  val bucket = unwrapResultOr(bRes, defaultBucket())
+  assertTrue(isErr(put(bucket, "archive.meta.json", "QQ==", "application/json")),
+             "put must reject .meta.json key at the isSafeKey contract gate")
+}
+
 // Sentinel bucket used by `unwrapResultOr` fallbacks — never read
 // because every test gates on `isOk(bRes)` before calling the unwrap.
 // Concrete type is forced to `StorageBucket` via the interface, with a

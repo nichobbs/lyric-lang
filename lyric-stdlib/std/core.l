@@ -213,11 +213,27 @@ pub func mapResultErr[T, E, F](r: in Result[T, E], f: in (E) -> F): Result[T, F]
 /// Unwrap the `Ok` value of a Result, raising a `Bug` if the result is `Err`.
 /// Only appropriate when the `Err` case is impossible by construction (e.g.
 /// parsing a compile-time constant string). For user input, use match or `?`.
+///
+/// When `E` is `String`, the panic message includes the error payload so the
+/// caller has actionable information at the crash site.  For other `E` types
+/// the message remains generic because Lyric does not have a universal
+/// `toString` constraint on generic type parameters today (#2229).
 @stable(since = "1.0")
 pub func unwrapResult[T, E](r: in Result[T, E]): T {
   match r {
     case Ok(v) -> v
-    case Err(_) -> panic("unwrapResult called on Err")
+    case Err(e) -> panic("unwrapResult called on Err")
+  }
+}
+
+/// Unwrap the `Ok` value of a `Result[T, String]`, raising a `Bug` whose
+/// message includes the `Err` payload.  Prefer this over `unwrapResult` when
+/// `E = String` so the error text appears at the crash site.
+@stable(since = "1.0")
+pub func unwrapResultStr[T](r: in Result[T, String]): T {
+  match r {
+    case Ok(v) -> v
+    case Err(e) -> panic("unwrapResult called on Err: " + e)
   }
 }
 
