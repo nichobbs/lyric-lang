@@ -455,6 +455,16 @@ language reference §2.6's "explicit conversion required to interop
 with numeric APIs" — the compiler does not emit implicit conversions
 between a Lyric `enum` and `int`.
 
+At the IL level, enum *values* are ordinal `int32`s: a case reference
+emits `ldc.i4 <ordinal>`, a `case X ->` pattern compares ordinals with
+`ceq`, and enum-typed signature positions encode `ELEMENT_TYPE_I4` —
+never `ELEMENT_TYPE_CLASS` naming the enum TypeDef, which the CLR
+loader rejects with a value-type mismatch (an enum extends
+`System.Enum`, a value type). The CLR `enum` TypeDef (with its
+`value__` field and one literal field + `Constant` row per case) is
+still emitted for metadata fidelity and host-side interop. Both the
+F# bootstrap emitter and the self-hosted backend follow this model.
+
 ### 8.2 Variant-free unions vs. enums
 
 A `union` with all payload-free variants is *not* the same as an

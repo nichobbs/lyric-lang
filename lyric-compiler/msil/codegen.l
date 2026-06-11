@@ -231,6 +231,13 @@ pub record CodegenCtx {
   // Compile-time const values: registered by IConst pre-scan so that EPath
   // references to const names inline ldc.i4 instead of ldsfld.
   constValues: Map[String, Int]  // constName → inlined Int value
+  // Lyric enums lower to ordinal Int values (mirroring the F# emitter's
+  // EnumCaseLookup): type positions encode I4, a case reference emits
+  // `ldc.i4 <ordinal>`, and a `case X` pattern compares ordinals.  A
+  // CLASS-flavored signature/TypeRef to the enum TypeDef (a value type
+  // extending System.Enum) is rejected by the loader (#3196).
+  enumTypeNames: Map[String, Int]  // enum simple name → case count
+  enumCaseOrdinals: Map[String, Int]  // case name (simple + pkg-qualified) → ordinal
   // FFI caches (#370 + Phase R6).  Populated lazily by
   // emitExternTargetBody as `@externTarget` declarations are walked.
   ffiAsmRefs: Map[String, Int]  // assembly simple name → AssemblyRef row index
@@ -1363,6 +1370,8 @@ pub func newCodegenCtx(
     lambdaCaptureTypes = newMap(),
     lambdaCaptureCells = newMap(),
     constValues = newMap(),
+    enumTypeNames = newMap(),
+    enumCaseOrdinals = newMap(),
     ffiAsmRefs = newMap(),
     ffiTypeRefs = newMap(),
     metadataTypeIndex = newMap(),
@@ -1533,6 +1542,31 @@ pub func prescanProjectableFqns(cctx: in CodegenCtx, files: in List[SourceFile],
 //      as its lowerM* counterpart.
 //   2. MPFuncs (added last by codegenMPackage): optional .cctor row (when any
 //      IVal has a non-literal initialiser), then one row per IFunc item.
+// Register a Lyric enum's ordinal model (F#-emitter parity: enum values ARE
+// I4 ordinals at the IL level).  The simple type name maps type positions to
+// MInt in `typeExprToMsilCtx`; each case name maps to its declaration-order
+// ordinal for expression references (`ldc.i4`) and `case X` pattern tests.
+// Simple names are first-wins (cross-package collisions keep the first
+// registration, like every other simple-name index here); the pkg-qualified
+// form is always recorded.
+pub func registerEnumDeclMsil(cctx: in CodegenCtx, pkgName: in String, decl: in EnumDecl): Unit {
+  if not cctx.enumTypeNames.containsKey(decl.name) {
+    cctx.enumTypeNames.add(decl.name, decl.cases.count)
+  }
+  var ei = 0
+  while ei < decl.cases.count {
+    val cn = decl.cases[ei].name
+    if not cctx.enumCaseOrdinals.containsKey(cn) {
+      cctx.enumCaseOrdinals.add(cn, ei)
+    }
+    val qn = pkgName + "." + cn
+    if not cctx.enumCaseOrdinals.containsKey(qn) {
+      cctx.enumCaseOrdinals.add(qn, ei)
+    }
+    ei = ei + 1
+  }
+}
+
 pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in String): Unit {
   // Collect IExternType names so auto-FFI call interception can resolve them.
   scanExternTypesMsil(cctx, file)
@@ -1686,7 +1720,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               // the `.ctor` parameter, so the construction MemberRef signature
               // byte-matches the TypeDef ctor.  Concrete fields keep their
               // ctx-aware MSIL type for accurate (cross-package) field-read typing.
-              val ftyG = typeExprToMsilG(f.ty, pkgName, recGenerics)
+              val ftyG = typeExprToMsilG(cctx, f.ty, pkgName, recGenerics)
               val gIdx = match ftyG { case MTypeVar(ix) -> ix; case _ -> -1 }
               recCtorParams.add(ftyG)
               val fty = if gIdx >= 0 { ftyG } else { typeExprToMsilCtx(cctx, f.ty, pkgName) }
@@ -1932,7 +1966,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                 if not cctx.fieldTokens.containsKey(caseName + "/field" + toString(fi)) {
                   cctx.fieldTokens.add(caseName + "/field" + toString(fi), 0x04000000 + fieldDefRow)
                 }
-                val ftyG = typeExprToMsilG(ufTy, pkgName, uGenerics)
+                val ftyG = typeExprToMsilG(cctx, ufTy, pkgName, uGenerics)
                 val gIdx = match ftyG { case MTypeVar(ix) -> ix; case _ -> -1 }
                 caseCtorParams.add(ftyG)
                 val ufTyMsil = if gIdx >= 0 { ftyG } else { typeExprToMsilCtx(cctx, ufTy, pkgName) }
@@ -1960,7 +1994,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               }
               case UFPos(ufPosTy, _) -> {
                 cctx.fieldTokens.add(caseName + "/field" + toString(fi), 0x04000000 + fieldDefRow)
-                val ftyGp = typeExprToMsilG(ufPosTy, pkgName, uGenerics)
+                val ftyGp = typeExprToMsilG(cctx, ufPosTy, pkgName, uGenerics)
                 val gIdxP = match ftyGp { case MTypeVar(ix) -> ix; case _ -> -1 }
                 caseCtorParams.add(ftyGp)
                 val ufPosTyMsil = if gIdxP >= 0 { ftyGp } else { typeExprToMsilCtx(cctx, ufPosTy, pkgName) }
@@ -2394,7 +2428,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           if not cctx.configFieldTokens.containsKey(cfKey) {
             cctx.configFieldTokens.add(cfKey, fieldTok)
           }
-          val cfTy = typeExprToMsil(decl.fields[cfi].ty, pkgName)
+          val cfTy = typeExprToMsilCtx(cctx, decl.fields[cfi].ty, pkgName)
           if not cctx.configFieldMsilTypes.containsKey(cfKey) {
             cctx.configFieldMsilTypes.add(cfKey, cfTy)
           }
@@ -2406,7 +2440,19 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           methodDefRow = methodDefRow + 1
         }
       }
-      // IRangeType, IEnum, IImpl: 0 MethodDef rows in non-MPFuncs.
+      // lowerMEnum: one `value__` FieldDef + one static literal FieldDef per
+      // case; no MethodDef rows.  Without this arm every FieldDef token
+      // predicted for items AFTER an enum in the same package was off by
+      // (1 + cases.count), so e.g. a following record's `ldfld` bound the
+      // enum's `value__` row instead of the record field — rejected by the
+      // JIT as an invalid program (#3196, Std.Log's LogLevel + LogField).
+      // Deliberately NOT registered in typeFqnByName: enum values are I4
+      // ordinals, never CLASS-typed references (see registerEnumDeclMsil).
+      case IEnum(decl) -> {
+        registerEnumDeclMsil(cctx, pkgName, decl)
+        fieldDefRow = fieldDefRow + 1 + decl.cases.count
+      }
+      // IRangeType, IImpl: 0 MethodDef rows in non-MPFuncs.
       // IConst, IVal, IFunc: handled below (go to MPFuncs, emitted last).
       case _ -> {
       }
@@ -3413,6 +3459,11 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
         MVoid
       } else if seg == "Object" {
         MObject
+      } else if cctx.enumTypeNames.containsKey(seg) {
+        // Lyric enum: ordinal-int representation (F# parity).  Encoding the
+        // enum as CLASS + TypeDef would name a value type with reference
+        // semantics — a loader-level "value type mismatch" (#3196).
+        MInt
       } else {
         // An extern type that maps to a BCL value type (e.g.
         // `extern type Uuid = "System.Guid"`) must carry its valuetype
@@ -4109,6 +4160,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               MInt
             }
             case None -> {
+              // Enum case reference (`val l = Debug`): emit the ordinal
+              // directly — enum values are I4 at the IL level (#3196).
+              match mapGet(cctx.enumCaseOrdinals, name) {
+                case Some(ordv) -> {
+                  insns.add(MLdcI4(v = ordv))
+                  return MInt
+                }
+                case None -> {
+                }
+              }
               // Nullary union case as a bare path (e.g. `val n = None`
               // — Lyric accepts the call-less form).  Same two-step
               // resolution as the `ECall` path: try the local pkg's
@@ -6423,6 +6484,26 @@ func lowerPatternTestMsil(
           lowerPatternTestMsil(cctx, fctx, insns, inner, scrutSlot, scrutTy, failLabel)
         }
         case None -> {
+          // `case Debug ->` over an enum scrutinee: the parser produced a
+          // PBinding, but the name is a known enum case — compare ordinals
+          // (mirrors the F# emitter's EnumCases-first lookup).  An MObject
+          // scrutinee (boxed) is unboxed to I4 first.
+          match mapGet(cctx.enumCaseOrdinals, pBindName) {
+            case Some(ordv) -> {
+              emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+              match scrutTy {
+                case MObject -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MInt)))
+                case _ -> {
+                }
+              }
+              insns.add(MLdcI4(v = ordv))
+              insns.add(MCeq)
+              insns.add(MBrFalse(label = failLabel))
+              return
+            }
+            case None -> {
+            }
+          }
           // `case Foo ->` with a single-segment path parses as PBinding
           // (the parser can't tell at that point whether `Foo` names a
           // local-bind target or a nullary union case).  If `pBindName`
@@ -6781,7 +6862,8 @@ func lowerPatternBindMsil(
           // to a known nullary union case, skip slot allocation so that later
           // EPath("Foo") references are not hijacked by an uninitialized local.
           val localCtorKey = fctx.pkgName + "." + name
-          val isNullaryCase = cctx.recordCtorTokens.containsKey(localCtorKey) or cctx.unionCaseCtorByName.containsKey(name)
+          val isNullaryCase = cctx.recordCtorTokens.containsKey(localCtorKey) or cctx.unionCaseCtorByName.containsKey(name) or
+            cctx.enumCaseOrdinals.containsKey(name)
           if not isNullaryCase {
             emitLoadSlot(insns, scrutSlot, fctx.paramCount)
             val bindSlot = allocSlotMsil(fctx, name, scrutTy)
@@ -13234,7 +13316,7 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
         // caller tracks it via funcRetTypes and reads it through the IList path
         // (#2557).
         val resolved = if fnGenerics.count > 0 {
-          typeExprToMsilGenSig(te, pkgName, fnGenerics)
+          typeExprToMsilGenSig(cctx, te, pkgName, fnGenerics)
         } else {
           typeExprToMsilCtx(cctx, te, pkgName)
         }
@@ -13429,7 +13511,7 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
       // Generic function (#2557): a `slice[T]` / bare-`T` parameter is emitted
       // as plain `object` in the signature so a List-backed argument matches the
       // slot; the body uses the IList slice path, never genuine array ops.
-      paramTypes.add(typeExprToMsilGenSig(decl.params[pi2].ty, pkgName, fnGenerics))
+      paramTypes.add(typeExprToMsilGenSig(cctx, decl.params[pi2].ty, pkgName, fnGenerics))
     } else {
       // Non-generic free function: the parameter signature uses the ctx-aware
       // concrete encoding (`Option[String]` → `Option`1<String>`, a record →
@@ -13479,7 +13561,7 @@ pub func lowerImplMethodMsil(
   // The method SIGNATURE keeps the legacy erased return type (generic / class
   // returns lower to `object`) so the emitted MethodDef matches the interface
   // slot and every existing cross-assembly consumer reference.
-  val retTy = match decl.ret { case Some(te) -> typeExprToMsil(te, pkgName); case None -> MVoid }
+  val retTy = match decl.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid }
   // …but `declaredRetTy` (used purely for union-case construction inference,
   // not the signature) resolves CTX-AWARE so a generic return like
   // `Result[String, E]` carries its full `MGenericInst` with concrete type
@@ -13571,7 +13653,7 @@ pub func lowerImplMethodMsil(
   val paramTypes: List[MsilType] = newList()
   var pi2 = 0
   while pi2 < decl.params.count {
-    paramTypes.add(typeExprToMsil(decl.params[pi2].ty, pkgName))
+    paramTypes.add(typeExprToMsilCtx(cctx, decl.params[pi2].ty, pkgName))
     pi2 = pi2 + 1
   }
 
@@ -13671,7 +13753,7 @@ func genericIndexOf(generics: in List[String], name: in String): Int {
 // ELEMENT_TYPE_VAR (`MTypeVar(index)`); everything else delegates to the legacy
 // `typeExprToMsil`.  Used for the fields of an in-bundle generic record/union so
 // `value: T` encodes `FIELD VAR(0)` (`06 13 00`), byte-matching the F# emitter.
-func typeExprToMsilG(te: in TypeExpr, pkgName: in String, generics: in List[String]): MsilType {
+func typeExprToMsilG(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, generics: in List[String]): MsilType {
   match te.kind {
     case TRef(path) -> {
       val seg = lastSegmentMsil(path)
@@ -13679,11 +13761,11 @@ func typeExprToMsilG(te: in TypeExpr, pkgName: in String, generics: in List[Stri
       if idx >= 0 {
         MTypeVar(index = idx)
       } else {
-        typeExprToMsil(te, pkgName)
+        typeExprToMsilCtx(cctx, te, pkgName)
       }
     }
-    case TParen(inner) -> typeExprToMsilG(inner, pkgName, generics)
-    case _ -> typeExprToMsil(te, pkgName)
+    case TParen(inner) -> typeExprToMsilG(cctx, inner, pkgName, generics)
+    case _ -> typeExprToMsilCtx(cctx, te, pkgName)
   }
 }
 
@@ -13739,24 +13821,24 @@ func typeExprToMsilGenBody(
 // array ops on it, so the `object[]` shape would be a lie that buys nothing.
 // Non-type-variable annotations delegate to the legacy (erasure) signature
 // lowering, preserving every existing signature byte.
-func typeExprToMsilGenSig(te: in TypeExpr, pkgName: in String, generics: in List[String]): MsilType {
+func typeExprToMsilGenSig(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, generics: in List[String]): MsilType {
   match te.kind {
     case TRef(_) -> {
       if isGenericTypeVar(te, generics) {
         MObject
       } else {
-        typeExprToMsil(te, pkgName)
+        typeExprToMsilCtx(cctx, te, pkgName)
       }
     }
     case TSlice(elem) -> {
       if isGenericTypeVar(elem, generics) {
         MObject
       } else {
-        typeExprToMsil(te, pkgName)
+        typeExprToMsilCtx(cctx, te, pkgName)
       }
     }
-    case TParen(inner) -> typeExprToMsilGenSig(inner, pkgName, generics)
-    case _ -> typeExprToMsil(te, pkgName)
+    case TParen(inner) -> typeExprToMsilGenSig(cctx, inner, pkgName, generics)
+    case _ -> typeExprToMsilCtx(cctx, te, pkgName)
   }
 }
 
@@ -13767,7 +13849,7 @@ func typeExprToMsilGenSig(te: in TypeExpr, pkgName: in String, generics: in List
 // Non-generic: ctx-aware `typeExprToMsilCtx` for concrete List/Map fields (DEF matches REF; D-progress-469). Generic: context-free `typeExprToMsilG` so fields erase to object (#2845; D-progress-469).
 func recordFieldMsilType(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, generics: in List[String]): MsilType {
   if generics.count > 0 {
-    typeExprToMsilG(te, pkgName, generics)
+    typeExprToMsilG(cctx, te, pkgName, generics)
   } else {
     typeExprToMsilCtx(cctx, te, pkgName)
   }
@@ -14751,13 +14833,17 @@ func lowerProtectedMsil(
       case PMField(pf) -> {
         match pf {
           case PFVar(name, ty, _, _) -> {
-            recFields.add(MField(flags = FDA_PUBLIC, name = name, fieldType = typeExprToMsil(ty, pkgName)))
+            recFields.add(MField(flags = FDA_PUBLIC, name = name, fieldType = typeExprToMsilCtx(cctx, ty, pkgName)))
           }
           case PFLet(name, ty, _, _) -> {
-            recFields.add(MField(flags = FDA_PUBLIC + FDA_INIT_ONLY, name = name, fieldType = typeExprToMsil(ty, pkgName)))
+            recFields.add(
+              MField(flags = FDA_PUBLIC + FDA_INIT_ONLY, name = name, fieldType = typeExprToMsilCtx(cctx, ty, pkgName))
+            )
           }
           case PFImmutable(f) -> {
-            recFields.add(MField(flags = FDA_PUBLIC + FDA_INIT_ONLY, name = f.name, fieldType = typeExprToMsil(f.ty, pkgName)))
+            recFields.add(
+              MField(flags = FDA_PUBLIC + FDA_INIT_ONLY, name = f.name, fieldType = typeExprToMsilCtx(cctx, f.ty, pkgName))
+            )
           }
         }
       }
@@ -14768,10 +14854,10 @@ func lowerProtectedMsil(
         val pTypes: List[MsilType] = newList()
         var pi = 0
         while pi < ed.params.count {
-          pTypes.add(typeExprToMsil(ed.params[pi].ty, pkgName))
+          pTypes.add(typeExprToMsilCtx(cctx, ed.params[pi].ty, pkgName))
           pi = pi + 1
         }
-        val retTy = match ed.ret { case Some(te) -> typeExprToMsil(te, pkgName); case None -> MVoid }
+        val retTy = match ed.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid }
         // paramCount = 1 (this) + declared params, matching lowerImplMethodMsil.
         val entryFctx = makeFuncCtxMsil(pkgName, typeFqn, ed.name, 1 + ed.params.count, retTy)
         // Reserve slot 0 for the implicit `this` receiver (no name binding).
@@ -15302,7 +15388,7 @@ func lowerWireMsil(
     match sortedMembers[fpi] {
       case WMProvided(pname, pty, _) -> {
         providedNames.add(pname)
-        providedTypes.add(typeExprToMsil(pty, pkgName))
+        providedTypes.add(typeExprToMsilCtx(cctx, pty, pkgName))
       }
       case _ -> {
       }
@@ -15332,13 +15418,13 @@ func lowerWireMsil(
         // Already registered as a param above; no instructions needed.
       }
       case WMSingleton(name, ty, init, _) -> {
-        val localTy = typeExprToMsil(ty, pkgName)
+        val localTy = typeExprToMsilCtx(cctx, ty, pkgName)
         val localSlot = allocSlotMsil(createFctx, name, localTy)
         lowerExprMsil(cctx, createFctx, createInsns, init)
         createInsns.add(MStloc(slot = localSlot - createFctx.paramCount))
       }
       case WMLocal(name, ty, init, _) -> {
-        val localTy = match ty { case Some(t) -> typeExprToMsil(t, pkgName); case None -> MObject }
+        val localTy = match ty { case Some(t) -> typeExprToMsilCtx(cctx, t, pkgName); case None -> MObject }
         val localSlot = allocSlotMsil(createFctx, name, localTy)
         lowerExprMsil(cctx, createFctx, createInsns, init)
         createInsns.add(MStloc(slot = localSlot - createFctx.paramCount))
@@ -15359,7 +15445,7 @@ func lowerWireMsil(
         // Evaluate the provider and store it under the interface's simple name
         // so subsequent member inits can reference the bound value by that name.
         val ifaceName = match iface.kind { case TRef(path) -> lastSegmentMsil(path); case _ -> "__bind" }
-        val localTy = typeExprToMsil(iface, pkgName)
+        val localTy = typeExprToMsilCtx(cctx, iface, pkgName)
         val localSlot = allocSlotMsil(createFctx, ifaceName, localTy)
         lowerExprMsil(cctx, createFctx, createInsns, provider)
         createInsns.add(MStloc(slot = localSlot - createFctx.paramCount))
@@ -17399,7 +17485,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
         items.add(MPUnion(u = lowerUnionMsil(cctx, decl, pkgName)))
       }
       case IDistinctType(decl) -> {
-        val inner = typeExprToMsil(decl.underlying, pkgName)
+        val inner = typeExprToMsilCtx(cctx, decl.underlying, pkgName)
         items.add(MPDistinctType(d = mkDistinctTypeIR(pkgName + "." + decl.name, pkgName, inner, decl.rangeClause)))
       }
       case IConst(decl) -> {
@@ -17515,10 +17601,10 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
               val pTypes: List[MsilType] = newList()
               var pi = 0
               while pi < sig.params.count {
-                pTypes.add(typeExprToMsil(sig.params[pi].ty, pkgName))
+                pTypes.add(typeExprToMsilCtx(cctx, sig.params[pi].ty, pkgName))
                 pi = pi + 1
               }
-              val retTy = match sig.ret { case Some(te) -> typeExprToMsil(te, pkgName); case None -> MVoid }
+              val retTy = match sig.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid }
               ifaceMembers.add(
                 MIAbstract(m = MInterfaceMethod(name = sig.name, params = byrefWrapSigTypes(sig.params, pTypes), ret = retTy))
               )
@@ -17553,7 +17639,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
           while fi < decl.members.count {
             match decl.members[fi] {
               case OMField(f) -> {
-                oFields.add(MField(flags = FDA_PRIVATE, name = f.name, fieldType = typeExprToMsil(f.ty, pkgName)))
+                oFields.add(MField(flags = FDA_PRIVATE, name = f.name, fieldType = typeExprToMsilCtx(cctx, f.ty, pkgName)))
                 visMask.add(not hasAnnotationMsil(f.annotations, "hidden"))
                 projMask.add(hasAnnotationMsil(f.annotations, "projectionBoundary"))
               }
@@ -17978,7 +18064,7 @@ func registerRestoredRecordCtor(cctx: in CodegenCtx, packageName: in String, rec
     match rec.members[fi] {
       case RMField(f) -> {
         val fty = if recGenerics.count > 0 {
-          typeExprToMsilG(f.ty, packageName, recGenerics)
+          typeExprToMsilG(cctx, f.ty, packageName, recGenerics)
         } else {
           typeExprToMsilCtx(cctx, f.ty, packageName)
         }
@@ -18022,7 +18108,7 @@ func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, r
         val key = className + "/" + f.name
         if not cctx.fieldTokens.containsKey(key) {
           val fty = if recGenerics.count > 0 {
-            typeExprToMsilG(f.ty, packageName, recGenerics)
+            typeExprToMsilG(cctx, f.ty, packageName, recGenerics)
           } else {
             typeExprToMsilCtx(cctx, f.ty, packageName)
           }
@@ -18171,7 +18257,7 @@ func registerRestoredUnionCase(
     val uf = c.fields[fi]
     val rawTy = unionFieldType(uf)
     val fty = if uGenerics.count > 0 {
-      typeExprToMsilG(rawTy, packageName, uGenerics)
+      typeExprToMsilG(cctx, rawTy, packageName, uGenerics)
     } else {
       typeExprToMsilCtx(cctx, rawTy, packageName)
     }
@@ -18308,6 +18394,12 @@ func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact): 
       case IInterface(decl) -> {
         registerRestoredInterface(cctx, art.packageName, decl)
       }
+      case IEnum(decl) -> {
+        // Restored enums use the same ordinal-int model as in-bundle ones
+        // (#3196): the type name maps signature positions to I4 and each
+        // case resolves to its ldc.i4 ordinal at consumer call sites.
+        registerEnumDeclMsil(cctx, art.packageName, decl)
+      }
       case _ -> ()
     }
     i = i + 1
@@ -18420,10 +18512,10 @@ func registerRestoredRecordMethod(
   val sigParamTypes: List[MsilType] = newList()
   var spi = 0
   while spi < params.count {
-    sigParamTypes.add(typeExprToMsil(params[spi].ty, packageName))
+    sigParamTypes.add(typeExprToMsilCtx(cctx, params[spi].ty, packageName))
     spi = spi + 1
   }
-  val sigRetType = match ret { case Some(te) -> typeExprToMsil(te, packageName); case None -> MVoid }
+  val sigRetType = match ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
   val sig = buildInstanceMethodSig(sigParamTypes, sigRetType)
   val sigKey = "restored_recmethod_" + key
   val memberRow = ctxAddMemberRef(cctx.lctx, recordTypeRefRow, methodName, sigKey, sig)
@@ -18501,10 +18593,10 @@ func registerRestoredIfaceMethod(
   val sigParamTypes: List[MsilType] = newList()
   var spi = 0
   while spi < params.count {
-    sigParamTypes.add(typeExprToMsil(params[spi].ty, packageName))
+    sigParamTypes.add(typeExprToMsilCtx(cctx, params[spi].ty, packageName))
     spi = spi + 1
   }
-  val sigRetType = match ret { case Some(te) -> typeExprToMsil(te, packageName); case None -> MVoid }
+  val sigRetType = match ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
   val sig = buildInstanceMethodSig(sigParamTypes, sigRetType)
   val sigKey = "restored_iface_" + key
   val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, methodName, sigKey, sig)
@@ -19004,6 +19096,12 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
       if not cctx.externTypeNames.containsKey(decl.name) {
         cctx.externTypeNames.add(decl.name, decl.clrName)
       }
+      return
+    }
+    // Stdlib enums use the ordinal-int model (#3196) — no TypeRef rows are
+    // needed because enum values never appear as reference types in IL.
+    case IEnum(decl) -> {
+      registerEnumDeclMsil(cctx, packageName, decl)
       return
     }
     case _ -> {

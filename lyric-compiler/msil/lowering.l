@@ -3272,7 +3272,11 @@ pub func lowerMEnum(e: in MEnum, ctx: in LoweringCtx): Int {
   val bh = ctx.blobs
   val t = ctx.tables
 
-  val sName = internString(sh, e.className)
+  // TypeDef stores the simple name; the CLR loader resolves by
+  // (namespace, simpleName).  Interning the full FQN here produced a
+  // doubled display name (`Std.Log` + `Std.Log.LogLevel`) that no
+  // consumer TypeRef could resolve (#3196).
+  val sName = internString(sh, simpleNameFromFqn(e.namespace, e.className))
   val sNs = internString(sh, e.namespace)
 
   // Allocate TypeDef row first (field list starts right after current fields).
