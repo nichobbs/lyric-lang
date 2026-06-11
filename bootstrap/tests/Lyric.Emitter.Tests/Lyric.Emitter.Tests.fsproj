@@ -70,10 +70,6 @@
     <Compile Include="SdkVersionSkewTests.fs" />
     <Compile Include="JvmSelfTest.fs" />
     <Compile Include="MsilSelfTestM1.fs" />
-    <Compile Include="MsilSelfTestM2a.fs" />
-    <Compile Include="MsilSelfTestM2b.fs" />
-    <Compile Include="MsilSelfTestM2c.fs" />
-    <Compile Include="MsilSelfTestM2d.fs" />
     <Compile Include="MsilSelfTestM3.fs" />
     <Compile Include="MsilSelfTestM4.fs" />
     <Compile Include="MsilSelfTestM5.fs" />

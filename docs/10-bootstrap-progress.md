@@ -24045,3 +24045,104 @@ triage:
 Verified by `typechecker_self_test.l` (194 cases), `inbundle_generics_self_test.l`
 (20 cases), and the full per-package self-compile path.  Docs: language
 reference §2.11 and the book's T-series table list the new codes.
+
+### D-progress-500 — MSIL self-tests M2a–M2d migrated to native `lyric test`; codegen scope-tier short-name resolution; self-hosted compiler-DLL staging (#3085, #3086, #66)
+
+Closes the two blockers from the D-progress-474 migration attempt and lands the
+migration itself: `msil_self_test_m2{a,b,c,d}.l` are now `@test_module` files
+run by native `lyric test --target dotnet` in CI
+(`compiler-self-tests-dotnet-b`), and the four F# Expecto wrappers
+(`MsilSelfTestM2{a,b,c,d}.fs`) are deleted.
+
+**#3085 — codegen short-name collision (`Msil.Kernel.ByteWriter` vs
+`Std.Stream.ByteWriter`).** The type checker already resolved colliding short
+names with scope tiers (`symTableTryFindOne`: own package → explicitly imported
+package → last-registered), but the MSIL codegen's `resolveTypeFqn` consulted
+`typeFqnByName`, a first-registered-wins simple-name map.  Stdlib types
+register before restored deps, so a restored `Msil.Kernel` signature naming
+`ByteWriter` was encoded against `Std.Stream.ByteWriter` — the consumer's
+MemberRef return type mismatched the producer and every `bufNew()` call site
+faulted with `MissingMethodException` at runtime.  Fix: a new ordered
+`typeFqnCandidates` multimap (every FQN registered per simple name, in
+registration order) and a tier-walking `resolveTypeFqn` that mirrors the type
+checker exactly — (1) the referencing package's own declaration, (2) the
+newest candidate from a package in `pkgImports[pkgName]`, (3) the newest
+registration (stdlib registers first, restored deps second, in-bundle
+packages last, so "newest" prefers the most local declaration).
+`typeFqnByName` is kept for the record-ctor call-resolution sites.
+
+**`List[Byte]` cross-assembly ABI divergence (uncovered by the #3085 fix).**
+`typeExprToMsilCtx` mapped a `List[Byte]` element through the scalar `Byte` →
+`MInt` rule, encoding `List`1<int32>` — but the F#-emitted producer ABI is
+`List`1<uint8>` (`Msil.Kernel.bufToList` returns `List`1[System.Byte]`), so
+the cross-assembly MemberRef faulted.  The element resolution now routes
+through `sliceElemMsilCtx` (the same `Byte` → `MByte` special case the
+`slice[Byte]` path has carried since the Base64 work), aligning the
+self-hosted `List[Byte]` encoding with the F# producer on both the consumer
+(MemberRef) and producer (MethodDef) sides.
+
+**`MByte` equality comparison (uncovered in turn by the `List[Byte]` fix).**
+`lowerBinopMsil`'s `BEq`/`BNeq` primitive arm matched
+`MInt | MBool | MChar | MLong | MDouble` but not `MByte`, so `bs[0] == 7` on
+a `List[Byte]` element fell into the `Object.Equals(object, object)` fallback
+with an unboxed byte as the first argument — `InvalidProgramException`.
+`MByte` now compares with `ceq` like the other small primitives.
+
+**Hardcoded `maxStack = 16` on user-code method bodies (latent producer bug,
+exposed by executing the self-hosted-emitted compiler DLLs for the first
+time).** `Msil.Tables.newMetadataTables` constructs a record with 18
+`newList()` ctor arguments — stack depth 18 — but `lowerFuncMsil` (free
+functions), the instance-method lowering, the protected-type entry lowering,
+and the protected `_create` factory all stamped a hardcoded `maxStack = 16`
+into the fat method header, so the CLR rejected the body with
+`InvalidProgramException` at first JIT.  The CI per-package gate only checks
+that the compiler closure *emits*, never runs it, so every
+self-hosted-emitted `Lyric.Msil.Tables.dll` carried this since the wide
+record was introduced.  All four sites now use `computeMaxStackMsil(insns)`
+(the conservative running-sum already used for async state-machine bodies).
+Repro threshold: a 17-arg constructor call was the smallest failing shape.
+
+**#3086 — module-level `pub val` constants absent from F#-emitted contract
+metadata.** The F# bootstrap contract writer
+(`bootstrap/src/Lyric.Emitter/ContractMeta.fs::declOfItem`) has no `IVal` arm,
+so the stage-1 compiler DLLs' embedded `Lyric.Contract` resources silently
+omit module-level `pub val` constants (`Msil.Tables`' MDA_*/TDF_* flags,
+`Msil.Opcodes`' OP_*, `Jvm.Classfile`'s ACC_*); a `@test_module` linking such
+a package as a restored dep failed with T0020.  The self-hosted writer
+(`contract_meta.l::buildContractFromFile`) already emits them.  Per the
+no-new-F# rule the fix stages self-hosted-emitted DLLs rather than extending
+the F# writer:
+
+- `scripts/stage-selfhosted-compiler.sh` runs one
+  `--internal-perpackage-build` over the whole `Lyric.Cli` import closure
+  (the emit CI's "Whole compiler self-host-compiles" gate validates) and
+  copies the per-package DLLs into `<libdir>/selfhosted/` — a dedicated
+  subdirectory, deliberately leaving the F#-emitted DLLs beside the AOT
+  binary untouched as the toolchain's own runtime.
+- `Emitter.compilerClosureDllPaths` prefers the staged self-hosted set when
+  (a) the test SOURCE references a module-level `pub val` name exported by
+  its compiler closure (the exact condition under which the F#-emitted
+  metadata cannot serve it; `closureModuleValNames` +
+  `sourceReferencesAnyName` over the payload sources) and (b) the
+  `selfhosted/` dir covers the WHOLE closure, so a single test never links a
+  mix of the two emitters' outputs.  The gate is the test's own references —
+  not merely "the closure exports vals" — because constants used internally
+  by the precompiled DLLs need no metadata, and tests whose closure pulls in
+  val-exporting packages they never name (e.g.
+  `msil_project_bridge_self_test.l`, whose `Msil.Bridge` closure includes
+  `Msil.Opcodes`) must keep linking the F#-built DLLs: the full self-hosted
+  compiler stack is not yet execution-clean (docs/41 R7; running
+  `Msil.Bridge` from the self-hosted set currently throws
+  `TypeLoadException: The signature is incorrect`).  Tests that reference no
+  closure vals keep the F#-built DLLs — no behaviour change for the
+  existing native self-tests.
+- `make lyric` runs the staging step (opt out with
+  `SKIP_SELFHOSTED_COMPILER=1`; re-stage alone with
+  `make selfhosted-compiler`); the CI step stages before running the M2
+  tests.
+
+**Test coverage split:** M2a's closure (`Msil.Heaps`/`Msil.Kernel`) exports no
+module vals, so it links the F#-emitted DLLs and pins the #3085 codegen fix
+against the F# producer ABI; M2b–M2d import val-exporting packages
+(`Msil.Opcodes`, `Msil.Tables`, `Msil.Assembler`) and pin the #3086
+self-hosted-DLL staging path.

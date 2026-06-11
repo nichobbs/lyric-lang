@@ -1122,6 +1122,12 @@ stage-1, not stage-0, so don't rebuild more than the change needs.  The
   Equivalently by hand: `./scripts/bootstrap.sh --stage 1` then
   `dotnet build bootstrap/src/Lyric.Cli.Aot`.  **Rebuild both** after a
   compiler `.l` change or you'll run stale DLLs.
+  `make lyric` also stages the self-hosted per-package compiler DLLs
+  under `<libdir>/selfhosted/` (~80 s, #3086) — needed by `lyric test`
+  for `@test_module`s that reference module-level `pub val` constants
+  from compiler packages (the F#-emitted stage-1 metadata omits them).
+  Skip it with `SKIP_SELFHOSTED_COMPILER=1 make lyric` when iterating
+  on something else; re-stage later with `make selfhosted-compiler`.
 
 `scripts/bootstrap.sh` honours `$TMPDIR` (it mirrors the F# emitter's
 `Path.GetTempPath()`), so the old `TMPDIR=/tmp ./scripts/bootstrap.sh`

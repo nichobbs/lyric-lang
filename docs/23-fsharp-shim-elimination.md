@@ -37,10 +37,15 @@ for the existing bootstrap compiler only"):
   rewritten to module-level `val` declarations in the synthesised
   source. The `FixtureUnsupported` outcome variant is removed.
   Migration of `MsilSelfTestM2{a,b,c,d}.fs` to native `lyric test`
-  was attempted but blocked by two pre-existing bugs: the
-  `ByteWriter` name collision (#2737) and module-level `pub val`
-  constants absent from contract metadata (#2738). The F# wrappers
-  remain until those are fixed.
+  was initially blocked by two pre-existing bugs — the `ByteWriter`
+  name collision (#3085) and module-level `pub val` constants absent
+  from the F#-emitted contract metadata (#3086) — both fixed in
+  D-progress-500: codegen short-name resolution gained the type
+  checker's scope tiers, and `scripts/stage-selfhosted-compiler.sh`
+  stages self-hosted-emitted compiler DLLs (whose metadata carries
+  the vals) under `<libdir>/selfhosted` for `lyric test` to link.
+  The four F# wrappers are deleted; the tests run as `@test_module`
+  files via native `lyric test` in CI.
 - The F# stage-0 bootstrap compiler under `bootstrap/src/Lyric.{Lexer,
   Parser,TypeChecker,Emitter,Cli}/` continues to exist solely so the
   stage-0 binary can build the self-hosted Lyric compiler from `.l`

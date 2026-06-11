@@ -3,70 +3,58 @@
 //! Exercises all four heap types (StringHeap, BlobHeap, UsHeap, GuidHeap) and
 //! verifies the structural invariants expected by the ECMA-335 layout engine.
 //!
-//! Checks emitted (one per line, key=value):
-//!   strings_start_ok    — new heap starts at size 1 (the null byte at offset 0)
-//!   string_intern_ok    — first intern returns offset 1; dedup returns same offset
-//!   string_size_ok      — size after two distinct strings is correct
-//!   string_bytes_ok     — serialized bytes match expected UTF-8 + null layout
-//!   blob_start_ok       — new blob heap starts at size 1
-//!   blob_intern_ok      — internBlob returns correct offset; dedup works
-//!   blob_size_ok        — size after one 3-byte blob is correct (1+1+3 = 5)
-//!   us_start_ok         — new US heap starts at size 1
-//!   us_intern_ok        — internUs returns correct offset; dedup works
-//!   us_size_ok          — size after interning "Hi" is correct (1 + 1 + 4 + 1 = 7)
-//!   us_bytes_ok         — first byte after offset 0 is the compressed length (5)
-//!   guid_start_ok       — new GUID heap starts at size 0
-//!   guid_intern_ok      — appendGuid returns 1-based index 1
-//!   guid_size_ok        — size after one GUID is 16
+//! Run in CI via native `lyric test` (D-progress-474 / #66), linking the
+//! already-compiled compiler DLLs as restored deps:
+//!
+//!   lyric test --target dotnet lyric-compiler/msil/msil_self_test_m2a.l
+//!
+//! Regression coverage for #3085: `Msil.Kernel.ByteWriter` shares its short
+//! name with the transitively-loaded `Std.Stream.ByteWriter`; the consumer
+//! codegen must bind the explicitly-imported package's type (scope-tier
+//! resolution in `Msil.Codegen.resolveTypeFqn`), or every `bufNew()` call
+//! site faults at runtime with a mismatched MemberRef return type.
+@test_module
 package Msil.SelfTestM2a
 
 import Msil.Heaps
 import Msil.Kernel
 import Std.Core
 import Std.Collections
+import Std.Testing
 
-func check(label: in String, ok: in Bool): Unit {
-  if ok {
-    println(label + "=true")
-  } else {
-    println(label + "=false")
-  }
-}
-
-func main(): Unit {
-  // ── StringHeap ─────────────────────────────────────────────────────────────
+test "StringHeap interning and serialization" {
   val sh = newStringHeap()
-  check("strings_start_ok", stringHeapSize(sh) == 1)
+  // New heap starts at size 1 (the null byte at offset 0).
+  assertEqualInt(stringHeapSize(sh), 1, "strings_start")
 
+  // First intern returns offset 1; dedup returns the same offset.
   val off1 = internString(sh, "Hello")
-  check("string_intern_ok", off1 == 1 and internString(sh, "Hello") == 1)
+  assertEqualInt(off1, 1, "string_intern first offset")
+  assertEqualInt(internString(sh, "Hello"), 1, "string_intern dedup")
 
+  // "Hello\0" = 6 bytes so the next entry starts at offset 7.
   val off2 = internString(sh, "Main")
-  // "Hello\0" = 6 bytes → next entry starts at offset 7
-  check("string_size_ok", off2 == 7 and stringHeapSize(sh) == 12)
+  assertEqualInt(off2, 7, "string second offset")
+  assertEqualInt(stringHeapSize(sh), 12, "string heap size")
 
-  // Serialize and spot-check: byte[0]=0 (empty), byte[1..5]='H','e','l','l','o', byte[6]=0
+  // Serialize and spot-check: byte[0]=0 (empty), byte[1..5]='H','e','l','l','o',
+  // byte[6]=0 (null terminator).
   val shW = bufNew()
   serializeStrings(sh, shW)
   val shBytes = bufToList(shW)
-  check(
-    "string_bytes_ok",
-    shBytes[0] == 0 and shBytes[1] == 72 and
-      // 'H'
-      shBytes[2] == 101 and
-      // 'e'
-      shBytes[3] == 108 and
-      // 'l'
-      shBytes[4] == 108 and
-      // 'l'
-      shBytes[5] == 111 and
-      // 'o'
-      shBytes[6] == 0
-  )       // null terminator
+  assertTrue(shBytes[0] == 0, "strings byte 0")
+  assertTrue(shBytes[1] == 72, "strings byte 'H'")
+  assertTrue(shBytes[2] == 101, "strings byte 'e'")
+  assertTrue(shBytes[3] == 108, "strings byte 'l'")
+  assertTrue(shBytes[4] == 108, "strings byte 'l'")
+  assertTrue(shBytes[5] == 111, "strings byte 'o'")
+  assertTrue(shBytes[6] == 0, "strings null terminator")
+}
 
-  // ── BlobHeap ───────────────────────────────────────────────────────────────
+test "BlobHeap interning" {
   val bh = newBlobHeap()
-  check("blob_start_ok", blobHeapSize(bh) == 1)
+  // New blob heap starts at size 1.
+  assertEqualInt(blobHeapSize(bh), 1, "blob_start")
 
   val bdataW = bufNew()
   bufU1(bdataW, 0x00)
@@ -74,29 +62,37 @@ func main(): Unit {
   bufU1(bdataW, 0x01)
   val bdata = bufToList(bdataW)
   val boff1 = internBlob(bh, "sig.void", bdata)
-  check("blob_intern_ok", boff1 == 1 and internBlob(bh, "sig.void", bdata) == 1)
-  // offset 0 = null byte, offset 1 = compressed-length(3) = 0x03, offsets 2-4 = data
-  check("blob_size_ok", blobHeapSize(bh) == 5)
+  assertEqualInt(boff1, 1, "blob_intern first offset")
+  assertEqualInt(internBlob(bh, "sig.void", bdata), 1, "blob_intern dedup")
+  // Offset 0 = null byte, offset 1 = compressed-length(3) = 0x03, offsets 2-4 = data.
+  assertEqualInt(blobHeapSize(bh), 5, "blob heap size")
+}
 
-  // ── UsHeap ─────────────────────────────────────────────────────────────────
+test "UsHeap interning and serialization" {
   val uh = newUsHeap()
-  check("us_start_ok", usHeapSize(uh) == 1)
+  // New US heap starts at size 1.
+  assertEqualInt(usHeapSize(uh), 1, "us_start")
 
   val uoff1 = internUs(uh, "Hi")
-  check("us_intern_ok", uoff1 == 1 and internUs(uh, "Hi") == 1)
-  // "Hi" = 2 chars → blobLen = 2*2+1 = 5; compressed(5) = 0x05 (1 byte)
-  // stored as: 0x05, 'H'(0x48), 0x00, 'i'(0x69), 0x00, flag(0x00) = 6 bytes
-  // total after offset 0: 1 + 6 = 7
-  check("us_size_ok", usHeapSize(uh) == 7)
+  assertEqualInt(uoff1, 1, "us_intern first offset")
+  assertEqualInt(internUs(uh, "Hi"), 1, "us_intern dedup")
+  // "Hi" = 2 chars so blobLen = 2*2+1 = 5; compressed(5) = 0x05 (1 byte);
+  // stored as: 0x05, 'H'(0x48), 0x00, 'i'(0x69), 0x00, flag(0x00) = 6 bytes;
+  // total after offset 0: 1 + 6 = 7.
+  assertEqualInt(usHeapSize(uh), 7, "us heap size")
 
   val uhW = bufNew()
   serializeUs(uh, uhW)
   val uhBytes = bufToList(uhW)
-  check("us_bytes_ok", uhBytes[1] == 5 and uhBytes[2] == 72 and uhBytes[3] == 0)
+  assertTrue(uhBytes[1] == 5, "us compressed length")
+  assertTrue(uhBytes[2] == 72, "us byte 'H'")
+  assertTrue(uhBytes[3] == 0, "us UTF-16 high byte")
+}
 
-  // ── GuidHeap ───────────────────────────────────────────────────────────────
+test "GuidHeap appending" {
   val gh = newGuidHeap()
-  check("guid_start_ok", guidHeapSize(gh) == 0)
+  // New GUID heap starts at size 0.
+  assertEqualInt(guidHeapSize(gh), 0, "guid_start")
 
   val guidW = bufNew()
   var gi = 0
@@ -106,7 +102,8 @@ func main(): Unit {
   }
   val zeroGuid = bufToList(guidW)
 
+  // appendGuid returns the 1-based index; one GUID occupies 16 bytes.
   val gidx = appendGuid(gh, zeroGuid)
-  check("guid_intern_ok", gidx == 1)
-  check("guid_size_ok", guidHeapSize(gh) == 16)
+  assertEqualInt(gidx, 1, "guid index")
+  assertEqualInt(guidHeapSize(gh), 16, "guid heap size")
 }

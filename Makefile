@@ -27,7 +27,7 @@ BUILD_CONFIG ?= Release
 # binary and the failure looks unrelated.
 AOT_BIN := bootstrap/src/Lyric.Cli.Aot/bin/$(BUILD_CONFIG)/net10.0/lyric
 
-.PHONY: help stage0 stage1 stage1-fast aot lyric \
+.PHONY: help stage0 stage1 stage1-fast aot lyric selfhosted-compiler \
         test test-lexer test-parser test-typechecker test-emitter test-cli \
         self-test clean
 
@@ -66,6 +66,17 @@ lyric: stage1 aot ## Build the end-to-end `lyric` binary and symlink it to ./bin
 	@echo "lyric binary ready: ./bin/lyric -> $(AOT_BIN)"
 	@echo "staging self-hosted-only stdlib packages (#2592: Std.Sort et al.) ..."
 	@bash scripts/stage-selfhosted-stdlib.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
+ifeq ($(SKIP_SELFHOSTED_COMPILER),1)
+	@echo "SKIP_SELFHOSTED_COMPILER=1; skipping the self-hosted compiler-DLL staging"
+else
+	@echo "staging self-hosted compiler DLLs for native lyric test (#3086) ..."
+	@bash scripts/stage-selfhosted-compiler.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
+endif
+
+# Re-stage only the self-hosted compiler DLLs (after `make lyric
+# SKIP_SELFHOSTED_COMPILER=1`, or to refresh them without a full rebuild).
+selfhosted-compiler: ## Stage self-hosted compiler DLLs under <libdir>/selfhosted (#3086)
+	@bash scripts/stage-selfhosted-compiler.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
 
 # ── F# test suites (Expecto console apps) ───────────────────────────────────
 
