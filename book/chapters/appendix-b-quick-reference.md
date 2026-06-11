@@ -796,6 +796,8 @@ lyric --help                           # grouped command list (also -h / help); 
 
 # Build
 lyric build <file.l>                   # compile to .dll + .runtimeconfig.json
+                                       # prints elapsed time on success: "built foo.dll in 342ms"
+                                       # project mode: "built foo.dll (3 package(s), 1204ms)"
 lyric build --force <file.l>           # rebuild unconditionally (bypass incremental check)
 lyric build --release <file.l>         # self-contained Native AOT binary (no runtime needed)
 lyric build --release <file.l> --rid <rid>   # override host runtime identifier
@@ -836,10 +838,13 @@ lyric test <file.l>                    # run test blocks in a @test_module file
                                        # (TAP-shaped output; exit 1 on any failure)
 lyric test <file.l> --filter <substr>  # only run tests whose title contains <substr>
 lyric test <file.l> --list             # print test titles only; do not compile or run
+lyric test <file.l> --fail-fast        # stop after the first file with failing tests;
+                                       # print an early summary and exit 1
 lyric test <file.l> --target jvm       # compile with JVM backend and run with java -jar
 lyric test                             # project mode: run every [project.tests] entry;
                                        # falls back to scanning [project.packages] for
                                        # @test_module files when [project.tests] is empty
+lyric test --fail-fast                 # project mode: stop after first failing test entry
 lyric test --manifest <lyric.toml>     # project mode: override manifest discovery
                                        # (v2: --doctests, --update-snapshots, property execution)
 
@@ -848,11 +853,14 @@ lyric fmt <file.l>                     # print formatted source to stdout (no co
 lyric fmt <file1.l> <file2.l> ...      # format multiple files (multi-file variadic)
 lyric fmt --write <file.l>             # overwrite file in place
 lyric fmt --check <file.l>             # exit 1 if not formatted; prints filename (CI gate)
+lyric fmt --diff <file.l>              # print a unified diff of what would change (no write)
 lyric fmt --stdin                      # read from stdin, write formatted output to stdout
                                        # (editor integration: pipe source through fmt)
 lyric fmt                              # project mode (dry-run): list files that would change
 lyric fmt --write                      # project mode: rewrite all files in place
 lyric fmt --check                      # project mode: exit 1 if any unformatted; prints paths (CI gate)
+lyric fmt --diff                       # project mode: print unified diffs of all files that would change
+lyric fmt --diff --write               # show diff then apply changes in place
 # Default: walks the red/green CST and preserves all comments
 # (//, /* */, ///, //!) plus intentional blank lines (max one per spot).
 
@@ -927,6 +935,9 @@ lyric add Lib --path ../lib            # add a path dependency
 lyric add Bar --git <url> --tag v1     # add a git dependency (or --rev/--branch)
 lyric add Pkg@1.0 --nuget              # add to the [nuget] table instead
 lyric add Foo@1.2.0 --no-restore       # edit the manifest without restoring
+lyric remove Foo                       # remove a [dependencies] entry, then restore
+lyric remove Pkg --nuget               # remove a [nuget] entry instead
+lyric remove Foo --no-restore          # remove from manifest without restoring
 lyric publish                          # publish package to the configured registry
 lyric publish --registry <url>         # publish to a specific registry feed URL
 lyric publish --api-key <key>          # supply an API key (NuGet push token / GitHub PAT)

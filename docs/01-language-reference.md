@@ -1374,7 +1374,7 @@ method-syntax form.
 
 ### 13.1 Compiler
 
-`lyric build` — compiles a project to a framework-dependent `.dll` (the fast inner loop). The default output name and artifacts are **target-aware**: `--target dotnet` (the default) writes `<source-stem>.dll` alongside a `<source-stem>.runtimeconfig.json` for `dotnet exec`, while `--target jvm` writes a self-contained runnable `<source-stem>.jar` (run with `java -jar`) and emits **no** `runtimeconfig.json` (a .NET-only artifact). An explicit `-o <output>` is honoured verbatim for either target. `lyric build --release <source.l>` produces a **self-contained Native AOT binary** (no managed runtime required at the deployment target): the compiler builds the managed DLL, generates a host project that references it plus the stdlib bundle, and runs `dotnet publish -p:PublishAot=true`, surfacing ILC trim/AOT warnings. `--rid <rid>` overrides the host runtime identifier (default: auto-detected). The native binary is written to the source stem (no extension) unless `-o` overrides it.
+`lyric build` — compiles a project to a framework-dependent `.dll` (the fast inner loop). After a successful build the compiler prints elapsed time: `built foo.dll in 342ms` for a single-package build, or `built foo.dll (3 package(s), 1204ms)` for a project build. The default output name and artifacts are **target-aware**: `--target dotnet` (the default) writes `<source-stem>.dll` alongside a `<source-stem>.runtimeconfig.json` for `dotnet exec`, while `--target jvm` writes a self-contained runnable `<source-stem>.jar` (run with `java -jar`) and emits **no** `runtimeconfig.json` (a .NET-only artifact). An explicit `-o <output>` is honoured verbatim for either target. `lyric build --release <source.l>` produces a **self-contained Native AOT binary** (no managed runtime required at the deployment target): the compiler builds the managed DLL, generates a host project that references it plus the stdlib bundle, and runs `dotnet publish -p:PublishAot=true`, surfacing ILC trim/AOT warnings. `--rid <rid>` overrides the host runtime identifier (default: auto-detected). The native binary is written to the source stem (no extension) unless `-o` overrides it.
 
 Currently `--release` covers **single-file** programs on the **.NET** target. Project-mode `--release` (multi-package bundles) and the JVM target (GraalVM `native-image`, designed behind the same `ReleaseTarget` seam) are tracked in #1975; both fail loud rather than silently producing a managed artifact.
 
@@ -1426,7 +1426,7 @@ is fixed. The watch loop runs in the CLI process (always the .NET host).
 
 **`[project.tests]` fallback.** When the manifest has a `[project]` section but no `[project.tests]` entries, `lyric test` scans all source files listed in `[project.packages]` for the `@test_module` annotation and runs each found file as a standalone single-file test. This allows projects that co-locate test modules with their source packages to run tests without explicit `[project.tests]` entries in `lyric.toml`.
 
-`--filter <substring>` runs only tests whose title contains `<substring>`; non-matching tests are reported as `# skip` lines. `--list` prints titles only without compiling. `property` declarations parse but skip at runtime in v1 (`# skip` line); `fixture name[: T] = expr` declarations are rewritten to module-level `val` declarations in the synthesised source (D-progress-474). v2 adds cross-package non-`pub` access (§3.2), property execution (`--properties`), and doctest extraction. See `docs/24-test-runner-plan.md` for the v1 design and v2 scope.
+`--filter <substring>` runs only tests whose title contains `<substring>`; non-matching tests are reported as `# skip` lines. `--list` prints titles only without compiling. `--fail-fast` stops after the first test file that has any failing test and prints an early summary; in project mode this means remaining test entries are not run. `property` declarations parse but skip at runtime in v1 (`# skip` line); `fixture name[: T] = expr` declarations are rewritten to module-level `val` declarations in the synthesised source (D-progress-474). v2 adds cross-package non-`pub` access (§3.2), property execution (`--properties`), and doctest extraction. See `docs/24-test-runner-plan.md` for the v1 design and v2 scope.
 
 ### 13.3 Verifier
 
@@ -1490,6 +1490,7 @@ The bootstrap formatter works directly from the parsed AST; it does not require 
 | _(default, project mode)_ | Project | Dry-run: print which files would change; exit 1 if any; does **not** write |
 | `--write` | File(s) or project | Overwrite file(s) in place; print each reformatted path |
 | `--check` | File(s) or project | Exit 1 if any file would change; prints the unformatted paths |
+| `--diff` | File(s) or project | Print a unified diff of what would change without writing; works in dry-run mode, single-file mode, and combined with `--write` (shows diff then applies changes) |
 | `--stdin` | — | Read from stdin, write formatted output to stdout (editor integration) |
 
 ### 13.8 Linter
@@ -1598,6 +1599,12 @@ A `@bench` function whose signature does not match `func name(): Unit` passes th
 - Bare `<name>` or `<name>@<version>` writes a registry entry to `[dependencies]` (`name = "<version>"`; a missing version is written as `"*"`).
 - `--path <dir>` writes `name = { path = "<dir>" }`; `--git <url>` with an optional `--tag`/`--rev`/`--branch` writes the git inline-table form; `--nuget` writes to the `[nuget]` table instead.
 - The edit is idempotent — re-adding a dependency updates its entry in place rather than duplicating it — and is rejected before write if the result would not parse. The table is created if absent. `--path`, `--git`, and `--nuget`/`@version` are mutually exclusive where they conflict.
+
+`lyric remove <name> [--nuget] [--manifest <lyric.toml>] [--no-restore]` removes a dependency from the discovered manifest and then restores (unless `--no-restore`):
+
+- Without `--nuget`, removes the entry from `[dependencies]`.
+- With `--nuget`, removes the entry from `[nuget]` instead.
+- The command is rejected if `<name>` is not present in the target table. `lyric remove` is the mirror of `lyric add`.
 
 ---
 

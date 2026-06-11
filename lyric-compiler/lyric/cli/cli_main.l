@@ -129,6 +129,10 @@ pub func main(argv: in slice[String]): Int {
     return cmdAdd(argv)
   }
 
+  if cmd == "remove" {
+    return cmdRemove(argv)
+  }
+
   if cmd == "init" {
     return cmdInit(argv)
   }

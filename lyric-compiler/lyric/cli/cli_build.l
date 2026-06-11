@@ -18,12 +18,15 @@ import Lyric.Release as Release
 import Lyric.Generator as Generator
 import Lyric.Emitter as Emitter
 import Lyric.CfgGate as CfgGate
+import Std.Time as Time
+import Std.Format as Format
 
 // Compile `sourcePath` to a DLL at `outPath`.
 // Returns the exit code: 0 on success, 1 on error.
 // `manifestPath` is forwarded to the generator pre-processor so custom
 // @generate(Pkg.Name) annotations can resolve their generator DLLs.
 func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarget, manifestPath: in Option[String]): Int {
+  val buildStart = Time.now()
   var source = match File.readText(sourcePath) {
     case Ok(text) -> text
     case Err(e) -> {
@@ -94,7 +97,8 @@ func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarge
     case Dotnet -> writeRuntimeConfig(outPath)
     case Jvm -> ()
   }
-  Console.println("built " + outPath)
+  val elapsedMs = Time.totalMillis(Time.since(Time.now(), buildStart))
+  Console.println("built " + outPath + " in " + Format.formatFixed(elapsedMs, 0) + "ms")
   0
 }
 
@@ -368,6 +372,7 @@ func buildProject(
   allFeatures: in Bool,
   noRestore: in Bool,
 ): Int {
+  val buildStart = Time.now()
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
     case Err(e) -> {
@@ -617,7 +622,10 @@ func buildProject(
   }
 
   writeRuntimeConfig(outPath)
-  Console.println("built " + outPath)
+  val elapsedMs = Time.totalMillis(Time.since(Time.now(), buildStart))
+  Console.println(
+    "built " + outPath + " (" + toString(pkgs.count) + " package(s), " + Format.formatFixed(elapsedMs, 0) + "ms)"
+  )
   0
 }
 
