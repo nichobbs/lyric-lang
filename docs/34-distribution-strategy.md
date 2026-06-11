@@ -341,6 +341,15 @@ flows, NuGet.org as the .NET channel, GitHub Packages Maven as the JVM channel,
 
 - **Q-dist-001** — AOT self-hosted binary path (§2.3): prerequisite is
   reproducible stage-2 bootstrap.  ETA: Phase 7.
+  *Progress (#1494):* `bootstrap/src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj`
+  now carries `<PublishAot>true</PublishAot>` + invariant globalization;
+  `dotnet publish -r linux-x64` produces a self-contained native ELF
+  `lyric` (~6 MB) that AOT-compiles the stage-1 Lyric-emitted compiler
+  closure, and CI's `aot-smoke` job builds and runs a real example
+  through it.  Known AOT limitation: restored-dependency builds rely on
+  `Assembly.Load(byte[])` for the embedded contract-metadata read
+  (`Std.AssemblyResources`), which Native AOT does not support — lifted
+  once the metadata-direct reader (docs/45 phases 2–5 / docs/42) lands.
 - **Q-dist-002 / Q-dist-003 / Q-dist-004** — package manager formulas
   (Homebrew / winget / apt): deferred until Q-dist-001 resolves.
 - **Q-dist-006** — Q-dist-005 resolved: `scripts/install.sh` ships as the

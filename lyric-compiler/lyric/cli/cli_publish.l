@@ -307,10 +307,15 @@ func cmdSearch(argv: in slice[String]): Int {
     }
   }
 
-  val query = if allMode {
-    ""
+  // Statement form rather than a `val x = if ... else { return 1 }`
+  // expression: the F# stage-0 emitter miscompiles an if-expression
+  // initializer whose else-arm diverges via `return` (stack underflow at
+  // the merge point — caught by ILC during the Native AOT publish, #1494).
+  var query = ""
+  if allMode {
+    query = ""
   } else if positional.count > 0 {
-    positional[0]
+    query = positional[0]
   } else {
     printErr("search: provide a search term or use --all")
     printUsage()
