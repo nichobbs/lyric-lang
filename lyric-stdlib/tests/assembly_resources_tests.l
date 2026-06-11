@@ -233,6 +233,19 @@ func testReadSameIdentityDistinctContent(): Unit {
   }
   assertTrue(cA.length > 0, "same_identity_distinct: A contract non-empty")
   assertTrue(not bytesEqual(cA, cB), "same_identity_distinct: distinct files yield distinct contract bytes")
+
+  // Clean up the temporary DLLs so test output directories do not
+  // accumulate stale artifacts (#2710).  Failures are silently ignored
+  // — the assertions above have already passed at this point, and a
+  // cleanup failure must not shadow the test result.
+  match File.deleteFile(pA) {
+    case Err(_) -> ()
+    case Ok(_) -> ()
+  }
+  match File.deleteFile(pB) {
+    case Err(_) -> ()
+    case Ok(_) -> ()
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
