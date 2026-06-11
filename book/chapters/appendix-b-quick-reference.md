@@ -799,10 +799,12 @@ lyric build <file.l>                   # compile to .dll + .runtimeconfig.json
                                        # prints elapsed time on success: "built foo.dll in 342ms"
                                        # project mode: "built foo.dll (3 package(s), 1204ms)"
 lyric build --force <file.l>           # rebuild unconditionally (bypass incremental check)
-lyric build --release <file.l>         # self-contained Native AOT binary (no runtime needed)
+lyric build --release <file.l>         # single-file: self-contained Native AOT binary (no runtime needed)
+lyric build --release                  # project-mode: entry package auto-detected (func main())
+lyric build --release --manifest lyric.toml  # explicit project manifest
 lyric build --release <file.l> --rid <rid>   # override host runtime identifier
 lyric build --release <file.l> -o <bin>      # native binary output path
-                                       # (single-file/.NET today; project mode + JVM GraalVM: #1975)
+                                       # (.NET target only; JVM GraalVM native-image: #1975)
 lyric build --target dotnet <file.l>   # target .NET (default): writes foo.dll + foo.runtimeconfig.json
 lyric build --target jvm <file.l>      # writes a runnable foo.jar (NO runtimeconfig.json) via the
                                        # self-hosted JVM emitter (`Main-Class` derived from the source
