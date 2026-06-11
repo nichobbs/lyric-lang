@@ -62,6 +62,7 @@ func cmdLint(argv: in slice[String]): Int {
     var hasWarning = false
     var errorCount = 0
     var warningCount = 0
+    var readFailCount = 0
     var fileCount = 0
     var pi = 0
     while pi < sourcePaths.count {
@@ -71,9 +72,9 @@ func cmdLint(argv: in slice[String]): Int {
       val source = match File.readText(sp) {
         case Ok(t) -> t
         case Err(e) -> {
-          printErr("lint: " + IOError.message(e))
+          printErr("lint: cannot read " + sp + ": " + IOError.message(e))
           hasError = true
-          errorCount += 1
+          readFailCount += 1
           continue
         }
       }
@@ -97,14 +98,16 @@ func cmdLint(argv: in slice[String]): Int {
         }
       }
     }
+    var summary = ""
     if errorCount > 0 or warningCount > 0 {
-      Console.println(
-        "lint: " + toString(errorCount) + " error(s), " + toString(warningCount) + " warning(s) in " + toString(fileCount) +
-          " file(s)"
-      )
+      summary = "lint: " + toString(errorCount) + " error(s), " + toString(warningCount) + " warning(s) in " + toString(fileCount) + " file(s)"
     } else {
-      Console.println("lint: " + toString(fileCount) + " file(s) clean")
+      summary = "lint: " + toString(fileCount) + " file(s) clean"
     }
+    if readFailCount > 0 {
+      summary = summary + "; " + toString(readFailCount) + " file(s) could not be read"
+    }
+    Console.println(summary)
     if hasError or (errorOnWarning and hasWarning) {
       return 1
     }

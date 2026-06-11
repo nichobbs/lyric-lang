@@ -454,3 +454,46 @@ test "emitProject subprocess fallback on restored dep" {
   }
   cleanup(tmpDir)
 }
+
+// ─── perPackageAssemblyName multi-segment coverage (#2653) ───────────────────
+// Verifies that multi-segment Std.* and non-Std package names map to the
+// expected assembly name on both targets, matching the F# emitter's convention.
+test "perPackageAssemblyName single segment Std" {
+  assertEqual(
+    Emitter.perPackageAssemblyName("Std.Core", Emitter.Dotnet),
+    "Lyric.Stdlib.Core",
+    "perPackageAssemblyName: Std.Core -> Lyric.Stdlib.Core"
+  )
+}
+
+test "perPackageAssemblyName multi-segment Std" {
+  assertEqual(
+    Emitter.perPackageAssemblyName("Std.Testing.Mocking", Emitter.Dotnet),
+    "Lyric.Stdlib.TestingMocking",
+    "perPackageAssemblyName: Std.Testing.Mocking -> Lyric.Stdlib.TestingMocking"
+  )
+}
+
+test "perPackageAssemblyName multi-segment Std JVM" {
+  assertEqual(
+    Emitter.perPackageAssemblyName("Std.Testing.Mocking", Emitter.Jvm),
+    "Lyric.Stdlib.TestingMocking.Jvm",
+    "perPackageAssemblyName: Std.Testing.Mocking/Jvm -> Lyric.Stdlib.TestingMocking.Jvm"
+  )
+}
+
+test "perPackageAssemblyName non-Std single segment" {
+  assertEqual(
+    Emitter.perPackageAssemblyName("Lyric", Emitter.Dotnet),
+    "Lyric.Lyric",
+    "perPackageAssemblyName: Lyric -> Lyric.Lyric"
+  )
+}
+
+test "perPackageAssemblyName non-Std multi-segment" {
+  assertEqual(
+    Emitter.perPackageAssemblyName("Msil.Bridge", Emitter.Dotnet),
+    "Lyric.Msil.Bridge",
+    "perPackageAssemblyName: Msil.Bridge -> Lyric.Msil.Bridge"
+  )
+}

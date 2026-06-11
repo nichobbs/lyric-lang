@@ -27,6 +27,8 @@ func isInHunk(pos: in Int, tags: in List[Int], opCnt: in Int, context: in Int): 
 
 // Compute a unified diff between `aText` and `bText` (line-based LCS).
 // Returns "" when the texts are identical.  `aPath` appears in --- / +++ headers.
+// O(n*m) time and space in the number of lines: acceptable for typical source
+// files (hundreds of lines), but may be slow for very large generated files.
 func diffLinesUnified(aPath: in String, aText: in String, bText: in String): String {
   if aText == bText {
     return ""
@@ -124,8 +126,8 @@ func diffLinesUnified(aPath: in String, aText: in String, bText: in String): Str
 
   // Format hunks
   val lines: List[String] = newList()
-  lines.add("--- " + aPath)
-  lines.add("+++ " + aPath)
+  lines.add("--- a/" + aPath)
+  lines.add("+++ b/" + aPath)
 
   var pos = 0
   while pos < opCnt {

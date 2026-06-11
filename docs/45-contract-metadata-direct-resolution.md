@@ -1,6 +1,6 @@
 # 45 — Contract Metadata Direct Resolution
 
-**Status**: Proposal (ready for decision)
+**Status**: Specced in D098. Phase 1 (`Lyric.ContractMetaEmit` v3 emitter) shipped in D-progress-471. Phases 2–5 deferred pending #2580.
 
 ## Problem
 

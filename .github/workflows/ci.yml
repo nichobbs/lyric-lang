@@ -610,7 +610,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping pattern-lowering self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/jvm/pattern_lowering_self_test.l
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/pattern_lowering_self_test.l
 
       - name: Auto-FFI metadata self-test (native lyric test)
         working-directory: ${{ github.workspace }}
@@ -1059,6 +1059,7 @@ jobs:
             fi
           done
           echo "OK: by-reference (\`var\`) capture shares a mutable cell across the closure boundary."
+
 
   # Second half of compiler self-tests (.NET target), running in parallel with job -a.
   compiler-self-tests-dotnet-b:
@@ -1686,6 +1687,34 @@ jobs:
           fi
           echo "OK: native AOT binary produced and executed correctly." >> "$GITHUB_STEP_SUMMARY"
 
+      # IConfig (config block) lowering self-test (#2983, #2992).
+      # Wires `lyric-compiler/msil/msil_self_test_m85.l` via `lyric run` (the
+      # AOT binary routes through the self-hosted MSIL emitter, which supports
+      # `config {}` blocks; the F# bootstrap emitter does not, so `lyric run`
+      # is the correct path).  The test verifies five checks: Int/Bool/String
+      # default values when env vars are absent, a second independent config
+      # block, and field access without panic.  No new F# runner needed.
+      - name: IConfig config-block lowering self-test (lyric run, #2983)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping IConfig self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping IConfig self-test"
+            exit 1
+          fi
+          out="$("$lyric_bin" run lyric-compiler/msil/msil_self_test_m85.l 2>&1)"
+          for check in "port_default=true" "debug_default=true" "name_default=true" "timeout_default=true" "access_no_panic=true"; do
+            if ! printf '%s\n' "$out" | grep -qx "$check"; then
+              echo "::error::IConfig self-test missing expected line '$check'; full output:"; echo "$out"; exit 1
+            fi
+          done
+          echo "IConfig config-block lowering: all 5 default-value checks pass (#2983)"
+
   compiler-self-tests-jvm:
     runs-on: ubuntu-latest
     needs: [build]
@@ -1788,7 +1817,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping pattern-lowering JVM self-test"
             exit 1
           fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/pattern_lowering_self_test.l
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/pattern_lowering_self_test.l
 
       # Auto-FFI metadata-resolution self-test — exercises the self-hosted
       # MSIL emitter resolving `ExternTypeName.method(args)` calls against
@@ -2997,6 +3026,81 @@ jobs:
           fi
           echo "cross-package record construct-in-consumer builds the concrete list"
 
+      # Cross-package union construct+match (#2897).  A PRODUCER package exports a
+      # union with a `List[Int]` payload case; the CONSUMER constructs a case and
+      # matches it across an assembly boundary.  Verifies that union-case construction
+      # in the consumer correctly stores a concrete `List<int32>` and that the match
+      # binding reads back the right count and element values.
+      - name: Cross-package union construct+match (#2897)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          mkdir -p "$work/udep/src" "$work/uapp/src"
+          cat > "$work/udep/lyric.toml" <<'TOML'
+          [package]
+          name = "udep"
+          version = "0.1.0"
+          [project]
+          name = "UDep"
+          output_assembly = "Lyric.UDep.dll"
+          [project.packages]
+          "UDep" = "src"
+          TOML
+          cat > "$work/udep/src/udep.l" <<'LYR'
+          package UDep
+          pub union Payload {
+            case Items(vals: List[Int])
+            case Empty
+          }
+          pub func sumPayload(p: in Payload): Int {
+            match p {
+              case Items(vals) -> {
+                var s = 0
+                var i = 0
+                while i < vals.count { s = s + vals[i]; i = i + 1 }
+                s
+              }
+              case Empty -> 0
+            }
+          }
+          LYR
+          cat > "$work/uapp/lyric.toml" <<'TOML'
+          [package]
+          name = "uapp"
+          version = "0.1.0"
+          [project]
+          name = "UApp"
+          [project.packages]
+          "UApp" = "src"
+          [dependencies]
+          udep = { path = "../udep" }
+          TOML
+          cat > "$work/uapp/src/uapp.l" <<'LYR'
+          package UApp
+          import UDep
+          import Std.Console as Console
+          func main(): Unit {
+            val p = Items(vals = [10, 20, 30])
+            Console.println(toString(sumPayload(p)))
+          }
+          LYR
+          "$lyric_bin" build --manifest "$work/udep/lyric.toml"
+          "$lyric_bin" build --manifest "$work/uapp/lyric.toml"
+          cp "$work/udep/bin/Lyric.UDep.dll" "$work/uapp/bin/"
+          got="$(cd "$work/uapp/bin" && dotnet UApp.dll | tail -1 | tr -d '\r\n')"
+          echo "cross-package union consumer printed: '$got'"
+          if [ "$got" != "60" ]; then
+            echo "::error::cross-package union construct+match returned '$got', expected '60' (#2897)"
+            exit 1
+          fi
+          echo "cross-package union construct+match with List[Int] payload works (#2897)"
+
       # Construction-position collExpect coverage (#2592 slice 3, D-progress-482).
       # Verifies that the self-hosted `codegen.l` `collExpect` push at four positions
       # produces genuine concrete `List<T>` rather than `List<object>`:
@@ -3029,7 +3133,7 @@ jobs:
           # positions requires the record-field construction path where the emitter
           # propagates the field's `List[T]` expected type into the literal
           # (T0060/T0070/T0043 type errors block the direct List-position paths — a
-          # self-hosted type-checker gap tracked separately).  All four positions are
+          # self-hosted type-checker gap tracked in #2394).  All four positions are
           # validated here via record fields: construct, pass as field, reassign as
           # field, and nest as inner field.
           cat > "$work/c3.l" <<'LYR'
@@ -3136,6 +3240,17 @@ jobs:
             exit 1
           fi
           echo "Sort.sortStrings(list.toArray()) returns lexicographically sorted result"
+
+      # NOTE (#2908): An implicit `List[T]`→`slice[T]` coercion test (passing a
+      # concrete `List[T]` directly to a function expecting `slice[T]`, without
+      # `.toArray()`) is not added here.  The self-hosted type checker rejects
+      # `List[T]` where `slice[T]` is expected (only the reverse — `slice[T]`
+      # satisfying `List[T]` — is allowed, per `typechecker_exprs.l`).  The
+      # `coerceCallArgMsil` MSIL-codegen path that performs this coercion is already
+      # exercised by `Sort.sortStrings(list.toArray())` above, which adds the
+      # explicit `.toArray()` call.  A purely implicit coercion would require a
+      # type-checker change to widen `List[T]` to `slice[T]`, which is a separate
+      # design decision.
 
       # Std.Xml / Std.Yaml staging check (#2592 slice 4 — curated-package
       # exclusions retired, D-progress-480).  `Xml` and `Yaml` are now in

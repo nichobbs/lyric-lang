@@ -8,8 +8,8 @@
 //! destructuring forms) on a target that reached it.  This module exercises
 //! every form with runtime-value assertions on BOTH targets:
 //!
-//!   lyric test --target dotnet lyric-compiler/jvm/pattern_lowering_self_test.l
-//!   lyric test --target jvm    lyric-compiler/jvm/pattern_lowering_self_test.l
+//!   lyric test --target dotnet lyric-compiler/lyric/pattern_lowering_self_test.l
+//!   lyric test --target jvm    lyric-compiler/lyric/pattern_lowering_self_test.l
 //!
 //! It also exercises the supporting JVM-backend infrastructure that #2455
 //! required to be testable end-to-end: real tuple construction (an

@@ -783,8 +783,18 @@ func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[P
   }
   var fi2 = 0
   while fi2 < needed.count {
-    if indexOfString(ordered, needed[fi2]) < 0 {
-      ordered.add(needed[fi2])
+    val residue = needed[fi2]
+    if indexOfString(ordered, residue) < 0 {
+      // A package still unordered after the full topo-sort pass means a
+      // dependency cycle or an import that isn't registered in the closure.
+      // Append it in input order so we never loop forever, but warn so the
+      // root cause is visible rather than silently producing bad IL (#2652).
+      Console.error(
+        "emitter: warning: compiler package '" + residue +
+          "' could not be topologically ordered (unresolvable dependency or cycle); " +
+          "appending in input order — the emitted IL may be incorrect"
+      )
+      ordered.add(residue)
     }
     fi2 = fi2 + 1
   }
@@ -1001,8 +1011,18 @@ func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): List[Proj
   }
   var fi2 = 0
   while fi2 < needed.count {
-    if indexOfString(ordered, needed[fi2]) < 0 {
-      ordered.add(needed[fi2])
+    val residue = needed[fi2]
+    if indexOfString(ordered, residue) < 0 {
+      // A package still unordered after the full topo-sort pass means a
+      // dependency cycle or an import that isn't registered in the closure.
+      // Append it in input order so we never loop forever, but warn so the
+      // root cause is visible rather than silently producing bad IL (#2652).
+      Console.error(
+        "emitter: warning: compiler package '" + residue +
+          "' could not be topologically ordered (unresolvable dependency or cycle); " +
+          "appending in input order — the emitted IL may be incorrect"
+      )
+      ordered.add(residue)
     }
     fi2 = fi2 + 1
   }

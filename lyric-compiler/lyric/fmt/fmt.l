@@ -911,39 +911,46 @@ func commentPayloads(source: in String): List[String] {
 
 /// Multiset difference `a \ b`: every element of `a` that appears more
 /// often in `a` than in `b`, with the surplus multiplicity.
+///
+/// O(n+m) via frequency maps: one pass to count `a`, one to count `b`,
+/// then a single pass over the unique keys collected from `a`.
 func multisetMissing(a: in List[String], b: in List[String]): List[String] {
-  val missing: List[String] = newList()
+  val aFreq: Map[String, Int] = newMap()
+  val aKeys: List[String] = newList()
   var i = 0
   while i < a.count {
     val v = a[i]
-    var seen = false
-    var p = 0
-    while p < i {
-      if a[p] == v {
-        seen = true
-      }
-      p = p + 1
-    }
-    if not seen {
-      var d = countOf(a, v) - countOf(b, v)
-      while d > 0 {
-        missing.add(v)
-        d = d - 1
-      }
+    if aFreq.containsKey(v) {
+      aFreq[v] = aFreq[v] + 1
+    } else {
+      aFreq.add(v, 1)
+      aKeys.add(v)
     }
     i = i + 1
+  }
+  val bFreq: Map[String, Int] = newMap()
+  var j = 0
+  while j < b.count {
+    val v = b[j]
+    if bFreq.containsKey(v) {
+      bFreq[v] = bFreq[v] + 1
+    } else {
+      bFreq.add(v, 1)
+    }
+    j = j + 1
+  }
+  val missing: List[String] = newList()
+  var ki = 0
+  while ki < aKeys.count {
+    val v = aKeys[ki]
+    val ac = aFreq[v]
+    val bc = if bFreq.containsKey(v) { bFreq[v] } else { 0 }
+    var d = ac - bc
+    while d > 0 {
+      missing.add(v)
+      d = d - 1
+    }
+    ki = ki + 1
   }
   missing
-}
-
-func countOf(xs: in List[String], v: in String): Int {
-  var c = 0
-  var i = 0
-  while i < xs.count {
-    if xs[i] == v {
-      c = c + 1
-    }
-    i = i + 1
-  }
-  c
 }

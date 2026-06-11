@@ -67,7 +67,7 @@ backing entry's id.
 - `docs/42-extern-metadata-resolution.md` — metadata-based extern signature resolution design (epic #1622, Band 4 of #1470): replaces the hardcoded `clrAssemblyForType` table + the auto-FFI `(object…) : void` guess with a **pure-Lyric CLI-metadata reader** that parses reference-assembly bytes directly (inverting the emitter's `pe.l`/`tables.l`/`heaps.l` writer). Resolves the D-progress-268 `Type.GetType`-null blocker (pure byte reading, no runtime type loading), rejects `System.Reflection.Metadata` (struct-FFI-hostile) and `MetadataLoadContext` (NuGet-only/AOT-risk), and lays out a five-phase plan. _Unbacked — see §5 for the phased plan; open questions Q-MD-001–Q-MD-005._
 - `docs/43-in-bundle-generics-plan.md` — execution plan for emitting *truly generic* in-bundle types (GenericParam table 0x2A + VAR fields + instantiated TypeSpec construction/field/match) in the self-hosted MSIL backend, so generic records/unions and the stdlib `Option`/`Result` byte-match the F# emitter. The prerequisite for full Stage 3 (#2362) byte-match within epic #2359 (Stages 1/2/4 merged; Stage 5 #2364 pending). Recommends an `MGenericInstByName`/`MNewobjGenericByName` by-name encoding (TypeDef resolved at lowering), documents the validated GenericParam wire format vs `Lyric.Stdlib.dll`, and sequences Box[T] → Maybe[T] → stdlib stage-3 byte-match. _Implemented for in-bundle types (D-progress-453 records, D-progress-455 unions): in-bundle generic **records and unions** ship (GenericParam table 0x2A + VAR fields + arity-suffixed names + TypeSpec construction/field-read; union cases extend the open base instantiation `Maybe`1<!0>`, nullary cases are `newobj`-each-time with no singleton), verified by `inbundle_generics_self_test.l` (16 cases). #2362 is closed: the exact stage-3 stdlib byte-match was **not pursued** — the self-hosted emitter already produces structurally-correct generic `Option`/`Result` but carries the arity-suffix correctness fix F# omits, and self-compiling the whole stdlib is blocked on self-hosted front-end completeness (docs/41 §R7). Plan corrections: the `` `<arity> `` name suffix is required for multi-field value-type layout, and a generic type's ctor must `stfld` through the open self-TypeSpec. **Q-GEN-001 resolved** (F# emits no singleton for `Option_None`; nullary generic cases are constructed via `newobj`). Open questions Q-GEN-002–Q-GEN-005 (linked from docs/41 Band 4)._
 - `docs/44-jvm-production-readiness-plan.md` — JVM production-readiness audit and remediation plan: the JVM counterpart to docs/41 (which excludes JVM) and docs/33 (narrow 20-program parity). Audits the self-hosted JVM backend code-as-source-of-truth (validated by building/running real programs on JDK 21), catalogues BLOCKER/MAJOR/MINOR findings (closures panic, async/`?` synchronous stubs, aspects not woven, `Float`→`double` and complex-assignment silent miscompiles, generics erased, `_kernel_jvm` never loaded by the self-hosted source loader, Maven self-hosting absent + orphaned `resolver/`, F#-host `Lyric.Jvm.Hosts` debt, CLI emits `.dll`+`runtimeconfig.json` for JVM), and sequences remediation into bands J0–J7. Documents the two JVM code paths (emission library vs user compile pipeline); J0 items are done and the JVM umbrella epic is #2663 (sub-tasks #2664–#2670). _Unbacked — needs a decision-log entry codifying band order and the G1 channel decision._
-- `docs/45-contract-metadata-direct-resolution.md` — contract metadata distribution design for restored Lyric packages: migrates from current synthesis → parse → recheck per consumer to metadata-direct symbol table construction (mirroring auto-FFI for external types). Adds explicit `visibility` field and dependency manifest to metadata; validates once at library build. Breaks v2 support immediately (format version 3). Eliminates per-consumer overhead, simplifies preamble logic, strengthens visibility guarantees. _Unbacked — awaiting decision (ready for decision log entry D###)._
+- `docs/45-contract-metadata-direct-resolution.md` — contract metadata distribution design for restored Lyric packages: migrates from current synthesis → parse → recheck per consumer to metadata-direct symbol table construction (mirroring auto-FFI for external types). Adds explicit `visibility` field and dependency manifest to metadata; validates once at library build. Breaks v2 support immediately (format version 3). Eliminates per-consumer overhead, simplifies preamble logic, strengthens visibility guarantees. _Specced in D098. Phase 1 (`Lyric.ContractMetaEmit` v3 emitter) shipped in D-progress-471. Phases 2–5 deferred pending #2580._
 
 ## Reading order (for Claude)
 
@@ -836,7 +836,13 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
   - `stubbable.l` — `Lyric.Stubbable` AST transform (D-progress-433): for each
     non-generic `@stubbable` interface, appends a synthesised `Stub` record +
     `impl` before type-check; entry point `stubbableRewriteFile(file): SourceFile`.
-    Generic interfaces, `Self`-bearing and async methods are skipped.
+    For each supported method, the synthesised record adds a `_value` field (for
+    non-Unit returns) and a `_counter: StubCounter = makeStubCounter()` field;
+    the `impl` increments the counter on entry before returning the value.
+    `import Std.Testing.Mocking` is injected automatically (deduplicated) whenever
+    any stub is synthesised, so `StubCounter` / `makeStubCounter()` /
+    `stubCounterIncrement` are always in scope without requiring the user to add
+    the import.  Generic interfaces, `Self`-bearing and async methods are skipped.
   - `weaver/weaver.l` — `Lyric.Weaver` package (D-progress-292).
     Self-hosted port of `bootstrap/src/Lyric.Emitter/Weaver.fs`.
     Replaces each aspect-matched IFunc with a renamed
@@ -846,7 +852,8 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
   - `lexer_self_test.l`, `parser_self_test.l`,
     `typechecker_self_test.l`, `modechecker_self_test.l`,
     `contract_elaborator_self_test.l`, `cfg_self_test.l`,
-    `derives_self_test.l`, `mono_self_test.l`, `fmt_self_test.l` —
+    `derives_self_test.l`, `mono_self_test.l`, `fmt_self_test.l`,
+    `stubbable_self_test.l` —
     `@test_module` self-tests run in CI via native `lyric test`
     (linking the compiler DLLs as restored deps, #2364 / D-progress-456);
     their former F# `SelfHosted*Tests.fs` wrappers were deleted.

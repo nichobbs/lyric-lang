@@ -4,10 +4,6 @@
 //! strategy.  Every operation returns Result[T, RestError] where T is the
 //! caller's expected response type.  JSON bodies are read via Std.Json;
 //! non-JSON response bodies surface as RestError.Deserialize.
-//!
-//! This is bootstrap-grade: generic typed body deserialization is
-//! hand-rolled per scalar field.  A derive(Json)-based approach lands
-//! when the derive pipeline is complete.
 @runtime_checked
 package Std.Rest
 
@@ -232,7 +228,7 @@ pub func RestClient.ensureSuccess(response: in HttpResponse, url: in String): Re
 }
 
 // ---------------------------------------------------------------------------
-// JSON scalar extractors — bootstrap-grade until derive(Json) lands.
+// JSON scalar extractors
 // ---------------------------------------------------------------------------
 /// Read a top-level string field from a JSON response body.
 ///
