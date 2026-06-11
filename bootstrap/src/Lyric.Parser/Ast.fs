@@ -553,6 +553,7 @@ and PropertyDecl =
 
 and FixtureDecl =
     { Name: string
+      NameSpan: Span
       Type: TypeExpr option
       Init: Expr
       Span: Span }
