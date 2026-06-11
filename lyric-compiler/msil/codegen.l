@@ -343,6 +343,15 @@ pub record CodegenCtx {
   // correct cross-package FQN instead of `<current-pkg>.<seg>`.  First-
   // processed wins on collisions, mirroring `unionCaseCtorByName`.
   typeFqnByName: Map[String, String]
+  // Every FQN registered for a simple type name, in registration order
+  // (#3085).  `resolveTypeFqn` walks this with the same scope tiers the
+  // type checker's `symTableTryFindOne` uses — own package, then an
+  // imported package, then last-registered — so a short name that
+  // collides across packages (`Msil.Kernel.ByteWriter` vs the
+  // transitively-loaded `Std.Stream.ByteWriter`) resolves to the same
+  // declaration the type checker bound, not to whichever package
+  // happened to register first.
+  typeFqnCandidates: Map[String, List[String]]
   // Generic stdlib union case type-param count. Key = FQN ctor key of the
   // case class (e.g. "Std.Core.Option_Some"). Value = number of type params
   // on the parent union (e.g. 1 for Option[T], 2 for Result[T,E]). Used at
@@ -1407,6 +1416,7 @@ pub func newCodegenCtx(
     unionCaseCtorByName = newMap(),
     caseParentUnion = newMap(),
     typeFqnByName = newMap(),
+    typeFqnCandidates = newMap(),
     caseTypeParamCount = newMap(),
     genericTypeArity = newMap(),
     genericCtorParams = newMap(),
@@ -1660,9 +1670,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         // followed by injected impl-method MethodDefs (#878).
         val className = pkgName + "." + decl.name
         // Cross-package type-name index (#1183 codegen port).
-        if not cctx.typeFqnByName.containsKey(decl.name) {
-          cctx.typeFqnByName.add(decl.name, className)
-        }
+        registerTypeFqnCandidate(cctx, decl.name, className)
         // In-bundle generic record support (#2362 / docs/43): a `value: T` field
         // is reified as VAR(n) rather than erased to object, so the field's
         // var-index, its FIELD VAR(n) signature, and the VAR-form ctor params are
@@ -1811,9 +1819,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
       case IExposedRec(decl) -> {
         // Same layout as IRecord.
         val className = pkgName + "." + decl.name
-        if not cctx.typeFqnByName.containsKey(decl.name) {
-          cctx.typeFqnByName.add(decl.name, className)
-        }
+        registerTypeFqnCandidate(cctx, decl.name, className)
         var fi = 0
         while fi < decl.members.count {
           match decl.members[fi] {
@@ -1895,9 +1901,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         // Account for the protected no-arg .ctor emitted on the abstract base by lowerMUnion.
         methodDefRow = methodDefRow + 1  // abstract base's protected .ctor
         val unionFqn = pkgName + "." + decl.name
-        if not cctx.typeFqnByName.containsKey(decl.name) {
-          cctx.typeFqnByName.add(decl.name, unionFqn)
-        }
+        registerTypeFqnCandidate(cctx, decl.name, unionFqn)
         // In-bundle generic union support (#2362): the union and every case are
         // reified, so register the union's arity (the cases share it).  A generic
         // nullary case is lowered as a zero-field generic record (plain `.ctor`,
@@ -2031,9 +2035,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         // `methodTokens` so callvirt against an interface-typed receiver dispatches
         // through the correct interface vtable slot (#878).
         val ifaceName = pkgName + "." + decl.name
-        if not cctx.typeFqnByName.containsKey(decl.name) {
-          cctx.typeFqnByName.add(decl.name, ifaceName)
-        }
+        registerTypeFqnCandidate(cctx, decl.name, ifaceName)
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
@@ -2095,9 +2097,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
             val viewSimpleName = decl.name + "View"
             val viewFqn = pkgName + "." + viewSimpleName
             // Register view type name so resolveTypeFqn finds <Name>View references.
-            if not cctx.typeFqnByName.containsKey(viewSimpleName) {
-              cctx.typeFqnByName.add(viewSimpleName, viewFqn)
-            }
+            registerTypeFqnCandidate(cctx, viewSimpleName, viewFqn)
             // Phase 1: view FieldDef rows (visible fields only) + view .ctor + tryInto().
             // Mirrors lowerMOpaque's Phase 1 exactly, including token registration.
             var hasHiddenProj = false
@@ -2328,9 +2328,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
       // The emission order here MUST match `lowerMDistinctType`.
       case IDistinctType(decl) -> {
         val className = pkgName + "." + decl.name
-        if not cctx.typeFqnByName.containsKey(decl.name) {
-          cctx.typeFqnByName.add(decl.name, className)
-        }
+        registerTypeFqnCandidate(cctx, decl.name, className)
         val valueTok = 0x04000000 + fieldDefRow
         if not cctx.fieldTokens.containsKey(className + "/value") {
           cctx.fieldTokens.add(className + "/value", valueTok)
@@ -3247,33 +3245,71 @@ func joinSegsMsil(segs: in List[String], sep: in String): String {
   result
 }
 
-// Cross-package type-name resolution helper (#1183 codegen port).
-// Given a simple type name like "Maybe" referenced in `pkgName`, find
-// the FQN to use for the resulting `MClass`.
+// Cross-package type-name resolution (#1183 codegen port, scope tiers
+// added in #3085).  Given a simple type name like "Maybe" referenced in
+// `pkgName`, find the FQN to use for the resulting `MClass`.
 //
-// Resolution: consult `typeFqnByName` (populated by `addPackageTokens`
-// with first-pkg-wins semantics — local registration wins over later
-// shadows from imported packages).  When a hit exists, it IS the
-// resolution — either it points at this pkg's own declaration or at
-// an imported pkg's.  Type-checking upstream is the line of defence
-// that rejects un-imported references, so we accept any hit without
-// re-validating against `pkgImports[pkgName]`.  When no entry exists,
-// fall back to the local-pkg form so codegen doesn't regress on
-// undeclared types (typecheck diagnostic surfaces upstream); the
-// originally-documented pkgImports walk was redundant given the
-// upstream guarantee and is no longer described here (#1221).
+// Record `typeFqn` as a resolution candidate for the simple name
+// `typeName`: keeps the legacy first-wins `typeFqnByName` entry (still
+// consulted by the record-ctor call resolution sites) and appends to the
+// ordered `typeFqnCandidates` multimap that `resolveTypeFqn` walks with
+// scope tiers (#3085).
+func registerTypeFqnCandidate(cctx: in CodegenCtx, typeName: in String, typeFqn: in String): Unit {
+  if not cctx.typeFqnByName.containsKey(typeName) {
+    cctx.typeFqnByName.add(typeName, typeFqn)
+  }
+  match mapGet(cctx.typeFqnCandidates, typeName) {
+    case Some(lst) -> {
+      if not lst.contains(typeFqn) {
+        lst.add(typeFqn)
+      }
+    }
+    case None -> {
+      val lst1: List[String] = newList()
+      lst1.add(typeFqn)
+      cctx.typeFqnCandidates.add(typeName, lst1)
+    }
+  }
+}
+
 func resolveTypeFqn(cctx: in CodegenCtx, pkgName: in String, seg: in String): String {
-  // `typeFqnByName` is keyed by simple type name with first-pkg-wins
-  // semantics (per `addPackageTokens`).  When a hit exists, it IS the
-  // resolution — either it points at this pkg's own declaration
-  // (`pkgName + "." + seg`) or at an imported pkg's.  Type-checking
-  // upstream is the line of defence that rejects un-imported references,
-  // so we accept any hit here without re-validating it against
-  // `pkgImports`.  When `typeFqnByName` has no entry the type was never
-  // declared in the bundle, so fall back to the current-pkg form (the
-  // existing pre-#1183 behaviour).
-  match mapGet(cctx.typeFqnByName, seg) {
-    case Some(fqn) -> fqn
+  // Scope-tier resolution over every registered candidate, mirroring the
+  // type checker's `symTableTryFindOne` (#3085): (1) the referencing
+  // package's own declaration, (2) the newest candidate declared by a
+  // package the referencing package imports, (3) the newest registration
+  // (stdlib registers first, restored deps second, in-bundle packages
+  // last — so "newest" prefers the most local declaration, exactly like
+  // the type checker's last-registered-wins fallback).  Tiers 1/2 keep a
+  // short name that collides across packages (`Msil.Kernel.ByteWriter`
+  // vs the transitively-loaded `Std.Stream.ByteWriter`) bound to the
+  // declaration the type checker chose.  When no candidate exists the
+  // type was never declared in the bundle, so fall back to the
+  // current-pkg form (the pre-#1183 behaviour).
+  match mapGet(cctx.typeFqnCandidates, seg) {
+    case Some(cands) -> {
+      val ownFqn = pkgName + "." + seg
+      if cands.contains(ownFqn) {
+        return ownFqn
+      }
+      match mapGet(cctx.pkgImports, pkgName) {
+        case Some(imports) -> {
+          var i = cands.count - 1
+          while i >= 0 {
+            val fqn = cands[i]
+            if fqn.length > seg.length + 1 {
+              val pkgPart = fqn.substring(0, fqn.length - seg.length - 1)
+              if imports.contains(pkgPart) {
+                return fqn
+              }
+            }
+            i = i - 1
+          }
+        }
+        case None -> {
+        }
+      }
+      cands[cands.count - 1]
+    }
     case None -> pkgName + "." + seg
   }
 }
@@ -3464,7 +3500,13 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
       if headSeg == "List" and args.count == 1 {
         match args[0] {
           case TAType(elemTe) -> {
-            val elemTy = typeExprToMsilCtx(cctx, elemTe, pkgName)
+            // `Byte` elements map to `MByte` (U1) — not the scalar `MInt`
+            // mapping — so a `List[Byte]` encodes as `List`1<uint8>`, matching
+            // the F#-emitted producer ABI (`Msil.Kernel.bufToList` returns
+            // `List`1[System.Byte]`); a `List`1<int32>` MemberRef faults with
+            // MissingMethodException at the call site.  Mirrors the
+            // `slice[Byte]` special case (`sliceElemMsilCtx`).
+            val elemTy = sliceElemMsilCtx(cctx, elemTe, pkgName)
             // A reference or concrete-collection/array element gets a closed
             // generic `List`1<elem>` — construction, operation tokens, and
             // signatures all match the instantiation and bind against any consumer.
@@ -5136,7 +5178,7 @@ func lowerBinopMsil(
         insns.add(MLdloc(slot = beqSpillIdx))
       }
       match beqLhsTy {
-        case MInt | MBool | MChar | MLong | MDouble -> {
+        case MInt | MBool | MChar | MLong | MDouble | MByte -> {
           insns.add(MCeq)
           MBool
         }
@@ -5169,7 +5211,7 @@ func lowerBinopMsil(
         insns.add(MLdloc(slot = bneqSpillIdx))
       }
       match bneqLhsTy {
-        case MInt | MBool | MChar | MLong | MDouble -> {
+        case MInt | MBool | MChar | MLong | MDouble | MByte -> {
           insns.add(MCeq)
           insns.add(MLdcI4(v = 1))
           insns.add(MXor)
@@ -13453,7 +13495,7 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
     params = byrefWrapSigTypes(decl.params, paramTypes),
     ret = retTy,
     insns = insns,
-    maxStack = 16,
+    maxStack = computeMaxStackMsil(insns),
     locals = fctx.locals
   )
 }
@@ -13586,7 +13628,7 @@ pub func lowerImplMethodMsil(
     params = byrefWrapSigTypes(decl.params, paramTypes),
     ret = retTy,
     insns = insns,
-    maxStack = 16,
+    maxStack = computeMaxStackMsil(insns),
     locals = fctx.locals
   )
 }
@@ -14919,7 +14961,7 @@ func lowerProtectedMsil(
             params = pTypes,
             ret = retTy,
             insns = entryInsns,
-            maxStack = 16,
+            maxStack = computeMaxStackMsil(entryInsns),
             locals = entryFctx.locals
           )
         )
@@ -15393,7 +15435,7 @@ func lowerWireMsil(
       params = createParams,
       ret = MObject,
       insns = createInsns,
-      maxStack = 16,
+      maxStack = computeMaxStackMsil(createInsns),
       locals = createFctx.locals
     )
   )
@@ -17900,9 +17942,7 @@ func registerRestoredTypeDecl(
     cctx.ffiTypeRefs.add(typeRefKey, row)
   }
 
-  if not cctx.typeFqnByName.containsKey(typeName) {
-    cctx.typeFqnByName.add(typeName, typeFqn)
-  }
+  registerTypeFqnCandidate(cctx, typeName, typeFqn)
 
   if decl.kind == "union" {
     registerUnionCases(cctx, packageName, typeName, decl)
@@ -19026,9 +19066,7 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
     val row = ctxAddTypeRef(cctx.lctx, packageName, typeName, asmRefRow)
     cctx.ffiTypeRefs.add(typeRefKey, row)
   }
-  if not cctx.typeFqnByName.containsKey(typeName) {
-    cctx.typeFqnByName.add(typeName, typeFqn)
-  }
+  registerTypeFqnCandidate(cctx, typeName, typeFqn)
   match it.kind {
     case IUnion(decl) -> {
       // Stdlib types compiled by the F# bootstrap emitter use `_` as the
