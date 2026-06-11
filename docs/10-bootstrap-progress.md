@@ -24084,3 +24084,56 @@ All six cases pass via `lyric test`.  CI step added at the in-bundle generics po
 
 Closes #1496.
 
+
+### D-progress-496 — Distinct/range-subtype construction in the self-hosted MSIL backend (#1501)
+
+The self-hosted `--target dotnet` backend now synthesises the distinct- and
+range-subtype construction API the language reference (§2.2) defines. Before
+this, a `type UserId = Int` (let alone `type Age = Int range 0 ..= 150`)
+compiled but every `UserId.from(x)`, `Age.tryFrom(x)`, or `value.toInt()` call
+produced invalid IL (`InvalidProgramException` at run time): `lowerMDistinctType`
+emitted only a bare `value`-field record, the `IDistinctType` codegen arm read
+just `underlying` and ignored `rangeClause`, and `lowerMRangeType` was dead. The
+construction API worked only through the F# stage-0 emitter, which masked the
+gap in the `lyric-stdlib/tests/*_tests.l` suite.
+
+**What ships:**
+
+- **`lowerMDistinctType`** (`msil/lowering.l`) now hand-emits, in a fixed row
+  order, `.ctor(value)`, a static `from(x): Self`, a static
+  `tryFrom(x): Result[Self, String]` (emitted when `Std.Core.Result` is
+  imported), and an inherent `toInt`/`toLong`/`toDouble`/`toByte` projection.
+  When the type carries a range, `from` throws
+  `System.ArgumentOutOfRangeException` and `tryFrom` returns `Err(message)` on a
+  violation; the bounds check honours closed (`..=`) vs half-open (`..<`) upper
+  bounds. `MDistinctType` gained `hasRange`/`rangeIsFloat`/`minI`/`maxI`/
+  `minF`/`maxF`/`upperExclusive` fields.
+- **`mkDistinctTypeIR`** (`msil/codegen.l`) folds the `rangeClause` literals
+  (integer and `Double`, including a leading unary minus) to bounds; a
+  non-literal bound falls back to no runtime check rather than a silently wrong
+  one.
+- **Pass-1 token budget** (`addPackageTokens`, `IDistinctType` arm) reserves the
+  matching MethodDef rows and registers `distinctFromTokens` /
+  `distinctTryFromTokens` / `distinctTryFromRetTypes` (statics) and a
+  `methodTokens` entry for the instance projection.
+- **`lowerMethodCallMsil`** resolves `TypeName.from(x)` / `TypeName.tryFrom(x)`
+  as static calls on a type name (guarded against a local-variable name
+  collision); `value.toInt()` resolves through the existing instance-dispatch
+  path. `tryFrom`'s `Ok`/`Err` are constructed via closed
+  `Result_Ok`/`Result_Err` TypeSpecs (the `Result` Ok/Err/base TypeRef rows are
+  seeded into the `LoweringCtx` in `bridge.l`, mirroring the projectable
+  `tryInto()` path).
+
+**Test** (`lyric-compiler/lyric/range_subtype_self_test.l`): a `@test_module`
+covering closed/half-open boundary semantics, `Int` and `Long` ranges, the
+in-range `from` round-trip, and a plain (rangeless) distinct type. Run under
+native `lyric test --target dotnet`; added to the compiler self-test CI loop.
+
+**Scope notes:** `Double`-bound ranges are rejected upstream by the type checker
+(`T0093`, integer literals only), so the `Double` bounds path is forward-compat
+only. Applying a generic stdlib helper (`isOk`/`isErr`/`unwrapResult`) to a
+`Result` over a *user* type still erases its type arguments — the cross-package
+generic-function monomorphization gap (#1498) — so consumers (and this test)
+use `match`. JVM range-bound checking remains tracked separately (#2997).
+
+Closes #1501.

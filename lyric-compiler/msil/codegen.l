@@ -146,6 +146,14 @@ pub record CodegenCtx {
   tokDictObjTryGetValue: Int  // Dictionary<object,object>::TryGetValue(object, object): bool
   // Intra-package pre-computed tokens
   recordCtorTokens: Map[String, Int]  // className → MethodDef token
+  // Distinct/range-subtype static factory tokens (#1501): className → MethodDef
+  // token for the synthesised static `from`/`tryFrom`.  Resolved at a
+  // `TypeName.from(x)` / `TypeName.tryFrom(x)` call site, which is a static call
+  // on a type name (not an instance method), so it cannot go through the normal
+  // `methodTokens` instance-dispatch path.
+  distinctFromTokens: Map[String, Int]
+  distinctTryFromTokens: Map[String, Int]
+  distinctTryFromRetTypes: Map[String, MsilType]
   fieldTokens: Map[String, Int]  // "ClassName/fieldName" → FieldDef token
   // Field metadata for cross-assembly generic union cases.  Both maps use the
   // same "ClassName/fieldName" and "ClassName/fieldN" key space as fieldTokens.
@@ -1317,6 +1325,9 @@ pub func newCodegenCtx(
     tokDictObjRemove = tokDictObjRemove,
     tokDictObjTryGetValue = tokDictObjTryGetValue,
     recordCtorTokens = recCtorToks,
+    distinctFromTokens = newMap(),
+    distinctTryFromTokens = newMap(),
+    distinctTryFromRetTypes = newMap(),
     fieldTokens = fieldToks,
     fieldSigBytes = newMap(),
     fieldDeclaredNames = newMap(),
@@ -2199,11 +2210,13 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           mi = mi + 1
         }
       }
-      // IDistinctType: lowerMDistinctType synthesises an MRecord with one
-      // `value` field + a one-arg `.ctor(inner)`.  Reserve those rows AND
-      // register the field token / ctor token / type FQN so member access
-      // (`self.value` in derive-synthesised methods) and construction
-      // (`Score(42)`) resolve correctly (#1917).
+      // IDistinctType: lowerMDistinctType synthesises a sealed type with one
+      // `value` field and the construction API — `.ctor(value)`, static `from`,
+      // static `tryFrom` (when Result is imported), and an inherent `toX`
+      // projection (#1501).  Reserve those rows AND register the tokens so
+      // member access (`self.value`), construction (`Score(42)`), and the
+      // `TypeName.from`/`TypeName.tryFrom`/`v.toInt()` call sites resolve.
+      // The emission order here MUST match `lowerMDistinctType`.
       case IDistinctType(decl) -> {
         val className = pkgName + "." + decl.name
         if not cctx.typeFqnByName.containsKey(decl.name) {
@@ -2218,10 +2231,42 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           cctx.fieldMsilTypes.add(className + "/value", innerTy)
         }
         fieldDefRow = fieldDefRow + 1
+        // Method 0: .ctor
         if not cctx.recordCtorTokens.containsKey(className) {
           cctx.recordCtorTokens.add(className, 0x06000000 + methodDefRow)
         }
         methodDefRow = methodDefRow + 1
+        // Method 1: static from
+        if not cctx.distinctFromTokens.containsKey(className) {
+          cctx.distinctFromTokens.add(className, 0x06000000 + methodDefRow)
+        }
+        methodDefRow = methodDefRow + 1
+        // Method 2: static tryFrom (only when Result Ok/Err/base are seeded).
+        val hasTryFrom = cctx.lctx.stdCoreResultOk2Row.count > 0 and cctx.lctx.stdCoreResultErr2Row.count > 0 and
+          cctx.lctx.stdCoreResultRow.count > 0
+        if hasTryFrom {
+          if not cctx.distinctTryFromTokens.containsKey(className) {
+            cctx.distinctTryFromTokens.add(className, 0x06000000 + methodDefRow)
+            val triArgs: List[MsilType] = newList()
+            triArgs.add(MClass(className = className))
+            triArgs.add(MString)
+            cctx.distinctTryFromRetTypes.add(
+              className,
+              MGenericInst(typeRefCode = 0, headFqn = "Std.Core.Result", typeArgs = triArgs)
+            )
+          }
+          methodDefRow = methodDefRow + 1
+        }
+        // Method 3: inherent toX projection (instance dispatch via methodTokens).
+        val convName = distinctConvName(innerTy)
+        if convName.length > 0 {
+          val convKey = className + "/" + convName
+          if not cctx.methodTokens.containsKey(convKey) {
+            cctx.methodTokens.add(convKey, 0x06000000 + methodDefRow)
+            cctx.methodRetTypes.add(convKey, innerTy)
+          }
+          methodDefRow = methodDefRow + 1
+        }
       }
       case IConfig(decl) -> {
         // Config block: N FieldDef rows (one per field) + 1 MethodDef row (.cctor),
@@ -7949,6 +7994,44 @@ func lowerMethodCallMsil(
           return emitAutoFfiCallMsil(cctx, fctx, insns, recv, memberName, args, clrFqn)
         }
         case None -> {
+        }
+      }
+      // Distinct/range-subtype static factories (#1501): `Type.from(x)` and
+      // `Type.tryFrom(x)` are static calls on a type NAME, so they cannot route
+      // through instance dispatch (which would first evaluate the type name as a
+      // value and emit invalid IL).  Guard against a local variable shadowing a
+      // type name: a real local takes precedence and falls through to the value
+      // path below.
+      val recvIsLocal = path.segments.count == 1 and fctx.slots.containsKey(recvName)
+      if not recvIsLocal {
+        match mapGet(cctx.typeFqnByName, recvName) {
+          case Some(distFqn) -> {
+            if memberName == "from" {
+              match mapGet(cctx.distinctFromTokens, distFqn) {
+                case Some(tok) -> {
+                  if args.count > 0 {
+                    val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
+                  }
+                  insns.add(MCall(methodToken = tok))
+                  return MClass(className = distFqn)
+                }
+                case None -> ()
+              }
+            }
+            if memberName == "tryFrom" {
+              match mapGet(cctx.distinctTryFromTokens, distFqn) {
+                case Some(tok) -> {
+                  if args.count > 0 {
+                    val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
+                  }
+                  insns.add(MCall(methodToken = tok))
+                  return match mapGet(cctx.distinctTryFromRetTypes, distFqn) { case Some(rt) -> rt; case None -> MObject }
+                }
+                case None -> ()
+              }
+            }
+          }
+          case None -> ()
         }
       }
     }
@@ -16698,9 +16781,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
       }
       case IDistinctType(decl) -> {
         val inner = typeExprToMsil(decl.underlying, pkgName)
-        items.add(
-          MPDistinctType(d = MDistinctType(className = pkgName + "." + decl.name, namespace = pkgName, inner = inner))
-        )
+        items.add(MPDistinctType(d = mkDistinctTypeIR(pkgName + "." + decl.name, pkgName, inner, decl.rangeClause)))
       }
       case IConst(decl) -> {
         // Module-level compile-time constant → static field on the host class.
@@ -17870,6 +17951,78 @@ func registerRestoredIfaceMethod(
   if not cctx.methodRetTypes.containsKey(key) {
     val realRetType = match ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
     cctx.methodRetTypes.add(key, realRetType)
+  }
+}
+
+// ── Range-subtype bound folding (#1501) ──────────────────────────────────────
+// A folded numeric range bound.  `ok` is false when the bound is not a literal
+// (named const, arithmetic, …) the codegen folder can evaluate — in which case
+// no runtime bounds check is emitted (rather than a silently wrong one).
+record RangeBoundVal {
+  ok: Bool
+  isFloat: Bool
+  l: Long
+  d: Double
+}
+
+func foldRangeBound(e: in Expr): RangeBoundVal {
+  match e.kind {
+    case ELiteral(lit) -> match lit { case LInt(v, _, _) -> RangeBoundVal(ok = true, isFloat = false, l = v, d = 0.0); case LFloat(v, _, _) -> RangeBoundVal(ok = true, isFloat = true, l = 0, d = v); case _ -> RangeBoundVal(ok = false, isFloat = false, l = 0, d = 0.0) }
+    case EPrefix(op, operand) -> match op { case PreNeg -> { val inner = foldRangeBound(operand); if inner.ok { RangeBoundVal(ok = true, isFloat = inner.isFloat, l = 0 - inner.l, d = 0.0 - inner.d) } else { RangeBoundVal(ok = false, isFloat = false, l = 0, d = 0.0) } }; case _ -> RangeBoundVal(ok = false, isFloat = false, l = 0, d = 0.0) }
+    case _ -> RangeBoundVal(ok = false, isFloat = false, l = 0, d = 0.0)
+  }
+}
+
+func mkDistinctRanged(
+  className: in String,
+  namespace: in String,
+  inner: in MsilType,
+  loE: in Expr,
+  hiE: in Expr,
+  upperExcl: in Bool,
+): MDistinctType {
+  val lo = foldRangeBound(loE)
+  val hi = foldRangeBound(hiE)
+  val isFloatInner = match inner { case MDouble -> true; case _ -> false }
+  if lo.ok and hi.ok {
+    val loF = if lo.isFloat { lo.d } else { lo.l.toDouble() }
+    val hiF = if hi.isFloat { hi.d } else { hi.l.toDouble() }
+    MDistinctType(
+      className = className,
+      namespace = namespace,
+      inner = inner,
+      hasRange = true,
+      rangeIsFloat = isFloatInner,
+      minI = lo.l,
+      maxI = hi.l,
+      minF = loF,
+      maxF = hiF,
+      upperExclusive = upperExcl
+    )
+  } else {
+    MDistinctType(
+      className = className,
+      namespace = namespace,
+      inner = inner,
+      hasRange = false,
+      rangeIsFloat = false,
+      minI = 0,
+      maxI = 0,
+      minF = 0.0,
+      maxF = 0.0,
+      upperExclusive = false
+    )
+  }
+}
+
+// Build the distinct-type IR item, folding any range clause to integer/float
+// bounds for the synthesised `from`/`tryFrom` validation.
+func mkDistinctTypeIR(
+  className: in String, namespace: in String, inner: in MsilType, rangeClause: in Option[RangeBound]
+): MDistinctType {
+  match rangeClause {
+    case Some(rb) -> match rb { case RBClosed(loE, hiE) -> mkDistinctRanged(className, namespace, inner, loE, hiE, false); case RBHalfOpen(loE, hiE) -> mkDistinctRanged(className, namespace, inner, loE, hiE, true); case _ -> MDistinctType(className = className, namespace = namespace, inner = inner, hasRange = false, rangeIsFloat = false, minI = 0, maxI = 0, minF = 0.0, maxF = 0.0, upperExclusive = false) }
+    case None -> MDistinctType(className = className, namespace = namespace, inner = inner, hasRange = false, rangeIsFloat = false, minI = 0, maxI = 0, minF = 0.0, maxF = 0.0, upperExclusive = false)
   }
 }
 
