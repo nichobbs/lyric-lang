@@ -323,6 +323,29 @@ test "Mail.send rejects an attachment whose contentType contains a CR character"
   }
 }
 
+test "Mail.send rejects an attachment whose contentType contains a LF character" {
+  var sender = Mail.MailSenderStub(callCount = 0)
+  val attBad = Attachment(filename = "report.pdf", contentType = "application/pdf\nX-Evil: 1", dataBase64 = "SGVsbG8=")
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = ""),
+    to = [EmailAddress(address = "r@example.com", displayName = "")],
+    cc = [],
+    bcc = [],
+    subject = "Injected",
+    textBody = "body",
+    htmlBody = "",
+    attachments = [attBad],
+    replyTo = None
+  )
+  match Mail.send(sender, msg) {
+    case Err(e) -> {
+      assertEqual(e.code, "HEADER_INJECTION", "contentType LF: error code is HEADER_INJECTION")
+      assertEqualInt(sender.callCount, 0, "contentType LF: sender.send never called")
+    }
+    case Ok(_) -> assertTrue(false, "contentType injection: expected Err but got Ok")
+  }
+}
+
 // Control case: a clean-filename attachment passes all guards without Err.
 test "Mail.send accepts an attachment with a clean filename" {
   var sender = Mail.MailSenderStub(callCount = 0)
