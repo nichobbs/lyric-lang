@@ -295,14 +295,14 @@ func findStdlibSourcesForTarget(forJvm: in Bool): List[String] {
 // typechecker's last-registered-wins `symTableTryFindOne` would pick
 // different declarations on each.  Sorting by basename makes the build
 // reproducible.
-// Scan `dir` for `.l` files, apply a basename-level skip predicate
-// (`skipBase(basename) -> Bool`), sort by basename, read each file, and
+// Scan `dir` for `.l` files, sort by basename, read each file, and
 // append text+path pairs to `out` (parallel lists).  Returns immediately
 // when `dir` does not exist.  Shared core for `appendLyricFiles`,
 // `appendLyricFilesCollect`, and `appendLyricFilesExcluding` (#2750).
+// `excludeList` skips files whose basename is in the list; `skipJvmKernel`
+// additionally skips basenames starting with "jvm".
 func collectLyricFileTexts(
   dir: in String,
-  skipBase: in List[String],
   excludeList: in List[String],
   skipJvmKernel: in Bool,
   texts: in List[String],
@@ -346,7 +346,7 @@ func appendLyricFiles(sources: in List[String], dir: in String, skipJvmKernel: i
   val texts: List[String] = newList()
   val paths: List[String] = newList()
   val noExclude: List[String] = newList()
-  collectLyricFileTexts(dir, noExclude, noExclude, skipJvmKernel, texts, paths)
+  collectLyricFileTexts(dir, noExclude, skipJvmKernel, texts, paths)
   var i = 0
   while i < texts.count {
     sources.add(texts[i])
@@ -364,7 +364,7 @@ func appendLyricFilesCollect(sources: in List[String], dir: in String, skipJvmKe
   val texts: List[String] = newList()
   val paths: List[String] = newList()
   val noExclude: List[String] = newList()
-  collectLyricFileTexts(dir, noExclude, noExclude, skipJvmKernel, texts, paths)
+  collectLyricFileTexts(dir, noExclude, skipJvmKernel, texts, paths)
   var i = 0
   while i < texts.count {
     sources.add(texts[i])
@@ -381,7 +381,7 @@ func appendLyricFilesCollect(sources: in List[String], dir: in String, skipJvmKe
 func appendLyricFilesExcluding(sources: in List[String], dir: in String, exclude: in List[String]): Unit {
   val texts: List[String] = newList()
   val paths: List[String] = newList()
-  collectLyricFileTexts(dir, newList(), exclude, false, texts, paths)
+  collectLyricFileTexts(dir, exclude, false, texts, paths)
   var i = 0
   while i < texts.count {
     sources.add(texts[i])
