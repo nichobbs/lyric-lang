@@ -1086,6 +1086,28 @@ func stdlibEntryImports(entrySource: in String, compilerPayloads: in List[Projec
   "package __stdlib_entry__\n" + Str.joinList("\n", lines) + "\n"
 }
 
+// True when any payload's merged source declares a module-level `pub val`
+// (column-0 `pub val NAME...`).  Function-local vals are indented, so a
+// column-0 prefix test is exact for formatted compiler sources (`lyric fmt`
+// enforces top-level items at column 0).  Used by `compilerClosureDllPaths`
+// to decide whether the F#-emitted stage-1 DLLs can serve the closure: the
+// F# contract writer drops module-level vals from the metadata (#3086).
+func closureExportsModuleVals(payloads: in List[ProjectPackagePayload]): Bool {
+  var i = 0
+  while i < payloads.count {
+    val lines = Str.split(payloads[i].source, "\n")
+    var li = 0
+    while li < lines.length {
+      if Str.startsWith(lines[li], "pub val ") {
+        return true
+      }
+      li = li + 1
+    }
+    i = i + 1
+  }
+  false
+}
+
 // Direct compiler-package imports of one payload's merged source.
 func compilerImportsOf(payloadSource: in String): List[String] {
   val lines: List[String] = newList()
@@ -1315,6 +1337,46 @@ pub func compilerClosureDllPaths(testSource: in String, libDir: in String): List
     return dlls
   }
   val payloads = loadCompilerPayloads(compilerDir, testSource)
+  // #3086: when the closure exports module-level `pub val` constants, link
+  // the self-hosted-emitted per-package compiler DLLs staged under
+  // `<libDir>/selfhosted` (by `scripts/stage-selfhosted-compiler.sh`)
+  // instead of the F#-emitted stage-1 bundle DLLs.  The F# contract-metadata
+  // writer has no `IVal` arm, so its DLLs silently drop the constants and
+  // the test fails with T0020 "unknown name"; the self-hosted writer emits
+  // them.  Closures WITHOUT module-level vals keep the F#-built DLLs (no
+  // behaviour change), and the self-hosted set is only used when it covers
+  // the WHOLE closure so a single test never links a mix of the two
+  // emitters' outputs.
+  if closureExportsModuleVals(payloads) {
+    val shDir = Path.join(libDir, "selfhosted")
+    var shComplete = payloads.count > 0
+    var shi = 0
+    while shi < payloads.count {
+      if not File.fileExists(Path.join(shDir, "Lyric." + payloads[shi].name + ".dll")) {
+        shComplete = false
+      }
+      shi = shi + 1
+    }
+    if shComplete {
+      var sj = 0
+      while sj < payloads.count {
+        val shPkg = payloads[sj].name
+        dlls.add(shPkg + "\t" + Path.join(shDir, "Lyric." + shPkg + ".dll"))
+        sj = sj + 1
+      }
+      return dlls
+    }
+    if payloads.count > 0 {
+      Console.error(
+        "test: warning: the test's compiler-package closure exports module-level `pub val` constants, " +
+          "but no complete self-hosted compiler-DLL set was found under '" +
+          shDir +
+          "'. " +
+          "Falling back to the F#-emitted stage-1 DLLs, whose contract metadata omits the constants " +
+          "(T0020 likely; see #3086). Run `make selfhosted-compiler` to stage the self-hosted set."
+      )
+    }
+  }
   var i = 0
   while i < payloads.count {
     val pkg = payloads[i].name
