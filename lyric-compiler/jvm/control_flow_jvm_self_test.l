@@ -108,6 +108,30 @@ protected type Counter {
   }
 }
 
+// A record with a method whose every arm `return`s — exercises the
+// `blockTerminates` check at the `lowerRecordMethod` call-site (#2877).
+// Both arms of the inner `if` return unconditionally, so the JVM verifier
+// must not see a stray trailing void return.
+record Point {
+  x: Int
+  y: Int
+  func quadrant(): String {
+    if self.x >= 0 {
+      if self.y >= 0 {
+        return "Q1"
+      } else {
+        return "Q4"
+      }
+    } else {
+      if self.y >= 0 {
+        return "Q2"
+      } else {
+        return "Q3"
+      }
+    }
+  }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 test "return in both if/else branches (the #2870 repro)" {
   assertEqual(classify(5), "pos", "positive input")
@@ -142,4 +166,15 @@ test "Unit fall-off function still emits its implicit return" {
 test "if without else followed by a tail value still falls through" {
   assertEqualInt(clampLow(5), 5, "non-negative passes through")
   assertEqualInt(clampLow(-9), 0, "negative clamped to 0")
+}
+
+test "record method with all-terminating if/else arms (blockTerminates at lowerRecordMethod)" {
+  val p1 = Point(x = 1, y = 1)
+  val p2 = Point(x = -1, y = 1)
+  val p3 = Point(x = -1, y = -1)
+  val p4 = Point(x = 1, y = -1)
+  assertEqual(p1.quadrant(), "Q1", "Q1: (+, +)")
+  assertEqual(p2.quadrant(), "Q2", "Q2: (-, +)")
+  assertEqual(p3.quadrant(), "Q3", "Q3: (-, -)")
+  assertEqual(p4.quadrant(), "Q4", "Q4: (+, -)")
 }
