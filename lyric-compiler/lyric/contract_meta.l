@@ -656,11 +656,11 @@ pub func contractToJson(c: in Contract): String {
   sb = sb + "  \"version\": \"" + escapeJson(c.version) + "\",\n"
   sb = sb + "  \"level\": \"" + escapeJson(c.level) + "\",\n"
 
-  if c.formatVersion >= 3 and Str.isNotEmpty(c.contractHash) {
+  // v3: always emit contractHash and dependencies (even empty list) to match
+  // the F# renderer's unconditional output — parsers expecting the key present
+  // in v3 must not receive a missing field (#2719).
+  if c.formatVersion >= 3 {
     sb = sb + "  \"contractHash\": \"" + escapeJson(c.contractHash) + "\",\n"
-  }
-
-  if c.formatVersion >= 3 and c.dependencies.count > 0 {
     sb = sb + "  \"dependencies\": " + renderDependencies(c.dependencies) + ",\n"
   }
 
@@ -1087,14 +1087,24 @@ func reprForExternType(decl: in ExternTypeDecl): String {
   "extern type " + decl.name + renderGenerics(decl.generics) + " = \"" + decl.clrName + "\""
 }
 
-// Construct a default ContractDecl with the three required fields and
-// everything else zeroed.  Mirrors F# `ContractDecl.basic`.
-func basicDecl(kind: in String, name: in String, repr: in String): ContractDecl {
+// Convert an AST Visibility option to the JSON-visible string used by ContractDecl.
+// "pub" for VisPub, "internal" for VisInternal, "" for None (package-private).
+func visibilityStr(vis: in Option[Visibility]): String {
+  match vis {
+    case Some(v) -> match v { case VisPub(_) -> "pub"; case VisInternal(_) -> "internal" }
+    case None -> ""
+  }
+}
+
+// Construct a default ContractDecl with the given fields and everything else zeroed.
+// Mirrors F# `ContractDecl.basic`.  `vis` is the raw AST visibility of the item so
+// v3 emission carries the correct value (fixes #2728 — never hardcode "pub").
+func basicDecl(kind: in String, name: in String, repr: in String, vis: in Option[Visibility]): ContractDecl {
   ContractDecl(
     kind = kind,
     name = name,
     repr = repr,
-    visibility = "pub",
+    visibility = visibilityStr(vis),
     isPure = false,
     stability = "",
     requiresClauses = newList(),
@@ -1262,20 +1272,20 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
     val it = file.items[i]
     if isPubVis(it.visibility) {
       match it.kind {
-        case IRecord(r) -> decls.add(basicDecl("record", r.name, reprForRecord(r)))
-        case IFunc(f) -> decls.add(basicDecl("func", f.name, reprForFunc(f)))
-        case IUnion(u) -> decls.add(basicDecl("union", u.name, reprForUnion(u)))
-        case IEnum(e) -> decls.add(basicDecl("enum", e.name, reprForEnum(e)))
-        case IInterface(ix) -> decls.add(basicDecl("interface", ix.name, reprForInterface(ix)))
-        case IDistinctType(d) -> decls.add(basicDecl("distinct", d.name, reprForDistinct(d)))
-        case IOpaque(o) -> decls.add(basicDecl("opaque", o.name, reprForOpaque(o)))
-        case ITypeAlias(a) -> decls.add(basicDecl("alias", a.name, reprForTypeAlias(a)))
+        case IRecord(r) -> decls.add(basicDecl("record", r.name, reprForRecord(r), it.visibility))
+        case IFunc(f) -> decls.add(basicDecl("func", f.name, reprForFunc(f), it.visibility))
+        case IUnion(u) -> decls.add(basicDecl("union", u.name, reprForUnion(u), it.visibility))
+        case IEnum(e) -> decls.add(basicDecl("enum", e.name, reprForEnum(e), it.visibility))
+        case IInterface(ix) -> decls.add(basicDecl("interface", ix.name, reprForInterface(ix), it.visibility))
+        case IDistinctType(d) -> decls.add(basicDecl("distinct", d.name, reprForDistinct(d), it.visibility))
+        case IOpaque(o) -> decls.add(basicDecl("opaque", o.name, reprForOpaque(o), it.visibility))
+        case ITypeAlias(a) -> decls.add(basicDecl("alias", a.name, reprForTypeAlias(a), it.visibility))
         // Module-level compile-time constants whose value crosses package
         // boundaries by inlining (see codegen `addPackageTokens`).  A
         // consumer compiled separately (per-package emit) needs the value
         // from the producer's contract; carry it here.
-        case IConst(c) -> decls.add(basicDecl("const", c.name, reprForConst(c)))
-        case IVal(v) -> match reprForInlinableVal(v) { case Some(repr) -> decls.add(basicDecl("val", bindingName(v.pattern), repr)); case None -> () }
+        case IConst(c) -> decls.add(basicDecl("const", c.name, reprForConst(c), it.visibility))
+        case IVal(v) -> match reprForInlinableVal(v) { case Some(repr) -> decls.add(basicDecl("val", bindingName(v.pattern), repr, it.visibility)); case None -> () }
         case _ -> ()
       }
     }
@@ -1292,7 +1302,9 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
         val targetName = implTargetSimpleName(idecl)
         if strListContains(pubTypeNames, targetName) {
           match reprForImplHead(idecl) {
-            case Some(repr) -> decls.add(basicDecl("impl", implReprName(idecl), repr))
+            // impl blocks have no visibility keyword; use None (package-private string "")
+            // which `renderDecl` omits for v1/v2.  For v3 the F# writer also uses "" here.
+            case Some(repr) -> decls.add(basicDecl("impl", implReprName(idecl), repr, None))
             case None -> ()
           }
         }
@@ -1302,9 +1314,9 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
       // even when the type itself is package-private, so the synthesised
       // contract source must always declare the anchor.  Matches the F#
       // writer's `IExternType _ | IProtected _ -> true` visibility rule.
-      case IProtected(p) -> decls.add(basicDecl("opaque", p.name, reprForProtected(p)))
+      case IProtected(p) -> decls.add(basicDecl("opaque", p.name, reprForProtected(p), it.visibility))
       case IExternType(et) -> {
-        decls.add(basicDecl("extern_type", et.name, reprForExternType(et)))
+        decls.add(basicDecl("extern_type", et.name, reprForExternType(et), it.visibility))
       }
       case _ -> ()
     }

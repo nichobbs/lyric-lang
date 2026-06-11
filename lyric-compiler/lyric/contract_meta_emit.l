@@ -29,9 +29,10 @@ import Lyric.ContractMeta as Meta
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. JSON building helpers (minimal serializer for contract metadata)
 // ─────────────────────────────────────────────────────────────────────────────
-// Build a JSON string by concatenating parts. No actual JSON library yet,
-// so we hand-construct the structure. This is intentionally simple and
-// focused on the contract metadata shape only.
+// Build a JSON string by concatenating parts.  `Std.Json` is a parser, not a
+// serializer, so we hand-construct the contract metadata shape here.  This is
+// intentionally narrow: only the fields defined in docs/45 §Format Version 3
+// are emitted, which keeps the output stable and auditable (#2889).
 func jsonString(s: in String): String {
   Std.Json.encodeString(s)
 }
