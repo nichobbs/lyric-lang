@@ -337,11 +337,14 @@ pub record CodegenCtx {
   caseParentUnion: Map[String, String]
   // Cross-package type name lookup (#1183 codegen port).  Maps a type's
   // simple name (e.g. "Maybe", "Point") to its FQN
-  // (e.g. "XPkgUnion.Lib.Maybe").  `typeExprToMsil` consults this when
-  // resolving a single-segment `TRef` like `Maybe[Int]` after an
-  // `import XPkgUnion.Lib`, so the resulting `MClass` carries the
-  // correct cross-package FQN instead of `<current-pkg>.<seg>`.  First-
-  // processed wins on collisions, mirroring `unionCaseCtorByName`.
+  // (e.g. "XPkgUnion.Lib.Maybe").  First-processed wins on collisions,
+  // mirroring `unionCaseCtorByName`.  LEGACY: kept only for the
+  // record-ctor call-resolution sites (`lowerBuiltinOrStaticCallMsil`'s
+  // cross-package ctor lookup and the EMember receiver fallback), which
+  // predate scope-tier resolution and have their own disambiguation
+  // story.  TYPE-POSITION resolution must NOT consult this map directly —
+  // use `resolveTypeFqn`, which walks the ordered `typeFqnCandidates`
+  // multimap below with the type checker's scope tiers (#3085).
   typeFqnByName: Map[String, String]
   // Every FQN registered for a simple type name, in registration order
   // (#3085).  `resolveTypeFqn` walks this with the same scope tiers the
