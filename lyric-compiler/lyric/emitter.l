@@ -1034,7 +1034,7 @@ func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): List[Proj
       // Append it in input order so we never loop forever, but warn so the
       // root cause is visible rather than silently producing bad IL (#2652).
       Console.error(
-        "emitter: warning: compiler package '" + residue +
+        "emitter: warning: stdlib package '" + residue +
           "' could not be topologically ordered (unresolvable dependency or cycle); " +
           "appending in input order — the emitted IL may be incorrect"
       )
