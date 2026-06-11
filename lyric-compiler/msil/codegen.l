@@ -68,6 +68,7 @@ pub record CodegenCtx {
   tokConcat2: Int  // String.Concat(string,string)
   tokConcat3: Int  // String.Concat(string,string,string)
   tokExceptionCtor: Int  // Exception..ctor(string) — one-arg ctor (callers emit ldstr+newobj+throw and rely on this arity)
+  tokInvalidOpExceptionCtor: Int  // InvalidOperationException..ctor(string) — for internal invariant violations only
   tokStringFormat1: Int  // String.Format(string,object)
   tokStringFormat2: Int  // String.Format(string,object,object)
   tokStringFormat3: Int  // String.Format(string,object,object,object)
@@ -479,6 +480,7 @@ pub func newCodegenCtx(
   // boxed reference (#2539 regression: garbage bytes broke HMAC verification).
   val trByte = ctxAddTypeRef(lctx, "System", "Byte", lctx.arRuntime)
   val trException = ctxAddTypeRef(lctx, "System", "Exception", lctx.arRuntime)
+  val trInvalidOpException = ctxAddTypeRef(lctx, "System", "InvalidOperationException", lctx.arRuntime)
 
   // Build MemberRef signatures.
   // 1. Console.WriteLine(string): void  → MemberRef[1] → token 0x0A000001
@@ -536,6 +538,20 @@ pub func newCodegenCtx(
   excCtorPs.add(MString)
   val tokExcCtor = 0x0A000000 +
     ctxAddMemberRef(lctx, trException, ".ctor", "exc_ctor", buildInstanceMethodSig(excCtorPs, MVoid))
+
+  // 9b. InvalidOperationException..ctor(string): void  instance HASTHIS
+  // Used for internal-invariant violations (compiler bugs) only; user-facing
+  // runtime errors keep tokExceptionCtor so stack traces distinguish the two.
+  val ioExcCtorPs: List[MsilType] = newList()
+  ioExcCtorPs.add(MString)
+  val tokInvalidOpExcCtor = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trInvalidOpException,
+      ".ctor",
+      "inv_op_exc_ctor",
+      buildInstanceMethodSig(ioExcCtorPs, MVoid)
+    )
 
   // 10. String.Format(string,object): string  → 0x0A00000A
   val fmt1Ps: List[MsilType] = newList()
@@ -1293,6 +1309,7 @@ pub func newCodegenCtx(
     tokConcat2 = tokConcat2,
     tokConcat3 = tokConcat3,
     tokExceptionCtor = tokExcCtor,
+    tokInvalidOpExceptionCtor = tokInvalidOpExcCtor,
     tokStringFormat1 = tokFmt1,
     tokStringFormat2 = tokFmt2,
     tokStringFormat3 = tokFmt3,
@@ -1734,19 +1751,24 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         while mi < decl.members.count {
           match decl.members[mi] {
             case RMFunc(fn) -> {
-              // Guard against duplicate-key crashes when overloaded methods share
-              // a name (different arities): first registration wins for the
-              // unqualified lookup key; callers that need arity disambiguation
-              // can use the `className/name/arity` variant once lookup sites
-              // are updated.
+              // Arity-qualified key guards against duplicate-key crashes and
+              // makes overloaded-method lookup unambiguous (same pattern as
+              // IFunc / registerStdlibFunc — arity key first, bare key as
+              // first-overload fallback for call sites that don't arity-disambiguate).
+              val rmArityKey = className + "/" + fn.name + "/" + toString(fn.params.count)
               val rmKey = className + "/" + fn.name
-              if not cctx.methodTokens.containsKey(rmKey) {
-                cctx.methodTokens.add(rmKey, 0x06000000 + methodDefRow)
-                // Token and signature metadata are registered together so the
-                // first overload wins for both (no token/metadata divergence).
-                registerMethodRetTy(cctx, rmKey, fn.ret, pkgName)
-                registerMethodParamTypes(cctx, rmKey, fn.params, pkgName)
-                registerMethodParamModes(cctx, rmKey, fn.params)
+              if not cctx.methodTokens.containsKey(rmArityKey) {
+                cctx.methodTokens.add(rmArityKey, 0x06000000 + methodDefRow)
+                registerMethodRetTy(cctx, rmArityKey, fn.ret, pkgName)
+                registerMethodParamTypes(cctx, rmArityKey, fn.params, pkgName)
+                registerMethodParamModes(cctx, rmArityKey, fn.params)
+                // Bare name: first overload wins so existing unqualified call sites work.
+                if not cctx.methodTokens.containsKey(rmKey) {
+                  cctx.methodTokens.add(rmKey, 0x06000000 + methodDefRow)
+                  registerMethodRetTy(cctx, rmKey, fn.ret, pkgName)
+                  registerMethodParamTypes(cctx, rmKey, fn.params, pkgName)
+                  registerMethodParamModes(cctx, rmKey, fn.params)
+                }
               }
               methodDefRow = methodDefRow + 1
             }
@@ -1820,14 +1842,20 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         while mi < decl.members.count {
           match decl.members[mi] {
             case RMFunc(fn) -> {
-              // Guard against duplicate-key crashes when overloaded methods share
-              // a name (different arities); see IRecord RMFunc above.
+              // Arity-qualified key; see IRecord RMFunc above.
+              val xrmArityKey = className + "/" + fn.name + "/" + toString(fn.params.count)
               val xrmKey = className + "/" + fn.name
-              if not cctx.methodTokens.containsKey(xrmKey) {
-                cctx.methodTokens.add(xrmKey, 0x06000000 + methodDefRow)
-                registerMethodRetTy(cctx, xrmKey, fn.ret, pkgName)
-                registerMethodParamTypes(cctx, xrmKey, fn.params, pkgName)
-                registerMethodParamModes(cctx, xrmKey, fn.params)
+              if not cctx.methodTokens.containsKey(xrmArityKey) {
+                cctx.methodTokens.add(xrmArityKey, 0x06000000 + methodDefRow)
+                registerMethodRetTy(cctx, xrmArityKey, fn.ret, pkgName)
+                registerMethodParamTypes(cctx, xrmArityKey, fn.params, pkgName)
+                registerMethodParamModes(cctx, xrmArityKey, fn.params)
+                if not cctx.methodTokens.containsKey(xrmKey) {
+                  cctx.methodTokens.add(xrmKey, 0x06000000 + methodDefRow)
+                  registerMethodRetTy(cctx, xrmKey, fn.ret, pkgName)
+                  registerMethodParamTypes(cctx, xrmKey, fn.params, pkgName)
+                  registerMethodParamModes(cctx, xrmKey, fn.params)
+                }
               }
               methodDefRow = methodDefRow + 1
             }
@@ -2004,27 +2032,38 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         while mi < decl.members.count {
           match decl.members[mi] {
             case IMSig(sig) -> {
-              // Guard against duplicate-key crashes for same-name interface
-              // signatures with different arities; see IRecord RMFunc.
+              // Arity-qualified key; see IRecord RMFunc above.
+              val imsArityKey = ifaceName + "/" + sig.name + "/" + toString(sig.params.count)
               val imsKey = ifaceName + "/" + sig.name
-              if not cctx.methodTokens.containsKey(imsKey) {
-                cctx.methodTokens.add(imsKey, 0x06000000 + methodDefRow)
-                // Token and signature metadata are registered together so the
-                // first overload wins for both (no token/metadata divergence).
-                registerMethodRetTy(cctx, imsKey, sig.ret, pkgName)
-                registerMethodParamTypes(cctx, imsKey, sig.params, pkgName)
-                registerMethodParamModes(cctx, imsKey, sig.params)
+              if not cctx.methodTokens.containsKey(imsArityKey) {
+                cctx.methodTokens.add(imsArityKey, 0x06000000 + methodDefRow)
+                registerMethodRetTy(cctx, imsArityKey, sig.ret, pkgName)
+                registerMethodParamTypes(cctx, imsArityKey, sig.params, pkgName)
+                registerMethodParamModes(cctx, imsArityKey, sig.params)
+                if not cctx.methodTokens.containsKey(imsKey) {
+                  cctx.methodTokens.add(imsKey, 0x06000000 + methodDefRow)
+                  registerMethodRetTy(cctx, imsKey, sig.ret, pkgName)
+                  registerMethodParamTypes(cctx, imsKey, sig.params, pkgName)
+                  registerMethodParamModes(cctx, imsKey, sig.params)
+                }
               }
               methodDefRow = methodDefRow + 1
             }
             case IMFunc(fn) -> {
-              // Guard against duplicate-key crashes; see IMSig above.
+              // Arity-qualified key; see IRecord RMFunc above.
+              val imfArityKey = ifaceName + "/" + fn.name + "/" + toString(fn.params.count)
               val imfKey = ifaceName + "/" + fn.name
-              if not cctx.methodTokens.containsKey(imfKey) {
-                cctx.methodTokens.add(imfKey, 0x06000000 + methodDefRow)
-                registerMethodRetTy(cctx, imfKey, fn.ret, pkgName)
-                registerMethodParamTypes(cctx, imfKey, fn.params, pkgName)
-                registerMethodParamModes(cctx, imfKey, fn.params)
+              if not cctx.methodTokens.containsKey(imfArityKey) {
+                cctx.methodTokens.add(imfArityKey, 0x06000000 + methodDefRow)
+                registerMethodRetTy(cctx, imfArityKey, fn.ret, pkgName)
+                registerMethodParamTypes(cctx, imfArityKey, fn.params, pkgName)
+                registerMethodParamModes(cctx, imfArityKey, fn.params)
+                if not cctx.methodTokens.containsKey(imfKey) {
+                  cctx.methodTokens.add(imfKey, 0x06000000 + methodDefRow)
+                  registerMethodRetTy(cctx, imfKey, fn.ret, pkgName)
+                  registerMethodParamTypes(cctx, imfKey, fn.params, pkgName)
+                  registerMethodParamModes(cctx, imfKey, fn.params)
+                }
               }
               methodDefRow = methodDefRow + 1
             }
@@ -2035,10 +2074,14 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         }
       }
       case IOpaque(decl) -> {
-        // lowerMOpaque emission order for @projectable types:
-        //   Phase 1 — view FieldDef ×M, view .ctor, tryInto() (optional)
-        //   Phase 2 — opaque FieldDef ×N, opaque .ctor, toView()
-        // Non-projectable types emit only: opaque FieldDef ×N, opaque .ctor.
+        // Token pre-allocation mirrors lowerMOpaque in lowering.l (func lowerMOpaque,
+        // ~line 4000).  The MethodDef row numbers assigned here MUST stay in lock-step
+        // with lowerMOpaque's emission order: Phase 1 (view fields + view .ctor +
+        // tryInto) before Phase 2 (opaque fields + opaque .ctor + toView).  Any future
+        // change to lowerMOpaque's method order must be mirrored here or the CLR will
+        // resolve callvirt slots to the wrong MethodDef (#3046).
+        //
+        // Non-@projectable types emit only: opaque FieldDef ×N, opaque .ctor.
         if decl.hasBody {
           val className = pkgName + "." + decl.name
           val isProj = hasAnnotationMsil(decl.annotations, "projectable")
@@ -2114,7 +2157,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
             methodDefRow = methodDefRow + 1  // view .ctor
             // tryInto() eligibility mirrors lowerMOpaque exactly (including the
             // isDiscover branch that always emits a stub in the discover pass).
-            if not hasHiddenProj and not hasNestedProjField and cctx.lctx.stdCoreResultOk2Row.count > 0 {
+            if not hasHiddenProj and not hasNestedProjField and cctx.lctx.stdCoreResultOk2Row.count > 0 and cctx.lctx.stdCoreResultRow.count > 0 {
               val tryIntoKey = viewFqn + "/tryInto"
               if not cctx.methodTokens.containsKey(tryIntoKey) {
                 cctx.methodTokens.add(tryIntoKey, 0x06000000 + methodDefRow)
@@ -2123,7 +2166,16 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                 val triRetArgs: List[MsilType] = newList()
                 triRetArgs.add(MClass(className = className))
                 triRetArgs.add(MString)
-                cctx.methodRetTypes.add(tryIntoKey, MGenericInst(typeRefCode = 0, headFqn = "Std.Core.Result", typeArgs = triRetArgs))
+                // typeRefCode uses stdCoreResultRow[0] (non-empty: guarded by stdCoreResultOk2Row.count > 0
+                // above which implies the Result row was also seeded in seedResultTypeRefs).
+                cctx.methodRetTypes.add(
+                  tryIntoKey,
+                  MGenericInst(
+                    typeRefCode = tdrTypeRef(cctx.lctx.stdCoreResultRow[0]),
+                    headFqn = "Std.Core.Result",
+                    typeArgs = triRetArgs
+                  )
+                )
               }
               methodDefRow = methodDefRow + 1  // tryInto()
             }
@@ -2297,9 +2349,16 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
             val triArgs: List[MsilType] = newList()
             triArgs.add(MClass(className = className))
             triArgs.add(MString)
+            // typeRefCode comes from stdCoreResultRow[0] (guaranteed non-empty by
+            // hasTryFrom guard above) so callers that inspect this MGenericInst for
+            // TypeSpec construction get a valid IL token, not a zero sentinel.
             cctx.distinctTryFromRetTypes.add(
               className,
-              MGenericInst(typeRefCode = 0, headFqn = "Std.Core.Result", typeArgs = triArgs)
+              MGenericInst(
+                typeRefCode = tdrTypeRef(cctx.lctx.stdCoreResultRow[0]),
+                headFqn = "Std.Core.Result",
+                typeArgs = triArgs
+              )
             )
           }
           methodDefRow = methodDefRow + 1
@@ -2472,6 +2531,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         // the List<object> index-loop protocol.
         val isGen = decl.isAsync and funcBodyContainsYieldMsil(decl)
         val isSm = decl.isAsync and not isGen and not hasExternTargetMsil(decl.annotations)
+        // Hoisted so both return-type and param-type lowering share the same
+        // computation (#2597: removed the duplicate declGenericsP).
+        val declGenerics = genericNamesOf(decl.generics)
         val retTy = if isGen {
           val genElemTy = match decl.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MObject }
           MIAsyncEnumerable(elemTy = genElemTy)
@@ -2511,7 +2573,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           // `.length` / indexing route through the IList slice path) or `MObject`
           // (a bare erased element), never as `MClass(pkg + ".T")` which names no
           // real CLR type and would emit a faulting `castclass`.
-          val declGenerics = genericNamesOf(decl.generics)
+          // declGenerics is hoisted above retTy and shared with the param loop.
           match decl.ret {
             case Some(te) -> {
               if declGenerics.count > 0 {
@@ -2535,12 +2597,13 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         // A generic function's `slice[T]` / bare-`T` parameter is recorded in the
         // erased List-backed form (#2557) so the call-site collExpect builds a
         // List-backed argument, matching the erased parameter slot.
-        val declGenericsP = genericNamesOf(decl.generics)
+        // declGenerics (computed above for the return type) covers the same decl,
+        // so we reuse it here (#2597: no need for a separate declGenericsP).
         val paramTys: List[MsilType] = newList()
         var ppi = 0
         while ppi < decl.params.count {
-          if declGenericsP.count > 0 {
-            paramTys.add(typeExprToMsilGenBody(cctx, decl.params[ppi].ty, pkgName, declGenericsP))
+          if declGenerics.count > 0 {
+            paramTys.add(typeExprToMsilGenBody(cctx, decl.params[ppi].ty, pkgName, declGenerics))
           } else {
             paramTys.add(typeExprToMsilCtx(cctx, decl.params[ppi].ty, pkgName))
           }
@@ -4506,6 +4569,11 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     // protocol.  Otherwise emit a blocking synchronous shim (GetAwaiter+GetResult).
     // Non-Task values (blocking @externTarget async, or already-resolved results)
     // are passed through as-is: the value is already on the stack.
+    //
+    // TODO(#2737): await inside a try/catch/finally region is unsupported —
+    // the CLR protected region would span a suspend/resume point — and causes
+    // InvalidProgramException at runtime.  The mode checker does not reject it
+    // yet; V0012 covers return-in-try but not await-in-try.
     case EAwait(inner) -> {
       val taskTy = lowerExprMsil(cctx, fctx, insns, inner)
       if not isTaskTypeMsil(cctx, taskTy) {
@@ -4735,13 +4803,20 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     // contract elaborator substitutes snapshot variables for `old(e)` before
     // reaching here, and quantifiers are approximated as `true` at runtime
     // (a sound overapproximation — the assert passes, no false-negative crash).
-    // A future pass can emit a per-site diagnostic; for now the emitted code is
-    // correct and the build succeeds.
+    // W0002 informs the user so they aren't surprised by the unenforced clause.
     case EForall(_, _, _) -> {
+      println(
+        "W0002: forall quantifier in @runtime_checked contract is not evaluated at runtime " +
+          "(sound overapproximation as true; consider restricting the domain or using @proof_required)"
+      )
       insns.add(MLdcI4(v = 1))
       MBool
     }
     case EExists(_, _, _) -> {
+      println(
+        "W0002: exists quantifier in @runtime_checked contract is not evaluated at runtime " +
+          "(sound overapproximation as true; consider restricting the domain or using @proof_required)"
+      )
       insns.add(MLdcI4(v = 1))
       MBool
     }
@@ -4811,11 +4886,10 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // Re-captured from the enclosing lambda's own capture array (#1479 multi-level).
           // Propagate the cell if the outer closure marked it as a cell capture;
           // otherwise propagate the value type from captureNameToType.
+          // capTypes is added unconditionally; capCells only for cell captures (#2948).
+          capTypes.add(match mapGet(fctx.captureNameToType, cn) { case Some(t) -> t; case None -> MObject })
           if nameListContains(fctx.captureCellNames, cn) {
-            capTypes.add(match mapGet(fctx.captureNameToType, cn) { case Some(t) -> t; case None -> MObject })
             capCells.add(cn)
-          } else {
-            capTypes.add(match mapGet(fctx.captureNameToType, cn) { case Some(t) -> t; case None -> MObject })
           }
         } else {
           match mapGet(fctx.hoistedCellSlot, cn) {
@@ -5649,7 +5723,7 @@ func lowerStmtsExprFromMsil(
   }
   val deferBody = match stmts[deferIdx].kind {
     case SDefer(b) -> b
-    case _ -> panic("Msil.Codegen: lowerStmtsExprFromMsil: deferIdx points at non-SDefer statement (unreachable)")
+    case _ -> panic("Msil.Codegen: lowerStmtsExprFromMsil: deferIdx points at non-SDefer statement (compiler bug)")
   }
   val tryStartL = freshLabelMsil(fctx)
   val afterL = freshLabelMsil(fctx)
@@ -6149,6 +6223,23 @@ func lowerMatchExprMsil(
       if not sawFall {
         firstFallTy = armTys[av]
         sawFall = true
+      } else if armTys[av] != MVoid and firstFallTy != MVoid {
+        // Internal-invariant check: the type checker should ensure all non-void
+        // fall-through arms have the same type.  If this fires, a type-checker
+        // regression reached codegen.
+        // Compare canonical keys, not structure: MsilType has multiple
+        // representations (by-name vs by-row generic instances) for the
+        // same type.  Erased-object arms (bare O, or O inside a generic
+        // instance) legitimately mix with concrete arms under erasure, so
+        // only a concrete-vs-concrete divergence is suspicious; warn loudly
+        // rather than abort the build (#1663).
+        val k1w = msilTypeKey(firstFallTy)
+        val k2w = msilTypeKey(armTys[av])
+        val erased1w = k1w == "O" or contains(k1w, "<O,") or contains(k1w, "[O]")
+        val erased2w = k2w == "O" or contains(k2w, "<O,") or contains(k2w, "[O]")
+        if k1w != k2w and not erased1w and not erased2w {
+          println("warning[W0004]: Msil.Codegen: lowerMatchExprMsil fall-through arm type mismatch: first arm " + k1w + " vs later arm " + k2w + " — result uses the first arm's type (possible type-checker regression, #1663)")
+        }
       }
       if armTys[av] == MVoid {
         anyVoid = true
@@ -8270,9 +8361,13 @@ func lowerMethodCallMsil(
             i = i + 1
           }
           insns.add(MPop)
-          val msgTok = ctxInternUs(cctx.lctx, "Msil.Codegen: String.contains expects 1 argument, got " + toString(args.count))
+          val msgTok = ctxInternUs(
+            cctx.lctx,
+            "Msil.Codegen: String.contains expects 1 argument, got " + toString(args.count) +
+              " (compiler bug: type checker should have validated arity)"
+          )
           insns.add(MLdStr(token = msgTok))
-          insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+          insns.add(MNewobj(ctorToken = cctx.tokInvalidOpExceptionCtor))
           insns.add(MThrow)
         }
         MBool
@@ -8294,9 +8389,13 @@ func lowerMethodCallMsil(
             i = i + 1
           }
           insns.add(MPop)
-          val msgTok = ctxInternUs(cctx.lctx, "Msil.Codegen: List.contains expects 1 argument, got " + toString(args.count))
+          val msgTok = ctxInternUs(
+            cctx.lctx,
+            "Msil.Codegen: List.contains expects 1 argument, got " + toString(args.count) +
+              " (compiler bug: type checker should have validated arity)"
+          )
           insns.add(MLdStr(token = msgTok))
-          insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+          insns.add(MNewobj(ctorToken = cctx.tokInvalidOpExceptionCtor))
           insns.add(MThrow)
         }
         MBool
@@ -8355,9 +8454,13 @@ func lowerMethodCallMsil(
         i = i + 1
       }
       insns.add(MPop)
-      val msgTok = ctxInternUs(cctx.lctx, "Msil.Codegen: List.removeAt expects 1 argument, got " + toString(args.count))
+      val msgTok = ctxInternUs(
+        cctx.lctx,
+        "Msil.Codegen: List.removeAt expects 1 argument, got " + toString(args.count) +
+          " (compiler bug: type checker should have validated arity)"
+      )
       insns.add(MLdStr(token = msgTok))
-      insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+      insns.add(MNewobj(ctorToken = cctx.tokInvalidOpExceptionCtor))
       insns.add(MThrow)
       MVoid
     }
@@ -10564,6 +10667,61 @@ func countYieldsInExpr(e: in Expr): Int {
         ai = ai + 1
       }
       n
+    }
+    case ETuple(elems) -> {
+      var n = 0
+      var ti = 0
+      while ti < elems.count {
+        n = n + countYieldsInExpr(elems[ti])
+        ti = ti + 1
+      }
+      n
+    }
+    case EList(elems) -> {
+      var n = 0
+      var li = 0
+      while li < elems.count {
+        n = n + countYieldsInExpr(elems[li])
+        li = li + 1
+      }
+      n
+    }
+    case EAssign(lhs, _, rhs) -> countYieldsInExpr(lhs) + countYieldsInExpr(rhs)
+    case EIndex(recv, indices) -> {
+      var n = countYieldsInExpr(recv)
+      var idi = 0
+      while idi < indices.count {
+        n = n + countYieldsInExpr(indices[idi])
+        idi = idi + 1
+      }
+      n
+    }
+    case EInterpolated(segs) -> {
+      var n = 0
+      var ipi = 0
+      while ipi < segs.count {
+        match segs[ipi] {
+          case ISExpr(ex) -> {
+            n = n + countYieldsInExpr(ex)
+          }
+          case ISText(_, _) -> ()
+        }
+        ipi = ipi + 1
+      }
+      n
+    }
+    // ELambda: yields inside a nested lambda are NOT counted here — a lambda
+    // is an independent generator scope; its yields drive its own resumeLabels,
+    // not the outer generator's.
+    case ELambda(_, _) -> 0
+    case ETypeApp(inner, _) -> countYieldsInExpr(inner)
+    case ERange(bound) -> {
+      match bound {
+        case RBClosed(lo, hi) -> countYieldsInExpr(lo) + countYieldsInExpr(hi)
+        case RBHalfOpen(lo, hi) -> countYieldsInExpr(lo) + countYieldsInExpr(hi)
+        case RBLowerOpen(hi) -> countYieldsInExpr(hi)
+        case RBUpperOpen(lo) -> countYieldsInExpr(lo)
+      }
     }
     case _ -> 0
   }
@@ -15104,8 +15262,17 @@ func lowerWireMsil(
         lowerExprMsil(cctx, createFctx, createInsns, init)
         createInsns.add(MStloc(slot = localSlot - createFctx.paramCount))
       }
-      case WMScoped(_, _, _, _, _) -> {
-        // AsyncLocal<T>-backed scoping deferred to #2972; not lowered until then.
+      case WMScoped(_, memberName, _, _, _) -> {
+        // AsyncLocal<T>-backed scoping is deferred to #2972.  A scoped member that
+        // is also exposed (WMExpose) would silently emit ldnull because its name is
+        // never added to createFctx.slots.  Fail loudly here so the gap (#2972) is
+        // caught at build time rather than manifesting as a NullReferenceException
+        // at the call site.
+        panic(
+          "Msil.Codegen: wire block member '" + memberName +
+            "' uses WMScoped, which is not yet implemented (see issue #2972). " +
+            "Remove the `scoped` modifier or avoid exposing this member until #2972 ships."
+        )
       }
       case WMBind(iface, provider, _) -> {
         // Evaluate the provider and store it under the interface's simple name
@@ -16409,6 +16576,10 @@ func ensureMetadataIndex(cctx: in CodegenCtx): Unit {
       val asms = Mdr.enumRefAssemblies(dir)
       var i = 0
       while i < asms.count {
+        // Both calls read the same assembly bytes independently (#2147: double I/O).
+        // A future optimisation can merge these into a single readBytes + combined
+        // scan.  Since ensureMetadataIndex runs once and is cached, correctness is
+        // unaffected today.
         Mdr.addAssemblyToIndexes(cctx.metadataTypeIndex, cctx.metadataPathIndex, asms[i])
         Mdr.addAssemblyValueTypes(cctx.metadataVtypeSet, asms[i])
         i = i + 1
@@ -16697,8 +16868,11 @@ func tryAutoFfiFromMetadata(
   // Snapshot fctx counters before speculative argument lowering so we can roll
   // back orphan locals if a later argument triggers fallback.  The map fields
   // (slots, types) may retain stale entries for rolled-back names, but those
-  // names are unique-per-count and will never be re-accessed after truncation,
-  // so they are harmless.
+  // names are unique-per-count (every temp name embeds slotTicker.count at
+  // allocation time) and will never be re-accessed after truncation.
+  // INVARIANT: every speculative temp name MUST embed the live slotTicker count
+  // at allocation time.  Any future temp that does NOT follow this convention
+  // must explicitly remove its fctx.slots/fctx.types entries on rollback instead.
   val snapSlot = fctx.slotTicker.count
   val snapLabel = fctx.labelTicker.count
   val snapLocals = fctx.locals.count
@@ -17154,7 +17328,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
         val initFctx = makeFuncCtxMsil(pkgName, pkgName, "__const_" + decl.name, 0, MVoid)
         val initInsns: List[MInsn] = newList()
         lowerExprMsil(cctx, initFctx, initInsns, decl.init)
-        val fieldTy = typeExprToMsil(decl.ty, pkgName)
+        val fieldTy = typeExprToMsilCtx(cctx, decl.ty, pkgName)
         if isLiteralI4ExprMsil(decl.init) {
           val constVal = match initInsns.count {
             case n if n > 0 -> match initInsns[0] { case MLdcI4(v) -> v; case _ -> 0 }

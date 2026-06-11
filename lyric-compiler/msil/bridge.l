@@ -44,6 +44,31 @@ pub func compileToMsil(source: in String, outputPath: in String, stdlibSources: 
   compileToMsilWithVersion(source, outputPath, stdlibSources, "")
 }
 
+// Seed lctx.stdCoreResultOk2Row / stdCoreResultErr2Row / stdCoreResultRow from
+// the ffiTypeRefs map that registerStdlibArtifactTokens just populated.  Called
+// from both compile entry points so lowerMOpaque can emit tryInto() and the
+// range-subtype tryFrom factory (#1501) can wrap Err values (#3115).
+func seedResultTypeRefs(cctx: in CodegenCtx): Unit {
+  if cctx.lctx.stdCoreResultOk2Row.count == 0 {
+    match mapGet(cctx.ffiTypeRefs, "Std.Core/Std.Core.Result_Ok") {
+      case Some(row) -> cctx.lctx.stdCoreResultOk2Row.add(row)
+      case None -> ()
+    }
+  }
+  if cctx.lctx.stdCoreResultErr2Row.count == 0 {
+    match mapGet(cctx.ffiTypeRefs, "Std.Core/Std.Core.Result_Err") {
+      case Some(row) -> cctx.lctx.stdCoreResultErr2Row.add(row)
+      case None -> ()
+    }
+  }
+  if cctx.lctx.stdCoreResultRow.count == 0 {
+    match mapGet(cctx.ffiTypeRefs, "Std.Core/Std.Core.Result") {
+      case Some(row) -> cctx.lctx.stdCoreResultRow.add(row)
+      case None -> ()
+    }
+  }
+}
+
 /// Variant of `compileToMsil` that accepts a `[package].version` string.
 /// Empty string means "no version threaded" — falls back to `0.0.0` for
 /// the Assembly row and the embedded `Lyric.Contract` resource, matching
@@ -149,28 +174,7 @@ pub func compileToMsilWithVersion(
   // rationale (mirrors the F# emitter's `resolveStdlibImports` +
   // `emitAssembly` import-table population).
   registerStdlibArtifactTokens(cctx, stdlibPkgs)
-  // Seed lctx.stdCoreResultOk2Row so lowerMOpaque can emit tryInto() bodies.
-  if cctx.lctx.stdCoreResultOk2Row.count == 0 {
-    match mapGet(cctx.ffiTypeRefs, "Std.Core/Std.Core.Result_Ok") {
-      case Some(row) -> cctx.lctx.stdCoreResultOk2Row.add(row)
-      case None -> ()
-    }
-  }
-  // Seed Result_Err too so a range subtype's `tryFrom` factory (#1501) can wrap
-  // an out-of-range value in `Err(message)`.
-  if cctx.lctx.stdCoreResultErr2Row.count == 0 {
-    match mapGet(cctx.ffiTypeRefs, "Std.Core/Std.Core.Result_Err") {
-      case Some(row) -> cctx.lctx.stdCoreResultErr2Row.add(row)
-      case None -> ()
-    }
-  }
-  // Base Result union TypeRef — the declared return type of a synthesised tryFrom.
-  if cctx.lctx.stdCoreResultRow.count == 0 {
-    match mapGet(cctx.ffiTypeRefs, "Std.Core/Std.Core.Result") {
-      case Some(row) -> cctx.lctx.stdCoreResultRow.add(row)
-      case None -> ()
-    }
-  }
+  seedResultTypeRefs(cctx)
 
   // Run the aspect weaver before the token pre-scan so that the pre-scan
   // sees the post-weave function list (renamed originals + synthesised wrappers).
@@ -567,28 +571,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // robust to a future refactor that routes stdlib compilation
   // through the in-process path.
   registerStdlibArtifactTokens(cctx, filterStdlibPkgsByBundle(stdlibPkgs, perPkgNames))
-  // Seed lctx.stdCoreResultOk2Row so lowerMOpaque can emit tryInto() bodies.
-  if cctx.lctx.stdCoreResultOk2Row.count == 0 {
-    match mapGet(cctx.ffiTypeRefs, "Std.Core/Std.Core.Result_Ok") {
-      case Some(row) -> cctx.lctx.stdCoreResultOk2Row.add(row)
-      case None -> ()
-    }
-  }
-  // Seed Result_Err too so a range subtype's `tryFrom` factory (#1501) can wrap
-  // an out-of-range value in `Err(message)`.
-  if cctx.lctx.stdCoreResultErr2Row.count == 0 {
-    match mapGet(cctx.ffiTypeRefs, "Std.Core/Std.Core.Result_Err") {
-      case Some(row) -> cctx.lctx.stdCoreResultErr2Row.add(row)
-      case None -> ()
-    }
-  }
-  // Base Result union TypeRef — the declared return type of a synthesised tryFrom.
-  if cctx.lctx.stdCoreResultRow.count == 0 {
-    match mapGet(cctx.ffiTypeRefs, "Std.Core/Std.Core.Result") {
-      case Some(row) -> cctx.lctx.stdCoreResultRow.add(row)
-      case None -> ()
-    }
-  }
+  seedResultTypeRefs(cctx)
   // Seed cross-package symbol tables with the restored artifacts' type
   // surface so the per-package addPackageTokens pre-scan sees restored
   // types as first-class lookups.
