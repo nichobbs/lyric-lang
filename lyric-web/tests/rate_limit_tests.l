@@ -13,22 +13,25 @@ package Web.RateLimitTests
 
 import Std.Core
 import Std.Testing
+import Std.Time as Time
 import Web.Kernel.Net as HttpKernel
 
 // ─── checkRateLimit unit tests ───────────────────────────────────────────────
 //
-// Each test uses a distinct endpoint key (prefixed with the test name and a
-// UUID-like suffix so parallel runs do not share state via the process-global
-// rate-limit map).  `requestsPerMinute = 2` and `burstSize = 1` gives the
-// smallest meaningful window for fast, deterministic assertions.
+// Each test appends a per-invocation epoch-millis suffix to its endpoint key
+// so that re-runs of the test suite in the same process do not share counters
+// via the process-global rate-limit map.  `requestsPerMinute = 2` and
+// `burstSize = 1` gives the smallest meaningful window for fast, deterministic
+// assertions.
 test "checkRateLimit: first call within limit is allowed" {
   // First call on a fresh key must always be allowed (count 1 <= RPM 10).
-  val allowed = HttpKernel.checkRateLimit("Web.RateLimitTests/firstCallAllowed", 10, 5)
+  val ep = "Web.RateLimitTests/firstCallAllowed/" + toString(Time.nowEpochMillis())
+  val allowed = HttpKernel.checkRateLimit(ep, 10, 5)
   assertTrue(allowed, "first call to a fresh endpoint must be allowed")
 }
 
 test "checkRateLimit: calls within requestsPerMinute are allowed" {
-  val ep = "Web.RateLimitTests/withinLimit"
+  val ep = "Web.RateLimitTests/withinLimit/" + toString(Time.nowEpochMillis())
   // Allow up to 3 calls per minute, no burst.  All three must succeed.
   val a1 = HttpKernel.checkRateLimit(ep, 3, 1)
   val a2 = HttpKernel.checkRateLimit(ep, 3, 1)
@@ -39,7 +42,7 @@ test "checkRateLimit: calls within requestsPerMinute are allowed" {
 }
 
 test "checkRateLimit: call beyond requestsPerMinute is denied" {
-  val ep = "Web.RateLimitTests/exceedLimit"
+  val ep = "Web.RateLimitTests/exceedLimit/" + toString(Time.nowEpochMillis())
   // RPM = 2, burst = 0 (minimum is 1 per contract — use 1 then exhaust it).
   // 3 calls within the same window: calls 1+2 consume the RPM budget;
   // call 3 must be denied.  burstSize = 1 so the burst is consumed on the
@@ -52,7 +55,7 @@ test "checkRateLimit: call beyond requestsPerMinute is denied" {
 }
 
 test "checkRateLimit: burst budget defers denial past requestsPerMinute" {
-  val ep = "Web.RateLimitTests/burstDefers"
+  val ep = "Web.RateLimitTests/burstDefers/" + toString(Time.nowEpochMillis())
   // RPM = 1, burst = 2.  Call 1 uses the RPM slot; calls 2+3 use burst.
   // Call 4 must be denied.
   val a1 = HttpKernel.checkRateLimit(ep, 1, 2)
@@ -66,8 +69,9 @@ test "checkRateLimit: burst budget defers denial past requestsPerMinute" {
 }
 
 test "checkRateLimit: distinct endpoints have independent counters" {
-  val ep1 = "Web.RateLimitTests/independent/a"
-  val ep2 = "Web.RateLimitTests/independent/b"
+  val ts = toString(Time.nowEpochMillis())
+  val ep1 = "Web.RateLimitTests/independent/a/" + ts
+  val ep2 = "Web.RateLimitTests/independent/b/" + ts
   // Exhaust ep1 (RPM = 1, burst = 1 → 2 allowed, 3rd denied).
   val _ = HttpKernel.checkRateLimit(ep1, 1, 1)
   val _ = HttpKernel.checkRateLimit(ep1, 1, 1)
