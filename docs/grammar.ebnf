@@ -186,12 +186,17 @@ ContextualHardKeyword = 'type'      | 'alias'    | 'record'   | 'union'
                       | 'enum'      | 'interface' | 'wire'     | 'fixture'
                       | 'property'  | 'test'      | 'entry'    | 'result'  ;
 
-(* An ExtendedIdent is any position where the parser accepts a plain IDENT
- * OR a ContextualHardKeyword (binding name, value expression, parameter name,
- * record field access). The IDENT-only positions (item introducers, import
- * paths) are not extended. Productions below use IDENT for lexer-level
- * identifiers and accept ContextualHardKeyword contextually per D093. *)
-ExtendedIdent = IDENT | ContextualHardKeyword ;
+(* An "extended identifier" position is any position where the parser accepts
+ * a plain IDENT OR a ContextualHardKeyword (binding name, value expression,
+ * parameter name, record field access). The IDENT-only positions (item
+ * introducers, import paths) are not extended.
+ *
+ * This grammar does NOT define an ExtendedIdent non-terminal and does not wire
+ * it into the productions below. Productions use IDENT directly; the
+ * contextual-keyword widening is performed by the parser's
+ * `tryEatIdentOrContextual` helper at those positions, which is not expressible
+ * as a context-free production without introducing ambiguity with item-level
+ * keyword uses. See decision-log entry D093 for the rationale. *)
 
 (* §1.7 Statement terminators
  *
