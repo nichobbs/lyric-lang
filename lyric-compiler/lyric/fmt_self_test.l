@@ -831,6 +831,54 @@ test "extern package round trips" {
   assertTrue(Str.contains(acc, "/// Doc."), "extern package: member doc preserved")
 }
 
+test "extern package member kinds round trip" {
+  // Each ExternMember branch in `externMemberLines` must round-trip through
+  // `formatSourceChecked`.  These cover the branches not exercised by the
+  // `pub func` / `pub exposed type` test above (#2348).
+  //
+  // `record` member — EMRecord (fields rendered as a block).
+  val recSrc = "package P\n\nextern package Host.X {\n  pub record Point {\n    x: Int\n    y: Int\n  }\n}\n"
+  val recC = formatSourceChecked(recSrc)
+  assertTrue(fmtCheckIsOk(recC), "extern record: round-trips")
+  val recAcc = format(parse(recSrc))
+  assertTrue(Str.contains(recAcc, "pub record Point"), "extern record: member kind preserved")
+
+  // `union` member — EMUnion.
+  val unionSrc = "package P\n\nextern package Host.X {\n  pub union Status {\n    case Active\n    case Inactive\n  }\n}\n"
+  val unionC = formatSourceChecked(unionSrc)
+  assertTrue(fmtCheckIsOk(unionC), "extern union: round-trips")
+  val unionAcc = format(parse(unionSrc))
+  assertTrue(Str.contains(unionAcc, "pub union Status"), "extern union: member kind preserved")
+
+  // `enum` member — EMEnum.
+  val enumSrc = "package P\n\nextern package Host.X {\n  pub enum Color {\n    case Red\n    case Green\n    case Blue\n  }\n}\n"
+  val enumC = formatSourceChecked(enumSrc)
+  assertTrue(fmtCheckIsOk(enumC), "extern enum: round-trips")
+  val enumAcc = format(parse(enumSrc))
+  assertTrue(Str.contains(enumAcc, "pub enum Color"), "extern enum: member kind preserved")
+
+  // bare `opaque type` — EMOpaque without the `exposed` tag.
+  val opaqueSrc = "package P\n\nextern package Host.X {\n  pub opaque type Conn\n}\n"
+  val opaqueC = formatSourceChecked(opaqueSrc)
+  assertTrue(fmtCheckIsOk(opaqueC), "extern opaque: round-trips")
+  val opaqueAcc = format(parse(opaqueSrc))
+  assertTrue(Str.contains(opaqueAcc, "pub opaque type Conn"), "extern opaque: member kind preserved")
+
+  // `alias` member — EMTypeAlias.
+  val aliasSrc = "package P\n\nextern package Host.X {\n  pub alias Name = String\n}\n"
+  val aliasC = formatSourceChecked(aliasSrc)
+  assertTrue(fmtCheckIsOk(aliasC), "extern alias: round-trips")
+  val aliasAcc = format(parse(aliasSrc))
+  assertTrue(Str.contains(aliasAcc, "pub alias Name = String"), "extern alias: member kind preserved")
+
+  // `distinct type` member — EMDistinctType.
+  val distinctSrc = "package P\n\nextern package Host.X {\n  pub type Id = Int\n}\n"
+  val distinctC = formatSourceChecked(distinctSrc)
+  assertTrue(fmtCheckIsOk(distinctC), "extern distinct: round-trips")
+  val distinctAcc = format(parse(distinctSrc))
+  assertTrue(Str.contains(distinctAcc, "pub type Id = Int"), "extern distinct: member kind preserved")
+}
+
 test "return try round trips" {
   // The parser models `return try { … } catch { … }` as a `return` whose
   // value is a single-statement block wrapping the `try`.  The formatter
@@ -861,6 +909,44 @@ test "match arm explicit brace preserved" {
   val src = "package P\n\nfunc f(o: in Option[Int]): Int {\n  match o {\n    case Some(e) -> { return e }\n    case None -> 0\n  }\n}\n"
   val c = formatSourceChecked(src)
   assertTrue(fmtCheckIsOk(c), "match-arm explicit braces: round-trips")
+  val acc = format(parse(src))
+  // The formatter may expand the brace body to multi-line, but the braces
+  // and the `return e` statement must both be present (not unwrapped to bare
+  // `case Some(e) -> return e`).
+  assertTrue(Str.contains(acc, "return e"), "match-arm explicit braces: return preserved in output")
+  assertTrue(not Str.contains(acc, "-> return e"), "match-arm explicit braces: braces not stripped")
+}
+
+test "match arm throw round trips" {
+  // `case P -> throw E` is a single-statement block whose statement is
+  // SThrow; the formatter's isKeywordExprStmt path must emit it bare.
+  val src = "package P\n\nfunc f(o: in Option[Int]): Int {\n  match o {\n    case None -> throw RuntimeError(\"missing\")\n    case Some(v) -> v\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "match-arm throw: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "case None -> throw RuntimeError"), "match-arm throw: bare throw preserved")
+}
+
+test "match arm break round trips" {
+  // `case P -> break` inside a while loop's match arm is a single-statement
+  // block whose statement is SBreak; the formatter must render it bare.
+  // The other arm uses a braced block (assignment needs braces in match arms).
+  val src = "package P\n\nfunc f(xs: in List[Int]): Int {\n  var i = 0\n  while i < xs.count {\n    match xs[i] {\n      case 0 -> break\n      case _ -> {\n        i = i + 1\n      }\n    }\n  }\n  i\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "match-arm break: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "case 0 -> break"), "match-arm break: bare break preserved")
+}
+
+test "match arm continue round trips" {
+  // `case P -> continue` inside a while loop is a single-statement SContinue
+  // block; the formatter must render it bare.
+  // The other arm uses a braced block (assignment needs braces in match arms).
+  val src = "package P\n\nfunc f(xs: in List[Int]): Int {\n  var sum = 0\n  var i = 0\n  while i < xs.count {\n    i = i + 1\n    match xs[i - 1] {\n      case 0 -> continue\n      case v -> {\n        sum = sum + v\n      }\n    }\n  }\n  sum\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "match-arm continue: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "case 0 -> continue"), "match-arm continue: bare continue preserved")
 }
 
 test "module header auto fix" {

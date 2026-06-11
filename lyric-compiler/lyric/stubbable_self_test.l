@@ -10,11 +10,17 @@
 //!   - Counters are independent across methods.
 //!   - `makeStubCounter()` default means construction without specifying the
 //!     counter field just works.
+//!   - Deduplication guard: when `import Std.Testing.Mocking` is already
+//!     present in the file, `buildImports` does NOT inject a second copy
+//!     (#3014).
 @test_module
 package Lyric.Stubbable.SelfTest
 
 import Std.Core
 import Std.Testing
+import Lyric.Lexer
+import Lyric.Parser
+import Lyric.Stubbable
 
 // Two-method interface: one value-returning, one Unit-returning.
 // `import Std.Testing.Mocking` is NOT listed here; the synthesis injects it.
@@ -31,7 +37,6 @@ pub interface Ticker {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "value field works" {
   val g = GreeterStub(greet_value = "hello")
   assertEqual(g.greet("Alice"), "hello", "greet returns configured value")
@@ -89,4 +94,33 @@ test "farewell does not affect greet counter" {
   g.farewell("E")
   assertEqualInt(stubCounterGet(g.greet_counter), 0, "greet counter untouched")
   assertEqualInt(stubCounterGet(g.farewell_counter), 2, "farewell counter = 2")
+}
+
+// ── hasMockingImport deduplication guard (#3014) ─────────────────────────────
+// When a file that already has `import Std.Testing.Mocking` also contains a
+// `@stubbable` interface, `buildImports` must return the original import list
+// unchanged — not inject a second `import Std.Testing.Mocking`.  Without the
+// guard a file would compile with a duplicate import and fail at type-check.
+test "no duplicate import when Mocking already present (#3014)" {
+  val src = "package P\n" + "import Std.Testing.Mocking\n" +
+    "@stubbable\npub interface Logger {\n  func log(msg: in String): Unit\n}\n"
+  val pr = parse(src)
+  val rewritten = stubbableRewriteFile(pr.file)
+  // Count how many imports in the rewritten file match `Std.Testing.Mocking`.
+  var mockingCount = 0
+  var i = 0
+  while i < rewritten.imports.count {
+    val imp = rewritten.imports[i]
+    // The import path segments are ["Std", "Testing", "Mocking"].
+    if imp.path.segments.count == 3 {
+      val s0 = imp.path.segments[0]
+      val s1 = imp.path.segments[1]
+      val s2 = imp.path.segments[2]
+      if s0 == "Std" and s1 == "Testing" and s2 == "Mocking" {
+        mockingCount = mockingCount + 1
+      }
+    }
+    i = i + 1
+  }
+  assertEqualInt(mockingCount, 1, "exactly one Std.Testing.Mocking import after rewrite (no duplicate)")
 }

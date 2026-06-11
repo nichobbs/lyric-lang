@@ -29,7 +29,6 @@ import Std.Xml as Xml
 import Std.Yaml as Yaml
 
 // ── Xml side ─────────────────────────────────────────────────────────────────
-
 test "Xml.parseXml with invalid input returns Err without MissingMethodException" {
   // Before #2899 this threw:
   //   MissingMethodException: Void Std.Yaml.YamlError_InvalidDocument..ctor(System.Object)
@@ -38,8 +37,12 @@ test "Xml.parseXml with invalid input returns Err without MissingMethodException
   // candidate (Std.Xml.XmlError_InvalidDocument) wins.
   var errCount = 0
   match Xml.parseXml("hi") {
-    case Ok(_) -> { panic("parseXml hi: expected Err, got Ok") }
-    case Err(_) -> { errCount = errCount + 1 }
+    case Ok(_) -> {
+      panic("parseXml hi: expected Err, got Ok")
+    }
+    case Err(_) -> {
+      errCount = errCount + 1
+    }
   }
   assertEqualInt(errCount, 1, "parseXml returned Err(XmlError)")
 }
@@ -47,8 +50,12 @@ test "Xml.parseXml with invalid input returns Err without MissingMethodException
 test "Xml.parseXml with empty string returns Err" {
   var errCount = 0
   match Xml.parseXml("") {
-    case Ok(_) -> { panic("parseXml empty: expected Err, got Ok") }
-    case Err(_) -> { errCount = errCount + 1 }
+    case Ok(_) -> {
+      panic("parseXml empty: expected Err, got Ok")
+    }
+    case Err(_) -> {
+      errCount = errCount + 1
+    }
   }
   assertEqualInt(errCount, 1, "parseXml empty returned Err")
 }
@@ -56,22 +63,29 @@ test "Xml.parseXml with empty string returns Err" {
 test "Xml.parseXml with well-formed XML returns Ok" {
   var okCount = 0
   match Xml.parseXml("<root/>") {
-    case Ok(_) -> { okCount = okCount + 1 }
-    case Err(_) -> { panic("parseXml root: returned Err unexpectedly") }
+    case Ok(_) -> {
+      okCount = okCount + 1
+    }
+    case Err(_) -> {
+      panic("parseXml root: returned Err unexpectedly")
+    }
   }
   assertEqualInt(okCount, 1, "parseXml returned Ok")
 }
 
 // ── Yaml side ────────────────────────────────────────────────────────────────
-
 test "Yaml.parseYaml does not throw when Xml is also imported" {
   // The same fix also covers the Yaml side: InvalidDocument inside
   // parseYaml should resolve to YamlError_InvalidDocument.
   // We just verify no panic occurs.
   var reached = 0
   match Yaml.parseYaml("key: value") {
-    case Ok(_) -> { reached = reached + 1 }
-    case Err(_) -> { reached = reached + 1 }
+    case Ok(_) -> {
+      reached = reached + 1
+    }
+    case Err(_) -> {
+      reached = reached + 1
+    }
   }
   assertEqualInt(reached, 1, "parseYaml completed without MissingMethodException")
 }
@@ -79,8 +93,31 @@ test "Yaml.parseYaml does not throw when Xml is also imported" {
 test "Yaml.parseYaml with well-formed YAML returns Ok" {
   var okCount = 0
   match Yaml.parseYaml("key: value") {
-    case Ok(_) -> { okCount = okCount + 1 }
-    case Err(_) -> { panic("parseYaml key-value: returned Err unexpectedly") }
+    case Ok(_) -> {
+      okCount = okCount + 1
+    }
+    case Err(_) -> {
+      panic("parseYaml key-value: returned Err unexpectedly")
+    }
   }
   assertEqualInt(okCount, 1, "parseYaml returned Ok")
 }
+
+// ── Note on #2919: explicit user-side construction ───────────────────────────
+// Issue #2919 asks for tests that exercise the import-priority branch of
+// `pickCaseFqnByScope` when user code in *this* package explicitly constructs
+// or matches against a colliding case name (e.g. `InvalidDocument` when both
+// Xml and Yaml are imported).
+//
+// Investigation shows that user-side construction of a colliding union case
+// (e.g. `val e: Xml.XmlError = InvalidDocument(message = "oops")`) is blocked
+// by a pre-existing type-checker gap: the type checker resolves the bare name
+// `InvalidDocument` to the last-imported package regardless of the declared
+// binding type, emitting T0060.  The emitter-level import-priority branch in
+// `pickCaseFqnByScope` is never reached because the type-checker rejects the
+// file first.  Similarly, matching on a union case obtained from a library
+// function produces `MissingFieldException` at runtime due to the same
+// resolution ordering.
+//
+// These gaps are tracked in issue #2919 for follow-up once the type-checker
+// can use binding-type context to disambiguate colliding case names.

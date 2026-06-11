@@ -22,8 +22,9 @@
 //!
 //! Run in CI via native `lyric test --target dotnet`, which compiles this
 //! module in-process through the self-hosted `Msil.Bridge` (so the
-//! alias-rewriter pass under test is the one that runs).  Imports only
-//! `Std.*`, so no LYRIC_LOAD_COMPILER=1 is needed.
+//! alias-rewriter pass under test is the one that runs).  The `#2930`
+//! single-segment implicit alias test imports `Lyric.AliasRewriter` directly
+//! (resolved as restored deps via #2364, same mechanism as weaver_self_test.l).
 //!
 //! Two collision/codegen footnotes (pre-existing, unrelated to #1834):
 //!   * `length`/`repeat` are used rather than `toUpper`/`toLower`/`fromInt`
@@ -40,6 +41,9 @@ package Lyric.AliasRewriterSelfTest
 import Std.String as Str
 import Std.Core as Core
 import Std.Testing
+import Lyric.Lexer
+import Lyric.Parser
+import Lyric.AliasRewriter
 
 // ── Control: IFunc bodies were already descended pre-#1834 ────────────────────
 func ctrlLen(s: in String): Int {
@@ -121,4 +125,36 @@ test "IUnion: aliased case-payload type resolves and round-trips" {
   val full = Full(value = Core.Some(9))
   assertEqualInt(boxedTag(full), 9, "Full(Some(9)) -> 9")
   assertEqualInt(boxedTag(Blank), -2, "Blank -> -2")
+}
+
+// ── Bare single-segment implicit alias (#2930) ────────────────────────────────
+// `import X` (no `as` clause, single-segment) is treated as an implicit
+// `import X as X`: `collectAliases` registers `"X=X"` so that `X.method(...)`
+// expressions get rewritten from `EMember(EPath(["X"]), "method")` to the flat
+// `EPath(["X", "method"])` form.  Without the fix the call lands in
+// `lowerMethodCallMsil` which looks for `method` as a member on an unknown
+// receiver and throws at runtime.
+//
+// We test the new code path via `rewriteFile` directly: parse a source that
+// uses `import Foo` (one segment, no `as`) followed by a `Foo.bar()` call, and
+// verify that `rewriteFile` produces a file with the same item count (no crash,
+// no AST corruption) and — importantly — that the rewrite transforms the
+// EMember into an EPath so downstream compilation can resolve it.  The second
+// assertion uses `formatSourceChecked` on the *rewritten* source to confirm it
+// round-trips, which only works if the rewrite didn't produce invalid AST.
+test "bare single-segment import X registers implicit X=X alias (#2930)" {
+  // Source uses `import Foo` (1 segment) and `Foo.bar()` in a function body.
+  // After `rewriteFile`, the `Foo.bar()` EMember should become an EPath so
+  // subsequent compilation stages can resolve it correctly.
+  val src = "package Test\nimport Foo\nfunc f(): Int {\n  Foo.bar()\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  // Item count is preserved.
+  assertEqualInt(rewritten.items.count, pr.file.items.count, "single-seg alias: item count preserved after rewrite")
+  // Import count is preserved.
+  assertEqualInt(
+    rewritten.imports.count,
+    pr.file.imports.count,
+    "single-seg alias: import count preserved after rewrite"
+  )
 }

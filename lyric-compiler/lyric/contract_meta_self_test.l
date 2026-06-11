@@ -261,6 +261,43 @@ func testStrArrayNonStringElementCoercedToEmpty(): Unit {
   assertEqual(c.decls[0].requiresClauses[2], "", "str_array_coerce: null → empty")
 }
 
+// v3 round-trip: formatVersion=3 with non-empty visibility, dependencies, and
+// contractHash all parse correctly.  Exercises the new field paths added in
+// #2701 (#2727).
+func testParseV3Contract(): Unit {
+  val json = "{" + "\"formatVersion\":3," + "\"packageName\":\"My.V3.Pkg\"," + "\"version\":\"2.0.0\"," +
+    "\"level\":\"proof_required\"," +
+    "\"contractHash\":\"abc123def456\"," +
+    "\"dependencies\":[" +
+    "  {\"packageName\":\"Dep.A\",\"version\":\"1.0.0\",\"contractHash\":\"hash-a\"}," +
+    "  {\"packageName\":\"Dep.B\",\"version\":\"0.5.0\",\"contractHash\":\"hash-b\"}" +
+    "]," +
+    "\"decls\":[" +
+    "  {\"kind\":\"func\",\"name\":\"compute\",\"repr\":\"func compute(): Int\",\"visibility\":\"pub\"}," +
+    "  {\"kind\":\"func\",\"name\":\"helper\",\"repr\":\"func helper(): Unit\",\"visibility\":\"internal\"}" +
+    "]}"
+  val c = unwrapOrFail(parseFromJson(json), "v3_round_trip")
+  assertEqualInt(c.formatVersion, 3, "v3: formatVersion")
+  assertEqual(c.contractHash, "abc123def456", "v3: contractHash")
+  assertEqualInt(c.dependencies.count, 2, "v3: two dependencies")
+  assertEqual(c.dependencies[0].packageName, "Dep.A", "v3: dep[0].packageName")
+  assertEqual(c.dependencies[0].version, "1.0.0", "v3: dep[0].version")
+  assertEqual(c.dependencies[0].contractHash, "hash-a", "v3: dep[0].contractHash")
+  assertEqual(c.dependencies[1].packageName, "Dep.B", "v3: dep[1].packageName")
+  assertEqual(c.dependencies[1].contractHash, "hash-b", "v3: dep[1].contractHash")
+  assertEqualInt(c.decls.count, 2, "v3: two decls")
+  val dPub = findDecl(c.decls, "compute")
+  match dPub {
+    case None -> panic("v3: compute decl missing")
+    case Some(d) -> assertEqual(d.visibility, "pub", "v3: compute.visibility = pub")
+  }
+  val dInternal = findDecl(c.decls, "helper")
+  match dInternal {
+    case None -> panic("v3: helper decl missing")
+    case Some(d) -> assertEqual(d.visibility, "internal", "v3: helper.visibility = internal")
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. In-process resource readers (#1229 Phase A.3)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -704,6 +741,10 @@ test "non-object param entry skipped" {
 
 test "str array non-string element coerced to empty" {
   testStrArrayNonStringElementCoercedToEmpty()
+}
+
+test "parse v3 contract round-trip" {
+  testParseV3Contract()
 }
 
 test "escapeJson basic" {
