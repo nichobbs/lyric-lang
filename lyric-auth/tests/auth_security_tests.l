@@ -339,24 +339,30 @@ test "verifyJwt: string-form aud still verifies (#1089 backwards-compat)" {
   assertTrue(isOk, "single-string aud match must continue to verify")
 }
 
-// ─── #1289: audienceMatches dual-form last-wins regression ───────────────────
-// When both `"aud":"..."` (string-form) and `"aud":[...]` (array-form) appear
-// in the same payload, the one at the larger byte offset wins.  These two tests
-// pin both orderings to prevent a regression back to first-wins or always-picks-
-// string semantics.
+// ─── #2714: duplicate aud keys must be rejected ───────────────────────────────
+// RFC 8259 §4 says duplicate JSON keys SHOULD NOT appear.  In a security
+// context the ambiguity is exploitable: one system may resolve the first
+// occurrence while another resolves the last.  `verifyJwt` rejects tokens
+// with any duplicate `aud` key with AUDIENCE_MISMATCH, regardless of whether
+// the token's audience might otherwise match (#2714).
 //
-// Token construction (Python snippet above, additional payloads):
-//   # string-form before array-form (array-form wins):
+// These two tests update the earlier #1289 regression tests which pinned
+// last-wins behavior on cross-form duplicate `aud` payloads.  The tokens
+// are unchanged; the expected error is now AUDIENCE_MISMATCH in all cases
+// because the duplicate-detection fires before audience matching.
+//
+// Token construction (Python snippet above):
+//   # string-form before array-form:
 //   print(make(b'{"aud":"string-form","aud":["api.example.com","admin"]}'))
 //   # → eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJzdHJpbmctZm9ybSIsImF1ZCI6WyJhcGkuZXhhbXBsZS5jb20iLCJhZG1pbiJdfQ.JfVRxKPvRE6tg-Hx38rEtkx6uW9OFYQYft0Qp5c2YWg
 //
-//   # array-form before string-form (string-form wins):
+//   # array-form before string-form:
 //   print(make(b'{"aud":["api.example.com","admin"],"aud":"string-form"}'))
 //   # → eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOlsiYXBpLmV4YW1wbGUuY29tIiwiYWRtaW4iXSwiYXVkIjoic3RyaW5nLWZvcm0ifQ.w_IKJJM4012nafutKKKl9jkiAz-lEIZFyicsvC87hB0
-test "audienceMatches dual-form: string-form before array-form — array-form (last) wins (#1289)" {
+test "duplicate aud: string-form before array-form is rejected with AUDIENCE_MISMATCH (#2714)" {
   // Payload: {"aud":"string-form","aud":["api.example.com","admin"]}
-  // The array-form appears at the larger byte offset → it wins.
-  // Audience "api.example.com" is in the array → must verify.
+  // Both string-form and array-form present → duplicate aud key detected →
+  // AUDIENCE_MISMATCH before audience matching.
   val r = Auth.verifyJwt(
     "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJzdHJpbmctZm9ybSIsImF1ZCI6WyJhcGkuZXhhbXBsZS5jb20iLCJhZG1pbiJdfQ.JfVRxKPvRE6tg-Hx38rEtkx6uW9OFYQYft0Qp5c2YWg",
     "test-secret",
@@ -364,14 +370,17 @@ test "audienceMatches dual-form: string-form before array-form — array-form (l
     "api.example.com",
     "HS256"
   )
-  val isOk = match r { case Ok(v) -> true; case Err(e) -> false }
-  assertTrue(isOk, "string-form aud before array-form: array-form (last) wins — api.example.com must verify")
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(
+    code,
+    "AUDIENCE_MISMATCH",
+    "duplicate aud (string-form then array-form) must be rejected with AUDIENCE_MISMATCH (#2714)"
+  )
 }
 
-test "audienceMatches dual-form: array-form before string-form — string-form (last) wins (#1289)" {
+test "duplicate aud: array-form before string-form is rejected with AUDIENCE_MISMATCH (#2714)" {
   // Payload: {"aud":["api.example.com","admin"],"aud":"string-form"}
-  // The string-form appears at the larger byte offset → it wins.
-  // Audience "api.example.com" is NOT the string-form value → must reject.
+  // Same duplicate-aud rejection regardless of which form appears first.
   val r = Auth.verifyJwt(
     "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOlsiYXBpLmV4YW1wbGUuY29tIiwiYWRtaW4iXSwiYXVkIjoic3RyaW5nLWZvcm0ifQ.w_IKJJM4012nafutKKKl9jkiAz-lEIZFyicsvC87hB0",
     "test-secret",
@@ -383,7 +392,7 @@ test "audienceMatches dual-form: array-form before string-form — string-form (
   assertEqual(
     code,
     "AUDIENCE_MISMATCH",
-    "array-form aud before string-form: string-form (last) wins — api.example.com must be rejected"
+    "duplicate aud (array-form then string-form) must be rejected with AUDIENCE_MISMATCH (#2714)"
   )
 }
 

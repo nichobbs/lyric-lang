@@ -293,6 +293,33 @@ func scanJsonString(json: in String, quotePos: in Int): Int {
   -1
 }
 
+// Return true when the JSON payload string contains duplicate `aud` keys.
+// A duplicate occurs when either:
+//   (a) both `"aud":"` (string form) and `"aud":[` (array form) are present, or
+//   (b) the same form appears more than once (first != last occurrence).
+// Used by `validatePayload` to reject duplicate-aud tokens before audience
+// matching (#2714).
+func audHasDuplicates(json: in String): Bool {
+  val pfxStr = "\"aud\":\""
+  val pfxArr = "\"aud\":["
+  val strFirst = json.indexOf(pfxStr)
+  val strLast = json.lastIndexOf(pfxStr)
+  val arrFirst = json.indexOf(pfxArr)
+  val arrLast = json.lastIndexOf(pfxArr)
+  // Both string-form and array-form present simultaneously.
+  if strFirst >= 0 and arrFirst >= 0 {
+    return true
+  }
+  // Same form appears more than once.
+  if strFirst >= 0 and strFirst != strLast {
+    return true
+  }
+  if arrFirst >= 0 and arrFirst != arrLast {
+    return true
+  }
+  return false
+}
+
 // Check whether `audience` appears in the `aud` claim of `json`, where
 // `aud` may be either a string (RFC 7519 §4.1.3 string form) or a JSON
 // array of strings.  Returns true when the audience matches either form;
@@ -304,12 +331,8 @@ func scanJsonString(json: in String, quotePos: in Int): Int {
 // comparison so escape sequences in the issuer's aud match callers'
 // unescaped expected audiences (#1079).
 //
-// Last-wins semantics (#1162): per RFC 8259 §4 duplicate-key behaviour
-// is implementation-defined, but `getStringClaimFromJson` already picks
-// the last occurrence via `lastIndexOf` for non-array claims.  Mirror
-// that here: when `"aud":"..."` and `"aud":[...]` both appear, the one
-// at the later byte offset wins.  Without this, a leading string-form
-// `aud` would mask a later array-form re-statement (or vice versa).
+// Callers must check `audHasDuplicates` before calling this function — tokens
+// with duplicate `aud` keys are rejected before audience matching (#2714).
 func audienceMatches(json: in String, audience: in String): Bool {
   if audience.length == 0 {
     return true
@@ -533,7 +556,8 @@ func jwtAlgFromHeader(headerSeg: in String): String {
 //   Ok(())                       — payload well-formed and all checks passed
 //   Err("MALFORMED_PAYLOAD")     — base64url or UTF-8 decode failed
 //   Err("ISSUER_MISMATCH")       — iss claim does not match expected issuer
-//   Err("AUDIENCE_MISMATCH")     — aud claim does not contain expected audience
+//   Err("AUDIENCE_MISMATCH")     — aud claim does not contain expected audience,
+//                                   OR aud claim has duplicate keys (#2714)
 //   Err("EXP_OVERFLOW")          — exp present but malformed/overflowed
 //   Err("EXPIRED")               — exp in the past (beyond clockSkewSeconds)
 //   Err("NBF_OVERFLOW")          — nbf present but malformed/overflowed
@@ -562,6 +586,13 @@ func validatePayload(
             if iss != issuer {
               return Err("ISSUER_MISMATCH")
             }
+          }
+          // Reject tokens with duplicate `aud` keys before audience matching
+          // (#2714).  RFC 8259 §4 says duplicate keys SHOULD NOT appear; in a
+          // security context the ambiguity is exploitable (one system may resolve
+          // the first occurrence, another the last) so we fail closed.
+          if audHasDuplicates(payloadJson) {
+            return Err("AUDIENCE_MISMATCH")
           }
           // Validate aud claim when the caller supplied a non-empty audience.
           // RFC 7519 §4.1.3 permits both string and array forms; see
