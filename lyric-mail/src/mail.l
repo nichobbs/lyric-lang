@@ -188,10 +188,9 @@ impl MailSender for NativeSender {
       }
       // Decode each base64 attachment payload and append it to the BCL
       // MailMessage.Attachments collection.
-      // MemoryStreams created here are not explicitly disposed if smtpClientSend
-      // throws mid-loop: Attachment.Dispose (via MailMessage.Dispose on the
-      // success path) disposes its content stream, and on the throw path the
-      // GC reclaims byte-array-backed MemoryStreams safely.
+      // MemoryStreams created here are never explicitly disposed: they are
+      // byte-array-backed (no unmanaged resources), so the GC reclaims them
+      // safely on both the success and the throw path.
       val attColl = MailKernel.mailGetAttachments(mailMsg)
       var ai = 0
       while ai < msg.attachments.length {
