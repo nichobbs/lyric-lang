@@ -853,13 +853,13 @@ lyric fmt <file.l>                     # print formatted source to stdout (no co
 lyric fmt <file1.l> <file2.l> ...      # format multiple files (multi-file variadic)
 lyric fmt --write <file.l>             # overwrite file in place
 lyric fmt --check <file.l>             # exit 1 if not formatted; prints filename (CI gate)
-lyric fmt --diff <file.l>              # print a unified diff of what would change (no write)
+lyric fmt --diff <file.l>              # print unified diff of what would change; exit 1 if any diff (CI gate)
 lyric fmt --stdin                      # read from stdin, write formatted output to stdout
                                        # (editor integration: pipe source through fmt)
 lyric fmt                              # project mode (dry-run): list files that would change
 lyric fmt --write                      # project mode: rewrite all files in place
 lyric fmt --check                      # project mode: exit 1 if any unformatted; prints paths (CI gate)
-lyric fmt --diff                       # project mode: print unified diffs of all files that would change
+lyric fmt --diff                       # project mode: print unified diffs; exit 1 if any file would change
 lyric fmt --diff --write               # show diff then apply changes in place
 # Default: walks the red/green CST and preserves all comments
 # (//, /* */, ///, //!) plus intentional blank lines (max one per spot).
