@@ -1670,6 +1670,29 @@ func lowerMethodCall(
         }
         case None -> ()
       }
+      // Synthesized free functions callable as instance methods (#1507):
+      // @derive(Equals/Hash/Show/Ord) appends free functions TypeName.method(self, args...)
+      // registered in funcSigs as `cls + "." + memberName` (matching the qkey in
+      // collectFileSigs: owner + "/" + decl.name).  The receiver is already on the stack
+      // as arg 0 (self); the remaining args correspond to sig.params[1..].  The JVM
+      // method name stored in the classfile is the decl.name, which equals the key with
+      // the owner prefix stripped: (cls + "." + memberName).replace(sig.owner + "/", "").
+      match mapGet(ctx.funcSigs, cls + "." + memberName) {
+        case Some(sig) -> {
+          var ai = 0
+          while ai < args.count {
+            val aTy = lowerCallArg(ctx, insns, args[ai])
+            if (ai + 1) < sig.params.count {
+              coerceArgTo(insns, aTy, sig.params[ai + 1])
+            }
+            ai = ai + 1
+          }
+          val jvmMethodName = (cls + "." + memberName).replace(sig.owner + "/", "")
+          insns.add(LInvokestatic(owner = sig.owner, name = jvmMethodName, params = sig.params, ret = sig.ret))
+          return sig.ret
+        }
+        case None -> ()
+      }
     }
     case _ -> ()
   }

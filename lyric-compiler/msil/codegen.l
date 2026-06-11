@@ -2185,7 +2185,40 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         var fi = 0
         while fi < decl.members.count {
           match decl.members[fi] {
-            case PMField(_) -> {
+            case PMField(pf) -> {
+              val fieldTok = 0x04000000 + fieldDefRow
+              match pf {
+                case PFVar(fname, fty, _, _) -> {
+                  val fKey = className + "/" + fname
+                  if not cctx.fieldTokens.containsKey(fKey) {
+                    cctx.fieldTokens.add(fKey, fieldTok)
+                    cctx.fieldMsilTypes.add(fKey, typeExprToMsilCtx(cctx, fty, pkgName))
+                  }
+                  if not cctx.fieldTokensByName.containsKey(pkgName + "/" + fname) {
+                    cctx.fieldTokensByName.add(pkgName + "/" + fname, fieldTok)
+                  }
+                }
+                case PFLet(fname, fty, _, _) -> {
+                  val fKey = className + "/" + fname
+                  if not cctx.fieldTokens.containsKey(fKey) {
+                    cctx.fieldTokens.add(fKey, fieldTok)
+                    cctx.fieldMsilTypes.add(fKey, typeExprToMsilCtx(cctx, fty, pkgName))
+                  }
+                  if not cctx.fieldTokensByName.containsKey(pkgName + "/" + fname) {
+                    cctx.fieldTokensByName.add(pkgName + "/" + fname, fieldTok)
+                  }
+                }
+                case PFImmutable(f) -> {
+                  val fKey = className + "/" + f.name
+                  if not cctx.fieldTokens.containsKey(fKey) {
+                    cctx.fieldTokens.add(fKey, fieldTok)
+                    cctx.fieldMsilTypes.add(fKey, typeExprToMsilCtx(cctx, f.ty, pkgName))
+                  }
+                  if not cctx.fieldTokensByName.containsKey(pkgName + "/" + f.name) {
+                    cctx.fieldTokensByName.add(pkgName + "/" + f.name, fieldTok)
+                  }
+                }
+              }
               fieldDefRow = fieldDefRow + 1
             }
             case _ -> {
@@ -2198,10 +2231,24 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
-            case PMEntry(_) -> {
+            case PMEntry(ed) -> {
+              val pmKey = className + "/" + ed.name
+              if not cctx.methodTokens.containsKey(pmKey) {
+                cctx.methodTokens.add(pmKey, 0x06000000 + methodDefRow)
+                registerMethodRetTy(cctx, pmKey, ed.ret, pkgName)
+                registerMethodParamTypes(cctx, pmKey, ed.params, pkgName)
+                registerMethodParamModes(cctx, pmKey, ed.params)
+              }
               methodDefRow = methodDefRow + 1
             }
-            case PMFunc(_) -> {
+            case PMFunc(fn) -> {
+              val pmKey = className + "/" + fn.name
+              if not cctx.methodTokens.containsKey(pmKey) {
+                cctx.methodTokens.add(pmKey, 0x06000000 + methodDefRow)
+                registerMethodRetTy(cctx, pmKey, fn.ret, pkgName)
+                registerMethodParamTypes(cctx, pmKey, fn.params, pkgName)
+                registerMethodParamModes(cctx, pmKey, fn.params)
+              }
               methodDefRow = methodDefRow + 1
             }
             case _ -> {
@@ -8102,6 +8149,33 @@ func lowerMethodCallMsil(
           return match mapGet(cctx.methodRetTypes, cls + "/" + memberName) { case Some(rty) -> rty; case None -> MObject }
         }
         case None -> {
+          // Synthesized free functions callable as instance methods (#1507):
+          // @derive(Equals/Hash/Show/Ord) appends free functions TypeName.method(self, args...)
+          // registered in funcTokens as `cls + "." + memberName`.  The receiver is already
+          // on the stack as the first (self) argument; load the remaining args and emit a
+          // static call.  Mirrors the BEq `derivedEqualsTokenMsil` path but for named calls.
+          match mapGet(cctx.funcTokens, cls + "." + memberName) {
+            case Some(funcTok) -> {
+              val funcParamList = match mapGet(cctx.funcParamTypes, cls + "." + memberName) {
+                case Some(pts) -> pts
+                case None -> newList()
+              }
+              var i = 0
+              while i < args.count {
+                // Free-function param 0 is `self` (already on the stack); arg i maps to param i+1.
+                val paramIsValue = if (i + 1) < funcParamList.count { isValueType(funcParamList[i + 1]) } else { false }
+                val aTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
+                if not paramIsValue {
+                  boxIfNeededMsil(cctx, insns, aTy)
+                }
+                i = i + 1
+              }
+              insns.add(MCall(methodToken = funcTok))
+              return match mapGet(cctx.funcRetTypes, cls + "." + memberName) { case Some(rty) -> rty; case None -> MObject }
+            }
+            case None -> {
+            }
+          }
         }
       }  // fall through to BCL-name dispatch
     }
@@ -14122,6 +14196,279 @@ pub func weaveAspectsMsil(file: in SourceFile): SourceFile {
   )
 }
 
+// ── Protected type body desugaring ───────────────────────────────────────────
+// Bare field references inside a protected type entry/func body are written as
+// `EPath([fieldName])` by the parser.  The F# bootstrap emitter rewrites these
+// to `EMember(ESelf, fieldName)` via `desugarSelfFields` before codegen.  The
+// self-hosted path performs the equivalent rewrite here, guided by the set of
+// field names declared in the protected type.
+//
+// Structure mirrors alias_rewriter.l — early returns per arm avoid the
+// bootstrap emitter's match-expression union-variant inference bug (#1170).
+func desugarProtectedExpr(fieldNames: in Map[String, Bool], e: in Expr): Expr {
+  match e.kind {
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        val name = path.segments[0]
+        if fieldNames.containsKey(name) {
+          val selfExpr = Expr(kind = ESelf, span = e.span)
+          return Expr(kind = EMember(receiver = selfExpr, memberName = name), span = e.span)
+        }
+      }
+      return e
+    }
+    case EMember(receiver, memberName) -> {
+      return Expr(
+        kind = EMember(receiver = desugarProtectedExpr(fieldNames, receiver), memberName = memberName),
+        span = e.span
+      )
+    }
+    case EBinop(op, lhs, rhs) -> {
+      return Expr(
+        kind = EBinop(
+          op = op,
+          lhs = desugarProtectedExpr(fieldNames, lhs),
+          rhs = desugarProtectedExpr(fieldNames, rhs)
+        ),
+        span = e.span
+      )
+    }
+    case EPrefix(op, operand) -> {
+      return Expr(kind = EPrefix(op = op, operand = desugarProtectedExpr(fieldNames, operand)), span = e.span)
+    }
+    case EParen(inner) -> {
+      return Expr(kind = EParen(inner = desugarProtectedExpr(fieldNames, inner)), span = e.span)
+    }
+    case ECall(fn, args) -> {
+      val args2: List[CallArg] = newList()
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CAPositional(expr) -> args2.add(CAPositional(expr = desugarProtectedExpr(fieldNames, expr)))
+          case CANamed(name, value, span) -> args2.add(CANamed(name = name, value = desugarProtectedExpr(fieldNames, value), span = span))
+        }
+        i = i + 1
+      }
+      return Expr(kind = ECall(fn = desugarProtectedExpr(fieldNames, fn), args = args2), span = e.span)
+    }
+    case EIndex(receiver, indices) -> {
+      val idxs: List[Expr] = newList()
+      var i = 0
+      while i < indices.count {
+        idxs.add(desugarProtectedExpr(fieldNames, indices[i]))
+        i = i + 1
+      }
+      return Expr(kind = EIndex(receiver = desugarProtectedExpr(fieldNames, receiver), indices = idxs), span = e.span)
+    }
+    case EIf(cond, thenBranch, elseBranch, thenForm) -> {
+      val then2 = match thenBranch {
+        case EOBExpr(expr) -> EOBExpr(expr = desugarProtectedExpr(fieldNames, expr))
+        case EOBBlock(block) -> EOBBlock(block = desugarProtectedBlock(fieldNames, block))
+      }
+      val else2 = match elseBranch {
+        case Some(eob) -> {
+          match eob {
+            case EOBExpr(expr) -> Some(value = EOBExpr(expr = desugarProtectedExpr(fieldNames, expr)))
+            case EOBBlock(block) -> Some(value = EOBBlock(block = desugarProtectedBlock(fieldNames, block)))
+          }
+        }
+        case None -> None
+      }
+      return Expr(
+        kind = EIf(
+          cond = desugarProtectedExpr(fieldNames, cond),
+          thenBranch = then2,
+          elseBranch = else2,
+          thenForm = thenForm
+        ),
+        span = e.span
+      )
+    }
+    case EMatch(scrutinee, arms) -> {
+      val arms2: List[MatchArm] = newList()
+      var i = 0
+      while i < arms.count {
+        val arm = arms[i]
+        val g = match arm.guard { case Some(x) -> Some(value = desugarProtectedExpr(fieldNames, x)); case None -> None }
+        val body2 = match arm.body {
+          case EOBExpr(expr) -> EOBExpr(expr = desugarProtectedExpr(fieldNames, expr))
+          case EOBBlock(block) -> EOBBlock(block = desugarProtectedBlock(fieldNames, block))
+        }
+        arms2.add(MatchArm(pattern = arm.pattern, guard = g, body = body2, span = arm.span))
+        i = i + 1
+      }
+      return Expr(kind = EMatch(scrutinee = desugarProtectedExpr(fieldNames, scrutinee), arms = arms2), span = e.span)
+    }
+    case EBlock(block) -> return Expr(kind = EBlock(block = desugarProtectedBlock(fieldNames, block)), span = e.span)
+    case EPropagate(inner) -> return Expr(kind = EPropagate(inner = desugarProtectedExpr(fieldNames, inner)), span = e.span)
+    case EAssign(target, op, value) -> return Expr(
+      kind = EAssign(
+        target = desugarProtectedExpr(fieldNames, target),
+        op = op,
+        value = desugarProtectedExpr(fieldNames, value)
+      ),
+      span = e.span
+    )
+    case ETuple(exprs) -> {
+      val xs: List[Expr] = newList()
+      var i = 0
+      while i < exprs.count {
+        xs.add(desugarProtectedExpr(fieldNames, exprs[i]))
+        i = i + 1
+      }
+      return Expr(kind = ETuple(exprs = xs), span = e.span)
+    }
+    case EList(exprs) -> {
+      val xs: List[Expr] = newList()
+      var i = 0
+      while i < exprs.count {
+        xs.add(desugarProtectedExpr(fieldNames, exprs[i]))
+        i = i + 1
+      }
+      return Expr(kind = EList(exprs = xs), span = e.span)
+    }
+    case _ -> return e
+  }
+  return e
+}
+
+func desugarProtectedBlock(fieldNames: in Map[String, Bool], block: in Block): Block {
+  val ss: List[Statement] = newList()
+  var i = 0
+  while i < block.statements.count {
+    ss.add(desugarProtectedStmt(fieldNames, block.statements[i]))
+    i = i + 1
+  }
+  Block(statements = ss, span = block.span)
+}
+
+func desugarProtectedStmt(fieldNames: in Map[String, Bool], s: in Statement): Statement {
+  match s.kind {
+    case SExpr(expr) -> return Statement(kind = SExpr(expr = desugarProtectedExpr(fieldNames, expr)), span = s.span)
+    case SAssign(target, op, value) -> return Statement(
+      kind = SAssign(
+        target = desugarProtectedExpr(fieldNames, target),
+        op = op,
+        value = desugarProtectedExpr(fieldNames, value)
+      ),
+      span = s.span
+    )
+    case SReturn(value) -> {
+      val v = match value { case Some(e) -> Some(value = desugarProtectedExpr(fieldNames, e)); case None -> None }
+      return Statement(kind = SReturn(value = v), span = s.span)
+    }
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(pat, ty, init) -> {
+          return Statement(
+            kind = SLocal(binding = LBVal(pat = pat, ty = ty, init = desugarProtectedExpr(fieldNames, init))),
+            span = s.span
+          )
+        }
+        case LBVar(name, ty, init) -> {
+          val v = match init { case Some(e) -> Some(value = desugarProtectedExpr(fieldNames, e)); case None -> None }
+          return Statement(kind = SLocal(binding = LBVar(name = name, ty = ty, init = v)), span = s.span)
+        }
+        case LBLet(name, ty, init) -> {
+          return Statement(
+            kind = SLocal(binding = LBLet(name = name, ty = ty, init = desugarProtectedExpr(fieldNames, init))),
+            span = s.span
+          )
+        }
+      }
+    }
+    case SWhile(label, cond, body) -> return Statement(
+      kind = SWhile(
+        label = label,
+        cond = desugarProtectedExpr(fieldNames, cond),
+        body = desugarProtectedBlock(fieldNames, body)
+      ),
+      span = s.span
+    )
+    case SFor(label, pat, iter, body) -> return Statement(
+      kind = SFor(
+        label = label,
+        pat = pat,
+        iter = desugarProtectedExpr(fieldNames, iter),
+        body = desugarProtectedBlock(fieldNames, body)
+      ),
+      span = s.span
+    )
+    case SThrow(expr) -> return Statement(kind = SThrow(expr = desugarProtectedExpr(fieldNames, expr)), span = s.span)
+    case STry(body, catches, finally_) -> {
+      val cs: List[CatchClause] = newList()
+      var i = 0
+      while i < catches.count {
+        cs.add(
+          CatchClause(
+            typeName = catches[i].typeName,
+            bindName = catches[i].bindName,
+            body = desugarProtectedBlock(fieldNames, catches[i].body),
+            span = catches[i].span
+          )
+        )
+        i = i + 1
+      }
+      val fn = match finally_ { case Some(blk) -> Some(value = desugarProtectedBlock(fieldNames, blk)); case None -> None }
+      return Statement(
+        kind = STry(body = desugarProtectedBlock(fieldNames, body), catches = cs, finally_ = fn),
+        span = s.span
+      )
+    }
+    case SLoop(label, body) -> return Statement(kind = SLoop(label = label, body = desugarProtectedBlock(fieldNames, body)), span = s.span)
+    case _ -> return s
+  }
+  return s
+}
+
+func desugarProtectedFuncBody(fieldNames: in Map[String, Bool], body: in FunctionBody): FunctionBody {
+  match body {
+    case FBExpr(expr) -> return FBExpr(expr = desugarProtectedExpr(fieldNames, expr))
+    case FBBlock(block) -> return FBBlock(block = desugarProtectedBlock(fieldNames, block))
+  }
+  return body
+}
+
+func desugarProtectedFuncDecl(fieldNames: in Map[String, Bool], fn: in FunctionDecl): FunctionDecl {
+  val newBody = match fn.body {
+    case Some(b) -> Some(value = desugarProtectedFuncBody(fieldNames, b))
+    case None -> None
+  }
+  FunctionDecl(
+    docComments = fn.docComments,
+    annotations = fn.annotations,
+    visibility = fn.visibility,
+    isAsync = fn.isAsync,
+    name = fn.name,
+    generics = fn.generics,
+    params = fn.params,
+    ret = fn.ret,
+    whereClause = fn.whereClause,
+    contracts = fn.contracts,
+    body = newBody,
+    span = fn.span
+  )
+}
+
+func makeProtectedFieldNames(decl: in ProtectedTypeDecl): Map[String, Bool] {
+  val result: Map[String, Bool] = newMap()
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case PMField(pf) -> {
+        match pf {
+          case PFVar(name, _, _, _) -> result.add(name, true)
+          case PFLet(name, _, _, _) -> result.add(name, true)
+          case PFImmutable(f) -> result.add(f.name, true)
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  result
+}
+
 // ── Protected type lowering ───────────────────────────────────────────────────
 // Lower an IProtected declaration to a sealed class with Monitor-based entry locking.
 // Each PMEntry becomes a public method that acquires Monitor(this), runs the body in
@@ -14140,7 +14487,10 @@ func lowerProtectedMsil(
   // Build Monitor.Enter(object) and Monitor.Exit(object) MemberRef tokens.
   // These are registered lazily here so they appear in the MemberRef table only
   // when at least one protected type is compiled (not unconditionally).
-  val trMonitor = ctxAddTypeRef(cctx.lctx, "System.Threading", "Monitor", cctx.lctx.arRuntime)
+  // System.Threading.Monitor lives in System.Threading, not System.Runtime
+  // (it is not type-forwarded through System.Runtime in .NET 10+).
+  val arThreading = ctxAddAssemblyRef(cctx.lctx, "System.Threading", 10, 0)
+  val trMonitor = ctxAddTypeRef(cctx.lctx, "System.Threading", "Monitor", arThreading)
   val enterPs: List[MsilType] = newList()
   enterPs.add(MObject)
   val tokEnter = 0x0A000000 +
@@ -14152,6 +14502,9 @@ func lowerProtectedMsil(
 
   val recFields: List[MField] = newList()
   val recMethods: List[MFunc] = newList()
+  // Collect field names once so the desugar pass can rewrite bare field
+  // references in entry/func bodies to EMember(ESelf, name).
+  val fieldNames = makeProtectedFieldNames(decl)
 
   var mi = 0
   while mi < decl.members.count {
@@ -14180,7 +14533,10 @@ func lowerProtectedMsil(
           pi = pi + 1
         }
         val retTy = match ed.ret { case Some(te) -> typeExprToMsil(te, pkgName); case None -> MVoid }
-        val entryFctx = makeFuncCtxMsil(pkgName, typeFqn, ed.name, ed.params.count, retTy)
+        // paramCount = 1 (this) + declared params, matching lowerImplMethodMsil.
+        val entryFctx = makeFuncCtxMsil(pkgName, typeFqn, ed.name, 1 + ed.params.count, retTy)
+        // Reserve slot 0 for the implicit `this` receiver (no name binding).
+        entryFctx.slotTicker.add(0)
         var epi = 0
         while epi < ed.params.count {
           val p = ed.params[epi]
@@ -14189,12 +14545,15 @@ func lowerProtectedMsil(
           // tracked as `MObject` emits `List<object>` ops on a real `List<int32>`
           // and segfaults).  The signature (`pTypes` above) stays erased.
           val paramTy = typeExprToMsilCtx(cctx, p.ty, pkgName)
-          val slot = entryFctx.slotTicker.count
+          val slot = entryFctx.slotTicker.count  // 1, 2, … (slot 0 = this)
           entryFctx.slots.add(p.name, slot)
           entryFctx.types.add(p.name, paramTy)
           entryFctx.slotTicker.add(0)
           epi = epi + 1
         }
+        // Desugar bare field references in the body to EMember(ESelf, fieldName)
+        // so lowerExprMsil/lowerStmtMsil can emit ldarg.0 + ldfld/stfld.
+        val desugarredEntryBody = desugarProtectedFuncBody(fieldNames, ed.body)
         val entryInsns: List[MInsn] = newList()
 
         // Monitor.Enter(this): acquire the per-instance lock.
@@ -14214,7 +14573,7 @@ func lowerProtectedMsil(
 
         // Shared helper: emit the try/finally EH structure and afterL epilogue.
         // Inlined per arm since each arm builds its own finallyStart/End labels.
-        match ed.body {
+        match desugarredEntryBody {
           case FBBlock(block) -> {
             if retTy != MVoid {
               // Non-void block body.  Lower the block; if it fell through normally
@@ -14327,7 +14686,11 @@ func lowerProtectedMsil(
         )
       }
       case PMFunc(fn) -> {
-        val mf = lowerFuncMsil(cctx, fn, pkgName + "." + decl.name)
+        // Desugar bare field references in the func body then lower as an
+        // instance method (lowerImplMethodMsil sets paramCount = 1 + params,
+        // reserves slot 0 for `this`, and handles ESelf/EMember correctly).
+        val desugarredFn = desugarProtectedFuncDecl(fieldNames, fn)
+        val mf = lowerImplMethodMsil(cctx, desugarredFn, pkgName, typeFqn)
         recMethods.add(
           MFunc(
             flags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG,

@@ -617,6 +617,31 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/auto_ffi_self_test.l
 
+      # Synthesized-method-resolution self-test (#1499, #1507).
+      # Verifies that compiler-synthesized named methods (protected-type entries,
+      # @derive(Equals/Show) free functions) resolve correctly at the call site:
+      #   #1499 — protected-type PMEntry/PMFunc dispatch (addPackageTokens now
+      #            registers field tokens + method tokens; lowerProtectedMsil now
+      #            uses 1+params paramCount, reserves slot 0 for `this`, and
+      #            desugars bare field refs to EMember(ESelf, name) before lowering).
+      #   #1507 — @derive synthesized IFuncs in funcTokens fallback
+      #            (lowerMethodCallMsil MClass arm now tries funcTokens on miss).
+      # Compiled in-process through the self-hosted `Msil.Bridge`; imports only `Std.*`.
+      - name: Synthesized-method-resolution self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping synthesized-method-resolution self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping synthesized-method-resolution self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/synthesized_method_self_test.l
+
       # @projectable opaque-twin self-test (#1500 / PR #3015, wired per #3045).
       # Exercises the self-hosted MSIL lowering for `@projectable` opaque types:
       # `<Name>View` TypeDef synthesis, `toView()`, `tryInto()` round-trip,
