@@ -277,7 +277,26 @@ func resolveTypePath(
       return TyVar(name = name)
     }
     match symTableTryFindOne(tbl, name) {
-      case Some(sym) -> return symbolToType(tbl, ctx, diag, sym, args, span)
+      case Some(sym) -> {
+        if symbolIsType(sym) {
+          return symbolToType(tbl, ctx, diag, sym, args, span)
+        }
+        // The scope-resolved symbol is not a type (e.g. a union case or
+        // function sharing a type's name — `Insn.Token` vs a sibling
+        // record `Token` in a flattened restored-contract source).  In
+        // type position a *type* symbol of the same name must win, so
+        // scan the full candidate set before reporting T0013 — mirrors
+        // `resolveAliasPath`'s concrete-type-first preference.
+        val all = symTableTryFindAll(tbl, name)
+        var ti = 0
+        while ti < all.count {
+          if symbolIsType(all[ti]) {
+            return symbolToType(tbl, ctx, diag, all[ti], args, span)
+          }
+          ti = ti + 1
+        }
+        return symbolToType(tbl, ctx, diag, sym, args, span)
+      }
       case None -> {
         diag.add(errorDiagnostic("T0010", "unknown type name '" + name + "'", span))
         return TyError
@@ -293,6 +312,16 @@ func resolveTypePath(
     case Some(sym) -> {
       if symbolIsType(sym) {
         return symbolToType(tbl, ctx, diag, sym, args, span)
+      }
+      // Same type-symbol preference as the single-segment arm: a non-type
+      // symbol shadowing a same-named type must not hide it in type position.
+      val all = symTableTryFindAll(tbl, last)
+      var ti = 0
+      while ti < all.count {
+        if symbolIsType(all[ti]) {
+          return symbolToType(tbl, ctx, diag, all[ti], args, span)
+        }
+        ti = ti + 1
       }
     }
     case None -> {

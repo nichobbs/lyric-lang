@@ -1350,6 +1350,28 @@ func collectImportNames(imports: in List[ImportDecl]): List[String] {
 // last-registered symbol of a given simple name wins every reference —
 // including references inside other packages' signatures.
 pub func checkWithImportedPackages(file: in SourceFile, importedPackages: in List[ImportedPackage]): CheckResult {
+  checkWithImportedPackagesCore(file, importedPackages, true)
+}
+
+// Contract-surface variant used when re-type-checking a *synthesised*
+// restored-package source (`Lyric.RestoredPackages.synthesiseArtifact`).
+// The synthesised file flattens one package's public decls plus a partial
+// sibling-type preamble; sibling types whose names collide with this
+// package's enum/union case names are deliberately dropped from the
+// preamble (#2514), so preamble record fields may reference types that are
+// absent from the flattened file.  Declaration-position validation (#1228)
+// would report those as unknown — correct for user code, noise here — so
+// this entry point skips the T4 decl pass while keeping every other check.
+pub func checkContractSurface(file: in SourceFile): CheckResult {
+  val empty: List[ImportedPackage] = newList()
+  checkWithImportedPackagesCore(file, empty, false)
+}
+
+func checkWithImportedPackagesCore(
+  file: in SourceFile,
+  importedPackages: in List[ImportedPackage],
+  validateDecls: in Bool,
+): CheckResult {
   val diag: List[Diagnostic] = newList()
   val tbl = newSymbolTable()
   val ctr = newTypeIdCounter()
@@ -1427,7 +1449,10 @@ pub func checkWithImportedPackages(file: in SourceFile, importedPackages: in Lis
   // T4: validate declaration-position type references (#1228) so an unknown
   // type in a record/union/interface/opaque/protected/alias/val declaration
   // errors at the declaration instead of silently degrading to Object.
-  checkDeclTypeRefs(tbl, diag, file.items)
+  // Skipped for synthesised contract-surface checks (see checkContractSurface).
+  if validateDecls {
+    checkDeclTypeRefs(tbl, diag, file.items)
+  }
 
   // T5: check user function bodies.
   var m = 0

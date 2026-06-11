@@ -397,7 +397,10 @@ pub func synthesiseArtifact(
     return Err(error = SynthesisDiagnostics(path = art.dllPath, diags = parseErrors))
   }
 
-  val cr = check(pr.file)
+  // Contract-surface check: skips declaration-position type validation
+  // (#1228) because the sibling-type preamble is deliberately partial —
+  // see `Lyric.TypeChecker.checkContractSurface`.
+  val cr = checkContractSurface(pr.file)
   val checkErrors = filterRealErrors(cr.diagnostics)
   if checkErrors.count > 0 {
     return Err(error = SynthesisDiagnostics(path = art.dllPath, diags = checkErrors))
