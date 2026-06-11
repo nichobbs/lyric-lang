@@ -99,6 +99,27 @@ pub interface MailSender {
   func close(): Unit
 }
 
+// ─── No-op sender for testing guard-only call paths ──────────────────────────
+// Records the number of delegate calls without touching any transport.  The
+// `Mail.send` header-injection guard fires before `send` is ever reached, so
+// injection tests can use this without a live SMTP server.
+/// A no-op `MailSender` that records call counts and always returns `Ok`.
+/// Intended for unit tests that need to exercise the `Mail.send` guard path
+/// without an SMTP/SES/SendGrid connection.
+@stable(since = "0.1")
+pub record MailSenderStub {
+  var callCount: Int
+}
+
+impl MailSender for MailSenderStub {
+  func send(msg: in EmailMessage): Result[Unit, MailError] {
+    self.callCount = self.callCount + 1
+    return Ok(())
+  }
+  func close(): Unit {
+  }
+}
+
 // ─── Native sender wrapper (internal) ────────────────────────────────────────
 // The SmtpClient is held directly as an opaque extern type — no integer
 // handle registry needed (Gap 1: BCL reference type storage via extern type).
@@ -166,6 +187,9 @@ impl MailSender for NativeSender {
       }
       // Decode each base64 attachment payload and append it to the BCL
       // MailMessage.Attachments collection.
+      // MemoryStreams created here are not explicitly disposed if smtpClientSend
+      // throws — BCL Attachment does not take stream ownership, so disposal is
+      // left to the GC via MailMessage.Dispose (called by the BCL send path).
       val attColl = MailKernel.mailGetAttachments(mailMsg)
       var ai = 0
       while ai < msg.attachments.length {
@@ -384,6 +408,7 @@ pub func makeAddressWithName(address: in String, displayName: in String): EmailA
 pub func makeAttachment(filename: in String, contentType: in String, dataBase64: in String): Attachment
   requires: filename.length > 0
   requires: contentType.length > 0
+  requires: dataBase64.length > 0
   requires: not containsHeaderInjection(filename)
   requires: not containsHeaderInjection(contentType)
 {

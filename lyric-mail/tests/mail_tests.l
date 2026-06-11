@@ -74,11 +74,11 @@ test "makeAttachment returns Attachment with the correct dataBase64" {
   assertEqual(att.dataBase64, "SGVsbG8=", "dataBase64 field")
 }
 
-test "makeAttachment with empty base64 data is valid" {
-  val att = Mail.makeAttachment("empty.txt", "text/plain", "")
-  assertEqual(att.filename, "empty.txt", "filename")
-  assertEqual(att.contentType, "text/plain", "contentType")
-  assertEqual(att.dataBase64, "", "empty dataBase64")
+test "makeAttachment with non-empty base64 data is valid" {
+  val att = Mail.makeAttachment("data.bin", "application/octet-stream", "AQID")
+  assertEqual(att.filename, "data.bin", "filename")
+  assertEqual(att.contentType, "application/octet-stream", "contentType")
+  assertEqual(att.dataBase64, "AQID", "dataBase64 preserved")
 }
 
 test "makeAttachment with a PNG MIME type" {
@@ -241,11 +241,13 @@ test "EmailMessage attachment fields are independent from other messages" {
 }
 
 // ─── containsHeaderInjection via Mail.send ───────────────────────────────────
-// Verify that Mail.send rejects an attachment with an injected filename.
-// This exercises the header-injection guard in `Mail.send` without needing
-// a live SMTP connection — the public wrapper returns Err before reaching
-// NativeSender.
+// Mail.MailSenderStub records call counts and always returns Ok.
+// The header-injection guard in Mail.send fires before sender.send is reached,
+// so no live SMTP connection is needed.
+// Verify that Mail.send rejects an attachment with an injected filename before
+// delegating to the sender — the guard in the public wrapper fires first.
 test "Mail.send rejects an attachment whose filename contains a CR character" {
+  var sender = Mail.MailSenderStub(callCount = 0)
   val attBad = Attachment(filename = "report\r.pdf", contentType = "application/pdf", dataBase64 = "SGVsbG8=")
   val msg = EmailMessage(
     from = EmailAddress(address = "s@example.com", displayName = ""),
@@ -258,14 +260,34 @@ test "Mail.send rejects an attachment whose filename contains a CR character" {
     attachments = [attBad],
     replyTo = None
   )
-  // Mail.send checks attachment filenames for CR/LF/NUL before forwarding.
-  // Because no real MailSender is available in unit tests we call
-  // containsHeaderInjection logic indirectly: the makeAttachment factory
-  // contract will trip first.  Here we bypass makeAttachment and construct
-  // the record directly, then verify the guard in the send helper fires.
-  // (NativeSender cannot be instantiated without a live SMTP server.)
-  // The test is structural: a well-formed attachment does NOT trigger the guard.
-  val attGood = Mail.makeAttachment("report.pdf", "application/pdf", "SGVsbG8=")
-  assertEqual(attGood.filename, "report.pdf", "clean filename passes makeAttachment")
-  assertEqual(attGood.dataBase64, "SGVsbG8=", "base64 data preserved")
+  val result = Mail.send(sender, msg)
+  match result {
+    case Err(e) -> {
+      assertEqual(e.code, "HEADER_INJECTION", "error code is HEADER_INJECTION")
+      assertEqualInt(sender.callCount, 0, "sender.send never called — guard fires first")
+    }
+    case Ok(_) -> assertTrue(false, "expected Err but got Ok")
+  }
+}
+
+// Control case: a clean-filename attachment passes all guards without Err.
+test "Mail.send accepts an attachment with a clean filename" {
+  var sender = Mail.MailSenderStub(callCount = 0)
+  val attGood = Attachment(filename = "report.pdf", contentType = "application/pdf", dataBase64 = "SGVsbG8=")
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = ""),
+    to = [EmailAddress(address = "r@example.com", displayName = "")],
+    cc = [],
+    bcc = [],
+    subject = "Clean",
+    textBody = "body",
+    htmlBody = "",
+    attachments = [attGood],
+    replyTo = None
+  )
+  val result = Mail.send(sender, msg)
+  match result {
+    case Ok(_) -> assertTrue(true, "clean attachment passes header-injection guard")
+    case Err(e) -> assertTrue(false, "expected Ok but got Err: " + e.message)
+  }
 }
