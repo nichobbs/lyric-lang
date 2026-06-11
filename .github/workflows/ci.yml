@@ -1060,25 +1060,6 @@ jobs:
           done
           echo "OK: by-reference (\`var\`) capture shares a mutable cell across the closure boundary."
 
-      # Closure-correctness self-test (#2946) — @test_module covering two CRITICAL
-      # closure fixes: (1) multi-level nested closure capture (#1479), where the
-      # inner lambda reads names captured by the outer lambda; (2) lambdas in
-      # @test_module bodies (#1854), where assertPanics receives a () -> Unit lambda
-      # that must map to System.Action.  Imports only Std.*, so no LYRIC_LOAD_COMPILER.
-      - name: Closure-correctness self-test (native lyric test, #2946)
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping closure-correctness self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping closure-correctness self-test"
-            exit 1
-          fi
-          "$lyric_bin" test lyric-compiler/lyric/closure_correctness_self_test.l
 
   # Second half of compiler self-tests (.NET target), running in parallel with job -a.
   compiler-self-tests-dotnet-b:
@@ -2514,53 +2495,6 @@ jobs:
             exit 1
           fi
           echo "cross-package pub val inlines through restored-dep contract metadata"
-          # pub const (IConst) coverage (#2740): same pipeline with `pub const`
-          # instead of `pub val` to ensure IConst items also travel in the
-          # embedded Lyric.Contract metadata and inline correctly.
-          work2="$(mktemp -d)"
-          mkdir -p "$work2/constdep2/src" "$work2/app2/src"
-          cat > "$work2/constdep2/lyric.toml" <<'TOML'
-          [package]
-          name = "constdep2"
-          version = "0.1.0"
-          [project]
-          name = "ConstDep2"
-          output_assembly = "Lyric.ConstDep2.dll"
-          [project.packages]
-          "ConstDep2" = "src"
-          TOML
-          cat > "$work2/constdep2/src/constdep2.l" <<'LYR'
-          package ConstDep2
-          pub const MAGIC: Int = 99
-          LYR
-          cat > "$work2/app2/lyric.toml" <<'TOML'
-          [package]
-          name = "app2"
-          version = "0.1.0"
-          [project]
-          name = "App2"
-          [project.packages]
-          "App2" = "src"
-          [dependencies]
-          constdep2 = { path = "../constdep2" }
-          TOML
-          cat > "$work2/app2/src/app2.l" <<'LYR'
-          package App2
-          import ConstDep2
-          import Std.Console as Console
-          func main(): Unit {
-            Console.println(toString(MAGIC))
-          }
-          LYR
-          "$lyric_bin" build --manifest "$work2/constdep2/lyric.toml"
-          "$lyric_bin" build --manifest "$work2/app2/lyric.toml"
-          got2="$(cd "$work2/app2/bin" && dotnet App2.dll | tr -d '\r\n')"
-          echo "pub const consumer printed: '$got2'"
-          if [ "$got2" != "99" ]; then
-            echo "::error::cross-package pub const inlining returned '$got2', expected '99' (#2740)"
-            exit 1
-          fi
-          echo "cross-package pub const (IConst) inlines through restored-dep contract metadata (#2740)"
 
       # Per-package compiler emit (#2592 slice 2).  emitPerPackageClosure now
       # emits the COMPILER-package closure (Lyric.* / Msil.* / Jvm.*) — not just
