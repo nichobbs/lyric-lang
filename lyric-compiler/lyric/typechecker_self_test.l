@@ -1793,18 +1793,18 @@ test "match arm guard bool ok" {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// #2955: EAssign uses argSatisfiesParam so M6 widening applies.
+// #2955: SAssign uses argSatisfiesParam so M6 widening applies.
 // ─────────────────────────────────────────────────────────────────────────────
-test "expression-position assign int to long target ok" {
-  val src = "package P\nfunc f(): Unit { var x: Long = 0i64; val _ = (x = 42) }\n"
+test "assign int to long target ok" {
+  val src = "package P\nfunc f(): Unit { var x: Long = 0i64; x = 42 }\n"
   val cr = parseCheck(src)
-  assertEqualInt(diagCount(cr), 0, "expr-pos assign Int to Long: no errors")
+  assertEqualInt(diagCount(cr), 0, "assign Int to Long: no errors")
 }
 
-test "expression-position assign string to int target rejected" {
-  val src = "package P\nfunc f(): Unit { var x: Int = 0; val _ = (x = \"bad\") }\n"
+test "assign string to int target rejected" {
+  val src = "package P\nfunc f(): Unit { var x: Int = 0; x = \"bad\" }\n"
   val cr = parseCheck(src)
-  assertTrue(hasDiagCode(cr, "T0063"), "expr-pos assign wrong type: T0063")
+  assertTrue(hasDiagCode(cr, "T0063"), "assign wrong type: T0063")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1818,18 +1818,22 @@ test "generic record constructor emits T0110" {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // #2954: unknown constraint name in where-clause emits T0111 warning.
+// T0111 fires at the call site (checkBoundsSatisfied); T0051 fires at the
+// definition site.  A call to f(42) is needed to trigger the call-site path.
 // ─────────────────────────────────────────────────────────────────────────────
 test "unknown constraint emits T0111 warning" {
-  val src = "package P\nfunc f[T](x: in T): T where T: Addd { x }\n"
+  val src = "package P\nfunc f[T](x: in T): T where T: Addd { x }\nfunc g(): Int { f(42) }\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0111"), "unknown constraint: T0111")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// #2179: inferGenericArgs handles nested generic positions (List[T] fields).
+// #2179: inferGenericArgs handles nested generic positions (e.g. Seq[T] fields).
+// Uses a locally-defined generic wrapper so stdlib is not needed during the
+// single-file parseCheck (check() has no imported packages).
 // ─────────────────────────────────────────────────────────────────────────────
-test "union case with nested List[T] field infers parent type" {
-  val src = "package P\nimport Std.Collections\nunion Box[T] { case Wrap(items: List[T]) }\nfunc f(xs: in List[Int]): Box[Int] { Wrap(items = xs) }\n"
+test "union case with nested generic field infers parent type" {
+  val src = "package P\nrecord Seq[T] { head: T }\nunion Box[T] { case Wrap(items: Seq[T]) }\nfunc f(xs: in Seq[Int]): Box[Int] { Wrap(items = xs) }\n"
   val cr = parseCheck(src)
-  assertEqualInt(diagCount(cr), 0, "nested List[T] field: type inferred correctly, no errors")
+  assertEqualInt(diagCount(cr), 0, "nested Seq[T] field: type inferred correctly, no errors")
 }

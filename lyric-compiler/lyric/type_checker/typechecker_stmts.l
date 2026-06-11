@@ -96,7 +96,7 @@ pub func checkStatement(
     case SAssign(target, _, value) -> {
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
       val valueType = inferExpr(sc, tbl, sigs, diag, value)
-      if not typeEquiv(targetType, valueType) {
+      if not argSatisfiesParam(tbl, targetType, valueType) {
         diag.add(
           errorDiagnostic(
             "T0063",
