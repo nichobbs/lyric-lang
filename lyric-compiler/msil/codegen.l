@@ -8300,11 +8300,53 @@ func lowerMethodCallMsil(
         }
         true
       }
+      case MMapOf(MGenericInst(_, _, keyArgs), MGenericInst(_, _, valArgs)) -> {
+        var ki = 0
+        while ki < keyArgs.count {
+          fctx.contextHintTyArgs.add(keyArgs[ki])
+          ki = ki + 1
+        }
+        var vi = 0
+        while vi < valArgs.count {
+          fctx.contextHintTyArgs.add(valArgs[vi])
+          vi = vi + 1
+        }
+        true
+      }
+      case MMapOf(MGenericInst(_, _, keyArgs), _) -> {
+        var ki = 0
+        while ki < keyArgs.count {
+          fctx.contextHintTyArgs.add(keyArgs[ki])
+          ki = ki + 1
+        }
+        true
+      }
       case MMapOf(_, MGenericInst(_, _, valArgs)) -> {
         var vi = 0
         while vi < valArgs.count {
           fctx.contextHintTyArgs.add(valArgs[vi])
           vi = vi + 1
+        }
+        true
+      }
+      case MConcreteMap(MGenericInst(_, _, keyArgs), MGenericInst(_, _, valArgs)) -> {
+        var ki = 0
+        while ki < keyArgs.count {
+          fctx.contextHintTyArgs.add(keyArgs[ki])
+          ki = ki + 1
+        }
+        var vi = 0
+        while vi < valArgs.count {
+          fctx.contextHintTyArgs.add(valArgs[vi])
+          vi = vi + 1
+        }
+        true
+      }
+      case MConcreteMap(MGenericInst(_, _, keyArgs), _) -> {
+        var ki = 0
+        while ki < keyArgs.count {
+          fctx.contextHintTyArgs.add(keyArgs[ki])
+          ki = ki + 1
         }
         true
       }
