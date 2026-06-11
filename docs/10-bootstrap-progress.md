@@ -24013,3 +24013,35 @@ The `"await in try runtime checked no v0012"` test is renamed `"await in try run
 
 - Nine `host*Safe` wrapper functions are added to `lyric-stdlib/std/_kernel/http_host.l` (which is `@axiom` and therefore exempt from V0012): each catches `Bug` internally and returns `Result[T, String]` (with the error message as the `Err` payload).  The wrappers are `hostSendSafe`, `hostGetSafe`, `hostPostStringSafe`, `hostReadBodyTextSafe`, `hostReadBodyBytesSafe`, `hostSendWithCancelSafe`, `hostGetWithCancelSafe`, `hostPostStringWithCancelSafe`, and `hostReadBodyTextWithCancelSafe`.
 - Each affected `Std.Http` function is rewritten to `await` its safe wrapper (which returns `Result`) and then `match` on the result — no `await` appears inside a `try` block anywhere in `http.l`.
+
+
+### D-progress-499 — type-checker diagnostics batch: T0109/T0110/T0111, guard Bool check, assignment widening, nested generic inference (#2009, #2014, #2179, #2700, #2707, #2708, #2954, #2955)
+
+PR #3136 lands eight self-hosted type-checker fixes from the 2026-06-11 backlog
+triage:
+
+- **T0109** — "value expression used as a type argument" gets its own code
+  (previously reused T0012, which also covers "primitive type does not take
+  type arguments").
+- **T0110** — a generic record/opaque constructor whose type parameters cannot
+  be inferred from its arguments emits a diagnostic naming the unresolvable
+  parameter(s), instead of silently degrading to `TyError`.  Constructor
+  type-argument inference itself was completed as part of the fix:
+  `ctorFieldTypes` resolves field types with the record's type parameters in
+  the generic context (mirroring `unionCaseFieldTypes`), so fully-inferable
+  constructions like `Box(value = 1)` type as `Box[Int]` with no diagnostic.
+- **T0111** — an unknown constraint name in a `where` clause warns at the call
+  site instead of silently passing.
+- Match-arm guards are now type-checked against `Bool` (T0066), symmetric with
+  if-conditions.
+- Assignment type-checking uses `argSatisfiesParam` (M6 numeric widening) —
+  the live fix is in `SAssign` (`typechecker_stmts.l`); the `EAssign`
+  expression form is never produced by the parser today.
+- `inferGenericArgs` recurses into nested generic positions (e.g. `List[T]`
+  fields); the conversion-method fall-through reuses the already-inferred
+  receiver type (no duplicate diagnostics); `MMapOf`/`MConcreteMap` `.add`
+  hint propagation covers key-generic cases.
+
+Verified by `typechecker_self_test.l` (194 cases), `inbundle_generics_self_test.l`
+(20 cases), and the full per-package self-compile path.  Docs: language
+reference §2.11 and the book's T-series table list the new codes.

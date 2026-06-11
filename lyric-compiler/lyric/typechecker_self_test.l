@@ -1766,3 +1766,113 @@ test "slice literal in list ctor field ok" {
   val cr = parseCheck(src)
   assertEqualInt(diagCount(cr), 0, "slice[Int] satisfies List[Int] in ctor field")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2707: T0109 for value-expression-as-type-argument (distinct from T0012).
+// ─────────────────────────────────────────────────────────────────────────────
+test "value expr as type arg emits T0109 not T0012" {
+  val src = "package P\nimport Std.Collections\nfunc f(): Unit { val _ : List[1] = newList() }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0109"), "value as type arg: T0109")
+  assertTrue(not hasDiagCode(cr, "T0012"), "value as type arg: not T0012")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2708: match-arm guard must be Bool (T0066 symmetry with if-condition).
+// ─────────────────────────────────────────────────────────────────────────────
+test "match arm guard string rejected with T0066" {
+  val src = "package P\nfunc f(x: in Int): Int { match x { case _ if \"bad\" -> 1; case _ -> 0 } }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0066"), "match guard non-Bool: T0066")
+}
+
+test "match arm guard bool ok" {
+  val src = "package P\nfunc f(x: in Int): Int { match x { case _ if x > 0 -> 1; case _ -> 0 } }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "match guard Bool: no errors")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2955: SAssign uses argSatisfiesParam so M6 widening applies.
+// ─────────────────────────────────────────────────────────────────────────────
+test "assign int to long target ok" {
+  val src = "package P\nfunc f(): Unit { var x: Long = 0i64; x = 42 }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "assign Int to Long: no errors")
+}
+
+test "assign string to int target rejected" {
+  val src = "package P\nfunc f(): Unit { var x: Int = 0; x = \"bad\" }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0063"), "assign wrong type: T0063")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2009: generic record constructor emits T0110 when a type parameter cannot be
+// inferred from the supplied arguments.  A phantom type parameter (one that
+// appears in no field) is genuinely uninferable — T0110 must fire.
+// A constructor where all type params appear in fields (e.g. Pair[A,B]) is
+// inferable and must NOT fire T0110.
+// ─────────────────────────────────────────────────────────────────────────────
+test "generic record constructor emits T0110 for uninferable type param" {
+  val src = "package P\nrecord Tagged[T, Phantom] { value: T }\nfunc f(): Unit { val _ = Tagged(value = 1) }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0110"), "phantom type param: T0110")
+}
+
+test "generic record constructor with inferable type params does not emit T0110" {
+  val src = "package P\nrecord Pair[A, B] { first: A; second: B }\nfunc f(): Unit { val _ = Pair(first = 1, second = \"x\") }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0110"), "inferable generic ctor: no T0110")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2954: unknown constraint name in where-clause emits T0111 warning.
+// T0111 fires at the call site (checkBoundsSatisfied); T0051 fires at the
+// definition site.  A call to f(42) is needed to trigger the call-site path.
+// ─────────────────────────────────────────────────────────────────────────────
+test "unknown constraint emits T0111 warning" {
+  val src = "package P\nfunc f[T](x: in T): T where T: Addd { x }\nfunc g(): Int { f(42) }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0111"), "unknown constraint: T0111")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2179: inferGenericArgs handles nested generic positions (e.g. Seq[T] fields).
+// Uses a locally-defined generic wrapper so stdlib is not needed during the
+// single-file parseCheck (check() has no imported packages).
+// ─────────────────────────────────────────────────────────────────────────────
+test "union case with nested generic field infers parent type" {
+  val src = "package P\nrecord Seq[T] { head: T }\nunion Box[T] { case Wrap(items: Seq[T]) }\nfunc f(xs: in Seq[Int]): Box[Int] { Wrap(items = xs) }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "nested Seq[T] field: type inferred correctly, no errors")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3157: named constructor args may be supplied in any order — the type
+// checker must pair each named arg's type with its declared field by name,
+// not positionally.  Pair[A, B] { first: A; second: B } constructed as
+// Pair(second = "x", first = 1) must infer A=Int, B=String, not A=String, B=Int.
+// ─────────────────────────────────────────────────────────────────────────────
+test "generic ctor named args in reverse order infer correct type args" {
+  val src = "package P\nrecord Pair[A, B] { first: A; second: B }\nfunc f(): Pair[Int, String] { Pair(second = \"x\", first = 1) }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "named args in reverse order: no errors")
+}
+
+test "generic ctor named args in declaration order also work" {
+  val src = "package P\nrecord Pair[A, B] { first: A; second: B }\nfunc f(): Pair[Int, String] { Pair(first = 1, second = \"x\") }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "named args in declaration order: no errors")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3156: missing a required field on a generic constructor should emit T0105
+// (missing required field), not T0110 (cannot infer type arguments).
+// ─────────────────────────────────────────────────────────────────────────────
+test "generic ctor missing required field emits T0105 not T0110" {
+  val src = "package P\nrecord Pair[A, B] { first: A; second: B }\nfunc f(): Unit { val _ = Pair(first = 1) }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0105"), "missing required field: T0105")
+  assertTrue(not hasDiagCode(cr, "T0110"), "missing required field: not T0110")
+}

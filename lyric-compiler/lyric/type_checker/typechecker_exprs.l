@@ -1393,6 +1393,246 @@ func ctorIsOpaque(sym: in Symbol): Bool {
   }
 }
 
+// Extract the ordered generic parameter names from a record/exposed-record/opaque
+// constructor symbol.  Returns an empty list for non-generic types.
+func ctorGenericNames(sym: in Symbol): List[String] {
+  val names: List[String] = newList()
+  val gOpt = match sym.kind {
+    case DKRecord(_, rd) -> rd.generics
+    case DKExposedRec(_, rd) -> rd.generics
+    case DKOpaque(_, od) -> od.generics
+    case _ -> None
+  }
+  match gOpt {
+    case None -> {
+    }
+    case Some(g) -> {
+      var j = 0
+      while j < g.params.count {
+        match g.params[j] {
+          case GPType(nm, _) -> names.add(nm)
+          case GPValue(nm, _, _) -> names.add(nm)
+        }
+        j = j + 1
+      }
+    }
+  }
+  names
+}
+
+// Collect the raw field types from a constructor symbol with `genericNames`
+// registered in the generic context, so that type-parameter fields resolve to
+// `TyVar(name)` rather than `TyError`.  Used by generic-constructor type-arg
+// inference in `inferConstruction`.
+func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[String]): List[Type] {
+  val ctx = newGenericContext()
+  gctxPush(ctx, genericNames)
+  // Inference probe only: resolution diagnostics are deliberately discarded
+  // (the authoritative field-type check runs later in inferConstruction);
+  // this pass exists solely to surface TyVar positions for inferGenericArgs.
+  val scratch: List[Diagnostic] = newList()
+  val result: List[Type] = newList()
+  match sym.kind {
+    case DKRecord(_, rd) -> {
+      var i = 0
+      while i < rd.members.count {
+        match rd.members[i] {
+          case RMField(fd) -> result.add(resolveType(tbl, ctx, scratch, fd.ty))
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case DKExposedRec(_, rd) -> {
+      var i = 0
+      while i < rd.members.count {
+        match rd.members[i] {
+          case RMField(fd) -> result.add(resolveType(tbl, ctx, scratch, fd.ty))
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case DKOpaque(_, od) -> {
+      var i = 0
+      while i < od.members.count {
+        match od.members[i] {
+          case OMField(fd) -> result.add(resolveType(tbl, ctx, scratch, fd.ty))
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case _ -> {
+    }
+  }
+  result
+}
+
+// Re-resolve constructor field types into `diag` so genuine field-type errors
+// (e.g. references to unknown types) surface even when T0110 fires early.
+// Uses a plain generic context (no type-var names pushed), so generic-position
+// fields silently produce TyError rather than spurious diagnostics.  Called
+// only on the T0110 early-return path (#3155).
+func surfaceCtorFieldTypeErrors(tbl: in SymbolTable, sym: in Symbol, diag: in List[Diagnostic]): Unit {
+  val ctx = newGenericContext()
+  match sym.kind {
+    case DKRecord(_, rd) -> {
+      var i = 0
+      while i < rd.members.count {
+        match rd.members[i] {
+          case RMField(fd) -> {
+            val _ = resolveType(tbl, ctx, diag, fd.ty)
+          }
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case DKExposedRec(_, rd) -> {
+      var i = 0
+      while i < rd.members.count {
+        match rd.members[i] {
+          case RMField(fd) -> {
+            val _ = resolveType(tbl, ctx, diag, fd.ty)
+          }
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case DKOpaque(_, od) -> {
+      var i = 0
+      while i < od.members.count {
+        match od.members[i] {
+          case OMField(fd) -> {
+            val _ = resolveType(tbl, ctx, diag, fd.ty)
+          }
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case _ -> {
+    }
+  }
+}
+
+// Return the field names of a constructor symbol in declaration order.
+// Used alongside ctorFieldTypes to reorder named-arg types to declaration
+// order before passing to inferGenericArgs (#3157).
+func ctorFieldNames(sym: in Symbol): List[String] {
+  val result: List[String] = newList()
+  match sym.kind {
+    case DKRecord(_, rd) -> {
+      var i = 0
+      while i < rd.members.count {
+        match rd.members[i] {
+          case RMField(fd) -> result.add(fd.name)
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case DKExposedRec(_, rd) -> {
+      var i = 0
+      while i < rd.members.count {
+        match rd.members[i] {
+          case RMField(fd) -> result.add(fd.name)
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case DKOpaque(_, od) -> {
+      var i = 0
+      while i < od.members.count {
+        match od.members[i] {
+          case OMField(fd) -> result.add(fd.name)
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case _ -> {
+    }
+  }
+  result
+}
+
+// Reorder argTypes to match declaration order so inferGenericArgs can pair
+// each field type with the type of the argument that initialises it (#3157).
+// Named args are placed at their declared-field index; positional args fill
+// unoccupied slots left to right; any unmatched slot gets TyError so
+// inferOneGenericArg simply skips it.
+func argTypesInFieldOrder(args: in List[CallArg], argTypes: in List[Type], fieldNames: in List[String]): List[Type] {
+  val result: List[Type] = newList()
+  val occupied: List[Bool] = newList()
+  var fi = 0
+  while fi < fieldNames.count {
+    result.add(TyError)
+    occupied.add(false)
+    fi = fi + 1
+  }
+  // Place named args at their declared slot first.
+  var i = 0
+  while i < args.count {
+    val ty = if i < argTypes.count { argTypes[i] } else { TyError }
+    match args[i] {
+      case CANamed(nm, _, _) -> {
+        var j = 0
+        while j < fieldNames.count {
+          if fieldNames[j] == nm {
+            result[j] = ty
+            occupied[j] = true
+            j = fieldNames.count
+          } else {
+            j = j + 1
+          }
+        }
+      }
+      case CAPositional(_) -> {
+      }
+    }
+    i = i + 1
+  }
+  // Place positional args into the first unoccupied slots, left to right.
+  var posIdx = 0
+  var i2 = 0
+  while i2 < args.count {
+    val ty = if i2 < argTypes.count { argTypes[i2] } else { TyError }
+    match args[i2] {
+      case CAPositional(_) -> {
+        // Advance posIdx past any slots already filled by named args.
+        var placed = false
+        while posIdx < fieldNames.count and not placed {
+          if not occupied[posIdx] {
+            result[posIdx] = ty
+            occupied[posIdx] = true
+            posIdx = posIdx + 1
+            placed = true
+          } else {
+            posIdx = posIdx + 1
+          }
+        }
+      }
+      case CANamed(_, _, _) -> {
+      }
+    }
+    i2 = i2 + 1
+  }
+  result
+}
+
 func fieldHasName(fields: in List[CtorField], name: in String): Bool {
   var i = 0
   while i < fields.count {
@@ -1515,6 +1755,166 @@ func inferConstruction(
   argTypes: in List[Type],
   span: in Span,
 ): Type {
+  // For generic constructors, attempt to infer type arguments from the supplied
+  // field initializer types before falling back to T0110.  T0110 fires only when
+  // one or more type parameters remain unresolved after inference.
+  if ctorIsGeneric(sym) {
+    val gnames = ctorGenericNames(sym)
+    val fieldNames = ctorFieldNames(sym)
+    // #3156: check for missing required fields before attempting inference so
+    // under-application is reported with a precise per-field diagnostic rather
+    // than the confusing "cannot infer type arguments" T0110.
+    val prelimFields: List[CtorField] = newList()
+    val _ = collectCtorFields(tbl, sym, prelimFields)
+    // Only perform the missing-field check when all supplied args are named
+    // (no positional args).  Positional args cover fields by declaration index
+    // and the interaction with named args is complex; mixed-mode under-application
+    // is rare and falls through to T0110 as before.
+    var hasPositional = false
+    var ani = 0
+    while ani < args.count {
+      match args[ani] {
+        case CAPositional(_) -> {
+          hasPositional = true
+        }
+        case CANamed(_, _, _) -> {
+        }
+      }
+      ani = ani + 1
+    }
+    val missing: List[String] = newList()
+    if not hasPositional {
+      var mfi = 0
+      while mfi < prelimFields.count {
+        val f = prelimFields[mfi]
+        if not f.hasDefault {
+          var supplied = false
+          var si = 0
+          while si < args.count {
+            match args[si] {
+              case CANamed(nm, _, _) -> if nm == f.name { supplied = true }
+              case CAPositional(_) -> {
+              }
+            }
+            si = si + 1
+          }
+          if not supplied {
+            missing.add(f.name)
+          }
+        }
+        mfi = mfi + 1
+      }
+    }
+    if missing.count > 0 {
+      var mi = 0
+      while mi < missing.count {
+        diag.add(
+          errorDiagnostic("T0105", "constructor '" + sym.name + "' is missing required field '" + missing[mi] + "'", span)
+        )
+        mi = mi + 1
+      }
+      return TyError
+    }
+    // Collect field types with generic names in context so type-param fields
+    // resolve to TyVar("T") (not TyError), enabling inference from arg types.
+    // Reorder argTypes to declaration order (#3157): named args are matched by
+    // field name, positional args fill remaining slots left to right.
+    val fieldTypes = ctorFieldTypes(tbl, sym, gnames)
+    val orderedArgTypes = argTypesInFieldOrder(args, argTypes, fieldNames)
+    val targs = inferGenericArgs(gnames, fieldTypes, orderedArgTypes)
+    // Collect names of parameters that could not be inferred.
+    val unresolved: List[String] = newList()
+    var gi = 0
+    while gi < gnames.count {
+      val isErr = match targs[gi] { case TyError -> true; case _ -> false }
+      if isErr {
+        unresolved.add(gnames[gi])
+      }
+      gi = gi + 1
+    }
+    if unresolved.count > 0 {
+      // #3155: surface genuine field-type resolution errors (e.g. unknown type
+      // names in field declarations) that were swallowed by the inference probe.
+      surfaceCtorFieldTypeErrors(tbl, sym, diag)
+      var msg = "cannot infer type argument(s) for generic constructor '" + sym.name + "': "
+      var ui = 0
+      while ui < unresolved.count {
+        if ui > 0 {
+          msg = msg + ", "
+        }
+        msg = msg + "'" + unresolved[ui] + "'"
+        ui = ui + 1
+      }
+      msg = msg + " could not be inferred from the supplied arguments"
+      diag.add(errorDiagnostic("T0110", msg, span))
+      return TyError
+    }
+    val inferredTy = match symbolTypeIdOpt(sym) {
+      case Some(tid) -> TyUser(id = tid, name = sym.name, args = targs)
+      case None -> TyError
+    }
+    // #1485: an opaque type's representation is hidden.
+    if ctorIsOpaque(sym) and sym.isImported {
+      diag.add(
+        errorDiagnostic("T0100", "cannot construct opaque type '" + sym.name + "' outside its declaring package", span)
+      )
+      return inferredTy
+    }
+    val fields: List[CtorField] = newList()
+    val _ = collectCtorFields(tbl, sym, fields)
+    var posIdx = 0
+    var i = 0
+    while i < args.count {
+      val argTy = if i < argTypes.count { argTypes[i] } else { TyError }
+      match args[i] {
+        case CANamed(nm, _, asp) -> {
+          if not fieldHasName(fields, nm) {
+            diag.add(errorDiagnostic("T0101", "'" + sym.name + "' has no field '" + nm + "'", asp))
+          } else {
+            val fieldTy = fieldTypeByName(fields, nm)
+            if not argSatisfiesParam(tbl, fieldTy, argTy) {
+              diag.add(
+                errorDiagnostic(
+                  "T0104",
+                  "argument for field '" + nm + "' has type " + renderType(argTy) + " but field expects " + renderType(fieldTy),
+                  asp
+                )
+              )
+            }
+          }
+        }
+        case CAPositional(ae) -> {
+          if posIdx >= fields.count {
+            diag.add(
+              errorDiagnostic(
+                "T0104",
+                "'" + sym.name + "' has " + toString(fields.count) + " field(s) but positional argument " + toString(posIdx + 1) +
+                  " was supplied",
+                ae.span
+              )
+            )
+          } else {
+            val fieldTy = fields[posIdx].ty
+            if not argSatisfiesParam(tbl, fieldTy, argTy) {
+              diag.add(
+                errorDiagnostic(
+                  "T0104",
+                  "positional argument " + toString(posIdx + 1) + " has type " + renderType(argTy) + " but field '" +
+                    fields[posIdx].name +
+                    "' expects " +
+                    renderType(fieldTy),
+                  ae.span
+                )
+              )
+            }
+          }
+          posIdx = posIdx + 1
+        }
+      }
+      i = i + 1
+    }
+    return inferredTy
+  }
   val resultTy = ctorResultType(sym)
   // #1485: an opaque type's representation is hidden — it cannot be constructed
   // from outside its declaring package.
@@ -1658,24 +2058,15 @@ func unionCaseFieldTypes(
   result
 }
 
-// For each parent generic name, take the argument type at the field position
-// that is exactly `TyVar(name)` (single-level inference; nested generic
-// positions fall back to `TyError`).
+// For each parent generic name, infer the concrete type argument from the
+// supplied field/arg pairs.  Uses `findGenericInPair` (the deep recursive
+// matcher already used by `inferGenericArgsDeep`) so nested generic positions
+// such as `List[T]` or `(T, U)` are handled (#2179).
 func inferGenericArgs(genericNames: in List[String], fieldTypes: in List[Type], argTypes: in List[Type]): List[Type] {
   val result: List[Type] = newList()
   var g = 0
   while g < genericNames.count {
-    var found: Type = TyError
-    var i = 0
-    while i < fieldTypes.count and i < argTypes.count {
-      match fieldTypes[i] {
-        case TyVar(nm) -> if nm == genericNames[g] { found = argTypes[i] }
-        case _ -> {
-        }
-      }
-      i = i + 1
-    }
-    result.add(found)
+    result.add(inferOneGenericArg(genericNames[g], fieldTypes, argTypes))
     g = g + 1
   }
   result
@@ -1897,6 +2288,16 @@ func checkBoundsSatisfied(
               match symTableTryFindOne(tbl, cname) {
                 case Some(ifaceSym) -> match ifaceSym.kind { case DKInterface(ifaceId, _) -> match typeIdOfType(concreteTy) { case Some(concreteId) -> { satisfied = symTableTypeImplements(tbl, concreteId, ifaceId) }; case None -> { satisfied = true } }; case _ -> { satisfied = true } }
                 case None -> {
+                  // Unknown constraint names are treated as satisfied to preserve
+                  // cross-package leniency, but emit T0111 so typos are visible.
+                  diag.add(
+                    warningDiagnostic(
+                      "T0111",
+                      "unknown constraint '" + cname + "' in where-clause for type parameter '" + bound.name +
+                        "' — treating as satisfied (cross-package interface or typo?)",
+                      span
+                    )
+                  )
                   satisfied = true
                 }
               }
@@ -2142,18 +2543,22 @@ pub func inferExpr(
       // Numeric / character conversion-method intrinsics (#1901): `x.toInt()`,
       // `b.toLong()`, etc.  Recognised only on a numeric/char receiver so a
       // user-defined method of the same name on some other type still falls
-      // through to the general (lenient) dispatch.  A non-numeric receiver
-      // yields `TyError`, exactly what the general path would produce — so the
-      // receiver is inferred once, with no duplicate diagnostics.
+      // through to the general (lenient) dispatch.  The receiver is inferred
+      // once here and reused below to avoid emitting diagnostics twice when a
+      // user-type receiver falls through to the general EMember path (#2700).
+      var cachedRecvType: Option[Type] = None
       match fn.kind {
-        case EMember(recvE, mname) -> match numericConvTarget(mname) { case Some(target) -> if args.count == 0 { val rt = inferExpr(sc, tbl, sigs, diag, recvE); if isNumericOrCharType(rt) { return TyPrim(pt = target) }; if isNonConvertiblePrimitive(rt) { diag.add(errorDiagnostic("T0103", "conversion method '" + mname + "' is not applicable to " + renderType(rt), recvE.span)); return TyError }; match rt { case TyError -> return TyError; case _ -> {  } } }; case None -> {  } }
-        // Non-numeric, non-primitive receiver: fall through to general dispatch so
-        // a user-defined method named toInt/toLong/etc. on a user type is not
-        // silently shadowed by this intrinsic path once C2 method resolution lands.
+        case EMember(recvE, mname) -> match numericConvTarget(mname) { case Some(target) -> if args.count == 0 { val rt = inferExpr(sc, tbl, sigs, diag, recvE); if isNumericOrCharType(rt) { return TyPrim(pt = target) }; if isNonConvertiblePrimitive(rt) { diag.add(errorDiagnostic("T0103", "conversion method '" + mname + "' is not applicable to " + renderType(rt), recvE.span)); return TyError }; match rt { case TyError -> return TyError; case _ -> {  } }; cachedRecvType = Some(value = rt) }; case None -> {  } }
         case _ -> {
         }
       }
-      val fnT = inferExpr(sc, tbl, sigs, diag, fn)
+      // Use the cached receiver type (if the intrinsics check already inferred it)
+      // to avoid a second inference of the receiver expression, which would emit
+      // diagnostics again for any problematic sub-expressions.
+      val fnT = match cachedRecvType {
+        case Some(rt) -> match fn.kind { case EMember(_, mname2) -> inferMember(tbl, diag, rt, mname2, fn.span); case _ -> inferExpr(sc, tbl, sigs, diag, fn) }
+        case None -> inferExpr(sc, tbl, sigs, diag, fn)
+      }
       val argTypes: List[Type] = newList()
       var i = 0
       while i < args.count {
@@ -2183,13 +2588,7 @@ pub func inferExpr(
             } else {
               toString(minRequired) + "–" + toString(sig.params.count) + " argument(s)"
             }
-            diag.add(
-              errorDiagnostic(
-                "T0042",
-                "expected " + expectedMsg + ", got " + toString(args.count),
-                e.span
-              )
-            )
+            diag.add(errorDiagnostic("T0042", "expected " + expectedMsg + ", got " + toString(args.count), e.span))
           } else {
             // Only validate the args that were actually supplied; missing
             // trailing params with defaults are filled in by codegen.
@@ -2351,8 +2750,17 @@ pub func inferExpr(
         scopePush(sc)
         bindPatternTyped(sc, tbl, diag, arms[ai].pattern, st)
         match arms[ai].guard {
-          case Some(g) -> inferExpr(sc, tbl, sigs, diag, g)
-          case None -> TyError
+          case Some(g) -> {
+            val guardT = inferExpr(sc, tbl, sigs, diag, g)
+            match guardT {
+              case TyError -> {
+              }
+              case TyPrim(pt) -> match pt { case PtBool -> {  }; case PtNever -> {  }; case _ -> diag.add(errorDiagnostic("T0066", "match-arm guard must be Bool (got " + renderType(guardT) + ")", g.span)) }
+              case _ -> diag.add(errorDiagnostic("T0066", "match-arm guard must be Bool (got " + renderType(guardT) + ")", g.span))
+            }
+          }
+          case None -> {
+          }
         }
         val bt = inferExprOrBlock(sc, tbl, sigs, diag, arms[ai].body)
         val armSpan = match arms[ai].body { case EOBExpr(ae) -> ae.span; case EOBBlock(ab) -> ab.span }
@@ -2424,7 +2832,7 @@ pub func inferExpr(
     case EAssign(target, _, value) -> {
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
       val valueType = inferExpr(sc, tbl, sigs, diag, value)
-      if not typeEquiv(targetType, valueType) {
+      if not argSatisfiesParam(tbl, targetType, valueType) {
         diag.add(
           errorDiagnostic(
             "T0063",

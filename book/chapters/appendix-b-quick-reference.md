@@ -1034,6 +1034,9 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0100` | Opaque type constructed outside its declaring package |
 | `T0101` | Constructor names a field the type does not have |
 | `T0102` | Pattern-matching an opaque type's representation outside its declaring package |
+| `T0109` | Value expression used where a type argument is required |
+| `T0110` | Generic constructor's type parameter(s) cannot be inferred from the arguments (add explicit type arguments) |
+| `T0111` | Unknown constraint name in a `where` clause (warning) |
 
 ### Emitter (E-series)
 
