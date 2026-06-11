@@ -105,8 +105,9 @@ pub interface MailSender {
 // injection tests can use this without a live SMTP server.
 /// A no-op `MailSender` that records call counts and always returns `Ok`.
 /// Intended for unit tests that need to exercise the `Mail.send` guard path
-/// without an SMTP/SES/SendGrid connection.
-@stable(since = "0.1")
+/// without an SMTP/SES/SendGrid connection.  Lives here rather than in
+/// lyric-testing because the MSIL lowering requires an interface's TypeDef
+/// to precede its implementors; not part of the stable API surface.
 pub record MailSenderStub {
   var callCount: Int
 }
@@ -188,8 +189,9 @@ impl MailSender for NativeSender {
       // Decode each base64 attachment payload and append it to the BCL
       // MailMessage.Attachments collection.
       // MemoryStreams created here are not explicitly disposed if smtpClientSend
-      // throws — BCL Attachment does not take stream ownership, so disposal is
-      // left to the GC via MailMessage.Dispose (called by the BCL send path).
+      // throws mid-loop: Attachment.Dispose (via MailMessage.Dispose on the
+      // success path) disposes its content stream, and on the throw path the
+      // GC reclaims byte-array-backed MemoryStreams safely.
       val attColl = MailKernel.mailGetAttachments(mailMsg)
       var ai = 0
       while ai < msg.attachments.length {
