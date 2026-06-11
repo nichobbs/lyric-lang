@@ -81,6 +81,13 @@ test "makeAttachment with non-empty base64 data is valid" {
   assertEqual(att.dataBase64, "AQID", "dataBase64 preserved")
 }
 
+// Zero-byte attachments are legal: Convert.FromBase64String("") yields
+// byte[0], a valid (if empty) attachment payload (#3173).
+test "makeAttachment accepts empty base64 (zero-byte attachment)" {
+  val att = Mail.makeAttachment("empty.bin", "application/octet-stream", "")
+  assertEqual(att.dataBase64, "", "empty dataBase64 preserved")
+}
+
 test "makeAttachment with a PNG MIME type" {
   val att = Mail.makeAttachment("logo.png", "image/png", "iVBORw0KGgo=")
   assertEqual(att.filename, "logo.png", "png filename")

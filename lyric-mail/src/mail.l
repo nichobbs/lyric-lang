@@ -410,7 +410,6 @@ pub func makeAddressWithName(address: in String, displayName: in String): EmailA
 pub func makeAttachment(filename: in String, contentType: in String, dataBase64: in String): Attachment
   requires: filename.length > 0
   requires: contentType.length > 0
-  requires: dataBase64.length > 0
   requires: not containsHeaderInjection(filename)
   requires: not containsHeaderInjection(contentType)
 {
