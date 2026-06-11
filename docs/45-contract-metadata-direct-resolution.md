@@ -200,7 +200,7 @@ Per CLAUDE.md "No new F# code" policy, all implementation is in Lyric (`lyric-co
 
 4. **Phase 4**: Migrate bridge to use direct loader
 
-5. **Phase 5**: Remove synthesis-based loader and temporary v2 compat code
+5. **Phase 5**: Remove synthesis-based loader; the direct loader is the only path.
 
 **Publish guidance**: Users publishing libraries must rebuild with the new compiler to emit v3 contracts. The CLI will reject v2 contracts with a clear error message.
 
@@ -226,7 +226,7 @@ Per CLAUDE.md "No new F# code" policy, all implementation is in Lyric (`lyric-co
 
 **D4 — Explicit visibility field**: Required in metadata format. No string-parsing.
 
-**D5 — New fields are stable**: The `visibility`, `dependencies`, and `contractHash` fields can carry `@stable(since = "0.1")` because they are metadata-only, not part of the runtime API surface.
+**D5 — New fields are stable**: The `visibility`, `dependencies`, and `contractHash` fields carry `@stable(since = "X.Y")` (where X.Y is the release that ships format version 3) because they are metadata-only, not part of the runtime API surface. These fields do not exist before format version 3, so `@stable(since = "0.1")` would be incorrect.
 
 **D6 — v2 rejection error message**: When the CLI encounters a contract with `formatVersion` less than 3, it must emit: `"Contract metadata format v2 is no longer supported. Rebuild the library with the latest compiler and re-publish."` No dual-path support; no compatibility routing.
 
