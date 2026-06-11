@@ -108,7 +108,7 @@ func lowerCmp(
 // Consumes the message from the stack, throws RuntimeException.
 func emitPanicFromStack(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
   // Message is on stack.  Store it to a temp slot so we can dup for ctor.
-  val msgSlot = allocSlot(ctx, "__panic_msg_" + toString(ctx.slotTicker.count), JRef(className = "java/lang/String"))
+  val msgSlot = allocSlot(ctx, "__panic_msg_" + freshLabel(ctx), JRef(className = "java/lang/String"))
   emitStore(insns, msgSlot, JRef(className = "java/lang/String"))
   insns.add(LNew(className = "java/lang/RuntimeException"))
   insns.add(LDup)
@@ -265,7 +265,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         case BAnd -> {
           val falseL = freshLabel(ctx)
           val afterL = freshLabel(ctx)
-          val resSlot = allocSlot(ctx, "__and_" + toString(ctx.slotTicker.count), JBoolean)
+          val resSlot = allocSlot(ctx, "__and_" + freshLabel(ctx), JBoolean)
           lowerExpr(ctx, insns, lhs)
           insns.add(LIfeq(label = falseL))
           lowerExpr(ctx, insns, rhs)
@@ -283,7 +283,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         case BOr -> {
           val trueL = freshLabel(ctx)
           val afterL = freshLabel(ctx)
-          val resSlot = allocSlot(ctx, "__or_" + toString(ctx.slotTicker.count), JBoolean)
+          val resSlot = allocSlot(ctx, "__or_" + freshLabel(ctx), JBoolean)
           lowerExpr(ctx, insns, lhs)
           insns.add(LIfne(label = trueL))
           lowerExpr(ctx, insns, rhs)
@@ -352,7 +352,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                 }
               }
               // Store lhs (already on JVM stack) to a slot before building the StringBuilder.
-              val lhsSlot = allocSlot(ctx, "__add_lhs_" + toString(ctx.slotTicker.count), lhsTy)
+              val lhsSlot = allocSlot(ctx, "__add_lhs_" + freshLabel(ctx), lhsTy)
               emitStore(insns, lhsSlot, lhsTy)
               insns.add(LNew(className = "java/lang/StringBuilder"))
               insns.add(LDup)
@@ -620,6 +620,14 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               )
             )
             JRef(className = "java/lang/String")
+          } else if cls == "java/lang/String" and memberName == "length" {
+            // String.length() returns int (I), not Object.  Resolving through
+            // the generic record-field path below would emit `getfield` (no such
+            // field) or fall back to Object — either breaks the comparison that
+            // typically follows `s.length > 0`.  Pin the descriptor directly.
+            val lenPs: List[JvmType] = newList()
+            insns.add(LInvokevirtual(owner = "java/lang/String", name = "length", params = lenPs, ret = JInt))
+            JInt
           } else {
             // Record field access: resolve the field's declared type from the
             // type registry (records are registered in `caseFields` keyed by
@@ -717,7 +725,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       insns.add(LDup)
       val tInitPs: List[JvmType] = newList()
       insns.add(LInvokespecial(owner = "java/util/ArrayList", name = "<init>", params = tInitPs, ret = JVoid))
-      val tupSlot = allocSlot(ctx, "__tuple_" + toString(ctx.slotTicker.count), JRef(className = "java/util/ArrayList"))
+      val tupSlot = allocSlot(ctx, "__tuple_" + freshLabel(ctx), JRef(className = "java/util/ArrayList"))
       insns.add(LAstore(slot = tupSlot))
       var ti = 0
       while ti < exprs.count {
@@ -741,7 +749,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       insns.add(LDup)
       val alInitPs: List[JvmType] = newList()
       insns.add(LInvokespecial(owner = "java/util/ArrayList", name = "<init>", params = alInitPs, ret = JVoid))
-      val listSlot = allocSlot(ctx, "__list_" + toString(ctx.slotTicker.count), JRef(className = "java/util/ArrayList"))
+      val listSlot = allocSlot(ctx, "__list_" + freshLabel(ctx), JRef(className = "java/util/ArrayList"))
       insns.add(LAstore(slot = listSlot))
       var i = 0
       while i < exprs.count {
@@ -935,7 +943,7 @@ func reconcileCmpOperands(ctx: in FuncCtx, insns: in List[LInsn], lhsTy: in JvmT
   val rhsPrim = numericPrimTy(rhsTy)
   if isRefJvm(lhsTy) and not (rhsPrim == JVoid) {
     // Unbox lhs (currently below rhs): spill rhs, unbox lhs, reload rhs.
-    val rhsSlot = allocSlot(ctx, "__cmp_rhs_" + toString(ctx.slotTicker.count), rhsTy)
+    val rhsSlot = allocSlot(ctx, "__cmp_rhs_" + freshLabel(ctx), rhsTy)
     emitStore(insns, rhsSlot, rhsTy)
     coerceArgTo(insns, lhsTy, rhsPrim)
     emitLoad(insns, rhsSlot, rhsTy)
@@ -945,6 +953,13 @@ func reconcileCmpOperands(ctx: in FuncCtx, insns: in List[LInsn], lhsTy: in JvmT
     coerceArgTo(insns, rhsTy, lhsPrim)
     lhsPrim
   } else {
+    // Both operands have the same primitive type (or both are Object-erased
+    // references).  For the primitive case the caller emits the arithmetic
+    // instruction directly against lhsTy.  The both-erased Object+Object case
+    // (e.g. `case Ok(x) -> case Ok(y) -> x + y` on nested generic match arms)
+    // is a known gap: both sides need to be unboxed to a primitive before the
+    // arithmetic instruction, but no tested code path currently triggers it
+    // (#2862).  Track the gap there; fix when a real reproducer is confirmed.
     lhsTy
   }
 }
@@ -1727,6 +1742,66 @@ func collectBoundNamesStmt(s: in Statement, acc: in List[String]): Unit {
         case None -> ()
       }
     }
+    case SExpr(e) -> collectBoundNamesExpr(e, acc)
+    case _ -> ()
+  }
+}
+
+// Walk an expression for nested `ELambda` nodes and add their params to `acc`.
+// This ensures a lambda param introduced inside an expression statement is
+// counted as bound when computing the outer lambda's capture set.
+func collectBoundNamesExpr(e: in Expr, acc: in List[String]): Unit {
+  match e.kind {
+    case ELambda(lparams, lbody) -> {
+      var i = 0
+      while i < lparams.count {
+        addNameOnceJvm(acc, lparams[i].name)
+        i = i + 1
+      }
+      collectBoundNamesBlock(lbody, acc)
+    }
+    case ECall(fn, args) -> {
+      collectBoundNamesExpr(fn, acc)
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CAPositional(ae) -> collectBoundNamesExpr(ae, acc)
+          case CANamed(_, ae, _) -> collectBoundNamesExpr(ae, acc)
+        }
+        i = i + 1
+      }
+    }
+    case EBinop(_, lhs, rhs) -> {
+      collectBoundNamesExpr(lhs, acc)
+      collectBoundNamesExpr(rhs, acc)
+    }
+    case EPrefix(_, operand) -> collectBoundNamesExpr(operand, acc)
+    case EMember(recv, _) -> collectBoundNamesExpr(recv, acc)
+    case ETypeApp(fn, _) -> collectBoundNamesExpr(fn, acc)
+    case EIf(cond, thenB, elseOpt, _) -> {
+      collectBoundNamesExpr(cond, acc)
+      match thenB {
+        case EOBExpr(te) -> collectBoundNamesExpr(te, acc)
+        case EOBBlock(tb) -> collectBoundNamesBlock(tb, acc)
+      }
+      match elseOpt {
+        case Some(eb) -> match eb { case EOBExpr(ee) -> collectBoundNamesExpr(ee, acc); case EOBBlock(eblk) -> collectBoundNamesBlock(eblk, acc) }
+        case None -> ()
+      }
+    }
+    case EMatch(scrut, arms) -> {
+      collectBoundNamesExpr(scrut, acc)
+      var i = 0
+      while i < arms.count {
+        collectBoundNamesPattern(arms[i].pattern, acc)
+        match arms[i].body {
+          case EOBExpr(ae) -> collectBoundNamesExpr(ae, acc)
+          case EOBBlock(ab) -> collectBoundNamesBlock(ab, acc)
+        }
+        i = i + 1
+      }
+    }
+    case EBlock(block) -> collectBoundNamesBlock(block, acc)
     case _ -> ()
   }
 }

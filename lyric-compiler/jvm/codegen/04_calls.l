@@ -31,12 +31,8 @@ func lowerCatchIntrinsic(ctx: in FuncCtx, insns: in List[LInsn], lambdaBody: in 
   val catchStartL = freshLabel(ctx)
   val afterL = freshLabel(ctx)
 
-  val resultSlot = allocSlot(
-    ctx,
-    "__catch_result_" + toString(ctx.slotTicker.count),
-    JRef(className = "java/lang/Object")
-  )
-  val exSlot = allocSlot(ctx, "__catch_ex_" + toString(ctx.slotTicker.count), JRef(className = "java/lang/Object"))
+  val resultSlot = allocSlot(ctx, "__catch_result_" + freshLabel(ctx), JRef(className = "java/lang/Object"))
+  val exSlot = allocSlot(ctx, "__catch_ex_" + freshLabel(ctx), JRef(className = "java/lang/Object"))
 
   // Class names for Result cases as compiled from Std.Core
   // (pkgName="Std/Core", union="Result", cases "Ok" and "Err").
@@ -384,7 +380,10 @@ func isLambdaLocal(ctx: in FuncCtx, name: in String): Bool {
 // is `Object`; the caller context narrows / unboxes it via the usual paths.
 func lowerLambdaInvoke(ctx: in FuncCtx, insns: in List[LInsn], name: in String, args: in List[CallArg]): JvmType {
   val ifaceName = lambdaIfaceName(ctx.pkgName)
-  val slot = match lookupSlot(ctx, name) { case Some(s) -> s; case None -> 0 }
+  val slot = match lookupSlot(ctx, name) {
+    case Some(s) -> s
+    case None -> panic("lowerLambdaInvoke: unresolved lambda slot for '" + name + "'")
+  }
   // Load the closure reference and ensure its static type is the iface.
   insns.add(LAload(slot = slot))
   insns.add(LCheckcast(className = ifaceName))
@@ -850,13 +849,10 @@ func emitFfiCoerce(ctx: in FuncCtx, insns: in List[LInsn], fromDesc: in String, 
   //   end:
   //     aload dst            // leave the byte[] on the stack
   if fromDesc == "[Ljava/lang/Object;" and toDesc == "[B" {
-    val srcSlot = allocSlot(
-      ctx,
-      "__ffi_arr_src_" + toString(ctx.slotTicker.count),
-      JArray(elem = JRef(className = "java/lang/Object"))
-    )
-    val dstSlot = allocSlot(ctx, "__ffi_arr_dst_" + toString(ctx.slotTicker.count), JArray(elem = JByte))
-    val idxSlot = allocSlot(ctx, "__ffi_arr_idx_" + toString(ctx.slotTicker.count), JInt)
+    val srcSlot = allocSlot(ctx, "__ffi_arr_src_" + freshLabel(ctx), JArray(elem = JRef(className = "java/lang/Object")))
+    val dstSlot = allocSlot(ctx, "__ffi_arr_dst_" + freshLabel(ctx), JArray(elem = JByte))
+    val idxSlot = allocSlot(ctx, "__ffi_arr_idx_" + freshLabel(ctx), JInt)
+    val lenSlot = allocSlot(ctx, "__ffi_arr_len_" + freshLabel(ctx), JInt)
     val loopL = freshLabel(ctx)
     val endL = freshLabel(ctx)
     // `LAstoreAs` carries the array descriptor so the StackMapTable types the
@@ -868,12 +864,16 @@ func emitFfiCoerce(ctx: in FuncCtx, insns: in List[LInsn], fromDesc: in String, 
     insns.add(LNewarray(typeCode = 8))
     // T_BYTE
     insns.add(LAstoreAs(slot = dstSlot, className = "[B"))
+    // Hoist arraylength out of the loop condition — avoids re-fetching the
+    // array header on every iteration (#2752).
+    insns.add(LAload(slot = srcSlot))
+    insns.add(LArraylength)
+    insns.add(LIstore(slot = lenSlot))
     insns.add(LIconst(v = 0))
     insns.add(LIstore(slot = idxSlot))
     insns.add(LLabel(name = loopL))
     insns.add(LIload(slot = idxSlot))
-    insns.add(LAload(slot = srcSlot))
-    insns.add(LArraylength)
+    insns.add(LIload(slot = lenSlot))
     insns.add(LIfIcmpge(label = endL))
     insns.add(LAload(slot = dstSlot))
     insns.add(LIload(slot = idxSlot))
@@ -1061,7 +1061,7 @@ func lowerAutoFfiInstanceCall(
         nj = nj + 1
       }
       val recvSlot = if needsRecvStash {
-        val rs = allocSlot(ctx, "__ffi_recv_" + toString(ctx.slotTicker.count), JRef(className = ci.binaryName))
+        val rs = allocSlot(ctx, "__ffi_recv_" + freshLabel(ctx), JRef(className = ci.binaryName))
         insns.add(LAstoreAs(slot = rs, className = ci.binaryName))
         rs
       } else {
@@ -1085,7 +1085,7 @@ func lowerAutoFfiInstanceCall(
         val pj = descStrToJvmType(paramDesc)
         paramJvms.add(pj)
         if needsRecvStash {
-          val aslot = allocSlot(ctx, "__ffi_arg_" + toString(ctx.slotTicker.count), pj)
+          val aslot = allocSlot(ctx, "__ffi_arg_" + freshLabel(ctx), pj)
           emitStore(insns, aslot, pj)
           argSlots.add(aslot)
         }

@@ -178,10 +178,10 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
             case _ -> {
               // Compound: spill arrayref + index to locals (no dup2 opcode), read
               // the current element, combine with the RHS, store back.
-              val arrSlot = allocSlot(ctx, "__idxasn_arr_" + toString(ctx.slotTicker.count), recvTy)
+              val arrSlot = allocSlot(ctx, "__idxasn_arr_" + freshLabel(ctx), recvTy)
               emitStore(insns, arrSlot, recvTy)
               lowerExpr(ctx, insns, indices[0])
-              val idxSlot = allocSlot(ctx, "__idxasn_i_" + toString(ctx.slotTicker.count), JInt)
+              val idxSlot = allocSlot(ctx, "__idxasn_i_" + freshLabel(ctx), JInt)
               emitStore(insns, idxSlot, JInt)
               emitLoad(insns, arrSlot, recvTy)
               emitLoad(insns, idxSlot, JInt)
@@ -238,6 +238,12 @@ func emitArrayLoad(insns: in List[LInsn], elem: in JvmType): Unit {
   match elem {
     case JByte -> insns.add(LBaload)
     case JBoolean -> insns.add(LBaload)
+    case JChar -> insns.add(LCaload)
+    case JShort -> insns.add(LSaload)
+    case JInt -> insns.add(LIaload)
+    case JLong -> insns.add(LLaload)
+    case JFloat -> insns.add(LFaload)
+    case JDouble -> insns.add(LDaload)
     case _ -> insns.add(LAaload)
   }
 }
@@ -356,7 +362,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           // in a temp so the deferred blocks run on an empty operand stack, then
           // reload and return (#1833, mirrors MSIL #1477's epilogue routing).
           if ctx.deferStack.count > 0 {
-            val rtmp = allocSlot(ctx, "__defer_ret_" + toString(ctx.slotTicker.count), rt)
+            val rtmp = allocSlot(ctx, "__defer_ret_" + freshLabel(ctx), rt)
             emitStore(insns, rtmp, rt)
             replayDefers(ctx, insns, 0)
             emitLoad(insns, rtmp, rt)
@@ -402,12 +408,12 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
       match iterTy {
         case JArray(elemArr) -> {
           // Array: index-based loop.
-          val arrSlot = allocSlot(ctx, "__arr_" + toString(ctx.slotTicker.count), iterTy)
+          val arrSlot = allocSlot(ctx, "__arr_" + freshLabel(ctx), iterTy)
           emitStore(insns, arrSlot, iterTy)
-          val iSlot = allocSlot(ctx, "__for_i_" + toString(ctx.slotTicker.count), JInt)
+          val iSlot = allocSlot(ctx, "__for_i_" + freshLabel(ctx), JInt)
           insns.add(LIconst(v = 0))
           emitStore(insns, iSlot, JInt)
-          val lenSlot = allocSlot(ctx, "__for_len_" + toString(ctx.slotTicker.count), JInt)
+          val lenSlot = allocSlot(ctx, "__for_len_" + freshLabel(ctx), JInt)
           emitLoad(insns, arrSlot, iterTy)
           insns.add(LArraylength)
           emitStore(insns, lenSlot, JInt)
@@ -422,7 +428,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           emitLoad(insns, iSlot, JInt)
           insns.add(LAaload)
           val elemTyA = JRef(className = "java/lang/Object")
-          val elemSlotA = allocSlot(ctx, "__for_elem_" + toString(ctx.slotTicker.count), elemTyA)
+          val elemSlotA = allocSlot(ctx, "__for_elem_" + freshLabel(ctx), elemTyA)
           emitStore(insns, elemSlotA, elemTyA)
           lowerPatternBind(ctx, insns, pat, elemSlotA, elemTyA)
           // #2854: `continue` targets the index-increment point (`contLA`), not
@@ -450,7 +456,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           val iterableClass = "java/lang/Iterable"
           val iteratorClass = "java/util/Iterator"
           val objTy = JRef(className = "java/lang/Object")
-          val iterableSlot = allocSlot(ctx, "__iterable_" + toString(ctx.slotTicker.count), objTy)
+          val iterableSlot = allocSlot(ctx, "__iterable_" + freshLabel(ctx), objTy)
           emitStore(insns, iterableSlot, objTy)
           // Call .iterator() to get an Iterator.
           emitLoad(insns, iterableSlot, objTy)
@@ -464,7 +470,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               argCount = 1
             )
           )
-          val itorSlot = allocSlot(ctx, "__itor_" + toString(ctx.slotTicker.count), objTy)
+          val itorSlot = allocSlot(ctx, "__itor_" + freshLabel(ctx), objTy)
           emitStore(insns, itorSlot, objTy)
           val loopLB = freshLabel(ctx)
           val endLB = freshLabel(ctx)
@@ -487,7 +493,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
             )
           )
           val elemTyB = JRef(className = "java/lang/Object")
-          val elemSlotB = allocSlot(ctx, "__for_elem_" + toString(ctx.slotTicker.count), elemTyB)
+          val elemSlotB = allocSlot(ctx, "__for_elem_" + freshLabel(ctx), elemTyB)
           emitStore(insns, elemSlotB, elemTyB)
           lowerPatternBind(ctx, insns, pat, elemSlotB, elemTyB)
           // #2854: `continue` targets the loop top (`loopLB`, which re-checks
@@ -624,7 +630,7 @@ func lowerLocalPatBind(
     }
     case _ -> {
       // Complex pattern: store to a temp slot then bind.
-      val tmpSlot = allocSlot(ctx, "__tmp_" + toString(ctx.slotTicker.count), initTy)
+      val tmpSlot = allocSlot(ctx, "__tmp_" + freshLabel(ctx), initTy)
       emitStore(insns, tmpSlot, initTy)
       lowerPatternBind(ctx, insns, pat, tmpSlot, initTy)
     }
@@ -685,18 +691,17 @@ func lowerTryCatchExpr(ctx: in FuncCtx, insns: in List[LInsn], body: in Block, c
         // and the JVM verifier doesn't reject a mismatched store (#1681).
         // The result slot is sized by `resultTy`; widths must match, which
         // the type-checker normally guarantees.
-        //
-        // KNOWN LIMITATION (#2042): when `catchBodyTy == JVoid` and
-        // `resultTy != JVoid`, the catch body evaluated in statement mode and
-        // pushed nothing onto the operand stack.  Falling back to
-        // `emitStore(insns, rslot, resultTy)` will still pop a value that
-        // isn't there, producing the same class of VerifyError this PR fixed
-        // for the non-void case.  This path is guarded by the type-checker
-        // guarantee that widths must match; when the documented type-checker
-        // gap allows a mismatch here, the generated class will fail to load.
-        // Fix pending the underlying type-checker repair.
         match catchBodyTy {
-          case JVoid -> emitStore(insns, rslot, resultTy)
+          case JVoid -> {
+            // The catch body produced nothing (statement mode) but the try
+            // body produced a value — emitting a store here would pop a
+            // value that isn't on the stack and produce a VerifyError.
+            // Emit a build-time panic so this surfaces as a clear compile
+            // error rather than an unloadable class (#2690).
+            panic(
+              "Jvm.Codegen: try-catch used as an expression but a catch arm returned Unit while the try body returned a value; this is a type-checker gap — annotate the try-catch result type explicitly (#2042)"
+            )
+          }
           case _ -> emitStore(insns, rslot, catchBodyTy)
         }
       }
@@ -781,7 +786,7 @@ func lowerTryCatch(
       val finallyExL = freshLabel(ctx)
       insns.add(LLabel(name = finallyExL))
       val exTy = JRef(className = "java/lang/Throwable")
-      val tmpName = "__finally_ex_" + toString(ctx.labelTicker.count)
+      val tmpName = "__finally_ex_" + freshLabel(ctx)
       val tmpSlot = allocSlot(ctx, tmpName, exTy)
       emitStore(insns, tmpSlot, exTy)
       lowerBlock(ctx, insns, fb)
@@ -950,7 +955,7 @@ func lowerDeferRegion(
   // Exception path: catch any throwable, run the deferred block, rethrow.
   insns.add(LLabel(name = handlerL))
   val exTy = JRef(className = "java/lang/Throwable")
-  val tmpName = "__defer_ex_" + toString(ctx.labelTicker.count)
+  val tmpName = "__defer_ex_" + freshLabel(ctx)
   val tmpSlot = allocSlot(ctx, tmpName, exTy)
   // Store via `LAstoreAs` so the slot's StackMapTable type is `Throwable`, not
   // the bare `Object` a plain `astore` registers — otherwise the rethrow's
@@ -1049,7 +1054,7 @@ pub func lowerBlockExprWithDefer(ctx: in FuncCtx, insns: in List[LInsn], block: 
     match valTy {
       case JVoid -> ()
       case _ -> {
-        valSlot = allocSlot(ctx, "__defer_val_" + toString(ctx.slotTicker.count), valTy)
+        valSlot = allocSlot(ctx, "__defer_val_" + freshLabel(ctx), valTy)
         emitStore(insns, valSlot, valTy)
       }
     }
