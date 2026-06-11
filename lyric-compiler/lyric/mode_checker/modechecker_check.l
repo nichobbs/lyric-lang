@@ -1107,17 +1107,11 @@ func checkImportLevels(
 // The CLR verifier rejects AwaitUnsafeOnCompleted inside a protected region;
 // diagnose at compile time instead of emitting invalid IL.
 //
-// Scope: currently limited to @proof_required packages (#2985).
-// The constraint is an emitter limitation (the self-hosted Phase B.1 emitter
-// cannot hoist await out of protected regions) that applies to ALL async
-// functions regardless of verification level. @runtime_checked packages are
-// excluded for now because pre-compiled stdlib packages (e.g. Std.Http) pass
-// through the F# bootstrap emitter which can hoist awaits, but user-authored
-// @runtime_checked async functions share the same risk.  Once the emitter
-// gains await-hoist capability (or all @runtime_checked callsites in the repo
-// are audited and cleaned up), remove the vlIsProofRequired guard below and
-// update the "await in try runtime checked no v0012" self-test.  Tracked in
-// issue #2985.
+// Scope: all @runtime_checked and @proof_required packages.  @axiom kernel
+// files are excluded because they compile through the F# bootstrap emitter
+// which can hoist awaits out of protected regions; the self-hosted emitter
+// that compiles user code cannot.  Stdlib.Http was restructured to hoist all
+// awaits before try blocks (issue #2985).
 // ─────────────────────────────────────────────────────────────────────────────
 record AwaitTryCtx {
   fnName: String
@@ -1371,7 +1365,7 @@ func checkFuncForAwaitInTry(fn: in FunctionDecl, diag: in List[Diagnostic]): Uni
 }
 
 func checkAwaitInTry(file: in SourceFile, fileLevel: in VerificationLevel, diag: in List[Diagnostic]): Unit {
-  if not vlIsProofRequired(fileLevel) {
+  if vlIsAxiom(fileLevel) {
     return
   }
   var i = 0

@@ -12981,7 +12981,7 @@ Both codes are added to `bootstrap/src/Lyric.Lexer/Lexer.fs` and covered by new 
 
 **Verifier warning V0013 — NaN/±Infinity in SMT goals.**  `smtRenderFloat` substitutes `0.0` for non-finite IEEE 754 values (SMT-LIB Real has no representation for them).  The verifier now detects these values in goals via `goalHasNonFiniteFloat` (added to `lyric-compiler/lyric/verifier/driver.l`) and emits `V0013` before discharging, making the approximation visible.
 
-Note: `V0009` is reserved by the mode checker for `assume` outside `unsafe {}`. The NaN/Infinity diagnostic uses the next unallocated code `V0013` (V0010 = conflicting level annotations, V0011 = unknown modifier, V0012 = planned for async-in-proof-required).
+Note: `V0009` is reserved by the mode checker for `assume` outside `unsafe {}`. The NaN/Infinity diagnostic uses the next unallocated code `V0013` (V0010 = conflicting level annotations, V0011 = unknown modifier, V0012 = await inside try/catch/finally in any non-axiom async func).
 
 **Diagnostic type extension (LSP consumers).**  `bootstrap/src/Lyric.Lexer/Diagnostics.fs` adds three optional fields to the `Diagnostic` record:
 
@@ -24137,3 +24137,34 @@ generic-function monomorphization gap (#1498) — so consumers (and this test)
 use `match`. JVM range-bound checking remains tracked separately (#2997).
 
 Closes #1501.
+
+### D-progress-497 — V0012 extended to @runtime_checked packages; Std.Http await-in-try callsites hoisted (#2985)
+
+**Status:** Shipped (2026-06-11).
+
+**Root cause (issue #2985):**
+
+`checkAwaitInTry` was guarded by `vlIsProofRequired(fileLevel)`, so V0012 was never emitted for `@runtime_checked` packages. The CLR constraint that triggers V0012 (the self-hosted MSIL emitter cannot hoist `await` expressions out of protected try/catch/finally regions) applies to all verification levels — any `@runtime_checked` async function containing `await` in a try block would emit invalid MSIL when compiled by the self-hosted emitter.
+
+`@runtime_checked` packages were originally excluded because `Std.Http` (the only stdlib package with `await`-in-try patterns) compiled through the F# bootstrap emitter, which can hoist awaits. That carve-out was tracked as a gap in PR #2965 review finding #2982.
+
+**Changes:**
+
+*Mode checker* (`lyric-compiler/lyric/mode_checker/modechecker_mode.l`, `modechecker_check.l`):
+
+A new `vlIsAxiom(lvl: in VerificationLevel): Bool` predicate is added to `modechecker_mode.l` (matching the existing `vlIsProofRequired` pattern). The `vlIsProofRequired` early-return guard in `checkAwaitInTry` is replaced by `vlIsAxiom(fileLevel)`: `@axiom` kernel files compile through the F# bootstrap emitter which supports await-in-try; every other verification level (`@runtime_checked`, `@proof_required`, all variants) now triggers V0012. Union types cannot be compared with `==`, so a proper `match`-based helper function is required.
+
+*Emitter source assembly* (`lyric-compiler/lyric/emitter.l`):
+
+Both `loadCompilerPayloads` and `loadStdlibPayloads` stripped file-level annotations (lines beginning with `@` before the `package` declaration) via `stripPackageAndImports`, but never re-added them when reconstructing the combined source as `"package " + name + "\n" + ...`. This caused `@axiom` kernel packages (e.g. `Std.HttpHost`) to lose their level annotation and be treated as `@runtime_checked` by the mode checker, defeating the `vlIsAxiom` guard. A new `extractFileLevelAnnotations` helper is added; both loaders now track per-package file-level annotations and prepend them to the reconstructed source header.
+
+*Self-test* (`lyric-compiler/lyric/modechecker_self_test.l`):
+
+The `"await in try runtime checked no v0012"` test is renamed `"await in try runtime checked v0012"` and updated to assert that V0012 is emitted for `@runtime_checked` packages (matching the new behaviour).
+
+*Stdlib HTTP callsite remediation* (`lyric-stdlib/std/_kernel/http_host.l`, `lyric-stdlib/std/http.l`):
+
+`Std.Http` contained 10 async functions that used `await` inside try/catch blocks to convert host `Bug` exceptions to `Result` error values (the standard stdlib exception-bridging pattern).  These are restructured as follows:
+
+- Nine `host*Safe` wrapper functions are added to `lyric-stdlib/std/_kernel/http_host.l` (which is `@axiom` and therefore exempt from V0012): each catches `Bug` internally and returns `Result[T, String]` (with the error message as the `Err` payload).  The wrappers are `hostSendSafe`, `hostGetSafe`, `hostPostStringSafe`, `hostReadBodyTextSafe`, `hostReadBodyBytesSafe`, `hostSendWithCancelSafe`, `hostGetWithCancelSafe`, `hostPostStringWithCancelSafe`, and `hostReadBodyTextWithCancelSafe`.
+- Each affected `Std.Http` function is rewritten to `await` its safe wrapper (which returns `Result`) and then `match` on the result — no `await` appears inside a `try` block anywhere in `http.l`.

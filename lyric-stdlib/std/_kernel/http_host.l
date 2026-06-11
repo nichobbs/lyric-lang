@@ -272,3 +272,99 @@ pub func hostResponseHeader(response: in HttpResponseMessage, name: in String): 
   }
   ""
 }
+
+// ---------------------------------------------------------------------------
+// V0012-safe wrappers — issue #2985.
+//
+// The self-hosted MSIL emitter cannot place an await inside a CLR protected
+// region (try/catch/finally).  Std.Http used to catch Bug inline around each
+// await; those functions now await these wrappers instead, keeping the await
+// outside any try block on the Std.Http side.  This file is @axiom, so it
+// compiles through the F# bootstrap emitter which can hoist awaits — the
+// wrappers below are therefore permitted to use await-in-try.
+// ---------------------------------------------------------------------------
+pub async func hostSendSafe(client: in HttpClient, request: in HttpRequestMessage): Result[HttpResponseMessage, String] {
+  return try {
+    Ok(value = await clientSendAsync(client, request))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+pub async func hostGetSafe(client: in HttpClient, url: in String): Result[HttpResponseMessage, String] {
+  return try {
+    Ok(value = await clientGetAsync(client, url))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+pub async func hostPostStringSafe(
+  client: in HttpClient, url: in String, body: in String, contentType: in String
+): Result[HttpResponseMessage, String] {
+  return try {
+    Ok(value = await clientPostAsync(client, url, newStringContent(body, utf8(), contentType)))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+pub async func hostReadBodyTextSafe(response: in HttpResponseMessage): Result[String, String] {
+  return try {
+    Ok(value = await contentReadAsString(responseContent(response)))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+pub async func hostReadBodyBytesSafe(response: in HttpResponseMessage): Result[slice[Byte], String] {
+  return try {
+    Ok(value = await contentReadAsBytes(responseContent(response)))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+pub async func hostSendWithCancelSafe(
+  client: in HttpClient, request: in HttpRequestMessage, token: in CancellationToken
+): Result[HttpResponseMessage, String] {
+  return try {
+    Ok(value = await clientSendAsyncCancel(client, request, token))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+pub async func hostGetWithCancelSafe(
+  client: in HttpClient, url: in String, token: in CancellationToken
+): Result[HttpResponseMessage, String] {
+  return try {
+    Ok(value = await clientGetAsyncCancel(client, url, token))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+pub async func hostPostStringWithCancelSafe(
+  client: in HttpClient,
+  url: in String,
+  body: in String,
+  contentType: in String,
+  token: in CancellationToken,
+): Result[HttpResponseMessage, String] {
+  return try {
+    Ok(value = await clientPostAsyncCancel(client, url, newStringContent(body, utf8(), contentType), token))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+pub async func hostReadBodyTextWithCancelSafe(
+  response: in HttpResponseMessage, token: in CancellationToken
+): Result[String, String] {
+  return try {
+    Ok(value = await contentReadAsStringCancel(responseContent(response), token))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}

@@ -242,14 +242,15 @@ test "await in try non-async no v0012" {
   assertTrue(not (hasDiagCode(result, "V0012")), "non-async-try: no V0012")
 }
 
-test "await in try runtime checked no v0012" {
-  // V0012 is currently scoped to @proof_required packages only.  @runtime_checked
-  // async functions share the same CLR constraint but are excluded until the
-  // emitter gains await-hoist capability or all callsites are audited.
-  // See issue #2985 for the remediation plan.
+test "await in try runtime checked v0012" {
+  // V0012 now covers @runtime_checked packages (issue #2985 resolved): the CLR
+  // constraint applies regardless of verification level.  Stdlib callsites in
+  // Std.Http were restructured to hoist awaits before try blocks; the
+  // vlIsProofRequired guard was replaced with a VLAxiom-only exclusion (kernel
+  // files compile through the F# emitter which can hoist, so they are exempt).
   val src = "@runtime_checked\npackage P\nasync func f(): Unit {\n  try {\n    await someTask()\n  } catch (e: Exception) {\n  }\n}\nfunc someTask(): Unit {}\n"
   val result = parseCheck(src)
-  assertTrue(not (hasDiagCode(result, "V0012")), "rc-await-in-try: no V0012 (scope limited per #2985)")
+  assertTrue(hasDiagCode(result, "V0012"), "rc-await-in-try: V0012 emitted for @runtime_checked")
 }
 
 test "await in lambda inside try no v0012" {
