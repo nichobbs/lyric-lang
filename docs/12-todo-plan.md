@@ -41,16 +41,16 @@ order:
    concrete .NET DIM MethodDefs in the self-hosted MSIL emitter (C11 DONE,
    `lowerMInterface` + `lowerImplMethodMsil`). **Remaining:** none — Band 1 is
    complete.
-2. **Backend correctness (CRITICAL).** All Band-2 items are now resolved: `?`
-   (C3, #1475), `==`/`Map`-key structural equality (H1, #1480/#1837), `defer`
-   (C7, #1477), all of #1481, try/catch-as-value-expression IL (#1823), and
-   capturing closures (H20, #1479 v1+v2 — immutable by value into `object[]`,
-   `var` by heap-cell reference, single-level incl. escaping). Function-value
-   invocation works for zero-arg lambdas (#1877) and annotated/HOF-propagated
-   param-using lambdas (#1939). M7 is stale (loop invariants lowered by the
-   elaborator; `SItem` never produced by the parser). Remaining tracked items:
-   multi-level nested closure capture (#1479) and lambdas in `@test_module`
-   bodies (#1854). **Anything not yet correctly lowered must hard-error, never
+2. **Backend correctness (CRITICAL). Shipped:** `?` (C3, #1475); `==`/`Map`-key
+   structural equality (H1, #1480/#1837); `defer` (C7, #1477); all of #1481;
+   try/catch-as-value-expression IL (#1823); capturing closures (H20, #1479
+   v1+v2 — immutable by value into `object[]`, `var` by heap-cell reference,
+   single-level incl. escaping); function-value invocation for zero-arg lambdas
+   (#1877) and annotated/HOF-propagated param-using lambdas (#1939); M7 closed
+   (loop invariants lowered by the elaborator; `SItem` never produced by the
+   parser). **Remaining:** multi-level nested closure capture (nested lambda
+   captures enclosing lambda's locals, #1479); lambdas in `@test_module` bodies
+   (#1854, LOW). **Anything not yet correctly lowered must hard-error, never
    silently pass through.**
 3. **Async tail (CRITICAL).** Async SM synthesis shipped (Epic #2070 Phases
    B.0–B.3 + spawn): `IAsyncStateMachine` / `AsyncTaskMethodBuilder` / `Task[T]`
