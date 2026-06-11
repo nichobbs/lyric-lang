@@ -1762,12 +1762,16 @@ test "long in int ctor field rejected" {
 }
 
 test "slice literal in list ctor field ok" {
-  val src = "package P\nimport Std.Collections\nrecord R { items: List[Int] }\nfunc f(): R { R(items = [1, 2, 3]) }\n"
+  // Declare a local generic `List` so the field type resolves in the bare
+  // `check()` harness (which registers no stdlib items) — the slice-
+  // satisfies-List rule keys on the type NAME, so a resolved local `List`
+  // exercises it the same way the stdlib's does.  This keeps the strict
+  // zero-diagnostics assertion meaningful: with the field type resolved,
+  // the ctor-argument check runs for real instead of vacuously matching a
+  // TyError field (#3190).
+  val src = "package P\nrecord List[T] { }\nrecord R { items: List[Int] }\nfunc f(): R { R(items = [1, 2, 3]) }\n"
   val cr = parseCheck(src)
-  // The bare `check()` harness registers no stdlib items, so the field's
-  // `List` reference itself is unknown here (T0010 via #1228 declaration
-  // validation); the assertion targets the ctor-argument check only.
-  assertTrue(not hasDiagCode(cr, "T0104"), "slice[Int] satisfies List[Int] in ctor field")
+  assertEqualInt(diagCount(cr), 0, "slice[Int] satisfies List[Int] in ctor field")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
