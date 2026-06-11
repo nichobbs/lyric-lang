@@ -15,8 +15,10 @@ output_assembly = "Jobs.dll"
 "Jobs.Aspects"    = "src/jobs_aspects.l"
 "Jobs.Kernel.Net" = "src/_kernel/net/jobs_kernel.l"
 
-[project.tests]
-"Jobs.JobsTests" = "tests/jobs_tests.l"
+# [project.tests] discovery is deliberately un-wired: the suite crashes the
+# self-hosted dotnet runtime today (invalid IL + AccessViolationException in
+# InProcessJobScheduler.enqueue, #3175). Re-enable once #3175 is fixed:
+# "Jobs.JobsTests" = "tests/jobs_tests.l"
 
 [features]
 hangfire = []   # Hangfire backend for .NET (Hangfire.Core + Hangfire.SqlServer)
