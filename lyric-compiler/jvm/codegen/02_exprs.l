@@ -1,4 +1,4 @@
-//! jvm/codegen_2_exprs.l — Jvm.Codegen: expression lowering.
+//! jvm/codegen/02_exprs.l — Jvm.Codegen: expression lowering.
 //!
 //! Part of the Jvm.Codegen package (split from codegen.l; see docs/44 J0).
 //! lowerExpr and its comparison, boolean-condition, if/block, interpolated-string,
