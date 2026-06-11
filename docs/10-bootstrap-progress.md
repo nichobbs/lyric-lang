@@ -24042,6 +24042,6 @@ triage:
   receiver type (no duplicate diagnostics); `MMapOf`/`MConcreteMap` `.add`
   hint propagation covers key-generic cases.
 
-Verified by `typechecker_self_test.l` (191 cases), `inbundle_generics_self_test.l`
+Verified by `typechecker_self_test.l` (194 cases), `inbundle_generics_self_test.l`
 (20 cases), and the full per-package self-compile path.  Docs: language
 reference §2.11 and the book's T-series table list the new codes.
