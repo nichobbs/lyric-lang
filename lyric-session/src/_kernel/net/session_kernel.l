@@ -5,7 +5,24 @@
 //! `bootstrap/src/Lyric.Session.Host/RedisStore.fs`) with native Lyric
 //! `@externTarget` bindings (#1777).
 //!
-//! Design changes vs the old shim path:
+//! ## BREAKING CHANGE: session ID format (#3022)
+//!
+//! Session IDs are now generated via `Std.Uuid.newUuid()` / `uuidToString()`,
+//! which produces **hyphenated UUID** format (e.g.
+//! `550e8400-e29b-41d4-a716-446655440000`).  The old F# host shim used
+//! `Guid.NewGuid().ToString("N")`, which produced **no-dash hex** format
+//! (e.g. `550e8400e29b41d4a716446655440000`).
+//!
+//! Applications upgrading from the F# shim will have existing sessions stored
+//! in Redis under the old no-dash keys.  After the upgrade the new code looks
+//! up sessions under hyphenated keys — all pre-upgrade sessions will appear as
+//! "not found," effectively logging out every active user.
+//!
+//! **Migration**: flush the Redis session namespace before deploying this
+//! version (e.g. `redis-cli --scan --pattern '<keyPrefix>*' | xargs redis-cli del`),
+//! or accept a one-time forced re-login for all active users at deployment time.
+//!
+//! ## Design changes vs the old shim path
 //!
 //!   * Handle type — the opaque `Int` store handle is replaced by a
 //!     `RedisStoreHandle` record `{ db: RedisDb, keyPrefix: String }`.
@@ -14,9 +31,7 @@
 //!     entirely.  `session.l` stores `RedisStoreHandle` in `NativeSessionStore`
 //!     and passes it back to each kernel call.
 //!
-//!   * Session IDs — generated via `Std.Uuid.newUuid()` / `uuidToString()`
-//!     (hyphenated format), replacing `Guid.NewGuid().ToString("N")` (no-dash
-//!     hex).  Both are unique V4 UUIDs; the format difference is internal.
+//!   * Session IDs — see BREAKING CHANGE above.
 //!
 //!   * `Nullable<TimeSpan>` — `default(): NullableTimeSpan` produces the null
 //!     (no-TTL) form; `wrapNullableTs(timeSpanFromSecs(n.toDouble()))` produces
