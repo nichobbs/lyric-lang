@@ -429,6 +429,13 @@ func buildReleaseProject(
       return 1
     }
     if Release.declaresEntryMain(combined) {
+      if entryPkgName != "" {
+        printErr(
+          "build: --release: multiple packages declare `func main()`: '" + entryPkgName + "' and '" + pkgEntry.name +
+            "' — exactly one entry package is required"
+        )
+        return 1
+      }
       entryPkgName = pkgEntry.name
     }
     pi += 1
@@ -472,35 +479,40 @@ func buildReleaseProject(
         val depDir = if Path.isAbsolute(dir) { dir } else { Path.join(mfDir, dir) }
         val depToml = Path.join(depDir, "lyric.toml")
         val depBinDir = Path.join(depDir, "bin")
-        if File.fileExists(depToml) {
-          match File.readText(depToml) {
-            case Ok(depMfText) -> {
-              match Mf.parseManifest(depMfText, depToml) {
-                case Ok(depMf) -> {
-                  val dllName = match depMf.project {
-                    case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }
-                    case None -> depMf.packageSection.name + ".dll"
-                  }
-                  val dllPath = Path.join(depBinDir, dllName)
-                  if File.fileExists(dllPath) {
-                    extraRefs.add(dllPath)
-                  } else {
-                    printErr(
-                      "build: --release: local dep '" + dep.name + "' not built — run `lyric build --manifest " + depToml + "` first"
-                    )
-                    return 1
-                  }
+        if not File.fileExists(depToml) {
+          printErr(
+            "build: --release: local dep '" + dep.name + "' — no lyric.toml found at '" + depToml +
+              "'; check the path = \"...\" entry in your lyric.toml"
+          )
+          return 1
+        }
+        match File.readText(depToml) {
+          case Ok(depMfText) -> {
+            match Mf.parseManifest(depMfText, depToml) {
+              case Ok(depMf) -> {
+                val dllName = match depMf.project {
+                  case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }
+                  case None -> depMf.packageSection.name + ".dll"
                 }
-                case Err(e) -> {
-                  printErr("build: --release: local dep '" + dep.name + "': malformed lyric.toml: " + ManifestError.message(e))
+                val dllPath = Path.join(depBinDir, dllName)
+                if File.fileExists(dllPath) {
+                  extraRefs.add(dllPath)
+                } else {
+                  printErr(
+                    "build: --release: local dep '" + dep.name + "' not built — run `lyric build --manifest " + depToml + "` first"
+                  )
                   return 1
                 }
               }
+              case Err(e) -> {
+                printErr("build: --release: local dep '" + dep.name + "': malformed lyric.toml: " + ManifestError.message(e))
+                return 1
+              }
             }
-            case Err(e) -> {
-              printErr("build: --release: local dep '" + dep.name + "': cannot read " + depToml + ": " + IOError.message(e))
-              return 1
-            }
+          }
+          case Err(e) -> {
+            printErr("build: --release: local dep '" + dep.name + "': cannot read " + depToml + ": " + IOError.message(e))
+            return 1
           }
         }
       }
