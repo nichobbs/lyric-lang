@@ -224,13 +224,16 @@ func cmdBuild(argv: in slice[String]): Int {
       }
     }
     if release {
-      // Project-mode Native AOT is a focused follow-up (needs entry-package
-      // detection across the bundle + path-dependency referencing); tracked in
-      // #1975.  Fail loud rather than silently producing a managed DLL.
-      printErr(
-        "build: --release for project mode is not yet supported; build a single-file entry with `lyric build --release <main.l>` (tracked in #1975)"
+      return buildReleaseProject(
+        mfPath,
+        explicitOut,
+        target,
+        ridArg,
+        cliFeatures,
+        noDefaultFeatures,
+        allFeatures,
+        noRestore
       )
-      return 1
     }
     if watch {
       return watchLoop(
@@ -328,6 +331,187 @@ func buildReleaseSingle(
 
   val outNative = match explicitOut { case Some(o) -> o; case None -> Path.join(srcDir, stem) }
   Release.buildRelease(releaseTarget, stagingDll, pkgName, newList(), ridArg, outNative)
+}
+
+// Project-mode `lyric build --release` (no explicit source file): compile every
+// package in [project.packages] into a staging bundle DLL, then produce a
+// self-contained native binary via Lyric.Release.  The entry package — the one
+// whose source declares `func main()` — is detected before the build so the
+// trampoline can be written immediately after `dotnet publish` finishes.
+func buildReleaseProject(
+  mfPath: in String,
+  explicitOut: in Option[String],
+  target: in CompileTarget,
+  ridArg: in Option[String],
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures: in Bool,
+  noRestore: in Bool,
+): Int {
+  // JVM native-image is not yet implemented; delegate to buildRelease which
+  // fails loud without performing a wasted managed build.
+  val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case Dotnet -> Release.DotnetAot }
+  match releaseTarget {
+    case JvmNativeImage -> return Release.buildRelease(releaseTarget, "", "", newList(), ridArg, "")
+    case DotnetAot -> ()
+  }
+
+  val mfText = match File.readText(mfPath) {
+    case Ok(text) -> text
+    case Err(e) -> {
+      printErr("build: " + IOError.message(e))
+      return 1
+    }
+  }
+  val manifest = match Mf.parseManifest(mfText, mfPath) {
+    case Ok(m) -> m
+    case Err(e) -> {
+      printErr("build: " + ManifestError.message(e))
+      return 1
+    }
+  }
+  val proj = match manifest.project {
+    case Some(p) -> p
+    case None -> {
+      printErr("build: " + mfPath + " has no [project] section")
+      return 1
+    }
+  }
+  if proj.packages.count == 0 {
+    printErr("build: " + mfPath + " [project.packages] is empty")
+    return 1
+  }
+
+  val mfDir = Path.dirname(mfPath)
+
+  // Scan each package's sources to find the entry package — the one declaring
+  // `func main()`.  Uses the manifest package name (pkgEntry.name) as the
+  // trampoline target, matching how the emitter labels the Program type.
+  var entryPkgName = ""
+  var pi = 0
+  while pi < proj.packages.count {
+    val pkgEntry = proj.packages[pi]
+    val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(mfDir, pkgEntry.path) }
+    var combined = ""
+    if File.fileExists(abs) {
+      match File.readText(abs) {
+        case Ok(raw) -> {
+          combined = raw
+        }
+        case Err(e) -> {
+          printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
+          return 1
+        }
+      }
+    } else if File.dirExists(abs) {
+      val allFiles = match File.listFilesRecursive(abs) {
+        case Ok(fs) -> fs
+        case Err(e) -> {
+          printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
+          return 1
+        }
+      }
+      for f in allFiles.toArray() {
+        if Str.endsWith(f, ".l") {
+          match File.readText(f) {
+            case Ok(raw) -> {
+              combined = combined + "\n" + raw
+            }
+            case Err(e) -> {
+              printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
+              return 1
+            }
+          }
+        }
+      }
+    } else {
+      printErr("build: package '" + pkgEntry.name + "': path not found: " + abs)
+      return 1
+    }
+    if Release.declaresEntryMain(combined) {
+      entryPkgName = pkgEntry.name
+    }
+    pi += 1
+  }
+
+  if entryPkgName == "" {
+    printErr(
+      "build: --release: no package in this project declares `func main()` (checked " + toString(proj.packages.count) +
+        " package(s))"
+    )
+    return 1
+  }
+
+  // Build to a staging directory so the production `bin/` output is untouched
+  // by the intermediate managed DLL.
+  val dllBase = match proj.outputAssembly { case Some(s) -> s; case None -> proj.name + ".dll" }
+  val stagingDir = Path.join(mfDir, ".lyric-release")
+  val stagingDll = Path.join(stagingDir, dllBase)
+
+  val buildExit = buildProject(
+    mfPath,
+    Some(value = stagingDll),
+    Dotnet,
+    cliFeatures,
+    noDefaultFeatures,
+    allFeatures,
+    noRestore
+  )
+  if buildExit != 0 {
+    return buildExit
+  }
+
+  // Collect the pre-built DLL paths of local-path dependencies.  These are not
+  // embedded in the bundle — the AOT linker needs them as managed references.
+  val extraRefs: List[String] = newList()
+  var di = 0
+  while di < manifest.deps.count {
+    val dep = manifest.deps[di]
+    match dep.source {
+      case Path(dir) -> {
+        val depDir = if Path.isAbsolute(dir) { dir } else { Path.join(mfDir, dir) }
+        val depToml = Path.join(depDir, "lyric.toml")
+        val depBinDir = Path.join(depDir, "bin")
+        if File.fileExists(depToml) {
+          match File.readText(depToml) {
+            case Ok(depMfText) -> {
+              match Mf.parseManifest(depMfText, depToml) {
+                case Ok(depMf) -> {
+                  val dllName = match depMf.project {
+                    case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }
+                    case None -> depMf.packageSection.name + ".dll"
+                  }
+                  val dllPath = Path.join(depBinDir, dllName)
+                  if File.fileExists(dllPath) {
+                    extraRefs.add(dllPath)
+                  } else {
+                    printErr(
+                      "build: --release: local dep '" + dep.name + "' not built — run `lyric build --manifest " + depToml + "` first"
+                    )
+                    return 1
+                  }
+                }
+                case Err(e) -> {
+                  printErr("build: --release: local dep '" + dep.name + "': malformed lyric.toml: " + ManifestError.message(e))
+                  return 1
+                }
+              }
+            }
+            case Err(e) -> {
+              printErr("build: --release: local dep '" + dep.name + "': cannot read " + depToml + ": " + IOError.message(e))
+              return 1
+            }
+          }
+        }
+      }
+      case _ -> ()
+    }
+    di += 1
+  }
+
+  val stem = stemOf(dllBase, 4)
+  val outNative = match explicitOut { case Some(o) -> o; case None -> Path.join(mfDir, stem) }
+  Release.buildRelease(releaseTarget, stagingDll, entryPkgName, extraRefs, ridArg, outNative)
 }
 
 // Deterministic ascending sort of a file-path list.
