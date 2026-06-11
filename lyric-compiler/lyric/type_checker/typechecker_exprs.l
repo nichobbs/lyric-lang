@@ -1393,6 +1393,82 @@ func ctorIsOpaque(sym: in Symbol): Bool {
   }
 }
 
+// Extract the ordered generic parameter names from a record/exposed-record/opaque
+// constructor symbol.  Returns an empty list for non-generic types.
+func ctorGenericNames(sym: in Symbol): List[String] {
+  val names: List[String] = newList()
+  val gOpt = match sym.kind {
+    case DKRecord(_, rd) -> rd.generics
+    case DKExposedRec(_, rd) -> rd.generics
+    case DKOpaque(_, od) -> od.generics
+    case _ -> None
+  }
+  match gOpt {
+    case None -> {
+    }
+    case Some(g) -> {
+      var j = 0
+      while j < g.params.count {
+        match g.params[j] {
+          case GPType(nm, _) -> names.add(nm)
+          case GPValue(nm, _, _) -> names.add(nm)
+        }
+        j = j + 1
+      }
+    }
+  }
+  names
+}
+
+// Collect the raw field types from a constructor symbol with `genericNames`
+// registered in the generic context, so that type-parameter fields resolve to
+// `TyVar(name)` rather than `TyError`.  Used by generic-constructor type-arg
+// inference in `inferConstruction`.
+func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[String]): List[Type] {
+  val ctx = newGenericContext()
+  gctxPush(ctx, genericNames)
+  val scratch: List[Diagnostic] = newList()
+  val result: List[Type] = newList()
+  match sym.kind {
+    case DKRecord(_, rd) -> {
+      var i = 0
+      while i < rd.members.count {
+        match rd.members[i] {
+          case RMField(fd) -> result.add(resolveType(tbl, ctx, scratch, fd.ty))
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case DKExposedRec(_, rd) -> {
+      var i = 0
+      while i < rd.members.count {
+        match rd.members[i] {
+          case RMField(fd) -> result.add(resolveType(tbl, ctx, scratch, fd.ty))
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case DKOpaque(_, od) -> {
+      var i = 0
+      while i < od.members.count {
+        match od.members[i] {
+          case OMField(fd) -> result.add(resolveType(tbl, ctx, scratch, fd.ty))
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case _ -> {
+    }
+  }
+  result
+}
+
 func fieldHasName(fields: in List[CtorField], name: in String): Bool {
   var i = 0
   while i < fields.count {
@@ -1515,16 +1591,104 @@ func inferConstruction(
   argTypes: in List[Type],
   span: in Span,
 ): Type {
+  // For generic constructors, attempt to infer type arguments from the supplied
+  // field initializer types before falling back to T0110.  T0110 fires only when
+  // one or more type parameters remain unresolved after inference.
   if ctorIsGeneric(sym) {
-    diag.add(
-      errorDiagnostic(
-        "T0110",
-        "generic constructor '" + sym.name +
-          "' requires explicit type arguments (type argument inference for constructors is not yet supported)",
-        span
+    val gnames = ctorGenericNames(sym)
+    // Collect field types with generic names in context so type-param fields
+    // resolve to TyVar("T") (not TyError), enabling inference from arg types.
+    val fieldTypes = ctorFieldTypes(tbl, sym, gnames)
+    val targs = inferGenericArgs(gnames, fieldTypes, argTypes)
+    // Collect names of parameters that could not be inferred.
+    val unresolved: List[String] = newList()
+    var gi = 0
+    while gi < gnames.count {
+      val isErr = match targs[gi] { case TyError -> true; case _ -> false }
+      if isErr {
+        unresolved.add(gnames[gi])
+      }
+      gi = gi + 1
+    }
+    if unresolved.count > 0 {
+      var msg = "cannot infer type argument(s) for generic constructor '" + sym.name + "': "
+      var ui = 0
+      while ui < unresolved.count {
+        if ui > 0 {
+          msg = msg + ", "
+        }
+        msg = msg + "'" + unresolved[ui] + "'"
+        ui = ui + 1
+      }
+      msg = msg + " could not be inferred from the supplied arguments"
+      diag.add(errorDiagnostic("T0110", msg, span))
+      return TyError
+    }
+    val inferredTy = match symbolTypeIdOpt(sym) {
+      case Some(tid) -> TyUser(id = tid, name = sym.name, args = targs)
+      case None -> TyError
+    }
+    // #1485: an opaque type's representation is hidden.
+    if ctorIsOpaque(sym) and sym.isImported {
+      diag.add(
+        errorDiagnostic("T0100", "cannot construct opaque type '" + sym.name + "' outside its declaring package", span)
       )
-    )
-    return TyError
+      return inferredTy
+    }
+    val fields: List[CtorField] = newList()
+    val _ = collectCtorFields(tbl, sym, fields)
+    var posIdx = 0
+    var i = 0
+    while i < args.count {
+      val argTy = if i < argTypes.count { argTypes[i] } else { TyError }
+      match args[i] {
+        case CANamed(nm, _, asp) -> {
+          if not fieldHasName(fields, nm) {
+            diag.add(errorDiagnostic("T0101", "'" + sym.name + "' has no field '" + nm + "'", asp))
+          } else {
+            val fieldTy = fieldTypeByName(fields, nm)
+            if not argSatisfiesParam(tbl, fieldTy, argTy) {
+              diag.add(
+                errorDiagnostic(
+                  "T0104",
+                  "argument for field '" + nm + "' has type " + renderType(argTy) + " but field expects " + renderType(fieldTy),
+                  asp
+                )
+              )
+            }
+          }
+        }
+        case CAPositional(ae) -> {
+          if posIdx >= fields.count {
+            diag.add(
+              errorDiagnostic(
+                "T0104",
+                "'" + sym.name + "' has " + toString(fields.count) + " field(s) but positional argument " + toString(posIdx + 1) +
+                  " was supplied",
+                ae.span
+              )
+            )
+          } else {
+            val fieldTy = fields[posIdx].ty
+            if not argSatisfiesParam(tbl, fieldTy, argTy) {
+              diag.add(
+                errorDiagnostic(
+                  "T0104",
+                  "positional argument " + toString(posIdx + 1) + " has type " + renderType(argTy) + " but field '" +
+                    fields[posIdx].name +
+                    "' expects " +
+                    renderType(fieldTy),
+                  ae.span
+                )
+              )
+            }
+          }
+          posIdx = posIdx + 1
+        }
+      }
+      i = i + 1
+    }
+    return inferredTy
   }
   val resultTy = ctorResultType(sym)
   // #1485: an opaque type's representation is hidden — it cannot be constructed

@@ -1808,12 +1808,22 @@ test "assign string to int target rejected" {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// #2009: generic record constructor emits T0110 instead of silent TyError.
+// #2009: generic record constructor emits T0110 when a type parameter cannot be
+// inferred from the supplied arguments.  A phantom type parameter (one that
+// appears in no field) is genuinely uninferable — T0110 must fire.
+// A constructor where all type params appear in fields (e.g. Pair[A,B]) is
+// inferable and must NOT fire T0110.
 // ─────────────────────────────────────────────────────────────────────────────
-test "generic record constructor emits T0110" {
+test "generic record constructor emits T0110 for uninferable type param" {
+  val src = "package P\nrecord Tagged[T, Phantom] { value: T }\nfunc f(): Unit { val _ = Tagged(value = 1) }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0110"), "phantom type param: T0110")
+}
+
+test "generic record constructor with inferable type params does not emit T0110" {
   val src = "package P\nrecord Pair[A, B] { first: A; second: B }\nfunc f(): Unit { val _ = Pair(first = 1, second = \"x\") }\n"
   val cr = parseCheck(src)
-  assertTrue(hasDiagCode(cr, "T0110"), "generic ctor without type args: T0110")
+  assertTrue(not hasDiagCode(cr, "T0110"), "inferable generic ctor: no T0110")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
