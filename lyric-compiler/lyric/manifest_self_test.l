@@ -389,6 +389,16 @@ func testMavenMalformedCoordinate(): Unit {
   val twoColons = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[maven]\n\"a:b:c\" = \"1.0.0\"\n"
   val e2 = parseErr(twoColons)
   assertTrue(isInvalidField(e2, "maven", "a:b:c"), "maven-malformed: InvalidField for two ':'")
+
+  // Empty-half variants: ':artifact' (empty group) and 'group:' (empty artifact).
+  // These are distinct validation branches from the no-colon / two-colon cases.
+  val emptyGroup = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[maven]\n\":my-artifact\" = \"1.0.0\"\n"
+  val e3 = parseErr(emptyGroup)
+  assertTrue(isInvalidField(e3, "maven", ":my-artifact"), "maven-malformed: InvalidField for empty group half")
+
+  val emptyArtifact = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[maven]\n\"com.example:\" = \"1.0.0\"\n"
+  val e4 = parseErr(emptyArtifact)
+  assertTrue(isInvalidField(e4, "maven", "com.example:"), "maven-malformed: InvalidField for empty artifact half")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

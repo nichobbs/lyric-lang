@@ -31,6 +31,7 @@ import Std.Collections
 import Std.Testing
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.AliasRewriter
 import Lyric.Mono
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -423,6 +424,55 @@ test "non generic return feeds inference" {
     "func caller(): Int { consume(origin()) }\n"
   val res = runMono(src)
   assertTrue(hasFunc(res.file, "consume__Int"), "#349 non-generic-return: consume__Int via origin(): Int")
+}
+
+// ── Multi-segment qualified generic call (#2943) ──────────────────────────────
+// PR #2936 added handling for `Pkg.func(arg)` where `func[T]` is a generic
+// imported from `Pkg`.  Before the fix, only single-segment `func(arg)` call
+// sites were picked up by the monomorphiser's genDecls lookup; multi-segment
+// paths landed in the `else` branch and were never specialised.
+//
+// The test mirrors the `lyric-validation` integration repro:
+//   `Validation.toResult(42, errors)` where `toResult[T]` is a generic from
+//   package `Validation`.  The alias rewriter converts the qualified call to
+//   `EPath(["Validation", "toResult"])` so the last-segment lookup in
+//   `rewriteExpr` applies.
+test "multi-segment qualified generic call is specialised (#2943)" {
+  // Caller uses `Validation.toResult(42)` — a multi-segment qualified call
+  // to an imported generic.  The alias rewriter must run first (it converts
+  // the single-segment `import Validation` to the `Validation=Validation`
+  // entry that rewrites `EMember(EPath(["Validation"]), "toResult")` →
+  // `EPath(["Validation", "toResult"])`); then the monomorphiser looks up
+  // the last segment `"toResult"` in genDecls and specialises it to
+  // `toResult__Int`.
+  val callerSrc = "package App\nimport Validation\nfunc caller(): Int { Validation.toResult(42) }\n"
+  val importedSrc = "package Validation\npub func toResult[T](x: in T): T { x }\n"
+
+  val callerPr = parse(callerSrc)
+  val importedPr = parse(importedSrc)
+
+  // Alias-rewrite the caller so `Validation.toResult(42)` becomes
+  // `EPath(["Validation", "toResult"])(42)` — without this step the mono
+  // pass sees EMember and does not reach the multi-segment `else` branch.
+  val callerRewritten = rewriteFile(callerPr.file)
+
+  val importedGen: List[FunctionDecl] = newList()
+  var i = 0
+  while i < importedPr.file.items.count {
+    match importedPr.file.items[i].kind {
+      case IFunc(decl) -> {
+        match decl.generics {
+          case Some(_) -> importedGen.add(decl)
+          case None -> ()
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+
+  val res = monoFileWithImports(callerRewritten, importedGen)
+  assertTrue(hasFunc(res.file, "toResult__Int"), "#2943 multi-segment qualified: toResult__Int specialisation appended")
 }
 
 // Mixed positional inference — one type-param inferred via nested

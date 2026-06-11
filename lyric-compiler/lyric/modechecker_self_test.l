@@ -285,3 +285,13 @@ test "await in try inside impl method v0012" {
   val result = parseCheck(src)
   assertTrue(hasDiagCode(result, "V0012"), "impl-method-await-in-try: V0012 emitted")
 }
+
+test "await in try axiom no v0012" {
+  // @axiom packages are exempt from V0012 — the guard changed from
+  // `not vlIsProofRequired` to `vlIsAxiom` in #3113, making @axiom the sole
+  // exemption.  An @axiom package with await inside a try block must NOT
+  // emit V0012; the F# bootstrap emitter can hoist awaits for kernel files.
+  val src = "@axiom\npackage P\nasync func f(): Unit {\n  try {\n    await someTask()\n  } catch (e: Exception) {\n  }\n}\nfunc someTask(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0012")), "axiom-await-in-try: @axiom is exempt from V0012")
+}

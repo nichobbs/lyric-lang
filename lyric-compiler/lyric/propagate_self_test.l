@@ -8,15 +8,19 @@
 //!
 //! Run in CI via native `lyric test --target dotnet`, which compiles this
 //! module in-process through the self-hosted `Msil.Bridge` (so the `?`
-//! lowering under test is the one that runs).  Imports only `Std.*`, so no
-//! LYRIC_LOAD_COMPILER=1 is needed.  MSIL target only; JVM-target `?` parity
-//! is tracked separately (epic #1470 defers JVM).
+//! lowering under test is the one that runs).  The F0020 error-path tests
+//! import `Lyric.Parser` and `Lyric.Propagate` from the stage-1 DLL bundle
+//! (resolved as restored deps via #2364, same mechanism as weaver_self_test.l).
+//! MSIL target only; JVM-target `?` parity is tracked separately (epic #1470).
 @test_module
 package Lyric.PropagateSelfTest
 
 import Std.Core
 import Std.Collections
 import Std.Testing
+import Lyric.Lexer
+import Lyric.Parser
+import Lyric.Propagate
 
 // A Result-producing helper whose Err carries a distinguishing label, so the
 // tests can prove WHICH `?` short-circuited (i.e. evaluation order).
@@ -159,3 +163,45 @@ test "Result `?` inside a while-loop body early-returns mid-iteration" {
 // blocked it was #1784 (a value-type *parameter* on an interface/impl method
 // faulted the JIT, unrelated to `?`), fixed separately.  End-to-end coverage of
 // `?` in an impl method lives in `impl_method_self_test.l`.
+// ── F0020 error-path tests (#1781, #1801) ─────────────────────────────────────
+// These exercise `lowerPropagateFile` directly against source strings that
+// contain invalid `?` usage.  The diagnostic path was previously untested;
+// regressions that silently removed F0020 and reverted to pass-through would not
+// have been caught by the runtime tests above.
+func propHasDiag(diags: in List[Diagnostic], code: in String): Bool {
+  var i = 0
+  var found = false
+  while i < diags.count {
+    if diags[i].code == code {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+test "F0020: ? in non-Result/Option function emits diagnostic" {
+  // The enclosing function returns `Int`, not `Result` or `Option`.
+  // `lowerPropagateFile` must emit F0020 rather than silently pass through.
+  val src = "package P\nfunc f(x: in Int): Int {\n  val r: Result[Int, String] = Ok(1)\n  r?\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertTrue(propHasDiag(result.diagnostics, "F0020"), "F0020 emitted for ? in Int function")
+}
+
+test "F0020: ? inside a lambda body emits lambda-specific diagnostic" {
+  // `?` inside a lambda body — the lambda's return monad is unknown to
+  // the propagation pass (PropInLambda), so the lambda-specific F0020
+  // message fires regardless of whether the enclosing function returns Result.
+  // (#1801)
+  val src = "package P\nfunc f(): Result[Int, String] {\n  val fn = \\() -> {\n    val r: Result[Int, String] = Ok(1)\n    r?\n  }\n  Ok(1)\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertTrue(propHasDiag(result.diagnostics, "F0020"), "F0020 emitted for ? inside lambda in Result function")
+}
+
+test "F0020: ? inside a lambda nested in a non-Result function also emits" {
+  // PropInLambda fires even when the outer function's return type is neither
+  // Result nor Option — the lambda wrapper is detected first. (#1801)
+  val src = "package P\nfunc f(): Unit {\n  val fn = \\() -> {\n    val r: Result[Int, String] = Ok(1)\n    r?\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertTrue(propHasDiag(result.diagnostics, "F0020"), "F0020 emitted for ? inside lambda in Unit function")
+}
