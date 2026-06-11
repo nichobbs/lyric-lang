@@ -1766,3 +1766,70 @@ test "slice literal in list ctor field ok" {
   val cr = parseCheck(src)
   assertEqualInt(diagCount(cr), 0, "slice[Int] satisfies List[Int] in ctor field")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2707: T0109 for value-expression-as-type-argument (distinct from T0012).
+// ─────────────────────────────────────────────────────────────────────────────
+test "value expr as type arg emits T0109 not T0012" {
+  val src = "package P\nimport Std.Collections\nfunc f(): Unit { val _ : List[1] = newList() }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0109"), "value as type arg: T0109")
+  assertTrue(not hasDiagCode(cr, "T0012"), "value as type arg: not T0012")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2708: match-arm guard must be Bool (T0066 symmetry with if-condition).
+// ─────────────────────────────────────────────────────────────────────────────
+test "match arm guard string rejected with T0066" {
+  val src = "package P\nfunc f(x: in Int): Int { match x { case _ if \"bad\" -> 1; case _ -> 0 } }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0066"), "match guard non-Bool: T0066")
+}
+
+test "match arm guard bool ok" {
+  val src = "package P\nfunc f(x: in Int): Int { match x { case _ if x > 0 -> 1; case _ -> 0 } }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "match guard Bool: no errors")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2955: EAssign uses argSatisfiesParam so M6 widening applies.
+// ─────────────────────────────────────────────────────────────────────────────
+test "expression-position assign int to long target ok" {
+  val src = "package P\nfunc f(): Unit { var x: Long = 0i64; val _ = (x = 42) }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "expr-pos assign Int to Long: no errors")
+}
+
+test "expression-position assign string to int target rejected" {
+  val src = "package P\nfunc f(): Unit { var x: Int = 0; val _ = (x = \"bad\") }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0063"), "expr-pos assign wrong type: T0063")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2009: generic record constructor emits T0110 instead of silent TyError.
+// ─────────────────────────────────────────────────────────────────────────────
+test "generic record constructor emits T0110" {
+  val src = "package P\nrecord Pair[A, B] { first: A; second: B }\nfunc f(): Unit { val _ = Pair(first = 1, second = \"x\") }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0110"), "generic ctor without type args: T0110")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2954: unknown constraint name in where-clause emits T0111 warning.
+// ─────────────────────────────────────────────────────────────────────────────
+test "unknown constraint emits T0111 warning" {
+  val src = "package P\nfunc f[T](x: in T): T where T: Addd { x }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0111"), "unknown constraint: T0111")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2179: inferGenericArgs handles nested generic positions (List[T] fields).
+// ─────────────────────────────────────────────────────────────────────────────
+test "union case with nested List[T] field infers parent type" {
+  val src = "package P\nimport Std.Collections\nunion Box[T] { case Wrap(items: List[T]) }\nfunc f(xs: in List[Int]): Box[Int] { Wrap(items = xs) }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "nested List[T] field: type inferred correctly, no errors")
+}
