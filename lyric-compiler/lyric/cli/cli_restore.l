@@ -435,7 +435,7 @@ func cmdRemove(argv: in slice[String]): Int {
   runRestore(mfPath, false)
 }
 
-// `lyric add <name>[@<version>] [--path <p>] [--git <url> [--tag|--rev|--branch <ref>]]
+// `lyric add <name>[@<version>] [--path <p>] [--git <url> [--tag|--rev|--branch <ref>] [--subdir <d>]]
 //   [--nuget] [--manifest <m>] [--no-restore]` — add or update a dependency in the
 // discovered manifest's [dependencies] (or [nuget]) table, then restore (#1973).
 func cmdAdd(argv: in slice[String]): Int {
@@ -444,6 +444,7 @@ func cmdAdd(argv: in slice[String]): Int {
   var gitArg: Option[String] = None
   var gitRefKind: String = ""    // "tag" | "rev" | "branch"
   var gitRef: String = ""
+  var gitSubdir: String = ""
   var isNuget: Bool = false
   var noRestore: Bool = false
   var spec: Option[String] = None
@@ -500,6 +501,14 @@ func cmdAdd(argv: in slice[String]): Int {
         i += 2
       } else {
         printErr("add: --branch requires an argument")
+        return 1
+      }
+    } else if arg == "--subdir" {
+      if i + 1 < argv.length {
+        gitSubdir = argv[i + 1]
+        i += 2
+      } else {
+        printErr("add: --subdir requires an argument")
         return 1
       }
     } else if arg == "--nuget" {
@@ -561,6 +570,10 @@ func cmdAdd(argv: in slice[String]): Int {
     printErr("add: --tag/--rev/--branch require --git")
     return 1
   }
+  if Str.length(gitSubdir) > 0 and not hasGit {
+    printErr("add: --subdir requires --git")
+    return 1
+  }
   if Str.length(version) > 0 and (hasPath or hasGit) {
     printErr("add: @version cannot be combined with --path/--git")
     return 1
@@ -594,11 +607,17 @@ func cmdAdd(argv: in slice[String]): Int {
     }
     case None -> ()
   }
-  // The git ref (--tag/--rev/--branch) is embedded in the TOML RHS too, so it
-  // gets the same double-quote guard against malformed/injected TOML.
+  // The git ref (--tag/--rev/--branch) and --subdir are embedded in the TOML
+  // RHS too, so they get the same double-quote guard against malformed/injected TOML.
   if gitRefKind != "" {
     if Str.contains(gitRef, "\"") {
       printErr("add: --" + gitRefKind + " value must not contain double-quote characters")
+      return 1
+    }
+  }
+  if Str.length(gitSubdir) > 0 {
+    if Str.contains(gitSubdir, "\"") {
+      printErr("add: --subdir value must not contain double-quote characters")
       return 1
     }
   }
@@ -606,7 +625,7 @@ func cmdAdd(argv: in slice[String]): Int {
   // Render the TOML right-hand side for the chosen source form.
   val rhs = match pathArg {
     case Some(p) -> "{ path = \"" + p + "\" }"
-    case None -> match gitArg { case Some(url) -> if gitRefKind != "" { "{ git = \"" + url + "\", " + gitRefKind + " = \"" + gitRef + "\" }" } else { "{ git = \"" + url + "\" }" }; case None -> "\"" + (if Str.length(version) > 0 { version } else { "*" }) + "\"" }
+    case None -> match gitArg { case Some(url) -> { var gitRhs = "{ git = \"" + url + "\""; if gitRefKind != "" { gitRhs = gitRhs + ", " + gitRefKind + " = \"" + gitRef + "\"" }; if Str.length(gitSubdir) > 0 { gitRhs = gitRhs + ", subdir = \"" + gitSubdir + "\"" }; gitRhs + " }" }; case None -> "\"" + (if Str.length(version) > 0 { version } else { "*" }) + "\"" }
   }
 
   val table = if isNuget { "nuget" } else { "dependencies" }
