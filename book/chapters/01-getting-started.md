@@ -221,7 +221,7 @@ Core commands you will use constantly:
 | Command | What it does |
 |---------|-------------|
 | `lyric` | Build the current project (discovers the nearest `lyric.toml`) |
-| `lyric build <file.l>` | Compile for .NET (default); produce a `.dll` + `.runtimeconfig.json` |
+| `lyric build <file.l>` | Compile for .NET (default); produce a `.dll` + `.runtimeconfig.json`; prints elapsed time on success |
 | `lyric build --target jvm <file.l>` | Compile for the JVM; produce a runnable `.jar` (no `runtimeconfig.json`) |
 | `lyric build` | Build the discovered project (no source arg needed) |
 | `lyric run <file.l>` | Compile and immediately execute a single file |
@@ -232,12 +232,14 @@ Core commands you will use constantly:
 | `lyric test` | Run tests for the discovered project; falls back to scanning packages for `@test_module` |
 | `lyric test <file.l> --list` | Print test titles without compiling |
 | `lyric test <file.l> --filter <substring>` | Run only tests whose title contains the substring |
+| `lyric test <file.l> --fail-fast` | Stop after the first file with failing tests; print an early summary |
 | `lyric check <file.l>` | Type-check without producing a usable output artifact |
 | `lyric check` | Type-check the discovered project (output to `.lyric-check/`, not `bin/`) |
 | `lyric clean` | Remove `bin/`, `.lyric-run/`, `.lyric-test/`, `.lyric-bench/`, `.lyric-check/`, `.lyric-release/` |
 | `lyric fmt` | Dry-run: list files that would be reformatted (exit 1 if any) |
 | `lyric fmt --write` | Reformat all project source files in place |
 | `lyric fmt --check` | Exit 1 if any file is not formatted (CI gate) |
+| `lyric fmt --diff` | Show a unified diff of what would change without writing |
 | `lyric fmt <file.l> [<file2.l> …]` | Format one or more explicit files |
 | `lyric fmt --stdin` | Read from stdin, write formatted output to stdout (editor integration) |
 | `lyric lint` | Report style diagnostics; prints summary `N error(s), M warning(s) in K file(s)` |
@@ -258,6 +260,7 @@ Core commands you will use constantly:
 | `lyric restore --locked` | Restore strictly from `lyric.lock` (fail if lock is stale) |
 | `lyric update` | Re-resolve all deps to latest compatible versions; rewrites `lyric.lock` |
 | `lyric deps` | Print the resolved dependency list from `lyric.lock` |
+| `lyric remove <name>` | Remove a dependency from `[dependencies]` in `lyric.toml` and re-run restore |
 | `lyric search <query>` | Search the registry for matching packages |
 | `lyric repl` | Start an interactive read-eval-print loop |
 | `lyric repl --verbose` | REPL with diagnostic output on each evaluation |

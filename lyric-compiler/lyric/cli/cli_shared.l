@@ -131,6 +131,8 @@ func usageText(): String {
     "  lyric add     <name>[@<version>] [--path <dir>] [--git <url> [--tag|--rev|--branch <ref>]]\n" +
     "                [--nuget] [--manifest <lyric.toml>] [--no-restore]\n" +
     "                (adds/updates a dependency in [dependencies] (or [nuget]) and restores)\n" +
+    "  lyric remove  <name> [--nuget] [--manifest <lyric.toml>] [--no-restore]\n" +
+    "                (removes a dependency from [dependencies] (or [nuget]) and restores)\n" +
     "  lyric publish [--manifest <lyric.toml>] [--dll <path>] [-o <dir>] [--registry <url>] [--api-key <key>]\n" +
     "  lyric search  <term>\n" +
     "\n" +
@@ -138,16 +140,17 @@ func usageText(): String {
     "  lyric run     [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm] [--watch] [-- <args>...]\n" +
     "                (no source: builds and runs the discovered project;\n" +
     "                 --watch: rebuild & re-run on source changes; Ctrl-C to stop)\n" +
-    "  lyric test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list] [--target dotnet|jvm]\n" +
-    "                (no source: runs all [project.tests]; falls back to scanning [project.packages] for @test_module)\n" +
+    "  lyric test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list] [--fail-fast] [--target dotnet|jvm]\n" +
+    "                (no source: runs all [project.tests]; falls back to scanning [project.packages] for @test_module;\n" +
+    "                 --fail-fast stops after the first file with failing tests)\n" +
     "  lyric bench   [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm] [--runs N] [--warmup N] [--filter <prefix>]\n" +
     "                (no source: benchmarks all @bench_module files in the discovered project)\n" +
     "  lyric repl\n" +
     "\n" +
     "Quality:\n" +
-    "  lyric fmt     [<source.l>...] [--manifest <lyric.toml>] [--check] [--write] [--stdin]\n" +
+    "  lyric fmt     [<source.l>...] [--manifest <lyric.toml>] [--check] [--write] [--diff] [--stdin]\n" +
     "                (no source: dry-run shows what would change; --write to apply; --check exits 1 if any would change;\n" +
-    "                 --stdin reads from stdin and writes formatted output to stdout)\n" +
+    "                 --diff shows a unified diff of changes; --stdin reads from stdin and writes formatted output to stdout)\n" +
     "  lyric lint    [<source.l>] [--manifest <lyric.toml>] [--error-on-warning]\n" +
     "                (no source: lints all project source files; prints summary at end)\n" +
     "  lyric prove   [<source.l>] [--manifest <lyric.toml>] [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]\n" +

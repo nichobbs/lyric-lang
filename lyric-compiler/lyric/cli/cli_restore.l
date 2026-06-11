@@ -276,6 +276,165 @@ func upsertTomlEntry(text: in String, table: in String, key: in String, rhs: in 
   Str.joinList("\n", outLines)
 }
 
+// Remove the `key` entry from the `[table]` section of a TOML document.
+// Returns `text` unchanged if the section or key is not found.
+func removeTomlEntry(text: in String, table: in String, key: in String): String {
+  val header = "[" + table + "]"
+  val lines = Str.split(text, "\n")
+  val n = lines.length
+
+  var secIdx = -1
+  var idx = 0
+  while idx < n {
+    val rawLine = Str.trim(lines[idx])
+    val strippedLine = match Str.indexOf(rawLine, "#") {
+      case Some(ci) -> Str.trim(Str.substring(rawLine, 0, ci))
+      case None -> rawLine
+    }
+    if strippedLine == header {
+      secIdx = idx
+      idx = n
+    } else {
+      idx += 1
+    }
+  }
+
+  if secIdx < 0 {
+    return text
+  }
+
+  var keyIdx = -1
+  var q = secIdx + 1
+  while q < n {
+    val t = Str.trim(lines[q])
+    if Str.startsWith(t, "[") {
+      q = n
+    } else {
+      if keyIdx < 0 and lineDefinesKey(lines[q], key) {
+        keyIdx = q
+      }
+      q += 1
+    }
+  }
+
+  if keyIdx < 0 {
+    return text
+  }
+
+  val outLines: List[String] = newList()
+  var w = 0
+  while w < n {
+    if w != keyIdx {
+      outLines.add(lines[w])
+    }
+    w += 1
+  }
+  Str.joinList("\n", outLines)
+}
+
+// `lyric remove <name> [--nuget] [--manifest <m>] [--no-restore]` — remove a
+// dependency from [dependencies] (or [nuget]) and restore (#1974).
+func cmdRemove(argv: in slice[String]): Int {
+  var manifestArg: Option[String] = None
+  var isNuget = false
+  var noRestore = false
+  var nameArg: Option[String] = None
+
+  var i = 1
+  while i < argv.length {
+    val arg = argv[i]
+    if arg == "--manifest" {
+      if i + 1 < argv.length {
+        manifestArg = Some(value = argv[i + 1])
+        i += 2
+      } else {
+        printErr("remove: --manifest requires an argument")
+        return 1
+      }
+    } else if arg == "--nuget" {
+      isNuget = true
+      i += 1
+    } else if arg == "--no-restore" {
+      noRestore = true
+      i += 1
+    } else {
+      match nameArg {
+        case None -> {
+          nameArg = Some(value = arg)
+          i += 1
+        }
+        case Some(_) -> {
+          printErr("remove: unexpected extra argument '" + arg + "'")
+          return 1
+        }
+      }
+    }
+  }
+
+  val name = match nameArg {
+    case Some(n) -> n
+    case None -> {
+      printErr("remove: missing <name>")
+      printUsage()
+      return 1
+    }
+  }
+  if Str.length(name) == 0 {
+    printErr("remove: empty dependency name")
+    return 1
+  }
+
+  val table = if isNuget { "nuget" } else { "dependencies" }
+
+  val mfPath = match discoverManifest(manifestArg) {
+    case Some(p) -> p
+    case None -> {
+      printErr("remove: no lyric.toml found in this directory or any parent (use --manifest)")
+      return 1
+    }
+  }
+
+  val mfText = match File.readText(mfPath) {
+    case Ok(t) -> t
+    case Err(e) -> {
+      printErr("remove: " + IOError.message(e))
+      return 1
+    }
+  }
+
+  var updated = removeTomlEntry(mfText, table, name)
+  if updated == mfText {
+    printErr("remove: '" + name + "' not found in [" + table + "] of " + mfPath)
+    return 1
+  }
+
+  if not Str.endsWith(updated, "\n") {
+    updated = updated + "\n"
+  }
+
+  match Mf.parseManifest(updated, mfPath) {
+    case Ok(_) -> ()
+    case Err(e) -> {
+      printErr("remove: refusing to write — resulting manifest is invalid: " + ManifestError.message(e))
+      return 1
+    }
+  }
+
+  match File.writeText(mfPath, updated) {
+    case Ok(_) -> ()
+    case Err(e) -> {
+      printErr("remove: could not write " + mfPath + ": " + IOError.message(e))
+      return 1
+    }
+  }
+  Console.println("remove: removed '" + name + "' from [" + table + "] in " + mfPath)
+
+  if noRestore {
+    return 0
+  }
+  runRestore(mfPath, false)
+}
+
 // `lyric add <name>[@<version>] [--path <p>] [--git <url> [--tag|--rev|--branch <ref>]]
 //   [--nuget] [--manifest <m>] [--no-restore]` — add or update a dependency in the
 // discovered manifest's [dependencies] (or [nuget]) table, then restore (#1973).

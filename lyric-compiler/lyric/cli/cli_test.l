@@ -88,6 +88,7 @@ func cmdTest(argv: in slice[String]): Int {
   var manifestArg: Option[String] = None
   var listMode = false
   var targetJvm = false
+  var failFast = false
   val positional: List[String] = newList()
 
   var i = 1
@@ -128,6 +129,9 @@ func cmdTest(argv: in slice[String]): Int {
     } else if arg == "--list" {
       listMode = true
       i += 1
+    } else if arg == "--fail-fast" {
+      failFast = true
+      i += 1
     } else {
       positional.add(arg)
       i += 1
@@ -140,14 +144,14 @@ func cmdTest(argv: in slice[String]): Int {
   // command's exit code is non-zero if any test fails.
   // Explicit --manifest takes precedence.
   match manifestArg {
-    case Some(p) -> return cmdTestManifest(p, filterArg, targetJvm)
+    case Some(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast)
     case None -> ()
   }
 
   if positional.count == 0 {
     // No explicit source file and no --manifest: auto-discover project.
     match Disc.findNearestManifest(Environment.currentDirectory()) {
-      case Some(p) -> return cmdTestManifest(p, filterArg, targetJvm)
+      case Some(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast)
       case None -> {
         printErr("test: missing source file and no lyric.toml found")
         return 1
@@ -357,7 +361,7 @@ func cmdTest(argv: in slice[String]): Int {
 // `Lyric.CfgGate` (#1123, #1124) so they're independently testable and
 // the duplicate-`package`-declaration bug for multi-file directory
 // packages is fixed at the assembly level.
-func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm: in Bool): Int {
+func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm: in Bool, failFast: in Bool): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
     case Err(e) -> {
@@ -451,6 +455,9 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
       val rc = cmdTest(testArgv.toArray())
       if rc != 0 {
         anyFailed = true
+      }
+      if failFast and anyFailed {
+        return 1
       }
     }
     if anyFailed {
@@ -934,6 +941,13 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
       totalPassed += 1
     } else {
       totalFailed += 1
+    }
+    if failFast and totalFailed > 0 {
+      Console.println("")
+      Console.println(
+        "== summary: " + toString(totalPassed) + " passed, " + toString(totalFailed) + " failed (stopped early)"
+      )
+      return 1
     }
     ti += 1
   }

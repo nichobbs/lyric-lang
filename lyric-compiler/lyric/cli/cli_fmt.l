@@ -11,6 +11,171 @@ import Lyric.Manifest as Mf
 import Lyric.Fmt as Fmt
 import Lyric.Discovery as Disc
 
+// Returns true when any op in the CONTEXT-window around `pos` is a change (not equal).
+func isInHunk(pos: in Int, tags: in List[Int], opCnt: in Int, context: in Int): Bool {
+  val lo = if pos >= context { pos - context } else { 0 }
+  val hi = if pos + context < opCnt { pos + context } else { opCnt - 1 }
+  var k = lo
+  while k <= hi {
+    if tags[k] != 0 {
+      return true
+    }
+    k += 1
+  }
+  false
+}
+
+// Compute a unified diff between `aText` and `bText` (line-based LCS).
+// Returns "" when the texts are identical.  `aPath` appears in --- / +++ headers.
+func diffLinesUnified(aPath: in String, aText: in String, bText: in String): String {
+  if aText == bText {
+    return ""
+  }
+  val aLines = Str.split(aText, "\n")
+  val bLines = Str.split(bText, "\n")
+  val n = aLines.length
+  val m = bLines.length
+
+  // LCS DP table: flat (n+1)*(m+1) list built row-major via List.add() only.
+  val dp: List[Int] = newList()
+  var j0 = 0
+  while j0 <= m {
+    dp.add(0)
+    j0 += 1
+  }
+  var dpI = 1
+  while dpI <= n {
+    dp.add(0)
+    var dpJ = 1
+    while dpJ <= m {
+      val diag = dp[(dpI - 1) * (m + 1) + (dpJ - 1)]
+      val up = dp[(dpI - 1) * (m + 1) + dpJ]
+      val left = dp[dpI * (m + 1) + (dpJ - 1)]
+      if aLines[dpI - 1] == bLines[dpJ - 1] {
+        dp.add(diag + 1)
+      } else {
+        dp.add(if up >= left { up } else { left })
+      }
+      dpJ += 1
+    }
+    dpI += 1
+  }
+
+  // Backtrack to produce edit ops (built in reverse, then reversed).
+  // Tags: 0=equal, 1=delete(from a), 2=insert(into b)
+  val revTags: List[Int] = newList()
+  val revText: List[String] = newList()
+  var bi = n
+  var bj = m
+  while bi > 0 or bj > 0 {
+    if bi > 0 and bj > 0 and aLines[bi - 1] == bLines[bj - 1] {
+      revTags.add(0)
+      revText.add(aLines[bi - 1])
+      bi -= 1
+      bj -= 1
+    } else if bj > 0 and (bi == 0 or dp[bi * (m + 1) + (bj - 1)] >= dp[(bi - 1) * (m + 1) + bj]) {
+      revTags.add(2)
+      revText.add(bLines[bj - 1])
+      bj -= 1
+    } else {
+      revTags.add(1)
+      revText.add(aLines[bi - 1])
+      bi -= 1
+    }
+  }
+
+  val opCnt = revTags.count
+  val tags: List[Int] = newList()
+  val opLines: List[String] = newList()
+  var ri = opCnt - 1
+  while ri >= 0 {
+    tags.add(revTags[ri])
+    opLines.add(revText[ri])
+    ri -= 1
+  }
+
+  val CONTEXT = 3
+
+  // Build line-number maps
+  val aNum: List[Int] = newList()
+  val bNum: List[Int] = newList()
+  var aN = 1
+  var bN = 1
+  var ki = 0
+  while ki < opCnt {
+    aNum.add(aN)
+    bNum.add(bN)
+    if tags[ki] != 2 {
+      aN += 1
+    }
+    if tags[ki] != 1 {
+      bN += 1
+    }
+    ki += 1
+  }
+
+  // Build inHunk indicator
+  val inHunk: List[Int] = newList()
+  var hp = 0
+  while hp < opCnt {
+    inHunk.add(if isInHunk(hp, tags, opCnt, CONTEXT) { 1 } else { 0 })
+    hp += 1
+  }
+
+  // Format hunks
+  val lines: List[String] = newList()
+  lines.add("--- " + aPath)
+  lines.add("+++ " + aPath)
+
+  var pos = 0
+  while pos < opCnt {
+    if inHunk[pos] == 0 {
+      pos += 1
+      continue
+    }
+    val hunkStart = pos
+    var he = pos
+    while he < opCnt and inHunk[he] == 1 {
+      he += 1
+    }
+    val hunkEnd = he - 1
+
+    var aCnt = 0
+    var bCnt = 0
+    var hk = hunkStart
+    while hk <= hunkEnd {
+      if tags[hk] != 2 {
+        aCnt += 1
+      }
+      if tags[hk] != 1 {
+        bCnt += 1
+      }
+      hk += 1
+    }
+
+    lines.add(
+      "@@ -" + toString(aNum[hunkStart]) + "," + toString(aCnt) + " +" + toString(bNum[hunkStart]) + "," + toString(bCnt) +
+        " @@"
+    )
+
+    hk = hunkStart
+    while hk <= hunkEnd {
+      if tags[hk] == 0 {
+        lines.add(" " + opLines[hk])
+      } else if tags[hk] == 1 {
+        lines.add("-" + opLines[hk])
+      } else {
+        lines.add("+" + opLines[hk])
+      }
+      hk += 1
+    }
+
+    pos = he
+  }
+
+  Str.joinList("\n", lines) + "\n"
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. Fmt command
 // ─────────────────────────────────────────────────────────────────────────────
@@ -18,6 +183,7 @@ func cmdFmt(argv: in slice[String]): Int {
   var checkMode = false
   var writeMode = false
   var stdinMode = false
+  var diffMode = false
   var manifestArg: Option[String] = None
   val positional: List[String] = newList()
 
@@ -32,6 +198,9 @@ func cmdFmt(argv: in slice[String]): Int {
       i += 1
     } else if arg == "--stdin" {
       stdinMode = true
+      i += 1
+    } else if arg == "--diff" {
+      diffMode = true
       i += 1
     } else if arg == "--manifest" {
       if i + 1 < argv.length {
@@ -180,7 +349,19 @@ func cmdFmt(argv: in slice[String]): Int {
         }
       }
       if not Fmt.isFormattedSource(source) {
-        Console.println(sp + ": would reformat")
+        if diffMode {
+          val dryRes = Fmt.formatSourceChecked(source)
+          if Fmt.fmtCheckIsOk(dryRes) {
+            val diff = diffLinesUnified(sp, source, Fmt.fmtCheckText(dryRes))
+            if diff != "" {
+              Console.print(diff)
+            }
+          } else {
+            Console.println(sp + ": would reformat")
+          }
+        } else {
+          Console.println(sp + ": would reformat")
+        }
         anyUnformatted = true
       }
     }
@@ -229,17 +410,33 @@ func cmdFmt(argv: in slice[String]): Int {
     val formatted = Fmt.fmtCheckText(checkResult)
 
     if writeMode {
-      match File.writeText(sourcePath, formatted) {
-        case Ok(_) -> Console.println("formatted " + sourcePath)
-        case Err(e) -> {
-          printErr("fmt: " + IOError.message(e))
-          anyFailed = true
+      if diffMode {
+        val diff = diffLinesUnified(sourcePath, source, formatted)
+        if diff != "" {
+          Console.print(diff)
+        }
+      }
+      if formatted != source {
+        match File.writeText(sourcePath, formatted) {
+          case Ok(_) -> if not diffMode { Console.println("formatted " + sourcePath) }
+          case Err(e) -> {
+            printErr("fmt: " + IOError.message(e))
+            anyFailed = true
+          }
         }
       }
       continue
     }
 
-    Console.print(formatted)
+    if diffMode {
+      val diff = diffLinesUnified(sourcePath, source, formatted)
+      if diff != "" {
+        Console.print(diff)
+        anyFailed = true
+      }
+    } else {
+      Console.print(formatted)
+    }
   }
 
   if anyFailed {
