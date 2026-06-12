@@ -1953,8 +1953,10 @@ pub func extractResourceBytes(img: in PeImage, resOffset: in Int): slice[Byte] {
   }
   // A malformed or hostile ManifestResource row can carry an Offset outside
   // the Resources region; reject it instead of reading bytes from an adjacent
-  // section (code, metadata tables, ...) (#3224).
-  if resOffset < 0 or (img.resourcesSize > 0 and resOffset >= img.resourcesSize) {
+  // section (code, metadata tables, ...) (#3224).  A zero-size region rejects
+  // every offset — a row pointing into a declared-empty region is malformed
+  // (#3251).
+  if resOffset < 0 or resOffset >= img.resourcesSize {
     return empty.toArray()
   }
   val b = img.bytes

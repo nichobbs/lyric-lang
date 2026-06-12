@@ -249,9 +249,11 @@ func testCompressedUIntRejectsReserved(): Unit {
     case Ok(_) -> panic("cuint-reserved: offset past the end must be rejected")
     case Err(_) -> ()
   }
-  // A reserved byte inside a signature blob degrades to a clean decode
-  // error, never a junk value: DEFAULT, 1 param, VOID ret, then a CLASS
-  // whose TypeDefOrRef token starts with reserved 0xE0.
+  // A reserved byte inside a signature blob degrades gracefully — the
+  // poisoned parameter surfaces as STUnknown rather than a junk STClass,
+  // while decodeMethodSig still returns Ok (only the individual decoded
+  // type is poisoned, not the whole sig): DEFAULT, 1 param, VOID ret,
+  // then a CLASS whose TypeDefOrRef token starts with reserved 0xE0.
   val sBad: List[Byte] = newList()
   sBad.add(0x00u8)
   sBad.add(0x01u8)
