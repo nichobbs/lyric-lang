@@ -372,6 +372,43 @@ test "stdlib self-build no duplicate type-var corruption" {
   assertEqual(Str.trim(result.stdout), "8", "ix1435_no_duplicate_type_var_corruption: stdout=8")
 }
 
+// Same-named module-level constants across two packages in one closure
+// (#2527 / #2628): registration must not crash on the duplicate bare name,
+// and the package-qualified `pkg/name` const key must make each package
+// inline its OWN value — the bare-name first-wins fallback must never leak
+// pkg A's value into pkg B's reads.
+test "same-named consts across packages resolve per package" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "ConstDup.A",
+      "package ConstDup.A\n" + "\n" + "pub val LIMIT: Int = 10\n" + "\n" + "pub func limitA(): Int { LIMIT }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "ConstDup.B",
+      "package ConstDup.B\n" + "\n" + "pub val LIMIT: Int = 20\n" + "\n" + "pub func limitB(): Int { LIMIT }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "ConstDup.App",
+      "package ConstDup.App\n" + "import ConstDup.A\n" + "import ConstDup.B\n" + "\n" + "func main(): Unit {\n" +
+        "  println(limitA())\n" +
+        "  println(limitB())\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("const-dup", packages, "ConstDup")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "same_named_consts: exit 0 (stderr=" + result.stderr + " stdout=" + result.stdout + ")"
+  )
+  assertEqual(Str.trim(result.stdout), "10\n20", "same_named_consts: each package inlines its own LIMIT")
+}
+
 // ─── Cfg-erasure diagnostics via the bridge ───────────────────────────────────
 // F0012 fires for a malformed @cfg (literal argument instead of
 // `feature = "X"`).  The bridge returns false.

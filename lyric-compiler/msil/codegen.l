@@ -231,6 +231,15 @@ pub record CodegenCtx {
   // Compile-time const values: registered by IConst pre-scan so that EPath
   // references to const names inline ldc.i4 instead of ldsfld.
   constValues: Map[String, Int]  // constName → inlined Int value
+  // Bare const/val names claimed by an earlier package's literal const
+  // registration — the addPackageTokens pre-pass mirror of the emission
+  // side's first-wins bare-name `constValues` adds (#2628).  The pre-pass
+  // needs it to predict that a later package whose same-named literal IVal
+  // loses the bare-name slot keeps its .cctor field init — and therefore
+  // its .cctor MethodDef row; predicting "literal, no .cctor" there shifts
+  // every later MethodDef token by one (the entry token then points at the
+  // wrong method).
+  constBareClaimed: Map[String, Bool]
   // Lyric enums lower to ordinal Int values (mirroring the F# emitter's
   // EnumCaseLookup): type positions encode I4, a case reference emits
   // `ldc.i4 <ordinal>`, and a `case X` pattern compares ordinals.  A
@@ -1382,6 +1391,7 @@ pub func newCodegenCtx(
     lambdaCaptureTypes = newMap(),
     lambdaCaptureCells = newMap(),
     constValues = newMap(),
+    constBareClaimed = newMap(),
     enumTypeNames = newMap(),
     enumCaseOrdinals = newMap(),
     ffiAsmRefs = newMap(),
@@ -1618,6 +1628,11 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         if not isLit {
           hasValCctor = true
         }
+        // Claim with the RAW literal check — the emission side registers an
+        // IConst's bare `constValues` name only in its raw-literal branch.
+        if isLiteralI4ExprMsil(decl.init) and not cctx.constBareClaimed.containsKey(decl.name) {
+          cctx.constBareClaimed.add(decl.name, true)
+        }
         constEnv.add(decl.name, isLit)
       }
       case IVal(decl) -> {
@@ -1626,7 +1641,20 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           hasValCctor = true
         }
         match decl.pattern.kind {
-          case PBinding(valName, _) -> constEnv.add(valName, isLit)
+          case PBinding(valName, _) -> {
+            // A literal IVal whose BARE name was already claimed by an earlier
+            // package loses the first-wins `constValues` slot at emission, so
+            // its field keeps the .cctor init — predict the .cctor row here
+            // too or every later MethodDef token shifts by one (#2628).
+            if isLit {
+              if cctx.constBareClaimed.containsKey(valName) {
+                hasValCctor = true
+              } else {
+                cctx.constBareClaimed.add(valName, true)
+              }
+            }
+            constEnv.add(valName, isLit)
+          }
           case _ -> {
           }
         }  // non-simple bindings can't appear in EPath
