@@ -9,7 +9,7 @@ The phased plan in `docs/05-implementation-plan.md` is the strategic view.
 purposes and retained as a historical reference only.  Technical per-gap
 evidence lives in `docs/41-self-hosted-compiler-gap-analysis.md`.
 
-_Last verified against source: **2026-06-10**._
+_Last verified against source: **2026-06-12**._
 
 ---
 
@@ -52,42 +52,29 @@ order:
    captures enclosing lambda's locals, #1479); lambdas in `@test_module` bodies
    (#1854, LOW). **Anything not yet correctly lowered must hard-error, never
    silently pass through.**
-3. **Async tail (CRITICAL).** Async SM synthesis shipped (Epic #2070 Phases
-   B.0–B.3 + spawn): `IAsyncStateMachine` / `AsyncTaskMethodBuilder` / `Task[T]`
-   returns and `ESpawn` are implemented in `lyric-compiler/msil/` (verified by
-   `async_sm_self_test.l`). Remaining correctness gaps:
-   - `await` inside a `try` block emits invalid IL (#2725, open, recent).
-   - Hardcoded `maxStack=8` risks `VerificationException` on complex methods
-     (#2712).
-   - Lazy `IAsyncEnumerable[T]` generator synthesis (C5, Phase 5, #1490).
-   (docs/41 C4 Phase B done; C5 + #2725 + #2712 remain.)
-4. **Feature completion (HIGH).** Cross-package user generic *types* (C8 —
-   in-bundle MSIL records/unions done #2362/D-progress-453/455; cross-package
-   reification and stdlib self-compile remain, #1496), protected-type locking
-   (C12 — zero mutual exclusion emitted, #1499), `@projectable` twins (H2, #1500),
-   range-subtype validation (H3, #1501), custom `@generate` wiring (H10, #1505),
-   `old()`/quantifier lowering (H11, #1506), `config{}` lowering (M3, #1508),
-   `@derive(Ord)`/union-enum derives (M4, #1507), user cross-package generic-fn
-   mono (H6, #1498 — stdlib wired, user cross-package funcs not yet collected),
-   wire `@provided`/`WMBind` + topo sort + cycle detection (H4, #1502 —
-   **shipped** D-progress-494: `@provided` params lower as `ACC_PRIVATE+STATIC`
-   fields bootstrapped from the `bootstrap()` method, `WMBind` lowers as a
-   static field under the interface's simple name, Kahn's BFS topo sort emitted
-   on both MSIL and JVM targets, cycle panics `W0001`; `WMScoped` scoped
-   lifetime remains stubbed pending #2972),
-   call-site named/default args (H5, #1503 — **shipped** D-progress-494:
-   `reorderAndFillMsil`/`reorderAndFillJvmArgs` reorder named args and fill
-   omitted defaulted params in codegen on both targets; self-hosted
-   `Lyric.TypeChecker` T0042 check updated to allow omitted trailing defaulted
-   params via `minRequired` count, so the type checker no longer rejects
-   valid calls).
-5. **F# elimination + AOT (HIGH).** AOT is now wired: `release.l` emits
-   `<PublishAot>true</PublishAot>` and invokes `dotnet publish -p:PublishAot=true`
-   for the `.lyric-release` target — a CI smoke test using this path is still
-   needed. F# residue still load-bearing: close the `HttpClientHost` class-`val`
-   `.cctor` gap (#1576), port `ProcessCapture` to async (#1489 tail), fix the
-   migrate `Lyric.Session.Host` off F#
-   (#1777). (docs/41 H12, H13 partial.)
+3. **Async tail (CRITICAL): SHIPPED.** All five phases of Epic #2070 complete
+   (extern async unwrapping, `IAsyncStateMachine` synthesis with multi-await,
+   promoted locals and stack-spill, `ESpawn`, lazy `IAsyncEnumerable[T]` generator
+   synthesis — C4 and C5 resolved, #2965).  `await`-in-`try` IL validity enforced
+   via V0012 diagnostic (#2965); dynamic `maxStack` computed in `ee501fd` (#3085).
+   Open correctness bugs tracked separately (not v1.0 blocking): #2725 (further
+   await-in-try edge cases), #2469 (JVM generator parity).
+4. **Feature completion (HIGH): SHIPPED.** All Band 4 items resolved: C8
+   (cross-package generic records/unions #1496, #3079; in-bundle #2362), C12
+   (protected-type `Monitor.Enter`/`Exit` #1499, #3120), H2 (`@projectable` twins
+   #1500, #3015/#3044), H3 (range-subtype validation #1501, #3112), H4 (wire
+   `@provided`/`WMBind` + topo sort #1502, #3050), H5 (named/default args #1503,
+   #3050), H6 (user cross-package generic-fn mono #1498, #2966), H10 (custom
+   `@generate` wiring #1505, #2966), H11 (`old()`/`forall`/`exists` lowering
+   #1506, #2966), M3 (`config{}` lowering #1508, #2966), M4 (`@derive(Ord)`/
+   union/enum derives #1507, #3120).
+5. **F# elimination + AOT (HIGH): SHIPPED.** All ecosystem host shims deleted
+   (#3053: Jvm.Hosts, Jobs.Host, Mq.Host, Web.Host; #3016: Session.Host,
+   ProcessCapture, StubCounterHost; #3034/#3062: HttpClientHost `.cctor` #1576
+   fixed, `Lyric.Emitter.dll` + `FSharp.Core.dll` removed from stage-1 bundle).
+   AOT publishing wired and CI smoke test running (#3197/#3201/#3206). Stage-1
+   determinism CI-enforced — 103/103 DLLs byte-identical (#3217). (docs/41 H12,
+   H13 complete.)
 
 ---
 
