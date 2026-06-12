@@ -2283,9 +2283,10 @@ jobs:
       # Synthesized-method-resolution self-test on JVM (#1499, #1507) — JVM
       # parity twin of the MSIL step above.  Pins the JVM `@derive(Equals/Show)`
       # free-function call path (the member-call fallback in `lowerMethodCall`
-      # that dispatches `p.equals(q)` as `invokestatic Pkg/Point_equals`) and the
+      # that dispatches `p.equals(q)` as an `invokestatic` of `equals`) and the
       # protected-type entry/func dispatch through the `<class>#<method>` registry.
-      # The classfile method name uses `_` in place of `.` to satisfy JVMS §4.2.2
+      # `lowerFunc` strips the `TypeName.` prefix from the synthesised name
+      # (`Point.equals` -> classfile method name `equals`) to satisfy JVMS §4.2.2
       # (unqualified names may not contain `.`).  Imports only `Std.*`.
       - name: Synthesized-method-resolution self-test on JVM (native lyric test --target jvm)
         working-directory: ${{ github.workspace }}
