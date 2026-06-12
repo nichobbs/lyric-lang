@@ -9,7 +9,7 @@ import Std.Uuid as Uuid
 
 // FIPS 180-4 test vectors (uppercase). Wrapped because top-level val isn't supported by the bootstrap parser.
 func sha256Abc(): String {
-  "BA7816BF8F01CFEA414140DE5DAE2EC68B99A32A54C6F7B3654C7F10DE9D58AF"
+  "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD"
 }
 
 func sha256Empty(): String {
@@ -85,15 +85,8 @@ func testSha512OfFileKnownVector(): Unit {
 }
 
 func main(): Int {
-  // SHA-256 tests are defined with correct FIPS 180-4 vectors but disabled pending
-  // bootstrap emitter BCL extern marshaling fixes (#2840). The tests compile and
-  // the sha256OfBytes function is wired correctly, but the runtime hash values
-  // are incorrect — indicating a .NET interop issue in the F# stage-0 emitter's
-  // handling of System.Security.Cryptography.SHA256.HashData. Once the bootstrap
-  // emitter is fixed to correctly marshal the input/output for SHA-256, these
-  // tests can be enabled and will pass.
-  // testSha256OfBytesKnownVector()
-  // testSha256OfBytesEmpty()
+  testSha256OfBytesKnownVector()
+  testSha256OfBytesEmpty()
   testSha512OfBytesKnownVector()
   testSha512OfBytesEmpty()
   testSha512OfFileNotFound()
