@@ -197,6 +197,7 @@ jobs:
       has_nuget_key: ${{ steps.check.outputs.has_nuget_key }}
     steps:
       - id: check
+        shell: bash
         env:
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
         run: |
@@ -211,9 +212,15 @@ jobs:
     needs: [build-standalone, secrets-gate]
     if: needs.secrets-gate.outputs.has_nuget_key == 'true'
 
-    # Hoisted so the signing step's `if:` can test it (see build-standalone).
+    # Hoist the secrets into `env` rather than interpolating ${{ secrets.* }}
+    # into `run:` scripts: it lets the signing step's `if:` test the cert (the
+    # `secrets` context is not allowed in `if:`), and it keeps secret values out
+    # of the rendered shell command text (they're read from the environment at
+    # runtime instead of being substituted into the script).
     env:
-      NUGET_SIGNING_CERT_BASE64: ${{ secrets.NUGET_SIGNING_CERT_BASE64 }}
+      NUGET_SIGNING_CERT_BASE64:   ${{ secrets.NUGET_SIGNING_CERT_BASE64 }}
+      NUGET_SIGNING_CERT_PASSWORD: ${{ secrets.NUGET_SIGNING_CERT_PASSWORD }}
+      NUGET_API_KEY:               ${{ secrets.NUGET_API_KEY }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -256,11 +263,11 @@ jobs:
       - name: Sign NuGet package
         if: env.NUGET_SIGNING_CERT_BASE64 != ''
         run: |
-          echo "${{ secrets.NUGET_SIGNING_CERT_BASE64 }}" | base64 --decode \
+          echo "$NUGET_SIGNING_CERT_BASE64" | base64 --decode \
             > /tmp/nuget-signing.pfx
           dotnet nuget sign bootstrap/nupkgs/*.nupkg \
             --certificate-path /tmp/nuget-signing.pfx \
-            --certificate-password "${{ secrets.NUGET_SIGNING_CERT_PASSWORD }}" \
+            --certificate-password "$NUGET_SIGNING_CERT_PASSWORD" \
             --timestamper http://timestamp.digicert.com \
             --overwrite
           rm -f /tmp/nuget-signing.pfx
@@ -268,6 +275,6 @@ jobs:
       - name: Push to NuGet.org
         run: |
           dotnet nuget push bootstrap/nupkgs/*.nupkg \
-            --api-key "${{ secrets.NUGET_API_KEY }}" \
+            --api-key "$NUGET_API_KEY" \
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate
