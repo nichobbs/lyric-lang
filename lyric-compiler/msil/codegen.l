@@ -19364,99 +19364,67 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
         ci = ci + 1
       }
     }
-    case IRecord(decl) -> {
-      val typeRefRow = match mapGet(cctx.ffiTypeRefs, typeRefKey) { case Some(r) -> r; case None -> 0 }
-      if typeRefRow > 0 {
-        var fi = 0
-        var fpos = 0
-        while fi < decl.members.count {
-          match decl.members[fi] {
-            case RMField(f) -> {
-              val key = typeFqn + "/" + f.name
-              if not cctx.fieldTokens.containsKey(key) {
-                val fty = typeExprToMsilCtx(cctx, f.ty, packageName)
-                val fSig = buildFieldSigWithCtx(fty, cctx.lctx)
-                val sigKey = "stdlib_field_" + key
-                val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, f.name, sigKey, fSig)
-                cctx.fieldTokens.add(key, 0x0A000000 + memberRow)
-                if not cctx.fieldMsilTypes.containsKey(key) {
-                  cctx.fieldMsilTypes.add(key, fty)
-                }
-              }
-              val byPosKey = typeFqn + "/field" + toString(fpos)
-              if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
-                cctx.fieldDeclaredNames.add(byPosKey, f.name)
-              }
-              fpos = fpos + 1
-            }
-            case _ -> ()
-          }
-          fi = fi + 1
-        }
-        val ctorParams: List[MsilType] = newList()
-        var ci = 0
-        while ci < decl.members.count {
-          match decl.members[ci] {
-            case RMField(f) -> ctorParams.add(typeExprToMsilCtx(cctx, f.ty, packageName))
-            case _ -> ()
-          }
-          ci = ci + 1
-        }
-        val ctorSig = buildInstanceMethodSig(ctorParams, MVoid)
-        val ctorSigKey = "stdlib_ctor_" + typeFqn
-        val ctorMrRow = ctxAddMemberRef(cctx.lctx, typeRefRow, ".ctor", ctorSigKey, ctorSig)
-        if not cctx.recordCtorTokens.containsKey(typeFqn) {
-          cctx.recordCtorTokens.add(typeFqn, 0x0A000000 + ctorMrRow)
-        }
-      }
-    }
-    case IExposedRec(decl) -> {
-      val typeRefRow = match mapGet(cctx.ffiTypeRefs, typeRefKey) { case Some(r) -> r; case None -> 0 }
-      if typeRefRow > 0 {
-        var fi = 0
-        var fpos = 0
-        while fi < decl.members.count {
-          match decl.members[fi] {
-            case RMField(f) -> {
-              val key = typeFqn + "/" + f.name
-              if not cctx.fieldTokens.containsKey(key) {
-                val fty = typeExprToMsilCtx(cctx, f.ty, packageName)
-                val fSig = buildFieldSigWithCtx(fty, cctx.lctx)
-                val sigKey = "stdlib_field_" + key
-                val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, f.name, sigKey, fSig)
-                cctx.fieldTokens.add(key, 0x0A000000 + memberRow)
-                if not cctx.fieldMsilTypes.containsKey(key) {
-                  cctx.fieldMsilTypes.add(key, fty)
-                }
-              }
-              val byPosKey = typeFqn + "/field" + toString(fpos)
-              if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
-                cctx.fieldDeclaredNames.add(byPosKey, f.name)
-              }
-              fpos = fpos + 1
-            }
-            case _ -> ()
-          }
-          fi = fi + 1
-        }
-        val ctorParams: List[MsilType] = newList()
-        var ci = 0
-        while ci < decl.members.count {
-          match decl.members[ci] {
-            case RMField(f) -> ctorParams.add(typeExprToMsilCtx(cctx, f.ty, packageName))
-            case _ -> ()
-          }
-          ci = ci + 1
-        }
-        val ctorSig = buildInstanceMethodSig(ctorParams, MVoid)
-        val ctorSigKey = "stdlib_ctor_" + typeFqn
-        val ctorMrRow = ctxAddMemberRef(cctx.lctx, typeRefRow, ".ctor", ctorSigKey, ctorSig)
-        if not cctx.recordCtorTokens.containsKey(typeFqn) {
-          cctx.recordCtorTokens.add(typeFqn, 0x0A000000 + ctorMrRow)
-        }
-      }
-    }
+    case IRecord(decl) -> registerStdlibRecordLikeType(cctx, decl, typeRefKey, typeFqn, packageName)
+    case IExposedRec(decl) -> registerStdlibRecordLikeType(cctx, decl, typeRefKey, typeFqn, packageName)
     case _ -> ()
+  }
+}
+
+// Shared by the IRecord and IExposedRec arms of `registerStdlibTypeItem`
+// (#2922): both carry a `RecordDecl` and register identical metadata — field
+// MemberRefs (by declared name and positional fallback), field MsilTypes, and
+// the ctor MemberRef.  The exposed/opaque distinction does not change what a
+// cross-assembly consumer references.
+func registerStdlibRecordLikeType(
+  cctx: in CodegenCtx,
+  decl: in RecordDecl,
+  typeRefKey: in String,
+  typeFqn: in String,
+  packageName: in String,
+): Unit {
+  val typeRefRow = match mapGet(cctx.ffiTypeRefs, typeRefKey) { case Some(r) -> r; case None -> 0 }
+  if typeRefRow > 0 {
+    var fi = 0
+    var fpos = 0
+    while fi < decl.members.count {
+      match decl.members[fi] {
+        case RMField(f) -> {
+          val key = typeFqn + "/" + f.name
+          if not cctx.fieldTokens.containsKey(key) {
+            val fty = typeExprToMsilCtx(cctx, f.ty, packageName)
+            val fSig = buildFieldSigWithCtx(fty, cctx.lctx)
+            val sigKey = "stdlib_field_" + key
+            val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, f.name, sigKey, fSig)
+            cctx.fieldTokens.add(key, 0x0A000000 + memberRow)
+            if not cctx.fieldMsilTypes.containsKey(key) {
+              cctx.fieldMsilTypes.add(key, fty)
+            }
+          }
+          val byPosKey = typeFqn + "/field" + toString(fpos)
+          if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
+            cctx.fieldDeclaredNames.add(byPosKey, f.name)
+          }
+          fpos = fpos + 1
+        }
+        case _ -> ()
+      }
+      fi = fi + 1
+    }
+    val ctorParams: List[MsilType] = newList()
+    var ci = 0
+    while ci < decl.members.count {
+      match decl.members[ci] {
+        case RMField(f) -> ctorParams.add(typeExprToMsilCtx(cctx, f.ty, packageName))
+        case _ -> ()
+      }
+      ci = ci + 1
+    }
+    val ctorSig = buildInstanceMethodSig(ctorParams, MVoid)
+    val ctorSigKey = "stdlib_ctor_" + typeFqn
+    val ctorMrRow = ctxAddMemberRef(cctx.lctx, typeRefRow, ".ctor", ctorSigKey, ctorSig)
+    if not cctx.recordCtorTokens.containsKey(typeFqn) {
+      cctx.recordCtorTokens.add(typeFqn, 0x0A000000 + ctorMrRow)
+    }
   }
 }
 
