@@ -3035,7 +3035,7 @@ func findDirectSig(
           prefix.add(path.segments[pi])
           pi = pi + 1
         }
-        val wantPkg = joinSegments(prefix)
+        val wantPkg = modulePathJoin(prefix)
         val qcands = gatherOverloadCandidates(sigs, arityKey)
         var qi = 0
         while qi < qcands.count {

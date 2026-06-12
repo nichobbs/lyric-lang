@@ -15,6 +15,24 @@ pub record ModulePath {
   span: Span
 }
 
+/// Join module-path segments with `.` (e.g. `["Std", "Core"]` ->
+/// `"Std.Core"`); an empty list yields `""`.  The single shared
+/// implementation for dotted-path rendering (#2329) — consumers
+/// (`Lyric.TypeChecker`, `Lyric.AliasRewriter`, ...) call this
+/// instead of keeping local copies.
+pub func modulePathJoin(segs: in List[String]): String {
+  if segs.count == 0 {
+    return ""
+  }
+  var s = segs[0]
+  var i = 1
+  while i < segs.count {
+    s = s + "." + segs[i]
+    i = i + 1
+  }
+  s
+}
+
 pub union Visibility {
   case VisPub(span: Span)
   case VisInternal(span: Span)

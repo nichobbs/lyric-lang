@@ -367,7 +367,7 @@ func resolveTypePath(
       TyPrim(pt = prim)
     }
     case None -> {
-      val joined = joinSegments(path.segments)
+      val joined = modulePathJoin(path.segments)
       diag.add(
         errorDiagnostic("T0014", "unknown qualified type '" + joined + "' ('" + last + "' not found in scope)", span)
       )
@@ -405,17 +405,4 @@ func checkImportedVisibility(sym: in Symbol, span: in Span, diag: in List[Diagno
       }
     }
   }
-}
-
-func joinSegments(segs: in List[String]): String {
-  if segs.count == 0 {
-    return ""
-  }
-  var s = segs[0]
-  var i = 1
-  while i < segs.count {
-    s = s + "." + segs[i]
-    i = i + 1
-  }
-  s
 }
