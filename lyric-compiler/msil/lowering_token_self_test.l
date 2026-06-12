@@ -8,69 +8,66 @@
 //! returned).  A second call with a different element type verifies the miss
 //! path allocates fresh tokens.
 //!
-//! Written as a plain `func main` program rather than `@test_module` because
-//! importing `Msil.Lowering` (which imports `Msil.Kernel`) triggers the
-//! `Msil.Kernel.ByteWriter` vs `Std.Stream.ByteWriter` name collision
-//! that blocks `@test_module` compilation (#3085).
+//! Run in CI via native `lyric test`, linking the already-compiled compiler
+//! DLLs as restored deps (the msil_self_test_m2a.l precedent; the #3085
+//! short-name collision that previously blocked `@test_module` compilation
+//! was fixed by codegen scope-tier resolution):
 //!
-//! Run via the F# bootstrap emitter (avoids #3085):
-//!
-//!   ./bin/lyric run lyric-compiler/msil/lowering_token_self_test.l
-//!
-//! Migration to native `lyric test` is blocked by #3085.
+//!   lyric test --target dotnet lyric-compiler/msil/lowering_token_self_test.l
+@test_module
 package Msil.LoweringTokenSelfTest
 
 import Msil.Lowering
 import Std.Core
 import Std.Collections
-
-func check(label: in String, ok: in Bool): Unit {
-  if ok {
-    println(label + "=true")
-  } else {
-    println(label + "=FAIL")
-  }
-}
+import Std.Testing
 
 // Seed the mandatory open-generic TypeRefs needed by listTokensForLowering /
 // dictTokensForLowering (mirrors the newCodegenCtx seeding in codegen.l).
 func seedCollectionTypeRefs(ctx: in LoweringCtx): Unit {
   val arRuntime = ctxAddAssemblyRef(ctx, "System.Runtime", 10, 0)
   val arCollections = ctxAddAssemblyRef(ctx, "System.Collections", 10, 0)
-  ctxAddTypeRef(ctx, "System.Collections.Generic", "List`1", arCollections)
-  ctxAddTypeRef(ctx, "System.Collections.Generic", "Dictionary`2", arCollections)
+  val _ = ctxAddTypeRef(ctx, "System.Collections.Generic", "List`1", arCollections)
+  val _ = ctxAddTypeRef(ctx, "System.Collections.Generic", "Dictionary`2", arCollections)
 }
 
-pub func main(): Int {
+test "listTokensForLowering cache hit returns same tokens" {
   val ctx = newLoweringCtx("Test", 1, 0)
   seedCollectionTypeRefs(ctx)
-
-  // Test: listTokensForLowering cache hit returns same struct
   val lt1a = listTokensForLowering(ctx, MInt)
   val lt1b = listTokensForLowering(ctx, MInt)
-  check("list_cache_hit_ctor", lt1a.ctor == lt1b.ctor)
-  check("list_cache_hit_add", lt1a.add == lt1b.add)
-  check("list_cache_hit_getitem", lt1a.getItem == lt1b.getItem)
-  check("list_cache_hit_count", lt1a.getCount == lt1b.getCount)
-  check("list_cache_hit_typespec", lt1a.typeSpec == lt1b.typeSpec)
+  assertEqualInt(lt1a.ctor, lt1b.ctor, "list_cache_hit_ctor")
+  assertEqualInt(lt1a.add, lt1b.add, "list_cache_hit_add")
+  assertEqualInt(lt1a.getItem, lt1b.getItem, "list_cache_hit_getitem")
+  assertEqualInt(lt1a.getCount, lt1b.getCount, "list_cache_hit_count")
+  assertEqualInt(lt1a.typeSpec, lt1b.typeSpec, "list_cache_hit_typespec")
+}
 
-  // Test: listTokensForLowering with different element type allocates fresh tokens
+test "listTokensForLowering miss allocates fresh tokens" {
+  val ctx = newLoweringCtx("Test", 1, 0)
+  seedCollectionTypeRefs(ctx)
+  val lt1 = listTokensForLowering(ctx, MInt)
   val lt2 = listTokensForLowering(ctx, MString)
-  check("list_cache_miss_different_typespec", lt1a.typeSpec != lt2.typeSpec)
+  assertTrue(lt1.typeSpec != lt2.typeSpec, "list_cache_miss_different_typespec")
+}
 
-  // Test: dictTokensForLowering cache hit returns same struct
+test "dictTokensForLowering cache hit returns same tokens" {
+  val ctx = newLoweringCtx("Test", 1, 0)
+  seedCollectionTypeRefs(ctx)
   val dt1a = dictTokensForLowering(ctx, MString, MInt)
   val dt1b = dictTokensForLowering(ctx, MString, MInt)
-  check("dict_cache_hit_ctor", dt1a.ctor == dt1b.ctor)
-  check("dict_cache_hit_add", dt1a.add == dt1b.add)
-  check("dict_cache_hit_containskey", dt1a.containsKey == dt1b.containsKey)
-  check("dict_cache_hit_remove", dt1a.remove == dt1b.remove)
-  check("dict_cache_hit_trygetvalue", dt1a.tryGetValue == dt1b.tryGetValue)
-  check("dict_cache_hit_typespec", dt1a.typeSpec == dt1b.typeSpec)
+  assertEqualInt(dt1a.ctor, dt1b.ctor, "dict_cache_hit_ctor")
+  assertEqualInt(dt1a.add, dt1b.add, "dict_cache_hit_add")
+  assertEqualInt(dt1a.containsKey, dt1b.containsKey, "dict_cache_hit_containskey")
+  assertEqualInt(dt1a.remove, dt1b.remove, "dict_cache_hit_remove")
+  assertEqualInt(dt1a.tryGetValue, dt1b.tryGetValue, "dict_cache_hit_trygetvalue")
+  assertEqualInt(dt1a.typeSpec, dt1b.typeSpec, "dict_cache_hit_typespec")
+}
 
-  // Test: dictTokensForLowering with different key type allocates fresh tokens
+test "dictTokensForLowering miss allocates fresh tokens" {
+  val ctx = newLoweringCtx("Test", 1, 0)
+  seedCollectionTypeRefs(ctx)
+  val dt1 = dictTokensForLowering(ctx, MString, MInt)
   val dt2 = dictTokensForLowering(ctx, MInt, MString)
-  check("dict_cache_miss_different_typespec", dt1a.typeSpec != dt2.typeSpec)
-
-  0
+  assertTrue(dt1.typeSpec != dt2.typeSpec, "dict_cache_miss_different_typespec")
 }

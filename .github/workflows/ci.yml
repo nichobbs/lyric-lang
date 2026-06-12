@@ -1136,6 +1136,9 @@ jobs:
       # `compilerClosureDllPaths` links the self-hosted-emitted compiler DLLs
       # staged under `<libdir>/selfhosted` by stage-selfhosted-compiler.sh —
       # the F#-emitted stage-1 metadata omits `pub val` decls (#3086).
+      # lowering_token_self_test.l (#2473) covers the listTokensForLowering /
+      # dictTokensForLowering cache hit/miss logic in Msil.Lowering; it rides
+      # the same step because it imports `Msil.*` like M2a-M2d.
       - name: MSIL backend self-tests M2a-M2d (native lyric test)
         working-directory: ${{ github.workspace }}
         run: |
@@ -1155,7 +1158,8 @@ jobs:
             lyric-compiler/msil/msil_self_test_m2a.l \
             lyric-compiler/msil/msil_self_test_m2b.l \
             lyric-compiler/msil/msil_self_test_m2c.l \
-            lyric-compiler/msil/msil_self_test_m2d.l ; do
+            lyric-compiler/msil/msil_self_test_m2d.l \
+            lyric-compiler/msil/lowering_token_self_test.l ; do
             echo "=== $t ==="
             "$lyric_bin" test --target dotnet "$t"
             ran="$ran $t"
