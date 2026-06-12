@@ -1,0 +1,9 @@
+{
+  "lyric": {
+    "command": "./bin/lyric",
+    "args": ["lsp"],
+    "extensionToLanguage": {
+      ".l": "lyric"
+    }
+  }
+}
