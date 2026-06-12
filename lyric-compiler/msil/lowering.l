@@ -3357,11 +3357,34 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
   val firstField = t.fields.count + 1
   val firstMethod = t.methodDefs.count + 1
 
-  // Emit one MethodDef per member in declaration order so token numbers agree
-  // with the addPackageTokens pre-pass (which also walks members in order).
-  // Abstract slots (MIAbstract) get RVA=0 and the Abstract flag; DIM slots
-  // (MIDim) get a compiled body and no Abstract flag.
+  // Pass 1 (#2962): lower and accumulate every DIM body first, recording each
+  // member's body index.  `methodBodyRvas` re-serializes ALL accumulated
+  // bodies per call, so calling it inside the member loop was O(n·k); one
+  // call after the loop is O(n+k).  Earlier bodies' RVAs are stable across
+  // later additions (sequential layout from a fixed base), so the single
+  // post-loop call yields the same RVAs the per-member calls did.
+  val dimBodyIdx: List[Int] = newList()
+  var hasDim = false
   var mi = 0
+  while mi < iface.members.count {
+    match iface.members[mi] {
+      case MIAbstract(_) -> dimBodyIdx.add(-1)
+      case MIDim(dm) -> {
+        ctx.bodies.add(lowerMFunc(dm, ctx))
+        dimBodyIdx.add(ctx.bodies.count - 1)
+        hasDim = true
+      }
+    }
+    mi = mi + 1
+  }
+  val dimRvas: List[Int] = if hasDim { methodBodyRvas(ctx.bodies) } else { newList() }
+
+  // Pass 2: emit one MethodDef per member in declaration order so token
+  // numbers agree with the addPackageTokens pre-pass (which also walks
+  // members in order).  Abstract slots (MIAbstract) get RVA=0 and the
+  // Abstract flag; DIM slots (MIDim) get their pass-1 body's RVA and no
+  // Abstract flag.
+  mi = 0
   while mi < iface.members.count {
     match iface.members[mi] {
       case MIAbstract(m) -> {
@@ -3384,10 +3407,7 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
         )
       }
       case MIDim(dm) -> {
-        val mbDm = lowerMFunc(dm, ctx)
-        ctx.bodies.add(mbDm)
-        val rvasDm = methodBodyRvas(ctx.bodies)
-        val dmRva = rvasDm[ctx.bodies.count - 1]
+        val dmRva = dimRvas[dimBodyIdx[mi]]
         val sNDm = internString(sh, dm.name)
         val dmSig = buildInstanceMethodSigWithCtx(dm.params, dm.ret, ctx)
         val bDmSig = internBlob(bh, "ifdmeth_" + iface.className + "_" + dm.name + "/" + toString(dm.params.count), dmSig)
