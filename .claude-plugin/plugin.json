@@ -1,0 +1,7 @@
+{
+  "name": "lyric-lsp",
+  "displayName": "Lyric Language Server",
+  "version": "0.1.0",
+  "description": "LSP server for the Lyric programming language",
+  "lspServers": "../.lsp.json"
+}
