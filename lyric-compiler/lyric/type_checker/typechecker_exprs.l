@@ -146,9 +146,36 @@ func floatPrimRank(pt: in PrimType): Int {
 // `Int + Long` type-checks and yields `Long`.
 func widenArithmetic(lhs: in Type, rhs: in Type): Option[Type] {
   match lhs {
-    case TyPrim(pa) -> match rhs { case TyPrim(pb) -> { if primEq(pa, pb) { return None }; val asr = signedIntRank(pa); val bsr = signedIntRank(pb); if asr >= 0 and bsr >= 0 { return Some(value = if asr >= bsr { lhs } else { rhs }) }; val au = unsignedIntRank(pa); val bu = unsignedIntRank(pb); if au >= 0 and bu >= 0 { return Some(value = if au >= bu { lhs } else { rhs }) }; val af = floatPrimRank(pa); val bf = floatPrimRank(pb); if af >= 0 and bf >= 0 { return Some(value = if af >= bf { lhs } else { rhs }) }; None }; case _ -> None }
+    case TyPrim(pa) -> match rhs { case TyPrim(pb) -> widenPrimArithmetic(lhs, rhs, pa, pb); case _ -> None }
     case _ -> None
   }
+}
+
+// The widening families are disjoint by construction (each rank function
+// returns -1 outside its family), so the three sections are tried in order.
+func widenPrimArithmetic(lhs: in Type, rhs: in Type, pa: in PrimType, pb: in PrimType): Option[Type] {
+  if primEq(pa, pb) {
+    return None
+  }
+  // Signed integers: Byte < Int < Long.
+  val asr = signedIntRank(pa)
+  val bsr = signedIntRank(pb)
+  if asr >= 0 and bsr >= 0 {
+    return Some(value = if asr >= bsr { lhs } else { rhs })
+  }
+  // Unsigned integers: Byte < UInt < ULong.
+  val au = unsignedIntRank(pa)
+  val bu = unsignedIntRank(pb)
+  if au >= 0 and bu >= 0 {
+    return Some(value = if au >= bu { lhs } else { rhs })
+  }
+  // Floating point: Float < Double.
+  val af = floatPrimRank(pa)
+  val bf = floatPrimRank(pb)
+  if af >= 0 and bf >= 0 {
+    return Some(value = if af >= bf { lhs } else { rhs })
+  }
+  None
 }
 
 func isOrderedType(t: in Type): Bool {
@@ -373,20 +400,12 @@ func isUnboundedScalar(pt: in PrimType): Bool {
 func importedOpaqueName(tbl: in SymbolTable, ty: in Type): Option[String] {
   match unrefine(ty) {
     case TyUser(id, _, _) -> {
-      var i = 0
-      while i < tbl.symbols.count {
-        match tbl.symbols[i].kind {
-          case DKOpaque(oid, _) -> {
-            if typeIdEq(oid, id) and tbl.symbols[i].isImported {
-              return Some(value = tbl.symbols[i].name)
-            }
-          }
-          case _ -> {
-          }
-        }
-        i = i + 1
+      val key = toString(id.id)
+      if not tbl.importedOpaqueNames.containsKey(key) {
+        return None
       }
-      None
+      val nm = tbl.importedOpaqueNames[key]
+      Some(value = nm)
     }
     case _ -> None
   }
@@ -1420,24 +1439,18 @@ func ctorGenericNames(sym: in Symbol): List[String] {
   names
 }
 
-// Collect the raw field types from a constructor symbol with `genericNames`
-// registered in the generic context, so that type-parameter fields resolve to
-// `TyVar(name)` rather than `TyError`.  Used by generic-constructor type-arg
-// inference in `inferConstruction`.
-func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[String]): List[Type] {
-  val ctx = newGenericContext()
-  gctxPush(ctx, genericNames)
-  // Inference probe only: resolution diagnostics are deliberately discarded
-  // (the authoritative field-type check runs later in inferConstruction);
-  // this pass exists solely to surface TyVar positions for inferGenericArgs.
-  val scratch: List[Diagnostic] = newList()
-  val result: List[Type] = newList()
+// All field declarations of a constructor symbol (record / exposed record /
+// opaque) in declaration order; empty for any other symbol kind.  Centralises
+// the DKRecord/DKExposedRec/DKOpaque member iteration so the helpers below
+// stay in sync when a constructor-like symbol kind is added (#3159).
+func ctorAllFields(sym: in Symbol): List[FieldDecl] {
+  val result: List[FieldDecl] = newList()
   match sym.kind {
     case DKRecord(_, rd) -> {
       var i = 0
       while i < rd.members.count {
         match rd.members[i] {
-          case RMField(fd) -> result.add(resolveType(tbl, ctx, scratch, fd.ty))
+          case RMField(fd) -> result.add(fd)
           case _ -> {
           }
         }
@@ -1448,7 +1461,7 @@ func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[S
       var i = 0
       while i < rd.members.count {
         match rd.members[i] {
-          case RMField(fd) -> result.add(resolveType(tbl, ctx, scratch, fd.ty))
+          case RMField(fd) -> result.add(fd)
           case _ -> {
           }
         }
@@ -1459,7 +1472,7 @@ func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[S
       var i = 0
       while i < od.members.count {
         match od.members[i] {
-          case OMField(fd) -> result.add(resolveType(tbl, ctx, scratch, fd.ty))
+          case OMField(fd) -> result.add(fd)
           case _ -> {
           }
         }
@@ -1472,6 +1485,27 @@ func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[S
   result
 }
 
+// Collect the raw field types from a constructor symbol with `genericNames`
+// registered in the generic context, so that type-parameter fields resolve to
+// `TyVar(name)` rather than `TyError`.  Used by generic-constructor type-arg
+// inference in `inferConstruction`.
+func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[String]): List[Type] {
+  val ctx = newGenericContext()
+  gctxPush(ctx, genericNames)
+  // Inference probe only: resolution diagnostics are deliberately discarded
+  // (the authoritative field-type check runs later in inferConstruction);
+  // this pass exists solely to surface TyVar positions for inferGenericArgs.
+  val scratch: List[Diagnostic] = newList()
+  val result: List[Type] = newList()
+  val fields = ctorAllFields(sym)
+  var i = 0
+  while i < fields.count {
+    result.add(resolveType(tbl, ctx, scratch, fields[i].ty))
+    i = i + 1
+  }
+  result
+}
+
 // Re-resolve constructor field types into `diag` so genuine field-type errors
 // (e.g. references to unknown types) surface even when T0110 fires early.
 // Uses a plain generic context (no type-var names pushed), so generic-position
@@ -1479,48 +1513,11 @@ func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[S
 // only on the T0110 early-return path (#3155).
 func surfaceCtorFieldTypeErrors(tbl: in SymbolTable, sym: in Symbol, diag: in List[Diagnostic]): Unit {
   val ctx = newGenericContext()
-  match sym.kind {
-    case DKRecord(_, rd) -> {
-      var i = 0
-      while i < rd.members.count {
-        match rd.members[i] {
-          case RMField(fd) -> {
-            val _ = resolveType(tbl, ctx, diag, fd.ty)
-          }
-          case _ -> {
-          }
-        }
-        i = i + 1
-      }
-    }
-    case DKExposedRec(_, rd) -> {
-      var i = 0
-      while i < rd.members.count {
-        match rd.members[i] {
-          case RMField(fd) -> {
-            val _ = resolveType(tbl, ctx, diag, fd.ty)
-          }
-          case _ -> {
-          }
-        }
-        i = i + 1
-      }
-    }
-    case DKOpaque(_, od) -> {
-      var i = 0
-      while i < od.members.count {
-        match od.members[i] {
-          case OMField(fd) -> {
-            val _ = resolveType(tbl, ctx, diag, fd.ty)
-          }
-          case _ -> {
-          }
-        }
-        i = i + 1
-      }
-    }
-    case _ -> {
-    }
+  val fields = ctorAllFields(sym)
+  var i = 0
+  while i < fields.count {
+    val _ = resolveType(tbl, ctx, diag, fields[i].ty)
+    i = i + 1
   }
 }
 
@@ -1529,42 +1526,11 @@ func surfaceCtorFieldTypeErrors(tbl: in SymbolTable, sym: in Symbol, diag: in Li
 // order before passing to inferGenericArgs (#3157).
 func ctorFieldNames(sym: in Symbol): List[String] {
   val result: List[String] = newList()
-  match sym.kind {
-    case DKRecord(_, rd) -> {
-      var i = 0
-      while i < rd.members.count {
-        match rd.members[i] {
-          case RMField(fd) -> result.add(fd.name)
-          case _ -> {
-          }
-        }
-        i = i + 1
-      }
-    }
-    case DKExposedRec(_, rd) -> {
-      var i = 0
-      while i < rd.members.count {
-        match rd.members[i] {
-          case RMField(fd) -> result.add(fd.name)
-          case _ -> {
-          }
-        }
-        i = i + 1
-      }
-    }
-    case DKOpaque(_, od) -> {
-      var i = 0
-      while i < od.members.count {
-        match od.members[i] {
-          case OMField(fd) -> result.add(fd.name)
-          case _ -> {
-          }
-        }
-        i = i + 1
-      }
-    }
-    case _ -> {
-    }
+  val fields = ctorAllFields(sym)
+  var i = 0
+  while i < fields.count {
+    result.add(fields[i].name)
+    i = i + 1
   }
   result
 }
@@ -1860,8 +1826,9 @@ func inferConstruction(
       )
       return inferredTy
     }
-    val fields: List[CtorField] = newList()
-    val _ = collectCtorFields(tbl, sym, fields)
+    // Reuse the field list collected for the missing-field check above (#3162):
+    // both calls traverse the same symbol and produce identical results.
+    val fields = prelimFields
     var posIdx = 0
     var i = 0
     while i < args.count {
@@ -2009,16 +1976,13 @@ func unionCaseSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
 }
 
 func parentUnionDeclOf(tbl: in SymbolTable, parentId: in TypeId): Option[UnionDecl] {
-  var i = 0
-  while i < tbl.symbols.count {
-    match tbl.symbols[i].kind {
-      case DKUnion(uid, decl) -> if typeIdEq(uid, parentId) { return Some(value = decl) }
-      case _ -> {
-      }
-    }
-    i = i + 1
+  val key = toString(parentId.id)
+  if not tbl.unionDeclIndex.containsKey(key) {
+    return None
   }
-  None
+  val ix = tbl.unionDeclIndex[key]
+  val decl = tbl.unionDeclList[ix]
+  Some(value = decl)
 }
 
 func unionDeclGenericNames(decl: in UnionDecl): List[String] {

@@ -117,6 +117,19 @@ pub record SymbolTable {
   /// Keyed by `TypeId` (not simple name) so a same-simple-name interface in a
   /// different package can never satisfy the check (#2303 soundness).
   impls: List[ImplPair]
+  /// `toString(TypeId.id)` → declared name of an *imported* opaque type.
+  /// Side index populated by `symTableAdd` so `importedOpaqueName` (called
+  /// once per `EMatch`) is O(1) instead of a full symbol scan (#2027).
+  importedOpaqueNames: Map[String, String]
+  /// `toString(TypeId.id)` → index into `unionDeclList`.  Side index populated
+  /// by `symTableAdd` so `parentUnionDeclOf` (called at least twice per
+  /// union-constructor call) is O(1) instead of a full symbol scan (#2178).
+  /// The decl itself lives in the parallel `unionDeclList` because the stage-0
+  /// bootstrap emitter miscompiles `Map` values of cross-package record types
+  /// (`UnionDecl` is a `Lyric.Parser` record); an `Int` map value plus a
+  /// `List` read is the established safe pattern.
+  unionDeclIndex: Map[String, Int]
+  unionDeclList: List[UnionDecl]
   // One `impl Iface for Target` conformance, by resolved `TypeId`.
 }
 
@@ -126,7 +139,15 @@ pub record ImplPair {
 }
 
 pub func newSymbolTable(): SymbolTable {
-  SymbolTable(symbols = newList(), scopePkg = newList(), scopeImports = newList(), impls = newList())
+  SymbolTable(
+    symbols = newList(),
+    scopePkg = newList(),
+    scopeImports = newList(),
+    impls = newList(),
+    importedOpaqueNames = newMap(),
+    unionDeclIndex = newMap(),
+    unionDeclList = newList()
+  )
 }
 
 // Record that the type with id `target` implements the interface with id
@@ -155,6 +176,28 @@ pub func symTableTypeImplements(tbl: in SymbolTable, target: in TypeId, iface: i
 }
 
 pub func symTableAdd(tbl: in SymbolTable, sym: in Symbol): Unit {
+  // Maintain the TypeId-keyed side indexes (#2027, #2178).  Each registration
+  // gets a fresh TypeId, so first-in-wins guards only against pathological
+  // double-adds of the same symbol.
+  match sym.kind {
+    case DKOpaque(oid, _) -> {
+      if sym.isImported {
+        val key = toString(oid.id)
+        if not tbl.importedOpaqueNames.containsKey(key) {
+          tbl.importedOpaqueNames.add(key, sym.name)
+        }
+      }
+    }
+    case DKUnion(uid, decl) -> {
+      val key = toString(uid.id)
+      if not tbl.unionDeclIndex.containsKey(key) {
+        tbl.unionDeclList.add(decl)
+        tbl.unionDeclIndex.add(key, tbl.unionDeclList.count - 1)
+      }
+    }
+    case _ -> {
+    }
+  }
   tbl.symbols.add(sym)
 }
 
