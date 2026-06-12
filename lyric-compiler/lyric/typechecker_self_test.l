@@ -2052,3 +2052,21 @@ test "try statement unit handler accepted" {
   val ok = "package P\nfunc use(n: in Int): Unit {}\nfunc f(): Unit {\n  try {\n    1\n  } catch Bug as b {\n    use(0)\n  }\n}\n"
   assertTrue(not hasDiagCode(parseCheck(ok), "T0067"), "try statement: Unit handler absorbed, no T0067")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3187: a refutable `for` pattern is rejected by the type checker (T0112) —
+// codegen has no failure path for a non-matching element, so accepting it
+// produced a broken binary behind an F0021 println.  Irrefutable tuple
+// patterns stay accepted.
+// ─────────────────────────────────────────────────────────────────────────────
+test "for refutable pattern rejected" {
+  val bad = "package P\nunion Opt[T] {\n  case Sm(value: T)\n  case Nn\n}\nfunc f(xs: in slice[Opt[Int]]): Unit {\n  for Sm(v) in xs {\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0112"), "for over constructor pattern: T0112")
+}
+
+test "for tuple pattern accepted" {
+  val ok = "package P\nfunc f(xs: in slice[(Int, String)]): Int {\n  var total = 0\n  for (n, s) in xs {\n    total = total + n\n  }\n  total\n}\n"
+  val cr = parseCheck(ok)
+  assertTrue(not hasDiagCode(cr, "T0112"), "for over tuple pattern: no T0112")
+  assertEqualInt(diagCount(cr), 0, "for over tuple pattern: clean")
+}

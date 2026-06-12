@@ -65,6 +65,30 @@ func bindPattern(sc: in Scope, pat: in Pattern, ty: in Type): Unit {
   }
 }
 
+// A pattern usable as a `for` loop binding: a name (with an irrefutable
+// inner), `_`, parentheses, or a tuple of those.  Anything that can fail to
+// match an element (constructor, record, literal, range, …) is refutable.
+// Keep in sync with the accepted set of `bindForPatternMsil` in
+// `msil/codegen.l` (#3187).
+func forPatternIrrefutable(p: in Pattern): Bool {
+  match p.kind {
+    case PWildcard -> true
+    case PBinding(_, inner) -> match inner { case None -> true; case Some(ip) -> forPatternIrrefutable(ip) }
+    case PParen(ip) -> forPatternIrrefutable(ip)
+    case PTuple(ps) -> {
+      var i = 0
+      while i < ps.count {
+        if not forPatternIrrefutable(ps[i]) {
+          return false
+        }
+        i = i + 1
+      }
+      true
+    }
+    case _ -> false
+  }
+}
+
 // When a binding is declared with an inline refined type (`Int range lo .. hi`)
 // and initialised with an integer literal, reject a literal that falls outside
 // the statically-known bounds (T0015).  This is the inline-refined-type
@@ -171,6 +195,20 @@ pub func checkStatement(
     case SFor(_, pat, iter, body) -> {
       val iterType = inferExpr(sc, tbl, sigs, diag, iter)
       val elemType = match iterType { case TySlice(e) -> e; case TyArray(_, e) -> e; case _ -> TyError }
+      // #3187: a `for` binding must be irrefutable — codegen has no failure
+      // path for a non-matching element, so a refutable pattern accepted here
+      // would reach the backends' defensive (no-IL) branch and produce a
+      // broken binary.  Mirrors `bindForPatternMsil`'s accepted set.
+      if not forPatternIrrefutable(pat) {
+        diag.add(
+          errorDiagnostic(
+            "T0112",
+            "a `for` loop variable must be an irrefutable pattern (a name, `_`, or a tuple of those); " +
+              "refutable patterns are not allowed in a `for` binding — use `match` inside the loop body instead",
+            pat.span
+          )
+        )
+      }
       scopePush(sc)
       bindPattern(sc, pat, elemType)
       val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body)

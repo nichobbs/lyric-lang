@@ -628,6 +628,13 @@ for x in collection { ... }
 for i in 0 ..< 10 { ... }
 ```
 
+The `for` binding must be an **irrefutable** pattern — a name, `_`, or a tuple
+of those (parentheses allowed). A refutable pattern (a constructor pattern such
+as `Some(v)`, a record pattern, a literal, or a range) is a compile error
+(**T0112**), because a `for` loop has no failure path for a non-matching
+element. Destructure refutable shapes with a `match` inside the loop body
+instead.
+
 `do ... while` does not exist. Use `while true { ... if cond { break } }`.
 
 Loop control: `break`, `continue`. Both may take a label for nested loops:
