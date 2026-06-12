@@ -536,20 +536,21 @@ The authoritative tactical task list is `docs/12-todo-plan.md`._
   `async_sm_self_test.l` (29), `async_extern_self_test.l` (4),
   `async_generator_self_test.l` (8).  Open correctness bugs tracked separately:
   #2725 (await-in-try), #2712 (maxStack).  JVM generator parity: #2469.
-- **Band 4 (feature completion, HIGH):** C8 (cross-package generic-type
-  reification — in-bundle MSIL records/unions done #2362; cross-package remains,
-  #1496), C12 (protected-type locking — zero mutual exclusion emitted, #1499),
-  H2 (`@projectable` twins, #1500 — **done**, PR #3015 MSIL + #3044 JVM),
-  H3 (range-subtype validation, #1501), H10
-  (custom `@generate` never invoked, #1505), H11 (`old()`/`forall`/`exists`
-  panic, #1506), M3 (`config{}` no-op, #1508), M4 (`@derive(Ord)`/union/enum
-  derives, #1507).
-- **Band 5 (F# elimination + AOT, HIGH):** AOT **now wired** — `release.l`
-  emits `<PublishAot>true</PublishAot>` and runs `dotnet publish
-  -p:PublishAot=true`; H13 "confirmed absent" is no longer accurate. CI smoke
-  test still needed. F# residue still load-bearing: H12 (HttpClientHost .cctor
-  gap #1576, ProcessCapture async tail #1489), L6 `Lyric.Session.Host` (#1777).
-  L5 `StubCounterHost` resolved (#1776).
+- **Band 4 (feature completion, HIGH): COMPLETE.** All items resolved: C8
+  (cross-package generic records/unions #1496, #3079; in-bundle #2362), C12
+  (protected-type `Monitor.Enter`/`Exit` #1499, #3120), H2 (`@projectable` twins
+  #1500, PR #3015 MSIL + #3044 JVM), H3 (range-subtype validation #1501, #3112),
+  H4 (wire `@provided`/`WMBind` + topo sort #1502, #3050), H5 (named/default
+  args #1503, #3050), H6 (user cross-package generic-fn mono #1498, #2966), H10
+  (custom `@generate` wiring #1505, #2966), H11 (`old()`/`forall`/`exists`
+  lowering #1506, #2966), M3 (`config{}` lowering #1508, #2966), M4
+  (`@derive(Ord)`/union/enum derives #1507, #3120).
+- **Band 5 (F# elimination + AOT, HIGH): COMPLETE.** All ecosystem host shims
+  deleted (#3053: Jvm.Hosts, Jobs.Host, Mq.Host, Web.Host; #3016: Session.Host,
+  ProcessCapture, StubCounterHost; #3034/#3062: HttpClientHost `.cctor` #1576
+  fixed, `Lyric.Emitter.dll` + `FSharp.Core.dll` removed from stage-1 bundle).
+  AOT publishing wired and CI smoke test running (#3197/#3201/#3206). Stage-1
+  determinism CI-enforced — 103/103 DLLs byte-identical (#3217).
 
 ### New findings (2026-06-03, not in the 05-29 body)
 
@@ -557,21 +558,25 @@ The authoritative tactical task list is `docs/12-todo-plan.md`._
   `@stubbable` counters are broken on the self-hosted path.~~ **RESOLVED (#1776)**:
   stale kernel externs deleted; `stubbable.l` wired to pure-Lyric `StubCounter`.
   (Added to §3, resolved in same pass.)
-- **L6** — `lyric-session` drags `Lyric.Session.Host.dll` (F#) onto consumers'
-  runtime closure — a second load-bearing F# assembly. (Added to §3.)
+- **L6** — ~~`lyric-session` drags `Lyric.Session.Host.dll` (F#) onto consumers'
+  runtime closure — a second load-bearing F# assembly.~~ **RESOLVED (#1777,
+  #3016)**: Session.Host deleted; session kernel fully migrated to audited BCL
+  externs in `lyric-session/src/_kernel/net/session_kernel.l`. (Added to §3.)
 
-### Bottom line (updated 2026-06-09)
+### Bottom line (updated 2026-06-12)
 
-Since the 2026-06-03 snapshot, significant further progress has landed: full async
-shipped (Epic #2070 Phases A–5 complete: SM synthesis, spawn, and
-`IAsyncEnumerable[T]` generator synthesis — C4 and C5 both resolved), the
-advisory→fatal typecheck gate flipped (C1, D-progress-438), visibility enforcement
-(#1484), opaque hiding (#1485), parameter-mode front-end (#1487), TyError
-expression forms (C2, #2939), full impl conformance including DIM body lowering
-(C11, #1486/#2939), `where`-bound satisfaction (H15, #2939), alias-as-type (H16,
-#2939), numeric widening (M6, #2939), and AOT wired via `release.l`.  **Band 1
-(front-end soundness) is now complete.**  **Band 3 (async) is now complete for
-MSIL.**  The remaining v1.0 blockers are async correctness tail (#2725
-await-in-try, #2712 maxStack) and Band-4 feature gaps.  Band 2 is substantially
-resolved.  `docs/12-todo-plan.md` is the authoritative task list;
-`docs/36-v1-roadmap.md` §R1–R6 are all done and tracking has moved to docs/12.
+**Bands 1–5 are all complete.** Band 1 (front-end soundness), Band 2 (backend
+correctness, substantially), Band 3 (async for MSIL), Band 4 (feature completion),
+and Band 5 (F# elimination + AOT) have all shipped as of 2026-06-12.
+
+Open correctness bugs tracked separately and not blocking v1.0: #2725
+(await-in-try invalid IL), #2712 (dynamic maxStack — fixed in #3085), #2469 (JVM
+async-generator parity).  LOW-priority v1.1 items: multi-level closure nesting
+(#1479), lambdas in `@test_module` (#1854).
+
+The stage-1 self-hosted compiler (103 DLLs) is deterministic and CI-enforced
+byte-identical run-to-run (#3217).  The v1.0 acceptance gate is now Band 6:
+every program in `docs/02-worked-examples.md` builds and runs under `--target
+dotnet`; parity suite baseline; stdlib `lyric prove`/`test`/`doc` regression
+baseline.  `docs/12-todo-plan.md` is the authoritative task list;
+`docs/36-v1-roadmap.md` §R1–R6 are all done.
