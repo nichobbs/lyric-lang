@@ -831,6 +831,34 @@ test "string escape canonicalization accepted" {
   assertTrue(fmtCheckIsOk(c), "checked: string-escape canonicalisation accepted")
 }
 
+test "structural diff identifier change" {
+  // A genuine code-token change (one identifier respelled) is what backs
+  // the FmtStructureChanged refusal: the first divergence is reported with
+  // its 1-based token index and both spellings.
+  val d = structuralSequenceDiff(
+    "package P\n\nfunc f(): Int {\n  alpha\n}\n",
+    "package P\n\nfunc f(): Int {\n  beta\n}\n"
+  )
+  assertEqual(d, "token 10 changed: `alpha` -> `beta`", "structural diff: identifier change reported")
+}
+
+test "structural diff token count change" {
+  // When one token sequence is a strict prefix of the other, the
+  // divergence is the length itself, reported as a count change.
+  val d = structuralSequenceDiff("package P\n", "package P\n\nfunc f(): Int {\n  1\n}\n")
+  assertEqual(d, "token count changed: 2 -> 11", "structural diff: count change reported")
+}
+
+test "structural diff string respelling accepted" {
+  // String literals compare by decoded value, so an escape respelling
+  // (`"\u{41}"` vs `"A"`) is not a structural change.
+  val d = structuralSequenceDiff(
+    "package P\n\nfunc f(): String {\n  \"\\u{41}\"\n}\n",
+    "package P\n\nfunc f(): String {\n  \"A\"\n}\n"
+  )
+  assertEqual(d, "", "structural diff: same-value string respelling is no diff")
+}
+
 test "extern package round trips" {
   // Extern packages round-trip: the `package` keyword, each member's
   // visibility, doc comments, and contracts, and the `exposed type`
