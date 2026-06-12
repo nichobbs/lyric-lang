@@ -1975,6 +1975,32 @@ test "generic ctor missing required field emits T0105 not T0110" {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// #3066: function-call named args are validated against their named parameter,
+// not positionally.  `foo(b = 2, a = "x")` for `foo(a: String, b: Int = 0)`
+// is clean; `foo(b = "x", a = 2)` mismatches both parameters (T0043).
+// ─────────────────────────────────────────────────────────────────────────────
+test "named args reversed heterogeneous clean" {
+  val src = "package P\nfunc foo(a: in String, b: in Int = 0): Unit {}\nfunc f(): Unit { foo(b = 2, a = \"x\") }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "named args reversed: types align by name, no T0043")
+}
+
+test "named args reversed wrong types rejected" {
+  val src = "package P\nfunc foo(a: in String, b: in Int = 0): Unit {}\nfunc f(): Unit { foo(b = \"x\", a = 2) }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0043"), "named args reversed with wrong types: T0043")
+}
+
+// #3066: the T0085 l-value check pairs an out-of-order named `out` argument
+// with its declared parameter — a `var` supplied by name is accepted, a `val`
+// supplied by name is rejected.
+test "named out arg out of order aligned" {
+  val ok = "package P\nfunc g(x: out Int, label: in String): Unit { x = 5 }\nfunc f(): Unit {\n  var y = 0\n  g(label = \"L\", x = y)\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0085"), "named out arg (var) out of order: no T0085")
+  val bad = "package P\nfunc g(x: out Int, label: in String): Unit { x = 5 }\nfunc f(): Unit {\n  val y = 0\n  g(label = \"L\", x = y)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0085"), "named out arg (val) out of order: T0085")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // #3160: a value expression used as a type argument in an alias RHS is T0109
 // (not the misleading T0012 "primitive does not take type arguments").
 // ─────────────────────────────────────────────────────────────────────────────

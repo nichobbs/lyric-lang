@@ -1599,6 +1599,63 @@ func argTypesInFieldOrder(args: in List[CallArg], argTypes: in List[Type], field
   result
 }
 
+// For each declared parameter position, the index of the call-site argument
+// that fills it, or -1 when the slot is unfilled (an omitted trailing
+// defaulted parameter).  Mirrors `argTypesInFieldOrder` (#3157) and codegen's
+// `reorderFuncNamedArgs`: named args land at their declared slot, positional
+// args fill the remaining slots left to right.  A named arg whose name matches
+// no parameter occupies no slot (it is reported by codegen's reorder pass);
+// its slot stays -1 so no misaligned type check fires against it (#3066).
+func argIndicesInParamOrder(args: in List[CallArg], paramNames: in List[String]): List[Int] {
+  val result: List[Int] = newList()
+  var fi = 0
+  while fi < paramNames.count {
+    result.add(-1)
+    fi = fi + 1
+  }
+  // Place named args at their declared slot first.
+  var i = 0
+  while i < args.count {
+    match args[i] {
+      case CANamed(nm, _, _) -> {
+        var j = 0
+        while j < paramNames.count {
+          if paramNames[j] == nm {
+            result[j] = i
+            j = paramNames.count
+          } else {
+            j = j + 1
+          }
+        }
+      }
+      case CAPositional(_) -> {
+      }
+    }
+    i = i + 1
+  }
+  // Place positional args into the first unoccupied slots, left to right.
+  var posIdx = 0
+  var i2 = 0
+  while i2 < args.count {
+    match args[i2] {
+      case CAPositional(_) -> {
+        var placed = false
+        while posIdx < paramNames.count and not placed {
+          if result[posIdx] < 0 {
+            result[posIdx] = i2
+            placed = true
+          }
+          posIdx = posIdx + 1
+        }
+      }
+      case CANamed(_, _, _) -> {
+      }
+    }
+    i2 = i2 + 1
+  }
+  result
+}
+
 func fieldHasName(fields: in List[CtorField], name: in String): Bool {
   var i = 0
   while i < fields.count {
@@ -2555,31 +2612,45 @@ pub func inferExpr(
             diag.add(errorDiagnostic("T0042", "expected " + expectedMsg + ", got " + toString(args.count), e.span))
           } else {
             // Only validate the args that were actually supplied; missing
-            // trailing params with defaults are filled in by codegen.
+            // trailing params with defaults are filled in by codegen.  Args
+            // are paired with their parameter by name for named args (#3066),
+            // mirroring the constructor path's `argTypesInFieldOrder`; a
+            // purely positional call pairs slot k with arg k as before.
+            val paramNames: List[String] = newList()
+            var pni = 0
+            while pni < sig.params.count {
+              paramNames.add(sig.params[pni].name)
+              pni = pni + 1
+            }
+            val srcIdx = argIndicesInParamOrder(args, paramNames)
             var k = 0
-            while k < args.count {
+            while k < sig.params.count {
               val p = sig.params[k]
-              if not argSatisfiesParam(tbl, p.ty, argTypes[k]) {
-                diag.add(
-                  errorDiagnostic(
-                    "T0043",
-                    "argument type " + renderType(argTypes[k]) + " does not match parameter type " + renderType(p.ty),
-                    e.span
+              val ai = srcIdx[k]
+              if ai >= 0 {
+                val argTy = if ai < argTypes.count { argTypes[ai] } else { TyError }
+                if not argSatisfiesParam(tbl, p.ty, argTy) {
+                  diag.add(
+                    errorDiagnostic(
+                      "T0043",
+                      "argument type " + renderType(argTy) + " does not match parameter type " + renderType(p.ty),
+                      e.span
+                    )
                   )
-                )
-              }
-              // #1487 (§5.2): a value-type `out`/`inout` argument must be a
-              // writable l-value (reference-type by-ref params are mutated in
-              // place — see `isByRefValueType`).
-              if modeNeedsLValue(p.mode) and isByRefValueType(p.ty) and not argIsValidByRefTarget(sc, callArgExpr(args[k])) {
-                diag.add(
-                  errorDiagnostic(
-                    "T0085",
-                    "argument for `out`/`inout` parameter '" + p.name +
-                      "' must be a mutable l-value (a `var`, or an `out`/`inout` binding)",
-                    e.span
+                }
+                // #1487 (§5.2): a value-type `out`/`inout` argument must be a
+                // writable l-value (reference-type by-ref params are mutated in
+                // place — see `isByRefValueType`).
+                if modeNeedsLValue(p.mode) and isByRefValueType(p.ty) and not argIsValidByRefTarget(sc, callArgExpr(args[ai])) {
+                  diag.add(
+                    errorDiagnostic(
+                      "T0085",
+                      "argument for `out`/`inout` parameter '" + p.name +
+                        "' must be a mutable l-value (a `var`, or an `out`/`inout` binding)",
+                      e.span
+                    )
                   )
-                )
+                }
               }
               k = k + 1
             }
