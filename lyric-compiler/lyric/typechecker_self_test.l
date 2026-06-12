@@ -37,6 +37,18 @@ func hasDiagCode(cr: in CheckResult, code: in String): Bool {
   false
 }
 
+// The message of the first diagnostic with `code`, or "" when absent.
+func diagMessageFor(cr: in CheckResult, code: in String): String {
+  var i = 0
+  while i < cr.diagnostics.count {
+    if cr.diagnostics[i].code == code {
+      return cr.diagnostics[i].message
+    }
+    i = i + 1
+  }
+  ""
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1372,6 +1384,9 @@ test "let no reassign" {
   val src = "package P\nfunc f(): Unit {\n  let x = 1\n  x = 2\n}\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0087"), "reassigning a `let`: T0087")
+  // #3009: the message must name all three immutable binding forms, so a user
+  // reassigning a `let` sees their binding kind mentioned.
+  assertTrue(Str.contains(diagMessageFor(cr, "T0087"), "`val`/`let`/`in`"), "T0087 message names val/let/in")
 }
 
 // #1993: an `inout val` argument must emit T0085.
@@ -1957,4 +1972,101 @@ test "generic ctor missing required field emits T0105 not T0110" {
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0105"), "missing required field: T0105")
   assertTrue(not hasDiagCode(cr, "T0110"), "missing required field: not T0110")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3066: function-call named args are validated against their named parameter,
+// not positionally.  `foo(b = 2, a = "x")` for `foo(a: String, b: Int = 0)`
+// is clean; `foo(b = "x", a = 2)` mismatches both parameters (T0043).
+// ─────────────────────────────────────────────────────────────────────────────
+test "named args reversed heterogeneous clean" {
+  val src = "package P\nfunc foo(a: in String, b: in Int = 0): Unit {}\nfunc f(): Unit { foo(b = 2, a = \"x\") }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "named args reversed: types align by name, no T0043")
+}
+
+test "named args reversed wrong types rejected" {
+  val src = "package P\nfunc foo(a: in String, b: in Int = 0): Unit {}\nfunc f(): Unit { foo(b = \"x\", a = 2) }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0043"), "named args reversed with wrong types: T0043")
+}
+
+// #3066: the T0085 l-value check pairs an out-of-order named `out` argument
+// with its declared parameter — a `var` supplied by name is accepted, a `val`
+// supplied by name is rejected.
+test "named out arg out of order aligned" {
+  val ok = "package P\nfunc g(x: out Int, label: in String): Unit { x = 5 }\nfunc f(): Unit {\n  var y = 0\n  g(label = \"L\", x = y)\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0085"), "named out arg (var) out of order: no T0085")
+  val bad = "package P\nfunc g(x: out Int, label: in String): Unit { x = 5 }\nfunc f(): Unit {\n  val y = 0\n  g(label = \"L\", x = y)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0085"), "named out arg (val) out of order: T0085")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3160: a value expression used as a type argument in an alias RHS is T0109
+// (not the misleading T0012 "primitive does not take type arguments").
+// ─────────────────────────────────────────────────────────────────────────────
+test "alias rhs value type arg emits T0109" {
+  val src = "package P\nimport Std.Collections\nalias Bad = List[1]\nfunc f(x: in Bad): Unit {}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0109"), "alias RHS value type-arg: T0109")
+  assertTrue(not hasDiagCode(cr, "T0012"), "alias RHS value type-arg: not T0012")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2611: an alias target resolves with scope priority — when the current
+// package declares `record Random` and an imported package also exports a
+// `Random`, `alias R = Random` must bind to the current-package type, so a
+// body constructing the local `Random` satisfies an `R` return cleanly.
+// ─────────────────────────────────────────────────────────────────────────────
+test "alias target prefers current package over import" {
+  val dep = parse("package Q\npub record Random {\n  q: Int\n}\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "Q", items = dep.file.items))
+  val src = "package P\nimport Q\nrecord Random {\n  x: Int\n}\nalias R = Random\nfunc f(): R { Random(x = 1) }\n"
+  val cr = checkWithImportedPackages(parse(src).file, packages)
+  assertEqualInt(diagCount(cr), 0, "alias target: current-package Random wins over imported Q.Random")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2355: a value-position `try` handler that can produce a value must be
+// compatible with the try body type (both feed one shared temp).  A diverging
+// (`panic`/throw → Never) handler stays accepted.
+// ─────────────────────────────────────────────────────────────────────────────
+test "try value handler type mismatch rejected" {
+  val bad = "package P\nfunc f(): Int {\n  val x: Int = try {\n    1\n  } catch Bug as b {\n    \"error\"\n  }\n  x\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0067"), "try value: String handler vs Int body: T0067")
+}
+
+test "try value diverging handler accepted" {
+  val ok = "package P\nfunc f(): Int {\n  val x: Int = try {\n    1\n  } catch Bug as b {\n    panic(\"boom\")\n  }\n  x\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0067"), "try value: Never handler is compatible with any body")
+}
+
+test "try value matching handler accepted" {
+  val ok = "package P\nfunc f(): Int {\n  val x: Int = try {\n    1\n  } catch Bug as b {\n    0\n  }\n  x\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0067"), "try value: Int handler matches Int body")
+}
+
+// Statement-position try whose value is discarded: a Unit handler beside a
+// value-producing body must stay accepted (the shared temp is never read).
+test "try statement unit handler accepted" {
+  val ok = "package P\nfunc use(n: in Int): Unit {}\nfunc f(): Unit {\n  try {\n    1\n  } catch Bug as b {\n    use(0)\n  }\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0067"), "try statement: Unit handler absorbed, no T0067")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3187: a refutable `for` pattern is rejected by the type checker (T0112) —
+// codegen has no failure path for a non-matching element, so accepting it
+// produced a broken binary behind an F0021 println.  Irrefutable tuple
+// patterns stay accepted.
+// ─────────────────────────────────────────────────────────────────────────────
+test "for refutable pattern rejected" {
+  val bad = "package P\nunion Opt[T] {\n  case Sm(value: T)\n  case Nn\n}\nfunc f(xs: in slice[Opt[Int]]): Unit {\n  for Sm(v) in xs {\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0112"), "for over constructor pattern: T0112")
+}
+
+test "for tuple pattern accepted" {
+  val ok = "package P\nfunc f(xs: in slice[(Int, String)]): Int {\n  var total = 0\n  for (n, s) in xs {\n    total = total + n\n  }\n  total\n}\n"
+  val cr = parseCheck(ok)
+  assertTrue(not hasDiagCode(cr, "T0112"), "for over tuple pattern: no T0112")
+  assertEqualInt(diagCount(cr), 0, "for over tuple pattern: clean")
 }

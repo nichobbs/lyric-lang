@@ -628,6 +628,13 @@ for x in collection { ... }
 for i in 0 ..< 10 { ... }
 ```
 
+The `for` binding must be an **irrefutable** pattern — a name, `_`, or a tuple
+of those (parentheses allowed). A refutable pattern (a constructor pattern such
+as `Some(v)`, a record pattern, a literal, or a range) is a compile error
+(**T0112**), because a `for` loop has no failure path for a non-matching
+element. Destructure refutable shapes with a `match` inside the loop body
+instead.
+
 `do ... while` does not exist. Use `while true { ... if cond { break } }`.
 
 Loop control: `break`, `continue`. Both may take a label for nested loops:
@@ -1014,6 +1021,12 @@ A `Bug` raised in:
 - A protected entry: aborts the current entry call without committing state changes. The protected type's invariant is verified to still hold (if not, the program terminates — invariant violation in a protected type is unrecoverable).
 
 `try`/`catch` exists for catching `Bug`s when absolutely needed (top-level handlers, test runners, robustness boundaries). Catching `Bug`s in normal application code is a smell; the compiler emits a warning.
+
+In value position, `try { ... } catch ... { ... }` is an expression: every
+handler must produce a type compatible with the `try` body's type, or the
+program is rejected at compile time (**T0067**). Diverging handlers (a body
+of type `Never` — e.g. a re-`throw` or `panic`) are exempt, as are
+statement-position `try` blocks whose value is discarded (`Unit`).
 
 ### 8.3 Result and panics
 

@@ -8924,7 +8924,13 @@ func bindForPatternMsil(
     case PWildcard -> {
     }
     case PTuple(_) -> lowerPatternBindMsil(cctx, fctx, insns, pat, slot, ty)
+    case PParen(inner) -> bindForPatternMsil(cctx, fctx, insns, inner, slot, ty)
     case _ -> {
+      // Defensive only: the type checker rejects refutable `for` patterns
+      // with T0112 (`forPatternIrrefutable` in typechecker_stmts.l, #3187),
+      // so this branch should be unreachable.  If it is ever reached, no IL
+      // is emitted for the binding and the produced assembly is invalid —
+      // do not treat this path as a safe fallthrough.
       val spanStr = toString(pat.span.startPos.line) + ":" + toString(pat.span.startPos.column)
       println(
         "F0021: " + spanStr + ": a `for` loop variable must be an irrefutable pattern " +

@@ -24259,3 +24259,35 @@ Verified end-to-end through the framework-dependent `./bin/lyric` (constdep/app
 prints `42` across the assembly boundary).  Implements the docs/42 §5 /
 docs/45-direction resource-read slice; the broader D098 metadata-direct
 symbol-table construction (docs/45 phases 2–5) remains tracked under #2580.
+
+### D-progress-504 — Type checker backlog batch: named-arg alignment, T0067 try-handler typing, T0112 refutable `for` patterns, O(1) symbol indexes (#3244)
+
+Eleven backlog fixes in the self-hosted type checker (PR #3244), the
+user-visible ones being:
+
+- **Named-argument validation aligned by parameter name (#3066).**  The
+  `directSig` loop paired `sig.params[k]` (declaration order) with
+  `argTypes[k]` (source order), so reordered heterogeneous named args drew
+  false T0043 and misaligned T0085 by-ref checks.  New
+  `argIndicesInParamOrder` mirrors the constructor path's
+  `argTypesInFieldOrder` and codegen's `reorderFuncNamedArgs`.
+- **Value-position `try` handler typing (#2355, T0067).**  A handler whose
+  type can neither satisfy nor be satisfied by the `try` body type is now
+  rejected on the handler's span; `Never` (diverging), `TyError`, `Unit`
+  (statement position), and Int/Long literal widening are absorbed,
+  mirroring `unifyBranchTypes`.  Documented in the language reference §8.2
+  and the book's diagnostics table.
+- **Refutable `for` patterns rejected (#3187, T0112).**  Previously the
+  checker accepted `for Some(v) in xs` and `bindForPatternMsil` printed
+  F0021 with no IL — `lyric build` exited 0 and wrote a broken DLL.  The
+  accepted set (names with irrefutable inners, `_`, parens, tuples thereof)
+  mirrors the emitter; the codegen F0021 arm is now a documented defensive
+  branch.  Documented in the reference's `for` section and the book table.
+- **Scope-priority alias resolution (#2611)**, **O(1) opaque/union indexes
+  (#2027, #2178)**, **`ctorAllFields` dedup (#3159)**, **T0087 message
+  naming `let` (#3009)**, plus test-only and readability items (#3160,
+  #3162, #2950).
+
+`typechecker_self_test.l` grew 205 → 216 assertions.  The stage-1 self-build
+(every compiler + stdlib package through the new checker) and the CI-gated
+lyric-auth / lyric-session suites are the false-positive regression net.

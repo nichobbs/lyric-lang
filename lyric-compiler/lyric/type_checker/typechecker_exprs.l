@@ -146,9 +146,36 @@ func floatPrimRank(pt: in PrimType): Int {
 // `Int + Long` type-checks and yields `Long`.
 func widenArithmetic(lhs: in Type, rhs: in Type): Option[Type] {
   match lhs {
-    case TyPrim(pa) -> match rhs { case TyPrim(pb) -> { if primEq(pa, pb) { return None }; val asr = signedIntRank(pa); val bsr = signedIntRank(pb); if asr >= 0 and bsr >= 0 { return Some(value = if asr >= bsr { lhs } else { rhs }) }; val au = unsignedIntRank(pa); val bu = unsignedIntRank(pb); if au >= 0 and bu >= 0 { return Some(value = if au >= bu { lhs } else { rhs }) }; val af = floatPrimRank(pa); val bf = floatPrimRank(pb); if af >= 0 and bf >= 0 { return Some(value = if af >= bf { lhs } else { rhs }) }; None }; case _ -> None }
+    case TyPrim(pa) -> match rhs { case TyPrim(pb) -> widenPrimArithmetic(lhs, rhs, pa, pb); case _ -> None }
     case _ -> None
   }
+}
+
+// The widening families are disjoint by construction (each rank function
+// returns -1 outside its family), so the three sections are tried in order.
+func widenPrimArithmetic(lhs: in Type, rhs: in Type, pa: in PrimType, pb: in PrimType): Option[Type] {
+  if primEq(pa, pb) {
+    return None
+  }
+  // Signed integers: Byte < Int < Long.
+  val asr = signedIntRank(pa)
+  val bsr = signedIntRank(pb)
+  if asr >= 0 and bsr >= 0 {
+    return Some(value = if asr >= bsr { lhs } else { rhs })
+  }
+  // Unsigned integers: Byte < UInt < ULong.
+  val au = unsignedIntRank(pa)
+  val bu = unsignedIntRank(pb)
+  if au >= 0 and bu >= 0 {
+    return Some(value = if au >= bu { lhs } else { rhs })
+  }
+  // Floating point: Float < Double.
+  val af = floatPrimRank(pa)
+  val bf = floatPrimRank(pb)
+  if af >= 0 and bf >= 0 {
+    return Some(value = if af >= bf { lhs } else { rhs })
+  }
+  None
 }
 
 func isOrderedType(t: in Type): Bool {
@@ -373,20 +400,12 @@ func isUnboundedScalar(pt: in PrimType): Bool {
 func importedOpaqueName(tbl: in SymbolTable, ty: in Type): Option[String] {
   match unrefine(ty) {
     case TyUser(id, _, _) -> {
-      var i = 0
-      while i < tbl.symbols.count {
-        match tbl.symbols[i].kind {
-          case DKOpaque(oid, _) -> {
-            if typeIdEq(oid, id) and tbl.symbols[i].isImported {
-              return Some(value = tbl.symbols[i].name)
-            }
-          }
-          case _ -> {
-          }
-        }
-        i = i + 1
+      val key = toString(id.id)
+      if not tbl.importedOpaqueNames.containsKey(key) {
+        return None
       }
-      None
+      val nm = tbl.importedOpaqueNames[key]
+      Some(value = nm)
     }
     case _ -> None
   }
@@ -1420,24 +1439,18 @@ func ctorGenericNames(sym: in Symbol): List[String] {
   names
 }
 
-// Collect the raw field types from a constructor symbol with `genericNames`
-// registered in the generic context, so that type-parameter fields resolve to
-// `TyVar(name)` rather than `TyError`.  Used by generic-constructor type-arg
-// inference in `inferConstruction`.
-func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[String]): List[Type] {
-  val ctx = newGenericContext()
-  gctxPush(ctx, genericNames)
-  // Inference probe only: resolution diagnostics are deliberately discarded
-  // (the authoritative field-type check runs later in inferConstruction);
-  // this pass exists solely to surface TyVar positions for inferGenericArgs.
-  val scratch: List[Diagnostic] = newList()
-  val result: List[Type] = newList()
+// All field declarations of a constructor symbol (record / exposed record /
+// opaque) in declaration order; empty for any other symbol kind.  Centralises
+// the DKRecord/DKExposedRec/DKOpaque member iteration so the helpers below
+// stay in sync when a constructor-like symbol kind is added (#3159).
+func ctorAllFields(sym: in Symbol): List[FieldDecl] {
+  val result: List[FieldDecl] = newList()
   match sym.kind {
     case DKRecord(_, rd) -> {
       var i = 0
       while i < rd.members.count {
         match rd.members[i] {
-          case RMField(fd) -> result.add(resolveType(tbl, ctx, scratch, fd.ty))
+          case RMField(fd) -> result.add(fd)
           case _ -> {
           }
         }
@@ -1448,7 +1461,7 @@ func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[S
       var i = 0
       while i < rd.members.count {
         match rd.members[i] {
-          case RMField(fd) -> result.add(resolveType(tbl, ctx, scratch, fd.ty))
+          case RMField(fd) -> result.add(fd)
           case _ -> {
           }
         }
@@ -1459,7 +1472,7 @@ func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[S
       var i = 0
       while i < od.members.count {
         match od.members[i] {
-          case OMField(fd) -> result.add(resolveType(tbl, ctx, scratch, fd.ty))
+          case OMField(fd) -> result.add(fd)
           case _ -> {
           }
         }
@@ -1472,6 +1485,27 @@ func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[S
   result
 }
 
+// Collect the raw field types from a constructor symbol with `genericNames`
+// registered in the generic context, so that type-parameter fields resolve to
+// `TyVar(name)` rather than `TyError`.  Used by generic-constructor type-arg
+// inference in `inferConstruction`.
+func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[String]): List[Type] {
+  val ctx = newGenericContext()
+  gctxPush(ctx, genericNames)
+  // Inference probe only: resolution diagnostics are deliberately discarded
+  // (the authoritative field-type check runs later in inferConstruction);
+  // this pass exists solely to surface TyVar positions for inferGenericArgs.
+  val scratch: List[Diagnostic] = newList()
+  val result: List[Type] = newList()
+  val fields = ctorAllFields(sym)
+  var i = 0
+  while i < fields.count {
+    result.add(resolveType(tbl, ctx, scratch, fields[i].ty))
+    i = i + 1
+  }
+  result
+}
+
 // Re-resolve constructor field types into `diag` so genuine field-type errors
 // (e.g. references to unknown types) surface even when T0110 fires early.
 // Uses a plain generic context (no type-var names pushed), so generic-position
@@ -1479,48 +1513,11 @@ func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[S
 // only on the T0110 early-return path (#3155).
 func surfaceCtorFieldTypeErrors(tbl: in SymbolTable, sym: in Symbol, diag: in List[Diagnostic]): Unit {
   val ctx = newGenericContext()
-  match sym.kind {
-    case DKRecord(_, rd) -> {
-      var i = 0
-      while i < rd.members.count {
-        match rd.members[i] {
-          case RMField(fd) -> {
-            val _ = resolveType(tbl, ctx, diag, fd.ty)
-          }
-          case _ -> {
-          }
-        }
-        i = i + 1
-      }
-    }
-    case DKExposedRec(_, rd) -> {
-      var i = 0
-      while i < rd.members.count {
-        match rd.members[i] {
-          case RMField(fd) -> {
-            val _ = resolveType(tbl, ctx, diag, fd.ty)
-          }
-          case _ -> {
-          }
-        }
-        i = i + 1
-      }
-    }
-    case DKOpaque(_, od) -> {
-      var i = 0
-      while i < od.members.count {
-        match od.members[i] {
-          case OMField(fd) -> {
-            val _ = resolveType(tbl, ctx, diag, fd.ty)
-          }
-          case _ -> {
-          }
-        }
-        i = i + 1
-      }
-    }
-    case _ -> {
-    }
+  val fields = ctorAllFields(sym)
+  var i = 0
+  while i < fields.count {
+    val _ = resolveType(tbl, ctx, diag, fields[i].ty)
+    i = i + 1
   }
 }
 
@@ -1529,42 +1526,11 @@ func surfaceCtorFieldTypeErrors(tbl: in SymbolTable, sym: in Symbol, diag: in Li
 // order before passing to inferGenericArgs (#3157).
 func ctorFieldNames(sym: in Symbol): List[String] {
   val result: List[String] = newList()
-  match sym.kind {
-    case DKRecord(_, rd) -> {
-      var i = 0
-      while i < rd.members.count {
-        match rd.members[i] {
-          case RMField(fd) -> result.add(fd.name)
-          case _ -> {
-          }
-        }
-        i = i + 1
-      }
-    }
-    case DKExposedRec(_, rd) -> {
-      var i = 0
-      while i < rd.members.count {
-        match rd.members[i] {
-          case RMField(fd) -> result.add(fd.name)
-          case _ -> {
-          }
-        }
-        i = i + 1
-      }
-    }
-    case DKOpaque(_, od) -> {
-      var i = 0
-      while i < od.members.count {
-        match od.members[i] {
-          case OMField(fd) -> result.add(fd.name)
-          case _ -> {
-          }
-        }
-        i = i + 1
-      }
-    }
-    case _ -> {
-    }
+  val fields = ctorAllFields(sym)
+  var i = 0
+  while i < fields.count {
+    result.add(fields[i].name)
+    i = i + 1
   }
   result
 }
@@ -1629,6 +1595,64 @@ func argTypesInFieldOrder(args: in List[CallArg], argTypes: in List[Type], field
       }
     }
     i2 = i2 + 1
+  }
+  result
+}
+
+// For each declared parameter position, the index of the call-site argument
+// that fills it, or -1 when the slot is unfilled (an omitted trailing
+// defaulted parameter).  Mirrors `argTypesInFieldOrder` (#3157) and codegen's
+// `reorderFuncNamedArgs`: named args land at their declared slot, positional
+// args fill the remaining slots left to right.  A named arg whose name matches
+// no parameter occupies no slot (it is reported by codegen's reorder pass);
+// its slot stays -1 so no misaligned type check fires against it (#3066).
+func argIndicesInParamOrder(args: in List[CallArg], paramNames: in List[String]): List[Int] {
+  val result: List[Int] = newList()
+  var fi = 0
+  while fi < paramNames.count {
+    result.add(-1)
+    fi = fi + 1
+  }
+  // Place named args at their declared slot first.
+  var i = 0
+  while i < args.count {
+    match args[i] {
+      case CANamed(nm, _, _) -> {
+        var j = 0
+        while j < paramNames.count {
+          if paramNames[j] == nm {
+            result[j] = i
+            j = paramNames.count
+          } else {
+            j = j + 1
+          }
+        }
+      }
+      case CAPositional(_) -> {
+      }
+    }
+    i = i + 1
+  }
+  // Second walk over the same args: place positional args into the first
+  // unoccupied slots, left to right.
+  var posIdx = 0
+  var argIdx = 0
+  while argIdx < args.count {
+    match args[argIdx] {
+      case CAPositional(_) -> {
+        var placed = false
+        while posIdx < paramNames.count and not placed {
+          if result[posIdx] < 0 {
+            result[posIdx] = argIdx
+            placed = true
+          }
+          posIdx = posIdx + 1
+        }
+      }
+      case CANamed(_, _, _) -> {
+      }
+    }
+    argIdx = argIdx + 1
   }
   result
 }
@@ -1860,8 +1884,9 @@ func inferConstruction(
       )
       return inferredTy
     }
-    val fields: List[CtorField] = newList()
-    val _ = collectCtorFields(tbl, sym, fields)
+    // Reuse the field list collected for the missing-field check above (#3162):
+    // both calls traverse the same symbol and produce identical results.
+    val fields = prelimFields
     var posIdx = 0
     var i = 0
     while i < args.count {
@@ -2009,16 +2034,13 @@ func unionCaseSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
 }
 
 func parentUnionDeclOf(tbl: in SymbolTable, parentId: in TypeId): Option[UnionDecl] {
-  var i = 0
-  while i < tbl.symbols.count {
-    match tbl.symbols[i].kind {
-      case DKUnion(uid, decl) -> if typeIdEq(uid, parentId) { return Some(value = decl) }
-      case _ -> {
-      }
-    }
-    i = i + 1
+  val key = toString(parentId.id)
+  if not tbl.unionDeclIndex.containsKey(key) {
+    return None
   }
-  None
+  val ix = tbl.unionDeclIndex[key]
+  val decl = tbl.unionDeclList[ix]
+  Some(value = decl)
 }
 
 func unionDeclGenericNames(decl: in UnionDecl): List[String] {
@@ -2591,31 +2613,45 @@ pub func inferExpr(
             diag.add(errorDiagnostic("T0042", "expected " + expectedMsg + ", got " + toString(args.count), e.span))
           } else {
             // Only validate the args that were actually supplied; missing
-            // trailing params with defaults are filled in by codegen.
+            // trailing params with defaults are filled in by codegen.  Args
+            // are paired with their parameter by name for named args (#3066),
+            // mirroring the constructor path's `argTypesInFieldOrder`; a
+            // purely positional call pairs slot k with arg k as before.
+            val paramNames: List[String] = newList()
+            var pni = 0
+            while pni < sig.params.count {
+              paramNames.add(sig.params[pni].name)
+              pni = pni + 1
+            }
+            val srcIdx = argIndicesInParamOrder(args, paramNames)
             var k = 0
-            while k < args.count {
+            while k < sig.params.count {
               val p = sig.params[k]
-              if not argSatisfiesParam(tbl, p.ty, argTypes[k]) {
-                diag.add(
-                  errorDiagnostic(
-                    "T0043",
-                    "argument type " + renderType(argTypes[k]) + " does not match parameter type " + renderType(p.ty),
-                    e.span
+              val ai = srcIdx[k]
+              if ai >= 0 {
+                val argTy = if ai < argTypes.count { argTypes[ai] } else { TyError }
+                if not argSatisfiesParam(tbl, p.ty, argTy) {
+                  diag.add(
+                    errorDiagnostic(
+                      "T0043",
+                      "argument type " + renderType(argTy) + " does not match parameter type " + renderType(p.ty),
+                      e.span
+                    )
                   )
-                )
-              }
-              // #1487 (§5.2): a value-type `out`/`inout` argument must be a
-              // writable l-value (reference-type by-ref params are mutated in
-              // place — see `isByRefValueType`).
-              if modeNeedsLValue(p.mode) and isByRefValueType(p.ty) and not argIsValidByRefTarget(sc, callArgExpr(args[k])) {
-                diag.add(
-                  errorDiagnostic(
-                    "T0085",
-                    "argument for `out`/`inout` parameter '" + p.name +
-                      "' must be a mutable l-value (a `var`, or an `out`/`inout` binding)",
-                    e.span
+                }
+                // #1487 (§5.2): a value-type `out`/`inout` argument must be a
+                // writable l-value (reference-type by-ref params are mutated in
+                // place — see `isByRefValueType`).
+                if modeNeedsLValue(p.mode) and isByRefValueType(p.ty) and not argIsValidByRefTarget(sc, callArgExpr(args[ai])) {
+                  diag.add(
+                    errorDiagnostic(
+                      "T0085",
+                      "argument for `out`/`inout` parameter '" + p.name +
+                        "' must be a mutable l-value (a `var`, or an `out`/`inout` binding)",
+                      e.span
+                    )
                   )
-                )
+                }
               }
               k = k + 1
             }
