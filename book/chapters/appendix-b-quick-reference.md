@@ -714,11 +714,9 @@ output_assembly = "myapp.dll"
 > - **`@experimental`** — every other `lyric-*` package in the table below.
 >   Public API may change without a SemVer major bump until v1.0; test
 >   coverage is uneven; cross-target (.NET / JVM) parity is incomplete.
->   Use in production with awareness of these gaps.  `lyric-health` in
->   particular currently `panic`s rather than silently reporting "ok"
->   on its `__handleLiveness` / `__handleReadiness` exit paths, since
->   the kernel dispatcher that would actually invoke registered checks
->   has not landed yet.
+>   Use in production with awareness of these gaps.  (`lyric-health`'s
+>   former kernel-dispatcher gap is closed: checks are registered as
+>   function references and `runChecks` invokes them directly — D099.)
 >
 > See [issue #367](https://github.com/nichobbs/lyric-lang/issues/367) for
 > the remediation plan that drives every entry toward `@stable` ahead of

@@ -35,15 +35,33 @@ import Db
 import Web
 import Health
 
-pub func liveness(): Result[Unit, String] {
-  Ok(())
+func liveness(): CheckStatus {
+  Health.pass()
 }
 
-pub func readiness(): Result[Unit, String] {
+func readiness(): CheckStatus {
   match Db.connectFromEnv() {
-    case Err(e) -> Err("database unreachable: " + e.message)
-    case Ok(conn) -> match conn.query("SELECT 1 AS ok", []) { case Err(e) -> { conn.close(); Err("database ping failed: " + e.message) }; case Ok(_) -> { conn.close(); Ok(()) } }
+    case Err(e) -> Health.fail("database unreachable: " + e.message)
+    case Ok(conn) -> match conn.query("SELECT 1 AS ok", []) { case Err(e) -> { conn.close(); Health.fail("database ping failed: " + e.message) }; case Ok(_) -> { conn.close(); Health.pass() } }
   }
+}
+
+// Checks are registered as function references (closures); Health invokes
+// them directly — no name-based dispatch.
+func healthRegistry(): HealthRegistry {
+  val health = Health.create()
+  val health = Health.addLivenessCheck(health, "process", { -> liveness() })
+  Health.addReadinessCheck(health, "postgres", { -> readiness() })
+}
+
+/// GET /health/live — registered by name on the router below.
+pub func healthLive(): Result[String, ApiError] {
+  Health.runLiveness(healthRegistry())
+}
+
+/// GET /health/ready — registered by name on the router below.
+pub func healthReady(): Result[String, ApiError] {
+  Health.runReadiness(healthRegistry())
 }
 
 pub func main(): Unit {
@@ -53,10 +71,8 @@ pub func main(): Unit {
   // Fires every Worker.pollIntervalMs milliseconds (default 2 s).
   val router = Web.addWorker(router, "job-poller", JobQueue.Worker.Worker.pollIntervalMs, "JobQueue.Worker.workerTick")
 
-  val health = Health.create()
-  val health = Health.addLivenessCheck(health, "process", "JobQueue.liveness")
-  val health = Health.addReadinessCheck(health, "postgres", "JobQueue.readiness")
-  val router = Health.registerRoutes(router, health)
+  val router = Web.addGet(router, "/health/live", "JobQueue.healthLive")
+  val router = Web.addGet(router, "/health/ready", "JobQueue.healthReady")
 
   Web.start(router)
 }

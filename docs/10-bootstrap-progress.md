@@ -11030,6 +11030,9 @@ Three follow-up items to the Maven Central linking feature (D052 / PR #252):
   { livePath = "/health/live"; readyPath = "/health/ready" }`,
   `registerRoutes(router, registry)`, built-in `__handleLiveness/Readiness`,
   stubs for `runChecks` and `attachRegistry` (pending router-annotation milestone).
+  *(Historical: D099 / D-progress-506 replaced the name-based registration
+  with function references — `runChecks` now invokes handlers directly, and
+  `registerRoutes` / `attachRegistry` / `config Endpoints` were deleted.)*
 - `lyric-health/README.md` — check function signature, response JSON shape,
   check groups, config table, full API reference.
 
@@ -24331,3 +24334,39 @@ types.  Fixed per issue #2993's option 2 (full support):
 
 JVM config-block parity remains tracked in #2998; docs/25's status header,
 v1 scope note, §3 parse-rule table, and §8 diagnostics table updated.
+
+### D-progress-506 — `lyric-health` runs checks via function references; dispatcher panic removed (#679, D099)
+
+`lyric-health`'s `runChecks` panicked ("kernel dispatcher not yet
+implemented") for both check groups: registration stored a fully-qualified
+function name that a never-built DLL-reflection dispatcher was supposed to
+resolve, so registered checks were never called.  The reflection design was
+rejected (AOT-hostile; see D099) in favour of the `Lambda.Direct`
+function-reference model:
+
+- **API.**  `HealthCheck.handler: () -> CheckStatus` replaces
+  `handlerName: String`; `CheckStatus { healthy; detail }` with `pass()` /
+  `fail(detail)` factories replaces `Result[Unit, String]` (cross-assembly
+  `Result` misdispatch — `Err` matched as `Ok` — made the old signature a
+  silent-misreport hazard); `CheckGroup` is a payload-free `union` (restored
+  enums miscompile at consumer call sites); `runChecks(registry, group)`
+  returns `HealthReport { healthy; body }` and invokes each registered
+  handler exactly once in registration order; `runLiveness` / `runReadiness`
+  map the report onto `Result[String, ApiError]` (Ok body / Err 503).
+  `registerRoutes`, `attachRegistry`, `__handleLiveness/Readiness`, and
+  `config Endpoints` are deleted — services expose one-line named handlers
+  and wire them with `Web.addGet`.
+- **Tests.**  `lyric-health/tests/health_tests.l` rewritten as 17 cases:
+  registration, passing/failing/mixed execution, liveness-vs-readiness
+  filtering, exact JSON bodies (including quote/backslash escaping), and the
+  503 mapping.  Wired into the CI ecosystem test step
+  (`lyric test --manifest lyric-health/lyric.toml`), which previously only
+  ran lyric-auth and lyric-session.
+- **Migrations.**  `examples/ledger`, `examples/rbac`, `examples/jobqueue`,
+  `book/chapters/24-web-services.md`, `book/chapters/27-health-checks.md`,
+  and the stale dispatcher notes in docs/05 and appendix B.
+
+Verified end-to-end through `./bin/lyric`: the 17-test suite passes via
+`lyric test --manifest`, and a separate consumer package registering a
+passing and a failing check prints the aggregated degraded/ok JSON bodies
+and the 503 `ApiError` mapping correctly.

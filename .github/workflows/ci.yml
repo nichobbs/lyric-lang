@@ -2332,7 +2332,7 @@ jobs:
       - name: Restore executable permissions
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
 
-      - name: Ecosystem test suite (lyric-auth + lyric-session)
+      - name: Ecosystem test suite (lyric-auth + lyric-session + lyric-health)
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2399,13 +2399,27 @@ jobs:
             echo "::error::lyric-cache build produced no lyric-cache/bin/Cache.dll"
             exit 1
           fi
-          # Run both test manifests; capture exit codes so both always run
+          # lyric-health depends on Lyric.Web (a local path dep), which in
+          # turn depends on Lyric.Auth and Lyric.Resilience.  The test
+          # runner's local-dep resolver requires each dep's output DLL to
+          # already exist, so build the chain bottom-up before running the
+          # health suite (D-progress-505 / #679).
+          echo "=== building lyric-web chain (lyric-health dependency) ==="
+          for lib in lyric-auth lyric-resilience lyric-web; do
+            if ! "$lyric_bin" build --manifest "$lib/lyric.toml"; then
+              echo "::error::failed to build $lib (lyric-health dependency)"
+              exit 1
+            fi
+          done
+          # Run all test manifests; capture exit codes so all always run
           # before we report the overall result.
           overall=0
           echo "=== lyric-auth tests ==="
           "$lyric_bin" test --manifest lyric-auth/lyric.toml || overall=$?
           echo "=== lyric-session tests ==="
           "$lyric_bin" test --manifest lyric-session/lyric.toml || overall=$?
+          echo "=== lyric-health tests ==="
+          "$lyric_bin" test --manifest lyric-health/lyric.toml || overall=$?
           if [ $overall -ne 0 ]; then
             echo "::error::ecosystem test suite failed — security regression detected"
             exit $overall

@@ -373,11 +373,9 @@ Open-ended. Successful languages spend most of their lifetime here.
 >   not been exercised against a live provider in CI.  May change
 >   without a SemVer major bump until the missing coverage lands.
 > - **Surface-only / `@experimental`** — every other `lyric-*` package.
->   `lyric-health`'s `__handleLiveness` / `__handleReadiness` exits now
->   `panic` rather than silently returning "ok" — the kernel dispatcher
->   that would actually invoke registered checks has not landed yet,
->   and the panic is the deliberate gate against shipping a degraded
->   service as healthy.  `lyric-ws`'s rate limiter has a one-shot
+>   (`lyric-health`'s former kernel-dispatcher gap is closed: checks are
+>   registered as function references and `runChecks` invokes them
+>   directly — D099.)  `lyric-ws`'s rate limiter has a one-shot
 >   burst budget (the budget does not refill).  Cross-target (.NET /
 >   JVM) parity remains incomplete for several entries.
 >
