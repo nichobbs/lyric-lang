@@ -1022,6 +1022,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0064` | `return` without value in non-Unit function |
 | `T0065` | Returned type does not match declared return type |
 | `T0066` | `while` condition is not Bool |
+| `T0067` | `if`/`match` guard or condition type error; value-position `try` handler type incompatible with the `try` body |
 | `T0070` | Function body type does not match declared return type |
 | `T0080` | `old(…)` used outside an `ensures` clause |
 | `T0085` | `out`/`inout` argument (value-type) must be a mutable l-value |
@@ -1039,6 +1040,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0109` | Value expression used where a type argument is required |
 | `T0110` | Generic constructor's type parameter(s) cannot be inferred from the arguments (add explicit type arguments) |
 | `T0111` | Unknown constraint name in a `where` clause (warning) |
+| `T0112` | Refutable pattern in a `for` loop binding (only names, `_`, parentheses, and tuples of those) |
 
 ### Emitter (E-series)
 

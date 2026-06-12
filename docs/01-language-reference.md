@@ -1022,6 +1022,12 @@ A `Bug` raised in:
 
 `try`/`catch` exists for catching `Bug`s when absolutely needed (top-level handlers, test runners, robustness boundaries). Catching `Bug`s in normal application code is a smell; the compiler emits a warning.
 
+In value position, `try { ... } catch ... { ... }` is an expression: every
+handler must produce a type compatible with the `try` body's type, or the
+program is rejected at compile time (**T0067**). Diverging handlers (a body
+of type `Never` — e.g. a re-`throw` or `panic`) are exempt, as are
+statement-position `try` blocks whose value is discarded (`Unit`).
+
 ### 8.3 Result and panics
 
 ```

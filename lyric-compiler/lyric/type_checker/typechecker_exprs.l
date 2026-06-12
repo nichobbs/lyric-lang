@@ -1633,16 +1633,17 @@ func argIndicesInParamOrder(args: in List[CallArg], paramNames: in List[String])
     }
     i = i + 1
   }
-  // Place positional args into the first unoccupied slots, left to right.
+  // Second walk over the same args: place positional args into the first
+  // unoccupied slots, left to right.
   var posIdx = 0
-  var i2 = 0
-  while i2 < args.count {
-    match args[i2] {
+  var argIdx = 0
+  while argIdx < args.count {
+    match args[argIdx] {
       case CAPositional(_) -> {
         var placed = false
         while posIdx < paramNames.count and not placed {
           if result[posIdx] < 0 {
-            result[posIdx] = i2
+            result[posIdx] = argIdx
             placed = true
           }
           posIdx = posIdx + 1
@@ -1651,7 +1652,7 @@ func argIndicesInParamOrder(args: in List[CallArg], paramNames: in List[String])
       case CANamed(_, _, _) -> {
       }
     }
-    i2 = i2 + 1
+    argIdx = argIdx + 1
   }
   result
 }
