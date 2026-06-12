@@ -24291,3 +24291,43 @@ user-visible ones being:
 `typechecker_self_test.l` grew 205 → 216 assertions.  The stage-1 self-build
 (every compiler + stdlib package through the new checker) and the CI-gated
 lyric-auth / lyric-session suites are the false-positive regression net.
+
+### D-progress-505 — Config blocks: Float/Long/Double field support and compile-time type guards (#2993)
+
+The `config { }` MSIL lowering (D046, shipped in D-progress-488) silently
+miscompiled every field type outside `Int`/`Bool`/`String`: the default
+path's literal match dropped `LFloat` (and out-of-Int32-range `LInt`)
+defaults on the floor, leaving the static field zero-initialised, and the
+env-parse path stored the raw env-var *string* into a non-string field —
+invalid IL at runtime.  No compile-time guard restricted config field
+types.  Fixed per issue #2993's option 2 (full support):
+
+- **New BCL parse tokens.**  `Int64.Parse(string): int64` and the
+  culture-pinned `Double.Parse(string, IFormatProvider)` join the
+  `ConfigTokens` bundle (`Msil.Lowering`), registered in `newCodegenCtx`
+  beside the existing `Int32.Parse`/`Boolean.Parse` MemberRefs.  The
+  Float/Double parse loads `CultureInfo.get_InvariantCulture` first so the
+  accepted numeric format does not vary with host locale.
+- **Type-directed default lowering.**  `emitConfigDefaultLiteralMsil`
+  (`Msil.Codegen`) emits `ldc.i8` for `Long` fields, `ldc.r8` for
+  `Float`/`Double` fields (an `Int` literal widens), and folds a leading
+  unary minus (`scale: Double = -1.5` parses as `EPrefix(PreNeg, LFloat)`).
+- **Env-parse arms.**  `lowerMConfig` now dispatches `MLong` → `Int64.Parse`
+  and `MDouble` → `Double.Parse(string, InvariantCulture)`; `MString` is an
+  explicit no-op arm and the residual `case _` is an ICE panic instead of a
+  silent fall-through.
+- **Compile-time guards in the self-hosted type checker.**
+  `checkConfigBlock` (`Lyric.TypeChecker`) enforces the docs/25 §8 codes:
+  `G0009` for field types outside Bool/Int/Long/Float/Double/String,
+  `G0010` for non-literal or kind-mismatched defaults (negated numeric
+  literals and Int→Long/Float/Double widening accepted), `G0013` for
+  duplicate field names.  The F# bootstrap checker's narrower v1 allow-list
+  is untouched (it never checks user code and is on the deletion schedule).
+- **Tests.**  `msil_self_test_m85.l` grows Float/Double/Long default checks
+  plus an `EnvProbe` block exercised by the CI step in two runs (env vars
+  absent → defaults; env vars set → parsed values) and a compile-only
+  negative probe asserting `G0009`.  `typechecker_self_test.l` adds three
+  config-guard tests (G0009 / G0010 / G0013, positive and negative).
+
+JVM config-block parity remains tracked in #2998; docs/25's status header,
+v1 scope note, §3 parse-rule table, and §8 diagnostics table updated.

@@ -428,6 +428,8 @@ pub record CodegenCtx {
   tokCfgEnvExit: Int        // Environment.Exit(int32): void  (static)
   tokCfgInt32Parse: Int     // Int32.Parse(string): int32  (static)
   tokCfgBoolParse: Int      // Boolean.Parse(string): bool  (static)
+  tokCfgInt64Parse: Int     // Int64.Parse(string): int64  (static)
+  tokCfgDoubleParse: Int    // Double.Parse(string, IFormatProvider): float64  (static)
   // Async SM synthesis (Phase B, Epic #2070).
   // TypeRef rows for System.Runtime.CompilerServices types.
   trAtmb: Int  // AsyncTaskMethodBuilder (void variant, row)
@@ -1312,6 +1314,32 @@ pub func newCodegenCtx(
       buildStaticMethodSig(cfgBoolParsePs, MBool)
     )
 
+  val cfgInt64ParsePs: List[MsilType] = newList()
+  cfgInt64ParsePs.add(MString)
+  val tokCfgInt64Parse = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trInt64,
+      "Parse",
+      "cfg_int64_parse",
+      buildStaticMethodSig(cfgInt64ParsePs, MLong)
+    )
+
+  // Double.Parse(string, IFormatProvider): the .cctor loads InvariantCulture
+  // (via tokInvariantCulture) before this call so Float/Double config fields
+  // parse identically regardless of host locale (#2993).
+  val cfgDoubleParsePs: List[MsilType] = newList()
+  cfgDoubleParsePs.add(MString)
+  cfgDoubleParsePs.add(MClassRef(typeRefCode = tdrTypeRef(trIFormatProvider), clrFqn = "System.IFormatProvider"))
+  val tokCfgDoubleParse = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trDouble,
+      "Parse",
+      "cfg_double_parse",
+      buildStaticMethodSig(cfgDoubleParsePs, MDouble)
+    )
+
   val recCtorToks: Map[String, Int] = newMap()
   val fieldToks: Map[String, Int] = newMap()
   val funcToks: Map[String, Int] = newMap()
@@ -1474,7 +1502,9 @@ pub func newCodegenCtx(
     tokCfgTwWriteLine = tokCfgTwWriteLine,
     tokCfgEnvExit = tokCfgEnvExit,
     tokCfgInt32Parse = tokCfgInt32Parse,
-    tokCfgBoolParse = tokCfgBoolParse
+    tokCfgBoolParse = tokCfgBoolParse,
+    tokCfgInt64Parse = tokCfgInt64Parse,
+    tokCfgDoubleParse = tokCfgDoubleParse
   )
 }
 
@@ -17476,6 +17506,78 @@ pub func appendDeriveOverridesMsil(
   )
 }
 
+// Lower one config-field default literal into `insns` (D046).  `neg` folds a
+// leading unary minus (the parser represents `-1` as EPrefix(PreNeg, LInt(1))).
+// The emitted instruction is directed by the declared field type so an Int
+// literal initialises a Long field via ldc.i8 and a Float/Double field via
+// ldc.r8 (#2993).  Returns false when the literal kind cannot initialise a
+// field of type `fieldTy`; callers turn that into an ICE panic, since the
+// type checker's G0010 guard rejects non-literal / mismatched defaults.
+func emitConfigDefaultLiteralMsil(
+  cctx: in CodegenCtx,
+  fieldTy: in MsilType,
+  lit: in Literal,
+  neg: in Bool,
+  insns: in List[MInsn],
+): Bool {
+  match lit {
+    case LInt(v0, _, _) -> {
+      val v = if neg { 0i64 - v0 } else { v0 }
+      match fieldTy {
+        case MInt -> {
+          insns.add(MLdcI4(v = longToInt(v)))
+          true
+        }
+        case MLong -> {
+          insns.add(MLdcI8(v = v))
+          true
+        }
+        case MDouble -> {
+          insns.add(MLdcR8(v = v.toDouble()))
+          true
+        }
+        case _ -> false
+      }
+    }
+    case LFloat(f0, _, _) -> {
+      match fieldTy {
+        case MDouble -> {
+          insns.add(MLdcR8(v = if neg { 0.0 - f0 } else { f0 }))
+          true
+        }
+        case _ -> false
+      }
+    }
+    case LBool(bv) -> {
+      match fieldTy {
+        case MBool -> {
+          if neg {
+            false
+          } else {
+            insns.add(MLdcI4(v = if bv { 1 } else { 0 }))
+            true
+          }
+        }
+        case _ -> false
+      }
+    }
+    case LString(sv) -> {
+      match fieldTy {
+        case MString -> {
+          if neg {
+            false
+          } else {
+            insns.add(MLdStr(token = ctxInternUs(cctx.lctx, sv)))
+            true
+          }
+        }
+        case _ -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
 // Derive the environment variable name for a config block field (D046):
 // LYRIC_CONFIG_<PKG_UPPER>_<BLOCK_UPPER>_<FIELD_UPPER>
 // Dots in pkgName are replaced with underscores before uppercasing.
@@ -17805,19 +17907,20 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
             if hasDefault {
               match cf.default {
                 case Some(defExpr) -> {
-                  match defExpr.kind {
-                    case ELiteral(lit) -> {
-                      match lit {
-                        case LInt(v, _, _) -> defaultInsnsList.add(MLdcI4(v = longToInt(v)))
-                        case LBool(bv) -> defaultInsnsList.add(MLdcI4(v = if bv { 1 } else { 0 }))
-                        case LString(sv, _) -> {
-                          val defTok = ctxInternUs(cctx.lctx, sv)
-                          defaultInsnsList.add(MLdStr(token = defTok))
-                        }
-                        case _ -> ()
-                      }
-                    }
-                    case _ -> ()
+                  val lowered = match defExpr.kind {
+                    case ELiteral(lit) -> emitConfigDefaultLiteralMsil(cctx, cfTy, lit, false, defaultInsnsList)
+                    case EPrefix(op, inner) -> match op { case PreNeg -> match inner.kind { case ELiteral(lit2) -> emitConfigDefaultLiteralMsil(cctx, cfTy, lit2, true, defaultInsnsList); case _ -> false }; case _ -> false }
+                    case _ -> false
+                  }
+                  if not lowered {
+                    // A silent fall-through here leaves the field at its
+                    // zero-initialised value regardless of the declared
+                    // default (#2993); the front-end's G0010 guard rejects
+                    // these shapes before codegen.
+                    panic(
+                      "Msil.Codegen ICE: config default for '" + decl.name + "." + cf.name +
+                        "' is not a literal of the declared type — the type checker (G0010) should have rejected this"
+                    )
                   }
                 }
                 case None -> ()
@@ -17853,7 +17956,10 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
                 tokTwWriteLine = cctx.tokCfgTwWriteLine,
                 tokEnvExit = cctx.tokCfgEnvExit,
                 tokInt32Parse = cctx.tokCfgInt32Parse,
-                tokBoolParse = cctx.tokCfgBoolParse
+                tokBoolParse = cctx.tokCfgBoolParse,
+                tokInt64Parse = cctx.tokCfgInt64Parse,
+                tokDoubleParse = cctx.tokCfgDoubleParse,
+                tokInvariantCulture = cctx.tokInvariantCulture
               )
             )
           )

@@ -1321,6 +1321,90 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §8b. Config block well-formedness (D046 / docs/25-config-blocks.md).
+// ─────────────────────────────────────────────────────────────────────────────
+// The bare single-segment name of a config field's declared type, or "" for
+// any shape outside the v1 set (qualified paths, generics, function types).
+func configFieldTypeName(te: in TypeExpr): String {
+  match te.kind {
+    case TRef(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
+    case _ -> ""
+  }
+}
+
+// Whether a literal default can initialise a config field of type `tyName`.
+// Int literals widen to Long / Float / Double; Float literals fit Float /
+// Double; everything else must match exactly.
+func configLiteralFitsType(lit: in Literal, tyName: in String): Bool {
+  match lit {
+    case LBool(_) -> tyName == "Bool"
+    case LInt(_, _, _) -> tyName == "Int" or tyName == "Long" or tyName == "Float" or tyName == "Double"
+    case LFloat(_, _, _) -> tyName == "Float" or tyName == "Double"
+    case LString(_) -> tyName == "String"
+    case LTripleString(_) -> tyName == "String"
+    case LRawString(_) -> tyName == "String"
+    case _ -> false
+  }
+}
+
+// Well-formedness check for a `config` block.  v1 enforces:
+//   * Field type is one of Bool / Int / Long / Float / Double / String
+//     (G0009); range subtypes, enums, and lists are deferred to v1.1.
+//   * Field default, when present, is a literal of the declared type,
+//     optionally negated for numeric fields (G0010).
+//   * Field names are unique within the block (G0013).
+// The MSIL config lowering relies on these guarantees: an unchecked field
+// type silently zero-fills the default path and emits invalid IL on the
+// env-parse path (#2993).
+func checkConfigBlock(diag: in List[Diagnostic], cd: in ConfigDecl): Unit {
+  val seen: List[String] = newList()
+  var i = 0
+  while i < cd.fields.count {
+    val f = cd.fields[i]
+    if listContainsStr(seen, f.name) {
+      diag.add(errorDiagnostic("G0013", "duplicate field '" + f.name + "' in config block '" + cd.name + "'", f.span))
+    } else {
+      seen.add(f.name)
+    }
+    val tyName = configFieldTypeName(f.ty)
+    val allowed = tyName == "Bool" or tyName == "Int" or tyName == "Long" or tyName == "Float" or tyName == "Double" or
+      tyName == "String"
+    if not allowed {
+      diag.add(
+        errorDiagnostic(
+          "G0009",
+          "config field '" + cd.name + "." + f.name +
+            "' has a type not allowed in a config block; allowed types: Bool, Int, Long, Float, Double, String",
+          f.ty.span
+        )
+      )
+    } else {
+      match f.default {
+        case Some(d) -> {
+          val ok = match d.kind {
+            case ELiteral(lit) -> configLiteralFitsType(lit, tyName)
+            case EPrefix(op, inner) -> match op { case PreNeg -> match inner.kind { case ELiteral(lit2) -> match lit2 { case LInt(_, _, _) -> configLiteralFitsType(lit2, tyName); case LFloat(_, _, _) -> configLiteralFitsType(lit2, tyName); case _ -> false }; case _ -> false }; case _ -> false }
+            case _ -> false
+          }
+          if not ok {
+            diag.add(
+              errorDiagnostic(
+                "G0010",
+                "config default for '" + cd.name + "." + f.name + "' must be a literal " + tyName + " constant",
+                d.span
+              )
+            )
+          }
+        }
+        case None -> {
+        }
+      }
+    }
+    i = i + 1
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §9. Public entry points.
 // ─────────────────────────────────────────────────────────────────────────────
 // Imported items tagged with their declaring package, so each package's
@@ -1469,6 +1553,7 @@ func checkWithImportedPackagesCore(
         }
       }
       case IImpl(decl) -> checkImplConformance(tbl, diag, decl)
+      case IConfig(decl) -> checkConfigBlock(diag, decl)
       case _ -> {
       }
     }

@@ -740,13 +740,17 @@ pub record ConfigTokens {
   tokEnvExit: Int        // Environment.Exit(int32): void  (static)
   tokInt32Parse: Int     // Int32.Parse(string): int32  (static)
   tokBoolParse: Int      // Boolean.Parse(string): bool  (static)
+  tokInt64Parse: Int     // Int64.Parse(string): int64  (static)
+  tokDoubleParse: Int    // Double.Parse(string, IFormatProvider): float64  (static)
+  tokInvariantCulture: Int  // CultureInfo.get_InvariantCulture(): CultureInfo  (static)
 }
 
 // One field inside a config block.  `defaultInsns` is a one-instruction list
-// that pushes the literal default (MLdcI4 or MLdStr); empty for required fields.
+// that pushes the literal default (MLdcI4, MLdcI8, MLdcR8, or MLdStr); empty
+// for required fields.
 pub record MConfigField {
   name: String
-  fieldType: MsilType      // MInt, MBool, or MString
+  fieldType: MsilType      // MInt, MLong, MDouble, MBool, or MString (G0009-guarded)
   // ldstr token (0x70000000 | US heap offset) for the env var name.
   envVarTok: Int
   hasDefault: Bool
@@ -4770,7 +4774,9 @@ pub func lowerMPackage(pkg: in MPackage, entryMethodToken: in Int): List[Byte] {
 //   parseLabel_i:
 //   ldstr envVarName
 //   call  Environment.GetEnvironmentVariable(string): string
-//   [call Int32.Parse / Boolean.Parse — omitted for String fields]
+//   [call Int32.Parse / Int64.Parse / Boolean.Parse, or
+//    call CultureInfo.get_InvariantCulture + Double.Parse(string, IFormatProvider)
+//    for Float/Double fields — omitted for String fields]
 //   stsfld fieldToken_i
 //   doneLabel_i:
 func lowerMConfig(
@@ -4834,14 +4840,28 @@ func lowerMConfig(
       // needed for verifier structural correctness).
       cctorInsns.add(MBr(label = doneLabel))
 
-      // Present path: re-load env var and parse.
+      // Present path: re-load env var and parse.  The `case _` arm is
+      // unreachable for type-checked input — the front-end rejects config
+      // fields outside Bool/Int/Long/Float/Double/String with G0009.  A
+      // silent fall-through there would stsfld a raw string into a
+      // non-string field — invalid IL at runtime (#2993).
       cctorInsns.add(MLabel(id = parseLabel))
       cctorInsns.add(MLdStr(token = f.envVarTok))
       cctorInsns.add(MCall(methodToken = configToks.tokGetEnvVar))
       match f.fieldType {
         case MInt -> cctorInsns.add(MCall(methodToken = configToks.tokInt32Parse))
+        case MLong -> cctorInsns.add(MCall(methodToken = configToks.tokInt64Parse))
+        case MDouble -> {
+          // Pin InvariantCulture so the accepted numeric format does not vary
+          // with the host locale (the single-arg overload reads "1,5" as 15
+          // under e.g. de-DE).
+          cctorInsns.add(MCall(methodToken = configToks.tokInvariantCulture))
+          cctorInsns.add(MCall(methodToken = configToks.tokDoubleParse))
+        }
         case MBool -> cctorInsns.add(MCall(methodToken = configToks.tokBoolParse))
-        case _ -> () // MString: already on stack, no parse needed
+        case MString -> {
+        }  // raw env-var string is already on the stack
+        case _ -> panic("Msil.Lowering ICE: config field '" + f.name + "' has an unsupported MsilType — the type checker (G0009) should have rejected this")
       }
       cctorInsns.add(MStsfld(fieldToken = fieldTok))
       cctorInsns.add(MLabel(id = doneLabel))

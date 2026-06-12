@@ -2070,3 +2070,35 @@ test "for tuple pattern accepted" {
   assertTrue(not hasDiagCode(cr, "T0112"), "for over tuple pattern: no T0112")
   assertEqualInt(diagCount(cr), 0, "for over tuple pattern: clean")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2993: config block well-formedness (D046 / docs/25-config-blocks.md).
+// Field types outside Bool/Int/Long/Float/Double/String are rejected with
+// G0009; non-literal or kind-mismatched defaults with G0010; duplicate field
+// names with G0013.  Before this guard, a Float/Long config field silently
+// miscompiled (zero-filled default, invalid IL on the env-parse path).
+// ─────────────────────────────────────────────────────────────────────────────
+test "config field type guard" {
+  val bad = "package P\nconfig S { c: Char }\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "G0009"), "config: Char field rejected with G0009")
+  val badList = "package P\nconfig S { xs: [String] }\n"
+  assertTrue(hasDiagCode(parseCheck(badList), "G0009"), "config: list field rejected with G0009")
+  val ok = "package P\nconfig S2 { a: Bool = true; b: Int = 1; c: Long = 2; d: Float = 0.5; e: Double = 1.5; f: String = \"x\"; g: Int }\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "config: full v1 type set accepted")
+}
+
+test "config default literal guard" {
+  val bad = "package P\nconfig S3 { p: Int = \"oops\" }\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "G0010"), "config: kind-mismatched default rejected with G0010")
+  val nonLit = "package P\nconfig S5 { p: Int = f() }\nfunc f(): Int { 1 }\n"
+  assertTrue(hasDiagCode(parseCheck(nonLit), "G0010"), "config: non-literal default rejected with G0010")
+  val neg = "package P\nconfig S4 { off: Int = -1; r: Float = -0.5; w: Long = -9000000000; d: Double = -2.5 }\n"
+  assertEqualInt(diagCount(parseCheck(neg)), 0, "config: negated numeric defaults accepted")
+  val widen = "package P\nconfig S6 { cap: Long = 5; rate: Float = 2; scale: Double = 3 }\n"
+  assertEqualInt(diagCount(parseCheck(widen)), 0, "config: Int literal widens to Long/Float/Double")
+}
+
+test "config duplicate field" {
+  val dup = "package P\nconfig S7 { p: Int = 1; p: Int = 2 }\n"
+  assertTrue(hasDiagCode(parseCheck(dup), "G0013"), "config: duplicate field rejected with G0013")
+}
