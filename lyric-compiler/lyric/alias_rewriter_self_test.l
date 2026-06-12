@@ -40,6 +40,8 @@ package Lyric.AliasRewriterSelfTest
 
 import Std.String as Str
 import Std.Core as Core
+import Std.Log as Log
+import Std.Console
 import Std.Testing
 import Lyric.Lexer
 import Lyric.Parser
@@ -50,13 +52,13 @@ func ctrlLen(s: in String): Int {
   Str.length(s)
 }
 
-// ── Contract clause descent (#1861): an aliased call inside a `requires:`
-//    clause must be rewritten too (the clause is type-checked, so a surviving
-//    `Str.` reference would trip T0020).  `requires:`-only (no `ensures:`) — the
-//    self-hosted MSIL `ensures:`/`result` lowering NRE's in the `lyric test`
-//    path independently of aliasing, tracked in #1871. ──────────────────────────
+// ── Contract clause descent (#1861): an aliased call inside a `requires:` or
+//    `ensures:` clause must be rewritten too (the clauses are type-checked, so
+//    a surviving `Str.` reference would trip T0020).  The `ensures:` clause
+//    exercises the CCEnsures arm end-to-end (#1875). ──────────────────────────
 func checkedLen(s: in String): Int
   requires: Str.length(s) >= 0
+  ensures: result == Str.length(s)
 {
   Str.length(s)
 }
@@ -103,12 +105,40 @@ func boxedTag(b: in Boxed): Int {
   }
 }
 
+// ── Where-bound descent (#1860 / #1874): `where T: Log.Logger` references the
+//    trait through the `Std.Log as Log` alias; without `rewriteWhereBound` the
+//    bound's ConstraintRef head would survive as the bare alias and fail
+//    resolution (and a qualified rewrite would trip the type checker's T0051
+//    "qualified constraint paths not yet supported").  `Std.Log` is used
+//    rather than `Std.Stream` because its per-package runtime assembly is in
+//    the staged stdlib set the in-process `lyric test` path can load. ─────────
+record ProbeLogger {
+}
+
+impl Log.Logger for ProbeLogger {
+  func log(level: in LogLevel, msg: in String, fields: in slice[LogField]): Unit {
+    ()
+  }
+}
+
+func logAndReport[T](x: in T): Int
+  where T: Log.Logger
+{
+  x.log(Info, "where-bound probe", [])
+  7
+}
+
 test "IFunc control: aliased call in a top-level body still works" {
   assertEqualInt(ctrlLen("abc"), 3, "Str.length via alias")
 }
 
-test "contract clause: aliased call inside a requires: clause resolves (#1861)" {
-  assertEqualInt(checkedLen("hello"), 5, "Str.length in requires + body")
+test "contract clause: aliased call inside requires: and ensures: resolves (#1861, #1875)" {
+  assertEqualInt(checkedLen("hello"), 5, "Str.length in requires + ensures + body")
+}
+
+test "where-bound: aliased trait in `where T: Log.Logger` resolves (#1860, #1874)" {
+  val p: ProbeLogger = ProbeLogger()
+  assertEqualInt(logAndReport(p), 7, "logAndReport(ProbeLogger) -> 7")
 }
 
 test "IImpl: aliased call inside an impl method body resolves (T0020 repro)" {
@@ -164,6 +194,9 @@ test "bare single-segment import X registers implicit X=X alias (#2930)" {
         case Some(fb) -> {
           match fb {
             case FBBlock(block) -> {
+              // Guard the index so a rewriter regression that empties the
+              // block fails with an assertion message, not a panic (#3163).
+              assertTrue(block.statements.count > 0, "function body block must have at least one statement")
               val stmt = block.statements[0]
               match stmt.kind {
                 case SExpr(callExpr) -> {
@@ -189,4 +222,104 @@ test "bare single-segment import X registers implicit X=X alias (#2930)" {
     }
     case _ -> assertTrue(false, "first item is not IFunc")
   }
+}
+
+// ── Bare multi-segment implicit alias (#2929) ────────────────────────────────
+// `import Foo.Bar` (no `as` clause, >1 segment) registers the tail segment as
+// an implicit alias for the full dotted path, so `Bar.baz()` is rewritten from
+// `EMember(EPath(["Bar"]), "baz")` to the flat `EPath(["Foo","Bar","baz"])`.
+// Before the fix only single-segment bare imports got the implicit alias, so
+// multi-segment forms still misrouted to `lowerMethodCallMsil` and threw at
+// runtime.
+test "bare multi-segment import Foo.Bar registers implicit Bar=Foo.Bar alias (#2929)" {
+  val src = "package Test\nimport Foo.Bar\nfunc f(): Int {\n  Bar.baz()\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  assertEqualInt(rewritten.items.count, pr.file.items.count, "multi-seg alias: item count preserved after rewrite")
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IFunc(decl) -> {
+      match decl.body {
+        case Some(fb) -> {
+          match fb {
+            case FBBlock(block) -> {
+              assertTrue(block.statements.count > 0, "function body block must have at least one statement")
+              val stmt = block.statements[0]
+              match stmt.kind {
+                case SExpr(callExpr) -> {
+                  match callExpr.kind {
+                    case ECall(fn, _) -> {
+                      match fn.kind {
+                        case EPath(p) -> assertEqualInt(p.segments.count, 3, "call fn is the fully-qualified Foo.Bar.baz path after rewrite")
+                        case EMember(_, _) -> assertTrue(false, "call fn is still EMember — rewrite did not collapse the multi-seg bare-import alias")
+                        case _ -> assertTrue(false, "call fn is unexpected ExprKind after rewrite")
+                      }
+                    }
+                    case _ -> assertTrue(false, "statement expression is not ECall")
+                  }
+                }
+                case _ -> assertTrue(false, "first statement is not SExpr")
+              }
+            }
+            case FBExpr(_) -> assertTrue(false, "function body is FBExpr, expected FBBlock")
+          }
+        }
+        case None -> assertTrue(false, "function decl has no body")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IFunc")
+  }
+}
+
+// An explicit `as` alias claims its name before any bare import's implicit
+// tail alias: with `import Other.Thing as Bar` + bare `import Foo.Bar`, the
+// `Bar` head must rewrite to `Other.Thing`, not `Foo.Bar`.
+test "explicit alias wins over a bare import's implicit tail alias (#2929)" {
+  val src = "package Test\nimport Foo.Bar\nimport Other.Thing as Bar\nfunc f(): Int {\n  Bar.baz()\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IFunc(decl) -> {
+      match decl.body {
+        case Some(fb) -> {
+          match fb {
+            case FBBlock(block) -> {
+              assertTrue(block.statements.count > 0, "function body block must have at least one statement")
+              val stmt = block.statements[0]
+              match stmt.kind {
+                case SExpr(callExpr) -> {
+                  match callExpr.kind {
+                    case ECall(fn, _) -> {
+                      match fn.kind {
+                        case EPath(p) -> {
+                          assertEqualInt(p.segments.count, 3, "call fn rewritten through the explicit alias")
+                          assertEqual(p.segments[0], "Other", "explicit alias target package wins over the bare import")
+                        }
+                        case _ -> assertTrue(false, "call fn is not EPath after rewrite")
+                      }
+                    }
+                    case _ -> assertTrue(false, "statement expression is not ECall")
+                  }
+                }
+                case _ -> assertTrue(false, "first statement is not SExpr")
+              }
+            }
+            case FBExpr(_) -> assertTrue(false, "function body is FBExpr, expected FBBlock")
+          }
+        }
+        case None -> assertTrue(false, "function decl has no body")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IFunc")
+  }
+}
+
+// Runtime end-to-end for #2929: this module itself bare-imports `Std.Console`
+// (multi-segment, no `as`) in its header.  Before the fix, `Console.println`
+// compiled but threw "unsupported method 'println' on the receiver type" at
+// runtime; with the implicit tail alias it routes to the static stdlib call.
+test "runtime: bare `import Std.Console` routes Console.println correctly (#2929)" {
+  Console.println("alias rewriter #2929: bare multi-segment import works")
+  assertTrue(true, "Console.println via a bare multi-segment import did not throw")
 }

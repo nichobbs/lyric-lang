@@ -90,12 +90,15 @@ func dotJoin(segs: in List[String]): String {
 // path (preserving which package the call/type targets) rather than dropping it.
 // `=` is a safe separator: neither identifiers nor package names contain it.
 //
-// Bare single-segment `import X` (no `as` clause) is treated as an implicit
-// `import X as X`: the package name `X` is registered as an alias for itself so
-// that `X.func(...)` call sites are rewritten from `EMember(EPath(["X"]), "func")`
-// to the flat `EPath(["X", "func"])` form that `lowerBuiltinOrStaticCallMsil`
-// can dispatch correctly.  Without this, the call lands in `lowerMethodCallMsil`
-// which looks for `func` as a method on an unknown receiver and throws at runtime.
+// Bare `import X` / `import A.B.X` (no `as` clause) is treated as an implicit
+// `import ... as X`: the tail segment `X` is registered as an alias for the
+// full dotted path so that `X.func(...)` call sites are rewritten from
+// `EMember(EPath(["X"]), "func")` to the flat `EPath([..., "X", "func"])` form
+// that `lowerBuiltinOrStaticCallMsil` can dispatch correctly.  Without this,
+// the call lands in `lowerMethodCallMsil` which looks for `func` as a method
+// on an unknown receiver and throws at runtime (#2930 single-segment, #2929
+// multi-segment).  Explicit `as` aliases are collected first and win: a bare
+// import never shadows a name an explicit alias already claims.
 func collectAliases(imports: in List[ImportDecl]): List[String] {
   val entries: List[String] = newList()
   var i = 0
@@ -103,14 +106,25 @@ func collectAliases(imports: in List[ImportDecl]): List[String] {
     val imp = imports[i]
     match asAliasOf(imp) {
       case Some(name) -> entries.add(name + "=" + dotJoin(imp.path.segments))
+      case None -> ()
+    }
+    i = i + 1
+  }
+  var j = 0
+  while j < imports.count {
+    val imp = imports[j]
+    match asAliasOf(imp) {
+      case Some(_) -> ()
       case None -> {
-        if imp.path.segments.count == 1 {
-          val seg = imp.path.segments[0]
-          entries.add(seg + "=" + seg)
+        if imp.path.segments.count >= 1 {
+          val tail = imp.path.segments[imp.path.segments.count - 1]
+          if not aliasContains(entries, tail) {
+            entries.add(tail + "=" + dotJoin(imp.path.segments))
+          }
         }
       }
     }
-    i = i + 1
+    j = j + 1
   }
   entries
 }
@@ -710,11 +724,32 @@ func rewriteConstraintRef(aliases: in List[String], cr: in ConstraintRef): Const
 // `where T: Alias.Trait` bounds reference aliased traits via ConstraintRef
 // (#1860).  Rewrite each bound's constraint list; the bound's own type-param
 // name is a binder, not an alias reference, so it is left untouched.
+//
+// Unlike every other position, an aliased `where` bound collapses to the
+// trait's *bare* name rather than the fully-qualified path: the type checker
+// resolves `where` constraints by bare interface name and rejects qualified
+// constraint paths outright (T0051), so a qualified rewrite would turn a
+// resolvable aliased bound into a hard error (#1874).
+func rewriteWhereConstraintRef(aliases: in List[String], cr: in ConstraintRef): ConstraintRef {
+  val as2: List[TypeArg] = newList()
+  var i = 0
+  while i < cr.args.count {
+    as2.add(rewriteTypeArg(aliases, cr.args[i]))
+    i = i + 1
+  }
+  if cr.head.segments.count >= 2 and aliasContains(aliases, cr.head.segments[0]) {
+    val segs: List[String] = newList()
+    segs.add(cr.head.segments[cr.head.segments.count - 1])
+    return ConstraintRef(head = ModulePath(segments = segs, span = cr.head.span), args = as2, span = cr.span)
+  }
+  ConstraintRef(head = rewritePath(aliases, cr.head), args = as2, span = cr.span)
+}
+
 func rewriteWhereBound(aliases: in List[String], b: in WhereBound): WhereBound {
   val cs: List[ConstraintRef] = newList()
   var i = 0
   while i < b.constraints.count {
-    cs.add(rewriteConstraintRef(aliases, b.constraints[i]))
+    cs.add(rewriteWhereConstraintRef(aliases, b.constraints[i]))
     i = i + 1
   }
   WhereBound(name = b.name, constraints = cs, span = b.span)
