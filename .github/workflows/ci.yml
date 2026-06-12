@@ -629,6 +629,48 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/auto_ffi_self_test.l
 
+      # Auto-FFI F0015 negative-compile test (#2945).  The auto-FFI self-test
+      # above covers only the happy path (valid signatures resolve), so a
+      # regression that silently disabled the signature-verification block in
+      # msil/codegen.l (e.g. `canVerify` or `isExplicitStatic` stuck false)
+      # would go undetected.  This step builds a fixture whose @externStatic
+      # @externTarget declares an arity that matches no System.Math.Max
+      # overload and asserts the build fails with F0015.
+      - name: Auto-FFI F0015 signature-mismatch negative test
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping F0015 negative test"
+            exit 1
+          fi
+          bin_abs="$(pwd)/$lyric_bin"
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          cat > "$work/f0015_fixture.l" <<'LYR'
+          package F0015Fixture
+          import Std.Core
+
+          @externStatic
+          @externTarget("System.Math.Max")
+          func badMax(a: in Int): Int = ()
+
+          func main(): Int {
+            badMax(1)
+          }
+          LYR
+          rc=0
+          ( cd "$work" && "$bin_abs" build f0015_fixture.l ) > "$work/build.out" 2>&1 || rc=$?
+          echo "--- build output (rc=$rc) ---"; cat "$work/build.out"
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::expected non-zero exit for a mismatched @externTarget signature"
+            exit 1
+          fi
+          grep -q "F0015" "$work/build.out" || {
+            echo "::error::build failed but did not report F0015"; exit 1; }
+          echo "F0015 signature-mismatch negative test passed (rc=$rc)"
+
       # Synthesized-method-resolution self-test (#1499, #1507).
       # Verifies that compiler-synthesized named methods (protected-type entries,
       # @derive(Equals/Show) free functions) resolve correctly at the call site:
