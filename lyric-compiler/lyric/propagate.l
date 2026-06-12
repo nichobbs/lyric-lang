@@ -33,6 +33,10 @@
 //! the function's intended result, so it must not be asserted against the
 //! success-shaped post-condition.
 //!
+//! Return types written through a same-file type alias (e.g.
+//! `alias ParseResult[T] = Result[T, ParseError]`) are unfolded through the
+//! file's alias declarations before classification (#1814).
+//!
 //! When `?` appears in a function whose return type is neither `Result` nor
 //! `Option` (or inside a lambda, whose return monad the backend cannot yet
 //! determine), the pass emits a hard `F0020` diagnostic instead of a silent
@@ -76,10 +80,14 @@ union PropKind {
 record PropState {
   counter: List[Int]
   diagnostics: List[Diagnostic]
+  // Same-file `alias Name[...] = ...` declarations (name -> right-hand side),
+  // so return types written through an alias of Result/Option classify
+  // correctly instead of tripping a false F0020 (#1814).
+  aliases: Map[String, TypeExpr]
 }
 
-func newPropState(diags: in List[Diagnostic]): PropState {
-  PropState(counter = newList(), diagnostics = diags)
+func newPropState(diags: in List[Diagnostic], aliases: in Map[String, TypeExpr]): PropState {
+  PropState(counter = newList(), diagnostics = diags, aliases = aliases)
 }
 
 func freshSuffix(st: in PropState): String {
@@ -176,13 +184,46 @@ func lastSegment(path: in ModulePath): String {
   }
 }
 
-// Known limitation (#1814): matches terminal segment only — type aliases for `Result`/`Option`
-// (e.g. `alias ParseResult[T] = Result[T, ParseError]`) yield `PropOther` and trip a
-// false F0020.  Workaround until an alias-resolution pass lands: write `Result[T, E]` directly.
-func monadOfRet(ret: in Option[TypeExpr]): PropKind {
+// Classification unfolds same-file `alias` declarations before the
+// Result/Option test (#1814), so e.g. `alias ParseResult[T] = Result[T,
+// ParseError]` classifies as PropResult.  Only the head matters here, so no
+// generic-argument substitution is needed; the unfold depth is bounded so an
+// alias cycle (a type error reported elsewhere) cannot loop.  Aliases imported
+// from other packages are not visible to this pass and still classify as
+// PropOther — the workaround there remains writing `Result[T, E]` directly.
+func classifyRetType(te: in TypeExpr, aliases: in Map[String, TypeExpr], depth: in Int): PropKind {
+  if depth > 8 {
+    return PropOther
+  }
+  match te.kind {
+    case TGenericApp(head, args) -> {
+      val h = lastSegment(head)
+      if h == "Result" and args.count == 2 {
+        PropResult
+      } else if h == "Option" and args.count == 1 {
+        PropOption
+      } else {
+        match mapGet(aliases, h) {
+          case Some(rhs) -> classifyRetType(rhs, aliases, depth + 1)
+          case None -> PropOther
+        }
+      }
+    }
+    case TRef(path) -> {
+      match mapGet(aliases, lastSegment(path)) {
+        case Some(rhs) -> classifyRetType(rhs, aliases, depth + 1)
+        case None -> PropOther
+      }
+    }
+    case TParen(inner) -> classifyRetType(inner, aliases, depth + 1)
+    case _ -> PropOther
+  }
+}
+
+func monadOfRet(ret: in Option[TypeExpr], aliases: in Map[String, TypeExpr]): PropKind {
   match ret {
     case None -> PropOther
-    case Some(te) -> match te.kind { case TGenericApp(head, args) -> { val h = lastSegment(head); if h == "Result" and args.count == 2 { PropResult } else if h == "Option" and args.count == 1 { PropOption } else { PropOther } }; case TParen(inner) -> monadOfRet(Some(value = inner)); case _ -> PropOther }
+    case Some(te) -> classifyRetType(te, aliases, 0)
   }
 }
 
@@ -442,7 +483,7 @@ func rewriteFunction(fn: in FunctionDecl, st: in PropState): FunctionDecl {
   match fn.body {
     case None -> fn
     case Some(body) -> {
-      val kind = monadOfRet(fn.ret)
+      val kind = monadOfRet(fn.ret, st.aliases)
       FunctionDecl(
         docComments = fn.docComments,
         annotations = fn.annotations,
@@ -462,7 +503,7 @@ func rewriteFunction(fn: in FunctionDecl, st: in PropState): FunctionDecl {
 }
 
 func rewriteEntry(ed: in EntryDecl, st: in PropState): EntryDecl {
-  val kind = monadOfRet(ed.ret)
+  val kind = monadOfRet(ed.ret, st.aliases)
   EntryDecl(
     docComments = ed.docComments,
     annotations = ed.annotations,
@@ -563,7 +604,20 @@ func rewriteItem(it: in Item, st: in PropState): Item {
 // ─────────────────────────────────────────────────────────────────────────────
 pub func lowerPropagateFile(file: in SourceFile): PropagateResult {
   val diags: List[Diagnostic] = newList()
-  val st = newPropState(diags)
+  val aliases: Map[String, TypeExpr] = newMap()
+  var ai = 0
+  while ai < file.items.count {
+    match file.items[ai].kind {
+      case ITypeAlias(decl) -> {
+        if not aliases.containsKey(decl.name) {
+          aliases.add(decl.name, decl.rhs)
+        }
+      }
+      case _ -> ()
+    }
+    ai = ai + 1
+  }
+  val st = newPropState(diags, aliases)
   val newItems: List[Item] = newList()
   var i = 0
   while i < file.items.count {
