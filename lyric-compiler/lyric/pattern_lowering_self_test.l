@@ -17,6 +17,10 @@
 //! (`new`/`invokespecial`), record field access, and call-site argument
 //! coercion of erased (`Object`) tuple elements to a declared parameter
 //! type.  Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1` is needed.
+//!
+//! Also covers the literal-pattern kinds that previously fell to the
+//! backends' pop-and-match-anything catch-all: triple-quoted and raw string
+//! patterns (#1792) plus a Float regression case (#1481).
 @test_module
 package Lyric.PatternLoweringSelfTest
 
@@ -104,6 +108,37 @@ func shapeMetric(sh: Shape): Int {
   }
 }
 
+// ── PLiteral string variants (#1792) — triple-quoted and raw string literal
+// patterns must compare the payload like a plain string literal.  Both
+// previously fell to the backend's literal catch-all, which popped the
+// scrutinee with no comparison so the FIRST arm always won — each function
+// below must select a non-first arm to prove the comparison is emitted.
+func tripleStringArm(s: String): Int {
+  match s {
+    case """alpha""" -> 1
+    case """beta""" -> 2
+    case _ -> 0
+  }
+}
+
+func rawStringArm(s: String): Int {
+  match s {
+    case r"one\n" -> 1
+    case r"two\n" -> 2
+    case _ -> 0
+  }
+}
+
+// ── PLiteral Float regression — the LFloat arm shipped earlier (#1481); keep a
+// non-first-arm selection so the same defect class cannot silently return.
+func floatBand(x: Double): Int {
+  match x {
+    case 1.5 -> 1
+    case 2.5 -> 2
+    case _ -> 0
+  }
+}
+
 // ── PTypeTest — `pattern is Type` narrows the scrutinee to `Type` and binds the
 // inner pattern at that type, so the bound value's field is read at the narrowed
 // type.  (A record type-test keeps the class resolution direct on both targets.)
@@ -173,4 +208,24 @@ test "PConstructor on a constructed union" {
 
 test "PTypeTest narrows and binds" {
   assertEqualInt(typeTestPointX(Point(x = 11, y = 2)), 11, "is Point -> x")
+}
+
+test "PLiteral triple-quoted string pattern selects the matching arm" {
+  assertEqualInt(tripleStringArm("alpha"), 1, "triple-string arm 1")
+  assertEqualInt(tripleStringArm("beta"), 2, "triple-string arm 2 (non-first)")
+  assertEqualInt(tripleStringArm("gamma"), 0, "triple-string wildcard")
+}
+
+test "PLiteral raw string pattern selects the matching arm" {
+  // Raw strings keep the backslash literal: the scrutinee must spell it as
+  // an escaped backslash in a plain string to be equal.
+  assertEqualInt(rawStringArm("one\\n"), 1, "raw-string arm 1")
+  assertEqualInt(rawStringArm("two\\n"), 2, "raw-string arm 2 (non-first)")
+  assertEqualInt(rawStringArm("two\n"), 0, "real newline does not equal raw \\n")
+}
+
+test "PLiteral Float pattern selects the matching arm" {
+  assertEqualInt(floatBand(1.5), 1, "float arm 1")
+  assertEqualInt(floatBand(2.5), 2, "float arm 2 (non-first)")
+  assertEqualInt(floatBand(3.5), 0, "float wildcard")
 }

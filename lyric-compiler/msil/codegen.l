@@ -6683,11 +6683,21 @@ func lowerPatternTestMsil(
           insns.add(MCeq)
           insns.add(MBrFalse(label = failLabel))
         }
-        case LUnit -> {
-          insns.add(MPop)
+        case LTripleString(s) -> {
+          // Triple-quoted and raw string literals carry a plain String payload,
+          // so they compare exactly like LString (#1792).
+          val sTok = ctxInternUs(cctx.lctx, s)
+          insns.add(MLdStr(token = sTok))
+          insns.add(MCeq)
+          insns.add(MBrFalse(label = failLabel))
         }
-        case _ -> {
-          // LATENT GAP: LFloat/LTripleString/LRawString silently match unconditionally — see #1792.
+        case LRawString(s) -> {
+          val sTok = ctxInternUs(cctx.lctx, s)
+          insns.add(MLdStr(token = sTok))
+          insns.add(MCeq)
+          insns.add(MBrFalse(label = failLabel))
+        }
+        case LUnit -> {
           insns.add(MPop)
         }
       }
