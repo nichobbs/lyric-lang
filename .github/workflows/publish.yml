@@ -52,6 +52,14 @@ jobs:
 
     runs-on: ${{ matrix.os }}
 
+    # Optional-signing secrets are hoisted into `env` so the step `if:` guards
+    # below can test them.  The `secrets` context is NOT permitted inside `if:`
+    # conditionals — referencing it there makes the whole workflow file invalid
+    # ("Unrecognized named-value: 'secrets'") and every push startup-fails.
+    env:
+      AZURE_KEY_VAULT_URL: ${{ secrets.AZURE_KEY_VAULT_URL }}
+      APPLE_TEAM_ID:       ${{ secrets.APPLE_TEAM_ID }}
+
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
@@ -90,9 +98,7 @@ jobs:
 
       # ── Windows: Authenticode signing via Azure Key Vault ─────────────────
       - name: Sign Windows binary (Authenticode)
-        if: >
-          matrix.authenticode == true &&
-          secrets.AZURE_KEY_VAULT_URL != ''
+        if: matrix.authenticode == true && env.AZURE_KEY_VAULT_URL != ''
         shell: bash
         run: |
           dotnet tool install --global AzureSignTool --version 5.0.0
@@ -109,9 +115,7 @@ jobs:
 
       # ── macOS: codesign + notarize (osx-arm64 only) ─────────────────────
       - name: Sign and notarize macOS binary
-        if: >
-          matrix.notarize == true &&
-          secrets.APPLE_TEAM_ID != ''
+        if: matrix.notarize == true && env.APPLE_TEAM_ID != ''
         shell: bash
         env:
           APPLE_CERT_BASE64:    ${{ secrets.APPLE_DEVELOPER_CERT_BASE64 }}
@@ -159,9 +163,7 @@ jobs:
 
       # ── macOS: submit for notarization after archive is ready ─────────────
       - name: Notarize macOS archive
-        if: >
-          matrix.notarize == true &&
-          secrets.APPLE_TEAM_ID != ''
+        if: matrix.notarize == true && env.APPLE_TEAM_ID != ''
         shell: bash
         run: |
           xcrun notarytool submit "$ARCHIVE" \
@@ -185,10 +187,33 @@ jobs:
   # Run after binaries so the release page shows assets before the NuGet
   # package appears on nuget.org.
   # ---------------------------------------------------------------------------
+  # A job-level `if:` cannot read the `env` OR `secrets` context, so the
+  # "is NUGET_API_KEY configured?" check can't live on `publish-nuget`
+  # directly.  This tiny gate job reads the secret via `env` (allowed) and
+  # publishes a boolean output the downstream job can gate on.
+  secrets-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      has_nuget_key: ${{ steps.check.outputs.has_nuget_key }}
+    steps:
+      - id: check
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [ -n "$NUGET_API_KEY" ]; then
+            echo "has_nuget_key=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "has_nuget_key=false" >> "$GITHUB_OUTPUT"
+          fi
+
   publish-nuget:
     runs-on: ubuntu-latest
-    needs: build-standalone
-    if: ${{ secrets.NUGET_API_KEY != '' }}
+    needs: [build-standalone, secrets-gate]
+    if: needs.secrets-gate.outputs.has_nuget_key == 'true'
+
+    # Hoisted so the signing step's `if:` can test it (see build-standalone).
+    env:
+      NUGET_SIGNING_CERT_BASE64: ${{ secrets.NUGET_SIGNING_CERT_BASE64 }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -229,7 +254,7 @@ jobs:
       # repository secrets.  The certificate fingerprint should be recorded in
       # docs/34-distribution-strategy.md §8 (Code-signing).
       - name: Sign NuGet package
-        if: ${{ secrets.NUGET_SIGNING_CERT_BASE64 != '' }}
+        if: env.NUGET_SIGNING_CERT_BASE64 != ''
         run: |
           echo "${{ secrets.NUGET_SIGNING_CERT_BASE64 }}" | base64 --decode \
             > /tmp/nuget-signing.pfx
