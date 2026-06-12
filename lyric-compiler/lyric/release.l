@@ -70,25 +70,51 @@ pub func packageNameOf(source: in String): String {
 
 // Whether `source` declares a zero-argument `main` — the only form the
 // emitter treats as a program entry point (`isMainFuncMsil`: name == "main",
-// no params).  Will be used to pick the entry package in a multi-package
-// project when that feature is wired up.
+// no params).  Used to pick the entry package in a multi-package project.
+//
+// This is a text scan, not a parse: lines inside triple-quoted ("""...""")
+// string literals are skipped so embedded documentation containing a bare
+// `func main()` line does not misidentify a library as an entry package
+// (#3215).  Raw-string edge cases (a raw literal that itself contains `"""`)
+// remain best-effort — the scan is a pre-build package picker, not a parser.
 pub func declaresEntryMain(source: in String): Bool {
   val lines = Str.split(source, "\n")
+  var inTripleString = false
   var i = 0
   while i < lines.length {
     val line = Str.trim(lines[i])
     // Match `func main()` / `pub func main()` with an empty parameter list,
     // tolerating whitespace before the `(`.
-    if (Str.startsWith(line, "func main") or Str.startsWith(line, "pub func main")) {
+    if not inTripleString and (Str.startsWith(line, "func main") or Str.startsWith(line, "pub func main")) {
       val afterMain = afterToken(line, "main")
       val trimmed = Str.trim(afterMain)
       if Str.startsWith(trimmed, "()") {
         return true
       }
     }
+    // An odd number of `"""` occurrences on a line flips the in-string state.
+    if tripleQuoteCount(lines[i]) % 2 == 1 {
+      inTripleString = not inTripleString
+    }
     i += 1
   }
   false
+}
+
+// Number of `"""` occurrences in `line` (non-overlapping, like the lexer).
+func tripleQuoteCount(line: in String): Int {
+  Str.split(line, "\"\"\"").length - 1
+}
+
+/// Error message for a local path dependency whose output DLL is missing.
+/// Shared by the `--release` and plain project-build local-dep probes in
+/// `cli_build.l` (and unit-tested via `release_self_test.l`).  Includes the
+/// probed path because only the dependency's default `bin/` output is
+/// discovered: a dep built with a custom `--out` exists elsewhere and a bare
+/// "not built" claim would send the user on a fruitless rebuild loop (#3216).
+pub func localDepNotBuiltMessage(depName: in String, probedDll: in String, depToml: in String): String {
+  "local dep '" + depName + "' not built: no DLL at '" + probedDll + "'. Run `lyric build --manifest " + depToml +
+    "` first. Note: dependencies built with a custom --out path are not discovered; rebuild without --out so the DLL lands in the dependency's bin/ directory."
 }
 
 // Return the substring of `line` immediately following the first occurrence of

@@ -117,8 +117,8 @@ func usageText(): String {
     "  lyric build   [<source.l>] [-o <output>] [--force] [--manifest <lyric.toml>] [--target dotnet|jvm] [--no-restore] [--watch]\n" +
     "                (no source: builds the discovered project's [project.packages] into one DLL;\n" +
     "                 auto-restores deps when lyric.lock is missing or stale unless --no-restore)\n" +
-    "  lyric build   --release [<source.l>] [--rid <rid>] [-o <bin>]\n" +
-    "                (self-contained Native AOT binary; single-file today, see #1975)\n" +
+    "  lyric build   --release [<source.l>] [--manifest <lyric.toml>] [--rid <rid>] [-o <bin>]\n" +
+    "                (self-contained Native AOT binary; no source: builds the discovered project)\n" +
     "  lyric check   [<source.l>...] [--manifest <lyric.toml>] [--target dotnet|jvm]\n" +
     "                (type-check without producing a usable output artifact)\n" +
     "  lyric clean   [<dir>] [--manifest <lyric.toml>]\n" +

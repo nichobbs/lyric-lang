@@ -15,6 +15,7 @@ package Lyric.ReleaseSelfTest
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Std.Testing
 import Lyric.Release as Release
 
@@ -62,4 +63,28 @@ test "declaresEntryMain: function whose name starts with 'main' but is not main(
 
 test "packageNameOf: inline comment stripped from package line" {
   assertEqual(Release.packageNameOf("package Demo // entry point\n"), "Demo", "inline comment stripped")
+}
+
+test "declaresEntryMain: func main() inside a triple-quoted string is not an entry (#3215)" {
+  val src = "package P\nval readme = \"\"\"\nfunc main()\n\"\"\"\n"
+  assertTrue(not Release.declaresEntryMain(src), "func main() inside a triple-quoted literal is documentation")
+}
+
+test "declaresEntryMain: real main after a closed triple-quoted string is an entry (#3215)" {
+  val src = "package P\nval readme = \"\"\"\ndocs only\n\"\"\"\nfunc main(): Int { 0 }\n"
+  assertTrue(Release.declaresEntryMain(src), "real func main() after a closed triple-quoted literal")
+}
+
+test "declaresEntryMain: single-line triple-quoted literal does not flip state (#3215)" {
+  val src = "package P\nval s = \"\"\"func main()\"\"\"\nfunc main(): Int { 0 }\n"
+  assertTrue(Release.declaresEntryMain(src), "balanced same-line triple quotes leave the scan in code")
+}
+
+// ── localDepNotBuiltMessage (#3216) ──────────────────────────────────────────
+test "localDepNotBuiltMessage names the probed DLL path and the --out caveat (#3216)" {
+  val m = Release.localDepNotBuiltMessage("util", "/proj/util/bin/Util.dll", "/proj/util/lyric.toml")
+  assertTrue(Str.contains(m, "'util'"), "dep name present")
+  assertTrue(Str.contains(m, "/proj/util/bin/Util.dll"), "probed DLL path present")
+  assertTrue(Str.contains(m, "lyric build --manifest /proj/util/lyric.toml"), "rebuild command present")
+  assertTrue(Str.contains(m, "--out"), "custom --out caveat present")
 }
