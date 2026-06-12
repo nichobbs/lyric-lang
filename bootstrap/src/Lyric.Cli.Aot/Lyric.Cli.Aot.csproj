@@ -18,14 +18,6 @@
          (#3201 / docs/45 / docs/42). -->
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <!-- Directory.Build.props sets TreatWarningsAsErrors=true, which ILC
-         inherits.  The metadata-direct contract reader (#3201) removed the
-         `Assembly.Load` path that produced the IL2104 trim rollup, so the
-         publish is expected to be warning-clean; flipping this back to
-         inherit (re-arming warn-as-error as a tripwire) is tracked in #3200.
-         Keep ILC diagnostics as warnings until then; the compile-time policy
-         for C#/F# warnings is unchanged. -->
-    <IlcTreatWarningsAsErrors>false</IlcTreatWarningsAsErrors>
   </PropertyGroup>
 
   <!-- Stage-1 DLL references.  The wildcard pulls in every artefact
