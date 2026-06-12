@@ -223,6 +223,32 @@ func extractClassField(
   fSlot
 }
 
+// Compare the scrutinee in `scrutSlot` against a String literal pattern's
+// payload via String.equals; jumps to `failLabel` on mismatch.  Shared by the
+// LString / LTripleString / LRawString arms — all three carry a plain String.
+func emitStringLiteralTest(
+  insns: in List[LInsn],
+  s: in String,
+  scrutSlot: in Int,
+  scrutTy: in JvmType,
+  failLabel: in String,
+): Unit {
+  emitLoad(insns, scrutSlot, scrutTy)
+  // The receiver of String.equals must be statically a String.  Narrow
+  // unconditionally: a plain astore erases an object local to
+  // java/lang/Object in the StackMapTable frames (see emitResultLoad), so
+  // even a String-typed scrutinee slot reads back as Object at every arm
+  // after the first branch target — skipping the checkcast for a
+  // JRef("java/lang/String") scrutTy fails verification there.  The cast is
+  // a no-op at runtime for a real String.
+  insns.add(LCheckcast(className = "java/lang/String"))
+  insns.add(LPushString(s = s))
+  val eqPs: List[JvmType] = newList()
+  eqPs.add(JRef(className = "java/lang/Object"))
+  insns.add(LInvokevirtual(owner = "java/lang/String", name = "equals", params = eqPs, ret = JBoolean))
+  insns.add(LIfeq(label = failLabel))
+}
+
 // Emit a runtime test for a pattern.  Jumps to `failLabel` if the test
 // fails.  The scrutinee is in local slot `scrutSlot` with type `scrutTy`.
 func lowerPatternTest(
@@ -316,30 +342,18 @@ func lowerPatternTest(
           insns.add(LIfne(label = failLabel))
         }
         case LString(s) -> {
-          emitLoad(insns, scrutSlot, scrutTy)
-          // The receiver of String.equals must be statically a String; narrow an
-          // erased/boxed scrutinee (e.g. a tuple element) before the call.
-          match scrutTy {
-            case JRef(c) -> {
-              if not (c == "java/lang/String") {
-                insns.add(LCheckcast(className = "java/lang/String"))
-              }
-            }
-            case _ -> ()
-          }
-          insns.add(LPushString(s = s))
-          val eqPs: List[JvmType] = newList()
-          eqPs.add(JRef(className = "java/lang/Object"))
-          insns.add(LInvokevirtual(owner = "java/lang/String", name = "equals", params = eqPs, ret = JBoolean))
-          insns.add(LIfeq(label = failLabel))
+          emitStringLiteralTest(insns, s, scrutSlot, scrutTy, failLabel)
+        }
+        case LTripleString(s) -> {
+          // Triple-quoted and raw string literals carry a plain String payload,
+          // so they compare exactly like LString (#1792).
+          emitStringLiteralTest(insns, s, scrutSlot, scrutTy, failLabel)
+        }
+        case LRawString(s) -> {
+          emitStringLiteralTest(insns, s, scrutSlot, scrutTy, failLabel)
         }
         case LUnit -> {
           // Unit always matches.
-          insns.add(LNop)
-        }
-        case _ -> {
-          // Other literal forms (triple/raw strings) compare structurally as
-          // strings via their text; handled by the LString arm in practice.
           insns.add(LNop)
         }
       }

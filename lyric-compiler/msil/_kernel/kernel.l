@@ -11,7 +11,8 @@
 //! little-endian targets (x64 / arm64), matching the explicit little-endian
 //! layout the former F# host produced and the LE assumption already pervasive
 //! in PE/MSIL emission.  No big-endian host targets are currently supported;
-//! a startup `BitConverter.IsLittleEndian` guard is tracked in #1824.
+//! `bufNew` fail-fasts via a `BitConverter.IsLittleEndian` guard (#1824) so a
+//! big-endian host can never silently emit byte-swapped 64-bit ints / doubles.
 package Msil.Kernel
 
 import Std.Core
@@ -25,7 +26,28 @@ pub record ByteWriter {
   data: List[Byte]
 }
 
+// The #1824 endianness guard's predicate: probe the byte order of the exact
+// call `bufI8Le` relies on — `BitConverter.GetBytes(1L)` yields [1, 0, …] on
+// a little-endian host and [0, …, 1] on a big-endian one.  The canonical
+// `System.BitConverter.IsLittleEndian` is a static FIELD (not a property),
+// and the self-hosted FFI path emits method MemberRefs only, so a field
+// extern would mis-bind once the kernel is compiled by the self-hosted
+// compiler; the probe needs no new extern boundary at all.
+pub func hostIsLittleEndian(): Bool {
+  val probe = i8GetBytes(1i64)
+  probe.length == 8 and probe[0] == 1
+}
+
 pub func bufNew(): ByteWriter {
+  // Fail-fast on big-endian hosts (#1824): `bufI8Le` / `bufF8Le` delegate to
+  // the host-endian `BitConverter.GetBytes`, so on a big-endian host every
+  // emitted PE would carry byte-swapped 64-bit ints and IEEE-754 doubles —
+  // surfacing only later as a cryptic BadImageFormatException at load time.
+  if not hostIsLittleEndian() {
+    panic(
+      "Msil.Kernel: PE emission requires a little-endian host; BitConverter.GetBytes reports big-endian byte order, so 64-bit integer and floating-point output would be byte-swapped"
+    )
+  }
   ByteWriter(data = newList())
 }
 

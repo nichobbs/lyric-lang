@@ -231,6 +231,15 @@ pub record CodegenCtx {
   // Compile-time const values: registered by IConst pre-scan so that EPath
   // references to const names inline ldc.i4 instead of ldsfld.
   constValues: Map[String, Int]  // constName → inlined Int value
+  // Bare const/val names claimed by an earlier package's literal const
+  // registration — the addPackageTokens pre-pass mirror of the emission
+  // side's first-wins bare-name `constValues` adds (#2628).  The pre-pass
+  // needs it to predict that a later package whose same-named literal IVal
+  // loses the bare-name slot keeps its .cctor field init — and therefore
+  // its .cctor MethodDef row; predicting "literal, no .cctor" there shifts
+  // every later MethodDef token by one (the entry token then points at the
+  // wrong method).
+  constBareClaimed: Map[String, Bool]
   // Lyric enums lower to ordinal Int values (mirroring the F# emitter's
   // EnumCaseLookup): type positions encode I4, a case reference emits
   // `ldc.i4 <ordinal>`, and a `case X` pattern compares ordinals.  A
@@ -1382,6 +1391,7 @@ pub func newCodegenCtx(
     lambdaCaptureTypes = newMap(),
     lambdaCaptureCells = newMap(),
     constValues = newMap(),
+    constBareClaimed = newMap(),
     enumTypeNames = newMap(),
     enumCaseOrdinals = newMap(),
     ffiAsmRefs = newMap(),
@@ -1618,6 +1628,11 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         if not isLit {
           hasValCctor = true
         }
+        // Claim with the RAW literal check — the emission side registers an
+        // IConst's bare `constValues` name only in its raw-literal branch.
+        if isLiteralI4ExprMsil(decl.init) and not cctx.constBareClaimed.containsKey(decl.name) {
+          cctx.constBareClaimed.add(decl.name, true)
+        }
         constEnv.add(decl.name, isLit)
       }
       case IVal(decl) -> {
@@ -1626,7 +1641,20 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           hasValCctor = true
         }
         match decl.pattern.kind {
-          case PBinding(valName, _) -> constEnv.add(valName, isLit)
+          case PBinding(valName, _) -> {
+            // A literal IVal whose BARE name was already claimed by an earlier
+            // package loses the first-wins `constValues` slot at emission, so
+            // its field keeps the .cctor init — predict the .cctor row here
+            // too or every later MethodDef token shifts by one (#2628).
+            if isLit {
+              if cctx.constBareClaimed.containsKey(valName) {
+                hasValCctor = true
+              } else {
+                cctx.constBareClaimed.add(valName, true)
+              }
+            }
+            constEnv.add(valName, isLit)
+          }
           case _ -> {
           }
         }  // non-simple bindings can't appear in EPath
@@ -6683,11 +6711,21 @@ func lowerPatternTestMsil(
           insns.add(MCeq)
           insns.add(MBrFalse(label = failLabel))
         }
-        case LUnit -> {
-          insns.add(MPop)
+        case LTripleString(s) -> {
+          // Triple-quoted and raw string literals carry a plain String payload,
+          // so they compare exactly like LString (#1792).
+          val sTok = ctxInternUs(cctx.lctx, s)
+          insns.add(MLdStr(token = sTok))
+          insns.add(MCeq)
+          insns.add(MBrFalse(label = failLabel))
         }
-        case _ -> {
-          // LATENT GAP: LFloat/LTripleString/LRawString silently match unconditionally — see #1792.
+        case LRawString(s) -> {
+          val sTok = ctxInternUs(cctx.lctx, s)
+          insns.add(MLdStr(token = sTok))
+          insns.add(MCeq)
+          insns.add(MBrFalse(label = failLabel))
+        }
+        case LUnit -> {
           insns.add(MPop)
         }
       }
@@ -8229,10 +8267,25 @@ func lowerBuiltinOrStaticCallMsil(
                 case None -> panic("Msil.Codegen: sibling method token vanished after containsKey for " + sibKey)
               }
               insns.add(MLdarg(slot = 0))
+              val sibModes = match mapGet(cctx.methodParamModes, sibKey) { case Some(ms) -> ms; case None -> newList() }
               var si = 0
               while si < args.count {
-                val aTy = lowerCallArgMsil(cctx, fctx, insns, args[si])
-                boxIfNeededMsil(cctx, insns, aTy)
+                val sibByref = if si < sibModes.count { isByrefMode(sibModes[si]) } else { false }
+                if sibByref {
+                  emitByrefArgMsil(cctx, fctx, insns, callArgExpr(args[si]))
+                } else {
+                  val aTy = lowerCallArgMsil(cctx, fctx, insns, args[si])
+                  // Mirror the MClass dispatch arm: box only when the declared
+                  // parameter is a reference/object type — boxing an Int arg
+                  // for an `int32` parameter is invalid IL (#1723 / #1784).
+                  val sibParamIsValue = match mapGet(cctx.methodParamTypes, sibKey + "#" + toString(si)) {
+                    case Some(pt) -> isValueType(pt)
+                    case None -> false
+                  }
+                  if not sibParamIsValue {
+                    boxIfNeededMsil(cctx, insns, aTy)
+                  }
+                }
                 si = si + 1
               }
               insns.add(MCallvirt(methodToken = sibTok))
@@ -19335,99 +19388,67 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
         ci = ci + 1
       }
     }
-    case IRecord(decl) -> {
-      val typeRefRow = match mapGet(cctx.ffiTypeRefs, typeRefKey) { case Some(r) -> r; case None -> 0 }
-      if typeRefRow > 0 {
-        var fi = 0
-        var fpos = 0
-        while fi < decl.members.count {
-          match decl.members[fi] {
-            case RMField(f) -> {
-              val key = typeFqn + "/" + f.name
-              if not cctx.fieldTokens.containsKey(key) {
-                val fty = typeExprToMsilCtx(cctx, f.ty, packageName)
-                val fSig = buildFieldSigWithCtx(fty, cctx.lctx)
-                val sigKey = "stdlib_field_" + key
-                val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, f.name, sigKey, fSig)
-                cctx.fieldTokens.add(key, 0x0A000000 + memberRow)
-                if not cctx.fieldMsilTypes.containsKey(key) {
-                  cctx.fieldMsilTypes.add(key, fty)
-                }
-              }
-              val byPosKey = typeFqn + "/field" + toString(fpos)
-              if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
-                cctx.fieldDeclaredNames.add(byPosKey, f.name)
-              }
-              fpos = fpos + 1
-            }
-            case _ -> ()
-          }
-          fi = fi + 1
-        }
-        val ctorParams: List[MsilType] = newList()
-        var ci = 0
-        while ci < decl.members.count {
-          match decl.members[ci] {
-            case RMField(f) -> ctorParams.add(typeExprToMsilCtx(cctx, f.ty, packageName))
-            case _ -> ()
-          }
-          ci = ci + 1
-        }
-        val ctorSig = buildInstanceMethodSig(ctorParams, MVoid)
-        val ctorSigKey = "stdlib_ctor_" + typeFqn
-        val ctorMrRow = ctxAddMemberRef(cctx.lctx, typeRefRow, ".ctor", ctorSigKey, ctorSig)
-        if not cctx.recordCtorTokens.containsKey(typeFqn) {
-          cctx.recordCtorTokens.add(typeFqn, 0x0A000000 + ctorMrRow)
-        }
-      }
-    }
-    case IExposedRec(decl) -> {
-      val typeRefRow = match mapGet(cctx.ffiTypeRefs, typeRefKey) { case Some(r) -> r; case None -> 0 }
-      if typeRefRow > 0 {
-        var fi = 0
-        var fpos = 0
-        while fi < decl.members.count {
-          match decl.members[fi] {
-            case RMField(f) -> {
-              val key = typeFqn + "/" + f.name
-              if not cctx.fieldTokens.containsKey(key) {
-                val fty = typeExprToMsilCtx(cctx, f.ty, packageName)
-                val fSig = buildFieldSigWithCtx(fty, cctx.lctx)
-                val sigKey = "stdlib_field_" + key
-                val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, f.name, sigKey, fSig)
-                cctx.fieldTokens.add(key, 0x0A000000 + memberRow)
-                if not cctx.fieldMsilTypes.containsKey(key) {
-                  cctx.fieldMsilTypes.add(key, fty)
-                }
-              }
-              val byPosKey = typeFqn + "/field" + toString(fpos)
-              if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
-                cctx.fieldDeclaredNames.add(byPosKey, f.name)
-              }
-              fpos = fpos + 1
-            }
-            case _ -> ()
-          }
-          fi = fi + 1
-        }
-        val ctorParams: List[MsilType] = newList()
-        var ci = 0
-        while ci < decl.members.count {
-          match decl.members[ci] {
-            case RMField(f) -> ctorParams.add(typeExprToMsilCtx(cctx, f.ty, packageName))
-            case _ -> ()
-          }
-          ci = ci + 1
-        }
-        val ctorSig = buildInstanceMethodSig(ctorParams, MVoid)
-        val ctorSigKey = "stdlib_ctor_" + typeFqn
-        val ctorMrRow = ctxAddMemberRef(cctx.lctx, typeRefRow, ".ctor", ctorSigKey, ctorSig)
-        if not cctx.recordCtorTokens.containsKey(typeFqn) {
-          cctx.recordCtorTokens.add(typeFqn, 0x0A000000 + ctorMrRow)
-        }
-      }
-    }
+    case IRecord(decl) -> registerStdlibRecordLikeType(cctx, decl, typeRefKey, typeFqn, packageName)
+    case IExposedRec(decl) -> registerStdlibRecordLikeType(cctx, decl, typeRefKey, typeFqn, packageName)
     case _ -> ()
+  }
+}
+
+// Shared by the IRecord and IExposedRec arms of `registerStdlibTypeItem`
+// (#2922): both carry a `RecordDecl` and register identical metadata — field
+// MemberRefs (by declared name and positional fallback), field MsilTypes, and
+// the ctor MemberRef.  The exposed/opaque distinction does not change what a
+// cross-assembly consumer references.
+func registerStdlibRecordLikeType(
+  cctx: in CodegenCtx,
+  decl: in RecordDecl,
+  typeRefKey: in String,
+  typeFqn: in String,
+  packageName: in String,
+): Unit {
+  val typeRefRow = match mapGet(cctx.ffiTypeRefs, typeRefKey) { case Some(r) -> r; case None -> 0 }
+  if typeRefRow > 0 {
+    var fi = 0
+    var fpos = 0
+    while fi < decl.members.count {
+      match decl.members[fi] {
+        case RMField(f) -> {
+          val key = typeFqn + "/" + f.name
+          if not cctx.fieldTokens.containsKey(key) {
+            val fty = typeExprToMsilCtx(cctx, f.ty, packageName)
+            val fSig = buildFieldSigWithCtx(fty, cctx.lctx)
+            val sigKey = "stdlib_field_" + key
+            val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, f.name, sigKey, fSig)
+            cctx.fieldTokens.add(key, 0x0A000000 + memberRow)
+            if not cctx.fieldMsilTypes.containsKey(key) {
+              cctx.fieldMsilTypes.add(key, fty)
+            }
+          }
+          val byPosKey = typeFqn + "/field" + toString(fpos)
+          if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
+            cctx.fieldDeclaredNames.add(byPosKey, f.name)
+          }
+          fpos = fpos + 1
+        }
+        case _ -> ()
+      }
+      fi = fi + 1
+    }
+    val ctorParams: List[MsilType] = newList()
+    var ci = 0
+    while ci < decl.members.count {
+      match decl.members[ci] {
+        case RMField(f) -> ctorParams.add(typeExprToMsilCtx(cctx, f.ty, packageName))
+        case _ -> ()
+      }
+      ci = ci + 1
+    }
+    val ctorSig = buildInstanceMethodSig(ctorParams, MVoid)
+    val ctorSigKey = "stdlib_ctor_" + typeFqn
+    val ctorMrRow = ctxAddMemberRef(cctx.lctx, typeRefRow, ".ctor", ctorSigKey, ctorSig)
+    if not cctx.recordCtorTokens.containsKey(typeFqn) {
+      cctx.recordCtorTokens.add(typeFqn, 0x0A000000 + ctorMrRow)
+    }
   }
 }
 

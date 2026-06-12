@@ -14,10 +14,13 @@
 //!   bufU2_0x8000    — bufU2(0x8000) appends [0, 128]
 //!   bufU4_neg1      — bufU4(-1) appends [255, 255, 255, 255]
 //!   bufU4_0x80000000 — bufU4(0x80000000) appends [0, 0, 0, 128]
+//!   hostIsLittleEndian — the #1824 endianness guard's predicate holds (every
+//!                        CI host is little-endian; a big-endian host would
+//!                        panic inside the bufNew calls above before this)
 //!
-//! Run via the F# bootstrap emitter (avoids #3085):
+//! Run with the compiler sources loaded so `import Msil.Kernel` resolves:
 //!
-//!   ./bin/lyric run lyric-compiler/msil/kernel_self_test.l
+//!   LYRIC_LOAD_COMPILER=1 ./bin/lyric run lyric-compiler/msil/kernel_self_test.l
 //!
 //! Migration to native `lyric test` is blocked by #3085.
 package Msil.KernelSelfTest
@@ -35,7 +38,7 @@ func check(label: in String, ok: in Bool): Unit {
 }
 
 func byteAt(w: in ByteWriter, i: in Int): Int {
-  w.data[i]
+  w.data[i].toInt()
 }
 
 pub func main(): Int {
@@ -69,6 +72,9 @@ pub func main(): Int {
   val w7 = bufNew()
   bufU4(w7, 0x80000000)
   check("bufU4_0x80000000", byteAt(w7, 0) == 0 and byteAt(w7, 1) == 0 and byteAt(w7, 2) == 0 and byteAt(w7, 3) == 128)
+
+  // #1824 endianness guard predicate.
+  check("hostIsLittleEndian", hostIsLittleEndian())
 
   0
 }
