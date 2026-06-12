@@ -38,6 +38,12 @@ help: ## Show this help
 
 # ── Bootstrap stages ────────────────────────────────────────────────────────
 
+# Everything stage 1 compiles from: the self-hosted compiler and stdlib `.l`
+# sources, plus the bootstrap script itself.  These are the stamp rule's
+# prerequisites so an edited compiler `.l` file makes `make aot` / `make
+# lyric` rebuild stage 1 instead of silently embedding stale DLLs (#2706).
+STAGE1_SRCS := $(shell find lyric-compiler lyric-stdlib -name '*.l') scripts/bootstrap.sh
+
 stage0: ## Build the F# stage-0 bootstrap compiler only
 	./scripts/bootstrap.sh --stage 0
 
@@ -51,16 +57,22 @@ stage1-fast: ## Stage 1 without the CLI bundle — fastest loop for a single com
 
 # `aot` depends on the stage-1 stamp so a direct `make aot` with no prior
 # stage 1 builds stage 1 first (via the stamp rule below) instead of failing
-# on a missing CLI bundle. The stamp is written by `stage1` / `stage1-fast`.
+# on a missing CLI bundle, and so an out-of-date stamp (a `.l` source newer
+# than the last stage-1 build) triggers a rebuild rather than embedding
+# stale DLLs.  The stamp is written by `stage1` / `stage1-fast`.
 # The recipe keeps --no-incremental on purpose: the AOT trampoline embeds the
 # stage-1 DLLs, so a clean C# build is required whenever stage 1 has changed.
-aot: .bootstrap/stage1.stamp ## Build the AOT entry-point project (requires a prior `make stage1`)
+aot: .bootstrap/stage1.stamp ## Build the AOT entry-point project (builds stage 1 first when stale)
 	dotnet build bootstrap/src/Lyric.Cli.Aot --configuration $(BUILD_CONFIG) --no-incremental
 
-.bootstrap/stage1.stamp:
+.bootstrap/stage1.stamp: $(STAGE1_SRCS)
 	$(MAKE) stage1
 
-lyric: stage1 aot ## Build the end-to-end `lyric` binary and symlink it to ./bin/lyric
+# `lyric` reaches stage 1 only through `aot` -> stamp (a single serial
+# dependency chain), never as a sibling prerequisite — under `make -j` a
+# `lyric: stage1 aot` rule would run `stage1` and the stamp rule's recursive
+# `$(MAKE) stage1` concurrently, racing on .bootstrap/stage1 (#2706).
+lyric: aot ## Build the end-to-end `lyric` binary and symlink it to ./bin/lyric
 	@mkdir -p bin
 	@ln -sf "../$(AOT_BIN)" bin/lyric
 	@echo "lyric binary ready: ./bin/lyric -> $(AOT_BIN)"
