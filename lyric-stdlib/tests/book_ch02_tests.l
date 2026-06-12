@@ -70,11 +70,26 @@ func testRangeSubtypeErr(): Unit {
   assertTrue(isErr(neg), "Age.tryFrom -1 is Err")
 }
 
+// ---------------------------------------------------------------------------
+// §2.3 Module-level `pub val` (Emitter pass A.4c)
+// ---------------------------------------------------------------------------
+// Regression for #3039: the second val's initializer reads the first, so the
+// init context must see earlier module vals in its ModuleVals table.
+pub val moduleValBase: String = "x"
+
+pub val moduleValDerived: String = moduleValBase + "y"
+
+func testModuleVals(): Unit {
+  assertEqual(moduleValBase, "x", "module val base")
+  assertEqual(moduleValDerived, "xy", "module val reads earlier module val")
+}
+
 func main(): Unit {
   testPrimitives()
   testNumericLiterals()
   testBoolLogic()
   testRangeSubtypeOk()
   testRangeSubtypeErr()
+  testModuleVals()
   println("book_ch02: ok")
 }

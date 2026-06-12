@@ -4249,7 +4249,7 @@ let private emitAssembly
                     programTy.DefineField(
                         "__val_" + name,
                         fieldTy,
-                        FieldAttributes.Private
+                        FieldAttributes.Public
                         ||| FieldAttributes.Static
                         ||| FieldAttributes.InitOnly)
                 moduleValsTable.[name] <- fb :> System.Reflection.FieldInfo
@@ -4269,7 +4269,7 @@ let private emitAssembly
                         externTypeNames
                         false None
                         programTy resolveTypeForInit lookup
-                        constsTable asyncLocalTable (Dictionary())
+                        constsTable asyncLocalTable moduleValsTable
                         codegenDiags
                 Codegen.emitExpr initCtx initExpr |> ignore
                 ccil.Emit(OpCodes.Stsfld, fb :> System.Reflection.FieldInfo)
