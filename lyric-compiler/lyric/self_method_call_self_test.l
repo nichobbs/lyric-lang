@@ -15,6 +15,8 @@ interface Svc {
   func viaBare(): Int
   func echo(s: in String): String
   func viaBareArg(s: in String): String
+  func twice(n: in Int): Int
+  func viaBareIntArg(): Int
   func save(): Result[Unit, SErr]
   func putSelf(): Result[Unit, SErr]
   func putBare(): Result[Unit, SErr]
@@ -44,6 +46,15 @@ impl Svc for Impl {
     s: in String,
   ): String {
     echo(s)
+  }
+  func twice(n: in Int): Int {
+    return n + n
+  }
+  func viaBareIntArg(): Int {
+    // Bare sibling call with a VALUE-TYPE argument: the arg must stay an
+    // unboxed int32 — boxing it mismatches twice's declared `int32` parameter
+    // and the JIT rejects the body (InvalidProgramException, #1723).
+    twice(5)
   }
   func save(): Result[Unit, SErr] {
     return Ok(())
@@ -78,6 +89,10 @@ test "bare base() resolves the sibling method" {
 
 test "bare sibling call with an argument lowers the arg" {
   assertEqual(mk().viaBareArg("ab"), "abab", "bare echo(\"ab\")")
+}
+
+test "bare sibling call with an Int argument does not box" {
+  assertEqualInt(mk().viaBareIntArg(), 10, "bare twice(5)")
 }
 
 test "self.save() returns the constructed Result, matches Ok" {

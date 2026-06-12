@@ -8229,10 +8229,25 @@ func lowerBuiltinOrStaticCallMsil(
                 case None -> panic("Msil.Codegen: sibling method token vanished after containsKey for " + sibKey)
               }
               insns.add(MLdarg(slot = 0))
+              val sibModes = match mapGet(cctx.methodParamModes, sibKey) { case Some(ms) -> ms; case None -> newList() }
               var si = 0
               while si < args.count {
-                val aTy = lowerCallArgMsil(cctx, fctx, insns, args[si])
-                boxIfNeededMsil(cctx, insns, aTy)
+                val sibByref = if si < sibModes.count { isByrefMode(sibModes[si]) } else { false }
+                if sibByref {
+                  emitByrefArgMsil(cctx, fctx, insns, callArgExpr(args[si]))
+                } else {
+                  val aTy = lowerCallArgMsil(cctx, fctx, insns, args[si])
+                  // Mirror the MClass dispatch arm: box only when the declared
+                  // parameter is a reference/object type — boxing an Int arg
+                  // for an `int32` parameter is invalid IL (#1723 / #1784).
+                  val sibParamIsValue = match mapGet(cctx.methodParamTypes, sibKey + "#" + toString(si)) {
+                    case Some(pt) -> isValueType(pt)
+                    case None -> false
+                  }
+                  if not sibParamIsValue {
+                    boxIfNeededMsil(cctx, insns, aTy)
+                  }
+                }
                 si = si + 1
               }
               insns.add(MCallvirt(methodToken = sibTok))
