@@ -2725,12 +2725,26 @@ jobs:
       # package's transitive compiler-import closure (already emitted) as
       # restored deps, so cross-package types AND inlined constants (#2592
       # slice 1) resolve across the assembly boundary.  This emits the
-      # typechecker self-test's compiler closure (Lexer + Parser + TypeChecker),
-      # then runs that same self-test against the SELF-HOSTED-EMITTED DLLs (via
-      # LYRIC_STDLIB_BIN, which findCompiledLibDir honours): the passing TAP
-      # assertions prove the emitted compiler DLLs are functional with correct
-      # transitive restored-dep threading — the producer side that #2364 (the
-      # consumer side, against F#-built DLLs) could not cover.
+      # typechecker self-test's compiler closure (Lexer + Parser + TypeChecker)
+      # and asserts the per-package DLLs exist, then runs the self-test against
+      # the emit output as a TRIPWIRE (not a pass gate).  Before #3199 this
+      # step claimed to execute the self-hosted-emitted DLLs but never did:
+      # findCompiledLibDir gates the LYRIC_STDLIB_BIN override through
+      # dirHasCompiledStdlib, which requires the *bundle* Lyric.Stdlib.dll as a
+      # marker that --internal-perpackage-build does not emit, so the override
+      # was silently rejected and the F#-linked path was validated instead.
+      # The bundle is now copied in so the override is honored — but executing
+      # the self-hosted-emitted closure currently fails on a known
+      # producer/consumer naming gap: the per-package emitter DEFINES generic
+      # stdlib types arity-suffixed (`Option`1`, the docs/43 correctness fix)
+      # while consumer references are emitted UNSUFFIXED to match the F#-built
+      # DLLs they normally link, so the run dies with "Could not load type
+      # 'Std.Core.Option'" (further execution-cleanliness gaps are tracked in
+      # docs/41 R7).  The tripwire pins both directions: a PASS means either
+      # the override silently fell back to the F#-linked path again
+      # (dirHasCompiledStdlib regression) or the naming gap was fixed — in the
+      # latter case promote this to a positive pass gate; an UNEXPECTED failure
+      # signature means a new producer bug.
       - name: Per-package compiler emit (#2592 self-hosted compiler DLLs)
         working-directory: ${{ github.workspace }}
         run: |
@@ -2750,15 +2764,20 @@ jobs:
               exit 1
             fi
           done
-          out="$(LYRIC_STDLIB_BIN="$work/out" "$lyric_bin" test "$st" --target dotnet)"
+          # Bundle marker so findCompiledLibDir honours LYRIC_STDLIB_BIN (#3199).
+          cp .bootstrap/stage1/Lyric.Stdlib.dll "$work/out/"
+          rc=0
+          out="$(LYRIC_STDLIB_BIN="$work/out" "$lyric_bin" test "$st" --target dotnet 2>&1)" || rc=$?
           printf '%s\n' "$out" | tail -5
-          fail="$(printf '%s\n' "$out" | sed -n 's/^# fail  *\([0-9][0-9]*\)$/\1/p')"
-          pass="$(printf '%s\n' "$out" | sed -n 's/^# pass  *\([0-9][0-9]*\)$/\1/p')"
-          if [ "${fail:-1}" != "0" ] || [ "${pass:-0}" -lt 1 ]; then
-            echo "::error::self-test against self-hosted-emitted compiler DLLs failed (pass=${pass:-?} fail=${fail:-?})"
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::typechecker self-test PASSED against the per-package emit output. Either LYRIC_STDLIB_BIN silently fell back to the F#-linked path (dirHasCompiledStdlib regression) or the docs/43 naming gap is fixed — if the latter, promote this tripwire to a positive pass gate (#3199)."
             exit 1
           fi
-          echo "self-hosted-emitted compiler closure runs the typechecker self-test ($pass assertions)"
+          if ! printf '%s\n' "$out" | grep -q "Could not load type"; then
+            echo "::error::self-hosted-emitted closure failed with an unexpected signature (expected the docs/43 'Could not load type' naming mismatch); a new producer bug may have landed (#3199)."
+            exit 1
+          fi
+          echo "per-package compiler closure emits and links; LYRIC_STDLIB_BIN honored; execution blocked by the known docs/43 arity-suffix naming gap (tripwire, #3199)"
 
       # Full self-hosted stdlib (#2592 slice 3).  Every Std.* package — including
       # ones the F# stage-0 emitter cannot compile (e.g. Std.Sort, whose
