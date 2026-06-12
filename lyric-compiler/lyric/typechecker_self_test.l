@@ -37,6 +37,18 @@ func hasDiagCode(cr: in CheckResult, code: in String): Bool {
   false
 }
 
+// The message of the first diagnostic with `code`, or "" when absent.
+func diagMessageFor(cr: in CheckResult, code: in String): String {
+  var i = 0
+  while i < cr.diagnostics.count {
+    if cr.diagnostics[i].code == code {
+      return cr.diagnostics[i].message
+    }
+    i = i + 1
+  }
+  ""
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1372,6 +1384,9 @@ test "let no reassign" {
   val src = "package P\nfunc f(): Unit {\n  let x = 1\n  x = 2\n}\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0087"), "reassigning a `let`: T0087")
+  // #3009: the message must name all three immutable binding forms, so a user
+  // reassigning a `let` sees their binding kind mentioned.
+  assertTrue(Str.contains(diagMessageFor(cr, "T0087"), "`val`/`let`/`in`"), "T0087 message names val/let/in")
 }
 
 // #1993: an `inout val` argument must emit T0085.
