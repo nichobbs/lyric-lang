@@ -142,19 +142,30 @@ pub func clrAssemblyResolvable(typeFqn: in String): Bool {
 // `valuetype System.X` MethodDef signature — a CLASS / OBJECT encoding mismatch
 // faults at run time with `Method not found` (#1602).
 //
-// The list is the closed set of value-typed externs the stdlib `_kernel/`
-// boundary declares today (see `lyric-stdlib/std/_kernel/*.l`).  Reference-type
-// externs (HttpClient, Regex, Stream, …) are deliberately absent — they keep
-// the existing CLASS / OBJECT encoding.  When a new value-typed extern is
-// added to the kernel, it must be added here too; an omission re-introduces the
-// signature mismatch.  A CI-time cross-check against the `_kernel/` externs is
-// tracked in #1802 (today there is no automated guard).
+// The list is the closed set of top-level value-typed externs the stdlib
+// `_kernel/` boundary declares today (see `lyric-stdlib/std/_kernel/*.l`).
+// Reference-type externs (HttpClient, Regex, Stream, …) are deliberately
+// absent — they keep the existing CLASS / OBJECT encoding.  Nested value
+// types (`JsonElement+ArrayEnumerator`, …) are also absent: the metadata
+// vtypeSet only indexes top-level public types, so the fallback mirrors
+// that domain.  When a new value-typed extern is added to the kernel, it
+// must be added here too; an omission re-introduces the signature mismatch
+// in SDK-less builds.  `codegen.l::externValueTypeMsil` consults the
+// metadata-derived vtypeSet first and only falls back to this list when no
+// reference pack is available.  The list is kept in lockstep with the
+// `_kernel/` externs by the `clr value-type audit` test in
+// `lyric-stdlib/tests/metadata_reader_tests.l` (#1802): any kernel extern
+// whose metadata says "value type" but is missing here (or vice versa)
+// fails that test in CI.
 pub func clrIsValueType(typeFqn: in String): Bool {
   typeFqn == "System.Guid" or typeFqn == "System.DateTime" or typeFqn == "System.TimeSpan" or
     typeFqn == "System.DateTimeOffset" or
     typeFqn == "System.Threading.CancellationToken" or
     typeFqn == "System.Globalization.NumberStyles" or
-    typeFqn == "System.Text.RegularExpressions.RegexOptions"
+    typeFqn == "System.Text.RegularExpressions.RegexOptions" or
+    typeFqn == "System.Text.Json.JsonElement" or
+    typeFqn == "System.Text.Json.JsonEncodedText" or
+    typeFqn == "System.Text.Json.JsonProperty"
 }
 
 // ── Resolver ─────────────────────────────────────────────────────────────────

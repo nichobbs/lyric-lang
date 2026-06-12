@@ -878,6 +878,182 @@ func testMergedIndexEquivalence(): Unit {
   }
 }
 
+// ── #1802: clrIsValueType ↔ _kernel extern audit ─────────────────────────────
+//
+// `Msil.Ffi.clrIsValueType` (lyric-compiler/msil/ffi.l) is the SDK-less
+// fallback that `codegen.l::externValueTypeMsil` consults when no reference
+// pack is available; the primary source is the metadata-derived vtypeSet
+// built by `addAssemblyValueTypes`.  The fallback is a hardcoded closed set
+// that must stay in lockstep with the value-typed `extern type` declarations
+// in `lyric-stdlib/std/_kernel/*.l` — a value-typed kernel extern missing
+// from it mis-encodes as CLASS in SDK-less builds and faults at run time
+// with MissingMethodException (#1602).
+//
+// `Msil.Ffi` is not importable here (its `Lyric.Parser` import would pull
+// the whole self-hosted parser into this test's compile closure), so this
+// test checks the equivalent invariant against a local copy of the set:
+// `expectedClrValueTypes()` MUST list exactly the FQNs in
+// `clrIsValueType`.  When either side changes, change the other in the
+// same commit — this test fails on any drift between the kernel externs,
+// the reference-pack metadata, and the expected set.
+func expectedClrValueTypes(): List[String] {
+  val xs: List[String] = newList()
+  xs.add("System.Guid")
+  xs.add("System.DateTime")
+  xs.add("System.TimeSpan")
+  xs.add("System.DateTimeOffset")
+  xs.add("System.Threading.CancellationToken")
+  xs.add("System.Globalization.NumberStyles")
+  xs.add("System.Text.RegularExpressions.RegexOptions")
+  xs.add("System.Text.Json.JsonElement")
+  xs.add("System.Text.Json.JsonEncodedText")
+  xs.add("System.Text.Json.JsonProperty")
+  xs
+}
+
+func containsStr(xs: in List[String], s: in String): Bool {
+  var i = 0
+  while i < xs.count {
+    if xs[i] == s {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Walk ancestor directories from `start` looking for the repo's
+// `lyric-stdlib/std/_kernel` directory (mirrors the F# harness's
+// repo-root discovery in StdlibLyricTests.fs).
+func findKernelDirFrom(start: in String): Option[String] {
+  var dir = start
+  var depth = 0
+  while depth < 32 and dir.length > 0 and dir != "." {
+    val candidate = Path.join(Path.join(Path.join(dir, "lyric-stdlib"), "std"), "_kernel")
+    if File.dirExists(candidate) {
+      return Some(value = candidate)
+    }
+    val parent = Path.dirname(dir)
+    if parent == dir {
+      return None
+    }
+    dir = parent
+    depth = depth + 1
+  }
+  None
+}
+
+// The emitted test PE runs from a temp directory but inherits the test
+// process's working directory (the repo's `bootstrap/`), so the cwd walk
+// finds the repo root; the app-base walk is a fallback for direct runs
+// of the PE from inside the repo tree.
+func findKernelDir(): String {
+  match findKernelDirFrom(Environment.currentDirectory()) {
+    case Some(d) -> d
+    case None -> match findKernelDirFrom(Environment.appBaseDirectory()) { case Some(d) -> d; case None -> panic("vt-audit: lyric-stdlib/std/_kernel not found above cwd or app base") }
+  }
+}
+
+// Text-scan one kernel source for `extern type X = "FQN"` declarations and
+// append each target FQN to `acc`.  Comment lines (`//`-prefixed after
+// trimming) never start with the `extern type ` keyword sequence, so they
+// are excluded by construction.
+func collectExternFqns(text: in String, acc: in List[String]): Unit {
+  val lines = Str.split(text, "\n")
+  var i = 0
+  while i < lines.length {
+    val t = Str.trimStart(lines[i])
+    if Str.startsWith(t, "extern type ") {
+      match Str.indexOf(t, "= \"") {
+        case None -> ()
+        case Some(eq) -> {
+          val rest = Str.substring(t, eq + 3, t.length - (eq + 3))
+          match Str.indexOf(rest, "\"") {
+            case None -> ()
+            case Some(q) -> {
+              val fqn = Str.substring(rest, 0, q)
+              if not containsStr(acc, fqn) {
+                acc.add(fqn)
+              }
+            }
+          }
+        }
+      }
+    }
+    i = i + 1
+  }
+}
+
+func testClrValueTypeAudit(): Unit {
+  val kernelDir = findKernelDir()
+  val files = match File.listFiles(kernelDir) {
+    case Ok(fs) -> fs
+    case Err(_) -> panic("vt-audit: cannot list " + kernelDir)
+  }
+  val fqns: List[String] = newList()
+  var fi = 0
+  while fi < files.count {
+    if Str.endsWith(files[fi], ".l") {
+      match File.readText(Path.join(kernelDir, files[fi])) {
+        case Ok(txt) -> collectExternFqns(txt, fqns)
+        case Err(_) -> panic("vt-audit: cannot read kernel file " + files[fi])
+      }
+    }
+    fi = fi + 1
+  }
+  // Scanner sanity: the kernel declares dozens of externs and the Guid
+  // extern (uuid_host.l) is a stable anchor — an empty or Guid-less scan
+  // means the text-scan pattern no longer matches the kernel syntax.
+  assertTrue(fqns.count >= 20, "vt-audit: kernel extern scan found a plausible set")
+  assertTrue(containsStr(fqns, "System.Guid"), "vt-audit: scan picked up the System.Guid extern")
+
+  match refPackDir() {
+    case None -> panic("vt-audit: reference-assembly pack not found")
+    case Some(dir) -> {
+      // Build the vtypeSet over the full reference pack, exactly as
+      // `codegen.l::ensureMetadataIndex` does for real builds.
+      val asms = enumRefAssemblies(dir)
+      val vt: Map[String, Bool] = newMap()
+      var ai = 0
+      while ai < asms.count {
+        addAssemblyValueTypes(vt, asms[ai])
+        ai = ai + 1
+      }
+      val expected = expectedClrValueTypes()
+      // Direction 1: for every kernel extern FQN, metadata and the closed
+      // set agree.  Nested types (FQN contains '+') are skipped: the
+      // vtypeSet indexes top-level public types only, and clrIsValueType
+      // deliberately mirrors that domain (see ffi.l).
+      var ki = 0
+      while ki < fqns.count {
+        val fqn = fqns[ki]
+        if not Str.contains(fqn, "+") {
+          val metaVt = isValueTypeFqn(vt, fqn)
+          val listed = containsStr(expected, fqn)
+          if metaVt != listed {
+            panic(
+              "vt-audit: drift for " + fqn + ": ref-pack metadata says value-type=" + toString(metaVt) +
+                " but the clrIsValueType closed set says " +
+                toString(listed) +
+                " — update lyric-compiler/msil/ffi.l::clrIsValueType and expectedClrValueTypes() together"
+            )
+          }
+        }
+        ki = ki + 1
+      }
+      // Direction 2: no stale closed-set entries — each one is still a
+      // declared kernel extern and still a metadata value type.
+      var ei = 0
+      while ei < expected.count {
+        val e = expected[ei]
+        assertTrue(containsStr(fqns, e), "vt-audit: closed-set entry still declared in _kernel: " + e)
+        assertTrue(isValueTypeFqn(vt, e), "vt-audit: closed-set entry is a metadata value type: " + e)
+        ei = ei + 1
+      }
+    }
+  }
+}
+
 // ── Driver ───────────────────────────────────────────────────────────────────
 func main(): Int {
   testPeContainer()
@@ -900,6 +1076,7 @@ func main(): Int {
   testScoreSigTypeArrayInvariance()
   testExtractResourceBytesBounds()
   testMergedIndexEquivalence()
+  testClrValueTypeAudit()
   println("metadata-reader self-test: ok")
   return 0
 }
