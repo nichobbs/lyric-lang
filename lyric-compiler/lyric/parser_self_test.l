@@ -374,6 +374,12 @@ test "aspect name-in missing brace P0321" {
   assertTrue(hasDiagCode(pr, "P0321"), "P0321: missing '{' after 'name in'")
 }
 
+// P0322 — missing `}` to close `name in { ... }` (EOF before the close).
+test "aspect name-in missing close brace P0322" {
+  val pr = parse("package P\naspect A from X {\n  matches: name in { foo, bar")
+  assertTrue(hasDiagCode(pr, "P0322"), "P0322: missing '}' to close 'name in { ... }'")
+}
+
 test "aspect as param name" {
   val src = "package P\nfunc tag(aspect: in String): String { aspect }\n"
   val pr = parse(src)
