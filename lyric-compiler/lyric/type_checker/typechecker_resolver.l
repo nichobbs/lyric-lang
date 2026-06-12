@@ -186,6 +186,18 @@ func resolveAliasRhs(
   }
 }
 
+// The `TyUser` for `sym` when it is a concrete type symbol, else `None`.
+// Helper for `resolveAliasPath`'s scope-priority lookup (#2611).
+func concreteAliasTarget(sym: in Symbol, args: in List[Type], span: in Span, diag: in List[Diagnostic]): Option[Type] {
+  match symbolTypeIdOpt(sym) {
+    case Some(tid) -> {
+      checkImportedVisibility(sym, span, diag)
+      Some(value = TyUser(id = tid, name = sym.name, args = args))
+    }
+    case None -> None
+  }
+}
+
 // Resolve an alias target path to a `Type`, preferring a concrete (non-alias)
 // type symbol of the path's final segment so the lookup cannot loop back on
 // the alias being expanded.  Falls through to a chained alias (bounded to 64
@@ -211,8 +223,28 @@ func resolveAliasPath(
     case None -> {
     }
   }
+  // Scope-priority first (#2611): `symTableTryFindOne` honours the current
+  // resolution scope (current package > imports > any), so an alias target
+  // sharing its name with a type from another package resolves to the
+  // scope-closest declaration — mirroring `resolveTypePath`.  Only a concrete
+  // type symbol is taken here; an alias (no `TypeId`) falls through to the
+  // insertion-order scan below, which prefers concrete types so the lookup
+  // cannot loop back on the alias being expanded.
+  match symTableTryFindOne(tbl, last) {
+    case Some(scopedSym) -> {
+      match concreteAliasTarget(scopedSym, args, span, diag) {
+        case Some(t) -> {
+          return t
+        }
+        case None -> {
+        }
+      }
+    }
+    case None -> {
+    }
+  }
   val all = symTableTryFindAll(tbl, last)
-  // First, any concrete type (record / union / extern type / …).
+  // Then, any concrete type (record / union / extern type / …).
   var i = 0
   while i < all.count {
     match symbolTypeIdOpt(all[i]) {

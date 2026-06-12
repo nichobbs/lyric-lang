@@ -1973,3 +1973,29 @@ test "generic ctor missing required field emits T0105 not T0110" {
   assertTrue(hasDiagCode(cr, "T0105"), "missing required field: T0105")
   assertTrue(not hasDiagCode(cr, "T0110"), "missing required field: not T0110")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3160: a value expression used as a type argument in an alias RHS is T0109
+// (not the misleading T0012 "primitive does not take type arguments").
+// ─────────────────────────────────────────────────────────────────────────────
+test "alias rhs value type arg emits T0109" {
+  val src = "package P\nimport Std.Collections\nalias Bad = List[1]\nfunc f(x: in Bad): Unit {}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0109"), "alias RHS value type-arg: T0109")
+  assertTrue(not hasDiagCode(cr, "T0012"), "alias RHS value type-arg: not T0012")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2611: an alias target resolves with scope priority — when the current
+// package declares `record Random` and an imported package also exports a
+// `Random`, `alias R = Random` must bind to the current-package type, so a
+// body constructing the local `Random` satisfies an `R` return cleanly.
+// ─────────────────────────────────────────────────────────────────────────────
+test "alias target prefers current package over import" {
+  val dep = parse("package Q\npub record Random {\n  q: Int\n}\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "Q", items = dep.file.items))
+  val src = "package P\nimport Q\nrecord Random {\n  x: Int\n}\nalias R = Random\nfunc f(): R { Random(x = 1) }\n"
+  val cr = checkWithImportedPackages(parse(src).file, packages)
+  assertEqualInt(diagCount(cr), 0, "alias target: current-package Random wins over imported Q.Random")
+}
