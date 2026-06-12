@@ -16788,12 +16788,9 @@ func ensureMetadataIndex(cctx: in CodegenCtx): Unit {
       val asms = Mdr.enumRefAssemblies(dir)
       var i = 0
       while i < asms.count {
-        // Both calls read the same assembly bytes independently (#2147: double I/O).
-        // A future optimisation can merge these into a single readBytes + combined
-        // scan.  Since ensureMetadataIndex runs once and is cached, correctness is
-        // unaffected today.
-        Mdr.addAssemblyToIndexes(cctx.metadataTypeIndex, cctx.metadataPathIndex, asms[i])
-        Mdr.addAssemblyValueTypes(cctx.metadataVtypeSet, asms[i])
+        // Single read + parse per assembly fills the type, path, and
+        // value-type indexes in one pass (#2147).
+        Mdr.addAssemblyToIndexesAndValueTypes(cctx.metadataTypeIndex, cctx.metadataPathIndex, cctx.metadataVtypeSet, asms[i])
         i = i + 1
       }
     }
@@ -16806,8 +16803,7 @@ func ensureMetadataIndex(cctx: in CodegenCtx): Unit {
   while ri < cctx.restoredArtifacts.count {
     val dllPath = cctx.restoredArtifacts[ri].dllPath
     if dllPath.length > 0 {
-      Mdr.addAssemblyToIndexes(cctx.metadataTypeIndex, cctx.metadataPathIndex, dllPath)
-      Mdr.addAssemblyValueTypes(cctx.metadataVtypeSet, dllPath)
+      Mdr.addAssemblyToIndexesAndValueTypes(cctx.metadataTypeIndex, cctx.metadataPathIndex, cctx.metadataVtypeSet, dllPath)
     }
     ri = ri + 1
   }

@@ -432,22 +432,41 @@ pub record CompressedUInt {
   byteWidth: Int
 }
 
-pub func readCompressedUInt(b: in slice[Byte], o: in Int): CompressedUInt {
-  // ECMA-335 §II.23.2: the 4-byte form covers `0xC0`–`0xDF`; the `0xE0`–`0xFE`
-  // range is reserved and `0xFF` is the null-blob marker.  Real metadata blobs
-  // never put a reserved byte here, so the bare `else` still produces
-  // well-formed integers for legitimate inputs; raising a distinct error on
-  // a reserved byte is tracked in #1878.
+// ECMA-335 §II.23.2: the 1-byte form covers lead bytes `0x00`–`0x7F`, the
+// 2-byte form `0x80`–`0xBF`, and the 4-byte form `0xC0`–`0xDF`.  The
+// `0xE0`–`0xFE` range is reserved and `0xFF` is the null-blob marker —
+// neither is a valid compressed integer, so both are rejected with `Err`
+// instead of silently decoding to a junk 29-bit value (#1878).  Out-of-range
+// and truncated reads are also rejected so a poisoned offset from an earlier
+// decode failure degrades to `Err` rather than an out-of-bounds panic.
+pub func readCompressedUInt(b: in slice[Byte], o: in Int): Result[CompressedUInt, String] {
+  if o < 0 or o >= b.length {
+    return Err(
+      error = "metadata: compressed integer offset " + toString(o) + " is outside the blob (length " +
+        toString(b.length) +
+        ")"
+    )
+  }
   val b0 = rdU8(b, o)
   if b0 < 0x80 {
-    CompressedUInt(value = b0, byteWidth = 1)
+    Ok(value = CompressedUInt(value = b0, byteWidth = 1))
   } else if b0 < 0xC0 {
-    CompressedUInt(value = (b0 - 0x80) * 256 + rdU8(b, o + 1), byteWidth = 2)
-  } else {
-    CompressedUInt(
-      value = (b0 - 0xC0) * 16777216 + rdU8(b, o + 1) * 65536 + rdU8(b, o + 2) * 256 + rdU8(b, o + 3),
-      byteWidth = 4
+    if o + 1 >= b.length {
+      return Err(error = "metadata: truncated 2-byte compressed integer at offset " + toString(o))
+    }
+    Ok(value = CompressedUInt(value = (b0 - 0x80) * 256 + rdU8(b, o + 1), byteWidth = 2))
+  } else if b0 < 0xE0 {
+    if o + 3 >= b.length {
+      return Err(error = "metadata: truncated 4-byte compressed integer at offset " + toString(o))
+    }
+    Ok(
+      value = CompressedUInt(
+        value = (b0 - 0xC0) * 16777216 + rdU8(b, o + 1) * 65536 + rdU8(b, o + 2) * 256 + rdU8(b, o + 3),
+        byteWidth = 4
+      )
     )
+  } else {
+    Err(error = "metadata: reserved compressed-integer lead byte " + toString(b0) + " at offset " + toString(o))
   }
 }
 
@@ -748,15 +767,23 @@ pub func blobAt(img: in PeImage, layout: in TableLayout, blobIndex: in Int): sli
     return empty.toArray()
   }
   val b = img.bytes
-  val hdr = readCompressedUInt(b, layout.blobBase + blobIndex)
-  val start = layout.blobBase + blobIndex + hdr.byteWidth
-  val acc: List[Byte] = newList()
-  var i = 0
-  while i < hdr.value and start + i < b.length {
-    acc.add(b[start + i])
-    i = i + 1
+  // A rejected length header (reserved lead byte, truncated read) means the
+  // index does not point at a well-formed blob.  This function has no error
+  // channel, so surface it as the empty blob — `decodeMethodSig` then rejects
+  // the empty blob with a clear `Err` instead of decoding misaligned bytes.
+  match readCompressedUInt(b, layout.blobBase + blobIndex) {
+    case Err(_) -> empty.toArray()
+    case Ok(hdr) -> {
+      val start = layout.blobBase + blobIndex + hdr.byteWidth
+      val acc: List[Byte] = newList()
+      var i = 0
+      while i < hdr.value and start + i < b.length {
+        acc.add(b[start + i])
+        i = i + 1
+      }
+      acc.toArray()
+    }
   }
-  acc.toArray()
 }
 
 // Read TypeDef row `row` (1-based).  Columns (ECMA §II.22.37):
@@ -960,26 +987,52 @@ pub record DecodedType {
   next: Int
 }
 
+// Poison result for an undecodable type: `STUnknown` never matches an
+// overload, and `next = b.length` halts every enclosing decode loop.  A
+// rejected compressed integer (reserved lead byte, truncated read, #1878)
+// thus degrades to "no resolution" instead of a silently misaligned decode.
+func undecodableType(b: in slice[Byte], elemByte: in Int): DecodedType {
+  DecodedType(ty = STUnknown(elemByte = elemByte), next = b.length)
+}
+
 // Decode one Type at offset `o`, skipping any leading custom modifiers
 // (CMOD_OPT / CMOD_REQD).
 pub func decodeType(b: in slice[Byte], o: in Int): DecodedType {
   var p = o
   // Skip custom modifiers: (CMOD_OPT 0x20 | CMOD_REQD 0x1F) + TypeDefOrRef.
   while p < b.length and (rdU8(b, p) == 0x1F or rdU8(b, p) == 0x20) {
+    val cmByte = rdU8(b, p)
     p = p + 1
-    val cm = readCompressedUInt(b, p)
-    p = p + cm.byteWidth
+    match readCompressedUInt(b, p) {
+      case Err(_) -> return undecodableType(b, cmByte)
+      case Ok(cm) -> {
+        p = p + cm.byteWidth
+      }
+    }
+  }
+  // A truncated blob (or a poisoned offset from a failed inner decode) can
+  // land exactly on the end; degrade rather than read out of bounds.
+  if p < 0 or p >= b.length {
+    return undecodableType(b, 0)
   }
   val et = rdU8(b, p)
   p = p + 1
   if et == 0x11 or et == 0x12 {
-    val tok = readCompressedUInt(b, p)
-    val ty = if et == 0x11 { STValueType(token = tok.value) } else { STClass(token = tok.value) }
-    DecodedType(ty = ty, next = p + tok.byteWidth)
+    match readCompressedUInt(b, p) {
+      case Err(_) -> undecodableType(b, et)
+      case Ok(tok) -> {
+        val ty = if et == 0x11 { STValueType(token = tok.value) } else { STClass(token = tok.value) }
+        DecodedType(ty = ty, next = p + tok.byteWidth)
+      }
+    }
   } else if et == 0x13 or et == 0x1E {
-    val n = readCompressedUInt(b, p)
-    val ty = if et == 0x13 { STVar(index = n.value) } else { STMVar(index = n.value) }
-    DecodedType(ty = ty, next = p + n.byteWidth)
+    match readCompressedUInt(b, p) {
+      case Err(_) -> undecodableType(b, et)
+      case Ok(n) -> {
+        val ty = if et == 0x13 { STVar(index = n.value) } else { STMVar(index = n.value) }
+        DecodedType(ty = ty, next = p + n.byteWidth)
+      }
+    }
   } else if et == 0x1D {
     val inner = decodeType(b, p)
     DecodedType(ty = STSzArray(elem = inner.ty), next = inner.next)
@@ -993,46 +1046,86 @@ pub func decodeType(b: in slice[Byte], o: in Int): DecodedType {
     // GENERICINST (CLASS|VALUETYPE) TypeDefOrRef GenArgCount Type*
     val kind = rdU8(b, p)
     var cur = p + 1
-    val tok = readCompressedUInt(b, cur)
-    cur = cur + tok.byteWidth
-    val cnt = readCompressedUInt(b, cur)
-    cur = cur + cnt.byteWidth
+    var tokValue = 0
+    match readCompressedUInt(b, cur) {
+      case Err(_) -> return undecodableType(b, et)
+      case Ok(tok) -> {
+        tokValue = tok.value
+        cur = cur + tok.byteWidth
+      }
+    }
+    var argCount = 0
+    match readCompressedUInt(b, cur) {
+      case Err(_) -> return undecodableType(b, et)
+      case Ok(cnt) -> {
+        argCount = cnt.value
+        cur = cur + cnt.byteWidth
+      }
+    }
     val args: List[SigType] = newList()
     var i = 0
-    while i < cnt.value {
+    while i < argCount and cur < b.length {
       val a = decodeType(b, cur)
       args.add(a.ty)
       cur = a.next
       i = i + 1
     }
-    DecodedType(ty = STGenericInst(valueType = kind == 0x11, token = tok.value, args = args), next = cur)
+    DecodedType(ty = STGenericInst(valueType = kind == 0x11, token = tokValue, args = args), next = cur)
   } else if et == 0x14 {
     // ARRAY Type ArrayShape(rank numSizes size* numLoBounds loBound*)
     val inner = decodeType(b, p)
     var cur = inner.next
-    val rank = readCompressedUInt(b, cur)
-    cur = cur + rank.byteWidth
-    val numSizes = readCompressedUInt(b, cur)
-    cur = cur + numSizes.byteWidth
+    var rankValue = 0
+    match readCompressedUInt(b, cur) {
+      case Err(_) -> return undecodableType(b, et)
+      case Ok(rank) -> {
+        rankValue = rank.value
+        cur = cur + rank.byteWidth
+      }
+    }
+    var sizeCount = 0
+    match readCompressedUInt(b, cur) {
+      case Err(_) -> return undecodableType(b, et)
+      case Ok(numSizes) -> {
+        sizeCount = numSizes.value
+        cur = cur + numSizes.byteWidth
+      }
+    }
     var i = 0
-    while i < numSizes.value {
-      val s = readCompressedUInt(b, cur)
-      cur = cur + s.byteWidth
+    while i < sizeCount {
+      match readCompressedUInt(b, cur) {
+        case Err(_) -> return undecodableType(b, et)
+        case Ok(s) -> {
+          cur = cur + s.byteWidth
+        }
+      }
       i = i + 1
     }
-    val numLo = readCompressedUInt(b, cur)
-    cur = cur + numLo.byteWidth
+    var loCount = 0
+    match readCompressedUInt(b, cur) {
+      case Err(_) -> return undecodableType(b, et)
+      case Ok(numLo) -> {
+        loCount = numLo.value
+        cur = cur + numLo.byteWidth
+      }
+    }
     var j = 0
-    while j < numLo.value {
-      val s2 = readCompressedUInt(b, cur)
-      cur = cur + s2.byteWidth
+    while j < loCount {
+      match readCompressedUInt(b, cur) {
+        case Err(_) -> return undecodableType(b, et)
+        case Ok(s2) -> {
+          cur = cur + s2.byteWidth
+        }
+      }
       j = j + 1
     }
-    DecodedType(ty = STArray(elem = inner.ty, rank = rank.value), next = cur)
+    DecodedType(ty = STArray(elem = inner.ty, rank = rankValue), next = cur)
   } else if et == 0x1B {
     // FNPTR + MethodDefSig — decode the nested sig to advance past it.
-    val nested = decodeMethodSigAt(b, p)
-    DecodedType(ty = STFnPtr, next = nested.next)
+    match decodeMethodSigAt(b, p) {
+      case Err(_) -> undecodableType(b, et)
+      case Ok(nested) -> DecodedType(ty = STFnPtr, next = nested.next)
+    }
   } else if isPrimByte(et) {
     DecodedType(ty = STPrim(elemByte = et), next = p)
   } else {
@@ -1047,25 +1140,43 @@ pub record DecodedMethodSigAt {
 }
 
 // Decode a MethodDefSig at offset `o` (used both at the blob root and for
-// nested FNPTR signatures).
-pub func decodeMethodSigAt(b: in slice[Byte], o: in Int): DecodedMethodSigAt {
+// nested FNPTR signatures).  Returns `Err` when the signature header carries
+// a malformed compressed integer (#1878) or starts past the end of the blob.
+pub func decodeMethodSigAt(b: in slice[Byte], o: in Int): Result[DecodedMethodSigAt, String] {
+  if o < 0 or o >= b.length {
+    return Err(
+      error = "metadata: method signature offset " + toString(o) + " is outside the blob (length " +
+        toString(b.length) +
+        ")"
+    )
+  }
   val cc = rdU8(b, o)
   var p = o + 1
   val hasThis = (cc / 32) % 2 == 1   // HASTHIS  (0x20)
   val isGeneric = (cc / 16) % 2 == 1   // GENERIC  (0x10)
   var genCount = 0
   if isGeneric {
-    val g = readCompressedUInt(b, p)
-    genCount = g.value
-    p = p + g.byteWidth
+    match readCompressedUInt(b, p) {
+      case Err(e) -> return Err(error = e)
+      case Ok(g) -> {
+        genCount = g.value
+        p = p + g.byteWidth
+      }
+    }
   }
-  val pc = readCompressedUInt(b, p)
-  p = p + pc.byteWidth
+  var paramCount = 0
+  match readCompressedUInt(b, p) {
+    case Err(e) -> return Err(error = e)
+    case Ok(pc) -> {
+      paramCount = pc.value
+      p = p + pc.byteWidth
+    }
+  }
   val ret = decodeType(b, p)
   p = ret.next
   val params: List[SigType] = newList()
   var i = 0
-  while i < pc.value and p < b.length {
+  while i < paramCount and p < b.length {
     if rdU8(b, p) == 0x41 {
       // SENTINEL marks the start of vararg arguments; it sits between
       // parameters and does not itself consume a parameter slot.
@@ -1077,24 +1188,30 @@ pub func decodeMethodSigAt(b: in slice[Byte], o: in Int): DecodedMethodSigAt {
       i = i + 1
     }
   }
-  DecodedMethodSigAt(
-    sig = DecodedMethodSig(
-      hasThis = hasThis,
-      isGeneric = isGeneric,
-      genParamCount = genCount,
-      returnType = ret.ty,
-      paramTypes = params
-    ),
-    next = p
+  Ok(
+    value = DecodedMethodSigAt(
+      sig = DecodedMethodSig(
+        hasThis = hasThis,
+        isGeneric = isGeneric,
+        genParamCount = genCount,
+        returnType = ret.ty,
+        paramTypes = params
+      ),
+      next = p
+    )
   )
 }
 
-// Decode a complete MethodDefSig blob.  Returns an error for an empty blob.
+// Decode a complete MethodDefSig blob.  Returns an error for an empty or
+// malformed blob.
 pub func decodeMethodSig(blob: in slice[Byte]): Result[DecodedMethodSig, String] {
   if blob.length == 0 {
     return Err(error = "metadata: empty method signature blob")
   }
-  Ok(value = decodeMethodSigAt(blob, 0).sig)
+  match decodeMethodSigAt(blob, 0) {
+    case Err(e) -> Err(error = e)
+    case Ok(d) -> Ok(value = d.sig)
+  }
 }
 
 // Construct a primitive `SigType` from its ECMA element-type byte.  Exposed so
@@ -1328,51 +1445,62 @@ pub func enumRefAssemblies(refDir: in String): List[String] {
   }
 }
 
+// Record every public top-level TypeDef of the parsed image in `index`,
+// mapping the type's fully-qualified name to `asmName`.  First writer wins
+// (duplicates across facades are ignored).
+func scanPublicTypes(ri: in ResourceImage, asmName: in String, index: in Map[String, String]): Unit {
+  val n = rowCountOf(ri.th, 0x02)
+  var i = 1
+  while i <= n {
+    val td = readTypeDef(ri.img, ri.layout, i)
+    // Index only Public top-level types (TypeAttributes visibility
+    // mask 0x07 == Public); this excludes `<Module>`, nested, and
+    // non-public types, which are never extern-resolution targets.
+    if (td.flags % 8) == 1 {
+      val fqn = if td.namespaceName.length > 0 { td.namespaceName + "." + td.name } else { td.name }
+      match mapGet(index, fqn) {
+        case Some(_) -> {
+        }
+        case None -> index.add(fqn, asmName)
+      }
+    }
+    i = i + 1
+  }
+}
+
+// Record every public top-level value type (any type whose Extends field
+// resolves to "System.ValueType" or "System.Enum") of the parsed image in
+// `vtypeSet` (FQN → true).  First writer wins.
+func scanValueTypes(ri: in ResourceImage, vtypeSet: in Map[String, Bool]): Unit {
+  val n = rowCountOf(ri.th, 0x02)
+  var i = 1
+  while i <= n {
+    val td = readTypeDef(ri.img, ri.layout, i)
+    // Only public top-level types can be extern targets.
+    if (td.flags % 8) == 1 and td.extendsToken > 0 {
+      val extName = resolveTypeDefOrRefName(ri.img, ri.layout, ri.th, td.extendsToken)
+      if extName == "System.ValueType" or extName == "System.Enum" {
+        val fqn = if td.namespaceName.length > 0 { td.namespaceName + "." + td.name } else { td.name }
+        match mapGet(vtypeSet, fqn) {
+          case Some(_) -> {
+          }
+          case None -> vtypeSet.add(fqn, true)
+        }
+      }
+    }
+    i = i + 1
+  }
+}
+
 // Add every public top-level TypeDef in the assembly at `asmPath` to `index`,
-// mapping the type's fully-qualified name to the assembly's simple name.  The
-// first assembly to claim a name wins (duplicates across facades are ignored).
+// mapping the type's fully-qualified name to the assembly's simple name.
 // Malformed or unreadable assemblies (read failure, bad PE/metadata) are
 // skipped silently — a single broken DLL must not abort building the index.
 pub func addAssemblyTypes(index: in Map[String, String], asmPath: in String): Unit {
   match File.readBytes(asmPath) {
     case Err(_) -> {
     }
-    case Ok(raw) -> match readPe(raw.toArray()) {
-      case Err(_) -> {
-      }
-      case Ok(img) -> match readMetadataRoot(img) {
-        case Err(_) -> {
-        }
-        case Ok(root) -> match readTablesHeader(img, root) {
-          case Err(_) -> {
-          }
-          case Ok(th) -> match computeLayout(img, root, th) {
-            case Err(_) -> {
-            }
-            case Ok(layout) -> {
-              val asmName = assemblySimpleName(asmPath)
-              val n = rowCountOf(th, 0x02)
-              var i = 1
-              while i <= n {
-                val td = readTypeDef(img, layout, i)
-                // Index only Public top-level types (TypeAttributes visibility
-                // mask 0x07 == Public); this excludes `<Module>`, nested, and
-                // non-public types, which are never extern-resolution targets.
-                if (td.flags % 8) == 1 {
-                  val fqn = if td.namespaceName.length > 0 { td.namespaceName + "." + td.name } else { td.name }
-                  match mapGet(index, fqn) {
-                    case Some(_) -> {
-                    }
-                    case None -> index.add(fqn, asmName)
-                  }
-                }
-                i = i + 1
-              }
-            }
-          }
-        }
-      }
-    }
+    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) { case None -> {  }; case Some(ri) -> scanPublicTypes(ri, assemblySimpleName(asmPath), index) }
   }
 }
 
@@ -1402,6 +1530,29 @@ pub func addAssemblyToIndexes(
   addAssemblyTypes(typeIndex, asmPath)
 }
 
+// Populate the type→assembly-name, assembly-name→path, and value-type indexes
+// from one assembly with a single disk read and a single metadata parse — the
+// merged form of `addAssemblyToIndexes` + `addAssemblyValueTypes` (#2147).
+// First writer wins for every name; malformed assemblies are skipped silently.
+pub func addAssemblyToIndexesAndValueTypes(
+  typeIndex: in Map[String, String],
+  pathIndex: in Map[String, String],
+  vtypeSet: in Map[String, Bool],
+  asmPath: in String,
+): Unit {
+  val nm = assemblySimpleName(asmPath)
+  match mapGet(pathIndex, nm) {
+    case Some(_) -> {
+    }
+    case None -> pathIndex.add(nm, asmPath)
+  }
+  match File.readBytes(asmPath) {
+    case Err(_) -> {
+    }
+    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) { case None -> {  }; case Some(ri) -> { scanPublicTypes(ri, nm, typeIndex); scanValueTypes(ri, vtypeSet) } }
+  }
+}
+
 // Resolve a CLR type's fully-qualified name to its owning assembly's simple
 // name, or None when no indexed assembly defines it.
 pub func assemblyForType(index: in Map[String, String], typeFqn: in String): Option[String] {
@@ -1410,49 +1561,14 @@ pub func assemblyForType(index: in Map[String, String], typeFqn: in String): Opt
 
 // Scan the public TypeDef rows of `asmPath` and record each value type (any
 // type whose Extends field resolves to "System.ValueType" or "System.Enum")
-// in `vtypeSet` (FQN → true).  First writer wins.  The vtypeSet is populated
-// alongside the type-index in ensureMetadataIndex so value-type detection
-// from metadata is free (same I/O pass, no extra assembly reads).
+// in `vtypeSet` (FQN → true).  First writer wins.  Standalone variant of the
+// value-type half of `addAssemblyToIndexesAndValueTypes`, which callers
+// filling all three indexes should prefer (it reads the DLL once).
 pub func addAssemblyValueTypes(vtypeSet: in Map[String, Bool], asmPath: in String): Unit {
   match File.readBytes(asmPath) {
     case Err(_) -> {
     }
-    case Ok(raw) -> match readPe(raw.toArray()) {
-      case Err(_) -> {
-      }
-      case Ok(img) -> match readMetadataRoot(img) {
-        case Err(_) -> {
-        }
-        case Ok(root) -> match readTablesHeader(img, root) {
-          case Err(_) -> {
-          }
-          case Ok(th) -> match computeLayout(img, root, th) {
-            case Err(_) -> {
-            }
-            case Ok(layout) -> {
-              val n = rowCountOf(th, 0x02)
-              var i = 1
-              while i <= n {
-                val td = readTypeDef(img, layout, i)
-                // Only public top-level types can be extern targets.
-                if (td.flags % 8) == 1 and td.extendsToken > 0 {
-                  val extName = resolveTypeDefOrRefName(img, layout, th, td.extendsToken)
-                  if extName == "System.ValueType" or extName == "System.Enum" {
-                    val fqn = if td.namespaceName.length > 0 { td.namespaceName + "." + td.name } else { td.name }
-                    match mapGet(vtypeSet, fqn) {
-                      case Some(_) -> {
-                      }
-                      case None -> vtypeSet.add(fqn, true)
-                    }
-                  }
-                }
-                i = i + 1
-              }
-            }
-          }
-        }
-      }
-    }
+    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) { case None -> {  }; case Some(ri) -> scanValueTypes(ri, vtypeSet) }
   }
 }
 
@@ -1796,9 +1912,18 @@ pub record ManifestResourceEntry {
 
 // Read ManifestResource row `row` (1-based).  Columns (ECMA §II.22.24):
 // Offset(u4), Flags(u4), Name(#String), Implementation(coded Implementation).
-pub func readManifestResource(img: in PeImage, layout: in TableLayout, row: in Int): ManifestResourceEntry {
+pub func readManifestResource(
+  img: in PeImage, layout: in TableLayout, th: in TablesHeader, row: in Int
+): ManifestResourceEntry {
   if row < 1 {
     panic("Msil.MetadataReader.readManifestResource: row must be >= 1, got " + toString(row))
+  }
+  val maxRow = rowCountOf(th, 0x28)
+  if row > maxRow {
+    panic(
+      "Msil.MetadataReader.readManifestResource: row " + toString(row) + " exceeds the ManifestResource row count " +
+        toString(maxRow)
+    )
   }
   val b = img.bytes
   val o = layout.dataStart[0x28] + (row - 1) * layout.rowSize[0x28]
@@ -1826,28 +1951,54 @@ pub func extractResourceBytes(img: in PeImage, resOffset: in Int): slice[Byte] {
   if img.resourcesOff < 0 {
     return empty.toArray()
   }
+  // A malformed or hostile ManifestResource row can carry an Offset outside
+  // the Resources region; reject it instead of reading bytes from an adjacent
+  // section (code, metadata tables, ...) (#3224).
+  if resOffset < 0 or (img.resourcesSize > 0 and resOffset >= img.resourcesSize) {
+    return empty.toArray()
+  }
   val b = img.bytes
   val base = img.resourcesOff + resOffset
   if base + 4 > b.length {
     return empty.toArray()
   }
   val len = rdU32(b, base)
+  // Clamp the payload read to the end of the Resources region (as well as the
+  // image) so a corrupt length prefix cannot spill into the next section.
+  var limit = b.length
+  if img.resourcesSize > 0 and img.resourcesOff + img.resourcesSize < limit {
+    limit = img.resourcesOff + img.resourcesSize
+  }
   val acc: List[Byte] = newList()
   var i = 0
-  while i < len and base + 4 + i < b.length {
+  while i < len and base + 4 + i < limit {
     acc.add(b[base + 4 + i])
     i = i + 1
   }
   acc.toArray()
 }
 
-// A parsed assembly image prepared for resource reads: the PE container plus
-// the computed table layout and `#~` header.  Built once per DLL by
-// `openResourceImage`, then queried by `resourceNamesIn` / `tryReadResourceIn`.
+// A parsed assembly image: the PE container plus the computed table layout
+// and `#~` header.  Built once per DLL — by `openResourceImage` for
+// embedded-resource reads (then queried by `resourceNamesIn` /
+// `tryReadResourceIn`) and by the type-index builders' shared
+// `parseAssemblyImage` step.
 pub record ResourceImage {
   img: PeImage
   layout: TableLayout
   th: TablesHeader
+}
+
+// Parse raw assembly bytes through every metadata layer (PE container,
+// metadata root, `#~` header, table layout).  Returns `None` when any layer
+// rejects the bytes — the shared graceful-failure policy for callers that
+// treat a malformed or non-managed DLL as "nothing to read".
+func parseAssemblyImage(raw: in slice[Byte]): Option[ResourceImage] {
+  val img = match readPe(raw) { case Ok(v) -> v; case Err(_) -> return None }
+  val root = match readMetadataRoot(img) { case Ok(v) -> v; case Err(_) -> return None }
+  val th = match readTablesHeader(img, root) { case Ok(v) -> v; case Err(_) -> return None }
+  val layout = match computeLayout(img, root, th) { case Ok(v) -> v; case Err(_) -> return None }
+  Some(value = ResourceImage(img = img, layout = layout, th = th))
 }
 
 // Open `path` as a .NET assembly and prepare it for embedded-resource reads.
@@ -1858,7 +2009,7 @@ pub record ResourceImage {
 pub func openResourceImage(path: in String): Option[ResourceImage] {
   match File.readBytes(path) {
     case Err(_) -> None
-    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> None; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> None; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> None; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> None; case Ok(layout) -> Some(value = ResourceImage(img = img, layout = layout, th = th)) } } } }
+    case Ok(raw) -> parseAssemblyImage(raw.toArray())
   }
 }
 
@@ -1871,7 +2022,7 @@ pub func resourceNamesIn(ri: in ResourceImage): List[String] {
   val n = rowCountOf(ri.th, 0x28)
   var i = 1
   while i <= n {
-    val r = readManifestResource(ri.img, ri.layout, i)
+    val r = readManifestResource(ri.img, ri.layout, ri.th, i)
     if r.implementation == 0 {
       names.add(r.name)
     }
@@ -1888,7 +2039,7 @@ pub func tryReadResourceIn(ri: in ResourceImage, name: in String): Option[slice[
   val n = rowCountOf(ri.th, 0x28)
   var i = 1
   while i <= n {
-    val r = readManifestResource(ri.img, ri.layout, i)
+    val r = readManifestResource(ri.img, ri.layout, ri.th, i)
     if r.implementation == 0 and r.name == name {
       return Some(value = extractResourceBytes(ri.img, r.resourceOffset))
     }
