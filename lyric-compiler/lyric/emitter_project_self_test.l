@@ -227,6 +227,78 @@ test "emitProject in-process stdlib import" {
   assertEqual(Str.trim(result.stdout), "hello world", "in_process_stdlib_import: stdout matches expected")
 }
 
+// ─── Multi-file packages (#2575) ─────────────────────────────────────────────
+// The issue's exact repro shape: a directory-form `[project.packages]` entry
+// with TWO .l files, each carrying its own `package MDir` + `import` header,
+// one file's `main` calling a function defined in the other.  The CLI's
+// directory branch feeds each file as a separate source of one
+// `ProjectPackage`; `emitProject` must merge them into a single valid
+// compilation unit (file 2's raw `package` line mid-unit is a P0040 cascade).
+// The fixture writes real files to a temp src dir and reads them back,
+// mirroring `buildProject`'s directory branch.
+test "emitProject multi-file directory package" {
+  val fixtureDir = freshTempDir("mdir-2575")
+  val srcDir = Path.join(fixtureDir, "src")
+  match File.createDir(srcDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("multi_file_dir_package: cannot create src dir: " + IOError.message(e))
+  }
+  val helperSrc = "package MDir\n" + "import Std.Core\n" + "\n" + "pub func helper(): Int { 42 }\n"
+  val mainSrc = "package MDir\n" + "import Std.Core\n" + "\n" + "func main(): Unit {\n" + "  println(helper())\n" +
+    "}\n"
+  match File.writeText(Path.join(srcDir, "a_helper.l"), helperSrc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("multi_file_dir_package: cannot write helper: " + IOError.message(e))
+  }
+  match File.writeText(Path.join(srcDir, "b_main.l"), mainSrc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("multi_file_dir_package: cannot write main: " + IOError.message(e))
+  }
+  val sources: List[String] = newList()
+  match File.readText(Path.join(srcDir, "a_helper.l")) {
+    case Ok(s) -> sources.add(s)
+    case Err(e) -> panic("multi_file_dir_package: cannot read helper: " + IOError.message(e))
+  }
+  match File.readText(Path.join(srcDir, "b_main.l")) {
+    case Ok(s) -> sources.add(s)
+    case Err(e) -> panic("multi_file_dir_package: cannot read main: " + IOError.message(e))
+  }
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(Emitter.ProjectPackage(name = "MDir", sources = sources))
+  val result = runEmitProject("mdir-2575-build", pkgs, "MDir")
+  cleanup(fixtureDir)
+  assertEqualInt(result.exitCode, 0, "multi_file_dir_package: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "multi_file_dir_package: stdout matches expected")
+}
+
+// Multi-file merge edge cases: `//!` module-doc headers and file-level
+// annotations must be stripped from every file (both are only valid before
+// `package`, so one left mid-unit is a P0040), the first file's file-level
+// annotation must be re-added to the merged header, and each file's `import`
+// lines must union into the merged preamble so file 2's aliased import stays
+// resolvable.  `shout` is never called at runtime — it pins the import union
+// at typecheck (a dropped `import Std.String as Str` fails the build with
+// T0020) without requiring `Lyric.Stdlib.String` beside the temp DLL.
+test "emitProject multi-file package module docs and import union" {
+  val fileOne = "//! first file module docs\n" + "@runtime_checked\n" + "package MDocs\n" + "import Std.Core\n" + "\n" +
+    "pub func answer(): Int { 41 + 1 }\n"
+  val fileTwo = "//! second file module docs\n" + "package MDocs\n" + "import Std.Core\n" + "import Std.String as Str\n" +
+    "\n" +
+    "pub func shout(s: in String): String { Str.trim(s) }\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(answer())\n" +
+    "}\n"
+  val sources: List[String] = newList()
+  sources.add(fileOne)
+  sources.add(fileTwo)
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(Emitter.ProjectPackage(name = "MDocs", sources = sources))
+  val result = runEmitProject("mdocs-2575", pkgs, "MDocs")
+  assertEqualInt(result.exitCode, 0, "multi_file_module_docs: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "multi_file_module_docs: stdout matches expected")
+}
+
 // ─── Per-package isolation ────────────────────────────────────────────────────
 // Two unrelated packages each define a record named `Helper`.  Per-package
 // symbol-table filtering must prevent a T0001 duplicate-name error (#1378).

@@ -82,8 +82,10 @@ pub record EmitResult {
 }
 
 /// Per-package source feed for `emitProject`.  Each package's `sources` list
-/// holds the `.l` file contents in deterministic order (multi-file packages
-/// should already be resolved by the caller).
+/// holds the `.l` file contents in deterministic order; `emitProject` merges
+/// a multi-file package into one compilation unit (single `package` line,
+/// union of import preambles, header-stripped bodies — #2575) before
+/// dispatching to a backend.
 pub record ProjectPackage {
   name: String
   sources: List[String]
@@ -646,6 +648,38 @@ func indexOfString(list: in List[String], s: in String): Int {
     i = i + 1
   }
   -1
+}
+
+// Merge a package's source files into ONE valid compilation unit: the first
+// file's file-level annotations + a single `package` declaration, the union
+// of every file's `import` lines, then each file's body with its
+// `package` / `import` / `//!` preamble stripped.  This is the same shape
+// `loadCompilerPayloads` / `loadStdlibPayloads` produce in their payload
+// pass — without it, file 2's `package` line lands mid-unit and the parser
+// rejects the bundle with a P0040 cascade (#2575).  A single source is
+// returned verbatim so its diagnostics keep exact line numbers.
+func mergePackageSources(fallbackName: in String, sources: in List[String]): String {
+  if sources.count == 0 {
+    return ""
+  }
+  if sources.count == 1 {
+    return sources[0]
+  }
+  val declared = extractPackageName(sources[0])
+  val name = if Str.length(declared) > 0 { declared } else { fallbackName }
+  val ann = extractFileLevelAnnotations(sources[0])
+  val imports: List[String] = newList()
+  var bodies = ""
+  var i = 0
+  while i < sources.count {
+    val src = sources[i]
+    collectImportLines(src, imports)
+    val body = stripPackageAndImports(src)
+    bodies = if Str.length(bodies) == 0 { body } else { bodies + "\n" + body }
+    i = i + 1
+  }
+  val header = if Str.length(ann) > 0 { ann + "\n" + "package " + name + "\n" } else { "package " + name + "\n" }
+  header + Str.joinList("\n", imports) + "\n" + bodies
 }
 
 // True when `pkg` is one of the self-hosted compiler namespaces that
@@ -1534,9 +1568,38 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
     }
   }
 
+  // Merge every multi-file package into a single compilation unit before
+  // target dispatch.  Both backends require one valid unit per package;
+  // a raw concatenation leaves file 2's `package` / `import` header lines
+  // mid-unit and the parser rejects the bundle with a P0040 cascade
+  // (#2575 — multi-file directory-form `[project.packages]` entries).
+  val mergedPkgs: List[ProjectPackage] = newList()
+  var mi = 0
+  while mi < req.packages.count {
+    val pkg = req.packages[mi]
+    if pkg.sources.count > 1 {
+      val merged: List[String] = newList()
+      merged.add(mergePackageSources(pkg.name, pkg.sources))
+      mergedPkgs.add(ProjectPackage(name = pkg.name, sources = merged))
+    } else {
+      mergedPkgs.add(pkg)
+    }
+    mi = mi + 1
+  }
+  val mergedReq = EmitProjectRequest(
+    packages = mergedPkgs,
+    assemblyName = req.assemblyName,
+    outputPath = req.outputPath,
+    target = req.target,
+    restoredDllPaths = req.restoredDllPaths,
+    activeFeatures = req.activeFeatures,
+    declaredFeatures = req.declaredFeatures,
+    packageVersion = req.packageVersion
+  )
+
   match req.target {
-    case Dotnet -> emitProjectInProcess(req)
-    case Jvm -> emitProjectJvmViaSubprocess(req)
+    case Dotnet -> emitProjectInProcess(mergedReq)
+    case Jvm -> emitProjectJvmViaSubprocess(mergedReq)
   }
 }
 
@@ -1668,25 +1731,17 @@ func siblingTypeDecls(arts: in List[RestoredArtifact], selfPkg: in String): List
 }
 
 // In-process project emit — direct call into `Msil.Bridge.compileProjectToMsil`
-// (#1183 Phase 4).  Each `ProjectPackage`'s multiple sources are joined with
-// a newline boundary before being handed to the bridge, matching the F#
-// `joinPackageSources` convention.  Diagnostics from the bridge land on
-// stderr (same path as `compileToMsil`).
+// (#1183 Phase 4).  Sources arrive pre-merged by `emitProject` (one valid
+// compilation unit per package, #2575); `mergePackageSources` here is a
+// verbatim pass-through for that single source and a header-stripping merge
+// for any caller that bypasses the pre-merge.  Diagnostics from the bridge
+// land on stderr (same path as `compileToMsil`).
 func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
   val payloads: List[ProjectPackagePayload] = newList()
   var pi = 0
   while pi < req.packages.count {
     val pkg = req.packages[pi]
-    var combined = ""
-    var si = 0
-    while si < pkg.sources.count {
-      if si > 0 {
-        combined = combined + "\n"
-      }
-      combined = combined + pkg.sources[si]
-      si += 1
-    }
-    payloads.add(ProjectPackagePayload(name = pkg.name, source = combined))
+    payloads.add(ProjectPackagePayload(name = pkg.name, source = mergePackageSources(pkg.name, pkg.sources)))
     pi += 1
   }
   // Auto-resolve `lyric-stdlib/std/*.l` at runtime so the in-process bridge

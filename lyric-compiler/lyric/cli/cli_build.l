@@ -667,8 +667,10 @@ func buildProject(
     return 1
   }
 
-  // Collect sources for each package entry individually (not concatenated).
-  // Each package entry may be a single .l file or a directory of .l files.
+  // Collect each package entry's per-file sources.  Each entry may be a
+  // single .l file or a directory of .l files; `Emitter.emitProject` merges
+  // a multi-file package into one compilation unit (single `package` line,
+  // union of import preambles, header-stripped bodies — #2575).
   val pkgs: List[ProjectPackage] = newList()
   var hadFatal = false
   var pi = 0
