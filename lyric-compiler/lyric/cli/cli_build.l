@@ -387,7 +387,9 @@ func buildReleaseProject(
   // Scan each package's sources to find the entry package — the one declaring
   // `func main()`.  Uses the manifest package name (pkgEntry.name) as the
   // trampoline target, matching how the emitter labels the Program type.
-  var entryPkgName = ""
+  // Every entry candidate is collected before reporting so a conflict lists
+  // all offending packages at once instead of one pair per rebuild (#3219).
+  val entryPkgNames: List[String] = newList()
   var pi = 0
   while pi < proj.packages.count {
     val pkgEntry = proj.packages[pi]
@@ -429,25 +431,31 @@ func buildReleaseProject(
       return 1
     }
     if Release.declaresEntryMain(combined) {
-      if entryPkgName != "" {
-        printErr(
-          "build: --release: multiple packages declare `func main()`: '" + entryPkgName + "' and '" + pkgEntry.name +
-            "' — exactly one entry package is required"
-        )
-        return 1
-      }
-      entryPkgName = pkgEntry.name
+      entryPkgNames.add(pkgEntry.name)
     }
     pi += 1
   }
 
-  if entryPkgName == "" {
+  if entryPkgNames.count > 1 {
+    var names = "'" + entryPkgNames[0] + "'"
+    var ni = 1
+    while ni < entryPkgNames.count {
+      names = names + ", '" + entryPkgNames[ni] + "'"
+      ni += 1
+    }
+    printErr(
+      "build: --release: multiple packages declare `func main()`: " + names + " — exactly one entry package is required"
+    )
+    return 1
+  }
+  if entryPkgNames.count == 0 {
     printErr(
       "build: --release: no package in this project declares `func main()` (checked " + toString(proj.packages.count) +
         " package(s))"
     )
     return 1
   }
+  val entryPkgName = entryPkgNames[0]
 
   // Build to a staging directory so the production `bin/` output is untouched
   // by the intermediate managed DLL.
@@ -498,9 +506,7 @@ func buildReleaseProject(
                 if File.fileExists(dllPath) {
                   extraRefs.add(dllPath)
                 } else {
-                  printErr(
-                    "build: --release: local dep '" + dep.name + "' not built — run `lyric build --manifest " + depToml + "` first"
-                  )
+                  printErr("build: --release: " + Release.localDepNotBuiltMessage(dep.name, dllPath, depToml))
                   return 1
                 }
               }
@@ -764,7 +770,7 @@ func buildProject(
                   if File.fileExists(dllPath) {
                     restoredDlls.add(dep.name + "\t" + dllPath)
                   } else {
-                    printErr("build: local dep '" + dep.name + "' not built — run `lyric build --manifest " + depToml + "` first")
+                    printErr("build: " + Release.localDepNotBuiltMessage(dep.name, dllPath, depToml))
                   }
                 }
                 case Err(e) -> {
