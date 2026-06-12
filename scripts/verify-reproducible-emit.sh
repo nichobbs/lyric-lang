@@ -69,8 +69,28 @@ verify_manifest() {
   # file name in two SEPARATE directories so the assembly identity is identical
   # and only the output directory differs — confirming the path is not baked
   # into the image.
+  #
+  # The extraction is a deliberately simple line-pattern; it cannot understand
+  # nested tables, inline comments inside the string, or single-quoted TOML
+  # strings.  Rather than silently picking a wrong name, it fails hard when it
+  # finds zero or more than one candidate — pass [asm-name] explicitly to
+  # override (#3222).
   if [[ -z "$asm_name" ]]; then
-    asm_name="$(sed -n 's/^[[:space:]]*output_assembly[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest" | head -1)"
+    local matches match_count
+    matches="$(sed -n 's/^[[:space:]]*output_assembly[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest")"
+    match_count="$(printf '%s' "$matches" | grep -c . || true)"
+    if [[ "$match_count" -eq 0 ]]; then
+      echo "FATAL: no output_assembly entry found in $manifest;" >&2
+      echo "       pass the assembly name explicitly: verify-reproducible-emit.sh manifest <lyric-bin> <manifest> <asm-name>" >&2
+      exit 1
+    fi
+    if [[ "$match_count" -gt 1 ]]; then
+      echo "FATAL: $match_count output_assembly entries found in $manifest:" >&2
+      while IFS= read -r m; do echo "       $m" >&2; done <<< "$matches"
+      echo "       pass the assembly name explicitly to disambiguate: verify-reproducible-emit.sh manifest <lyric-bin> <manifest> <asm-name>" >&2
+      exit 1
+    fi
+    asm_name="$matches"
   fi
   [[ -n "$asm_name" ]] || { echo "FATAL: could not determine output assembly name; pass it as the last arg" >&2; exit 1; }
 
