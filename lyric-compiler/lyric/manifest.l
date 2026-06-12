@@ -949,9 +949,15 @@ func assembleFeatures(entries: in List[Entry]): Result[Option[FeaturesSection], 
   Ok(value = Some(value = FeaturesSection(declared = sortStringList(declared), defaults = defaultList)))
 }
 
-func assembleNuget(entries: in List[Entry]): Option[NugetSection] {
+/// Assemble the `[nuget]` / `[nuget.options]` tables.  Each
+/// `Package.Name = "version"` entry becomes a `NugetEntry`; the extended
+/// `{ version = "...", ... }` inline-table form is also accepted.  An entry
+/// whose value is neither a string nor an inline table carrying a `version`
+/// key produces `Err(InvalidField)` (#2744).  Returns `Ok(None)` when no
+/// `[nuget]` table is present.
+func assembleNuget(entries: in List[Entry]): Result[Option[NugetSection], ManifestError] {
   if not hasSection(entries, "nuget") {
-    return None
+    return Ok(value = None)
   }
   val nugetEntries: List[NugetEntry] = newList()
   var i = 0
@@ -964,17 +970,29 @@ func assembleNuget(entries: in List[Entry]): Option[NugetSection] {
           // Support { version = "1.0.0", features = [...] } form in [nuget].
           match findInlineStr(pairs, "version") {
             case Some(v) -> nugetEntries.add(NugetEntry(name = e.key, version = v))
-            case None -> ()
+            case None -> return Err(
+              error = InvalidField(
+                section = "nuget",
+                field = e.key,
+                message = "expected a version string or an inline table with a 'version' key"
+              )
+            )
           }
         }
-        case _ -> ()
+        case _ -> return Err(
+          error = InvalidField(
+            section = "nuget",
+            field = e.key,
+            message = "expected a version string or an inline table with a 'version' key"
+          )
+        )
       }
     }
     i += 1
   }
   val target = findString(entries, "nuget.options", "target")
   val allowNative = findBool(entries, "nuget.options", "allow_native", false)
-  Some(value = NugetSection(entries = nugetEntries, target = target, allowNative = allowNative))
+  Ok(value = Some(value = NugetSection(entries = nugetEntries, target = target, allowNative = allowNative)))
 }
 
 /// Validate a `[maven]` coordinate key + version and, on success, append the
@@ -1013,6 +1031,8 @@ func collectMavenEntry(acc: in List[MavenEntry], key: in String, version: in Str
 /// extended `{ version = "...", ... }` inline-table form is also accepted.
 /// Coordinate keys must be exactly `groupId:artifactId` and versions must not
 /// be `-SNAPSHOT` builds (B0054) — either produces `Err(InvalidField)`.
+/// An entry whose value is neither a string nor an inline table carrying a
+/// `version` key also produces `Err(InvalidField)` (#2744).
 /// `[maven.options].repositories` defaults to `["central"]`; `java_version`
 /// is optional.  Returns `Ok(None)` when no `[maven]` table is present.
 func assembleMaven(entries: in List[Entry]): Result[Option[MavenSection], ManifestError] {
@@ -1032,7 +1052,7 @@ func assembleMaven(entries: in List[Entry]): Result[Option[MavenSection], Manife
         case _ -> None
       }
       match versionOpt {
-        case None -> ()
+        case None -> if isNone(firstErr) { firstErr = Some(value = InvalidField(section = "maven", field = e.key, message = "expected a version string or an inline table with a 'version' key")) }
         case Some(v) -> {
           val entryErr = collectMavenEntry(mavenEntries, e.key, v)
           if isNone(firstErr) {
@@ -1105,7 +1125,7 @@ func assembleRegistry(entries: in List[Entry]): Option[RegistryConfig] {
 pub func parseManifest(text: in String, filePath: in String): Result[Manifest, ManifestError] {
   match collectEntries(text, filePath) {
     case Err(e) -> Err(error = e)
-    case Ok(entries) -> match assemblePackage(entries) { case Err(e) -> Err(error = e); case Ok(pkg) -> { val project = assembleProject(entries); val nuget = assembleNuget(entries); val ws = assembleWorkspace(entries); val reg = assembleRegistry(entries); match assembleDeps(entries) { case Err(e) -> Err(error = e); case Ok(deps) -> match assembleFeatures(entries) { case Err(e) -> Err(error = e); case Ok(featuresOpt) -> match assembleMaven(entries) { case Err(e) -> Err(error = e); case Ok(mavenOpt) -> Ok(value = Manifest(filePath = filePath, packageSection = pkg, project = project, deps = deps, nuget = nuget, maven = mavenOpt, features = featuresOpt, workspace = ws, registry = reg)) } } } } }
+    case Ok(entries) -> match assemblePackage(entries) { case Err(e) -> Err(error = e); case Ok(pkg) -> { val project = assembleProject(entries); val ws = assembleWorkspace(entries); val reg = assembleRegistry(entries); match assembleNuget(entries) { case Err(e) -> Err(error = e); case Ok(nuget) -> match assembleDeps(entries) { case Err(e) -> Err(error = e); case Ok(deps) -> match assembleFeatures(entries) { case Err(e) -> Err(error = e); case Ok(featuresOpt) -> match assembleMaven(entries) { case Err(e) -> Err(error = e); case Ok(mavenOpt) -> Ok(value = Manifest(filePath = filePath, packageSection = pkg, project = project, deps = deps, nuget = nuget, maven = mavenOpt, features = featuresOpt, workspace = ws, registry = reg)) } } } } } }
   }
 }
 
