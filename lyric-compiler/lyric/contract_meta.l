@@ -98,9 +98,10 @@ func decodeUtf8Resource(bytes: in slice[Byte]): Option[String] {
 /// as a present DLL that carries no `Lyric.Contract` resource.
 @stable(since = "0.1")
 pub func readFromFile(path: in String): Option[String] {
-  match Mdr.openResourceImage(path) {
+  val ri = match Mdr.openResourceImage(path) { case Some(v) -> v; case None -> return None }
+  match Mdr.tryReadResourceIn(ri, "Lyric.Contract") {
     case None -> None
-    case Some(ri) -> match Mdr.tryReadResourceIn(ri, "Lyric.Contract") { case None -> None; case Some(bytes) -> decodeUtf8Resource(bytes) }
+    case Some(bytes) -> decodeUtf8Resource(bytes)
   }
 }
 
