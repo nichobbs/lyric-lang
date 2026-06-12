@@ -161,11 +161,11 @@ pub record FuncCtx {
   // package items (plus the one shared interface) after all functions are lowered.
   // The same list object is threaded through every `FuncCtx` of the package so
   // lambda-class names stay globally unique and no closure is lost.
+  // `.count` doubles as the next `<pkg>$Lambda$<n>` index: `lowerLambda`
+  // reserves its slot with a placeholder before lowering the body (nested
+  // lambdas append to the same list) and overwrites it with the finished
+  // closure.
   closureAcc: List[LClosure]
-  // Shared monotonic counter for unique `<pkg>$Lambda$<n>` class names; `.count`
-  // is the next index, `.add` advances it.  Shared across the package like
-  // `closureAcc`.
-  closureCounter: List[Int]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

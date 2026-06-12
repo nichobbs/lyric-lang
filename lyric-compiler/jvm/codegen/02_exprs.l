@@ -1881,11 +1881,29 @@ func lambdaCaptureNamesJvm(ctx: in FuncCtx, lparams: in List[LambdaParam], body:
 // is left on the stack.  Returns the closure's static type (the shared iface).
 func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[LambdaParam], body: in Block): JvmType {
   val ifaceName = lambdaIfaceName(ctx.pkgName)
-  val idx = ctx.closureCounter.count
-  ctx.closureCounter.add(0)
+  val idx = ctx.closureAcc.count
   // Use `$Lambda$<n>` nesting under the package host class so the binary name is
   // unique and not mistaken for a user record/union.
   val closureClass = ctx.pkgName + "$Lambda$" + toString(idx)
+  // Claim index `idx` in the package-shared accumulator now: lowering the body
+  // below recurses into any nested lambdas, which append to the same list, so
+  // the slot must be reserved up front for `$Lambda$<n>` names to stay unique.
+  // The placeholder is overwritten with the finished closure at the end.
+  val placeholderCaps: List[LClosureCapture] = newList()
+  val placeholderParams: List[JvmType] = newList()
+  val placeholderInsns: List[LInsn] = newList()
+  ctx.closureAcc.add(
+    LClosure(
+      closureClass = closureClass,
+      ifaceClass = ifaceName,
+      ifaceMethod = lambdaIfaceMethod(),
+      captures = placeholderCaps,
+      methodParams = placeholderParams,
+      methodRet = JRef(className = "java/lang/Object"),
+      bodyInsns = placeholderInsns,
+      bodyMaxLocals = 0
+    )
+  )
 
   val caps = lambdaCaptureNamesJvm(ctx, lparams, body)
   // Capture types come from the enclosing scope (by value, per §5.4 / docs/01:
@@ -1918,8 +1936,7 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
     JRef(className = "java/lang/Object"),
     ctx.moduleVals,
     ctx.opaqueTypes,
-    ctx.closureAcc,
-    ctx.closureCounter
+    ctx.closureAcc
   )
   // Reserve slot 0 (this) and slot 1 (Object[] args).
   allocSlot(bodyCtx, "__closure_this", JRef(className = closureClass))
@@ -1976,7 +1993,7 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
     bodyInsns = bodyInsns,
     bodyMaxLocals = bodyCtx.slotTicker.count
   )
-  ctx.closureAcc.add(closure)
+  ctx.closureAcc[idx] = closure
 
   // ── Construct the closure at the lambda site ─────────────────────────────────
   insns.add(LNew(className = closureClass))
