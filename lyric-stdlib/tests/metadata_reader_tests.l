@@ -134,19 +134,35 @@ func loadLayout(img: in PeImage, th: in TablesHeader): TableLayout {
   }
 }
 
+// Unwrap a compressed-uint decode that the test expects to succeed.
+func cuintOk(bytes: in slice[Byte], label: in String): CompressedUInt {
+  match readCompressedUInt(bytes, 0) {
+    case Ok(c) -> c
+    case Err(e) -> panic(label + ": unexpected rejection: " + e)
+  }
+}
+
+// Assert that a compressed-uint decode is rejected with `Err`.
+func cuintRejected(bytes: in slice[Byte], label: in String): Unit {
+  match readCompressedUInt(bytes, 0) {
+    case Ok(c) -> panic(label + ": expected rejection, decoded " + Str.fromInt(c.value))
+    case Err(_) -> ()
+  }
+}
+
 // The compressed-uint reader inverts the writer's three-form encoding.
 func testCompressedUInt(): Unit {
   // 1-byte form: 0x03 → 3.
   val one: List[Byte] = newList()
   one.add(0x03u8)
-  val r1 = readCompressedUInt(one.toArray(), 0)
+  val r1 = cuintOk(one.toArray(), "cuint: 1-byte")
   assertEqualInt(r1.value, 3, "cuint: 1-byte value")
   assertEqualInt(r1.byteWidth, 1, "cuint: 1-byte width")
   // 2-byte form: 0x81 0x00 → 0x100 = 256.
   val two: List[Byte] = newList()
   two.add(0x81u8)
   two.add(0x00u8)
-  val r2 = readCompressedUInt(two.toArray(), 0)
+  val r2 = cuintOk(two.toArray(), "cuint: 2-byte")
   assertEqualInt(r2.value, 256, "cuint: 2-byte value")
   assertEqualInt(r2.byteWidth, 2, "cuint: 2-byte width")
   // 4-byte form: 0xC0 0x00 0x40 0x00 → 0x4000 = 16384.
@@ -155,29 +171,105 @@ func testCompressedUInt(): Unit {
   four.add(0x00u8)
   four.add(0x40u8)
   four.add(0x00u8)
-  val r4 = readCompressedUInt(four.toArray(), 0)
+  val r4 = cuintOk(four.toArray(), "cuint: 4-byte")
   assertEqualInt(r4.value, 16384, "cuint: 4-byte value")
   assertEqualInt(r4.byteWidth, 4, "cuint: 4-byte width")
   // Boundary: 0x7F → 127 — last value still in the 1-byte form.
   val max1: List[Byte] = newList()
   max1.add(0x7Fu8)
-  val rMax1 = readCompressedUInt(max1.toArray(), 0)
+  val rMax1 = cuintOk(max1.toArray(), "cuint: max 1-byte")
   assertEqualInt(rMax1.value, 127, "cuint: max 1-byte (0x7F)")
   assertEqualInt(rMax1.byteWidth, 1, "cuint: width at 1-byte ceiling")
   // Boundary: 0x80 0x80 → 128 — first value that requires the 2-byte form.
   val min2: List[Byte] = newList()
   min2.add(0x80u8)
   min2.add(0x80u8)
-  val rMin2 = readCompressedUInt(min2.toArray(), 0)
+  val rMin2 = cuintOk(min2.toArray(), "cuint: min 2-byte")
   assertEqualInt(rMin2.value, 128, "cuint: min 2-byte (0x80 0x80)")
   assertEqualInt(rMin2.byteWidth, 2, "cuint: width at 2-byte floor")
   // Boundary: 0xBF 0xFF → 16383 — last value still in the 2-byte form.
   val max2: List[Byte] = newList()
   max2.add(0xBFu8)
   max2.add(0xFFu8)
-  val rMax2 = readCompressedUInt(max2.toArray(), 0)
+  val rMax2 = cuintOk(max2.toArray(), "cuint: max 2-byte")
   assertEqualInt(rMax2.value, 16383, "cuint: max 2-byte (0xBF 0xFF)")
   assertEqualInt(rMax2.byteWidth, 2, "cuint: width at 2-byte ceiling")
+  // Boundary: 0xDF 0xFF 0xFF 0xFF → 0x1FFFFFFF — last valid 4-byte lead.
+  val max4: List[Byte] = newList()
+  max4.add(0xDFu8)
+  max4.add(0xFFu8)
+  max4.add(0xFFu8)
+  max4.add(0xFFu8)
+  val rMax4 = cuintOk(max4.toArray(), "cuint: max 4-byte")
+  assertEqualInt(rMax4.value, 536870911, "cuint: max 4-byte (0xDF ...)")
+  assertEqualInt(rMax4.byteWidth, 4, "cuint: width at 4-byte ceiling")
+}
+
+// ECMA-335 §II.23.2 reserves lead bytes 0xE0–0xFE and assigns 0xFF as the
+// null-blob marker; neither is a valid compressed integer, so the reader
+// rejects them instead of decoding a junk 29-bit value (#1878).  Truncated
+// and out-of-range reads are rejected for the same reason.
+func testCompressedUIntRejectsReserved(): Unit {
+  // 0xE0 — first reserved lead byte (followed by enough bytes for the
+  // would-be 4-byte form, proving the rejection is the lead byte itself).
+  val resv: List[Byte] = newList()
+  resv.add(0xE0u8)
+  resv.add(0x00u8)
+  resv.add(0x00u8)
+  resv.add(0x00u8)
+  cuintRejected(resv.toArray(), "cuint-reserved: 0xE0 lead byte")
+  // 0xFE — last reserved lead byte.
+  val resvHi: List[Byte] = newList()
+  resvHi.add(0xFEu8)
+  resvHi.add(0x00u8)
+  resvHi.add(0x00u8)
+  resvHi.add(0x00u8)
+  cuintRejected(resvHi.toArray(), "cuint-reserved: 0xFE lead byte")
+  // 0xFF — the null-blob marker is not a compressed integer either.
+  val nul: List[Byte] = newList()
+  nul.add(0xFFu8)
+  nul.add(0x00u8)
+  nul.add(0x00u8)
+  nul.add(0x00u8)
+  cuintRejected(nul.toArray(), "cuint-reserved: 0xFF null marker")
+  // Truncated 2-byte form: a 0x80 lead with no continuation byte.
+  val trunc2: List[Byte] = newList()
+  trunc2.add(0x80u8)
+  cuintRejected(trunc2.toArray(), "cuint-reserved: truncated 2-byte form")
+  // Truncated 4-byte form: a 0xC0 lead with only two of three tail bytes.
+  val trunc4: List[Byte] = newList()
+  trunc4.add(0xC0u8)
+  trunc4.add(0x00u8)
+  trunc4.add(0x00u8)
+  cuintRejected(trunc4.toArray(), "cuint-reserved: truncated 4-byte form")
+  // Out-of-range offset.
+  val tiny: List[Byte] = newList()
+  tiny.add(0x03u8)
+  match readCompressedUInt(tiny.toArray(), 1) {
+    case Ok(_) -> panic("cuint-reserved: offset past the end must be rejected")
+    case Err(_) -> ()
+  }
+  // A reserved byte inside a signature blob degrades to a clean decode
+  // error, never a junk value: DEFAULT, 1 param, VOID ret, then a CLASS
+  // whose TypeDefOrRef token starts with reserved 0xE0.
+  val sBad: List[Byte] = newList()
+  sBad.add(0x00u8)
+  sBad.add(0x01u8)
+  sBad.add(0x01u8)
+  sBad.add(0x12u8)
+  sBad.add(0xE0u8)
+  match decodeMethodSig(sBad.toArray()) {
+    case Err(e) -> panic("cuint-reserved: sig with reserved token byte should decode: " + e)
+    case Ok(d) -> {
+      // The poisoned parameter surfaces as STUnknown (never matches an
+      // overload) rather than an STClass with a garbage token.
+      assertEqualInt(d.paramTypes.count, 1, "cuint-reserved: poisoned param recorded once")
+      match d.paramTypes[0] {
+        case STUnknown(_) -> ()
+        case _ -> panic("cuint-reserved: poisoned param should be STUnknown")
+      }
+    }
+  }
 }
 
 // Layer 4 oracle: the running test PE's metadata tables decode to the
@@ -733,6 +825,59 @@ func testResolveExternValueType(): Unit {
   }
 }
 
+// Resource-payload extraction never reads outside the Resources region: an
+// out-of-range offset yields an empty slice instead of bytes from an adjacent
+// section (#3224).
+func testExtractResourceBytesBounds(): Unit {
+  val img = loadPe()
+  assertEqualInt(extractResourceBytes(img, -1).length, 0, "resx: negative offset is empty")
+  // The whole-file length is beyond any Resources region regardless of
+  // whether this PE carries one.
+  assertEqualInt(extractResourceBytes(img, img.bytes.length).length, 0, "resx: offset past region is empty")
+  if img.resourcesSize > 0 {
+    assertEqualInt(extractResourceBytes(img, img.resourcesSize).length, 0, "resx: offset at region end is empty")
+  }
+}
+
+// #2147: the merged single-read indexer (`addAssemblyToIndexesAndValueTypes`)
+// fills the same type/path/value-type indexes as the two separate
+// per-assembly scans (`addAssemblyToIndexes` + `addAssemblyValueTypes`).
+func testMergedIndexEquivalence(): Unit {
+  match refPackDir() {
+    case None -> panic("merged-index: reference-assembly pack not found")
+    case Some(dir) -> {
+      val rt = Path.join(dir, "System.Runtime.dll")
+      val typeIdxSep: Map[String, String] = newMap()
+      val pathIdxSep: Map[String, String] = newMap()
+      val vtypeSep: Map[String, Bool] = newMap()
+      addAssemblyToIndexes(typeIdxSep, pathIdxSep, rt)
+      addAssemblyValueTypes(vtypeSep, rt)
+      val typeIdxMerged: Map[String, String] = newMap()
+      val pathIdxMerged: Map[String, String] = newMap()
+      val vtypeMerged: Map[String, Bool] = newMap()
+      addAssemblyToIndexesAndValueTypes(typeIdxMerged, pathIdxMerged, vtypeMerged, rt)
+      // Identical deterministic scans over identical bytes: the entry counts
+      // must match exactly, and known entries must agree.
+      assertEqualInt(typeIdxMerged.count, typeIdxSep.count, "merged-index: type index counts equal")
+      assertEqualInt(pathIdxMerged.count, pathIdxSep.count, "merged-index: path index counts equal")
+      assertEqualInt(vtypeMerged.count, vtypeSep.count, "merged-index: value-type set counts equal")
+      assertTrue(typeIdxSep.count > 0, "merged-index: type index non-empty")
+      assertTrue(vtypeSep.count > 0, "merged-index: value-type set non-empty")
+      match assemblyForType(typeIdxMerged, "System.Object") {
+        case None -> panic("merged-index: System.Object missing from merged type index")
+        case Some(a) -> assertEqual(a, "System.Runtime", "merged-index: System.Object -> System.Runtime")
+      }
+      match mapGet(pathIdxMerged, "System.Runtime") {
+        case None -> panic("merged-index: System.Runtime missing from merged path index")
+        case Some(p) -> assertEqual(p, rt, "merged-index: path index points at the scanned DLL")
+      }
+      assertTrue(isValueTypeFqn(vtypeMerged, "System.TimeSpan"), "merged-index: TimeSpan is a value type")
+      assertTrue(isValueTypeFqn(vtypeSep, "System.TimeSpan"), "merged-index: TimeSpan in separate-scan set too")
+      assertTrue(not isValueTypeFqn(vtypeMerged, "System.Object"), "merged-index: Object is not a value type")
+    }
+  }
+}
+
 // ── Driver ───────────────────────────────────────────────────────────────────
 func main(): Int {
   testPeContainer()
@@ -740,6 +885,7 @@ func main(): Int {
   testMetadataRoot()
   testTablesHeader()
   testCompressedUInt()
+  testCompressedUIntRejectsReserved()
   testTableRows()
   testMethodSigBlobs()
   testSigDecodeRoundTrip()
@@ -752,6 +898,8 @@ func main(): Int {
   testResolveExtern()
   testResolveExternValueType()
   testScoreSigTypeArrayInvariance()
+  testExtractResourceBytesBounds()
+  testMergedIndexEquivalence()
   println("metadata-reader self-test: ok")
   return 0
 }
