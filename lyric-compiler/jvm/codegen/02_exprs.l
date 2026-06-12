@@ -1802,6 +1802,38 @@ func collectBoundNamesExpr(e: in Expr, acc: in List[String]): Unit {
       }
     }
     case EBlock(block) -> collectBoundNamesBlock(block, acc)
+    case EList(elems) -> {
+      var i = 0
+      while i < elems.count {
+        collectBoundNamesExpr(elems[i], acc)
+        i = i + 1
+      }
+    }
+    case ETuple(elems) -> {
+      var i = 0
+      while i < elems.count {
+        collectBoundNamesExpr(elems[i], acc)
+        i = i + 1
+      }
+    }
+    case EIndex(recv, idxs) -> {
+      collectBoundNamesExpr(recv, acc)
+      var i = 0
+      while i < idxs.count {
+        collectBoundNamesExpr(idxs[i], acc)
+        i = i + 1
+      }
+    }
+    case EInterpolated(segments) -> {
+      var i = 0
+      while i < segments.count {
+        match segments[i] {
+          case ISExpr(ex) -> collectBoundNamesExpr(ex, acc)
+          case ISText(_, _) -> ()
+        }
+        i = i + 1
+      }
+    }
     case _ -> ()
   }
 }
