@@ -629,24 +629,36 @@ func synthesizeShowUnion(typeName: in String, decl: in UnionDecl, vis: in Option
 // Build `Ord` for a union type.
 // Case ordering follows declaration order. For the same case, fields are
 // compared lexicographically left-to-right using `<`/`>` with early return.
-func synthesizeOrdUnion(typeName: in String, decl: in UnionDecl, vis: in Option[Visibility]): Item {
+func synthesizeOrdUnion(
+  typeName: in String,
+  decl: in UnionDecl,
+  vis: in Option[Visibility],
+  distincts: in Map[String, String],
+): Item {
   val outerArms: List[MatchArm] = newList()
   var selfIdx = 0
   while selfIdx < decl.cases.count {
     val sc = decl.cases[selfIdx]
-    // Emit D0001 for non-primitive case fields before synthesizing BLt/BGt comparisons (#2969).
+    // Per-field `.value` projection depths: a distinct type over an Ord primitive
+    // compares through its projection chain (#3186); a genuinely non-ordered
+    // field type gets D0001 before synthesizing BLt/BGt comparisons (#2969).
+    val fieldHops: List[Int] = newList()
     var fwi = 0
     while fwi < sc.fields.count {
       val fwTyName = match sc.fields[fwi] {
         case UFNamed(_, fty, _) -> match fty.kind { case TRef(p) -> if p.segments.count > 0 { p.segments[p.segments.count - 1] } else { "" }; case _ -> "" }
         case UFPos(fty, _) -> match fty.kind { case TRef(p) -> if p.segments.count > 0 { p.segments[p.segments.count - 1] } else { "" }; case _ -> "" }
       }
-      if not isOrdPrimitiveTypeName(fwTyName) {
+      val fwHops = ordValueHops(fwTyName, distincts)
+      if fwHops < 0 {
         println(
           "D0001: @derive(Ord) on '" + typeName + "' case '" + sc.name + "': field " + toString(fwi) + " has type '" +
             fwTyName +
             "' which does not support `<`/`>` operators — comparison will fail; use a custom `compare` implementation instead (#2969)"
         )
+        fieldHops.add(0)
+      } else {
+        fieldHops.add(fwHops)
       }
       fwi = fwi + 1
     }
@@ -662,8 +674,10 @@ func synthesizeOrdUnion(typeName: in String, decl: in UnionDecl, vis: in Option[
         val stmts: List[Statement] = newList()
         var fi = 0
         while fi < selfNames.count {
-          stmts.add(stmtIf(binop(BLt, pathExpr(selfNames[fi]), pathExpr(otherNames[fi])), blockReturn(longLitOf(-1i64))))
-          stmts.add(stmtIf(binop(BGt, pathExpr(selfNames[fi]), pathExpr(otherNames[fi])), blockReturn(longLitOf(1i64))))
+          val sf = ordFieldAccess(pathExpr(selfNames[fi]), fieldHops[fi])
+          val of_ = ordFieldAccess(pathExpr(otherNames[fi]), fieldHops[fi])
+          stmts.add(stmtIf(binop(BLt, sf, of_), blockReturn(longLitOf(-1i64))))
+          stmts.add(stmtIf(binop(BGt, sf, of_), blockReturn(longLitOf(1i64))))
           fi = fi + 1
         }
         val sameBody = blockStmtsReturn(stmts, longLitOf(0i64))
@@ -789,10 +803,57 @@ func isOrdPrimitiveTypeName(name: in String): Bool {
     name == "Double"
 }
 
+// How many `.value` projections take a field of type `name` down to an Ord
+// primitive, following the file's distinct-type declarations (`type Age = Int`
+// needs one hop, `type A = B` over `type B = Int` needs two); -1 when the
+// chain does not end at an Ord primitive.  A distinct type lowers to a sealed
+// wrapper with a single `value` field, and comparing the wrappers directly
+// silently miscompiles to a reference comparison in the MSIL backend — the
+// synthesised compare must go through the projection chain instead (#3186).
+// The hop bound keeps a cyclic declaration (a type error reported elsewhere)
+// from looping.
+func ordValueHops(name: in String, distincts: in Map[String, String]): Int {
+  var cur = name
+  var hops = 0
+  while hops < 32 {
+    if isOrdPrimitiveTypeName(cur) {
+      return hops
+    }
+    match mapGet(distincts, cur) {
+      case Some(u) -> {
+        cur = u
+      }
+      case None -> {
+        return -1
+      }
+    }
+    hops = hops + 1
+  }
+  -1
+}
+
+// `base.value.value...` — `hops` chained projections down to the primitive.
+func ordFieldAccess(base: in Expr, hops: in Int): Expr {
+  var e = base
+  var i = 0
+  while i < hops {
+    e = memberOf(e, "value")
+    i = i + 1
+  }
+  e
+}
+
 // Field-by-field lexicographic comparison using `<`/`>` with early return.
-// Emits D0001 for any field whose type is not an Ord primitive; such fields require
-// a recursive `compare` call which is not yet synthesized (#2969).
-func synthesizeOrdRecord(typeName: in String, decl: in RecordDecl, vis: in Option[Visibility]): Item {
+// A field of distinct type over an Ord primitive (`type Age = Int`) compares
+// through its `.value` projection chain (#3186).  Emits D0001 for any field
+// whose type is not (transitively) an Ord primitive; such fields require a
+// recursive `compare` call which is not yet synthesized (#2969).
+func synthesizeOrdRecord(
+  typeName: in String,
+  decl: in RecordDecl,
+  vis: in Option[Visibility],
+  distincts: in Map[String, String],
+): Item {
   val fields = collectFields(decl)
   val stmts: List[Statement] = newList()
   var i = 0
@@ -801,17 +862,20 @@ func synthesizeOrdRecord(typeName: in String, decl: in RecordDecl, vis: in Optio
       case TRef(path) -> if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "" }
       case _ -> ""
     }
-    if not isOrdPrimitiveTypeName(fTyName) {
-      // D0001: @derive(Ord) on a record field of non-primitive type — `<`/`>` operators
-      // are not defined for custom types; comparison will fail at type-check time (#2969).
+    var hops = ordValueHops(fTyName, distincts)
+    if hops < 0 {
+      // D0001: @derive(Ord) on a record field that is neither an Ord primitive nor a
+      // distinct type over one — `<`/`>` are not defined for custom types and the
+      // comparison would miscompile to a reference comparison (#2969, #3186).
       // Recursive `compare` call synthesis is not yet implemented.
       println(
         "D0001: @derive(Ord) on '" + typeName + "': field '" + fields[i].name + "' has type '" + fTyName +
           "' which does not support `<`/`>` operators — comparison will fail; use a custom `compare` implementation instead (#2969)"
       )
+      hops = 0
     }
-    val sf = memberOf(pathExpr("self"), fields[i].name)
-    val of_ = memberOf(pathExpr("other"), fields[i].name)
+    val sf = ordFieldAccess(memberOf(pathExpr("self"), fields[i].name), hops)
+    val of_ = ordFieldAccess(memberOf(pathExpr("other"), fields[i].name), hops)
     stmts.add(stmtIf(binop(BLt, sf, of_), blockReturn(longLitOf(-1i64))))
     stmts.add(stmtIf(binop(BGt, sf, of_), blockReturn(longLitOf(1i64))))
     i = i + 1
@@ -868,7 +932,9 @@ func addIfNew(synths: inout List[Item], existingItems: in List[Item], candidate:
   }
 }
 
-func deriveItem(item: in Item, existingItems: in List[Item], synths: inout List[Item]) {
+func deriveItem(
+  item: in Item, existingItems: in List[Item], synths: inout List[Item], distincts: in Map[String, String]
+) {
   val anns = item.annotations
   // Synthesised helpers inherit the parent item's visibility so that
   // `pub @derive(Equals) record Point { ... }` produces a `pub Point.equals`
@@ -888,7 +954,7 @@ func deriveItem(item: in Item, existingItems: in List[Item], synths: inout List[
         addIfNew(synths, existingItems, synthesizeShowRecord(decl.name, decl, vis), decl.name + ".show")
       }
       if hasDeriveMarker(anns, "Ord") {
-        addIfNew(synths, existingItems, synthesizeOrdRecord(decl.name, decl, vis), decl.name + ".compare")
+        addIfNew(synths, existingItems, synthesizeOrdRecord(decl.name, decl, vis, distincts), decl.name + ".compare")
       }
       if hasGenerateMarker(anns, "Json") {
         addIfNew(synths, existingItems, synthesizeToJsonRecord(decl.name, decl, vis), decl.name + ".toJson")
@@ -905,7 +971,7 @@ func deriveItem(item: in Item, existingItems: in List[Item], synths: inout List[
         addIfNew(synths, existingItems, synthesizeShowRecord(decl.name, decl, vis), decl.name + ".show")
       }
       if hasDeriveMarker(anns, "Ord") {
-        addIfNew(synths, existingItems, synthesizeOrdRecord(decl.name, decl, vis), decl.name + ".compare")
+        addIfNew(synths, existingItems, synthesizeOrdRecord(decl.name, decl, vis, distincts), decl.name + ".compare")
       }
       if hasGenerateMarker(anns, "Json") {
         addIfNew(synths, existingItems, synthesizeToJsonRecord(decl.name, decl, vis), decl.name + ".toJson")
@@ -954,7 +1020,7 @@ func deriveItem(item: in Item, existingItems: in List[Item], synths: inout List[
         addIfNew(synths, existingItems, synthesizeShowUnion(decl.name, decl, vis), decl.name + ".show")
       }
       if hasDeriveMarker(anns, "Ord") {
-        addIfNew(synths, existingItems, synthesizeOrdUnion(decl.name, decl, vis), decl.name + ".compare")
+        addIfNew(synths, existingItems, synthesizeOrdUnion(decl.name, decl, vis, distincts), decl.name + ".compare")
       }
     }
     case IEnum(decl) -> {
@@ -982,10 +1048,31 @@ func deriveItem(item: in Item, existingItems: in List[Item], synths: inout List[
 /// `@derive(X)` / `@generate(Json)` annotation, and return a new SourceFile
 /// with the synthesised items appended after the originals.
 pub func deriveFile(file: in SourceFile): SourceFile {
+  // Same-file distinct-type declarations (name -> underlying type's head name)
+  // so @derive(Ord) fields typed as e.g. `type Age = Int` resolve through to
+  // their ordering-capable primitive instead of tripping a false D0001 and a
+  // miscompiled reference comparison (#3186).
+  val distincts: Map[String, String] = newMap()
+  var di = 0
+  while di < file.items.count {
+    match file.items[di].kind {
+      case IDistinctType(decl) -> {
+        val underlyingName = match decl.underlying.kind {
+          case TRef(path) -> if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "" }
+          case _ -> ""
+        }
+        if not distincts.containsKey(decl.name) {
+          distincts.add(decl.name, underlyingName)
+        }
+      }
+      case _ -> ()
+    }
+    di = di + 1
+  }
   val synths: List[Item] = newList()
   var i = 0
   while i < file.items.count {
-    deriveItem(file.items[i], file.items, synths)
+    deriveItem(file.items[i], file.items, synths, distincts)
     i = i + 1
   }
   if synths.count == 0 {
