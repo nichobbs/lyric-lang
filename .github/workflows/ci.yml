@@ -718,6 +718,29 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/msil/msil_self_test_m87.l
 
+      # Package-level class-typed val .cctor self-test (#1576, wired per #3024).
+      # Exercises the self-hosted MSIL lowering for a package-level `val` whose
+      # initializer is a non-literal class-typed extern expression: the .cctor
+      # must store into a backing static field typed CLASS + TypeRef, not
+      # degraded to `object`.  Replaces the former F# bridge test entry
+      # `shm_val_cctor_class_typed` in SelfHostedMsilBridgeTests.fs (deleted —
+      # no-new-F# rule).  Compiled in-process through the self-hosted
+      # `Msil.Bridge`; imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+      - name: Class-typed package val .cctor self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping class-typed val .cctor self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping class-typed val .cctor self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/msil/msil_self_test_m86.l
+
       # In-bundle generic records self-test (#2362, docs/43, epic #2359 Stage 3).
       # Exercises the self-hosted MSIL backend emitting a `record Box[T]` as a
       # truly generic TypeDef: GenericParam metadata rows (table 0x2A), VAR-typed

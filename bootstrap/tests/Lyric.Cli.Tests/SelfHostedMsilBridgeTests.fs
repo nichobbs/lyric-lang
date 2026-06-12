@@ -552,48 +552,6 @@ func main(): Unit {
 """
             "val ok"
 
-        // ── #1576: package-level class-typed val → .cctor with correct TypeRef ─
-        // Before #1576, `typeExprToMsilCtx` degraded reference-type extern types
-        // to `MClass("Pkg.SB")` (no TypeRef), so the field signature encoded as
-        // `ELEMENT_TYPE_OBJECT` while the .cctor stored a real StringBuilder —
-        // a mismatch that caused NRE or InvalidProgramException at runtime.
-        // The fix adds a reference-type extern path that produces `MClassRef`
-        // (CLASS + TypeRef), matching the field identity the CLR expects.
-        mkBridge "shm_val_cctor_class_typed"
-            """package ShMValCctorClass
-import Std.Core
-
-extern type SB = "System.Text.StringBuilder"
-
-@externTarget("System.Text.StringBuilder..ctor")
-func newSb(): SB = ()
-
-@externTarget("System.Text.StringBuilder.Append")
-@externInstance
-func sbAppend(sb: in SB, s: in String): SB = ()
-
-@externTarget("System.Text.StringBuilder.ToString")
-@externInstance
-func sbStr(sb: in SB): String = ()
-
-val sharedSb: SB = newSb()
-
-val sharedSb2: SB = newSb()
-
-func appendX(): Unit {
-  val _ = sbAppend(sharedSb, "x")
-}
-
-func main(): Unit {
-  appendX()
-  appendX()
-  println(sbStr(sharedSb))
-  val _ = sbAppend(sharedSb2, "second")
-  println(sbStr(sharedSb2))
-}
-"""
-            "xx\nsecond"
-
         // ── Band 2 (#853): IInterface → CLR interface TypeDef ────────────────
         mkBridge "shm_interface_smoke"
             """package ShMIface
