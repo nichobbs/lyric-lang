@@ -80,6 +80,16 @@ test "declaresEntryMain: single-line triple-quoted literal does not flip state (
   assertTrue(Release.declaresEntryMain(src), "balanced same-line triple quotes leave the scan in code")
 }
 
+test "declaresEntryMain: triple-quotes inside a line comment do not flip state (#3248)" {
+  val src = "package P\n// example: \"\"\"\nfunc main(): Int { 0 }\n"
+  assertTrue(Release.declaresEntryMain(src), "func main() after a comment containing triple quotes is still detected")
+}
+
+test "declaresEntryMain: comment markers inside a triple-quoted string stay literal (#3248)" {
+  val src = "package P\nval s = \"\"\"\n// not a comment: \"\"\"\nfunc main(): Int { 0 }\n"
+  assertTrue(Release.declaresEntryMain(src), "a // inside a triple-quoted literal does not stop the close scan")
+}
+
 // ── localDepNotBuiltMessage (#3216) ──────────────────────────────────────────
 test "localDepNotBuiltMessage names the probed DLL path and the --out caveat (#3216)" {
   val m = Release.localDepNotBuiltMessage("util", "/proj/util/bin/Util.dll", "/proj/util/lyric.toml")

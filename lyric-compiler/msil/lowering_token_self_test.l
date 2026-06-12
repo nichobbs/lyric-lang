@@ -25,7 +25,7 @@ import Std.Testing
 // Seed the mandatory open-generic TypeRefs needed by listTokensForLowering /
 // dictTokensForLowering (mirrors the newCodegenCtx seeding in codegen.l).
 func seedCollectionTypeRefs(ctx: in LoweringCtx): Unit {
-  val arRuntime = ctxAddAssemblyRef(ctx, "System.Runtime", 10, 0)
+  val _ = ctxAddAssemblyRef(ctx, "System.Runtime", 10, 0)
   val arCollections = ctxAddAssemblyRef(ctx, "System.Collections", 10, 0)
   val _ = ctxAddTypeRef(ctx, "System.Collections.Generic", "List`1", arCollections)
   val _ = ctxAddTypeRef(ctx, "System.Collections.Generic", "Dictionary`2", arCollections)

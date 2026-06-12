@@ -650,7 +650,6 @@ jobs:
           trap 'rm -rf "$work"' EXIT
           cat > "$work/f0015_fixture.l" <<'LYR'
           package F0015Fixture
-          import Std.Core
 
           @externStatic
           @externTarget("System.Math.Max")

@@ -315,6 +315,50 @@ test "explicit alias wins over a bare import's implicit tail alias (#2929)" {
   }
 }
 
+// Two bare imports sharing a tail segment resolve first-wins in source
+// order with no diagnostic (documented in collectAliases, #3250): `Bar`
+// routes to `Foo.Bar`, the earlier import.
+test "duplicate bare import tails: first bare import wins deterministically (#3250)" {
+  val src = "package Test\nimport Foo.Bar\nimport Other.Bar\nfunc f(): Int {\n  Bar.baz()\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IFunc(decl) -> {
+      match decl.body {
+        case Some(fb) -> {
+          match fb {
+            case FBBlock(block) -> {
+              assertTrue(block.statements.count > 0, "function body block must have at least one statement")
+              val stmt = block.statements[0]
+              match stmt.kind {
+                case SExpr(callExpr) -> {
+                  match callExpr.kind {
+                    case ECall(fn, _) -> {
+                      match fn.kind {
+                        case EPath(p) -> {
+                          assertEqualInt(p.segments.count, 3, "call fn rewritten through the implicit tail alias")
+                          assertEqual(p.segments[0], "Foo", "first bare import in source order wins the shared tail")
+                        }
+                        case _ -> assertTrue(false, "call fn is not EPath after rewrite")
+                      }
+                    }
+                    case _ -> assertTrue(false, "statement expression is not ECall")
+                  }
+                }
+                case _ -> assertTrue(false, "first statement is not SExpr")
+              }
+            }
+            case FBExpr(_) -> assertTrue(false, "function body is FBExpr, expected FBBlock")
+          }
+        }
+        case None -> assertTrue(false, "function decl has no body")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IFunc")
+  }
+}
+
 // Runtime end-to-end for #2929: this module itself bare-imports `Std.Console`
 // (multi-segment, no `as`) in its header.  Before the fix, `Console.println`
 // compiled but threw "unsupported method 'println' on the receiver type" at

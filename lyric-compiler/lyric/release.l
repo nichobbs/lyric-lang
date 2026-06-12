@@ -75,8 +75,10 @@ pub func packageNameOf(source: in String): String {
 // This is a text scan, not a parse: lines inside triple-quoted ("""...""")
 // string literals are skipped so embedded documentation containing a bare
 // `func main()` line does not misidentify a library as an entry package
-// (#3215).  Raw-string edge cases (a raw literal that itself contains `"""`)
-// remain best-effort — the scan is a pre-build package picker, not a parser.
+// (#3215), and a `"""` in a `//` line-comment tail does not flip the
+// in-string state (#3248).  Raw-string edge cases (a raw literal that itself
+// contains `"""`) and `//` inside ordinary one-line string literals remain
+// best-effort — the scan is a pre-build package picker, not a parser.
 pub func declaresEntryMain(source: in String): Bool {
   val lines = Str.split(source, "\n")
   var inTripleString = false
@@ -92,18 +94,32 @@ pub func declaresEntryMain(source: in String): Bool {
         return true
       }
     }
-    // An odd number of `"""` occurrences on a line flips the in-string state.
-    if tripleQuoteCount(lines[i]) % 2 == 1 {
-      inTripleString = not inTripleString
-    }
+    inTripleString = advanceTripleState(lines[i], inTripleString)
     i += 1
   }
   false
 }
 
-// Number of `"""` occurrences in `line` (non-overlapping, like the lexer).
-func tripleQuoteCount(line: in String): Int {
-  Str.split(line, "\"\"\"").length - 1
+// Advance the triple-quoted-string state across one raw source line.  A `//`
+// outside a triple-quoted string starts a line comment, so a `"""` in the
+// comment tail must not flip the state (#3248); inside a triple-quoted string
+// `//` is literal content and scanning continues.
+func advanceTripleState(line: in String, inTriple: in Bool): Bool {
+  var state = inTriple
+  var i = 0
+  val n = Str.length(line)
+  while i < n {
+    if not state and i + 1 < n and Str.substring(line, i, 2) == "//" {
+      return state
+    }
+    if i + 3 <= n and Str.substring(line, i, 3) == "\"\"\"" {
+      state = not state
+      i += 3
+    } else {
+      i += 1
+    }
+  }
+  state
 }
 
 /// Error message for a local path dependency whose output DLL is missing.

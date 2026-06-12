@@ -738,6 +738,10 @@ func tokenKindTag(tok: in Token): String {
 /// Compare the code-token sequences of two sources.  Returns "" when they
 /// are identical, otherwise a one-line description of the first
 /// divergence (1-based token index and the differing texts).
+///
+/// Internal diagnostic helper, `pub` only so the formatter self-tests can
+/// pin the loss-check guard's behaviour; not `@stable` — the exact message
+/// format carries no compatibility promise and may change (#3258).
 pub func structuralSequenceDiff(a: in String, b: in String): String {
   val ta = codeTokens(a)
   val tb = codeTokens(b)

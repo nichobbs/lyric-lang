@@ -98,7 +98,11 @@ func dotJoin(segs: in List[String]): String {
 // the call lands in `lowerMethodCallMsil` which looks for `func` as a method
 // on an unknown receiver and throws at runtime (#2930 single-segment, #2929
 // multi-segment).  Explicit `as` aliases are collected first and win: a bare
-// import never shadows a name an explicit alias already claims.
+// import never shadows a name an explicit alias already claims.  Two bare
+// imports sharing a tail segment (`import Foo.Bar` + `import Other.Bar`)
+// resolve first-wins in source order with no diagnostic — matching the
+// existing duplicate-explicit-alias behavior; add an explicit `as` clause to
+// disambiguate (#3250).
 func collectAliases(imports: in List[ImportDecl]): List[String] {
   val entries: List[String] = newList()
   var i = 0
