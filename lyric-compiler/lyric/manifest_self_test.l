@@ -299,6 +299,22 @@ func testNuget(): Unit {
   }
 }
 
+// A non-string, non-table entry value (e.g. an integer) is rejected rather
+// than silently skipped (#2744).
+func testNugetInvalidValueType(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[nuget]\nNewtonsoft.Json = 42\n"
+  val e = parseErr(toml)
+  assertTrue(isInvalidField(e, "nuget", "Newtonsoft.Json"), "nuget-invalid-value: InvalidField for integer value")
+}
+
+// An inline table without a 'version' key is rejected rather than silently
+// skipped (#2744).
+func testNugetTableMissingVersion(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[nuget]\nSerilog = { features = [\"sinks\"] }\n"
+  val e = parseErr(toml)
+  assertTrue(isInvalidField(e, "nuget", "Serilog"), "nuget-table-no-version: InvalidField for missing 'version' key")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §5b. [maven] section (docs/31-maven-linking.md, D053)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -399,6 +415,25 @@ func testMavenMalformedCoordinate(): Unit {
   val emptyArtifact = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[maven]\n\"com.example:\" = \"1.0.0\"\n"
   val e4 = parseErr(emptyArtifact)
   assertTrue(isInvalidField(e4, "maven", "com.example:"), "maven-malformed: InvalidField for empty artifact half")
+}
+
+// A non-string, non-table entry value (e.g. an integer) is rejected rather
+// than silently skipped (#2744).
+func testMavenInvalidValueType(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[maven]\n\"com.example:lib\" = 42\n"
+  val e = parseErr(toml)
+  assertTrue(isInvalidField(e, "maven", "com.example:lib"), "maven-invalid-value: InvalidField for integer value")
+}
+
+// An inline table without a 'version' key is rejected rather than silently
+// skipped (#2744).
+func testMavenTableMissingVersion(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[maven]\n\"com.example:lib\" = { classifier = \"tests\" }\n"
+  val e = parseErr(toml)
+  assertTrue(
+    isInvalidField(e, "maven", "com.example:lib"),
+    "maven-table-no-version: InvalidField for missing 'version' key"
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -547,6 +582,14 @@ test "nuget section" {
   testNuget()
 }
 
+test "nuget invalid value type" {
+  testNugetInvalidValueType()
+}
+
+test "nuget table missing version" {
+  testNugetTableMissingVersion()
+}
+
 test "maven single entry" {
   testMavenSingle()
 }
@@ -569,6 +612,14 @@ test "maven snapshot rejected" {
 
 test "maven malformed coordinate" {
   testMavenMalformedCoordinate()
+}
+
+test "maven invalid value type" {
+  testMavenInvalidValueType()
+}
+
+test "maven table missing version" {
+  testMavenTableMissingVersion()
 }
 
 test "project section" {
