@@ -754,6 +754,23 @@ test "then form if arm comments in match arm" {
   assertTrue(isFormatted(acc, parse(acc)), "then-if in match arm: idempotent")
 }
 
+test "then form if expression arm comments preserved" {
+  // Same fix for an *expression-form* arm (`case 0 -> if ... then 3 // op`):
+  // the body is EOBExpr, so the trivia branch of `matchLines` must detect
+  // the interior comment and route through the ctx-aware `exprAtCol`
+  // instead of the flat `exprInline` that would drop it.
+  val src = "package P\n\nfunc g(x: in Int): Int {\n" + "  match x {\n" + "    case 0 -> if x > 0 then 3   // op\n" +
+    "    else 6\n" +
+    "    case _ -> 1\n" +
+    "  }\n" +
+    "}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "then-if expression arm: round-trips losslessly")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "// op"), "then-if expression arm: interior comment preserved")
+  assertTrue(isFormatted(acc, parse(acc)), "then-if expression arm: idempotent")
+}
+
 test "then form if no comments stays inline" {
   // Without interior trivia, a `then`-form if stays on one line — the
   // multi-line split fires only to rescue comments.
