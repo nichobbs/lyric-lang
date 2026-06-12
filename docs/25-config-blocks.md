@@ -1,6 +1,8 @@
 # 25 — Config Blocks (typed, env-backed, read-once)
 
-**Status:** MSIL backend shipped (PR #2966, D-progress-488). JVM backend
+**Status:** MSIL backend shipped (PR #2966, D-progress-488); extended to
+`Long`/`Float`/`Double` fields with compile-time `G0009`/`G0010`/`G0013`
+guards (#2993, D-progress-505). JVM backend
 parity not yet implemented; tracked in #2998.  v1 surface (parser + AST +
 type-check + symbol table) implemented in the F# bootstrap and
 self-hosted compiler (PRs #206, #227).  v2 spec:
@@ -12,13 +14,20 @@ toggles.  Independently useful for application-level configuration.
 
 > **v1 scope note.** The first implementation ships a deliberately
 > narrow subset of the design below: module-scope `config Name { ... }`
-> blocks; field types limited to `Bool`, `Int`, and `String` (no
-> range subtypes, enums, or lists in v1); literal defaults only (no
-> imported-constant references); auto-derived env vars
-> `LYRIC_CONFIG_<PKG>_<BLOCK>_<FIELD>` (no `via "NAME"` overrides);
-> read-once-at-startup with fail-fast on required fields.  Lists,
-> ranges, enums, `via`, and `@sensitive` behaviour are deferred to
-> v1.1; the design below describes the full target.
+> blocks; field types limited to `Bool`, `Int`, `Long`, `Float` /
+> `Double`, and `String` (no range subtypes, enums, or lists in v1;
+> `Long`/`Float`/`Double` added in #2993 — `Float`/`Double` env values
+> parse with `InvariantCulture`, so the accepted format does not vary
+> with host locale); literal defaults only (no imported-constant
+> references; an `Int` literal widens to a `Long`/`Float`/`Double`
+> field, and a leading `-` on a numeric literal is folded); auto-derived
+> env vars `LYRIC_CONFIG_<PKG>_<BLOCK>_<FIELD>` (no `via "NAME"`
+> overrides); read-once-at-startup with fail-fast on required fields.
+> Unsupported field types are rejected at compile time with `G0009`,
+> non-literal or kind-mismatched defaults with `G0010`, and duplicate
+> field names with `G0013` (all enforced by the self-hosted type
+> checker).  Lists, ranges, enums, `via`, and `@sensitive` behaviour
+> are deferred to v1.1; the design below describes the full target.
 
 ---
 
@@ -121,7 +130,7 @@ cleanly from a single environment-variable string:
 | `Bool` | `"true"` / `"false"` (case-insensitive); `"1"` / `"0"` | `BOOL=true` |
 | `Int` | base-10 signed integer | `PORT=8080` |
 | `Long` | base-10 signed long | `LIMIT=1099511627776` |
-| `Float` / `Double` | IEEE-754 round-trip parse (Lyric's existing `tryParseDouble`) | `RATE=0.25` |
+| `Float` / `Double` | IEEE-754 round-trip parse, `InvariantCulture`-pinned (host locale never changes the accepted format) | `RATE=0.25` |
 | `String` | the raw env-var content, unmodified | `HOST=app.example.com` |
 | Range subtype (e.g. `Int range 0 ..= 65535`) | parsed as base type, then range-checked | `PORT=8080` |
 | Simple enum (closed sum type, no payloads) | case name, exact match | `LEVEL=Info` |
@@ -322,13 +331,17 @@ initialisation, separate fail-fast scope.
 | `G0004` | Field value parses but fails range / enum check (runtime, exit code 78). |
 | `G0005` | List field has unbalanced backslash escape (runtime, exit code 78). |
 | `G0008` | `pub config` rejected at compile time. |
-| `G0009` | Disallowed type in `config` field. |
-| `G0010` | Field default is not a compile-time constant. |
+| `G0009` | Disallowed type in `config` field (v1 allows `Bool`, `Int`, `Long`, `Float`, `Double`, `String`). |
+| `G0010` | Field default is not a compile-time literal constant of the declared type. |
 | `G0011` | `via "..."` value is not upper-snake. |
 | `G0012` | Two config blocks in the same package share a name. |
 | `G0013` | Field name collision within a single block. |
 
 The `G0001`–`G0005` codes are runtime; the rest are compile time.
+`G0009`, `G0010`, and `G0013` are enforced by the self-hosted type
+checker (#2993); before that guard existed, a `Float`/`Long` field
+silently miscompiled (zero-filled default; invalid IL when the env
+var was set).
 
 ---
 

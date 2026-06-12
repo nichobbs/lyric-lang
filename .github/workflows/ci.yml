@@ -1889,13 +1889,18 @@ jobs:
           size_kb=$(du -k "$native_cli" | cut -f1)
           echo "OK: Native AOT lyric CLI published (${size_kb} KB), built+ran an example and a restored-dependency build end-to-end." >> "$GITHUB_STEP_SUMMARY"
 
-      # IConfig (config block) lowering self-test (#2983, #2992).
+      # IConfig (config block) lowering self-test (#2983, #2992, #2993).
       # Wires `lyric-compiler/msil/msil_self_test_m85.l` via `lyric run` (the
       # AOT binary routes through the self-hosted MSIL emitter, which supports
       # `config {}` blocks; the F# bootstrap emitter does not, so `lyric run`
-      # is the correct path).  The test verifies five checks: Int/Bool/String
-      # default values when env vars are absent, a second independent config
-      # block, and field access without panic.  No new F# runner needed.
+      # is the correct path).  Run 1 (env vars absent) verifies the default
+      # path for the full v1 type set — Int/Bool/String/Long/Float/Double,
+      # including a negated Float default and a Long default outside Int32
+      # range — plus a second independent config block and field access
+      # without panic.  Run 2 sets the EnvProbe env vars and verifies the
+      # env-parse path (Int32.Parse / Int64.Parse / Boolean.Parse and the
+      # culture-pinned Double.Parse).  A third compile-only probe asserts the
+      # G0009 unsupported-field-type diagnostic.  No new F# runner needed.
       - name: IConfig config-block lowering self-test (lyric run, #2983)
         working-directory: ${{ github.workspace }}
         run: |
@@ -1910,12 +1915,38 @@ jobs:
             exit 1
           fi
           out="$("$lyric_bin" run lyric-compiler/msil/msil_self_test_m85.l 2>&1)"
-          for check in "port_default=true" "debug_default=true" "name_default=true" "timeout_default=true" "access_no_panic=true"; do
+          for check in "port_default=true" "debug_default=true" "name_default=true" \
+                       "rate_default=true" "scale_default=true" "cap_default=true" \
+                       "timeout_default=true" "access_no_panic=true" \
+                       "eport_parsed=false" "erate_parsed=false" "ecap_parsed=false" \
+                       "eflag_parsed=false" "ename_parsed=false"; do
             if ! printf '%s\n' "$out" | grep -qx "$check"; then
-              echo "::error::IConfig self-test missing expected line '$check'; full output:"; echo "$out"; exit 1
+              echo "::error::IConfig self-test (defaults run) missing expected line '$check'; full output:"; echo "$out"; exit 1
             fi
           done
-          echo "IConfig config-block lowering: all 5 default-value checks pass (#2983)"
+          out_env="$(LYRIC_CONFIG_MSIL_SELFTESTM85_ENVPROBE_EPORT=4242 \
+                     LYRIC_CONFIG_MSIL_SELFTESTM85_ENVPROBE_ERATE=2.5 \
+                     LYRIC_CONFIG_MSIL_SELFTESTM85_ENVPROBE_ECAP=8589934592 \
+                     LYRIC_CONFIG_MSIL_SELFTESTM85_ENVPROBE_EFLAG=true \
+                     LYRIC_CONFIG_MSIL_SELFTESTM85_ENVPROBE_ENAME=from-env \
+                     "$lyric_bin" run lyric-compiler/msil/msil_self_test_m85.l 2>&1)"
+          for check in "port_default=true" "rate_default=true" "cap_default=true" \
+                       "eport_parsed=true" "erate_parsed=true" "ecap_parsed=true" \
+                       "eflag_parsed=true" "ename_parsed=true"; do
+            if ! printf '%s\n' "$out_env" | grep -qx "$check"; then
+              echo "::error::IConfig self-test (env-parse run) missing expected line '$check'; full output:"; echo "$out_env"; exit 1
+            fi
+          done
+          bad_src="$(mktemp -d)/config_bad_type.l"
+          printf 'package ConfigBadType\n\nconfig Bad {\n  c: Char\n}\n\nfunc main(): Unit {\n  println("unreachable")\n}\n' > "$bad_src"
+          if bad_out="$("$lyric_bin" run "$bad_src" 2>&1)"; then
+            echo "::error::IConfig negative probe: unsupported Char config field compiled successfully; output:"; echo "$bad_out"; exit 1
+          else
+            if ! printf '%s\n' "$bad_out" | grep -q "G0009"; then
+              echo "::error::IConfig negative probe: expected G0009 in compile failure output:"; echo "$bad_out"; exit 1
+            fi
+          fi
+          echo "IConfig config-block lowering: defaults, env-parse, and G0009 negative checks pass (#2983, #2993)"
 
   compiler-self-tests-jvm:
     runs-on: ubuntu-latest
