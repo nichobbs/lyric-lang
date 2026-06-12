@@ -22,17 +22,15 @@
 //!   * A second class-typed package val (`val sb2: SB = newSb()`) is also
 //!     initialized correctly (multiple .cctor entries).
 //!
-//! Manual run:
-//!   ./bin/lyric run lyric-compiler/msil/msil_self_test_m86.l
+//! Run in CI via native `lyric test` (the auto_ffi_self_test.l precedent;
+//! compiled in-process through the self-hosted `Msil.Bridge`):
 //!
-//! Expected stdout (all checks print "=true"):
-//!   val_init_ok=true
-//!   val_append_ok=true
-//!   val_second_ok=true
-//!
-//! CI wiring: not yet wired — requires F# emitter test runner which cannot
-//! be added per CLAUDE.md.  Tracked in #2983.
+//!   lyric test --target dotnet lyric-compiler/msil/msil_self_test_m86.l
+@test_module
 package Msil.SelfTestM86
+
+import Std.Core
+import Std.Testing
 
 extern type SB = "System.Text.StringBuilder"
 
@@ -51,25 +49,14 @@ val sharedSb: SB = newSb()
 
 val sharedSb2: SB = newSb()
 
-func check(label: in String, ok: in Bool): Int {
-  if ok {
-    println(label + "=true")
-    0
-  } else {
-    println(label + "=false")
-    1
-  }
+test "package-level class-typed val initializes and accumulates via .cctor" {
+  val _ = sbAppend(sharedSb, "hello")
+  assertEqual(sbStr(sharedSb), "hello", "val_init_ok")
+  val _ = sbAppend(sharedSb, "-world")
+  assertEqual(sbStr(sharedSb), "hello-world", "val_append_ok")
 }
 
-func main(): Int {
-  var fails = 0
-  val _ = sbAppend(sharedSb, "hello")
-  fails = fails + check("val_init_ok", sbStr(sharedSb) == "hello")
-
-  val _ = sbAppend(sharedSb, "-world")
-  fails = fails + check("val_append_ok", sbStr(sharedSb) == "hello-world")
-
+test "second class-typed package val initializes independently" {
   val _ = sbAppend(sharedSb2, "second")
-  fails = fails + check("val_second_ok", sbStr(sharedSb2) == "second")
-  fails
+  assertEqual(sbStr(sharedSb2), "second", "val_second_ok")
 }

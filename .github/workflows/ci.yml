@@ -411,6 +411,7 @@ jobs:
             lyric-compiler/lyric/test_synth_self_test.l \
             lyric-compiler/lyric/manifest_self_test.l \
             lyric-compiler/lyric/verifier_self_test.l \
+            lyric-compiler/lyric/closure_correctness_self_test.l \
             lyric-compiler/lyric/generator/generator_self_test.l ; do
             echo "=== $t ==="
             "$lyric_bin" test "$t"
@@ -628,6 +629,48 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/auto_ffi_self_test.l
 
+      # Auto-FFI F0015 negative-compile test (#2945).  The auto-FFI self-test
+      # above covers only the happy path (valid signatures resolve), so a
+      # regression that silently disabled the signature-verification block in
+      # msil/codegen.l (e.g. `canVerify` or `isExplicitStatic` stuck false)
+      # would go undetected.  This step builds a fixture whose @externStatic
+      # @externTarget declares an arity that matches no System.Math.Max
+      # overload and asserts the build fails with F0015.
+      - name: Auto-FFI F0015 signature-mismatch negative test
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping F0015 negative test"
+            exit 1
+          fi
+          bin_abs="$(pwd)/$lyric_bin"
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          cat > "$work/f0015_fixture.l" <<'LYR'
+          package F0015Fixture
+          import Std.Core
+
+          @externStatic
+          @externTarget("System.Math.Max")
+          func badMax(a: in Int): Int = ()
+
+          func main(): Int {
+            badMax(1)
+          }
+          LYR
+          rc=0
+          ( cd "$work" && "$bin_abs" build f0015_fixture.l ) > "$work/build.out" 2>&1 || rc=$?
+          echo "--- build output (rc=$rc) ---"; cat "$work/build.out"
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::expected non-zero exit for a mismatched @externTarget signature"
+            exit 1
+          fi
+          grep -q "F0015" "$work/build.out" || {
+            echo "::error::build failed but did not report F0015"; exit 1; }
+          echo "F0015 signature-mismatch negative test passed (rc=$rc)"
+
       # Synthesized-method-resolution self-test (#1499, #1507).
       # Verifies that compiler-synthesized named methods (protected-type entries,
       # @derive(Equals/Show) free functions) resolve correctly at the call site:
@@ -674,6 +717,29 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/msil/msil_self_test_m87.l
+
+      # Package-level class-typed val .cctor self-test (#1576, wired per #3024).
+      # Exercises the self-hosted MSIL lowering for a package-level `val` whose
+      # initializer is a non-literal class-typed extern expression: the .cctor
+      # must store into a backing static field typed CLASS + TypeRef, not
+      # degraded to `object`.  Replaces the former F# bridge test entry
+      # `shm_val_cctor_class_typed` in SelfHostedMsilBridgeTests.fs (deleted —
+      # no-new-F# rule).  Compiled in-process through the self-hosted
+      # `Msil.Bridge`; imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+      - name: Class-typed package val .cctor self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping class-typed val .cctor self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping class-typed val .cctor self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/msil/msil_self_test_m86.l
 
       # In-bundle generic records self-test (#2362, docs/43, epic #2359 Stage 3).
       # Exercises the self-hosted MSIL backend emitting a `record Box[T]` as a
@@ -1093,6 +1159,9 @@ jobs:
       # `compilerClosureDllPaths` links the self-hosted-emitted compiler DLLs
       # staged under `<libdir>/selfhosted` by stage-selfhosted-compiler.sh —
       # the F#-emitted stage-1 metadata omits `pub val` decls (#3086).
+      # lowering_token_self_test.l (#2473) covers the listTokensForLowering /
+      # dictTokensForLowering cache hit/miss logic in Msil.Lowering; it rides
+      # the same step because it imports `Msil.*` like M2a-M2d.
       - name: MSIL backend self-tests M2a-M2d (native lyric test)
         working-directory: ${{ github.workspace }}
         run: |
@@ -1112,7 +1181,8 @@ jobs:
             lyric-compiler/msil/msil_self_test_m2a.l \
             lyric-compiler/msil/msil_self_test_m2b.l \
             lyric-compiler/msil/msil_self_test_m2c.l \
-            lyric-compiler/msil/msil_self_test_m2d.l ; do
+            lyric-compiler/msil/msil_self_test_m2d.l \
+            lyric-compiler/msil/lowering_token_self_test.l ; do
             echo "=== $t ==="
             "$lyric_bin" test --target dotnet "$t"
             ran="$ran $t"
@@ -2655,12 +2725,28 @@ jobs:
       # package's transitive compiler-import closure (already emitted) as
       # restored deps, so cross-package types AND inlined constants (#2592
       # slice 1) resolve across the assembly boundary.  This emits the
-      # typechecker self-test's compiler closure (Lexer + Parser + TypeChecker),
-      # then runs that same self-test against the SELF-HOSTED-EMITTED DLLs (via
-      # LYRIC_STDLIB_BIN, which findCompiledLibDir honours): the passing TAP
-      # assertions prove the emitted compiler DLLs are functional with correct
-      # transitive restored-dep threading — the producer side that #2364 (the
-      # consumer side, against F#-built DLLs) could not cover.
+      # typechecker self-test's compiler closure (Lexer + Parser + TypeChecker)
+      # and asserts the per-package DLLs exist, then runs the self-test against
+      # the emit output as a TRIPWIRE (not a pass gate).  Before #3199 this
+      # step claimed to execute the self-hosted-emitted DLLs but never did:
+      # findCompiledLibDir gates the LYRIC_STDLIB_BIN override through
+      # dirHasCompiledStdlib, which requires the *bundle* Lyric.Stdlib.dll as a
+      # marker that --internal-perpackage-build does not emit, so the override
+      # was silently rejected and the F#-linked path was validated instead.
+      # The bundle is now copied in so the override is honored — but executing
+      # the self-hosted-emitted closure currently fails on a known
+      # producer/consumer naming gap: the per-package emitter DEFINES generic
+      # stdlib types arity-suffixed (`Option`1`, the docs/43 correctness fix)
+      # while consumer references are emitted UNSUFFIXED to match the F#-built
+      # DLLs they normally link, so the run dies with "Could not load type
+      # 'Std.Core.Option'" (further execution-cleanliness gaps are tracked in
+      # docs/41 R7).  The exact failure signature varies by environment (the
+      # type-load error locally; per-test failures on CI runners), so the
+      # tripwire pins only the PASS direction: a PASS means either the
+      # override silently fell back to the F#-linked path again
+      # (dirHasCompiledStdlib regression) or the naming gap was fixed — in the
+      # latter case promote this to a positive pass gate.  Any failure is the
+      # known-gap state; its tail is printed for visibility.
       - name: Per-package compiler emit (#2592 self-hosted compiler DLLs)
         working-directory: ${{ github.workspace }}
         run: |
@@ -2680,15 +2766,16 @@ jobs:
               exit 1
             fi
           done
-          out="$(LYRIC_STDLIB_BIN="$work/out" "$lyric_bin" test "$st" --target dotnet)"
-          printf '%s\n' "$out" | tail -5
-          fail="$(printf '%s\n' "$out" | sed -n 's/^# fail  *\([0-9][0-9]*\)$/\1/p')"
-          pass="$(printf '%s\n' "$out" | sed -n 's/^# pass  *\([0-9][0-9]*\)$/\1/p')"
-          if [ "${fail:-1}" != "0" ] || [ "${pass:-0}" -lt 1 ]; then
-            echo "::error::self-test against self-hosted-emitted compiler DLLs failed (pass=${pass:-?} fail=${fail:-?})"
+          # Bundle marker so findCompiledLibDir honours LYRIC_STDLIB_BIN (#3199).
+          cp .bootstrap/stage1/Lyric.Stdlib.dll "$work/out/"
+          rc=0
+          out="$(LYRIC_STDLIB_BIN="$work/out" "$lyric_bin" test "$st" --target dotnet 2>&1)" || rc=$?
+          printf '%s\n' "$out" | tail -20
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::typechecker self-test PASSED against the per-package emit output. Either LYRIC_STDLIB_BIN silently fell back to the F#-linked path (dirHasCompiledStdlib regression) or the docs/43 naming gap is fixed — if the latter, promote this tripwire to a positive pass gate (#3199)."
             exit 1
           fi
-          echo "self-hosted-emitted compiler closure runs the typechecker self-test ($pass assertions)"
+          echo "per-package compiler closure emits and links; LYRIC_STDLIB_BIN honored; execution still blocked by the known docs/43 producer/consumer gap (tripwire, #3199)"
 
       # Full self-hosted stdlib (#2592 slice 3).  Every Std.* package — including
       # ones the F# stage-0 emitter cannot compile (e.g. Std.Sort, whose

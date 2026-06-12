@@ -442,6 +442,7 @@ f1_path = Path(sys.argv[1]); f2_path = Path(sys.argv[2])
 f1 = bytearray(f1_path.read_bytes())
 f2 = bytearray(f2_path.read_bytes())
 if len(f1) != len(f2):
+    print(f"[compare_dlls] size mismatch: {len(f1)} vs {len(f2)} bytes in {f1_path.name}", file=sys.stderr)
     sys.exit(1)
 
 for buf in (f1, f2):
