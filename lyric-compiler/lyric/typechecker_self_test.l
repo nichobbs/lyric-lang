@@ -2025,3 +2025,30 @@ test "alias target prefers current package over import" {
   val cr = checkWithImportedPackages(parse(src).file, packages)
   assertEqualInt(diagCount(cr), 0, "alias target: current-package Random wins over imported Q.Random")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2355: a value-position `try` handler that can produce a value must be
+// compatible with the try body type (both feed one shared temp).  A diverging
+// (`panic`/throw → Never) handler stays accepted.
+// ─────────────────────────────────────────────────────────────────────────────
+test "try value handler type mismatch rejected" {
+  val bad = "package P\nfunc f(): Int {\n  val x: Int = try {\n    1\n  } catch Bug as b {\n    \"error\"\n  }\n  x\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0067"), "try value: String handler vs Int body: T0067")
+}
+
+test "try value diverging handler accepted" {
+  val ok = "package P\nfunc f(): Int {\n  val x: Int = try {\n    1\n  } catch Bug as b {\n    panic(\"boom\")\n  }\n  x\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0067"), "try value: Never handler is compatible with any body")
+}
+
+test "try value matching handler accepted" {
+  val ok = "package P\nfunc f(): Int {\n  val x: Int = try {\n    1\n  } catch Bug as b {\n    0\n  }\n  x\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0067"), "try value: Int handler matches Int body")
+}
+
+// Statement-position try whose value is discarded: a Unit handler beside a
+// value-producing body must stay accepted (the shared temp is never read).
+test "try statement unit handler accepted" {
+  val ok = "package P\nfunc use(n: in Int): Unit {}\nfunc f(): Unit {\n  try {\n    1\n  } catch Bug as b {\n    use(0)\n  }\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0067"), "try statement: Unit handler absorbed, no T0067")
+}

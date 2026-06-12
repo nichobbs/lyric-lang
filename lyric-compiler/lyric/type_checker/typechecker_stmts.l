@@ -238,6 +238,51 @@ func statementDiverges(stmt: in Statement): Bool {
   }
 }
 
+// #2355: emit T0067 when a value-position `try` handler's type can neither
+// satisfy nor be satisfied by the body type.  Never (a diverging handler),
+// TyError (an already-reported failure), and Unit (a statement-position `try`
+// whose value is discarded) are all absorbed without error, and an Int/Long
+// literal-widening pair merges cleanly — the same leniencies
+// `unifyBranchTypes` applies to `if`/`match` branches.
+func checkTryHandlerType(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  bodyTy: in Type,
+  handlerTy: in Type,
+  span: in Span,
+): Unit {
+  if isNeverType(handlerTy) or isNeverType(bodyTy) {
+    return
+  }
+  val anyError = match handlerTy {
+    case TyError -> true
+    case _ -> match bodyTy { case TyError -> true; case _ -> false }
+  }
+  if anyError {
+    return
+  }
+  if isUnitType(handlerTy) or isUnitType(bodyTy) {
+    return
+  }
+  if argSatisfiesParam(tbl, bodyTy, handlerTy) or argSatisfiesParam(tbl, handlerTy, bodyTy) {
+    return
+  }
+  match mergeIntWiden(bodyTy, handlerTy) {
+    case Some(_) -> {
+      return
+    }
+    case None -> {
+    }
+  }
+  diag.add(
+    errorDiagnostic(
+      "T0067",
+      "catch handler type " + renderType(handlerTy) + " is incompatible with try body type " + renderType(bodyTy),
+      span
+    )
+  )
+}
+
 pub func checkBlock(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -274,6 +319,13 @@ pub func checkBlock(
           scopePop(sc)
           if typeEquiv(resultTy, TyPrim(pt = PtNever)) {
             resultTy = hTy
+          } else {
+            // #2355: codegen routes the body and every handler through one
+            // shared temp, so a non-diverging handler must produce a value
+            // compatible with the body type.  Unit on either side is absorbed
+            // (the statement-position `try` whose value is discarded), and
+            // Never/TyError stay lenient, mirroring `unifyBranchTypes`.
+            checkTryHandlerType(tbl, diag, resultTy, hTy, c.span)
           }
           ci = ci + 1
         }
