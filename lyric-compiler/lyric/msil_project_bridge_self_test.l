@@ -6,8 +6,9 @@
 //! self-hosted pipeline, runs the produced DLL via `dotnet exec`, and
 //! asserts on stdout.  Covers Phases 1–3 of the multi-package bridge:
 //! independent bundles (Phase 1), cross-package function calls (Phase 2),
-//! cross-package record and union round-trips (Phase 3), and cfg-erasure
-//! diagnostics (F0012/F0013).
+//! cross-package record and union round-trips (Phase 3), cross-package
+//! module-level `pub val` reads (Public backing field, #3040), and
+//! cfg-erasure diagnostics (F0012/F0013).
 //!
 //! Placed in `lyric-compiler/lyric/` (not `lyric-stdlib/tests/`) so it
 //! can import `Msil.Bridge` without overflowing the F# bootstrap emitter's
@@ -298,6 +299,47 @@ test "cross-package union parenless nullary case" {
     Str.trim(result.stdout),
     "on\noff",
     "cross_package_union_parenless_case: bare-name case arms match correctly"
+  )
+}
+
+// Cross-package module-level `pub val` READ (#3040 / #3239 / #3240).
+// Pkg A exports a non-constant `pub val` (computed in its `.cctor`, so it is
+// emitted as a real static field rather than const-inlined into the consumer).
+// Pkg B imports A and reads the val by name from `main`, forcing a cross-type
+// `ldsfld` against pkg A's `Program.__val_*` field.  PR #3239 changed that
+// backing field from `FieldAttributes.Private` to `Public`; were it still
+// Private the read would fail at JIT/verify time (the field lives on pkg A's
+// type, read from pkg B's code in the same assembly), so a non-42 stdout / a
+// non-zero exit code here regresses the #3040 fix.  This is the cross-package
+// companion to the same-package Module-val self-test (#3039).
+test "cross-package pub val read (Public backing field, #3040)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "XPkgVal.Lib",
+      "package XPkgVal.Lib\n" + "\n" + "func computeAnswer(): Int {\n" + "  var acc = 0\n" + "  var i = 0\n" +
+        "  while i < 6 {\n" +
+        "    acc = acc + 7\n" +
+        "    i = i + 1\n" +
+        "  }\n" +
+        "  acc\n" +
+        "}\n" +
+        "\n" +
+        "pub val ANSWER: Int = computeAnswer()\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XPkgVal.App",
+      "package XPkgVal.App\n" + "import XPkgVal.Lib\n" + "\n" + "func main(): Unit {\n" + "  println(ANSWER)\n" + "}\n"
+    )
+  )
+  val result = compileAndRun("xpkg-val", packages, "XPkgVal")
+  assertEqualInt(result.exitCode, 0, "cross_package_pub_val_read: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "42",
+    "cross_package_pub_val_read: consumer reads pkg A's non-const pub val via cross-type ldsfld"
   )
 }
 
