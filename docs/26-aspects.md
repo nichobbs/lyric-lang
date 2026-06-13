@@ -259,8 +259,18 @@ Inside the body:
 - `proceed(args)` calls the target. Returns the typed return value.
   May be omitted entirely (skip / replace semantics) — the wrapper
   then returns whatever the body's last expression evaluates to.
-- `ret` is the type of the target's return value, used for the
-  advice body's own return.
+  `call.proceed(args)` is an accepted equivalent spelling (a method on
+  the ambient `call` value, §4.3); it advances to the target exactly like
+  the bare form. Both ignore their own argument list and forward the
+  wrapper's parameters.
+- `ret` names the wrapper's return value (its type is the target's return
+  type). Two styles are supported:
+  - **out-variable**: assign `ret = <expr>` (on every path); the wrapper
+    returns `ret` after the body runs. This is the form the shipped
+    library templates use — e.g.
+    `around(call) -> ret { if ok { ret = call.proceed() } else { ret = Err(errs) } }`.
+  - **trailing expression**: omit `ret` writes and let the body's last
+    expression be the return value (e.g. a trailing `proceed(args)`).
 - Early `return` from inside `around` is allowed and idiomatic for
   skip / replace patterns (caching, circuit breakers, dry-run modes).
 

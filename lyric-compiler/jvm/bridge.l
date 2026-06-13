@@ -785,6 +785,70 @@ func collectDeriveFreeSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]
   }
 }
 
+// Detect an aspect-weave-synthesised function name.  `Lyric.Weaver` renames a
+// matched target to `<name>__aspect_target` and emits intermediate wrappers
+// `<name>__aspect_<AspectName>` (the outermost wrapper keeps the original
+// name).  All carry the `__aspect_` infix; the original name does not.
+func isAspectWovenName(name: in String): Bool {
+  match lastIndexOf(name, "__aspect_") {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+// Register the sigs of aspect-weave-synthesised functions (`__aspect_target`
+// renamed targets + intermediate `__aspect_<Aspect>` wrappers) from the
+// POST-weave file, patching the registry built from the pre-weave `userFile`.
+// `proceed(args)` lowers to an UNQUALIFIED call to the inner target, so both
+// the bare name and the qualified `owner/name` key are registered (unlike
+// `collectDeriveFreeSigs`, whose derive functions are only called qualified).
+// Without this, the proceed call falls through to the `(…)Object` guess and
+// the JVM rejects the descriptor mismatch (NoSuchMethodError / VerifyError) —
+// the JVM analogue of the MSIL #3402 weave breakage.  The synthesised target /
+// wrappers keep the original function's params and return type, so an empty
+// `paramDefaults` is correct (the proceed substitution forwards every
+// parameter positionally) and avoids the stage-0 bootstrap
+// `List[Option[Expr]]` `.add()` miscompile (same rationale as
+// `collectDeriveFreeSigs`).  First-wins guard, matching `collectFileSigs`.
+func collectAspectWovenSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]): Unit {
+  val owner = pkgJvmOwner(file.packageDecl.path)
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(decl) -> {
+        if isAspectWovenName(decl.name) {
+          val params: List[JvmType] = newList()
+          val paramNames: List[String] = newList()
+          var pi = 0
+          while pi < decl.params.count {
+            params.add(typeExprToJvm(decl.params[pi].ty, owner))
+            paramNames.add(decl.params[pi].name)
+            pi = pi + 1
+          }
+          val ret = match decl.ret { case Some(te) -> typeExprToJvm(te, owner); case None -> JVoid }
+          val sig = JvmFuncSig(
+            owner = owner,
+            params = params,
+            ret = ret,
+            paramNames = paramNames,
+            paramDefaults = newList(),
+            paramModes = newList()
+          )
+          val qkey = owner + "/" + decl.name
+          if not into.containsKey(qkey) {
+            into.add(qkey, sig)
+          }
+          if not into.containsKey(decl.name) {
+            into.add(decl.name, sig)
+          }
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
 // Back-compat forwarder: no feature flags, so no `@cfg` erasure runs.  Callers
 // that thread a manifest's `[features]` table (the in-process CLI path) use
 // `compileToJarBundledWithFeatures`.
@@ -1103,6 +1167,10 @@ pub func compileToJarBundledWithFeatures(
       // than the full `collectFileSigs` to avoid the stage-0 bootstrap
       // List[Option[Expr]] miscompile on paramDefaults.add().
       collectDeriveFreeSigs(f, registry)
+      // Register aspect-weave-synthesised targets / wrappers (`__aspect_*`)
+      // from the post-weave file so the `proceed(args)` call resolves to the
+      // real descriptor instead of the `(…)Object` guess (#3402, JVM analogue).
+      collectAspectWovenSigs(f, registry)
       codegenPackageInto(f, registry, caseReg, ctorReg, autoFfi, allProjFqns, allClasses)
     }
     case None -> return false
@@ -1131,6 +1199,7 @@ pub func compileToJarBundledWithFeatures(
     val ok = try {
       match runMiddleEnd(f, importedPkgs, stdlibGenFuncs, false) {
         case Some(ff) -> {
+          collectAspectWovenSigs(ff, registry)
           codegenPackageInto(ff, registry, caseReg, ctorReg, autoFfi, allProjFqns, allClasses)
           true
         }

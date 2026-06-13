@@ -900,6 +900,19 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     field binding, i64 literals, comparison materialization, basic-block
     stackmap frames, String predicate methods) plus deploying FSharp.Core
     beside the AOT binary for the JVM kernel's F# host shim.
+  - `aspect_weave_self_test.l` — `@test_module` end-to-end regression test
+    for aspect weaving (#3402).  Runs real woven functions and asserts
+    runtime values: out-variable `ret = proceed()` advice (the headline
+    #3402 form that produced `InvalidProgramException` before the weaver
+    lowered the `around(...) -> ret` binding), the `call.proceed()` library-
+    template spelling, short-circuit advice (target not run), a
+    `call.shortName`-gated proceed, expression-style advice, and a
+    `Unit`-returning woven function.  Run in CI via native `lyric test` on
+    **both targets** (like `bitwise_self_test.l`): `--target dotnet` through
+    `Msil.Bridge`, `--target jvm` through `Jvm.Bridge` `compileToJarBundled`.
+    Imports only `Std.*` (no `LYRIC_LOAD_COMPILER=1`).  Cross-package
+    `from`-instance library aspects (#3414) are out of scope for this test —
+    the per-file weaver can't resolve a template body in another package yet.
   - `auto_ffi_self_test.l` — `@test_module` covering self-hosted
     metadata-based auto-FFI resolution (epic #1622, Phase 3c): the MSIL
     emitter resolves `ExternTypeName.method(args)` calls from real .NET
