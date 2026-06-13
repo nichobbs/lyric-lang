@@ -1411,9 +1411,9 @@ func checkConfigBlock(diag: in List[Diagnostic], cd: in ConfigDecl): Unit {
 // signatures resolve against its own declarations (not one flat table).
 @stable(since = "0.1")
 pub record ImportedPackage {
+  // Dotted spelling of a module path (`Std.Regex`), or "" for the empty path.
   name: String
   items: List[Item]
-  // Dotted spelling of a module path (`Std.Regex`), or "" for the empty path.
   /// Dotted names of the packages this package itself imports.  Drives the
   /// tier-2 (declared-imports) preference when this package's own signatures
   /// are resolved, so a same-named type exported by two sibling packages binds

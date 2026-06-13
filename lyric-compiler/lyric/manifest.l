@@ -1051,7 +1051,7 @@ func assembleMaven(entries: in List[Entry]): Result[Option[MavenSection], Manife
         case _ -> None
       }
       // Return on the first invalid entry, mirroring assembleNuget's
-      // early-return control flow (#3263).
+      // early-return control flow.
       match versionOpt {
         case None -> return Err(
           error = InvalidField(
