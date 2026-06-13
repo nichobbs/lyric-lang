@@ -1106,8 +1106,13 @@ func rewriteConfigDecl(aliases: in List[String], d: in ConfigDecl): ConfigDecl {
 }
 
 func rewriteAspectDecl(aliases: in List[String], d: in AspectDecl): AspectDecl {
+  // `someAspectAround` (Lyric.Parser) — NOT a local `Some(value = ...)`:
+  // the stage-0 bootstrap emitter miscompiles `Option[AspectAround]`
+  // construction in this package, producing a value that matches neither
+  // `Some` nor `None` downstream, which silently un-weaves every aspect
+  // in an import-bearing file (#1298 investigation).
   val ar = match d.around {
-    case Some(a) -> Some(value = AspectAround(argsName = a.argsName, retName = a.retName, body = rewriteBlock(aliases, a.body), span = a.span))
+    case Some(a) -> someAspectAround(AspectAround(argsName = a.argsName, retName = a.retName, body = rewriteBlock(aliases, a.body), span = a.span))
     case None -> d.around
   }
   AspectDecl(

@@ -154,7 +154,10 @@ pub func compileToJar(
 
   // Synthesise `@stubbable` interface stubs (record + impl) before type-check,
   // matching the MSIL bridge — keeps `@stubbable` working on both targets.
-  val file0 = Stubbable.stubbableRewriteFile(parseResult.file)
+  // `injectWeaveImports` ensures `import Std.Time` is present before any
+  // import-driven resolution when an aspect references `call.elapsed`
+  // (#1298) — the weave itself runs later, in `runMiddleEnd`.
+  val file0 = Weaver.injectWeaveImports(Stubbable.stubbableRewriteFile(parseResult.file))
 
   val tcRes = checkWithImportedPackages(file0, importedPkgs)
   reportDiagnostics(tcRes.diagnostics)
@@ -817,7 +820,11 @@ pub func compileToJarBundledWithFeatures(
     return false
   }
   // `@stubbable` synthesis before type-check (parity with the MSIL bridge).
-  val userFile = Stubbable.stubbableRewriteFile(cfgRes.file)
+  // `injectWeaveImports` must run HERE — before the transitive
+  // import-closure walk below — so that an aspect referencing
+  // `call.elapsed` (#1298) gets `Std.Time` bundled into the JAR for the
+  // `monotonicNanos` calls the weave synthesises later in `runMiddleEnd`.
+  val userFile = Weaver.injectWeaveImports(Stubbable.stubbableRewriteFile(cfgRes.file))
 
   // Parse every stdlib source once: collect its type items (for cross-package
   // type resolution) and index the whole file by dotted package name (for the
@@ -934,7 +941,15 @@ pub func compileToJarBundledWithFeatures(
   val reachableFns: Map[String, Bool] = newMap()
   val fnWorklist: List[String] = newList()
 
-  // User package: every top-level function is a root.
+  // User package: every top-level function is a root.  Aspect `around`
+  // bodies are roots too: the call graph is built on the PRE-weave file,
+  // but the weave inlines each advice body into user-package wrappers,
+  // so its callees (e.g. the `Std.Time.monotonicNanos` calls the
+  // `call.elapsed` instrumentation synthesises, #1298) execute from the
+  // user package.  Without this, a stdlib package used only by woven
+  // advice is bundled but never marked reachable, downgrading its
+  // codegen failure to a silent skip and the build error to a runtime
+  // NoClassDefFoundError.
   val userOwner = pkgJvmOwner(userFile.packageDecl.path)
   var gi = 0
   while gi < userFile.items.count {
@@ -949,9 +964,38 @@ pub func compileToJarBundledWithFeatures(
           fnWorklist.add(selfKey)
         }
       }
+      case IAspect(aspDecl) -> {
+        match aspDecl.around {
+          case Some(ar) -> {
+            val adviceCallees: List[String] = newList()
+            collectBlockNames(ar.body, adviceCallees, registry)
+            var aci = 0
+            while aci < adviceCallees.count {
+              val callee = adviceCallees[aci]
+              if not reachableFns.containsKey(callee) {
+                reachableFns.add(callee, true)
+                fnWorklist.add(callee)
+              }
+              aci = aci + 1
+            }
+          }
+          case None -> ()
+        }
+      }
       case _ -> ()
     }
     gi = gi + 1
+  }
+  // `call.elapsed` instrumentation calls `Std.Time.monotonicNanos` from
+  // the woven wrappers; the synthesised calls don't exist in the
+  // pre-weave advice bodies, so seed the root explicitly when any
+  // aspect references the field (#1298).
+  if Weaver.weaveNeedsStdTime(userFile) {
+    val monoKey = "Std/Time/monotonicNanos"
+    if registry.containsKey(monoKey) and not reachableFns.containsKey(monoKey) {
+      reachableFns.add(monoKey, true)
+      fnWorklist.add(monoKey)
+    }
   }
 
   // Bundled packages: index their functions' outgoing calls (not roots).

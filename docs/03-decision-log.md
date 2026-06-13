@@ -6065,6 +6065,77 @@ invokes them directly:
 **Related:** D057, D064 / docs/35 §10 (`Lambda.Direct` precedent),
 D075 (subprocess generators), D098 / docs/45 (byte-reading contract
 metadata), docs/34 (AOT distribution), issues #679, #367, #1024.
+## D100 — `call.elapsed` runtime instrumentation auto-injects `import Std.Time` at weave time (#1298)
+
+**Context.** docs/26 §4.3 specifies `call.elapsed: Option[Int]` — `Some(ms)`
+after `proceed` returns, `None` before `proceed` / when the body never calls
+it (the zero-sentinel was rejected in Q-aspects-003).  PR #1172 shipped the
+compile-time `call` fields and deferred `call.elapsed` / `call.caller` to
+#1298 because both need runtime instrumentation, and `call.elapsed`
+additionally needs a design decision: the woven wrapper must call
+`Std.Time.monotonicNanos()`, but the consumer's file is not required to
+`import Std.Time`.  Issue #1298 offered two options — auto-inject the import
+at weave time, or synthesise fully-qualified `Std.Time.*` calls and rely on
+the resolver accepting them without an import.
+
+**Decision.** Auto-inject `import Std.Time` (deduplicated) into the woven
+file whenever any aspect's `around` body references `call.elapsed`.
+
+- **Precedent**: `Lyric.Stubbable` (D-progress-433) auto-injects
+  `import Std.Testing.Mocking` when it synthesises stub records — the
+  synthesised dependency is made explicit on the file, exactly as the
+  contract elaborator makes its `assert(...)` calls visible in the AST.
+  `Lyric.Weaver.injectWeaveImports` mirrors that pattern.
+- **Why not fully-qualified calls**: the self-hosted backends resolve
+  cross-package calls through the file's import list (`pkgImports` on MSIL,
+  the bundler's import-closure walk on JVM).  A fully-qualified call without
+  the import would resolve on neither target without new resolver surface;
+  the explicit import keeps both resolution paths on their existing,
+  well-tested rails.
+- **Placement**: `weaveFile` / `weaveFileWithDiags` apply the injection
+  internally (before the items pass, while the `IAspect` items that carry
+  the `call.elapsed` references still exist).  The JVM bridge additionally
+  calls `injectWeaveImports` immediately after parse in `compileToJar` and
+  `compileToJarBundledWithFeatures`, because the JAR bundler computes the
+  stdlib import closure from `file.imports` *before* the middle-end weave
+  runs — injection inside the weave alone would leave `Std.Time` out of the
+  bundle.  The items-only overloads (`weaveItems` / `weaveItemsWithDiags`)
+  cannot inject (no import list); their doc comments state the caller
+  obligation.
+- **Instrumentation shape**: the prelude materialises
+  `var __lyric_call_elapsed: Option[Int] = None`, and each `proceed(args)`
+  rewrites to a block expression that captures
+  `val __lyric_call_start = monotonicNanos()`, calls the target, assigns
+  `Some(((monotonicNanos() - __lyric_call_start) / 1000000).toInt())`, and
+  yields the result.  The block form keeps the capture exact in any
+  expression position and guarantees `Some` is assigned iff `proceed`
+  dynamically executed.  `monotonicNanos` (not wall-clock `now()`) so a
+  clock adjustment mid-call cannot produce a negative duration.
+- **`call.caller` stays unwired**: docs/26 §4.3 specifies it as "when
+  available"; no caller-site capture exists, so references keep surfacing
+  as A0043, whose message now names `call.caller` as unavailable instead
+  of "not yet wired".
+
+**Consequences.** Aspects that reference `call.elapsed` no longer fail with
+A0043; the recognised-fields list in the A0043 message gains `elapsed`.  A
+woven file may carry one import the author did not write — visible in
+`weaveFile` output and documented in the language reference §14.7 and
+docs/26 §4.3.
+
+**MSIL is complete; JVM is plumbed but blocked on a pre-existing gap.** The
+implementation lands fully on the MSIL target (the weaver self-test runtime
+arms, the verifier driver, and an end-to-end `lyric build`/`run` program all
+pass).  On the JVM target, `Std.Time.monotonicNanos` does not yet resolve
+(a plain `import Std.Time` / `Std.Time.monotonicNanos()` program fails JVM
+codegen with an auto-FFI miss, and `Std.TimeHost`'s `java.time.Duration.ZERO`
+extern trips F0015-J), so a `call.elapsed` aspect on `--target jvm` now fails
+loudly at build time (the JVM bundler marks `Std.Time` reachable, surfacing a
+clear J002 error) rather than silently un-weaving.  The JVM `Std.Time`
+support gap is pre-existing and broader than this issue; it is tracked under
+the JVM production-readiness plan (docs/44) and issue #1298's JVM follow-up.
+
+**Related:** #1298, #1172, #682, D-progress-433 (Stubbable precedent),
+D-progress-507 (implementation), docs/26 §4.3 / §15, docs/44 (JVM gap).
 
 ---
 

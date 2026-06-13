@@ -27,12 +27,20 @@
 //!     constants for `call.shortName`, `call.qualifiedName`,
 //!     `call.modulePath`, `call.sourceLocation`, and `call.annotations`,
 //!     materialised as `__lyric_call_<name>` locals.  `call.aspect` is
-//!     also injected (the current aspect's name).  `call.elapsed` and
-//!     `call.caller` require runtime instrumentation (Std.Time integration
-//!     and call-site capture) that is deferred to a follow-up.  Any
-//!     `call.<unknown>` reference — including those two — surfaces as
-//!     an A0043 diagnostic at weave time so users get a clear message
-//!     instead of a downstream "undeclared call" type error.
+//!     also injected (the current aspect's name).  `call.elapsed`
+//!     (#1298) is runtime-instrumented: the prelude materialises
+//!     `var __lyric_call_elapsed: Option[Int] = None` and each
+//!     `proceed(args)` rewrite captures `Std.Time.monotonicNanos()`
+//!     around the target call, assigning `Some(ms)` after it returns —
+//!     so a body that never reaches `proceed` observes `None`
+//!     (docs/26 §4.3, Q-aspects-003).  `import Std.Time` is
+//!     auto-injected (deduplicated) into the woven file when the
+//!     instrumentation fires, following the `Lyric.Stubbable`
+//!     auto-import precedent (D100).  `call.caller` is not available
+//!     (caller-site capture is unimplemented; docs/26 §4.3); it — and
+//!     any other unrecognised `call.<field>` — surfaces as an A0043
+//!     diagnostic at weave time so users get a clear message instead
+//!     of a downstream "undeclared call" type error.
 //!
 //!   - `@inline_template` (#681): aspects annotated `@inline_template`
 //!     have `args.<field>` rewrites applied at weave time; each field
@@ -180,8 +188,15 @@ record RewriteCtx {
   /// Call-context field names that the weaver materialises into
   /// `__lyric_call_<n>` locals.  `call.<n>` for these names rewrites
   /// to the local; other `call.<n>` accesses pass through unchanged
-  /// (the type checker will flag them) (#682).
+  /// (the type checker will flag them) (#682).  When `elapsed` is
+  /// present, `proceed(args)` additionally rewrites to the timed
+  /// block form (see `proceedSubstitutionTimed`, #1298).
   callFields: Map[String, Bool]
+  /// True when the matched function's declared return type is `Unit`
+  /// (or absent).  The timed proceed substitution (#1298) uses this to
+  /// skip binding the target's result into a local — a `Unit` value
+  /// local would be meaningless and the void store trips codegen.
+  targetReturnsUnit: Bool
   /// True when the matching aspect carries `@inline_template`.  In that
   /// mode `args.<n>` is rewritten to `<n>` (parameter name) when `<n>`
   /// is in `paramNames`; missing names accumulate as diagnostics in
@@ -195,8 +210,8 @@ record RewriteCtx {
   ///   - A0042 — `@inline_template` `args.<n>` does not match a
   ///             parameter of the matched function (#681).
   ///   - A0043 — `call.<n>` references an unknown context field
-  ///             (e.g. `call.elapsed` before runtime instrumentation
-  ///             lands; #682 follow-up).
+  ///             (e.g. `call.caller`, whose caller-site capture is
+  ///             unimplemented; docs/26 §4.3).
   ///   - A0044 — `config.<n>` references a declared field that has
   ///             no default (env-var resolution is a follow-up; see
   ///             `docs/26 §8`).  Surfaced at weave time to replace
@@ -231,6 +246,7 @@ func newRewriteCtx(
   configFields: in Map[String, Bool],
   configNoDefault: in Map[String, Bool],
   callFields: in Map[String, Bool],
+  targetReturnsUnit: in Bool,
   isInlineTemplate: in Bool,
   aspectName: in String,
   funcName: in String,
@@ -242,6 +258,7 @@ func newRewriteCtx(
     configFields = configFields,
     configNoDefault = configNoDefault,
     callFields = callFields,
+    targetReturnsUnit = targetReturnsUnit,
     isInlineTemplate = isInlineTemplate,
     aspectName = aspectName,
     funcName = funcName,
@@ -269,6 +286,101 @@ func proceedSubstitution(targetName: in String, paramNames: in List[String]): Ex
     i = i + 1
   }
   Expr(kind = ECall(fn = singleSegPathExpr(targetName), args = argExprs), span = synSpan())
+}
+
+/// `<name>()` no-arg call at a zero span.
+func mkCallNoArgs(name: in String): Expr {
+  val noArgs: List[CallArg] = newList()
+  Expr(kind = ECall(fn = singleSegPathExpr(name), args = noArgs), span = synSpan())
+}
+
+/// `Some(value = <e>)` call at a zero span.
+func mkSomeCall(e: in Expr): Expr {
+  val args: List[CallArg] = newList()
+  args.add(CANamed(name = "value", value = e, span = synSpan()))
+  Expr(kind = ECall(fn = singleSegPathExpr("Some"), args = args), span = synSpan())
+}
+
+/// `((monotonicNanos() - __lyric_call_start) / 1000000).toInt()` —
+/// the elapsed-millisecond expression assigned after `proceed`
+/// returns.  `monotonicNanos` (Std.Time, auto-imported by
+/// `injectWeaveImports`) is the capture primitive on both targets:
+/// monotonic, so a wall-clock adjustment mid-call can't produce a
+/// negative duration.  `.toInt()` truncation is safe — an around
+/// body would have to run for ~24 days before the millisecond count
+/// overflows Int.
+func mkElapsedMillisExpr(): Expr {
+  val sub = Expr(
+    kind = EBinop(
+      op = BSub,
+      lhs = mkCallNoArgs("monotonicNanos"),
+      rhs = singleSegPathExpr("__lyric_call_start")
+    ),
+    span = synSpan()
+  )
+  val divisor = Expr(kind = ELiteral(lit = LInt(value = 1000000i64, suffix = I64, raw = "")), span = synSpan())
+  val divided = Expr(
+    kind = EBinop(op = BDiv, lhs = Expr(kind = EParen(inner = sub), span = synSpan()), rhs = divisor),
+    span = synSpan()
+  )
+  val noArgs: List[CallArg] = newList()
+  Expr(
+    kind = ECall(
+      fn = Expr(
+        kind = EMember(
+          receiver = Expr(kind = EParen(inner = divided), span = synSpan()),
+          memberName = "toInt"
+        ),
+        span = synSpan()
+      ),
+      args = noArgs
+    ),
+    span = synSpan()
+  )
+}
+
+/// `__lyric_call_elapsed = Some(value = <elapsed-ms>)` statement.
+func mkElapsedAssignStmt(): Statement {
+  Statement(
+    kind = SAssign(
+      target = singleSegPathExpr("__lyric_call_elapsed"),
+      op = AssEq,
+      value = mkSomeCall(mkElapsedMillisExpr())
+    ),
+    span = synSpan()
+  )
+}
+
+/// Timed `proceed(args)` substitution used when the aspect body
+/// references `call.elapsed` (#1298).  Rewrites the proceed call to a
+/// block expression so the capture is exact in any expression
+/// position (statement, val-init, loop body, if-branch) and the
+/// assignment runs iff `proceed` dynamically executed:
+///
+///   {
+///     val __lyric_call_start = monotonicNanos()
+///     val __lyric_call_proceed_ret = <target>(p1, ...)
+///     __lyric_call_elapsed = Some(value = ...ms...)
+///     __lyric_call_proceed_ret
+///   }
+///
+/// For `Unit`-returning targets the result binding is skipped (the
+/// trailing statement is the assignment, so the block stays
+/// `Unit`-typed).  Locals are block-scoped, so multiple `proceed`
+/// sites in one body each get their own `__lyric_call_start`.
+func proceedSubstitutionTimed(targetName: in String, paramNames: in List[String], targetReturnsUnit: in Bool): Expr {
+  val stmts: List[Statement] = newList()
+  stmts.add(mkValStmt("__lyric_call_start", None, mkCallNoArgs("monotonicNanos")))
+  val targetCall = proceedSubstitution(targetName, paramNames)
+  if targetReturnsUnit {
+    stmts.add(Statement(kind = SExpr(expr = targetCall), span = synSpan()))
+    stmts.add(mkElapsedAssignStmt())
+  } else {
+    stmts.add(mkValStmt("__lyric_call_proceed_ret", None, targetCall))
+    stmts.add(mkElapsedAssignStmt())
+    stmts.add(Statement(kind = SExpr(expr = singleSegPathExpr("__lyric_call_proceed_ret")), span = synSpan()))
+  }
+  Expr(kind = EBlock(block = Block(statements = stmts, span = synSpan())), span = synSpan())
 }
 
 /// Detect `receiver.<member>` where `receiver` is a bare `name`
@@ -429,6 +541,9 @@ func paramListContains(paramNames: in List[String], name: in String): Bool {
 
 func rewriteExpr(ctx: in RewriteCtx, expr: in Expr): Expr {
   if isProceedCall(expr) {
+    if ctx.callFields.containsKey("elapsed") {
+      return proceedSubstitutionTimed(ctx.targetName, ctx.paramNames, ctx.targetReturnsUnit)
+    }
     return proceedSubstitution(ctx.targetName, ctx.paramNames)
   }
   match tryMemberRewrite(ctx, expr) {
@@ -636,6 +751,22 @@ func makeWeaveSite(packagePath: in String, isInlineTemplate: in Bool, weaveDiags
 func mkValStmt(name: in String, ty: in Option[TypeExpr], init: in Expr): Statement {
   val pat = Pattern(kind = PBinding(name = name, inner = None), span = synSpan())
   Statement(kind = SLocal(binding = LBVal(pat = pat, ty = ty, init = init)), span = synSpan())
+}
+
+/// Build a synthetic `var <name>: <ty> = <init>` statement at a zero
+/// span.  Used by the `call.elapsed` prelude (#1298), which needs a
+/// mutable local so the timed proceed substitution can assign into it.
+func mkVarStmt(name: in String, ty: in Option[TypeExpr], init: in Expr): Statement {
+  Statement(kind = SLocal(binding = LBVar(name = name, ty = ty, init = Some(value = init))), span = synSpan())
+}
+
+/// `Option[Int]` type expression for the `__lyric_call_elapsed` var.
+func mkOptionIntTypeExpr(): TypeExpr {
+  val sp = synSpan()
+  val intTy = TypeExpr(kind = TRef(path = ModulePath(segments = singleSeg("Int"), span = sp)), span = sp)
+  val targs: List[TypeArg] = newList()
+  targs.add(TAType(ty = intTy))
+  TypeExpr(kind = TGenericApp(head = ModulePath(segments = singleSeg("Option"), span = sp), args = targs), span = sp)
 }
 
 /// `ELiteral(LString(text))` at a zero span.
@@ -913,9 +1044,12 @@ func collectCallRefsBlock(blk: in Block, into: in Map[String, Bool]): Unit {
 /// actually references; aspects that don't touch `call.*` produce
 /// byte-identical wrappers to the pre-todo-06 weaver.
 /// Compile-time-known fields: `shortName`, `qualifiedName`,
-/// `modulePath`, `sourceLocation`, `annotations`, `aspect`.  `elapsed`
-/// and `caller` are not yet wired — references surface as A0043
-/// diagnostics handled by the rewriter.
+/// `modulePath`, `sourceLocation`, `annotations`, `aspect`.  The
+/// runtime field `elapsed` (#1298) materialises as a mutable
+/// `var __lyric_call_elapsed: Option[Int] = None` that the timed
+/// proceed substitution assigns into.  `caller` is not available
+/// (caller-site capture is unimplemented; docs/26 §4.3) — references
+/// surface as A0043 diagnostics handled by the rewriter.
 /// DRIFT WARNING: keep this set in lockstep with the A0043 "recognised
 /// fields" list in `weaveDiagsToDiagnostics::WDCallUnknown` — adding a
 /// field here without removing it from that list yields a diagnostic
@@ -990,6 +1124,18 @@ func buildCallPrelude(
     present.add("aspect", true)
   }
 
+  // elapsed : Option[Int] — `Some(ms)` after `proceed` returns, `None`
+  // before / when the body never calls `proceed` (docs/26 §4.3,
+  // Q-aspects-003).  Starts at None; `proceedSubstitutionTimed`
+  // assigns `Some(ms)` immediately after the target call returns, so
+  // a skip path that never reaches `proceed` observes None.  The
+  // explicit `Option[Int]` annotation is mandatory — a bare `None`
+  // initializer carries no inferable payload type.
+  if refs.containsKey("elapsed") {
+    stmts.add(mkVarStmt("__lyric_call_elapsed", Some(value = mkOptionIntTypeExpr()), singleSegPathExpr("None")))
+    present.add("elapsed", true)
+  }
+
   return (stmts, present)
 }
 
@@ -1019,12 +1165,26 @@ func buildWrapper(
   val (cfgStmts, cfgPresent, cfgNoDefault) = buildConfigPrelude(aspect, around.body)
   val (callStmts, callPresent) = buildCallPrelude(originalFn, aspect, site, around.body)
 
+  // `: Unit` parses as a TRef named "Unit" (TUnit is only the literal
+  // `()` form), so both spellings must be recognised here.
+  val targetReturnsUnit = match originalFn.ret {
+    case None -> true
+    case Some(te) -> {
+      match te.kind {
+        case TUnit -> true
+        case TRef(mp) -> mp.segments.count == 1 and mp.segments[0] == "Unit"
+        case _ -> false
+      }
+    }
+  }
+
   val ctx = newRewriteCtx(
     callTargetName,
     paramNames,
     cfgPresent,
     cfgNoDefault,
     callPresent,
+    targetReturnsUnit,
     site.isInlineTemplate,
     aspect.name,
     originalFn.name,
@@ -1524,6 +1684,94 @@ func packagePathString(file: in SourceFile): String {
   segmentsJoin(file.packageDecl.path.segments)
 }
 
+// True if the file already has `import Std.Time`.
+func hasStdTimeImport(imports: in List[ImportDecl]): Bool {
+  var i = 0
+  while i < imports.count {
+    val imp = imports[i]
+    if imp.path.segments.count == 2 and imp.path.segments[0] == "Std" and imp.path.segments[1] == "Time" {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Return a copy of `imports` with a synthetic `import Std.Time` appended.
+func addStdTimeImport(imports: in List[ImportDecl], span: in Span): List[ImportDecl] {
+  val result: List[ImportDecl] = newList()
+  var i = 0
+  while i < imports.count {
+    result.add(imports[i])
+    i = i + 1
+  }
+  val segs: List[String] = newList()
+  segs.add("Std")
+  segs.add("Time")
+  result.add(
+    ImportDecl(
+      path = ModulePath(segments = segs, span = span),
+      selector = None,
+      asAlias = None,
+      isPubUse = false,
+      span = span
+    )
+  )
+  result
+}
+
+/// True iff any `aspect { around ... }` item's body references
+/// `call.elapsed` — i.e. weaving this file will synthesise calls to
+/// `Std.Time.monotonicNanos` (#1298).
+pub func weaveNeedsStdTime(file: in SourceFile): Bool {
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IAspect(decl) -> {
+        match decl.around {
+          case Some(a) -> {
+            val refs: Map[String, Bool] = newMap()
+            collectCallRefsBlock(a.body, refs)
+            if refs.containsKey("elapsed") {
+              return true
+            }
+          }
+          case None -> ()
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// Return `file` with `import Std.Time` ensured (deduplicated) when
+/// weaving will materialise `call.elapsed` instrumentation; identity
+/// otherwise.  Mirrors the `Lyric.Stubbable` auto-import precedent
+/// (D100): the synthesised dependency is made explicit on the file
+/// rather than resolved ad hoc.  `weaveFile` / `weaveFileWithDiags`
+/// apply this automatically, but bridges that compute an import
+/// closure BEFORE the middle-end weave runs (the JVM bundler walks
+/// `file.imports` to decide which stdlib packages to bundle) must
+/// call it right after parse so `Std.Time` lands in the closure.
+pub func injectWeaveImports(file: in SourceFile): SourceFile {
+  if not weaveNeedsStdTime(file) {
+    return file
+  }
+  if hasStdTimeImport(file.imports) {
+    return file
+  }
+  SourceFile(
+    moduleDoc = file.moduleDoc,
+    fileAnnotations = file.fileAnnotations,
+    packageDecl = file.packageDecl,
+    imports = addStdTimeImport(file.imports, file.span),
+    items = file.items,
+    span = file.span
+  )
+}
+
 /// Convert weave-time diagnostic entries to user-facing Diagnostic
 /// objects.  Three kinds today: A0042 (args mismatch on
 /// `@inline_template`), A0043 (unknown `call.<field>`), A0044
@@ -1546,14 +1794,15 @@ func weaveDiagsToDiagnostics(errs: in List[WeaveDiagEntry]): List[Diagnostic] {
         // **Drift warning:** the recognised-fields list below is the
         // user-visible enumeration of fields the weaver injects in
         // `buildCallPrelude`.  When a new `call.<field>` is added
-        // there (e.g. `call.elapsed` when runtime instrumentation
-        // lands), this list must be updated to match — otherwise
+        // there, this list must be updated to match — otherwise
         // A0043 will name the new field as "unrecognised" while
         // simultaneously rewriting it correctly.
         val msg = "aspect '" + e.aspectName + "' references call." + e.fieldName + " on matched function '" + e.funcName +
-          "' but the weaver does not (yet) inject a value for that " +
-          "field (recognised fields: shortName, qualifiedName, " +
-          "modulePath, sourceLocation, annotations, aspect)"
+          "' but the weaver does not inject a value for that field " +
+          "(recognised fields: shortName, qualifiedName, modulePath, " +
+          "sourceLocation, annotations, aspect, elapsed; call.caller " +
+          "is not available — caller-site capture is unimplemented, " +
+          "see docs/26-aspects.md section 4.3)"
         diags.add(errorDiagnostic("A0043", msg, e.span))
       }
       case WDConfigNoDefault -> {
@@ -1720,8 +1969,11 @@ func weaveItemsCore(items: in List[Item], packagePath: in String): WeaveResult {
 /// **Limitation:** because this overload has no `SourceFile`, the
 /// package-path is unknown — so the `call.qualifiedName` and
 /// `call.modulePath` synthesised locals are populated from an empty
-/// package string.  Callers that need correct values should use
-/// `weaveFile` or `weaveFileWithDiags` instead.
+/// package string, and the `import Std.Time` auto-injection for
+/// `call.elapsed` (#1298) cannot run (there is no import list to
+/// extend — callers must ensure the import themselves, e.g. via
+/// `injectWeaveImports`).  Callers that need correct values should
+/// use `weaveFile` or `weaveFileWithDiags` instead.
 pub func weaveItems(items: in List[Item]): List[Item] {
   weaveItemsCore(items, "").items
 }
@@ -1740,14 +1992,18 @@ pub func weaveItemsWithDiags(items: in List[Item], packagePath: in String): Weav
 /// A0044 `config.<no-default>`) are silently dropped — callers that
 /// need to surface them should use `weaveFileWithDiags` instead.
 pub func weaveFile(file: in SourceFile): SourceFile {
-  val newItems = weaveItemsCore(file.items, packagePathString(file)).items
+  // Ensure `import Std.Time` before the items are rewritten — the
+  // IAspect items (which carry the `call.elapsed` references the
+  // pre-scan looks for) are dropped by the weave itself (#1298).
+  val file0 = injectWeaveImports(file)
+  val newItems = weaveItemsCore(file0.items, packagePathString(file0)).items
   SourceFile(
-    moduleDoc = file.moduleDoc,
-    fileAnnotations = file.fileAnnotations,
-    packageDecl = file.packageDecl,
-    imports = file.imports,
+    moduleDoc = file0.moduleDoc,
+    fileAnnotations = file0.fileAnnotations,
+    packageDecl = file0.packageDecl,
+    imports = file0.imports,
     items = newItems,
-    span = file.span
+    span = file0.span
   )
 }
 
@@ -1763,14 +2019,17 @@ pub record WeaveFileResult {
 /// Callers that want plain back-compat behaviour can continue using
 /// `weaveFile`, which drops the diagnostic list.
 pub func weaveFileWithDiags(file: in SourceFile): WeaveFileResult {
-  val wr = weaveItemsCore(file.items, packagePathString(file))
+  // See weaveFile: the Std.Time auto-import must be decided while the
+  // IAspect items are still present (#1298).
+  val file0 = injectWeaveImports(file)
+  val wr = weaveItemsCore(file0.items, packagePathString(file0))
   val newFile = SourceFile(
-    moduleDoc = file.moduleDoc,
-    fileAnnotations = file.fileAnnotations,
-    packageDecl = file.packageDecl,
-    imports = file.imports,
+    moduleDoc = file0.moduleDoc,
+    fileAnnotations = file0.fileAnnotations,
+    packageDecl = file0.packageDecl,
+    imports = file0.imports,
     items = wr.items,
-    span = file.span
+    span = file0.span
   )
   WeaveFileResult(file = newFile, diagnostics = wr.diagnostics)
 }

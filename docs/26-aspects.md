@@ -310,9 +310,9 @@ weave site:
 | `call.shortName` | `String` | Short target name (`handleRequest`) |
 | `call.modulePath` | `String` | Package containing the target |
 | `call.sourceLocation` | `String` | `"<packagePath>:<line>"` of the target's definition (e.g. `"My.Pkg:42"`).  When `packagePath` is empty the weaver substitutes `"<unknown>:<line>"`.  A richer `SourceLoc { file, line, column }` form is tracked for follow-up alongside `call.caller`. |
-| `call.caller` | `Option[SourceLoc]` | Caller site, when available; `None` for entry points and reflective calls |
+| `call.caller` | `Option[SourceLoc]` | Caller site, when available; `None` for entry points and reflective calls.  **Not currently available:** the weaver has no caller-site capture, so any reference surfaces as a weave-time A0043 (see §15). |
 | `call.annotations` | `slice[String]` | Short names of the matched function's annotations (e.g. `["deprecated", "public_api"]`).  The weaver materialises these as string literals, not full `Annotation` objects, so annotation arguments are not accessible here. |
-| `call.elapsed` | `Option[Int]` | `Some(ms)` after `proceed` returns; `None` before `proceed` is called or if the body never calls `proceed`. The earlier zero-sentinel was rejected as a footgun (Q-aspects-003). |
+| `call.elapsed` | `Option[Int]` | `Some(ms)` after `proceed` returns; `None` before `proceed` is called or if the body never calls `proceed`. The earlier zero-sentinel was rejected as a footgun (Q-aspects-003).  Wired in #1298 (D100): the weaver materialises a `var __lyric_call_elapsed: Option[Int] = None` prelude and rewrites each `proceed(args)` into a block that captures `Std.Time.monotonicNanos()` around the target call and assigns `Some(ms)` after it returns; `import Std.Time` is auto-injected (deduplicated) into the woven file. |
 | `call.aspect` | `String` | The current aspect's name (useful when one helper serves several aspects) |
 
 `SourceLoc` is a simple stdlib record; full layout in
@@ -870,7 +870,7 @@ compiler.
 | `A0025` | `from` references a `pub aspect` template that is not `pub` (cross-package reference to a package-private template). |
 | `A0026` | `from` references a name that is not a template aspect (e.g. a matching aspect or an ordinary type). |
 | `A0042` | `@inline_template` aspect body references `args.<field>` that does not match any parameter of the matched function.  Surfaced by the weaver at weave time (rather than as a downstream type error) so the message names the aspect, the matched function, and the offending field. |
-| `A0043` | `call.<field>` references an ambient field the weaver does not recognise (e.g. `call.elapsed` / `call.caller` while runtime instrumentation is deferred — see #1298).  Recognised fields today: `shortName`, `qualifiedName`, `modulePath`, `sourceLocation`, `annotations`, `aspect`. |
+| `A0043` | `call.<field>` references an ambient field the weaver does not recognise.  Recognised fields today: `shortName`, `qualifiedName`, `modulePath`, `sourceLocation`, `annotations`, `aspect`, `elapsed` (runtime-instrumented per #1298 / D100).  `call.caller` is not available — caller-site capture is unimplemented (§4.3) — so it fires A0043 like any unknown field. |
 | `A0044` | `config.<field>` references a `config { }` field declared without a literal default.  Env-var resolution per §8 is not yet wired; until it lands, the field must have a literal default to be referenced from the aspect body.  Surfaced at weave time to replace the confusing downstream "config not declared" type error. |
 
 Plus the runtime contract codes (`C0014` etc.) gain provenance
