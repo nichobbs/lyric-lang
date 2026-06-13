@@ -1478,17 +1478,40 @@ func substTypesFunctionBody(
 // ─────────────────────────────────────────────────────────────────────────────
 // §11. Function specialisation — substitute type vars in decl structure
 // ─────────────────────────────────────────────────────────────────────────────
-// True iff the annotation list carries `@externTarget(...)`.
-func annsHaveExternTargetMono(anns: in List[Annotation]): Bool {
+// The `"Type.Member"` string of an `@externTarget(...)` annotation, or "".
+func externTargetStringMono(anns: in List[Annotation]): String {
   var i = 0
   while i < anns.count {
     val segs = anns[i].name.segments
     if segs.count == 1 and segs[0] == "externTarget" {
-      return true
+      var j = 0
+      while j < anns[i].args.count {
+        match anns[i].args[j] {
+          case ALiteral(v, _) -> match v { case AVString(s, _) -> { return s }; case _ -> () }
+          case AAName(_, v, _) -> match v { case AVString(s, _) -> { return s }; case _ -> () }
+          case _ -> ()
+        }
+        j = j + 1
+      }
     }
     i = i + 1
   }
-  false
+  ""
+}
+
+// True iff the function is an `@externTarget` over a *generic declaring type*
+// (the target's type name carries a `\`N` arity suffix, e.g.
+// `ConcurrentDictionary\`2`).  Only such externs are kept un-specialised by the
+// monomorphizer: the MSIL backend's `emitGenericExternMember` can emit them, and
+// a zero-arg ctor extern invoked from a module-`val` initializer (never walked
+// by the monomorphizer) needs the generic definition to survive.  An extern over
+// a NON-generic type (`Monitor.Enter`) is always reachable through its
+// specialised call-site copies and never needs keeping; keeping it broadly would
+// also force the JVM backend — which has no generic-extern emission — to compile
+// erased collection-kernel externs (`newList` → `java.util.ArrayList.<init>`)
+// it previously dropped, tripping F0015-J.
+func annsKeepGenericExternMono(anns: in List[Annotation]): Bool {
+  Str.contains(externTargetStringMono(anns), "`")
 }
 
 // True iff the annotation list carries `@axiom(...)`.
@@ -2415,7 +2438,7 @@ pub func monoFileWithImports(file: in SourceFile, importedGenDecls: in List[Func
             // from a module-level `val` initializer — keep calling the generic
             // name, which would resolve to nothing if it were dropped.  `@axiom`
             // generics stay dropped (proof-only, never emitted as runtime code).
-            if annsHaveExternTargetMono(decl.annotations) and not annsHaveAxiomMono(decl.annotations) {
+            if annsKeepGenericExternMono(decl.annotations) and not annsHaveAxiomMono(decl.annotations) {
               rewrittenItems.add(item)
             }
           }

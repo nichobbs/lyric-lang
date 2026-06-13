@@ -10869,7 +10869,17 @@ func emitGenericExternMember(
       } else {
         buildStaticMethodSigWithCtx(memberParams, memberRet, cctx.lctx)
       }
-      val mrKey = "mr_genextern_" + resolvedFqn + "." + r.memberName
+      // The MemberRef intern key must encode the full signature, not just the
+      // member name: two overloads of the same name on the same generic type
+      // (e.g. distinct-arity `TryGetValue`s, or a `.ctor()` vs `.ctor(int,int)`)
+      // would otherwise alias to the first-registered MemberRef (#3429).
+      var mrKey = "mr_genextern_" + resolvedFqn + "." + r.memberName + "/" + toString(memberParams.count)
+      var mki = 0
+      while mki < memberParams.count {
+        mrKey = mrKey + "_" + msilTypeKeyStr(memberParams[mki])
+        mki = mki + 1
+      }
+      mrKey = mrKey + "_ret_" + msilTypeKeyStr(if r.isCtor { MVoid } else { memberRet })
       val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, r.memberName, mrKey, memberSig)
       val mrTok = 0x0A000000 + mrRow
 
