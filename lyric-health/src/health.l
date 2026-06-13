@@ -56,6 +56,7 @@
 package Health
 
 import Std.Core
+import Std.Char
 import Std.Iter
 import Web
 
@@ -269,7 +270,16 @@ func checkJson(status: in CheckStatus): String {
   return "{\"status\":\"fail\",\"detail\":\"" + jsonEscape(status.detail) + "\"}"
 }
 
-// Escape special characters for JSON string embedding.
+// The lowercase hex digit for a value in 0..15.
+func hexDigit(n: in Int): String {
+  val digits = "0123456789abcdef"
+  return digits[n].toString()
+}
+
+// Escape special characters for JSON string embedding.  Per RFC 8259
+// §7, every control character in U+0000..U+001F must be escaped: the
+// shorthands `\b` `\f` `\n` `\r` `\t` for the five named controls, and
+// the `\u00XX` six-character form for the rest.
 func jsonEscape(s: in String): String {
   var buf: String = ""
   var i: Int = 0
@@ -279,12 +289,19 @@ func jsonEscape(s: in String): String {
       buf = buf + "\\\""
     } else if ch == '\\' {
       buf = buf + "\\\\"
+    } else if ch == '\u{0008}' {
+      buf = buf + "\\b"
+    } else if ch == '\u{000c}' {
+      buf = buf + "\\f"
     } else if ch == '\n' {
       buf = buf + "\\n"
     } else if ch == '\r' {
       buf = buf + "\\r"
     } else if ch == '\t' {
       buf = buf + "\\t"
+    } else if toInt(ch) < 32 {
+      val code = toInt(ch)
+      buf = buf + "\\u00" + hexDigit(code / 16) + hexDigit(code % 16)
     } else {
       buf = buf + ch.toString()
     }
