@@ -83,3 +83,6 @@ nunit-*.xml
 
 # `make lyric` symlink to the AOT entry-point binary
 /bin/
+
+# Transient Claude Code agent worktree checkouts (isolation: worktree)
+.claude/worktrees/
