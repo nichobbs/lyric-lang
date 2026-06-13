@@ -462,8 +462,15 @@ pub func emitStore(insns: in List[LInsn], slot: in Int, ty: in JvmType): Unit {
     case JInt -> insns.add(LIstore(slot = slot))
     case JFloat -> insns.add(LFstore(slot = slot))
     case JVoid -> insns.add(LNop)
-    case JRef(_) -> insns.add(LAstore(slot = slot))
-    case JArray(_) -> insns.add(LAstore(slot = slot))
+    // Carry the resolved class/array descriptor into the store so the
+    // StackMapTable frame types this local precisely (`VObject(cls)`), not the
+    // `java/lang/Object` a bare `LAstore` records.  Without this, an
+    // extern-typed (or any specific-class) local used across a basic-block
+    // boundary — e.g. a `JRef` driven through a `while` back-edge — is framed
+    // as `Object`, and the next `invokevirtual` fails verification with
+    // "Type 'java/lang/Object' is not assignable to '<class>'" (#3307).
+    case JRef(cls) -> insns.add(LAstoreAs(slot = slot, className = cls))
+    case JArray(el) -> insns.add(LAstoreAs(slot = slot, className = "[" + typeDescriptor(el)))
   }
 }
 

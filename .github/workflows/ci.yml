@@ -2371,6 +2371,27 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/nan_compare_jvm_self_test.l
+      # Extern-handle-across-a-loop self-test (#3307) — pins StackMapTable
+      # local-variable typing for `JRef`/extern locals at basic-block
+      # boundaries: an `extern type` value driven through a `while`/`if` (loop
+      # back-edge) must keep its resolved JVM class in the frame, so the next
+      # `invokevirtual` verifies (previously the bare `LAstore` framed it as
+      # `java/lang/Object` -> VerifyError).  Compiled in-process through the
+      # self-hosted `Jvm.Bridge` and run under `java`.  Imports only `Std.*`.
+      - name: Extern-handle-across-loop self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping extern-loop JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping extern-loop JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/extern_loop_jvm_self_test.l
       # `lyric run --target jvm` end-to-end smoke (#674) — the first CI step to
       # exercise the `run` JVM convenience wrapper (vs. the `test --target jvm`
       # steps above).  Builds a no-arg `func main(): Int` program to a bundled

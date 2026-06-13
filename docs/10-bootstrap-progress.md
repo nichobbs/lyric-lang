@@ -24686,3 +24686,46 @@ still pass; and an interface `out` parameter is rejected with the
 `rejectInstanceHolderParams` diagnostic.  docs/44 m-3 marked done (free
 functions); docs/18 §11.2 carries the implementation-status note.  No F# code
 was added (the change is confined to `lyric-compiler/jvm/`).
+
+### D-progress-513 — JVM StackMapTable types extern/`JRef` locals across basic-block boundaries (#3307)
+
+On `--target jvm`, an `extern type` value (or any specific-class `JRef`) bound
+to a local and used across a basic-block boundary — a `while`/`for` loop
+back-edge, or across an `if` — produced bytecode whose `StackMapTable`
+`full_frame` typed that local as `java/lang/Object` instead of its real JVM
+class.  The next `invokevirtual` on the local then failed verification with
+`VerifyError: Bad type on operand stack` ("Type 'java/lang/Object' is not
+assignable to '<class>'").  Straight-line use verified fine; only uses that
+crossed a frame boundary failed.
+
+Root cause: `emitStore` (`lyric-compiler/jvm/codegen/01_types.l`) lowered every
+`JRef`/`JArray` local store to a bare `LAstore(slot)`.  The frame builder in
+`lowering.l` records `LAstore` as `VObject("java/lang/Object")` and the typed
+`LAstoreAs(slot, cls)` variant as `VObject(cls)` — but `emitStore` never used
+the typed form, so the resolved class was discarded at every reference store.
+
+Fix: `emitStore` now emits `LAstoreAs(slot, cls)` for `JRef(cls)` and
+`LAstoreAs(slot, "[" + typeDescriptor(el))` for `JArray(el)`, so the
+`StackMapTable` frame carries the precise class/array descriptor.  `LAstore`
+and `LAstoreAs` emit identical `astore` bytecode (verified in `lowering.l`'s
+`lowerInsn`); only the frame-typing scan differs, so this is a pure
+verification-metadata fix with no codegen behaviour change.  The previous
+`java/lang/Object` framing for genuinely-`Object` locals (generic-erased
+payloads) is unchanged — those still resolve to `VObject("java/lang/Object")`.
+
+Verified by `lyric-compiler/jvm/extern_loop_jvm_self_test.l` (4 cases: extern
+handle across a bare `while`, across a `while` with an inner `if`, used after a
+loop, and two extern handles across one loop), compiled in-process through the
+self-hosted `Jvm.Bridge` and run under `java`; wired into CI.  The full JVM
+self-test suite (auto-FFI, record-method, generic, closure, silent-miscompile,
+out/inout, try-catch, NaN, bitwise, conv-methods, pattern-lowering, hash,
+projectable, control-flow, j3, middle-end) is regression-clean.
+
+This unblocks the loop-driven pure-auto-FFI `_kernel_jvm` hosts that #1065
+(`Std.ProcessCaptureHost`) needs (drain/poll loops carrying a `Process` /
+`InputStream` / `ByteArrayOutputStream` extern handle across the back-edge).
+The separate extern-type-**parameter** descriptor sub-gap noted in #3307 (a
+`func(sink: in JBAOS)` param resolves to `Main/JBAOS` rather than
+`java/io/ByteArrayOutputStream` because `typeExprToJvm` does not consult the
+extern-type table) is **not** addressed here — it lives in the signature path
+and is tracked separately.
