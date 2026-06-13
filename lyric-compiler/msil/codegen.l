@@ -3365,7 +3365,7 @@ func joinSegsMsil(segs: in List[String], sep: in String): String {
 // consulted by the record-ctor call resolution sites) and appends to the
 // ordered `typeFqnCandidates` multimap that `resolveTypeFqn` walks with
 // scope tiers (#3085).
-func registerTypeFqnCandidate(cctx: in CodegenCtx, typeName: in String, typeFqn: in String): Unit {
+pub func registerTypeFqnCandidate(cctx: in CodegenCtx, typeName: in String, typeFqn: in String): Unit {
   if not cctx.typeFqnByName.containsKey(typeName) {
     cctx.typeFqnByName.add(typeName, typeFqn)
   }

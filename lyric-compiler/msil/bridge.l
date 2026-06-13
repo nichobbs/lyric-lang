@@ -611,42 +611,25 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     val prtPkg = perPkgNames[prtpi]
     var prtii = 0
     while prtii < prtFile.items.count {
+      // Register the declaring-package FQN as both a short-name mapping
+      // (`typeFqnByName`, first-registered-wins) and an ordered candidate
+      // (`typeFqnCandidates`, accumulated) via `registerTypeFqnCandidate`.
+      // Seeding ONLY `typeFqnByName` (the previous behaviour) left
+      // `resolveTypeFqn` — which walks `typeFqnCandidates` — blind to an
+      // imported in-bundle type when the consumer package is lowered before
+      // the declaring package (the test-package-first ordering).  That made a
+      // `match` on a `Result[T, ImportedUserType]` returned from an imported
+      // generic call mis-qualify the error type to the consumer package
+      // (`Lib.LibTests.VErr` instead of `Lib.VErr`), so the closed-generic
+      // `isinst` never matched and the match panicked "not exhaustive" (#3332).
       match prtFile.items[prtii].kind {
-        case IRecord(decl) -> {
-          if not cctx.typeFqnByName.containsKey(decl.name) {
-            cctx.typeFqnByName.add(decl.name, prtPkg + "." + decl.name)
-          }
-        }
-        case IExposedRec(decl) -> {
-          if not cctx.typeFqnByName.containsKey(decl.name) {
-            cctx.typeFqnByName.add(decl.name, prtPkg + "." + decl.name)
-          }
-        }
-        case IUnion(decl) -> {
-          if not cctx.typeFqnByName.containsKey(decl.name) {
-            cctx.typeFqnByName.add(decl.name, prtPkg + "." + decl.name)
-          }
-        }
-        case IEnum(decl) -> {
-          if not cctx.typeFqnByName.containsKey(decl.name) {
-            cctx.typeFqnByName.add(decl.name, prtPkg + "." + decl.name)
-          }
-        }
-        case IInterface(decl) -> {
-          if not cctx.typeFqnByName.containsKey(decl.name) {
-            cctx.typeFqnByName.add(decl.name, prtPkg + "." + decl.name)
-          }
-        }
-        case IOpaque(decl) -> {
-          if not cctx.typeFqnByName.containsKey(decl.name) {
-            cctx.typeFqnByName.add(decl.name, prtPkg + "." + decl.name)
-          }
-        }
-        case IDistinctType(decl) -> {
-          if not cctx.typeFqnByName.containsKey(decl.name) {
-            cctx.typeFqnByName.add(decl.name, prtPkg + "." + decl.name)
-          }
-        }
+        case IRecord(decl) -> registerTypeFqnCandidate(cctx, decl.name, prtPkg + "." + decl.name)
+        case IExposedRec(decl) -> registerTypeFqnCandidate(cctx, decl.name, prtPkg + "." + decl.name)
+        case IUnion(decl) -> registerTypeFqnCandidate(cctx, decl.name, prtPkg + "." + decl.name)
+        case IEnum(decl) -> registerTypeFqnCandidate(cctx, decl.name, prtPkg + "." + decl.name)
+        case IInterface(decl) -> registerTypeFqnCandidate(cctx, decl.name, prtPkg + "." + decl.name)
+        case IOpaque(decl) -> registerTypeFqnCandidate(cctx, decl.name, prtPkg + "." + decl.name)
+        case IDistinctType(decl) -> registerTypeFqnCandidate(cctx, decl.name, prtPkg + "." + decl.name)
         case _ -> ()
       }
       prtii = prtii + 1

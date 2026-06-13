@@ -221,3 +221,19 @@ test "fromEntries: a duplicate name is listed once, last value wins" {
   assertEqualInt(Flags.listFlags(store).length, 1, "duplicate name listed once")
   assertTrue(not Flags.isEnabled(store, "dup"), "last (false) value wins for duplicate name")
 }
+
+// ─── getFloat / makeFloatFlag ──────────────────────────────────────────────────
+test "getFloat: returns the stored Float value" {
+  val store = Flags.fromEntries([Flags.makeFloatFlag("ratio", 0.25f32)])
+  assertTrue(Flags.getFloat(store, "ratio", 1.0f32) == 0.25f32, "stored Float value returned")
+}
+
+test "getFloat: returns default for an Int flag (wrong type)" {
+  val store = Flags.fromEntries([Flags.makeIntFlag("n", 5)])
+  assertTrue(Flags.getFloat(store, "n", 9.5f32) == 9.5f32, "Int flag falls back for getFloat")
+}
+
+test "getFloat: returns default when flag is absent" {
+  val store = Flags.inProcess()
+  assertTrue(Flags.getFloat(store, "missing", 3.5f32) == 3.5f32, "default returned when absent")
+}

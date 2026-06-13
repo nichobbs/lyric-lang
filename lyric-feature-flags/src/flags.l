@@ -211,6 +211,17 @@ pub func getInt(store: in FlagStore, name: in String, def: in Int): Int
   }
 }
 
+/// Return the Float value of the named flag, or `def` if absent or non-Float.
+@stable(since = "0.1")
+pub func getFloat(store: in FlagStore, name: in String, def: in Float): Float
+  requires: name.length > 0
+{
+  match store.getValue(name) {
+    case None -> return def
+    case Some(fv) -> match fv { case FlagFloat(v) -> return v; case _ -> return def }
+  }
+}
+
 /// Return every flag currently in `store`.
 @stable(since = "0.1")
 pub func listFlags(store: in FlagStore): slice[FlagEntry] {
