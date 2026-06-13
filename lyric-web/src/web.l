@@ -461,6 +461,24 @@ pub func merge(a: in Router, b: in Router): Router {
   return Router(routes = concat(a.routes, b.routes), workers = concat(a.workers, b.workers), pathPrefix = "")
 }
 
+// ─── CORS configuration guard ─────────────────────────────────────────────────
+/// Validate the CORS configuration that `start()` reads from the environment.
+/// Returns `Some(error)` when the configuration is unsafe to bind a server with,
+/// `None` when it is acceptable.  Enabling CORS without an explicit origin list
+/// is a fail-closed configuration mistake; a disabled CORS layer never errors,
+/// and a wildcard origin (`*`) is accepted (the kernel warns rather than rejects).
+/// `start()` calls this so the panic path and this pure helper share one rule.
+@stable(since = "0.1")
+pub func corsConfigError(enabled: in Bool, origins: in String): Option[String] {
+  if enabled and origins.length == 0 {
+    return Some(
+      "LYRIC_CONFIG_WEB_CORS_ENABLED=true requires LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS " +
+        "to be a non-empty comma-separated list of allowedOrigins."
+    )
+  }
+  return None
+}
+
 // ─── Server entry point ───────────────────────────────────────────────────────
 /// Start the HTTP server with the given router.
 /// Blocks until the process receives a shutdown signal.
@@ -484,12 +502,10 @@ pub func start(router: in Router): Unit {
   val corsMaxAge = 86400
 
   // Enabling CORS without an explicit origin list is a configuration
-  // mistake.  Fail closed at startup.
-  if corsEnabled and corsOrigins.length == 0 {
-    panic(
-      "LYRIC_CONFIG_WEB_CORS_ENABLED=true requires LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS " +
-        "to be a non-empty comma-separated list of allowed origins."
-    )
+  // mistake.  Fail closed at startup, sharing the rule with corsConfigError.
+  match corsConfigError(corsEnabled, corsOrigins) {
+    case Some(err) -> panic(err)
+    case None -> ()
   }
 
   // Unpack routes into parallel slices for the kernel boundary.
