@@ -2626,6 +2626,16 @@ jobs:
           "$lyric_bin" test --manifest lyric-validation/lyric.toml || overall=$?
           echo "=== lyric-proto tests ==="
           "$lyric_bin" test --manifest lyric-proto/lyric.toml || overall=$?
+          # lyric-logging, lyric-mq, and lyric-grpc went green once the
+          # enum-value-in-expression-position codegen fix (#3344) landed.  Their
+          # path deps are already built above: cache (mq), auth + resilience
+          # (grpc); logging is tier-0.
+          echo "=== lyric-logging tests ==="
+          "$lyric_bin" test --manifest lyric-logging/lyric.toml || overall=$?
+          echo "=== lyric-mq tests ==="
+          "$lyric_bin" test --manifest lyric-mq/lyric.toml || overall=$?
+          echo "=== lyric-grpc tests ==="
+          "$lyric_bin" test --manifest lyric-grpc/lyric.toml || overall=$?
           if [ $overall -ne 0 ]; then
             echo "::error::ecosystem test suite failed — security regression detected"
             exit $overall
