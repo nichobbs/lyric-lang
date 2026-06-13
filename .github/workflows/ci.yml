@@ -2624,6 +2624,8 @@ jobs:
           "$lyric_bin" test --manifest lyric-feature-flags/lyric.toml || overall=$?
           echo "=== lyric-validation tests ==="
           "$lyric_bin" test --manifest lyric-validation/lyric.toml || overall=$?
+          echo "=== lyric-proto tests ==="
+          "$lyric_bin" test --manifest lyric-proto/lyric.toml || overall=$?
           if [ $overall -ne 0 ]; then
             echo "::error::ecosystem test suite failed — security regression detected"
             exit $overall

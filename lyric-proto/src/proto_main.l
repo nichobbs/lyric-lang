@@ -13,24 +13,40 @@ import Std.Collections
 // ═══════════════════════════════════════════════════════════════════════════════
 // ─── .NET kernel boundary (inlined from Proto.Kernel.Net) ────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
-/// An opaque mutable byte accumulator backed by System.IO.MemoryStream.
-pub extern type ProtoBuffer = "System.IO.MemoryStream"
+/// A mutable byte accumulator.  Backed by a pure-Lyric `List[Byte]` rather than
+/// a `System.IO.MemoryStream`: the BCL stream forced fragile instance-method FFI
+/// (`WriteByte(byte)` / `ToArray()`) whose hand-routed `@externTarget` form
+/// mis-binds the receiver as a leading parameter, and whose auto-FFI form fails
+/// to resolve a zero-arg instance method.  A `List[Byte]` accumulator is fully
+/// portable (no `.NET`-only boundary) and records are reference types, so writes
+/// through the `in` borrow persist.
+pub record ProtoBuffer {
+  var bytes: List[Byte]
+}
 
 /// Allocate a fresh empty ProtoBuffer.
-@externTarget("System.IO.MemoryStream..ctor")
-pub func newProtoBuffer(): ProtoBuffer = ()
+pub func newProtoBuffer(): ProtoBuffer {
+  return ProtoBuffer(bytes = newList())
+}
 
 /// Append the low byte of `b` (b & 0xFF) to the buffer.
 pub func bufWriteByte(buf: ProtoBuffer, b: in Int): Unit {
+  buf.bytes.add(b.and(255).toByte())
 }
 
 /// Append all bytes from `data` to the buffer.
 pub func bufWriteBytes(buf: ProtoBuffer, data: in slice[Byte]): Unit {
+  var i = 0
+  while i < data.length {
+    buf.bytes.add(data[i])
+    i = i + 1
+  }
 }
 
 /// Extract the accumulated bytes as an immutable slice.
-@externTarget("System.IO.MemoryStream.ToArray")
-pub func bufToBytes(buf: ProtoBuffer): slice[Byte] = ()
+pub func bufToBytes(buf: ProtoBuffer): slice[Byte] {
+  return buf.bytes.toArray()
+}
 
 /// Reinterpret a 32-bit float as its IEEE 754 bit pattern (returned as Int).
 @externTarget("System.BitConverter.SingleToInt32Bits")
@@ -42,22 +58,39 @@ pub func doubleToInt64Bits(v: in Double): Long = ()
 
 /// Read a single byte from `data[offset]` as an unsigned Int (0-255).
 pub func byteAt(data: in slice[Byte], offset: in Int): Int {
-  0
+  data[offset].toInt()
 }
 
 /// Read four bytes from data[offset..offset+4) as a little-endian Int32.
 pub func int32LE(data: in slice[Byte], offset: in Int): Int {
-  0
+  val b0 = byteAt(data, offset)
+  val b1 = byteAt(data, offset + 1)
+  val b2 = byteAt(data, offset + 2)
+  val b3 = byteAt(data, offset + 3)
+  b0.or(b1.shl(8)).or(b2.shl(16)).or(b3.shl(24))
 }
 
 /// Read eight bytes from data[offset..offset+8) as a little-endian Int64.
 pub func int64LE(data: in slice[Byte], offset: in Int): Long {
-  0i64
+  var result = 0i64
+  var i = 0
+  while i < 8 {
+    val bi = intAsLong(byteAt(data, offset + i))
+    result = result.or(bi.shl(i * 8))
+    i = i + 1
+  }
+  result
 }
 
 /// Copy data[offset..offset+length) into a fresh slice[Byte].
 pub func sliceCopy(data: in slice[Byte], offset: in Int, length: in Int): slice[Byte] {
-  data
+  var acc: List[Byte] = newList()
+  var i = 0
+  while i < length {
+    acc.add(data[offset + i])
+    i = i + 1
+  }
+  acc.toArray()
 }
 
 /// Widen an Int (32-bit) to a Long (64-bit).
@@ -70,52 +103,52 @@ pub func longAsInt(n: in Long): Int = ()
 
 /// Bitwise AND for Long values.
 pub func bitandLong(a: in Long, b: in Long): Long {
-  0i64
+  a.and(b)
 }
 
 /// Bitwise OR for Long values.
 pub func bitorLong(a: in Long, b: in Long): Long {
-  0i64
+  a.or(b)
 }
 
 /// Bitwise AND for Int values.
 pub func bitandInt(a: in Int, b: in Int): Int {
-  0
+  a.and(b)
 }
 
 /// Bitwise OR for Int values.
 pub func bitorInt(a: in Int, b: in Int): Int {
-  0
+  a.or(b)
 }
 
 /// Left shift a Long by `shift` positions.
 pub func shlLong(v: in Long, shift: in Int): Long {
-  0i64
+  v.shl(shift)
 }
 
 /// Arithmetic right shift a Long by `shift` positions.
 pub func shrLong(v: in Long, shift: in Int): Long {
-  0i64
+  v.shr(shift)
 }
 
 /// Left shift an Int by `shift` positions.
 pub func shlInt(v: in Int, shift: in Int): Int {
-  0
+  v.shl(shift)
 }
 
 /// Arithmetic right shift an Int by `shift` positions.
 pub func shrInt(v: in Int, shift: in Int): Int {
-  0
+  v.shr(shift)
 }
 
 /// Bitwise XOR for Long values.
 pub func xorLong(a: in Long, b: in Long): Long {
-  0i64
+  a.xor(b)
 }
 
 /// Bitwise XOR for Int values.
 pub func xorInt(a: in Int, b: in Int): Int {
-  0
+  a.xor(b)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -197,11 +230,16 @@ pub func unzigzag64(n: Long): Long {
 // ═══════════════════════════════════════════════════════════════════════════════
 func writeVarint(buf: ProtoBuffer, v: Long): Unit {
   var remaining = v
-  while remaining >= 128i64 {
+  // proto3 encodes a negative int32/int64 as the full 10-byte varint of its
+  // 64-bit two's-complement bit pattern.  Loop on the *unsigned* value: a
+  // negative `remaining` has the high bit set (so `< 0` under signed compare),
+  // and the shift must be LOGICAL — an arithmetic `shr` sign-extends and never
+  // terminates.  Simulate logical shift-by-7 by masking off the 7 high bits the
+  // arithmetic shift sign-extended (`& 0x01FF…FF` keeps the low 57 bits).
+  while remaining < 0i64 or remaining >= 128i64 {
     val lo7 = bitandLong(remaining, 127i64)
-    val more = bitorLong(lo7, 128i64)
-    bufWriteByte(buf, longAsInt(more))
-    remaining = shrLong(remaining, 7)
+    bufWriteByte(buf, longAsInt(bitorLong(lo7, 128i64)))
+    remaining = bitandLong(shrLong(remaining, 7), 0x01FFFFFFFFFFFFFFi64)
   }
   bufWriteByte(buf, longAsInt(bitandLong(remaining, 127i64)))
 }
