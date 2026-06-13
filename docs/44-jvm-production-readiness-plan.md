@@ -183,7 +183,7 @@ tracking issue today (band J0 files them).
 | M-15 | `extern type` robustness gaps: `T.new()` on abstract type → runtime `InstantiationError` (no compile guard); `findBestInstanceMethod` stops before `java/lang/Object` | #2215, #2219 | #2215, #2219 |
 | M-16 | Slice ABI fork: F#-built `Lyric.Stdlib.dll` uses `!0[]` arrays for generic `slice[T]` while self-hosted callers are List-backed | #2592 | #2592 |
 | M-17 | `scope` (structured concurrency) panics on JDK 24+ (StructuredTaskScope became an interface); supports 21–23 only | `lowering.l:3904-3914` | #2263 |
-| M-18 | JVM distribution: ~~no `lyric run --target jvm` (#674)~~ **DONE** (`cli_run.l` builds the bundled JAR via the in-process `Jvm.Bridge` and execs `java -jar`, forwarding `--`-args and exit code, for both single-file and project mode); ~~no `lyric bench --target jvm` (#680)~~ **DONE** (`cli_bench.l` emits the `@bench_module` harness to a JAR and runs it under `java -jar`); GraalVM native-image path (#675/#1975) still outstanding | #675, #1975 | #674 ✅, #680 ✅; #675/#1975 open |
+| M-18 | JVM distribution: ~~no `lyric run --target jvm` (#674)~~ **partially DONE** (`cli_run.l` builds the bundled JAR via the in-process `Jvm.Bridge` and execs `java -jar`; the no-arg / stdout path works, but a `main(slice[String])` taking arguments hits a JVM `VerifyError` and the `Int` return is **not** propagated to the process exit code — both tracked in #3303); `lyric bench --target jvm` (#680) dispatch is **wired but blocked** on JVM `Std.Time` support (#3302), so #680 stays open; GraalVM native-image path (#675/#1975) still outstanding | #675, #1975, #3302, #3303 | #674 (no-arg path) ✅; #680 open (#3302); #675/#1975/#3303 open |
 
 ### MINORS (coverage, polish, diagnostics)
 
@@ -434,8 +434,11 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
   native path subsumes them.
 - B-11/#676: ship the full JUnit 5 `LyricTestEngine` so `lyric test --jvm`
   executes tests.
-- M-18: `lyric run --target jvm` (#674) ✅ and `lyric bench --target jvm`
-  (#680) ✅ shipped; GraalVM native-image (#675/#1975) still outstanding.
+- M-18: `lyric run --target jvm` (#674) ships for the no-arg / stdout path;
+  arg-forwarding and exit-code propagation hit a JVM `VerifyError`, tracked in
+  #3303. `lyric bench --target jvm` (#680) dispatch is wired but blocked on
+  JVM `Std.Time` support (#3302), so #680 stays open. GraalVM native-image
+  (#675/#1975) still outstanding.
 - Make the native JVM CI steps **fail loud** (they currently `::warning` +
   `exit 0` on a missing bundle, so an infra regression silently drops JVM
   coverage).
