@@ -1620,6 +1620,13 @@ pub func registerEnumDeclMsil(cctx: in CodegenCtx, pkgName: in String, decl: in 
     if not cctx.enumCaseOrdinals.containsKey(qn) {
       cctx.enumCaseOrdinals.add(qn, ei)
     }
+    // Type-scoped key `<EnumType>.<Case>` so a qualified `Enum.Case` reference
+    // resolves the ordinal of the *named* enum even when two in-bundle enums
+    // share a case name with different ordinals (#3346).
+    val tn = decl.name + "." + cn
+    if not cctx.enumCaseOrdinals.containsKey(tn) {
+      cctx.enumCaseOrdinals.add(tn, ei)
+    }
     ei = ei + 1
   }
 }
@@ -6804,7 +6811,14 @@ func lowerPatternTestMsil(
       // form parses as PBinding; the `Enum.Case` form parses as PConstructor.)
       val enumPenult = if head.segments.count >= 2 { head.segments[head.segments.count - 2] } else { "" }
       if cctx.enumTypeNames.containsKey(enumPenult) {
-        match mapGet(cctx.enumCaseOrdinals, caseName) {
+        // Prefer the type-scoped ordinal (`<EnumType>.<Case>`) so two in-bundle
+        // enums sharing a case name don't collide on the bare-name key (#3346);
+        // fall back to the bare name for robustness.
+        val scopedOrd = match mapGet(cctx.enumCaseOrdinals, enumPenult + "." + caseName) {
+          case Some(o) -> Some(value = o)
+          case None -> mapGet(cctx.enumCaseOrdinals, caseName)
+        }
+        match scopedOrd {
           case Some(ordv) -> {
             emitLoadSlot(insns, scrutSlot, fctx.paramCount)
             match scrutTy {
