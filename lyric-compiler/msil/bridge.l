@@ -964,6 +964,13 @@ func collectTypeItemsFromFile(file: in SourceFile, importedItems: in List[Item])
       // Safe now that extern types dedup to a canonical `TypeId` (#2394).
       case IExternType(_) -> true
       case IProtected(_) -> true
+      // An `impl Iface for Record` conformance must reach packages that import
+      // this one, or a cross-package call passing the concrete `Record` where an
+      // `Iface` parameter is expected fails the interface-subsumption check with
+      // T0043 (e.g. `Cache.get(Cache.inProcess(), …)`).  `registerImplsFromItems`
+      // keys the relation by `TypeId`, and `addSigsFromItems` ignores `IImpl`, so
+      // carrying the declaration across is sound and additive (#3xxx).
+      case IImpl(_) -> true
       case _ -> false
     }
     val isPubFunc = match it.kind {
@@ -1058,6 +1065,11 @@ func collectStdlibTypeItems(stdlibSources: in List[String], importedItems: in Li
         case IProtected(_) -> true
         case IExternType(_) -> true
         case IFunc(_) -> true
+        // Carry `impl Iface for T` so a consumer passing a concrete stdlib type
+        // where an stdlib interface is expected satisfies interface subsumption
+        // (parallels the in-bundle collector; keyed by `TypeId`, ignored by
+        // `addSigsFromItems`).
+        case IImpl(_) -> true
         case _ -> false
       }
       if include {

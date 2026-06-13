@@ -86,34 +86,47 @@ pub interface FlagStore {
 }
 
 // ─── InProcessFlagStore ───────────────────────────────────────────────────────
-/// In-process flag store backed by a value-string map plus a kind map.
+/// In-process flag store backed by a `Map[String, FlagValue]`.
 ///
-/// All flag values are stored as their string representation in `valueMap`
-/// ("true"/"false" for Bool, verbatim for String, decimal for Int).
-/// The `kindMap` records "bool"/"string"/"int"/"float" per name.
-/// This sidesteps bootstrap emitter limitations with non-String Map indexing
-/// in impl blocks.
+/// Values are stored as typed `FlagValue`s directly (String keys, so there is
+/// no non-String Map-indexing concern), preserving full type fidelity for Bool,
+/// String, Int, and Float flags.  `names` tracks insertion order so `listFlags`
+/// can enumerate (the `Map` extern exposes no key iteration), and `descMap`
+/// carries each flag's description for round-tripping through `listFlags`.
 ///
 /// Not thread-safe in v1.  For concurrent access, wrap in a `protected type`
 /// once the protected-type weaver ships, or use a remote-backed implementation.
 @stable(since = "0.1")
 pub record InProcessFlagStore {
-  // Single flat map: "bool:<name>" -> "true"/"false", "str:<name>" -> value,
-  // "int:<name>" -> decimal, "has:<name>" -> kind ("bool"/"str"/"int")
-  var dataMap: Map[String, String]
+  var valueMap: Map[String, FlagValue]
+  var names: List[String]
+  var descMap: Map[String, String]
 }
 
 impl FlagStore for InProcessFlagStore {
   func isEnabled(name: in String): Bool {
-    return false
+    match mapGet(self.valueMap, name) {
+      case Some(fv) -> return getBoolVal(fv)
+      case None -> return false
+    }
   }
 
   func getValue(name: in String): Option[FlagValue] {
-    return None
+    return mapGet(self.valueMap, name)
   }
 
   func listFlags(): slice[FlagEntry] {
-    return []
+    var acc: List[FlagEntry] = newList()
+    for n in self.names {
+      match mapGet(self.valueMap, n) {
+        case Some(fv) -> {
+          val desc = match mapGet(self.descMap, n) { case Some(d) -> d; case None -> "" }
+          acc.add(FlagEntry(name = n, value = fv, description = desc))
+        }
+        case None -> ()
+      }
+    }
+    return acc.toArray()
   }
 
   func refresh(): Result[Unit, FlagError] {
@@ -127,37 +140,25 @@ impl FlagStore for InProcessFlagStore {
 /// Create an empty in-process flag store.
 @stable(since = "0.1")
 pub func inProcess(): InProcessFlagStore {
-  return InProcessFlagStore(dataMap = newMap())
+  return InProcessFlagStore(valueMap = newMap(), names = newList(), descMap = newMap())
 }
 
 /// Create an in-process flag store pre-loaded with the given entries.
+/// Later entries with a duplicate name overwrite earlier ones; each name is
+/// listed once for `listFlags`.
 @stable(since = "0.1")
 pub func fromEntries(entries: in slice[FlagEntry]): InProcessFlagStore {
-  var dm: Map[String, String] = newMap()
+  var vm: Map[String, FlagValue] = newMap()
+  var nm: List[String] = newList()
+  var dmap: Map[String, String] = newMap()
   for fe in entries {
-    val n = fe.name
-    val fv = fe.value
-    if isFlagBool(fv) {
-      val bv = getBoolVal(fv)
-      dm.add("has:" + n, "bool")
-      if bv {
-        dm.add("bool:" + n, "true")
-      } else {
-        dm.add("bool:" + n, "false")
-      }
-    } else {
-      if isFlagString(fv) {
-        dm.add("has:" + n, "str")
-        dm.add("str:" + n, getStringVal(fv))
-      } else {
-        if isFlagInt(fv) {
-          dm.add("has:" + n, "int")
-          dm.add("int:" + n, intStr(getIntVal(fv)))
-        }
-      }
+    if not vm.containsKey(fe.name) {
+      nm.add(fe.name)
     }
+    vm[fe.name] = fe.value
+    dmap[fe.name] = fe.description
   }
-  return InProcessFlagStore(dataMap = dm)
+  return InProcessFlagStore(valueMap = vm, names = nm, descMap = dmap)
 }
 
 // ─── Convenience functions ────────────────────────────────────────────────────
@@ -182,34 +183,32 @@ pub func getValue(store: in FlagStore, name: in String): Option[FlagValue]
 pub func getBool(store: in FlagStore, name: in String, def: in Bool): Bool
   requires: name.length > 0
 {
-  return store.isEnabled(name)
+  match store.getValue(name) {
+    case None -> return def
+    case Some(fv) -> match fv { case FlagBool(v) -> return v; case _ -> return def }
+  }
 }
 
-/// Return the String value of the named flag, or `defaultValue` if absent or non-String.
-/// Note: works correctly when `store` is an `InProcessFlagStore`; for custom
-/// `FlagStore` implementations use `store.getValue` and pattern-match the result.
+/// Return the String value of the named flag, or `def` if absent or non-String.
 @stable(since = "0.1")
 pub func getString(store: in FlagStore, name: in String, def: in String): String
   requires: name.length > 0
 {
-  if store.isEnabled(name) {
-    return def
+  match store.getValue(name) {
+    case None -> return def
+    case Some(fv) -> match fv { case FlagString(v) -> return v; case _ -> return def }
   }
-  val fv = store.getValue(name)
-  if not isSome(fv) {
-    return def
-  }
-  return def
 }
 
-/// Return the Int value of the named flag, or `defaultValue` if absent or non-Int.
-/// Note: works correctly when `store` is an `InProcessFlagStore`; for custom
-/// `FlagStore` implementations use `store.getValue` and pattern-match the result.
+/// Return the Int value of the named flag, or `def` if absent or non-Int.
 @stable(since = "0.1")
 pub func getInt(store: in FlagStore, name: in String, def: in Int): Int
   requires: name.length > 0
 {
-  return def
+  match store.getValue(name) {
+    case None -> return def
+    case Some(fv) -> match fv { case FlagInt(v) -> return v; case _ -> return def }
+  }
 }
 
 /// Refresh the flag store from the remote endpoint.
@@ -235,36 +234,8 @@ pub func makeFlagWithDesc(name: in String, enabled: in Bool, description: in Str
 }
 
 // ─── Private FlagValue helpers ────────────────────────────────────────────────
-// These helpers test/extract typed values from a FlagValue union.
-// Receiving `fv` as a typed parameter lets the bootstrap emitter resolve
-// the union cases correctly.
-func isFlagBool(fv: in FlagValue): Bool {
-  match fv {
-    case FlagBool(_) -> return true
-    case FlagString(_) -> return false
-    case FlagInt(_) -> return false
-    case FlagFloat(_) -> return false
-  }
-}
-
-func isFlagString(fv: in FlagValue): Bool {
-  match fv {
-    case FlagString(_) -> return true
-    case FlagBool(_) -> return false
-    case FlagInt(_) -> return false
-    case FlagFloat(_) -> return false
-  }
-}
-
-func isFlagInt(fv: in FlagValue): Bool {
-  match fv {
-    case FlagInt(_) -> return true
-    case FlagBool(_) -> return false
-    case FlagString(_) -> return false
-    case FlagFloat(_) -> return false
-  }
-}
-
+// Receiving `fv` as a typed parameter lets the emitter resolve the union cases.
+/// The Bool payload of a `FlagBool`, or `false` for any other variant.
 func getBoolVal(fv: in FlagValue): Bool {
   match fv {
     case FlagBool(v) -> return v
@@ -272,33 +243,4 @@ func getBoolVal(fv: in FlagValue): Bool {
     case FlagInt(_) -> return false
     case FlagFloat(_) -> return false
   }
-}
-
-func getStringVal(fv: in FlagValue): String {
-  match fv {
-    case FlagString(v) -> return v
-    case FlagBool(_) -> return ""
-    case FlagInt(_) -> return ""
-    case FlagFloat(_) -> return ""
-  }
-}
-
-func getIntVal(fv: in FlagValue): Int {
-  match fv {
-    case FlagInt(v) -> return v
-    case FlagBool(_) -> return 0
-    case FlagString(_) -> return 0
-    case FlagFloat(_) -> return 0
-  }
-}
-
-// Convert a decimal string to Int.  Stub: returns 0 for all inputs.
-// Full parsing deferred; int flags round-trip through string storage.
-func parseIntStr(s: in String): Int {
-  return 0
-}
-
-// Convert an Int to decimal string.
-func intStr(n: in Int): String {
-  return toString(n)
 }
