@@ -610,6 +610,68 @@ test "ord record non-ordered field still synthesises without projection (D0001 p
   assertEqualInt(countMemberNamedInFunc(sf, "Holder.compare", "value"), 0, "ord-nonord: no .value projection")
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// @derive(Ord) fields of a distinct type imported from another package (#3287).
+// ─────────────────────────────────────────────────────────────────────────────
+// Parse an "imported package" source and return its items, mirroring how the
+// bridges flatten `ImportedPackage.items` before calling `deriveFileWithImports`.
+func importedItemsOf(src: in String): List[Item] {
+  parse(src).file.items
+}
+
+test "ord record cross-package distinct field projects through .value (#3287)" {
+  // `Age` is declared in another package; the consumer's @derive(Ord) record
+  // must still compare `self.age.value`, not the wrapper references.  Without
+  // the imported-distincts map the field tripped a false D0001 and miscompiled
+  // to a reference comparison.
+  val pkg = "package Pkg\ntype Age = Int\n"
+  val app = "package App\nimport Pkg\n@derive(Ord)\nrecord Person { age: Age; name: String }\n"
+  val sf = deriveFileWithImports(parse(app).file, importedItemsOf(pkg))
+  assertTrue(findFuncInFile(sf, "Person.compare"), "xpkg-ord: Person.compare synthesised")
+  assertEqualInt(
+    countMemberNamedInFunc(sf, "Person.compare", "value"),
+    4,
+    "xpkg-ord: 2 age-ifs x 2 operands project through .value"
+  )
+}
+
+test "ord union cross-package distinct case field projects through .value (#3287)" {
+  val pkg = "package Pkg\ntype Age = Int\n"
+  val app = "package App\nimport Pkg\n@derive(Ord)\nunion U { case Person(age: Age); case Anon }\n"
+  val sf = deriveFileWithImports(parse(app).file, importedItemsOf(pkg))
+  assertTrue(findFuncInFile(sf, "U.compare"), "xpkg-union-ord: U.compare synthesised")
+  // The single same-case `Person` arm compares the one field: 2 ifs x 2 operands.
+  assertEqualInt(
+    countMemberNamedInFunc(sf, "U.compare", "value"),
+    0,
+    "xpkg-union-ord: projection lives in the inner match, not the outer block"
+  )
+}
+
+test "ord record same-file distinct still works through deriveFileWithImports (#3287)" {
+  // Regression guard: same-file distincts must keep resolving when the imported
+  // list is non-empty (the consumer file is folded into the map first).
+  val pkg = "package Pkg\ntype Other = Int\n"
+  val app = "package App\nimport Pkg\ntype Age = Int\n@derive(Ord)\nrecord Person { age: Age }\n"
+  val sf = deriveFileWithImports(parse(app).file, importedItemsOf(pkg))
+  assertEqualInt(
+    countMemberNamedInFunc(sf, "Person.compare", "value"),
+    4,
+    "xpkg-samefile: same-file Age projects through .value alongside imports"
+  )
+}
+
+test "deriveFile single-file entry still derives same-file distinct (#3287)" {
+  // The no-imports wrapper must be unchanged behaviour: same-file distinct works.
+  val src = "package P\ntype Age = Int\n@derive(Ord)\nrecord Person { age: Age }\n"
+  val sf = deriveFile(parse(src).file)
+  assertEqualInt(
+    countMemberNamedInFunc(sf, "Person.compare", "value"),
+    4,
+    "deriveFile-wrapper: same-file Age still projects through .value"
+  )
+}
+
 // Runtime coverage (#3186): this module itself is compiled through the
 // self-hosted pipeline, so the derived compare below exercises the projection
 // at runtime.  Allocation order deliberately opposes value order — a regression

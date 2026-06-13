@@ -529,7 +529,21 @@ pub func compileProjectToMsilWithRestoredAndVersion(
       return false
     }
 
-    val derived = deriveFile(propRes.file)
+    // Flatten the items of every package this package imports so `deriveFile`
+    // can resolve a `@derive(Ord)` field typed as a cross-package distinct type
+    // through its `.value` projection chain instead of miscompiling to a
+    // reference comparison (#3287).
+    val importedItems: List[Item] = newList()
+    var iii = 0
+    while iii < importedPkgs.count {
+      var jjj = 0
+      while jjj < importedPkgs[iii].items.count {
+        importedItems.add(importedPkgs[iii].items[jjj])
+        jjj = jjj + 1
+      }
+      iii = iii + 1
+    }
+    val derived = deriveFileWithImports(propRes.file, importedItems)
 
     val monoRes = monoFileWithImports(derived, allImportedGenFuncs)
     if reportAndAbortInPkg(pp.name, monoRes.diagnostics) {

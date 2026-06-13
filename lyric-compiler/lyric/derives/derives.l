@@ -1044,18 +1044,16 @@ func deriveItem(
 // ─────────────────────────────────────────────────────────────────────────────
 // §10. Public entry point.
 // ─────────────────────────────────────────────────────────────────────────────
-/// Walk all items in `file`, synthesise derive helper functions for every
-/// `@derive(X)` / `@generate(Json)` annotation, and return a new SourceFile
-/// with the synthesised items appended after the originals.
-pub func deriveFile(file: in SourceFile): SourceFile {
-  // Same-file distinct-type declarations (name -> underlying type's head name)
-  // so @derive(Ord) fields typed as e.g. `type Age = Int` resolve through to
-  // their ordering-capable primitive instead of tripping a false D0001 and a
-  // miscompiled reference comparison (#3186).
-  val distincts: Map[String, String] = newMap()
+// Add every `type X = Underlying` declaration in `items` to `distincts` as a
+// name -> underlying-head-name pair, skipping names already present.  Used to
+// seed both the same-file declarations (the current file) and the cross-package
+// ones (an imported package's `IDistinctType` items, #3287) so @derive(Ord)
+// fields typed as a distinct type resolve through to their ordering-capable
+// primitive regardless of which package the distinct type was declared in.
+func collectDistinctsFromItems(items: in List[Item], distincts: inout Map[String, String]) {
   var di = 0
-  while di < file.items.count {
-    match file.items[di].kind {
+  while di < items.count {
+    match items[di].kind {
       case IDistinctType(decl) -> {
         val underlyingName = match decl.underlying.kind {
           case TRef(path) -> if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "" }
@@ -1069,6 +1067,44 @@ pub func deriveFile(file: in SourceFile): SourceFile {
     }
     di = di + 1
   }
+}
+
+/// Walk all items in `file`, synthesise derive helper functions for every
+/// `@derive(X)` / `@generate(Json)` annotation, and return a new SourceFile
+/// with the synthesised items appended after the originals.
+///
+/// Single-file entry point: only same-file distinct types resolve through
+/// their `.value` projection chain.  Multi-package builds use
+/// `deriveFileWithImports` so a `@derive(Ord)` field typed as a distinct type
+/// imported from another package (e.g. `type Age = Int` exported by `Pkg`)
+/// also resolves correctly instead of miscompiling to a reference comparison
+/// (#3287).
+pub func deriveFile(file: in SourceFile): SourceFile {
+  val noImports: List[Item] = newList()
+  deriveFileWithImports(file, noImports)
+}
+
+/// Like `deriveFile`, but `importedItems` carries the type-shaped items
+/// (notably `IDistinctType` declarations) of every package this file imports —
+/// the same item lists the type checker resolves against.  Imported distinct
+/// types are folded into the same name -> underlying-head map as same-file ones
+/// so `@derive(Ord)` on a record/union field whose type is a cross-package
+/// distinct over an Ord primitive emits the correct `.value` projection chain
+/// rather than a false D0001 plus a reference-comparison miscompile (#3287).
+///
+/// Note: the synthesised `self.field.value` chain is correct, but the bare
+/// `Msil.Bridge` path (empty `stdlibSources`) still miscompiles a chained
+/// `self.field.subfield` read in a UFCS method body to invalid IL — a
+/// pre-existing codegen defect that affects hand-written methods too and is
+/// orthogonal to this AST transform (tracked in #3353).
+pub func deriveFileWithImports(file: in SourceFile, importedItems: in List[Item]): SourceFile {
+  // Distinct-type declarations (name -> underlying type's head name).  Same-file
+  // declarations win over imported ones on name collision because
+  // `collectDistinctsFromItems` skips names already present and the current
+  // file is folded in first.
+  val distincts: Map[String, String] = newMap()
+  collectDistinctsFromItems(file.items, distincts)
+  collectDistinctsFromItems(importedItems, distincts)
   val synths: List[Item] = newList()
   var i = 0
   while i < file.items.count {
