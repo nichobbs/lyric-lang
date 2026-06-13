@@ -201,6 +201,7 @@ tracking issue today (band J0 files them).
 | m-10 | `Std.Time.sleepMillis` is a JVM stub; doc omits the limitation | #2101 | #2101 |
 | m-11 | Doc contradictions: Q-J012/Q-J013 marked "shipped" in `docs/36` but "NOT present / Phase 6" in `docs/31`/`docs/03`; self-test counts drift (B124/B125/B130) across `docs/18`/`docs/33`/`docs/04`; parity count "20-program" vs "22-program" | `docs/31:409-434` vs `docs/36:123-150`; count drift | (Band J0 docs sweep) |
 | m-12 | ~~`Float`/`Double` ordered comparisons used `fcmpl`/`dcmpl` for all six operators → NaN compared as less-than-everything for `<`/`<=` (IEEE 754 §5.11 violation)~~ **Fixed (D-progress-508):** `floatCmpInsn(op, isDouble)` selects `fcmpg`/`dcmpg` for `<`/`<=` and `fcmpl`/`dcmpl` otherwise, in both `lowerCmp` and `lowerCmpFail`; verified by `nan_compare_jvm_self_test.l`. | `codegen/02_exprs.l` | #2772 |
+| m-13 | ~~`lowerTryCatchExpr` value-less catch arm (type-checker gap #2042) aborted with a bare `panic(...)` carrying no source location~~ **DONE (D-progress-509).** Now a source-located `error[J004]: <line>:<col>: …` built from the offending catch clause's span, re-emitted under `error[J002]` by the `Jvm.Bridge` `Bug` catch for bundled packages. `J004` is the next free code after `J001`–`J003`. Regression-guarded by `try_catch_expr_jvm_self_test.l` (4 valid cases) in CI on `--target jvm`. | `codegen/05_stmts.l` | #3193 |
 
 ---
 

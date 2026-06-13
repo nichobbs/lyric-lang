@@ -2258,6 +2258,30 @@ jobs:
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/control_flow_jvm_self_test.l
 
+      # Try/catch-as-expression self-test on JVM (#3193, epic #2663).  Pins
+      # `lowerTryCatchExpr` (jvm/codegen/05_stmts.l): when every arm yields a
+      # value of the try-body type, the no-throw path yields the try body's
+      # value and the throwing path yields the catch arm's value, routed through
+      # the result slot (Int `istore`/`iload` and String `astore`/`aload`
+      # variants, plus a bound-exception arm).  This is the regression guard for
+      # the #3193 change, which only narrows the value-less-catch-arm abort path
+      # (now a source-located `error[J004]` instead of an unlocated panic) and
+      # must leave valid try-catch expressions untouched.  Imports only `Std.*`.
+      - name: Try/catch-expression self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping try/catch-expression JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping try/catch-expression JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/try_catch_expr_jvm_self_test.l
+
       # @projectable opaque-twin self-test on JVM (#3044) — JVM parity twin of
       # the MSIL m87 self-test (PR #3015): `<Name>View` class synthesis,
       # `toView()`, `tryInto()` round-trip via Std.Core.Result, `@hidden`

@@ -24483,3 +24483,43 @@ Verified by `lyric-compiler/jvm/nan_compare_jvm_self_test.l` (7 cases, both
 lowering paths, Float and Double, plus a non-NaN ordering regression),
 compiled in-process through the self-hosted `Jvm.Bridge` and run under `java`;
 wired into CI beside the other native `--target jvm` self-tests.
+
+### D-progress-509 — JVM `lowerTryCatchExpr` value-less catch arm now reports a source-located `error[J004]` (#3193, epic #2663)
+
+The JVM try/catch-as-expression lowering (`lowerTryCatchExpr` in
+`lyric-compiler/jvm/codegen/05_stmts.l`) routes each arm's value through
+a single result slot so the operand stack is empty at the join label.
+When the try body yields a value but a catch arm yields `Unit` (the
+documented type-checker gap #2042, e.g. a catch arm whose tail is a
+statement rather than a value-yielding expression), the backend cannot
+route an absent value through the result slot.  Emitting a store there
+would pop a value that is not on the stack and produce a class-load-time
+`VerifyError`; #2690 already replaced that with a compile-time abort, but
+the abort was a bare `panic(...)` carrying no source file, line, or
+column — the user saw an untyped crash with no pointer to the offending
+line.
+
+- **`lyric-compiler/jvm/codegen/05_stmts.l`.**  The `JVoid` catch-body
+  arm now aborts with a source-located diagnostic message built from the
+  offending catch clause's span (`c.span.startPos.line` /
+  `.column`): `error[J004]: <line>:<col>: try-catch used as an
+  expression, but this catch arm yields Unit while the try body yields a
+  value; … annotate the try-catch result type explicitly (type-checker
+  gap #2042).`  The code is threaded through the `panic` message (rather
+  than a diagnostic-collecting `Result`) because the codegen tree returns
+  `JvmType`, not a diagnostic result — the `Jvm.Bridge` `Bug` catch
+  re-emits the message under `error[J002]` for bundled referenced
+  packages, and the direct user-build path surfaces the same located
+  text.  `J004` is the next free code after `J001`–`J003` (`bridge.l`).
+- **Test.**  `lyric-compiler/jvm/try_catch_expr_jvm_self_test.l`
+  (`@test_module`, 4 tests) pins the *valid* cases — Int and String arms,
+  no-throw vs throwing path, and a bound-exception arm — so the change is
+  a regression guard that only narrows the value-less-arm abort path and
+  leaves valid try-catch expressions compiling and running correctly on
+  JVM.  Wired into CI beside the other `--target jvm` JVM-codegen
+  self-tests (`.github/workflows/ci.yml`).  The error path itself aborts
+  compilation and is verified manually with `lyric build --target jvm`
+  (before: `panic: Jvm.Codegen: …` with no location; after:
+  `error[J004]: 8:5: …`).
+- **Docs.**  `docs/44-jvm-production-readiness-plan.md` notes the J004
+  diagnostic under the diagnostics/error-surface discussion.
