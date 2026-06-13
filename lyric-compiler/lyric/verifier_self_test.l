@@ -592,6 +592,56 @@ func testSummaryHelpers(): Unit {
   assertTrue(not summaryHasErrorDiag(summary), "summary-no-error-diag")
 }
 
+func summaryHasDiagCode(s: in ProofSummary, code: in String): Bool {
+  var i = 0
+  while i < s.diagnostics.count {
+    if s.diagnostics[i].code == code {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// #3298: a @proof_required async function carrying a contract clause must be
+// rejected with V0032, not silently verified against an opaqued body.
+func testProveAsyncContractRejected(): Unit {
+  val src = "@proof_required\npackage P\nasync func f(x: in Int): Int requires: x > 0 ensures: result > 0 { x }\n"
+  val summary = prove(src)
+  assertTrue(summaryHasDiagCode(summary, "V0032"), "async-contract: V0032 emitted")
+  assertTrue(summaryHasErrorDiag(summary), "async-contract: error diag present")
+  // No vacuous/opaque goals are generated for the rejected function.
+  assertEqualInt(summaryTotalCount(summary), 0, "async-contract: no goals")
+}
+
+// #3298: a @proof_required async function WITHOUT contracts is unaffected —
+// no V0032, and it verifies normally.
+func testProveAsyncNoContractAllowed(): Unit {
+  val src = "@proof_required\npackage P\nasync func f(x: in Int): Int { x }\n"
+  val summary = prove(src)
+  assertTrue(not summaryHasDiagCode(summary, "V0032"), "async-no-contract: no V0032")
+  assertTrue(not summaryHasErrorDiag(summary), "async-no-contract: no error diags")
+}
+
+// #3298 regression: a synchronous @proof_required function with contracts must
+// still take the normal VC-generation path — the guard fires only for
+// async/yield bodies, so no V0032 and goals are still produced.
+func testProveSyncContractStillVerifies(): Unit {
+  val src = "@proof_required\npackage P\nfunc f(x: in Int): Int requires: x >= 0 ensures: result >= 0 { x }\n"
+  val summary = prove(src)
+  assertTrue(not summaryHasDiagCode(summary, "V0032"), "sync-contract: no V0032")
+  assertTrue(summaryTotalCount(summary) > 0, "sync-contract: goals generated (normal path)")
+}
+
+// #3298: a @proof_required generator (async + yield) carrying a contract is
+// rejected with V0032 like any other async contract-bearer.
+func testProveGeneratorContractRejected(): Unit {
+  val src = "@proof_required\npackage P\nasync func gen(): Int ensures: result >= 0 {\n  yield 1\n  0\n}\n"
+  val summary = prove(src)
+  assertTrue(summaryHasDiagCode(summary, "V0032"), "generator-contract: V0032 emitted")
+  assertTrue(summaryHasErrorDiag(summary), "generator-contract: error diag present")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Test items
 // ─────────────────────────────────────────────────────────────────────────────
@@ -781,4 +831,20 @@ test "qualified datatype name no collision" {
 
 test "summary helpers" {
   testSummaryHelpers()
+}
+
+test "prove async contract rejected" {
+  testProveAsyncContractRejected()
+}
+
+test "prove async no contract allowed" {
+  testProveAsyncNoContractAllowed()
+}
+
+test "prove sync contract still verifies" {
+  testProveSyncContractStillVerifies()
+}
+
+test "prove generator contract rejected" {
+  testProveGeneratorContractRejected()
 }

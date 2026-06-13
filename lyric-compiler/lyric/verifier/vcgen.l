@@ -1587,7 +1587,148 @@ func collectModifiedVarsSt(st: in Statement, output: in List[String]): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §10. Goals for a single function.
 // ─────────────────────────────────────────────────────────────────────────────
+// True when a function's body contains at least one EYield node (a generator).
+// The verifier cannot model the suspend/resume control flow of generators, so a
+// contract-bearing generator is rejected by goalsForFunction rather than having
+// its body silently coerced to an opaque term by the translateExpr catch-all.
+func funcBodyContainsYield(decl: in FunctionDecl): Bool {
+  match decl.body {
+    case Some(b) -> {
+      match b {
+        case FBExpr(expr) -> exprContainsYield(expr)
+        case FBBlock(blk) -> blockContainsYield(blk)
+      }
+    }
+    case None -> false
+  }
+}
+
+func blockContainsYield(blk: in Block): Bool {
+  var i = 0
+  while i < blk.statements.count {
+    if stmtContainsYield(blk.statements[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+func stmtContainsYield(s: in Statement): Bool {
+  match s.kind {
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(_, _, init) -> exprContainsYield(init)
+        case LBLet(_, _, init) -> exprContainsYield(init)
+        case LBVar(_, _, Some(init)) -> exprContainsYield(init)
+        case LBVar(_, _, None) -> false
+      }
+    }
+    case SAssign(target, _, value) -> exprContainsYield(target) or exprContainsYield(value)
+    case SReturn(Some(e)) -> exprContainsYield(e)
+    case SReturn(None) -> false
+    case SThrow(e) -> exprContainsYield(e)
+    case STry(body, catches, finally_) -> {
+      if blockContainsYield(body) {
+        return true
+      }
+      var ci = 0
+      while ci < catches.count {
+        if blockContainsYield(catches[ci].body) {
+          return true
+        }
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> blockContainsYield(fb)
+        case None -> false
+      }
+    }
+    case SDefer(body) -> blockContainsYield(body)
+    case SScope(_, body) -> blockContainsYield(body)
+    case SFor(_, _, iter, body) -> exprContainsYield(iter) or blockContainsYield(body)
+    case SWhile(_, cond, body) -> exprContainsYield(cond) or blockContainsYield(body)
+    case SLoop(_, body) -> blockContainsYield(body)
+    case SInvariant(e) -> exprContainsYield(e)
+    case SExpr(e) -> exprContainsYield(e)
+    case SRule(lhs, rhs) -> exprContainsYield(lhs) or exprContainsYield(rhs)
+    case _ -> false
+  }
+}
+
+func exprContainsYield(e: in Expr): Bool {
+  match e.kind {
+    case EYield(_) -> true
+    case EParen(inner) -> exprContainsYield(inner)
+    case EAwait(inner) -> exprContainsYield(inner)
+    case ESpawn(inner) -> exprContainsYield(inner)
+    case EPropagate(inner) -> exprContainsYield(inner)
+    case ETry(inner) -> exprContainsYield(inner)
+    case EBlock(blk) -> blockContainsYield(blk)
+    case EIf(cond, thenBranch, elseBranch, _) -> {
+      if exprContainsYield(cond) {
+        return true
+      }
+      if eobContainsYield(thenBranch) {
+        return true
+      }
+      match elseBranch {
+        case Some(eb) -> eobContainsYield(eb)
+        case None -> false
+      }
+    }
+    case EMatch(scrutinee, arms) -> {
+      if exprContainsYield(scrutinee) {
+        return true
+      }
+      var i = 0
+      while i < arms.count {
+        if eobContainsYield(arms[i].body) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case _ -> false
+  }
+}
+
+func eobContainsYield(eob: in ExprOrBlock): Bool {
+  match eob {
+    case EOBExpr(x) -> exprContainsYield(x)
+    case EOBBlock(blk) -> blockContainsYield(blk)
+  }
+}
+
 pub func goalsForFunction(env0: in VEnv, decl: in FunctionDecl): (List[Goal], List[Diagnostic]) {
+  // Soundness guard (#3298): the WP/SP calculus has no model for the
+  // suspend/resume control flow of `async`/`yield` bodies — an `await` or
+  // `yield` expression hits the translateExpr catch-all and is silently
+  // replaced with an uninterpreted opaque term, so a `requires:`/`ensures:`
+  // clause would be "discharged" against an unmodelled body.  Until
+  // effect-aware VC generation lands, reject any contract-bearing
+  // async/generator function with a hard error and emit no goals (rather than
+  // vacuous/opaque ones).  A non-contract async function is unaffected.
+  if decl.contracts.count > 0 and (decl.isAsync or funcBodyContainsYield(decl)) {
+    val asyncDiags: List[Diagnostic] = newList()
+    asyncDiags.add(
+      errorDiagnostic(
+        "V0032",
+        "contracts on async/yield functions are not yet verifiable; the proof " +
+          "system cannot model suspend/resume control flow, so 'requires:'/'ensures:' " +
+          "clauses on '" +
+          decl.name +
+          "' would be checked against an unmodelled body. " +
+          "Move the contract to a synchronous core, or mark the package @runtime_checked.",
+        decl.span
+      )
+    )
+    val noGoals: List[Goal] = newList()
+    val asyncPair: (List[Goal], List[Diagnostic]) = (noGoals, asyncDiags)
+    return asyncPair
+  }
+
   // Bind parameters.
   var envWithParams = env0
   val paramHyps: List[Term] = newList()
