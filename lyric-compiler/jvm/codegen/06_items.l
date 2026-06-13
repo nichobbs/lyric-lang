@@ -292,13 +292,21 @@ pub func anyHolderParam(params: in List[Param]): Bool {
 // TypeExpr to its element JvmType (caller supplies the erased or non-erased
 // mapper).  Index-aligned with `params`.
 pub func holderAwareParamTypes(
-  params: in List[Param], pkgName: in String, erase: in Bool, typeParams: in List[String]
+  params: in List[Param],
+  pkgName: in String,
+  erase: in Bool,
+  typeParams: in List[String],
+  externTypes: in Map[String, String],
 ): List[JvmType] {
   val acc: List[JvmType] = newList()
   var i = 0
   while i < params.count {
     val p = params[i]
-    val elemTy = if erase { typeExprToJvmErased(p.ty, pkgName, typeParams) } else { typeExprToJvm(p.ty, pkgName) }
+    val elemTy = if erase {
+      typeExprToJvmErased(p.ty, pkgName, typeParams)
+    } else {
+      typeExprToJvmExtern(p.ty, pkgName, externTypes)
+    }
     if isHolderMode(p.mode) {
       acc.add(holderArrayType(elemTy))
     } else {
@@ -323,6 +331,7 @@ pub func setupStaticParamSlotsAndHolders(
   insns: in List[LInsn],
   params: in List[Param],
   pkgName: in String,
+  externTypes: in Map[String, String],
 ): Unit {
   // Pass 1: allocate the ABI slot for every parameter, in order.  A holder
   // parameter's ABI slot holds the incoming array; it is bound under a hidden
@@ -334,7 +343,7 @@ pub func setupStaticParamSlotsAndHolders(
   var pi = 0
   while pi < params.count {
     val p = params[pi]
-    val elemTy = typeExprToJvm(p.ty, pkgName)
+    val elemTy = typeExprToJvmExtern(p.ty, pkgName, externTypes)
     if isHolderMode(p.mode) {
       val hs = allocSlot(ctx, "__holder$" + p.name, holderArrayType(elemTy))
       holderIdx.add(pi)
@@ -378,7 +387,7 @@ pub func lowerFunc(
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
 ): LFunc {
-  val retTy = match decl.ret { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
+  val retTy = match decl.ret { case Some(te) -> typeExprToJvmExtern(te, pkgName, externTypes); case None -> JVoid }
 
   val ctx = makeFuncCtx(
     pkgName,
@@ -397,7 +406,7 @@ pub func lowerFunc(
 
   // Allocate slots for parameters and set up any `out`/`inout` holder bindings;
   // the holder unwrap-prologue (if any) is emitted into `insns` first (#1763).
-  setupStaticParamSlotsAndHolders(ctx, insns, decl.params, pkgName)
+  setupStaticParamSlotsAndHolders(ctx, insns, decl.params, pkgName, externTypes)
 
   // Lower the body. @externTarget annotation takes priority over any syntactic
   // body form — a conventional `= ()` stub on an extern declaration must route
@@ -470,7 +479,7 @@ pub func lowerFunc(
   // Determine param types for the LFunc descriptor.  An `out`/`inout`
   // parameter is declared as a single-element holder array (#1763).
   val noTypeParams: List[String] = newList()
-  val paramTypes = holderAwareParamTypes(decl.params, pkgName, false, noTypeParams)
+  val paramTypes = holderAwareParamTypes(decl.params, pkgName, false, noTypeParams, externTypes)
 
   // Synthesised @derive names like "Point.equals" carry a "TypeName." prefix
   // that JVMS §4.2.2 forbids in unqualified method names.  Strip everything up
@@ -1856,8 +1865,33 @@ func constraintRefToJvmClass(cr: in ConstraintRef, pkgName: in String): String {
 // wins).  Owner is the file's package host class.  Used to build the
 // cross-package call registry so any package's call sites can resolve a
 // callee's owner + descriptor.  See JvmFuncSig.
+// Collect a file's `extern type Alias = "java.fq.Name"` declarations into an
+// alias → dotted-Java-FQN map (first-wins).  Used to resolve extern aliases in
+// parameter/return descriptors so they don't fall back to `<pkg>/<Alias>`.
+pub func collectExternTypesFromFile(file: in SourceFile): Map[String, String] {
+  val externTypes: Map[String, String] = newMap()
+  var eti = 0
+  while eti < file.items.count {
+    match file.items[eti].kind {
+      case IExternType(decl) -> {
+        if not externTypes.containsKey(decl.name) {
+          externTypes.add(decl.name, decl.clrName)
+        }
+      }
+      case _ -> ()
+    }
+    eti = eti + 1
+  }
+  externTypes
+}
+
 pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]): Unit {
   val owner = segmentsToJvmPath(file.packageDecl.path.segments)
+  // Resolve `extern type` parameter/return descriptors to the real JVM class
+  // (e.g. `JBAOS` -> `java/io/ByteArrayOutputStream`), not `<pkg>/<Alias>`
+  // (#3334).  The emitted method descriptor in `lowerFunc` resolves the same
+  // way, so the registered sig and the method stay in lockstep.
+  val externTypes = collectExternTypesFromFile(file)
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -1866,7 +1900,7 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
         // descriptor (#1763), so the registry records the array type and the
         // declared mode; call sites read the modes to wrap holder arguments.
         val noTypeParams: List[String] = newList()
-        val params = holderAwareParamTypes(decl.params, owner, false, noTypeParams)
+        val params = holderAwareParamTypes(decl.params, owner, false, noTypeParams, externTypes)
         val paramNames: List[String] = newList()
         val paramDefaults: List[Option[Expr]] = newList()
         val paramModes: List[ParamMode] = newList()
@@ -1886,7 +1920,7 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
           JRef(className = "java/lang/Object")
         } else {
           match decl.ret {
-            case Some(te) -> typeExprToJvm(te, owner)
+            case Some(te) -> typeExprToJvmExtern(te, owner, externTypes)
             case None -> JVoid
           }
         }
@@ -2601,20 +2635,7 @@ pub func codegenPackageWithSigs(
   val funcsClass = pkgName
 
   // Collect extern-type declarations: alias → Java FQN.
-  val externTypes: Map[String, String] = newMap()
-  var eti = 0
-  while eti < file.items.count {
-    match file.items[eti].kind {
-      case IExternType(decl) -> {
-        if not externTypes.containsKey(decl.name) {
-          externTypes.add(decl.name, decl.clrName)
-        }
-      }
-      case _ -> {
-      }
-    }
-    eti = eti + 1
-  }
+  val externTypes = collectExternTypesFromFile(file)
 
   // m-2: collect the module-level `val NAME` declarations up front (name → JVM
   // type) so a bare reference to one resolves to `getstatic <hostClass>.<name>`
