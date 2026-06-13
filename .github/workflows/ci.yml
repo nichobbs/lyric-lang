@@ -4313,14 +4313,15 @@ jobs:
 
             // Fetch fresh PR state to verify mergeable_state.
             // GitHub computes mergeable_state asynchronously; it may be 'unknown'
-            // immediately after CI completes.  Re-poll up to 3 times (5 s apart)
-            // before giving up so a transient 'unknown' does not permanently block
-            // promotion.  If the state remains 'unknown' after all retries we skip
-            // this run (it will retry on the next CI event) rather than risk
-            // promoting a PR whose conflict state has not yet been computed.
+            // or transiently 'dirty' immediately after CI completes. Re-poll up to 6
+            // times (with exponential backoff: 3s, 5s, 7s, 9s, 11s, 13s) before
+            // giving up. Both 'unknown' and transient 'dirty' can resolve on retry,
+            // so we keep polling for both. If the state doesn't stabilize, skip this
+            // run (it will retry on the next CI event) rather than risk promoting a PR
+            // whose conflict state has not yet been accurately computed.
             let freshPr;
             let mergeableState;
-            const MAX_POLLS = 3;
+            const MAX_POLLS = 6;
             for (let poll = 1; poll <= MAX_POLLS; poll++) {
               freshPr = await github.rest.pulls.get({
                 owner: context.repo.owner,
@@ -4328,16 +4329,18 @@ jobs:
                 pull_number: prNumber
               });
               mergeableState = freshPr.data.mergeable_state;
-              if (mergeableState !== 'unknown') break;
+              if (mergeableState !== 'unknown' && mergeableState !== 'dirty') break;
               if (poll < MAX_POLLS) {
-                console.log(`[auto-promote] PR #${prNumber}: mergeable_state is 'unknown' (poll ${poll}/${MAX_POLLS}), retrying in 5 s...`);
-                await new Promise(r => setTimeout(r, 5000));
+                const delayMs = 3000 + (poll * 2000); // 3s, 5s, 7s, 9s, 11s, 13s
+                console.log(`[auto-promote] PR #${prNumber}: mergeable_state is '${mergeableState}' (poll ${poll}/${MAX_POLLS}), retrying in ${delayMs/1000}s...`);
+                await new Promise(r => setTimeout(r, delayMs));
               }
             }
 
             // Check for merge conflicts (mergeable_state: dirty).
+            // If it's still dirty after all retries, skip to avoid promoting a truly conflicted PR.
             if (mergeableState === 'dirty') {
-              console.log(`[auto-promote] PR #${prNumber}: WARN merge conflicts detected (mergeable_state=dirty) — skipping promotion to avoid promoting a conflicted PR`);
+              console.log(`[auto-promote] PR #${prNumber}: WARN merge conflicts detected (mergeable_state=dirty) after ${MAX_POLLS} polls — skipping promotion to avoid promoting a conflicted PR`);
               return;
             }
             if (mergeableState === 'unknown') {
