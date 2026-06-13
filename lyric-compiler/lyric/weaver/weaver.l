@@ -266,11 +266,32 @@ func newRewriteCtx(
   )
 }
 
+/// True for a target-advancing call.  Two spellings are accepted:
+///   - bare `proceed(...)` — the form the weaver self-tests use; and
+///   - `call.proceed(...)` — the form every shipped library aspect
+///     template uses (`ValidateInput`, `CallLogging`, `RequiresAuth`,
+///     `Retry`, …).  Here `call` is the ambient call value (docs/26
+///     §4.3); `.proceed()` advances to the target exactly like the bare
+///     form.  Without this arm the member access `call.proceed` falls
+///     into `tryMemberRewrite`'s `call.<field>` path and raises a
+///     spurious A0043, so library templates never weave.
+/// The proceed call's own argument list is ignored either way — the
+/// substitution forwards the wrapper's own parameters (F#-weaver parity).
 func isProceedCall(expr: in Expr): Bool {
   match expr.kind {
     case ECall(f, _) -> {
       match f.kind {
         case EPath(path) -> path.segments.count == 1 and path.segments[0] == "proceed"
+        case EMember(recv, member) -> {
+          if member == "proceed" {
+            match recv.kind {
+              case EPath(p) -> p.segments.count == 1 and p.segments[0] == "call"
+              case _ -> false
+            }
+          } else {
+            false
+          }
+        }
         case _ -> false
       }
     }
@@ -760,6 +781,143 @@ func mkVarStmt(name: in String, ty: in Option[TypeExpr], init: in Expr): Stateme
   Statement(kind = SLocal(binding = LBVar(name = name, ty = ty, init = Some(value = init))), span = synSpan())
 }
 
+/// Build a synthetic `var <name>: <ty>` statement (no initializer) at a
+/// zero span.  Used by the `around(...) -> ret` out-variable lowering
+/// (#3402): the wrapper declares `var ret: <returnType>`, the rewritten
+/// body assigns into it, and the wrapper returns it.  Codegen
+/// zero-initialises an uninitialised `var` slot, so all paths are
+/// well-defined even if a branch forgets to assign.
+///
+/// The `init = None` (`Option[Expr]`) is constructed via
+/// `mkVarNoInitBinding` in `Lyric.Parser` rather than inline here:
+/// the stage-0 bootstrap emitter miscompiles `Option[Expr]` `None`
+/// construction in a consumer package (the value matches neither
+/// `Some` nor `None` downstream), so codegen's `LBVar` `case None`
+/// arm would never fire — no slot is allocated, the body's
+/// `ret = …` assignment is discarded, and `return ret` reads the
+/// zero default.  Routing the construction through the declaring
+/// package keeps the generic instantiation known-good, mirroring the
+/// `someAspectAround` precedent.  Expected to become dead once the
+/// stage-0 F# emitter is retired (docs/23-fsharp-shim-elimination.md).
+func mkVarStmtNoInit(name: in String, ty: in Option[TypeExpr]): Statement {
+  // The `init = None` is bound through an explicitly-typed local first
+  // (`val noInit: Option[Expr] = None`) rather than passed inline as the
+  // constructor argument.  The stage-0 bootstrap emitter miscompiles a
+  // bare inline `None` (no type context) into a value that matches
+  // neither `Some` nor `None` downstream — so codegen's `LBVar`
+  // `case None` arm never fires, no slot is allocated, the body's
+  // `ret = …` assignment is discarded, and `return ret` reads zero.
+  // The type-annotated local is exactly how `parseLocalBinding` builds
+  // an uninitialised `var` (a form that codegen handles correctly), so
+  // matching that idiom yields a sound `None`.  Bootstrap-emitter
+  // workaround — expected to become dead once the stage-0 F# emitter is
+  // retired; see docs/23-fsharp-shim-elimination.md.
+  val noInit: Option[Expr] = None
+  Statement(kind = SLocal(binding = LBVar(name = name, ty = ty, init = noInit)), span = synSpan())
+}
+
+/// True iff the block (or any nested statement body) contains a
+/// top-level assignment to the bare local `name` — i.e. a
+/// `name = <expr>` statement.  Drives the `around(...) -> ret`
+/// out-variable lowering: when the advice body writes the named return
+/// value, the wrapper must declare it as a local and return it (#3402).
+/// Expression-style bodies (e.g. trailing `proceed(args)`) never assign
+/// `ret`, so they are left untouched.
+func blockAssignsToName(blk: in Block, name: in String): Bool {
+  var i = 0
+  while i < blk.statements.count {
+    if stmtAssignsToName(blk.statements[i], name) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+func exprIsBarePath(e: in Expr, name: in String): Bool {
+  match e.kind {
+    case EPath(p) -> p.segments.count == 1 and p.segments[0] == name
+    case _ -> false
+  }
+}
+
+func stmtAssignsToName(s: in Statement, name: in String): Bool {
+  match s.kind {
+    case SAssign(t, _, _) -> exprIsBarePath(t, name)
+    case SFor(_, _, _, body) -> blockAssignsToName(body, name)
+    case SWhile(_, _, body) -> blockAssignsToName(body, name)
+    case SLoop(_, body) -> blockAssignsToName(body, name)
+    case SScope(_, body) -> blockAssignsToName(body, name)
+    case SDefer(body) -> blockAssignsToName(body, name)
+    case STry(body, catches, finally_) -> {
+      if blockAssignsToName(body, name) {
+        return true
+      }
+      var i = 0
+      while i < catches.count {
+        if blockAssignsToName(catches[i].body, name) {
+          return true
+        }
+        i = i + 1
+      }
+      match finally_ {
+        case Some(fb) -> blockAssignsToName(fb, name)
+        case None -> false
+      }
+    }
+    case SExpr(e) -> exprAssignsToName(e, name)
+    case SReturn(o) -> match o { case Some(e) -> exprAssignsToName(e, name); case None -> false }
+    case SLocal(b) -> {
+      match b {
+        case LBVal(_, _, init) -> exprAssignsToName(init, name)
+        case LBLet(_, _, init) -> exprAssignsToName(init, name)
+        case LBVar(_, _, optInit) -> match optInit { case Some(e) -> exprAssignsToName(e, name); case None -> false }
+      }
+    }
+    case _ -> false
+  }
+}
+
+/// Detect assignment to `name` inside an expression.  `ret = ...` may
+/// appear as the `EAssign` expression form (or be nested inside an
+/// `if` / `match` arm used in expression position), so the scan
+/// descends into the branch-bearing and block-bearing expression kinds.
+func exprAssignsToName(e: in Expr, name: in String): Bool {
+  match e.kind {
+    case EAssign(t, _, _) -> exprIsBarePath(t, name)
+    case EBlock(blk) -> blockAssignsToName(blk, name)
+    case EUnsafe(blk) -> blockAssignsToName(blk, name)
+    case EParen(inner) -> exprAssignsToName(inner, name)
+    case EIf(_, thenB, elseB, _) -> {
+      if eobAssignsToName(thenB, name) {
+        return true
+      }
+      match elseB {
+        case Some(e2) -> eobAssignsToName(e2, name)
+        case None -> false
+      }
+    }
+    case EMatch(_, arms) -> {
+      var i = 0
+      while i < arms.count {
+        if eobAssignsToName(arms[i].body, name) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case _ -> false
+  }
+}
+
+func eobAssignsToName(eob: in ExprOrBlock, name: in String): Bool {
+  match eob {
+    case EOBBlock(b) -> blockAssignsToName(b, name)
+    case EOBExpr(e) -> exprAssignsToName(e, name)
+  }
+}
+
 /// `Option[Int]` type expression for the `__lyric_call_elapsed` var.
 func mkOptionIntTypeExpr(): TypeExpr {
   val sp = synSpan()
@@ -1210,7 +1368,34 @@ func buildWrapper(
     finalStmts.add(rewiredBody.statements[i])
     i = i + 1
   }
-  val finalBody = Block(statements = finalStmts, span = rewiredBody.span)
+
+  // `around(...) -> ret` out-variable lowering (#3402).  When the advice
+  // body writes the named return value (`ret = ...`) — the form every
+  // shipped library template uses — the wrapper must declare `ret` as a
+  // local of the target's return type and return it after the body runs;
+  // otherwise the synthesised wrapper falls off the end of a non-void
+  // method, producing invalid IL (InvalidProgramException at runtime).
+  // Expression-style bodies (trailing `proceed(args)`, no `ret`
+  // assignment) are left byte-identical to the pre-#3402 weaver.
+  val loweredStmts = match around.retName {
+    case Some(retVar) -> {
+      if blockAssignsToName(rewiredBody, retVar) {
+        val withRet: List[Statement] = newList()
+        withRet.add(mkVarStmtNoInit(retVar, originalFn.ret))
+        var ri = 0
+        while ri < finalStmts.count {
+          withRet.add(finalStmts[ri])
+          ri = ri + 1
+        }
+        withRet.add(Statement(kind = SReturn(value = Some(value = singleSegPathExpr(retVar))), span = synSpan()))
+        withRet
+      } else {
+        finalStmts
+      }
+    }
+    case None -> finalStmts
+  }
+  val finalBody = Block(statements = loweredStmts, span = rewiredBody.span)
 
   // Composed contract: aspect.contracts ++ original.contracts (§5).
   val composed: List[ContractClause] = newList()

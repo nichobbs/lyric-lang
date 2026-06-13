@@ -464,6 +464,31 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/bitwise_self_test.l
 
+      # Aspect-weave end-to-end self-test (#3402).  Runs real woven functions
+      # (out-variable `ret = proceed()` advice, the `call.proceed()` library-
+      # template spelling, short-circuit advice, `call.shortName`, expression-
+      # style advice, and a Unit-returning woven function) and asserts every
+      # runtime value.  Pins the #3402 fixes so aspect weaving can never again
+      # silently regress to InvalidProgramException.  This (`dotnet`) job runs
+      # the MSIL half via in-process `Msil.Bridge`; the `--target jvm` half runs
+      # in the `compiler-self-tests-jvm` job below (which has JDK 21).  Imports
+      # only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+      - name: Aspect-weave self-test (native lyric test, --target dotnet)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping aspect-weave self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping aspect-weave self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/aspect_weave_self_test.l
+          echo "aspect-weave self-test ran: aspect_weave_self_test.l (--target dotnet)" >> "$GITHUB_STEP_SUMMARY"
+
       # Slice array-ABI self-test (#2592).  Verifies a self-hosted `slice[T]`
       # literal binds as a genuine CLR `T[]` when handed to the F#-built,
       # array-based stdlib (`Std.Core.sumInts`/`maxInt`/`countEq`,
@@ -1990,6 +2015,27 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/bitwise_self_test.l
+
+      # Aspect-weave self-test on JVM (#3402) — the JVM half of the dotnet-job
+      # step above.  Pins the JVM woven-call resolution fix (`collectAspectWovenSigs`
+      # registering the post-weave `__aspect_*` sigs) so a woven `proceed` no
+      # longer hits the `(…)Object` guess / NoSuchMethodError.  Needs JDK 21
+      # (this job), unlike the dotnet job.  Imports only `Std.*`.
+      - name: Aspect-weave self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping aspect-weave JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping aspect-weave JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/aspect_weave_self_test.l
+          echo "aspect-weave self-test ran: aspect_weave_self_test.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
 
       # Named-arg/default-param self-test on JVM — pins call-site reorder and
       # default fill on the JVM target (#1503).  Imports only `Std.*`.

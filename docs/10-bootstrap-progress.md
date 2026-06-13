@@ -24865,3 +24865,75 @@ local, as `segs[0]`, so it is unaffected.
 Verified by a new `enum_msil_self_test.l` case (`box.Color.Red` field-read wins
 over the enum ordinal — 8/8), run in CI via native `lyric test --target
 dotnet`.
+
+### D-progress-518 — Aspect weaving works end-to-end on both targets: `around(...) -> ret` out-variable lowering + `call.proceed()` + JVM woven-call resolution (#3402)
+
+Aspect weaving was non-functional at runtime on both backends; three layered
+causes (#3402):
+
+1. **MSIL headline — `InvalidProgramException` on every woven function.**
+   `Lyric.Weaver` never lowered the `around(...) -> ret` *out-variable* binding.
+   For the form every shipped library template uses
+   (`around(call) -> ret { ... ret = call.proceed() ... }`), the synthesised
+   wrapper body assigned `ret` — a local that was never declared and never
+   returned — so the wrapper fell off the end of a non-void method and the JIT
+   rejected it (`System.InvalidProgramException`).  Only the expression-style
+   form (trailing `proceed()`, no `ret` write) happened to work because the
+   block's trailing expression is the implicit return.
+   Fix (`lyric-compiler/lyric/weaver/weaver.l`): `buildWrapper` now detects an
+   advice body that assigns the named return value (`blockAssignsToName`,
+   recursing through if/match/loops/try) and, when present, declares
+   `var <ret>: <targetReturnType>` ahead of the body and appends
+   `return <ret>` after it.  Codegen zero-initialises the uninitialised slot,
+   so every path is well-defined.  Expression-style bodies are left
+   byte-identical to the pre-fix weaver.  The synthetic `var <ret>` is built
+   with its `init = None` bound through an explicitly-typed local
+   (`val noInit: Option[Expr] = None`) rather than an inline `None` argument —
+   the stage-0 bootstrap emitter miscompiles a bare inline `Option[Expr] None`
+   in a consumer package into a value that matches neither `Some` nor `None`
+   downstream, so codegen's `LBVar` `case None` arm never fired (no slot, the
+   `ret` store discarded, the load returned the zero default).  The
+   type-annotated-local idiom matches how `parseLocalBinding` builds an
+   uninitialised `var`, which codegen handles correctly.
+
+2. **`call.proceed()` raised A0043 instead of advancing to the target.**
+   `isProceedCall` recognised only a bare `proceed(...)` call.  Every shipped
+   library template (`ValidateInput`, `CallLogging`, `RequiresAuth`, `Retry`, …)
+   spells it `call.proceed()`, which fell into the `call.<field>` rewrite path
+   and raised A0043 ("the weaver does not inject a value for that field").
+   Fix: `isProceedCall` now also accepts `call.proceed(...)` (member call on the
+   ambient `call` value); the proceed substitution is unchanged (it forwards the
+   wrapper's own parameters and ignores the call's own arguments, per F#-weaver
+   parity).
+
+3. **JVM — `NoSuchMethodError` / `VerifyError` on woven calls.**
+   `Jvm.Bridge.compileToJarBundled` built its function-signature registry
+   (`collectFileSigs`) from the **pre-weave** `userFile`, but codegen runs on
+   the **post-weave** file.  The renamed `<name>__aspect_target` and the
+   intermediate `<name>__aspect_<Aspect>` wrappers therefore weren't in the
+   registry, so the `proceed` call site fell through to the `(…)Object` guess —
+   a descriptor mismatch the JVM rejects at link/verify time.  This was the JVM
+   analogue of the MSIL breakage and broke even expression-style aspects on the
+   JVM target.  Fix: a new `collectAspectWovenSigs` registers the
+   `__aspect_*` targets/wrappers from the post-weave file (both the qualified
+   `owner/name` key and the bare key, since `proceed` lowers to an unqualified
+   call) before codegen, mirroring the existing `collectDeriveFreeSigs` patch
+   for `deriveFile`-synthesised functions.
+
+Both fixes land entirely in the self-hosted compiler (no new F#).  Verified
+end-to-end via the new `lyric-compiler/lyric/aspect_weave_self_test.l`
+(`@test_module`, `Std.*`-only) run by native `lyric test` on **both** targets
+in CI (mirroring `bitwise_self_test.l`): out-variable pass-through,
+`call.proceed()`, short-circuit (target not run), `call.shortName`-gated
+proceed, expression-style, and a `Unit`-returning woven function — 6/6 on
+`--target dotnet` and `--target jvm`.  The existing `weaver_self_test.l`
+(28/28) and `verifier_self_test.l` continue to pass.
+
+Cross-package `from`-instance templates (a consumer applying
+`aspect X from Lib.Aspects.Template { matches: … }`) remain unwoven — the
+instance carries the `matches:`/`config` but the `around` body lives in the
+imported package, and the per-file weaver has no access to it.  That is
+#3402's part (c), tracked as a follow-up in #3414 (cross-package template
+resolution) with a concrete plan; it is the remaining gap before ecosystem
+library aspects (`Web.Aspects.*`, `Validation.Aspects.*`, …) function in
+consumers.
