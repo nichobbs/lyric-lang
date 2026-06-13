@@ -331,6 +331,9 @@ func isTypeItem(it: in Item): Bool {
 // `stdlibGenFuncs` supplies the stdlib's pure-Lyric generic `pub func`s to the
 // monomorphizer so cross-package generic calls specialise into this bundle.
 //
+// `templates` is a map of cross-package aspect templates (indexed by FQN) that
+// aspect instantiations can reference via `from Pkg.Template` (#3414).
+//
 // `reportTcAdvisories` gates whether the (non-gating) type-check diagnostics
 // are echoed to stderr.  Bundled stdlib packages pass `false`: their advisory
 // T0020-style noise (the self-hosted checker lacks full builtin coverage)
@@ -341,6 +344,7 @@ func runMiddleEnd(
   file0: in SourceFile,
   importedPkgs: in List[ImportedPackage],
   stdlibGenFuncs: in List[FunctionDecl],
+  templates: in Map[String, AspectDecl],
   reportTcAdvisories: in Bool,
 ): Option[SourceFile] {
   val tcRes = checkWithImportedPackages(file0, importedPkgs)
@@ -369,7 +373,8 @@ func runMiddleEnd(
   // Aspect weaving (B-3) — after mono, before codegen, matching the MSIL
   // bridge's per-package weave so the todo/06 features and weave-time
   // diagnostics (A0042 / A0043 / A0044) apply on the JVM target too.
-  val weaveRes = Weaver.weaveFileWithDiags(monoRes.file)
+  // Use template-aware weaving to resolve cross-package aspect instantiations (#3414).
+  val weaveRes = Weaver.weaveFileWithDiagsAndTemplates(monoRes.file, templates)
   if reportAndAbort(weaveRes.diagnostics) {
     return None
   }
@@ -1153,9 +1158,20 @@ pub func compileToJarBundledWithFeatures(
   // MSIL bridge's `collectStdlibGenericFuncs`).
   val stdlibGenFuncs = collectStdlibGenericFuncsJvm(stdlibFiles)
 
+  // Collect aspect templates from the user package so cross-package aspect
+  // instantiations can be resolved (#3414).  Templates are `pub aspect`
+  // declarations without `matches:` clauses.
+  //
+  // TODO (#3414): Multi-file bundles should accumulate templates from all
+  // packages. Currently we use user-package templates only. This requires
+  // a way to merge maps; once Map has better iteration support, extend this
+  // to include bundled package templates.
+  val userPkgName = dottedPath(userFile.packageDecl.path)
+  val allTemplates = Weaver.collectAspectTemplates(userFile.items, userPkgName)
+
   // User package first (its codegen failing is always fatal).  Its type-check
   // advisories are echoed (they are about the program the user actually wrote).
-  match runMiddleEnd(userFile, importedPkgs, stdlibGenFuncs, true) {
+  match runMiddleEnd(userFile, importedPkgs, stdlibGenFuncs, allTemplates, true) {
     case Some(f) -> {
       // Register sigs synthesised by `deriveFile` (inside `runMiddleEnd`) so
       // that call-site resolution in `codegenPackageInto` can find them.  The
@@ -1197,7 +1213,7 @@ pub func compileToJarBundledWithFeatures(
     val pkgName = dottedPath(f.packageDecl.path)
     val reachable = referencedPkgs.containsKey(pkgJvmOwner(f.packageDecl.path))
     val ok = try {
-      match runMiddleEnd(f, importedPkgs, stdlibGenFuncs, false) {
+      match runMiddleEnd(f, importedPkgs, stdlibGenFuncs, allTemplates, false) {
         case Some(ff) -> {
           collectAspectWovenSigs(ff, registry)
           codegenPackageInto(ff, registry, caseReg, ctorReg, autoFfi, allProjFqns, allClasses)
