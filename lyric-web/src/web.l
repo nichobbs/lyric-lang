@@ -499,10 +499,10 @@ pub func parseServerPort(portStr: in String): Result[Int, String] {
 /// Parse `LYRIC_CONFIG_WEB_CORS_MAXAGESECONDS`, falling back to `def` for a
 /// malformed or negative value.  Previously `start()` hardcoded 86400 and
 /// ignored this env var.
-pub func parseCorsMaxAge(maxAgeStr: in String, def: in Int): Int {
+pub func parseCorsMaxAge(maxAgeStr: in String, defaultValue: in Int): Int {
   match tryParseInt(maxAgeStr) {
-    case Ok(m) -> if m >= 0 { m } else { def }
-    case Err(_) -> def
+    case Ok(m) -> if m >= 0 { m } else { defaultValue }
+    case Err(_) -> defaultValue
   }
 }
 

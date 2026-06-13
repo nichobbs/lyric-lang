@@ -64,6 +64,27 @@ test "parseServerPort: a configured port is honoured (not silently ignored)" {
   }
 }
 
+test "parseServerPort: lower bound 1 is accepted" {
+  match Web.parseServerPort("1") {
+    case Ok(p) -> assertEqualInt(p, 1, "port 1 is the inclusive lower bound")
+    case Err(e) -> assertTrue(false, "port 1 should parse: " + e)
+  }
+}
+
+test "parseServerPort: upper bound 65535 is accepted" {
+  match Web.parseServerPort("65535") {
+    case Ok(p) -> assertEqualInt(p, 65535, "port 65535 is the inclusive upper bound")
+    case Err(e) -> assertTrue(false, "port 65535 should parse: " + e)
+  }
+}
+
+test "parseServerPort: 65536 (one past the upper bound) is rejected" {
+  match Web.parseServerPort("65536") {
+    case Ok(p) -> assertTrue(false, "65536 is one past the upper bound, should error")
+    case Err(_) -> ()
+  }
+}
+
 test "parseServerPort: out-of-range port is rejected" {
   match Web.parseServerPort("70000") {
     case Ok(p) -> assertTrue(false, "70000 is out of range, should error")
