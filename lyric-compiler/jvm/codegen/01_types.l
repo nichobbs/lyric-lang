@@ -462,8 +462,9 @@ pub func emitStore(insns: in List[LInsn], slot: in Int, ty: in JvmType): Unit {
     case JInt -> insns.add(LIstore(slot = slot))
     case JFloat -> insns.add(LFstore(slot = slot))
     case JVoid -> insns.add(LNop)
-    case JRef(_) -> insns.add(LAstore(slot = slot))
-    case JArray(_) -> insns.add(LAstore(slot = slot))
+    // LAstoreAs (not LAstore) so the StackMapTable frames this local with its real class, not Object — else a ref used across a loop back-edge fails verification (#3307).
+    case JRef(cls) -> insns.add(LAstoreAs(slot = slot, className = cls))
+    case JArray(el) -> insns.add(LAstoreAs(slot = slot, className = "[" + typeDescriptor(el)))
   }
 }
 
