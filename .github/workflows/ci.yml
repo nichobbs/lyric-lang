@@ -4280,6 +4280,7 @@ jobs:
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const prNumber = parseInt(process.env.PR_NUMBER, 10);
             if (!prNumber || isNaN(prNumber)) {
