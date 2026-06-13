@@ -181,3 +181,43 @@ test "refresh: fromEntries store returns Ok(())" {
     case Err(e) -> assertTrue(false, "refresh on fromEntries store must return Ok: " + e.message)
   }
 }
+
+// ─── getString / getInt happy paths ───────────────────────────────────────────
+// A bug that always returned the default would pass the absent / wrong-type
+// tests above, so assert the stored value is actually returned (#3329).
+test "getString: returns the stored String value" {
+  val store = Flags.fromEntries([Flags.makeStringFlag("theme", "dark")])
+  assertEqual(Flags.getString(store, "theme", "blue"), "dark", "stored String value returned")
+}
+
+test "getInt: returns the stored Int value" {
+  val store = Flags.fromEntries([Flags.makeIntFlag("max-retries", 7)])
+  assertEqualInt(Flags.getInt(store, "max-retries", 3), 7, "stored Int value returned")
+}
+
+test "getString: returns default for an Int flag (wrong type)" {
+  val store = Flags.fromEntries([Flags.makeIntFlag("n", 5)])
+  assertEqual(Flags.getString(store, "n", "fallback"), "fallback", "Int flag falls back for getString")
+}
+
+test "getInt: returns default for a String flag (wrong type)" {
+  val store = Flags.fromEntries([Flags.makeStringFlag("s", "hello")])
+  assertEqualInt(Flags.getInt(store, "s", 42), 42, "String flag falls back for getInt")
+}
+
+// ─── listFlags ─────────────────────────────────────────────────────────────────
+test "listFlags: returns every registered flag" {
+  val store = Flags.fromEntries([Flags.makeFlag("a", true), Flags.makeStringFlag("b", "x"), Flags.makeIntFlag("c", 9)])
+  assertEqualInt(Flags.listFlags(store).length, 3, "all three flags listed")
+}
+
+test "listFlags: empty store lists nothing" {
+  val store = Flags.inProcess()
+  assertEqualInt(Flags.listFlags(store).length, 0, "empty store lists no flags")
+}
+
+test "fromEntries: a duplicate name is listed once, last value wins" {
+  val store = Flags.fromEntries([Flags.makeFlag("dup", true), Flags.makeFlag("dup", false)])
+  assertEqualInt(Flags.listFlags(store).length, 1, "duplicate name listed once")
+  assertTrue(not Flags.isEnabled(store, "dup"), "last (false) value wins for duplicate name")
+}
