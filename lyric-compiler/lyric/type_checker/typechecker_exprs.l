@@ -583,15 +583,13 @@ func inferBinop(
         )
       }
       // M6: numeric widening — Int + Long → Long.  `widenArithmetic` returns
-      // `None` for same-type pairs (already `typeEquiv`) so the slow path
-      // preserves the pre-M6 `val addEquiv = …; if not addEquiv { … }` shape
-      // that avoids the #1891 PConstructor MObject codegen bug.
+      // `None` for same-type pairs (already `typeEquiv`), so the slow path
+      // only diagnoses mismatched, non-widenable operand types.
       val addWiden = widenArithmetic(lhs, rhs)
       match addWiden {
         case Some(w) -> w
         case None -> {
-          val addEquiv = typeEquiv(lhs, rhs)
-          if not addEquiv {
+          if not typeEquiv(lhs, rhs) {
             diag.add(
               errorDiagnostic(
                 "T0031",
