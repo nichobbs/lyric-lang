@@ -106,7 +106,9 @@ pub func compileToMsilWithVersion(
   val importedPkgs: List[ImportedPackage] = newList()
   var spi = 0
   while spi < stdlibPkgs.count {
-    importedPkgs.add(ImportedPackage(name = stdlibPkgs[spi].name, items = stdlibPkgs[spi].items))
+    importedPkgs.add(
+      ImportedPackage(name = stdlibPkgs[spi].name, items = stdlibPkgs[spi].items, imports = stdlibPkgs[spi].imports)
+    )
     spi = spi + 1
   }
 
@@ -389,7 +391,9 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   val baseImportedPkgs: List[ImportedPackage] = newList()
   var sbi = 0
   while sbi < stdlibPkgs.count {
-    baseImportedPkgs.add(ImportedPackage(name = stdlibPkgs[sbi].name, items = stdlibPkgs[sbi].items))
+    baseImportedPkgs.add(
+      ImportedPackage(name = stdlibPkgs[sbi].name, items = stdlibPkgs[sbi].items, imports = stdlibPkgs[sbi].imports)
+    )
     sbi = sbi + 1
   }
   var ri0 = 0
@@ -397,7 +401,11 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     val rItems: List[Item] = newList()
     collectTypeItemsFromFile(restoredArtifacts[ri0].source, rItems)
     baseImportedPkgs.add(
-      ImportedPackage(name = segmentsToString(restoredArtifacts[ri0].source.packageDecl.path.segments), items = rItems)
+      ImportedPackage(
+        name = segmentsToString(restoredArtifacts[ri0].source.packageDecl.path.segments),
+        items = rItems,
+        imports = collectImportNames(restoredArtifacts[ri0].source.imports)
+      )
     )
     ri0 = ri0 + 1
   }
@@ -900,20 +908,28 @@ func addBundleClosurePackages(
     return
   }
   visited.add(pkgName, true)
-  match mapGet(inBundleItems, pkgName) {
-    case Some(items) -> acc.add(ImportedPackage(name = pkgName, items = items))
-    case None -> return
-  }
+  // Dotted names of this package's own imports: threaded into the
+  // `ImportedPackage` so its signatures resolve through tier 2 (#2282), and
+  // reused below as the recursion frontier.
+  val depNames: List[String] = newList()
   match mapGet(inBundleImports, pkgName) {
     case Some(deps) -> {
-      var ii = 0
-      while ii < deps.count {
-        val sub = segmentsToString(deps[ii].path.segments)
-        addBundleClosurePackages(sub, inBundleItems, inBundleImports, visited, baseNames, acc)
-        ii = ii + 1
+      var di = 0
+      while di < deps.count {
+        depNames.add(segmentsToString(deps[di].path.segments))
+        di = di + 1
       }
     }
     case None -> ()
+  }
+  match mapGet(inBundleItems, pkgName) {
+    case Some(items) -> acc.add(ImportedPackage(name = pkgName, items = items, imports = depNames))
+    case None -> return
+  }
+  var ii = 0
+  while ii < depNames.count {
+    addBundleClosurePackages(depNames[ii], inBundleItems, inBundleImports, visited, baseNames, acc)
+    ii = ii + 1
   }
 }
 
@@ -1124,7 +1140,7 @@ pub func collectStdlibPackages(stdlibSources: in List[String]): List[StdlibPkg] 
       }
       ii = ii + 1
     }
-    pkgs.add(StdlibPkg(name = pkgName, items = items))
+    pkgs.add(StdlibPkg(name = pkgName, items = items, imports = collectImportNames(stdPr.file.imports)))
     si = si + 1
   }
   pkgs

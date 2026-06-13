@@ -560,8 +560,8 @@ test "interface subtyping cross package sound" {
     "package PkgB\npub interface Greeter {\n  func greet(): String\n}\npub func wantB(g: in Greeter): String { \"\" }\n"
   )
   val packages: List[ImportedPackage] = newList()
-  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items))
-  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items))
+  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
+  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
   val src = "package App\nimport PkgA\nrecord Hello { x: Int }\nimpl Greeter for Hello {\n  func greet(): String { \"hi\" }\n}\nfunc f(): Unit {\n  val s = wantB(Hello(x = 1))\n}\n"
   val cr = checkWithImportedPackages(parse(src).file, packages)
   assertTrue(
@@ -1336,8 +1336,8 @@ test "scoped resolution no cross package type collision" {
   val pkgA = regexErrorPkgA()
   val pkgB = regexErrorPkgB()
   val imports: List[ImportedPackage] = newList()
-  imports.add(ImportedPackage(name = "Pa", items = pkgA.file.items))
-  imports.add(ImportedPackage(name = "Pb", items = pkgB.file.items))
+  imports.add(ImportedPackage(name = "Pa", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
+  imports.add(ImportedPackage(name = "Pb", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
   val app = parse("package App\nfunc main(): Int { 0 }\n")
   val cr = checkWithImportedPackages(app.file, imports)
 
@@ -1377,6 +1377,32 @@ test "flat imports preserve last wins" {
   val idB = sigReturnUserId(cr, "tryB")
   assertTrue(idA > 0 and idB > 0, "flat: both signatures resolve to a user type")
   assertEqualInt(idA, idB, "flat imports: last-registered RegexError wins both signatures (back-compat)")
+}
+
+// #2282: an imported package's own signatures resolve through ITS declared
+// imports (tier 2), not last-registered-wins (tier 3).  `Pa` imports `Pb`
+// without declaring its own `Payload`; `Pb` and `Pc` both export one, and `Pc`
+// registers last.  Under the old empty-imports scope, tier 1 never fired (no
+// local decl) and tier 2 never engaged (empty imports list), so `mk`'s return
+// type silently bound to Pc's union.  With `ImportedPackage.imports` threaded,
+// tier 2 binds it to Pb's.
+test "imported package signature prefers its declared import" {
+  val pkgB = parse("package Pb\npub union Payload { case FromB }\n")
+  val pkgC = parse("package Pc\npub union Payload { case FromC }\n")
+  val pkgA = parse("package Pa\nimport Pb\npub func mk(): Payload { FromB }\n")
+  val imports: List[ImportedPackage] = newList()
+  imports.add(ImportedPackage(name = "Pa", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
+  imports.add(ImportedPackage(name = "Pb", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  imports.add(ImportedPackage(name = "Pc", items = pkgC.file.items, imports = collectImportNames(pkgC.file.imports)))
+  val app = parse("package App\nfunc main(): Int { 0 }\n")
+  val cr = checkWithImportedPackages(app.file, imports)
+  val idMk = sigReturnUserId(cr, "mk")
+  val idPb = typeSymIdByOrigin(cr, "Payload", "Pb")
+  val idPc = typeSymIdByOrigin(cr, "Payload", "Pc")
+  assertTrue(idMk > 0, "import-scope: mk resolves to a user type")
+  assertTrue(idPb != idPc, "import-scope: Pb's and Pc's Payload are distinct types")
+  assertEqualInt(idMk, idPb, "import-scope: mk's return binds to Pb's Payload (Pa's declared import)")
+  assertTrue(idMk != idPc, "import-scope: mk's return is not the last-registered Pc Payload")
 }
 
 // #1980: `let` bindings are immutable like `val`; reassigning one must emit T0087.
@@ -1573,7 +1599,7 @@ test "interface subtyping cross package acceptance" {
     "package PkgA\npub interface Greeter {\n  func greet(): String\n}\npub func useG(g: in Greeter): String { \"\" }\n"
   )
   val packages: List[ImportedPackage] = newList()
-  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items))
+  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
   val src = "package App\nimport PkgA\nrecord Hello { x: Int }\nimpl Greeter for Hello {\n  func greet(): String { \"hi\" }\n}\nfunc f(): Unit {\n  val s = useG(Hello(x = 1))\n}\n"
   val cr = checkWithImportedPackages(parse(src).file, packages)
   assertTrue(
@@ -2020,7 +2046,7 @@ test "alias rhs value type arg emits T0109" {
 test "alias target prefers current package over import" {
   val dep = parse("package Q\npub record Random {\n  q: Int\n}\n")
   val packages: List[ImportedPackage] = newList()
-  packages.add(ImportedPackage(name = "Q", items = dep.file.items))
+  packages.add(ImportedPackage(name = "Q", items = dep.file.items, imports = collectImportNames(dep.file.imports)))
   val src = "package P\nimport Q\nrecord Random {\n  x: Int\n}\nalias R = Random\nfunc f(): R { Random(x = 1) }\n"
   val cr = checkWithImportedPackages(parse(src).file, packages)
   assertEqualInt(diagCount(cr), 0, "alias target: current-package Random wins over imported Q.Random")

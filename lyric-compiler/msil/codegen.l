@@ -19054,6 +19054,11 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
 pub record StdlibPkg {
   name: String
   items: List[Item]
+  /// Dotted names of the packages this stdlib package itself imports.  Threaded
+  /// into `ImportedPackage.imports` so the package's own signatures resolve a
+  /// same-named sibling type through its declared imports (tier 2) instead of
+  /// last-registered-wins (#2282).
+  imports: List[String]
 }
 
 /// Walk every `StdlibPkg` and register its `pub func`s as
