@@ -2327,7 +2327,6 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/synthesized_method_self_test.l
-<<<<<<< HEAD
       # NaN-comparison self-test on JVM (#2772) — pins IEEE 754 §5.11 ordered
       # comparisons for Float/Double: `lowerCmp`/`lowerCmpFail` must select the
       # `fcmpg`/`dcmpg` ("g") variant for `<`/`<=` (NaN -> +1 -> branch not taken
@@ -2350,7 +2349,6 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/nan_compare_jvm_self_test.l
-=======
       # `lyric run --target jvm` end-to-end smoke (#674) — the first CI step to
       # exercise the `run` JVM convenience wrapper (vs. the `test --target jvm`
       # steps above).  Builds a no-arg `func main(): Int` program to a bundled
@@ -2428,7 +2426,6 @@ jobs:
             echo "::error::lyric bench --target dotnet did not report its benchmark count"
             exit 1
           fi
->>>>>>> d47a1a8 (cli: fix `lyric run --target jvm` NRE and `bench --target dotnet` runtime deps (#674))
       # Match-literal + compound-assignment self-test — pins two self-hosted
       # MSIL backend correctness fixes from #1481 (epic #1470, Band 2): Float
       # literal *match* patterns now emit a real `ldc.r8; ceq` compare instead
