@@ -999,6 +999,11 @@ func collectExternFqns(text: in String, acc: in List[String]): Unit {
   while i < lines.length {
     val t = Str.trimStart(lines[i])
     if Str.startsWith(t, "extern type ") {
+      // Relies on fmt-normalised `name = "FQN"` spacing (exactly one space on
+      // each side of `=`): `lyric fmt --write` is run over every kernel file
+      // before commit, so this is the canonical layout.  A miss here is caught
+      // by the scanner sanity checks (count >= 20, Guid present) in
+      // testClrValueTypeAudit.
       match Str.indexOf(t, "= \"") {
         case None -> ()
         case Some(eq) -> {
