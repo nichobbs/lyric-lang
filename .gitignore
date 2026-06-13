@@ -97,3 +97,6 @@ lyric.lock
 book/*.pdf
 book/*.html
 .claude/settings.local.json
+
+# Claude Code agent worktrees (transient; auto-cleaned)
+.claude/worktrees/
