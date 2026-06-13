@@ -24523,3 +24523,61 @@ line.
   `error[J004]: 8:5: …`).
 - **Docs.**  `docs/44-jvm-production-readiness-plan.md` notes the J004
   diagnostic under the diagnostics/error-surface discussion.
+
+### D-progress-512 — JVM `Std.ProcessCaptureHost` redesigned to pure auto-FFI; codegen blocker #3307 surfaced (#1065, docs/44 M-11)
+
+Tackles docs/44 band J6 finding M-11 for `ProcessCaptureHost` on JVM
+(#1065).  The pre-existing `lyric-stdlib/std/_kernel_jvm/process_capture_host.l`
+routed every entry point through a `lyric.stdlib.jvm.ProcessCaptureHost`
+Java helper class (and an opaque `lyric.stdlib.jvm.ProcessCaptureResult`
+POJO) that was never built — a bootstrap-grade stub that also violates the
+no-new-shim rule.  This entry replaces that plan with the correct
+production design and pins the real blocker.
+
+- **Correct design (pure JVM auto-FFI, no F#/Java shim).**  Spawn via
+  `java.lang.Runtime.getRuntime().exec(String)` (the single-`String`
+  overload re-tokenises like the existing JVM `Std.ProcessHost.spawn`
+  boundary and the .NET `ProcessStartInfo.Arguments` parser).  Drain
+  stdout/stderr *incrementally* inside the wait loop —
+  `InputStream.available()`-bounded reads into a
+  `java.io.ByteArrayOutputStream` — so a child that emits more than one
+  pipe buffer (4 KB Linux / 64 KB Windows) cannot deadlock a
+  single-threaded drainer (the deadlock-free analogue of the .NET
+  kernel's concurrent `Task.Run` drainers; pure auto-FFI cannot spawn
+  closure-carrying threads).  Enforce the wall-clock cap by polling
+  `Process.isAlive()` against `System.currentTimeMillis()` rather than
+  `Process.waitFor(long, TimeUnit)` — `java.util.concurrent.TimeUnit` is
+  an `enum`, which the auto-FFI resolver (`jvm/class_reader.l`) skips, so
+  the `TimeUnit` constant is unreachable.  Kill via
+  `Process.destroyForcibly()` on timeout, sentinel `exitCode = -2`.
+  Return a Lyric `ProcessCaptureResult` record structurally identical to
+  the `.NET` kernel's (no opaque POJO), so the public `Std.ProcessCapture`
+  surface projects the fields the same way on both targets.
+
+- **Codegen blocker #3307.**  The design was written and validated
+  against the JDK API surface but cannot land: every drain/poll loop
+  carries a `Process` / `InputStream` / `ByteArrayOutputStream` extern
+  handle across the loop back-edge, and the JVM backend currently types
+  extern-type locals as `java/lang/Object` in the `StackMapTable` frame
+  at a loop boundary, so the emitted `invokevirtual` fails JVM bytecode
+  verification (`VerifyError: Bad type on operand stack`).  Bisected to a
+  minimal repro (a bare `while` loop writing to a `ByteArrayOutputStream`
+  local — no `if`, `val`/`var` both fail; straight-line code verifies
+  fine).  A second related gap (extern-type *function parameter* →
+  `NoClassDefFoundError` on an unresolved local class name) is noted in
+  the same issue.  Filed as **#3307** (`jvm/codegen/*`); out of scope for
+  a kernel-only PR.
+
+- **Storage (#1444/#1840) parked.**  `lyric-storage`'s local-fs backend
+  is implemented in `storage.l` directly against the `host*` primitives
+  of `Storage.Kernel.Net` (which it statically `import`s); a JVM backend
+  needs the kernel import swapped per target, i.e. JVM `@cfg(feature=…)`
+  erasure (docs/44 M-4 / #2444, in `bridge.l`) — which does not exist on
+  JVM yet.  Parked behind #2444.
+
+- **Docs.**  `docs/44-jvm-production-readiness-plan.md` M-11 row and the
+  J6 narrative now read "design done, codegen-blocked on #3307" (storage
+  blocked on #2444); the kernel file's header documents the correct
+  pure-auto-FFI design and the #3307 blocker in place of the phantom
+  Java-shim plan.  No self-test is wired yet — a loop-driven process
+  kernel cannot compile to valid JVM bytecode until #3307 lands.
