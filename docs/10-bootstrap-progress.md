@@ -24455,3 +24455,31 @@ worked examples).
 - **Docs.**  `docs/26-aspects.md` §4.3 + §15, language reference
   §14.7, and `book/chapters/22-aspects.md` §22.6 updated; decision-log
   entry **D100** records the auto-import decision.
+
+### D-progress-508 — JVM Float/Double ordered comparisons are NaN-correct (#2772)
+
+The self-hosted JVM backend emitted `fcmpl`/`dcmpl` for *all six* comparison
+operators in both `lowerCmp` (value position) and `lowerCmpFail` (condition
+position) in `lyric-compiler/jvm/codegen/02_exprs.l`.  The "l" variant pushes
+`-1` when an operand is NaN; pairing it with `iflt`/`ifle` made a NaN compare
+as *less than everything* for `<` and `<=`, so `NaN < x` and `NaN <= x`
+wrongly returned `true` — violating IEEE 754 §5.11 (every NaN comparison is
+false, except `!=`, which is true).  The defect is only reachable when a NaN
+`Float`/`Double` reaches an ordered comparison (the language offers no NaN
+literal; the realistic source is an `extern type` FFI call returning NaN), so
+ordinary programs were unaffected — but the output was wrong-but-running.
+
+Fix: a `floatCmpInsn(op, isDouble)` helper selects the `fcmpg`/`dcmpg` ("g",
+NaN → +1) variant for `BLt`/`BLte` and the `fcmpl`/`dcmpl` ("l") variant for
+`BGt`/`BGte`/`BEq`/`BNeq`, applied in both `lowerCmp` and `lowerCmpFail`.
+With the "g" variant a NaN operand makes the `iflt`/`ifle` branch not fire, so
+the comparison yields `false`; the existing `==`/`!=` behaviour (NaN ≠ x is
+true, NaN == x is false) is preserved.  This is the standard javac pattern.
+The `PRange` double-bound and `LFloat` literal-equality match paths in
+`03_match.l` were audited and are already NaN-correct (the lower-bound
+`dcmpl`+`iflt` routes NaN to the fail label), so they were left unchanged.
+
+Verified by `lyric-compiler/jvm/nan_compare_jvm_self_test.l` (7 cases, both
+lowering paths, Float and Double, plus a non-NaN ordering regression),
+compiled in-process through the self-hosted `Jvm.Bridge` and run under `java`;
+wired into CI beside the other native `--target jvm` self-tests.
