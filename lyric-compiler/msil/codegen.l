@@ -7315,6 +7315,60 @@ func lowerPatternBindMsil(
                 lowerPatternBindMsil(cctx, fctx, insns, fields[fi], ptFldSlot, ptFieldTy)
               }
             }
+            case PConstructor(_, _) -> {
+              // Nested constructor pattern (#3280): field fi holds a union-case
+              // value that itself must be destructured.  Load the positional field
+              // from the outer cast slot, store in a temp, then recurse.  The
+              // recursive call hits the top-level `PConstructor` branch above,
+              // which does the inner isinst-cast and binds the inner variables.
+              val ncFldKey = caseClass + "/field" + toString(fi)
+              val ncFTok = match mapGet(cctx.fieldTokens, ncFldKey) { case Some(t) -> t; case None -> 0 }
+              if ncFTok > 0 {
+                var ncVi = -1
+                match castTy {
+                  case MGenericInst(_, _, typeArgs) -> {
+                    ncVi = match mapGet(cctx.fieldVarIndices, ncFldKey) { case Some(v) -> v; case None -> -1 }
+                  }
+                  case MGenericInstByName(_, _) -> {
+                    ncVi = match mapGet(cctx.fieldVarIndices, ncFldKey) { case Some(v) -> v; case None -> -1 }
+                  }
+                  case _ -> {
+                  }
+                }
+                val ncFSig = match mapGet(cctx.fieldSigBytes, ncFldKey) { case Some(s) -> s; case None -> buildFieldSig(MObject) }
+                val ncActualFieldName = match mapGet(cctx.fieldDeclaredNames, ncFldKey) {
+                  case Some(n) -> n
+                  case None -> "field" + toString(fi)
+                }
+                var ncFieldTy: MsilType = match mapGet(cctx.fieldMsilTypes, ncFldKey) { case Some(ty) -> ty; case None -> MObject }
+                if ncVi >= 0 {
+                  match castTy {
+                    case MGenericInst(_, _, typeArgs) -> {
+                      ncFieldTy = typeArgs[ncVi]
+                    }
+                    case MGenericInstByName(_, typeArgs) -> {
+                      if ncVi < typeArgs.count {
+                        ncFieldTy = typeArgs[ncVi]
+                      }
+                    }
+                    case _ -> {
+                    }
+                  }
+                }
+                emitLoadSlot(insns, castSlot, fctx.paramCount)
+                match castTy {
+                  case MGenericInst(_, _, typeArgs) -> insns.add(MLdfldGeneric(baseClassName = caseClass, typeArgs = typeArgs, fieldName = ncActualFieldName, fieldSig = ncFSig))
+                  case MGenericInstByName(_, typeArgs) -> insns.add(MLdfldGeneric(baseClassName = caseClassBt, typeArgs = typeArgs, fieldName = ncActualFieldName, fieldSig = ncFSig))
+                  case _ -> {
+                    insns.add(MCastclassByName(className = caseClass))
+                    insns.add(MLdfld(fieldToken = ncFTok))
+                  }
+                }
+                val ncFldSlot = allocSlotMsil(fctx, "__nested_" + toString(fi) + "_" + toString(fctx.slotTicker.count), ncFieldTy)
+                emitStoreSlot(insns, ncFldSlot, fctx.paramCount)
+                lowerPatternBindMsil(cctx, fctx, insns, fields[fi], ncFldSlot, ncFieldTy)
+              }
+            }
             case _ -> {
             }
           }

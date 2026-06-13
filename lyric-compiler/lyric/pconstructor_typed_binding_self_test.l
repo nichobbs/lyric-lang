@@ -85,10 +85,19 @@ test "val-bound match over Option keeps its payload type" {
   }
 }
 
-// NOTE: deeply *nested* constructor bindings — e.g.
-// `case Some(Tagged(label, n)) -> useString(label)` — are a separate codegen
-// path from the single-level typed binding #1891 fixed.  They currently
-// populate the inner binding slot incorrectly and trip a runtime
-// NullReferenceException; that gap is tracked in #3280 and is out of scope
-// for #1891 (whose acceptance is the single-level `case Some(s: String)`
-// shape).  Re-add a nested case here once #3280 lands.
+test "nested constructor binding populates inner slot (#3280)" {
+  // `case Some(Tagged(label, n))` nests a PConstructor inside an outer
+  // PConstructor.  Before #3280 the inner `label` and `n` slots were never
+  // populated from the `Tagged` fields — `label` was null and `n` was 0 —
+  // causing a NullReferenceException at `useString(label)`.
+  val nested: Option[Tag] = Some(Tagged(label = "hi", n = 1))
+  val total = match nested { case Some(Tagged(label, n)) -> useString(label) + n; case Some(_) -> -1; case None -> 0 }
+  assertTrue(total == 3, "nested PConstructor: label.length + n == 3")
+}
+
+test "nested constructor binding two levels deep" {
+  // Three-level nesting: Option[Option[Tag]].
+  val deep: Option[Option[Tag]] = Some(Some(Tagged(label = "abc", n = 2)))
+  val r = match deep { case Some(Some(Tagged(label, n))) -> useString(label) + n; case _ -> 0 }
+  assertTrue(r == 5, "three-level nested PConstructor: label.length + n == 5")
+}
