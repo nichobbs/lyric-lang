@@ -696,10 +696,21 @@ func lowerTryCatchExpr(ctx: in FuncCtx, insns: in List[LInsn], body: in Block, c
             // The catch body produced nothing (statement mode) but the try
             // body produced a value — emitting a store here would pop a
             // value that isn't on the stack and produce a VerifyError.
-            // Emit a build-time panic so this surfaces as a clear compile
-            // error rather than an unloadable class (#2690).
+            // Abort codegen with a source-located diagnostic so the user
+            // sees a pointed compile error rather than an untyped crash
+            // with no line number (#3193, supersedes the bare panic from
+            // #2690).  The Jvm.Bridge `Bug` catch re-emits this message
+            // under `error[J002]`; the `error[J004]` code and `line:col`
+            // prefix below name the offending catch arm precisely.  Code
+            // is threaded through the panic message because the codegen
+            // tree returns `JvmType`, not a diagnostic-collecting Result.
+            val pos = c.span.startPos
             panic(
-              "Jvm.Codegen: try-catch used as an expression but a catch arm returned Unit while the try body returned a value; this is a type-checker gap — annotate the try-catch result type explicitly (#2042)"
+              "error[J004]: " + pos.line.toString() + ":" + pos.column.toString() +
+                ": try-catch used as an expression, but this catch arm yields Unit while the " +
+                "try body yields a value; the JVM backend cannot route an absent value through " +
+                "the result slot. Give the catch arm a trailing value of the try body's type, or " +
+                "annotate the try-catch result type explicitly (type-checker gap #2042)."
             )
           }
           case _ -> emitStore(insns, rslot, catchBodyTy)
