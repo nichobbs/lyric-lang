@@ -371,6 +371,22 @@ pub func typeExprToJvmErased(te: in TypeExpr, pkgName: in String, typeParams: in
   }
 }
 
+// Map a Lyric TypeExpr to a JvmType, resolving an `extern type` alias (e.g.
+// `JBAOS` -> `java/io/ByteArrayOutputStream`) via `externTypes` instead of the
+// same-package `<pkg>/<name>` fallback `typeExprToJvm` would pick (#3334).
+pub func typeExprToJvmExtern(te: in TypeExpr, pkgName: in String, externTypes: in Map[String, String]): JvmType {
+  match te.kind {
+    case TRef(path) -> {
+      match mapGet(externTypes, lastSegment(path)) {
+        case Some(javaFqn) -> JRef(className = javaFqn.replace(".", "/"))
+        case None -> typeExprToJvm(te, pkgName)
+      }
+    }
+    case TParen(inner) -> typeExprToJvmExtern(inner, pkgName, externTypes)
+    case _ -> typeExprToJvm(te, pkgName)
+  }
+}
+
 // Map a Lyric TypeExpr to a JvmType.
 pub func typeExprToJvm(te: in TypeExpr, pkgName: in String): JvmType {
   match te.kind {

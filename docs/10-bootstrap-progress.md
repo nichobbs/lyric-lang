@@ -24729,3 +24729,40 @@ The separate extern-type-**parameter** descriptor sub-gap noted in #3307 (a
 `java/io/ByteArrayOutputStream` because `typeExprToJvm` does not consult the
 extern-type table) is **not** addressed here — it lives in the signature path
 and is tracked separately.
+
+### D-progress-514 — JVM resolves `extern type` values in function parameter/return descriptors (#3334)
+
+On `--target jvm`, an `extern type` value used as a function **parameter** or
+**return type** resolved to the same-package `<pkg>/<Alias>` fallback rather
+than the real JVM class: `func fill(sink: in JBAOS, …)` emitted a descriptor
+referencing `Main/JBAOS`, so the program died at runtime with
+`NoClassDefFoundError: Main/JBAOS`.  This is the "second, related gap" noted in
+#3307 (the loop-local frame-typing half was fixed in D-progress-513).
+
+Root cause: `typeExprToJvm` (`lyric-compiler/jvm/codegen/01_types.l`) maps any
+non-builtin `TRef` named type to `JRef(pkgName + "/" + lastSegment)` and never
+consulted the file's `extern type` table — which was only used at call/receiver
+sites (`ctx.externTypes`, `04_calls.l`), not when computing a function's
+parameter/return descriptors.
+
+Fix: a new `typeExprToJvmExtern(te, pkgName, externTypes)` resolves a `TRef`
+whose `lastSegment` is an extern alias to `JRef(javaFqn.replace(".", "/"))`,
+else delegates to `typeExprToJvm`.  It is applied at every site that computes a
+free function's parameter/return JVM type so the **registered `JvmFuncSig`**
+(`collectFileSigs`) and the **emitted method descriptor** (`lowerFunc`,
+`holderAwareParamTypes`, `setupStaticParamSlotsAndHolders`) resolve identically
+and stay in lockstep (a mismatch would break call-site linking).  The
+extern-type table is derived from the file's `IExternType` items via a new
+`collectExternTypesFromFile` helper (factored out of `codegenPackage`'s inline
+build).  Builtins and ordinary same-package types are unaffected (their
+`lastSegment` is not an extern alias).
+
+Combined with D-progress-513, this clears **both** JVM codegen blockers that
+#1065 (`Std.ProcessCaptureHost`) hit — loop-carried extern-handle frame typing
+and extern-handle parameters — so the kernel design #3308 documented can now be
+implemented.
+
+Verified by `lyric-compiler/jvm/extern_param_jvm_self_test.l` (3 cases: extern
+param driven through a loop, extern return value, create→pass→read round-trip),
+compiled in-process through the self-hosted `Jvm.Bridge` and run under `java`;
+wired into CI.  The full JVM self-test suite (17 files) is regression-clean.

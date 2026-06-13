@@ -2392,6 +2392,27 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/extern_loop_jvm_self_test.l
+      # Extern-type parameter/return self-test (#3334) — pins that an `extern
+      # type` value used as a function parameter or return type resolves to the
+      # real JVM class in the method descriptor (e.g. JBAOS ->
+      # java/io/ByteArrayOutputStream), not the `<pkg>/<Alias>` fallback that
+      # produced `NoClassDefFoundError: Main/JBAOS`.  Compiled in-process
+      # through the self-hosted `Jvm.Bridge` and run under `java`.  Imports
+      # only `Std.*`.
+      - name: Extern-type parameter self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping extern-param JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping extern-param JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/extern_param_jvm_self_test.l
       # `lyric run --target jvm` end-to-end smoke (#674) — the first CI step to
       # exercise the `run` JVM convenience wrapper (vs. the `test --target jvm`
       # steps above).  Builds a no-arg `func main(): Int` program to a bundled
