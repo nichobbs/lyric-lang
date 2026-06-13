@@ -258,7 +258,17 @@ supporting all language features."
   part 1) static/instance/ctor calls — class-typed params/return encode as real
   `TypeRef`-backed MemberRefs; `@externStatic`/`@externInstance` dispatch with
   conflict guard; unresolved externs emit an actionable runtime-throw stub
-  rather than invalid IL.
+  rather than invalid IL. **Generic *declaring types*** (e.g.
+  `ConcurrentDictionary`2`) are supported (#3392): `emitGenericExternMember`
+  emits a closed `<object,…>` GENERICINST TypeSpec parent with a `!0`/`!1`
+  (`MTypeVar`)-encoded member signature read from reference-assembly metadata
+  (`Mdr.decodeExternMethodSig`), casts the receiver to it, boxes value-type
+  arguments, and marshals `out` arguments across the `object`-erasure boundary.
+  The monomorphizer preserves `@externTarget` on specialised copies and keeps an
+  unspecialised generic extern (so a zero-arg ctor extern invoked from a
+  module-`val` initializer still resolves). This is what made the lyric-web
+  rate-limiter / lyric-resilience circuit-breaker kernels — which previously
+  monomorphised to an `ldnull; ret` stub (silent no-op / invalid IL) — work.
 - **Mode checker:** V0001–V0006, V0009–V0011 well-enforced for proof-required code
   (the strongest part of the front end).
 - **Front-end enforcement that does work:** operator typing (T0030–T0037),

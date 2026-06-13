@@ -10725,6 +10725,275 @@ func buildFfiMethodSigCtx(
   bufToList(w)
 }
 
+// Parse the `\`N` generic-arity suffix of a simple type name (e.g.
+// `ConcurrentDictionary`2` -> 2).  Returns 0 when there is no suffix.
+func decimalDigitValue(c: in Char): Int {
+  if c == '0' {
+    0
+  } else if c == '1' {
+    1
+  } else if c == '2' {
+    2
+  } else if c == '3' {
+    3
+  } else if c == '4' {
+    4
+  } else if c == '5' {
+    5
+  } else if c == '6' {
+    6
+  } else if c == '7' {
+    7
+  } else if c == '8' {
+    8
+  } else if c == '9' {
+    9
+  } else {
+    0 - 1
+  }
+}
+
+func genericArityOfName(simpleName: in String): Int {
+  val bt = simpleName.lastIndexOf("`")
+  if bt < 0 {
+    return 0
+  }
+  var n = 0
+  var i = bt + 1
+  while i < simpleName.length {
+    val d = decimalDigitValue(simpleName[i])
+    if d >= 0 {
+      n = n * 10 + d
+    }
+    i = i + 1
+  }
+  n
+}
+
+// Emit the body of a generic `@externTarget` member whose *declaring type* is a
+// generic BCL type (`ConcurrentDictionary`2`, …).  A member of a generic type
+// cannot be referenced through an open-generic TypeRef with a concrete-typed
+// signature (ECMA-335 §II.22.25 / §II.23.2): it needs a closed GENERICINST
+// TypeSpec parent and a `!0`/`!1`-encoded member signature.
+//
+// The type arguments are erased to `<object,…>`, matching how
+// `typeExprToMsilCtx` already erases the Lyric extern wrapper type
+// (`ConcurrentDict[K, V]`) to `MObject` — so the receiver value, the field that
+// stores it, and every call site are all `object`-shaped, and the runtime
+// instance produced by the `..ctor` extern is `T<object,…>`.  VAR positions are
+// read from reference-assembly metadata (so they are exact, not guessed); a
+// value-type by-value argument is boxed, and an `out`/`inout` argument whose
+// Lyric pointee is concrete is marshalled through an `object` temp because the
+// BCL position is `!1&` (= `object&`) after erasure.
+//
+// Does not append `MRet` (the caller does).  Returns false — having emitted
+// nothing — when the metadata signature can't be resolved or carries a shape
+// this path can't encode, so the caller falls back to the legacy path.
+func emitGenericExternMember(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  decl: in FunctionDecl,
+  r: in FfiResolved,
+  resolvedFqn: in String,
+  paramTypes: in List[MsilType],
+): Bool {
+  val arity = genericArityOfName(r.typeName)
+  if arity <= 0 {
+    return false
+  }
+  // Resolve the BCL member's true signature (hasThis + exact VAR positions).
+  // Build `sigOpt` via a typed `var` + assignment rather than a `match`
+  // expression: the bootstrap F# emitter unifies a `match`'s `None` arm with the
+  // `Some(...)` arm to `Option<object>`, after which `sig.paramTypes` below
+  // would be an `Object` field read it cannot resolve.
+  val asmName = assemblyForTypeMsil(cctx, resolvedFqn)
+  var sigOpt: Option[Mdr.DecodedMethodSig] = None
+  match mapGet(cctx.metadataPathIndex, asmName) {
+    case None -> {
+    }
+    case Some(path) -> {
+      sigOpt = Mdr.decodeExternMethodSig(path, resolvedFqn, r.memberName, decl.params.count)
+    }
+  }
+  match sigOpt {
+    case None -> false
+    case Some(sig) -> {
+      // Convert the BCL param/return SigTypes to MsilType, preserving VARs.
+      val memberParams: List[MsilType] = newList()
+      var convOk = true
+      var ci = 0
+      while ci < sig.paramTypes.count {
+        match genericMemberSigToMsil(cctx, sig.paramTypes[ci]) {
+          case Some(m) -> memberParams.add(m)
+          case None -> {
+            convOk = false
+          }
+        }
+        ci = ci + 1
+      }
+      val memberRet = match genericMemberSigToMsil(cctx, sig.returnType) {
+        case Some(m) -> m
+        case None -> {
+          convOk = false
+          MVoid
+        }
+      }
+      val isInstance = sig.hasThis and not r.isCtor
+      // Arg-count sanity: BCL params + (instance receiver) must equal the
+      // Lyric wrapper's declared parameter count, or our positional mapping
+      // would be wrong.
+      val expectedDeclParams = if isInstance { memberParams.count + 1 } else { memberParams.count }
+      if not convOk or expectedDeclParams != decl.params.count {
+        return false
+      }
+
+      // Closed GENERICINST TypeSpec `T<object,…>`.
+      val ns = r.namespaceStr
+      val typeRefRow = internFfiTypeRef(cctx, asmName, ns, r.typeName)
+      val objArgs: List[MsilType] = newList()
+      var ai = 0
+      while ai < arity {
+        objArgs.add(MObject)
+        ai = ai + 1
+      }
+      val tsKey = "ts_genextern_" + resolvedFqn
+      val tsBlob = buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(typeRefRow), objArgs)
+      val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+      val tsTok = 0x1B000000 + tsRow
+
+      // MemberRef on the TypeSpec.  Constructors and instance methods are
+      // HASTHIS; the (unused-here) static case uses the default convention.
+      val memberSig = if isInstance or r.isCtor {
+        buildInstanceMethodSig(memberParams, if r.isCtor { MVoid } else { memberRet })
+      } else {
+        buildStaticMethodSigWithCtx(memberParams, memberRet, cctx.lctx)
+      }
+      val mrKey = "mr_genextern_" + resolvedFqn + "." + r.memberName
+      val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, r.memberName, mrKey, memberSig)
+      val mrTok = 0x0A000000 + mrRow
+
+      // Pre-allocate marshalling temps for concrete `out`/`inout` pointee types
+      // (the BCL position is `!1&` = `object&`, the Lyric param is `RateEntry&`).
+      // Parallel lists: byref BCL param index j -> (objTempLocal, lyricParamIdx,
+      // pointeeMsil).
+      val marshalBclIdx: List[Int] = newList()
+      val marshalTmp: List[Int] = newList()
+      val marshalPointee: List[MsilType] = newList()
+      var pj = 0
+      while pj < memberParams.count {
+        val lyIdx = if isInstance { pj + 1 } else { pj }
+        match memberParams[pj] {
+          case MByRef(_) -> {
+            val lyInner = match paramTypes[lyIdx] { case MByRef(inner) -> inner; case other -> other }
+            match lyInner {
+              case MObject -> {
+              }
+              case _ -> {
+                val tmpIdx = fctx.locals.count
+                fctx.locals.add(MObject)
+                marshalBclIdx.add(pj)
+                marshalTmp.add(tmpIdx)
+                marshalPointee.add(lyInner)
+              }
+            }
+          }
+          case _ -> {
+          }
+        }
+        pj = pj + 1
+      }
+
+      // ── Emit ──────────────────────────────────────────────────────────────
+      if r.isCtor {
+        insns.add(MNewobj(ctorToken = mrTok))
+        return true
+      }
+      if isInstance {
+        insns.add(MLdarg(slot = 0))
+        insns.add(MCastclass(typeToken = tsTok))
+      }
+      var ej = 0
+      while ej < memberParams.count {
+        val lyIdx = if isInstance { ej + 1 } else { ej }
+        val mTy = memberParams[ej]
+        match mTy {
+          case MByRef(_) -> {
+            val mi = listIndexOfInt(marshalBclIdx, ej)
+            if mi >= 0 {
+              insns.add(MLdloca(slot = marshalTmp[mi]))
+            } else {
+              // pointee already `object` (erased generic copy): pass directly.
+              insns.add(MLdarg(slot = lyIdx))
+            }
+          }
+          case _ -> {
+            insns.add(MLdarg(slot = lyIdx))
+            // Box a value-type argument when the BCL position is a type
+            // parameter (erased to `object`).
+            val isVarPos = match mTy { case MTypeVar(_) -> true; case MObject -> true; case _ -> false }
+            if isVarPos and isValueType(paramTypes[lyIdx]) {
+              boxIfNeededMsil(cctx, insns, paramTypes[lyIdx])
+            }
+          }
+        }
+        ej = ej + 1
+      }
+      if isInstance {
+        insns.add(MCallvirt(methodToken = mrTok))
+      } else {
+        insns.add(MCall(methodToken = mrTok))
+      }
+
+      // Marshal `out` temps back into the Lyric byref locations.
+      if marshalBclIdx.count > 0 {
+        val retIsVoid = match memberRet { case MVoid -> true; case _ -> false }
+        val resIdx = if retIsVoid {
+          0 - 1
+        } else {
+          val ri = fctx.locals.count
+          fctx.locals.add(memberRet)
+          insns.add(MStloc(slot = ri))
+          ri
+        }
+        var mk = 0
+        while mk < marshalBclIdx.count {
+          val lyIdx = if isInstance { marshalBclIdx[mk] + 1 } else { marshalBclIdx[mk] }
+          insns.add(MLdarg(slot = lyIdx))         // the byref pointer
+          insns.add(MLdloc(slot = marshalTmp[mk]))  // the object the BCL wrote
+          val pointee = marshalPointee[mk]
+          if isValueType(pointee) {
+            insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, pointee)))
+          } else {
+            match pointee {
+              case MClass(cn) -> insns.add(MCastclassByName(className = cn))
+              case _ -> ()
+            }
+          }
+          insns.add(MStind(ty = pointee))
+          mk = mk + 1
+        }
+        if resIdx >= 0 {
+          insns.add(MLdloc(slot = resIdx))
+        }
+      }
+      true
+    }
+  }
+}
+
+// Index of the first occurrence of `v` in `xs`, or -1.
+func listIndexOfInt(xs: in List[Int], v: in Int): Int {
+  var i = 0
+  while i < xs.count {
+    if xs[i] == v {
+      return i
+    }
+    i = i + 1
+  }
+  0 - 1
+}
+
 func emitExternTargetBody(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -10789,6 +11058,20 @@ func emitExternTargetBody(
       val isKnownFqn = match Mdr.assemblyForType(cctx.metadataTypeIndex, resolvedFqn) {
         case Some(_) -> true
         case None -> clrAssemblyResolvable(resolvedFqn)
+      }
+      // Generic declaring type (e.g. `ConcurrentDictionary`2`): a member of a
+      // generic type cannot be referenced through a plain open-generic TypeRef
+      // with a concrete-typed signature — ECMA-335 §II.22.25 requires a closed
+      // GENERICINST TypeSpec parent and a `!0`/`!1`-encoded member signature.
+      // Route these through the dedicated emitter, which erases the type
+      // arguments to `<object,…>` (matching how `typeExprToMsilCtx` already
+      // erases the Lyric `ConcurrentDict[K,V]` value to `MObject`) and marshals
+      // `out`/value-type arguments across the erasure boundary (#3392).
+      if isKnownFqn and contains(r.typeName, "`") {
+        if emitGenericExternMember(cctx, fctx, insns, decl, r, resolvedFqn, paramTypes) {
+          insns.add(MRet)
+          return true
+        }
       }
       if not isKnownFqn {
         panic(
@@ -16973,6 +17256,48 @@ func resolvedSigToMsil(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[MsilTyp
     } else {
       internClassRef(cctx, fqn)
     }
+  }
+}
+
+// Map a decoded BCL member `SigType` to the `MsilType` used to build a
+// TypeSpec-parented MemberRef signature for a generic declaring type — unlike
+// `resolvedSigToMsil`, this preserves `STVar` as `MTypeVar` (ELEMENT_TYPE_VAR)
+// and `STByRef` as `MByRef`, because a member of a generic type must reference
+// its declaring type's generic parameters (`!0`/`!1`), per ECMA-335 §II.23.2.
+// `STNamed` class/value types are interned as concrete refs (a non-generic
+// parameter such as the `out int` of `Dictionary.TryGetValue` keeps its real
+// type).  None for any shape the emitter can't encode (caller falls back).
+func genericMemberSigToMsil(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[MsilType] {
+  // Each `Option`-producing arm assigns into a typed `var` rather than yielding
+  // a `match` whose `None`/`Some` arms the bootstrap F# emitter would unify to
+  // `Option<object>` (the same erasure that breaks `sig.paramTypes` elsewhere).
+  match sig {
+    case Mdr.STPrim(b) -> elemByteToMsil(b)
+    case Mdr.STVar(i) -> Some(value = MTypeVar(index = i))
+    case Mdr.STByRef(inner) -> {
+      var res: Option[MsilType] = None
+      match genericMemberSigToMsil(cctx, inner) {
+        case Some(m) -> {
+          res = Some(value = MByRef(inner = m))
+        }
+        case None -> {
+        }
+      }
+      res
+    }
+    case Mdr.STSzArray(e) -> {
+      var res: Option[MsilType] = None
+      match genericMemberSigToMsil(cctx, e) {
+        case Some(m) -> {
+          res = Some(value = MArray(elemTy = m))
+        }
+        case None -> {
+        }
+      }
+      res
+    }
+    case Mdr.STNamed(fqn, vt) -> if vt { internValueTypeRef(cctx, fqn) } else { internClassRef(cctx, fqn) }
+    case _ -> None
   }
 }
 
