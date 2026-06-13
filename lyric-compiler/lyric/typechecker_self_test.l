@@ -2115,6 +2115,16 @@ test "try statement unit handler with value body accepted" {
   assertTrue(not hasDiagCode(parseCheck(ok), "T0067"), "try statement: Unit handler beside Int body absorbed, no T0067")
 }
 
+// #3361: a *non-trailing* try inside a value-position block discards its value,
+// so a Unit handler beside a non-Unit body must stay absorbed even when the
+// enclosing function returns Int.  The `tryValuePos = valuePos and (i == last)`
+// guard makes the non-trailing case statement-position; this pins it so a
+// future isLast refactor cannot silently regress it back to a spurious T0067.
+test "try non-trailing value-position block stays clean" {
+  val ok = "package P\nfunc f(): Int {\n  try {\n    42\n  } catch Bug as b {\n    ()\n  }\n  99\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0067"), "non-trailing try: Unit handler discarded, no T0067")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // #3187: a refutable `for` pattern is rejected by the type checker (T0112) —
 // codegen has no failure path for a non-matching element, so accepting it

@@ -3402,10 +3402,10 @@ func flattenPathExprSegs(e: in Expr): List[String] {
 //
 // Returns the case ordinal when `expr` is such a reference, or -1 otherwise.
 // The lookup is scoped to the named enum type (`<EnumType>.<Case>` key) so two
-// in-bundle enums sharing a case name can't collide (#3346).  A single-segment
-// receiver that names a local takes precedence — it's a real value, not an
-// enum type reference — so field access through a same-named local is left to
-// the normal `EMember` arm.
+// in-bundle enums sharing a case name can't collide (#3346).  A receiver whose
+// first segment names a local takes precedence — it's a real value, not an
+// enum type reference — so a member-access chain rooted in a same-named local
+// (single- or multi-segment) is left to the normal `EMember` arm.
 //
 // Resolved here (before the `EMember` arm of `lowerExprMsil`) rather than
 // inside that arm: restructuring the arm's control flow mis-lowers ordinary
@@ -3426,7 +3426,7 @@ func tryQualifiedEnumOrdinalMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in
       // chain (`x.Color.Red`, or a bare `Color.Red` shadowed by a local
       // `Color`), not a package-qualified enum reference — even if a middle
       // segment coincidentally matches an enum type name and the member matches
-      // a case.  Leave it to the normal `EMember` arm (#3390).
+      // a case.  Leave it to the normal `EMember` arm.
       if fctx.slots.containsKey(segs[0]) {
         return -1
       }
