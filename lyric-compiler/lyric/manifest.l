@@ -1040,7 +1040,6 @@ func assembleMaven(entries: in List[Entry]): Result[Option[MavenSection], Manife
     return Ok(value = None)
   }
   val mavenEntries: List[MavenEntry] = newList()
-  var firstErr: Option[ManifestError] = None
   var i = 0
   while i < entries.count {
     val e = entries[i]
@@ -1051,21 +1050,20 @@ func assembleMaven(entries: in List[Entry]): Result[Option[MavenSection], Manife
         case VTable(pairs) -> findInlineStr(pairs, "version")
         case _ -> None
       }
+      // Return on the first invalid entry, mirroring assembleNuget's
+      // early-return control flow (#3263).
       match versionOpt {
-        case None -> if isNone(firstErr) { firstErr = Some(value = InvalidField(section = "maven", field = e.key, message = "expected a version string or an inline table with a 'version' key")) }
-        case Some(v) -> {
-          val entryErr = collectMavenEntry(mavenEntries, e.key, v)
-          if isNone(firstErr) {
-            firstErr = entryErr
-          }
-        }
+        case None -> return Err(
+          error = InvalidField(
+            section = "maven",
+            field = e.key,
+            message = "expected a version string or an inline table with a 'version' key"
+          )
+        )
+        case Some(v) -> match collectMavenEntry(mavenEntries, e.key, v) { case Some(err) -> return Err(error = err); case None -> () }
       }
     }
     i += 1
-  }
-  match firstErr {
-    case Some(err) -> return Err(error = err)
-    case None -> ()
   }
   val repositories: List[String] = match findStringList(entries, "maven.options", "repositories") {
     case Some(repos) -> repos
