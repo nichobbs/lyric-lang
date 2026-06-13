@@ -1439,6 +1439,25 @@ pub func collectImportNames(imports: in List[ImportDecl]): List[String] {
   names
 }
 
+// Flatten the items of every imported package into one list, in package then
+// declaration order.  Both bridges feed the result to `deriveFileWithImports`
+// so a `@derive(Ord)` field typed as a cross-package distinct type resolves
+// through its `.value` projection chain instead of miscompiling to a reference
+// comparison (#3287).
+pub func flattenImportedItems(pkgs: in List[ImportedPackage]): List[Item] {
+  val items: List[Item] = newList()
+  var i = 0
+  while i < pkgs.count {
+    var j = 0
+    while j < pkgs[i].items.count {
+      items.add(pkgs[i].items[j])
+      j = j + 1
+    }
+    i = i + 1
+  }
+  items
+}
+
 // Scope-aware type check.  Imported items are supplied grouped by their
 // declaring package so each package's signatures resolve against its own
 // declarations (and its imports), instead of one flat table where the
