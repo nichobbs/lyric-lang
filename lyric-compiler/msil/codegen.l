@@ -10905,10 +10905,10 @@ func emitGenericExternMember(
       }
 
       // ── Emit ──────────────────────────────────────────────────────────────
-      if r.isCtor {
-        insns.add(MNewobj(ctorToken = mrTok))
-        return true
-      }
+      // Push the receiver (instance calls) then every argument BEFORE the call
+      // or `newobj`.  Emitting `newobj` ahead of the argument-push loop would
+      // fire it against an empty stack for a ctor wrapper that takes arguments
+      // (#3419); only the zero-argument ctor happened to be correct.
       if isInstance {
         insns.add(MLdarg(slot = 0))
         insns.add(MCastclass(typeToken = tsTok))
@@ -10939,13 +10939,16 @@ func emitGenericExternMember(
         }
         ej = ej + 1
       }
-      if isInstance {
+      if r.isCtor {
+        insns.add(MNewobj(ctorToken = mrTok))
+      } else if isInstance {
         insns.add(MCallvirt(methodToken = mrTok))
       } else {
         insns.add(MCall(methodToken = mrTok))
       }
 
-      // Marshal `out` temps back into the Lyric byref locations.
+      // Marshal `out` temps back into the Lyric byref locations.  A ctor never
+      // has `out` parameters, so `marshalBclIdx` is empty and this is a no-op.
       if marshalBclIdx.count > 0 {
         val retIsVoid = match memberRet { case MVoid -> true; case _ -> false }
         val resIdx = if retIsVoid {
