@@ -205,3 +205,52 @@ test "F0020: ? inside a lambda nested in a non-Result function also emits" {
   val result = lowerPropagateFile(parse(src).file)
   assertTrue(propHasDiag(result.diagnostics, "F0020"), "F0020 emitted for ? inside lambda in Unit function")
 }
+
+// ── Same-file alias return types (#1814) ─────────────────────────────────────
+// `monadOfRet` unfolds same-file `alias` declarations before the Result/Option
+// classification, so a return type written through an alias no longer trips a
+// false F0020.
+test "alias of Result: ? classifies as PropResult, no F0020 (#1814)" {
+  val src = "package P\nalias ParseResult[T] = Result[T, String]\nfunc f(): ParseResult[Int] {\n  val r: Result[Int, String] = Ok(1)\n  val v = r?\n  Ok(v)\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertEqualInt(result.diagnostics.count, 0, "no diagnostics for ? behind a Result alias")
+}
+
+test "alias of Option: ? classifies as PropOption, no F0020 (#1814)" {
+  val src = "package P\nalias Maybe[T] = Option[T]\nfunc g(): Maybe[Int] {\n  val o: Option[Int] = Some(1)\n  val v = o?\n  Some(v)\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertEqualInt(result.diagnostics.count, 0, "no diagnostics for ? behind an Option alias")
+}
+
+test "non-generic alias of Result: TRef return type also unfolds (#1814)" {
+  val src = "package P\nalias IntResult = Result[Int, String]\nfunc f(): IntResult {\n  val r: Result[Int, String] = Ok(1)\n  val v = r?\n  Ok(v)\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertEqualInt(result.diagnostics.count, 0, "no diagnostics for ? behind a non-generic Result alias")
+}
+
+test "chained alias of Result unfolds through both hops (#1814)" {
+  val src = "package P\nalias Inner[T] = Result[T, String]\nalias Outer[T] = Inner[T]\nfunc f(): Outer[Int] {\n  val r: Result[Int, String] = Ok(1)\n  val v = r?\n  Ok(v)\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertEqualInt(result.diagnostics.count, 0, "no diagnostics for ? behind a chained alias")
+}
+
+test "non-monadic alias still fires F0020 (#1814)" {
+  val src = "package P\nalias Ints = List[Int]\nfunc f(): Ints {\n  val r: Result[Int, String] = Ok(1)\n  val v = r?\n  newList()\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertTrue(propHasDiag(result.diagnostics, "F0020"), "F0020 still fires when the alias is not Result/Option")
+}
+
+test "cyclic alias classifies as PropOther without looping (#1814)" {
+  val src = "package P\nalias A = B\nalias B = A\nfunc f(): A {\n  val r: Result[Int, String] = Ok(1)\n  val v = r?\n  v\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertTrue(propHasDiag(result.diagnostics, "F0020"), "cyclic alias hits the depth bound and fires F0020")
+}
+
+// NOTE: runtime end-to-end coverage of `?` behind an alias is blocked on a
+// pre-existing MSIL backend gap independent of the propagation pass: a value
+// returned through `alias IntResult = Result[Int, String]` is constructed as
+// a distinct generic instantiation, so a downstream `match` on it traps with
+// "match not exhaustive ... scr=GStd.Core.Result<I,S,>" even with no `?`
+// involved (and module-level generic alias parameters fail T0010 in the
+// self-hosted type checker).  Tracked in #3267; the alias classification
+// itself is fully covered by the AST-level tests above.

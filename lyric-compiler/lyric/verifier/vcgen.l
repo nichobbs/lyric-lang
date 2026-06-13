@@ -173,37 +173,13 @@ func translateLit(lit: in Literal): Term {
     case LString(s) -> TLit(value = VLString(s = s), sort = SString)
     case LTripleString(s) -> TLit(value = VLString(s = s), sort = SString)
     case LRawString(s) -> TLit(value = VLString(s = s), sort = SString)
-    case LChar(cp) -> TLit(value = VLInt(n = codepointToLong(cp)), sort = SInt)
+    case LChar(cp) -> TLit(value = VLInt(n = cp.toLong()), sort = SInt)
     case LUnit -> {
       val args: List[Sort] = newList()
       val unitDt = SDatatype(name = "Unit", args = args)
       TLit(value = VLUnit, sort = unitDt)
     }
   }
-}
-
-// Convert an Int codepoint to a Long value for LInt literals.
-// Lyric's surface lacks a direct Int → Long cast today; mirror the
-// `intToLong` shim in lexer.l.  Inputs are bounded codepoint indices
-// (typically small non-negative integers) so the constant-time-per-bit
-// bound here is acceptable.  Will collapse to a single `conv.i8` IL
-// instruction when the cleaner widening shim lands (lyric-lang #418 §9).
-func codepointToLong(n: in Int): Long {
-  var acc: Long = 0i64
-  if n >= 0 {
-    var i = 0
-    while i < n {
-      acc = acc + 1i64
-      i = i + 1
-    }
-  } else {
-    var i = 0
-    while i > n {
-      acc = acc - 1i64
-      i = i - 1
-    }
-  }
-  acc
 }
 
 func unitTerm(): Term {

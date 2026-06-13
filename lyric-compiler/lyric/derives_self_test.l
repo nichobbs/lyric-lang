@@ -497,6 +497,144 @@ test "derive ord distinct annotation" {
   assertTrue(parseDeriveAndFindFunc(src, "Score.compare"), "ord-distinct-ann: Score.compare synthesised via @derive")
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// @derive(Ord) fields of distinct type over an Ord primitive (#3186).
+// ─────────────────────────────────────────────────────────────────────────────
+// Count `EMember(_, name)` accesses anywhere in `e` (plain member reads, not
+// method calls — countMethodCalls only sees ECall heads).
+func countMemberNamed(e: in Expr, name: in String): Int {
+  var n = 0
+  match e.kind {
+    case EMember(receiver, m) -> {
+      if m == name {
+        n = n + 1
+      }
+      n = n + countMemberNamed(receiver, name)
+    }
+    case EBinop(_, lhs, rhs) -> {
+      n = n + countMemberNamed(lhs, name)
+      n = n + countMemberNamed(rhs, name)
+    }
+    case EParen(inner) -> {
+      n = n + countMemberNamed(inner, name)
+    }
+    case EIf(cond, _, _, _) -> {
+      n = n + countMemberNamed(cond, name)
+    }
+    case _ -> ()
+  }
+  n
+}
+
+// Sum `countMemberNamed` over every statement-expression in the named
+// synthesised function's block body (the Ord compare body is a sequence of
+// `if (lt/gt) return` statements).
+func countMemberNamedInFunc(sf: in SourceFile, funcName: in String, member: in String): Int {
+  var i = 0
+  while i < sf.items.count {
+    match sf.items[i].kind {
+      case IFunc(decl) -> {
+        if decl.name == funcName {
+          match decl.body {
+            case Some(fb) -> {
+              match fb {
+                case FBBlock(blk) -> {
+                  var n = 0
+                  var si = 0
+                  while si < blk.statements.count {
+                    match blk.statements[si].kind {
+                      case SExpr(e) -> {
+                        n = n + countMemberNamed(e, member)
+                      }
+                      case _ -> ()
+                    }
+                    si = si + 1
+                  }
+                  return n
+                }
+                case _ -> {
+                  return 0
+                }
+              }
+            }
+            case None -> {
+              return 0
+            }
+          }
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  0
+}
+
+test "ord record distinct field projects through .value (#3186)" {
+  // `age: Age` over `type Age = Int` must compare `self.age.value`, not the
+  // wrapper references; the two age-ifs carry one `.value` per operand.
+  val src = "package P\ntype Age = Int\n@derive(Ord)\nrecord Person { age: Age; name: String }\n"
+  val pr = parse(src)
+  val sf = deriveFile(pr.file)
+  assertTrue(parseDeriveAndFindFunc(src, "Person.compare"), "ord-distinct-field: Person.compare synthesised")
+  assertEqualInt(
+    countMemberNamedInFunc(sf, "Person.compare", "value"),
+    4,
+    "ord-distinct-field: 2 age-ifs x 2 operands project through .value"
+  )
+}
+
+test "ord record chained distinct field projects through .value.value (#3186)" {
+  val src = "package P\ntype Inner = Int\ntype Outer = Inner\n@derive(Ord)\nrecord W { o: Outer }\n"
+  val pr = parse(src)
+  val sf = deriveFile(pr.file)
+  assertEqualInt(
+    countMemberNamedInFunc(sf, "W.compare", "value"),
+    8,
+    "ord-chained-distinct: 2 ifs x 2 operands x 2 hops project through .value.value"
+  )
+}
+
+test "ord union distinct case field projects through .value (#3186)" {
+  val src = "package P\ntype Age = Int\n@derive(Ord)\nunion U { case Person(age: Age); case Anon }\n"
+  assertTrue(parseDeriveAndFindFunc(src, "U.compare"), "ord-union-distinct: U.compare synthesised")
+}
+
+test "ord record non-ordered field still synthesises without projection (D0001 path)" {
+  // A record-typed field is not ordering-capable: D0001 fires (stdout) and the
+  // comparison falls back to the unprojected field (hops 0).
+  val src = "package P\nrecord Inner { v: Int }\n@derive(Ord)\nrecord Holder { inner: Inner }\n"
+  val pr = parse(src)
+  val sf = deriveFile(pr.file)
+  assertTrue(parseDeriveAndFindFunc(src, "Holder.compare"), "ord-nonord: Holder.compare still synthesised")
+  assertEqualInt(countMemberNamedInFunc(sf, "Holder.compare", "value"), 0, "ord-nonord: no .value projection")
+}
+
+// Runtime coverage (#3186): this module itself is compiled through the
+// self-hosted pipeline, so the derived compare below exercises the projection
+// at runtime.  Allocation order deliberately opposes value order — a regression
+// back to reference comparison flips the expected signs.
+type TestAge = Int
+
+@derive(Ord)
+record OrdPerson {
+  age: TestAge
+  name: String
+}
+
+test "ord record distinct field compares by value at runtime (#3186)" {
+  val p1 = OrdPerson(age = TestAge(40), name = "amy")
+  val p2 = OrdPerson(age = TestAge(30), name = "zed")
+  assertEqualInt(p1.compare(p2), 1, "runtime-ord: 40 > 30 despite allocation order")
+  assertEqualInt(p2.compare(p1), -1, "runtime-ord: 30 < 40 despite allocation order")
+  val q1 = OrdPerson(age = TestAge(25), name = "amy")
+  val q2 = OrdPerson(age = TestAge(25), name = "amy")
+  assertEqualInt(q1.compare(q2), 0, "runtime-ord: equal values in distinct wrappers compare 0")
+  val r2 = OrdPerson(age = TestAge(25), name = "bob")
+  assertEqualInt(q1.compare(r2), -1, "runtime-ord: equal ages fall through to name")
+  assertEqualInt(r2.compare(q1), 1, "runtime-ord: name comparison reversed")
+}
+
 test "mono retains derived helpers" {
   val src = "package P\n" + "@derive(Equals)\n@derive(Hash)\n@derive(Show)\n" + "record Point { x: Int; y: Int }\n" +
     "func gid[T](v: in T): T { v }\n"
