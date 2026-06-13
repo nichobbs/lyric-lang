@@ -20,6 +20,8 @@ output_assembly = "Mq.dll"
 "Mq.MqTests" = "tests/mq_tests.l"
 
 [features]
+default         = ["inmemory"]   # In-memory broker is the functional default transport (Phase 5 of #733)
+inmemory        = []   # In-process ConcurrentQueue broker (`Mq.Kernel.Net`, .NET-only)
 dotnet          = []   # Target the .NET kernel (`Mq.Kernel.Net`)
 jvm             = []   # Target the JVM kernel (`Mq.Kernel.Jvm`)
 rabbitmq        = []   # RabbitMQ via AMQP 0-9-1 (RabbitMQ.Client on .NET)
