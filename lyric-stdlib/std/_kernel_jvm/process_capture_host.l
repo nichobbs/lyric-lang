@@ -5,11 +5,31 @@
 //! the self-hosted verifier (`Lyric.Verifier`) to invoke z3/cvc5 and
 //! by the source-generator runtime when running under `--target jvm`.
 //!
-//! Routes through lyric.stdlib.jvm.ProcessCaptureHost, which wraps
-//! java.lang.ProcessBuilder.  The implementation captures stdout and
-//! stderr on separate threads to prevent pipe-buffer deadlock, and
-//! returns a ProcessCaptureResult POJO with `stdout`, `stderr`,
-//! `exitCode`, and `timedOut` fields.
+//! BLOCKED on a JVM codegen defect (#3307); see the gap note below.
+//!
+//! The production design for this kernel is **pure JVM auto-FFI against the
+//! JDK** — no F# host shim and no external Java helper JAR, consistent with
+//! the `_kernel_jvm/hash_host.l` precedent (M-9) and the project's no-new-shim
+//! rule.  The intended implementation spawns the child via
+//! `java.lang.Runtime.getRuntime().exec(String)`, drains stdout/stderr
+//! incrementally inside the wait loop (`InputStream.available()`-bounded reads
+//! into a `java.io.ByteArrayOutputStream`, so a >pipe-buffer child cannot
+//! deadlock a single-threaded drainer), enforces the wall-clock cap by polling
+//! `Process.isAlive()` against `System.currentTimeMillis()`
+//! (`java.util.concurrent.TimeUnit` is an enum the auto-FFI resolver skips, so
+//! `Process.waitFor(long, TimeUnit)` is unavailable), kills the child via
+//! `Process.destroyForcibly()` on timeout, and returns a Lyric
+//! `ProcessCaptureResult` record structurally identical to the .NET kernel's.
+//!
+//! That implementation was written and validated against the JDK API surface,
+//! but it cannot land yet: every required drain/poll loop carries a
+//! `Process` / `InputStream` / `ByteArrayOutputStream` extern handle across the
+//! loop back-edge, and the JVM backend currently types extern-type locals as
+//! `java/lang/Object` in the `StackMapTable` frame at a loop boundary, so the
+//! emitted `invokevirtual` fails bytecode verification (`VerifyError: Bad type
+//! on operand stack`).  Tracked as #3307 (`lyric-compiler/jvm/codegen/*`).  Once
+//! #3307 is fixed, these stubs are replaced by the pure-auto-FFI body — the
+//! signatures and `ProcessCaptureResult` shape below are already final.
 //!
 //! Internal: only Std.ProcessCapture and Std.Process should import this.
 @axiom("lyric.stdlib.jvm.ProcessCaptureHost piped stdout/stderr capture")
@@ -47,30 +67,10 @@ pub func hostRunCapture(executable: in String, arguments: in String, stdinConten
 
 // Variant of `hostRunCapture` with a caller-supplied `timeoutMs` wall-clock
 // cap.  Used by `Std.Process.runCapture` and `Std.Process.runCaptureWithInput`
-// (#1023 / #743).
-//
-// JVM parity gap: `lyric.stdlib.jvm.ProcessCaptureHost.runCaptureWithTimeout`
-// is tracked in #1065.  The expected implementation (Java side; lives in the
-// external `lyric-stdlib-shim` JAR project) must:
-//
-//   1. Spawn the subprocess via `ProcessBuilder`.
-//   2. Drain stdout and stderr on two separate daemon threads — `Process`'s
-//      pipe buffers are 4 KB on Linux / 64 KB on Windows, so a synchronous
-//      drain-then-wait sequence deadlocks against children that emit more
-//      than one buffer's worth before exit.  Mirror the .NET `Task.Run`
-//      drainers in `Lyric.Emitter.ProcessCapture.runCaptureImpl`.
-//   3. Enforce the wall-clock cap via `process.waitFor(timeoutMs,
-//      java.util.concurrent.TimeUnit.MILLISECONDS)`; on `false`, call
-//      `process.destroyForcibly()` and record `timedOut = true`.
-//   4. Join the drainer threads with a short bounded wait (`thread.join(5000)`)
-//      to surface what the child had already emitted before the kill.
-//   5. Return a `lyric.stdlib.jvm.ProcessCaptureResult` POJO populated with
-//      `stdout`, `stderr`, `exitCode` (`-2` when timed out, `-1` on spawn
-//      failure, otherwise `process.exitValue()`), and `timedOut`.
-//
-// Until the Java side lands, callers on the JVM target compiling against
-// this kernel will see a `NoSuchMethodError` at load time — surfacing the
-// gap loudly rather than silently dropping the timeout argument.
+// (#1023 / #743).  The pure-auto-FFI body (see the file header) enforces the
+// cap with an `isAlive()` / `currentTimeMillis()` poll and `destroyForcibly()`,
+// returning `exitCode = -2` on timeout — but is blocked on the extern-local
+// stackmap codegen defect #3307 (#1065).
 @externTarget("lyric.stdlib.jvm.ProcessCaptureHost.runCaptureWithTimeout")
 pub func hostRunCaptureTimeout(
   executable: in String, arguments: in String, stdinContent: in String, timeoutMs: in Int
