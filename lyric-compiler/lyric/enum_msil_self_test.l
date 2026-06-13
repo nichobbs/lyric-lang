@@ -73,8 +73,8 @@ func pick(b: in Bool): Color {
 
 // Records whose field names coincide with an enum type (`Color`) and a case
 // (`Red`), so a chained field access through a *local* (`box.Color.Red`)
-// exercises the first-segment local guard (#3390): the qualified-enum
-// short-circuit must not fire when the receiver root is a local value.
+// exercises the first-segment local guard: the qualified-enum short-circuit
+// must not fire when the receiver root is a local value.
 record Inner {
   Red: String
 }
@@ -118,7 +118,7 @@ test "enum value flows through a local and a record field" {
   assertEqual(t.label, "x", "sibling field after enum-typed field")
 }
 
-test "qualified enum value in argument position (#3344)" {
+test "qualified enum value in argument position" {
   // `Color.Red` parses as EMember(EPath["Color"], "Red"); it must lower to the
   // ordinal, not evaluate the bare type name as a value (which NREs).
   assertEqual(colorName(Color.Red), "red", "Color.Red as arg")
@@ -126,17 +126,17 @@ test "qualified enum value in argument position (#3344)" {
   assertEqual(colorName(Color.Blue), "blue", "Color.Blue as arg")
 }
 
-test "qualified enum value as match scrutinee (#3344)" {
+test "qualified enum value as match scrutinee" {
   val r = match Color.Green { case Red -> "r"; case Green -> "g"; case Blue -> "b" }
   assertEqual(r, "g", "Color.Green scrutinee")
 }
 
-test "qualified enum value returned from expression position (#3344)" {
+test "qualified enum value returned from expression position" {
   assertEqual(colorName(pick(true)), "green", "returned Color.Green")
   assertEqual(colorName(pick(false)), "blue", "returned Color.Blue")
 }
 
-test "qualified value resolves against the named enum's ordinals (#3346)" {
+test "qualified value resolves against the named enum's ordinals" {
   // Color.Green is ordinal 1; Hue.Warm is ordinal 0.  Each qualified value must
   // resolve against its own enum's ordinal table even with two enums in scope.
   assertEqual(hueName(Hue.Warm), "warm", "Hue.Warm")
@@ -144,7 +144,7 @@ test "qualified value resolves against the named enum's ordinals (#3346)" {
   assertEqual(colorName(Color.Green), "green", "Color.Green alongside Hue")
 }
 
-test "chained field access through a local is not mistaken for an enum value (#3390)" {
+test "chained field access through a local is not mistaken for an enum value" {
   // `box.Color.Red` flattens to ["box", "Color"] with last segment "Color"
   // (a registered enum type) and member "Red" (a Color case) — but the root
   // `box` is a local, so this is field access, not `Color.Red` the enum value.
