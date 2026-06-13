@@ -1666,7 +1666,92 @@ func exprContainsYield(e: in Expr): Bool {
     case ESpawn(inner) -> exprContainsYield(inner)
     case EPropagate(inner) -> exprContainsYield(inner)
     case ETry(inner) -> exprContainsYield(inner)
+    case EOld(inner) -> exprContainsYield(inner)
     case EBlock(blk) -> blockContainsYield(blk)
+    case EUnsafe(blk) -> blockContainsYield(blk)
+    case EPrefix(_, operand) -> exprContainsYield(operand)
+    case EBinop(_, lhs, rhs) -> exprContainsYield(lhs) or exprContainsYield(rhs)
+    case EMember(receiver, _) -> exprContainsYield(receiver)
+    case ETypeApp(fn, _) -> exprContainsYield(fn)
+    case EAssign(target, _, value) -> exprContainsYield(target) or exprContainsYield(value)
+    case ECall(fn, args) -> {
+      if exprContainsYield(fn) {
+        return true
+      }
+      var i = 0
+      while i < args.count {
+        if exprContainsYield(args[i].value) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case EIndex(receiver, indices) -> {
+      if exprContainsYield(receiver) {
+        return true
+      }
+      var i = 0
+      while i < indices.count {
+        if exprContainsYield(indices[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case ETuple(exprs) -> {
+      var i = 0
+      while i < exprs.count {
+        if exprContainsYield(exprs[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case EList(exprs) -> {
+      var i = 0
+      while i < exprs.count {
+        if exprContainsYield(exprs[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case EInterpolated(segments) -> {
+      var i = 0
+      while i < segments.count {
+        match segments[i] {
+          case ISExpr(x) -> {
+            if exprContainsYield(x) {
+              return true
+            }
+          }
+          case ISText(_, _) -> ()
+        }
+        i = i + 1
+      }
+      false
+    }
+    case ERange(bound) -> {
+      match bound {
+        case RBClosed(lo, hi) -> exprContainsYield(lo) or exprContainsYield(hi)
+        case RBHalfOpen(lo, hi) -> exprContainsYield(lo) or exprContainsYield(hi)
+        case RBLowerOpen(hi) -> exprContainsYield(hi)
+        case RBUpperOpen(lo) -> exprContainsYield(lo)
+      }
+    }
+    case EForall(_, whereExpr, body) -> {
+      val inWhere = match whereExpr { case Some(w) -> exprContainsYield(w); case None -> false }
+      inWhere or exprContainsYield(body)
+    }
+    case EExists(_, whereExpr, body) -> {
+      val inWhere = match whereExpr { case Some(w) -> exprContainsYield(w); case None -> false }
+      inWhere or exprContainsYield(body)
+    }
+    case ELambda(_, body) -> blockContainsYield(body)
     case EIf(cond, thenBranch, elseBranch, _) -> {
       if exprContainsYield(cond) {
         return true
