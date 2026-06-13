@@ -12,10 +12,13 @@
 //!   * `java.lang.ProcessBuilder(List<String>)` spawns the child.  The Lyric
 //!     `List[T]` maps to `java.util.ArrayList` at runtime and scores as a
 //!     reference-subtype match (score 1) against the `List` parameter.
-//!   * `Process.getOutputStream/getInputStream/getErrorStream` obtain the
-//!     stdio pipes.  Stdin is written in one shot (UTF-8 bytes) and closed.
+//!   * `proc.getOutputStream/getInputStream/getErrorStream()` obtain the
+//!     stdio pipes.  Instance methods are called on the object (`proc.start()`,
+//!     `stream.available()`, `buf.write(b)`, etc.) via the instance auto-FFI
+//!     path; only constructors and static methods use the `JType.method()`
+//!     form.  Stdin is written in one shot (UTF-8 bytes) and closed.
 //!   * Stdout and stderr are drained incrementally inside the `isAlive()` poll
-//!     loop via `InputStream.available()`-bounded reads into a
+//!     loop via `stream.available()`-bounded reads into a
 //!     `java.io.ByteArrayOutputStream`, preventing pipe-buffer deadlock.
 //!   * Wall-clock cap is enforced by comparing `System.currentTimeMillis()`
 //!     against a computed deadline and calling `Process.destroyForcibly()`.
@@ -142,11 +145,11 @@ func parseArgString(executable: in String, argStr: in String): List[String] {
 // without blocking.  Called from the isAlive() poll loop so we never
 // deadlock on a pipe whose buffer is full.
 func drainAvailable(stream: in JInputStream, buf: in JBAOS): Unit {
-  var avail = JInputStream.available(stream)
+  var avail = stream.available()
   while avail > 0 {
-    val b = JInputStream.read(stream)
+    val b = stream.read()
     if b >= 0 {
-      JBAOS.write(buf, b)
+      buf.write(b)
     }
     avail = avail - 1
   }
@@ -158,16 +161,16 @@ func runImpl(
 ): ProcessCaptureResult {
   val cmdList = parseArgString(executable, arguments)
   val pb = JProcessBuilder.new(cmdList)
-  val proc = JProcessBuilder.start(pb)
+  val proc = pb.start()
 
   // Write stdin as UTF-8 bytes then close the pipe so the child sees EOF.
-  val stdinStream = JProcess.getOutputStream(proc)
+  val stdinStream = proc.getOutputStream()
   val stdinBytes = stringToUtf8Bytes(stdinContent)
-  JOutputStream.write(stdinStream, stdinBytes)
-  JOutputStream.close(stdinStream)
+  stdinStream.write(stdinBytes)
+  stdinStream.close()
 
-  val stdoutStream = JProcess.getInputStream(proc)
-  val stderrStream = JProcess.getErrorStream(proc)
+  val stdoutStream = proc.getInputStream()
+  val stderrStream = proc.getErrorStream()
   val stdoutBuf = JBAOS.new()
   val stderrBuf = JBAOS.new()
 
@@ -177,12 +180,12 @@ func runImpl(
 
   // Poll until the child exits, draining both pipes each iteration.
   // Sleep 1 ms per idle iteration to avoid spinning at 100% CPU.
-  while JProcess.isAlive(proc) {
+  while proc.isAlive() {
     drainAvailable(stdoutStream, stdoutBuf)
     drainAvailable(stderrStream, stderrBuf)
     if not timedOut and currentTimeMillis() - startMs >= timeoutMsL {
       timedOut = true
-      JProcess.destroyForcibly(proc)
+      proc.destroyForcibly()
     }
     JThread.sleep(intToLong(1))
   }
@@ -191,11 +194,11 @@ func runImpl(
   drainAvailable(stdoutStream, stdoutBuf)
   drainAvailable(stderrStream, stderrBuf)
 
-  val exitCode = if timedOut { -2 } else { try { JProcess.exitValue(proc) } catch Bug as _ { -1 } }
+  val exitCode = if timedOut { -2 } else { try { proc.exitValue() } catch Bug as _ { -1 } }
 
   ProcessCaptureResult(
-    stdout = JBAOS.toString(stdoutBuf, "UTF-8"),
-    stderr = JBAOS.toString(stderrBuf, "UTF-8"),
+    stdout = stdoutBuf.toString("UTF-8"),
+    stderr = stderrBuf.toString("UTF-8"),
     exitCode = exitCode,
     timedOut = timedOut
   )
