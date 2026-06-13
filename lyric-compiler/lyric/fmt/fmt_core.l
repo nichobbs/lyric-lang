@@ -1247,13 +1247,13 @@ func exprParenMulti(col: in Int, ctx: inout FmtCtx, inner: in Expr): List[String
 ///
 /// The lambda body is a `Block`, so `blockLines` (already trivia-aware)
 /// handles per-statement comments and blank-line preservation inside.
-/// Empty-param lambdas drop the `->` arrow on the opening line:
+/// Zero-param lambdas keep the `->` arrow to distinguish from a block expression:
 ///
-///     {
+///     { ->
 ///       stmt
 ///     }
 func exprLambdaMulti(col: in Int, ctx: inout FmtCtx, ps: in List[LambdaParam], body: in Block): List[String] {
-  val opener = if ps.count == 0 { "{" } else { "{ " + lambdaParamsStr(ps) + " ->" }
+  val opener = if ps.count == 0 { "{ ->" } else { "{ " + lambdaParamsStr(ps) + " ->" }
   val acc: List[String] = newList()
   acc.add(opener)
   val bd = indentDoc(2, blockLines(body, ctx))
@@ -1421,7 +1421,7 @@ func quantifierStr(kw: in String, bs: in List[PropertyBinder], w: in Option[Expr
 
 func lambdaInlineStr(ps: in List[LambdaParam], body: in Block): String {
   if ps.count == 0 {
-    "{ " + blockInline(body) + " }"
+    "{ -> " + blockInline(body) + " }"
   } else {
     val parts: List[String] = newList()
     var i = 0

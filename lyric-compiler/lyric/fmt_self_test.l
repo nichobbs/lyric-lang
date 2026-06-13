@@ -1294,3 +1294,27 @@ test "match expression arm round trips" {
   val twice = format(parse(once))
   assertEqual(once, twice, "match expression arm: idempotent")
 }
+
+test "zero arg closure arrow preserved" {
+  // A zero-argument closure `{ -> expr }` must keep its `->` arrow on a
+  // format round-trip.  Both `lambdaInlineStr` (inline) and `exprLambdaMulti`
+  // (multi-line) dropped the arrow before the #3272 fix, producing a bare
+  // `{ expr }` that the parser reads as a block expression rather than a
+  // closure — breaking the structural diff loss-check.
+  val inlineSrc = "package P\n\nfunc f(): Int {\n  val cb = { -> 42 }\n  cb()\n}\n"
+  val c = formatSourceChecked(inlineSrc)
+  assertTrue(fmtCheckIsOk(c), "zero-arg closure inline: round-trips losslessly")
+  val acc = format(parse(inlineSrc))
+  assertTrue(Str.contains(acc, "{ -> 42 }"), "zero-arg closure inline: arrow preserved")
+  assertTrue(not Str.contains(acc, "{ 42 }"), "zero-arg closure inline: not rendered as bare block")
+  assertTrue(isFormatted(acc, parse(acc)), "zero-arg closure inline: idempotent")
+
+  // Multi-line form: a comment inside the body forces `exprLambdaMulti`.
+  val multiSrc = "package P\n\nfunc g(): Int {\n  val cb = { ->\n    // compute\n    42\n  }\n  cb()\n}\n"
+  val mc = formatSourceChecked(multiSrc)
+  assertTrue(fmtCheckIsOk(mc), "zero-arg closure multi: round-trips losslessly")
+  val macc = format(parse(multiSrc))
+  assertTrue(Str.contains(macc, "{ ->\n"), "zero-arg closure multi: arrow on opening line")
+  assertTrue(not Str.contains(macc, "{\n    // compute"), "zero-arg closure multi: not bare block")
+  assertTrue(isFormatted(macc, parse(macc)), "zero-arg closure multi: idempotent")
+}
