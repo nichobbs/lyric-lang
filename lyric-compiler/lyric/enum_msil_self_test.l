@@ -71,6 +71,18 @@ func pick(b: in Bool): Color {
   }
 }
 
+// Records whose field names coincide with an enum type (`Color`) and a case
+// (`Red`), so a chained field access through a *local* (`box.Color.Red`)
+// exercises the first-segment local guard (#3390): the qualified-enum
+// short-circuit must not fire when the receiver root is a local value.
+record Inner {
+  Red: String
+}
+
+record ColorBox {
+  Color: Inner
+}
+
 // The Std.Log.formatFields shape: a loop over slice[Record] with field
 // reads, where the record was declared after an enum.
 func fmt(fields: in slice[KV]): String {
@@ -130,6 +142,15 @@ test "qualified value resolves against the named enum's ordinals (#3346)" {
   assertEqual(hueName(Hue.Warm), "warm", "Hue.Warm")
   assertEqual(hueName(Hue.Cool), "cool", "Hue.Cool")
   assertEqual(colorName(Color.Green), "green", "Color.Green alongside Hue")
+}
+
+test "chained field access through a local is not mistaken for an enum value (#3390)" {
+  // `box.Color.Red` flattens to ["box", "Color"] with last segment "Color"
+  // (a registered enum type) and member "Red" (a Color case) — but the root
+  // `box` is a local, so this is field access, not `Color.Red` the enum value.
+  // Without the first-segment local guard it would mis-lower to ldc.i4 <ord>.
+  val box = ColorBox(Color = Inner(Red = "field-not-ordinal"))
+  assertEqual(box.Color.Red, "field-not-ordinal", "field read wins over enum ordinal")
 }
 
 test "record field tokens are correct after a preceding enum" {

@@ -24844,3 +24844,24 @@ same function without contracts discharges 1/1.  Four new cases in
 goals; async-without-contract → no V0032, no errors; sync-with-contract
 regression → no V0032, goals still generated; generator-with-contract → V0032)
 pass via native `lyric test` (51/51).
+
+### D-progress-517 — MSIL: guard `tryQualifiedEnumOrdinalMsil` against local-rooted receiver chains (#3390)
+
+Review follow-up to D-progress-515 (#3344).  The qualified-enum short-circuit
+`tryQualifiedEnumOrdinalMsil` only excluded a **single-segment** receiver that
+shadowed a local (`segs.count == 1 and fctx.slots.containsKey(enumTy)`).  A
+**multi-segment** chain rooted in a local — `box.Color.Red` where `box` is a
+local whose field `Color` is itself a record with a field `Red` — flattens to
+`["box", "Color"]` with last segment `Color` (a registered enum type) and member
+`Red` (a `Color` case), so the helper would have returned the ordinal and
+emitted `ldc.i4 <ord>` instead of lowering the chained field access.
+
+Fix: guard on the **first** segment instead of the whole single-segment
+receiver — `if fctx.slots.containsKey(segs[0])` — which subsumes the old
+single-segment check and rejects any path whose root names a local.  A
+package-qualified enum reference (`Pkg.Sub.Color.Red`) has a package, never a
+local, as `segs[0]`, so it is unaffected.
+
+Verified by a new `enum_msil_self_test.l` case (`box.Color.Red` field-read wins
+over the enum ordinal — 8/8), run in CI via native `lyric test --target
+dotnet`.

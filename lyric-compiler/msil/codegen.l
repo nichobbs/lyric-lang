@@ -3422,7 +3422,12 @@ func tryQualifiedEnumOrdinalMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in
       if not cctx.enumTypeNames.containsKey(enumTy) {
         return -1
       }
-      if segs.count == 1 and fctx.slots.containsKey(enumTy) {
+      // A receiver whose first segment names a local is a value member-access
+      // chain (`x.Color.Red`, or a bare `Color.Red` shadowed by a local
+      // `Color`), not a package-qualified enum reference — even if a middle
+      // segment coincidentally matches an enum type name and the member matches
+      // a case.  Leave it to the normal `EMember` arm (#3390).
+      if fctx.slots.containsKey(segs[0]) {
         return -1
       }
       match mapGet(cctx.enumCaseOrdinals, enumTy + "." + memberName) {
