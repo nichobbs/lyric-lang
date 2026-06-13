@@ -156,6 +156,19 @@ test "runChecks escapes quotes and backslashes in names and details" {
     "escaped response body")
 }
 
+test "runChecks escapes control characters in names and details (RFC 8259)" {
+  // Name carries U+0001 (no shorthand -> ) and U+0008 backspace (-> \b);
+  // detail carries U+000C form-feed (-> \f).
+  val registry = Health.addReadinessCheck(
+    Health.create(), "a\u{0001}b\u{0008}c", { -> Health.fail("x\u{000C}y") })
+  val report = Health.runChecks(registry, Readiness)
+  assertEqual(
+    report.body,
+    "{\"status\":\"degraded\",\"checks\":{" +
+      "\"a\\u0001b\\bc\":{\"status\":\"fail\",\"detail\":\"x\\fy\"}}}",
+    "control characters are escaped per RFC 8259")
+}
+
 // ─── runLiveness / runReadiness handler mapping ───────────────────────────────
 
 test "runLiveness returns Ok with the JSON body when healthy" {
