@@ -841,6 +841,39 @@ func testExtractResourceBytesBounds(): Unit {
   }
 }
 
+// A zero-size Resources region rejects every offset (#3251): when
+// `resourcesSize == 0`, any `resOffset >= 0` satisfies the
+// `resOffset >= resourcesSize` guard, so no byte of the image is readable as a
+// resource payload — even though the region is declared present
+// (`resourcesOff = 0`, not -1).  Regression guard against reintroducing the old
+// `resourcesSize > 0 and` escape, which made the bounds check non-exhaustive
+// and let any offset through for a declared-empty region.
+func testExtractResourceBytesZeroSizeRegion(): Unit {
+  val real = loadPe()
+  val noSections: List[SectionHeader] = newList()
+  // A minimal image over real non-empty bytes: the Resources region is declared
+  // present (resourcesOff = 0, not -1) but zero-sized, so only the size guard —
+  // not the missing-region check — can reject the read.
+  val img = PeImage(
+    bytes = real.bytes,
+    peHeaderOff = 0,
+    numSections = 0,
+    optHeaderSize = 0,
+    isPe32Plus = false,
+    cliHeaderRva = 0,
+    cliHeaderSize = 0,
+    metadataRva = 0,
+    metadataSize = 0,
+    metadataOff = 0,
+    resourcesRva = 0,
+    resourcesSize = 0,
+    resourcesOff = 0,
+    sections = noSections
+  )
+  assertEqualInt(extractResourceBytes(img, 0).length, 0, "resx0: zero-size region rejects offset 0")
+  assertEqualInt(extractResourceBytes(img, 8).length, 0, "resx0: zero-size region rejects a positive offset")
+}
+
 // #2147: the merged single-read indexer (`addAssemblyToIndexesAndValueTypes`)
 // fills the same type/path/value-type indexes as the two separate
 // per-assembly scans (`addAssemblyToIndexes` + `addAssemblyValueTypes`).
@@ -1077,6 +1110,7 @@ func main(): Int {
   testResolveExternValueType()
   testScoreSigTypeArrayInvariance()
   testExtractResourceBytesBounds()
+  testExtractResourceBytesZeroSizeRegion()
   testMergedIndexEquivalence()
   testClrValueTypeAudit()
   println("metadata-reader self-test: ok")
