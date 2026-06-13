@@ -24984,3 +24984,29 @@ delivery, exit codes 0/1/42, stderr-vs-stdout separation, empty output, and the
 `destroyForcibly` timeout path), compiled in-process through the self-hosted
 `Jvm.Bridge` and run under `java`; wired into CI as the "ProcessCapture JVM
 self-test" step.
+### D-progress-520 — Aspect weaving: out-variable advice on `Unit`-returning targets (#3424)
+
+Follow-up to D-progress-518 (#3402).  The out-variable lowering in
+`Lyric.Weaver.buildWrapper` synthesised `var ret: <returnType>` +
+`return ret` whenever the advice body assigned the named return value —
+including when the target returns `Unit`.  A void local has no slot and the
+discarded `ret = proceed()` store popped an empty stack, so
+`around(call) -> ret { ret = proceed() }` on a `Unit` function reintroduced
+the very `InvalidProgramException` D-progress-518 removed for value-returning
+targets (review SUGGESTION #3424).
+
+Fix: `buildWrapper` now branches on `targetReturnsUnit`.  For a `Unit` target
+the named `ret` carries no value, so the new `stripRetAssignments` pass
+(with `stripRetAssignmentsStmt` / `stripRetAssignmentsExpr` /
+`stripRetAssignmentsEOB`, recursing through loops, `try`/catch/finally, and
+expression-position `if`/`match`) rewrites each `ret = <expr>` to a bare
+`<expr>` statement — so `proceed()`'s effect still runs — and emits no
+synthetic var/return; the wrapper is a plain void method that falls off the
+end.  The value-returning path is unchanged.
+
+Verified: `aspect_weave_self_test.l` gains a 7th case (Unit-returning
+out-variable advice) and its `call.shortName` test now matches two functions
+to exercise both the proceed and short-circuit branches (review SUGGESTION
+#3422) — 7/7 on `--target dotnet` and `--target jvm`.  `weaver_self_test.l`
+unchanged (28/28).  Also trimmed the duplicated/stale bootstrap-emitter
+explanation on `mkVarStmtNoInit` (review SUGGESTION #3423).
