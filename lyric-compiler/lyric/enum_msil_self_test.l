@@ -47,6 +47,30 @@ func colorName(c: in Color): String {
   }
 }
 
+// A second enum (distinct case names — enum cases share module scope, so two
+// in-module enums can't reuse a name) so a qualified value resolves against the
+// right type's ordinal table when more than one enum is registered (#3346).
+enum Hue {
+  case Warm
+  case Cool
+}
+
+func hueName(h: in Hue): String {
+  match h {
+    case Warm -> "warm"
+    case Cool -> "cool"
+  }
+}
+
+// Returns a qualified enum value from expression position (#3344).
+func pick(b: in Bool): Color {
+  if b {
+    Color.Green
+  } else {
+    Color.Blue
+  }
+}
+
 // The Std.Log.formatFields shape: a loop over slice[Record] with field
 // reads, where the record was declared after an enum.
 func fmt(fields: in slice[KV]): String {
@@ -80,6 +104,32 @@ test "enum value flows through a local and a record field" {
   val t = Tagged(c = Blue, label = "x")
   assertEqual(colorName(t.c), "blue", "via record field")
   assertEqual(t.label, "x", "sibling field after enum-typed field")
+}
+
+test "qualified enum value in argument position (#3344)" {
+  // `Color.Red` parses as EMember(EPath["Color"], "Red"); it must lower to the
+  // ordinal, not evaluate the bare type name as a value (which NREs).
+  assertEqual(colorName(Color.Red), "red", "Color.Red as arg")
+  assertEqual(colorName(Color.Green), "green", "Color.Green as arg")
+  assertEqual(colorName(Color.Blue), "blue", "Color.Blue as arg")
+}
+
+test "qualified enum value as match scrutinee (#3344)" {
+  val r = match Color.Green { case Red -> "r"; case Green -> "g"; case Blue -> "b" }
+  assertEqual(r, "g", "Color.Green scrutinee")
+}
+
+test "qualified enum value returned from expression position (#3344)" {
+  assertEqual(colorName(pick(true)), "green", "returned Color.Green")
+  assertEqual(colorName(pick(false)), "blue", "returned Color.Blue")
+}
+
+test "qualified value resolves against the named enum's ordinals (#3346)" {
+  // Color.Green is ordinal 1; Hue.Warm is ordinal 0.  Each qualified value must
+  // resolve against its own enum's ordinal table even with two enums in scope.
+  assertEqual(hueName(Hue.Warm), "warm", "Hue.Warm")
+  assertEqual(hueName(Hue.Cool), "cool", "Hue.Cool")
+  assertEqual(colorName(Color.Green), "green", "Color.Green alongside Hue")
 }
 
 test "record field tokens are correct after a preceding enum" {
