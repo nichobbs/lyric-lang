@@ -24690,8 +24690,8 @@ was added (the change is confined to `lyric-compiler/jvm/`).
 ### D-progress-513 — JVM StackMapTable types extern/`JRef` locals across basic-block boundaries (#3307)
 
 On `--target jvm`, an `extern type` value (or any specific-class `JRef`) bound
-to a local and used across a basic-block boundary — a `while`/`for` loop
-back-edge, or across an `if` — produced bytecode whose `StackMapTable`
+to a local and used across a basic-block boundary — a `while` loop back-edge,
+or across an `if` — produced bytecode whose `StackMapTable`
 `full_frame` typed that local as `java/lang/Object` instead of its real JVM
 class.  The next `invokevirtual` on the local then failed verification with
 `VerifyError: Bad type on operand stack` ("Type 'java/lang/Object' is not

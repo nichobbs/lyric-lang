@@ -1,7 +1,7 @@
 //! extern_loop_jvm_self_test.l — CI gate for #3307: an `extern type` value bound
-//! to a local and used across a basic-block boundary (a `while`/`for` loop
-//! back-edge, or across an `if`) must keep its resolved JVM class in the
-//! StackMapTable frame so the next `invokevirtual` verifies.
+//! to a local and used across a basic-block boundary (a `while` loop back-edge,
+//! or across an `if`) must keep its resolved JVM class in the StackMapTable
+//! frame so the next `invokevirtual` verifies.
 //!
 //! Before the fix, `emitStore` (jvm/codegen/01_types.l) lowered every `JRef`
 //! local store to a bare `LAstore`, which the frame builder records as
