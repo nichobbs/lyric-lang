@@ -21,6 +21,8 @@
 //!     against a computed deadline and calling `Process.destroyForcibly()`.
 //!     (`Process.waitFor(long, TimeUnit)` is unavailable because the auto-FFI
 //!     resolver skips enum types such as `java.util.concurrent.TimeUnit`.)
+//!   * `Thread.sleep(1L)` (via `extern type JThread`) parks the polling thread
+//!     for 1 ms per iteration, preventing 100% CPU spin while the child runs.
 //!   * Output byte arrays are converted to Strings via
 //!     `ByteArrayOutputStream.toString("UTF-8")`.
 //!
@@ -42,18 +44,11 @@ extern type JOutputStream = "java.io.OutputStream"
 
 extern type JBAOS = "java.io.ByteArrayOutputStream"
 
-// ── Wall-clock timer and sleep ────────────────────────────────────────────────
+extern type JThread = "java.lang.Thread"
+
+// ── Wall-clock timer ─────────────────────────────────────────────────────────
 @externTarget("java.lang.System.currentTimeMillis")
 func currentTimeMillis(): Long = ()
-
-// Sleeps the calling thread for `ms` milliseconds.  Used inside the isAlive()
-// poll loop to avoid spinning at 100% CPU while waiting for a child process.
-// Thread.sleep(long) throws InterruptedException (checked); the JVM does not
-// enforce checked exceptions at the bytecode level, and the child-monitor loop
-// never sets the thread's interrupt flag, so InterruptedException is not
-// reachable in practice.
-@externTarget("java.lang.Thread.sleep")
-func hostSleepMs(ms: in Long): Unit = ()
 
 // ── Result record ─────────────────────────────────────────────────────────────
 /// Lyric record holding the captured output of a child process.
@@ -189,7 +184,7 @@ func runImpl(
       timedOut = true
       JProcess.destroyForcibly(proc)
     }
-    hostSleepMs(intToLong(1))
+    JThread.sleep(intToLong(1))
   }
 
   // Final drain after the child exits (last bytes may arrive after isAlive → false).
