@@ -418,7 +418,16 @@ pub func typeExprToJvm(te: in TypeExpr, pkgName: in String): JvmType {
       }
     }
     case TSlice(_) -> JArray(elem = JRef(className = "java/lang/Object"))
-    case TGenericApp(_, _) -> JRef(className = "java/lang/Object")
+    case TGenericApp(head, _) -> {
+      val seg = lastSegment(head)
+      if seg == "List" {
+        JRef(className = "java/util/ArrayList")
+      } else if seg == "Map" {
+        JRef(className = "java/util/HashMap")
+      } else {
+        JRef(className = "java/lang/Object")
+      }
+    }
     case TNullable(_) -> JRef(className = "java/lang/Object")
     case TTuple(_) -> JRef(className = "java/lang/Object")
     case TFunction(_, _) -> JRef(className = "java/lang/Object")

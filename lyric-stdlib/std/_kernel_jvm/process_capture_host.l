@@ -5,73 +5,224 @@
 //! the self-hosted verifier (`Lyric.Verifier`) to invoke z3/cvc5 and
 //! by the source-generator runtime when running under `--target jvm`.
 //!
-//! BLOCKED on a JVM codegen defect (#3307); see the gap note below.
+//! Implementation: pure JVM auto-FFI against the JDK — no F# host shim and
+//! no external Java helper JAR, consistent with the `_kernel_jvm/hash_host.l`
+//! precedent (M-9) and the project's no-new-shim rule.
 //!
-//! The production design for this kernel is **pure JVM auto-FFI against the
-//! JDK** — no F# host shim and no external Java helper JAR, consistent with
-//! the `_kernel_jvm/hash_host.l` precedent (M-9) and the project's no-new-shim
-//! rule.  The intended implementation spawns the child via
-//! `java.lang.Runtime.getRuntime().exec(String)`, drains stdout/stderr
-//! incrementally inside the wait loop (`InputStream.available()`-bounded reads
-//! into a `java.io.ByteArrayOutputStream`, so a >pipe-buffer child cannot
-//! deadlock a single-threaded drainer), enforces the wall-clock cap by polling
-//! `Process.isAlive()` against `System.currentTimeMillis()`
-//! (`java.util.concurrent.TimeUnit` is an enum the auto-FFI resolver skips, so
-//! `Process.waitFor(long, TimeUnit)` is unavailable), kills the child via
-//! `Process.destroyForcibly()` on timeout, and returns a Lyric
-//! `ProcessCaptureResult` record structurally identical to the .NET kernel's.
+//!   * `java.lang.ProcessBuilder(List<String>)` spawns the child.  The Lyric
+//!     `List[T]` maps to `java.util.ArrayList` at runtime and scores as a
+//!     reference-subtype match (score 1) against the `List` parameter.
+//!   * `proc.getOutputStream/getInputStream/getErrorStream()` obtain the
+//!     stdio pipes.  Instance methods are called on the object (`proc.start()`,
+//!     `stream.available()`, `buf.write(b)`, etc.) via the instance auto-FFI
+//!     path; only constructors and static methods use the `JType.method()`
+//!     form.  Stdin is written in one shot (UTF-8 bytes) and closed.
+//!   * Stdout and stderr are drained incrementally inside the `isAlive()` poll
+//!     loop via `stream.available()`-bounded reads into a
+//!     `java.io.ByteArrayOutputStream`, preventing pipe-buffer deadlock.
+//!   * Wall-clock cap is enforced by comparing `System.currentTimeMillis()`
+//!     against a computed deadline and calling `Process.destroyForcibly()`.
+//!     (`Process.waitFor(long, TimeUnit)` is unavailable because the auto-FFI
+//!     resolver skips enum types such as `java.util.concurrent.TimeUnit`.)
+//!   * `Thread.sleep(1L)` (via `extern type JThread`) parks the polling thread
+//!     for 1 ms per iteration, preventing 100% CPU spin while the child runs.
+//!   * Output byte arrays are converted to Strings via
+//!     `ByteArrayOutputStream.toString("UTF-8")`.
 //!
-//! That implementation was written and validated against the JDK API surface,
-//! but it cannot land yet: every required drain/poll loop carries a
-//! `Process` / `InputStream` / `ByteArrayOutputStream` extern handle across the
-//! loop back-edge, and the JVM backend currently types extern-type locals as
-//! `java/lang/Object` in the `StackMapTable` frame at a loop boundary, so the
-//! emitted `invokevirtual` fails bytecode verification (`VerifyError: Bad type
-//! on operand stack`).  Tracked as #3307 (`lyric-compiler/jvm/codegen/*`).  Once
-//! #3307 is fixed, these stubs are replaced by the pure-auto-FFI body — the
-//! signatures and `ProcessCaptureResult` shape below are already final.
-//!
-//! Internal: only Std.ProcessCapture and Std.Process should import this.
-@axiom("lyric.stdlib.jvm.ProcessCaptureHost piped stdout/stderr capture")
+//! Internal: only Std.ProcessCapture should import this.
+@axiom("java.lang.ProcessBuilder + java.lang.Process + java.io stream contracts conform to documented JVM process/IO semantics")
 package Std.ProcessCaptureHost
 
 import Std.Core
+import Std.Collections
 
-// Opaque handle to the JVM `lyric.stdlib.jvm.ProcessCaptureResult`
-// POJO (#1025).  Field accessors below expose the individual fields
-// so `Std.ProcessCapture` can project them into the public `CaptureResult`
-// Lyric record without leaking the JVM type to callers.
-extern type ProcessCaptureResult = "lyric.stdlib.jvm.ProcessCaptureResult"
+// ── JDK extern types ──────────────────────────────────────────────────────────
+extern type JProcessBuilder = "java.lang.ProcessBuilder"
 
-// ── Field accessors ────────────────────────────────────────────────────────
-@externTarget("lyric.stdlib.jvm.ProcessCaptureResult.getStdout")
-pub func pcResultStdout(r: in ProcessCaptureResult): String = ()
+extern type JProcess = "java.lang.Process"
 
-@externTarget("lyric.stdlib.jvm.ProcessCaptureResult.getStderr")
-pub func pcResultStderr(r: in ProcessCaptureResult): String = ()
+extern type JInputStream = "java.io.InputStream"
 
-@externTarget("lyric.stdlib.jvm.ProcessCaptureResult.getExitCode")
-pub func pcResultExitCode(r: in ProcessCaptureResult): Int = ()
+extern type JOutputStream = "java.io.OutputStream"
 
-@externTarget("lyric.stdlib.jvm.ProcessCaptureResult.isTimedOut")
-pub func pcResultTimedOut(r: in ProcessCaptureResult): Bool = ()
+extern type JBAOS = "java.io.ByteArrayOutputStream"
 
-// ── Subprocess entry point ─────────────────────────────────────────────────
-// Run `executable` with a pre-formed `arguments` string (whitespace-
-// split by the JVM shim), write `stdinContent` to the child's stdin,
-// close stdin, and return a `ProcessCaptureResult` with stdout, stderr,
-// exit code, and whether the process was killed by the timeout.  Returns
-// a result with empty strings and exitCode = -1 on spawn failure or I/O error.
-@externTarget("lyric.stdlib.jvm.ProcessCaptureHost.runCapture")
-pub func hostRunCapture(executable: in String, arguments: in String, stdinContent: in String): ProcessCaptureResult = ()
+extern type JThread = "java.lang.Thread"
 
-// Variant of `hostRunCapture` with a caller-supplied `timeoutMs` wall-clock
-// cap.  Used by `Std.Process.runCapture` and `Std.Process.runCaptureWithInput`
-// (#1023 / #743).  The pure-auto-FFI body (see the file header) enforces the
-// cap with an `isAlive()` / `currentTimeMillis()` poll and `destroyForcibly()`,
-// returning `exitCode = -2` on timeout — but is blocked on the extern-local
-// stackmap codegen defect #3307 (#1065).
-@externTarget("lyric.stdlib.jvm.ProcessCaptureHost.runCaptureWithTimeout")
+// ── Wall-clock timer ─────────────────────────────────────────────────────────
+@externTarget("java.lang.System.currentTimeMillis")
+func currentTimeMillis(): Long = ()
+
+// ── Result record ─────────────────────────────────────────────────────────────
+/// Lyric record holding the captured output of a child process.
+/// Structurally identical to the .NET kernel's `ProcessCaptureResult`
+/// so `Std.ProcessCapture` compiles unchanged on both targets.
+pub record ProcessCaptureResult {
+  stdout: String
+  stderr: String
+  exitCode: Int
+  timedOut: Bool
+}
+
+pub func pcResultStdout(r: in ProcessCaptureResult): String {
+  r.stdout
+}
+
+pub func pcResultStderr(r: in ProcessCaptureResult): String {
+  r.stderr
+}
+
+pub func pcResultExitCode(r: in ProcessCaptureResult): Int {
+  r.exitCode
+}
+
+pub func pcResultTimedOut(r: in ProcessCaptureResult): Bool {
+  r.timedOut
+}
+
+// ── Argument-string parser ────────────────────────────────────────────────────
+// Parse the `buildArgString`-formatted `arguments` string (produced by
+// `Std.ProcessCapture.buildArgString`) back into a `List[String]`.
+// The format is a space-separated sequence of `"..."` tokens where interior
+// `"` is escaped as `\"` and interior `\` is escaped as `\\`.
+// The resulting list is prepended with `executable` so
+// `ProcessBuilder` receives a complete command line.
+func parseArgString(executable: in String, argStr: in String): List[String] {
+  val result: List[String] = newList()
+  result.add(executable)
+  var i = 0
+  val n = argStr.length
+  while i < n {
+    // Skip inter-argument whitespace
+    while i < n and argStr[i] == ' ' {
+      i = i + 1
+    }
+    if i >= n {
+      return result
+    }
+    if argStr[i] == '"' {
+      // Quoted token
+      i = i + 1
+      var arg = ""
+      var done = false
+      while not done and i < n {
+        val c = argStr[i]
+        if c == '\\' and i + 1 < n {
+          i = i + 1
+          val ec = argStr[i]
+          if ec == '"' {
+            arg = arg + "\""
+          } else if ec == '\\' {
+            arg = arg + "\\"
+          } else {
+            arg = arg + "\\" + argStr.substring(i, 1)
+          }
+          i = i + 1
+        } else if c == '"' {
+          i = i + 1
+          done = true
+        } else {
+          arg = arg + argStr.substring(i, 1)
+          i = i + 1
+        }
+      }
+      result.add(arg)
+    } else {
+      // Unquoted token (fallback; buildArgString always quotes)
+      var arg = ""
+      while i < n and argStr[i] != ' ' {
+        arg = arg + argStr.substring(i, 1)
+        i = i + 1
+      }
+      result.add(arg)
+    }
+  }
+  result
+}
+
+// ── Incremental drain ─────────────────────────────────────────────────────────
+// Drain however many bytes are currently available on `stream` into `buf`
+// without blocking.  Called from the isAlive() poll loop so we never
+// deadlock on a pipe whose buffer is full.
+func drainAvailable(stream: in JInputStream, buf: in JBAOS): Unit {
+  var avail = stream.available()
+  while avail > 0 {
+    val b = stream.read()
+    if b >= 0 {
+      buf.write(b)
+    }
+    avail = avail - 1
+  }
+}
+
+// ── Core implementation ───────────────────────────────────────────────────────
+func runImpl(
+  executable: in String, arguments: in String, stdinContent: in String, timeoutMs: in Int
+): ProcessCaptureResult {
+  val cmdList = parseArgString(executable, arguments)
+  val pb = JProcessBuilder.new(cmdList)
+  val proc = pb.start()
+
+  // Write stdin as UTF-8 bytes then close the pipe so the child sees EOF.
+  val stdinStream = proc.getOutputStream()
+  val stdinBytes = stringToUtf8Bytes(stdinContent)
+  stdinStream.write(stdinBytes)
+  stdinStream.close()
+
+  val stdoutStream = proc.getInputStream()
+  val stderrStream = proc.getErrorStream()
+  val stdoutBuf = JBAOS.new()
+  val stderrBuf = JBAOS.new()
+
+  val startMs = currentTimeMillis()
+  val timeoutMsL = intToLong(timeoutMs)
+  var timedOut = false
+
+  // Poll until the child exits, draining both pipes each iteration.
+  // Sleep 1 ms per idle iteration to avoid spinning at 100% CPU.
+  while proc.isAlive() {
+    drainAvailable(stdoutStream, stdoutBuf)
+    drainAvailable(stderrStream, stderrBuf)
+    if not timedOut and currentTimeMillis() - startMs >= timeoutMsL {
+      timedOut = true
+      proc.destroyForcibly()
+    }
+    JThread.sleep(intToLong(1))
+  }
+
+  // Final drain after the child exits (last bytes may arrive after isAlive → false).
+  drainAvailable(stdoutStream, stdoutBuf)
+  drainAvailable(stderrStream, stderrBuf)
+
+  val exitCode = if timedOut { -2 } else { try { proc.exitValue() } catch Bug as _ { -1 } }
+
+  ProcessCaptureResult(
+    stdout = stdoutBuf.toString("UTF-8"),
+    stderr = stderrBuf.toString("UTF-8"),
+    exitCode = exitCode,
+    timedOut = timedOut
+  )
+}
+
+// ── Public host functions ─────────────────────────────────────────────────────
+/// Spawn `executable` with `arguments` (buildArgString format), write
+/// `stdinContent` to its stdin, and return a `ProcessCaptureResult`.
+/// Applies a 10-second wall-clock cap.  Returns exitCode = -1 on spawn failure.
+pub func hostRunCapture(executable: in String, arguments: in String, stdinContent: in String): ProcessCaptureResult {
+  try {
+    runImpl(executable, arguments, stdinContent, 10000)
+  } catch Bug as _ {
+    ProcessCaptureResult(stdout = "", stderr = "", exitCode = -1, timedOut = false)
+  }
+}
+
+/// Variant with a caller-supplied `timeoutMs` wall-clock cap.
 pub func hostRunCaptureTimeout(
   executable: in String, arguments: in String, stdinContent: in String, timeoutMs: in Int
-): ProcessCaptureResult = ()
+): ProcessCaptureResult {
+  try {
+    runImpl(executable, arguments, stdinContent, timeoutMs)
+  } catch Bug as _ {
+    ProcessCaptureResult(stdout = "", stderr = "", exitCode = -1, timedOut = false)
+  }
+}

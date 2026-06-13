@@ -176,7 +176,7 @@ tracking issue today (band J0 files them).
 | M-8 | **F#-host kernel debt:** JVM byte-builder + constant pool via `@externTarget` into `Lyric.Jvm.Hosts` (F#), on the deletion schedule | `jvm/_kernel/kernel.l:19-28` → `JvmHosts.fs`; `docs/41` H12 | (Band 5 / #1470 parity) |
 | M-9 | ~~`Std.Hash` has **no JVM host**~~ **DONE (J6).** `lyric-stdlib/std/_kernel_jvm/hash_host.l` added: `MessageDigest.getInstance("SHA-512").digest(...)` + `HexFormat.of().withUpperCase().formatHex(...)` via JVM auto-FFI (`extern type`, no F# shim). Verified by `hash_jvm_self_test.l` (3 NIST vectors) under `java`. | `_kernel_jvm/hash_host.l` | DONE |
 | M-10 | ~~`_kernel_jvm/` is **never loaded** by the self-hosted source loader~~ **DONE (J6).** `emitter.l:findStdlibSourcesForTarget(forJvm)` prefers `_kernel_jvm/<module>_host.l` and falls back to `_kernel/<module>_host.l` only when no JVM host exists; `emitJvmInProcess` threads `forJvm = true`. Required JVM `slice[Byte]↔byte[]` interop fixes in `codegen.l` (auto-FFI arg/return byte-array coercion, primitive-array index/length) and a String `==`/`!=` value-comparison fix. | `emitter.l`, `jvm/codegen.l`, `jvm/auto_ffi.l` | DONE |
-| M-11 | `ProcessCaptureHost` on JVM (#1065) — **design done, codegen-blocked on #3307.** The production design is pure JVM auto-FFI (`java.lang.Runtime.exec(String)` + incremental `InputStream.available()`-bounded drain into a `ByteArrayOutputStream` + `Process.isAlive()`/`System.currentTimeMillis()` timeout poll + `destroyForcibly()`), returning a Lyric `ProcessCaptureResult` record like the .NET kernel — no F#/Java shim (the never-built `lyric.stdlib.jvm.*` shim plan is removed from the kernel doc). It cannot land because every drain/poll loop carries an extern handle across the loop back-edge and the JVM backend types extern-type locals as `java/lang/Object` in the `StackMapTable` frame → `VerifyError` (#3307, `jvm/codegen/*`). `lyric-storage` local-fs JVM kernel (#1444/#1840) **BLOCKED on M-4** (JVM `@cfg(feature=…)` erasure, #2444): `storage.l` hard-imports `Storage.Kernel.Net` and its local-fs data plane calls those `host*` primitives directly, so a JVM backend needs per-target import erasure that does not exist on JVM yet. | `_kernel_jvm/process_capture_host.l`; blockers #3307 + #2444 | #1065 (blocked #3307); #1444, #1840 (blocked #2444) |
+| M-11 | ~~`ProcessCaptureHost` on JVM (#1065) — design done, codegen-blocked on #3307~~ **DONE (J6, D-progress-519).** `_kernel_jvm/process_capture_host.l` rewritten as pure JVM auto-FFI: `java.lang.ProcessBuilder(List<String>)` (reference-subtype match via new score-1 path in `auto_ffi.l`), `InputStream.available()` drain loop into `ByteArrayOutputStream`, `System.currentTimeMillis()` timeout poll, `Process.destroyForcibly()` kill, `JBAOS.toString("UTF-8")` output conversion. Returns a Lyric `ProcessCaptureResult` record — no F#/Java shim. `@externTarget` stubs removed. `lyric-storage` local-fs JVM kernel (#1444/#1840) **still BLOCKED on M-4** (#2444). | `_kernel_jvm/process_capture_host.l`, `jvm/auto_ffi.l` | #1065 DONE; #1444, #1840 (blocked #2444) |
 | M-12 | Async generators are eager "collect-all", not lazy `IAsyncEnumerable` | `lowering.l:3493-3518` | #2469 |
 | M-13 | Range/refined types erased to `JInt`, no bounds checks | `codegen.l:283` | (new) |
 | M-14 | Self-hosted JVM **pipeline** coverage is ~4 programs vs 132 library self-tests; the front-end → JVM path is barely exercised | `ci.yml` (4 native `--target jvm` steps) | #2000, #2595 (per-test) |
@@ -395,38 +395,27 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
   coercion, primitive-array index `baload` / `.length`, receiver stash so the
   coercion loop runs at empty operand stack) and a String `==`/`!=`
   value-comparison fix (was reference equality).
-- **M-11 (`ProcessCaptureHost` design done, codegen-blocked; storage blocked):**
-  the production design for JVM `Std.ProcessCaptureHost`
-  (`_kernel_jvm/process_capture_host.l`, #1065) is pure JVM auto-FFI —
-  `java.lang.Runtime.getRuntime().exec(String)` spawns the child, stdout/stderr
-  drain incrementally inside the wait loop (`InputStream.available()`-bounded
-  reads into a `ByteArrayOutputStream`, so a >pipe-buffer child cannot deadlock
-  a single-threaded drain), the wall-clock cap is polled via `Process.isAlive()`
-  + `System.currentTimeMillis()` (TimeUnit is an enum the resolver skips, so
-  `waitFor(long, TimeUnit)` is unavailable), and a timeout triggers
-  `Process.destroyForcibly()` with sentinel `exitCode = -2`, returning a Lyric
-  `ProcessCaptureResult` record (no opaque POJO, no Java/F# shim — the
-  never-built `lyric.stdlib.jvm.*` shim plan is removed from the kernel doc).
-  **It cannot land yet:** every drain/poll loop carries a `Process` /
-  `InputStream` / `ByteArrayOutputStream` extern handle across the loop
-  back-edge, and the JVM backend currently types extern-type locals as
-  `java/lang/Object` in the `StackMapTable` frame at a loop boundary, so the
-  emitted `invokevirtual` fails bytecode verification. Tracked as **#3307**
-  (`jvm/codegen/*`), with a minimal repro (a bare `while` loop writing to a
-  `ByteArrayOutputStream` local). The `lyric-storage` local-fs JVM kernel
-  (#1444/#1840) remains **BLOCKED on M-4**: `storage.l` statically
-  `import Storage.Kernel.Net` and the local-fs data plane calls those `host*`
-  primitives directly, so a JVM backend needs the import swapped per target —
-  JVM `@cfg(feature=…)` erasure (M-4 / #2444, in `bridge.l`) must land first.
-  M-16 slice-ABI reconciliation (#2592); m-6/m-10 regex/time stubs.
-- **Acceptance (MET for M-9/M-10; M-11 pending #3307 + #2444):**
-  `lyric-compiler/lyric/hash_jvm_self_test.l` imports `Std.Hash` (resolving to
-  `_kernel_jvm/hash_host.l` on JVM), builds via the self-hosted `Jvm.Bridge`, and
-  runs under `java` asserting three NIST SHA-512 vectors — closing the "no native
-  JVM test depends on `_kernel_jvm`" gap. The M-11 `ProcessCaptureHost` self-test
-  is deferred behind #3307 (a loop-driven process kernel cannot compile to valid
-  JVM bytecode until the extern-local stackmap typing is fixed), and the storage
-  kernel behind #2444.
+- **M-11 (DONE, D-progress-519):** `_kernel_jvm/process_capture_host.l` fully
+  rewritten as pure JVM auto-FFI — no F#/Java shim, no `@externTarget`.
+  `java.lang.ProcessBuilder(List<String>)` spawns the child (auto-FFI matches
+  `List[T]`/`ArrayList` to the `List` parameter via a new reference-subtype
+  score-1 path in `auto_ffi.l`); stdin is written as UTF-8 bytes via
+  `stringToUtf8Bytes` intrinsic + `OutputStream.write(byte[])`; stdout/stderr
+  drain incrementally inside the `isAlive()` poll loop (`InputStream.available()`-
+  bounded reads into `ByteArrayOutputStream`); wall-clock timeout polled via
+  `System.currentTimeMillis()` (TimeUnit enum skipped by the resolver, so
+  `waitFor(long,TimeUnit)` is unavailable); timeout triggers
+  `Process.destroyForcibly()` with sentinel `exitCode = -2`; output converted via
+  `JBAOS.toString("UTF-8")`.  Returns a Lyric `ProcessCaptureResult` record.
+  Unblocked by D-progress-513 (m-14, #3307) and D-progress-514 (m-15, #3334).
+  Verified by `lyric-compiler/jvm/process_capture_jvm_self_test.l` (10 cases:
+  stdout, stderr, stdin delivery, multi-word args, quoting round-trip, exit code
+  0/1/42, timeout path), wired in CI.  The `lyric-storage` local-fs JVM kernel
+  (#1444/#1840) remains **BLOCKED on M-4** (#2444).
+- **Acceptance (MET for M-9/M-10/M-11; storage blocked on M-4/#2444):**
+  `hash_jvm_self_test.l` gates M-9/M-10; `process_capture_jvm_self_test.l`
+  gates M-11 (10 real subprocess assertions on `--target jvm`).  `lyric-storage`
+  kernel waits on JVM `@cfg` erasure (#2444).
 
 ### J7 — Testing, distribution, and the acceptance gate
 - M-14: expand the self-hosted `--target jvm` pipeline suite well beyond the
