@@ -1171,10 +1171,7 @@ func unifyBranchTypes(a: in Type, b: in Type, span: in Span, diag: in List[Diagn
     case _ -> {
     }
   }
-  // Unit is absorbed position-blind: unsound for a value-position if/match
-  // consumed by a non-Unit type (`val x: Int = if c { 42 } else { () }`), the
-  // same class as the try Unit-handler bug #3262. Fix needs valuePos threaded
-  // into the EIf/EMatch arms; tracked in #3362.
+  // Position-blind Unit absorption — unsound for value-position if/match; fix tracked in #3362.
   if isUnitType(a) or isUnitType(b) {
     return TyPrim(pt = PtUnit)
   }
