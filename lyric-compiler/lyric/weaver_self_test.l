@@ -376,6 +376,21 @@ func countTimedProceedStmt(s: in Statement): Int {
       }
     }
     case SAssign(t, _, v) -> countTimedProceedExpr(t) + countTimedProceedExpr(v)
+    case SThrow(e) -> countTimedProceedExpr(e)
+    case SFor(_, _, iter, body) -> countTimedProceedExpr(iter) + countTimedProceedBlocks(body)
+    case SWhile(_, cond, body) -> countTimedProceedExpr(cond) + countTimedProceedBlocks(body)
+    case SLoop(_, body) -> countTimedProceedBlocks(body)
+    case SScope(_, body) -> countTimedProceedBlocks(body)
+    case SDefer(body) -> countTimedProceedBlocks(body)
+    case STry(body, catches, finally_) -> {
+      var n = countTimedProceedBlocks(body)
+      var i = 0
+      while i < catches.count {
+        n = n + countTimedProceedBlocks(catches[i].body)
+        i = i + 1
+      }
+      n + match finally_ { case Some(fb) -> countTimedProceedBlocks(fb); case None -> 0 }
+    }
     case _ -> 0
   }
 }
@@ -400,7 +415,55 @@ func countTimedProceedExpr(e: in Expr): Int {
       n
     }
     case EBinop(_, l, r) -> countTimedProceedExpr(l) + countTimedProceedExpr(r)
+    case EPrefix(_, operand) -> countTimedProceedExpr(operand)
+    case EMember(recv, _) -> countTimedProceedExpr(recv)
+    case EIf(c, t, el, _) -> {
+      val base = countTimedProceedExpr(c) + countTimedProceedEob(t)
+      base + match el { case Some(eb) -> countTimedProceedEob(eb); case None -> 0 }
+    }
+    case EMatch(scrut, arms) -> {
+      var n = countTimedProceedExpr(scrut)
+      var i = 0
+      while i < arms.count {
+        match arms[i].guard {
+          case Some(g) -> {
+            n = n + countTimedProceedExpr(g)
+          }
+          case None -> ()
+        }
+        n = n + countTimedProceedEob(arms[i].body)
+        i = i + 1
+      }
+      n
+    }
+    case ELambda(_, body) -> countTimedProceedBlocks(body)
+    case EUnsafe(blk) -> countTimedProceedBlocks(blk)
+    case EAwait(inner) -> countTimedProceedExpr(inner)
+    case EYield(inner) -> countTimedProceedExpr(inner)
+    case ESpawn(inner) -> countTimedProceedExpr(inner)
+    case ETry(inner) -> countTimedProceedExpr(inner)
+    case EPropagate(inner) -> countTimedProceedExpr(inner)
+    case EAssign(t, _, v) -> countTimedProceedExpr(t) + countTimedProceedExpr(v)
+    case ETuple(xs) -> countTimedProceedExprList(xs)
+    case EList(xs) -> countTimedProceedExprList(xs)
     case _ -> 0
+  }
+}
+
+func countTimedProceedExprList(xs: in List[Expr]): Int {
+  var n = 0
+  var i = 0
+  while i < xs.count {
+    n = n + countTimedProceedExpr(xs[i])
+    i = i + 1
+  }
+  n
+}
+
+func countTimedProceedEob(eob: in ExprOrBlock): Int {
+  match eob {
+    case EOBExpr(e) -> countTimedProceedExpr(e)
+    case EOBBlock(b) -> countTimedProceedBlocks(b)
   }
 }
 

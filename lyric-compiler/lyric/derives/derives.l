@@ -40,6 +40,7 @@
 //! Public surface:
 //!
 //!   pub func deriveFile(file: in SourceFile): SourceFile
+//!   pub func deriveFileWithImports(file: in SourceFile, importedItems: in List[Item]): SourceFile
 //!
 package Lyric.Derives
 

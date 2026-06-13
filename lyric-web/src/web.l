@@ -502,7 +502,7 @@ pub func start(router: in Router): Unit {
   val corsMaxAge = 86400
 
   // Enabling CORS without an explicit origin list is a configuration
-  // mistake.  Fail closed at startup, sharing the rule with corsConfigError.
+  // mistake.  Fail closed at startup.
   match corsConfigError(corsEnabled, corsOrigins) {
     case Some(err) -> panic(err)
     case None -> ()

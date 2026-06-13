@@ -515,20 +515,107 @@ func countMemberNamed(e: in Expr, name: in String): Int {
       n = n + countMemberNamed(lhs, name)
       n = n + countMemberNamed(rhs, name)
     }
+    case EPrefix(_, operand) -> {
+      n = n + countMemberNamed(operand, name)
+    }
     case EParen(inner) -> {
       n = n + countMemberNamed(inner, name)
     }
-    case EIf(cond, _, _, _) -> {
+    case ECall(f, args) -> {
+      n = n + countMemberNamed(f, name)
+      var i = 0
+      while i < args.count {
+        val v = match args[i] { case CAPositional(v) -> v; case CANamed(_, v, _) -> v }
+        n = n + countMemberNamed(v, name)
+        i = i + 1
+      }
+    }
+    case EIf(cond, t, _, _) -> {
+      // The synthesised Ord `.value` projections live in the if condition and
+      // the then-branch; the else-branch (`Option[ExprOrBlock]`) is skipped
+      // because the self-hosted MSIL backend miscompiles a match over a
+      // cross-package `Option[ExprOrBlock]` here, and no synthesised projection
+      // is reachable only through it.
       n = n + countMemberNamed(cond, name)
+      n = n + countMemberNamedEob(t, name)
+    }
+    // Union Ord bodies dispatch through a nested match; descend into the arm
+    // bodies so cross-package `.value` projections inside them are counted
+    // rather than silently dropped (#3287, #3365).  The arm guard
+    // (`Option[Expr]`) is skipped for the same cross-package-Option codegen
+    // reason as the if else-branch above; synthesised arms carry no guard.
+    case EMatch(scrut, arms) -> {
+      n = n + countMemberNamed(scrut, name)
+      var i = 0
+      while i < arms.count {
+        n = n + countMemberNamedEob(arms[i].body, name)
+        i = i + 1
+      }
+    }
+    case EBlock(blk) -> {
+      n = n + countMemberNamedBlock(blk, name)
     }
     case _ -> ()
   }
   n
 }
 
-// Sum `countMemberNamed` over every statement-expression in the named
-// synthesised function's block body (the Ord compare body is a sequence of
-// `if (lt/gt) return` statements).
+func countMemberNamedEob(eob: in ExprOrBlock, name: in String): Int {
+  match eob {
+    case EOBExpr(e) -> countMemberNamed(e, name)
+    case EOBBlock(b) -> countMemberNamedBlock(b, name)
+  }
+}
+
+func countMemberNamedBlock(blk: in Block, name: in String): Int {
+  var n = 0
+  var si = 0
+  while si < blk.statements.count {
+    match blk.statements[si].kind {
+      case SExpr(e) -> {
+        n = n + countMemberNamed(e, name)
+      }
+      case SReturn(o) -> {
+        match o {
+          case Some(e) -> {
+            n = n + countMemberNamed(e, name)
+          }
+          case None -> ()
+        }
+      }
+      case SLocal(b) -> {
+        match b {
+          case LBVal(_, _, init) -> {
+            n = n + countMemberNamed(init, name)
+          }
+          case LBLet(_, _, init) -> {
+            n = n + countMemberNamed(init, name)
+          }
+          case LBVar(_, _, init) -> {
+            match init {
+              case Some(e) -> {
+                n = n + countMemberNamed(e, name)
+              }
+              case None -> ()
+            }
+          }
+        }
+      }
+      case SAssign(t, _, v) -> {
+        n = n + countMemberNamed(t, name)
+        n = n + countMemberNamed(v, name)
+      }
+      case _ -> ()
+    }
+    si = si + 1
+  }
+  n
+}
+
+// Sum `countMemberNamed` over the named synthesised function's block body.  The
+// record Ord body is a sequence of `if (lt/gt) return` statement-expressions;
+// the union Ord body wraps the per-case comparisons in a `return match` (an
+// `SReturn(EMatch(...))`), so the walk descends through both forms (#3365).
 func countMemberNamedInFunc(sf: in SourceFile, funcName: in String, member: in String): Int {
   var i = 0
   while i < sf.items.count {
@@ -539,18 +626,7 @@ func countMemberNamedInFunc(sf: in SourceFile, funcName: in String, member: in S
             case Some(fb) -> {
               match fb {
                 case FBBlock(blk) -> {
-                  var n = 0
-                  var si = 0
-                  while si < blk.statements.count {
-                    match blk.statements[si].kind {
-                      case SExpr(e) -> {
-                        n = n + countMemberNamed(e, member)
-                      }
-                      case _ -> ()
-                    }
-                    si = si + 1
-                  }
-                  return n
+                  return countMemberNamedBlock(blk, member)
                 }
                 case _ -> {
                   return 0
@@ -640,11 +716,13 @@ test "ord union cross-package distinct case field projects through .value (#3287
   val app = "package App\nimport Pkg\n@derive(Ord)\nunion U { case Person(age: Age); case Anon }\n"
   val sf = deriveFileWithImports(parse(app).file, importedItemsOf(pkg))
   assertTrue(findFuncInFile(sf, "U.compare"), "xpkg-union-ord: U.compare synthesised")
-  // The single same-case `Person` arm compares the one field: 2 ifs x 2 operands.
+  // The same-case `Person` arm compares the one `age: Age` field, projecting it
+  // through `.value`: a non-zero count proves the cross-package distinct fix
+  // reaches the union's inner-match arm body (a broken path emits 0) — #3287.
   assertEqualInt(
     countMemberNamedInFunc(sf, "U.compare", "value"),
-    0,
-    "xpkg-union-ord: projection lives in the inner match, not the outer block"
+    4,
+    "xpkg-union-ord: 2 age-ifs x 2 operands project through .value in the inner match arm"
   )
 }
 
