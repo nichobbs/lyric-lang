@@ -141,7 +141,13 @@ pub func compileToJar(
       }
       ii = ii + 1
     }
-    importedPkgs.add(ImportedPackage(name = dottedPath(stdPr.file.packageDecl.path), items = pkgItems))
+    importedPkgs.add(
+      ImportedPackage(
+        name = dottedPath(stdPr.file.packageDecl.path),
+        items = pkgItems,
+        imports = collectImportNames(stdPr.file.imports)
+      )
+    )
     stdlibFiles.add(stdPr.file)
     si = si + 1
   }
@@ -838,7 +844,7 @@ pub func compileToJarBundledWithFeatures(
       ii = ii + 1
     }
     val pn = dottedPath(pr.file.packageDecl.path)
-    importedPkgs.add(ImportedPackage(name = pn, items = pkgItems))
+    importedPkgs.add(ImportedPackage(name = pn, items = pkgItems, imports = collectImportNames(pr.file.imports)))
     stdlibFiles.add(pr.file)
     if pn.length > 0 and not stdlibByPkg.containsKey(pn) {
       stdlibByPkg.add(pn, pr.file)

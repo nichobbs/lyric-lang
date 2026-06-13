@@ -1414,14 +1414,22 @@ pub record ImportedPackage {
   name: String
   items: List[Item]
   // Dotted spelling of a module path (`Std.Regex`), or "" for the empty path.
+  /// Dotted names of the packages this package itself imports.  Drives the
+  /// tier-2 (declared-imports) preference when this package's own signatures
+  /// are resolved, so a same-named type exported by two sibling packages binds
+  /// to the one THIS package imports instead of last-registered-wins (#2282).
+  imports: List[String]
 }
 
 func dottedPackageName(path: in ModulePath): String {
   modulePathJoin(path.segments)
 }
 
-// The dotted names of every package a file explicitly imports.
-func collectImportNames(imports: in List[ImportDecl]): List[String] {
+// The dotted names of every package a file explicitly imports.  Public so the
+// MSIL / JVM bridges and tests can build `ImportedPackage.imports` from a
+// parsed `SourceFile.imports` with the same dotted spelling the scope tiers
+// compare against.
+pub func collectImportNames(imports: in List[ImportDecl]): List[String] {
   val names: List[String] = newList()
   var i = 0
   while i < imports.count {
@@ -1514,7 +1522,6 @@ func checkWithImportedPackagesCore(
   // declaring package's type, not a same-named sibling's (the RegexError case).
   val sigs: Map[String, ResolvedSignature] = newMap()
   val importedDiag: List[Diagnostic] = newList()
-  val noImports: List[String] = newList()
   // Interface-conformance registration resolves impl iface/target names purely
   // to key the subtyping relation, so its diagnostics are discarded (genuine
   // unresolved-type errors surface via sig resolution / checkImplConformance).
@@ -1522,7 +1529,9 @@ func checkWithImportedPackagesCore(
   var sp = 0
   while sp < importedPackages.count {
     val ip2 = importedPackages[sp]
-    symTableSetScope(tbl, ip2.name, noImports)
+    // Tier 2 sees the package's OWN declared imports, so a type it imports from
+    // a sibling beats an unrelated same-named export elsewhere (#2282).
+    symTableSetScope(tbl, ip2.name, ip2.imports)
     addSigsFromItems(tbl, importedDiag, sigs, ip2.items, true, ip2.name)
     registerImplsFromItems(tbl, newGenericContext(), implDiag, ip2.items)
     sp = sp + 1
@@ -1572,7 +1581,8 @@ func checkWithImportedPackagesCore(
 // `checkWithImportedPackages` directly to get the collision fix.
 pub func checkWithImports(file: in SourceFile, importedItems: in List[Item]): CheckResult {
   val packages: List[ImportedPackage] = newList()
-  packages.add(ImportedPackage(name = "", items = importedItems))
+  val noImports: List[String] = newList()
+  packages.add(ImportedPackage(name = "", items = importedItems, imports = noImports))
   checkWithImportedPackages(file, packages)
 }
 
