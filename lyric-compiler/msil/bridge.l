@@ -969,7 +969,7 @@ func collectTypeItemsFromFile(file: in SourceFile, importedItems: in List[Item])
       // `Iface` parameter is expected fails the interface-subsumption check with
       // T0043 (e.g. `Cache.get(Cache.inProcess(), …)`).  `registerImplsFromItems`
       // keys the relation by `TypeId`, and `addSigsFromItems` ignores `IImpl`, so
-      // carrying the declaration across is sound and additive (#3xxx).
+      // carrying the declaration across is sound and additive.
       case IImpl(_) -> true
       case _ -> false
     }

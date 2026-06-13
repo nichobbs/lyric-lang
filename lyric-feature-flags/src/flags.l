@@ -211,6 +211,12 @@ pub func getInt(store: in FlagStore, name: in String, def: in Int): Int
   }
 }
 
+/// Return every flag currently in `store`.
+@stable(since = "0.1")
+pub func listFlags(store: in FlagStore): slice[FlagEntry] {
+  return store.listFlags()
+}
+
 /// Refresh the flag store from the remote endpoint.
 @stable(since = "0.1")
 pub func refresh(store: in FlagStore): Result[Unit, FlagError] {
@@ -231,6 +237,30 @@ pub func makeFlagWithDesc(name: in String, enabled: in Bool, description: in Str
   requires: name.length > 0
 {
   return FlagEntry(name = name, value = FlagBool(value = enabled), description = description)
+}
+
+/// Construct a String-valued FlagEntry.
+@stable(since = "0.1")
+pub func makeStringFlag(name: in String, value: in String): FlagEntry
+  requires: name.length > 0
+{
+  return FlagEntry(name = name, value = FlagString(value = value), description = "")
+}
+
+/// Construct an Int-valued FlagEntry.
+@stable(since = "0.1")
+pub func makeIntFlag(name: in String, value: in Int): FlagEntry
+  requires: name.length > 0
+{
+  return FlagEntry(name = name, value = FlagInt(value = value), description = "")
+}
+
+/// Construct a Float-valued FlagEntry.
+@stable(since = "0.1")
+pub func makeFloatFlag(name: in String, value: in Float): FlagEntry
+  requires: name.length > 0
+{
+  return FlagEntry(name = name, value = FlagFloat(value = value), description = "")
 }
 
 // ─── Private FlagValue helpers ────────────────────────────────────────────────
