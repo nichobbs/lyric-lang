@@ -1592,10 +1592,7 @@ func collectModifiedVarsSt(st: in Statement, output: in List[String]): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §10. Goals for a single function.
 // ─────────────────────────────────────────────────────────────────────────────
-// True when a function's body contains at least one EYield node (a generator).
-// The verifier cannot model the suspend/resume control flow of generators, so a
-// contract-bearing generator is rejected by goalsForFunction rather than having
-// its body silently coerced to an opaque term by the translateExpr catch-all.
+// True when a function body contains EYield (generator); WP/SP cannot model generator suspend/resume.
 func funcBodyContainsYield(decl: in FunctionDecl): Bool {
   match decl.body {
     case Some(b) -> {
@@ -1707,14 +1704,7 @@ func eobContainsYield(eob: in ExprOrBlock): Bool {
 }
 
 pub func goalsForFunction(env0: in VEnv, decl: in FunctionDecl): (List[Goal], List[Diagnostic]) {
-  // Soundness guard (#3298): the WP/SP calculus has no model for the
-  // suspend/resume control flow of `async`/`yield` bodies — an `await` or
-  // `yield` expression hits the translateExpr catch-all and is silently
-  // replaced with an uninterpreted opaque term, so a `requires:`/`ensures:`
-  // clause would be "discharged" against an unmodelled body.  Until
-  // effect-aware VC generation lands, reject any contract-bearing
-  // async/generator function with a hard error and emit no goals (rather than
-  // vacuous/opaque ones).  A non-contract async function is unaffected.
+  // Soundness guard: WP/SP has no suspend/resume model; reject contract-bearing async/yield rather than opaquing (#3298).
   if decl.contracts.count > 0 and (decl.isAsync or funcBodyContainsYield(decl)) {
     val asyncDiags: List[Diagnostic] = newList()
     asyncDiags.add(

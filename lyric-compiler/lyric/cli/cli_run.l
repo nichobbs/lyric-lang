@@ -267,11 +267,7 @@ func cmdRun(argv: in slice[String]): Int {
     }
   }
 
-  // A `val x = match { … case Some(t) -> if … }` binding mis-lowers under the
-  // stage-0 emitter: the nested `if`-expression in the `Some` arm is emitted as
-  // a value-discarding statement, leaving `x` null (the crash diagnosed for
-  // #674 — a null target propagates to a null `outPath` and NREs in `stemOf`).
-  // Mirror the proven `var`-mutation shape that `cmdBuild` uses for `--target`.
+  // var-mutation shape: val/match/if with nested if mis-lowers under the stage-0 emitter.
   var runTarget: CompileTarget = Dotnet
   match targetArg {
     case None -> ()
