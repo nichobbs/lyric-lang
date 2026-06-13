@@ -585,18 +585,19 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // types as first-class lookups.
   registerRestoredArtifactTokens(cctx)
 
-  // Pre-register all in-bundle user-type names in typeFqnByName so that
-  // cross-package type references in specialised functions resolve correctly
-  // regardless of package processing order.  `cmdTestManifest` in cli.l
-  // places the test package FIRST in allPkgs (so its synthesised main() wins
-  // the entry-point slot), which means addPackageTokens for the test package
-  // runs before addPackageTokens for the library packages.  Any specialised
-  // function placed in the test package (e.g. toResult__Int synthesised from
-  // Validation.toResult[T]) carries unqualified type refs (e.g. TRef
-  // ["ValidationError"]) whose FQN must be resolved via typeFqnByName.
-  // Without this pre-pass the lookup falls back to pkgName + "." + seg,
-  // producing the wrong FQN (e.g. Validation.ValidationTests.ValidationError)
-  // and a "match not exhaustive" panic at run time (#2932).
+  // Pre-register all in-bundle user-type names as FQN candidates (seeding both
+  // `typeFqnByName` and `typeFqnCandidates` via `registerTypeFqnCandidate`) so
+  // cross-package type references resolve correctly regardless of package
+  // processing order.  `cmdTestManifest` in cli.l places the test package FIRST
+  // in allPkgs (so its synthesised main() wins the entry-point slot), which means
+  // addPackageTokens for the test package runs before addPackageTokens for the
+  // library packages.  Any specialised function placed in the test package (e.g.
+  // toResult__Int synthesised from Validation.toResult[T]) carries unqualified
+  // type refs (e.g. TRef ["ValidationError"]) whose FQN must resolve via these
+  // maps.  Without this pre-pass the lookup falls back to pkgName + "." + seg,
+  // producing the wrong FQN (e.g. Validation.ValidationTests.ValidationError) and
+  // a "match not exhaustive" panic at run time (#2932; the `typeFqnCandidates`
+  // half of the seeding was added in #3332).
   //
   // INVARIANT: first-registered-wins (#2941).  If two in-bundle packages
   // declare a type with the same unqualified name the package iterated first

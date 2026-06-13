@@ -2588,10 +2588,11 @@ jobs:
           "$lyric_bin" test --manifest lyric-session/lyric.toml || overall=$?
           echo "=== lyric-health tests ==="
           "$lyric_bin" test --manifest lyric-health/lyric.toml || overall=$?
-          # lyric-cache, lyric-mail, lyric-aws-xray, and lyric-feature-flags are
-          # tier-0 (no local path deps) and have green suites; run them here so
-          # their coverage is enforced on every push instead of build-only.
-          # cache is already built above (session dependency).
+          # lyric-cache, lyric-mail, lyric-aws-xray, lyric-feature-flags, and
+          # lyric-validation are tier-0 (no local path deps) and have green
+          # suites; run them here so their coverage is enforced on every push
+          # instead of build-only.  cache is already built above (session
+          # dependency).
           echo "=== lyric-cache tests ==="
           "$lyric_bin" test --manifest lyric-cache/lyric.toml || overall=$?
           echo "=== lyric-mail tests ==="
