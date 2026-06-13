@@ -1829,6 +1829,92 @@ pub func resolveOverload(
   }
 }
 
+// Decode the raw signature of a method on a (possibly generic) declaring type,
+// selecting by member name + arity rather than scoring against concrete
+// argument types.  Unlike `resolveOverloadIn`, the returned `paramTypes`
+// preserve `STVar`/`STMVar` (generic type/method parameters) and `STByRef`
+// wrappers — `scoreSigType` cannot match those, so the scoring path is unusable
+// for a member like `ConcurrentDictionary`2::TryGetValue(!0, !1&)`.  `declArity`
+// is the Lyric wrapper's full parameter count (receiver included for instance
+// methods); the instance overload (`declArity - 1` BCL params) is preferred,
+// falling back to the static/ctor overload (`declArity` BCL params).  Non-VAR
+// class/value-type tokens are normalised to `STNamed` (FQN) so the caller can
+// map them without this assembly's tokens; `hasThis` distinguishes instance
+// from static.
+pub func decodeExternMethodSigIn(
+  img: in PeImage,
+  layout: in TableLayout,
+  th: in TablesHeader,
+  typeFqn: in String,
+  member: in String,
+  declArity: in Int,
+): Option[DecodedMethodSig] {
+  val typeRow = findTypeDefByFqn(img, layout, th, typeFqn)
+  if typeRow < 0 {
+    return None
+  }
+  val mr = methodRange(img, layout, th, typeRow)
+  var instanceMatch: Option[DecodedMethodSig] = None
+  var staticMatch: Option[DecodedMethodSig] = None
+  var mi = mr.start
+  while mi <= mr.endRow {
+    val md = readMethodDef(img, layout, mi)
+    if md.name == member {
+      match decodeMethodSig(blobAt(img, layout, md.sigBlob)) {
+        case Err(_) -> {
+        }
+        case Ok(sig) -> {
+          val normParams: List[SigType] = newList()
+          var pj = 0
+          while pj < sig.paramTypes.count {
+            normParams.add(resolveSigTypeFqn(img, layout, th, sig.paramTypes[pj]))
+            pj = pj + 1
+          }
+          val normSig = DecodedMethodSig(
+            hasThis = sig.hasThis,
+            isGeneric = sig.isGeneric,
+            genParamCount = sig.genParamCount,
+            returnType = resolveSigTypeFqn(img, layout, th, sig.returnType),
+            paramTypes = normParams
+          )
+          // Instance overload: the receiver is the implicit `this`, so the BCL
+          // method has one fewer parameter than the Lyric wrapper.
+          if normParams.count == declArity - 1 {
+            match instanceMatch {
+              case None -> {
+                instanceMatch = Some(value = normSig)
+              }
+              case Some(_) -> ()
+            }
+          } else if normParams.count == declArity {
+            match staticMatch {
+              case None -> {
+                staticMatch = Some(value = normSig)
+              }
+              case Some(_) -> ()
+            }
+          }
+        }
+      }
+    }
+    mi = mi + 1
+  }
+  match instanceMatch {
+    case Some(s) -> Some(value = s)
+    case None -> staticMatch
+  }
+}
+
+// Read-from-disk convenience wrapper over `decodeExternMethodSigIn`.
+pub func decodeExternMethodSig(
+  asmPath: in String, typeFqn: in String, member: in String, declArity: in Int
+): Option[DecodedMethodSig] {
+  match File.readBytes(asmPath) {
+    case Err(_) -> None
+    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> None; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> None; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> None; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> None; case Ok(layout) -> decodeExternMethodSigIn(img, layout, th, typeFqn, member, declArity) } } } }
+  }
+}
+
 // ── resolveExtern: discovery + resolution composed ───────────────────────────
 //
 // The single entry point the emitter calls to resolve an extern method.  It

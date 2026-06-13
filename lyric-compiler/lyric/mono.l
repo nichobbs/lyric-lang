@@ -1478,6 +1478,55 @@ func substTypesFunctionBody(
 // ─────────────────────────────────────────────────────────────────────────────
 // §11. Function specialisation — substitute type vars in decl structure
 // ─────────────────────────────────────────────────────────────────────────────
+// The `"Type.Member"` string of an `@externTarget(...)` annotation, or "".
+func externTargetStringMono(anns: in List[Annotation]): String {
+  var i = 0
+  while i < anns.count {
+    val segs = anns[i].name.segments
+    if segs.count == 1 and segs[0] == "externTarget" {
+      var j = 0
+      while j < anns[i].args.count {
+        match anns[i].args[j] {
+          case ALiteral(v, _) -> match v { case AVString(s, _) -> { return s }; case _ -> () }
+          case AAName(_, v, _) -> match v { case AVString(s, _) -> { return s }; case _ -> () }
+          case _ -> ()
+        }
+        j = j + 1
+      }
+    }
+    i = i + 1
+  }
+  ""
+}
+
+// True iff the function is an `@externTarget` over a *generic declaring type*
+// (the target's type name carries a `\`N` arity suffix, e.g.
+// `ConcurrentDictionary\`2`).  Only such externs are kept un-specialised by the
+// monomorphizer: the MSIL backend's `emitGenericExternMember` can emit them, and
+// a zero-arg ctor extern invoked from a module-`val` initializer (never walked
+// by the monomorphizer) needs the generic definition to survive.  An extern over
+// a NON-generic type (`Monitor.Enter`) is always reachable through its
+// specialised call-site copies and never needs keeping; keeping it broadly would
+// also force the JVM backend — which has no generic-extern emission — to compile
+// erased collection-kernel externs (`newList` → `java.util.ArrayList.<init>`)
+// it previously dropped, tripping F0015-J.
+func annsKeepGenericExternMono(anns: in List[Annotation]): Bool {
+  Str.contains(externTargetStringMono(anns), "`")
+}
+
+// True iff the annotation list carries `@axiom(...)`.
+func annsHaveAxiomMono(anns: in List[Annotation]): Bool {
+  var i = 0
+  while i < anns.count {
+    val segs = anns[i].name.segments
+    if segs.count == 1 and segs[0] == "axiom" {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 func specializeFunc(
   decl: in FunctionDecl,
   specName: in String,
@@ -1519,7 +1568,24 @@ func specializeFunc(
     }
   }
   val emptyDocs: List[DocComment] = newList()
-  val emptyAnns: List[Annotation] = newList()
+  // Preserve `@externTarget` (and the `@externStatic` / `@externInstance`
+  // resolve hints) on the specialised copy: a monomorphised generic extern
+  // wrapper (`cdSetItem[K, V]` -> `cdSetItem__String__RateEntry`) must keep
+  // its kernel-boundary annotation, or codegen falls through to the
+  // placeholder `= ()` body and emits a broken `ldnull; ret` stub — invalid
+  // IL for a `Unit`/void return, and a silent always-false for a `Bool`
+  // return (#3392 / #3175).  Every other annotation (`@stable`, `@axiom`,
+  // doc markers, …) is intentionally dropped — a specialised copy is a fresh
+  // codegen target, not a re-published surface.
+  val keptAnns: List[Annotation] = newList()
+  var ai = 0
+  while ai < decl.annotations.count {
+    val segs = decl.annotations[ai].name.segments
+    if segs.count == 1 and (segs[0] == "externTarget" or segs[0] == "externStatic" or segs[0] == "externInstance") {
+      keptAnns.add(decl.annotations[ai])
+    }
+    ai = ai + 1
+  }
   // Substitute type-variable annotations inside the body too (#2557): a typed
   // local such as `val acc: List[T]` must become `List[Int]` in the specialised
   // copy, otherwise codegen emits a `List<Pkg.T>` over a non-existent CLR type.
@@ -1529,7 +1595,7 @@ func specializeFunc(
   }
   FunctionDecl(
     docComments = emptyDocs,
-    annotations = emptyAnns,
+    annotations = keptAnns,
     visibility = None,
     isAsync = decl.isAsync,
     name = specName,
@@ -2363,7 +2429,18 @@ pub func monoFileWithImports(file: in SourceFile, importedGenDecls: in List[Func
         match decl.generics {
           case Some(_) -> {
             // Generic functions are dropped here; specialisations are added below.
-            ()
+            //
+            // Exception: a generic `@externTarget` kernel wrapper is kept (with
+            // its type parameters erased by codegen's generic-extern path).  A
+            // call site reached by the monomorphizer is still rewritten to a
+            // concrete copy, but call sites the monomorphizer does NOT walk —
+            // e.g. a zero-argument ctor extern (`newConcurrentDict()`) invoked
+            // from a module-level `val` initializer — keep calling the generic
+            // name, which would resolve to nothing if it were dropped.  `@axiom`
+            // generics stay dropped (proof-only, never emitted as runtime code).
+            if annsKeepGenericExternMono(decl.annotations) and not annsHaveAxiomMono(decl.annotations) {
+              rewrittenItems.add(item)
+            }
           }
           // Wildcard (not `case None`): a `@derive`-synthesised `None` lowers to a bare null that `isinst` misses — see #1796.
           case _ -> {
