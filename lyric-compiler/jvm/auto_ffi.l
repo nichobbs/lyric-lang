@@ -408,6 +408,14 @@ pub func scoreParamMatch(argDesc: in String, paramDesc: in String): Int {
   if argDesc == "[Ljava/lang/Object;" and paramDesc == "[B" {
     return 2
   }
+  // General reference-subtype: any reference arg → any non-Object reference param.
+  // Enables passing Lyric `List[T]` (ArrayList) to `java.util.List` parameters,
+  // `Process` to typed stream accessors, etc.  The JVM bytecode verifier enforces
+  // actual IS-A compatibility at class-load time, so the score is low (1) to rank
+  // behind all explicit matches.
+  if argDesc.startsWith("L") and paramDesc.startsWith("L") {
+    return 1
+  }
   return -1
 }
 

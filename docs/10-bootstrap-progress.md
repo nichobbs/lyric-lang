@@ -24937,3 +24937,50 @@ imported package, and the per-file weaver has no access to it.  That is
 resolution) with a concrete plan; it is the remaining gap before ecosystem
 library aspects (`Web.Aspects.*`, `Validation.Aspects.*`, …) function in
 consumers.
+
+### D-progress-519 — `Std.ProcessCaptureHost` JVM kernel: pure auto-FFI subprocess capture (#1065)
+
+`lyric-stdlib/std/_kernel_jvm/process_capture_host.l` is fully rewritten as
+production-quality pure JVM auto-FFI — no F# shim, no Java helper JAR, no
+`@externTarget` pointing at non-existent `lyric.stdlib.jvm.*` classes.
+
+**Root cause of the previous stub:** every required drain/poll loop carried a
+`Process` / `InputStream` / `ByteArrayOutputStream` extern handle across a loop
+back-edge, and the JVM backend typed those locals as `java/lang/Object` in the
+`StackMapTable`, causing `VerifyError` on the next `invokevirtual` (#3307).
+D-progress-513 fixed the frame-typing (m-14); D-progress-514 fixed extern-type
+parameter/return descriptors (m-15).  Together they made the implementation
+possible.
+
+**Additional auto-FFI fix:** `scoreParamMatch` in `lyric-compiler/jvm/auto_ffi.l`
+now scores any reference-type argument against any (non-Object) reference-type
+parameter as 1 (the lowest positive priority), falling back to `-1` only when no
+other rule fires.  This enables `List[T]` / `ArrayList` to match
+`ProcessBuilder(java.util.List<String>)` — the argument IS-A the parameter at the
+JVM bytecode level, and the verifier enforces the actual type constraint at
+class-load time.  Without this, the constructor call scored -1 and the compiler
+rejected it.
+
+**Implementation:**
+- `JProcessBuilder.new(cmdList)` spawns the child via `ProcessBuilder(List<String>)`.
+- `stringToUtf8Bytes(stdinContent)` + `OutputStream.write(byte[])` + `close()`
+  delivers stdin.
+- `InputStream.available()` + `InputStream.read()` → `ByteArrayOutputStream.write(int)`
+  drains stdout and stderr incrementally inside the `isAlive()` poll loop —
+  deadlock-free regardless of child pipe buffer size.
+- `System.currentTimeMillis()` (via `@externTarget("java.lang.System.currentTimeMillis")`)
+  tracks elapsed time; `Process.destroyForcibly()` kills the child on timeout;
+  `exitCode = -2` signals the caller.
+- `JBAOS.toString("UTF-8")` converts the byte accumulator to a String.
+- `ProcessCaptureResult` is a Lyric `pub record` — identical shape to the .NET
+  kernel so `Std.ProcessCapture` compiles and runs unchanged on both targets.
+- `parseArgString(executable, argStr)` re-parses the `buildArgString`-format
+  argument string back into a `List[String]` for `ProcessBuilder`, handling
+  `\"` and `\\` escape sequences and falling back to unquoted tokens.
+
+Verified by `lyric-compiler/jvm/process_capture_jvm_self_test.l` (10 cases:
+stdout capture, multi-word argument quoting round-trip, two-argument pass, stdin
+delivery, exit codes 0/1/42, stderr-vs-stdout separation, empty output, and the
+`destroyForcibly` timeout path), compiled in-process through the self-hosted
+`Jvm.Bridge` and run under `java`; wired into CI as the "ProcessCapture JVM
+self-test" step.
