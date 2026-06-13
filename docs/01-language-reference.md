@@ -1457,6 +1457,8 @@ is fixed. The watch loop runs in the CLI process (always the .NET host).
 
 **NaN and ±Infinity in proof goals (`V0013`):** SMT-LIB Real has no representation for non-finite IEEE 754 values. When a proof goal contains a NaN or ±Infinity float literal, the emitter substitutes `0.0` in the generated SMT-LIB and emits warning `V0013`. The verification result may be incorrect; review such goals manually.
 
+**Contracts on async/generator functions (`V0032`):** The verifier's WP/SP calculus has no model for the suspend/resume control flow of an `async func` or a `yield`-bearing generator — an `await`/`yield` expression has no Term translation and would be coerced to an uninterpreted opaque symbol, so a `requires:`/`ensures:` clause on such a function would be "discharged" against an unmodelled body (unsound). A `@proof_required` async or generator function that carries any contract clause is therefore rejected at VC-generation time with error `V0032` and produces no goals. A non-contract async function is unaffected. Move the contract to a synchronous core, or mark the package `@runtime_checked`. Effect-aware VC generation that models async/generator bodies is future work.
+
 ### 13.4 Documentation
 
 `lyric doc [<source.l>]` generates Markdown documentation from doc comments and contract metadata. Includes signatures and contracts.

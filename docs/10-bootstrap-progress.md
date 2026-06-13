@@ -24808,3 +24808,39 @@ dotnet`.  Ecosystem suites are regression-clean and several improve: lyric-mq
 lyric-logging **14/14**, lyric-grpc **16/16** (the naive fix only reached
 12/16), with lyric-cache 15/15, feature-flags 36/36, validation, and mail 29/29
 unchanged.  MSIL-target only; the JVM analogue is tracked in #3345.
+
+### D-progress-516 — Verifier rejects contracts on async/yield functions with `V0032` instead of silently opaquing (#3298)
+
+`lyric-compiler/lyric/verifier/vcgen.l` had no `EAwait`/`EYield` translation
+case: those expressions hit the `translateExpr` catch-all, which emitted only a
+`V0024` **warning** and replaced the expression with an uninterpreted opaque
+term (`TVar("?expr", SUninterp("expr"))`).  `goalsForFile` then verified any
+`@proof_required` function without inspecting `FunctionDecl.isAsync`, so a
+`requires:`/`ensures:` clause on an `async func` or a `yield`-bearing generator
+was checked against an unmodelled body — unsound, with no hard stop.
+
+Fix: `goalsForFunction` now guards at entry — when a function carries any
+contract clause (`decl.contracts.count > 0`) **and** is async
+(`decl.isAsync`) or contains a `yield` (a new `funcBodyContainsYield` AST
+walker, which descends through statements, loops, try/catch/finally, and
+if/match arms but stops at nested lambdas), it emits the hard error `V0032` on
+the function's span and returns no goals.  This replaces the silent opaquing
+with a loud rejection and avoids generating vacuous/opaque obligations.  A
+non-contract async function is unaffected (verifies normally).  Generators are
+necessarily `async func` (the type checker sets `isGenerator = isAsync and …`),
+so `isAsync` alone already covers them; the yield walker is defence in depth.
+
+`V0032` was chosen as the next free verifier diagnostic code (verifier codes run
+`V0020`–`V0031`; `V0012`, the code the phase-4 plan originally reserved for this,
+was repurposed by the mode checker for await-in-try CLR-IL rejection in
+#2985/#3113).  Documented in `docs/01-language-reference.md` §13.3,
+`docs/15-phase-4-proof-plan.md` §3.1 (with a note correcting the stale `V0012`
+row), and the diagnostic-code allocation.
+
+Verified end-to-end: `./bin/lyric prove` on a `@proof_required async func`
+with `requires:`/`ensures:` reports `V0032` and discharges 0/0 obligations; the
+same function without contracts discharges 1/1.  Four new cases in
+`lyric-compiler/lyric/verifier_self_test.l` (async-with-contract → V0032 + no
+goals; async-without-contract → no V0032, no errors; sync-with-contract
+regression → no V0032, goals still generated; generator-with-contract → V0032)
+pass via native `lyric test` (51/51).

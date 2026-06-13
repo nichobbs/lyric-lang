@@ -1092,8 +1092,9 @@ Warnings emitted by the MSIL emitter for constructs that compile but may not beh
 | `V0009` | error | `assume` used in `@proof_required` code outside `unsafe { }` |
 | `V0010` | error | Conflicting verification-level annotations on the same package |
 | `V0011` | error | Unknown verification-level modifier |
-| `V0012` | (reserved) | Planned: `async func` or `yield`-bearing function in `@proof_required` context — not yet emitted in the self-hosted verifier |
+| `V0012` | error | (mode checker) `await` inside a `try`/`catch`/`finally` block in an async function — a CLR IL constraint (not the verifier-side async rejection, which is `V0032`) |
 | `V0013` | warning | Proof goal contains NaN or ±Infinity float literal; substituted with `0.0` in SMT-LIB output — verification result may be incorrect |
+| `V0032` | error | Contract clause (`requires:`/`ensures:`) on an `async func` or `yield`-bearing generator — the WP/SP calculus cannot model suspend/resume, so the verifier rejects the function rather than checking it against an unmodelled body. Move the contract to a synchronous core, or mark the package `@runtime_checked` |
 
 ### Bench (B-series)
 
