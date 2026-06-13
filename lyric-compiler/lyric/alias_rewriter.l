@@ -72,19 +72,7 @@ func asAliasOf(imp: in ImportDecl): Option[String] {
 //
 // A list is used instead of a set because the typechecker isn't a
 // hot path for huge alias counts — linear membership is plenty.
-func dotJoin(segs: in List[String]): String {
-  if segs.count == 0 {
-    return ""
-  }
-  var s = segs[0]
-  var i = 1
-  while i < segs.count {
-    s = s + "." + segs[i]
-    i = i + 1
-  }
-  s
-}
-
+//
 // Each entry is `"<alias>=<dotted declaring package>"`, e.g. `"Rx=Std.RegexSafe"`,
 // so a later `Rx.foo` rewrite can substitute the alias head with the full package
 // path (preserving which package the call/type targets) rather than dropping it.
@@ -109,7 +97,7 @@ func collectAliases(imports: in List[ImportDecl]): List[String] {
   while i < imports.count {
     val imp = imports[i]
     match asAliasOf(imp) {
-      case Some(name) -> entries.add(name + "=" + dotJoin(imp.path.segments))
+      case Some(name) -> entries.add(name + "=" + modulePathJoin(imp.path.segments))
       case None -> ()
     }
     i = i + 1
@@ -123,7 +111,7 @@ func collectAliases(imports: in List[ImportDecl]): List[String] {
         if imp.path.segments.count >= 1 {
           val tail = imp.path.segments[imp.path.segments.count - 1]
           if not aliasContains(entries, tail) {
-            entries.add(tail + "=" + dotJoin(imp.path.segments))
+            entries.add(tail + "=" + modulePathJoin(imp.path.segments))
           }
         }
       }

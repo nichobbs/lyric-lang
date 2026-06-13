@@ -2102,3 +2102,18 @@ test "config duplicate field" {
   val dup = "package P\nconfig S7 { p: Int = 1; p: Int = 2 }\n"
   assertTrue(hasDiagCode(parseCheck(dup), "G0013"), "config: duplicate field rejected with G0013")
 }
+
+// #3261: the refutability check must recurse into tuple elements — a
+// constructor pattern nested inside an otherwise-irrefutable tuple is
+// still refutable and must be rejected.
+test "for tuple-of-refutable pattern rejected" {
+  val bad = "package P\nunion Opt[T] {\n  case Sm(value: T)\n  case Nn\n}\nfunc f(xs: in slice[(Int, Opt[Int])]): Unit {\n  for (n, Sm(v)) in xs {\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0112"), "for tuple containing constructor: T0112")
+}
+
+test "for nested tuple pattern accepted" {
+  val ok = "package P\nfunc f(xs: in slice[(Int, (Int, String))]): Int {\n  var total = 0\n  for (a, (b, s)) in xs {\n    total = total + a + b\n  }\n  total\n}\n"
+  val cr = parseCheck(ok)
+  assertTrue(not hasDiagCode(cr, "T0112"), "for over nested tuple pattern: no T0112")
+  assertEqualInt(diagCount(cr), 0, "for over nested tuple pattern: clean")
+}

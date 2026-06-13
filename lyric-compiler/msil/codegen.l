@@ -239,6 +239,10 @@ pub record CodegenCtx {
   // its .cctor MethodDef row; predicting "literal, no .cctor" there shifts
   // every later MethodDef token by one (the entry token then points at the
   // wrong method).
+  // This is a SET: only containsKey is ever consulted and every stored value
+  // is `true` — Map[String, Bool] with always-true values is the compiler's
+  // pervasive set idiom (see e.g. Jvm.Lowering.collectBranchTargets); no
+  // compiler package uses Std.Set (#3254).
   constBareClaimed: Map[String, Bool]
   // Lyric enums lower to ordinal Int values (mirroring the F# emitter's
   // EnumCaseLookup): type positions encode I4, a case reference emits

@@ -1417,7 +1417,7 @@ pub record ImportedPackage {
 }
 
 func dottedPackageName(path: in ModulePath): String {
-  joinSegments(path.segments)
+  modulePathJoin(path.segments)
 }
 
 // The dotted names of every package a file explicitly imports.
