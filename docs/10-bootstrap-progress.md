@@ -24766,3 +24766,45 @@ Verified by `lyric-compiler/jvm/extern_param_jvm_self_test.l` (3 cases: extern
 param driven through a loop, extern return value, create→pass→read round-trip),
 compiled in-process through the self-hosted `Jvm.Bridge` and run under `java`;
 wired into CI.  The full JVM self-test suite (17 files) is regression-clean.
+
+### D-progress-515 — MSIL: qualified enum value in expression position lowers to its ordinal (#3344)
+
+A qualified enum value used in **expression position** — `Color.Red` passed as
+an argument (`name(Color.Red)`), used as a `match` scrutinee (`match
+AckMode.Auto { … }`), or returned from a function — faulted at runtime with an
+NRE.  `Color.Red` parses as `EMember(EPath["Color"], "Red")`, and the
+`EMember` expression-lowering arm evaluated the receiver (a bare enum **type**
+name) as a value and then did field access, producing `null`.  An enum value is
+an Int ordinal at the IL level (F#-emitter parity, see `registerEnumDeclMsil`),
+so it must lower to `ldc.i4 <ordinal>` exactly like the bare `Red` form (the
+`EPath` arm) and the qualified `case Color.Red ->` pattern (#3343).  This was
+the remaining expression-position analogue of the pattern/call-routing fixes in
+#3343.
+
+Root-cause constraint (the #3344 dead-end): two prior attempts to add an enum
+short-circuit *inside* `lowerExprMsil`'s `EMember` arm broadly regressed every
+`assertEqual`-using suite — even with the enum branch provably not firing for
+the failing tests.  Restructuring that arm's control flow (adding intermediate
+`val` bindings + an `else if`) itself caused the self-hosted compiler to
+mis-lower ordinary field access in the byte-identical `else` path (field reads
+started returning `0`), a self-hosted-compiler mis-compilation of the modified
+arm, not the enum logic.
+
+Fix: resolve the qualified enum case **before** the `match expr.kind` in
+`lowerExprMsil`, leaving the `EMember` arm byte-identical.  A new helper
+`tryQualifiedEnumOrdinalMsil` (`lyric-compiler/msil/codegen.l`) flattens the
+receiver via `flattenPathExprSegs`, checks the last segment names a known enum
+type (`enumTypeNames`), excludes a single-segment receiver that shadows a local
+(`fctx.slots`), and returns the type-scoped ordinal (`<EnumType>.<Case>` key, so
+two enums sharing a case name can't collide — #3346) or -1.  At function entry,
+`lowerExprMsil` emits `ldc.i4 <ordinal>` and returns `MInt` when the helper
+hits.
+
+Verified by `lyric-compiler/lyric/enum_msil_self_test.l` (extended: argument
+position, `match` scrutinee, returned-from-expression, and two-enum
+type-scoped resolution — 7/7), run in CI via native `lyric test --target
+dotnet`.  Ecosystem suites are regression-clean and several improve: lyric-mq
+**8/8** (tests 7-8, `AckMode.Auto`/`AckMode.Manual` scrutinees, unblocked),
+lyric-logging **14/14**, lyric-grpc **16/16** (the naive fix only reached
+12/16), with lyric-cache 15/15, feature-flags 36/36, validation, and mail 29/29
+unchanged.  MSIL-target only; the JVM analogue is tracked in #3345.

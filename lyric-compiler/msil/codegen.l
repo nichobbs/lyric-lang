@@ -3392,6 +3392,48 @@ func flattenPathExprSegs(e: in Expr): List[String] {
   }
 }
 
+// Qualified enum-case *value* in expression position (`Color.Red` passed as an
+// argument, returned, or used as a `match` scrutinee).  `Color.Red` parses as
+// `EMember(EPath["Color"], "Red")`; a multi-segment package prefix
+// (`Acme.Types.Color.Red`) parses as nested `EMember`s.  An enum value is an
+// Int ordinal at the IL level (F#-emitter parity, see `registerEnumDeclMsil`),
+// so it must lower to `ldc.i4 <ordinal>` — exactly like the bare `Red` form
+// (the `EPath` arm) and the qualified `case Color.Red ->` pattern (#3343).
+//
+// Returns the case ordinal when `expr` is such a reference, or -1 otherwise.
+// The lookup is scoped to the named enum type (`<EnumType>.<Case>` key) so two
+// in-bundle enums sharing a case name can't collide (#3346).  A single-segment
+// receiver that names a local takes precedence — it's a real value, not an
+// enum type reference — so field access through a same-named local is left to
+// the normal `EMember` arm.
+//
+// Resolved here (before the `EMember` arm of `lowerExprMsil`) rather than
+// inside that arm: restructuring the arm's control flow mis-lowers ordinary
+// field access in the self-hosted compiler (the #3344 dead-end), so the arm is
+// left byte-identical and the enum case is short-circuited at function entry.
+func tryQualifiedEnumOrdinalMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in Expr): Int {
+  match expr.kind {
+    case EMember(recv, memberName) -> {
+      val segs = flattenPathExprSegs(recv)
+      if segs.count == 0 {
+        return -1
+      }
+      val enumTy = segs[segs.count - 1]
+      if not cctx.enumTypeNames.containsKey(enumTy) {
+        return -1
+      }
+      if segs.count == 1 and fctx.slots.containsKey(enumTy) {
+        return -1
+      }
+      match mapGet(cctx.enumCaseOrdinals, enumTy + "." + memberName) {
+        case Some(ord) -> ord
+        case None -> -1
+      }
+    }
+    case _ -> -1
+  }
+}
+
 // Cross-package type-name resolution (#1183 codegen port, scope tiers
 // added in #3085).  Given a simple type name like "Maybe" referenced in
 // `pkgName`, find the FQN to use for the resulting `MClass`.
@@ -4164,6 +4206,15 @@ func emitDictRemove(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in MsilT
 // Lower a single expression.  Pushes exactly one value onto the operand stack
 // (or nothing for MVoid).  Returns the MsilType of the pushed value.
 pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], expr: in Expr): MsilType {
+  // Qualified enum-case value (`Color.Red` as an argument / scrutinee / return
+  // value): lower to its Int ordinal directly (#3344).  Short-circuited here so
+  // the `EMember` arm below stays byte-identical — see
+  // `tryQualifiedEnumOrdinalMsil` for why restructuring that arm is unsafe.
+  val qEnumOrd = tryQualifiedEnumOrdinalMsil(cctx, fctx, expr)
+  if qEnumOrd >= 0 {
+    insns.add(MLdcI4(v = qEnumOrd))
+    return MInt
+  }
   match expr.kind {
 
     // ── Literals ─────────────────────────────────────────────────────────────
