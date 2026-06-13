@@ -2349,6 +2349,83 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/nan_compare_jvm_self_test.l
+      # `lyric run --target jvm` end-to-end smoke (#674) — the first CI step to
+      # exercise the `run` JVM convenience wrapper (vs. the `test --target jvm`
+      # steps above).  Builds a no-arg `func main(): Int` program to a bundled
+      # JAR via the in-process `Jvm.Bridge` and runs it under `java -jar`,
+      # asserting stdout.  Pins the #674 regression where `run --target jvm`
+      # NRE'd in `stemOf` because a `val x = match { … case Some -> if … }`
+      # binding mis-lowered the parsed `--target` to a null `CompileTarget`.
+      # (Arg-forwarding + Int→exit-code on JVM are tracked in #3303; this step
+      # covers the no-arg / output path that #674 asked for.)
+      - name: lyric run --target jvm end-to-end smoke (#674)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping lyric run --target jvm smoke"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          cat > "$work/runjvm.l" <<'LYR'
+          package RunJvm
+
+          import Std.Core
+
+          func main(): Int {
+            println("hello from lyric run --target jvm")
+            0
+          }
+          LYR
+          out="$("$lyric_bin" run --target jvm "$work/runjvm.l")"
+          echo "lyric run --target jvm output:"
+          echo "$out"
+          if ! printf '%s\n' "$out" | grep -qx "hello from lyric run --target jvm"; then
+            echo "::error::lyric run --target jvm produced unexpected output"
+            exit 1
+          fi
+      # `lyric bench --target dotnet` end-to-end smoke (#680 companion) — the
+      # synthesised `@bench` harness imports `Std.Time` (now / since /
+      # totalMillis), so `Lyric.Stdlib.Time.dll` and siblings must be
+      # co-located beside the bench output for `dotnet exec` (the
+      # `copyRuntimeDepsBeside` call added to `cli_bench.l`).  Asserts the
+      # harness runs and reports its benchmark count.  (`bench --target jvm`
+      # is blocked on Std.Time JVM support, tracked in #3302.)
+      - name: lyric bench --target dotnet end-to-end smoke
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping lyric bench smoke"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          cat > "$work/benchsmoke.l" <<'LYR'
+          @bench_module
+          package BenchSmoke
+
+          import Std.Core
+
+          @bench
+          func addLoop(): Unit {
+            var acc = 0
+            var i = 0
+            while i < 100 {
+              acc = acc + i
+              i = i + 1
+            }
+            ()
+          }
+          LYR
+          out="$("$lyric_bin" bench --target dotnet --runs 3 --warmup 1 "$work/benchsmoke.l")"
+          echo "lyric bench --target dotnet output:"
+          echo "$out"
+          if ! printf '%s\n' "$out" | grep -q "1 benchmark(s)"; then
+            echo "::error::lyric bench --target dotnet did not report its benchmark count"
+            exit 1
+          fi
       # Match-literal + compound-assignment self-test — pins two self-hosted
       # MSIL backend correctness fixes from #1481 (epic #1470, Band 2): Float
       # literal *match* patterns now emit a real `ldc.r8; ceq` compare instead

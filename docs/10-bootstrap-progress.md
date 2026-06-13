@@ -24581,3 +24581,60 @@ production design and pins the real blocker.
   pure-auto-FFI design and the #3307 blocker in place of the phantom
   Java-shim plan.  No self-test is wired yet — a loop-driven process
   kernel cannot compile to valid JVM bytecode until #3307 lands.
+
+### D-progress-510 — `lyric run --target jvm` NRE fix + `bench --target dotnet` runtime deps; CI smoke + closeout (#674, #680)
+
+The self-hosted CLI carried JVM dispatch for both `run` and `bench`
+(`cli_run.l` / `cli_bench.l`, PR #3063 / #3102), but the paths had never
+been exercised end-to-end and both were broken in practice.
+
+- **`lyric run --target jvm` crashed with a NullReferenceException** in
+  `stemOf`.  Root cause (IL-decompile confirmed): the
+  `val runTarget: CompileTarget = match targetArg { … case Some(t) -> if … }`
+  binding mis-lowers under the stage-0 emitter — the nested `if`-expression
+  in the `Some` arm is emitted as a value-discarding statement, leaving
+  `runTarget` null.  The null target propagated to a null `outPath` in
+  `runOnce`, and `Path.basename(null)` returned null into `stemOf`.  The bug
+  also broke `lyric run --target dotnet` when `--target` was passed
+  explicitly (only the bare `lyric run`, hitting the `None` arm, worked).
+  Fixed by rewriting the parse to the `var`-mutation shape `cmdBuild` already
+  uses for `--target`, which the emitter lowers correctly.  `lyric run
+  --target jvm` now builds the bundled JAR via the in-process `Jvm.Bridge`
+  and runs it under `java -jar`; verified on JDK 21 (a no-arg `func main()`
+  prints correctly).
+- **`lyric bench --target dotnet` failed at runtime** with a
+  `FileNotFoundException` for `Lyric.Stdlib.Time` — the synthesised `@bench`
+  harness imports `Std.Time` (now/since/totalMillis) but the bench dotnet
+  branch never co-located the split stdlib runtime assemblies beside its
+  output.  Added the `copyRuntimeDepsBeside(outPath, findCompiledLibDir())`
+  call (mirroring `runOnce`); `bench --target dotnet` now reports
+  min/max/mean.
+- **CI.**  Two native end-to-end smoke steps added to `ci.yml` after the JVM
+  self-test block: `lyric run --target jvm` (compiles + runs a no-arg-main
+  program under `java`, asserts stdout — the first CI coverage of the run
+  JVM wrapper) and `lyric bench --target dotnet` (runs a `@bench_module`,
+  asserts the benchmark-count line).
+- **Docs.**  Language reference §13.1 gains a `lyric run` paragraph (with the
+  JVM arg/exit-code limitations noted); docs/44 M-18 + its §J7 bullet mark
+  #674 done for the no-arg/stdout path, describe `bench --target jvm` (#680)
+  as wired-but-blocked on JVM `Std.Time` (#3302), and note the run-JVM
+  arg/exit-code gaps (#3303), with GraalVM native-image (#675/#1975) the
+  remaining JVM-distribution gap; book appendix-B annotates the parked JVM
+  gaps.
+
+Parked (the CLI dispatch is in place and fails loud with real diagnostics —
+not stubs):
+
+- **`lyric bench --target jvm` is blocked on JVM `Std.Time` support.**  The
+  timing harness needs `now()` / `since()` / `totalMillis()`, none of which
+  the JVM backend can lower (the receiver resolves to `java.lang.Object`, and
+  `Std.TimeHost`'s `@externTarget "java.time.Duration.ZERO"` static-field
+  read is unsupported by the JVM auto-FFI resolver — F0015-J).  This is the
+  same gap independently surfaced by D-progress-507 (#1298).  Tracked in
+  **#3302**; **#680 stays open**.
+- **`lyric run --target jvm` of an args-taking `main(slice[String])`** hits a
+  JVM `VerifyError` (entry `args` typed `Object[]`), and the `Int` return is
+  not propagated to the JVM process exit code (the no-arg / output path that
+  #674 asked for works).  JVM codegen gaps tracked in **#3303**.
+
+**Closes #674.**

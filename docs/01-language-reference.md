@@ -1397,6 +1397,8 @@ method-syntax form.
 
 `--release` is supported for both **single-file** and **project-mode** (multi-package `lyric.toml`) programs on the **.NET** target. In project mode the entry package — the one whose source declares a zero-argument `func main()` — is auto-detected across all `[project.packages]` entries; exactly one package must declare `func main()` (zero or multiple entries are a hard error). Local path dependencies declared in `[dependencies]` are automatically collected as AOT linker references. The JVM target (GraalVM `native-image`, designed behind the same `ReleaseTarget` seam) is not yet implemented and fails loud rather than silently producing a managed artifact (#1975).
 
+`lyric run [<source.l>] [--target dotnet|jvm]` — compiles and immediately executes, mirroring `lyric build` then running the produced artifact. `--target dotnet` (the default) builds the `.dll` and runs it via `dotnet exec`; `--target jvm` builds the self-contained `.jar` and runs it via `java -jar`. On `--target dotnet`, arguments after `--` are forwarded verbatim to the program and the program's exit code becomes `lyric run`'s exit code. On `--target jvm` this works for a no-argument `main` whose output goes to stdout; a `main(slice[String])` that takes arguments currently hits a JVM `VerifyError`, and the `Int` return is not yet propagated to the process exit code (both tracked in #3303). With no source file, `lyric run` discovers the nearest `lyric.toml` and runs the project's entry artifact; `--target` applies to the project build. Intermediate artifacts are written under `.lyric-run/`.
+
 **Project-aware defaults.** Running `lyric` with no command builds the current
 project: it discovers the nearest `lyric.toml` by walking up from the working
 directory and runs `lyric build` against it. All eight dev-loop commands —
@@ -1541,7 +1543,7 @@ The bootstrap formatter works directly from the parsed AST; it does not require 
 
 ### 13.9 Benchmark runner
 
-`lyric bench [<source.l>] [--target dotnet|jvm]` compiles a `@bench_module` file, synthesises a timing harness around each `@bench`-annotated function, and reports wall-clock statistics to stdout. `--target dotnet` (default) runs via `dotnet exec`; `--target jvm` produces a self-contained JAR and runs via `java -jar`.
+`lyric bench [<source.l>] [--target dotnet|jvm]` compiles a `@bench_module` file, synthesises a timing harness around each `@bench`-annotated function, and reports wall-clock statistics to stdout. `--target dotnet` (default) runs via `dotnet exec`. `--target jvm` dispatch is wired but currently blocked: the timing harness imports `Std.Time`, which does not yet compile on the JVM backend (#3302), so `lyric bench --target jvm` is not yet usable (#680 remains open).
 
 **Project mode.** When invoked with no source file, `lyric bench` discovers the nearest `lyric.toml` and runs benchmarks for every `[project.packages]` source file that contains a `@bench_module` annotation. Pass `--manifest <lyric.toml>` to override discovery. `--target` applies to all files in the project.
 
