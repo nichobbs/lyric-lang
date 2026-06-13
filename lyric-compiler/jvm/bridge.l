@@ -297,6 +297,11 @@ func isTypeItem(it: in Item): Bool {
     // `protected type` declarations must likewise propagate across package
     // boundaries so importing packages can reference the protected type.
     case IProtected(_) -> true
+    // `impl Iface for T` conformance must cross package boundaries so a consumer
+    // passing the concrete `T` where an `Iface` parameter is expected satisfies
+    // interface subsumption (parallels the MSIL bridge; keyed by `TypeId`,
+    // ignored by `addSigsFromItems`).
+    case IImpl(_) -> true
     case _ -> false
   }
   if isType {

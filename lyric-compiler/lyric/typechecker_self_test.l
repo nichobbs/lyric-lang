@@ -1405,6 +1405,25 @@ test "imported package signature prefers its declared import" {
   assertTrue(idMk != idPc, "import-scope: mk's return is not the last-registered Pc Payload")
 }
 
+// A concrete record with `impl Iface for Record` in package A must satisfy an
+// `Iface` *parameter* of a free function imported from A when called from a
+// consumer package B (the lyric-cache `Cache.get(Cache.inProcess(), …)` shape).
+// Same-package this works (registerImplsFromItems keys the relation by TypeId);
+// cross-package it regressed because the impl relation was keyed off TypeIds
+// that the consumer's scope re-resolved differently.
+test "cross package impl satisfies interface at argument position" {
+  val pkgAcme = parse(
+    "package Acme\npub interface Store { func get(key: in String): Int }\npub record MemStore { var data: Int = 0 }\nimpl Store for MemStore { func get(key: in String): Int { 0 } }\npub func mkStore(): MemStore { MemStore(data = 0) }\npub func lookup(store: in Store, key: in String): Int { store.get(key) }\n"
+  )
+  val imports: List[ImportedPackage] = newList()
+  imports.add(
+    ImportedPackage(name = "Acme", items = pkgAcme.file.items, imports = collectImportNames(pkgAcme.file.imports))
+  )
+  val app = parse("package App\nimport Acme\nfunc run(): Int { lookup(mkStore(), \"k\") }\n")
+  val cr = checkWithImportedPackages(app.file, imports)
+  assertFalse(hasDiagCode(cr, "T0043"), "cross-package: MemStore satisfies Store parameter (no T0043)")
+}
+
 // #1980: `let` bindings are immutable like `val`; reassigning one must emit T0087.
 test "let no reassign" {
   val src = "package P\nfunc f(): Unit {\n  let x = 1\n  x = 2\n}\n"
