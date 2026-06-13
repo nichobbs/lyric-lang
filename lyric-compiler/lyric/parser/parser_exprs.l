@@ -619,8 +619,14 @@ func parsePrimaryPattern(st: inout ParseState): Pattern {
           val inner = parsePrimaryPattern(st)
           mkPat(PBinding(name = path.segments[0], inner = Some(value = inner)), joinSpans(path.span, inner.span))
         } else if path.segments.count == 1 {
-          // TODO(#1891): workaround for PConstructor MObject codegen bug —
-          // an inline `None` would route through the buggy lowering path.
+          // RETAINED for #1891: hoisting `None` into a typed `noInner` local is
+          // load-bearing here, not stylistic.  When the self-hosted compiler
+          // compiles *this* parser, an inline `inner = None` makes the produced
+          // parser miscompile single-segment patterns (notably `case None`),
+          // so exhaustiveness later reports spurious T0016 missing-`None`.  The
+          // codegen fix landed for typed PConstructor *bindings* but does not
+          // cover inline-`None`-into-an-`Option[Pattern]` field, so this hoist
+          // stays until that path is fixed.  Tracked under #1891.
           val noInner: Option[Pattern] = None
           mkPat(PBinding(name = path.segments[0], inner = noInner), path.span)
         } else {
@@ -632,17 +638,14 @@ func parsePrimaryPattern(st: inout ParseState): Pattern {
       match k {
         case KwResult -> {
           val _ = advance(st)
-          // TODO(#1891): workaround for PConstructor MObject codegen bug.
-          val noInner: Option[Pattern] = None
-          mkPat(PBinding(name = "result", inner = noInner), tok.span)
+          mkPat(PBinding(name = "result", inner = None), tok.span)
         }
         case _ -> match contextualIdentKeyword(k) {
           // A pure position-introducer keyword (`entry`, `type`, …) used as a
           // `val`/`match` binding name binds like any identifier (D093).
           case Some(name) -> {
             val _ = advance(st)
-            val noInner: Option[Pattern] = None
-            mkPat(PBinding(name = name, inner = noInner), tok.span)
+            mkPat(PBinding(name = name, inner = None), tok.span)
           }
           case None -> {
             // A reserved keyword (not a contextual identifier) in pattern
