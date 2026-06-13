@@ -143,6 +143,32 @@ func isValBinding(s: in Statement, name: in String): Bool {
   }
 }
 
+func isVarBinding(s: in Statement, name: in String): Bool {
+  match s.kind {
+    case SLocal(b) -> {
+      match b {
+        case LBVar(n, _, _) -> n == name
+        case _ -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
+// Count `import <seg0>.<seg1>` entries in the file's import list.
+func importCount(file: in SourceFile, seg0: in String, seg1: in String): Int {
+  var n = 0
+  var i = 0
+  while i < file.imports.count {
+    val p = file.imports[i].path
+    if p.segments.count == 2 and p.segments[0] == seg0 and p.segments[1] == seg1 {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  n
+}
+
 func literalIntValue(e: in Expr): Long {
   match e.kind {
     case ELiteral(lit) -> {
@@ -825,11 +851,11 @@ test "call.<field> member access rewrites to __lyric_call_<field>" {
 }
 
 test "unknown call.<field> emits A0043 weave diagnostic" {
-  // call.elapsed is not yet wired; the rewriter leaves the expression
+  // A genuinely-unknown field: the rewriter leaves the expression
   // intact AND emits A0043 so the user gets a weaver-targeted message
   // instead of a "call is undeclared" type error (review #1193).
   val src = "package P\n" + "aspect Trace {\n" + "  matches: name like \"g\"\n" + "  around(args) -> ret {\n" +
-    "    val e = call.elapsed\n" +
+    "    val e = call.bogus\n" +
     "    proceed(args)\n" +
     "  }\n" +
     "}\n" +
@@ -837,8 +863,25 @@ test "unknown call.<field> emits A0043 weave diagnostic" {
   val wr = parseWeaveDiags(src)
   val wrapper = firstFunction(wr.file, "g")
   val body = functionBody(wrapper)
-  assertTrue(bodyHasMemberAccess(body, "call", "elapsed"), "call.elapsed left intact in AST")
-  assertTrue(diagsHaveCode(wr.diagnostics, "A0043"), "A0043 emitted for unknown call.elapsed")
+  assertTrue(bodyHasMemberAccess(body, "call", "bogus"), "call.bogus left intact in AST")
+  assertTrue(diagsHaveCode(wr.diagnostics, "A0043"), "A0043 emitted for unknown call.bogus")
+}
+
+test "call.caller emits A0043 (caller-site capture unavailable)" {
+  // `call.caller` is specified in docs/26 §4.3 as "when available";
+  // the weaver has no caller-site capture, so it stays an A0043 —
+  // distinct from `call.elapsed`, which IS wired (#1298).
+  val src = "package P\n" + "aspect Trace {\n" + "  matches: name like \"g\"\n" + "  around(args) -> ret {\n" +
+    "    val c = call.caller\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n" +
+    "func g(): Int { 0 }\n"
+  val wr = parseWeaveDiags(src)
+  val wrapper = firstFunction(wr.file, "g")
+  val body = functionBody(wrapper)
+  assertTrue(bodyHasMemberAccess(body, "call", "caller"), "call.caller left intact in AST")
+  assertTrue(diagsHaveCode(wr.diagnostics, "A0043"), "A0043 emitted for call.caller")
 }
 
 test "call prelude is omitted when the body never references call.<x>" {
@@ -887,10 +930,12 @@ test "duplicate call.<field> references don't crash the pre-scan" {
 test "repeated unknown call.<field> emits at most one A0043" {
   // Regression for review #1299: `tryMemberRewrite` previously
   // appended to argsErrors once per occurrence, so an aspect body
-  // referencing `call.elapsed` twice produced two A0043 diagnostics.
+  // referencing the same unknown field twice produced two A0043
+  // diagnostics.  (`call.caller` is the unknown field here —
+  // `call.elapsed` no longer qualifies since #1298 wired it.)
   val src = "package P\n" + "aspect Trace {\n" + "  matches: name like \"r\"\n" + "  around(args) -> ret {\n" +
-    "    val a = call.elapsed\n" +
-    "    val b = call.elapsed\n" +
+    "    val a = call.caller\n" +
+    "    val b = call.caller\n" +
     "    proceed(args)\n" +
     "  }\n" +
     "}\n" +
@@ -905,6 +950,142 @@ test "repeated unknown call.<field> emits at most one A0043" {
     i = i + 1
   }
   assertEqualInt(count, 1, "A0043 dedup: at most one diag per (kind, field)")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §3.5. #1298 — `call.elapsed` runtime instrumentation.
+// ─────────────────────────────────────────────────────────────────────────────
+test "call.elapsed after proceed: prelude var + timed proceed, no A0043" {
+  val src = "package P\n" + "aspect Timing {\n" + "  matches: name like \"t\"\n" + "  around(args) -> ret {\n" +
+    "    val r = proceed(args)\n" +
+    "    val e = call.elapsed\n" +
+    "    r\n" +
+    "  }\n" +
+    "}\n" +
+    "func t(): Int { 1 }\n"
+  val wr = parseWeaveDiags(src)
+  assertTrue(not diagsHaveCode(wr.diagnostics, "A0043"), "no A0043 for wired call.elapsed")
+  val wrapper = firstFunction(wr.file, "t")
+  val body = functionBody(wrapper)
+  assertTrue(isVarBinding(body.statements[0], "__lyric_call_elapsed"), "prelude starts with the elapsed var")
+  assertTrue(not bodyHasMemberAccess(body, "call", "elapsed"), "call.elapsed member access rewritten away")
+  assertTrue(bodyMentionsPath(body, "__lyric_call_elapsed"), "__lyric_call_elapsed path present")
+  assertTrue(bodyMentionsPath(body, "__lyric_call_start"), "timed proceed captures __lyric_call_start")
+  assertTrue(bodyMentionsPath(body, "__lyric_call_proceed_ret"), "timed proceed binds the target result")
+  assertTrue(bodyMentionsPath(body, "monotonicNanos"), "timed proceed calls monotonicNanos")
+}
+
+test "call.elapsed with no proceed: var prelude only, no instrumentation" {
+  // A body that never calls `proceed` still gets the prelude var (so
+  // the rewritten reference resolves) but no start-capture — the var
+  // stays None for the whole wrapper, per docs/26 §4.3.
+  val src = "package P\n" + "aspect Replace {\n" + "  matches: name like \"n\"\n" + "  around(args) -> ret {\n" +
+    "    val e = call.elapsed\n" +
+    "    0\n" +
+    "  }\n" +
+    "}\n" +
+    "func n(): Int { 1 }\n"
+  val wr = parseWeaveDiags(src)
+  assertTrue(not diagsHaveCode(wr.diagnostics, "A0043"), "no A0043 for wired call.elapsed")
+  val wrapper = firstFunction(wr.file, "n")
+  val body = functionBody(wrapper)
+  assertTrue(isVarBinding(body.statements[0], "__lyric_call_elapsed"), "prelude carries the elapsed var")
+  assertTrue(not bodyMentionsPath(body, "__lyric_call_start"), "no start capture without a proceed call")
+}
+
+test "Unit-returning target: timed proceed skips the result binding" {
+  val src = "package P\n" + "aspect Timing {\n" + "  matches: name like \"u\"\n" + "  around(args) -> ret {\n" +
+    "    proceed(args)\n" +
+    "    val e = call.elapsed\n" +
+    "  }\n" +
+    "}\n" +
+    "func u(): Unit {\n  val x = 0\n}\n"
+  val wr = parseWeaveDiags(src)
+  val wrapper = firstFunction(wr.file, "u")
+  val body = functionBody(wrapper)
+  assertTrue(bodyMentionsPath(body, "__lyric_call_start"), "timed proceed still captures the start instant")
+  assertTrue(not bodyMentionsPath(body, "__lyric_call_proceed_ret"), "no result binding for a Unit target")
+}
+
+test "weaveFile auto-injects import Std.Time for call.elapsed" {
+  val src = "package P\n" + "aspect Timing {\n" + "  matches: name like \"t\"\n" + "  around(args) -> ret {\n" +
+    "    val r = proceed(args)\n" +
+    "    val e = call.elapsed\n" +
+    "    r\n" +
+    "  }\n" +
+    "}\n" +
+    "func t(): Int { 1 }\n"
+  val woven = parseWeave(src)
+  assertEqualInt(importCount(woven, "Std", "Time"), 1, "import Std.Time injected once")
+}
+
+test "Std.Time auto-import is deduplicated when already present" {
+  val src = "package P\n" + "import Std.Time\n" + "aspect Timing {\n" + "  matches: name like \"t\"\n" +
+    "  around(args) -> ret {\n" +
+    "    val r = proceed(args)\n" +
+    "    val e = call.elapsed\n" +
+    "    r\n" +
+    "  }\n" +
+    "}\n" +
+    "func t(): Int { 1 }\n"
+  val woven = parseWeave(src)
+  assertEqualInt(importCount(woven, "Std", "Time"), 1, "no duplicate import Std.Time")
+}
+
+test "no Std.Time injection when no aspect references call.elapsed" {
+  val src = "package P\n" + "aspect Trace {\n" + "  matches: name like \"t\"\n" +
+    "  around(args) -> ret { proceed(args) }\n" +
+    "}\n" +
+    "func t(): Int { 1 }\n"
+  val woven = parseWeave(src)
+  assertEqualInt(importCount(woven, "Std", "Time"), 0, "no import injected when elapsed unused")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §3.6. #1298 — runtime coverage.  These aspects live in THIS test
+// module, so when `lyric test` compiles the file the in-process bridge
+// weaves them for real: the tests below execute the instrumented
+// wrappers and observe `call.elapsed` at runtime.
+// ─────────────────────────────────────────────────────────────────────────────
+aspect ElapsedRuntimeProbe {
+  matches: name like "elapsedTimedTarget"
+  around(args) -> ret {
+    val r = proceed(args)
+    // Encode the observed elapsed value into the return so the test
+    // can assert on it: None -> -1 (fails the >= base check),
+    // Some(ms) -> base + ms.
+    val ms = match call.elapsed { case Some(v) -> v; case None -> 0 - 1 }
+    r + ms
+  }
+}
+
+aspect ElapsedSkipProbe {
+  matches: name like "elapsedSkipTarget"
+  around(args) -> ret {
+    // Never calls proceed: per docs/26 §4.3 call.elapsed must be None.
+    match call.elapsed {
+      case Some(_) -> 0 - 1
+      case None -> 7
+    }
+  }
+}
+
+func elapsedTimedTarget(): Int {
+  1000000
+}
+
+func elapsedSkipTarget(): Int {
+  42
+}
+
+test "runtime: call.elapsed is Some(ms >= 0) after proceed" {
+  val v = elapsedTimedTarget()
+  assertTrue(v >= 1000000, "call.elapsed must be Some(ms) with ms >= 0 after proceed")
+  assertTrue(v < 1060000, "call.elapsed must be plausible (under 60s)")
+}
+
+test "runtime: skip aspect (no proceed) observes call.elapsed as None" {
+  assertEqualInt(elapsedSkipTarget(), 7, "no-proceed wrapper takes the None arm")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

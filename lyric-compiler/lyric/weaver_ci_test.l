@@ -348,14 +348,16 @@ func testCallShortNameInjected(): Unit {
 }
 
 func testCallUnknownFieldEmitsA0043(): Unit {
+  // `call.caller` (caller-site capture is unimplemented; docs/26 §4.3)
+  // — `call.elapsed` no longer qualifies since #1298 wired it.
   val src = "package P\n" + "aspect Trace {\n" + "  matches: name like \"g\"\n" + "  around(args) -> ret {\n" +
-    "    val e = call.elapsed\n" +
+    "    val e = call.caller\n" +
     "    proceed(args)\n" +
     "  }\n" +
     "}\n" +
     "func g(): Int { 0 }\n"
   val wr = parseWeaveDiags(src)
-  check(diagsHaveCode(wr.diagnostics, "A0043"), "call unknown field: A0043 must be emitted for call.elapsed")
+  check(diagsHaveCode(wr.diagnostics, "A0043"), "call unknown field: A0043 must be emitted for call.caller")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -813,3 +813,18 @@ pub record ParseResult {
   /// contents themselves.
   source: String
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §X. Same-package Option constructors for cross-package rewriters.
+// ─────────────────────────────────────────────────────────────────────────────
+/// Build `Some(around)` inside the declaring package.  The stage-0
+/// bootstrap emitter miscompiles `Option[AspectAround]` construction in a
+/// *third* package (e.g. `Lyric.AliasRewriter`): the resulting value
+/// matches neither `Some` nor `None` in consuming packages, so an aspect
+/// rebuilt by such a rewriter silently loses its `around` body and the
+/// weaver stops matching it (#1298 investigation).  Routing the
+/// construction through this helper keeps the generic instantiation in
+/// `Lyric.Parser`, where the parser's own construction is known-good.
+pub func someAspectAround(a: in AspectAround): Option[AspectAround] {
+  Some(value = a)
+}

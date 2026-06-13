@@ -375,12 +375,14 @@ a follow-up.
 and materialises only the `__lyric_call_<name>` locals that are
 actually referenced.  Six compile-time-known fields are wired:
 `shortName`, `qualifiedName`, `modulePath`, `sourceLocation`,
-`annotations`, `aspect`.  `call.elapsed` and `call.caller` need
-runtime instrumentation (Std.Time integration plus auto-import-
-injection design); deferred to **#1298**.  Any `call.<unknown>` —
-including those two — surfaces as an **A0043** weave-time
-diagnostic so users get a weaver-targeted message instead of a
-downstream "call is undeclared" type error.
+`annotations`, `aspect`.  The runtime field `call.elapsed`
+(`Option[Int]`, ms) was wired later in **#1298** / D-progress-507
+(monotonic capture around `proceed` + `import Std.Time`
+auto-injection per D100).  `call.caller` is not available
+(caller-site capture unimplemented); it — and any other
+`call.<unknown>` — surfaces as an **A0043** weave-time diagnostic
+so users get a weaver-targeted message instead of a downstream
+"call is undeclared" type error.
 
 **#681 — `@inline_template`:**
 
@@ -24370,3 +24372,86 @@ Verified end-to-end through `./bin/lyric`: the 17-test suite passes via
 `lyric test --manifest`, and a separate consumer package registering a
 passing and a failing check prints the aggregated degraded/ok JSON bodies
 and the 503 `ApiError` mapping correctly.
+### D-progress-507 — weaver: `call.elapsed` runtime instrumentation + `Std.Time` auto-import (#1298, D100)
+
+Wires the last deferred `call` ambient field that is implementable
+without an ABI change: `call.elapsed: Option[Int]` (milliseconds),
+closing the Tier-6 follow-up #1298.  `docs/26-aspects.md` §4.3 is the
+shape authority — `Option[Int]` / `Some(ms)`-after-`proceed`, not the
+`Option[Duration]` sketch from the issue body (Q-aspects-003 resolved
+the type to `Option[Int]` so `call.elapsed.unwrapOr(0)` works in the
+worked examples).
+
+- **`lyric-compiler/lyric/weaver/weaver.l`.**  When an aspect's
+  `around` body references `call.elapsed`, `buildCallPrelude` emits a
+  mutable `var __lyric_call_elapsed: Option[Int] = None` prelude local
+  and the rewriter swaps `proceed(args)` for a timed block expression
+  (`proceedSubstitutionTimed`): capture
+  `val __lyric_call_start = monotonicNanos()`, call the target, assign
+  `__lyric_call_elapsed = Some(value = ((monotonicNanos() -
+  __lyric_call_start) / 1000000).toInt())`, yield the result.  A block
+  expression keeps the capture exact in any expression position
+  (val-init, loop body, if-branch) and guarantees the assignment runs
+  iff `proceed` dynamically executed — a skip body observes `None`,
+  per spec.  `Unit`-returning targets skip the result binding (`: Unit`
+  parses as a `TRef` named "Unit", not `TUnit`, which only the literal
+  `()` form produces — the unit check accepts both).
+- **`import Std.Time` auto-injection (D100).**  `injectWeaveImports`
+  (new `pub` entry) appends a deduplicated `import Std.Time` to the
+  file when any `around` body references `call.elapsed`, following the
+  `Lyric.Stubbable` auto-import precedent.  `weaveFile` /
+  `weaveFileWithDiags` apply it before the items pass (the IAspect
+  items that carry the references are dropped by the weave itself);
+  the JVM bridge additionally calls it right after parse in both
+  `compileToJar` and `compileToJarBundledWithFeatures`, because the
+  bundler computes the stdlib import closure from `file.imports`
+  BEFORE the middle-end weave runs.
+- **A0043 narrows.**  `call.elapsed` no longer fires A0043.  The
+  recognised-fields list in the message gains `elapsed`, and the
+  message now states explicitly that `call.caller` is unavailable
+  (caller-site capture unimplemented, docs/26 §4.3) rather than
+  "not yet wired".
+- **Tests.**  `weaver_self_test.l` gains §3.5 (AST shape: prelude var,
+  timed block, no-proceed body, Unit-target binding skip, import
+  injection + dedup) and §3.6 (runtime: in-module aspects woven by the
+  in-process bridge during `lyric test`; a timing aspect observes
+  `Some(ms >= 0)` after `proceed`, a no-proceed aspect observes
+  `None`).  The pre-existing A0043 regression arms move to
+  `call.caller` / `call.bogus`.  `weaver_ci_test.l` follows suit.  All
+  27 weaver self-tests and the 47 verifier self-tests (the prove
+  driver calls `weaveFile`) pass on `--target dotnet`.
+- **JVM status.**  The weaver transform and the auto-import run
+  identically on `--target jvm` (the JVM bridge injects the import
+  before its bundling closure walk, and seeds
+  `Std/Time/monotonicNanos` plus every aspect advice body's callees
+  as call-graph roots so the woven calls count as reachable).  But
+  `Std.Time` itself does not yet compile on JVM today: a plain
+  `import Std.Time` / `Std.Time.monotonicNanos()` program fails JVM
+  codegen (the call falls through to an auto-FFI miss), and
+  `Std.TimeHost`'s `@externTarget "java.time.Duration.ZERO"` is a
+  static *field* the JVM extern resolver cannot bind (F0015-J).  So an
+  aspect using `call.elapsed` on `--target jvm` now fails the build
+  with an honest J002 naming `Std.Time` / `Std.TimeHost` (previously a
+  bundled-but-unreachable package's codegen failure was soft-skipped,
+  downgrading to a runtime `NoClassDefFoundError`).  The JVM `Std.Time`
+  gap is pre-existing and broader than this issue; tracked under the
+  JVM production-readiness plan (docs/44, epic #2663 / band J6 #2669)
+  and the JVM follow-up of #1298.
+- **Drive-by fix — weaving was silently disabled for every
+  import-bearing file.**  Wiring the runtime tests exposed a
+  pre-existing bug: `Lyric.AliasRewriter.collectAliases` registers an
+  implicit alias for *every* import (tail segment → full path), so any
+  `import` line makes `rewriteFile` reconstruct all items — and
+  `rewriteAspectDecl`'s `Some(value = AspectAround(...))` is an
+  `Option[<cross-package record>]` construction in a third package,
+  which the stage-0 bootstrap emitter miscompiles into a value that
+  matches neither `Some` nor `None` downstream.  `collectActiveAspects`
+  then saw no `around` and silently skipped the weave: an aspect file
+  with any import compiled to the *unwoven* original on `lyric build` /
+  `lyric run` / `lyric test`.  Fixed by constructing the option inside
+  the declaring package: new `Lyric.Parser.someAspectAround(a)` helper,
+  used by `rewriteAspectDecl`.  The §3.6 runtime tests (which import
+  `Std.Testing`) regress this permanently.
+- **Docs.**  `docs/26-aspects.md` §4.3 + §15, language reference
+  §14.7, and `book/chapters/22-aspects.md` §22.6 updated; decision-log
+  entry **D100** records the auto-import decision.

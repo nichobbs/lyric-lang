@@ -1732,20 +1732,24 @@ requires:`) and A0041 (template-imports diagnostic referenced in
 
 The following are specified but not yet fully woven:
 
-- The `call` ambient value's runtime fields — `call.elapsed`
-  (timestamp around `proceed`) and `call.caller` (caller-site
-  location) need runtime instrumentation that is deferred to
-  issue #1298. The compile-time-known fields (`shortName`,
-  `qualifiedName`, `modulePath`, `sourceLocation`, `annotations`,
-  `aspect`) are wired and rewritten by the weaver as
-  `__lyric_call_<name>` locals. Concrete shapes: `shortName`,
-  `qualifiedName`, `modulePath`, `aspect` are `String`;
-  `sourceLocation` is `String` of the form
-  `"<packagePath>:<line>"` (or `"<unknown>:<line>"` when the
-  package path is empty); `annotations` is `slice[String]`
-  carrying the matched function's annotation short-names.
-  References to `call.elapsed` / `call.caller` surface as A0043
-  weave-time diagnostics.
+- The `call` ambient value's `call.caller` field (caller-site
+  location) needs caller-site capture that is not implemented;
+  references surface as A0043 weave-time diagnostics. The
+  compile-time-known fields (`shortName`, `qualifiedName`,
+  `modulePath`, `sourceLocation`, `annotations`, `aspect`) are
+  wired and rewritten by the weaver as `__lyric_call_<name>`
+  locals. Concrete shapes: `shortName`, `qualifiedName`,
+  `modulePath`, `aspect` are `String`; `sourceLocation` is
+  `String` of the form `"<packagePath>:<line>"` (or
+  `"<unknown>:<line>"` when the package path is empty);
+  `annotations` is `slice[String]` carrying the matched
+  function's annotation short-names. The runtime field
+  `call.elapsed` (`Option[Int]`, milliseconds) is wired (#1298 /
+  D100): the weaver captures `Std.Time.monotonicNanos()` around
+  each `proceed(args)` call and auto-injects `import Std.Time`
+  (deduplicated) into the woven file; the value is `Some(ms)`
+  after `proceed` returns and `None` before / when the body never
+  calls `proceed`.
 - `pub aspect` templates and consumer-side instantiation
   (`aspect X from Pkg.Y`) — parsed by the compiler but the weaver
   does not act on them.
