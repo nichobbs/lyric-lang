@@ -157,7 +157,7 @@ test "runChecks escapes quotes and backslashes in names and details" {
 }
 
 test "runChecks escapes control characters in names and details (RFC 8259)" {
-  // Name carries U+0001 (no shorthand -> ) and U+0008 backspace (-> \b);
+  // Name carries U+0001 (no shorthand -> ) and U+0008 backspace (-> \b);
   // detail carries U+000C form-feed (-> \f).
   val registry = Health.addReadinessCheck(
     Health.create(), "a\u{0001}b\u{0008}c", { -> Health.fail("x\u{000C}y") })
@@ -192,6 +192,30 @@ test "runReadiness returns a 503 ApiError naming failing checks when degraded" {
       assertEqualInt(e.status, 503, "degraded maps to 503")
       assertEqual(e.message, "health checks degraded: db, cache", "failing check names")
     }
+  }
+}
+
+test "runLiveness returns a 503 ApiError naming failing checks when degraded" {
+  var registry = Health.create()
+  registry = Health.addLivenessCheck(registry, "self", { -> failingCheck() })
+  registry = Health.addLivenessCheck(registry, "disk", { -> Health.fail("full") })
+  match Health.runLiveness(registry) {
+    case Ok(_) -> assertTrue(false, "expected Err from a degraded liveness registry")
+    case Err(e) -> {
+      assertEqualInt(e.status, 503, "degraded liveness maps to 503")
+      assertEqual(e.message, "health checks degraded: self, disk", "failing check names")
+    }
+  }
+}
+
+test "runReadiness returns Ok with the JSON body when ready" {
+  val registry = Health.addReadinessCheck(Health.create(), "db", { -> passingCheck() })
+  match Health.runReadiness(registry) {
+    case Ok(body) -> assertEqual(
+      body,
+      "{\"status\":\"ok\",\"checks\":{\"db\":{\"status\":\"ok\",\"detail\":\"\"}}}",
+      "Ok body")
+    case Err(_) -> assertTrue(false, "expected Ok from a ready registry")
   }
 }
 
