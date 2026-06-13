@@ -1680,7 +1680,8 @@ func exprContainsYield(e: in Expr): Bool {
       }
       var i = 0
       while i < args.count {
-        if exprContainsYield(args[i].value) {
+        val argExpr = match args[i] { case CANamed(_, v, _) -> v; case CAPositional(expr) -> expr }
+        if exprContainsYield(argExpr) {
           return true
         }
         i = i + 1
