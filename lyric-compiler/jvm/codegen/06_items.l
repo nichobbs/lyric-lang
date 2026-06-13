@@ -1860,11 +1860,6 @@ func constraintRefToJvmClass(cr: in ConstraintRef, pkgName: in String): String {
   }
 }
 
-// Collect every top-level `func` item's JVM call signature from `file` into
-// `into` (keyed by bare function name; first declaration of a given name
-// wins).  Owner is the file's package host class.  Used to build the
-// cross-package call registry so any package's call sites can resolve a
-// callee's owner + descriptor.  See JvmFuncSig.
 // Collect a file's `extern type Alias = "java.fq.Name"` declarations into an
 // alias → dotted-Java-FQN map (first-wins).  Used to resolve extern aliases in
 // parameter/return descriptors so they don't fall back to `<pkg>/<Alias>`.
@@ -1885,6 +1880,11 @@ pub func collectExternTypesFromFile(file: in SourceFile): Map[String, String] {
   externTypes
 }
 
+// Collect every top-level `func` item's JVM call signature from `file` into
+// `into` (keyed by bare function name; first declaration of a given name
+// wins).  Owner is the file's package host class.  Used to build the
+// cross-package call registry so any package's call sites can resolve a
+// callee's owner + descriptor.  See JvmFuncSig.
 pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]): Unit {
   val owner = segmentsToJvmPath(file.packageDecl.path.segments)
   // Resolve `extern type` parameter/return descriptors to the real JVM class
