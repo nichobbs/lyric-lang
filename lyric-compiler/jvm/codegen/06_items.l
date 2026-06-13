@@ -70,7 +70,9 @@ func makeFuncCtx(
     selfClass = None,
     moduleVals = moduleVals,
     opaqueTypes = opaqueTypes,
-    closureAcc = closureAcc
+    closureAcc = closureAcc,
+    holderArraySlot = newMap(),
+    holderElemType = newMap()
   )
 }
 
@@ -118,7 +120,9 @@ func makeFuncCtxForGenerator(
     selfClass = None,
     moduleVals = moduleVals,
     opaqueTypes = opaqueTypes,
-    closureAcc = closureAcc
+    closureAcc = closureAcc,
+    holderArraySlot = newMap(),
+    holderElemType = newMap()
   )
 }
 
@@ -168,7 +172,9 @@ func makeFuncCtxInstance(
     selfClass = Some(value = className),
     moduleVals = moduleVals,
     opaqueTypes = opaqueTypes,
-    closureAcc = closureAcc
+    closureAcc = closureAcc,
+    holderArraySlot = newMap(),
+    holderElemType = newMap()
   )
 }
 
@@ -264,6 +270,101 @@ func emitBoxByteArray(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
   insns.add(LAload(slot = dstSlot))
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §6b. `out` / `inout` parameter prologue + descriptor (#1763).
+// ─────────────────────────────────────────────────────────────────────────────
+// True when any of `params` declares an `out`/`inout` mode.
+pub func anyHolderParam(params: in List[Param]): Bool {
+  var i = 0
+  while i < params.count {
+    if isHolderMode(params[i].mode) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Build the JVM descriptor parameter types for a function/method, honouring
+// `out`/`inout` modes: a holder parameter of element type T is declared as the
+// single-element array type `JArray(T)` (the caller passes the holder array),
+// while `in` parameters keep their value type.  `toJvm` maps a parameter's
+// TypeExpr to its element JvmType (caller supplies the erased or non-erased
+// mapper).  Index-aligned with `params`.
+pub func holderAwareParamTypes(
+  params: in List[Param], pkgName: in String, erase: in Bool, typeParams: in List[String]
+): List[JvmType] {
+  val acc: List[JvmType] = newList()
+  var i = 0
+  while i < params.count {
+    val p = params[i]
+    val elemTy = if erase { typeExprToJvmErased(p.ty, pkgName, typeParams) } else { typeExprToJvm(p.ty, pkgName) }
+    if isHolderMode(p.mode) {
+      acc.add(holderArrayType(elemTy))
+    } else {
+      acc.add(elemTy)
+    }
+    i = i + 1
+  }
+  acc
+}
+
+// Allocate JVM local slots for a static (free) function's parameters, set up
+// `out`/`inout` holder bindings, and emit the entry-prologue unwrap for each
+// holder parameter (#1763).  Parameter slots are allocated first, in
+// declaration order, so they line up with the JVM calling convention; then a
+// fresh value slot is allocated for each holder parameter and the holder array's
+// element 0 is unwrapped into it.  The parameter name resolves to the value slot
+// (a plain local), so reads need no array deref; `emitStoreLocalWriteThrough`
+// mirrors writes back to the holder.  `collectModes`, when non-null, receives
+// the declared modes index-aligned with the descriptor.
+pub func setupStaticParamSlotsAndHolders(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  params: in List[Param],
+  pkgName: in String,
+): Unit {
+  // Pass 1: allocate the ABI slot for every parameter, in order.  A holder
+  // parameter's ABI slot holds the incoming array; it is bound under a hidden
+  // name so the visible parameter name can later map to the unwrapped value
+  // slot.
+  val holderIdx: List[Int] = newList()
+  val holderSlots: List[Int] = newList()
+  val holderElems: List[JvmType] = newList()
+  var pi = 0
+  while pi < params.count {
+    val p = params[pi]
+    val elemTy = typeExprToJvm(p.ty, pkgName)
+    if isHolderMode(p.mode) {
+      val hs = allocSlot(ctx, "__holder$" + p.name, holderArrayType(elemTy))
+      holderIdx.add(pi)
+      holderSlots.add(hs)
+      holderElems.add(elemTy)
+    } else {
+      allocSlot(ctx, p.name, elemTy)
+    }
+    pi = pi + 1
+  }
+  // Pass 2: unwrap each holder into a fresh value slot bound to the parameter
+  // name, and record the holder binding so assignments write through.  The
+  // unwrap instructions are appended to `insns` (the body list, still empty at
+  // this point) so they run first.
+  var hi = 0
+  while hi < holderIdx.count {
+    val name = params[holderIdx[hi]].name
+    val elemTy = holderElems[hi]
+    val hs = holderSlots[hi]
+    val valueSlot = allocSlot(ctx, name, elemTy)
+    ctx.holderArraySlot.add(valueSlot, hs)
+    ctx.holderElemType.add(valueSlot, elemTy)
+    insns.add(LAload(slot = hs))
+    insns.add(LIconst(v = 0))
+    emitHolderElemLoad(insns, elemTy)
+    emitStore(insns, valueSlot, elemTy)
+    hi = hi + 1
+  }
+}
+
 pub func lowerFunc(
   decl: in FunctionDecl,
   pkgName: in String,
@@ -294,14 +395,9 @@ pub func lowerFunc(
   )
   val insns: List[LInsn] = newList()
 
-  // Allocate slots for parameters.
-  var pi = 0
-  while pi < decl.params.count {
-    val p = decl.params[pi]
-    val paramTy = typeExprToJvm(p.ty, pkgName)
-    allocSlot(ctx, p.name, paramTy)
-    pi = pi + 1
-  }
+  // Allocate slots for parameters and set up any `out`/`inout` holder bindings;
+  // the holder unwrap-prologue (if any) is emitted into `insns` first (#1763).
+  setupStaticParamSlotsAndHolders(ctx, insns, decl.params, pkgName)
 
   // Lower the body. @externTarget annotation takes priority over any syntactic
   // body form — a conventional `= ()` stub on an extern declaration must route
@@ -371,14 +467,10 @@ pub func lowerFunc(
     }
   }
 
-  // Determine param types for the LFunc descriptor.
-  val paramTypes: List[JvmType] = newList()
-  var pi2 = 0
-  while pi2 < decl.params.count {
-    val p2 = decl.params[pi2]
-    paramTypes.add(typeExprToJvm(p2.ty, pkgName))
-    pi2 = pi2 + 1
-  }
+  // Determine param types for the LFunc descriptor.  An `out`/`inout`
+  // parameter is declared as a single-element holder array (#1763).
+  val noTypeParams: List[String] = newList()
+  val paramTypes = holderAwareParamTypes(decl.params, pkgName, false, noTypeParams)
 
   // Synthesised @derive names like "Point.equals" carry a "TypeName." prefix
   // that JVMS §4.2.2 forbids in unqualified method names.  Strip everything up
@@ -660,6 +752,28 @@ pub func lowerUnion(decl: in UnionDecl, pkgName: in String): LSealedUnion {
 // when the block does not already terminate via `endsWithReturn` /
 // `blockTerminates` (#2870, #2874).  Extracted to prevent the two call-sites
 // (`lowerProtectedMethod`, `lowerRecordMethod`) from drifting.
+// Reject `out`/`inout` parameters on instance/interface methods on the JVM
+// target with a clear compile error (#1763).  Free functions support the
+// holder-array lowering end-to-end; the instance-method path (interface /
+// virtual dispatch, where the interface slot's descriptor and the impl
+// method's descriptor must agree on the holder array shape, plus the
+// dispatch-site wrap/unwrap) is not yet implemented, and silently passing the
+// parameter by value would drop the callee's write.  We fail loudly rather
+// than miscompile; the gap is tracked in the issue.  `context` names the
+// declaring method for the diagnostic.
+func rejectInstanceHolderParams(params: in List[Param], context: in String): Unit {
+  var i = 0
+  while i < params.count {
+    if isHolderMode(params[i].mode) {
+      panic(
+        "Jvm.Codegen: `out`/`inout` parameter '" + params[i].name + "' on instance/interface method " + context +
+          " is not yet supported on the JVM target (#1763); free-function `out`/`inout` parameters are supported. Use a return value (e.g. Option/Result or a tuple) for an instance method, or compile with --target dotnet where MSIL byref is used."
+      )
+    }
+    i = i + 1
+  }
+}
+
 func lowerInstanceMethodBody(ctx: in FuncCtx, insns: in List[LInsn], body: in FunctionBody, retTy: in JvmType): Unit {
   match body {
     case FBBlock(block) -> {
@@ -727,6 +841,7 @@ func lowerProtectedMethod(
     opaqueTypes,
     closureAcc
   )
+  rejectInstanceHolderParams(params, className + "." + name)
   val insns: List[LInsn] = newList()
   val paramTypes: List[JvmType] = newList()
   var pi = 0
@@ -781,6 +896,7 @@ func lowerRecordMethod(
     opaqueTypes,
     closureAcc
   )
+  rejectInstanceHolderParams(fn.params, className + "." + fn.name)
   val insns: List[LInsn] = newList()
   val paramTypes: List[JvmType] = newList()
   var pi = 0
@@ -1601,6 +1717,11 @@ func lowerGeneratorBody(
     closureAcc
   )
 
+  // `out`/`inout` parameters on an async generator are not supported on the
+  // JVM target (the holder array is captured into a generator field, and the
+  // write-back point is undefined across suspension) — reject rather than
+  // silently pass by value (#1763).
+  rejectInstanceHolderParams(decl.params, genClass + "(generator)")
   // Preamble: load each param from this.<field> into a local slot.
   var pi = 0
   while pi < decl.params.count {
@@ -1741,14 +1862,19 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
   while i < file.items.count {
     match file.items[i].kind {
       case IFunc(decl) -> {
-        val params: List[JvmType] = newList()
+        // An `out`/`inout` parameter is declared as a holder array in the JVM
+        // descriptor (#1763), so the registry records the array type and the
+        // declared mode; call sites read the modes to wrap holder arguments.
+        val noTypeParams: List[String] = newList()
+        val params = holderAwareParamTypes(decl.params, owner, false, noTypeParams)
         val paramNames: List[String] = newList()
         val paramDefaults: List[Option[Expr]] = newList()
+        val paramModes: List[ParamMode] = newList()
         var pi = 0
         while pi < decl.params.count {
-          params.add(typeExprToJvm(decl.params[pi].ty, owner))
           paramNames.add(decl.params[pi].name)
           paramDefaults.add(decl.params[pi].dflt)
+          paramModes.add(decl.params[pi].mode)
           pi = pi + 1
         }
         // An async generator's *factory* returns the synthesised generator
@@ -1769,7 +1895,8 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
           params = params,
           ret = ret,
           paramNames = paramNames,
-          paramDefaults = paramDefaults
+          paramDefaults = paramDefaults,
+          paramModes = paramModes
         )
         // Qualified key (`Std/Testing/assertEqualInt`) is unique across the
         // bundle, so two packages exporting the same short name (e.g.
@@ -1848,7 +1975,8 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
                       params = fPs,
                       ret = typeExprToJvm(f.ty, owner),
                       paramNames = newList(),
-                      paramDefaults = newList()
+                      paramDefaults = newList(),
+                      paramModes = newList()
                     )
                   )
                 }
@@ -1935,7 +2063,14 @@ func registerInstanceSigErased(
   if not into.containsKey(key) {
     into.add(
       key,
-      JvmFuncSig(owner = className, params = ps, ret = ret, paramNames = newList(), paramDefaults = newList())
+      JvmFuncSig(
+        owner = className,
+        params = ps,
+        ret = ret,
+        paramNames = newList(),
+        paramDefaults = newList(),
+        paramModes = newList()
+      )
     )
   }
 }
@@ -1954,7 +2089,14 @@ func registerStaticWireSig(
   if not into.containsKey(key) {
     into.add(
       key,
-      JvmFuncSig(owner = wireClass, params = params, ret = ret, paramNames = newList(), paramDefaults = newList())
+      JvmFuncSig(
+        owner = wireClass,
+        params = params,
+        ret = ret,
+        paramNames = newList(),
+        paramDefaults = newList(),
+        paramModes = newList()
+      )
     )
   }
 }
@@ -2310,7 +2452,8 @@ pub func registerProjectableViews(
                 params = tvPs,
                 ret = JRef(className = viewCls),
                 paramNames = newList(),
-                paramDefaults = newList()
+                paramDefaults = newList(),
+                paramModes = newList()
               )
             )
           }
@@ -2325,7 +2468,8 @@ pub func registerProjectableViews(
                   params = tiPs,
                   ret = JRef(className = "Std/Core/Result"),
                   paramNames = newList(),
-                  paramDefaults = newList()
+                  paramDefaults = newList(),
+                  paramModes = newList()
                 )
               )
             }
@@ -2534,7 +2678,28 @@ pub func codegenPackageWithSigs(
         var mi2 = 0
         while mi2 < decl.members.count {
           match decl.members[mi2] {
-            case IMplFunc(fn) -> implFuncs.add(lowerFunc(fn, pkgName, targetClass, funcSigs, caseFields, ctors, externTypes, autoFfi, moduleVals, opaqueTypes, closureAcc))
+            case IMplFunc(fn) -> {
+              // `impl` methods are emitted as static dispatch methods; the
+              // instance-call site (`lowerMethodCall`) does not yet wrap
+              // `out`/`inout` arguments as holder arrays (#1763), so reject
+              // them rather than miscompile.  Free functions are supported.
+              rejectInstanceHolderParams(fn.params, targetClass + "." + fn.name)
+              implFuncs.add(
+                lowerFunc(
+                  fn,
+                  pkgName,
+                  targetClass,
+                  funcSigs,
+                  caseFields,
+                  ctors,
+                  externTypes,
+                  autoFfi,
+                  moduleVals,
+                  opaqueTypes,
+                  closureAcc
+                )
+              )
+            }
             case IMplAssoc(_) -> {
             }
           }
@@ -2827,6 +2992,7 @@ pub func codegenPackageWithSigs(
         while imi < decl.members.count {
           match decl.members[imi] {
             case IMSig(sig) -> {
+              rejectInstanceHolderParams(sig.params, ifClassName + "." + sig.name)
               val params: List[JvmType] = newList()
               var spi = 0
               while spi < sig.params.count {
@@ -2838,6 +3004,7 @@ pub func codegenPackageWithSigs(
               abstractMethods.add(makeMethodInfo(ACC_PUBLIC + ACC_ABSTRACT, sig.name, desc, emptyAttrs))
             }
             case IMFunc(fn) -> {
+              rejectInstanceHolderParams(fn.params, ifClassName + "." + fn.name)
               concreteFuncs.add(
                 lowerFunc(
                   fn,

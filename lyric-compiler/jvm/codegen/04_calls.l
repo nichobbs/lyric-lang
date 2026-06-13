@@ -1365,6 +1365,164 @@ func lowerConstruction(ctx: in FuncCtx, insns: in List[LInsn], className: in Str
   }
 }
 
+// The argument expression of a CallArg (positional or named).
+func callArgExpr(arg: in CallArg): Expr {
+  match arg {
+    case CAPositional(e) -> e
+    case CANamed(_, e, _) -> e
+  }
+}
+
+// The name a path-shaped expression resolves to, or "" if the expression is not
+// a bare/qualified path.  An `out`/`inout` argument must be an assignable
+// variable (the mode checker guarantees V0001–V0006); this recovers its name.
+func pathExprName(e: in Expr): String {
+  match e.kind {
+    case EPath(p) -> {
+      val n = p.segments.count
+      if n == 0 {
+        ""
+      } else {
+        p.segments[n - 1]
+      }
+    }
+    case _ -> ""
+  }
+}
+
+// True when `modes` declares at least one `out`/`inout` parameter.
+func anyHolderMode(modes: in List[ParamMode]): Bool {
+  var i = 0
+  while i < modes.count {
+    if isHolderMode(modes[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Emit a static call whose callee has one or more `out`/`inout` parameters
+// (#1763).  Each holder argument must be an assignable local (or a forwarded
+// `out`/`inout` parameter of the current function); it is wrapped in a fresh
+// single-element holder array pre-filled with the local's current value, the
+// array is passed in that argument position, and after the call the callee's
+// write to `holder[0]` is copied back into the caller's local.
+//
+// Build order: holder arrays are materialised into temp slots *before* the
+// argument-push loop so the post-call readback can reach them, then the loop
+// pushes either the temp (holder arg) or the lowered value (by-value arg) in
+// declaration order.  `callArgs` is already reordered/defaulted to match
+// `sig.params`.
+func lowerStaticCallWithHolders(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  funcName: in String,
+  sig: in JvmFuncSig,
+  callArgs: in List[CallArg],
+): JvmType {
+  // Pre-build each holder argument's array into a temp slot.  Parallel lists
+  // (index into callArgs, temp slot, element type, write-back local name)
+  // rather than a record-valued map, matching the bootstrap-safe style used
+  // elsewhere in this file.
+  val hArgIdx: List[Int] = newList()
+  val hTempSlot: List[Int] = newList()
+  val hElemTy: List[JvmType] = newList()
+  val hBackName: List[String] = newList()
+  var bi = 0
+  while bi < callArgs.count {
+    val isHolder = if bi < sig.paramModes.count { isHolderMode(sig.paramModes[bi]) } else { false }
+    if isHolder {
+      val elemTy = match sig.params[bi] { case JArray(el) -> el; case other -> other }
+      val name = pathExprName(callArgExpr(callArgs[bi]))
+      if name == "" {
+        panic(
+          "Jvm.Codegen: out/inout argument " + toString(bi) + " to '" + funcName +
+            "' is not an assignable variable (the mode checker should have rejected this)"
+        )
+      }
+      match lookupSlot(ctx, name) {
+        case Some(srcSlot) -> {
+          val srcTy = match lookupType(ctx, name) { case Some(t) -> t; case None -> elemTy }
+          // holder := new [elemTy](1); holder[0] := <current value of `name`>
+          emitNewHolder(insns, elemTy)
+          insns.add(LDup)
+          insns.add(LIconst(v = 0))
+          emitLoad(insns, srcSlot, srcTy)
+          coerceArgTo(insns, srcTy, elemTy)
+          emitHolderElemStore(insns, elemTy)
+          // Stash the array reference in a temp slot, typed precisely so the
+          // StackMapTable verifies the later aload + element load.
+          val tmpSlot = allocSlot(ctx, "__holderarg$" + funcName + "$" + toString(bi), holderArrayType(elemTy))
+          insns.add(LAstoreAs(slot = tmpSlot, className = holderArrayDescriptor(elemTy)))
+          hArgIdx.add(bi)
+          hTempSlot.add(tmpSlot)
+          hElemTy.add(elemTy)
+          hBackName.add(name)
+        }
+        case None -> panic("Jvm.Codegen: out/inout argument '" + name + "' to '" + funcName + "' is not a local or parameter (the mode checker should have rejected this)")
+      }
+    }
+    bi = bi + 1
+  }
+  // Push arguments in declaration order: a holder arg reloads its prepared temp
+  // array; a by-value arg is lowered and coerced as usual.
+  var ai = 0
+  while ai < callArgs.count {
+    val isHolder = if ai < sig.paramModes.count { isHolderMode(sig.paramModes[ai]) } else { false }
+    if isHolder {
+      val ts = holderTempSlotFor(hArgIdx, hTempSlot, ai)
+      insns.add(LAload(slot = ts))
+    } else {
+      val aTy = lowerCallArg(ctx, insns, callArgs[ai])
+      if ai < sig.params.count {
+        if isByteArrayToObjectArray(aTy, sig.params[ai]) {
+          emitBoxByteArray(ctx, insns)
+        } else {
+          coerceArgTo(insns, aTy, sig.params[ai])
+        }
+      }
+    }
+    ai = ai + 1
+  }
+  insns.add(LInvokestatic(owner = sig.owner, name = funcName, params = sig.params, ret = sig.ret))
+  // Copy each holder's element 0 back into the caller's local.
+  var ri = 0
+  while ri < hArgIdx.count {
+    val ts = hTempSlot[ri]
+    val elemTy = hElemTy[ri]
+    val name = hBackName[ri]
+    match lookupSlot(ctx, name) {
+      case Some(destSlot) -> {
+        val destTy = match lookupType(ctx, name) { case Some(t) -> t; case None -> elemTy }
+        insns.add(LAload(slot = ts))
+        insns.add(LIconst(v = 0))
+        emitHolderElemLoad(insns, elemTy)
+        coerceArgTo(insns, elemTy, destTy)
+        // Write through the holder binding too, so a forwarded `out`/`inout`
+        // parameter's own holder array stays in sync after a nested call.
+        emitStoreLocalWriteThrough(ctx, insns, destSlot, destTy)
+      }
+      case None -> ()
+    }
+    ri = ri + 1
+  }
+  sig.ret
+}
+
+// Linear lookup of the temp slot prepared for the holder argument at call-arg
+// index `argIdx` (the parallel-list companion to `lowerStaticCallWithHolders`).
+func holderTempSlotFor(hArgIdx: in List[Int], hTempSlot: in List[Int], argIdx: in Int): Int {
+  var i = 0
+  while i < hArgIdx.count {
+    if hArgIdx[i] == argIdx {
+      return hTempSlot[i]
+    }
+    i = i + 1
+  }
+  panic("Jvm.Codegen: holder temp slot not found for argument index " + toString(argIdx))
+}
+
 func lowerGeneralStaticCall(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -1410,6 +1568,10 @@ func lowerGeneralStaticCall(
   match sigOpt {
     case Some(sig) -> {
       val callArgs = reorderAndFillJvmArgs(sig, args)
+      // `out`/`inout` parameters need holder-array wrapping + write-back (#1763).
+      if anyHolderMode(sig.paramModes) {
+        return lowerStaticCallWithHolders(ctx, insns, funcName, sig, callArgs)
+      }
       var ai = 0
       while ai < callArgs.count {
         val aTy = lowerCallArg(ctx, insns, callArgs[ai])
