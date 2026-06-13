@@ -378,6 +378,8 @@ pub func decodeStep(data: in slice[Byte], offset: Int): Result[DecodeStep, Strin
       val fieldNum = longAsInt(shrLong(tag, 3))
       val wireTypeId = longAsInt(bitandLong(tag, 7i64))
       val afterTag = tagResult.nextOffset
+      // Raw literals because Lyric match requires literal patterns (val constants
+      // cannot be used as arms): 0=WIRE_VARINT, 1=WIRE_FIXED64, 2=WIRE_LENGTH_DELIMITED, 5=WIRE_FIXED32.
       match wireTypeId {
         case 0 -> match readVarint(data, afterTag) { case Err(e) -> Err(error = "varint field " + fieldNum.toString() + ": " + e); case Ok(vr) -> Ok(value = DecodeStep(field = DecodedVarint(fieldNum, vr.value), nextOffset = vr.nextOffset)) }
         case 1 -> {

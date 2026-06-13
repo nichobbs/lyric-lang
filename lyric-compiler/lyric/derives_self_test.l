@@ -531,19 +531,12 @@ func countMemberNamed(e: in Expr, name: in String): Int {
       }
     }
     case EIf(cond, t, _, _) -> {
-      // The synthesised Ord `.value` projections live in the if condition and
-      // the then-branch; the else-branch (`Option[ExprOrBlock]`) is skipped
-      // because the self-hosted MSIL backend miscompiles a match over a
-      // cross-package `Option[ExprOrBlock]` here, and no synthesised projection
-      // is reachable only through it.
+      // Else-branch omitted: cross-package match on Option[ExprOrBlock] miscompiles (#3273).
       n = n + countMemberNamed(cond, name)
       n = n + countMemberNamedEob(t, name)
     }
-    // Union Ord bodies dispatch through a nested match; descend into the arm
-    // bodies so cross-package `.value` projections inside them are counted
-    // rather than silently dropped (#3287, #3365).  The arm guard
-    // (`Option[Expr]`) is skipped for the same cross-package-Option codegen
-    // reason as the if else-branch above; synthesised arms carry no guard.
+    // Union Ord bodies dispatch through nested match; arm guard Option[Expr] also
+    // omitted for the same cross-package-Option miscompile reason (#3273).
     case EMatch(scrut, arms) -> {
       n = n + countMemberNamed(scrut, name)
       var i = 0

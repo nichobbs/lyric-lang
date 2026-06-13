@@ -8547,26 +8547,16 @@ func lowerMethodCallMsil(
   // parser left as nested `EMember`s (`Grpc.Types.statusCodeFromInt(...)` parses
   // as `EMember(EMember(EPath["Grpc"], "Types"), "statusCodeFromInt")`, not an
   // `EPath`).  If the receiver flattens to a pure dotted path and
-  // `<prefix>.<member>` names a registered free function, this is a static call,
-  // not a method — route it to the static-call lowering.  The `funcTokens`
-  // membership check is what disambiguates a package-qualified call from value
-  // member access (a local's field chain never names a free function), so this
-  // never mis-fires on real method/field receivers.  Single-segment package
-  // calls (`Cache.get(...)`) already resolve elsewhere; this closes the
-  // multi-segment gap (#3332 sibling — grpc/logging qualified calls).
+  // `<prefix>.<member>` names a registered free function — route to static-call
+  // lowering.  `funcTokens` check disambiguates package-qualified calls from value
+  // member access; single-segment package calls resolve elsewhere.
   val recvSegs = flattenPathExprSegs(recv)
   if recvSegs.count > 0 {
-    val fqnSegs: List[String] = newList()
-    var rsi = 0
-    while rsi < recvSegs.count {
-      fqnSegs.add(recvSegs[rsi])
-      rsi = rsi + 1
-    }
-    fqnSegs.add(memberName)
-    val callFqn = joinSegsMsil(fqnSegs, ".")
+    recvSegs.add(memberName)
+    val callFqn = joinSegsMsil(recvSegs, ".")
     val callArityFqn = callFqn + "/" + toString(args.count)
     if cctx.funcTokens.containsKey(callArityFqn) or cctx.funcTokens.containsKey(callFqn) {
-      val staticPath = ModulePath(segments = fqnSegs, span = recv.span)
+      val staticPath = ModulePath(segments = recvSegs, span = recv.span)
       return lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, memberName, staticPath, args)
     }
   }

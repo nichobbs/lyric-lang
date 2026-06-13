@@ -7,7 +7,7 @@
 //! asserts on stdout.  Covers Phases 1–3 of the multi-package bridge:
 //! independent bundles (Phase 1), cross-package function calls (Phase 2),
 //! cross-package record and union round-trips (Phase 3), cross-package
-//! module-level `pub val` reads (Public backing field, #3040), and
+//! module-level `pub val` reads (Public backing field), and
 //! cfg-erasure diagnostics (F0012/F0013).
 //!
 //! Placed in `lyric-compiler/lyric/` (not `lyric-stdlib/tests/`) so it
@@ -302,17 +302,12 @@ test "cross-package union parenless nullary case" {
   )
 }
 
-// Cross-package module-level `pub val` READ (#3040 / #3239 / #3240).
 // Pkg A exports a non-constant `pub val` (computed in its `.cctor`, so it is
 // emitted as a real static field rather than const-inlined into the consumer).
-// Pkg B imports A and reads the val by name from `main`, forcing a cross-type
-// `ldsfld` against pkg A's `Program.__val_*` field.  PR #3239 changed that
-// backing field from `FieldAttributes.Private` to `Public`; were it still
-// Private the read would fail at JIT/verify time (the field lives on pkg A's
-// type, read from pkg B's code in the same assembly), so a non-42 stdout / a
-// non-zero exit code here regresses the #3040 fix.  This is the cross-package
-// companion to the same-package Module-val self-test (#3039).
-test "cross-package pub val read (Public backing field, #3040)" {
+// Pkg B reads the val from `main`, forcing a cross-type `ldsfld` against pkg A's
+// `Program.__val_*` field.  The backing field must be `Public`; were it Private
+// the read would fail at JIT/verify time (pkg A's type, read from pkg B's code).
+test "cross-package pub val read (Public backing field)" {
   val packages: List[ProjectPackagePayload] = newList()
   packages.add(
     mkPkg(
