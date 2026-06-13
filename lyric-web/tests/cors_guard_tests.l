@@ -48,3 +48,52 @@ test "corsConfigError: disabled with explicit origins returns None" {
     case None -> ()
   }
 }
+
+// ─── parseServerPort (#C-WEB-1) ───────────────────────────────────────────────
+test "parseServerPort: default 8080 parses" {
+  match Web.parseServerPort("8080") {
+    case Ok(p) -> assertEqualInt(p, 8080, "8080 parses")
+    case Err(e) -> assertTrue(false, "8080 should parse: " + e)
+  }
+}
+
+test "parseServerPort: a configured port is honoured (not silently ignored)" {
+  match Web.parseServerPort("3000") {
+    case Ok(p) -> assertEqualInt(p, 3000, "3000 parses to 3000")
+    case Err(e) -> assertTrue(false, "3000 should parse: " + e)
+  }
+}
+
+test "parseServerPort: out-of-range port is rejected" {
+  match Web.parseServerPort("70000") {
+    case Ok(p) -> assertTrue(false, "70000 is out of range, should error")
+    case Err(_) -> ()
+  }
+}
+
+test "parseServerPort: zero is rejected" {
+  match Web.parseServerPort("0") {
+    case Ok(p) -> assertTrue(false, "port 0 should error")
+    case Err(_) -> ()
+  }
+}
+
+test "parseServerPort: non-numeric is rejected" {
+  match Web.parseServerPort("abc") {
+    case Ok(p) -> assertTrue(false, "non-numeric should error")
+    case Err(_) -> ()
+  }
+}
+
+// ─── parseCorsMaxAge ──────────────────────────────────────────────────────────
+test "parseCorsMaxAge: a configured value is honoured" {
+  assertEqualInt(Web.parseCorsMaxAge("3600", 86400), 3600, "3600 parses")
+}
+
+test "parseCorsMaxAge: malformed falls back to default" {
+  assertEqualInt(Web.parseCorsMaxAge("nope", 86400), 86400, "malformed -> default")
+}
+
+test "parseCorsMaxAge: negative falls back to default" {
+  assertEqualInt(Web.parseCorsMaxAge("-5", 86400), 86400, "negative -> default")
+}

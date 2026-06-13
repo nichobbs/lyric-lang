@@ -40,6 +40,7 @@ import Std.Core
 import Std.Char
 import Std.Environment as Env
 import Std.Iter
+import Std.Parse
 
 // ─── Kernel boundary (inlined) ────────────────────────────────────────────────
 // Declared here rather than imported from Web.Kernel.Net because intra-project
@@ -479,6 +480,32 @@ pub func corsConfigError(enabled: in Bool, origins: in String): Option[String] {
   return None
 }
 
+/// Parse `LYRIC_CONFIG_WEB_SERVER_PORT` into a validated TCP port.
+/// `Ok(port)` for a well-formed value in 1..=65535; `Err(message)` otherwise so
+/// the caller can fail closed at startup.  Previously `start()` hardcoded 8080
+/// and silently ignored this env var entirely (CWE-1188 / silent misconfig).
+pub func parseServerPort(portStr: in String): Result[Int, String] {
+  match tryParseInt(portStr) {
+    case Ok(p) -> {
+      if p >= 1 and p <= 65535 {
+        return Ok(p)
+      }
+      return Err("LYRIC_CONFIG_WEB_SERVER_PORT must be in 1..=65535, got: " + portStr)
+    }
+    case Err(_) -> return Err("LYRIC_CONFIG_WEB_SERVER_PORT is not a valid integer: " + portStr)
+  }
+}
+
+/// Parse `LYRIC_CONFIG_WEB_CORS_MAXAGESECONDS`, falling back to `def` for a
+/// malformed or negative value.  Previously `start()` hardcoded 86400 and
+/// ignored this env var.
+pub func parseCorsMaxAge(maxAgeStr: in String, def: in Int): Int {
+  match tryParseInt(maxAgeStr) {
+    case Ok(m) -> if m >= 0 { m } else { def }
+    case Err(_) -> def
+  }
+}
+
 // ─── Server entry point ───────────────────────────────────────────────────────
 /// Start the HTTP server with the given router.
 /// Blocks until the process receives a shutdown signal.
@@ -495,11 +522,12 @@ pub func start(router: in Router): Unit {
   val corsHeaders = Env.getVarOrDefault("LYRIC_CONFIG_WEB_CORS_ALLOWEDHEADERS", "Content-Type,Authorization,Accept")
   val corsMaxAgeStr = Env.getVarOrDefault("LYRIC_CONFIG_WEB_CORS_MAXAGESECONDS", "86400")
 
-  // Simple port parsing — use 8080 default if env var is the default string
-  val port = 8080
+  // Parse the configured port/CORS-max-age (previously hardcoded, ignoring the
+  // documented env vars).  Fail closed on an invalid port.
+  val port = match parseServerPort(portStr) { case Ok(p) -> p; case Err(e) -> panic(e) }
   val swaggerEnabled = swaggerStr == "true"
   val corsEnabled = corsEnabledStr == "true"
-  val corsMaxAge = 86400
+  val corsMaxAge = parseCorsMaxAge(corsMaxAgeStr, 86400)
 
   // Enabling CORS without an explicit origin list is a configuration
   // mistake.  Fail closed at startup.
