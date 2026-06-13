@@ -3045,7 +3045,12 @@ HTTP 200 for `"ok"`, HTTP 503 for `"degraded"`.
 - **Per-check timeout.**  Deferred; requires async support.  Added to the
   follow-up milestone list.
 
-**Revisions:** None.
+**Revisions:** PARTIALLY SUPERSEDED by D099 — the name-based
+`handlerName: String` registration and the planned DLL-reflection kernel
+dispatcher (with `registerRoutes` / `attachRegistry` / `config Endpoints`)
+were replaced by function-reference registration; `runChecks` invokes
+handlers directly.  The check-group split, immutable registry, and JSON
+response shape are unchanged.
 
 ---
 
@@ -5963,6 +5968,103 @@ and locks in the determinism *foundation* it depends on.
 
 **Related:** docs/34 (distribution), docs/36 §R7 / G5 / Q-dist-001, docs/41 §R7,
 `scripts/verify-reproducible-emit.sh`, `scripts/bootstrap.sh`.
+
+---
+
+## D099 — `lyric-health` checks are function references; the DLL-reflection dispatcher is abandoned (#679)
+
+**Date:** 2026-06-12
+**Partially supersedes:** D057 (registration model and route wiring only).
+
+### Context
+
+D057 shipped `lyric-health` with name-based registration: `HealthCheck`
+stored a fully-qualified function name (`handlerName: String`) that a
+future "kernel dispatcher" would resolve via DLL reflection at request
+time, mirroring `Web.Route.handlerName`.  That dispatcher never landed,
+so `runChecks` deliberately panicked rather than silently reporting
+"ok" — issue #679 asked for the dispatcher so registered checks would
+actually be called.
+
+The reflection design proposed in #679 is rejected by later codebase
+direction: contract metadata reads bytes directly instead of loading
+types (docs/45, D098), source generators bridge via subprocess rather
+than reflection (D075), and the Native AOT distribution path (docs/34)
+forbids runtime reflection because the AOT linker trims unreferenced
+methods.  `Lambda.Direct` (D064, docs/35 §10) already established the
+sanctioned alternative: register a function reference so the compiler
+roots the handler at the registration site.
+
+### Decision
+
+`lyric-health` registration takes function references, and `runChecks`
+invokes them directly:
+
+- `HealthCheck.handlerName: String` → `handler: () -> CheckStatus`.
+- `pub record CheckStatus { healthy: Bool, detail: String }` with
+  `pass()` / `fail(detail)` factory functions replaces
+  `Result[Unit, String]` as the check return type.  Empirically, a
+  `Result` constructed in the consumer assembly and matched inside
+  `Health.dll` misdispatches (`Err` matched as `Ok`, and closure-built
+  `Ok(())` hits a non-exhaustive-match codegen panic) because generic
+  stdlib union instantiations are not yet identity-stable across the
+  restored-package boundary.  A library-defined record whose values are
+  built by library factories — even when the factory call sits inside a
+  consumer closure — crosses the boundary exactly, so the silent
+  health-misreport failure mode is structurally excluded.
+- `CheckGroup` becomes a payload-free `union` (was `enum`): restored
+  enums miscompile at consumer call sites (InvalidProgramException),
+  while payload-free unions dispatch correctly.  `isLiveness` /
+  `isReadiness` helpers are provided because consumer-side `match` over
+  a restored union falls back to an always-true `isinst` (W0003); the
+  helpers match inside the defining assembly where dispatch is exact.
+- `runChecks(registry, group): HealthReport { healthy, body }` runs
+  every matching handler exactly once, in registration order, and
+  builds the D057 JSON response shape (unchanged).
+  `runLiveness` / `runReadiness` map the report onto the lyric-web
+  handler convention: `Ok(body)` when healthy, `Err(503 ApiError)`
+  naming the failing checks when degraded.
+- `registerRoutes`, `attachRegistry`, `__handleLiveness` /
+  `__handleReadiness`, and `config Endpoints` are deleted.  The web
+  router is name-based, so a registry value cannot reach a
+  name-resolved handler; instead services expose one-line handlers in
+  their own package (`pub func healthReady(): Result[String, ApiError]
+  { return Health.runReadiness(buildHealth()) }`) and register them
+  with `Web.addGet`.  This composes with the router as it exists today
+  instead of waiting on route-annotation support, and it removes the
+  `attachRegistry` stub that silently dropped its argument.
+
+### Consequences
+
+- `lyric-health` is functional end-to-end: registered checks run, the
+  JSON report aggregates them, and the panic gate is gone.
+- The library's test suite (`lyric-health/tests/health_tests.l`,
+  17 tests) covers registration, execution (passing / failing / mixed),
+  group filtering, JSON escaping, and the handler-result mapping; it
+  runs in CI via `lyric test --manifest lyric-health/lyric.toml` in the
+  ecosystem test step.
+- `examples/ledger`, `examples/rbac`, and `examples/jobqueue` migrate
+  to the new API.
+- Breaking change to a pre-1.0 `@experimental`-cohort library; no
+  SemVer major bump required (docs/05 Tier-5 framing).
+
+### Alternatives considered
+
+- **DLL-reflection dispatcher (the #679 proposal).**  Rejected: AOT-
+  hostile, reflection-based, and the function-reference model is both
+  simpler and already precedented by `Lambda.Direct`.
+- **Keeping `() -> Result[Unit, String]` as the handler type.**
+  Rejected on empirical grounds (see Decision): cross-assembly `Result`
+  misdispatch would let a failing check report healthy — the exact
+  failure mode a health library exists to prevent.
+- **Keeping `registerRoutes` as a no-op shim over the new model.**
+  Rejected: a function that silently drops its registry argument is a
+  production-quality violation; the explicit two-line `addGet` wiring
+  is honest about how the name-based router composes.
+
+**Related:** D057, D064 / docs/35 §10 (`Lambda.Direct` precedent),
+D075 (subprocess generators), D098 / docs/45 (byte-reading contract
+metadata), docs/34 (AOT distribution), issues #679, #367, #1024.
 
 ---
 

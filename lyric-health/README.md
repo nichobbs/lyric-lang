@@ -1,6 +1,11 @@
 # lyric-health
 
-Liveness and readiness health-check endpoints for Lyric web services.
+Liveness and readiness health checks for Lyric web services.
+
+Checks are registered as **function references** (closures) and invoked
+directly by `Health.runChecks` — the same AOT-safe model as
+`Lambda.Direct` (see `docs/35-lambda-library.md` §10).  No runtime
+reflection or name-based dispatch is involved.
 
 ## Quick start
 
@@ -9,59 +14,66 @@ import Health
 import Web
 import Db
 
-func checkDb(): Result[Unit, String] {
+func checkDb(): CheckStatus {
   val conn = match Db.connectFromEnv() {
     case Ok(c)  -> c
-    case Err(e) -> return Err("connect: " + e.message)
+    case Err(e) -> return Health.fail("connect: " + e.message)
   }
-  val result = match conn.execute("SELECT 1", []) {
-    case Ok(_)  -> Ok(())
-    case Err(e) -> Err("db: " + e.message)
+  val status = match conn.execute("SELECT 1", []) {
+    case Ok(_)  -> Health.pass()
+    case Err(e) -> Health.fail("db: " + e.message)
   }
   conn.close()
-  return result
+  return status
+}
+
+func buildHealth(): HealthRegistry {
+  var health = Health.create()
+  health = Health.addLivenessCheck(health, "self", { -> Health.pass() })
+  health = Health.addReadinessCheck(health, "db", { -> checkDb() })
+  return health
+}
+
+// Web routes are name-based, so expose the endpoints as ordinary
+// handlers in your own package:
+pub func healthLive(): Result[String, ApiError] {
+  return Health.runLiveness(buildHealth())
+}
+
+pub func healthReady(): Result[String, ApiError] {
+  return Health.runReadiness(buildHealth())
 }
 
 func main(): Unit {
   var router = Web.create()
   router = Web.addGet(router, "/users/{id}", "MyService.Handlers.getUser")
-
-  var health = Health.create()
-  health = Health.addReadinessCheck(health, "db", "MyService.checkDb")
-  router = Health.registerRoutes(router, health)
-
+  router = Web.addGet(router, "/health/live", "MyService.healthLive")
+  router = Web.addGet(router, "/health/ready", "MyService.healthReady")
   Web.start(router)
 }
 ```
 
-This registers two endpoints:
-
 - `GET /health/live` — runs all liveness checks
 - `GET /health/ready` — runs all readiness checks
 
-## Implementation status
-
-> **Note:** The kernel dispatcher that resolves check functions by name has not
-> yet shipped.  Until it does, registered checks are **never called** — both
-> endpoints unconditionally return `{"status":"ok"}`.  Do not rely on these
-> endpoints for real health signalling until the dispatcher milestone ships
-> (see `docs/14-native-stdlib-plan.md`).
-
 ## Check function signature
 
-Check functions must have the signature:
+Check handlers have the signature:
 
 ```lyric
-func myCheck(): Result[Unit, String]
+() -> CheckStatus
 ```
 
-Pass the fully-qualified Lyric function name as a string to `addLivenessCheck`
-or `addReadinessCheck`. The kernel resolves it via DLL reflection at request
-time, using the same dispatch model as `Web.Route.handlerName`.
+Return `Health.pass()` when the check succeeds and
+`Health.fail("human-readable reason")` when it does not.  Register the
+handler as a closure: `Health.addReadinessCheck(health, "db", { -> checkDb() })`.
+The closure is stored in the registry and invoked directly when checks
+run — the compiler roots it at the registration site, so the model is
+compatible with Native AOT trimming.
 
 ## Response format
 
-Responses are JSON:
+`runChecks` produces a `HealthReport` whose `body` is JSON:
 
 ```json
 {
@@ -83,7 +95,9 @@ When any check fails:
 }
 ```
 
-HTTP 200 is returned when status is `"ok"`; HTTP 503 when `"degraded"`.
+`runLiveness` / `runReadiness` map the report onto the lyric-web handler
+convention: `Ok(body)` (HTTP 200) when every check passes, and an
+`Err(ApiError)` with status 503 naming the failing checks when degraded.
 
 ## Check groups
 
@@ -93,32 +107,38 @@ HTTP 200 is returned when status is `"ok"`; HTTP 503 when `"degraded"`.
 | `Readiness` | Traffic readiness — a failure removes the instance from the load balancer |
 
 ```lyric
-health = Health.addLivenessCheck(health, "memory", "MyService.checkMemory")
-health = Health.addReadinessCheck(health, "db", "MyService.checkDb")
-health = Health.addReadinessCheck(health, "cache", "MyService.checkCache")
+health = Health.addLivenessCheck(health, "memory", { -> checkMemory() })
+health = Health.addReadinessCheck(health, "db", { -> checkDb() })
+health = Health.addReadinessCheck(health, "cache", { -> checkCache() })
 ```
 
-## Configuration
-
-Endpoint paths can be overridden via env vars:
-
-| Env var | Default | Meaning |
-|---|---|---|
-| `LYRIC_CONFIG_HEALTH_ENDPOINTS_LIVEPATH` | `/health/live` | Liveness endpoint path |
-| `LYRIC_CONFIG_HEALTH_ENDPOINTS_READYPATH` | `/health/ready` | Readiness endpoint path |
+To inspect a stored check's group, use `Health.isLiveness(check.group)` /
+`Health.isReadiness(check.group)` rather than matching `CheckGroup` from a
+consuming package (cross-package union case dispatch is not yet reliable
+in the self-hosted backend; the helpers match inside the defining
+assembly where dispatch is exact).
 
 ## API reference
 
 ```lyric
 Health.create(): HealthRegistry
-Health.addLivenessCheck(registry, name, handlerName): HealthRegistry
-Health.addReadinessCheck(registry, name, handlerName): HealthRegistry
-Health.registerRoutes(router, registry): Web.Router
+Health.addLivenessCheck(registry, name, handler): HealthRegistry
+Health.addReadinessCheck(registry, name, handler): HealthRegistry
+Health.pass(): CheckStatus
+Health.fail(detail): CheckStatus
+Health.runChecks(registry, group): HealthReport
+Health.runLiveness(registry): Result[String, ApiError]
+Health.runReadiness(registry): Result[String, ApiError]
+Health.isLiveness(group): Bool
+Health.isReadiness(group): Bool
 ```
 
-All builder functions are pure and return a new registry; chain them as needed.
-`registerRoutes` is the only function that modifies `router`.
+All builder functions are pure and return a new registry; chain them as
+needed.  `runChecks` invokes each registered handler in the requested
+group exactly once, in registration order.
 
 ## Decision log
 
-See `docs/03-decision-log.md` D057.
+See `docs/03-decision-log.md` D057 (original design) and D099
+(function-reference registration, superseding the name-based
+DLL-reflection dispatcher plan).

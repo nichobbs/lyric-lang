@@ -50,26 +50,41 @@ import Health
 
 // ─── Health check functions ───────────────────────────────────────────────────
 /// Liveness: the process is running and can handle requests.
-pub func liveness(): Result[Unit, String] {
-  Ok(())
+func liveness(): CheckStatus {
+  Health.pass()
 }
 
 /// Readiness: the PostgreSQL connection pool is reachable and responding.
-pub func readiness(): Result[Unit, String] {
+func readiness(): CheckStatus {
   match Db.connectFromEnv() {
-    case Err(e) -> Err("database unreachable: " + e.message)
-    case Ok(conn) -> match conn.query("SELECT 1 AS ok", []) { case Err(e) -> { conn.close(); Err("database ping failed: " + e.message) }; case Ok(_) -> { conn.close(); Ok(()) } }
+    case Err(e) -> Health.fail("database unreachable: " + e.message)
+    case Ok(conn) -> match conn.query("SELECT 1 AS ok", []) { case Err(e) -> { conn.close(); Health.fail("database ping failed: " + e.message) }; case Ok(_) -> { conn.close(); Health.pass() } }
   }
+}
+
+// Checks are registered as function references (closures); Health invokes
+// them directly — no name-based dispatch.
+func healthRegistry(): HealthRegistry {
+  val health = Health.create()
+  val health = Health.addLivenessCheck(health, "process", { -> liveness() })
+  Health.addReadinessCheck(health, "postgres", { -> readiness() })
+}
+
+/// GET /health/live — registered by name on the router below.
+pub func healthLive(): Result[String, ApiError] {
+  Health.runLiveness(healthRegistry())
+}
+
+/// GET /health/ready — registered by name on the router below.
+pub func healthReady(): Result[String, ApiError] {
+  Health.runReadiness(healthRegistry())
 }
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
 pub func main(): Unit {
   val router = Ledger.Api.routes()
-
-  val health = Health.create()
-  val health = Health.addLivenessCheck(health, "process", "Ledger.liveness")
-  val health = Health.addReadinessCheck(health, "postgres", "Ledger.readiness")
-  val router = Health.registerRoutes(router, health)
+  val router = Web.addGet(router, "/health/live", "Ledger.healthLive")
+  val router = Web.addGet(router, "/health/ready", "Ledger.healthReady")
 
   Web.start(router)
 }

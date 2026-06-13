@@ -157,19 +157,27 @@ aspect HandlerTimeout from Web.Aspects.Timeout {
 
 ## Composing with health checks
 
-The `lyric-health` library integrates directly with `Web.Router`:
+The `lyric-health` library composes with `Web.Router` through ordinary
+named handlers; checks themselves are registered as function references:
 
 ```lyric
 import Web
 import Health
 
+func buildHealth(): HealthRegistry {
+  var health = Health.create()
+  health = Health.addReadinessCheck(health, "db", { -> checkDb() })
+  return health
+}
+
+pub func healthReady(): Result[String, ApiError] {
+  Health.runReadiness(buildHealth())
+}
+
 func main(): Unit {
   var router = Web.create()
   router = Web.addGet(router, "/users/{id}", "MyService.Handlers.getUser")
-
-  var health = Health.create()
-  health = Health.addReadinessCheck(health, "db", "MyService.checkDb")
-  router = Health.registerRoutes(router, health)
+  router = Web.addGet(router, "/health/ready", "MyService.healthReady")
 
   Web.start(router)
 }
