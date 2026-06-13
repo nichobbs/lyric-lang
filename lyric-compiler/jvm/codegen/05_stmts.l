@@ -26,7 +26,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
           match op {
             case AssEq -> {
               lowerExpr(ctx, insns, value)
-              emitStore(insns, slot, ty)
+              emitStoreLocalWriteThrough(ctx, insns, slot, ty)
             }
             case AssPlus -> {
               emitLoad(insns, slot, ty)
@@ -36,7 +36,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 case JDouble -> insns.add(LDadd)
                 case _ -> insns.add(LIadd)
               }
-              emitStore(insns, slot, ty)
+              emitStoreLocalWriteThrough(ctx, insns, slot, ty)
             }
             case AssMinus -> {
               emitLoad(insns, slot, ty)
@@ -46,7 +46,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 case JDouble -> insns.add(LDsub)
                 case _ -> insns.add(LIsub)
               }
-              emitStore(insns, slot, ty)
+              emitStoreLocalWriteThrough(ctx, insns, slot, ty)
             }
             case AssStar -> {
               emitLoad(insns, slot, ty)
@@ -56,7 +56,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 case JDouble -> insns.add(LDmul)
                 case _ -> insns.add(LImul)
               }
-              emitStore(insns, slot, ty)
+              emitStoreLocalWriteThrough(ctx, insns, slot, ty)
             }
             case AssSlash -> {
               emitLoad(insns, slot, ty)
@@ -66,7 +66,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 case JDouble -> insns.add(LDdiv)
                 case _ -> insns.add(LIdiv)
               }
-              emitStore(insns, slot, ty)
+              emitStoreLocalWriteThrough(ctx, insns, slot, ty)
             }
             case AssPercent -> {
               emitLoad(insns, slot, ty)
@@ -75,7 +75,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 case JLong -> insns.add(LLrem)
                 case _ -> insns.add(LIrem)
               }
-              emitStore(insns, slot, ty)
+              emitStoreLocalWriteThrough(ctx, insns, slot, ty)
             }
           }
           JVoid

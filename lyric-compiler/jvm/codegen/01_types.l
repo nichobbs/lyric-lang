@@ -43,6 +43,12 @@ pub record JvmFuncSig {
   ret: JvmType         // declared return type (JVoid for Unit)
   paramNames: List[String]              // declared parameter names (empty = unknown)
   paramDefaults: List[Option[Expr]]     // default expr per param (None = no default)
+  // Declared parameter modes, index-aligned with `params` (#1763).  An empty
+  // list means "all `in`" (the common case): a call site treats every argument
+  // as by-value.  When non-empty, a `PMOut`/`PMInout` entry tells the call site
+  // to pass that argument as a holder array and copy the callee's write back to
+  // the caller's local after the call.  Mirrors the MSIL `funcParamModes`.
+  paramModes: List[ParamMode]
 }
 
 // One field of a union case class, in declaration order.  A match binding
@@ -166,6 +172,17 @@ pub record FuncCtx {
   // lambdas append to the same list) and overwrites it with the finished
   // closure.
   closureAcc: List[LClosure]
+  // `out`/`inout` parameter holder bindings (#1763), keyed by the parameter's
+  // *value* slot (the slot `ctx.slots` maps the parameter name to after the
+  // entry-prologue unwrap).  An assignment to a value slot present in
+  // `holderArraySlot` writes the new value through to its holder array's
+  // element 0 so the caller observes it; a read uses the value slot directly
+  // (no deref).  Two parallel maps — value slot → holder array slot, and value
+  // slot → element type — rather than a `Map[Int, <record>]`, which the stage-0
+  // bootstrap emitter mis-resolves (see `ctors` above for the same hazard).
+  // Both empty for functions with no `out`/`inout` parameters.
+  holderArraySlot: Map[Int, Int]
+  holderElemType: Map[Int, JvmType]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -463,5 +480,124 @@ pub func emitReturn(insns: in List[LInsn], ty: in JvmType): Unit {
     case JVoid -> insns.add(LReturn)
     case JRef(_) -> insns.add(LAreturn)
     case JArray(_) -> insns.add(LAreturn)
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4b. `out` / `inout` holder-array helpers (#1763).
+// ─────────────────────────────────────────────────────────────────────────────
+// True for the by-reference parameter modes (`out`, `inout`) — the JVM lowers
+// these to a single-element holder array (the MSIL backend uses a managed
+// byref `T&`).  `in` (the default) passes by value.  Mirrors the MSIL
+// `isByrefMode`.
+pub func isHolderMode(m: in ParamMode): Bool {
+  match m {
+    case PMOut -> true
+    case PMInout -> true
+    case PMIn -> false
+  }
+}
+
+// The JVM holder type for an `out`/`inout` parameter of element type `elemTy`:
+// a single-element array of that element type.
+pub func holderArrayType(elemTy: in JvmType): JvmType {
+  JArray(elem = elemTy)
+}
+
+// The JVM array descriptor for a holder of element type `elemTy` (e.g. `[I`,
+// `[Ljava/lang/String;`), used as the `LAstoreAs` class name so the
+// StackMapTable types the temp slot precisely enough to verify the later
+// element load/store.
+pub func holderArrayDescriptor(elemTy: in JvmType): String {
+  typeDescriptor(holderArrayType(elemTy))
+}
+
+// Allocate a fresh single-element holder array of element type `elemTy` on the
+// stack: `iconst_1; (a)newarray <elemTy>`.  Reference and array element types
+// use `anewarray <className>`; every primitive uses `newarray <T_*>`.
+pub func emitNewHolder(insns: in List[LInsn], elemTy: in JvmType): Unit {
+  insns.add(LIconst(v = 1))
+  match elemTy {
+    case JRef(cls) -> insns.add(LAnewarray(className = cls))
+    case JArray(_) -> insns.add(LAnewarray(className = arrayElemClassName(elemTy)))
+    case JBoolean -> insns.add(LNewarray(typeCode = 4))
+    case JChar -> insns.add(LNewarray(typeCode = 5))
+    case JFloat -> insns.add(LNewarray(typeCode = 6))
+    case JDouble -> insns.add(LNewarray(typeCode = 7))
+    case JByte -> insns.add(LNewarray(typeCode = 8))
+    case JShort -> insns.add(LNewarray(typeCode = 9))
+    case JInt -> insns.add(LNewarray(typeCode = 10))
+    case JLong -> insns.add(LNewarray(typeCode = 11))
+    case JVoid -> panic("Jvm.Codegen: cannot build an out/inout holder for a Unit-typed parameter")
+  }
+}
+
+// The JVM internal class name an `anewarray` needs for a (possibly nested)
+// array element type — i.e. the array's component descriptor with the leading
+// `[` dimension stripped relative to the holder array we are creating.  For a
+// `JArray(inner)` element, `anewarray` is given the *component* descriptor
+// (`[<inner-descriptor>`); for a `JRef`, it is the bare class name.
+func arrayElemClassName(elemTy: in JvmType): String {
+  match elemTy {
+    case JArray(inner) -> "[" + typeDescriptor(inner)
+    case JRef(cls) -> cls
+    case _ -> panic("Jvm.Codegen: arrayElemClassName called on a non-reference element type")
+  }
+}
+
+// Emit the array-element *load* for a holder of element type `elemTy`: consumes
+// `arrayref, index` from the stack and pushes the element.
+pub func emitHolderElemLoad(insns: in List[LInsn], elemTy: in JvmType): Unit {
+  match elemTy {
+    case JLong -> insns.add(LLaload)
+    case JDouble -> insns.add(LDaload)
+    case JFloat -> insns.add(LFaload)
+    case JBoolean -> insns.add(LBaload)
+    case JByte -> insns.add(LBaload)
+    case JChar -> insns.add(LCaload)
+    case JShort -> insns.add(LSaload)
+    case JInt -> insns.add(LIaload)
+    case JRef(_) -> insns.add(LAaload)
+    case JArray(_) -> insns.add(LAaload)
+    case JVoid -> panic("Jvm.Codegen: cannot load a Unit-typed holder element")
+  }
+}
+
+// Emit the array-element *store* for a holder of element type `elemTy`:
+// consumes `arrayref, index, value` from the stack.
+pub func emitHolderElemStore(insns: in List[LInsn], elemTy: in JvmType): Unit {
+  match elemTy {
+    case JLong -> insns.add(LLastore)
+    case JDouble -> insns.add(LDastore)
+    case JFloat -> insns.add(LFastore)
+    case JBoolean -> insns.add(LBastore)
+    case JByte -> insns.add(LBastore)
+    case JChar -> insns.add(LCastore)
+    case JShort -> insns.add(LSastore)
+    case JInt -> insns.add(LIastore)
+    case JRef(_) -> insns.add(LAastore)
+    case JArray(_) -> insns.add(LAastore)
+    case JVoid -> panic("Jvm.Codegen: cannot store a Unit-typed holder element")
+  }
+}
+
+// Store the value currently on the stack into local `slot` (of type `ty`), and
+// — when `slot` is an `out`/`inout` parameter's value slot — also write the new
+// value through to its holder array's element 0 so the caller observes it
+// (#1763).  All assignment-statement paths funnel their final store through
+// here, so write-through is centralised.  The value is consumed once; the
+// write-through reloads it from the value slot (cheaper than a `dup` that would
+// have to handle the long/double two-word case).
+pub func emitStoreLocalWriteThrough(ctx: in FuncCtx, insns: in List[LInsn], slot: in Int, ty: in JvmType): Unit {
+  emitStore(insns, slot, ty)
+  match mapGet(ctx.holderArraySlot, slot) {
+    case Some(arrSlot) -> {
+      val elemTy = match mapGet(ctx.holderElemType, slot) { case Some(t) -> t; case None -> ty }
+      insns.add(LAload(slot = arrSlot))
+      insns.add(LIconst(v = 0))
+      emitLoad(insns, slot, elemTy)
+      emitHolderElemStore(insns, elemTy)
+    }
+    case None -> ()
   }
 }

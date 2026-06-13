@@ -2117,6 +2117,28 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/silent_miscompile_guard_jvm_self_test.l
+      # out/inout parameter parity (docs/44 m-3, #1763, follow-up to #1761) —
+      # exercises the JVM holder-array lowering for free-function `out`/`inout`
+      # parameters: the caller wraps each holder argument in a single-element
+      # array pre-filled with the local's value, passes it, and copies element 0
+      # back after the call; the callee unwraps on entry and writes through on
+      # every assignment.  Covers out String/Int/Long, multiple out, inout
+      # read-modify-write, nested inout forwarding, and mixed-mode signatures.
+      # Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+      - name: out/inout parameter self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping out/inout JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping out/inout JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/out_inout_jvm_self_test.l
       # Middle-end-passes guard (band J2, docs/44 §5, #2665, epic #2663) —
       # exercises the target-agnostic middle-end passes J2 wired into the
       # self-hosted JVM bridge: `@cfg` erasure (an inactive-feature item is

@@ -837,6 +837,40 @@ mutability for `inout`) runs unchanged on the AST; the back-end's
 only role is the array-allocation prelude and the indexed
 assignment for body operations.
 
+**Implementation status (#1763, follow-up to the MSIL #1761).** The
+self-hosted JVM backend implements this holder-array lowering for
+**free functions**: the method descriptor declares each `out`/`inout`
+parameter as the single-element array `[T`; on entry the callee
+unwraps `holder[0]` into a plain value slot (`setupStaticParamSlotsAndHolders`
+in `codegen/06_items.l`); every assignment to the parameter both stores
+into the value slot and writes the new value through to `holder[0]`
+(`emitStoreLocalWriteThrough` in `codegen/01_types.l`), so the caller
+observes the write with no return-time epilogue; the call site
+(`lowerStaticCallWithHolders` in `codegen/04_calls.l`) allocates a holder
+pre-filled with the caller's local, passes it, and copies element 0 back
+into the local after the call. `JvmFuncSig.paramModes` carries the
+declared modes so a call site knows which arguments to wrap; the
+`FuncCtx.holderArraySlot` / `holderElemType` maps record the value-slot
+→ holder-slot / element-type bindings (parallel maps, not a
+record-valued map, per the stage-0 bootstrap hazard). Forwarding an
+`inout` parameter to a nested call is handled by the post-call readback,
+which itself writes through the holder binding so the outer holder stays
+in sync. Guarded by `lyric-compiler/jvm/out_inout_jvm_self_test.l`
+(out String/Int/Long, multiple out, inout read-modify-write, nested
+forwarding, mixed-mode), run in CI via native `lyric test --target jvm`.
+
+`out`/`inout` parameters on **instance / interface methods** (record,
+protected, `impl`, interface abstract/default, and async-generator
+methods) are a tracked follow-up: the interface slot's descriptor and
+the impl method's descriptor must agree on the holder shape and the
+virtual/interface dispatch site must perform the wrap/unwrap, which is
+not yet wired. Rather than silently passing such a parameter by value
+(which would drop the callee's write), the backend emits a hard compile
+error (`rejectInstanceHolderParams` in `codegen/06_items.l`). The MSIL
+backend supports the instance-method cases via byref (the companion
+`lyric-compiler/lyric/outparam_self_test.l` covers them on
+`--target dotnet`).
+
 ### 11.3 Closures and lambdas
 
 A closure `{ x: Int -> x + n }` lowers via `LambdaMetafactory` (the

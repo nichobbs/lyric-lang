@@ -759,7 +759,14 @@ func collectDeriveFreeSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]
           // paramDefaults intentionally empty: derive-synthesized free functions have
           // no default values.  Using an empty list avoids the stage-0 bootstrap
           // List[Option[Expr]] miscompile on .add() (#3139).
-          val sig = JvmFuncSig(owner = owner, params = params, ret = ret, paramNames = paramNames, paramDefaults = newList())
+          val sig = JvmFuncSig(
+            owner = owner,
+            params = params,
+            ret = ret,
+            paramNames = paramNames,
+            paramDefaults = newList(),
+            paramModes = newList()
+          )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
             into.add(qkey, sig)

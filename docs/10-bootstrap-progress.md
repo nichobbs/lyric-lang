@@ -24372,6 +24372,7 @@ Verified end-to-end through `./bin/lyric`: the 17-test suite passes via
 `lyric test --manifest`, and a separate consumer package registering a
 passing and a failing check prints the aggregated degraded/ok JSON bodies
 and the 503 `ApiError` mapping correctly.
+
 ### D-progress-507 — weaver: `call.elapsed` runtime instrumentation + `Std.Time` auto-import (#1298, D100)
 
 Wires the last deferred `call` ambient field that is implementable
@@ -24638,3 +24639,50 @@ not stubs):
   #674 asked for works).  JVM codegen gaps tracked in **#3303**.
 
 **Closes #674.**
+
+### D-progress-511 — JVM `out`/`inout` parameter parity for free functions (holder-array lowering) (#1763, docs/44 m-3)
+
+The self-hosted JVM backend emitted every parameter by value, so a callee's
+write to an `out`/`inout` parameter was dropped on `--target jvm` — the JVM
+counterpart of the MSIL #1761 defect (which used managed byref `T&`).  The JVM
+has no byref, so the fix uses the **single-element holder array** lowering that
+docs/18 §11.2 already specced:
+
+- **Descriptor.**  A free function's `out`/`inout` parameter of element type T
+  is declared as the array type `[T` (`holderAwareParamTypes` in
+  `codegen/06_items.l`); the registry (`collectFileSigs`) records the array
+  type and the declared mode in the new `JvmFuncSig.paramModes`.
+- **Callee.**  On entry the holder's element 0 is unwrapped into a plain value
+  slot bound to the parameter name (`setupStaticParamSlotsAndHolders`); reads
+  use the value slot directly (no array deref), so the off-limits expression
+  reader (`02_exprs.l`) is untouched.  Every assignment funnels through
+  `emitStoreLocalWriteThrough` (`codegen/01_types.l`), which stores to the value
+  slot and then writes the new value through to `holder[0]` — so the caller
+  observes the write without any return-time epilogue.  `FuncCtx` carries the
+  bindings as two parallel maps (`holderArraySlot`, `holderElemType`) rather
+  than a `Map[Int, <record>]`, which the stage-0 bootstrap emitter mis-resolves.
+- **Caller.**  `lowerStaticCallWithHolders` (`codegen/04_calls.l`) pre-builds a
+  fresh single-element holder per `out`/`inout` argument (pre-filled with the
+  local's current value for `inout`), passes the array in the declaration
+  position, and after the call copies `holder[0]` back into the caller's local;
+  the readback itself write-throughs, so forwarding an `inout` parameter to a
+  nested call keeps the outer holder in sync.  Wide elements (`Long`/`Double`)
+  use `[J`/`[D` with `lastore`/`laload` etc.; reference elements use
+  `anewarray` + `aastore`/`aaload`.
+- **Guard.**  `out`/`inout` parameters on **instance / interface methods**
+  (record, protected, `impl`, interface abstract/default, async generator) are
+  a tracked follow-up — the dispatch-site wrap/unwrap is unimplemented — so
+  `rejectInstanceHolderParams` emits a hard compile error rather than a silent
+  by-value miscompile.  MSIL supports these via byref.
+
+New self-test `lyric-compiler/jvm/out_inout_jvm_self_test.l` (`@test_module`,
+8 cases: out String/Int/Long, multiple out, inout read-modify-write, inout
+String, nested inout forwarding, mixed in/out/inout) runs in CI via native
+`lyric test --target jvm` (compiled in-process through `Jvm.Bridge`
+`compileToJarBundled`, run under `java`).  Verified end-to-end through
+`./bin/lyric`: all 8 cases pass (`# pass 8 # fail 0`); the existing JVM
+self-tests (`generic`, `record_method`, `closure`, `silent_miscompile_guard`)
+still pass; and an interface `out` parameter is rejected with the
+`rejectInstanceHolderParams` diagnostic.  docs/44 m-3 marked done (free
+functions); docs/18 §11.2 carries the implementation-status note.  No F# code
+was added (the change is confined to `lyric-compiler/jvm/`).
