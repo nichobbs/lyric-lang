@@ -24,6 +24,8 @@ import Std.Testing
 
 extern type CD[K, V] = "System.Collections.Concurrent.ConcurrentDictionary`2"
 
+extern type Tup[A, B] = "System.Tuple`2"
+
 @externTarget("System.Collections.Concurrent.ConcurrentDictionary`2..ctor")
 func newCD[K, V](): CD[K, V] = ()
 
@@ -35,6 +37,17 @@ func cdAdd[K, V](dict: in CD[K, V], key: in K, value: in V): Bool = ()
 
 @externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.set_Item")
 func cdSet[K, V](dict: in CD[K, V], key: in K, value: in V): Unit = ()
+
+// `Tuple`2(T1, T2)` is a reference type with exactly one (unambiguous)
+// two-argument constructor, so it exercises the non-zero-argument generic ctor
+// path (`newobj` after the argument-push loop, #3419) — including value-type
+// argument boxing at the `!0` position.  `ToString()` returns a concrete
+// `String`, so the round-trip needs no generic-return handling.
+@externTarget("System.Tuple`2..ctor")
+func newTup[A, B](a: in A, b: in B): Tup[A, B] = ()
+
+@externTarget("System.Tuple`2.ToString")
+func tupToString[A, B](t: in Tup[A, B]): String = ()
 
 record Counter {
   var n: Int = 0
@@ -77,6 +90,11 @@ test "set_Item write-back replaces the stored value" {
   var got: Counter = default()
   val _ = cdGet(mapStr, "c", got)
   assertEqualInt(got.n, 99, "set_Item replaced the value")
+}
+
+test "non-zero-arg generic ctor: Tuple`2(T1, T2) constructs and round-trips (#3419)" {
+  val t = newTup(1, "hi")
+  assertEqual(tupToString(t), "(1, hi)", "Tuple(1, \"hi\").ToString()")
 }
 
 test "value-type key (Int) is boxed at the call boundary" {
