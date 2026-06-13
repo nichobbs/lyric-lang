@@ -16,10 +16,7 @@ pub record ModulePath {
 }
 
 /// Join module-path segments with `.` (e.g. `["Std", "Core"]` ->
-/// `"Std.Core"`); an empty list yields `""`.  The single shared
-/// implementation for dotted-path rendering (#2329) — consumers
-/// (`Lyric.TypeChecker`, `Lyric.AliasRewriter`, ...) call this
-/// instead of keeping local copies.
+/// `"Std.Core"`); an empty list yields `""`.
 pub func modulePathJoin(segs: in List[String]): String {
   if segs.count == 0 {
     return ""

@@ -841,13 +841,7 @@ func testExtractResourceBytesBounds(): Unit {
   }
 }
 
-// A zero-size Resources region rejects every offset (#3251): when
-// `resourcesSize == 0`, any `resOffset >= 0` satisfies the
-// `resOffset >= resourcesSize` guard, so no byte of the image is readable as a
-// resource payload — even though the region is declared present
-// (`resourcesOff = 0`, not -1).  Regression guard against reintroducing the old
-// `resourcesSize > 0 and` escape, which made the bounds check non-exhaustive
-// and let any offset through for a declared-empty region.
+// Regression guard: resourcesOff=0 (present) but resourcesSize=0 — the size guard must reject every offset.
 func testExtractResourceBytesZeroSizeRegion(): Unit {
   val real = loadPe()
   val noSections: List[SectionHeader] = newList()
@@ -999,11 +993,7 @@ func collectExternFqns(text: in String, acc: in List[String]): Unit {
   while i < lines.length {
     val t = Str.trimStart(lines[i])
     if Str.startsWith(t, "extern type ") {
-      // Relies on fmt-normalised `name = "FQN"` spacing (exactly one space on
-      // each side of `=`): `lyric fmt --write` is run over every kernel file
-      // before commit, so this is the canonical layout.  A miss here is caught
-      // by the scanner sanity checks (count >= 20, Guid present) in
-      // testClrValueTypeAudit.
+      // Assumes fmt-normalised `= "` spacing; a miss is caught by the sanity counts in testClrValueTypeAudit.
       match Str.indexOf(t, "= \"") {
         case None -> ()
         case Some(eq) -> {
