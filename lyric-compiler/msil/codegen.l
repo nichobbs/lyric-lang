@@ -3356,6 +3356,35 @@ func joinSegsMsil(segs: in List[String], sep: in String): String {
   result
 }
 
+// Flatten a pure dotted-path expression — an `EPath`, or a chain of `EMember`
+// accesses bottoming out in an `EPath` (`Grpc.Types` parses as
+// `EMember(EPath["Grpc"], "Types")`) — into its segment list.  Returns an empty
+// list for any expression that is not a pure identifier path (e.g. a member
+// access on a real value), so a caller can distinguish a package-qualified
+// reference from value member access.  Used to recognise a fully-qualified
+// free-function call (`Grpc.Types.statusCodeFromInt(...)`) whose multi-segment
+// package prefix the parser left as nested `EMember`s.
+func flattenPathExprSegs(e: in Expr): List[String] {
+  match e.kind {
+    case EPath(path) -> path.segments
+    case EMember(receiver, memberName) -> {
+      val pre = flattenPathExprSegs(receiver)
+      if pre.count == 0 {
+        return newList()
+      }
+      val segs: List[String] = newList()
+      var i = 0
+      while i < pre.count {
+        segs.add(pre[i])
+        i = i + 1
+      }
+      segs.add(memberName)
+      segs
+    }
+    case _ -> newList()
+  }
+}
+
 // Cross-package type-name resolution (#1183 codegen port, scope tiers
 // added in #3085).  Given a simple type name like "Maybe" referenced in
 // `pkgName`, find the FQN to use for the resulting `MClass`.
@@ -6767,6 +6796,31 @@ func lowerPatternTestMsil(
     case PConstructor(head, args) -> {
       // Use isinst to check the case type; branch to failLabel if null.
       val caseName = lastSegmentMsil(head)
+      // Qualified enum-case pattern (`case Color.Red ->`): an enum value is an
+      // Int ordinal, not a union case class, so the isinst path below would never
+      // match.  When the penultimate path segment names a known enum type, this
+      // is an enum case test — compare the scrutinee ordinal directly, mirroring
+      // the single-segment `case Red ->` PBinding path above.  (The single-segment
+      // form parses as PBinding; the `Enum.Case` form parses as PConstructor.)
+      val enumPenult = if head.segments.count >= 2 { head.segments[head.segments.count - 2] } else { "" }
+      if cctx.enumTypeNames.containsKey(enumPenult) {
+        match mapGet(cctx.enumCaseOrdinals, caseName) {
+          case Some(ordv) -> {
+            emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+            match scrutTy {
+              case MObject -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MInt)))
+              case _ -> {
+              }
+            }
+            insns.add(MLdcI4(v = ordv))
+            insns.add(MCeq)
+            insns.add(MBrFalse(label = failLabel))
+            return
+          }
+          case None -> {
+          }
+        }
+      }
       // For an in-bundle generic union the scrutinee FQN carries the arity suffix
       // (`Pkg.Maybe`1`); strip it before splicing the case name (#2362).
       val baseCls = match scrutTy {
@@ -8417,6 +8471,33 @@ func lowerMethodCallMsil(
       }
     }
     case _ -> {
+    }
+  }
+  // Fully-qualified free-function call whose multi-segment package prefix the
+  // parser left as nested `EMember`s (`Grpc.Types.statusCodeFromInt(...)` parses
+  // as `EMember(EMember(EPath["Grpc"], "Types"), "statusCodeFromInt")`, not an
+  // `EPath`).  If the receiver flattens to a pure dotted path and
+  // `<prefix>.<member>` names a registered free function, this is a static call,
+  // not a method — route it to the static-call lowering.  The `funcTokens`
+  // membership check is what disambiguates a package-qualified call from value
+  // member access (a local's field chain never names a free function), so this
+  // never mis-fires on real method/field receivers.  Single-segment package
+  // calls (`Cache.get(...)`) already resolve elsewhere; this closes the
+  // multi-segment gap (#3332 sibling — grpc/logging qualified calls).
+  val recvSegs = flattenPathExprSegs(recv)
+  if recvSegs.count > 0 {
+    val fqnSegs: List[String] = newList()
+    var rsi = 0
+    while rsi < recvSegs.count {
+      fqnSegs.add(recvSegs[rsi])
+      rsi = rsi + 1
+    }
+    fqnSegs.add(memberName)
+    val callFqn = joinSegsMsil(fqnSegs, ".")
+    val callArityFqn = callFqn + "/" + toString(args.count)
+    if cctx.funcTokens.containsKey(callArityFqn) or cctx.funcTokens.containsKey(callFqn) {
+      val staticPath = ModulePath(segments = fqnSegs, span = recv.span)
+      return lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, memberName, staticPath, args)
     }
   }
   val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
