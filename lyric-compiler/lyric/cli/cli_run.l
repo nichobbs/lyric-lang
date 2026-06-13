@@ -267,9 +267,24 @@ func cmdRun(argv: in slice[String]): Int {
     }
   }
 
-  val runTarget: CompileTarget = match targetArg {
-    case None -> Dotnet
-    case Some(t) -> if t == "jvm" { Jvm } else if t == "dotnet" { Dotnet } else { printErr("run: unknown target '" + t + "' — expected dotnet or jvm"); return 1 }
+  // A `val x = match { … case Some(t) -> if … }` binding mis-lowers under the
+  // stage-0 emitter: the nested `if`-expression in the `Some` arm is emitted as
+  // a value-discarding statement, leaving `x` null (the crash diagnosed for
+  // #674 — a null target propagates to a null `outPath` and NREs in `stemOf`).
+  // Mirror the proven `var`-mutation shape that `cmdBuild` uses for `--target`.
+  var runTarget: CompileTarget = Dotnet
+  match targetArg {
+    case None -> ()
+    case Some(t) -> {
+      if t == "jvm" {
+        runTarget = Jvm
+      } else if t == "dotnet" {
+        runTarget = Dotnet
+      } else {
+        printErr("run: unknown target '" + t + "' — expected dotnet or jvm")
+        return 1
+      }
+    }
   }
 
   // Project-mode: no explicit source file — discover or use --manifest.

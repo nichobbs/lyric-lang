@@ -830,7 +830,11 @@ lyric run <file.l> --watch             # rebuild & re-run on source changes (Ctr
 lyric run                              # project mode: build + run the project's main entry point
 lyric run -- arg1 arg2                 # project mode: pass arguments to the program
 lyric run --watch                      # project mode: rebuild & re-run on source changes
-lyric run --target jvm                 # project mode: build JVM target and run with java -jar
+lyric run --target jvm                 # build JVM target and run with java -jar
+                                       #   (single-file or project; entry main() output is correct.
+                                       #    Note: forwarding `-- args` to a slice[String] main and
+                                       #    propagating the Int return as the JVM exit code are pending
+                                       #    JVM codegen work — see issue #3303.)
 lyric build --watch                    # project/single build: rebuild on source changes
 
 # Test
@@ -894,15 +898,18 @@ lyric prove --manifest <lyric.toml>    # project mode: override manifest discove
 
 # Benchmarking  (see chapter 28)
 lyric bench <file.l>                   # compile and run @bench_module timing harness
-lyric bench <file.l> --target jvm      # benchmark on JVM target (java -jar)
+lyric bench <file.l> --target jvm      # benchmark on JVM target (java -jar); see note below
 lyric bench <file.l> --runs <N>        # number of timed iterations (default: 10)
 lyric bench <file.l> --warmup <N>      # un-timed warmup iterations (default: 3)
 lyric bench <file.l> --filter <substr> # only run benchmarks whose name contains <substr>
 lyric bench                            # project mode: run all @bench_module files in project
-lyric bench --target jvm               # project mode: JVM target for all benchmark files
+lyric bench --target jvm               # project mode: JVM target; see note below
 lyric bench --manifest <lyric.toml>    # project mode: override manifest discovery
 # Output: "name  min=Xms  max=Xms  mean=Xms" per @bench function
 # Requirements: file must carry @bench_module; @bench functions must be pub func f(): Unit
+# Note: --target jvm is wired but currently blocked on JVM Std.Time support
+#       (the timing harness uses now()/since()/totalMillis()); see issue #3302.
+#       --target dotnet is fully supported.
 
 # Code generation
 lyric openapi <spec.json>              # generate a typed Std.Rest client from an OpenAPI 3.x JSON spec
