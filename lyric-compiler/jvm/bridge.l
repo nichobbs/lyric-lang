@@ -359,7 +359,21 @@ func runMiddleEnd(
     return None
   }
 
-  val derived = deriveFile(propRes.file)
+  // Flatten the items of every imported package so `deriveFile` resolves a
+  // `@derive(Ord)` field typed as a cross-package distinct type through its
+  // `.value` projection chain rather than a reference-comparison miscompile
+  // (#3287); parity with the MSIL bridge's per-package pass.
+  val importedItems: List[Item] = newList()
+  var iii = 0
+  while iii < importedPkgs.count {
+    var jjj = 0
+    while jjj < importedPkgs[iii].items.count {
+      importedItems.add(importedPkgs[iii].items[jjj])
+      jjj = jjj + 1
+    }
+    iii = iii + 1
+  }
+  val derived = deriveFileWithImports(propRes.file, importedItems)
   val monoRes = monoFileWithImports(derived, stdlibGenFuncs)
   if reportAndAbort(monoRes.diagnostics) {
     return None
