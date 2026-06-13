@@ -24,8 +24,10 @@
 //! `lyric-compiler/jvm/codegen/06_items.l`:
 //!   — `lowerMethodCall` JRef arm now tries the free-function key `cls + "." + memberName`
 //!     after the instance-method `cls + "#" + memberName` lookup misses.
-//!   — `lowerFunc` now emits method names with `.` replaced by `_` (JVMS §4.2.2
-//!     forbids `.` in unqualified names); the call site applies the same sanitisation.
+//!   — `lowerFunc` now strips the `TypeName.` prefix from synthesised names
+//!     (JVMS §4.2.2 forbids `.` in unqualified names), so `Point.equals` is
+//!     emitted as method name `equals`; the call site already dispatches on the
+//!     plain member name, so both sides agree.
 //!
 //! Compile and run via native `lyric test` (both targets):
 //!   lyric test lyric-compiler/lyric/synthesized_method_self_test.l

@@ -40,7 +40,6 @@ func makeFuncCtx(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  closureCounter: in List[Int],
 ): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
@@ -71,8 +70,7 @@ func makeFuncCtx(
     selfClass = None,
     moduleVals = moduleVals,
     opaqueTypes = opaqueTypes,
-    closureAcc = closureAcc,
-    closureCounter = closureCounter
+    closureAcc = closureAcc
   )
 }
 
@@ -89,7 +87,6 @@ func makeFuncCtxForGenerator(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  closureCounter: in List[Int],
 ): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
@@ -121,8 +118,7 @@ func makeFuncCtxForGenerator(
     selfClass = None,
     moduleVals = moduleVals,
     opaqueTypes = opaqueTypes,
-    closureAcc = closureAcc,
-    closureCounter = closureCounter
+    closureAcc = closureAcc
   )
 }
 
@@ -141,7 +137,6 @@ func makeFuncCtxInstance(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  closureCounter: in List[Int],
 ): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
@@ -173,8 +168,7 @@ func makeFuncCtxInstance(
     selfClass = Some(value = className),
     moduleVals = moduleVals,
     opaqueTypes = opaqueTypes,
-    closureAcc = closureAcc,
-    closureCounter = closureCounter
+    closureAcc = closureAcc
   )
 }
 
@@ -282,7 +276,6 @@ pub func lowerFunc(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  closureCounter: in List[Int],
 ): LFunc {
   val retTy = match decl.ret { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
 
@@ -297,8 +290,7 @@ pub func lowerFunc(
     retTy,
     moduleVals,
     opaqueTypes,
-    closureAcc,
-    closureCounter
+    closureAcc
   )
   val insns: List[LInsn] = newList()
 
@@ -539,7 +531,6 @@ pub func lowerRecord(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  closureCounter: in List[Int],
 ): LRecord {
   val className = pkgName + "/" + decl.name
   // Generic type params erase to `Object` (docs/44 M-1 / Q-J001) so a `T`-typed
@@ -584,7 +575,7 @@ pub func lowerRecord(
   // A body-less RMFunc signature is skipped (records carry no abstract methods).
   // Lambdas inside a record method still register their synthesised closure
   // inner class into the package-shared accumulator (#2864) via the threaded
-  // `closureAcc`/`closureCounter`.
+  // `closureAcc`.
   var mi = 0
   while mi < decl.members.count {
     match decl.members[mi] {
@@ -605,8 +596,7 @@ pub func lowerRecord(
                 autoFfi,
                 moduleVals,
                 opaqueTypes,
-                closureAcc,
-                closureCounter
+                closureAcc
               )
             )
           }
@@ -718,7 +708,6 @@ func lowerProtectedMethod(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  closureCounter: in List[Int],
 ): LFunc {
   val retTy = match retOpt { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
   // Lambdas inside a protected-type entry/helper register their synthesised
@@ -736,8 +725,7 @@ func lowerProtectedMethod(
     retTy,
     moduleVals,
     opaqueTypes,
-    closureAcc,
-    closureCounter
+    closureAcc
   )
   val insns: List[LInsn] = newList()
   val paramTypes: List[JvmType] = newList()
@@ -778,7 +766,6 @@ func lowerRecordMethod(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  closureCounter: in List[Int],
 ): LFunc {
   val retTy = match fn.ret { case Some(te) -> typeExprToJvmErased(te, pkgName, typeParams); case None -> JVoid }
   val ctxSelf = makeFuncCtxInstance(
@@ -792,8 +779,7 @@ func lowerRecordMethod(
     retTy,
     moduleVals,
     opaqueTypes,
-    closureAcc,
-    closureCounter
+    closureAcc
   )
   val insns: List[LInsn] = newList()
   val paramTypes: List[JvmType] = newList()
@@ -828,7 +814,6 @@ func buildProtected(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  closureCounter: in List[Int],
 ): LPackageItem {
   val className = pkgName + "/" + decl.name
   val fields: List[LField] = newList()
@@ -860,8 +845,7 @@ func buildProtected(
             autoFfi,
             moduleVals,
             opaqueTypes,
-            closureAcc,
-            closureCounter
+            closureAcc
           )
         )
       }
@@ -884,8 +868,7 @@ func buildProtected(
                 autoFfi,
                 moduleVals,
                 opaqueTypes,
-                closureAcc,
-                closureCounter
+                closureAcc
               )
             )
           }
@@ -1214,7 +1197,6 @@ func buildWire(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  closureCounter: in List[Int],
 ): LWire {
   val className = pkgName + "/" + decl.name
   val bindings: List[LWireBinding] = newList()
@@ -1276,7 +1258,6 @@ func buildWire(
           moduleVals,
           opaqueTypes,
           closureAcc,
-          closureCounter,
           initInsns,
           init,
           bty
@@ -1301,7 +1282,6 @@ func buildWire(
           moduleVals,
           opaqueTypes,
           closureAcc,
-          closureCounter,
           initInsns,
           init,
           bty
@@ -1329,7 +1309,6 @@ func buildWire(
           moduleVals,
           opaqueTypes,
           closureAcc,
-          closureCounter,
           initInsns,
           provider,
           bty
@@ -1365,7 +1344,6 @@ func lowerWireBindingInit(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  closureCounter: in List[Int],
   insns: in List[LInsn],
   init: in Expr,
   expectedTy: in JvmType,
@@ -1398,8 +1376,7 @@ func lowerWireBindingInit(
       expectedTy,
       moduleVals,
       opaqueTypes,
-      closureAcc,
-      closureCounter
+      closureAcc
     )
     val ty = lowerExpr(ctx, insns, init)
     coerceArgTo(insns, ty, expectedTy)
@@ -1606,7 +1583,6 @@ func lowerGeneratorBody(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  closureCounter: in List[Int],
 ): List[LInsn] {
   val insns: List[LInsn] = newList()
   // #2856: thread the real `moduleVals` / `opaqueTypes` maps into the generator
@@ -1622,8 +1598,7 @@ func lowerGeneratorBody(
     autoFfi,
     moduleVals,
     opaqueTypes,
-    closureAcc,
-    closureCounter
+    closureAcc
   )
 
   // Preamble: load each param from this.<field> into a local slot.
@@ -2514,12 +2489,11 @@ pub func codegenPackageWithSigs(
   // FuncCtx (`valInitCtx`) so their local-slot numbering stays disjoint when the
   // initialisers are concatenated into a single `<clinit>` body.
   val staticVals: List[LStaticVal] = newList()
-  // J2b closures (#2665): the package-shared closure accumulator + name counter,
+  // J2b closures (#2665): the package-shared closure accumulator,
   // threaded through every top-level `func` / module-`val` / `impl` / `interface`
   // FuncCtx so that an `ELambda` anywhere on those paths registers its synthesised
   // inner class here.  Drained into `LPClosureClass` items after the item loop.
   val closureAcc: List[LClosure] = newList()
-  val closureCounter: List[Int] = newList()
   val valInitCtx = makeFuncCtx(
     pkgName,
     funcsClass,
@@ -2531,8 +2505,7 @@ pub func codegenPackageWithSigs(
     JVoid,
     moduleVals,
     opaqueTypes,
-    closureAcc,
-    closureCounter
+    closureAcc
   )
   // #2853: lower every module-level `val` once, now, and overwrite `moduleVals`
   // with the real field type before any function (or the `<clinit>` itself) is
@@ -2561,7 +2534,7 @@ pub func codegenPackageWithSigs(
         var mi2 = 0
         while mi2 < decl.members.count {
           match decl.members[mi2] {
-            case IMplFunc(fn) -> implFuncs.add(lowerFunc(fn, pkgName, targetClass, funcSigs, caseFields, ctors, externTypes, autoFfi, moduleVals, opaqueTypes, closureAcc, closureCounter))
+            case IMplFunc(fn) -> implFuncs.add(lowerFunc(fn, pkgName, targetClass, funcSigs, caseFields, ctors, externTypes, autoFfi, moduleVals, opaqueTypes, closureAcc))
             case IMplAssoc(_) -> {
             }
           }
@@ -2594,8 +2567,7 @@ pub func codegenPackageWithSigs(
             autoFfi,
             moduleVals,
             opaqueTypes,
-            closureAcc,
-            closureCounter
+            closureAcc
           )
           val genParams: List[LGenParam] = newList()
           var pi = 0
@@ -2633,8 +2605,7 @@ pub func codegenPackageWithSigs(
               autoFfi,
               moduleVals,
               opaqueTypes,
-              closureAcc,
-              closureCounter
+              closureAcc
             )
           )
           if isMainFunc(decl) {
@@ -2673,8 +2644,7 @@ pub func codegenPackageWithSigs(
           autoFfi,
           moduleVals,
           opaqueTypes,
-          closureAcc,
-          closureCounter
+          closureAcc
         )
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() {
@@ -2727,8 +2697,7 @@ pub func codegenPackageWithSigs(
           autoFfi,
           moduleVals,
           opaqueTypes,
-          closureAcc,
-          closureCounter
+          closureAcc
         )
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() {
@@ -2844,8 +2813,7 @@ pub func codegenPackageWithSigs(
             autoFfi,
             moduleVals,
             opaqueTypes,
-            closureAcc,
-            closureCounter
+            closureAcc
           )
         )
       }
@@ -2882,8 +2850,7 @@ pub func codegenPackageWithSigs(
                   autoFfi,
                   moduleVals,
                   opaqueTypes,
-                  closureAcc,
-                  closureCounter
+                  closureAcc
                 )
               )
             }
@@ -2918,8 +2885,7 @@ pub func codegenPackageWithSigs(
               autoFfi,
               moduleVals,
               opaqueTypes,
-              closureAcc,
-              closureCounter
+              closureAcc
             )
           )
         )

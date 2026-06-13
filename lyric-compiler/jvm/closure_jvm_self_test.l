@@ -16,7 +16,9 @@
 //!   • passing a lambda to a higher-order function and invoking it inside;
 //!   • a lambda returning `Result[Int, String]` (drives J4 erased generics
 //!     through the closure ABI — payload boxing + checkcast/unbox round-trip);
-//!   • a multi-argument lambda and a String-payload capture.
+//!   • a multi-argument lambda and a String-payload capture;
+//!   • a lambda nested inside a list literal whose param shadows an enclosing
+//!     local (#3191 — the param must be bound, not spuriously captured).
 //!
 //! Each lambda lowers to a `<pkg>$Lambda$<n>` inner class implementing the
 //! package-shared `<pkg>/Lyric$Lambda` functional interface (uniform
@@ -36,6 +38,7 @@
 package Lyric.ClosureJvmSelfTest
 
 import Std.Core
+import Std.Collections
 import Std.Testing
 
 // Higher-order functions whose `(…) -> R` parameter type lets the lambda be
@@ -75,6 +78,13 @@ protected type Adder {
     val f: (Int) -> Int = { y: Int -> y + amount }
     return f(x)
   }
+}
+
+// Consumer for the #3191 bound-name test below: accepts a list of lambdas and
+// discards it, so the lambda only ever appears inside the list literal (a JVM
+// `EList` lowers to a populated `java.util.ArrayList`).
+func ignoreFns(fs: in List[(Int) -> Int]): Unit {
+  ()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -151,6 +161,21 @@ test "capturing lambda over a String val" {
   val prefix = "hi-"
   val withPrefix: (String) -> String = { s: String -> prefix + s }
   assertEqual(withPrefix("there"), "hi-there", "withPrefix(there) with captured prefix")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lambda nested inside a list literal in an expression statement (#3191): the
+// nested lambda's params must enter `collectBoundNamesExpr`'s bound set via the
+// `EList` case.  Without it, the inner param `x` — which shadows the enclosing
+// local `x` — leaks into the outer lambda's capture set as a spurious capture
+// of the enclosing `x`.  The outer body deliberately references only `base`
+// (its own param) and `n`, so the precise capture set is exactly `{n}`.
+test "lambda param inside list literal shadows outer local" {
+  val x = 5
+  val n = 10
+  val outer = { base: Int -> ignoreFns([{ x: Int -> x * 2 }]); base + n }
+  assertEqualInt(outer(1), 11, "outer(1) captures only n; list-literal lambda param x is bound")
+  assertEqualInt(x, 5, "enclosing x is not corrupted by the shadowing list-literal lambda param")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
