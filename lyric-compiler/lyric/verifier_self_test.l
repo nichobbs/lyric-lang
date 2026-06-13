@@ -642,6 +642,20 @@ func testProveGeneratorContractRejected(): Unit {
   assertTrue(summaryHasErrorDiag(summary), "generator-contract: error diag present")
 }
 
+// Trailing expression body: `result` must carry the declared return sort, not Unit.
+// Without the fix the `result` TVar had sort `Unit` and the ensures discharged as
+// V0007 (solver: unknown) rather than Discharged.
+func testProveTrailingExprResultSort(): Unit {
+  val src = "@proof_required\npackage P\n" + "func identity(x: in Int): Int ensures: result == x { x }\n"
+  val summary = prove(src)
+  assertTrue(
+    not summaryHasDiagCode(summary, "V0007"),
+    "trailing-expr-result: no V0007 (result sort was Unit before fix)"
+  )
+  assertTrue(not summaryHasFailure(summary), "trailing-expr-result: goal discharged")
+  assertTrue(summaryTotalCount(summary) > 0, "trailing-expr-result: at least one goal generated")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Test items
 // ─────────────────────────────────────────────────────────────────────────────
@@ -847,4 +861,8 @@ test "prove sync contract still verifies" {
 
 test "prove generator contract rejected" {
   testProveGeneratorContractRejected()
+}
+
+test "prove trailing expr result sort" {
+  testProveTrailingExprResultSort()
 }

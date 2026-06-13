@@ -1092,39 +1092,44 @@ func wpWalk(env: in VEnv, resultSort: in SortInfo, postcond: in Term, stmts: in 
             WpResult(wp = inner.wp, sideGoals = sg, assumed = asList, diags = di)
           }
           case None -> {
-            // Check if it's an if statement.
-            match tryExtractIf(callExpr) {
-              case Some(ifTriple) -> {
-                wpIfStmt(env, resultSort, postcond, stmts, idx, ifTriple.cond, ifTriple.thenBranch, ifTriple.elseBranchOpt, st.span)
-              }
-              case None -> {
-                // General call or expression statement.
-                match callExpr.kind {
-                  case ECall(_, _) -> {
-                    val (callR, callDiags) = translateExpr(env, callExpr)
-                    val inner = wpWalk(env, resultSort, postcond, stmts, idx + 1)
-                    val sg: List[SideGoal] = newList()
-                    var i = 0
-                    while i < callR.sideConds.count {
-                      sg.add(SideGoal(term = callR.sideConds[i], kind = GKAssertion, span = callExpr.span))
-                      i = i + 1
+            // Trailing expression in a block is the implicit return value (#3371).
+            if idx + 1 >= stmts.count {
+              wpExpr(env, resultSort, postcond, callExpr)
+            } else {
+              // Check if it's an if statement.
+              match tryExtractIf(callExpr) {
+                case Some(ifTriple) -> {
+                  wpIfStmt(env, resultSort, postcond, stmts, idx, ifTriple.cond, ifTriple.thenBranch, ifTriple.elseBranchOpt, st.span)
+                }
+                case None -> {
+                  // General call or expression statement.
+                  match callExpr.kind {
+                    case ECall(_, _) -> {
+                      val (callR, callDiags) = translateExpr(env, callExpr)
+                      val inner = wpWalk(env, resultSort, postcond, stmts, idx + 1)
+                      val sg: List[SideGoal] = newList()
+                      var i = 0
+                      while i < callR.sideConds.count {
+                        sg.add(SideGoal(term = callR.sideConds[i], kind = GKAssertion, span = callExpr.span))
+                        i = i + 1
+                      }
+                      i = 0
+                      while i < inner.sideGoals.count {
+                        sg.add(inner.sideGoals[i])
+                        i = i + 1
+                      }
+                      val asList: List[Term] = newList()
+                      appendTermList(asList, callR.assumed)
+                      appendTermList(asList, inner.assumed)
+                      val di: List[Diagnostic] = newList()
+                      appendTermList2(di, callDiags)
+                      appendTermList2(di, inner.diags)
+                      WpResult(wp = inner.wp, sideGoals = sg, assumed = asList, diags = di)
                     }
-                    i = 0
-                    while i < inner.sideGoals.count {
-                      sg.add(inner.sideGoals[i])
-                      i = i + 1
+                    case _ -> {
+                      // Other SExpr — skip.
+                      wpWalk(env, resultSort, postcond, stmts, idx + 1)
                     }
-                    val asList: List[Term] = newList()
-                    appendTermList(asList, callR.assumed)
-                    appendTermList(asList, inner.assumed)
-                    val di: List[Diagnostic] = newList()
-                    appendTermList2(di, callDiags)
-                    appendTermList2(di, inner.diags)
-                    WpResult(wp = inner.wp, sideGoals = sg, assumed = asList, diags = di)
-                  }
-                  case _ -> {
-                    // Other SExpr — skip.
-                    wpWalk(env, resultSort, postcond, stmts, idx + 1)
                   }
                 }
               }
