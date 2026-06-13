@@ -2303,6 +2303,28 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/synthesized_method_self_test.l
+      # NaN-comparison self-test on JVM (#2772) — pins IEEE 754 §5.11 ordered
+      # comparisons for Float/Double: `lowerCmp`/`lowerCmpFail` must select the
+      # `fcmpg`/`dcmpg` ("g") variant for `<`/`<=` (NaN -> +1 -> branch not taken
+      # -> false) and `fcmpl`/`dcmpl` for the rest, so every NaN ordered compare
+      # is false (and `!=` is true).  Exercises both the value-position
+      # (`lowerCmp`) and condition-position (`lowerCmpFail`) lowering paths,
+      # compiled in-process through the self-hosted `Jvm.Bridge` and run under
+      # `java`.  Imports only `Std.*`.
+      - name: NaN-comparison self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping NaN-comparison JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping NaN-comparison JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/nan_compare_jvm_self_test.l
       # Match-literal + compound-assignment self-test — pins two self-hosted
       # MSIL backend correctness fixes from #1481 (epic #1470, Band 2): Float
       # literal *match* patterns now emit a real `ldc.r8; ceq` compare instead

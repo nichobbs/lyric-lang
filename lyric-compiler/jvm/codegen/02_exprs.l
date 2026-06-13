@@ -20,6 +20,32 @@ import Jvm.AutoFfi
 // recursive.  In Lyric this is supported via the natural forward-reference
 // rules — all three are in the same package and file, so they can call each
 // other freely.
+// Select the NaN-correct float/double compare opcode for `op`.
+//
+// `fcmpl`/`dcmpl` push -1 when either operand is NaN; `fcmpg`/`dcmpg` push +1.
+// IEEE 754 §5.11 requires every NaN comparison to be false (except `!=`, which
+// is true), so `<` and `<=` must use the "g" variant (NaN → +1, so the
+// `iflt`/`ifle` branch is not taken → false) while `>`, `>=`, `==`, and `!=`
+// use the "l" variant (NaN → -1, so `ifgt`/`ifge` are not taken → false, and
+// `ifeq` for `==` is not taken while `ifne` for `!=` is — both correct).  This
+// is the standard javac pattern.
+func floatCmpInsn(op: in BinOp, isDouble: in Bool): LInsn {
+  val useG = match op { case BLt -> true; case BLte -> true; case _ -> false }
+  if isDouble {
+    if useG {
+      LDcmpg
+    } else {
+      LDcmpl
+    }
+  } else {
+    if useG {
+      LFcmpg
+    } else {
+      LFcmpl
+    }
+  }
+}
+
 // Lower a comparison expression.  lhs type determines which comparison is used.
 func lowerCmp(
   ctx: in FuncCtx,
@@ -43,7 +69,7 @@ func lowerCmp(
       }
     }
     case JDouble -> {
-      insns.add(LDcmpl)
+      insns.add(floatCmpInsn(op, true))
       match op {
         case BEq -> insns.add(LIfeq(label = trueLabel))
         case BNeq -> insns.add(LIfne(label = trueLabel))
@@ -55,7 +81,7 @@ func lowerCmp(
       }
     }
     case JFloat -> {
-      insns.add(LFcmpl)
+      insns.add(floatCmpInsn(op, false))
       match op {
         case BEq -> insns.add(LIfeq(label = trueLabel))
         case BNeq -> insns.add(LIfne(label = trueLabel))
@@ -1017,7 +1043,7 @@ func lowerCmpFail(insns: in List[LInsn], op: in BinOp, lhsTy: in JvmType, failLa
       }
     }
     case JDouble -> {
-      insns.add(LDcmpl)
+      insns.add(floatCmpInsn(op, true))
       match op {
         case BEq -> insns.add(LIfne(label = failLabel))
         case BNeq -> insns.add(LIfeq(label = failLabel))
@@ -1029,7 +1055,7 @@ func lowerCmpFail(insns: in List[LInsn], op: in BinOp, lhsTy: in JvmType, failLa
       }
     }
     case JFloat -> {
-      insns.add(LFcmpl)
+      insns.add(floatCmpInsn(op, false))
       match op {
         case BEq -> insns.add(LIfne(label = failLabel))
         case BNeq -> insns.add(LIfeq(label = failLabel))

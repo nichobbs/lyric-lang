@@ -200,6 +200,7 @@ tracking issue today (band J0 files them).
 | m-9 | `findBestConstructor` implicit score threshold vs explicit `>= 0` | #2226 | #2226 |
 | m-10 | `Std.Time.sleepMillis` is a JVM stub; doc omits the limitation | #2101 | #2101 |
 | m-11 | Doc contradictions: Q-J012/Q-J013 marked "shipped" in `docs/36` but "NOT present / Phase 6" in `docs/31`/`docs/03`; self-test counts drift (B124/B125/B130) across `docs/18`/`docs/33`/`docs/04`; parity count "20-program" vs "22-program" | `docs/31:409-434` vs `docs/36:123-150`; count drift | (Band J0 docs sweep) |
+| m-12 | ~~`Float`/`Double` ordered comparisons used `fcmpl`/`dcmpl` for all six operators → NaN compared as less-than-everything for `<`/`<=` (IEEE 754 §5.11 violation)~~ **Fixed (D-progress-508):** `floatCmpInsn(op, isDouble)` selects `fcmpg`/`dcmpg` for `<`/`<=` and `fcmpl`/`dcmpl` otherwise, in both `lowerCmp` and `lowerCmpFail`; verified by `nan_compare_jvm_self_test.l`. | `codegen/02_exprs.l` | #2772 |
 
 ---
 
