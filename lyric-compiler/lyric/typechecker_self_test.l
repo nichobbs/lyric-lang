@@ -2098,6 +2098,23 @@ test "try statement unit handler accepted" {
   assertTrue(not hasDiagCode(parseCheck(ok), "T0067"), "try statement: Unit handler absorbed, no T0067")
 }
 
+// #3262: a *value-position* try with a non-Unit body and a Unit handler must
+// raise T0067.  If the catch fires, the shared codegen temp the value binds to
+// is left unassigned, so silently absorbing the Unit handler (as the earlier
+// blanket Unit leniency did) was unsound.
+test "try value unit handler rejected" {
+  val bad = "package P\nfunc f(): Int {\n  val x: Int = try {\n    42\n  } catch Bug as b {\n    ()\n  }\n  x\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0067"), "try value: Unit handler vs Int body: T0067")
+}
+
+// #3262 companion: the statement-position counterpart of the case above stays
+// clean — the trailing `try` is a Unit-returning function body, so its value is
+// discarded and a Unit handler beside a value-producing body is fine.
+test "try statement unit handler with value body accepted" {
+  val ok = "package P\nfunc f(): Unit {\n  try {\n    42\n  } catch Bug as b {\n    ()\n  }\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0067"), "try statement: Unit handler beside Int body absorbed, no T0067")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // #3187: a refutable `for` pattern is rejected by the type checker (T0112) —
 // codegen has no failure path for a non-matching element, so accepting it

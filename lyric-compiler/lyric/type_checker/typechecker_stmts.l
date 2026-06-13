@@ -181,15 +181,15 @@ pub func checkStatement(
     }
 
     case SDefer(body) -> {
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body, false)
     }
 
     case SScope(_, body) -> {
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body, false)
     }
 
     case SLoop(_, body) -> {
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body, false)
     }
 
     case SFor(_, pat, iter, body) -> {
@@ -211,7 +211,7 @@ pub func checkStatement(
       }
       scopePush(sc)
       bindPattern(sc, pat, elemType)
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body, false)
       scopePop(sc)
     }
 
@@ -220,11 +220,11 @@ pub func checkStatement(
       if not typeEquiv(condT, TyPrim(pt = PtBool)) {
         diag.add(errorDiagnostic("T0066", "while-condition must be Bool (got " + renderType(condT) + ")", stmt.span))
       }
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body, false)
     }
 
     case STry(body, catches, finally_) -> {
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body, false)
       var i = 0
       while i < catches.count {
         val c = catches[i]
@@ -236,7 +236,7 @@ pub func checkStatement(
             scopeAdd(sc, LocalBinding(name = bname, ty = TyException, isMutable = false))
           }
         }
-        val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, c.body)
+        val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, c.body, false)
         scopePop(sc)
         i = i + 1
       }
@@ -244,7 +244,7 @@ pub func checkStatement(
         case None -> {
         }
         case Some(fb) -> {
-          val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, fb)
+          val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, fb, false)
         }
       }
     }
@@ -276,17 +276,26 @@ func statementDiverges(stmt: in Statement): Bool {
   }
 }
 
-// #2355: emit T0067 when a value-position `try` handler's type can neither
-// satisfy nor be satisfied by the body type.  Never (a diverging handler),
-// TyError (an already-reported failure), and Unit (a statement-position `try`
-// whose value is discarded) are all absorbed without error, and an Int/Long
-// literal-widening pair merges cleanly — the same leniencies
-// `unifyBranchTypes` applies to `if`/`match` branches.
+// #2355 / #3262: emit T0067 when a value-position `try` handler's type can
+// neither satisfy nor be satisfied by the body type.  Never (a diverging
+// handler), TyError (an already-reported failure), and an Int/Long
+// literal-widening pair are absorbed — the same leniencies `unifyBranchTypes`
+// applies to `if`/`match` branches.
+//
+// Unit leniency is asymmetric and depends on whether the `try`'s value is
+// actually consumed (`handlerInValuePos`):
+//   - A Unit *body* means the `try` produces nothing on the happy path, so a
+//     non-Unit handler cannot create a value-position mismatch; always absorbed.
+//   - A Unit *handler* beside a non-Unit body is only safe in statement
+//     position (the value is discarded).  In value position the shared codegen
+//     temp would be left unassigned when the catch fires (#3262), so the Unit
+//     handler must raise T0067 there rather than being silently absorbed.
 func checkTryHandlerType(
   tbl: in SymbolTable,
   diag: in List[Diagnostic],
   bodyTy: in Type,
   handlerTy: in Type,
+  handlerInValuePos: in Bool,
   span: in Span,
 ): Unit {
   if isNeverType(handlerTy) or isNeverType(bodyTy) {
@@ -299,7 +308,10 @@ func checkTryHandlerType(
   if anyError {
     return
   }
-  if isUnitType(handlerTy) or isUnitType(bodyTy) {
+  if isUnitType(bodyTy) {
+    return
+  }
+  if isUnitType(handlerTy) and not handlerInValuePos {
     return
   }
   if argSatisfiesParam(tbl, bodyTy, handlerTy) or argSatisfiesParam(tbl, handlerTy, bodyTy) {
@@ -321,6 +333,14 @@ func checkTryHandlerType(
   )
 }
 
+// `valuePos` is true when the trailing value of this block flows out to a
+// consumer that requires a value of a known type (a `val`/`let`/`var`
+// initialiser, a function body with a non-Unit return type, an `if`/`match`
+// value arm, or a value-position `{ … }` / `try` expression).  It governs the
+// asymmetric Unit-handler leniency in `checkTryHandlerType` (#3262): only a
+// genuinely statement-position `try` may absorb a Unit handler beside a
+// non-Unit body.  Statement-position callers (loop / catch / finally bodies)
+// pass false.
 pub func checkBlock(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -329,6 +349,7 @@ pub func checkBlock(
   returnTy: in Type,
   diag: in List[Diagnostic],
   blk: in Block,
+  valuePos: in Bool,
 ): Type {
   scopePush(sc)
   var lastExprType: Type = TyPrim(pt = PtUnit)
@@ -337,11 +358,31 @@ pub func checkBlock(
     val stmt = blk.statements[i]
     match stmt.kind {
       case SExpr(e) -> {
-        lastExprType = inferExpr(sc, tbl, sigs, diag, e)
+        // A brace / `unsafe` block used as a statement-expression carries the
+        // enclosing block's value-position only at the trailing statement;
+        // route it through `checkBlock` directly so a non-trailing block's
+        // value is correctly treated as discarded (#3262).  All other
+        // expression forms type via `inferExpr`.
+        val isLast = i == blk.statements.count - 1
+        match e.kind {
+          case EBlock(innerBlk) -> {
+            lastExprType = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, innerBlk, valuePos and isLast)
+          }
+          case EUnsafe(innerBlk) -> {
+            lastExprType = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, innerBlk, valuePos and isLast)
+          }
+          case _ -> {
+            lastExprType = inferExpr(sc, tbl, sigs, diag, e)
+          }
+        }
       }
       // Codegen lowers value-position try via a shared temp — type the expression as the body (or first handler if body is Never).
       case STry(body, catches, fin) -> {
-        var resultTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body)
+        // The `try` value is consumed only when the enclosing block is in value
+        // position *and* this is the trailing statement; otherwise the value is
+        // discarded (#3262).
+        val tryValuePos = valuePos and i == blk.statements.count - 1
+        var resultTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body, tryValuePos)
         var ci = 0
         while ci < catches.count {
           val c = catches[ci]
@@ -353,17 +394,17 @@ pub func checkBlock(
               scopeAdd(sc, LocalBinding(name = bname, ty = TyException, isMutable = false))
             }
           }
-          val hTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, c.body)
+          val hTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, c.body, tryValuePos)
           scopePop(sc)
           if typeEquiv(resultTy, TyPrim(pt = PtNever)) {
             resultTy = hTy
           } else {
             // #2355: codegen routes the body and every handler through one
             // shared temp, so a non-diverging handler must produce a value
-            // compatible with the body type.  Unit on either side is absorbed
-            // (the statement-position `try` whose value is discarded), and
-            // Never/TyError stay lenient, mirroring `unifyBranchTypes`.
-            checkTryHandlerType(tbl, diag, resultTy, hTy, c.span)
+            // compatible with the body type.  Never/TyError and a Unit body
+            // stay lenient, mirroring `unifyBranchTypes`; a Unit handler beside
+            // a non-Unit body is only absorbed in statement position (#3262).
+            checkTryHandlerType(tbl, diag, resultTy, hTy, tryValuePos, c.span)
           }
           ci = ci + 1
         }
@@ -371,7 +412,8 @@ pub func checkBlock(
           case None -> {
           }
           case Some(fb) -> {
-            val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, fb)
+            // The `finally` block's value is always discarded.
+            val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, fb, false)
           }
         }
         lastExprType = resultTy
@@ -665,7 +707,7 @@ pub func checkFunctionBody(
   match fn.body {
     case None -> {
     }
-    case Some(body) -> match body { case FBExpr(e) -> { val bodyType = inferExpr(sc, tbl, sigs, diag, e); val isNever = match bodyType { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }; if not isNever and not typeAssignable(tbl, sig.returnTy, bodyType) { diag.add(errorDiagnostic("T0070", "function body has type " + renderType(bodyType) + " but declared return type is " + renderType(sig.returnTy), fn.span)) } }; case FBBlock(blk) -> { val bodyType = checkBlock(sc, tbl, sigs, sig.generics, sig.returnTy, diag, blk); val isUnit = match bodyType { case TyPrim(pt) -> match pt { case PtUnit -> true; case _ -> false }; case _ -> false }; val isNever = match bodyType { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }; if not isUnit and not isNever and not typeAssignable(tbl, sig.returnTy, bodyType) { diag.add(errorDiagnostic("T0070", "function body trailing expression has type " + renderType(bodyType) + " but declared return type is " + renderType(sig.returnTy), fn.span)) } } }
+    case Some(body) -> match body { case FBExpr(e) -> { val bodyType = inferExpr(sc, tbl, sigs, diag, e); val isNever = match bodyType { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }; if not isNever and not typeAssignable(tbl, sig.returnTy, bodyType) { diag.add(errorDiagnostic("T0070", "function body has type " + renderType(bodyType) + " but declared return type is " + renderType(sig.returnTy), fn.span)) } }; case FBBlock(blk) -> { val bodyValuePos = not isUnitType(sig.returnTy); val bodyType = checkBlock(sc, tbl, sigs, sig.generics, sig.returnTy, diag, blk, bodyValuePos); val isUnit = match bodyType { case TyPrim(pt) -> match pt { case PtUnit -> true; case _ -> false }; case _ -> false }; val isNever = match bodyType { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }; if not isUnit and not isNever and not typeAssignable(tbl, sig.returnTy, bodyType) { diag.add(errorDiagnostic("T0070", "function body trailing expression has type " + renderType(bodyType) + " but declared return type is " + renderType(sig.returnTy), fn.span)) } } }
   }
   checkOutDefiniteAssignment(diag, fn, sig)
 }
