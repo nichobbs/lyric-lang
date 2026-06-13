@@ -42,9 +42,18 @@ extern type JOutputStream = "java.io.OutputStream"
 
 extern type JBAOS = "java.io.ByteArrayOutputStream"
 
-// ── Wall-clock timer ─────────────────────────────────────────────────────────
+// ── Wall-clock timer and sleep ────────────────────────────────────────────────
 @externTarget("java.lang.System.currentTimeMillis")
 func currentTimeMillis(): Long = ()
+
+// Sleeps the calling thread for `ms` milliseconds.  Used inside the isAlive()
+// poll loop to avoid spinning at 100% CPU while waiting for a child process.
+// Thread.sleep(long) throws InterruptedException (checked); the JVM does not
+// enforce checked exceptions at the bytecode level, and the child-monitor loop
+// never sets the thread's interrupt flag, so InterruptedException is not
+// reachable in practice.
+@externTarget("java.lang.Thread.sleep")
+func hostSleepMs(ms: in Long): Unit = ()
 
 // ── Result record ─────────────────────────────────────────────────────────────
 /// Lyric record holding the captured output of a child process.
@@ -172,6 +181,7 @@ func runImpl(
   var timedOut = false
 
   // Poll until the child exits, draining both pipes each iteration.
+  // Sleep 1 ms per idle iteration to avoid spinning at 100% CPU.
   while JProcess.isAlive(proc) {
     drainAvailable(stdoutStream, stdoutBuf)
     drainAvailable(stderrStream, stderrBuf)
@@ -179,6 +189,7 @@ func runImpl(
       timedOut = true
       JProcess.destroyForcibly(proc)
     }
+    hostSleepMs(intToLong(1))
   }
 
   // Final drain after the child exits (last bytes may arrive after isAlive → false).
@@ -211,5 +222,9 @@ pub func hostRunCapture(executable: in String, arguments: in String, stdinConten
 pub func hostRunCaptureTimeout(
   executable: in String, arguments: in String, stdinContent: in String, timeoutMs: in Int
 ): ProcessCaptureResult {
-  runImpl(executable, arguments, stdinContent, timeoutMs)
+  try {
+    runImpl(executable, arguments, stdinContent, timeoutMs)
+  } catch Bug as _ {
+    ProcessCaptureResult(stdout = "", stderr = "", exitCode = -1, timedOut = false)
+  }
 }

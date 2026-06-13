@@ -408,13 +408,13 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
   `Process.destroyForcibly()` with sentinel `exitCode = -2`; output converted via
   `JBAOS.toString("UTF-8")`.  Returns a Lyric `ProcessCaptureResult` record.
   Unblocked by D-progress-513 (m-14, #3307) and D-progress-514 (m-15, #3334).
-  Verified by `lyric-compiler/jvm/process_capture_jvm_self_test.l` (12 cases:
+  Verified by `lyric-compiler/jvm/process_capture_jvm_self_test.l` (10 cases:
   stdout, stderr, stdin delivery, multi-word args, quoting round-trip, exit code
   0/1/42, timeout path), wired in CI.  The `lyric-storage` local-fs JVM kernel
   (#1444/#1840) remains **BLOCKED on M-4** (#2444).
 - **Acceptance (MET for M-9/M-10/M-11; storage blocked on M-4/#2444):**
   `hash_jvm_self_test.l` gates M-9/M-10; `process_capture_jvm_self_test.l`
-  gates M-11 (12 real subprocess assertions on `--target jvm`).  `lyric-storage`
+  gates M-11 (10 real subprocess assertions on `--target jvm`).  `lyric-storage`
   kernel waits on JVM `@cfg` erasure (#2444).
 
 ### J7 — Testing, distribution, and the acceptance gate
