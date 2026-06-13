@@ -1077,7 +1077,7 @@ pub func inferExprOrBlock(
 ): Type {
   match eob {
     case EOBExpr(ex) -> inferExpr(sc, tbl, sigs, diag, ex)
-    case EOBBlock(bl) -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, diag, bl)
+    case EOBBlock(bl) -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, diag, bl, true)
   }
 }
 
@@ -2740,7 +2740,7 @@ pub func inferExpr(
         scopeAdd(sc, LocalBinding(name = lp.name, ty = pTy, isMutable = false))
         li = li + 1
       }
-      val bodyTy = checkBlock(sc, tbl, sigs, sc.genericNames, TyError, diag, body)
+      val bodyTy = checkBlock(sc, tbl, sigs, sc.genericNames, TyError, diag, body, true)
       scopePop(sc)
       TyFunction(params = paramTypes, ret = bodyTy, isAsync = false)
     }
@@ -2810,8 +2810,8 @@ pub func inferExpr(
     // sc.genericNames / sc.returnTy are passed explicitly here because checkBlock
     // still carries them as standalone parameters (follow-up: remove them once all
     // branch forms are wired and checkBlock can read them from sc directly).
-    case EBlock(blk) -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, diag, blk)
-    case EUnsafe(blk) -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, diag, blk)
+    case EBlock(blk) -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, diag, blk, true)
+    case EUnsafe(blk) -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, diag, blk, true)
     case ETry(_) -> TyError
     // EForall/EExists: quantifier expressions used in contracts.  Bind the
     // quantified variables into a fresh scope, infer the optional `where`
