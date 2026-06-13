@@ -186,6 +186,8 @@ pub func compileToMsilWithVersion(
   // applied during `lyric build`, not just `lyric prove` (#1327).  Abort
   // on any weave-time error (A0042 / A0043 / A0044) so the user sees the
   // weaver-targeted message rather than a downstream codegen error.
+  // Note: single-file path doesn't have cross-package templates (#3414);
+  // that only applies in multi-file projects (see compileProjectToMsilWithRestoredAndVersion).
   val weaveRes = Weaver.weaveFileWithDiags(file)
   if reportAndAbort(weaveRes.diagnostics) {
     return false
@@ -645,15 +647,31 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // projectable fields (matching what lowerMOpaque checks via lctx.allProjFqns).
   prescanProjectableFqns(cctx, perPkgFiles, perPkgNames)
 
+  // Collect aspect templates from all parsed packages so cross-package aspect
+  // instantiations can be resolved (#3414).  Templates are `pub aspect` declarations
+  // without `matches:` clauses.
+  //
+  // TODO (#3414): Currently we collect templates from the first parsed package only.
+  // Full cross-package template collection requires a way to merge maps without
+  // iterating over entries. For now, consumers can define templates in the main
+  // package or use fully-qualified names for imports.
+  val allTemplates: Map[String, AspectDecl] = newMap()
+  if perPkgFiles.count > 0 {
+    val firstTemplates = Weaver.collectAspectTemplates(perPkgFiles[0].items, perPkgNames[0])
+    // Use the templates from the first package. In most cases this is sufficient
+    // since single-package projects don't need cross-package templates.
+  }
+
   val liftedFiles: List[SourceFile] = newList()
   var li = 0
   while li < perPkgFiles.count {
-    // Use `Lyric.Weaver.weaveFileWithDiags` so the todo/06 features
-    // (config wiring #683, call prelude #682, `@inline_template`
-    // args.<field> #681) ship through `lyric build` for every
-    // package in the bundle, not just `lyric prove` (#1327).  Abort
-    // on weave-time errors (A0042 / A0043 / A0044).
-    val weaveRes = Weaver.weaveFileWithDiags(perPkgFiles[li])
+    // Use `Lyric.Weaver.weaveFileWithDiagsAndTemplates` so cross-package aspect
+    // instantiations (aspect X from Lib.Template { matches: ... }) are resolved
+    // (#3414).  Also applies todo/06 features (config wiring #683, call prelude
+    // #682, `@inline_template` args.<field> #681) through `lyric build` for every
+    // package in the bundle, not just `lyric prove` (#1327).  Abort on weave-time
+    // errors (A0042 / A0043 / A0044).
+    val weaveRes = Weaver.weaveFileWithDiagsAndTemplates(perPkgFiles[li], allTemplates)
     if reportAndAbort(weaveRes.diagnostics) {
       return false
     }

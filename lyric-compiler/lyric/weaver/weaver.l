@@ -2074,6 +2074,136 @@ pub func injectWeaveImports(file: in SourceFile): SourceFile {
   )
 }
 
+/// Resolve a module path through a file's imports to get the fully-qualified
+/// package name. E.g. `from Resilience.Retry` with `import Std.Resilience`
+/// resolves to `"Std.Resilience.Retry"`.  Returns None if the path cannot
+/// be resolved through the imports.  (#3414)
+func resolveTemplatePathThroughImports(
+  templatePath: in ModulePath,
+  fileImports: in List[ImportDecl],
+): Option[String] {
+  if templatePath.segments.count == 0 {
+    return None
+  }
+
+  val firstSeg = templatePath.segments[0]
+
+  // Look for a matching import that could serve as the package prefix.
+  // E.g. `import Std.Resilience` matches `from Resilience.Retry`.
+  var i = 0
+  while i < fileImports.count {
+    val imp = fileImports[i]
+    val lastSeg = imp.path.segments[imp.path.segments.count - 1]
+
+    if lastSeg == firstSeg {
+      // Found a matching import. The template path segments extend the
+      // import's package path. E.g.:
+      //   import: [Std, Resilience]
+      //   from:   [Resilience, Retry]
+      //   result: [Std, Resilience, Retry]
+      val fqName: List[String] = newList()
+      var pi = 0
+      while pi < imp.path.segments.count - 1 {
+        fqName.add(imp.path.segments[pi])
+        pi = pi + 1
+      }
+      // Add the full template path (starting with the matched segment).
+      var ti = 0
+      while ti < templatePath.segments.count {
+        fqName.add(templatePath.segments[ti])
+        ti = ti + 1
+      }
+      val result: Option[String] = Some(value = segmentsJoin(fqName))
+      return result
+    }
+
+    i = i + 1
+  }
+
+  // If the first segment matches an import's alias, use that import's path.
+  var j = 0
+  while j < fileImports.count {
+    val imp = fileImports[j]
+    match imp.asAlias {
+      case Some(aliasName) -> {
+        if aliasName == firstSeg {
+          val fqName: List[String] = newList()
+          var pi = 0
+          while pi < imp.path.segments.count {
+            fqName.add(imp.path.segments[pi])
+            pi = pi + 1
+          }
+          // Add remaining template path segments.
+          var ti = 1
+          while ti < templatePath.segments.count {
+            fqName.add(templatePath.segments[ti])
+            ti = ti + 1
+          }
+          val result: Option[String] = Some(value = segmentsJoin(fqName))
+          return result
+        }
+      }
+      case None -> ()
+    }
+    j = j + 1
+  }
+
+  // If no import prefix matched, try treating it as a fully-qualified path
+  // that starts with "Std" or is a multi-segment absolute reference.
+  // This handles cases like `from Std.Resilience.Retry` where the import
+  // is just `import Std.Resilience`.
+  if templatePath.segments.count > 1 and templatePath.segments[0] == "Std" {
+    val result: Option[String] = Some(value = segmentsJoin(templatePath.segments))
+    return result
+  }
+
+  None
+}
+
+/// Given an aspect instantiation with `from: Some(path)`, synthesize its
+/// `around` body from the template found in the templates map.  Returns
+/// the instantiation with `around` filled in, or the original instantiation
+/// if the template is not found.  (#3414)
+func synthesizeTemplateBody(
+  instantiation: in AspectDecl,
+  templates: in Map[String, AspectDecl],
+  fileImports: in List[ImportDecl],
+): AspectDecl {
+  match instantiation.from {
+    case Some(path) -> {
+      // Try to resolve the template path to a fully-qualified name.
+      match resolveTemplatePathThroughImports(path, fileImports) {
+        case Some(fqName) -> {
+          // Look up the template in the map using mapGet.
+          val templateOpt = mapGet(templates, fqName)
+          match templateOpt {
+            case Some(template) -> {
+              // Found the template! Synthesize the instantiation with
+              // the template's around body. Keep the instantiation's
+              // matches/config; take around/contracts from template.
+              AspectDecl(
+                name = instantiation.name,
+                from = instantiation.from,
+                config = instantiation.config,
+                matches = instantiation.matches,
+                exceptNames = instantiation.exceptNames,
+                around = template.around,
+                contracts = template.contracts,
+                wraps = instantiation.wraps,
+                inside = instantiation.inside,
+                span = instantiation.span
+              )
+            }
+            case None -> instantiation
+          }
+        }
+        case None -> instantiation
+      }
+    }
+    case None -> instantiation
+  }
+}
+
 /// Convert weave-time diagnostic entries to user-facing Diagnostic
 /// objects.  Three kinds today: A0042 (args mismatch on
 /// `@inline_template`), A0043 (unknown `call.<field>`), A0044
@@ -2118,6 +2248,42 @@ func weaveDiagsToDiagnostics(errs: in List[WeaveDiagEntry]): List[Diagnostic] {
     i = i + 1
   }
   diags
+}
+
+/// Core weave loop with template synthesis. Like `weaveItemsCore` but also
+/// resolves aspect instantiations with `from: Some(path)` by synthesizing their
+/// `around` bodies from the provided templates map. (#3414)
+func weaveItemsCoreWithTemplates(
+  items: in List[Item],
+  packagePath: in String,
+  fileImports: in List[ImportDecl],
+  templates: in Map[String, AspectDecl],
+): WeaveResult {
+  // First pass: synthesize template bodies into instantiations.
+  val synthesizedItems: List[Item] = newList()
+  var si = 0
+  while si < items.count {
+    val item = items[si]
+    match item.kind {
+      case IAspect(decl) -> {
+        val synthesized = synthesizeTemplateBody(decl, templates, fileImports)
+        synthesizedItems.add(
+          Item(
+            docComments = item.docComments,
+            annotations = item.annotations,
+            visibility = item.visibility,
+            kind = IAspect(decl = synthesized),
+            span = item.span
+          )
+        )
+      }
+      case _ -> synthesizedItems.add(item)
+    }
+    si = si + 1
+  }
+
+  // Now run the normal weave loop on the synthesized items.
+  weaveItemsCore(synthesizedItems, packagePath)
 }
 
 /// Core weave loop.  Used by both `weaveItems` (drops diagnostics, for
@@ -2335,3 +2501,72 @@ pub func weaveFileWithDiags(file: in SourceFile): WeaveFileResult {
   )
   WeaveFileResult(file = newFile, diagnostics = wr.diagnostics)
 }
+
+/// Weave a SourceFile with cross-package aspect template resolution.
+/// Templates are indexed by fully-qualified name (e.g. "Std.Resilience.Retry").
+/// When an aspect instantiation has `from: Some(path)`, the weaver resolves
+/// the path through the file's imports and looks up the template body.
+/// (#3414)
+pub func weaveFileWithDiagsAndTemplates(
+  file: in SourceFile,
+  templates: in Map[String, AspectDecl],
+): WeaveFileResult {
+  val file0 = injectWeaveImports(file)
+  val wr = weaveItemsCoreWithTemplates(file0.items, packagePathString(file0), file0.imports, templates)
+  val newFile = SourceFile(
+    moduleDoc = file0.moduleDoc,
+    fileAnnotations = file0.fileAnnotations,
+    packageDecl = file0.packageDecl,
+    imports = file0.imports,
+    items = wr.items,
+    span = file0.span
+  )
+  WeaveFileResult(file = newFile, diagnostics = wr.diagnostics)
+}
+
+/// Collect aspect templates from an items list. Templates are `pub aspect`
+/// declarations without a `matches:` clause (they have `around` but no
+/// matching predicates). Returns a map indexed by the fully-qualified name
+/// (package path + aspect name). (#3414)
+pub func collectAspectTemplates(
+  items: in List[Item],
+  packagePath: in String,
+): Map[String, AspectDecl] {
+  val templates: Map[String, AspectDecl] = newMap()
+  var i = 0
+  while i < items.count {
+    val item = items[i]
+    match item.kind {
+      case IAspect(decl) -> {
+        // A template is a `pub aspect` without `matches:`.
+        // Check: has `around` (weaveItemsCore's collectActiveAspects only
+        // includes aspects with `around`), has no `matches:`, is `pub`.
+        match decl.around {
+          case Some(_) -> {
+            if decl.matches.count == 0 {
+              match item.visibility {
+                case Some(Pub) -> {
+                  // Build the fully-qualified name: package path + aspect name.
+                  val fqName = if packagePath.length == 0 {
+                    decl.name
+                  } else {
+                    packagePath + "." + decl.name
+                  }
+                  if not templates.containsKey(fqName) {
+                    templates.add(fqName, decl)
+                  }
+                }
+                case _ -> ()
+              }
+            }
+          }
+          case None -> ()
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  templates
+}
+
