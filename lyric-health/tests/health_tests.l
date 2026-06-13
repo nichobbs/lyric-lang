@@ -167,6 +167,17 @@ test "runChecks escapes control characters in names and details (RFC 8259)" {
     "{\"status\":\"degraded\",\"checks\":{" +
       "\"a\\u0001b\\bc\":{\"status\":\"fail\",\"detail\":\"x\\fy\"}}}",
     "control characters are escaped per RFC 8259")
+
+  // U+001F (US, code 31) exercises the hexDigit high-nibble path: code / 16
+  // == 1, so the escape is \u001f, not \u000X (#3309).
+  val registry2 = Health.addReadinessCheck(
+    Health.create(), "a\u{001F}b", { -> Health.pass() })
+  val report2 = Health.runChecks(registry2, Readiness)
+  assertEqual(
+    report2.body,
+    "{\"status\":\"ok\",\"checks\":{" +
+      "\"a\\u001fb\":{\"status\":\"ok\",\"detail\":\"\"}}}",
+    "U+001F escapes to \\u001f (high nibble 1)")
 }
 
 // ─── runLiveness / runReadiness handler mapping ───────────────────────────────

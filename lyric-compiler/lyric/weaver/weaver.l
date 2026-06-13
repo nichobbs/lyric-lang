@@ -1723,6 +1723,9 @@ func addStdTimeImport(imports: in List[ImportDecl], span: in Span): List[ImportD
 /// True iff any `aspect { around ... }` item's body references
 /// `call.elapsed` — i.e. weaving this file will synthesise calls to
 /// `Std.Time.monotonicNanos` (#1298).
+/// DRIFT WARNING: if a future `call.<field>` also requires an auto-injected
+/// import (as `call.elapsed` requires `Std.Time`), extend BOTH this function
+/// and `injectWeaveImports` — mirror the `"elapsed"` / `Std.Time` pattern.
 pub func weaveNeedsStdTime(file: in SourceFile): Bool {
   var i = 0
   while i < file.items.count {

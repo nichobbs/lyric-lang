@@ -822,6 +822,8 @@ pub record ParseResult {
 /// weaver stops matching it (#1298 investigation).  Routing the
 /// construction through this helper keeps the generic instantiation in
 /// `Lyric.Parser`, where the parser's own construction is known-good.
+/// Bootstrap-emitter workaround -- expected to become dead code once the
+/// stage-0 F# emitter is retired; see docs/23-fsharp-shim-elimination.md.
 pub func someAspectAround(a: in AspectAround): Option[AspectAround] {
   Some(value = a)
 }
