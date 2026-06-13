@@ -2468,6 +2468,16 @@ jobs:
           "$lyric_bin" test --manifest lyric-session/lyric.toml || overall=$?
           echo "=== lyric-health tests ==="
           "$lyric_bin" test --manifest lyric-health/lyric.toml || overall=$?
+          # lyric-cache, lyric-mail, and lyric-aws-xray are tier-0 (no local
+          # path deps) and have green suites; run them here so their coverage
+          # is enforced on every push instead of build-only.  cache is already
+          # built above (session dependency).
+          echo "=== lyric-cache tests ==="
+          "$lyric_bin" test --manifest lyric-cache/lyric.toml || overall=$?
+          echo "=== lyric-mail tests ==="
+          "$lyric_bin" test --manifest lyric-mail/lyric.toml || overall=$?
+          echo "=== lyric-aws-xray tests ==="
+          "$lyric_bin" test --manifest lyric-aws-xray/lyric.toml || overall=$?
           if [ $overall -ne 0 ]; then
             echo "::error::ecosystem test suite failed — security regression detected"
             exit $overall

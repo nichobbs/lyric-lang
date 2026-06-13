@@ -93,6 +93,14 @@ impl CacheStore for InProcessCacheStore {
 
   func set(key: in String, value: in String, ttlSeconds: in Int): Unit {
     val isNew = not self.valueMap.containsKey(key)
+    // FIFO capacity bound: before inserting a *new* key into a full store,
+    // evict the oldest (front of the insertion order).  `maxEntries <= 0`
+    // disables the bound.
+    if isNew and self.maxEntries > 0 and self.insertionOrder.count >= self.maxEntries {
+      val oldest = self.insertionOrder[0]
+      self.valueMap.remove(oldest)
+      self.insertionOrder.removeAt(0)
+    }
     self.valueMap[key] = value
     if isNew {
       self.insertionOrder.add(key)
@@ -101,12 +109,32 @@ impl CacheStore for InProcessCacheStore {
 
   func delete(key: in String): Unit {
     self.valueMap.remove(key)
-    self.insertionOrder.remove(key)
+    // Remove `key` from the insertion order by index: `List.remove(value)` is
+    // not a supported element-removal intrinsic on the MSIL backend (it lowers
+    // to a no-op), so a value-based remove would silently leave a stale entry
+    // and corrupt the FIFO eviction bound.  Scan for the index and `removeAt`.
+    var idx = 0
+    var found = 0 - 1
+    while idx < self.insertionOrder.count {
+      if self.insertionOrder[idx] == key {
+        found = idx
+        idx = self.insertionOrder.count
+      } else {
+        idx = idx + 1
+      }
+    }
+    if found >= 0 {
+      self.insertionOrder.removeAt(found)
+    }
   }
 
   func clear(): Unit {
-    self.valueMap.clear()
-    self.insertionOrder.clear()
+    // Reset to fresh empty collections.  Records are reference types, so the
+    // field reassignment is visible through the `CacheStore` borrow at the call
+    // site.  (In-place `Map.clear()` / `List.clear()` are not yet supported
+    // intrinsics on the MSIL backend; reassignment is the idiomatic reset.)
+    self.valueMap = newMap()
+    self.insertionOrder = newList()
   }
 }
 
