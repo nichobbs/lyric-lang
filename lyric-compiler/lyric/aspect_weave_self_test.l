@@ -101,12 +101,15 @@ test "short-circuit advice returns its own value, skipping the target" {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Argument-observing advice: proceed on one input, replace on another.
+// `call.shortName`-discriminating advice: one aspect matches two functions and
+// proceeds for one, short-circuits for the other based on the ambient short
+// name.  Matching both targets makes BOTH guard branches reachable, so the
+// `call.shortName` value is genuinely exercised (not a dead else).
 // ─────────────────────────────────────────────────────────────────────────────
 aspect Gate {
-  matches: name in { gated }
+  matches: name in { gatedOpen, gatedShut }
   around(call) -> ret {
-    if call.shortName == "gated" {
+    if call.shortName == "gatedOpen" {
       ret = call.proceed()
     } else {
       ret = -1
@@ -114,12 +117,19 @@ aspect Gate {
   }
 }
 
-func gated(x: Int): Int {
+func gatedOpen(x: Int): Int {
   return x * 10
 }
 
-test "advice can read call.shortName and proceed" {
-  assertEqualInt(gated(4), 40, "gated(4) proceeds (shortName matched)")
+func gatedShut(x: Int): Int {
+  return x * 10
+}
+
+test "advice discriminates on call.shortName: proceed vs short-circuit" {
+  // gatedOpen matches the guard → proceeds (4 * 10).
+  assertEqualInt(gatedOpen(4), 40, "gatedOpen proceeds (shortName matched)")
+  // gatedShut takes the else → short-circuits to -1 without running the target.
+  assertEqualInt(gatedShut(4), -1, "gatedShut short-circuits (shortName guard)")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -163,4 +173,31 @@ test "Unit-returning woven function compiles and runs cleanly" {
   touch(1)
   touch(2)
   assertTrue(true, "Unit-returning wrapper executed through the weave")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unit-returning target with OUT-VARIABLE advice (`ret = proceed()`) — the
+// #3424 regression.  Before the fix the weaver synthesised `var ret: Unit` +
+// `return ret` for a void type, which codegen could not represent (a void local
+// has no slot; the discarded store popped an empty stack) — reintroducing the
+// exact InvalidProgramException #3402 set out to remove.  The lowering now
+// strips `ret = <expr>` to a bare `<expr>` for Unit targets, so `proceed()`
+// still runs and the wrapper is a plain void method.
+// ─────────────────────────────────────────────────────────────────────────────
+aspect UnitOut {
+  matches: name in { sink }
+  around(call) -> ret {
+    ret = proceed()
+  }
+}
+
+func sink(x: in Int): Unit {
+  // Empty body: the test only needs the woven wrapper to run `ret = proceed()`
+  // against a Unit target without an InvalidProgramException / VerifyError.
+}
+
+test "Unit-returning out-variable advice (ret = proceed()) runs cleanly" {
+  sink(1)
+  sink(2)
+  assertTrue(true, "ret = proceed() on a Unit target wove without InvalidProgramException")
 }
