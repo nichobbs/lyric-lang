@@ -49,6 +49,7 @@ func makeFuncCtx(
   val loopCont: List[String] = newList()
   val deferStack: List[Block] = newList()
   val loopDeferDepth: List[Int] = newList()
+  val deferRanSlots: List[Int] = newList()
   FuncCtx(
     pkgName = pkgName,
     className = className,
@@ -67,6 +68,7 @@ func makeFuncCtx(
     retTy = retTy,
     deferStack = deferStack,
     loopDeferDepth = loopDeferDepth,
+    deferRanSlots = deferRanSlots,
     selfClass = None,
     moduleVals = moduleVals,
     opaqueTypes = opaqueTypes,
@@ -99,6 +101,7 @@ func makeFuncCtxForGenerator(
   val loopCont: List[String] = newList()
   val deferStack: List[Block] = newList()
   val loopDeferDepth: List[Int] = newList()
+  val deferRanSlots: List[Int] = newList()
   FuncCtx(
     pkgName = pkgName,
     className = genClass,
@@ -117,6 +120,7 @@ func makeFuncCtxForGenerator(
     retTy = JVoid,
     deferStack = deferStack,
     loopDeferDepth = loopDeferDepth,
+    deferRanSlots = deferRanSlots,
     selfClass = None,
     moduleVals = moduleVals,
     opaqueTypes = opaqueTypes,
@@ -151,6 +155,7 @@ func makeFuncCtxInstance(
   val loopCont: List[String] = newList()
   val deferStack: List[Block] = newList()
   val loopDeferDepth: List[Int] = newList()
+  val deferRanSlots: List[Int] = newList()
   FuncCtx(
     pkgName = pkgName,
     className = className,
@@ -169,6 +174,7 @@ func makeFuncCtxInstance(
     retTy = retTy,
     deferStack = deferStack,
     loopDeferDepth = loopDeferDepth,
+    deferRanSlots = deferRanSlots,
     selfClass = Some(value = className),
     moduleVals = moduleVals,
     opaqueTypes = opaqueTypes,
@@ -912,6 +918,57 @@ func lowerRecordMethod(
   while pi < fn.params.count {
     val p = fn.params[pi]
     val paramTy = typeExprToJvmErased(p.ty, pkgName, typeParams)
+    allocSlot(ctxSelf, p.name, paramTy)
+    paramTypes.add(paramTy)
+    pi = pi + 1
+  }
+  lowerInstanceMethodBody(ctxSelf, insns, body, retTy)
+  LFunc(flags = 0x0001, name = fn.name, params = paramTypes, ret = retTy, insns = insns, maxStack = 0, maxLocals = 0)
+}
+
+// Build an `impl T for X` interface method as a true non-static instance method
+// (slot 0 = `this`, flags 0x0001) so the JVM class for X actually implements T.
+// Call sites that dispatch through the registered `<targetClass>#<method>` sig
+// emit `invokevirtual targetClass.method`; bare sibling calls inside the body
+// (`m()` or `self.m()`) both reach here via `selfClass = Some(targetClass)`.
+func lowerImplMethod(
+  targetClass: in String,
+  fn: in FunctionDecl,
+  pkgName: in String,
+  funcSigs: in Map[String, JvmFuncSig],
+  caseFields: in Map[String, List[JvmCaseField]],
+  ctors: in Map[String, String],
+  externTypes: in Map[String, String],
+  autoFfi: in AutoFfiCtx,
+  moduleVals: in Map[String, JvmType],
+  opaqueTypes: in Map[String, Bool],
+  closureAcc: in List[LClosure],
+): LFunc {
+  val body = match fn.body {
+    case Some(b) -> b
+    case None -> panic("lowerImplMethod: impl method has no body — interface-only declaration reached codegen")
+  }
+  val retTy = match fn.ret { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
+  val ctxSelf = makeFuncCtxInstance(
+    pkgName,
+    targetClass,
+    funcSigs,
+    caseFields,
+    ctors,
+    externTypes,
+    autoFfi,
+    retTy,
+    moduleVals,
+    opaqueTypes,
+    closureAcc
+  )
+  rejectInstanceHolderParams(fn.params, targetClass + "." + fn.name)
+  val insns: List[LInsn] = newList()
+  val paramTypes: List[JvmType] = newList()
+  var pi = 0
+  while pi < fn.params.count {
+    val p = fn.params[pi]
+    val paramTy = typeExprToJvm(p.ty, pkgName)
     allocSlot(ctxSelf, p.name, paramTy)
     paramTypes.add(paramTy)
     pi = pi + 1
@@ -1985,6 +2042,22 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
           mi = mi + 1
         }
       }
+      case IImpl(decl) -> {
+        // Register each impl method under `<targetClass>#<methodName>` so that
+        // call sites (`lowerMethodCall` J3 M-3 path) emit a precisely-typed
+        // `invokevirtual` rather than the `()Object` guess (#1722).
+        val tgtClass = typeExprToJvmClass(decl.target, owner)
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMplFunc(fn) -> {
+              registerInstanceSig(into, tgtClass, fn.name, fn.params, fn.ret, owner)
+            }
+            case IMplAssoc(_) -> ()
+          }
+          mi = mi + 1
+        }
+      }
       case IOpaque(decl) -> {
         // Erased-Object receiver fallback (#3044): register each opaque field
         // under the `field:<name>` key (owner class + declared type) so a
@@ -2700,16 +2773,17 @@ pub func codegenPackageWithSigs(
         while mi2 < decl.members.count {
           match decl.members[mi2] {
             case IMplFunc(fn) -> {
-              // `impl` methods are emitted as static dispatch methods; the
-              // instance-call site (`lowerMethodCall`) does not yet wrap
-              // `out`/`inout` arguments as holder arrays (#1763), so reject
-              // them rather than miscompile.  Free functions are supported.
-              rejectInstanceHolderParams(fn.params, targetClass + "." + fn.name)
+              // Emit each impl method as a true instance method on the target
+              // class (#1722).  `lowerImplMethod` uses `makeFuncCtxInstance` so
+              // `selfClass = Some(targetClass)` — bare `m()` and `self.m()` calls
+              // inside the body dispatch as `invokevirtual`.  `rejectInstanceHolderParams`
+              // is called inside `lowerImplMethod`; `out`/`inout` on impl methods
+              // is still unsupported (#1763) and produces a hard compile error.
               implFuncs.add(
-                lowerFunc(
+                lowerImplMethod(
+                  targetClass,
                   fn,
                   pkgName,
-                  targetClass,
                   funcSigs,
                   caseFields,
                   ctors,

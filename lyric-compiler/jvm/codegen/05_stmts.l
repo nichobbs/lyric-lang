@@ -426,11 +426,10 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           insns.add(LIfIcmpge(label = endLA))
           emitLoad(insns, arrSlot, iterTy)
           emitLoad(insns, iSlot, JInt)
-          insns.add(LAaload)
-          val elemTyA = JRef(className = "java/lang/Object")
-          val elemSlotA = allocSlot(ctx, "__for_elem_" + freshLabel(ctx), elemTyA)
-          emitStore(insns, elemSlotA, elemTyA)
-          lowerPatternBind(ctx, insns, pat, elemSlotA, elemTyA)
+          emitArrayLoad(insns, elemArr)
+          val elemSlotA = allocSlot(ctx, "__for_elem_" + freshLabel(ctx), elemArr)
+          emitStore(insns, elemSlotA, elemArr)
+          lowerPatternBind(ctx, insns, pat, elemSlotA, elemArr)
           // #2854: `continue` targets the index-increment point (`contLA`), not
           // the loop top, so the loop variable still advances; `break` targets
           // `endLA`.  `loopDeferDepth` captures the entry depth so a body `defer`
@@ -876,9 +875,18 @@ func lastInsnIsTerminator(insns: in List[LInsn]): Bool {
 // reverse (innermost-defined runs first), WITHOUT popping them.  Control is
 // transferring away (return / break / continue), so the stack entries stay in
 // place for any enclosing block's own fall-off / exception handling.
+// Before emitting each inline replay body, stores 1 to the parallel
+// `deferRanSlots[i]` flag so the catch-all handler for that region (which
+// covers the replay site) can detect the early-transfer case and skip
+// re-running the block — preventing double execution (#2855).
 func replayDefers(ctx: in FuncCtx, insns: in List[LInsn], downTo: in Int): Unit {
   var i = ctx.deferStack.count - 1
   while i >= downTo {
+    if i < ctx.deferRanSlots.count {
+      val ranSlot = ctx.deferRanSlots[i]
+      insns.add(LIconst(v = 1))
+      insns.add(LIstore(slot = ranSlot))
+    }
     lowerBlock(ctx, insns, ctx.deferStack[i])
     i = i - 1
   }
@@ -938,15 +946,25 @@ func lowerDeferRegion(
   val afterL = freshLabel(ctx)
   val normalReplayL = freshLabel(ctx)
   val handlerL = freshLabel(ctx)
+  // Allocate the "already-replayed" flag (#2855): a JVM int local initialised
+  // to 0 here, set to 1 by `replayDefers` before each inline early-transfer
+  // replay.  The catch-all handler below checks this flag and skips the defer
+  // body when it is 1, so a throw from the inline replay does not re-run the
+  // block a second time.
+  val ranSlot = allocSlot(ctx, "__defer_ran_" + freshLabel(ctx), JInt)
+  insns.add(LIconst(v = 0))
+  insns.add(LIstore(slot = ranSlot))
   insns.add(LLabel(name = startL))
   // Make the deferred block visible to `return` / `break` / `continue` inside
   // the protected region so they replay it before transferring control.
   ctx.deferStack.add(deferBody)
+  ctx.deferRanSlots.add(ranSlot)
   val savedDepth = ctx.deferStack.count - 1
   lowerBlockStmtsFrom(ctx, insns, stmts, deferIdx + 1)
   // Drop this defer from the pending set before the normal-path replay (the
   // inline copy below covers fall-off; replays past here must not re-run it).
   ctx.deferStack.removeAt(savedDepth)
+  ctx.deferRanSlots.removeAt(savedDepth)
   // Snapshot whether the suffix already transferred control BEFORE emitting the
   // normalReplayL label (a label resets `lastInsnIsTerminator`, so the check
   // must run against the suffix's true tail).
@@ -963,7 +981,9 @@ func lowerDeferRegion(
     lowerBlock(ctx, insns, deferBody)
     insns.add(LGoto(label = afterL))
   }
-  // Exception path: catch any throwable, run the deferred block, rethrow.
+  // Exception path: catch any throwable.  Skip the deferred block when the
+  // "already-replayed" flag is set (meaning an early-transfer replay threw and
+  // unwound here), then rethrow so the block never runs twice (#2855).
   insns.add(LLabel(name = handlerL))
   val exTy = JRef(className = "java/lang/Throwable")
   val tmpName = "__defer_ex_" + freshLabel(ctx)
@@ -972,7 +992,11 @@ func lowerDeferRegion(
   // the bare `Object` a plain `astore` registers — otherwise the rethrow's
   // `athrow` fails verification when the deferred block itself does not diverge.
   insns.add(LAstoreAs(slot = tmpSlot, className = "java/lang/Throwable"))
+  val skipDeferL = freshLabel(ctx)
+  insns.add(LIload(slot = ranSlot))
+  insns.add(LIfne(label = skipDeferL))
   lowerBlock(ctx, insns, deferBody)
+  insns.add(LLabel(name = skipDeferL))
   emitLoad(insns, tmpSlot, exTy)
   insns.add(LAthrow)
   // Catch-all entry covers [startL, normalReplayL) (the region body + suffix
@@ -1040,12 +1064,20 @@ pub func lowerBlockExprWithDefer(ctx: in FuncCtx, insns: in List[LInsn], block: 
   val afterL = freshLabel(ctx)
   val normalReplayL = freshLabel(ctx)
   val handlerL = freshLabel(ctx)
+  // Allocate the "already-replayed" flag (#2855): see `lowerDeferRegion` for
+  // the full rationale.  `replayDefers` sets this to 1 before any inline early-
+  // transfer replay; the catch-all handler skips the body when the flag is set.
+  val ranSlot = allocSlot(ctx, "__defer_ran_" + freshLabel(ctx), JInt)
+  insns.add(LIconst(v = 0))
+  insns.add(LIstore(slot = ranSlot))
   insns.add(LLabel(name = startL))
   ctx.deferStack.add(deferBody)
+  ctx.deferRanSlots.add(ranSlot)
   val savedDepth = ctx.deferStack.count - 1
   // Recurse for the value-producing suffix (may contain further defers).
   val valTy = lowerBlockExprWithDefer(ctx, insns, block, deferIdx + 1)
   ctx.deferStack.removeAt(savedDepth)
+  ctx.deferRanSlots.removeAt(savedDepth)
   // Snapshot whether the suffix already transferred control BEFORE emitting the
   // normalReplayL label (a label resets `lastInsnIsTerminator`, so the check
   // must run against the suffix's true tail).
@@ -1076,7 +1108,8 @@ pub func lowerBlockExprWithDefer(ctx: in FuncCtx, insns: in List[LInsn], block: 
     }
     insns.add(LGoto(label = afterL))
   }
-  // Exception path: run the deferred block, then rethrow.
+  // Exception path: skip the defer body when already replayed by an early
+  // transfer, then rethrow (#2855).
   insns.add(LLabel(name = handlerL))
   val exTy = JRef(className = "java/lang/Throwable")
   val tmpSlot = allocSlot(ctx, "__defer_ex_" + toString(ctx.labelTicker.count), exTy)
@@ -1084,7 +1117,11 @@ pub func lowerBlockExprWithDefer(ctx: in FuncCtx, insns: in List[LInsn], block: 
   // the bare `Object` a plain `astore` registers — otherwise the rethrow's
   // `athrow` fails verification when the deferred block itself does not diverge.
   insns.add(LAstoreAs(slot = tmpSlot, className = "java/lang/Throwable"))
+  val skipDeferExprL = freshLabel(ctx)
+  insns.add(LIload(slot = ranSlot))
+  insns.add(LIfne(label = skipDeferExprL))
   lowerBlock(ctx, insns, deferBody)
+  insns.add(LLabel(name = skipDeferExprL))
   emitLoad(insns, tmpSlot, exTy)
   insns.add(LAthrow)
   // Catch-all covers [startL, normalReplayL) (region body + suffix only);
