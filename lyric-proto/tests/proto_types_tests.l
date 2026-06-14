@@ -130,3 +130,61 @@ test "Fix64Field emits tag + 8 little-endian bytes" {
   assertEqualInt(byteAt(bytes, 2), 7, "little-endian byte 1 = 0x07")
   assertEqualInt(byteAt(bytes, 8), 1, "little-endian byte 7 = 0x01")
 }
+
+// Fixed32 (wire type 5): tag = (field<<3)|5.  For field 2: tag = (2<<3)|5 = 0x15 = 21.
+// Decode not attempted here for the same cross-package generic-list reason as Fix64Field.
+test "Fix32Field emits tag + 4 little-endian bytes" {
+  val bytes = encodeMessage([Fix32Field(number = 2, bits = 0x01020304)])
+  assertEqualInt(bytes.length, 5, "tag + 4 fixed bytes")
+  assertEqualInt(byteAt(bytes, 0), 21, "tag = (2<<3)|5")
+  assertEqualInt(byteAt(bytes, 1), 4, "little-endian byte 0 = 0x04")
+  assertEqualInt(byteAt(bytes, 2), 3, "little-endian byte 1 = 0x03")
+  assertEqualInt(byteAt(bytes, 3), 2, "little-endian byte 2 = 0x02")
+  assertEqualInt(byteAt(bytes, 4), 1, "little-endian byte 3 = 0x01")
+}
+
+// ─── Convenience constructor encoding ────────────────────────────────────────
+// boolField is a VarField with value 1 (true) or 0 (false).
+// Field 1 true → tag 0x08 + varint 0x01 = 2 bytes.
+test "boolField encodes true as varint 1" {
+  val bytes = encodeMessage([boolField(1, true)])
+  assertEqualInt(bytes.length, 2, "tag + 1-byte varint")
+  assertEqualInt(byteAt(bytes, 0), 8, "tag = (1<<3)|0")
+  assertEqualInt(byteAt(bytes, 1), 1, "varint = 1")
+}
+
+test "boolField encodes false as varint 0" {
+  val bytes = encodeMessage([boolField(1, false)])
+  assertEqualInt(bytes.length, 2, "tag + 1-byte varint")
+  assertEqualInt(byteAt(bytes, 0), 8, "tag = (1<<3)|0")
+  assertEqualInt(byteAt(bytes, 1), 0, "varint = 0")
+}
+
+// sint32Field zig-zag encodes -1 → 1, which produces a 1-byte varint.
+// Field 1 → tag 0x08 + varint 0x01.
+test "sint32Field zig-zag encodes negative values" {
+  val bytes = encodeMessage([sint32Field(1, -1)])
+  assertEqualInt(bytes.length, 2, "tag + 1-byte zigzag")
+  assertEqualInt(byteAt(bytes, 0), 8, "tag = (1<<3)|0")
+  assertEqualInt(byteAt(bytes, 1), 1, "zigzag32(-1) = 1")
+}
+
+// ─── Error path: decodeStep on truncated input ───────────────────────────────
+// An empty slice (offset == length) returns Err immediately.
+test "decodeStep on empty input returns Err" {
+  val empty: slice[Byte] = []
+  match decodeStep(empty, 0) {
+    case Ok(_) -> assertTrue(false, "expected Err on empty input")
+    case Err(_) -> assertTrue(true, "Err on empty input")
+  }
+}
+
+// A valid tag byte (field 1 varint, 0x08) with no following value bytes
+// returns Err for the truncated varint body.
+test "decodeStep on truncated varint field returns Err" {
+  val truncated: slice[Byte] = [8u8]
+  match decodeStep(truncated, 0) {
+    case Ok(_) -> assertTrue(false, "expected Err on truncated varint")
+    case Err(_) -> assertTrue(true, "Err on truncated varint")
+  }
+}

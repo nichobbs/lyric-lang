@@ -299,6 +299,7 @@ func writeField(buf: ProtoBuffer, field: ProtoField): Unit {
 // ─── Message encoding ────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 /// Encode a proto3 message from a list of fields.
+@stable(since = "0.1")
 pub func encodeMessage(fields: List[ProtoField]): slice[Byte] {
   val buf = newProtoBuffer()
   for f in fields {
@@ -308,34 +309,42 @@ pub func encodeMessage(fields: List[ProtoField]): slice[Byte] {
 }
 
 // ─── Convenience constructors ─────────────────────────────────────────────────
+@stable(since = "0.1")
 pub func floatField(number: Int, v: Float): ProtoField {
   Fix32Field(number, floatToInt32Bits(v))
 }
 
+@stable(since = "0.1")
 pub func doubleField(number: Int, v: Double): ProtoField {
   Fix64Field(number, doubleToInt64Bits(v))
 }
 
+@stable(since = "0.1")
 pub func boolField(number: Int, v: Bool): ProtoField {
   VarField(number, if v { 1i64 } else { 0i64 })
 }
 
+@stable(since = "0.1")
 pub func enumField(number: Int, ordinal: Int): ProtoField {
   VarField(number, intAsLong(ordinal))
 }
 
+@stable(since = "0.1")
 pub func stringField(number: Int, utf8: slice[Byte]): ProtoField {
   BytesField(number, utf8)
 }
 
+@stable(since = "0.1")
 pub func embeddedField(number: Int, inner: slice[Byte]): ProtoField {
   BytesField(number, inner)
 }
 
+@stable(since = "0.1")
 pub func sint32Field(number: Int, v: Int): ProtoField {
   VarField(number, zigzag32(v))
 }
 
+@stable(since = "0.1")
 pub func sint64Field(number: Int, v: Long): ProtoField {
   VarField(number, zigzag64(v))
 }
@@ -367,6 +376,7 @@ func readVarint(data: in slice[Byte], offset: Int): Result[VarintResult, String]
 // ─── Field decoding ──────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 /// Attempt to decode one field starting at `offset`.
+@stable(since = "0.1")
 pub func decodeStep(data: in slice[Byte], offset: Int): Result[DecodeStep, String] {
   if offset >= data.length {
     return Err(error = "end of input at offset " + offset.toString())
@@ -404,6 +414,7 @@ pub func decodeStep(data: in slice[Byte], offset: Int): Result[DecodeStep, Strin
 }
 
 /// Decode all fields in `data`, returning them in order.
+@stable(since = "0.1")
 pub func decodeMessage(data: in slice[Byte]): Result[List[DecodedField], String] {
   var offset: Int = 0
   val fields = newList()
@@ -421,6 +432,7 @@ pub func decodeMessage(data: in slice[Byte]): Result[List[DecodedField], String]
 
 // ─── Typed field extraction helpers ──────────────────────────────────────────
 /// Find the first varint field with the given field number, or None.
+@stable(since = "0.1")
 pub func findVarint(fields: in List[DecodedField], number: Int): Option[Long] {
   val arr = fields.toArray()
   for f in arr {
@@ -437,6 +449,7 @@ pub func findVarint(fields: in List[DecodedField], number: Int): Option[Long] {
 }
 
 /// Find the first bytes field with the given field number, or None.
+@stable(since = "0.1")
 pub func findBytes(fields: in List[DecodedField], number: Int): Option[slice[Byte]] {
   val arr = fields.toArray()
   for f in arr {
@@ -453,6 +466,7 @@ pub func findBytes(fields: in List[DecodedField], number: Int): Option[slice[Byt
 }
 
 /// Collect all bytes fields with the given field number (repeated field).
+@stable(since = "0.1")
 pub func collectBytes(fields: in List[DecodedField], number: Int): List[slice[Byte]] {
   val res = newList()
   val arr = fields.toArray()
