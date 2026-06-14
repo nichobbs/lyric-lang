@@ -786,21 +786,13 @@ func mkVarStmt(name: in String, ty: in Option[TypeExpr], init: in Expr): Stateme
 /// (#3402): the wrapper declares `var ret: <returnType>`, the rewritten
 /// body assigns into it, and the wrapper returns it.  Codegen
 /// zero-initialises an uninitialised `var` slot, so all paths are
-/// well-defined even if a branch forgets to assign.  See the body comment
-/// for why `init = None` must go through a type-annotated local.
+/// well-defined even if a branch forgets to assign.  `init = None`
+/// is bound through an explicitly-typed local rather than passed inline:
+/// the stage-0 bootstrap emitter miscompiles a bare inline `None` (no
+/// type context) into a value that matches neither `Some` nor `None`,
+/// so the `LBVar` `case None` arm never fires and `return ret` reads zero.
+/// Bootstrap-emitter workaround; see docs/23-fsharp-shim-elimination.md.
 func mkVarStmtNoInit(name: in String, ty: in Option[TypeExpr]): Statement {
-  // The `init = None` is bound through an explicitly-typed local first
-  // (`val noInit: Option[Expr] = None`) rather than passed inline as the
-  // constructor argument.  The stage-0 bootstrap emitter miscompiles a
-  // bare inline `None` (no type context) into a value that matches
-  // neither `Some` nor `None` downstream — so codegen's `LBVar`
-  // `case None` arm never fires, no slot is allocated, the body's
-  // `ret = …` assignment is discarded, and `return ret` reads zero.
-  // The type-annotated local is exactly how `parseLocalBinding` builds
-  // an uninitialised `var` (a form that codegen handles correctly), so
-  // matching that idiom yields a sound `None`.  Bootstrap-emitter
-  // workaround — expected to become dead once the stage-0 F# emitter is
-  // retired; see docs/23-fsharp-shim-elimination.md.
   val noInit: Option[Expr] = None
   Statement(kind = SLocal(binding = LBVar(name = name, ty = ty, init = noInit)), span = synSpan())
 }
@@ -968,6 +960,17 @@ func stripRetAssignmentsStmt(s: in Statement, name: in String): Statement {
       }
       val newFinally = match finally_ { case Some(fb) -> Some(value = stripRetAssignments(fb, name)); case None -> None }
       Statement(kind = STry(body = stripRetAssignments(body, name), catches = newCatches, finally_ = newFinally), span = sp)
+    }
+    case SLocal(b) -> {
+      val newBinding = match b {
+        case LBVal(pat, ty, init) -> LBVal(pat = pat, ty = ty, init = stripRetAssignmentsExpr(init, name))
+        case LBLet(lname, ty, init) -> LBLet(name = lname, ty = ty, init = stripRetAssignmentsExpr(init, name))
+        case LBVar(lname, ty, optInit) -> {
+          val newInit = match optInit { case Some(e) -> Some(value = stripRetAssignmentsExpr(e, name)); case None -> None }
+          LBVar(name = lname, ty = ty, init = newInit)
+        }
+      }
+      Statement(kind = SLocal(binding = newBinding), span = sp)
     }
     case _ -> s
   }
@@ -1468,7 +1471,13 @@ func buildWrapper(
   // `proceed()`) still runs, and emit no var/return — the wrapper is a
   // plain void method that falls off the end.
   val effectiveBody = match around.retName {
-    case Some(retVar) -> if assignsRet and targetReturnsUnit { stripRetAssignments(rewiredBody, retVar) } else { rewiredBody }
+    case Some(retVar) -> {
+      if assignsRet and targetReturnsUnit {
+        stripRetAssignments(rewiredBody, retVar)
+      } else {
+        rewiredBody
+      }
+    }
     case None -> rewiredBody
   }
 
