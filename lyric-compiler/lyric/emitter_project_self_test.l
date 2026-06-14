@@ -98,7 +98,8 @@ func runEmitProjectOpts(
     restoredDllPaths = newList(),
     activeFeatures = features,
     declaredFeatures = declared,
-    packageVersion = ""
+    packageVersion = "",
+    depTemplateSrcs = newList()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -340,7 +341,8 @@ test "per-package isolation implicit leak rejected" {
     restoredDllPaths = newList(),
     activeFeatures = newList(),
     declaredFeatures = newList(),
-    packageVersion = ""
+    packageVersion = "",
+    depTemplateSrcs = newList()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -474,7 +476,8 @@ test "restored dep wiring no crash" {
     restoredDllPaths = restoredDlls,
     activeFeatures = newList(),
     declaredFeatures = newList(),
-    packageVersion = ""
+    packageVersion = "",
+    depTemplateSrcs = newList()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -514,7 +517,8 @@ test "emitProject subprocess fallback on restored dep" {
     restoredDllPaths = restoredDlls,
     activeFeatures = newList(),
     declaredFeatures = newList(),
-    packageVersion = ""
+    packageVersion = "",
+    depTemplateSrcs = newList()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {

@@ -6295,6 +6295,40 @@ list for string literals.
 
 ---
 
+## D104 — A0045 diagnostic for unresolved `from`-instance aspect templates (#3497)
+
+**Context.** `weaveFileWithDiagsAndTemplates` resolves `from`-instance aspects
+(those with `from: Some(path)` and no `around` body) by looking up the template
+in the supplied `Map[String, AspectDecl]`. When the lookup misses — because
+the template package is absent from the build or the path contains a typo —
+the instance is passed through unchanged and the standard weave silently
+drops it (it has no `around` body). The woven function is therefore never
+wrapped; security-relevant templates that are silently unresolved are worse
+than a compile error.
+
+**Decision.** `collectUnresolvedFromDiags` scans the item list after
+`resolveFromInstances` runs and emits an `A0045` error diagnostic for every
+`from`-instance aspect whose template was not found:
+
+```
+A0045: aspect 'LoggedFoo' declares `from Lib.Tracing` but the template was
+not found in the build; ensure the package that defines 'Lib.Tracing' is
+listed in [dependencies] in lyric.toml
+```
+
+The diagnostic fires once per unresolved aspect item (not once per function
+that would have been matched), referencing the aspect's declaration span.
+`weaveFileWithDiagsAndTemplates` accumulates both A0045 diagnostics and the
+existing A0042/A0043/A0044 diagnostics from `weaveItemsCore` into the
+returned `WeaveFileResult.diagnostics`.
+
+**Diagnostic range.** A0040–A0044 were assigned for existing weave
+diagnostics (D047/D051). A0045 is the next unused code in that range.
+
+**Related:** #3497, #3414, D102, D047, D051.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

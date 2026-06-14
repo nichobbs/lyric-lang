@@ -748,9 +748,11 @@ func buildProject(
     return 1
   }
 
-  // Resolve local-path dependencies to DLL paths.
+  // Resolve local-path dependencies to DLL paths and collect their source
+  // packages for cross-package aspect template resolution (#3498).
   // Format: "depName\tdllPath" — passed to emitter.l which writes "DEP\t..." lines.
   val restoredDlls: List[String] = newList()
+  val depTemplatePkgsList: List[ProjectPackage] = newList()
   var di = 0
   while di < manifest.deps.count {
     val dep = manifest.deps[di]
@@ -773,6 +775,29 @@ func buildProject(
                     restoredDlls.add(dep.name + "\t" + dllPath)
                   } else {
                     printErr("build: " + Release.localDepNotBuiltMessage(dep.name, dllPath, depToml))
+                  }
+                  // Collect source files from this path dependency so the weaver can
+                  // resolve cross-package `from`-instance aspect templates (#3498).
+                  match depMf.project {
+                    case Some(proj) -> {
+                      var pki = 0
+                      while pki < proj.packages.count {
+                        val pkgEntry = proj.packages[pki]
+                        val srcPath = Path.join(depDir, pkgEntry.path)
+                        match File.readText(srcPath) {
+                          case Ok(srcText) -> {
+                            val srcList: List[String] = newList()
+                            srcList.add(srcText)
+                            depTemplatePkgsList.add(ProjectPackage(name = pkgEntry.name, sources = srcList))
+                          }
+                          case Err(e) -> {
+                            printErr("build: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
+                          }
+                        }
+                        pki += 1
+                      }
+                    }
+                    case None -> ()
                   }
                 }
                 case Err(e) -> {
@@ -805,7 +830,8 @@ func buildProject(
     restoredDllPaths = restoredDlls,
     activeFeatures = activeFeatures,
     declaredFeatures = mfDeclared,
-    packageVersion = manifest.packageSection.version
+    packageVersion = manifest.packageSection.version,
+    depTemplateSrcs = depTemplatePkgsList
   )
 
   // For JVM builds, inject Maven classpath into LYRIC_FFI_JARS so the JVM

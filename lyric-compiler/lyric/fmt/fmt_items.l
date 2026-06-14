@@ -1121,24 +1121,20 @@ func aspectMatcherPred(m: in AspectMatcher): String {
   }
 }
 
-func aspectDoc(visStr: in String, ad: in AspectDecl, ctx: inout FmtCtx): List[String] {
+// Return the source start-offset of an AspectMatcher for source-order detection (#3584).
+func aspectMatcherSpanOffset(m: in AspectMatcher): Int {
+  match m {
+    case AMNameLike(_, s) -> s.startPos.offset
+    case AMNameIn(_, s) -> s.startPos.offset
+    case AMAnnotated(_, s) -> s.startPos.offset
+    case AMVisibility(_, s) -> s.startPos.offset
+    case AMSignatureReturns(_, s) -> s.startPos.offset
+  }
+}
+
+// Produce the `  matches: …` line(s) for an aspect.  Empty list when there are no matchers.
+func aspectMatchesLines(ad: in AspectDecl): List[String] {
   val acc: List[String] = newList()
-  // Instantiation form (D051): `aspect Name from Pkg.Template { … }`.  The
-  // `from` clause is matched on the `ad.from` field directly (a single match,
-  // not a nested re-match of a sub-field), so it lowers correctly under the
-  // stage-0 emitter — unlike the `around` advice, which is routed through
-  // `aspectAroundLines` for that reason.
-  val fromStr = match ad.from { case Some(mp) -> " from " + pathStr(mp); case None -> "" }
-  acc.add(visStr + "aspect " + ad.name + fromStr + " {")
-  // §6 ordering: emit wraps:/inside: before matches:
-  if ad.wraps.count > 0 {
-    val wrapStr: String = joinStrings(ad.wraps, ", ")
-    acc.add("  wraps: " + wrapStr)
-  }
-  if ad.inside.count > 0 {
-    val insideStr: String = joinStrings(ad.inside, ", ")
-    acc.add("  inside: " + insideStr)
-  }
   if ad.matches.count > 0 {
     val preds: List[String] = newList()
     var i = 0
@@ -1150,10 +1146,12 @@ func aspectDoc(visStr: in String, ad: in AspectDecl, ctx: inout FmtCtx): List[St
     val ex = if ad.exceptNames.count > 0 { " except name in { " + joinStrings(ad.exceptNames, ", ") + " }" } else { "" }
     acc.add("  matches: " + body + ex)
   }
-  // §8 anonymous `config { }` block — canonical order (docs/26 §"Compile-time
-  // enable / runtime configure") places it after `matches:` and before the
-  // `around` advice.  Each member sits at column 4 (2 for the aspect body,
-  // 2 for the block body).
+  acc
+}
+
+// Produce the `  config { … }` block lines for an aspect.  Empty list when there are no config fields.
+func aspectConfigBlockLines(ad: in AspectDecl, ctx: inout FmtCtx): List[String] {
+  val acc: List[String] = newList()
   if ad.config.count > 0 {
     acc.add("  config {")
     val cfgLines: List[String] = newList()
@@ -1180,6 +1178,62 @@ func aspectDoc(visStr: in String, ad: in AspectDecl, ctx: inout FmtCtx): List[St
       ci2 = ci2 + 1
     }
     acc.add("  }")
+  }
+  acc
+}
+
+func aspectDoc(visStr: in String, ad: in AspectDecl, ctx: inout FmtCtx): List[String] {
+  val acc: List[String] = newList()
+  // Instantiation form (D051): `aspect Name from Pkg.Template { … }`.  The
+  // `from` clause is matched on the `ad.from` field directly (a single match,
+  // not a nested re-match of a sub-field), so it lowers correctly under the
+  // stage-0 emitter — unlike the `around` advice, which is routed through
+  // `aspectAroundLines` for that reason.
+  val fromStr = match ad.from { case Some(mp) -> " from " + pathStr(mp); case None -> "" }
+  acc.add(visStr + "aspect " + ad.name + fromStr + " {")
+  // §6 ordering: emit wraps:/inside: before matches:
+  if ad.wraps.count > 0 {
+    val wrapStr: String = joinStrings(ad.wraps, ", ")
+    acc.add("  wraps: " + wrapStr)
+  }
+  if ad.inside.count > 0 {
+    val insideStr: String = joinStrings(ad.inside, ", ")
+    acc.add("  inside: " + insideStr)
+  }
+  // §8 config / matches ordering: preserve source order when both are present.
+  // docs/26 §8 defines `matches:` then `config { }` as canonical, but the
+  // formatter must not reorder when the author wrote `config { }` first —
+  // the loss-check detects the token-sequence change and refuses to write
+  // (#3584).  Compare the first config-field span vs the first matcher span
+  // to detect source order; when only one is present the ordering is trivial.
+  val configFirst = ad.config.count > 0 and ad.matches.count > 0 and
+    ad.config[0].span.startPos.offset < aspectMatcherSpanOffset(ad.matches[0])
+  if configFirst {
+    val cfgOut = aspectConfigBlockLines(ad, ctx)
+    var cfgI = 0
+    while cfgI < cfgOut.count {
+      acc.add(cfgOut[cfgI])
+      cfgI = cfgI + 1
+    }
+    val mOut = aspectMatchesLines(ad)
+    var mI = 0
+    while mI < mOut.count {
+      acc.add(mOut[mI])
+      mI = mI + 1
+    }
+  } else {
+    val mOut = aspectMatchesLines(ad)
+    var mI = 0
+    while mI < mOut.count {
+      acc.add(mOut[mI])
+      mI = mI + 1
+    }
+    val cfgOut = aspectConfigBlockLines(ad, ctx)
+    var cfgI = 0
+    while cfgI < cfgOut.count {
+      acc.add(cfgOut[cfgI])
+      cfgI = cfgI + 1
+    }
   }
   // §5 contract augmentation: emit requires:/ensures: before the around block.
   var ci = 0

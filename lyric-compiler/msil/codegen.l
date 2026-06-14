@@ -7279,6 +7279,144 @@ func lowerPatternTestMsil(
   }
 }
 
+// Resolve the concrete MSIL type for a union-case field, substituting
+// the scrutinee's generic type arguments when the scrutinee is generic.
+// Also normalises MVoid (unit-typed payloads have no runtime storage) to
+// MObject, matching the CLR restriction that LocalVarSig cannot contain void.
+func resolveConcreteMsilFieldTy(cctx: in CodegenCtx, castTy: in MsilType, sigLookupKey: in String): MsilType {
+  var vi = -1
+  match castTy {
+    case MGenericInst(_, _, _) -> {
+      vi = match mapGet(cctx.fieldVarIndices, sigLookupKey) { case Some(v) -> v; case None -> -1 }
+    }
+    case MGenericInstByName(_, _) -> {
+      vi = match mapGet(cctx.fieldVarIndices, sigLookupKey) { case Some(v) -> v; case None -> -1 }
+    }
+    case _ -> ()
+  }
+  var fieldTy: MsilType = match mapGet(cctx.fieldMsilTypes, sigLookupKey) { case Some(t) -> t; case None -> MObject }
+  if vi >= 0 {
+    match castTy {
+      case MGenericInst(_, _, typeArgs) -> {
+        fieldTy = typeArgs[vi]
+      }
+      case MGenericInstByName(_, typeArgs) -> {
+        if vi < typeArgs.count {
+          fieldTy = typeArgs[vi]
+        }
+      }
+      case _ -> ()
+    }
+  }
+  match fieldTy {
+    case MVoid -> MObject
+    case _ -> fieldTy
+  }
+}
+
+// Emit the MSIL instructions to load one field of a union case from
+// `castSlot`, using the appropriate generic or non-generic ldfld form.
+// For non-generic types the emitter must first narrowcast to the concrete
+// case class so the JIT can verify ldfld on an object-typed local.
+func emitCaseFieldLoad(
+  insns: in List[MInsn],
+  castTy: in MsilType,
+  castSlot: in Int,
+  paramCount: in Int,
+  caseClass: in String,
+  caseClassBt: in String,
+  fieldToken: in Int,
+  fieldSig: in List[Byte],
+  fieldName: in String,
+): Unit {
+  emitLoadSlot(insns, castSlot, paramCount)
+  match castTy {
+    case MGenericInst(_, _, typeArgs) -> insns.add(MLdfldGeneric(baseClassName = caseClass, typeArgs = typeArgs, fieldName = fieldName, fieldSig = fieldSig))
+    case MGenericInstByName(_, typeArgs) -> insns.add(MLdfldGeneric(baseClassName = caseClassBt, typeArgs = typeArgs, fieldName = fieldName, fieldSig = fieldSig))
+    case _ -> {
+      // castSlot is typed as `object` in LocalVarSig, so castclass narrows to
+      // the concrete case class before ldfld (#1442).
+      insns.add(MCastclassByName(className = caseClass))
+      insns.add(MLdfld(fieldToken = fieldToken))
+    }
+  }
+}
+
+// Bind one named-field (`case Rec(fieldName)` or `case Rec(alias)`) from
+// a union case to a new local slot.  Tries the field by its declared name
+// first, then falls back to the positional key `/field<fi>` when the
+// pattern uses a binding alias.  Recurses into any inner sub-pattern.
+func bindNamedFieldMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  castTy: in MsilType,
+  castSlot: in Int,
+  caseClass: in String,
+  caseClassBt: in String,
+  fi: in Int,
+  fieldPat: in Pattern,
+): Unit {
+  match fieldPat.kind {
+    case PBinding(fname, innerOpt) -> {
+      val fByName = cctx.fieldTokens.containsKey(caseClass + "/" + fname)
+      val sigLookupKey = if fByName { caseClass + "/" + fname } else { caseClass + "/field" + toString(fi) }
+      val fTok = match mapGet(cctx.fieldTokens, sigLookupKey) { case Some(t) -> t; case None -> 0 }
+      if fTok > 0 {
+        val fSig = match mapGet(cctx.fieldSigBytes, sigLookupKey) { case Some(s) -> s; case None -> buildFieldSig(MObject) }
+        val actualFieldName = if fByName {
+          fname
+        } else {
+          match mapGet(cctx.fieldDeclaredNames, sigLookupKey) {
+            case Some(n) -> n
+            case None -> fname
+          }
+        }
+        val concreteFieldTy = resolveConcreteMsilFieldTy(cctx, castTy, sigLookupKey)
+        emitCaseFieldLoad(insns, castTy, castSlot, fctx.paramCount, caseClass, caseClassBt, fTok, fSig, actualFieldName)
+        val fSlot = allocSlotMsil(fctx, fname, concreteFieldTy)
+        emitStoreSlot(insns, fSlot, fctx.paramCount)
+        match innerOpt {
+          case Some(innerPat) -> lowerPatternBindMsil(cctx, fctx, insns, innerPat, fSlot, concreteFieldTy)
+          case None -> ()
+        }
+      }
+    }
+    case _ -> ()
+  }
+}
+
+// Bind one positional field of a union case (used for `PTuple` and nested
+// `PConstructor` sub-patterns) to a new local slot and recurse.  The
+// `slotNamePrefix` distinguishes the two callers ("__tup_fld_" vs "__nested_").
+func bindPositionalFieldMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  castTy: in MsilType,
+  castSlot: in Int,
+  caseClass: in String,
+  caseClassBt: in String,
+  fi: in Int,
+  fieldPat: in Pattern,
+  slotNamePrefix: in String,
+): Unit {
+  val fldKey = caseClass + "/field" + toString(fi)
+  val fTok = match mapGet(cctx.fieldTokens, fldKey) { case Some(t) -> t; case None -> 0 }
+  if fTok > 0 {
+    val fSig = match mapGet(cctx.fieldSigBytes, fldKey) { case Some(s) -> s; case None -> buildFieldSig(MObject) }
+    val actualFieldName = match mapGet(cctx.fieldDeclaredNames, fldKey) {
+      case Some(n) -> n
+      case None -> "field" + toString(fi)
+    }
+    val fieldTy = resolveConcreteMsilFieldTy(cctx, castTy, fldKey)
+    emitCaseFieldLoad(insns, castTy, castSlot, fctx.paramCount, caseClass, caseClassBt, fTok, fSig, actualFieldName)
+    val fldSlot = allocSlotMsil(fctx, slotNamePrefix + toString(fi) + "_" + toString(fctx.slotTicker.count), fieldTy)
+    emitStoreSlot(insns, fldSlot, fctx.paramCount)
+    lowerPatternBindMsil(cctx, fctx, insns, fieldPat, fldSlot, fieldTy)
+  }
+}
+
 // Bind pattern variables after a successful match.
 func lowerPatternBindMsil(
   cctx: in CodegenCtx,
@@ -7372,210 +7510,19 @@ func lowerPatternBindMsil(
         }
         val castSlot = allocSlotMsil(fctx, "__cast_" + caseName + "_" + toString(fctx.slotTicker.count), castTy)
         emitStoreSlot(insns, castSlot, fctx.paramCount)
-        // Bind each named field by reading the pre-computed field token.
-        // Try the binding variable name first (works when the pattern uses the
-        // declared field name, e.g. `case Rec(fieldName)`).  Fall back to the
-        // positional key "/field<i>" for cross-assembly cases where the user
-        // wrote a binding alias (`case Some(x)` instead of `case Some(value)`).
+        // Bind each field sub-pattern using the extracted per-kind helpers.
+        // `bindNamedFieldMsil` handles `PBinding` (named or alias); both
+        // `PTuple` and nested `PConstructor` sub-fields are positional and
+        // delegate to `bindPositionalFieldMsil` with distinct slot prefixes.
         var fi = 0
         while fi < fields.count {
           match fields[fi].kind {
-            case PBinding(fname, _) -> {
-              val fByName = cctx.fieldTokens.containsKey(caseClass + "/" + fname)
-              val fTok = if fByName {
-                match mapGet(cctx.fieldTokens, caseClass + "/" + fname) {
-                  case Some(t) -> t
-                  case None -> 0
-                }
-              } else {
-                match mapGet(cctx.fieldTokens, caseClass + "/field" + toString(fi)) {
-                  case Some(t) -> t
-                  case None -> 0
-                }
-              }
-              if fTok > 0 {
-                val sigLookupKey = if fByName { caseClass + "/" + fname } else { caseClass + "/field" + toString(fi) }
-                val fSig = match mapGet(cctx.fieldSigBytes, sigLookupKey) {
-                  case Some(sigBytes) -> sigBytes
-                  case None -> buildFieldSig(MObject)
-                }
-                var vi = -1
-                match castTy {
-                  case MGenericInst(_, _, typeArgs) -> {
-                    vi = match mapGet(cctx.fieldVarIndices, sigLookupKey) { case Some(v) -> v; case None -> -1 }
-                  }
-                  case MGenericInstByName(_, _) -> {
-                    vi = match mapGet(cctx.fieldVarIndices, sigLookupKey) { case Some(v) -> v; case None -> -1 }
-                  }
-                  case _ -> {
-                  }
-                }
-                // For generic case classes (e.g. Option_Some<Keyword>) use
-                // MLdfldGeneric so the TypeSpec and TypeSpec-parented MemberRef
-                // are built at Phase 5 lowering time, when all TypeDefs are
-                // present.  For non-generic cases use the pre-computed fTok.
-                val actualFieldName = if fByName {
-                  fname
-                } else {
-                  match mapGet(cctx.fieldDeclaredNames, sigLookupKey) {
-                    case Some(n) -> n
-                    case None -> fname
-                  }
-                }
-                var concreteFieldTy: MsilType = match mapGet(cctx.fieldMsilTypes, sigLookupKey) {
-                  case Some(ty) -> ty
-                  case None -> MObject
-                }
-                if vi >= 0 {
-                  match castTy {
-                    case MGenericInst(_, _, typeArgs) -> {
-                      concreteFieldTy = typeArgs[vi]
-                    }
-                    case MGenericInstByName(_, typeArgs) -> {
-                      if vi < typeArgs.count {
-                        concreteFieldTy = typeArgs[vi]
-                      }
-                    }
-                    case _ -> {
-                    }
-                  }
-                }
-                // Unit-typed payload has no runtime value (null/object); MVoid local would be invalid — erase to object.
-                match concreteFieldTy {
-                  case MVoid -> {
-                    concreteFieldTy = MObject
-                  }
-                  case _ -> {
-                  }
-                }
-                emitLoadSlot(insns, castSlot, fctx.paramCount)
-                match castTy {
-                  case MGenericInst(_, _, typeArgs) -> insns.add(MLdfldGeneric(baseClassName = caseClass, typeArgs = typeArgs, fieldName = actualFieldName, fieldSig = fSig))
-                  case MGenericInstByName(_, typeArgs) -> insns.add(MLdfldGeneric(baseClassName = caseClassBt, typeArgs = typeArgs, fieldName = actualFieldName, fieldSig = fSig))
-                  case _ -> {
-                    // castSlot is typed as `object` in LocalVarSig (MClass encodes as
-                    // ELEMENT_TYPE_OBJECT = 0x1C), so the JIT sees `object` on the stack.
-                    // castclass narrows to the concrete case class so ldfld verifies (#1442).
-                    insns.add(MCastclassByName(className = caseClass))
-                    insns.add(MLdfld(fieldToken = fTok))
-                  }
-                }
-                val fSlot = allocSlotMsil(fctx, fname, concreteFieldTy)
-                emitStoreSlot(insns, fSlot, fctx.paramCount)
-                // Recurse into any inner pattern (e.g. `case Some(x @ (a, b))`).
-                match fields[fi].kind {
-                  case PBinding(_, Some(innerPat)) -> lowerPatternBindMsil(cctx, fctx, insns, innerPat, fSlot, concreteFieldTy)
-                  case _ -> {
-                  }
-                }
-              }
-            }
-            case PTuple(_) -> {
-              // Positional field fi carries a tuple value; load it and recurse.
-              val ptPosFldKey = caseClass + "/field" + toString(fi)
-              val ptFTok = match mapGet(cctx.fieldTokens, ptPosFldKey) { case Some(t) -> t; case None -> 0 }
-              if ptFTok > 0 {
-                var ptVi = -1
-                match castTy {
-                  case MGenericInst(_, _, typeArgs) -> {
-                    ptVi = match mapGet(cctx.fieldVarIndices, ptPosFldKey) { case Some(v) -> v; case None -> -1 }
-                  }
-                  case MGenericInstByName(_, _) -> {
-                    ptVi = match mapGet(cctx.fieldVarIndices, ptPosFldKey) { case Some(v) -> v; case None -> -1 }
-                  }
-                  case _ -> {
-                  }
-                }
-                val ptFSig = match mapGet(cctx.fieldSigBytes, ptPosFldKey) { case Some(s) -> s; case None -> buildFieldSig(MObject) }
-                val ptActualFieldName = match mapGet(cctx.fieldDeclaredNames, ptPosFldKey) {
-                  case Some(n) -> n
-                  case None -> "field" + toString(fi)
-                }
-                var ptFieldTy: MsilType = match mapGet(cctx.fieldMsilTypes, ptPosFldKey) { case Some(ty) -> ty; case None -> MObject }
-                if ptVi >= 0 {
-                  match castTy {
-                    case MGenericInst(_, _, typeArgs) -> {
-                      ptFieldTy = typeArgs[ptVi]
-                    }
-                    case MGenericInstByName(_, typeArgs) -> {
-                      if ptVi < typeArgs.count {
-                        ptFieldTy = typeArgs[ptVi]
-                      }
-                    }
-                    case _ -> {
-                    }
-                  }
-                }
-                emitLoadSlot(insns, castSlot, fctx.paramCount)
-                match castTy {
-                  case MGenericInst(_, _, typeArgs) -> insns.add(MLdfldGeneric(baseClassName = caseClass, typeArgs = typeArgs, fieldName = ptActualFieldName, fieldSig = ptFSig))
-                  case MGenericInstByName(_, typeArgs) -> insns.add(MLdfldGeneric(baseClassName = caseClassBt, typeArgs = typeArgs, fieldName = ptActualFieldName, fieldSig = ptFSig))
-                  case _ -> {
-                    insns.add(MCastclassByName(className = caseClass))
-                    insns.add(MLdfld(fieldToken = ptFTok))
-                  }
-                }
-                val ptFldSlot = allocSlotMsil(fctx, "__tup_fld_" + toString(fi) + "_" + toString(fctx.slotTicker.count), ptFieldTy)
-                emitStoreSlot(insns, ptFldSlot, fctx.paramCount)
-                lowerPatternBindMsil(cctx, fctx, insns, fields[fi], ptFldSlot, ptFieldTy)
-              }
-            }
-            case PConstructor(_, _) -> {
-              // Nested constructor pattern (#3280): field fi holds a union-case
-              // value that itself must be destructured.  Load the positional field
-              // from the outer cast slot, store in a temp, then recurse.  The
-              // recursive call hits the top-level `PConstructor` branch above,
-              // which does the inner isinst-cast and binds the inner variables.
-              val ncFldKey = caseClass + "/field" + toString(fi)
-              val ncFTok = match mapGet(cctx.fieldTokens, ncFldKey) { case Some(t) -> t; case None -> 0 }
-              if ncFTok > 0 {
-                var ncVi = -1
-                match castTy {
-                  case MGenericInst(_, _, typeArgs) -> {
-                    ncVi = match mapGet(cctx.fieldVarIndices, ncFldKey) { case Some(v) -> v; case None -> -1 }
-                  }
-                  case MGenericInstByName(_, _) -> {
-                    ncVi = match mapGet(cctx.fieldVarIndices, ncFldKey) { case Some(v) -> v; case None -> -1 }
-                  }
-                  case _ -> {
-                  }
-                }
-                val ncFSig = match mapGet(cctx.fieldSigBytes, ncFldKey) { case Some(s) -> s; case None -> buildFieldSig(MObject) }
-                val ncActualFieldName = match mapGet(cctx.fieldDeclaredNames, ncFldKey) {
-                  case Some(n) -> n
-                  case None -> "field" + toString(fi)
-                }
-                var ncFieldTy: MsilType = match mapGet(cctx.fieldMsilTypes, ncFldKey) { case Some(ty) -> ty; case None -> MObject }
-                if ncVi >= 0 {
-                  match castTy {
-                    case MGenericInst(_, _, typeArgs) -> {
-                      ncFieldTy = typeArgs[ncVi]
-                    }
-                    case MGenericInstByName(_, typeArgs) -> {
-                      if ncVi < typeArgs.count {
-                        ncFieldTy = typeArgs[ncVi]
-                      }
-                    }
-                    case _ -> {
-                    }
-                  }
-                }
-                emitLoadSlot(insns, castSlot, fctx.paramCount)
-                match castTy {
-                  case MGenericInst(_, _, typeArgs) -> insns.add(MLdfldGeneric(baseClassName = caseClass, typeArgs = typeArgs, fieldName = ncActualFieldName, fieldSig = ncFSig))
-                  case MGenericInstByName(_, typeArgs) -> insns.add(MLdfldGeneric(baseClassName = caseClassBt, typeArgs = typeArgs, fieldName = ncActualFieldName, fieldSig = ncFSig))
-                  case _ -> {
-                    insns.add(MCastclassByName(className = caseClass))
-                    insns.add(MLdfld(fieldToken = ncFTok))
-                  }
-                }
-                val ncFldSlot = allocSlotMsil(fctx, "__nested_" + toString(fi) + "_" + toString(fctx.slotTicker.count), ncFieldTy)
-                emitStoreSlot(insns, ncFldSlot, fctx.paramCount)
-                lowerPatternBindMsil(cctx, fctx, insns, fields[fi], ncFldSlot, ncFieldTy)
-              }
-            }
-            case _ -> {
-            }
+            case PBinding(_, _) -> bindNamedFieldMsil(cctx, fctx, insns, castTy, castSlot, caseClass, caseClassBt, fi, fields[fi])
+            case PTuple(_) -> bindPositionalFieldMsil(cctx, fctx, insns, castTy, castSlot, caseClass, caseClassBt, fi, fields[fi], "__tup_fld_")
+            case PConstructor(_, _) -> bindPositionalFieldMsil(cctx, fctx, insns, castTy, castSlot, caseClass, caseClassBt, fi, fields[fi], "__nested_")
+            // Nested constructor pattern (#3280): the recursive call hits the
+            // top-level PConstructor branch, which does the inner isinst-cast.
+            case _ -> ()
           }
           fi = fi + 1
         }

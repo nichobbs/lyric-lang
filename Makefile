@@ -53,7 +53,11 @@ stage1: ## Build stage-0 + the full self-hosted compiler + CLI bundle (.bootstra
 
 stage1-fast: ## Stage 1 without the CLI bundle — fastest loop for a single compiler package
 	SKIP_CLI_BUNDLE=1 ./scripts/bootstrap.sh --stage 1
-	@touch .bootstrap/stage1.stamp
+	# Intentionally NOT touching stage1.stamp here: SKIP_CLI_BUNDLE=1 skips the
+	# CLI bundle (which rebuilds the self-hosted compiler DLLs), so the stamp
+	# would be stale from the previous full build.  A subsequent `make lyric`
+	# must see the stamp as older than any edited .l source so stage1 runs in
+	# full (#3583).  Use `make stage1` + `make aot` if you need make lyric too.
 
 # `aot` depends on the stage-1 stamp so a direct `make aot` with no prior
 # stage 1 builds stage 1 first (via the stamp rule below) instead of failing

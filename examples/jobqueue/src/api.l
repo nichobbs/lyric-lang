@@ -38,7 +38,7 @@ aspect Auth from Web.Aspects.RequiresAuth {
   matches: name in { handleEnqueue }
   config {
     @sensitive
-    jwtSecret: String
+    jwtSecret: String = ""  // set LYRIC_ASPECT_AUTH_JWTSECRET in production (docs/26 §8)
     issuer: String = "jobqueue-service"
     audience: String = "jobqueue-api"
   }

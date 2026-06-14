@@ -95,7 +95,8 @@ func buildDll(tmpDir: in String, pkgName: in String, source: in String, asmName:
     restoredDllPaths = newList(),
     activeFeatures = newList(),
     declaredFeatures = newList(),
-    packageVersion = ""
+    packageVersion = "",
+    depTemplateSrcs = newList()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -127,7 +128,8 @@ func buildAndRunConsumer(
     restoredDllPaths = restored,
     activeFeatures = newList(),
     declaredFeatures = newList(),
-    packageVersion = ""
+    packageVersion = "",
+    depTemplateSrcs = newList()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {

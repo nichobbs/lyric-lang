@@ -69,6 +69,7 @@ func emitTestLinked(
   testPkgs.add(ProjectPackage(name = testPkgName, sources = testSrcs))
   val activeF: List[String] = newList()
   val declaredF: List[String] = newList()
+  val noDepTemplateSrcs: List[ProjectPackage] = newList()
   Emitter.emitProject(
     EmitProjectRequest(
       packages = testPkgs,
@@ -78,7 +79,8 @@ func emitTestLinked(
       restoredDllPaths = compilerDlls,
       activeFeatures = activeF,
       declaredFeatures = declaredF,
-      packageVersion = ""
+      packageVersion = "",
+      depTemplateSrcs = noDepTemplateSrcs
     )
   )
 }
@@ -729,6 +731,7 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
   // are not merged into the main dep bundle (e.g. Lyric.Stdlib.dll).
   val restoredDlls: List[String] = newList()
   val depBinDirs: List[String] = newList()
+  val depTemplatePkgsList: List[ProjectPackage] = newList()
   var di = 0
   while di < manifest.deps.count {
     val dep = manifest.deps[di]
@@ -762,6 +765,40 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
             case Err(e) -> {
               printErr("test: local dep '" + dep.name + "': " + e)
             }
+          }
+          // Collect source files from this path dep for cross-package aspect template
+          // resolution (parity with cli_build.l; fixes lyric build vs lyric test --manifest
+          // inconsistency where A0045 fired for aspects that built cleanly — #3649).
+          match File.readText(depToml) {
+            case Ok(depMfText) -> {
+              match Mf.parseManifest(depMfText, depToml) {
+                case Ok(depMf) -> {
+                  match depMf.project {
+                    case Some(depProj) -> {
+                      var pki = 0
+                      while pki < depProj.packages.count {
+                        val pkgEntry = depProj.packages[pki]
+                        val srcPath = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(depDir, pkgEntry.path) }
+                        match File.readText(srcPath) {
+                          case Ok(srcText) -> {
+                            val srcList: List[String] = newList()
+                            srcList.add(srcText)
+                            depTemplatePkgsList.add(ProjectPackage(name = pkgEntry.name, sources = srcList))
+                          }
+                          case Err(e) -> {
+                            printErr("test: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
+                          }
+                        }
+                        pki += 1
+                      }
+                    }
+                    case None -> ()
+                  }
+                }
+                case Err(_) -> ()
+              }
+            }
+            case Err(_) -> ()
           }
         } else {
           printErr("test: local dep '" + dep.name + "' — no lyric.toml found at '" + depToml + "'")
@@ -876,7 +913,8 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
       restoredDllPaths = restoredDlls,
       activeFeatures = activeFeatures,
       declaredFeatures = mfDeclared,
-      packageVersion = manifest.packageSection.version
+      packageVersion = manifest.packageSection.version,
+      depTemplateSrcs = depTemplatePkgsList
     )
     val result = Emitter.emitProject(projReq)
     var hadBuildError = false
