@@ -567,3 +567,45 @@ test "qualified enum-case pattern with shared case name" {
   assertEqualInt(result.exitCode, 0, "qualified_enum_case_pattern: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "color-same\nshape-different", "qualified_enum_case_pattern: correct arms fired")
 }
+
+// ─── Regression: generic-arg FQN mis-qualified in cross-package generic-union match (#3332) ─
+// A generic function returning a user-defined `Outcome[T, VErr]` (modelling
+// the same pattern as `Result[T, slice[VErr]]`) where `VErr` is a concrete
+// cross-package record type.  Without the fix, the MSIL emitter stored
+// `MClass("Lib.T")` (phantom) in funcRetTypes, which the consumer's match
+// emitted as an isinst TypeSpec referencing a non-existent CLR type — causing
+// both arms to fail the isinst and fall to the "match not exhaustive" panic.
+// With the fix, typeExprToMsilGenBody erases generic type vars to MObject in
+// TGenericApp type args, so the stored type uses object for T and the real
+// Lib.VErr for the concrete arg, and the isinst correctly matches (#3332).
+test "generic cross-package union return type round-trips through match" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "GenRes.Lib",
+      "package GenRes.Lib\n" + "pub record VErr { message: String }\n" + "pub generic[T, E] union Outcome {\n" +
+        "  case Good(value: T)\n" +
+        "  case Bad(err: E)\n" +
+        "}\n" +
+        "pub func wrap[T](value: in T, err: in VErr): Outcome[T, VErr] {\n" +
+        "  if err.message.length == 0 { return Good(value = value) }\n" +
+        "  return Bad(err = err)\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "GenRes.App",
+      "package GenRes.App\n" + "import GenRes.Lib\n" + "func main(): Unit {\n" + "  val noErr = VErr(message = \"\")\n" +
+        "  val r = wrap(42, noErr)\n" +
+        "  match r {\n" +
+        "    case Good(v) -> println(v)\n" +
+        "    case Bad(_) -> println(\"bad\")\n" +
+        "  }\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("genres", packages, "GenRes")
+  assertEqualInt(result.exitCode, 0, "generic_cross_pkg_union_match: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "generic_cross_pkg_union_match: Good arm fired, v=42")
+}
