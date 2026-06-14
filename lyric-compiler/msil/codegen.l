@@ -466,6 +466,20 @@ pub record CodegenCtx {
   // synthesizeGeneratorMsil increment this in source-declaration order so
   // the computed FQN is consistent across the pre-scan and synthesis passes.
   genTicker: List[Int]
+  // Non-generic IEnumerable / IEnumerator — used by the MExternEnumerable
+  // for-loop protocol to iterate extern types that implement IEnumerable
+  // but not IList (e.g. DictKeyCollection[K,V], DictValueCollection[K,V]).
+  trIEnumerable: Int  // System.Collections.IEnumerable (non-generic)
+  trIEnumerator: Int  // System.Collections.IEnumerator (non-generic)
+  tokIEnumerableGetEnumerator: Int  // IEnumerable.GetEnumerator(): IEnumerator  callvirt
+  tokIEnumeratorMoveNext: Int  // IEnumerator.MoveNext(): bool  callvirt
+  tokIEnumeratorGetCurrent: Int  // IEnumerator.get_Current(): object  callvirt
+  // Erased Dictionary<object,object> get_Keys / get_Values tokens (#3511).
+  // Used by the dictGetKeys / dictGetValues special cases when the map type is
+  // not concrete (MMapOf / MObject).  For concrete maps (MConcreteMap), the
+  // concrete-keyed MDictOp(DoGetKeys/DoGetValues) path is used instead.
+  tokDictObjGetKeys: Int    // Dictionary<obj,obj>.get_Keys(): object  callvirt
+  tokDictObjGetValues: Int  // Dictionary<obj,obj>.get_Values(): object  callvirt
   // One impl block (`impl Iface for Target { … }`) captured by the pre-pass.
   // `methods` are produced by `lowerImplMethodMsil`, which reserves slot 0 for
   // the implicit `this` so `self` and user parameters resolve correctly when
@@ -781,6 +795,38 @@ pub func newCodegenCtx(
     )
   val tokIListCast = 0x01000000 + trIList
 
+  // ── Non-generic IEnumerable / IEnumerator for the MExternEnumerable protocol ──
+  val trIEnumerable = ctxAddTypeRef(lctx, "System.Collections", "IEnumerable", lctx.arRuntime)
+  val trIEnumerator = ctxAddTypeRef(lctx, "System.Collections", "IEnumerator", lctx.arRuntime)
+
+  val ieGetEnumPs: List[MsilType] = newList()
+  val ieGetEnumRetTy = MClassRef(
+    typeRefCode = tdrTypeRef(trIEnumerator),
+    clrFqn = "System.Collections.IEnumerator",
+  )
+  val tokIEnumerableGetEnumerator = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trIEnumerable,
+      "GetEnumerator",
+      "ie_getenum",
+      buildInstanceMethodSig(ieGetEnumPs, ieGetEnumRetTy),
+    )
+
+  val ieMoveNextPs: List[MsilType] = newList()
+  val tokIEnumeratorMoveNext = 0x0A000000 +
+    ctxAddMemberRef(lctx, trIEnumerator, "MoveNext", "ie_movenext", buildInstanceMethodSig(ieMoveNextPs, MBool))
+
+  val ieGetCurrentPs: List[MsilType] = newList()
+  val tokIEnumeratorGetCurrent = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trIEnumerator,
+      "get_Current",
+      "ie_getcurrent",
+      buildInstanceMethodSig(ieGetCurrentPs, MObject),
+    )
+
   // ── Dictionary<object,object> via TypeSpec ────────────────────────────────
   val trDict2 = ctxAddTypeRef(lctx, "System.Collections.Generic", "Dictionary`2", arCollections)
 
@@ -883,6 +929,30 @@ pub func newCodegenCtx(
   // Signature: HASTHIS, 2 params, bool return, object key, byref-object value
   // For bootstrap we use get_Item instead; register as a stub pointing to get_Item sig.
   val tokDictObjTryGetValue = tokDictObjGetItem  // bootstrap: alias to get_Item
+
+  // 23b. Dictionary<object,object>::get_Keys(): object  HASTHIS  (#3511)
+  // Return type is declared as object (the actual value is a KeyCollection<k,v>);
+  // the IEnumerator protocol casts it to IEnumerable immediately after the call.
+  val dictGkPs: List[MsilType] = newList()
+  val tokDictObjGetKeys = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      lctx,
+      tsDictObj,
+      "get_Keys",
+      "dict_obj_getkeys",
+      buildInstanceMethodSig(dictGkPs, MObject)
+    )
+
+  // 23c. Dictionary<object,object>::get_Values(): object  HASTHIS  (#3511)
+  val dictGvPs: List[MsilType] = newList()
+  val tokDictObjGetValues = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      lctx,
+      tsDictObj,
+      "get_Values",
+      "dict_obj_getvalues",
+      buildInstanceMethodSig(dictGvPs, MObject)
+    )
 
   // 24. System.Action TypeRef  (System.Runtime assembly)
   val trAction = ctxAddTypeRef(lctx, "System", "Action", lctx.arRuntime)
@@ -1498,6 +1568,13 @@ pub func newCodegenCtx(
     trCancToken = trCancToken,
     trTcs1 = trTcs1,
     genTicker = newList(),
+    trIEnumerable = trIEnumerable,
+    trIEnumerator = trIEnumerator,
+    tokIEnumerableGetEnumerator = tokIEnumerableGetEnumerator,
+    tokIEnumeratorMoveNext = tokIEnumeratorMoveNext,
+    tokIEnumeratorGetCurrent = tokIEnumeratorGetCurrent,
+    tokDictObjGetKeys = tokDictObjGetKeys,
+    tokDictObjGetValues = tokDictObjGetValues,
     configFieldTokens = newMap(),
     configFieldMsilTypes = newMap(),
     tokCfgGetEnvVar = tokCfgGetEnvVar,
@@ -3810,6 +3887,21 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
         }
       } else if headSeg == "Map" {
         MMapOf(keyTy = MObject, valTy = MObject)
+      } else if headSeg == "DictKeyCollection" and args.count == 2 {
+        // Extern key-collection view — implements IEnumerable<K>, not IList.
+        // Use IEnumerator protocol in emitCollectionForMsil (#3511).
+        val keyTy = match args[0] {
+          case TAType(te2) -> typeExprToMsilCtx(cctx, te2, pkgName)
+          case TAValue(_) -> MObject
+        }
+        MExternEnumerable(elemTy = keyTy)
+      } else if headSeg == "DictValueCollection" and args.count == 2 {
+        // Extern value-collection view — implements IEnumerable<V>, not IList.
+        val valTy = match args[1] {
+          case TAType(te2) -> typeExprToMsilCtx(cctx, te2, pkgName)
+          case TAValue(_) -> MObject
+        }
+        MExternEnumerable(elemTy = valTy)
       } else {
         // Silent `MObject` fallback for unresolved/unregistered generic heads.
         // Audit assumption: in-bundle generic types are always reached after
@@ -4266,6 +4358,20 @@ func emitDictContainsKey(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in 
   match recvTy {
     case MConcreteMap(k, v) -> insns.add(MDictOp(op = DoContainsKey, keyTy = k, valTy = v))
     case _ -> insns.add(MCallvirt(methodToken = cctx.tokDictObjContainsKey))
+  }
+}
+
+func emitDictGetKeys(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in MsilType): Unit {
+  match recvTy {
+    case MConcreteMap(k, v) -> insns.add(MDictOp(op = DoGetKeys, keyTy = k, valTy = v))
+    case _ -> insns.add(MCallvirt(methodToken = cctx.tokDictObjGetKeys))
+  }
+}
+
+func emitDictGetValues(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in MsilType): Unit {
+  match recvTy {
+    case MConcreteMap(k, v) -> insns.add(MDictOp(op = DoGetValues, keyTy = k, valTy = v))
+    case _ -> insns.add(MCallvirt(methodToken = cctx.tokDictObjGetValues))
   }
 }
 
@@ -8225,6 +8331,34 @@ func lowerBuiltinOrStaticCallMsil(
       insns.add(MLdNull)
       MObject
     }
+  } else if funcName == "dictGetKeys" or startsWith(funcName, "dictGetKeys__") {
+    // `dictGetKeys(m)` — emit `m.get_Keys()` inline and return `MExternEnumerable(keyTy)`
+    // so the surrounding `for k in ...` loop uses the IEnumerator protocol (#3511).
+    // This special case fires both for direct calls and for monomorphized specializations
+    // (e.g. `dictGetKeys__String__Int`) inside monomorphizer-generated wrappers whose
+    // package context does not include Std.CollectionsHost in its import list.
+    if args.count >= 1 {
+      val mArgTyGk = lowerCallArgMsil(cctx, fctx, insns, args[0])
+      val keyTyGk = match mArgTyGk { case MConcreteMap(k, _) -> k; case _ -> MObject }
+      emitDictCastRecv(cctx, insns, mArgTyGk)
+      emitDictGetKeys(cctx, insns, mArgTyGk)
+      MExternEnumerable(elemTy = keyTyGk)
+    } else {
+      insns.add(MLdNull)
+      MObject
+    }
+  } else if funcName == "dictGetValues" or startsWith(funcName, "dictGetValues__") {
+    // `dictGetValues(m)` — emit `m.get_Values()` inline and return `MExternEnumerable(valTy)`.
+    if args.count >= 1 {
+      val mArgTyGv = lowerCallArgMsil(cctx, fctx, insns, args[0])
+      val valTyGv = match mArgTyGv { case MConcreteMap(_, v) -> v; case _ -> MObject }
+      emitDictCastRecv(cctx, insns, mArgTyGv)
+      emitDictGetValues(cctx, insns, mArgTyGv)
+      MExternEnumerable(elemTy = valTyGv)
+    } else {
+      insns.add(MLdNull)
+      MObject
+    }
   } else if funcName == "format1" {
     if args.count >= 2 {
       lowerCallArgMsil(cctx, fctx, insns, args[0])
@@ -9585,6 +9719,49 @@ func emitCollectionForMsil(
       insns.add(MCallvirt(methodToken = tokDispAsync))
       insns.add(MStloc(slot = dispVtSlot - fctx.paramCount))  // discard ValueTask by storing to unused local
     }
+    case MExternEnumerable(eeElemTy) -> {
+      // IEnumerator protocol for extern types that implement IEnumerable but
+      // not IList (e.g. DictKeyCollection, DictValueCollection).  Protocol:
+      //   castclass IEnumerable
+      //   GetEnumerator() → IEnumerator (non-generic)
+      //   while MoveNext() { elem = get_Current(); body }
+      // Cast the collection to System.Collections.IEnumerable and call GetEnumerator.
+      insns.add(MCastclass(typeToken = 0x01000000 + cctx.trIEnumerable))
+      insns.add(MCallvirt(methodToken = cctx.tokIEnumerableGetEnumerator))
+      // GetEnumerator() return type is IEnumerator; store as MObject slot.
+      val eeEnumSlot = allocSlotMsil(fctx, "__ee_enum_" + toString(fctx.slotTicker.count), MObject)
+      emitStoreSlot(insns, eeEnumSlot, fctx.paramCount)
+
+      val eeLoopL = freshLabelMsil(fctx)
+      val eeContL = freshLabelMsil(fctx)
+      val eeAfterL = freshLabelMsil(fctx)
+
+      insns.add(MLabel(id = eeLoopL))
+      // IEnumerator.MoveNext() → bool; false → exit loop
+      emitLoadSlot(insns, eeEnumSlot, fctx.paramCount)
+      insns.add(MCallvirt(methodToken = cctx.tokIEnumeratorMoveNext))
+      insns.add(MBrFalse(label = eeAfterL))
+
+      // IEnumerator.get_Current() → object; cast to elemTy if concrete
+      emitLoadSlot(insns, eeEnumSlot, fctx.paramCount)
+      insns.add(MCallvirt(methodToken = cctx.tokIEnumeratorGetCurrent))
+      castObjectToMsil(cctx, insns, eeElemTy)
+      val eeElemSlot = allocSlotMsil(fctx, "__ee_elem_" + toString(fctx.slotTicker.count), eeElemTy)
+      emitStoreSlot(insns, eeElemSlot, fctx.paramCount)
+      bindForPatternMsil(cctx, fctx, insns, pat, eeElemSlot, eeElemTy)
+
+      fctx.loopBreak.add(eeAfterL)
+      fctx.loopCont.add(eeContL)
+      fctx.loopTryDepth.add(fctx.tryRegionStack.count)
+      lowerBlockMsil(cctx, fctx, insns, body)
+      fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
+      fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
+      fctx.loopCont.removeAt(fctx.loopCont.count - 1)
+
+      insns.add(MLabel(id = eeContL))
+      insns.add(MBr(label = eeLoopL))
+      insns.add(MLabel(id = eeAfterL))
+    }
     case _ -> {
       // ── List<object> / Array index-loop protocol (existing path) ─────────────
       // Narrow only reference (`MClass`) elements — user records / unions, the
@@ -10466,6 +10643,8 @@ func listOpStackDelta(op: in ListOp): Int {
 func dictOpStackDelta(op: in DictOp): Int {
   match op {
     case DoCastclass -> 0
+    case DoGetKeys -> 0
+    case DoGetValues -> 0
     case _ -> 1
   }
 }
@@ -10887,6 +11066,7 @@ func msilTypeKeyStr(t: in MsilType): String {
     case MConcreteList(elem) -> "clist_" + msilTypeKeyStr(elem)
     case MConcreteMap(k, v) -> "cmap_" + msilTypeKeyStr(k) + "_" + msilTypeKeyStr(v)
     case MIAsyncEnumerable(e) -> "iasyncen_" + msilTypeKeyStr(e)
+    case MExternEnumerable(e) -> "exten_" + msilTypeKeyStr(e)
     case MGenericInst(_, fqn, args) -> {
       var k = "gi_" + fqn
       var ai = 0
@@ -14647,6 +14827,22 @@ func typeExprToMsilGenBody(
         }
       } else if headSeg == "Map" {
         MMapOf(keyTy = MObject, valTy = MObject)
+      } else if headSeg == "DictKeyCollection" and args.count == 2 {
+        // Extern key-collection view — implements IEnumerable<K>, not IList.
+        // Use IEnumerator protocol in emitCollectionForMsil (#3511).
+        val keyTy = match args[0] {
+          case TAType(kte) -> typeExprToMsilGenBody(cctx, kte, pkgName, generics)
+          case TAValue(_) -> MObject
+        }
+        MExternEnumerable(elemTy = keyTy)
+      } else if headSeg == "DictValueCollection" and args.count == 2 {
+        // Extern value-collection view — implements IEnumerable<V>, not IList.
+        // Use IEnumerator protocol in emitCollectionForMsil (#3511).
+        val valTy = match args[1] {
+          case TAType(vte) -> typeExprToMsilGenBody(cctx, vte, pkgName, generics)
+          case TAValue(_) -> MObject
+        }
+        MExternEnumerable(elemTy = valTy)
       } else {
         val headFqn = resolveTypeFqn(cctx, pkgName, headSeg)
         match mapGet(cctx.genericTypeArity, headFqn) {
@@ -20181,6 +20377,9 @@ func buildGenericCaseCtorTok(
       case Some(parentRow) -> outParentTy.add(MGenericInst(typeRefCode = tdrTypeRef(parentRow), headFqn = parentFqn, typeArgs = typeArgs))
       case None -> outParentTy.add(MClass(className = parentFqn))
     }
+  } else {
+    // Plain generic record (no union parent): the result type IS the record itself.
+    outParentTy.add(MGenericInst(typeRefCode = tdrTypeRef(caseRefRow), headFqn = ctorKey, typeArgs = typeArgs))
   }
   1
 }
@@ -20425,6 +20624,23 @@ func registerStdlibRecordLikeType(
   typeFqn: in String,
   packageName: in String,
 ): Unit {
+  // For generic records (MapEntry[K, V], etc.), build a type-parameter index
+  // so buildGenericCaseCtorTok can emit TypeSpec-based newobj (#3512).
+  val recTypeParamVarIdx: Map[String, Int] = newMap()
+  val recGenericArity = match decl.generics {
+    case Some(gps) -> {
+      var rgi = 0
+      while rgi < gps.params.count {
+        match gps.params[rgi] {
+          case GPType(tpName, _) -> recTypeParamVarIdx.add(tpName, rgi)
+          case _ -> ()
+        }
+        rgi = rgi + 1
+      }
+      gps.params.count
+    }
+    case None -> 0
+  }
   val typeRefRow = match mapGet(cctx.ffiTypeRefs, typeRefKey) { case Some(r) -> r; case None -> 0 }
   if typeRefRow > 0 {
     var fi = 0
@@ -20434,7 +20650,22 @@ func registerStdlibRecordLikeType(
         case RMField(f) -> {
           val key = typeFqn + "/" + f.name
           if not cctx.fieldTokens.containsKey(key) {
-            val fty = typeExprToMsilCtx(cctx, f.ty, packageName)
+            val rawFty = typeExprToMsilCtx(cctx, f.ty, packageName)
+            // For generic-param fields (e.g. `key: K`), the var index tells
+            // buildGenericCaseCtorTok which type-arg slot this field resolves.
+            val ftySegForVar = match f.ty.kind {
+              case TRef(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
+              case _ -> ""
+            }
+            val ftyVarIdx = if ftySegForVar.length > 0 {
+              match mapGet(recTypeParamVarIdx, ftySegForVar) {
+                case Some(vi) -> vi
+                case None -> -1
+              }
+            } else {
+              -1
+            }
+            val fty = rawFty
             val fSig = buildFieldSigWithCtx(fty, cctx.lctx)
             val sigKey = "stdlib_field_" + key
             val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, f.name, sigKey, fSig)
@@ -20442,10 +20673,29 @@ func registerStdlibRecordLikeType(
             if not cctx.fieldMsilTypes.containsKey(key) {
               cctx.fieldMsilTypes.add(key, fty)
             }
+            if ftyVarIdx >= 0 and not cctx.fieldVarIndices.containsKey(key) {
+              cctx.fieldVarIndices.add(key, ftyVarIdx)
+            }
           }
           val byPosKey = typeFqn + "/field" + toString(fpos)
           if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
             cctx.fieldDeclaredNames.add(byPosKey, f.name)
+          }
+          // Populate positional fieldVarIndices for generic-param fields.
+          val ftySegForPos = match f.ty.kind {
+            case TRef(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
+            case _ -> ""
+          }
+          val ftyVarIdxPos = if ftySegForPos.length > 0 {
+            match mapGet(recTypeParamVarIdx, ftySegForPos) {
+              case Some(vi) -> vi
+              case None -> -1
+            }
+          } else {
+            -1
+          }
+          if ftyVarIdxPos >= 0 and not cctx.fieldVarIndices.containsKey(byPosKey) {
+            cctx.fieldVarIndices.add(byPosKey, ftyVarIdxPos)
           }
           fpos = fpos + 1
         }
@@ -20467,6 +20717,9 @@ func registerStdlibRecordLikeType(
     val ctorMrRow = ctxAddMemberRef(cctx.lctx, typeRefRow, ".ctor", ctorSigKey, ctorSig)
     if not cctx.recordCtorTokens.containsKey(typeFqn) {
       cctx.recordCtorTokens.add(typeFqn, 0x0A000000 + ctorMrRow)
+    }
+    if recGenericArity > 0 and not cctx.caseTypeParamCount.containsKey(typeFqn) {
+      cctx.caseTypeParamCount.add(typeFqn, recGenericArity)
     }
   }
 }

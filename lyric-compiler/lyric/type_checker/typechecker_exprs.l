@@ -1533,13 +1533,84 @@ func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[S
   result
 }
 
+// Returns true when `TyVar(name)` appears anywhere in `ty` (directly or nested).
+// Used to determine which constructor fields constrain a given type parameter.
+func fieldTypeUsesVar(name: in String, ty: in Type): Bool {
+  match ty {
+    case TyVar(nm) -> nm == name
+    case TyUser(_, _, targs) -> {
+      var i = 0
+      while i < targs.count {
+        if fieldTypeUsesVar(name, targs[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TySlice(e) -> fieldTypeUsesVar(name, e)
+    case TyArray(_, e) -> fieldTypeUsesVar(name, e)
+    case TyNullable(inner) -> fieldTypeUsesVar(name, inner)
+    case TyTuple(elems) -> {
+      var i = 0
+      while i < elems.count {
+        if fieldTypeUsesVar(name, elems[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TyFunction(ps, r, _) -> {
+      var i = 0
+      while i < ps.count {
+        if fieldTypeUsesVar(name, ps[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      fieldTypeUsesVar(name, r)
+    }
+    case _ -> false
+  }
+}
+
+// Returns true when at least one constructor field that constrains `name` has a
+// corresponding arg of type TyError (the lenient wildcard produced by
+// `eraseTyVars` in `bindPatternTyped` for pattern-bound variables).  When true,
+// the inference failure for `name` is due to type-variable erasure, not a real
+// mismatch — T0110 should be suppressed for this parameter.
+func anyFieldArgIsLenientForParam(
+  name: in String,
+  fieldTypes: in List[Type],
+  orderedArgTypes: in List[Type],
+): Bool {
+  var i = 0
+  while i < fieldTypes.count and i < orderedArgTypes.count {
+    if fieldTypeUsesVar(name, fieldTypes[i]) {
+      match orderedArgTypes[i] {
+        case TyError -> return true
+        case _ -> {
+        }
+      }
+    }
+    i = i + 1
+  }
+  false
+}
+
 // Re-resolve constructor field types into `diag` so genuine field-type errors
 // (e.g. references to unknown types) surface even when T0110 fires early.
-// Uses a plain generic context (no type-var names pushed), so generic-position
-// fields silently produce TyError rather than spurious diagnostics.  Called
-// only on the T0110 early-return path (#3155).
+// Pushes the constructor's own generic parameter names so generic-position
+// fields correctly resolve to TyVar (silent) rather than producing spurious
+// T0010 "unknown type name" diagnostics.  Called only on the T0110
+// early-return path (#3155).
 func surfaceCtorFieldTypeErrors(tbl: in SymbolTable, sym: in Symbol, diag: in List[Diagnostic]): Unit {
   val ctx = newGenericContext()
+  val gnames = ctorGenericNames(sym)
+  if gnames.count > 0 {
+    gctxPush(ctx, gnames)
+  }
   val fields = ctorAllFields(sym)
   var i = 0
   while i < fields.count {
@@ -1879,7 +1950,14 @@ func inferConstruction(
     while gi < gnames.count {
       val isErr = match targs[gi] { case TyError -> true; case _ -> false }
       if isErr {
-        unresolved.add(gnames[gi])
+        // Suppress T0110 for this param when the inference failure is due to
+        // an erased type variable (TyError from eraseTyVars in bindPatternTyped).
+        // A TyError arg at a field position that constrains the param is a lenient
+        // wildcard, not a genuine mismatch — consistent with typeEquiv treating
+        // TyError as a wildcard everywhere else in the type checker.
+        if not anyFieldArgIsLenientForParam(gnames[gi], fieldTypes, orderedArgTypes) {
+          unresolved.add(gnames[gi])
+        }
       }
       gi = gi + 1
     }

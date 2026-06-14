@@ -52,3 +52,25 @@ extern type Set[T] = "System.Collections.Generic.HashSet`1"
 
 @externTarget("System.Collections.Generic.HashSet`1..ctor")
 pub func newSet[T](): Set[T] = ()
+
+// =====================================================================
+// Dict key/value collection views — BCL nested types on Dictionary`2.
+//
+// `DictKeyCollection[K, V]` and `DictValueCollection[K, V]` expose the
+// key and value collections of a `Map[K, V]` without copying.  Both
+// types implement IEnumerable<K> / IEnumerable<V> (not IList), so
+// iteration is handled by the self-hosted emitter's IEnumerator path.
+//
+// CLR nested-type FQN uses `+` as the enclosing-type separator.
+// =====================================================================
+extern type DictKeyCollection[K, V] = "System.Collections.Generic.Dictionary`2+KeyCollection"
+
+extern type DictValueCollection[K, V] = "System.Collections.Generic.Dictionary`2+ValueCollection"
+
+@externTarget("System.Collections.Generic.Dictionary`2.get_Keys")
+@externInstance
+pub func dictGetKeys[K, V](m: in Map[K, V]): DictKeyCollection[K, V] = ()
+
+@externTarget("System.Collections.Generic.Dictionary`2.get_Values")
+@externInstance
+pub func dictGetValues[K, V](m: in Map[K, V]): DictValueCollection[K, V] = ()

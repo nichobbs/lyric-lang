@@ -194,7 +194,21 @@ pub func checkStatement(
 
     case SFor(_, pat, iter, body) -> {
       val iterType = inferExpr(sc, tbl, sigs, diag, iter)
-      val elemType = match iterType { case TySlice(e) -> e; case TyArray(_, e) -> e; case _ -> TyError }
+      val elemType = match iterType {
+        case TySlice(e) -> e
+        case TyArray(_, e) -> e
+        case TyUser(_, iterName, iterArgs) -> {
+          // DictKeyCollection[K,V] iterates over K; DictValueCollection[K,V] over V.
+          if iterName == "DictKeyCollection" and iterArgs.count == 2 {
+            iterArgs[0]
+          } else if iterName == "DictValueCollection" and iterArgs.count == 2 {
+            iterArgs[1]
+          } else {
+            TyError
+          }
+        }
+        case _ -> TyError
+      }
       // #3187: a `for` binding must be irrefutable — codegen has no failure
       // path for a non-matching element, so a refutable pattern accepted here
       // would reach the backends' defensive (no-IL) branch and produce a
