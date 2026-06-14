@@ -4030,27 +4030,49 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
     }
     bi = bi + 1
   }
-  // Signal exhaustion by putting the sentinel onto the channel.
+  // Normal-path sentinel put: body completed without throwing.
+  emitLabel(bodyAsm, "run_body_end")
   emitAload(bodyAsm, 0)
   emitGetfield(bodyAsm, channelIdx)
   emitGetstatic(bodyAsm, sentinelIdx)
+  emitLabel(bodyAsm, "run_sentinel1_start")
   emitInvokevirtual(bodyAsm, sqPutIdx)
-  emitLabel(bodyAsm, "run_try_end")
+  emitLabel(bodyAsm, "run_sentinel1_end")
   emitReturn(bodyAsm)
-  // InterruptedException handler: consumer abandoned iteration; exit silently.
+  // Catch-all handler: body (or a yield put) threw a non-IE exception.
+  // Save the exception, put the sentinel so the consumer unblocks, then
+  // rethrow.  The virtual thread's exception is discarded by the JVM (virtual
+  // threads do not propagate uncaught exceptions to their starter), but
+  // unblocking the consumer ensures hasNext() returns false rather than
+  // deadlocking indefinitely in take().
+  emitLabel(bodyAsm, "run_catch_all")
+  emitAstore(bodyAsm, yieldTempSlot)
+  emitAload(bodyAsm, 0)
+  emitGetfield(bodyAsm, channelIdx)
+  emitGetstatic(bodyAsm, sentinelIdx)
+  emitLabel(bodyAsm, "run_sentinel2_start")
+  emitInvokevirtual(bodyAsm, sqPutIdx)
+  emitLabel(bodyAsm, "run_sentinel2_end")
+  emitAload(bodyAsm, yieldTempSlot)
+  emitAthrow(bodyAsm)
+  // InterruptedException from either sentinel put: consumer abandoned iteration;
+  // swallow and exit.  The thread's interrupted status is cleared by catching
+  // IE, so a subsequent put (sentinel2 path) would not re-throw unless the
+  // thread is interrupted again externally, which is outside Lyric's control.
   emitLabel(bodyAsm, "run_ie_handler")
   emitPop(bodyAsm)
   emitReturn(bodyAsm)
   val ieClassIdx = poolClass(pool, "java/lang/InterruptedException")
-  val bodyCode = assembleCodeWith1Handler(
-    bodyAsm,
-    bodyAsm.peakStack,
-    bodyMaxLocals,
-    "run_try_start",
-    "run_try_end",
-    "run_ie_handler",
-    ieClassIdx
-  )
+  // Handler 1: catch-all for the body (including yield puts) so the sentinel is
+  //            always put before the producer exits.
+  addExceptionHandler(bodyAsm, "run_try_start", "run_body_end", "run_catch_all", 0)
+  // Handler 2: InterruptedException from the normal-path sentinel put (consumer gone).
+  addExceptionHandler(bodyAsm, "run_sentinel1_start", "run_sentinel1_end", "run_ie_handler", ieClassIdx)
+  // Handler 3: InterruptedException from the exception-path sentinel put (consumer gone
+  //            while the producer was also handling another exception).
+  addExceptionHandler(bodyAsm, "run_sentinel2_start", "run_sentinel2_end", "run_ie_handler", ieClassIdx)
+  val runMaxStack = if bodyAsm.peakStack >= 3 then bodyAsm.peakStack else 3
+  val bodyCode = assembleCode(bodyAsm, runMaxStack, bodyMaxLocals)
   val bodyAttrs: List[Attribute] = newList()
   bodyAttrs.add(bodyCode)
   val bodyPs: List[JvmType] = newList()
@@ -4355,6 +4377,11 @@ func lowerScopeBlockShutdownOnFailure(
 // The default open() scope makes join() throw FailedException (a RuntimeException
 // subtype) if any subtask failed, so explicit per-subtask state checks are not
 // needed — failure propagates automatically.
+// `firstTaskSlot` is accepted for signature parity with
+// `lowerScopeBlockShutdownOnFailure` (which stores per-subtask results in
+// successive slots).  On the JDK 24 path, fork() results are discarded via
+// emitPop (FailedException from join() propagates failure automatically), so
+// the parameter is unused here.
 func lowerScopeBlockJdk24(
   asm: in MethodAssembler,
   callableNames: in List[String],
