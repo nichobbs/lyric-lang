@@ -53,9 +53,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
 
-      - name: Restore and build bootstrap
+      - name: Restore bootstrap
         working-directory: bootstrap
-        run: dotnet restore Bootstrap.sln && dotnet build Bootstrap.sln --configuration Debug --no-restore
+        run: dotnet restore Bootstrap.sln
 
       - name: Cache stage-0 F# publish
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
@@ -86,22 +86,26 @@ jobs:
       - name: Convert stdlib markdown to HTML
         run: |
           mkdir -p _site/stdlib
+          # Normalize path to HTML filename: convert / and . to -
+          # Example: stdlib-docs/std/core.md → std-core.html
+          normalize_filename() {
+            local name=$(basename "$1" .md)
+            local dir=$(dirname "$1" | sed 's|^stdlib-docs||; s|^/||; s|/|-|g')
+            if [ -n "$dir" ]; then
+              echo "${dir}-${name}.html"
+            else
+              echo "${name}.html"
+            fi
+          }
+
           # Generate stdlib index dynamically from actual lyric doc output
           {
             echo "# Lyric Standard Library API Reference"
             echo ""
             echo "Auto-generated from Lyric stdlib sources using \`lyric doc\`."
             echo ""
-            find stdlib-docs -name '*.md' | sort | while read md; do
-              # Convert path to HTML filename: stdlib-docs/std/core.md → std-core.html
-              name=$(basename "$md" .md)
-              dir=$(dirname "$md" | sed 's|^stdlib-docs||; s|^/||; s|/|-|g')
-              if [ -n "$dir" ]; then
-                htmlfile="${dir}-${name}.html"
-              else
-                htmlfile="${name}.html"
-              fi
-              # Extract module name from path for display
+            find stdlib-docs -name '*.md' -print0 2>/dev/null | while IFS= read -r -d '' md; do
+              htmlfile=$(normalize_filename "$md")
               modname=$(dirname "$md" | sed 's|stdlib-docs/||')
               if [ -n "$modname" ] && [ "$modname" != "." ]; then
                 modname="${modname}/$(basename "$md" .md)"
@@ -124,15 +128,8 @@ jobs:
             -o _site/stdlib/index.html
 
           # Convert individual stdlib module docs to HTML
-          find stdlib-docs -name '*.md' | while read md; do
-            # Convert path to HTML filename: stdlib-docs/std/core.md → std-core.html
-            name=$(basename "$md" .md)
-            dir=$(dirname "$md" | sed 's|^stdlib-docs||; s|^/||; s|/|-|g')
-            if [ -n "$dir" ]; then
-              htmlfile="${dir}-${name}.html"
-            else
-              htmlfile="${name}.html"
-            fi
+          find stdlib-docs -name '*.md' -print0 2>/dev/null | while IFS= read -r -d '' md; do
+            htmlfile=$(normalize_filename "$md")
             pandoc "$md" \
               --standalone \
               --embed-resources \
