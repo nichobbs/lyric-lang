@@ -56,5 +56,14 @@ test "mapIsEmpty returns true for empty map" {
 test "mapIsEmpty returns false for non-empty map" {
   val m: Map[String, Int] = newMap()
   m["key"] = 42
-  assertTrue(not mapIsEmpty(m), "map with entries is not empty")
+  assertFalse(mapIsEmpty(m), "map with entries is not empty")
+}
+
+test "mapIsEmpty returns true after removing all entries" {
+  val m: Map[String, Int] = newMap()
+  m["a"] = 1
+  m["b"] = 2
+  val _ = m.remove("a")
+  val _ = m.remove("b")
+  assertTrue(mapIsEmpty(m), "map is empty after removing all entries")
 }

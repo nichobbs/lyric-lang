@@ -425,7 +425,7 @@ Every `pub` item in `lyric-stdlib/std/` carries either `@stable(since="1.0")` or
 | `Std.Errors` (`errors.l`) | `@stable` | Core error types used everywhere; stable from day one. |
 | `Std.Parse` (`parse.l`) | `@stable` | Primitive parsing is foundational; well-exercised. |
 | `Std.Core` (`core.l`) | no `pub` items | Option/Result are compiler-intrinsic; accessed by all importers without `pub`. |
-| `Std.Collections` (`collections.l`) | `@stable` | `mapGet` is the only pub item; maps are fundamental. |
+| `Std.Collections` (`collections.l`) | mixed | `mapGet` is `@stable` (maps fundamental); `mapSize`, `mapIsEmpty` are `@experimental` (pending JVM parity validation #3577). Iteration functions (`mapKeys`, `mapValues`, `mapEntries`, `mapForEach`, `mapPutAll`) deferred to follow-up PR pending codegen epics #3511/#3512. |
 | `Std.String` (`string.l`) | `@stable` | All string helpers; well-tested, stable API. |
 | `Std.Console` (`console.l`) | `@stable` | `print`, `println`, `error`, `readLine` — basic I/O. |
 | `Std.File` (`file.l`) | `@stable` | `readText`, `writeText`, `fileExists`, `dirExists`, `createDir`. |
