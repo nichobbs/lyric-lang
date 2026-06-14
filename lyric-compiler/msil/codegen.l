@@ -3314,12 +3314,8 @@ func emitByrefArgMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIns
         case None -> panic("Msil.Codegen: out/inout argument '" + name + "' is not a local or parameter (mode checker should have rejected this)")
       }
     }
-    // Field-access l-value (`obj.field`): a perfectly valid assignable target
-    // (the same `obj.field = x` works), so an `inout`/`out` argument may name
-    // one — e.g. lyric-testing's `Testing.advance(ctx.clock, …)`.  Lower the
-    // receiver to push the instance, resolve the field token the same way the
-    // field-assignment path does, then `ldflda` the field's managed pointer so
-    // the callee writes through to `obj.field` (#3547).
+    // A field access is a valid assignable l-value (same rule as
+    // `obj.field = x`), so it is legal in `inout`/`out` argument position.
     case EMember(recv, memberName) -> {
       val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
       match recvTy {
@@ -3327,14 +3323,10 @@ func emitByrefArgMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIns
           val key = cls + "/" + memberName
           match mapGet(cctx.fieldTokens, key) {
             case Some(tok) -> insns.add(MLdflda(fieldToken = tok))
-            case None -> panic(
-              "Msil.Codegen: out/inout argument: unknown field '" + memberName + "' on type '" + cls + "'"
-            )
+            case None -> panic("Msil.Codegen: out/inout argument: unknown field '" + memberName + "' on type '" + cls + "'")
           }
         }
-        case _ -> panic(
-          "Msil.Codegen: out/inout argument: receiver of field '" + memberName + "' is not a class type"
-        )
+        case _ -> panic("Msil.Codegen: out/inout argument: receiver of field '" + memberName + "' is not a class type")
       }
     }
     case _ -> panic("Msil.Codegen: out/inout argument must be an assignable variable (a local, parameter, or field access)")
