@@ -2821,7 +2821,9 @@ func collectUnresolvedFromDiags(items: in List[Item]): List[Diagnostic] {
                 val msg = "aspect '" + aDecl.name + "' declares `from " + pathStr0 + "` but the template was not found in the build; " +
                   "ensure the package that defines '" +
                   pathStr0 +
-                  "' is listed in [dependencies] in lyric.toml"
+                  "' is listed as a path dependency (`path = \"...\"`) in [dependencies] in lyric.toml " +
+                  "(cross-package template resolution currently requires a path dep and a .NET project build; " +
+                  "NuGet/Maven deps and JVM project builds are not yet supported — see #3498)"
                 diags.add(errorDiagnostic("A0045", msg, items[i].span))
               }
               case Some(_) -> ()

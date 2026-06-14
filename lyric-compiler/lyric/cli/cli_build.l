@@ -790,7 +790,9 @@ func buildProject(
                             srcList.add(srcText)
                             depTemplatePkgsList.add(ProjectPackage(name = pkgEntry.name, sources = srcList))
                           }
-                          case Err(_) -> ()
+                          case Err(e) -> {
+                            printErr("build: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
+                          }
                         }
                         pki += 1
                       }
