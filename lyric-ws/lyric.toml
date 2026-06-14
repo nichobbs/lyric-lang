@@ -17,7 +17,8 @@ output_assembly = "Ws.dll"
 "Ws.Kernel.Jvm" = "src/_kernel/jvm/ws_kernel.l"
 
 [project.tests]
-"Ws.WsTests" = "tests/ws_tests.l"
+"Ws.WsTests"                       = "tests/ws_tests.l"
+"Ws.WsSecurityAspectWeavingTests"  = "tests/ws_security_aspect_weaving_tests.l"
 
 [features]
 default = ["dotnet"]
