@@ -1013,6 +1013,11 @@ func resolveLbl(labels: in Map[String, Int], name: in String): Int {
 }
 
 /// Assemble with one exception-table entry (label names resolved to PCs).
+///
+/// INCOMPATIBLE with `addExceptionHandler`: these fixed-arity helpers build
+/// the exception table from their own parameters and ignore `asm.exnHandlers`.
+/// Use `assembleCode` or `assembleCodeWithFrames` when handlers were registered
+/// via `addExceptionHandler`.
 pub func assembleCodeWith1Handler(
   asm: in MethodAssembler,
   maxStack: in Int,
@@ -1032,6 +1037,8 @@ pub func assembleCodeWith1Handler(
 }
 
 /// Assemble with two exception-table entries (label names resolved to PCs).
+///
+/// INCOMPATIBLE with `addExceptionHandler`: see `assembleCodeWith1Handler`.
 pub func assembleCodeWith2Handlers(
   asm: in MethodAssembler,
   maxStack: in Int,

@@ -4388,8 +4388,9 @@ func lowerScopeBlockShutdownOnFailure(
 // `firstTaskSlot` is accepted for signature parity with
 // `lowerScopeBlockShutdownOnFailure` (which stores per-subtask results in
 // successive slots).  On the JDK 24 path, fork() results are discarded via
-// emitPop (FailedException from join() propagates failure automatically), so
-// the parameter is unused here.
+// emitPop (FailedException from join() propagates failure automatically); the
+// slot IS used by the catch handler to temporarily save the Throwable across
+// the close() call so it can be rethrown.
 func lowerScopeBlockJdk24(
   asm: in MethodAssembler,
   callableNames: in List[String],
