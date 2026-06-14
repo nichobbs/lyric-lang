@@ -534,13 +534,13 @@ func lowerPatternTest(
               insns.add(LFcmpl)
               insns.add(LIfne(label = failLabel))
             }
-            case JRef(_) -> {
+            case JRef(refClassName) -> {
               emitLoad(insns, scrutSlot, scrutTy)
-              insns.add(LCheckcast(className = "java/lang/String"))
+              insns.add(LCheckcast(className = refClassName))
               insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
               val eqPs: List[JvmType] = newList()
               eqPs.add(JRef(className = "java/lang/Object"))
-              insns.add(LInvokevirtual(owner = "java/lang/String", name = "equals", params = eqPs, ret = JBoolean))
+              insns.add(LInvokevirtual(owner = refClassName, name = "equals", params = eqPs, ret = JBoolean))
               insns.add(LIfeq(label = failLabel))
             }
             case JBoolean -> {

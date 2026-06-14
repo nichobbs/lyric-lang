@@ -9,9 +9,9 @@
 //! patterns inside or-patterns; and the matching fall-through to the wildcard arm.
 //!
 //! ERROR CASES (T0068, T0069, T0071, T0072): Type-checker validation errors are
-//! compile-time diagnostics and cannot be tested in a runtime @test_module. Error
-//! cases are validated by the type-checker test suite (typechecker_self_test.l) and
-//! PR code review which verifies checkConstRefPattern recursion and diagnostic logic.
+//! compile-time diagnostics and cannot be tested in a runtime @test_module. Code review
+//! of checkConstRefPattern validates the diagnostic logic; future work could add a
+//! dedicated const_pattern_errors_self_test.l that uses compile-error annotations.
 @test_module
 package Lyric.ConstPatternSelfTest
 
