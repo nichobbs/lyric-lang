@@ -91,18 +91,15 @@ bar:
    type used to emit a runtime-throw stub; that is now resolved — #1504
    part 1 — encoding real `TypeRef`-backed MemberRefs.)_
 
-5. **One F# DLL is still load-bearing at runtime and AOT is unconfigured
-   (HIGH).** _(`Msil.Kernel.ByteWriter` was a `Lyric.Jvm.Hosts.dll`
-   boundary on every emitted byte; #1492 replaced it with a pure-Lyric
-   `List[Byte]` buffer — `System.BitConverter` is the only host extern — with
-   byte-identical output, so `--target dotnet` no longer routes bytes through
-   that F# DLL.  Only `Lyric.Emitter.dll` remains load-bearing today; #1600.)_
-   Core stdlib kernels
-   (`http`/`process` still — `console`/`env`/`log` migrated to direct BCL
-   externs in #1493) extern into `Lyric.Emitter.dll` —
-   the same assembly that carries the Reflection.Emit F# emitter. No
-   `<PublishAot>` is set anywhere, so the "AOT-compilable" goal is currently
-   aspirational.
+5. ~~**One F# DLL is still load-bearing at runtime and AOT is unconfigured
+   (HIGH).** Core stdlib kernels (`http`/`process` still — `console`/`env`/`log`
+   migrated to direct BCL externs in #1493) extern into `Lyric.Emitter.dll`.
+   No `<PublishAot>` is set anywhere, so the "AOT-compilable" goal is currently
+   aspirational.~~ _(**Band 5 COMPLETE as of 2026-06-12, §10.**  All F# host shims
+   deleted: `http_host.l` and `process_capture_host.l` now bind direct BCL externs
+   (#1576 codegen fix + #1489/#3016); `Lyric.Emitter.dll` + `FSharp.Core.dll`
+   removed from the stage-1 runtime bundle (#3034/#3062); AOT publishing wired and
+   CI smoke test running (#3197/#3201/#3206).)_
 
 **Bottom line.** The pipeline is now the right shape and a large slice of the
 language works end-to-end on self-hosted .NET. But a non-trivial program can
@@ -191,8 +188,8 @@ supporting all language features."
 | H9 | ~~Auto-FFI scoring only handles static void-returning methods; instance/non-void silently mis-bind.~~ **Resolved (#1504 H9):** auto-FFI cannot resolve a method's real signature without .NET metadata (the self-hosted emitter has no reflection over reference assemblies; D-progress-268), so any shape beyond *static / void / parameterless* was an `(object…):void` guess that mis-bound at runtime (`MissingMethodException`). `emitAutoFfiCallMsil` now **fails the build with a clear diagnostic** for any argument-bearing auto-FFI call, directing the user to an `@externTarget` wrapper (which supplies the real signature and supports instance / non-void / typed-param / class returns after part 1). The parameterless static-void shape (`GC.Collect()`) still works.  **Open sub-case:** parameterless static methods with a *non-void* return type (e.g. `Guid.NewGuid()`) are still emitted with the hardcoded `():void` signature and throw `MissingMethodException` at runtime; tracked under epic #1622.  **Superseded by epic #1622** (real metadata-based resolution — design in `docs/42-extern-metadata-resolution.md`), which would remove the guess entirely. | `codegen.l` `emitAutoFfiCallMsil` | ✅ (stopgap; #1622 supersedes) |
 | H10 | Custom `@generate(Pkg.Name)` source generators exist (`generator/generator.l`) but are **never called from `bridge.l`** — inert on self-hosted .NET. | `generator/generator.l:1-16`; no ref in `bridge.l` | M |
 | H11 | `old()`/`forall`/`exists` in `@runtime_checked` contracts **panic** in codegen (elaborator passes them through). | `codegen.l:1851-1858`; `elaborator.l:361-362` | M |
-| H12 | Two F# DLLs were load-bearing at runtime. **ByteWriter resolved for MSIL (#1492):** `Msil.Kernel.ByteWriter` is now a pure-Lyric `List[Byte]` buffer (`System.BitConverter` the only host extern); a sample exercising Int/Long/Double/String compiles **byte-identical** to the old host (verified via `cmp`), and the MSIL path has zero `Jvm.Hosts` references (JVM target retains `Lyric.Jvm.Hosts`, out of scope per #1470). **Kernels partially resolved (#1493):** `console` (stderr → `Console.Error`/`TextWriter`), `env` (`verifier_env` → `Environment.GetEnvironmentVariable`), and `log` (→ console stderr) migrated to audited BCL externs, and the dead `ConsoleHelper`/`LogHelper`/`VerifierEnv` F# types were deleted. Remaining (verified 2026-06-03): `http` `defaultClient` singleton (`http_host.l` → `Lyric.Emitter.HttpClientHost.defaultClient`, blocked on a package-level class-`val` `.cctor` codegen gap — a class-typed package-level `val` compiles but its static field stays null at runtime) and `process_capture` (`process_capture_host.l` → `Lyric.Emitter.ProcessCapture.*`, deadlock-safe concurrent stdout/stderr reads need async, Band 3 #1489). **Newly surfaced 2026-06-03 (not in the 05-29 audit):** (a) ~~`lyric-stdlib/std/_kernel/testing_mocking.l` externs into `Lyric.Stdlib.StubCounterHost.*`~~ — **resolved (#1776, see L5)**; (b) `Lyric.Session.Host.dll` (ecosystem `lyric-session`) is an F# host on its consumers' runtime closure (see L6). Net remaining F#-host externs on the .NET path: **~11 live**. | `msil/_kernel/kernel.l`; `lyric-stdlib/std/_kernel/{http,process_capture}_host.l`; `scripts/bootstrap.sh` | M |
-| H13 | No `<PublishAot>` configured; "AOT-compilable" unrealized and untested. | `bootstrap/src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj` | M (gated on H12) |
+| H12 | Two F# DLLs were load-bearing at runtime. **ByteWriter resolved for MSIL (#1492):** `Msil.Kernel.ByteWriter` is now a pure-Lyric `List[Byte]` buffer (`System.BitConverter` the only host extern); a sample exercising Int/Long/Double/String compiles **byte-identical** to the old host (verified via `cmp`), and the MSIL path has zero `Jvm.Hosts` references (JVM target retains `Lyric.Jvm.Hosts`, out of scope per #1470). **Kernels partially resolved (#1493):** `console` (stderr → `Console.Error`/`TextWriter`), `env` (`verifier_env` → `Environment.GetEnvironmentVariable`), and `log` (→ console stderr) migrated to audited BCL externs, and the dead `ConsoleHelper`/`LogHelper`/`VerifierEnv` F# types were deleted. ~~Remaining (verified 2026-06-03): `http` `defaultClient` singleton (`http_host.l` → `Lyric.Emitter.HttpClientHost.defaultClient`, blocked on a package-level class-`val` `.cctor` codegen gap) and `process_capture` (`process_capture_host.l` → `Lyric.Emitter.ProcessCapture.*`, needs async, Band 3 #1489). Net remaining F#-host externs on the .NET path: **~11 live**.~~ **Fully resolved (#1493, 2026-06-12):** `http_host.l` `defaultClient` singleton uses `pub val defaultClient: HttpClient = newClient()` once the class-typed package-level `val` `.cctor` codegen gap was fixed (#1576/#3012); `process_capture_host.l` rewritten with direct BCL externs + concurrent async pipe drains (#1489/#3016); `Lyric.Session.Host.dll` deleted (#1777/#3016); all ecosystem shims deleted (#3053). `Lyric.Emitter.dll` + `FSharp.Core.dll` removed from stage-1 runtime bundle (#3034/#3062). Net F#-host externs: **0**. | `lyric-stdlib/std/_kernel/{http,process_capture}_host.l` | ✅ |
+| H13 | ~~No `<PublishAot>` configured; "AOT-compilable" unrealized and untested.~~ **RESOLVED (#3197/#3201/#3206):** AOT publishing wired; CI smoke test builds a hello-world Lyric program through `lyric build --release` + `dotnet publish -p:PublishAot=true` and runs the native ELF binary. Stage-1 DLL determinism CI-enforced (103/103 byte-identical, #3217). | `bootstrap/src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj`; `.github/workflows/ci.yml` | ✅ |
 | H14 | ~~Visibility (`pub`/`internal`/`private`) stored but never enforced at use sites.~~ **RESOLVED (#1484).** `checkImportedVisibility` (`typechecker_resolver.l`) rejects a cross-package reference to a package-private (unmarked) symbol with **T0097** (`pub`/`internal` allowed cross-package within a project per ref §3.1); wired into `resolveTypePath` + `resolveExprPath`. (V0007/V0008 from the issue collide with the verifier, so the type-checker code T0097 is used.) | `typechecker_resolver.l` | M |
 | H15 | ~~`where T: Marker` bound satisfaction never checked at call sites; qualified constraint paths rejected (T0051).~~ **RESOLVED (PR #2939).** Bound satisfaction checked at generic call sites. | `typechecker_exprs.l:603-723`; `typechecker_checker.l:372-373` | ✅ |
 | H16 | ~~`alias X = Long` unresolvable as a type — alias has no `TypeId`, so `val v: X` → T0013 "not a type".~~ **RESOLVED (PR #2939).** Alias types now resolve as usable types. | `typechecker_symbols.l:85-98` | ✅ |
@@ -222,7 +219,7 @@ supporting all language features."
 | L3 | `weaver_self_test.l`/`weaver_ci_test.l` not wired into CI (#1324). | CLAUDE.md / #1324 | LOW |
 | L4 | `Float` literals always lower to `MDouble` (32-bit `Float` not distinct); `BXor`/`Long` truncates to `MInt`. | `codegen.l:1459-1462,2142-2147` | LOW |
 | L5 | ~~**NEW (2026-06-03).** `testing_mocking.l` declares `extern` against `Lyric.Stdlib.StubCounterHost.{newCounter,record,count,wasCalledWith}` but no such F# type exists under `bootstrap/src/` (the `Lyric.Stdlib` F# project was deleted, D-progress-140). `@stubbable` call-count assertions therefore fail to resolve on the self-hosted .NET path.~~ **RESOLVED (#1776):** stale `_kernel/testing_mocking.l` + `_kernel_jvm/testing_mocking.l` deleted (D-progress-467); the pure-Lyric `StubCounter protected type` in `std/testing_mocking.l` is the sole implementation. `stubbable.l` now synthesises `_counter: StubCounter = makeStubCounter()` fields for every supported method and injects `import Std.Testing.Mocking` automatically; the synthesised impl increments the counter on entry. Covered by `stubbable_self_test.l` on the self-hosted path. | `lyric-compiler/lyric/stubbable.l` | ✅ |
-| L6 | **NEW (2026-06-03).** `lyric-session` ships an F# host (`Lyric.Session.Host.dll`) that lands on consumers' runtime closure — a second load-bearing F# assembly beyond `Lyric.Emitter.dll`. Migrate its boundary to audited BCL externs (`StackExchange.Redis` via `extern package`) per the no-F# rule. | `lyric-session/` host shim | MED |
+| L6 | ~~**NEW (2026-06-03).** `lyric-session` ships an F# host (`Lyric.Session.Host.dll`) that lands on consumers' runtime closure — a second load-bearing F# assembly beyond `Lyric.Emitter.dll`.~~ **RESOLVED (#1777/#3016):** `bootstrap/src/Lyric.Session.Host/` deleted; session kernel fully migrated to audited BCL externs (StackExchange.Redis 2.x direct externs) in `lyric-session/src/_kernel/net/session_kernel.l`. | `lyric-session/src/_kernel/net/session_kernel.l` | ✅ |
 
 ---
 
@@ -330,15 +327,14 @@ make on user generic types is monomorphize-the-type (extend `mono.l`, consistent
 with the function strategy) vs. reify-as-CLI-generics (GenericParam +
 GenericParamConstraint + MethodSpec + `constrained.`) — see §6 band 4.
 
-### 5.5  AOT & F# residue (HIGH band)
+### 5.5  AOT & F# residue (HIGH band) — **COMPLETE (2026-06-12)**
 
-Two F# DLLs sit on every .NET program's runtime closure (H12). They don't break
-codegen under AOT (resolution is table-driven, not reflection-driven), but they
-keep F# — including the Reflection.Emit emitter assembly — in the loop, blocking
-both "no F# in the .NET path" and a clean NativeAOT publish (H13). The fix is a
-pure-Lyric byte accumulator for the ByteWriter boundary and audited direct-BCL
-externs (`System.Console`/`Process`/`Net.Http`/`Environment`) for the kernel
-helpers, then `<PublishAot>` + a native-binary CI smoke test.
+~~Two F# DLLs sit on every .NET program's runtime closure (H12).~~ All F# host
+shims have been eliminated (H12 ✅, H13 ✅ — see §10 "Band 5: COMPLETE"). The
+pure-Lyric byte accumulator shipped (#1492); every stdlib and ecosystem kernel
+(`http`, `process_capture`, `session`, et al.) binds direct BCL externs with no F#
+intermediary; `Lyric.Emitter.dll` + `FSharp.Core.dll` are no longer on the stage-1
+runtime bundle; and AOT publishing is wired with a CI smoke test running.
 
 ---
 
@@ -431,11 +427,16 @@ tests), `async_generator_self_test.l` (8 tests).
     plan is `docs/43-in-bundle-generics-plan.md` (epic #2359, prerequisite for
     full Stage 3 byte-match #2362). Open questions there: Q-GEN-001–Q-GEN-005.
 
-### Band 5 — F# elimination + AOT (HIGH)
-- Replace the `Lyric.Jvm.Hosts` ByteWriter boundary with a pure-Lyric byte
-  accumulator; move the `Lyric.Emitter`-hosted kernel helpers to audited direct
-  BCL externs; then add `<PublishAot>` (+ globalization/trim) and a CI smoke test
-  that runs a real `lyric build` through the native binary.
+### Band 5 — F# elimination + AOT (HIGH) — **COMPLETE (2026-06-12)**
+
+All Band-5 items shipped. `Lyric.Jvm.Hosts` ByteWriter replaced by pure-Lyric
+`List[Byte]` (#1492). All stdlib + ecosystem F# host shims deleted: `http_host.l`
+and `process_capture_host.l` bind direct BCL externs (#1576/#3012, #1489/#3016);
+`Lyric.Session.Host` deleted (#1777/#3016); Jvm.Hosts/Jobs.Host/Mq.Host/Web.Host
+deleted (#3053). `Lyric.Emitter.dll` + `FSharp.Core.dll` removed from the stage-1
+runtime bundle (#3034/#3062). AOT publishing wired and CI smoke test running
+(#3197/#3201/#3206). Stage-1 determinism CI-enforced — 103/103 DLLs byte-identical
+(#3217). See §10 "Band 5: COMPLETE" for the full list.
 
 ### Band 6 — Acceptance gate
 The self-hosted .NET compiler is production-ready when: every program in
