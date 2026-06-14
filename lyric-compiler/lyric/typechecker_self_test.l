@@ -2251,4 +2251,7 @@ test "const pattern: generic container const rejected before T0071 (#3509)" {
   val cr = parseCheck(bad)
   assertTrue(hasDiagCode(cr, "T0010"), "generic-typed const: T0010 unknown type 'T' fires first")
   assertTrue(hasDiagCode(cr, "T0069"), "generic container const is also rejected as non-literal (T0069)")
+  // Pin the invariant directly: T0071 must NOT be reachable here, so a future
+  // refactor that accidentally made it reachable would fail this test (#3517).
+  assertTrue(not hasDiagCode(cr, "T0071"), "T0071 is not reached: T0010/T0069 fire first")
 }
