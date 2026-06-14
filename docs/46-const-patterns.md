@@ -62,7 +62,7 @@ A const pattern compiles to the same IL/bytecode as a literal pattern. For examp
 
 The const pattern's type must match the scrutinee:
 - Scrutinee `Int`, const `Int` → OK
-- Scrutinee `Int`, const `String` → Error T0062 (pattern type mismatch)
+- Scrutinee `Int`, const `String` → Error T0068 (pattern type mismatch)
 - Const contains a generic type parameter → Error (const patterns must be monomorphic)
 
 ### Scope & visibility
@@ -75,36 +75,34 @@ A const pattern resolves any `pub val` or private `val` reachable from the curre
 
 ### Type checker
 
-In `typechecker_exprs.l`, the pattern-lowering routine (`lowerPattern`) gains an arm for `@Ident`:
+In `typechecker_exprs.l`, the pattern-lowering routine (`lowerPatternTest`) gains an arm for `@Ident` const patterns. During type checking, `@NAME` resolves to a module-level `val`, and its compile-time constant value is validated:
 
 ```lyric
-func lowerPattern(pat: in Pattern, scrutineeTy: in Type): PatternResult {
-  match pat.form {
-    case PBinding(name) -> ...
-    case PLiteral(lit) -> ...
-    case PConstructor(...) -> ...
-    case PConstRef(name) ->
-      // Resolve `name` as a `val`.
-      let sym = resolveSymbol(name)?
-      match sym {
-        case DKVal(valDecl) ->
-          // Require the val to be compile-time constant.
-          if not valDecl.isCompileTimeConstant {
-            return Err(diag: T0063, "const pattern requires a compile-time constant")
-          }
-          // Extract the literal value.
-          let lit = valDecl.constantValue?
-          // Require type match.
-          if not typesCompatible(lit.type, scrutineeTy) {
-            return Err(diag: T0062, "const pattern type does not match scrutinee")
-          }
-          // Lower to a literal pattern.
-          return PLiteral(lit: lit)
-        case _ ->
-          return Err(diag: T0064, "name is not a const val; use a variable pattern instead")
+// In lowerPatternTest (comparison-side pattern lowering):
+case PConstRef(name) ->
+  // Resolve `name` as a `val`.
+  let sym = resolveSymbol(name)?
+  match sym {
+    case DKVal(valDecl) ->
+      // Require the val to be compile-time constant.
+      if not valDecl.isCompileTimeConstant {
+        diag.add(errorDiagnostic("T0069", "const pattern requires a compile-time constant val", pattern.span))
+        return MError
       }
+      // Extract the literal value.
+      let lit = valDecl.constantValue?
+      // Require type match with scrutinee.
+      if not typesCompatible(lit.type, scrutineeTy) {
+        diag.add(errorDiagnostic("T0068", "const pattern type " + renderType(lit.type) + 
+          " does not match scrutinee type " + renderType(scrutineeTy), pattern.span))
+        return MError
+      }
+      // Lower to a literal pattern comparison (no binding).
+      return lowerLiteral(lit)  // PLiteral arm in existing code
+    case _ ->
+      diag.add(errorDiagnostic("T0070", "name is not a val; use a variable pattern or const reference", pattern.span))
+      return MError
   }
-}
 ```
 
 ### Parser
@@ -141,15 +139,15 @@ A `val` that is initialized with a non-compile-time expression cannot be used as
 ```lyric
 val seed = timestamp()  // dynamic init
 match x {
-  case @seed -> ...    // ERROR T0063: not compile-time constant
+  case @seed -> ...    // ERROR T0069: not compile-time constant
 }
 ```
 
-Diagnostic T0063 guides the user to use a literal pattern or a variable pattern instead.
+Diagnostic T0069 guides the user to use a literal pattern or a variable pattern instead.
 
 ### 2. Generic val types
 
-A generic `val` like `val EMPTY_LIST: List[T] = ...` is not a valid const pattern (the type parameter is uninstantiated). Reject at type-check time with diagnostic T0065.
+A generic `val` like `val EMPTY_LIST: List[T] = ...` is not a valid const pattern (the type parameter is uninstantiated). Reject at type-check time with diagnostic T0071.
 
 ### 3. Reference-type const values
 
@@ -157,9 +155,18 @@ A `val greeting = "hello"` (reference-type `String` with a string literal) is a 
 
 A `val obj = SomeRecord(...)` (reference-type record) is a valid const pattern only if the record is a compile-time constant (which Lyric doesn't support for general records yet). For now, only primitive and string consts are allowed. Revisit if the language adds const records.
 
-### 4. Ambiguity with `@` in annotation position
+### 4. Ambiguity with `@` in annotation position and existing pattern use
 
-`@` is also used for annotations in declaration and expression positions. In a pattern position, `@Ident` unambiguously means a const pattern (patterns cannot be annotations). No parse conflict.
+`@` is already used in two other contexts:
+1. **Annotations**: `@derive`, `@test_module`, `@axiom` in declaration and expression positions. These never appear in patterns.
+2. **Binding patterns**: The existing `BindingPattern = IDENT [ '@' PrimaryPattern ]` form (the `x @ Foo(_)` pattern) allows binding a variable while destructuring.
+
+The new const pattern `@Ident` introduces a third `@` use, but both are unambiguous:
+- Const pattern: `@NAME` appears directly in a match arm, refers to a `val` binding, and is fully qualified by context (patterns).
+- Binding pattern: `x @ PATTERN` always has a variable name before `@`, so the parse is distinct. Const patterns never have a preceding identifier.
+- Annotations: Appear in declaration/expression contexts, never in pattern destructuring position.
+
+No parse conflict.
 
 ---
 
@@ -167,13 +174,17 @@ A `val obj = SomeRecord(...)` (reference-type record) is a valid const pattern o
 
 These are implementation checkpoints for Phase 3+ work:
 
-- [ ] The parser recognizes `@Ident` in pattern position without ambiguity.
-- [ ] The type checker resolves `@Ident` to a `val` and validates its compile-time constant status.
-- [ ] Type mismatch diagnostics (T0062), non-constant diagnostics (T0063), and reference-type limitations are clear.
-- [ ] Match arms using `@CONST` patterns compile to the same IL as literal patterns.
-- [ ] Self-test: `const_pattern_self_test.l` exercises `@` patterns on `Int`, `Long`, `String`, and `Char` consts, with a non-constant val that correctly errors.
+- [ ] `docs/grammar.ebnf` updated: `PrimaryPattern` (or `Pattern`) includes `"@" Ident` alternative as `ConstPattern`.
+- [ ] `docs/01-language-reference.md` §3.3 updated: match-pattern syntax expanded with const pattern form, semantics, and examples.
+- [ ] `book/chapters/` CLI/chapter references updated: const patterns documented and example works end-to-end.
+- [ ] `docs/10-bootstrap-progress.md` updated: const-pattern implementation milestone recorded.
+- [ ] The self-hosted parser recognizes `@Ident` in pattern position without ambiguity (no conflicts with annotations or binding patterns).
+- [ ] The type checker resolves `@Ident` to a `val`, validates compile-time constant status (T0069), type match (T0068), and val existence (T0070).
+- [ ] Generic val types rejected with diagnostic T0071.
+- [ ] Match arms using `@CONST` patterns compile to the same IL/bytecode as literal patterns (lowering to `PLiteral` at type-check, no codegen changes).
+- [ ] Self-test: `const_pattern_self_test.l` exercises `@` patterns on `Int`, `Long`, `String`, and `Char` consts, with a non-constant val that correctly errors (T0069).
 - [ ] A rewritten `proto_main.l` (or similar) uses `@WIRE_VARINT`, etc., and compiles cleanly.
-- [ ] No regressions in existing `EMatch` or pattern tests.
+- [ ] No regressions in existing `EMatch` or pattern tests on both MSIL and JVM backends.
 
 ---
 
@@ -220,8 +231,16 @@ Requires extending range-pattern lowering to accept const references for bounds.
 
 ## References
 
-- `docs/01-language-reference.md` §3.3 (pattern matching syntax; add `@Ident` form).
-- `lyric-compiler/lyric/typechecker_exprs.l::lowerPattern`.
-- `lyric-compiler/lyric/parser/parser_exprs.l::parsePattern`.
-- `lyric-compiler/msil/codegen.l::lowerPatternTestMsil`.
-- `lyric-compiler/jvm/codegen.l::lowerPatternTestJvm`.
+**Documentation to update:**
+- `docs/grammar.ebnf` — add `ConstPattern = "@" Ident` to `PrimaryPattern` alternatives (Phase 0 deliverable #4)
+- `docs/01-language-reference.md` §3.3 — pattern matching syntax; add const pattern form, semantics, and examples
+- `book/chapters/01-getting-started.md` — toolchain table may need const-pattern version notes
+- `book/chapters/appendix-b-quick-reference.md` — pattern-matching reference section
+- `docs/10-bootstrap-progress.md` — record const-pattern implementation milestone
+
+**Implementation files:**
+- `lyric-compiler/lyric/type_checker/typechecker_exprs.l::lowerPatternTest` — add `PConstRef` arm with T0068–T0071 diagnostics
+- `lyric-compiler/lyric/type_checker/typechecker_exprs.l::lowerPatternBind` — add `PConstRef` arm (returns `PError`; const patterns don't bind)
+- `lyric-compiler/lyric/parser/parser_exprs.l::parsePattern` — recognize `@Ident` and build `PConstRef` node
+- `lyric-compiler/msil/codegen.l::lowerPatternTestMsil` — no changes (const patterns are pre-lowered to `PLiteral` by type check)
+- `lyric-compiler/jvm/codegen.l::lowerPatternTestJvm` — no changes (const patterns are pre-lowered to `PLiteral` by type check)

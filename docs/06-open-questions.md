@@ -555,7 +555,13 @@ evaluate.  All Q-MP entries are currently open.
 - Const references must be resolvable at type-check time.
 - Generic vals are out of scope (const pattern must be monomorphic).
 
-**Recommendation:** Proceed with the `@Ident` design in `docs/46-const-patterns.md`. Implement as a self-contained type-checker + codegen feature with no language-reference changes (const patterns lower to literal patterns at check time, so the runtime semantics are already defined).
+**Recommendation:** Proceed with the `@Ident` design in `docs/46-const-patterns.md`. Implementation requires full documentation sync per CLAUDE.md:
+1. **Formal grammar** (`docs/grammar.ebnf`): Add `ConstPattern = "@" Ident` to `PrimaryPattern` alternatives
+2. **Language reference** (`docs/01-language-reference.md` §3.3): Expand match-pattern syntax with const pattern form, semantics, and examples
+3. **Book** (`book/chapters/`): Update CLI reference and relevant chapters; ensure examples work end-to-end
+4. **Progress tracking** (`docs/10-bootstrap-progress.md`): Record const-pattern implementation milestone
+5. **Diagnostic codes**: Use T0068–T0071 (T0068 = pattern type mismatch, T0069 = non-constant val, T0070 = not a val, T0071 = generic val)
+6. **Self-tests**: `const_pattern_self_test.l` on both MSIL and JVM backends, plus regressions on existing pattern tests
 
 ---
 
