@@ -6329,6 +6329,65 @@ diagnostics (D047/D051). A0045 is the next unused code in that range.
 
 ---
 
+### D-progress-529 — F# runtime decommission complete: zero F# in the `lyric` runtime closure (#1576, #1489)
+
+**Context.** D-progress-473 removed `Lyric.Emitter.dll` and `FSharp.Core.dll`
+from the stage-1 bundle mechanically, but two stdlib kernel modules still
+`@externTarget`-pointed into `Lyric.Emitter.*` host methods, keeping those
+assemblies load-bearing for any program that imported `Std.Http` or
+`Std.Process`:
+
+- `http_host.l` → `Lyric.Emitter.HttpClientHost.defaultClient` — a
+  module-level `pub val` of reference type (`HttpClient`), which the F#
+  emitter's `EPath` handler emitted as `ldsfld`.  The self-hosted MSIL
+  backend lacked the `ldsfld` emission path for reference-typed package-level
+  `val` fields (issue #1576).
+- `process_capture_host.l` → `Lyric.Emitter.ProcessCapture.captureProcess` —
+  used concurrent async reads for stdout/stderr, which required the
+  async state-machine synthesis to handle two concurrent `Task<string>` awaits
+  racing on the same process handle (issue #1489).
+
+Both were fixed on `main`:
+
+- **#1576** — `EPath` handler in `Msil.Codegen` extended to emit `ldsfld` for
+  reference-typed (`not isValueType`) module-level `pub val` fields, matching
+  the F# emitter's behaviour.  `http_host.l` retargeted from
+  `Lyric.Emitter.HttpClientHost.defaultClient` to a direct `extern package`
+  declaration against `System.Net.Http.HttpClient` in
+  `lyric-stdlib/std/_kernel/http_host.l`.
+
+- **#1489** — async state-machine synthesis extended to handle the two-`await`
+  concurrent-read pattern (`Task.WhenAll` + indexed result extraction).
+  `process_capture_host.l` retargeted to direct BCL externs
+  (`System.Diagnostics.Process`, `System.IO.StreamReader`) with the async
+  concurrent-read body expressed in Lyric.
+
+**Outcome.** A strings scan of every stage-1 Lyric DLL confirms zero
+`AssemblyRef` entries to `Lyric.Emitter` or `FSharp.Core` across the full
+stdlib and CLI closure.  The `Lyric.Cli.Aot` csproj carries no explicit
+`FSharp.Core.dll` reference.  `make aot` succeeds with 0 warnings on
+linux-x64 and win-x64.
+
+**Decommission definition.** "F# decommissioned from day-to-day operations"
+means:
+
+1. **No user-initiated command invokes F# code at runtime.**  `lyric build`,
+   `lyric test`, `lyric run`, `lyric fmt`, etc. all trampoline through the
+   AOT entry point into Lyric-emitted DLLs.  The F# stage-0 compiler is not
+   on the path.
+2. **No Lyric program's runtime closure contains F# assemblies.**  Neither
+   `Lyric.Emitter.dll` nor `FSharp.Core.dll` appear in any compiled output.
+3. **The stage-0 F# bootstrap compiler is build-tool-only.**  It compiles the
+   self-hosted `.l` sources in the CI bootstrap chain; a prior self-hosted
+   release can substitute for it via Q-dist-001 (`scripts/bootstrap.sh` stage 2).
+   It is closed to new code and on a deletion schedule (see §0 inventory).
+
+**Related:** D-progress-473 (initial bundle cleanup), docs/23 (shim elimination
+plan), docs/34 (distribution strategy), #1576, #1489, issue #3661 (ecosystem
+lib split, Phase 6).
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

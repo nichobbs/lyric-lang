@@ -25319,3 +25319,26 @@ around-bodies serialised into contract metadata.  Open follow-ups: the
 `collectBareRefs*`/`collectMemberRefs*` traversal dedup (#3594), body-local
 shadowing of config fields (#3611), and runtime weaving tests for the
 security-critical templates (#3616).
+
+### D-progress-529 — F# runtime decommission complete: zero F# in the `lyric` runtime closure (#1576, #1489)
+
+The last two `@externTarget` declarations pointing at `Lyric.Emitter.*` host
+methods were eliminated, completing the F# runtime decommission:
+
+- **#1576** — `http_host.l` retargeted from `Lyric.Emitter.HttpClientHost
+  .defaultClient` to a direct `extern package` against `System.Net.Http
+  .HttpClient`.  The self-hosted MSIL codegen (`EPath` handler) gained
+  `ldsfld` emission for reference-typed module-level `pub val` fields.
+
+- **#1489** — `process_capture_host.l` retargeted to direct BCL externs
+  (`System.Diagnostics.Process`, `System.IO.StreamReader`), with the async
+  concurrent stdout/stderr read expressed in Lyric using `Task.WhenAll`.
+  The async state-machine synthesiser was extended to handle the two-await
+  concurrent-read pattern.
+
+A strings scan of every stage-1 DLL confirms zero `AssemblyRef` entries to
+`Lyric.Emitter` or `FSharp.Core`.  The F# stage-0 bootstrap compiler remains
+as a build tool only (closed to new code; see docs/23 §0 inventory).
+
+`docs/23-fsharp-shim-elimination.md` status updated to RUNTIME F# DECOMMISSION
+COMPLETE.  Formal declaration in decision-log D-progress-529.
