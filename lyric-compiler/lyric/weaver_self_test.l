@@ -1278,3 +1278,104 @@ test "non-template aspects leave args.<field> alone" {
   val body = functionBody(wrapper)
   assertTrue(bodyHasMemberAccess(body, "args", "x"), "args.x left intact")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §5. #3414 — cross-package aspect template resolution.
+//
+// `weaveFileWithDiagsAndTemplates` accepts a pre-built template map produced
+// by calling `collectAspectTemplates` on the template-declaring package; a
+// consumer aspect with `from = Some(...)` and no `around` body is resolved
+// against the map and gains the template's `around` before weaving.
+// ─────────────────────────────────────────────────────────────────────────────
+func makeTemplates(src: in String, pkgName: in String): Map[String, AspectDecl] {
+  val pr = parse(src)
+  val dest: Map[String, AspectDecl] = newMap()
+  collectAspectTemplates(pr.file.items, pkgName, dest)
+  dest
+}
+
+func weaveWithTemplates(consumeSrc: in String, templates: in Map[String, AspectDecl]): WeaveFileResult {
+  val pr = parse(consumeSrc)
+  weaveFileWithDiagsAndTemplates(pr.file, templates)
+}
+
+test "collectAspectTemplates collects pub aspect with around" {
+  val tplSrc = "package Lib.Tap\n" + "pub aspect Tap {\n" + "  matches: name like \"*\"\n" +
+    "  around(args) -> ret { proceed(args) }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Tap")
+  assertTrue(templates.containsKey("Lib.Tap.Tap"), "Lib.Tap.Tap in templates")
+}
+
+test "collectAspectTemplates skips private aspect with around" {
+  val tplSrc = "package Lib.Tap\n" + "aspect Tap {\n" + "  matches: name like \"*\"\n" +
+    "  around(args) -> ret { proceed(args) }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Tap")
+  assertTrue(not templates.containsKey("Lib.Tap.Tap"), "private aspect not collected")
+}
+
+test "collectAspectTemplates skips aspect with no around (consumer instance)" {
+  val tplSrc = "package Lib.Tap\n" + "pub aspect Tap from Other.Tpl {\n" + "  matches: name like \"*\"\n" + "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Tap")
+  assertTrue(not templates.containsKey("Lib.Tap.Tap"), "from-instance not collected as template")
+}
+
+test "from-instance aspect is resolved to template around and weaved" {
+  val tplSrc = "package Lib.Tap\n" + "pub aspect Tap {\n" + "  matches: name like \"*\"\n" + "  around(args) -> ret {\n" +
+    "    val __before = 1\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Tap")
+  val consumeSrc = "package App\n" + "aspect MyTap from Lib.Tap.Tap {\n" + "  matches: name like \"doWork\"\n" + "}\n" +
+    "func doWork(x: in Int): Int { x }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(wr.diagnostics.count == 0, "no diagnostics")
+  val wrapper = firstFunction(wr.file, "doWork")
+  val body = functionBody(wrapper)
+  assertTrue(bodyMentionsPath(body, "__before"), "template around body injected")
+}
+
+test "from-instance aspect with no matching template passes through unchanged" {
+  val templates: Map[String, AspectDecl] = newMap()
+  val consumeSrc = "package App\n" + "aspect MyTap from Lib.Tap.Tap {\n" + "  matches: name like \"doWork\"\n" + "}\n" +
+    "func doWork(x: in Int): Int { x }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(wr.diagnostics.count == 0, "no diagnostics")
+  val fn = firstFunction(wr.file, "doWork")
+  assertTrue(fn.name == "doWork", "function is unmodified (template not found → no weaving)")
+}
+
+test "weaveFileWithDiagsAndTemplates falls back to regular weaving for aspects with around" {
+  val templates: Map[String, AspectDecl] = newMap()
+  val consumeSrc = "package App\n" + "aspect InlineAspect {\n" + "  matches: name like \"*\"\n" +
+    "  around(args) -> ret {\n" +
+    "    val __inline = 42\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n" +
+    "func doWork(x: in Int): Int { x }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(wr.diagnostics.count == 0, "no diagnostics")
+  val wrapper = firstFunction(wr.file, "doWork")
+  val body = functionBody(wrapper)
+  assertTrue(bodyMentionsPath(body, "__inline"), "inline around body injected")
+}
+
+test "consumer config overrides template config when present" {
+  val tplSrc = "package Lib.Tpl\n" + "pub aspect Tpl {\n" + "  matches: name like \"*\"\n" +
+    "  config { prefix: String = \"default\" }\n" +
+    "  around(args) -> ret {\n" +
+    "    val __pfx = config.prefix\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Tpl")
+  val consumeSrc = "package App\n" + "aspect MyAsp from Lib.Tpl.Tpl {\n" + "  matches: name like \"run\"\n" +
+    "  config { prefix: String = \"custom\" }\n" +
+    "}\n" +
+    "func run(x: in Int): Int { x }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(wr.diagnostics.count == 0, "no diagnostics")
+}
