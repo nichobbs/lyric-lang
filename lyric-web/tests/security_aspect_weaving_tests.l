@@ -106,3 +106,62 @@ test "RequiresAuth aspect: enabled=false bypasses JWT verification" {
     case Err(_) -> assertTrue(false, "a disabled guard must not reject")
   }
 }
+
+// Complete the bypass matrix for the remaining web aspects that carry an
+// `enabled` master switch (#3653): RequiresRole, RateLimit, HttpCircuitBreaker.
+// Each must short-circuit to call.proceed() when disabled.
+aspect RoleGuardDisabled from Web.Aspects.RequiresRole {
+  matches: name like "roleBypassed*"
+  config {
+    jwtSecret: String = "test-signing-secret"
+    allowedRoles: String = "admin"
+    enabled: Bool = false
+  }
+}
+
+pub func roleBypassedHandler(authToken: in String): Result[String, Web.ApiError] {
+  return Ok("reached")
+}
+
+test "RequiresRole aspect: enabled=false bypasses the role check" {
+  match roleBypassedHandler("not.a.valid.jwt") {
+    case Ok(v) -> assertEqual(v, "reached", "a disabled guard must let any call through")
+    case Err(_) -> assertTrue(false, "a disabled guard must not reject")
+  }
+}
+
+aspect RateLimitDisabled from Web.Aspects.RateLimit {
+  matches: name like "rateBypassed*"
+  config {
+    enabled: Bool = false
+  }
+}
+
+pub func rateBypassedHandler(): Result[String, Web.ApiError] {
+  return Ok("reached")
+}
+
+test "RateLimit aspect: enabled=false bypasses the rate counter" {
+  match rateBypassedHandler() {
+    case Ok(v) -> assertEqual(v, "reached", "a disabled limiter must let any call through")
+    case Err(_) -> assertTrue(false, "a disabled limiter must not reject")
+  }
+}
+
+aspect CircuitBreakerDisabled from Web.Aspects.HttpCircuitBreaker {
+  matches: name like "breakerBypassed*"
+  config {
+    enabled: Bool = false
+  }
+}
+
+pub func breakerBypassedHandler(): Result[String, Web.ApiError] {
+  return Ok("reached")
+}
+
+test "HttpCircuitBreaker aspect: enabled=false bypasses the circuit" {
+  match breakerBypassedHandler() {
+    case Ok(v) -> assertEqual(v, "reached", "a disabled breaker must let any call through")
+    case Err(_) -> assertTrue(false, "a disabled breaker must not reject")
+  }
+}
