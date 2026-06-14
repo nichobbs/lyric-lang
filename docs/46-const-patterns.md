@@ -44,7 +44,7 @@ In match arms, patterns gain a new form:
 
 ```
 Pattern ::= ...
-          | "@" Ident  // const pattern
+          | "@" Ident  // const pattern: @CONST_NAME references a compile-time constant
 ```
 
 A const pattern `@NAME` is resolved at type-check time:
@@ -67,15 +67,7 @@ The const pattern's type must match the scrutinee:
 
 ### Scope & visibility
 
-A const pattern resolves any `pub val` or private `val` reachable from the current module and imported modules. Cross-package const patterns require explicit import:
-
-```lyric
-import Proto.Codes
-
-match wireTypeId {
-  case @Codes.WIRE_VARINT -> ...  // qualified const reference
-}
-```
+A const pattern resolves any `pub val` or private `val` reachable from the current module and imported modules. In Phase 3+ v1, only unqualified const references are supported; qualified refs (`@Package.CONST`) are deferred to future work.
 
 ---
 
@@ -165,21 +157,23 @@ A `val greeting = "hello"` (reference-type `String` with a string literal) is a 
 
 A `val obj = SomeRecord(...)` (reference-type record) is a valid const pattern only if the record is a compile-time constant (which Lyric doesn't support for general records yet). For now, only primitive and string consts are allowed. Revisit if the language adds const records.
 
-### 4. Ambiguity with method calls
+### 4. Ambiguity with `@` in annotation position
 
-`@` is also used for annotations and future use in other contexts. In a pattern position, `@Ident` unambiguously means a const pattern; in an expression position, `@` is still reserved for annotations. No conflict.
+`@` is also used for annotations in declaration and expression positions. In a pattern position, `@Ident` unambiguously means a const pattern (patterns cannot be annotations). No parse conflict.
 
 ---
 
 ## Acceptance criteria
 
-- [x] The parser recognizes `@Ident` in pattern position without ambiguity.
-- [x] The type checker resolves `@Ident` to a `val` and validates its compile-time constant status.
-- [x] Type mismatch diagnostics (T0062), non-constant diagnostics (T0063), and reference-type limitations are clear.
-- [x] Match arms using `@CONST` patterns compile to the same IL as literal patterns.
-- [x] Self-test: `const_pattern_self_test.l` exercises `@` patterns on `Int`, `Long`, `String`, and `Char` consts, with a non-constant val that correctly errors.
-- [x] A rewritten `proto_main.l` (or similar) uses `@WIRE_VARINT`, etc., and compiles cleanly.
-- [x] No regressions in existing `EMatch` or pattern tests.
+These are implementation checkpoints for Phase 3+ work:
+
+- [ ] The parser recognizes `@Ident` in pattern position without ambiguity.
+- [ ] The type checker resolves `@Ident` to a `val` and validates its compile-time constant status.
+- [ ] Type mismatch diagnostics (T0062), non-constant diagnostics (T0063), and reference-type limitations are clear.
+- [ ] Match arms using `@CONST` patterns compile to the same IL as literal patterns.
+- [ ] Self-test: `const_pattern_self_test.l` exercises `@` patterns on `Int`, `Long`, `String`, and `Char` consts, with a non-constant val that correctly errors.
+- [ ] A rewritten `proto_main.l` (or similar) uses `@WIRE_VARINT`, etc., and compiles cleanly.
+- [ ] No regressions in existing `EMatch` or pattern tests.
 
 ---
 
@@ -187,7 +181,7 @@ A `val obj = SomeRecord(...)` (reference-type record) is a valid const pattern o
 
 ### Qualified const references
 
-Support `@PackageName.CONST` for cross-package const patterns:
+Phase 3+ v2 or later: support `@PackageName.CONST` for cross-package const patterns:
 
 ```lyric
 import Proto.Codes
@@ -196,7 +190,7 @@ match wireTypeId {
 }
 ```
 
-Requires the import resolver to track `val` bindings in imported modules' contract metadata (currently only types/functions/interfaces are tracked).
+Requires extending contract metadata to track `val` bindings from imported modules (currently only types/functions/interfaces are tracked).
 
 ### Const records & structs
 
