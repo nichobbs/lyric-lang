@@ -961,17 +961,6 @@ func stripRetAssignmentsStmt(s: in Statement, name: in String): Statement {
       val newFinally = match finally_ { case Some(fb) -> Some(value = stripRetAssignments(fb, name)); case None -> None }
       Statement(kind = STry(body = stripRetAssignments(body, name), catches = newCatches, finally_ = newFinally), span = sp)
     }
-    case SLocal(b) -> {
-      val newBinding = match b {
-        case LBVal(pat, ty, init) -> LBVal(pat = pat, ty = ty, init = stripRetAssignmentsExpr(init, name))
-        case LBLet(lname, ty, init) -> LBLet(name = lname, ty = ty, init = stripRetAssignmentsExpr(init, name))
-        case LBVar(lname, ty, optInit) -> {
-          val newInit = match optInit { case Some(e) -> Some(value = stripRetAssignmentsExpr(e, name)); case None -> None }
-          LBVar(name = lname, ty = ty, init = newInit)
-        }
-      }
-      Statement(kind = SLocal(binding = newBinding), span = sp)
-    }
     case _ -> s
   }
 }
@@ -2336,20 +2325,16 @@ pub record WeaveFileResult {
 /// weave (#681 A0042 — `@inline_template` args.<field> mismatches).
 /// Callers that want plain back-compat behaviour can continue using
 /// `weaveFile`, which drops the diagnostic list.
+///
+/// Thin wrapper over `weaveFileWithDiagsAndTemplates` with an empty
+/// template map (#3499): the single-file case is the no-cross-package
+/// specialisation of the general multi-package weave.  `resolveFromInstances`
+/// short-circuits to identity when there are no `from`-instances (and, when
+/// there are, an empty map leaves every `from`-instance to be dropped by the
+/// standard weave exactly as before), so this is behaviour-preserving.
 pub func weaveFileWithDiags(file: in SourceFile): WeaveFileResult {
-  // See weaveFile: the Std.Time auto-import must be decided while the
-  // IAspect items are still present (#1298).
-  val file0 = injectWeaveImports(file)
-  val wr = weaveItemsCore(file0.items, packagePathString(file0))
-  val newFile = SourceFile(
-    moduleDoc = file0.moduleDoc,
-    fileAnnotations = file0.fileAnnotations,
-    packageDecl = file0.packageDecl,
-    imports = file0.imports,
-    items = wr.items,
-    span = file0.span
-  )
-  WeaveFileResult(file = newFile, diagnostics = wr.diagnostics)
+  val noTemplates: Map[String, AspectDecl] = newMap()
+  weaveFileWithDiagsAndTemplates(file, noTemplates)
 }
 
 /// Collect all `pub` aspect declarations that carry an `around` body from
