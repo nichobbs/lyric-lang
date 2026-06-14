@@ -14519,10 +14519,14 @@ func isGenericTypeVar(te: in TypeExpr, generics: in List[String]): Bool {
 // non-generic slice path route through: a `slice[T]` value is tracked as
 // `MArray(MObject)` so `.length` / indexing / `for` dispatch through the
 // (already-correct) non-generic `IList`/`ICollection` path, and a bare `T` is
-// tracked as `MObject` (the erased element).  Element reads therefore yield
-// `object` (no `castclass` to the non-existent `Pkg.T`), matching the erased
-// runtime value.  Non-type-variable annotations delegate to the legacy
-// context-aware lowering so a generic function over concrete types is unaffected.
+// tracked as `MObject` (the erased element).  For generic apps like
+// `Result[T, slice[VErr]]` the outer head is concrete but any type arg that is
+// a generic type variable must also be erased (#3332): the stored MsilType is
+// used as-is in `MIsinstGeneric` at the consumer's match site, so a
+// `MClass("Lib.T")` arg would build a TypeSpec referencing a non-existent CLR
+// type and make every `isinst` return null — "match not exhaustive" at runtime.
+// Non-type-variable annotations delegate to the legacy context-aware lowering
+// so a generic function over concrete types is unaffected.
 func typeExprToMsilGenBody(
   cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, generics: in List[String]
 ): MsilType {
@@ -14542,6 +14546,86 @@ func typeExprToMsilGenBody(
       }
     }
     case TParen(inner) -> typeExprToMsilGenBody(cctx, inner, pkgName, generics)
+    case TGenericApp(head, args) -> {
+      // Mirror typeExprToMsilCtx's TGenericApp handler but recurse each type
+      // arg through typeExprToMsilGenBody so generic type variables erase to
+      // MObject (#3332).  The outer head is always a concrete type (Result,
+      // Option, a user union…); only the args may carry generic vars.
+      val headSeg = lastSegmentMsil(head)
+      if headSeg == "List" and args.count == 1 {
+        match args[0] {
+          case TAType(te2) -> {
+            val elemTy = typeExprToMsilGenBody(cctx, te2, pkgName, generics)
+            if collElemConcrete(elemTy) {
+              MConcreteList(elemTy = elemTy)
+            } else if isValueType(elemTy) {
+              MListOf(elemTy = elemTy)
+            } else {
+              MObject
+            }
+          }
+          case TAValue(_) -> MObject
+        }
+      } else if headSeg == "Map" and args.count == 2 {
+        val keyTy = match args[0] {
+          case TAType(kte) -> typeExprToMsilGenBody(cctx, kte, pkgName, generics)
+          case TAValue(_) -> MObject
+        }
+        val valTyRaw = match args[1] {
+          case TAType(vte) -> typeExprToMsilGenBody(cctx, vte, pkgName, generics)
+          case TAValue(_) -> MObject
+        }
+        if collElemConcrete(keyTy) and collElemConcrete(valTyRaw) {
+          MConcreteMap(keyTy = keyTy, valTy = valTyRaw)
+        } else {
+          val mapValTy = if isValueType(valTyRaw) { valTyRaw } else { MObject }
+          MMapOf(keyTy = MObject, valTy = mapValTy)
+        }
+      } else if headSeg == "Map" {
+        MMapOf(keyTy = MObject, valTy = MObject)
+      } else {
+        val headFqn = resolveTypeFqn(cctx, pkgName, headSeg)
+        match mapGet(cctx.genericTypeArity, headFqn) {
+          case Some(arity) -> {
+            val inBundleArgs: List[MsilType] = newList()
+            var iai = 0
+            while iai < args.count {
+              match args[iai] {
+                case TAType(te2) -> inBundleArgs.add(typeExprToMsilGenBody(cctx, te2, pkgName, generics))
+                case TAValue(_) -> inBundleArgs.add(MObject)
+              }
+              iai = iai + 1
+            }
+            MGenericInstByName(headFqn = genericBacktickFqn(headFqn, arity), typeArgs = inBundleArgs)
+          }
+          case None -> {
+            val dotIdx = headFqn.lastIndexOf(".")
+            if dotIdx < 0 {
+              MObject
+            } else {
+              val headPkg = headFqn.substring(0, dotIdx)
+              val typeRefKey = headPkg + "/" + headFqn
+              match mapGet(cctx.ffiTypeRefs, typeRefKey) {
+                case None -> MObject
+                case Some(row) -> {
+                  val codedIdx: Int = tdrTypeRef(row)
+                  val resolvedArgs: List[MsilType] = newList()
+                  var ai = 0
+                  while ai < args.count {
+                    match args[ai] {
+                      case TAType(te2) -> resolvedArgs.add(typeExprToMsilGenBody(cctx, te2, pkgName, generics))
+                      case TAValue(_) -> resolvedArgs.add(MObject)
+                    }
+                    ai = ai + 1
+                  }
+                  MGenericInst(typeRefCode = codedIdx, headFqn = headFqn, typeArgs = resolvedArgs)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
     case _ -> typeExprToMsilCtx(cctx, te, pkgName)
   }
 }
