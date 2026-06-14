@@ -41,6 +41,7 @@ package Lambda.Authorizer
 
 import Std.Core
 import Std.Collections
+import Std.String
 
 // ─── REST API TOKEN authorizer event ─────────────────────────────────────────
 /// Event delivered to a REST API TOKEN Lambda authorizer.
@@ -228,7 +229,7 @@ pub func allowAll(principalId: in String, methodArn: in String): AuthorizerRespo
 {
   // Derive the stage wildcard from the method ARN by keeping only
   // the first two slash-separated segments (arnBase/stage) and appending "/*".
-  val parts = methodArn.split("/")
+  val parts = split(methodArn, "/")
   val stageBase = parts[0] + "/" + parts[1] + "/*"
   return AuthorizerResponse(
     principalId = principalId,

@@ -2718,6 +2718,11 @@ jobs:
           "$lyric_bin" test --manifest lyric-db/lyric.toml || overall=$?
           echo "=== lyric-search tests ==="
           "$lyric_bin" test --manifest lyric-search/lyric.toml || overall=$?
+          # lyric-lambda (dep: lyric-web, built above) — test file corrected from
+          # non-Lyric syntax (|> pipe, phantom Map API, qualified union ctor); the
+          # library gained LambdaError factory functions + an authorizer split fix.
+          echo "=== lyric-lambda tests ==="
+          "$lyric_bin" test --manifest lyric-lambda/lyric.toml || overall=$?
           # lyric-web went green once the generic-`ConcurrentDictionary` extern
           # codegen fix (#3392) landed: checkRateLimit is no longer a silent
           # no-op, so the rate-limit suite asserts real deny/burst behaviour.
