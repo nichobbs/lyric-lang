@@ -810,6 +810,8 @@ func buildProject(
 
   // For JVM builds, inject Maven classpath into LYRIC_FFI_JARS so the JVM
   // auto-FFI resolver can locate downloaded Maven JARs at compile time.
+  // The `:` separator is the POSIX path-list separator; Windows drive-letter
+  // ambiguity is a known gap tracked in #2214 (both sides fixed together).
   match target {
     case Jvm -> {
       val classpathFile = Path.join(Path.join(Path.join(mfDir, "target"), "restore"), "jvm-classpath.txt")
@@ -868,10 +870,28 @@ func buildProject(
       val classpathFile = Path.join(Path.join(Path.join(mfDir, "target"), "restore"), "jvm-classpath.txt")
       match File.readText(classpathFile) {
         case Ok(text) -> {
-          val mpPath = Path.join(outDir, "module-path.txt")
-          match File.writeText(mpPath, text) {
-            case Err(e) -> printErr("build: warning: cannot write " + mpPath + ": " + IOError.message(e))
-            case Ok(_) -> ()
+          val trimmed = Str.trim(text)
+          if trimmed.length > 0 {
+            val lines = Str.split(trimmed, "\n")
+            var colonSep = ""
+            var li = 0
+            while li < lines.length {
+              val line = Str.trim(lines[li])
+              if line.length > 0 {
+                if colonSep.length > 0 {
+                  colonSep = colonSep + ":"
+                }
+                colonSep = colonSep + line
+              }
+              li += 1
+            }
+            if colonSep.length > 0 {
+              val mpPath = Path.join(outDir, "module-path.txt")
+              match File.writeText(mpPath, colonSep) {
+                case Err(e) -> printErr("build: warning: cannot write " + mpPath + ": " + IOError.message(e))
+                case Ok(_) -> ()
+              }
+            }
           }
         }
         case Err(_) -> ()
