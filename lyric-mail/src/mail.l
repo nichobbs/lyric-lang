@@ -104,10 +104,22 @@ pub interface MailSender {
 // `Mail.send` header-injection guard fires before `send` is ever reached, so
 // injection tests can use this without a live SMTP server.
 /// A no-op `MailSender` that records call counts and always returns `Ok`.
-/// Intended for unit tests that need to exercise the `Mail.send` guard path
-/// without an SMTP/SES/SendGrid connection.  Lives here rather than in
-/// lyric-testing because the MSIL lowering requires an interface's TypeDef
-/// to precede its implementors; not part of the stable API surface.
+/// Intended for unit tests that exercise the `Mail.send` guard path without an
+/// SMTP/SES/SendGrid connection.
+///
+/// Why it lives in the `Mail` package rather than the `Mail.MailTests` test
+/// module (#3183): the in-bundle test/manifest build lowers the test module
+/// and `Mail` into one compilation, and `impl Mail.MailSender for …` declared
+/// in the test module fails MSIL lowering with `MPImpl interface type
+/// 'Mail.MailSender' has no TypeDef or TypeRef row` — the interface's metadata
+/// row is not visible to an implementor in a *different* in-bundle package.
+/// (`MockMailSender` in lyric-testing implements the same interface only
+/// because lyric-testing is built as a separate library against restored
+/// `Mail` metadata, which does emit the TypeRef.)  Keeping the stub in the
+/// interface's own package puts the TypeDef in the same assembly.  It is
+/// `pub` so the test module can construct it, but carries no `@stable`
+/// annotation, so it is excluded from the stable public-API surface that
+/// `lyric public-api-diff` tracks.
 pub record MailSenderStub {
   var callCount: Int
 }
