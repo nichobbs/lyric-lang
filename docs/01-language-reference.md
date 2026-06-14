@@ -746,7 +746,7 @@ present).
 - `out`: parameter must be assigned before the function returns. Used for output parameters; the caller passes an uninitialized binding. Equivalent to C# `out`. The type checker rejects an `out` parameter that is never assigned in the body (**T0086**); full all-paths definite-assignment (catching assignment on some but not all paths) is a planned refinement.
 - `inout`: parameter is read/write. Caller passes a mutable binding; function may read and modify. Equivalent to C# `ref`.
 
-At a call site, an argument bound to a **value-type** `out`/`inout` parameter must be a writable l-value — a `var` local, or an `out`/`inout` binding (**T0085**). A literal, a call result, or an immutable (`val`/`let`/`in`) binding is rejected, because the callee writes a value back into the argument. Reference-type by-ref parameters (records, `String`, slices) are mutated in place through the reference, so this requirement does not apply to them.
+At a call site, an argument bound to a **value-type** `out`/`inout` parameter must be a writable l-value — a `var` local, an `out`/`inout` binding, or a mutable field access (`obj.field`, where the field is reachable for assignment) (**T0085**). A literal, a call result, or an immutable (`val`/`let`/`in`) binding is rejected, because the callee writes a value back into the argument. Reference-type by-ref parameters (records, `String`, slices) are mutated in place through the reference, so this requirement does not apply to them.
 
 ```
 func divmod(n: Int, d: Int, q: out Int, r: out Int) {
