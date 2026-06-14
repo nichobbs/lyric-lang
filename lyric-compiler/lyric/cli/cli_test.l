@@ -69,6 +69,7 @@ func emitTestLinked(
   testPkgs.add(ProjectPackage(name = testPkgName, sources = testSrcs))
   val activeF: List[String] = newList()
   val declaredF: List[String] = newList()
+  val noDepTemplateSrcs: List[ProjectPackage] = newList()
   Emitter.emitProject(
     EmitProjectRequest(
       packages = testPkgs,
@@ -78,7 +79,8 @@ func emitTestLinked(
       restoredDllPaths = compilerDlls,
       activeFeatures = activeF,
       declaredFeatures = declaredF,
-      packageVersion = ""
+      packageVersion = "",
+      depTemplateSrcs = noDepTemplateSrcs
     )
   )
 }
@@ -868,6 +870,7 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
     val asmStem = stemOf(Path.basename(testEntry.path), 2)
     val outPath = Path.join(testOutDir, asmStem + testExt)
 
+    val noDepTemplateSrcsTest: List[ProjectPackage] = newList()
     val projReq = EmitProjectRequest(
       packages = allPkgs,
       assemblyName = asmStem,
@@ -876,7 +879,8 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
       restoredDllPaths = restoredDlls,
       activeFeatures = activeFeatures,
       declaredFeatures = mfDeclared,
-      packageVersion = manifest.packageSection.version
+      packageVersion = manifest.packageSection.version,
+      depTemplateSrcs = noDepTemplateSrcsTest
     )
     val result = Emitter.emitProject(projReq)
     var hadBuildError = false

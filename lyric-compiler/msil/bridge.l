@@ -335,6 +335,7 @@ pub func compileProjectToMsilWithRestored(
 ): Bool {
   // Forwarder to the version-threading variant with an empty version
   // (legacy `0.0.0.0` Assembly row).
+  val noDepTemplatePkgs: List[ProjectPackagePayload] = newList()
   compileProjectToMsilWithRestoredAndVersion(
     packages,
     assemblyName,
@@ -343,7 +344,8 @@ pub func compileProjectToMsilWithRestored(
     activeFeatures,
     declaredFeatures,
     restoredArtifacts,
-    ""
+    "",
+    noDepTemplatePkgs
   )
 }
 
@@ -360,6 +362,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   declaredFeatures: in List[String],
   restoredArtifacts: in List[SynthesisedArtifact],
   packageVersion: in String,
+  depTemplatePkgs: in List[ProjectPackagePayload],
 ): Bool {
   if packages.count == 0 {
     return false
@@ -658,6 +661,16 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     Weaver.collectAspectTemplates(perPkgFiles[tpi].items, perPkgNames[tpi], allTemplates)
     tpi = tpi + 1
   }
+  // Also collect templates from path-dependency source packages (#3498 partial fix).
+  // These are pre-compiled dependencies whose source files were passed by the CLI
+  // so cross-package `from`-instance aspects can resolve their template bodies.
+  var dti = 0
+  while dti < depTemplatePkgs.count {
+    val dtPkg = depTemplatePkgs[dti]
+    val dtParseRes = parse(dtPkg.source)
+    Weaver.collectAspectTemplates(dtParseRes.file.items, dtPkg.name, allTemplates)
+    dti = dti + 1
+  }
 
   val liftedFiles: List[SourceFile] = newList()
   var li = 0
@@ -808,6 +821,7 @@ pub func compileProjectToMsilWithRestoredEncoded(
 
   val activeFeatures: List[String] = newList()
   val declaredFeatures: List[String] = newList()
+  val noDepTemplatePkgsEncoded: List[ProjectPackagePayload] = newList()
   compileProjectToMsilWithRestoredAndVersion(
     packages,
     assemblyName,
@@ -816,7 +830,8 @@ pub func compileProjectToMsilWithRestoredEncoded(
     activeFeatures,
     declaredFeatures,
     restoredArtifacts,
-    packageVersion
+    packageVersion,
+    noDepTemplatePkgsEncoded
   )
 }
 

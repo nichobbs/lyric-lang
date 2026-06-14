@@ -1351,12 +1351,12 @@ test "from-instance aspect is resolved to template around and weaved" {
   assertTrue(bodyDefinesLocal(body, "__before"), "template around body injected: val __before defined")
 }
 
-test "from-instance aspect with no matching template passes through unchanged" {
+test "from-instance aspect with no matching template emits A0045" {
   val templates: Map[String, AspectDecl] = newMap()
   val consumeSrc = "package App\n" + "aspect MyTap from Lib.Tap.Tap {\n" + "  matches: name like \"doWork\"\n" + "}\n" +
     "func doWork(x: in Int): Int { x }\n"
   val wr = weaveWithTemplates(consumeSrc, templates)
-  assertTrue(wr.diagnostics.count == 0, "no diagnostics")
+  assertTrue(diagsHaveCode(wr.diagnostics, "A0045"), "A0045 emitted for unresolved from-instance template")
   val fn = firstFunction(wr.file, "doWork")
   assertTrue(fn.name == "doWork", "function is unmodified (template not found → no weaving)")
 }

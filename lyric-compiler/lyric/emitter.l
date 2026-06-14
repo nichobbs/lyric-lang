@@ -115,6 +115,11 @@ pub record EmitProjectRequest {
   /// `Lyric.Contract.<Pkg>` resources carry the real semver.  Empty
   /// string falls back to the bootstrap-grade `0.0.0.0` (#1364).
   packageVersion: String
+  /// Source packages from path dependencies whose aspect templates
+  /// must be visible to the weaver for cross-package `from`-instance
+  /// aspects to resolve (#3498).  Each entry is a `ProjectPackage`
+  /// from the dependency's `[project.packages]` list.
+  depTemplateSrcs: List[ProjectPackage]
   // ─────────────────────────────────────────────────────────────────────────────
   // §2. Subprocess helpers — thin wrappers over Lyric.CliShell.
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1334,6 +1339,7 @@ func emitPerPackagePackage(
   srcs.add(source)
   pkgs.add(ProjectPackage(name = name, sources = srcs))
   val noFeatures: List[String] = newList()
+  val noDepTemplateSrcs: List[ProjectPackage] = newList()
   val req = EmitProjectRequest(
     packages = pkgs,
     assemblyName = asmName,
@@ -1342,7 +1348,8 @@ func emitPerPackagePackage(
     restoredDllPaths = restored,
     activeFeatures = noFeatures,
     declaredFeatures = noFeatures,
-    packageVersion = "0.1.0"
+    packageVersion = "0.1.0",
+    depTemplateSrcs = noDepTemplateSrcs
   )
   val res = emitProject(req)
   match res.outputPath {
@@ -1701,7 +1708,8 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
     restoredDllPaths = req.restoredDllPaths,
     activeFeatures = req.activeFeatures,
     declaredFeatures = req.declaredFeatures,
-    packageVersion = req.packageVersion
+    packageVersion = req.packageVersion,
+    depTemplateSrcs = req.depTemplateSrcs
   )
 
   match req.target {
@@ -1911,6 +1919,14 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
     si2 = si2 + 1
   }
 
+  val depTemplatePkgs: List[ProjectPackagePayload] = newList()
+  var dtpi = 0
+  while dtpi < req.depTemplateSrcs.count {
+    val pkg = req.depTemplateSrcs[dtpi]
+    depTemplatePkgs.add(ProjectPackagePayload(name = pkg.name, source = mergePackageSources(pkg.name, pkg.sources)))
+    dtpi = dtpi + 1
+  }
+
   val ok = MsilBridge.compileProjectToMsilWithRestoredAndVersion(
     payloads,
     req.assemblyName,
@@ -1919,7 +1935,8 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
     req.activeFeatures,
     req.declaredFeatures,
     restoredArtifacts,
-    req.packageVersion
+    req.packageVersion,
+    depTemplatePkgs
   )
   if ok {
     val okDiags: List[Diagnostic] = newList()
@@ -2172,6 +2189,7 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
         allPayloads.add(ProjectPackagePayload(name = pkgName, source = req.source))
         val noFeatures: List[String] = newList()
         val noArtifacts: List[SynthesisedArtifact] = newList()
+        val noDepTemplatePkgsPerPkg: List[ProjectPackagePayload] = newList()
         val ok = MsilBridge.compileProjectToMsilWithRestoredAndVersion(
           allPayloads,
           req.assemblyName,
@@ -2180,7 +2198,8 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
           noFeatures,
           noFeatures,
           noArtifacts,
-          req.packageVersion
+          req.packageVersion,
+          noDepTemplatePkgsPerPkg
         )
         if ok {
           val okDiags: List[Diagnostic] = newList()
