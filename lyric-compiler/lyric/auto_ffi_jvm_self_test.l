@@ -163,3 +163,39 @@ test "@externTarget with verified JVM signatures compile and run correctly" {
   assertEqualInt(Math_max(100, 2), 100, "Math_max(100, 2)")
   assertEqual(Integer_toString(42), "42", "Integer_toString(42)")
 }
+
+// ── isBare guard regression test (typeExprToJvm TGenericApp, #3445/#3455) ──────
+//
+// `typeExprToJvm` maps `TGenericApp` heads to concrete JVM types:
+//   * bare `List[T]`  (head.segments.count == 1, seg == "List") → ArrayList
+//   * bare `Map[K,V]` (head.segments.count == 1, seg == "Map")  → HashMap
+//   * everything else                                            → Object
+//
+// Without the `isBare = head.segments.count == 1` guard, any generic type
+// whose last path segment happens to be "List" — including a package-qualified
+// user type like `MyPkg.List[T]` — would be mis-mapped to `java/util/ArrayList`.
+// At runtime, the slot declared as ArrayList would hold a non-ArrayList user
+// instance, and the JVM bytecode verifier would reject the class with a
+// VerifyError.
+//
+// Testing the `MyPkg.List[T]` scenario fully requires a multi-package setup
+// (the user type and this test file in separate packages).  The test below
+// exercises the adjacent invariant that is testable in a single file: a
+// user-defined generic record (`Container[T]`) must erase to Object, NOT to
+// ArrayList.  If the codegen incorrectly mapped any generic type to ArrayList,
+// the JVM verifier would reject the class when loading it, failing this test.
+
+record Container[T] {
+  item: T
+}
+
+test "user generic erases to Object, not ArrayList — isBare regression guard (#3455)" {
+  val box: Container[Int] = Container(item = 99)
+  // Pass `box` to StringBuilder.append(Object).  If Container[Int] were
+  // mis-mapped to ArrayList, the bytecode verifier would reject the class
+  // (Container is not assignable to ArrayList) before the test can run.
+  val sb = JStringBuilder.new("")
+  sb.append(box)
+  val result = sb.toString()
+  assertTrue(result.length > 0, "Container[Int] accepted as Object by StringBuilder.append")
+}
