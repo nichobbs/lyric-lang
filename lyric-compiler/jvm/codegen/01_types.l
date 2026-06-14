@@ -148,8 +148,9 @@ pub record FuncCtx {
   // initialised to 0 at region entry.  `replayDefers` stores 1 to that slot
   // before emitting each inline early-transfer replay so the catch-all handler
   // (which covers the same region body) can skip re-running the defer when the
-  // replay itself throws — preventing the double-execution bug.  -1 means no flag
-  // was allocated (not used in this codebase; forward-compat guard only).
+  // replay itself throws — preventing the double-execution bug.  Always kept the
+  // same length as `deferStack`; `replayDefers` guards access with a list-bounds
+  // check (`i < ctx.deferRanSlots.count`).
   deferRanSlots: List[Int]
   // When `Some(cls)`, the function is an instance method whose receiver is at
   // local slot 0 (a protected-type entry / helper).  `self` and bare field
