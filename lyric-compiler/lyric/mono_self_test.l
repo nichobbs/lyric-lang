@@ -475,6 +475,47 @@ test "multi-segment qualified generic call is specialised (#2943)" {
   assertTrue(hasFunc(res.file, "toResult__Int"), "#2943 multi-segment qualified: toResult__Int specialisation appended")
 }
 
+// ── Multi-segment qualified call must not be hijacked by a same-named generic
+//    with fewer parameters (#3627) ────────────────────────────────────────────
+// `Helper.assertEq("x", "y", "z")` passes three arguments, but the only
+// `assertEq` reachable in genDecls is a one-parameter generic `assertEq[T](x)`
+// (this mirrors the real collision between a package's non-generic
+// `assertEq(a, b, msg): Unit` and `Std.Core.Proof.assertEq[T](x): T`).  Because
+// genDecls is keyed by the bare last segment, the monomorphiser used to match
+// the generic by name and rewrite the call into `assertEq__String`, stranding
+// the two extra arguments on the stack -> InvalidProgramException at runtime.
+// A genuine call to the generic can never supply more args than it has params,
+// so the call must be left untouched for normal (non-generic) resolution.
+test "multi-segment qualified call is not hijacked by a fewer-param same-named generic (#3627)" {
+  val callerSrc = "package App\nimport Helper\nfunc caller(): Unit { Helper.assertEq(\"x\", \"y\", \"z\") }\n"
+  val importedSrc = "package Helper\npub func assertEq[T](x: in T): T { x }\n"
+
+  val callerPr = parse(callerSrc)
+  val importedPr = parse(importedSrc)
+  val callerRewritten = rewriteFile(callerPr.file)
+
+  val importedGen: List[FunctionDecl] = newList()
+  var i = 0
+  while i < importedPr.file.items.count {
+    match importedPr.file.items[i].kind {
+      case IFunc(decl) -> {
+        match decl.generics {
+          case Some(_) -> importedGen.add(decl)
+          case None -> ()
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+
+  val res = monoFileWithImports(callerRewritten, importedGen)
+  assertTrue(
+    not hasFunc(res.file, "assertEq__String"),
+    "#3627: a 3-arg qualified call must not be specialised against a 1-param generic"
+  )
+}
+
 // Mixed positional inference — one type-param inferred via nested
 // generic call, the other via literal.
 test "mixed inference shapes" {
