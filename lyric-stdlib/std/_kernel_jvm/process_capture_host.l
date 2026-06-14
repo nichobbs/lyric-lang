@@ -14,12 +14,15 @@
 //!     reference-subtype match (score 1) against the `List` parameter.
 //!   * `proc.getOutputStream/getInputStream/getErrorStream()` obtain the
 //!     stdio pipes.  Instance methods are called on the object (`proc.start()`,
-//!     `stream.available()`, `buf.write(b)`, etc.) via the instance auto-FFI
+//!     `stream.available()`, `buf.write(chunk)`, etc.) via the instance auto-FFI
 //!     path; only constructors and static methods use the `JType.method()`
 //!     form.  Stdin is written in one shot (UTF-8 bytes) and closed.
 //!   * Stdout and stderr are drained incrementally inside the `isAlive()` poll
-//!     loop via `stream.available()`-bounded reads into a
+//!     loop via `stream.available()`-bounded chunk reads into a
 //!     `java.io.ByteArrayOutputStream`, preventing pipe-buffer deadlock.
+//!     Each drain call costs two JNI crossings regardless of chunk size:
+//!     one `readNBytes(avail)` and one `write(byte[])`.  (The previous
+//!     byte-at-a-time loop cost 2×N JNI crossings for N available bytes.)
 //!   * Wall-clock cap is enforced by comparing `System.currentTimeMillis()`
 //!     against a computed deadline and calling `Process.destroyForcibly()`.
 //!     (`Process.waitFor(long, TimeUnit)` is unavailable because the auto-FFI
@@ -144,14 +147,16 @@ func parseArgString(executable: in String, argStr: in String): List[String] {
 // Drain however many bytes are currently available on `stream` into `buf`
 // without blocking.  Called from the isAlive() poll loop so we never
 // deadlock on a pipe whose buffer is full.
+//
+// Uses InputStream.readNBytes(int) (Java 11+): reads the entire available
+// chunk in one JDK call and writes it to the accumulator in another, costing
+// two JNI crossings per drain call regardless of how many bytes arrive.  The
+// previous single-byte loop cost 2×N crossings for N bytes.
 func drainAvailable(stream: in JInputStream, buf: in JBAOS): Unit {
-  var avail = stream.available()
-  while avail > 0 {
-    val b = stream.read()
-    if b >= 0 {
-      buf.write(b)
-    }
-    avail = avail - 1
+  val avail = stream.available()
+  if avail > 0 {
+    val chunk = stream.readNBytes(avail)
+    buf.write(chunk)
   }
 }
 
