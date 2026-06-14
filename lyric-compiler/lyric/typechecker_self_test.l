@@ -2189,3 +2189,43 @@ test "for nested tuple pattern accepted" {
   assertTrue(not hasDiagCode(cr, "T0112"), "for over nested tuple pattern: no T0112")
   assertEqualInt(diagCount(cr), 0, "for over nested tuple pattern: clean")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Const patterns (docs/46, D101).  checkConstRefPattern diagnostics; the
+// positive runtime behaviour lives in const_pattern_self_test.l.  #3485.
+// ─────────────────────────────────────────────────────────────────────────────
+test "const pattern: undefined name rejected (T0072)" {
+  val bad = "package P\nfunc f(x: in Int): Int {\n  match x {\n    case @NOPE -> 1\n    case _ -> 0\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0072"), "const pattern @NOPE (undefined): T0072")
+}
+
+test "const pattern: non-val name rejected (T0072)" {
+  val bad = "package P\nfunc g(): Int { 1 }\nfunc f(x: in Int): Int {\n  match x {\n    case @g -> 1\n    case _ -> 0\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0072"), "const pattern @g (a func): T0072")
+}
+
+test "const pattern: non-literal val rejected (T0069)" {
+  val bad = "package P\nfunc now(): Int { 1 }\nval DYN = now()\nfunc f(x: in Int): Int {\n  match x {\n    case @DYN -> 1\n    case _ -> 0\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0069"), "const pattern @DYN (dynamic init): T0069")
+}
+
+test "const pattern: type mismatch rejected (T0068)" {
+  val bad = "package P\nval NAME = \"hi\"\nfunc f(x: in Int): Int {\n  match x {\n    case @NAME -> 1\n    case _ -> 0\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0068"), "const pattern @NAME (String const, Int scrutinee): T0068")
+}
+
+test "const pattern: matching type accepted (no diagnostics)" {
+  val ok = "package P\nval WIRE = 2\nfunc f(x: in Int): Int {\n  match x {\n    case @WIRE -> 1\n    case _ -> 0\n  }\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "const pattern @WIRE (Int const, Int scrutinee): clean")
+}
+
+// #3488: Bool exhaustiveness must resolve const patterns, not just literals.
+test "const pattern: Bool match over both consts is exhaustive (no T0016)" {
+  val ok = "package P\nval ON = true\nval OFF = false\nfunc f(b: in Bool): Int {\n  match b {\n    case @ON -> 1\n    case @OFF -> 0\n  }\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0016"), "Bool match over @ON/@OFF: no false non-exhaustive")
+}
+
+test "const pattern: Bool match missing a const arm is non-exhaustive (T0016)" {
+  val bad = "package P\nval ON = true\nfunc f(b: in Bool): Int {\n  match b {\n    case @ON -> 1\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0016"), "Bool match over only @ON: T0016 missing false")
+}

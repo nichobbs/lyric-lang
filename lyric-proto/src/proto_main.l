@@ -388,19 +388,20 @@ pub func decodeStep(data: in slice[Byte], offset: Int): Result[DecodeStep, Strin
       val fieldNum = longAsInt(shrLong(tag, 3))
       val wireTypeId = longAsInt(bitandLong(tag, 7i64))
       val afterTag = tagResult.nextOffset
-      // Raw literals because Lyric match requires literal patterns (val constants
-      // cannot be used as arms): 0=WIRE_VARINT, 1=WIRE_FIXED64, 2=WIRE_LENGTH_DELIMITED, 5=WIRE_FIXED32.
+      // Const patterns (docs/46): the wire-type arms reference the named
+      // `WIRE_*` constants directly via `@`, so the magic numbers `0/1/2/5`
+      // no longer leak into the match (#3382, #3487).
       match wireTypeId {
-        case 0 -> match readVarint(data, afterTag) { case Err(e) -> Err(error = "varint field " + fieldNum.toString() + ": " + e); case Ok(vr) -> Ok(value = DecodeStep(field = DecodedVarint(fieldNum, vr.value), nextOffset = vr.nextOffset)) }
-        case 1 -> {
+        case @WIRE_VARINT -> match readVarint(data, afterTag) { case Err(e) -> Err(error = "varint field " + fieldNum.toString() + ": " + e); case Ok(vr) -> Ok(value = DecodeStep(field = DecodedVarint(fieldNum, vr.value), nextOffset = vr.nextOffset)) }
+        case @WIRE_FIXED64 -> {
           if afterTag + 8 > data.length {
             Err(error = "truncated fixed64 at field " + fieldNum.toString())
           } else {
             Ok(value = DecodeStep(field = DecodedFixed64(fieldNum, int64LE(data, afterTag)), nextOffset = afterTag + 8))
           }
         }
-        case 2 -> match readVarint(data, afterTag) { case Err(e) -> Err(error = "length prefix at field " + fieldNum.toString() + ": " + e); case Ok(lenResult) -> { val length = longAsInt(lenResult.value); val dataStart = lenResult.nextOffset; if dataStart + length > data.length { Err(error = "truncated bytes field " + fieldNum.toString()) } else { Ok(value = DecodeStep(field = DecodedBytes(fieldNum, sliceCopy(data, dataStart, length)), nextOffset = dataStart + length)) } } }
-        case 5 -> {
+        case @WIRE_LENGTH_DELIMITED -> match readVarint(data, afterTag) { case Err(e) -> Err(error = "length prefix at field " + fieldNum.toString() + ": " + e); case Ok(lenResult) -> { val length = longAsInt(lenResult.value); val dataStart = lenResult.nextOffset; if dataStart + length > data.length { Err(error = "truncated bytes field " + fieldNum.toString()) } else { Ok(value = DecodeStep(field = DecodedBytes(fieldNum, sliceCopy(data, dataStart, length)), nextOffset = dataStart + length)) } } }
+        case @WIRE_FIXED32 -> {
           if afterTag + 4 > data.length {
             Err(error = "truncated fixed32 at field " + fieldNum.toString())
           } else {

@@ -6139,6 +6139,60 @@ D-progress-507 (implementation), docs/26 §4.3 / §15, docs/44 (JVM gap).
 
 ---
 
+## D101 — Const patterns retain `PConstRef` through to codegen rather than lowering to `PLiteral` at type-check (Q-MP-001, #3479)
+
+**Date:** 2026-06-14
+**Resolves:** Q-MP-001 (docs/06), review finding #3479.
+
+**Context.** docs/46-const-patterns.md sketched the const-pattern feature
+(`case @NAME ->`, D-progress-523) with the type checker *lowering* a
+`PConstRef(name)` pattern to a `PLiteral` carrying the constant's value, so
+that both backends would need no new pattern arm ("Codegen … no changes are
+needed"). The shipped implementation deviated: the type checker
+(`typechecker_exprs.l::checkConstRefPattern`) **validates** a `PConstRef`
+(existence T0072, compile-time-constant T0069, monomorphic T0071, scrutinee
+type match T0068) but leaves the `PConstRef` node in the AST, and each
+backend grew an explicit `PConstRef` arm in its pattern-test lowering
+(`msil/codegen.l::lowerPatternTestMsil`, `jvm/codegen/03_match.l`). #3479
+flagged this as an unbacked deviation from the doc and noted the backend
+arms' `case None ->` fall-throughs.
+
+**Decision.** Keep the codegen-level `PConstRef` lowering; the
+`PLiteral`-rewrite-at-type-check approach is rejected.
+
+- **Why not rewrite to `PLiteral`.** Rewriting requires the type checker to
+  reconstruct a literal AST node from a resolved constant value. For
+  non-integer consts (`String`, `Float`, `Long`, `Char`) the value lives in
+  a static field at runtime, not as an inline literal — the MSIL backend
+  emits `ldsfld` against the const's static-value token and the JVM backend
+  emits `getstatic`, neither of which a synthetic `PLiteral` can express
+  without re-introducing the constant reference. Lowering would therefore
+  only ever cover the integer case and force a second representation for the
+  rest, which is strictly more code than one honest `PConstRef` arm per
+  backend.
+- **Diagnostics and spans.** Retaining `PConstRef` keeps the source-level
+  name and span available to the exhaustiveness checker and to error
+  messages (e.g. the Bool-exhaustiveness fix in #3488 resolves a
+  `PConstRef` Bool const to decide `sawTrue`/`sawFalse`), which a
+  pre-lowered literal would have discarded.
+- **The backend `case None ->` paths are defensive, not silent.** Both
+  backends `panic` with `"… (type checker should have validated)"` when a
+  `PConstRef` reaches codegen whose name is absent from `constValues` /
+  `staticValTokens` (MSIL) or `moduleVals` (JVM). This is an internal
+  invariant assertion guarded by `checkConstRefPattern`, not a
+  default-value swallow; it fails loudly if a future change lets an
+  unvalidated const pattern through.
+
+**Consequences.** docs/46 is corrected to describe the codegen-level
+arms (the "no changes needed" claims and the `lowerPatternBind` "returns
+`PError`" note were inaccurate). Exhaustiveness checking must be
+`PConstRef`-aware (#3488).
+
+**Related:** Q-MP-001, D-progress-523, #3479, #3468, #3469, #3488,
+docs/46-const-patterns.md.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
