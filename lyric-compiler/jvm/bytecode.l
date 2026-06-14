@@ -545,6 +545,17 @@ pub union AsmInsn {
 /// Switch table data is stored in parallel lists here rather than in
 /// the AsmInsn union, because non-generic union case fields of List[T]
 /// are erased to Object by the D035 erasure path and cannot be accessed.
+/// A pending exception-table entry in the assembler.  Label names are
+/// resolved to PCs at assembly time by `assembleCode`.
+/// `catchType` is a CONSTANT_Class constant-pool index, or 0 for catch-all.
+pub record AsmExnHandler {
+
+  startLabel: String
+  endLabel: String
+  handlerLabel: String
+  catchType: Int
+}
+
 pub record MethodAssembler {
   insns: List[AsmInsn]
   pool: Pool          // shared constant pool
@@ -556,6 +567,7 @@ pub record MethodAssembler {
   swLookupOff: List[Int]     // start index for each lookupswitch in swLookupKeys/Labels
   curStack: Int           // current stack depth during lowerInsn calls
   peakStack: Int           // maximum stack depth seen so far
+  exnHandlers: List[AsmExnHandler]   // exception-table entries accumulated by emitters
 }
 
 /// Construct a fresh assembler sharing `pool`.
@@ -570,7 +582,22 @@ pub func newAssembler(pool: in Pool): MethodAssembler {
     swLookupLabels = newList(),
     swLookupOff = newList(),
     curStack = 0,
-    peakStack = 0
+    peakStack = 0,
+    exnHandlers = newList()
+  )
+}
+
+/// Register an exception-table entry to be emitted when the assembler is
+/// assembled.  `catchType` is a CONSTANT_Class pool index (0 = catch-all).
+pub func addExceptionHandler(
+  asm: in MethodAssembler,
+  startLabel: in String,
+  endLabel: in String,
+  handlerLabel: in String,
+  catchType: in Int,
+): Unit {
+  asm.exnHandlers.add(
+    AsmExnHandler(startLabel = startLabel, endLabel = endLabel, handlerLabel = handlerLabel, catchType = catchType)
   )
 }
 
@@ -948,7 +975,29 @@ pub func assembleCode(asm: in MethodAssembler, maxStack: in Int, maxLocals: in I
   val labels = buildLabelMap(asm)
   val code = writerNew()
   emitAllInsns(asm, labels, code)
-  makeCodeAttr(maxStack, maxLocals, writerToList(code))
+  val bytes = writerToList(code)
+  if asm.exnHandlers.count == 0 {
+    makeCodeAttr(maxStack, maxLocals, bytes)
+  } else {
+    // Build Code attribute with N exception-table entries.
+    val w = writerNew()
+    writerU2(w, maxStack)
+    writerU2(w, maxLocals)
+    writerU4(w, bytes.count)
+    writerByteList(w, bytes)
+    writerU2(w, asm.exnHandlers.count)
+    var hi = 0
+    while hi < asm.exnHandlers.count {
+      val h = asm.exnHandlers[hi]
+      writerU2(w, resolveLbl(labels, h.startLabel))
+      writerU2(w, resolveLbl(labels, h.endLabel))
+      writerU2(w, resolveLbl(labels, h.handlerLabel))
+      writerU2(w, h.catchType)
+      hi = hi + 1
+    }
+    writerU2(w, 0)
+    attrFromWriter("Code", w)
+  }
 }
 
 /// Like `assembleCode` but uses `asm.peakStack` instead of a caller-supplied maxStack.

@@ -3863,7 +3863,7 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
 
   val fieldsOut: List[FieldInfo] = newList()
   // Static sentinel signals exhaustion to the consumer.
-  fieldsOut.add(makeFieldInfo(ACC_PUBLIC + ACC_STATIC, "_DONE_SENTINEL", sentinelDesc, emptyAttrs))
+  fieldsOut.add(makeFieldInfo(ACC_PRIVATE + ACC_STATIC + ACC_FINAL, "_DONE_SENTINEL", sentinelDesc, emptyAttrs))
   // Instance fields
   fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_done", doneDesc, emptyAttrs))
   fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_pending", pendingDesc, emptyAttrs))
@@ -4059,6 +4059,10 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   // ── 5. iterator(): Iterator ────────────────────────────────────────────────
   // Initialise the channel, reset state, start a virtual thread running `this`
   // (which executes run()), and return this as Iterator.
+  // Single-use: calling iterator() while a prior iteration is in progress
+  // replaces the channel, orphaning the running virtual thread in put().
+  // That thread will park indefinitely (no data recipient on the new channel).
+  // Callers must not re-enter iterator() during an active iteration.
   val iterAsm = newAssembler(pool)
   val startVtRef = poolMethodref(pool, threadClass, "startVirtualThread", "(Ljava/lang/Runnable;)Ljava/lang/Thread;")
   // _channel = new SynchronousQueue()
@@ -4366,32 +4370,66 @@ func lowerScopeBlockJdk24(
   emitAstore(asm, scopeSlot)
 
   // fork each callable — invokeinterface on StructuredTaskScope (interface API).
+  // The Subtask return value is discarded; failure propagates via FailedException
+  // from join(), so there is no per-subtask result slot needed.
   val forkDesc = "(Ljava/util/concurrent/Callable;)Ljava/util/concurrent/StructuredTaskScope$Subtask;"
-  var taskSlot = firstTaskSlot
   for callableName in callableNames.toArray() {
     val callableClass = poolClass(asm.pool, callableName)
     val callableCtor = poolMethodref(asm.pool, callableName, "<init>", "()V")
     val forkRef = poolIfaceMethodref(asm.pool, scopeIface, "fork", forkDesc)
-
     emitAload(asm, scopeSlot)
     emitNew(asm, callableClass)
     emitDup(asm)
     emitInvokespecial(asm, callableCtor)
     emitInvokeinterface(asm, forkRef, 2)
     emitPop(asm)
-    taskSlot = taskSlot + 1
   }
 
-  // join() — blocks until all subtasks finish; throws FailedException on any failure.
+  // join() wrapped in a try-finally so close() always runs, even when join()
+  // throws FailedException (a RuntimeException) because a subtask failed.
+  //
+  // Emitted shape (class-file version 49, no StackMapTable needed):
+  //
+  //   [join_start]
+  //     aload scopeSlot
+  //     invokeinterface join
+  //     pop                    // discard the scope return value on success
+  //   [join_end / close_start]
+  //     aload scopeSlot
+  //     invokeinterface close
+  //     goto done
+  //   [exn_handler]            <- exception table entry: [join_start, close_start) → exn_handler, catch-all
+  //     pop                    // discard the Throwable on the handler stack
+  //     aload scopeSlot
+  //     invokeinterface close
+  //     athrow                 // rethrow FailedException (or any other Throwable)
+  //   [done]
+
   val joinRef = poolIfaceMethodref(asm.pool, scopeIface, "join", "()Ljava/util/concurrent/StructuredTaskScope;")
+  val closeRef = poolIfaceMethodref(asm.pool, scopeIface, "close", "()V")
+
+  val joinStart = "scope24_join_start_" + toString(scopeSlot)
+  val closeStart = "scope24_close_start_" + toString(scopeSlot)
+  val exnHandler = "scope24_exn_" + toString(scopeSlot)
+  val done = "scope24_done_" + toString(scopeSlot)
+
+  emitLabel(asm, joinStart)
   emitAload(asm, scopeSlot)
   emitInvokeinterface(asm, joinRef, 1)
   emitPop(asm)
-
-  // close() — release scope resources.
-  val closeRef = poolIfaceMethodref(asm.pool, scopeIface, "close", "()V")
+  emitLabel(asm, closeStart)
   emitAload(asm, scopeSlot)
   emitInvokeinterface(asm, closeRef, 1)
+  emitGoto(asm, done)
+  emitLabel(asm, exnHandler)
+  emitPop(asm)
+  emitAload(asm, scopeSlot)
+  emitInvokeinterface(asm, closeRef, 1)
+  emitAthrow(asm)
+  emitLabel(asm, done)
+
+  // Register a catch-all (catchType=0) handler so close() is always reached.
+  addExceptionHandler(asm, joinStart, closeStart, exnHandler, 0)
 }
 
 // ── JDK feature-version detection ─────────────────────────────────────────────
