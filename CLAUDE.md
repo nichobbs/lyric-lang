@@ -911,9 +911,11 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     `Unit`-returning woven function.  Run in CI via native `lyric test` on
     **both targets** (like `bitwise_self_test.l`): `--target dotnet` through
     `Msil.Bridge`, `--target jvm` through `Jvm.Bridge` `compileToJarBundled`.
-    Imports only `Std.*` (no `LYRIC_LOAD_COMPILER=1`).  Cross-package
-    `from`-instance library aspects (#3414) are out of scope for this test —
-    the per-file weaver can't resolve a template body in another package yet.
+    Imports only `Std.*` (no `LYRIC_LOAD_COMPILER=1`).
+    Cross-package `from`-instance library aspects are now supported by the
+    weaver (D-progress-525, #3414); `aspect_weave_self_test.l` does not yet
+    exercise the multi-file scenario where a consumer package imports a
+    library template — a runtime test is tracked separately (#3498).
   - `auto_ffi_self_test.l` — `@test_module` covering self-hosted
     metadata-based auto-FFI resolution (epic #1622, Phase 3c): the MSIL
     emitter resolves `ExternTypeName.method(args)` calls from real .NET

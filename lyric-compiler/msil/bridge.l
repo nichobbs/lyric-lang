@@ -645,15 +645,30 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // projectable fields (matching what lowerMOpaque checks via lctx.allProjFqns).
   prescanProjectableFqns(cctx, perPkgFiles, perPkgNames)
 
+  // Collect aspect templates from every package in the bundle before the
+  // weave loop so cross-package `from`-instance aspects (e.g.
+  // `aspect Guard from Lib.Aspects.Validate { matches: ... }`) can
+  // resolve their template body.  Only `pub` aspects with an `around` body
+  // are collected; same-package private aspects are intentionally excluded
+  // (#3414 / D050).  The accumulation is a direct `dest.add` walk — no
+  // Map-iteration primitives needed.
+  val allTemplates: Map[String, AspectDecl] = newMap()
+  var tpi = 0
+  while tpi < perPkgFiles.count {
+    Weaver.collectAspectTemplates(perPkgFiles[tpi].items, perPkgNames[tpi], allTemplates)
+    tpi = tpi + 1
+  }
+
   val liftedFiles: List[SourceFile] = newList()
   var li = 0
   while li < perPkgFiles.count {
-    // Use `Lyric.Weaver.weaveFileWithDiags` so the todo/06 features
-    // (config wiring #683, call prelude #682, `@inline_template`
-    // args.<field> #681) ship through `lyric build` for every
-    // package in the bundle, not just `lyric prove` (#1327).  Abort
-    // on weave-time errors (A0042 / A0043 / A0044).
-    val weaveRes = Weaver.weaveFileWithDiags(perPkgFiles[li])
+    // Use `Lyric.Weaver.weaveFileWithDiagsAndTemplates` so the todo/06
+    // features (config wiring #683, call prelude #682, `@inline_template`
+    // args.<field> #681) ship through `lyric build` for every package in
+    // the bundle, and cross-package `from`-instance aspects are resolved
+    // against the templates collected above (#3414).  Abort on weave-time
+    // errors (A0042 / A0043 / A0044).
+    val weaveRes = Weaver.weaveFileWithDiagsAndTemplates(perPkgFiles[li], allTemplates)
     if reportAndAbort(weaveRes.diagnostics) {
       return false
     }

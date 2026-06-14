@@ -2351,3 +2351,153 @@ pub func weaveFileWithDiags(file: in SourceFile): WeaveFileResult {
   )
   WeaveFileResult(file = newFile, diagnostics = wr.diagnostics)
 }
+
+/// Collect all `pub` aspect declarations that carry an `around` body from
+/// `items` into `dest`, keyed by their fully-qualified name
+/// (`pkgName + "." + decl.name`).  Called once per package before the
+/// weave loop so cross-package `from` references can be resolved.  Only
+/// `pub`-visibility aspects are collected — private/local aspects must not
+/// be visible outside the package they are declared in.  Aspects without
+/// an `around` body (`from`-instance forms) are skipped.
+pub func collectAspectTemplates(items: in List[Item], pkgName: in String, dest: in Map[String, AspectDecl]): Unit {
+  var i = 0
+  while i < items.count {
+    val it = items[i]
+    match it.kind {
+      case IAspect(decl) -> {
+        match decl.around {
+          case Some(_) -> {
+            val isPub = match it.visibility { case Some(_) -> true; case None -> false }
+            if isPub {
+              val fqn = pkgName + "." + decl.name
+              if not dest.containsKey(fqn) {
+                dest.add(fqn, decl)
+              }
+            }
+          }
+          case None -> ()
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
+/// Join a `from` path's segments into a dotted string used as the
+/// template-lookup key in the `templates` map.
+func resolveFromPath(path: in ModulePath): String {
+  segmentsJoin(path.segments)
+}
+
+/// Pre-process `items` so that every `from`-instance aspect whose template
+/// is found in `templates` is replaced by a synthesised concrete aspect that
+/// merges the template's `around` / `contracts` with the instance's
+/// `matches` / `exceptNames` / `wraps` / `inside`.  The instance's
+/// `config` overrides the template's when non-empty; otherwise the
+/// template's `config` defaults are used.  Unresolved `from` references
+/// (template absent from `templates`) are passed through unchanged so the
+/// caller can decide whether to emit a diagnostic.
+func resolveFromInstanceItem(it: in Item, instDecl: in AspectDecl, templates: in Map[String, AspectDecl]): Item {
+  match instDecl.around {
+    case Some(_) -> it
+    case None -> {
+      match instDecl.from {
+        case None -> it
+        case Some(fromPath) -> {
+          val fqn = resolveFromPath(fromPath)
+          match mapGet(templates, fqn) {
+            case None -> it
+            case Some(tplDecl) -> {
+              val instCfg = instDecl.config
+              val effectiveConfig = if instCfg.count > 0 { instCfg } else { tplDecl.config }
+              val effective = AspectDecl(
+                name = instDecl.name,
+                from = instDecl.from,
+                config = effectiveConfig,
+                matches = instDecl.matches,
+                exceptNames = instDecl.exceptNames,
+                around = tplDecl.around,
+                contracts = tplDecl.contracts,
+                wraps = instDecl.wraps,
+                inside = instDecl.inside,
+                span = instDecl.span
+              )
+              Item(
+                docComments = it.docComments,
+                annotations = it.annotations,
+                visibility = it.visibility,
+                kind = IAspect(decl = effective),
+                span = it.span
+              )
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+func hasFromInstance(items: in List[Item]): Bool {
+  var fi = 0
+  while fi < items.count {
+    match items[fi].kind {
+      case IAspect(aDecl) -> {
+        match aDecl.from {
+          case Some(_) -> {
+            match aDecl.around {
+              case None -> return true
+              case Some(_) -> ()
+            }
+          }
+          case None -> ()
+        }
+      }
+      case _ -> ()
+    }
+    fi = fi + 1
+  }
+  false
+}
+
+func resolveFromInstances(items: in List[Item], templates: in Map[String, AspectDecl]): List[Item] {
+  // Fast-path: if no from-instance exists in items, return the original list.
+  if not hasFromInstance(items) {
+    return items
+  }
+  val result: List[Item] = newList()
+  var j = 0
+  while j < items.count {
+    val it = items[j]
+    match it.kind {
+      case IAspect(aDecl) -> {
+        result.add(resolveFromInstanceItem(it, aDecl, templates))
+      }
+      case _ -> result.add(it)
+    }
+    j = j + 1
+  }
+  result
+}
+
+/// Weave a SourceFile with cross-package aspect template resolution (#3414).
+/// Before running the standard weave, resolves `from`-instance aspects whose
+/// templates are found in `templates` by synthesising concrete `AspectDecl`
+/// values (template `around` + instance `matches`/`config` overrides).
+/// Unresolved `from` references are passed through — the standard weave
+/// silently drops aspects without an `around` body.
+/// A004x diagnostic for unresolved `from` is deferred to a follow-up (#3497).
+pub func weaveFileWithDiagsAndTemplates(file: in SourceFile, templates: in Map[String, AspectDecl]): WeaveFileResult {
+  val file0 = injectWeaveImports(file)
+  val resolvedItems = resolveFromInstances(file0.items, templates)
+  val wr = weaveItemsCore(resolvedItems, packagePathString(file0))
+  val newFile = SourceFile(
+    moduleDoc = file0.moduleDoc,
+    fileAnnotations = file0.fileAnnotations,
+    packageDecl = file0.packageDecl,
+    imports = file0.imports,
+    items = wr.items,
+    span = file0.span
+  )
+  WeaveFileResult(file = newFile, diagnostics = wr.diagnostics)
+}
