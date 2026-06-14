@@ -53,7 +53,7 @@ aspect Auth from Web.Aspects.RequiresAuth {
   matches: name in { handleCreateAccount, handleCreateTransfer }
   config {
     @sensitive
-    jwtSecret: String
+    jwtSecret: String = ""  // set LYRIC_ASPECT_AUTH_JWTSECRET in production (docs/26 §8)
     issuer: String = "ledger-service"
     audience: String = "ledger-api"
   }

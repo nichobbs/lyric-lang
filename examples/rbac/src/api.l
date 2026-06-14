@@ -34,7 +34,7 @@ aspect Auth from Web.Aspects.RequiresAuth {
   matches: name in { handleCreateUser, handleGrantRole, handleRevokeRole }
   config {
     @sensitive
-    jwtSecret: String
+    jwtSecret: String = ""  // set LYRIC_ASPECT_AUTH_JWTSECRET in production (docs/26 §8)
     issuer: String = "rbac-service"
     audience: String = "rbac-api"
   }
