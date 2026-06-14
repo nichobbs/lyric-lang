@@ -16,6 +16,9 @@ output_assembly = "Ws.dll"
 "Ws.Kernel.Net" = "src/_kernel/net/ws_kernel.l"
 "Ws.Kernel.Jvm" = "src/_kernel/jvm/ws_kernel.l"
 
+[project.tests]
+"Ws.WsTests" = "tests/ws_tests.l"
+
 [features]
 default = ["dotnet"]
 dotnet = []   # ASP.NET Core WebSockets

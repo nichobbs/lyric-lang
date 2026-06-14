@@ -14,6 +14,9 @@ output_assembly = "Search.dll"
 "Search"            = "src/search.l"
 "Search.Kernel.Net" = "src/_kernel/net/search_kernel.l"
 
+[project.tests]
+"Search.SearchTests" = "tests/search_tests.l"
+
 [features]
 elasticsearch = []   # Elasticsearch (Elastic.Clients.Elasticsearch on .NET)
 meilisearch   = []   # Meilisearch (Meilisearch .NET client)

@@ -2663,10 +2663,13 @@ jobs:
           # runner's local-dep resolver requires each dep's output DLL to
           # already exist, so build the chain bottom-up before running the
           # health suite (D-progress-505 / #679).
-          echo "=== building lyric-web chain (lyric-health dependency) ==="
-          for lib in lyric-auth lyric-resilience lyric-web; do
+          # lyric-logging is a path dep of lyric-db; lyric-resilience of
+          # lyric-search.  Build the dep chain bottom-up so each test's
+          # local-dep resolver finds an existing output DLL.
+          echo "=== building lyric-web chain + lyric-db/search deps ==="
+          for lib in lyric-logging lyric-auth lyric-resilience lyric-web; do
             if ! "$lyric_bin" build --manifest "$lib/lyric.toml"; then
-              echo "::error::failed to build $lib (lyric-health dependency)"
+              echo "::error::failed to build $lib (ecosystem test dependency)"
               exit 1
             fi
           done
@@ -2690,6 +2693,8 @@ jobs:
           "$lyric_bin" test --manifest lyric-mail/lyric.toml || overall=$?
           echo "=== lyric-aws-xray tests ==="
           "$lyric_bin" test --manifest lyric-aws-xray/lyric.toml || overall=$?
+          echo "=== lyric-aws-secrets tests ==="
+          "$lyric_bin" test --manifest lyric-aws-secrets/lyric.toml || overall=$?
           echo "=== lyric-feature-flags tests ==="
           "$lyric_bin" test --manifest lyric-feature-flags/lyric.toml || overall=$?
           echo "=== lyric-validation tests ==="
@@ -2706,12 +2711,23 @@ jobs:
           "$lyric_bin" test --manifest lyric-mq/lyric.toml || overall=$?
           echo "=== lyric-grpc tests ==="
           "$lyric_bin" test --manifest lyric-grpc/lyric.toml || overall=$?
+          # lyric-db (dep: logging) and lyric-search (dep: resilience) — test
+          # files corrected from non-Lyric syntax (qualified union construction /
+          # phantom Map API); deps built above.
+          echo "=== lyric-db tests ==="
+          "$lyric_bin" test --manifest lyric-db/lyric.toml || overall=$?
+          echo "=== lyric-search tests ==="
+          "$lyric_bin" test --manifest lyric-search/lyric.toml || overall=$?
           # lyric-web went green once the generic-`ConcurrentDictionary` extern
           # codegen fix (#3392) landed: checkRateLimit is no longer a silent
           # no-op, so the rate-limit suite asserts real deny/burst behaviour.
           # Built above (lyric-web chain); run here to guard the fix.
           echo "=== lyric-web tests ==="
           "$lyric_bin" test --manifest lyric-web/lyric.toml || overall=$?
+          # lyric-ws depends on Lyric.Auth (already built above as part of the
+          # lyric-web chain).  Run here to guard the WebSocket type surface.
+          echo "=== lyric-ws tests ==="
+          "$lyric_bin" test --manifest lyric-ws/lyric.toml || overall=$?
           if [ $overall -ne 0 ]; then
             echo "::error::ecosystem test suite failed — security regression detected"
             exit $overall
