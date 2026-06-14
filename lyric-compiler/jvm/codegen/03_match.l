@@ -499,6 +499,72 @@ func lowerPatternTest(
       insns.add(LGoto(label = failLabel))
       insns.add(LLabel(name = succeedL))
     }
+    case PConstRef(constName) -> {
+      match mapGet(ctx.moduleVals, constName) {
+        case Some(vty) -> {
+          val scrutIsRef = isRefJvm(scrutTy)
+          match vty {
+            case JLong -> {
+              emitLoad(insns, scrutSlot, scrutTy)
+              if scrutIsRef {
+                insns.add(LCheckcast(className = "java/lang/Long"))
+                insns.add(LUnboxLong)
+              }
+              insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
+              insns.add(LLcmp)
+              insns.add(LIfne(label = failLabel))
+            }
+            case JDouble | JFloat -> {
+              emitLoad(insns, scrutSlot, scrutTy)
+              if scrutIsRef {
+                insns.add(LCheckcast(className = "java/lang/Double"))
+                insns.add(LUnboxDouble)
+              }
+              insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
+              insns.add(LDcmpl)
+              insns.add(LIfne(label = failLabel))
+            }
+            case JRef(_) -> {
+              emitLoad(insns, scrutSlot, scrutTy)
+              insns.add(LCheckcast(className = "java/lang/String"))
+              insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
+              val eqPs: List[JvmType] = newList()
+              eqPs.add(JRef(className = "java/lang/Object"))
+              insns.add(LInvokevirtual(owner = "java/lang/String", name = "equals", params = eqPs, ret = JBoolean))
+              insns.add(LIfeq(label = failLabel))
+            }
+            case JBoolean -> {
+              emitLoad(insns, scrutSlot, scrutTy)
+              if scrutIsRef {
+                insns.add(LCheckcast(className = "java/lang/Boolean"))
+                insns.add(LUnboxBool)
+              }
+              insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
+              insns.add(LIfIcmpne(label = failLabel))
+            }
+            case JChar -> {
+              emitLoad(insns, scrutSlot, scrutTy)
+              if scrutIsRef {
+                insns.add(LCheckcast(className = "java/lang/Character"))
+                insns.add(LUnboxChar)
+              }
+              insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
+              insns.add(LIfIcmpne(label = failLabel))
+            }
+            case _ -> {
+              emitLoad(insns, scrutSlot, scrutTy)
+              if scrutIsRef {
+                insns.add(LCheckcast(className = "java/lang/Integer"))
+                insns.add(LUnboxInt)
+              }
+              insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
+              insns.add(LIfIcmpne(label = failLabel))
+            }
+          }
+        }
+        case None -> insns.add(LNop)
+      }
+    }
     case PError -> insns.add(LNop)
   }
 }
@@ -566,6 +632,7 @@ func lowerPatternBind(
       }
     }
     case PLiteral(_) -> insns.add(LNop)
+    case PConstRef(_) -> insns.add(LNop)
     case PRange(_, _, _) -> insns.add(LNop)
     case PParen(inner) -> lowerPatternBind(ctx, insns, inner, scrutSlot, scrutTy)
     case PTypeTest(inner, ty) -> {

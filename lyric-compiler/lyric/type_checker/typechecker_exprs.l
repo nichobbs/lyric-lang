@@ -2369,6 +2369,133 @@ func isConstructorPatternName(tbl: in SymbolTable, name: in String): Bool {
   }
 }
 
+// True when an expression is a compile-time constant literal: a direct literal,
+// a paren-wrapped literal, or a negated numeric literal.  Used to validate
+// PConstRef patterns (T0069).
+func isLiteralInit(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(_) -> true
+    case EParen(inner) -> isLiteralInit(inner)
+    case EPrefix(op, operand) -> match op { case PreNeg -> match operand.kind { case ELiteral(_) -> true; case _ -> false }; case _ -> false }
+    case _ -> false
+  }
+}
+
+// Validate PConstRef patterns inside a match arm against the scrutinee type.
+// Emits T0068 (type mismatch), T0069 (non-constant val), T0071 (generic type),
+// or T0072 (name not a val/const).  Recurses into POr/PParen/PTypeTest
+// sub-patterns.  Pure diagnostics — does not modify the AST.
+func checkConstRefPattern(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  pat: in Pattern,
+  scrutineeTy: in Type,
+): Unit {
+  match pat.kind {
+    case PConstRef(name) -> {
+      match symTableTryFindOne(tbl, name) {
+        case None -> {
+          diag.add(errorDiagnostic("T0072", "'" + name + "' is not defined; use a val or const for a const pattern", pat.span))
+        }
+        case Some(sym) -> {
+          match sym.kind {
+            case DKConst(cd) -> {
+              val ctx = newGenericContext()
+              val constTy = resolveType(tbl, ctx, diag, cd.ty)
+              match constTy {
+                case TyVar(_) -> {
+                  diag.add(
+                    errorDiagnostic(
+                      "T0071",
+                      "const pattern '" + name + "' has a generic type; const patterns must be monomorphic",
+                      pat.span
+                    )
+                  )
+                }
+                case _ -> {
+                  if not typeEquiv(constTy, scrutineeTy) {
+                    diag.add(
+                      errorDiagnostic(
+                        "T0068",
+                        "const pattern type " + renderType(constTy) + " does not match scrutinee type " + renderType(scrutineeTy),
+                        pat.span
+                      )
+                    )
+                  }
+                }
+              }
+            }
+            case DKVal(vd) -> {
+              if not isLiteralInit(vd.init) {
+                diag.add(
+                  errorDiagnostic(
+                    "T0069",
+                    "const pattern '@" + name + "' requires a compile-time constant val; '" + name +
+                      "' is not initialized with a literal",
+                    pat.span
+                  )
+                )
+              } else {
+                val ctx = newGenericContext()
+                val valTy = match vd.ty {
+                  case Some(te) -> resolveType(tbl, ctx, diag, te)
+                  case None -> {
+                    val emptyScope = newScopeForFunction(TyError, newList())
+                    inferExpr(emptyScope, tbl, sigs, diag, vd.init)
+                  }
+                }
+                match valTy {
+                  case TyVar(_) -> {
+                    diag.add(
+                      errorDiagnostic(
+                        "T0071",
+                        "const pattern '" + name + "' has a generic type; const patterns must be monomorphic",
+                        pat.span
+                      )
+                    )
+                  }
+                  case _ -> {
+                    if not typeEquiv(valTy, scrutineeTy) {
+                      diag.add(
+                        errorDiagnostic(
+                          "T0068",
+                          "const pattern type " + renderType(valTy) + " does not match scrutinee type " + renderType(scrutineeTy),
+                          pat.span
+                        )
+                      )
+                    }
+                  }
+                }
+              }
+            }
+            case _ -> {
+              diag.add(
+                errorDiagnostic(
+                  "T0072",
+                  "'" + name + "' is not a val or const; use a variable pattern or const reference",
+                  pat.span
+                )
+              )
+            }
+          }
+        }
+      }
+    }
+    case POr(patterns) -> {
+      var i = 0
+      while i < patterns.count {
+        checkConstRefPattern(tbl, sigs, diag, patterns[i], scrutineeTy)
+        i = i + 1
+      }
+    }
+    case PParen(inner) -> checkConstRefPattern(tbl, sigs, diag, inner, scrutineeTy)
+    case PTypeTest(inner, _) -> checkConstRefPattern(tbl, sigs, diag, inner, scrutineeTy)
+    case _ -> {
+    }
+  }
+}
+
 // Replace unresolved generic type variables with `TyError` (the lenient
 // unifier).  A pattern variable bound to a still-generic type (e.g. `v` from
 // `Some(v)` on `Option[V]` inside a generic function) must not later trip a
@@ -2483,6 +2610,8 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
       bindPatternTyped(sc, tbl, diag, inner, testTy)
     }
     case PRange(_, _, _) -> {
+    }
+    case PConstRef(_) -> {
     }
     case _ -> {
     }
@@ -2784,6 +2913,7 @@ pub func inferExpr(
       while ai < arms.count {
         scopePush(sc)
         bindPatternTyped(sc, tbl, diag, arms[ai].pattern, st)
+        checkConstRefPattern(tbl, sigs, diag, arms[ai].pattern, st)
         match arms[ai].guard {
           case Some(g) -> {
             val guardT = inferExpr(sc, tbl, sigs, diag, g)

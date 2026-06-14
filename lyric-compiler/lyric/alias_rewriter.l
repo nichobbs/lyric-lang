@@ -484,6 +484,7 @@ func rewritePattern(aliases: in List[String], p: in Pattern): Pattern {
     case PRange(lo, inclusive, hi) -> PRange(lo = rewriteExpr(aliases, lo), inclusive = inclusive, hi = rewriteExpr(aliases, hi))
     case PWildcard -> PWildcard
     case PLiteral(lit) -> PLiteral(lit = lit)
+    case PConstRef(name) -> PConstRef(name = name)
     case PError -> PError
   }
   Pattern(kind = kind, span = p.span)

@@ -6943,6 +6943,39 @@ func lowerPatternTestMsil(
         }
       }
     }
+    case PConstRef(constName) -> {
+      emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+      val scrutBoxed = match scrutTy { case MObject -> true; case _ -> false }
+      // Try integer const (inline ldc.i4 from constValues)
+      val qKey = fctx.pkgName + "/" + constName
+      val intValOpt = match mapGet(cctx.constValues, qKey) {
+        case Some(v) -> Some(value = v)
+        case None -> mapGet(cctx.constValues, constName)
+      }
+      match intValOpt {
+        case Some(v) -> {
+          if scrutBoxed {
+            insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MInt)))
+          }
+          insns.add(MLdcI4(v = v))
+          insns.add(MCeq)
+          insns.add(MBrFalse(label = failLabel))
+        }
+        case None -> {
+          // Non-integer const: load from static field (String, Float, Long, etc.)
+          match mapGet(cctx.staticValTokens, constName) {
+            case Some(fieldTok) -> {
+              insns.add(MLdsfld(fieldToken = fieldTok))
+              insns.add(MCeq)
+              insns.add(MBrFalse(label = failLabel))
+            }
+            case None -> {
+              insns.add(MPop)
+            }
+          }
+        }
+      }
+    }
     case PConstructor(head, args) -> {
       // Use isinst to check the case type; branch to failLabel if null.
       val caseName = lastSegmentMsil(head)
@@ -7201,6 +7234,8 @@ func lowerPatternBindMsil(
       }
     }
     case PLiteral(_) -> {
+    }
+    case PConstRef(_) -> {
     }
     case PConstructor(head, fields) -> {
       val caseName = lastSegmentMsil(head)

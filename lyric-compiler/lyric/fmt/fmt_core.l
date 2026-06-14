@@ -510,6 +510,7 @@ pub func patStr(p: in Pattern): String {
     case PParen(innerP) -> patParenStr(innerP)
     case PTypeTest(innerP, ty) -> patTypeTestStr(innerP, ty)
     case POr(patterns) -> patOrStr(patterns)
+    case PConstRef(name) -> "@" + name
     case PError -> "<pat-error>"
   }
 }

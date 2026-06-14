@@ -537,26 +537,9 @@ questions"` for their current status.
 
 ## Q-MP-001: Const pattern syntax and scoping
 
-**Status:** OPEN
+**Status:** RESOLVED → D-progress-523
 
-**Question:** Should match arms support comparison against named `val` constants? If so, what syntax disambiguates `case x =>` (bind a variable) from `case @x =>` (compare against constant `x`)?
-
-**Context:** Code review issue #3382 surfaces a common pattern in code: matching against symbolic constants (e.g., protobuf wire-type IDs) rather than raw integer literals. The current type checker rejects this, forcing developers to leave TODO comments or duplicate magic numbers.
-
-**Sketch:** `docs/46-const-patterns.md` proposes using `@Ident` to reference a const val in a pattern. The `@` prefix disambiguates from variable bindings; the val must be compile-time constant and type-compatible with the scrutinee. Pattern lowering converts `@CONST` to a `PLiteral` pattern, so runtime codegen is unchanged.
-
-**Constraints:**
-- Must not introduce ambiguity with `@` in other contexts (annotations, future syntax).
-- Const references must be resolvable at type-check time.
-- Generic vals are out of scope (const pattern must be monomorphic).
-
-**Recommendation:** Proceed with the `@Ident` design in `docs/46-const-patterns.md`. Implementation requires full documentation sync per CLAUDE.md:
-1. **Formal grammar** (`docs/grammar.ebnf`): Add `ConstPattern = "@" Ident` to `PrimaryPattern` alternatives
-2. **Language reference** (`docs/01-language-reference.md` §3.3): Expand match-pattern syntax with const pattern form, semantics, and examples
-3. **Book** (`book/chapters/`): Update CLI reference and relevant chapters; ensure examples work end-to-end
-4. **Progress tracking** (`docs/10-bootstrap-progress.md`): Record const-pattern implementation milestone
-5. **Diagnostic codes**: Use T0068, T0069, T0071, T0072 (T0068 = pattern type mismatch, T0069 = non-constant val, T0071 = generic val, T0072 = not a val; T0070 is pre-allocated to function-body type mismatch)
-6. **Self-tests**: `const_pattern_self_test.l` on both MSIL and JVM backends, plus regressions on existing pattern tests
+**Decision:** `@Ident` syntax adopted. `case @NAME ->` in a match arm compares the scrutinee against the compile-time value of `val`/`const NAME`. The `@` prefix is unambiguous: it cannot precede an identifier in annotation or binding-pattern contexts. The referenced name must resolve to a `val` initialised with a literal (or a `const` declaration); dynamic vals (T0069), generic vals (T0071), non-val names (T0072), and type mismatches (T0068) are rejected at type-check time. Codegen emits the same comparison as a literal pattern — no runtime overhead. Full implementation shipped in PR for this branch; see `docs/46-const-patterns.md` for the complete design.
 
 ---
 
