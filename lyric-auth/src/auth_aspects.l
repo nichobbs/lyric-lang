@@ -45,9 +45,6 @@ pub aspect ValidateKey {
     @sensitive
     expectedKey: String
   }
-  requires: args.apiKey != ""
-  // required — no default
-  // handler must declare an apiKey parameter
   around(call) -> ret {
     if not enabled {
       ret = call.proceed()

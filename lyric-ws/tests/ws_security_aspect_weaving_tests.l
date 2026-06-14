@@ -147,8 +147,10 @@ test "WsRateLimit aspect: calls beyond the limit and burst are blocked" {
   // Call 3: both window and burst exhausted → blocked.
   val r3 = wsRateLimitTightHandler(ctx)
   val r1Ok = match r1 { case Ok(_) -> true; case Err(_) -> false }
+  val r2Ok = match r2 { case Ok(_) -> true; case Err(_) -> false }
   val r3Ok = match r3 { case Ok(_) -> true; case Err(_) -> false }
   assertTrue(r1Ok, "first call must proceed (within limit)")
+  assertTrue(r2Ok, "second call must proceed (burst slot)")
   assertTrue(not r3Ok, "third call must be blocked (limit and burst exhausted)")
 }
 

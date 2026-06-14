@@ -13,7 +13,6 @@ package Auth.AuthAspectWeavingTests
 
 import Std.Core
 import Std.Testing
-import Auth as Auth
 import Auth.Aspects
 
 // Guard any handler named `apiKeyGuarded*` with the ValidateKey template.
