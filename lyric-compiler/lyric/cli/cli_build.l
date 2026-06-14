@@ -831,7 +831,11 @@ func buildProject(
               li += 1
             }
             if jars.length > 0 {
-              Environment.setVar("LYRIC_FFI_JARS", jars)
+              val existing = match Environment.getVar("LYRIC_FFI_JARS") {
+                case Ok(v) -> if v.length > 0 { v + ":" } else { "" }
+                case Err(_) -> ""
+              }
+              Environment.setVar("LYRIC_FFI_JARS", existing + jars)
             }
           }
         }
