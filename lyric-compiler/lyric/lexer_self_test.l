@@ -307,14 +307,21 @@ test "unicode escape surrogate rejected" {
   assertEqual(stringValueAt(r2, 0), "�", "uDFFF: U+FFFD substituted")
 }
 
-test "unicode escape non bmp rejected" {
-  // \u{1F600} — non-BMP scalar (emoji).  The current Char-returning
-  // surface cannot express a UTF-16 surrogate pair, so non-BMP escapes
-  // produce an L0022 + U+FFFD substitution.
+test "unicode escape non bmp in string accepted as surrogate pair" {
+  // \u{1F600} — non-BMP scalar (😀).  String literals accept non-BMP via
+  // UTF-16 surrogate-pair emission; no diagnostic should be recorded.
   val r = lex("\"\\u{1F600}\"")
-  assertEqualInt(diagCount(r), 1, "u1F600: one diagnostic")
-  assertEqual(r.diagnostics[0].code, "L0022", "u1F600: L0022")
-  assertEqual(stringValueAt(r, 0), "�", "u1F600: U+FFFD substituted")
+  assertEqualInt(diagCount(r), 0, "u1F600-str: no diagnostics")
+  assertEqual(stringValueAt(r, 0), "😀", "u1F600-str: emoji round-trips")
+}
+
+test "unicode escape non bmp in char literal rejected" {
+  // '\u{1F600}' — non-BMP in a char literal.  Char is a single UTF-16
+  // code unit so a non-BMP code point cannot be expressed; L0022.
+  val r = lex("'\\u{1F600}'")
+  assertEqualInt(diagCount(r), 1, "u1F600-char: one diagnostic")
+  assertEqual(r.diagnostics[0].code, "L0022", "u1F600-char: L0022")
+  assertEqualInt(charCodepointAt(r, 0), 0xFFFD, "u1F600-char: U+FFFD substituted")
 }
 
 // Phase 5 §M5.1 stage 3 — interpolated / triple / raw strings.

@@ -23,7 +23,10 @@
 //! see `compiler/lyric/std/_kernel/unicode_host.l` for the constants.
 //!
 //! Scope still deferred:
-//!   * Non-BMP `\u{…}` escapes (would need a wider TChar payload).
+//!   * Non-BMP `\u{…}` escapes in **char literals** (Char is a single
+//!     UTF-16 code unit; widening TChar is a separate follow-up).
+//!     String literals (plain, interpolated, triple-quoted) now accept
+//!     non-BMP via surrogate-pair emission into the text buffer (#3299).
 //!
 //! Everything else from the F# lexer's grammar §1 implementation lives
 //! here: identifiers, the full keyword table, decimal/hex/octal/binary
@@ -1657,10 +1660,10 @@ func lexNumber(state: inout LexerState): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // Character and string literals.
 //
-// Interpolation, triple-quoted, and raw strings are deferred (see the
-// file header).  Within plain `"…"` and `'…'` literals the v0.1 lexer
-// recognises the common ASCII escapes; non-BMP `\u{…}` escapes are
-// reserved for the follow-up that introduces a wider TChar payload.
+// String literals (plain, interpolated, triple-quoted) accept non-BMP
+// `\u{…}` escapes by emitting a UTF-16 surrogate pair into the text
+// buffer.  Char literals reject non-BMP (Char is a single UTF-16 code
+// unit; L0022 is emitted).
 // ─────────────────────────────────────────────────────────────────────────────
 @pure
 func decodeEscape(c: in Char): Option[Char] {
@@ -1707,9 +1710,22 @@ func charCodepoint(c: in Char): Int {
   CharHost.hostCharToInt(c)
 }
 
-/// Consume one escape-sequence body just past the opening backslash.
-/// Returns the decoded char (or U+FFFD on error) and records a
-/// diagnostic if the sequence was malformed / unknown.
+/// Convert a non-BMP Unicode scalar (0x10000..0x10FFFF) to its UTF-16
+/// surrogate-pair encoding as a two-code-unit String.
+/// Caller must ensure `v` is in the non-BMP range.
+@pure
+func nonBmpToSurrPairString(v: in Long): String {
+  val cpPrime = v - 65536i64
+  val highOffset = cpPrime / 1024i64
+  val lowOffset = cpPrime - highOffset * 1024i64
+  val highChar = CharHost.hostIntToChar(55296 + longToInt(highOffset))
+  val lowChar = CharHost.hostIntToChar(56320 + longToInt(lowOffset))
+  charToString(highChar) + charToString(lowChar)
+}
+
+/// Consume one escape-sequence body just past the opening backslash,
+/// for **char literal** contexts.  Returns the decoded Char (or U+FFFD
+/// on error).  Non-BMP `\u{…}` escapes are rejected with L0022.
 func lexEscape(state: inout LexerState, startP: in Position): Char {
   if isAtEnd(state) {
     return '\u{fffd}'
@@ -1724,12 +1740,30 @@ func lexEscape(state: inout LexerState, startP: in Position): Char {
   }
 }
 
-/// Lex a `\u{...}` Unicode escape.
+/// Consume one escape-sequence body just past the opening backslash,
+/// for **string literal** contexts.  Returns the decoded String (one
+/// code unit for BMP, two for non-BMP surrogate pairs).
+func lexEscapeString(state: inout LexerState, startP: in Position): String {
+  if isAtEnd(state) {
+    return "�"
+  }
+  val c = advance(state)
+  if c == 'u' {
+    return lexUnicodeEscapeToString(state, startP)
+  }
+  match decodeEscape(c) {
+    case Some(d) -> charToString(d)
+    case None -> charToString(c)
+  }
+}
+
+/// Lex a `\u{...}` Unicode escape in a **char literal** context.
 ///
-/// Decodes BMP scalar values (`\u{0}`..`\u{FFFF}` except the surrogate
-/// range `\u{D800}`..`\u{DFFF}`) to a single `Char`.  Non-BMP scalars
-/// (`\u{10000}`..`\u{10FFFF}`) require a UTF-16 surrogate pair which
-/// the current Char-returning surface cannot express.
+/// Decodes BMP scalar values (`\u{0}`..`\u{FFFF}`, excluding the
+/// surrogate range `\u{D800}`..`\u{DFFF}`) to a single `Char`.
+/// Non-BMP scalars (`\u{10000}`..`\u{10FFFF}`) cannot fit in a single
+/// UTF-16 code unit and are rejected with L0022.  For string contexts
+/// use `lexUnicodeEscapeToString` which emits a surrogate pair instead.
 ///
 /// The leading `\u` has already been consumed by the caller.
 func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
@@ -1803,12 +1837,12 @@ func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
         )
         '\u{fffd}'
       } else if v > 65535i64 {
-        // Non-BMP scalar — needs a surrogate-pair encoding the current
-        // Char surface cannot express (L0022, reachable via U+10000..U+10FFFF).
+        // Non-BMP scalar: cannot appear in a char literal (Char is a
+        // single UTF-16 code unit).  L0022; substitute U+FFFD.
         recordError(
           state,
           "L0022",
-          "non-BMP unicode escape (>U+FFFF) requires surrogate-pair encoding",
+          "non-BMP unicode escape (>U+FFFF) cannot appear in a char literal",
           makeSpan(startP, currentPosition(state))
         )
         '\u{fffd}'
@@ -1824,6 +1858,95 @@ func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
         makeSpan(startP, currentPosition(state))
       )
       '\u{fffd}'
+    }
+  }
+}
+
+/// Lex a `\u{...}` Unicode escape in a **string** context.
+///
+/// Identical to `lexUnicodeEscape` except non-BMP scalars
+/// (`\u{10000}`..`\u{10FFFF}`) are accepted and emitted as a UTF-16
+/// surrogate pair (two-code-unit String) rather than rejected.
+/// The surrogate range (`\u{D800}`..`\u{DFFF}`) is still rejected
+/// with L0023.
+///
+/// The leading `\u` has already been consumed by the caller.
+func lexUnicodeEscapeToString(state: inout LexerState, startP: in Position): String {
+  if peek(state) != '{' {
+    recordError(state, "L0021", "expected '{' after \\u", makeSpan(startP, currentPosition(state)))
+    return "�"
+  }
+  advance(state)   // '{'
+  var hexBody = ""
+  var n = 0
+  while not isAtEnd(state) and peek(state) != '}' and n < 6 {
+    hexBody = hexBody + charToString(advance(state))
+    n = n + 1
+  }
+  if peek(state) != '}' {
+    if n == 6 {
+      var extra = 0
+      while not isAtEnd(state) and peek(state) != '}' and extra < 16 and isHexDigitChar(peek(state)) {
+        advance(state)
+        extra = extra + 1
+      }
+      if peek(state) == '}' {
+        advance(state)
+      }
+      recordError(
+        state,
+        "L0022",
+        "overlong unicode escape (must be 1-6 hex digits, <= U+10FFFF)",
+        makeSpan(startP, currentPosition(state))
+      )
+    } else {
+      recordError(state, "L0021", "unterminated unicode escape", makeSpan(startP, currentPosition(state)))
+    }
+    return "�"
+  }
+  advance(state)   // '}'
+  if n == 0 {
+    recordError(
+      state,
+      "L0022",
+      "empty unicode escape (\\u{} requires 1-6 hex digits)",
+      makeSpan(startP, currentPosition(state))
+    )
+    return "�"
+  }
+  match parseDigits(hexBody, 16) {
+    case Some(v) -> {
+      if v < 0i64 or v > 1114111i64 {
+        recordError(
+          state,
+          "L0022",
+          "invalid unicode escape (must be 1-6 hex digits, <= U+10FFFF)",
+          makeSpan(startP, currentPosition(state))
+        )
+        "�"
+      } else if v >= 55296i64 and v <= 57343i64 {
+        recordError(
+          state,
+          "L0023",
+          "invalid unicode escape (surrogate range U+D800..U+DFFF is not a valid scalar)",
+          makeSpan(startP, currentPosition(state))
+        )
+        "�"
+      } else if v > 65535i64 {
+        // Non-BMP scalar: emit as a UTF-16 surrogate pair.
+        nonBmpToSurrPairString(v)
+      } else {
+        charToString(longToChar(v))
+      }
+    }
+    case None -> {
+      recordError(
+        state,
+        "L0022",
+        "invalid unicode escape (must be 1-6 hex digits)",
+        makeSpan(startP, currentPosition(state))
+      )
+      "�"
     }
   }
 }
@@ -1872,8 +1995,7 @@ func lexStringLiteral(state: inout LexerState): Unit {
       terminated = true
     } else if c == '\\' {
       advance(state)
-      val d = lexEscape(state, startP)
-      buf = buf + charToString(d)
+      buf = buf + lexEscapeString(state, startP)
     } else if c == '\n' {
       recordError(
         state,
@@ -1968,8 +2090,7 @@ func lexStringChunk(state: inout LexerState, stringStart: in Position): Unit {
         closeReason = 2
       } else if c == '\\' {
         advance(state)    // consume the backslash
-        val d = lexEscape(state, chunkStart)
-        buf = buf + charToString(d)
+        buf = buf + lexEscapeString(state, chunkStart)
       } else {
         buf = buf + charToString(advance(state))
       }
@@ -2020,8 +2141,7 @@ func lexTripleString(state: inout LexerState): Unit {
       terminated = true
     } else if peek(state) == '\\' {
       advance(state)
-      val d = lexEscape(state, startP)
-      buf = buf + charToString(d)
+      buf = buf + lexEscapeString(state, startP)
     } else {
       buf = buf + charToString(advance(state))
     }
