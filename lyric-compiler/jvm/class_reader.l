@@ -45,6 +45,7 @@ pub record ClassMethod {
 pub record ClassInfo {
   binaryName: String             // JVM binary name, e.g. "java/lang/Math"
   superName: String             // JVM binary name of superclass, e.g. "java/lang/AbstractStringBuilder"; "" for Object
+  interfaces: List[String]      // JVM binary names of directly-declared interfaces, e.g. ["java/util/List", "java/util/RandomAccess"]
   methods: List[ClassMethod]  // public non-synthetic non-constructor methods
   constructors: List[ClassMethod]  // public <init> constructors (isStatic=false)
   // ACC_ABSTRACT (0x0400): true when the class cannot be instantiated directly.
@@ -229,12 +230,30 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
   val classNameIdx = getS(classMap, toString(thisClassIdx))
   val binaryName = getSStr(utf8Map, toString(classNameIdx))
 
-  // Skip interfaces.
+  // Parse the directly-declared interface names.  Each entry is a constant-pool
+  // index to a CONSTANT_Class_info, resolved through classMap -> utf8Map exactly
+  // like super_class above.  Used by the auto-FFI resolver to verify reference
+  // assignability (e.g. ArrayList IS-A java/util/List) when ranking overloads.
   if pos + 2 > b.count {
     return None
   }
   val ifaceCount = rdU16(b, pos)
-  pos = pos + 2 + ifaceCount * 2
+  pos = pos + 2
+  val interfaces: List[String] = newList()
+  var ii = 0
+  while ii < ifaceCount {
+    if pos + 2 > b.count {
+      return None
+    }
+    val ifaceCpIdx = rdU16(b, pos)
+    val ifaceNameIdx = getS(classMap, toString(ifaceCpIdx))
+    val ifaceName = getSStr(utf8Map, toString(ifaceNameIdx))
+    if ifaceName.length > 0 {
+      interfaces.add(ifaceName)
+    }
+    pos = pos + 2
+    ii = ii + 1
+  }
 
   // Skip fields (each field_info: access(2) + name(2) + desc(2) + attCount(2) + attrs).
   if pos + 2 > b.count {
@@ -289,6 +308,7 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
           value = ClassInfo(
             binaryName = binaryName,
             superName = superName,
+            interfaces = interfaces,
             methods = methods,
             constructors = constructors,
             isAbstract = isAbstract
@@ -323,6 +343,7 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
     value = ClassInfo(
       binaryName = binaryName,
       superName = superName,
+      interfaces = interfaces,
       methods = methods,
       constructors = constructors,
       isAbstract = isAbstract

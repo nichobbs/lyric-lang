@@ -408,12 +408,85 @@ pub func scoreParamMatch(argDesc: in String, paramDesc: in String): Int {
   if argDesc == "[Ljava/lang/Object;" and paramDesc == "[B" {
     return 2
   }
-  // General reference-subtype: any reference arg → any non-Object reference param.
-  // Enables passing Lyric `List[T]` (ArrayList) to `java.util.List` parameters,
-  // `Process` to typed stream accessors, etc.  The JVM bytecode verifier enforces
-  // actual IS-A compatibility at class-load time, so the score is low (1) to rank
-  // behind all explicit matches.
+  // Reference/reference pairs are not classified here: the descriptor strings
+  // alone do not carry the class hierarchy.  `scoreParam` (which has the auto-FFI
+  // context) resolves these via `isAssignableRef`, scoring a verified IS-A match
+  // above the blind fallback.  Returning -1 keeps this function pure.
+  return -1
+}
+
+// `Lxxx;` reference descriptor → JVM binary name (`Ljava/util/List;` ->
+// `java/util/List`); "" for any non-object descriptor (primitive, array, …).
+func refDescToBinary(desc: in String): String {
+  if desc.length >= 3 and desc.startsWith("L") and desc.endsWith(";") {
+    desc.substring(1, desc.length - 2)
+  } else {
+    ""
+  }
+}
+
+// True when a value of reference type `fromBin` is assignable to a parameter of
+// reference type `toBin` (IS-A), per the loaded class metadata: `toBin` is
+// `Object`, or one of `fromBin`'s (transitive) superclasses, or a directly-
+// declared interface of `fromBin` or any of its superclasses.
+//
+// Interface→super-interface chains are NOT followed: the class reader skips
+// ACC_INTERFACE class files, so an interface's own super-interfaces are
+// unavailable.  Such a (rarer) assignability therefore reports `false` here, and
+// `scoreParam` falls back to the low-priority blind match — never to a rejection,
+// so an assignability we cannot prove never blocks a real call.  Walks the
+// superclass chain with the load → `findCacheIdx` → `cacheVals[idx]` pattern that
+// avoids the stage-0 `Option[ClassInfo]` match-arm binding bug.
+func isAssignableRef(ctx: in AutoFfiCtx, fromBin: in String, toBin: in String): Bool {
+  if fromBin == toBin {
+    return true
+  }
+  if toBin == "java/lang/Object" {
+    return true
+  }
+  var cur = fromBin
+  var guard = 0
+  while cur.length > 0 and guard < 64 {
+    if cur == toBin {
+      return true
+    }
+    val fqn = cur.replace("/", ".")
+    loadClass(ctx, fqn)
+    val idx = findCacheIdx(ctx, cur)
+    if idx < 0 {
+      return false
+    }
+    val ci = ctx.cacheVals[idx]
+    var i = 0
+    while i < ci.interfaces.count {
+      if ci.interfaces[i] == toBin {
+        return true
+      }
+      i = i + 1
+    }
+    cur = ci.superName
+    guard = guard + 1
+  }
+  false
+}
+
+// Score one argument descriptor against one parameter descriptor with auto-FFI
+// context.  Delegates the context-free cases to `scoreParamMatch`; for an
+// otherwise-unmatched reference/reference pair, a verified IS-A match scores 4
+// (ranking above the blind fallback, below an exact match at 10) and an
+// unverifiable pair scores 1 (permissive — the JVM verifier enforces the true
+// constraint at class-load).
+func scoreParam(ctx: in AutoFfiCtx, argDesc: in String, paramDesc: in String): Int {
+  val base = scoreParamMatch(argDesc, paramDesc)
+  if base >= 0 {
+    return base
+  }
   if argDesc.startsWith("L") and paramDesc.startsWith("L") {
+    val fromBin = refDescToBinary(argDesc)
+    val toBin = refDescToBinary(paramDesc)
+    if fromBin.length > 0 and toBin.length > 0 and isAssignableRef(ctx, fromBin, toBin) {
+      return 4
+    }
     return 1
   }
   return -1
@@ -421,7 +494,7 @@ pub func scoreParamMatch(argDesc: in String, paramDesc: in String): Int {
 
 // Score a method against a list of argument descriptor strings.
 // Returns -1 for incompatible, else the sum of per-parameter scores.
-func scoreMethod(method: in ClassMethod, argDescs: in List[String], wantStatic: in Bool): Int {
+func scoreMethod(ctx: in AutoFfiCtx, method: in ClassMethod, argDescs: in List[String], wantStatic: in Bool): Int {
   if wantStatic and not method.isStatic {
     return -1
   }
@@ -432,7 +505,7 @@ func scoreMethod(method: in ClassMethod, argDescs: in List[String], wantStatic: 
   var total = 0
   var i = 0
   while i < params.count {
-    val s = scoreParamMatch(argDescs[i], params[i])
+    val s = scoreParam(ctx, argDescs[i], params[i])
     if s < 0 {
       return -1
     }
@@ -446,7 +519,11 @@ func scoreMethod(method: in ClassMethod, argDescs: in List[String], wantStatic: 
 /// descriptor strings.  Each element of `argDescs` is a JVM type descriptor
 /// produced by `jvmTypeToDescStr` in Jvm.Codegen.
 pub func findBestMethod(
-  ci: in ClassInfo, methodName: in String, argDescs: in List[String], wantStatic: in Bool
+  ctx: in AutoFfiCtx,
+  ci: in ClassInfo,
+  methodName: in String,
+  argDescs: in List[String],
+  wantStatic: in Bool,
 ): Option[ClassMethod] {
   var best: Option[ClassMethod] = None
   var bestScore: Int = -1
@@ -454,7 +531,7 @@ pub func findBestMethod(
   while i < ci.methods.count {
     val m = ci.methods[i]
     if m.name == methodName {
-      val s = scoreMethod(m, argDescs, wantStatic)
+      val s = scoreMethod(ctx, m, argDescs, wantStatic)
       if s > bestScore {
         bestScore = s
         best = Some(value = m)
@@ -467,13 +544,13 @@ pub func findBestMethod(
 
 /// Find the best-matching constructor in `ci` for the given argument descriptor
 /// strings.  Searches the `constructors` list (public `<init>` entries).
-pub func findBestConstructor(ci: in ClassInfo, argDescs: in List[String]): Option[ClassMethod] {
+pub func findBestConstructor(ctx: in AutoFfiCtx, ci: in ClassInfo, argDescs: in List[String]): Option[ClassMethod] {
   var best: Option[ClassMethod] = None
   var bestScore: Int = -1
   var i = 0
   while i < ci.constructors.count {
     val m = ci.constructors[i]
-    val s = scoreMethod(m, argDescs, false)
+    val s = scoreMethod(ctx, m, argDescs, false)
     // Explicit `s >= 0` mirrors `scoreAndGetSuper` / `findBestInstanceMethod`:
     // negative means "no match" per the `scoreMethod` convention.  The
     // initialisation of `bestScore = -1` provides an equivalent implicit guard
@@ -506,6 +583,7 @@ func findCacheIdx(autoFfi: in AutoFfiCtx, binaryName: in String): Int {
 // `sci` is received as a function parameter — the only stage-0-safe way to
 // access fields of a cross-package record type that arrived via an Option match.
 func scoreAndGetSuper(
+  ctx: in AutoFfiCtx,
   sci: in ClassInfo,
   methodName: in String,
   argDescs: in List[String],
@@ -516,7 +594,7 @@ func scoreAndGetSuper(
   while j < sci.methods.count {
     val m = sci.methods[j]
     if m.name == methodName {
-      val s = scoreMethod(m, argDescs, false)
+      val s = scoreMethod(ctx, m, argDescs, false)
       if s >= 0 {
         allMethods.add(m)
         allScores.add(s)
@@ -549,7 +627,7 @@ pub func findBestInstanceMethod(
   while i < ci.methods.count {
     val m = ci.methods[i]
     if m.name == methodName {
-      val s = scoreMethod(m, argDescs, false)
+      val s = scoreMethod(autoFfi, m, argDescs, false)
       if s >= 0 {
         allMethods.add(m)
         allScores.add(s)
@@ -579,7 +657,7 @@ pub func findBestInstanceMethod(
     val superIdx = findCacheIdx(autoFfi, superBin)
     var nextSuper = ""
     if superIdx >= 0 {
-      nextSuper = scoreAndGetSuper(autoFfi.cacheVals[superIdx], methodName, argDescs, allMethods, allScores)
+      nextSuper = scoreAndGetSuper(autoFfi, autoFfi.cacheVals[superIdx], methodName, argDescs, allMethods, allScores)
     }
     superBin = nextSuper
   }
@@ -620,9 +698,9 @@ pub func verifyExternTargetJvm(
     case None -> true
     case Some(ci) -> {
       val resolved = if methodName == "new" {
-        findBestConstructor(ci, argDescs)
+        findBestConstructor(ctx, ci, argDescs)
       } else {
-        findBestMethod(ci, methodName, argDescs, wantStatic)
+        findBestMethod(ctx, ci, methodName, argDescs, wantStatic)
       }
       match resolved {
         case Some(_) -> true

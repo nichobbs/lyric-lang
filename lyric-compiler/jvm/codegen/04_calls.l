@@ -958,7 +958,7 @@ func lowerAutoFfiStaticCall(
       if methodName == "new" {
         return lowerAutoFfiConstructorCall(ctx, insns, ci, args)
       }
-      match findBestMethod(ci, methodName, argDescs, true) {
+      match findBestMethod(ctx.autoFfi, ci, methodName, argDescs, true) {
         case None -> {
           // No static overload matches — compile-time diagnostic.
           var argStr = ""
@@ -1132,7 +1132,7 @@ func lowerAutoFfiConstructorCall(
     argDescs.add(jvmTypeToDescStr(aTy))
     i = i + 1
   }
-  match findBestConstructor(ci, argDescs) {
+  match findBestConstructor(ctx.autoFfi, ci, argDescs) {
     case None -> {
       var argStr = ""
       var ai = 0

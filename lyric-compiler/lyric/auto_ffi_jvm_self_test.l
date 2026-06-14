@@ -22,6 +22,7 @@
 package Lyric.AutoFfiJvmSelfTest
 
 import Std.Core
+import Std.Collections
 import Std.Testing
 
 extern type JMath = "java.lang.Math"
@@ -29,6 +30,8 @@ extern type JMath = "java.lang.Math"
 extern type JInteger = "java.lang.Integer"
 
 extern type JStringBuilder = "java.lang.StringBuilder"
+
+extern type JArrayList = "java.util.ArrayList"
 
 // ── Math int overloads ────────────────────────────────────────────────────────
 test "Math.max(int, int) returns larger value" {
@@ -121,6 +124,24 @@ test "StringBuilder.new(String) constructor binding" {
 test "StringBuilder.new() no-arg constructor binding" {
   val sb = JStringBuilder.new()
   assertEqualInt(sb.length(), 0, "empty StringBuilder length")
+}
+
+// ── Verified reference assignability in overload resolution (#3409) ────────────
+//
+// `ArrayList` declares three constructors: `ArrayList()`, `ArrayList(int)`, and
+// `ArrayList(Collection)`.  Passing a Lyric `List[String]` (a `java.util.ArrayList`
+// at runtime) must select the copy constructor `ArrayList(Collection)`: the arg
+// is verified IS-A `java.util.Collection` by walking ArrayList's superclass chain
+// to `AbstractCollection`, which directly declares the `Collection` interface.
+// The scorer ranks that verified match (4) above the blind reference fallback (1),
+// and rejects `ArrayList(int)` (a reference arg never matches an `int` parameter).
+test "ArrayList(Collection) copy constructor — verified reference assignability (#3409)" {
+  val src: List[String] = newList()
+  src.add("alpha")
+  src.add("beta")
+  src.add("gamma")
+  val copy = JArrayList.new(src)
+  assertEqualInt(copy.size(), 3, "copied ArrayList preserves element count")
 }
 
 // Phase 5 (F0015-J): @externTarget with metadata-verified signature.
