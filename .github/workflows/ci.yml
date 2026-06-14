@@ -1512,6 +1512,27 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_value_self_test.l
 
+      # Map-enhancements self-test (issue #3442). Tests Map helpers:
+      # mapSize, mapIsEmpty (dotnet target; JVM parity pending #3577).
+      # Iteration functions (mapKeys, mapValues, mapEntries, mapForEach, mapPutAll)
+      # and the MapEntry record are deferred to a follow-up PR pending resolution
+      # of codegen epics #3511 and #3512.  Run via native `lyric test` (in-process
+      # through Msil.Bridge).
+      - name: Map-enhancements self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping map-enhancements self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping map-enhancements self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_enhancements_self_test.l
+
       # Impl-method self-test — #1784.  Interface/impl methods with value-type
       # parameters (`Int`/`Bool`/`Double`/`Char`) — and `?`/early-`return` in
       # their bodies — dispatch correctly (value-type args are no longer boxed
