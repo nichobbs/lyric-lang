@@ -2438,9 +2438,7 @@ func resolveFromInstanceItem(it: in Item, instDecl: in AspectDecl, templates: in
   }
 }
 
-func resolveFromInstances(items: in List[Item], templates: in Map[String, AspectDecl]): List[Item] {
-  // Fast-path: if no from-instance exists in items, return the original list.
-  var anyFrom = false
+func hasFromInstance(items: in List[Item]): Bool {
   var fi = 0
   while fi < items.count {
     match items[fi].kind {
@@ -2448,9 +2446,7 @@ func resolveFromInstances(items: in List[Item], templates: in Map[String, Aspect
         match aDecl.from {
           case Some(_) -> {
             match aDecl.around {
-              case None -> {
-                anyFrom = true
-              }
+              case None -> return true
               case Some(_) -> ()
             }
           }
@@ -2461,7 +2457,12 @@ func resolveFromInstances(items: in List[Item], templates: in Map[String, Aspect
     }
     fi = fi + 1
   }
-  if not anyFrom {
+  false
+}
+
+func resolveFromInstances(items: in List[Item], templates: in Map[String, AspectDecl]): List[Item] {
+  // Fast-path: if no from-instance exists in items, return the original list.
+  if not hasFromInstance(items) {
     return items
   }
   val result: List[Item] = newList()
