@@ -1499,7 +1499,21 @@ func buildWrapper(
   // `Unit`-returning targets (handled by `effectiveBody` above) are left
   // without a synthetic var/return.
   val loweredStmts = match around.retName {
-    case Some(retVar) -> if assignsRet and not targetReturnsUnit { val withRet: List[Statement] = newList(); withRet.add(mkVarStmtNoInit(retVar, originalFn.ret)); var ri = 0; while ri < finalStmts.count { withRet.add(finalStmts[ri]); ri = ri + 1 }; withRet.add(Statement(kind = SReturn(value = Some(value = singleSegPathExpr(retVar))), span = synSpan())); withRet } else { finalStmts }
+    case Some(retVar) -> {
+      if assignsRet and not targetReturnsUnit {
+        val withRet: List[Statement] = newList()
+        withRet.add(mkVarStmtNoInit(retVar, originalFn.ret))
+        var ri = 0
+        while ri < finalStmts.count {
+          withRet.add(finalStmts[ri])
+          ri = ri + 1
+        }
+        withRet.add(Statement(kind = SReturn(value = Some(value = singleSegPathExpr(retVar))), span = synSpan()))
+        withRet
+      } else {
+        finalStmts
+      }
+    }
     case None -> finalStmts
   }
   val finalBody = Block(statements = loweredStmts, span = rewiredBody.span)
