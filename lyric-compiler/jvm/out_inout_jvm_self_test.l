@@ -21,12 +21,11 @@
 //!
 //! Scope: this guards the **free-function** holder lowering (the #1761 motivating
 //! shape — `Auth.Kernel.Net.tryExtractClaim(value: out String)` is a free
-//! function).  `out`/`inout` parameters on *instance / interface* methods are a
-//! tracked follow-up on the JVM target (the dispatch-site wrap/unwrap is not yet
-//! implemented); the backend emits a hard compile error for them rather than a
-//! silent by-value miscompile (see `rejectInstanceHolderParams`).  The MSIL
-//! companion `lyric-compiler/lyric/outparam_self_test.l` covers the instance-
-//! method cases on `--target dotnet`.
+//! function).  `out`/`inout` parameters on instance/interface methods are now
+//! also supported on JVM (see `out_inout_instance_jvm_self_test.l` for the
+//! instance-method regression tests, #1763).  The MSIL companion
+//! `lyric-compiler/lyric/outparam_self_test.l` covers instance-method cases on
+//! `--target dotnet`.
 @test_module
 package Lyric.OutInoutJvmSelfTest
 
