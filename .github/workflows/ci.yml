@@ -109,7 +109,7 @@ jobs:
 
       - name: Set up .NET (uses bootstrap/global.json)
         if: steps.changes.outputs.has_code_changes == 'true'
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
 
@@ -247,7 +247,7 @@ jobs:
       # and actually fail, so security regressions are caught on every push.
       - name: Upload build artifacts
         if: steps.changes.outputs.has_code_changes == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: build-artifacts
           path: |
@@ -273,7 +273,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
       - name: Set up Java 21 (for JVM emitter tests — class files target major version 65)
@@ -345,11 +345,11 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: build-artifacts
       - name: Restore executable permissions
@@ -405,6 +405,7 @@ jobs:
             lyric-compiler/lyric/class_encoding_self_test.l \
             lyric-compiler/lyric/hof_type_propagation_self_test.l \
             lyric-compiler/lyric/typechecker_extern_dedup_self_test.l \
+            lyric-compiler/lyric/generic_extern_self_test.l \
             lyric-compiler/lyric/enum_msil_self_test.l \
             lyric-compiler/lyric/contract_meta_self_test.l \
             lyric-compiler/lyric/restored_packages_self_test.l \
@@ -1166,11 +1167,11 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: build-artifacts
       - name: Restore executable permissions
@@ -1751,11 +1752,11 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: build-artifacts
       - name: Restore executable permissions
@@ -1986,7 +1987,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
       - name: Set up Java 21 (for JVM emitter tests)
@@ -1995,7 +1996,7 @@ jobs:
           distribution: temurin
           java-version: '21'
       - name: Download build artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: build-artifacts
       - name: Restore executable permissions
@@ -2580,11 +2581,11 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: build-artifacts
       - name: Restore executable permissions
@@ -2705,6 +2706,12 @@ jobs:
           "$lyric_bin" test --manifest lyric-mq/lyric.toml || overall=$?
           echo "=== lyric-grpc tests ==="
           "$lyric_bin" test --manifest lyric-grpc/lyric.toml || overall=$?
+          # lyric-web went green once the generic-`ConcurrentDictionary` extern
+          # codegen fix (#3392) landed: checkRateLimit is no longer a silent
+          # no-op, so the rate-limit suite asserts real deny/burst behaviour.
+          # Built above (lyric-web chain); run here to guard the fix.
+          echo "=== lyric-web tests ==="
+          "$lyric_bin" test --manifest lyric-web/lyric.toml || overall=$?
           if [ $overall -ne 0 ]; then
             echo "::error::ecosystem test suite failed — security regression detected"
             exit $overall
@@ -2724,11 +2731,11 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: build-artifacts
       - name: Restore executable permissions
@@ -2924,11 +2931,11 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: build-artifacts
       - name: Restore executable permissions
@@ -3875,11 +3882,11 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: build-artifacts
       - name: Restore executable permissions
@@ -4303,11 +4310,11 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: build-artifacts
       - name: Restore executable permissions
@@ -4343,7 +4350,7 @@ jobs:
           ls -lah ../coverage || true
 
       - name: Upload coverage artifact (main only)
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: code-coverage
           path: coverage/
@@ -4379,7 +4386,7 @@ jobs:
 
     steps:
       - name: Mark PR ready for review if build succeeds
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7.0.1
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         with:

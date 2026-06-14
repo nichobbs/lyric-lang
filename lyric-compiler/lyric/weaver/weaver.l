@@ -786,19 +786,8 @@ func mkVarStmt(name: in String, ty: in Option[TypeExpr], init: in Expr): Stateme
 /// (#3402): the wrapper declares `var ret: <returnType>`, the rewritten
 /// body assigns into it, and the wrapper returns it.  Codegen
 /// zero-initialises an uninitialised `var` slot, so all paths are
-/// well-defined even if a branch forgets to assign.
-///
-/// The `init = None` (`Option[Expr]`) is constructed via
-/// `mkVarNoInitBinding` in `Lyric.Parser` rather than inline here:
-/// the stage-0 bootstrap emitter miscompiles `Option[Expr]` `None`
-/// construction in a consumer package (the value matches neither
-/// `Some` nor `None` downstream), so codegen's `LBVar` `case None`
-/// arm would never fire — no slot is allocated, the body's
-/// `ret = …` assignment is discarded, and `return ret` reads the
-/// zero default.  Routing the construction through the declaring
-/// package keeps the generic instantiation known-good, mirroring the
-/// `someAspectAround` precedent.  Expected to become dead once the
-/// stage-0 F# emitter is retired (docs/23-fsharp-shim-elimination.md).
+/// well-defined even if a branch forgets to assign.  See the body comment
+/// for why `init = None` must go through a type-annotated local.
 func mkVarStmtNoInit(name: in String, ty: in Option[TypeExpr]): Statement {
   // The `init = None` is bound through an explicitly-typed local first
   // (`val noInit: Option[Expr] = None`) rather than passed inline as the
@@ -915,6 +904,106 @@ func eobAssignsToName(eob: in ExprOrBlock, name: in String): Bool {
   match eob {
     case EOBBlock(b) -> blockAssignsToName(b, name)
     case EOBExpr(e) -> exprAssignsToName(e, name)
+  }
+}
+
+/// Rewrite every assignment to the bare local `name` (`name = <expr>`) into a
+/// bare expression statement (`<expr>`), descending through the same nested
+/// statement and expression-position branch forms as `blockAssignsToName`.
+/// Used by the out-variable lowering for `Unit`-returning targets (#3424),
+/// where the named `ret` carries no value: keeping `proceed()`'s effect while
+/// dropping the meaningless store avoids synthesising a void `var`/`return`.
+func stripRetAssignments(blk: in Block, name: in String): Block {
+  val acc: List[Statement] = newList()
+  var i = 0
+  while i < blk.statements.count {
+    acc.add(stripRetAssignmentsStmt(blk.statements[i], name))
+    i = i + 1
+  }
+  Block(statements = acc, span = blk.span)
+}
+
+func stripRetAssignmentsStmt(s: in Statement, name: in String): Statement {
+  val sp = s.span
+  match s.kind {
+    case SAssign(t, _, value) -> {
+      if exprIsBarePath(t, name) {
+        Statement(kind = SExpr(expr = value), span = sp)
+      } else {
+        s
+      }
+    }
+    case SExpr(e) -> Statement(kind = SExpr(expr = stripRetAssignmentsExpr(e, name)), span = sp)
+    case SReturn(o) -> match o { case Some(e) -> Statement(kind = SReturn(value = Some(value = stripRetAssignmentsExpr(e, name))), span = sp); case None -> s }
+    case SFor(lbl, pat, iter, body) -> Statement(kind = SFor(label = lbl, pat = pat, iter = iter, body = stripRetAssignments(body, name)), span = sp)
+    case SWhile(lbl, cond, body) -> Statement(kind = SWhile(label = lbl, cond = cond, body = stripRetAssignments(body, name)), span = sp)
+    case SLoop(lbl, body) -> Statement(kind = SLoop(label = lbl, body = stripRetAssignments(body, name)), span = sp)
+    case SScope(b, body) -> Statement(kind = SScope(binding = b, body = stripRetAssignments(body, name)), span = sp)
+    case SDefer(body) -> Statement(kind = SDefer(body = stripRetAssignments(body, name)), span = sp)
+    case STry(body, catches, finally_) -> {
+      val newCatches: List[CatchClause] = newList()
+      var i = 0
+      while i < catches.count {
+        val cc = catches[i]
+        newCatches.add(
+          CatchClause(
+            typeName = cc.typeName,
+            bindName = cc.bindName,
+            body = stripRetAssignments(cc.body, name),
+            span = cc.span
+          )
+        )
+        i = i + 1
+      }
+      val newFinally = match finally_ { case Some(fb) -> Some(value = stripRetAssignments(fb, name)); case None -> None }
+      Statement(kind = STry(body = stripRetAssignments(body, name), catches = newCatches, finally_ = newFinally), span = sp)
+    }
+    case _ -> s
+  }
+}
+
+/// Expression-position counterpart: rewrite `name = <e>` (the `EAssign` form,
+/// or one nested in a branch/block used in expression position) to `<e>`.
+func stripRetAssignmentsExpr(e: in Expr, name: in String): Expr {
+  val s = e.span
+  match e.kind {
+    case EAssign(t, _, value) -> {
+      if exprIsBarePath(t, name) {
+        value
+      } else {
+        e
+      }
+    }
+    case EParen(inner) -> Expr(kind = EParen(inner = stripRetAssignmentsExpr(inner, name)), span = s)
+    case EBlock(blk) -> Expr(kind = EBlock(block = stripRetAssignments(blk, name)), span = s)
+    case EUnsafe(blk) -> Expr(kind = EUnsafe(block = stripRetAssignments(blk, name)), span = s)
+    case EIf(cond, thenB, elseB, form) -> {
+      val newElse = match elseB { case None -> None; case Some(eob) -> Some(value = stripRetAssignmentsEOB(eob, name)) }
+      Expr(
+        kind = EIf(cond = cond, thenBranch = stripRetAssignmentsEOB(thenB, name), elseBranch = newElse, thenForm = form),
+        span = s
+      )
+    }
+    case EMatch(scrut, arms) -> {
+      val newArms: List[MatchArm] = newList()
+      var i = 0
+      while i < arms.count {
+        val a = arms[i]
+        newArms.add(
+          MatchArm(pattern = a.pattern, guard = a.guard, body = stripRetAssignmentsEOB(a.body, name), span = a.span)
+        )
+        i = i + 1
+      }
+      Expr(kind = EMatch(scrutinee = scrut, arms = newArms), span = s)
+    }
+    case _ -> e
+  }
+}
+
+func stripRetAssignmentsEOB(eob: in ExprOrBlock, name: in String): ExprOrBlock {
+  match eob {
+    case EOBBlock(b) -> EOBBlock(block = stripRetAssignments(b, name))
+    case EOBExpr(e) -> EOBExpr(expr = stripRetAssignmentsExpr(e, name))
   }
 }
 
@@ -1351,7 +1440,32 @@ func buildWrapper(
 
   val rewiredBody = rewriteBlock(ctx, around.body)
 
-  // Compose: <config prelude> ++ <call prelude> ++ <rewritten body>.
+  // Does the advice write the named return value (`ret = ...`)?  This is the
+  // out-variable form every shipped library template uses; expression-style
+  // bodies (trailing `proceed(args)`, no `ret` write) never do.
+  val assignsRet = match around.retName {
+    case Some(retVar) -> blockAssignsToName(rewiredBody, retVar)
+    case None -> false
+  }
+
+  // For a `Unit`-returning target the named `ret` is meaningless — there is
+  // no value to thread or return — and synthesising `var ret: Unit` +
+  // `return ret` trips codegen (a void local has no slot; the discarded
+  // `ret = proceed()` store pops an empty stack), producing the very
+  // `InvalidProgramException` #3402 set out to remove (#3424).  Strip each
+  // `ret = <expr>` to a bare `<expr>` statement so its effect (e.g.
+  // `proceed()`) still runs, and emit no var/return — the wrapper is a
+  // plain void method that falls off the end.
+  val effectiveBody = if assignsRet and targetReturnsUnit {
+    match around.retName {
+      case Some(retVar) -> stripRetAssignments(rewiredBody, retVar)
+      case None -> rewiredBody
+    }
+  } else {
+    rewiredBody
+  }
+
+  // Compose: <config prelude> ++ <call prelude> ++ <body>.
   val finalStmts: List[Statement] = newList()
   var i = 0
   while i < cfgStmts.count {
@@ -1364,22 +1478,22 @@ func buildWrapper(
     i = i + 1
   }
   i = 0
-  while i < rewiredBody.statements.count {
-    finalStmts.add(rewiredBody.statements[i])
+  while i < effectiveBody.statements.count {
+    finalStmts.add(effectiveBody.statements[i])
     i = i + 1
   }
 
   // `around(...) -> ret` out-variable lowering (#3402).  When the advice
-  // body writes the named return value (`ret = ...`) — the form every
-  // shipped library template uses — the wrapper must declare `ret` as a
-  // local of the target's return type and return it after the body runs;
-  // otherwise the synthesised wrapper falls off the end of a non-void
-  // method, producing invalid IL (InvalidProgramException at runtime).
-  // Expression-style bodies (trailing `proceed(args)`, no `ret`
-  // assignment) are left byte-identical to the pre-#3402 weaver.
-  val loweredStmts = match around.retName {
-    case Some(retVar) -> {
-      if blockAssignsToName(rewiredBody, retVar) {
+  // body writes the named return value (`ret = ...`) and the target returns
+  // a real value, the wrapper must declare `ret` as a local of the target's
+  // return type and return it after the body runs; otherwise the synthesised
+  // wrapper falls off the end of a non-void method, producing invalid IL
+  // (InvalidProgramException at runtime).  Expression-style bodies and
+  // `Unit`-returning targets (handled by `effectiveBody` above) are left
+  // without a synthetic var/return.
+  val loweredStmts = if assignsRet and not targetReturnsUnit {
+    match around.retName {
+      case Some(retVar) -> {
         val withRet: List[Statement] = newList()
         withRet.add(mkVarStmtNoInit(retVar, originalFn.ret))
         var ri = 0
@@ -1389,11 +1503,11 @@ func buildWrapper(
         }
         withRet.add(Statement(kind = SReturn(value = Some(value = singleSegPathExpr(retVar))), span = synSpan()))
         withRet
-      } else {
-        finalStmts
       }
+      case None -> finalStmts
     }
-    case None -> finalStmts
+  } else {
+    finalStmts
   }
   val finalBody = Block(statements = loweredStmts, span = rewiredBody.span)
 
