@@ -6971,8 +6971,6 @@ func lowerPatternTestMsil(
               match scrutTy {
                 case MString -> {
                   insns.add(MCall(methodToken = cctx.tokObjectStaticEquals))
-                  insns.add(MLdcI4(v = 0))
-                  insns.add(MCeq)
                   insns.add(MBrFalse(label = failLabel))
                 }
                 case _ -> {
