@@ -65,3 +65,44 @@ test "RequiresAuth aspect: an invalid token is denied with 403 before the handle
     case Err(e) -> assertEqualInt(e.status, 403, "invalid token short-circuits with 403 Forbidden")
   }
 }
+
+// The `enabled` master switch must bypass the guard entirely when false — a
+// regression that dropped the bypass would silently start rejecting traffic on
+// endpoints the operator deliberately left unguarded.
+aspect KeyGuardDisabled from Web.Aspects.ApiKey {
+  matches: name like "apiKeyBypassed*"
+  config {
+    expectedKey: String = "secret-key-123"
+    enabled: Bool = false
+  }
+}
+
+pub func apiKeyBypassedHandler(apiKey: in String): Result[String, Web.ApiError] {
+  return Ok("reached")
+}
+
+test "ApiKey aspect: enabled=false bypasses the key check" {
+  match apiKeyBypassedHandler("wrong-key") {
+    case Ok(v) -> assertEqual(v, "reached", "a disabled guard must let any call through")
+    case Err(_) -> assertTrue(false, "a disabled guard must not reject")
+  }
+}
+
+aspect AuthGuardDisabled from Web.Aspects.RequiresAuth {
+  matches: name like "authBypassed*"
+  config {
+    jwtSecret: String = "test-signing-secret"
+    enabled: Bool = false
+  }
+}
+
+pub func authBypassedHandler(authToken: in String): Result[String, Web.ApiError] {
+  return Ok("reached")
+}
+
+test "RequiresAuth aspect: enabled=false bypasses JWT verification" {
+  match authBypassedHandler("not.a.valid.jwt") {
+    case Ok(v) -> assertEqual(v, "reached", "a disabled guard must let any call through")
+    case Err(_) -> assertTrue(false, "a disabled guard must not reject")
+  }
+}
