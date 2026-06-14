@@ -41,6 +41,10 @@ config CatalogDb {
 // GrpcAuth reads the token from gRPC metadata (LYRIC_ASPECT_GRPCAUTH_*).
 aspect GrpcAuth from Grpc.Aspects.RequiresGrpcAuth {
   matches: visibility: pub
+  config {
+    @sensitive
+    jwtSecret: String = ""
+  }
 }
 
 aspect GrpcCircuit from Grpc.Aspects.GrpcCircuitBreaker {
