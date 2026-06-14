@@ -1789,6 +1789,7 @@ func bumpInDegrees(
         if inDegree.containsKey(inner) {
           val d = match mapGet(inDegree, inner) { case Some(v) -> v; case None -> 0 }
           val nd = d + delta
+          val _ = inDegree.remove(inner)
           inDegree.add(inner, nd)
           if delta < 0 and nd == 0 {
             queue.add(inner)
