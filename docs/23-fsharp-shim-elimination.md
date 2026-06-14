@@ -1,10 +1,19 @@
 # 23 — F# Shim Elimination
 
-**Status: STDLIB SHIM ELIMINATED.** The original target —
-`bootstrap/src/Lyric.Stdlib/Stdlib.fs` — was deleted entirely in
-D-progress-140 (2026-04 era). The plan below describes the
-multi-stage journey; sections 4.1–4.3 are now **historical record**
-of how each bucket was retired.
+**Status: RUNTIME F# DECOMMISSION COMPLETE (D-progress-529).** The
+`lyric` AOT binary and every user-facing Lyric program now execute
+with **zero F# in the runtime closure** — no `Lyric.Emitter.dll`,
+no `FSharp.Core.dll`, no ecosystem host shims. The F# stage-0
+bootstrap compiler (`bootstrap/src/Lyric.{Lexer,Parser,TypeChecker,
+Emitter,Cli}/`) survives solely as a build tool: it compiles the
+self-hosted `.l` sources once, after which every subsequent `lyric`
+release is built by a prior self-hosted release. No user-initiated
+command ever invokes F# code at runtime.
+
+The original target — `bootstrap/src/Lyric.Stdlib/Stdlib.fs` — was
+deleted entirely in D-progress-140 (2026-04 era). The plan below
+describes the multi-stage journey; sections 4.1–4.3 are now
+**historical record** of how each bucket was retired.
 
 What remains, and the **current policy** (per `CLAUDE.md` §"F# is
 for the existing bootstrap compiler only"):
