@@ -399,6 +399,7 @@ jobs:
             lyric-compiler/lyric/cfg_self_test.l \
             lyric-compiler/lyric/derives_self_test.l \
             lyric-compiler/lyric/mono_self_test.l \
+            lyric-compiler/lyric/alias_impl_self_test.l \
             lyric-compiler/lyric/range_subtype_self_test.l \
             lyric-compiler/lyric/fmt_self_test.l \
             lyric-compiler/lyric/async_generator_self_test.l \

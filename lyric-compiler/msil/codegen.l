@@ -251,6 +251,14 @@ pub record CodegenCtx {
   // extending System.Enum) is rejected by the loader (#3196).
   enumTypeNames: Map[String, Int]  // enum simple name → case count
   enumCaseOrdinals: Map[String, Int]  // case name (simple + pkg-qualified) → ordinal
+  // User type-alias targets (`alias Sid = String`).  Key = alias simple name and
+  // its pkg-qualified form; value = the alias RHS TypeExpr.  `typeExprToMsilCtx`
+  // resolves a `TRef` to an alias through this map so an alias-to-primitive
+  // (`Sid` → `String`) lowers to the underlying MsilType.  Without it the alias
+  // degraded to `MClass("…Sid")`, so an interface-impl method typed with the
+  // alias (`func make(): Sid`) didn't match the interface slot (`: String`) and
+  // the loader rejected the type with "method has no implementation" (#3673).
+  aliasTargets: Map[String, TypeExpr]
   // FFI caches (#370 + Phase R6).  Populated lazily by
   // emitExternTargetBody as `@externTarget` declarations are walked.
   ffiAsmRefs: Map[String, Int]  // assembly simple name → AssemblyRef row index
@@ -1522,6 +1530,7 @@ pub func newCodegenCtx(
     constValues = newMap(),
     constBareClaimed = newMap(),
     enumTypeNames = newMap(),
+    aliasTargets = newMap(),
     enumCaseOrdinals = newMap(),
     ffiAsmRefs = newMap(),
     ffiTypeRefs = newMap(),
@@ -1732,6 +1741,29 @@ pub func registerEnumDeclMsil(cctx: in CodegenCtx, pkgName: in String, decl: in 
       cctx.enumCaseOrdinals.add(tn, ei)
     }
     ei = ei + 1
+  }
+}
+
+// Record a user type alias so `typeExprToMsilCtx` can follow `alias Name = RHS`
+// to its target type.  Both the simple name and the pkg-qualified form are
+// keyed (first-wins, like the other simple-name indices), so a cross-package
+// alias referenced by its qualified name (`Session.SessionId`) resolves too.
+pub func registerTypeAliasMsil(cctx: in CodegenCtx, pkgName: in String, decl: in TypeAliasDecl): Unit {
+  // Skip a re-export whose RHS names a type with the same simple name (the
+  // stdlib's `pub alias Random = <extern Random>` pattern).  Registering it
+  // would make `typeExprToMsilCtx` recurse on the same `seg` forever; leaving
+  // it unregistered routes the name through the normal extern / MClass path,
+  // exactly as before this resolution existed.
+  val rhsSelfNamed = match decl.rhs.kind { case TRef(path) -> lastSegmentMsil(path) == decl.name; case _ -> false }
+  if rhsSelfNamed {
+    return
+  }
+  if not cctx.aliasTargets.containsKey(decl.name) {
+    cctx.aliasTargets.add(decl.name, decl.rhs)
+  }
+  val qn = pkgName + "." + decl.name
+  if not cctx.aliasTargets.containsKey(qn) {
+    cctx.aliasTargets.add(qn, decl.rhs)
   }
 }
 
@@ -3818,6 +3850,16 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
         MVoid
       } else if seg == "Object" {
         MObject
+      } else if cctx.aliasTargets.containsKey(seg) {
+        // Follow `alias Name = RHS` to its target so an alias-to-primitive
+        // (`Sid` → `String`) lowers to the underlying MsilType rather than a
+        // bogus `MClass("…Sid")` (#3673).  Alias chains resolve via the
+        // recursion; the type checker has already rejected cyclic aliases.
+        match mapGet(cctx.aliasTargets, seg) {
+          case Some(rhs) -> typeExprToMsilCtx(cctx, rhs, pkgName)
+          // Unreachable: the `containsKey(seg)` guard above guarantees Some.
+          case None -> panic("typeExprToMsilCtx: aliasTargets.containsKey returned true but mapGet returned None for " + seg)
+        }
       } else if cctx.enumTypeNames.containsKey(seg) {
         // Lyric enum: ordinal-int representation (F# parity).  Encoding the
         // enum as CLASS + TypeDef would name a value type with reference
@@ -17757,6 +17799,9 @@ func scanExternTypesMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
           cctx.externTypeNames.add(decl.name, decl.clrName)
         }
       }
+      case ITypeAlias(decl) -> {
+        registerTypeAliasMsil(cctx, joinSegsMsil(file.packageDecl.path.segments, "."), decl)
+      }
       case _ -> {
       }
     }
@@ -19732,6 +19777,13 @@ func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact): 
         // case resolves to its ldc.i4 ordinal at consumer call sites.
         registerEnumDeclMsil(cctx, art.packageName, decl)
       }
+      case ITypeAlias(decl) -> {
+        // Restored type aliases (carried in contract metadata via
+        // reprForTypeAlias) so a consumer's signature that names a cross-package
+        // alias (`Session.SessionId`) resolves to its underlying type, matching
+        // the interface slot it implements (#3673).
+        registerTypeAliasMsil(cctx, art.packageName, decl)
+      }
       case _ -> ()
     }
     i = i + 1
@@ -20476,6 +20528,10 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
     // needed because enum values never appear as reference types in IL.
     case IEnum(decl) -> {
       registerEnumDeclMsil(cctx, packageName, decl)
+      return
+    }
+    case ITypeAlias(decl) -> {
+      registerTypeAliasMsil(cctx, packageName, decl)
       return
     }
     case _ -> {
