@@ -155,6 +155,20 @@ func isVarBinding(s: in Statement, name: in String): Bool {
   }
 }
 
+/// True iff the block (transitively) defines a local binding (val/let/var)
+/// whose binding name equals `name`.  Used to confirm that a woven body
+/// contains an injected `val __before = 1`-style statement.
+func bodyDefinesLocal(blk: in Block, name: in String): Bool {
+  var i = 0
+  while i < blk.statements.count {
+    if isValBinding(blk.statements[i], name) or isVarBinding(blk.statements[i], name) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 // Count `import <seg0>.<seg1>` entries in the file's import list.
 func importCount(file: in SourceFile, seg0: in String, seg1: in String): Int {
   var n = 0
@@ -1321,6 +1335,22 @@ test "collectAspectTemplates skips aspect with no around (consumer instance)" {
   assertTrue(not templates.containsKey("Lib.Tap.Tap"), "from-instance not collected as template")
 }
 
+test "from-instance aspect is resolved to template around and weaved" {
+  val tplSrc = "package Lib.Tap\n" + "pub aspect Tap {\n" + "  matches: name like \"*\"\n" + "  around(args) -> ret {\n" +
+    "    val __before = 1\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Tap")
+  val consumeSrc = "package App\n" + "aspect MyTap from Lib.Tap.Tap {\n" + "  matches: name like \"doWork\"\n" + "}\n" +
+    "func doWork(x: in Int): Int { x }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(wr.diagnostics.count == 0, "no diagnostics")
+  val wrapper = firstFunction(wr.file, "doWork")
+  val body = functionBody(wrapper)
+  assertTrue(bodyDefinesLocal(body, "__before"), "template around body injected: val __before defined")
+}
+
 test "from-instance aspect with no matching template passes through unchanged" {
   val templates: Map[String, AspectDecl] = newMap()
   val consumeSrc = "package App\n" + "aspect MyTap from Lib.Tap.Tap {\n" + "  matches: name like \"doWork\"\n" + "}\n" +
@@ -1329,4 +1359,20 @@ test "from-instance aspect with no matching template passes through unchanged" {
   assertTrue(wr.diagnostics.count == 0, "no diagnostics")
   val fn = firstFunction(wr.file, "doWork")
   assertTrue(fn.name == "doWork", "function is unmodified (template not found → no weaving)")
+}
+
+test "weaveFileWithDiagsAndTemplates also weaves inline aspects (no from)" {
+  val templates: Map[String, AspectDecl] = newMap()
+  val consumeSrc = "package App\n" + "aspect InlineAspect {\n" + "  matches: name like \"*\"\n" +
+    "  around(args) -> ret {\n" +
+    "    var __inline = 42\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n" +
+    "func doWork(x: in Int): Int { x }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(wr.diagnostics.count == 0, "no diagnostics")
+  val wrapper = firstFunction(wr.file, "doWork")
+  val body = functionBody(wrapper)
+  assertTrue(bodyDefinesLocal(body, "__inline"), "inline around body injected: var __inline defined")
 }

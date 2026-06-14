@@ -25124,3 +25124,64 @@ Self-test: `const_pattern_self_test.l` (`@test_module`).  Runs on both
 `--target dotnet` (self-hosted MSIL bridge) and `--target jvm`.  Covers
 `Int`, `Long`, `String`, `Char`, `Bool` const patterns, a const-ref inside
 an or-pattern arm, and mixed literal/const arms — 16/16 on both targets.
+
+### D-progress-524 — MSIL: `typeExprToMsilGenBody` handles `TGenericApp` correctly (closes #3332)
+
+`typeExprToMsilGenBody` (in `lyric-compiler/msil/codegen.l`) is used to record
+function return-type tokens in `funcRetTypes` for the monomorphiser and
+cross-package generics resolution.  Before this fix the function had no
+`TGenericApp` case, so a function whose return type was a generic application
+such as `Outcome[Result[T, VErr]]` fell through to the `typeExprToMsilCtx`
+path which tried to resolve generic type vars (`T`, `VErr`) as concrete BCL
+types and produced phantom `MClass("Lib.T")` entries.  At runtime every
+`isinst MClass("Lib.T")` checked against `null` (the type was never defined),
+causing the exhaustiveness `panic` to fire on every branch.
+
+The fix adds a `TGenericApp` arm that erases any argument containing a generic
+type variable to `MObject` and recurses for concrete arguments (same
+structure as the existing `typeExprToMsilCtx` `TGenericApp` arm).
+
+Regression test: test 17 added to `msil_project_bridge_self_test.l` —
+cross-package generic union with `Outcome[Result[Int, String]]` as the concrete
+instantiation, asserting that both `Ok` and `Err` arms fire correctly at
+runtime.  The test ran red before the fix and green after.
+
+### D-progress-525 — Weaver + MSIL bridge: cross-package aspect template resolution (#3414)
+
+`aspect X from Lib.Template { matches: … }` is the instantiation form where
+the consumer package provides match predicates but the `around` body lives in
+the template declaration in another package.  Before this entry the weaver
+called `weaveFileWithDiags` which had no access to cross-package template
+bodies, so from-instance aspects were silently dropped (no `around` body →
+no weaving).
+
+**Weaver** (`lyric-compiler/lyric/weaver/weaver.l`):
+
+- `collectAspectTemplates(items, pkgName, dest)`: walks items and collects
+  every `pub` aspect with an `around` body into `dest` keyed by FQN
+  (`pkgName + "." + name`).
+- `resolveFromInstanceItem(it, instDecl, templates)`: for one from-instance
+  aspect (no `around`, has `from`), looks up the template by FQN and
+  synthesises a concrete `AspectDecl` carrying the template's `around` +
+  `contracts`, the instance's `matches` / `exceptNames` / `wraps` / `inside`,
+  and an effective `config` (instance config if non-empty, else template
+  defaults).
+- `resolveFromInstances(items, templates)`: fast-path skips the list rebuild
+  when no from-instances are present; otherwise rebuilds, calling
+  `resolveFromInstanceItem` per `IAspect`.
+- `weaveFileWithDiagsAndTemplates(file, templates)`: public entry point
+  that runs `resolveFromInstances` before the existing `weaveItemsCore`.
+
+**MSIL bridge** (`lyric-compiler/msil/bridge.l`):
+`compileProjectToMsilWithRestoredAndVersion` now calls
+`Weaver.collectAspectTemplates` for every package before the weave loop, then
+calls `Weaver.weaveFileWithDiagsAndTemplates` per package instead of the
+single-file `weaveFileWithDiags`.
+
+**JVM bridge** (`lyric-compiler/jvm/bridge.l`):
+`runMiddleEnd` similarly collects templates from the whole file list and calls
+`weaveFileWithDiagsAndTemplates` per package, keeping MSIL/JVM parity.
+
+**Tests** (`lyric-compiler/lyric/weaver_self_test.l` §5, 32 tests total):
+template collection (pub/private/from-instance edge cases) and fast-path
+pass-through when no from-instances are present.

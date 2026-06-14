@@ -324,9 +324,14 @@ func isTypeItem(it: in Item): Bool {
 //
 // Mirrors the MSIL bridge's per-package pass order (`?`-propagation after the
 // elaborator, `monoFileWithImports` fed the stdlib's generic `pub func`s, then
-// `Weaver.weaveFileWithDiags` before codegen) so the JVM target weaves
-// aspects and specialises cross-package generics with the same semantics
-// (J2 / docs/44 §5, #2665).
+// `Weaver.weaveFileWithDiagsAndTemplates` before codegen) so the JVM target
+// weaves aspects (including cross-package from-instance aspects, #3414) and
+// specialises cross-package generics with the same semantics (J2 / docs/44 §5,
+// #2665).
+//
+// `templates` is the aspect-template map built from all packages in the
+// bundle before the weave loop; `weaveFileWithDiagsAndTemplates` resolves
+// from-instance aspects against it.  Pass an empty map for single-file builds.
 //
 // `stdlibGenFuncs` supplies the stdlib's pure-Lyric generic `pub func`s to the
 // monomorphizer so cross-package generic calls specialise into this bundle.
@@ -341,6 +346,7 @@ func runMiddleEnd(
   file0: in SourceFile,
   importedPkgs: in List[ImportedPackage],
   stdlibGenFuncs: in List[FunctionDecl],
+  templates: in Map[String, AspectDecl],
   reportTcAdvisories: in Bool,
 ): Option[SourceFile] {
   val tcRes = checkWithImportedPackages(file0, importedPkgs)
@@ -367,9 +373,10 @@ func runMiddleEnd(
   }
 
   // Aspect weaving (B-3) — after mono, before codegen, matching the MSIL
-  // bridge's per-package weave so the todo/06 features and weave-time
-  // diagnostics (A0042 / A0043 / A0044) apply on the JVM target too.
-  val weaveRes = Weaver.weaveFileWithDiags(monoRes.file)
+  // bridge's per-package weave so the todo/06 features, weave-time
+  // diagnostics (A0042 / A0043 / A0044), and cross-package from-instance
+  // aspect resolution (#3414) apply on the JVM target too.
+  val weaveRes = Weaver.weaveFileWithDiagsAndTemplates(monoRes.file, templates)
   if reportAndAbort(weaveRes.diagnostics) {
     return None
   }
@@ -1153,9 +1160,21 @@ pub func compileToJarBundledWithFeatures(
   // MSIL bridge's `collectStdlibGenericFuncs`).
   val stdlibGenFuncs = collectStdlibGenericFuncsJvm(stdlibFiles)
 
+  // Collect cross-package aspect templates from every file in the bundle before
+  // the weave loop so that from-instance aspects in any package can resolve
+  // their template body (#3414; parity with the MSIL bridge).
+  val allTemplates: Map[String, AspectDecl] = newMap()
+  Weaver.collectAspectTemplates(userFile.items, dottedPath(userFile.packageDecl.path), allTemplates)
+  var ati = 0
+  while ati < toBundle.count {
+    val tf = toBundle[ati]
+    Weaver.collectAspectTemplates(tf.items, dottedPath(tf.packageDecl.path), allTemplates)
+    ati = ati + 1
+  }
+
   // User package first (its codegen failing is always fatal).  Its type-check
   // advisories are echoed (they are about the program the user actually wrote).
-  match runMiddleEnd(userFile, importedPkgs, stdlibGenFuncs, true) {
+  match runMiddleEnd(userFile, importedPkgs, stdlibGenFuncs, allTemplates, true) {
     case Some(f) -> {
       // Register sigs synthesised by `deriveFile` (inside `runMiddleEnd`) so
       // that call-site resolution in `codegenPackageInto` can find them.  The
@@ -1197,7 +1216,7 @@ pub func compileToJarBundledWithFeatures(
     val pkgName = dottedPath(f.packageDecl.path)
     val reachable = referencedPkgs.containsKey(pkgJvmOwner(f.packageDecl.path))
     val ok = try {
-      match runMiddleEnd(f, importedPkgs, stdlibGenFuncs, false) {
+      match runMiddleEnd(f, importedPkgs, stdlibGenFuncs, allTemplates, false) {
         case Some(ff) -> {
           collectAspectWovenSigs(ff, registry)
           codegenPackageInto(ff, registry, caseReg, ctorReg, autoFfi, allProjFqns, allClasses)
