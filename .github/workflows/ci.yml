@@ -2701,6 +2701,11 @@ jobs:
           "$lyric_bin" test --manifest lyric-validation/lyric.toml || overall=$?
           echo "=== lyric-proto tests ==="
           "$lyric_bin" test --manifest lyric-proto/lyric.toml || overall=$?
+          # lyric-otel — OTel type vocabulary tests; no path deps (the OTLP
+          # kernel's nuget is only pulled by OTel.Kernel.Net, which the type
+          # tests don't import).
+          echo "=== lyric-otel tests ==="
+          "$lyric_bin" test --manifest lyric-otel/lyric.toml || overall=$?
           # lyric-logging, lyric-mq, and lyric-grpc went green once the
           # enum-value-in-expression-position codegen fix (#3344) landed.  Their
           # path deps are already built above: cache (mq), auth + resilience

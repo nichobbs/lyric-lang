@@ -13,3 +13,6 @@ output_assembly = "I18n.dll"
 [project.packages]
 "I18n" = "src/i18n.l"
 
+[project.tests]
+"I18n.I18nTests" = "tests/i18n_tests.l"
+
