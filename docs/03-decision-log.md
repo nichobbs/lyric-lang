@@ -6225,10 +6225,12 @@ the template lookup (registered under `pkg.X`, looked up as `X`).
    package (`pkg.X`) as a fallback after the as-written lookup misses.
 
 **Validation.** `lyric-validation/tests/aspect_weaving_tests.l` is the
-ecosystem's first runtime weaving regression suite (5 cases: cross-package
-`from`, same-package unqualified `from`, and a direct `@inline_template`
-aspect; each asserts the woven handler short-circuits out-of-bounds input
-and proceeds on valid input). It runs in the `ecosystem-security-tests`
+ecosystem's first runtime weaving regression suite (6 cases across four
+instantiation forms: cross-package `from`, same-package unqualified `from`,
+a direct `@inline_template` aspect, and a C-mode `from`-template that reads
+`args.<field>` without referencing the ambient `call` — the #3592 case;
+each asserts the woven handler short-circuits out-of-bounds input and
+proceeds on valid input). It runs in the `ecosystem-security-tests`
 CI job via the already-wired `lyric-validation` manifest.
 
 **Out of scope (follow-up).** Defect 4 of #3543 — aspect templates that
