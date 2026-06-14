@@ -174,13 +174,19 @@ test "enqueue wrapper: uses default limits and queues the job (#3174)" {
   }
 }
 
-test "enqueueWith wrapper: honours explicit maxAttempts/timeoutMs (#3174)" {
+test "enqueueWith wrapper: honours explicit maxAttempts/timeoutMs (#3174, #3515)" {
   val scheduler = Jobs.inProcess()
   match Jobs.enqueueWith(scheduler, "tuned-job", "{}", 5, 60000) {
     case Err(e) -> assertTrue(false, "enqueueWith wrapper must succeed: " + e)
     case Ok(jobId) -> {
       assertTrue(jobId.length > 0, "enqueueWith wrapper returns non-empty job ID")
       assertTrue(scheduler.queue.length == 1, "queue has one job after enqueueWith wrapper")
+      // Assert the explicit retry/timeout actually reached the stored JobSpec,
+      // not just that the job was queued (#3515).
+      val spec = scheduler.queue[0]
+      assertEqual(spec.name, "tuned-job", "stored spec name")
+      assertEqualInt(spec.maxAttempts, 5, "stored spec maxAttempts honours the explicit argument")
+      assertEqualInt(spec.timeoutMs, 60000, "stored spec timeoutMs honours the explicit argument")
     }
   }
 }
