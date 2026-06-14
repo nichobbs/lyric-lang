@@ -5,7 +5,7 @@ Lyric defaults to .NET, but it also targets the JVM. `lyric build --target jvm` 
 The two targets share the same language, the same type system, the same contracts, and the same standard library surface. What differs is the output format and the platform-specific kernel that implements I/O and other runtime services. Switching targets is a compiler flag, not a code change — unless your code imports platform-specific `extern` packages.
 
 ::: note
-**JVM status.** `lyric build --target jvm` is production-ready for the package shapes covered in this chapter. Maven dependency resolution (`[maven]` table in `lyric.toml`) and async generators with `await` in their bodies are both fully implemented. Remaining gaps: `module-path.txt` generation (list JARs on `--module-path` manually for now), GraalVM native-image integration, and the `lyric run --target jvm` convenience wrapper (run via `java -jar` directly). These are noted inline where they arise.
+**JVM status.** `lyric build --target jvm` is production-ready for the package shapes covered in this chapter. Maven dependency resolution (`[maven]` table in `lyric.toml`), `module-path.txt` generation, and async generators with `await` in their bodies are all fully implemented. Remaining gaps: GraalVM native-image integration and the `lyric run --target jvm` convenience wrapper (run via `java -jar` directly). These are noted inline where they arise.
 :::
 
 ## §14.1 Building for the JVM
@@ -44,13 +44,11 @@ The `module-info.class` in the JAR lists every public Lyric type's namespace in 
 For a package with `func main(): Unit`:
 
 ```sh
-java --module-path "$(cat target/build/module-path.txt):target/build/account.jar" \
+java --module-path "$(cat bin/module-path.txt):bin/account.jar" \
      --module lyric.account/lyric.account.Account$Funcs
 ```
 
-::: note
-**Pending.** `lyric build` will write `target/build/module-path.txt` listing all dependency JARs in order. Until it does, list the required JARs on `--module-path` directly. `$()` is used because `--module-path` expects a colon-separated list of paths, not a file reference.
-:::
+`lyric build --target jvm` writes `bin/module-path.txt` alongside the output JAR. The file contains the colon-separated paths of all Maven and path-dependency JARs that the package needs at runtime. `$(cat …)` expands the file inline because `--module-path` expects a colon-separated list, not a file reference.
 
 For a self-contained executable JAR with `Main-Class` set:
 
@@ -224,15 +222,24 @@ Lyric JVM packages can depend on Maven Central libraries through the `[maven]` t
 "org.apache.commons:commons-lang3" = "3.14.0"
 ```
 
-Running `lyric restore` materialises the JARs into `target/restore/jars/` and generates Lyric shim packages under `_extern/` that let your Lyric code import them:
+Running `lyric restore` downloads the declared JARs to the local Maven cache (`~/.m2/repository/`) via `lyric-resolver.jar` and writes a classpath manifest at `target/restore/jvm-classpath.txt` (one JAR path per line). `lyric build --target jvm` reads that file and injects the JAR paths as `LYRIC_FFI_JARS` before invoking the self-hosted JVM emitter, so the auto-FFI resolver can find the Maven library's `.class` files and emit correct `invokevirtual`/`invokestatic` call sites. The build also copies `jvm-classpath.txt` to `bin/module-path.txt` so callers can pass it directly to `java --module-path`.
+
+To call into a Maven library, declare an `extern type` binding in your Lyric source:
 
 ```lyric
-import ComGoogleGuava.Guava.{ImmutableList}
+import Std.Core
+
+extern type ImmutableList = "com.google.common.collect.ImmutableList"
+
+pub func example(): Unit {
+  val xs = ImmutableList.of("a", "b", "c")
+  Console.println(xs.toString())
+}
 ```
 
-The shim is a code-review artefact: every public symbol that crosses the Lyric boundary is visible as a generated file with an `@axiom` annotation attributing the trust to its Maven coordinate. Changes to Maven deps show up in your diff.
+The `lyric-resolver.jar` tool resolves coordinates, handles transitive dependencies, and stores downloaded JARs in the local Maven cache. It must be available beside the `lyric` binary, or pointed to via `LYRIC_MAVEN_RESOLVER`. If it is not found, `lyric restore` emits a note and succeeds (`.NET` builds are unaffected); a subsequent `lyric build --target jvm` will see no `LYRIC_FFI_JARS` and fail at type-resolution if Maven extern types are used.
 
-For full details on dependency resolution, version pinning, the shim generation rules, and GraalVM native-image compatibility, see `docs/31-maven-linking.md`.
+For full details on the resolver protocol, version pinning, and the `[maven.options]` table, see `docs/31-maven-linking.md`.
 
 ## Exercises
 
