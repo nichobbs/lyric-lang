@@ -531,12 +531,7 @@ questions"` for their current status.
 
 ---
 
-## Match pattern questions
-
-Match-pattern open questions (Q-MP-001 and later) are maintained in
-`docs/46-const-patterns.md` §"Constraints & edge cases".  They live there
-because they require pattern-matching and const-value domain context to
-evaluate.  All Q-MP entries are currently open.
+## Match pattern questions (Q-MP-001 and later)
 
 ---
 
@@ -560,7 +555,7 @@ evaluate.  All Q-MP entries are currently open.
 2. **Language reference** (`docs/01-language-reference.md` §3.3): Expand match-pattern syntax with const pattern form, semantics, and examples
 3. **Book** (`book/chapters/`): Update CLI reference and relevant chapters; ensure examples work end-to-end
 4. **Progress tracking** (`docs/10-bootstrap-progress.md`): Record const-pattern implementation milestone
-5. **Diagnostic codes**: Use T0068–T0071 (T0068 = pattern type mismatch, T0069 = non-constant val, T0070 = not a val, T0071 = generic val)
+5. **Diagnostic codes**: Use T0068, T0069, T0071, T0072 (T0068 = pattern type mismatch, T0069 = non-constant val, T0071 = generic val, T0072 = not a val; T0070 is pre-allocated to function-body type mismatch)
 6. **Self-tests**: `const_pattern_self_test.l` on both MSIL and JVM backends, plus regressions on existing pattern tests
 
 ---

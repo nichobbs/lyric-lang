@@ -100,7 +100,7 @@ case PConstRef(name) ->
       // Lower to a literal pattern comparison (no binding).
       return lowerLiteral(lit)  // PLiteral arm in existing code
     case _ ->
-      diag.add(errorDiagnostic("T0070", "name is not a val; use a variable pattern or const reference", pattern.span))
+      diag.add(errorDiagnostic("T0072", "name is not a val; use a variable pattern or const reference", pattern.span))
       return MError
   }
 ```
@@ -179,7 +179,7 @@ These are implementation checkpoints for Phase 3+ work:
 - [ ] `book/chapters/` CLI/chapter references updated: const patterns documented and example works end-to-end.
 - [ ] `docs/10-bootstrap-progress.md` updated: const-pattern implementation milestone recorded.
 - [ ] The self-hosted parser recognizes `@Ident` in pattern position without ambiguity (no conflicts with annotations or binding patterns).
-- [ ] The type checker resolves `@Ident` to a `val`, validates compile-time constant status (T0069), type match (T0068), and val existence (T0070).
+- [ ] The type checker resolves `@Ident` to a `val`, validates compile-time constant status (T0069), type match (T0068), and val existence (T0072).
 - [ ] Generic val types rejected with diagnostic T0071.
 - [ ] Match arms using `@CONST` patterns compile to the same IL/bytecode as literal patterns (lowering to `PLiteral` at type-check, no codegen changes).
 - [ ] Self-test: `const_pattern_self_test.l` exercises `@` patterns on `Int`, `Long`, `String`, and `Char` consts, with a non-constant val that correctly errors (T0069).
@@ -239,7 +239,7 @@ Requires extending range-pattern lowering to accept const references for bounds.
 - `docs/10-bootstrap-progress.md` — record const-pattern implementation milestone
 
 **Implementation files:**
-- `lyric-compiler/lyric/type_checker/typechecker_exprs.l::lowerPatternTest` — add `PConstRef` arm with T0068–T0071 diagnostics
+- `lyric-compiler/lyric/type_checker/typechecker_exprs.l::lowerPatternTest` — add `PConstRef` arm with T0068, T0069, T0071, T0072 diagnostics
 - `lyric-compiler/lyric/type_checker/typechecker_exprs.l::lowerPatternBind` — add `PConstRef` arm (returns `PError`; const patterns don't bind)
 - `lyric-compiler/lyric/parser/parser_exprs.l::parsePattern` — recognize `@Ident` and build `PConstRef` node
 - `lyric-compiler/msil/codegen.l::lowerPatternTestMsil` — no changes (const patterns are pre-lowered to `PLiteral` by type check)
