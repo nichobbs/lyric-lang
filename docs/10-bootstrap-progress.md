@@ -25319,3 +25319,35 @@ around-bodies serialised into contract metadata.  Open follow-ups: the
 `collectBareRefs*`/`collectMemberRefs*` traversal dedup (#3594), body-local
 shadowing of config fields (#3611), and runtime weaving tests for the
 security-critical templates (#3616).
+
+### D-progress-529 — MSIL: `inout`/`out` argument may be a field access (#3547)
+
+`Msil.Codegen.emitByrefArgMsil` only handled a bare local/parameter as an
+`inout`/`out` argument and `panic`ked (an untyped host exception, not a
+diagnostic) on anything else.  A field access (`obj.field`) is a valid
+assignable l-value — the same `obj.field = x` works — so an `inout`/`out`
+argument may name one.  This blocked **lyric-testing** entirely: its
+`TestContext` pattern mutates mock fields through `inout` helpers
+(`Testing.advance(ctx.clock, …)`, `Testing.clearSent(ctx.mail)`,
+`Testing.enable(ctx.flags, …)`), and the whole `lyric test` run aborted at
+compile time.
+
+Fix (`lyric-compiler/msil/codegen.l`): `emitByrefArgMsil` gains an
+`EMember(recv, field)` arm — lower the receiver to push the instance,
+resolve the field token via `cls + "/" + memberName` (the same lookup the
+field-assignment path uses), then `ldflda` the field's managed pointer so
+the callee writes through to `obj.field`.  Unknown field / non-class
+receiver now produce a precise message rather than the generic panic.
+
+Validated by `lyric-compiler/lyric/inout_field_self_test.l` (run in CI via
+native `lyric test`): an `inout` field-access argument mutates through
+across repeated calls, and an `out` field-access argument is written
+through.
+
+Scope: MSIL.  The JVM backend has the same gap
+(`Jvm.Codegen.lowerStaticCallWithHolders` panics on a non-`EPath` holder
+argument) — its copy-in/copy-out holder mechanism needs a getfield/putfield
+field-access path, tracked in #3628.  lyric-testing remains red on a
+*separate* pre-existing bug this fix unmasked (a cross-package call into the
+Testing library from a `@test_module` throws `InvalidProgramException` at
+run time — #3627); it is no longer blocked by the inout panic.
