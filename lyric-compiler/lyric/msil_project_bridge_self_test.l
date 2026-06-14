@@ -33,6 +33,7 @@ import Std.Testing
 import Std.Uuid
 import Std.Environment as Environment
 import Msil.Bridge
+import Lyric.Emitter as Emitter
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 func tempBase(): String {
@@ -112,6 +113,33 @@ func compileAndGetSucceeded(
   val ok = compileProjectToMsilWithFeatures(packages, assemblyName, dllPath, stdlibSources, active, declared)
   cleanup(dir)
   ok
+}
+
+// Like `compileAndRun` but populates stdlib sources so user packages may
+// reference stdlib types (List, Map, Option, etc.) in their signatures.
+// Copies compiled stdlib DLLs beside the output so `dotnet exec` can resolve
+// the cross-assembly references that `registerStdlibArtifactTokens` emits.
+// Used by regression tests that exercise stdlib-typed generic functions.
+func compileAndRunWithStdlib(
+  label: in String, packages: in List[ProjectPackagePayload], assemblyName: in String
+): Capture.CaptureResult {
+  val dir = freshTempDir(label)
+  val dllPath = Path.join(dir, assemblyName + ".dll")
+  val stdlibSources = Emitter.findStdlibSources()
+  val ok = compileProjectToMsil(packages, assemblyName, dllPath, stdlibSources)
+  if not ok {
+    cleanup(dir)
+    panic(label + ": compileProjectToMsil returned false")
+  }
+  val libDir = Emitter.findCompiledStdlibDir()
+  Emitter.copyStdlibDllsBeside(dllPath, libDir)
+  writeRuntimeConfig(dllPath)
+  val args: List[String] = newList()
+  args.add("exec")
+  args.add(dllPath)
+  val result = Capture.runCaptureWithDiagnostics("dotnet", args, "")
+  cleanup(dir)
+  result
 }
 
 // ─── Phase 1: independent-package bundles ────────────────────────────────────
@@ -610,4 +638,46 @@ test "generic cross-package union return type round-trips through match" {
   val result = compileAndRun("genres", packages, "GenRes")
   assertEqualInt(result.exitCode, 0, "generic_cross_pkg_union_match: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "42", "generic_cross_pkg_union_match: Good arm fired, v=42")
+}
+
+// ─── Regression: generic @externTarget functions with List[Byte] / List[T] signatures compile (#3472/#3473) ─
+// Validates that a generic @externTarget function whose parameter and return
+// types include `List[Byte]` (bug #3472: sliceElemMsilGenBody Byte→MByte
+// preservation) and `List[T]` (bug #3473: missing TGenericApp case in
+// typeExprToMsilGenSig) compile without errors and produce a loadable PE.
+//
+// A @externTarget with a backtick in the target name is kept by the
+// monomorphizer as-is (annsKeepGenericExternMono returns true), so both
+// addPackageTokens (which calls typeExprToMsilGenBody when declGenerics > 0)
+// and lowerFuncMsil (which calls typeExprToMsilGenSig when fnGenerics > 0)
+// process the full generic signature.
+//
+// Without fix #3472: typeExprToMsilGenBody returned MConcreteList(MInt) for
+// List[Byte] because the element type fell through typeExprToMsilGenBody(Byte)
+// → MInt instead of sliceElemMsilGenBody(Byte) → MByte.
+//
+// Without fix #3473: typeExprToMsilGenSig had no TGenericApp case so List[T]
+// fell through to typeExprToMsilCtx(List[T]) → MConcreteList(MClass("Pkg.T")),
+// a phantom TypeSpec referencing a non-existent CLR type, causing an
+// InvalidProgramException at load time.
+//
+// The App's main() does not call the extern functions so no runtime dep on
+// the BCL's List constructor is needed; `compileAndRunWithStdlib` is used
+// so the type-checker can resolve `List` from stdlib sources.
+test "generic @externTarget with List[Byte] and List[T] signatures compile and PE loads" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "GenByteRet.Lib",
+      "package GenByteRet.Lib\n" + "import Std.Collections\n" +
+        "@externTarget(\"System.Collections.Generic.List`1..ctor\")\n" +
+        "pub func mkByteLst[T](tag: in T): List[Byte] = ()\n" +
+        "@externTarget(\"System.Collections.Generic.List`1..ctor\")\n" +
+        "pub func mkGenLst[T](tag: in T): List[T] = ()\n"
+    )
+  )
+  packages.add(mkPkg("GenByteRet.App", "package GenByteRet.App\n" + "func main(): Unit {\n" + "  println(0)\n" + "}\n"))
+  val result = compileAndRunWithStdlib("genbyteret", packages, "GenByteRet")
+  assertEqualInt(result.exitCode, 0, "generic_list_byte_return: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "0", "generic_list_byte_return: PE loads and main runs")
 }
