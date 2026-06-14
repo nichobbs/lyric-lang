@@ -164,3 +164,48 @@ test "unwrapResultOr on Result[Shape,String] Err returns default area" {
   val s = unwrapResultOr(r, Square(side = 7))
   assertEqualInt(s.area(), 49, "unwrapResultOr(Err, Square(7)) .area() == 49")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Nested generic + interface: Result[Option[Shape], String].
+// Exercises the ctxIsGenericInst guard in the priority logic: the outer context
+// type arg `Option[Shape]` (MGenericInstByName) must NOT override the inner
+// `Some(Square(...))` construction's arg type, while `Shape` and `String` (not
+// generic instantiations) must still win over the concrete arg types.
+// ─────────────────────────────────────────────────────────────────────────────
+func squareOptionResult(): Result[Option[Shape], String] {
+  return Ok(Some(Square(side = 6)))
+}
+
+func noneOptionResult(): Result[Option[Shape], String] {
+  return Ok(None)
+}
+
+func errOptionResult(): Result[Option[Shape], String] {
+  return Err("fail")
+}
+
+test "isOk on Result[Option[Shape],String] Ok/Some case" {
+  assertTrue(isOk(squareOptionResult()), "nested: isOk Ok(Some(Square))")
+}
+
+test "isErr on Result[Option[Shape],String] Err case" {
+  assertTrue(isErr(errOptionResult()), "nested: isErr Err(...)")
+}
+
+test "match Result[Option[Shape],String] Ok/Some extracts area" {
+  val r = squareOptionResult()
+  val got = match r { case Ok(o) -> match o { case Some(s) -> s.area(); case None -> -1 }; case Err(_) -> -2 }
+  assertEqualInt(got, 36, "nested: Square(side=6).area() == 36")
+}
+
+test "match Result[Option[Shape],String] Ok/None arm reached" {
+  val r = noneOptionResult()
+  val got = match r { case Ok(o) -> match o { case Some(_) -> 1; case None -> 0 }; case Err(_) -> -1 }
+  assertEqualInt(got, 0, "nested: Ok(None) reaches None arm")
+}
+
+test "match Result[Option[Shape],String] Err arm reached" {
+  val r = errOptionResult()
+  val got = match r { case Ok(_) -> 1; case Err(msg) -> if msg == "fail" { 0 } else { 2 } }
+  assertEqualInt(got, 0, "nested: Err('fail') reaches Err arm")
+}
