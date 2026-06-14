@@ -490,6 +490,30 @@ jobs:
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/aspect_weave_self_test.l
           echo "aspect-weave self-test ran: aspect_weave_self_test.l (--target dotnet)" >> "$GITHUB_STEP_SUMMARY"
 
+      # stdlib-generic-iface self-test (#3502).  Pins the fix for
+      # `isOk`/`isErr` / `match` on `Result[InterfaceType, E]` and
+      # `Option[InterfaceType]` — the self-hosted MSIL codegen was building the
+      # `newobj` TypeSpec from the concrete argument type (e.g. T1) rather than
+      # the declared return type (e.g. Thing), so on the CLR (invariant generics)
+      # the `isinst Result_Ok<Thing, String>` in the consumer's match returned
+      # null even though T1 implements Thing, causing the match-exhaustiveness
+      # guard to panic.  Run via native `lyric test`; imports only `Std.*`.
+      - name: stdlib-generic-iface self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping stdlib-generic-iface self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping stdlib-generic-iface self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/stdlib_generic_iface_self_test.l
+          echo "stdlib-generic-iface self-test ran: stdlib_generic_iface_self_test.l" >> "$GITHUB_STEP_SUMMARY"
+
       # Slice array-ABI self-test (#2592).  Verifies a self-hosted `slice[T]`
       # literal binds as a genuine CLR `T[]` when handed to the F#-built,
       # array-based stdlib (`Std.Core.sumInts`/`maxInt`/`countEq`,

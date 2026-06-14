@@ -19938,30 +19938,38 @@ func buildInBundleGenericCtorTok(
 ): Int {
   val nTypeParams = match mapGet(cctx.genericTypeArity, ctorKey) { case Some(n) -> n; case None -> return 0 }
   val ctorParams = match mapGet(cctx.genericCtorParams, ctorKey) { case Some(p) -> p; case None -> return 0 }
-  // Infer one concrete argument per type-parameter slot: find a ctor param that
-  // is `MTypeVar(slot)` and take the matching argument's lowered type; fall back
-  // to the outer context hint, then to MObject.
+  // Infer one concrete argument per type-parameter slot.  Context (declared
+  // type parameter) takes priority over the inferred argument type: the
+  // construction TypeSpec must match what the consumer's `isinst` uses, which
+  // is derived from the scrutinee's DECLARED type — not the concrete value's
+  // runtime class.  For instance, `Ok(t1)` in a function returning
+  // `Result[Thing, String]` must produce `newobj Result_Ok<Thing, String>`,
+  // not `Result_Ok<T1, String>`, because CLR generics are invariant and the
+  // consumer's `isinst Result_Ok<Thing, String>` would fail to match a
+  // `Result_Ok<T1, String>` value even when T1 implements Thing (#3502).
   val typeArgs: List[MsilType] = newList()
   var slot = 0
   while slot < nTypeParams {
     var foundTy: MsilType = MObject
-    var i = 0
-    while i < ctorParams.count {
-      match ctorParams[i] {
-        case MTypeVar(ix) -> {
-          if ix == slot and i < argTypes.count {
-            foundTy = argTypes[i]
-          }
-        }
-        case _ -> {
-        }
-      }
-      i = i + 1
-    }
-    if foundTy == MObject and slot < contextTyArgs.count {
+    if slot < contextTyArgs.count {
       val ctxTy = contextTyArgs[slot]
       if ctxTy != MObject {
         foundTy = ctxTy
+      }
+    }
+    if foundTy == MObject {
+      var i = 0
+      while i < ctorParams.count {
+        match ctorParams[i] {
+          case MTypeVar(ix) -> {
+            if ix == slot and i < argTypes.count {
+              foundTy = argTypes[i]
+            }
+          }
+          case _ -> {
+          }
+        }
+        i = i + 1
       }
     }
     typeArgs.add(foundTy)
@@ -19998,27 +20006,32 @@ func buildGenericCaseCtorTok(
   val pkgPart = ctorKey.substring(0, dotIdx0)
   val caseRefKey = pkgPart + "/" + ctorKey
   val caseRefRow = match mapGet(cctx.ffiTypeRefs, caseRefKey) { case Some(r) -> r; case None -> return 0 }
-  // Build concrete type args: for each type-param slot, look through the
-  // constructor fields to find one whose varIdx equals the param slot.
-  // If no field covers the slot, fall back to the context type arg (if any),
-  // then to MObject.
+  // Build concrete type args: for each type-param slot, prefer the context
+  // (declared type parameter) and fall back to the inferred argument type.
+  // Context must win because CLR generics are invariant: the construction
+  // TypeSpec must agree with the consumer's `isinst` TypeSpec, which is
+  // derived from the scrutinee's DECLARED type.  E.g. `Ok(t1)` in a function
+  // returning `Result[Thing, String]` must build `Result_Ok<Thing, String>`,
+  // not `Result_Ok<T1, String>`, even when T1 implements Thing (#3502).
   val typeArgs: List[MsilType] = newList()
   var tpi = 0
   while tpi < nTypeParams {
     var foundTy: MsilType = MObject
-    var fi = 0
-    while fi < argTypes.count {
-      val fldKey = ctorKey + "/field" + toString(fi)
-      val vi = match mapGet(cctx.fieldVarIndices, fldKey) { case Some(v) -> v; case None -> -1 }
-      if vi == tpi {
-        foundTy = argTypes[fi]
-      }
-      fi = fi + 1
-    }
-    if foundTy == MObject and tpi < contextTyArgs.count {
+    if tpi < contextTyArgs.count {
       val ctxTy = contextTyArgs[tpi]
       if ctxTy != MObject {
         foundTy = ctxTy
+      }
+    }
+    if foundTy == MObject {
+      var fi = 0
+      while fi < argTypes.count {
+        val fldKey = ctorKey + "/field" + toString(fi)
+        val vi = match mapGet(cctx.fieldVarIndices, fldKey) { case Some(v) -> v; case None -> -1 }
+        if vi == tpi {
+          foundTy = argTypes[fi]
+        }
+        fi = fi + 1
       }
     }
     typeArgs.add(foundTy)
