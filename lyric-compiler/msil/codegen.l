@@ -19938,39 +19938,56 @@ func buildInBundleGenericCtorTok(
 ): Int {
   val nTypeParams = match mapGet(cctx.genericTypeArity, ctorKey) { case Some(n) -> n; case None -> return 0 }
   val ctorParams = match mapGet(cctx.genericCtorParams, ctorKey) { case Some(p) -> p; case None -> return 0 }
-  // Infer one concrete argument per type-parameter slot.  Context (declared
-  // type parameter) takes priority over the inferred argument type: the
-  // construction TypeSpec must match what the consumer's `isinst` uses, which
-  // is derived from the scrutinee's DECLARED type — not the concrete value's
-  // runtime class.  For instance, `Ok(t1)` in a function returning
-  // `Result[Thing, String]` must produce `newobj Result_Ok<Thing, String>`,
-  // not `Result_Ok<T1, String>`, because CLR generics are invariant and the
-  // consumer's `isinst Result_Ok<Thing, String>` would fail to match a
-  // `Result_Ok<T1, String>` value even when T1 implements Thing (#3502).
+  // Infer one concrete argument per type-parameter slot.
+  //
+  // Priority rule (#3502 + nested-generic correctness):
+  //   a) argTypes provides a concrete type for the slot  →  collect it in argFoundTy
+  //   b) contextTyArgs provides a type for the slot:
+  //        - If context is MGenericInstByName or MGenericInst (i.e. a full generic
+  //          instantiation derived from the outer function's declared return type):
+  //            the context may be at the wrong nesting level for a nested constructor
+  //            (e.g. inner `Just(5)` in `Just(Just(5))` where function returns
+  //            `Maybe[Maybe[Int]]` — context would be `Maybe[Int]`, wrong for `Int`).
+  //            Use argFoundTy if available, else fall back to context.
+  //        - Otherwise (MClass, MString, primitives, etc.):
+  //            context wins.  This ensures `Ok(t1)` in `Result[Thing, String]`
+  //            emits `Result_Ok<Thing, String>` instead of `Result_Ok<T1, String>`,
+  //            which is required because CLR generics are invariant and
+  //            `isinst Result_Ok<Thing, String>` returns null for
+  //            `Result_Ok<T1, String>` even when T1 implements Thing (#3502).
   val typeArgs: List[MsilType] = newList()
   var slot = 0
   while slot < nTypeParams {
+    var argFoundTy: MsilType = MObject
+    var i = 0
+    while i < ctorParams.count {
+      match ctorParams[i] {
+        case MTypeVar(ix) -> {
+          if ix == slot and i < argTypes.count {
+            argFoundTy = argTypes[i]
+          }
+        }
+        case _ -> {
+        }
+      }
+      i = i + 1
+    }
     var foundTy: MsilType = MObject
-    if slot < contextTyArgs.count {
+    if slot < contextTyArgs.count and contextTyArgs[slot] != MObject {
       val ctxTy = contextTyArgs[slot]
-      if ctxTy != MObject {
+      val ctxIsGenericInst = match ctxTy {
+        case MGenericInstByName(_, _) -> true
+        case MGenericInst(_, _, _) -> true
+        case _ -> false
+      }
+      if ctxIsGenericInst and argFoundTy != MObject {
+        foundTy = argFoundTy
+      } else {
         foundTy = ctxTy
       }
     }
     if foundTy == MObject {
-      var i = 0
-      while i < ctorParams.count {
-        match ctorParams[i] {
-          case MTypeVar(ix) -> {
-            if ix == slot and i < argTypes.count {
-              foundTy = argTypes[i]
-            }
-          }
-          case _ -> {
-          }
-        }
-        i = i + 1
-      }
+      foundTy = argFoundTy
     }
     typeArgs.add(foundTy)
     slot = slot + 1
@@ -20006,33 +20023,39 @@ func buildGenericCaseCtorTok(
   val pkgPart = ctorKey.substring(0, dotIdx0)
   val caseRefKey = pkgPart + "/" + ctorKey
   val caseRefRow = match mapGet(cctx.ffiTypeRefs, caseRefKey) { case Some(r) -> r; case None -> return 0 }
-  // Build concrete type args: for each type-param slot, prefer the context
-  // (declared type parameter) and fall back to the inferred argument type.
-  // Context must win because CLR generics are invariant: the construction
-  // TypeSpec must agree with the consumer's `isinst` TypeSpec, which is
-  // derived from the scrutinee's DECLARED type.  E.g. `Ok(t1)` in a function
-  // returning `Result[Thing, String]` must build `Result_Ok<Thing, String>`,
-  // not `Result_Ok<T1, String>`, even when T1 implements Thing (#3502).
+  // Build concrete type args: context wins only when it is an MClass
+  // (reference type or interface).  See comment in buildInBundleGenericCtorTok
+  // Apply the same context-vs-arg priority as buildInBundleGenericCtorTok; see
+  // the comment there for the full rationale (#3502 + nested-generic regression).
   val typeArgs: List[MsilType] = newList()
   var tpi = 0
   while tpi < nTypeParams {
+    var argFoundTy: MsilType = MObject
+    var fi = 0
+    while fi < argTypes.count {
+      val fldKey = ctorKey + "/field" + toString(fi)
+      val vi = match mapGet(cctx.fieldVarIndices, fldKey) { case Some(v) -> v; case None -> -1 }
+      if vi == tpi {
+        argFoundTy = argTypes[fi]
+      }
+      fi = fi + 1
+    }
     var foundTy: MsilType = MObject
-    if tpi < contextTyArgs.count {
+    if tpi < contextTyArgs.count and contextTyArgs[tpi] != MObject {
       val ctxTy = contextTyArgs[tpi]
-      if ctxTy != MObject {
+      val ctxIsGenericInst = match ctxTy {
+        case MGenericInstByName(_, _) -> true
+        case MGenericInst(_, _, _) -> true
+        case _ -> false
+      }
+      if ctxIsGenericInst and argFoundTy != MObject {
+        foundTy = argFoundTy
+      } else {
         foundTy = ctxTy
       }
     }
     if foundTy == MObject {
-      var fi = 0
-      while fi < argTypes.count {
-        val fldKey = ctorKey + "/field" + toString(fi)
-        val vi = match mapGet(cctx.fieldVarIndices, fldKey) { case Some(v) -> v; case None -> -1 }
-        if vi == tpi {
-          foundTy = argTypes[fi]
-        }
-        fi = fi + 1
-      }
+      foundTy = argFoundTy
     }
     typeArgs.add(foundTy)
     tpi = tpi + 1
