@@ -2486,7 +2486,7 @@ func resolveFromInstances(items: in List[Item], templates: in Map[String, Aspect
 /// values (template `around` + instance `matches`/`config` overrides).
 /// Unresolved `from` references are passed through — the standard weave
 /// silently drops aspects without an `around` body.
-/// A004x diagnostic for unresolved `from` is deferred to a follow-up (#3414 §3).
+/// A004x diagnostic for unresolved `from` is deferred to a follow-up (#3497).
 pub func weaveFileWithDiagsAndTemplates(file: in SourceFile, templates: in Map[String, AspectDecl]): WeaveFileResult {
   val file0 = injectWeaveImports(file)
   val resolvedItems = resolveFromInstances(file0.items, templates)

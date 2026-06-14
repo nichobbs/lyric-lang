@@ -915,7 +915,7 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     Cross-package `from`-instance library aspects are now supported by the
     weaver (D-progress-525, #3414); `aspect_weave_self_test.l` does not yet
     exercise the multi-file scenario where a consumer package imports a
-    library template — a runtime test is tracked separately.
+    library template — a runtime test is tracked separately (#3498).
   - `auto_ffi_self_test.l` — `@test_module` covering self-hosted
     metadata-based auto-FFI resolution (epic #1622, Phase 3c): the MSIL
     emitter resolves `ExternTypeName.method(args)` calls from real .NET
