@@ -172,30 +172,49 @@ test "@externTarget with verified JVM signatures compile and run correctly" {
 //   * everything else                                            → Object
 //
 // Without the `isBare = head.segments.count == 1` guard, any generic type
-// whose last path segment happens to be "List" — including a package-qualified
-// user type like `MyPkg.List[T]` — would be mis-mapped to `java/util/ArrayList`.
-// At runtime, the slot declared as ArrayList would hold a non-ArrayList user
-// instance, and the JVM bytecode verifier would reject the class with a
-// VerifyError.
+// whose last path segment happens to be "List" or "Map" — including a
+// package-qualified user type like `MyPkg.List[T]` — would be mis-mapped to
+// `java/util/ArrayList` or `java/util/HashMap`.  At runtime, the slot declared
+// as ArrayList/HashMap would hold a non-ArrayList/HashMap user instance, and the
+// JVM bytecode verifier would reject the class with a VerifyError.
 //
-// Testing the `MyPkg.List[T]` scenario fully requires a multi-package setup
-// (the user type and this test file in separate packages).  The test below
-// exercises the adjacent invariant that is testable in a single file: a
-// user-defined generic record (`Container[T]`) must erase to Object, NOT to
-// ArrayList.  If the codegen incorrectly mapped any generic type to ArrayList,
-// the JVM verifier would reject the class when loading it, failing this test.
+// Single-file coverage: the tests below exercise the `else → Object` path by
+// using user-defined generic records whose names are not "List" or "Map".  If
+// the codegen incorrectly mapped any generic to ArrayList/HashMap, the JVM
+// verifier would reject the class when loading it (user records are not
+// assignable to ArrayList/HashMap), failing both tests before they can run.
+//
+// Deferred (multi-package setup required): the `isBare` guard's primary purpose
+// — preventing a package-qualified user type `Pkg.List[T]` with `segments.count
+// > 1` from being mis-mapped to ArrayList — cannot be tested in a single-file
+// `@test_module` because all user types in one file share a single package
+// (head.segments.count == 1 for every locally-defined type).  Tracked in #3455.
 
 record Container[T] {
   item: T
 }
 
-test "user generic erases to Object, not ArrayList — isBare regression guard (#3455)" {
+record Pair[A, B] {
+  first: A
+  second: B
+}
+
+test "single-param user generic erases to Object, not ArrayList — isBare guard (#3455)" {
   val box: Container[Int] = Container(item = 99)
-  // Pass `box` to StringBuilder.append(Object).  If Container[Int] were
-  // mis-mapped to ArrayList, the bytecode verifier would reject the class
-  // (Container is not assignable to ArrayList) before the test can run.
+  // If Container[Int] were mis-mapped to ArrayList the bytecode verifier
+  // rejects the class (Container is not assignable to ArrayList).
   val sb = JStringBuilder.new("")
   sb.append(box)
   val result = sb.toString()
   assertTrue(result.length > 0, "Container[Int] accepted as Object by StringBuilder.append")
+}
+
+test "two-param user generic erases to Object, not HashMap — isBare guard Map arm (#3455)" {
+  val p: Pair[Int, String] = Pair(first = 1, second = "hello")
+  // If Pair[Int,String] were mis-mapped to HashMap the bytecode verifier
+  // rejects the class (Pair is not assignable to HashMap).
+  val sb = JStringBuilder.new("")
+  sb.append(p)
+  val result = sb.toString()
+  assertTrue(result.length > 0, "Pair[Int,String] accepted as Object by StringBuilder.append")
 }
