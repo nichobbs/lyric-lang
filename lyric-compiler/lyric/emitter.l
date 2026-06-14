@@ -142,6 +142,113 @@ func tempBase(): String {
   Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
 }
 
+// True when `dir` holds the fully-compiled stdlib bundle.
+func dirHasCompiledStdlib(dir: in String): Bool {
+  dir.length > 0 and File.fileExists(Path.join(dir, "Lyric.Stdlib.dll"))
+}
+
+// Walk up from `start` (max 32 hops) looking for `<start>/…/<rel>` that
+// holds the compiled stdlib bundle; returns that path or "".
+func walkUpForCompiledStdlibDir(start: in String, rel: in String): String {
+  if start.length == 0 {
+    return ""
+  }
+  var dir = start
+  var hop = 0
+  while hop < 32 {
+    val candidate = Path.join(dir, rel)
+    if dirHasCompiledStdlib(candidate) {
+      return candidate
+    }
+    val parent = Path.dirname(dir)
+    if parent.length == 0 or parent == dir {
+      return ""
+    }
+    dir = parent
+    hop = hop + 1
+  }
+  ""
+}
+
+// Locate the directory holding the fully-compiled stdlib runtime assemblies
+// (`Lyric.Stdlib*.dll`).  Mirrors `Lyric.Cli.findCompiledLibDir` from
+// `cli_shared.l` so callers that only import `Lyric.Emitter` can find the
+// runtime DLLs without importing the CLI package (which imports Emitter,
+// creating a cycle).  Discovery order:
+//   1. $LYRIC_STDLIB_BIN          — explicit override
+//   2. <appBaseDir>               — DLLs ship beside the binary
+//   3. <appBaseDir>/lib           — installed SDK layout
+//   4. walk up (appBase, cwd) for .bootstrap/stage1   — dev bootstrap output
+//   5. walk up (appBase, cwd) for lyric-stdlib/bin     — dev manifest build
+//   6. walk up (appBase, cwd) for .lyric-test          — lyric test cache dir
+// Returns "" when none of the candidates holds `Lyric.Stdlib.dll`.
+pub func findCompiledStdlibDir(): String {
+  val env = Environment.getVarOrDefault("LYRIC_STDLIB_BIN", "")
+  if dirHasCompiledStdlib(env) {
+    return env
+  }
+  val appBase = Environment.appBaseDirectory()
+  if dirHasCompiledStdlib(appBase) {
+    return appBase
+  }
+  val appLib = Path.join(appBase, "lib")
+  if dirHasCompiledStdlib(appLib) {
+    return appLib
+  }
+  val cwd = Environment.currentDirectory()
+  var hit = walkUpForCompiledStdlibDir(appBase, Path.join(".bootstrap", "stage1"))
+  if hit.length > 0 {
+    return hit
+  }
+  hit = walkUpForCompiledStdlibDir(cwd, Path.join(".bootstrap", "stage1"))
+  if hit.length > 0 {
+    return hit
+  }
+  hit = walkUpForCompiledStdlibDir(appBase, Path.join("lyric-stdlib", "bin"))
+  if hit.length > 0 {
+    return hit
+  }
+  hit = walkUpForCompiledStdlibDir(cwd, Path.join("lyric-stdlib", "bin"))
+  if hit.length > 0 {
+    return hit
+  }
+  hit = walkUpForCompiledStdlibDir(appBase, ".lyric-test")
+  if hit.length > 0 {
+    return hit
+  }
+  walkUpForCompiledStdlibDir(cwd, ".lyric-test")
+}
+
+// Co-locate the split stdlib runtime assemblies (`Lyric.Stdlib*.dll` and
+// `FSharp.Core.dll`) from `libDir` next to the DLL at `dllPath`, so
+// `dotnet exec` resolves them at runtime.  Best-effort: copy failures are
+// non-fatal (the run will surface the original assembly-load error).
+pub func copyStdlibDllsBeside(dllPath: in String, libDir: in String): Unit {
+  if libDir.length == 0 {
+    return
+  }
+  val destDir = Path.dirname(dllPath)
+  match File.listFiles(libDir) {
+    case Err(_) -> ()
+    case Ok(fs) -> {
+      for f in fs.toArray() {
+        val base = Path.basename(f)
+        val wanted = (Str.startsWith(base, "Lyric.Stdlib") and Str.endsWith(base, ".dll")) or base == "FSharp.Core.dll" or
+          base == "Lyric.Emitter.dll"
+        if wanted {
+          val dest = Path.join(destDir, base)
+          match File.readBytes(f) {
+            case Ok(bs) -> {
+              val _ = File.writeBytes(dest, bs)
+            }
+            case Err(_) -> ()
+          }
+        }
+      }
+    }
+  }
+}
+
 // Walk up from `start` looking for a directory whose direct child
 // `lyric-stdlib/std/` exists.  Returns "" if no such ancestor is found
 // within 32 hops.  Used by `findStdlibSources` to try multiple anchor
@@ -221,7 +328,7 @@ func walkUpForCompilerDir(start: in String): String {
 // `findStdlibSourcesForTarget` for the target-aware variant the JVM
 // in-process bridge uses (J6 M-10).
 // No caching yet — re-reads ~30 stdlib files per emit call; see #1907.
-func findStdlibSources(): List[String] {
+pub func findStdlibSources(): List[String] {
   findStdlibSourcesForTarget(false)
 }
 
