@@ -6193,6 +6193,54 @@ docs/46-const-patterns.md.
 
 ---
 
+## D102 — Aspect weaving wires bare config-field references and merges `from`-instance config onto template defaults (#3543)
+
+**Context.** Every first-party aspect library ships C-mode
+`@inline_template` templates that consumers instantiate with a separate
+`from`-instance carrying a `matches:` clause (the pattern documented in
+§§4, 8). An audit found that woven aspects were inert or crashed at
+runtime: the templates reference config fields **bare** (`minLen`), but
+the weaver's `buildConfigPrelude` only materialised and rewrote the
+documented qualified form (`config.minLen`); a `from`-instance's
+`config { }` *replaced* the template's config wholesale, dropping fields
+the instance did not mention (e.g. `enabled`, `field`); the template's
+`@inline_template` marker was lost during `collectAspectTemplates` (which
+stores only the `AspectDecl`), so `args.<field>` was not rewritten in
+`from`-resolved aspects; and an unqualified same-package `from X` failed
+the template lookup (registered under `pkg.X`, looked up as `X`).
+
+**Decision.** The weaver (`lyric-compiler/lyric/weaver/weaver.l`) now:
+
+1. Materialises and rewrites **bare** config-field references in addition
+   to `config.<field>`. A bare name is resolved to the config field only
+   when it is not a parameter of the matched function (parameters shadow;
+   use `config.<field>` to disambiguate). Documented in docs/26 §7.
+2. Merges a `from`-instance's `config { }` onto the template's config
+   defaults (`mergeAspectConfig`) — instance values win, unmentioned
+   template fields keep their defaults — rather than replacing wholesale.
+3. Propagates the template's `@inline_template` marker onto the resolved
+   instance (detected from the template body's `args.<field>` use) so the
+   `args.<field>` rewrite runs for `from`-resolved aspects.
+4. Resolves an unqualified single-segment `from X` against the consuming
+   package (`pkg.X`) as a fallback after the as-written lookup misses.
+
+**Validation.** `lyric-validation/tests/aspect_weaving_tests.l` is the
+ecosystem's first runtime weaving regression suite (5 cases: cross-package
+`from`, same-package unqualified `from`, and a direct `@inline_template`
+aspect; each asserts the woven handler short-circuits out-of-bounds input
+and proceeds on valid input). It runs in the `ecosystem-security-tests`
+CI job via the already-wired `lyric-validation` manifest.
+
+**Out of scope (follow-up).** Defect 4 of #3543 — aspect templates that
+live in a *restored dependency DLL* (not an in-bundle source package) are
+still not collected, because the around-body source is not serialised into
+contract metadata. Cross-dependency aspect *libraries* therefore remain
+unwoven until the metadata carries aspect bodies; tracked in #3543.
+
+**Related:** #3543, docs/26-aspects.md §7, docs/27-aspect-libraries.md, D047, D051.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
