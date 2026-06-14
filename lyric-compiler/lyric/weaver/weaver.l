@@ -496,6 +496,41 @@ func tryMemberRewrite(ctx: in RewriteCtx, expr: in Expr): Option[Expr] {
       case None -> ()
     }
   }
+  // bare <configfield> → __aspect_cfg_<configfield>.  Every shipped aspect
+  // template references config fields bare (e.g. `minLen`) rather than via
+  // the documented `config.minLen` form; wire both so the materialised
+  // prelude local is actually read (#3543).  A parameter of the matched
+  // function shadows a like-named config field (params win), so only
+  // rewrite when the bare name is a materialised config field that is not
+  // also a parameter.
+  //
+  // LIMITATION (#3611): a `val`/`var`/`let` in the `around` body whose name
+  // collides with a config field is NOT yet recognised as a shadower — only
+  // parameters are.  Such a body-local would be rewritten to the config
+  // value.  This is unreached by the shipped templates (their locals never
+  // share a config field's name) and is fixed properly alongside the #3594
+  // walker dedup, where collecting local-binding names folds into the same
+  // single pass.  Until then, do not name an `around`-body local after one
+  // of the aspect's own config fields.
+  match expr.kind {
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        val cfgName = path.segments[0]
+        if ctx.configFields.containsKey(cfgName) and not paramListContains(ctx.paramNames, cfgName) {
+          if ctx.configNoDefault.containsKey(cfgName) {
+            addWeaveDiagOnce(ctx.weaveDiags, WDConfigNoDefault, ctx.aspectName, ctx.funcName, cfgName, expr.span)
+          }
+          return Some(
+            value = Expr(
+              kind = EPath(path = ModulePath(segments = singleSeg("__aspect_cfg_" + cfgName), span = expr.span)),
+              span = expr.span
+            )
+          )
+        }
+      }
+    }
+    case _ -> ()
+  }
   None
 }
 
@@ -1077,9 +1112,22 @@ func buildConfigPrelude(aspect: in AspectDecl, body: in Block): (List[Statement]
     return (stmts, materialised, noDefault)
   }
 
-  // Pre-scan: which config.<field> names does the body reference?
+  // Pre-scan: which config fields does the body reference?  Both the
+  // documented `config.<field>` qualified form and the bare `<field>`
+  // form (used by every shipped template, e.g. `minLen` / `enabled`) are
+  // honoured (#3543) so the prelude materialises the locals the body
+  // actually reads under either spelling.
   val refs: Map[String, Bool] = newMap()
   collectMemberRefsBlock(body, "config", refs)
+  val fieldNames: Map[String, Bool] = newMap()
+  var fnI = 0
+  while fnI < aspect.config.count {
+    if not fieldNames.containsKey(aspect.config[fnI].name) {
+      fieldNames.add(aspect.config[fnI].name, true)
+    }
+    fnI = fnI + 1
+  }
+  collectBareRefsBlock(body, fieldNames, refs)
   if refs.count == 0 {
     return (stmts, materialised, noDefault)
   }
@@ -1279,6 +1327,167 @@ func collectMemberRefsEOB(eob: in ExprOrBlock, receiver: in String, into: in Map
   match eob {
     case EOBExpr(e) -> collectMemberRefsExpr(e, receiver, into)
     case EOBBlock(b) -> collectMemberRefsBlock(b, receiver, into)
+  }
+}
+
+// Collect bare single-segment path references whose name is in `fields`
+// (the aspect's config field names).  Mirrors `collectMemberRefsExpr`'s
+// traversal exactly so every shipped template's bare config references
+// (e.g. `minLen`, `enabled`) are materialised by `buildConfigPrelude`, not
+// just the documented `config.<field>` qualified form (#3543).
+//
+// MAINTENANCE: this family duplicates the `collectMemberRefs*` traversal
+// structure and must stay in lockstep with it when new `Expr`/`Statement`
+// kinds are added.  Folding the two into one parameterised walker (so the
+// config-prelude pre-scan collects both `config.<field>` and bare `<field>`
+// in a single pass) is tracked as #3594; deferred to keep the #3592 fix
+// turnaround off the shared `call`/`config` collection path.
+func collectBareRefsBlock(blk: in Block, fields: in Map[String, Bool], into: in Map[String, Bool]): Unit {
+  var i = 0
+  while i < blk.statements.count {
+    collectBareRefsStmt(blk.statements[i], fields, into)
+    i = i + 1
+  }
+}
+
+func collectBareRefsStmt(s: in Statement, fields: in Map[String, Bool], into: in Map[String, Bool]): Unit {
+  match s.kind {
+    case SExpr(e) -> collectBareRefsExpr(e, fields, into)
+    case SReturn(o) -> match o { case Some(e) -> collectBareRefsExpr(e, fields, into); case None -> () }
+    case SLocal(b) -> {
+      match b {
+        case LBVal(_, _, init) -> collectBareRefsExpr(init, fields, into)
+        case LBLet(_, _, init) -> collectBareRefsExpr(init, fields, into)
+        case LBVar(_, _, init) -> match init { case Some(e) -> collectBareRefsExpr(e, fields, into); case None -> () }
+      }
+    }
+    case SAssign(t, _, v) -> {
+      collectBareRefsExpr(t, fields, into)
+      collectBareRefsExpr(v, fields, into)
+    }
+    case SThrow(e) -> collectBareRefsExpr(e, fields, into)
+    case SFor(_, _, iter, body) -> {
+      collectBareRefsExpr(iter, fields, into)
+      collectBareRefsBlock(body, fields, into)
+    }
+    case SWhile(_, cond, body) -> {
+      collectBareRefsExpr(cond, fields, into)
+      collectBareRefsBlock(body, fields, into)
+    }
+    case SLoop(_, body) -> collectBareRefsBlock(body, fields, into)
+    case SScope(_, body) -> collectBareRefsBlock(body, fields, into)
+    case STry(body, catches, finally_) -> {
+      collectBareRefsBlock(body, fields, into)
+      var i = 0
+      while i < catches.count {
+        collectBareRefsBlock(catches[i].body, fields, into)
+        i = i + 1
+      }
+      match finally_ {
+        case Some(fb) -> collectBareRefsBlock(fb, fields, into)
+        case None -> ()
+      }
+    }
+    case SDefer(body) -> collectBareRefsBlock(body, fields, into)
+    case _ -> ()
+  }
+}
+
+func collectBareRefsExpr(e: in Expr, fields: in Map[String, Bool], into: in Map[String, Bool]): Unit {
+  match e.kind {
+    case EPath(p) -> if p.segments.count == 1 and fields.containsKey(p.segments[0]) and not into.containsKey(p.segments[0]) { into.add(p.segments[0], true) }
+    case ECall(f, args) -> {
+      collectBareRefsExpr(f, fields, into)
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CAPositional(v) -> collectBareRefsExpr(v, fields, into)
+          case CANamed(_, v, _) -> collectBareRefsExpr(v, fields, into)
+        }
+        i = i + 1
+      }
+    }
+    case EParen(inner) -> collectBareRefsExpr(inner, fields, into)
+    case ETuple(xs) -> {
+      var i = 0
+      while i < xs.count {
+        collectBareRefsExpr(xs[i], fields, into)
+        i = i + 1
+      }
+    }
+    case EList(xs) -> {
+      var i = 0
+      while i < xs.count {
+        collectBareRefsExpr(xs[i], fields, into)
+        i = i + 1
+      }
+    }
+    case EAwait(inner) -> collectBareRefsExpr(inner, fields, into)
+    case EYield(inner) -> collectBareRefsExpr(inner, fields, into)
+    case ESpawn(inner) -> collectBareRefsExpr(inner, fields, into)
+    case ETry(inner) -> collectBareRefsExpr(inner, fields, into)
+    case EOld(inner) -> collectBareRefsExpr(inner, fields, into)
+    case EPropagate(inner) -> collectBareRefsExpr(inner, fields, into)
+    case EPrefix(_, operand) -> collectBareRefsExpr(operand, fields, into)
+    case EBinop(_, l, r) -> {
+      collectBareRefsExpr(l, fields, into)
+      collectBareRefsExpr(r, fields, into)
+    }
+    case EAssign(t, _, v) -> {
+      collectBareRefsExpr(t, fields, into)
+      collectBareRefsExpr(v, fields, into)
+    }
+    case EMember(recv, _) -> collectBareRefsExpr(recv, fields, into)
+    case EIndex(recv, idxs) -> {
+      collectBareRefsExpr(recv, fields, into)
+      var i = 0
+      while i < idxs.count {
+        collectBareRefsExpr(idxs[i], fields, into)
+        i = i + 1
+      }
+    }
+    case ETypeApp(f, _) -> collectBareRefsExpr(f, fields, into)
+    case EIf(c, t, el, _) -> {
+      collectBareRefsExpr(c, fields, into)
+      collectBareRefsEOB(t, fields, into)
+      match el {
+        case Some(e2) -> collectBareRefsEOB(e2, fields, into)
+        case None -> ()
+      }
+    }
+    case EMatch(scrut, arms) -> {
+      collectBareRefsExpr(scrut, fields, into)
+      var i = 0
+      while i < arms.count {
+        match arms[i].guard {
+          case Some(g) -> collectBareRefsExpr(g, fields, into)
+          case None -> ()
+        }
+        collectBareRefsEOB(arms[i].body, fields, into)
+        i = i + 1
+      }
+    }
+    case ELambda(_, body) -> collectBareRefsBlock(body, fields, into)
+    case EBlock(blk) -> collectBareRefsBlock(blk, fields, into)
+    case EUnsafe(blk) -> collectBareRefsBlock(blk, fields, into)
+    case EInterpolated(segs) -> {
+      var i = 0
+      while i < segs.count {
+        match segs[i] {
+          case ISText(_, _) -> ()
+          case ISExpr(inner) -> collectBareRefsExpr(inner, fields, into)
+        }
+        i = i + 1
+      }
+    }
+    case _ -> ()
+  }
+}
+
+func collectBareRefsEOB(eob: in ExprOrBlock, fields: in Map[String, Bool], into: in Map[String, Bool]): Unit {
+  match eob {
+    case EOBExpr(e) -> collectBareRefsExpr(e, fields, into)
+    case EOBBlock(b) -> collectBareRefsBlock(b, fields, into)
   }
 }
 
@@ -2375,15 +2584,116 @@ func resolveFromPath(path: in ModulePath): String {
   segmentsJoin(path.segments)
 }
 
-/// Pre-process `items` so that every `from`-instance aspect whose template
-/// is found in `templates` is replaced by a synthesised concrete aspect that
-/// merges the template's `around` / `contracts` with the instance's
-/// `matches` / `exceptNames` / `wraps` / `inside`.  The instance's
-/// `config` overrides the template's when non-empty; otherwise the
-/// template's `config` defaults are used.  Unresolved `from` references
-/// (template absent from `templates`) are passed through unchanged so the
-/// caller can decide whether to emit a diagnostic.
-func resolveFromInstanceItem(it: in Item, instDecl: in AspectDecl, templates: in Map[String, AspectDecl]): Item {
+// Find a config field by name in a config-field list, or None.
+func configFieldByName(cfg: in List[ConfigField], name: in String): Option[ConfigField] {
+  var i = 0
+  while i < cfg.count {
+    if cfg[i].name == name {
+      return Some(value = cfg[i])
+    }
+    i = i + 1
+  }
+  None
+}
+
+// Merge a `from`-instance's `config { }` overrides onto the template's config
+// defaults: every template field is kept (with the instance's value when the
+// instance overrides it), and any instance-only field is appended.  The old
+// "instance replaces template wholesale when non-empty" behaviour dropped
+// template fields the instance didn't mention (e.g. `enabled`, `field`),
+// leaving them unwired and read as their zero value at runtime (#3543).
+func mergeAspectConfig(tplCfg: in List[ConfigField], instCfg: in List[ConfigField]): List[ConfigField] {
+  val result: List[ConfigField] = newList()
+  var i = 0
+  while i < tplCfg.count {
+    val tf = tplCfg[i]
+    match configFieldByName(instCfg, tf.name) {
+      case Some(ov) -> result.add(ov)
+      case None -> result.add(tf)
+    }
+    i = i + 1
+  }
+  var j = 0
+  while j < instCfg.count {
+    match configFieldByName(tplCfg, instCfg[j].name) {
+      case Some(_) -> ()
+      case None -> result.add(instCfg[j])
+    }
+    j = j + 1
+  }
+  result
+}
+
+// A `from`-template is C-mode (`@inline_template`) when its `around` body
+// reads the matched function's arguments via the `args.<field>` keyword.
+// `collectAspectTemplates` stores only the `AspectDecl` (not the declaring
+// Item's annotations), so the `@inline_template` marker is lost during
+// collection; reconstruct it from the body so the resolved instance gets the
+// `args.<field>` rewrite (#3543).  The receiver scanned for is the literal
+// `args` — the exact keyword `tryMemberRewrite` rewrites — NOT the
+// `around(<name>)` binding (which is usually `call`).  Using the binding name
+// (#3592) misclassified every template that merely calls `call.proceed()` as
+// C-mode and, worse, missed a genuine C-mode template that reads `args.field`
+// but never references the ambient `call`, regressing the #3543 NRE.
+func aspectTemplateIsCMode(decl: in AspectDecl): Bool {
+  match decl.around {
+    case None -> false
+    case Some(a) -> {
+      val refs: Map[String, Bool] = newMap()
+      collectMemberRefsBlock(a.body, "args", refs)
+      refs.count > 0
+    }
+  }
+}
+
+func annotationsHaveInlineTemplate(anns: in List[Annotation]): Bool {
+  var i = 0
+  while i < anns.count {
+    if annotationShortName(anns[i]) == "inline_template" {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+func mkInlineTemplateAnnotation(span: in Span): Annotation {
+  Annotation(name = ModulePath(segments = singleSeg("inline_template"), span = span), args = newList(), span = span)
+}
+
+// Resolve a `from`-instance's template by its `from` path.  The qualified
+// cross-package form (`from Lib.Aspects.X`) keys directly; the unqualified
+// same-package form (`from X`) is registered under the declaring package's
+// FQN (`pkgName.X`), so retry with the consuming package prefix when the
+// as-written path misses (#3543).
+func lookupFromTemplate(templates: in Map[String, AspectDecl], fqn: in String, pkgName: in String): Option[AspectDecl] {
+  match mapGet(templates, fqn) {
+    case Some(t) -> Some(value = t)
+    case None -> {
+      if pkgName.length > 0 {
+        mapGet(templates, pkgName + "." + fqn)
+      } else {
+        None
+      }
+    }
+  }
+}
+
+/// Pre-process a `from`-instance aspect: when its template is found in
+/// `templates`, replace it with a synthesised concrete aspect that takes the
+/// template's `around` / `contracts` and the instance's `matches` /
+/// `exceptNames` / `wraps` / `inside`. The effective `config` is the
+/// template's defaults with the instance's `config { }` entries overlaid
+/// (`mergeAspectConfig`), and the template's `@inline_template` marker is
+/// propagated when the template body reads `args.<field>`. An unresolved
+/// `from` reference (template absent from `templates`) is passed through
+/// unchanged so the caller can decide whether to emit a diagnostic.
+func resolveFromInstanceItem(
+  it: in Item,
+  instDecl: in AspectDecl,
+  templates: in Map[String, AspectDecl],
+  pkgName: in String,
+): Item {
   match instDecl.around {
     case Some(_) -> it
     case None -> {
@@ -2391,11 +2701,11 @@ func resolveFromInstanceItem(it: in Item, instDecl: in AspectDecl, templates: in
         case None -> it
         case Some(fromPath) -> {
           val fqn = resolveFromPath(fromPath)
-          match mapGet(templates, fqn) {
+          match lookupFromTemplate(templates, fqn, pkgName) {
             case None -> it
             case Some(tplDecl) -> {
               val instCfg = instDecl.config
-              val effectiveConfig = if instCfg.count > 0 { instCfg } else { tplDecl.config }
+              val effectiveConfig = mergeAspectConfig(tplDecl.config, instCfg)
               val effective = AspectDecl(
                 name = instDecl.name,
                 from = instDecl.from,
@@ -2408,9 +2718,26 @@ func resolveFromInstanceItem(it: in Item, instDecl: in AspectDecl, templates: in
                 inside = instDecl.inside,
                 span = instDecl.span
               )
+              // Propagate the template's `@inline_template` marker — lost
+              // during `collectAspectTemplates` (which stores only the decl)
+              // — so the resolved aspect's `args.<field>` references are
+              // rewritten to the matched function's parameters (#3543).
+              val baseAnns = it.annotations
+              val finalAnns = if aspectTemplateIsCMode(tplDecl) and not annotationsHaveInlineTemplate(baseAnns) {
+                val merged: List[Annotation] = newList()
+                var ai = 0
+                while ai < baseAnns.count {
+                  merged.add(baseAnns[ai])
+                  ai = ai + 1
+                }
+                merged.add(mkInlineTemplateAnnotation(it.span))
+                merged
+              } else {
+                baseAnns
+              }
               Item(
                 docComments = it.docComments,
-                annotations = it.annotations,
+                annotations = finalAnns,
                 visibility = it.visibility,
                 kind = IAspect(decl = effective),
                 span = it.span
@@ -2445,7 +2772,7 @@ func hasFromInstance(items: in List[Item]): Bool {
   false
 }
 
-func resolveFromInstances(items: in List[Item], templates: in Map[String, AspectDecl]): List[Item] {
+func resolveFromInstances(items: in List[Item], templates: in Map[String, AspectDecl], pkgName: in String): List[Item] {
   // Fast-path: if no from-instance exists in items, return the original list.
   if not hasFromInstance(items) {
     return items
@@ -2456,7 +2783,7 @@ func resolveFromInstances(items: in List[Item], templates: in Map[String, Aspect
     val it = items[j]
     match it.kind {
       case IAspect(aDecl) -> {
-        result.add(resolveFromInstanceItem(it, aDecl, templates))
+        result.add(resolveFromInstanceItem(it, aDecl, templates, pkgName))
       }
       case _ -> result.add(it)
     }
@@ -2474,8 +2801,9 @@ func resolveFromInstances(items: in List[Item], templates: in Map[String, Aspect
 /// A004x diagnostic for unresolved `from` is deferred to a follow-up (#3497).
 pub func weaveFileWithDiagsAndTemplates(file: in SourceFile, templates: in Map[String, AspectDecl]): WeaveFileResult {
   val file0 = injectWeaveImports(file)
-  val resolvedItems = resolveFromInstances(file0.items, templates)
-  val wr = weaveItemsCore(resolvedItems, packagePathString(file0))
+  val pkgPath = packagePathString(file0)
+  val resolvedItems = resolveFromInstances(file0.items, templates, pkgPath)
+  val wr = weaveItemsCore(resolvedItems, pkgPath)
   val newFile = SourceFile(
     moduleDoc = file0.moduleDoc,
     fileAnnotations = file0.fileAnnotations,

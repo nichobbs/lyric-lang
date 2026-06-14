@@ -16,9 +16,8 @@ output_assembly = "Validation.dll"
 
 [project.tests]
 "Validation.ValidationTests" = "tests/validation_tests.l"
-# tests/aspect_weaving_tests.l is staged but NOT registered: it asserts the
-# ValidateInput aspect actually short-circuits when woven, which fails today
-# because aspect weaving is non-functional for the C-mode @inline_template +
-# `from`-instance pattern (#3543). Register + CI-wire it in the PR that fixes
-# #3543.
-# "Validation.AspectWeavingTests" = "tests/aspect_weaving_tests.l"
+# Runtime aspect-weaving regression suite (#3543): asserts the ValidateInput
+# template and the direct/unqualified-from instantiation forms actually
+# short-circuit when woven. validation is already in the ecosystem CI job, so
+# this is the ecosystem's first CI coverage of woven-aspect runtime behaviour.
+"Validation.AspectWeavingTests" = "tests/aspect_weaving_tests.l"

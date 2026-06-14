@@ -706,7 +706,16 @@ per §6):
    boundaries.
 4. The runtime config block for each aspect (§8) is initialised once
    per process; the inlined body reads `config.<field>` as a static
-   load.
+   load. A `config { }` field may be referenced either qualified
+   (`config.minLen`) or by its bare name (`minLen`); both lower to the
+   same materialised constant. The bare form is what the first-party
+   aspect libraries use. A bare reference is resolved to the config
+   field only when it does not name a parameter of the matched function
+   (parameters shadow like-named config fields; use the qualified
+   `config.<field>` form to disambiguate). For a `from`-instance, the
+   effective config is the template's defaults with the instance's
+   `config { }` entries overlaid — fields the instance does not mention
+   keep their template default.
 
 Aspects that share an `around` helper can factor it out — see §12 on
 generics interaction for the monomorphisation cost.
