@@ -567,3 +567,40 @@ Source generator open questions (Q-SG-001–Q-SG-004) are maintained in
 `docs/40-source-generators.md` §10.  They live there because they require
 source-generator design context to evaluate.  All Q-SG entries are currently
 open.
+
+---
+
+## JVM stdlib portability questions
+
+**Q-JVM-001 (open):** `Std.Environment.setVar` is marked `@stable(since = "1.0")` but
+its JVM implementation (`lyric-stdlib/std/_kernel_jvm/environment_host.l`) is a
+silent no-op — the JVM platform has no portable `setenv` equivalent, and the
+`lyric` CLI always runs on .NET.  Two sub-questions:
+
+1. Should `@stable` be deferred until the JVM behaviour is defined (either a real
+   implementation or a documented first-class limitation)?
+2. Should calling `setVar` in a JVM-targeted compilation emit a compile-time note
+   so callers are not silently surprised?
+
+The function works correctly on .NET; the stability question is purely about the
+cross-platform contract.  Tracked in review issue #3534.
+
+---
+
+## Maven protocol test coverage
+
+**Q-MV-001 (open):** The three pure helpers in `cli_restore.l` —
+`jsonEscape`, `buildMavenResolverRequest`, and `extractMavenJarPaths` — have
+non-trivial string-manipulation logic and implicit invariants (compact-JSON
+protocol, unescape order) but no `@test_module` coverage.
+
+The blocker is that these functions are private to the `Lyric.Cli` package and
+depend on `MavenSection` (from `Lyric.Manifest`), so a standalone `@test_module`
+cannot import them without either making them `pub` or extracting them into a
+separate `Lyric.MavenProtocol` package.
+
+Tracked in review issue #3549.  Resolution options:
+- Extract to a `Lyric.MavenProtocol` package with `pub` visibility and a
+  dedicated `maven_protocol_self_test.l`.
+- Make the helpers `pub` in `cli_restore.l` and test from a `cli_restore_self_test.l`
+  (accepts the full `Lyric.Cli` import closure).
