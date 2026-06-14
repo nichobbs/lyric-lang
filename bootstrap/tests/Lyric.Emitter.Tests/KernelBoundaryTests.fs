@@ -206,7 +206,12 @@ let tests =
             //               The embedded contract-metadata read is now
             //               metadata-direct (`Msil.MetadataReader`, pure byte
             //               reading, AOT-safe), needing no host extern at all.
-            Expect.isLessThanOrEqual total 324
+            //   324 → 325 — `Std.EnvironmentHost.hostSetEnvironmentVariable`:
+            //               `@externTarget("System.Environment.SetEnvironmentVariable")`
+            //               backing `Std.Environment.setVar`, used by the
+            //               JVM build pipeline to inject `LYRIC_FFI_JARS`
+            //               before `emitProject` (#2668 J5 Maven resolver).
+            Expect.isLessThanOrEqual total 325
                 "total extern surface unexpectedly large"
         }
     ]

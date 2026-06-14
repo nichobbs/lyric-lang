@@ -32,3 +32,11 @@ extern package lyric.stdlib.jvm.EnvHost {
 pub func hostRuntimeDirectory(): String {
   ""
 }
+
+// SetEnvironmentVariable has no portable JVM equivalent (the JVM exposes no
+// `setenv(3)` equivalent without unsafe reflection).  This is a no-op stub
+// so JVM programs that import Std.Environment still compile; in practice the
+// Lyric CLI (the only caller of setVar) always runs on .NET.
+pub func hostSetEnvironmentVariable(key: in String, value: in String): Unit {
+  ()
+}

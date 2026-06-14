@@ -808,6 +808,39 @@ func buildProject(
     packageVersion = manifest.packageSection.version
   )
 
+  // For JVM builds, inject Maven classpath into LYRIC_FFI_JARS so the JVM
+  // auto-FFI resolver can locate downloaded Maven JARs at compile time.
+  match target {
+    case Jvm -> {
+      val classpathFile = Path.join(Path.join(Path.join(mfDir, "target"), "restore"), "jvm-classpath.txt")
+      match File.readText(classpathFile) {
+        case Ok(text) -> {
+          val trimmed = Str.trim(text)
+          if trimmed.length > 0 {
+            val lines = Str.split(trimmed, "\n")
+            var jars = ""
+            var li = 0
+            while li < lines.length {
+              val line = Str.trim(lines[li])
+              if line.length > 0 {
+                if jars.length > 0 {
+                  jars = jars + ":"
+                }
+                jars = jars + line
+              }
+              li += 1
+            }
+            if jars.length > 0 {
+              Environment.setVar("LYRIC_FFI_JARS", jars)
+            }
+          }
+        }
+        case Err(_) -> ()
+      }
+    }
+    case Dotnet -> ()
+  }
+
   val result = Emitter.emitProject(projReq)
   var hadError = false
   for d in result.diagnostics.toArray() {
@@ -825,7 +858,22 @@ func buildProject(
     return 1
   }
 
-  writeRuntimeConfig(outPath)
+  match target {
+    case Dotnet -> writeRuntimeConfig(outPath)
+    case Jvm -> {
+      val classpathFile = Path.join(Path.join(Path.join(mfDir, "target"), "restore"), "jvm-classpath.txt")
+      match File.readText(classpathFile) {
+        case Ok(text) -> {
+          val mpPath = Path.join(outDir, "module-path.txt")
+          match File.writeText(mpPath, text) {
+            case Err(e) -> printErr("build: warning: cannot write " + mpPath + ": " + IOError.message(e))
+            case Ok(_) -> ()
+          }
+        }
+        case Err(_) -> ()
+      }
+    }
+  }
   val elapsedMs = Time.totalMillis(Time.since(Time.now(), buildStart))
   Console.println(
     "built " + outPath + " (" + toString(pkgs.count) + " package(s), " + Format.formatFixed(elapsedMs, 0) + "ms)"
