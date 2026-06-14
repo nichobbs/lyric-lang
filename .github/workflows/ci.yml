@@ -4478,7 +4478,7 @@ jobs:
             // Fetch fresh PR state to verify mergeable_state.
             // GitHub computes mergeable_state asynchronously; it may be 'unknown'
             // or transiently 'dirty' immediately after CI completes. Re-poll up to 6
-            // times (with linear backoff: 5s, 7s, 9s, 11s, 13s) before
+            // times (with linear backoff: 3s, 5s, 7s, 9s, 11s) before
             // giving up. Both 'unknown' and transient 'dirty' can resolve on retry,
             // so we keep polling for both. If the state doesn't stabilize, skip this
             // run (it will retry on the next CI event) rather than risk promoting a PR
