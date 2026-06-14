@@ -211,3 +211,66 @@ test "HttpCircuitBreaker aspect: enabled=false bypasses the circuit" {
     case Err(_) -> assertTrue(false, "a disabled breaker must not reject")
   }
 }
+
+// ─── RateLimit enforcement path ───────────────────────────────────────────────
+//
+// Prove that the woven RateLimit aspect actually calls the kernel and maps the
+// denial to 429 — a weave that no-ops the kernel call would silently pass all
+// calls through.  `requestsPerMinute=2, burstSize=1` means calls 1–3 are
+// allowed (2 RPM slots + 1 burst slot) and call 4 is denied.  All four calls
+// happen in rapid succession (well under one window), so the window boundary
+// never flakes.
+aspect RateEnforced from Web.Aspects.RateLimit {
+  matches: name like "rateLimited*"
+  config {
+    requestsPerMinute: Int = 2
+    burstSize: Int = 1
+  }
+}
+
+pub func rateLimitedHandler(): Result[String, Web.ApiError] {
+  return Ok("ok")
+}
+
+test "RateLimit aspect: call after requestsPerMinute + burstSize exhausted is denied with 429" {
+  // Exhaust the RPM budget (2) and the burst budget (1): three allowed calls.
+  val _ = rateLimitedHandler()
+  val _ = rateLimitedHandler()
+  val _ = rateLimitedHandler()
+  // The fourth call must be short-circuited before the handler runs.
+  match rateLimitedHandler() {
+    case Ok(_) -> assertTrue(false, "an over-limit call must not reach the handler")
+    case Err(e) -> assertEqualInt(e.status, 429, "over-limit call short-circuits with 429 Too Many Requests")
+  }
+}
+
+// ─── HttpCircuitBreaker enforcement path ─────────────────────────────────────
+//
+// Prove that the woven HttpCircuitBreaker aspect opens the circuit after
+// `failureThreshold` consecutive handler failures and short-circuits the next
+// call with 503.  `failureThreshold=2` means two Err returns open the circuit;
+// the third call must be denied without reaching the handler.  `cooldownMs` is
+// set high (60 s) so the circuit stays open for the duration of the test run.
+aspect BreakerEnforced from Web.Aspects.HttpCircuitBreaker {
+  matches: name like "breakerLimited*"
+  config {
+    failureThreshold: Int = 2
+    cooldownMs: Int = 60000
+  }
+}
+
+// Always returns Err so the woven aspect accumulates consecutive failures.
+pub func breakerLimitedHandler(): Result[String, Web.ApiError] {
+  return Err(Web.internalError("intentional failure for circuit-breaker test"))
+}
+
+test "HttpCircuitBreaker aspect: call after failureThreshold consecutive failures is denied with 503" {
+  // Drive two failures to open the circuit (failureThreshold = 2).
+  val _ = breakerLimitedHandler()
+  val _ = breakerLimitedHandler()
+  // The circuit is now open; the next call must be short-circuited.
+  match breakerLimitedHandler() {
+    case Ok(_) -> assertTrue(false, "an open circuit must not reach the handler")
+    case Err(e) -> assertEqualInt(e.status, 503, "open circuit short-circuits with 503 Service Unavailable")
+  }
+}
