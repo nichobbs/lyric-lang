@@ -255,3 +255,37 @@ test "collectFixed64 gathers repeated fixed64 fields" {
     }
   }
 }
+
+// Edge cases for the fixed-width extraction helpers (#3620): absent field
+// number yields None / empty list, mirroring findVarint/collectBytes semantics.
+test "findFixed32/findFixed64 return None for an absent field number" {
+  val bytes = encodeMessage(
+    [Fix32Field(number = 1, bits = 0x01020304), Fix64Field(number = 2, bits = 0x0102030405060708i64)]
+  )
+  match decodeMessage(bytes) {
+    case Err(e) -> assertTrue(false, "decode failed: " + e)
+    case Ok(fields) -> {
+      match findFixed32(fields, 9) {
+        case Some(_) -> assertTrue(false, "no fixed32 field 9 expected")
+        case None -> assertTrue(true, "findFixed32 absent -> None")
+      }
+      match findFixed64(fields, 9) {
+        case Some(_) -> assertTrue(false, "no fixed64 field 9 expected")
+        case None -> assertTrue(true, "findFixed64 absent -> None")
+      }
+    }
+  }
+}
+
+test "collectFixed32/collectFixed64 return an empty list for an absent field number" {
+  val bytes = encodeMessage(
+    [Fix32Field(number = 1, bits = 0x01020304), Fix64Field(number = 2, bits = 0x0102030405060708i64)]
+  )
+  match decodeMessage(bytes) {
+    case Err(e) -> assertTrue(false, "decode failed: " + e)
+    case Ok(fields) -> {
+      assertEqualInt(collectFixed32(fields, 9).length, 0, "collectFixed32 absent -> empty")
+      assertEqualInt(collectFixed64(fields, 9).length, 0, "collectFixed64 absent -> empty")
+    }
+  }
+}
