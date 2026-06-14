@@ -1020,6 +1020,7 @@ func rewriteTrailingSExpr(
   counter: inout RenameCounter,
   sp: in Span,
   acc: in List[Statement],
+  isVoidReturn: in Bool,
 ): Unit {
   if ensuresExprs.count == 0 {
     // No ensures clauses, but we still need to descend through any
@@ -1032,6 +1033,18 @@ func rewriteTrailingSExpr(
     // the inner blocks).
     val newE = elaborateExprDeep(e, ensuresExprs, counter)
     acc.add(mkStmt(SExpr(expr = newE), sp))
+    return
+  }
+  // For void-returning functions, the trailing expression produces no value,
+  // so binding it to a `let` would create a void-typed local that the codegen
+  // cannot stloc (nothing on the stack) → InvalidProgramException (#3505).
+  // Emit the expression as a plain statement and check ensures without result
+  // substitution.  Protected-type invariant ensures are the typical case here:
+  // they reference field names, never `result`.
+  if isVoidReturn {
+    val newE = elaborateExprDeep(e, ensuresExprs, counter)
+    acc.add(mkStmt(SExpr(expr = newE), sp))
+    appendEnsuresAssertsNoResult(acc, ensuresExprs, sp)
     return
   }
   val name = freshResultName(counter)
@@ -1175,6 +1188,7 @@ func elaborateTopLevelStmt(
   ensuresExprs: in List[Expr],
   counter: inout RenameCounter,
   acc: in List[Statement],
+  isVoidReturn: in Bool,
 ): Unit {
   match s.kind {
     case SReturn(valOpt) -> {
@@ -1188,7 +1202,7 @@ func elaborateTopLevelStmt(
     }
     case SExpr(e) -> {
       if isLast {
-        rewriteTrailingSExpr(e, ensuresExprs, counter, s.span, acc)
+        rewriteTrailingSExpr(e, ensuresExprs, counter, s.span, acc, isVoidReturn)
       } else {
         // Not the trailing expression: recurse into any nested blocks so
         // that returns inside if/match/loop branches are also elaborated.
@@ -1308,7 +1322,12 @@ func exprOrBlockHasInvariant(eb: in ExprOrBlock): Bool {
   }
 }
 
-func elaborateFunctionBody(contracts: in List[ContractClause], body: in Block, counter: inout RenameCounter): Block {
+func elaborateFunctionBody(
+  contracts: in List[ContractClause],
+  body: in Block,
+  counter: inout RenameCounter,
+  isVoidReturn: in Bool,
+): Block {
   val requiresExprs = collectRequires(contracts)
   val ensuresExprs = collectEnsures(contracts)
 
@@ -1354,7 +1373,7 @@ func elaborateFunctionBody(contracts: in List[ContractClause], body: in Block, c
   var si = 0
   while si < body.statements.count {
     val isLast = si == body.statements.count - 1
-    elaborateTopLevelStmt(body.statements[si], isLast, rewrittenEnsures, counter, outs)
+    elaborateTopLevelStmt(body.statements[si], isLast, rewrittenEnsures, counter, outs, isVoidReturn)
     si = si + 1
   }
 
@@ -1378,6 +1397,36 @@ func wrapExprBody(e: in Expr): Block {
 //     type entries and interface default methods are picked up in a
 //     follow-up stage.
 // ─────────────────────────────────────────────────────────────────────────────
+// True if a type expression denotes the Unit type.  Covers the three
+// representations that can appear in a return-type annotation:
+//   TUnit       — the empty-tuple syntax `()`
+//   TRef("Unit") / TRef("Std.Core.Unit") — unqualified or fully-qualified name
+// Parenthesised forms are unwrapped.
+func isUnitTypeExpr(te: in TypeExpr): Bool {
+  match te.kind {
+    case TUnit -> true
+    case TRef(path) -> {
+      val n = path.segments.count
+      if n == 0 {
+        false
+      } else {
+        path.segments[n - 1] == "Unit"
+      }
+    }
+    case TParen(inner) -> isUnitTypeExpr(inner)
+    case _ -> false
+  }
+}
+
+// True if the return-type option represents a void (Unit) return.  Covers
+// both `func foo()` (ret = None) and `func foo(): Unit` (ret = Some(Unit)).
+func isVoidReturnOpt(ret: in Option[TypeExpr]): Bool {
+  match ret {
+    case None -> true
+    case Some(te) -> isUnitTypeExpr(te)
+  }
+}
+
 pub func elaborateFunction(fn: in FunctionDecl): FunctionDecl {
   // @axiom functions have no body — nothing to elaborate.
   if functionIsAxiom(fn) {
@@ -1404,8 +1453,9 @@ pub func elaborateFunction(fn: in FunctionDecl): FunctionDecl {
   }
 
   var counter = newRenameCounter()
+  val isVoid = isVoidReturnOpt(fn.ret)
   val newBody: FunctionBody = match fn.body {
-    case Some(b) -> match b { case FBBlock(blk) -> FBBlock(block = elaborateFunctionBody(fn.contracts, blk, counter)); case FBExpr(e) -> FBBlock(block = elaborateFunctionBody(fn.contracts, wrapExprBody(e), counter)) }
+    case Some(b) -> match b { case FBBlock(blk) -> FBBlock(block = elaborateFunctionBody(fn.contracts, blk, counter, isVoid)); case FBExpr(e) -> FBBlock(block = elaborateFunctionBody(fn.contracts, wrapExprBody(e), counter, isVoid)) }
     case None -> FBExpr(expr = mkExpr(EError, fn.span))
   }
   // unreachable per the early return above
@@ -1447,9 +1497,10 @@ func elaborateProtectedMember(m: in ProtectedMember, invariantEnsures: in List[C
         m
       } else {
         var counter = newRenameCounter()
+        val isVoid = isVoidReturnOpt(ed.ret)
         val newBody: FunctionBody = match ed.body {
-          case FBBlock(blk) -> FBBlock(block = elaborateFunctionBody(combined, blk, counter))
-          case FBExpr(e) -> FBBlock(block = elaborateFunctionBody(combined, wrapExprBody(e), counter))
+          case FBBlock(blk) -> FBBlock(block = elaborateFunctionBody(combined, blk, counter, isVoid))
+          case FBExpr(e) -> FBBlock(block = elaborateFunctionBody(combined, wrapExprBody(e), counter, isVoid))
         }
         PMEntry(
           entryDecl = EntryDecl(

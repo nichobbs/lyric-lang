@@ -2348,12 +2348,14 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         // lowerMRecord then adds: FieldDef per field; .ctor; one MethodDef per method.
         val className = pkgName + "." + decl.name
         var fi = 0
+        var fpos = 0
         while fi < decl.members.count {
           match decl.members[fi] {
             case PMField(pf) -> {
               val fieldTok = 0x04000000 + fieldDefRow
+              val byPosKey = className + "/field" + toString(fpos)
               match pf {
-                case PFVar(fname, fty, _, _) -> {
+                case PFVar(fname, fty, initOpt, _) -> {
                   val fKey = className + "/" + fname
                   if not cctx.fieldTokens.containsKey(fKey) {
                     cctx.fieldTokens.add(fKey, fieldTok)
@@ -2362,9 +2364,20 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                   if not cctx.fieldTokensByName.containsKey(pkgName + "/" + fname) {
                     cctx.fieldTokensByName.add(pkgName + "/" + fname, fieldTok)
                     cctx.fieldDeclaringClassByName.add(pkgName + "/" + fname, className)
+                  }
+                  if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
+                    cctx.fieldDeclaredNames.add(byPosKey, fname)
+                  }
+                  match initOpt {
+                    case Some(dfltExpr) -> {
+                      if not cctx.ctorDefaultExprs.containsKey(byPosKey) {
+                        cctx.ctorDefaultExprs.add(byPosKey, dfltExpr)
+                      }
+                    }
+                    case None -> ()
                   }
                 }
-                case PFLet(fname, fty, _, _) -> {
+                case PFLet(fname, fty, initOpt, _) -> {
                   val fKey = className + "/" + fname
                   if not cctx.fieldTokens.containsKey(fKey) {
                     cctx.fieldTokens.add(fKey, fieldTok)
@@ -2373,6 +2386,17 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                   if not cctx.fieldTokensByName.containsKey(pkgName + "/" + fname) {
                     cctx.fieldTokensByName.add(pkgName + "/" + fname, fieldTok)
                     cctx.fieldDeclaringClassByName.add(pkgName + "/" + fname, className)
+                  }
+                  if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
+                    cctx.fieldDeclaredNames.add(byPosKey, fname)
+                  }
+                  match initOpt {
+                    case Some(dfltExpr) -> {
+                      if not cctx.ctorDefaultExprs.containsKey(byPosKey) {
+                        cctx.ctorDefaultExprs.add(byPosKey, dfltExpr)
+                      }
+                    }
+                    case None -> ()
                   }
                 }
                 case PFImmutable(f) -> {
@@ -2385,8 +2409,12 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                     cctx.fieldTokensByName.add(pkgName + "/" + f.name, fieldTok)
                     cctx.fieldDeclaringClassByName.add(pkgName + "/" + f.name, className)
                   }
+                  if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
+                    cctx.fieldDeclaredNames.add(byPosKey, f.name)
+                  }
                 }
               }
+              fpos = fpos + 1
               fieldDefRow = fieldDefRow + 1
             }
             case _ -> {
@@ -3314,7 +3342,22 @@ func emitByrefArgMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIns
         case None -> panic("Msil.Codegen: out/inout argument '" + name + "' is not a local or parameter (mode checker should have rejected this)")
       }
     }
-    case _ -> panic("Msil.Codegen: out/inout argument must be an assignable variable")
+    case EMember(recv, memberName) -> {
+      // out/inout argument is a field access (e.g. `self.field`).  Load the
+      // receiver address then use ldflda to get a managed pointer to the field.
+      val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
+      match recvTy {
+        case MClass(cls) -> {
+          val key = cls + "/" + memberName
+          match mapGet(cctx.fieldTokens, key) {
+            case Some(tok) -> insns.add(MLdflda(fieldToken = tok))
+            case None -> panic("Msil.Codegen: out/inout field argument '" + memberName + "' not found in fieldTokens for class '" + cls + "'")
+          }
+        }
+        case _ -> panic("Msil.Codegen: out/inout field argument receiver must be a class type")
+      }
+    }
+    case _ -> panic("Msil.Codegen: out/inout argument must be an assignable variable (path or field access)")
   }
 }
 
@@ -7729,10 +7772,9 @@ func callArgExpr(arg: in CallArg): Expr {
 // positional (already in order), the field-name map is absent (defensive), or
 // a required field has neither a named arg nor a registered default.
 func fillCtorDefaultArgs(cctx: in CodegenCtx, ctorKey: in String, args: in List[CallArg]): List[CallArg] {
-  if args.count == 0 {
-    return args
-  }
   // Build name → arg from the call site; bail if any arg is positional.
+  // When args.count == 0 we still need to go through the default-injection path
+  // to handle zero-arg construction of types whose fields all have defaults.
   val nameToArg: Map[String, CallArg] = newMap()
   var i = 0
   while i < args.count {
