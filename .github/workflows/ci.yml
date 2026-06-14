@@ -1488,11 +1488,12 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_value_self_test.l
 
-      # Map-enhancements self-test (issue #3442). Tests stable Map helpers:
-      # mapSize, mapIsEmpty. Iteration functions (mapKeys, mapValues, mapEntries,
-      # mapForEach, mapPutAll) and the MapEntry record are deferred to a follow-up
-      # PR pending resolution of codegen epics #3511 and #3512.  Run via native
-      # `lyric test` (in-process through Msil.Bridge).
+      # Map-enhancements self-test (issue #3442). Tests Map helpers:
+      # mapSize, mapIsEmpty (dotnet target; JVM parity pending #3577).
+      # Iteration functions (mapKeys, mapValues, mapEntries, mapForEach, mapPutAll)
+      # and the MapEntry record are deferred to a follow-up PR pending resolution
+      # of codegen epics #3511 and #3512.  Run via native `lyric test` (in-process
+      # through Msil.Bridge).
       - name: Map-enhancements self-test (native lyric test)
         working-directory: ${{ github.workspace }}
         run: |
