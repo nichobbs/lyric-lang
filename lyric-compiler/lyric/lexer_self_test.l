@@ -324,6 +324,27 @@ test "unicode escape non bmp in char literal rejected" {
   assertEqualInt(charCodepointAt(r, 0), 0xFFFD, "u1F600-char: U+FFFD substituted")
 }
 
+test "unicode escape non bmp in interpolated string accepted" {
+  // "\u{1F600}${x}" — non-BMP in a string literal that also has an
+  // interpolation hole.  The escape is in the leading chunk (TStringPart)
+  // and must emit a surrogate pair; the hole is unaffected.
+  val r = lex("\"\\u{1F600}\${x}\"")
+  assertEqualInt(diagCount(r), 0, "u1F600-interp: no diagnostics")
+  assertEqual(tokenKindAt(r, 0), "string_start", "u1F600-interp: TStringStart")
+  assertEqual(tokenKindAt(r, 1), "string_part", "u1F600-interp: TStringPart")
+  assertEqual(stringPartAt(r, 1), "😀", "u1F600-interp: chunk has emoji")
+  assertEqual(tokenKindAt(r, 2), "string_hole_start", "u1F600-interp: TStringHoleStart")
+}
+
+test "unicode escape non bmp in triple string accepted" {
+  // """\u{1F600}""" — non-BMP in a triple-quoted string literal.
+  // The escape must emit a surrogate pair; no diagnostic.
+  val r = lex("\"\"\"\\u{1F600}\"\"\"")
+  assertEqualInt(diagCount(r), 0, "u1F600-triple: no diagnostics")
+  assertEqual(tokenKindAt(r, 0), "triple_string", "u1F600-triple: TTripleString")
+  assertEqual(tripleStringAt(r, 0), "😀", "u1F600-triple: body has emoji")
+}
+
 // Phase 5 §M5.1 stage 3 — interpolated / triple / raw strings.
 //
 // Note on quoting: every time the body of a `lex(...)` call below

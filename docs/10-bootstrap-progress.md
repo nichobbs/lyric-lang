@@ -5750,8 +5750,10 @@ nested block comments, doc + module-doc comments, statement-end
 insertion with the same suppression rules as the F# bootstrap, and
 diagnostic codes L0001/L0010/L0011/L0012/L0020/L0021/L0022/L0023/
 L0024/L0025/L0030.  String interpolation, triple-quoted and raw
-strings, non-BMP `\u{…}`, non-ASCII identifiers + NFC normalisation,
-and the L0040 reserved-name diagnostic are deferred to a follow-up.
+strings, non-ASCII identifiers + NFC normalisation, and the L0040
+reserved-name diagnostic are deferred to a follow-up.  Non-BMP
+`\u{…}` in string literals ships separately in PR #3621 (D103); char
+literals reject non-BMP with L0022 (Char is a UTF-16 code unit).
 
 The same file ships an in-program test harness (24 cases over
 `Std.Testing`) covering empty input, identifiers + keywords, bool
