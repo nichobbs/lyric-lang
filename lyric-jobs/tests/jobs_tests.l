@@ -161,3 +161,26 @@ test "enqueue: successive enqueues each produce a unique job ID" {
     }
   }
 }
+
+// ─── enqueue / enqueueWith convenience wrappers ───────────────────────────────
+test "enqueue wrapper: uses default limits and queues the job (#3174)" {
+  val scheduler = Jobs.inProcess()
+  match Jobs.enqueue(scheduler, "wrapped-job", "{}") {
+    case Err(e) -> assertTrue(false, "enqueue wrapper must succeed: " + e)
+    case Ok(jobId) -> {
+      assertTrue(jobId.length > 0, "enqueue wrapper returns non-empty job ID")
+      assertTrue(scheduler.queue.length == 1, "queue has one job after enqueue wrapper")
+    }
+  }
+}
+
+test "enqueueWith wrapper: honours explicit maxAttempts/timeoutMs (#3174)" {
+  val scheduler = Jobs.inProcess()
+  match Jobs.enqueueWith(scheduler, "tuned-job", "{}", 5, 60000) {
+    case Err(e) -> assertTrue(false, "enqueueWith wrapper must succeed: " + e)
+    case Ok(jobId) -> {
+      assertTrue(jobId.length > 0, "enqueueWith wrapper returns non-empty job ID")
+      assertTrue(scheduler.queue.length == 1, "queue has one job after enqueueWith wrapper")
+    }
+  }
+}
