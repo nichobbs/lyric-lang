@@ -266,7 +266,9 @@ test "cross-package union construct and match" {
 }
 
 // Parenless nullary case syntax (`case Active` without `()`) must resolve
-// to the known nullary union case and produce a correct match (#1223).
+// to the known nullary union case and produce a correct match (#1223), and
+// bare nullary *construction* (`val a = On`, no `()`) must resolve to the
+// constructor rather than a fresh PBinding/variable (#1227).
 test "cross-package union parenless nullary case" {
   val packages: List[ProjectPackagePayload] = newList()
   packages.add(
@@ -286,8 +288,8 @@ test "cross-package union parenless nullary case" {
         "}\n" +
         "\n" +
         "func main(): Unit {\n" +
-        "  val a = On()\n" +
-        "  val b = Off()\n" +
+        "  val a = On\n" +
+        "  val b = Off\n" +
         "  println(describe(a))\n" +
         "  println(describe(b))\n" +
         "}\n"
