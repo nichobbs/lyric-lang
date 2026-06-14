@@ -866,7 +866,16 @@ pub func compileToJarBundled(
   stdlibSources: in List[String],
 ): Bool {
   val noFeatures: List[String] = newList()
-  compileToJarBundledWithFeatures(source, outputPath, packageName, stdlibSources, noFeatures, noFeatures)
+  val noDepTemplateSrcs: List[String] = newList()
+  compileToJarBundledWithFeatures(
+    source,
+    outputPath,
+    packageName,
+    stdlibSources,
+    noFeatures,
+    noFeatures,
+    noDepTemplateSrcs
+  )
 }
 
 /// Like `compileToJarBundled` but threads `activeFeatures` / `declaredFeatures`
@@ -875,6 +884,10 @@ pub func compileToJarBundled(
 /// annotated `@cfg(feature = "X")` where `X` is absent from `activeFeatures`
 /// are erased; an annotation naming a feature absent from `declaredFeatures`
 /// (when the declared set is non-empty) raises an `F0013` typo warning.
+/// `depTemplateSrcs` is a list of source strings from path-dependency packages;
+/// each is parsed and its `pub aspect` templates are collected into the weave
+/// map so that `from`-instance aspects can resolve cross-package templates
+/// (parity with the MSIL bridge's `depTemplatePkgs`).
 pub func compileToJarBundledWithFeatures(
   source: in String,
   outputPath: in String,
@@ -882,6 +895,7 @@ pub func compileToJarBundledWithFeatures(
   stdlibSources: in List[String],
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
+  depTemplateSrcs: in List[String],
 ): Bool {
   val parseResult = parse(source)
   if reportAndAbort(parseResult.diagnostics) {
@@ -1170,6 +1184,16 @@ pub func compileToJarBundledWithFeatures(
     val tf = toBundle[ati]
     Weaver.collectAspectTemplates(tf.items, dottedPath(tf.packageDecl.path), allTemplates)
     ati = ati + 1
+  }
+  // Collect templates from path-dependency source files passed by the caller
+  // (parity with the MSIL bridge's depTemplatePkgs loop).  For single-file
+  // JVM builds (emitJvmInProcess) this list is empty; JVM project builds that
+  // route through the self-hosted bridge will populate it when that path lands.
+  var dti = 0
+  while dti < depTemplateSrcs.count {
+    val dtPr = parse(depTemplateSrcs[dti])
+    Weaver.collectAspectTemplates(dtPr.file.items, dottedPath(dtPr.file.packageDecl.path), allTemplates)
+    dti = dti + 1
   }
 
   // User package first (its codegen failing is always fatal).  Its type-check

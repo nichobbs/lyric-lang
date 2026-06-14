@@ -2120,13 +2120,15 @@ func emitJvmInProcess(req: in EmitRequest): EmitResult {
   // builds thread the manifest's feature set through
   // `emitProjectJvmViaSubprocess`'s `FEATURE` spec lines.
   val noFeatures: List[String] = newList()
+  val noDepTemplateSrcsJvm: List[String] = newList()
   val ok = JvmBridge.compileToJarBundledWithFeatures(
     req.source,
     req.outputPath,
     name,
     stdlibSources,
     noFeatures,
-    noFeatures
+    noFeatures,
+    noDepTemplateSrcsJvm
   )
   if ok {
     val okDiags: List[Diagnostic] = newList()
