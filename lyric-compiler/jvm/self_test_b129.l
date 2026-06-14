@@ -1,10 +1,12 @@
-//! jvm/self_test_b129.l — Stage B129: lowerAsyncGenerator (eager Iterable+Iterator).
+//! jvm/self_test_b129.l — Stage B129: lowerAsyncGenerator (lazy VT+SynchronousQueue).
 //!
 //! Validates the bytecode shape that lowerAsyncGenerator emits for a generator
 //! function `doubles(a: int, b: int): int` that yields `a * 2` and `b * 2`:
 //!
-//!   1. Creates a generator class `Doubles$Gen` implementing Iterable+Iterator
-//!      with an eager RunBody that populates an ArrayList.
+//!   1. Creates a generator class `Doubles$Gen` implementing Iterable+Iterator+Runnable.
+//!      run() executes the body on a virtual thread, communicating each yielded value
+//!      via a SynchronousQueue hand-off; hasNext() calls take() and checks against
+//!      a static _DONE_SENTINEL to detect exhaustion.
 //!   2. Creates a host class `Doubles` with a static kickoff method `doubles(II)`.
 //!   3. Main calls `Doubles.doubles(10, 21)`, iterates via hasNext()/next(),
 //!      and prints each element.

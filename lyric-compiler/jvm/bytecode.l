@@ -545,6 +545,17 @@ pub union AsmInsn {
 /// Switch table data is stored in parallel lists here rather than in
 /// the AsmInsn union, because non-generic union case fields of List[T]
 /// are erased to Object by the D035 erasure path and cannot be accessed.
+/// A pending exception-table entry in the assembler.  Label names are
+/// resolved to PCs at assembly time by `assembleCode`.
+/// `catchType` is a CONSTANT_Class constant-pool index, or 0 for catch-all.
+pub record AsmExnHandler {
+
+  startLabel: String
+  endLabel: String
+  handlerLabel: String
+  catchType: Int
+}
+
 pub record MethodAssembler {
   insns: List[AsmInsn]
   pool: Pool          // shared constant pool
@@ -556,6 +567,7 @@ pub record MethodAssembler {
   swLookupOff: List[Int]     // start index for each lookupswitch in swLookupKeys/Labels
   curStack: Int           // current stack depth during lowerInsn calls
   peakStack: Int           // maximum stack depth seen so far
+  exnHandlers: List[AsmExnHandler]   // exception-table entries accumulated by emitters
 }
 
 /// Construct a fresh assembler sharing `pool`.
@@ -570,7 +582,22 @@ pub func newAssembler(pool: in Pool): MethodAssembler {
     swLookupLabels = newList(),
     swLookupOff = newList(),
     curStack = 0,
-    peakStack = 0
+    peakStack = 0,
+    exnHandlers = newList()
+  )
+}
+
+/// Register an exception-table entry to be emitted when the assembler is
+/// assembled.  `catchType` is a CONSTANT_Class pool index (0 = catch-all).
+pub func addExceptionHandler(
+  asm: in MethodAssembler,
+  startLabel: in String,
+  endLabel: in String,
+  handlerLabel: in String,
+  catchType: in Int,
+): Unit {
+  asm.exnHandlers.add(
+    AsmExnHandler(startLabel = startLabel, endLabel = endLabel, handlerLabel = handlerLabel, catchType = catchType)
   )
 }
 
@@ -948,7 +975,29 @@ pub func assembleCode(asm: in MethodAssembler, maxStack: in Int, maxLocals: in I
   val labels = buildLabelMap(asm)
   val code = writerNew()
   emitAllInsns(asm, labels, code)
-  makeCodeAttr(maxStack, maxLocals, writerToList(code))
+  val bytes = writerToList(code)
+  if asm.exnHandlers.count == 0 {
+    makeCodeAttr(maxStack, maxLocals, bytes)
+  } else {
+    // Build Code attribute with N exception-table entries.
+    val w = writerNew()
+    writerU2(w, maxStack)
+    writerU2(w, maxLocals)
+    writerU4(w, bytes.count)
+    writerByteList(w, bytes)
+    writerU2(w, asm.exnHandlers.count)
+    var hi = 0
+    while hi < asm.exnHandlers.count {
+      val h = asm.exnHandlers[hi]
+      writerU2(w, resolveLbl(labels, h.startLabel))
+      writerU2(w, resolveLbl(labels, h.endLabel))
+      writerU2(w, resolveLbl(labels, h.handlerLabel))
+      writerU2(w, h.catchType)
+      hi = hi + 1
+    }
+    writerU2(w, 0)
+    attrFromWriter("Code", w)
+  }
 }
 
 /// Like `assembleCode` but uses `asm.peakStack` instead of a caller-supplied maxStack.
@@ -964,6 +1013,11 @@ func resolveLbl(labels: in Map[String, Int], name: in String): Int {
 }
 
 /// Assemble with one exception-table entry (label names resolved to PCs).
+///
+/// INCOMPATIBLE with `addExceptionHandler`: these fixed-arity helpers build
+/// the exception table from their own parameters and ignore `asm.exnHandlers`.
+/// Use `assembleCode` or `assembleCodeWithFrames` when handlers were registered
+/// via `addExceptionHandler`.
 pub func assembleCodeWith1Handler(
   asm: in MethodAssembler,
   maxStack: in Int,
@@ -983,6 +1037,8 @@ pub func assembleCodeWith1Handler(
 }
 
 /// Assemble with two exception-table entries (label names resolved to PCs).
+///
+/// INCOMPATIBLE with `addExceptionHandler`: see `assembleCodeWith1Handler`.
 pub func assembleCodeWith2Handlers(
   asm: in MethodAssembler,
   maxStack: in Int,
@@ -1121,7 +1177,13 @@ func collectBranchLabels(asm: in MethodAssembler): Map[String, Bool] {
 /// by the JVM verifier in class files with major version >= 50 (Java 6+).
 ///
 /// `frameLocals` must describe the types of all local variable slots at every
-/// branch target.  The operand stack is assumed empty at every branch target.
+/// branch target and exception handler entry point.  The operand stack is
+/// assumed empty at every branch target; exception handler entries carry one
+/// element (java/lang/Throwable) on the stack automatically.
+///
+/// Exception handlers registered via `addExceptionHandler` are emitted into
+/// the Code attribute's exception table, and StackMapTable `full_frame` entries
+/// are generated at each unique handler label with stack = [Throwable].
 pub func assembleCodeWithFrames(
   asm: in MethodAssembler,
   maxStack: in Int,
@@ -1131,6 +1193,19 @@ pub func assembleCodeWithFrames(
   val pool = asm.pool
   val ar = assembleRaw(asm)
   val targets = collectBranchLabels(asm)
+
+  // Collect unique handler labels; they need full_frame entries with Throwable on stack.
+  val handlerLabels: Map[String, Bool] = newMap()
+  var hli = 0
+  while hli < asm.exnHandlers.count {
+    val h = asm.exnHandlers[hli]
+    match mapGet(handlerLabels, h.handlerLabel) {
+      case None -> handlerLabels.add(h.handlerLabel, true)
+      case Some(_) -> ()
+    }
+    hli = hli + 1
+  }
+
   val smBuf = writerNew()
   var smCount = 0
   var prevOff = -1
@@ -1157,6 +1232,27 @@ pub func assembleCodeWithFrames(
             }
             case None -> ()
           }
+        } else {
+          if handlerLabels.containsKey(nm) {
+            match mapGet(ar.labelOffsets, nm) {
+              case Some(off) -> {
+                val delta = off - prevOff - 1
+                writerByte(smBuf, 255)           // full_frame tag
+                writerU2(smBuf, delta)           // offset_delta
+                writerU2(smBuf, frameLocals.count)
+                var vi = 0
+                while vi < frameLocals.count {
+                  emitVerifierTypeBc(frameLocals[vi], pool, smBuf)
+                  vi = vi + 1
+                }
+                writerU2(smBuf, 1)               // stack has one element: Throwable
+                emitVerifierTypeBc(VObject(className = "java/lang/Throwable"), pool, smBuf)
+                smCount = smCount + 1
+                prevOff = off
+              }
+              case None -> ()
+            }
+          }
         }
       }
       case _ -> ()
@@ -1169,7 +1265,16 @@ pub func assembleCodeWithFrames(
   writerU2(codeW, maxLocals)
   writerU4(codeW, ar.codeBytes.count)
   writerByteList(codeW, ar.codeBytes)
-  writerU2(codeW, 0)                             // exception_table_length = 0
+  writerU2(codeW, asm.exnHandlers.count)
+  var hi = 0
+  while hi < asm.exnHandlers.count {
+    val h = asm.exnHandlers[hi]
+    writerU2(codeW, resolveLbl(ar.labelOffsets, h.startLabel))
+    writerU2(codeW, resolveLbl(ar.labelOffsets, h.endLabel))
+    writerU2(codeW, resolveLbl(ar.labelOffsets, h.handlerLabel))
+    writerU2(codeW, h.catchType)
+    hi = hi + 1
+  }
   if smCount > 0 {
     writerU2(codeW, 1)                           // attributes_count = 1
     writerU2(codeW, poolUtf8(pool, "StackMapTable"))

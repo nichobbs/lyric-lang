@@ -149,3 +149,30 @@ test "?-propagation Err carries the message" {
   val msg = match r { case Ok(_) -> "ok"; case Err(m) -> m }
   assertEqual(msg, "div by zero", "chain Err message")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Nested-generic union construction: Result[Option[T], E] (m-5, #1707)
+// ─────────────────────────────────────────────────────────────────────────────
+test "nested Ok(Some(42)) construction and match extraction" {
+  val r: Result[Option[Int], String] = Ok(Some(42))
+  val v = match r { case Ok(opt) -> match opt { case Some(x) -> x; case None -> -1 }; case Err(_) -> -2 }
+  assertEqualInt(v, 42, "Ok(Some(42)) -> 42")
+}
+
+test "nested Ok(None) construction and match extraction" {
+  val r: Result[Option[Int], String] = Ok(None)
+  val v = match r { case Ok(opt) -> match opt { case Some(x) -> x; case None -> 99 }; case Err(_) -> -1 }
+  assertEqualInt(v, 99, "Ok(None) -> default 99")
+}
+
+test "nested Err with Option type arg" {
+  val r: Result[Option[Int], String] = Err("outer error")
+  val s = match r { case Ok(_) -> "ok"; case Err(m) -> m }
+  assertEqual(s, "outer error", "Err payload preserved through nested generic")
+}
+
+test "nested Some(Some(5)) double-nesting" {
+  val o: Option[Option[Int]] = Some(Some(5))
+  val v = match o { case Some(inner) -> match inner { case Some(x) -> x; case None -> -1 }; case None -> -2 }
+  assertEqualInt(v, 5, "Some(Some(5)) -> 5")
+}
