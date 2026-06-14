@@ -4445,7 +4445,7 @@ jobs:
               mergeableState = freshPr.data.mergeable_state;
               if (mergeableState !== 'unknown' && mergeableState !== 'dirty') break;
               if (poll < MAX_POLLS) {
-                const delayMs = 3000 + (poll * 2000); // 5s, 7s, 9s, 11s, 13s
+                const delayMs = 3000 + (poll * 2000); // 3s, 5s, 7s, 9s, 11s
                 console.log(`[auto-promote] PR #${prNumber}: mergeable_state is '${mergeableState}' (poll ${poll}/${MAX_POLLS}), retrying in ${delayMs/1000}s...`);
                 await new Promise(r => setTimeout(r, delayMs));
               }

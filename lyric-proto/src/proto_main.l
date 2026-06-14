@@ -466,6 +466,40 @@ pub func findBytes(fields: in List[DecodedField], number: Int): Option[slice[Byt
   None
 }
 
+/// Find the first fixed32 field with the given field number, or None.
+@stable(since = "0.1")
+pub func findFixed32(fields: in List[DecodedField], number: Int): Option[Int] {
+  val arr = fields.toArray()
+  for f in arr {
+    match f {
+      case DecodedFixed32(n, bits) -> {
+        if n == number {
+          return Some(value = bits)
+        }
+      }
+      case _ -> ()
+    }
+  }
+  None
+}
+
+/// Find the first fixed64 field with the given field number, or None.
+@stable(since = "0.1")
+pub func findFixed64(fields: in List[DecodedField], number: Int): Option[Long] {
+  val arr = fields.toArray()
+  for f in arr {
+    match f {
+      case DecodedFixed64(n, bits) -> {
+        if n == number {
+          return Some(value = bits)
+        }
+      }
+      case _ -> ()
+    }
+  }
+  None
+}
+
 /// Collect all bytes fields with the given field number (repeated field).
 @stable(since = "0.1")
 pub func collectBytes(fields: in List[DecodedField], number: Int): List[slice[Byte]] {

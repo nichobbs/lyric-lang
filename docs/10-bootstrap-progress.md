@@ -12470,7 +12470,8 @@ malformed input.  The kernel boundary (`Proto.Kernel.Net`) provides only:
 ZigZag helpers (`zigzag32/64`, `unzigzag32/64`) live in `Proto.Types` as pure
 Lyric integer arithmetic.  Convenience constructors (`floatField`, `boolField`,
 `sint32Field`, etc.) are in `Proto.Encoding`.  Typed extraction helpers
-(`findVarint`, `findBytes`, `collectBytes`) are in `Proto.Decoding`.
+(`findVarint`, `findFixed32`, `findFixed64`, `findBytes`, `collectBytes`) are
+in `Proto.Decoding`.
 
 **`lyric-grpc/`** (new library, D068) — General-purpose gRPC client.  Wraps
 `Grpc.Net.Client` 2.65.0 on .NET using a pass-through `Marshaller<byte[]>` so
