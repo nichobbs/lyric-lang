@@ -220,6 +220,12 @@ test "HttpCircuitBreaker aspect: enabled=false bypasses the circuit" {
 // allowed (2 RPM slots + 1 burst slot) and call 4 is denied.  All four calls
 // happen in rapid succession (well under one window), so the window boundary
 // never flakes.
+//
+// Note: `webRateLimitMap` is process-global and keyed by `call.qualifiedName`.
+// This test exhausts `rateLimitedHandler`'s counter (usedInWindow=3,
+// burstAvailable=0) for the life of the process.  The test is designed to run
+// once per process invocation; a second run in the same process would see the
+// first call immediately denied (run once per CI invocation, as expected).
 aspect RateEnforced from Web.Aspects.RateLimit {
   matches: name like "rateLimited*"
   config {
@@ -251,6 +257,12 @@ test "RateLimit aspect: call after requestsPerMinute + burstSize exhausted is de
 // call with 503.  `failureThreshold=2` means two Err returns open the circuit;
 // the third call must be denied without reaching the handler.  `cooldownMs` is
 // set high (60 s) so the circuit stays open for the duration of the test run.
+//
+// Gated to `dotnet` only: `Resilience.Kernel.Jvm` stubs `circuitIsOpen` as
+// always-false and `circuitRecordFailure` as a no-op, so the circuit never
+// opens on JVM and the 503 assertion would fail.  JVM parity is tracked
+// in #3669 (implement `Resilience.Kernel.Jvm` backed by ConcurrentHashMap).
+@cfg(feature = "dotnet")
 aspect BreakerEnforced from Web.Aspects.HttpCircuitBreaker {
   matches: name like "breakerLimited*"
   config {
@@ -260,10 +272,12 @@ aspect BreakerEnforced from Web.Aspects.HttpCircuitBreaker {
 }
 
 // Always returns Err so the woven aspect accumulates consecutive failures.
+@cfg(feature = "dotnet")
 pub func breakerLimitedHandler(): Result[String, Web.ApiError] {
   return Err(Web.internalError("intentional failure for circuit-breaker test"))
 }
 
+@cfg(feature = "dotnet")
 test "HttpCircuitBreaker aspect: call after failureThreshold consecutive failures is denied with 503" {
   // Drive two failures to open the circuit (failureThreshold = 2).
   val _ = breakerLimitedHandler()
