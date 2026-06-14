@@ -527,6 +527,7 @@ test "UFCS chained member read through self" {
   assertEqual(Str.trim(result.stdout), "42", "ufcs_chain: stdout=42")
 }
 
+
 // ─── Regression: qualified enum-case pattern with shared case names (#3349) ──
 // Two packages each declare an enum with a case named `Same`.  A consumer
 // matches on `PackA.Color.Same` and verifies the correct ordinal fires,
