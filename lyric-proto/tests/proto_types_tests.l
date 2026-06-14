@@ -221,3 +221,37 @@ test "decodeStep on truncated varint field returns Err" {
     case Err(_) -> assertTrue(true, "Err on truncated varint")
   }
 }
+
+// Repeated fixed-width fields collected via the in-package collectFixed32
+// helper (#3618): two fixed32 fields share field number 7; collectFixed32
+// returns both in encounter order.
+test "collectFixed32 gathers repeated fixed32 fields" {
+  val bytes = encodeMessage([Fix32Field(number = 7, bits = 0x0A0B0C0D), Fix32Field(number = 7, bits = 0x11223344)])
+  match decodeMessage(bytes) {
+    case Err(e) -> assertTrue(false, "decode failed: " + e)
+    case Ok(fields) -> {
+      val got = collectFixed32(fields, 7)
+      assertEqualInt(got.length, 2, "two fixed32 fields collected")
+      assertEqualInt(got[0], 0x0A0B0C0D, "first repeated fixed32")
+      assertEqualInt(got[1], 0x11223344, "second repeated fixed32")
+    }
+  }
+}
+
+test "collectFixed64 gathers repeated fixed64 fields" {
+  val bytes = encodeMessage(
+    [
+      Fix64Field(number = 8, bits = 0x0102030405060708i64),
+      Fix64Field(number = 8, bits = 0x1122334455667788i64)
+    ]
+  )
+  match decodeMessage(bytes) {
+    case Err(e) -> assertTrue(false, "decode failed: " + e)
+    case Ok(fields) -> {
+      val got = collectFixed64(fields, 8)
+      assertEqualInt(got.length, 2, "two fixed64 fields collected")
+      assertTrue(got[0] == 0x0102030405060708i64, "first repeated fixed64")
+      assertTrue(got[1] == 0x1122334455667788i64, "second repeated fixed64")
+    }
+  }
+}

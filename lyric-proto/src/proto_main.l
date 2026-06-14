@@ -517,3 +517,39 @@ pub func collectBytes(fields: in List[DecodedField], number: Int): List[slice[By
   }
   res
 }
+
+/// Collect all fixed32 fields with the given field number (repeated field).
+@stable(since = "0.1")
+pub func collectFixed32(fields: in List[DecodedField], number: Int): List[Int] {
+  val res: List[Int] = newList()
+  val arr = fields.toArray()
+  for f in arr {
+    match f {
+      case DecodedFixed32(n, bits) -> {
+        if n == number {
+          res.add(bits)
+        }
+      }
+      case _ -> ()
+    }
+  }
+  res
+}
+
+/// Collect all fixed64 fields with the given field number (repeated field).
+@stable(since = "0.1")
+pub func collectFixed64(fields: in List[DecodedField], number: Int): List[Long] {
+  val res: List[Long] = newList()
+  val arr = fields.toArray()
+  for f in arr {
+    match f {
+      case DecodedFixed64(n, bits) -> {
+        if n == number {
+          res.add(bits)
+        }
+      }
+      case _ -> ()
+    }
+  }
+  res
+}
