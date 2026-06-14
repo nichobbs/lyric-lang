@@ -354,13 +354,13 @@ pub func parseDescriptorParams(descriptor: in String): List[String] {
   params
 }
 
-// Score how well a Lyric JVM-type-descriptor string matches a JVM param descriptor.
-// Returns -1 for incompatible; 0+ for compatible (higher = better match).
-// Lyric type descriptor strings come from `jvmTypeToDescStr` in codegen.l:
-//   "I"=int, "J"=long, "D"=double, "F"=float, "Z"=boolean,
-//   "B"=byte, "C"=char, "S"=short,
-//   "Ljava/lang/String;" or other "L...;" for references, "" for unknown.
-pub func scoreParamMatch(argDesc: in String, paramDesc: in String): Int {
+// Context-free descriptor scoring (numeric widening, exact match, any-ref→Object,
+// byte-slice→byte[]).  Returns -1 for incompatible AND for reference/reference
+// pairs — those need the class hierarchy, which `scoreParam` resolves via
+// `isAssignableRef`.  Module-private: external callers must use `scoreParam` (which
+// layers the IS-A check on top), so a bare reference/reference pair here never
+// means "definitively incompatible".
+func scoreParamMatch(argDesc: in String, paramDesc: in String): Int {
   if argDesc == paramDesc {
     return 10
   }
@@ -425,18 +425,12 @@ func refDescToBinary(desc: in String): String {
   }
 }
 
-// True when a value of reference type `fromBin` is assignable to a parameter of
-// reference type `toBin` (IS-A), per the loaded class metadata: `toBin` is
-// `Object`, or one of `fromBin`'s (transitive) superclasses, or a directly-
-// declared interface of `fromBin` or any of its superclasses.
-//
-// Interface→super-interface chains are NOT followed: the class reader skips
-// ACC_INTERFACE class files, so an interface's own super-interfaces are
-// unavailable.  Such a (rarer) assignability therefore reports `false` here, and
-// `scoreParam` falls back to the low-priority blind match — never to a rejection,
-// so an assignability we cannot prove never blocks a real call.  Walks the
-// superclass chain with the load → `findCacheIdx` → `cacheVals[idx]` pattern that
-// avoids the stage-0 `Option[ClassInfo]` match-arm binding bug.
+// True when reference type `fromBin` IS-A `toBin` per loaded class metadata:
+// walks `fromBin`'s superclass chain, matching each class and its directly-declared
+// interfaces.  Interface→super-interface chains are not followed (the reader skips
+// ACC_INTERFACE files), so an unprovable assignability returns `false` and the
+// caller falls back to the permissive blind match — never a rejection.  Uses the
+// load → `findCacheIdx` → `cacheVals[idx]` walk to dodge the stage-0 Option binding bug.
 func isAssignableRef(ctx: in AutoFfiCtx, fromBin: in String, toBin: in String): Bool {
   if fromBin == toBin {
     return true

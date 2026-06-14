@@ -419,19 +419,12 @@ pub func typeExprToJvm(te: in TypeExpr, pkgName: in String): JvmType {
     }
     case TSlice(_) -> JArray(elem = JRef(className = "java/lang/Object"))
     case TGenericApp(head, _) -> {
-      // The stdlib collection types `List[T]` / `Map[K, V]` have a concrete JVM
-      // runtime representation (`newList()` → `ArrayList`, `newMap()` → `HashMap`),
-      // so they map to that class rather than the generic-erased `Object` — this
-      // is what lets instance dispatch (`xs.add(...)`) resolve through auto-FFI.
-      // The match is restricted to the *bare, unqualified* spelling (`List`, not
-      // `Foo.List`): after `import Std.Collections` the canonical reference is
-      // unqualified, and requiring a single segment means a package-qualified
-      // user type `MyPkg.List[T]` is never mis-mapped.  `List` / `Map` are
-      // treated as reserved generic type names here, consistent with how the
-      // `TRef` arm above reserves `Int` / `String` / etc. by short name; a
-      // same-unit user type that shadows `List` while `Std.Collections` is in
-      // scope is a type-checker name conflict, not a codegen concern.  All other
-      // generic applications (user `Box[T]`, `Option[T]`, …) erase to `Object`.
+      // `List[T]` / `Map[K, V]` map to their concrete runtime class (`newList()` →
+      // `ArrayList`, `newMap()` → `HashMap`) rather than generic-erased `Object`, so
+      // instance dispatch (`xs.add(...)`) resolves through auto-FFI.  Restricted to
+      // the bare unqualified spelling so a package-qualified user type `MyPkg.List[T]`
+      // is never mis-mapped — `List` / `Map` are reserved here as the `TRef` arm
+      // reserves `Int` / `String`.  All other generic heads erase to `Object`.
       val isBare = head.segments.count == 1
       val seg = lastSegment(head)
       if isBare and seg == "List" {
