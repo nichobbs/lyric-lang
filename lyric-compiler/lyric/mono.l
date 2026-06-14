@@ -1875,7 +1875,11 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
               case Some(baseDecl) -> {
                 val typeParams = extractTypeParamNames(baseDecl.generics)
                 val valueParams = extractValueParamNames(baseDecl.generics)
-                if typeParams.count > 0 and valueParams.count == 0 {
+                // A genuine call to this generic can never supply more arguments
+                // than it has parameters; reject that case so an unrelated
+                // same-named function isn't hijacked into a broken specialisation
+                // (the unqualified sibling of the #3627 collision).
+                if typeParams.count > 0 and valueParams.count == 0 and args.count <= baseDecl.params.count {
                   // Pure type-generic call site: existing inference path
                   // (value generics require explicit `f[N]` type apps).
                   val subst: Map[String, TypeExpr] = newMap()
@@ -1919,7 +1923,14 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
               case Some(qBaseDecl) -> {
                 val qTypeParams = extractTypeParamNames(qBaseDecl.generics)
                 val qValueParams = extractValueParamNames(qBaseDecl.generics)
-                if qTypeParams.count > 0 and qValueParams.count == 0 {
+                // Guard against a bare-name collision: `genDecls` is keyed by
+                // last segment only, so `Pkg.fn(a, b, c)` could otherwise match
+                // an unrelated generic `fn[T](x)` in a *different* package (e.g.
+                // `Testing.assertEq(a, b, msg)` vs `Std.Core.Proof.assertEq[T](x)`,
+                // #3627).  A genuine call to this generic can never supply more
+                // arguments than it has parameters, so reject that case and leave
+                // the call for normal (non-generic) resolution.
+                if qTypeParams.count > 0 and qValueParams.count == 0 and args.count <= qBaseDecl.params.count {
                   val qSubst: Map[String, TypeExpr] = newMap()
                   var qi = 0
                   while qi < args.count and qi < qBaseDecl.params.count {
