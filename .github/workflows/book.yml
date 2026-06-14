@@ -86,39 +86,32 @@ jobs:
       - name: Convert stdlib markdown to HTML
         run: |
           mkdir -p _site/stdlib
-          # Generate a Pandoc-friendly index from the stdlib docs
-          cat > stdlib-index.md <<'EOF'
-          # Lyric Standard Library API Reference
-
-          Auto-generated from Lyric stdlib sources using `lyric doc`.
-
-          - [**Std.Core**](std-core.html) — Option, Result, List, panic/expect/assert
-          - [**Std.Collections**](std-collections.html) — Map, Set, Queue
-          - [**Std.String**](std-string.html) — String manipulation
-          - [**Std.Char**](std-char.html) — Character utilities
-          - [**Std.Console**](std-console.html) — println, printErr, readLine
-          - [**Std.File**](std-file.html) — File I/O
-          - [**Std.Path**](std-path.html) — Path manipulation
-          - [**Std.Environment**](std-environment.html) — Environment variables
-          - [**Std.Time**](std-time.html) — Instant, Duration, Clock
-          - [**Std.Uuid**](std-uuid.html) — UUID utilities
-          - [**Std.Http**](std-http.html) — HTTP client (MSIL target)
-          - [**Std.Json**](std-json.html) — JSON encoding/decoding
-          - [**Std.Xml**](std-xml.html) — XML parsing
-          - [**Std.Yaml**](std-yaml.html) — YAML parsing
-          - [**Std.Parse**](std-parse.html) — String parsing utilities
-          - [**Std.Sort**](std-sort.html) — Sorting algorithms
-          - [**Std.Hash**](std-hash.html) — Hashing utilities
-          - [**Std.Random**](std-random.html) — Random number generation
-          - [**Std.Task**](std-task.html) — Async task primitives
-          - [**Std.Testing**](std-testing.html) — Test assertions
-          - [**Std.Regex**](std-regex.html) — Regular expressions
-          - [**Std.Math**](std-math.html) — Mathematical functions
-          - [**Std.Iter**](std-iter.html) — Iterator utilities
-          - [**Std.Encoding**](std-encoding.html) — Text encoding
-          - [**Std.AssemblyResources**](std-assemblyresources.html) — Embedded resources
-          - [**Std.Log**](std-log.html) — Structured logging
-          EOF
+          # Generate stdlib index dynamically from actual lyric doc output
+          {
+            echo "# Lyric Standard Library API Reference"
+            echo ""
+            echo "Auto-generated from Lyric stdlib sources using \`lyric doc\`."
+            echo ""
+            find stdlib-docs -name '*.md' | sort | while read md; do
+              # Convert path to HTML filename: stdlib-docs/std/core.md → std-core.html
+              name=$(basename "$md" .md)
+              dir=$(dirname "$md" | sed 's|^stdlib-docs||; s|^/||; s|/|-|g')
+              if [ -n "$dir" ]; then
+                htmlfile="${dir}-${name}.html"
+              else
+                htmlfile="${name}.html"
+              fi
+              # Extract module name from path for display
+              modname=$(dirname "$md" | sed 's|stdlib-docs/||')
+              if [ -n "$modname" ] && [ "$modname" != "." ]; then
+                modname="${modname}/$(basename "$md" .md)"
+              else
+                modname="$(basename "$md" .md)"
+              fi
+              modname=$(echo "$modname" | tr '/' '.')
+              echo "- [$modname]($htmlfile)"
+            done
+          } > stdlib-index.md
 
           pandoc stdlib-index.md \
             --standalone \
@@ -131,21 +124,24 @@ jobs:
             -o _site/stdlib/index.html
 
           # Convert individual stdlib module docs to HTML
-          for md in stdlib-docs/*.md; do
-            if [ -f "$md" ]; then
-              name=$(basename "$md" .md)
-              # Convert to lowercase with hyphens for consistency
-              name=$(echo "$name" | tr '[:upper:]' '[:lower:]')
-              pandoc "$md" \
-                --standalone \
-                --embed-resources \
-                --toc \
-                --toc-depth=2 \
-                --css=../book/style.css \
-                --syntax-highlighting=tango \
-                -V lang=en \
-                -o "_site/stdlib/${name}.html"
+          find stdlib-docs -name '*.md' | while read md; do
+            # Convert path to HTML filename: stdlib-docs/std/core.md → std-core.html
+            name=$(basename "$md" .md)
+            dir=$(dirname "$md" | sed 's|^stdlib-docs||; s|^/||; s|/|-|g')
+            if [ -n "$dir" ]; then
+              htmlfile="${dir}-${name}.html"
+            else
+              htmlfile="${name}.html"
             fi
+            pandoc "$md" \
+              --standalone \
+              --embed-resources \
+              --toc \
+              --toc-depth=2 \
+              --css=book/style.css \
+              --syntax-highlighting=tango \
+              -V lang=en \
+              -o "_site/stdlib/${htmlfile}"
           done
 
       - name: Create landing page
@@ -291,21 +287,21 @@ jobs:
                   </div>
                   <div class="documentation">
                       <div class="doc-card">
-                          <h3>📖 The Book</h3>
+                          <h3>The Book</h3>
                           <p>
                               <em>Making Lyric Sing</em> — A comprehensive programmer's introduction to the language, covering everything from quick start to advanced verification.
                           </p>
                           <a href="book.html">Read the Book →</a>
                       </div>
                       <div class="doc-card">
-                          <h3>📚 Standard Library</h3>
+                          <h3>Standard Library</h3>
                           <p>
                               Auto-generated API reference for all Lyric standard library modules. Browse individual modules or start with Std.Core.
                           </p>
                           <a href="stdlib/">View API Docs →</a>
                       </div>
                       <div class="doc-card">
-                          <h3>💻 Source Code</h3>
+                          <h3>Source Code</h3>
                           <p>
                               Lyric is open source. Explore the self-hosted compiler, stdlib, and ecosystem libraries on GitHub.
                           </p>
