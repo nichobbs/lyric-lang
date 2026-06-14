@@ -82,3 +82,31 @@ test "two extern handles across a loop (#3307)" {
   assertEqualInt(a.size(), 3, "a accumulated 3 bytes")
   assertEqualInt(b.size(), 6, "b accumulated 6 bytes")
 }
+
+// A `byte[]` (`JArray(JByte)`) local declared *inside* a while loop body —
+// regression test for the JArray case of D-progress-513 (#3307 / #3408).
+//
+// D-progress-513 fixed `emitStore` to emit `LAstoreAs(slot, "[" + desc)` for
+// `JArray` locals (so the StackMapTable frame carries `[B` instead of
+// `java/lang/Object`), but the four JRef test cases above never exercised a
+// `JArray`-typed local in a loop.  This test fills that gap.
+//
+// The repro: `toByteArray()` returns `byte[]`; the local is declared inside the
+// `while` body and used via `write(byte[])` in the same iteration, crossing the
+// back-edge on every subsequent iteration.  If the StackMapTable typed the slot
+// as Object instead of `[B`, the `invokevirtual write([B)V` call would fail
+// verification ("Object is not assignable to [B") before the test can run.
+test "byte[] local inside a while loop — JArray frame-type regression (#3408)" {
+  val sink = JBAOS.new()
+  sink.write(65)
+  var i = 0
+  while i < 3 {
+    val chunk = sink.toByteArray()
+    sink.write(chunk)
+    i = i + 1
+  }
+  // i=0: sink has 1 byte; write([65])       → 2 bytes
+  // i=1: sink has 2 bytes; write([65,65])   → 4 bytes
+  // i=2: sink has 4 bytes; write([65,65,65,65]) → 8 bytes
+  assertEqualInt(sink.size(), 8, "byte[] local in while: 1→2→4→8 bytes over 3 iterations (#3408)")
+}

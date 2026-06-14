@@ -25067,14 +25067,15 @@ walking `ArrayList → AbstractList → AbstractCollection`, which declares the
 (generic, closure, record-method, control-flow, try/catch, out/inout,
 silent-miscompile guard, middle-end, NaN, extern-loop, extern-param) stays green.
 
-The chunked-drain optimization (#3408) is **not** included: replacing the
-per-byte `read`/`write` loop in `_kernel_jvm/process_capture_host.l` with
-`InputStream.readNBytes(int)` + `ByteArrayOutputStream.writeBytes(byte[])` hits a
-self-hosted JVM codegen gap — a `byte[]` local declared inside a `while` body
-produces a `StackMapTable` stack-size mismatch (`VerifyError`) at the loop
+The chunked-drain optimization (#3408) was deferred at the time this entry was
+written: a `byte[]` local declared inside a `while` body was suspected to
+produce a `StackMapTable` stack-size mismatch (`VerifyError`) at the loop
 back-edge (same family as #3307 / D-progress-513, but for array-typed locals).
-Both methods resolve and run correctly outside a loop; the in-loop case needs a
-focused backend fix and remains tracked in #3408.
+The optimization was subsequently shipped in #3474 using an `if avail > 0`
+guard instead of a loop (avoiding the in-loop `JArray` local entirely), and
+D-progress-526 adds a direct regression test that exercises `JArray` locals
+inside a `while` loop via `JBAOS.toByteArray()` + `write(byte[])` to confirm
+the D-progress-513 `emitStore` JArray fix covers the in-loop case.
 
 ### D-progress-523 — Const patterns in match arms: `@Ident` syntax (docs/46, Q-MP-001)
 
@@ -25185,3 +25186,43 @@ single-file `weaveFileWithDiags`.
 **Tests** (`lyric-compiler/lyric/weaver_self_test.l` §5, 32 tests total):
 template collection (pub/private/from-instance edge cases) and fast-path
 pass-through when no from-instances are present.
+
+### D-progress-526 — JVM: JArray-in-loop regression test (#3408) and isBare two-param generic test (#3455)
+
+Follow-up to D-progress-513 and #3474.
+
+**#3408 — JArray local inside a while loop.**  D-progress-513 fixed
+`emitStore` (`lyric-compiler/jvm/codegen/01_types.l`) to emit `LAstoreAs(slot,
+"[" + desc)` for `JArray` locals so the `StackMapTable` frame carries the
+precise array descriptor (`[B`, `[Ljava/lang/Object;` etc.) rather than
+`java/lang/Object`.  The four test cases in `extern_loop_jvm_self_test.l` that
+verified the fix all use `JBAOS` (`JRef`); no `JArray`-typed local was tested
+across a loop back-edge.  This entry adds a fifth case: `JBAOS.toByteArray()`
+returns `byte[]` (`JArray(JByte)`); the local is declared inside the `while`
+body and passed to `JBAOS.write(byte[])` in the same iteration, crossing the
+back-edge on subsequent iterations.  If the StackMapTable typed the slot as
+`Object` instead of `[B`, the `invokevirtual write([B)V` call would fail
+verification before the test could run.  The test confirms the D-progress-513
+`emitStore` JArray fix is correct for the in-loop declaration case: the
+`toByteArray()` + `write(chunk)` chain runs correctly across three iterations
+(`1→2→4→8` bytes), verifying both the frame-type and the back-edge transition.
+
+#3474 shipped `drainAvailable` as an `if avail > 0` check (not a loop) so that
+the `readNBytes` + `write(byte[])` optimisation landed without depending on the
+JArray-in-loop case being proven clean.  With this test green, a future loop
+form (`while avail > 0 { val chunk = stream.readNBytes(avail); buf.write(chunk) }`)
+is safe — the frame-typing is correct.
+
+**#3455 — isBare guard two-param generic test.**  PR #3474 added `record
+Container[T]` (single type parameter) and verified it erases to `Object`.
+This entry adds `record Pair[A, B]` (two type parameters) and a second test
+that passes `Pair[Int, String]` to `StringBuilder.append(Object)`.  The
+two-param case exercises the same `else → Object` path as Container but
+confirms the guard applies identically regardless of the arity of the user
+generic.  The `Map` arm (`isBare and seg == "Map" → HashMap`) is exercised
+symmetrically: if Pair were mis-mapped to HashMap, the bytecode verifier would
+reject the class (Pair is not assignable to HashMap) before the test runs.
+
+The deferred multi-package scenario — a consumer package using `Pkg.List[T]`
+where `Pkg.List` is a user-defined non-ArrayList generic type — requires a
+multi-file project self-test and remains tracked in #3455.
