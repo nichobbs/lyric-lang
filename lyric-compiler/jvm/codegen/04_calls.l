@@ -1527,6 +1527,93 @@ func holderTempSlotFor(hArgIdx: in List[Int], hTempSlot: in List[Int], argIdx: i
   panic("Jvm.Codegen: holder temp slot not found for argument index " + toString(argIdx))
 }
 
+// Emit a virtual method call whose callee has one or more `out`/`inout` parameters
+// (#1763).  Mirrors `lowerStaticCallWithHolders` but emits `invokevirtual` instead
+// of `invokestatic`.  The receiver must already be on the operand stack when this
+// is called (pushed by the caller via `lowerExpr` or `LAload(0)` for sibling calls).
+// `args` are the user-level arguments (not including `this`); `sig.params` are the
+// declared JVM param types (also not including `this`).
+func lowerVirtualCallWithHolders(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  owner: in String,
+  methodName: in String,
+  sig: in JvmFuncSig,
+  args: in List[CallArg],
+): JvmType {
+  val hArgIdx: List[Int] = newList()
+  val hTempSlot: List[Int] = newList()
+  val hElemTy: List[JvmType] = newList()
+  val hBackName: List[String] = newList()
+  var bi = 0
+  while bi < args.count {
+    val isHolder = if bi < sig.paramModes.count { isHolderMode(sig.paramModes[bi]) } else { false }
+    if isHolder {
+      val elemTy = match sig.params[bi] { case JArray(el) -> el; case other -> other }
+      val name = pathExprName(callArgExpr(args[bi]))
+      if name == "" {
+        panic(
+          "Jvm.Codegen: out/inout argument " + toString(bi) + " to '" + owner + "." + methodName +
+            "' is not an assignable variable (the mode checker should have rejected this)"
+        )
+      }
+      match lookupSlot(ctx, name) {
+        case Some(srcSlot) -> {
+          val srcTy = match lookupType(ctx, name) { case Some(t) -> t; case None -> elemTy }
+          emitNewHolder(insns, elemTy)
+          insns.add(LDup)
+          insns.add(LIconst(v = 0))
+          emitLoad(insns, srcSlot, srcTy)
+          coerceArgTo(insns, srcTy, elemTy)
+          emitHolderElemStore(insns, elemTy)
+          val tmpSlot = allocSlot(ctx, "__holderarg$" + methodName + "$" + toString(bi), holderArrayType(elemTy))
+          insns.add(LAstoreAs(slot = tmpSlot, className = holderArrayDescriptor(elemTy)))
+          hArgIdx.add(bi)
+          hTempSlot.add(tmpSlot)
+          hElemTy.add(elemTy)
+          hBackName.add(name)
+        }
+        case None -> panic("Jvm.Codegen: out/inout argument '" + name + "' to '" + methodName + "' is not a local or parameter (the mode checker should have rejected this)")
+      }
+    }
+    bi = bi + 1
+  }
+  var ai = 0
+  while ai < args.count {
+    val isHolder = if ai < sig.paramModes.count { isHolderMode(sig.paramModes[ai]) } else { false }
+    if isHolder {
+      val ts = holderTempSlotFor(hArgIdx, hTempSlot, ai)
+      insns.add(LAload(slot = ts))
+    } else {
+      val aTy = lowerCallArg(ctx, insns, args[ai])
+      if ai < sig.params.count {
+        coerceArgTo(insns, aTy, sig.params[ai])
+      }
+    }
+    ai = ai + 1
+  }
+  insns.add(LInvokevirtual(owner = owner, name = methodName, params = sig.params, ret = sig.ret))
+  var ri = 0
+  while ri < hArgIdx.count {
+    val ts = hTempSlot[ri]
+    val elemTy = hElemTy[ri]
+    val name = hBackName[ri]
+    match lookupSlot(ctx, name) {
+      case Some(destSlot) -> {
+        val destTy = match lookupType(ctx, name) { case Some(t) -> t; case None -> elemTy }
+        insns.add(LAload(slot = ts))
+        insns.add(LIconst(v = 0))
+        emitHolderElemLoad(insns, elemTy)
+        coerceArgTo(insns, elemTy, destTy)
+        emitStoreLocalWriteThrough(ctx, insns, destSlot, destTy)
+      }
+      case None -> ()
+    }
+    ri = ri + 1
+  }
+  sig.ret
+}
+
 func lowerGeneralStaticCall(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -1556,6 +1643,9 @@ func lowerGeneralStaticCall(
         case Some(sig) -> {
           insns.add(LAload(slot = 0))
           val callArgs = reorderAndFillJvmArgs(sig, args)
+          if anyHolderMode(sig.paramModes) {
+            return lowerVirtualCallWithHolders(ctx, insns, selfCls, funcName, sig, callArgs)
+          }
           var ai = 0
           while ai < callArgs.count {
             val aTy = lowerCallArg(ctx, insns, callArgs[ai])
@@ -1902,15 +1992,20 @@ func lowerMethodCall(
     case _ -> ()
   }
 
-  // Instance methods of in-package record / protected types: when the receiver
-  // class and method are registered under `<class>#<method>` (J3 M-3), emit a
-  // precisely-typed `invokevirtual` (args coerced to declared params, real
-  // return type) rather than the `()Object` guess — which would mis-resolve a
-  // `void` entry like `c.increment()` to a non-existent `()Object` method.
+  // Instance methods of in-package record / protected types / impls: when the
+  // receiver class and method are registered under `<class>#<method>` (J3 M-3),
+  // emit a precisely-typed `invokevirtual` (args coerced to declared params,
+  // real return type) rather than the `()Object` guess — which would mis-resolve
+  // a `void` entry like `c.increment()` to a non-existent `()Object` method.
+  // When the sig has out/inout params, route through `lowerVirtualCallWithHolders`
+  // so the call site wraps/unwraps holder arrays (#1763).
   match recvTy {
     case JRef(cls) -> {
       match mapGet(ctx.funcSigs, cls + "#" + memberName) {
         case Some(sig) -> {
+          if anyHolderMode(sig.paramModes) {
+            return lowerVirtualCallWithHolders(ctx, insns, cls, memberName, sig, args)
+          }
           var ai = 0
           while ai < args.count {
             val aTy = lowerCallArg(ctx, insns, args[ai])
