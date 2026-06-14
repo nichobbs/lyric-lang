@@ -23,29 +23,42 @@ import Lambda.Events
 import Lambda.Authorizer
 
 // ─── LambdaError ─────────────────────────────────────────────────────────────
+// Construct each case via unqualified union construction (a type annotation
+// disambiguates) and destructure positionally to assert the stored fields
+// directly — not just their rendered errorMessage form (#3519).
 test "LambdaError.HandlerError: carries message and errorType" {
-  val e = Lambda.handlerError("boom", "ValidationError")
-  val msg = Lambda.errorMessage(e)
-  assertTrue(msg.contains("boom"), "message field")
-  assertTrue(msg.contains("ValidationError"), "errorType field")
+  val e: LambdaError = HandlerError("boom", "ValidationError")
+  match e {
+    case HandlerError(message, errorType) -> {
+      assertEqual(message, "boom", "message field")
+      assertEqual(errorType, "ValidationError", "errorType field")
+    }
+    case _ -> assertTrue(false, "expected HandlerError case")
+  }
 }
 
 test "LambdaError.ParseError: carries message" {
-  val e = Lambda.parseError("unexpected token")
-  val msg = Lambda.errorMessage(e)
-  assertTrue(msg.contains("unexpected token"), "message field")
+  val e: LambdaError = ParseError("unexpected token")
+  match e {
+    case ParseError(message) -> assertEqual(message, "unexpected token", "message field")
+    case _ -> assertTrue(false, "expected ParseError case")
+  }
 }
 
 test "LambdaError.TimeoutError: carries remainingMs" {
-  val e = Lambda.timeoutError(150i64)
-  val msg = Lambda.errorMessage(e)
-  assertTrue(msg.contains("150"), "remainingMs field")
+  val e: LambdaError = TimeoutError(150i64)
+  match e {
+    case TimeoutError(remainingMs) -> assertTrue(remainingMs == 150i64, "remainingMs field")
+    case _ -> assertTrue(false, "expected TimeoutError case")
+  }
 }
 
 test "LambdaError.InternalError: carries message" {
-  val e = Lambda.internalError("handler not found")
-  val msg = Lambda.errorMessage(e)
-  assertTrue(msg.contains("handler not found"), "message field")
+  val e: LambdaError = InternalError("handler not found")
+  match e {
+    case InternalError(message) -> assertEqual(message, "handler not found", "message field")
+    case _ -> assertTrue(false, "expected InternalError case")
+  }
 }
 
 // ─── errorMessage ─────────────────────────────────────────────────────────────
