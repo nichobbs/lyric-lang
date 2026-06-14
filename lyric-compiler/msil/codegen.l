@@ -4375,12 +4375,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               // case ctor, then walk `unionCaseCtorByName` for cross-
               // package cases.  Mirrors the construction-side fix in
               // `lowerBuiltinOrStaticCallMsil` (#1183 codegen port).
+              // For qualified paths (`Color.Same`), the penultimate segment
+              // names the parent union — prefer the matching candidate
+              // so same-named cases across two unions disambiguate (#3349).
+              val pathQualifier = if path.segments.count >= 2 { path.segments[path.segments.count - 2] } else { "" }
               val localCtorKey = fctx.pkgName + "." + name
               val ctorKey = if cctx.recordCtorTokens.containsKey(localCtorKey) {
                 localCtorKey
               } else {
                 match mapGet(cctx.unionCaseCtorByName, name) {
-                  case Some(candidates) -> pickCaseFqnByScope(cctx, fctx, candidates)
+                  case Some(candidates) -> pickCaseFqnByQualifier(cctx, fctx, candidates, pathQualifier)
                   case None -> localCtorKey
                 }
               }
@@ -4504,226 +4508,264 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
 
     // ── Member access ──────────────────────────────────────────────────────────
     case EMember(recv, memberName) -> {
-      // Config block short-circuit: `Settings.port` parses as
-      // EMember(EPath(["Settings"]), "port").  If the single-segment receiver
-      // matches a config block name and the "blockName/fieldName" key is in
-      // configFieldTokens, emit ldsfld directly without evaluating the receiver.
-      val cfKey = match recv.kind {
-        case EPath(path) -> if path.segments.count == 1 { path.segments[0] + "/" + memberName } else { "" }
+      // Nullary union case referenced as `UnionType.CaseName` in value position.
+      // The expression-level parser builds `Color.Same` as
+      // EMember(EPath(["Color"]), "Same") — member access, NOT a constructor call.
+      // Detect when the single-segment receiver names a union type (not a local)
+      // and `memberName` is a nullary case of that union; redirect to the
+      // singleton-field load so `val c: Color = Color.Same` pushes the real
+      // `Color_Same.Instance` value instead of pushing `null` (#3349).
+      val nmCaseFqn: String = match recv.kind {
+        case EPath(recvPath) -> {
+          if recvPath.segments.count == 1 {
+            val qualifier = recvPath.segments[0]
+            if not fctx.slots.containsKey(qualifier) and not fctx.hoistedCellSlot.containsKey(qualifier) and not fctx.captureNameToIndex.containsKey(qualifier) {
+              match mapGet(cctx.unionCaseCtorByName, memberName) {
+                case Some(nmCands) -> {
+                  val nmPicked = pickCaseFqnByQualifier(cctx, fctx, nmCands, qualifier)
+                  if cctx.singletonFieldTokens.containsKey(nmPicked) {
+                    nmPicked
+                  } else {
+                    ""
+                  }
+                }
+                case None -> ""
+              }
+            } else {
+              ""
+            }
+          } else {
+            ""
+          }
+        }
         case _ -> ""
       }
-      if cfKey != "" and cctx.configFieldTokens.containsKey(cfKey) {
-        val cfTok = match mapGet(cctx.configFieldTokens, cfKey) { case Some(t) -> t; case None -> 0 }
-        insns.add(MLdsfld(fieldToken = cfTok))
-        match mapGet(cctx.configFieldMsilTypes, cfKey) {
-          case Some(cfMty) -> cfMty
-          case None -> MObject
-        }
+      if nmCaseFqn.length > 0 {
+        val nmFldTok = match mapGet(cctx.singletonFieldTokens, nmCaseFqn) { case Some(t) -> t; case None -> 0 }
+        insns.add(MLdsfld(fieldToken = nmFldTok))
+        MClass(className = caseParentFqnMsil(cctx, nmCaseFqn))
       } else {
-        val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
-        match recvTy {
-          case MClass(cls) -> {
-            val key = cls + "/" + memberName
-            match mapGet(cctx.fieldTokens, key) {
-              case Some(tok) -> {
-                // Locals and return values of class type are declared as `object`
-                // in LocalVarSig, so the stack type seen by the JIT is `object`.
-                // castclass narrows the stack type to the concrete class before
-                // ldfld so the verifier accepts the instruction (#1442).
-                insns.add(MCastclassByName(className = cls))
-                insns.add(MLdfld(fieldToken = tok))
-                // Return the field's declared MSIL type so that downstream
-                // operators (BEq/BNeq) use ceq for value types instead of
-                // Object.Equals — passing an unboxed Bool/Int to Object.Equals
-                // triggers StackUnexpected / InvalidProgramException (#1442).
-                match mapGet(cctx.fieldMsilTypes, key) {
-                  case Some(fty) -> fty
-                  case None -> MObject
-                }
-              }
-              case None -> {
-                if memberName == "count" {
-                  insns.add(MCallvirt(methodToken = cctx.tokListObjGetCount))
-                  MInt
-                } else {
-                  insns.add(MPop)
-                  MObject
-                }
-              }
-            }
+        // Config block short-circuit: `Settings.port` parses as
+        // EMember(EPath(["Settings"]), "port").  If the single-segment receiver
+        // matches a config block name and the "blockName/fieldName" key is in
+        // configFieldTokens, emit ldsfld directly without evaluating the receiver.
+        val cfKey = match recv.kind {
+          case EPath(path) -> if path.segments.count == 1 { path.segments[0] + "/" + memberName } else { "" }
+          case _ -> ""
+        }
+        if cfKey != "" and cctx.configFieldTokens.containsKey(cfKey) {
+          val cfTok = match mapGet(cctx.configFieldTokens, cfKey) { case Some(t) -> t; case None -> 0 }
+          insns.add(MLdsfld(fieldToken = cfTok))
+          match mapGet(cctx.configFieldMsilTypes, cfKey) {
+            case Some(cfMty) -> cfMty
+            case None -> MObject
           }
-          case MGenericInstByName(fqn, typeArgs) -> {
-            // Field read on an in-bundle generic record instance (#2362).  The
-            // receiver is a closed `MGenericInstByName` (e.g. `Box<Int>`); read the
-            // field through a TypeSpec-parented MemberRef via MLdfldGeneric (TypeSpec
-            // built at Phase 5).  The result type is the concrete type argument for a
-            // type-parameter field, else the field's registered concrete type.  The
-            // codegen maps are keyed by the plain FQN; the instruction carries the
-            // arity-suffixed `fqn` so it resolves against the suffixed TypeDef.
-            val key = stripGenericArity(fqn) + "/" + memberName
-            val vi = match mapGet(cctx.fieldVarIndices, key) { case Some(v) -> v; case None -> -1 }
-            val fSig = match mapGet(cctx.fieldSigBytes, key) { case Some(s) -> s; case None -> buildFieldSig(MObject) }
-            if cctx.fieldSigBytes.containsKey(key) {
-              // The receiver slot is `object` in IL; narrow it to the closed
-              // GENERICINST TypeSpec (in-bundle TypeDef) so `ldfld` verifies.
-              insns.add(MCastclassGeneric(className = fqn, typeArgs = typeArgs))
-              insns.add(MLdfldGeneric(baseClassName = fqn, typeArgs = typeArgs, fieldName = memberName, fieldSig = fSig))
-              if vi >= 0 {
-                if vi < typeArgs.count {
-                  typeArgs[vi]
-                } else {
-                  MObject
-                }
-              } else {
-                match mapGet(cctx.fieldMsilTypes, key) {
-                  case Some(fty) -> fty
-                  case None -> MObject
-                }
-              }
-            } else {
-              insns.add(MPop)
-              MObject
-            }
-          }
-          case MMapOf(_, _) -> {
-            // Map[K, V] receiver: dispatch to Dictionary<object,object> members.
-            if memberName == "count" {
-              insns.add(MCallvirt(methodToken = cctx.tokDictObjGetCount))
-              MInt
-            } else {
-              // Unimplemented Map member: pop the receiver and emit a runtime
-              // throw so the failure is loud rather than a silent miscompile.
-              insns.add(MPop)
-              val msgTok = ctxInternUs(cctx.lctx, "Msil.Codegen: unimplemented Map member access: " + memberName)
-              insns.add(MLdStr(token = msgTok))
-              insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
-              insns.add(MThrow)
-              MObject
-            }
-          }
-          case MConcreteList(_) -> {
-            // Concrete List[T] receiver: `.count` / `.length` via the
-            // concrete `get_Count`; castclass first so the callvirt is well-typed
-            // when the receiver came from an object-typed slot.  `slice[T]` values
-            // are List-backed at runtime (slice literals and `toArray()` both yield
-            // a `List`), so `.length` is the element count, not a real-array `ldlen`
-            // (#2539).
-            if memberName == "count" or memberName == "length" {
-              emitListCastRecv(cctx, insns, recvTy)
-              emitListGetCount(cctx, insns, recvTy)
-              MInt
-            } else {
-              insns.add(MPop)
-              val msgTok = ctxInternUs(cctx.lctx, "Msil.Codegen: unimplemented List member access: " + memberName)
-              insns.add(MLdStr(token = msgTok))
-              insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
-              insns.add(MThrow)
-              MObject
-            }
-          }
-          case MConcreteMap(_, _) -> {
-            if memberName == "count" {
-              emitDictCastRecv(cctx, insns, recvTy)
-              emitDictGetCount(cctx, insns, recvTy)
-              MInt
-            } else {
-              insns.add(MPop)
-              val msgTok = ctxInternUs(cctx.lctx, "Msil.Codegen: unimplemented Map member access: " + memberName)
-              insns.add(MLdStr(token = msgTok))
-              insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
-              insns.add(MThrow)
-              MObject
-            }
-          }
-          case MArray(_) -> {
-            // `MArray` is the lowered static type of `slice[T]` (codegen ~2686:
-            // `TSlice(elem) -> MArray(...)`), but slice *values* have two runtime
-            // representations behind that one static type: genuine CLI arrays
-            // (e.g. `String[]` from a `String.Split` extern) and `List`-backed
-            // slices (slice literals, `toArray()` results, sub-slice copies).  A
-            // raw `ldlen` faults / reads garbage on the List-backed case (#2539).
-            // Both `System.Array` and `List<T>` implement the non-generic
-            // `System.Collections.IList` / `ICollection`, so `.length` / `.count`
-            // route through `ICollection.get_Count`, which is correct for either
-            // representation.
-            if memberName == "length" or memberName == "count" {
-              insns.add(MCastclass(typeToken = cctx.tokIListCast))
-              insns.add(MCallvirt(methodToken = cctx.tokICollGetCount))
-              MInt
-            } else {
-              insns.add(MPop)
-              MObject
-            }
-          }
-          case MString -> {
-            // Genuine `String` receiver: `.length` is `String.get_Length`.  This
-            // arm is explicit so a `String` value never falls through to the
-            // `case _` collection-count path below (#2539): both used to share the
-            // fallback, which routed `.length` to `String.get_Length` and so
-            // silently miscompiled `.length` on a `List`-backed slice that also
-            // lowered to `MObject`.
-            if memberName == "length" {
-              insns.add(MCallvirt(methodToken = cctx.tokStringGetLength))
-              MInt
-            } else {
-              insns.add(MPop)
-              MObject
-            }
-          }
-          case _ -> {
-            // TyException built-in members: .message and .typeName.
-            // Catch-clause exception bindings are stored as MObject; detect by member name.
-            if memberName == "message" {
-              insns.add(MCallvirt(methodToken = cctx.tokExcGetMessage))
-              MString
-            } else if memberName == "typeName" {
-              insns.add(MCallvirt(methodToken = cctx.tokObjGetType))
-              insns.add(MCallvirt(methodToken = cctx.tokTypeGetName))
-              MString
-            } else if memberName == "count" {
-              // Read `.count` through the non-generic ICollection so the cast works
-              // whether the receiver holds a genuine `List<object>` or a concrete
-              // `List<Foo>` extracted from a type-erased container — `castclass
-              // List<object>` faults on the latter because generics are invariant.
-              insns.add(MCastclass(typeToken = cctx.tokIListCast))
-              insns.add(MCallvirt(methodToken = cctx.tokICollGetCount))
-              MInt
-            } else if memberName == "length" {
-              // An `object`-typed receiver reaching here is a `List`-backed slice
-              // (slice literal / `toArray()` result whose static type erased to
-              // `MObject`); `.length` is its element count.  Read it through the
-              // non-generic `ICollection` exactly like `.count` above so it works
-              // whether the value is a genuine `List<object>` or a concrete
-              // `List<Foo>` (#2539).  Genuine `String` receivers take the explicit
-              // `MString` arm above, not this path.
-              insns.add(MCastclass(typeToken = cctx.tokIListCast))
-              insns.add(MCallvirt(methodToken = cctx.tokICollGetCount))
-              MInt
-            } else {
-              // Emit castclass before ldfld on MObject receivers, mirroring the
-              // MClass arm.  fieldDeclaringClassByName carries the declaring FQN
-              // registered at addPackageTokens time (#1868).
-              val fbyNameKey = fctx.pkgName + "/" + memberName
-              match mapGet(cctx.fieldTokensByName, fbyNameKey) {
+        } else {
+          val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
+          match recvTy {
+            case MClass(cls) -> {
+              val key = cls + "/" + memberName
+              match mapGet(cctx.fieldTokens, key) {
                 case Some(tok) -> {
-                  match mapGet(cctx.fieldDeclaringClassByName, fbyNameKey) {
-                    case Some(declCls) -> insns.add(MCastclassByName(className = declCls))
-                    case None -> ()
-                  }
+                  // Locals and return values of class type are declared as `object`
+                  // in LocalVarSig, so the stack type seen by the JIT is `object`.
+                  // castclass narrows the stack type to the concrete class before
+                  // ldfld so the verifier accepts the instruction (#1442).
+                  insns.add(MCastclassByName(className = cls))
                   insns.add(MLdfld(fieldToken = tok))
-                  match mapGet(cctx.fieldMsilTypes, fbyNameKey) {
+                  // Return the field's declared MSIL type so that downstream
+                  // operators (BEq/BNeq) use ceq for value types instead of
+                  // Object.Equals — passing an unboxed Bool/Int to Object.Equals
+                  // triggers StackUnexpected / InvalidProgramException (#1442).
+                  match mapGet(cctx.fieldMsilTypes, key) {
                     case Some(fty) -> fty
                     case None -> MObject
                   }
                 }
                 case None -> {
-                  MObject
+                  if memberName == "count" {
+                    insns.add(MCallvirt(methodToken = cctx.tokListObjGetCount))
+                    MInt
+                  } else {
+                    insns.add(MPop)
+                    MObject
+                  }
+                }
+              }
+            }
+            case MGenericInstByName(fqn, typeArgs) -> {
+              // Field read on an in-bundle generic record instance (#2362).  The
+              // receiver is a closed `MGenericInstByName` (e.g. `Box<Int>`); read the
+              // field through a TypeSpec-parented MemberRef via MLdfldGeneric (TypeSpec
+              // built at Phase 5).  The result type is the concrete type argument for a
+              // type-parameter field, else the field's registered concrete type.  The
+              // codegen maps are keyed by the plain FQN; the instruction carries the
+              // arity-suffixed `fqn` so it resolves against the suffixed TypeDef.
+              val key = stripGenericArity(fqn) + "/" + memberName
+              val vi = match mapGet(cctx.fieldVarIndices, key) { case Some(v) -> v; case None -> -1 }
+              val fSig = match mapGet(cctx.fieldSigBytes, key) { case Some(s) -> s; case None -> buildFieldSig(MObject) }
+              if cctx.fieldSigBytes.containsKey(key) {
+                // The receiver slot is `object` in IL; narrow it to the closed
+                // GENERICINST TypeSpec (in-bundle TypeDef) so `ldfld` verifies.
+                insns.add(MCastclassGeneric(className = fqn, typeArgs = typeArgs))
+                insns.add(MLdfldGeneric(baseClassName = fqn, typeArgs = typeArgs, fieldName = memberName, fieldSig = fSig))
+                if vi >= 0 {
+                  if vi < typeArgs.count {
+                    typeArgs[vi]
+                  } else {
+                    MObject
+                  }
+                } else {
+                  match mapGet(cctx.fieldMsilTypes, key) {
+                    case Some(fty) -> fty
+                    case None -> MObject
+                  }
+                }
+              } else {
+                insns.add(MPop)
+                MObject
+              }
+            }
+            case MMapOf(_, _) -> {
+              // Map[K, V] receiver: dispatch to Dictionary<object,object> members.
+              if memberName == "count" {
+                insns.add(MCallvirt(methodToken = cctx.tokDictObjGetCount))
+                MInt
+              } else {
+                // Unimplemented Map member: pop the receiver and emit a runtime
+                // throw so the failure is loud rather than a silent miscompile.
+                insns.add(MPop)
+                val msgTok = ctxInternUs(cctx.lctx, "Msil.Codegen: unimplemented Map member access: " + memberName)
+                insns.add(MLdStr(token = msgTok))
+                insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+                insns.add(MThrow)
+                MObject
+              }
+            }
+            case MConcreteList(_) -> {
+              // Concrete List[T] receiver: `.count` / `.length` via the
+              // concrete `get_Count`; castclass first so the callvirt is well-typed
+              // when the receiver came from an object-typed slot.  `slice[T]` values
+              // are List-backed at runtime (slice literals and `toArray()` both yield
+              // a `List`), so `.length` is the element count, not a real-array `ldlen`
+              // (#2539).
+              if memberName == "count" or memberName == "length" {
+                emitListCastRecv(cctx, insns, recvTy)
+                emitListGetCount(cctx, insns, recvTy)
+                MInt
+              } else {
+                insns.add(MPop)
+                val msgTok = ctxInternUs(cctx.lctx, "Msil.Codegen: unimplemented List member access: " + memberName)
+                insns.add(MLdStr(token = msgTok))
+                insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+                insns.add(MThrow)
+                MObject
+              }
+            }
+            case MConcreteMap(_, _) -> {
+              if memberName == "count" {
+                emitDictCastRecv(cctx, insns, recvTy)
+                emitDictGetCount(cctx, insns, recvTy)
+                MInt
+              } else {
+                insns.add(MPop)
+                val msgTok = ctxInternUs(cctx.lctx, "Msil.Codegen: unimplemented Map member access: " + memberName)
+                insns.add(MLdStr(token = msgTok))
+                insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+                insns.add(MThrow)
+                MObject
+              }
+            }
+            case MArray(_) -> {
+              // `MArray` is the lowered static type of `slice[T]` (codegen ~2686:
+              // `TSlice(elem) -> MArray(...)`), but slice *values* have two runtime
+              // representations behind that one static type: genuine CLI arrays
+              // (e.g. `String[]` from a `String.Split` extern) and `List`-backed
+              // slices (slice literals, `toArray()` results, sub-slice copies).  A
+              // raw `ldlen` faults / reads garbage on the List-backed case (#2539).
+              // Both `System.Array` and `List<T>` implement the non-generic
+              // `System.Collections.IList` / `ICollection`, so `.length` / `.count`
+              // route through `ICollection.get_Count`, which is correct for either
+              // representation.
+              if memberName == "length" or memberName == "count" {
+                insns.add(MCastclass(typeToken = cctx.tokIListCast))
+                insns.add(MCallvirt(methodToken = cctx.tokICollGetCount))
+                MInt
+              } else {
+                insns.add(MPop)
+                MObject
+              }
+            }
+            case MString -> {
+              // Genuine `String` receiver: `.length` is `String.get_Length`.  This
+              // arm is explicit so a `String` value never falls through to the
+              // `case _` collection-count path below (#2539): both used to share the
+              // fallback, which routed `.length` to `String.get_Length` and so
+              // silently miscompiled `.length` on a `List`-backed slice that also
+              // lowered to `MObject`.
+              if memberName == "length" {
+                insns.add(MCallvirt(methodToken = cctx.tokStringGetLength))
+                MInt
+              } else {
+                insns.add(MPop)
+                MObject
+              }
+            }
+            case _ -> {
+              // TyException built-in members: .message and .typeName.
+              // Catch-clause exception bindings are stored as MObject; detect by member name.
+              if memberName == "message" {
+                insns.add(MCallvirt(methodToken = cctx.tokExcGetMessage))
+                MString
+              } else if memberName == "typeName" {
+                insns.add(MCallvirt(methodToken = cctx.tokObjGetType))
+                insns.add(MCallvirt(methodToken = cctx.tokTypeGetName))
+                MString
+              } else if memberName == "count" {
+                // Read `.count` through the non-generic ICollection so the cast works
+                // whether the receiver holds a genuine `List<object>` or a concrete
+                // `List<Foo>` extracted from a type-erased container — `castclass
+                // List<object>` faults on the latter because generics are invariant.
+                insns.add(MCastclass(typeToken = cctx.tokIListCast))
+                insns.add(MCallvirt(methodToken = cctx.tokICollGetCount))
+                MInt
+              } else if memberName == "length" {
+                // An `object`-typed receiver reaching here is a `List`-backed slice
+                // (slice literal / `toArray()` result whose static type erased to
+                // `MObject`); `.length` is its element count.  Read it through the
+                // non-generic `ICollection` exactly like `.count` above so it works
+                // whether the value is a genuine `List<object>` or a concrete
+                // `List<Foo>` (#2539).  Genuine `String` receivers take the explicit
+                // `MString` arm above, not this path.
+                insns.add(MCastclass(typeToken = cctx.tokIListCast))
+                insns.add(MCallvirt(methodToken = cctx.tokICollGetCount))
+                MInt
+              } else {
+                // Emit castclass before ldfld on MObject receivers, mirroring the
+                // MClass arm.  fieldDeclaringClassByName carries the declaring FQN
+                // registered at addPackageTokens time (#1868).
+                val fbyNameKey = fctx.pkgName + "/" + memberName
+                match mapGet(cctx.fieldTokensByName, fbyNameKey) {
+                  case Some(tok) -> {
+                    match mapGet(cctx.fieldDeclaringClassByName, fbyNameKey) {
+                      case Some(declCls) -> insns.add(MCastclassByName(className = declCls))
+                      case None -> ()
+                    }
+                    insns.add(MLdfld(fieldToken = tok))
+                    match mapGet(cctx.fieldMsilTypes, fbyNameKey) {
+                      case Some(fty) -> fty
+                      case None -> MObject
+                    }
+                  }
+                  case None -> {
+                    MObject
+                  }
                 }
               }
             }
           }
-        }
-      }  // else: not a config field access
+        }  // else: not a config field access
+      }  // else: not a nullary union case
     }
 
     // ── If / else ──────────────────────────────────────────────────────────────
@@ -6634,6 +6676,38 @@ func pickCaseFqnByScope(cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in Li
   candidates[0]
 }
 
+// Qualifier-aware variant: when a case is written as `UnionName.CaseName`
+// (path.segments.count >= 2), `qualifier` is the penultimate segment
+// (e.g. `"Color"` in `Color.Same`).  Prefers the candidate whose
+// parent-union FQN ends with `.qualifier` (or equals `qualifier`).
+// Falls back to `pickCaseFqnByScope` when no candidate matches.
+func pickCaseFqnByQualifier(
+  cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in List[String], qualifier: in String
+): String {
+  if candidates.count == 1 or qualifier.length == 0 {
+    return pickCaseFqnByScope(cctx, fctx, candidates)
+  }
+  var i = 0
+  while i < candidates.count {
+    match mapGet(cctx.caseParentUnion, candidates[i]) {
+      case Some(parentFqn) -> {
+        val dotIdx = parentFqn.lastIndexOf(".")
+        val parentSimple = if dotIdx >= 0 {
+          parentFqn.substring(dotIdx + 1, parentFqn.length - dotIdx - 1)
+        } else {
+          parentFqn
+        }
+        if parentSimple == qualifier {
+          return candidates[i]
+        }
+      }
+      case None -> ()
+    }
+    i = i + 1
+  }
+  pickCaseFqnByScope(cctx, fctx, candidates)
+}
+
 // Pattern-matching variant of `pickCaseFqnByScope`.  When `scrutTy`
 // names a concrete union class the case whose registered parent union
 // matches it is preferred, because the scrutinee's type is the most
@@ -8136,11 +8210,14 @@ func lowerBuiltinOrStaticCallMsil(
     //      (which leaves args on the stack without a newobj, causing a
     //      stack-height mismatch that the JIT reports as InvalidProgramException).
     val localCtorKey = fctx.pkgName + "." + funcName
+    // For qualified calls like `Color.CaseName(...)` the qualifier names
+    // the parent union; prefer the matching candidate (#3349).
+    val callQualifier = if path.segments.count >= 2 { path.segments[path.segments.count - 2] } else { "" }
     val ctorKey = if cctx.recordCtorTokens.containsKey(localCtorKey) {
       localCtorKey
     } else {
       match mapGet(cctx.unionCaseCtorByName, funcName) {
-        case Some(candidates) -> pickCaseFqnByScope(cctx, fctx, candidates)
+        case Some(candidates) -> pickCaseFqnByQualifier(cctx, fctx, candidates, callQualifier)
         case None -> {
           // Cross-package record: look up simple name in typeFqnByName to
           // get the FQN, then verify it has a ctor registered.
