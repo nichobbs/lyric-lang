@@ -142,6 +142,16 @@ pub record FuncCtx {
   // >= this depth) before jumping, so a `defer` declared in a loop body runs on
   // loop-exit and loop-continue as well as on fall-off.
   loopDeferDepth: List[Int]
+  // Parallel to `deferStack`: the JVM local-variable slot holding the
+  // "already-replayed" flag for each active defer region (#2855).  Entry `i` is
+  // the int slot allocated by `lowerDeferRegion` / `lowerBlockExprWithDefer` and
+  // initialised to 0 at region entry.  `replayDefers` stores 1 to that slot
+  // before emitting each inline early-transfer replay so the catch-all handler
+  // (which covers the same region body) can skip re-running the defer when the
+  // replay itself throws — preventing the double-execution bug.  Always kept the
+  // same length as `deferStack`; `replayDefers` guards access with a list-bounds
+  // check (`i < ctx.deferRanSlots.count`).
+  deferRanSlots: List[Int]
   // When `Some(cls)`, the function is an instance method whose receiver is at
   // local slot 0 (a protected-type entry / helper).  `self` and bare field
   // references (`tokens`, not `self.tokens`) resolve to `getfield`/`putfield`

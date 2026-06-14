@@ -27,6 +27,7 @@ import Std.Testing
 
 // ── m-2: module-level val ─────────────────────────────────────────────────────
 val theAnswer: Int = 42
+
 val greeting: String = "hello"
 
 // #2853: an *unannotated* module `val` whose init is a function call.  Before the
@@ -36,6 +37,7 @@ val greeting: String = "hello"
 func computeAnswer(): Int {
   return 6 * 7
 }
+
 val derivedAnswer = computeAnswer()
 
 // #2853: an *unannotated* module `val` whose init is a non-literal returning a
@@ -48,6 +50,7 @@ record Gadget {
 func makeGadget(): Gadget {
   return Gadget(weight = 99)
 }
+
 val theGadget = makeGadget()
 
 // #2853: an *unannotated* F32 module `val`.  `inferValType` typed every float
@@ -67,15 +70,12 @@ func amountCents(a: in Amount): Int {
 // ── M-3: protected type ───────────────────────────────────────────────────────
 protected type Counter {
   var count: Int
-
   entry increment() {
     count = count + 1
   }
-
   entry add(n: in Int) {
     count = count + n
   }
-
   entry get(): Int {
     return count
   }
@@ -143,15 +143,40 @@ func deferContinues(iters: in Int, obs: in Counter): Unit {
   }
 }
 
-// #2854: `for`/`loop` `break`/`continue` now replay pending defers (the codegen
-// registers `loopBreak`/`loopCont`/`loopDeferDepth` symmetric to `while`).  No
-// runnable JVM regression is added here because `for`-over-array element use and
-// `loop {}` both hit *pre-existing* JVM-backend miscompiles independent of this
-// fix — an array-`for` element is bound as a boxed `Object` and any typed use
-// (`if v == n`) fails verification ("Bad type on operand stack"); `loop {}` with
-// a `break`/`return` panics codegen with a spurious `ELambda`.  Both predate this
-// branch (verified against pristine `05_stmts.l`) and are out of scope here; the
-// `while`-loop defer paths above (#2852) cover the replay machinery end-to-end.
+// #2854: `for`/`do` `break`/`continue` now replay pending defers.
+// #2858: `do {}` with `break`/`return` no longer panics codegen (pre-fix the
+// `ELambda` panic fired because `lowerLambda` was absent; J2b closures fixed it).
+// Also pins that `for` over a List (Iterable path) counts correctly (#2858
+// array-for path; full typed-element support requires J4 generic unboxing).
+func countListElems(xs: in List[Int]): Int {
+  var n = 0
+  for _ in xs {
+    n = n + 1
+  }
+  return n
+}
+
+func countToN(n: in Int): Int {
+  var i = 0
+  do {
+    if i >= n {
+      break
+    }
+    i = i + 1
+  }
+  return i
+}
+
+func countUpReturn(limit: in Int): Int {
+  var i = 0
+  do {
+    if i >= limit {
+      return i
+    }
+    i = i + 1
+  }
+  return i
+}
 
 // #2856: a generator body that reads a module-`val` must resolve it (real
 // `getstatic`), not silently lower to `null`.  Before the fix the generator ctx
@@ -246,4 +271,18 @@ test "generator body reads a module val, not null (#2856)" {
   val obs = Counter(count = 0)
   consumeAnswers(3, obs)
   assertEqualInt(obs.get(), 3, "generator yielded 3 times, each value == theAnswer")
+}
+
+test "for-over-List iterates each element correctly (#2858)" {
+  assertEqualInt(countListElems([1, 2, 3, 4, 5]), 5, "count 5 elems via for-over-List")
+  assertEqualInt(countListElems([10, 20, 30]), 3, "count 3 elems via for-over-List")
+}
+
+test "do-loop with break exits at the right iteration (#2858)" {
+  assertEqualInt(countToN(5), 5, "do-loop breaks when i reaches 5")
+  assertEqualInt(countToN(0), 0, "do-loop breaks immediately when limit is 0")
+}
+
+test "do-loop with return exits at the right iteration (#2858)" {
+  assertEqualInt(countUpReturn(3), 3, "do-loop returns when i reaches 3")
 }

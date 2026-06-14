@@ -1248,6 +1248,10 @@ func coerceArgTo(insns: in List[LInsn], fromTy: in JvmType, toTy: in JvmType): U
     }
     case JRef(toCls) -> {
       match fromTy {
+        // Lyric Unit (`()`) lowers to JVoid: nothing on the stack.  A
+        // Unit-typed argument flowing into a reference slot must push `null`
+        // so the JVM sees a value for the parameter (#1722 / Ok(()) pattern).
+        case JVoid -> insns.add(LAconstNull)
         case JRef(fromCls) -> {
           if not (fromCls == toCls) and not (toCls == "java/lang/Object") {
             insns.add(LCheckcast(className = toCls))
@@ -1537,6 +1541,38 @@ func lowerGeneralStaticCall(
     case None -> ()
   }
 
+  // Bare sibling call inside an impl / record / protected-type method body
+  // (#1722): when `ctx.selfClass` is set (the enclosing method is an instance
+  // method) and `selfClass#funcName` is registered, lower `m(args)` as
+  // `aload_0; invokevirtual selfClass.m` rather than a static call.  This
+  // covers both the explicit `self.m()` form (which goes through `lowerMethodCall`
+  // and already finds `<cls>#m`) and the bare `m()` form here.  Must come after
+  // the ctor check above (constructors are never dispatched as instance calls)
+  // and before the general funcSigs lookup (to override any static function of
+  // the same bare name visible at the call site).
+  match ctx.selfClass {
+    case Some(selfCls) -> {
+      match mapGet(ctx.funcSigs, selfCls + "#" + funcName) {
+        case Some(sig) -> {
+          insns.add(LAload(slot = 0))
+          val callArgs = reorderAndFillJvmArgs(sig, args)
+          var ai = 0
+          while ai < callArgs.count {
+            val aTy = lowerCallArg(ctx, insns, callArgs[ai])
+            if ai < sig.params.count {
+              coerceArgTo(insns, aTy, sig.params[ai])
+            }
+            ai = ai + 1
+          }
+          insns.add(LInvokevirtual(owner = selfCls, name = funcName, params = sig.params, ret = sig.ret))
+          return sig.ret
+        }
+        case None -> ()
+      }
+    }
+    case None -> ()
+  }
+
   // Preferred path: resolve against the cross-package function registry, which
   // carries the callee's declaring host class and its exact JVM descriptor
   // (declared param + return types).  Args are lowered against the resolved
@@ -1793,6 +1829,62 @@ func lowerMethodCall(
     }
     insns.add(LInvokevirtual(owner = "java/lang/String", name = memberName, params = ps, ret = JBoolean))
     return JBoolean
+  }
+
+  // String instance methods with non-Object returns (#1585).  The generic
+  // fallback below emits ret=Object, which fails JVM verification whenever the
+  // value is used as a typed operand (e.g. an `indexOf` result compared to 0
+  // via `iflt`/`ifge`, or `trim` passed to a String parameter).  Pin the exact
+  // JVM descriptor here.  Java spellings:
+  //   trim → strip()  (Unicode-aware; Java 11+, JDK 21 baseline)
+  //   trimStart → stripLeading()  (Java 11+)
+  //   trimEnd  → stripTrailing()  (Java 11+)
+  //   toUpper  → toUpperCase()
+  //   toLower  → toLowerCase()
+  //   length   → length()  (returns int)
+  //   indexOf / lastIndexOf(String) → indexOf / lastIndexOf(String) → int
+  //   replace(old, new) → replace(CharSequence, CharSequence) → String
+  if isStringRecv and args.count == 0 and (memberName == "trim" or memberName == "trimStart" or memberName == "trimEnd" or memberName == "toUpper" or memberName == "toLower" or memberName == "length") {
+    val noPs: List[JvmType] = newList()
+    val javaName = if memberName == "trim" {
+      "strip"
+    } else if memberName == "trimStart" {
+      "stripLeading"
+    } else if memberName == "trimEnd" {
+      "stripTrailing"
+    } else if memberName == "toUpper" {
+      "toUpperCase"
+    } else if memberName == "toLower" {
+      "toLowerCase"
+    } else {
+      "length"
+    }
+    val retT: JvmType = if memberName == "length" { JInt } else { JRef(className = "java/lang/String") }
+    insns.add(LInvokevirtual(owner = "java/lang/String", name = javaName, params = noPs, ret = retT))
+    return retT
+  }
+  if isStringRecv and args.count == 1 and (memberName == "indexOf" or memberName == "lastIndexOf") {
+    lowerCallArg(ctx, insns, args[0])
+    val ps1: List[JvmType] = newList()
+    ps1.add(JRef(className = "java/lang/String"))
+    insns.add(LInvokevirtual(owner = "java/lang/String", name = memberName, params = ps1, ret = JInt))
+    return JInt
+  }
+  if isStringRecv and args.count == 2 and memberName == "replace" {
+    lowerCallArg(ctx, insns, args[0])
+    lowerCallArg(ctx, insns, args[1])
+    val ps2: List[JvmType] = newList()
+    ps2.add(JRef(className = "java/lang/CharSequence"))
+    ps2.add(JRef(className = "java/lang/CharSequence"))
+    insns.add(
+      LInvokevirtual(
+        owner = "java/lang/String",
+        name = "replace",
+        params = ps2,
+        ret = JRef(className = "java/lang/String")
+      )
+    )
+    return JRef(className = "java/lang/String")
   }
 
   // Instance auto-FFI: when the receiver is a JRef to a JDK class (returned
