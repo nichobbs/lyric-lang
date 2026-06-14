@@ -66,6 +66,20 @@ test "RequiresAuth aspect: an invalid token is denied with 403 before the handle
   }
 }
 
+// A stable HS256 token signed with the AuthGuard instance's jwtSecret
+// ("test-signing-secret"), carrying no `exp` claim so it never expires. This
+// lets us exercise the RequiresAuth *accept* path — a validly-signed token must
+// flow through Auth.verifyJwt and reach the handler — the counterpart to the
+// rejection test above. Generated offline (HMAC-SHA256 over header.payload); see #3643.
+val validAuthToken: String = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0LXVzZXIiLCJyb2xlIjoiYWRtaW4ifQ.Mj5dNtlMDypmDCnwx73ItntqJ46e90e5jSicrdDqM-s"
+
+test "RequiresAuth aspect: a validly-signed token reaches the handler" {
+  match authGuardedHandler(validAuthToken) {
+    case Ok(v) -> assertEqual(v, "authorized", "a validly-signed token must reach the handler")
+    case Err(_) -> assertTrue(false, "a validly-signed token must not be rejected")
+  }
+}
+
 // Guard any handler named `roleGuarded*` with the RequiresRole template (enabled
 // by default). A non-empty but unverifiable token must short-circuit with 403 —
 // the enforcement counterpart to the RequiresAuth rejection test above.
@@ -85,6 +99,16 @@ test "RequiresRole aspect: an invalid token is denied with 403 before the handle
   match roleGuardedHandler("not.a.valid.jwt") {
     case Ok(_) -> assertTrue(false, "an unverifiable token must be rejected before the handler runs")
     case Err(e) -> assertEqualInt(e.status, 403, "invalid token short-circuits with 403 Forbidden")
+  }
+}
+
+// validAuthToken carries role="admin", which matches RoleGuard's allowedRoles,
+// so the woven RequiresRole must verify the signature, accept the role, and
+// reach the handler — the accept counterpart to the rejection test above.
+test "RequiresRole aspect: a validly-signed token with the required role reaches the handler" {
+  match roleGuardedHandler(validAuthToken) {
+    case Ok(v) -> assertEqual(v, "authorized", "a valid token with an allowed role must reach the handler")
+    case Err(_) -> assertTrue(false, "a valid token with an allowed role must not be rejected")
   }
 }
 
