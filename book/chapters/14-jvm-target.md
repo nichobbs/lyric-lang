@@ -48,7 +48,7 @@ java --module-path "$(cat bin/module-path.txt):bin/account.jar" \
      --module lyric.account/lyric.account.Account$Funcs
 ```
 
-`lyric build --target jvm` writes `bin/module-path.txt` alongside the output JAR. The file contains the colon-separated paths of all Maven and path-dependency JARs that the package needs at runtime. `$(cat …)` expands the file inline because `--module-path` expects a colon-separated list, not a file reference.
+`lyric build --target jvm` writes `bin/module-path.txt` alongside the output JAR when Maven dependencies were restored (i.e. `target/restore/jvm-classpath.txt` exists and contains at least one path). The file contains the colon-separated paths of all Maven (non-Lyric) JARs; Lyric path-dependency packages are separate Lyric-compiled JARs and are not listed here. `$(cat …)` expands the file inline because `--module-path` expects a colon-separated list, not a file reference. For packages with no `[maven]` entries, `module-path.txt` is not written and `--module-path` can be omitted or reference only the output JAR.
 
 For a self-contained executable JAR with `Main-Class` set:
 

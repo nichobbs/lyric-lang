@@ -734,7 +734,13 @@ func jsonEscape(s: in String): String {
 //   4. $HOME/.lyric/tools/lyric-resolver.jar  (user-local install)
 func findMavenResolverJar(): Option[String] {
   match Environment.getVar("LYRIC_MAVEN_RESOLVER") {
-    case Ok(p) -> if File.fileExists(p) { return Some(value = p) } else { () }
+    case Ok(p) -> {
+      if File.fileExists(p) {
+        return Some(value = p)
+      } else {
+        printErr("restore: warning: LYRIC_MAVEN_RESOLVER=" + p + " does not exist; falling back to default search locations")
+      }
+    }
     case Err(_) -> ()
   }
   val base = Environment.appBaseDirectory()
@@ -794,6 +800,10 @@ func buildMavenResolverRequest(maven: in MavenSection, cacheDir: in String, outp
 // Extract all `jarPath` values from lyric-resolver.jar's JSON array output.
 // Uses structural splitting rather than a full JSON parser: `jarPath` values
 // are file-system paths that cannot contain `"` on any supported platform.
+//
+// CONTRACT: expects compact JSON (no whitespace between `"jarPath":"` and the
+// value).  Pretty-printed output (`"jarPath": "..."`) will yield zero paths —
+// the resolver protocol requires compact format.
 func extractMavenJarPaths(jsonOutput: in String): List[String] {
   val paths: List[String] = newList()
   val pieces = Str.split(jsonOutput, "\"jarPath\":\"")
@@ -862,6 +872,12 @@ func restoreMavenJars(manifest: in Manifest, mfDir: in String): Int {
     return 1
   }
   val jarPaths = extractMavenJarPaths(captureResult.stdout)
+  if jarPaths.count == 0 and maven.entries.count > 0 {
+    printErr(
+      "restore: warning: Maven resolver reported 0 resolved JARs for " + toString(maven.entries.count) +
+        " declared coordinates — check resolver output above for errors; verify coordinates and network connectivity"
+    )
+  }
   var classpathText = ""
   var ji = 0
   while ji < jarPaths.count {

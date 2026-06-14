@@ -840,7 +840,15 @@ func buildProject(
             }
           }
         }
-        case Err(_) -> ()
+        case Err(_) -> {
+          val hasMaven = match manifest.maven { case Some(m) -> m.entries.count > 0; case None -> false }
+          if hasMaven {
+            printErr(
+              "build: note: target/restore/jvm-classpath.txt not found; Maven JARs will not be available to the JVM emitter"
+            )
+            printErr("  run `lyric restore` first to download Maven dependencies")
+          }
+        }
       }
       if mavenJarColonSep.length > 0 {
         val prevFfi = match Environment.getVar("LYRIC_FFI_JARS") { case Ok(v) -> v; case Err(_) -> "" }
