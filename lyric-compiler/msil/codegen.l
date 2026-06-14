@@ -6970,7 +6970,9 @@ func lowerPatternTestMsil(
               insns.add(MBrFalse(label = failLabel))
             }
             case None -> {
-              insns.add(MPop)
+              panic(
+                "lowerPatternTestMsil: PConstRef name not found in constValues or staticValTokens (type checker should have validated)"
+              )
             }
           }
         }

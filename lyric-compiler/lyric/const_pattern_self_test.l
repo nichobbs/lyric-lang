@@ -166,6 +166,21 @@ test "Bool const pattern matches false flag" {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Float const patterns
+// ─────────────────────────────────────────────────────────────────────────────
+test "Float const pattern matches threshold value" {
+  val x = 0.5
+  val result = match x { case @THRESHOLD -> "at threshold"; case _ -> "other" }
+  assertEqual(result, "at threshold", "@THRESHOLD match")
+}
+
+test "Float const pattern misses different value" {
+  val x = 0.75
+  val result = match x { case @THRESHOLD -> "at threshold"; case _ -> "other" }
+  assertEqual(result, "other", "float const no-match")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Const pattern inside or-pattern
 // ─────────────────────────────────────────────────────────────────────────────
 func isVarintOrFixed64(n: in Int): Bool {

@@ -562,7 +562,7 @@ func lowerPatternTest(
             }
           }
         }
-        case None -> insns.add(LNop)
+        case None -> panic("lowerPatternTest (JVM): PConstRef name not found in moduleVals (type checker should have validated)")
       }
     }
     case PError -> insns.add(LNop)
