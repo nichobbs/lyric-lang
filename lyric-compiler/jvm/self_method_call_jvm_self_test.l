@@ -40,6 +40,8 @@ interface Svc {
   func save(): Result[Unit, SErr]
   func putSelf(): Result[Unit, SErr]
   func putBare(): Result[Unit, SErr]
+  func viaSelfArg(s: in String): String
+  func viaSelfIntArg(n: in Int): Int
 }
 
 record Impl {
@@ -77,6 +79,12 @@ impl Svc for Impl {
   func putBare(): Result[Unit, SErr] {
     save()
   }
+  func viaSelfArg(s: in String): String {
+    self.echo(s)
+  }
+  func viaSelfIntArg(n: in Int): Int {
+    self.twice(n)
+  }
 }
 
 func mk(): Impl {
@@ -112,4 +120,12 @@ test "self.save() returns the constructed Result, matches Ok" {
 
 test "bare save() returns the constructed Result, matches Ok" {
   assertEqualInt(classify(mk().putBare()), 1, "bare save() -> Ok")
+}
+
+test "self.m(String arg) dispatches correctly via lowerMethodCall (#3563)" {
+  assertEqual(mk().viaSelfArg("ab"), "abab", "self.echo(\"ab\")")
+}
+
+test "self.m(Int arg) dispatches correctly via lowerMethodCall (#3563)" {
+  assertEqualInt(mk().viaSelfIntArg(7), 14, "self.twice(7)")
 }
