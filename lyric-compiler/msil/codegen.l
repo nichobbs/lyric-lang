@@ -7326,7 +7326,7 @@ func emitCaseFieldLoad(
   caseClass: in String,
   caseClassBt: in String,
   fieldToken: in Int,
-  fieldSig: in slice[Byte],
+  fieldSig: in List[Byte],
   fieldName: in String,
 ): Unit {
   emitLoadSlot(insns, castSlot, paramCount)
