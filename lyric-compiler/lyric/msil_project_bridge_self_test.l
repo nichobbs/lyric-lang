@@ -484,3 +484,66 @@ test "cfg erasure F0013 typo warning does not fail build" {
   val ok = compileAndGetSucceeded("cfg-f0013", pkgs, "CfgF0013", empty, declared)
   assertTrue(ok, "cfg_erasure_f0013_typo: warning should not fail the build")
 }
+
+// ─── Regression: multi-segment qualified calls (#3349) ───────────────────────
+// A consumer references a library function with the fully-qualified
+// two-segment path `Lib.func(arg)`.  This exercises the `flattenPathExprSegs`
+// path in `lowerMethodCallMsil` that was fixed in PR #3343.
+test "multi-segment qualified call resolves correctly" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg("MultiSeg.Lib", "package MultiSeg.Lib\n" + "\n" + "pub func triple(x: in Int): Int { x + x + x }\n")
+  )
+  packages.add(
+    mkPkg(
+      "MultiSeg.App",
+      "package MultiSeg.App\n" + "\n" + "import MultiSeg.Lib\n" + "\n" + "func main(): Unit {\n" +
+        "  println(MultiSeg.Lib.triple(7))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("multiseg", packages, "MultiSeg")
+  assertEqualInt(result.exitCode, 0, "multi_segment_qualified_call: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "21", "multi_segment_qualified_call: stdout=21")
+}
+
+// ─── Regression: qualified enum-case pattern with shared case names (#3349) ──
+// Two packages each declare an enum with a case named `Same`.  A consumer
+// matches on `PackA.Color.Same` and verifies the correct ordinal fires,
+// not the ordinal from `PackB.Shape.Same`.  Exercises the PConstructor arm
+// in `lowerPatternTestMsil` fixed in PR #3343.
+test "qualified enum-case pattern with shared case name" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "QualEnum.Lib",
+      "package QualEnum.Lib\n" + "\n" + "pub union Color {\n" + "  case Same\n" + "  case Different\n" + "}\n" + "\n" +
+        "pub union Shape {\n" +
+        "  case Same\n" +
+        "  case Different\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "QualEnum.App",
+      "package QualEnum.App\n" + "\n" + "import QualEnum.Lib\n" + "\n" + "func main(): Unit {\n" +
+        "  val c: Color = Color.Same\n" +
+        "  val result = match c {\n" +
+        "    case Color.Same -> \"color-same\"\n" +
+        "    case Color.Different -> \"color-different\"\n" +
+        "  }\n" +
+        "  println(result)\n" +
+        "  val s: Shape = Shape.Different\n" +
+        "  val r2 = match s {\n" +
+        "    case Shape.Same -> \"shape-same\"\n" +
+        "    case Shape.Different -> \"shape-different\"\n" +
+        "  }\n" +
+        "  println(r2)\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("qualenum", packages, "QualEnum")
+  assertEqualInt(result.exitCode, 0, "qualified_enum_case_pattern: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "color-same\nshape-different", "qualified_enum_case_pattern: correct arms fired")
+}
