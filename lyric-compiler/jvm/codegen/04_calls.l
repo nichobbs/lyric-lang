@@ -1856,10 +1856,8 @@ func lowerMethodCall(
       "toUpperCase"
     } else if memberName == "toLower" {
       "toLowerCase"
-    } else if memberName == "length" {
-      "length"
     } else {
-      panic("Jvm.Codegen: unreachable 0-arg String method '" + memberName + "' — outer guard and inner table diverged")
+      "length"
     }
     val retT: JvmType = if memberName == "length" { JInt } else { JRef(className = "java/lang/String") }
     insns.add(LInvokevirtual(owner = "java/lang/String", name = javaName, params = noPs, ret = retT))
