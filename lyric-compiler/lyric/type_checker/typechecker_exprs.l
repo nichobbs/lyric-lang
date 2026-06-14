@@ -472,6 +472,14 @@ func checkOpaquePatternHiding(
 // `case @FLAG_ENABLED` / `case @FLAG_DISABLED` pair (const patterns, #3488)
 // is recognised as covering `true`/`false` rather than falling through and
 // producing a false T0016.  Returns None for non-Bool / non-literal inits.
+//
+// Only `EParen`/`ELiteral` need handling (#3510): a type annotation on the
+// val (`val ON: Bool = true`) lives in the val's declared type, not in its
+// initializer expression, so the init is still a bare `ELiteral`.  A const
+// pattern that reaches exhaustiveness has already passed `checkConstRefPattern`
+// (literal-init required, else T0069), so a Bool const here always has a bare
+// literal init; returning None for any other shape only ever fails safe (a
+// conservative T0016), never silently accepts a non-exhaustive match.
 func constBoolOfExpr(e: in Expr): Option[Bool] {
   match e.kind {
     case EParen(inner) -> constBoolOfExpr(inner)

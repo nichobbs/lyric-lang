@@ -2229,3 +2229,26 @@ test "const pattern: Bool match missing a const arm is non-exhaustive (T0016)" {
   val bad = "package P\nval ON = true\nfunc f(b: in Bool): Int {\n  match b {\n    case @ON -> 1\n  }\n}\n"
   assertTrue(hasDiagCode(parseCheck(bad), "T0016"), "Bool match over only @ON: T0016 missing false")
 }
+
+// #3510: a type-annotated Bool const (`val ON: Bool = true`) must also be
+// resolved by the Bool-exhaustiveness check.  The annotation lives in the
+// val's declared type, not its initializer expression, so `constBoolOfExpr`
+// still sees a bare `ELiteral(LBool(_))` — confirm no false T0016.
+test "const pattern: annotated Bool consts are exhaustive (no T0016) (#3510)" {
+  val ok = "package P\nval ON: Bool = true\nval OFF: Bool = false\nfunc f(b: in Bool): Int {\n  match b {\n    case @ON -> 1\n    case @OFF -> 0\n  }\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0016"), "annotated Bool consts @ON/@OFF: no false non-exhaustive")
+}
+
+// #3509: T0071 (generic-typed const pattern) is a defensive arm in
+// checkConstRefPattern that is unreachable from well-formed source: a
+// module-level `val`/`const` cannot carry a free type variable, so such a
+// declaration fails earlier with T0010 (unknown type name) — and a generic
+// container const is rejected as non-literal (T0069) before T0071 is ever
+// reached.  There is therefore no positive parse-check that isolates T0071;
+// the closest source form (`val EMPTY: Box[T] = Wrap(0)`) emits T0010 + T0069.
+test "const pattern: generic container const rejected before T0071 (#3509)" {
+  val bad = "package P\nunion Box[T] {\n  case Wrap(v: T)\n}\nval EMPTY: Box[T] = Wrap(0)\nfunc f(x: in Box[Int]): Int {\n  match x {\n    case @EMPTY -> 1\n    case _ -> 0\n  }\n}\n"
+  val cr = parseCheck(bad)
+  assertTrue(hasDiagCode(cr, "T0010"), "generic-typed const: T0010 unknown type 'T' fires first")
+  assertTrue(hasDiagCode(cr, "T0069"), "generic container const is also rejected as non-literal (T0069)")
+}
