@@ -935,6 +935,17 @@ func stripRetAssignmentsStmt(s: in Statement, name: in String): Statement {
     }
     case SExpr(e) -> Statement(kind = SExpr(expr = stripRetAssignmentsExpr(e, name)), span = sp)
     case SReturn(o) -> match o { case Some(e) -> Statement(kind = SReturn(value = Some(value = stripRetAssignmentsExpr(e, name))), span = sp); case None -> s }
+    case SLocal(b) -> {
+      // The detection pass (`stmtAssignsToName`) descends into local-binding
+      // initializers, so the strip pass must mirror it: a `ret = …` written
+      // in expression position inside a `val`/`let`/`var` init (e.g.
+      // `val x = (ret = proceed())`) is rewritten the same way (#3434).
+      match b {
+        case LBVal(pat, ty, init) -> Statement(kind = SLocal(binding = LBVal(pat = pat, ty = ty, init = stripRetAssignmentsExpr(init, name))), span = sp)
+        case LBLet(nm, ty, init) -> Statement(kind = SLocal(binding = LBLet(name = nm, ty = ty, init = stripRetAssignmentsExpr(init, name))), span = sp)
+        case LBVar(nm, ty, optInit) -> match optInit { case Some(e) -> Statement(kind = SLocal(binding = LBVar(name = nm, ty = ty, init = Some(value = stripRetAssignmentsExpr(e, name)))), span = sp); case None -> s }
+      }
+    }
     case SFor(lbl, pat, iter, body) -> Statement(kind = SFor(label = lbl, pat = pat, iter = iter, body = stripRetAssignments(body, name)), span = sp)
     case SWhile(lbl, cond, body) -> Statement(kind = SWhile(label = lbl, cond = cond, body = stripRetAssignments(body, name)), span = sp)
     case SLoop(lbl, body) -> Statement(kind = SLoop(label = lbl, body = stripRetAssignments(body, name)), span = sp)
@@ -1456,13 +1467,9 @@ func buildWrapper(
   // `ret = <expr>` to a bare `<expr>` statement so its effect (e.g.
   // `proceed()`) still runs, and emit no var/return — the wrapper is a
   // plain void method that falls off the end.
-  val effectiveBody = if assignsRet and targetReturnsUnit {
-    match around.retName {
-      case Some(retVar) -> stripRetAssignments(rewiredBody, retVar)
-      case None -> rewiredBody
-    }
-  } else {
-    rewiredBody
+  val effectiveBody = match around.retName {
+    case Some(retVar) -> if assignsRet and targetReturnsUnit { stripRetAssignments(rewiredBody, retVar) } else { rewiredBody }
+    case None -> rewiredBody
   }
 
   // Compose: <config prelude> ++ <call prelude> ++ <body>.
@@ -1491,9 +1498,9 @@ func buildWrapper(
   // (InvalidProgramException at runtime).  Expression-style bodies and
   // `Unit`-returning targets (handled by `effectiveBody` above) are left
   // without a synthetic var/return.
-  val loweredStmts = if assignsRet and not targetReturnsUnit {
-    match around.retName {
-      case Some(retVar) -> {
+  val loweredStmts = match around.retName {
+    case Some(retVar) -> {
+      if assignsRet and not targetReturnsUnit {
         val withRet: List[Statement] = newList()
         withRet.add(mkVarStmtNoInit(retVar, originalFn.ret))
         var ri = 0
@@ -1503,11 +1510,11 @@ func buildWrapper(
         }
         withRet.add(Statement(kind = SReturn(value = Some(value = singleSegPathExpr(retVar))), span = synSpan()))
         withRet
+      } else {
+        finalStmts
       }
-      case None -> finalStmts
     }
-  } else {
-    finalStmts
+    case None -> finalStmts
   }
   val finalBody = Block(statements = loweredStmts, span = rewiredBody.span)
 
