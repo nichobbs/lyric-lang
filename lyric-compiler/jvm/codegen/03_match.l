@@ -514,7 +514,7 @@ func lowerPatternTest(
               insns.add(LLcmp)
               insns.add(LIfne(label = failLabel))
             }
-            case JDouble | JFloat -> {
+            case JDouble -> {
               emitLoad(insns, scrutSlot, scrutTy)
               if scrutIsRef {
                 insns.add(LCheckcast(className = "java/lang/Double"))
@@ -522,6 +522,16 @@ func lowerPatternTest(
               }
               insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
               insns.add(LDcmpl)
+              insns.add(LIfne(label = failLabel))
+            }
+            case JFloat -> {
+              emitLoad(insns, scrutSlot, scrutTy)
+              if scrutIsRef {
+                insns.add(LCheckcast(className = "java/lang/Float"))
+                insns.add(LUnboxFloat)
+              }
+              insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
+              insns.add(LFcmpl)
               insns.add(LIfne(label = failLabel))
             }
             case JRef(_) -> {
