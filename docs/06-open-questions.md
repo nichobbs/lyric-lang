@@ -531,6 +531,34 @@ questions"` for their current status.
 
 ---
 
+## Match pattern questions
+
+Match-pattern open questions (Q-MP-001 and later) are maintained in
+`docs/46-const-patterns.md` §"Constraints & edge cases".  They live there
+because they require pattern-matching and const-value domain context to
+evaluate.  All Q-MP entries are currently open.
+
+---
+
+## Q-MP-001: Const pattern syntax and scoping
+
+**Status:** OPEN
+
+**Question:** Should match arms support comparison against named `val` constants? If so, what syntax disambiguates `case x =>` (bind a variable) from `case @x =>` (compare against constant `x`)?
+
+**Context:** Code review issue #3382 surfaces a common pattern in code: matching against symbolic constants (e.g., protobuf wire-type IDs) rather than raw integer literals. The current type checker rejects this, forcing developers to leave TODO comments or duplicate magic numbers.
+
+**Sketch:** `docs/46-const-patterns.md` proposes using `@Ident` to reference a const val in a pattern. The `@` prefix disambiguates from variable bindings; the val must be compile-time constant and type-compatible with the scrutinee. Pattern lowering converts `@CONST` to a `PLiteral` pattern, so runtime codegen is unchanged.
+
+**Constraints:**
+- Must not introduce ambiguity with `@` in other contexts (annotations, future syntax).
+- Const references must be resolvable at type-check time.
+- Generic vals are out of scope (const pattern must be monomorphic).
+
+**Recommendation:** Proceed with the `@Ident` design in `docs/46-const-patterns.md`. Implement as a self-contained type-checker + codegen feature with no language-reference changes (const patterns lower to literal patterns at check time, so the runtime semantics are already defined).
+
+---
+
 ## JS / WASM Component Model questions
 
 JS-target and WASM Component Model open questions (Q-JS-001–Q-JS-006 and
