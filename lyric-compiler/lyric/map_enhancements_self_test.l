@@ -1,8 +1,9 @@
-//! map_enhancements_self_test.l — Stable Map helpers from Std.Collections.
+//! map_enhancements_self_test.l — Map helpers from Std.Collections.
 //!
-//! Tests for the stable, production-ready functions:
-//! - mapSize: get the number of key-value pairs (all cases)
-//! - mapIsEmpty: test if a map is empty (all cases)
+//! Tests for mapSize and mapIsEmpty helper functions. Both are currently
+//! tested on dotnet target; JVM parity testing is tracked in #3577.
+//! Marked non-@stable pending JVM validation per CLAUDE.md production-readiness
+//! standard (forbids undocumented one-platform implementations).
 //!
 //! Iteration functions (mapKeys, mapValues, mapEntries, mapForEach, mapPutAll)
 //! and the MapEntry record are deferred to a follow-up PR, pending resolution
@@ -37,6 +38,14 @@ test "mapSize decreases after removal" {
   assertEqualInt(mapSize(m), 2, "map size is 2 before removal")
   val _ = m.remove("a")
   assertEqualInt(mapSize(m), 1, "map size is 1 after removing one entry")
+}
+
+test "mapSize unchanged when overwriting existing key" {
+  val m: Map[String, Int] = newMap()
+  m["key"] = 1
+  assertEqualInt(mapSize(m), 1, "initial size is 1")
+  m["key"] = 2
+  assertEqualInt(mapSize(m), 1, "size remains 1 after overwrite")
 }
 
 test "mapIsEmpty returns true for empty map" {

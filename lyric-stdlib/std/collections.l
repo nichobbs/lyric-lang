@@ -41,13 +41,11 @@ pub func mapGet[K, V](m: in Map[K, V], key: in K): Option[V] {
 }
 
 /// Number of key-value pairs in `m`.
-@stable(since = "1.0")
 pub func mapSize[K, V](m: in Map[K, V]): Int {
   m.count
 }
 
 /// True when `m` has no key-value pairs.
-@stable(since = "1.0")
 pub func mapIsEmpty[K, V](m: in Map[K, V]): Bool {
   m.count == 0
 }
