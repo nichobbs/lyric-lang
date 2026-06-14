@@ -4457,9 +4457,11 @@ func lowerScopeBlockJdk24(
   emitInvokeinterface(asm, closeRef, 1)
   emitGoto(asm, done)
   emitLabel(asm, exnHandler)
-  emitPop(asm)
+  // Stack on handler entry: [Throwable].  Save it so close() can run and we can rethrow.
+  emitAstore(asm, firstTaskSlot)
   emitAload(asm, scopeSlot)
   emitInvokeinterface(asm, closeRef, 1)
+  emitAload(asm, firstTaskSlot)
   emitAthrow(asm)
   emitLabel(asm, done)
 
@@ -4483,7 +4485,7 @@ func lowerScopeBlockJdk24(
 // only supported lowering today is the JDK 21..23 `ShutdownOnFailure` form, so
 // we'd rather panic with a clear message than silently generate broken bytecode
 // for an undetected JDK 24+.
-func detectJavaFeatureVersion(): Int {
+pub func detectJavaFeatureVersion(): Int {
   val javaHome = Env.getVarOrDefault("JAVA_HOME", "")
   if javaHome.length > 0 {
     match File.readText(javaHome + "/release") {

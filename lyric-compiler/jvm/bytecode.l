@@ -1170,7 +1170,13 @@ func collectBranchLabels(asm: in MethodAssembler): Map[String, Bool] {
 /// by the JVM verifier in class files with major version >= 50 (Java 6+).
 ///
 /// `frameLocals` must describe the types of all local variable slots at every
-/// branch target.  The operand stack is assumed empty at every branch target.
+/// branch target and exception handler entry point.  The operand stack is
+/// assumed empty at every branch target; exception handler entries carry one
+/// element (java/lang/Throwable) on the stack automatically.
+///
+/// Exception handlers registered via `addExceptionHandler` are emitted into
+/// the Code attribute's exception table, and StackMapTable `full_frame` entries
+/// are generated at each unique handler label with stack = [Throwable].
 pub func assembleCodeWithFrames(
   asm: in MethodAssembler,
   maxStack: in Int,
@@ -1180,6 +1186,19 @@ pub func assembleCodeWithFrames(
   val pool = asm.pool
   val ar = assembleRaw(asm)
   val targets = collectBranchLabels(asm)
+
+  // Collect unique handler labels; they need full_frame entries with Throwable on stack.
+  val handlerLabels: Map[String, Bool] = newMap()
+  var hli = 0
+  while hli < asm.exnHandlers.count {
+    val h = asm.exnHandlers[hli]
+    match mapGet(handlerLabels, h.handlerLabel) {
+      case None -> handlerLabels.add(h.handlerLabel, true)
+      case Some(_) -> ()
+    }
+    hli = hli + 1
+  }
+
   val smBuf = writerNew()
   var smCount = 0
   var prevOff = -1
@@ -1206,6 +1225,27 @@ pub func assembleCodeWithFrames(
             }
             case None -> ()
           }
+        } else {
+          if handlerLabels.containsKey(nm) {
+            match mapGet(ar.labelOffsets, nm) {
+              case Some(off) -> {
+                val delta = off - prevOff - 1
+                writerByte(smBuf, 255)           // full_frame tag
+                writerU2(smBuf, delta)           // offset_delta
+                writerU2(smBuf, frameLocals.count)
+                var vi = 0
+                while vi < frameLocals.count {
+                  emitVerifierTypeBc(frameLocals[vi], pool, smBuf)
+                  vi = vi + 1
+                }
+                writerU2(smBuf, 1)               // stack has one element: Throwable
+                emitVerifierTypeBc(VObject(className = "java/lang/Throwable"), pool, smBuf)
+                smCount = smCount + 1
+                prevOff = off
+              }
+              case None -> ()
+            }
+          }
         }
       }
       case _ -> ()
@@ -1218,7 +1258,16 @@ pub func assembleCodeWithFrames(
   writerU2(codeW, maxLocals)
   writerU4(codeW, ar.codeBytes.count)
   writerByteList(codeW, ar.codeBytes)
-  writerU2(codeW, 0)                             // exception_table_length = 0
+  writerU2(codeW, asm.exnHandlers.count)
+  var hi = 0
+  while hi < asm.exnHandlers.count {
+    val h = asm.exnHandlers[hi]
+    writerU2(codeW, resolveLbl(ar.labelOffsets, h.startLabel))
+    writerU2(codeW, resolveLbl(ar.labelOffsets, h.endLabel))
+    writerU2(codeW, resolveLbl(ar.labelOffsets, h.handlerLabel))
+    writerU2(codeW, h.catchType)
+    hi = hi + 1
+  }
   if smCount > 0 {
     writerU2(codeW, 1)                           // attributes_count = 1
     writerU2(codeW, poolUtf8(pool, "StackMapTable"))

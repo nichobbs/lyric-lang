@@ -156,17 +156,28 @@ func makeMainBytes(pool: in Pool): List[Byte] {
 
   emitReturn(asm)
 
-  // Branches in the subtask-failure check require a StackMapTable.
+  // Branches and the exception handler entry require a StackMapTable.
+  // The local-variable frame depends on which scope lowering path ran:
+  //   JDK ≤ 23: ShutdownOnFailure in slot 1 + two Subtask slots (slots 2, 3)
+  //   JDK ≥ 24: StructuredTaskScope (interface) in slot 1; firstTaskSlot (slot 2) is
+  //              used only in the catch handler as a Throwable save slot and is
+  //              therefore Top at every declared frame entry.
   val frameLocals: List[VerifierType] = newList()
   frameLocals.add(VObject(className = "[Ljava/lang/String;"))
-  // Slot 1 must be declared as ShutdownOnFailure, not its supertype StructuredTaskScope.
-  // After each branch target, invokevirtual ShutdownOnFailure.close()V is emitted;
-  // invokevirtual requires the receiver's frame-declared type to be a subtype of the
-  // Methodref class (ShutdownOnFailure).  StructuredTaskScope is NOT a subtype of
-  // ShutdownOnFailure, so declaring the supertype here would cause a VerifyError.
-  frameLocals.add(VObject(className = "java/util/concurrent/StructuredTaskScope$ShutdownOnFailure"))
-  frameLocals.add(VObject(className = "java/util/concurrent/StructuredTaskScope$Subtask"))
-  frameLocals.add(VObject(className = "java/util/concurrent/StructuredTaskScope$Subtask"))
+  if detectJavaFeatureVersion() >= 24 {
+    // Slot 1 = StructuredTaskScope (the sealed interface used by JDK 24+ path).
+    // Slots 2+ are not live at any branch target, so they are implicitly Top.
+    frameLocals.add(VObject(className = "java/util/concurrent/StructuredTaskScope"))
+  } else {
+    // Slot 1 must be declared as ShutdownOnFailure, not its supertype StructuredTaskScope.
+    // After each branch target, invokevirtual ShutdownOnFailure.close()V is emitted;
+    // invokevirtual requires the receiver's frame-declared type to be a subtype of the
+    // Methodref class (ShutdownOnFailure).  StructuredTaskScope is NOT a subtype of
+    // ShutdownOnFailure, so declaring the supertype here would cause a VerifyError.
+    frameLocals.add(VObject(className = "java/util/concurrent/StructuredTaskScope$ShutdownOnFailure"))
+    frameLocals.add(VObject(className = "java/util/concurrent/StructuredTaskScope$Subtask"))
+    frameLocals.add(VObject(className = "java/util/concurrent/StructuredTaskScope$Subtask"))
+  }
   val codeAttr = assembleCodeWithFrames(asm, 6, 4, frameLocals)
   val attrs: List[Attribute] = newList()
   attrs.add(codeAttr)
