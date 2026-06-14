@@ -2490,7 +2490,47 @@ func checkConstRefPattern(
       }
     }
     case PParen(inner) -> checkConstRefPattern(tbl, sigs, diag, inner, scrutineeTy)
-    case PTypeTest(inner, _) -> checkConstRefPattern(tbl, sigs, diag, inner, scrutineeTy)
+    case PTypeTest(inner, tyExpr) -> {
+      val ctx = newGenericContext()
+      val testTy = resolveType(tbl, ctx, diag, tyExpr)
+      checkConstRefPattern(tbl, sigs, diag, inner, testTy)
+    }
+    case PConstructor(head, args) -> {
+      val ftypes = match unionCaseSymbolOf(tbl, pat2fnExpr(head, pat.span)) {
+        case Some(caseSym) -> caseFieldTypesInstantiated(tbl, diag, caseSym, scrutineeTy)
+        case None -> newList()
+      }
+      var i = 0
+      while i < args.count {
+        val at = if i < ftypes.count { ftypes[i] } else { TyError }
+        checkConstRefPattern(tbl, sigs, diag, args[i], at)
+        i = i + 1
+      }
+    }
+    case PTuple(patterns) -> {
+      val elems = match unrefine(scrutineeTy) { case TyTuple(es) -> es; case _ -> newList() }
+      var i = 0
+      while i < patterns.count {
+        val et = if i < elems.count { elems[i] } else { TyError }
+        checkConstRefPattern(tbl, sigs, diag, patterns[i], et)
+        i = i + 1
+      }
+    }
+    case PRecord(_, fields, _) -> {
+      val recFields: List[FieldEntry] = match unrefine(scrutineeTy) {
+        case TyUser(tid, _, _) -> fieldsOfRecord(tbl, tid)
+        case _ -> newList()
+      }
+      var i = 0
+      while i < fields.count {
+        match fields[i] {
+          case RPFNamed(fname, p, _) -> checkConstRefPattern(tbl, sigs, diag, p, fieldEntryType(recFields, fname))
+          case RPFShort(_, _) -> {
+          }
+        }
+        i = i + 1
+      }
+    }
     case _ -> {
     }
   }

@@ -6966,8 +6966,20 @@ func lowerPatternTestMsil(
           match mapGet(cctx.staticValTokens, constName) {
             case Some(fieldTok) -> {
               insns.add(MLdsfld(fieldToken = fieldTok))
-              insns.add(MCeq)
-              insns.add(MBrFalse(label = failLabel))
+              // For String types, use Object.Equals (value equality) instead of
+              // ceq (reference equality), since the const may be a non-interned string.
+              match scrutTy {
+                case MString -> {
+                  insns.add(MCall(methodToken = cctx.tokObjectStaticEquals))
+                  insns.add(MLdcI4(v = 0))
+                  insns.add(MCeq)
+                  insns.add(MBrFalse(label = failLabel))
+                }
+                case _ -> {
+                  insns.add(MCeq)
+                  insns.add(MBrFalse(label = failLabel))
+                }
+              }
             }
             case None -> {
               panic(
