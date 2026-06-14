@@ -503,6 +503,15 @@ func tryMemberRewrite(ctx: in RewriteCtx, expr: in Expr): Option[Expr] {
   // function shadows a like-named config field (params win), so only
   // rewrite when the bare name is a materialised config field that is not
   // also a parameter.
+  //
+  // LIMITATION (#3611): a `val`/`var`/`let` in the `around` body whose name
+  // collides with a config field is NOT yet recognised as a shadower — only
+  // parameters are.  Such a body-local would be rewritten to the config
+  // value.  This is unreached by the shipped templates (their locals never
+  // share a config field's name) and is fixed properly alongside the #3594
+  // walker dedup, where collecting local-binding names folds into the same
+  // single pass.  Until then, do not name an `around`-body local after one
+  // of the aspect's own config fields.
   match expr.kind {
     case EPath(path) -> {
       if path.segments.count == 1 {
@@ -2575,19 +2584,8 @@ func resolveFromPath(path: in ModulePath): String {
   segmentsJoin(path.segments)
 }
 
-/// Pre-process `items` so that every `from`-instance aspect whose template
-/// is found in `templates` is replaced by a synthesised concrete aspect that
-/// merges the template's `around` / `contracts` with the instance's
-/// `matches` / `exceptNames` / `wraps` / `inside`.  The instance's
-/// `config` overrides the template's when non-empty; otherwise the
-/// template's `config` defaults are used.  Unresolved `from` references
-/// (template absent from `templates`) are passed through unchanged so the
-/// caller can decide whether to emit a diagnostic.
-func configFieldByName(
-  // Find a config field by name in a config-field list, or None.
-  cfg: in List[ConfigField],
-  name: in String,
-): Option[ConfigField] {
+// Find a config field by name in a config-field list, or None.
+func configFieldByName(cfg: in List[ConfigField], name: in String): Option[ConfigField] {
   var i = 0
   while i < cfg.count {
     if cfg[i].name == name {
@@ -2681,6 +2679,15 @@ func lookupFromTemplate(templates: in Map[String, AspectDecl], fqn: in String, p
   }
 }
 
+/// Pre-process a `from`-instance aspect: when its template is found in
+/// `templates`, replace it with a synthesised concrete aspect that takes the
+/// template's `around` / `contracts` and the instance's `matches` /
+/// `exceptNames` / `wraps` / `inside`. The effective `config` is the
+/// template's defaults with the instance's `config { }` entries overlaid
+/// (`mergeAspectConfig`), and the template's `@inline_template` marker is
+/// propagated when the template body reads `args.<field>`. An unresolved
+/// `from` reference (template absent from `templates`) is passed through
+/// unchanged so the caller can decide whether to emit a diagnostic.
 func resolveFromInstanceItem(
   it: in Item,
   instDecl: in AspectDecl,
