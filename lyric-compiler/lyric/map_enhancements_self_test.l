@@ -70,7 +70,6 @@ test "mapIsEmpty returns true after removing all entries" {
 // ─────────────────────────────────────────────────────────────────────────────
 // Basic map operations (pre-conditions for the iteration tests)
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "empty map has zero keys via mapKeys" {
   val m: Map[String, Int] = newMap()
   var count = 0
@@ -114,7 +113,6 @@ test "containsKey still works" {
 // ─────────────────────────────────────────────────────────────────────────────
 // mapKeys (#3511) — iterates DictKeyCollection via IEnumerator protocol
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "mapKeys iterates all keys of a two-entry map" {
   val m: Map[String, Int] = newMap()
   m.add("a", 1)
@@ -142,7 +140,6 @@ test "mapKeys count matches map.count" {
 // ─────────────────────────────────────────────────────────────────────────────
 // mapValues (#3511) — iterates DictValueCollection via IEnumerator protocol
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "mapValues iterates all values of a two-entry map" {
   val m: Map[String, Int] = newMap()
   m.add("a", 1)
@@ -176,7 +173,6 @@ test "mapValues count matches map.count" {
 // ─────────────────────────────────────────────────────────────────────────────
 // mapEntries (#3512) — constructs MapEntry[K,V] generic stdlib records
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "mapEntries returns correct count" {
   val m: Map[String, Int] = newMap()
   m.add("one", 1)
@@ -200,7 +196,6 @@ test "mapEntries keys all exist in source map" {
 // ─────────────────────────────────────────────────────────────────────────────
 // mapForEach — visits every key/value pair
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "mapForEach visits all entries" {
   val m: Map[String, Int] = newMap()
   m.add("p", 7)
@@ -220,7 +215,6 @@ test "mapForEach on empty map visits nothing" {
 // ─────────────────────────────────────────────────────────────────────────────
 // mapPutAll — copies entries from src into dst
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "mapPutAll copies all entries from src to empty dst" {
   val src: Map[String, Int] = newMap()
   src.add("x", 1)

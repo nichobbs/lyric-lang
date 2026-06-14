@@ -89,7 +89,10 @@ pub func mapForEach[K, V](m: in Map[K, V], action: in (K, V) -> Unit): Unit {
 pub func mapPutAll[K, V](dst: in Map[K, V], src: in Map[K, V]): Unit {
   for k in dictGetKeys(src) {
     match mapGet(src, k) {
-      case Some(v) -> dst.add(k, v)
+      case Some(v) -> {
+        dst.remove(k)
+        dst.add(k, v)
+      }
       case None -> ()
     }
   }

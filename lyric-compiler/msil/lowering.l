@@ -940,8 +940,8 @@ pub record DictTokens {
   containsKey: Int
   remove: Int
   tryGetValue: Int  // TryGetValue(!0, !1&) -> bool  (#2474)
-  getKeys: Int      // get_Keys() -> object  (#3511)
-  getValues: Int    // get_Values() -> object  (#3511)
+  getKeys: Int      // get_Keys() -> KeyCollection<!0,!1>  (#3511)
+  getValues: Int    // get_Values() -> ValueCollection<!0,!1>  (#3511)
 }
 
 // ── LoweringCtx — mutable accumulator for a single-assembly lowering ──────────
@@ -1348,6 +1348,18 @@ pub func ctxAddTypeRef(ctx: in LoweringCtx, namespaceName: in String, typeName: 
   addTypeRef(
     ctx.tables,
     TypeRefRow(resolutionScope = rsAssemblyRef(assemblyRefRow), typeName = sName, typeNamespace = sNs)
+  )
+}
+
+// Add a nested TypeRef whose ResolutionScope points to an enclosing TypeRef row.
+// ECMA-335 §22.38: ResolutionScope can reference another TypeRef (tag 0x01) to
+// describe nested types (e.g. Dictionary`2+KeyCollection).
+pub func ctxAddNestedTypeRef(ctx: in LoweringCtx, outerTypeRefRow: in Int, nestedTypeName: in String): Int {
+  val sName = ctxInternStr(ctx, nestedTypeName)
+  val sEmpty = ctxInternStr(ctx, "")
+  addTypeRef(
+    ctx.tables,
+    TypeRefRow(resolutionScope = rsTypeRef(outerTypeRefRow), typeName = sName, typeNamespace = sEmpty)
   )
 }
 
@@ -3905,14 +3917,38 @@ pub func dictTokensForLowering(ctx: in LoweringCtx, keyTy: in MsilType, valTy: i
       "dict_tgv_" + key,
       buildInstanceMethodSig(tgvP, MBool)
     )
-  // get_Keys() -> object  (return typed as object; IEnumerator protocol casts to IEnumerable)
+  // Add nested TypeRefs for Dictionary`2+KeyCollection and Dictionary`2+ValueCollection.
+  // ResolutionScope points to the enclosing Dictionary`2 TypeRef (ECMA-335 §22.38).
+  val trKeyCol = ctxAddNestedTypeRef(ctx, trDict2, "KeyCollection")
+  val trValCol = ctxAddNestedTypeRef(ctx, trDict2, "ValueCollection")
+  // get_Keys() -> Dictionary`2+KeyCollection<!0,!1>
+  val gkRetArgs: List[MsilType] = newList()
+  gkRetArgs.add(MTypeVar(0))
+  gkRetArgs.add(MTypeVar(1))
+  val gkRetTy = MGenericInst(typeRefCode = tdrTypeRef(trKeyCol), headFqn = "KeyCollection", typeArgs = gkRetArgs)
   val gkP: List[MsilType] = newList()
   val gkTok = 0x0A000000 +
-    ctxAddMemberRefForTypeSpec(ctx, tsRow, "get_Keys", "dict_gk_" + key, buildInstanceMethodSig(gkP, MObject))
-  // get_Values() -> object
+    ctxAddMemberRefForTypeSpec(
+      ctx,
+      tsRow,
+      "get_Keys",
+      "dict_gk_" + key,
+      buildInstanceMethodSig(gkP, gkRetTy)
+    )
+  // get_Values() -> Dictionary`2+ValueCollection<!0,!1>
+  val gvRetArgs: List[MsilType] = newList()
+  gvRetArgs.add(MTypeVar(0))
+  gvRetArgs.add(MTypeVar(1))
+  val gvRetTy = MGenericInst(typeRefCode = tdrTypeRef(trValCol), headFqn = "ValueCollection", typeArgs = gvRetArgs)
   val gvP: List[MsilType] = newList()
   val gvTok = 0x0A000000 +
-    ctxAddMemberRefForTypeSpec(ctx, tsRow, "get_Values", "dict_gv_" + key, buildInstanceMethodSig(gvP, MObject))
+    ctxAddMemberRefForTypeSpec(
+      ctx,
+      tsRow,
+      "get_Values",
+      "dict_gv_" + key,
+      buildInstanceMethodSig(gvP, gvRetTy)
+    )
   val t = DictTokens(
     typeSpec = 0x1B000000 + tsRow,
     ctor = ctorTok,
