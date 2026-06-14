@@ -3857,7 +3857,8 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
         // recursion; the type checker has already rejected cyclic aliases.
         match mapGet(cctx.aliasTargets, seg) {
           case Some(rhs) -> typeExprToMsilCtx(cctx, rhs, pkgName)
-          case None -> MObject
+          // Unreachable: the `containsKey(seg)` guard above guarantees Some.
+          case None -> panic("typeExprToMsilCtx: aliasTargets.containsKey returned true but mapGet returned None for " + seg)
         }
       } else if cctx.enumTypeNames.containsKey(seg) {
         // Lyric enum: ordinal-int representation (F# parity).  Encoding the

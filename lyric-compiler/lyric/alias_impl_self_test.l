@@ -11,7 +11,7 @@
 //! Run in CI via native `lyric test` on the dotnet target; imports only `Std.*`.
 //! Not wired for `--target jvm`: the JVM backend has a separate, pre-existing
 //! interface-dispatch gap ("Found interface ..., but class was expected") that
-//! fails this shape with or without the alias — tracked independently.
+//! fails this shape with or without the alias — tracked in #3687.
 @test_module
 package AliasImplSelfTest
 
