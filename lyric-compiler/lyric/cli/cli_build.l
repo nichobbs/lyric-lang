@@ -812,6 +812,13 @@ func buildProject(
   // auto-FFI resolver can locate downloaded Maven JARs at compile time.
   // The `:` separator is the POSIX path-list separator; Windows drive-letter
   // ambiguity is a known gap tracked in #2214 (both sides fixed together).
+  //
+  // The original LYRIC_FFI_JARS value is restored immediately after emitProject
+  // returns so that multi-package builds do not accumulate stale entries (#3554).
+  // `mavenJarColonSep` is reused below to write `module-path.txt` without
+  // re-reading the file (#3555).
+  var mavenJarColonSep = ""
+  var savedFfiJars: Option[String] = None
   match target {
     case Jvm -> {
       val classpathFile = Path.join(Path.join(Path.join(mfDir, "target"), "restore"), "jvm-classpath.txt")
@@ -820,34 +827,40 @@ func buildProject(
           val trimmed = Str.trim(text)
           if trimmed.length > 0 {
             val lines = Str.split(trimmed, "\n")
-            var jars = ""
             var li = 0
             while li < lines.length {
               val line = Str.trim(lines[li])
               if line.length > 0 {
-                if jars.length > 0 {
-                  jars = jars + ":"
+                if mavenJarColonSep.length > 0 {
+                  mavenJarColonSep = mavenJarColonSep + ":"
                 }
-                jars = jars + line
+                mavenJarColonSep = mavenJarColonSep + line
               }
               li += 1
-            }
-            if jars.length > 0 {
-              val existing = match Environment.getVar("LYRIC_FFI_JARS") {
-                case Ok(v) -> if v.length > 0 { v + ":" } else { "" }
-                case Err(_) -> ""
-              }
-              Environment.setVar("LYRIC_FFI_JARS", existing + jars)
             }
           }
         }
         case Err(_) -> ()
+      }
+      if mavenJarColonSep.length > 0 {
+        val prevFfi = match Environment.getVar("LYRIC_FFI_JARS") { case Ok(v) -> v; case Err(_) -> "" }
+        savedFfiJars = Some(value = prevFfi)
+        val injected = if prevFfi.length > 0 { prevFfi + ":" + mavenJarColonSep } else { mavenJarColonSep }
+        Environment.setVar("LYRIC_FFI_JARS", injected)
       }
     }
     case Dotnet -> ()
   }
 
   val result = Emitter.emitProject(projReq)
+
+  // Restore LYRIC_FFI_JARS immediately — before any early return — so
+  // subsequent buildProject calls in the same process start clean (#3554).
+  match savedFfiJars {
+    case Some(prev) -> Environment.setVar("LYRIC_FFI_JARS", prev)
+    case None -> ()
+  }
+
   var hadError = false
   for d in result.diagnostics.toArray() {
     match d.severity {
@@ -867,34 +880,12 @@ func buildProject(
   match target {
     case Dotnet -> writeRuntimeConfig(outPath)
     case Jvm -> {
-      val classpathFile = Path.join(Path.join(Path.join(mfDir, "target"), "restore"), "jvm-classpath.txt")
-      match File.readText(classpathFile) {
-        case Ok(text) -> {
-          val trimmed = Str.trim(text)
-          if trimmed.length > 0 {
-            val lines = Str.split(trimmed, "\n")
-            var colonSep = ""
-            var li = 0
-            while li < lines.length {
-              val line = Str.trim(lines[li])
-              if line.length > 0 {
-                if colonSep.length > 0 {
-                  colonSep = colonSep + ":"
-                }
-                colonSep = colonSep + line
-              }
-              li += 1
-            }
-            if colonSep.length > 0 {
-              val mpPath = Path.join(outDir, "module-path.txt")
-              match File.writeText(mpPath, colonSep) {
-                case Err(e) -> printErr("build: warning: cannot write " + mpPath + ": " + IOError.message(e))
-                case Ok(_) -> ()
-              }
-            }
-          }
+      if mavenJarColonSep.length > 0 {
+        val mpPath = Path.join(outDir, "module-path.txt")
+        match File.writeText(mpPath, mavenJarColonSep) {
+          case Err(e) -> printErr("build: warning: cannot write " + mpPath + ": " + IOError.message(e))
+          case Ok(_) -> ()
         }
-        case Err(_) -> ()
       }
     }
   }
