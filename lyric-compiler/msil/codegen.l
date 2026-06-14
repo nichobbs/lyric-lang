@@ -6943,6 +6943,51 @@ func lowerPatternTestMsil(
         }
       }
     }
+    case PConstRef(constName) -> {
+      emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+      val scrutBoxed = match scrutTy { case MObject -> true; case _ -> false }
+      // Try integer const (inline ldc.i4 from constValues)
+      val qKey = fctx.pkgName + "/" + constName
+      val intValOpt = match mapGet(cctx.constValues, qKey) {
+        case Some(v) -> Some(value = v)
+        case None -> mapGet(cctx.constValues, constName)
+      }
+      match intValOpt {
+        case Some(v) -> {
+          if scrutBoxed {
+            insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MInt)))
+          }
+          insns.add(MLdcI4(v = v))
+          insns.add(MCeq)
+          insns.add(MBrFalse(label = failLabel))
+        }
+        case None -> {
+          // Non-integer const: load from static field (String, Float, Long, etc.)
+          match mapGet(cctx.staticValTokens, constName) {
+            case Some(fieldTok) -> {
+              insns.add(MLdsfld(fieldToken = fieldTok))
+              // For String types, use Object.Equals (value equality) instead of
+              // ceq (reference equality), since the const may be a non-interned string.
+              match scrutTy {
+                case MString -> {
+                  insns.add(MCall(methodToken = cctx.tokObjectStaticEquals))
+                  insns.add(MBrFalse(label = failLabel))
+                }
+                case _ -> {
+                  insns.add(MCeq)
+                  insns.add(MBrFalse(label = failLabel))
+                }
+              }
+            }
+            case None -> {
+              panic(
+                "lowerPatternTestMsil: PConstRef name not found in constValues or staticValTokens (type checker should have validated)"
+              )
+            }
+          }
+        }
+      }
+    }
     case PConstructor(head, args) -> {
       // Use isinst to check the case type; branch to failLabel if null.
       val caseName = lastSegmentMsil(head)
@@ -7201,6 +7246,8 @@ func lowerPatternBindMsil(
       }
     }
     case PLiteral(_) -> {
+    }
+    case PConstRef(_) -> {
     }
     case PConstructor(head, fields) -> {
       val caseName = lastSegmentMsil(head)

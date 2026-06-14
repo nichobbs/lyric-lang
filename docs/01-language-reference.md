@@ -588,6 +588,7 @@ Patterns:
 - Tuple patterns: `(a, b)`
 - Record patterns: `Point { x, y }`, `Point { x = 0.0, y }` (destructure with literal match on `x`)
 - Range patterns: `0 ..= 9`
+- Const patterns: `@NAME` — compares the scrutinee against the value of a compile-time `val` or `const` named `NAME`. The `@` prefix disambiguates from a binding pattern (`case x ->` always binds a new variable; `case @X ->` compares against the existing constant `X`). The referenced name must resolve to a `val` initialized with a literal, or a `const` declaration. Diagnostic T0069 is raised when the val is not compile-time constant, T0068 when the type does not match the scrutinee, T0071 when the const is generic, and T0072 when the name is not a val or const.
 - Guard clauses: `case ... where condition`
 
 Exhaustiveness is enforced. The compiler tracks variant coverage and rejects incomplete matches without `case _`.

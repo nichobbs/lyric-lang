@@ -25075,3 +25075,52 @@ produces a `StackMapTable` stack-size mismatch (`VerifyError`) at the loop
 back-edge (same family as #3307 / D-progress-513, but for array-typed locals).
 Both methods resolve and run correctly outside a loop; the in-loop case needs a
 focused backend fix and remains tracked in #3408.
+
+### D-progress-523 — Const patterns in match arms: `@Ident` syntax (docs/46, Q-MP-001)
+
+Implements const patterns per `docs/46-const-patterns.md`.  A `case @NAME ->`
+arm in a `match` expression compares the scrutinee against the compile-time
+value of the `val` or `const` named `NAME`, disambiguated from the binding
+pattern `case x ->` (which always introduces a fresh local) by the `@` prefix.
+
+**Parser** (`parser_ast.l`, `parser_exprs.l`): adds `PConstRef(name: String)`
+to `PatternKind`; `parsePrimaryPattern` recognises `@IDENT` in the
+`case TPunct(p) / case At` arm and builds `PConstRef(name)`, emitting P0076
+when `@` is not followed by an identifier.
+
+**Type checker** (`typechecker_exprs.l`): `bindPatternTyped` gains a no-op
+`PConstRef` arm (const patterns introduce no local bindings).  New
+`checkConstRefPattern` (and helper `isLiteralInit`) is called from the `EMatch`
+arm loop to validate each const-pattern arm: T0072 when the name is not
+defined or not a val/const, T0069 when the val's initialiser is not a literal
+(dynamic `val`), T0071 when the const type is generic, T0068 when the const
+type does not match the scrutinee type.
+
+**MSIL codegen** (`msil/codegen.l`): `lowerPatternTestMsil` adds a `PConstRef`
+arm that resolves the constant's value from `cctx.constValues` (inline `ldc.i4`
+for integer consts) or `cctx.staticValTokens` (`ldsfld` for String/Float/Long),
+then emits `ceq + brfalse` matching the existing PLiteral behaviour.
+`lowerPatternBindMsil` adds a no-op arm.
+
+**JVM codegen** (`jvm/codegen/03_match.l`): `lowerPatternTest` adds a
+`PConstRef` arm that resolves the val type from `ctx.moduleVals` and emits
+`getstatic + if_icmpne / lcmp + ifne / dcmpl + ifne / String.equals + ifeq`
+matching the existing PLiteral comparison strategy for each primitive type.
+`lowerPatternBind` adds a no-op arm.
+
+**Formatter** (`fmt/fmt_core.l`): `patStr` renders `PConstRef(name)` as
+`"@" + name`.
+
+**Alias rewriter** (`alias_rewriter.l`): `rewritePattern` passes `PConstRef`
+through unchanged (no aliases to rewrite in the constant name).
+
+**Grammar** (`docs/grammar.ebnf`): `ConstPattern = "@" IDENT` added to
+`PrimaryPattern`.
+
+**Language reference** (`docs/01-language-reference.md` §4.2): const pattern
+form documented with semantics and diagnostic codes.
+
+Self-test: `const_pattern_self_test.l` (`@test_module`).  Runs on both
+`--target dotnet` (self-hosted MSIL bridge) and `--target jvm`.  Covers
+`Int`, `Long`, `String`, `Char`, `Bool` const patterns, a const-ref inside
+an or-pattern arm, and mixed literal/const arms — 16/16 on both targets.

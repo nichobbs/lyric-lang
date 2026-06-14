@@ -139,6 +139,7 @@ pub union PatternKind {
   case PParen(inner: Pattern)
   case PTypeTest(inner: Pattern, ty: TypeExpr)
   case POr(patterns: List[Pattern])
+  case PConstRef(name: String)
   case PError
   // ─────────────────────────────────────────────────────────────────────────────
   // §5. Contracts.

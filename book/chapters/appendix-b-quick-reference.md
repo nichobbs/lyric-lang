@@ -383,6 +383,7 @@ Pattern kinds:
 | Record destructure | `Point { x, y }` `Point { x = 0.0, y }` |
 | Tuple | `(a, b)` |
 | Range | `0 ..= 9` |
+| Const reference | `@NAME` (compares against the value of `val`/`const NAME`) |
 | Alternative | `A \| B` |
 | Guard | `case … where condition` or `case … if condition` |
 | Type test (reserved) | `x is T` |

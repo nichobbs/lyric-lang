@@ -739,6 +739,17 @@ func parsePrimaryPattern(st: inout ParseState): Pattern {
             }
           }
         }
+        case At -> {
+          val atSpan = tok.span
+          val _ = advance(st)
+          match tryEatIdent(st) {
+            case Some(ns) -> mkPat(PConstRef(name = ns.name), joinSpans(atSpan, ns.span))
+            case None -> {
+              emitErr(st, "P0076", "expected an identifier after '@' in const pattern", peekSpan(st))
+              mkPat(PError, atSpan)
+            }
+          }
+        }
         case _ -> {
           emitErr(st, "P0075", "expected a pattern", tok.span)
           if not isAtEnd(st) {

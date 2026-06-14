@@ -1,6 +1,6 @@
 # 46 — Const Patterns in Match Arms
 
-**Status:** Unbacked (Q-MP-001 open in docs/06)
+**Status:** Shipped (D-progress-523; Q-MP-001 resolved in docs/06)
 
 **Motivation:** Code review issue #3382 surfaced a common pattern — matching against named `val` constants — that the current type checker rejects. A `decodeStep` function wants to match wire-type values against symbolic constants (`WIRE_VARINT`, `WIRE_FIXED64`, etc.) rather than raw integer literals. Today this requires leaving a TODO comment.
 
@@ -174,15 +174,15 @@ No parse conflict.
 
 These are implementation checkpoints for Phase 3+ work:
 
-- [ ] `docs/grammar.ebnf` updated: `PrimaryPattern` (or `Pattern`) includes `"@" Ident` alternative as `ConstPattern`.
-- [ ] `docs/01-language-reference.md` §3.3 updated: match-pattern syntax expanded with const pattern form, semantics, and examples.
-- [ ] `book/chapters/` CLI/chapter references updated: const patterns documented and example works end-to-end.
-- [ ] `docs/10-bootstrap-progress.md` updated: const-pattern implementation milestone recorded.
-- [ ] The self-hosted parser recognizes `@Ident` in pattern position without ambiguity (no conflicts with annotations or binding patterns).
-- [ ] The type checker resolves `@Ident` to a `val`, validates compile-time constant status (T0069), type match (T0068), and val existence (T0072).
-- [ ] Generic val types rejected with diagnostic T0071.
-- [ ] Match arms using `@CONST` patterns compile to the same IL/bytecode as literal patterns (lowering to `PLiteral` at type-check, no codegen changes).
-- [ ] Self-test: `const_pattern_self_test.l` exercises `@` patterns on `Int`, `Long`, `String`, and `Char` consts, with a non-constant val that correctly errors (T0069).
+- [x] `docs/grammar.ebnf` updated: `PrimaryPattern` (or `Pattern`) includes `"@" Ident` alternative as `ConstPattern`.
+- [x] `docs/01-language-reference.md` §4.2 updated: match-pattern syntax expanded with const pattern form, semantics, and examples.
+- [x] `book/chapters/` CLI/chapter references updated: const patterns documented and example works end-to-end.
+- [x] `docs/10-bootstrap-progress.md` updated: const-pattern implementation milestone recorded (D-progress-523).
+- [x] The self-hosted parser recognizes `@Ident` in pattern position without ambiguity (no conflicts with annotations or binding patterns).
+- [x] The type checker resolves `@Ident` to a `val`, validates compile-time constant status (T0069), type match (T0068), and val existence (T0072).
+- [x] Generic val types rejected with diagnostic T0071.
+- [x] Match arms using `@CONST` patterns compile to the same IL/bytecode as literal patterns (MSIL: `constValues` lookup + `ldc.i4/ceq` or `ldsfld/ceq`; JVM: `getstatic` + type-appropriate comparison).
+- [x] Self-test: `const_pattern_self_test.l` exercises `@` patterns on `Int`, `Long`, `String`, `Char`, `Bool`, and `Float` consts.
 - [ ] A rewritten `proto_main.l` (or similar) uses `@WIRE_VARINT`, etc., and compiles cleanly.
 - [ ] No regressions in existing `EMatch` or pattern tests on both MSIL and JVM backends.
 

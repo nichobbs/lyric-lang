@@ -1090,6 +1090,7 @@ PrimaryPattern =
     | LiteralPattern
     | RangePattern
     | BindingPattern
+    | ConstPattern
     | ConstructorPattern
     | RecordPattern
     | TuplePattern
@@ -1101,6 +1102,7 @@ LiteralPattern   = Literal | InterpolatedString ;
 RangePattern     = Expr ( '..=' | '..<' | '..' ) Expr ;     (* expressions are restricted
                                                                to constant forms post-parse *)
 BindingPattern   = IDENT [ '@' PrimaryPattern ] ;            (* 'x' or 'x @ Foo(_)' *)
+ConstPattern     = '@' IDENT ;                               (* '@NAME' references a compile-time val/const *)
 
 ConstructorPattern =
       ModulePath [ '(' [ Pattern { ',' Pattern } [ ',' ] ] ')' ] ;
