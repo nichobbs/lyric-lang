@@ -49,6 +49,12 @@
 //!     reject `args.<field>` references downstream — this matches the
 //!     parity contract with the F# weaver.
 //!
+//!   - `from`-instance resolution (#3497): `weaveFileWithDiagsAndTemplates`
+//!     resolves `from X { … }` aspects from the supplied template map.
+//!     A0045 is emitted for every `from` reference whose template is not
+//!     found, so a missing dependency causes a clear error rather than a
+//!     silent no-op.
+//!
 //! Used by the verifier driver so `lyric prove` discharges contracts on
 //! the woven body (not the parsed body). Closes #336.
 //!
@@ -2292,6 +2298,9 @@ pub func injectWeaveImports(file: in SourceFile): SourceFile {
 /// objects.  Three kinds today: A0042 (args mismatch on
 /// `@inline_template`), A0043 (unknown `call.<field>`), A0044
 /// (`config.<field>` declared but no literal default).
+/// A0045 (unresolved `from`-instance template) is emitted directly in
+/// `collectUnresolvedFromDiags` / `weaveFileWithDiagsAndTemplates`, not
+/// via this converter (it has no WeaveDiagEntry form).
 func weaveDiagsToDiagnostics(errs: in List[WeaveDiagEntry]): List[Diagnostic] {
   val diags: List[Diagnostic] = newList()
   var i = 0
@@ -2792,18 +2801,65 @@ func resolveFromInstances(items: in List[Item], templates: in Map[String, Aspect
   result
 }
 
+/// Emit A0045 diagnostics for any `from`-instance aspects that remain
+/// unresolved after `resolveFromInstances` — i.e., aspects with `from:
+/// Some(path)` and `around: None` whose template was not found in the
+/// supplied template map.  A missing template is a silent no-op without
+/// this diagnostic, which violates the production-readiness standard.
+func collectUnresolvedFromDiags(items: in List[Item]): List[Diagnostic] {
+  val diags: List[Diagnostic] = newList()
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IAspect(aDecl) -> {
+        match aDecl.from {
+          case Some(fromPath) -> {
+            match aDecl.around {
+              case None -> {
+                val pathStr0 = resolveFromPath(fromPath)
+                val msg = "aspect '" + aDecl.name + "' declares `from " + pathStr0 + "` but the template was not found in the build; " +
+                  "ensure the package that defines '" +
+                  pathStr0 +
+                  "' is listed in [dependencies] in lyric.toml"
+                diags.add(errorDiagnostic("A0045", msg, items[i].span))
+              }
+              case Some(_) -> ()
+            }
+          }
+          case None -> ()
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  diags
+}
+
 /// Weave a SourceFile with cross-package aspect template resolution (#3414).
 /// Before running the standard weave, resolves `from`-instance aspects whose
 /// templates are found in `templates` by synthesising concrete `AspectDecl`
 /// values (template `around` + instance `matches`/`config` overrides).
-/// Unresolved `from` references are passed through — the standard weave
-/// silently drops aspects without an `around` body.
-/// A004x diagnostic for unresolved `from` is deferred to a follow-up (#3497).
+/// Unresolved `from` references emit A0045 diagnostics; the standard weave
+/// then drops them (they have no `around` body) so codegen sees only resolved
+/// aspects.
 pub func weaveFileWithDiagsAndTemplates(file: in SourceFile, templates: in Map[String, AspectDecl]): WeaveFileResult {
   val file0 = injectWeaveImports(file)
   val pkgPath = packagePathString(file0)
   val resolvedItems = resolveFromInstances(file0.items, templates, pkgPath)
+  val unresolvedDiags = collectUnresolvedFromDiags(resolvedItems)
   val wr = weaveItemsCore(resolvedItems, pkgPath)
+  val allDiags: List[Diagnostic] = newList()
+  var ui = 0
+  while ui < unresolvedDiags.count {
+    allDiags.add(unresolvedDiags[ui])
+    ui = ui + 1
+  }
+  var di = 0
+  while di < wr.diagnostics.count {
+    allDiags.add(wr.diagnostics[di])
+    di = di + 1
+  }
   val newFile = SourceFile(
     moduleDoc = file0.moduleDoc,
     fileAnnotations = file0.fileAnnotations,
@@ -2812,5 +2868,5 @@ pub func weaveFileWithDiagsAndTemplates(file: in SourceFile, templates: in Map[S
     items = wr.items,
     span = file0.span
   )
-  WeaveFileResult(file = newFile, diagnostics = wr.diagnostics)
+  WeaveFileResult(file = newFile, diagnostics = allDiags)
 }

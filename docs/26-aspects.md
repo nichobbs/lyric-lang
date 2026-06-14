@@ -712,10 +712,15 @@ per §6):
    aspect libraries use. A bare reference is resolved to the config
    field only when it does not name a parameter of the matched function
    (parameters shadow like-named config fields; use the qualified
-   `config.<field>` form to disambiguate). For a `from`-instance, the
-   effective config is the template's defaults with the instance's
-   `config { }` entries overlaid — fields the instance does not mention
-   keep their template default.
+   `config.<field>` form to disambiguate). **Note:** local variable
+   bindings declared inside the `around` body do NOT shadow bare config
+   field references — only parameters shadow. If an around-body local
+   happens to share a name with a config field, the weaver rewrites it
+   to the config value; use the `config.<field>` form for the config
+   access and rename the local to avoid the collision (#3611). For a
+   `from`-instance, the effective config is the template's defaults with
+   the instance's `config { }` entries overlaid — fields the instance
+   does not mention keep their template default.
 
 Aspects that share an `around` helper can factor it out — see §12 on
 generics interaction for the monomorphisation cost.
@@ -891,6 +896,7 @@ compiler.
 | `A0042` | `@inline_template` aspect body references `args.<field>` that does not match any parameter of the matched function.  Surfaced by the weaver at weave time (rather than as a downstream type error) so the message names the aspect, the matched function, and the offending field. |
 | `A0043` | `call.<field>` references an ambient field the weaver does not recognise.  Recognised fields today: `shortName`, `qualifiedName`, `modulePath`, `sourceLocation`, `annotations`, `aspect`, `elapsed` (runtime-instrumented per #1298 / D100).  `call.caller` is not available — caller-site capture is unimplemented (§4.3) — so it fires A0043 like any unknown field. |
 | `A0044` | `config.<field>` references a `config { }` field declared without a literal default.  Env-var resolution per §8 is not yet wired; until it lands, the field must have a literal default to be referenced from the aspect body.  Surfaced at weave time to replace the confusing downstream "config not declared" type error. |
+| `A0045` | `aspect … from Pkg.Template` template not found in the build.  The `from` path could not be resolved from the available packages; the instance is silently dropped (no weaving).  Ensure the template package is listed in `[dependencies]` in `lyric.toml`. |
 
 Plus the runtime contract codes (`C0014` etc.) gain provenance
 fields naming the aspect that introduced the failing clause (§5.3).
