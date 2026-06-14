@@ -25010,3 +25010,20 @@ to exercise both the proceed and short-circuit branches (review SUGGESTION
 #3422) — 7/7 on `--target dotnet` and `--target jvm`.  `weaver_self_test.l`
 unchanged (28/28).  Also trimmed the duplicated/stale bootstrap-emitter
 explanation on `mkVarStmtNoInit` (review SUGGESTION #3423).
+
+### D-progress-521 — Weaver strip-pass `SLocal` symmetry + dead-arm cleanup (#3434, #3435)
+
+Two non-blocking SUGGESTIONs from the #3427 review.  `stmtAssignsToName`
+(the out-variable detection pass) descends into `val`/`let`/`var`
+initializers, but `stripRetAssignmentsStmt` (the matching strip pass, added
+in D-progress-520) had no `SLocal` case — so a `ret = …` written in
+expression position inside a local initializer would be detected yet not
+stripped.  Added the `SLocal` case (`LBVal`/`LBLet`/`LBVar`, routing the
+initializer through `stripRetAssignmentsExpr`) so the two passes are
+symmetric for every binding form (#3434).  Separately, the `effectiveBody`
+and `loweredStmts` matches nested `around.retName` *inside* an
+`if assignsRet …` guard that already implied `Some`, leaving the `case None`
+arms unreachable; inverted the nesting to match `retName` first so the
+`None` arms (advice with no `-> ret`) are genuinely reachable (#3435).  No
+behaviour change for any realistic advice; `aspect_weave_self_test.l` 7/7 on
+both targets and `weaver_self_test.l` 28/28 unchanged.
