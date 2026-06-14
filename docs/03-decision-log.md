@@ -6243,6 +6243,58 @@ unwoven until the metadata carries aspect bodies; tracked in #3543.
 
 ---
 
+## D103 — `Char` is a UTF-16 code unit (BMP scalar); non-BMP string escapes emit a surrogate pair (#3299, #3621)
+
+**Date:** 2026-06-14
+**Resolves:** Issue #3299; spec/implementation conflict raised in review finding #3623.
+
+**Context.** The language reference §2.1 originally described `Char` as a
+"Unicode scalar" and §1.4 showed `'\u{1F600}'` as a valid character literal.
+In practice, both the F# bootstrap and the self-hosted compiler represent
+`Char` as a 16-bit value (mapped to `System.Char` on .NET and Java's
+primitive `char` on JVM), which can only hold code points in the Basic
+Multilingual Plane (U+0000–U+FFFF, excluding the surrogate range
+U+D800–U+DFFF).  The self-hosted lexer always rejected non-BMP escapes in
+char literals with L0022.  Issue #3299 surfaced a parity gap: the self-hosted
+lexer also rejected non-BMP escapes in *string* literals, while the F#
+bootstrap accepted them (via `Char.ConvertFromUtf32`).
+
+**Decision.** `Char` is formally defined as a **UTF-16 code unit (BMP
+scalar)** — a value in U+0000..U+FFFF excluding U+D800..U+DFFF.  The
+consequences are:
+
+- **Char literals** (`'…'`) may only contain BMP scalars.  A `\u{…}` escape
+  with a code point > U+FFFF is a compile-time error (L0022: "non-BMP unicode
+  escape cannot appear in a char literal").  The correct alternative is a
+  string literal.
+- **String literals** (`"…"`, `"…${…}…"`, `"""…"""`) accept any Unicode scalar
+  in `\u{…}` escapes, including non-BMP.  The lexer emits the corresponding
+  UTF-16 surrogate pair into the token's text buffer so the resulting `String`
+  round-trips correctly on both .NET and JVM.  No diagnostic is emitted.
+- **String indexing** (`s[i]: Char`) returns individual UTF-16 code units, not
+  decoded scalars; a non-BMP character occupies two consecutive indices.
+
+**Why not widen `Char` to a full Unicode scalar?** That would require a wider
+`TChar` payload in the lexer (currently `codepoint: Int`, sufficient for
+full scalar range) *and* changes to every backend and stdlib that allocates or
+compares `Char` values, since both .NET and JVM represent `char` as a 16-bit
+value at the hardware level.  This is tracked as a future enhancement; until
+then the BMP restriction is explicit, documented, and consistently enforced.
+
+**Consequences.** The language reference §1.4 example is corrected from
+`'\u{1F600}'` to `'\u{20AC}'` (Euro sign, BMP), and the type table entry for
+`Char` is updated from "Unicode scalar" to "UTF-16 code unit (BMP scalar)".
+The book appendix B quick-reference is updated to match.
+`docs/10-bootstrap-progress.md` removes "non-BMP `\u{…}`" from the deferred
+list for string literals.
+
+**Related:** #3299, #3621, issue #3623 (review finding), §1.4 and §2.1 of
+`docs/01-language-reference.md`, `docs/10-bootstrap-progress.md`,
+`book/chapters/appendix-b-quick-reference.md`,
+`lyric-compiler/lyric/lexer.l`.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

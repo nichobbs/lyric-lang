@@ -36,7 +36,7 @@ r#"contains "quotes""#     // raw with hash delimiters
 multi-line
 string
 """                        // triple-quoted; supports interpolation
-'a'   '\n'   '\u{1F600}'   // character literals (Unicode scalar)
+'a'   '\n'   '\u{20AC}'    // character literals (BMP scalar, U+0000–U+FFFF)
 ```
 
 ### Naming conventions (formatter-enforced)

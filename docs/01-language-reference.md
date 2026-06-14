@@ -112,7 +112,7 @@ r"C:\path\to\file"
 r#"contains "quotes""#         // hash delimiters for embedded quotes
 ```
 
-**Character literals**: `'a'`, `'\n'`, `'\u{1F600}'`. Single Unicode scalar value.
+**Character literals**: `'a'`, `'\n'`, `'\u{20AC}'`. Single UTF-16 code unit (BMP scalar, U+0000–U+FFFF excluding the surrogate range U+D800–U+DFFF). Non-BMP code points require a string literal; use `"\u{1F600}"` to embed emoji.
 
 **Boolean literals**: `true`, `false`.
 
@@ -148,7 +148,7 @@ Whitespace is not significant beyond token separation. Statements are terminated
 | `Nat` | non-negative Long | `0 ..= 2^63 - 1` |
 | `Float` | 32-bit IEEE 754 | per IEEE 754-2019 |
 | `Double` | 64-bit IEEE 754 | per IEEE 754-2019 |
-| `Char` | Unicode scalar | per Unicode 15+ |
+| `Char` | UTF-16 code unit (BMP scalar) | U+0000..U+FFFF excl. U+D800..U+DFFF |
 | `String` | immutable UTF-8 | unbounded |
 | `Unit` | unit type | single value `()` |
 | `Never` | bottom type | uninhabited |
