@@ -17,7 +17,12 @@ import I18n
 func storeFromJson(json: in String): InProcessTranslationStore {
   match I18n.fromJson(json) {
     case Ok(s) -> return s
-    case Err(_) -> return I18n.inProcess()
+    // Surface a malformed fixture loudly rather than masking it as an empty
+    // store (which would later show up as a misleading "key not found").
+    case Err(e) -> {
+      assertTrue(false, "test fixture JSON failed to parse: " + e.message)
+      return I18n.inProcess()
+    }
   }
 }
 
