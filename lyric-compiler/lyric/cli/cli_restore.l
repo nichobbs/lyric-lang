@@ -825,9 +825,12 @@ func restoreMavenJars(manifest: in Manifest, mfDir: in String): Int {
   }
   val resolverJar = match findMavenResolverJar() {
     case None -> {
-      printErr("restore: Maven dependencies declared but lyric-resolver.jar not found")
-      printErr("  Set LYRIC_MAVEN_RESOLVER=/path/to/lyric-resolver.jar or place it beside the lyric binary")
-      return 1
+      Console.println(
+        "restore: note: Maven dependencies declared but lyric-resolver.jar not found; " +
+          "JVM builds will skip Maven artifacts"
+      )
+      Console.println("  Set LYRIC_MAVEN_RESOLVER=/path/to/lyric-resolver.jar or place it beside the lyric binary")
+      return 0
     }
     case Some(j) -> j
   }
