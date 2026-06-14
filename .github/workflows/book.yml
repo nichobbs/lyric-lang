@@ -1,11 +1,12 @@
-name: Book — Deploy to GitHub Pages
+name: Docs — Deploy to GitHub Pages
 
 on:
   push:
     branches: [main]
     paths:
       - 'book/**'
-  # Allow a manual re-deploy without needing a book/ change
+      - 'lyric-stdlib/**'
+  # Allow a manual re-deploy without needing a change
   workflow_dispatch:
 
 # GitHub Pages deployment requires these exact permissions
@@ -21,11 +22,19 @@ concurrency:
 
 jobs:
   build:
-    name: Build HTML book
+    name: Build docs
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
+        with:
+          global-json-file: bootstrap/global.json
 
       - name: Install Pandoc
         run: |
@@ -36,16 +45,283 @@ jobs:
           sudo dpkg -i "pandoc-${PANDOC_VER}-1-amd64.deb"
           pandoc --version | head -1
 
-      - name: Build self-contained HTML
+      - name: Cache NuGet packages
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('bootstrap/**/*.fsproj', 'bootstrap/**/*.csproj', 'bootstrap/global.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore and build bootstrap
+        working-directory: bootstrap
+        run: dotnet restore Bootstrap.sln && dotnet build Bootstrap.sln --configuration Debug --no-restore
+
+      - name: Cache stage-0 F# publish
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: .bootstrap/stage0-publish
+          key: ${{ runner.os }}-stage0-${{ hashFiles('bootstrap/src/**/*.fs', 'bootstrap/src/**/*.fsproj', 'bootstrap/global.json', 'bootstrap/Directory.Build.props', 'scripts/bootstrap.sh') }}
+
+      - name: Bootstrap stage 1 (F# → self-hosted packages)
+        env:
+          STAGE0_REUSE_PUBLISHED: "1"
+        run: ./scripts/bootstrap.sh --stage 1
+
+      - name: Build AOT entry-point
+        working-directory: bootstrap/src/Lyric.Cli.Aot
+        run: dotnet build --configuration Debug
+
+      - name: Build HTML book
         working-directory: book
         run: make html
 
-      - name: Prepare Pages artifact
-        # upload-pages-artifact needs a directory, not a file.
-        # We put the book at index.html so the root URL shows it directly.
+      - name: Generate stdlib API documentation
         run: |
-          mkdir -p _site
-          cp book/making-lyric-sing.html _site/index.html
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric"
+          chmod +x "$lyric_bin"
+          cd lyric-stdlib
+          "$PWD/../$lyric_bin" doc -o ../stdlib-docs
+
+      - name: Convert stdlib markdown to HTML
+        run: |
+          mkdir -p _site/stdlib
+          # Generate stdlib index dynamically from actual lyric doc output
+          {
+            echo "# Lyric Standard Library API Reference"
+            echo ""
+            echo "Auto-generated from Lyric stdlib sources using \`lyric doc\`."
+            echo ""
+            find stdlib-docs -name '*.md' | sort | while read md; do
+              # Convert path to HTML filename: stdlib-docs/std/core.md → std-core.html
+              name=$(basename "$md" .md)
+              dir=$(dirname "$md" | sed 's|^stdlib-docs||; s|^/||; s|/|-|g')
+              if [ -n "$dir" ]; then
+                htmlfile="${dir}-${name}.html"
+              else
+                htmlfile="${name}.html"
+              fi
+              # Extract module name from path for display
+              modname=$(dirname "$md" | sed 's|stdlib-docs/||')
+              if [ -n "$modname" ] && [ "$modname" != "." ]; then
+                modname="${modname}/$(basename "$md" .md)"
+              else
+                modname="$(basename "$md" .md)"
+              fi
+              modname=$(echo "$modname" | tr '/' '.')
+              echo "- [$modname]($htmlfile)"
+            done
+          } > stdlib-index.md
+
+          pandoc stdlib-index.md \
+            --standalone \
+            --embed-resources \
+            --toc \
+            --toc-depth=1 \
+            --css=book/style.css \
+            --syntax-highlighting=tango \
+            -V lang=en \
+            -o _site/stdlib/index.html
+
+          # Convert individual stdlib module docs to HTML
+          find stdlib-docs -name '*.md' | while read md; do
+            # Convert path to HTML filename: stdlib-docs/std/core.md → std-core.html
+            name=$(basename "$md" .md)
+            dir=$(dirname "$md" | sed 's|^stdlib-docs||; s|^/||; s|/|-|g')
+            if [ -n "$dir" ]; then
+              htmlfile="${dir}-${name}.html"
+            else
+              htmlfile="${name}.html"
+            fi
+            pandoc "$md" \
+              --standalone \
+              --embed-resources \
+              --toc \
+              --toc-depth=2 \
+              --css=book/style.css \
+              --syntax-highlighting=tango \
+              -V lang=en \
+              -o "_site/stdlib/${htmlfile}"
+          done
+
+      - name: Create landing page
+        run: |
+          cat > _site/index.html <<'EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Lyric — A Safety-Oriented Language</title>
+              <style>
+                  * {
+                      margin: 0;
+                      padding: 0;
+                      box-sizing: border-box;
+                  }
+                  body {
+                      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                      line-height: 1.6;
+                      color: #333;
+                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                      min-height: 100vh;
+                      display: flex;
+                      flex-direction: column;
+                      padding: 0;
+                  }
+                  header {
+                      background: rgba(0, 0, 0, 0.8);
+                      color: white;
+                      padding: 3rem 2rem;
+                      text-align: center;
+                      border-bottom: 3px solid #667eea;
+                  }
+                  header h1 {
+                      font-size: 3rem;
+                      margin-bottom: 0.5rem;
+                  }
+                  header p {
+                      font-size: 1.2rem;
+                      opacity: 0.9;
+                  }
+                  .container {
+                      max-width: 1000px;
+                      margin: 2rem auto;
+                      padding: 0 2rem;
+                      flex-grow: 1;
+                  }
+                  .intro {
+                      background: white;
+                      padding: 2rem;
+                      border-radius: 8px;
+                      margin-bottom: 2rem;
+                      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                  }
+                  .intro h2 {
+                      margin-bottom: 1rem;
+                      color: #667eea;
+                  }
+                  .intro ul {
+                      list-style-position: inside;
+                      margin-left: 1rem;
+                  }
+                  .intro li {
+                      margin-bottom: 0.5rem;
+                  }
+                  .documentation {
+                      display: grid;
+                      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+                      gap: 2rem;
+                      margin: 2rem 0;
+                  }
+                  .doc-card {
+                      background: white;
+                      padding: 2rem;
+                      border-radius: 8px;
+                      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                      transition: transform 0.2s, box-shadow 0.2s;
+                  }
+                  .doc-card:hover {
+                      transform: translateY(-4px);
+                      box-shadow: 0 8px 12px rgba(0, 0, 0, 0.2);
+                  }
+                  .doc-card h3 {
+                      margin-bottom: 0.5rem;
+                      color: #667eea;
+                  }
+                  .doc-card p {
+                      margin-bottom: 1rem;
+                      color: #666;
+                  }
+                  .doc-card a {
+                      display: inline-block;
+                      padding: 0.6rem 1.2rem;
+                      background: #667eea;
+                      color: white;
+                      text-decoration: none;
+                      border-radius: 4px;
+                      transition: background 0.2s;
+                  }
+                  .doc-card a:hover {
+                      background: #764ba2;
+                  }
+                  footer {
+                      background: rgba(0, 0, 0, 0.8);
+                      color: white;
+                      text-align: center;
+                      padding: 2rem;
+                      margin-top: 3rem;
+                      font-size: 0.9rem;
+                  }
+                  footer a {
+                      color: #667eea;
+                      text-decoration: none;
+                  }
+                  footer a:hover {
+                      text-decoration: underline;
+                  }
+              </style>
+          </head>
+          <body>
+              <header>
+                  <h1>Lyric</h1>
+                  <p>A Safety-Oriented Application Language Targeting .NET and the JVM</p>
+              </header>
+              <div class="container">
+                  <div class="intro">
+                      <h2>Welcome</h2>
+                      <p>
+                          Lyric is a general-purpose application language for building services and APIs with:
+                      </p>
+                      <ul>
+                          <li><strong>Strong type system</strong> with range-constrained subtypes and distinct nominal types</li>
+                          <li><strong>Representational privacy</strong> via opaque types — no reflection can crack them open</li>
+                          <li><strong>Design-by-contract</strong> as a first-class language feature</li>
+                          <li><strong>Compile-time dependency injection</strong> baked into the language</li>
+                          <li><strong>Structured concurrency</strong> with async/await and protected types</li>
+                          <li><strong>Optional formal verification</strong> via SMT-solver-backed proof of contracts</li>
+                      </ul>
+                      <p style="margin-top: 1rem;">
+                          The self-hosted Lyric compiler targets .NET (<code>--target dotnet</code>) and the JVM (<code>--target jvm</code>), with a standard library of 40+ modules and 20+ ecosystem libraries.
+                      </p>
+                  </div>
+                  <div class="documentation">
+                      <div class="doc-card">
+                          <h3>The Book</h3>
+                          <p>
+                              <em>Making Lyric Sing</em> — A comprehensive programmer's introduction to the language, covering everything from quick start to advanced verification.
+                          </p>
+                          <a href="book.html">Read the Book →</a>
+                      </div>
+                      <div class="doc-card">
+                          <h3>Standard Library</h3>
+                          <p>
+                              Auto-generated API reference for all Lyric standard library modules. Browse individual modules or start with Std.Core.
+                          </p>
+                          <a href="stdlib/">View API Docs →</a>
+                      </div>
+                      <div class="doc-card">
+                          <h3>Source Code</h3>
+                          <p>
+                              Lyric is open source. Explore the self-hosted compiler, stdlib, and ecosystem libraries on GitHub.
+                          </p>
+                          <a href="https://github.com/nichobbs/lyric-lang">GitHub Repository →</a>
+                      </div>
+                  </div>
+              </div>
+              <footer>
+                  <p>
+                      Lyric is an open-source project. For issues, discussions, or to contribute, visit the
+                      <a href="https://github.com/nichobbs/lyric-lang">GitHub repository</a>.
+                  </p>
+              </footer>
+          </body>
+          </html>
+          EOF
+
+      - name: Move book to docs directory
+        run: |
+          cp book/making-lyric-sing.html _site/book.html
           cp book/logo.svg _site/logo.svg
 
       - name: Upload Pages artifact
