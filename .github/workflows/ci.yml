@@ -109,7 +109,7 @@ jobs:
 
       - name: Set up .NET (uses bootstrap/global.json)
         if: steps.changes.outputs.has_code_changes == 'true'
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
 
@@ -273,7 +273,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
       - name: Set up Java 21 (for JVM emitter tests — class files target major version 65)
@@ -345,7 +345,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
@@ -1167,7 +1167,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
@@ -1752,7 +1752,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
@@ -1987,7 +1987,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
       - name: Set up Java 21 (for JVM emitter tests)
@@ -2581,7 +2581,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
@@ -2731,7 +2731,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
@@ -2931,7 +2931,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
@@ -3882,7 +3882,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
@@ -4310,7 +4310,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
