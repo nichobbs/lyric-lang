@@ -66,6 +66,28 @@ test "RequiresAuth aspect: an invalid token is denied with 403 before the handle
   }
 }
 
+// Guard any handler named `roleGuarded*` with the RequiresRole template (enabled
+// by default). A non-empty but unverifiable token must short-circuit with 403 —
+// the enforcement counterpart to the RequiresAuth rejection test above.
+aspect RoleGuard from Web.Aspects.RequiresRole {
+  matches: name like "roleGuarded*"
+  config {
+    jwtSecret: String = "test-signing-secret"
+    allowedRoles: String = "admin"
+  }
+}
+
+pub func roleGuardedHandler(authToken: in String): Result[String, Web.ApiError] {
+  return Ok("authorized")
+}
+
+test "RequiresRole aspect: an invalid token is denied with 403 before the handler" {
+  match roleGuardedHandler("not.a.valid.jwt") {
+    case Ok(_) -> assertTrue(false, "an unverifiable token must be rejected before the handler runs")
+    case Err(e) -> assertEqualInt(e.status, 403, "invalid token short-circuits with 403 Forbidden")
+  }
+}
+
 // The `enabled` master switch must bypass the guard entirely when false — a
 // regression that dropped the bypass would silently start rejecting traffic on
 // endpoints the operator deliberately left unguarded.
