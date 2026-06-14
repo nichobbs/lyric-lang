@@ -1977,6 +1977,39 @@ func lowerMethodCall(
     return JRef(className = "java/lang/String")
   }
 
+  // HashMap intrinsics: Lyric Map[K,V] maps to java/util/HashMap on JVM.
+  // BCL Dictionary[K,V] uses `Add(K,V)` / `Remove(K)` / `ContainsKey(K)` /
+  // `Count`, but HashMap spells them `put(K,V)` / `remove(K)` / `containsKey(K)`
+  // / `size()`.  Emit the correct invokevirtual before falling through to the
+  // generic auto-FFI path, which would panic on a missing `add` method.
+  val isHashMapRecv = match recvTy { case JRef(c) -> c == "java/util/HashMap"; case _ -> false }
+  if isHashMapRecv {
+    val objTy = JRef(className = "java/lang/Object")
+    if memberName == "add" and args.count == 2 {
+      val kPs: List[JvmType] = newList()
+      kPs.add(objTy)
+      kPs.add(objTy)
+      lowerCallArg(ctx, insns, args[0])
+      lowerCallArg(ctx, insns, args[1])
+      insns.add(LInvokevirtual(owner = "java/util/HashMap", name = "put", params = kPs, ret = objTy))
+      insns.add(LPop)
+      return JVoid
+    } else if memberName == "remove" and args.count == 1 {
+      val rPs: List[JvmType] = newList()
+      rPs.add(objTy)
+      lowerCallArg(ctx, insns, args[0])
+      insns.add(LInvokevirtual(owner = "java/util/HashMap", name = "remove", params = rPs, ret = objTy))
+      insns.add(LPop)
+      return JVoid
+    } else if memberName == "containsKey" and args.count == 1 {
+      val ckPs: List[JvmType] = newList()
+      ckPs.add(objTy)
+      lowerCallArg(ctx, insns, args[0])
+      insns.add(LInvokevirtual(owner = "java/util/HashMap", name = "containsKey", params = ckPs, ret = JBoolean))
+      return JBoolean
+    }
+  }
+
   // Instance auto-FFI: when the receiver is a JRef to a JDK class (returned
   // by a prior static auto-FFI call, e.g. JInteger.valueOf(42).toString()),
   // resolve the instance method from JDK metadata and emit a correctly-typed

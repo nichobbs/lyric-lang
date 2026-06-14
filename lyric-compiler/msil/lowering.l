@@ -153,6 +153,12 @@ pub union MsilType {
   // emitted.  Mirrors the proven `MCastclassByName` / `MLdfldByName` deferred-
   // by-name pattern.  Encodes `0x15 0x12 <coded> <argCount> <args…>`.
   case MGenericInstByName(headFqn: String, typeArgs: List[MsilType])
+  // Erased-to-object extern type that implements IEnumerable (not IList).
+  // emitCollectionForMsil uses the IEnumerator protocol for this type
+  // (GetEnumerator/MoveNext/get_Current on non-generic IEnumerable/IEnumerator)
+  // so that extern types like DictKeyCollection[K,V] can be iterated with
+  // `for x in collection` without requiring the type to implement IList.
+  case MExternEnumerable(elemTy: MsilType)
 }
 
 // Return the ECMA-335 ELEMENT_TYPE byte for the given MsilType.
@@ -184,6 +190,7 @@ pub func elementTypeByte(t: in MsilType): Int {
     case MValueTypeGenericInst(_, _, _) -> 0x15  // GENERICINST prefix; VALUETYPE byte + args follow
     case MIAsyncEnumerable(_) -> 0x1C  // erased to object in signatures
     case MGenericInstByName(_, _) -> 0x15  // GENERICINST prefix; full encoding via bufMsilTypeWithCtx
+    case MExternEnumerable(_) -> 0x1C  // erased to object in signatures
   }
 }
 
@@ -901,6 +908,8 @@ pub union DictOp {
   case DoRemove      // callvirt Remove(!0) -> bool
   case DoCastclass   // castclass Dictionary`2<k,v>
   case DoTryGetValue // callvirt TryGetValue(!0, !1&) -> bool  (#2474)
+  case DoGetKeys     // callvirt get_Keys() -> KeyCollection<k,v>  (#3511)
+  case DoGetValues   // callvirt get_Values() -> ValueCollection<k,v>  (#3511)
 }
 
 // Operation tokens (0x0A000000 | MemberRef row) for a closed `List`1<elemTy>` /
@@ -931,6 +940,8 @@ pub record DictTokens {
   containsKey: Int
   remove: Int
   tryGetValue: Int  // TryGetValue(!0, !1&) -> bool  (#2474)
+  getKeys: Int      // get_Keys() -> KeyCollection<!0,!1>  (#3511)
+  getValues: Int    // get_Values() -> ValueCollection<!0,!1>  (#3511)
 }
 
 // ── LoweringCtx — mutable accumulator for a single-assembly lowering ──────────
@@ -1340,6 +1351,18 @@ pub func ctxAddTypeRef(ctx: in LoweringCtx, namespaceName: in String, typeName: 
   )
 }
 
+// Add a nested TypeRef whose ResolutionScope points to an enclosing TypeRef row.
+// ECMA-335 §22.38: ResolutionScope can reference another TypeRef (tag 0x01) to
+// describe nested types (e.g. Dictionary`2+KeyCollection).
+pub func ctxAddNestedTypeRef(ctx: in LoweringCtx, outerTypeRefRow: in Int, nestedTypeName: in String): Int {
+  val sName = ctxInternStr(ctx, nestedTypeName)
+  val sEmpty = ctxInternStr(ctx, "")
+  addTypeRef(
+    ctx.tables,
+    TypeRefRow(resolutionScope = rsTypeRef(outerTypeRefRow), typeName = sName, typeNamespace = sEmpty)
+  )
+}
+
 // Add a MemberRef row (external method reference) and return its 1-based row index.
 pub func ctxAddMemberRef(
   ctx: in LoweringCtx,
@@ -1528,6 +1551,7 @@ pub func msilTypeKey(t: in MsilType): String {
     }
     case MByRef(inner) -> "BY" + msilTypeKey(inner) + ";"
     case MIAsyncEnumerable(e) -> "IAE[" + msilTypeKey(e) + "]"
+    case MExternEnumerable(e) -> "EE[" + msilTypeKey(e) + "]"
     case MGenericInstByName(headFqn, typeArgs) -> {
       var key = "GN" + headFqn + "<"
       var i = 0
@@ -1860,6 +1884,8 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
         case DoRemove -> emitCallvirt(mb, dt.remove)
         case DoCastclass -> emitCastclass(mb, dt.typeSpec)
         case DoTryGetValue -> emitCallvirt(mb, dt.tryGetValue)
+        case DoGetKeys -> emitCallvirt(mb, dt.getKeys)
+        case DoGetValues -> emitCallvirt(mb, dt.getValues)
       }
     }
     case MCastclassByName(name) -> {
@@ -3891,6 +3917,38 @@ pub func dictTokensForLowering(ctx: in LoweringCtx, keyTy: in MsilType, valTy: i
       "dict_tgv_" + key,
       buildInstanceMethodSig(tgvP, MBool)
     )
+  // Add nested TypeRefs for Dictionary`2+KeyCollection and Dictionary`2+ValueCollection.
+  // ResolutionScope points to the enclosing Dictionary`2 TypeRef (ECMA-335 §22.38).
+  val trKeyCol = ctxAddNestedTypeRef(ctx, trDict2, "KeyCollection")
+  val trValCol = ctxAddNestedTypeRef(ctx, trDict2, "ValueCollection")
+  // get_Keys() -> Dictionary`2+KeyCollection<!0,!1>
+  val gkRetArgs: List[MsilType] = newList()
+  gkRetArgs.add(MTypeVar(0))
+  gkRetArgs.add(MTypeVar(1))
+  val gkRetTy = MGenericInst(typeRefCode = tdrTypeRef(trKeyCol), headFqn = "KeyCollection", typeArgs = gkRetArgs)
+  val gkP: List[MsilType] = newList()
+  val gkTok = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      ctx,
+      tsRow,
+      "get_Keys",
+      "dict_gk_" + key,
+      buildInstanceMethodSig(gkP, gkRetTy)
+    )
+  // get_Values() -> Dictionary`2+ValueCollection<!0,!1>
+  val gvRetArgs: List[MsilType] = newList()
+  gvRetArgs.add(MTypeVar(0))
+  gvRetArgs.add(MTypeVar(1))
+  val gvRetTy = MGenericInst(typeRefCode = tdrTypeRef(trValCol), headFqn = "ValueCollection", typeArgs = gvRetArgs)
+  val gvP: List[MsilType] = newList()
+  val gvTok = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      ctx,
+      tsRow,
+      "get_Values",
+      "dict_gv_" + key,
+      buildInstanceMethodSig(gvP, gvRetTy)
+    )
   val t = DictTokens(
     typeSpec = 0x1B000000 + tsRow,
     ctor = ctorTok,
@@ -3900,7 +3958,9 @@ pub func dictTokensForLowering(ctx: in LoweringCtx, keyTy: in MsilType, valTy: i
     getCount = cntTok,
     containsKey = ckTok,
     remove = rmTok,
-    tryGetValue = tgvTok
+    tryGetValue = tgvTok,
+    getKeys = gkTok,
+    getValues = gvTok
   )
   ctx.dictTokenCache.add(key, t)
   t

@@ -211,7 +211,12 @@ let tests =
             //               backing `Std.Environment.setVar`, used by the
             //               JVM build pipeline to inject `LYRIC_FFI_JARS`
             //               before `emitProject` (#2668 J5 Maven resolver).
-            Expect.isLessThanOrEqual total 325
+            //   325 → 329 — `DictKeyCollection[K,V]` and `DictValueCollection[K,V]`
+            //               extern types plus `dictGetKeys` and `dictGetValues`
+            //               `@externTarget` functions added to `Std.CollectionsHost`
+            //               to support IEnumerator for-loop protocol over Dictionary
+            //               key/value collections (#3511).
+            Expect.isLessThanOrEqual total 329
                 "total extern surface unexpectedly large"
         }
     ]
