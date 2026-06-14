@@ -507,6 +507,26 @@ test "multi-segment qualified call resolves correctly" {
   assertEqual(Str.trim(result.stdout), "21", "multi_segment_qualified_call: stdout=21")
 }
 
+// ─── Regression: UFCS chained member read through `self` (#3353) ────────────
+// `func Outer.rd(self: in Outer)` with body `self.inner.value` used to
+// produce invalid IL because ESelf returned MClass(pkgName) instead of
+// MClass("pkg.Outer"), making the inner ldfld look up the wrong key and pop
+// the receiver, leaving the stack empty for the outer castclass/ldfld.
+test "UFCS chained member read through self" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "Ufcs.App",
+      "package Ufcs.App\n" + "\n" + "record Inner { v: Int }\n" + "record Outer { i: Inner }\n" +
+        "func Outer.rd(self: in Outer): Int { self.i.v }\n" +
+        "func main(): Unit { println(Outer(i = Inner(v = 42)).rd()) }\n"
+    )
+  )
+  val result = compileAndRun("ufcs_chain", packages, "Ufcs")
+  assertEqualInt(result.exitCode, 0, "ufcs_chain: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "ufcs_chain: stdout=42")
+}
+
 // ─── Regression: qualified enum-case pattern with shared case names (#3349) ──
 // Two packages each declare an enum with a case named `Same`.  A consumer
 // matches on `PackA.Color.Same` and verifies the correct ordinal fires,

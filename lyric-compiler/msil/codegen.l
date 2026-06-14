@@ -4515,6 +4515,10 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       // and `memberName` is a nullary case of that union; redirect to the
       // singleton-field load so `val c: Color = Color.Same` pushes the real
       // `Color_Same.Instance` value instead of pushing `null` (#3349).
+      // This check runs before the config-block short-circuit below: union type
+      // names are PascalCase; config block names follow identifier rules but are
+      // distinct — a name that hits unionCaseCtorByName is unambiguously a case
+      // reference, not a config block access.
       val nmCaseFqn: String = match recv.kind {
         case EPath(recvPath) -> {
           if recvPath.segments.count == 1 {
@@ -5148,12 +5152,21 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     }
     case ESelf -> {
       insns.add(MLdarg(slot = 0))
-      // Type `self` as its enclosing class so `self.method(...)` dispatches via
-      // the MClass arm of `lowerMethodCallMsil`; MObject went to the BCL stub.
-      if fctx.className.length > 0 {
-        MClass(className = fctx.className)
-      } else {
-        MObject
+      // In a UFCS method (`func Outer.rd(self: in Outer)`) `self` is slot 0
+      // and its type is registered in fctx.types["self"] by lowerFuncMsil's
+      // parameter loop.  Use that type so chained reads `self.field.subfield`
+      // return the correct receiver type for the second ldfld (#3353).
+      // For impl methods, slot 0 is the implicit `this` (no named binding) and
+      // fctx.className carries the concrete implementing type — fall back to it.
+      match mapGet(fctx.types, "self") {
+        case Some(selfTy) -> selfTy
+        case None -> {
+          if fctx.className.length > 0 {
+            MClass(className = fctx.className)
+          } else {
+            MObject
+          }
+        }
       }
     }
     case EResult -> {
