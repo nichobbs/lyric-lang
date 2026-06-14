@@ -75,7 +75,7 @@ divmod(17, 5, quotient, remainder)
 // quotient is now 3, remainder is now 2
 ```
 
-The variables must be `var`, not `val`. You cannot pass an immutable binding to an `out` parameter.
+The argument must be a writable l-value — a `var` local, another `out`/`inout` parameter, or a mutable field access (`obj.field`). You cannot pass an immutable binding (`val`/`let`/`in`), a literal, or a call result to an `out` parameter.
 
 ### `inout` — read and write
 
