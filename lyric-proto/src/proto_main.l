@@ -466,6 +466,40 @@ pub func findBytes(fields: in List[DecodedField], number: Int): Option[slice[Byt
   None
 }
 
+/// Find the first fixed32 field with the given field number, or None.
+@stable(since = "0.1")
+pub func findFixed32(fields: in List[DecodedField], number: Int): Option[Int] {
+  val arr = fields.toArray()
+  for f in arr {
+    match f {
+      case DecodedFixed32(n, bits) -> {
+        if n == number {
+          return Some(value = bits)
+        }
+      }
+      case _ -> ()
+    }
+  }
+  None
+}
+
+/// Find the first fixed64 field with the given field number, or None.
+@stable(since = "0.1")
+pub func findFixed64(fields: in List[DecodedField], number: Int): Option[Long] {
+  val arr = fields.toArray()
+  for f in arr {
+    match f {
+      case DecodedFixed64(n, bits) -> {
+        if n == number {
+          return Some(value = bits)
+        }
+      }
+      case _ -> ()
+    }
+  }
+  None
+}
+
 /// Collect all bytes fields with the given field number (repeated field).
 @stable(since = "0.1")
 pub func collectBytes(fields: in List[DecodedField], number: Int): List[slice[Byte]] {
@@ -476,6 +510,42 @@ pub func collectBytes(fields: in List[DecodedField], number: Int): List[slice[By
       case DecodedBytes(n, data) -> {
         if n == number {
           res.add(data)
+        }
+      }
+      case _ -> ()
+    }
+  }
+  res
+}
+
+/// Collect all fixed32 fields with the given field number (repeated field).
+@stable(since = "0.1")
+pub func collectFixed32(fields: in List[DecodedField], number: Int): List[Int] {
+  val res: List[Int] = newList()
+  val arr = fields.toArray()
+  for f in arr {
+    match f {
+      case DecodedFixed32(n, bits) -> {
+        if n == number {
+          res.add(bits)
+        }
+      }
+      case _ -> ()
+    }
+  }
+  res
+}
+
+/// Collect all fixed64 fields with the given field number (repeated field).
+@stable(since = "0.1")
+pub func collectFixed64(fields: in List[DecodedField], number: Int): List[Long] {
+  val res: List[Long] = newList()
+  val arr = fields.toArray()
+  for f in arr {
+    match f {
+      case DecodedFixed64(n, bits) -> {
+        if n == number {
+          res.add(bits)
         }
       }
       case _ -> ()

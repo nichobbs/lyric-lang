@@ -132,7 +132,6 @@ test "Fix64Field emits tag + 8 little-endian bytes" {
 }
 
 // Fixed32 (wire type 5): tag = (field<<3)|5.  For field 2: tag = (2<<3)|5 = 0x15 = 21.
-// Decode not attempted here for the same cross-package generic-list reason as Fix64Field.
 test "Fix32Field emits tag + 4 little-endian bytes" {
   val bytes = encodeMessage([Fix32Field(number = 2, bits = 0x01020304)])
   assertEqualInt(bytes.length, 5, "tag + 4 fixed bytes")
@@ -141,6 +140,40 @@ test "Fix32Field emits tag + 4 little-endian bytes" {
   assertEqualInt(byteAt(bytes, 2), 3, "little-endian byte 1 = 0x03")
   assertEqualInt(byteAt(bytes, 3), 2, "little-endian byte 2 = 0x02")
   assertEqualInt(byteAt(bytes, 4), 1, "little-endian byte 3 = 0x01")
+}
+
+// Round-trip via the in-package `findFixed32` extractor (#3383).  Extraction
+// must happen inside the Proto package: iterating the decoded
+// `List[DecodedField]` directly from a consumer package erases the element
+// type to `Object` and traps on the cast (the cross-package generic-list gap,
+// #2932/#3267), which is why `findFixed32`/`findFixed64` are pub helpers.
+test "Fix32Field round-trips through encode/decode" {
+  val bytes = encodeMessage([Fix32Field(number = 2, bits = 0x01020304)])
+  match decodeMessage(bytes) {
+    case Err(e) -> assertTrue(false, "decode failed: " + e)
+    case Ok(fields) -> match findFixed32(fields, 2) { case Some(b) -> assertEqualInt(b, 0x01020304, "fixed32 field 2 round-trips"); case None -> assertTrue(false, "fixed32 field 2 not found after decode") }
+  }
+}
+
+test "Fix64Field round-trips through encode/decode" {
+  val bytes = encodeMessage([Fix64Field(number = 3, bits = 0x0102030405060708i64)])
+  match decodeMessage(bytes) {
+    case Err(e) -> assertTrue(false, "decode failed: " + e)
+    case Ok(fields) -> match findFixed64(fields, 3) { case Some(b) -> assertTrue(b == 0x0102030405060708i64, "fixed64 field 3 round-trips"); case None -> assertTrue(false, "fixed64 field 3 not found after decode") }
+  }
+}
+
+// Convenience-constructor coverage (#3383): doubleField builds a Fix64 field,
+// so it round-trips through findFixed64.  (floatField's round-trip is blocked
+// by a separate Float->BitConverter.SingleToInt32Bits(Double) extern
+// miscompile, tracked separately, so it is not asserted here.)
+test "doubleField round-trips through Fix64 and decodes to the original bits" {
+  val bits = doubleToInt64Bits(2.5)
+  val bytes = encodeMessage([doubleField(5, 2.5)])
+  match decodeMessage(bytes) {
+    case Err(e) -> assertTrue(false, "decode failed: " + e)
+    case Ok(fields) -> match findFixed64(fields, 5) { case Some(b) -> assertTrue(b == bits, "doubleField round-trips to its IEEE-754 bits"); case None -> assertTrue(false, "doubleField field 5 not found after decode") }
+  }
 }
 
 // ─── Convenience constructor encoding ────────────────────────────────────────
@@ -186,5 +219,73 @@ test "decodeStep on truncated varint field returns Err" {
   match decodeStep(truncated, 0) {
     case Ok(_) -> assertTrue(false, "expected Err on truncated varint")
     case Err(_) -> assertTrue(true, "Err on truncated varint")
+  }
+}
+
+// Repeated fixed-width fields collected via the in-package collectFixed32
+// helper (#3618): two fixed32 fields share field number 7; collectFixed32
+// returns both in encounter order.
+test "collectFixed32 gathers repeated fixed32 fields" {
+  val bytes = encodeMessage([Fix32Field(number = 7, bits = 0x0A0B0C0D), Fix32Field(number = 7, bits = 0x11223344)])
+  match decodeMessage(bytes) {
+    case Err(e) -> assertTrue(false, "decode failed: " + e)
+    case Ok(fields) -> {
+      val got = collectFixed32(fields, 7)
+      assertEqualInt(got.length, 2, "two fixed32 fields collected")
+      assertEqualInt(got[0], 0x0A0B0C0D, "first repeated fixed32")
+      assertEqualInt(got[1], 0x11223344, "second repeated fixed32")
+    }
+  }
+}
+
+test "collectFixed64 gathers repeated fixed64 fields" {
+  val bytes = encodeMessage(
+    [
+      Fix64Field(number = 8, bits = 0x0102030405060708i64),
+      Fix64Field(number = 8, bits = 0x1122334455667788i64)
+    ]
+  )
+  match decodeMessage(bytes) {
+    case Err(e) -> assertTrue(false, "decode failed: " + e)
+    case Ok(fields) -> {
+      val got = collectFixed64(fields, 8)
+      assertEqualInt(got.length, 2, "two fixed64 fields collected")
+      assertTrue(got[0] == 0x0102030405060708i64, "first repeated fixed64")
+      assertTrue(got[1] == 0x1122334455667788i64, "second repeated fixed64")
+    }
+  }
+}
+
+// Edge cases for the fixed-width extraction helpers (#3620): absent field
+// number yields None / empty list, mirroring findVarint/collectBytes semantics.
+test "findFixed32/findFixed64 return None for an absent field number" {
+  val bytes = encodeMessage(
+    [Fix32Field(number = 1, bits = 0x01020304), Fix64Field(number = 2, bits = 0x0102030405060708i64)]
+  )
+  match decodeMessage(bytes) {
+    case Err(e) -> assertTrue(false, "decode failed: " + e)
+    case Ok(fields) -> {
+      match findFixed32(fields, 9) {
+        case Some(_) -> assertTrue(false, "no fixed32 field 9 expected")
+        case None -> assertTrue(true, "findFixed32 absent -> None")
+      }
+      match findFixed64(fields, 9) {
+        case Some(_) -> assertTrue(false, "no fixed64 field 9 expected")
+        case None -> assertTrue(true, "findFixed64 absent -> None")
+      }
+    }
+  }
+}
+
+test "collectFixed32/collectFixed64 return an empty list for an absent field number" {
+  val bytes = encodeMessage(
+    [Fix32Field(number = 1, bits = 0x01020304), Fix64Field(number = 2, bits = 0x0102030405060708i64)]
+  )
+  match decodeMessage(bytes) {
+    case Err(e) -> assertTrue(false, "decode failed: " + e)
+    case Ok(fields) -> {
+      assertEqualInt(collectFixed32(fields, 9).length, 0, "collectFixed32 absent -> empty")
+      assertEqualInt(collectFixed64(fields, 9).length, 0, "collectFixed64 absent -> empty")
+    }
   }
 }
