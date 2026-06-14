@@ -380,6 +380,54 @@ pub func setupStaticParamSlotsAndHolders(
   }
 }
 
+// Allocate JVM local slots for an instance method's parameters (slot 0 = `this`
+// is already reserved), set up `out`/`inout` holder bindings, and emit the
+// entry-prologue unwrap for each holder parameter (#1763).  Identical in structure
+// to `setupStaticParamSlotsAndHolders` but uses `typeExprToJvmErased` with the
+// caller-supplied `typeParams` list so generic record methods erase type variables
+// to `Object`, matching the descriptor emitted for the method.  For non-generic
+// methods pass `newList()` for `typeParams`; the result is the same as
+// `typeExprToJvm` (no-op erase with an empty list).
+pub func setupInstanceParamSlotsAndHolders(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  params: in List[Param],
+  pkgName: in String,
+  typeParams: in List[String],
+): Unit {
+  val holderIdx: List[Int] = newList()
+  val holderSlots: List[Int] = newList()
+  val holderElems: List[JvmType] = newList()
+  var pi = 0
+  while pi < params.count {
+    val p = params[pi]
+    val elemTy = typeExprToJvmErased(p.ty, pkgName, typeParams)
+    if isHolderMode(p.mode) {
+      val hs = allocSlot(ctx, "__holder$" + p.name, holderArrayType(elemTy))
+      holderIdx.add(pi)
+      holderSlots.add(hs)
+      holderElems.add(elemTy)
+    } else {
+      allocSlot(ctx, p.name, elemTy)
+    }
+    pi = pi + 1
+  }
+  var hi = 0
+  while hi < holderIdx.count {
+    val name = params[holderIdx[hi]].name
+    val elemTy = holderElems[hi]
+    val hs = holderSlots[hi]
+    val valueSlot = allocSlot(ctx, name, elemTy)
+    ctx.holderArraySlot.add(valueSlot, hs)
+    ctx.holderElemType.add(valueSlot, elemTy)
+    insns.add(LAload(slot = hs))
+    insns.add(LIconst(v = 0))
+    emitHolderElemLoad(insns, elemTy)
+    emitStore(insns, valueSlot, elemTy)
+    hi = hi + 1
+  }
+}
+
 pub func lowerFunc(
   decl: in FunctionDecl,
   pkgName: in String,
@@ -767,28 +815,6 @@ pub func lowerUnion(decl: in UnionDecl, pkgName: in String): LSealedUnion {
 // when the block does not already terminate via `endsWithReturn` /
 // `blockTerminates` (#2870, #2874).  Extracted to prevent the two call-sites
 // (`lowerProtectedMethod`, `lowerRecordMethod`) from drifting.
-// Reject `out`/`inout` parameters on instance/interface methods on the JVM
-// target with a clear compile error (#1763).  Free functions support the
-// holder-array lowering end-to-end; the instance-method path (interface /
-// virtual dispatch, where the interface slot's descriptor and the impl
-// method's descriptor must agree on the holder array shape, plus the
-// dispatch-site wrap/unwrap) is not yet implemented, and silently passing the
-// parameter by value would drop the callee's write.  We fail loudly rather
-// than miscompile; the gap is tracked in the issue.  `context` names the
-// declaring method for the diagnostic.
-func rejectInstanceHolderParams(params: in List[Param], context: in String): Unit {
-  var i = 0
-  while i < params.count {
-    if isHolderMode(params[i].mode) {
-      panic(
-        "Jvm.Codegen: `out`/`inout` parameter '" + params[i].name + "' on instance/interface method " + context +
-          " is not yet supported on the JVM target (#1763); free-function `out`/`inout` parameters are supported. Use a return value (e.g. Option/Result or a tuple) for an instance method, or compile with --target dotnet where MSIL byref is used."
-      )
-    }
-    i = i + 1
-  }
-}
-
 func lowerInstanceMethodBody(ctx: in FuncCtx, insns: in List[LInsn], body: in FunctionBody, retTy: in JvmType): Unit {
   match body {
     case FBBlock(block) -> {
@@ -856,17 +882,10 @@ func lowerProtectedMethod(
     opaqueTypes,
     closureAcc
   )
-  rejectInstanceHolderParams(params, className + "." + name)
   val insns: List[LInsn] = newList()
-  val paramTypes: List[JvmType] = newList()
-  var pi = 0
-  while pi < params.count {
-    val p = params[pi]
-    val paramTy = typeExprToJvm(p.ty, pkgName)
-    allocSlot(ctxSelf, p.name, paramTy)
-    paramTypes.add(paramTy)
-    pi = pi + 1
-  }
+  val noTps: List[String] = newList()
+  val paramTypes = holderAwareParamTypes(params, pkgName, true, noTps, externTypes)
+  setupInstanceParamSlotsAndHolders(ctxSelf, insns, params, pkgName, noTps)
   lowerInstanceMethodBody(ctxSelf, insns, body, retTy)
   LFunc(flags = flags, name = name, params = paramTypes, ret = retTy, insns = insns, maxStack = 0, maxLocals = 0)
 }
@@ -911,17 +930,10 @@ func lowerRecordMethod(
     opaqueTypes,
     closureAcc
   )
-  rejectInstanceHolderParams(fn.params, className + "." + fn.name)
   val insns: List[LInsn] = newList()
-  val paramTypes: List[JvmType] = newList()
-  var pi = 0
-  while pi < fn.params.count {
-    val p = fn.params[pi]
-    val paramTy = typeExprToJvmErased(p.ty, pkgName, typeParams)
-    allocSlot(ctxSelf, p.name, paramTy)
-    paramTypes.add(paramTy)
-    pi = pi + 1
-  }
+  val noExts: Map[String, String] = newMap()
+  val paramTypes = holderAwareParamTypes(fn.params, pkgName, true, typeParams, noExts)
+  setupInstanceParamSlotsAndHolders(ctxSelf, insns, fn.params, pkgName, typeParams)
   lowerInstanceMethodBody(ctxSelf, insns, body, retTy)
   LFunc(flags = 0x0001, name = fn.name, params = paramTypes, ret = retTy, insns = insns, maxStack = 0, maxLocals = 0)
 }
@@ -962,17 +974,10 @@ func lowerImplMethod(
     opaqueTypes,
     closureAcc
   )
-  rejectInstanceHolderParams(fn.params, targetClass + "." + fn.name)
   val insns: List[LInsn] = newList()
-  val paramTypes: List[JvmType] = newList()
-  var pi = 0
-  while pi < fn.params.count {
-    val p = fn.params[pi]
-    val paramTy = typeExprToJvm(p.ty, pkgName)
-    allocSlot(ctxSelf, p.name, paramTy)
-    paramTypes.add(paramTy)
-    pi = pi + 1
-  }
+  val noTpsImpl: List[String] = newList()
+  val paramTypes = holderAwareParamTypes(fn.params, pkgName, true, noTpsImpl, externTypes)
+  setupInstanceParamSlotsAndHolders(ctxSelf, insns, fn.params, pkgName, noTpsImpl)
   lowerInstanceMethodBody(ctxSelf, insns, body, retTy)
   LFunc(flags = 0x0001, name = fn.name, params = paramTypes, ret = retTy, insns = insns, maxStack = 0, maxLocals = 0)
 }
@@ -1787,7 +1792,16 @@ func lowerGeneratorBody(
   // JVM target (the holder array is captured into a generator field, and the
   // write-back point is undefined across suspension) — reject rather than
   // silently pass by value (#1763).
-  rejectInstanceHolderParams(decl.params, genClass + "(generator)")
+  var _gpi = 0
+  while _gpi < decl.params.count {
+    if isHolderMode(decl.params[_gpi].mode) {
+      panic(
+        "Jvm.Codegen: `out`/`inout` parameter '" + decl.params[_gpi].name + "' on async generator " + genClass +
+          " is not supported on the JVM target (#1763); use a return value instead."
+      )
+    }
+    _gpi = _gpi + 1
+  }
   // Preamble: load each param from this.<field> into a local slot.
   var pi = 0
   while pi < decl.params.count {
@@ -2159,13 +2173,21 @@ func registerInstanceSigErased(
   owner: in String,
   typeParams: in List[String],
 ): Unit {
-  val ps: List[JvmType] = newList()
+  // Use holderAwareParamTypes so out/inout params register as JArray(elemTy) in the
+  // descriptor, matching the emitted method and the call-site wrapping (#1763).
+  val noExts: Map[String, String] = newMap()
+  val ps = holderAwareParamTypes(params, owner, true, typeParams, noExts)
+  val ret = match retOpt { case Some(te) -> typeExprToJvmErased(te, owner, typeParams); case None -> JVoid }
+  val paramNames: List[String] = newList()
+  val paramDefs: List[Option[Expr]] = newList()
+  val modes: List[ParamMode] = newList()
   var pi = 0
   while pi < params.count {
-    ps.add(typeExprToJvmErased(params[pi].ty, owner, typeParams))
+    paramNames.add(params[pi].name)
+    paramDefs.add(params[pi].dflt)
+    modes.add(params[pi].mode)
     pi = pi + 1
   }
-  val ret = match retOpt { case Some(te) -> typeExprToJvmErased(te, owner, typeParams); case None -> JVoid }
   val key = className + "#" + methodName
   if not into.containsKey(key) {
     into.add(
@@ -2174,9 +2196,9 @@ func registerInstanceSigErased(
         owner = className,
         params = ps,
         ret = ret,
-        paramNames = newList(),
-        paramDefaults = newList(),
-        paramModes = newList()
+        paramNames = paramNames,
+        paramDefaults = paramDefs,
+        paramModes = modes
       )
     )
   }
@@ -2776,9 +2798,9 @@ pub func codegenPackageWithSigs(
               // Emit each impl method as a true instance method on the target
               // class (#1722).  `lowerImplMethod` uses `makeFuncCtxInstance` so
               // `selfClass = Some(targetClass)` — bare `m()` and `self.m()` calls
-              // inside the body dispatch as `invokevirtual`.  `rejectInstanceHolderParams`
-              // is called inside `lowerImplMethod`; `out`/`inout` on impl methods
-              // is still unsupported (#1763) and produces a hard compile error.
+              // inside the body dispatch as `invokevirtual`.  `out`/`inout` params
+              // are fully supported via `setupInstanceParamSlotsAndHolders` and
+              // `lowerVirtualCallWithHolders` at the call site (#1763).
               implFuncs.add(
                 lowerImplMethod(
                   targetClass,
@@ -3087,19 +3109,13 @@ pub func codegenPackageWithSigs(
         while imi < decl.members.count {
           match decl.members[imi] {
             case IMSig(sig) -> {
-              rejectInstanceHolderParams(sig.params, ifClassName + "." + sig.name)
-              val params: List[JvmType] = newList()
-              var spi = 0
-              while spi < sig.params.count {
-                params.add(typeExprToJvm(sig.params[spi].ty, pkgName))
-                spi = spi + 1
-              }
+              val noTpsIface: List[String] = newList()
+              val params = holderAwareParamTypes(sig.params, pkgName, true, noTpsIface, externTypes)
               val ret = match sig.ret { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
               val desc = buildDescriptor(params, ret)
               abstractMethods.add(makeMethodInfo(ACC_PUBLIC + ACC_ABSTRACT, sig.name, desc, emptyAttrs))
             }
             case IMFunc(fn) -> {
-              rejectInstanceHolderParams(fn.params, ifClassName + "." + fn.name)
               concreteFuncs.add(
                 lowerFunc(
                   fn,
