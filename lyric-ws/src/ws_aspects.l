@@ -46,6 +46,7 @@ pub aspect WsAuth {
 // ─── WsRateLimit ─────────────────────────────────────────────────────────────
 /// Enforce a per-connection message rate limit on WebSocket message handlers.
 @stable(since = "0.1")
+@inline_template
 pub aspect WsRateLimit {
   config {
     enabled: Bool = true
