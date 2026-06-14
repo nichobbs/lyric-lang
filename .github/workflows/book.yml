@@ -104,7 +104,7 @@ jobs:
             echo ""
             echo "Auto-generated from Lyric stdlib sources using \`lyric doc\`."
             echo ""
-            find stdlib-docs -name '*.md' -print0 2>/dev/null | while IFS= read -r -d '' md; do
+            find stdlib-docs -name '*.md' -print0 | sort -z | while IFS= read -r -d '' md; do
               htmlfile=$(normalize_filename "$md")
               modname=$(dirname "$md" | sed 's|stdlib-docs/||')
               if [ -n "$modname" ] && [ "$modname" != "." ]; then
@@ -128,7 +128,7 @@ jobs:
             -o _site/stdlib/index.html
 
           # Convert individual stdlib module docs to HTML
-          find stdlib-docs -name '*.md' -print0 2>/dev/null | while IFS= read -r -d '' md; do
+          find stdlib-docs -name '*.md' -print0 | while IFS= read -r -d '' md; do
             htmlfile=$(normalize_filename "$md")
             pandoc "$md" \
               --standalone \
