@@ -25271,3 +25271,47 @@ For .NET builds, `writeRuntimeConfig` is called as before.
 **Makefile** (`Makefile`): `make maven-resolver` target wraps
 `mvn package -q -DskipTests -f resolver/pom.xml` to build
 `resolver/target/lyric-resolver.jar`.
+
+### D-progress-528 — Weaver: C-mode `@inline_template` aspect weaving made functional at runtime (#3543, D102)
+
+Aspect weaving was silently inert or crashed at runtime for the C-mode
+`@inline_template` + `from`-instance pattern every first-party aspect
+library uses (`lyric-web`, `lyric-validation`, `lyric-resilience`,
+`lyric-storage`, `lyric-mq`, `lyric-jobs`, `lyric-ws`, …).  Four root
+causes fixed in `lyric-compiler/lyric/weaver/weaver.l`:
+
+- **Bare config-field references weren't wired.**  Shipped templates
+  reference config fields bare (`minLen`), but `buildConfigPrelude` only
+  materialised/rewrote the documented `config.<field>` form — bare names
+  read as their zero value at runtime.  Now both spellings are
+  materialised and rewritten; a bare name is rewritten only when it is not
+  a parameter of the matched function (params shadow; qualify to
+  disambiguate).
+- **`from`-instance config replaced the template wholesale.**  Dropped
+  fields the instance didn't override (e.g. `enabled`, `field`).  Now
+  `mergeAspectConfig` overlays the instance's entries onto the template
+  defaults.
+- **`@inline_template` was lost during template collection.**
+  `collectAspectTemplates` stores only the `AspectDecl`, so the marker
+  (on the Item) vanished and `args.<field>` was never rewritten for
+  `from`-resolved aspects (→ `NullReferenceException`).  Now reconstructed
+  from the template body's literal `args.<field>` use (not the
+  `around(<name>)` binding — #3592) and propagated onto the resolved
+  instance.
+- **Unqualified same-package `from X` failed the lookup** (registered
+  under `pkg.X`, looked up as `X`).  Now falls back to the consuming
+  package FQN.
+
+Validated by `lyric-validation/tests/aspect_weaving_tests.l` — the
+ecosystem's first runtime aspect-weaving regression suite (6 cases:
+cross-package `from`, same-package unqualified `from`, direct
+`@inline_template`, and a C-mode template that reads `args` without
+referencing `call`).  Registered into the CI-wired `lyric-validation`
+manifest.  Documented in docs/26 §7 and decision-log D102.
+
+Out of scope (follow-up on #3543): aspect templates that live in a
+restored **dependency** DLL are still not collected — that needs aspect
+around-bodies serialised into contract metadata.  Open follow-ups: the
+`collectBareRefs*`/`collectMemberRefs*` traversal dedup (#3594), body-local
+shadowing of config fields (#3611), and runtime weaving tests for the
+security-critical templates (#3616).
