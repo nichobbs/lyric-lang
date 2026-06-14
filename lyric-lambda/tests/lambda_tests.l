@@ -140,6 +140,9 @@ test "onRaw: registers catch-all handler" {
   assertEqual(app.eventHandlers[0].eventSource, "raw", "event source is raw")
 }
 
+// Registration reads inside-out (Queue → Storage → Events): the nested-call
+// form is used because the self-hosted compiler has no `|>` pipe operator yet
+// (#3520). Re-express as a left-to-right pipeline once pipe support lands.
 test "chained event handlers: each produces a unique entry" {
   val app = Lambda.onEventBridge(
     Lambda.onS3(Lambda.onSqs(Lambda.newApp(), "MyApp.Queue.handle"), "MyApp.Storage.handle"),
