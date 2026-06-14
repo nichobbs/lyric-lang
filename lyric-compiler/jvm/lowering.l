@@ -3813,35 +3813,61 @@ pub record LGenFunc {
   bodyInsns: List[LInsn]
 }
 
-/// Bootstrap lowering of a Lyric `async func` with `yield`.
+/// Lazy lowering of a Lyric `async func` with `yield`.
 ///
-/// Emits a generator class implementing `java.lang.Iterable<Object>` and
-/// `java.util.Iterator<Object>` with an eager `runBody()` that populates a
-/// `java.util.ArrayList<Object>` on the first `iterator()` call.
+/// Emits a generator class implementing `java.lang.Iterable<Object>`,
+/// `java.util.Iterator<Object>`, and `java.lang.Runnable`.  The body runs
+/// in a JDK-21+ virtual thread; each `yield` calls `SynchronousQueue.put`
+/// to hand the value to the consumer; `hasNext` calls `take` to receive the
+/// next value or the sentinel.  This gives truly lazy, on-demand evaluation:
+/// values are produced only when the consumer calls `hasNext`.
 ///
-/// Also emits a static kickoff method on `hostClass` that instantiates the
-/// generator with the given parameters and returns it as `Object`.
+/// Class layout:
+///   static _DONE_SENTINEL: Object            — signals exhaustion
+///   _done: boolean                           — true after sentinel received
+///   _pending: Object                         — buffered value from last hasNext
+///   _channel: SynchronousQueue<Object>       — producer↔consumer handoff
+///   _param0 … _paramN: captured params
 ///
-/// Bootstrap semantics match the MSIL bootstrap (D-progress-259, Gap-4):
-/// all `yield` expressions execute eagerly before the first `hasNext()`.
+/// Methods:
+///   <clinit>:  new Object(); putstatic _DONE_SENTINEL
+///   <init>(params): super(); store params to fields
+///   run():     body with yield → channel.put(value); sentinel put at end;
+///              InterruptedException caught and silently swallows (consumer abandoned)
+///   iterator(): new SynchronousQueue; reset _done/_pending; startVirtualThread(this)
+///   hasNext(): if _done return false; take from channel; check sentinel; store pending
+///   next():    return _pending
+///
+/// Uses class file version 49 (Java 5) so no StackMapTable is required for
+/// the branches in hasNext() and run().  Virtual threads and SynchronousQueue
+/// are JDK-21+ runtime APIs callable from any class file version.
 pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   val result: List[ClassFile] = newList()
   val genClass = g.generatorClass
   val objClass = "java/lang/Object"
-  val listClass = "java/util/ArrayList"
+  val sqClass = "java/util/concurrent/SynchronousQueue"
   val iterClass = "java/util/Iterator"
   val iterableClass = "java/lang/Iterable"
-  val listType = JRef(className = listClass)
+  val runnableClass = "java/lang/Runnable"
+  val threadClass = "java/lang/Thread"
   val objType = JRef(className = objClass)
+  val sqType = JRef(className = sqClass)
 
-  // ── 1. Field declarations ───────────────────────────────────────────────────
+  // ── 1. Field declarations ──────────────────────────────────────────────────
   val emptyAttrs: List[Attribute] = newList()
-  val valuesDesc = typeDescriptor(listType)
+  val sentinelDesc = typeDescriptor(objType)
+  val doneDesc = "Z"
+  val pendingDesc = typeDescriptor(objType)
+  val channelDesc = typeDescriptor(sqType)
   val posDesc = typeDescriptor(JInt)
 
   val fieldsOut: List[FieldInfo] = newList()
-  fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_values", valuesDesc, emptyAttrs))
-  fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_pos", posDesc, emptyAttrs))
+  // Static sentinel signals exhaustion to the consumer.
+  fieldsOut.add(makeFieldInfo(ACC_PUBLIC + ACC_STATIC, "_DONE_SENTINEL", sentinelDesc, emptyAttrs))
+  // Instance fields
+  fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_done", doneDesc, emptyAttrs))
+  fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_pending", pendingDesc, emptyAttrs))
+  fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_channel", channelDesc, emptyAttrs))
   var pi = 0
   while pi < g.params.count {
     val p = g.params[pi]
@@ -3850,12 +3876,30 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
     pi = pi + 1
   }
 
-  // ── 2. Constructor <init>(params...)V ───────────────────────────────────────
-  val ctorAsm = newAssembler(pool)
+  // Pre-compute constant pool refs used across multiple methods.
   val objCtorIdx = poolMethodref(pool, objClass, "<init>", "()V")
+  val sqCtorIdx = poolMethodref(pool, sqClass, "<init>", "()V")
+  val sentinelIdx = poolFieldref(pool, genClass, "_DONE_SENTINEL", sentinelDesc)
+  val doneIdx = poolFieldref(pool, genClass, "_done", doneDesc)
+  val pendingIdx = poolFieldref(pool, genClass, "_pending", pendingDesc)
+  val channelIdx = poolFieldref(pool, genClass, "_channel", channelDesc)
+
+  // ── 2. <clinit> — initialize _DONE_SENTINEL ───────────────────────────────
+  val clinitAsm = newAssembler(pool)
+  emitNew(clinitAsm, poolClass(pool, objClass))
+  emitDup(clinitAsm)
+  emitInvokespecial(clinitAsm, objCtorIdx)
+  emitPutstatic(clinitAsm, sentinelIdx)
+  emitReturn(clinitAsm)
+  val clinitCode = assembleCode(clinitAsm, 2, 0)
+  val clinitAttrs: List[Attribute] = newList()
+  clinitAttrs.add(clinitCode)
+  val clinitMethod = makeMethodInfo(ACC_STATIC, "<clinit>", "()V", clinitAttrs)
+
+  // ── 3. Constructor <init>(params...)V ──────────────────────────────────────
+  val ctorAsm = newAssembler(pool)
   emitAload(ctorAsm, 0)
   emitInvokespecial(ctorAsm, objCtorIdx)
-  // store params into fields
   var slot = 1
   var qi = 0
   while qi < g.params.count {
@@ -3877,17 +3921,9 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
     }
     qi = qi + 1
   }
-  // initialize _values = new ArrayList()
-  val listCtorIdx = poolMethodref(pool, listClass, "<init>", "()V")
-  val valuesIdx = poolFieldref(pool, genClass, "_values", valuesDesc)
-  emitAload(ctorAsm, 0)
-  emitNew(ctorAsm, poolClass(pool, listClass))
-  emitDup(ctorAsm)
-  emitInvokespecial(ctorAsm, listCtorIdx)
-  emitPutfield(ctorAsm, valuesIdx)
   emitReturn(ctorAsm)
   val ctorMaxLocals = slot
-  val ctorCode = assembleCode(ctorAsm, 4, ctorMaxLocals)
+  val ctorCode = assembleCode(ctorAsm, 2, ctorMaxLocals)
   val ctorAttrs: List[Attribute] = newList()
   ctorAttrs.add(ctorCode)
   val ctorParamTypes: List[JvmType] = newList()
@@ -3898,12 +3934,11 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   }
   val ctorMethod = makeMethodInfo(ACC_PUBLIC, "<init>", buildDescriptor(ctorParamTypes, JVoid), ctorAttrs)
 
-  // ── 3. runBody()V ───────────────────────────────────────────────────────────
-  // Body instructions with LYield replaced by ArrayList.add(Object).
-  // Slot 0 = `this`; slots 1..paramSlots hold params (preamble loads from fields);
-  // yieldTempSlot (one past the highest body slot) holds the boxed yield value transiently.
-  //
-  // Scan body insns first to find the max slot so yieldTempSlot doesn't collide.
+  // ── 4. run()V — executes the generator body in a virtual thread ───────────
+  // Body instructions with LYield replaced by SynchronousQueue.put(boxed_value).
+  // Slot 0 = `this`; yieldTempSlot (one past the highest body slot) holds the
+  // boxed value transiently.  Scan body insns first to find the max slot so
+  // yieldTempSlot doesn't collide with any existing local.
   var bodyMaxSlot = 0
   var bsi = 0
   while bsi < g.bodyInsns.count {
@@ -3962,19 +3997,18 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
     }
     bsi = bsi + 1
   }
-  // yieldTempSlot must not overlap any slot already used by the body preamble or locals.
   val yieldTempSlot = bodyMaxSlot
   val bodyMaxLocals = yieldTempSlot + 1
 
+  val sqPutIdx = poolMethodref(pool, sqClass, "put", "(Ljava/lang/Object;)V")
   val bodyAsm = newAssembler(pool)
-  val listAddIdx = poolMethodref(pool, listClass, "add", "(Ljava/lang/Object;)Z")
+  emitLabel(bodyAsm, "run_try_start")
   var bi = 0
   while bi < g.bodyInsns.count {
     val insn = g.bodyInsns[bi]
     match insn {
       case LYield -> {
-        // Stack top = yielded value (already evaluated by preceding insns).
-        // Box primitive types to Object before storing in ArrayList.
+        // Box primitive; store to temp slot; load this._channel; reload value; put.
         match g.elemType {
           case JInt -> lowerInsn(LBoxInt, bodyAsm)
           case JLong -> lowerInsn(LBoxLong, bodyAsm)
@@ -3986,124 +4020,149 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
           case JShort -> lowerInsn(LBoxShort, bodyAsm)
           case _ -> ()
         }
-        // reference types need no boxing
-        // Stack: [..., Object(value)]
-        // Emit: this._values.add(value)
         emitAstore(bodyAsm, yieldTempSlot)
-        // temp = value; stack: [...]
         emitAload(bodyAsm, 0)
-        // stack: [this]
-        emitGetfield(bodyAsm, valuesIdx)
-        // stack: [ArrayList]
+        emitGetfield(bodyAsm, channelIdx)
         emitAload(bodyAsm, yieldTempSlot)
-        // stack: [ArrayList, value]
-        emitInvokevirtual(bodyAsm, listAddIdx)
-        // stack: [boolean]
-        emitPop(bodyAsm)
-        // stack: []
+        emitInvokevirtual(bodyAsm, sqPutIdx)
       }
       case _ -> lowerInsn(insn, bodyAsm)
     }
     bi = bi + 1
   }
+  // Signal exhaustion by putting the sentinel onto the channel.
+  emitAload(bodyAsm, 0)
+  emitGetfield(bodyAsm, channelIdx)
+  emitGetstatic(bodyAsm, sentinelIdx)
+  emitInvokevirtual(bodyAsm, sqPutIdx)
+  emitLabel(bodyAsm, "run_try_end")
   emitReturn(bodyAsm)
-  // Use assembleCodeInferred so maxStack is derived from peakStack rather than
-  // a fixed constant — caller-supplied bodyInsns can be arbitrarily deep.
-  val bodyCode = assembleCodeInferred(bodyAsm, bodyMaxLocals)
+  // InterruptedException handler: consumer abandoned iteration; exit silently.
+  emitLabel(bodyAsm, "run_ie_handler")
+  emitPop(bodyAsm)
+  emitReturn(bodyAsm)
+  val ieClassIdx = poolClass(pool, "java/lang/InterruptedException")
+  val bodyCode = assembleCodeWith1Handler(
+    bodyAsm,
+    bodyAsm.peakStack,
+    bodyMaxLocals,
+    "run_try_start",
+    "run_try_end",
+    "run_ie_handler",
+    ieClassIdx
+  )
   val bodyAttrs: List[Attribute] = newList()
   bodyAttrs.add(bodyCode)
   val bodyPs: List[JvmType] = newList()
-  val runBodyMethod = makeMethodInfo(ACC_PUBLIC, "runBody", buildDescriptor(bodyPs, JVoid), bodyAttrs)
+  val runMethod = makeMethodInfo(ACC_PUBLIC, "run", buildDescriptor(bodyPs, JVoid), bodyAttrs)
 
-  // ── 4. iterator(): Iterator ─────────────────────────────────────────────────
-  // Reinitialise _values = new ArrayList() and reset _pos before running body,
-  // matching the MSIL GetAsyncEnumerator path so a second iterator() call
-  // produces a fresh sequence instead of appending to the old one.
+  // ── 5. iterator(): Iterator ────────────────────────────────────────────────
+  // Initialise the channel, reset state, start a virtual thread running `this`
+  // (which executes run()), and return this as Iterator.
   val iterAsm = newAssembler(pool)
-  val posIdx = poolFieldref(pool, genClass, "_pos", posDesc)
-  val runBodyIdx = poolMethodref(pool, genClass, "runBody", "()V")
+  val startVtRef = poolMethodref(pool, threadClass, "startVirtualThread", "(Ljava/lang/Runnable;)Ljava/lang/Thread;")
+  // _channel = new SynchronousQueue()
   emitAload(iterAsm, 0)
-  emitNew(iterAsm, poolClass(pool, listClass))
+  emitNew(iterAsm, poolClass(pool, sqClass))
   emitDup(iterAsm)
-  emitInvokespecial(iterAsm, listCtorIdx)
-  emitPutfield(iterAsm, valuesIdx)
+  emitInvokespecial(iterAsm, sqCtorIdx)
+  emitPutfield(iterAsm, channelIdx)
+  // _done = false (0)
   emitAload(iterAsm, 0)
-  emitInvokevirtual(iterAsm, runBodyIdx)
+  emitIconst(iterAsm, 0)
+  emitPutfield(iterAsm, doneIdx)
+  // _pending = null
   emitAload(iterAsm, 0)
-  emitPushInt(iterAsm, 0)
-  emitPutfield(iterAsm, posIdx)
+  emitAconstNull(iterAsm)
+  emitPutfield(iterAsm, pendingIdx)
+  // Thread.startVirtualThread(this) — discard the returned Thread
+  emitAload(iterAsm, 0)
+  emitInvokestatic(iterAsm, startVtRef)
+  emitPop(iterAsm)
+  // return this
   emitAload(iterAsm, 0)
   emitAreturn(iterAsm)
   val iterPs: List[JvmType] = newList()
   val iterRetType = JRef(className = iterClass)
+  // maxStack=3: new + dup before invokespecial SynchronousQueue.<init>
   val iterCode = assembleCode(iterAsm, 3, 1)
-  // maxStack=3: new+dup before invokespecial
   val iterAttrs: List[Attribute] = newList()
   iterAttrs.add(iterCode)
   val iterMethod = makeMethodInfo(ACC_PUBLIC, "iterator", buildDescriptor(iterPs, iterRetType), iterAttrs)
 
-  // ── 5. hasNext(): boolean ───────────────────────────────────────────────────
+  // ── 6. hasNext(): boolean ──────────────────────────────────────────────────
+  // slot 0 = this, slot 1 = the value taken from the channel (v)
   val hnAsm = newAssembler(pool)
-  val sizePs: List[JvmType] = newList()
-  val listSizeIdx = poolMethodref(pool, listClass, "size", "()I")
+  val sqTakeIdx = poolMethodref(pool, sqClass, "take", "()Ljava/lang/Object;")
+  // if (_done) return false
   emitAload(hnAsm, 0)
-  emitGetfield(hnAsm, posIdx)
+  emitGetfield(hnAsm, doneIdx)
+  emitIfeq(hnAsm, "hn_try_start")
+  emitIconst(hnAsm, 0)
+  emitIreturn(hnAsm)
+  // try: v = _channel.take()
+  emitLabel(hnAsm, "hn_try_start")
   emitAload(hnAsm, 0)
-  emitGetfield(hnAsm, valuesIdx)
-  emitInvokevirtual(hnAsm, listSizeIdx)
-  emitIfIcmpge(hnAsm, "hn_false")
+  emitGetfield(hnAsm, channelIdx)
+  emitInvokevirtual(hnAsm, sqTakeIdx)
+  emitAstore(hnAsm, 1)
+  // if (v == _DONE_SENTINEL) { _done = true; return false; }
+  emitAload(hnAsm, 1)
+  emitGetstatic(hnAsm, sentinelIdx)
+  emitIfAcmpne(hnAsm, "hn_pending")
+  emitAload(hnAsm, 0)
+  emitIconst(hnAsm, 1)
+  emitPutfield(hnAsm, doneIdx)
+  emitIconst(hnAsm, 0)
+  emitIreturn(hnAsm)
+  // _pending = v; return true
+  emitLabel(hnAsm, "hn_pending")
+  emitAload(hnAsm, 0)
+  emitAload(hnAsm, 1)
+  emitPutfield(hnAsm, pendingIdx)
   emitIconst(hnAsm, 1)
   emitIreturn(hnAsm)
-  emitLabel(hnAsm, "hn_false")
+  // End of try range (never reached from the paths above; marks the handler end).
+  emitLabel(hnAsm, "hn_try_end")
+  // InterruptedException handler: _done = true; return false
+  emitLabel(hnAsm, "hn_ie_handler")
+  emitPop(hnAsm)
+  emitAload(hnAsm, 0)
+  emitIconst(hnAsm, 1)
+  emitPutfield(hnAsm, doneIdx)
   emitIconst(hnAsm, 0)
   emitIreturn(hnAsm)
   val hnPs: List[JvmType] = newList()
-  val hnCode = assembleCode(hnAsm, 2, 1)
+  val hnCode = assembleCodeWith1Handler(hnAsm, 2, 2, "hn_try_start", "hn_try_end", "hn_ie_handler", ieClassIdx)
   val hnAttrs: List[Attribute] = newList()
   hnAttrs.add(hnCode)
   val hasNextMethod = makeMethodInfo(ACC_PUBLIC, "hasNext", buildDescriptor(hnPs, JBoolean), hnAttrs)
 
-  // ── 6. next(): Object ───────────────────────────────────────────────────────
-  // Returns _values.get(_pos), then increments _pos.
+  // ── 7. next(): Object ──────────────────────────────────────────────────────
   val nextAsm = newAssembler(pool)
-  val getPs: List[JvmType] = newList()
-  getPs.add(JInt)
-  val listGetIdx = poolMethodref(pool, listClass, "get", "(I)Ljava/lang/Object;")
   emitAload(nextAsm, 0)
-  emitGetfield(nextAsm, valuesIdx)
-  emitAload(nextAsm, 0)
-  emitGetfield(nextAsm, posIdx)
-  emitInvokevirtual(nextAsm, listGetIdx)
-  emitAstore(nextAsm, 1)
-  // stash result before incrementing _pos (field, not local)
-  // Increment _pos via getfield + iadd + putfield.
-  emitAload(nextAsm, 0)
-  emitAload(nextAsm, 0)
-  emitGetfield(nextAsm, posIdx)
-  emitIconst(nextAsm, 1)
-  emitIadd(nextAsm)
-  emitPutfield(nextAsm, posIdx)
-  emitAload(nextAsm, 1)
+  emitGetfield(nextAsm, pendingIdx)
   emitAreturn(nextAsm)
   val nextPs: List[JvmType] = newList()
-  val nextCode = assembleCode(nextAsm, 3, 2)
-  // maxStack=3: peak during _pos increment (aload,aload,getfield,iconst+iadd,putfield)
+  val nextCode = assembleCode(nextAsm, 1, 1)
   val nextAttrs: List[Attribute] = newList()
   nextAttrs.add(nextCode)
   val nextMethod = makeMethodInfo(ACC_PUBLIC, "next", buildDescriptor(nextPs, objType), nextAttrs)
 
-  // ── 7. Assemble generator class ────────────────────────────────────────────
+  // ── 8. Assemble generator class ────────────────────────────────────────────
   val genMethods: List[MethodInfo] = newList()
+  genMethods.add(clinitMethod)
   genMethods.add(ctorMethod)
-  genMethods.add(runBodyMethod)
+  genMethods.add(runMethod)
   genMethods.add(iterMethod)
   genMethods.add(hasNextMethod)
   genMethods.add(nextMethod)
   val genIfaces: List[String] = newList()
   genIfaces.add(iterableClass)
   genIfaces.add(iterClass)
+  genIfaces.add(runnableClass)
   // Use Java 5 (version 49) so the verifier does not require StackMapTable
-  // for hasNext()'s branch — bootstrap quality, matching lowerRangeType.
+  // for hasNext()'s branches and run()'s exception handler.
   result.add(
     ClassFile(
       minorVersion = 0,
@@ -4118,7 +4177,7 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
     )
   )
 
-  // ── 8. Kickoff method on host class ────────────────────────────────────────
+  // ── 9. Kickoff method on host class ────────────────────────────────────────
   // When hostClass is empty the caller (codegenPackage full pipeline) has
   // arranged for a factory LFunc in LPFuncs; skip the separate host class.
   if g.hostClass != "" {
@@ -4201,17 +4260,10 @@ pub func lowerScopeBlock(
   firstTaskSlot: in Int,
 ): Unit {
   if detectJavaFeatureVersion() >= 24 {
-    panic(
-      "Jvm.Lowering: structured-concurrency 'scope' blocks are not yet " +
-        "supported when targeting JDK 24+. java.util.concurrent." +
-        "StructuredTaskScope became a sealed interface (JEP 499) whose " +
-        "still-preview method descriptors cannot be verified on this Java 21 " +
-        "toolchain; build with a JDK 21..23 toolchain for now. " +
-        "JDK 24+ support is tracked in " +
-        "https://github.com/nichobbs/lyric-lang/issues/2263"
-    )
+    lowerScopeBlockJdk24(asm, callableNames, scopeSlot, firstTaskSlot)
+  } else {
+    lowerScopeBlockShutdownOnFailure(asm, callableNames, scopeSlot, firstTaskSlot)
   }
-  lowerScopeBlockShutdownOnFailure(asm, callableNames, scopeSlot, firstTaskSlot)
 }
 
 // JDK 21..23: StructuredTaskScope.ShutdownOnFailure (class API, invokevirtual).
@@ -4293,6 +4345,53 @@ func lowerScopeBlockShutdownOnFailure(
   // close() on the success path — all subtasks succeeded.
   emitAload(asm, scopeSlot)
   emitInvokevirtual(asm, closeRef)
+}
+
+// JDK 24+: StructuredTaskScope sealed interface (JEP 499), invokeinterface.
+// The default open() scope makes join() throw FailedException (a RuntimeException
+// subtype) if any subtask failed, so explicit per-subtask state checks are not
+// needed — failure propagates automatically.
+func lowerScopeBlockJdk24(
+  asm: in MethodAssembler,
+  callableNames: in List[String],
+  scopeSlot: in Int,
+  firstTaskSlot: in Int,
+): Unit {
+  val scopeIface = "java/util/concurrent/StructuredTaskScope"
+
+  // StructuredTaskScope.open() — static factory on the interface; invokestatic
+  // with an InterfaceMethodref entry is valid at class-file version 52+ (Java 8+).
+  val openRef = poolIfaceMethodref(asm.pool, scopeIface, "open", "()Ljava/util/concurrent/StructuredTaskScope;")
+  emitInvokestatic(asm, openRef)
+  emitAstore(asm, scopeSlot)
+
+  // fork each callable — invokeinterface on StructuredTaskScope (interface API).
+  val forkDesc = "(Ljava/util/concurrent/Callable;)Ljava/util/concurrent/StructuredTaskScope$Subtask;"
+  var taskSlot = firstTaskSlot
+  for callableName in callableNames.toArray() {
+    val callableClass = poolClass(asm.pool, callableName)
+    val callableCtor = poolMethodref(asm.pool, callableName, "<init>", "()V")
+    val forkRef = poolIfaceMethodref(asm.pool, scopeIface, "fork", forkDesc)
+
+    emitAload(asm, scopeSlot)
+    emitNew(asm, callableClass)
+    emitDup(asm)
+    emitInvokespecial(asm, callableCtor)
+    emitInvokeinterface(asm, forkRef, 2)
+    emitPop(asm)
+    taskSlot = taskSlot + 1
+  }
+
+  // join() — blocks until all subtasks finish; throws FailedException on any failure.
+  val joinRef = poolIfaceMethodref(asm.pool, scopeIface, "join", "()Ljava/util/concurrent/StructuredTaskScope;")
+  emitAload(asm, scopeSlot)
+  emitInvokeinterface(asm, joinRef, 1)
+  emitPop(asm)
+
+  // close() — release scope resources.
+  val closeRef = poolIfaceMethodref(asm.pool, scopeIface, "close", "()V")
+  emitAload(asm, scopeSlot)
+  emitInvokeinterface(asm, closeRef, 1)
 }
 
 // ── JDK feature-version detection ─────────────────────────────────────────────
