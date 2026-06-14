@@ -467,6 +467,26 @@ func checkOpaquePatternHiding(
   }
 }
 
+// Resolve a const/val name to its Bool literal value, if it is a Bool const
+// initialised with a literal.  Used by Bool match exhaustiveness so that a
+// `case @FLAG_ENABLED` / `case @FLAG_DISABLED` pair (const patterns, #3488)
+// is recognised as covering `true`/`false` rather than falling through and
+// producing a false T0016.  Returns None for non-Bool / non-literal inits.
+func constBoolOfExpr(e: in Expr): Option[Bool] {
+  match e.kind {
+    case EParen(inner) -> constBoolOfExpr(inner)
+    case ELiteral(lit) -> match lit { case LBool(b) -> Some(value = b); case _ -> None }
+    case _ -> None
+  }
+}
+
+func tryResolveConstBool(tbl: in SymbolTable, name: in String): Option[Bool] {
+  match symTableTryFindOne(tbl, name) {
+    case None -> None
+    case Some(sym) -> match sym.kind { case DKConst(cd) -> constBoolOfExpr(cd.init); case DKVal(vd) -> constBoolOfExpr(vd.init); case _ -> None }
+  }
+}
+
 func checkMatchExhaustive(
   tbl: in SymbolTable,
   diag: in List[Diagnostic],
@@ -494,7 +514,7 @@ func checkMatchExhaustive(
               match arms[i].guard {
                 case Some(_) -> {
                 }
-                case None -> match arms[i].pattern.kind { case PLiteral(lit) -> match lit { case LBool(b) -> if b { sawTrue = true } else { sawFalse = true }; case _ -> {  } }; case _ -> {  } }
+                case None -> match arms[i].pattern.kind { case PLiteral(lit) -> match lit { case LBool(b) -> if b { sawTrue = true } else { sawFalse = true }; case _ -> {  } }; case PConstRef(cn) -> match tryResolveConstBool(tbl, cn) { case Some(b) -> if b { sawTrue = true } else { sawFalse = true }; case None -> {  } }; case _ -> {  } }
               }
               i = i + 1
             }

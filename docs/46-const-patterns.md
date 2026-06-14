@@ -1,6 +1,6 @@
 # 46 — Const Patterns in Match Arms
 
-**Status:** Shipped (D-progress-523; Q-MP-001 resolved in docs/06)
+**Status:** Shipped (D-progress-523; Q-MP-001 resolved in docs/06; codegen representation codified in D101)
 
 **Motivation:** Code review issue #3382 surfaced a common pattern — matching against named `val` constants — that the current type checker rejects. A `decodeStep` function wants to match wire-type values against symbolic constants (`WIRE_VARINT`, `WIRE_FIXED64`, etc.) rather than raw integer literals. Today this requires leaving a TODO comment.
 
@@ -75,7 +75,12 @@ A const pattern resolves any `pub val` or private `val` reachable from the curre
 
 ### Type checker
 
-In `typechecker_exprs.l`, the pattern-lowering routine (`lowerPatternTest`) gains an arm for `@Ident` const patterns. During type checking, `@NAME` resolves to a module-level `val`, and its compile-time constant value is validated:
+In `typechecker_exprs.l`, const-pattern validation lives in
+`checkConstRefPattern` (the shipped name; this sketch's `lowerPatternTest`
+predates D101). `@NAME` resolves to a module-level `val`/`const`, and its
+compile-time constant value is validated — but, per D101, the `PConstRef`
+node is **retained** rather than rewritten to `PLiteral`; the sketch below
+shows the validation logic, not a literal rewrite:
 
 ```lyric
 // In lowerPatternTest (comparison-side pattern lowering):
@@ -122,11 +127,25 @@ func parsePattern(...): Pattern {
 
 ### Codegen (MSIL)
 
-In `msil/codegen.l`, the pattern lowering (`lowerPatternTestMsil`) handles `PLiteral` already. A const pattern reaching codegen is pre-lowered to `PLiteral` by the type checker, so no codegen changes are needed.
+> **Implemented differently from this sketch — see D101.** The shipped type
+> checker does *not* rewrite `PConstRef` to `PLiteral`; it validates the
+> pattern and leaves the `PConstRef` node in the AST. `msil/codegen.l`'s
+> `lowerPatternTestMsil` therefore has an explicit `PConstRef(constName)` arm:
+> integer consts are matched with `ldc.i4`/`ceq` (value pulled from
+> `cctx.constValues`); `String`/`Float`/`Long`/`Char` consts load the const's
+> static field (`ldsfld` against `staticValTokens`) and compare with
+> `Object.Equals` (strings) or `ceq`. The `case None ->` fall-through is a
+> defensive `panic` guarded by `checkConstRefPattern` — it cannot fire for a
+> type-checked program.
 
 ### Codegen (JVM)
 
-Similarly, `jvm/codegen.l`'s pattern lowering handles `PLiteral`. Const patterns are pre-lowered by type check.
+> **Implemented differently from this sketch — see D101.** `jvm/codegen/03_match.l`
+> has an explicit `PConstRef(constName)` arm that resolves the const's JVM type
+> from `ctx.moduleVals` and emits a `getstatic` plus a type-appropriate
+> comparison (`lcmp`/`if_icmpne` for `Long`, `dcmpl` for `Double`, `fcmpl` for
+> `Float`, `equals` for reference types, `if_icmpne` for `Boolean`/`Char`/`Int`).
+> Like the MSIL arm, the `case None ->` path is a defensive `panic`.
 
 ---
 
@@ -183,8 +202,8 @@ These are implementation checkpoints for Phase 3+ work:
 - [x] Generic val types rejected with diagnostic T0071.
 - [x] Match arms using `@CONST` patterns compile to the same IL/bytecode as literal patterns (MSIL: `constValues` lookup + `ldc.i4/ceq` or `ldsfld/ceq`; JVM: `getstatic` + type-appropriate comparison).
 - [x] Self-test: `const_pattern_self_test.l` exercises `@` patterns on `Int`, `Long`, `String`, `Char`, `Bool`, and `Float` consts.
-- [ ] A rewritten `proto_main.l` (or similar) uses `@WIRE_VARINT`, etc., and compiles cleanly.
-- [ ] No regressions in existing `EMatch` or pattern tests on both MSIL and JVM backends.
+- [x] A rewritten `proto_main.l` (`lyric-proto/src/proto_main.l` `decodeStep`) uses `@WIRE_VARINT`/`@WIRE_FIXED64`/`@WIRE_LENGTH_DELIMITED`/`@WIRE_FIXED32` and compiles cleanly; the `lyric-proto` test suite (17 tests, incl. fixed32/fixed64/varint/length-delimited round-trips) passes (#3382, #3487).
+- [x] No regressions in existing `EMatch` or pattern tests on MSIL: `const_pattern_self_test.l` (18) and `typechecker_self_test.l` (233, incl. the new T0068/T0069/T0072 and Bool-exhaustiveness const-pattern cases, #3485/#3488) pass via native `lyric test`. JVM parity is exercised by `const_pattern_self_test.l --target jvm` in CI.
 
 ---
 
@@ -239,8 +258,9 @@ Requires extending range-pattern lowering to accept const references for bounds.
 - `docs/10-bootstrap-progress.md` — record const-pattern implementation milestone
 
 **Implementation files:**
-- `lyric-compiler/lyric/type_checker/typechecker_exprs.l::lowerPatternTest` — add `PConstRef` arm with T0068, T0069, T0071, T0072 diagnostics
-- `lyric-compiler/lyric/type_checker/typechecker_exprs.l::lowerPatternBind` — add `PConstRef` arm (returns `PError`; const patterns don't bind)
+- `lyric-compiler/lyric/parser/parser_ast.l` — `PConstRef(name: String)` variant in the `PatternKind` union (the AST node every other reference depends on)
 - `lyric-compiler/lyric/parser/parser_exprs.l::parsePattern` — recognize `@Ident` and build `PConstRef` node
-- `lyric-compiler/msil/codegen.l::lowerPatternTestMsil` — no changes (const patterns are pre-lowered to `PLiteral` by type check)
-- `lyric-compiler/jvm/codegen.l::lowerPatternTestJvm` — no changes (const patterns are pre-lowered to `PLiteral` by type check)
+- `lyric-compiler/lyric/type_checker/typechecker_exprs.l::checkConstRefPattern` — validate a `PConstRef` arm against the scrutinee with T0068 (type mismatch), T0069 (non-constant val), T0071 (generic type), T0072 (name not a val/const); recurses through `POr`/`PParen`/`PTypeTest`/constructor/record sub-patterns
+- `lyric-compiler/lyric/type_checker/typechecker_exprs.l::bindPatternTyped` — `PConstRef` arm introduces no bindings (a const pattern compares, it does not bind — same as `PLiteral`/`PWild`)
+- `lyric-compiler/msil/codegen.l::lowerPatternTestMsil` — explicit `PConstRef` arm (see Codegen (MSIL) above; D101)
+- `lyric-compiler/jvm/codegen/03_match.l` — explicit `PConstRef` arm (see Codegen (JVM) above; D101)

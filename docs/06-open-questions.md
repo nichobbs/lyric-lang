@@ -537,9 +537,9 @@ questions"` for their current status.
 
 ## Q-MP-001: Const pattern syntax and scoping
 
-**Status:** RESOLVED → D-progress-523
+**Status:** RESOLVED → D-progress-523; codegen representation codified in D101.
 
-**Decision:** `@Ident` syntax adopted. `case @NAME ->` in a match arm compares the scrutinee against the compile-time value of `val`/`const NAME`. The `@` prefix is unambiguous: it cannot precede an identifier in annotation or binding-pattern contexts. The referenced name must resolve to a `val` initialised with a literal (or a `const` declaration); dynamic vals (T0069), generic vals (T0071), non-val names (T0072), and type mismatches (T0068) are rejected at type-check time. Codegen emits the same comparison as a literal pattern — no runtime overhead. Full implementation shipped in PR for this branch; see `docs/46-const-patterns.md` for the complete design.
+**Decision:** `@Ident` syntax adopted. `case @NAME ->` in a match arm compares the scrutinee against the compile-time value of `val`/`const NAME`. The `@` prefix is unambiguous: it cannot precede an identifier in annotation or binding-pattern contexts. The referenced name must resolve to a `val` initialised with a literal (or a `const` declaration); dynamic vals (T0069), generic vals (T0071), non-val names (T0072), and type mismatches (T0068) are rejected at type-check time. The type checker validates the const pattern but retains the `PConstRef` node; each backend lowers it to the same comparison as a literal pattern (no runtime overhead). The choice to keep `PConstRef` through to codegen rather than rewrite to `PLiteral` at type-check is recorded in D101 (docs/03). See `docs/46-const-patterns.md` for the complete design.
 
 ---
 
