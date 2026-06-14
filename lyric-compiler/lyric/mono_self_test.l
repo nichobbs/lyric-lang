@@ -516,6 +516,21 @@ test "multi-segment qualified call is not hijacked by a fewer-param same-named g
   )
 }
 
+// Single-segment (unqualified) sibling of #3627 (#3677): the same arity guard
+// applies to the unqualified-call branch of `rewriteExpr`.  An unqualified
+// `assertEq("x","y","z")` (three args) must not be specialised against a
+// same-file one-param generic `assertEq[T](x)` — leave it for normal resolution
+// rather than emitting a broken `assertEq__String`.
+test "unqualified call is not hijacked by a fewer-param same-named generic (#3677)" {
+  val src = "package P\n" + "func assertEq[T](x: in T): T { x }\n" +
+    "func caller(): Unit { assertEq(\"x\", \"y\", \"z\") }\n"
+  val res = runMono(src)
+  assertTrue(
+    not hasFunc(res.file, "assertEq__String"),
+    "#3677: a 3-arg unqualified call must not be specialised against a 1-param generic"
+  )
+}
+
 // Mixed positional inference — one type-param inferred via nested
 // generic call, the other via literal.
 test "mixed inference shapes" {
