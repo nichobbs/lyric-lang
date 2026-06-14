@@ -843,10 +843,10 @@ func buildProject(
         case Err(_) -> {
           val hasMaven = match manifest.maven { case Some(m) -> m.entries.count > 0; case None -> false }
           if hasMaven {
-            Console.println(
+            printErr(
               "build: note: target/restore/jvm-classpath.txt not found; Maven JARs will not be available to the JVM emitter"
             )
-            Console.println("  run `lyric restore` first to download Maven dependencies")
+            printErr("  run `lyric restore` first to download Maven dependencies")
           }
         }
       }

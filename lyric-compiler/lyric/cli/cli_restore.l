@@ -738,9 +738,7 @@ func findMavenResolverJar(): Option[String] {
       if File.fileExists(p) {
         return Some(value = p)
       } else {
-        Console.println(
-          "restore: warning: LYRIC_MAVEN_RESOLVER=" + p + " does not exist; falling back to default search locations"
-        )
+        printErr("restore: warning: LYRIC_MAVEN_RESOLVER=" + p + " does not exist; falling back to default search locations")
       }
     }
     case Err(_) -> ()
@@ -877,7 +875,7 @@ func restoreMavenJars(manifest: in Manifest, mfDir: in String): Int {
   if jarPaths.count == 0 and maven.entries.count > 0 {
     printErr(
       "restore: warning: Maven resolver reported 0 resolved JARs for " + toString(maven.entries.count) +
-        " declared coordinates — check that lyric-resolver.jar emits compact JSON (no whitespace in `\"jarPath\":\"...\"` fields)"
+        " declared coordinates — check resolver output above for errors; verify coordinates and network connectivity"
     )
   }
   var classpathText = ""
