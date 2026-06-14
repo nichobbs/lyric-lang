@@ -88,30 +88,6 @@ pub union LambdaError {
   case InternalError(message: String)
 }
 
-/// Construct a HandlerError with the given message and errorType.
-@stable(since = "0.1")
-pub func handlerError(message: in String, errorType: in String): LambdaError {
-  HandlerError(message = message, errorType = errorType)
-}
-
-/// Construct a ParseError with the given message.
-@stable(since = "0.1")
-pub func parseError(message: in String): LambdaError {
-  ParseError(message = message)
-}
-
-/// Construct a TimeoutError with the given remainingMs.
-@stable(since = "0.1")
-pub func timeoutError(remainingMs: in Long): LambdaError {
-  TimeoutError(remainingMs = remainingMs)
-}
-
-/// Construct an InternalError with the given message.
-@stable(since = "0.1")
-pub func internalError(message: in String): LambdaError {
-  InternalError(message = message)
-}
-
 /// Human-readable message for logging or diagnostic output.
 @stable(since = "0.1")
 pub func errorMessage(err: in LambdaError): String {

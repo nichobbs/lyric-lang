@@ -63,28 +63,28 @@ test "LambdaError.InternalError: carries message" {
 
 // ─── errorMessage ─────────────────────────────────────────────────────────────
 test "errorMessage: HandlerError includes errorType and message" {
-  val e = Lambda.handlerError("bad input", "ValidationError")
+  val e: LambdaError = HandlerError("bad input", "ValidationError")
   val msg = Lambda.errorMessage(e)
   assertTrue(msg.contains("ValidationError"), "message includes errorType")
   assertTrue(msg.contains("bad input"), "message includes handler message")
 }
 
 test "errorMessage: ParseError includes prefix and message" {
-  val e = Lambda.parseError("invalid JSON")
+  val e: LambdaError = ParseError("invalid JSON")
   val msg = Lambda.errorMessage(e)
   assertTrue(msg.contains("ParseError"), "message includes ParseError prefix")
   assertTrue(msg.contains("invalid JSON"), "message includes inner message")
 }
 
 test "errorMessage: TimeoutError includes remaining ms" {
-  val e = Lambda.timeoutError(42i64)
+  val e: LambdaError = TimeoutError(42i64)
   val msg = Lambda.errorMessage(e)
   assertTrue(msg.contains("42"), "message includes remaining ms")
   assertTrue(msg.contains("TimeoutError"), "message includes TimeoutError prefix")
 }
 
 test "errorMessage: InternalError includes message" {
-  val e = Lambda.internalError("DLL not found")
+  val e: LambdaError = InternalError("DLL not found")
   val msg = Lambda.errorMessage(e)
   assertTrue(msg.contains("InternalError"), "message includes InternalError prefix")
   assertTrue(msg.contains("DLL not found"), "message includes inner message")
