@@ -126,7 +126,7 @@ deferred to Phase 3 by design.
 | M5.3 — project-aware CLI: `run`, `fmt`, `lint`, `prove`, `doc`, `test`, `bench` all auto-discover `lyric.toml` when invoked with no source file; `--manifest` override; `fmt` dry-run/`--write` distinction; `run --target dotnet\|jvm` for project mode | **Shipped** (PR #3063) | — |
 | M5.3 — `bench --target jvm`; `fmt --stdin` + multi-file variadic; `lint` project-mode summary + exit-code fix; `test` `@test_module` fallback scan; `check`, `clean`, `update`, `deps` new commands; `bench` double-read optimization | **Shipped** (PR #3102) | — |
 
-### Phase 2 — type system completion (in progress)
+### Phase 2 — type system completion (complete)
 
 | Item | Status | Lands in |
 |---|---|---|
@@ -202,7 +202,7 @@ deferred to Phase 3 by design.
   snapshot directory, no diff rendering, no normalization — Phase 3
   follow-ups.
 
-### Phase 4 — proof system (in progress)
+### Phase 4 — proof system (complete)
 
 | Milestone | Status | Lands in |
 |---|---|---|

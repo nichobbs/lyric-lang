@@ -1092,39 +1092,44 @@ func wpWalk(env: in VEnv, resultSort: in SortInfo, postcond: in Term, stmts: in 
             WpResult(wp = inner.wp, sideGoals = sg, assumed = asList, diags = di)
           }
           case None -> {
-            // Check if it's an if statement.
-            match tryExtractIf(callExpr) {
-              case Some(ifTriple) -> {
-                wpIfStmt(env, resultSort, postcond, stmts, idx, ifTriple.cond, ifTriple.thenBranch, ifTriple.elseBranchOpt, st.span)
-              }
-              case None -> {
-                // General call or expression statement.
-                match callExpr.kind {
-                  case ECall(_, _) -> {
-                    val (callR, callDiags) = translateExpr(env, callExpr)
-                    val inner = wpWalk(env, resultSort, postcond, stmts, idx + 1)
-                    val sg: List[SideGoal] = newList()
-                    var i = 0
-                    while i < callR.sideConds.count {
-                      sg.add(SideGoal(term = callR.sideConds[i], kind = GKAssertion, span = callExpr.span))
-                      i = i + 1
+            // Trailing expression in a block is the implicit return value (#3371).
+            if idx + 1 >= stmts.count {
+              wpExpr(env, resultSort, postcond, callExpr)
+            } else {
+              // Check if it's an if statement.
+              match tryExtractIf(callExpr) {
+                case Some(ifTriple) -> {
+                  wpIfStmt(env, resultSort, postcond, stmts, idx, ifTriple.cond, ifTriple.thenBranch, ifTriple.elseBranchOpt, st.span)
+                }
+                case None -> {
+                  // General call or expression statement.
+                  match callExpr.kind {
+                    case ECall(_, _) -> {
+                      val (callR, callDiags) = translateExpr(env, callExpr)
+                      val inner = wpWalk(env, resultSort, postcond, stmts, idx + 1)
+                      val sg: List[SideGoal] = newList()
+                      var i = 0
+                      while i < callR.sideConds.count {
+                        sg.add(SideGoal(term = callR.sideConds[i], kind = GKAssertion, span = callExpr.span))
+                        i = i + 1
+                      }
+                      i = 0
+                      while i < inner.sideGoals.count {
+                        sg.add(inner.sideGoals[i])
+                        i = i + 1
+                      }
+                      val asList: List[Term] = newList()
+                      appendTermList(asList, callR.assumed)
+                      appendTermList(asList, inner.assumed)
+                      val di: List[Diagnostic] = newList()
+                      appendTermList2(di, callDiags)
+                      appendTermList2(di, inner.diags)
+                      WpResult(wp = inner.wp, sideGoals = sg, assumed = asList, diags = di)
                     }
-                    i = 0
-                    while i < inner.sideGoals.count {
-                      sg.add(inner.sideGoals[i])
-                      i = i + 1
+                    case _ -> {
+                      // Other SExpr — skip.
+                      wpWalk(env, resultSort, postcond, stmts, idx + 1)
                     }
-                    val asList: List[Term] = newList()
-                    appendTermList(asList, callR.assumed)
-                    appendTermList(asList, inner.assumed)
-                    val di: List[Diagnostic] = newList()
-                    appendTermList2(di, callDiags)
-                    appendTermList2(di, inner.diags)
-                    WpResult(wp = inner.wp, sideGoals = sg, assumed = asList, diags = di)
-                  }
-                  case _ -> {
-                    // Other SExpr — skip.
-                    wpWalk(env, resultSort, postcond, stmts, idx + 1)
                   }
                 }
               }
@@ -1587,10 +1592,7 @@ func collectModifiedVarsSt(st: in Statement, output: in List[String]): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §10. Goals for a single function.
 // ─────────────────────────────────────────────────────────────────────────────
-// True when a function's body contains at least one EYield node (a generator).
-// The verifier cannot model the suspend/resume control flow of generators, so a
-// contract-bearing generator is rejected by goalsForFunction rather than having
-// its body silently coerced to an opaque term by the translateExpr catch-all.
+// True when a function body contains EYield (generator); WP/SP cannot model generator suspend/resume.
 func funcBodyContainsYield(decl: in FunctionDecl): Bool {
   match decl.body {
     case Some(b) -> {
@@ -1664,7 +1666,93 @@ func exprContainsYield(e: in Expr): Bool {
     case ESpawn(inner) -> exprContainsYield(inner)
     case EPropagate(inner) -> exprContainsYield(inner)
     case ETry(inner) -> exprContainsYield(inner)
+    case EOld(inner) -> exprContainsYield(inner)
     case EBlock(blk) -> blockContainsYield(blk)
+    case EUnsafe(blk) -> blockContainsYield(blk)
+    case EPrefix(_, operand) -> exprContainsYield(operand)
+    case EBinop(_, lhs, rhs) -> exprContainsYield(lhs) or exprContainsYield(rhs)
+    case EMember(receiver, _) -> exprContainsYield(receiver)
+    case ETypeApp(fn, _) -> exprContainsYield(fn)
+    case EAssign(target, _, value) -> exprContainsYield(target) or exprContainsYield(value)
+    case ECall(fn, args) -> {
+      if exprContainsYield(fn) {
+        return true
+      }
+      var i = 0
+      while i < args.count {
+        val argExpr = match args[i] { case CANamed(_, v, _) -> v; case CAPositional(expr) -> expr }
+        if exprContainsYield(argExpr) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case EIndex(receiver, indices) -> {
+      if exprContainsYield(receiver) {
+        return true
+      }
+      var i = 0
+      while i < indices.count {
+        if exprContainsYield(indices[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case ETuple(exprs) -> {
+      var i = 0
+      while i < exprs.count {
+        if exprContainsYield(exprs[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case EList(exprs) -> {
+      var i = 0
+      while i < exprs.count {
+        if exprContainsYield(exprs[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case EInterpolated(segments) -> {
+      var i = 0
+      while i < segments.count {
+        match segments[i] {
+          case ISExpr(x) -> {
+            if exprContainsYield(x) {
+              return true
+            }
+          }
+          case ISText(_, _) -> ()
+        }
+        i = i + 1
+      }
+      false
+    }
+    case ERange(bound) -> {
+      match bound {
+        case RBClosed(lo, hi) -> exprContainsYield(lo) or exprContainsYield(hi)
+        case RBHalfOpen(lo, hi) -> exprContainsYield(lo) or exprContainsYield(hi)
+        case RBLowerOpen(hi) -> exprContainsYield(hi)
+        case RBUpperOpen(lo) -> exprContainsYield(lo)
+      }
+    }
+    case EForall(_, whereExpr, body) -> {
+      val inWhere = match whereExpr { case Some(w) -> exprContainsYield(w); case None -> false }
+      inWhere or exprContainsYield(body)
+    }
+    case EExists(_, whereExpr, body) -> {
+      val inWhere = match whereExpr { case Some(w) -> exprContainsYield(w); case None -> false }
+      inWhere or exprContainsYield(body)
+    }
+    case ELambda(_, body) -> blockContainsYield(body)
     case EIf(cond, thenBranch, elseBranch, _) -> {
       if exprContainsYield(cond) {
         return true
@@ -1702,14 +1790,7 @@ func eobContainsYield(eob: in ExprOrBlock): Bool {
 }
 
 pub func goalsForFunction(env0: in VEnv, decl: in FunctionDecl): (List[Goal], List[Diagnostic]) {
-  // Soundness guard (#3298): the WP/SP calculus has no model for the
-  // suspend/resume control flow of `async`/`yield` bodies — an `await` or
-  // `yield` expression hits the translateExpr catch-all and is silently
-  // replaced with an uninterpreted opaque term, so a `requires:`/`ensures:`
-  // clause would be "discharged" against an unmodelled body.  Until
-  // effect-aware VC generation lands, reject any contract-bearing
-  // async/generator function with a hard error and emit no goals (rather than
-  // vacuous/opaque ones).  A non-contract async function is unaffected.
+  // Soundness guard: WP/SP has no suspend/resume model; reject contract-bearing async/yield rather than opaquing (#3298).
   if decl.contracts.count > 0 and (decl.isAsync or funcBodyContainsYield(decl)) {
     val asyncDiags: List[Diagnostic] = newList()
     asyncDiags.add(

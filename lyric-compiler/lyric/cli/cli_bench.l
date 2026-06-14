@@ -96,10 +96,7 @@ func runBenchOnSource(
           }
         }
       } else {
-        // Co-locate the fully-compiled stdlib runtime assemblies beside the
-        // bench output: the synthesised harness imports `Std.Time` (now /
-        // since / totalMillis), so `Lyric.Stdlib.Time.dll` and its siblings
-        // must resolve under `dotnet exec`.  Mirrors `runOnce`.
+        // Harness imports Std.Time, so stdlib DLLs must be co-located beside the output (mirrors runOnce).
         copyRuntimeDepsBeside(outPath, findCompiledLibDir())
         writeRuntimeConfig(outPath)
         val execArgs: List[String] = newList()

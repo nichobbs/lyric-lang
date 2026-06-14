@@ -7,7 +7,7 @@
 //! asserts on stdout.  Covers Phases 1–3 of the multi-package bridge:
 //! independent bundles (Phase 1), cross-package function calls (Phase 2),
 //! cross-package record and union round-trips (Phase 3), cross-package
-//! module-level `pub val` reads (Public backing field, #3040), and
+//! module-level `pub val` reads (Public backing field), and
 //! cfg-erasure diagnostics (F0012/F0013).
 //!
 //! Placed in `lyric-compiler/lyric/` (not `lyric-stdlib/tests/`) so it
@@ -302,17 +302,12 @@ test "cross-package union parenless nullary case" {
   )
 }
 
-// Cross-package module-level `pub val` READ (#3040 / #3239 / #3240).
 // Pkg A exports a non-constant `pub val` (computed in its `.cctor`, so it is
 // emitted as a real static field rather than const-inlined into the consumer).
-// Pkg B imports A and reads the val by name from `main`, forcing a cross-type
-// `ldsfld` against pkg A's `Program.__val_*` field.  PR #3239 changed that
-// backing field from `FieldAttributes.Private` to `Public`; were it still
-// Private the read would fail at JIT/verify time (the field lives on pkg A's
-// type, read from pkg B's code in the same assembly), so a non-42 stdout / a
-// non-zero exit code here regresses the #3040 fix.  This is the cross-package
-// companion to the same-package Module-val self-test (#3039).
-test "cross-package pub val read (Public backing field, #3040)" {
+// Pkg B reads the val from `main`, forcing a cross-type `ldsfld` against pkg A's
+// `Program.__val_*` field.  The backing field must be `Public`; were it Private
+// the read would fail at JIT/verify time (pkg A's type, read from pkg B's code).
+test "cross-package pub val read (Public backing field)" {
   val packages: List[ProjectPackagePayload] = newList()
   packages.add(
     mkPkg(
@@ -488,4 +483,87 @@ test "cfg erasure F0013 typo warning does not fail build" {
   declared.add("experimental")
   val ok = compileAndGetSucceeded("cfg-f0013", pkgs, "CfgF0013", empty, declared)
   assertTrue(ok, "cfg_erasure_f0013_typo: warning should not fail the build")
+}
+
+// ─── Regression: multi-segment qualified calls (#3349) ───────────────────────
+// A consumer references a library function with the fully-qualified
+// two-segment path `Lib.func(arg)`.  This exercises the `flattenPathExprSegs`
+// path in `lowerMethodCallMsil` that was fixed in PR #3343.
+test "multi-segment qualified call resolves correctly" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg("MultiSeg.Lib", "package MultiSeg.Lib\n" + "\n" + "pub func triple(x: in Int): Int { x + x + x }\n")
+  )
+  packages.add(
+    mkPkg(
+      "MultiSeg.App",
+      "package MultiSeg.App\n" + "\n" + "import MultiSeg.Lib\n" + "\n" + "func main(): Unit {\n" +
+        "  println(MultiSeg.Lib.triple(7))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("multiseg", packages, "MultiSeg")
+  assertEqualInt(result.exitCode, 0, "multi_segment_qualified_call: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "21", "multi_segment_qualified_call: stdout=21")
+}
+
+// ─── Regression: UFCS chained member read through `self` (#3353) ────────────
+// `func Outer.rd(self: in Outer)` with body `self.inner.value` used to
+// produce invalid IL because ESelf returned MClass(pkgName) instead of
+// MClass("pkg.Outer"), making the inner ldfld look up the wrong key and pop
+// the receiver, leaving the stack empty for the outer castclass/ldfld.
+test "UFCS chained member read through self" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "Ufcs.App",
+      "package Ufcs.App\n" + "\n" + "record Inner { v: Int }\n" + "record Outer { i: Inner }\n" +
+        "func Outer.rd(self: in Outer): Int { self.i.v }\n" +
+        "func main(): Unit { println(Outer(i = Inner(v = 42)).rd()) }\n"
+    )
+  )
+  val result = compileAndRun("ufcs_chain", packages, "Ufcs")
+  assertEqualInt(result.exitCode, 0, "ufcs_chain: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "ufcs_chain: stdout=42")
+}
+
+// ─── Regression: qualified enum-case pattern with shared case names (#3349) ──
+// Two packages each declare an enum with a case named `Same`.  A consumer
+// matches on `PackA.Color.Same` and verifies the correct ordinal fires,
+// not the ordinal from `PackB.Shape.Same`.  Exercises the PConstructor arm
+// in `lowerPatternTestMsil` fixed in PR #3343.
+test "qualified enum-case pattern with shared case name" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "QualEnum.Lib",
+      "package QualEnum.Lib\n" + "\n" + "pub union Color {\n" + "  case Same\n" + "  case Different\n" + "}\n" + "\n" +
+        "pub union Shape {\n" +
+        "  case Same\n" +
+        "  case Different\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "QualEnum.App",
+      "package QualEnum.App\n" + "\n" + "import QualEnum.Lib\n" + "\n" + "func main(): Unit {\n" +
+        "  val c: Color = Color.Same\n" +
+        "  val result = match c {\n" +
+        "    case Color.Same -> \"color-same\"\n" +
+        "    case Color.Different -> \"color-different\"\n" +
+        "  }\n" +
+        "  println(result)\n" +
+        "  val s: Shape = Shape.Different\n" +
+        "  val r2 = match s {\n" +
+        "    case Shape.Same -> \"shape-same\"\n" +
+        "    case Shape.Different -> \"shape-different\"\n" +
+        "  }\n" +
+        "  println(r2)\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("qualenum", packages, "QualEnum")
+  assertEqualInt(result.exitCode, 0, "qualified_enum_case_pattern: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "color-same\nshape-different", "qualified_enum_case_pattern: correct arms fired")
 }

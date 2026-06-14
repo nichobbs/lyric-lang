@@ -274,7 +274,7 @@ func emitBoxByteArray(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
 // §6b. `out` / `inout` parameter prologue + descriptor (#1763).
 // ─────────────────────────────────────────────────────────────────────────────
 // True when any of `params` declares an `out`/`inout` mode.
-pub func anyHolderParam(params: in List[Param]): Bool {
+func anyHolderParam(params: in List[Param]): Bool {
   var i = 0
   while i < params.count {
     if isHolderMode(params[i].mode) {

@@ -575,9 +575,11 @@ The authoritative tactical task list is `docs/12-todo-plan.md`._
 
 ### Bottom line (updated 2026-06-12)
 
-**Bands 1–5 are all complete.** Band 1 (front-end soundness), Band 2 (backend
-correctness, substantially), Band 3 (async for MSIL), Band 4 (feature completion),
-and Band 5 (F# elimination + AOT) have all shipped as of 2026-06-12.
+**Bands 1, 3–5 are complete; Band 2 is substantially resolved.** Band 1
+(front-end soundness), Band 3 (async for MSIL), Band 4 (feature completion), and
+Band 5 (F# elimination + AOT) have all shipped as of 2026-06-12. Band 2 (backend
+correctness) has all major items resolved with no remaining v1.0 blockers; open
+edge cases are tracked separately (see below).
 
 Open correctness bugs tracked separately and not blocking v1.0: #2725
 (await-in-try invalid IL), #2469 (JVM

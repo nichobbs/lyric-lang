@@ -70,11 +70,36 @@ func hasPriorUserSym(tbl: in SymbolTable, name: in String): Bool {
   false
 }
 
+// Same case name is only a duplicate when it belongs to the same parent
+// union/enum (same parentId).  Cases with the same name in *different* unions
+// or enums are distinct and must be allowed — they are distinguished at use
+// sites via qualified patterns (`Color.Same` vs `Shape.Same`, #3349).
+func caseNameExistsForParent(tbl: in SymbolTable, name: in String, parentId: in TypeId): Bool {
+  var i = 0
+  while i < tbl.symbols.count {
+    val sym = tbl.symbols[i]
+    if sym.name == name and not sym.isImported {
+      val sameParent = match sym.kind {
+        case DKUnionCase(pid, _) -> typeIdEq(pid, parentId)
+        case DKEnumCase(pid, _) -> typeIdEq(pid, parentId)
+        case _ -> false
+      }
+      if sameParent {
+        return true
+      }
+    }
+    i = i + 1
+  }
+  false
+}
+
 func checkDuplicate(
   tbl: in SymbolTable, diag: in List[Diagnostic], name: in String, kind: in DeclKind, span: in Span
 ): Unit {
   val isDup = match kind {
     case DKFunc(fd) -> funcArityExists(tbl, name, fd.params.count)
+    case DKUnionCase(parentId, _) -> caseNameExistsForParent(tbl, name, parentId)
+    case DKEnumCase(parentId, _) -> caseNameExistsForParent(tbl, name, parentId)
     case _ -> hasPriorUserSym(tbl, name)
   }
   if isDup {
