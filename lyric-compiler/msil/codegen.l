@@ -20023,8 +20023,6 @@ func buildGenericCaseCtorTok(
   val pkgPart = ctorKey.substring(0, dotIdx0)
   val caseRefKey = pkgPart + "/" + ctorKey
   val caseRefRow = match mapGet(cctx.ffiTypeRefs, caseRefKey) { case Some(r) -> r; case None -> return 0 }
-  // Build concrete type args: context wins only when it is an MClass
-  // (reference type or interface).  See comment in buildInBundleGenericCtorTok
   // Apply the same context-vs-arg priority as buildInBundleGenericCtorTok; see
   // the comment there for the full rationale (#3502 + nested-generic regression).
   val typeArgs: List[MsilType] = newList()

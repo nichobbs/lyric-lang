@@ -2083,6 +2083,11 @@ jobs:
           "$lyric_bin" test --target jvm lyric-compiler/lyric/aspect_weave_self_test.l
           echo "aspect-weave self-test ran: aspect_weave_self_test.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
 
+      # JVM coverage for stdlib_generic_iface_self_test.l is deferred: the JVM
+      # backend erases generic type parameters to Object and does not yet emit
+      # checkcast before interface dispatch on extracted generic fields
+      # (e.g. `case Ok(s) -> s.area()` where T = Shape).  Tracked in #3613.
+
       # Named-arg/default-param self-test on JVM — pins call-site reorder and
       # default fill on the JVM target (#1503).  Imports only `Std.*`.
       - name: Named-arg/default-param self-test on JVM (native lyric test --target jvm)
