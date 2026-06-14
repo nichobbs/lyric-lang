@@ -419,10 +419,17 @@ pub func typeExprToJvm(te: in TypeExpr, pkgName: in String): JvmType {
     }
     case TSlice(_) -> JArray(elem = JRef(className = "java/lang/Object"))
     case TGenericApp(head, _) -> {
+      // `List[T]` / `Map[K, V]` map to their concrete runtime class (`newList()` →
+      // `ArrayList`, `newMap()` → `HashMap`) rather than generic-erased `Object`, so
+      // instance dispatch (`xs.add(...)`) resolves through auto-FFI.  Restricted to
+      // the bare unqualified spelling so a package-qualified user type `MyPkg.List[T]`
+      // is never mis-mapped — `List` / `Map` are reserved here as the `TRef` arm
+      // reserves `Int` / `String`.  All other generic heads erase to `Object`.
+      val isBare = head.segments.count == 1
       val seg = lastSegment(head)
-      if seg == "List" {
+      if isBare and seg == "List" {
         JRef(className = "java/util/ArrayList")
-      } else if seg == "Map" {
+      } else if isBare and seg == "Map" {
         JRef(className = "java/util/HashMap")
       } else {
         JRef(className = "java/lang/Object")

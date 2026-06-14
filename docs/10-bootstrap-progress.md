@@ -25027,3 +25027,51 @@ arms unreachable; inverted the nesting to match `retName` first so the
 `None` arms (advice with no `-> ret`) are genuinely reachable (#3435).  No
 behaviour change for any realistic advice; `aspect_weave_self_test.l` 7/7 on
 both targets and `weaver_self_test.l` 28/28 unchanged.
+
+### D-progress-522 — JVM auto-FFI: verified reference assignability in overload scoring; tightened generic type mapping (#3409, #3425)
+
+Follow-up hardening to D-progress-519 (#3406), addressing two review SUGGESTIONs.
+
+**#3409 — verified reference assignability (`jvm/auto_ffi.l`, `jvm/class_reader.l`).**
+The reference-subtype fallback added in D-progress-519 scored *any* reference
+argument against *any* reference parameter at the blind priority 1, deferring
+all real type errors to a JVM `VerifyError` at class-load and risking wrong
+overload selection when two reference overloads tied at 1.  The scorer now
+verifies IS-A against the loaded class metadata: `ClassReader.parseClass` reads
+the directly-declared interface names into a new `ClassInfo.interfaces` field,
+and `isAssignableRef` walks the argument class's superclass chain — checking each
+class and its directly-declared interfaces against the parameter type — to rank a
+*verified* assignable match at 4 (above the blind fallback, below an exact match
+at 10).  An unprovable pair still scores 1 (permissive: the verifier enforces the
+true constraint at load), so an assignability we cannot prove never blocks a real
+call; interface→super-interface chains are not followed (the reader skips
+`ACC_INTERFACE` class files), and that reports `false` (→ fallback), never a wrong
+positive.  `scoreParamMatch` stays pure (descriptor-only); the new `scoreParam`
+threads the `AutoFfiCtx` through `scoreMethod` / `findBestMethod` /
+`findBestConstructor` / `scoreAndGetSuper` to reach `isAssignableRef`.
+
+**#3425 — tightened generic type mapping (`jvm/codegen/01_types.l`).**
+The D-progress-519 `TGenericApp` mapping (`List[T]` → `ArrayList`, `Map[K,V]` →
+`HashMap`) matched on the head's short name alone, so a package-qualified user
+type `MyPkg.List[T]` would have been mis-mapped to `java/util/ArrayList`.  The
+match now requires the *bare, unqualified* spelling (`head.segments.count == 1`),
+the canonical form after `import Std.Collections`; a same-unit user type that
+shadows `List` while `Std.Collections` is in scope is a type-checker name
+conflict, not a codegen concern — consistent with how the `TRef` arm reserves
+`Int` / `String` by short name.
+
+Verified: `auto_ffi_jvm_self_test.l` gains a verified-assignability case
+(`ArrayList(Collection)` copy constructor selected over `ArrayList(int)` by
+walking `ArrayList → AbstractList → AbstractCollection`, which declares the
+`Collection` interface) — 15/15 on `--target jvm`; the full JVM self-test suite
+(generic, closure, record-method, control-flow, try/catch, out/inout,
+silent-miscompile guard, middle-end, NaN, extern-loop, extern-param) stays green.
+
+The chunked-drain optimization (#3408) is **not** included: replacing the
+per-byte `read`/`write` loop in `_kernel_jvm/process_capture_host.l` with
+`InputStream.readNBytes(int)` + `ByteArrayOutputStream.writeBytes(byte[])` hits a
+self-hosted JVM codegen gap — a `byte[]` local declared inside a `while` body
+produces a `StackMapTable` stack-size mismatch (`VerifyError`) at the loop
+back-edge (same family as #3307 / D-progress-513, but for array-typed locals).
+Both methods resolve and run correctly outside a loop; the in-loop case needs a
+focused backend fix and remains tracked in #3408.
