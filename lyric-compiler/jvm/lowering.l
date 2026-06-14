@@ -3859,7 +3859,6 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   val doneDesc = "Z"
   val pendingDesc = typeDescriptor(objType)
   val channelDesc = typeDescriptor(sqType)
-  val posDesc = typeDescriptor(JInt)
 
   val fieldsOut: List[FieldInfo] = newList()
   // Static sentinel signals exhaustion to the consumer.
@@ -4081,10 +4080,19 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   // ── 5. iterator(): Iterator ────────────────────────────────────────────────
   // Initialise the channel, reset state, start a virtual thread running `this`
   // (which executes run()), and return this as Iterator.
-  // Single-use: calling iterator() while a prior iteration is in progress
-  // replaces the channel, orphaning the running virtual thread in put().
-  // That thread will park indefinitely (no data recipient on the new channel).
-  // Callers must not re-enter iterator() during an active iteration.
+  //
+  // Resource-leak note (early-exit / re-entry):
+  //   If the consumer stops calling hasNext() before the generator is exhausted
+  //   (e.g. a `break` from a `for` loop), the producer virtual thread remains
+  //   parked in SynchronousQueue.put() indefinitely — it holds no OS thread
+  //   (virtual threads are cheap), but it IS a GC root until the generator object
+  //   itself is collected.  Callers that truncate iteration must be aware of this
+  //   cost; interrupt-on-abandon is a tracked follow-up (#3565).
+  //
+  //   Re-entry (calling iterator() while a prior iteration is in progress) replaces
+  //   the channel, orphaning the running virtual thread permanently in put() with no
+  //   recipient.  This constitutes a thread leak.  Callers must not re-enter
+  //   iterator() during an active iteration.
   val iterAsm = newAssembler(pool)
   val startVtRef = poolMethodref(pool, threadClass, "startVirtualThread", "(Ljava/lang/Runnable;)Ljava/lang/Thread;")
   // _channel = new SynchronousQueue()
