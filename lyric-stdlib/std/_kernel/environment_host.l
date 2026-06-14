@@ -40,6 +40,13 @@ pub func hostCurrentDirectory(): String = ()
 @externTarget("System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory")
 pub func hostRuntimeDirectory(): String = ()
 
+// Set (or unset) a process-level environment variable.  Wraps
+// `System.Environment.SetEnvironmentVariable(string, string)`.  The new
+// value is visible to `GetEnvironmentVariable` in the same process and
+// is inherited by any child processes spawned afterwards.
+@externTarget("System.Environment.SetEnvironmentVariable")
+pub func hostSetEnvironmentVariable(key: in String, value: in String): Unit = ()
+
 // Terminates the current process. The BCL method is void; Lyric callers
 // see Never because Environment.Exit does not return in practice.
 @externTarget("System.Environment.Exit")

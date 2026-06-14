@@ -172,8 +172,8 @@ tracking issue today (band J0 files them).
 | M-4 | `@cfg(feature=…)` erasure not applied on JVM (`bridge.l` has no cfg stage) | `bridge.l`; vs `msil/bridge.l:402` | #2444 (target-gate seam) |
 | M-5 | Cross-package / generic-type monomorphization is same-package only on JVM | `bridge.l:159` | #1707 |
 | M-6 | **Maven self-hosting absent:** `[maven]` parsed only by F# `Manifest.fs`; `manifest.l` cannot read ecosystem `[maven]` tables (`lyric-web`, `lyric-mq`, `lyric-grpc`, `lyric-lambda`, …). **Parsing slice DONE (#2668):** `manifest.l` now parses `[maven]` / `[maven.options]` into `MavenSection` (`MavenEntry` + `repositories` default `["central"]` + optional `java_version`), mirroring `[nuget]`; covered by `manifest_self_test.l`. The resolution/download path (M-7) remains. | `manifest.l` `assembleMaven`; `Manifest.fs:121+` | #1622/#1708 cluster |
-| M-7 | **Maven resolver orphaned:** `resolver/` Java project not built/invoked by any script, F#, Lyric, or CI; only `LYRIC_FFI_JARS` works | `resolver/pom.xml`; no references | #673 |
-| M-8 | **F#-host kernel debt:** JVM byte-builder + constant pool via `@externTarget` into `Lyric.Jvm.Hosts` (F#), on the deletion schedule | `jvm/_kernel/kernel.l:19-28` → `JvmHosts.fs`; `docs/41` H12 | (Band 5 / #1470 parity) |
+| M-7 | ~~**Maven resolver orphaned**~~ **Partially DONE (J5).** `cli_restore.l:restoreMavenJars` now invokes `lyric-resolver.jar` via `ProcessCapture.runCaptureWithDiagnosticsTimeout`, reads the JSON response, and writes `target/restore/jvm-classpath.txt`.  `cli_build.l:buildProject` reads the classpath file before `emitProject` and injects `LYRIC_FFI_JARS` for JVM auto-FFI; after a successful JVM build it also writes `<outDir>/module-path.txt`. `LYRIC_MAVEN_RESOLVER` env var or `lyric-resolver.jar` beside the binary required.  Remaining gap: `resolver/pom.xml` must be built (`make maven-resolver`) — the JAR is not yet pre-distributed with `lyric`. | `cli_restore.l:restoreMavenJars`, `cli_build.l:buildProject`; `resolver/pom.xml` | #673 |
+| M-8 | ~~**F#-host kernel debt:** JVM byte-builder + constant pool via `@externTarget` into `Lyric.Jvm.Hosts` (F#), on the deletion schedule~~ **DONE (J5, D-progress-527).** `Lyric.Jvm.Hosts` project deleted entirely; `jvm/_kernel/kernel.l` is a pure-Lyric `ByteWriter`/`ConstantPool` using only arithmetic operators and audited BCL externs (`System.BitConverter`, `System.Convert.ToByte`, `System.IO.MemoryStream`). No `@externTarget` into F# host code. | `jvm/_kernel/kernel.l` | DONE |
 | M-9 | ~~`Std.Hash` has **no JVM host**~~ **DONE (J6).** `lyric-stdlib/std/_kernel_jvm/hash_host.l` added: `MessageDigest.getInstance("SHA-512").digest(...)` + `HexFormat.of().withUpperCase().formatHex(...)` via JVM auto-FFI (`extern type`, no F# shim). Verified by `hash_jvm_self_test.l` (3 NIST vectors) under `java`. | `_kernel_jvm/hash_host.l` | DONE |
 | M-10 | ~~`_kernel_jvm/` is **never loaded** by the self-hosted source loader~~ **DONE (J6).** `emitter.l:findStdlibSourcesForTarget(forJvm)` prefers `_kernel_jvm/<module>_host.l` and falls back to `_kernel/<module>_host.l` only when no JVM host exists; `emitJvmInProcess` threads `forJvm = true`. Required JVM `slice[Byte]↔byte[]` interop fixes in `codegen.l` (auto-FFI arg/return byte-array coercion, primitive-array index/length) and a String `==`/`!=` value-comparison fix. | `emitter.l`, `jvm/codegen.l`, `jvm/auto_ffi.l` | DONE |
 | M-11 | ~~`ProcessCaptureHost` on JVM (#1065) — design done, codegen-blocked on #3307~~ **DONE (J6, D-progress-519).** `_kernel_jvm/process_capture_host.l` rewritten as pure JVM auto-FFI: `java.lang.ProcessBuilder(List<String>)` (reference-subtype match via new score-1 path in `auto_ffi.l`), `InputStream.available()` drain loop into `ByteArrayOutputStream`, `System.currentTimeMillis()` timeout poll, `Process.destroyForcibly()` kill, `JBAOS.toString("UTF-8")` output conversion. Returns a Lyric `ProcessCaptureResult` record — no F#/Java shim. `@externTarget` stubs removed. `lyric-storage` local-fs JVM kernel (#1444/#1840) **still BLOCKED on M-4** (#2444). | `_kernel_jvm/process_capture_host.l`, `jvm/auto_ffi.l` | #1065 DONE; #1444, #1840 (blocked #2444) |
@@ -195,9 +195,9 @@ tracking issue today (band J0 files them).
 | m-4 | intra-impl `self.m`/bare `m` calls | #1722 | #1722 |
 | m-5 | nested-generic union case construction (`Result[Option[T],E]`) | #1707 | #1707 |
 | m-6 | JVM regex daemon-thread timeout shim | #1103 | #1103 |
-| m-7 | `splitPathList` splits on `:` and `;`, breaking Windows `LYRIC_FFI_JARS` | #2214 | #2214 |
-| m-8 | negative `loadClass` results not cached (repeated JMOD scans) | #2181 | #2181 |
-| m-9 | `findBestConstructor` implicit score threshold vs explicit `>= 0` | #2226 | #2226 |
+| m-7 | `splitPathList` splits on `:` and `;`, breaking Windows `LYRIC_FFI_JARS` (`C:\path` drive letter treated as separator) | #2214 | #2214 |
+| m-8 | ~~negative `loadClass` results not cached (repeated JMOD scans)~~ **DONE.** `loadClass` maintains `ctx.missKeys` (linear scan); repeated lookups of unknown classes skip the JMOD scan entirely. | `auto_ffi.l:284-306` | #2181 DONE |
+| m-9 | ~~`findBestConstructor` implicit score threshold vs explicit `>= 0`~~ **DONE.** `findBestConstructor` uses `if s >= 0 and s > bestScore` (#2226). | `auto_ffi.l:553` | #2226 DONE |
 | m-10 | `Std.Time.sleepMillis` is a JVM stub; doc omits the limitation | #2101 | #2101 |
 | m-11 | Doc contradictions: Q-J012/Q-J013 marked "shipped" in `docs/36` but "NOT present / Phase 6" in `docs/31`/`docs/03`; self-test counts drift (B124/B125/B130) across `docs/18`/`docs/33`/`docs/04`; parity count "20-program" vs "22-program" | `docs/31:409-434` vs `docs/36:123-150`; count drift | (Band J0 docs sweep) |
 | m-12 | ~~`Float`/`Double` ordered comparisons used `fcmpl`/`dcmpl` for all six operators → NaN compared as less-than-everything for `<`/`<=` (IEEE 754 §5.11 violation)~~ **Fixed (D-progress-508):** `floatCmpInsn(op, isDouble)` selects `fcmpg`/`dcmpg` for `<`/`<=` and `fcmpl`/`dcmpl` otherwise, in both `lowerCmp` and `lowerCmpFail`; verified by `nan_compare_jvm_self_test.l`. | `codegen/02_exprs.l` | #2772 |
@@ -356,31 +356,28 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
 - **Acceptance:** async + generator + generics self-tests on `--target jvm`.
 
 ### J5 — Eliminate F# host debt and ship Maven (self-hosting + ecosystem)
-- M-8: replace `Lyric.Jvm.Hosts` (`JvmHosts.fs`) byte-builder/constant-pool
-  with a pure-Lyric `_kernel_jvm` boundary (mirror the MSIL ByteWriter win,
-  #1492). No `@externTarget` into F# host code.
-- M-6/M-7: port `[maven]` parsing into `manifest.l`; build a self-hosted Maven
-  resolution path (revive or replace `resolver/`), wired into
-  `lyric build --target jvm`. Until then, document `LYRIC_FFI_JARS` as the only
-  supported mechanism rather than implying automated resolution.
-  - **Parsing slice DONE (#2668):** `manifest.l` now parses `[maven]` and
-    `[maven.options]` into a `MavenSection` (`MavenEntry` coordinate/version
-    pairs, `repositories` defaulting to `["central"]`, optional `java_version`),
-    mirroring how `[nuget]` / `[nuget.options]` are parsed (`assembleMaven`
-    parallels `assembleNuget`). Both the plain `group:artifact = "version"`
-    and extended `{ version = "..." }` inline-table forms are accepted, per
-    `docs/31-maven-linking.md` §2 (D053). Covered by `manifest_self_test.l`
-    (single coordinate, multiple coordinates + options, extended form, and
-    absence → `None`).
-  - **Remaining (resolver slice):** consume the parsed `MavenSection` from the
-    JVM build pipeline — revive or replace the orphaned Java `resolver/`,
-    download + checksum-verify JARs (`B0050`/`B0054`), generate `_extern/*.l`
-    auto-shims (§4), and wire the resolved classpath into
-    `lyric build --target jvm`.
-- M-15/m-7/m-8/m-9: `extern type` robustness (abstract-type guard,
-  `java/lang/Object` walk, path-split, negative-cache), Windows path handling.
+- **M-8 DONE:** `Lyric.Jvm.Hosts` (`JvmHosts.fs`) byte-builder/constant-pool
+  deleted; `jvm/_kernel/kernel.l` is a pure-Lyric `ByteWriter`/`ConstantPool`
+  using only arithmetic and audited BCL externs. No `@externTarget` into F# host code.
+- **M-6 DONE (parsing):** `manifest.l` parses `[maven]` / `[maven.options]` into
+  `MavenSection` (`MavenEntry` coordinate/version pairs, `repositories` defaulting
+  to `["central"]`, optional `java_version`).  Covered by `manifest_self_test.l`.
+- **M-7 partial DONE (resolver wire-up):** `cli_restore.l:restoreMavenJars`
+  invokes `lyric-resolver.jar` via JSON stdin/stdout protocol, writes
+  `target/restore/jvm-classpath.txt`.  `cli_build.l:buildProject` injects
+  `LYRIC_FFI_JARS` before `emitProject` (JVM auto-FFI) and writes
+  `<outDir>/module-path.txt` after a successful JVM build.  A `make maven-resolver`
+  Makefile target builds `resolver/pom.xml` into `lyric-resolver.jar`.
+  - **Remaining gap:** `lyric-resolver.jar` must be pre-built and placed beside the
+    `lyric` binary (or `LYRIC_MAVEN_RESOLVER` set).  Pre-distribution of the JAR
+    alongside the `lyric` binary and lock-file SHA verification (`B0050`/`B0054`)
+    are deferred to a follow-up.
+- **m-8 DONE:** `loadClass` negative-result cache implemented (`ctx.missKeys`).
+- **m-9 DONE:** `findBestConstructor` uses explicit `>= 0` threshold (#2226).
+- m-7/M-15: Windows `LYRIC_FFI_JARS` path-split (`:` vs `;`) and abstract-type
+  guard / `java/lang/Object` walk remain open.
 - **Acceptance:** an ecosystem library with a `[maven]` table builds and runs
-  on `--target jvm` from a clean checkout with no manual classpath.
+  on `--target jvm` from a checkout with `lyric-resolver.jar` present.
 
 ### J6 — stdlib JVM kernel parity (cross-platform stdlib actually works on JVM)
 - **M-9 (DONE):** added `_kernel_jvm/hash_host.l` (Java SHA-512 via

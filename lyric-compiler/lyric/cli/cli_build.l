@@ -808,7 +808,59 @@ func buildProject(
     packageVersion = manifest.packageSection.version
   )
 
+  // For JVM builds, inject Maven classpath into LYRIC_FFI_JARS so the JVM
+  // auto-FFI resolver can locate downloaded Maven JARs at compile time.
+  // The `:` separator is the POSIX path-list separator; Windows drive-letter
+  // ambiguity is a known gap tracked in #2214 (both sides fixed together).
+  //
+  // The original LYRIC_FFI_JARS value is restored immediately after emitProject
+  // returns so that multi-package builds do not accumulate stale entries (#3554).
+  // `mavenJarColonSep` is reused below to write `module-path.txt` without
+  // re-reading the file (#3555).
+  var mavenJarColonSep = ""
+  var savedFfiJars: Option[String] = None
+  match target {
+    case Jvm -> {
+      val classpathFile = Path.join(Path.join(Path.join(mfDir, "target"), "restore"), "jvm-classpath.txt")
+      match File.readText(classpathFile) {
+        case Ok(text) -> {
+          val trimmed = Str.trim(text)
+          if trimmed.length > 0 {
+            val lines = Str.split(trimmed, "\n")
+            var li = 0
+            while li < lines.length {
+              val line = Str.trim(lines[li])
+              if line.length > 0 {
+                if mavenJarColonSep.length > 0 {
+                  mavenJarColonSep = mavenJarColonSep + ":"
+                }
+                mavenJarColonSep = mavenJarColonSep + line
+              }
+              li += 1
+            }
+          }
+        }
+        case Err(_) -> ()
+      }
+      if mavenJarColonSep.length > 0 {
+        val prevFfi = match Environment.getVar("LYRIC_FFI_JARS") { case Ok(v) -> v; case Err(_) -> "" }
+        savedFfiJars = Some(value = prevFfi)
+        val injected = if prevFfi.length > 0 { prevFfi + ":" + mavenJarColonSep } else { mavenJarColonSep }
+        Environment.setVar("LYRIC_FFI_JARS", injected)
+      }
+    }
+    case Dotnet -> ()
+  }
+
   val result = Emitter.emitProject(projReq)
+
+  // Restore LYRIC_FFI_JARS immediately — before any early return — so
+  // subsequent buildProject calls in the same process start clean (#3554).
+  match savedFfiJars {
+    case Some(prev) -> Environment.setVar("LYRIC_FFI_JARS", prev)
+    case None -> ()
+  }
+
   var hadError = false
   for d in result.diagnostics.toArray() {
     match d.severity {
@@ -825,7 +877,18 @@ func buildProject(
     return 1
   }
 
-  writeRuntimeConfig(outPath)
+  match target {
+    case Dotnet -> writeRuntimeConfig(outPath)
+    case Jvm -> {
+      if mavenJarColonSep.length > 0 {
+        val mpPath = Path.join(outDir, "module-path.txt")
+        match File.writeText(mpPath, mavenJarColonSep) {
+          case Err(e) -> printErr("build: warning: cannot write " + mpPath + ": " + IOError.message(e))
+          case Ok(_) -> ()
+        }
+      }
+    }
+  }
   val elapsedMs = Time.totalMillis(Time.since(Time.now(), buildStart))
   Console.println(
     "built " + outPath + " (" + toString(pkgs.count) + " package(s), " + Format.formatFixed(elapsedMs, 0) + "ms)"

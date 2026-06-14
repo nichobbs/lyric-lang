@@ -25,7 +25,7 @@ Here is the full module inventory:
 | `Std.Console` | `print`, `println`, `error`, `readLine` |
 | `Std.Directory` | `exists`, `create`, `createRecursive`, `enumerate`, `enumerateFiles`, `delete` |
 | `Std.Path` | Pure path helpers: `join`, `extension`, `basename`, `dirname`, `isAbsolute` |
-| `Std.Environment` | `getVar`, `getVarOrDefault`, `args`, `exitCode` |
+| `Std.Environment` | `getVar`, `getVarOrDefault`, `setVar`, `args`, `exitCode` |
 | `Std.Process` | `run`, `runChecked`, `runCapture`, `runCaptureWithInput`, `ProcessResult` |
 | `Std.App` | Application entry: `run(main: func Unit): Int`, `withConfig`, `Config` |
 | `Std.Log` | Structured logging: `LogLevel`, `Logger` interface, `debug`, `info`, `warn`, `error` |

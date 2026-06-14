@@ -25226,3 +25226,48 @@ reject the class (Pair is not assignable to HashMap) before the test runs.
 The deferred multi-package scenario — a consumer package using `Pkg.List[T]`
 where `Pkg.List` is a user-defined non-ArrayList generic type — requires a
 multi-file project self-test and remains tracked in #3455.
+
+### D-progress-527 — J5: Maven restore wire-up, Std.Environment.setVar, JVM module-path.txt (#2668)
+
+J5 items from `docs/44-jvm-production-readiness-plan.md` (M-7 Maven resolver
+wire-up, m-9 Std.Environment.setVar, #673 module-path.txt generation).
+
+**Std.Environment.setVar** (`lyric-stdlib/std/environment.l`,
+`lyric-stdlib/std/_kernel/environment_host.l`,
+`lyric-stdlib/std/_kernel_jvm/environment_host.l`):
+`@externTarget("System.Environment.SetEnvironmentVariable")` backed .NET
+extern + no-op JVM stub.  Public API:
+`pub func setVar(key: in String, value: in String): Unit`.  Used by the JVM
+build pipeline to inject `LYRIC_FFI_JARS` before calling `emitProject` so the
+auto-FFI resolver finds Maven library `.class` files.  Kernel-boundary ratchet
+bumped 324 → 325 in `KernelBoundaryTests.fs`.
+
+**Maven restore wire-up** (`lyric-compiler/lyric/cli/cli_restore.l`):
+`restoreMavenJars(manifest, mfDir)` calls `lyric-resolver.jar` via
+`ProcessCapture.runCaptureWithDiagnosticsTimeout("java", ["-jar", jar],
+requestJson, 300000)`.  The resolver receives a JSON object on stdin
+(`coordinates`, `repositories`, `javaVersion`, `cacheDir`, `outputDir`) and
+returns a JSON array of `{jarPath: "..."}` objects on stdout.
+`extractMavenJarPaths` splits the output structurally (no full JSON parser;
+Maven coordinates and paths cannot contain `"`) and writes
+`target/restore/jvm-classpath.txt` (one path per line).  Resolver discovery
+checks `LYRIC_MAVEN_RESOLVER`, `<appBaseDir>/lyric-resolver.jar`,
+`<appBaseDir>/../lyric-resolver.jar`, and `$HOME/.lyric/tools/lyric-resolver.jar`.
+When the resolver is not found, `lyric restore` prints a note and returns 0
+(Maven JARs are only needed for `--target jvm`; `.NET` builds are unaffected).
+
+**JVM build LYRIC_FFI_JARS injection** (`lyric-compiler/lyric/cli/cli_build.l`):
+Before calling `emitProject` on a JVM build, reads
+`target/restore/jvm-classpath.txt`, splits by newline, joins with `:`, and
+calls `Environment.setVar("LYRIC_FFI_JARS", jars)` so the in-process JVM
+auto-FFI resolver (`Jvm.AutoFfi.buildAutoFfiCtx`) picks up the Maven JARs.
+
+**module-path.txt generation** (#673, `lyric-compiler/lyric/cli/cli_build.l`):
+After a successful JVM build, `jvm-classpath.txt` is copied to
+`<outDir>/module-path.txt` (beside the output `.jar`).  Callers can pass it
+directly to `java --module-path "$(cat bin/module-path.txt):bin/Foo.jar"`.
+For .NET builds, `writeRuntimeConfig` is called as before.
+
+**Makefile** (`Makefile`): `make maven-resolver` target wraps
+`mvn package -q -DskipTests -f resolver/pom.xml` to build
+`resolver/target/lyric-resolver.jar`.

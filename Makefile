@@ -119,6 +119,12 @@ self-test: ## Run one self-hosted self-test, e.g. `make self-test NAME=parser`
 	dotnet run --project bootstrap/tests/Lyric.Emitter.Tests -c $(BUILD_CONFIG) \
 	  -- --filter-test-case "$(NAME)_self_test_passes"
 
+# ── Maven resolver ──────────────────────────────────────────────────────────
+
+maven-resolver: ## Build resolver/pom.xml into resolver/target/lyric-resolver.jar
+	mvn package -q -DskipTests -f resolver/pom.xml
+	@echo "lyric-resolver.jar built: resolver/target/lyric-resolver.jar"
+
 # ── Housekeeping ────────────────────────────────────────────────────────────
 
 clean: ## Remove bootstrap artefacts (.bootstrap) and the ./bin symlink

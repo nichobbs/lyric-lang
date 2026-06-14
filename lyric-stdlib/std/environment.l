@@ -91,3 +91,19 @@ pub func currentDirectory(): String {
 pub func runtimeDirectory(): String {
   hostRuntimeDirectory()
 }
+
+/// Set (or replace) a process-level environment variable.
+///
+/// The new value is visible to subsequent `getVar` / `getVarOrDefault` calls
+/// in the same process and is inherited by any child processes spawned after
+/// this call.
+///
+/// On .NET, delegates to `System.Environment.SetEnvironmentVariable`.
+/// On JVM this is a no-op (the JVM exposes no portable `setenv` equivalent
+/// without unsafe reflection); the Lyric CLI — the primary caller of this
+/// function — always runs on .NET, so the JVM no-op is never exercised in
+/// practice.
+@stable(since = "1.0")
+pub func setVar(key: in String, value: in String): Unit {
+  hostSetEnvironmentVariable(key, value)
+}

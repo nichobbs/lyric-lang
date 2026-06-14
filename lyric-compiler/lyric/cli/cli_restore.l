@@ -719,6 +719,170 @@ func cmdRestore(argv: in slice[String]): Int {
   return runRestore(mfPath, lockedMode)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §10a. Maven artifact restore helpers
+// ─────────────────────────────────────────────────────────────────────────────
+// Escape a string value for embedding in a JSON string literal.
+func jsonEscape(s: in String): String {
+  Str.replace(Str.replace(s, "\\", "\\\\"), "\"", "\\\"")
+}
+
+// Find lyric-resolver.jar.  Search order:
+//   1. LYRIC_MAVEN_RESOLVER env var (exact path to the jar)
+//   2. <appBaseDir>/lyric-resolver.jar  (installed beside the lyric binary)
+//   3. <appBaseDir>/../lyric-resolver.jar  (one level up — common dev layout)
+//   4. $HOME/.lyric/tools/lyric-resolver.jar  (user-local install)
+func findMavenResolverJar(): Option[String] {
+  match Environment.getVar("LYRIC_MAVEN_RESOLVER") {
+    case Ok(p) -> if File.fileExists(p) { return Some(value = p) } else { () }
+    case Err(_) -> ()
+  }
+  val base = Environment.appBaseDirectory()
+  val c1 = Path.join(base, "lyric-resolver.jar")
+  if File.fileExists(c1) {
+    return Some(value = c1)
+  }
+  val c2 = Path.join(Path.dirname(base), "lyric-resolver.jar")
+  if File.fileExists(c2) {
+    return Some(value = c2)
+  }
+  val home = Environment.getVarOrDefault("HOME", "")
+  if home.length > 0 {
+    val c3 = Path.join(Path.join(Path.join(home, ".lyric"), "tools"), "lyric-resolver.jar")
+    if File.fileExists(c3) {
+      return Some(value = c3)
+    }
+  }
+  None
+}
+
+// Build the JSON request body for lyric-resolver.jar's stdin protocol.
+func buildMavenResolverRequest(maven: in MavenSection, cacheDir: in String, outputDir: in String): String {
+  var coords = "["
+  var ci = 0
+  while ci < maven.entries.count {
+    val e = maven.entries[ci]
+    if ci > 0 {
+      coords = coords + ","
+    }
+    coords = coords + "{\"group\":\"" + jsonEscape(e.group) + "\",\"artifact\":\"" + jsonEscape(e.artifact) +
+      "\",\"version\":\"" +
+      jsonEscape(e.version) +
+      "\"}"
+    ci += 1
+  }
+  coords = coords + "]"
+  var repos = "["
+  var ri = 0
+  while ri < maven.repositories.count {
+    val r = maven.repositories[ri]
+    if ri > 0 {
+      repos = repos + ","
+    }
+    repos = repos + "\"" + jsonEscape(r) + "\""
+    ri += 1
+  }
+  repos = repos + "]"
+  val jvStr = match maven.javaVersion { case Some(jv) -> "\"" + jsonEscape(jv) + "\""; case None -> "null" }
+  "{\"coordinates\":" + coords + ",\"repositories\":" + repos + ",\"javaVersion\":" + jvStr + ",\"cacheDir\":\"" +
+    jsonEscape(cacheDir) +
+    "\",\"outputDir\":\"" +
+    jsonEscape(outputDir) +
+    "\"}"
+}
+
+// Extract all `jarPath` values from lyric-resolver.jar's JSON array output.
+// Uses structural splitting rather than a full JSON parser: `jarPath` values
+// are file-system paths that cannot contain `"` on any supported platform.
+func extractMavenJarPaths(jsonOutput: in String): List[String] {
+  val paths: List[String] = newList()
+  val pieces = Str.split(jsonOutput, "\"jarPath\":\"")
+  var pi = 1
+  while pi < pieces.length {
+    val piece = pieces[pi]
+    match Str.indexOf(piece, "\"") {
+      case None -> ()
+      case Some(closeIdx) -> {
+        val raw = Str.substring(piece, 0, closeIdx)
+        if raw.length > 0 {
+          val unescaped = Str.replace(Str.replace(raw, "\\\\", "\\"), "\\\"", "\"")
+          paths.add(unescaped)
+        }
+      }
+    }
+    pi += 1
+  }
+  paths
+}
+
+// Download Maven JARs declared in manifest.maven and write their paths to
+// <mfDir>/target/restore/jvm-classpath.txt (one path per line).
+// Returns 0 on success, 1 on error.  No-op when no [maven] section is present.
+func restoreMavenJars(manifest: in Manifest, mfDir: in String): Int {
+  val maven = match manifest.maven { case None -> return 0; case Some(m) -> m }
+  if maven.entries.count == 0 {
+    return 0
+  }
+  val resolverJar = match findMavenResolverJar() {
+    case None -> {
+      Console.println(
+        "restore: note: Maven dependencies declared but lyric-resolver.jar not found; " +
+          "JVM builds will skip Maven artifacts"
+      )
+      Console.println("  Set LYRIC_MAVEN_RESOLVER=/path/to/lyric-resolver.jar or place it beside the lyric binary")
+      return 0
+    }
+    case Some(j) -> j
+  }
+  val home = Environment.getVarOrDefault("HOME", "")
+  val cacheDir = if home.length > 0 { Path.join(Path.join(home, ".m2"), "repository") } else { Path.join(mfDir, ".m2") }
+  val outputDir = Path.join(Path.join(mfDir, "target"), "restore")
+  match File.createDir(outputDir) {
+    case Err(e) -> {
+      printErr("restore: cannot create " + outputDir + ": " + IOError.message(e))
+      return 1
+    }
+    case Ok(_) -> ()
+  }
+  val requestJson = buildMavenResolverRequest(maven, cacheDir, outputDir)
+  Console.println("restore: downloading Maven artifacts ...")
+  val javaArgs: List[String] = newList()
+  javaArgs.add("-jar")
+  javaArgs.add(resolverJar)
+  val captureResult = ProcessCapture.runCaptureWithDiagnosticsTimeout("java", javaArgs, requestJson, 300000)
+  if captureResult.timedOut {
+    printErr("restore: Maven resolver timed out after 300 seconds")
+    return 1
+  }
+  if captureResult.exitCode != 0 {
+    printErr("restore: Maven resolver exited with code " + toString(captureResult.exitCode))
+    if captureResult.stderr.length > 0 {
+      printErr(captureResult.stderr)
+    }
+    return 1
+  }
+  val jarPaths = extractMavenJarPaths(captureResult.stdout)
+  var classpathText = ""
+  var ji = 0
+  while ji < jarPaths.count {
+    if ji > 0 {
+      classpathText = classpathText + "\n"
+    }
+    classpathText = classpathText + jarPaths[ji]
+    ji += 1
+  }
+  val classpathFile = Path.join(outputDir, "jvm-classpath.txt")
+  match File.writeText(classpathFile, classpathText) {
+    case Err(e) -> {
+      printErr("restore: cannot write " + classpathFile + ": " + IOError.message(e))
+      return 1
+    }
+    case Ok(_) -> ()
+  }
+  Console.println("restore: " + toString(jarPaths.count) + " Maven artifact(s) resolved")
+  0
+}
+
 // Resolve and lock every dependency declared in the manifest at `mfPath`,
 // writing `lyric.lock` (or verifying it under `lockedMode`).  Extracted from
 // cmdRestore so `lyric build` can auto-restore when the lock is missing or
@@ -1046,6 +1210,11 @@ func runRestore(mfPath: in String, lockedMode: in Bool): Int {
       case Err(e) -> printErr("restore: warning: could not write lock file: " + IOError.message(e))
       case Ok(_) -> ()
     }
+  }
+
+  val mavenRc = restoreMavenJars(manifest, mfDir)
+  if mavenRc != 0 {
+    return mavenRc
   }
 
   Console.println("restore: done")
