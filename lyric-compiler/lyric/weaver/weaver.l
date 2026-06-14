@@ -1326,6 +1326,13 @@ func collectMemberRefsEOB(eob: in ExprOrBlock, receiver: in String, into: in Map
 // traversal exactly so every shipped template's bare config references
 // (e.g. `minLen`, `enabled`) are materialised by `buildConfigPrelude`, not
 // just the documented `config.<field>` qualified form (#3543).
+//
+// MAINTENANCE: this family duplicates the `collectMemberRefs*` traversal
+// structure and must stay in lockstep with it when new `Expr`/`Statement`
+// kinds are added.  Folding the two into one parameterised walker (so the
+// config-prelude pre-scan collects both `config.<field>` and bare `<field>`
+// in a single pass) is tracked as #3594; deferred to keep the #3592 fix
+// turnaround off the shared `call`/`config` collection path.
 func collectBareRefsBlock(blk: in Block, fields: in Map[String, Bool], into: in Map[String, Bool]): Unit {
   var i = 0
   while i < blk.statements.count {
@@ -2577,12 +2584,7 @@ func resolveFromPath(path: in ModulePath): String {
 /// (template absent from `templates`) are passed through unchanged so the
 /// caller can decide whether to emit a diagnostic.
 func configFieldByName(
-  // A `from`-template is C-mode (`@inline_template`) when its `around` body
-  // reads the matched function's arguments via `<argsName>.<field>` member
-  // access.  `collectAspectTemplates` stores only the `AspectDecl` (not the
-  // declaring Item's annotations), so the `@inline_template` marker is lost
-  // during collection; reconstruct it from the body so the resolved instance
-  // gets the `args.<field>` rewrite (#3543).
+  // Find a config field by name in a config-field list, or None.
   cfg: in List[ConfigField],
   name: in String,
 ): Option[ConfigField] {
@@ -2624,12 +2626,23 @@ func mergeAspectConfig(tplCfg: in List[ConfigField], instCfg: in List[ConfigFiel
   result
 }
 
+// A `from`-template is C-mode (`@inline_template`) when its `around` body
+// reads the matched function's arguments via the `args.<field>` keyword.
+// `collectAspectTemplates` stores only the `AspectDecl` (not the declaring
+// Item's annotations), so the `@inline_template` marker is lost during
+// collection; reconstruct it from the body so the resolved instance gets the
+// `args.<field>` rewrite (#3543).  The receiver scanned for is the literal
+// `args` — the exact keyword `tryMemberRewrite` rewrites — NOT the
+// `around(<name>)` binding (which is usually `call`).  Using the binding name
+// (#3592) misclassified every template that merely calls `call.proceed()` as
+// C-mode and, worse, missed a genuine C-mode template that reads `args.field`
+// but never references the ambient `call`, regressing the #3543 NRE.
 func aspectTemplateIsCMode(decl: in AspectDecl): Bool {
   match decl.around {
     case None -> false
     case Some(a) -> {
       val refs: Map[String, Bool] = newMap()
-      collectMemberRefsBlock(a.body, a.argsName, refs)
+      collectMemberRefsBlock(a.body, "args", refs)
       refs.count > 0
     }
   }

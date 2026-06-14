@@ -128,3 +128,45 @@ test "direct inline_template aspect: too-short short-circuits, valid proceeds" {
     case Err(_) -> assertTrue(false, "valid input must not be short-circuited")
   }
 }
+
+// ── Form 4: C-mode `from`-template that reads args but never references call ──
+// Regression for #3592: C-mode detection must key on the literal `args`
+// keyword, not the `around(<name>)` binding. This template reads `args.input`
+// and proceeds via bare `proceed(...)` with no `call.*` reference at all, so a
+// detector keyed on the `call` binding would misclassify it as non-C-mode,
+// skip the `args.<field>` rewrite, and regress the #3543 NullReferenceException.
+@inline_template
+pub aspect NoCallTemplate {
+  config {
+    minLen: Int = 0
+  }
+  around(call) -> ret {
+    if args.input.length < minLen {
+      ret = Err("too-short")
+    } else {
+      ret = proceed(args)
+    }
+  }
+}
+
+aspect NoCallGuard from NoCallTemplate {
+  matches: name like "noCallGuarded*"
+  config {
+    minLen: Int = 4
+  }
+}
+
+pub func noCallGuardedEcho(input: in String): Result[String, String] {
+  return Ok("handled:" + input)
+}
+
+test "C-mode from-template without a call reference still weaves args (#3592)" {
+  match noCallGuardedEcho("ab") {
+    case Ok(_) -> assertTrue(false, "len 2 < minLen 4 must be rejected")
+    case Err(e) -> assertEqual(e, "too-short", "short-circuit error propagated")
+  }
+  match noCallGuardedEcho("abcd") {
+    case Ok(v) -> assertEqual(v, "handled:abcd", "len 4 >= minLen 4 proceeds")
+    case Err(_) -> assertTrue(false, "valid input must not be short-circuited")
+  }
+}
