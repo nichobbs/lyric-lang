@@ -18144,7 +18144,8 @@ func emitResolvedAutoFfi(
   insns: in List[MInsn],
   asmName: in String,
   clrFqn: in String,
-  methodName: in String,
+  clrMethodName: in String,
+  originalMethodName: in String,
   argBufs: in List[List[MInsn]],
   argTys: in List[MsilType],
   m: in Mdr.ResolvedMethod,
@@ -18178,7 +18179,14 @@ func emitResolvedAutoFfi(
   if not ok {
     return None
   }
-  match resolvedSigToMsil(cctx, m.returnType) {
+  // Constructor shorthand (.new) returns the constructed type, not the void
+  // signature from the .ctor metadata.
+  val resultType = if originalMethodName == "new" {
+    resolvedSigToMsil(cctx, Mdr.STNamed(fqn = clrFqn, valueType = false))
+  } else {
+    resolvedSigToMsil(cctx, m.returnType)
+  }
+  match resultType {
     case None -> None
     case Some(retMsil) -> {
       val sp = splitTypeFqn(clrFqn)
@@ -18189,14 +18197,14 @@ func emitResolvedAutoFfi(
       // overloads) — ctxAddMemberRef dedups the signature blob by key, so it
       // encodes each parameter's identity plus the return's; otherwise a second
       // overload would reuse the first's signature.
-      var sigKey = "autoffi_" + clrFqn + "." + methodName
+      var sigKey = "autoffi_" + clrFqn + "." + clrMethodName
       var ki = 0
       while ki < m.paramTypes.count {
         sigKey = sigKey + "_" + sigTypeKeyFrag(m.paramTypes[ki])
         ki = ki + 1
       }
       sigKey = sigKey + "_r" + sigTypeKeyFrag(m.returnType)
-      val mrRow = ctxAddMemberRef(cctx.lctx, tRef, methodName, sigKey, sig)
+      val mrRow = ctxAddMemberRef(cctx.lctx, tRef, clrMethodName, sigKey, sig)
       val tok = 0x0A000000 + mrRow
       var bi = 0
       while bi < argBufs.count {
@@ -18382,7 +18390,9 @@ func tryAutoFfiFromMetadata(
     }
     None
   } else {
-    match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, clrFqn, methodName, argSigs) {
+    // Constructor shorthand: .new(args) maps to .ctor for metadata resolution.
+    val resolveMethodName = if methodName == "new" { ".ctor" } else { methodName }
+    match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, clrFqn, resolveMethodName, argSigs) {
       case None -> {
         // Metadata resolved nothing — still roll back to keep counters clean.
         while fctx.slotTicker.count > snapSlot {
@@ -18396,7 +18406,7 @@ func tryAutoFfiFromMetadata(
         }
         None
       }
-      case Some(re) -> emitResolvedAutoFfi(cctx, insns, re.assemblyName, clrFqn, methodName, argBufs, argTys, re.sig)
+      case Some(re) -> emitResolvedAutoFfi(cctx, insns, re.assemblyName, clrFqn, resolveMethodName, methodName, argBufs, argTys, re.sig)
     }
   }
 }
