@@ -857,7 +857,7 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     `typechecker_self_test.l`, `modechecker_self_test.l`,
     `contract_elaborator_self_test.l`, `cfg_self_test.l`,
     `derives_self_test.l`, `mono_self_test.l`, `fmt_self_test.l`,
-    `stubbable_self_test.l` —
+    `result_generic_specialization_self_test.l`, `stubbable_self_test.l` —
     `@test_module` self-tests run in CI via native `lyric test`
     (linking the compiler DLLs as restored deps, #2364 / D-progress-456);
     their former F# `SelfHosted*Tests.fs` wrappers were deleted.
