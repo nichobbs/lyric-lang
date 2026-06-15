@@ -435,6 +435,58 @@ test "non-generic callee return feeds cross-package union-predicate specialisati
   )
 }
 
+// #3813: a generic union predicate over the result of an *interface-method*
+// call (`isOkLike(b.probe())` where `b: Widget`) specialises over the
+// concrete method return type only when the monomorphizer can see the
+// interface decl — fed via `monoFileWithImportsAndIfaces`.  Mirrors the
+// lyric-storage `isOk(bucket.exists(...))` shape that motivated #3813.
+test "interface-method return feeds union-predicate specialisation (#3813)" {
+  val callerSrc = "package Caller\n" + "func caller(b: in Widget): Bool { isOkLike(b.probe()) }\n"
+  val genericSrc = "package Lib\n" +
+    "pub func isOkLike[T, E](r: in Result[T, E]): Bool { match r { case Ok(v) -> true\n case Err(c) -> false } }\n"
+  val ifaceSrc = "package Lib\n" + "pub interface Widget { func probe(): Result[Bool, String] }\n"
+
+  val genericPr = parse(genericSrc)
+  val ifacePr = parse(ifaceSrc)
+
+  val genFeed: List[FunctionDecl] = newList()
+  var gi = 0
+  while gi < genericPr.file.items.count {
+    match genericPr.file.items[gi].kind {
+      case IFunc(decl) -> match decl.generics { case Some(_) -> genFeed.add(decl); case None -> () }
+      case _ -> ()
+    }
+    gi = gi + 1
+  }
+
+  val ifaceFeed: List[InterfaceDecl] = newList()
+  var ii = 0
+  while ii < ifacePr.file.items.count {
+    match ifacePr.file.items[ii].kind {
+      case IInterface(decl) -> ifaceFeed.add(decl)
+      case _ -> ()
+    }
+    ii = ii + 1
+  }
+
+  // Without the interface decl, `b.probe()`'s return type is unknown, so the
+  // predicate stays erased.
+  val emptyIfaces: List[InterfaceDecl] = newList()
+  val resNoIface = monoFileWithImportsAndIfaces(parse(callerSrc).file, genFeed, emptyIfaces)
+  assertTrue(
+    not hasFunc(resNoIface.file, "isOkLike__Bool__String"),
+    "without the Widget interface fed, isOkLike is not specialised"
+  )
+
+  // With the interface decl fed, mono infers b.probe(): Result[Bool, String]
+  // and specialises the predicate.
+  val resIface = monoFileWithImportsAndIfaces(parse(callerSrc).file, genFeed, ifaceFeed)
+  assertTrue(
+    hasFunc(resIface.file, "isOkLike__Bool__String"),
+    "with the Widget interface fed, isOkLike__Bool__String specialisation is appended"
+  )
+}
+
 // Identity behaviour when no generics are present: monoFile returns
 // the file unchanged with an empty rewrites map.
 test "no generics no op" {

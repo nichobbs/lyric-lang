@@ -515,6 +515,27 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     allImportedGenFuncs.add(inBundleNonGenFuncs[agfm])
     agfm = agfm + 1
   }
+  // Interface decls (in-bundle + stdlib + restored), fed to the monomorphizer
+  // for method-call return inference on interface-typed receivers (#3813).
+  val allImportedIfaceDecls: List[InterfaceDecl] = newList()
+  val inBundleIfaces = collectInBundleInterfaceDecls(parsedPkgs)
+  val stdlibIfaces = collectStdlibInterfaceDecls(stdlibPkgs)
+  val restoredIfaces = collectRestoredInterfaceDecls(restoredArtifacts)
+  var aifi = 0
+  while aifi < inBundleIfaces.count {
+    allImportedIfaceDecls.add(inBundleIfaces[aifi])
+    aifi = aifi + 1
+  }
+  var aifj = 0
+  while aifj < stdlibIfaces.count {
+    allImportedIfaceDecls.add(stdlibIfaces[aifj])
+    aifj = aifj + 1
+  }
+  var aifk = 0
+  while aifk < restoredIfaces.count {
+    allImportedIfaceDecls.add(restoredIfaces[aifk])
+    aifk = aifk + 1
+  }
   val perPkgFiles: List[SourceFile] = newList()
   val perPkgNames: List[String] = newList()
   var ti = 0
@@ -549,7 +570,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     val importedItems = flattenImportedItems(importedPkgs)
     val derived = deriveFileWithImports(propRes.file, importedItems)
 
-    val monoRes = monoFileWithImports(derived, allImportedGenFuncs)
+    val monoRes = monoFileWithImportsAndIfaces(derived, allImportedGenFuncs, allImportedIfaceDecls)
     if reportAndAbortInPkg(pp.name, monoRes.diagnostics) {
       return false
     }
@@ -1311,6 +1332,70 @@ func collectInBundleNonGenericFuncs(parsedPkgs: in List[ParsedUserPkg]): List[Fu
     pi = pi + 1
   }
   nonGenFuncs
+}
+
+// Collect interface decls from all in-bundle parsed packages.  Fed to the
+// monomorphizer so it can infer a method-call return type on an
+// interface-typed receiver (`isOk(bucket.exists(...))` where
+// `bucket: StorageBucket`) and specialise the enclosing generic predicate
+// rather than leaving it type-erased (#3813).  Interfaces only feed
+// inference; they are never specialised.
+func collectInBundleInterfaceDecls(parsedPkgs: in List[ParsedUserPkg]): List[InterfaceDecl] {
+  val ifaces: List[InterfaceDecl] = newList()
+  var pi = 0
+  while pi < parsedPkgs.count {
+    val file = parsedPkgs[pi].file
+    var ii = 0
+    while ii < file.items.count {
+      match file.items[ii].kind {
+        case IInterface(decl) -> ifaces.add(decl)
+        case _ -> ()
+      }
+      ii = ii + 1
+    }
+    pi = pi + 1
+  }
+  ifaces
+}
+
+// Counterpart of `collectInBundleInterfaceDecls` for stdlib packages.
+func collectStdlibInterfaceDecls(pkgs: in List[StdlibPkg]): List[InterfaceDecl] {
+  val ifaces: List[InterfaceDecl] = newList()
+  var pi = 0
+  while pi < pkgs.count {
+    val pkg: StdlibPkg = pkgs[pi]
+    var ii = 0
+    while ii < pkg.items.count {
+      match pkg.items[ii].kind {
+        case IInterface(decl) -> ifaces.add(decl)
+        case _ -> ()
+      }
+      ii = ii + 1
+    }
+    pi = pi + 1
+  }
+  ifaces
+}
+
+// Counterpart of `collectInBundleInterfaceDecls` for restored dependency
+// artifacts (cross-DLL imports), so a consumer importing a published library
+// interface can still infer its method returns.
+func collectRestoredInterfaceDecls(artifacts: in List[SynthesisedArtifact]): List[InterfaceDecl] {
+  val ifaces: List[InterfaceDecl] = newList()
+  var ai = 0
+  while ai < artifacts.count {
+    val file = artifacts[ai].source
+    var ii = 0
+    while ii < file.items.count {
+      match file.items[ii].kind {
+        case IInterface(decl) -> ifaces.add(decl)
+        case _ -> ()
+      }
+      ii = ii + 1
+    }
+    ai = ai + 1
+  }
+  ifaces
 }
 
 // Collect generic pub funcs from all restored dependency SynthesisedArtifacts.

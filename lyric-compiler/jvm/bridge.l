@@ -342,6 +342,22 @@ func isTypeItem(it: in Item): Bool {
 // would otherwise leak onto a *successful* build's output.  Real errors still
 // gate via `reportAndAbort` on the mode-check / propagate / mono / weave
 // passes regardless.
+// Collect every `IInterface` decl from a flat item list.  Fed to the
+// monomorphizer (#3813) so a method-call return on an interface-typed
+// receiver can be inferred and the enclosing generic predicate specialised.
+func collectInterfaceDeclsFromItems(items: in List[Item]): List[InterfaceDecl] {
+  val ifaces: List[InterfaceDecl] = newList()
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IInterface(decl) -> ifaces.add(decl)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  ifaces
+}
+
 func runMiddleEnd(
   file0: in SourceFile,
   importedPkgs: in List[ImportedPackage],
@@ -367,7 +383,13 @@ func runMiddleEnd(
 
   val importedItems = flattenImportedItems(importedPkgs)
   val derived = deriveFileWithImports(propRes.file, importedItems)
-  val monoRes = monoFileWithImports(derived, stdlibGenFuncs)
+  // Feed interface decls visible to this package so the monomorphizer can
+  // infer method-call return types on interface-typed receivers and
+  // specialise the enclosing generic predicate — parity with the MSIL
+  // bridge (#3813).  `importedItems` already flattens every imported
+  // package's items; same-package interfaces are collected by mono itself.
+  val importedIfaceDecls = collectInterfaceDeclsFromItems(importedItems)
+  val monoRes = monoFileWithImportsAndIfaces(derived, stdlibGenFuncs, importedIfaceDecls)
   if reportAndAbort(monoRes.diagnostics) {
     return None
   }
