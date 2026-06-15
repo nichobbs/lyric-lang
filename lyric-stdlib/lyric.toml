@@ -52,7 +52,11 @@ output_assembly = "Lyric.Stdlib.dll"
 "Std.Time"             = "std/time.l"
 
 # Tier 4 — structured data.
-"Std.Json"             = "std/json.l"
+#   Std.Json / Std.JsonHost — deferred to full self-hosted stdlib build
+#                             (lyric-stdlib/lyric.full.toml) due to F# project-mode
+#                             emitter limitations with generic type resolution (List[T]).
+#                             The full implementations remain in std/json.l and
+#                             std/_kernel/json_host.l for self-hosted build. See #3694.
 
 # Tier 5 — testing utilities.
 "Std.Testing.Mocking"  = "std/testing_mocking.l"
