@@ -5037,6 +5037,16 @@ and private emitPatternBind
         (ctx: FunctionCtx)
         (tmp: LocalBuilder)
         (pat: Pattern) : unit =
+    // Save the current ExpectedType and set it from the scrutinee type
+    // so that nested nullary union-case construction can disambiguate
+    // generic type arguments. Restore after pattern binding completes.
+    let savedExpected = ctx.ExpectedType
+    let scrutTy = tmp.LocalType
+    ctx.ExpectedType <-
+        if scrutTy.IsGenericType && not scrutTy.IsGenericTypeDefinition then
+            Some scrutTy
+        else
+            None
     let il = ctx.IL
     match pat.Kind with
     | PBinding ("null", None) ->
@@ -5081,6 +5091,7 @@ and private emitPatternBind
                     il.Emit(OpCodes.Stloc, lb)
                 | _ ->
                     // Nested pattern: load field into a temp, recurse.
+                    // The recursive emitPatternBind call will set ExpectedType from fieldTmp.LocalType.
                     let fieldTmp =
                         FunctionCtx.defineLocal ctx ("__bind_" + key + "_" + fname) fty
                     il.Emit(OpCodes.Ldloc, castedTmp)
@@ -5193,6 +5204,9 @@ and private emitPatternBind
             il.MarkLabel(doneLabel)
 
     | _ -> ()
+
+    // Restore the saved ExpectedType after pattern binding completes.
+    ctx.ExpectedType <- savedExpected
 
 and private emitMatch
         (ctx: FunctionCtx)
