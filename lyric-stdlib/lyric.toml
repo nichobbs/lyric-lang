@@ -55,9 +55,9 @@ output_assembly = "Lyric.Stdlib.dll"
 # NOTE: Std.JsonHost and Std.Json deferred from bootstrap manifest.
 # Std.JsonHost contains nested CLR types (System.Text.Json.JsonElement+ObjectEnumerator)
 # that require NestedClass table resolution in the metadata reader. While the
-# self-hosted compiler now supports nested types (issue #3694 / D-progress-XXX),
-# the JSON stdlib packages are deferred pending resolution of the runtime
-# method-resolution issue when using Std.Json from restored packages (#3694).
+# self-hosted compiler now supports nested types (PR #3697), the JSON stdlib
+# packages are deferred pending resolution of the runtime method-resolution
+# issue when using Std.Json from restored packages (issue #3719).
 # "Std.JsonHost"         = "std/_kernel/json_host.l"
 # "Std.Json"             = "std/json.l"
 
