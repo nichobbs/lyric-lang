@@ -52,14 +52,7 @@ output_assembly = "Lyric.Stdlib.dll"
 "Std.Time"             = "std/time.l"
 
 # Tier 4 — structured data.
-# NOTE: Std.JsonHost and Std.Json deferred from bootstrap manifest.
-# Std.JsonHost contains nested CLR types (System.Text.Json.JsonElement+ObjectEnumerator)
-# that require NestedClass table resolution in the metadata reader. While the
-# self-hosted compiler now supports nested types (PR #3697), the JSON stdlib
-# packages are deferred pending resolution of the runtime method-resolution
-# issue when using Std.Json from restored packages (issue #3719).
-# "Std.JsonHost"         = "std/_kernel/json_host.l"
-# "Std.Json"             = "std/json.l"
+"Std.Json"             = "std/json.l"
 
 # Tier 5 — testing utilities.
 "Std.Testing.Mocking"  = "std/testing_mocking.l"
