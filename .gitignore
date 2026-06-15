@@ -100,3 +100,5 @@ book/*.html
 
 # Claude Code agent worktrees (transient; auto-cleaned)
 .claude/worktrees/
+*.dll
+*.runtimeconfig.json
