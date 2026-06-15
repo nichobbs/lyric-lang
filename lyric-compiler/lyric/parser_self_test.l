@@ -117,17 +117,11 @@ test "import extern with alias" {
   assertTrue(pr.file.imports[0].isExtern, "import extern alias: isExtern flag is true")
 }
 
-test "pub use extern diagnostic" {
+test "pub use extern" {
   val pr = parse("package P\npub use extern System.Net.Http.{ HttpClient }\n")
-  var sawP0034 = false
-  var i = 0
-  while i < pr.diagnostics.count {
-    if pr.diagnostics[i].code == "P0034" {
-      sawP0034 = true
-    }
-    i = i + 1
-  }
-  assertTrue(sawP0034, "pub use extern: P0034 diagnostic emitted")
+  assertEqualInt(diagCount(pr), 0, "pub use extern: no diagnostics")
+  assertEqualInt(importCount(pr), 1, "pub use extern: one import")
+  assertTrue(pr.file.imports[0].isExtern, "pub use extern: isExtern flag is true")
 }
 
 test "func decl" {

@@ -1,7 +1,7 @@
 # 47 — Import Extern Syntax for External Types
 
 **Status:** Specced (D105). Design questions Q47-001–Q47-004 are resolved.
-Parser scaffolding is in place (PR #3729). Type-checker integration is deferred
+Parser support is in place (PR #3728). Type-checker integration is deferred
 to Phase 2 (tracked separately).
 
 **Builds on:** `docs/01-language-reference.md` §11 (FFI), `docs/42-extern-metadata-resolution.md` (metadata-based resolution), `docs/14-native-stdlib-plan.md` (kernel boundary).

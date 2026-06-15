@@ -716,12 +716,7 @@ func parseImportDecl(st: inout ParseState): Option[ImportDecl] {
     if isKw(peekToken(st), KwExtern) {
       val _ = advance(st)
       // extern
-      if isPubUse {
-        // pub use extern is not defined in docs/47; only import extern is supported
-        emitErr(st, "P0034", "pub use extern is not supported; use 'import extern' instead", peekSpan(st))
-      } else {
-        isExtern = true
-      }
+      isExtern = true
     }
     val path = parseModulePath(st)
 
