@@ -8571,22 +8571,40 @@ func lowerBuiltinOrStaticCallMsil(
             hci = hci + 1
           }
         } else {
-          match fctx.declaredRetTy {
-            case MGenericInst(_, _, retArgTys) -> {
-              var rci = 0
-              while rci < retArgTys.count {
-                outerCtxTyArgs.add(retArgTys[rci])
-                rci = rci + 1
+          // Fall back to the enclosing function's declared return type to fill
+          // type-param slots an argument can't pin (e.g. `E` in a bare `Ok(v)`
+          // whose function returns `Result[T, E]`).  BUT only when the value
+          // being constructed is the SAME generic head as the return type:
+          // otherwise a `Some(x)` (Option) inside a function returning
+          // `Result[ListResult, StorageError]` would borrow `Result`'s args and
+          // build `Option_Some<ListResult>` instead of inferring `<String>` from
+          // `x`, so a later `match` on the resulting `Option[String]` field
+          // fails "not exhaustive" against the mismatched TypeSpec (#3705
+          // follow-up: storage `list` pagination token, #3818-adjacent).
+          val retHead = match fctx.declaredRetTy {
+            case MGenericInst(_, h, _) -> h
+            case MGenericInstByName(h, _) -> stripGenericArity(h)
+            case _ -> ""
+          }
+          val ctorParentHead = ctorParentHeadFqn(cctx, ctorKey)
+          if retHead.length > 0 and retHead == ctorParentHead {
+            match fctx.declaredRetTy {
+              case MGenericInst(_, _, retArgTys) -> {
+                var rci = 0
+                while rci < retArgTys.count {
+                  outerCtxTyArgs.add(retArgTys[rci])
+                  rci = rci + 1
+                }
               }
-            }
-            case MGenericInstByName(_, retArgTys) -> {
-              var rci = 0
-              while rci < retArgTys.count {
-                outerCtxTyArgs.add(retArgTys[rci])
-                rci = rci + 1
+              case MGenericInstByName(_, retArgTys) -> {
+                var rci = 0
+                while rci < retArgTys.count {
+                  outerCtxTyArgs.add(retArgTys[rci])
+                  rci = rci + 1
+                }
               }
-            }
-            case _ -> {
+              case _ -> {
+              }
             }
           }
         }
@@ -9108,7 +9126,10 @@ func lowerMethodCallMsil(
               // Thread parameter types into contextHintTyArgs/collExpect so a bare
               // `newMap()` argument builds the concrete instance the callee's
               // parameter expects (e.g., Map[String,String]) (#3812).
-              val paramTy = match mapGet(cctx.methodParamTypes, dispatchKey + "#" + toString(i)) { case Some(pt) -> pt; case None -> MObject }
+              val paramTy = match mapGet(cctx.methodParamTypes, dispatchKey + "#" + toString(i)) {
+                case Some(pt) -> pt
+                case None -> MObject
+              }
               val aTy = match paramTy {
                 case MConcreteMap(keyTy, valTy) -> {
                   val savedHints: List[MsilType] = newList()
@@ -20442,6 +20463,34 @@ pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibP
 // `contextTyArgs` — outer instantiation hints for slots not pinned by an arg.
 // `outResultTy`   — populated on success with the closed `MGenericInstByName`.
 //
+// Resolve the generic-head FQN that a constructor key `ctorKey` produces:
+// for a union case (`Pkg.Union_Case`) the parent union (`Pkg.Union`); for a
+// plain generic record (`Pkg.Box`) the record itself.  Used to decide whether
+// the enclosing function's declared return type is a valid context for filling
+// generic slots (it only is when both name the same head — see the EPath ctor
+// fallback).  Prefers the registered `caseParentUnion` mapping; falls back to
+// the structural `Union_Case` split that `buildGenericCaseCtorTok` also uses.
+func ctorParentHeadFqn(cctx: in CodegenCtx, ctorKey: in String): String {
+  match mapGet(cctx.caseParentUnion, ctorKey) {
+    case Some(p) -> p
+    case None -> {
+      val di = ctorKey.lastIndexOf(".")
+      if di < 0 {
+        ctorKey
+      } else {
+        val pkg = ctorKey.substring(0, di)
+        val loc = ctorKey.substring(di + 1, ctorKey.length - di - 1)
+        val ui = loc.lastIndexOf("_")
+        if ui > 0 {
+          pkg + "." + loc.substring(0, ui)
+        } else {
+          ctorKey
+        }
+      }
+    }
+  }
+}
+
 // Returns 1 (and emits the newobj) when `ctorKey` is a registered in-bundle
 // generic record; 0 otherwise (so the caller falls back to the plain path).
 func buildInBundleGenericCtorTok(

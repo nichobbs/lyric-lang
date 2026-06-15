@@ -487,6 +487,60 @@ test "interface-method return feeds union-predicate specialisation (#3813)" {
   )
 }
 
+// #3813 follow-up: a generic predicate over a *field projection* on an
+// imported record (`isSomeLike(p.tok)` where `p: Page` and `tok:
+// Option[String]`) specialises only when the cross-package record decl is fed
+// via `monoFileWithImportsAndTypeDecls`.  Mirrors the lyric-storage
+// `isSome(page.nextContinuationToken)` shape.
+test "imported record field feeds union-predicate specialisation (#3813)" {
+  val callerSrc = "package Caller\n" + "func caller(p: in Page): Bool { isSomeLike(p.tok) }\n"
+  val genericSrc = "package Lib\n" +
+    "pub func isSomeLike[T](o: in Option[T]): Bool { match o { case Some(v) -> true\n case None -> false } }\n"
+  val recordSrc = "package Lib\n" + "pub record Page { tok: Option[String]\n truncated: Bool }\n"
+
+  val genericPr = parse(genericSrc)
+  val recordPr = parse(recordSrc)
+
+  val genFeed: List[FunctionDecl] = newList()
+  var gi = 0
+  while gi < genericPr.file.items.count {
+    match genericPr.file.items[gi].kind {
+      case IFunc(decl) -> match decl.generics { case Some(_) -> genFeed.add(decl); case None -> () }
+      case _ -> ()
+    }
+    gi = gi + 1
+  }
+
+  val recFeed: List[RecordDecl] = newList()
+  var ri = 0
+  while ri < recordPr.file.items.count {
+    match recordPr.file.items[ri].kind {
+      case IRecord(decl) -> recFeed.add(decl)
+      case _ -> ()
+    }
+    ri = ri + 1
+  }
+
+  val emptyIfaces: List[InterfaceDecl] = newList()
+  val emptyRecs: List[RecordDecl] = newList()
+
+  // Without the record decl, `p.tok`'s type is unknown, so the predicate stays
+  // erased.
+  val resNoRec = monoFileWithImportsAndTypeDecls(parse(callerSrc).file, genFeed, emptyIfaces, emptyRecs)
+  assertTrue(
+    not hasFunc(resNoRec.file, "isSomeLike__String"),
+    "without the Page record fed, isSomeLike is not specialised"
+  )
+
+  // With the record decl fed, mono infers p.tok: Option[String] and
+  // specialises the predicate.
+  val resRec = monoFileWithImportsAndTypeDecls(parse(callerSrc).file, genFeed, emptyIfaces, recFeed)
+  assertTrue(
+    hasFunc(resRec.file, "isSomeLike__String"),
+    "with the Page record fed, isSomeLike__String specialisation is appended"
+  )
+}
+
 // Identity behaviour when no generics are present: monoFile returns
 // the file unchanged with an empty rewrites map.
 test "no generics no op" {
