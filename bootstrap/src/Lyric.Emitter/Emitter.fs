@@ -2060,18 +2060,64 @@ let private findClrType (qualifiedName: string) : System.Type option =
     let _ = typeof<System.Text.Json.JsonDocument>
     let _ = typeof<System.Text.RegularExpressions.Regex>
     let _ = typeof<System.Net.HttpListener>
-    let direct = System.Type.GetType qualifiedName
-    let result =
-        match Option.ofObj direct with
-        | Some t -> Some t
-        | None ->
-            System.AppDomain.CurrentDomain.GetAssemblies()
-            |> Array.tryPick (fun asm ->
-                try
-                    Option.ofObj (asm.GetType qualifiedName)
-                with _ -> None)
-    clrTypeCache[qualifiedName] <- result
-    result
+
+    // Handle nested CLR types: if the qualified name contains `+`, it
+    // refers to a nested class (e.g., "System.Text.Json.JsonElement+ArrayEnumerator").
+    // The `+` is Lyric notation (borrowed from C# IL syntax); .NET's Type.GetType
+    // and Assembly.GetType don't recognize it — nested types require GetNestedType.
+    if qualifiedName.Contains "+" then
+        let parts = qualifiedName.Split '+'
+        let outerTypeName = parts.[0]
+
+        // Resolve the outer type
+        let direct = System.Type.GetType outerTypeName
+        let outerType =
+            match Option.ofObj direct with
+            | Some t -> Some t
+            | None ->
+                System.AppDomain.CurrentDomain.GetAssemblies()
+                |> Array.tryPick (fun asm ->
+                    try
+                        Option.ofObj (asm.GetType outerTypeName)
+                    with _ -> None)
+
+        // Resolve nested types from inner to outer
+        let result =
+            match outerType with
+            | None -> None
+            | Some t ->
+                let mutable currentType: System.Type = t
+                let mutable i = 1
+                let mutable success = true
+                while i < parts.Length && success do
+                    try
+                        let nested = currentType.GetNestedType(parts.[i], System.Reflection.BindingFlags.Public ||| System.Reflection.BindingFlags.NonPublic)
+                        match Option.ofObj nested with
+                        | None -> success <- false
+                        | Some n ->
+                            currentType <- n
+                            i <- i + 1
+                    with _ ->
+                        success <- false
+
+                if success then Some currentType else None
+
+        clrTypeCache[qualifiedName] <- result
+        result
+    else
+        // Non-nested type: use original logic
+        let direct = System.Type.GetType qualifiedName
+        let result =
+            match Option.ofObj direct with
+            | Some t -> Some t
+            | None ->
+                System.AppDomain.CurrentDomain.GetAssemblies()
+                |> Array.tryPick (fun asm ->
+                    try
+                        Option.ofObj (asm.GetType qualifiedName)
+                    with _ -> None)
+        clrTypeCache[qualifiedName] <- result
+        result
 
 /// Phase 5 §M5.1 stage 2d.v: pre-load the user's NuGet DLLs into
 /// the current AppDomain so `findClrType` finds extern types declared
