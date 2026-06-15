@@ -1078,7 +1078,7 @@ import extern System.Net.Http.{HttpClient, HttpRequestMessage as ReqMsg}
 import extern java.lang.{Math as JMath}
 ```
 
-`import extern` imports types from external (host runtime) packages. The FQN specifies the host namespace; the imported names are bound under their short names or explicit aliases per D105 (docs/47). Each imported name must have a selector group `{ ... }`; bare `import extern Foo.Bar` is invalid. External imports are scoped to the importing package and do not re-export by default.
+`import extern` imports types from external (host runtime) packages. The FQN specifies the host namespace; each imported name must have a selector group `{ ... }`; bare `import extern Foo.Bar` is invalid per D105 Q47-001. Type binding and resolution are deferred to Phase 2; currently these imports parse but are not yet usable in type positions. External imports are scoped to the importing package and do not re-export by default.
 
 ### 9.3 Re-exports
 

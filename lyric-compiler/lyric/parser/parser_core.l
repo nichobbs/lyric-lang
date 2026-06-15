@@ -712,10 +712,8 @@ func parseImportDecl(st: inout ParseState): Option[ImportDecl] {
       val _ = advance(st)
       // import
     }
-    // Check for 'extern' keyword after import/pub use
     if isKw(peekToken(st), KwExtern) {
       val _ = advance(st)
-      // extern
       isExtern = true
     }
     val path = parseModulePath(st)
@@ -751,6 +749,11 @@ func parseImportDecl(st: inout ParseState): Option[ImportDecl] {
       Some(value = ISGroup(items = items))
     } else {
       None
+    }
+
+    // P0035: import extern requires selector group per D105 Q47-001
+    if isExtern and selector.isNone() {
+      emitErr(st, "P0035", "import extern requires selector group { ... }", path.span)
     }
 
     var endSp = path.span
