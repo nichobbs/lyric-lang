@@ -52,11 +52,13 @@ output_assembly = "Lyric.Stdlib.dll"
 "Std.Time"             = "std/time.l"
 
 # Tier 4 — structured data.
-# Kernel boundary for JSON parsing — @externTarget pattern, System.Text.Json.
-# Now enabled in bootstrap manifest (was deferred due to F# nested-type-resolution
-# issue #3506, which has been fixed).
-"Std.JsonHost"         = "std/_kernel/json_host.l"
-"Std.Json"             = "std/json.l"
+# NOTE: Std.JsonHost and Std.Json deferred from bootstrap manifest.
+# Std.JsonHost contains nested CLR types (System.Text.Json.JsonElement+ArrayEnumerator)
+# that the F# bootstrap emitter cannot yet handle (nested-type resolution,
+# issue #3506).  Both will be added to the full-stdlib manifest once the
+# self-hosted compiler is tested; JSON parsing is not required for bootstrap.
+# "Std.JsonHost"         = "std/_kernel/json_host.l"
+# "Std.Json"             = "std/json.l"
 
 # Tier 5 — testing utilities.
 "Std.Testing.Mocking"  = "std/testing_mocking.l"
