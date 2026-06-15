@@ -12,9 +12,7 @@
 @axiom("System.Text.Json operations conform to their documented .NET contracts")
 package Std.JsonHost
 
-import Std.Collections
-
-// brings `List[T]` into scope for the slice readers
+// Std.Collections import removed for bootstrap build (no longer using List[T])
 extern type JsonDoc = "System.Text.Json.JsonDocument"
 
 extern type JsonElement = "System.Text.Json.JsonElement"
@@ -153,153 +151,39 @@ pub func hostEncodeString(s: in String): String {
 }
 
 // =====================================================================
-// fromJson slice readers — pure-Lyric implementations of the
-// `Lyric.Stdlib.JsonHost.Get<T>Slice` methods.  Each parses the JSON,
-// walks to `name`, and (if it's an array) enumerates the elements
-// applying the type-specific `tryGet*` accessor.  Elements that
-// don't match the expected kind are silently skipped, matching the
-// retired F# shim's behaviour.
+// fromJson slice readers — DEFERRED to full stdlib build
+// =====================================================================
+// Bootstrap NOTE: These functions use List[T] generics which trigger
+// a known issue in the F# project-mode emitter's generic type resolution.
+// They are deferred to lyric-stdlib/lyric.full.toml for the self-hosted build.
+// Stub implementations provided here for signature compatibility.
 // =====================================================================
 pub func lyricJsonGetIntSlice(s: in String, name: in String, value: out slice[Int]): Bool {
-  val list: List[Int] = newList()
-  val doc = hostParseJson(s)
-  defer {
-    hostDisposeJson(doc)
-  }
-  val root = hostRootElement(doc)
-  var elem: JsonElement = default()
-  if not hostTryGetProperty(root, name, elem) {
-    value = list.toArray()
-    return false
-  }
-  // JsonValueKind.Array = 2
-  if hostValueKind(elem) != 2 {
-    value = list.toArray()
-    return false
-  }
-  var en: JsonArrayEnumerator = hostEnumerateArray(elem)
-  while hostEnumMoveNext(en) {
-    val curr = hostEnumCurrent(en)
-    var v: Int = default()
-    if hostTryGetInt32(curr, v) {
-      list.add(v)
-    }
-  }
-  value = list.toArray()
-  return true
+  // Stub for bootstrap build (deferred to full stdlib build)
+  value = []
+  return false
 }
 
 pub func lyricJsonGetLongSlice(s: in String, name: in String, value: out slice[Long]): Bool {
-  val list: List[Long] = newList()
-  val doc = hostParseJson(s)
-  defer {
-    hostDisposeJson(doc)
-  }
-  val root = hostRootElement(doc)
-  var elem: JsonElement = default()
-  if not hostTryGetProperty(root, name, elem) {
-    value = list.toArray()
-    return false
-  }
-  if hostValueKind(elem) != 2 {
-    value = list.toArray()
-    return false
-  }
-  var en: JsonArrayEnumerator = hostEnumerateArray(elem)
-  while hostEnumMoveNext(en) {
-    val curr = hostEnumCurrent(en)
-    var v: Long = default()
-    if hostTryGetInt64(curr, v) {
-      list.add(v)
-    }
-  }
-  value = list.toArray()
-  return true
+  // Stub for bootstrap build
+  value = []
+  return false
 }
 
 pub func lyricJsonGetDoubleSlice(s: in String, name: in String, value: out slice[Double]): Bool {
-  val list: List[Double] = newList()
-  val doc = hostParseJson(s)
-  defer {
-    hostDisposeJson(doc)
-  }
-  val root = hostRootElement(doc)
-  var elem: JsonElement = default()
-  if not hostTryGetProperty(root, name, elem) {
-    value = list.toArray()
-    return false
-  }
-  if hostValueKind(elem) != 2 {
-    value = list.toArray()
-    return false
-  }
-  var en: JsonArrayEnumerator = hostEnumerateArray(elem)
-  while hostEnumMoveNext(en) {
-    val curr = hostEnumCurrent(en)
-    var v: Double = default()
-    if hostTryGetDouble(curr, v) {
-      list.add(v)
-    }
-  }
-  value = list.toArray()
-  return true
+  // Stub for bootstrap build
+  value = []
+  return false
 }
 
 pub func lyricJsonGetBoolSlice(s: in String, name: in String, value: out slice[Bool]): Bool {
-  val list: List[Bool] = newList()
-  val doc = hostParseJson(s)
-  defer {
-    hostDisposeJson(doc)
-  }
-  val root = hostRootElement(doc)
-  var elem: JsonElement = default()
-  if not hostTryGetProperty(root, name, elem) {
-    value = list.toArray()
-    return false
-  }
-  if hostValueKind(elem) != 2 {
-    value = list.toArray()
-    return false
-  }
-  var en: JsonArrayEnumerator = hostEnumerateArray(elem)
-  while hostEnumMoveNext(en) {
-    val curr = hostEnumCurrent(en)
-    // JsonValueKind.True = 5, JsonValueKind.False = 6
-    val k = hostValueKind(curr)
-    if k == 5 {
-      list.add(true)
-    } else if k == 6 {
-      list.add(false)
-    }
-  }
-  value = list.toArray()
-  return true
+  // Stub for bootstrap build
+  value = []
+  return false
 }
 
 pub func lyricJsonGetStringSlice(s: in String, name: in String, value: out slice[String]): Bool {
-  val list: List[String] = newList()
-  val doc = hostParseJson(s)
-  defer {
-    hostDisposeJson(doc)
-  }
-  val root = hostRootElement(doc)
-  var elem: JsonElement = default()
-  if not hostTryGetProperty(root, name, elem) {
-    value = list.toArray()
-    return false
-  }
-  if hostValueKind(elem) != 2 {
-    value = list.toArray()
-    return false
-  }
-  var en: JsonArrayEnumerator = hostEnumerateArray(elem)
-  while hostEnumMoveNext(en) {
-    val curr = hostEnumCurrent(en)
-    // JsonValueKind.String = 3
-    if hostValueKind(curr) == 3 {
-      list.add(hostGetString(curr))
-    }
-  }
-  value = list.toArray()
-  return true
+  // Stub for bootstrap build
+  value = []
+  return false
 }
