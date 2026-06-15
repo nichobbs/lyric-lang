@@ -20,13 +20,13 @@ func sbCapacity(sb: in SBld): Int = ()
 
 test "StringBuilder.new()" {
   val sb = SBld.new()
-  assertEqualInt(sbLength(sb), 0, "parameterless constructor produces empty StringBuilder")
+  assertEqualInt(sbLength(sb), 0, "newly constructed StringBuilder is empty")
 }
 
 test "StringBuilder.new(capacity)" {
   val capacity = 32
   val sb = SBld.new(capacity)
-  assertTrue(sbCapacity(sb) >= capacity, "capacity constructor respects requested size")
+  assertTrue(sbCapacity(sb) >= capacity, "capacity constructor respects size")
 }
 
 test "constructor overload resolution" {
