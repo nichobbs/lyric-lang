@@ -126,12 +126,9 @@ import extern System.Net.Http.{
 }
 ```
 
-**Key benefits:**
-- **Grouped declaration** — all external types are listed in a single, clearly-bounded block.
-- **Visible FFI boundary** — at a glance, a developer scanning the file can see which external types are imported and in what order.
-- **Aliasing at import site** — aliases (`as HostClient`) are declared alongside the import, not scattered before methods that use them.
+**Trade-off:** For small type sets (2–3 types), LOC is neutral or slightly higher (4 lines → 6 lines including braces). However, the grouped declaration provides immediate clarity: scanning the file shows exactly which external types are imported and makes the FFI boundary visible at a glance, rather than scattered throughout the file.
 
-**Note on line count:** For small type sets (4 types), the line count is neutral or slightly higher (4 `extern type` declarations → 6 lines for the grouped import statement). However, this grouping benefit becomes more pronounced for larger type sets (10+ types), where scattered `extern type` declarations would span 10+ lines but can fit in a single 12–15 line import block. The real gain is not in LOC reduction but in **discoverability and maintainability** — the FFI surface is explicit and bounded, rather than sprinkled throughout the file.
+**Benefit for larger sets:** For 6+ types, the grouping reduces repetition and duplication of the namespace path. The motivation is not line-count reduction but **clarity and maintainability** — when a file uses many external types, having them declared together in one place prevents accidental duplication and makes auditing the FFI surface straightforward.
 
 ---
 
