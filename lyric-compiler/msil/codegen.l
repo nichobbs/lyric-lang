@@ -8597,30 +8597,58 @@ func lowerBuiltinOrStaticCallMsil(
         val ctorArgs = fillCtorDefaultArgs(cctx, ctorKey, args)
         // Resolved before arg lowering so each payload gets its inner-type hint (#1687).
         val outerCtxTyArgs: List[MsilType] = newList()
+        // Build retTyArgs from the function's declared return type so we can
+        // substitute MVoid hint slots with the outer function's concrete type
+        // args.  This handles `case Err(e) -> return Err(e)` inside a function
+        // returning Result[SB, SE] when the inner match scrutinee is
+        // Result[Unit, SE]: contextHintTyArgs[0] == MVoid, but declaredRetTy
+        // says T=SB, so the constructed Err gets Result_Err<SB,SE> not
+        // Result_Err<object,SE> (#3705).
+        val retTyArgs: List[MsilType] = newList()
+        match fctx.declaredRetTy {
+          case MGenericInst(_, _, declRetArgTys) -> {
+            var rci = 0
+            while rci < declRetArgTys.count {
+              retTyArgs.add(declRetArgTys[rci])
+              rci = rci + 1
+            }
+          }
+          case MGenericInstByName(_, declRetArgTys) -> {
+            var rci = 0
+            while rci < declRetArgTys.count {
+              retTyArgs.add(declRetArgTys[rci])
+              rci = rci + 1
+            }
+          }
+          case _ -> {
+          }
+        }
         if fctx.contextHintTyArgs.count > 0 {
           var hci = 0
           while hci < fctx.contextHintTyArgs.count {
-            outerCtxTyArgs.add(fctx.contextHintTyArgs[hci])
+            val hint = fctx.contextHintTyArgs[hci]
+            // When the inner-match scrutinee carried MVoid for a type slot but the
+            // enclosing function's declared return type has a concrete type for that
+            // slot, use the declared type.  This preserves the correct closed
+            // TypeSpec when propagating a case constructor through nested matches.
+            val effective: MsilType = if hint == MVoid and hci < retTyArgs.count {
+              val retSlot = retTyArgs[hci]
+              if retSlot != MVoid and retSlot != MObject {
+                retSlot
+              } else {
+                hint
+              }
+            } else {
+              hint
+            }
+            outerCtxTyArgs.add(effective)
             hci = hci + 1
           }
         } else {
-          match fctx.declaredRetTy {
-            case MGenericInst(_, _, retArgTys) -> {
-              var rci = 0
-              while rci < retArgTys.count {
-                outerCtxTyArgs.add(retArgTys[rci])
-                rci = rci + 1
-              }
-            }
-            case MGenericInstByName(_, retArgTys) -> {
-              var rci = 0
-              while rci < retArgTys.count {
-                outerCtxTyArgs.add(retArgTys[rci])
-                rci = rci + 1
-              }
-            }
-            case _ -> {
-            }
+          var rci2 = 0
+          while rci2 < retTyArgs.count {
+            outerCtxTyArgs.add(retTyArgs[rci2])
+            rci2 = rci2 + 1
           }
         }
         // Lower args, collecting their MSIL types for generic type inference.
@@ -11640,15 +11668,11 @@ func emitExternTargetBody(
       // Phase 4 (F0015): verify the declared @externTarget signature against
       // reference-assembly metadata so a mis-transcribed Lyric signature is
       // caught at build time rather than surfacing as a MissingMethodException.
-      // Skipped when: (a) any declared param is MByRef (out/inout, complex to
-      // resolve via overload scoring), (b) any param type maps to None in
-      // argTyToSig (generic or unsupported shapes), (c) the type is absent
-      // from the metadata index (Lyric host types in Lyric.Emitter.dll), or
-      // (d) the caller did not supply @externStatic — without an explicit
-      // static annotation the codegen defaults to static but the BCL method
-      // may be instance, producing a false positive; verification is only
-      // reliable when the caller's intent is unambiguous.
+      // For non-async externs, also extract the actual BCL return type so we
+      // emit the correct method signature (critical for matching at JIT time).
       val isExplicitStatic = match hint { case RHStaticOnly -> true; case _ -> false }
+      var bclRetTyFromMeta: Option[MsilType] = None
+      var emitPopAfterCall = false
       if not r.isCtor and isExplicitStatic {
         val verifyStart = if r.isStatic { 0 } else { 1 }
         val verifySigs: List[Mdr.SigType] = newList()
@@ -11675,7 +11699,38 @@ func emitExternTargetBody(
             }
             case Some(_) -> {
               match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, resolvedFqn, r.memberName, verifySigs) {
-                case Some(_) -> {
+                case Some(resolved) -> {
+                  val isVoidRet = match retTy { case MVoid -> true; case _ -> false }
+                  if isVoidRet {
+                    match resolved.sig.returnType {
+                      case Mdr.STPrim(b) -> {
+                        if b != 0x01 {
+                          emitPopAfterCall = true
+                          val elemTy = elemByteToMsil(b)
+                          match elemTy {
+                            case Some(m) -> {
+                              bclRetTyFromMeta = Some(value = m)
+                            }
+                            case None -> {
+                            }
+                          }
+                        }
+                      }
+                      case Mdr.STNamed(fqn, vt) -> {
+                        emitPopAfterCall = true
+                        val typeRefOpt = if vt { internValueTypeRef(cctx, fqn) } else { internClassRef(cctx, fqn) }
+                        match typeRefOpt {
+                          case Some(m) -> {
+                            bclRetTyFromMeta = Some(value = m)
+                          }
+                          case None -> {
+                          }
+                        }
+                      }
+                      case _ -> {
+                      }
+                    }
+                  }
                 }
                 case None -> {
                   var declSigStr = "("
@@ -11711,6 +11766,8 @@ func emitExternTargetBody(
       // Encode the actual BCL return type in the MemberRef so the CLR can resolve the
       // method at JIT time.  retTy (the Lyric-declared T) is used only for the unwrap
       // callvirt appended below.  Ctors are never async in the BCL; skip them.
+      // For non-async externs with metadata-discovered return type, use that type
+      // in the signature so the method signature matches the actual BCL method.
       val bclRetTy = if decl.isAsync and not r.isCtor {
         val isVoidRet = match retTy { case MVoid -> true; case _ -> false }
         if isVoidRet {
@@ -11721,7 +11778,10 @@ func emitExternTargetBody(
           MGenericInst(typeRefCode = tdrTypeRef(cctx.trTask1), headFqn = "System.Threading.Tasks.Task", typeArgs = taskArgs)
         }
       } else {
-        retTy
+        match bclRetTyFromMeta {
+          case Some(m) -> m
+          case None -> retTy
+        }
       }
       val sig = if r.isStatic and not r.isCtor {
         buildFfiMethodSigCtx(cctx, paramTypes, bclRetTy, false)
@@ -11756,6 +11816,12 @@ func emitExternTargetBody(
         insns.add(MCall(methodToken = tok))
       } else {
         insns.add(MCallvirt(methodToken = tok))
+      }
+      // If the BCL method returned a non-void type but Lyric declared Unit,
+      // the call pushed a value onto the stack that the Lyric caller expects
+      // to be discarded.  Emit pop to match the declared type.
+      if emitPopAfterCall {
+        insns.add(MPop)
       }
       // For `@externTarget async func`, the BCL method returns Task / Task<T>.
       // Synchronously unwrap to T so the Lyric caller sees the declared return
@@ -18187,18 +18253,14 @@ func emitResolvedAutoFfi(
   insns: in List[MInsn],
   asmName: in String,
   clrFqn: in String,
-  clrMethodName: in String,
-  originalMethodName: in String,
+  methodName: in String,
   argBufs: in List[List[MInsn]],
   argTys: in List[MsilType],
   m: in Mdr.ResolvedMethod,
 ): Option[MsilType] {
-  // Constructor shorthand: .ctor is an instance method with implicit this, but
-  // called via newobj (no pre-allocated receiver). Regular static/instance methods
-  // still require m.isStatic == true since we can only call static methods on a
-  // type name without an explicit receiver.
-  val isConstructor = originalMethodName == "new"
-  if not isConstructor and not m.isStatic {
+  // Auto-FFI's receiver is a type name, so only a static method can be called
+  // this way; instance overloads need an @externTarget wrapper.
+  if not m.isStatic {
     return None
   }
   if m.paramTypes.count != argTys.count {
@@ -18225,53 +18287,25 @@ func emitResolvedAutoFfi(
   if not ok {
     return None
   }
-  // Constructor shorthand: detect and reject value-type constructors.
-  // Value types (System.DateTime, System.Guid, etc.) have different construction
-  // semantics than reference types (initobj vs. newobj); proper support is tracked
-  // as Q48-004. For now, fall back to legacy path to provide a clear error message.
-  if isConstructor {
-    val isVtype = Mdr.isValueTypeFqn(cctx.metadataVtypeSet, clrFqn)
-    if isVtype {
-      return None
-    }
-  }
-  // Constructor shorthand (.new) returns the constructed type, not the void
-  // signature from the .ctor metadata.
-  // Q48-004: valueType always false until metadata inference is implemented.
-  val resultType = if isConstructor {
-    resolvedSigToMsil(cctx, Mdr.STNamed(fqn = clrFqn, valueType = false))
-  } else {
-    resolvedSigToMsil(cctx, m.returnType)
-  }
-  match resultType {
+  match resolvedSigToMsil(cctx, m.returnType) {
     case None -> None
     case Some(retMsil) -> {
       val sp = splitTypeFqn(clrFqn)
       val tRef = internFfiTypeRef(cctx, asmName, sp.ns, sp.name)
-      // Constructor (.ctor) signature: HASTHIS void(params). Regular static method
-      // uses the resolved return type.
-      val sig = if isConstructor {
-        buildInstanceMethodSig(paramMsil, MVoid)
-      } else {
-        buildStaticMethodSig(paramMsil, retMsil)
-      }
+      val sig = buildStaticMethodSig(paramMsil, retMsil)
       // The blob-intern key must distinguish overloads of the same name/arity
       // (e.g. Max(int,int) vs Max(long,long), or value-type vs primitive
       // overloads) — ctxAddMemberRef dedups the signature blob by key, so it
       // encodes each parameter's identity plus the return's; otherwise a second
       // overload would reuse the first's signature.
-      var sigKey = if isConstructor {
-        "autoffi_ctor_" + clrFqn + "." + clrMethodName
-      } else {
-        "autoffi_" + clrFqn + "." + clrMethodName
-      }
+      var sigKey = "autoffi_" + clrFqn + "." + methodName
       var ki = 0
       while ki < m.paramTypes.count {
         sigKey = sigKey + "_" + sigTypeKeyFrag(m.paramTypes[ki])
         ki = ki + 1
       }
       sigKey = sigKey + "_r" + sigTypeKeyFrag(m.returnType)
-      val mrRow = ctxAddMemberRef(cctx.lctx, tRef, clrMethodName, sigKey, sig)
+      val mrRow = ctxAddMemberRef(cctx.lctx, tRef, methodName, sigKey, sig)
       val tok = 0x0A000000 + mrRow
       var bi = 0
       while bi < argBufs.count {
@@ -18279,12 +18313,7 @@ func emitResolvedAutoFfi(
         appendInsnsMsil(insns, coercions[bi])  // exact: empty; widening: conv; object: box
         bi = bi + 1
       }
-      // Constructor: emit newobj (allocates + initializes). Regular method: emit call.
-      if isConstructor {
-        insns.add(MNewobj(ctorToken = tok))
-      } else {
-        insns.add(MCall(methodToken = tok))
-      }
+      insns.add(MCall(methodToken = tok))
       Some(value = retMsil)
     }
   }
@@ -18462,9 +18491,7 @@ func tryAutoFfiFromMetadata(
     }
     None
   } else {
-    // Constructor shorthand: .new(args) maps to .ctor for metadata resolution.
-    val resolveMethodName = if methodName == "new" { ".ctor" } else { methodName }
-    match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, clrFqn, resolveMethodName, argSigs) {
+    match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, clrFqn, methodName, argSigs) {
       case None -> {
         // Metadata resolved nothing — still roll back to keep counters clean.
         while fctx.slotTicker.count > snapSlot {
@@ -18478,7 +18505,7 @@ func tryAutoFfiFromMetadata(
         }
         None
       }
-      case Some(re) -> emitResolvedAutoFfi(cctx, insns, re.assemblyName, clrFqn, resolveMethodName, methodName, argBufs, argTys, re.sig)
+      case Some(re) -> emitResolvedAutoFfi(cctx, insns, re.assemblyName, clrFqn, methodName, argBufs, argTys, re.sig)
     }
   }
 }
@@ -20464,19 +20491,23 @@ func buildInBundleGenericCtorTok(
       i = i + 1
     }
     var foundTy: MsilType = MObject
-    if slot < contextTyArgs.count {
+    if slot < contextTyArgs.count and contextTyArgs[slot] != MObject {
       val ctxTy = contextTyArgs[slot]
-      if ctxTy != MObject {
-        val ctxIsGenericInst = match ctxTy {
-          case MGenericInstByName(_, _) -> true
-          case MGenericInst(_, _, _) -> true
-          case _ -> false
-        }
-        if ctxIsGenericInst and argFoundTy != MObject {
-          foundTy = argFoundTy
-        } else {
-          foundTy = ctxTy
-        }
+      val ctxIsGenericInst = match ctxTy {
+        case MGenericInstByName(_, _) -> true
+        case MGenericInst(_, _, _) -> true
+        case _ -> false
+      }
+      // MVoid (Unit) context wins only when there is no concrete arg for this
+      // slot: if a real value argument provides a non-Object type, that is a
+      // stronger signal than a Unit hint originating from a sibling match
+      // scrutinee (#3705).  GenericInst context likewise defers to a concrete
+      // arg (nesting-level mismatch); plain MClass context wins unconditionally.
+      val ctxIsVoid = ctxTy == MVoid
+      if (ctxIsGenericInst or ctxIsVoid) and argFoundTy != MObject {
+        foundTy = argFoundTy
+      } else {
+        foundTy = ctxTy
       }
     }
     if foundTy == MObject {
@@ -20516,7 +20547,8 @@ func buildGenericCaseCtorTok(
   val pkgPart = ctorKey.substring(0, dotIdx0)
   val caseRefKey = pkgPart + "/" + ctorKey
   val caseRefRow = match mapGet(cctx.ffiTypeRefs, caseRefKey) { case Some(r) -> r; case None -> return 0 }
-  // Context type wins; use arg type only when context is itself a generic instantiation (#3502).
+  // Apply the same context-vs-arg priority as buildInBundleGenericCtorTok; see
+  // the comment there for the full rationale (#3502 + nested-generic regression).
   val typeArgs: List[MsilType] = newList()
   var tpi = 0
   while tpi < nTypeParams {
@@ -20531,19 +20563,22 @@ func buildGenericCaseCtorTok(
       fi = fi + 1
     }
     var foundTy: MsilType = MObject
-    if tpi < contextTyArgs.count {
+    if tpi < contextTyArgs.count and contextTyArgs[tpi] != MObject {
       val ctxTy = contextTyArgs[tpi]
-      if ctxTy != MObject {
-        val ctxIsGenericInst = match ctxTy {
-          case MGenericInstByName(_, _) -> true
-          case MGenericInst(_, _, _) -> true
-          case _ -> false
-        }
-        if ctxIsGenericInst and argFoundTy != MObject {
-          foundTy = argFoundTy
-        } else {
-          foundTy = ctxTy
-        }
+      val ctxIsGenericInst = match ctxTy {
+        case MGenericInstByName(_, _) -> true
+        case MGenericInst(_, _, _) -> true
+        case _ -> false
+      }
+      // MVoid (Unit) context wins only when there is no concrete arg for this
+      // slot: a real value argument provides a stronger type signal than a Unit
+      // hint from a sibling match scrutinee (#3705).  Same rationale as
+      // buildInBundleGenericCtorTok.
+      val ctxIsVoid = ctxTy == MVoid
+      if (ctxIsGenericInst or ctxIsVoid) and argFoundTy != MObject {
+        foundTy = argFoundTy
+      } else {
+        foundTy = ctxTy
       }
     }
     if foundTy == MObject {

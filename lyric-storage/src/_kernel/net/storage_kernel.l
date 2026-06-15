@@ -42,10 +42,12 @@ package Storage.Kernel.Net
 /// `try { … } catch Bug as b { … }` and surface failures as
 /// `StorageError(code = "INVALID_BASE64")`.
 @externTarget("System.Convert.FromBase64String")
+@externStatic
 pub func hostFromBase64(data: in String): slice[Byte] = ()
 
 /// Encode raw bytes as base64.  Never throws under normal operation.
 @externTarget("System.Convert.ToBase64String")
+@externStatic
 pub func hostToBase64(bytes: in slice[Byte]): String = ()
 
 // =====================================================================
@@ -57,11 +59,13 @@ pub func hostToBase64(bytes: in slice[Byte]): String = ()
 // integrity tag, not for authentication or signing.
 // =====================================================================
 @externTarget("System.Security.Cryptography.MD5.HashData")
+@externStatic
 pub func hostMd5(bytes: in slice[Byte]): slice[Byte] = ()
 
 /// Hex-encode a byte slice (uppercase).  `storage.l` lowercases the
 /// result so the on-disk ETag convention is lowercase-hex.
 @externTarget("System.Convert.ToHexString")
+@externStatic
 pub func hostBytesToHexUpper(bytes: in slice[Byte]): String = ()
 
 // =====================================================================
@@ -72,6 +76,7 @@ pub func hostBytesToHexUpper(bytes: in slice[Byte]): String = ()
 /// keys that smuggled `..` past the substring check (e.g. `a/..`).
 /// `Storage.isSafeKey` is the primary check; this is the second layer.
 @externTarget("System.IO.Path.GetFullPath")
+@externStatic
 pub func hostPathGetFullPath(path: in String): String = ()
 
 // =====================================================================
@@ -82,21 +87,27 @@ pub func hostPathGetFullPath(path: in String): String = ()
 // Bug as b { … }` and surfaces failures as `StorageError`.
 // =====================================================================
 @externTarget("System.IO.File.ReadAllBytes")
+@externStatic
 pub func hostReadAllBytes(path: in String): slice[Byte] = ()
 
 @externTarget("System.IO.File.WriteAllBytes")
+@externStatic
 pub func hostWriteAllBytes(path: in String, bytes: in slice[Byte]): Unit = ()
 
 @externTarget("System.IO.File.WriteAllText")
+@externStatic
 pub func hostWriteAllText(path: in String, contents: in String): Unit = ()
 
 @externTarget("System.IO.File.ReadAllText")
+@externStatic
 pub func hostReadAllText(path: in String): String = ()
 
 @externTarget("System.IO.File.Exists")
+@externStatic
 pub func hostFileExists(path: in String): Bool = ()
 
 @externTarget("System.IO.File.Delete")
+@externStatic
 pub func hostDeleteFile(path: in String): Unit = ()
 
 // =====================================================================
@@ -105,17 +116,21 @@ pub func hostDeleteFile(path: in String): Unit = ()
 // of absolute paths.
 // =====================================================================
 @externTarget("System.IO.Directory.Exists")
+@externStatic
 pub func hostDirectoryExists(path: in String): Bool = ()
 
 extern type DirectoryInfo = "System.IO.DirectoryInfo"
 
 @externTarget("System.IO.Directory.CreateDirectory")
+@externStatic
 pub func hostCreateDirectory(path: in String): DirectoryInfo = ()
 
 @externTarget("System.IO.Directory.GetFiles")
+@externStatic
 pub func hostGetFiles(path: in String): slice[String] = ()
 
 @externTarget("System.IO.Directory.GetDirectories")
+@externStatic
 pub func hostGetDirectories(path: in String): slice[String] = ()
 
 // Audit logging hook moved out of the kernel to `Storage.auditLog`

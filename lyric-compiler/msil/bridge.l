@@ -482,6 +482,11 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // calling `Validation.toResult(42, [])` specialises `toResult__Int` into its
   // own class rather than hitting the unresolved-call fallback (#2932).
   val inBundleGenFuncs = collectInBundleGenericFuncs(parsedPkgs)
+  // Non-generic in-bundle pub funcs: fed to the monomorphizer for type
+  // inference only (not specialisation), so cross-package calls like
+  // `isErr(connectLocal(...))` can resolve `connectLocal`'s return type
+  // and produce a concrete specialisation (#3705).
+  val inBundleNonGenFuncs = collectInBundleNonGenericFuncs(parsedPkgs)
   // Restored-dependency generic pub funcs: cross-DLL generic calls specialise
   // into the consumer bundle rather than erasing return type to `object` (#1498).
   val restoredGenFuncs = collectRestoredGenericFuncs(restoredArtifacts)
@@ -500,6 +505,11 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   while agfk < restoredGenFuncs.count {
     allImportedGenFuncs.add(restoredGenFuncs[agfk])
     agfk = agfk + 1
+  }
+  var agfm = 0
+  while agfm < inBundleNonGenFuncs.count {
+    allImportedGenFuncs.add(inBundleNonGenFuncs[agfm])
+    agfm = agfm + 1
   }
   val perPkgFiles: List[SourceFile] = newList()
   val perPkgNames: List[String] = newList()
@@ -1258,6 +1268,42 @@ func collectInBundleGenericFuncs(parsedPkgs: in List[ParsedUserPkg]): List[Funct
     pi = pi + 1
   }
   genFuncs
+}
+
+// Collect non-generic pub funcs from all in-bundle parsed packages.  These are
+// fed to `monoFileWithImports` alongside the generic candidates so the
+// monomorphizer can resolve cross-package call return types during type
+// inference (e.g. `isErr(connectLocal(...))` — mono needs `connectLocal`'s
+// declared return type to infer `T=StorageBucket, E=StorageError` and produce
+// `isErr__StorageBucket__StorageError`, #3705).  Only block-body funcs are
+// included; externs / signatures are BCL stubs whose types may not be fully
+// representable in the Lyric AST type system.
+func collectInBundleNonGenericFuncs(parsedPkgs: in List[ParsedUserPkg]): List[FunctionDecl] {
+  val nonGenFuncs: List[FunctionDecl] = newList()
+  var pi = 0
+  while pi < parsedPkgs.count {
+    val file = parsedPkgs[pi].file
+    var ii = 0
+    while ii < file.items.count {
+      match file.items[ii].kind {
+        case IFunc(decl) -> {
+          val isPub = match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
+          val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+          val hasBlockBody = match decl.body {
+            case Some(fb) -> match fb { case FBBlock(_) -> true; case FBExpr(_) -> false }
+            case None -> false
+          }
+          if isPub and not isGeneric and hasBlockBody {
+            nonGenFuncs.add(decl)
+          }
+        }
+        case _ -> ()
+      }
+      ii = ii + 1
+    }
+    pi = pi + 1
+  }
+  nonGenFuncs
 }
 
 // Collect generic pub funcs from all restored dependency SynthesisedArtifacts.
