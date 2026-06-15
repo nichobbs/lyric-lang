@@ -216,7 +216,8 @@ let tests =
             //               `@externTarget` functions added to `Std.CollectionsHost`
             //               to support IEnumerator for-loop protocol over Dictionary
             //               key/value collections (#3511).
-            Expect.isLessThanOrEqual total 329
+            //   329 → 330 — `DirectoryInfo` extern type for `hostCreateDirectory`
+            Expect.isLessThanOrEqual total 330
                 "total extern surface unexpectedly large"
         }
     ]

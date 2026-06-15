@@ -36,8 +36,10 @@ pub func hostWriteAllText(path: in String, contents: in String): Unit = ()
 // Directory creation — `CreateDirectory` returns `DirectoryInfo` in
 // the BCL; `Std.File` only needs the success/throw signal.
 // =====================================================================
+extern type DirectoryInfo = "System.IO.DirectoryInfo"
+
 @externTarget("System.IO.Directory.CreateDirectory")
-pub func hostCreateDirectory(path: in String): Unit = ()
+pub func hostCreateDirectory(path: in String): DirectoryInfo = ()
 
 // =====================================================================
 // Bytes-mode IO — `ReadAllBytes` returns `byte[]` (which Lyric maps

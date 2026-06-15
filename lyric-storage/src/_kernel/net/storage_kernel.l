@@ -107,8 +107,10 @@ pub func hostDeleteFile(path: in String): Unit = ()
 @externTarget("System.IO.Directory.Exists")
 pub func hostDirectoryExists(path: in String): Bool = ()
 
+extern type DirectoryInfo = "System.IO.DirectoryInfo"
+
 @externTarget("System.IO.Directory.CreateDirectory")
-pub func hostCreateDirectory(path: in String): Unit = ()
+pub func hostCreateDirectory(path: in String): DirectoryInfo = ()
 
 @externTarget("System.IO.Directory.GetFiles")
 pub func hostGetFiles(path: in String): slice[String] = ()
