@@ -1,10 +1,12 @@
-//! issue_3693_self_test.l — regression test for issue #3693
+//! result_generic_specialization_self_test.l — regression test for issue #3693
 //!
 //! isOk/isErr over Result[interface, record] was not being specialised because
 //! the monomorphiser's generic-function import list was filtering out
 //! expression-bodied generics. Fixed by allowing expression-bodied functions
 //! in collectStdlibGenericFuncs / collectInBundleGenericFuncs /
-//! collectRestoredGenericFuncs.
+//! collectRestoredGenericFuncs. Also tests nested-generic TypeSpec handling
+//! (Result[List[String], StorageError]) to ensure the ctxIsGenericInst code path
+//! works correctly.
 //!
 //! Runs on both targets (--target dotnet and --target jvm) via CI.
 @test_module
