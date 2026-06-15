@@ -407,10 +407,11 @@ func collectStdlibGenericFuncsJvm(files: in List[SourceFile]): List[FunctionDecl
     while ii < f.items.count {
       match f.items[ii].kind {
         case IFunc(decl) -> {
-          val isPub = match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
           val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
           val hasBody = match decl.body { case Some(_) -> true; case None -> false }
-          if isPub and isGeneric and hasBody and not annsBlockSpecializationJvm(decl.annotations) and not (decl.name == "mapGet" and pkgName == "Std.Collections") {
+          // Note: no isPub check here (unlike some user-package collectors).
+          // All stdlib items are implicitly public; visibility filtering is not needed.
+          if isGeneric and hasBody and not annsBlockSpecializationJvm(decl.annotations) and not (decl.name == "mapGet" and pkgName == "Std.Collections") {
             genFuncs.add(decl)
           }
         }
