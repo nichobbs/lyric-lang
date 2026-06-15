@@ -8847,6 +8847,34 @@ func lowerBuiltinOrStaticCallMsil(
                             rh = rh + 1
                           }
                         }
+                        case MConcreteMap(keyTy, valTy) -> {
+                          // Thread the map's key and value types into contextHintTyArgs
+                          // so a bare `newMap()` argument builds Map[K,V], not the
+                          // erased Dictionary<Object,Object> (#3812).  Mirrors the
+                          // MGenericInst case above.
+                          val savedHints: List[MsilType] = newList()
+                          var sh = 0
+                          while sh < fctx.contextHintTyArgs.count {
+                            savedHints.add(fctx.contextHintTyArgs[sh])
+                            sh = sh + 1
+                          }
+                          while fctx.contextHintTyArgs.count > 0 {
+                            fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+                          }
+                          fctx.contextHintTyArgs.add(keyTy)
+                          fctx.contextHintTyArgs.add(valTy)
+                          pushCollExpect(fctx, pTy)
+                          val _ = lowerCallArgMsil(cctx, fctx, insns, callArgs[i])
+                          popCollExpect(fctx)
+                          while fctx.contextHintTyArgs.count > 0 {
+                            fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+                          }
+                          var rh = 0
+                          while rh < savedHints.count {
+                            fctx.contextHintTyArgs.add(savedHints[rh])
+                            rh = rh + 1
+                          }
+                        }
                         case _ -> {
                           // A concrete-collection parameter pushes the expected type
                           // so a bare `newList()` / `[...]` argument builds the
@@ -9077,17 +9105,47 @@ func lowerMethodCallMsil(
             if isByrefArg {
               emitByrefArgMsil(cctx, fctx, insns, callArgExpr(args[i]))
             } else {
-              val aTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
+              // Thread parameter types into contextHintTyArgs/collExpect so a bare
+              // `newMap()` argument builds the concrete instance the callee's
+              // parameter expects (e.g., Map[String,String]) (#3812).
+              val paramTy = match mapGet(cctx.methodParamTypes, dispatchKey + "#" + toString(i)) { case Some(pt) -> pt; case None -> MObject }
+              val aTy = match paramTy {
+                case MConcreteMap(keyTy, valTy) -> {
+                  val savedHints: List[MsilType] = newList()
+                  var sh = 0
+                  while sh < fctx.contextHintTyArgs.count {
+                    savedHints.add(fctx.contextHintTyArgs[sh])
+                    sh = sh + 1
+                  }
+                  while fctx.contextHintTyArgs.count > 0 {
+                    fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+                  }
+                  fctx.contextHintTyArgs.add(keyTy)
+                  fctx.contextHintTyArgs.add(valTy)
+                  pushCollExpect(fctx, paramTy)
+                  val result = lowerCallArgMsil(cctx, fctx, insns, args[i])
+                  popCollExpect(fctx)
+                  while fctx.contextHintTyArgs.count > 0 {
+                    fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+                  }
+                  var rh = 0
+                  while rh < savedHints.count {
+                    fctx.contextHintTyArgs.add(savedHints[rh])
+                    rh = rh + 1
+                  }
+                  result
+                }
+                case _ -> {
+                  lowerCallArgMsil(cctx, fctx, insns, args[i])
+                }
+              }
               // The method signature declares each parameter's concrete type
               // (`typeExprToMsil`).  Box a value-type argument ONLY when the
               // parameter is a reference/object type — boxing it for a value-type
               // parameter passed `object` where `bool`/`int32` was expected, which
               // is invalid IL (#1784).  A missing registry entry falls back to the
               // conservative box-if-value behaviour.
-              val paramIsValue = match mapGet(cctx.methodParamTypes, dispatchKey + "#" + toString(i)) {
-                case Some(pt) -> isValueType(pt)
-                case None -> false
-              }
+              val paramIsValue = isValueType(paramTy)
               if not paramIsValue {
                 boxIfNeededMsil(cctx, insns, aTy)
               }
