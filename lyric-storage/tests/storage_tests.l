@@ -168,7 +168,7 @@ test "exists returns Ok(false) for absent key" {
   val bRes = freshBucket()
   assertTrue(isOk(bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
-  assertTrue(isOk(exists(bucket, "never-put.txt")),
+  assertTrue(isOk(bucket.exists("never-put.txt")),
              "exists call must succeed regardless of presence")
 }
 
@@ -178,7 +178,7 @@ test "exists returns Ok after put" {
   val bucket = unwrapResultOr(bRes, defaultBucket())
   assertTrue(isOk(put(bucket, "exists/probe.bin", "AAA=", "application/octet-stream")),
              "put must succeed")
-  assertTrue(isOk(exists(bucket, "exists/probe.bin")),
+  assertTrue(isOk(bucket.exists("exists/probe.bin")),
              "exists must succeed after put")
 }
 
