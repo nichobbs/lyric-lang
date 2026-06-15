@@ -53,10 +53,11 @@ output_assembly = "Lyric.Stdlib.dll"
 
 # Tier 4 — structured data.
 # NOTE: Std.JsonHost and Std.Json deferred from bootstrap manifest.
-# Std.JsonHost contains nested CLR types (System.Text.Json.JsonElement+ArrayEnumerator)
-# that the F# bootstrap emitter cannot yet handle (nested-type resolution,
-# issue #3506).  Both will be added to the full-stdlib manifest once the
-# self-hosted compiler is tested; JSON parsing is not required for bootstrap.
+# Std.JsonHost contains nested CLR types (System.Text.Json.JsonElement+ObjectEnumerator)
+# that require NestedClass table resolution in the metadata reader. While the
+# self-hosted compiler now supports nested types (issue #3694 / D-progress-XXX),
+# the JSON stdlib packages are deferred pending resolution of the runtime
+# method-resolution issue when using Std.Json from restored packages (#3694).
 # "Std.JsonHost"         = "std/_kernel/json_host.l"
 # "Std.Json"             = "std/json.l"
 
