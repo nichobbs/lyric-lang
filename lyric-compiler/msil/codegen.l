@@ -18182,8 +18182,19 @@ func emitResolvedAutoFfi(
   if not ok {
     return None
   }
+  // Constructor shorthand: detect and reject value-type constructors.
+  // Value types (System.DateTime, System.Guid, etc.) have different construction
+  // semantics than reference types (initobj vs. newobj); proper support is tracked
+  // as Q48-004. For now, fall back to legacy path to provide a clear error message.
+  if isConstructor {
+    val isVtype = Mdr.isValueTypeFqn(cctx.metadataVtypeSet, clrFqn)
+    if isVtype {
+      return None
+    }
+  }
   // Constructor shorthand (.new) returns the constructed type, not the void
   // signature from the .ctor metadata.
+  // Q48-004: valueType always false until metadata inference is implemented.
   val resultType = if isConstructor {
     resolvedSigToMsil(cctx, Mdr.STNamed(fqn = clrFqn, valueType = false))
   } else {
