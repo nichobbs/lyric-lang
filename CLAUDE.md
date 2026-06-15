@@ -71,7 +71,7 @@ backing entry's id.
 - `docs/46-const-patterns.md` — const patterns in match arms: `@Ident` syntax to reference compile-time `val` constants instead of raw literals, disambiguated from variable bindings, zero runtime overhead via type-check-time constant resolution. _Shipped in D-progress-523. Q-MP-001 resolved._
 - `docs/47-import-extern-syntax.md` — `import extern` syntax for external types: unify Lyric package imports and external-type imports under one mechanism, with aliasing at the import site. Reduces boilerplate and makes the FFI boundary clearer. _Unbacked (Q47-001–Q47-004 open)._
 - `docs/48-constructor-shorthand.md` — Constructor shorthand for extern types: enable `.new(args)` calls on external types, eliminating `@externTarget` wrapper functions and aligning MSIL with JVM behavior. _Unbacked; straightforward implementation via Phase 3c auto-FFI infrastructure._
-- `docs/49-methods-in-types.md` — Methods inside type definitions: explore whether Lyric should support declaring methods grouped inside types (vs. current UFCS model where all methods are free functions). Pragmatic ergonomics vs. principle of explicitness. _Unbacked (tension T1–T3 unresolved); soft recommendation: defer to post-v1.0._
+- `docs/49-methods-in-types.md` — Methods inside type definitions: design space that led to D037. Documents how methods in type bodies desugar to UFCS-style functions, with explicit receiver (`self: in Type`) and zero new semantic surface area. Pressure-test record of design tensions (principle vs. pragmatism, parser simplicity, compatibility) that influenced the shipped design. _Specced in D037 (accepted 2026-04-30)._
 
 ## Reading order (for Claude)
 
