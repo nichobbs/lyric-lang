@@ -20367,36 +20367,27 @@ func buildInBundleGenericCtorTok(
   val typeArgs: List[MsilType] = newList()
   var slot = 0
   while slot < nTypeParams {
-    var argFoundTy: MsilType = MObject
-    var i = 0
-    while i < ctorParams.count {
-      match ctorParams[i] {
-        case MTypeVar(ix) -> {
-          if ix == slot and i < argTypes.count {
-            argFoundTy = argTypes[i]
-          }
-        }
-        case _ -> {
-        }
-      }
-      i = i + 1
-    }
     var foundTy: MsilType = MObject
-    if slot < contextTyArgs.count and contextTyArgs[slot] != MObject {
+    if slot < contextTyArgs.count {
       val ctxTy = contextTyArgs[slot]
-      val ctxIsGenericInst = match ctxTy {
-        case MGenericInstByName(_, _) -> true
-        case MGenericInst(_, _, _) -> true
-        case _ -> false
-      }
-      if ctxIsGenericInst and argFoundTy != MObject {
-        foundTy = argFoundTy
-      } else {
+      if ctxTy != MObject {
         foundTy = ctxTy
       }
     }
     if foundTy == MObject {
-      foundTy = argFoundTy
+      var i = 0
+      while i < ctorParams.count {
+        match ctorParams[i] {
+          case MTypeVar(ix) -> {
+            if ix == slot and i < argTypes.count {
+              foundTy = argTypes[i]
+            }
+          }
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
     }
     typeArgs.add(foundTy)
     slot = slot + 1
@@ -20432,37 +20423,31 @@ func buildGenericCaseCtorTok(
   val pkgPart = ctorKey.substring(0, dotIdx0)
   val caseRefKey = pkgPart + "/" + ctorKey
   val caseRefRow = match mapGet(cctx.ffiTypeRefs, caseRefKey) { case Some(r) -> r; case None -> return 0 }
-  // Apply the same context-vs-arg priority as buildInBundleGenericCtorTok; see
-  // the comment there for the full rationale (#3502 + nested-generic regression).
+  // Build concrete type args: context (declared type parameter) wins over the
+  // inferred argument type. The construction TypeSpec must match what the
+  // consumer's `isinst` uses, which is derived from the scrutinee's DECLARED
+  // type, not the concrete value's runtime class. CLR generics are invariant,
+  // so the match exhaustiveness check depends on TypeSpec agreement (#3502).
   val typeArgs: List[MsilType] = newList()
   var tpi = 0
   while tpi < nTypeParams {
-    var argFoundTy: MsilType = MObject
-    var fi = 0
-    while fi < argTypes.count {
-      val fldKey = ctorKey + "/field" + toString(fi)
-      val vi = match mapGet(cctx.fieldVarIndices, fldKey) { case Some(v) -> v; case None -> -1 }
-      if vi == tpi {
-        argFoundTy = argTypes[fi]
-      }
-      fi = fi + 1
-    }
     var foundTy: MsilType = MObject
-    if tpi < contextTyArgs.count and contextTyArgs[tpi] != MObject {
+    if tpi < contextTyArgs.count {
       val ctxTy = contextTyArgs[tpi]
-      val ctxIsGenericInst = match ctxTy {
-        case MGenericInstByName(_, _) -> true
-        case MGenericInst(_, _, _) -> true
-        case _ -> false
-      }
-      if ctxIsGenericInst and argFoundTy != MObject {
-        foundTy = argFoundTy
-      } else {
+      if ctxTy != MObject {
         foundTy = ctxTy
       }
     }
     if foundTy == MObject {
-      foundTy = argFoundTy
+      var fi = 0
+      while fi < argTypes.count {
+        val fldKey = ctorKey + "/field" + toString(fi)
+        val vi = match mapGet(cctx.fieldVarIndices, fldKey) { case Some(v) -> v; case None -> -1 }
+        if vi == tpi {
+          foundTy = argTypes[fi]
+        }
+        fi = fi + 1
+      }
     }
     typeArgs.add(foundTy)
     tpi = tpi + 1
