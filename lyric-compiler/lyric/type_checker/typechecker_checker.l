@@ -1458,7 +1458,9 @@ pub func collectImportNames(imports: in List[ImportDecl]): List[String] {
   val names: List[String] = newList()
   var i = 0
   while i < imports.count {
-    names.add(dottedPackageName(imports[i].path))
+    if not imports[i].isExtern {
+      names.add(dottedPackageName(imports[i].path))
+    }
     i = i + 1
   }
   names

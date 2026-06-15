@@ -25367,3 +25367,50 @@ property access.
 
 `docs/23-fsharp-shim-elimination.md` status updated to RUNTIME F# DECOMMISSION
 COMPLETE.  Formal declaration in decision-log D-progress-529.
+
+---
+
+### D105 / D106 — Parser support for `import extern` syntax and constructor shorthand (docs/47, docs/48)
+
+Phase 1 of docs/47 (`import extern` syntax) and docs/48 (constructor shorthand)
+implementation ships parser support with design finalization. Both sketches are
+now backed by decision-log entries with all open questions resolved.
+
+**D105 — `import extern` syntax for unified external type imports (docs/47)**
+
+Resolves Q47-001–Q47-004 with the following design decisions:
+
+- Q47-001: Full FQN (assembly + namespace) required; no namespace search.
+- Q47-002: Local types shadow external imports (standard scoping rule).
+- Q47-003: External types are not part of public API surface.
+- Q47-004: `pub use extern` allowed for re-exports with caveats.
+
+Parser support (`lyric-compiler/lyric/parser/parser_*.l`, `fmt_items.l`,
+`parser_self_test.l`):
+
+- `ImportDecl` gains `isExtern: Bool` field.
+- Parser recognizes `import extern Foo.Bar.{ Item, Item as Alias }` syntax.
+- `pub use extern Foo.Bar.{ Item }` re-exports allowed per D105 Q47-004.
+- Missing selector group → P0035 diagnostic (parser-level validation).
+- Type-checker integration deferred to Phase 2 (both 2a symbol registration and
+  2b type resolution together per CLAUDE.md production-quality standard).
+
+**D106 — Constructor shorthand for extern types (docs/48)**
+
+Resolves Q48-003; defers Q48-001 (generic constructors) and Q48-002 (async
+constructors) to follow-up.
+
+- Q48-003: Yes, `ExternType.new(args)` syntax is desirable and aligns MSIL with
+  JVM behavior.
+- Implementation deferred pending type-checker Phase 2 integration (same effort
+  as Q47 Phase 2).
+
+**Documentation updates:**
+
+- `docs/01-language-reference.md` §9.2–§9.3: Added examples and semantics for
+  `import extern` and `pub use extern`.
+- `docs/47-import-extern-syntax.md`: Status updated from "Unbacked (D105)" to
+  "Specced (D105)".
+- `docs/48-constructor-shorthand.md`: Status updated from "Unbacked (D106)" to
+  "Specced (D106)".
+- `CLAUDE.md` sketch-list entries updated to reflect decision backing.

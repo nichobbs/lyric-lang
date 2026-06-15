@@ -377,6 +377,7 @@ func addMockingImport(imports: in List[ImportDecl], span: in Span): List[ImportD
     selector = None,
     asAlias = None,
     isPubUse = false,
+    isExtern = false,
     span = span
   ))
   result

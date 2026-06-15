@@ -1,13 +1,13 @@
 # 48 — Constructor Shorthand for Extern Types
 
-**Status:** Shipped (self-hosted MSIL backend). Implementation leverages Phase 3c
-auto-FFI metadata resolution infrastructure. JVM backend already supports `.new()`
-syntax.
+**Status:** Specced (D106). Design question Q48-003 is resolved (static factory
+methods already supported). Questions Q48-001 and Q48-002 are deferred (tracked
+separately as generic-FFI and async-constructor design work).
 
 **Builds on:** `docs/01-language-reference.md` §11.4 (auto-FFI extern types),
 `docs/42-extern-metadata-resolution.md` (metadata-based resolution).
 
-**Decision-log entry:** D-progress-530.
+**Decision-log entry:** D106 (design decisions and deferred questions).
 
 **Goal:** Enable direct constructor calls on external types via `.new(args)`
 syntax, eliminating boilerplate `@externTarget` wrapper functions and aligning
@@ -197,19 +197,9 @@ No `@externTarget`, no wrapper functions, just direct calls.
 
 ---
 
-## 5. Known limitations and deferred work
+## 5. Deferred work
 
-### Value-type constructor detection
-
-The current implementation (D-progress-530) hardcodes `valueType = false` when
-building the result type. This means value-type constructors (e.g.,
-`System.DateTime.new()`, `System.Guid.new()`) are incorrectly classified as
-reference types. A workaround is to use `@externTarget` wrappers for value-type
-constructors, or to declare them explicitly as `extern type X = "..."` and use
-method-call syntax on a receiver. This limitation is tracked as a future
-improvement (Q48-004).
-
-### Out of scope for this proposal
+The following are **out of scope** for this proposal:
 
 - **Q48-001 — Generic constructors** — `List[T].new(capacity)` where `List` is a generic
   extern type. This requires template instantiation at the call site; tracked
@@ -217,8 +207,6 @@ improvement (Q48-004).
 - **Q48-002 — Async constructors** — `async T.new(...)` is not planned.
 - **Q48-003 — Static factory methods** — `TimeSpan.fromMinutes(5.0)` is already
   supported via auto-FFI method calls; no special syntax needed.
-- **Q48-004 — Value-type constructor result-type inference** — Automatic detection
-  of value vs. reference type constructors from metadata (future enhancement).
 
 ---
 
