@@ -11,7 +11,8 @@
 //!
 //! Run in CI via native `lyric test` on the dotnet target; imports only `Std.*`.
 //! Not JVM-wired: the JVM backend hits a pre-existing stdlib-bundling gap
-//! (note J003 / VerifyError) on this module shape, unrelated to the parser fix.
+//! (#3709, docs/44 band J003 / VerifyError) on this module shape, unrelated to
+//! the parser fix.
 @test_module
 package QuantifierIdentSelfTest
 
