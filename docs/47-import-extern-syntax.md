@@ -126,8 +126,8 @@ import extern System.Net.Http.{
 }
 ```
 
-**Benefit:** 4 lines → 6 lines (import statement + 4 type entries + closing brace).
-More importantly: all types imported in one place, making the external surface obvious.
+**Benefit:** All types imported in one place, making the external FFI surface immediately visible.
+(Note: total lines increase slightly — 4 `extern type` declarations → 6 lines for the grouped import — but discoverability and intent are clearer. For larger type sets, grouping saves effort and prevents scattered declarations.)
 
 ---
 

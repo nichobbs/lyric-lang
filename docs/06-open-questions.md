@@ -622,4 +622,7 @@ Docker.DotNet.{ DockerClient as HostClient }` syntax, replacing scattered
 **Constructor shorthand (docs/48, implementation-ready):**
 See `docs/48-constructor-shorthand.md`. Propose enabling `.new(args)` calls on
 external types (already works on JVM; MSIL still requires `@externTarget`
-wrappers). Leverages Phase 3c auto-FFI infrastructure; no open design questions.
+wrappers). Leverages Phase 3c auto-FFI infrastructure. No open design questions; deferred work tracked separately:
+- Q48-001: Generic constructors (`List[T].new(capacity)`; requires template instantiation; part of Q022-4).
+- Q48-002: Async constructors (`async T.new(...)`).
+- Q48-003: Static factory methods (already supported via auto-FFI; no special syntax needed).

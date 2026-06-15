@@ -1,6 +1,6 @@
-# 49 — Methods Inside Type Definitions (SUPERSEDED)
+# 49 — Methods Inside Type Definitions (Specced in D037)
 
-**Status:** SUPERSEDED — D037 (accepted 2026-04-30) resolved this design and shipped the feature.
+**Status:** Specced in D037 (accepted 2026-04-30). The design is shipped — methods inside type bodies desugar to UFCS-style free functions with explicit receiver (`self: in Type`).
 
 **Builds on:** `docs/01-language-reference.md` §2 (type system), `docs/03-decision-log.md` D036–D037 (UFCS dispatch and method hoisting).
 

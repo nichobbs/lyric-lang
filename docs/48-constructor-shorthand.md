@@ -200,12 +200,12 @@ No `@externTarget`, no wrapper functions, just direct calls.
 
 The following are **out of scope** for this proposal:
 
-- **Generic constructors** — `List[T].new(capacity)` where `List` is a generic
+- **Q48-001 — Generic constructors** — `List[T].new(capacity)` where `List` is a generic
   extern type. This requires template instantiation at the call site; tracked
   separately as part of generic-FFI (Q022-4, docs/36).
-- **Static factory methods** — `TimeSpan.fromMinutes(5.0)` is already
+- **Q48-002 — Async constructors** — `async T.new(...)` is not planned.
+- **Q48-003 — Static factory methods** — `TimeSpan.fromMinutes(5.0)` is already
   supported via auto-FFI method calls; no special syntax needed.
-- **Async constructors** — `async T.new(...)` is not planned.
 
 ---
 
