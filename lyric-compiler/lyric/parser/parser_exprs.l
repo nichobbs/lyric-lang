@@ -1143,9 +1143,9 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
         val opTok = advance(st)
         val body = parseBlock(st)
         mkExpr(EUnsafe(block = body), joinSpans(opTok.span, body.span))
-      } else if name == "forall" {
+      } else if name == "forall" and looksLikeQuantifier(st) {
         parseQuantifierExpr(st, true)
-      } else if name == "exists" {
+      } else if name == "exists" and looksLikeQuantifier(st) {
         parseQuantifierExpr(st, false)
       } else if name == "break" {
         val stmt = parseStatement(st)
@@ -1440,6 +1440,17 @@ func parseQuantifierBinder(st: inout ParseState): PropertyBinder {
   }
   val ty = parseTypeExpr(st)
   PropertyBinder(name = ns.name, ty = ty, span = joinSpans(ns.span, ty.span))
+}
+
+// Disambiguate a `forall`/`exists` quantifier from a call to a function that
+// happens to be named `forall`/`exists` (e.g. `StorageBucket.exists(bucket,
+// key)`, #3692-followup).  A quantifier always opens `forall( IDENT : Type …)`;
+// a call opens `forall( <expr> , …)` or `forall( <expr> )`.  So treat the head
+// as a quantifier only when the two tokens after `(` are `IDENT :`.  The head
+// ident is the current token (peekAt 0), so `(`/IDENT/`:` are at offsets 1/2/3.
+func looksLikeQuantifier(st: in ParseState): Bool {
+  isPunct(peekAt(st, 1).token, LParen) and (match peekAt(st, 2).token { case TIdent(_) -> true; case _ -> false }) and
+    isPunct(peekAt(st, 3).token, Colon)
 }
 
 func parseQuantifierExpr(st: inout ParseState, isForall: in Bool): Expr {
