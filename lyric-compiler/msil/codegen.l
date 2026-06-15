@@ -3755,10 +3755,38 @@ func externValueTypeMsil(cctx: in CodegenCtx, seg: in String): Option[MsilType] 
       if not isVtype and not clrIsValueType(clrFqn) {
         return None
       }
-      val sp = splitTypeFqn(clrFqn)
-      val asm = assemblyForTypeMsil(cctx, clrFqn)
-      val refRow = internFfiTypeRef(cctx, asm, sp.ns, sp.name)
+      val refRow = internFfiTypeRefNested(cctx, clrFqn)
       Some(value = MValueTypeRef(typeRefCode = tdrTypeRef(refRow), clrFqn = clrFqn))
+    }
+  }
+}
+
+// Intern a TypeRef row for a (possibly nested) CLR type FQN.  A nested type
+// ("Enclosing+Nested", ECMA-335 §II.22.38) is encoded as a TypeRef whose
+// ResolutionScope is the enclosing type's TypeRef row — NOT a flat TypeRef
+// with a "+"-bearing name scoped to an assembly (which mis-resolves the
+// owning assembly and faults at run time).  The split is on the LAST "+" so a
+// multi-level nest resolves its enclosing chain recursively; a non-nested FQN
+// falls through to the flat `internFfiTypeRef`.  Nested rows are cached under a
+// "nested:" + FQN key so repeated references reuse one TypeRef row.
+func internFfiTypeRefNested(cctx: in CodegenCtx, clrFqn: in String): Int {
+  val plusIdx = clrFqn.lastIndexOf("+")
+  if plusIdx < 0 {
+    ensureMetadataIndex(cctx)
+    val asm = assemblyForTypeMsil(cctx, clrFqn)
+    val sp = splitTypeFqn(clrFqn)
+    return internFfiTypeRef(cctx, asm, sp.ns, sp.name)
+  }
+  val cacheKey = "nested:" + clrFqn
+  match mapGet(cctx.ffiTypeRefs, cacheKey) {
+    case Some(r) -> r
+    case None -> {
+      val enclosingFqn = clrFqn.substring(0, plusIdx)
+      val nestedName = clrFqn.substring(plusIdx + 1, clrFqn.length - plusIdx - 1)
+      val enclosingRow = internFfiTypeRefNested(cctx, enclosingFqn)
+      val row = ctxAddNestedTypeRef(cctx.lctx, enclosingRow, nestedName)
+      cctx.ffiTypeRefs.add(cacheKey, row)
+      row
     }
   }
 }
@@ -3890,9 +3918,7 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
                   MClass(className = resolveTypeFqn(cctx, pkgName, seg))
                 } else {
                   ensureMetadataIndex(cctx)
-                  val sp = splitTypeFqn(clrFqn)
-                  val asm = assemblyForTypeMsil(cctx, clrFqn)
-                  val refRow = internFfiTypeRef(cctx, asm, sp.ns, sp.name)
+                  val refRow = internFfiTypeRefNested(cctx, clrFqn)
                   MClassRef(typeRefCode = tdrTypeRef(refRow), clrFqn = clrFqn)
                 }
               }

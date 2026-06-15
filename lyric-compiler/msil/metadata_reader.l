@@ -1491,7 +1491,8 @@ func scanPublicTypes(ri: in ResourceImage, asmName: in String, index: in Map[Str
 
 // Record every public top-level value type (any type whose Extends field
 // resolves to "System.ValueType" or "System.Enum") of the parsed image in
-// `vtypeSet` (FQN → true).  First writer wins.
+// `vtypeSet` (FQN → true).  First writer wins.  Also indexes public NESTED
+// value types under their "Enclosing+Nested" FQN (see scanNestedValueTypes).
 func scanValueTypes(ri: in ResourceImage, vtypeSet: in Map[String, Bool]): Unit {
   val n = rowCountOf(ri.th, 0x02)
   var i = 1
@@ -1506,6 +1507,66 @@ func scanValueTypes(ri: in ResourceImage, vtypeSet: in Map[String, Bool]): Unit 
           case Some(_) -> {
           }
           case None -> vtypeSet.add(fqn, true)
+        }
+      }
+    }
+    i = i + 1
+  }
+  scanNestedValueTypes(ri, vtypeSet)
+}
+
+// Build a map from a nested TypeDef row → its enclosing TypeDef row by scanning
+// the NestedClass table (0x29, ECMA-335 §II.22.32).  Used to form the
+// "Enclosing+Nested" FQN of nested types.
+func buildNestedClassMap(ri: in ResourceImage): Map[Int, Int] {
+  val m: Map[Int, Int] = newMap()
+  val n = rowCountOf(ri.th, 0x29)
+  var i = 1
+  while i <= n {
+    val nc = readNestedClass(ri.img, ri.layout, i)
+    if not m.containsKey(nc.nestedTypeDef) {
+      m.add(nc.nestedTypeDef, nc.enclosingTypeDef)
+    }
+    i = i + 1
+  }
+  m
+}
+
+// Record every public NESTED value type of the parsed image in `vtypeSet`,
+// keyed by its "Enclosing+Nested" CLR FQN (e.g.
+// "System.Text.Json.JsonElement+ObjectEnumerator").  `scanValueTypes` is
+// otherwise top-level only; nested value-typed externs (the JSON
+// `ArrayEnumerator`/`ObjectEnumerator` structs) need this so the self-hosted
+// emitter encodes them as ELEMENT_TYPE_VALUETYPE rather than CLASS in
+// cross-package signatures (a CLASS-vs-VALUETYPE mismatch faults at run time
+// with `Method not found`).  Single-level nesting (the only shape the stdlib
+// `_kernel/` externs use today); deeper nesting would need a recursive
+// enclosing-FQN walk.
+func scanNestedValueTypes(ri: in ResourceImage, vtypeSet: in Map[String, Bool]): Unit {
+  val nestedMap = buildNestedClassMap(ri)
+  if nestedMap.count == 0 {
+    return
+  }
+  val n = rowCountOf(ri.th, 0x02)
+  var i = 1
+  while i <= n {
+    val td = readTypeDef(ri.img, ri.layout, i)
+    // Nested visibility mask 0x07 == NestedPublic (2); only NestedPublic
+    // types are reachable extern targets.
+    if (td.flags % 8) == 2 and td.extendsToken > 0 {
+      match mapGet(nestedMap, i) {
+        case None -> {
+        }
+        case Some(enclosingRow) -> {
+          val extName = resolveTypeDefOrRefName(ri.img, ri.layout, ri.th, td.extendsToken)
+          if extName == "System.ValueType" or extName == "System.Enum" {
+            val enc = readTypeDef(ri.img, ri.layout, enclosingRow)
+            val encFqn = if enc.namespaceName.length > 0 { enc.namespaceName + "." + enc.name } else { enc.name }
+            val fqn = encFqn + "+" + td.name
+            if not vtypeSet.containsKey(fqn) {
+              vtypeSet.add(fqn, true)
+            }
+          }
         }
       }
     }

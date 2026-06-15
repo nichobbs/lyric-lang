@@ -142,13 +142,15 @@ pub func clrAssemblyResolvable(typeFqn: in String): Bool {
 // `valuetype System.X` MethodDef signature — a CLASS / OBJECT encoding mismatch
 // faults at run time with `Method not found` (#1602).
 //
-// The list is the closed set of top-level value-typed externs the stdlib
-// `_kernel/` boundary declares today (see `lyric-stdlib/std/_kernel/*.l`).
+// The list is the closed set of value-typed externs the stdlib `_kernel/`
+// boundary declares today (see `lyric-stdlib/std/_kernel/*.l`).
 // Reference-type externs (HttpClient, Regex, Stream, …) are deliberately
-// absent — they keep the existing CLASS / OBJECT encoding.  Nested value
-// types (`JsonElement+ArrayEnumerator`, …) are also absent: the metadata
-// vtypeSet only indexes top-level public types, so the fallback mirrors
-// that domain.  When a new value-typed extern is added to the kernel, it
+// absent — they keep the existing CLASS / OBJECT encoding.  The nested
+// value-typed enumerator structs (`JsonElement+ArrayEnumerator`,
+// `JsonElement+ObjectEnumerator`) are listed too: `scanNestedValueTypes`
+// indexes them in the metadata vtypeSet when a reference pack is present,
+// but this hardcoded fallback is what keeps them encoding as VALUETYPE in
+// SDK-less builds.  When a new value-typed extern is added to the kernel, it
 // must be added here too; an omission re-introduces the signature mismatch
 // in SDK-less builds.  `codegen.l::externValueTypeMsil` consults the
 // metadata-derived vtypeSet first and only falls back to this list when no
@@ -165,7 +167,9 @@ pub func clrIsValueType(typeFqn: in String): Bool {
     typeFqn == "System.Text.RegularExpressions.RegexOptions" or
     typeFqn == "System.Text.Json.JsonElement" or
     typeFqn == "System.Text.Json.JsonEncodedText" or
-    typeFqn == "System.Text.Json.JsonProperty"
+    typeFqn == "System.Text.Json.JsonProperty" or
+    typeFqn == "System.Text.Json.JsonElement+ArrayEnumerator" or
+    typeFqn == "System.Text.Json.JsonElement+ObjectEnumerator"
 }
 
 // ── Resolver ─────────────────────────────────────────────────────────────────
