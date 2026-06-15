@@ -4756,6 +4756,8 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       // and `memberName` is a nullary case of that union; redirect to the
       // singleton-field load so `val c: Color = Color.Same` pushes the real
       // `Color_Same.Instance` value instead of pushing `null` (#3349).
+      // For generic nullary cases (which have no singleton instance), construct
+      // via newobj instead (#3814).
       // This check runs before the config-block short-circuit below: union type
       // names are PascalCase; config block names follow identifier rules but are
       // distinct — a name that hits unionCaseCtorByName is unambiguously a case
@@ -4768,11 +4770,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               match mapGet(cctx.unionCaseCtorByName, memberName) {
                 case Some(nmCands) -> {
                   val nmPicked = pickCaseFqnByQualifier(cctx, fctx, nmCands, qualifier)
-                  if cctx.singletonFieldTokens.containsKey(nmPicked) {
-                    nmPicked
-                  } else {
-                    ""
-                  }
+                  nmPicked
                 }
                 case None -> ""
               }
@@ -4786,9 +4784,21 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         case _ -> ""
       }
       if nmCaseFqn.length > 0 {
-        val nmFldTok = match mapGet(cctx.singletonFieldTokens, nmCaseFqn) { case Some(t) -> t; case None -> 0 }
-        insns.add(MLdsfld(fieldToken = nmFldTok))
-        MClass(className = caseParentFqnMsil(cctx, nmCaseFqn))
+        if cctx.singletonFieldTokens.containsKey(nmCaseFqn) {
+          val nmFldTok = match mapGet(cctx.singletonFieldTokens, nmCaseFqn) { case Some(t) -> t; case None -> 0 }
+          insns.add(MLdsfld(fieldToken = nmFldTok))
+          MClass(className = caseParentFqnMsil(cctx, nmCaseFqn))
+        } else {
+          match mapGet(cctx.recordCtorTokens, nmCaseFqn) {
+            case Some(ctorTok) -> {
+              insns.add(MNewobj(ctorToken = ctorTok))
+              MClass(className = caseParentFqnMsil(cctx, nmCaseFqn))
+            }
+            case None -> {
+              MObject
+            }
+          }
+        }
       } else {
         // Config block short-circuit: `Settings.port` parses as
         // EMember(EPath(["Settings"]), "port").  If the single-segment receiver
