@@ -773,3 +773,44 @@ test "peek at negative returns synthetic eof" {
   val realEof = lr.tokens[lr.tokens.count - 1].span
   assertTrue(sp.startPos.offset == realEof.endPos.offset, "peekAt(-1): span anchored at real EOF, not 0")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// exists/forall disambiguation tests (#3693/#3716)
+// Verify that exists/forall are allowed as function names via lookahead,
+// not unconditionally treated as quantifier keywords.
+// ─────────────────────────────────────────────────────────────────────────────
+test "exists as function name in function call" {
+  // `exists(bucket, key)` should parse as a function call, not a quantifier.
+  val src = "package P\nfunc test(): Unit { val x = exists(bucket, key) }\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "exists(args) parses as function call with no errors")
+  assertEqualInt(itemCount(pr), 1, "exists function call: one item")
+  assertEqual(firstItemKindName(pr), "func", "exists function call: item is func")
+}
+
+test "forall as function name in function call" {
+  // `forall(args)` should parse as a function call, not a quantifier.
+  val src = "package P\nfunc test(): Unit { val x = forall(vec, pred) }\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "forall(args) parses as function call with no errors")
+  assertEqualInt(itemCount(pr), 1, "forall function call: one item")
+  assertEqual(firstItemKindName(pr), "func", "forall function call: item is func")
+}
+
+test "exists as quantifier expression still works" {
+  // `exists(x: Int) x > 5` should still parse as a quantifier, not a function call.
+  val src = "package P\nval x: Bool = exists(n: Int) n > 5\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "quantifier exists(x: T) body parses correctly")
+  assertEqualInt(itemCount(pr), 1, "quantifier: one item")
+  assertEqual(firstItemKindName(pr), "val", "quantifier: item is val")
+}
+
+test "forall as quantifier expression still works" {
+  // `forall(x: Int) x >= 0` should still parse as a quantifier.
+  val src = "package P\nval x: Bool = forall(n: Int) n >= 0\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "quantifier forall(x: T) body parses correctly")
+  assertEqualInt(itemCount(pr), 1, "quantifier: one item")
+  assertEqual(firstItemKindName(pr), "val", "quantifier: item is val")
+}
