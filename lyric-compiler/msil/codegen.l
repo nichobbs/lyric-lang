@@ -20953,6 +20953,15 @@ func registerStdlibFunc(cctx: in CodegenCtx, packageName: in String, hostRefRow:
   if not isPub {
     return
   }
+  // Generic public free functions require monomorphized-form MemberRef
+  // signatures — a raw type-variable `T` resolves to a non-existent
+  // `<pkg>.T` class and the runtime raises MissingMethodException.  Deferred
+  // until cross-assembly generic call sites are supported; mirrors
+  // `registerRestoredFunc`'s identical guard.
+  val fnIsGeneric = match fn.generics { case Some(_) -> true; case None -> false }
+  if fnIsGeneric {
+    return
+  }
   val fqn = packageName + "." + fn.name
   val arityKey = fqn + "/" + toString(fn.params.count)
 
