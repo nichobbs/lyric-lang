@@ -103,6 +103,33 @@ test "import" {
   assertEqualInt(importCount(pr), 1, "import: one import")
 }
 
+test "import extern" {
+  val pr = parse("package P\nimport extern System.Net.Http.{ HttpClient }\n")
+  assertEqualInt(diagCount(pr), 0, "import extern: no diagnostics")
+  assertEqualInt(importCount(pr), 1, "import extern: one import")
+  assertTrue(pr.file.imports[0].isExtern, "import extern: isExtern flag is true")
+}
+
+test "import extern with alias" {
+  val pr = parse("package P\nimport extern Docker.DotNet.{ DockerClient as HostClient }\n")
+  assertEqualInt(diagCount(pr), 0, "import extern alias: no diagnostics")
+  assertEqualInt(importCount(pr), 1, "import extern alias: one import")
+  assertTrue(pr.file.imports[0].isExtern, "import extern alias: isExtern flag is true")
+}
+
+test "pub use extern diagnostic" {
+  val pr = parse("package P\npub use extern System.Net.Http.{ HttpClient }\n")
+  var sawP0034 = false
+  var i = 0
+  while i < pr.diagnostics.count {
+    if pr.diagnostics[i].code == "P0034" {
+      sawP0034 = true
+    }
+    i = i + 1
+  }
+  assertTrue(sawP0034, "pub use extern: P0034 diagnostic emitted")
+}
+
 test "func decl" {
   val pr = parse("package P\nfunc add(x: in Int, y: in Int): Int { x + y }\n")
   assertEqualInt(diagCount(pr), 0, "func: no diagnostics")
