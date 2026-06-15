@@ -20434,8 +20434,7 @@ func buildGenericCaseCtorTok(
   val pkgPart = ctorKey.substring(0, dotIdx0)
   val caseRefKey = pkgPart + "/" + ctorKey
   val caseRefRow = match mapGet(cctx.ffiTypeRefs, caseRefKey) { case Some(r) -> r; case None -> return 0 }
-  // CLR generics are invariant: TypeSpec must match consumer's isinst (from declared type, #3502).
-  // Prefer inferred arg when context is generic instantiation (nested generics like Maybe[Maybe[Int]]), else use context.
+  // Context type wins; use arg type only when context is itself a generic instantiation (#3502).
   val typeArgs: List[MsilType] = newList()
   var tpi = 0
   while tpi < nTypeParams {
