@@ -33,6 +33,7 @@ pub func mkStmt(kind: in StatementKind, span: in Span): Statement {
 // a quantifier (with syntax `exists(x: T, ...) ...`) or a function name.
 // Quantifier binders have the form `identifier: Type`, so we look ahead to see
 // if the opening paren is followed by an identifier and then a colon.
+// Must appear before parsePrimaryExpr: Lyric's resolver does not support forward references.
 func isQuantifierContext(st: in ParseState): Bool {
   val tokAfterName = peekAt(st, 1)
   if not isPunct(tokAfterName.token, LParen) {
