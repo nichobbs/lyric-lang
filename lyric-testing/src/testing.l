@@ -145,6 +145,7 @@ pub func clearSent(sender: inout MockMailSender): Unit {
 @stable(since = "0.1")
 pub record MockStorageBucket {
   var objects: Map[String, StoredObject]
+  var orderedKeys: List[String]
   bucketName: String
   var callCount: Int
 }
@@ -154,6 +155,10 @@ impl Storage.StorageBucket for MockStorageBucket {
     key: in String, dataBase64: in String, contentType: in String, userMeta: in Map[String, String]
   ): Result[Storage.StorageMetadata, Storage.StorageError] {
     val obj = StoredObject(key = key, dataBase64 = dataBase64, contentType = contentType)
+    val existing: Option[StoredObject] = mapGet(self.objects, key)
+    if not isSome(existing) {
+      self.orderedKeys.add(key)
+    }
     self.objects[key] = obj
     self.callCount = self.callCount + 1
     val meta = Storage.StorageMetadata(
@@ -169,7 +174,7 @@ impl Storage.StorageBucket for MockStorageBucket {
 
     key: in String,
   ): Result[Storage.StorageObject, Storage.StorageError] {
-    val found = mapGet(self.objects, key)
+    val found: Option[StoredObject] = mapGet(self.objects, key)
     if not isSome(found) {
       return Err(Storage.StorageError(message = "not found: " + key, code = "NOT_FOUND"))
     }
@@ -189,6 +194,13 @@ impl Storage.StorageBucket for MockStorageBucket {
     key: in String,
   ): Result[Unit, Storage.StorageError] {
     self.objects.remove(key)
+    var newKeys: List[String] = newList()
+    for k in self.orderedKeys {
+      if k != key {
+        newKeys.add(k)
+      }
+    }
+    self.orderedKeys = newKeys
     return Ok(())
   }
   func list(
@@ -198,7 +210,7 @@ impl Storage.StorageBucket for MockStorageBucket {
     maxKeys: in Int,
   ): Result[Storage.ListResult, Storage.StorageError] {
     var entries: slice[Storage.ListEntry] = []
-    for k in self.objects {
+    for k in self.orderedKeys {
       val obj = self.objects[k]
       val matches = if prefix.length == 0 {
         true
@@ -226,7 +238,8 @@ impl Storage.StorageBucket for MockStorageBucket {
 
     key: in String,
   ): Result[Bool, Storage.StorageError] {
-    return Ok(isSome(mapGet(self.objects, key)))
+    val found: Option[StoredObject] = mapGet(self.objects, key)
+    return Ok(isSome(found))
   }
 }
 
@@ -293,7 +306,7 @@ pub record MockSessionStore {
 }
 
 impl Session.SessionStore for MockSessionStore {
-  func create(): Result[Session.SessionId, Session.SessionError] {
+  func create(): Result[String, Session.SessionError] {
     self.sessionSeq = self.sessionSeq + 1
     val id = "test-session-" + self.sessionSeq.toString()
     self.entries[id] = newMap()
@@ -301,7 +314,7 @@ impl Session.SessionStore for MockSessionStore {
   }
   func load(
 
-    sessionId: in Session.SessionId,
+    sessionId: in String,
   ): Result[Option[Session.SessionData], Session.SessionError] {
     val found: Option[Map[String, String]] = mapGet(self.entries, sessionId)
     if not isSome(found) {
@@ -329,21 +342,21 @@ impl Session.SessionStore for MockSessionStore {
   }
   func destroy(
 
-    sessionId: in Session.SessionId,
+    sessionId: in String,
   ): Result[Unit, Session.SessionError] {
     self.entries.remove(sessionId)
     return Ok(())
   }
   func touch(
 
-    sessionId: in Session.SessionId,
+    sessionId: in String,
   ): Result[Unit, Session.SessionError] {
     // no-op: mock doesn't track TTL.
     return Ok(())
   }
   func get(
 
-    sessionId: in Session.SessionId,
+    sessionId: in String,
     key: in String,
   ): Result[Option[String], Session.SessionError] {
     val found: Option[Map[String, String]] = mapGet(self.entries, sessionId)
@@ -355,7 +368,7 @@ impl Session.SessionStore for MockSessionStore {
   }
   func set(
 
-    sessionId: in Session.SessionId,
+    sessionId: in String,
     key: in String,
     value: in String,
   ): Result[Unit, Session.SessionError] {
@@ -380,7 +393,7 @@ impl Session.SessionStore for MockSessionStore {
   }
   func delete(
 
-    sessionId: in Session.SessionId,
+    sessionId: in String,
     key: in String,
   ): Result[Unit, Session.SessionError] {
     val found: Option[Map[String, String]] = mapGet(self.entries, sessionId)
@@ -393,7 +406,7 @@ impl Session.SessionStore for MockSessionStore {
   }
   func clear(
 
-    sessionId: in Session.SessionId,
+    sessionId: in String,
   ): Result[Unit, Session.SessionError] {
     val found: Option[Map[String, String]] = mapGet(self.entries, sessionId)
     if isSome(found) {
@@ -422,7 +435,11 @@ impl Flags.FlagStore for MockFlagStore {
 
     name: in String,
   ): Option[Flags.FlagValue] {
-    return None
+    val found: Option[Bool] = mapGet(self.flags, name)
+    match found {
+      case None -> return None
+      case Some(b) -> return Some(value = Flags.FlagBool(value = b))
+    }
   }
   func listFlags(): slice[Flags.FlagEntry] {
 
@@ -473,7 +490,12 @@ pub func newTestContext(): TestContext {
   return TestContext(
     cache = cacheStore,
     mail = MockMailSender(sentEmails = newList(), count = 0),
-    storage = MockStorageBucket(objects = newMap(), bucketName = "test-bucket", callCount = 0),
+    storage = MockStorageBucket(
+      objects = newMap(),
+      orderedKeys = newList(),
+      bucketName = "test-bucket",
+      callCount = 0
+    ),
     queue = MockMessageQueue(published = newList(), queueName = "test-queue", msgCount = 0),
     session = MockSessionStore(entries = newMap(), sessionSeq = 0),
     flags = MockFlagStore(flags = newMap()),
@@ -488,11 +510,9 @@ pub func newTestContext(): TestContext {
 /// expose a top `Any` type.  For other error types, convert to String first.
 @stable(since = "0.1")
 pub func assertOk[T](result: in Result[T, String], msg: in String): Unit {
-  // Use stdlib isOk/unwrapErrOr to avoid pattern matching on unknown T in
-  // the bootstrap emitter (E11 "unknown constructor pattern 'Ok'").
-  if not isOk(result) {
-    val errMsg = unwrapErrOr(result, "")
-    panic(msg + " (got Err: " + errMsg + ")")
+  match result {
+    case Err(e) -> panic(msg + " (got Err: " + e + ")")
+    case Ok(_) -> ()
   }
 }
 
@@ -500,12 +520,13 @@ pub func assertOk[T](result: in Result[T, String], msg: in String): Unit {
 /// Returns the error value when the assertion passes.
 @stable(since = "0.1")
 pub func assertErr[T](result: in Result[T, String], msg: in String): String {
-  if isOk(result) {
-    panic(msg + " (expected Err, got Ok)")
-    return ""
-    // unreachable; panic diverges
+  match result {
+    case Ok(_) -> {
+      panic(msg + " (expected Err, got Ok)")
+      return ""
+    }
+    case Err(e) -> return e
   }
-  return unwrapErrOr(result, "")
 }
 
 /// Assert that `opt` is Some.  Panics with `msg` if it is None.
