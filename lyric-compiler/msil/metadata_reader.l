@@ -500,6 +500,7 @@ pub record TableLayout {
   fieldIdx: Int          // Field simple-index width
   methodIdx: Int          // MethodDef simple-index width
   paramIdx: Int          // Param simple-index width
+  typeDefIdx: Int        // TypeDef simple-index width (for NestedClass table)
   rowSize: List[Int]    // length 64
   dataStart: List[Int]    // length 64, file offset of each table's rows
   stringsBase: Int          // file offset of the #Strings heap (-1 if absent)
@@ -735,6 +736,7 @@ pub func computeLayout(img: in PeImage, root: in MetadataRoot, th: in TablesHead
       fieldIdx = fieldIdx,
       methodIdx = methodIdx,
       paramIdx = paramIdx,
+      typeDefIdx = typeDefIdx,
       rowSize = rowSize,
       dataStart = dataStart,
       stringsBase = stringsBase,

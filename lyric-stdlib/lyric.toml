@@ -53,6 +53,8 @@ output_assembly = "Lyric.Stdlib.dll"
 
 # Tier 4 — structured data.
 # Kernel boundary for JSON parsing — @externTarget pattern, System.Text.Json.
+# Now enabled in bootstrap manifest (was deferred due to F# nested-type-resolution
+# issue #3506, which has been fixed).
 "Std.JsonHost"         = "std/_kernel/json_host.l"
 "Std.Json"             = "std/json.l"
 
