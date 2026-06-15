@@ -8,10 +8,10 @@ package Lyric.ConstructorShorthand
 import Std.Core
 import Std.Testing
 
+extern type SBld = "System.Text.StringBuilder"
+
 // Test basic parameterless constructor call.
 test "StringBuilder.new()" {
-  extern type SBld = "System.Text.StringBuilder"
-
   val sb = SBld.new()
   // Verify the object was constructed and has expected initial state.
   assertEqual(sb.Length, 0, "newly constructed StringBuilder should be empty")
@@ -19,8 +19,6 @@ test "StringBuilder.new()" {
 
 // Test constructor with single argument (capacity).
 test "StringBuilder.new(capacity)" {
-  extern type SBld = "System.Text.StringBuilder"
-
   val capacity = 32
   val sb = SBld.new(capacity)
   // Verify the constructor was called with the argument.
@@ -29,8 +27,6 @@ test "StringBuilder.new(capacity)" {
 
 // Test constructor overload resolution.
 test "constructor overload resolution" {
-  extern type SBld = "System.Text.StringBuilder"
-
   // Both overloads should resolve via metadata and emit correct newobj IL.
   val sb0 = SBld.new()
   val sb1 = SBld.new(64)
@@ -41,8 +37,6 @@ test "constructor overload resolution" {
 
 // Test constructor with String argument (initializes content).
 test "StringBuilder.new(String)" {
-  extern type SBld = "System.Text.StringBuilder"
-
   val initialContent = "hello"
   val sb = SBld.new(initialContent)
   // Verify the string argument was passed and applied.
