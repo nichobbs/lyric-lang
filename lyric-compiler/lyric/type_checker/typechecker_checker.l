@@ -1458,145 +1458,10 @@ pub func collectImportNames(imports: in List[ImportDecl]): List[String] {
   val names: List[String] = newList()
   var i = 0
   while i < imports.count {
-    if not imports[i].isExtern {
-      names.add(dottedPackageName(imports[i].path))
-    }
+    names.add(dottedPackageName(imports[i].path))
     i = i + 1
   }
   names
-}
-
-// Register external imports (`import extern`) as symbols in the symbol table.
-// External imports are not package imports; they create bindings to external types
-// that will be resolved through metadata at type-check time.
-func registerExternalImports(
-  tbl: inout SymbolTable,
-  diag: in List[Diagnostic],
-  userPkg: in String,
-  imports: in List[ImportDecl]
-): Unit {
-  var i = 0
-  while i < imports.count {
-    val imp = imports[i]
-    if imp.isExtern {
-      match imp.selector {
-        case Some(sel) -> {
-          match sel {
-            case ISGroup(items) -> {
-              var j = 0
-              while j < items.count {
-                val item = items[j]
-                val localName = match item.asAlias {
-                  case Some(alias) -> alias
-                  case None -> item.name
-                }
-                val pathSegments = imp.path.segments
-                var externalFqn = ""
-                var k = 0
-                while k < pathSegments.count {
-                  if k > 0 {
-                    externalFqn = externalFqn + "."
-                  }
-                  externalFqn = externalFqn + pathSegments[k]
-                  k = k + 1
-                }
-                externalFqn = externalFqn + "." + item.name
-
-                val extImpDecl = ExternalImportDecl(
-                  name = localName,
-                  externalFqn = externalFqn,
-                  span = item.span
-                )
-                val _ = addSym(
-                  tbl,
-                  diag,
-                  false,
-                  userPkg,
-                  localName,
-                  DKExternalImport(decl = extImpDecl),
-                  Some(value = VisPublic),
-                  item.span
-                )
-                j = j + 1
-              }
-            }
-            case ISSingle(item) -> {
-              val localName = match item.asAlias {
-                case Some(alias) -> alias
-                case None -> item.name
-              }
-              val pathSegments = imp.path.segments
-              var externalFqn = ""
-              var k = 0
-              while k < pathSegments.count {
-                if k > 0 {
-                  externalFqn = externalFqn + "."
-                }
-                externalFqn = externalFqn + pathSegments[k]
-                k = k + 1
-              }
-              externalFqn = externalFqn + "." + item.name
-
-              val extImpDecl = ExternalImportDecl(
-                name = localName,
-                externalFqn = externalFqn,
-                span = item.span
-              )
-              val _ = addSym(
-                tbl,
-                diag,
-                false,
-                userPkg,
-                localName,
-                DKExternalImport(decl = extImpDecl),
-                Some(value = VisPublic),
-                item.span
-              )
-            }
-          }
-        }
-        case None -> {
-          // No selector — import the module name itself as an external type
-          val localName = match imp.asAlias {
-            case Some(alias) -> alias
-            case None -> {
-              match imp.path.segments.last() {
-                case Some(last) -> last
-                case None -> "Unknown"
-              }
-            }
-          }
-          val pathSegments = imp.path.segments
-          var externalFqn = ""
-          var k = 0
-          while k < pathSegments.count {
-            if k > 0 {
-              externalFqn = externalFqn + "."
-            }
-            externalFqn = externalFqn + pathSegments[k]
-            k = k + 1
-          }
-
-          val extImpDecl = ExternalImportDecl(
-            name = localName,
-            externalFqn = externalFqn,
-            span = imp.span
-          )
-          val _ = addSym(
-            tbl,
-            diag,
-            false,
-            userPkg,
-            localName,
-            DKExternalImport(decl = extImpDecl),
-            Some(value = VisPublic),
-            imp.span
-          )
-        }
-      }
-    }
-    i = i + 1
-  }
 }
 
 // Flatten the items of every imported package into one list, in package then
@@ -1670,9 +1535,6 @@ func checkWithImportedPackagesCore(
     registerItem(tbl, ctr, diag, false, userPkg, file.items[j])
     j = j + 1
   }
-
-  // T1.5: register external imports (`import extern`) as external type symbols.
-  registerExternalImports(tbl, diag, userPkg, file.imports)
 
   // From here on, resolve under the user package's scope by default: the
   // user's own declarations win, then its imports, then last-registered.
