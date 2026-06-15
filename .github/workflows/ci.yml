@@ -400,6 +400,7 @@ jobs:
             lyric-compiler/lyric/derives_self_test.l \
             lyric-compiler/lyric/mono_self_test.l \
             lyric-compiler/lyric/alias_impl_self_test.l \
+            lyric-compiler/lyric/quantifier_ident_self_test.l \
             lyric-compiler/lyric/range_subtype_self_test.l \
             lyric-compiler/lyric/fmt_self_test.l \
             lyric-compiler/lyric/async_generator_self_test.l \
@@ -2791,6 +2792,13 @@ jobs:
           # lyric-web chain).  Run here to guard the WebSocket type surface.
           echo "=== lyric-ws tests ==="
           "$lyric_bin" test --manifest lyric-ws/lyric.toml || overall=$?
+          # lyric-testing went green (37/37) once three compiler fixes landed:
+          # the monomorphiser bare-name collision (#3627), type-alias resolution
+          # in interface-impl signatures (#3673), and isOk/isSome over erased
+          # generics (#3674).  Its mocks pull in mail/storage/mq/flags/session/
+          # cache; `lyric test --manifest` restores those path deps.
+          echo "=== lyric-testing tests ==="
+          "$lyric_bin" test --manifest lyric-testing/lyric.toml || overall=$?
           if [ $overall -ne 0 ]; then
             echo "::error::ecosystem test suite failed — security regression detected"
             exit $overall

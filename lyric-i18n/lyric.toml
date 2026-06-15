@@ -13,12 +13,11 @@ output_assembly = "I18n.dll"
 [project.packages]
 "I18n" = "src/i18n.l"
 
-# tests/i18n_tests.l is written and idiomatic, but its store-construction path
-# consumes `fromJson(...): Result[InProcessTranslationStore, I18nError]`, which
-# hits the cross-package generic-erasure bug #3502 (`isOk(Result<Object,Object>)`
-# Method not found). Registration is deferred to the PR that resolves #3502 and
-# CI-wires the suite — registering it now would make `lyric test --manifest
-# lyric-i18n/lyric.toml` fail with a compile-time error.
+# tests/i18n_tests.l is written and idiomatic.  Its earlier #3502 blocker is
+# resolved, but the suite now surfaces a separate gap: the translation-loading
+# path calls Std.Json.enumerateObject, which the emitted Std.Json surface does
+# not expose (Method not found) — tracked in #3694.  Registration stays deferred
+# until #3694 lands; enabling it now would make `lyric test` fail.
 # [project.tests]
 # "I18n.I18nTests" = "tests/i18n_tests.l"
 

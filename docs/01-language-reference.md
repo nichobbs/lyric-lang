@@ -1346,6 +1346,18 @@ obj.someInstanceMethod()         // invokevirtual via instance auto-FFI
 
 All Lyric code is AOT-compatible. The compiler targets either JIT or Native AOT depending on build configuration. No reflection, no runtime code generation, no `System.Reflection.Emit` usage in compiled output.
 
+### 11.6 Future FFI ergonomics
+
+The following design sketches propose ergonomic improvements to the FFI system:
+
+- `docs/47-import-extern-syntax.md` — Unify external-type imports with Lyric
+  package imports using `import extern` syntax, reducing boilerplate and making
+  the FFI boundary clearer. (Unbacked sketch; Q47-001–Q47-004 open.)
+- `docs/48-constructor-shorthand.md` — Enable `.new(args)` shorthand for external
+  type constructors, eliminating `@externTarget` wrapper functions and aligning
+  MSIL with JVM behavior. (Unbacked sketch; straightforward implementation via
+  Phase 3c auto-FFI.)
+
 ## 12. Standard library
 
 The standard library is its own package set, versioned independently of the language. Modules:

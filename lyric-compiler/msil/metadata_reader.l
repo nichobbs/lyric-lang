@@ -500,6 +500,7 @@ pub record TableLayout {
   fieldIdx: Int          // Field simple-index width
   methodIdx: Int          // MethodDef simple-index width
   paramIdx: Int          // Param simple-index width
+  typeDefIdx: Int        // TypeDef simple-index width (for NestedClass table)
   rowSize: List[Int]    // length 64
   dataStart: List[Int]    // length 64, file offset of each table's rows
   stringsBase: Int          // file offset of the #Strings heap (-1 if absent)
@@ -735,6 +736,7 @@ pub func computeLayout(img: in PeImage, root: in MetadataRoot, th: in TablesHead
       fieldIdx = fieldIdx,
       methodIdx = methodIdx,
       paramIdx = paramIdx,
+      typeDefIdx = typeDefIdx,
       rowSize = rowSize,
       dataStart = dataStart,
       stringsBase = stringsBase,
@@ -834,6 +836,25 @@ pub func readTypeRef(img: in PeImage, layout: in TableLayout, row: in Int): Type
   p = p + layout.stringIdx
   val nsI = rdIdx(b, p, layout.stringIdx)
   TypeRefRow(name = stringAt(img, layout, nameI), namespaceName = stringAt(img, layout, nsI))
+}
+
+// A NestedClass row mapping (ECMA §II.22.32).
+pub record NestedClassRow {
+  nestedTypeDef: Int          // TypeDef index of the nested type
+  enclosingTypeDef: Int       // TypeDef index of the outer type
+}
+
+// Read NestedClass row `row` (1-based).  Columns: NestedClass(TypeDef),
+// EnclosingClass(TypeDef).  Maps nested types to their declaring outer type.
+pub func readNestedClass(img: in PeImage, layout: in TableLayout, row: in Int): NestedClassRow {
+  if row < 1 {
+    panic("Msil.MetadataReader.readNestedClass: row must be >= 1, got " + toString(row))
+  }
+  val b = img.bytes
+  val o = layout.dataStart[0x29] + (row - 1) * layout.rowSize[0x29]
+  val nestedI = rdIdx(b, o, layout.typeDefIdx)
+  val enclosingI = rdIdx(b, o + layout.typeDefIdx, layout.typeDefIdx)
+  NestedClassRow(nestedTypeDef = nestedI, enclosingTypeDef = enclosingI)
 }
 
 // Resolve a TypeDefOrRef coded index (the 2-bit-tagged token a CLASS /
@@ -1743,6 +1764,42 @@ pub func scoreOverload(argTypes: in List[SigType], sig: in DecodedMethodSig): In
 // Find the TypeDef row (1-based) whose fully-qualified name is `typeFqn`, or
 // -1 when absent.
 pub func findTypeDefByFqn(img: in PeImage, layout: in TableLayout, th: in TablesHeader, typeFqn: in String): Int {
+  // Handle nested types: if typeFqn contains a `+`, split into outer and nested parts.
+  // E.g., "System.Text.Json.JsonElement+ObjectEnumerator" → outer="System.Text.Json.JsonElement", nested="ObjectEnumerator"
+  var plusIdx: Int = -1
+  var idx: Int = 0
+  while idx < typeFqn.length {
+    if typeFqn.substring(idx, 1) == "+" {
+      plusIdx = idx
+    }
+    idx = idx + 1
+  }
+
+  if plusIdx >= 0 {
+    // This is a nested type. Look up the outer type first.
+    val outerFqn = typeFqn.substring(0, plusIdx)
+    val nestedName = typeFqn.substring(plusIdx + 1, typeFqn.length - plusIdx - 1)
+    val outerTypeDefIdx = findTypeDefByFqn(img, layout, th, outerFqn)
+    if outerTypeDefIdx < 0 {
+      return -1
+    }
+    // Search the NestedClass table for a nested type of outerTypeDefIdx with name nestedName.
+    val nestedClassCount = rowCountOf(th, 0x29)
+    var i: Int = 1
+    while i <= nestedClassCount {
+      val nc = readNestedClass(img, layout, i)
+      if nc.enclosingTypeDef == outerTypeDefIdx {
+        val nestedTd = readTypeDef(img, layout, nc.nestedTypeDef)
+        if nestedTd.name == nestedName {
+          return nc.nestedTypeDef
+        }
+      }
+      i = i + 1
+    }
+    return -1
+  }
+
+  // No nested type: regular top-level type lookup.
   val n = rowCountOf(th, 0x02)
   var i = 1
   while i <= n {
