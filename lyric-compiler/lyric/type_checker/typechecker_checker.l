@@ -21,7 +21,7 @@ pub record CheckResult {
   // ─────────────────────────────────────────────────────────────────────────────
 }
 
-record TypeIdCounter {
+pub record TypeIdCounter {
   ticks: List[Int]
 }
 
@@ -1466,6 +1466,82 @@ pub func collectImportNames(imports: in List[ImportDecl]): List[String] {
   names
 }
 
+// Register external types from `import extern` declarations (D105, Phase 2a).
+// For each `import extern Namespace.{ Type as Alias }`, registers `Alias` as
+// a symbol of kind `DKExternType` with a synthetic ExternTypeDecl carrying the
+// external FQN. This allows auto-FFI to resolve method calls on imported
+// external types just as it does for `extern type` declarations.
+// Deduplicates by external FQN so repeated imports of the same external type
+// share one canonical TypeId (matching the behavior of `extern type`).
+// Public (`pub use extern`) and private (`import extern`) imports are both
+// supported with correct visibility semantics.
+pub func registerExternalImports(
+  tbl: in SymbolTable,
+  ctr: in TypeIdCounter,
+  diag: in List[Diagnostic],
+  imports: in List[ImportDecl],
+): Unit {
+  var i = 0
+  while i < imports.count {
+    val imp = imports[i]
+    if imp.isExtern {
+      val baseNamespace = dottedPackageName(imp.path)
+      match imp.selector {
+        case Some(ISGroup(items)) -> {
+          var j = 0
+          while j < items.count {
+            val item = items[j]
+            val externalFqn = if baseNamespace.length > 0 {
+              baseNamespace + "." + item.name
+            } else {
+              item.name
+            }
+            val symbolName = match item.asAlias {
+              case Some(aliasName) -> aliasName
+              case None -> item.name
+            }
+            // Deduplicate by external FQN like regular `extern type`.
+            val tid = match findExternTypeIdByClr(tbl, externalFqn) {
+              case Some(existing) -> existing
+              case None -> freshTypeId(ctr)
+            }
+            // Create a synthetic ExternTypeDecl with no generics (external types
+            // are monomorphic from the import perspective; generics are resolved
+            // through auto-FFI metadata lookup).
+            val syntheticDecl = ExternTypeDecl(name = symbolName, generics = None, clrName = externalFqn, span = imp.span)
+            val vis = if imp.isPubUse { Some(value = VisPub(span = imp.span)) } else { None }
+            val _ = addSym(tbl, diag, false, "", symbolName, DKExternType(id = tid, decl = syntheticDecl), vis, imp.span)
+            j = j + 1
+          }
+        }
+        case Some(ISSingle(item)) -> {
+          val externalFqn = if baseNamespace.length > 0 {
+            baseNamespace + "." + item.name
+          } else {
+            item.name
+          }
+          val symbolName = match item.asAlias {
+            case Some(aliasName) -> aliasName
+            case None -> item.name
+          }
+          // Deduplicate by external FQN like regular `extern type`.
+          val tid = match findExternTypeIdByClr(tbl, externalFqn) {
+            case Some(existing) -> existing
+            case None -> freshTypeId(ctr)
+          }
+          // Create a synthetic ExternTypeDecl.
+          val syntheticDecl = ExternTypeDecl(name = symbolName, generics = None, clrName = externalFqn, span = imp.span)
+          val vis = if imp.isPubUse { Some(value = VisPub(span = imp.span)) } else { None }
+          val _ = addSym(tbl, diag, false, "", symbolName, DKExternType(id = tid, decl = syntheticDecl), vis, imp.span)
+        }
+        case None -> {
+        }
+      }
+    }
+    i = i + 1
+  }
+}
+
 // Flatten the items of every imported package into one list, in package then
 // declaration order.  Both bridges feed the result to `deriveFileWithImports`
 // so a `@derive(Ord)` field typed as a cross-package distinct type resolves
@@ -1537,6 +1613,11 @@ func checkWithImportedPackagesCore(
     registerItem(tbl, ctr, diag, false, userPkg, file.items[j])
     j = j + 1
   }
+
+  // T1.5: register external imports from `import extern` declarations (D105, Phase 2a).
+  // This must happen after T1 so regular Lyric types are already in scope for
+  // shadowing, and before symTableSetScope so the scope is computed afterward.
+  registerExternalImports(tbl, ctr, diag, file.imports)
 
   // From here on, resolve under the user package's scope by default: the
   // user's own declarations win, then its imports, then last-registered.
