@@ -404,6 +404,14 @@ impl StorageBucket for LocalBucket {
   func put(
     key: in String, dataBase64: in String, contentType: in String, userMeta: in Map[String, String]
   ): Result[StorageMetadata, StorageError] {
+    if not isSafeKey(key) {
+      return Err(
+        StorageError(
+          message = "key contains reserved .meta.json suffix or other unsafe characters",
+          code = "INVALID_KEY"
+        )
+      )
+    }
     // Non-empty `userMeta` is currently rejected at the boundary so the
     // sidecar's `userMeta` field never silently drops caller-supplied
     // entries (#1446 / #1459).  Map iteration via `for k in m` is the
@@ -477,6 +485,14 @@ impl StorageBucket for LocalBucket {
   }
 
   func get(key: in String): Result[StorageObject, StorageError] {
+    if not isSafeKey(key) {
+      return Err(
+        StorageError(
+          message = "key contains reserved .meta.json suffix or other unsafe characters",
+          code = "INVALID_KEY"
+        )
+      )
+    }
     match resolveLocalPath(self, key) {
       case Err(e) -> return Err(e)
       case Ok(fullPath) -> {
@@ -498,6 +514,14 @@ impl StorageBucket for LocalBucket {
   }
 
   func delete(key: in String): Result[Unit, StorageError] {
+    if not isSafeKey(key) {
+      return Err(
+        StorageError(
+          message = "key contains reserved .meta.json suffix or other unsafe characters",
+          code = "INVALID_KEY"
+        )
+      )
+    }
     match resolveLocalPath(self, key) {
       case Err(e) -> return Err(e)
       case Ok(fullPath) -> {
@@ -572,6 +596,14 @@ impl StorageBucket for LocalBucket {
   }
 
   func presignedUrl(key: in String, expiresInSeconds: in Int): Result[String, StorageError] {
+    if not isSafeKey(key) {
+      return Err(
+        StorageError(
+          message = "key contains reserved .meta.json suffix or other unsafe characters",
+          code = "INVALID_KEY"
+        )
+      )
+    }
     // The local-fs backend has no signing service.  Validate that the
     // key resolves cleanly before refusing.
     match resolveLocalPath(self, key) {
@@ -581,6 +613,14 @@ impl StorageBucket for LocalBucket {
   }
 
   func exists(key: in String): Result[Bool, StorageError] {
+    if not isSafeKey(key) {
+      return Err(
+        StorageError(
+          message = "key contains reserved .meta.json suffix or other unsafe characters",
+          code = "INVALID_KEY"
+        )
+      )
+    }
     match resolveLocalPath(self, key) {
       case Err(e) -> return Err(e)
       case Ok(fullPath) -> Ok(hostFileExists(fullPath))
