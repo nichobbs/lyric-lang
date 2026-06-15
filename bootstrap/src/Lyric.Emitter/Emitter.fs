@@ -2060,16 +2060,48 @@ let private findClrType (qualifiedName: string) : System.Type option =
     let _ = typeof<System.Text.Json.JsonDocument>
     let _ = typeof<System.Text.RegularExpressions.Regex>
     let _ = typeof<System.Net.HttpListener>
-    let direct = System.Type.GetType qualifiedName
+
+    // Support nested CLR types (e.g., System.Text.Json.JsonElement+ObjectEnumerator)
     let result =
+        // First try direct lookup
+        let direct = System.Type.GetType qualifiedName
         match Option.ofObj direct with
         | Some t -> Some t
         | None ->
-            System.AppDomain.CurrentDomain.GetAssemblies()
-            |> Array.tryPick (fun asm ->
-                try
-                    Option.ofObj (asm.GetType qualifiedName)
-                with _ -> None)
+            // If that fails, check if this is a nested type (contains '+')
+            if qualifiedName.Contains("+") then
+                let parts = qualifiedName.Split([|'+'|])
+                if parts.Length = 2 then
+                    let outerName = parts.[0]
+                    let nestedName = parts.[1]
+                    // Try to find the outer type first
+                    let directOuter = System.Type.GetType outerName
+                    match Option.ofObj directOuter with
+                    | Some outerType ->
+                        // Get the nested type from the outer type
+                        match Option.ofObj (outerType.GetNestedType(nestedName)) with
+                        | Some nestedType -> Some nestedType
+                        | None -> None
+                    | None ->
+                        // If direct lookup failed, search assemblies for outer type
+                        System.AppDomain.CurrentDomain.GetAssemblies()
+                        |> Array.tryPick (fun asm ->
+                            try
+                                match Option.ofObj (asm.GetType outerName) with
+                                | Some outerType ->
+                                    Option.ofObj (outerType.GetNestedType(nestedName))
+                                | None -> None
+                            with _ -> None)
+                else
+                    None
+            else
+                // No '+' found, do normal assembly search
+                System.AppDomain.CurrentDomain.GetAssemblies()
+                |> Array.tryPick (fun asm ->
+                    try
+                        Option.ofObj (asm.GetType qualifiedName)
+                    with _ -> None)
+
     clrTypeCache[qualifiedName] <- result
     result
 

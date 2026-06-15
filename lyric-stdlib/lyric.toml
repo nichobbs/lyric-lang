@@ -52,6 +52,9 @@ output_assembly = "Lyric.Stdlib.dll"
 "Std.Time"             = "std/time.l"
 
 # Tier 4 — structured data.
+# Kernel boundary for JSON — System.Text.Json externs via @externTarget.
+"Std.JsonHost"         = "std/_kernel/json_host.l"
+# Public Std.Json wrapper — safe enumerators and Option-returning APIs.
 "Std.Json"             = "std/json.l"
 
 # Tier 5 — testing utilities.
