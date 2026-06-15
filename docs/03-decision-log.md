@@ -6388,6 +6388,61 @@ lib split, Phase 6).
 
 ---
 
+## D-progress-263 — Constructor shorthand for extern types (.new syntax)
+
+**Feature:** Enable direct constructor calls on external types via `.new(args)`
+syntax (docs/48), eliminating boilerplate `@externTarget` wrapper functions and
+aligning MSIL behavior with the JVM backend.
+
+**Status:** Shipped in self-hosted MSIL backend (M5.4).
+
+**Implementation.**
+
+The MSIL codegen in `lyric-compiler/msil/codegen.l` detects when the method
+name is `"new"` on an `extern type` and routes to constructor resolution instead
+of regular method lookup. The implementation reuses the Phase 3c auto-FFI
+metadata resolution and overload-scoring infrastructure:
+
+1. **Metadata lookup** — `tryAutoFfiFromMetadata` translates `"new"` to `".ctor"`
+   when querying the metadata index, unifying constructor lookups with the
+   existing method-resolution path.
+
+2. **Overload resolution** — The metadata resolver finds the best-matching
+   constructor via the same overload-scoring logic as regular methods (exact
+   parameter match, widening conversions, etc.).
+
+3. **IL emission** — For constructors:
+   - Emit `newobj` instead of `call`
+   - Use `buildInstanceMethodSig(paramMsil, MVoid)` (HASTHIS calling convention,
+     void return) to match the ECMA-335 `.ctor` signature
+   - Override the result type to `clrFqn` (the constructed type) instead of
+     the method's void return signature
+
+4. **Value-type rejection** — Constructors for value types (System.DateTime,
+   System.Guid, etc.) have different construction semantics (initobj vs newobj)
+   and are detected from metadata and rejected, falling back to the legacy path
+   for a clear error message. Proper support is tracked as Q48-004.
+
+**Tests.** A new `@test_module` (`lyric-compiler/msil/msil_self_test_m88.l`)
+covers the three important overload paths: zero-arg constructor
+(`SBld.new()`), single-argument (`SBld.new(capacity)` with capacity widening),
+and multi-argument overload resolution (`SBld.new("hello")`).  Tests assert
+real runtime behavior via auto-FFI instance property access (sb.Length,
+sb.Capacity).  The test is wired into CI.
+
+**Known limitations.**
+
+- **Q48-004** — Value-type constructors are hardcoded as reference types (valueType = false).
+  The proper fix requires querying the metadata index to detect whether a type is
+  a value type and using `initobj` instead of `newobj` for those cases.  Until
+  that infrastructure is in place, users of value-type constructors must use
+  `@externTarget` wrapper functions.
+
+**Related:** docs/48 (design), docs/01 §11.4 (language reference), docs/42
+(Phase 3c metadata resolution), epic #1622 (auto-FFI), #3728 (PR).
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

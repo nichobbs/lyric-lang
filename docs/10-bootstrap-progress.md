@@ -25340,5 +25340,30 @@ A strings scan of every stage-1 DLL confirms zero `AssemblyRef` entries to
 `Lyric.Emitter` or `FSharp.Core`.  The F# stage-0 bootstrap compiler remains
 as a build tool only (closed to new code; see docs/23 §0 inventory).
 
+---
+
+### MSIL PE emitter Stage M88 — Constructor shorthand for extern types (docs/48)
+
+**Feature:** Enable `.new(args)` syntax on external types, eliminating
+`@externTarget` wrapper functions and aligning MSIL behavior with the JVM
+backend.
+
+**Implementation:** The MSIL codegen detects when method name is `"new"` on an
+`extern type` and routes to constructor metadata resolution. Reuses the
+Phase 3c auto-FFI infrastructure: `tryAutoFfiFromMetadata` translates `"new"`
+to `".ctor"` for metadata lookup, overload resolution applies existing scoring
+logic, and IL emission uses `newobj` instead of `call` with `buildInstanceMethodSig`
+for the HASTHIS calling convention.
+
+Value-type constructors are detected from metadata and rejected to prevent
+silent miscompilation; proper support (Q48-004) is deferred.
+
+**Test:** `msil_self_test_m88.l` covers zero-arg (`SBld.new()`), single-argument
+(`SBld.new(capacity)` with widening), and multi-argument overload resolution
+(`SBld.new("hello")`). Tests assert real runtime behavior via auto-FFI instance
+property access.
+
+**See also:** D-progress-263 (decision-log entry).
+
 `docs/23-fsharp-shim-elimination.md` status updated to RUNTIME F# DECOMMISSION
 COMPLETE.  Formal declaration in decision-log D-progress-529.

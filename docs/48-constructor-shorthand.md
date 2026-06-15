@@ -7,7 +7,7 @@ syntax.
 **Builds on:** `docs/01-language-reference.md` §11.4 (auto-FFI extern types),
 `docs/42-extern-metadata-resolution.md` (metadata-based resolution).
 
-**Decision-log entry:** D-progress-NNN (pending, to be assigned on merge).
+**Decision-log entry:** D-progress-263.
 
 **Goal:** Enable direct constructor calls on external types via `.new(args)`
 syntax, eliminating boilerplate `@externTarget` wrapper functions and aligning

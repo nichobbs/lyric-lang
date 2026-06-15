@@ -539,6 +539,10 @@ Ts.Compare(Ts.FromMinutes(5.0),           // value-type params & returns
            Ts.FromMinutes(3.0))           //   -> 1
 Typ.GetType("System.Int32").ToString()    // class return + instance dispatch (callvirt)
                                           //   -> "System.Int32"
+
+extern type SBld = "System.Text.StringBuilder"
+SBld.new()                                // constructor shorthand (docs/48) -> empty StringBuilder
+SBld.new(64).Length                       // constructor + property access -> 0
 ```
 
 **`--target jvm`** — signature read from JDK `.jmod` metadata (epic #1622):
