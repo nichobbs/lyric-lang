@@ -50,3 +50,14 @@ test "isOk with Result[interface, record]" {
   val r = makeOkResult()
   assertTrue(isOk(r), "Result with interface type and record error should specialise isOk")
 }
+
+test "isErr with nested generic Result[List[String], StorageError]" {
+  val r: Result[List[String], StorageError] = Err(error = StorageError(code = 2))
+  assertTrue(isErr(r), "Result with nested generic value type should specialise isErr")
+}
+
+test "isOk with nested generic Result[List[String], StorageError]" {
+  val items: List[String] = newList()
+  val r: Result[List[String], StorageError] = Ok(value = items)
+  assertTrue(isOk(r), "Result with nested generic value type should specialise isOk")
+}
