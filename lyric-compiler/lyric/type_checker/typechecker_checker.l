@@ -1458,10 +1458,35 @@ pub func collectImportNames(imports: in List[ImportDecl]): List[String] {
   val names: List[String] = newList()
   var i = 0
   while i < imports.count {
-    names.add(dottedPackageName(imports[i].path))
+    if not imports[i].isExtern {
+      names.add(dottedPackageName(imports[i].path))
+    }
     i = i + 1
   }
   names
+}
+
+// Validate that external imports are not used (feature not yet implemented).
+// Once docs/47 is backed by a decision-log entry and full type-checker
+// integration is complete, this can be replaced with proper resolution logic.
+func validateExternalImports(
+  imports: in List[ImportDecl],
+  diag: in List[Diagnostic]
+): Unit {
+  var i = 0
+  while i < imports.count {
+    val imp = imports[i]
+    if imp.isExtern {
+      diag.add(
+        errorDiagnostic(
+          "T0098",
+          "import extern syntax is not yet supported (docs/47 feature pending design finalization)",
+          imp.span
+        )
+      )
+    }
+    i = i + 1
+  }
 }
 
 // Flatten the items of every imported package into one list, in package then
@@ -1517,6 +1542,9 @@ func checkWithImportedPackagesCore(
 
   val userPkg = dottedPackageName(file.packageDecl.path)
   val userImports = collectImportNames(file.imports)
+
+  // Validate that external imports are not used (feature not yet implemented)
+  validateExternalImports(file.imports, diag)
 
   // T1: register imported items first (shadow without error), tagging each
   // symbol with its declaring package so scoped resolution can prefer it.
