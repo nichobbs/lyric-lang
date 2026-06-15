@@ -201,7 +201,7 @@ No `@externTarget`, no wrapper functions, just direct calls.
 
 ### Value-type constructor detection
 
-The current implementation (D-progress-263) hardcodes `valueType = false` when
+The current implementation (D-progress-530) hardcodes `valueType = false` when
 building the result type. This means value-type constructors (e.g.,
 `System.DateTime.new()`, `System.Guid.new()`) are incorrectly classified as
 reference types. A workaround is to use `@externTarget` wrappers for value-type
