@@ -1321,6 +1321,26 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/nested_generic_self_test.l
 
+      # Union-ctor return-context self-test — pins #3813 follow-up: a bare
+      # `Some(...)` built in a function returning `Result[Rec, E]` must infer
+      # its type-arg from the argument, not borrow the return type's args.
+      # MSIL target only (the construction-context fix lives in the MSIL
+      # codegen); the inference half is target-agnostic.
+      - name: Union-ctor return-context self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping union-ctor return-context self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping union-ctor return-context self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/union_ctor_return_context_self_test.l
+
       # Self-method-call self-test — pins #1715: intra-impl method calls
       # (`self.m()` and bare `m()`) were dropped by the self-hosted MSIL
       # backend, returning null/the argument instead of the call result.

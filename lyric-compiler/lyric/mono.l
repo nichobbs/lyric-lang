@@ -2532,6 +2532,23 @@ pub func monoFileWithImportsAndIfaces(
   importedGenDecls: in List[FunctionDecl],
   importedIfaceDecls: in List[InterfaceDecl],
 ): MonoResult {
+  val emptyRecs: List[RecordDecl] = newList()
+  monoFileWithImportsAndTypeDecls(file, importedGenDecls, importedIfaceDecls, emptyRecs)
+}
+
+/// As `monoFileWithImportsAndIfaces`, but also takes cross-package *record*
+/// decls.  These let the inferer resolve a field projection (`recv.field`) on
+/// a value whose record type is declared in another package, so a generic
+/// predicate over that field — e.g. `isSome(page.nextContinuationToken)` where
+/// `page: ListResult` is an imported record and `nextContinuationToken:
+/// Option[String]` — specialises instead of staying type-erased (#3813
+/// follow-up; the lyric-storage `list` pagination case).
+pub func monoFileWithImportsAndTypeDecls(
+  file: in SourceFile,
+  importedGenDecls: in List[FunctionDecl],
+  importedIfaceDecls: in List[InterfaceDecl],
+  importedRecordDecls: in List[RecordDecl],
+): MonoResult {
   // ── Phase 1: collect generic function decls ─────────────────────────────
   // #349: also collect every IFunc (generic + non-generic) and every
   // record decl so `inferExprTE` can resolve call returns and field
@@ -2591,6 +2608,18 @@ pub func monoFileWithImportsAndIfaces(
       ifaceDecls.add(idf.name, idf)
     }
     ii2 = ii2 + 1
+  }
+
+  // Merge imported (cross-package) record decls — same-package wins.  Lets
+  // `recv.field` projections resolve when `recv`'s record type is declared in
+  // another package (#3813 follow-up).
+  var ir2 = 0
+  while ir2 < importedRecordDecls.count {
+    val rdf = importedRecordDecls[ir2]
+    if not recordDecls.containsKey(rdf.name) {
+      recordDecls.add(rdf.name, rdf)
+    }
+    ir2 = ir2 + 1
   }
 
   // Merge imported generic decls (cross-package surface).  Same-package

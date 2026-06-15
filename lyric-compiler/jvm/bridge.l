@@ -358,6 +358,24 @@ func collectInterfaceDeclsFromItems(items: in List[Item]): List[InterfaceDecl] {
   ifaces
 }
 
+// Collect every record decl (plain + exposed) from a flat item list.  Fed to
+// the monomorphizer (#3813) so a `recv.field` projection on a value whose
+// record type is declared in an imported package can be inferred and the
+// enclosing generic predicate specialised.
+func collectRecordDeclsFromItems(items: in List[Item]): List[RecordDecl] {
+  val recs: List[RecordDecl] = newList()
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IRecord(decl) -> recs.add(decl)
+      case IExposedRec(decl) -> recs.add(decl)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  recs
+}
+
 func runMiddleEnd(
   file0: in SourceFile,
   importedPkgs: in List[ImportedPackage],
@@ -389,7 +407,8 @@ func runMiddleEnd(
   // bridge (#3813).  `importedItems` already flattens every imported
   // package's items; same-package interfaces are collected by mono itself.
   val importedIfaceDecls = collectInterfaceDeclsFromItems(importedItems)
-  val monoRes = monoFileWithImportsAndIfaces(derived, stdlibGenFuncs, importedIfaceDecls)
+  val importedRecordDecls = collectRecordDeclsFromItems(importedItems)
+  val monoRes = monoFileWithImportsAndTypeDecls(derived, stdlibGenFuncs, importedIfaceDecls, importedRecordDecls)
   if reportAndAbort(monoRes.diagnostics) {
     return None
   }

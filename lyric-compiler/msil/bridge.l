@@ -536,6 +536,27 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     allImportedIfaceDecls.add(restoredIfaces[aifk])
     aifk = aifk + 1
   }
+  // Record decls (in-bundle + stdlib + restored), fed to the monomorphizer for
+  // cross-package field-projection inference (#3813 follow-up).
+  val allImportedRecordDecls: List[RecordDecl] = newList()
+  val inBundleRecs = collectInBundleRecordDecls(parsedPkgs)
+  val stdlibRecs = collectStdlibRecordDecls(stdlibPkgs)
+  val restoredRecs = collectRestoredRecordDecls(restoredArtifacts)
+  var areci = 0
+  while areci < inBundleRecs.count {
+    allImportedRecordDecls.add(inBundleRecs[areci])
+    areci = areci + 1
+  }
+  var arecj = 0
+  while arecj < stdlibRecs.count {
+    allImportedRecordDecls.add(stdlibRecs[arecj])
+    arecj = arecj + 1
+  }
+  var areck = 0
+  while areck < restoredRecs.count {
+    allImportedRecordDecls.add(restoredRecs[areck])
+    areck = areck + 1
+  }
   val perPkgFiles: List[SourceFile] = newList()
   val perPkgNames: List[String] = newList()
   var ti = 0
@@ -570,7 +591,12 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     val importedItems = flattenImportedItems(importedPkgs)
     val derived = deriveFileWithImports(propRes.file, importedItems)
 
-    val monoRes = monoFileWithImportsAndIfaces(derived, allImportedGenFuncs, allImportedIfaceDecls)
+    val monoRes = monoFileWithImportsAndTypeDecls(
+      derived,
+      allImportedGenFuncs,
+      allImportedIfaceDecls,
+      allImportedRecordDecls
+    )
     if reportAndAbortInPkg(pp.name, monoRes.diagnostics) {
       return false
     }
@@ -1396,6 +1422,70 @@ func collectRestoredInterfaceDecls(artifacts: in List[SynthesisedArtifact]): Lis
     ai = ai + 1
   }
   ifaces
+}
+
+// Record decls (plain + exposed) from all in-bundle parsed packages.  Fed to
+// the monomorphizer so a `recv.field` projection where `recv`'s record type is
+// declared in another in-bundle package can be inferred, letting a generic
+// predicate over the field specialise (e.g. `isSome(page.nextContinuationToken)`
+// on an imported `ListResult`, #3813).
+func collectInBundleRecordDecls(parsedPkgs: in List[ParsedUserPkg]): List[RecordDecl] {
+  val recs: List[RecordDecl] = newList()
+  var pi = 0
+  while pi < parsedPkgs.count {
+    val file = parsedPkgs[pi].file
+    var ii = 0
+    while ii < file.items.count {
+      match file.items[ii].kind {
+        case IRecord(decl) -> recs.add(decl)
+        case IExposedRec(decl) -> recs.add(decl)
+        case _ -> ()
+      }
+      ii = ii + 1
+    }
+    pi = pi + 1
+  }
+  recs
+}
+
+// Counterpart of `collectInBundleRecordDecls` for stdlib packages.
+func collectStdlibRecordDecls(pkgs: in List[StdlibPkg]): List[RecordDecl] {
+  val recs: List[RecordDecl] = newList()
+  var pi = 0
+  while pi < pkgs.count {
+    val pkg: StdlibPkg = pkgs[pi]
+    var ii = 0
+    while ii < pkg.items.count {
+      match pkg.items[ii].kind {
+        case IRecord(decl) -> recs.add(decl)
+        case IExposedRec(decl) -> recs.add(decl)
+        case _ -> ()
+      }
+      ii = ii + 1
+    }
+    pi = pi + 1
+  }
+  recs
+}
+
+// Counterpart of `collectInBundleRecordDecls` for restored dependency artifacts.
+func collectRestoredRecordDecls(artifacts: in List[SynthesisedArtifact]): List[RecordDecl] {
+  val recs: List[RecordDecl] = newList()
+  var ai = 0
+  while ai < artifacts.count {
+    val file = artifacts[ai].source
+    var ii = 0
+    while ii < file.items.count {
+      match file.items[ii].kind {
+        case IRecord(decl) -> recs.add(decl)
+        case IExposedRec(decl) -> recs.add(decl)
+        case _ -> ()
+      }
+      ii = ii + 1
+    }
+    ai = ai + 1
+  }
+  recs
 }
 
 // Collect generic pub funcs from all restored dependency SynthesisedArtifacts.
