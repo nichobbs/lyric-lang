@@ -1062,6 +1062,7 @@ Sub-packages live in subdirectories: `account/` is package `Account`, `account/i
 
 ### 9.2 Imports
 
+**Lyric package imports:**
 ```
 import Money.{Amount, Cents}
 import Time.Instant
@@ -1071,13 +1072,22 @@ import std.collections as Coll      // alias
 
 Wildcard imports (`import Money.*`) are not permitted. Every imported name is explicit.
 
+**External type imports:**
+```
+import extern System.Net.Http.{HttpClient, HttpRequestMessage as ReqMsg}
+import extern java.lang.{Math as JMath}
+```
+
+`import extern` imports types from external (host runtime) packages. The FQN specifies the host namespace; the imported names are bound under their short names or explicit aliases per D105 (docs/47). Each imported name must have a selector group `{ ... }`; bare `import extern Foo.Bar` is invalid. External imports are scoped to the importing package and do not re-export by default.
+
 ### 9.3 Re-exports
 
 ```
 pub use Money.Amount        // re-exports Amount as part of this package's contract
+pub use extern Docker.DotNet.{DockerClient}  // re-exports external type (D105 Q47-004)
 ```
 
-Re-exports surface a name from a dependency as if declared in the current package. Useful for facade packages.
+Re-exports surface a name from a dependency (Lyric or external) as if declared in the current package. Useful for facade packages. External re-exports make the external type part of the public API surface; consumers depend on the host runtime's availability.
 
 ## 10. Wire / Dependency Injection
 

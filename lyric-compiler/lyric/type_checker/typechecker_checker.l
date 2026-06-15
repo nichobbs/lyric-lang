@@ -1466,9 +1466,6 @@ pub func collectImportNames(imports: in List[ImportDecl]): List[String] {
   names
 }
 
-// Validate that external imports are not used (feature not yet implemented).
-// Once docs/47 is backed by a decision-log entry and full type-checker
-// integration is complete, this can be replaced with proper resolution logic.
 // Flatten the items of every imported package into one list, in package then
 // declaration order.  Both bridges feed the result to `deriveFileWithImports`
 // so a `@derive(Ord)` field typed as a cross-package distinct type resolves
