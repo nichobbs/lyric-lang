@@ -8597,58 +8597,30 @@ func lowerBuiltinOrStaticCallMsil(
         val ctorArgs = fillCtorDefaultArgs(cctx, ctorKey, args)
         // Resolved before arg lowering so each payload gets its inner-type hint (#1687).
         val outerCtxTyArgs: List[MsilType] = newList()
-        // Build retTyArgs from the function's declared return type so we can
-        // substitute MVoid hint slots with the outer function's concrete type
-        // args.  This handles `case Err(e) -> return Err(e)` inside a function
-        // returning Result[SB, SE] when the inner match scrutinee is
-        // Result[Unit, SE]: contextHintTyArgs[0] == MVoid, but declaredRetTy
-        // says T=SB, so the constructed Err gets Result_Err<SB,SE> not
-        // Result_Err<object,SE> (#3705).
-        val retTyArgs: List[MsilType] = newList()
-        match fctx.declaredRetTy {
-          case MGenericInst(_, _, declRetArgTys) -> {
-            var rci = 0
-            while rci < declRetArgTys.count {
-              retTyArgs.add(declRetArgTys[rci])
-              rci = rci + 1
-            }
-          }
-          case MGenericInstByName(_, declRetArgTys) -> {
-            var rci = 0
-            while rci < declRetArgTys.count {
-              retTyArgs.add(declRetArgTys[rci])
-              rci = rci + 1
-            }
-          }
-          case _ -> {
-          }
-        }
         if fctx.contextHintTyArgs.count > 0 {
           var hci = 0
           while hci < fctx.contextHintTyArgs.count {
-            val hint = fctx.contextHintTyArgs[hci]
-            // When the inner-match scrutinee carried MVoid for a type slot but the
-            // enclosing function's declared return type has a concrete type for that
-            // slot, use the declared type.  This preserves the correct closed
-            // TypeSpec when propagating a case constructor through nested matches.
-            val effective: MsilType = if hint == MVoid and hci < retTyArgs.count {
-              val retSlot = retTyArgs[hci]
-              if retSlot != MVoid and retSlot != MObject {
-                retSlot
-              } else {
-                hint
-              }
-            } else {
-              hint
-            }
-            outerCtxTyArgs.add(effective)
+            outerCtxTyArgs.add(fctx.contextHintTyArgs[hci])
             hci = hci + 1
           }
         } else {
-          var rci2 = 0
-          while rci2 < retTyArgs.count {
-            outerCtxTyArgs.add(retTyArgs[rci2])
-            rci2 = rci2 + 1
+          match fctx.declaredRetTy {
+            case MGenericInst(_, _, retArgTys) -> {
+              var rci = 0
+              while rci < retArgTys.count {
+                outerCtxTyArgs.add(retArgTys[rci])
+                rci = rci + 1
+              }
+            }
+            case MGenericInstByName(_, retArgTys) -> {
+              var rci = 0
+              while rci < retArgTys.count {
+                outerCtxTyArgs.add(retArgTys[rci])
+                rci = rci + 1
+              }
+            }
+            case _ -> {
+            }
           }
         }
         // Lower args, collecting their MSIL types for generic type inference.
