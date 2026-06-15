@@ -1201,10 +1201,7 @@ pub func collectStdlibGenericFuncs(pkgs: in List[StdlibPkg]): List[FunctionDecl]
       match pkg.items[ii].kind {
         case IFunc(decl) -> {
           val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
-          val hasBlockBody = match decl.body {
-            case Some(fb) -> match fb { case FBBlock(_) -> true; case FBExpr(_) -> false }
-            case None -> false
-          }
+          val hasBody = match decl.body { case Some(_) -> true; case None -> false }
           // `mapGet` is a codegen builtin intrinsic (see the `funcName ==
           // "mapGet"` branch in `Msil.Codegen.lowerBuiltinOrStaticCallMsil`),
           // which wraps `Dictionary.get_Item` into `Option[V]` directly.
@@ -1215,7 +1212,7 @@ pub func collectStdlibGenericFuncs(pkgs: in List[StdlibPkg]): List[FunctionDecl]
           // Bare-name match: only stdlib packages enter `collectStdlibGenericFuncs`,
           // and `mapGet` is unique in `Std.Collections` today.  A future @builtin_intrinsic
           // annotation would let any module mark intrinsics declaratively.
-          if isGeneric and hasBlockBody and not annsBlockSpecialization(decl.annotations) and not (decl.name == "mapGet" and pkg.name == "Std.Collections") {
+          if isGeneric and hasBody and not annsBlockSpecialization(decl.annotations) and not (decl.name == "mapGet" and pkg.name == "Std.Collections") {
             genFuncs.add(decl)
           }
         }
@@ -1247,11 +1244,8 @@ func collectInBundleGenericFuncs(parsedPkgs: in List[ParsedUserPkg]): List[Funct
         case IFunc(decl) -> {
           val isPub = match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
           val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
-          val hasBlockBody = match decl.body {
-            case Some(fb) -> match fb { case FBBlock(_) -> true; case FBExpr(_) -> false }
-            case None -> false
-          }
-          if isPub and isGeneric and hasBlockBody and not annsBlockSpecialization(decl.annotations) {
+          val hasBody = match decl.body { case Some(_) -> true; case None -> false }
+          if isPub and isGeneric and hasBody and not annsBlockSpecialization(decl.annotations) {
             genFuncs.add(decl)
           }
         }
@@ -1280,11 +1274,8 @@ func collectRestoredGenericFuncs(artifacts: in List[SynthesisedArtifact]): List[
         case IFunc(decl) -> {
           val isPub = match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
           val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
-          val hasBlockBody = match decl.body {
-            case Some(fb) -> match fb { case FBBlock(_) -> true; case FBExpr(_) -> false }
-            case None -> false
-          }
-          if isPub and isGeneric and hasBlockBody and not annsBlockSpecialization(decl.annotations) {
+          val hasBody = match decl.body { case Some(_) -> true; case None -> false }
+          if isPub and isGeneric and hasBody and not annsBlockSpecialization(decl.annotations) {
             genFuncs.add(decl)
           }
         }
