@@ -609,7 +609,7 @@ Tracked in review issue #3549.  Resolution options:
 
 ## FFI ergonomics improvements
 
-**Q-FFI-001–Q-FFI-004 (import extern syntax, open):**
+**Q47-001–Q47-004 (import extern syntax, open):**
 See `docs/47-import-extern-syntax.md` for the full design sketch. The proposal
 unifies external-type imports with Lyric package imports via `import extern
 Docker.DotNet.{ DockerClient as HostClient }` syntax, replacing scattered

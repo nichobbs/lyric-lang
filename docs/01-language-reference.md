@@ -1298,10 +1298,14 @@ boxed), and **value-type and class (reference-type)** parameters and returns
 (e.g. `System.TimeSpan`, `System.Type` — matched and emitted by their
 fully-qualified name).  **Instance methods** on a class-typed extern receiver
 also resolve and dispatch via `callvirt` (e.g.
-`Type.GetType("System.Int32").ToString()`).  Calls that need narrowing, a
-`float` parameter, or an instance method on a *value-type* receiver fall back to
-requiring an explicit `@externTarget` wrapper.  An unresolved auto-FFI call is a
-compile-time diagnostic (it is never silently mis-bound).
+`Type.GetType("System.Int32").ToString()`).  **Constructors** via the `T.new(args)`
+pseudo-method emit `newobj` with the resolved constructor signature (e.g.
+`StringBuilder.new(64)` → `newobj System.Text.StringBuilder..ctor(int32)`);
+value-type constructors fall back to requiring an explicit `@externTarget` wrapper
+(Q48-004, `docs/48`).  Calls that need narrowing, a `float` parameter, or an
+instance method on a *value-type* receiver also fall back to requiring an explicit
+`@externTarget` wrapper.  An unresolved auto-FFI call is a compile-time diagnostic
+(it is never silently mis-bound).
 
 **JVM target.**  The self-hosted JVM emitter resolves `extern type` method calls
 from real JDK **`.jmod` metadata** at compile time (epic #1622, shipped in the

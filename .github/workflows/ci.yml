@@ -1257,6 +1257,7 @@ jobs:
             lyric-compiler/msil/msil_self_test_m2b.l \
             lyric-compiler/msil/msil_self_test_m2c.l \
             lyric-compiler/msil/msil_self_test_m2d.l \
+            lyric-compiler/msil/msil_self_test_m88.l \
             lyric-compiler/msil/lowering_token_self_test.l ; do
             echo "=== $t ==="
             "$lyric_bin" test --target dotnet "$t"
