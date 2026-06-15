@@ -126,9 +126,8 @@ import extern System.Net.Http.{
 }
 ```
 
-**Benefit:** 4 lines → 5 lines (the import statement itself adds one, but
-eliminating `= "..."` offsets it). More importantly: all types imported in
-one place, making the external surface obvious.
+**Benefit:** 4 lines → 6 lines (import statement + 4 type entries + closing brace).
+More importantly: all types imported in one place, making the external surface obvious.
 
 ---
 
@@ -164,9 +163,11 @@ existing auto-FFI lowering.
   require full FQN; ambiguity is a foot-gun.
 
 - **Q47-002** — Collision handling: if a file imports `import extern Docker.DotNet
-  { DockerClient }` and also has a local type `DockerClient` in scope, which
-  wins? Recommendation: local types shadow external imports (standard scoping
-  rule); a collision is a compile error if both are referenced.
+  { DockerClient }` and also declares a local type `DockerClient`, which wins?
+  Recommendation: **local types shadow external imports** (standard scoping rule).
+  No compile error; the local type is in scope and the external import is hidden.
+  This matches how `import Std.Core.{ Option }` behaves if a local `Option` is
+  declared in the same package — the local definition wins.
 
 - **Q47-003** — Documentation and tooling: should `lyric doc` render external
   types differently? Should `lyric public-api-diff` detect when an external

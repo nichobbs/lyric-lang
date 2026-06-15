@@ -1,10 +1,10 @@
-# 49 — Methods Inside Type Definitions (sketch)
+# 49 — Methods Inside Type Definitions (SUPERSEDED)
 
-**Status:** Unbacked sketch. Significant design implications; see §3 for tensions.
+**Status:** SUPERSEDED — D037 (accepted 2026-04-30) resolved this design and shipped the feature.
 
-**Builds on:** `docs/01-language-reference.md` §2 (type system, UFCS).
+**Builds on:** `docs/01-language-reference.md` §2 (type system), `docs/03-decision-log.md` D036–D037 (UFCS dispatch and method hoisting).
 
-**Decision-log entry:** to follow if consensus forms on design direction.
+**Decision-log entry:** D037 (methods in type body desugar to UFCS-style functions).
 
 **Goal:** Explore whether Lyric should support declaring methods inside type
 definitions (records, unions, opaque types) vs. the current UFCS model where
@@ -50,155 +50,89 @@ function" vs. "static method" distinction.
 
 ---
 
-## 2. Design space
+## 2. Shipped design (D037)
 
-### Option A: Methods inside type definitions
+### Methods inside type definitions — hoisted to UFCS-style functions
 
-```lyric
-pub opaque type Config {
-  handle: HostConfig
-
-  /// Create a Config from a URI.
-  pub func create(uri: in String): Config {
-    Config(handle = hostNewConfig(uri))
-  }
-
-  /// Establish a connection using this Config.
-  pub func connect(self: in Config): Client {
-    Client(handle = hostCreateClient(self.handle))
-  }
-}
-```
-
-**Semantics:**
-- Methods are grouped at the type definition.
-- The receiver parameter (`self: in Config`) is explicit (no implicit `this`).
-- Methods are syntactic sugar for the same underlying free function
-  (the type checker transforms them to `pub func Config.create(...)`).
-
-**Pros:**
-- Methods grouped with the type they operate on.
-- Familiar to developers from imperative languages.
-- Still explicit about the receiver (no magic `this`).
-
-**Cons:**
-- Parser must distinguish method blocks from nested scopes (adds complexity).
-- Breaks the "all methods are free functions" principle.
-- Requires a new grammar rule for method declarations inside types.
-
-### Option B: Impl blocks (like Rust)
+**Decision (D037):** Methods inside type bodies are pure syntactic sugar hoisted to top-level functions.
 
 ```lyric
-pub opaque type Config {
-  handle: HostConfig
+record Point {
+  x: Int
+  y: Int
+
+  func length(self: in Point): Int =
+    self.x * self.x + self.y * self.y
 }
 
-impl Config {
-  pub func create(uri: in String): Config {
-    Config(handle = hostNewConfig(uri))
-  }
-
-  pub func connect(self: in Config): Client {
-    Client(handle = hostCreateClient(self.handle))
-  }
-}
+// Desugars to:
+// pub func Point.length(self: in Point): Int = ...
 ```
 
-**Pros:**
-- Familiar to Rust developers.
-- Impl blocks can be defined in a separate file (logical grouping without
-  modifying the type definition).
-- Can have multiple impl blocks for the same type.
+**Semantics (shipped):**
+- Methods are grouped at the type definition (syntactic convenience).
+- The receiver parameter (`self: in <Type>`) is **explicit** (no implicit `this`).
+- The parser hoists each method to a top-level function named `<TypeName>.<methodName>`.
+- Codegen uses the existing UFCS dispatch (D036) — no new dispatch path.
+- Methods see the same type-checker, emitter, and proof system as hand-written UFCS functions.
 
-**Cons:**
-- More verbose (extra `impl` blocks).
-- Further departs from "all methods are free functions" principle.
-- Requires significant parser/checker changes.
+**Implementation:**
+- Parser desugars during AST construction (one pass, zero downstream changes).
+- No new semantic surface area; existing UFCS infrastructure handles the call.
+- Works for `record`, `opaque type`, `exposed record`, and `union` types.
 
-### Option C: Keep UFCS (status quo)
+### Design rationale (from D037)
 
+**Why hoisting?** The parser hoist approach was chosen because:
+- Technically clean: the type checker, emitter, and proof system see the same
+  UFCS-style functions they already understand.
+- No new dispatch path, no new metadata, no new semantic surface area.
+- Methods inside types remain pure syntactic sugar; implementation complexity
+  stays in the parser (one pass, zero downstream changes).
+
+**Explicit receiver:** The receiver parameter must be named `self` and typed
+against the enclosing type:
 ```lyric
-pub opaque type Config { handle: HostConfig }
-
-pub func Config.create(uri: in String): Config { ... }
-pub func Config.connect(cfg: in Config): Client { ... }
+func length(self: in Point): Int
 ```
 
-**Pros:**
-- All methods are free functions (no special syntax).
-- Already implemented; no parser/checker changes.
-- Forces explicit receiver, preventing implicit-`this` bugs.
+Implicit `self` injection (so users can write `func length(): Int = self.x * …`)
+was deferred as a follow-up needing AST rewriting of `self` references inside
+the method body.
 
-**Cons:**
-- Methods scattered after the type definition.
-- Less familiar to imperative-language developers.
+**Rationale for this design:**
+
+From D037's rationale:
+- C# / Kotlin / Swift / Rust all support data + behaviour at one declaration site.
+- Lyric's split between `record` and `impl` is technically clean but cognitively
+  noisy for the common case of "this function operates on this type."
+- Pure syntactic sugar means the type checker, emitter, and proof system see the
+  same UFCS-style functions they already understand.
+- `impl` blocks remain canonical for interface satisfaction; inline methods are
+  inherent only.
 
 ---
 
-## 3. Design tensions
+## 3. Follow-ups (open after D037 shipped)
 
-### T1: Principle vs. pragmatism
+D037 deferred two follow-ups:
 
-**Tension:** Lyric's design philosophy treats all methods as free functions
-(D029, D032 decision log entries on associated functions). This enforces
-explicitness: the receiver is never implicit. But this comes at the cost of
-ergonomics — methods are scattered.
+**Implicit `self` injection:** After methods-in-types landed, add an AST pass
+that rewrites `self` inside hoisted methods to a parameter named "self", and
+inject the parameter automatically when the user omits it. This would allow:
+```lyric
+func length(): Int = self.x * self.x + self.y * self.y  // self injected implicitly
+```
 
-**Resolution options:**
-- **Conservative:** Keep UFCS. Lean into explicitness as a feature, not a bug.
-  Educate users that scattered methods are acceptable (and arguable preferable
-  for clarity).
-- **Pragmatic:** Allow methods inside types (Option A) but maintain that they
-  are syntactic sugar for free functions (to preserve the principle at the
-  semantic level).
-- **Radical:** Embrace impl blocks (Option B), accept that "all methods are
-  free functions" becomes a compiler-level detail, not a language-level one.
-
-### T2: Parser simplicity
-
-**Tension:** Adding methods inside types requires the parser to distinguish
-method declarations from nested scopes and fields. This adds complexity.
-
-**Resolution options:**
-- **Conservative:** Keep UFCS; no parser changes.
-- **Pragmatic:** Add a simple grammar rule for methods (receiver param + body)
-  inside type definitions only. Limit to methods; no nested types.
-- **Radical:** Full impl blocks with arbitrary nesting; full parser complexity.
-
-### T3: Compatibility with existing code
-
-**Tension:** If methods-inside-types is added, should old UFCS-style declarations
-still work in the same file?
-
-**Resolution:** Yes, with a deprecation path. Both styles can coexist; linters
-can warn on scattered methods.
+**`opaque type` and `exposed record` bodies:** Once method hoisting is stable,
+extend the syntax to `opaque type` and `exposed record` bodies; the parser
+already handles all three through `parseRecordMembers`.
 
 ---
 
-## 4. Recommendation (soft)
+## 4. Example ergonomics (before and after D037)
 
-**For Phase 1–v1.0:**
-
-Keep UFCS (Option C). The benefits of methods-inside-types are ergonomic; the
-costs are parser complexity and a departure from the "explicit receiver"
-principle. For v1.0, prioritize shipped-software philosophy.
-
-**For v1.1 or later:**
-
-Revisit once:
-1. `import extern` (docs/47) and constructor shorthand (docs/48) ship, reducing
-   the number of methods users write.
-2. Real-world usage shows whether scattered methods are actually a pain point.
-
-If Option A (methods inside types) gains consensus, it can be added with a
-straightforward parser change (1–2 weeks) that treats method definitions as
-syntactic sugar for the current free-function form.
-
----
-
-## 5. Example ergonomics comparison
-
-### Status quo (UFCS)
+### Before D037: scattered UFCS methods
 
 ```lyric
 package Lyric.Docker
@@ -226,7 +160,7 @@ pub func Client.connect(cfg: in Config): Result[Client, ConnectError] {
 }
 ```
 
-### With methods inside types (Option A)
+### After D037: methods inside type definition
 
 ```lyric
 package Lyric.Docker
@@ -259,9 +193,10 @@ improves: related methods are grouped at the type definition.
 
 ---
 
-## 6. References
+## 5. References
 
-- `docs/01-language-reference.md` §2 (types and UFCS).
-- Decision log entries D029 (associated functions), D032 (method syntax).
+- **`docs/03-decision-log.md` D036** (UFCS dispatch via dotted-name lookups).
+- **`docs/03-decision-log.md` D037** (methods in type body desugar to UFCS-style functions — the shipped decision).
+- `docs/01-language-reference.md` §2.3 / §2.5 / §2.10 (inline-method syntax in type definitions).
 - Rust's `impl` blocks (precedent for methods-inside-types with explicit receiver).
 - Go's receiver syntax (another precedent).

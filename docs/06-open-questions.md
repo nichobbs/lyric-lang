@@ -604,3 +604,22 @@ Tracked in review issue #3549.  Resolution options:
   dedicated `maven_protocol_self_test.l`.
 - Make the helpers `pub` in `cli_restore.l` and test from a `cli_restore_self_test.l`
   (accepts the full `Lyric.Cli` import closure).
+
+---
+
+## FFI ergonomics improvements
+
+**Q-FFI-001–Q-FFI-004 (import extern syntax, open):**
+See `docs/47-import-extern-syntax.md` for the full design sketch. The proposal
+unifies external-type imports with Lyric package imports via `import extern
+Docker.DotNet.{ DockerClient as HostClient }` syntax, replacing scattered
+`extern type` declarations. Open questions:
+- Q47-001: Namespace resolution (full FQN vs. by-namespace search)?
+- Q47-002: Name collision semantics (shadowing vs. error)?
+- Q47-003: Tooling support (doc rendering, API diffs)?
+- Q47-004: Visibility in `pub use` re-exports?
+
+**Constructor shorthand (docs/48, implementation-ready):**
+See `docs/48-constructor-shorthand.md`. Propose enabling `.new(args)` calls on
+external types (already works on JVM; MSIL still requires `@externTarget`
+wrappers). Leverages Phase 3c auto-FFI infrastructure; no open design questions.
