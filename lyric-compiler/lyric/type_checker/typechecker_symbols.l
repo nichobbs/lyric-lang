@@ -8,6 +8,15 @@ import Lyric.Lexer
 import Lyric.Parser
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §0. ExternalImportDecl — metadata for `import extern` bindings.
+// ─────────────────────────────────────────────────────────────────────────────
+pub record ExternalImportDecl {
+  name: String
+  externalFqn: String
+  span: Span
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §1. DeclKind — what kind of declaration each symbol represents.
 // ─────────────────────────────────────────────────────────────────────────────
 @stable(since = "0.1")
@@ -23,6 +32,7 @@ pub union DeclKind {
   case DKTypeAlias(decl: TypeAliasDecl)
   case DKInterface(id: TypeId, decl: InterfaceDecl)
   case DKExternType(id: TypeId, decl: ExternTypeDecl)
+  case DKExternalImport(decl: ExternalImportDecl)
   // Term-level declarations.
   case DKConst(decl: ConstDecl)
   case DKVal(decl: ValDecl)
