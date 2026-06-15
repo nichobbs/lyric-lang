@@ -18150,9 +18150,12 @@ func emitResolvedAutoFfi(
   argTys: in List[MsilType],
   m: in Mdr.ResolvedMethod,
 ): Option[MsilType] {
-  // Auto-FFI's receiver is a type name, so only a static method can be called
-  // this way; instance overloads need an @externTarget wrapper.
-  if not m.isStatic {
+  // Constructor shorthand: .ctor is an instance method with implicit this, but
+  // called via newobj (no pre-allocated receiver). Regular static/instance methods
+  // still require m.isStatic == true since we can only call static methods on a
+  // type name without an explicit receiver.
+  val isConstructor = originalMethodName == "new"
+  if not isConstructor and not m.isStatic {
     return None
   }
   if m.paramTypes.count != argTys.count {
@@ -18181,7 +18184,7 @@ func emitResolvedAutoFfi(
   }
   // Constructor shorthand (.new) returns the constructed type, not the void
   // signature from the .ctor metadata.
-  val resultType = if originalMethodName == "new" {
+  val resultType = if isConstructor {
     resolvedSigToMsil(cctx, Mdr.STNamed(fqn = clrFqn, valueType = false))
   } else {
     resolvedSigToMsil(cctx, m.returnType)
@@ -18191,13 +18194,23 @@ func emitResolvedAutoFfi(
     case Some(retMsil) -> {
       val sp = splitTypeFqn(clrFqn)
       val tRef = internFfiTypeRef(cctx, asmName, sp.ns, sp.name)
-      val sig = buildStaticMethodSig(paramMsil, retMsil)
+      // Constructor (.ctor) signature: HASTHIS void(params). Regular static method
+      // uses the resolved return type.
+      val sig = if isConstructor {
+        buildInstanceMethodSig(paramMsil, MVoid)
+      } else {
+        buildStaticMethodSig(paramMsil, retMsil)
+      }
       // The blob-intern key must distinguish overloads of the same name/arity
       // (e.g. Max(int,int) vs Max(long,long), or value-type vs primitive
       // overloads) — ctxAddMemberRef dedups the signature blob by key, so it
       // encodes each parameter's identity plus the return's; otherwise a second
       // overload would reuse the first's signature.
-      var sigKey = "autoffi_" + clrFqn + "." + clrMethodName
+      var sigKey = if isConstructor {
+        "autoffi_ctor_" + clrFqn + "." + clrMethodName
+      } else {
+        "autoffi_" + clrFqn + "." + clrMethodName
+      }
       var ki = 0
       while ki < m.paramTypes.count {
         sigKey = sigKey + "_" + sigTypeKeyFrag(m.paramTypes[ki])
@@ -18212,7 +18225,12 @@ func emitResolvedAutoFfi(
         appendInsnsMsil(insns, coercions[bi])  // exact: empty; widening: conv; object: box
         bi = bi + 1
       }
-      insns.add(MCall(methodToken = tok))
+      // Constructor: emit newobj (allocates + initializes). Regular method: emit call.
+      if isConstructor {
+        insns.add(MNewobj(ctorToken = tok))
+      } else {
+        insns.add(MCall(methodToken = tok))
+      }
       Some(value = retMsil)
     }
   }
