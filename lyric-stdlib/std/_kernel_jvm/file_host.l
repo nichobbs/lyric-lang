@@ -38,6 +38,9 @@ pub func hostReadAllText(path: in String): String = lyric.stdlib.jvm.FileHost.re
 
 pub func hostWriteAllText(path: in String, contents: in String): Unit = lyric.stdlib.jvm.FileHost.writeAllText(path, contents)
 
+// Note: `hostCreateDirectory` intentionally returns `Unit` in the JVM kernel
+// as the underlying wrapper handles it, whereas the .NET kernel returns
+// `DirectoryInfo` to match the BCL signature.
 pub func hostCreateDirectory(path: in String): Unit = lyric.stdlib.jvm.FileHost.createDirectory(path)
 
 pub func hostReadAllBytes(path: in String): slice[Byte] = lyric.stdlib.jvm.FileHost.readAllBytes(path)

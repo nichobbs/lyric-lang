@@ -168,6 +168,7 @@ test "exists returns Ok(false) for absent key" {
   val bRes = freshBucket()
   assertTrue(isOk(bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
+  // (using method-call form to avoid `exists` soft-keyword parser ambiguity)
   assertTrue(isOk(bucket.exists("never-put.txt")),
              "exists call must succeed regardless of presence")
 }
@@ -178,6 +179,7 @@ test "exists returns Ok after put" {
   val bucket = unwrapResultOr(bRes, defaultBucket())
   assertTrue(isOk(put(bucket, "exists/probe.bin", "AAA=", "application/octet-stream")),
              "put must succeed")
+  // (using method-call form to avoid `exists` soft-keyword parser ambiguity)
   assertTrue(isOk(bucket.exists("exists/probe.bin")),
              "exists must succeed after put")
 }
