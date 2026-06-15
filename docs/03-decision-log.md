@@ -6439,7 +6439,7 @@ sb.Capacity).  The test is wired into CI.
   `@externTarget` wrapper functions.
 
 **Related:** docs/48 (design), docs/01 §11.4 (language reference), docs/42
-(Phase 3c metadata resolution), epic #1622 (auto-FFI), #3728 (PR).
+(Phase 3c metadata resolution), epic #1622 (auto-FFI), #3732 (PR).
 
 ---
 
