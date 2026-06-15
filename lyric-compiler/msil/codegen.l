@@ -20382,17 +20382,19 @@ func buildInBundleGenericCtorTok(
       i = i + 1
     }
     var foundTy: MsilType = MObject
-    if slot < contextTyArgs.count and contextTyArgs[slot] != MObject {
+    if slot < contextTyArgs.count {
       val ctxTy = contextTyArgs[slot]
-      val ctxIsGenericInst = match ctxTy {
-        case MGenericInstByName(_, _) -> true
-        case MGenericInst(_, _, _) -> true
-        case _ -> false
-      }
-      if ctxIsGenericInst and argFoundTy != MObject {
-        foundTy = argFoundTy
-      } else {
-        foundTy = ctxTy
+      if ctxTy != MObject {
+        val ctxIsGenericInst = match ctxTy {
+          case MGenericInstByName(_, _) -> true
+          case MGenericInst(_, _, _) -> true
+          case _ -> false
+        }
+        if ctxIsGenericInst and argFoundTy != MObject {
+          foundTy = argFoundTy
+        } else {
+          foundTy = ctxTy
+        }
       }
     }
     if foundTy == MObject {
@@ -20432,8 +20434,7 @@ func buildGenericCaseCtorTok(
   val pkgPart = ctorKey.substring(0, dotIdx0)
   val caseRefKey = pkgPart + "/" + ctorKey
   val caseRefRow = match mapGet(cctx.ffiTypeRefs, caseRefKey) { case Some(r) -> r; case None -> return 0 }
-  // Apply the same context-vs-arg priority as buildInBundleGenericCtorTok; see
-  // the comment there for the full rationale (#3502 + nested-generic regression).
+  // Context type wins; use arg type only when context is itself a generic instantiation (#3502).
   val typeArgs: List[MsilType] = newList()
   var tpi = 0
   while tpi < nTypeParams {
@@ -20448,17 +20449,19 @@ func buildGenericCaseCtorTok(
       fi = fi + 1
     }
     var foundTy: MsilType = MObject
-    if tpi < contextTyArgs.count and contextTyArgs[tpi] != MObject {
+    if tpi < contextTyArgs.count {
       val ctxTy = contextTyArgs[tpi]
-      val ctxIsGenericInst = match ctxTy {
-        case MGenericInstByName(_, _) -> true
-        case MGenericInst(_, _, _) -> true
-        case _ -> false
-      }
-      if ctxIsGenericInst and argFoundTy != MObject {
-        foundTy = argFoundTy
-      } else {
-        foundTy = ctxTy
+      if ctxTy != MObject {
+        val ctxIsGenericInst = match ctxTy {
+          case MGenericInstByName(_, _) -> true
+          case MGenericInst(_, _, _) -> true
+          case _ -> false
+        }
+        if ctxIsGenericInst and argFoundTy != MObject {
+          foundTy = argFoundTy
+        } else {
+          foundTy = ctxTy
+        }
       }
     }
     if foundTy == MObject {
