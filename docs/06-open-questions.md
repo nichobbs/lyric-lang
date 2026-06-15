@@ -619,8 +619,8 @@ Docker.DotNet.{ DockerClient as HostClient }` syntax, replacing scattered
 - Q47-003: Tooling support (doc rendering, API diffs)?
 - Q47-004: Visibility in `pub use` re-exports?
 
-**Q48-001–Q48-003 (Constructor shorthand, docs/48):**
-Propose enabling `.new(args)` calls on external types (already works on JVM; MSIL still requires `@externTarget`
+**Q48-001–Q48-003 (Constructor shorthand):**
+See `docs/48-constructor-shorthand.md`. Propose enabling `.new(args)` calls on external types (already works on JVM; MSIL still requires `@externTarget`
 wrappers). Leverages Phase 3c auto-FFI infrastructure. Design questions:
 - Q48-001: Generic constructors (`List[T].new(capacity)`; requires template instantiation; part of Q022-4).
 - Q48-002: Async constructors (`async T.new(...)`).
