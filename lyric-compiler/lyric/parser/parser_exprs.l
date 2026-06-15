@@ -27,6 +27,29 @@ pub func mkStmt(kind: in StatementKind, span: in Span): Statement {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Quantifier vs function name disambiguation.
+// ─────────────────────────────────────────────────────────────────────────────
+// When we see "exists" or "forall" as an identifier, we need to decide if it's
+// a quantifier (with syntax `exists(x: T, ...) ...`) or a function name.
+// Quantifier binders have the form `identifier: Type`, so we look ahead to see
+// if the opening paren is followed by an identifier and then a colon.
+func isQuantifierContext(st: in ParseState): Bool {
+  val tokAfterName = peekAt(st, 1)
+  if not isPunct(tokAfterName.token, LParen) {
+    false
+  } else {
+    val tokAfterParen = peekAt(st, 2)
+    match tokAfterParen.token {
+      case TIdent(_) -> {
+        val tokAfterIdent = peekAt(st, 3)
+        isPunct(tokAfterIdent.token, Colon)
+      }
+      case _ -> false
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Generic parameters.
 // ─────────────────────────────────────────────────────────────────────────────
 func parseGenericParam(st: inout ParseState): GenericParam {
@@ -1143,9 +1166,9 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
         val opTok = advance(st)
         val body = parseBlock(st)
         mkExpr(EUnsafe(block = body), joinSpans(opTok.span, body.span))
-      } else if name == "forall" {
+      } else if name == "forall" and isQuantifierContext(st) {
         parseQuantifierExpr(st, true)
-      } else if name == "exists" {
+      } else if name == "exists" and isQuantifierContext(st) {
         parseQuantifierExpr(st, false)
       } else if name == "break" {
         val stmt = parseStatement(st)
