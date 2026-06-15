@@ -20434,12 +20434,8 @@ func buildGenericCaseCtorTok(
   val pkgPart = ctorKey.substring(0, dotIdx0)
   val caseRefKey = pkgPart + "/" + ctorKey
   val caseRefRow = match mapGet(cctx.ffiTypeRefs, caseRefKey) { case Some(r) -> r; case None -> return 0 }
-  // Build concrete type args: prefer inferred argument type when context type
-  // is itself a generic instantiation (nested generics like Maybe[Maybe[Int]]),
-  // otherwise use context type. The construction TypeSpec must match what the
-  // consumer's `isinst` uses, which is derived from the scrutinee's DECLARED
-  // type, not the concrete value's runtime class. CLR generics are invariant,
-  // so the match exhaustiveness check depends on TypeSpec agreement (#3502).
+  // CLR generics are invariant: TypeSpec must match consumer's isinst (from declared type, #3502).
+  // Prefer inferred arg when context is generic instantiation (nested generics like Maybe[Maybe[Int]]), else use context.
   val typeArgs: List[MsilType] = newList()
   var tpi = 0
   while tpi < nTypeParams {
