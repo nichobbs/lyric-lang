@@ -6807,6 +6807,39 @@ func lowerMatchExprMsil(
     val armInsns: List[MInsn] = newList()
     lowerPatternTestMsil(cctx, fctx, armInsns, arm.pattern, scrutSlot, scrutTy, nextArmL)
     lowerPatternBindMsil(cctx, fctx, armInsns, arm.pattern, scrutSlot, scrutTy)
+
+    // Set context from scrutinee type for guard and arm body so any constructor
+    // calls use the correct generic type arguments (#3705). This ensures that
+    // pattern-matched union cases are built with scrutinee type args, not the
+    // function's return type. Save/restore to avoid polluting other contexts.
+    val savedCtxHints: List[MsilType] = newList()
+    var sci = 0
+    while sci < fctx.contextHintTyArgs.count {
+      savedCtxHints.add(fctx.contextHintTyArgs[sci])
+      sci = sci + 1
+    }
+    while fctx.contextHintTyArgs.count > 0 {
+      fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+    }
+    match scrutTy {
+      case MGenericInst(_, _, typeArgs) -> {
+        var sti = 0
+        while sti < typeArgs.count {
+          fctx.contextHintTyArgs.add(typeArgs[sti])
+          sti = sti + 1
+        }
+      }
+      case MGenericInstByName(_, typeArgs) -> {
+        var stib = 0
+        while stib < typeArgs.count {
+          fctx.contextHintTyArgs.add(typeArgs[stib])
+          stib = stib + 1
+        }
+      }
+      case _ -> {
+      }
+    }
+
     match arm.guard {
       case Some(g) -> {
         lowerExprMsil(cctx, fctx, armInsns, g)
@@ -6816,6 +6849,16 @@ func lowerMatchExprMsil(
       }
     }
     val armTy = lowerExprOrBlockMsil(cctx, fctx, armInsns, arm.body)
+
+    // Restore saved context hints
+    while fctx.contextHintTyArgs.count > 0 {
+      fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+    }
+    var rci = 0
+    while rci < savedCtxHints.count {
+      fctx.contextHintTyArgs.add(savedCtxHints[rci])
+      rci = rci + 1
+    }
     armBuffers.add(armInsns)
     armTys.add(armTy)
     armNextLs.add(nextArmL)
