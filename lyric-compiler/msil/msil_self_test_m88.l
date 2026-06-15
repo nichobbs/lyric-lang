@@ -10,35 +10,36 @@ import Std.Testing
 
 extern type SBld = "System.Text.StringBuilder"
 
-// Test basic parameterless constructor call.
+@externTarget("System.Text.StringBuilder.get_Length")
+@externInstance
+func sbLength(sb: in SBld): Int = ()
+
+@externTarget("System.Text.StringBuilder.get_Capacity")
+@externInstance
+func sbCapacity(sb: in SBld): Int = ()
+
 test "StringBuilder.new()" {
   val sb = SBld.new()
-  // Verify the object was constructed (non-null).
-  assertTrue(true, "parameterless constructor succeeded")
+  assertEqualInt(sbLength(sb), 0, "parameterless constructor produces empty StringBuilder")
 }
 
-// Test constructor with single argument (capacity).
 test "StringBuilder.new(capacity)" {
   val capacity = 32
   val sb = SBld.new(capacity)
-  // Constructor with int argument succeeded.
-  assertTrue(true, "capacity constructor succeeded")
+  assertTrue(sbCapacity(sb) >= capacity, "capacity constructor respects requested size")
 }
 
-// Test constructor overload resolution.
 test "constructor overload resolution" {
-  // Both overloads should resolve via metadata and emit correct newobj IL.
   val sb0 = SBld.new()
   val sb1 = SBld.new(64)
-  // Both constructed successfully.
-  assertTrue(true, "overload resolution succeeded")
+
+  assertEqualInt(sbLength(sb0), 0, "zero-arg constructor produces empty StringBuilder")
+  assertTrue(sbCapacity(sb1) >= 64, "capacity constructor respects requested size")
 }
 
-// Test constructor with String argument (initializes content).
 test "StringBuilder.new(String)" {
   val initialContent = "hello"
   val sb = SBld.new(initialContent)
-  // Constructor with string argument succeeded.
-  assertTrue(true, "string-argument constructor succeeded")
+  assertEqualInt(sbLength(sb), 5, "string-argument constructor initializes length correctly")
 }
 
