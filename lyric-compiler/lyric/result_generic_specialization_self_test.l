@@ -10,7 +10,7 @@
 //!
 //! Runs on both targets (--target dotnet and --target jvm) via CI.
 @test_module
-package Lyric.Issue3693SelfTest
+package Lyric.ResultGenericSpecializationSelfTest
 
 import Std.Core
 import Std.Testing
