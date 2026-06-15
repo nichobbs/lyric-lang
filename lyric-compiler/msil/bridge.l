@@ -1202,6 +1202,8 @@ pub func collectStdlibGenericFuncs(pkgs: in List[StdlibPkg]): List[FunctionDecl]
         case IFunc(decl) -> {
           val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
           val hasBody = match decl.body { case Some(_) -> true; case None -> false }
+          // Note: no isPub check here (unlike collectInBundleGenericFuncs/collectRestoredGenericFuncs).
+          // All stdlib items are implicitly public; visibility filtering is not needed.
           // `mapGet` is a codegen builtin intrinsic (see the `funcName ==
           // "mapGet"` branch in `Msil.Codegen.lowerBuiltinOrStaticCallMsil`),
           // which wraps `Dictionary.get_Item` into `Option[V]` directly.
