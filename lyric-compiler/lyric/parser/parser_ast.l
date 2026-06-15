@@ -777,6 +777,7 @@ pub record ImportDecl {
   selector: Option[ImportSelector]
   asAlias: Option[String]
   isPubUse: Bool
+  isExtern: Bool
   span: Span
 }
 

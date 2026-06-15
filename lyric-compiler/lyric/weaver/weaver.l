@@ -2234,6 +2234,7 @@ func addStdTimeImport(imports: in List[ImportDecl], span: in Span): List[ImportD
       selector = None,
       asAlias = None,
       isPubUse = false,
+      isExtern = false,
       span = span
     )
   )

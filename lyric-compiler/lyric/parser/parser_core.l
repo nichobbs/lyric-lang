@@ -702,6 +702,7 @@ func parseImportDecl(st: inout ParseState): Option[ImportDecl] {
   } else {
     cstStart(st, SkImportDecl)
     val startSp = peekSpan(st)
+    var isExtern = false
     if isPubUse {
       val _ = advance(st)
       // pub
@@ -710,6 +711,12 @@ func parseImportDecl(st: inout ParseState): Option[ImportDecl] {
     } else {
       val _ = advance(st)
       // import
+    }
+    // Check for 'extern' keyword after import/pub use
+    if isKw(peekToken(st), KwExtern) {
+      val _ = advance(st)
+      // extern
+      isExtern = true
     }
     val path = parseModulePath(st)
 
@@ -758,6 +765,7 @@ func parseImportDecl(st: inout ParseState): Option[ImportDecl] {
                 selector = selector,
                 asAlias = Some(value = al.name),
                 isPubUse = isPubUse,
+                isExtern = isExtern,
                 span = joinSpans(startSp, endSp)
               )
             )
@@ -770,6 +778,7 @@ func parseImportDecl(st: inout ParseState): Option[ImportDecl] {
                 selector = selector,
                 asAlias = None,
                 isPubUse = isPubUse,
+                isExtern = isExtern,
                 span = joinSpans(startSp, endSp)
               )
             )
@@ -783,6 +792,7 @@ func parseImportDecl(st: inout ParseState): Option[ImportDecl] {
             selector = selector,
             asAlias = None,
             isPubUse = isPubUse,
+            isExtern = isExtern,
             span = joinSpans(startSp, endSp)
           )
         )

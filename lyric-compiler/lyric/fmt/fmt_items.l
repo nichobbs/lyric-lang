@@ -1326,5 +1326,6 @@ pub func importDoc(imp: in ImportDecl): List[String] {
   }
   val aliasStr = match imp.asAlias { case Some(a) -> " as " + a; case None -> "" }
   val kw = if imp.isPubUse { "pub use" } else { "import" }
-  singleLineDoc(kw + " " + pathStr(imp.path) + selStr + aliasStr)
+  val externKw = if imp.isExtern { " extern" } else { "" }
+  singleLineDoc(kw + externKw + " " + pathStr(imp.path) + selStr + aliasStr)
 }
