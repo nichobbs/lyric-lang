@@ -372,6 +372,69 @@ test "cross package imported generic" {
   )
 }
 
+// #3705: a generic union predicate (`isErrLike`, the shape of stdlib
+// `isOk`/`isErr`) is specialised over the *concrete* Result type only
+// when the monomorphizer can infer the argument's type — which, for a
+// cross-package call `isErrLike(makeRes())`, requires the non-generic
+// callee `makeRes`'s declared return type.  Feeding the non-generic decl
+// (as `collectInBundleNonGenericFuncs` now does in the MSIL bridge) is what
+// turns the call into `isErrLike__Int__String`; without it the call would
+// hit the type-erased generic, whose `isinst Result_Err<object,object>`
+// never matches the concrete value at runtime ("Unable to cast Result_Err
+// to Boolean").
+test "non-generic callee return feeds cross-package union-predicate specialisation (#3705)" {
+  val callerSrc = "package Caller\n" + "func caller(): Bool { isErrLike(makeRes()) }\n"
+  val genericSrc = "package Lib\n" +
+    "pub func isErrLike[T, E](r: in Result[T, E]): Bool { match r { case Ok(v) -> false\n case Err(c) -> true } }\n"
+  val nonGenericSrc = "package Lib\n" + "pub func makeRes(): Result[Int, String] { Ok(1) }\n"
+
+  val genericPr = parse(genericSrc)
+  val nonGenericPr = parse(nonGenericSrc)
+
+  // The generic predicate alone (mirrors the pre-fix feed).
+  val genOnly: List[FunctionDecl] = newList()
+  var gi = 0
+  while gi < genericPr.file.items.count {
+    match genericPr.file.items[gi].kind {
+      case IFunc(decl) -> match decl.generics { case Some(_) -> genOnly.add(decl); case None -> () }
+      case _ -> ()
+    }
+    gi = gi + 1
+  }
+
+  // Without the non-generic callee, the argument type can't be inferred, so
+  // the predicate stays erased — no concrete specialisation is produced.
+  val resNoFeed = monoFileWithImports(parse(callerSrc).file, genOnly)
+  assertTrue(
+    not hasFunc(resNoFeed.file, "isErrLike__Int__String"),
+    "without makeRes fed, isErrLike is not specialised (call hits the erased generic)"
+  )
+
+  // With the non-generic callee fed alongside the generic, mono infers
+  // makeRes(): Result[Int, String], unifies T=Int / E=String, and emits the
+  // concrete specialisation.
+  val withFeed: List[FunctionDecl] = newList()
+  var wgi = 0
+  while wgi < genOnly.count {
+    withFeed.add(genOnly[wgi])
+    wgi = wgi + 1
+  }
+  var ni = 0
+  while ni < nonGenericPr.file.items.count {
+    match nonGenericPr.file.items[ni].kind {
+      case IFunc(decl) -> match decl.generics { case Some(_) -> (); case None -> withFeed.add(decl) }
+      case _ -> ()
+    }
+    ni = ni + 1
+  }
+
+  val resFeed = monoFileWithImports(parse(callerSrc).file, withFeed)
+  assertTrue(
+    hasFunc(resFeed.file, "isErrLike__Int__String"),
+    "with makeRes fed, isErrLike__Int__String specialisation is appended"
+  )
+}
+
 // Identity behaviour when no generics are present: monoFile returns
 // the file unchanged with an empty rewrites map.
 test "no generics no op" {

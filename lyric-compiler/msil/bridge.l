@@ -482,6 +482,15 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // calling `Validation.toResult(42, [])` specialises `toResult__Int` into its
   // own class rather than hitting the unresolved-call fallback (#2932).
   val inBundleGenFuncs = collectInBundleGenericFuncs(parsedPkgs)
+  // Non-generic in-bundle pub funcs: fed to the monomorphizer for type
+  // inference only (never added to the specialisation worklist), so a
+  // cross-package call like `isErr(connectLocal(...))` can resolve
+  // `connectLocal`'s declared return type and specialise the generic
+  // `isErr` for the concrete `Result[StorageBucket, StorageError]` instead of
+  // calling the type-erased generic (whose `isinst Result_Err<object,object>`
+  // never matches the concrete value, so the match falls off and the
+  // scrutinee leaks back as the `Bool` result — #3705).
+  val inBundleNonGenFuncs = collectInBundleNonGenericFuncs(parsedPkgs)
   // Restored-dependency generic pub funcs: cross-DLL generic calls specialise
   // into the consumer bundle rather than erasing return type to `object` (#1498).
   val restoredGenFuncs = collectRestoredGenericFuncs(restoredArtifacts)
@@ -500,6 +509,11 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   while agfk < restoredGenFuncs.count {
     allImportedGenFuncs.add(restoredGenFuncs[agfk])
     agfk = agfk + 1
+  }
+  var agfm = 0
+  while agfm < inBundleNonGenFuncs.count {
+    allImportedGenFuncs.add(inBundleNonGenFuncs[agfm])
+    agfm = agfm + 1
   }
   val perPkgFiles: List[SourceFile] = newList()
   val perPkgNames: List[String] = newList()
@@ -1258,6 +1272,45 @@ func collectInBundleGenericFuncs(parsedPkgs: in List[ParsedUserPkg]): List[Funct
     pi = pi + 1
   }
   genFuncs
+}
+
+// Collect non-generic block-bodied pub funcs from all in-bundle parsed
+// packages.  Unlike `collectInBundleGenericFuncs`, these are fed to the
+// monomorphizer purely so it can resolve cross-package call return types
+// during inference (e.g. `isErr(connectLocal(...))` — mono needs
+// `connectLocal`'s declared return type to infer `T=StorageBucket,
+// E=StorageError` and specialise `isErr__StorageBucket__StorageError`,
+// #3705).  Because they are non-generic they only land in the monomorphizer's
+// `funcDecls` map (used for inference), never in `genDecls` (the
+// specialisation worklist), so they are never themselves rewritten.  Externs
+// and body-less signatures are excluded — they are BCL boundary stubs whose
+// return types may not be representable in the Lyric AST type system.
+func collectInBundleNonGenericFuncs(parsedPkgs: in List[ParsedUserPkg]): List[FunctionDecl] {
+  val nonGenFuncs: List[FunctionDecl] = newList()
+  var pi = 0
+  while pi < parsedPkgs.count {
+    val file = parsedPkgs[pi].file
+    var ii = 0
+    while ii < file.items.count {
+      match file.items[ii].kind {
+        case IFunc(decl) -> {
+          val isPub = match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
+          val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+          val hasBlockBody = match decl.body {
+            case Some(fb) -> match fb { case FBBlock(_) -> true; case FBExpr(_) -> false }
+            case None -> false
+          }
+          if isPub and not isGeneric and hasBlockBody and not annsBlockSpecialization(decl.annotations) {
+            nonGenFuncs.add(decl)
+          }
+        }
+        case _ -> ()
+      }
+      ii = ii + 1
+    }
+    pi = pi + 1
+  }
+  nonGenFuncs
 }
 
 // Collect generic pub funcs from all restored dependency SynthesisedArtifacts.
