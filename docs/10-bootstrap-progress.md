@@ -25363,7 +25363,7 @@ silent miscompilation; proper support (Q48-004) is deferred.
 (`SBld.new("hello")`). Tests assert real runtime behavior via auto-FFI instance
 property access.
 
-**See also:** D-progress-263 (decision-log entry).
+**See also:** D-progress-530 (decision-log entry).
 
 `docs/23-fsharp-shim-elimination.md` status updated to RUNTIME F# DECOMMISSION
 COMPLETE.  Formal declaration in decision-log D-progress-529.

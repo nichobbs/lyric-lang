@@ -6388,7 +6388,7 @@ lib split, Phase 6).
 
 ---
 
-## D-progress-263 — Constructor shorthand for extern types (.new syntax)
+## D-progress-530 — Constructor shorthand for extern types (.new syntax)
 
 **Feature:** Enable direct constructor calls on external types via `.new(args)`
 syntax (docs/48), eliminating boilerplate `@externTarget` wrapper functions and
