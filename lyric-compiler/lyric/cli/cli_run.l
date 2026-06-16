@@ -44,7 +44,8 @@ func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in Com
   if buildRc != 0 {
     return buildRc
   }
-  val outPath = projectBinOutputPath(mfDir, proj, target)
+  val buildKind = getBuildKind(manifest)
+  val outPath = projectBinOutputPath(mfDir, proj, target, buildKind)
   if not File.fileExists(outPath) {
     printErr("run: project output not found after build: " + outPath)
     return 1
