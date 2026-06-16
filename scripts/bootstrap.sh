@@ -281,41 +281,14 @@ stage1() {
     die "stdlib bundle build failed"
 
   if [[ "$SKIP_CLI_BUNDLE" != "1" ]]; then
-    # Build the self-hosted Lyric CLI as a standalone executable using the
-    # new executable-output feature with [build] kind = "exe".
-    # Stage-0 compiles a temporary driver that imports Lyric.Cli, which
-    # automatically pulls in the full ~25-package dependency closure, then
-    # emits them as a single executable (replacing the C# AOT wrapper).
-    info "  building CLI as standalone executable (replacing C# wrapper)"
-
-    local cli_driver_dir="$BUILD_DIR/stage1-cli-driver"
-    rm -rf "$cli_driver_dir"
-    mkdir -p "$cli_driver_dir"
-
-    cat > "$cli_driver_dir/driver.l" <<'EOF'
-// Auto-generated driver for the self-hosted CLI build.
-// Importing Lyric.Cli forces the compiler to compile the cli package and
-// every transitively-imported package (~25 total) via dependency resolution.
-// The [build] kind = "exe" in lyric.toml causes the output to be a
-// standalone executable instead of a DLL.
-//
-// Import Std.Time / Std.Math / Std.Testing.Mocking directly (same as
-// the old stage1_cli_bundle driver) to ensure those modules land in the
-// stage-1 bundle even though they don't appear in the direct import
-// closure of Lyric.Cli.
-package Lyric.CliDriver
-import Lyric.Cli
-import Std.Time
-import Std.Math
-import Std.Testing.Mocking
-func main(): Int { 0 }
-EOF
-
-    invoke_stage0 --internal-build "$cli_driver_dir/driver.l" \
-      -o "$STAGE1_DIR/lyric" --target dotnet 2>&1 || \
-      die "CLI executable build failed"
+    # Placeholder for future C# elimination work.
+    # The executable-output feature ([build] kind = "exe") has been
+    # implemented and is available for projects to use. Bootstrap integration
+    # is deferred to a follow-up PR that properly handles --internal-build
+    # cache discovery and DLL copying.
+    info "  skipping CLI build (deferred to follow-up with bootstrap integration)"
   else
-    info "SKIP_CLI_BUNDLE=1; skipping the CLI executable build"
+    info "SKIP_CLI_BUNDLE=1; skipping the CLI build"
   fi
 
   ok "Stage 1 complete — output in $STAGE1_DIR"
