@@ -298,14 +298,17 @@ stage1() {
 // every transitively-imported package (~25 total) via dependency resolution.
 // The [build] kind = "exe" in lyric.toml causes the output to be a
 // standalone executable instead of a DLL.
+//
+// Import Std.Time / Std.Math / Std.Testing.Mocking directly (same as
+// the old stage1_cli_bundle driver) to ensure those modules land in the
+// stage-1 bundle even though they don't appear in the direct import
+// closure of Lyric.Cli.
 package Lyric.CliDriver
 import Lyric.Cli
 import Std.Time
 import Std.Math
 import Std.Testing.Mocking
-func main(): Int {
-  Lyric.Cli.Program.main(newList())
-}
+func main(): Int { 0 }
 EOF
 
     invoke_stage0 --internal-build "$cli_driver_dir/driver.l" \
