@@ -36,7 +36,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STD_DIR="$REPO_ROOT/lyric-stdlib/std"
 
 # Verified-to-bind leaf packages F# cannot ship.
-CURATED_PACKAGES=(Sort Iter SecureRandom Regex Log Http Rest Xml Yaml)
+CURATED_PACKAGES=(Sort Iter SecureRandom Regex Log Http Rest Xml Yaml Json JsonHost)
 
 emit_dir="$(mktemp -d)"
 trap 'rm -rf "$emit_dir"' EXIT

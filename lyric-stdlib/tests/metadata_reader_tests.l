@@ -937,6 +937,12 @@ func expectedClrValueTypes(): List[String] {
   xs.add("System.Text.Json.JsonElement")
   xs.add("System.Text.Json.JsonEncodedText")
   xs.add("System.Text.Json.JsonProperty")
+  // Nested value-typed enumerator structs.  `scanNestedValueTypes` indexes
+  // these in the metadata vtypeSet (keyed by their "Enclosing+Nested" FQN),
+  // so Direction 2 below holds; the closed-set fallback in ffi.l carries them
+  // for SDK-less builds.
+  xs.add("System.Text.Json.JsonElement+ArrayEnumerator")
+  xs.add("System.Text.Json.JsonElement+ObjectEnumerator")
   xs
 }
 
