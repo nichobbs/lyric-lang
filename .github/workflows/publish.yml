@@ -77,9 +77,13 @@ jobs:
         shell: bash
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            # Remove 'v' prefix from tag (e.g., v0.1.0 -> 0.1.0)
             echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
           else
-            echo "VERSION=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+            # Manual dispatch: use version from input, ensuring no 'v' prefix for NuGet
+            version="${{ github.event.inputs.version }}"
+            version="${version#v}"  # Remove leading 'v' if present
+            echo "VERSION=${version:-0.1.0-rc}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Restore
@@ -246,9 +250,13 @@ jobs:
         shell: bash
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            # Remove 'v' prefix from tag (e.g., v0.1.0 -> 0.1.0)
             echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
           else
-            echo "VERSION=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+            # Manual dispatch: use version from input, ensuring no 'v' prefix for NuGet
+            version="${{ github.event.inputs.version }}"
+            version="${version#v}"  # Remove leading 'v' if present
+            echo "VERSION=${version:-0.1.0-rc}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Restore
