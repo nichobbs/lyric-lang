@@ -8,21 +8,17 @@ Lyric currently supports mapping FFI types to `extern type` and `extern package`
 
 ## Proposed Changes
 
-### 1. FFI Syntax Extensions (`parser` & `ast`)
-- Add support for `extern interface` declarations within `extern package` blocks.
-- Add an `EMExternInterface` node to the `ExternMember` AST enum.
-- Update `lyric-compiler/lyric/parser/` to parse method signatures within `extern interface` blocks.
-
-```lyric
-extern package System {
-  extern interface IDisposable {
-    func Dispose(): Unit
-  }
-}
-```
+### 1. FFI Target Resolution (`type_checker`)
+- **No New Syntax Required**: We can leverage the existing `extern type` and metadata resolution system that landed in Phase 4. Users simply import the interface the same way they import a .NET class:
+  ```lyric
+  extern type IDisposable = "System.IDisposable"
+  ```
+- The compiler's metadata reader (`lyric-compiler/msil/pe.l`) already parses the .NET `TypeDef` table and can identify if an `extern type` represents a `.NET` interface (via the `ClassSemanticsMask`).
+- When an `impl` block targets an `extern type`, the type checker queries the metadata cache to extract the expected interface method signatures (names, parameters, return types).
 
 ### 2. Impl Binding Enhancements (`type_checker`)
-- Update the type checker's `impl` conformance checks to allow implementing `extern interface` targets.
+- Update the type checker's `impl` conformance checks to allow implementing `extern type` targets *if* the metadata indicates the target is a `.NET` interface.
+- Ensure that the Lyric implementation structurally matches the `.NET` interface signature extracted from metadata.
 - Ensure that the Lyric implementation structurally matches the `.NET` interface signature (including any primitive boxing requirements expected by the FFI boundary, if applicable).
 
 ### 3. MSIL Type Emission (`msil/codegen.l`)
@@ -42,13 +38,13 @@ extern package System {
 > [!WARNING]
 > If an external interface contains properties or events, how will those map to Lyric syntax, since Lyric does not have properties (only methods and fields)?
 
-**Proposed Resolution**: In .NET, properties and events are syntactic sugar over standard methods (e.g., `get_Count()`, `add_Changed(EventHandler)`). The `extern interface` declaration in Lyric will explicitly declare these underlying methods:
+**Proposed Resolution**: The .NET metadata encodes properties and events as standard methods with special prefixes (e.g., `get_Count()`, `add_Changed()`). The type checker will extract these underlying method signatures from the interface metadata. The user will satisfy the interface by simply implementing standard Lyric methods with the matching underlying names:
 ```lyric
-extern interface ICollection {
-  func get_Count(): Int
+impl ICollection for MyList {
+  func get_Count(): Int { return self.size }
 }
 ```
-The .NET runtime interface dispatch links implementations by method name and signature. When Lyric emits a standard method named `get_Count`, it will correctly satisfy the interface's property getter requirement in the MSIL `MethodImpl` table.
+The .NET runtime interface dispatch will automatically wire this `MethodImpl` to the property getter requirement.
 
 ## Verification Plan
 
