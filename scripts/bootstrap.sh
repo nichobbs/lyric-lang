@@ -281,17 +281,78 @@ stage1() {
     die "stdlib bundle build failed"
 
   if [[ "$SKIP_CLI_BUNDLE" != "1" ]]; then
-    # Placeholder for future C# elimination work.
-    # The executable-output feature ([build] kind = "exe") has been
-    # implemented and is available for projects to use. Bootstrap integration
-    # is deferred to a follow-up PR that properly handles --internal-build
-    # cache discovery and DLL copying.
-    info "  skipping CLI build (deferred to follow-up with bootstrap integration)"
+    stage1_cli_bundle
   else
-    info "SKIP_CLI_BUNDLE=1; skipping the CLI build"
+    info "SKIP_CLI_BUNDLE=1; skipping the CLI dependency-closure precompile"
   fi
 
   ok "Stage 1 complete — output in $STAGE1_DIR"
+}
+
+# ---------------------------------------------------------------------------
+# Stage 1 — CLI bundle precompile (Track A, A1.2)
+# ---------------------------------------------------------------------------
+stage1_cli_bundle() {
+  info "Stage 1 (CLI bundle): precompiling Lyric.Cli + transitive deps"
+
+  local driver_dir="$BUILD_DIR/stage1-cli-driver"
+  rm -rf "$driver_dir"
+  mkdir -p "$driver_dir"
+
+  cat > "$driver_dir/driver.l" <<'EOF'
+// Auto-generated driver for the bootstrap CLI-bundle precompile.
+package Lyric.CliBundle
+import Lyric.Cli
+import Std.Time
+import Std.Math
+import Std.Testing.Mocking
+func main(): Unit { }
+EOF
+
+  local driver_out="$driver_dir/Lyric.CliBundle.dll"
+  local pre_snapshot
+  pre_snapshot="$(ls -d "$TMP_BASE"/lyric-stdlib-* 2>/dev/null || true)"
+
+  LYRIC_STD_PATH="$STAGE1_DIR" \
+    invoke_stage0 --internal-build "$driver_dir/driver.l" -o "$driver_out" \
+    --target dotnet 2>&1 || \
+    die "stage-1 CLI-bundle driver compile failed"
+
+  local post_snapshot
+  post_snapshot="$(ls -d "$TMP_BASE"/lyric-stdlib-* 2>/dev/null || true)"
+  local new_dirs
+  new_dirs="$(comm -13 \
+    <(echo "$pre_snapshot"  | sort) \
+    <(echo "$post_snapshot" | sort) \
+    | grep -v '^$' || true)"
+
+  local cache_dir
+  cache_dir="$(echo "$new_dirs" | head -1)"
+  [[ -n "$cache_dir" && -d "$cache_dir" ]] || \
+    die "stage-1 CLI bundle: no new $TMP_BASE/lyric-stdlib-*/ cache found after compile"
+
+  info "  CLI bundle cache: $cache_dir"
+  local copied=0
+  for f in "$cache_dir"/*.dll; do
+    [[ -f "$f" ]] || continue
+    cp -f "$f" "$STAGE1_DIR/"
+    copied=$((copied + 1))
+  done
+
+  info "  copied $copied DLLs into $STAGE1_DIR"
+  [[ -f "$STAGE1_DIR/Lyric.Lyric.Cli.dll" ]] || \
+    die "stage-1 CLI bundle: Lyric.Lyric.Cli.dll not found in $STAGE1_DIR after copy"
+
+  if [[ "$SKIP_COREREF_REWRITE" != "1" ]]; then
+    info "  retargeting System.Private.CoreLib refs -> public facades"
+    dotnet fsi "$REPO_ROOT/scripts/rewrite-corelib-refs.fsx" "$STAGE1_DIR"/*.dll \
+      > "$BUILD_DIR/rewrite-corelib-refs.log" 2>&1 || \
+      die "stage-1 CLI bundle: corelib-ref rewrite failed"
+  else
+    info "SKIP_COREREF_REWRITE=1; leaving stage-1 DLLs with raw CoreLib refs"
+  fi
+
+  ok "Stage 1 CLI bundle complete — Lyric.Lyric.Cli.dll + $((copied - 1)) deps in $STAGE1_DIR"
 }
 
 compare_stage1_stage2_dlls() {
