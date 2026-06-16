@@ -106,9 +106,12 @@ try_bootstrap_from_release() {
     return 1
   fi
 
+  # Strip 'v' prefix from tag if present (v0.1.0 -> 0.1.0)
+  local version="${latest_release#v}"
+
   info "Attempting to bootstrap from latest release ($latest_release, platform: $platform)..."
 
-  local archive_name="lyric-${latest_release}-${platform}.tar.gz"
+  local archive_name="lyric-${version}-${platform}.tar.gz"
   local download_url="https://github.com/nichobbs/lyric-lang/releases/download/${latest_release}/${archive_name}"
 
   # Create temporary directory for download
