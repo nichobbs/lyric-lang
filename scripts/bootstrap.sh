@@ -108,16 +108,19 @@ stage0() {
       --nologo -v q
   fi
 
-  # On Linux the published output is a native binary. On Windows, it's a DLL.
+  # On Linux the published output is a native binary. On Windows, it's an EXE.
   # Use copy instead of symlink for Windows compatibility.
   if [[ -f "$BUILD_DIR/stage0-publish/lyric" ]]; then
     # Native binary on Linux/macOS
     ln -sf "$BUILD_DIR/stage0-publish/lyric" "$STAGE0_BIN"
+  elif [[ -f "$BUILD_DIR/stage0-publish/lyric.exe" ]]; then
+    # Windows EXE: copy it (symlinks don't work reliably on Windows)
+    cp "$BUILD_DIR/stage0-publish/lyric.exe" "$STAGE0_BIN"
   elif [[ -f "$BUILD_DIR/stage0-publish/lyric.dll" ]]; then
-    # Windows DLL: copy it (symlinks don't work reliably on Windows)
+    # Fallback to DLL if EXE not found
     cp "$BUILD_DIR/stage0-publish/lyric.dll" "$STAGE0_BIN"
   else
-    die "publish did not produce a lyric binary in $BUILD_DIR/stage0-publish"
+    die "publish did not produce a lyric binary in $BUILD_DIR/stage0-publish (checked for: lyric, lyric.exe, lyric.dll)"
   fi
 
   ok "Stage 0 complete — $STAGE0_BIN"
@@ -136,28 +139,34 @@ stage1() {
   info "Stage 1: compiling Lyric compiler packages with stage-0 lyric"
   mkdir -p "$STAGE1_DIR"
 
-  # Helper to invoke stage-0, handling both native binaries and DLL wrappers.
-  # On Windows the published output is a DLL; use dotnet directly with proper
-  # path conversion (bash uses Unix paths /d/a/..., but dotnet is a Windows app).
+  # Helper to invoke stage-0, handling both native binaries and DLL/EXE wrappers.
+  # On Windows the published output is an EXE; invoke it directly with proper path
+  # conversion (bash uses Unix paths /d/a/..., but Windows apps expect D:\a\...).
   invoke_stage0() {
-    if [[ "$STAGE0_BIN" == *.dll ]]; then
-      # Convert Unix path to Windows path for dotnet (Windows application)
-      local dll_path
+    local bin_path="$STAGE0_BIN"
+
+    # For Windows EXE/DLL, convert Unix path to Windows path
+    if [[ "$STAGE0_BIN" == *.exe ]] || [[ "$STAGE0_BIN" == *.dll ]]; then
       if command -v cygpath &>/dev/null; then
-        dll_path="$(cygpath -w "$STAGE0_BIN")"
-        info "  (Windows) invoking dotnet with path: $dll_path"
+        bin_path="$(cygpath -w "$STAGE0_BIN")"
+        info "  (Windows path) invoking: $bin_path"
       else
-        dll_path="$STAGE0_BIN"
-        info "  (Unix) invoking dotnet with path: $dll_path"
+        info "  (Unix path) invoking: $bin_path"
       fi
 
-      # Verify the DLL exists before trying to run it
+      # Verify the binary exists before trying to run it
       if [[ ! -f "$STAGE0_BIN" ]]; then
-        die "Stage 0 DLL not found at: $STAGE0_BIN (Windows path: $dll_path)"
+        die "Stage 0 binary not found at: $STAGE0_BIN (Windows path: $bin_path)"
       fi
 
-      dotnet "$dll_path" "$@"
+      # If it's a DLL, invoke via dotnet; if it's an EXE, invoke directly
+      if [[ "$STAGE0_BIN" == *.dll ]]; then
+        dotnet "$bin_path" "$@"
+      else
+        "$bin_path" "$@"
+      fi
     else
+      # Native binary on Unix
       "$STAGE0_BIN" "$@"
     fi
   }
