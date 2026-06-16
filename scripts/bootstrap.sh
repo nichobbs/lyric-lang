@@ -108,28 +108,47 @@ stage0() {
       --nologo -v q
   fi
 
-  # On Linux the published output is a native binary. On Windows, it's an EXE.
-  # Use copy instead of symlink for Windows compatibility.
-  if [[ -f "$BUILD_DIR/stage0-publish/lyric" ]]; then
-    # Native binary on Linux/macOS
-    ln -sf "$BUILD_DIR/stage0-publish/lyric" "$STAGE0_BIN"
-  elif [[ -f "$BUILD_DIR/stage0-publish/lyric.exe" ]]; then
-    # Windows EXE: copy it (symlinks don't work reliably on Windows)
-    cp "$BUILD_DIR/stage0-publish/lyric.exe" "$STAGE0_BIN"
+  # Publish output handling:
+  #   * Linux/macOS: native executable "lyric" (no extension)
+  #   * Windows (PowerShell): native executable "lyric.exe"
+  #   * Windows (Git Bash): bash wrapper "lyric" + framework-dependent "lyric.dll"
+  #
+  # The invoke_stage0 helper checks for .dll and .exe extensions, so we copy/symlink
+  # accordingly. Always copy (never symlink) to ensure Windows Git Bash wrapper works.
+  if [[ -f "$BUILD_DIR/stage0-publish/lyric.exe" ]]; then
+    # Windows native executable
+    cp "$BUILD_DIR/stage0-publish/lyric.exe" "$STAGE0_BIN.exe"
   elif [[ -f "$BUILD_DIR/stage0-publish/lyric.dll" ]]; then
-    # Fallback to DLL if EXE not found
-    cp "$BUILD_DIR/stage0-publish/lyric.dll" "$STAGE0_BIN"
+    # Windows Git Bash (wrapper script) or framework-dependent DLL-only case
+    cp "$BUILD_DIR/stage0-publish/lyric.dll" "$STAGE0_BIN.dll"
+    # Copy the wrapper script if present (for Git Bash completeness, but we'll use the DLL)
+    if [[ -f "$BUILD_DIR/stage0-publish/lyric" ]]; then
+      cp "$BUILD_DIR/stage0-publish/lyric" "$STAGE0_BIN"
+    fi
+  elif [[ -f "$BUILD_DIR/stage0-publish/lyric" ]]; then
+    # Unix native executable
+    cp "$BUILD_DIR/stage0-publish/lyric" "$STAGE0_BIN"
   else
-    die "publish did not produce a lyric binary in $BUILD_DIR/stage0-publish (checked for: lyric, lyric.exe, lyric.dll)"
+    die "publish did not produce a lyric binary in $BUILD_DIR/stage0-publish"
   fi
 
   ok "Stage 0 complete — $STAGE0_BIN"
 
-  # Debug: verify the binary actually exists
-  if [[ ! -f "$STAGE0_BIN" ]]; then
-    die "Stage 0 binary not found at $STAGE0_BIN"
+  # Verify the binary exists in one of its expected forms
+  if [[ -f "$STAGE0_BIN" ]]; then
+    info "Stage 0 binary: $(ls -lh "$STAGE0_BIN")"
+  elif [[ -f "$STAGE0_BIN.dll" ]]; then
+    info "Stage 0 DLL: $(ls -lh "$STAGE0_BIN.dll")"
+    if [[ -f "$STAGE0_BIN" ]]; then
+      info "Stage 0 wrapper: $(ls -lh "$STAGE0_BIN")"
+    fi
+  elif [[ -f "$STAGE0_BIN.exe" ]]; then
+    info "Stage 0 EXE: $(ls -lh "$STAGE0_BIN.exe")"
+  else
+    die "Stage 0 binary not found at $STAGE0_BIN, $STAGE0_BIN.dll, or $STAGE0_BIN.exe"
   fi
-  info "Stage 0 binary verified: $(ls -lh "$STAGE0_BIN")"
+  info "stage0-publish directory contents:"
+  ls -lh "$BUILD_DIR/stage0-publish/" || true
 }
 
 # ---------------------------------------------------------------------------
@@ -139,35 +158,39 @@ stage1() {
   info "Stage 1: compiling Lyric compiler packages with stage-0 lyric"
   mkdir -p "$STAGE1_DIR"
 
-  # Helper to invoke stage-0, handling both native binaries and DLL/EXE wrappers.
-  # On Windows the published output is an EXE; invoke it directly with proper path
-  # conversion (bash uses Unix paths /d/a/..., but Windows apps expect D:\a\...).
+  # Helper to invoke stage-0, handling native binaries, EXE files, and DLLs.
+  # On Windows Git Bash, dotnet publish creates a bash wrapper + DLL, so we need
+  # to invoke the DLL via dotnet. On Windows proper (PowerShell), we get an EXE.
+  # On Unix, we get a native executable.
   invoke_stage0() {
     local bin_path="$STAGE0_BIN"
 
-    # For Windows EXE/DLL, convert Unix path to Windows path
-    if [[ "$STAGE0_BIN" == *.exe ]] || [[ "$STAGE0_BIN" == *.dll ]]; then
+    # Check what type of file we actually have (not just the filename)
+    local actual_file
+    if [[ -f "$STAGE0_BIN" ]]; then
+      actual_file="$STAGE0_BIN"
+    elif [[ -f "$STAGE0_BIN.dll" ]]; then
+      actual_file="$STAGE0_BIN.dll"
+    elif [[ -f "$STAGE0_BIN.exe" ]]; then
+      actual_file="$STAGE0_BIN.exe"
+    else
+      die "Stage 0 binary not found at: $STAGE0_BIN (checked for .dll and .exe extensions)"
+    fi
+
+    # For Windows files (EXE/DLL), convert Unix path to Windows path
+    if [[ "$actual_file" == *.exe ]] || [[ "$actual_file" == *.dll ]]; then
       if command -v cygpath &>/dev/null; then
-        bin_path="$(cygpath -w "$STAGE0_BIN")"
-        info "  (Windows path) invoking: $bin_path"
-      else
-        info "  (Unix path) invoking: $bin_path"
+        bin_path="$(cygpath -w "$actual_file")"
       fi
-
-      # Verify the binary exists before trying to run it
-      if [[ ! -f "$STAGE0_BIN" ]]; then
-        die "Stage 0 binary not found at: $STAGE0_BIN (Windows path: $bin_path)"
-      fi
-
       # If it's a DLL, invoke via dotnet; if it's an EXE, invoke directly
-      if [[ "$STAGE0_BIN" == *.dll ]]; then
+      if [[ "$actual_file" == *.dll ]]; then
         dotnet "$bin_path" "$@"
       else
         "$bin_path" "$@"
       fi
     else
       # Native binary on Unix
-      "$STAGE0_BIN" "$@"
+      "$actual_file" "$@"
     fi
   }
 
