@@ -109,8 +109,8 @@ stage0() {
   fi
 
   # Publish output handling:
-  #   * Linux/macOS: native executable "lyric" (no extension)
-  #   * Windows (PowerShell): native executable "lyric.exe"
+  #   * Linux/macOS: native executable "lyric" (no extension) + runtimeconfig.json
+  #   * Windows (PowerShell): native executable "lyric.exe" + runtimeconfig.json
   #   * Windows (Git Bash): bash wrapper "lyric" + framework-dependent "lyric.dll"
   #
   # The invoke_stage0 helper checks for .dll and .exe extensions, so we copy/symlink
@@ -118,6 +118,9 @@ stage0() {
   if [[ -f "$BUILD_DIR/stage0-publish/lyric.exe" ]]; then
     # Windows native executable
     cp "$BUILD_DIR/stage0-publish/lyric.exe" "$STAGE0_BIN.exe"
+    if [[ -f "$BUILD_DIR/stage0-publish/lyric.runtimeconfig.json" ]]; then
+      cp "$BUILD_DIR/stage0-publish/lyric.runtimeconfig.json" "$STAGE0_BIN.runtimeconfig.json"
+    fi
   elif [[ -f "$BUILD_DIR/stage0-publish/lyric.dll" ]]; then
     # Windows Git Bash (wrapper script) or framework-dependent DLL-only case
     cp "$BUILD_DIR/stage0-publish/lyric.dll" "$STAGE0_BIN.dll"
@@ -128,6 +131,10 @@ stage0() {
   elif [[ -f "$BUILD_DIR/stage0-publish/lyric" ]]; then
     # Unix native executable
     cp "$BUILD_DIR/stage0-publish/lyric" "$STAGE0_BIN"
+    # Copy runtime config if present (needed for self-contained apps)
+    if [[ -f "$BUILD_DIR/stage0-publish/lyric.runtimeconfig.json" ]]; then
+      cp "$BUILD_DIR/stage0-publish/lyric.runtimeconfig.json" "$STAGE0_BIN.runtimeconfig.json"
+    fi
   else
     die "publish did not produce a lyric binary in $BUILD_DIR/stage0-publish"
   fi
