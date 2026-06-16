@@ -215,11 +215,11 @@ jobs:
             bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}
           retention-days: 1
 
-  # F# test suites (Lexer, Parser, TypeChecker, Emitter, CLI + JVM smoke) used to
-  # run serially inside `build`, blocking stage-1 bootstrap from starting.  Moving
-  # them here lets stage-1 begin as soon as `dotnet build` finishes, and runs the
-  # test suites in parallel with all downstream self-test jobs.  Saves ~8–12 min
-  # off the critical path.
+  # Placeholder job retained for workflow structure. The F# test suites
+  # (Lexer, Parser, TypeChecker, Emitter, CLI) were deleted when the F#
+  # bootstrap compiler was decommissioned in favor of bootstrap-from-release.
+  # Self-hosted compiler tests now run directly in compiler-self-tests-dotnet-*
+  # jobs via native `lyric test`.
   test-bootstrap:
     runs-on: ubuntu-latest
     needs: [build]
@@ -246,33 +246,9 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: ~/.nuget/packages
-          key: ${{ runner.os }}-nuget-${{ hashFiles('bootstrap/**/*.fsproj', 'bootstrap/**/*.csproj', 'bootstrap/global.json') }}
+          key: ${{ runner.os }}-nuget-${{ hashFiles('bootstrap/**/*.csproj', 'bootstrap/global.json') }}
           restore-keys: |
             ${{ runner.os }}-nuget-
-      # The emitter test suite writes /tmp/lyric-jvm-selftest/Hello.class via the
-      # Jvm.SelfTest stage-B2 program.  Existing tests verify structural validity
-      # with `javap -c` but never execute the class via `java`, so JVM-side
-      # codegen bugs (linkage, descriptor mismatches, etc.) reach main undetected.
-      # Closes #744.
-      - name: JVM execution smoke (run Hello.class via `java`)
-        timeout-minutes: 1
-        env:
-          JVM_SELFTEST_DIR: /tmp/lyric-jvm-selftest
-        run: |
-          set -euo pipefail
-          if [ ! -f "$JVM_SELFTEST_DIR/Hello.class" ]; then
-            echo "::error::Hello.class missing under $JVM_SELFTEST_DIR — Jvm.SelfTest must have run during the Emitter tests step"
-            exit 1
-          fi
-          out=$(java -cp "$JVM_SELFTEST_DIR" Hello)
-          echo "java output: $out"
-          if [ "$out" != "hello from lyric-jvm" ]; then
-            echo "::error::JVM execution produced unexpected output: '$out'"
-            exit 1
-          fi
-      - name: CLI tests
-        working-directory: bootstrap
-        run: dotnet run --project tests/Lyric.Cli.Tests --no-build --configuration $BUILD_CONFIG
 
   compiler-self-tests-dotnet-a:
     runs-on: ubuntu-latest
