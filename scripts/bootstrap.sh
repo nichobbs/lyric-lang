@@ -83,7 +83,6 @@ try_bootstrap_from_release() {
         aarch64) platform="linux-arm64" ;;
         *) return 1 ;;
       esac
-      local archive_ext="tar.gz"
       ;;
     Darwin)
       case "$(uname -m)" in
@@ -91,30 +90,38 @@ try_bootstrap_from_release() {
         arm64) platform="osx-arm64" ;;
         *) return 1 ;;
       esac
-      local archive_ext="tar.gz"
       ;;
     *)
       return 1
       ;;
   esac
 
-  info "Attempting to bootstrap from latest release ($platform)..."
+  # Fetch latest release version from GitHub API
+  local latest_release
+  latest_release=$(curl -sSL "https://api.github.com/repos/nichobbs/lyric-lang/releases/latest" \
+    2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": "\(.*\)".*/\1/')
 
-  local release_url="https://github.com/nichobbs/lyric-lang/releases/download"
-  local latest_release="latest"
-  local archive_name="lyric-*-${platform}.${archive_ext}"
+  if [[ -z "$latest_release" ]]; then
+    info "  Failed to fetch latest release version from GitHub API"
+    return 1
+  fi
+
+  info "Attempting to bootstrap from latest release ($latest_release, platform: $platform)..."
+
+  local archive_name="lyric-${latest_release}-${platform}.tar.gz"
+  local download_url="https://github.com/nichobbs/lyric-lang/releases/download/${latest_release}/${archive_name}"
 
   # Create temporary directory for download
   local temp_dir
   temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/lyric-release.XXXXXX")"
   trap "rm -rf '$temp_dir'" RETURN
 
-  # Try to download the latest release
-  info "  Downloading $platform binary from GitHub releases..."
+  # Try to download the release binary
+  info "  Downloading $archive_name..."
   if command -v curl &>/dev/null; then
-    curl -sSL "${release_url}/${latest_release}/${archive_name}" -o "${temp_dir}/lyric.tar.gz" 2>/dev/null || return 1
+    curl -sSL "$download_url" -o "${temp_dir}/lyric.tar.gz" 2>/dev/null || return 1
   elif command -v wget &>/dev/null; then
-    wget -q "${release_url}/${latest_release}/${archive_name}" -O "${temp_dir}/lyric.tar.gz" 2>/dev/null || return 1
+    wget -q "$download_url" -O "${temp_dir}/lyric.tar.gz" 2>/dev/null || return 1
   else
     info "  SKIP: Neither curl nor wget found"
     return 1
@@ -122,11 +129,11 @@ try_bootstrap_from_release() {
 
   # Extract to stage0-publish
   mkdir -p "$BUILD_DIR/stage0-publish"
-  if tar -xzf "${temp_dir}/lyric.tar.gz" -C "$BUILD_DIR/stage0-publish" 2>/dev/null; then
+  if tar -xzf "${temp_dir}/lyric.tar.gz" -C "$BUILD_DIR/stage0-publish"; then
     info "  Successfully extracted release binary"
     return 0
   else
-    info "  Failed to extract release archive"
+    info "  Failed to extract release archive (file may be corrupted or missing)"
     return 1
   fi
 }
