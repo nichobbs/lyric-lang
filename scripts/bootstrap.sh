@@ -283,11 +283,11 @@ stage1() {
   if [[ "$SKIP_CLI_BUNDLE" != "1" ]]; then
     # Build the self-hosted Lyric CLI as a standalone executable using the
     # manifest with [build] kind = "exe".  Stage-0 (the pre-built self-hosted
-    # binary) compiles the full Lyric.Cli closure (~25 packages) and emits
-    # them as DLLs, then uses the new executable-output feature to wrap the
-    # entry point as a standalone .exe that can replace the C# AOT wrapper.
+    # binary) uses --internal-manifest-build to compile the full Lyric.Cli
+    # closure (~25 packages) and emits them as a single executable via the
+    # new executable-output feature, replacing the C# AOT wrapper.
     info "  building CLI as standalone executable (replacing C# wrapper)"
-    invoke_stage0 build --manifest "$REPO_ROOT/lyric-compiler/lyric/lyric.toml" \
+    invoke_stage0 --internal-manifest-build "$REPO_ROOT/lyric-compiler/lyric/lyric.toml" \
       -o "$STAGE1_DIR/lyric" --target dotnet 2>&1 || \
       die "CLI executable build failed"
   else
