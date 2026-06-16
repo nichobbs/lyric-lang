@@ -282,12 +282,33 @@ stage1() {
 
   if [[ "$SKIP_CLI_BUNDLE" != "1" ]]; then
     # Build the self-hosted Lyric CLI as a standalone executable using the
-    # manifest with [build] kind = "exe".  Stage-0 (the pre-built self-hosted
-    # binary) uses --internal-manifest-build to compile the full Lyric.Cli
-    # closure (~25 packages) and emits them as a single executable via the
-    # new executable-output feature, replacing the C# AOT wrapper.
+    # new executable-output feature with [build] kind = "exe".
+    # Stage-0 compiles a temporary driver that imports Lyric.Cli, which
+    # automatically pulls in the full ~25-package dependency closure, then
+    # emits them as a single executable (replacing the C# AOT wrapper).
     info "  building CLI as standalone executable (replacing C# wrapper)"
-    invoke_stage0 --internal-manifest-build "$REPO_ROOT/lyric-compiler/lyric/lyric.toml" \
+
+    local cli_driver_dir="$BUILD_DIR/stage1-cli-driver"
+    rm -rf "$cli_driver_dir"
+    mkdir -p "$cli_driver_dir"
+
+    cat > "$cli_driver_dir/driver.l" <<'EOF'
+// Auto-generated driver for the self-hosted CLI build.
+// Importing Lyric.Cli forces the compiler to compile the cli package and
+// every transitively-imported package (~25 total) via dependency resolution.
+// The [build] kind = "exe" in lyric.toml causes the output to be a
+// standalone executable instead of a DLL.
+package Lyric.CliDriver
+import Lyric.Cli
+import Std.Time
+import Std.Math
+import Std.Testing.Mocking
+func main(): Int {
+  Lyric.Cli.Program.main(newList())
+}
+EOF
+
+    invoke_stage0 --internal-build "$cli_driver_dir/driver.l" \
       -o "$STAGE1_DIR/lyric" --target dotnet 2>&1 || \
       die "CLI executable build failed"
   else
