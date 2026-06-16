@@ -121,6 +121,12 @@ stage0() {
   fi
 
   ok "Stage 0 complete — $STAGE0_BIN"
+
+  # Debug: verify the binary actually exists
+  if [[ ! -f "$STAGE0_BIN" ]]; then
+    die "Stage 0 binary not found at $STAGE0_BIN"
+  fi
+  info "Stage 0 binary verified: $(ls -lh "$STAGE0_BIN")"
 }
 
 # ---------------------------------------------------------------------------
@@ -139,9 +145,17 @@ stage1() {
       local dll_path
       if command -v cygpath &>/dev/null; then
         dll_path="$(cygpath -w "$STAGE0_BIN")"
+        info "  (Windows) invoking dotnet with path: $dll_path"
       else
         dll_path="$STAGE0_BIN"
+        info "  (Unix) invoking dotnet with path: $dll_path"
       fi
+
+      # Verify the DLL exists before trying to run it
+      if [[ ! -f "$STAGE0_BIN" ]]; then
+        die "Stage 0 DLL not found at: $STAGE0_BIN (Windows path: $dll_path)"
+      fi
+
       dotnet "$dll_path" "$@"
     else
       "$STAGE0_BIN" "$@"
