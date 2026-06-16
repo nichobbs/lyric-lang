@@ -26,7 +26,7 @@ dotnet = []   # ASP.NET Core WebSockets
 jvm    = []   # Undertow WebSockets (Phase 6)
 
 [dependencies]
-"Lyric.Auth"   = { path = "../lyric-auth" }
+"Lyric.Auth"   = { workspace = true }
 
 # [nuget] — no third-party packages needed for the current .NET kernel
 # implementation; the real ASP.NET Core WebSocket upgrade path (deferred to

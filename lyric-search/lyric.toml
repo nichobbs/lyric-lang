@@ -22,7 +22,7 @@ elasticsearch = []   # Elasticsearch (Elastic.Clients.Elasticsearch on .NET)
 meilisearch   = []   # Meilisearch (Meilisearch .NET client)
 
 [dependencies]
-"Lyric.Resilience" = { path = "../lyric-resilience" }
+"Lyric.Resilience" = { workspace = true }
 
 [nuget]
 # feature = "elasticsearch" — Elasticsearch .NET client

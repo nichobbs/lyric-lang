@@ -146,8 +146,11 @@ pub func findWorkspaceRoot(startDir: in String): Option[WorkspaceContext] {
       // lyric.toml exists but has no [workspace]
     }
     // Advance to parent directory; stop when we reach the filesystem root.
+    // Note: we must check the current directory BEFORE comparing with parent,
+    // so that relative paths like "lyric-web" properly check "." for workspace.
     val parent = Path.dirname(current)
-    if parent == current or parent == "." {
+    if parent == current {
+      // Reached filesystem root; stop.
       keepWalking = false
     } else {
       current = parent

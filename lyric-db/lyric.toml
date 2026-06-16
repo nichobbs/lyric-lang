@@ -23,4 +23,4 @@ postgres = []    # enable the Npgsql (PostgreSQL) driver
 sqlite   = []    # enable the Microsoft.Data.Sqlite driver
 
 [dependencies]
-"Std.Logging"   = { path = "../lyric-logging" }
+"Std.Logging"   = { workspace = true }
