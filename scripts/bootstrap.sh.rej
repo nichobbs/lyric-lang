@@ -1,0 +1,16 @@
+--- scripts/bootstrap.sh
++++ scripts/bootstrap.sh
+@@ -75,6 +75,13 @@ info() { echo "[bootstrap] $*" >&2; }
+ 
+ try_bootstrap_from_release() {
+   # Detect platform (for filename)
++  # Check if binary already exists (skip download if it does)
++  mkdir -p "$BUILD_DIR/stage0-publish"
++  if [[ -f "$BUILD_DIR/stage0-publish/lyric" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.exe" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.dll" ]]; then
++    info "  Using cached stage0-publish binary (skipping download)"
++    return 0
++  fi
++  
+   case "$OSTYPE" in
+     linux-gnu*)
+       case "$(uname -m)" in
