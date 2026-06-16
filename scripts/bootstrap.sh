@@ -39,11 +39,15 @@
 #   ./scripts/bootstrap.sh --stage 0   # build F# compiler only
 #   ./scripts/bootstrap.sh --stage 1   # stages 0 + 1
 #   ./scripts/bootstrap.sh --stage 2   # all stages incl. reproducibility gate
+#   ./scripts/bootstrap.sh --bootstrap-from-release  # download latest self-hosted binary
+#                                      # instead of building F# compiler; speeds up
+#                                      # builds once releases are available
 #   SKIP_VERIFY=1 ./scripts/bootstrap.sh  # skip ALL of stage-2 verification
 #   SKIP_CLI_BUNDLE=1 ./scripts/bootstrap.sh  # stage 1 stops after the compiler-package
 #                                              loop; the CLI bundle step is skipped.
 #                                              Useful when iterating on a single
 #                                              compiler package.
+#   BOOTSTRAP_FROM_RELEASE=1 ./scripts/bootstrap.sh  # same as --bootstrap-from-release
 
 set -euo pipefail
 
@@ -69,10 +73,12 @@ MAX_STAGE=2
 SKIP_VERIFY="${SKIP_VERIFY:-0}"
 SKIP_CLI_BUNDLE="${SKIP_CLI_BUNDLE:-0}"
 SKIP_COREREF_REWRITE="${SKIP_COREREF_REWRITE:-0}"
+BOOTSTRAP_FROM_RELEASE="${BOOTSTRAP_FROM_RELEASE:-0}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --stage) MAX_STAGE="$2"; shift 2 ;;
+    --bootstrap-from-release) BOOTSTRAP_FROM_RELEASE=1; shift ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -82,31 +88,105 @@ info() { echo "[bootstrap] $*"; }
 ok() { echo "[bootstrap] OK: $*"; }
 
 # ---------------------------------------------------------------------------
-# Stage 0 — F# bootstrap compiler
+# Download and extract self-hosted binary from latest release
+# ---------------------------------------------------------------------------
+try_bootstrap_from_release() {
+  # Detect platform and architecture for downloading the right binary
+  local platform
+  case "$(uname -s)" in
+    Linux)
+      case "$(uname -m)" in
+        x86_64) platform="linux-x64" ;;
+        aarch64) platform="linux-arm64" ;;
+        *) return 1 ;;
+      esac
+      local archive_ext="tar.gz"
+      ;;
+    Darwin)
+      case "$(uname -m)" in
+        x86_64) platform="osx-x64" ;;
+        arm64) platform="osx-arm64" ;;
+        *) return 1 ;;
+      esac
+      local archive_ext="tar.gz"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  info "Attempting to bootstrap from latest release ($platform)..."
+
+  local release_url="https://github.com/nichobbs/lyric-lang/releases/download"
+  local latest_release="latest"
+  local archive_name="lyric-*-${platform}.${archive_ext}"
+
+  # Create temporary directory for download
+  local temp_dir
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/lyric-release.XXXXXX")"
+  trap "rm -rf '$temp_dir'" RETURN
+
+  # Try to download the latest release
+  info "  Downloading $platform binary from GitHub releases..."
+  if command -v curl &>/dev/null; then
+    curl -sSL "${release_url}/${latest_release}/${archive_name}" -o "${temp_dir}/lyric.tar.gz" 2>/dev/null || return 1
+  elif command -v wget &>/dev/null; then
+    wget -q "${release_url}/${latest_release}/${archive_name}" -O "${temp_dir}/lyric.tar.gz" 2>/dev/null || return 1
+  else
+    info "  SKIP: Neither curl nor wget found"
+    return 1
+  fi
+
+  # Extract to stage0-publish
+  mkdir -p "$BUILD_DIR/stage0-publish"
+  if tar -xzf "${temp_dir}/lyric.tar.gz" -C "$BUILD_DIR/stage0-publish" 2>/dev/null; then
+    info "  Successfully extracted release binary"
+    return 0
+  else
+    info "  Failed to extract release archive"
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Stage 0 — F# bootstrap compiler (or self-hosted binary from release)
 # ---------------------------------------------------------------------------
 stage0() {
-  info "Stage 0: building F# bootstrap compiler"
   mkdir -p "$BUILD_DIR/stage0-publish"
-  # `$STAGE0_BIN` is `$BUILD_DIR/stage0/lyric`; create the parent dir
-  # before symlinking into it.
   mkdir -p "$(dirname "$STAGE0_BIN")"
 
-  # Optional cache reuse (CI): when STAGE0_REUSE_PUBLISHED=1 and a published
-  # binary is already present (restored from an actions/cache keyed on the
-  # exact hash of every F# source), skip the Release publish.  The cache key
-  # is content-addressed with NO prefix fallback, so a restored output is
-  # guaranteed to correspond to the current F# sources; a miss restores
-  # nothing and we rebuild below.  Local dev never sets the flag, so it always
-  # rebuilds and can't be fooled by a stale `.bootstrap/`.
-  if [[ "${STAGE0_REUSE_PUBLISHED:-0}" == "1" \
-        && ( -f "$BUILD_DIR/stage0-publish/lyric" \
-             || -f "$BUILD_DIR/stage0-publish/lyric.dll" ) ]]; then
-    info "  reusing cached stage-0 publish (STAGE0_REUSE_PUBLISHED=1)"
-  else
-    dotnet publish "$COMPILER_DIR/src/Lyric.Cli/Lyric.Cli.fsproj" \
-      --configuration Release \
-      --output "$BUILD_DIR/stage0-publish" \
-      --nologo -v q
+  # Try to download self-hosted binary from latest release if requested
+  if [[ "$BOOTSTRAP_FROM_RELEASE" == "1" ]]; then
+    if try_bootstrap_from_release; then
+      info "Stage 0: using self-hosted binary from release"
+      # Binary is now in stage0-publish, skip F# build
+    else
+      info "Stage 0: release download failed, falling back to F# build"
+      BOOTSTRAP_FROM_RELEASE=0  # disable flag to avoid retrying
+    fi
+  fi
+
+  # Build F# bootstrap compiler if we didn't get a release binary
+  if [[ "$BOOTSTRAP_FROM_RELEASE" == "0" ]]; then
+    info "Stage 0: building F# bootstrap compiler"
+
+    # Optional cache reuse (CI): when STAGE0_REUSE_PUBLISHED=1 and a published
+    # binary is already present (restored from an actions/cache keyed on the
+    # exact hash of every F# source), skip the Release publish.  The cache key
+    # is content-addressed with NO prefix fallback, so a restored output is
+    # guaranteed to correspond to the current F# sources; a miss restores
+    # nothing and we rebuild below.  Local dev never sets the flag, so it always
+    # rebuilds and can't be fooled by a stale `.bootstrap/`.
+    if [[ "${STAGE0_REUSE_PUBLISHED:-0}" == "1" \
+          && ( -f "$BUILD_DIR/stage0-publish/lyric" \
+               || -f "$BUILD_DIR/stage0-publish/lyric.dll" ) ]]; then
+      info "  reusing cached stage-0 publish (STAGE0_REUSE_PUBLISHED=1)"
+    else
+      dotnet publish "$COMPILER_DIR/src/Lyric.Cli/Lyric.Cli.fsproj" \
+        --configuration Release \
+        --output "$BUILD_DIR/stage0-publish" \
+        --nologo -v q
+    fi
   fi
 
   # Publish output handling:
