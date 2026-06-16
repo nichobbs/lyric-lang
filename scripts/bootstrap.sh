@@ -108,14 +108,14 @@ stage0() {
       --nologo -v q
   fi
 
-  # On Linux the published output is a native binary. On Windows, it's a DLL
-  # that will be invoked via dotnet in the invoke_stage0 helper.
+  # On Linux the published output is a native binary. On Windows, it's a DLL.
+  # Use copy instead of symlink for Windows compatibility.
   if [[ -f "$BUILD_DIR/stage0-publish/lyric" ]]; then
+    # Native binary on Linux/macOS
     ln -sf "$BUILD_DIR/stage0-publish/lyric" "$STAGE0_BIN"
   elif [[ -f "$BUILD_DIR/stage0-publish/lyric.dll" ]]; then
-    # On Windows, stage-0 is a DLL; symlink it for consistency, then invoke
-    # via dotnet in the invoke_stage0 helper (see stage1 function).
-    ln -sf "$BUILD_DIR/stage0-publish/lyric.dll" "$STAGE0_BIN"
+    # Windows DLL: copy it (symlinks don't work reliably on Windows)
+    cp "$BUILD_DIR/stage0-publish/lyric.dll" "$STAGE0_BIN"
   else
     die "publish did not produce a lyric binary in $BUILD_DIR/stage0-publish"
   fi
