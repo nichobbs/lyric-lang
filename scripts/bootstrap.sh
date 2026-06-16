@@ -131,10 +131,18 @@ stage1() {
   mkdir -p "$STAGE1_DIR"
 
   # Helper to invoke stage-0, handling both native binaries and DLL wrappers.
-  # On Windows the published output is a DLL; use dotnet directly.
+  # On Windows the published output is a DLL; use dotnet directly with proper
+  # path conversion (bash uses Unix paths /d/a/..., but dotnet is a Windows app).
   invoke_stage0() {
     if [[ "$STAGE0_BIN" == *.dll ]]; then
-      dotnet "$STAGE0_BIN" "$@"
+      # Convert Unix path to Windows path for dotnet (Windows application)
+      local dll_path
+      if command -v cygpath &>/dev/null; then
+        dll_path="$(cygpath -w "$STAGE0_BIN")"
+      else
+        dll_path="$STAGE0_BIN"
+      fi
+      dotnet "$dll_path" "$@"
     else
       "$STAGE0_BIN" "$@"
     fi
