@@ -80,7 +80,9 @@ jobs:
 
       - name: Restore
         working-directory: bootstrap
-        run: dotnet restore Bootstrap.sln --runtime ${{ matrix.rid }}
+        run: |
+          dotnet restore Bootstrap.sln --runtime ${{ matrix.rid }}
+          dotnet restore src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj --runtime ${{ matrix.rid }}
 
       - name: Publish self-contained binary
         shell: bash
@@ -243,7 +245,9 @@ jobs:
 
       - name: Restore
         working-directory: bootstrap
-        run: dotnet restore Bootstrap.sln
+        run: |
+          dotnet restore Bootstrap.sln
+          dotnet restore src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj
 
       - name: Pack NuGet global tool
         working-directory: bootstrap
