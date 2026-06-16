@@ -11816,10 +11816,16 @@ func emitExternTargetBody(
 
       // Load every Lyric param in order.  For instance calls the
       // receiver is param 0 and lands on the stack first; for static
-      // calls every param is explicit.
+      // calls every param is explicit.  For `out`/`inout` parameters,
+      // load the address (via ldarga) instead of the value (via ldarg)
+      // so the BCL method can write back through the pointer.
       var li = 0
       while li < decl.params.count {
-        insns.add(MLdarg(slot = li))
+        if isByrefMode(decl.params[li].mode) {
+          insns.add(MLdarga(slot = li))
+        } else {
+          insns.add(MLdarg(slot = li))
+        }
         li = li + 1
       }
       if r.isCtor {
