@@ -40,7 +40,8 @@ pub func buildWorkspaceDeps(
   var hadError = false
 
   // Find the workspace root. If we're not in a workspace, return empty.
-  val wsCtx = match Ws.findWorkspaceRoot(Path.dirname(mfPath)) {
+  val wsCtxOpt = Ws.findWorkspaceRoot(Path.dirname(mfPath))
+  val wsCtx = match wsCtxOpt {
     case Some(ctx) -> ctx
     case None -> {
       // No workspace found; workspace dependencies cannot be resolved.
@@ -91,7 +92,7 @@ pub func buildWorkspaceDeps(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Build a single workspace dependency and return its DLL path.
-/// Returns Err(msg) on any failure.
+/// Returns Err(error) on any failure.
 func buildWorkspaceDep(
   depName: in String,
   depDir: in String,
@@ -101,16 +102,16 @@ func buildWorkspaceDep(
 
   // Check that the manifest exists.
   if not File.fileExists(depToml) {
-    return Err(msg = "no lyric.toml found at " + depToml)
+    return Err(error = "no lyric.toml found at " + depToml)
   }
 
   val depMfText = match File.readText(depToml) {
-    case Err(e) -> return Err(msg = "cannot read " + depToml + ": " + IOError.message(e))
+    case Err(e) -> return Err(error = "cannot read " + depToml + ": " + IOError.message(e))
     case Ok(text) -> text
   }
 
   val depMf = match Mf.parseManifest(depMfText, depToml) {
-    case Err(e) -> return Err(msg = "malformed lyric.toml: " + ManifestError.message(e))
+    case Err(e) -> return Err(error = "malformed lyric.toml: " + ManifestError.message(e))
     case Ok(m) -> m
   }
 
@@ -143,13 +144,13 @@ func buildWorkspaceDep(
   )
 
   if buildExit != 0 {
-    return Err(msg = "build failed (exit code " + toString(buildExit) + ")")
+    return Err(error = "build failed (exit code " + toString(buildExit) + ")")
   }
 
   // After a successful build, the DLL should exist.
   if File.fileExists(dllPath) {
     Ok(value = dllPath)
   } else {
-    Err(msg = "build succeeded but DLL not found at " + dllPath)
+    Err(error = "build succeeded but DLL not found at " + dllPath)
   }
 }
