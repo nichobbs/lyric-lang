@@ -149,9 +149,15 @@ pub func compileToMsilWithVersion(
   // Monomorphise same-package generic calls (Band 5 — docs/41 §9), feeding
   // the stdlib's pure-Lyric generic `pub func`s as imported generics so calls
   // like `mapGet(m, "k")` specialise into a concrete copy in this bundle
-  // rather than erasing their generic return to `object` (#1727).
+  // rather than erasing their generic return to `object` (#1727).  Also feed
+  // stdlib interface and record declarations so the monomorphizer can infer
+  // method-call and field-projection return types, allowing cross-package
+  // predicates like `isOk(bucket.exists(...))` to specialise instead of
+  // staying type-erased (#3813).
   val stdlibGenFuncs = collectStdlibGenericFuncs(stdlibPkgs)
-  val monoRes = monoFileWithImports(derived, stdlibGenFuncs)
+  val stdlibIfaces = collectStdlibInterfaceDecls(stdlibPkgs)
+  val stdlibRecs = collectStdlibRecordDecls(stdlibPkgs)
+  val monoRes = monoFileWithImportsAndTypeDecls(derived, stdlibGenFuncs, stdlibIfaces, stdlibRecs)
   if reportAndAbort(monoRes.diagnostics) {
     return false
   }
