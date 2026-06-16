@@ -149,9 +149,15 @@ pub func compileToMsilWithVersion(
   // Monomorphise same-package generic calls (Band 5 — docs/41 §9), feeding
   // the stdlib's pure-Lyric generic `pub func`s as imported generics so calls
   // like `mapGet(m, "k")` specialise into a concrete copy in this bundle
-  // rather than erasing their generic return to `object` (#1727).
+  // rather than erasing their generic return to `object` (#1727).  Also feed
+  // stdlib interface and record declarations so the monomorphizer can infer
+  // method-call and field-projection return types, allowing cross-package
+  // predicates like `isOk(bucket.exists(...))` to specialise instead of
+  // staying type-erased (#3813).
   val stdlibGenFuncs = collectStdlibGenericFuncs(stdlibPkgs)
-  val monoRes = monoFileWithImports(derived, stdlibGenFuncs)
+  val stdlibIfaces = collectStdlibInterfaceDecls(stdlibPkgs)
+  val stdlibRecs = collectStdlibRecordDecls(stdlibPkgs)
+  val monoRes = monoFileWithImportsAndTypeDecls(derived, stdlibGenFuncs, stdlibIfaces, stdlibRecs)
   if reportAndAbort(monoRes.diagnostics) {
     return false
   }
@@ -482,6 +488,15 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // calling `Validation.toResult(42, [])` specialises `toResult__Int` into its
   // own class rather than hitting the unresolved-call fallback (#2932).
   val inBundleGenFuncs = collectInBundleGenericFuncs(parsedPkgs)
+  // Non-generic in-bundle pub funcs: fed to the monomorphizer for type
+  // inference only (never added to the specialisation worklist), so a
+  // cross-package call like `isErr(connectLocal(...))` can resolve
+  // `connectLocal`'s declared return type and specialise the generic
+  // `isErr` for the concrete `Result[StorageBucket, StorageError]` instead of
+  // calling the type-erased generic (whose `isinst Result_Err<object,object>`
+  // never matches the concrete value, so the match falls off and the
+  // scrutinee leaks back as the `Bool` result — #3705).
+  val inBundleNonGenFuncs = collectInBundleNonGenericFuncs(parsedPkgs)
   // Restored-dependency generic pub funcs: cross-DLL generic calls specialise
   // into the consumer bundle rather than erasing return type to `object` (#1498).
   val restoredGenFuncs = collectRestoredGenericFuncs(restoredArtifacts)
@@ -500,6 +515,53 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   while agfk < restoredGenFuncs.count {
     allImportedGenFuncs.add(restoredGenFuncs[agfk])
     agfk = agfk + 1
+  }
+  var agfm = 0
+  while agfm < inBundleNonGenFuncs.count {
+    allImportedGenFuncs.add(inBundleNonGenFuncs[agfm])
+    agfm = agfm + 1
+  }
+  // Interface decls (in-bundle + stdlib + restored), fed to the monomorphizer
+  // for method-call return inference on interface-typed receivers (#3813).
+  val allImportedIfaceDecls: List[InterfaceDecl] = newList()
+  val inBundleIfaces = collectInBundleInterfaceDecls(parsedPkgs)
+  val stdlibIfaces = collectStdlibInterfaceDecls(stdlibPkgs)
+  val restoredIfaces = collectRestoredInterfaceDecls(restoredArtifacts)
+  var aifi = 0
+  while aifi < inBundleIfaces.count {
+    allImportedIfaceDecls.add(inBundleIfaces[aifi])
+    aifi = aifi + 1
+  }
+  var aifj = 0
+  while aifj < stdlibIfaces.count {
+    allImportedIfaceDecls.add(stdlibIfaces[aifj])
+    aifj = aifj + 1
+  }
+  var aifk = 0
+  while aifk < restoredIfaces.count {
+    allImportedIfaceDecls.add(restoredIfaces[aifk])
+    aifk = aifk + 1
+  }
+  // Record decls (in-bundle + stdlib + restored), fed to the monomorphizer for
+  // cross-package field-projection inference (#3813 follow-up).
+  val allImportedRecordDecls: List[RecordDecl] = newList()
+  val inBundleRecs = collectInBundleRecordDecls(parsedPkgs)
+  val stdlibRecs = collectStdlibRecordDecls(stdlibPkgs)
+  val restoredRecs = collectRestoredRecordDecls(restoredArtifacts)
+  var areci = 0
+  while areci < inBundleRecs.count {
+    allImportedRecordDecls.add(inBundleRecs[areci])
+    areci = areci + 1
+  }
+  var arecj = 0
+  while arecj < stdlibRecs.count {
+    allImportedRecordDecls.add(stdlibRecs[arecj])
+    arecj = arecj + 1
+  }
+  var areck = 0
+  while areck < restoredRecs.count {
+    allImportedRecordDecls.add(restoredRecs[areck])
+    areck = areck + 1
   }
   val perPkgFiles: List[SourceFile] = newList()
   val perPkgNames: List[String] = newList()
@@ -535,7 +597,12 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     val importedItems = flattenImportedItems(importedPkgs)
     val derived = deriveFileWithImports(propRes.file, importedItems)
 
-    val monoRes = monoFileWithImports(derived, allImportedGenFuncs)
+    val monoRes = monoFileWithImportsAndTypeDecls(
+      derived,
+      allImportedGenFuncs,
+      allImportedIfaceDecls,
+      allImportedRecordDecls
+    )
     if reportAndAbortInPkg(pp.name, monoRes.diagnostics) {
       return false
     }
@@ -1258,6 +1325,173 @@ func collectInBundleGenericFuncs(parsedPkgs: in List[ParsedUserPkg]): List[Funct
     pi = pi + 1
   }
   genFuncs
+}
+
+// Collect non-generic block-bodied pub funcs from all in-bundle parsed
+// packages.  Unlike `collectInBundleGenericFuncs`, these are fed to the
+// monomorphizer purely so it can resolve cross-package call return types
+// during inference (e.g. `isErr(connectLocal(...))` — mono needs
+// `connectLocal`'s declared return type to infer `T=StorageBucket,
+// E=StorageError` and specialise `isErr__StorageBucket__StorageError`,
+// #3705).  Because they are non-generic they only land in the monomorphizer's
+// `funcDecls` map (used for inference), never in `genDecls` (the
+// specialisation worklist), so they are never themselves rewritten.  Externs
+// and body-less signatures are excluded — they are BCL boundary stubs whose
+// return types may not be representable in the Lyric AST type system.
+func collectInBundleNonGenericFuncs(parsedPkgs: in List[ParsedUserPkg]): List[FunctionDecl] {
+  val nonGenFuncs: List[FunctionDecl] = newList()
+  var pi = 0
+  while pi < parsedPkgs.count {
+    val file = parsedPkgs[pi].file
+    var ii = 0
+    while ii < file.items.count {
+      match file.items[ii].kind {
+        case IFunc(decl) -> {
+          val isPub = match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
+          val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+          val hasBlockBody = match decl.body {
+            case Some(fb) -> match fb { case FBBlock(_) -> true; case FBExpr(_) -> false }
+            case None -> false
+          }
+          if isPub and not isGeneric and hasBlockBody and not annsBlockSpecialization(decl.annotations) {
+            nonGenFuncs.add(decl)
+          }
+        }
+        case _ -> ()
+      }
+      ii = ii + 1
+    }
+    pi = pi + 1
+  }
+  nonGenFuncs
+}
+
+// Collect interface decls from all in-bundle parsed packages.  Fed to the
+// monomorphizer so it can infer a method-call return type on an
+// interface-typed receiver (`isOk(bucket.exists(...))` where
+// `bucket: StorageBucket`) and specialise the enclosing generic predicate
+// rather than leaving it type-erased (#3813).  Interfaces only feed
+// inference; they are never specialised.
+func collectInBundleInterfaceDecls(parsedPkgs: in List[ParsedUserPkg]): List[InterfaceDecl] {
+  val ifaces: List[InterfaceDecl] = newList()
+  var pi = 0
+  while pi < parsedPkgs.count {
+    val file = parsedPkgs[pi].file
+    var ii = 0
+    while ii < file.items.count {
+      match file.items[ii].kind {
+        case IInterface(decl) -> ifaces.add(decl)
+        case _ -> ()
+      }
+      ii = ii + 1
+    }
+    pi = pi + 1
+  }
+  ifaces
+}
+
+// Counterpart of `collectInBundleInterfaceDecls` for stdlib packages.
+func collectStdlibInterfaceDecls(pkgs: in List[StdlibPkg]): List[InterfaceDecl] {
+  val ifaces: List[InterfaceDecl] = newList()
+  var pi = 0
+  while pi < pkgs.count {
+    val pkg: StdlibPkg = pkgs[pi]
+    var ii = 0
+    while ii < pkg.items.count {
+      match pkg.items[ii].kind {
+        case IInterface(decl) -> ifaces.add(decl)
+        case _ -> ()
+      }
+      ii = ii + 1
+    }
+    pi = pi + 1
+  }
+  ifaces
+}
+
+// Counterpart of `collectInBundleInterfaceDecls` for restored dependency
+// artifacts (cross-DLL imports), so a consumer importing a published library
+// interface can still infer its method returns.
+func collectRestoredInterfaceDecls(artifacts: in List[SynthesisedArtifact]): List[InterfaceDecl] {
+  val ifaces: List[InterfaceDecl] = newList()
+  var ai = 0
+  while ai < artifacts.count {
+    val file = artifacts[ai].source
+    var ii = 0
+    while ii < file.items.count {
+      match file.items[ii].kind {
+        case IInterface(decl) -> ifaces.add(decl)
+        case _ -> ()
+      }
+      ii = ii + 1
+    }
+    ai = ai + 1
+  }
+  ifaces
+}
+
+// Record decls (plain + exposed) from all in-bundle parsed packages.  Fed to
+// the monomorphizer so a `recv.field` projection where `recv`'s record type is
+// declared in another in-bundle package can be inferred, letting a generic
+// predicate over the field specialise (e.g. `isSome(page.nextContinuationToken)`
+// on an imported `ListResult`, #3813).
+func collectInBundleRecordDecls(parsedPkgs: in List[ParsedUserPkg]): List[RecordDecl] {
+  val recs: List[RecordDecl] = newList()
+  var pi = 0
+  while pi < parsedPkgs.count {
+    val file = parsedPkgs[pi].file
+    var ii = 0
+    while ii < file.items.count {
+      match file.items[ii].kind {
+        case IRecord(decl) -> recs.add(decl)
+        case IExposedRec(decl) -> recs.add(decl)
+        case _ -> ()
+      }
+      ii = ii + 1
+    }
+    pi = pi + 1
+  }
+  recs
+}
+
+// Counterpart of `collectInBundleRecordDecls` for stdlib packages.
+func collectStdlibRecordDecls(pkgs: in List[StdlibPkg]): List[RecordDecl] {
+  val recs: List[RecordDecl] = newList()
+  var pi = 0
+  while pi < pkgs.count {
+    val pkg: StdlibPkg = pkgs[pi]
+    var ii = 0
+    while ii < pkg.items.count {
+      match pkg.items[ii].kind {
+        case IRecord(decl) -> recs.add(decl)
+        case IExposedRec(decl) -> recs.add(decl)
+        case _ -> ()
+      }
+      ii = ii + 1
+    }
+    pi = pi + 1
+  }
+  recs
+}
+
+// Counterpart of `collectInBundleRecordDecls` for restored dependency artifacts.
+func collectRestoredRecordDecls(artifacts: in List[SynthesisedArtifact]): List[RecordDecl] {
+  val recs: List[RecordDecl] = newList()
+  var ai = 0
+  while ai < artifacts.count {
+    val file = artifacts[ai].source
+    var ii = 0
+    while ii < file.items.count {
+      match file.items[ii].kind {
+        case IRecord(decl) -> recs.add(decl)
+        case IExposedRec(decl) -> recs.add(decl)
+        case _ -> ()
+      }
+      ii = ii + 1
+    }
+    ai = ai + 1
+  }
+  recs
 }
 
 // Collect generic pub funcs from all restored dependency SynthesisedArtifacts.

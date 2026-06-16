@@ -3755,10 +3755,38 @@ func externValueTypeMsil(cctx: in CodegenCtx, seg: in String): Option[MsilType] 
       if not isVtype and not clrIsValueType(clrFqn) {
         return None
       }
-      val sp = splitTypeFqn(clrFqn)
-      val asm = assemblyForTypeMsil(cctx, clrFqn)
-      val refRow = internFfiTypeRef(cctx, asm, sp.ns, sp.name)
+      val refRow = internFfiTypeRefNested(cctx, clrFqn)
       Some(value = MValueTypeRef(typeRefCode = tdrTypeRef(refRow), clrFqn = clrFqn))
+    }
+  }
+}
+
+// Intern a TypeRef row for a (possibly nested) CLR type FQN.  A nested type
+// ("Enclosing+Nested", ECMA-335 §II.22.38) is encoded as a TypeRef whose
+// ResolutionScope is the enclosing type's TypeRef row — NOT a flat TypeRef
+// with a "+"-bearing name scoped to an assembly (which mis-resolves the
+// owning assembly and faults at run time).  The split is on the LAST "+" so a
+// multi-level nest resolves its enclosing chain recursively; a non-nested FQN
+// falls through to the flat `internFfiTypeRef`.  Nested rows are cached under a
+// "nested:" + FQN key so repeated references reuse one TypeRef row.
+func internFfiTypeRefNested(cctx: in CodegenCtx, clrFqn: in String): Int {
+  val plusIdx = clrFqn.lastIndexOf("+")
+  if plusIdx < 0 {
+    ensureMetadataIndex(cctx)
+    val asm = assemblyForTypeMsil(cctx, clrFqn)
+    val sp = splitTypeFqn(clrFqn)
+    return internFfiTypeRef(cctx, asm, sp.ns, sp.name)
+  }
+  val cacheKey = "nested:" + clrFqn
+  match mapGet(cctx.ffiTypeRefs, cacheKey) {
+    case Some(r) -> r
+    case None -> {
+      val enclosingFqn = clrFqn.substring(0, plusIdx)
+      val nestedName = clrFqn.substring(plusIdx + 1, clrFqn.length - plusIdx - 1)
+      val enclosingRow = internFfiTypeRefNested(cctx, enclosingFqn)
+      val row = ctxAddNestedTypeRef(cctx.lctx, enclosingRow, nestedName)
+      cctx.ffiTypeRefs.add(cacheKey, row)
+      row
     }
   }
 }
@@ -3890,9 +3918,7 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
                   MClass(className = resolveTypeFqn(cctx, pkgName, seg))
                 } else {
                   ensureMetadataIndex(cctx)
-                  val sp = splitTypeFqn(clrFqn)
-                  val asm = assemblyForTypeMsil(cctx, clrFqn)
-                  val refRow = internFfiTypeRef(cctx, asm, sp.ns, sp.name)
+                  val refRow = internFfiTypeRefNested(cctx, clrFqn)
                   MClassRef(typeRefCode = tdrTypeRef(refRow), clrFqn = clrFqn)
                 }
               }
@@ -4756,6 +4782,8 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       // and `memberName` is a nullary case of that union; redirect to the
       // singleton-field load so `val c: Color = Color.Same` pushes the real
       // `Color_Same.Instance` value instead of pushing `null` (#3349).
+      // For generic nullary cases (which have no singleton instance), construct
+      // via newobj instead (#3814).
       // This check runs before the config-block short-circuit below: union type
       // names are PascalCase; config block names follow identifier rules but are
       // distinct — a name that hits unionCaseCtorByName is unambiguously a case
@@ -4768,11 +4796,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               match mapGet(cctx.unionCaseCtorByName, memberName) {
                 case Some(nmCands) -> {
                   val nmPicked = pickCaseFqnByQualifier(cctx, fctx, nmCands, qualifier)
-                  if cctx.singletonFieldTokens.containsKey(nmPicked) {
-                    nmPicked
-                  } else {
-                    ""
-                  }
+                  nmPicked
                 }
                 case None -> ""
               }
@@ -4786,9 +4810,21 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         case _ -> ""
       }
       if nmCaseFqn.length > 0 {
-        val nmFldTok = match mapGet(cctx.singletonFieldTokens, nmCaseFqn) { case Some(t) -> t; case None -> 0 }
-        insns.add(MLdsfld(fieldToken = nmFldTok))
-        MClass(className = caseParentFqnMsil(cctx, nmCaseFqn))
+        if cctx.singletonFieldTokens.containsKey(nmCaseFqn) {
+          val nmFldTok = match mapGet(cctx.singletonFieldTokens, nmCaseFqn) { case Some(t) -> t; case None -> 0 }
+          insns.add(MLdsfld(fieldToken = nmFldTok))
+          MClass(className = caseParentFqnMsil(cctx, nmCaseFqn))
+        } else {
+          match mapGet(cctx.recordCtorTokens, nmCaseFqn) {
+            case Some(ctorTok) -> {
+              insns.add(MNewobj(ctorToken = ctorTok))
+              MClass(className = caseParentFqnMsil(cctx, nmCaseFqn))
+            }
+            case None -> {
+              MObject
+            }
+          }
+        }
       } else {
         // Config block short-circuit: `Settings.port` parses as
         // EMember(EPath(["Settings"]), "port").  If the single-segment receiver
@@ -8561,22 +8597,40 @@ func lowerBuiltinOrStaticCallMsil(
             hci = hci + 1
           }
         } else {
-          match fctx.declaredRetTy {
-            case MGenericInst(_, _, retArgTys) -> {
-              var rci = 0
-              while rci < retArgTys.count {
-                outerCtxTyArgs.add(retArgTys[rci])
-                rci = rci + 1
+          // Fall back to the enclosing function's declared return type to fill
+          // type-param slots an argument can't pin (e.g. `E` in a bare `Ok(v)`
+          // whose function returns `Result[T, E]`).  BUT only when the value
+          // being constructed is the SAME generic head as the return type:
+          // otherwise a `Some(x)` (Option) inside a function returning
+          // `Result[ListResult, StorageError]` would borrow `Result`'s args and
+          // build `Option_Some<ListResult>` instead of inferring `<String>` from
+          // `x`, so a later `match` on the resulting `Option[String]` field
+          // fails "not exhaustive" against the mismatched TypeSpec (#3705
+          // follow-up: storage `list` pagination token, #3818-adjacent).
+          val retHead = match fctx.declaredRetTy {
+            case MGenericInst(_, h, _) -> h
+            case MGenericInstByName(h, _) -> stripGenericArity(h)
+            case _ -> ""
+          }
+          val ctorParentHead = ctorParentHeadFqn(cctx, ctorKey)
+          if retHead.length > 0 and retHead == ctorParentHead {
+            match fctx.declaredRetTy {
+              case MGenericInst(_, _, retArgTys) -> {
+                var rci = 0
+                while rci < retArgTys.count {
+                  outerCtxTyArgs.add(retArgTys[rci])
+                  rci = rci + 1
+                }
               }
-            }
-            case MGenericInstByName(_, retArgTys) -> {
-              var rci = 0
-              while rci < retArgTys.count {
-                outerCtxTyArgs.add(retArgTys[rci])
-                rci = rci + 1
+              case MGenericInstByName(_, retArgTys) -> {
+                var rci = 0
+                while rci < retArgTys.count {
+                  outerCtxTyArgs.add(retArgTys[rci])
+                  rci = rci + 1
+                }
               }
-            }
-            case _ -> {
+              case _ -> {
+              }
             }
           }
         }
@@ -8837,6 +8891,34 @@ func lowerBuiltinOrStaticCallMsil(
                             rh = rh + 1
                           }
                         }
+                        case MConcreteMap(keyTy, valTy) -> {
+                          // Thread the map's key and value types into contextHintTyArgs
+                          // so a bare `newMap()` argument builds Map[K,V], not the
+                          // erased Dictionary<Object,Object> (#3812).  Mirrors the
+                          // MGenericInst case above.
+                          val savedHints: List[MsilType] = newList()
+                          var sh = 0
+                          while sh < fctx.contextHintTyArgs.count {
+                            savedHints.add(fctx.contextHintTyArgs[sh])
+                            sh = sh + 1
+                          }
+                          while fctx.contextHintTyArgs.count > 0 {
+                            fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+                          }
+                          fctx.contextHintTyArgs.add(keyTy)
+                          fctx.contextHintTyArgs.add(valTy)
+                          pushCollExpect(fctx, pTy)
+                          val _ = lowerCallArgMsil(cctx, fctx, insns, callArgs[i])
+                          popCollExpect(fctx)
+                          while fctx.contextHintTyArgs.count > 0 {
+                            fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+                          }
+                          var rh = 0
+                          while rh < savedHints.count {
+                            fctx.contextHintTyArgs.add(savedHints[rh])
+                            rh = rh + 1
+                          }
+                        }
                         case _ -> {
                           // A concrete-collection parameter pushes the expected type
                           // so a bare `newList()` / `[...]` argument builds the
@@ -9067,17 +9149,50 @@ func lowerMethodCallMsil(
             if isByrefArg {
               emitByrefArgMsil(cctx, fctx, insns, callArgExpr(args[i]))
             } else {
-              val aTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
+              // Thread parameter types into contextHintTyArgs/collExpect so a bare
+              // `newMap()` argument builds the concrete instance the callee's
+              // parameter expects (e.g., Map[String,String]) (#3812).
+              val paramTy = match mapGet(cctx.methodParamTypes, dispatchKey + "#" + toString(i)) {
+                case Some(pt) -> pt
+                case None -> MObject
+              }
+              val aTy = match paramTy {
+                case MConcreteMap(keyTy, valTy) -> {
+                  val savedHints: List[MsilType] = newList()
+                  var sh = 0
+                  while sh < fctx.contextHintTyArgs.count {
+                    savedHints.add(fctx.contextHintTyArgs[sh])
+                    sh = sh + 1
+                  }
+                  while fctx.contextHintTyArgs.count > 0 {
+                    fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+                  }
+                  fctx.contextHintTyArgs.add(keyTy)
+                  fctx.contextHintTyArgs.add(valTy)
+                  pushCollExpect(fctx, paramTy)
+                  val result = lowerCallArgMsil(cctx, fctx, insns, args[i])
+                  popCollExpect(fctx)
+                  while fctx.contextHintTyArgs.count > 0 {
+                    fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+                  }
+                  var rh = 0
+                  while rh < savedHints.count {
+                    fctx.contextHintTyArgs.add(savedHints[rh])
+                    rh = rh + 1
+                  }
+                  result
+                }
+                case _ -> {
+                  lowerCallArgMsil(cctx, fctx, insns, args[i])
+                }
+              }
               // The method signature declares each parameter's concrete type
               // (`typeExprToMsil`).  Box a value-type argument ONLY when the
               // parameter is a reference/object type — boxing it for a value-type
               // parameter passed `object` where `bool`/`int32` was expected, which
               // is invalid IL (#1784).  A missing registry entry falls back to the
               // conservative box-if-value behaviour.
-              val paramIsValue = match mapGet(cctx.methodParamTypes, dispatchKey + "#" + toString(i)) {
-                case Some(pt) -> isValueType(pt)
-                case None -> false
-              }
+              val paramIsValue = isValueType(paramTy)
               if not paramIsValue {
                 boxIfNeededMsil(cctx, insns, aTy)
               }
@@ -11701,10 +11816,16 @@ func emitExternTargetBody(
 
       // Load every Lyric param in order.  For instance calls the
       // receiver is param 0 and lands on the stack first; for static
-      // calls every param is explicit.
+      // calls every param is explicit.  For `out`/`inout` parameters,
+      // load the address (via ldarga) instead of the value (via ldarg)
+      // so the BCL method can write back through the pointer.
       var li = 0
       while li < decl.params.count {
-        insns.add(MLdarg(slot = li))
+        if isByrefMode(decl.params[li].mode) {
+          insns.add(MLdarga(slot = li))
+        } else {
+          insns.add(MLdarg(slot = li))
+        }
         li = li + 1
       }
       if r.isCtor {
@@ -20374,6 +20495,34 @@ pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibP
 // `contextTyArgs` — outer instantiation hints for slots not pinned by an arg.
 // `outResultTy`   — populated on success with the closed `MGenericInstByName`.
 //
+// Resolve the generic-head FQN that a constructor key `ctorKey` produces:
+// for a union case (`Pkg.Union_Case`) the parent union (`Pkg.Union`); for a
+// plain generic record (`Pkg.Box`) the record itself.  Used to decide whether
+// the enclosing function's declared return type is a valid context for filling
+// generic slots (it only is when both name the same head — see the EPath ctor
+// fallback).  Prefers the registered `caseParentUnion` mapping; falls back to
+// the structural `Union_Case` split that `buildGenericCaseCtorTok` also uses.
+func ctorParentHeadFqn(cctx: in CodegenCtx, ctorKey: in String): String {
+  match mapGet(cctx.caseParentUnion, ctorKey) {
+    case Some(p) -> p
+    case None -> {
+      val di = ctorKey.lastIndexOf(".")
+      if di < 0 {
+        ctorKey
+      } else {
+        val pkg = ctorKey.substring(0, di)
+        val loc = ctorKey.substring(di + 1, ctorKey.length - di - 1)
+        val ui = loc.lastIndexOf("_")
+        if ui > 0 {
+          pkg + "." + loc.substring(0, ui)
+        } else {
+          ctorKey
+        }
+      }
+    }
+  }
+}
+
 // Returns 1 (and emits the newobj) when `ctorKey` is a registered in-bundle
 // generic record; 0 otherwise (so the caller falls back to the plain path).
 func buildInBundleGenericCtorTok(

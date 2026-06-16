@@ -123,6 +123,12 @@ record MonoState {
   /// substituting the record's generic parameters with the receiver's
   /// concrete type arguments (#349).
   recordDecls: Map[String, RecordDecl]
+  /// Interface decls visible to the file (same-package + cross-package
+  /// imports), keyed by simple name.  Used by `inferExprTE` to resolve a
+  /// method-call return type (`recv.method(...)`) when `recv` is an
+  /// interface-typed value, after substituting the interface's generic
+  /// parameters with the receiver's concrete type arguments (#3813).
+  ifaceDecls: Map[String, InterfaceDecl]
   seenSpecs: Map[String, Bool]
   allSpecs: List[SpecRequest]
   diags: List[Diagnostic]
@@ -132,11 +138,13 @@ func newMonoState(
   genDecls: in Map[String, FunctionDecl],
   funcDecls: in Map[String, FunctionDecl],
   recordDecls: in Map[String, RecordDecl],
+  ifaceDecls: in Map[String, InterfaceDecl],
 ): MonoState {
   MonoState(
     genDecls = genDecls,
     funcDecls = funcDecls,
     recordDecls = recordDecls,
+    ifaceDecls = ifaceDecls,
     seenSpecs = newMap(),
     allSpecs = newList(),
     diags = newList()
@@ -1028,7 +1036,167 @@ func inferCallReturnTE(
         case _ -> None
       }
     }
+    // Method call `recv.method(args)` — the callee is an `EMember`.  Infer
+    // the receiver's type, find the method on its interface/record decl, and
+    // return the method's declared return type with the receiver's generic
+    // type-args substituted.  Without this a call like
+    // `isOk(bucket.exists(...))` (where `bucket: StorageBucket`) could not
+    // infer its argument type, so the generic `isOk` stayed type-erased and
+    // failed at runtime (#3813, same failure mode as #3705).
+    case EMember(recv, methodName) -> inferMethodReturnTE(state, env, recv, methodName, args)
     case _ -> None
+  }
+}
+
+// Infer the return type of `recv.method(args)`.  Resolves `recv`'s type to a
+// known interface (or record) decl, locates `method`, and returns its
+// declared return type after substituting the type's generic parameters with
+// the receiver's concrete type arguments and inferring any method-level
+// generics from the call arguments.  Returns None when the receiver type is
+// unknown, the method has no declared return, or a method-level type param
+// cannot be inferred.
+func inferMethodReturnTE(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  recv: in Expr,
+  methodName: in String,
+  args: in List[CallArg],
+): Option[TypeExpr] {
+  match inferExprTE(state, env, recv) {
+    case None -> None
+    case Some(recvTy) -> {
+      val typeName = match recvTy.kind {
+        case TRef(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
+        case TGenericApp(head, _) -> if head.segments.count == 1 { head.segments[0] } else { "" }
+        case _ -> ""
+      }
+      if typeName.length == 0 {
+        None
+      } else {
+        val recvArgs: List[TypeArg] = match recvTy.kind { case TGenericApp(_, a) -> a; case _ -> newList() }
+        // Interfaces first (the common case — `bucket.exists` on
+        // `StorageBucket`), then records (methods declared in a record body).
+        val ifaceOpt: Option[InterfaceDecl] = mapGet(state.ifaceDecls, typeName)
+        match ifaceOpt {
+          case Some(idecl) -> lookupIfaceMethodRetTE(state, env, idecl, methodName, recvArgs, args)
+          case None -> {
+            val recOpt: Option[RecordDecl] = mapGet(state.recordDecls, typeName)
+            match recOpt {
+              case None -> None
+              case Some(rdecl) -> lookupRecordMethodRetTE(state, env, rdecl, methodName, recvArgs, args)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// Look up `methodName` among an interface's members and return its declared
+// return type, substituted for the interface's generic params (bound to
+// `recvArgs`) plus any method-level generics inferred from `args`.
+func lookupIfaceMethodRetTE(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  idecl: in InterfaceDecl,
+  methodName: in String,
+  recvArgs: in List[TypeArg],
+  args: in List[CallArg],
+): Option[TypeExpr] {
+  val typeParams = extractTypeParamNames(idecl.generics)
+  var i = 0
+  while i < idecl.members.count {
+    match idecl.members[i] {
+      case IMSig(sig) -> {
+        if sig.name == methodName {
+          return substMethodRetTE(state, env, typeParams, recvArgs, sig.generics, sig.params, sig.ret, args)
+        }
+      }
+      case IMFunc(fn) -> {
+        if fn.name == methodName {
+          return substMethodRetTE(state, env, typeParams, recvArgs, fn.generics, fn.params, fn.ret, args)
+        }
+      }
+      case IMAssoc(_) -> ()
+    }
+    i = i + 1
+  }
+  None
+}
+
+// Counterpart of `lookupIfaceMethodRetTE` for methods declared inside a
+// record body (`RMFunc`).
+func lookupRecordMethodRetTE(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  rdecl: in RecordDecl,
+  methodName: in String,
+  recvArgs: in List[TypeArg],
+  args: in List[CallArg],
+): Option[TypeExpr] {
+  val typeParams = extractTypeParamNames(rdecl.generics)
+  var i = 0
+  while i < rdecl.members.count {
+    match rdecl.members[i] {
+      case RMFunc(fn) -> {
+        if fn.name == methodName {
+          return substMethodRetTE(state, env, typeParams, recvArgs, fn.generics, fn.params, fn.ret, args)
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  None
+}
+
+// Build the substitution for a method's return type: the declaring type's
+// generic params bind to `recvArgs`; method-level generics are inferred from
+// the call `args` (via `unifyTE`).  Returns the substituted return type, or
+// None when there is no declared return or a method generic stays unbound.
+func substMethodRetTE(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  typeParams: in List[String],
+  recvArgs: in List[TypeArg],
+  methodGenerics: in Option[GenericParams],
+  params: in List[Param],
+  ret: in Option[TypeExpr],
+  args: in List[CallArg],
+): Option[TypeExpr] {
+  match ret {
+    case None -> None
+    case Some(r) -> {
+      val subst: Map[String, TypeExpr] = newMap()
+      val valueSubst: Map[String, Expr] = newMap()
+      // Bind the declaring type's params to the receiver's concrete args.
+      if typeParams.count == recvArgs.count {
+        var i = 0
+        while i < typeParams.count {
+          match recvArgs[i] {
+            case TAType(te) -> subst.add(typeParams[i], te)
+            case TAValue(_) -> ()
+          }
+          i = i + 1
+        }
+      }
+      // Infer method-level generics from the call arguments.
+      val methodParams = extractTypeParamNames(methodGenerics)
+      if methodParams.count > 0 {
+        var ai = 0
+        while ai < args.count and ai < params.count {
+          match inferExprTE(state, env, callArgExpr(args[ai])) {
+            case Some(argTE) -> unifyTE(methodParams, params[ai].ty, argTE, subst)
+            case None -> ()
+          }
+          ai = ai + 1
+        }
+        if not substIsComplete(methodParams, subst) {
+          return None
+        }
+      }
+      Some(value = substTypeExpr(subst, valueSubst, r))
+    }
   }
 }
 
@@ -2348,6 +2516,39 @@ pub func monoFile(file: in SourceFile): MonoResult {
 /// the user's compilation unit can resolve.  Used by the MSIL / JVM bridges
 /// once Band 6 (`Lyric.RestoredPackages`) is wired through.
 pub func monoFileWithImports(file: in SourceFile, importedGenDecls: in List[FunctionDecl]): MonoResult {
+  val emptyIfaces: List[InterfaceDecl] = newList()
+  monoFileWithImportsAndIfaces(file, importedGenDecls, emptyIfaces)
+}
+
+/// As `monoFileWithImports`, but also takes the interface decls visible to
+/// `file` (same-package interfaces are collected from the file itself;
+/// `importedIfaceDecls` carries cross-package ones).  These let the inferer
+/// resolve a method-call return type (`recv.method(...)`) on an
+/// interface-typed receiver, which is what lets a generic predicate over the
+/// method's result — e.g. `isOk(bucket.exists(...))` — specialise instead of
+/// staying type-erased (#3813).
+pub func monoFileWithImportsAndIfaces(
+  file: in SourceFile,
+  importedGenDecls: in List[FunctionDecl],
+  importedIfaceDecls: in List[InterfaceDecl],
+): MonoResult {
+  val emptyRecs: List[RecordDecl] = newList()
+  monoFileWithImportsAndTypeDecls(file, importedGenDecls, importedIfaceDecls, emptyRecs)
+}
+
+/// As `monoFileWithImportsAndIfaces`, but also takes cross-package *record*
+/// decls.  These let the inferer resolve a field projection (`recv.field`) on
+/// a value whose record type is declared in another package, so a generic
+/// predicate over that field — e.g. `isSome(page.nextContinuationToken)` where
+/// `page: ListResult` is an imported record and `nextContinuationToken:
+/// Option[String]` — specialises instead of staying type-erased (#3813
+/// follow-up; the lyric-storage `list` pagination case).
+pub func monoFileWithImportsAndTypeDecls(
+  file: in SourceFile,
+  importedGenDecls: in List[FunctionDecl],
+  importedIfaceDecls: in List[InterfaceDecl],
+  importedRecordDecls: in List[RecordDecl],
+): MonoResult {
   // ── Phase 1: collect generic function decls ─────────────────────────────
   // #349: also collect every IFunc (generic + non-generic) and every
   // record decl so `inferExprTE` can resolve call returns and field
@@ -2358,6 +2559,8 @@ pub func monoFileWithImports(file: in SourceFile, importedGenDecls: in List[Func
   val genDecls: Map[String, FunctionDecl] = newMap()
   val funcDecls: Map[String, FunctionDecl] = newMap()
   val recordDecls: Map[String, RecordDecl] = newMap()
+  // #3813: interface decls keyed by simple name, for method-return inference.
+  val ifaceDecls: Map[String, InterfaceDecl] = newMap()
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -2384,11 +2587,39 @@ pub func monoFileWithImports(file: in SourceFile, importedGenDecls: in List[Func
           recordDecls.add(decl.name, decl)
         }
       }
-      case IInterface(decl) -> collectIfaceGenerics(decl, genDecls, funcDecls)
+      case IInterface(decl) -> {
+        if not ifaceDecls.containsKey(decl.name) {
+          ifaceDecls.add(decl.name, decl)
+        }
+        collectIfaceGenerics(decl, genDecls, funcDecls)
+      }
       case IImpl(decl) -> collectImplGenerics(decl, genDecls, funcDecls)
       case _ -> ()
     }
     i = i + 1
+  }
+
+  // Merge imported (cross-package) interface decls.  Same-package wins on
+  // name collision, mirroring the imported-generic merge below.
+  var ii2 = 0
+  while ii2 < importedIfaceDecls.count {
+    val idf = importedIfaceDecls[ii2]
+    if not ifaceDecls.containsKey(idf.name) {
+      ifaceDecls.add(idf.name, idf)
+    }
+    ii2 = ii2 + 1
+  }
+
+  // Merge imported (cross-package) record decls — same-package wins.  Lets
+  // `recv.field` projections resolve when `recv`'s record type is declared in
+  // another package (#3813 follow-up).
+  var ir2 = 0
+  while ir2 < importedRecordDecls.count {
+    val rdf = importedRecordDecls[ir2]
+    if not recordDecls.containsKey(rdf.name) {
+      recordDecls.add(rdf.name, rdf)
+    }
+    ir2 = ir2 + 1
   }
 
   // Merge imported generic decls (cross-package surface).  Same-package
@@ -2428,7 +2659,7 @@ pub func monoFileWithImports(file: in SourceFile, importedGenDecls: in List[Func
     return MonoResult(file = file, rewrites = emptyRewrites, diagnostics = emptyDiags)
   }
 
-  val state = newMonoState(genDecls, funcDecls, recordDecls)
+  val state = newMonoState(genDecls, funcDecls, recordDecls, ifaceDecls)
 
   // ── Phase 2: rewrite non-generic items ──────────────────────────────────
   val rewrittenItems: List[Item] = newList()

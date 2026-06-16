@@ -86,15 +86,20 @@ impl TranslationStore for InProcessTranslationStore {
   func translate(key: in String, locale: in Locale): String {
     val fullKey = localeKey(locale)
     val compoundFull = fullKey + "|" + key
-    val r1 = mapGet(self.translations, compoundFull)
-    if isSome(r1) {
-      return unwrapOr(r1, key)
+    // Use the Map `containsKey` + index methods rather than the generic
+    // free function `mapGet` (`Option`-returning): a cross-package call to a
+    // generic stdlib free function is not resolved by the self-hosted MSIL
+    // backend yet (it skips generic functions in `registerStdlibFunc`), so
+    // `mapGet`/`isSome`/`unwrapOr` mis-bind here.  The non-generic Map methods
+    // bind correctly, matching the `containsKey`/`add` usage in
+    // `buildStoreFromObject`.
+    if self.translations.containsKey(compoundFull) {
+      return self.translations[compoundFull]
     }
     if locale.region.length > 0 {
       val compoundLang = locale.language + "|" + key
-      val r2 = mapGet(self.translations, compoundLang)
-      if isSome(r2) {
-        return unwrapOr(r2, key)
+      if self.translations.containsKey(compoundLang) {
+        return self.translations[compoundLang]
       }
     }
     return key
@@ -118,14 +123,14 @@ impl TranslationStore for InProcessTranslationStore {
   func hasKey(key: in String, locale: in Locale): Bool {
     val fullKey = localeKey(locale)
     val compoundFull = fullKey + "|" + key
-    val r1 = mapGet(self.translations, compoundFull)
-    if isSome(r1) {
+    // Non-generic Map `containsKey` method (see `translate` for why the
+    // generic `mapGet`/`isSome` free functions are avoided here).
+    if self.translations.containsKey(compoundFull) {
       return true
     }
     if locale.region.length > 0 {
       val compoundLang = locale.language + "|" + key
-      val r2 = mapGet(self.translations, compoundLang)
-      if isSome(r2) {
+      if self.translations.containsKey(compoundLang) {
         return true
       }
     }
@@ -153,12 +158,17 @@ pub func fromJson(json: in String): Result[InProcessTranslationStore, I18nError]
 /// Load translations from `path` and return an in-process store.
 @stable(since = "0.1")
 pub func loadFromPath(path: in String): Result[InProcessTranslationStore, I18nError] {
-  val readResult = readText(path)
-  if isErr(readResult) {
-    return Err(I18nError(message = "Failed to read file: " + path, code = "LOAD_ERROR"))
+  // Pattern-match the Result directly rather than the generic `isErr` /
+  // `unwrapResultOr` free functions, which the self-hosted MSIL backend does
+  // not yet resolve across packages (see `translate`).
+  match readText(path) {
+    case Ok(json) -> {
+      return fromJson(json)
+    }
+    case Err(_) -> {
+      return Err(I18nError(message = "Failed to read file: " + path, code = "LOAD_ERROR"))
+    }
   }
-  val json = unwrapResultOr(readResult, "")
-  return fromJson(json)
 }
 
 // ─── Convenience functions ────────────────────────────────────────────────────
@@ -266,9 +276,12 @@ func substitutePlaceholders(template: in String, vars: in Map[String, String]): 
         i = template.length
       } else {
         val varName = template.substring(i + 1, j - i - 1)
-        val getResult = mapGet(vars, varName)
-        if isSome(getResult) {
-          val value = unwrapOr(getResult, "")
+        // Non-generic Map `containsKey` + index methods rather than the
+        // generic `mapGet`/`isSome`/`unwrapOr` free functions, which the
+        // self-hosted MSIL backend does not yet resolve across packages (see
+        // `translate`).  An unknown placeholder is left verbatim.
+        if vars.containsKey(varName) {
+          val value = vars[varName]
           if buf.length + value.length > maxSubstOutputLength {
             return template
           }

@@ -116,6 +116,46 @@ func testGetRawText(): Unit {
   assertTrue(raw.contains("99"), "raw text contains 99")
 }
 
+func testTryGetInt(): Unit {
+  // Test 1: tryGetInt on a numeric value should return Some
+  val doc1 = parseJson("{\"num\":42}")
+  val root1 = rootElement(doc1)
+  val num = getProperty(root1, "num")
+  match tryGetInt(num) {
+    case Some(v) -> assertEqualInt(v, 42, "tryGetInt extracts numeric value")
+    case None -> assertTrue(false, "tryGetInt should extract numeric value")
+  }
+
+  // Test 2: tryGetInt on a string value should return None (not throw)
+  val doc2 = parseJson("{\"str\":\"hello\"}")
+  val root2 = rootElement(doc2)
+  val str = getProperty(root2, "str")
+  match tryGetInt(str) {
+    case Some(_) -> assertTrue(false, "tryGetInt should not extract int from string")
+    case None -> assertTrue(true, "correctly returned None for non-numeric value")
+  }
+}
+
+func testTryGetLong(): Unit {
+  // Test 1: tryGetLong on a numeric value should return Some
+  val doc1 = parseJson("{\"num\":12345}")
+  val root1 = rootElement(doc1)
+  val num = getProperty(root1, "num")
+  match tryGetLong(num) {
+    case Some(v) -> assertTrue(v == 12345, "tryGetLong extracts numeric value")
+    case None -> assertTrue(false, "tryGetLong should extract numeric value")
+  }
+
+  // Test 2: tryGetLong on a string value should return None (not throw)
+  val doc2 = parseJson("{\"str\":\"hello\"}")
+  val root2 = rootElement(doc2)
+  val str = getProperty(root2, "str")
+  match tryGetLong(str) {
+    case Some(_) -> assertTrue(false, "tryGetLong should not extract long from string")
+    case None -> assertTrue(true, "correctly returned None for non-numeric value")
+  }
+}
+
 func main(): Unit {
   testParseString()
   testParseInt()
@@ -127,5 +167,7 @@ func main(): Unit {
   testArrayEnumeration()
   testObjectEnumeration()
   testGetRawText()
+  testTryGetInt()
+  testTryGetLong()
   println("json_tests: ok")
 }

@@ -89,6 +89,11 @@ pub func getDouble(elem: in JsonElement): Double {
 
 @stable(since = "1.0")
 pub func tryGetInt(elem: in JsonElement): Option[Int] {
+  // JsonValueKind.Number = 4. Check the kind first to avoid the BCL
+  // throwing an exception on non-numeric values (#3824).
+  if hostValueKind(elem) != 4 {
+    return None
+  }
   var v: Int = default()
   if hostTryGetInt32(elem, v) {
     Some(value = v)
@@ -99,8 +104,27 @@ pub func tryGetInt(elem: in JsonElement): Option[Int] {
 
 @stable(since = "1.0")
 pub func tryGetLong(elem: in JsonElement): Option[Long] {
+  // JsonValueKind.Number = 4. Check the kind first to avoid the BCL
+  // throwing an exception on non-numeric values (#3824).
+  if hostValueKind(elem) != 4 {
+    return None
+  }
   var v: Long = default()
   if hostTryGetInt64(elem, v) {
+    Some(value = v)
+  } else {
+    None
+  }
+}
+
+pub func tryGetDouble(elem: in JsonElement): Option[Double] {
+  // JsonValueKind.Number = 4. Check the kind first to avoid the BCL
+  // throwing an exception on non-numeric values (#3824).
+  if hostValueKind(elem) != 4 {
+    return None
+  }
+  var v: Double = default()
+  if hostTryGetDouble(elem, v) {
     Some(value = v)
   } else {
     None
