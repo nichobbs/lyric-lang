@@ -117,9 +117,13 @@ stage0() {
   # accordingly. Always copy (never symlink) to ensure Windows Git Bash wrapper works.
   if [[ -f "$BUILD_DIR/stage0-publish/lyric.exe" ]]; then
     # Windows native executable
+    mkdir -p "$(dirname "$STAGE0_BIN")"
     cp "$BUILD_DIR/stage0-publish/lyric.exe" "$STAGE0_BIN.exe"
     if [[ -f "$BUILD_DIR/stage0-publish/lyric.runtimeconfig.json" ]]; then
       cp "$BUILD_DIR/stage0-publish/lyric.runtimeconfig.json" "$STAGE0_BIN.runtimeconfig.json"
+      info "  copied runtimeconfig.json"
+    else
+      info "  WARNING: lyric.runtimeconfig.json not found in stage0-publish"
     fi
   elif [[ -f "$BUILD_DIR/stage0-publish/lyric.dll" ]]; then
     # Windows Git Bash (wrapper script) or framework-dependent DLL-only case
@@ -130,10 +134,14 @@ stage0() {
     fi
   elif [[ -f "$BUILD_DIR/stage0-publish/lyric" ]]; then
     # Unix native executable
+    mkdir -p "$(dirname "$STAGE0_BIN")"
     cp "$BUILD_DIR/stage0-publish/lyric" "$STAGE0_BIN"
     # Copy runtime config if present (needed for self-contained apps)
     if [[ -f "$BUILD_DIR/stage0-publish/lyric.runtimeconfig.json" ]]; then
       cp "$BUILD_DIR/stage0-publish/lyric.runtimeconfig.json" "$STAGE0_BIN.runtimeconfig.json"
+      info "  copied runtimeconfig.json"
+    else
+      info "  WARNING: lyric.runtimeconfig.json not found in stage0-publish"
     fi
   else
     die "publish did not produce a lyric binary in $BUILD_DIR/stage0-publish"
@@ -141,9 +149,14 @@ stage0() {
 
   ok "Stage 0 complete — $STAGE0_BIN"
 
-  # Verify the binary exists in one of its expected forms
+  # Verify the binary exists in one of its expected forms and runtimeconfig.json if needed
   if [[ -f "$STAGE0_BIN" ]]; then
     info "Stage 0 binary: $(ls -lh "$STAGE0_BIN")"
+    if [[ -f "$STAGE0_BIN.runtimeconfig.json" ]]; then
+      info "  with runtimeconfig.json: $(ls -lh "$STAGE0_BIN.runtimeconfig.json")"
+    else
+      info "  WARNING: runtimeconfig.json NOT found at $STAGE0_BIN.runtimeconfig.json"
+    fi
   elif [[ -f "$STAGE0_BIN.dll" ]]; then
     info "Stage 0 DLL: $(ls -lh "$STAGE0_BIN.dll")"
     if [[ -f "$STAGE0_BIN" ]]; then
@@ -151,6 +164,11 @@ stage0() {
     fi
   elif [[ -f "$STAGE0_BIN.exe" ]]; then
     info "Stage 0 EXE: $(ls -lh "$STAGE0_BIN.exe")"
+    if [[ -f "$STAGE0_BIN.runtimeconfig.json" ]]; then
+      info "  with runtimeconfig.json: $(ls -lh "$STAGE0_BIN.runtimeconfig.json")"
+    else
+      info "  WARNING: runtimeconfig.json NOT found at $STAGE0_BIN.runtimeconfig.json"
+    fi
   else
     die "Stage 0 binary not found at $STAGE0_BIN, $STAGE0_BIN.dll, or $STAGE0_BIN.exe"
   fi
