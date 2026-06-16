@@ -12,6 +12,5 @@ kind = "exe"
 name = "lyric"
 output = "single"
 
-[[project.packages]]
-name = "Lyric.Cli"
-path = "cli/"
+[project.packages]
+"Lyric.Cli" = "cli/"
