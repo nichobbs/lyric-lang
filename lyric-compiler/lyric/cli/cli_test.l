@@ -17,6 +17,7 @@ import Lyric.TestSynth as TestSynth
 import Lyric.Repl as Repl
 import Lyric.Discovery as Disc
 import Lyric.CfgGate as CfgGate
+import Lyric.Workspace as Ws
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §11b. Repl command
@@ -598,6 +599,13 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
     return 1
   }
 
+  // Build workspace dependencies first, so their DLLs are available when building
+  // path deps and test packages. This mirrors the integration in cli_build.l.
+  val (wsDepDlls, wsHadError) = buildWorkspaceDeps(manifest, mfPath, testTarget)
+  if wsHadError {
+    return 1
+  }
+
   // Build local-path dependencies in topological order (#2887).
   // Uses an iterative DFS post-order over the full transitive local-path-dep
   // closure so a dep's own local-path dependencies are always built before the
@@ -730,6 +738,12 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
   // DLLs (e.g. Lyric.Stdlib.Testing) that live in the dep's bin dir but
   // are not merged into the main dep bundle (e.g. Lyric.Stdlib.dll).
   val restoredDlls: List[String] = newList()
+  // Add workspace dependency DLLs first.
+  var wi = 0
+  while wi < wsDepDlls.count {
+    restoredDlls.add(wsDepDlls[wi])
+    wi += 1
+  }
   val depBinDirs: List[String] = newList()
   val depTemplatePkgsList: List[ProjectPackage] = newList()
   var di = 0
