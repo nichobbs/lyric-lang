@@ -49,6 +49,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$REPO_ROOT/.bootstrap"
+STAGE0_PUBLISH_DIR="$BUILD_DIR/stage0-publish"
 STAGE0_BIN="$BUILD_DIR/stage0/lyric"
 STAGE1_DIR="$BUILD_DIR/stage1"
 STAGE2_DIR="$BUILD_DIR/stage2"
@@ -184,23 +185,27 @@ stage1() {
   mkdir -p "$STAGE1_DIR"
 
   # Helper to invoke stage-0, handling native binaries, EXE files, and DLLs.
+  # The binary is in STAGE0_PUBLISH_DIR with its runtimeconfig.json, so we invoke it
+  # from there to avoid path issues with framework-dependent apps.
   # On Windows Git Bash, dotnet publish creates a bash wrapper + DLL, so we need
   # to invoke the DLL via dotnet. On Windows proper (PowerShell), we get an EXE.
   # On Unix, we get a native executable.
   invoke_stage0() {
-    local bin_path="$STAGE0_BIN"
-
-    # Check what type of file we actually have (not just the filename)
+    local bin_path
     local actual_file
-    if [[ -f "$STAGE0_BIN" ]]; then
-      actual_file="$STAGE0_BIN"
-    elif [[ -f "$STAGE0_BIN.dll" ]]; then
-      actual_file="$STAGE0_BIN.dll"
-    elif [[ -f "$STAGE0_BIN.exe" ]]; then
-      actual_file="$STAGE0_BIN.exe"
+
+    # Check what type of file we actually have in stage0-publish
+    if [[ -f "$STAGE0_PUBLISH_DIR/lyric.exe" ]]; then
+      actual_file="$STAGE0_PUBLISH_DIR/lyric.exe"
+    elif [[ -f "$STAGE0_PUBLISH_DIR/lyric.dll" ]]; then
+      actual_file="$STAGE0_PUBLISH_DIR/lyric.dll"
+    elif [[ -f "$STAGE0_PUBLISH_DIR/lyric" ]]; then
+      actual_file="$STAGE0_PUBLISH_DIR/lyric"
     else
-      die "Stage 0 binary not found at: $STAGE0_BIN (checked for .dll and .exe extensions)"
+      die "Stage 0 binary not found in $STAGE0_PUBLISH_DIR (checked for .exe, .dll, and native binary)"
     fi
+
+    bin_path="$actual_file"
 
     # For Windows files (EXE/DLL), convert Unix path to Windows path
     if [[ "$actual_file" == *.exe ]] || [[ "$actual_file" == *.dll ]]; then
