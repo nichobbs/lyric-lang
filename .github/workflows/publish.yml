@@ -69,6 +69,7 @@ jobs:
           global-json-file: bootstrap/global.json
 
       - name: Build stage-1 (F# bootstrap → self-hosted DLLs)
+        shell: bash
         run: ./scripts/bootstrap.sh --stage 1
 
       - name: Resolve version
@@ -237,6 +238,7 @@ jobs:
           global-json-file: bootstrap/global.json
 
       - name: Build stage-1 (F# bootstrap → self-hosted DLLs)
+        shell: bash
         run: ./scripts/bootstrap.sh --stage 1
 
       - name: Resolve version
