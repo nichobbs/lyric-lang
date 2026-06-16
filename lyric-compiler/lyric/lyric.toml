@@ -13,4 +13,4 @@ name = "lyric"
 output = "single"
 
 [project.packages]
-"Lyric.Cli" = "cli/"
+"Lyric.Cli" = "cli/cli_main.l"
