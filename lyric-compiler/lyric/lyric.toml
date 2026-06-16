@@ -1,0 +1,17 @@
+[package]
+name = "Lyric.Cli"
+version = "0.1.0"
+description = "Self-hosted Lyric compiler CLI"
+authors = ["Lyric contributors"]
+license = "Apache-2.0"
+
+[build]
+kind = "exe"
+
+[project]
+name = "lyric"
+output = "single"
+
+[[project.packages]]
+name = "Lyric.Cli"
+path = "cli/"

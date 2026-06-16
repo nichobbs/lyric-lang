@@ -281,206 +281,20 @@ stage1() {
     die "stdlib bundle build failed"
 
   if [[ "$SKIP_CLI_BUNDLE" != "1" ]]; then
-    # Track A (A1.2) — precompile cli/ + the full Lyric.Cli dependency
-    # closure into $STAGE1_DIR.  The F# emitter's stdlib auto-resolve
-    # discovers every transitive import (lexer, parser, type-checker,
-    # mode-checker, contract-elaborator, MSIL backend, manifest, pack,
-    # workspace, gitdep, lockfile, generator, emitter, fmt, lint,
-    # verifier, doc, contract-meta, repl, test-synth, bench-synth,
-    # openapi, …) from a one-line driver and emits each as a DLL.
-    # We then copy the artefacts to $STAGE1_DIR.
-    #
-    # This single step replaces the old manual COMPILER_SOURCES compile
-    # loop — the F# emitter does dependency ordering correctly and
-    # there's no value in the script re-implementing it.
-    stage1_cli_bundle
+    # Build the self-hosted Lyric CLI as a standalone executable using the
+    # manifest with [build] kind = "exe".  Stage-0 (the pre-built self-hosted
+    # binary) compiles the full Lyric.Cli closure (~25 packages) and emits
+    # them as DLLs, then uses the new executable-output feature to wrap the
+    # entry point as a standalone .exe that can replace the C# AOT wrapper.
+    info "  building CLI as standalone executable (replacing C# wrapper)"
+    invoke_stage0 build --manifest "$REPO_ROOT/lyric-compiler/lyric/lyric.toml" \
+      -o "$STAGE1_DIR/lyric" --target dotnet 2>&1 || \
+      die "CLI executable build failed"
   else
-    info "SKIP_CLI_BUNDLE=1; skipping the CLI dependency-closure precompile"
+    info "SKIP_CLI_BUNDLE=1; skipping the CLI executable build"
   fi
 
   ok "Stage 1 complete — output in $STAGE1_DIR"
-}
-
-# ---------------------------------------------------------------------------
-# Stage 1 — CLI bundle precompile (Track A, A1.2)
-#
-# Compile a tiny driver program that does `import Lyric.Cli`.  The F#
-# emitter's stdlib auto-resolve discovers the cli/ package's full transitive
-# dependency closure (~25 Lyric packages plus the existing compiler
-# packages built above) and emits each one as a DLL in its per-process
-# scratch cache.  We then copy those DLLs into $STAGE1_DIR so the
-# stage-1 layout contains every artefact the AOT entry-point project
-# (Track A, A1.3) will reference.
-#
-# This step is idempotent: re-running it just overwrites the same DLLs.
-# It writes to a unique sub-dir under $BUILD_DIR/tmp so concurrent
-# bootstraps don't race.
-# ---------------------------------------------------------------------------
-stage1_cli_bundle() {
-  info "Stage 1 (CLI bundle): precompiling Lyric.Cli + transitive deps"
-
-  local driver_dir="$BUILD_DIR/stage1-cli-driver"
-  rm -rf "$driver_dir"
-  mkdir -p "$driver_dir"
-
-  cat > "$driver_dir/driver.l" <<'EOF'
-// Auto-generated driver for the bootstrap CLI-bundle precompile.
-// Importing Lyric.Cli forces the F# emitter to compile the cli/ package and
-// every transitively-imported Lyric package into its stdlib cache.
-//
-// Std.Time / Std.Math are imported *directly* because neither appears in
-// the direct or transitive import closure of Lyric.Cli.  (Lyric.BenchSynth
-// emits the string "import Std.Time" into synthesised benchmark source,
-// but that is a code-generation artefact, not an import edge the emitter
-// sees here.)  Without a direct import the F# emitter never visits these
-// modules during the CLI-bundle precompile, so Lyric.Stdlib.Time(.Host) /
-// Math(.Host) DLLs never land in $STAGE1_DIR — and every ecosystem library
-// that imports Std.Time or Std.Math (lyric-session, lyric-auth,
-// lyric-cache, …) then fails at run time with "Could not load file or
-// assembly 'Lyric.Stdlib.Time'".
-//
-// Std.Testing.Mocking is imported directly so Lyric.Stdlib.Testing.Mocking.dll
-// lands in $STAGE1_DIR.  The testing self-tests (stubbable_self_test.l etc.)
-// import this package and the compiled test DLL then references it at runtime
-// — without a standalone DLL the CLR load fails with a file-not-found error.
-package Lyric.CliBundle
-import Lyric.Cli
-import Std.Time
-import Std.Math
-import Std.Testing.Mocking
-func main(): Unit { }
-EOF
-
-  local driver_out="$driver_dir/Lyric.CliBundle.dll"
-
-  # Snapshot the existing $TMP_BASE/lyric-stdlib-* directories so we can
-  # identify *the one the upcoming compile creates* unambiguously.
-  # Reusing CI runners often leaves stale dirs in the temp base; `ls -dt
-  # | head -1` would happily pick one of those if filesystem mtimes were
-  # close.  `|| true` swallows the non-zero exit when the glob doesn't
-  # match — `set -euo pipefail` would otherwise abort here before the
-  # post-compile check produces a useful error.
-  local pre_snapshot
-  pre_snapshot="$(ls -d "$TMP_BASE"/lyric-stdlib-* 2>/dev/null || true)"
-
-  # Force the F# emitter via `--internal-build`.  The driver has a
-  # `func main(): Unit { }` so it satisfies the F# emitter's executable
-  # contract; we don't care about running it, only about the side effect
-  # of populating the per-process stdlib cache with every Lyric package
-  # the driver transitively imports.
-  LYRIC_STD_PATH="$STAGE1_DIR" \
-    invoke_stage0 --internal-build "$driver_dir/driver.l" -o "$driver_out" \
-    --target dotnet 2>&1 || \
-    die "stage-1 CLI-bundle driver compile failed"
-
-  # Locate the cache dir the compile created: take all current matches,
-  # subtract the pre-compile snapshot, expect exactly one new entry.
-  # Pattern: $TMP_BASE/lyric-stdlib-<pid>/ — see Emitter.fs::stdlibCacheDir.
-  local post_snapshot
-  post_snapshot="$(ls -d "$TMP_BASE"/lyric-stdlib-* 2>/dev/null || true)"
-  local new_dirs
-  new_dirs="$(comm -13 \
-    <(echo "$pre_snapshot"  | sort) \
-    <(echo "$post_snapshot" | sort) \
-    | grep -v '^$' || true)"
-
-  local cache_dir
-  cache_dir="$(echo "$new_dirs" | head -1)"
-  [[ -n "$cache_dir" && -d "$cache_dir" ]] || \
-    die "stage-1 CLI bundle: no new $TMP_BASE/lyric-stdlib-*/ cache found after compile (pre='$pre_snapshot', post='$post_snapshot')"
-
-  info "  CLI bundle cache: $cache_dir"
-  local copied=0
-  for f in "$cache_dir"/*.dll; do
-    [[ -f "$f" ]] || continue
-    cp -f "$f" "$STAGE1_DIR/"
-    copied=$((copied + 1))
-  done
-
-  # `Lyric.Jvm.Hosts` is gone — the JVM byte-writer and constant-pool helpers
-  # are now pure-Lyric BCL externs in `lyric-compiler/jvm/_kernel/kernel.l`
-  # (docs/23-fsharp-shim-elimination.md).  No F# shim is published or copied
-  # into the stage-1 bundle.
-
-  # `FSharp.Core.dll` and `Lyric.Emitter.dll` are no longer bundled.
-  # All stdlib kernel modules (`console_host.l`, `process_capture_host.l`,
-  # `verifier_env_host.l`, `http_host.l`) migrated off `Lyric.Emitter.*`
-  # host shims to direct BCL externs (#1489, #1493, G12, #1576).
-  # No Lyric-compiled DLL in stage1 carries an AssemblyRef to either
-  # `Lyric.Emitter` or `FSharp.Core` (verified by strings scan of stage1 DLLs).
-  # The `Lyric.Cli.Aot` csproj no longer references `FSharp.Core.dll` explicitly.
-
-  # `Lyric.Session.Host` is gone — `Session.Kernel.Net` now binds
-  # StackExchange.Redis directly via `@externTarget` in native Lyric
-  # (`lyric-session/src/_kernel/net/session_kernel.l`, #1777).
-  # No F# shim is published or copied into the stage-1 bundle.
-  # StackExchange.Redis.dll is resolved at user-program build time via
-  # the `[nuget]` entry in lyric-session/lyric.toml.
-
-  # `Lyric.Storage.Host` is gone — the lyric-storage local-filesystem
-  # backend now binds the BCL externs (System.IO.File, System.IO.Directory,
-  # System.IO.Path, System.Convert, System.Security.Cryptography.MD5)
-  # directly from `Storage.Kernel.Net`.  No F# host shim is published or
-  # copied into the stage-1 bundle.  S3 / Azure Blob backends return
-  # `NOT_IMPLEMENTED` until their native NuGet SDK bindings land.
-
-
-  # `Lyric.Jobs.Host` is gone — the in-process scheduler helpers are now
-  # pure-Lyric BCL externs in `lyric-jobs/src/_kernel/net/jobs_kernel.l`
-  # (docs/23-fsharp-shim-elimination.md).  No F# shim is published or copied.
-
-  # `Lyric.Mail.Host` is gone — the lyric-mail SMTP backend now binds
-  # `System.Net.Mail` directly from its kernel.  No F# host shim is
-  # published or copied into the stage-1 bundle.
-
-  # `Lyric.Mq.Host` is gone — the in-memory queue helpers are now
-  # pure-Lyric BCL externs in `lyric-mq/src/_kernel/net/mq_kernel.l`
-  # (docs/23-fsharp-shim-elimination.md).  No F# shim is published or copied.
-
-  # `Lyric.Web.Host` is gone — the HTTP listener path-finder is now
-  # pure-Lyric BCL externs in `lyric-web/src/_kernel/net/web_kernel.l`
-  # and `lyric-web/src/web.l` (docs/23-fsharp-shim-elimination.md).
-  # No F# shim is published or copied.
-
-  info "  copied $copied DLLs into $STAGE1_DIR"
-
-  # Remove every per-host scratch publish directory now that the shim DLLs
-  # have been copied into $STAGE1_DIR.  Leaving them in place accumulates
-  # ~100 MB across repeat bootstraps.  We glob `stage0-publish-*` so new
-  # ecosystem libraries are cleaned automatically without touching this
-  # script (#1125).  The shared `stage0-publish` directory itself is
-  # intentionally kept because the generated apphost stub points at
-  # `stage0-publish/lyric.dll`.
-  shopt -s nullglob
-  scratch_dirs=("$BUILD_DIR"/stage0-publish-*)
-  shopt -u nullglob
-  if (( ${#scratch_dirs[@]} > 0 )); then
-    rm -rf "${scratch_dirs[@]}"
-  fi
-
-  # Sanity check: Lyric.Lyric.Cli.dll must land in stage1/.  If it
-  # doesn't, the F# emitter's stdlib-cache layout has changed and this
-  # script needs to be updated.
-  [[ -f "$STAGE1_DIR/Lyric.Lyric.Cli.dll" ]] || \
-    die "stage-1 CLI bundle: Lyric.Lyric.Cli.dll not found in $STAGE1_DIR after copy"
-
-  # Track A A1.3: retarget Lyric-emitted DLLs' AssemblyRefs from
-  # `System.Private.CoreLib` (the unified CoreCLR runtime assembly)
-  # to the matching public-facade reference assemblies (System.Runtime,
-  # System.Collections, System.Console, mscorlib, ...).  Without this
-  # rewrite the AOT entry-point project can't reference the
-  # stage-1 DLLs as compile-time inputs — the C# compiler refuses to
-  # accept refs whose AssemblyRef table points at System.Private.CoreLib.
-  if [[ "$SKIP_COREREF_REWRITE" != "1" ]]; then
-    info "  retargeting System.Private.CoreLib refs -> public facades"
-    dotnet fsi "$REPO_ROOT/scripts/rewrite-corelib-refs.fsx" "$STAGE1_DIR"/*.dll \
-      > "$BUILD_DIR/rewrite-corelib-refs.log" 2>&1 || \
-      die "stage-1 CLI bundle: corelib-ref rewrite failed (see $BUILD_DIR/rewrite-corelib-refs.log)"
-  else
-    info "SKIP_COREREF_REWRITE=1; leaving stage-1 DLLs with raw CoreLib refs"
-  fi
-
-  ok "Stage 1 CLI bundle complete — Lyric.Lyric.Cli.dll + $((copied - 1)) deps in $STAGE1_DIR"
 }
 
 compare_stage1_stage2_dlls() {
@@ -734,8 +548,7 @@ EOF
   info "  copied $copied DLLs into $STAGE2_DIR"
 
   # Retarget System.Private.CoreLib refs -> public facades so the stage-2
-  # outputs match the stage-1 rewrite step.  This mirrors the stage-1
-  # rewrite performed in `stage1_cli_bundle()`.
+  # outputs match the stage-1 rewrite step.
   if [[ "$SKIP_COREREF_REWRITE" != "1" ]]; then
     info "  retargeting System.Private.CoreLib refs -> public facades (stage-2)"
     dotnet fsi "$REPO_ROOT/scripts/rewrite-corelib-refs.fsx" "$STAGE2_DIR"/*.dll \
