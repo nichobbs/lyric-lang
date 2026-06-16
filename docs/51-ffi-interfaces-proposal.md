@@ -30,12 +30,25 @@ extern package System {
 - **VTable Wiring**: Map the Lyric methods bound in the `impl` block to the corresponding MSIL `.override` slots using `MethodImpl` table rows, or rely on implicit name-and-signature matching where the CLR wires up methods automatically.
 - **Boxing/Unboxing**: If the `.NET` interface expects unboxed primitive arguments but Lyric methods expect boxed `System.Object` under the uniform ABI, we may need to synthesize bridge methods (thunks) on the class that satisfy the `.NET` interface signature, unbox/box the parameters, and then delegate to the actual Lyric method implementation.
 
-## Open Questions
+## Open Questions / Resolution
+
+### Q: Generic external interfaces
 > [!IMPORTANT]
 > How will we handle generic external interfaces like `IEnumerable<T>`? The `.NET` type parameters need to map to Lyric type parameters, and the structural MSIL emissions will need to support instantiating the closed interface TypeRef.
 
+**Proposed Resolution**: Lyric already parses generic FFI types (`extern type IEnumerable[T]`). When a Lyric record implements this interface, the type checker will instantiate the interface with concrete types. During MSIL emission (`codegen.l`), the implementation list for the `.class` will use the existing `MTypeSpec` machinery (which builds closed generic types) instead of a plain `MClassRef`, mapping the Lyric type arguments directly to the .NET type arguments.
+
+### Q: Properties and events in external interfaces
 > [!WARNING]
 > If an external interface contains properties or events, how will those map to Lyric syntax, since Lyric does not have properties (only methods and fields)?
+
+**Proposed Resolution**: In .NET, properties and events are syntactic sugar over standard methods (e.g., `get_Count()`, `add_Changed(EventHandler)`). The `extern interface` declaration in Lyric will explicitly declare these underlying methods:
+```lyric
+extern interface ICollection {
+  func get_Count(): Int
+}
+```
+The .NET runtime interface dispatch links implementations by method name and signature. When Lyric emits a standard method named `get_Count`, it will correctly satisfy the interface's property getter requirement in the MSIL `MethodImpl` table.
 
 ## Verification Plan
 

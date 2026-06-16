@@ -27,12 +27,19 @@ Lyric's uniform ABI currently lowers all lambdas to `System.Func<object, ..., ob
 - Construct the target `.NET` delegate type (e.g., `newobj instance void class [mscorlib]System.Predicate\`1<int32>::.ctor(object, native int)`).
 - Pass this strongly-typed delegate to the underlying .NET FFI call.
 
-## Open Questions
+## Open Questions / Resolution
+
+### Q: Performance overhead of boxing/unboxing parameters in hot loops
 > [!WARNING]
 > The performance overhead of boxing/unboxing parameters at every delegate invocation in hot loops (e.g., `Enumerable.Where`) might be non-trivial. Should we provide a way to emit strongly typed closures instead for specific contexts?
 
+**Proposed Resolution**: We accept the overhead for now. Epic #1877 explicitly simplified the compiler by boxing all lambdas to a uniform `Func<object, ..., object>` ABI. Re-introducing strongly typed lambdas specifically for FFI would undo this simplification. If performance is critical, developers can write a high-performance interop layer in C# or F# and expose a simpler boundary to Lyric.
+
+### Q: Distinguishing generic closures in `Lyric.Mono`
 > [!IMPORTANT]
 > How will we distinguish between the generic `System.Func` closures and nominal delegates in the `Lyric.Mono` monomorphization pass?
+
+**Proposed Resolution**: `Lyric.Mono` operates on the AST before MSIL codegen and simply substitutes type variables. The new "adapter cast" AST node would hold a `TypeRef` to the target delegate. `Lyric.Mono` only needs to substitute any generic type variables inside that `TypeRef`. The actual distinction between Lyric closures and .NET delegates, and the subsequent thunk generation, happens later during MSIL emission (`codegen.l`), which handles concrete MSIL types and FFI metadata.
 
 ## Verification Plan
 
