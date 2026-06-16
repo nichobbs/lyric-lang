@@ -31,7 +31,7 @@ redis    = []   # Redis-backed sessions (StackExchange.Redis)
 inmemory = []   # In-process sessions (suitable for single-instance deployments)
 
 [dependencies]
-"Lyric.Cache"  = { path = "../lyric-cache" }
+"Lyric.Cache"  = { workspace = true }
 
 [nuget]
 # feature = "redis" — Redis client for .NET session backing store

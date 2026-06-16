@@ -80,7 +80,7 @@ output_assembly = "Lambda.dll"
 "Lambda.LambdaTests" = "tests/lambda_tests.l"
 
 [dependencies]
-"Lyric.Web"    = { path = "../lyric-web" }
+"Lyric.Web"    = { workspace = true }
 
 [nuget]
 # Production .NET runtime support — included when feature = "aws".

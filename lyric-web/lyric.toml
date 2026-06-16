@@ -54,8 +54,8 @@ output_assembly = "Web.dll"
 "Web.SecurityAspectWeavingTests" = "tests/security_aspect_weaving_tests.l"
 
 [dependencies]
-"Lyric.Auth"         = { path = "../lyric-auth" }
-"Lyric.Resilience"   = { path = "../lyric-resilience" }
+"Lyric.Auth"         = { workspace = true }
+"Lyric.Resilience"   = { workspace = true }
 
 [nuget]
 # ASP.NET Core is part of the .NET SDK; no extra package needed for Kestrel.

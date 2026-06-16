@@ -24,7 +24,7 @@ hangfire = []   # Hangfire backend for .NET (Hangfire.Core + Hangfire.SqlServer)
 quartz   = []   # Quartz.NET scheduler
 
 [dependencies]
-"Lyric.Resilience" = { path = "../lyric-resilience" }
+"Lyric.Resilience" = { workspace = true }
 
 [nuget]
 # feature = "hangfire" — Hangfire job scheduler for .NET

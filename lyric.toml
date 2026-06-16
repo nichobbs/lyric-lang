@@ -1,0 +1,18 @@
+# lyric.toml — workspace root
+#
+# Declares the workspace containing all compiler, stdlib, and ecosystem libraries.
+# Members are auto-discovered by walking the directory tree and finding lyric.toml files.
+#
+# See docs/38-workspace.md for the workspace design specification.
+
+[workspace]
+exclude = [
+  "bootstrap",
+  "docs",
+  "book",
+  "examples",
+  "native",
+  "scripts",
+  "resolver",
+  ".github",
+]
