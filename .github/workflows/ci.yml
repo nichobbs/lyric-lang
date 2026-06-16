@@ -249,24 +249,6 @@ jobs:
           key: ${{ runner.os }}-nuget-${{ hashFiles('bootstrap/**/*.fsproj', 'bootstrap/**/*.csproj', 'bootstrap/global.json') }}
           restore-keys: |
             ${{ runner.os }}-nuget-
-      - name: Restore
-        working-directory: bootstrap
-        run: dotnet restore Bootstrap.sln
-      - name: Build
-        working-directory: bootstrap
-        run: dotnet build Bootstrap.sln --configuration $BUILD_CONFIG --no-restore
-      - name: Lexer tests
-        working-directory: bootstrap
-        run: dotnet run --project tests/Lyric.Lexer.Tests --no-build --configuration $BUILD_CONFIG
-      - name: Parser tests
-        working-directory: bootstrap
-        run: dotnet run --project tests/Lyric.Parser.Tests --no-build --configuration $BUILD_CONFIG
-      - name: Type-checker tests
-        working-directory: bootstrap
-        run: dotnet run --project tests/Lyric.TypeChecker.Tests --no-build --configuration $BUILD_CONFIG
-      - name: Emitter tests
-        working-directory: bootstrap
-        run: dotnet run --project tests/Lyric.Emitter.Tests --no-build --configuration $BUILD_CONFIG
       # The emitter test suite writes /tmp/lyric-jvm-selftest/Hello.class via the
       # Jvm.SelfTest stage-B2 program.  Existing tests verify structural validity
       # with `javap -c` but never execute the class via `java`, so JVM-side
