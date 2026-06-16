@@ -27,8 +27,8 @@ BUILD_CONFIG ?= Release
 # binary and the failure looks unrelated.
 AOT_BIN := bootstrap/src/Lyric.Cli.Aot/bin/$(BUILD_CONFIG)/net10.0/lyric
 
-.PHONY: help stage1 stage1-fast aot lyric selfhosted-compiler \
-        test test-lexer test-parser test-typechecker test-emitter \
+.PHONY: help stage0 stage1 stage1-fast aot lyric selfhosted-compiler \
+        test test-lexer test-parser test-typechecker test-emitter test-cli \
         self-test clean
 
 help: ## Show this help
@@ -42,14 +42,12 @@ help: ## Show this help
 # sources, plus the bootstrap script itself.  These are the stamp rule's
 # prerequisites so an edited compiler `.l` file makes `make aot` / `make
 # lyric` rebuild stage 1 instead of silently embedding stale DLLs (#2706).
-#
-# NOTE: Stage 0 (F# bootstrap) has been deleted. Bootstrap.sh now downloads
-# the latest release binary by default (via --bootstrap-from-release). For
-# local development, the stage-1 build uses the self-hosted compiler from
-# the release, enabling the full self-hosted compilation pipeline.
 STAGE1_SRCS := $(shell find lyric-compiler lyric-stdlib -name '*.l') scripts/bootstrap.sh
 
-stage1: ## Build the full self-hosted compiler + CLI bundle (.bootstrap/stage1)
+stage0: ## Build the F# stage-0 bootstrap compiler only
+	./scripts/bootstrap.sh --stage 0
+
+stage1: ## Build stage-0 + the full self-hosted compiler + CLI bundle (.bootstrap/stage1)
 	./scripts/bootstrap.sh --stage 1
 	@touch .bootstrap/stage1.stamp
 
@@ -98,7 +96,7 @@ selfhosted-compiler: ## Stage self-hosted compiler DLLs under <libdir>/selfhoste
 
 # ── F# test suites (Expecto console apps) ───────────────────────────────────
 
-test: test-lexer test-parser test-typechecker test-emitter ## Run F# test suites
+test: test-lexer test-parser test-typechecker test-emitter test-cli ## Run every F# test suite
 
 test-lexer: ## Run the lexer test suite
 	dotnet run --project bootstrap/tests/Lyric.Lexer.Tests -c $(BUILD_CONFIG)
@@ -111,6 +109,9 @@ test-typechecker: ## Run the type-checker test suite
 
 test-emitter: ## Run the emitter test suite (includes all self-hosted self-tests)
 	dotnet run --project bootstrap/tests/Lyric.Emitter.Tests -c $(BUILD_CONFIG)
+
+test-cli: ## Run the CLI test suite
+	dotnet run --project bootstrap/tests/Lyric.Cli.Tests -c $(BUILD_CONFIG)
 
 # ── Self-hosted self-tests (fast inner-loop verification) ───────────────────
 # Usage: make self-test NAME=parser   (runs the `<NAME>_self_test_passes` case)

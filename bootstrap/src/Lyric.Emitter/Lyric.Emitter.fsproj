@@ -9,6 +9,7 @@
        making them part of the public Lyric.Emitter API surface. -->
   <ItemGroup>
     <InternalsVisibleTo Include="Lyric.Emitter.Tests" />
+    <InternalsVisibleTo Include="Lyric.Cli.Tests" />
   </ItemGroup>
 
   <ItemGroup>
