@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# bootstrap.sh — three-stage self-hosting bootstrap for the Lyric compiler
+# bootstrap.sh — self-hosting bootstrap for the Lyric compiler
 #
-# Stage 0:  Build the F# bootstrap compiler (lyric-stage0).
+# Stage 0:  Download the latest self-hosted Lyric binary from GitHub releases
+#           (by default), or build the F# bootstrap compiler (if BOOTSTRAP_FROM_RELEASE=0).
+#           The F# bootstrap is on a deletion schedule; released binaries are preferred.
+#
 # Stage 1:  Use stage-0 lyric to compile the Lyric-written compiler packages
 #           (stdlib, Lyric.Lexer, Lyric.Parser, Lyric.TypeChecker,
 #           Lyric.ModeChecker, Lyric.ContractElaborator, Msil.Codegen,
@@ -10,35 +13,22 @@
 #           the full CLI dependency closure (cli/ + ~25 Lyric packages)
 #           and copies the artefacts into `.bootstrap/stage1/`.  These are
 #           the DLLs Track A's AOT entry-point project will reference.
-# Stage 2:  Reproducibility verification, in two parts:
 #
-#           (a) TRUST-ANCHOR GATE (STRICT) — build the full self-hosted stdlib
-#               bundle (`lyric-stdlib/lyric.full.toml`) TWICE via the AOT
-#               `lyric` binary (which routes `--target dotnet` through the
-#               self-hosted `Msil.Bridge`) and assert the two images are
-#               byte-for-byte identical with an exact `cmp`.  The self-hosted
-#               emitter is deterministic by construction — fixed Module MVID
-#               (lowering.l) and zero PE TimeDateStamp (assembler.l), no
-#               wall-clock baked into any heap or resource — so this passes
-#               with no normalization.  This is the property a signed,
-#               reproducible release depends on (Q-dist-001); a regression
-#               here FAILS the build.  See scripts/verify-reproducible-emit.sh.
-#
-#           (b) STAGE-0 DIAGNOSTIC (informational) — compare the stage-1 and
-#               stage-2 F#-emitted CLI-bundle DLLs after precisely zeroing the
-#               intrinsic identity fields (Module MVID via the #GUID heap, PE
-#               TimeDateStamp, PE checksum) using an ECMA-335-aware normalizer.
-#               The F# stage-0 emitter is non-reproducible BY DESIGN — random
-#               MVID, real PE timestamp, and a `DateTime.UtcNow` `build_date`
-#               embedded in `Lyric.SdkVersion` — and is frozen on a deletion
-#               schedule (no new F#), so this part is reported but NEVER fatal.
-#               It exists to track stage-0 drift until the F# path is deleted.
+# Stage 2:  Reproducibility verification: build the full self-hosted stdlib
+#           bundle (`lyric-stdlib/lyric.full.toml`) TWICE via the AOT
+#           `lyric` binary and assert the two images are byte-for-byte identical
+#           with an exact `cmp`.  The self-hosted emitter is deterministic by
+#           construction — fixed Module MVID (lowering.l) and zero PE TimeDateStamp
+#           (assembler.l), no wall-clock baked into any heap or resource.
+#           This is the property a signed, reproducible release depends on (Q-dist-001);
+#           a regression here FAILS the build.  See scripts/verify-reproducible-emit.sh.
 #
 # Usage:
-#   ./scripts/bootstrap.sh              # all stages; stage 2 gate (a) is STRICT
-#   ./scripts/bootstrap.sh --stage 0   # build F# compiler only
+#   ./scripts/bootstrap.sh              # all stages; uses released binary by default
 #   ./scripts/bootstrap.sh --stage 1   # stages 0 + 1
 #   ./scripts/bootstrap.sh --stage 2   # all stages incl. reproducibility gate
+#   ./scripts/bootstrap.sh --no-bootstrap-from-release  # build F# stage-0 instead of
+#                                      # downloading the latest release (for dev/debugging)
 #   SKIP_VERIFY=1 ./scripts/bootstrap.sh  # skip ALL of stage-2 verification
 #   SKIP_CLI_BUNDLE=1 ./scripts/bootstrap.sh  # stage 1 stops after the compiler-package
 #                                              loop; the CLI bundle step is skipped.
@@ -49,6 +39,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$REPO_ROOT/.bootstrap"
+STAGE0_PUBLISH_DIR="$BUILD_DIR/stage0-publish"
 STAGE0_BIN="$BUILD_DIR/stage0/lyric"
 STAGE1_DIR="$BUILD_DIR/stage1"
 STAGE2_DIR="$BUILD_DIR/stage2"
@@ -68,10 +59,16 @@ MAX_STAGE=2
 SKIP_VERIFY="${SKIP_VERIFY:-0}"
 SKIP_CLI_BUNDLE="${SKIP_CLI_BUNDLE:-0}"
 SKIP_COREREF_REWRITE="${SKIP_COREREF_REWRITE:-0}"
+# Bootstrap from the latest release binary by default. To use a locally-built
+# stage-0 compiler instead (for development/debugging), set BOOTSTRAP_FROM_RELEASE=0
+# or use --no-bootstrap-from-release.
+BOOTSTRAP_FROM_RELEASE="${BOOTSTRAP_FROM_RELEASE:-1}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --stage) MAX_STAGE="$2"; shift 2 ;;
+    --bootstrap-from-release) BOOTSTRAP_FROM_RELEASE=1; shift ;;
+    --no-bootstrap-from-release) BOOTSTRAP_FROM_RELEASE=0; shift ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -81,49 +78,173 @@ info() { echo "[bootstrap] $*"; }
 ok() { echo "[bootstrap] OK: $*"; }
 
 # ---------------------------------------------------------------------------
-# Stage 0 — F# bootstrap compiler
+# Download and extract self-hosted binary from latest release
 # ---------------------------------------------------------------------------
-stage0() {
-  info "Stage 0: building F# bootstrap compiler"
-  mkdir -p "$BUILD_DIR/stage0-publish"
-  # `$STAGE0_BIN` is `$BUILD_DIR/stage0/lyric`; create the parent dir
-  # before symlinking into it.
-  mkdir -p "$(dirname "$STAGE0_BIN")"
+try_bootstrap_from_release() {
+  # Detect platform and architecture for downloading the right binary
+  local platform
+  case "$(uname -s)" in
+    Linux)
+      case "$(uname -m)" in
+        x86_64) platform="linux-x64" ;;
+        aarch64) platform="linux-arm64" ;;
+        *) return 1 ;;
+      esac
+      local archive_ext="tar.gz"
+      ;;
+    Darwin)
+      case "$(uname -m)" in
+        x86_64) platform="osx-x64" ;;
+        arm64) platform="osx-arm64" ;;
+        *) return 1 ;;
+      esac
+      local archive_ext="tar.gz"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 
-  # Optional cache reuse (CI): when STAGE0_REUSE_PUBLISHED=1 and a published
-  # binary is already present (restored from an actions/cache keyed on the
-  # exact hash of every F# source), skip the Release publish.  The cache key
-  # is content-addressed with NO prefix fallback, so a restored output is
-  # guaranteed to correspond to the current F# sources; a miss restores
-  # nothing and we rebuild below.  Local dev never sets the flag, so it always
-  # rebuilds and can't be fooled by a stale `.bootstrap/`.
-  if [[ "${STAGE0_REUSE_PUBLISHED:-0}" == "1" \
-        && ( -f "$BUILD_DIR/stage0-publish/lyric" \
-             || -f "$BUILD_DIR/stage0-publish/lyric.dll" ) ]]; then
-    info "  reusing cached stage-0 publish (STAGE0_REUSE_PUBLISHED=1)"
+  info "Attempting to bootstrap from latest release ($platform)..."
+
+  local release_url="https://github.com/nichobbs/lyric-lang/releases/download"
+  local latest_release="latest"
+  local archive_name="lyric-*-${platform}.${archive_ext}"
+
+  # Create temporary directory for download
+  local temp_dir
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/lyric-release.XXXXXX")"
+  trap "rm -rf '$temp_dir'" RETURN
+
+  # Try to download the latest release
+  info "  Downloading $platform binary from GitHub releases..."
+  if command -v curl &>/dev/null; then
+    curl -sSL "${release_url}/${latest_release}/${archive_name}" -o "${temp_dir}/lyric.tar.gz" 2>/dev/null || return 1
+  elif command -v wget &>/dev/null; then
+    wget -q "${release_url}/${latest_release}/${archive_name}" -O "${temp_dir}/lyric.tar.gz" 2>/dev/null || return 1
   else
-    dotnet publish "$COMPILER_DIR/src/Lyric.Cli/Lyric.Cli.fsproj" \
-      --configuration Release \
-      --output "$BUILD_DIR/stage0-publish" \
-      --nologo -v q
+    info "  SKIP: Neither curl nor wget found"
+    return 1
   fi
 
-  # On Linux the published output is a DLL + wrapper script; wire up a
-  # convenience symlink so subsequent stages can call `$STAGE0_BIN`.
-  if [[ -f "$BUILD_DIR/stage0-publish/lyric" ]]; then
-    ln -sf "$BUILD_DIR/stage0-publish/lyric" "$STAGE0_BIN"
+  # Extract to stage0-publish
+  mkdir -p "$BUILD_DIR/stage0-publish"
+  if tar -xzf "${temp_dir}/lyric.tar.gz" -C "$BUILD_DIR/stage0-publish" 2>/dev/null; then
+    info "  Successfully extracted release binary"
+    return 0
+  else
+    info "  Failed to extract release archive"
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Stage 0 — F# bootstrap compiler (or self-hosted binary from release)
+# ---------------------------------------------------------------------------
+stage0() {
+  mkdir -p "$BUILD_DIR/stage0-publish"
+  mkdir -p "$(dirname "$STAGE0_BIN")"
+
+  # Try to download self-hosted binary from latest release if requested
+  if [[ "$BOOTSTRAP_FROM_RELEASE" == "1" ]]; then
+    if try_bootstrap_from_release; then
+      info "Stage 0: using self-hosted binary from release"
+      # Binary is now in stage0-publish, skip F# build
+    else
+      info "Stage 0: release download failed, falling back to F# build"
+      BOOTSTRAP_FROM_RELEASE=0  # disable flag to avoid retrying
+    fi
+  fi
+
+  # Build F# bootstrap compiler if we didn't get a release binary
+  if [[ "$BOOTSTRAP_FROM_RELEASE" == "0" ]]; then
+    info "Stage 0: building F# bootstrap compiler"
+
+    # Optional cache reuse (CI): when STAGE0_REUSE_PUBLISHED=1 and a published
+    # binary is already present (restored from an actions/cache keyed on the
+    # exact hash of every F# source), skip the Release publish.  The cache key
+    # is content-addressed with NO prefix fallback, so a restored output is
+    # guaranteed to correspond to the current F# sources; a miss restores
+    # nothing and we rebuild below.  Local dev never sets the flag, so it always
+    # rebuilds and can't be fooled by a stale `.bootstrap/`.
+    if [[ "${STAGE0_REUSE_PUBLISHED:-0}" == "1" \
+          && ( -f "$BUILD_DIR/stage0-publish/lyric" \
+               || -f "$BUILD_DIR/stage0-publish/lyric.dll" ) ]]; then
+      info "  reusing cached stage-0 publish (STAGE0_REUSE_PUBLISHED=1)"
+    else
+      dotnet publish "$COMPILER_DIR/src/Lyric.Cli/Lyric.Cli.fsproj" \
+        --configuration Release \
+        --output "$BUILD_DIR/stage0-publish" \
+        --nologo -v q
+    fi
+  fi
+
+  # Publish output handling:
+  #   * Linux/macOS: native executable "lyric" (no extension) + runtimeconfig.json
+  #   * Windows (PowerShell): native executable "lyric.exe" + runtimeconfig.json
+  #   * Windows (Git Bash): bash wrapper "lyric" + framework-dependent "lyric.dll"
+  #
+  # The invoke_stage0 helper checks for .dll and .exe extensions, so we copy/symlink
+  # accordingly. Always copy (never symlink) to ensure Windows Git Bash wrapper works.
+  if [[ -f "$BUILD_DIR/stage0-publish/lyric.exe" ]]; then
+    # Windows native executable
+    mkdir -p "$(dirname "$STAGE0_BIN")"
+    cp "$BUILD_DIR/stage0-publish/lyric.exe" "$STAGE0_BIN.exe"
+    if [[ -f "$BUILD_DIR/stage0-publish/lyric.runtimeconfig.json" ]]; then
+      cp "$BUILD_DIR/stage0-publish/lyric.runtimeconfig.json" "$STAGE0_BIN.runtimeconfig.json"
+      info "  copied runtimeconfig.json"
+    else
+      info "  WARNING: lyric.runtimeconfig.json not found in stage0-publish"
+    fi
   elif [[ -f "$BUILD_DIR/stage0-publish/lyric.dll" ]]; then
-    # Fallback: wrap with dotnet exec
-    cat > "$STAGE0_BIN" <<'WRAPPER'
-#!/usr/bin/env bash
-exec dotnet "$(dirname "$0")/stage0-publish/lyric.dll" "$@"
-WRAPPER
-    chmod +x "$STAGE0_BIN"
+    # Windows Git Bash (wrapper script) or framework-dependent DLL-only case
+    cp "$BUILD_DIR/stage0-publish/lyric.dll" "$STAGE0_BIN.dll"
+    # Copy the wrapper script if present (for Git Bash completeness, but we'll use the DLL)
+    if [[ -f "$BUILD_DIR/stage0-publish/lyric" ]]; then
+      cp "$BUILD_DIR/stage0-publish/lyric" "$STAGE0_BIN"
+    fi
+  elif [[ -f "$BUILD_DIR/stage0-publish/lyric" ]]; then
+    # Unix native executable
+    mkdir -p "$(dirname "$STAGE0_BIN")"
+    cp "$BUILD_DIR/stage0-publish/lyric" "$STAGE0_BIN"
+    # Copy runtime config if present (needed for self-contained apps)
+    if [[ -f "$BUILD_DIR/stage0-publish/lyric.runtimeconfig.json" ]]; then
+      cp "$BUILD_DIR/stage0-publish/lyric.runtimeconfig.json" "$STAGE0_BIN.runtimeconfig.json"
+      info "  copied runtimeconfig.json"
+    else
+      info "  WARNING: lyric.runtimeconfig.json not found in stage0-publish"
+    fi
   else
     die "publish did not produce a lyric binary in $BUILD_DIR/stage0-publish"
   fi
 
   ok "Stage 0 complete — $STAGE0_BIN"
+
+  # Verify the binary exists in one of its expected forms and runtimeconfig.json if needed
+  if [[ -f "$STAGE0_BIN" ]]; then
+    info "Stage 0 binary: $(ls -lh "$STAGE0_BIN")"
+    if [[ -f "$STAGE0_BIN.runtimeconfig.json" ]]; then
+      info "  with runtimeconfig.json: $(ls -lh "$STAGE0_BIN.runtimeconfig.json")"
+    else
+      info "  WARNING: runtimeconfig.json NOT found at $STAGE0_BIN.runtimeconfig.json"
+    fi
+  elif [[ -f "$STAGE0_BIN.dll" ]]; then
+    info "Stage 0 DLL: $(ls -lh "$STAGE0_BIN.dll")"
+    if [[ -f "$STAGE0_BIN" ]]; then
+      info "Stage 0 wrapper: $(ls -lh "$STAGE0_BIN")"
+    fi
+  elif [[ -f "$STAGE0_BIN.exe" ]]; then
+    info "Stage 0 EXE: $(ls -lh "$STAGE0_BIN.exe")"
+    if [[ -f "$STAGE0_BIN.runtimeconfig.json" ]]; then
+      info "  with runtimeconfig.json: $(ls -lh "$STAGE0_BIN.runtimeconfig.json")"
+    else
+      info "  WARNING: runtimeconfig.json NOT found at $STAGE0_BIN.runtimeconfig.json"
+    fi
+  else
+    die "Stage 0 binary not found at $STAGE0_BIN, $STAGE0_BIN.dll, or $STAGE0_BIN.exe"
+  fi
+  info "stage0-publish directory contents:"
+  ls -lh "$BUILD_DIR/stage0-publish/" || true
 }
 
 # ---------------------------------------------------------------------------
@@ -133,6 +254,46 @@ stage1() {
   info "Stage 1: compiling Lyric compiler packages with stage-0 lyric"
   mkdir -p "$STAGE1_DIR"
 
+  # Helper to invoke stage-0, handling native binaries, EXE files, and DLLs.
+  # The binary is in STAGE0_PUBLISH_DIR with its runtimeconfig.json, so we invoke it
+  # from there to avoid path issues with framework-dependent apps.
+  # On Windows Git Bash, dotnet publish creates a bash wrapper + DLL, so we need
+  # to invoke the DLL via dotnet. On Windows proper (PowerShell), we get an EXE.
+  # On Unix, we get a native executable.
+  invoke_stage0() {
+    local bin_path
+    local actual_file
+
+    # Check what type of file we actually have in stage0-publish
+    if [[ -f "$STAGE0_PUBLISH_DIR/lyric.exe" ]]; then
+      actual_file="$STAGE0_PUBLISH_DIR/lyric.exe"
+    elif [[ -f "$STAGE0_PUBLISH_DIR/lyric.dll" ]]; then
+      actual_file="$STAGE0_PUBLISH_DIR/lyric.dll"
+    elif [[ -f "$STAGE0_PUBLISH_DIR/lyric" ]]; then
+      actual_file="$STAGE0_PUBLISH_DIR/lyric"
+    else
+      die "Stage 0 binary not found in $STAGE0_PUBLISH_DIR (checked for .exe, .dll, and native binary)"
+    fi
+
+    bin_path="$actual_file"
+
+    # For Windows files (EXE/DLL), convert Unix path to Windows path
+    if [[ "$actual_file" == *.exe ]] || [[ "$actual_file" == *.dll ]]; then
+      if command -v cygpath &>/dev/null; then
+        bin_path="$(cygpath -w "$actual_file")"
+      fi
+      # If it's a DLL, invoke via dotnet; if it's an EXE, invoke directly
+      if [[ "$actual_file" == *.dll ]]; then
+        dotnet "$bin_path" "$@"
+      else
+        "$bin_path" "$@"
+      fi
+    else
+      # Native binary on Unix
+      "$actual_file" "$@"
+    fi
+  }
+
   # Build the stdlib bundle first (multi-package manifest).
   # Track A A1.4: the F# user-facing `lyric build --manifest`
   # dispatcher is gone; stage 1 drives the multi-package compile
@@ -140,7 +301,7 @@ stage1() {
   # which reads `lyric.toml` and feeds the package list straight
   # to `Emitter.emitProject`.
   info "  compiling stdlib bundle"
-  "$STAGE0_BIN" --internal-manifest-build "$STDLIB_DIR/lyric.toml" \
+  invoke_stage0 --internal-manifest-build "$STDLIB_DIR/lyric.toml" \
     -o "$STAGE1_DIR/Lyric.Stdlib.dll" --target dotnet 2>&1 || \
     die "stdlib bundle build failed"
 
@@ -233,7 +394,7 @@ EOF
   # of populating the per-process stdlib cache with every Lyric package
   # the driver transitively imports.
   LYRIC_STD_PATH="$STAGE1_DIR" \
-    "$STAGE0_BIN" --internal-build "$driver_dir/driver.l" -o "$driver_out" \
+    invoke_stage0 --internal-build "$driver_dir/driver.l" -o "$driver_out" \
     --target dotnet 2>&1 || \
     die "stage-1 CLI-bundle driver compile failed"
 
