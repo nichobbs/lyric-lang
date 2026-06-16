@@ -108,18 +108,14 @@ stage0() {
       --nologo -v q
   fi
 
-  # On Linux the published output is a DLL + wrapper script; wire up a
-  # convenience symlink so subsequent stages can call `$STAGE0_BIN`.
+  # On Linux the published output is a native binary. On Windows, it's a DLL
+  # that will be invoked via dotnet in the invoke_stage0 helper.
   if [[ -f "$BUILD_DIR/stage0-publish/lyric" ]]; then
     ln -sf "$BUILD_DIR/stage0-publish/lyric" "$STAGE0_BIN"
   elif [[ -f "$BUILD_DIR/stage0-publish/lyric.dll" ]]; then
-    # Fallback: wrap with dotnet exec (use absolute path for Windows compat)
-    local dll_path="$BUILD_DIR/stage0-publish/lyric.dll"
-    cat > "$STAGE0_BIN" <<WRAPPER
-#!/usr/bin/env bash
-exec dotnet "$dll_path" "\$@"
-WRAPPER
-    chmod +x "$STAGE0_BIN"
+    # On Windows, stage-0 is a DLL; symlink it for consistency, then invoke
+    # via dotnet in the invoke_stage0 helper (see stage1 function).
+    ln -sf "$BUILD_DIR/stage0-publish/lyric.dll" "$STAGE0_BIN"
   else
     die "publish did not produce a lyric binary in $BUILD_DIR/stage0-publish"
   fi
@@ -134,6 +130,16 @@ stage1() {
   info "Stage 1: compiling Lyric compiler packages with stage-0 lyric"
   mkdir -p "$STAGE1_DIR"
 
+  # Helper to invoke stage-0, handling both native binaries and DLL wrappers.
+  # On Windows the published output is a DLL; use dotnet directly.
+  invoke_stage0() {
+    if [[ "$STAGE0_BIN" == *.dll ]]; then
+      dotnet "$STAGE0_BIN" "$@"
+    else
+      "$STAGE0_BIN" "$@"
+    fi
+  }
+
   # Build the stdlib bundle first (multi-package manifest).
   # Track A A1.4: the F# user-facing `lyric build --manifest`
   # dispatcher is gone; stage 1 drives the multi-package compile
@@ -141,7 +147,7 @@ stage1() {
   # which reads `lyric.toml` and feeds the package list straight
   # to `Emitter.emitProject`.
   info "  compiling stdlib bundle"
-  "$STAGE0_BIN" --internal-manifest-build "$STDLIB_DIR/lyric.toml" \
+  invoke_stage0 --internal-manifest-build "$STDLIB_DIR/lyric.toml" \
     -o "$STAGE1_DIR/Lyric.Stdlib.dll" --target dotnet 2>&1 || \
     die "stdlib bundle build failed"
 
@@ -234,7 +240,7 @@ EOF
   # of populating the per-process stdlib cache with every Lyric package
   # the driver transitively imports.
   LYRIC_STD_PATH="$STAGE1_DIR" \
-    "$STAGE0_BIN" --internal-build "$driver_dir/driver.l" -o "$driver_out" \
+    invoke_stage0 --internal-build "$driver_dir/driver.l" -o "$driver_out" \
     --target dotnet 2>&1 || \
     die "stage-1 CLI-bundle driver compile failed"
 
