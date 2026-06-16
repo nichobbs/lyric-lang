@@ -33,6 +33,17 @@ pub func hostReadAllText(path: in String): String = ()
 pub func hostWriteAllText(path: in String, contents: in String): Unit = ()
 
 // =====================================================================
+// File metadata — modification time via DateTime objects.
+// =====================================================================
+extern type DateTime = "System.DateTime"
+
+@externTarget("System.IO.File.GetLastWriteTimeUtc")
+pub func hostGetLastWriteTimeUtc(path: in String): DateTime = ()
+
+@externTarget("System.DateTime.op_GreaterThan")
+pub func hostDateTimeGreaterThan(a: in DateTime, b: in DateTime): Bool = ()
+
+// =====================================================================
 // Directory creation — `CreateDirectory` returns `DirectoryInfo` in
 // the BCL; `Std.File` only needs the success/throw signal.
 // =====================================================================

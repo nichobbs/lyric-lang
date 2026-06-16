@@ -18,6 +18,18 @@ import Std.Collections
 import Std.Errors
 import Std.FileHost
 
+/// File metadata: last write time (stored as DateTime for comparison).
+extern type DateTime = "System.DateTime"
+
+pub record FileStat {
+  modifiedAt: DateTime
+}
+
+/// Compare two file modification times. Returns true if `a` is newer than `b`.
+pub func fileStatIsNewer(a: in FileStat, b: in FileStat): Bool {
+  hostDateTimeGreaterThan(a.modifiedAt, b.modifiedAt)
+}
+
 /// Probe whether a regular file exists at `path`.
 ///
 /// Empty / invalid paths return false (matches common existence-probe
@@ -257,6 +269,28 @@ pub func listDirs(dir: in String): Result[List[String], IOError] {
     Ok(value = acc)
   } catch Bug as b {
     Err(error = IoError(path = dir, message = b.message))
+  }
+}
+
+/// Get file modification time for `path`.
+///
+/// Returns `Err(InvalidPath)` for empty paths, `Err(FileNotFound)` if
+/// the host reports the file is missing, and `Err(IoError)` for any
+/// other host failure (permission, device, …).
+@stable(since = "1.0")
+pub func stat(path: in String): Result[FileStat, IOError] {
+  if path.length == 0 {
+    return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
+  }
+  return try {
+    val modifiedAt = hostGetLastWriteTimeUtc(path)
+    Ok(value = FileStat(modifiedAt = modifiedAt))
+  } catch Bug as b {
+    if b.message.startsWith("Could not find file") or b.message.contains("FileNotFoundException") or b.message.contains("DirectoryNotFoundException") {
+      Err(error = FileNotFound(path = path))
+    } else {
+      Err(error = IoError(path = path, message = b.message))
+    }
   }
 }
 

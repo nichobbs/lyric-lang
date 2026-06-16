@@ -26,15 +26,12 @@ import Lyric.Emitter as Emitter
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public API
 // ─────────────────────────────────────────────────────────────────────────────
-
 /// Resolve all { workspace = true } dependencies in a manifest, building them
 /// as needed.  Returns (dllPaths, buildErrors).
 /// dllPaths is a list of "name\tdllPath" strings, matching the format used for
 /// path dependencies.  buildErrors is True if any build failed.
 pub func buildWorkspaceDeps(
-  manifest: in Mf.Manifest,
-  mfPath: in String,
-  target: in Emitter.CompileTarget,
+  manifest: in Mf.Manifest, mfPath: in String, target: in Emitter.CompileTarget
 ): (List[String], Bool) {
   val result: List[String] = newList()
   var hadError = false
@@ -50,6 +47,7 @@ pub func buildWorkspaceDeps(
     }
   }
 
+  val buildStack: List[String] = newList()
   val mfDir = Path.dirname(mfPath)
   var di = 0
   while di < manifest.deps.count {
@@ -59,7 +57,7 @@ pub func buildWorkspaceDeps(
         // Resolve the dependency name to its directory within the workspace.
         match Ws.resolveDep(dep.name, wsCtx) {
           case Some(depDir) -> {
-            val buildResult = buildWorkspaceDep(dep.name, depDir, target)
+            val buildResult = buildWorkspaceDep(dep.name, depDir, target, versionOpt, buildStack)
             match buildResult {
               case Ok(dllPath) -> {
                 result.add(dep.name + "\t" + dllPath)
@@ -71,10 +69,7 @@ pub func buildWorkspaceDeps(
             }
           }
           case None -> {
-            printErr(
-              "build: workspace dep '" + dep.name +
-                "' not found; check workspace root and member list"
-            )
+            printErr("build: workspace dep '" + dep.name + "' not found; check workspace root and member list")
             hadError = true
           }
         }
@@ -82,7 +77,7 @@ pub func buildWorkspaceDeps(
       case _ -> ()
     }
     di += 1
-  }
+  };
 
   (result, hadError)
 }
@@ -90,14 +85,30 @@ pub func buildWorkspaceDeps(
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Private helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
 /// Build a single workspace dependency and return its DLL path.
 /// Returns Err(error) on any failure.
+/// buildStack tracks the dependency chain to detect circular dependencies.
+/// versionConstraint (if Some) is checked against the actual package version.
 func buildWorkspaceDep(
   depName: in String,
   depDir: in String,
   target: in Emitter.CompileTarget,
+  versionConstraint: in Option[String],
+  buildStack: in List[String],
 ): Result[String, String] {
+  // Check for circular dependencies: is depName already being built?
+  var isCycle = false
+  var ci = 0
+  while ci < buildStack.count {
+    if buildStack[ci] == depName {
+      isCycle = true
+    }
+    ci += 1
+  }
+  if isCycle {
+    return Err(error = "circular dependency detected: " + depName + " is already being built")
+  }
+
   val depToml = Path.join(depDir, "lyric.toml")
 
   // Check that the manifest exists.
@@ -115,6 +126,17 @@ func buildWorkspaceDep(
     case Ok(m) -> m
   }
 
+  // Validate version constraint if specified.
+  match versionConstraint {
+    case Some(expectedVersion) -> {
+      val actualVersion = depMf.packageSection.version
+      if actualVersion != expectedVersion {
+        return Err(error = "version mismatch: expected " + expectedVersion + ", found " + actualVersion)
+      }
+    }
+    case None -> ()
+  }
+
   // Determine the DLL filename and path.
   val dllName: String = match depMf.project {
     case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }
@@ -123,25 +145,35 @@ func buildWorkspaceDep(
   val depBinDir = Path.join(depDir, "bin")
   val dllPath = Path.join(depBinDir, dllName)
 
-  // If the DLL exists and is up-to-date, skip the build.
-  // (A full modification-time check is deferred; for now, existence check is sufficient.)
-  if File.fileExists(dllPath) {
-    return Ok(value = dllPath)
+  // Check if DLL exists and is up-to-date (not stale).
+  val dllExists = File.fileExists(dllPath)
+  if dllExists {
+    val dllIsStale = checkDllIsStale(dllPath, depToml, depDir)
+    if not dllIsStale {
+      return Ok(value = dllPath)
+    }
   }
 
   // The DLL is missing or stale. Recursively build this dependency and any of
-  // its transitive dependencies.
+  // its transitive dependencies. Add depName to the build stack to detect cycles.
+  buildStack.add(depName)
   Console.println("build: building workspace dep '" + depName + "' (" + depDir + ") ...")
 
   val buildExit = buildProject(
     depToml,
-    None,  // use the manifest's default output location
+    None,
+    // use the manifest's default output location
     target,
-    newList(),  // no CLI features
-    false,      // use defaults
-    false,      // no --all-features
-    false       // allow restore
-  )
+    newList(),
+    // no CLI features
+    false,
+    // use defaults
+    false,
+    // no --all-features
+    false
+  )       // allow restore
+
+  buildStack.removeAt(buildStack.count - 1)
 
   if buildExit != 0 {
     return Err(error = "build failed (exit code " + toString(buildExit) + ")")
@@ -152,5 +184,57 @@ func buildWorkspaceDep(
     Ok(value = dllPath)
   } else {
     Err(error = "build succeeded but DLL not found at " + dllPath)
+  }
+}
+
+/// Check if a DLL is stale by comparing its modification time to source files.
+/// Returns true if the DLL is older than the manifest or any source files.
+func checkDllIsStale(dllPath: in String, manifestPath: in String, sourceDir: in String): Bool {
+  // Check if DLL exists.
+  if not File.fileExists(dllPath) {
+    return true
+  }
+
+  // Try to get DLL and manifest modification times.
+  val dllStatRes = File.stat(dllPath)
+  val manifestStatRes = File.stat(manifestPath)
+  val filesRes = File.listFilesRecursive(sourceDir)
+
+  // Check DLL stat for errors.
+  match dllStatRes {
+    case Err(e) -> return true
+    case Ok(dllStat) -> {
+      // Check manifest stat for errors.
+      match manifestStatRes {
+        case Err(e) -> return true
+        case Ok(manifestStat) -> {
+          // If manifest is newer than DLL, it's stale.
+          if File.fileStatIsNewer(manifestStat, dllStat) {
+            return true
+          }
+
+          // Check if any .l source files are newer than the DLL.
+          match filesRes {
+            case Err(e) -> return true
+            case Ok(files) -> {
+              for f in files.toArray() {
+                if Str.endsWith(f, ".l") {
+                  val fstatRes = File.stat(f)
+                  match fstatRes {
+                    case Err(e) -> return true
+                    case Ok(fstat) -> {
+                      if File.fileStatIsNewer(fstat, dllStat) {
+                        return true
+                      }
+                    }
+                  }
+                }
+              }
+              false
+            }
+          }
+        }
+      }
+    }
   }
 }
