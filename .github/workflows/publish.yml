@@ -68,41 +68,30 @@ jobs:
         with:
           global-json-file: bootstrap/global.json
 
-      - name: Build stage-1 (F# bootstrap → self-hosted DLLs)
-        shell: bash
-        run: ./scripts/bootstrap.sh --stage 1
-
       - name: Resolve version
         id: ver
         shell: bash
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            # Remove 'v' prefix from tag (e.g., v0.1.0 -> 0.1.0)
             echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
           else
-            # Manual dispatch: use version from input, ensuring no 'v' prefix for NuGet
-            version="${{ github.event.inputs.version }}"
-            version="${version#v}"  # Remove leading 'v' if present
-            echo "VERSION=${version:-0.1.0-rc}" >> "$GITHUB_OUTPUT"
+            echo "VERSION=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Restore
         working-directory: bootstrap
-        run: |
-          dotnet restore Bootstrap.sln --runtime ${{ matrix.rid }}
-          dotnet restore src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj --runtime ${{ matrix.rid }}
+        run: dotnet restore Bootstrap.sln --runtime ${{ matrix.rid }}
 
       - name: Publish self-contained binary
         shell: bash
         working-directory: bootstrap
         run: |
-          dotnet publish src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
+          dotnet publish src/Lyric.Cli/Lyric.Cli.fsproj \
             --configuration Release \
             --runtime ${{ matrix.rid }} \
             --self-contained true \
             -p:PublishSingleFile=true \
             -p:EnableCompressionInSingleFile=true \
-            -p:PublishAot=false \
             -p:Version=${{ steps.ver.outputs.VERSION }} \
             --output publish/${{ matrix.rid }} \
             --no-restore
@@ -241,40 +230,29 @@ jobs:
         with:
           global-json-file: bootstrap/global.json
 
-      - name: Build stage-1 (F# bootstrap → self-hosted DLLs)
-        shell: bash
-        run: ./scripts/bootstrap.sh --stage 1
-
       - name: Resolve version
         id: ver
         shell: bash
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            # Remove 'v' prefix from tag (e.g., v0.1.0 -> 0.1.0)
             echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
           else
-            # Manual dispatch: use version from input, ensuring no 'v' prefix for NuGet
-            version="${{ github.event.inputs.version }}"
-            version="${version#v}"  # Remove leading 'v' if present
-            echo "VERSION=${version:-0.1.0-rc}" >> "$GITHUB_OUTPUT"
+            echo "VERSION=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Restore
         working-directory: bootstrap
-        run: |
-          dotnet restore Bootstrap.sln
-          dotnet restore src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj
+        run: dotnet restore Bootstrap.sln
 
       - name: Pack NuGet global tool
         working-directory: bootstrap
         run: |
-          dotnet pack src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
+          dotnet pack src/Lyric.Cli/Lyric.Cli.fsproj \
             --configuration Release \
             -p:PackageVersion=${{ steps.ver.outputs.VERSION }} \
             -p:PackAsTool=true \
             -p:ToolCommandName=lyric \
             -p:PackageId=lyric \
-            -p:PublishAot=false \
             --output nupkgs \
             --no-restore
 
