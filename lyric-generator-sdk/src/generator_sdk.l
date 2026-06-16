@@ -383,8 +383,8 @@ pub func parseResponse(json: in String): Result[GeneratorResponse, String] {
   Ok(
     value = GeneratorResponse(
       lyricSource = lyricSource,
-      additionalImports = additionalImports.toSlice(),
-      diagnostics = diagnostics.toSlice()
+      additionalImports = additionalImports.toArray(),
+      diagnostics = diagnostics.toArray()
     )
   )
 }

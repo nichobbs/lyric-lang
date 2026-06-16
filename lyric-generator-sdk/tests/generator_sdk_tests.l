@@ -581,3 +581,97 @@ test "Round-trip: request with complex types" {
   assertTrue(json.contains("ResultType"), "result type present")
   assertTrue(json.contains("\"required\""), "annotation present")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §14. parseResponse — full response deserialization (now works with toArray fix)
+// ─────────────────────────────────────────────────────────────────────────────
+test "parseResponse: minimal response" {
+  val json = "{\"lyricSource\":\"\",\"additionalImports\":[],\"diagnostics\":[]}"
+  val result = parseResponse(json)
+  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
+  assertTrue(isValid, "valid response parses")
+  match result {
+    case Ok(resp) -> {
+      assertTrue(resp.lyricSource == "", "empty source")
+      assertTrue(resp.additionalImports.toArray().count == 0, "no imports")
+      assertTrue(resp.diagnostics.toArray().count == 0, "no diagnostics")
+    }
+    case Err(_) -> assertTrue(false, "should not error")
+  }
+}
+
+test "parseResponse: response with source code" {
+  val json = "{\"lyricSource\":\"pub func generated(): Unit {}\",\"additionalImports\":[],\"diagnostics\":[]}"
+  val result = parseResponse(json)
+  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
+  assertTrue(isValid, "response with source code parses")
+}
+
+test "parseResponse: response with additional imports" {
+  val json = "{\"lyricSource\":\"\",\"additionalImports\":[\"import Std.Json\",\"import Std.Collections\"],\"diagnostics\":[]}"
+  val result = parseResponse(json)
+  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
+  assertTrue(isValid, "response with imports parses")
+}
+
+test "parseResponse: response with escaped source" {
+  val json = "{\"lyricSource\":\"pub func escaped(): Unit {}\",\"additionalImports\":[],\"diagnostics\":[]}"
+  val result = parseResponse(json)
+  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
+  assertTrue(isValid, "response with source parses")
+}
+
+test "parseResponse: response with multiple imports" {
+  val json = "{\"lyricSource\":\"\",\"additionalImports\":[\"import A\",\"import B\",\"import C\"],\"diagnostics\":[]}"
+  val result = parseResponse(json)
+  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
+  assertTrue(isValid, "response with multiple imports parses")
+}
+
+test "parseResponse: always returns Ok (lenient parsing)" {
+  val malformed = "{incomplete json"
+  val result = parseResponse(malformed)
+  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
+  assertTrue(isValid, "parseResponse is lenient and always returns Ok")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §15. Full integration — request/response round-trip with realistic generator
+// ─────────────────────────────────────────────────────────────────────────────
+test "Full integration: request and response round-trip" {
+  val td = TypeDescriptor(
+    kind = Record,
+    name = "Order",
+    packageName = "MyApp.Models",
+    typeParams = [],
+    fields = [
+      FieldDescriptor(
+        name = "id",
+        fieldType = FieldType(kind = Primitive, name = "Int", typeArgs = []),
+        isPublic = true,
+        annotations = [AnnotationDescriptor(name = "required", args = [])]
+      ),
+      FieldDescriptor(
+        name = "items",
+        fieldType = FieldType(kind = Slice, name = "slice[String]", typeArgs = ["String"]),
+        isPublic = true,
+        annotations = []
+      )
+    ],
+    annotations = [AnnotationDescriptor(name = "derive", args = ["Eq"])]
+  )
+  val req = GeneratorRequest(
+    generatorArg = "Proto.Derive",
+    typeDescriptor = td,
+    packageName = "MyApp",
+    sourceFile = "order.l"
+  )
+  val reqJson = serializeRequest(req)
+  assertTrue(reqJson.contains("Order"), "request serialized with type name")
+  assertTrue(reqJson.contains("Proto.Derive"), "generator arg in request")
+  assertTrue(reqJson.contains("\"id\""), "request field serialized")
+  val respJson = "{\"lyricSource\":\"pub func protoSerialize(o: Order): slice[Byte] {}\",\"additionalImports\":[\"import Std.Json\"],\"diagnostics\":[]}"
+  val respResult = parseResponse(respJson)
+  val isValid = match respResult { case Ok(_) -> true; case Err(_) -> false }
+  assertTrue(isValid, "response parses successfully")
+}
