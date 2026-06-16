@@ -21,6 +21,24 @@ import Lyric.CfgGate as CfgGate
 import Std.Time as Time
 import Std.Format as Format
 
+// Helper to extract build kind from manifest if available, defaulting to "lib".
+func readBuildKindFromManifest(manifestOpt: in Option[String]): String {
+  match manifestOpt {
+    case None -> "lib"
+    case Some(mfPath) -> {
+      match File.readText(mfPath) {
+        case Err(_) -> "lib"
+        case Ok(mfText) -> {
+          match Mf.parseManifest(mfText, mfPath) {
+            case Err(_) -> "lib"
+            case Ok(mf) -> getBuildKind(mf)
+          }
+        }
+      }
+    }
+  }
+}
+
 // Compile `sourcePath` to a DLL at `outPath`.
 // Returns the exit code: 0 on success, 1 on error.
 // `manifestPath` is forwarded to the generator pre-processor so custom
@@ -272,9 +290,8 @@ func cmdBuild(argv: in slice[String]): Int {
     case None -> {
       val dir = Path.dirname(sourcePath)
       val stem = stemOf(Path.basename(sourcePath), 2)  // strip ".l"
-      // Default output extension is target-aware: a `--target jvm` build
-      // produces a runnable JAR, a `--target dotnet` build a managed DLL.
-      val ext = match target { case Jvm -> ".jar"; case Dotnet -> ".dll" }
+      val buildKind = readBuildKindFromManifest(manifestArg)
+      val ext = outputExt(target, buildKind)
       Path.join(dir, stem + ext)
     }
   }
@@ -644,10 +661,11 @@ func buildProject(
   }
 
   val mfDir = Path.dirname(mfPath)
+  val buildKind = getBuildKind(manifest)
   val outPath = match explicitOut {
     case Some(o) -> o
     case None -> {
-      val ext = match target { case Jvm -> ".jar"; case Dotnet -> ".dll" }
+      val ext = outputExt(target, buildKind)
       val stem = match proj.outputAssembly { case Some(s) -> s; case None -> proj.name + ext }
       Path.join(Path.join(mfDir, "bin"), stem)
     }
@@ -951,8 +969,11 @@ func buildProject(
 
 // Compute the default output artifact path for a project build (no explicit -o).
 // Mirrors the extension logic in buildProject so runProjectOnce finds the file.
-func projectBinOutputPath(mfDir: in String, proj: in ProjectSection, target: in CompileTarget): String {
-  val ext = match target { case Jvm -> ".jar"; case Dotnet -> ".dll" }
+// `buildKind` comes from the manifest's [build] section, default "lib".
+func projectBinOutputPath(
+  mfDir: in String, proj: in ProjectSection, target: in CompileTarget, buildKind: in String
+): String {
+  val ext = outputExt(target, buildKind)
   val stem = match proj.outputAssembly { case Some(s) -> s; case None -> proj.name + ext }
   Path.join(Path.join(mfDir, "bin"), stem)
 }

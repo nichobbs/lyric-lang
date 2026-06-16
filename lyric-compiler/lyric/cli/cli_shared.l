@@ -86,6 +86,7 @@ import Lyric.Lexer
 import Lyric.Workspace as Ws
 import Lyric.Lockfile as LF
 import Lyric.Discovery as Disc
+import Lyric.Emitter as Emitter
 
 func VERSION(): String {
   "0.1.0"
@@ -234,6 +235,30 @@ func stemOf(base: in String, extLen: in Int): String {
     base.substring(0, n - extLen)
   } else {
     base
+  }
+}
+
+// Return the output file extension for a given target and build kind.
+// For Dotnet: ".dll" if kind="lib" (default), ".exe" if kind="exe"
+// For Jvm: ".jar" (kind is currently a no-op)
+func outputExt(target: in Emitter.CompileTarget, kind: in String): String {
+  match target {
+    case Emitter.Dotnet -> {
+      if kind == "exe" {
+        ".exe"
+      } else {
+        ".dll"
+      }
+    }
+    case Emitter.Jvm -> ".jar"
+  }
+}
+
+// Return the build kind from a manifest's [build] section, defaulting to "lib".
+func getBuildKind(m: in Mf.Manifest): String {
+  match m.build {
+    case Some(section) -> section.kind
+    case None -> "lib"
   }
 }
 

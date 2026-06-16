@@ -8,6 +8,7 @@
 //!   [dependencies]      — map of package-name -> dep-source (string, inline-table)
 //!   [nuget]             — map of NuGet-id -> version string
 //!   [nuget.options]     — target TFM and allow_native flag
+//!   [build]             — output kind configuration (kind: "lib" or "exe")
 //!   [workspace]         — workspace root declaration (exclude list, overrides)
 //!   [workspace.overrides] — per-package path overrides for fork/patch workflows
 //!   [registry]          — custom registry feed URLs
@@ -178,6 +179,13 @@ pub record RegistryConfig {
   jvm: Option[String]
 }
 
+/// `[build]` section for output kind configuration.
+/// For Dotnet target: `kind = "lib"` produces .dll (default), `kind = "exe"` produces .exe
+/// (both runnable via `dotnet exec <file>`). For Jvm target: kind is currently a no-op.
+pub record BuildSection {
+  kind: String
+}
+
 /// Parsed form of a virtual workspace root (`lyric.toml` with `[workspace]`
 /// but no `[package]`).
 pub record WorkspaceRoot {
@@ -194,6 +202,8 @@ pub record Manifest {
   nuget: Option[NugetSection]
   maven: Option[MavenSection]
   features: Option[FeaturesSection]
+  /// Non-None when this manifest also declares a `[build]` table.
+  build: Option[BuildSection]
   /// Non-None when this manifest also declares a `[workspace]` table.
   workspace: Option[WorkspaceSection]
   registry: Option[RegistryConfig]
@@ -768,6 +778,32 @@ func assembleProject(entries: in List[Entry]): Option[ProjectSection] {
   )
 }
 
+func assembleBuild(entries: in List[Entry]): Result[Option[BuildSection], ManifestError] {
+  if not hasSection(entries, "build") {
+    return Ok(value = None)
+  }
+  match findString(entries, "build", "kind") {
+    case Some(kind) -> {
+      // Validate: kind must be one of "lib" or "exe"
+      if kind == "lib" or kind == "exe" {
+        Ok(value = Some(value = BuildSection(kind = kind)))
+      } else {
+        Err(
+          error = InvalidField(
+            section = "build",
+            field = "kind",
+            message = "must be \"lib\" or \"exe\", got \"" + kind + "\""
+          )
+        )
+      }
+    }
+    case None -> {
+      // Default to "lib" when [build] exists but kind is missing
+      Ok(value = Some(value = BuildSection(kind = "lib")))
+    }
+  }
+}
+
 // ── Inline table helpers ─────────────────────────────────────────────────────
 func findInlineStr(pairs: in List[InlinePair], key: in String): Option[String] {
   var i = 0
@@ -1123,7 +1159,7 @@ func assembleRegistry(entries: in List[Entry]): Option[RegistryConfig] {
 pub func parseManifest(text: in String, filePath: in String): Result[Manifest, ManifestError] {
   match collectEntries(text, filePath) {
     case Err(e) -> Err(error = e)
-    case Ok(entries) -> match assemblePackage(entries) { case Err(e) -> Err(error = e); case Ok(pkg) -> { val project = assembleProject(entries); val ws = assembleWorkspace(entries); val reg = assembleRegistry(entries); match assembleNuget(entries) { case Err(e) -> Err(error = e); case Ok(nuget) -> match assembleDeps(entries) { case Err(e) -> Err(error = e); case Ok(deps) -> match assembleFeatures(entries) { case Err(e) -> Err(error = e); case Ok(featuresOpt) -> match assembleMaven(entries) { case Err(e) -> Err(error = e); case Ok(mavenOpt) -> Ok(value = Manifest(filePath = filePath, packageSection = pkg, project = project, deps = deps, nuget = nuget, maven = mavenOpt, features = featuresOpt, workspace = ws, registry = reg)) } } } } } }
+    case Ok(entries) -> match assemblePackage(entries) { case Err(e) -> Err(error = e); case Ok(pkg) -> { val project = assembleProject(entries); val ws = assembleWorkspace(entries); val reg = assembleRegistry(entries); match assembleNuget(entries) { case Err(e) -> Err(error = e); case Ok(nuget) -> match assembleDeps(entries) { case Err(e) -> Err(error = e); case Ok(deps) -> match assembleFeatures(entries) { case Err(e) -> Err(error = e); case Ok(featuresOpt) -> match assembleMaven(entries) { case Err(e) -> Err(error = e); case Ok(mavenOpt) -> match assembleBuild(entries) { case Err(e) -> Err(error = e); case Ok(buildOpt) -> Ok(value = Manifest(filePath = filePath, packageSection = pkg, project = project, deps = deps, nuget = nuget, maven = mavenOpt, features = featuresOpt, build = buildOpt, workspace = ws, registry = reg)) } } } } } } }
   }
 }
 
