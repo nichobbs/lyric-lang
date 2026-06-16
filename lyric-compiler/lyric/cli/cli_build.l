@@ -748,11 +748,24 @@ func buildProject(
     return 1
   }
 
-  // Resolve local-path dependencies to DLL paths and collect their source
-  // packages for cross-package aspect template resolution (#3498).
+  // Resolve all dependencies (workspace and path) to DLL paths and collect their
+  // source packages for cross-package aspect template resolution (#3498).
   // Format: "depName\tdllPath" — passed to emitter.l which writes "DEP\t..." lines.
   val restoredDlls: List[String] = newList()
   val depTemplatePkgsList: List[ProjectPackage] = newList()
+
+  // First, build all workspace dependencies (if we're in a workspace).
+  val (wsDepDlls, wsHadError) = buildWorkspaceDeps(manifest, mfPath, target)
+  if wsHadError {
+    return 1
+  }
+  var wdi = 0
+  while wdi < wsDepDlls.count {
+    restoredDlls.add(wsDepDlls[wdi])
+    wdi += 1
+  }
+
+  // Then, resolve path dependencies (for backwards compat with non-workspace projects).
   var di = 0
   while di < manifest.deps.count {
     val dep = manifest.deps[di]
@@ -815,6 +828,12 @@ func buildProject(
               "'; check the path = \"...\" entry in your lyric.toml"
           )
         }
+      }
+      case Mf.DepSource.Workspace(_) -> {
+        // Workspace dependencies should have been handled above by buildWorkspaceDeps.
+        // If we reach here, it means buildWorkspaceDeps didn't find it, which
+        // already printed an error.
+        ()
       }
       case _ -> ()
     }
