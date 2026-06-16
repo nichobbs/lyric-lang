@@ -68,6 +68,9 @@ jobs:
         with:
           global-json-file: bootstrap/global.json
 
+      - name: Build stage-1 (F# bootstrap → self-hosted DLLs)
+        run: ./scripts/bootstrap.sh --stage 1
+
       - name: Resolve version
         id: ver
         shell: bash
@@ -232,6 +235,9 @@ jobs:
         uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
+
+      - name: Build stage-1 (F# bootstrap → self-hosted DLLs)
+        run: ./scripts/bootstrap.sh --stage 1
 
       - name: Resolve version
         id: ver
