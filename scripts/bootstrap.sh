@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# bootstrap.sh — three-stage self-hosting bootstrap for the Lyric compiler
+# bootstrap.sh — self-hosting bootstrap for the Lyric compiler
 #
-# Stage 0:  Build the F# bootstrap compiler (lyric-stage0).
+# Stage 0:  Download the latest self-hosted Lyric binary from GitHub releases
+#           (by default), or build the F# bootstrap compiler (if BOOTSTRAP_FROM_RELEASE=0).
+#           The F# bootstrap is on a deletion schedule; released binaries are preferred.
+#
 # Stage 1:  Use stage-0 lyric to compile the Lyric-written compiler packages
 #           (stdlib, Lyric.Lexer, Lyric.Parser, Lyric.TypeChecker,
 #           Lyric.ModeChecker, Lyric.ContractElaborator, Msil.Codegen,
@@ -10,44 +13,27 @@
 #           the full CLI dependency closure (cli/ + ~25 Lyric packages)
 #           and copies the artefacts into `.bootstrap/stage1/`.  These are
 #           the DLLs Track A's AOT entry-point project will reference.
-# Stage 2:  Reproducibility verification, in two parts:
 #
-#           (a) TRUST-ANCHOR GATE (STRICT) — build the full self-hosted stdlib
-#               bundle (`lyric-stdlib/lyric.full.toml`) TWICE via the AOT
-#               `lyric` binary (which routes `--target dotnet` through the
-#               self-hosted `Msil.Bridge`) and assert the two images are
-#               byte-for-byte identical with an exact `cmp`.  The self-hosted
-#               emitter is deterministic by construction — fixed Module MVID
-#               (lowering.l) and zero PE TimeDateStamp (assembler.l), no
-#               wall-clock baked into any heap or resource — so this passes
-#               with no normalization.  This is the property a signed,
-#               reproducible release depends on (Q-dist-001); a regression
-#               here FAILS the build.  See scripts/verify-reproducible-emit.sh.
-#
-#           (b) STAGE-0 DIAGNOSTIC (informational) — compare the stage-1 and
-#               stage-2 F#-emitted CLI-bundle DLLs after precisely zeroing the
-#               intrinsic identity fields (Module MVID via the #GUID heap, PE
-#               TimeDateStamp, PE checksum) using an ECMA-335-aware normalizer.
-#               The F# stage-0 emitter is non-reproducible BY DESIGN — random
-#               MVID, real PE timestamp, and a `DateTime.UtcNow` `build_date`
-#               embedded in `Lyric.SdkVersion` — and is frozen on a deletion
-#               schedule (no new F#), so this part is reported but NEVER fatal.
-#               It exists to track stage-0 drift until the F# path is deleted.
+# Stage 2:  Reproducibility verification: build the full self-hosted stdlib
+#           bundle (`lyric-stdlib/lyric.full.toml`) TWICE via the AOT
+#           `lyric` binary and assert the two images are byte-for-byte identical
+#           with an exact `cmp`.  The self-hosted emitter is deterministic by
+#           construction — fixed Module MVID (lowering.l) and zero PE TimeDateStamp
+#           (assembler.l), no wall-clock baked into any heap or resource.
+#           This is the property a signed, reproducible release depends on (Q-dist-001);
+#           a regression here FAILS the build.  See scripts/verify-reproducible-emit.sh.
 #
 # Usage:
-#   ./scripts/bootstrap.sh              # all stages; stage 2 gate (a) is STRICT
-#   ./scripts/bootstrap.sh --stage 0   # build F# compiler only
+#   ./scripts/bootstrap.sh              # all stages; uses released binary by default
 #   ./scripts/bootstrap.sh --stage 1   # stages 0 + 1
 #   ./scripts/bootstrap.sh --stage 2   # all stages incl. reproducibility gate
-#   ./scripts/bootstrap.sh --bootstrap-from-release  # download latest self-hosted binary
-#                                      # instead of building F# compiler; speeds up
-#                                      # builds once releases are available
+#   ./scripts/bootstrap.sh --no-bootstrap-from-release  # build F# stage-0 instead of
+#                                      # downloading the latest release (for dev/debugging)
 #   SKIP_VERIFY=1 ./scripts/bootstrap.sh  # skip ALL of stage-2 verification
 #   SKIP_CLI_BUNDLE=1 ./scripts/bootstrap.sh  # stage 1 stops after the compiler-package
 #                                              loop; the CLI bundle step is skipped.
 #                                              Useful when iterating on a single
 #                                              compiler package.
-#   BOOTSTRAP_FROM_RELEASE=1 ./scripts/bootstrap.sh  # same as --bootstrap-from-release
 
 set -euo pipefail
 
@@ -73,12 +59,16 @@ MAX_STAGE=2
 SKIP_VERIFY="${SKIP_VERIFY:-0}"
 SKIP_CLI_BUNDLE="${SKIP_CLI_BUNDLE:-0}"
 SKIP_COREREF_REWRITE="${SKIP_COREREF_REWRITE:-0}"
-BOOTSTRAP_FROM_RELEASE="${BOOTSTRAP_FROM_RELEASE:-0}"
+# Bootstrap from the latest release binary by default. To use a locally-built
+# stage-0 compiler instead (for development/debugging), set BOOTSTRAP_FROM_RELEASE=0
+# or use --no-bootstrap-from-release.
+BOOTSTRAP_FROM_RELEASE="${BOOTSTRAP_FROM_RELEASE:-1}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --stage) MAX_STAGE="$2"; shift 2 ;;
     --bootstrap-from-release) BOOTSTRAP_FROM_RELEASE=1; shift ;;
+    --no-bootstrap-from-release) BOOTSTRAP_FROM_RELEASE=0; shift ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
 done
