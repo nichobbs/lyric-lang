@@ -24,11 +24,10 @@
 #           a regression here FAILS the build.  See scripts/verify-reproducible-emit.sh.
 #
 # Usage:
-#   ./scripts/bootstrap.sh              # all stages; uses released binary by default
+#   ./scripts/bootstrap.sh              # all stages; downloads released binary for stage 0
+#   ./scripts/bootstrap.sh --stage 0   # download released binary only
 #   ./scripts/bootstrap.sh --stage 1   # stages 0 + 1
 #   ./scripts/bootstrap.sh --stage 2   # all stages incl. reproducibility gate
-#   ./scripts/bootstrap.sh --no-bootstrap-from-release  # build F# stage-0 instead of
-#                                      # downloading the latest release (for dev/debugging)
 #   SKIP_VERIFY=1 ./scripts/bootstrap.sh  # skip ALL of stage-2 verification
 #   SKIP_CLI_BUNDLE=1 ./scripts/bootstrap.sh  # stage 1 stops after the compiler-package
 #                                              loop; the CLI bundle step is skipped.
@@ -59,16 +58,10 @@ MAX_STAGE=2
 SKIP_VERIFY="${SKIP_VERIFY:-0}"
 SKIP_CLI_BUNDLE="${SKIP_CLI_BUNDLE:-0}"
 SKIP_COREREF_REWRITE="${SKIP_COREREF_REWRITE:-0}"
-# Bootstrap from the latest release binary by default. To use a locally-built
-# stage-0 compiler instead (for development/debugging), set BOOTSTRAP_FROM_RELEASE=0
-# or use --no-bootstrap-from-release.
-BOOTSTRAP_FROM_RELEASE="${BOOTSTRAP_FROM_RELEASE:-1}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --stage) MAX_STAGE="$2"; shift 2 ;;
-    --bootstrap-from-release) BOOTSTRAP_FROM_RELEASE=1; shift ;;
-    --no-bootstrap-from-release) BOOTSTRAP_FROM_RELEASE=0; shift ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -90,7 +83,6 @@ try_bootstrap_from_release() {
         aarch64) platform="linux-arm64" ;;
         *) return 1 ;;
       esac
-      local archive_ext="tar.gz"
       ;;
     Darwin)
       case "$(uname -m)" in
@@ -98,30 +90,41 @@ try_bootstrap_from_release() {
         arm64) platform="osx-arm64" ;;
         *) return 1 ;;
       esac
-      local archive_ext="tar.gz"
       ;;
     *)
       return 1
       ;;
   esac
 
-  info "Attempting to bootstrap from latest release ($platform)..."
+  # Fetch latest release version from GitHub API
+  local latest_release
+  latest_release=$(curl -sSL "https://api.github.com/repos/nichobbs/lyric-lang/releases/latest" \
+    2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": "\(.*\)".*/\1/')
 
-  local release_url="https://github.com/nichobbs/lyric-lang/releases/download"
-  local latest_release="latest"
-  local archive_name="lyric-*-${platform}.${archive_ext}"
+  if [[ -z "$latest_release" ]]; then
+    info "  Failed to fetch latest release version from GitHub API"
+    return 1
+  fi
+
+  # Strip 'v' prefix from tag if present (v0.1.0 -> 0.1.0)
+  local version="${latest_release#v}"
+
+  info "Attempting to bootstrap from latest release ($latest_release, platform: $platform)..."
+
+  local archive_name="lyric-${version}-${platform}.tar.gz"
+  local download_url="https://github.com/nichobbs/lyric-lang/releases/download/${latest_release}/${archive_name}"
 
   # Create temporary directory for download
   local temp_dir
   temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/lyric-release.XXXXXX")"
   trap "rm -rf '$temp_dir'" RETURN
 
-  # Try to download the latest release
-  info "  Downloading $platform binary from GitHub releases..."
+  # Try to download the release binary
+  info "  Downloading $archive_name..."
   if command -v curl &>/dev/null; then
-    curl -sSL "${release_url}/${latest_release}/${archive_name}" -o "${temp_dir}/lyric.tar.gz" 2>/dev/null || return 1
+    curl -sSL "$download_url" -o "${temp_dir}/lyric.tar.gz" 2>/dev/null || return 1
   elif command -v wget &>/dev/null; then
-    wget -q "${release_url}/${latest_release}/${archive_name}" -O "${temp_dir}/lyric.tar.gz" 2>/dev/null || return 1
+    wget -q "$download_url" -O "${temp_dir}/lyric.tar.gz" 2>/dev/null || return 1
   else
     info "  SKIP: Neither curl nor wget found"
     return 1
@@ -129,55 +132,27 @@ try_bootstrap_from_release() {
 
   # Extract to stage0-publish
   mkdir -p "$BUILD_DIR/stage0-publish"
-  if tar -xzf "${temp_dir}/lyric.tar.gz" -C "$BUILD_DIR/stage0-publish" 2>/dev/null; then
+  if tar -xzf "${temp_dir}/lyric.tar.gz" -C "$BUILD_DIR/stage0-publish"; then
     info "  Successfully extracted release binary"
     return 0
   else
-    info "  Failed to extract release archive"
+    info "  Failed to extract release archive (file may be corrupted or missing)"
     return 1
   fi
 }
 
 # ---------------------------------------------------------------------------
-# Stage 0 — F# bootstrap compiler (or self-hosted binary from release)
+# Stage 0 — Download self-hosted binary from release
 # ---------------------------------------------------------------------------
 stage0() {
   mkdir -p "$BUILD_DIR/stage0-publish"
   mkdir -p "$(dirname "$STAGE0_BIN")"
 
-  # Try to download self-hosted binary from latest release if requested
-  if [[ "$BOOTSTRAP_FROM_RELEASE" == "1" ]]; then
-    if try_bootstrap_from_release; then
-      info "Stage 0: using self-hosted binary from release"
-      # Binary is now in stage0-publish, skip F# build
-    else
-      info "Stage 0: release download failed, falling back to F# build"
-      BOOTSTRAP_FROM_RELEASE=0  # disable flag to avoid retrying
-    fi
+  # Download self-hosted binary from latest release (F# bootstrap is deleted)
+  if ! try_bootstrap_from_release; then
+    die "Stage 0: failed to download self-hosted binary from GitHub releases (F# bootstrap no longer available)"
   fi
-
-  # Build F# bootstrap compiler if we didn't get a release binary
-  if [[ "$BOOTSTRAP_FROM_RELEASE" == "0" ]]; then
-    info "Stage 0: building F# bootstrap compiler"
-
-    # Optional cache reuse (CI): when STAGE0_REUSE_PUBLISHED=1 and a published
-    # binary is already present (restored from an actions/cache keyed on the
-    # exact hash of every F# source), skip the Release publish.  The cache key
-    # is content-addressed with NO prefix fallback, so a restored output is
-    # guaranteed to correspond to the current F# sources; a miss restores
-    # nothing and we rebuild below.  Local dev never sets the flag, so it always
-    # rebuilds and can't be fooled by a stale `.bootstrap/`.
-    if [[ "${STAGE0_REUSE_PUBLISHED:-0}" == "1" \
-          && ( -f "$BUILD_DIR/stage0-publish/lyric" \
-               || -f "$BUILD_DIR/stage0-publish/lyric.dll" ) ]]; then
-      info "  reusing cached stage-0 publish (STAGE0_REUSE_PUBLISHED=1)"
-    else
-      dotnet publish "$COMPILER_DIR/src/Lyric.Cli/Lyric.Cli.fsproj" \
-        --configuration Release \
-        --output "$BUILD_DIR/stage0-publish" \
-        --nologo -v q
-    fi
-  fi
+  info "Stage 0: using self-hosted binary from release"
 
   # Publish output handling:
   #   * Linux/macOS: native executable "lyric" (no extension) + runtimeconfig.json
