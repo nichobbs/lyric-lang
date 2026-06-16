@@ -86,7 +86,7 @@ jobs:
         shell: bash
         working-directory: bootstrap
         run: |
-          dotnet publish src/Lyric.Cli/Lyric.Cli.fsproj \
+          dotnet publish src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
             --configuration Release \
             --runtime ${{ matrix.rid }} \
             --self-contained true \
@@ -247,7 +247,7 @@ jobs:
       - name: Pack NuGet global tool
         working-directory: bootstrap
         run: |
-          dotnet pack src/Lyric.Cli/Lyric.Cli.fsproj \
+          dotnet pack src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
             --configuration Release \
             -p:PackageVersion=${{ steps.ver.outputs.VERSION }} \
             -p:PackAsTool=true \
