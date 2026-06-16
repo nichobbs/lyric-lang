@@ -3,7 +3,6 @@
 //! Test suite for the public API of the generator SDK: request serialization,
 //! response parsing, and the types that comprise the contract between the
 //! compiler and generator implementations.
-
 @test_module
 package Lyric.GeneratorSdk.Tests
 
@@ -14,21 +13,14 @@ import Lyric.GeneratorSdk
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. AnnotationDescriptor — annotation values
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "AnnotationDescriptor: name and empty args" {
-  val ann = AnnotationDescriptor(
-    name = "required",
-    args = []
-  )
+  val ann = AnnotationDescriptor(name = "required", args = [])
   assertTrue(ann.name == "required", "name field")
   assertTrue(ann.args.toArray().count == 0, "empty args array")
 }
 
 test "AnnotationDescriptor: name with multiple args" {
-  val ann = AnnotationDescriptor(
-    name = "since",
-    args = ["\"1.0\"", "\"Json\""]
-  )
+  val ann = AnnotationDescriptor(name = "since", args = ["\"1.0\"", "\"Json\""])
   assertTrue(ann.name == "since", "name field")
   assertTrue(ann.args.toArray().count == 2, "two args")
   val argArr = ann.args.toArray()
@@ -39,102 +31,66 @@ test "AnnotationDescriptor: name with multiple args" {
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. FieldTypeKind — field type categorization
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "FieldTypeKind.Primitive: can be matched" {
   val kind = Primitive
-  val matched = match kind {
-    case Primitive -> true
-    case _ -> false
-  }
+  val matched = match kind { case Primitive -> true; case _ -> false }
   assertTrue(matched, "Primitive variant")
 }
 
 test "FieldTypeKind.Slice: can be matched" {
   val kind = Slice
-  val matched = match kind {
-    case Slice -> true
-    case _ -> false
-  }
+  val matched = match kind { case Slice -> true; case _ -> false }
   assertTrue(matched, "Slice variant")
 }
 
 test "FieldTypeKind.OptionType: can be matched" {
   val kind = OptionType
-  val matched = match kind {
-    case OptionType -> true
-    case _ -> false
-  }
+  val matched = match kind { case OptionType -> true; case _ -> false }
   assertTrue(matched, "OptionType variant")
 }
 
 test "FieldTypeKind.ResultType: can be matched" {
   val kind = ResultType
-  val matched = match kind {
-    case ResultType -> true
-    case _ -> false
-  }
+  val matched = match kind { case ResultType -> true; case _ -> false }
   assertTrue(matched, "ResultType variant")
 }
 
 test "FieldTypeKind.Named: can be matched" {
   val kind = Named
-  val matched = match kind {
-    case Named -> true
-    case _ -> false
-  }
+  val matched = match kind { case Named -> true; case _ -> false }
   assertTrue(matched, "Named variant")
 }
 
 test "FieldTypeKind.Generic: can be matched" {
   val kind = Generic
-  val matched = match kind {
-    case Generic -> true
-    case _ -> false
-  }
+  val matched = match kind { case Generic -> true; case _ -> false }
   assertTrue(matched, "Generic variant")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. FieldType — resolved type information
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "FieldType: primitive Int" {
-  val ft = FieldType(
-    kind = Primitive,
-    name = "Int",
-    typeArgs = []
-  )
+  val ft = FieldType(kind = Primitive, name = "Int", typeArgs = [])
   assertTrue(ft.name == "Int", "name field")
   assertTrue(ft.typeArgs.toArray().count == 0, "no type args")
 }
 
 test "FieldType: slice with String element" {
-  val ft = FieldType(
-    kind = Slice,
-    name = "slice[String]",
-    typeArgs = ["String"]
-  )
+  val ft = FieldType(kind = Slice, name = "slice[String]", typeArgs = ["String"])
   assertTrue(ft.name == "slice[String]", "name includes brackets")
   assertTrue(ft.typeArgs.toArray().count == 1, "one type arg")
   assertTrue(ft.typeArgs.toArray()[0] == "String", "element type")
 }
 
 test "FieldType: Option with String" {
-  val ft = FieldType(
-    kind = OptionType,
-    name = "Option[String]",
-    typeArgs = ["String"]
-  )
+  val ft = FieldType(kind = OptionType, name = "Option[String]", typeArgs = ["String"])
   assertTrue(ft.kind == OptionType, "kind")
   assertTrue(ft.typeArgs.toArray()[0] == "String", "inner type")
 }
 
 test "FieldType: Result with two type args" {
-  val ft = FieldType(
-    kind = ResultType,
-    name = "Result[Int, String]",
-    typeArgs = ["Int", "String"]
-  )
+  val ft = FieldType(kind = ResultType, name = "Result[Int, String]", typeArgs = ["Int", "String"])
   val args = ft.typeArgs.toArray()
   assertTrue(args.count == 2, "two type args")
   assertTrue(args[0] == "Int", "success type")
@@ -144,7 +100,6 @@ test "FieldType: Result with two type args" {
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. FieldDescriptor — field information
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "FieldDescriptor: simple public field" {
   val fd = FieldDescriptor(
     name = "id",
@@ -182,47 +137,33 @@ test "FieldDescriptor: field with annotation" {
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. ItemKind — type declaration kinds
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "ItemKind.Record: can be matched" {
   val kind = Record
-  val matched = match kind {
-    case Record -> true
-    case _ -> false
-  }
+  val matched = match kind { case Record -> true; case _ -> false }
   assertTrue(matched, "Record variant")
 }
 
 test "ItemKind.ExposedRecord: can be matched" {
   val kind = ExposedRecord
-  val matched = match kind {
-    case ExposedRecord -> true
-    case _ -> false
-  }
+  val matched = match kind { case ExposedRecord -> true; case _ -> false }
   assertTrue(matched, "ExposedRecord variant")
 }
 
 test "ItemKind.Union: can be matched" {
   val kind = Union
-  val matched = match kind {
-    case Union -> true
-    case _ -> false
-  }
+  val matched = match kind { case Union -> true; case _ -> false }
   assertTrue(matched, "Union variant")
 }
 
 test "ItemKind.Interface: can be matched" {
   val kind = Interface
-  val matched = match kind {
-    case Interface -> true
-    case _ -> false
-  }
+  val matched = match kind { case Interface -> true; case _ -> false }
   assertTrue(matched, "Interface variant")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §6. TypeDescriptor — full type information
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "TypeDescriptor: simple record" {
   val td = TypeDescriptor(
     kind = Record,
@@ -321,7 +262,6 @@ test "TypeDescriptor: interface" {
 // ─────────────────────────────────────────────────────────────────────────────
 // §7. GeneratorRequest — request contract
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "GeneratorRequest: basic fields" {
   val td = TypeDescriptor(
     kind = Record,
@@ -346,7 +286,6 @@ test "GeneratorRequest: basic fields" {
 // ─────────────────────────────────────────────────────────────────────────────
 // §8. serializeRequest — round-trip via JSON
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "serializeRequest: minimal request" {
   val td = TypeDescriptor(
     kind = Record,
@@ -356,12 +295,7 @@ test "serializeRequest: minimal request" {
     fields = [],
     annotations = []
   )
-  val req = GeneratorRequest(
-    generatorArg = "Gen",
-    typeDescriptor = td,
-    packageName = "Pkg",
-    sourceFile = "f.l"
-  )
+  val req = GeneratorRequest(generatorArg = "Gen", typeDescriptor = td, packageName = "Pkg", sourceFile = "f.l")
   val json = serializeRequest(req)
   assertTrue(json.contains("\"schemaVersion\":\"1\""), "schema version")
   assertTrue(json.contains("\"generatorArg\":\"Gen\""), "generator arg")
@@ -399,12 +333,7 @@ test "serializeRequest: request with type parameters" {
     fields = [],
     annotations = []
   )
-  val req = GeneratorRequest(
-    generatorArg = "Gen",
-    typeDescriptor = td,
-    packageName = "Std",
-    sourceFile = "c.l"
-  )
+  val req = GeneratorRequest(generatorArg = "Gen", typeDescriptor = td, packageName = "Std", sourceFile = "c.l")
   val json = serializeRequest(req)
   assertTrue(json.contains("[\"T\",\"E\"]"), "type params serialized")
 }
@@ -426,12 +355,7 @@ test "serializeRequest: request with fields" {
     fields = fields,
     annotations = []
   )
-  val req = GeneratorRequest(
-    generatorArg = "Proto",
-    typeDescriptor = td,
-    packageName = "Models",
-    sourceFile = "user.l"
-  )
+  val req = GeneratorRequest(generatorArg = "Proto", typeDescriptor = td, packageName = "Models", sourceFile = "user.l")
   val json = serializeRequest(req)
   assertTrue(json.contains("\"name\":\"id\""), "field name")
   assertTrue(json.contains("\"Primitive\""), "field type kind")
@@ -446,12 +370,7 @@ test "serializeRequest: ExposedRecord variant" {
     fields = [],
     annotations = []
   )
-  val req = GeneratorRequest(
-    generatorArg = "Gen",
-    typeDescriptor = td,
-    packageName = "Pkg",
-    sourceFile = "f.l"
-  )
+  val req = GeneratorRequest(generatorArg = "Gen", typeDescriptor = td, packageName = "Pkg", sourceFile = "f.l")
   val json = serializeRequest(req)
   assertTrue(json.contains("ExposedRecord"), "ItemKind ExposedRecord serialized")
 }
@@ -465,12 +384,7 @@ test "serializeRequest: Union variant" {
     fields = [],
     annotations = []
   )
-  val req = GeneratorRequest(
-    generatorArg = "Gen",
-    typeDescriptor = td,
-    packageName = "Pkg",
-    sourceFile = "f.l"
-  )
+  val req = GeneratorRequest(generatorArg = "Gen", typeDescriptor = td, packageName = "Pkg", sourceFile = "f.l")
   val json = serializeRequest(req)
   assertTrue(json.contains("Union"), "ItemKind Union serialized")
 }
@@ -484,24 +398,14 @@ test "serializeRequest: Interface variant" {
     fields = [],
     annotations = []
   )
-  val req = GeneratorRequest(
-    generatorArg = "Gen",
-    typeDescriptor = td,
-    packageName = "Pkg",
-    sourceFile = "f.l"
-  )
+  val req = GeneratorRequest(generatorArg = "Gen", typeDescriptor = td, packageName = "Pkg", sourceFile = "f.l")
   val json = serializeRequest(req)
   assertTrue(json.contains("Interface"), "ItemKind Interface serialized")
 }
 
 test "serializeRequest: Slice field type" {
   val ft = FieldType(kind = Slice, name = "T", typeArgs = [])
-  val fd = FieldDescriptor(
-    name = "f",
-    fieldType = ft,
-    isPublic = true,
-    annotations = []
-  )
+  val fd = FieldDescriptor(name = "f", fieldType = ft, isPublic = true, annotations = [])
   val td = TypeDescriptor(
     kind = Record,
     name = "Type",
@@ -510,24 +414,14 @@ test "serializeRequest: Slice field type" {
     fields = [fd],
     annotations = []
   )
-  val req = GeneratorRequest(
-    generatorArg = "Gen",
-    typeDescriptor = td,
-    packageName = "Pkg",
-    sourceFile = "f.l"
-  )
+  val req = GeneratorRequest(generatorArg = "Gen", typeDescriptor = td, packageName = "Pkg", sourceFile = "f.l")
   val json = serializeRequest(req)
   assertTrue(json.contains("Slice"), "FieldTypeKind Slice in JSON")
 }
 
 test "serializeRequest: Generic field type" {
   val ft = FieldType(kind = Generic, name = "T", typeArgs = [])
-  val fd = FieldDescriptor(
-    name = "f",
-    fieldType = ft,
-    isPublic = true,
-    annotations = []
-  )
+  val fd = FieldDescriptor(name = "f", fieldType = ft, isPublic = true, annotations = [])
   val td = TypeDescriptor(
     kind = Record,
     name = "Type",
@@ -536,12 +430,7 @@ test "serializeRequest: Generic field type" {
     fields = [fd],
     annotations = []
   )
-  val req = GeneratorRequest(
-    generatorArg = "Gen",
-    typeDescriptor = td,
-    packageName = "Pkg",
-    sourceFile = "f.l"
-  )
+  val req = GeneratorRequest(generatorArg = "Gen", typeDescriptor = td, packageName = "Pkg", sourceFile = "f.l")
   val json = serializeRequest(req)
   assertTrue(json.contains("Generic"), "FieldTypeKind Generic in JSON")
 }
@@ -549,12 +438,7 @@ test "serializeRequest: Generic field type" {
 test "serializeRequest: field with annotations" {
   val ann = AnnotationDescriptor(name = "required", args = [])
   val ft = FieldType(kind = Primitive, name = "String", typeArgs = [])
-  val fd = FieldDescriptor(
-    name = "email",
-    fieldType = ft,
-    isPublic = true,
-    annotations = [ann]
-  )
+  val fd = FieldDescriptor(name = "email", fieldType = ft, isPublic = true, annotations = [ann])
   val td = TypeDescriptor(
     kind = Record,
     name = "User",
@@ -563,12 +447,7 @@ test "serializeRequest: field with annotations" {
     fields = [fd],
     annotations = []
   )
-  val req = GeneratorRequest(
-    generatorArg = "Gen",
-    typeDescriptor = td,
-    packageName = "Pkg",
-    sourceFile = "f.l"
-  )
+  val req = GeneratorRequest(generatorArg = "Gen", typeDescriptor = td, packageName = "Pkg", sourceFile = "f.l")
   val json = serializeRequest(req)
   assertTrue(json.contains("\"name\":\"required\""), "annotation name in JSON")
 }
@@ -583,12 +462,7 @@ test "serializeRequest: annotation with arguments" {
     fields = [],
     annotations = [ann]
   )
-  val req = GeneratorRequest(
-    generatorArg = "Gen",
-    typeDescriptor = td,
-    packageName = "Pkg",
-    sourceFile = "f.l"
-  )
+  val req = GeneratorRequest(generatorArg = "Gen", typeDescriptor = td, packageName = "Pkg", sourceFile = "f.l")
   val json = serializeRequest(req)
   assertTrue(json.contains("\"args\":[\"\\\"1.0\\\"\"]"), "annotation args serialized")
 }
@@ -596,86 +470,52 @@ test "serializeRequest: annotation with arguments" {
 // ─────────────────────────────────────────────────────────────────────────────
 // §9. GeneratorDiagnosticSeverity — diagnostic levels
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "GeneratorDiagnosticSeverity.Error: can be matched" {
   val sev = Error
-  val matched = match sev {
-    case Error -> true
-    case _ -> false
-  }
+  val matched = match sev { case Error -> true; case _ -> false }
   assertTrue(matched, "Error variant")
 }
 
 test "GeneratorDiagnosticSeverity.Warning: can be matched" {
   val sev = Warning
-  val matched = match sev {
-    case Warning -> true
-    case _ -> false
-  }
+  val matched = match sev { case Warning -> true; case _ -> false }
   assertTrue(matched, "Warning variant")
 }
 
 test "GeneratorDiagnosticSeverity.Info: can be matched" {
   val sev = Info
-  val matched = match sev {
-    case Info -> true
-    case _ -> false
-  }
+  val matched = match sev { case Info -> true; case _ -> false }
   assertTrue(matched, "Info variant")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §10. GeneratorDiagnostic — diagnostic messages
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "GeneratorDiagnostic: error with code" {
-  val diag = GeneratorDiagnostic(
-    severity = Error,
-    message = "Invalid type",
-    code = Some(value = "G001")
-  )
+  val diag = GeneratorDiagnostic(severity = Error, message = "Invalid type", code = Some(value = "G001"))
   assertTrue(diag.severity == Error, "severity")
   assertTrue(diag.message == "Invalid type", "message")
-  val hasCode = match diag.code {
-    case Some(_) -> true
-    case None -> false
-  }
+  val hasCode = match diag.code { case Some(_) -> true; case None -> false }
   assertTrue(hasCode, "has code")
 }
 
 test "GeneratorDiagnostic: warning without code" {
-  val diag = GeneratorDiagnostic(
-    severity = Warning,
-    message = "Unused type param",
-    code = None
-  )
+  val diag = GeneratorDiagnostic(severity = Warning, message = "Unused type param", code = None)
   assertTrue(diag.severity == Warning, "severity")
-  val hasCode = match diag.code {
-    case Some(_) -> true
-    case None -> false
-  }
+  val hasCode = match diag.code { case Some(_) -> true; case None -> false }
   assertFalse(hasCode, "no code")
 }
 
 test "GeneratorDiagnostic: info with empty code string" {
-  val diag = GeneratorDiagnostic(
-    severity = Info,
-    message = "Processing started",
-    code = Some(value = "")
-  )
+  val diag = GeneratorDiagnostic(severity = Info, message = "Processing started", code = Some(value = ""))
   assertTrue(diag.severity == Info, "severity")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §11. GeneratorResponse — response contract
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "GeneratorResponse: basic response" {
-  val resp = GeneratorResponse(
-    lyricSource = "pub func generated(): Unit {}",
-    additionalImports = [],
-    diagnostics = []
-  )
+  val resp = GeneratorResponse(lyricSource = "pub func generated(): Unit {}", additionalImports = [], diagnostics = [])
   assertTrue(resp.lyricSource == "pub func generated(): Unit {}", "source")
   assertTrue(resp.additionalImports.toArray().count == 0, "no imports")
   assertTrue(resp.diagnostics.toArray().count == 0, "no diagnostics")
@@ -695,26 +535,17 @@ test "GeneratorResponse: with imports" {
 test "GeneratorResponse: with diagnostics" {
   val diag1 = GeneratorDiagnostic(severity = Error, message = "Error 1", code = None)
   val diag2 = GeneratorDiagnostic(severity = Warning, message = "Warning 1", code = Some(value = "W001"))
-  val resp = GeneratorResponse(
-    lyricSource = "",
-    additionalImports = [],
-    diagnostics = [diag1, diag2]
-  )
+  val resp = GeneratorResponse(lyricSource = "", additionalImports = [], diagnostics = [diag1, diag2])
   val diags = resp.diagnostics.toArray()
   assertTrue(diags.count == 2, "two diagnostics")
   assertTrue(diags[0].severity == Error, "first is error")
-  val hasCode = match diags[1].code {
-    case Some(_) -> true
-    case None -> false
-  }
+  val hasCode = match diags[1].code { case Some(_) -> true; case None -> false }
   assertTrue(hasCode, "second has code")
 }
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §13. Round-trip compatibility
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "Round-trip: request with complex types" {
   val fields = [
     FieldDescriptor(
@@ -750,4 +581,3 @@ test "Round-trip: request with complex types" {
   assertTrue(json.contains("ResultType"), "result type present")
   assertTrue(json.contains("\"required\""), "annotation present")
 }
-
