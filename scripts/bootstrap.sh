@@ -113,10 +113,11 @@ stage0() {
   if [[ -f "$BUILD_DIR/stage0-publish/lyric" ]]; then
     ln -sf "$BUILD_DIR/stage0-publish/lyric" "$STAGE0_BIN"
   elif [[ -f "$BUILD_DIR/stage0-publish/lyric.dll" ]]; then
-    # Fallback: wrap with dotnet exec
-    cat > "$STAGE0_BIN" <<'WRAPPER'
+    # Fallback: wrap with dotnet exec (use absolute path for Windows compat)
+    local dll_path="$BUILD_DIR/stage0-publish/lyric.dll"
+    cat > "$STAGE0_BIN" <<WRAPPER
 #!/usr/bin/env bash
-exec dotnet "$(dirname "$0")/stage0-publish/lyric.dll" "$@"
+exec dotnet "$dll_path" "\$@"
 WRAPPER
     chmod +x "$STAGE0_BIN"
   else
