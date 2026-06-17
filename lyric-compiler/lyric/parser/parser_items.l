@@ -2965,6 +2965,23 @@ func parseItemOpt(st: inout ParseState): Option[List[Item]] {
 
   val anns: List[Annotation] = collectedAnns
   val nextTok = peek(st)
+
+  match nextTok.token {
+    case TKeyword(k) -> {
+      match k {
+        case KwImpl -> {
+          if not isFlatImpl(st) {
+            val nestedItems = parseNestedImpl(st, docs, anns, vis, genericsPrefix, prefixStart)
+            cstFinish(st)
+            return Some(value = nestedItems)
+          }
+        }
+        case _ -> {}
+      }
+    }
+    case _ -> {}
+  }
+
   val kind = match nextTok.token {
     case TKeyword(k) -> {
       match k {
@@ -3105,13 +3122,7 @@ func parseItemOpt(st: inout ParseState): Option[List[Item]] {
           IInterface(decl = parseInterfaceBody(st, genericsPrefix))
         }
         case KwImpl -> {
-          if not isFlatImpl(st) {
-            val nestedItems = parseNestedImpl(st, docs, anns, vis, genericsPrefix, prefixStart)
-            cstFinish(st)
-            return Some(value = nestedItems)
-          } else {
-            IImpl(decl = parseImplBody(st, genericsPrefix))
-          }
+          IImpl(decl = parseImplBody(st, genericsPrefix))
         }
         case KwProtected -> {
           val next1 = peekAt(st, 1)

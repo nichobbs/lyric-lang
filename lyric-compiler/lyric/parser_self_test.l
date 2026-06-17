@@ -990,3 +990,18 @@ test "nested satisfies syntax error cases" {
   }
   assertTrue(sawP0183, "unclosed block: P0183 raised")
 }
+
+test "flat impl basic parsing" {
+  val src = "package P\nimpl Repository for PostgresUserRepository {\n  func findById(): Unit {}\n}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "flat-basic: no diagnostics")
+  assertEqualInt(itemCount(pr), 1, "flat-basic: 1 item")
+}
+
+test "flat impl firstItemKindName" {
+  val src = "package P\nimpl Repository for PostgresUserRepository {\n  func findById(): Unit {}\n}\n"
+  val pr = parse(src)
+  assertEqual(firstItemKindName(pr), "impl", "flat-basic: first item kind name")
+}
+
+
