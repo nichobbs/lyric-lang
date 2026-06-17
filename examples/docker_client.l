@@ -81,7 +81,7 @@ async func dockerClientDemo(): Int {
     case Ok(containersJson) -> {
       val containerCount = countJsonArrayElements(containersJson)
       println("✓ Found " + containerCount.toString() + " container(s)")
-      if containerCount > 0 && containersJson.length > 50 {
+      if containerCount > 0 and containersJson.length > 50 {
         println("  (Sample: " + containersJson.substring(0, 50) + "...)")
       }
     }
@@ -93,7 +93,7 @@ async func dockerClientDemo(): Int {
     case Ok(imagesJson) -> {
       val imageCount = countJsonArrayElements(imagesJson)
       println("✓ Found " + imageCount.toString() + " image(s)")
-      if imageCount > 0 && imagesJson.length > 50 {
+      if imageCount > 0 and imagesJson.length > 50 {
         println("  (Sample: " + imagesJson.substring(0, 50) + "...)")
       }
     }
@@ -116,7 +116,7 @@ func countJsonArrayElements(jsonArray: in String): Int {
   val startIdx = jsonArray.indexOf('[')
   val endIdx = jsonArray.lastIndexOf(']')
 
-  if startIdx < 0 || endIdx < 0 || startIdx >= endIdx {
+  if startIdx < 0 or endIdx < 0 or startIdx >= endIdx {
     return 0
   }
 
