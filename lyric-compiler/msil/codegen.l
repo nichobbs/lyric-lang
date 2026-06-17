@@ -38,6 +38,7 @@ import Msil.Lowering
 import Msil.Ffi
 import Msil.Kernel
 import Msil.MetadataReader as Mdr
+import Std.Console as Console
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. CodegenCtx — package-level context with pre-registered external tokens.
@@ -273,6 +274,14 @@ pub record CodegenCtx {
   metadataPathIndex: Map[String, String]
   metadataVtypeSet: Map[String, Bool]
   metadataReady: List[Bool]
+  // One-shot flag tracking whether the D105 §A "FFI metadata index is empty"
+  // warning has been emitted for this build.  Codegen surfaces a one-line
+  // notice to stderr on the first external-iface impl encountered when the
+  // metadata index couldn't be populated (no reference pack on disk), so
+  // SDK-less builds get fast feedback that FFI validation is silent-skipped
+  // — without spamming the warning once per impl.  See
+  // `warnFfiIndexEmptyOnce` in `validateOneExternImplMsil`.
+  ffiIndexEmptyWarned: List[Bool]
   // Lambda / yield / extern-type support (Band 2, R6).
   tokActionCtor: Int  // System.Action::.ctor(object, native int)
   tokActionInvoke: Int  // System.Action::Invoke(): void
@@ -1547,6 +1556,7 @@ pub func newCodegenCtx(
     metadataPathIndex = newMap(),
     metadataVtypeSet = newMap(),
     metadataReady = newList(),
+    ffiIndexEmptyWarned = newList(),
     tokActionCtor = tokActionCtor,
     tokActionInvoke = tokActionInvoke,
     tokStringGetChars = tokStringGetChars,
@@ -19558,6 +19568,27 @@ func checkOneInterfaceMethodMsil(
 
 // Walk an external-interface `impl` block and validate it against the
 // reference assembly.  See the section header for diagnostic codes.
+// Emit a one-time stderr notice when the FFI metadata index is empty so the
+// user knows extern-iface validation is being skipped (rather than wondering
+// silently why their typo wasn't caught at build time).  Fires lazily on the
+// first external iface impl encountered to avoid spamming runs that don't use
+// extern types at all.  The notice is non-fatal and matches the silent-skip
+// convention F0015 (auto-FFI signature validation) uses for the same
+// reference-pack-absent case.
+func warnFfiIndexEmptyOnceMsil(cctx: in CodegenCtx): Unit {
+  if cctx.ffiIndexEmptyWarned.count > 0 {
+    return
+  }
+  cctx.ffiIndexEmptyWarned.add(true)
+  Console.error(
+    "lyric: warning: external-interface impl validation is silent-skipped because " +
+      "the .NET reference pack was not found on disk (SDK-less build).  F0020–F0024 " +
+      "build-time diagnostics for external iface impls are disabled for this run; " +
+      "the CLR will surface mismatches at first use as TypeLoadException.  " +
+      "Install the .NET SDK to enable validation."
+  )
+}
+
 func validateOneExternImplMsil(
   cctx: in CodegenCtx, decl: in ImplDecl, pkgName: in String, ifaceFqn: in String
 ): Unit {
@@ -19569,6 +19600,8 @@ func validateOneExternImplMsil(
       //   - Index empty: SDK-less build (no reference pack on disk).
       //     Silent-skip — matches F0015's `assemblyForType`-None fallback
       //     and the established convention for runtime-only environments.
+      //     Emit a one-time stderr notice so the user knows validation is
+      //     off, rather than wondering why their typo wasn't caught.
       //   - Index populated: reference pack was loaded but the iface FQN
       //     doesn't match any type in it.  Almost always a typo in
       //     `extern type IFoo = "Wrong.Ns.IFoo`1"`.  Without F0024 here
@@ -19584,6 +19617,8 @@ func validateOneExternImplMsil(
             "(SDK-less build); this build's index is populated, so a missing FQN " +
             "is treated as a typo."
         )
+      } else {
+        warnFfiIndexEmptyOnceMsil(cctx)
       }
     }
     case Some(asmName) -> match mapGet(cctx.metadataPathIndex, asmName) {
