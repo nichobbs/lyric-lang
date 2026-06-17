@@ -853,6 +853,26 @@ jobs:
           func main(): Int { 0 }
           LYR
           run_fixture "F0023" "f0023_fixture.l"
+          # F0022 on a generic iface: substitution catches a mismatched
+          # impl-method parameter type — `IEquatable[GenRec]` requires
+          # `Equals(GenRec)`, but the fixture declares `Equals(Int)`.  Before
+          # substitution landed (D105 §A follow-up), the F0021–F0023 pass
+          # bailed per-method on STVar shapes; this fixture pins the new
+          # substitution path.
+          cat > "$work/f0022_gen_fixture.l" <<'LYR'
+          package F0022GenFixture
+
+          extern type IEquatable[T] = "System.IEquatable`1"
+
+          record GenRec { tag: Int }
+
+          impl IEquatable[GenRec] for GenRec {
+            func Equals(other: in Int): Bool { false }
+          }
+
+          func main(): Int { 0 }
+          LYR
+          run_fixture "F0022" "f0022_gen_fixture.l"
           # F0024: closed generic external interfaces whose iface methods have
           # a signature shape outside {STPrim, STNamed primitive FQN, STNamed
           # user class/value type, STVar(i)} are deferred to a follow-up cut
