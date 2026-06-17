@@ -137,7 +137,7 @@ func countJsonArrayElements(jsonArray: in String): Int {
       braceDepth += 1
     } else if ch == '}' {
       braceDepth -= 1
-    } else if ch == ',' && braceDepth == 1 {
+    } else if ch == ',' and braceDepth == 1 {
       count += 1
     }
     i += 1
