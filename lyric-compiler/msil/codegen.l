@@ -17928,7 +17928,55 @@ func scanExternTypesMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
     }
     i = i + 1
   }
+
+  // Populate cctx.externTypeNames from import extern declarations
+  var k = 0
+  while k < file.imports.count {
+    val imp = file.imports[k]
+    if imp.isExtern {
+      val baseNamespace = joinSegsMsil(imp.path.segments, ".")
+      match imp.selector {
+        case Some(ISGroup(items)) -> {
+          var j = 0
+          while j < items.count {
+            val item = items[j]
+            val clrName = if baseNamespace.length > 0 {
+              baseNamespace + "." + item.name
+            } else {
+              item.name
+            }
+            val aliasName = match item.asAlias {
+              case Some(aliasName) -> aliasName
+              case _ -> item.name
+            }
+            if not cctx.externTypeNames.containsKey(aliasName) {
+              cctx.externTypeNames.add(aliasName, clrName)
+            }
+            j = j + 1
+          }
+        }
+        case Some(ISSingle(item)) -> {
+          val clrName = if baseNamespace.length > 0 {
+            baseNamespace + "." + item.name
+          } else {
+            item.name
+          }
+          val aliasName = match item.asAlias {
+            case Some(aliasName) -> aliasName
+            case _ -> item.name
+          }
+          if not cctx.externTypeNames.containsKey(aliasName) {
+            cctx.externTypeNames.add(aliasName, clrName)
+          }
+        }
+        case _ -> {
+        }
+      }
+    }
+    k = k + 1
+  }
 }
+
 
 // ── Metadata-based auto-FFI resolution (epic #1622, Phase 3c) ─────────────────
 //
