@@ -18946,7 +18946,9 @@ func buildExternIfaceMethodRowsMsil(
         var paramsOk = true
         while pj < m.paramTypes.count and paramsOk {
           match sigTypeToMsilForIface(cctx, m.paramTypes[pj]) {
-            case None -> paramsOk = false
+            case None -> {
+              paramsOk = false
+            }
             case Some(mt) -> msilParams.add(mt)
           }
           pj = pj + 1
@@ -19027,12 +19029,21 @@ func validateExternGenericIfacesMsil(cctx: in CodegenCtx, file: in SourceFile, p
                     if m.isAbstract and not m.isStatic {
                       var representable = true
                       val rret = sigTypeToMsilForIface(cctx, m.returnType)
-                      match rret { case None -> representable = false; case Some(_) -> {  } }
+                      match rret {
+                        case None -> {
+                          representable = false
+                        }
+                        case Some(_) -> {
+                        }
+                      }
                       var pj = 0
                       while pj < m.paramTypes.count and representable {
                         match sigTypeToMsilForIface(cctx, m.paramTypes[pj]) {
-                          case None -> representable = false
-                          case Some(_) -> {  }
+                          case None -> {
+                            representable = false
+                          }
+                          case Some(_) -> {
+                          }
                         }
                         pj = pj + 1
                       }
