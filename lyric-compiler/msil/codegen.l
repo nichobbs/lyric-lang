@@ -18825,6 +18825,290 @@ pub func collectImplEntriesMsil(cctx: in CodegenCtx, file: in SourceFile, pkgNam
   }
 }
 
+// ── D105 Phase 2: external-interface impl conformance validation ─────────────
+//
+// Walk every IImpl block whose iface resolves to an external CLR type and
+// match it structurally against the interface metadata's MethodDef table.
+// Emits `F0020`–`F0023` diagnostics:
+//
+//   F0020 — the named extern type exists but is NOT an interface
+//           (e.g. user wrote `impl Math for Foo` against `System.Math`).
+//   F0021 — an abstract interface method has no matching impl method.
+//   F0022 — an impl method's Nth parameter type / arity does not match.
+//   F0023 — an impl method's return type does not match.
+//
+// Diagnostics are emitted with `panic` so they share the F0015 surface
+// (auto-FFI signature validation already uses this path).  Validation is
+// skipped — without diagnostic — when:
+//   (a) the interface is absent from the metadata-type index (no reference
+//       pack on disk, mirroring F0015's fallback at line 11793), or
+//   (b) any interface method signature contains a Var/MVar (generic
+//       parameter) — generic external interfaces are deferred per D105.
+//
+// Two equality forms are compared:
+//   • Primitive sigs match by ECMA element-type byte (`sigPrimByte`).
+//   • Class / value-type sigs match by normalised FQN (`sigNamedFqn`).
+// Anything richer (byref, pinned, custom modifiers) is treated as a "can't
+// verify" and silently skipped for that single method, the same way F0015
+// bails out via `canVerify`.
+
+func sigTypesEqualMsil(a: in Mdr.SigType, b: in Mdr.SigType): Bool {
+  val pa = Mdr.sigPrimByte(a)
+  val pb = Mdr.sigPrimByte(b)
+  if pa >= 0 or pb >= 0 {
+    return pa == pb
+  }
+  val na = Mdr.sigNamedFqn(a)
+  val nb = Mdr.sigNamedFqn(b)
+  if na.length > 0 and nb.length > 0 {
+    return na == nb
+  }
+  false
+}
+
+// Resolve every Lyric `impl` method's param/return type into a SigType for
+// structural comparison.  Returns None on any param the metadata pipeline
+// can't describe (generics, byref, …) — the caller skips validation of that
+// method, matching F0015's `canVerify` fallback.  The trailing element of
+// the returned list is the return-type sig.
+func implMethodToSigsMsil(
+  cctx: in CodegenCtx, fn: in FunctionDecl, pkgName: in String
+): Option[List[Mdr.SigType]] {
+  val out: List[Mdr.SigType] = newList()
+  var pi = 0
+  while pi < fn.params.count {
+    val pTy = typeExprToMsilCtx(cctx, fn.params[pi].ty, pkgName)
+    val isByRef = match pTy { case MByRef(_) -> true; case _ -> false }
+    if isByRef {
+      return None
+    }
+    match argTyToSig(pTy) {
+      case None -> return None
+      case Some(s) -> out.add(s)
+    }
+    pi = pi + 1
+  }
+  val retTy = match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid }
+  match argTyToSig(retTy) {
+    case None -> {
+      val isVoid = match retTy { case MVoid -> true; case _ -> false }
+      if isVoid {
+        out.add(Mdr.mkPrimSig(0x01))
+      } else {
+        return None
+      }
+    }
+    case Some(s) -> out.add(s)
+  }
+  Some(value = out)
+}
+
+// Render a SigType for a diagnostic message: primitives by element byte name,
+// named refs by FQN.
+func renderSigForDiagMsil(s: in Mdr.SigType): String {
+  val pb = Mdr.sigPrimByte(s)
+  if pb >= 0 {
+    if pb == 0x01 {
+      "void"
+    } else if pb == 0x02 {
+      "bool"
+    } else if pb == 0x03 {
+      "char"
+    } else if pb == 0x05 {
+      "byte"
+    } else if pb == 0x08 {
+      "int32"
+    } else if pb == 0x0A {
+      "int64"
+    } else if pb == 0x0D {
+      "double"
+    } else if pb == 0x0E {
+      "string"
+    } else if pb == 0x1C {
+      "object"
+    } else {
+      "prim(0x" + toString(pb) + ")"
+    }
+  } else {
+    Mdr.sigNamedFqn(s)
+  }
+}
+
+// Find the FunctionDecl in an IImpl block whose name matches `methodName`,
+// or None.  Mirrors `findImplMethod` in the type checker; codegen carries
+// `decl.members: List[ImplMember]` rather than the lowered MFunc list, so
+// we re-scan the AST here.
+func findImplFunctionDeclMsil(decl: in ImplDecl, methodName: in String): Option[FunctionDecl] {
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case IMplFunc(fn) -> {
+        if fn.name == methodName {
+          return Some(value = fn)
+        }
+      }
+      case IMplAssoc(_) -> {
+      }
+    }
+    i = i + 1
+  }
+  None
+}
+
+// True iff a signature is neither a primitive nor a named class/value-type
+// reference — i.e. it carries a Var/MVar/GenericInst/ByRef/Array shape.  We
+// bail out of structural validation when such a shape appears, because the
+// D105 Phase 2 cut covers only flat non-generic interfaces.
+func sigHasGenericOrByRefMsil(s: in Mdr.SigType): Bool {
+  if Mdr.sigPrimByte(s) >= 0 {
+    return false
+  }
+  if Mdr.sigNamedFqn(s).length > 0 {
+    return false
+  }
+  true
+}
+
+// Apply F0021–F0023 checks for one (iface method, optional impl method) pair.
+// Skipped when the iface method has a Var/MVar/ByRef shape or the impl method
+// can't be lowered to a flat SigType — both deferred to the generic-interfaces
+// follow-up work in D105.
+func checkOneInterfaceMethodMsil(
+  cctx: in CodegenCtx,
+  decl: in ImplDecl,
+  pkgName: in String,
+  ifaceFqn: in String,
+  ifaceMethod: in Mdr.ResolvedMethod,
+): Unit {
+  match findImplFunctionDeclMsil(decl, ifaceMethod.name) {
+    case None -> panic(
+      "F0021: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) +
+        "`: interface method '" + ifaceMethod.name + "' is not implemented. " +
+        "Add `func " + ifaceMethod.name + "(…): …` to the impl block."
+    )
+    case Some(implFn) -> {
+      var ifaceHasUnsupported = sigHasGenericOrByRefMsil(ifaceMethod.returnType)
+      var pj = 0
+      while pj < ifaceMethod.paramTypes.count and not ifaceHasUnsupported {
+        if sigHasGenericOrByRefMsil(ifaceMethod.paramTypes[pj]) {
+          ifaceHasUnsupported = true
+        }
+        pj = pj + 1
+      }
+      if not ifaceHasUnsupported {
+        match implMethodToSigsMsil(cctx, implFn, pkgName) {
+          case None -> {
+          }
+          case Some(implSigs) -> {
+            val implParamCount = implSigs.count - 1
+            if implParamCount != ifaceMethod.paramTypes.count {
+              panic(
+                "F0022: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) +
+                  "`: method '" + ifaceMethod.name + "' takes " + toString(implParamCount) +
+                  " parameter(s) but the .NET interface declares " + toString(ifaceMethod.paramTypes.count) + "."
+              )
+            } else {
+              var pk = 0
+              while pk < ifaceMethod.paramTypes.count {
+                val expected = ifaceMethod.paramTypes[pk]
+                val got = implSigs[pk]
+                if not sigTypesEqualMsil(expected, got) {
+                  panic(
+                    "F0022: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) +
+                      "`: method '" + ifaceMethod.name + "' parameter " + toString(pk + 1) +
+                      " has type " + renderSigForDiagMsil(got) +
+                      " but the .NET interface expects " + renderSigForDiagMsil(expected) + "."
+                  )
+                }
+                pk = pk + 1
+              }
+              val implRet = implSigs[implSigs.count - 1]
+              if not sigTypesEqualMsil(ifaceMethod.returnType, implRet) {
+                panic(
+                  "F0023: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) +
+                    "`: method '" + ifaceMethod.name + "' returns " + renderSigForDiagMsil(implRet) +
+                    " but the .NET interface declares return type " + renderSigForDiagMsil(ifaceMethod.returnType) + "."
+                )
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// Walk an external-interface `impl` block and validate it against the
+// reference assembly.  See the section header for diagnostic codes.
+func validateOneExternImplMsil(
+  cctx: in CodegenCtx, decl: in ImplDecl, pkgName: in String, ifaceFqn: in String
+): Unit {
+  ensureMetadataIndex(cctx)
+  match Mdr.assemblyForType(cctx.metadataTypeIndex, ifaceFqn) {
+    case None -> {
+      // No reference pack carries this assembly; skip silently, matching
+      // F0015's fallback at line 11793.  The TypeRef row is still emitted
+      // by `collectImplEntriesMsil`; the CLR will surface any conformance
+      // gap at first use.
+    }
+    case Some(asmName) -> match mapGet(cctx.metadataPathIndex, asmName) {
+      case None -> {
+      }
+      case Some(asmPath) -> match Mdr.inspectInterfaceTarget(asmPath, ifaceFqn) {
+        case None -> {
+        }
+        case Some(insp) -> {
+          if not insp.isInterface {
+            panic(
+              "F0020: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) +
+                "`: '" + ifaceFqn + "' resolves through `extern type` / `import extern` but its .NET metadata is " +
+                "not an interface (TypeAttributes.ClassSemanticsMask = 0). " +
+                "An `impl` block can only target a .NET interface."
+            )
+          }
+          var mi = 0
+          while mi < insp.methods.count {
+            val ifaceMethod = insp.methods[mi]
+            // F0021–F0023 fire on abstract slots only — C# 8+ default interface
+            // methods (Virtual without Abstract) are optional.  Special-name
+            // accessors (`get_X` / `set_X` / `add_X` / `remove_X`) are also
+            // abstract and required; the property/event naming convention is
+            // documented in D105 as a future enhancement to the LSP scaffolding,
+            // but the underlying methods are validated like any other.
+            if ifaceMethod.isAbstract and not ifaceMethod.isStatic {
+              checkOneInterfaceMethodMsil(cctx, decl, pkgName, ifaceFqn, ifaceMethod)
+            }
+            mi = mi + 1
+          }
+        }
+      }
+    }
+  }
+}
+
+// Pre-emission validation pass: walks every IImpl block in the file, and for
+// each block whose iface resolves to an external CLR type, runs F0020–F0023
+// checks against reference-assembly metadata.  Must run AFTER
+// `scanExternTypesMsil` so `externTypeNames` is populated.  Per D105, runs
+// before `lowerMImpl` so a mis-shaped `impl` becomes a build-time error
+// instead of a CLR `TypeLoadException` on first use.
+pub func validateExternImplConformanceMsil(cctx: in CodegenCtx, file: in SourceFile, pkgName: in String): Unit {
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IImpl(decl) -> {
+        if implIfaceIsExternalClr(cctx, decl) {
+          val ifaceFqn = implIfaceNameMsil(cctx, decl, pkgName)
+          validateOneExternImplMsil(cctx, decl, pkgName, ifaceFqn)
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
 // Append any pre-collected impl methods whose target matches `targetFqn` to
 // the record's method list, producing a new `MRecord`.  The original record
 // is left untouched.
@@ -19113,6 +19397,13 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
   // TypeDefs are emitted so `lowerMImpl` can resolve TypeDef rows and
   // MethodDef tokens by name.
   collectImplEntriesMsil(cctx, weavedFile, pkgName)
+
+  // ── D105 Phase 2: external-interface impl conformance validation ──────────
+  // Runs AFTER collectImplEntriesMsil so the TypeRef row is already reserved
+  // (a fixture file fails F0020–F0023 before it can fail at the CLR loader),
+  // and BEFORE the IRecord lowering loop so the diagnostic surfaces near the
+  // user's code, not from deep inside method-body lowering.
+  validateExternImplConformanceMsil(cctx, weavedFile, pkgName)
 
   var i = 0
   while i < weavedFile.items.count {

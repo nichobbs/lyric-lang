@@ -1676,6 +1676,11 @@ pub record ResolvedMethod {
   name: String
   isStatic: Bool
   isVirtual: Bool
+  // True iff the MethodAttributes.Abstract bit (0x0400) is set — i.e. the
+  // method has no body and an implementer must supply one.  Used by the
+  // D105 interface-impl conformance pass to distinguish required methods
+  // from C# 8 default interface methods.  Older callers leave this False.
+  isAbstract: Bool
   returnType: SigType
   paramTypes: List[SigType]
 }
@@ -1880,6 +1885,13 @@ func methodIsVirtual(flags: in Int): Bool {
   (flags / 64) % 2 == 1
 }
 
+// MethodAttributes: Abstract = 0x0400.  Interface methods that *must* be
+// implemented carry this bit; C# 8+ default interface methods carry only
+// Virtual and are optional.
+pub func methodIsAbstract(flags: in Int): Bool {
+  (flags / 1024) % 2 == 1
+}
+
 // Resolve the best-matching overload of `member` on `typeFqn` for `argTypes`,
 // reading from already-parsed metadata.  Returns None when the type is absent
 // or no overload is compatible.
@@ -1922,6 +1934,7 @@ pub func resolveOverloadIn(
                 name = md.name,
                 isStatic = not sig.hasThis,
                 isVirtual = methodIsVirtual(md.flags),
+                isAbstract = methodIsAbstract(md.flags),
                 returnType = resolveSigTypeFqn(img, layout, th, sig.returnType),
                 paramTypes = normParams
               )
@@ -2030,6 +2043,99 @@ pub func decodeExternMethodSig(
   match File.readBytes(asmPath) {
     case Err(_) -> None
     case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> None; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> None; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> None; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> None; case Ok(layout) -> decodeExternMethodSigIn(img, layout, th, typeFqn, member, declArity) } } } }
+  }
+}
+
+// ── Layer 5b: interface-impl conformance support (D105 Phase 2) ──────────────
+//
+// `TypeAttributes.ClassSemanticsMask` is the two-bit field at 0x20:
+//   0x00 = Class, 0x20 = Interface, 0x40 = reserved.
+// True iff this TypeDef row flags an interface (ECMA-335 §II.23.1.15).
+pub func isInterfaceTypeDef(flags: in Int): Bool {
+  (flags / 32) % 2 == 1
+}
+
+// All methods declared on the TypeDef at `typeFqn`, with their parameter and
+// return types normalised to `STNamed`-keyed FQNs (matching `resolveOverloadIn`).
+// `None` when the type is absent from the assembly.  Used by the MSIL backend's
+// interface-impl validation pass to enumerate the methods a Lyric `impl` block
+// must structurally satisfy.  The result preserves declaration order and
+// includes every method on the type — interfaces in the reference pack carry
+// only their abstract slots (their methods are flagged `Abstract` + `Virtual`),
+// but the caller does the filtering downstream so we don't have to expose every
+// MethodAttributes bit here.
+pub func allMethodSigsOn(
+  img: in PeImage, layout: in TableLayout, th: in TablesHeader, typeFqn: in String
+): Option[List[ResolvedMethod]] {
+  val typeRow = findTypeDefByFqn(img, layout, th, typeFqn)
+  if typeRow < 0 {
+    return None
+  }
+  val mr = methodRange(img, layout, th, typeRow)
+  val out: List[ResolvedMethod] = newList()
+  var mi = mr.start
+  while mi <= mr.endRow {
+    val md = readMethodDef(img, layout, mi)
+    match decodeMethodSig(blobAt(img, layout, md.sigBlob)) {
+      case Err(_) -> {
+      }
+      case Ok(sig) -> {
+        val normParams: List[SigType] = newList()
+        var pj = 0
+        while pj < sig.paramTypes.count {
+          normParams.add(resolveSigTypeFqn(img, layout, th, sig.paramTypes[pj]))
+          pj = pj + 1
+        }
+        out.add(
+          ResolvedMethod(
+            name = md.name,
+            isStatic = not sig.hasThis,
+            isVirtual = methodIsVirtual(md.flags),
+            isAbstract = methodIsAbstract(md.flags),
+            returnType = resolveSigTypeFqn(img, layout, th, sig.returnType),
+            paramTypes = normParams
+          )
+        )
+      }
+    }
+    mi = mi + 1
+  }
+  Some(value = out)
+}
+
+// True iff `typeFqn` resolves to an interface in this assembly.  Returns false
+// when the type is absent — callers (e.g. the F0020 check) treat absence
+// separately because it usually means the reference pack does not carry the
+// declaring assembly, not that the type is mis-declared.
+pub func typeIsInterface(
+  img: in PeImage, layout: in TableLayout, th: in TablesHeader, typeFqn: in String
+): Bool {
+  val typeRow = findTypeDefByFqn(img, layout, th, typeFqn)
+  if typeRow < 0 {
+    return false
+  }
+  isInterfaceTypeDef(readTypeDef(img, layout, typeRow).flags)
+}
+
+// Inspection result for an external type used as an `impl` target: whether the
+// .NET type carries the `Interface` ClassSemantics bit, and the resolved
+// signatures of every method declared on it.  Lifecycle / disk-read errors
+// (missing file, malformed PE / metadata, type absent from the assembly)
+// collapse to `None`, mirroring `resolveOverload` — the caller treats that as
+// "can't verify" and falls back to runtime checks.
+pub record InterfaceInspection {
+  isInterface: Bool
+  methods: List[ResolvedMethod]
+}
+
+// Read-from-disk convenience wrapper that loads `asmPath` and inspects
+// `typeFqn` for an interface-impl validation pass.  Used by the MSIL
+// backend's `validateExternImplConformanceMsil`; co-located here so the
+// File / PE / metadata layering stays self-contained.
+pub func inspectInterfaceTarget(asmPath: in String, typeFqn: in String): Option[InterfaceInspection] {
+  match File.readBytes(asmPath) {
+    case Err(_) -> None
+    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> None; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> None; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> None; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> None; case Ok(layout) -> match allMethodSigsOn(img, layout, th, typeFqn) { case None -> None; case Some(ms) -> Some(value = InterfaceInspection(isInterface = typeIsInterface(img, layout, th, typeFqn), methods = ms)) } } } } }
   }
 }
 
