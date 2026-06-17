@@ -18874,7 +18874,7 @@ func sigTypesEqualMsil(a: in Mdr.SigType, b: in Mdr.SigType): Bool {
 func implMethodToSigsMsil(
   cctx: in CodegenCtx, fn: in FunctionDecl, pkgName: in String
 ): Option[List[Mdr.SigType]] {
-  val out: List[Mdr.SigType] = newList()
+  val sigs: List[Mdr.SigType] = newList()
   var pi = 0
   while pi < fn.params.count {
     val pTy = typeExprToMsilCtx(cctx, fn.params[pi].ty, pkgName)
@@ -18884,7 +18884,7 @@ func implMethodToSigsMsil(
     }
     match argTyToSig(pTy) {
       case None -> return None
-      case Some(s) -> out.add(s)
+      case Some(s) -> sigs.add(s)
     }
     pi = pi + 1
   }
@@ -18893,14 +18893,14 @@ func implMethodToSigsMsil(
     case None -> {
       val isVoid = match retTy { case MVoid -> true; case _ -> false }
       if isVoid {
-        out.add(Mdr.mkPrimSig(0x01))
+        sigs.add(Mdr.mkPrimSig(0x01))
       } else {
         return None
       }
     }
-    case Some(s) -> out.add(s)
+    case Some(s) -> sigs.add(s)
   }
-  Some(value = out)
+  Some(value = sigs)
 }
 
 // Render a SigType for a diagnostic message: primitives by element byte name,

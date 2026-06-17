@@ -2072,7 +2072,7 @@ pub func allMethodSigsOn(
     return None
   }
   val mr = methodRange(img, layout, th, typeRow)
-  val out: List[ResolvedMethod] = newList()
+  val methods: List[ResolvedMethod] = newList()
   var mi = mr.start
   while mi <= mr.endRow {
     val md = readMethodDef(img, layout, mi)
@@ -2086,7 +2086,7 @@ pub func allMethodSigsOn(
           normParams.add(resolveSigTypeFqn(img, layout, th, sig.paramTypes[pj]))
           pj = pj + 1
         }
-        out.add(
+        methods.add(
           ResolvedMethod(
             name = md.name,
             isStatic = not sig.hasThis,
@@ -2100,7 +2100,7 @@ pub func allMethodSigsOn(
     }
     mi = mi + 1
   }
-  Some(value = out)
+  Some(value = methods)
 }
 
 // True iff `typeFqn` resolves to an interface in this assembly.  Returns false
