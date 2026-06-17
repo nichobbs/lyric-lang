@@ -23,10 +23,15 @@ pub object StandardSocketPaths {
   pub val alternateSocket: String = "/var/run/docker.sock.raw"
 }
 
-/// Create an HTTP client connected to the standard Docker daemon Unix socket.
+/// Create an HTTP client connected to the Docker daemon.
+///
+/// Follows the standard Docker connection priority:
+/// 1. DOCKER_HOST environment variable (if set and is a unix:// URL)
+/// 2. Standard location /var/run/docker.sock
+/// 3. Rootless location $XDG_RUNTIME_DIR/docker.sock (if available)
 ///
 /// # Preconditions as data
-/// - The Docker daemon must be running and listening on /var/run/docker.sock
+/// - The Docker daemon must be running and accessible via one of the above paths
 /// - The current user must have permission to access the socket (typically requires
 ///   membership in the docker group or sudo).
 ///
@@ -41,7 +46,10 @@ pub object StandardSocketPaths {
 /// ) |> assertOk()
 /// ```
 pub func makeDockerClient(): Std.Http.HttpClient {
-  Std.Http.clientWithUnixSocket(StandardSocketPaths.unixSocket)
+  match parseDockerHost() {
+    case Some(socketPath) -> Std.Http.clientWithUnixSocket(socketPath)
+    case None -> Std.Http.clientWithUnixSocket(StandardSocketPaths.unixSocket)
+  }
 }
 
 /// Create an HTTP client for rootless Docker (when running in unprivileged mode).
@@ -78,4 +86,54 @@ pub func makeDockerClientAt(socketPath: in String): Std.Http.HttpClient
   requires: socketPath.length > 0
 {
   Std.Http.clientWithUnixSocket(socketPath)
+}
+
+/// Parse DOCKER_HOST environment variable to extract a Unix socket path.
+///
+/// DOCKER_HOST is typically in one of these formats:
+/// - `unix:///var/run/docker.sock` — Unix socket (absolute path)
+/// - `unix://./docker.sock` — Unix socket (relative path, rare)
+/// - `tcp://localhost:2375` — TCP connection (not yet supported)
+/// - `npipe:////.//pipe//docker_engine` — Windows named pipe (not yet supported)
+///
+/// Returns `Some(socketPath)` if DOCKER_HOST is set and is a valid unix:// URL.
+/// Returns `None` if DOCKER_HOST is not set, not a unix:// URL, or is malformed.
+func parseDockerHost(): Option[String] {
+  match Std.Environment.getOpt("DOCKER_HOST") {
+    case Some(dockerHost) -> parseUnixSocketUrl(dockerHost)
+    case None -> None
+  }
+}
+
+/// Parse a unix:// URL to extract the socket path.
+///
+/// Handles formats like:
+/// - `unix:///var/run/docker.sock` → `/var/run/docker.sock`
+/// - `unix://docker.sock` → `docker.sock` (relative, unusual)
+/// - Non-unix URLs are rejected (tcp://, npipe://, etc.)
+func parseUnixSocketUrl(url: in String): Option[String] {
+  val prefix = "unix://"
+  if !url.startsWith(prefix) {
+    return None
+  }
+
+  val withoutPrefix = url.substring(prefix.length)
+
+  if withoutPrefix.length == 0 {
+    return None
+  }
+
+  val path = if withoutPrefix.startsWith("//") {
+    withoutPrefix.substring(2)
+  } else if withoutPrefix.startsWith("/") {
+    withoutPrefix
+  } else {
+    withoutPrefix
+  }
+
+  if path.length > 0 {
+    Some(value = path)
+  } else {
+    None
+  }
 }

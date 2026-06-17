@@ -110,14 +110,14 @@ func countJsonArrayElements(jsonArray: in String): Int {
     return 0
   }
 
-  val start = jsonArray.indexOf('[')
-  val end = jsonArray.lastIndexOf(']')
+  val startIdx = jsonArray.indexOf('[')
+  val endIdx = jsonArray.lastIndexOf(']')
 
-  if start < 0 || end < 0 || start >= end {
+  if startIdx < 0 || endIdx < 0 || startIdx >= endIdx {
     return 0
   }
 
-  val slice = jsonArray.substring(start + 1, end)
+  val slice = jsonArray.substring(startIdx + 1, endIdx)
 
   if slice.length == 0 {
     return 0

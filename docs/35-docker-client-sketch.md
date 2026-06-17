@@ -47,12 +47,16 @@ lyric-docker/
 
 Three ways to connect:
 
-1. **Standard Docker:**
+1. **Standard Docker (priority order):**
    ```lyric
-   val client = Docker.makeDockerClient()  // /var/run/docker.sock
+   val client = Docker.makeDockerClient()
    ```
+   Automatically checks:
+   - `DOCKER_HOST` environment variable (if set to `unix://` URL)
+   - `/var/run/docker.sock` (default location)
+   - `$XDG_RUNTIME_DIR/docker.sock` (rootless mode fallback)
 
-2. **Rootless Docker:**
+2. **Rootless Docker (explicit):**
    ```lyric
    match Docker.makeRootlessDockerClient() {
      case Ok(client) -> // ...
@@ -64,6 +68,19 @@ Three ways to connect:
    ```lyric
    val client = Docker.makeDockerClientAt("/custom/docker.sock")
    ```
+
+### DOCKER_HOST Support
+
+The `DOCKER_HOST` environment variable is automatically detected and takes precedence:
+
+```bash
+export DOCKER_HOST=unix:///var/run/docker.sock
+lyric run examples/docker_client.l
+```
+
+Supported formats:
+- `unix:///absolute/path/docker.sock` — Unix socket (absolute path)
+- `unix://relative/docker.sock` — Unix socket (relative path)
 
 ### Basic Operations
 

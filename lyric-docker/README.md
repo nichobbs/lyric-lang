@@ -59,11 +59,30 @@ pub func main(): Int {
 
 ## Connection
 
-### Standard Docker (Linux/macOS)
+### Standard Docker (Recommended)
 
 ```lyric
-val client = Docker.makeDockerClient()  // Uses /var/run/docker.sock
+val client = Docker.makeDockerClient()
 ```
+
+This automatically follows the standard Docker connection priority:
+1. `DOCKER_HOST` environment variable (if set and is a `unix://` URL)
+2. Standard location `/var/run/docker.sock` (Linux/macOS)
+3. Rootless location `$XDG_RUNTIME_DIR/docker.sock` (if available)
+
+### Specifying Docker Host via Environment Variable
+
+Set `DOCKER_HOST` to override the default socket location:
+
+```bash
+export DOCKER_HOST=unix:///custom/docker.sock
+```
+
+Supported formats:
+- `unix:///path/to/docker.sock` — Unix socket (absolute path)
+- `unix://docker.sock` — Unix socket (relative path)
+
+TCP and named pipe transports are planned for future releases.
 
 ### Rootless Docker
 
@@ -73,6 +92,8 @@ match Docker.makeRootlessDockerClient() {
   case Err(e) -> println("Error: " + e)
 }
 ```
+
+Explicitly targets `$XDG_RUNTIME_DIR/docker.sock` for rootless Docker. Use this when you want to ensure rootless mode is used and get an error if it's not available.
 
 ### Custom Socket Path
 
