@@ -13,6 +13,9 @@
 //!   - Docker daemon running and accessible at /var/run/docker.sock
 //!   - User has permission to access the socket (docker group or sudo)
 
+@runtime_checked
+package DockerClientExample
+
 import Docker
 import Std.Core
 
