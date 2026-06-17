@@ -14917,10 +14917,14 @@ pub func lowerImplMethodMsil(
     pi2 = pi2 + 1
   }
 
-  // Public | Virtual | HideBySig — no NewSlot/Final so CLR wires the
-  // concrete method to the interface slot by name-matching, matching the
-  // pattern used in msil_self_test_m11.l.
-  val instanceFlags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG
+  // Public | Virtual | Final | NewSlot | HideBySig — the canonical CIL
+  // shape for a method that satisfies an interface slot.  Final+NewSlot is
+  // required for the explicit `MethodImpl` row path that TypeSpec-dispatched
+  // generic external interfaces emit (D105 §A); for non-generic interfaces
+  // the CLR's name-matching still wires implicitly, but Final+NewSlot is
+  // legal on those methods too and matches the C# emission for interface
+  // implementers.
+  val instanceFlags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG + MDA_FINAL + MDA_NEW_SLOT
 
   MFunc(
     flags = instanceFlags,
