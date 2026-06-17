@@ -19206,6 +19206,18 @@ func sigTypesEqualMsil(a: in Mdr.SigType, b: in Mdr.SigType): Bool {
 // can't describe (generics, byref, …) — the caller skips validation of that
 // method, matching F0015's `canVerify` fallback.  The trailing element of
 // the returned list is the return-type sig.
+// Try `argTyToSig` first (handles primitives + extern class/value refs);
+// fall back to `msilTypeToSigForIface` which also handles plain Lyric
+// records (`MClass(name)` → `STNamed(name, false)`).  Without this
+// fallback, an impl method declared `func Equals(other: in GenRec): Bool`
+// collapses to None and the F0022/F0023 pass silently skips it.
+func tryImplTyToSigMsil(t: in MsilType): Option[Mdr.SigType] {
+  match argTyToSig(t) {
+    case Some(s) -> Some(value = s)
+    case None -> msilTypeToSigForIface(t)
+  }
+}
+
 func implMethodToSigsMsil(
   cctx: in CodegenCtx, fn: in FunctionDecl, pkgName: in String
 ): Option[List[Mdr.SigType]] {
@@ -19217,29 +19229,14 @@ func implMethodToSigsMsil(
     if isByRef {
       return None
     }
-    // Try `argTyToSig` first (handles primitives + extern class/value refs);
-    // fall back to `msilTypeToSigForIface` which also handles plain Lyric
-    // records (`MClass(name)` → `STNamed(name, false)`).  Without this
-    // fallback, an impl method declared `func Equals(other: in GenRec): Bool`
-    // collapses to None and the F0022/F0023 pass silently skips it (the
-    // structural mismatch then surfaces as a runtime TypeLoadException
-    // instead of a build-time diagnostic).
-    val asSig = match argTyToSig(pTy) {
-      case Some(s) -> Some(value = s)
-      case None -> msilTypeToSigForIface(pTy)
-    }
-    match asSig {
+    match tryImplTyToSigMsil(pTy) {
       case None -> return None
       case Some(s) -> sigs.add(s)
     }
     pi = pi + 1
   }
   val retTy = match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid }
-  val retSig = match argTyToSig(retTy) {
-    case Some(s) -> Some(value = s)
-    case None -> msilTypeToSigForIface(retTy)
-  }
-  match retSig {
+  match tryImplTyToSigMsil(retTy) {
     case None -> {
       val isVoid = match retTy { case MVoid -> true; case _ -> false }
       if isVoid {
