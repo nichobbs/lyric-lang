@@ -31,6 +31,7 @@ import Lyric.Parser
 import Lyric.TypeChecker
 import Lyric.ModeChecker
 import Lyric.Verifier
+import Msil.MetadataReader as Mdr
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. State types.
@@ -56,6 +57,16 @@ pub record LspState {
   // importedURI → [consumerURI]
   exit: List[Bool]
   // box[Bool], true after "exit"
+  // Lazily-built reference-pack metadata indexes for the "Implement
+  // Interface" code action on extern targets.  Both empty until the
+  // first request.  Length-1 List[Bool] is used as a one-shot init
+  // sentinel (true once `ensureLspMetadataIndex` has run, regardless
+  // of whether the reference pack was found).
+  ffiTypeIndex: Map[String, String]
+  // FQN → assembly simple name
+  ffiPathIndex: Map[String, String]
+  // assembly simple name → on-disk path
+  ffiIndexInit: List[Bool]
 }
 
 pub func lspInit(): LspState {
@@ -63,7 +74,19 @@ pub func lspInit(): LspState {
   wsRoot.add("")
   val exit: List[Bool] = newList()
   exit.add(false)
-  LspState(store = newMap(), wsRoot = wsRoot, wsIndex = newMap(), wsKeys = newList(), revDeps = newMap(), exit = exit)
+  val ffiInit: List[Bool] = newList()
+  ffiInit.add(false)
+  LspState(
+    store = newMap(),
+    wsRoot = wsRoot,
+    wsIndex = newMap(),
+    wsKeys = newList(),
+    revDeps = newMap(),
+    exit = exit,
+    ffiTypeIndex = newMap(),
+    ffiPathIndex = newMap(),
+    ffiIndexInit = ffiInit
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1411,6 +1434,424 @@ func findProofRequiredAnn(anns: in List[Annotation]): Option[Annotation] {
   None
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §15a. "Implement Interface" code-action support (D105 §B).
+// ─────────────────────────────────────────────────────────────────────────────
+// Lazily build the reference-pack metadata indexes on first use.  Idempotent.
+// When the reference pack is unavailable (SDK-less environment), the indexes
+// stay empty and the extern-impl scaffolder silently falls back to no-op.
+func ensureLspMetadataIndex(state: in LspState): Unit {
+  if state.ffiIndexInit[0] {
+    return
+  }
+  state.ffiIndexInit[0] = true
+  match Mdr.refPackDir() {
+    case None -> {
+    }
+    case Some(refDir) -> {
+      val paths = Mdr.enumRefAssemblies(refDir)
+      val ty = Mdr.buildTypeIndex(paths)
+      val pa = Mdr.buildPathIndex(paths)
+      for k in dictGetKeys(ty) {
+        match mapGet(ty, k) { case Some(v) -> state.ffiTypeIndex.add(k, v); case None -> {  } }
+      }
+      for k in dictGetKeys(pa) {
+        match mapGet(pa, k) { case Some(v) -> state.ffiPathIndex.add(k, v); case None -> {  } }
+      }
+    }
+  }
+}
+
+// Render a TypeExpr back as Lyric source text.  Recursive; handles primitive
+// names (`Int`, `String`, …), simple type refs (`Resource`), and generic
+// applications (`List[Int]`, `Map[String, Int]`).  Unknown / structural
+// shapes fall back to `Any` so the stub still parses; the user can fix up.
+func renderTypeExprAsLyricSource(te: in TypeExpr): String {
+  match te.kind {
+    case TRef(path) -> {
+      var s = ""
+      var i = 0
+      while i < path.segments.count {
+        if i > 0 {
+          s = s + "."
+        }
+        s = s + path.segments[i]
+        i = i + 1
+      }
+      s
+    }
+    case TGenericApp(head, args) -> {
+      var s = ""
+      var hi = 0
+      while hi < head.segments.count {
+        if hi > 0 {
+          s = s + "."
+        }
+        s = s + head.segments[hi]
+        hi = hi + 1
+      }
+      s = s + "["
+      var ai = 0
+      while ai < args.count {
+        if ai > 0 {
+          s = s + ", "
+        }
+        s = s + match args[ai] {
+          case TAType(t) -> renderTypeExprAsLyricSource(t)
+          case TAValue(_) -> "_"
+        }
+        ai = ai + 1
+      }
+      s = s + "]"
+      s
+    }
+    case _ -> "Any"
+  }
+}
+
+// Render one Lyric `Param` as `name: mode Type` (or just `name: Type` when
+// the mode keyword was omitted in the source).  Used when synthesising
+// native-interface method stubs from the iface's `IMSig` members.
+func renderParamAsLyricSource(p: in Param): String {
+  val modeStr = if p.modeExplicit {
+    match p.mode { case PMIn -> "in "; case PMOut -> "out "; case PMInout -> "inout " }
+  } else {
+    ""
+  }
+  p.name + ": " + modeStr + renderTypeExprAsLyricSource(p.ty)
+}
+
+// True when `s` is contained in (or touches the start of) the impl decl's
+// LSP-translated source span.  Used to identify an impl block at the
+// caret/selection range of a code-action request.
+func lspRangePositionInside(rng: in String, target: in Span): Bool {
+  val pdoc = parseJson(rng)
+  val r = rootElement(pdoc)
+  val sLine = match tryGetProperty(r, "start") {
+    case None -> -1
+    case Some(sp) -> match tryGetProperty(sp, "line") { case None -> -1; case Some(e) -> match tryGetInt(e) { case None -> -1; case Some(n) -> n + 1 } }
+  }
+  val sCol = match tryGetProperty(r, "start") {
+    case None -> -1
+    case Some(sp) -> match tryGetProperty(sp, "character") { case None -> -1; case Some(e) -> match tryGetInt(e) { case None -> -1; case Some(n) -> n + 1 } }
+  }
+  if sLine < 0 {
+    return false
+  }
+  val tsLine = target.startPos.line
+  val tsCol = target.startPos.column
+  val teLine = target.endPos.line
+  val teCol = target.endPos.column
+  val afterStart = sLine > tsLine or (sLine == tsLine and sCol >= tsCol)
+  val beforeEnd = sLine < teLine or (sLine == teLine and sCol <= teCol)
+  afterStart and beforeEnd
+}
+
+// Find an IImpl block in `file` whose span contains `rng`, or None.  The
+// first match wins (impl blocks don't nest).
+func findImplDeclAtRange(file: in SourceFile, rng: in String): Option[ImplDecl] {
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IImpl(decl) -> {
+        if lspRangePositionInside(rng, decl.span) {
+          return Some(value = decl)
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  None
+}
+
+// Names of methods the user has already implemented in this impl block.
+// Compared against the iface's required-method list to compute the
+// scaffolder's "missing" set.
+func implMethodNames(decl: in ImplDecl): List[String] {
+  val names: List[String] = newList()
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case IMplFunc(fn) -> names.add(fn.name)
+      case IMplAssoc(_) -> {
+      }
+    }
+    i = i + 1
+  }
+  names
+}
+
+func listContainsString(xs: in List[String], s: in String): Bool {
+  var i = 0
+  while i < xs.count {
+    if xs[i] == s {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Find the `DKInterface` symbol named `name`, or None.  Mirrors
+// `findInterfaceDecl` in `typechecker_checker.l` but lives here so the
+// LSP doesn't have to expose its symbol-table walker.
+func lspFindInterfaceDecl(tbl: in SymbolTable, name: in String): Option[InterfaceDecl] {
+  var i = 0
+  while i < tbl.symbols.count {
+    match tbl.symbols[i].kind {
+      case DKInterface(_, d) -> {
+        if tbl.symbols[i].name == name {
+          return Some(value = d)
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  None
+}
+
+// CLR FQN of a `DKExternType` symbol named `name`, or "" when no extern
+// type by that name is in scope.  Used by the extern-impl scaffolder to
+// route through `Mdr.inspectInterfaceTarget`.
+func lspFindExternTypeFqn(tbl: in SymbolTable, name: in String): String {
+  var i = 0
+  while i < tbl.symbols.count {
+    match tbl.symbols[i].kind {
+      case DKExternType(_, decl) -> {
+        if tbl.symbols[i].name == name {
+          return decl.clrName
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  ""
+}
+
+// Map a BCL SigType to its idiomatic Lyric source form.  Primitives use the
+// Lyric names (`Int`, `Long`, …); the void return becomes `Unit`.  Named
+// types fall through to their CLR FQN — the user can rewrite to a Lyric
+// alias.  Unsupported shapes (generics, byref, …) render as `Any` so the
+// stub still parses; the validation pass will surface the gap.
+func sigTypeToLyricSource(s: in Mdr.SigType): String {
+  val pb = Mdr.sigPrimByte(s)
+  if pb >= 0 {
+    if pb == 0x01 { "Unit" }
+    else if pb == 0x02 { "Bool" }
+    else if pb == 0x03 { "Char" }
+    else if pb == 0x05 { "Byte" }
+    else if pb == 0x08 { "Int" }
+    else if pb == 0x0A { "Long" }
+    else if pb == 0x0D { "Double" }
+    else if pb == 0x0E { "String" }
+    else if pb == 0x1C { "Any" }
+    else { "Any" }
+  } else {
+    val fqn = Mdr.sigNamedFqn(s)
+    if fqn.length > 0 { fqn } else { "Any" }
+  }
+}
+
+// True when `s` mentions a Var / MVar / GenericInst / ByRef / Array shape
+// that the scaffolder can't render cleanly.  Mirrors
+// `sigHasGenericOrByRefMsil` in codegen.l; methods whose signature trips
+// this are skipped (rather than rendered as `Any`-laden stubs that would
+// almost certainly be wrong).
+func sigIsRenderable(s: in Mdr.SigType): Bool {
+  if Mdr.sigPrimByte(s) >= 0 {
+    return true
+  }
+  if Mdr.sigNamedFqn(s).length > 0 {
+    return true
+  }
+  false
+}
+
+// Build a stub `func name(p1: in T1, …): Ret { panic("not implemented") }`
+// for one interface method.  `prefix` is the indent (whatever sits before
+// the closing brace) so the inserted line aligns visually.
+func stubFromNativeSig(sig: in FunctionSig, prefix: in String): String {
+  var src = prefix + "func " + sig.name + "("
+  var i = 0
+  while i < sig.params.count {
+    if i > 0 {
+      src = src + ", "
+    }
+    src = src + renderParamAsLyricSource(sig.params[i])
+    i = i + 1
+  }
+  src = src + "): "
+  src = src + match sig.ret { case None -> "Unit"; case Some(te) -> renderTypeExprAsLyricSource(te) }
+  src = src + " {\n" + prefix + "  panic(\"not implemented\")\n" + prefix + "}\n"
+  src
+}
+
+// Build a stub from an extern (metadata-resolved) method signature.  The
+// parameter names follow the standard `arg<N>` convention; metadata does
+// not preserve parameter names on every reference-pack assembly.  Modes
+// default to `in` for a value/class type — refining to out/inout is a
+// follow-up tied to the existing ByRef gap in the validation pass.
+func stubFromExternSig(m: in Mdr.ResolvedMethod, prefix: in String): String {
+  var src = prefix + "func " + m.name + "("
+  var i = 0
+  while i < m.paramTypes.count {
+    if i > 0 {
+      src = src + ", "
+    }
+    src = src + "arg" + toString(i + 1) + ": in " + sigTypeToLyricSource(m.paramTypes[i])
+    i = i + 1
+  }
+  src = src + "): " + sigTypeToLyricSource(m.returnType)
+  src = src + " {\n" + prefix + "  panic(\"not implemented\")\n" + prefix + "}\n"
+  src
+}
+
+// Convert a source-text byte offset to a 0-indexed LSP `Position` shape
+// (`{"line": …, "character": …}`).  Walks the prefix once; offsets past
+// end of source clamp to the EOF position.
+func offsetToLspPosJson(source: in String, offset: in Int): String {
+  var line = 0
+  var col = 0
+  var i = 0
+  val n = if offset < source.length { offset } else { source.length }
+  while i < n {
+    if source[i] == '\n' {
+      line = line + 1
+      col = 0
+    } else {
+      col = col + 1
+    }
+    i = i + 1
+  }
+  val fs: List[String] = newList()
+  fs.add(jPair("line", jInt(line)))
+  fs.add(jPair("character", jInt(col)))
+  jObj(fs)
+}
+
+// LSP range that covers the closing `}` of the impl block AND any
+// whitespace on the same line preceding it.  The code action replaces
+// the whole range with `<stubs><indent>}` — so the indent before `}`
+// isn't doubled in the output (and the single-line `impl … { }` shape
+// still works because in that case there's no preceding whitespace on
+// the `}`'s line).
+func implCloseBraceRange(source: in String, decl: in ImplDecl): String {
+  val endOff = decl.span.endPos.offset
+  var braceOff = if endOff > 0 { endOff - 1 } else { 0 }
+  var startOff = braceOff
+  while startOff > 0 and (source[startOff - 1] == ' ' or source[startOff - 1] == '\t') {
+    startOff = startOff - 1
+  }
+  val fs: List[String] = newList()
+  fs.add(jPair("start", offsetToLspPosJson(source, startOff)))
+  fs.add(jPair("end", offsetToLspPosJson(source, endOff)))
+  jObj(fs)
+}
+
+// Detect the indent of the line that contains the impl block's closing `}`.
+// Used so the synthesised stubs and the replacement `}` align visually
+// with the rest of the impl body.  Defaults to "" when the line couldn't
+// be identified (e.g. malformed source).
+func implBodyIndent(source: in String, decl: in ImplDecl): String {
+  val braceOff = if decl.span.endPos.offset > 0 { decl.span.endPos.offset - 1 } else { 0 }
+  var lineStart = braceOff
+  while lineStart > 0 and source[lineStart - 1] != '\n' {
+    lineStart = lineStart - 1
+  }
+  var p = lineStart
+  while p < braceOff and (source[p] == ' ' or source[p] == '\t') {
+    p = p + 1
+  }
+  source.substring(lineStart, p - lineStart)
+}
+
+// True when at least one `IMSig` member of the native iface lacks an impl.
+// Names matched by simple string equality.
+func nativeMissingMethods(iface: in InterfaceDecl, impls: in List[String]): List[FunctionSig] {
+  val missing: List[FunctionSig] = newList()
+  var i = 0
+  while i < iface.members.count {
+    match iface.members[i] {
+      case IMSig(sig) -> {
+        if not listContainsString(impls, sig.name) {
+          missing.add(sig)
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  missing
+}
+
+// Build the native-interface stub block for any methods missing from the
+// impl.  Returns "" when nothing is missing.
+func buildNativeStubBlock(iface: in InterfaceDecl, impls: in List[String], indent: in String): String {
+  val missing = nativeMissingMethods(iface, impls)
+  if missing.count == 0 {
+    return ""
+  }
+  var block = ""
+  var i = 0
+  while i < missing.count {
+    block = block + stubFromNativeSig(missing[i], indent + "  ")
+    i = i + 1
+  }
+  block
+}
+
+// Build the extern-interface stub block for any abstract methods missing
+// from the impl.  Reads the iface's metadata via `Mdr.inspectInterfaceTarget`;
+// returns "" when the reference pack is absent or every required method is
+// already implemented.  Skips methods whose signature mentions a generic /
+// byref / array shape (D105 §B v1 covers flat signatures only).
+func buildExternStubBlock(
+  state: in LspState, externFqn: in String, impls: in List[String], indent: in String
+): String {
+  ensureLspMetadataIndex(state)
+  match mapGet(state.ffiTypeIndex, externFqn) {
+    case None -> ""
+    case Some(asmName) -> match mapGet(state.ffiPathIndex, asmName) {
+      case None -> ""
+      case Some(asmPath) -> match Mdr.inspectInterfaceTarget(asmPath, externFqn) {
+        case None -> ""
+        case Some(insp) -> {
+          if not insp.isInterface {
+            return ""
+          }
+          var block = ""
+          var i = 0
+          while i < insp.methods.count {
+            val m = insp.methods[i]
+            if m.isAbstract and not m.isStatic and not listContainsString(impls, m.name) {
+              var renderable = sigIsRenderable(m.returnType)
+              var pj = 0
+              while pj < m.paramTypes.count and renderable {
+                if not sigIsRenderable(m.paramTypes[pj]) {
+                  renderable = false
+                }
+                pj = pj + 1
+              }
+              if renderable {
+                block = block + stubFromExternSig(m, indent + "  ")
+              }
+            }
+            i = i + 1
+          }
+          block
+        }
+      }
+    }
+  }
+}
+
 func handleCodeAction(state: in LspState, params: in String): String {
   val pdoc = parseJson(params)
   val root = rootElement(pdoc)
@@ -1474,6 +1915,47 @@ func handleCodeAction(state: in LspState, params: in String): String {
                 }
                 more = arrayMoveNext(en)
               }
+            }
+          }
+        }
+      }
+      // ── D105 §B: "Implement <Iface>" proactive code action ───────────────
+      // Fires whenever the code-action request range overlaps an `impl Iface
+      // for Record { … }` block.  Builds method stubs for any required iface
+      // method that the user has not yet supplied:
+      //   - Native interfaces (DKInterface): walk IMSig members.
+      //   - Extern interfaces (DKExternType): consult the reference-pack
+      //     metadata via `Mdr.inspectInterfaceTarget` (lazy index).
+      // The replacement range is exactly the closing `}` so the inserted
+      // stubs land just before it; the `}` is reprinted at the end of the
+      // newText to keep the surrounding source intact.
+      val reqRange = match tryGetProperty(root, "range") {
+        case None -> "{}"
+        case Some(e) -> getRawText(e)
+      }
+      match findImplDeclAtRange(cachedFile, reqRange) {
+        case None -> {
+        }
+        case Some(implDecl) -> {
+          val ifaceSegs = implDecl.iface.head.segments
+          if ifaceSegs.count > 0 {
+            val ifaceName = ifaceSegs[ifaceSegs.count - 1]
+            val impls = implMethodNames(implDecl)
+            val indent = implBodyIndent(cached.source, implDecl)
+            val nativeBlock = match lspFindInterfaceDecl(cachedCr.symbols, ifaceName) {
+              case None -> ""
+              case Some(ifaceDecl) -> buildNativeStubBlock(ifaceDecl, impls, indent)
+            }
+            val stubBlock = if nativeBlock.length > 0 {
+              nativeBlock
+            } else {
+              val externFqn = lspFindExternTypeFqn(cachedCr.symbols, ifaceName)
+              if externFqn.length > 0 { buildExternStubBlock(state, externFqn, impls, indent) } else { "" }
+            }
+            if stubBlock.length > 0 {
+              val rng = implCloseBraceRange(cached.source, implDecl)
+              val newText = stubBlock + indent + "}"
+              actions.add(mkCodeAction(uri, "Implement " + ifaceName, rng, newText))
             }
           }
         }
