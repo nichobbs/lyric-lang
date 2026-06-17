@@ -11,14 +11,15 @@
 > | §A (i) | STVar substitution for F0022/F0023 on generic ifaces | #3864 |
 > | §A (ii) | F0024 lift for STSzArray / STByRef | #3864 |
 > | §A (iii) | F0024 lift for STNamedGenericInst | #3865 |
-> | §A (iv) | F0024 narrowed to "iface FQN not found" | #3865 |
+> | §A (iv) | F0024 removed entirely | #3865 |
 > | §B | LSP "Implement <Iface>" code action | #3861 |
 > | §C | Bridge-thunk synthesis | N/A — Lyric primitives are native CLR primitives |
 >
-> What `F0024` now catches: a typo in `extern type IFoo = "Wrong.Ns.IFoo\`1"`
-> that doesn't resolve to a TypeDef in the reference assembly.  All
-> structural mismatch surfaces (F0020 / F0021 / F0022 / F0023) and
-> runtime `TypeLoadException` cover the rest.
+> `F0024` is gone: TypeSpec emission produces structurally-valid IL for
+> any closed instantiation, Phase 2 F0020–F0023 catches every
+> build-time-detectable structural mismatch (with `STVar` substitution
+> and recursive `STSzArray` / `STByRef` / `STNamedGenericInst` handling),
+> and the runtime catches the rest as `TypeLoadException`.
 >
 > Explicitly deferred (rare in BCL; silent-skip F0022/F0023 with runtime
 > as the backstop): `STMVar` (method-generic iface methods),
@@ -94,14 +95,20 @@ Phases 1–4 and follow-ups A, B, C are all shipped:
 | §B | LSP "Implement Interface" code action (native + extern) | Shipped in #3861 |
 | §C | Bridge-thunk synthesis | N/A (see below) |
 
-### F0024 — narrowed scope
+### F0024 — removed
 
-`F0024` is now a single typo guard: it fires when the iface FQN doesn't
-resolve in the reference assembly's TypeDef table (typically a
-mis-spelled `extern type IFoo = "Wrong.Ns.IFoo\`1"`). All other shape
-gating is gone — TypeSpec emission produces structurally-valid IL for
-any closed instantiation, and the runtime catches genuine structural
-mismatches.
+`F0024` was removed in #3865.  TypeSpec emission produces
+structurally-valid IL for any closed instantiation, and Phase 2's
+F0020 / F0021 / F0022 / F0023 catches every build-time-detectable
+structural mismatch — with `STVar` substitution against the iface's
+resolved type args and recursive shape handling for `STSzArray`,
+`STByRef`, and `STNamedGenericInst`.  The only previously-imagined
+F0024 role (typo guard for "iface FQN not in reference-assembly
+TypeDef table") proved unreachable in practice: `Mdr.assemblyForType`
+returns `None` for an unknown FQN and the validation path silently
+skips, so the panic site never fired.  The wider FFI contract — runtime
+catches genuine mismatches as `TypeLoadException` — covers the typo
+case at first use instead.
 
 ### Explicitly deferred (no real-world impact)
 

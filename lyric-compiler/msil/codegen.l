@@ -19039,65 +19039,23 @@ func buildExternIfaceMethodRowsMsil(
 // Closed instantiations of `IEquatable<T>`, `IComparable<T>`, and similarly-
 // shaped BCL interfaces lower cleanly via `buildExternIfaceMethodRowsMsil`
 // and proceed to emission.
-// ── D105 §A: generic external interface "type not found" guard ──────────────
+// ── D105 §A: generic external interface validation ──────────────────────────
 //
-// Phase 2 (`validateExternImplConformanceMsil`) already runs F0020 / F0021
-// / F0022 / F0023 on every external-impl block, generic or not, with full
-// STVar substitution + recursive shape handling — so this pass is *not* the
-// place to repeat structural checks.  Its remaining job is the narrow
-// "iface type not found in the reference assembly" case (typically a typo
-// in `extern type IFoo = "Wrong.Namespace.IFoo`1"`): without it, the
-// CLR-name-matching emission path (TypeSpec + InterfaceImpl) would still
-// produce a structurally-valid DLL whose load fails at run time, and the
-// user would have a hard time tracing it back to the typo.  Catching it
-// at build time with F0024 makes the typo loud.
+// (Removed in #3865.)  The Phase 2 validation pass
+// (`validateExternImplConformanceMsil`) handles every diagnostic that's
+// actually catchable at build time: F0020 (not-an-interface), F0021 (missing
+// method), F0022 (parameter type / arity mismatch with STVar substitution),
+// F0023 (return type mismatch).  TypeSpec emission + CLR name-matching
+// produces structurally-valid IL for *any* closed instantiation, and the
+// runtime catches structural mismatches that the substitution-aware
+// F0022/F0023 path can't reach (e.g. iface methods whose signature mentions
+// `STMVar` / `STPtr` / `STFnPtr`).
 //
-// The shape-not-representable check that used to fire here is intentionally
-// gone: TypeSpec emission works for *any* closed instantiation, and the
-// runtime catches actual structural mismatches (the wider FFI contract).
-// Per-method F0021–F0023 still fires via `validateExternImplConformanceMsil`
-// for missing methods and shape-validatable param/return mismatches.
-func validateExternGenericIfacesMsil(cctx: in CodegenCtx, file: in SourceFile, pkgName: in String): Unit {
-  var i = 0
-  while i < file.items.count {
-    match file.items[i].kind {
-      case IImpl(decl) -> {
-        if implIfaceIsExternalClr(cctx, decl) and decl.iface.args.count > 0 {
-          val ifaceFqn = implIfaceNameMsil(cctx, decl, pkgName)
-          ensureMetadataIndex(cctx)
-          match Mdr.assemblyForType(cctx.metadataTypeIndex, ifaceFqn) {
-            case None -> {
-              // Reference pack absent — skip silently (mirrors F0015 fallback).
-            }
-            case Some(asmName) -> match mapGet(cctx.metadataPathIndex, asmName) {
-              case None -> {
-              }
-              case Some(asmPath) -> match Mdr.inspectInterfaceTarget(asmPath, ifaceFqn) {
-                case None -> {
-                  panic(
-                    "F0024: `impl " + decl.iface.head.segments[0] + "[…] for " +
-                      implTargetNameMsil(decl, pkgName) + "`: '" + ifaceFqn +
-                      "' was not found in the reference assembly's TypeDef table. " +
-                      "Check the `extern type` FQN for typos (the BCL convention is " +
-                      "`Namespace.SimpleName\\`<arity>`, e.g. `System.IEquatable\\`1`)."
-                  )
-                }
-                case Some(_) -> {
-                  // Type exists and is reachable.  Phase 2
-                  // (`validateExternImplConformanceMsil`) runs F0020 / F0021 /
-                  // F0022 / F0023 on every iface method below.
-                }
-              }
-            }
-          }
-        }
-      }
-      case _ -> {
-      }
-    }
-    i = i + 1
-  }
-}
+// `F0024` previously gated the build for these uncatchable shapes; with the
+// substitution + shape-lifting work it had no remaining role except as a
+// typo guard for "iface FQN not in metadata index" — which `assemblyForType`
+// already skips silently (the index is not exhaustive of every restored
+// dep), so the panic was unreachable.  The pass is gone.
 
 // Pre-pass: collect every IImpl block into `cctx.implEntries`.  Each impl
 // method is lowered through `lowerImplMethodMsil` so it carries virtual
@@ -19138,11 +19096,13 @@ pub func collectImplEntriesMsil(cctx: in CodegenCtx, file: in SourceFile, pkgNam
           mi = mi + 1
         }
         // D105 §A: when the iface is an external generic interface, build a
-        // closed-instantiation TypeSpec and per-method MemberRef rows so
-        // `lowerMImpl` can emit the matching `MethodImpl` rows.  When the
-        // metadata or signature shapes aren't representable by the v1 cut,
-        // leave the fields at their zero defaults; `validateExternGenericIfacesMsil`
-        // will surface a structured F0024 diagnostic before lowering runs.
+        // closed-instantiation TypeSpec and stash the resulting token on the
+        // queued `MImplData.ifaceTypeToken` so `lowerMImpl` emits the
+        // matching InterfaceImpl row against the TypeSpec.  CLR name-matching
+        // through the TypeSpec wires up dispatch without explicit MethodImpl
+        // rows.  Unrepresentable shapes fall back to the open-generic
+        // TypeRef path; the structural F0021–F0023 pass catches anything
+        // catchable, and the runtime catches the rest.
         var ifaceTypeToken = 0
         val slotTokens: List[Int] = newList()
         if isExternal and decl.iface.args.count > 0 {
@@ -19964,17 +19924,6 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
   // TypeDefs are emitted so `lowerMImpl` can resolve TypeDef rows and
   // MethodDef tokens by name.
   collectImplEntriesMsil(cctx, weavedFile, pkgName)
-
-  // ── D105 §A: generic external interface representability gate ─────────────
-  // Runs before the F0020–F0023 validation pass so the user gets a more
-  // specific "v1 cut can't represent this signature shape" message (F0024)
-  // when an iface method's metadata signature mentions an STMVar / STSzArray /
-  // STByRef / STGenericInst shape.  Closed instantiations of `IEquatable<T>` /
-  // `IComparable<T>` and similar flat-sig interfaces pass through; the
-  // TypeSpec + MemberRef rows were already populated by
-  // `collectImplEntriesMsil`, so the structural F0021–F0023 pass below
-  // doesn't fire on the inevitable STVar parameters.
-  validateExternGenericIfacesMsil(cctx, weavedFile, pkgName)
 
   // ── D105 Phase 2: external-interface impl conformance validation ──────────
   // Runs AFTER collectImplEntriesMsil so the TypeRef row is already reserved

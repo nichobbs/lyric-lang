@@ -768,7 +768,7 @@ jobs:
       # to end at the codegen layer; this phase adds metadata-direct signature
       # validation so a mis-shaped impl fails at build time instead of at first
       # use with `TypeLoadException`.  Each fixture targets one diagnostic.
-      - name: FFI iface impl F0020–F0024 negative tests
+      - name: FFI iface impl F0020–F0023 + generic-iface negative tests
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -894,27 +894,7 @@ jobs:
           func main(): Int { 0 }
           LYR
           run_fixture "F0021" "f0021_gen_fixture.l"
-          # F0024 (narrowed): the generic external interface type wasn't found in
-          # the reference assembly's TypeDef table — typically a typo in the
-          # `extern type` FQN.  The pre-lift F0024 fired on any shape the v1
-          # cut couldn't represent; that role is gone (TypeSpec emission works
-          # for any closed instantiation, and Phase 2 catches structural
-          # mismatches via F0021–F0023), so F0024 is now the narrow
-          # "type-not-found" guard.
-          cat > "$work/f0024_fixture.l" <<'LYR'
-          package F0024Fixture
-
-          extern type ITypo[T] = "System.IDoesNotExist`1"
-
-          record R { tag: Int }
-
-          impl ITypo[Int] for R {
-          }
-
-          func main(): Int { 0 }
-          LYR
-          run_fixture "F0024" "f0024_fixture.l"
-          echo "all F0020–F0024 negative tests passed"
+          echo "all F0020–F0023 + generic-iface negative tests passed"
 
       # Synthesized-method-resolution self-test (#1499, #1507).
       # Verifies that compiler-synthesized named methods (protected-type entries,
