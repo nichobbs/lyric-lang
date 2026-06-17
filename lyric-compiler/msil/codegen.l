@@ -19217,14 +19217,29 @@ func implMethodToSigsMsil(
     if isByRef {
       return None
     }
-    match argTyToSig(pTy) {
+    // Try `argTyToSig` first (handles primitives + extern class/value refs);
+    // fall back to `msilTypeToSigForIface` which also handles plain Lyric
+    // records (`MClass(name)` → `STNamed(name, false)`).  Without this
+    // fallback, an impl method declared `func Equals(other: in GenRec): Bool`
+    // collapses to None and the F0022/F0023 pass silently skips it (the
+    // structural mismatch then surfaces as a runtime TypeLoadException
+    // instead of a build-time diagnostic).
+    val asSig = match argTyToSig(pTy) {
+      case Some(s) -> Some(value = s)
+      case None -> msilTypeToSigForIface(pTy)
+    }
+    match asSig {
       case None -> return None
       case Some(s) -> sigs.add(s)
     }
     pi = pi + 1
   }
   val retTy = match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid }
-  match argTyToSig(retTy) {
+  val retSig = match argTyToSig(retTy) {
+    case Some(s) -> Some(value = s)
+    case None -> msilTypeToSigForIface(retTy)
+  }
+  match retSig {
     case None -> {
       val isVoid = match retTy { case MVoid -> true; case _ -> false }
       if isVoid {
@@ -19304,16 +19319,67 @@ func sigHasGenericOrByRefMsil(s: in Mdr.SigType): Bool {
   true
 }
 
+// Convert an `MsilType` (the form the Lyric type-resolver produces) to a
+// metadata `SigType` (the form the metadata reader returns).  Inverse of
+// `sigTypeToMsilForIface` for the supported v1 shapes.  Used to convert
+// the iface's type-argument list into the substitution table the
+// `substituteVarsInSigType` helper consumes.  Returns `None` for shapes
+// the v1 cut can't carry through the iface MemberRef (function pointers,
+// raw MObject, …) — caller falls back to leaving the slot as STVar.
+func msilTypeToSigForIface(t: in MsilType): Option[Mdr.SigType] {
+  match t {
+    case MBool -> Some(value = Mdr.mkPrimSig(0x02))
+    case MChar -> Some(value = Mdr.mkPrimSig(0x03))
+    case MByte -> Some(value = Mdr.mkPrimSig(0x05))
+    case MInt -> Some(value = Mdr.mkPrimSig(0x08))
+    case MLong -> Some(value = Mdr.mkPrimSig(0x0A))
+    case MDouble -> Some(value = Mdr.mkPrimSig(0x0D))
+    case MString -> Some(value = Mdr.mkPrimSig(0x0E))
+    case MObject -> Some(value = Mdr.mkPrimSig(0x1C))
+    case MVoid -> Some(value = Mdr.mkPrimSig(0x01))
+    case MClass(name) -> Some(value = Mdr.mkNamedSig(name, false))
+    case MClassRef(_, fqn) -> Some(value = Mdr.mkNamedSig(fqn, false))
+    case MValueTypeRef(_, fqn) -> Some(value = Mdr.mkNamedSig(fqn, true))
+    case _ -> None
+  }
+}
+
+// Lower an iface block's resolved type args to a substitution table the
+// validation pass can apply via `substituteVarsInSigType`.  Returns `None`
+// when any arg can't be converted — caller skips F0022/F0023 for that iface
+// (the runtime's TypeLoadException catches the mismatch).
+func lowerImplIfaceTypeArgsToSigsMsil(
+  cctx: in CodegenCtx, decl: in ImplDecl, pkgName: in String
+): Option[List[Mdr.SigType]] {
+  match lowerImplIfaceTypeArgsMsil(cctx, decl, pkgName) {
+    case None -> None
+    case Some(msilArgs) -> {
+      val sigs: List[Mdr.SigType] = newList()
+      var i = 0
+      while i < msilArgs.count {
+        match msilTypeToSigForIface(msilArgs[i]) {
+          case None -> return None
+          case Some(s) -> sigs.add(s)
+        }
+        i = i + 1
+      }
+      Some(value = sigs)
+    }
+  }
+}
+
 // Apply F0021–F0023 checks for one (iface method, optional impl method) pair.
-// Skipped when the iface method has a Var/MVar/ByRef shape or the impl method
-// can't be lowered to a flat SigType — both deferred to the generic-interfaces
-// follow-up work in D105.
+// Skipped when the iface method has a Var/MVar/ByRef shape that *survives*
+// substitution (the v1 cut substitutes STVar against the iface's resolved
+// type args, then bails on remaining non-flat shapes — same fallback the
+// F0015 auto-FFI pass uses).
 func checkOneInterfaceMethodMsil(
   cctx: in CodegenCtx,
   decl: in ImplDecl,
   pkgName: in String,
   ifaceFqn: in String,
   ifaceMethod: in Mdr.ResolvedMethod,
+  ifaceTypeArgs: in List[Mdr.SigType],
 ): Unit {
   match findImplFunctionDeclMsil(decl, ifaceMethod.name) {
     case None -> panic(
@@ -19322,10 +19388,21 @@ func checkOneInterfaceMethodMsil(
         "Add `func " + ifaceMethod.name + "(…): …` to the impl block."
     )
     case Some(implFn) -> {
-      var ifaceHasUnsupported = sigHasGenericOrByRefMsil(ifaceMethod.returnType)
+      // Substitute STVar against the iface's resolved type args.  For
+      // non-generic ifaces this is a no-op (typeArgs is empty); for
+      // closed generic ifaces (D105 §A) this brings the iface sig into
+      // the same form as the impl sig so the structural compare lines up.
+      val substRet = Mdr.substituteVarsInSigType(ifaceMethod.returnType, ifaceTypeArgs)
+      val substParams: List[Mdr.SigType] = newList()
+      var spi = 0
+      while spi < ifaceMethod.paramTypes.count {
+        substParams.add(Mdr.substituteVarsInSigType(ifaceMethod.paramTypes[spi], ifaceTypeArgs))
+        spi = spi + 1
+      }
+      var ifaceHasUnsupported = sigHasGenericOrByRefMsil(substRet)
       var pj = 0
-      while pj < ifaceMethod.paramTypes.count and not ifaceHasUnsupported {
-        if sigHasGenericOrByRefMsil(ifaceMethod.paramTypes[pj]) {
+      while pj < substParams.count and not ifaceHasUnsupported {
+        if sigHasGenericOrByRefMsil(substParams[pj]) {
           ifaceHasUnsupported = true
         }
         pj = pj + 1
@@ -19336,16 +19413,16 @@ func checkOneInterfaceMethodMsil(
           }
           case Some(implSigs) -> {
             val implParamCount = implSigs.count - 1
-            if implParamCount != ifaceMethod.paramTypes.count {
+            if implParamCount != substParams.count {
               panic(
                 "F0022: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) +
                   "`: method '" + ifaceMethod.name + "' takes " + toString(implParamCount) +
-                  " parameter(s) but the .NET interface declares " + toString(ifaceMethod.paramTypes.count) + "."
+                  " parameter(s) but the .NET interface declares " + toString(substParams.count) + "."
               )
             } else {
               var pk = 0
-              while pk < ifaceMethod.paramTypes.count {
-                val expected = ifaceMethod.paramTypes[pk]
+              while pk < substParams.count {
+                val expected = substParams[pk]
                 val got = implSigs[pk]
                 if not sigTypesEqualMsil(expected, got) {
                   panic(
@@ -19358,11 +19435,11 @@ func checkOneInterfaceMethodMsil(
                 pk = pk + 1
               }
               val implRet = implSigs[implSigs.count - 1]
-              if not sigTypesEqualMsil(ifaceMethod.returnType, implRet) {
+              if not sigTypesEqualMsil(substRet, implRet) {
                 panic(
                   "F0023: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) +
                     "`: method '" + ifaceMethod.name + "' returns " + renderSigForDiagMsil(implRet) +
-                    " but the .NET interface declares return type " + renderSigForDiagMsil(ifaceMethod.returnType) + "."
+                    " but the .NET interface declares return type " + renderSigForDiagMsil(substRet) + "."
                 )
               }
             }
@@ -19401,6 +19478,15 @@ func validateOneExternImplMsil(
                 "An `impl` block can only target a .NET interface."
             )
           }
+          // For closed generic interfaces, build the substitution table so the
+          // F0021–F0023 pass can compare against the *substituted* iface sig
+          // (e.g. IEquatable<T>.Equals(T) vs impl Equals(GenRec) → after
+          // substitution, both sides are Equals(GenRec)).  For non-generic
+          // ifaces, the table is empty and substitution is a no-op.
+          val ifaceTypeArgs: List[Mdr.SigType] = match lowerImplIfaceTypeArgsToSigsMsil(cctx, decl, pkgName) {
+            case None -> newList()
+            case Some(sigs) -> sigs
+          }
           var mi = 0
           while mi < insp.methods.count {
             val ifaceMethod = insp.methods[mi]
@@ -19411,7 +19497,7 @@ func validateOneExternImplMsil(
             // documented in D105 as a future enhancement to the LSP scaffolding,
             // but the underlying methods are validated like any other.
             if ifaceMethod.isAbstract and not ifaceMethod.isStatic {
-              checkOneInterfaceMethodMsil(cctx, decl, pkgName, ifaceFqn, ifaceMethod)
+              checkOneInterfaceMethodMsil(cctx, decl, pkgName, ifaceFqn, ifaceMethod, ifaceTypeArgs)
             }
             mi = mi + 1
           }

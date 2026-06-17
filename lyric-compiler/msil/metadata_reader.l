@@ -1294,6 +1294,39 @@ pub func sigVarIndex(t: in SigType): Option[Int] {
   }
 }
 
+// Substitute every `STVar(i)` occurrence in `s` with `typeArgs[i]`.  Used by
+// D105 §A's F0022/F0023 validation pass to compare an iface method's
+// signature (which carries `STVar` for each iface generic param) against
+// the impl method's concrete signature.  Out-of-range `STVar(i)` (i.e.
+// `i >= typeArgs.count`) is left unchanged — defensive default for
+// malformed metadata that the upstream consumer treats as a "can't verify"
+// case.  `STMVar`, `STPtr`, `STFnPtr`, and `STUnknown` are passed through;
+// the v1 F0022/F0023 cut bails on those upstream via `sigHasGenericOrByRefMsil`.
+pub func substituteVarsInSigType(s: in SigType, typeArgs: in List[SigType]): SigType {
+  match s {
+    case STVar(idx) -> {
+      if idx >= 0 and idx < typeArgs.count {
+        typeArgs[idx]
+      } else {
+        s
+      }
+    }
+    case STSzArray(elem) -> STSzArray(elem = substituteVarsInSigType(elem, typeArgs))
+    case STArray(elem, rank) -> STArray(elem = substituteVarsInSigType(elem, typeArgs), rank = rank)
+    case STByRef(inner) -> STByRef(inner = substituteVarsInSigType(inner, typeArgs))
+    case STGenericInst(vt, tok, args) -> {
+      val substArgs: List[SigType] = newList()
+      var i = 0
+      while i < args.count {
+        substArgs.add(substituteVarsInSigType(args[i], typeArgs))
+        i = i + 1
+      }
+      STGenericInst(valueType = vt, token = tok, args = substArgs)
+    }
+    case _ -> s
+  }
+}
+
 // True when the `SigType` is an `STNamed` value type.  Cross-package accessor.
 pub func sigNamedIsValueType(t: in SigType): Bool {
   match t {
