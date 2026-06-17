@@ -120,7 +120,7 @@ func countJsonArrayElements(jsonArray: in String): Int {
     return 0
   }
 
-  val slice = jsonArray.substring(startIdx + 1, endIdx)
+  val slice = jsonArray.substring(startIdx + 1, endIdx - startIdx - 1)
 
   if slice.length == 0 {
     return 0
