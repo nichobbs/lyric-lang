@@ -9,9 +9,9 @@ Lyric currently supports mapping FFI types to `extern type` and `extern package`
 ## Proposed Changes
 
 ### 1. FFI Target Resolution (`type_checker`)
-- **No New Syntax Required**: We can leverage the existing `extern type` and metadata resolution system that landed in Phase 4. Users simply import the interface the same way they import a .NET class:
+- **No New Syntax Required**: We can leverage the existing `extern type` and metadata resolution system that landed in Phase 4. Users simply import the interface the same way they import a .NET class using the `import extern` syntax:
   ```lyric
-  extern type IDisposable = "System.IDisposable"
+  import extern System.{ IDisposable as IDisposable }
   ```
 - The compiler's metadata reader (`lyric-compiler/msil/pe.l`) already parses the .NET `TypeDef` table and can identify if an `extern type` represents a `.NET` interface (via the `ClassSemanticsMask`).
 - When an `impl` block targets an `extern type`, the type checker queries the metadata cache to extract the expected interface method signatures (names, parameters, return types).
@@ -36,15 +36,15 @@ Lyric currently supports mapping FFI types to `extern type` and `extern package`
 
 ### Q: Properties and events in external interfaces
 > [!WARNING]
-> If an external interface contains properties or events, how will those map to Lyric syntax, since Lyric does not have properties (only methods and fields)?
+> How will a Lyric implementer know what the correct method is for a property or event? Do we need a `prop` syntax for interfaces?
 
-**Proposed Resolution**: The .NET metadata encodes properties and events as standard methods with special prefixes (e.g., `get_Count()`, `add_Changed()`). The type checker will extract these underlying method signatures from the interface metadata. The user will satisfy the interface by simply implementing standard Lyric methods with the matching underlying names:
+**Proposed Resolution**: We do not need a new `prop` syntax. The .NET metadata encodes properties and events as standard methods with special prefixes (e.g., `get_Count()`, `set_Count()`, `add_Changed()`). The type checker will extract these underlying method signatures from the interface metadata. The user will satisfy the interface by following the standard .NET convention and implementing standard Lyric methods matching those underlying names:
 ```lyric
 impl ICollection for MyList {
   func get_Count(): Int { return self.size }
 }
 ```
-The .NET runtime interface dispatch will automatically wire this `MethodImpl` to the property getter requirement.
+The .NET runtime interface dispatch automatically wires this `MethodImpl` to the property getter requirement. To aid discoverability, the Lyric LSP/VS Code extension will automatically scaffold the correct `get_`/`set_` method signatures when a user invokes "Implement Interface".
 
 ## Verification Plan
 
