@@ -19129,30 +19129,17 @@ pub func collectImplEntriesMsil(cctx: in CodegenCtx, file: in SourceFile, pkgNam
             case Some(argTys) -> {
               val tsRow = ensureExternIfaceTypeSpecMsil(cctx, ifaceName, argTys)
               ifaceTypeToken = tdrTypeSpec(tsRow)
-              ensureMetadataIndex(cctx)
-              match Mdr.assemblyForType(cctx.metadataTypeIndex, ifaceName) {
-                case None -> {
-                }
-                case Some(asmName) -> match mapGet(cctx.metadataPathIndex, asmName) {
-                  case None -> {
-                  }
-                  case Some(asmPath) -> match Mdr.inspectInterfaceTarget(asmPath, ifaceName) {
-                    case None -> {
-                    }
-                    case Some(insp) -> match buildExternIfaceMethodRowsMsil(cctx, tsRow, ifaceName, insp, implNames) {
-                      case None -> {
-                      }
-                      case Some(rows) -> {
-                        var ri = 0
-                        while ri < rows.count {
-                          slotTokens.add(rows[ri])
-                          ri = ri + 1
-                        }
-                      }
-                    }
-                  }
-                }
-              }
+              // The CLR name-matches through the TypeSpec (with VAR substitution
+              // against the TypeSpec's type args), so an implementing method
+              // declared `Final | NewSlot | Virtual | Public | HideBySig` with
+              // the substituted signature wires correctly without explicit
+              // MethodImpl rows.  This matches the IL the C# compiler emits
+              // for `class GenRec : IEquatable<GenRec> { public bool
+              // Equals(GenRec other) {…} }`.  Leaving `slotTokens` empty keeps
+              // `lowerMImpl`'s TypeSpec branch from emitting MethodImpl rows,
+              // which (as observed in PR #3862 CI) otherwise fail validation
+              // because the CLR compares the body sig against the MemberRef
+              // sig literally (with VAR), not against the substituted form.
             }
           }
         }
