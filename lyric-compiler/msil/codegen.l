@@ -18791,6 +18791,38 @@ func implIfaceIsExternalClr(cctx: in CodegenCtx, decl: in ImplDecl): Bool {
   }
 }
 
+// D105 Phase 4 guard: reject `impl ExternGeneric[T] for Record` until
+// the full generic-external-interface support lands.  The deferred work
+// is non-trivial: `lowerMImpl` would have to emit a TypeSpec token in
+// the InterfaceImpl row (instead of a bare TypeRef) and per-slot
+// MethodImpl rows (the CLR cannot name-match through a TypeSpec).  The
+// current emission path would silently produce wrong IL — the TypeRef
+// row would name the wrong (open) type and dispatch would never wire,
+// surfacing as a `TypeLoadException` or wrong-method call at run time.
+// Catching it at build time with F0024 is the production-quality
+// behaviour until the full support ships.
+func validateNoExternGenericIfacesMsil(cctx: in CodegenCtx, file: in SourceFile, pkgName: in String): Unit {
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IImpl(decl) -> {
+        if implIfaceIsExternalClr(cctx, decl) and decl.iface.args.count > 0 {
+          val ifaceName = decl.iface.head.segments[0]
+          panic(
+            "F0024: `impl " + ifaceName + "[…] for " + implTargetNameMsil(decl, pkgName) +
+              "`: generic external .NET interfaces are not yet supported by the self-hosted MSIL backend. " +
+              "Tracked under D105 follow-up work (TypeSpec + MethodImpl emission). " +
+              "Use a non-generic external interface, or implement a native Lyric interface, in the meantime."
+          )
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
 // Pre-pass: collect every IImpl block into `cctx.implEntries`.  Each impl
 // method is lowered through `lowerImplMethodMsil` so it carries virtual
 // instance-method flags and slot 0 = `this`; the methods are NOT added to
@@ -19403,6 +19435,13 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
   // TypeDefs are emitted so `lowerMImpl` can resolve TypeDef rows and
   // MethodDef tokens by name.
   collectImplEntriesMsil(cctx, weavedFile, pkgName)
+
+  // ── D105 Phase 4 guard: reject generic external interfaces upfront ────────
+  // Runs before the F0020–F0023 validation pass so the user gets the more
+  // specific "feature not yet supported" diagnostic first, instead of one of
+  // the structural-mismatch diagnostics that would fire because every method
+  // signature on a generic interface mentions a Var/MVar.
+  validateNoExternGenericIfacesMsil(cctx, weavedFile, pkgName)
 
   // ── D105 Phase 2: external-interface impl conformance validation ──────────
   // Runs AFTER collectImplEntriesMsil so the TypeRef row is already reserved
