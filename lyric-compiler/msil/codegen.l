@@ -19039,6 +19039,24 @@ func buildExternIfaceMethodRowsMsil(
 // Closed instantiations of `IEquatable<T>`, `IComparable<T>`, and similarly-
 // shaped BCL interfaces lower cleanly via `buildExternIfaceMethodRowsMsil`
 // and proceed to emission.
+// ── D105 §A: generic external interface "type not found" guard ──────────────
+//
+// Phase 2 (`validateExternImplConformanceMsil`) already runs F0020 / F0021
+// / F0022 / F0023 on every external-impl block, generic or not, with full
+// STVar substitution + recursive shape handling — so this pass is *not* the
+// place to repeat structural checks.  Its remaining job is the narrow
+// "iface type not found in the reference assembly" case (typically a typo
+// in `extern type IFoo = "Wrong.Namespace.IFoo`1"`): without it, the
+// CLR-name-matching emission path (TypeSpec + InterfaceImpl) would still
+// produce a structurally-valid DLL whose load fails at run time, and the
+// user would have a hard time tracing it back to the typo.  Catching it
+// at build time with F0024 makes the typo loud.
+//
+// The shape-not-representable check that used to fire here is intentionally
+// gone: TypeSpec emission works for *any* closed instantiation, and the
+// runtime catches actual structural mismatches (the wider FFI contract).
+// Per-method F0021–F0023 still fires via `validateExternImplConformanceMsil`
+// for missing methods and shape-validatable param/return mismatches.
 func validateExternGenericIfacesMsil(cctx: in CodegenCtx, file: in SourceFile, pkgName: in String): Unit {
   var i = 0
   while i < file.items.count {
@@ -19046,14 +19064,10 @@ func validateExternGenericIfacesMsil(cctx: in CodegenCtx, file: in SourceFile, p
       case IImpl(decl) -> {
         if implIfaceIsExternalClr(cctx, decl) and decl.iface.args.count > 0 {
           val ifaceFqn = implIfaceNameMsil(cctx, decl, pkgName)
-          // Build the iface method-row list dry-run; a None return means a
-          // signature shape isn't representable.
           ensureMetadataIndex(cctx)
           match Mdr.assemblyForType(cctx.metadataTypeIndex, ifaceFqn) {
             case None -> {
-              // Reference pack absent.  Continue silently — mirrors F0015's
-              // fallback.  The InterfaceImpl will use the open TypeRef and
-              // the load may still bind at run time for known BCL types.
+              // Reference pack absent — skip silently (mirrors F0015 fallback).
             }
             case Some(asmName) -> match mapGet(cctx.metadataPathIndex, asmName) {
               case None -> {
@@ -19063,52 +19077,15 @@ func validateExternGenericIfacesMsil(cctx: in CodegenCtx, file: in SourceFile, p
                   panic(
                     "F0024: `impl " + decl.iface.head.segments[0] + "[…] for " +
                       implTargetNameMsil(decl, pkgName) + "`: '" + ifaceFqn +
-                      "' was not found in the reference assembly's TypeDef table."
+                      "' was not found in the reference assembly's TypeDef table. " +
+                      "Check the `extern type` FQN for typos (the BCL convention is " +
+                      "`Namespace.SimpleName\\`<arity>`, e.g. `System.IEquatable\\`1`)."
                   )
                 }
-                case Some(insp) -> {
-                  if not insp.isInterface {
-                    panic(
-                      "F0020: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) +
-                        "`: '" + ifaceFqn + "' is not an interface."
-                    )
-                  }
-                  var mi = 0
-                  while mi < insp.methods.count {
-                    val m = insp.methods[mi]
-                    if m.isAbstract and not m.isStatic {
-                      var representable = true
-                      val rret = sigTypeToMsilForIface(cctx, m.returnType)
-                      match rret {
-                        case None -> {
-                          representable = false
-                        }
-                        case Some(_) -> {
-                        }
-                      }
-                      var pj = 0
-                      while pj < m.paramTypes.count and representable {
-                        match sigTypeToMsilForIface(cctx, m.paramTypes[pj]) {
-                          case None -> {
-                            representable = false
-                          }
-                          case Some(_) -> {
-                          }
-                        }
-                        pj = pj + 1
-                      }
-                      if not representable {
-                        panic(
-                          "F0024: `impl " + decl.iface.head.segments[0] + "[…] for " +
-                            implTargetNameMsil(decl, pkgName) + "`: iface method '" + m.name +
-                            "' has a signature shape (method generic / byref / array / nested generic) " +
-                            "not yet supported by the v1 generic-iface emission. Use a non-generic " +
-                            "interface or wait for the follow-up cut."
-                        )
-                      }
-                    }
-                    mi = mi + 1
-                  }
+                case Some(_) -> {
+                  // Type exists and is reachable.  Phase 2
+                  // (`validateExternImplConformanceMsil`) runs F0020 / F0021 /
+                  // F0022 / F0023 on every iface method below.
                 }
               }
             }
