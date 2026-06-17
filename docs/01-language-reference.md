@@ -1076,9 +1076,10 @@ Wildcard imports (`import Money.*`) are not permitted. Every imported name is ex
 ```
 import extern System.Net.Http.{HttpClient, HttpRequestMessage as ReqMsg}
 import extern java.lang.{Math as JMath}
+import extern System.DateTime
 ```
 
-`import extern` imports types from external (host runtime) packages. The FQN specifies the host namespace; each imported name must have a selector group `{ ... }`; bare `import extern Foo.Bar` is invalid per D105 Q47-001. Type binding and resolution are fully supported. External imports are scoped to the importing package and do not re-export by default.
+`import extern` imports types from external (host runtime) packages. The FQN specifies the host namespace; imported names can optionally be listed within a selector group `{ ... }` or imported directly as a single FQN (e.g. `import extern System.DateTime`). Type binding and resolution are fully supported. External imports are scoped to the importing package and do not re-export by default.
 
 ### 9.3 Re-exports
 
