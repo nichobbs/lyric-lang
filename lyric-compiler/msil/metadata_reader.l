@@ -1294,6 +1294,34 @@ pub func sigVarIndex(t: in SigType): Option[Int] {
   }
 }
 
+// Construct an `STSzArray(elem)`.  Cross-package accessor used by D105 §A's
+// shape-lifting validation pass so callers can wrap a substituted element
+// type without touching the union internals.
+pub func mkSzArraySig(elem: in SigType): SigType {
+  STSzArray(elem = elem)
+}
+
+// Element type of `t` when it is `STSzArray(elem)`, else `None`.
+pub func sigSzArrayElem(t: in SigType): Option[SigType] {
+  match t {
+    case STSzArray(elem) -> Some(value = elem)
+    case _ -> None
+  }
+}
+
+// Construct an `STByRef(inner)`.  Cross-package accessor.
+pub func mkByRefSig(inner: in SigType): SigType {
+  STByRef(inner = inner)
+}
+
+// Inner type of `t` when it is `STByRef(inner)`, else `None`.
+pub func sigByRefInner(t: in SigType): Option[SigType] {
+  match t {
+    case STByRef(inner) -> Some(value = inner)
+    case _ -> None
+  }
+}
+
 // Substitute every `STVar(i)` occurrence in `s` with `typeArgs[i]`.  Used by
 // D105 §A's F0022/F0023 validation pass to compare an iface method's
 // signature (which carries `STVar` for each iface generic param) against

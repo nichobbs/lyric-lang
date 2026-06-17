@@ -18863,13 +18863,26 @@ func sigTypeToMsilForIface(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[Msi
         }
       }
     } else {
-      // STVar/STMVar/STSzArray/STByRef/STGenericInst — recover by checking
-      // sigPrimByte/sigNamedFqn negatives, and dispatch on the raw element-
-      // type byte exposed via `sigVarIndex` for STVar (no other shape is
-      // representable in v1).
+      // Non-primitive, non-named shapes: dispatch on the structural accessor
+      // that succeeds.  STVar(i) → MTypeVar(i); STSzArray(elem) → MArray
+      // (recursing on the element); STByRef(inner) → MByRef.  Other shapes
+      // (STMVar / STGenericInst / STPtr / STFnPtr / STArray rank > 1 /
+      // STUnknown) remain unsupported and surface as F0024 upstream.
       match Mdr.sigVarIndex(sig) {
-        case None -> None
         case Some(idx) -> Some(value = MTypeVar(index = idx))
+        case None -> match Mdr.sigSzArrayElem(sig) {
+          case Some(elemSig) -> match sigTypeToMsilForIface(cctx, elemSig) {
+            case Some(elemTy) -> Some(value = MArray(elemTy = elemTy))
+            case None -> None
+          }
+          case None -> match Mdr.sigByRefInner(sig) {
+            case Some(innerSig) -> match sigTypeToMsilForIface(cctx, innerSig) {
+              case Some(innerTy) -> Some(value = MByRef(inner = innerTy))
+              case None -> None
+            }
+            case None -> None
+          }
+        }
       }
     }
   }
@@ -19198,6 +19211,25 @@ func sigTypesEqualMsil(a: in Mdr.SigType, b: in Mdr.SigType): Bool {
   if na.length > 0 and nb.length > 0 {
     return na == nb
   }
+  // Structural shapes: STSzArray and STByRef compare element-wise.  Only
+  // matching shapes on both sides count as equal (an `STSzArray(T)` does not
+  // satisfy a `T` slot).
+  match Mdr.sigSzArrayElem(a) {
+    case Some(eaSig) -> match Mdr.sigSzArrayElem(b) {
+      case Some(ebSig) -> return sigTypesEqualMsil(eaSig, ebSig)
+      case None -> return false
+    }
+    case None -> {
+    }
+  }
+  match Mdr.sigByRefInner(a) {
+    case Some(iaSig) -> match Mdr.sigByRefInner(b) {
+      case Some(ibSig) -> return sigTypesEqualMsil(iaSig, ibSig)
+      case None -> return false
+    }
+    case None -> {
+    }
+  }
   false
 }
 
@@ -19225,10 +19257,10 @@ func implMethodToSigsMsil(
   var pi = 0
   while pi < fn.params.count {
     val pTy = typeExprToMsilCtx(cctx, fn.params[pi].ty, pkgName)
-    val isByRef = match pTy { case MByRef(_) -> true; case _ -> false }
-    if isByRef {
-      return None
-    }
+    // MByRef params (Lyric `out` / `inout`) are converted to `STByRef` sigs
+    // by `msilTypeToSigForIface` so the validation pass can compare against
+    // an iface's `STByRef` slot (D105 §A follow-up; lifts F0024 for ref
+    // params).
     match tryImplTyToSigMsil(pTy) {
       case None -> return None
       case Some(s) -> sigs.add(s)
@@ -19277,7 +19309,18 @@ func renderSigForDiagMsil(s: in Mdr.SigType): String {
       "prim(0x" + toString(pb) + ")"
     }
   } else {
-    Mdr.sigNamedFqn(s)
+    val named = Mdr.sigNamedFqn(s)
+    if named.length > 0 {
+      named
+    } else {
+      match Mdr.sigSzArrayElem(s) {
+        case Some(elem) -> renderSigForDiagMsil(elem) + "[]"
+        case None -> match Mdr.sigByRefInner(s) {
+          case Some(inner) -> "ref " + renderSigForDiagMsil(inner)
+          case None -> "<unknown shape>"
+        }
+      }
+    }
   }
 }
 
@@ -19302,16 +19345,29 @@ func findImplFunctionDeclMsil(decl: in ImplDecl, methodName: in String): Option[
   None
 }
 
-// True iff a signature is neither a primitive nor a named class/value-type
-// reference — i.e. it carries a Var/MVar/GenericInst/ByRef/Array shape.  We
-// bail out of structural validation when such a shape appears, because the
-// D105 Phase 2 cut covers only flat non-generic interfaces.
+// True iff a signature is not validatable by the current cut — i.e. it
+// carries an STVar (the validation pass substitutes these before calling),
+// STMVar, STGenericInst, STPtr, STFnPtr, STUnknown, or STArray (rank > 1)
+// shape.  STPrim and STNamed are validatable directly; STSzArray and
+// STByRef are validatable recursively (this function descends into them).
+// Used after substitution to gate F0022/F0023 fall-through when an iface
+// method's signature still mentions an unsupported shape.
 func sigHasGenericOrByRefMsil(s: in Mdr.SigType): Bool {
   if Mdr.sigPrimByte(s) >= 0 {
     return false
   }
   if Mdr.sigNamedFqn(s).length > 0 {
     return false
+  }
+  match Mdr.sigSzArrayElem(s) {
+    case Some(elem) -> return sigHasGenericOrByRefMsil(elem)
+    case None -> {
+    }
+  }
+  match Mdr.sigByRefInner(s) {
+    case Some(inner) -> return sigHasGenericOrByRefMsil(inner)
+    case None -> {
+    }
   }
   true
 }
@@ -19334,6 +19390,14 @@ func msilTypeToSigForIface(t: in MsilType): Option[Mdr.SigType] {
     case MString -> Some(value = Mdr.mkPrimSig(0x0E))
     case MObject -> Some(value = Mdr.mkPrimSig(0x1C))
     case MVoid -> Some(value = Mdr.mkPrimSig(0x01))
+    case MArray(elemTy) -> match msilTypeToSigForIface(elemTy) {
+      case Some(es) -> Some(value = Mdr.mkSzArraySig(es))
+      case None -> None
+    }
+    case MByRef(inner) -> match msilTypeToSigForIface(inner) {
+      case Some(inS) -> Some(value = Mdr.mkByRefSig(inS))
+      case None -> None
+    }
     case MClass(name) -> Some(value = Mdr.mkNamedSig(name, false))
     case MClassRef(_, fqn) -> Some(value = Mdr.mkNamedSig(fqn, false))
     case MValueTypeRef(_, fqn) -> Some(value = Mdr.mkNamedSig(fqn, true))
