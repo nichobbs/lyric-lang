@@ -68,15 +68,15 @@ public static class UnixSocketHttpClient
     /// Creates a ConnectCallback that routes connections through a Unix domain socket.
     /// The callback ignores the standard DnsEndPoint and connects to the Unix socket instead.
     /// </summary>
-    private static Func<SocketsHttpConnectionContext, ValueTask<Stream>> CreateConnectCallback(string socketPath)
+    private static Func<SocketsHttpConnectionContext, CancellationToken, ValueTask<Stream>> CreateConnectCallback(string socketPath)
     {
-        return async context =>
+        return async (context, cancellationToken) =>
         {
             var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
             try
             {
                 var endpoint = new UnixDomainSocketEndPoint(socketPath);
-                await socket.ConnectAsync(endpoint, context.CancellationToken).ConfigureAwait(false);
+                await socket.ConnectAsync(endpoint, cancellationToken).ConfigureAwait(false);
                 return new NetworkStream(socket, ownsSocket: true);
             }
             catch
