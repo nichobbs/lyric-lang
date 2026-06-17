@@ -757,7 +757,7 @@ jobs:
       # to end at the codegen layer; this phase adds metadata-direct signature
       # validation so a mis-shaped impl fails at build time instead of at first
       # use with `TypeLoadException`.  Each fixture targets one diagnostic.
-      - name: FFI iface impl F0020–F0023 negative tests
+      - name: FFI iface impl F0020–F0024 negative tests
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -842,7 +842,24 @@ jobs:
           func main(): Int { 0 }
           LYR
           run_fixture "F0023" "f0023_fixture.l"
-          echo "all F0020–F0023 negative tests passed"
+          # F0024: generic external interfaces are deferred — `impl IEquatable[Int]
+          # for R` must surface a clear "not yet supported" diagnostic instead of
+          # silently emitting broken IL.
+          cat > "$work/f0024_fixture.l" <<'LYR'
+          package F0024Fixture
+
+          extern type IEquatable = "System.IEquatable`1"
+
+          record R { tag: Int }
+
+          impl IEquatable[Int] for R {
+            func Equals(other: in Int): Bool { other == self.tag }
+          }
+
+          func main(): Int { 0 }
+          LYR
+          run_fixture "F0024" "f0024_fixture.l"
+          echo "all F0020–F0024 negative tests passed"
 
       # Synthesized-method-resolution self-test (#1499, #1507).
       # Verifies that compiler-synthesized named methods (protected-type entries,

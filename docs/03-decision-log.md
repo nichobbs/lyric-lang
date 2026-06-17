@@ -6469,7 +6469,16 @@ targets without new syntax.
    instead of a bare `TypeRef`, and explicit `MethodImpl` rows since
    the CLR cannot name-match through a TypeSpec. The non-generic slice
    here covers `IDisposable`, custom single-method callback interfaces,
-   and the bulk of practical BCL interop needs.
+   and the bulk of practical BCL interop needs. Until the full support
+   ships, `validateNoExternGenericIfacesMsil`
+   (`lyric-compiler/msil/codegen.l`) detects `impl ExternIface[T] for R`
+   shapes and surfaces them as `F0024` — failing the build at the codegen
+   layer rather than silently emitting an InterfaceImpl row whose
+   TypeRef names the open generic type (which would never wire dispatch
+   at runtime). The diagnostic is emitted before `validateExternImplConformanceMsil`
+   so the user sees the more specific "not yet supported" message
+   instead of the F0022/F0023 "parameter mentions a generic param"
+   structural-mismatch noise.
 
 **Consequences.**
 

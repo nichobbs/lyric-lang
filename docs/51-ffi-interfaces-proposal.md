@@ -14,9 +14,21 @@
 > mismatch). Validation is skipped without diagnostic when the
 > reference pack is absent (mirrors F0015), and per-method when the
 > interface signature mentions a generic / byref / array shape.
-> Generic external interfaces, the `get_`/`set_` property convention
-> (the underlying methods are validated like any other; only the LSP
-> scaffolding is missing), and bridge-thunk synthesis remain deferred.
+> Phase 3 (widening to extern-interface-typed bindings / parameters)
+> shipped: `registerImplsFromItems` already keys conformance on `TypeId`,
+> which `DKExternType` symbols carry, so `argSatisfiesParam`'s
+> interface-subtyping fallthrough accepts the widening without a
+> type-checker patch.  Verified by two new tests in
+> `ffi_iface_impl_self_test.l`.
+> Phase 4 (generic external interfaces) **deferred behind `F0024`** —
+> `validateNoExternGenericIfacesMsil` detects `impl ExternIface[T] for R`
+> and fails the build with a clear "not yet supported" diagnostic
+> instead of silently emitting an InterfaceImpl row whose TypeRef
+> names the open generic type.  Full support (TypeSpec emission +
+> MethodImpl rows) sequenced as a follow-up.
+> The `get_`/`set_` property convention (the underlying methods are
+> validated like any other; only the LSP scaffolding is missing) and
+> bridge-thunk synthesis remain deferred.
 
 Provide a way for Lyric programs to explicitly implement an interface defined in a compiled `.NET` dependency across the Auto FFI boundary.
 
