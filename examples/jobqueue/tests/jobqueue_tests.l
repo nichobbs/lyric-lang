@@ -28,8 +28,9 @@ test "toJson produces valid JSON object" {
     createdAt = "2024-01-15T00:00:00Z"
   )
   val json = JobQueue.Jobs.toJson(j)
-  assertEqual(json.first.toString(), "{", "starts with {")
-  assertEqual(json.last.toString(), "}", "ends with }")
+  assertTrue(json.length > 0, "json non-empty")
+  assertEqual(json.substring(0, 1), "{", "starts with {")
+  assertEqual(json.substring(json.length - 1, 1), "}", "ends with }")
 }
 
 test "toJson includes id" {

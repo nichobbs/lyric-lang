@@ -9,8 +9,9 @@
 //! Run: lyric run examples/ffi_bcl.l
 package FfiBcl
 
-// Property getter on a System.* class.
-@externTarget("System.Environment.MachineName")
+// Property getter on a System.* class.  .NET properties are exposed as
+// `get_<Name>` static methods on the declaring type.
+@externTarget("System.Environment.get_MachineName")
 func machineName(): String = ()
 
 // Static method with a single arg.
@@ -18,7 +19,7 @@ func machineName(): String = ()
 func directoryExists(path: in String): Bool = ()
 
 // Static getter that doesn't take args.
-@externTarget("System.Environment.ProcessorCount")
+@externTarget("System.Environment.get_ProcessorCount")
 func cpuCount(): Int = ()
 
 func main(): Unit {

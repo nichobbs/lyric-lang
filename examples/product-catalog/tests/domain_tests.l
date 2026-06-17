@@ -125,7 +125,7 @@ test "priceEditNonNegating decrease" {
 
 // ─── createRequestValid oracle ────────────────────────────────────────────────
 test "createRequestValid minimal" {
-  val req = CreateProductRequest(name = "Widget", description = "", category = "other", priceCents = 0, stockCount = 0)
+  val req = CreateProductRequest(name = "Widget", description = "", category = "other", priceCents = 0, stockCount = 0, inStock = false)
   assertTrue(createRequestValid(req) == true, "createRequestValid(minimal)")
 }
 
@@ -135,7 +135,8 @@ test "createRequestValid full" {
     description = "High-performance laptop for developers",
     category = "electronics",
     priceCents = 249900,
-    stockCount = 50
+    stockCount = 50,
+    inStock = true
   )
   assertTrue(createRequestValid(req) == true, "createRequestValid(full)")
 }

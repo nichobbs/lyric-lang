@@ -20,8 +20,48 @@ pub record VEnv {
   pub callees: Map[String, FunctionDecl]
   pub symbols: List[SymbolDecl]
   pub checkedArithmetic: Bool
+  // Distinct-type alias map: `Cents` → `TRef(Long)` for `pub type Cents = Long`.
+  // Threaded through every VEnv constructor so `sortOfTypeExprE` can recurse
+  // through alias chains and produce the underlying primitive's sort (#3853).
+  pub distincts: Map[String, TypeExpr]
   // Copy helpers — use explicit names list to avoid iterating Map.keys on a
   // TypeBuilderInstantiation, which generates invalid IL.
+}
+
+// Resolve a distinct-type chain to its underlying TypeExpr.  Stops on the first
+// non-distinct type (primitive, record, generic application, etc.).  Bounded
+// by a depth limit to defend against malformed cyclic alias declarations.
+func resolveDistinct(distincts: in Map[String, TypeExpr], te: in TypeExpr): TypeExpr {
+  var current = te
+  var depth = 0
+  while depth < 16 {
+    match current.kind {
+      case TRef(path) -> {
+        if path.segments.count == 1 {
+          val name = path.segments[0]
+          match mapGet(distincts, name) {
+            case Some(under) -> {
+              current = under
+              depth = depth + 1
+            }
+            case None -> return current
+          }
+        } else {
+          return current
+        }
+      }
+      case _ -> return current
+    }
+  }
+  current
+}
+
+// Env-aware sort lookup that follows distinct-type chains (#3853).  Use this
+// in vcgen wherever a TypeExpr is converted to a Sort; the env's
+// `distincts` map carries the file-level `pub type X = Y` aliases registered
+// in `goalsForFile`.
+pub func sortOfTypeExprE(env: in VEnv, te: in TypeExpr): SortInfo {
+  sortOfTypeExpr(resolveDistinct(env.distincts, te))
 }
 
 func copyVarMap(m: in Map[String, Term], names: in List[String]): Map[String, Term] {
@@ -68,13 +108,15 @@ pub func envEmpty(callees: in Map[String, FunctionDecl], symbols: in List[Symbol
   val vars: Map[String, Term] = newMap()
   val sorts: Map[String, SortInfo] = newMap()
   val varNames: List[String] = newList()
+  val distincts: Map[String, TypeExpr] = newMap()
   VEnv(
     vars = vars,
     varNames = varNames,
     sorts = sorts,
     callees = callees,
     symbols = symbols,
-    checkedArithmetic = checkedArithmetic
+    checkedArithmetic = checkedArithmetic,
+    distincts = distincts
   )
 }
 
@@ -101,7 +143,8 @@ pub func envBind(name: in String, info: in SortInfo, env: in VEnv): VEnv {
     sorts = sorts2,
     callees = env.callees,
     symbols = env.symbols,
-    checkedArithmetic = env.checkedArithmetic
+    checkedArithmetic = env.checkedArithmetic,
+    distincts = env.distincts
   )
 }
 
@@ -127,7 +170,8 @@ pub func envBindTerm(name: in String, term: in Term, info: in SortInfo, env: in 
     sorts = sorts2,
     callees = env.callees,
     symbols = env.symbols,
-    checkedArithmetic = env.checkedArithmetic
+    checkedArithmetic = env.checkedArithmetic,
+    distincts = env.distincts
   )
 }
 
@@ -187,11 +231,16 @@ func findRecordFields(env: in VEnv, name: in String): Option[List[DatatypeField]
 // Return the sort of a named field on a record type, or None if the record
 // (or that field) isn't registered.  Drives EMember's selector emission.
 func findRecordFieldSort(env: in VEnv, recName: in String, fieldName: in String): Option[Sort] {
+  // Selectors are registered with a `<TypeName>__` prefix (see
+  // `goalsForFile` IRecord / IProtected) so a field named `capacity` on a
+  // Bucket doesn't collide with a free constant of the same name in z3's
+  // global name space (#3855).  Match against the prefixed form.
+  val prefixed = recName + "__" + fieldName
   match findRecordFields(env, recName) {
     case Some(fields) -> {
       var j = 0
       while j < fields.count {
-        if fields[j].name == fieldName {
+        if fields[j].name == prefixed {
           val sortOpt: Option[Sort] = Some(value = fields[j].sort)
           return sortOpt
         }
@@ -520,7 +569,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           match mapGet(env.callees, name) {
             case Some(decl) -> {
               val resultSort = match decl.ret {
-                case Some(te) -> sortOfTypeExpr(te).sort
+                case Some(te) -> sortOfTypeExprE(env, te).sort
                 case None -> {
                   val ua: List[Sort] = newList()
                   SDatatype(name = "Unit", args = ua)
@@ -529,7 +578,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
               val paramSorts: List[Sort] = newList()
               var pi = 0
               while pi < decl.params.count {
-                paramSorts.add(sortOfTypeExpr(decl.params[pi].ty).sort)
+                paramSorts.add(sortOfTypeExprE(env, decl.params[pi].ty).sort)
                 pi = pi + 1
               }
               env.symbols.add(DeclUserFun(name = name, paramSorts = paramSorts, resultSort = resultSort))
@@ -552,7 +601,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
               val innerVarNames: List[String] = newList()
               var ii = 0
               while ii < decl.params.count {
-                val pInfo = sortOfTypeExpr(decl.params[ii].ty)
+                val pInfo = sortOfTypeExprE(env, decl.params[ii].ty)
                 innerVars.add(decl.params[ii].name, TVar(name = decl.params[ii].name, sort = pInfo.sort))
                 innerSorts.add(decl.params[ii].name, pInfo)
                 innerVarNames.add(decl.params[ii].name)
@@ -566,7 +615,8 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
                 sorts = innerSorts,
                 callees = emptyCallees,
                 symbols = emptySymbols,
-                checkedArithmetic = false
+                checkedArithmetic = false,
+                distincts = env.distincts
               )
 
               // @pure callee: translate body expr, emit equality as assumption.
@@ -633,7 +683,8 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
                 sorts = resultSorts2,
                 callees = emptyCallees,
                 symbols = emptySymbols,
-                checkedArithmetic = false
+                checkedArithmetic = false,
+                distincts = env.distincts
               )
               ci = 0
               while ci < decl.contracts.count {
@@ -660,6 +711,18 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
               knownCalleePair
             }
             case None -> {
+              // Distinct-type constructor (`UserId(n)`) — `pub type UserId = Long`
+              // makes UserId a nominal wrapper around Long.  The verifier
+              // treats it transparently: the constructor call IS the
+              // underlying value, just at the underlying sort.  Without this
+              // the unknown-callee branch below emits a TApp with sort
+              // SUninterp("call.UserId") which z3 then refuses to use in
+              // arithmetic (#3853).
+              if env.distincts.containsKey(name) and argTerms.count == 1 {
+                val distinctTR = TranslateResult(term = argTerms[0], sideConds = argSides, assumed = argAssumed)
+                val distinctPair: (TranslateResult, List[Diagnostic]) = (distinctTR, allArgDiags)
+                return distinctPair
+              }
               // Unknown callee — emit TApp with uninterpreted sort.
               val callNameSort = SUninterp(name = "call." + name)
               val t = TApp(name = name, args = argTerms, retSort = callNameSort)
@@ -691,7 +754,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       var i = 0
       while i < binders.count {
         val b = binders[i]
-        val info = sortOfTypeExpr(b.ty)
+        val info = sortOfTypeExprE(env, b.ty)
         envAcc = envBind(b.name, info, envAcc)
         sortBinders.add(SortBinder(name = b.name, sort = info.sort))
         i = i + 1
@@ -728,7 +791,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       var i = 0
       while i < binders.count {
         val b = binders[i]
-        val info = sortOfTypeExpr(b.ty)
+        val info = sortOfTypeExprE(env, b.ty)
         envAcc = envBind(b.name, info, envAcc)
         sortBinders.add(SortBinder(name = b.name, sort = info.sort))
         i = i + 1
@@ -770,19 +833,23 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       val (rR, rDiags) = translateExpr(env, receiver)
       // If the receiver's sort is a registered record datatype and `memberName`
       // names one of its fields, emit the SMT datatype selector
-      // `(memberName receiver)` with the field's actual sort.  Otherwise fall
-      // back to an uninterpreted `$field.<memberName>` symbol — the SMT
-      // renderer will declare it as a uninterpreted function (#3843).
+      // `(<TypeName>__<memberName> receiver)` with the field's actual sort.
+      // The selector is registered with the prefixed name in the DeclDatatype
+      // to avoid z3 ambiguity with same-named free constants (#3855).
+      // Otherwise fall back to an uninterpreted `$field.<memberName>` symbol
+      // — the SMT renderer will declare it as a uninterpreted function (#3843).
       val recvSort = sortOf(rR.term)
-      val recordFieldHit = match recvSort {
-        case SDatatype(recName, _) -> findRecordFieldSort(env, recName, memberName)
-        case _ -> {
-          val nothing: Option[Sort] = None
-          nothing
-        }
+      val recvRecName: String = match recvSort {
+        case SDatatype(rName, _) -> rName
+        case _ -> ""
+      }
+      val recordFieldHit: Option[Sort] = if recvRecName.length > 0 {
+        findRecordFieldSort(env, recvRecName, memberName)
+      } else {
+        None
       }
       val t = match recordFieldHit {
-        case Some(fSort) -> TApp(name = memberName, args = termList1(rR.term), retSort = fSort)
+        case Some(fSort) -> TApp(name = recvRecName + "__" + memberName, args = termList1(rR.term), retSort = fSort)
         case None -> {
           val unkSort = SUninterp(name = "field." + memberName)
           TApp(name = "$field." + memberName, args = termList1(rR.term), retSort = unkSort)
@@ -1898,7 +1965,7 @@ pub func goalsForFunction(env0: in VEnv, decl: in FunctionDecl): (List[Goal], Li
   var i = 0
   while i < decl.params.count {
     val p = decl.params[i]
-    val info = sortOfTypeExpr(p.ty)
+    val info = sortOfTypeExprE(env0, p.ty)
     envWithParams = envBind(p.name, info, envWithParams)
     val hyps = rangeHypotheses(p.name, info)
     appendTermList(paramHyps, hyps)
@@ -1906,7 +1973,7 @@ pub func goalsForFunction(env0: in VEnv, decl: in FunctionDecl): (List[Goal], Li
   }
 
   // Result sort.
-  val resultSort = match decl.ret { case Some(te) -> sortOfTypeExpr(te); case None -> unitSortInfo() }
+  val resultSort = match decl.ret { case Some(te) -> sortOfTypeExprE(env0, te); case None -> unitSortInfo() }
 
   // Bind `result` for postcondition translation.
   val envWithResult = envBind("result", resultSort, envWithParams)
@@ -1916,7 +1983,7 @@ pub func goalsForFunction(env0: in VEnv, decl: in FunctionDecl): (List[Goal], Li
   i = 0
   while i < decl.params.count {
     val p = decl.params[i]
-    val info = sortOfTypeExpr(p.ty)
+    val info = sortOfTypeExprE(env0, p.ty)
     val t = TVar(name = p.name, sort = info.sort)
     envWithOld = envBindTerm("old." + p.name, t, info, envWithOld)
     i = i + 1
@@ -2086,7 +2153,8 @@ func freshSymbolsEnv(env: in VEnv): VEnv {
     sorts = env.sorts,
     callees = env.callees,
     symbols = freshSyms,
-    checkedArithmetic = env.checkedArithmetic
+    checkedArithmetic = env.checkedArithmetic,
+    distincts = env.distincts
   )
 }
 
@@ -2118,6 +2186,7 @@ func goalsForProtectedEntry(
   protName: in String,
   ed: in EntryDecl,
   invContracts: in List[ContractClause],
+  protMembers: in List[ProtectedMember],
   allGoals: in List[Goal],
   allDiags: in List[Diagnostic],
 ): Unit {
@@ -2153,7 +2222,61 @@ func goalsForProtectedEntry(
   )
   val fnLevel = levelOfFunction(level, synthDecl)
   if vlIsProofRequired(fnLevel) {
-    val fnEnv = freshSymbolsEnv(env0)
+    // Bind every protected-type field (PFVar / PFLet / PFImmutable) as a
+    // term that projects the field from a synthetic `__self_<protName>` of
+    // the protected datatype's sort.  Two reasons (#3855):
+    //   1. The body refers to fields by bare identifier (`tokens`, not
+    //      `self.tokens`), and without a binding the verifier translates
+    //      them as SUninterp("tokens") free variables — sort-incompatible
+    //      with the arithmetic the body does on them.
+    //   2. We also register the protected type as a DeclDatatype so
+    //      `make`'s `ensures: result.tokens == capacity` can use the
+    //      datatype's selector.  Binding `tokens` to a free TVar of the
+    //      same sort as the selector triggers a z3 "ambiguous constant
+    //      reference" error.  Binding `tokens` to a TApp through the
+    //      synthetic `__self_<protName>` avoids the clash — the selector
+    //      use-site and the field-binding use-site become the same SMT
+    //      term, structurally indistinguishable from a regular field
+    //      projection.
+    val emptyArgs: List[Sort] = newList()
+    val selfSort = SDatatype(name = protName, args = emptyArgs)
+    val selfInfo = sortInfoNoRange(selfSort)
+    val selfName = "__self_" + protName
+    var fnEnv = freshSymbolsEnv(env0)
+    fnEnv = envBind(selfName, selfInfo, fnEnv)
+    val selfTerm = TVar(name = selfName, sort = selfSort)
+    var mfi = 0
+    while mfi < protMembers.count {
+      match protMembers[mfi] {
+        case PMField(pf) -> {
+          match pf {
+            case PFVar(fname, fty, _, _) -> {
+              val fInfo = sortOfTypeExprE(env0, fty)
+              val args1: List[Term] = newList()
+              args1.add(selfTerm)
+              val fTerm = TApp(name = protName + "__" + fname, args = args1, retSort = fInfo.sort)
+              fnEnv = envBindTerm(fname, fTerm, fInfo, fnEnv)
+            }
+            case PFLet(fname, fty, _, _) -> {
+              val fInfo = sortOfTypeExprE(env0, fty)
+              val args2: List[Term] = newList()
+              args2.add(selfTerm)
+              val fTerm = TApp(name = protName + "__" + fname, args = args2, retSort = fInfo.sort)
+              fnEnv = envBindTerm(fname, fTerm, fInfo, fnEnv)
+            }
+            case PFImmutable(fd) -> {
+              val fInfo = sortOfTypeExprE(env0, fd.ty)
+              val args3: List[Term] = newList()
+              args3.add(selfTerm)
+              val fTerm = TApp(name = protName + "__" + fd.name, args = args3, retSort = fInfo.sort)
+              fnEnv = envBindTerm(fd.name, fTerm, fInfo, fnEnv)
+            }
+          }
+        }
+        case _ -> ()
+      }
+      mfi = mfi + 1
+    }
     val (goals, diags) = goalsForFunction(fnEnv, synthDecl)
     var gi = 0
     while gi < goals.count {
@@ -2200,7 +2323,7 @@ func goalsForProtectedMembers(
   while mi < members.count {
     match members[mi] {
       case PMEntry(ed) -> {
-        goalsForProtectedEntry(level, env0, protName, ed, invContracts, allGoals, allDiags)
+        goalsForProtectedEntry(level, env0, protName, ed, invContracts, members, allGoals, allDiags)
       }
       case PMFunc(fn) -> {
         goalsForProtectedFunc(level, env0, fn, allGoals, allDiags)
@@ -2289,6 +2412,23 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
   val checkedArith = match level { case VLProofRequiredChecked -> true; case _ -> false }
   val sharedSymbols: List[SymbolDecl] = newList()
 
+  // Collect distinct-type aliases (`pub type Cents = Long`) so record /
+  // protected field-sort lookups and the per-function `sortOfTypeExprE`
+  // call sites resolve them to the underlying primitive (#3853).
+  val distinctMap: Map[String, TypeExpr] = newMap()
+  var dti0 = 0
+  while dti0 < file.items.count {
+    match file.items[dti0].kind {
+      case IDistinctType(dtDecl) -> {
+        if not distinctMap.containsKey(dtDecl.name) {
+          distinctMap.add(dtDecl.name, dtDecl.underlying)
+        }
+      }
+      case _ -> ()
+    }
+    dti0 = dti0 + 1
+  }
+
   // Pre-register every `IRecord` as an SMT datatype with one constructor
   // matching the record's fields.  Lets the verifier reason about
   // `Amount(value = c)` constructors and `result.value` field reads against
@@ -2298,6 +2438,13 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
   var ri = 0
   while ri < file.items.count {
     match file.items[ri].kind {
+      // Datatype field names share z3's name space with free constants
+      // and parameters, so a free param named `capacity` would clash with
+      // the selector `capacity` from a Bucket datatype declaration even
+      // though their sorts differ (#3855).  Disambiguate selector names by
+      // prefixing them with `<TypeName>__` — `Bucket__capacity` for a
+      // Bucket-field reading.  EMember's record-field translation mirrors
+      // this prefix when it emits the selector TApp.
       case IRecord(recDecl) -> {
         val skipGeneric = match recDecl.generics { case Some(_) -> true; case None -> false }
         if not skipGeneric {
@@ -2306,7 +2453,7 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
           while fi < recDecl.members.count {
             match recDecl.members[fi] {
               case RMField(fld) -> {
-                dtFields.add(DatatypeField(name = fld.name, sort = sortOfTypeExpr(fld.ty).sort))
+                dtFields.add(DatatypeField(name = recDecl.name + "__" + fld.name, sort = sortOfTypeExpr(resolveDistinct(distinctMap, fld.ty)).sort))
               }
               case _ -> ()
             }
@@ -2317,11 +2464,51 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
           sharedSymbols.add(DeclDatatype(name = recDecl.name, constructors = dtCtors))
         }
       }
+      // Same as IRecord above, but for protected types.  Lets
+      // `make`'s `ensures: result.tokens == capacity` discharge against
+      // the prefixed selector `Bucket__tokens`.
+      case IProtected(pdecl) -> {
+        val dtFields: List[DatatypeField] = newList()
+        var pfi = 0
+        while pfi < pdecl.members.count {
+          match pdecl.members[pfi] {
+            case PMField(pf) -> {
+              match pf {
+                case PFVar(fname, fty, _, _) -> {
+                  dtFields.add(DatatypeField(name = pdecl.name + "__" + fname, sort = sortOfTypeExpr(resolveDistinct(distinctMap, fty)).sort))
+                }
+                case PFLet(fname, fty, _, _) -> {
+                  dtFields.add(DatatypeField(name = pdecl.name + "__" + fname, sort = sortOfTypeExpr(resolveDistinct(distinctMap, fty)).sort))
+                }
+                case PFImmutable(fd) -> {
+                  dtFields.add(DatatypeField(name = pdecl.name + "__" + fd.name, sort = sortOfTypeExpr(resolveDistinct(distinctMap, fd.ty)).sort))
+                }
+              }
+            }
+            case _ -> ()
+          }
+          pfi = pfi + 1
+        }
+        val dtCtors: List[DatatypeCtor] = newList()
+        dtCtors.add(DatatypeCtor(name = pdecl.name, fields = dtFields))
+        sharedSymbols.add(DeclDatatype(name = pdecl.name, constructors = dtCtors))
+      }
       case _ -> ()
     }
     ri = ri + 1
   }
-  val env0 = envEmpty(callees, sharedSymbols, checkedArith)
+
+  // Build env0 carrying the distinct-type alias map collected above (#3853).
+  val env0Init = envEmpty(callees, sharedSymbols, checkedArith)
+  val env0 = VEnv(
+    vars = env0Init.vars,
+    varNames = env0Init.varNames,
+    sorts = env0Init.sorts,
+    callees = env0Init.callees,
+    symbols = env0Init.symbols,
+    checkedArithmetic = env0Init.checkedArithmetic,
+    distincts = distinctMap
+  )
 
   val allGoals: List[Goal] = newList()
   val allDiags: List[Diagnostic] = newList()
