@@ -191,9 +191,6 @@ jobs:
           done
 
       # Run/test single-file examples to catch runtime regressions.
-      # Known expected failures (tracked issues #3840–#3844):
-      #   - ffi_bcl.l, ffi_datetime.l → #3841 (FFI property-getter codegen)
-      #   - rest_service.l → #3844 (Std.HttpServer packaging)
       - name: Run single-file examples
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
@@ -204,22 +201,40 @@ jobs:
             echo "::warning::AOT binary not found; skipping example runs"
             exit 0
           fi
-          # Known-passing examples (run and assert exit 0)
-          for ex in csv fizzbuzz primes wordcount; do
+          # Run-to-completion examples (assert exit 0).
+          for ex in csv fizzbuzz primes wordcount ffi_bcl ffi_datetime; do
             echo "=== run examples/$ex.l ==="
             "$lyric_bin" run "examples/$ex.l" > /tmp/"$ex".run.log 2>&1 \
               && echo "PASS" || { echo "FAIL"; tail -10 /tmp/"$ex".run.log; exit 1; }
           done
-          # Known-failing examples (run and log failure, but don't fail CI)
-          for ex in ffi_bcl ffi_datetime rest_service; do
-            echo "=== xfail examples/$ex.l (expected failure) ==="
-            "$lyric_bin" run "examples/$ex.l" > /tmp/"$ex".run.log 2>&1 || true
+          # rest_service starts an HTTP listener and runs until killed.  Run it
+          # in the background, wait for the "Listening on" line in its log,
+          # smoke-test the endpoint, then SIGTERM the server.
+          echo "=== smoke examples/rest_service.l ==="
+          "$lyric_bin" run examples/rest_service.l > /tmp/rest_service.run.log 2>&1 &
+          srv_pid=$!
+          for _ in $(seq 1 20); do
+            if grep -q "Listening on" /tmp/rest_service.run.log 2>/dev/null; then
+              break
+            fi
+            sleep 0.5
           done
+          if ! kill -0 "$srv_pid" 2>/dev/null; then
+            echo "FAIL: rest_service exited before serving"
+            tail -20 /tmp/rest_service.run.log
+            exit 1
+          fi
+          body="$(curl -s --max-time 3 http://localhost:8080/ || true)"
+          kill "$srv_pid" 2>/dev/null || true
+          wait "$srv_pid" 2>/dev/null || true
+          if [ "$body" != "Hello from Lyric!" ]; then
+            echo "FAIL: unexpected body '$body'"
+            tail -20 /tmp/rest_service.run.log
+            exit 1
+          fi
+          echo "PASS"
 
       # Test multi-package examples with `lyric test --manifest`.
-      # Known expected failures (tracked issues #3840–#3842):
-      #   - rbac, ledger, jobqueue → #3840 (union-case codegen) + #3842 (InvalidProgramException)
-      #   - product-catalog → #3842 (InvalidProgramException in category conversion)
       - name: Test multi-package examples
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
@@ -236,14 +251,14 @@ jobs:
             echo "=== build dependency $lib ==="
             "$lyric_bin" build --manifest "$lib/lyric.toml" > /tmp/"$lib".log 2>&1 || { tail -20 /tmp/"$lib".log; exit 1; }
           done
-          # Test each example (all expected-fail due to known emitter bugs)
+          # Test each example
           for ex in rbac ledger jobqueue product-catalog; do
-            echo "=== xfail test examples/$ex (expected failures due to #3840–#3842) ==="
-            "$lyric_bin" test --manifest "examples/$ex/lyric.toml" > /tmp/"$ex".test.log 2>&1 || true
+            echo "=== test examples/$ex ==="
+            "$lyric_bin" test --manifest "examples/$ex/lyric.toml" > /tmp/"$ex".test.log 2>&1 \
+              && echo "PASS" || { echo "FAIL"; tail -30 /tmp/"$ex".test.log; exit 1; }
           done
 
       # Prove proof-only examples.
-      # Known expected failures (tracked issue #3843): z3 rejects SMT with unknown sorts.
       - name: Prove proof-only examples (with z3)
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
@@ -254,14 +269,10 @@ jobs:
             echo "::warning::AOT binary not found; skipping example proves"
             exit 0
           fi
-          # Known-passing proofs
-          echo "=== prove examples/pagination.l ==="
-          "$lyric_bin" prove "examples/pagination.l" > /tmp/pagination.prove.log 2>&1 \
-            && echo "PASS" || { echo "FAIL"; tail -15 /tmp/pagination.prove.log; exit 1; }
-          # Known-failing proofs (expected due to #3843: missing SMT sort declarations)
-          for ex in prove_demo token_bucket_proof; do
-            echo "=== xfail prove examples/$ex.l (expected: #3843 SMT sort encoding) ==="
-            "$lyric_bin" prove "examples/$ex.l" > /tmp/"$ex".prove.log 2>&1 || true
+          for ex in pagination prove_demo token_bucket_proof; do
+            echo "=== prove examples/$ex.l ==="
+            "$lyric_bin" prove "examples/$ex.l" > /tmp/"$ex".prove.log 2>&1 \
+              && echo "PASS" || { echo "FAIL"; tail -20 /tmp/"$ex".prove.log; exit 1; }
           done
 
       # Band 5 invariant guardrail (#3067): assert that no stage-1 DLL carries
