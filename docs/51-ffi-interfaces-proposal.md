@@ -25,10 +25,11 @@
 > and fails the build with a clear "not yet supported" diagnostic
 > instead of silently emitting an InterfaceImpl row whose TypeRef
 > names the open generic type.  Full support (TypeSpec emission +
-> MethodImpl rows) sequenced as a follow-up.
-> The `get_`/`set_` property convention (the underlying methods are
-> validated like any other; only the LSP scaffolding is missing) and
-> bridge-thunk synthesis remain deferred.
+> MethodImpl rows) sequenced as a follow-up; the implementation plan
+> lives at the bottom of this document under "Remaining work" §A.
+> The `get_X`/`set_X` LSP "Implement Interface" scaffolding (plan §B)
+> and the bridge-thunk question (plan §C — confirmed N/A for the
+> current Lyric MSIL ABI) are also documented.
 
 Provide a way for Lyric programs to explicitly implement an interface defined in a compiled `.NET` dependency across the Auto FFI boundary.
 
@@ -81,3 +82,109 @@ The .NET runtime interface dispatch automatically wires this `MethodImpl` to the
 - Implement `System.IDisposable` on a Lyric record and pass it to a C# method that calls `.Dispose()`.
 - Implement a custom C# interface with multiple methods from a referenced `.dll`.
 - Test implementing a generic .NET interface (e.g., `System.IEquatable<int>`).
+
+## Remaining work — concrete implementation plans
+
+Phases 1–4 (non-generic emission, validation, widening, generic guard
+F0024) are shipped. The three follow-ups below are documented here in
+implementation-ready form so the next pass can pick them up without
+re-discovery.
+
+### A. Full generic external interface support (`F0024` lift)
+
+Infrastructure status: `MImplData` already carries `ifaceTypeToken`
+(`lowering.l:813`) and `slots: List[MImplSlot]` where each slot has
+`ifaceMethodToken` (`lowering.l:792`). `lowerMImpl` already handles
+the `(ifaceToken % 4) == 2` (TypeSpec) path at `lowering.l:4055–4079`,
+emitting `MethodImpl` rows when slots carry a non-zero
+`ifaceMethodToken`. `ctxAddTypeSpec` and `buildGenericInstBlobWithCtx`
+exist (`lowering.l:1381`, used at `lowering.l:3749` for `List<T>`).
+
+What's missing:
+
+1. **Codegen — `implIfaceNameMsil` for generic instantiations**
+   (`codegen.l:18759`). When `decl.iface.args.count > 0` and the iface
+   resolves to an external CLR type, build a TypeSpec blob via
+   `buildGenericInstBlobWithCtx(ctx, tdrTypeRef(ifaceTypeRefRow),
+   loweredArgs)` and stash the resulting TypeSpec token on the queued
+   `MImplData.ifaceTypeToken`. The iface's TypeRef row is reserved with
+   the arity-suffixed name (e.g. `System.IEquatable\`1`) via
+   `internFfiTypeRefNested` like today.
+
+2. **Codegen — per-slot `MImplSlot.ifaceMethodToken`** for every iface
+   method, populated with a MemberRef row whose parent is the new
+   TypeSpec token and whose signature uses `STVar(i)` tokens for type
+   parameters (so the loader substitutes against the TypeSpec's args).
+   Build the MemberRef via `ctxAddMemberRef(lctx, tdrTypeSpec(tsRow),
+   memberName, sigKey, memberSig)` (`codegen.l`-side); the sig builder
+   needs a `bufMsilTypeWithVar` variant that emits ELEMENT_TYPE_VAR
+   (0x13) for type parameters.
+
+3. **Validation pass** (`validateExternImplConformanceMsil`,
+   `codegen.l`). Today bails per-method on signatures that mention
+   `STVar/STMVar/STGenericInst`. Substitute the Lyric type args
+   (`decl.iface.args`) into the iface method's MethodDef signature so
+   F0022/F0023 can compare against the impl method's concrete sig.
+   Inverse of step 2's MemberRef-sig-building.
+
+4. **F0024 guard removal** (`validateNoExternGenericIfacesMsil`,
+   `codegen.l`). Replace the panic with a permit once steps 1–3 are
+   shipped, leaving the guard wired in to catch any *remaining*
+   uncovered shape (e.g. open generic instantiation referring to a
+   not-yet-resolved type parameter).
+
+5. **Self-test extension** (`ffi_iface_impl_self_test.l`). Add a
+   positive test that implements `extern type IEquatable = "System.IEquatable\`1"`
+   on a `Resource` record with `func Equals(other: in Resource): Bool`
+   and asserts CLR-side dispatch via a Lyric-side widening (mirrors
+   the Phase 3 pattern). Negative test: drop the F0024 fixture once
+   the guard becomes a permit.
+
+Acceptance criterion: `impl IEquatable[Resource] for Resource { … }`
+compiles, runs, and dispatches `Equals` through the CLR's generic
+interface dispatch table.
+
+### B. LSP "Implement Interface" scaffolding
+
+Status: `handleCodeAction` at `lyric-compiler/lyric/lsp.l:1414` already
+dispatches code actions keyed by diagnostic code (V0009, V0003, V0007,
+V0008). Adding T0098 (`checkImplConformance` missing-method) would
+build a stub `func <name>(<params>): <ret> { panic("not implemented") }`.
+
+What's missing:
+
+1. **Structured diagnostic payload**. T0098 today carries only the
+   missing method *name* in its message. To synthesise a real stub
+   the LSP needs the iface method's full signature — either by:
+   (a) re-walking the iface symbol's `IFunc`/`IMSig` members at
+       code-action time (sufficient for native interfaces), or
+   (b) consulting `Msil.MetadataReader.inspectInterfaceTarget` for
+       extern interfaces (the validation pass already imports this).
+
+2. **`get_X`/`set_X` scaffolding**. When an iface's metadata MethodDef
+   row has the SpecialName flag (0x0800) and a `get_` / `set_` /
+   `add_` / `remove_` prefix, surface a friendlier action label
+   ("Implement property X") that emits the matching `get_X`/`set_X`
+   pair as a single edit.
+
+Acceptance criterion: in VS Code, opening a file with
+`impl IDisposable for Foo { }` shows a "Implement IDisposable" quick
+fix that inserts the `Dispose` stub.
+
+### C. Bridge thunks — N/A
+
+The proposal's worry was that Lyric might use a uniform boxed-object
+ABI requiring bridge thunks to unbox primitive arguments for the .NET
+interface. **This concern does not apply to Lyric MSIL today**:
+`Int` = ECMA element type `0x08` (int32), `Long` = `0x0A` (int64),
+`Double` = `0x0D`, etc. — all native CLR primitives, never boxed in
+record fields or method signatures. The F0022/F0023 validation pass
+already enforces by-value primitive matching, and the InterfaceImpl
+emission produces a MethodDef whose signature is the native primitive
+shape. No bridge thunks are needed for the primitive case.
+
+The only hypothetical thunk requirement is when an iface method takes
+a value-type receiver passed by reference (`int& this`) and the Lyric
+impl can't express that. This is the same ByRef gap the validation
+pass already bails on; it surfaces as F0022/F0023 if/when it occurs,
+not as a silent miscompilation. No thunk synthesis is planned.
