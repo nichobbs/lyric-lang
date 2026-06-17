@@ -17,7 +17,7 @@ We will no longer rely on `MObject` coercion. The Lyric TypeChecker already reso
 
 ### Code Generation (`lyric-compiler/msil/codegen.l`)
 
-#### [MODIFY] [codegen.l](file:///Users/nihobbs/repos/lyric-lang/lyric-compiler/msil/codegen.l)
+#### [MODIFY] [codegen.l](../lyric-compiler/msil/codegen.l)
 - **Closure Class Synthesis**:
   - Add a pass before or during `liftLambdasMsil` to synthesize a new `__Closure_<i>` MSIL `.class` for each capturing lambda.
   - For every captured variable (found via `lambdaCaptureNamesMsil`), add a strongly-typed MSIL `.field` to the closure class. If the capture is by-reference (a hoisted cell), the field's type is the `List[object]` cell type. Otherwise, it is the actual primitive/reference type.
