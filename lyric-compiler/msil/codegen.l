@@ -9102,6 +9102,54 @@ func lowerMethodCallMsil(
       val staticPath = ModulePath(segments = fqnSegs, span = recv.span)
       return lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, memberName, staticPath, args)
     }
+    // Qualified union-case construction (#3840): `StoreError.UserNotFound(id = 7)`
+    // parses as `EMember(EPath["StoreError"], "UserNotFound")`, not as a 2-segment
+    // EPath, so it never reaches the EPath constructor path in
+    // `lowerBuiltinOrStaticCallMsil`.  If `<member>` names a registered union
+    // case and the receiver's last segment matches the parent union's simple
+    // name, route to constructor lowering with a synthetic EPath so all the
+    // existing named-arg / default / generic-inference logic applies.  Guard
+    // against a single-segment receiver shadowed by a local variable — a real
+    // local takes precedence and falls through to the value path below.
+    val recvLastSeg = recvSegs[recvSegs.count - 1]
+    val recvIsLocalQual = recvSegs.count == 1 and fctx.slots.containsKey(recvLastSeg)
+    if not recvIsLocalQual and cctx.unionCaseCtorByName.containsKey(memberName) {
+      match mapGet(cctx.unionCaseCtorByName, memberName) {
+        case Some(qualCandidates) -> {
+          var qci = 0
+          var foundQualMatch = false
+          while qci < qualCandidates.count and not foundQualMatch {
+            match mapGet(cctx.caseParentUnion, qualCandidates[qci]) {
+              case Some(parentFqn) -> {
+                val dotIdx2 = parentFqn.lastIndexOf(".")
+                val parentSimple = if dotIdx2 >= 0 {
+                  parentFqn.substring(dotIdx2 + 1, parentFqn.length - dotIdx2 - 1)
+                } else {
+                  parentFqn
+                }
+                if parentSimple == recvLastSeg {
+                  foundQualMatch = true
+                }
+              }
+              case None -> ()
+            }
+            qci = qci + 1
+          }
+          if foundQualMatch {
+            val ctorSegs: List[String] = newList()
+            var csi = 0
+            while csi < recvSegs.count {
+              ctorSegs.add(recvSegs[csi])
+              csi = csi + 1
+            }
+            ctorSegs.add(memberName)
+            val ctorPath = ModulePath(segments = ctorSegs, span = recv.span)
+            return lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, memberName, ctorPath, args)
+          }
+        }
+        case None -> ()
+      }
+    }
   }
   val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
   // Auto-FFI instance dispatch: an extern class-ref receiver (e.g. the result
