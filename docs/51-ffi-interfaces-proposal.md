@@ -1,4 +1,15 @@
-# Implementing External .NET Interfaces (Proposal)
+# Implementing External .NET Interfaces
+
+> **Status.** Specced in D105. Phase 1 (non-generic interface emission)
+> shipped: codegen resolves the FQN via the existing extern-type table
+> (`implIfaceNameMsil` consults `cctx.externTypeNames`), reserves the
+> TypeRef row in `collectImplEntriesMsil` via `internFfiTypeRefNested`,
+> and `lowerMImpl` reuses its existing TypeRef path. Type-check-time
+> metadata-based signature validation (the FFI conformance pass that
+> would emit `F0020`–`F0023`), generic external interfaces, the
+> `get_`/`set_` property convention, and bridge-thunk synthesis are
+> deferred to a follow-up decision — until the validation pass lands,
+> a mis-shaped impl surfaces as a CLR `TypeLoadException` on first use.
 
 Provide a way for Lyric programs to explicitly implement an interface defined in a compiled `.NET` dependency across the Auto FFI boundary.
 

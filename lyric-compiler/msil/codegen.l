@@ -18746,12 +18746,42 @@ func implTargetNameMsil(decl: in ImplDecl, pkgName: in String): String {
   }
 }
 
-func implIfaceNameMsil(decl: in ImplDecl, pkgName: in String): String {
+// Resolve the interface FQN for an `impl Iface for …` block.  A
+// single-segment name is first looked up in `cctx.externTypeNames`
+// (populated from `extern type` declarations and `import extern` selectors,
+// see `scanExternTypesMsil`); a hit means the user is implementing an
+// external .NET interface and we return the CLR FQN
+// (`System.IDisposable`) so `lowerMImpl` finds the right TypeRef row
+// instead of looking for `<pkg>.IDisposable` (D105).  Multi-segment
+// names are returned verbatim — they are either an explicit external FQN
+// or a cross-package native Lyric interface.  Single-segment names that
+// miss the table fall back to the current-package prefix as before.
+func implIfaceNameMsil(cctx: in CodegenCtx, decl: in ImplDecl, pkgName: in String): String {
   val segs = decl.iface.head.segments
   if segs.count == 1 {
-    pkgName + "." + segs[0]
+    match mapGet(cctx.externTypeNames, segs[0]) {
+      case Some(clrFqn) -> clrFqn
+      case None -> pkgName + "." + segs[0]
+    }
   } else {
     joinSegsMsil(segs, ".")
+  }
+}
+
+// True iff the single-segment iface name resolves through
+// `cctx.externTypeNames` to an external .NET CLR FQN.  `Lyric.*` extern
+// targets (in-process Lyric packages re-exposed through `extern`) are NOT
+// external — they fall back to the normal Lyric TypeDef / cross-package
+// TypeRef path, matching how `typeExprToMsilCtx` treats them in
+// `scanExternTypesMsil` (#1602).
+func implIfaceIsExternalClr(cctx: in CodegenCtx, decl: in ImplDecl): Bool {
+  val segs = decl.iface.head.segments
+  if segs.count != 1 {
+    return false
+  }
+  match mapGet(cctx.externTypeNames, segs[0]) {
+    case Some(clrFqn) -> not startsWith(clrFqn, "Lyric.")
+    case None -> false
   }
 }
 
@@ -18760,13 +18790,22 @@ func implIfaceNameMsil(decl: in ImplDecl, pkgName: in String): String {
 // instance-method flags and slot 0 = `this`; the methods are NOT added to
 // any record yet — that injection happens in the IRecord arm of the main
 // loop via `injectImplMethodsIntoRecord`.
+//
+// When the interface name resolves to an external CLR type (D105), this
+// pre-pass also reserves the TypeRef row via `internFfiTypeRefNested` so
+// `lowerMImpl`'s `findTypeRefRowByName` lookup finds it — an `impl` block
+// is otherwise the only place an external interface can be named without
+// any method call having already created the row.
 pub func collectImplEntriesMsil(cctx: in CodegenCtx, file: in SourceFile, pkgName: in String): Unit {
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
       case IImpl(decl) -> {
         val targetName = implTargetNameMsil(decl, pkgName)
-        val ifaceName = implIfaceNameMsil(decl, pkgName)
+        val ifaceName = implIfaceNameMsil(cctx, decl, pkgName)
+        if implIfaceIsExternalClr(cctx, decl) {
+          val _ = internFfiTypeRefNested(cctx, ifaceName)
+        }
         val methods: List[MFunc] = newList()
         var mi = 0
         while mi < decl.members.count {
