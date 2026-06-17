@@ -4,8 +4,8 @@
 //! Run: lyric run examples/ffi_datetime.l
 package FfiDateTime
 
-import extern System.{ DateTime }
-import extern System.Text.{ StringBuilder }
+import extern System.DateTime
+import extern System.Text.StringBuilder
 
 func main(): Unit {
   val a = DateTime.get_UtcNow()

@@ -751,16 +751,7 @@ func parseImportDecl(st: inout ParseState): Option[ImportDecl] {
       None
     }
 
-    // P0035: import extern requires selector group per D105 Q47-001
-    match selector {
-      case None -> {
-        if isExtern {
-          emitErr(st, "P0035", "import extern requires selector group { ... }", path.span)
-        }
-      }
-      case Some(_) -> {
-      }
-    }
+
 
     var endSp = path.span
     val result = match tryEatKw(st, KwAs) {

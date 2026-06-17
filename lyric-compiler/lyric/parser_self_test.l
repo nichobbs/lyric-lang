@@ -126,9 +126,9 @@ test "pub use extern" {
 
 test "import extern without selector" {
   val pr = parse("package P\nimport extern System.Net.Http.HttpClient\n")
-  assertEqualInt(diagCount(pr), 1, "import extern without selector: one diagnostic")
-  val diag = pr.diagnostics[0]
-  assertEqual(diag.code, "P0035", "import extern without selector: P0035 code")
+  assertEqualInt(diagCount(pr), 0, "import extern without selector: no diagnostics")
+  assertEqualInt(importCount(pr), 1, "import extern without selector: one import")
+  assertTrue(pr.file.imports[0].isExtern, "import extern without selector: isExtern flag is true")
 }
 
 test "func decl" {

@@ -17970,6 +17970,12 @@ func scanExternTypesMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
           }
         }
         case _ -> {
+          val clrName = joinSegsMsil(imp.path.segments, ".")
+          val typeName = imp.path.segments[imp.path.segments.count - 1]
+          val aliasName = unwrapOr(imp.asAlias, typeName)
+          if not cctx.externTypeNames.containsKey(aliasName) {
+            cctx.externTypeNames.add(aliasName, clrName)
+          }
         }
       }
     }
