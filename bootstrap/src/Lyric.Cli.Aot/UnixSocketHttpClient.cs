@@ -11,7 +11,7 @@ using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Lyric.Stdlib.HttpHost;
+namespace Lyric.Cli.Aot;
 
 /// <summary>
 /// Infrastructure helpers for creating HttpClient instances with Unix domain socket support.

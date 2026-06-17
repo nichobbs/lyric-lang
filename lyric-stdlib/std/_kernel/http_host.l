@@ -240,15 +240,15 @@ pub func hostClientNoRedirects(): HttpClient {
 
 // ---------------------------------------------------------------------------
 // Unix domain socket support for local protocol access (Docker, systemd, etc).
-// Infrastructure bridge to Lyric.Stdlib.HttpHost.UnixSocketHttpClient.
+// Infrastructure bridge to Lyric.Cli.Aot.UnixSocketHttpClient (in AOT entry-point).
 // ---------------------------------------------------------------------------
-@externTarget("Lyric.Stdlib.HttpHost.UnixSocketHttpClient.CreateWithUnixSocket")
+@externTarget("Lyric.Cli.Aot.UnixSocketHttpClient.CreateWithUnixSocket")
 pub func hostClientWithUnixSocket(socketPath: in String): HttpClient = ()
 
-@externTarget("Lyric.Stdlib.HttpHost.UnixSocketHttpClient.CreateWithUnixSocketAndRedirects")
+@externTarget("Lyric.Cli.Aot.UnixSocketHttpClient.CreateWithUnixSocketAndRedirects")
 pub func hostClientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: in Int): HttpClient = ()
 
-@externTarget("Lyric.Stdlib.HttpHost.UnixSocketHttpClient.CreateWithUnixSocketNoRedirects")
+@externTarget("Lyric.Cli.Aot.UnixSocketHttpClient.CreateWithUnixSocketNoRedirects")
 pub func hostClientWithUnixSocketNoRedirects(socketPath: in String): HttpClient = ()
 
 // `ResponseHeader` (G12 follow-up): native Lyric on top of
