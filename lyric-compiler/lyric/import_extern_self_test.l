@@ -1,14 +1,3 @@
-//! import_extern_self_test.l — regression test for import extern syntax (D105, Phase 2).
-//!
-//! Tests `import extern` syntax for importing external types, ensuring that:
-//! 1. External types can be imported via `import extern Namespace.{ Type }` syntax
-//! 2. Aliasing works: `import extern Namespace.{ Type as Alias }`
-//! 3. Multiple types can be imported in a group
-//! 4. Public re-exports work: `pub use extern Namespace.{ Type }`
-//! 5. Auto-FFI resolves method calls on imported external types
-//!
-//! Run with: lyric test lyric-compiler/lyric/import_extern_self_test.l
-//!
 @test_module
 package Lyric.ImportExternSelfTest
 

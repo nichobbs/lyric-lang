@@ -248,7 +248,7 @@ record Counter {
 }
 ```
 
-The `var` prefix is accepted by the parser. Both the self-hosted parser (`lyric-compiler/lyric/parser/`) and the stage-0 F# bootstrap parser consume the keyword but do not yet carry a mutability flag in `FieldDecl` — the resulting AST node is identical to a non-`var` field. Full AST tracking and mutability enforcement (preventing external reassignment, restricting write sites to the owning package) are tracked as T6+ type-checker work; the emitter currently treats `var` and non-`var` fields identically at the IL/bytecode level. The syntax is intentionally similar to local `var` declarations so that the intention is clear in code review.
+The `var` prefix is accepted by the parser. The self-hosted parser (`lyric-compiler/lyric/parser/`) consumes the keyword but does not yet carry a mutability flag in `FieldDecl` — the resulting AST node is identical to a non-`var` field. Full AST tracking and mutability enforcement (preventing external reassignment, restricting write sites to the owning package) are tracked as T6+ type-checker work; the emitter currently treats `var` and non-`var` fields identically at the IL/bytecode level. The syntax is intentionally similar to local `var` declarations so that the intention is clear in code review.
 
 ### 2.5 Unions (sum types)
 
@@ -924,7 +924,7 @@ The compiler selects one of two lowering strategies based on the body's content:
 
 **Eager-producer** (body has `yield` but no `await`): the generator body runs to completion synchronously when the caller first calls `GetAsyncEnumerator`, buffering all yielded values in a `List<T>` that `MoveNextAsync` serves one at a time. Correct for generator comprehensions and producer pipelines.
 
-*Bootstrap constraints for eager-producer generators:* (a) The generator class is single-use per instance — calling `GetAsyncEnumerator` on the same instance concurrently (e.g. passing the same `IAsyncEnumerable<T>` to two nested `for` loops) is unsupported and produces undefined behaviour. The `for x in f(args)` desugaring creates a fresh instance on each call to `f`, so well-formed Lyric code is unaffected. (b) The eager-producer strategy buffers *all* yielded values before the first `MoveNextAsync` returns; generators with an unbounded yield sequence will consume unbounded memory and hang the process at the `for` site. Use `await` inside the body to force the async-iterator strategy when infinite or very-large sequences are needed.
+*Constraints for eager-producer generators:* (a) The generator class is single-use per instance — calling `GetAsyncEnumerator` on the same instance concurrently (e.g. passing the same `IAsyncEnumerable<T>` to two nested `for` loops) is unsupported and produces undefined behaviour. The `for x in f(args)` desugaring creates a fresh instance on each call to `f`, so well-formed Lyric code is unaffected. (b) The eager-producer strategy buffers *all* yielded values before the first `MoveNextAsync` returns; generators with an unbounded yield sequence will consume unbounded memory and hang the process at the `for` site. Use `await` inside the body to force the async-iterator strategy when infinite or very-large sequences are needed.
 
 **Async-iterator** (body has both `yield` and `await`): **not yet implemented** (tracked in issue #1490). The compiler synthesises a combined `IAsyncStateMachine` + `IAsyncEnumerable<T>` class per the design in D-progress-261 (§14.6.2 of `docs/09-msil-emission.md`), but the self-hosted MSIL backend does not yet lower this form. A function body containing both `yield` and `await` is currently a compile error. Use the eager-producer strategy (`yield` only) or a plain `async func` (`await` only) until this form lands.
 
@@ -1078,7 +1078,7 @@ import extern System.Net.Http.{HttpClient, HttpRequestMessage as ReqMsg}
 import extern java.lang.{Math as JMath}
 ```
 
-`import extern` imports types from external (host runtime) packages. The FQN specifies the host namespace; each imported name must have a selector group `{ ... }`; bare `import extern Foo.Bar` is invalid per D105 Q47-001. Type binding and resolution are deferred to Phase 2; currently these imports parse but are not yet usable in type positions. External imports are scoped to the importing package and do not re-export by default.
+`import extern` imports types from external (host runtime) packages. The FQN specifies the host namespace; each imported name must have a selector group `{ ... }`; bare `import extern Foo.Bar` is invalid per D105 Q47-001. Type binding and resolution are fully supported. External imports are scoped to the importing package and do not re-export by default.
 
 ### 9.3 Re-exports
 
@@ -1281,68 +1281,47 @@ diagnostic; when the jmods directory is absent (no JDK found), the auto-FFI
 falls back to the legacy object-typed binding and a `NoClassDefFoundError` at
 class-load time is possible.
 
-### 11.4 Auto-FFI extern types
+### 11.4 Auto-FFI and import extern
 
-`extern type Name = "CLR.Type"` binds a Lyric name to a host type so that
-`Name.method(args)` calls a static method on it without a hand-written
-`@externTarget` wrapper:
+External types can be imported directly using the `import extern` syntax. This is the preferred mechanism for interacting with host runtime APIs (such as the .NET BCL or Java JDK) as it unifies package imports and external imports under one cohesive model.
 
-```
-extern type Math = "System.Math"
+```lyric
+import extern System.{ Math as SystemMath }
+import extern System.Text.{ StringBuilder }
 
 func clamp(n: in Int): Int {
-  Math.Min(Math.Max(n, 0), 100)   // resolves System.Math.Max/Min(int, int)
+  SystemMath.Min(SystemMath.Max(n, 0), 100)   // resolves System.Math.Max/Min(int, int)
+}
+
+func makeMessage(name: in String): String {
+  val sb = StringBuilder.new(64)              // constructor shorthand (.new)
+  sb.Append("Hello, ")
+  sb.Append(name)
+  return sb.ToString()
 }
 ```
 
-On `--target dotnet` the self-hosted MSIL emitter resolves the call's overload
-from real .NET reference-assembly **metadata** at compile time (it parses the
-reference pack's CLI metadata directly — see `docs/42-extern-metadata-resolution.md`),
-locating the type's owning assembly from a metadata-derived index and selecting
-the method whose parameter types match the argument types, then emitting the
-correctly-typed call and return.  Supported today: static methods whose
-parameter and return types are primitives, `String`, or `object` and match the
-arguments, plus widening numeric coercion (an `Int`/`Long` argument binds a
-`(long)`/`(double)` overload via `conv`), `object` parameters (the argument is
-boxed), and **value-type and class (reference-type)** parameters and returns
-(e.g. `System.TimeSpan`, `System.Type` — matched and emitted by their
-fully-qualified name).  **Instance methods** on a class-typed extern receiver
-also resolve and dispatch via `callvirt` (e.g.
-`Type.GetType("System.Int32").ToString()`).  **Constructors** via the `T.new(args)`
-pseudo-method emit `newobj` with the resolved constructor signature (e.g.
-`StringBuilder.new(64)` → `newobj System.Text.StringBuilder..ctor(int32)`);
-value-type constructors fall back to requiring an explicit `@externTarget` wrapper
-(Q48-004, `docs/48`).  Calls that need narrowing, a `float` parameter, or an
-instance method on a *value-type* receiver also fall back to requiring an explicit
-`@externTarget` wrapper.  An unresolved auto-FFI call is a compile-time diagnostic
-(it is never silently mis-bound).
+Alternatively, `extern type Name = "CLR.Type"` can be used to bind a Lyric name to a host type within the package, though `import extern` is preferred.
 
-**JVM target.**  The self-hosted JVM emitter resolves `extern type` method calls
-from real JDK **`.jmod` metadata** at compile time (epic #1622, shipped in the
-`Jvm.AutoFfi` / `Jvm.ZipReader` / `Jvm.ClassReader` / `Jvm.Deflate` stack under
-`lyric-compiler/jvm/`).  It reads the `.class` entry straight out of
-`java.base.jmod` (a ZIP behind a 4-byte JMOD magic header) at compile time,
-parses the constant pool and method table, scores overloads, and emits the
-correctly-typed bytecode:
+On `--target dotnet` the self-hosted MSIL emitter resolves calls and overloads from real .NET reference-assembly **metadata** at compile time (it parses the reference pack's CLI metadata directly — see `docs/42-extern-metadata-resolution.md`), locating the type's owning assembly from a metadata-derived index and selecting the method whose parameter types match the argument types, then emitting the correctly-typed call and return.
 
-- **`invokestatic`** for static methods (e.g. `Math.max(int,int)` → `(II)I`).
-- **`invokevirtual`** for instance methods on a JDK reference receiver
-  (e.g. calling `.intValue()` on the `Integer` returned by `JInteger.valueOf(42)`).
-- **`new` + `invokespecial <init>`** for constructors via the `T.new(args)` pseudo-method
-  (e.g. `JStringBuilder.new("hello")` → `new java/lang/StringBuilder; dup; ldc "hello";
-  invokespecial java/lang/StringBuilder.<init>(Ljava/lang/String;)V`).
+Supported features:
+- **Static methods**: primitive, `String`, or `object` parameters and returns. Includes widening numeric coercion (e.g. `Int`/`Long` argument binds a `(long)`/`(double)` overload), and `object` boxing.
+- **Instance methods**: resolves and dispatches via `callvirt` (e.g., `Type.GetType("System.Int32").ToString()`).
+- **Constructors**: via the `.new(args)` constructor shorthand, which emits `newobj` with the resolved constructor signature (e.g., `StringBuilder.new(64)` → `newobj System.Text.StringBuilder..ctor(int32)`). Value-type constructors fall back to requiring an explicit `@externTarget` wrapper.
+- **Value-types and classes**: matched and emitted by their fully-qualified names.
 
-The same overload-scoring rules as dotnet apply (exact match → numeric widening);
-an unresolved call when the JDK is present is a compile-time error.  When
-`JAVA_HOME` is unset and no JDK is found on the standard search paths, the emitter
-silently falls back to the legacy object-typed binding (no JDK required at compile
-time for that mode, but resolution may fail at JVM link time).
+Unresolved calls, narrowing coercions, or instance methods on a value-type receiver fall back to requiring an explicit `@externTarget` wrapper. All unresolved auto-FFI calls produce a compile-time diagnostic.
 
-**Maven / non-JDK classes.**  To resolve methods on third-party library classes,
-set the `LYRIC_FFI_JARS` environment variable to a colon-separated (Unix) or
-semicolon-separated (Windows) list of JAR file paths.  The emitter scans these
-JARs after the JDK jmods, using the standard JAR entry path
-(`"com/example/Foo.class"`, without the `"classes/"` JMOD prefix):
+**JVM target.** The self-hosted JVM emitter resolves `import extern` and `extern type` method calls from real JDK **`.jmod` metadata** at compile time (epic #1622, shipped in the `Jvm.AutoFfi` / `Jvm.ZipReader` / `Jvm.ClassReader` / `Jvm.Deflate` stack under `lyric-compiler/jvm/`). It reads the `.class` entry straight out of `java.base.jmod` (a ZIP behind a 4-byte JMOD magic header) at compile time, parses the constant pool and method table, scores overloads, and emits the correctly-typed bytecode:
+
+- **`invokestatic`** for static methods (e.g. `SystemMath.abs(-7)` → `invokestatic`).
+- **`invokevirtual`** for instance methods on a JDK reference receiver (e.g. calling `.intValue()` on the `Integer` returned by `JInteger.valueOf(42)`).
+- **`new` + `invokespecial <init>`** for constructors via the `.new(args)` shorthand (e.g. `JStringBuilder.new("hello")` → `new java/lang/StringBuilder; dup; ldc "hello"; invokespecial java/lang/StringBuilder.<init>(Ljava/lang/String;)V`).
+
+The same overload-scoring rules as dotnet apply (exact match → numeric widening); an unresolved call when the JDK is present is a compile-time error. When `JAVA_HOME` is unset and no JDK is found on the standard search paths, the emitter silently falls back to the legacy object-typed binding (no JDK required at compile time for that mode, but resolution may fail at JVM link time).
+
+**Maven / non-JDK classes.** To resolve methods on third-party library classes, set the `LYRIC_FFI_JARS` environment variable to a colon-separated (Unix) or semicolon-separated (Windows) list of JAR file paths. The emitter scans these JARs after the JDK jmods, using the standard JAR entry path (`"com/example/Foo.class"`, without the `"classes/"` JMOD prefix):
 
 ```
 export LYRIC_FFI_JARS=$(mvn -q dependency:build-classpath \
@@ -1350,27 +1329,18 @@ export LYRIC_FFI_JARS=$(mvn -q dependency:build-classpath \
 ```
 
 ```lyric
-extern type JFoo = "com.example.Foo"
-JFoo.someStaticMethod(42)        // resolved from JAR at compile time
-val obj = JFoo.new("hello")      // constructor via T.new(args)
-obj.someInstanceMethod()         // invokevirtual via instance auto-FFI
+import extern com.example.{ Foo as JFoo }
+
+func useExternalClass(): Unit {
+  JFoo.someStaticMethod(42)        // resolved from JAR at compile time
+  val obj = JFoo.new("hello")      // constructor via .new(args) shorthand
+  obj.someInstanceMethod()         // invokevirtual via instance auto-FFI
+}
 ```
 
 ### 11.5 AOT compatibility
 
 All Lyric code is AOT-compatible. The compiler targets either JIT or Native AOT depending on build configuration. No reflection, no runtime code generation, no `System.Reflection.Emit` usage in compiled output.
-
-### 11.6 Future FFI ergonomics
-
-The following design sketches propose ergonomic improvements to the FFI system:
-
-- `docs/47-import-extern-syntax.md` — Unify external-type imports with Lyric
-  package imports using `import extern` syntax, reducing boilerplate and making
-  the FFI boundary clearer. (Unbacked sketch; Q47-001–Q47-004 open.)
-- `docs/48-constructor-shorthand.md` — Enable `.new(args)` shorthand for external
-  type constructors, eliminating `@externTarget` wrapper functions and aligning
-  MSIL with JVM behavior. (Unbacked sketch; straightforward implementation via
-  Phase 3c auto-FFI.)
 
 ## 12. Standard library
 
