@@ -461,6 +461,60 @@ pub func clientNoRedirects(): HostHttp.HttpClient {
   return HostHttp.hostClientNoRedirects()
 }
 
+// ---------------------------------------------------------------------------
+// Unix domain socket support for local protocol access (Docker, systemd, etc).
+// ---------------------------------------------------------------------------
+/// Construct an `HttpClient` connected to a Unix domain socket.
+///
+/// Unix domain sockets are used for local inter-process communication on
+/// Unix-like systems (Linux, macOS). Common applications include Docker
+/// (at `/var/run/docker.sock`), systemd, and dbus.
+///
+/// # Preconditions as data
+/// - `socketPath` must be a valid path to an accessible Unix socket.
+///
+/// Connection failures are represented as `ConnectionFailed` by `sendAsync`.
+///
+/// # Examples
+/// ```lyric
+/// val dockerClient = clientWithUnixSocket("/var/run/docker.sock")
+/// val response = await sendAsync(
+///   request(GET, Url.tryFrom("http://docker/v1.40/containers/json") |> assertOk())
+/// ) |> assertOk()
+/// ```
+@stable(since = "1.1")
+pub func clientWithUnixSocket(socketPath: in String): HostHttp.HttpClient
+  requires: socketPath.length > 0
+{
+  return HostHttp.hostClientWithUnixSocket(socketPath)
+}
+
+/// Construct an `HttpClient` connected to a Unix domain socket with redirect following.
+///
+/// # Preconditions as data
+/// - `socketPath` must be a valid path to an accessible Unix socket.
+/// - `maxRedirects` must be non-negative.
+@stable(since = "1.1")
+pub func clientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: in Int): HostHttp.HttpClient
+  requires: socketPath.length > 0
+  requires: maxRedirects >= 0
+{
+  return HostHttp.hostClientWithUnixSocketAndRedirects(socketPath, maxRedirects)
+}
+
+/// Construct an `HttpClient` connected to a Unix domain socket without redirect following.
+///
+/// Useful when the caller wants to inspect 3xx responses directly.
+///
+/// # Preconditions as data
+/// - `socketPath` must be a valid path to an accessible Unix socket.
+@stable(since = "1.1")
+pub func clientWithUnixSocketNoRedirects(socketPath: in String): HostHttp.HttpClient
+  requires: socketPath.length > 0
+{
+  return HostHttp.hostClientWithUnixSocketNoRedirects(socketPath)
+}
+
 // Future: scoped HttpClient (per-Scope cancellation flow) needs the
 // AsyncLocal<T> propagation from D-progress-059's Phase 4 follow-up;
 // today users thread tokens explicitly via `sendWithCancelAsync`.

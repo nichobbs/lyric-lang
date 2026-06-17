@@ -43,6 +43,10 @@ extern type HttpHeaders = "System.Net.Http.Headers.HttpHeaders"
 
 extern type Encoding = "System.Text.Encoding"
 
+extern type SocketsHttpHandler = "System.Net.Http.SocketsHttpHandler"
+
+extern type UnixDomainSocketEndPoint = "System.Net.Sockets.UnixDomainSocketEndPoint"
+
 // =====================================================================
 // Primitive externs (private to this kernel file).  These bind the
 // individual BCL members; the public `host*` helpers compose them.
@@ -82,6 +86,18 @@ func setAllowAutoRedirect(h: in HttpClientHandler, v: in Bool): Unit = ()
 
 @externTarget("System.Net.Http.HttpClientHandler.set_MaxAutomaticRedirections")
 func setMaxAutomaticRedirections(h: in HttpClientHandler, n: in Int): Unit = ()
+
+@externTarget("System.Net.Sockets.UnixDomainSocketEndPoint..ctor")
+func newUnixDomainSocketEndPoint(path: in String): UnixDomainSocketEndPoint = ()
+
+@externTarget("System.Net.Http.SocketsHttpHandler..ctor")
+func newSocketsHandler(): SocketsHttpHandler = ()
+
+@externTarget("System.Net.Http.SocketsHttpHandler.set_AllowAutoRedirect")
+func socketsSetAllowAutoRedirect(h: in SocketsHttpHandler, v: in Bool): Unit = ()
+
+@externTarget("System.Net.Http.SocketsHttpHandler.set_MaxAutomaticRedirections")
+func socketsSetMaxAutomaticRedirections(h: in SocketsHttpHandler, n: in Int): Unit = ()
 
 @externTarget("System.Net.Http.HttpClient.SendAsync")
 async func clientSendAsync(client: in HttpClient, request: in HttpRequestMessage): HttpResponseMessage = ()
@@ -221,6 +237,19 @@ pub func hostClientNoRedirects(): HttpClient {
   setAllowAutoRedirect(handler, false)
   newClientFromHandler(handler)
 }
+
+// ---------------------------------------------------------------------------
+// Unix domain socket support for local protocol access (Docker, systemd, etc).
+// Infrastructure bridge to Lyric.Cli.Aot.UnixSocketHttpClient (in AOT entry-point).
+// ---------------------------------------------------------------------------
+@externTarget("Lyric.Cli.Aot.UnixSocketHttpClient.CreateWithUnixSocket")
+pub func hostClientWithUnixSocket(socketPath: in String): HttpClient = ()
+
+@externTarget("Lyric.Cli.Aot.UnixSocketHttpClient.CreateWithUnixSocketAndRedirects")
+pub func hostClientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: in Int): HttpClient = ()
+
+@externTarget("Lyric.Cli.Aot.UnixSocketHttpClient.CreateWithUnixSocketNoRedirects")
+pub func hostClientWithUnixSocketNoRedirects(socketPath: in String): HttpClient = ()
 
 // `ResponseHeader` (G12 follow-up): native Lyric on top of
 // `HttpHeaders.TryGetValues(name, out IEnumerable<string>)` + a
