@@ -2094,7 +2094,7 @@ test "try value matching handler accepted" {
 // Statement-position try whose value is discarded: a Unit handler beside a
 // value-producing body must stay accepted (the shared temp is never read).
 test "try statement unit handler accepted" {
-  val ok = "package P\nfunc use(n: in Int): Unit {}\nfunc f(): Unit {\n  try {\n    1\n  } catch Bug as b {\n    use(0)\n  }\n}\n"
+  val ok = "package P\nfunc consume(n: in Int): Unit {}\nfunc f(): Unit {\n  try {\n    1\n  } catch Bug as b {\n    consume(0)\n  }\n}\n"
   assertTrue(not hasDiagCode(parseCheck(ok), "T0067"), "try statement: Unit handler absorbed, no T0067")
 }
 
@@ -2153,7 +2153,7 @@ test "for tuple pattern accepted" {
 test "config field type guard" {
   val bad = "package P\nconfig S { c: Char }\n"
   assertTrue(hasDiagCode(parseCheck(bad), "G0009"), "config: Char field rejected with G0009")
-  val badList = "package P\nconfig S { xs: [String] }\n"
+  val badList = "package P\nconfig S { xs: slice[String] }\n"
   assertTrue(hasDiagCode(parseCheck(badList), "G0009"), "config: list field rejected with G0009")
   val ok = "package P\nconfig S2 { a: Bool = true; b: Int = 1; c: Long = 2; d: Float = 0.5; e: Double = 1.5; f: String = \"x\"; g: Int }\n"
   assertEqualInt(diagCount(parseCheck(ok)), 0, "config: full v1 type set accepted")

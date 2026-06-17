@@ -1535,6 +1535,18 @@ pub func registerExternalImports(
           val _ = addSym(tbl, diag, false, "", symbolName, DKExternType(id = tid, decl = syntheticDecl), vis, imp.span)
         }
         case None -> {
+          val externalFqn = dottedPackageName(imp.path)
+          val typeName = imp.path.segments[imp.path.segments.count - 1]
+          val symbolName = unwrapOr(imp.asAlias, typeName)
+          // Deduplicate by external FQN like regular `extern type`.
+          val tid = match findExternTypeIdByClr(tbl, externalFqn) {
+            case Some(existing) -> existing
+            case None -> freshTypeId(ctr)
+          }
+          // Create a synthetic ExternTypeDecl.
+          val syntheticDecl = ExternTypeDecl(name = symbolName, generics = None, clrName = externalFqn, span = imp.span)
+          val vis = if imp.isPubUse { Some(value = VisPub(span = imp.span)) } else { None }
+          val _ = addSym(tbl, diag, false, "", symbolName, DKExternType(id = tid, decl = syntheticDecl), vis, imp.span)
         }
       }
     }
