@@ -4,46 +4,34 @@ Provide a way to pass Lyric lambdas or method references to .NET methods expecti
 
 ## Goal Description
 
-Lyric's uniform ABI currently lowers all lambdas to `System.Func<object, ..., object>` or `System.Action`. .NET delegates are nominally typed, meaning the runtime rejects passing a `System.Func<object, object>` where a `System.Predicate<int>` is expected, even if the types structurally map to each other. This prevents Lyric from directly invoking many BCL and third-party library methods that take delegates. This proposal describes a bridging mechanism for the FFI layer.
+Currently, the MSIL emitter struggles with bridging Lyric lambdas to .NET delegates because of the interim "Uniform Func ABI" where all lambdas lower to `System.Func<object, ..., object>`. .NET delegates are nominally typed, meaning the runtime rejects passing a `System.Func<object, object>` where a `System.Predicate<int>` is expected.
+
+With the upcoming transition to a strongly-typed lambda ABI (Epic #1877, see `docs/52-strongly-typed-lambdas-proposal.md`), Lyric lambdas will natively compile to strongly-typed `System.Func` closures. Because the Lyric lambda signatures will structurally match the .NET delegate signatures, this FFI bridging can be drastically simplified to a direct MSIL instantiation without any complex thunking or adapter synthesis.
 
 ## Proposed Changes
 
 ### 1. FFI Target Resolution (`type_checker`)
-- Update `lyric-compiler/lyric/type_checker/` to unwrap the `.Invoke` signature of .NET `System.Delegate` subclasses during overload resolution.
-- Provide a scoring mechanism allowing a Lyric `TFunction(params, ret)` to implicitly map to the delegate type if structurally compatible. 
-- Introduce a new AST node to represent an implicit FFI adapter cast from a Lyric function expression to a specific nominal `.NET` delegate `TypeRef`.
+- Update `lyric-compiler/lyric/type_checker/` to unwrap the `.Invoke` signature of nominal .NET `System.Delegate` subclasses during overload resolution.
+- Because Epic #1877 means the Lyric lambda is strongly typed, the type checker can perform a direct structural match between the Lyric `TFunction(params, ret)` and the target delegate's `.Invoke` signature.
+- Introduce a new AST node to represent a direct FFI delegate cast.
 
-### 2. Synthesizing Thunks (`msil/codegen.l`)
-- When the MSIL generator encounters this adapter cast, it must emit a hidden static adapter method (a "thunk").
-- The thunk method's signature must exactly match the target `.NET` delegate's signature (e.g., `bool Adapter(int x)`).
-- **Thunk Body**: 
-  - The thunk will take the boxed Lyric lambda closure array (`object[]`) as an implicit parameter.
-  - It will box all incoming primitive parameters into `System.Object`.
-  - It will call the standard `System.Func::Invoke` on the Lyric lambda.
-  - It will unbox the returned `System.Object` back to the delegate's expected return type.
-
-### 3. Call-site Emission (`msil/codegen.l`)
-- Generate an `ldftn` instruction pointing to the newly synthesized thunk.
-- Construct the target `.NET` delegate type (e.g., `newobj instance void class [mscorlib]System.Predicate\`1<int32>::.ctor(object, native int)`).
-- Pass this strongly-typed delegate to the underlying .NET FFI call.
+### 2. Direct MSIL Delegate Instantiation (`msil/codegen.l`)
+- Because the underlying Lyric lambda is now emitted as a strongly-typed instance method on a closure class (or a strongly-typed static method for non-capturing lambdas), we no longer need to synthesize adapter thunks.
+- Generate an `ldftn` (or `ldvirtftn`) instruction pointing directly to the strongly-typed Lyric lambda method.
+- Construct the target `.NET` delegate type by pushing the closure environment (or null for static) and the function pointer, then calling the delegate constructor (e.g., `newobj instance void class [mscorlib]System.Predicate\`1<int32>::.ctor(object, native int)`).
+- The constructed delegate is now perfectly strongly-typed and can be passed directly to the underlying .NET FFI call.
 
 ## Open Questions / Resolution
 
-### Q: Performance overhead of boxing/unboxing parameters in hot loops
-> [!WARNING]
-> The performance overhead of boxing/unboxing parameters at every delegate invocation in hot loops (e.g., `Enumerable.Where`) might be non-trivial. Should we provide a way to emit strongly typed closures instead for specific contexts?
-
-**Proposed Resolution**: We accept the overhead for now. Epic #1877 explicitly simplified the compiler by boxing all lambdas to a uniform `Func<object, ..., object>` ABI. Re-introducing strongly typed lambdas specifically for FFI would undo this simplification. If performance is critical, developers can write a high-performance interop layer in C# or F# and expose a simpler boundary to Lyric.
-
-### Q: Distinguishing generic closures in `Lyric.Mono`
+### Q: Structurally mapping to generic delegates
 > [!IMPORTANT]
-> How will we distinguish between the generic `System.Func` closures and nominal delegates in the `Lyric.Mono` monomorphization pass?
+> How will the MSIL generator know which concrete generic arguments to provide to a delegate like `System.Action<T>` when instantiating it?
 
-**Proposed Resolution**: `Lyric.Mono` operates on the AST before MSIL codegen and simply substitutes type variables. The new "adapter cast" AST node would hold a `TypeRef` to the target delegate. `Lyric.Mono` only needs to substitute any generic type variables inside that `TypeRef`. The actual distinction between Lyric closures and .NET delegates, and the subsequent thunk generation, happens later during MSIL emission (`codegen.l`), which handles concrete MSIL types and FFI metadata.
+**Proposed Resolution**: The AST's delegate cast node will carry the fully resolved target `MsilType` (which will be an `MTypeSpec` for closed generic delegates). The MSIL generator uses this exact `MsilType` when emitting the `newobj` instruction. 
 
 ## Verification Plan
 
 ### Automated Tests
-- Passing a simple lambda to `System.Collections.Generic.List<T>::RemoveAll(Predicate<T>)`
-- Passing a method reference to a C# event handler
-- A test explicitly passing primitive integers to verify boxing/unboxing within the thunk.
+- Passing a strongly-typed lambda `(Int) -> Bool` to `System.Collections.Generic.List<T>::RemoveAll(Predicate<T>)`.
+- Passing a method reference to a C# event handler.
+- Verify MSIL output to ensure no adapter thunks were generated and the lambda is instantiated directly into the nominal delegate type.
