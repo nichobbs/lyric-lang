@@ -275,7 +275,7 @@ Gated on `DOCKER_AVAILABLE=1` environment variable.
 - Docker API OpenAPI spec: https://raw.githubusercontent.com/docker/cli/master/docs/swagger.json
 - Docker Go client source: https://github.com/moby/moby/tree/master/client
 - PR #3863: Unix socket support in Std.Http
-- docs/35-docker-client-sketch.md (this file)
+- docs/54-docker-client-library-sketch.md (this file)
 
 ## Deployment
 

@@ -26,7 +26,7 @@ import Std.Json
 import Std.Core
 
 // Placeholder: Docker API types and client operations would be generated here.
-// See: docs/35-docker-client-sketch.md (planned) for the full API surface.
+// See: docs/54-docker-client-library-sketch.md (planned) for the full API surface.
 //
 // Generated operations will include:
 //   - Containers: list, create, start, stop, remove, inspect, logs, exec
