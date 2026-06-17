@@ -36,7 +36,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STD_DIR="$REPO_ROOT/lyric-stdlib/std"
 
 # Verified-to-bind leaf packages F# cannot ship.
-CURATED_PACKAGES=(Sort Iter SecureRandom Regex Log Http Rest Xml Yaml Json JsonHost)
+CURATED_PACKAGES=(Sort Iter SecureRandom Regex Log Http Rest HttpServer Xml Yaml Json JsonHost)
 
 emit_dir="$(mktemp -d)"
 trap 'rm -rf "$emit_dir"' EXIT
@@ -47,7 +47,8 @@ trap 'rm -rf "$emit_dir"' EXIT
 driver="$emit_dir/driver.l"
 {
   echo "package SelfHostedStdlibStage"
-  grep -rhoE '^package Std\.[A-Za-z.]+' "$STD_DIR"/*.l | sed 's/^package /import /' | sort -u
+  # Import all public Std.* packages plus kernel-boundary packages (e.g., Std.HttpServer)
+  grep -rhoE '^package Std\.[A-Za-z.]+' "$STD_DIR"/*.l "$STD_DIR"/_kernel/*.l | sed 's/^package /import /' | sort -u
   echo "func main(): Unit { }"
 } > "$driver"
 
