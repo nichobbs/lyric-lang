@@ -92,3 +92,32 @@ test "extern-interface-typed parameter accepts a conforming record" {
   disposeIt(r)
   assertEqualInt(r.tag, 99, "Dispose ran via interface dispatch")
 }
+
+// Phase 4: closed generic external interface — `impl IEquatable[GenRec]
+// for GenRec` (D105 §A).  The MSIL backend now builds a TypeSpec for
+// `System.IEquatable\`1<GenRec>`, a per-slot MemberRef parented at the
+// TypeSpec (with `STVar(0)` → `MTypeVar(0)` substitution), and emits
+// explicit `MethodImpl` rows wiring `GenRec.Equals` to the iface slot.
+// The runtime validates the InterfaceImpl + MethodImpl rows at type
+// load; if any token is malformed, instantiating `GenRec` throws
+// `TypeLoadException` and the test fails.
+extern type IEquatable[T] = "System.IEquatable`1"
+
+record GenRec {
+  tag: Int
+}
+
+impl IEquatable[GenRec] for GenRec {
+  func Equals(other: in GenRec): Bool {
+    other.tag == self.tag
+  }
+}
+
+test "closed generic external interface: impl IEquatable[GenRec] for GenRec compiles, type loads, and dispatches" {
+  val a = GenRec(tag = 17)
+  val b = GenRec(tag = 17)
+  val c = GenRec(tag = 99)
+  // Direct UFCS dispatch — exercises the impl method body.
+  assertTrue(a.Equals(b), "Equals(a, b) with equal tags")
+  assertTrue(not a.Equals(c), "not Equals(a, c) with distinct tags")
+}
