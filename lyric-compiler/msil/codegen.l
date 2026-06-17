@@ -19564,10 +19564,27 @@ func validateOneExternImplMsil(
   ensureMetadataIndex(cctx)
   match Mdr.assemblyForType(cctx.metadataTypeIndex, ifaceFqn) {
     case None -> {
-      // No reference pack carries this assembly; skip silently, matching
-      // F0015's fallback at line 11793.  The TypeRef row is still emitted
-      // by `collectImplEntriesMsil`; the CLR will surface any conformance
-      // gap at first use.
+      // The iface FQN is not in any indexed assembly.  Distinguish two
+      // cases by checking whether the metadata index was populated at all:
+      //   - Index empty: SDK-less build (no reference pack on disk).
+      //     Silent-skip — matches F0015's `assemblyForType`-None fallback
+      //     and the established convention for runtime-only environments.
+      //   - Index populated: reference pack was loaded but the iface FQN
+      //     doesn't match any type in it.  Almost always a typo in
+      //     `extern type IFoo = "Wrong.Ns.IFoo`1"`.  Without F0024 here
+      //     the user would only learn of the typo at first use as a CLR
+      //     `TypeLoadException`; raise it at build time instead.
+      if cctx.metadataTypeIndex.count > 0 {
+        panic(
+          "F0024: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) +
+            "`: '" + ifaceFqn + "' is not present in any reference-pack or restored-dependency " +
+            "assembly's TypeDef table.  Check the `extern type` FQN for typos " +
+            "(BCL convention: `Namespace.SimpleName\\`<arity>`, e.g. `System.IEquatable\\`1`).  " +
+            "Validation is silent-skipped only when no reference pack is loaded " +
+            "(SDK-less build); this build's index is populated, so a missing FQN " +
+            "is treated as a typo."
+        )
+      }
     }
     case Some(asmName) -> match mapGet(cctx.metadataPathIndex, asmName) {
       case None -> {

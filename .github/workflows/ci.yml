@@ -894,7 +894,25 @@ jobs:
           func main(): Int { 0 }
           LYR
           run_fixture "F0021" "f0021_gen_fixture.l"
-          echo "all F0020–F0023 + generic-iface negative tests passed"
+          # F0024 — narrow typo guard.  Fires when the iface FQN doesn't
+          # resolve in any indexed reference-pack / restored-dep assembly,
+          # AND the metadata index is non-empty (the build is *not* SDK-less).
+          # SDK-less builds (no reference pack on disk) continue to silent-skip,
+          # matching the F0015 fallback convention.
+          cat > "$work/f0024_fixture.l" <<'LYR'
+          package F0024Fixture
+
+          extern type ITypo[T] = "System.IDoesNotExist`1"
+
+          record R { tag: Int }
+
+          impl ITypo[Int] for R {
+          }
+
+          func main(): Int { 0 }
+          LYR
+          run_fixture "F0024" "f0024_fixture.l"
+          echo "all F0020–F0024 negative tests passed"
 
       # Synthesized-method-resolution self-test (#1499, #1507).
       # Verifies that compiler-synthesized named methods (protected-type entries,
