@@ -162,6 +162,51 @@ func appendTermList(dst: in List[Term], src: in List[Term]): Unit {
   }
 }
 
+// Scan env.symbols for a single-ctor `DeclDatatype` whose name matches.
+// Returns the constructor's fields (name → sort) so EMember can emit a
+// strongly-typed selector and ECall can emit a strongly-typed ctor call
+// when the receiver type is a known record (#3843).
+func findRecordFields(env: in VEnv, name: in String): Option[List[DatatypeField]] {
+  var i = 0
+  while i < env.symbols.count {
+    match env.symbols[i] {
+      case DeclDatatype(rName, ctors) -> {
+        if rName == name and ctors.count >= 1 {
+          val fieldsOpt: Option[List[DatatypeField]] = Some(value = ctors[0].fields)
+          return fieldsOpt
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  val none: Option[List[DatatypeField]] = None
+  none
+}
+
+// Return the sort of a named field on a record type, or None if the record
+// (or that field) isn't registered.  Drives EMember's selector emission.
+func findRecordFieldSort(env: in VEnv, recName: in String, fieldName: in String): Option[Sort] {
+  match findRecordFields(env, recName) {
+    case Some(fields) -> {
+      var j = 0
+      while j < fields.count {
+        if fields[j].name == fieldName {
+          val sortOpt: Option[Sort] = Some(value = fields[j].sort)
+          return sortOpt
+        }
+        j = j + 1
+      }
+      val noSort: Option[Sort] = None
+      noSort
+    }
+    case None -> {
+      val noRec: Option[Sort] = None
+      noRec
+    }
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Literal translation.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -453,6 +498,25 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
             }
           }
 
+          // Record-constructor short-circuit (#3843): if `name` is a
+          // registered record, return a TApp whose retSort is the record's
+          // SDatatype — the SMT renderer recognises the symbol as the
+          // declared datatype's constructor and z3 typechecks the call.
+          match findRecordFields(env, name) {
+            case Some(_) -> {
+              val emptyArgs: List[Sort] = newList()
+              val recRetSort: Sort = SDatatype(name = name, args = emptyArgs)
+              val recCallTerm = TApp(name = name, args = argTerms, retSort = recRetSort)
+              val recSc: List[Term] = newList()
+              appendTermList(recSc, argSides)
+              val recAs: List[Term] = newList()
+              appendTermList(recAs, argAssumed)
+              val recTR = TranslateResult(term = recCallTerm, sideConds = recSc, assumed = recAs)
+              val recPair: (TranslateResult, List[Diagnostic]) = (recTR, allArgDiags)
+              return recPair
+            }
+            case None -> ()
+          }
           match mapGet(env.callees, name) {
             case Some(decl) -> {
               val resultSort = match decl.ret {
@@ -704,8 +768,26 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
 
     case EMember(receiver, memberName) -> {
       val (rR, rDiags) = translateExpr(env, receiver)
-      val resultSort = SUninterp(name = "field." + memberName)
-      val t = TApp(name = "$field." + memberName, args = termList1(rR.term), retSort = resultSort)
+      // If the receiver's sort is a registered record datatype and `memberName`
+      // names one of its fields, emit the SMT datatype selector
+      // `(memberName receiver)` with the field's actual sort.  Otherwise fall
+      // back to an uninterpreted `$field.<memberName>` symbol — the SMT
+      // renderer will declare it as a uninterpreted function (#3843).
+      val recvSort = sortOf(rR.term)
+      val recordFieldHit = match recvSort {
+        case SDatatype(recName, _) -> findRecordFieldSort(env, recName, memberName)
+        case _ -> {
+          val nothing: Option[Sort] = None
+          nothing
+        }
+      }
+      val t = match recordFieldHit {
+        case Some(fSort) -> TApp(name = memberName, args = termList1(rR.term), retSort = fSort)
+        case None -> {
+          val unkSort = SUninterp(name = "field." + memberName)
+          TApp(name = "$field." + memberName, args = termList1(rR.term), retSort = unkSort)
+        }
+      }
       val sc: List[Term] = newList()
       appendTermList(sc, rR.sideConds)
       val asList: List[Term] = newList()
@@ -1988,7 +2070,16 @@ pub func goalsForFunction(env0: in VEnv, decl: in FunctionDecl): (List[Goal], Li
 // ─────────────────────────────────────────────────────────────────────────────
 // Return a copy of env with a fresh (empty) symbols list.
 func freshSymbolsEnv(env: in VEnv): VEnv {
+  // Start each function with its own symbol-accumulator list so per-function
+  // DeclUserFun additions don't leak across functions, but copy the file-
+  // level pre-registered symbols (e.g. record DeclDatatypes from #3843) so
+  // EMember field selectors and ECall record constructors can resolve them.
   val freshSyms: List[SymbolDecl] = newList()
+  var i = 0
+  while i < env.symbols.count {
+    freshSyms.add(env.symbols[i])
+    i = i + 1
+  }
   VEnv(
     vars = env.vars,
     varNames = env.varNames,
@@ -2197,6 +2288,39 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
 
   val checkedArith = match level { case VLProofRequiredChecked -> true; case _ -> false }
   val sharedSymbols: List[SymbolDecl] = newList()
+
+  // Pre-register every `IRecord` as an SMT datatype with one constructor
+  // matching the record's fields.  Lets the verifier reason about
+  // `Amount(value = c)` constructors and `result.value` field reads against
+  // a properly declared sort, instead of falling back to uninterpreted
+  // names that z3 rejects as "unknown constant" (#3843).  Generic records
+  // are skipped — the SMT encoding here is the simple non-parametric form.
+  var ri = 0
+  while ri < file.items.count {
+    match file.items[ri].kind {
+      case IRecord(recDecl) -> {
+        val skipGeneric = match recDecl.generics { case Some(_) -> true; case None -> false }
+        if not skipGeneric {
+          val dtFields: List[DatatypeField] = newList()
+          var fi = 0
+          while fi < recDecl.members.count {
+            match recDecl.members[fi] {
+              case RMField(fld) -> {
+                dtFields.add(DatatypeField(name = fld.name, sort = sortOfTypeExpr(fld.ty).sort))
+              }
+              case _ -> ()
+            }
+            fi = fi + 1
+          }
+          val dtCtors: List[DatatypeCtor] = newList()
+          dtCtors.add(DatatypeCtor(name = recDecl.name, fields = dtFields))
+          sharedSymbols.add(DeclDatatype(name = recDecl.name, constructors = dtCtors))
+        }
+      }
+      case _ -> ()
+    }
+    ri = ri + 1
+  }
   val env0 = envEmpty(callees, sharedSymbols, checkedArith)
 
   val allGoals: List[Goal] = newList()

@@ -453,21 +453,255 @@ pub func smtRenderPreamble(): String {
   "(set-logic ALL)\n(set-option :produce-models true)\n(declare-datatypes ((Unit 0)) (((unit))))\n"
 }
 
+// True for sort names that are already declared by the SMT-LIB theory or by
+// the verifier's preamble — never re-declare them.
+func isBuiltinSortName(name: in String): Bool {
+  name == "Bool" or name == "Int" or name == "Real" or name == "String" or name == "Unit" or name == "Tuple" or
+    name == "Option" or
+    name == "Array"
+}
+
+// Walk a sort, collecting every uninterpreted-sort name (SDatatype with no
+// type-args, and SUninterp) into `seen`/`out`.  Generic SDatatype arity > 0
+// is recursively walked into args, but its head name is not collected — the
+// few cases that hit this path (Option/Tuple/Array) are already declared by
+// the preamble.
+func collectSortNames(s: in Sort, seen: in Map[String, Bool], outList: in List[String]): Unit {
+  match s {
+    case SBool -> ()
+    case SInt -> ()
+    case SBitVec(_) -> ()
+    case SFloat32 -> ()
+    case SFloat64 -> ()
+    case SString -> ()
+    case SDatatype(name, args) -> {
+      if args.count == 0 {
+        if not isBuiltinSortName(name) and not seen.containsKey(name) {
+          seen.add(name, true)
+          outList.add(name)
+        }
+      } else {
+        var i = 0
+        while i < args.count {
+          collectSortNames(args[i], seen, outList)
+          i = i + 1
+        }
+      }
+    }
+    case SSlice(e) -> collectSortNames(e, seen, outList)
+    case SUninterp(name) -> {
+      val sanitized = smtSanitize(name)
+      if not isBuiltinSortName(sanitized) and not seen.containsKey(sanitized) {
+        seen.add(sanitized, true)
+        outList.add(sanitized)
+      }
+    }
+  }
+}
+
+// Walk a term, collecting (a) every sort referenced (via sort positions on
+// TVar/TLit, retSort on TApp, and binder sorts on TForall/TExists), and (b)
+// every TApp call site that names a function not declared in `knownFuncs`.
+// TApp call sites become declare-fun emissions so Z3 doesn't reject the use
+// of an undeclared constant (#3843).
+record TAppRef {
+  name: String
+  paramSorts: List[Sort]
+  resultSort: Sort
+}
+
+func collectFromTerm(
+  t: in Term,
+  knownFuncs: in Map[String, Bool],
+  seenSorts: in Map[String, Bool],
+  outSorts: in List[String],
+  seenFuncs: in Map[String, Bool],
+  outFuncs: in List[TAppRef],
+): Unit {
+  match t {
+    case TVar(_, s) -> collectSortNames(s, seenSorts, outSorts)
+    case TLit(_, s) -> collectSortNames(s, seenSorts, outSorts)
+    case TBuiltin(_, args) -> {
+      var i = 0
+      while i < args.count {
+        collectFromTerm(args[i], knownFuncs, seenSorts, outSorts, seenFuncs, outFuncs)
+        i = i + 1
+      }
+    }
+    case TApp(name, args, retSort) -> {
+      collectSortNames(retSort, seenSorts, outSorts)
+      var i = 0
+      while i < args.count {
+        collectFromTerm(args[i], knownFuncs, seenSorts, outSorts, seenFuncs, outFuncs)
+        i = i + 1
+      }
+      val sanitized = smtSanitize(name)
+      if not knownFuncs.containsKey(sanitized) and not seenFuncs.containsKey(sanitized) {
+        seenFuncs.add(sanitized, true)
+        val paramSorts: List[Sort] = newList()
+        var j = 0
+        while j < args.count {
+          paramSorts.add(sortOf(args[j]))
+          j = j + 1
+        }
+        outFuncs.add(TAppRef(name = name, paramSorts = paramSorts, resultSort = retSort))
+      }
+    }
+    case TLet(bindings, body) -> {
+      var bi = 0
+      while bi < bindings.count {
+        collectFromTerm(bindings[bi].term, knownFuncs, seenSorts, outSorts, seenFuncs, outFuncs)
+        bi = bi + 1
+      }
+      collectFromTerm(body, knownFuncs, seenSorts, outSorts, seenFuncs, outFuncs)
+    }
+    case TIte(c, a, b) -> {
+      collectFromTerm(c, knownFuncs, seenSorts, outSorts, seenFuncs, outFuncs)
+      collectFromTerm(a, knownFuncs, seenSorts, outSorts, seenFuncs, outFuncs)
+      collectFromTerm(b, knownFuncs, seenSorts, outSorts, seenFuncs, outFuncs)
+    }
+    case TForall(binders, _, body) -> {
+      var i = 0
+      while i < binders.count {
+        collectSortNames(binders[i].sort, seenSorts, outSorts)
+        i = i + 1
+      }
+      collectFromTerm(body, knownFuncs, seenSorts, outSorts, seenFuncs, outFuncs)
+    }
+    case TExists(binders, body) -> {
+      var i = 0
+      while i < binders.count {
+        collectSortNames(binders[i].sort, seenSorts, outSorts)
+        i = i + 1
+      }
+      collectFromTerm(body, knownFuncs, seenSorts, outSorts, seenFuncs, outFuncs)
+    }
+  }
+}
+
 // Render a goal as a self-contained SMT-LIB v2.6 file.
 pub func smtRenderGoal(g: in Goal): String {
   var output = smtRenderPreamble()
   output = output + "; goal: " + g.label + "\n"
   output = output + "; kind: " + goalKindDisplay(g.kind) + "\n"
 
-  // Emit symbol declarations.
+  // Build the claim: hypotheses => conclusion.
+  val claim = goalAsImplication(g)
+
+  // Collect (1) every uninterpreted sort name and (2) every TApp call site
+  // whose function isn't already declared by a symbol.  Walking happens
+  // before symbol/declare-const emission so the sort declarations land first
+  // and every later use resolves cleanly (#3843).  `knownFuncs` seeds the
+  // function-collector with the symbols already in g.symbols so we don't
+  // double-declare a registered callee.
+  val knownFuncs: Map[String, Bool] = newMap()
+  var si = 0
+  while si < g.symbols.count {
+    match g.symbols[si] {
+      case DeclUserFun(fname, _, _) -> {
+        val key = smtSanitize(fname)
+        if not knownFuncs.containsKey(key) {
+          knownFuncs.add(key, true)
+        }
+      }
+      case DeclDatatype(_, dtCtors) -> {
+        // (declare-datatypes ...) defines both the constructor and each
+        // field selector — record them as "known" so the unknown-TApp
+        // scanner below doesn't redeclare them via declare-fun (#3843).
+        var dci = 0
+        while dci < dtCtors.count {
+          val dctor = dtCtors[dci]
+          val cKey = smtSanitize(dctor.name)
+          if not knownFuncs.containsKey(cKey) {
+            knownFuncs.add(cKey, true)
+          }
+          var dfi = 0
+          while dfi < dctor.fields.count {
+            val fKey = smtSanitize(dctor.fields[dfi].name)
+            if not knownFuncs.containsKey(fKey) {
+              knownFuncs.add(fKey, true)
+            }
+            dfi = dfi + 1
+          }
+          dci = dci + 1
+        }
+      }
+    }
+    si = si + 1
+  }
+  val seenSorts: Map[String, Bool] = newMap()
+  val outSorts: List[String] = newList()
+  val seenFuncs: Map[String, Bool] = newMap()
+  val outFuncs: List[TAppRef] = newList()
+  // Seed seenSorts with every datatype name registered in g.symbols, since
+  // (declare-datatypes ...) declares its own sort — emitting an extra
+  // (declare-sort X 0) for the same name is a redefinition error in z3.
+  var sd = 0
+  while sd < g.symbols.count {
+    match g.symbols[sd] {
+      case DeclDatatype(dtName, _) -> {
+        val dtKey = smtSanitize(dtName)
+        if not seenSorts.containsKey(dtKey) {
+          seenSorts.add(dtKey, true)
+        }
+      }
+      case _ -> ()
+    }
+    sd = sd + 1
+  }
+  // Include declared symbols in the sort-collection scan so a callee's
+  // param/result sort gets declared.
+  var sj = 0
+  while sj < g.symbols.count {
+    match g.symbols[sj] {
+      case DeclUserFun(_, pSorts, rSort) -> {
+        var pi = 0
+        while pi < pSorts.count {
+          collectSortNames(pSorts[pi], seenSorts, outSorts)
+          pi = pi + 1
+        }
+        collectSortNames(rSort, seenSorts, outSorts)
+      }
+      case DeclDatatype(_, _) -> ()
+    }
+    sj = sj + 1
+  }
+  collectFromTerm(claim, knownFuncs, seenSorts, outSorts, seenFuncs, outFuncs)
+
+  // Emit (declare-sort X 0) for each unknown sort name.
+  var k = 0
+  while k < outSorts.count {
+    output = output + "(declare-sort " + outSorts[k] + " 0)\n"
+    k = k + 1
+  }
+
+  // Emit registered symbol declarations.
   var i = 0
   while i < g.symbols.count {
     output = output + smtRenderSymbol(g.symbols[i]) + "\n"
     i = i + 1
   }
 
-  // Build the claim: hypotheses => conclusion.
-  val claim = goalAsImplication(g)
+  // Emit (declare-fun ...) for each TApp callsite whose function wasn't
+  // already declared by a symbol.  Without this Z3 reports the call as an
+  // unknown constant ("unknown constant Amount (Int)") and the whole proof
+  // attempt aborts before sat/unsat (#3843).
+  k = 0
+  while k < outFuncs.count {
+    val fr = outFuncs[k]
+    var paramText = ""
+    var pi = 0
+    while pi < fr.paramSorts.count {
+      if pi > 0 {
+        paramText = paramText + " "
+      }
+      paramText = paramText + smtRenderSort(fr.paramSorts[pi])
+      pi = pi + 1
+    }
+    output = output + "(declare-fun " + smtSanitize(fr.name) + " (" + paramText + ") " + smtRenderSort(fr.resultSort) +
+      ")\n"
+    k = k + 1
+  }
 
   // Collect free variables and emit declare-const.
   val freeVarList = collectFreeVars(claim)

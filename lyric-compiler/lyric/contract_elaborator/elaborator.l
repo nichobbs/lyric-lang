@@ -1047,10 +1047,76 @@ func rewriteTrailingSExpr(
     appendEnsuresAssertsNoResult(acc, ensuresExprs, sp)
     return
   }
+  // The trailing expression may itself be an EMatch / EIf whose arms exit
+  // via `return` on every branch (e.g. `match c { case A -> return "a"; ... }`
+  // — common in helper functions that prefer per-arm `return` over a single
+  // trailing value).  Wrapping such a divergent expression in
+  // `let __lyric_result_<n> = <match>` produces invalid IL: the `stloc` has
+  // nothing on the stack (every arm `ret`s instead of yielding a value),
+  // which the JIT rejects as `InvalidProgramException` (#3842).  Deep-walk
+  // first so the nested SReturns are rewritten in place (per-arm let + assert
+  // + return); if the resulting expression always exits, emit it directly
+  // without the outer let-bind / assert / yield.
+  val newE = elaborateExprDeep(e, ensuresExprs, counter)
+  if exprAlwaysExits(newE) {
+    acc.add(mkStmt(SExpr(expr = newE), sp))
+    return
+  }
   val name = freshResultName(counter)
-  acc.add(mkLetBinding(name, e, sp))
+  acc.add(mkLetBinding(name, newE, sp))
   appendEnsuresAsserts(acc, ensuresExprs, name, sp)
   acc.add(mkStmt(SExpr(expr = mkPath(name, sp)), sp))
+}
+
+// True iff every reachable path through `e` ends in `return` or `throw`.
+// Used by `rewriteTrailingSExpr` to skip the let-bind / assert / yield wrap
+// for trailing expressions that diverge unconditionally — wrapping them
+// emits IL that loads from an unset slot (#3842).
+func exprAlwaysExits(e: in Expr): Bool {
+  match e.kind {
+    case EMatch(_, arms) -> {
+      if arms.count == 0 {
+        return false
+      }
+      var i = 0
+      while i < arms.count {
+        if not exprOrBlockAlwaysExits(arms[i].body) {
+          return false
+        }
+        i = i + 1
+      }
+      true
+    }
+    case EIf(_, thenBranch, elseOpt, _) -> {
+      match elseOpt {
+        case None -> false
+        case Some(eb) -> exprOrBlockAlwaysExits(thenBranch) and exprOrBlockAlwaysExits(eb)
+      }
+    }
+    case EBlock(blk) -> blockAlwaysExits(blk)
+    case EParen(inner) -> exprAlwaysExits(inner)
+    case _ -> false
+  }
+}
+
+func exprOrBlockAlwaysExits(eob: in ExprOrBlock): Bool {
+  match eob {
+    case EOBExpr(inner) -> exprAlwaysExits(inner)
+    case EOBBlock(blk) -> blockAlwaysExits(blk)
+  }
+}
+
+func blockAlwaysExits(blk: in Block): Bool {
+  if blk.statements.count == 0 {
+    return false
+  }
+  val last = blk.statements[blk.statements.count - 1]
+  match last.kind {
+    case SReturn(_) -> true
+    case SThrow(_) -> true
+    case SExpr(inner) -> exprAlwaysExits(inner)
+    case _ -> false
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
