@@ -14,7 +14,7 @@
 //!   - User has permission to access the socket (docker group or sudo)
 
 @runtime_checked
-package DockerClientExample
+package Docker.Examples
 
 import Docker
 import Std.Core
