@@ -5,7 +5,7 @@
 package FfiDateTime
 
 import extern System.{ DateTime }
-extern type StringBuilder = "System.Text.StringBuilder"
+import extern System.Text.{ StringBuilder }
 
 func main(): Unit {
   val a = DateTime.get_UtcNow()

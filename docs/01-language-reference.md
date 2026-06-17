@@ -1315,7 +1315,7 @@ Unresolved calls, narrowing coercions, or instance methods on a value-type recei
 
 **JVM target.** The self-hosted JVM emitter resolves `import extern` and `extern type` method calls from real JDK **`.jmod` metadata** at compile time (epic #1622, shipped in the `Jvm.AutoFfi` / `Jvm.ZipReader` / `Jvm.ClassReader` / `Jvm.Deflate` stack under `lyric-compiler/jvm/`). It reads the `.class` entry straight out of `java.base.jmod` (a ZIP behind a 4-byte JMOD magic header) at compile time, parses the constant pool and method table, scores overloads, and emits the correctly-typed bytecode:
 
-- **`invokestatic`** for static methods (e.g. `SystemMath.abs(-7)` → `invokestatic`).
+- **`invokestatic`** for static methods (e.g. `JMath.abs(-7)` → `invokestatic`).
 - **`invokevirtual`** for instance methods on a JDK reference receiver (e.g. calling `.intValue()` on the `Integer` returned by `JInteger.valueOf(42)`).
 - **`new` + `invokespecial <init>`** for constructors via the `.new(args)` shorthand (e.g. `JStringBuilder.new("hello")` → `new java/lang/StringBuilder; dup; ldc "hello"; invokespecial java/lang/StringBuilder.<init>(Ljava/lang/String;)V`).
 
