@@ -190,6 +190,80 @@ jobs:
             "$lyric_bin" build "$ex" -o "$out" --force
           done
 
+      # Run/test single-file examples to catch runtime regressions.
+      # Known expected failures (tracked issues #3840–#3844):
+      #   - ffi_bcl.l, ffi_datetime.l → #3841 (FFI property-getter codegen)
+      #   - rest_service.l → #3844 (Std.HttpServer packaging)
+      - name: Run single-file examples
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found; skipping example runs"
+            exit 0
+          fi
+          # Known-passing examples (run and assert exit 0)
+          for ex in csv fizzbuzz primes wordcount; do
+            echo "=== run examples/$ex.l ==="
+            "$lyric_bin" run "examples/$ex.l" > /tmp/"$ex".run.log 2>&1 \
+              && echo "PASS" || { echo "FAIL"; tail -10 /tmp/"$ex".run.log; exit 1; }
+          done
+          # Known-failing examples (run and log failure, but don't fail CI)
+          for ex in ffi_bcl ffi_datetime rest_service; do
+            echo "=== xfail examples/$ex.l (expected failure) ==="
+            "$lyric_bin" run "examples/$ex.l" > /tmp/"$ex".run.log 2>&1 || true
+          done
+
+      # Test multi-package examples with `lyric test --manifest`.
+      # Known expected failures (tracked issues #3840–#3842):
+      #   - rbac, ledger, jobqueue → #3840 (union-case codegen) + #3842 (InvalidProgramException)
+      #   - product-catalog → #3842 (InvalidProgramException in category conversion)
+      - name: Test multi-package examples
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found; skipping example tests"
+            exit 0
+          fi
+          # Build dependency libraries
+          libs="lyric-logging lyric-auth lyric-resilience lyric-otel lyric-db lyric-web lyric-health lyric-grpc"
+          for lib in $libs; do
+            echo "=== build dependency $lib ==="
+            "$lyric_bin" build --manifest "$lib/lyric.toml" > /tmp/"$lib".log 2>&1 || { tail -20 /tmp/"$lib".log; exit 1; }
+          done
+          # Test each example (all expected-fail due to known emitter bugs)
+          for ex in rbac ledger jobqueue product-catalog; do
+            echo "=== xfail test examples/$ex (expected failures due to #3840–#3842) ==="
+            "$lyric_bin" test --manifest "examples/$ex/lyric.toml" > /tmp/"$ex".test.log 2>&1 || true
+          done
+
+      # Prove proof-only examples.
+      # Known expected failures (tracked issue #3843): z3 rejects SMT with unknown sorts.
+      - name: Prove proof-only examples (with z3)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found; skipping example proves"
+            exit 0
+          fi
+          # Known-passing proofs
+          echo "=== prove examples/pagination.l ==="
+          "$lyric_bin" prove "examples/pagination.l" > /tmp/pagination.prove.log 2>&1 \
+            && echo "PASS" || { echo "FAIL"; tail -15 /tmp/pagination.prove.log; exit 1; }
+          # Known-failing proofs (expected due to #3843: missing SMT sort declarations)
+          for ex in prove_demo token_bucket_proof; do
+            echo "=== xfail prove examples/$ex.l (expected: #3843 SMT sort encoding) ==="
+            "$lyric_bin" prove "examples/$ex.l" > /tmp/"$ex".prove.log 2>&1 || true
+          done
+
       # Band 5 invariant guardrail (#3067): assert that no stage-1 DLL carries
       # an AssemblyRef entry for Lyric.Emitter or FSharp.Core.  These were
       # removed in #3062; a future kernel module accidentally reintroducing an
