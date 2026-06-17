@@ -1,15 +1,22 @@
 # Implementing External .NET Interfaces
 
-> **Status.** Specced in D105. Phase 1 (non-generic interface emission)
-> shipped: codegen resolves the FQN via the existing extern-type table
-> (`implIfaceNameMsil` consults `cctx.externTypeNames`), reserves the
-> TypeRef row in `collectImplEntriesMsil` via `internFfiTypeRefNested`,
-> and `lowerMImpl` reuses its existing TypeRef path. Type-check-time
-> metadata-based signature validation (the FFI conformance pass that
-> would emit `F0020`–`F0023`), generic external interfaces, the
-> `get_`/`set_` property convention, and bridge-thunk synthesis are
-> deferred to a follow-up decision — until the validation pass lands,
-> a mis-shaped impl surfaces as a CLR `TypeLoadException` on first use.
+> **Status.** Specced in D105.
+> Phase 1 (non-generic interface emission) shipped: codegen resolves
+> the FQN via the existing extern-type table (`implIfaceNameMsil`
+> consults `cctx.externTypeNames`), reserves the TypeRef row in
+> `collectImplEntriesMsil` via `internFfiTypeRefNested`, and
+> `lowerMImpl` reuses its existing TypeRef path.
+> Phase 2 (metadata-based signature validation) shipped: the
+> `validateExternImplConformanceMsil` pass calls
+> `Mdr.inspectInterfaceTarget` on the reference assembly, emits
+> `F0020` (not-an-interface), `F0021` (missing required method),
+> `F0022` (parameter arity / type mismatch), `F0023` (return type
+> mismatch). Validation is skipped without diagnostic when the
+> reference pack is absent (mirrors F0015), and per-method when the
+> interface signature mentions a generic / byref / array shape.
+> Generic external interfaces, the `get_`/`set_` property convention
+> (the underlying methods are validated like any other; only the LSP
+> scaffolding is missing), and bridge-thunk synthesis remain deferred.
 
 Provide a way for Lyric programs to explicitly implement an interface defined in a compiled `.NET` dependency across the Auto FFI boundary.
 

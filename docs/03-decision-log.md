@@ -6425,24 +6425,42 @@ targets without new syntax.
    record's methods — no `MethodImpl` rows are required for non-generic
    interfaces, matching the native-interface emission path.
 
-3. **Signature validation belongs in a post-type-check FFI conformance
+3. **Signature validation lives in a post-type-check FFI conformance
    pass, not in the type checker.** The type checker is intentionally
    backend-agnostic and does not load .NET reference assemblies
    (`typechecker_checker.l` imports only `Std.*` and `Lyric.Parser`),
    so `checkImplConformance` continues to silently skip extern targets
-   for the same reason it skips cross-package interfaces. A future
-   FFI conformance pass — owned by `Msil.Codegen` / `Msil.Bridge` so it
-   has the metadata cache (`Msil.MetadataReader`) already in hand — will
-   verify `ClassSemanticsMask` bit (0x20) is set on the target type and
-   structurally match each interface MethodDef's `decodeMethodSig`
-   against the impl methods, with diagnostics `F0020`–`F0023` for
-   not-an-interface, missing method, and parameter / return type
-   mismatch. Until that pass lands, a mis-shaped `impl` against an
-   external interface emits a structurally-incomplete InterfaceImpl
-   row that surfaces as a CLR `TypeLoadException` on first use — the
-   same hazard a hand-rolled `extern func` carries today. This is an
-   explicit trade-off to unblock `IDisposable`-shaped use cases while
-   the validation pass is sequenced as a follow-up.
+   for the same reason it skips cross-package interfaces. The FFI
+   conformance pass — `validateExternImplConformanceMsil` in
+   `lyric-compiler/msil/codegen.l` — runs after `collectImplEntriesMsil`
+   (the TypeRef row is already reserved) and before lowering. It calls
+   `Mdr.inspectInterfaceTarget(asmPath, ifaceFqn)`, which loads the
+   reference assembly, locates the TypeDef, reads `ClassSemanticsMask`
+   (bit 0x20), and decodes every `MethodDef` row's signature through
+   `decodeMethodSig` + `resolveSigTypeFqn` so types compare by
+   normalised FQN. Four diagnostics emit via the same `panic`-style
+   surface F0015 uses:
+
+   - `F0020` — `extern type` resolves to a non-interface (the
+     `ClassSemanticsMask` bit is clear). The user wrote `impl Math for
+     R` against `System.Math` instead of a real interface.
+   - `F0021` — an abstract interface method (Virtual + Abstract bits
+     set) has no matching Lyric impl method. C# 8+ default interface
+     methods (Virtual only) are optional and skipped.
+   - `F0022` — an impl method's parameter arity or Nth parameter type
+     does not match the interface's MethodDef signature.
+   - `F0023` — an impl method's return type does not match the
+     interface's MethodDef return type.
+
+   When the reference pack is absent (`assemblyForType` returns None),
+   validation is skipped silently — mirroring F0015's fallback at
+   `codegen.l:11793`. Validation also bails (silently, per method) on
+   any signature that mentions a Var / MVar / GenericInst / ByRef /
+   Array shape — those land with the generic-external-interfaces
+   follow-up work. The trade-off is conservative: a real mismatch on
+   a non-generic shape fails the build; richer shapes still fall
+   through to the CLR loader at first use, same hazard as today's
+   hand-rolled `extern func`.
 
 4. **Generic external interfaces (`IEnumerable[T]`, `IEquatable[T]`),
    property/event naming conventions (`get_X`/`set_X`), and bridge-thunk

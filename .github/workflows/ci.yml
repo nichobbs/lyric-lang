@@ -752,6 +752,98 @@ jobs:
             echo "::error::build failed but did not report F0015"; exit 1; }
           echo "F0015 signature-mismatch negative test passed (rc=$rc)"
 
+      # D105 Phase 2: F0020–F0023 external-interface impl conformance negative
+      # tests.  Phase 1 (PR #3851) wired `impl ExternInterface for Record` end
+      # to end at the codegen layer; this phase adds metadata-direct signature
+      # validation so a mis-shaped impl fails at build time instead of at first
+      # use with `TypeLoadException`.  Each fixture targets one diagnostic.
+      - name: FFI iface impl F0020–F0023 negative tests
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping F0020–F0023 negative tests"
+            exit 1
+          fi
+          bin_abs="$(pwd)/$lyric_bin"
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          run_fixture() {
+            local diag="$1" file="$2"
+            local rc=0
+            ( cd "$work" && "$bin_abs" build "$file" ) > "$work/build.out" 2>&1 || rc=$?
+            echo "--- $diag fixture build output (rc=$rc) ---"; cat "$work/build.out"
+            if [ "$rc" -eq 0 ]; then
+              echo "::error::$diag fixture compiled but expected failure"
+              exit 1
+            fi
+            grep -q "$diag" "$work/build.out" || {
+              echo "::error::$diag fixture failed but did not report $diag"; exit 1; }
+            echo "$diag negative test passed (rc=$rc)"
+          }
+          # F0020: impl block targets a non-interface (System.Math is a class).
+          cat > "$work/f0020_fixture.l" <<'LYR'
+          package F0020Fixture
+
+          extern type NotAnIface = "System.Math"
+
+          record R { tag: Int }
+
+          impl NotAnIface for R {
+          }
+
+          func main(): Int { 0 }
+          LYR
+          run_fixture "F0020" "f0020_fixture.l"
+          # F0021: impl is missing a required interface method (IDisposable.Dispose).
+          cat > "$work/f0021_fixture.l" <<'LYR'
+          package F0021Fixture
+
+          extern type IDisposable = "System.IDisposable"
+
+          record R { tag: Int }
+
+          impl IDisposable for R {
+          }
+
+          func main(): Int { 0 }
+          LYR
+          run_fixture "F0021" "f0021_fixture.l"
+          # F0022: parameter type mismatch (IComparable.CompareTo expects object,
+          # the impl declares Int).
+          cat > "$work/f0022_fixture.l" <<'LYR'
+          package F0022Fixture
+
+          extern type IComparable = "System.IComparable"
+
+          record R { tag: Int }
+
+          impl IComparable for R {
+            func CompareTo(other: in Int): Int { 0 }
+          }
+
+          func main(): Int { 0 }
+          LYR
+          run_fixture "F0022" "f0022_fixture.l"
+          # F0023: return type mismatch (IDisposable.Dispose returns void; impl
+          # declares Int).
+          cat > "$work/f0023_fixture.l" <<'LYR'
+          package F0023Fixture
+
+          extern type IDisposable = "System.IDisposable"
+
+          record R { tag: Int }
+
+          impl IDisposable for R {
+            func Dispose(): Int { 0 }
+          }
+
+          func main(): Int { 0 }
+          LYR
+          run_fixture "F0023" "f0023_fixture.l"
+          echo "all F0020–F0023 negative tests passed"
+
       # Synthesized-method-resolution self-test (#1499, #1507).
       # Verifies that compiler-synthesized named methods (protected-type entries,
       # @derive(Equals/Show) free functions) resolve correctly at the call site:
