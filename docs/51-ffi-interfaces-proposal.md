@@ -18,8 +18,7 @@ Lyric currently supports mapping FFI types to `extern type` and `extern package`
 
 ### 2. Impl Binding Enhancements (`type_checker`)
 - Update the type checker's `impl` conformance checks to allow implementing `extern type` targets *if* the metadata indicates the target is a `.NET` interface.
-- Ensure that the Lyric implementation structurally matches the `.NET` interface signature extracted from metadata.
-- Ensure that the Lyric implementation structurally matches the `.NET` interface signature (including any primitive boxing requirements expected by the FFI boundary, if applicable).
+- Ensure that the Lyric implementation structurally matches the `.NET` interface signature extracted from metadata (including any primitive boxing requirements expected by the FFI boundary, if applicable).
 
 ### 3. MSIL Type Emission (`msil/codegen.l`)
 - When generating the `.class` definition for the implementing Lyric record in `lowerTypeDefMsil`, include the `.NET` interface TypeRef in the `implements` list of the MSIL class headers (`InterfaceImpl` metadata row).
