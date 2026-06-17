@@ -295,6 +295,41 @@ func typeArgListKey(args: in List[TypeArg]): String {
 // `TAValue` source (integer/bool/char/string) plus single-segment paths
 // (`EPath([N])`) used to forward an outer value generic into a nested
 // call.  Falls back to "Vx" for shapes mono can't render verbatim — the
+// Flatten a pure path expression (`EPath` / nested `EMember` over `EPath`)
+// to its dotted-segment list.  Returns an empty list as soon as a non-path
+// node (call, index, paren, etc.) is hit, so the result is safe to test with
+// `count > 0` for "this looked like a qualified path".  Used by
+// `inferCallReturnTE`'s EMember case to detect qualified function calls
+// the parser left as nested EMembers (#3852-adjacent).
+func flattenPathExprSegsMono(e: in Expr): List[String] {
+  match e.kind {
+    case EPath(path) -> {
+      val segs: List[String] = newList()
+      var i = 0
+      while i < path.segments.count {
+        segs.add(path.segments[i])
+        i = i + 1
+      }
+      segs
+    }
+    case EMember(receiver, memberName) -> {
+      val pre = flattenPathExprSegsMono(receiver)
+      if pre.count == 0 {
+        return newList()
+      }
+      val segs: List[String] = newList()
+      var i = 0
+      while i < pre.count {
+        segs.add(pre[i])
+        i = i + 1
+      }
+      segs.add(memberName)
+      segs
+    }
+    case _ -> newList()
+  }
+}
+
 // resulting specialisation still has a unique name within the file
 // because callers de-duplicate via `state.seenSpecs`.
 func valueExprKey(e: in Expr): String {
@@ -1017,7 +1052,19 @@ func inferCallReturnTE(
           case None -> inferReturnFromName(state, env, name, args, None)
         }
       } else {
-        None
+        // Multi-segment EPath — qualified package call (`Foo.parse(...)`).
+        // Look up the trailing segment as a function or record-constructor
+        // name; cross-package imports live in `state.funcDecls` /
+        // `state.recordDecls` keyed by simple name, so the same return-type
+        // inference machinery the single-segment path uses works here.
+        // Without this, a generic call like `isNone(Foo.parse("..."))` can't
+        // infer the Option's element type and stays erased, mis-running at
+        // runtime as a type-erased value (issue #3852-adjacent).
+        val name = path.segments[path.segments.count - 1]
+        match inferRecordCtorTE(state, name, None, fn.span) {
+          case Some(te) -> Some(value = te)
+          case None -> inferReturnFromName(state, env, name, args, None)
+        }
       }
     }
     case ETypeApp(innerFn, targs) -> {
@@ -1030,7 +1077,11 @@ func inferCallReturnTE(
               case None -> inferReturnFromName(state, env, name, args, Some(value = targs))
             }
           } else {
-            None
+            val name = p.segments[p.segments.count - 1]
+            match inferRecordCtorTE(state, name, Some(value = targs), fn.span) {
+              case Some(te) -> Some(value = te)
+              case None -> inferReturnFromName(state, env, name, args, Some(value = targs))
+            }
           }
         }
         case _ -> None
@@ -1043,7 +1094,32 @@ func inferCallReturnTE(
     // `isOk(bucket.exists(...))` (where `bucket: StorageBucket`) could not
     // infer its argument type, so the generic `isOk` stayed type-erased and
     // failed at runtime (#3813, same failure mode as #3705).
-    case EMember(recv, methodName) -> inferMethodReturnTE(state, env, recv, methodName, args)
+    case EMember(recv, methodName) -> {
+      // First check if the EMember chain flattens to a pure dotted path
+      // (e.g. `JobQueue.Domain.jobStatusFromString`).  The parser builds
+      // these as nested `EMember(EMember(EPath["Pkg"], "Sub"), "fn")` rather
+      // than a multi-segment `EPath`, so the EPath case above misses them.
+      // When the chain is pure (every step is an EPath / EMember with no
+      // calls / indexing), look up `<methodName>` in funcDecls / recordDecls
+      // by simple name.  Without this a generic call like
+      // `isNone(Pkg.parse("x"))` against a cross-package function leaves
+      // the Option's element type unknown — the call stays type-erased and
+      // mis-runs at runtime as the raw Option value (issue #3852-adjacent).
+      val flatSegs = flattenPathExprSegsMono(fn)
+      if flatSegs.count >= 2 {
+        match inferRecordCtorTE(state, methodName, None, fn.span) {
+          case Some(te) -> Some(value = te)
+          case None -> {
+            match inferReturnFromName(state, env, methodName, args, None) {
+              case Some(te) -> Some(value = te)
+              case None -> inferMethodReturnTE(state, env, recv, methodName, args)
+            }
+          }
+        }
+      } else {
+        inferMethodReturnTE(state, env, recv, methodName, args)
+      }
+    }
     case _ -> None
   }
 }

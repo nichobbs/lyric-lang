@@ -72,8 +72,9 @@ test "userToJson includes username" {
 test "userToJson is wrapped in braces" {
   val u = User(id = 1, username = "carol", createdAt = "2024-01-01T00:00:00Z")
   val json = Rbac.Store.userToJson(u)
-  assertEqual(json.first.toString(), "{", "starts with {")
-  assertEqual(json.last.toString(), "}", "ends with }")
+  assertTrue(json.length > 0, "json non-empty")
+  assertEqual(json.substring(0, 1), "{", "starts with {")
+  assertEqual(json.substring(json.length - 1, 1), "}", "ends with }")
 }
 
 // ─── Store.assignmentToJson ───────────────────────────────────────────────────
