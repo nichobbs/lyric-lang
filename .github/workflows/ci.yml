@@ -768,7 +768,7 @@ jobs:
       # to end at the codegen layer; this phase adds metadata-direct signature
       # validation so a mis-shaped impl fails at build time instead of at first
       # use with `TypeLoadException`.  Each fixture targets one diagnostic.
-      - name: FFI iface impl F0020–F0024 negative tests
+      - name: FFI iface impl F0020–F0023 + generic-iface negative tests
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -873,16 +873,18 @@ jobs:
           func main(): Int { 0 }
           LYR
           run_fixture "F0022" "f0022_gen_fixture.l"
-          # F0024: closed generic external interfaces whose iface methods have
-          # a signature shape outside {STPrim, STNamed primitive FQN, STNamed
-          # user class/value type, STVar(i)} are deferred to a follow-up cut
-          # of D105 §A.  IEnumerable<T>.GetEnumerator() returns IEnumerator<T>
-          # (STGenericInst), which the v1 cut cannot represent — must surface
-          # F0024 rather than silently emit broken IL.
-          cat > "$work/f0024_fixture.l" <<'LYR'
-          package F0024Fixture
+          # F0021 on a closed generic interface with a STGenericInst return type
+          # — `IEnumerable<T>.GetEnumerator(): IEnumerator<T>` is now
+          # representable (D105 §A nested-generic lift) so the empty impl
+          # surfaces F0021 (missing method) instead of F0024 (unrepresentable
+          # shape).  This pin guards both the lift (test would surface F0024
+          # if STGenericInst regressed) and the structural-validation pass
+          # (test would surface no diagnostic if F0021 silently passed
+          # through STGenericInst signatures).
+          cat > "$work/f0021_gen_fixture.l" <<'LYR'
+          package F0021GenFixture
 
-          extern type IEnumerable = "System.Collections.Generic.IEnumerable`1"
+          extern type IEnumerable[T] = "System.Collections.Generic.IEnumerable`1"
 
           record R { tag: Int }
 
@@ -891,8 +893,8 @@ jobs:
 
           func main(): Int { 0 }
           LYR
-          run_fixture "F0024" "f0024_fixture.l"
-          echo "all F0020–F0024 negative tests passed"
+          run_fixture "F0021" "f0021_gen_fixture.l"
+          echo "all F0020–F0023 + generic-iface negative tests passed"
 
       # Synthesized-method-resolution self-test (#1499, #1507).
       # Verifies that compiler-synthesized named methods (protected-type entries,

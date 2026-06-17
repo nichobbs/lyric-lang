@@ -987,6 +987,14 @@ pub union SigType {
   // an `STClass`/`STValueType` token into it so resolved types and the caller's
   // argument types compare by name rather than by cross-assembly token.
   case STNamed(fqn: String, valueType: Bool)
+  // A `STGenericInst` whose head token has been resolved to a fully-qualified
+  // name and whose args have been recursively normalised.  Produced by
+  // `resolveSigTypeFqn` (the existing call site that already collapses
+  // `STClass`/`STValueType` into `STNamed`) so the iface MemberRef shape
+  // can be compared across assemblies without tokens.  D105 §A's structural
+  // validation consumes this form for nested generic iface methods like
+  // `IEnumerable<T>.GetEnumerator(): IEnumerator<T>`.
+  case STNamedGenericInst(fqn: String, valueType: Bool, args: List[SigType])
 }
 
 pub record DecodedMethodSig {
@@ -1322,6 +1330,29 @@ pub func sigByRefInner(t: in SigType): Option[SigType] {
   }
 }
 
+// Resolved generic instantiation parts: the closed type's head FQN, whether
+// the head is a value type, and the per-position type arguments.  Bundled
+// into a record so the cross-package accessor returns a single value that
+// the codegen-side comparison can destructure without re-walking the union.
+pub record NamedGenericInstParts {
+  fqn: String
+  valueType: Bool
+  args: List[SigType]
+}
+
+// Construct an `STNamedGenericInst(fqn, valueType, args)`.
+pub func mkNamedGenericInstSig(fqn: in String, valueType: in Bool, args: in List[SigType]): SigType {
+  STNamedGenericInst(fqn = fqn, valueType = valueType, args = args)
+}
+
+// FQN/valueType/args of `t` when it is `STNamedGenericInst`, else `None`.
+pub func sigNamedGenericInstParts(t: in SigType): Option[NamedGenericInstParts] {
+  match t {
+    case STNamedGenericInst(fqn, vt, args) -> Some(value = NamedGenericInstParts(fqn = fqn, valueType = vt, args = args))
+    case _ -> None
+  }
+}
+
 // Substitute every `STVar(i)` occurrence in `s` with `typeArgs[i]`.  Used by
 // D105 §A's F0022/F0023 validation pass to compare an iface method's
 // signature (which carries `STVar` for each iface generic param) against
@@ -1350,6 +1381,15 @@ pub func substituteVarsInSigType(s: in SigType, typeArgs: in List[SigType]): Sig
         i = i + 1
       }
       STGenericInst(valueType = vt, token = tok, args = substArgs)
+    }
+    case STNamedGenericInst(fqn, vt, args) -> {
+      val substArgs: List[SigType] = newList()
+      var i = 0
+      while i < args.count {
+        substArgs.add(substituteVarsInSigType(args[i], typeArgs))
+        i = i + 1
+      }
+      STNamedGenericInst(fqn = fqn, valueType = vt, args = substArgs)
     }
     case _ -> s
   }
@@ -1840,15 +1880,43 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
 // comparable to a caller's by-name argument types and directly mappable by the
 // emitter.  Primitive and other shapes pass through unchanged.
 pub func resolveSigTypeFqn(img: in PeImage, layout: in TableLayout, th: in TablesHeader, t: in SigType): SigType {
-  val tok = sigClassToken(t)
-  if tok < 0 {
-    t
-  } else {
-    val fqn = resolveTypeDefOrRefName(img, layout, th, tok)
-    if fqn.length == 0 {
-      t
-    } else {
-      STNamed(fqn = fqn, valueType = sigIsValueType(t))
+  match t {
+    case STGenericInst(vt, tok, args) -> {
+      val fqn = resolveTypeDefOrRefName(img, layout, th, tok)
+      if fqn.length == 0 {
+        // Token didn't resolve (unusual): fall through with original args
+        // recursively normalised so an STClass inside still becomes STNamed.
+        val normArgs: List[SigType] = newList()
+        var i = 0
+        while i < args.count {
+          normArgs.add(resolveSigTypeFqn(img, layout, th, args[i]))
+          i = i + 1
+        }
+        STGenericInst(valueType = vt, token = tok, args = normArgs)
+      } else {
+        val normArgs: List[SigType] = newList()
+        var i = 0
+        while i < args.count {
+          normArgs.add(resolveSigTypeFqn(img, layout, th, args[i]))
+          i = i + 1
+        }
+        STNamedGenericInst(fqn = fqn, valueType = vt, args = normArgs)
+      }
+    }
+    case STSzArray(elem) -> STSzArray(elem = resolveSigTypeFqn(img, layout, th, elem))
+    case STByRef(inner) -> STByRef(inner = resolveSigTypeFqn(img, layout, th, inner))
+    case _ -> {
+      val tok = sigClassToken(t)
+      if tok < 0 {
+        t
+      } else {
+        val fqn = resolveTypeDefOrRefName(img, layout, th, tok)
+        if fqn.length == 0 {
+          t
+        } else {
+          STNamed(fqn = fqn, valueType = sigIsValueType(t))
+        }
+      }
     }
   }
 }

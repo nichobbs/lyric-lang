@@ -18865,9 +18865,11 @@ func sigTypeToMsilForIface(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[Msi
     } else {
       // Non-primitive, non-named shapes: dispatch on the structural accessor
       // that succeeds.  STVar(i) → MTypeVar(i); STSzArray(elem) → MArray
-      // (recursing on the element); STByRef(inner) → MByRef.  Other shapes
-      // (STMVar / STGenericInst / STPtr / STFnPtr / STArray rank > 1 /
-      // STUnknown) remain unsupported and surface as F0024 upstream.
+      // (recursing on the element); STByRef(inner) → MByRef;
+      // STNamedGenericInst → MGenericInstByName (closed instantiation of an
+      // external generic type, with each arg recursed).  Other shapes
+      // (STMVar / STPtr / STFnPtr / STArray rank > 1 / STUnknown) remain
+      // unsupported and surface as F0024 upstream.
       match Mdr.sigVarIndex(sig) {
         case Some(idx) -> Some(value = MTypeVar(index = idx))
         case None -> match Mdr.sigSzArrayElem(sig) {
@@ -18880,10 +18882,41 @@ func sigTypeToMsilForIface(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[Msi
               case Some(innerTy) -> Some(value = MByRef(inner = innerTy))
               case None -> None
             }
-            case None -> None
+            case None -> sigTypeToMsilForIfaceGenericInst(cctx, sig)
           }
         }
       }
+    }
+  }
+}
+
+// Handle the STNamedGenericInst → MsilType conversion in a separate function
+// to keep the parent match shallow.  Returns None when any inner arg is
+// unrepresentable.  The returned `MGenericInstByName` carries the head FQN
+// + lowered type args; codegen's downstream consumers can recreate the
+// TypeSpec on demand.
+func sigTypeToMsilForIfaceGenericInst(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[MsilType] {
+  match Mdr.sigNamedGenericInstParts(sig) {
+    case None -> None
+    case Some(parts) -> {
+      val argTys: List[MsilType] = newList()
+      var i = 0
+      var argsOk = true
+      while i < parts.args.count and argsOk {
+        match sigTypeToMsilForIface(cctx, parts.args[i]) {
+          case Some(at) -> argTys.add(at)
+          case None -> {
+            argsOk = false
+          }
+        }
+        i = i + 1
+      }
+      if not argsOk {
+        return None
+      }
+      ensureMetadataIndex(cctx)
+      val _refRow = internFfiTypeRefNested(cctx, parts.fqn)
+      Some(value = MGenericInstByName(headFqn = parts.fqn, typeArgs = argTys))
     }
   }
 }
@@ -19230,6 +19263,27 @@ func sigTypesEqualMsil(a: in Mdr.SigType, b: in Mdr.SigType): Bool {
     case None -> {
     }
   }
+  // Closed generic instantiations: same head FQN + same args by position.
+  match Mdr.sigNamedGenericInstParts(a) {
+    case Some(pa) -> match Mdr.sigNamedGenericInstParts(b) {
+      case Some(pb) -> {
+        if pa.fqn != pb.fqn or pa.valueType != pb.valueType or pa.args.count != pb.args.count {
+          return false
+        }
+        var i = 0
+        while i < pa.args.count {
+          if not sigTypesEqualMsil(pa.args[i], pb.args[i]) {
+            return false
+          }
+          i = i + 1
+        }
+        return true
+      }
+      case None -> return false
+    }
+    case None -> {
+    }
+  }
   false
 }
 
@@ -19317,7 +19371,21 @@ func renderSigForDiagMsil(s: in Mdr.SigType): String {
         case Some(elem) -> renderSigForDiagMsil(elem) + "[]"
         case None -> match Mdr.sigByRefInner(s) {
           case Some(inner) -> "ref " + renderSigForDiagMsil(inner)
-          case None -> "<unknown shape>"
+          case None -> match Mdr.sigNamedGenericInstParts(s) {
+            case Some(parts) -> {
+              var rendered = parts.fqn + "<"
+              var i = 0
+              while i < parts.args.count {
+                if i > 0 {
+                  rendered = rendered + ", "
+                }
+                rendered = rendered + renderSigForDiagMsil(parts.args[i])
+                i = i + 1
+              }
+              rendered + ">"
+            }
+            case None -> "<unknown shape>"
+          }
         }
       }
     }
@@ -19369,6 +19437,20 @@ func sigHasGenericOrByRefMsil(s: in Mdr.SigType): Bool {
     case None -> {
     }
   }
+  match Mdr.sigNamedGenericInstParts(s) {
+    case Some(parts) -> {
+      var i = 0
+      while i < parts.args.count {
+        if sigHasGenericOrByRefMsil(parts.args[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      return false
+    }
+    case None -> {
+    }
+  }
   true
 }
 
@@ -19379,6 +19461,29 @@ func sigHasGenericOrByRefMsil(s: in Mdr.SigType): Bool {
 // `substituteVarsInSigType` helper consumes.  Returns `None` for shapes
 // the v1 cut can't carry through the iface MemberRef (function pointers,
 // raw MObject, …) — caller falls back to leaving the slot as STVar.
+// Helper for `msilTypeToSigForIface` — convert a closed generic
+// instantiation's head FQN + type args to an `STNamedGenericInst`.
+// Returns `None` when any arg is unrepresentable.
+func msilGenericArgsToSig(headFqn: in String, args: in List[MsilType], valueType: in Bool): Option[Mdr.SigType] {
+  val sigArgs: List[Mdr.SigType] = newList()
+  var i = 0
+  var ok = true
+  while i < args.count and ok {
+    match msilTypeToSigForIface(args[i]) {
+      case Some(s) -> sigArgs.add(s)
+      case None -> {
+        ok = false
+      }
+    }
+    i = i + 1
+  }
+  if not ok {
+    None
+  } else {
+    Some(value = Mdr.mkNamedGenericInstSig(headFqn, valueType, sigArgs))
+  }
+}
+
 func msilTypeToSigForIface(t: in MsilType): Option[Mdr.SigType] {
   match t {
     case MBool -> Some(value = Mdr.mkPrimSig(0x02))
@@ -19398,6 +19503,9 @@ func msilTypeToSigForIface(t: in MsilType): Option[Mdr.SigType] {
       case Some(inS) -> Some(value = Mdr.mkByRefSig(inS))
       case None -> None
     }
+    case MGenericInstByName(headFqn, typeArgs) -> msilGenericArgsToSig(headFqn, typeArgs, false)
+    case MGenericInst(_, headFqn, typeArgs) -> msilGenericArgsToSig(headFqn, typeArgs, false)
+    case MValueTypeGenericInst(_, headFqn, typeArgs) -> msilGenericArgsToSig(headFqn, typeArgs, true)
     case MClass(name) -> Some(value = Mdr.mkNamedSig(name, false))
     case MClassRef(_, fqn) -> Some(value = Mdr.mkNamedSig(fqn, false))
     case MValueTypeRef(_, fqn) -> Some(value = Mdr.mkNamedSig(fqn, true))
