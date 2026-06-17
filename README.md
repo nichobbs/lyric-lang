@@ -2,7 +2,7 @@
 
 A safety-oriented application language targeting .NET, drawing on Ada's design principles while maintaining familiar syntax and ecosystem interoperability.
 
-**Status:** Self-hosted compiler shipping. Lyric compiles itself: the self-hosted compiler under `lyric-compiler/lyric/` lexes, parses, type-checks, mode-checks, elaborates contracts, monomorphises, weaves aspects, and emits MSIL (in-process) and JVM bytecode. A 40-module standard library and ~20 ecosystem libraries (web, mq, auth, storage, sessions, jobs, etc.) ship alongside. The legacy F# bootstrap compiler under `bootstrap/src/Lyric.*/` exists solely so stage-0 can compile the self-hosted compiler from `.l` sources; it is closed to new code and on a deletion schedule (see `docs/23-fsharp-shim-elimination.md`). The self-hosted `--target dotnet` path is not yet at the v1.0 production bar — the front end is still advisory and a few constructs (`?`, `await`, `defer`, `==`) need correctness work; the live gating list is `docs/41-self-hosted-compiler-gap-analysis.md` §10, sequenced as `docs/36-v1-roadmap.md` §R7.
+**Status:** Self-hosted compiler shipping. Lyric compiles itself: the self-hosted compiler under `lyric-compiler/lyric/` lexes, parses, type-checks, mode-checks, elaborates contracts, monomorphises, weaves aspects, and emits MSIL (in-process) and JVM bytecode. A 40-module standard library and ~20 ecosystem libraries (web, mq, auth, storage, sessions, jobs, etc.) ship alongside. The self-hosted `--target dotnet` path is not yet at the v1.0 production bar — the front end is still advisory and a few constructs (`?`, `await`, `defer`, `==`) need correctness work; the live gating list is `docs/41-self-hosted-compiler-gap-analysis.md` §10, sequenced as `docs/36-v1-roadmap.md` §R7.
 
 ## What Lyric is
 
@@ -22,51 +22,35 @@ Lyric targets the .NET runtime (`--target dotnet`, leveraging reified generics, 
 
 ### Prerequisites
 
-- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) (pinned by `bootstrap/global.json`)
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
 
 ### Build the compiler
 
 ```sh
-# Stage 0: build the F# bootstrap compiler.
-cd bootstrap
-dotnet build Bootstrap.sln
-
-# Stage 1: bootstrap the self-hosted Lyric compiler.  This compiles
-# every `lyric-compiler/lyric/**/*.l` package into a `Lyric.Lyric.*.dll`
-# bundle under `.bootstrap/stage1/` and builds the AOT entry-point
-# binary `bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric` that
-# trampolines into the Lyric-emitted CLI.
-cd ..
-./scripts/bootstrap.sh --stage 1
+# Bootstrap the self-hosted Lyric compiler. This downloads the latest
+# self-hosted binary as stage-0 and compiles every `lyric-compiler/lyric/**/*.l`
+# package into a `Lyric.Lyric.*.dll` bundle under `.bootstrap/stage1/`.
+make lyric
 ```
 
 ### Compile and run a Lyric program
 
 User-facing commands flow through the AOT entry-point binary built by
-stage 1.  After `./scripts/bootstrap.sh --stage 1`:
+the bootstrap pipeline. After `make lyric`:
 
 ```sh
-lyric=bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric
-
 # Build: writes hello.dll + hello.runtimeconfig.json alongside hello.l
-$lyric build hello.l
+./bin/lyric build hello.l
 
 # Build + run in one step
-$lyric run hello.l
+./bin/lyric run hello.l
 
 # Pass args to the program
-$lyric run hello.l -- arg1 arg2
+./bin/lyric run hello.l -- arg1 arg2
 ```
 
 `build` is incremental — re-running with the same source and stdlib files is
 a no-op.  Pass `--force` to always rebuild.
-
-The F# `bootstrap/src/Lyric.Cli/` project only handles internal flags
-(`--internal-build`, `--internal-project-build`,
-`--internal-contract-meta`, `--internal-manifest-build`) used by the
-bootstrap pipeline; do not invoke it directly for user commands.
-
-### Hello world
 
 ```lyric
 package Hello
@@ -137,19 +121,17 @@ DLL into the user's output directory.  The search order is:
 
 ### Running the test suite
 
+To run the compiler self-tests:
+
 ```sh
-cd bootstrap
-dotnet run --project tests/Lyric.Lexer.Tests
-dotnet run --project tests/Lyric.Parser.Tests
-dotnet run --project tests/Lyric.TypeChecker.Tests
-dotnet run --project tests/Lyric.Emitter.Tests
-dotnet run --project tests/Lyric.Cli.Tests
+# Run a specific self-hosted test, e.g. parser, typechecker, manifest, etc.
+make self-test NAME=parser
+
+# Run the standard library tests using the built lyric binary:
+./bin/lyric test --manifest lyric-stdlib/lyric.toml
 ```
 
-The `Lyric.Emitter.Tests` runner discovers and executes every
-`lyric-stdlib/tests/*_tests.l` self-test against the in-process MSIL
-bridge.  Self-tests for the self-hosted compiler packages live next to
-their sources (`lyric-compiler/lyric/<pkg>_self_test.l`).
+Self-tests for the self-hosted compiler packages live next to their sources (`lyric-compiler/lyric/<pkg>_self_test.l`). Standard library unit tests live in `lyric-stdlib/tests/`.
 
 ---
 
