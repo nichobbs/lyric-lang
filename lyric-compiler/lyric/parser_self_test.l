@@ -842,3 +842,151 @@ test "forall as quantifier expression still works" {
   assertEqualInt(itemCount(pr), 1, "quantifier: one item")
   assertEqual(firstItemKindName(pr), "val", "quantifier: item is val")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// nested satisfies tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+func testTypeExprName(te: in TypeExpr): String {
+  match te.kind {
+    case TRef(path) -> modulePathJoin(path.segments)
+    case TGenericApp(head, _) -> modulePathJoin(head.segments)
+    case _ -> "<other>"
+  }
+}
+
+test "nested satisfies basic desugaring" {
+  val src = "package P\n" +
+    "impl PostgresUserRepository {\n" +
+    "  satisfies Repository {\n" +
+    "    func findById(): Unit {}\n" +
+    "  }\n" +
+    "  satisfies Disposable {\n" +
+    "    func dispose(): Unit {}\n" +
+    "  }\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "nested-basic: no diagnostics")
+  assertEqualInt(itemCount(pr), 2, "nested-basic: desugars to 2 items")
+
+  match pr.file.items[0].kind {
+    case IImpl(decl) -> {
+      assertEqual(testTypeExprName(decl.target), "PostgresUserRepository", "nested-basic: target 1")
+      assertEqual(modulePathJoin(decl.iface.head.segments), "Repository", "nested-basic: iface 1")
+      assertEqualInt(decl.members.count, 1, "nested-basic: members 1")
+    }
+    case _ -> {
+      assertTrue(false, "nested-basic: item 0 should be an impl")
+    }
+  }
+
+  match pr.file.items[1].kind {
+    case IImpl(decl) -> {
+      assertEqual(testTypeExprName(decl.target), "PostgresUserRepository", "nested-basic: target 2")
+      assertEqual(modulePathJoin(decl.iface.head.segments), "Disposable", "nested-basic: iface 2")
+      assertEqualInt(decl.members.count, 1, "nested-basic: members 2")
+    }
+    case _ -> {
+      assertTrue(false, "nested-basic: item 1 should be an impl")
+    }
+  }
+}
+
+test "nested satisfies metadata inheritance" {
+  val src = "package P\n" +
+    "/// Outer class doc\n" +
+    "@outer\n" +
+    "impl PostgresUserRepository {\n" +
+    "  /// Inner satisfies doc\n" +
+    "  @inner\n" +
+    "  satisfies Repository {\n" +
+    "    func findById(): Unit {}\n" +
+    "  }\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "nested-meta: no diagnostics")
+  assertEqualInt(itemCount(pr), 1, "nested-meta: 1 item")
+
+  val item = pr.file.items[0]
+  // Verify doc comments are merged
+  assertEqualInt(item.docComments.count, 2, "nested-meta: should inherit outer and inner doc comments")
+  assertTrue(item.docComments[0].text.contains("Outer class doc"), "nested-meta: outer doc matches")
+  assertTrue(item.docComments[1].text.contains("Inner satisfies doc"), "nested-meta: inner doc matches")
+
+  // Verify annotations are merged
+  assertEqualInt(item.annotations.count, 2, "nested-meta: should inherit outer and inner annotations")
+  assertEqual(modulePathJoin(item.annotations[0].name.segments), "outer", "nested-meta: outer annotation name")
+  assertEqual(modulePathJoin(item.annotations[1].name.segments), "inner", "nested-meta: inner annotation name")
+}
+
+test "nested satisfies with outer and inner generics" {
+  val src = "package P\n" +
+    "impl[T] UserRepository[T] {\n" +
+    "  satisfies Repository[T] {\n" +
+    "    func findById(): T {}\n" +
+    "  }\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "nested-generics: no diagnostics")
+  assertEqualInt(itemCount(pr), 1, "nested-generics: 1 item")
+
+  match pr.file.items[0].kind {
+    case IImpl(decl) -> {
+      match decl.generics {
+        case Some(gps) -> {
+          assertEqualInt(gps.params.count, 1, "nested-generics: param count")
+          match gps.params[0] {
+            case GPType(name, _) -> assertEqual(name, "T", "nested-generics: param name T")
+            case _ -> assertTrue(false, "nested-generics: expected GPType")
+          }
+        }
+        case None -> assertTrue(false, "nested-generics: should have merged generics")
+      }
+    }
+    case _ -> assertTrue(false, "nested-generics: item 0 is an impl")
+  }
+}
+
+test "nested satisfies syntax error cases" {
+  // 1. Missing '{' to start the nested satisfies block
+  val src1 = "package P\nimpl PostgresUserRepository\n  satisfies Repository {}\n"
+  val pr1 = parse(src1)
+  assertTrue(diagCount(pr1) > 0, "missing brace: should produce diagnostic errors")
+  var sawP0181 = false
+  var i = 0
+  while i < pr1.diagnostics.count {
+    if pr1.diagnostics[i].code == "P0181" {
+      sawP0181 = true
+    }
+    i = i + 1
+  }
+  assertTrue(sawP0181, "missing brace: P0181 raised")
+
+  // 2. Missing 'satisfies' keyword
+  val src2 = "package P\nimpl PostgresUserRepository {\n  Repository {}\n}\n"
+  val pr2 = parse(src2)
+  assertTrue(diagCount(pr2) > 0, "missing satisfies: should produce diagnostic errors")
+  var sawP0182 = false
+  i = 0
+  while i < pr2.diagnostics.count {
+    if pr2.diagnostics[i].code == "P0182" {
+      sawP0182 = true
+    }
+    i = i + 1
+  }
+  assertTrue(sawP0182, "missing satisfies: P0182 raised")
+
+  // 3. Missing '}' to close nested satisfies block
+  val src3 = "package P\nimpl PostgresUserRepository {\n  satisfies Repository {}\n"
+  val pr3 = parse(src3)
+  assertTrue(diagCount(pr3) > 0, "unclosed block: should produce diagnostic errors")
+  var sawP0183 = false
+  i = 0
+  while i < pr3.diagnostics.count {
+    if pr3.diagnostics[i].code == "P0183" {
+      sawP0183 = true
+    }
+    i = i + 1
+  }
+  assertTrue(sawP0183, "unclosed block: P0183 raised")
+}
