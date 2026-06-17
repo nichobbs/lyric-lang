@@ -14,9 +14,9 @@
 //!   - User has permission to access the socket (docker group or sudo)
 
 @runtime_checked
-package Docker.Examples
+package Examples.Docker
 
-import Docker
+import Lyric.Docker
 import Std.Core
 
 pub func main(): Int {

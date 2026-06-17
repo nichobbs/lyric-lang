@@ -30,11 +30,11 @@ output_assembly = "Docker.dll"
 
 [project.packages]
 # Docker API client (generated from OpenAPI spec).
-"Docker.Api"      = "src/docker_api.l"
+"Lyric.Docker.Api"      = "src/docker_api.l"
 # Convenience wrappers and helpers for common operations.
-"Docker"          = "src/docker.l"
+"Lyric.Docker"          = "src/docker.l"
 # Connection helpers for Unix sockets and named pipes.
-"Docker.Sockets"  = "src/sockets.l"
+"Lyric.Docker.Sockets"  = "src/sockets.l"
 
 [project.tests]
 # Integration tests require a running Docker daemon.

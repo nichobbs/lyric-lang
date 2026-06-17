@@ -12,9 +12,9 @@
 
 @test_module
 @runtime_checked
-package Docker.BasicOperationsTests
+package Lyric.Docker.BasicOperationsTests
 
-import Docker
+import Lyric.Docker
 import Std.Core
 
 /// Verify Docker daemon connectivity.

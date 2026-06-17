@@ -3,7 +3,7 @@
 //! Provides utilities for establishing connections to the Docker daemon
 //! across different platforms.
 @runtime_checked
-package Docker.Sockets
+package Lyric.Docker.Sockets
 
 import Std.Http
 import Std.Core

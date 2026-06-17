@@ -33,17 +33,17 @@ Add to your `lyric.toml`:
 ## Quick Start
 
 ```lyric
-import Docker
-import Docker.Sockets
+import Lyric.Docker
+import Lyric.Docker.Sockets
 import Std.Core
 
 pub func main(): Int {
-  val client = Docker.makeDockerClient()
+  val client = Lyric.Docker.makeDockerClient()
   
-  match await Docker.ping(client) {
+  match await Lyric.Docker.ping(client) {
     case Ok(_) -> {
       println("✓ Connected to Docker")
-      match await Docker.systemInfo(client) {
+      match await Lyric.Docker.systemInfo(client) {
         case Ok(info) -> println("System: " + info)
         case Err(e) -> println("Error: " + e.message)
       }
@@ -62,7 +62,7 @@ pub func main(): Int {
 ### Standard Docker (Recommended)
 
 ```lyric
-val client = Docker.makeDockerClient()
+val client = Lyric.Docker.makeDockerClient()
 ```
 
 This automatically follows the standard Docker connection priority:
@@ -87,7 +87,7 @@ TCP and named pipe transports are planned for future releases.
 ### Rootless Docker
 
 ```lyric
-match Docker.makeRootlessDockerClient() {
+match Lyric.Docker.makeRootlessDockerClient() {
   case Ok(client) -> // Use client...
   case Err(e) -> println("Error: " + e)
 }
@@ -98,7 +98,7 @@ Explicitly targets `$XDG_RUNTIME_DIR/docker.sock` for rootless Docker. Use this 
 ### Custom Socket Path
 
 ```lyric
-val client = Docker.makeDockerClientAt("/custom/path/docker.sock")
+val client = Lyric.Docker.makeDockerClientAt("/custom/path/docker.sock")
 ```
 
 ## API Surface

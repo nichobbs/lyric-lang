@@ -19,7 +19,7 @@
 //! Phase 3: Advanced diagnostics, logs streaming, and event subscriptions.
 
 @runtime_checked
-package Docker.Api
+package Lyric.Docker.Api
 
 import Std.Http
 import Std.Json

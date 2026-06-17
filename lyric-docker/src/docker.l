@@ -20,12 +20,12 @@
 //! }
 //! ```
 @runtime_checked
-package Docker
+package Lyric.Docker
 
 import Std.Http
 import Std.Core
-import Docker.Api
-import Docker.Sockets
+import Lyric.Docker.Api
+import Lyric.Docker.Sockets
 
 /// Docker error type — encapsulates HTTP errors with Docker-specific context.
 pub record DockerError {
