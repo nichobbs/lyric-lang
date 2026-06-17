@@ -1284,6 +1284,16 @@ pub func sigNamedFqn(t: in SigType): String {
   }
 }
 
+// The 0-based generic-type-parameter index when `t` is `STVar(i)`, else `None`.
+// Used by D105 §A to map iface-method `STVar` shapes onto `MTypeVar` so the
+// MemberRef signature substitutes correctly through the TypeSpec.
+pub func sigVarIndex(t: in SigType): Option[Int] {
+  match t {
+    case STVar(idx) -> Some(value = idx)
+    case _ -> None
+  }
+}
+
 // True when the `SigType` is an `STNamed` value type.  Cross-package accessor.
 pub func sigNamedIsValueType(t: in SigType): Bool {
   match t {

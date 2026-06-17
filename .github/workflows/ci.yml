@@ -853,18 +853,20 @@ jobs:
           func main(): Int { 0 }
           LYR
           run_fixture "F0023" "f0023_fixture.l"
-          # F0024: generic external interfaces are deferred — `impl IEquatable[Int]
-          # for R` must surface a clear "not yet supported" diagnostic instead of
-          # silently emitting broken IL.
+          # F0024: closed generic external interfaces whose iface methods have
+          # a signature shape outside {STPrim, STNamed primitive FQN, STNamed
+          # user class/value type, STVar(i)} are deferred to a follow-up cut
+          # of D105 §A.  IEnumerable<T>.GetEnumerator() returns IEnumerator<T>
+          # (STGenericInst), which the v1 cut cannot represent — must surface
+          # F0024 rather than silently emit broken IL.
           cat > "$work/f0024_fixture.l" <<'LYR'
           package F0024Fixture
 
-          extern type IEquatable = "System.IEquatable`1"
+          extern type IEnumerable = "System.Collections.Generic.IEnumerable`1"
 
           record R { tag: Int }
 
-          impl IEquatable[Int] for R {
-            func Equals(other: in Int): Bool { other == self.tag }
+          impl IEnumerable[Int] for R {
           }
 
           func main(): Int { 0 }
