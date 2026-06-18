@@ -104,15 +104,29 @@ try_bootstrap_from_release() {
 
   # Fetch latest non-draft release version from GitHub API
   local latest_release
+  local api_url="https://api.github.com/repos/nichobbs/lyric-lang/releases"
+
+  # Use GITHUB_TOKEN for authentication if available (increases rate limit from 60 to 5000 req/hr)
+  # Without auth: 60 requests/hour; with auth: 5000 requests/hour
   if command -v jq &>/dev/null; then
     # Use jq for robust JSON parsing if available
     # Query for the first non-draft release with a valid tag_name
-    latest_release=$(curl -sSL "https://api.github.com/repos/nichobbs/lyric-lang/releases" \
-      2>/dev/null | jq -r '.[] | select((.draft // true) == false) | select(.tag_name != null and .tag_name != "") | .tag_name' | head -1)
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+      latest_release=$(curl -sSL -H "Authorization: token $GITHUB_TOKEN" "$api_url" \
+        2>/dev/null | jq -r '.[] | select((.draft // true) == false) | select(.tag_name != null and .tag_name != "") | .tag_name' | head -1)
+    else
+      latest_release=$(curl -sSL "$api_url" \
+        2>/dev/null | jq -r '.[] | select((.draft // true) == false) | select(.tag_name != null and .tag_name != "") | .tag_name' | head -1)
+    fi
   else
     # Fall back to grep-based parsing if jq is not available
-    latest_release=$(curl -sSL "https://api.github.com/repos/nichobbs/lyric-lang/releases?per_page=30" \
-      2>/dev/null | grep '"draft": false' -B 5 | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": "\(.*\)".*/\1/')
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+      latest_release=$(curl -sSL -H "Authorization: token $GITHUB_TOKEN" "$api_url?per_page=30" \
+        2>/dev/null | grep '"draft": false' -B 5 | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": "\(.*\)".*/\1/')
+    else
+      latest_release=$(curl -sSL "$api_url?per_page=30" \
+        2>/dev/null | grep '"draft": false' -B 5 | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": "\(.*\)".*/\1/')
+    fi
   fi
 
   if [[ -z "$latest_release" ]]; then
