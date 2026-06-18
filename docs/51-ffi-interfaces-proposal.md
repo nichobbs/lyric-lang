@@ -118,17 +118,90 @@ the method by name. The runtime catches structural mismatches at
 type-load.
 
 - **`STMVar`** — method-generic iface methods (e.g. `T Bar<U>()`). Rare
-  in BCL; supporting validation requires `MTypeVar` to distinguish
-  type-generic (VAR 0x13) from method-generic (MVAR 0x1E) tokens in
-  signatures, plus GenericParam table rows on the impl `MethodDef`.
+  in BCL; the practical surface is logging-style interfaces
+  (`Microsoft.Extensions.Logging.ILogger.Log<TState>(...)`,
+  `IOptionsMonitor<TOptions>.OnChange<TState>(...)`).
+  See "STMVar — implementation plan" below.
 - **`STArray` rank > 1** — multi-dim arrays (`int[,]`). Lyric's array
   type maps to single-dim `MArray`; multi-dim arrays aren't
-  expressible in Lyric impl methods.
+  expressible in Lyric impl methods. Out of scope by language design;
+  the few BCL ifaces that use them aren't on the supported FFI surface.
 - **`STPtr` / `STFnPtr`** — unmanaged pointers / function pointers.
   Out of scope for the managed FFI; the BCL interfaces that use these
   aren't on the supported FFI surface.
 - **`STUnknown`** — element bytes the metadata decoder doesn't
-  recognize. Defensive default for forward compatibility.
+  recognize. Defensive default for forward compatibility; not a
+  language gap.
+
+### STMVar — implementation plan (deferred)
+
+Supporting `impl ILogger for MyLogger { func Log[TState](state: in TState,
+…): Unit { … } }` requires extending six pieces of infrastructure. The
+plan is documented here so the next attempt doesn't need to re-derive
+it. **Estimated scope: 500–1000 lines, multi-file, regression risk on
+async/stream/derived-method lowering.** Not worth shipping until a
+real user hits the case.
+
+1. **New union case `MTypeMVar(index: Int)`** in
+   `lyric-compiler/msil/lowering.l` (mirroring `MTypeVar`). `bufMsilType`
+   emits `0x1E` (ELEMENT_TYPE_MVAR) + compressed index; otherwise
+   parallel to `MTypeVar`'s `0x13` (VAR) emission. `bufMsilTypeWithCtx`
+   passes it through identically.
+
+2. **Method-generic context** in `typeExprToMsilCtx`
+   (`lyric-compiler/msil/codegen.l:3874`). Today it falls through
+   unknown type names to `MClass(name)`. Add a method-generic-name list
+   to `CodegenCtx` (or thread it through the call), populated by
+   `lowerImplMethodMsil` / `lowerFuncMsil` from the function's
+   `generics: Option[GenericParams]`. A lookup hits before the
+   `MClass` fallthrough: when the name matches a method generic, emit
+   `MTypeMVar(idx)` instead.
+
+3. **Generic-aware signature builders** in `lowering.l`. `buildInstanceMethodSig`
+   / `buildStaticMethodSig` need variants that emit the GENERIC
+   calling convention (0x10) plus the generic-param count.
+   `buildAtmbStartOpenSig` (`lowering.l:1415`) is a concrete reference
+   for the wire format. Add `buildInstanceMethodSigGeneric(genCount,
+   params, ret)` and the static variant; the existing builders stay
+   as the non-generic path.
+
+4. **GenericParam table rows for impl `MethodDef`s** in
+   `lowering.l`. `emitGenericParamRows(ctx, owner, generics)` already
+   exists for TypeDefs (line 2386), using `mtdTypeDef(row)`. Add a
+   method variant via `mtdMethodDef(row)` (already in `tables.l:444`).
+   Call from `lowerMRecord`'s method emission loop when
+   `MFunc.params`-derived sigs need GENERIC convention.
+
+5. **`MFunc` shape extension**. Today `MFunc` carries `flags`, `name`,
+   `params`, `ret`, … but no generic-param list. Add
+   `genericParamNames: List[String]` (empty for non-generic methods),
+   populated from the `FunctionDecl.generics` in `lowerImplMethodMsil` /
+   `lowerFuncMsil`. The `lowerMRecord` method loop reads it to drive
+   #3 (sig builder choice) and #4 (GenericParam emission).
+
+6. **Validation pass** (`sigTypeToMsilForIface` in `codegen.l`). Today
+   returns `None` for `STMVar` (surfacing the silent skip). Mirror
+   the `STVar` arm: extract the MVar index via a new
+   `Mdr.sigMVarIndex(t): Option[Int]` accessor and return
+   `Some(MTypeMVar(idx))`. `sigHasGenericOrByRefMsil` no longer needs
+   to treat STMVar as a bail-out shape. `substituteVarsInSigType`
+   keeps STMVar untouched (substitution is for type generics; method
+   generics are substituted at the call site, not at the impl
+   site).
+
+**Risk note:** `MTypeVar` is constructed at ~30+ sites for class
+generics. The audit step (ensuring class-generic sites don't
+accidentally get rewritten to `MTypeMVar`) is the main regression
+hazard. A thorough pass over `grep -n 'MTypeVar(index' codegen.l`
+plus async/stream/derived-method self-tests is the minimum CI gate
+before shipping.
+
+**Acceptance criterion:** `impl Microsoft.Extensions.Logging.ILogger
+for MyLogger { func Log[TState](logLevel: in Int, eventId: in Int,
+state: in TState, exception: in Exception, formatter: in (TState,
+Exception) -> String): Unit { … } }` compiles, type-loads, and
+dispatches `Log<MyState>` through the CLR's method-generic
+dispatch when the caller provides a concrete `TState`.
 
 ### §B — shipped in #3861
 
