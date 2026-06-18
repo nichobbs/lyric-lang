@@ -106,8 +106,9 @@ try_bootstrap_from_release() {
   local latest_release
   if command -v jq &>/dev/null; then
     # Use jq for robust JSON parsing if available
+    # Query for the first non-draft release with a valid tag_name
     latest_release=$(curl -sSL "https://api.github.com/repos/nichobbs/lyric-lang/releases" \
-      2>/dev/null | jq -r '.[] | select(.draft == false) | .tag_name' | head -1)
+      2>/dev/null | jq -r '.[] | select((.draft // true) == false) | select(.tag_name != null and .tag_name != "") | .tag_name' | head -1)
   else
     # Fall back to grep-based parsing if jq is not available
     latest_release=$(curl -sSL "https://api.github.com/repos/nichobbs/lyric-lang/releases?per_page=30" \
