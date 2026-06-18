@@ -206,8 +206,7 @@ func main(): Unit {
     us = uh,
     blobs = bh,
     guids = gh,
-    resourceData = newList(),
-    buildKind = "lib"
+    resourceData = newList()
   )
   val peBuf = assemblePe(inp)
   val bs = bufToList(peBuf)

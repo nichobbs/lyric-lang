@@ -43,9 +43,6 @@ pub record AssemblerInput {
   /// embedded resources), the CLR header's Resources directory entry
   /// is left zero.
   resourceData: List[Byte]
-  /// Build kind: "lib" for DLL (PE subsystem/characteristics for library),
-  /// "exe" for EXE (PE subsystem/characteristics for executable).
-  buildKind: String
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -87,7 +84,7 @@ func writeDos(w: in ByteWriter): Unit {
 }
 
 // ── PE/COFF headers, padded to file offset 0x200 (384 bytes) ─────────────────
-func writePeHdrs(w: in ByteWriter, textVSize: in Int, textRSize: in Int, imgSize: in Int, buildKind: in String): Unit {
+func writePeHdrs(w: in ByteWriter, textVSize: in Int, textRSize: in Int, imgSize: in Int): Unit {
   // PE signature "PE\0\0"
   bufU1(w, 0x50)
   bufU1(w, 0x45)
@@ -101,10 +98,7 @@ func writePeHdrs(w: in ByteWriter, textVSize: in Int, textRSize: in Int, imgSize
   w4p(w, 0)      // TimeDateStamp, PtrToSymbolTable
   w4p(w, 0)                        // NumberOfSymbols
   w2p(w, 224)
-  // Characteristics: 0x0102 (EXECUTABLE_IMAGE | EXECUTABLE) for EXE,
-  // add 0x2000 (DLL) flag for DLL output
-  val characteristics = if buildKind == "lib" { 0x2102 } else { 0x0102 }
-  w2p(w, characteristics) // SizeOfOptionalHeader=224, Characteristics
+  w2p(w, 0x0102) // SizeOfOptionalHeader=224, Characteristics
 
   // PE32 optional header (96 bytes)
   w2p(w, 0x010B)                   // Magic: PE32
@@ -431,7 +425,7 @@ pub func assemblePe(inp: in AssemblerInput): ByteWriter {
   // Write PE image
   val w = bufNew()
   writeDos(w)                                              // 0x000–0x07F
-  writePeHdrs(w, textVSize, textRSize, imgSize, inp.buildKind)            // 0x080–0x1FF
+  writePeHdrs(w, textVSize, textRSize, imgSize)            // 0x080–0x1FF
   writeClrHdr(w, mdRva, metaSize, inp.entryPointToken, rsrcRva, rawRsrcSize)                         // 0x200–0x247
 
   // Method bodies, each followed by zero-padding to a 4-byte boundary so
