@@ -33,6 +33,17 @@ extern type JStringBuilder = "java.lang.StringBuilder"
 
 extern type JArrayList = "java.util.ArrayList"
 
+// Unquoted dotted path declarations
+extern type UnquotedJMath = java.lang.Math
+extern type UnquotedJInteger = java.lang.Integer
+extern type UnquotedMapEntry = java.util.Map.Entry
+
+test "UnquotedJMath and UnquotedJInteger resolve and compile correctly" {
+  assertEqualInt(UnquotedJMath.max(20, 50), 50, "UnquotedJMath.max(20,50)")
+  assertEqualInt(UnquotedJInteger.sum(5, 6), 11, "UnquotedJInteger.sum(5,6)")
+}
+
+
 // ── Math int overloads ────────────────────────────────────────────────────────
 test "Math.max(int, int) returns larger value" {
   assertEqualInt(JMath.max(3, 7), 7, "max(3,7)")
