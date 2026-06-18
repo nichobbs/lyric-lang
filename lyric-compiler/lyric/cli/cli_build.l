@@ -39,11 +39,12 @@ func readBuildKindFromManifest(manifestOpt: in Option[String]): String {
   }
 }
 
-// Compile `sourcePath` to a DLL at `outPath`.
+// Compile `sourcePath` to a DLL/EXE at `outPath`.
 // Returns the exit code: 0 on success, 1 on error.
 // `manifestPath` is forwarded to the generator pre-processor so custom
 // @generate(Pkg.Name) annotations can resolve their generator DLLs.
-func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarget, manifestPath: in Option[String]): Int {
+// `buildKind` is "lib" (DLL) or "exe" (EXE); controls PE subsystem for Dotnet.
+func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarget, manifestPath: in Option[String], buildKind: in String): Int {
   val buildStart = Time.now()
   var source = match File.readText(sourcePath) {
     case Ok(text) -> text
@@ -71,13 +72,14 @@ func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarge
   }
 
   val outBase = Path.basename(outPath)
-  val asmName = stemOf(outBase, 4)  // strip ".dll"
+  val asmName = stemOf(outBase, 4)  // strip ".dll" or ".exe"
   val req = EmitRequest(
     source = source,
     assemblyName = asmName,
     outputPath = outPath,
     target = target,
-    packageVersion = ""
+    packageVersion = "",
+    buildKind = buildKind
   )
 
   val result = Emitter.emit(req)
@@ -285,12 +287,12 @@ func cmdBuild(argv: in slice[String]): Int {
     return buildReleaseSingle(sourcePath, explicitOut, target, ridArg, manifestArg)
   }
 
+  val buildKind = readBuildKindFromManifest(manifestArg)
   val outPath = match explicitOut {
     case Some(o) -> o
     case None -> {
       val dir = Path.dirname(sourcePath)
       val stem = stemOf(Path.basename(sourcePath), 2)  // strip ".l"
-      val buildKind = readBuildKindFromManifest(manifestArg)
       val ext = outputExt(target, buildKind)
       Path.join(dir, stem + ext)
     }
@@ -302,7 +304,7 @@ func cmdBuild(argv: in slice[String]): Int {
     return watchLoop(files, BuildFile(sourcePath = sourcePath, outArg = outPath, target = target, manifest = manifestArg))
   }
 
-  buildOne(sourcePath, outPath, target, manifestArg)
+  buildOne(sourcePath, outPath, target, manifestArg, buildKind)
 }
 
 // Single-file `lyric build --release <source.l>`: compile to a staging DLL,
@@ -341,7 +343,7 @@ func buildReleaseSingle(
   val srcDir = Path.dirname(sourcePath)
   val stem = stemOf(Path.basename(sourcePath), 2)  // strip ".l"
   val stagingDll = Path.join(Path.join(srcDir, ".lyric-release"), stem + ".dll")
-  val buildExit = buildOne(sourcePath, stagingDll, Dotnet, manifestArg)
+  val buildExit = buildOne(sourcePath, stagingDll, Dotnet, manifestArg, "lib")
   if buildExit != 0 {
     return buildExit
   }

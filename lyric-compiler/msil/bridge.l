@@ -81,6 +81,7 @@ pub func compileToMsilWithVersion(
   outputPath: in String,
   stdlibSources: in List[String],
   packageVersion: in String,
+  buildKind: in String,
 ): Bool {
   val parseResult = parse(source)
   if reportAndAbort(parseResult.diagnostics) {
@@ -223,7 +224,7 @@ pub func compileToMsilWithVersion(
   embedLyricContract(cctx.lctx, liftedFile, "Lyric.Contract", resourceVersion)
 
   // Lower the package IR to raw PE bytes using the pre-seeded context.
-  val bytes = lowerMPackageWithCtx(pkg, cctx.lctx, entryToken)
+  val bytes = lowerMPackageWithCtx(pkg, cctx.lctx, entryToken, buildKind)
 
   // Write the PE to disk.
   val result = writeBytes(outputPath, bytes)
@@ -369,6 +370,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   restoredArtifacts: in List[SynthesisedArtifact],
   packageVersion: in String,
   depTemplatePkgs: in List[ProjectPackagePayload],
+  buildKind: in String,
 ): Bool {
   if packages.count == 0 {
     return false
@@ -782,7 +784,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   val entryToken = resolveEntryToken(cctx)
 
   // Phase 6: lower all MPackages into a single PE against the shared lctx.
-  val bytes = lowerMPackagesWithCtx(mpkgs, cctx.lctx, entryToken)
+  val bytes = lowerMPackagesWithCtx(mpkgs, cctx.lctx, entryToken, buildKind)
 
   val result = writeBytes(outputPath, bytes)
   match result {

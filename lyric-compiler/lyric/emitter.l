@@ -74,6 +74,10 @@ pub record EmitRequest {
   /// the REPL / direct API use), and the bridge falls back to the
   /// legacy default.  See #1364.
   packageVersion: String
+  /// Build kind from `[build]` section: "lib" (default) for DLL or "exe" for EXE.
+  /// For Dotnet: controls PE subsystem (DLL vs CUI executable).
+  /// For Jvm: currently unused (always JAR).
+  buildKind: String
 }
 
 pub record EmitResult {
@@ -1936,7 +1940,8 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
     req.declaredFeatures,
     restoredArtifacts,
     req.packageVersion,
-    depTemplatePkgs
+    depTemplatePkgs,
+    req.buildKind
   )
   if ok {
     val okDiags: List[Diagnostic] = newList()
@@ -2201,7 +2206,8 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
           noFeatures,
           noArtifacts,
           req.packageVersion,
-          noDepTemplatePkgsPerPkg
+          noDepTemplatePkgsPerPkg,
+          req.buildKind
         )
         if ok {
           val okDiags: List[Diagnostic] = newList()
@@ -2212,7 +2218,7 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
       }
     }
   }
-  val ok = MsilBridge.compileToMsilWithVersion(req.source, req.outputPath, stdlibSources, req.packageVersion)
+  val ok = MsilBridge.compileToMsilWithVersion(req.source, req.outputPath, stdlibSources, req.packageVersion, req.buildKind)
   if ok {
     val okDiags: List[Diagnostic] = newList()
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
