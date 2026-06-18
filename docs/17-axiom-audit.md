@@ -890,6 +890,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.EnvironmentHost` | `environment_host.l` | lyric.stdlib.jvm.EnvHost operations conform to their documented JVM contracts |
 | `jvm` | `Std.FileHost` | `file_host.l` | lyric.stdlib.jvm.FileHost operations conform to their documented JVM contracts |
 | `jvm` | `Std.FormatHost` | `format_host.l` | lyric.stdlib.jvm.FormatHost formatting operations conform to their documented JVM contracts |
+| `jvm` | `Std.HashHost` | `hash_host.l` | java.security.MessageDigest.getInstance(\"SHA-256\") and getInstance(\"SHA-512\") conform to documented JDK SHA-256/SHA-512 semantics and are pure functions of their input bytes |
 | `jvm` | `Std.HttpHost` | `http_host.l` | lyric.stdlib.jvm.HttpClientHost operations conform to their documented JVM / java.net.http contracts |
 | `jvm` | `Std.IO` | `io.l` | lyric.stdlib.jvm ConsoleHost and FileHost operations conform to their documented JVM contracts |
 | `jvm` | `Std.JsonHost` | `json_host.l` | lyric.stdlib.jvm.JsonHost operations conform to their documented JVM contracts |
