@@ -157,6 +157,47 @@ SoftKeyword = 'range'    | 'derives' | 'forall'     | 'exists'
  * remove them from §1.5 and append a decision-log entry.
  *)
 
+(* §1.6.2 Hard keywords accepted as contextual identifiers
+ *
+ * The following §1.5 hard keywords are lexed as keyword tokens (so they
+ * keep their keyword meaning at the positions that expect them), but the
+ * parser ALSO accepts them as ordinary identifiers in identifier,
+ * expression, and binding-name position. They are pure
+ * position-introducers — each carries keyword meaning only at item
+ * position, or, for 'entry', inside a 'protected type' body — so admitting
+ * them as identifiers elsewhere is unambiguous:
+ *
+ *   result                                            (contract variable)
+ *   type | alias | record | union | enum | interface (item introducers)
+ *   wire | fixture | property | test                 (item introducers)
+ *   entry                                             (protected-type member)
+ *
+ * So `val entry = …`, `var type = …`, `record.field`, and a parameter
+ * named `test` are all legal, while `type Age = Int` and `record P { … }`
+ * still declare a distinct type / record at item position. Operators
+ * ('and'/'or'/'is'/'as'), expression or statement starters
+ * ('if'/'match'/'return'/…), parameter/visibility modifiers
+ * ('in'/'out'/'pub'/…), and literals ('true'/'self'/…) are NOT accepted as
+ * identifiers — using one there is reported as P0051. See decision-log
+ * entry D093.
+ *)
+
+ContextualHardKeyword = 'type'      | 'alias'    | 'record'   | 'union'
+                      | 'enum'      | 'interface' | 'wire'     | 'fixture'
+                      | 'property'  | 'test'      | 'entry'    | 'result'  ;
+
+(* An "extended identifier" position is any position where the parser accepts
+ * a plain IDENT OR a ContextualHardKeyword (binding name, value expression,
+ * parameter name, record field access). The IDENT-only positions (item
+ * introducers, import paths) are not extended.
+ *
+ * This grammar does NOT define an ExtendedIdent non-terminal and does not wire
+ * it into the productions below. Productions use IDENT directly; the
+ * contextual-keyword widening is performed by the parser's
+ * `tryEatIdentOrContextual` helper at those positions, which is not expressible
+ * as a context-free production without introducing ambiguity with item-level
+ * keyword uses. See decision-log entry D093 for the rationale. *)
+
 (* §1.7 Statement terminators
  *
  * The lexer emits a STMT_END token at:
@@ -307,8 +348,8 @@ ModulePath  = IDENT { '.' IDENT } ;
 (* §2.1 Imports *)
 
 ImportDecl =
-      'import' ModulePath [ '.' ImportTail ] [ 'as' IDENT ]
-    | 'pub' 'use' ModulePath [ '.' ImportTail ] ;
+      'import' [ 'extern' ] ModulePath [ '.' ImportTail ] [ 'as' IDENT ]
+    | 'pub' 'use' [ 'extern' ] ModulePath [ '.' ImportTail ] ;
 
 ImportTail =
       IDENT [ 'as' IDENT ]
@@ -317,7 +358,10 @@ ImportTail =
 ImportItem  = IDENT [ 'as' IDENT ] ;
 
 (* Wildcard imports ('import Foo.*') are rejected by the grammar: there is
- * no production that admits '*' in this position. *)
+ * no production that admits '*' in this position.
+ * 'import extern' requires a selector group '{ ... }' per D105 (Q47-001):
+ * bare 'import extern Foo.Bar' is invalid; the '.' ImportTail is mandatory
+ * for extern imports. The parser enforces this with P0035 diagnostic. *)
 
 
 (* ============================================================================
@@ -678,7 +722,11 @@ FunctionBody =
 ParamList = Param { ',' Param } [ ',' ] ;
 
 Param =
-      IDENT ':' [ ParamMode ] Type [ '=' Expr ] ;
+      { Annotation } IDENT ':' [ ParamMode ] Type [ '=' Expr ] ;
+
+(* Leading annotations may precede the parameter name, e.g.
+ * `@body req: in CreateRequest` (lyric-web reads `@body` to pick which
+ * parameter receives the deserialised request body). *)
 
 (* The mode keyword is optional; an omitted mode is taken as 'in'.
  * Note also: actual position is *after* the colon, not before — the
@@ -914,6 +962,11 @@ PrimaryExpr =
     | Path ;                                  (* IDENT or qualified path like Foo.Bar *)
 
 SelfExpr   = 'self' ;
+(* 'result' is contextual (D086): meaningful as the return-value reference only
+ * inside an ensures clause. It is also accepted as an ordinary binding name, and
+ * an in-scope `result` binding shadows this reference (the type checker and
+ * codegen resolve the binding first, then fall back to the contract return
+ * value). *)
 ResultExpr = 'result' ;
 
 Path = ModulePath ;
@@ -1040,6 +1093,7 @@ PrimaryPattern =
     | LiteralPattern
     | RangePattern
     | BindingPattern
+    | ConstPattern
     | ConstructorPattern
     | RecordPattern
     | TuplePattern
@@ -1051,6 +1105,7 @@ LiteralPattern   = Literal | InterpolatedString ;
 RangePattern     = Expr ( '..=' | '..<' | '..' ) Expr ;     (* expressions are restricted
                                                                to constant forms post-parse *)
 BindingPattern   = IDENT [ '@' PrimaryPattern ] ;            (* 'x' or 'x @ Foo(_)' *)
+ConstPattern     = '@' IDENT ;                               (* '@NAME' references a compile-time val/const *)
 
 ConstructorPattern =
       ModulePath [ '(' [ Pattern { ',' Pattern } [ ',' ] ] ')' ] ;

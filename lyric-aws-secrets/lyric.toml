@@ -91,9 +91,6 @@ output_assembly = "AwsSecrets.dll"
   "src/_kernel/secrets_kernel_jvm.l",
 ]
 
-[dependencies]
-"Lyric.Stdlib" = { path = "../lyric-stdlib" }
-
 [nuget]
 # AWS Secrets Manager SDK — included when feature = "aws".
 "AWSSDK.SecretsManager" = { version = "3.7.400", features = ["aws"] }

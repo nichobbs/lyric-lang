@@ -156,6 +156,7 @@ predicate      = name-predicate
                | visibility-predicate
                | signature-predicate
 name-predicate       = "name" "like" string-literal
+                     | "name" "in" "{" identifier-list "}"
 annotated-predicate  = "annotated" ":" "@" identifier
 visibility-predicate = "visibility" ":" ("pub" | "priv" | "internal")
 signature-predicate  = "signature" ":" "returns" string-literal
@@ -174,6 +175,13 @@ qualified module path) against a POSIX-ish glob:
 - `?` — match exactly one character
 - `[abc]`, `[a-z]` — match one character from a set or range
 - All other characters match literally
+
+**`name in { fn1, fn2 }`** — matches when the function's short name is one
+of the listed identifiers (set membership). The positive counterpart of the
+`except name in { … }` exclusion list: `name in` selects, `except name in`
+de-selects. Names are bare short identifiers (not qualified module paths), as
+with `name like`. Use it instead of a long `name like "a" and …` chain when a
+fixed set of handlers shares an aspect.
 
 **`annotated: @AnnotName`** — matches functions carrying the named
 annotation anywhere in their annotation list. The match is on the short
@@ -251,8 +259,18 @@ Inside the body:
 - `proceed(args)` calls the target. Returns the typed return value.
   May be omitted entirely (skip / replace semantics) — the wrapper
   then returns whatever the body's last expression evaluates to.
-- `ret` is the type of the target's return value, used for the
-  advice body's own return.
+  `call.proceed(args)` is an accepted equivalent spelling (a method on
+  the ambient `call` value, §4.3); it advances to the target exactly like
+  the bare form. Both ignore their own argument list and forward the
+  wrapper's parameters.
+- `ret` names the wrapper's return value (its type is the target's return
+  type). Two styles are supported:
+  - **out-variable**: assign `ret = <expr>` (on every path); the wrapper
+    returns `ret` after the body runs. This is the form the shipped
+    library templates use — e.g.
+    `around(call) -> ret { if ok { ret = call.proceed() } else { ret = Err(errs) } }`.
+  - **trailing expression**: omit `ret` writes and let the body's last
+    expression be the return value (e.g. a trailing `proceed(args)`).
 - Early `return` from inside `around` is allowed and idiomatic for
   skip / replace patterns (caching, circuit breakers, dry-run modes).
 
@@ -302,9 +320,9 @@ weave site:
 | `call.shortName` | `String` | Short target name (`handleRequest`) |
 | `call.modulePath` | `String` | Package containing the target |
 | `call.sourceLocation` | `String` | `"<packagePath>:<line>"` of the target's definition (e.g. `"My.Pkg:42"`).  When `packagePath` is empty the weaver substitutes `"<unknown>:<line>"`.  A richer `SourceLoc { file, line, column }` form is tracked for follow-up alongside `call.caller`. |
-| `call.caller` | `Option[SourceLoc]` | Caller site, when available; `None` for entry points and reflective calls |
+| `call.caller` | `Option[SourceLoc]` | Caller site, when available; `None` for entry points and reflective calls.  **Not currently available:** the weaver has no caller-site capture, so any reference surfaces as a weave-time A0043 (see §15). |
 | `call.annotations` | `slice[String]` | Short names of the matched function's annotations (e.g. `["deprecated", "public_api"]`).  The weaver materialises these as string literals, not full `Annotation` objects, so annotation arguments are not accessible here. |
-| `call.elapsed` | `Option[Int]` | `Some(ms)` after `proceed` returns; `None` before `proceed` is called or if the body never calls `proceed`. The earlier zero-sentinel was rejected as a footgun (Q-aspects-003). |
+| `call.elapsed` | `Option[Int]` | `Some(ms)` after `proceed` returns; `None` before `proceed` is called or if the body never calls `proceed`. The earlier zero-sentinel was rejected as a footgun (Q-aspects-003).  Wired in #1298 (D100): the weaver materialises a `var __lyric_call_elapsed: Option[Int] = None` prelude and rewrites each `proceed(args)` into a block that captures `Std.Time.monotonicNanos()` around the target call and assigns `Some(ms)` after it returns; `import Std.Time` is auto-injected (deduplicated) into the woven file. |
 | `call.aspect` | `String` | The current aspect's name (useful when one helper serves several aspects) |
 
 `SourceLoc` is a simple stdlib record; full layout in
@@ -688,7 +706,21 @@ per §6):
    boundaries.
 4. The runtime config block for each aspect (§8) is initialised once
    per process; the inlined body reads `config.<field>` as a static
-   load.
+   load. A `config { }` field may be referenced either qualified
+   (`config.minLen`) or by its bare name (`minLen`); both lower to the
+   same materialised constant. The bare form is what the first-party
+   aspect libraries use. A bare reference is resolved to the config
+   field only when it does not name a parameter of the matched function
+   (parameters shadow like-named config fields; use the qualified
+   `config.<field>` form to disambiguate). **Note:** local variable
+   bindings declared inside the `around` body do NOT shadow bare config
+   field references — only parameters shadow. If an around-body local
+   happens to share a name with a config field, the weaver rewrites it
+   to the config value; use the `config.<field>` form for the config
+   access and rename the local to avoid the collision (#3611). For a
+   `from`-instance, the effective config is the template's defaults with
+   the instance's `config { }` entries overlaid — fields the instance
+   does not mention keep their template default.
 
 Aspects that share an `around` helper can factor it out — see §12 on
 generics interaction for the monomorphisation cost.
@@ -862,8 +894,9 @@ compiler.
 | `A0025` | `from` references a `pub aspect` template that is not `pub` (cross-package reference to a package-private template). |
 | `A0026` | `from` references a name that is not a template aspect (e.g. a matching aspect or an ordinary type). |
 | `A0042` | `@inline_template` aspect body references `args.<field>` that does not match any parameter of the matched function.  Surfaced by the weaver at weave time (rather than as a downstream type error) so the message names the aspect, the matched function, and the offending field. |
-| `A0043` | `call.<field>` references an ambient field the weaver does not recognise (e.g. `call.elapsed` / `call.caller` while runtime instrumentation is deferred — see #1298).  Recognised fields today: `shortName`, `qualifiedName`, `modulePath`, `sourceLocation`, `annotations`, `aspect`. |
+| `A0043` | `call.<field>` references an ambient field the weaver does not recognise.  Recognised fields today: `shortName`, `qualifiedName`, `modulePath`, `sourceLocation`, `annotations`, `aspect`, `elapsed` (runtime-instrumented per #1298 / D100).  `call.caller` is not available — caller-site capture is unimplemented (§4.3) — so it fires A0043 like any unknown field. |
 | `A0044` | `config.<field>` references a `config { }` field declared without a literal default.  Env-var resolution per §8 is not yet wired; until it lands, the field must have a literal default to be referenced from the aspect body.  Surfaced at weave time to replace the confusing downstream "config not declared" type error. |
+| `A0045` | `aspect … from Pkg.Template` template not found in the build.  The `from` path could not be resolved from the available packages; the instance is silently dropped (no weaving).  Ensure the template package is listed in `[dependencies]` in `lyric.toml`. |
 
 Plus the runtime contract codes (`C0014` etc.) gain provenance
 fields naming the aspect that introduced the failing clause (§5.3).

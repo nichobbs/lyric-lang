@@ -1,7 +1,7 @@
-// stdlib/tests/format_tests.l — Tests for Std.Format.
-//
-// Covers: toHexString, toHexStringUpper, formatFixed, padLeft,
-// padRight, zeroPad, hexPad, hexPadUpper.
+//! stdlib/tests/format_tests.l — Tests for Std.Format.
+//!
+//! Covers: toHexString, toHexStringUpper, formatFixed, padLeft,
+//! padRight, zeroPad, hexPad, hexPadUpper.
 package Std.Format.Tests
 
 import Std.Format

@@ -11,16 +11,15 @@ output          = "single"
 output_assembly = "Testing.dll"
 
 [project.packages]
-"Testing" = "src"
+"Testing" = "src/testing.l"
 
 [project.tests]
 "Testing.TestingTests" = "tests/testing_tests.l"
 
 [dependencies]
-"Lyric.Stdlib"   = { path = "../lyric-stdlib" }
-"Lyric.Cache"    = { path = "../lyric-cache" }
-"Lyric.Mail"     = { path = "../lyric-mail" }
-"Lyric.Storage"  = { path = "../lyric-storage" }
-"Lyric.Mq"       = { path = "../lyric-mq" }
-"Lyric.Session"  = { path = "../lyric-session" }
-"Lyric.Flags"    = { path = "../lyric-feature-flags" }
+"Lyric.Cache"    = { workspace = true }
+"Lyric.Mail"     = { workspace = true }
+"Lyric.Storage"  = { workspace = true }
+"Lyric.Mq"       = { workspace = true }
+"Lyric.Session"  = { workspace = true }
+"Lyric.Flags"    = { workspace = true }

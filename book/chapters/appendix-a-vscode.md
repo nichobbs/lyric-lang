@@ -17,13 +17,12 @@ In the meantime, build from source and either invoke `lyric lsp` directly or sym
 
 ```sh
 cd lyric-lang
-./scripts/bootstrap.sh --stage 1
-dotnet build bootstrap/src/Lyric.Cli.Aot
+make lyric
 # Option A — keep the binary named `lyric` and tell VS Code to invoke `lyric lsp`:
-export PATH="$(pwd)/bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0:$PATH"
+export PATH="$(pwd)/bin:$PATH"
 # Option B — symlink as `lyric-lsp` so the extension's autodiscovery
 # finds it on PATH without an explicit serverPath setting:
-ln -sf "$(pwd)/bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric" ~/.local/bin/lyric-lsp
+ln -sf "$(pwd)/bin/lyric" ~/.local/bin/lyric-lsp
 ```
 
 For option (B), set `lyric.serverPath` in VS Code (see below) to point at the symlink; for option (A), point `lyric.serverPath` at the compiler binary and add `lyric.serverArgs: ["lsp"]`.
@@ -181,4 +180,4 @@ If pressing `F5` in the `lyric-vscode/` folder opens an Extension Development Ho
 
 ## See also
 
-The language server source is at `bootstrap/src/Lyric.Lsp/`. The end-to-end test suite for the LSP protocol is in `bootstrap/tests/Lyric.Lsp.Tests/ProtocolTests.fs`; reading those tests is the fastest way to understand exactly which LSP methods the server implements and what responses it produces.
+The language server source is at `lyric-compiler/lyric/lsp.l` and is fully self-hosted. You can inspect its `lspRunLoop` to understand exactly which LSP methods the server implements and what responses it produces.

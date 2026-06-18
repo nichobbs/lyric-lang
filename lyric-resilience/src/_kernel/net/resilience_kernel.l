@@ -1,60 +1,141 @@
-// Resilience.Kernel.Net — .NET resilience extern boundary.
-//
-// Provides:
-//   sleepMs             — Thread.Sleep for retry backoff
-//   circuitIsOpen       — query per-named circuit state (thread-safe)
-//   circuitRecordSuccess — record a successful call
-//   circuitRecordFailure — record a failed call; may open the circuit
-//
-// Circuit state lives in a process-global ConcurrentDictionary keyed by
-// circuit name.  The state machine is the in-process realization of the
-// formal model `pub protected type CircuitBreakerState` declared in
-// `lyric-resilience/src/resilience.l` (issue #365); the host class
-// `Lyric.Resilience.CircuitStore` in `bootstrap/src/Lyric.Emitter/
-// CircuitStoreHost.fs` mirrors the protected type's three entries and
-// must keep the same invariants:
-//   - consecutiveFailures >= 0
-//   - isOpen ==> openedAtMs > 0
-//
-// The F# shim is an interim runtime: once non-constant module-level
-// vals (M5.2 stage 3+) and the wire singleton emitter ship, the
-// protected type can own the registry too and the shim retires.
-//
-// Only active when compiled with feature = "dotnet".
-// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
-
+//! Resilience.Kernel.Net — .NET circuit-breaker and retry extern boundary.
+//!
+//! Provides:
+//!   sleepMs              — Thread.Sleep for retry backoff
+//!   circuitIsOpen        — query per-named circuit state (thread-safe)
+//!   circuitRecordSuccess — record a successful call
+//!   circuitRecordFailure — record a failed call; may open the circuit
+//!
+//! Circuit state lives in a process-global ConcurrentDictionary keyed by
+//! circuit name.  Per-entry Monitor locking ensures atomic read-modify-write
+//! for the four mutable fields of CircuitEntry.  State-machine invariants:
+//!   - consecutiveFailures >= 0
+//!   - isOpen ==> openedAtMs > 0
+//!
+//! The half-open state machine is covered exhaustively by the
+//! CircuitBreakerState formal-model tests in lyric-resilience/tests/
+//! resilience_tests.l, which inject nowMs to keep tests deterministic.
+//!
+//! Only active when compiled with feature = "dotnet".
+//! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 @cfg(feature = "dotnet")
 package Resilience.Kernel.Net
 
 import Std.Core
+import Std.Time
 
-@axiom("System.Threading for sleep and System.Collections.Concurrent for circuit state")
-extern package System.Threading {
-  /// Block the calling thread for `ms` milliseconds.  Used for retry backoff.
-  pub func sleepMs(ms: Int): Unit
-    requires: ms >= 0
+extern type ConcurrentDict[K, V] = "System.Collections.Concurrent.ConcurrentDictionary`2"
+
+@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2..ctor")
+func newConcurrentDict[K, V](): ConcurrentDict[K, V] = ()
+
+@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.TryGetValue")
+func cdTryGetValue[K, V](dict: in ConcurrentDict[K, V], key: in K, value: out V): Bool = ()
+
+@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.TryAdd")
+func cdTryAdd[K, V](dict: in ConcurrentDict[K, V], key: in K, value: in V): Bool = ()
+
+record CircuitEntry {
+  var consecutiveFailures: Int = 0
+  var isOpen: Bool = false
+  var openedAtMs: Long = 0i64
+  var halfOpenProbeInFlight: Bool = false
 }
 
-@axiom("In-process circuit-breaker state machine implemented in F# at bootstrap/src/Lyric.Emitter/CircuitStoreHost.fs as Lyric.Resilience.CircuitStore; mirrors the protected-type model in lyric-resilience/src/resilience.l (issue #365)")
-extern package Lyric.Resilience.CircuitStore {
-  /// Returns true if the named circuit is currently open (rejecting calls).
-  /// When the circuit is open and `cooldownMs` has elapsed since the last
-  /// open, the first caller is granted a half-open probe (returns false);
-  /// concurrent callers continue to see true until the probe records its
-  /// outcome via circuitRecordSuccess or circuitRecordFailure.
-  pub func circuitIsOpen(name: String, cooldownMs: Int): Bool
-    requires: name.length > 0
-    requires: cooldownMs > 0
+@axiom("System.Threading.Monitor.Enter — acquires an exclusive lock on obj")
+@externTarget("System.Threading.Monitor.Enter")
+func monitorEnter[T](obj: in T): Unit = ()
 
-  /// Record a successful call.  Closes the circuit and resets the failure count.
-  pub func circuitRecordSuccess(name: String): Unit
-    requires: name.length > 0
+@axiom("System.Threading.Monitor.Exit — releases an exclusive lock on obj")
+@externTarget("System.Threading.Monitor.Exit")
+func monitorExit[T](obj: in T): Unit = ()
 
-  /// Record a failed call.  Increments the failure count and opens the circuit
-  /// when the count reaches `failureThreshold`.  When the circuit is already
-  /// open (a half-open probe failed), refreshes `openedAtMs` so the cooldown
-  /// window restarts.
-  pub func circuitRecordFailure(name: String, failureThreshold: Int): Unit
-    requires: name.length > 0
-    requires: failureThreshold > 0
+val circuitRegistry: ConcurrentDict[String, CircuitEntry] = newConcurrentDict()
+
+func getOrCreateEntry(name: in String): CircuitEntry {
+  var found: CircuitEntry = default()
+  if cdTryGetValue(circuitRegistry, name, found) {
+    return found
+  }
+  val newEntry = CircuitEntry(consecutiveFailures = 0, isOpen = false, openedAtMs = 0i64, halfOpenProbeInFlight = false)
+  val _ = cdTryAdd(circuitRegistry, name, newEntry)
+  var found2: CircuitEntry = default()
+  if cdTryGetValue(circuitRegistry, name, found2) {
+    return found2
+  }
+  // Invariant: unreachable — circuitRegistry is append-only (no Remove/Clear calls),
+  // so a key added via TryAdd is always present for the immediately following
+  // TryGetValue.  The fallback returns newEntry to satisfy the type checker; any
+  // caller that somehow reaches this path will operate on an unregistered
+  // CircuitEntry (mutations will be invisible to other callers), which would
+  // indicate a ConcurrentDictionary contract violation outside our control.
+  newEntry
+}
+
+@axiom("System.Threading.Thread.Sleep — blocks the calling thread for the given number of milliseconds")
+@externTarget("System.Threading.Thread.Sleep")
+pub func sleepMs(ms: in Int): Unit
+  requires: ms >= 0
+  = ()
+
+@stable(since = "0.1")
+pub func circuitIsOpen(name: in String, cooldownMs: in Int): Bool
+  requires: name.length > 0
+  requires: cooldownMs > 0
+{
+  val entry = getOrCreateEntry(name)
+  monitorEnter(entry)
+  defer {
+    monitorExit(entry)
+  }
+  if not entry.isOpen {
+    return false
+  }
+  val elapsed: Long = nowEpochMillis() - entry.openedAtMs
+  if elapsed < cooldownMs.toLong() {
+    return true
+  }
+  if entry.halfOpenProbeInFlight {
+    return true
+  }
+  entry.halfOpenProbeInFlight = true
+  false
+}
+
+@stable(since = "0.1")
+pub func circuitRecordSuccess(name: in String): Unit
+  requires: name.length > 0
+{
+  val entry = getOrCreateEntry(name)
+  monitorEnter(entry)
+  defer {
+    monitorExit(entry)
+  }
+  entry.consecutiveFailures = 0
+  entry.isOpen = false
+  entry.openedAtMs = 0i64
+  entry.halfOpenProbeInFlight = false
+}
+
+@stable(since = "0.1")
+pub func circuitRecordFailure(name: in String, failureThreshold: in Int): Unit
+  requires: name.length > 0
+  requires: failureThreshold > 0
+{
+  val entry = getOrCreateEntry(name)
+  monitorEnter(entry)
+  defer {
+    monitorExit(entry)
+  }
+  entry.consecutiveFailures = entry.consecutiveFailures + 1
+  if entry.isOpen {
+    entry.openedAtMs = nowEpochMillis()
+    entry.halfOpenProbeInFlight = false
+  } else {
+    if entry.consecutiveFailures >= failureThreshold {
+      entry.isOpen = true
+      entry.openedAtMs = nowEpochMillis()
+      entry.halfOpenProbeInFlight = false
+    }
+  }
 }

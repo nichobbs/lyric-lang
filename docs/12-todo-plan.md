@@ -3,55 +3,78 @@
 Everything in Bands A–D and Tiers 1–5 of the previous version of this file
 has shipped.  What remains is tracked here.
 
-The phased plan in `docs/05-implementation-plan.md` is the strategic view;
-this doc is the *next-sessions* tactical view.
+The phased plan in `docs/05-implementation-plan.md` is the strategic view.
+**This file is the single source of truth for outstanding work.**
+`docs/36-v1-roadmap.md` (§R1–R6 all complete) is superseded for tracking
+purposes and retained as a historical reference only.  Technical per-gap
+evidence lives in `docs/41-self-hosted-compiler-gap-analysis.md`.
+
+_Last verified against source: **2026-06-12**._
 
 ---
 
 ## Tier 0 — self-hosted `--target dotnet` soundness & correctness floor (v1.0 blocker)
 
-This is the top of the queue and the real remaining v1.0 work.  Since the
-self-hosted compiler became the default and only non-JVM path, its gaps ship to
-users.  The authoritative, source-verified list is
-`docs/41-self-hosted-compiler-gap-analysis.md` §10 (re-verified 2026-06-03),
-sequenced as `docs/36-v1-roadmap.md` §R7.  In priority order:
+This is the top of the queue and the real remaining v1.0 work.  In priority
+order:
 
-1. **Front-end soundness (CRITICAL).** Make the type checker a gatekeeper, not an
-   advisory pass: type the ~12 `TyError` expression forms, add match
-   exhaustiveness, visibility / opaque-hiding / impl-conformance enforcement, and
-   a §5.2 parameter-mode pass that runs for *all* packages; then flip the
-   single-file build path from advisory to fatal and reconcile it with the
-   project path. (docs/41 C1, C2, C10, C11, H14, H15, H16, M6, C13-front-end.)
-2. **Backend correctness (CRITICAL).** `?` (C3), all of #1481 (compound-assign
-   operator H22, Float/Long literal match H18, break/continue-across-`try` H17,
-   `List.contains`/`removeAt` + unknown-method fail-loud H21), `defer` at scope
-   exit (C7, #1477), `==`/`Map`-key structural equality (H1, #1480/#1837), and
-   try/catch-as-value-expression IL (#1823) are done; M7 is stale (loop
-   invariants are checked via the elaborator; `SItem` is never parsed).
-   Capturing closures (H20, #1479) work for **immutable** bindings (by-value
-   into an `object[]` closed delegate target); capturing a `var` fails loud
-   (by-ref capture + nested closures are v2).  Function-value
-   invocation (#1877) is fixed for zero-argument lambdas via a uniform `Func`
-   ABI (thunks/suppliers/`() -> Unit` callbacks work through HOFs); param-using
-   lambdas passed directly to a typed `(…) -> R` parameter work — boxed args
-   unboxed via annotation or HOF-signature propagation (#1939); a param-using
-   lambda with neither source fails loud.
-   **Anything not yet correctly lowered must hard-error, never silently pass
-   through.** (docs/41 H20 PARTIAL; #1877 done, #1939 done, #1854.)
-3. **Async (CRITICAL).** Port `AsyncStateMachine.fs` + `AsyncGenerator.fs` to
-   `lyric-compiler/msil/` (state machine, `Task[T]`/`ValueTask[T]`, lazy
-   `IAsyncEnumerable[T]`).  Until ported, `await`/`spawn`/async-generators must
-   panic with a tracked-issue message instead of miscompiling. (docs/41 C4, C5.)
-4. **Feature completion (HIGH).** User generic *types* (C8), `@projectable`
-   twins (H2), range-subtype validation (H3), custom `@generate` wiring (H10),
-   `old()`/quantifier lowering (H11), `config{}` (M3), `@derive(Ord)`/union-enum
-   derives (M4), user cross-package generic-fn mono (H6), wire
-   `bind`/`scoped`/`provided` (H4), call-site named/default args (H5).
-5. **F# elimination + AOT (HIGH).** Close the `HttpClientHost` package class-`val`
-   `.cctor` gap, port `ProcessCapture` to async, resolve the broken
-   `StubCounterHost` externs (`@stubbable` counters, **new** — docs/41 L5),
-   migrate `Lyric.Session.Host` off F# (**new** — docs/41 L6), then add
-   `<PublishAot>` + a native-binary CI smoke test (H12, H13).
+1. **Front-end soundness (CRITICAL).** **Shipped:** gatekeeper flip done — single-file
+   `lyric build` now aborts on type errors, matching the project path (C1,
+   D-progress-438); match exhaustiveness for unions/enums/`Bool`/unbounded scalars
+   (T0016, #1483 split 1); `EPropagate` (`?`) unwrap typing (#1483 split 2a);
+   `EIndex` element typing (D-progress-407); `EIf`-branch unified typing
+   (D-progress-414); `EMatch`-branch unified typing with per-arm pattern variable
+   binding (D-progress-419); generic union-constructor typing (D-progress-418);
+   generic return-type instantiation (D-progress-424); argument-type overload
+   resolution (D-progress-421); `EBlock`/`EUnsafe`/`EResult` typing
+   (D-progress-408); visibility enforcement (H14, #1484); opaque
+   representation-hiding (C10, #1485); §5.2 parameter-mode pass for all packages
+   (C13-front-end, #1487); impl-conformance start — missing-abstract-method and
+   arity-mismatch errors, interface subtyping at argument positions (C11 PARTIAL,
+   #1486); remaining `TyError` expression forms — `ELambda`, `ETypeApp`,
+   `EForall`/`EExists`, `EAssign`, tuple-destructure sub-bindings, record-ctor
+   argument checking (C2, #2939); full impl-conformance signature type matching
+   (C11, #1486, #2939); `where T: Marker` bound satisfaction at call sites (H15,
+   #2939); `alias X = Long` as a usable type (H16, #2939); numeric widening —
+   `Int`/`Long` and `Float`/`Double` in arithmetic, comparisons, and argument
+   positions (M6, #2939); default interface method (DIM) bodies lowered as
+   concrete .NET DIM MethodDefs in the self-hosted MSIL emitter (C11 DONE,
+   `lowerMInterface` + `lowerImplMethodMsil`). **Remaining:** none — Band 1 is
+   complete.
+2. **Backend correctness (CRITICAL). Shipped:** `?` (C3, #1475); `==`/`Map`-key
+   structural equality (H1, #1480/#1837); `defer` (C7, #1477); all of #1481;
+   try/catch-as-value-expression IL (#1823); capturing closures (H20, #1479
+   v1+v2 — immutable by value into `object[]`, `var` by heap-cell reference,
+   single-level incl. escaping); function-value invocation for zero-arg lambdas
+   (#1877) and annotated/HOF-propagated param-using lambdas (#1939); M7 closed
+   (loop invariants lowered by the elaborator; `SItem` never produced by the
+   parser). **Remaining:** multi-level nested closure capture (nested lambda
+   captures enclosing lambda's locals, #1479); lambdas in `@test_module` bodies
+   (#1854, LOW). **Anything not yet correctly lowered must hard-error, never
+   silently pass through.**
+3. **Async tail (CRITICAL): SHIPPED.** All five phases of Epic #2070 complete
+   (extern async unwrapping, `IAsyncStateMachine` synthesis with multi-await,
+   promoted locals and stack-spill, `ESpawn`, lazy `IAsyncEnumerable[T]` generator
+   synthesis — C4 and C5 resolved, #2965).  `await`-in-`try` IL validity enforced
+   via V0012 diagnostic (#2965); dynamic `maxStack` computed in `ee501fd` (#3085).
+   Open correctness bugs tracked separately (not v1.0 blocking): #2725 (further
+   await-in-try edge cases), #2469 (JVM generator parity).
+4. **Feature completion (HIGH): SHIPPED.** All Band 4 items resolved: C8
+   (cross-package generic records/unions #1496, #3079; in-bundle #2362), C12
+   (protected-type `Monitor.Enter`/`Exit` #1499, #3120), H2 (`@projectable` twins
+   #1500, #3015/#3044), H3 (range-subtype validation #1501, #3112), H4 (wire
+   `@provided`/`WMBind` + topo sort #1502, #3050), H5 (named/default args #1503,
+   #3050), H6 (user cross-package generic-fn mono #1498, #2966), H10 (custom
+   `@generate` wiring #1505, #2966), H11 (`old()`/`forall`/`exists` lowering
+   #1506, #2966), M3 (`config{}` lowering #1508, #2966), M4 (`@derive(Ord)`/
+   union/enum derives #1507, #3120).
+5. **F# elimination + AOT (HIGH): SHIPPED.** All ecosystem host shims deleted
+   (#3053: Jvm.Hosts, Jobs.Host, Mq.Host, Web.Host; #3016: Session.Host,
+   ProcessCapture, StubCounterHost; #3034/#3062: HttpClientHost `.cctor` #1576
+   fixed, `Lyric.Emitter.dll` + `FSharp.Core.dll` removed from stage-1 bundle).
+   AOT publishing wired and CI smoke test running (#3197/#3201/#3206). Stage-1
+   determinism CI-enforced — 103/103 DLLs byte-identical (#3217). (docs/41 H12,
+   H13 complete.)
 
 ---
 

@@ -1,30 +1,28 @@
-// Mq.Kernel.Jvm — JVM extern boundary for message broker drivers.
-//
-// JVM implementation of the same contract as Mq.Kernel.Net.
-// Two broker clients are supported on JVM:
-//
-//   rabbitmq — com.rabbitmq.client.ConnectionFactory (amqp-client JAR)
-//   kafka    — org.apache.kafka.clients.producer.KafkaProducer + KafkaConsumer
-//
-// Azure Service Bus and SQS are .NET-only in the current plan; JVM bindings
-// for those brokers (e.g. via AWS SDK for Java or Azure SDK for Java) are
-// tracked in Q-MQ-001 and can be added here when the feature is requested.
-//
-// Handle table and wire format follow the same conventions as Mq.Kernel.Net:
-//   connect → Int handle
-//   consume → JSON object string (same schema) or "" for timeout
-//   ack/nack → delivery tag string
-//
-// Only active when compiled with feature = "jvm" (Phase 6).
-// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
-
+//! Mq.Kernel.Jvm — JVM extern boundary for message broker drivers.
+//!
+//! JVM implementation of the same contract as Mq.Kernel.Net.
+//! Two broker clients are supported on JVM:
+//!
+//!   rabbitmq — com.rabbitmq.client.ConnectionFactory (amqp-client JAR)
+//!   kafka    — org.apache.kafka.clients.producer.KafkaProducer + KafkaConsumer
+//!
+//! Azure Service Bus and SQS are .NET-only in the current plan; JVM bindings
+//! for those brokers (e.g. via AWS SDK for Java or Azure SDK for Java) are
+//! tracked in Q-MQ-001 and can be added here when the feature is requested.
+//!
+//! Handle table and wire format follow the same conventions as Mq.Kernel.Net:
+//!   connect → Int handle
+//!   consume → JSON object string (same schema) or "" for timeout
+//!   ack/nack → delivery tag string
+//!
+//! Only active when compiled with feature = "jvm" (Phase 6).
+//! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 @cfg(feature = "jvm")
 package Mq.Kernel.Jvm
 
 import Std.Core
 
 // ─── RabbitMQ (AMQP 0-9-1) ───────────────────────────────────────────────────
-
 /// Open an AMQP connection and declare the queue.  Returns a channel handle.
 @axiom("com.rabbitmq.client.ConnectionFactory AMQP 0-9-1 client for JVM")
 @cfg(feature = "rabbitmq")
@@ -62,7 +60,6 @@ pub func nack(queueId: in Int, deliveryTag: in String, requeue: in Bool): Result
 pub func close(queueId: in Int): Unit = ()
 
 // ─── Apache Kafka ─────────────────────────────────────────────────────────────
-
 /// Create a KafkaProducer+KafkaConsumer pair for the given topic.
 /// `url` is the bootstrap.servers value; `queueName` is the topic name.
 /// Returns an opaque handle.

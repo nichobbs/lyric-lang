@@ -1,12 +1,11 @@
-// jvm/self_test_b25.l — Stage B25: static fields (putstatic + getstatic).
-//
-// Generates Counter.class with a static int field `count` and two methods:
-//   increment()V: reads count, adds 1, writes count back (getstatic/putstatic)
-//   getCount()I:  returns current value of count (getstatic/ireturn)
-//
-// Main calls increment() three times then prints getCount() → 3.
-// Exercises: makeFieldInfo, makeClassFull with fields, putstatic, getstatic.
-
+//! jvm/self_test_b25.l — Stage B25: static fields (putstatic + getstatic).
+//!
+//! Generates Counter.class with a static int field `count` and two methods:
+//!   increment()V: reads count, adds 1, writes count back (getstatic/putstatic)
+//!   getCount()I:  returns current value of count (getstatic/ireturn)
+//!
+//! Main calls increment() three times then prints getCount() → 3.
+//! Exercises: makeFieldInfo, makeClassFull with fields, putstatic, getstatic.
 package Jvm.SelfTestB25
 
 import Std.Core
@@ -60,12 +59,12 @@ func makeCounterClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOut    = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val incRef    = poolMethodref(pool, "Counter", "increment", "()V")
-  val getRef    = poolMethodref(pool, "Counter", "getCount", "()I")
-  val printlnI  = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val incRef = poolMethodref(pool, "Counter", "increment", "()V")
+  val getRef = poolMethodref(pool, "Counter", "getCount", "()I")
+  val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
 
   // Call increment() three times
   emitGetstatic(asm, sysOut)
@@ -90,24 +89,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b25"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val counterBytes = makeCounterClassBytes()
-  val mainBytes    = makeMainClassBytes()
+  val mainBytes = makeMainClassBytes()
 
   val counterClass = BuiltClass(binaryName = "Counter", bytes = counterBytes)
-  val mainClass    = BuiltClass(binaryName = "Main",    bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(counterClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB25",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

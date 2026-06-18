@@ -1,15 +1,14 @@
-// jvm/self_test_b29.l — Stage B29: instanceof + checkcast.
-//
-// Generates TypeCheck.class with two static helpers:
-//   isString(Ljava/lang/Object;)Z  — returns 1 if arg is a String instance
-//   castToString(Ljava/lang/Object;)Ljava/lang/String; — casts arg to String
-//
-// Main:
-//   println(TypeCheck.isString("hello"))   → 1 (true)
-//   println(TypeCheck.castToString("world")) → "world"
-//
-// Exercises: emitInstanceof, emitCheckcast, invoking with Object supertype.
-
+//! jvm/self_test_b29.l — Stage B29: instanceof + checkcast.
+//!
+//! Generates TypeCheck.class with two static helpers:
+//!   isString(Ljava/lang/Object;)Z  — returns 1 if arg is a String instance
+//!   castToString(Ljava/lang/Object;)Ljava/lang/String; — casts arg to String
+//!
+//! Main:
+//!   println(TypeCheck.isString("hello"))   → 1 (true)
+//!   println(TypeCheck.castToString("world")) → "world"
+//!
+//! Exercises: emitInstanceof, emitCheckcast, invoking with Object supertype.
 package Jvm.SelfTestB29
 
 import Std.Core
@@ -32,12 +31,7 @@ func makeTypeCheckClassBytes(): List[Byte] {
   val isCode = assembleCode(asmIS, 1, 1)
   val isAttrs: List[Attribute] = newList()
   isAttrs.add(isCode)
-  val isStringMethod = makeMethodInfo(
-    ACC_PUBLIC + ACC_STATIC,
-    "isString",
-    "(Ljava/lang/Object;)Z",
-    isAttrs
-  )
+  val isStringMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "isString", "(Ljava/lang/Object;)Z", isAttrs)
 
   // ── castToString(Ljava/lang/Object;)Ljava/lang/String; ────────────────────
   val asmCS = newAssembler(pool)
@@ -63,13 +57,13 @@ func makeTypeCheckClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOut         = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val isStringRef    = poolMethodref(pool, "TypeCheck", "isString",    "(Ljava/lang/Object;)Z")
-  val castToStrRef   = poolMethodref(pool, "TypeCheck", "castToString", "(Ljava/lang/Object;)Ljava/lang/String;")
-  val printlnI       = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
-  val printlnS       = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val isStringRef = poolMethodref(pool, "TypeCheck", "isString", "(Ljava/lang/Object;)Z")
+  val castToStrRef = poolMethodref(pool, "TypeCheck", "castToString", "(Ljava/lang/Object;)Ljava/lang/String;")
+  val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
+  val printlnS = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
 
   // System.out.println(TypeCheck.isString("hello"))  → prints 1
   emitGetstatic(asm, sysOut)
@@ -98,24 +92,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b29"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val typeCheckBytes = makeTypeCheckClassBytes()
-  val mainBytes      = makeMainClassBytes()
+  val mainBytes = makeMainClassBytes()
 
   val typeCheckClass = BuiltClass(binaryName = "TypeCheck", bytes = typeCheckBytes)
-  val mainClass      = BuiltClass(binaryName = "Main",      bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(typeCheckClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB29",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

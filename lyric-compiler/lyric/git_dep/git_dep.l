@@ -1,23 +1,23 @@
-// lyric/gitdep/gitdep.l — git-source dependency resolver (Phase 5 §M5.3).
-//
-// Resolves `{ git = "...", tag/rev/branch, subdir }` dependencies by
-// cloning into a local cache under `~/.lyric/git-cache/`.
-//
-// Each remote URL maps to a deterministic directory name via `urlToHash`.
-// Within that directory each ref variant lives in its own subdirectory so
-// multiple refs from the same repo coexist without conflict:
-//   tag-<name>         — shallow clone pinned at a tag
-//   rev-<first-12>     — full clone checked out at a specific commit SHA
-//   branch-<name>      — shallow clone tracking a branch (refreshed on use)
-//
-// Branch refs are always re-fetched (git pull) because they are mutable.
-// Tag and Rev refs are cached permanently once cloned.
-
+//! lyric/gitdep/gitdep.l — git-source dependency resolver (Phase 5 §M5.3).
+//!
+//! Resolves `{ git = "...", tag/rev/branch, subdir }` dependencies by
+//! cloning into a local cache under `~/.lyric/git-cache/`.
+//!
+//! Each remote URL maps to a deterministic directory name via `urlToHash`.
+//! Within that directory each ref variant lives in its own subdirectory so
+//! multiple refs from the same repo coexist without conflict:
+//!   tag-<name>         — shallow clone pinned at a tag
+//!   rev-<first-12>     — full clone checked out at a specific commit SHA
+//!   branch-<name>      — shallow clone tracking a branch (refreshed on use)
+//!
+//! Branch refs are always re-fetched (git pull) because they are mutable.
+//! Tag and Rev refs are cached permanently once cloned.
 package Lyric.GitDep
 
 import Std.Core
 import Std.Collections
-import Std.String as Str      // before Path so Path.join/2 wins over Str.join/2
+import Std.String as Str
+// before Path so Path.join/2 wins over Str.join/2
 import Std.Char as Char
 import Std.File as File
 import Std.Path as Path
@@ -30,34 +30,19 @@ import Std.Errors
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public types
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// A reference that pins a git dependency to a specific point in history.
-pub union GitRef {
-  /// A git tag (e.g. `v1.2.3`).  Resolved with a shallow clone so the
-  /// network transfer is minimal.
-  case Tag(name: String)
-  /// An exact commit SHA.  The full history is cloned so the SHA is
-  /// guaranteed to be reachable.
-  case Rev(sha: String)
-  /// A branch name (e.g. `main`).  Always refreshed with `git pull` so
-  /// the working copy reflects the latest remote state.
-  case Branch(name: String)
-}
-
 /// The result of a successful `resolve` call.
 pub record GitDepResult {
   /// Absolute path to the resolved directory.  This is either the clone
   /// root or the `subdir` within it when the dependency specifies one.
-  localDir:    String
+  localDir: String
   /// Resolved git commit SHA.  For `Rev` refs this is the SHA from the manifest;
   /// for `Tag` and `Branch` refs it is the result of `git rev-parse HEAD`
   /// after the clone/pull completes.
   resolvedRev: String
+  // ─────────────────────────────────────────────────────────────────────────────
+  // §2. Cache directory helpers
+  // ─────────────────────────────────────────────────────────────────────────────
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §2. Cache directory helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Return the root of the git dependency cache.
 ///
@@ -81,12 +66,7 @@ pub func cacheDir(): String {
 ///   "http://localhost:3000/my.git"     → "localhost-3000-my-git-<hash>"
 pub func urlToHash(url: in String): String {
   // Sanitise the URL into a human-readable prefix.
-  val prefix = url
-    .replace("https://", "")
-    .replace("http://", "")
-    .replace("/", "-")
-    .replace(":", "-")
-    .replace(".", "-")
+  val prefix = url.replace("https://", "").replace("http://", "").replace("/", "-").replace(":", "-").replace(".", "-")
 
   // Strip leading hyphens from prefix.
   var trimmed = prefix
@@ -107,23 +87,34 @@ pub func urlToHash(url: in String): String {
     h = (h % 65000000) * 33 + (Char.toInt(url[ui]) % 128)
     ui += 1
   }
-  trimmed + "-" + Str.fromInt(h)
+  // Use the `toString` builtin, NOT `Str.fromInt`: this file imports both
+  // Std.String and Std.Char, and the F# emitter's qualified-name resolution
+  // mis-resolves `Str.fromInt` to `Std.Char.fromInt` (whose `requires n<=65535`
+  // panics for the ~2-billion DJB2 hash — the original crash; #2082).
+  trimmed + "-" + toString(h)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
-// Derive the subdirectory name for a given ref variant.
-func refDirName(ref: in GitRef): String {
-  match ref {
-    case Tag(name)    -> "tag-" + name
-    case Rev(sha)     ->
-      // Use only the first 12 characters of the SHA for readability.
-      if sha.length >= 12 { "rev-" + Str.substring(sha, 0, 12) }
-      else                { "rev-" + sha }
-    case Branch(name) -> "branch-" + name
+// Derive the cache subdirectory name for a `(refKind, refValue)` pair.  Returns
+// "" for an unknown kind so `resolve` can fail gracefully.  Takes flat strings
+// rather than a `GitRef` union — see the note on `resolve`.
+func refDirName(refKind: in String, refValue: in String): String {
+  if refKind == "tag" {
+    return "tag-" + refValue
   }
+  if refKind == "branch" {
+    return "branch-" + refValue
+  }
+  if refKind == "rev" {
+    // Use only the first 12 characters of the SHA for readability.
+    if refValue.length >= 12 {
+      return "rev-" + Str.substring(refValue, 0, 12)
+    }
+    return "rev-" + refValue
+  }
+  ""
 }
 
 // True when `dir` looks like an already-initialised git clone.
@@ -140,13 +131,13 @@ func runGit(args: in List[String]): Result[Int, IOError] {
 
 // Build an Err string from a git command result.
 func gitErrMsg(op: in String, code: in Int): String {
-  "git " + op + " failed (exit " + Str.fromInt(code) + ")"
+  // `toString`, not `Str.fromInt` (Std.String/Std.Char name collision; #2082).
+  "git " + op + " failed (exit " + toString(code) + ")"
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. Clone / fetch strategies
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Clone a tag: shallow clone with `--branch <tag> --depth 1`.
 func cloneTag(url: in String, tagName: in String, targetDir: in String): Result[Unit, String] {
   val args: List[String] = newList()
@@ -158,10 +149,8 @@ func cloneTag(url: in String, tagName: in String, targetDir: in String): Result[
   args.add(url)
   args.add(targetDir)
   match runGit(args) {
-    case Err(e)    -> Err(error = "git clone failed: " + IOError.message(e))
-    case Ok(code)  ->
-      if code != 0 { Err(error = gitErrMsg("clone", code)) }
-      else         { Ok(value = ()) }
+    case Err(e) -> Err(error = "git clone failed: " + IOError.message(e))
+    case Ok(code) -> if code != 0 { Err(error = gitErrMsg("clone", code)) } else { Ok(value = ()) }
   }
 }
 
@@ -173,9 +162,8 @@ func cloneRev(url: in String, sha: in String, targetDir: in String): Result[Unit
   cloneArgs.add(url)
   cloneArgs.add(targetDir)
   match runGit(cloneArgs) {
-    case Err(e)   -> return Err(error = "git clone failed: " + IOError.message(e))
-    case Ok(code) ->
-      if code != 0 { return Err(error = gitErrMsg("clone", code)) }
+    case Err(e) -> return Err(error = "git clone failed: " + IOError.message(e))
+    case Ok(code) -> if code != 0 { return Err(error = gitErrMsg("clone", code)) }
   }
   // Checkout the exact commit.
   val coArgs: List[String] = newList()
@@ -184,10 +172,8 @@ func cloneRev(url: in String, sha: in String, targetDir: in String): Result[Unit
   coArgs.add("checkout")
   coArgs.add(sha)
   match runGit(coArgs) {
-    case Err(e)   -> Err(error = "git checkout failed: " + IOError.message(e))
-    case Ok(code) ->
-      if code != 0 { Err(error = gitErrMsg("checkout", code)) }
-      else         { Ok(value = ()) }
+    case Err(e) -> Err(error = "git checkout failed: " + IOError.message(e))
+    case Ok(code) -> if code != 0 { Err(error = gitErrMsg("checkout", code)) } else { Ok(value = ()) }
   }
 }
 
@@ -202,10 +188,8 @@ func cloneBranch(url: in String, branchName: in String, targetDir: in String): R
   args.add(url)
   args.add(targetDir)
   match runGit(args) {
-    case Err(e)   -> Err(error = "git clone failed: " + IOError.message(e))
-    case Ok(code) ->
-      if code != 0 { Err(error = gitErrMsg("clone", code)) }
-      else         { Ok(value = ()) }
+    case Err(e) -> Err(error = "git clone failed: " + IOError.message(e))
+    case Ok(code) -> if code != 0 { Err(error = gitErrMsg("clone", code)) } else { Ok(value = ()) }
   }
 }
 
@@ -227,28 +211,14 @@ func pullBranch(targetDir: in String): Result[Unit, String] {
   args.add(targetDir)
   args.add("pull")
   match runGit(args) {
-    case Err(e)   -> Err(error = "git pull failed: " + IOError.message(e))
-    case Ok(code) ->
-      if code != 0 { Err(error = gitErrMsg("pull", code)) }
-      else         { Ok(value = ()) }
+    case Err(e) -> Err(error = "git pull failed: " + IOError.message(e))
+    case Ok(code) -> if code != 0 { Err(error = gitErrMsg("pull", code)) } else { Ok(value = ()) }
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. Public API
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// Return a human-readable label for a `GitRef` value.
-///
-/// Used in diagnostic messages and lock-file annotations.
-pub func gitRefLabel(ref: in GitRef): String {
-  match ref {
-    case Tag(name)    -> "tag:" + name
-    case Rev(sha)     -> "rev:" + sha
-    case Branch(name) -> "branch:" + name
-  }
-}
-
 /// Resolve a git dependency by cloning (or updating) into the local cache.
 ///
 /// Steps:
@@ -258,60 +228,70 @@ pub func gitRefLabel(ref: in GitRef): String {
 ///      or pull if the ref is a `Branch` (mutable) and it is already cached.
 ///   4. Optionally descend into `subdir` and verify it exists.
 ///   5. Return `Ok(GitDepResult)` or `Err(message)`.
-pub func resolve(url: in String, ref: in GitRef, subdir: in Option[String]): Result[GitDepResult, String] {
+/// `refKind` is one of "tag" / "rev" / "branch"; `refValue` the name or SHA.
+/// Flat strings rather than a `GitRef` union: a union-typed field of the
+/// `Lyric.Manifest.DepSource.Git` union read back null under the F# stage-0
+/// emitter (#2126), so the typed ref never reached here.  The flat encoding
+/// round-trips on both emitters.
+pub func resolve(
+  url: in String, refKind: in String, refValue: in String, subdir: in Option[String]
+): Result[GitDepResult, String] {
   // Derive cache paths.
-  val cacheRoot  = Path.join(cacheDir(), urlToHash(url))
-  val targetDir  = Path.join(cacheRoot, refDirName(ref))
+  val cacheRoot = Path.join(cacheDir(), urlToHash(url))
+  val refName = refDirName(refKind, refValue)
+  // Guard: an empty ref name means the ref kind (tag/rev/branch) could not be
+  // determined.  Fail with a clean diagnostic rather than letting the resulting
+  // `Path.join(cacheRoot, "")` NUL-join produce a confusing path or panic.
+  if Str.length(refName) == 0 {
+    return Err(error = "git dependency '" + url + "': unknown ref kind '" + refKind + "' (expected tag/rev/branch)")
+  }
+  val targetDir = Path.join(cacheRoot, refName)
 
   // Ensure the cache root directory exists.
   match Dir.createRecursive(cacheRoot) {
-    case Ok(_)  -> ()
-    case Err(e) ->
-      return Err(error = "cannot create cache directory '" + cacheRoot + "': " + IOError.message(e))
+    case Ok(_) -> ()
+    case Err(e) -> return Err(error = "cannot create cache directory '" + cacheRoot + "': " + IOError.message(e))
   }
 
   // Clone or refresh depending on ref type and whether the clone exists.
   val alreadyCloned = isGitClone(targetDir)
   var resolvedRev = ""
 
-  match ref {
-    case Tag(name) -> {
-      if not alreadyCloned {
-        match cloneTag(url, name, targetDir) {
-          case Err(msg) -> return Err(error = msg)
-          case Ok(_)    -> ()
-        }
+  if refKind == "tag" {
+    if not alreadyCloned {
+      match cloneTag(url, refValue, targetDir) {
+        case Err(msg) -> return Err(error = msg)
+        case Ok(_) -> ()
       }
-      // Tag refs are immutable: once cloned, no refresh needed.
-      // Capture the pinned SHA for the lock file.
-      resolvedRev = revParseHead(targetDir)
     }
-    case Rev(sha) -> {
-      if not alreadyCloned {
-        match cloneRev(url, sha, targetDir) {
-          case Err(msg) -> return Err(error = msg)
-          case Ok(_)    -> ()
-        }
+    // Tag refs are immutable: once cloned, no refresh needed.
+    // Capture the pinned SHA for the lock file.
+    resolvedRev = revParseHead(targetDir)
+  } else if refKind == "rev" {
+    if not alreadyCloned {
+      match cloneRev(url, refValue, targetDir) {
+        case Err(msg) -> return Err(error = msg)
+        case Ok(_) -> ()
       }
-      // Rev refs are immutable: the SHA is already known from the manifest.
-      resolvedRev = sha
     }
-    case Branch(name) -> {
-      if not alreadyCloned {
-        match cloneBranch(url, name, targetDir) {
-          case Err(msg) -> return Err(error = msg)
-          case Ok(_)    -> ()
-        }
-      } else {
-        // Branch refs are mutable: pull to get the latest commit.
-        match pullBranch(targetDir) {
-          case Err(msg) -> return Err(error = msg)
-          case Ok(_)    -> ()
-        }
+    // Rev refs are immutable: the SHA is already known from the manifest.
+    resolvedRev = refValue
+  } else {
+    // refKind == "branch" (refDirName already rejected unknown kinds).
+    if not alreadyCloned {
+      match cloneBranch(url, refValue, targetDir) {
+        case Err(msg) -> return Err(error = msg)
+        case Ok(_) -> ()
       }
-      // Capture the current HEAD SHA so the lock file records a specific commit.
-      resolvedRev = revParseHead(targetDir)
+    } else {
+      // Branch refs are mutable: pull to get the latest commit.
+      match pullBranch(targetDir) {
+        case Err(msg) -> return Err(error = msg)
+        case Ok(_) -> ()
+      }
     }
+    // Capture the current HEAD SHA so the lock file records a specific commit.
+    resolvedRev = revParseHead(targetDir)
   }
 
   // Verify the clone root exists after the operation.
@@ -320,10 +300,7 @@ pub func resolve(url: in String, ref: in GitRef, subdir: in Option[String]): Res
   }
 
   // Optionally descend into a subdirectory.
-  val resolvedDir = match subdir {
-    case None    -> targetDir
-    case Some(s) -> Path.join(targetDir, s)
-  }
+  val resolvedDir = match subdir { case None -> targetDir; case Some(s) -> Path.join(targetDir, s) }
 
   if not Dir.exists(resolvedDir) {
     return Err(error = "subdir '" + resolvedDir + "' does not exist in cloned repository")

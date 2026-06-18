@@ -1,29 +1,34 @@
-// std/_kernel/json_host.l - host boundary for System.Text.Json.
-//
-// Holds every `@externTarget` and `extern type` declaration that
-// `Std.Json` formerly declared inline.  Kernel function names carry
-// a `host` prefix so they don't collide with the user-facing names
-// in `Std.Json` when the test inliner merges every stdlib file into
-// one user package.
-//
-// Internal: only `Std.Json` should import this; per
-// `compiler/lyric/std/_kernel/README.md` the kernel is the audited
-// extern boundary, not a general-purpose API.
-
+//! std/_kernel/json_host.l - host boundary for System.Text.Json.
+//!
+//! Holds every `@externTarget` and `extern type` declaration that
+//! `Std.Json` formerly declared inline.  Kernel function names carry
+//! a `host` prefix so they don't collide with the user-facing names
+//! in `Std.Json` when the test inliner merges every stdlib file into
+//! one user package.
+//!
+//! Internal: only `Std.Json` should import this; per
+//! `compiler/lyric/std/_kernel/README.md` the kernel is the audited
+//! extern boundary, not a general-purpose API.
 @axiom("System.Text.Json operations conform to their documented .NET contracts")
 package Std.JsonHost
 
-import Std.Collections    // brings `List[T]` into scope for the slice readers
+import Std.Collections
 
-extern type JsonDoc     = "System.Text.Json.JsonDocument"
+// brings `List[T]` into scope for the slice readers
+extern type JsonDoc = "System.Text.Json.JsonDocument"
+
 extern type JsonElement = "System.Text.Json.JsonElement"
+
 // Nested CLR type — `+` separates the outer type from the nested
 // `ArrayEnumerator` struct.  Used by the slice-reader helpers to
 // iterate `JsonElement.EnumerateArray()` without an F#-side shim.
-extern type JsonArrayEnumerator  = "System.Text.Json.JsonElement+ArrayEnumerator"
+extern type JsonArrayEnumerator = "System.Text.Json.JsonElement+ArrayEnumerator"
+
 extern type JsonObjectEnumerator = "System.Text.Json.JsonElement+ObjectEnumerator"
-extern type JsonProperty         = "System.Text.Json.JsonProperty"
-extern type JsonEncodedText      = "System.Text.Json.JsonEncodedText"
+
+extern type JsonProperty = "System.Text.Json.JsonProperty"
+
+extern type JsonEncodedText = "System.Text.Json.JsonEncodedText"
 
 // =====================================================================
 // Parsing.
@@ -32,7 +37,6 @@ extern type JsonEncodedText      = "System.Text.Json.JsonEncodedText"
 // via the FFI default-arg emit (the BCL overload is reachable as 1-arg
 // from C# because the second parameter has a default value).
 // =====================================================================
-
 @externTarget("System.Text.Json.JsonDocument.Parse")
 pub func hostParseJson(s: in String): JsonDoc = ()
 
@@ -50,7 +54,6 @@ pub func hostRootElement(d: in JsonDoc): JsonElement = ()
 // =====================================================================
 // Walking the tree.
 // =====================================================================
-
 @externTarget("System.Text.Json.JsonElement.GetProperty")
 pub func hostGetProperty(elem: in JsonElement, name: in String): JsonElement = ()
 
@@ -61,7 +64,6 @@ pub func hostTryGetProperty(elem: in JsonElement, name: in String, out_: out Jso
 // Leaf accessors.  All `GetXyz` methods on `JsonElement` throw if the
 // kind is wrong; the `tryGet*` family is the safe wrapper.
 // =====================================================================
-
 @externTarget("System.Text.Json.JsonElement.GetString")
 pub func hostGetString(elem: in JsonElement): String = ()
 
@@ -99,7 +101,6 @@ pub func hostValueKind(elem: in JsonElement): Int = ()
 // param is `inout`; Current is a property getter and doesn't mutate
 // but routes through `propGetter ()` in the FFI resolver.
 // =====================================================================
-
 @externTarget("System.Text.Json.JsonElement.EnumerateArray")
 pub func hostEnumerateArray(elem: in JsonElement): JsonArrayEnumerator = ()
 
@@ -113,7 +114,6 @@ pub func hostEnumCurrent(en: inout JsonArrayEnumerator): JsonElement = ()
 // Object iteration — direct externs over `JsonElement.ObjectEnumerator`
 // (the nested-CLR struct) so object-walking code can stay in pure Lyric.
 // =====================================================================
-
 @externTarget("System.Text.Json.JsonElement.EnumerateObject")
 pub func hostEnumerateObject(elem: in JsonElement): JsonObjectEnumerator = ()
 
@@ -138,7 +138,6 @@ pub func hostPropertyValue(prop: in JsonProperty): JsonElement = ()
 // `ToString()` instance method renders the escaped UTF-16 form
 // without the surrounding quotes; we add those in Lyric.
 // =====================================================================
-
 @externTarget("System.Text.Json.JsonEncodedText.Encode")
 pub func hostEncodeText(s: in String): JsonEncodedText = ()
 
@@ -161,11 +160,12 @@ pub func hostEncodeString(s: in String): String {
 // don't match the expected kind are silently skipped, matching the
 // retired F# shim's behaviour.
 // =====================================================================
-
 pub func lyricJsonGetIntSlice(s: in String, name: in String, value: out slice[Int]): Bool {
   val list: List[Int] = newList()
   val doc = hostParseJson(s)
-  defer { hostDisposeJson(doc) }
+  defer {
+    hostDisposeJson(doc)
+  }
   val root = hostRootElement(doc)
   var elem: JsonElement = default()
   if not hostTryGetProperty(root, name, elem) {
@@ -192,7 +192,9 @@ pub func lyricJsonGetIntSlice(s: in String, name: in String, value: out slice[In
 pub func lyricJsonGetLongSlice(s: in String, name: in String, value: out slice[Long]): Bool {
   val list: List[Long] = newList()
   val doc = hostParseJson(s)
-  defer { hostDisposeJson(doc) }
+  defer {
+    hostDisposeJson(doc)
+  }
   val root = hostRootElement(doc)
   var elem: JsonElement = default()
   if not hostTryGetProperty(root, name, elem) {
@@ -218,7 +220,9 @@ pub func lyricJsonGetLongSlice(s: in String, name: in String, value: out slice[L
 pub func lyricJsonGetDoubleSlice(s: in String, name: in String, value: out slice[Double]): Bool {
   val list: List[Double] = newList()
   val doc = hostParseJson(s)
-  defer { hostDisposeJson(doc) }
+  defer {
+    hostDisposeJson(doc)
+  }
   val root = hostRootElement(doc)
   var elem: JsonElement = default()
   if not hostTryGetProperty(root, name, elem) {
@@ -244,7 +248,9 @@ pub func lyricJsonGetDoubleSlice(s: in String, name: in String, value: out slice
 pub func lyricJsonGetBoolSlice(s: in String, name: in String, value: out slice[Bool]): Bool {
   val list: List[Bool] = newList()
   val doc = hostParseJson(s)
-  defer { hostDisposeJson(doc) }
+  defer {
+    hostDisposeJson(doc)
+  }
   val root = hostRootElement(doc)
   var elem: JsonElement = default()
   if not hostTryGetProperty(root, name, elem) {
@@ -273,7 +279,9 @@ pub func lyricJsonGetBoolSlice(s: in String, name: in String, value: out slice[B
 pub func lyricJsonGetStringSlice(s: in String, name: in String, value: out slice[String]): Bool {
   val list: List[String] = newList()
   val doc = hostParseJson(s)
-  defer { hostDisposeJson(doc) }
+  defer {
+    hostDisposeJson(doc)
+  }
   val root = hostRootElement(doc)
   var elem: JsonElement = default()
   if not hostTryGetProperty(root, name, elem) {

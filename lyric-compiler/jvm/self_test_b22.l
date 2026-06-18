@@ -1,14 +1,13 @@
-// jvm/self_test_b22.l — Stage B22: exception handling with try/catch.
-//
-// Generates TryCatch.class with safeDiv(I,I)I that catches ArithmeticException
-// from integer division by zero and returns -1.  Main calls safeDiv(10,2)=5
-// and safeDiv(10,0)=-1.
-//
-// Uses assembleRaw + makeCodeAttrWithHandler to set the exception table.
-// Targets Java 5 (major=49) to avoid the StackMapTable requirement at the
-// exception handler entry point (which has the exception object on the stack,
-// requiring a same_locals_1_stack_item frame — tracked as B23+).
-
+//! jvm/self_test_b22.l — Stage B22: exception handling with try/catch.
+//!
+//! Generates TryCatch.class with safeDiv(I,I)I that catches ArithmeticException
+//! from integer division by zero and returns -1.  Main calls safeDiv(10,2)=5
+//! and safeDiv(10,0)=-1.
+//!
+//! Uses assembleRaw + makeCodeAttrWithHandler to set the exception table.
+//! Targets Java 5 (major=49) to avoid the StackMapTable requirement at the
+//! exception handler entry point (which has the exception object on the stack,
+//! requiring a same_locals_1_stack_item frame — tracked as B23+).
 package Jvm.SelfTestB22
 
 import Std.Core
@@ -20,7 +19,7 @@ import Jvm.Driver
 
 func makeTryCatchClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
   // safeDiv(I,I)I layout (all 1-byte instructions):
   //   offset 0: iload_0
@@ -38,7 +37,7 @@ func makeTryCatchClassBytes(): List[Byte] {
   emitPushInt(asm, -1)
   emitIreturn(asm)
 
-  val ar      = assembleRaw(asm)
+  val ar = assembleRaw(asm)
   val exClass = poolClass(pool, "java/lang/ArithmeticException")
 
   // Exception table: try [0, 4) → handler 4, catch ArithmeticException
@@ -55,11 +54,11 @@ func makeTryCatchClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOut    = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val safeDivRef = poolMethodref(pool, "TryCatch", "safeDiv", "(II)I")
-  val printlnI  = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
+  val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
 
   // println(safeDiv(10, 2))  → 5
   emitGetstatic(asm, sysOut)
@@ -90,24 +89,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b22"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val tryCatchBytes = makeTryCatchClassBytes()
-  val mainBytes     = makeMainClassBytes()
+  val mainBytes = makeMainClassBytes()
 
   val tryCatchClass = BuiltClass(binaryName = "TryCatch", bytes = tryCatchBytes)
-  val mainClass     = BuiltClass(binaryName = "Main",     bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(tryCatchClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB22",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

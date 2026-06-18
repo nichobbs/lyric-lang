@@ -1,38 +1,38 @@
-/// Rbac.Policy — permission model and machine-checked no-escalation theorem.
-///
-/// The proof obligations verified by Z3:
-///
-///   hasPermission    — the permission predicate is closed over the four roles;
-///                      Z3 verifies that it is total (every (Role, Permission)
-///                      pair has a defined result) and that Admin dominates
-///                      all others.
-///
-///   noEscalation     — a principal cannot grant a permission they do not hold.
-///                      Proved as: "if not hasPermission(grantor, perm) then
-///                      grantAllowed(grantor, perm) == false."
-///                      Z3 closes this by enum case split; the proof makes
-///                      privilege escalation structurally impossible in any
-///                      @proof_required caller.
-///
-///   dominanceTransitive — the role hierarchy is transitive:
-///                      Admin ≥ Manager ≥ User ≥ Guest.
-///
-/// Run standalone:  lyric prove examples/rbac/src/policy.l --verbose
-
+//! Rbac.Policy — permission model and machine-checked no-escalation theorem.
+//!
+//! The proof obligations verified by Z3:
+//!
+//!   hasPermission    — the permission predicate is closed over the four roles;
+//!                      Z3 verifies that it is total (every (Role, Permission)
+//!                      pair has a defined result) and that Admin dominates
+//!                      all others.
+//!
+//!   noEscalation     — a principal cannot grant a permission they do not hold.
+//!                      Proved as: "if not hasPermission(grantor, perm) then
+//!                      grantAllowed(grantor, perm) == false."
+//!                      Z3 closes this by enum case split; the proof makes
+//!                      privilege escalation structurally impossible in any
+//!                      @proof_required caller.
+//!
+//!   dominanceTransitive — the role hierarchy is transitive:
+//!                      Admin ≥ Manager ≥ User ≥ Guest.
+//!
+//! Run standalone:  lyric prove examples/rbac/src/policy.l --verbose
 @proof_required
 package Rbac.Policy
 
 import Std.Core
 
 // ─── Identity types ───────────────────────────────────────────────────────────
+pub type UserId = Long
 
-pub type UserId       = Long
-pub type RoleId       = Long
-pub type ResourceId   = Long
+pub type RoleId = Long
+
+pub type ResourceId = Long
+
 pub type PermissionId = Long
 
 // ─── Permission model ─────────────────────────────────────────────────────────
-
 pub enum Permission {
   case Read
   case Write
@@ -50,42 +50,41 @@ pub enum Role {
 
 pub func roleLabel(r: in Role): String {
   match r {
-    case Role.Guest   -> "guest"
-    case Role.User    -> "user"
+    case Role.Guest -> "guest"
+    case Role.User -> "user"
     case Role.Manager -> "manager"
-    case Role.Admin   -> "admin"
+    case Role.Admin -> "admin"
   }
 }
 
 pub func roleFromString(s: in String): Option[Role] {
   match s {
-    case "guest"   -> Some(value = Role.Guest)
-    case "user"    -> Some(value = Role.User)
+    case "guest" -> Some(value = Role.Guest)
+    case "user" -> Some(value = Role.User)
     case "manager" -> Some(value = Role.Manager)
-    case "admin"   -> Some(value = Role.Admin)
-    case _         -> None
+    case "admin" -> Some(value = Role.Admin)
+    case _ -> None
   }
 }
 
 pub func permissionLabel(p: in Permission): String {
   match p {
-    case Permission.Read          -> "read"
-    case Permission.Write         -> "write"
-    case Permission.Delete        -> "delete"
-    case Permission.ManageUsers   -> "manage_users"
+    case Permission.Read -> "read"
+    case Permission.Write -> "write"
+    case Permission.Delete -> "delete"
+    case Permission.ManageUsers -> "manage_users"
     case Permission.AdministerAll -> "administer_all"
   }
 }
 
 // ─── Permission lattice ───────────────────────────────────────────────────────
-
 /// Numeric level of a role in the hierarchy.  Higher = more privileged.
 pub func roleLevel(r: in Role): Int {
   match r {
-    case Role.Guest   -> 1
-    case Role.User    -> 2
+    case Role.Guest -> 1
+    case Role.User -> 2
     case Role.Manager -> 3
-    case Role.Admin   -> 4
+    case Role.Admin -> 4
   }
 }
 
@@ -102,34 +101,29 @@ pub func dominates(a: in Role, b: in Role): Bool {
 ///   Guest   — Read only
 pub func hasPermission(role: in Role, perm: in Permission): Bool {
   match role {
-    case Role.Admin   -> true
-    case Role.Manager ->
-      perm == Permission.Read       ||
-      perm == Permission.Write      ||
-      perm == Permission.Delete     ||
-      perm == Permission.ManageUsers
-    case Role.User ->
-      perm == Permission.Read  ||
-      perm == Permission.Write
-    case Role.Guest ->
-      perm == Permission.Read
+    case Role.Admin -> true
+    case Role.Manager -> perm == Permission.Read or perm == Permission.Write or perm == Permission.Delete or perm == Permission.ManageUsers
+    case Role.User -> perm == Permission.Read or perm == Permission.Write
+    case Role.Guest -> perm == Permission.Read
   }
 }
 
 // ─── Provable theorems ────────────────────────────────────────────────────────
-
 /// Prove that dominance is transitive: if a ≥ b and b ≥ c, then a ≥ c.
 ///
 /// Z3 closes this via linear arithmetic on the level encoding.
 pub func dominanceTransitive(a: in Role, b: in Role, c: in Role): Bool
   requires: dominates(a, b)
   requires: dominates(b, c)
-  ensures:  result == true
-  ensures:  dominates(a, c)
+  ensures: result == true
+  ensures: dominates(a, c)
 {
-  assert roleLevel(a) >= roleLevel(b)
-  assert roleLevel(b) >= roleLevel(c)
-  assert roleLevel(a) >= roleLevel(c)
+  assert
+  roleLevel(a) >= roleLevel(b)
+  assert
+  roleLevel(b) >= roleLevel(c)
+  assert
+  roleLevel(a) >= roleLevel(c)
   return true
 }
 
@@ -142,7 +136,7 @@ pub func dominanceTransitive(a: in Role, b: in Role, c: in Role): Bool
 /// combination where hasPermission(grantor, perm) is false, the result is false.
 pub func noEscalation(grantor: in Role, perm: in Permission): Bool
   requires: not hasPermission(grantor, perm)
-  ensures:  result == false
+  ensures: result == false
 {
   return false
 }
@@ -162,10 +156,7 @@ pub func adminHoldsAll(perm: in Permission): Bool
 ///
 /// Useful for sanity-checking the permission lattice in integration tests.
 pub func guestIsRestricted(perm: in Permission): Bool
-  requires:
-    perm == Permission.Write      ||
-    perm == Permission.Delete     ||
-    perm == Permission.ManageUsers ||
+  requires: perm == Permission.Write or perm == Permission.Delete or perm == Permission.ManageUsers or
     perm == Permission.AdministerAll
   ensures: result == false
   ensures: not hasPermission(Role.Guest, perm)

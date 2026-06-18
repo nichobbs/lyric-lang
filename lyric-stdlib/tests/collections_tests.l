@@ -1,7 +1,7 @@
-// stdlib/tests/collections_tests.l — Tests for Std.Collections.
-//
-// Covers: List construction, add, count, index access; Map construction,
-// add, containsKey, mapGet (Some/None), and count.
+//! stdlib/tests/collections_tests.l — Tests for Std.Collections.
+//!
+//! Covers: List construction, add, count, index access; Map construction,
+//! add, containsKey, mapGet (Some/None), and count.
 package Std.Collections.Tests
 
 import Std.Core
@@ -30,7 +30,7 @@ func testListStrings(): Unit {
   xs.add("beta")
   assertEqualInt(xs.count, 2, "string list count")
   assertTrue(xs[0] == "alpha", "xs[0] == alpha")
-  assertTrue(xs[1] == "beta",  "xs[1] == beta")
+  assertTrue(xs[1] == "beta", "xs[1] == beta")
 }
 
 func testListWithCapacity(): Unit {
@@ -61,11 +61,11 @@ func testMapGet(): Unit {
   m.add("y", 99)
   match mapGet(m, "x") {
     case Some(v) -> assertEqualInt(v, 42, "mapGet x == 42")
-    case None    -> assertTrue(false, "mapGet x should be Some")
+    case None -> assertTrue(false, "mapGet x should be Some")
   }
   match mapGet(m, "z") {
     case Some(_) -> assertTrue(false, "mapGet z should be None")
-    case None    -> assertTrue(true, "mapGet z is None")
+    case None -> assertTrue(true, "mapGet z is None")
   }
 }
 
@@ -75,11 +75,11 @@ func testMapIntKeys(): Unit {
   m.add(2, "two")
   match mapGet(m, 1) {
     case Some(s) -> assertTrue(s == "one", "int key 1 -> one")
-    case None    -> assertTrue(false, "int key 1 missing")
+    case None -> assertTrue(false, "int key 1 missing")
   }
   match mapGet(m, 3) {
     case Some(_) -> assertTrue(false, "int key 3 should be absent")
-    case None    -> assertTrue(true, "int key 3 absent")
+    case None -> assertTrue(true, "int key 3 absent")
   }
 }
 

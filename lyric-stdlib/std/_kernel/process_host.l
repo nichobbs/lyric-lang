@@ -1,12 +1,11 @@
-// std/_kernel/process_host.l - trusted host boundary for process execution.
-//
-// Exposes the minimal BCL surface needed to spawn child processes.
-// On .NET 5+, UseShellExecute defaults to false, so the child process
-// inherits the parent's stdio — required for all CLI sub-invocations.
-//
-// Internal: only Std.Process should import this.  All callers are
-// audited; the @axiom asserts the BCL contract.
-
+//! std/_kernel/process_host.l - trusted host boundary for process execution.
+//!
+//! Exposes the minimal BCL surface needed to spawn child processes.
+//! On .NET 5+, UseShellExecute defaults to false, so the child process
+//! inherits the parent's stdio — required for all CLI sub-invocations.
+//!
+//! Internal: only Std.Process should import this.  All callers are
+//! audited; the @axiom asserts the BCL contract.
 @axiom("System.Diagnostics.Process conforms to its documented .NET contracts")
 package Std.ProcessHost
 

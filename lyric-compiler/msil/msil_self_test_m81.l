@@ -1,53 +1,52 @@
-// msil_self_test_m81.l — Stage M81: stelem.i4 (0x9E), ldelem.i4 (0x94),
-//                                   stelem.i8 (0x9F), ldelem.i8 (0x96),
-//                                   stelem.r4 (0xA0), ldelem.r4 (0x98),
-//                                   stelem.r8 (0xA1), ldelem.r8 (0x99).
-//
-// Exercises typed array element store/load instructions.
-//
-// Fat method header required (4 locals: Int32[], Int64[], Single[], Double[]).
-// LocalVarSig: { 0x07, 0x04, 0x1D, 0x08, 0x1D, 0x0A, 0x1D, 0x0C, 0x1D, 0x0D }
-//
-// TypeRef layout:
-//   TypeRef[1]: System.Console  (AssemblyRef[2])
-//   TypeRef[2]: System.Object   (AssemblyRef[1])
-//   TypeRef[3]: System.Int32    (AssemblyRef[1]) — for Int32[]
-//   TypeRef[4]: System.Int64    (AssemblyRef[1]) — for Int64[]
-//   TypeRef[5]: System.Single   (AssemblyRef[1]) — for Single[]
-//   TypeRef[6]: System.Double   (AssemblyRef[1]) — for Double[]
-//
-// Code layout (fat header at 0x248, code at 0x254, codeSize=88):
-//   offset  0-3:  nop×4
-//   offset  4-9:  ldc.i4.1 / newarr Int32 / stloc.0
-//   offset 10-16: ldc.i4.1 / newarr Int64 / stloc.1
-//   offset 17-23: ldc.i4.1 / newarr Single / stloc.2
-//   offset 24-30: ldc.i4.1 / newarr Double / stloc.3
-//   offset 32-36: ldloc.0 / ldc.i4.0 / ldc.i4.s 42 / stelem.i4  ← 0x9E at 0x278
-//   offset 37-39: ldloc.0 / ldc.i4.0 / ldelem.i4                ← 0x94 at 0x27B
-//   offset 39:    pop
-//   offset 40-45: ldloc.1 / ldc.i4.0 / ldc.i4.s 42 / conv.i8 / stelem.i8 ← 0x9F at 0x282
-//   offset 46-48: ldloc.1 / ldc.i4.0 / ldelem.i8                ← 0x96 at 0x285
-//   offset 49:    pop
-//   offset 50-57: ldloc.2 / ldc.i4.0 / ldc.r4 42.0 / stelem.r4 ← 0xA0 at 0x28E
-//   offset 58-60: ldloc.2 / ldc.i4.0 / ldelem.r4                ← 0x98 at 0x291
-//   offset 61:    pop
-//   offset 62-71: ldloc.3 / ldc.i4.0 / ldc.r8 42.0 / stelem.r8 ← 0xA1 at 0x29E
-//   offset 72-74: ldloc.3 / ldc.i4.0 / ldelem.r8                ← 0x99 at 0x2A1
-//   offset 75:    pop
-//   offset 76-81: ldloc.0 / ldc.i4.0 / ldelem.i4 → 42 / call / ret
-//
-// BSJB at 0x254 + 88 = 0x2AC.
-//
-// Checks:
-//   stelem_i4_ok: bs[0x278] == 0x9E
-//   ldelem_i4_ok: bs[0x27B] == 0x94
-//   stelem_i8_ok: bs[0x282] == 0x9F
-//   ldelem_i8_ok: bs[0x285] == 0x96
-//   stelem_r4_ok: bs[0x28E] == 0xA0
-//   ldelem_r4_ok: bs[0x291] == 0x98
-//   stelem_r8_ok: bs[0x29E] == 0xA1
-//   ldelem_r8_ok: bs[0x2A1] == 0x99
-
+//! msil_self_test_m81.l — Stage M81: stelem.i4 (0x9E), ldelem.i4 (0x94),
+//!                                   stelem.i8 (0x9F), ldelem.i8 (0x96),
+//!                                   stelem.r4 (0xA0), ldelem.r4 (0x98),
+//!                                   stelem.r8 (0xA1), ldelem.r8 (0x99).
+//!
+//! Exercises typed array element store/load instructions.
+//!
+//! Fat method header required (4 locals: Int32[], Int64[], Single[], Double[]).
+//! LocalVarSig: { 0x07, 0x04, 0x1D, 0x08, 0x1D, 0x0A, 0x1D, 0x0C, 0x1D, 0x0D }
+//!
+//! TypeRef layout:
+//!   TypeRef[1]: System.Console  (AssemblyRef[2])
+//!   TypeRef[2]: System.Object   (AssemblyRef[1])
+//!   TypeRef[3]: System.Int32    (AssemblyRef[1]) — for Int32[]
+//!   TypeRef[4]: System.Int64    (AssemblyRef[1]) — for Int64[]
+//!   TypeRef[5]: System.Single   (AssemblyRef[1]) — for Single[]
+//!   TypeRef[6]: System.Double   (AssemblyRef[1]) — for Double[]
+//!
+//! Code layout (fat header at 0x248, code at 0x254, codeSize=88):
+//!   offset  0-3:  nop×4
+//!   offset  4-9:  ldc.i4.1 / newarr Int32 / stloc.0
+//!   offset 10-16: ldc.i4.1 / newarr Int64 / stloc.1
+//!   offset 17-23: ldc.i4.1 / newarr Single / stloc.2
+//!   offset 24-30: ldc.i4.1 / newarr Double / stloc.3
+//!   offset 32-36: ldloc.0 / ldc.i4.0 / ldc.i4.s 42 / stelem.i4  ← 0x9E at 0x278
+//!   offset 37-39: ldloc.0 / ldc.i4.0 / ldelem.i4                ← 0x94 at 0x27B
+//!   offset 39:    pop
+//!   offset 40-45: ldloc.1 / ldc.i4.0 / ldc.i4.s 42 / conv.i8 / stelem.i8 ← 0x9F at 0x282
+//!   offset 46-48: ldloc.1 / ldc.i4.0 / ldelem.i8                ← 0x96 at 0x285
+//!   offset 49:    pop
+//!   offset 50-57: ldloc.2 / ldc.i4.0 / ldc.r4 42.0 / stelem.r4 ← 0xA0 at 0x28E
+//!   offset 58-60: ldloc.2 / ldc.i4.0 / ldelem.r4                ← 0x98 at 0x291
+//!   offset 61:    pop
+//!   offset 62-71: ldloc.3 / ldc.i4.0 / ldc.r8 42.0 / stelem.r8 ← 0xA1 at 0x29E
+//!   offset 72-74: ldloc.3 / ldc.i4.0 / ldelem.r8                ← 0x99 at 0x2A1
+//!   offset 75:    pop
+//!   offset 76-81: ldloc.0 / ldc.i4.0 / ldelem.i4 → 42 / call / ret
+//!
+//! BSJB at 0x254 + 88 = 0x2AC.
+//!
+//! Checks:
+//!   stelem_i4_ok: bs[0x278] == 0x9E
+//!   ldelem_i4_ok: bs[0x27B] == 0x94
+//!   stelem_i8_ok: bs[0x282] == 0x9F
+//!   ldelem_i8_ok: bs[0x285] == 0x96
+//!   stelem_r4_ok: bs[0x28E] == 0xA0
+//!   ldelem_r4_ok: bs[0x291] == 0x98
+//!   stelem_r8_ok: bs[0x29E] == 0xA1
+//!   ldelem_r8_ok: bs[0x2A1] == 0x99
 package Msil.SelfTestM81
 
 import Msil.Assembler
@@ -59,61 +58,84 @@ import Std.Collections
 import Std.File
 
 func check(label: in String, ok: in Bool): Unit {
-  if ok { println(label + "=true") } else { println(label + "=false") }
+  if ok {
+    println(label + "=true")
+  } else {
+    println(label + "=false")
+  }
 }
 
 func main(): Unit {
   val outPath = "/tmp/lyric_msil_m81_stelem_ldelem_typed.dll"
 
-  val sh       = newStringHeap()
-  val sModule  = internString(sh, "<Module>")
-  val sHello   = internString(sh, "Hello")
-  val sMain    = internString(sh, "Main")
-  val sSystem  = internString(sh, "System")
+  val sh = newStringHeap()
+  val sModule = internString(sh, "<Module>")
+  val sHello = internString(sh, "Hello")
+  val sMain = internString(sh, "Main")
+  val sSystem = internString(sh, "System")
   val sConsole = internString(sh, "Console")
   val sRuntime = internString(sh, "System.Runtime")
   val sConsoleAsm = internString(sh, "System.Console")
-  val sObject  = internString(sh, "Object")
-  val sInt32   = internString(sh, "Int32")
-  val sInt64   = internString(sh, "Int64")
-  val sSingle  = internString(sh, "Single")
-  val sDouble  = internString(sh, "Double")
+  val sObject = internString(sh, "Object")
+  val sInt32 = internString(sh, "Int32")
+  val sInt64 = internString(sh, "Int64")
+  val sSingle = internString(sh, "Single")
+  val sDouble = internString(sh, "Double")
   val sWriteLine = internString(sh, "WriteLine")
 
-  val gh    = newGuidHeap()
+  val gh = newGuidHeap()
   val guidW = bufNew()
   var gi = 0
-  while gi < 16 { bufU1(guidW, 0); gi = gi + 1 }
+  while gi < 16 {
+    bufU1(guidW, 0)
+    gi = gi + 1
+  }
   val mvid = appendGuid(gh, bufToList(guidW))
 
   val uh = newUsHeap()
   val bh = newBlobHeap()
 
   val voidSigW = bufNew()
-  bufU1(voidSigW, 0x00); bufU1(voidSigW, 0x00); bufU1(voidSigW, 0x01)
+  bufU1(voidSigW, 0x00)
+  bufU1(voidSigW, 0x00)
+  bufU1(voidSigW, 0x01)
   val sigVoid = internBlob(bh, "void_sig", bufToList(voidSigW))
 
   val wlSigW = bufNew()
-  bufU1(wlSigW, 0x00); bufU1(wlSigW, 0x01); bufU1(wlSigW, 0x01); bufU1(wlSigW, 0x08)
+  bufU1(wlSigW, 0x00)
+  bufU1(wlSigW, 0x01)
+  bufU1(wlSigW, 0x01)
+  bufU1(wlSigW, 0x08)
   val sigWriteLineInt = internBlob(bh, "wl_int_sig", bufToList(wlSigW))
 
   // LocalVarSig: LOCAL_SIG + count=4 + SZARRAY×I4, SZARRAY×I8, SZARRAY×R4, SZARRAY×R8
   val lvW = bufNew()
-  bufU1(lvW, 0x07); bufU1(lvW, 0x04)
-  bufU1(lvW, 0x1D); bufU1(lvW, 0x08)
-  bufU1(lvW, 0x1D); bufU1(lvW, 0x0A)
-  bufU1(lvW, 0x1D); bufU1(lvW, 0x0C)
-  bufU1(lvW, 0x1D); bufU1(lvW, 0x0D)
+  bufU1(lvW, 0x07)
+  bufU1(lvW, 0x04)
+  bufU1(lvW, 0x1D)
+  bufU1(lvW, 0x08)
+  bufU1(lvW, 0x1D)
+  bufU1(lvW, 0x0A)
+  bufU1(lvW, 0x1D)
+  bufU1(lvW, 0x0C)
+  bufU1(lvW, 0x1D)
+  bufU1(lvW, 0x0D)
   val localVarSig = internBlob(bh, "locals_sig", bufToList(lvW))
 
   val keyW = bufNew()
-  bufU1(keyW, 0xB0); bufU1(keyW, 0x3F); bufU1(keyW, 0x5F); bufU1(keyW, 0x7F)
-  bufU1(keyW, 0x11); bufU1(keyW, 0xD5); bufU1(keyW, 0x0A); bufU1(keyW, 0x3A)
+  bufU1(keyW, 0xB0)
+  bufU1(keyW, 0x3F)
+  bufU1(keyW, 0x5F)
+  bufU1(keyW, 0x7F)
+  bufU1(keyW, 0x11)
+  bufU1(keyW, 0xD5)
+  bufU1(keyW, 0x0A)
+  bufU1(keyW, 0x3A)
   val keyToken = internBlob(bh, "ms_key", bufToList(keyW))
 
   // Tokens for TypeRef[3..6]
-  val tokInt32  = 0x01000003
-  val tokInt64  = 0x01000004
+  val tokInt32 = 0x01000003
+  val tokInt64 = 0x01000004
   val tokSingle = 0x01000005
   val tokDouble = 0x01000006
 
@@ -181,7 +203,7 @@ func main(): Unit {
 
   val bodies: List[MethodBody] = newList()
   bodies.add(mbMain)
-  val rvas    = methodBodyRvas(bodies)
+  val rvas = methodBodyRvas(bodies)
   val rvaMain = rvas[0]
 
   val t = newMetadataTables()
@@ -192,25 +214,96 @@ func main(): Unit {
   addTypeRef(t, TypeRefRow(resolutionScope = rsAssemblyRef(1), typeName = sInt64, typeNamespace = sSystem))
   addTypeRef(t, TypeRefRow(resolutionScope = rsAssemblyRef(1), typeName = sSingle, typeNamespace = sSystem))
   addTypeRef(t, TypeRefRow(resolutionScope = rsAssemblyRef(1), typeName = sDouble, typeNamespace = sSystem))
-  addTypeDef(t, TypeDefRow(flags = 0, typeName = sModule, typeNamespace = 0, extends = 0, fieldList = 1, methodList = 1))
-  addTypeDef(t, TypeDefRow(flags = TDF_PUBLIC, typeName = sHello, typeNamespace = 0, extends = tdrTypeRef(2), fieldList = 1, methodList = 1))
-  addMethodDef(t, MethodDefRow(rva = rvaMain, implFlags = 0, flags = MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG, name = sMain, signature = sigVoid, paramList = 1))
+  addTypeDef(
+    t,
+    TypeDefRow(flags = 0, typeName = sModule, typeNamespace = 0, extends = 0, fieldList = 1, methodList = 1)
+  )
+  addTypeDef(
+    t,
+    TypeDefRow(
+      flags = TDF_PUBLIC,
+      typeName = sHello,
+      typeNamespace = 0,
+      extends = tdrTypeRef(2),
+      fieldList = 1,
+      methodList = 1
+    )
+  )
+  addMethodDef(
+    t,
+    MethodDefRow(
+      rva = rvaMain,
+      implFlags = 0,
+      flags = MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG,
+      name = sMain,
+      signature = sigVoid,
+      paramList = 1
+    )
+  )
   val sigIdx = addStandAloneSig(t, StandAloneSigRow(signature = localVarSig))
   mbSetLocalSig(mbMain, standaloneToken(sigIdx))
   addMemberRef(t, MemberRefRow(class = mrpTypeRef(1), name = sWriteLine, signature = sigWriteLineInt))
-  addAssembly(t, AssemblyRow(hashAlgId = HASH_ALG_SHA1, majorVersion = 0, minorVersion = 0, buildNumber = 0, revisionNumber = 0, flags = ASF_NONE, publicKey = 0, name = sHello, culture = 0))
-  addAssemblyRef(t, AssemblyRefRow(majorVersion = 10, minorVersion = 0, buildNumber = 0, revisionNumber = 0, flags = 0, publicKeyToken = keyToken, name = sRuntime,    culture = 0, hashValue = 0))
-  addAssemblyRef(t, AssemblyRefRow(majorVersion = 10, minorVersion = 0, buildNumber = 0, revisionNumber = 0, flags = 0, publicKeyToken = keyToken, name = sConsoleAsm, culture = 0, hashValue = 0))
+  addAssembly(
+    t,
+    AssemblyRow(
+      hashAlgId = HASH_ALG_SHA1,
+      majorVersion = 0,
+      minorVersion = 0,
+      buildNumber = 0,
+      revisionNumber = 0,
+      flags = ASF_NONE,
+      publicKey = 0,
+      name = sHello,
+      culture = 0
+    )
+  )
+  addAssemblyRef(
+    t,
+    AssemblyRefRow(
+      majorVersion = 10,
+      minorVersion = 0,
+      buildNumber = 0,
+      revisionNumber = 0,
+      flags = 0,
+      publicKeyToken = keyToken,
+      name = sRuntime,
+      culture = 0,
+      hashValue = 0
+    )
+  )
+  addAssemblyRef(
+    t,
+    AssemblyRefRow(
+      majorVersion = 10,
+      minorVersion = 0,
+      buildNumber = 0,
+      revisionNumber = 0,
+      flags = 0,
+      publicKeyToken = keyToken,
+      name = sConsoleAsm,
+      culture = 0,
+      hashValue = 0
+    )
+  )
 
-  val inp = AssemblerInput(entryPointToken = 0x06000001, methodBodies = bodies, tables = t, strings = sh, us = uh, blobs = bh, guids = gh, resourceData = newList(), buildKind = "lib")
+  val inp = AssemblerInput(
+    entryPointToken = 0x06000001,
+    methodBodies = bodies,
+    tables = t,
+    strings = sh,
+    us = uh,
+    blobs = bh,
+    guids = gh,
+    resourceData = newList()
+  )
   val peBuf = assemblePe(inp)
   val bs = bufToList(peBuf)
 
-  check("dos_ok",       bs[0] == 0x4D and bs[1] == 0x5A)
-  check("pe_sig_ok",    bs[0x80] == 0x50 and bs[0x81] == 0x45 and bs[0x82] == 0 and bs[0x83] == 0)
-  check("clr_cb_ok",    bs[0x200] == 72 and bs[0x201] == 0)
+  check("dos_ok", bs[0] == 0x4D and bs[1] == 0x5A)
+  check("pe_sig_ok", bs[0x80] == 0x50 and bs[0x81] == 0x45 and bs[0x82] == 0 and bs[0x83] == 0)
+  check("clr_cb_ok", bs[0x200] == 72 and bs[0x201] == 0)
   check("entry_tok_ok", bs[0x214] == 0x01 and bs[0x215] == 0 and bs[0x216] == 0 and bs[0x217] == 0x06)
-  check("fat_hdr_ok",   bs[0x248] == 0x13 and bs[0x249] == 0x30)
+  check("fat_hdr_ok", bs[0x248] == 0x13 and bs[0x249] == 0x30)
   check("stelem_i4_ok", bs[0x278] == 0x9E)
   check("ldelem_i4_ok", bs[0x27B] == 0x94)
   check("stelem_i8_ok", bs[0x282] == 0x9F)
@@ -219,12 +312,10 @@ func main(): Unit {
   check("ldelem_r4_ok", bs[0x291] == 0x98)
   check("stelem_r8_ok", bs[0x29E] == 0xA1)
   check("ldelem_r8_ok", bs[0x2A1] == 0x99)
-  check("bsjb_ok",
-    bs[0x2AC] == 0x42 and bs[0x2AD] == 0x53 and
-    bs[0x2AE] == 0x4A and bs[0x2AF] == 0x42)
+  check("bsjb_ok", bs[0x2AC] == 0x42 and bs[0x2AD] == 0x53 and bs[0x2AE] == 0x4A and bs[0x2AF] == 0x42)
 
   match writeBytes(outPath, bs) {
-    case Ok(_)  -> println("wrote_pe=true")
+    case Ok(_) -> println("wrote_pe=true")
     case Err(_) -> println("wrote_pe=false")
   }
 }

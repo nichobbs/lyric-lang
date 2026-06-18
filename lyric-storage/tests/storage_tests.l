@@ -168,7 +168,8 @@ test "exists returns Ok(false) for absent key" {
   val bRes = freshBucket()
   assertTrue(isOk(bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
-  assertTrue(isOk(exists(bucket, "never-put.txt")),
+  // (using method-call form to avoid `exists` soft-keyword parser ambiguity)
+  assertTrue(isOk(bucket.exists("never-put.txt")),
              "exists call must succeed regardless of presence")
 }
 
@@ -178,7 +179,8 @@ test "exists returns Ok after put" {
   val bucket = unwrapResultOr(bRes, defaultBucket())
   assertTrue(isOk(put(bucket, "exists/probe.bin", "AAA=", "application/octet-stream")),
              "put must succeed")
-  assertTrue(isOk(exists(bucket, "exists/probe.bin")),
+  // (using method-call form to avoid `exists` soft-keyword parser ambiguity)
+  assertTrue(isOk(bucket.exists("exists/probe.bin")),
              "exists must succeed after put")
 }
 
@@ -266,6 +268,55 @@ test "get rejects unsafe key with absolute path" {
   val bucket = unwrapResultOr(bRes, defaultBucket())
   assertTrue(isErr(get(bucket, "/etc/passwd")),
              "get must reject absolute key at the safety gate")
+}
+
+// ─── .meta.json key rejection (#1911) ────────────────────────────────────────
+//
+// Keys whose basename ends in `.meta.json` are reserved for the local-fs
+// sidecar metadata files and must be uniformly rejected across all
+// operations.  `isSafeKey` is the single source of truth; the four
+// data-plane methods all carry `requires: isSafeKey(key)` so the rejection
+// surfaces as a contract violation.
+
+test "isSafeKey rejects .meta.json-suffixed key" {
+  assertTrue(not isSafeKey("archive.meta.json"),
+             "bare .meta.json key must be rejected")
+  assertTrue(not isSafeKey("uploads/photo.meta.json"),
+             "nested .meta.json key must be rejected")
+  assertTrue(not isSafeKey("a/b/c.meta.json"),
+             "deeply nested .meta.json key must be rejected")
+}
+
+test "isSafeKey accepts keys that merely contain meta.json" {
+  assertTrue(isSafeKey("meta.json.bak"),
+             "meta.json.bak is not a sidecar suffix")
+  assertTrue(isSafeKey("meta.json"),
+             "bare meta.json (no leading dot on suffix) is safe")
+}
+
+test "put rejects .meta.json-suffixed key" {
+  val bRes = freshBucket()
+  assertTrue(isOk(bRes), "fresh bucket must connect")
+  val bucket = unwrapResultOr(bRes, defaultBucket())
+  assertTrue(isErr(put(bucket, "archive.meta.json", "QQ==", "application/json")),
+             "put must reject .meta.json key at the isSafeKey contract gate")
+}
+
+test "get rejects .meta.json-suffixed key" {
+  val bRes = freshBucket()
+  assertTrue(isOk(bRes), "fresh bucket must connect")
+  val bucket = unwrapResultOr(bRes, defaultBucket())
+  assertTrue(isErr(get(bucket, "archive.meta.json")),
+             "get must reject .meta.json key at the isSafeKey contract gate")
+}
+
+test "exists rejects .meta.json-suffixed key" {
+  val bRes = freshBucket()
+  assertTrue(isOk(bRes), "fresh bucket must connect")
+  val bucket = unwrapResultOr(bRes, defaultBucket())
+  // Use the method-call form to avoid the `exists` soft-keyword parse ambiguity.
+  assertTrue(isErr(bucket.exists("archive.meta.json")),
+             "exists must reject .meta.json key at the isSafeKey contract gate")
 }
 
 // Sentinel bucket used by `unwrapResultOr` fallbacks — never read

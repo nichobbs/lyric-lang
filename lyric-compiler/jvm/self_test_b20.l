@@ -1,13 +1,12 @@
-// jvm/self_test_b20.l — Stage B20: interface implementation + invokeinterface.
-//
-// Generates three class files:
-//   Printable.class  — interface with abstract print(Ljava/lang/String;)V
-//   Printer.class    — concrete class implementing Printable
-//   Main.class       — calls Printer.print() via invokeinterface
-//
-// Exercises: makeInterface, ClassFile with interfaces list, ACC_ABSTRACT
-// on interface methods, invokeinterface + argcount, areturn from interface call.
-
+//! jvm/self_test_b20.l — Stage B20: interface implementation + invokeinterface.
+//!
+//! Generates three class files:
+//!   Printable.class  — interface with abstract print(Ljava/lang/String;)V
+//!   Printer.class    — concrete class implementing Printable
+//!   Main.class       — calls Printer.print() via invokeinterface
+//!
+//! Exercises: makeInterface, ClassFile with interfaces list, ACC_ABSTRACT
+//! on interface methods, invokeinterface + argcount, areturn from interface call.
 package Jvm.SelfTestB20
 
 import Std.Core
@@ -26,19 +25,19 @@ func makePrintableBytes(): List[Byte] {
   val methods: List[MethodInfo] = newList()
   methods.add(printMethod)
 
-  val ifaces: List[String]    = newList()
+  val ifaces: List[String] = newList()
   val fields: List[FieldInfo] = newList()
-  val attrs:  List[Attribute] = newList()
+  val attrs: List[Attribute] = newList()
   val cf = ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags        = ACC_PUBLIC + ACC_INTERFACE + ACC_ABSTRACT,
-    thisClass    = "Printable",
-    superClass   = "java/lang/Object",
-    interfaces   = ifaces,
-    fields       = fields,
-    methods      = methods,
-    attrs        = attrs
+    flags = ACC_PUBLIC + ACC_INTERFACE + ACC_ABSTRACT,
+    thisClass = "Printable",
+    superClass = "java/lang/Object",
+    interfaces = ifaces,
+    fields = fields,
+    methods = methods,
+    attrs = attrs
   )
   serializeClassWithPool(cf, pool)
 }
@@ -48,7 +47,7 @@ func makePrinterBytes(): List[Byte] {
 
   // <init>()V
   val asmInit = newAssembler(pool)
-  val objInit  = poolMethodref(pool, "java/lang/Object", "<init>", "()V")
+  val objInit = poolMethodref(pool, "java/lang/Object", "<init>", "()V")
   emitAload(asmInit, 0)
   emitInvokespecial(asmInit, objInit)
   emitReturn(asmInit)
@@ -59,7 +58,7 @@ func makePrinterBytes(): List[Byte] {
 
   // print(Ljava/lang/String;)V — getstatic System.out, aload_1, invokevirtual println
   val asmPrint = newAssembler(pool)
-  val sysOut   = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val println_ = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
   emitGetstatic(asmPrint, sysOut)
   emitAload(asmPrint, 1)
@@ -74,32 +73,32 @@ func makePrinterBytes(): List[Byte] {
   methods.add(initMethod)
   methods.add(printMethod)
 
-  val ifaces: List[String]    = newList()
+  val ifaces: List[String] = newList()
   ifaces.add("Printable")
   val fields: List[FieldInfo] = newList()
-  val attrs:  List[Attribute] = newList()
+  val attrs: List[Attribute] = newList()
 
   val cf = ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags        = ACC_PUBLIC + ACC_SUPER,
-    thisClass    = "Printer",
-    superClass   = "java/lang/Object",
-    interfaces   = ifaces,
-    fields       = fields,
-    methods      = methods,
-    attrs        = attrs
+    flags = ACC_PUBLIC + ACC_SUPER,
+    thisClass = "Printer",
+    superClass = "java/lang/Object",
+    interfaces = ifaces,
+    fields = fields,
+    methods = methods,
+    attrs = attrs
   )
   serializeClassWithPool(cf, pool)
 }
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
   val printerClass = poolClass(pool, "Printer")
-  val printerInit  = poolMethodref(pool, "Printer", "<init>", "()V")
-  val printIface   = poolIfaceMethodref(pool, "Printable", "print", "(Ljava/lang/String;)V")
+  val printerInit = poolMethodref(pool, "Printer", "<init>", "()V")
+  val printIface = poolIfaceMethodref(pool, "Printable", "print", "(Ljava/lang/String;)V")
 
   emitNew(asm, printerClass)
   emitDup(asm)
@@ -121,17 +120,17 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b20"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val printableBytes = makePrintableBytes()
-  val printerBytes   = makePrinterBytes()
-  val mainBytes      = makeMainClassBytes()
+  val printerBytes = makePrinterBytes()
+  val mainBytes = makeMainClassBytes()
 
   val printableClass = BuiltClass(binaryName = "Printable", bytes = printableBytes)
-  val printerClass   = BuiltClass(binaryName = "Printer",   bytes = printerBytes)
-  val mainClass      = BuiltClass(binaryName = "Main",      bytes = mainBytes)
+  val printerClass = BuiltClass(binaryName = "Printer", bytes = printerBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(printableClass)
   classes.add(printerClass)
@@ -139,9 +138,9 @@ func main(): Unit {
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB20",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

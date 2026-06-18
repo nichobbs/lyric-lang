@@ -1,13 +1,12 @@
-// lyric/lexer_self_test.l — Lyric.LexerSelfTest consumer of the
-// `Lyric.Lexer` library.  Compiled and executed by the F# Expecto
-// runner at `compiler/tests/Lyric.Emitter.Tests/SelfHostedLexerTests.fs`:
-// each in-program assertion panics via `Std.Testing` on mismatch;
-// exit 0 + an "ok" line in stdout means every check held.
-//
-// Stage 2b of M5.1 split this out from the lexer module so
-// `Lyric.Lexer` is a reusable library.  The split exercises every
-// cross-package surface the M5.1 follow-up depends on (record field
-// access, union case match, function call, generic Option) end to end.
+//! lyric/lexer_self_test.l — Lyric.LexerSelfTest consumer of the
+//! `Lyric.Lexer` library.  Run in CI via native `lyric test` (no F#
+//! runner shim).
+//!
+//! Stage 2b of M5.1 split this out from the lexer module so
+//! `Lyric.Lexer` is a reusable library.  The split exercises every
+//! cross-package surface the M5.1 follow-up depends on (record field
+//! access, union case match, function call, generic Option) end to end.
+@test_module
 package Lyric.LexerSelfTest
 
 import Std.Core
@@ -19,27 +18,26 @@ import Lyric.Lexer
 // ─────────────────────────────────────────────────────────────────────────────
 // Token-shape predicates.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func tokenName(t: in Token): String {
   match t {
-    case TKeyword(_)          -> "keyword"
-    case TIdent(_)            -> "ident"
-    case TInt(_, _)           -> "int"
-    case TFloat(_, _)         -> "float"
-    case TChar(_)             -> "char"
-    case TString(_)           -> "string"
-    case TStringStart         -> "string_start"
-    case TStringPart(_)       -> "string_part"
-    case TStringHoleStart     -> "string_hole_start"
-    case TStringEnd           -> "string_end"
-    case TTripleString(_)     -> "triple_string"
-    case TRawString(_)        -> "raw_string"
-    case TBool(_)             -> "bool"
-    case TPunct(_)            -> "punct"
-    case TStmtEnd             -> "stmt_end"
-    case TDocComment(_)       -> "doc"
+    case TKeyword(_) -> "keyword"
+    case TIdent(_) -> "ident"
+    case TInt(_, _, _) -> "int"
+    case TFloat(_, _, _) -> "float"
+    case TChar(_) -> "char"
+    case TString(_) -> "string"
+    case TStringStart -> "string_start"
+    case TStringPart(_) -> "string_part"
+    case TStringHoleStart -> "string_hole_start"
+    case TStringEnd -> "string_end"
+    case TTripleString(_) -> "triple_string"
+    case TRawString(_) -> "raw_string"
+    case TBool(_) -> "bool"
+    case TPunct(_) -> "punct"
+    case TStmtEnd -> "stmt_end"
+    case TDocComment(_) -> "doc"
     case TModuleDocComment(_) -> "module_doc"
-    case TEof                 -> "eof"
+    case TEof -> "eof"
   }
 }
 
@@ -53,122 +51,122 @@ func tokenKindAt(lr: in LexResult, i: in Int): String {
 
 func intValueAt(lr: in LexResult, i: in Int): Long {
   match tokenAt(lr, i).token {
-    case TInt(v, _) -> v
-    case _          -> -1i64
+    case TInt(v, _, _) -> v
+    case _ -> -1i64
   }
 }
 
 func floatValueAt(lr: in LexResult, i: in Int): Double {
   match tokenAt(lr, i).token {
-    case TFloat(v, _) -> v
-    case _            -> -1.0
+    case TFloat(v, _, _) -> v
+    case _ -> -1.0
   }
 }
 
 func identNameAt(lr: in LexResult, i: in Int): String {
   match tokenAt(lr, i).token {
     case TIdent(name) -> name
-    case _            -> "<not-ident>"
+    case _ -> "<not-ident>"
   }
 }
 
 func stringValueAt(lr: in LexResult, i: in Int): String {
   match tokenAt(lr, i).token {
     case TString(t) -> t
-    case _          -> "<not-string>"
+    case _ -> "<not-string>"
   }
 }
 
 func boolValueAt(lr: in LexResult, i: in Int): Bool {
   match tokenAt(lr, i).token {
     case TBool(b) -> b
-    case _        -> false
+    case _ -> false
   }
 }
 
 func stringPartAt(lr: in LexResult, i: in Int): String {
   match tokenAt(lr, i).token {
     case TStringPart(t) -> t
-    case _              -> "<not-string-part>"
+    case _ -> "<not-string-part>"
   }
 }
 
 func tripleStringAt(lr: in LexResult, i: in Int): String {
   match tokenAt(lr, i).token {
     case TTripleString(t) -> t
-    case _                -> "<not-triple-string>"
+    case _ -> "<not-triple-string>"
   }
 }
 
 func rawStringAt(lr: in LexResult, i: in Int): String {
   match tokenAt(lr, i).token {
     case TRawString(t) -> t
-    case _             -> "<not-raw-string>"
+    case _ -> "<not-raw-string>"
   }
 }
 
 func charCodepointAt(lr: in LexResult, i: in Int): Int {
   match tokenAt(lr, i).token {
     case TChar(cp) -> cp
-    case _         -> -1
+    case _ -> -1
   }
 }
 
 func keywordSpellingAt(lr: in LexResult, i: in Int): String {
   match tokenAt(lr, i).token {
     case TKeyword(kw) -> keywordSpelling(kw)
-    case _            -> "<not-keyword>"
+    case _ -> "<not-keyword>"
   }
 }
 
 func punctNameAt(lr: in LexResult, i: in Int): String {
   match tokenAt(lr, i).token {
     case TPunct(p) -> punctName(p)
-    case _         -> "<not-punct>"
+    case _ -> "<not-punct>"
   }
 }
 
 func punctName(p: in Punct): String {
   match p {
-    case DotDotEq         -> "..="
-    case DotDotLt         -> "..<"
-    case DotDot           -> ".."
-    case Arrow            -> "->"
-    case FatArrow         -> "=>"
-    case ColonColon       -> "::"
-    case Question         -> "?"
+    case DotDotEq -> "..="
+    case DotDotLt -> "..<"
+    case DotDot -> ".."
+    case Arrow -> "->"
+    case FatArrow -> "=>"
+    case ColonColon -> "::"
+    case Question -> "?"
     case QuestionQuestion -> "??"
-    case At               -> "@"
-    case EqEq             -> "=="
-    case NotEq            -> "!="
-    case LtEq             -> "<="
-    case GtEq             -> ">="
-    case Lt               -> "<"
-    case Gt               -> ">"
-    case PlusEq           -> "+="
-    case MinusEq          -> "-="
-    case StarEq           -> "*="
-    case SlashEq          -> "/="
-    case PercentEq        -> "%="
-    case Plus             -> "+"
-    case Minus            -> "-"
-    case Star             -> "*"
-    case Slash            -> "/"
-    case Percent          -> "%"
-    case Eq               -> "="
-    case Bang             -> "!"
-    case Pipe             -> "|"
-    case Amp              -> "&"
-    case LParen           -> "("
-    case RParen           -> ")"
-    case LBracket         -> "["
-    case RBracket         -> "]"
-    case LBrace           -> "{"
-    case RBrace           -> "}"
-    case Comma            -> ","
-    case Semi             -> ";"
-    case Colon            -> ":"
-    case Dot              -> "."
+    case At -> "@"
+    case EqEq -> "=="
+    case NotEq -> "!="
+    case LtEq -> "<="
+    case GtEq -> ">="
+    case Lt -> "<"
+    case Gt -> ">"
+    case PlusEq -> "+="
+    case MinusEq -> "-="
+    case StarEq -> "*="
+    case SlashEq -> "/="
+    case PercentEq -> "%="
+    case Plus -> "+"
+    case Minus -> "-"
+    case Star -> "*"
+    case Slash -> "/"
+    case Percent -> "%"
+    case Eq -> "="
+    case Bang -> "!"
+    case Pipe -> "|"
+    case Amp -> "&"
+    case LParen -> "("
+    case RParen -> ")"
+    case LBracket -> "["
+    case RBracket -> "]"
+    case LBrace -> "{"
+    case RBrace -> "}"
+    case Comma -> ","
+    case Semi -> ";"
+    case Colon -> ":"
+    case Dot -> "."
   }
 }
 
@@ -179,8 +177,7 @@ func diagCount(lr: in LexResult): Int {
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests.
 // ─────────────────────────────────────────────────────────────────────────────
-
-func testEmptyInput(): Unit {
+test "empty input" {
   val r = lex("")
   // Just an EOF.
   assertEqualInt(r.tokens.count, 1, "empty: token count")
@@ -188,23 +185,23 @@ func testEmptyInput(): Unit {
   assertEqualInt(diagCount(r), 0, "empty: no diagnostics")
 }
 
-func testIdentAndKeyword(): Unit {
+test "ident and keyword" {
   val r = lex("foo bar package self")
   // foo, bar, package, self, EOF — no STMT_END (no newline).
   assertEqualInt(r.tokens.count, 5, "ident+kw: token count")
-  assertEqual(tokenKindAt(r, 0), "ident",    "ident+kw: foo is ident")
-  assertEqual(identNameAt(r, 0), "foo",      "ident+kw: foo name")
-  assertEqual(tokenKindAt(r, 1), "ident",    "ident+kw: bar is ident")
-  assertEqual(identNameAt(r, 1), "bar",      "ident+kw: bar name")
-  assertEqual(tokenKindAt(r, 2), "keyword",  "ident+kw: package is keyword")
+  assertEqual(tokenKindAt(r, 0), "ident", "ident+kw: foo is ident")
+  assertEqual(identNameAt(r, 0), "foo", "ident+kw: foo name")
+  assertEqual(tokenKindAt(r, 1), "ident", "ident+kw: bar is ident")
+  assertEqual(identNameAt(r, 1), "bar", "ident+kw: bar name")
+  assertEqual(tokenKindAt(r, 2), "keyword", "ident+kw: package is keyword")
   assertEqual(keywordSpellingAt(r, 2), "package", "ident+kw: package spelling")
-  assertEqual(tokenKindAt(r, 3), "keyword",  "ident+kw: self is keyword")
+  assertEqual(tokenKindAt(r, 3), "keyword", "ident+kw: self is keyword")
   assertEqual(keywordSpellingAt(r, 3), "self", "ident+kw: self spelling")
-  assertEqual(tokenKindAt(r, 4), "eof",      "ident+kw: trailing eof")
+  assertEqual(tokenKindAt(r, 4), "eof", "ident+kw: trailing eof")
   assertEqualInt(diagCount(r), 0, "ident+kw: no diagnostics")
 }
 
-func testBoolKeyword(): Unit {
+test "bool keyword" {
   val r = lex("true false")
   assertEqualInt(r.tokens.count, 3, "bool: token count")
   assertEqual(tokenKindAt(r, 0), "bool", "bool: true is bool token")
@@ -213,7 +210,7 @@ func testBoolKeyword(): Unit {
   assertTrue(not boolValueAt(r, 1), "bool: false value")
 }
 
-func testDecimalInts(): Unit {
+test "decimal ints" {
   val r = lex("0 42 1_000_000")
   assertEqualInt(r.tokens.count, 4, "decimal: token count (incl eof)")
   assertEqual(tokenKindAt(r, 0), "int", "decimal: 0 is int")
@@ -222,29 +219,29 @@ func testDecimalInts(): Unit {
   assertTrue(intValueAt(r, 2) == 1000000i64, "decimal: underscore-separated")
 }
 
-func testHexOctBinInts(): Unit {
+test "hex oct bin ints" {
   val r = lex("0xFF 0o755 0b1010")
   assertEqualInt(r.tokens.count, 4, "based: token count")
   assertTrue(intValueAt(r, 0) == 255i64, "based: 0xFF")
   assertTrue(intValueAt(r, 1) == 493i64, "based: 0o755")
-  assertTrue(intValueAt(r, 2) == 10i64,  "based: 0b1010")
+  assertTrue(intValueAt(r, 2) == 10i64, "based: 0b1010")
   assertEqualInt(diagCount(r), 0, "based: no diagnostics")
 }
 
-func testIntSuffix(): Unit {
+test "int suffix" {
   val r = lex("100u32 7i64")
   assertTrue(intValueAt(r, 0) == 100i64, "int-suffix: 100")
-  assertTrue(intValueAt(r, 1) == 7i64,   "int-suffix: 7")
+  assertTrue(intValueAt(r, 1) == 7i64, "int-suffix: 7")
   assertEqualInt(diagCount(r), 0, "int-suffix: no diagnostics")
 }
 
-func testLeadingZeroDecimalRejected(): Unit {
+test "leading zero decimal rejected" {
   val r = lex("0755")
   assertEqualInt(diagCount(r), 1, "leading-zero: one diagnostic")
   assertEqual(r.diagnostics[0].code, "L0012", "leading-zero: L0012")
 }
 
-func testFloatLiterals(): Unit {
+test "float literals" {
   val r = lex("3.14 2.5e2 1.0f64")
   assertEqual(tokenKindAt(r, 0), "float", "float: 3.14 kind")
   assertTrue(floatValueAt(r, 0) > 3.13 and floatValueAt(r, 0) < 3.15, "float: 3.14 value")
@@ -255,20 +252,20 @@ func testFloatLiterals(): Unit {
   assertEqualInt(diagCount(r), 0, "float: no diagnostics")
 }
 
-func testStringLiteral(): Unit {
+test "string literal" {
   val r = lex("\"hello\"")
   assertEqual(tokenKindAt(r, 0), "string", "string: kind")
   assertEqual(stringValueAt(r, 0), "hello", "string: value")
   assertEqualInt(diagCount(r), 0, "string: no diagnostics")
 }
 
-func testStringEscapes(): Unit {
+test "string escapes" {
   val r = lex("\"a\\nb\\tc\\\\d\"")
   assertEqual(tokenKindAt(r, 0), "string", "string-esc: kind")
   assertEqual(stringValueAt(r, 0), "a\nb\tc\\d", "string-esc: value")
 }
 
-func testUnterminatedString(): Unit {
+test "unterminated string" {
   val r = lex("\"oops")
   assertEqualInt(diagCount(r), 1, "unterm: one diagnostic")
   assertEqual(r.diagnostics[0].code, "L0025", "unterm: L0025")
@@ -276,48 +273,76 @@ func testUnterminatedString(): Unit {
 
 // Unicode escapes in the full BMP must decode correctly.
 // The surrogate range U+D800..U+DFFF must be rejected with L0023.
-func testUnicodeEscapeBmpRange(): Unit {
+test "unicode escape bmp range" {
   // \u{80} — first non-ASCII BMP scalar.  Previously decoded to U+FFFD
   // under the 96-char ASCII lookup table.
   val r1 = lex("\"\\u{80}\"")
   assertEqualInt(diagCount(r1), 0, "u80: no diagnostics")
-  assertEqual(stringValueAt(r1, 0), "\u{80}", "u80: round-trips")
+  assertEqual(stringValueAt(r1, 0), "", "u80: round-trips")
 
   // \u{00FF} — Latin-1 supplement boundary.
   val r2 = lex("\"\\u{00FF}\"")
   assertEqualInt(diagCount(r2), 0, "u00FF: no diagnostics")
-  assertEqual(stringValueAt(r2, 0), "\u{00FF}", "u00FF: round-trips")
+  assertEqual(stringValueAt(r2, 0), "ÿ", "u00FF: round-trips")
 
   // \u{FFFF} — highest BMP scalar (last code point before surrogate
   // range, well above the surrogate range itself).
   val r3 = lex("\"\\u{FFFF}\"")
   assertEqualInt(diagCount(r3), 0, "uFFFF: no diagnostics")
-  assertEqual(stringValueAt(r3, 0), "\u{FFFF}", "uFFFF: round-trips")
+  assertEqual(stringValueAt(r3, 0), "￿", "uFFFF: round-trips")
 }
 
-func testUnicodeEscapeSurrogateRejected(): Unit {
+test "unicode escape surrogate rejected" {
   // U+D800 — first high (lead) surrogate.  Must produce L0023 (surrogate range)
   // and substitute U+FFFD without panicking.
   val r1 = lex("\"\\u{D800}\"")
   assertEqualInt(diagCount(r1), 1, "uD800: one diagnostic")
   assertEqual(r1.diagnostics[0].code, "L0023", "uD800: L0023")
-  assertEqual(stringValueAt(r1, 0), "\u{FFFD}", "uD800: U+FFFD substituted")
+  assertEqual(stringValueAt(r1, 0), "�", "uD800: U+FFFD substituted")
 
   // U+DFFF — last low (trail) surrogate.
   val r2 = lex("\"\\u{DFFF}\"")
   assertEqualInt(diagCount(r2), 1, "uDFFF: one diagnostic")
   assertEqual(r2.diagnostics[0].code, "L0023", "uDFFF: L0023")
-  assertEqual(stringValueAt(r2, 0), "\u{FFFD}", "uDFFF: U+FFFD substituted")
+  assertEqual(stringValueAt(r2, 0), "�", "uDFFF: U+FFFD substituted")
 }
 
-func testUnicodeEscapeNonBmpRejected(): Unit {
-  // \u{1F600} — non-BMP scalar (emoji).  The current Char-returning
-  // surface cannot express a UTF-16 surrogate pair, so non-BMP escapes
-  // produce an L0022 + U+FFFD substitution.
+test "unicode escape non bmp in string accepted as surrogate pair" {
+  // \u{1F600} — non-BMP scalar (😀).  String literals accept non-BMP via
+  // UTF-16 surrogate-pair emission; no diagnostic should be recorded.
   val r = lex("\"\\u{1F600}\"")
-  assertEqualInt(diagCount(r), 1, "u1F600: one diagnostic")
-  assertEqual(r.diagnostics[0].code, "L0022", "u1F600: L0022")
-  assertEqual(stringValueAt(r, 0), "\u{FFFD}", "u1F600: U+FFFD substituted")
+  assertEqualInt(diagCount(r), 0, "u1F600-str: no diagnostics")
+  assertEqual(stringValueAt(r, 0), "😀", "u1F600-str: emoji round-trips")
+}
+
+test "unicode escape non bmp in char literal rejected" {
+  // '\u{1F600}' — non-BMP in a char literal.  Char is a single UTF-16
+  // code unit so a non-BMP code point cannot be expressed; L0022.
+  val r = lex("'\\u{1F600}'")
+  assertEqualInt(diagCount(r), 1, "u1F600-char: one diagnostic")
+  assertEqual(r.diagnostics[0].code, "L0022", "u1F600-char: L0022")
+  assertEqualInt(charCodepointAt(r, 0), 0xFFFD, "u1F600-char: U+FFFD substituted")
+}
+
+test "unicode escape non bmp in interpolated string accepted" {
+  // "\u{1F600}${x}" — non-BMP in a string literal that also has an
+  // interpolation hole.  The escape is in the leading chunk (TStringPart)
+  // and must emit a surrogate pair; the hole is unaffected.
+  val r = lex("\"\\u{1F600}\${x}\"")
+  assertEqualInt(diagCount(r), 0, "u1F600-interp: no diagnostics")
+  assertEqual(tokenKindAt(r, 0), "string_start", "u1F600-interp: TStringStart")
+  assertEqual(tokenKindAt(r, 1), "string_part", "u1F600-interp: TStringPart")
+  assertEqual(stringPartAt(r, 1), "😀", "u1F600-interp: chunk has emoji")
+  assertEqual(tokenKindAt(r, 2), "string_hole_start", "u1F600-interp: TStringHoleStart")
+}
+
+test "unicode escape non bmp in triple string accepted" {
+  // """\u{1F600}""" — non-BMP in a triple-quoted string literal.
+  // The escape must emit a surrogate pair; no diagnostic.
+  val r = lex("\"\"\"\\u{1F600}\"\"\"")
+  assertEqualInt(diagCount(r), 0, "u1F600-triple: no diagnostics")
+  assertEqual(tokenKindAt(r, 0), "triple_string", "u1F600-triple: TTripleString")
+  assertEqual(tripleStringAt(r, 0), "😀", "u1F600-triple: body has emoji")
 }
 
 // Phase 5 §M5.1 stage 3 — interpolated / triple / raw strings.
@@ -328,7 +353,7 @@ func testUnicodeEscapeNonBmpRejected(): Unit {
 // `\$` escape in the outer string keeps the bootstrap from doing
 // that — the lexer-under-test still sees a literal `${` because
 // `\$` decodes to `$`.
-func testInterpolatedString(): Unit {
+test "interpolated string" {
   // The string passed to `lex` is `"hello, ${name}"` — three logical
   // chunks: the literal `hello, `, the hole's expression token (an
   // ident), and the closing sequence.  Tokens: TStringStart,
@@ -336,16 +361,16 @@ func testInterpolatedString(): Unit {
   // TEof.
   val r = lex("\"hello, \${name}\"")
   assertEqualInt(diagCount(r), 0, "interp: no diagnostics")
-  assertEqual(tokenKindAt(r, 0), "string_start",      "interp: TStringStart")
-  assertEqual(tokenKindAt(r, 1), "string_part",       "interp: TStringPart")
-  assertEqual(stringPartAt(r, 1), "hello, ",          "interp: chunk text")
+  assertEqual(tokenKindAt(r, 0), "string_start", "interp: TStringStart")
+  assertEqual(tokenKindAt(r, 1), "string_part", "interp: TStringPart")
+  assertEqual(stringPartAt(r, 1), "hello, ", "interp: chunk text")
   assertEqual(tokenKindAt(r, 2), "string_hole_start", "interp: TStringHoleStart")
-  assertEqual(tokenKindAt(r, 3), "ident",             "interp: hole ident")
-  assertEqual(tokenKindAt(r, 4), "punct",             "interp: closing }")
-  assertEqual(tokenKindAt(r, 5), "string_end",        "interp: TStringEnd")
+  assertEqual(tokenKindAt(r, 3), "ident", "interp: hole ident")
+  assertEqual(tokenKindAt(r, 4), "punct", "interp: closing }")
+  assertEqual(tokenKindAt(r, 5), "string_end", "interp: TStringEnd")
 }
 
-func testInterpolatedStringNoHoles(): Unit {
+test "interpolated string no holes" {
   // No `${`, so the simple `TString` path runs even though the
   // dispatcher consulted `hasInterpolation`.
   val r = lex("\"plain ascii\"")
@@ -353,20 +378,20 @@ func testInterpolatedStringNoHoles(): Unit {
   assertEqual(stringValueAt(r, 0), "plain ascii", "interp-fallback: text")
 }
 
-func testTripleString(): Unit {
+test "triple string" {
   val r = lex("\"\"\"line1\nline2\"\"\"")
   assertEqualInt(diagCount(r), 0, "triple: no diagnostics")
   assertEqual(tokenKindAt(r, 0), "triple_string", "triple: TTripleString")
   assertEqual(tripleStringAt(r, 0), "line1\nline2", "triple: body preserved")
 }
 
-func testUnterminatedTripleString(): Unit {
+test "unterminated triple string" {
   val r = lex("\"\"\"missing close")
   assertEqualInt(diagCount(r), 1, "unterm-triple: one diagnostic")
   assertEqual(r.diagnostics[0].code, "L0026", "unterm-triple: L0026")
 }
 
-func testRawStringNoHashes(): Unit {
+test "raw string no hashes" {
   val r = lex("r\"raw\\nbody\"")
   assertEqualInt(diagCount(r), 0, "raw: no diagnostics")
   assertEqual(tokenKindAt(r, 0), "raw_string", "raw: TRawString")
@@ -374,20 +399,20 @@ func testRawStringNoHashes(): Unit {
   assertEqual(rawStringAt(r, 0), "raw\\nbody", "raw: body byte-for-byte")
 }
 
-func testRawStringWithHashes(): Unit {
+test "raw string with hashes" {
   val r = lex("r#\"with \"quotes\"\"#")
   assertEqualInt(diagCount(r), 0, "raw#: no diagnostics")
   assertEqual(tokenKindAt(r, 0), "raw_string", "raw#: TRawString")
   assertEqual(rawStringAt(r, 0), "with \"quotes\"", "raw#: embedded quotes")
 }
 
-func testUnterminatedRawString(): Unit {
+test "unterminated raw string" {
   val r = lex("r\"oops")
   assertEqualInt(diagCount(r), 1, "unterm-raw: one diagnostic")
   assertEqual(r.diagnostics[0].code, "L0028", "unterm-raw: L0028")
 }
 
-func testCharLiteral(): Unit {
+test "char literal" {
   val r = lex("'a' '\\n'")
   assertEqual(tokenKindAt(r, 0), "char", "char: 'a' kind")
   assertEqualInt(charCodepointAt(r, 0), 97, "char: 'a' codepoint")
@@ -395,27 +420,27 @@ func testCharLiteral(): Unit {
   assertEqualInt(charCodepointAt(r, 1), 10, "char: '\\n' codepoint")
 }
 
-func testPunctuation(): Unit {
+test "punctuation" {
   val r = lex("-> => ..= < <= == != +=")
-  assertEqual(punctNameAt(r, 0), "->",  "punct: ->")
-  assertEqual(punctNameAt(r, 1), "=>",  "punct: =>")
+  assertEqual(punctNameAt(r, 0), "->", "punct: ->")
+  assertEqual(punctNameAt(r, 1), "=>", "punct: =>")
   assertEqual(punctNameAt(r, 2), "..=", "punct: ..=")
-  assertEqual(punctNameAt(r, 3), "<",   "punct: <")
-  assertEqual(punctNameAt(r, 4), "<=",  "punct: <=")
-  assertEqual(punctNameAt(r, 5), "==",  "punct: ==")
-  assertEqual(punctNameAt(r, 6), "!=",  "punct: !=")
-  assertEqual(punctNameAt(r, 7), "+=",  "punct: +=")
+  assertEqual(punctNameAt(r, 3), "<", "punct: <")
+  assertEqual(punctNameAt(r, 4), "<=", "punct: <=")
+  assertEqual(punctNameAt(r, 5), "==", "punct: ==")
+  assertEqual(punctNameAt(r, 6), "!=", "punct: !=")
+  assertEqual(punctNameAt(r, 7), "+=", "punct: +=")
 }
 
-func testStmtEndInsertion(): Unit {
+test "stmt end insertion" {
   val r = lex("foo\nbar")
   assertEqualInt(r.tokens.count, 4, "stmt-end: foo STMT_END bar EOF")
-  assertEqual(tokenKindAt(r, 0), "ident",    "stmt-end: foo")
+  assertEqual(tokenKindAt(r, 0), "ident", "stmt-end: foo")
   assertEqual(tokenKindAt(r, 1), "stmt_end", "stmt-end: synthesised")
-  assertEqual(tokenKindAt(r, 2), "ident",    "stmt-end: bar")
+  assertEqual(tokenKindAt(r, 2), "ident", "stmt-end: bar")
 }
 
-func testStmtEndSuppressedAfterOperator(): Unit {
+test "stmt end suppressed after operator" {
   val r = lex("a +\nb")
   assertEqualInt(r.tokens.count, 4, "stmt-end suppressed: token count")
   assertEqual(tokenKindAt(r, 0), "ident", "stmt-end suppressed: a")
@@ -423,7 +448,7 @@ func testStmtEndSuppressedAfterOperator(): Unit {
   assertEqual(tokenKindAt(r, 2), "ident", "stmt-end suppressed: b — no STMT_END between + and b")
 }
 
-func testStmtEndSuppressedInsideBrackets(): Unit {
+test "stmt end suppressed inside brackets" {
   val r = lex("(a\nb)")
   assertEqualInt(r.tokens.count, 5, "brackets: token count")
   assertEqual(tokenKindAt(r, 0), "punct", "brackets: (")
@@ -432,21 +457,21 @@ func testStmtEndSuppressedInsideBrackets(): Unit {
   assertEqual(tokenKindAt(r, 3), "punct", "brackets: )")
 }
 
-func testExplicitSemicolon(): Unit {
+test "explicit semicolon" {
   val r = lex("a;b")
   assertEqualInt(r.tokens.count, 4, "semi: token count")
   assertEqual(tokenKindAt(r, 1), "stmt_end", "semi: STMT_END from ;")
 }
 
-func testLineComment(): Unit {
+test "line comment" {
   val r = lex("foo // ignored\nbar")
   assertEqualInt(r.tokens.count, 4, "line comment: foo STMT_END bar EOF")
-  assertEqual(tokenKindAt(r, 0), "ident",    "line comment: foo")
+  assertEqual(tokenKindAt(r, 0), "ident", "line comment: foo")
   assertEqual(tokenKindAt(r, 1), "stmt_end", "line comment: STMT_END after newline")
-  assertEqual(tokenKindAt(r, 2), "ident",    "line comment: bar")
+  assertEqual(tokenKindAt(r, 2), "ident", "line comment: bar")
 }
 
-func testBlockComment(): Unit {
+test "block comment" {
   val r = lex("foo /* /* nested */ */ bar")
   assertEqualInt(r.tokens.count, 3, "block comment: token count")
   assertEqual(identNameAt(r, 0), "foo", "block comment: foo")
@@ -454,7 +479,7 @@ func testBlockComment(): Unit {
   assertEqualInt(diagCount(r), 0, "block comment: no diagnostics")
 }
 
-func testUnterminatedBlockComment(): Unit {
+test "unterminated block comment" {
   val r = lex("foo /* unclosed")
   assertEqualInt(diagCount(r), 1, "unterm block: one diagnostic")
   assertEqual(r.diagnostics[0].code, "L0001", "unterm block: L0001")
@@ -467,13 +492,15 @@ func testUnterminatedBlockComment(): Unit {
 // The literal still emits a TInt(Long.MinValue) so the parser can
 // collapse `PreNeg + literal` into Long.MinValue and cancel the
 // diagnostic (parser-side coverage in `parser_self_test.l`).
-func testBareMinValueAbsLiteralFiresL0010(): Unit {
+test "bare min value abs literal fires l0010" {
   val r = lex("val x = 9223372036854775808")
   assertTrue(diagCount(r) >= 1, "9223372036854775808: L0010 fires")
   var sawL0010 = false
   var i = 0
   while i < r.diagnostics.count {
-    if r.diagnostics[i].code == "L0010" { sawL0010 = true }
+    if r.diagnostics[i].code == "L0010" {
+      sawL0010 = true
+    }
     i = i + 1
   }
   assertTrue(sawL0010, "9223372036854775808: L0010 present")
@@ -481,24 +508,24 @@ func testBareMinValueAbsLiteralFiresL0010(): Unit {
   // can produce Long.MinValue — that's a separate parser test.
   // The literal itself is the third token (val, ident, =, int).
   assertEqual(tokenKindAt(r, 3), "int", "9223372036854775808: TInt emitted")
-  assertTrue(intValueAt(r, 3) == -9223372036854775808i64,
-             "9223372036854775808: bit pattern is Long.MinValue")
+  assertTrue(intValueAt(r, 3) == -9223372036854775808i64, "9223372036854775808: bit pattern is Long.MinValue")
 }
 
 // Sanity check that other huge literals still hit the regular
 // overflow path (not the MinValue special case).
-func testTrulyOverflowingLiteralStillFiresL0010(): Unit {
+test "truly overflowing literal still fires l0010" {
   val r = lex("val x = 9223372036854775809")  // one past Long.MaxValue+1
   var sawL0010 = false
   var i = 0
   while i < r.diagnostics.count {
-    if r.diagnostics[i].code == "L0010" { sawL0010 = true }
+    if r.diagnostics[i].code == "L0010" {
+      sawL0010 = true
+    }
     i = i + 1
   }
   assertTrue(sawL0010, "regular overflow: L0010 present")
   assertEqual(tokenKindAt(r, 3), "int", "regular overflow: TInt emitted (value 0)")
-  assertTrue(intValueAt(r, 3) == 0i64,
-             "regular overflow: value substituted with 0")
+  assertTrue(intValueAt(r, 3) == 0i64, "regular overflow: value substituted with 0")
 }
 
 // #425 item 2: a `// /*` sequence inside a line comment must NOT
@@ -507,17 +534,17 @@ func testTrulyOverflowingLiteralStillFiresL0010(): Unit {
 // leading `//` claims the whole line — the `/*` is just comment text.
 // Regression test: `foo // /*\nbar` must produce two real tokens
 // (foo, bar) and no unterminated-comment diagnostic.
-func testLineCommentSwallowsBlockOpen(): Unit {
+test "line comment swallows block open" {
   val r = lex("foo // /*\nbar")
   assertEqualInt(diagCount(r), 0, "line // /*: no unterminated-block diagnostic")
-  assertEqual(tokenKindAt(r, 0), "ident",    "line // /*: foo")
-  assertEqual(identNameAt(r, 0), "foo",      "line // /*: foo name")
+  assertEqual(tokenKindAt(r, 0), "ident", "line // /*: foo")
+  assertEqual(identNameAt(r, 0), "foo", "line // /*: foo name")
   assertEqual(tokenKindAt(r, 1), "stmt_end", "line // /*: STMT_END after newline")
-  assertEqual(tokenKindAt(r, 2), "ident",    "line // /*: bar")
-  assertEqual(identNameAt(r, 2), "bar",      "line // /*: bar name")
+  assertEqual(tokenKindAt(r, 2), "ident", "line // /*: bar")
+  assertEqual(identNameAt(r, 2), "bar", "line // /*: bar name")
 }
 
-func testDocComment(): Unit {
+test "doc comment" {
   val r = lex("/// documentation\nfoo")
   assertEqualInt(r.tokens.count, 4, "doc: doc STMT_END foo EOF")
   assertEqual(tokenKindAt(r, 0), "doc", "doc: kind")
@@ -525,18 +552,18 @@ func testDocComment(): Unit {
   assertEqual(identNameAt(r, 2), "foo", "doc: foo follows")
 }
 
-func testModuleDocComment(): Unit {
+test "module doc comment" {
   val r = lex("//! module overview\n")
   assertEqualInt(r.tokens.count, 3, "module doc: token count")
   assertEqual(tokenKindAt(r, 0), "module_doc", "module doc: kind")
 }
 
-func testCrlfNormalisation(): Unit {
+test "crlf normalisation" {
   val r = lex("foo\r\nbar")
   assertEqualInt(r.tokens.count, 4, "crlf: token count")
-  assertEqual(tokenKindAt(r, 0), "ident",    "crlf: foo")
+  assertEqual(tokenKindAt(r, 0), "ident", "crlf: foo")
   assertEqual(tokenKindAt(r, 1), "stmt_end", "crlf: STMT_END")
-  assertEqual(tokenKindAt(r, 2), "ident",    "crlf: bar")
+  assertEqual(tokenKindAt(r, 2), "ident", "crlf: bar")
 }
 
 // Phase 5 §M5.1 stage 4 — L0040 reserved-name diagnostic for `_X`
@@ -545,11 +572,10 @@ func testCrlfNormalisation(): Unit {
 // `__error_<offset>` placeholder before TIdent emission; this prevents
 // the original `_Foo` lexeme from clashing with compiler-generated
 // names like `_Async` / `_StateMachine` further down the pipeline.
-func testReservedUnderscoreUpperRejected(): Unit {
+test "reserved underscore upper rejected" {
   val r = lex("_Hidden")
   assertEqual(tokenKindAt(r, 0), "ident", "L0040: still emitted as TIdent")
-  assertEqual(identNameAt(r, 0), "__error_0",
-              "L0040: lexeme rewritten to placeholder (offset 0)")
+  assertEqual(identNameAt(r, 0), "__error_0", "L0040: lexeme rewritten to placeholder (offset 0)")
   assertEqualInt(diagCount(r), 1, "L0040: one diagnostic")
   assertEqual(r.diagnostics[0].code, "L0040", "L0040: code")
 }
@@ -558,7 +584,7 @@ func testReservedUnderscoreUpperRejected(): Unit {
 // placeholder, so two rejections in the same source produce distinct
 // TIdent names that cannot clash with each other or with the
 // `_StateMachine` / `_Async` family of compiler-generated names.
-func testReservedUnderscoreUpperPlaceholdersDistinct(): Unit {
+test "reserved underscore upper placeholders distinct" {
   val r = lex("_Foo  _Bar")
   assertEqualInt(diagCount(r), 2, "L0040: two diagnostics")
   assertEqual(identNameAt(r, 0), "__error_0", "L0040: first placeholder")
@@ -566,21 +592,21 @@ func testReservedUnderscoreUpperPlaceholdersDistinct(): Unit {
   assertEqual(identNameAt(r, 1), "__error_6", "L0040: second placeholder")
 }
 
-func testReservedUnderscoreLowerOK(): Unit {
+test "reserved underscore lower ok" {
   // Underscore followed by a *lowercase* letter is fine — those
   // aren't compiler-generated.
   val r = lex("_hidden")
   assertEqualInt(diagCount(r), 0, "L0040: no diagnostic for _hidden")
 }
 
-func testReservedUnderscoreDigitOK(): Unit {
+test "reserved underscore digit ok" {
   // Underscore + digit is also fine (e.g. `_0` is a destructured
   // tuple slot in some style guides).
   val r = lex("_0name")
   assertEqualInt(diagCount(r), 0, "L0040: no diagnostic for _0…")
 }
 
-func testReservedUnderscoreAlone(): Unit {
+test "reserved underscore alone" {
   // Pure underscore is the wildcard pattern; no diagnostic.
   val r = lex("_")
   assertEqualInt(diagCount(r), 0, "L0040: no diagnostic for `_`")
@@ -589,31 +615,31 @@ func testReservedUnderscoreAlone(): Unit {
 // Phase 5 §M5.1 stage 4 — non-ASCII (UAX #31 XID_Start /
 // XID_Continue) identifier acceptance via `Std.UnicodeHost`'s
 // `System.Char.GetUnicodeCategory` extern.
-func testNonAsciiIdentifier(): Unit {
+test "non ascii identifier" {
   // Greek-letter identifier — `α` is `LowercaseLetter`,
   // `β` is `LowercaseLetter`.  No diagnostics; one TIdent token.
-  val r = lex("\u{03B1}\u{03B2}")
+  val r = lex("αβ")
   assertEqualInt(diagCount(r), 0, "uax31: greek ident no diagnostics")
   assertEqual(tokenKindAt(r, 0), "ident", "uax31: TIdent kind")
-  assertEqual(identNameAt(r, 0), "\u{03B1}\u{03B2}", "uax31: lexeme preserved")
+  assertEqual(identNameAt(r, 0), "αβ", "uax31: lexeme preserved")
 }
 
-func testCyrillicIdentifier(): Unit {
+test "cyrillic identifier" {
   // Cyrillic capital letter `И` (U+0418) is `UppercaseLetter`;
   // followed by lowercase `и` (U+0438) which is `LowercaseLetter`.
-  val r = lex("\u{0418}\u{0438}")
+  val r = lex("Ии")
   assertEqualInt(diagCount(r), 0, "uax31: cyrillic ident no diagnostics")
   assertEqual(tokenKindAt(r, 0), "ident", "uax31: TIdent kind")
 }
 
-func testIdentDigitsContinueOnly(): Unit {
+test "ident digits continue only" {
   // `α0` — letter then ASCII digit.  Digits are XID_Continue but
   // not XID_Start, so the leading letter is required.  Should
   // produce one TIdent.
-  val r = lex("\u{03B1}0")
+  val r = lex("α0")
   assertEqualInt(diagCount(r), 0, "uax31: letter+digit no diagnostics")
   assertEqual(tokenKindAt(r, 0), "ident", "uax31: starts as TIdent")
-  assertEqual(identNameAt(r, 0), "\u{03B1}0", "uax31: digits trail")
+  assertEqual(identNameAt(r, 0), "α0", "uax31: digits trail")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -625,12 +651,11 @@ func testIdentDigitsContinueOnly(): Unit {
 // reproduces the original source byte-for-byte (modulo CR/LF
 // normalisation already applied by `lex`).
 // ─────────────────────────────────────────────────────────────────────────────
-
 func triviaKindName(k: in TriviaKind): String {
   match k {
-    case TKWhitespace   -> "ws"
-    case TKNewline      -> "nl"
-    case TKLineComment  -> "line"
+    case TKWhitespace -> "ws"
+    case TKNewline -> "nl"
+    case TKLineComment -> "line"
     case TKBlockComment -> "block"
   }
 }
@@ -669,7 +694,7 @@ func reconstructSource(src: in String, lr: in LexResult): String {
   s
 }
 
-func testTriviaLeadingWhitespace(): Unit {
+test "trivia leading whitespace" {
   val r = lex("   foo")
   // Tokens: foo, EOF.  `foo` carries the leading "   " whitespace.
   assertEqual(tokenKindAt(r, 0), "ident", "trivia-ws: ident")
@@ -678,7 +703,7 @@ func testTriviaLeadingWhitespace(): Unit {
   assertEqual(leadingTriviaTextAt(r, 0, 0), "   ", "trivia-ws: text")
 }
 
-func testTriviaLineComment(): Unit {
+test "trivia line comment" {
   val r = lex("// hi\nfoo")
   // Tokens: foo, EOF.  Leading trivia on `foo`: line-comment then newline.
   assertEqual(tokenKindAt(r, 0), "ident", "trivia-line: ident")
@@ -689,7 +714,7 @@ func testTriviaLineComment(): Unit {
   assertEqual(leadingTriviaTextAt(r, 0, 1), "\n", "trivia-line: newline text")
 }
 
-func testTriviaBlockComment(): Unit {
+test "trivia block comment" {
   val r = lex("/* hi */foo")
   // Tokens: foo, EOF.  Leading trivia on `foo`: block-comment.
   assertEqual(tokenKindAt(r, 0), "ident", "trivia-block: ident")
@@ -698,7 +723,7 @@ func testTriviaBlockComment(): Unit {
   assertEqual(leadingTriviaTextAt(r, 0, 0), "/* hi */", "trivia-block: text")
 }
 
-func testTriviaNewlineRun(): Unit {
+test "trivia newline run" {
   val r = lex("a\n\nb")
   // Tokens: a, STMT_END (synthesised), b, EOF.  Each `\n` becomes its
   // own TKNewline trivium so a formatter can preserve blank lines.
@@ -715,7 +740,7 @@ func testTriviaNewlineRun(): Unit {
   assertEqualInt(leadingTriviaCount(r, 2), 0, "trivia-nl: b drained")
 }
 
-func testTriviaDocCommentNotInTrivia(): Unit {
+test "trivia doc comment not in trivia" {
   // Doc comments remain real tokens (TDocComment) — they must NOT be
   // captured as `TriviaKind.TKLineComment`.  Plain `//` line comments
   // before the doc comment do attach as trivia on the doc-comment
@@ -729,7 +754,7 @@ func testTriviaDocCommentNotInTrivia(): Unit {
   assertEqual(leadingTriviaTextAt(r, 0, 0), "// plain", "trivia-doc: leading text")
 }
 
-func testTriviaLossless(): Unit {
+test "trivia lossless" {
   // Round-trip a moderately mixed source through the lexer and verify
   // that the captured token + trivia text equals the (post-CRLF
   // normalised) input.  Doc-comment tokens have no `text` field on
@@ -741,7 +766,7 @@ func testTriviaLossless(): Unit {
   assertEqual(rebuilt, src, "trivia-rt: lossless round-trip")
 }
 
-func testFullPackageHeader(): Unit {
+test "full package header" {
   val r = lex("package Foo.Bar\n\nimport Std.Core\n\nfunc add(x: in Int, y: in Int): Int {\n  x + y\n}\n")
   assertEqualInt(diagCount(r), 0, "full: no diagnostics")
   val last = r.tokens.count - 1
@@ -751,59 +776,4 @@ func testFullPackageHeader(): Unit {
   assertEqual(tokenKindAt(r, 1), "ident", "full: Foo ident")
   assertEqual(tokenKindAt(r, 2), "punct", "full: . punct")
   assertEqual(punctNameAt(r, 2), ".", "full: dot")
-}
-
-func main(): Unit {
-  testEmptyInput()
-  testIdentAndKeyword()
-  testBoolKeyword()
-  testDecimalInts()
-  testHexOctBinInts()
-  testIntSuffix()
-  testLeadingZeroDecimalRejected()
-  testFloatLiterals()
-  testStringLiteral()
-  testStringEscapes()
-  testUnterminatedString()
-  testUnicodeEscapeBmpRange()
-  testUnicodeEscapeSurrogateRejected()
-  testUnicodeEscapeNonBmpRejected()
-  testInterpolatedString()
-  testInterpolatedStringNoHoles()
-  testTripleString()
-  testUnterminatedTripleString()
-  testRawStringNoHashes()
-  testRawStringWithHashes()
-  testUnterminatedRawString()
-  testCharLiteral()
-  testPunctuation()
-  testStmtEndInsertion()
-  testStmtEndSuppressedAfterOperator()
-  testStmtEndSuppressedInsideBrackets()
-  testExplicitSemicolon()
-  testLineComment()
-  testBlockComment()
-  testUnterminatedBlockComment()
-  testBareMinValueAbsLiteralFiresL0010()
-  testTrulyOverflowingLiteralStillFiresL0010()
-  testLineCommentSwallowsBlockOpen()
-  testDocComment()
-  testModuleDocComment()
-  testCrlfNormalisation()
-  testReservedUnderscoreUpperRejected()
-  testReservedUnderscoreUpperPlaceholdersDistinct()
-  testReservedUnderscoreLowerOK()
-  testReservedUnderscoreDigitOK()
-  testReservedUnderscoreAlone()
-  testNonAsciiIdentifier()
-  testCyrillicIdentifier()
-  testIdentDigitsContinueOnly()
-  testFullPackageHeader()
-  testTriviaLeadingWhitespace()
-  testTriviaLineComment()
-  testTriviaBlockComment()
-  testTriviaNewlineRun()
-  testTriviaDocCommentNotInTrivia()
-  testTriviaLossless()
-  println("lexer self-test: ok")
 }

@@ -1,6 +1,5 @@
-// tests/testing_tests.l — unit tests for the Testing library's mock
-// implementations and assertion helpers.
-
+//! tests/testing_tests.l — unit tests for the Testing library's mock
+//! implementations and assertion helpers.
 @test_module
 package Testing.TestingTests
 
@@ -16,20 +15,20 @@ import Session
 import Cache
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
 func makeEmailMsg(): Mail.EmailMessage {
   val fromAddr = Mail.makeAddress("test@example.com")
-  val toAddr   = Mail.makeAddress("recipient@example.com")
+  val toAddr = Mail.makeAddress("recipient@example.com")
   Mail.EmailMessage(
-    from        = fromAddr,
-    to          = [toAddr],
-    cc          = [],
-    bcc         = [],
-    subject     = "Test",
-    textBody    = "Hello",
-    htmlBody    = "",
+    from = fromAddr,
+    to = [toAddr],
+    cc = [],
+    bcc = [],
+    subject = "Test",
+    textBody = "Hello",
+    htmlBody = "",
     attachments = [],
-    replyTo     = None)
+    replyTo = None
+  )
 }
 
 func makeMqMsg(id: in String): Mq.Message {
@@ -37,7 +36,6 @@ func makeMqMsg(id: in String): Mq.Message {
 }
 
 // ─── TestContext ──────────────────────────────────────────────────────────────
-
 test "newTestContext creates context with all fields initialized" {
   val ctx = Testing.newTestContext()
   // Verify all fields are present and have sane defaults.
@@ -47,7 +45,6 @@ test "newTestContext creates context with all fields initialized" {
 }
 
 // ─── TestClock ────────────────────────────────────────────────────────────────
-
 test "TestClock starts at 0" {
   val ctx = Testing.newTestContext()
   assertEqualInt(Testing.now(ctx.clock).toInt(), 0, "initial epoch ms is 0")
@@ -74,13 +71,12 @@ test "advance by 0 is a no-op" {
 }
 
 // ─── MockMailSender ───────────────────────────────────────────────────────────
-
 test "MockMailSender: send returns Ok" {
   val ctx = Testing.newTestContext()
   val msg = makeEmailMsg()
   match ctx.mail.send(msg) {
     case Err(e) -> assertTrue(false, "send() must return Ok: " + e.message)
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
   }
 }
 
@@ -95,7 +91,7 @@ test "MockMailSender: lastSent returns None when no emails sent" {
   val ctx = Testing.newTestContext()
   match Testing.lastSent(ctx.mail) {
     case Some(_) -> assertTrue(false, "lastSent must be None before any sends")
-    case None    -> ()
+    case None -> ()
   }
 }
 
@@ -104,7 +100,7 @@ test "MockMailSender: lastSent returns Some after send" {
   val msg = makeEmailMsg()
   ctx.mail.send(msg)
   match Testing.lastSent(ctx.mail) {
-    case None    -> assertTrue(false, "lastSent must be Some after one send")
+    case None -> assertTrue(false, "lastSent must be Some after one send")
     case Some(e) -> Testing.assertEq(e.subject, "Test", "subject matches")
   }
 }
@@ -134,24 +130,23 @@ test "MockMailSender: lastSent is None after clearSent" {
   Testing.clearSent(ctx.mail)
   match Testing.lastSent(ctx.mail) {
     case Some(_) -> assertTrue(false, "lastSent must be None after clearSent")
-    case None    -> ()
+    case None -> ()
   }
 }
 
 // ─── MockStorageBucket ────────────────────────────────────────────────────────
-
 test "MockStorageBucket: put returns Ok" {
   val ctx = Testing.newTestContext()
   match Storage.put(ctx.storage, "mykey", "data", "text/plain") {
     case Err(e) -> assertTrue(false, "put() must return Ok: " + e.message)
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
   }
 }
 
 test "MockStorageBucket: get returns NOT_FOUND for missing key" {
   val ctx = Testing.newTestContext()
   match Storage.get(ctx.storage, "missing-key") {
-    case Ok(_)  -> assertTrue(false, "get() for missing key must return Err")
+    case Ok(_) -> assertTrue(false, "get() for missing key must return Err")
     case Err(e) -> Testing.assertEq(e.code, "NOT_FOUND", "error code")
   }
 }
@@ -160,7 +155,7 @@ test "MockStorageBucket: put then get round-trip" {
   val ctx = Testing.newTestContext()
   Storage.put(ctx.storage, "rkey", "aGVsbG8=", "text/plain")
   match Storage.get(ctx.storage, "rkey") {
-    case Err(e)  -> assertTrue(false, "get() after put() must succeed: " + e.message)
+    case Err(e) -> assertTrue(false, "get() after put() must succeed: " + e.message)
     case Ok(obj) -> Testing.assertEq(obj.dataBase64, "aGVsbG8=", "data round-trip")
   }
 }
@@ -170,7 +165,7 @@ test "MockStorageBucket: delete removes key" {
   Storage.put(ctx.storage, "delkey", "data", "text/plain")
   Storage.delete(ctx.storage, "delkey")
   match Storage.get(ctx.storage, "delkey") {
-    case Ok(_)  -> assertTrue(false, "get() after delete() must return Err")
+    case Ok(_) -> assertTrue(false, "get() after delete() must return Err")
     case Err(e) -> Testing.assertEq(e.code, "NOT_FOUND", "deleted key is NOT_FOUND")
   }
 }
@@ -178,7 +173,7 @@ test "MockStorageBucket: delete removes key" {
 test "MockStorageBucket: exists returns false before put" {
   val ctx = Testing.newTestContext()
   match Storage.exists(ctx.storage, "no-such-key") {
-    case Err(e)   -> assertTrue(false, "exists() must succeed: " + e.message)
+    case Err(e) -> assertTrue(false, "exists() must succeed: " + e.message)
     case Ok(found) -> assertFalse(found, "exists before put must be false")
   }
 }
@@ -187,7 +182,7 @@ test "MockStorageBucket: exists returns true after put" {
   val ctx = Testing.newTestContext()
   Storage.put(ctx.storage, "existkey", "data", "text/plain")
   match Storage.exists(ctx.storage, "existkey") {
-    case Err(e)   -> assertTrue(false, "exists() must succeed: " + e.message)
+    case Err(e) -> assertTrue(false, "exists() must succeed: " + e.message)
     case Ok(found) -> assertTrue(found, "exists after put must be true")
   }
 }
@@ -195,7 +190,7 @@ test "MockStorageBucket: exists returns true after put" {
 test "MockStorageBucket: presignedUrl returns url containing bucket name" {
   val ctx = Testing.newTestContext()
   match Storage.presignedUrl(ctx.storage, "some/key", 3600) {
-    case Err(e)  -> assertTrue(false, "presignedUrl() must succeed: " + e.message)
+    case Err(e) -> assertTrue(false, "presignedUrl() must succeed: " + e.message)
     case Ok(url) -> assertTrue(url.contains("test-bucket"), "url contains bucket name")
   }
 }
@@ -204,9 +199,9 @@ test "MockStorageBucket: list with prefix filters correctly" {
   val ctx = Testing.newTestContext()
   Storage.put(ctx.storage, "images/a.jpg", "data1", "image/jpeg")
   Storage.put(ctx.storage, "images/b.jpg", "data2", "image/jpeg")
-  Storage.put(ctx.storage, "docs/c.pdf",   "data3", "application/pdf")
+  Storage.put(ctx.storage, "docs/c.pdf", "data3", "application/pdf")
   match Storage.list(ctx.storage, "images/") {
-    case Err(e)  -> assertTrue(false, "list() must succeed: " + e.message)
+    case Err(e) -> assertTrue(false, "list() must succeed: " + e.message)
     case Ok(res) -> assertEqualInt(res.entries.length, 2, "only image/ entries listed")
   }
 }
@@ -216,19 +211,18 @@ test "MockStorageBucket: list with empty prefix returns all keys" {
   Storage.put(ctx.storage, "a", "d1", "text/plain")
   Storage.put(ctx.storage, "b", "d2", "text/plain")
   match Storage.list(ctx.storage, "") {
-    case Err(e)  -> assertTrue(false, "list() must succeed: " + e.message)
+    case Err(e) -> assertTrue(false, "list() must succeed: " + e.message)
     case Ok(res) -> assertTrue(res.entries.length >= 2, "all keys included")
   }
 }
 
 // ─── MockMessageQueue ─────────────────────────────────────────────────────────
-
 test "MockMessageQueue: publish returns Ok and increments count" {
   val ctx = Testing.newTestContext()
   val msg = makeMqMsg("m1")
   match ctx.queue.publish(msg) {
     case Err(e) -> assertTrue(false, "publish() must return Ok: " + e)
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
   }
   assertEqualInt(Testing.publishedCount(ctx.queue), 1, "count after one publish")
 }
@@ -238,7 +232,7 @@ test "MockMessageQueue: publishBatch publishes all messages" {
   val msgs = [makeMqMsg("b1"), makeMqMsg("b2"), makeMqMsg("b3")]
   match ctx.queue.publishBatch(msgs) {
     case Err(e) -> assertTrue(false, "publishBatch() must return Ok: " + e)
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
   }
   assertEqualInt(Testing.publishedCount(ctx.queue), 3, "count after batch of 3")
 }
@@ -247,23 +241,22 @@ test "MockMessageQueue: lastPublished returns None when nothing published" {
   val ctx = Testing.newTestContext()
   match Testing.lastPublished(ctx.queue) {
     case Some(_) -> assertTrue(false, "lastPublished must be None before any publishes")
-    case None    -> ()
+    case None -> ()
   }
 }
 
 test "MockMessageQueue: lastPublished returns correct message after publish" {
   val ctx = Testing.newTestContext()
   val msg = makeMqMsg("last-msg")
-  ctx.queue.publish(Mq.Message(id = "first",    body = "first-payload",   headers = [], deliveryCount = 0))
+  ctx.queue.publish(Mq.Message(id = "first", body = "first-payload", headers = [], deliveryCount = 0))
   ctx.queue.publish(Mq.Message(id = "last-msg", body = "expected-payload", headers = [], deliveryCount = 0))
   match Testing.lastPublished(ctx.queue) {
-    case None    -> assertTrue(false, "lastPublished must be Some after publishes")
+    case None -> assertTrue(false, "lastPublished must be Some after publishes")
     case Some(p) -> Testing.assertEq(p.body, "expected-payload", "last published body")
   }
 }
 
 // ─── MockFlagStore ────────────────────────────────────────────────────────────
-
 test "MockFlagStore: isEnabled returns false for unknown flag" {
   val ctx = Testing.newTestContext()
   assertFalse(ctx.flags.isEnabled("unknown-flag"), "unknown flag is disabled by default")
@@ -286,25 +279,20 @@ test "MockFlagStore: getValue returns FlagBool(true) for enabled flag" {
   val ctx = Testing.newTestContext()
   Testing.enable(ctx.flags, "bool-flag")
   match ctx.flags.getValue("bool-flag") {
-    case None    -> assertTrue(false, "getValue must return Some for known flag")
-    case Some(v) ->
-      match v {
-        case Flags.FlagValue.FlagBool(b) -> assertTrue(b, "FlagBool value should be true")
-        case _                           -> assertTrue(false, "unexpected FlagValue variant")
-      }
+    case None -> assertTrue(false, "getValue must return Some for known flag")
+    case Some(v) -> match v { case Flags.FlagValue.FlagBool(b) -> assertTrue(b, "FlagBool value should be true"); case _ -> assertTrue(false, "unexpected FlagValue variant") }
   }
 }
 
 test "MockFlagStore: getValue returns None for unknown flag" {
   val ctx = Testing.newTestContext()
   match ctx.flags.getValue("nonexistent") {
-    case None    -> ()
+    case None -> ()
     case Some(_) -> assertTrue(false, "getValue must be None for unknown flag")
   }
 }
 
 // ─── Assertion helpers ────────────────────────────────────────────────────────
-
 test "Testing.assertOk passes for Ok result" {
   val r: Result[Int, String] = Ok(42)
   Testing.assertOk(r, "should be Ok")

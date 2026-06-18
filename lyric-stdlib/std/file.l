@@ -1,16 +1,15 @@
-// std/file.l - Bootstrap-grade file I/O.
-//
-// G10 (`docs/23-fsharp-shim-elimination.md` §5): every helper now
-// wraps a direct BCL `@externTarget` (declared in
-// `stdlib/std/_kernel/file_host.l`) in `try { … } catch Bug as b
-// { … }` to surface host failures as `Result.Err(IoError)`.  No more
-// F#-side `FileHost` round-trip.
-//
-// For bytes round-tripping the public surface stays `List[Byte]` for
-// caller convenience; the kernel extern returns / accepts
-// `slice[Byte]` and we shuttle through `slice[T].toList()` /
-// `List[T].toArray()` in pure Lyric.
-
+//! std/file.l - Bootstrap-grade file I/O.
+//!
+//! G10 (`docs/23-fsharp-shim-elimination.md` §5): every helper now
+//! wraps a direct BCL `@externTarget` (declared in
+//! `stdlib/std/_kernel/file_host.l`) in `try { … } catch Bug as b
+//! { … }` to surface host failures as `Result.Err(IoError)`.  No more
+//! F#-side `FileHost` round-trip.
+//!
+//! For bytes round-tripping the public surface stays `List[Byte]` for
+//! caller convenience; the kernel extern returns / accepts
+//! `slice[Byte]` and we shuttle through `slice[T].toList()` /
+//! `List[T].toArray()` in pure Lyric.
 @runtime_checked
 package Std.File
 
@@ -18,6 +17,18 @@ import Std.Core
 import Std.Collections
 import Std.Errors
 import Std.FileHost
+
+/// File metadata: last write time (stored as DateTime for comparison).
+extern type DateTime = "System.DateTime"
+
+pub record FileStat {
+  modifiedAt: DateTime
+}
+
+/// Compare two file modification times. Returns true if `a` is newer than `b`.
+pub func fileStatIsNewer(a: in FileStat, b: in FileStat): Bool {
+  hostDateTimeGreaterThan(a.modifiedAt, b.modifiedAt)
+}
 
 /// Probe whether a regular file exists at `path`.
 ///
@@ -29,7 +40,7 @@ import Std.FileHost
 /// Named `fileExists` rather than the more idiomatic `exists` because
 /// `exists` is a soft keyword (predicate-logic quantifier) reserved for
 /// `requires` / `ensures` clauses.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func fileExists(path: in String): Bool {
   if path.length == 0 {
     false
@@ -45,7 +56,7 @@ pub func fileExists(path: in String): Bool {
 /// other host failure (encoding, permission, device, …).  The existence
 /// probe was dropped to eliminate a TOCTOU race between the probe and
 /// the read — instead the host exception is classified by message.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func readText(path: in String): Result[String, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
@@ -58,9 +69,7 @@ pub func readText(path: in String): Result[String, IOError] {
     // FileNotFoundException may slip through as IoError until the
     // host shim is upgraded to return an exception-type tag rather
     // than the localised message text.  See lyric-lang #601.
-    if b.message.startsWith("Could not find file") or
-       b.message.contains("FileNotFoundException") or
-       b.message.contains("DirectoryNotFoundException") {
+    if b.message.startsWith("Could not find file") or b.message.contains("FileNotFoundException") or b.message.contains("DirectoryNotFoundException") {
       Err(error = FileNotFound(path = path))
     } else {
       Err(error = IoError(path = path, message = b.message))
@@ -72,7 +81,7 @@ pub func readText(path: in String): Result[String, IOError] {
 ///
 /// Returns `Ok(())` on success, `Err(InvalidPath)` for empty paths,
 /// or `Err(IoError)` for any host failure (permission, disk-full, …).
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func writeText(path: in String, text: in String): Result[Unit, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
@@ -87,7 +96,7 @@ pub func writeText(path: in String, text: in String): Result[Unit, IOError] {
 
 /// Probe whether `path` names an existing directory.  Returns false
 /// for empty paths and host errors.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func dirExists(path: in String): Bool {
   if path.length == 0 {
     false
@@ -100,7 +109,7 @@ pub func dirExists(path: in String): Bool {
 /// if it already exists.  Returns `Ok(())` on success,
 /// `Err(InvalidPath)` for empty paths, or `Err(IoError)` if the host
 /// call fails.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func createDir(path: in String): Result[Unit, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
@@ -121,7 +130,7 @@ pub func createDir(path: in String): Result[Unit, IOError] {
 /// shim which the kernel doesn't expose today.  Callers that need
 /// idempotent semantics should check `dirExists(path)` first or
 /// match on `Err(IoError)` and ignore it.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func deleteDirRecursive(path: in String): Result[Unit, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
@@ -148,7 +157,7 @@ pub func deleteDirRecursive(path: in String): Result[Unit, IOError] {
 /// invoke `deleteFile` unconditionally.  This is the opposite of
 /// `deleteDirRecursive`, which routes the BCL's
 /// `DirectoryNotFoundException` into `Err(IoError)`.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func deleteFile(path: in String): Result[Unit, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
@@ -165,7 +174,7 @@ pub func deleteFile(path: in String): Result[Unit, IOError] {
 ///
 /// Returns `Ok(bytes)` on success, `Err(InvalidPath)` for empty paths,
 /// or `Err(IoError)` for any host failure (not found, permission, …).
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func readBytes(path: in String): Result[List[Byte], IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
@@ -194,7 +203,7 @@ pub func readBytes(path: in String): Result[List[Byte], IOError] {
 /// fixed-size buffer form callers parse directly.  When a missing or
 /// unreadable file is an expected, recoverable outcome, use `readBytes`,
 /// which reports failures as `Result.Err(IOError)`.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func readBytesOrPanic(path: in String): slice[Byte] {
   if path.length == 0 {
     panic("Std.File.readBytesOrPanic: path must not be empty")
@@ -206,7 +215,7 @@ pub func readBytesOrPanic(path: in String): slice[Byte] {
 ///
 /// Returns `Ok(())` on success, `Err(InvalidPath)` for empty paths,
 /// or `Err(IoError)` for any host failure (permission, disk-full, …).
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func writeBytes(path: in String, bytes: in List[Byte]): Result[Unit, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
@@ -224,7 +233,7 @@ pub func writeBytes(path: in String, bytes: in List[Byte]): Result[Unit, IOError
 /// Returns `Ok(files)` where each element is an absolute path to a file.
 /// Returns `Err(InvalidPath)` for an empty path, `Err(IoError)` for
 /// any host failure (missing dir, permission, …).
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func listFiles(dir: in String): Result[List[String], IOError] {
   if dir.length == 0 {
     return Err(error = InvalidPath(path = dir, reason = "path must not be empty"))
@@ -232,7 +241,9 @@ pub func listFiles(dir: in String): Result[List[String], IOError] {
   return try {
     val raw = hostEnumerateFiles(dir)
     val acc: List[String] = newListWithCapacity(raw.length)
-    for f in raw { acc.add(f) }
+    for f in raw {
+      acc.add(f)
+    }
     Ok(value = acc)
   } catch Bug as b {
     Err(error = IoError(path = dir, message = b.message))
@@ -244,7 +255,7 @@ pub func listFiles(dir: in String): Result[List[String], IOError] {
 /// Returns `Ok(dirs)` where each element is an absolute path to a directory.
 /// Returns `Err(InvalidPath)` for an empty path, `Err(IoError)` for
 /// any host failure (missing dir, permission, …).
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func listDirs(dir: in String): Result[List[String], IOError] {
   if dir.length == 0 {
     return Err(error = InvalidPath(path = dir, reason = "path must not be empty"))
@@ -252,29 +263,51 @@ pub func listDirs(dir: in String): Result[List[String], IOError] {
   return try {
     val raw = hostEnumerateDirectories(dir)
     val acc: List[String] = newListWithCapacity(raw.length)
-    for d in raw { acc.add(d) }
+    for d in raw {
+      acc.add(d)
+    }
     Ok(value = acc)
   } catch Bug as b {
     Err(error = IoError(path = dir, message = b.message))
   }
 }
 
+/// Get file modification time for `path`.
+///
+/// Returns `Err(InvalidPath)` for empty paths, `Err(FileNotFound)` if
+/// the host reports the file is missing, and `Err(IoError)` for any
+/// other host failure (permission, device, …).
+@stable(since = "1.0")
+pub func stat(path: in String): Result[FileStat, IOError] {
+  if path.length == 0 {
+    return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
+  }
+  return try {
+    val modifiedAt = hostGetLastWriteTimeUtc(path)
+    Ok(value = FileStat(modifiedAt = modifiedAt))
+  } catch Bug as b {
+    if b.message.startsWith("Could not find file") or b.message.contains("FileNotFoundException") or b.message.contains("DirectoryNotFoundException") {
+      Err(error = FileNotFound(path = path))
+    } else {
+      Err(error = IoError(path = path, message = b.message))
+    }
+  }
+}
+
 // Helper: collect all files recursively starting from `dir` into `acc`.
 // Errors stop the traversal and propagate up.
 func collectFilesRecursive(dir: in String, acc: in List[String]): Result[Unit, IOError] {
-  val files = match listFiles(dir) {
-    case Ok(fs)  -> fs
-    case Err(e)  -> { return Err(error = e) }
+  val files = match listFiles(dir) { case Ok(fs) -> fs; case Err(e) -> { return Err(error = e) } }
+  for f in files.toArray() {
+    acc.add(f)
   }
-  for f in files.toArray() { acc.add(f) }
-  val subdirs = match listDirs(dir) {
-    case Ok(ds)  -> ds
-    case Err(e)  -> { return Err(error = e) }
-  }
+  val subdirs = match listDirs(dir) { case Ok(ds) -> ds; case Err(e) -> { return Err(error = e) } }
   for sub in subdirs.toArray() {
     match collectFilesRecursive(sub, acc) {
-      case Ok(_)  -> ()
-      case Err(e) -> { return Err(error = e) }
+      case Ok(_) -> ()
+      case Err(e) -> {
+        return Err(error = e)
+      }
     }
   }
   return Ok(value = ())
@@ -284,14 +317,14 @@ func collectFilesRecursive(dir: in String, acc: in List[String]): Result[Unit, I
 ///
 /// Returns `Ok(files)` with one absolute path per file.  Traversal
 /// errors (missing intermediate dir, permission) surface as `Err(IoError)`.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func listFilesRecursive(dir: in String): Result[List[String], IOError] {
   if dir.length == 0 {
     return Err(error = InvalidPath(path = dir, reason = "path must not be empty"))
   }
   val acc: List[String] = newList()
   match collectFilesRecursive(dir, acc) {
-    case Ok(_)  -> Ok(value = acc)
+    case Ok(_) -> Ok(value = acc)
     case Err(e) -> Err(error = e)
   }
 }

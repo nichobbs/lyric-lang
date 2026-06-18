@@ -14,8 +14,10 @@ output_assembly = "Validation.dll"
 "Validation"         = "src/validation.l"
 "Validation.Aspects" = "src/validation_aspects.l"
 
-[dependencies]
-"Lyric.Stdlib" = { path = "../stdlib" }
-
 [project.tests]
 "Validation.ValidationTests" = "tests/validation_tests.l"
+# Runtime aspect-weaving regression suite (#3543): asserts the ValidateInput
+# template and the direct/unqualified-from instantiation forms actually
+# short-circuit when woven. validation is already in the ecosystem CI job, so
+# this is the ecosystem's first CI coverage of woven-aspect runtime behaviour.
+"Validation.AspectWeavingTests" = "tests/aspect_weaving_tests.l"

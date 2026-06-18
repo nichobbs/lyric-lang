@@ -11,11 +11,10 @@ output          = "single"
 output_assembly = "Health.dll"
 
 [project.packages]
-"Health" = "src"
+"Health" = "src/health.l"
 
 [dependencies]
-"Lyric.Stdlib" = { path = "../lyric-stdlib" }
-"Lyric.Web"    = { path = "../lyric-web" }
+"Lyric.Web"    = { workspace = true }
 
 [project.tests]
 "Health.HealthTests" = "tests/health_tests.l"

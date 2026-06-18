@@ -1,32 +1,33 @@
-// release.l — `lyric build --release` native-binary pipeline.
-//
-// Produces a self-contained, optimized, standalone native executable from a
-// compiled Lyric program — no managed runtime required on the target machine.
-// Plain `lyric build` keeps emitting the fast framework-dependent DLL (the
-// inner loop); `--release` is the deployable-artifact path.
-//
-// .NET target (DotnetAot): mirrors the compiler's own AOT entry-point pattern
-// (bootstrap/src/Lyric.Cli.Aot).  We generate a tiny host project that
-// references the already-built program DLL(s) + the stdlib bundle (+ restored
-// dependency DLLs), with a C# trampoline into the program's emitted
-// `<package>.Program.main()`, then run `dotnet publish -p:PublishAot=true`.
-//
-// JVM target (JvmNativeImage): the release path is GraalVM `native-image` over
-// the bundled JAR.  The seam is defined here so the dispatcher is target-
-// agnostic; the toolchain invocation is not yet implemented (#1975) and fails
-// loud rather than silently producing a managed artifact.
-
+//! release.l — `lyric build --release` native-binary pipeline.
+//!
+//! Produces a self-contained, optimized, standalone native executable from a
+//! compiled Lyric program — no managed runtime required on the target machine.
+//! Plain `lyric build` keeps emitting the fast framework-dependent DLL (the
+//! inner loop); `--release` is the deployable-artifact path.
+//!
+//! .NET target (DotnetAot): mirrors the compiler's own AOT entry-point pattern
+//! (bootstrap/src/Lyric.Cli.Aot).  We generate a tiny host project that
+//! references the already-built program DLL(s) + the stdlib bundle (+ restored
+//! dependency DLLs), with a C# trampoline into the program's emitted
+//! `<package>.Program.main()`, then run `dotnet publish -p:PublishAot=true`.
+//!
+//! JVM target (JvmNativeImage): the release path is GraalVM `native-image` over
+//! the bundled JAR.  The seam is defined here so the dispatcher is target-
+//! agnostic; the toolchain invocation is not yet implemented (#1975) and fails
+//! loud rather than silently producing a managed artifact.
 package Lyric.Release
 
 import Std.Core
 import Std.Collections
 import Std.Errors
 import Std.Console as Console
-import Std.String as Str      // before Path so Path.join/2 wins over Str.join (overload resolution)
+import Std.String as Str
+// before Path so Path.join/2 wins over Str.join (overload resolution)
 import Std.File as File
 import Std.Path as Path
 import Std.Process as Process
 import Std.Environment as Environment
+import Lyric.Pack as Pack
 
 // Release target selector.  `buildRelease` is target-agnostic; each arm owns
 // its toolchain invocation so adding the GraalVM path later does not touch the
@@ -36,13 +37,17 @@ pub union ReleaseTarget {
   case JvmNativeImage
 }
 
-func releaseErr(message: in String): Unit { Console.error("release: " + message) }
+func releaseErr(message: in String): Unit {
+  Console.error("release: " + message)
+}
 
 // The host assembly name is deliberately distinct from any user package name:
 // ILC resolves assembly identities case-insensitively, so a host named after
 // the program (e.g. `prog` vs the program's `Prog`) would shadow the program's
 // `<pkg>.Program` type and the entry trampoline would fail to load at runtime.
-func hostAssemblyName(): String { "__lyric_aot_host" }
+func hostAssemblyName(): String {
+  "__lyric_aot_host"
+}
 
 /// Extract the `package X` name from Lyric source text — the first line that
 /// begins with `package `.  Returns "" if absent.  The trampoline targets
@@ -53,38 +58,86 @@ pub func packageNameOf(source: in String): String {
   while i < lines.length {
     val line = Str.trim(lines[i])
     if Str.startsWith(line, "package ") {
-      return Str.trim(Str.substring(line, 8, Str.length(line) - 8))
+      val raw = Str.trim(Str.substring(line, 8, Str.length(line) - 8))
+      // Strip any inline // comment from the package name so that a line
+      // like `package Demo // entry point` yields "Demo", not "Demo // entry point".
+      return match Str.indexOf(raw, "//") { case Some(idx) -> Str.trim(Str.substring(raw, 0, idx)); case None -> raw }
     }
     i += 1
   }
   ""
 }
 
-/// Whether `source` declares a zero-argument `main` — the only form the
-/// emitter treats as a program entry point (`isMainFuncMsil`: name == "main",
-/// no params).  Used to pick the entry package in a multi-package project.
+// Whether `source` declares a zero-argument `main` — the only form the
+// emitter treats as a program entry point (`isMainFuncMsil`: name == "main",
+// no params).  Used to pick the entry package in a multi-package project.
+//
+// This is a text scan, not a parse: lines inside triple-quoted ("""...""")
+// string literals are skipped so embedded documentation containing a bare
+// `func main()` line does not misidentify a library as an entry package
+// (#3215), and a `"""` in a `//` line-comment tail does not flip the
+// in-string state (#3248).  Raw-string edge cases (a raw literal that itself
+// contains `"""`) and `//` inside ordinary one-line string literals remain
+// best-effort — the scan is a pre-build package picker, not a parser.
 pub func declaresEntryMain(source: in String): Bool {
   val lines = Str.split(source, "\n")
+  var inTripleString = false
   var i = 0
   while i < lines.length {
     val line = Str.trim(lines[i])
     // Match `func main()` / `pub func main()` with an empty parameter list,
     // tolerating whitespace before the `(`.
-    if (Str.startsWith(line, "func main") or Str.startsWith(line, "pub func main")) {
+    if not inTripleString and (Str.startsWith(line, "func main") or Str.startsWith(line, "pub func main")) {
       val afterMain = afterToken(line, "main")
       val trimmed = Str.trim(afterMain)
-      if Str.startsWith(trimmed, "()") { return true }
+      if Str.startsWith(trimmed, "()") {
+        return true
+      }
     }
+    inTripleString = advanceTripleState(lines[i], inTripleString)
     i += 1
   }
   false
+}
+
+// Advance the triple-quoted-string state across one raw source line.  A `//`
+// outside a triple-quoted string starts a line comment, so a `"""` in the
+// comment tail must not flip the state (#3248); inside a triple-quoted string
+// `//` is literal content and scanning continues.
+func advanceTripleState(line: in String, inTriple: in Bool): Bool {
+  var state = inTriple
+  var i = 0
+  val n = Str.length(line)
+  while i < n {
+    if not state and i + 1 < n and Str.substring(line, i, 2) == "//" {
+      return state
+    }
+    if i + 3 <= n and Str.substring(line, i, 3) == "\"\"\"" {
+      state = not state
+      i += 3
+    } else {
+      i += 1
+    }
+  }
+  state
+}
+
+/// Error message for a local path dependency whose output DLL is missing.
+/// Shared by the `--release` and plain project-build local-dep probes in
+/// `cli_build.l` (and unit-tested via `release_self_test.l`).  Includes the
+/// probed path because only the dependency's default `bin/` output is
+/// discovered: a dep built with a custom `--out` exists elsewhere and a bare
+/// "not built" claim would send the user on a fruitless rebuild loop (#3216).
+pub func localDepNotBuiltMessage(depName: in String, probedDll: in String, depToml: in String): String {
+  "local dep '" + depName + "' not built: no DLL at '" + probedDll + "'. Run `lyric build --manifest " + depToml +
+    "` first. Note: dependencies built with a custom --out path are not discovered; rebuild without --out so the DLL lands in the dependency's bin/ directory."
 }
 
 // Return the substring of `line` immediately following the first occurrence of
 // `token`, or "" if `token` is absent.
 func afterToken(line: in String, token: in String): String {
   match Str.indexOf(line, token) {
-    case None      -> ""
+    case None -> ""
     case Some(idx) -> {
       val start = idx + Str.length(token)
       Str.substring(line, start, Str.length(line) - start)
@@ -101,14 +154,16 @@ func locateStdlib(programDllDir: in String): Option[String] {
   candidates.add(Path.join(Environment.appBaseDirectory(), "Lyric.Stdlib.dll"))
   var i = 0
   while i < candidates.count {
-    if File.fileExists(candidates[i]) { return Some(value = candidates[i]) }
+    if File.fileExists(candidates[i]) {
+      return Some(value = candidates[i])
+    }
     i += 1
   }
   None
 }
 
 func referenceXml(dllPath: in String): String {
-  "    <Reference Include=\"" + dllPath + "\"><Private>true</Private></Reference>\n"
+  "    <Reference Include=\"" + Pack.xmlEscape(dllPath) + "\"><Private>true</Private></Reference>\n"
 }
 
 // Write the AOT host project.  `refDlls` are absolute paths to every managed
@@ -121,15 +176,16 @@ func writeHostProject(hostDir: in String, refDlls: in List[String], ridValue: in
     refs = refs + referenceXml(refDlls[i])
     i += 1
   }
-  val csproj =
-    "<Project Sdk=\"Microsoft.NET.Sdk\">\n" +
-    "  <PropertyGroup>\n" +
-    "    <OutputType>Exe</OutputType>\n" +
+  val csproj = "<Project Sdk=\"Microsoft.NET.Sdk\">\n" + "  <PropertyGroup>\n" + "    <OutputType>Exe</OutputType>\n" +
     "    <TargetFramework>net10.0</TargetFramework>\n" +
-    "    <AssemblyName>" + hostAssemblyName() + "</AssemblyName>\n" +
+    "    <AssemblyName>" +
+    hostAssemblyName() +
+    "</AssemblyName>\n" +
     "    <Nullable>enable</Nullable>\n" +
     "    <PublishAot>true</PublishAot>\n" +
-    "    <RuntimeIdentifier>" + ridValue + "</RuntimeIdentifier>\n" +
+    "    <RuntimeIdentifier>" +
+    ridValue +
+    "</RuntimeIdentifier>\n" +
     "    <!-- Surface ILC trim/AOT warnings to the user without failing the build. -->\n" +
     "    <IlcTreatWarningsAsErrors>false</IlcTreatWarningsAsErrors>\n" +
     "  </PropertyGroup>\n" +
@@ -138,7 +194,7 @@ func writeHostProject(hostDir: in String, refDlls: in List[String], ridValue: in
     "  </ItemGroup>\n" +
     "</Project>\n"
   match File.writeText(Path.join(hostDir, "host.csproj"), csproj) {
-    case Ok(_)  -> Ok(value = ())
+    case Ok(_) -> Ok(value = ())
     case Err(e) -> Err(error = "could not write host.csproj: " + IOError.message(e))
   }
 }
@@ -146,14 +202,15 @@ func writeHostProject(hostDir: in String, refDlls: in List[String], ridValue: in
 // Write the C# trampoline whose `Main` forwards into the program's emitted
 // zero-arg `<pkgName>.Program.main()`.
 func writeTrampoline(hostDir: in String, pkgName: in String): Result[Unit, String] {
-  val cs =
-    "// Generated by `lyric build --release`.  Trampoline into the Lyric\n" +
+  val cs = "// Generated by `lyric build --release`.  Trampoline into the Lyric\n" +
     "// program's emitted entry point.\n" +
     "public static class LyricAotEntry {\n" +
-    "    public static int Main(string[] args) => " + pkgName + ".Program.main();\n" +
+    "    public static int Main(string[] args) => " +
+    pkgName +
+    ".Program.main();\n" +
     "}\n"
   match File.writeText(Path.join(hostDir, "Trampoline.cs"), cs) {
-    case Ok(_)  -> Ok(value = ())
+    case Ok(_) -> Ok(value = ())
     case Err(e) -> Err(error = "could not write trampoline: " + IOError.message(e))
   }
 }
@@ -168,8 +225,7 @@ func copyExecutable(src: in String, dst: in String): Result[Unit, String] {
   args.add(src)
   args.add(dst)
   match Process.run("cp", args) {
-    case Ok(code) ->
-      if code == 0 { Ok(value = ()) } else { Err(error = "cp exited " + toString(code)) }
+    case Ok(code) -> if code == 0 { Ok(value = ()) } else { Err(error = "cp exited " + toString(code)) }
     case Err(e) -> Err(error = "cp failed: " + IOError.message(e))
   }
 }
@@ -184,10 +240,10 @@ func copyExecutable(src: in String, dst: in String): Result[Unit, String] {
 /// `outPath` — destination for the native binary.
 pub func buildReleaseDotnet(
   programDll: in String,
-  pkgName:    in String,
-  extraRefs:  in List[String],
-  ridOpt:     in Option[String],
-  outPath:    in String
+  pkgName: in String,
+  extraRefs: in List[String],
+  ridOpt: in Option[String],
+  outPath: in String,
 ): Int {
   if pkgName == "" {
     releaseErr("could not determine the entry package (no `package` declaration found)")
@@ -203,29 +259,36 @@ pub func buildReleaseDotnet(
   val refs: List[String] = newList()
   refs.add(programDll)
   var i = 0
-  while i < extraRefs.count { refs.add(extraRefs[i]); i += 1 }
+  while i < extraRefs.count {
+    refs.add(extraRefs[i])
+    i += 1
+  }
   match locateStdlib(programDir) {
     case Some(p) -> refs.add(p)
-    case None    -> {
+    case None -> {
       // Fail with a clear Lyric diagnostic rather than letting `dotnet
       // publish` fail later with a cryptic ILC link error (#2020).
-      releaseErr("Lyric.Stdlib.dll not found near " + programDir +
-                 " or the lyric binary (" + Environment.appBaseDirectory() + ")")
+      releaseErr(
+        "Lyric.Stdlib.dll not found near " + programDir + " or the lyric binary (" + Environment.appBaseDirectory() + ")"
+      )
       return 1
     }
   }
 
-  val ridValue = match ridOpt {
-    case Some(r) -> r
-    case None    -> "$(NETCoreSdkPortableRuntimeIdentifier)"
-  }
+  val ridValue = match ridOpt { case Some(r) -> r; case None -> "$(NETCoreSdkPortableRuntimeIdentifier)" }
   match writeHostProject(hostDir, refs, ridValue) {
-    case Ok(_)  -> ()
-    case Err(m) -> { releaseErr(m); return 1 }
+    case Ok(_) -> ()
+    case Err(m) -> {
+      releaseErr(m)
+      return 1
+    }
   }
   match writeTrampoline(hostDir, pkgName) {
-    case Ok(_)  -> ()
-    case Err(m) -> { releaseErr(m); return 1 }
+    case Ok(_) -> ()
+    case Err(m) -> {
+      releaseErr(m)
+      return 1
+    }
   }
 
   // Publish to a known output dir so the native binary path is RID-independent.
@@ -241,7 +304,10 @@ pub func buildReleaseDotnet(
   Console.println("release: compiling native binary (dotnet publish -p:PublishAot=true) ...")
   val pubExit = match Process.run("dotnet", pubArgs) {
     case Ok(code) -> code
-    case Err(e)   -> { releaseErr("dotnet publish failed to start: " + IOError.message(e)); return 1 }
+    case Err(e) -> {
+      releaseErr("dotnet publish failed to start: " + IOError.message(e))
+      return 1
+    }
   }
   if pubExit != 0 {
     releaseErr("dotnet publish exited " + toString(pubExit) + " — see output above")
@@ -255,8 +321,11 @@ pub func buildReleaseDotnet(
     return 1
   }
   match copyExecutable(nativeBin, outPath) {
-    case Ok(_)  -> ()
-    case Err(m) -> { releaseErr(m); return 1 }
+    case Ok(_) -> ()
+    case Err(m) -> {
+      releaseErr(m)
+      return 1
+    }
   }
   Console.println("built native binary " + outPath)
   0
@@ -266,15 +335,15 @@ pub func buildReleaseDotnet(
 /// JVM GraalVM path.  The JVM arm is not yet implemented and fails loud (#1975)
 /// rather than silently producing a non-native artifact.
 pub func buildRelease(
-  target:     in ReleaseTarget,
+  target: in ReleaseTarget,
   programDll: in String,
-  pkgName:    in String,
-  extraRefs:  in List[String],
-  ridOpt:     in Option[String],
-  outPath:    in String
+  pkgName: in String,
+  extraRefs: in List[String],
+  ridOpt: in Option[String],
+  outPath: in String,
 ): Int {
   match target {
-    case DotnetAot      -> buildReleaseDotnet(programDll, pkgName, extraRefs, ridOpt, outPath)
+    case DotnetAot -> buildReleaseDotnet(programDll, pkgName, extraRefs, ridOpt, outPath)
     case JvmNativeImage -> {
       releaseErr("`--release --target jvm` (GraalVM native-image) is not yet implemented; tracked in #1975")
       1

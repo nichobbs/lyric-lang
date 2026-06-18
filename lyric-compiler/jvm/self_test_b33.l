@@ -1,15 +1,14 @@
-// jvm/self_test_b33.l — Stage B33: dcmpg for double sign comparison.
-//
-// Generates DoubleSign.class with static sign(D)I that uses dcmpg:
-//   dload_0; dconst_0; dcmpg → -1 if d < 0 (or NaN), 0 if d == 0, 1 if d > 0
-//
-// Main prints:
-//   sign(-3.5) = -1
-//   sign(0.0)  =  0
-//   sign(7.2)  =  1
-//
-// Linear method body (no branches), no StackMapTable needed.
-
+//! jvm/self_test_b33.l — Stage B33: dcmpg for double sign comparison.
+//!
+//! Generates DoubleSign.class with static sign(D)I that uses dcmpg:
+//!   dload_0; dconst_0; dcmpg → -1 if d < 0 (or NaN), 0 if d == 0, 1 if d > 0
+//!
+//! Main prints:
+//!   sign(-3.5) = -1
+//!   sign(0.0)  =  0
+//!   sign(7.2)  =  1
+//!
+//! Linear method body (no branches), no StackMapTable needed.
 package Jvm.SelfTestB33
 
 import Std.Core
@@ -21,7 +20,7 @@ import Jvm.Driver
 
 func makeDoubleSignClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
   // sign(D)I
   //   dload_0       (the double arg — occupies slots 0-1)
@@ -45,11 +44,11 @@ func makeDoubleSignClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOut    = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val signRef   = poolMethodref(pool, "DoubleSign", "sign", "(D)I")
-  val printlnI  = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val signRef = poolMethodref(pool, "DoubleSign", "sign", "(D)I")
+  val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
 
   // sign(-3.5) = -1
   emitGetstatic(asm, sysOut)
@@ -85,24 +84,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b33"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val doubleSignBytes = makeDoubleSignClassBytes()
-  val mainBytes       = makeMainClassBytes()
+  val mainBytes = makeMainClassBytes()
 
   val doubleSignClass = BuiltClass(binaryName = "DoubleSign", bytes = doubleSignBytes)
-  val mainClass       = BuiltClass(binaryName = "Main",       bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(doubleSignClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB33",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

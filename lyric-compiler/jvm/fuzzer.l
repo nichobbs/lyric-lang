@@ -1,25 +1,24 @@
-// jvm/fuzzer.l — Stage B8: differential fuzzing corpus.
-//
-// Generates a fixed set of LFunc method shapes that stress the JVM verifier
-// across different opcodes, branching patterns, return types, and local
-// variable configurations.  All methods are intended for a single class
-// `B8Corpus` as public static members.
-//
-// The corpus covers:
-//   voidNoop     — void method, just returns
-//   constFortyTwo — returns int constant 42
-//   intAdd       — adds two int params
-//   intSub       — subtracts two int params
-//   intMul       — multiplies two int params
-//   intNeg       — negates one int param
-//   intMax       — if/else branch (max of two ints); requires StackMapTable
-//   intAbs       — if/else branch (absolute value); requires StackMapTable
-//   intLoop      — while loop (sum 1..n); requires StackMapTable
-//   longAdd      — adds two long params (double-width locals)
-//   doubleAdd    — adds two double params (double-width locals)
-//   returnNull   — returns null (aconst_null + areturn)
-//   intI2l       — widens int to long via i2l
-
+//! jvm/fuzzer.l — Stage B8: differential fuzzing corpus.
+//!
+//! Generates a fixed set of LFunc method shapes that stress the JVM verifier
+//! across different opcodes, branching patterns, return types, and local
+//! variable configurations.  All methods are intended for a single class
+//! `B8Corpus` as public static members.
+//!
+//! The corpus covers:
+//!   voidNoop     — void method, just returns
+//!   constFortyTwo — returns int constant 42
+//!   intAdd       — adds two int params
+//!   intSub       — subtracts two int params
+//!   intMul       — multiplies two int params
+//!   intNeg       — negates one int param
+//!   intMax       — if/else branch (max of two ints); requires StackMapTable
+//!   intAbs       — if/else branch (absolute value); requires StackMapTable
+//!   intLoop      — while loop (sum 1..n); requires StackMapTable
+//!   longAdd      — adds two long params (double-width locals)
+//!   doubleAdd    — adds two double params (double-width locals)
+//!   returnNull   — returns null (aconst_null + areturn)
+//!   intI2l       — widens int to long via i2l
 package Jvm.Fuzzer
 
 import Std.Core
@@ -32,8 +31,15 @@ func makeVoidNoop(): LFunc {
   val insns: List[LInsn] = newList()
   insns.add(LReturn)
   val ps: List[JvmType] = newList()
-  LFunc(flags = ACC_PUBLIC + ACC_STATIC, name = "voidNoop",
-        params = ps, ret = JVoid, insns = insns, maxStack = 0, maxLocals = 0)
+  LFunc(
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = "voidNoop",
+    params = ps,
+    ret = JVoid,
+    insns = insns,
+    maxStack = 0,
+    maxLocals = 0
+  )
 }
 
 func makeConstFortyTwo(): LFunc {
@@ -41,8 +47,15 @@ func makeConstFortyTwo(): LFunc {
   insns.add(LIconst(v = 42))
   insns.add(LIreturn)
   val ps: List[JvmType] = newList()
-  LFunc(flags = ACC_PUBLIC + ACC_STATIC, name = "constFortyTwo",
-        params = ps, ret = JInt, insns = insns, maxStack = 1, maxLocals = 0)
+  LFunc(
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = "constFortyTwo",
+    params = ps,
+    ret = JInt,
+    insns = insns,
+    maxStack = 1,
+    maxLocals = 0
+  )
 }
 
 func makeIntAdd(): LFunc {
@@ -54,8 +67,15 @@ func makeIntAdd(): LFunc {
   val ps: List[JvmType] = newList()
   ps.add(JInt)
   ps.add(JInt)
-  LFunc(flags = ACC_PUBLIC + ACC_STATIC, name = "intAdd",
-        params = ps, ret = JInt, insns = insns, maxStack = 2, maxLocals = 2)
+  LFunc(
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = "intAdd",
+    params = ps,
+    ret = JInt,
+    insns = insns,
+    maxStack = 2,
+    maxLocals = 2
+  )
 }
 
 func makeIntSub(): LFunc {
@@ -67,8 +87,15 @@ func makeIntSub(): LFunc {
   val ps: List[JvmType] = newList()
   ps.add(JInt)
   ps.add(JInt)
-  LFunc(flags = ACC_PUBLIC + ACC_STATIC, name = "intSub",
-        params = ps, ret = JInt, insns = insns, maxStack = 2, maxLocals = 2)
+  LFunc(
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = "intSub",
+    params = ps,
+    ret = JInt,
+    insns = insns,
+    maxStack = 2,
+    maxLocals = 2
+  )
 }
 
 func makeIntMul(): LFunc {
@@ -80,8 +107,15 @@ func makeIntMul(): LFunc {
   val ps: List[JvmType] = newList()
   ps.add(JInt)
   ps.add(JInt)
-  LFunc(flags = ACC_PUBLIC + ACC_STATIC, name = "intMul",
-        params = ps, ret = JInt, insns = insns, maxStack = 2, maxLocals = 2)
+  LFunc(
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = "intMul",
+    params = ps,
+    ret = JInt,
+    insns = insns,
+    maxStack = 2,
+    maxLocals = 2
+  )
 }
 
 func makeIntNeg(): LFunc {
@@ -91,8 +125,15 @@ func makeIntNeg(): LFunc {
   insns.add(LIreturn)
   val ps: List[JvmType] = newList()
   ps.add(JInt)
-  LFunc(flags = ACC_PUBLIC + ACC_STATIC, name = "intNeg",
-        params = ps, ret = JInt, insns = insns, maxStack = 1, maxLocals = 1)
+  LFunc(
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = "intNeg",
+    params = ps,
+    ret = JInt,
+    insns = insns,
+    maxStack = 1,
+    maxLocals = 1
+  )
 }
 
 // max(a, b): if a >= b return a; else return b
@@ -109,8 +150,15 @@ func makeIntMax(): LFunc {
   val ps: List[JvmType] = newList()
   ps.add(JInt)
   ps.add(JInt)
-  LFunc(flags = ACC_PUBLIC + ACC_STATIC, name = "intMax",
-        params = ps, ret = JInt, insns = insns, maxStack = 2, maxLocals = 2)
+  LFunc(
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = "intMax",
+    params = ps,
+    ret = JInt,
+    insns = insns,
+    maxStack = 2,
+    maxLocals = 2
+  )
 }
 
 // abs(a): if a >= 0 return a; else return -a
@@ -126,8 +174,15 @@ func makeIntAbs(): LFunc {
   insns.add(LIreturn)
   val ps: List[JvmType] = newList()
   ps.add(JInt)
-  LFunc(flags = ACC_PUBLIC + ACC_STATIC, name = "intAbs",
-        params = ps, ret = JInt, insns = insns, maxStack = 1, maxLocals = 1)
+  LFunc(
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = "intAbs",
+    params = ps,
+    ret = JInt,
+    insns = insns,
+    maxStack = 1,
+    maxLocals = 1
+  )
 }
 
 // sum(n): s=0; while n>0 { s+=n; n-=1 }; return s
@@ -153,8 +208,15 @@ func makeIntLoop(): LFunc {
   insns.add(LIreturn)
   val ps: List[JvmType] = newList()
   ps.add(JInt)
-  LFunc(flags = ACC_PUBLIC + ACC_STATIC, name = "intLoop",
-        params = ps, ret = JInt, insns = insns, maxStack = 2, maxLocals = 2)
+  LFunc(
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = "intLoop",
+    params = ps,
+    ret = JInt,
+    insns = insns,
+    maxStack = 2,
+    maxLocals = 2
+  )
 }
 
 func makeLongAdd(): LFunc {
@@ -167,8 +229,15 @@ func makeLongAdd(): LFunc {
   ps.add(JLong)
   ps.add(JLong)
   // long occupies 2 slots each: params at 0,1 and 2,3 -> maxLocals=4
-  LFunc(flags = ACC_PUBLIC + ACC_STATIC, name = "longAdd",
-        params = ps, ret = JLong, insns = insns, maxStack = 4, maxLocals = 4)
+  LFunc(
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = "longAdd",
+    params = ps,
+    ret = JLong,
+    insns = insns,
+    maxStack = 4,
+    maxLocals = 4
+  )
 }
 
 func makeDoubleAdd(): LFunc {
@@ -180,8 +249,15 @@ func makeDoubleAdd(): LFunc {
   val ps: List[JvmType] = newList()
   ps.add(JDouble)
   ps.add(JDouble)
-  LFunc(flags = ACC_PUBLIC + ACC_STATIC, name = "doubleAdd",
-        params = ps, ret = JDouble, insns = insns, maxStack = 4, maxLocals = 4)
+  LFunc(
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = "doubleAdd",
+    params = ps,
+    ret = JDouble,
+    insns = insns,
+    maxStack = 4,
+    maxLocals = 4
+  )
 }
 
 func makeReturnNull(): LFunc {
@@ -189,9 +265,15 @@ func makeReturnNull(): LFunc {
   insns.add(LAconstNull)
   insns.add(LAreturn)
   val ps: List[JvmType] = newList()
-  LFunc(flags = ACC_PUBLIC + ACC_STATIC, name = "returnNull",
-        params = ps, ret = JRef(className = "java/lang/Object"),
-        insns = insns, maxStack = 1, maxLocals = 0)
+  LFunc(
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = "returnNull",
+    params = ps,
+    ret = JRef(className = "java/lang/Object"),
+    insns = insns,
+    maxStack = 1,
+    maxLocals = 0
+  )
 }
 
 func makeIntI2l(): LFunc {
@@ -201,8 +283,15 @@ func makeIntI2l(): LFunc {
   insns.add(LLreturn)
   val ps: List[JvmType] = newList()
   ps.add(JInt)
-  LFunc(flags = ACC_PUBLIC + ACC_STATIC, name = "intI2l",
-        params = ps, ret = JLong, insns = insns, maxStack = 2, maxLocals = 1)
+  LFunc(
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = "intI2l",
+    params = ps,
+    ret = JLong,
+    insns = insns,
+    maxStack = 2,
+    maxLocals = 1
+  )
 }
 
 pub func makeFuzzCorpus(pool: in Pool): List[LFunc] {

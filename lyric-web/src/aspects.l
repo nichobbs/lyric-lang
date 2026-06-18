@@ -1,46 +1,45 @@
-// Web.Aspects — pub aspect templates for cross-cutting HTTP handler concerns.
-//
-// Provides five reusable template aspects:
-//
-//   RequiresAuth        — validates a bearer token; 401 / 403 on failure.
-//                         C-mode (@inline_template): reads args.authToken.
-//   RequiresRole        — validates token AND checks a role claim; 403 on
-//                         insufficient role.  C-mode: reads args.authToken.
-//   ApiKey              — constant-time API-key check; 401 on mismatch.
-//                         C-mode: reads args.apiKey.
-//   RateLimit           — per-endpoint sliding-window rate limit; 429 on
-//                         excess.  B-mode: uses call.qualifiedName.
-//   HttpCircuitBreaker  — open-circuit short-circuit; 503 when open.
-//                         B-mode: uses call.qualifiedName.
-//
-// Auth aspects delegate to lyric-auth (Auth.verifyJwt, Auth.extractClaim,
-// Auth.verifyApiKey, Auth.rolesContain) so the JWT and API-key logic is
-// transport-agnostic and can be reused from gRPC or queue aspects.
-//
-// Typical consumer instantiation:
-//
-//   import Web.Aspects
-//
-//   aspect Auth from Web.Aspects.RequiresAuth {
-//     matches: name like "handle*"
-//     except name in { handleHealth, handleOpenApiSpec }
-//   }
-//
-//   aspect Throttle from Web.Aspects.RateLimit {
-//     matches: name like "handle*"
-//     inside:  Auth
-//     config { requestsPerMinute: Int = 30 }
-//   }
-//
-//   aspect Circuit from Web.Aspects.HttpCircuitBreaker {
-//     matches: name like "handle*"
-//     inside:  Throttle
-//   }
-//
-// CORS is not an aspect — configure it via env vars (see Web.start).
-//
-// See docs/26-aspects.md §18, docs/27-aspect-libraries.md.
-
+//! Web.Aspects — pub aspect templates for cross-cutting HTTP handler concerns.
+//!
+//! Provides five reusable template aspects:
+//!
+//!   RequiresAuth        — validates a bearer token; 401 / 403 on failure.
+//!                         C-mode (@inline_template): reads args.authToken.
+//!   RequiresRole        — validates token AND checks a role claim; 403 on
+//!                         insufficient role.  C-mode: reads args.authToken.
+//!   ApiKey              — constant-time API-key check; 401 on mismatch.
+//!                         C-mode: reads args.apiKey.
+//!   RateLimit           — per-endpoint sliding-window rate limit; 429 on
+//!                         excess.  B-mode: uses call.qualifiedName.
+//!   HttpCircuitBreaker  — open-circuit short-circuit; 503 when open.
+//!                         B-mode: uses call.qualifiedName.
+//!
+//! Auth aspects delegate to lyric-auth (Auth.verifyJwt, Auth.extractClaim,
+//! Auth.verifyApiKey, Auth.rolesContain) so the JWT and API-key logic is
+//! transport-agnostic and can be reused from gRPC or queue aspects.
+//!
+//! Typical consumer instantiation:
+//!
+//!   import Web.Aspects
+//!
+//!   aspect Auth from Web.Aspects.RequiresAuth {
+//!     matches: name like "handle*"
+//!     except name in { handleHealth, handleOpenApiSpec }
+//!   }
+//!
+//!   aspect Throttle from Web.Aspects.RateLimit {
+//!     matches: name like "handle*"
+//!     inside:  Auth
+//!     config { requestsPerMinute: Int = 30 }
+//!   }
+//!
+//!   aspect Circuit from Web.Aspects.HttpCircuitBreaker {
+//!     matches: name like "handle*"
+//!     inside:  Throttle
+//!   }
+//!
+//! CORS is not an aspect — configure it via env vars (see Web.start).
+//!
+//! See docs/26-aspects.md §18, docs/27-aspect-libraries.md.
 @runtime_checked
 package Web.Aspects
 
@@ -52,7 +51,6 @@ import Resilience
 import Web.Kernel.Net as HttpKernel
 
 // ─── RequiresAuth ─────────────────────────────────────────────────────────────
-
 /// Validate a bearer token on every matched handler call.
 ///
 /// The handler must declare a parameter named `authToken: String` (the value
@@ -74,21 +72,19 @@ import Web.Kernel.Net as HttpKernel
 ///                               (default: "HS256").  Tokens whose `alg` header is
 ///                               not in this list — including `alg=none` — are
 ///                               rejected.  See RFC 8725 §3.1.
-@stable(since="0.1")
+@stable(since = "0.1")
 @inline_template
 pub aspect RequiresAuth {
   config {
-    enabled:  Bool   = true
+    enabled: Bool = true
     @sensitive
     jwtSecret: String          // required — no default
-    issuer:   String = ""
+    issuer: String = ""
     audience: String = ""
     allowedAlgorithms: String = "HS256"
   }
-
-  requires:
-    args.authToken != ""       // handler must have an authToken parameter
-
+  requires: args.authToken != ""
+  // handler must have an authToken parameter
   around(call) -> ret {
     if not enabled {
       ret = call.proceed()
@@ -115,7 +111,6 @@ pub aspect RequiresAuth {
 }
 
 // ─── RequiresRole ─────────────────────────────────────────────────────────────
-
 /// Validate a bearer token AND assert the caller holds a required role.
 ///
 /// The handler must declare a parameter named `authToken: String`.  The aspect
@@ -132,22 +127,19 @@ pub aspect RequiresAuth {
 ///   audience           String — expected aud claim (default: "")
 ///   allowedRoles       String — comma-separated list of accepted role values (e.g. "admin,manager")
 ///   allowedAlgorithms  String — comma-separated allow-list of `alg` values (default: "HS256")
-@stable(since="0.1")
+@stable(since = "0.1")
 @inline_template
 pub aspect RequiresRole {
   config {
-    enabled: Bool   = true
+    enabled: Bool = true
     @sensitive
-    jwtSecret:    String
-    issuer:       String = ""
-    audience:     String = ""
+    jwtSecret: String
+    issuer: String = ""
+    audience: String = ""
     allowedRoles: String        // required — no default
     allowedAlgorithms: String = "HS256"
   }
-
-  requires:
-    args.authToken != ""
-
+  requires: args.authToken != ""
   around(call) -> ret {
     if not enabled {
       ret = call.proceed()
@@ -182,7 +174,6 @@ pub aspect RequiresRole {
 }
 
 // ─── ApiKey ───────────────────────────────────────────────────────────────────
-
 /// Validate a static API key on every matched handler call.
 ///
 /// The handler must declare a parameter named `apiKey: String` (the value
@@ -195,18 +186,16 @@ pub aspect RequiresRole {
 ///   enabled     Bool   — master switch (default: true)
 ///   @sensitive
 ///   expectedKey String — REQUIRED: the accepted API key
-@stable(since="0.1")
+@stable(since = "0.1")
 @inline_template
 pub aspect ApiKey {
   config {
-    enabled: Bool   = true
+    enabled: Bool = true
     @sensitive
-    expectedKey: String        // required — no default
+    expectedKey: String
   }
-
-  requires:
-    args.apiKey != ""
-
+  requires: args.apiKey != ""
+  // required — no default
   around(call) -> ret {
     if not enabled {
       ret = call.proceed()
@@ -226,7 +215,6 @@ pub aspect ApiKey {
 }
 
 // ─── RateLimit ────────────────────────────────────────────────────────────────
-
 /// Enforce a per-endpoint call rate limit.
 ///
 /// Uses call.qualifiedName as the rate-limit key so each handler has an
@@ -243,12 +231,12 @@ pub aspect ApiKey {
 ///   enabled           Bool — master switch (default: true)
 ///   requestsPerMinute Int  — maximum allowed calls per 60-second window (default: 60)
 ///   burstSize         Int  — maximum calls allowed in a single second (default: 10)
-@stable(since="0.1")
+@stable(since = "0.1")
 pub aspect RateLimit {
   config {
-    enabled:           Bool = true
-    requestsPerMinute: Int  = 60
-    burstSize:         Int  = 10
+    enabled: Bool = true
+    requestsPerMinute: Int = 60
+    burstSize: Int = 10
   }
   around(call) -> ret {
     if not enabled {
@@ -265,7 +253,6 @@ pub aspect RateLimit {
 }
 
 // ─── HttpCircuitBreaker ───────────────────────────────────────────────────────
-
 /// HTTP-specific circuit breaker: open circuit returns 503 Service Unavailable.
 ///
 /// Wraps the transport-agnostic Resilience.CircuitBreaker logic and maps the
@@ -284,15 +271,14 @@ pub aspect RateLimit {
 ///   name             String — circuit name; defaults to call.qualifiedName (default: "")
 ///   failureThreshold Int    — consecutive failures before opening (default: 5)
 ///   cooldownMs       Int    — ms to wait before probing again (default: 30000)
-@stable(since="0.1")
+@stable(since = "0.1")
 pub aspect HttpCircuitBreaker {
   config {
-    enabled:          Bool   = true
-    name:             String = ""
-    failureThreshold: Int    = 5
-    cooldownMs:       Int    = 30000
+    enabled: Bool = true
+    name: String = ""
+    failureThreshold: Int = 5
+    cooldownMs: Int = 30000
   }
-
   around(call) -> ret {
     if not enabled {
       ret = call.proceed()
@@ -303,7 +289,7 @@ pub aspect HttpCircuitBreaker {
       } else {
         ret = call.proceed()
         match ret {
-          case Ok(_)  -> Resilience.circuitRecordSuccess(key)
+          case Ok(_) -> Resilience.circuitRecordSuccess(key)
           case Err(_) -> Resilience.circuitRecordFailure(key, failureThreshold)
         }
       }

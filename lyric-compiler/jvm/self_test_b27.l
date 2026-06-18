@@ -1,11 +1,10 @@
-// jvm/self_test_b27.l — Stage B27: double arithmetic (ldc2_w, dload, dadd, ddiv, dreturn).
-//
-// Generates DoubleMath.class with a static average(D,D)D method that returns
-// (a + b) / 2.0.  Main calls average(3.0, 7.0) and prints 5.0.
-//
-// Exercises: emitPushDouble (ldc2_w), dload (wide-slot params, 2 slots each),
-// dadd, ddiv, dreturn, and println(D) for double output.
-
+//! jvm/self_test_b27.l — Stage B27: double arithmetic (ldc2_w, dload, dadd, ddiv, dreturn).
+//!
+//! Generates DoubleMath.class with a static average(D,D)D method that returns
+//! (a + b) / 2.0.  Main calls average(3.0, 7.0) and prints 5.0.
+//!
+//! Exercises: emitPushDouble (ldc2_w), dload (wide-slot params, 2 slots each),
+//! dadd, ddiv, dreturn, and println(D) for double output.
 package Jvm.SelfTestB27
 
 import Std.Core
@@ -17,7 +16,7 @@ import Jvm.Driver
 
 func makeDoubleMathClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
   // average(D,D)D
   //   dload_0   (first  double param — occupies slots 0-1)
@@ -37,12 +36,7 @@ func makeDoubleMathClassBytes(): List[Byte] {
   val codeAttr = assembleCode(asm, 4, 4)
   val attrs: List[Attribute] = newList()
   attrs.add(codeAttr)
-  val avgMethod = makeMethodInfo(
-    ACC_PUBLIC + ACC_STATIC,
-    "average",
-    "(DD)D",
-    attrs
-  )
+  val avgMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "average", "(DD)D", attrs)
   val methods: List[MethodInfo] = newList()
   methods.add(avgMethod)
   val cf = makeClassWithMethods("DoubleMath", methods)
@@ -51,10 +45,10 @@ func makeDoubleMathClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOut   = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val avgRef   = poolMethodref(pool, "DoubleMath", "average", "(DD)D")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val avgRef = poolMethodref(pool, "DoubleMath", "average", "(DD)D")
   val printlnD = poolMethodref(pool, "java/io/PrintStream", "println", "(D)V")
 
   // System.out.println(DoubleMath.average(3.0, 7.0))
@@ -79,24 +73,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b27"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val doubleMathBytes = makeDoubleMathClassBytes()
-  val mainBytes       = makeMainClassBytes()
+  val mainBytes = makeMainClassBytes()
 
   val doubleMathClass = BuiltClass(binaryName = "DoubleMath", bytes = doubleMathBytes)
-  val mainClass       = BuiltClass(binaryName = "Main",       bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(doubleMathClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB27",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

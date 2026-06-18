@@ -1,17 +1,16 @@
-// jvm/self_test_b106.l — Stage B106: lowerClosure (closure / inner-class codegen).
-//
-// Creates two classes:
-//   Adder — a functional interface with a single method add(int,int):int
-//   AddN  — a closure class implementing Adder; captures an int field `n`;
-//           add(a,b) returns a + b + n
-//
-// A Main class instantiates AddN(10) and calls add(3,4) expecting 17,
-// then AddN(0) and calls add(5,6) expecting 11.
-//
-// Java output (java -jar):
-//   result(3+4+10)=17
-//   result(5+6+0)=11
-
+//! jvm/self_test_b106.l — Stage B106: lowerClosure (closure / inner-class codegen).
+//!
+//! Creates two classes:
+//!   Adder — a functional interface with a single method add(int,int):int
+//!   AddN  — a closure class implementing Adder; captures an int field `n`;
+//!           add(a,b) returns a + b + n
+//!
+//! A Main class instantiates AddN(10) and calls add(3,4) expecting 17,
+//! then AddN(0) and calls add(5,6) expecting 11.
+//!
+//! Java output (java -jar):
+//!   result(3+4+10)=17
+//!   result(5+6+0)=11
 package Jvm.SelfTestB106
 
 import Std.Core
@@ -23,7 +22,6 @@ import Jvm.Lowering
 import Jvm.Driver
 
 // ── Build Adder interface ─────────────────────────────────────────────────────
-
 func makeAdderBytes(): List[Byte] {
   val pool = poolNew()
   val emptyAttrs: List[Attribute] = newList()
@@ -38,7 +36,6 @@ func makeAdderBytes(): List[Byte] {
 }
 
 // ── Build AddN closure class ──────────────────────────────────────────────────
-
 func makeAddNBytes(): List[Byte] {
   val pool = poolNew()
 
@@ -61,32 +58,32 @@ func makeAddNBytes(): List[Byte] {
 
   val c = LClosure(
     closureClass = "AddN",
-    ifaceClass   = "Adder",
-    ifaceMethod  = "add",
-    captures     = captures,
+    ifaceClass = "Adder",
+    ifaceMethod = "add",
+    captures = captures,
     methodParams = params,
-    methodRet    = JInt,
-    bodyInsns    = body
+    methodRet = JInt,
+    bodyInsns = body,
+    bodyMaxLocals = 0
   )
   val cf = lowerClosure(c, pool)
   serializeClassWithPool(cf, pool)
 }
 
 // ── Build Main class ──────────────────────────────────────────────────────────
-
 func makeMainBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOutIdx  = poolFieldref(pool,  "java/lang/System",    "out",     "Ljava/io/PrintStream;")
+  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val concatIdx  = poolMethodref(pool, "java/lang/String",    "concat",  "(Ljava/lang/String;)Ljava/lang/String;")
-  val valueOfIdx = poolMethodref(pool, "java/lang/String",    "valueOf", "(I)Ljava/lang/String;")
+  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
+  val valueOfIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
 
   val addNPs: List[JvmType] = newList()
   addNPs.add(JInt)
   val addNCtorIdx = poolMethodref(pool, "AddN", "<init>", buildDescriptor(addNPs, JVoid))
-  val addNNewIdx  = poolClass(pool, "AddN")
+  val addNNewIdx = poolClass(pool, "AddN")
 
   val addPs: List[JvmType] = newList()
   addPs.add(JInt)
@@ -134,24 +131,23 @@ func makeMainBytes(): List[Byte] {
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
-
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b106"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val classes: List[BuiltClass] = newList()
   classes.add(BuiltClass(binaryName = "Adder", bytes = makeAdderBytes()))
-  classes.add(BuiltClass(binaryName = "AddN",  bytes = makeAddNBytes()))
-  classes.add(BuiltClass(binaryName = "Main",  bytes = makeMainBytes()))
+  classes.add(BuiltClass(binaryName = "AddN", bytes = makeAddNBytes()))
+  classes.add(BuiltClass(binaryName = "Main", bytes = makeMainBytes()))
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB106",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

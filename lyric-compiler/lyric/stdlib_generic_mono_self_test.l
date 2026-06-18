@@ -1,20 +1,19 @@
-// #1727 (inference slice): the monomorphizer now (a) receives the stdlib's
-// pure-Lyric generic `pub func`s as imported generics, (b) rewrites impl- and
-// interface-method bodies, and (c) infers types through `self.field`
-// projections and `Map`/`List` indexing.  Together these let a call like
-// `unwrapOr(self.items[i], d)` specialise into a concrete copy so its return
-// type stays concrete and a consumer `match` finds the right arm.
-//
-// Scope: pure-Lyric stdlib generics whose type argument is inferable at the
-// call site (here via the `default` argument), exercised from free functions
-// and impl methods over reference-typed payloads.  Generics whose bodies call
-// a kernel extern (`mapGet` -> `tryGetValue`), value-type specialisations, and
-// non-inferable call shapes (`isSome(None)`) need further self-hosted codegen
-// work and are tracked separately.
-//
-// MSIL target only; JVM-target parity for same-package generic specialization
-// is tracked in #1707.
-
+//! #1727 (inference slice): the monomorphizer now (a) receives the stdlib's
+//! pure-Lyric generic `pub func`s as imported generics, (b) rewrites impl- and
+//! interface-method bodies, and (c) infers types through `self.field`
+//! projections and `Map`/`List` indexing.  Together these let a call like
+//! `unwrapOr(self.items[i], d)` specialise into a concrete copy so its return
+//! type stays concrete and a consumer `match` finds the right arm.
+//!
+//! Scope: pure-Lyric stdlib generics whose type argument is inferable at the
+//! call site (here via the `default` argument), exercised from free functions
+//! and impl methods over reference-typed payloads.  Generics whose bodies call
+//! a kernel extern (`mapGet` -> `tryGetValue`), value-type specialisations, and
+//! non-inferable call shapes (`isSome(None)`) need further self-hosted codegen
+//! work and are tracked separately.
+//!
+//! MSIL target only; JVM-target parity for same-package generic specialization
+//! is tracked in #1707.
 @test_module
 package Lyric.StdlibGenericMonoSelfTest
 
@@ -23,7 +22,6 @@ import Std.Collections
 import Std.Testing
 
 // ── Free-function call sites ────────────────────────────────────────────────
-
 test "unwrapOr on Some/None specialises and round-trips (String)" {
   assertEqual(unwrapOr(Some(value = "hit"), "fb"), "hit", "Some -> payload")
   assertEqual(unwrapOr(None, "fb"), "fb", "None -> fallback")
@@ -36,7 +34,6 @@ test "unwrapOr specialises independently per call site" {
 
 // ── Impl-method call sites: exercises the Phase-2 IImpl rewrite plus
 //    self-typing and List/Map index inference feeding the generic call. ───────
-
 record Bag {
   opts: List[Option[String]]
 }
@@ -45,14 +42,18 @@ interface Reader {
   func firstOr(b: in Bag, fallback: in String): String
 }
 
-record BagReader {}
+record BagReader {
+}
 
 impl Reader for BagReader {
-  // `b.opts[0]` is `Option[String]` (List index inference + `self`-free member
-  // projection on the parameter `b`); `unwrapOr` must specialise to
-  // `unwrapOr__String` so its `String` return is concrete and this method's
-  // own `match`-free return type checks.
-  func firstOr(b: in Bag, fallback: in String): String {
+  func firstOr(
+    // `b.opts[0]` is `Option[String]` (List index inference + `self`-free member
+    // projection on the parameter `b`); `unwrapOr` must specialise to
+    // `unwrapOr__String` so its `String` return is concrete and this method's
+    // own `match`-free return type checks.
+    b: in Bag,
+    fallback: in String,
+  ): String {
     if b.opts.count > 0 {
       unwrapOr(b.opts[0], fallback)
     } else {
@@ -76,14 +77,17 @@ test "impl method specialises unwrapOr on a List[Option[String]] field" {
 // reaches the generic call through `self.store.items[i]` instead, exercising
 // the `ESelf -> mapGet(env, "self")` branch that PR #1753 added specifically
 // for this pattern.
-
-record Store { items: List[Option[String]] }
+record Store {
+  items: List[Option[String]]
+}
 
 interface Lookup {
   func first(fallback: in String): String
 }
 
-record StoreImpl { store: Store }
+record StoreImpl {
+  store: Store
+}
 
 impl Lookup for StoreImpl {
   func first(fallback: in String): String {
@@ -108,4 +112,33 @@ test "impl method specialises unwrapOr via self.field projection" {
   val store2 = Store(items = items2)
   val l2: Lookup = StoreImpl(store = store2)
   assertEqual(l2.first("missing"), "missing", "self.store.items[0] -> None -> fallback")
+}
+
+// ── Map hint-propagation path: MMapOf(_, MGenericInst(...)) arm ──────────────
+//
+// This exercises the `MMapOf(_, MGenericInst(_, _, valArgs))` branch in the
+// codegen hint-propagation logic for `.add`.  When the map's value type is
+// `Option[Int]`, the codegen must propagate the `Option[Int]` hint to the
+// None argument so it constructs as `Option_None`1[Int]` rather than the
+// uninstantiated form.  Without the MMapOf arm, the hint is absent and the
+// isinst check for the None arm of a subsequent `match` on `mapGet(m, k)`
+// silently takes the wrong branch.
+test "Map[String, Option[Int]].add(None) hint-propagation: map value None roundtrips" {
+  val m: Map[String, Option[Int]] = newMap()
+  m.add("k", None)
+  val outer: Option[Option[Int]] = mapGet(m, "k")
+  val got: Option[Int] = match outer { case None -> None; case Some(v) -> v }
+  match got {
+    case None -> assertTrue(true, "map value None -> Option_None")
+    case Some(v) -> assertTrue(false, "expected None but got Some")
+  }
+}
+
+test "Map[String, Option[Int]].add(Some) and mapGet roundtrips" {
+  val m: Map[String, Option[Int]] = newMap()
+  m.add("x", Some(value = 42))
+  val outer: Option[Option[Int]] = mapGet(m, "x")
+  val got: Option[Int] = match outer { case None -> None; case Some(v) -> v }
+  val v = match got { case None -> -1; case Some(n) -> n }
+  assertEqualInt(v, 42, "map value Some(42) roundtrips")
 }

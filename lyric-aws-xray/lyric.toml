@@ -70,9 +70,6 @@ output_assembly = "AwsXRay.dll"
 # are embedded in xray.l and selected by @cfg(feature = X).
 "AwsXRay" = "src/xray.l"
 
-[dependencies]
-"Lyric.Stdlib" = { path = "../lyric-stdlib" }
-
 [nuget]
 # X-Ray recorder core — included when feature = "aws".
 "Amazon.XRay.Recorder.Core" = { version = "2.14.0", features = ["aws"] }

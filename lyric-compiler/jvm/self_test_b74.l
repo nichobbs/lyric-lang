@@ -1,18 +1,17 @@
-// jvm/self_test_b74.l — Stage B74: if_acmpeq / if_acmpne (reference equality).
-//
-// Generates RefEq.class with:
-//   same(Object,Object)I  — returns 1 if a == b (same reference), else 0
-//   different(Object,Object)I — returns 1 if a != b, else 0
-//
-// Main prints:
-//   val s = "hello"
-//   same(s, s)      → 1  (same reference)
-//   same(s, "world")→ 0  (different references)
-//   different(s, s) → 0
-//   different(s, "world") → 1
-//
-// Exercises: if_acmpeq, if_acmpne.
-
+//! jvm/self_test_b74.l — Stage B74: if_acmpeq / if_acmpne (reference equality).
+//!
+//! Generates RefEq.class with:
+//!   same(Object,Object)I  — returns 1 if a == b (same reference), else 0
+//!   different(Object,Object)I — returns 1 if a != b, else 0
+//!
+//! Main prints:
+//!   val s = "hello"
+//!   same(s, s)      → 1  (same reference)
+//!   same(s, "world")→ 0  (different references)
+//!   different(s, s) → 0
+//!   different(s, "world") → 1
+//!
+//! Exercises: if_acmpeq, if_acmpne.
 package Jvm.SelfTestB74
 
 import Std.Core
@@ -38,8 +37,7 @@ func makeRefEqBytes(): List[Byte] {
   val sameCode = assembleCode(asmSame, 2, 2)
   val sameAttrs: List[Attribute] = newList()
   sameAttrs.add(sameCode)
-  val sameMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "same",
-    "(Ljava/lang/Object;Ljava/lang/Object;)I", sameAttrs)
+  val sameMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "same", "(Ljava/lang/Object;Ljava/lang/Object;)I", sameAttrs)
 
   // different(Object,Object)I
   val asmDiff = newAssembler(pool)
@@ -54,8 +52,12 @@ func makeRefEqBytes(): List[Byte] {
   val diffCode = assembleCode(asmDiff, 2, 2)
   val diffAttrs: List[Attribute] = newList()
   diffAttrs.add(diffCode)
-  val diffMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "different",
-    "(Ljava/lang/Object;Ljava/lang/Object;)I", diffAttrs)
+  val diffMethod = makeMethodInfo(
+    ACC_PUBLIC + ACC_STATIC,
+    "different",
+    "(Ljava/lang/Object;Ljava/lang/Object;)I",
+    diffAttrs
+  )
 
   val methods: List[MethodInfo] = newList()
   methods.add(sameMethod)
@@ -65,13 +67,13 @@ func makeRefEqBytes(): List[Byte] {
 }
 
 func makeMainClassBytes(): List[Byte] {
-  val pool      = poolNew()
-  val asm       = newAssembler(pool)
+  val pool = poolNew()
+  val asm = newAssembler(pool)
 
-  val sysOut    = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnI  = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
-  val sameRef   = poolMethodref(pool, "RefEq", "same",      "(Ljava/lang/Object;Ljava/lang/Object;)I")
-  val diffRef   = poolMethodref(pool, "RefEq", "different", "(Ljava/lang/Object;Ljava/lang/Object;)I")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
+  val sameRef = poolMethodref(pool, "RefEq", "same", "(Ljava/lang/Object;Ljava/lang/Object;)I")
+  val diffRef = poolMethodref(pool, "RefEq", "different", "(Ljava/lang/Object;Ljava/lang/Object;)I")
 
   // Store a single interned string in slot 0
   emitPushString(asm, "hello")
@@ -121,24 +123,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b74"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val refEqBytes = makeRefEqBytes()
-  val mainBytes  = makeMainClassBytes()
+  val mainBytes = makeMainClassBytes()
 
   val refEqClass = BuiltClass(binaryName = "RefEq", bytes = refEqBytes)
-  val mainClass  = BuiltClass(binaryName = "Main",  bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(refEqClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB74",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

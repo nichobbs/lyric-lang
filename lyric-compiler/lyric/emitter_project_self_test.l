@@ -99,7 +99,7 @@ func runEmitProjectOpts(
     activeFeatures = features,
     declaredFeatures = declared,
     packageVersion = "",
-    buildKind = "lib"
+    depTemplateSrcs = newList()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -342,7 +342,7 @@ test "per-package isolation implicit leak rejected" {
     activeFeatures = newList(),
     declaredFeatures = newList(),
     packageVersion = "",
-    buildKind = "lib"
+    depTemplateSrcs = newList()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -477,7 +477,7 @@ test "restored dep wiring no crash" {
     activeFeatures = newList(),
     declaredFeatures = newList(),
     packageVersion = "",
-    buildKind = "lib"
+    depTemplateSrcs = newList()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -518,7 +518,7 @@ test "emitProject subprocess fallback on restored dep" {
     activeFeatures = newList(),
     declaredFeatures = newList(),
     packageVersion = "",
-    buildKind = "lib"
+    depTemplateSrcs = newList()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {

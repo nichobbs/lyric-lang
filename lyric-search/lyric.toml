@@ -14,16 +14,18 @@ output_assembly = "Search.dll"
 "Search"            = "src/search.l"
 "Search.Kernel.Net" = "src/_kernel/net/search_kernel.l"
 
+[project.tests]
+"Search.SearchTests" = "tests/search_tests.l"
+
 [features]
 elasticsearch = []   # Elasticsearch (Elastic.Clients.Elasticsearch on .NET)
 meilisearch   = []   # Meilisearch (Meilisearch .NET client)
 
 [dependencies]
-"Lyric.Stdlib"     = { path = "../lyric-stdlib" }
-"Lyric.Resilience" = { path = "../lyric-resilience" }
+"Lyric.Resilience" = { workspace = true }
 
 [nuget]
 # feature = "elasticsearch" — Elasticsearch .NET client
 "Elastic.Clients.Elasticsearch" = "8.14.0"
 # feature = "meilisearch" — Meilisearch .NET client
-"Meilisearch"                   = "0.21.0"
+"Meilisearch"                   = "0.18.0"

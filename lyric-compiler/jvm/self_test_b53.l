@@ -1,16 +1,15 @@
-// jvm/self_test_b53.l — Stage B53: recursive static method (factorial).
-//
-// Generates Factorial.class (Java 5 / major=49) with:
-//   fact(I)I — recursive: if n==0 return 1, else return n * fact(n-1)
-//
-// Main prints:
-//   fact(0) → 1
-//   fact(5) → 120
-//
-// Exercises: ifeq branch to base case, recursive invokestatic call,
-//            imul for accumulation.  Java 5 major=49 avoids StackMapTable
-//            requirement for the branch target.
-
+//! jvm/self_test_b53.l — Stage B53: recursive static method (factorial).
+//!
+//! Generates Factorial.class (Java 5 / major=49) with:
+//!   fact(I)I — recursive: if n==0 return 1, else return n * fact(n-1)
+//!
+//! Main prints:
+//!   fact(0) → 1
+//!   fact(5) → 120
+//!
+//! Exercises: ifeq branch to base case, recursive invokestatic call,
+//!            imul for accumulation.  Java 5 major=49 avoids StackMapTable
+//!            requirement for the branch target.
 package Jvm.SelfTestB53
 
 import Std.Core
@@ -21,7 +20,7 @@ import Jvm.Bytecode
 import Jvm.Driver
 
 func makeFactorialClassBytes(): List[Byte] {
-  val pool    = poolNew()
+  val pool = poolNew()
   val factRef = poolMethodref(pool, "Factorial", "fact", "(I)I")
 
   // ── fact(I)I ─────────────────────────────────────────────────────────────────
@@ -56,11 +55,11 @@ func makeFactorialClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOut   = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
-  val factRef  = poolMethodref(pool, "Factorial", "fact", "(I)I")
+  val factRef = poolMethodref(pool, "Factorial", "fact", "(I)I")
 
   // println(Factorial.fact(0))  → 1
   emitGetstatic(asm, sysOut)
@@ -89,7 +88,7 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b53"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
@@ -97,16 +96,16 @@ func main(): Unit {
   val mainBytes = makeMainClassBytes()
 
   val factClass = BuiltClass(binaryName = "Factorial", bytes = factBytes)
-  val mainClass = BuiltClass(binaryName = "Main",      bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(factClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB53",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

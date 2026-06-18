@@ -1,17 +1,16 @@
-// jvm/self_test_b60.l — Stage B60: java.lang.Math static methods.
-//
-// Generates MathHelper.class with:
-//   absInt(I)I      — Math.abs(i)
-//   minInt(II)I     — Math.min(a, b)
-//   maxInt(II)I     — Math.max(a, b)
-//
-// Main prints:
-//   absInt(-7)      → 7
-//   minInt(3, 8)    → 3
-//   maxInt(3, 8)    → 8
-//
-// Exercises: invokestatic on java/lang/Math for abs/min/max builtins.
-
+//! jvm/self_test_b60.l — Stage B60: java.lang.Math static methods.
+//!
+//! Generates MathHelper.class with:
+//!   absInt(I)I      — Math.abs(i)
+//!   minInt(II)I     — Math.min(a, b)
+//!   maxInt(II)I     — Math.max(a, b)
+//!
+//! Main prints:
+//!   absInt(-7)      → 7
+//!   minInt(3, 8)    → 3
+//!   maxInt(3, 8)    → 8
+//!
+//! Exercises: invokestatic on java/lang/Math for abs/min/max builtins.
 package Jvm.SelfTestB60
 
 import Std.Core
@@ -22,10 +21,10 @@ import Jvm.Bytecode
 import Jvm.Driver
 
 func makeMathHelperBytes(): List[Byte] {
-  val pool    = poolNew()
-  val absRef  = poolMethodref(pool, "java/lang/Math", "abs",  "(I)I")
-  val minRef  = poolMethodref(pool, "java/lang/Math", "min",  "(II)I")
-  val maxRef  = poolMethodref(pool, "java/lang/Math", "max",  "(II)I")
+  val pool = poolNew()
+  val absRef = poolMethodref(pool, "java/lang/Math", "abs", "(I)I")
+  val minRef = poolMethodref(pool, "java/lang/Math", "min", "(II)I")
+  val maxRef = poolMethodref(pool, "java/lang/Math", "max", "(II)I")
 
   // absInt(I)I
   val asmAbs = newAssembler(pool)
@@ -68,14 +67,14 @@ func makeMathHelperBytes(): List[Byte] {
 }
 
 func makeMainClassBytes(): List[Byte] {
-  val pool     = poolNew()
-  val asm      = newAssembler(pool)
+  val pool = poolNew()
+  val asm = newAssembler(pool)
 
-  val sysOut   = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
-  val absRef   = poolMethodref(pool, "MathHelper", "absInt", "(I)I")
-  val minRef   = poolMethodref(pool, "MathHelper", "minInt", "(II)I")
-  val maxRef   = poolMethodref(pool, "MathHelper", "maxInt", "(II)I")
+  val absRef = poolMethodref(pool, "MathHelper", "absInt", "(I)I")
+  val minRef = poolMethodref(pool, "MathHelper", "minInt", "(II)I")
+  val maxRef = poolMethodref(pool, "MathHelper", "maxInt", "(II)I")
 
   // println(MathHelper.absInt(-7))  → 7
   emitGetstatic(asm, sysOut)
@@ -113,24 +112,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b60"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val mathHelperBytes = makeMathHelperBytes()
-  val mainBytes       = makeMainClassBytes()
+  val mainBytes = makeMainClassBytes()
 
   val mathHelperClass = BuiltClass(binaryName = "MathHelper", bytes = mathHelperBytes)
-  val mainClass       = BuiltClass(binaryName = "Main",       bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(mathHelperClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB60",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

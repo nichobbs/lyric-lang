@@ -1,13 +1,12 @@
-// std/_kernel_jvm/secure_random_host.l — JVM host boundary for
-// java.security.SecureRandom (CSPRNG).
-//
-// Mirrors _kernel/secure_random_host.l for the JVM target.
-// All methods route through a process-wide SecureRandom instance backed by
-// the OS-level cryptographic entropy source (`/dev/urandom` on Linux,
-// `BCryptGenRandom` on Windows, `SecRandomCopyBytes` on macOS via JDK).
-//
-// Internal: only Std.SecureRandom should import this.
-
+//! std/_kernel_jvm/secure_random_host.l — JVM host boundary for
+//! java.security.SecureRandom (CSPRNG).
+//!
+//! Mirrors _kernel/secure_random_host.l for the JVM target.
+//! All methods route through a process-wide SecureRandom instance backed by
+//! the OS-level cryptographic entropy source (`/dev/urandom` on Linux,
+//! `BCryptGenRandom` on Windows, `SecRandomCopyBytes` on macOS via JDK).
+//!
+//! Internal: only Std.SecureRandom should import this.
 @axiom("java.security.SecureRandom conforms to its documented JDK contracts and produces cryptographically strong output; lyric.stdlib.jvm.SecureRandomHost wraps the strongest available algorithm")
 package Std.SecureRandomHost
 

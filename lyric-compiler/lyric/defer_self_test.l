@@ -1,24 +1,23 @@
-// defer_self_test.l — executable regression tests for `defer`-at-scope-exit on
-// the self-hosted MSIL target (#1477; epic #1470, Band 2).
-//
-// `defer { D }` runs D on scope exit on EVERY path — normal fall-off, early
-// `return`, `break`/`continue`, and exception unwind (grammar: "runs on scope
-// exit, success or failure") — and multiple defers run in reverse declaration
-// order.  Previously `SDefer` ran its body inline at the declaration point, so
-// it executed too early and never on the return / exception paths.  Codegen now
-// lowers the statements following a `defer` as `try { rest } finally { D }`,
-// reusing the function-epilogue return lowering (D-progress-373) and the
-// break/continue-`leave` lowering (D-progress-371) so the finally runs on those
-// exits too.
-//
-// Run via native `lyric test --target dotnet`.  Imports only `Std.*`.
-//
-//   lyric test lyric-compiler/lyric/defer_self_test.l
-//
-// Observation uses a `List[Int]` log (a reference type, so appends are visible
-// to the caller).  MSIL target only; JVM parity is tracked under epic #1470's
-// JVM-deferral note.
-
+//! defer_self_test.l — executable regression tests for `defer`-at-scope-exit on
+//! the self-hosted MSIL target (#1477; epic #1470, Band 2).
+//!
+//! `defer { D }` runs D on scope exit on EVERY path — normal fall-off, early
+//! `return`, `break`/`continue`, and exception unwind (grammar: "runs on scope
+//! exit, success or failure") — and multiple defers run in reverse declaration
+//! order.  Previously `SDefer` ran its body inline at the declaration point, so
+//! it executed too early and never on the return / exception paths.  Codegen now
+//! lowers the statements following a `defer` as `try { rest } finally { D }`,
+//! reusing the function-epilogue return lowering (D-progress-373) and the
+//! break/continue-`leave` lowering (D-progress-371) so the finally runs on those
+//! exits too.
+//!
+//! Run via native `lyric test --target dotnet`.  Imports only `Std.*`.
+//!
+//!   lyric test lyric-compiler/lyric/defer_self_test.l
+//!
+//! Observation uses a `List[Int]` log (a reference type, so appends are visible
+//! to the caller).  MSIL target only; JVM parity is tracked under epic #1470's
+//! JVM-deferral note.
 @test_module
 package Lyric.DeferSelfTest
 
@@ -28,14 +27,20 @@ import Std.Testing
 
 // Normal fall-off, multiple defers → reverse declaration order.
 func reverseOrder(log: in List[Int]): Unit {
-  defer { log.add(1) }
-  defer { log.add(2) }
+  defer {
+    log.add(1)
+  }
+  defer {
+    log.add(2)
+  }
   log.add(0)
 }
 
 // `defer` runs on an early `return` (value-returning function).
 func deferOnReturn(log: in List[Int], x: in Int): Int {
-  defer { log.add(9) }
+  defer {
+    log.add(9)
+  }
   if x > 0 {
     return 5
   }
@@ -52,7 +57,9 @@ func deferOnBreak(log: in List[Int]): Unit {
     // does not depend on the deferred block reading `i` after its in-body
     // increment (a `defer` block reads variables at scope-exit time).
     val mark = 100 + i
-    defer { log.add(mark) }
+    defer {
+      log.add(mark)
+    }
     if i == 2 {
       break
     }
@@ -66,7 +73,9 @@ func deferOnContinue(log: in List[Int]): Unit {
   while i < 3 {
     val cur = i
     i = i + 1
-    defer { log.add(200 + cur) }
+    defer {
+      log.add(200 + cur)
+    }
     if cur == 1 {
       continue
     }
@@ -77,7 +86,9 @@ func deferOnContinue(log: in List[Int]): Unit {
 // A void function whose deferred block runs while an exception unwinds through
 // its scope (the caller catches).  Demonstrates the success-or-failure contract.
 func deferThenPanic(log: in List[Int]): Unit {
-  defer { log.add(8) }
+  defer {
+    log.add(8)
+  }
   panic("boom")
 }
 
@@ -93,12 +104,7 @@ func runWithPanic(log: in List[Int]): Unit {
 // directly exercises the trailing-value defer path (`lowerStmtsExprFromMsil`),
 // where the block value must survive the `leave` while the deferred block runs.
 func deferInValueBlock(log: in List[Int]): Int {
-  val r = if true {
-    defer { log.add(5) }
-    7
-  } else {
-    0
-  }
+  val r = if true { defer { log.add(5) }; 7 } else { 0 }
   r
 }
 

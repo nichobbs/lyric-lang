@@ -27,7 +27,7 @@ jobs:
       github.actor != 'claude[bot]'
     steps:
       - name: Checkout (full history)
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -38,7 +38,7 @@ jobs:
       # resolution.  Claude is given tools (bash, file read/write, gh CLI)
       # and instructed to resolve each conflict conservatively.
       - name: Resolve conflicting PRs with Claude
-        uses: anthropics/claude-code-action@beta
+        uses: anthropics/claude-code-action@d5726de019ec4498aa667642bc3a80fca83aa102  # beta
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}

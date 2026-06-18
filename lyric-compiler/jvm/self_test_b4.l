@@ -1,21 +1,20 @@
-// jvm/self_test_b4.l — Stage B4 smoke test for union-type lowering.
-//
-// Builds three JVM class files that together implement the `Option` union:
-//
-//   Option.class        — abstract base class (ACC_ABSTRACT)
-//   Option$Some.class   — concrete case carrying `int value`
-//   Option$None.class   — concrete case with no fields
-//
-// Then builds a helper class `OptionHelper.class` with a static method:
-//
-//   public static int unwrapOr(Option opt, int defaultVal)
-//
-// That method uses `instanceof` + `checkcast` to pattern-match the union,
-// returning `value` for Some and `defaultVal` for None.
-//
-// All class files are written to /tmp/lyric-jvm-b4/ and verified by
-// the Expecto test via `javap -c`.
-
+//! jvm/self_test_b4.l — Stage B4 smoke test for union-type lowering.
+//!
+//! Builds three JVM class files that together implement the `Option` union:
+//!
+//!   Option.class        — abstract base class (ACC_ABSTRACT)
+//!   Option$Some.class   — concrete case carrying `int value`
+//!   Option$None.class   — concrete case with no fields
+//!
+//! Then builds a helper class `OptionHelper.class` with a static method:
+//!
+//!   public static int unwrapOr(Option opt, int defaultVal)
+//!
+//! That method uses `instanceof` + `checkcast` to pattern-match the union,
+//! returning `value` for Some and `defaultVal` for None.
+//!
+//! All class files are written to /tmp/lyric-jvm-b4/ and verified by
+//! the Expecto test via `javap -c`.
 package Jvm.SelfTestB4
 
 import Std.Core
@@ -26,7 +25,6 @@ import Jvm.Bytecode
 import Jvm.Lowering
 
 // ── Option union hierarchy ─────────────────────────────────────────────────────
-
 func makeOptionClasses(pool: in Pool): List[ClassFile] {
   // Case Some: one int field `value`
   val someField = LField(flags = ACC_PUBLIC, name = "value", fieldType = JInt)
@@ -67,7 +65,6 @@ func makeOptionClasses(pool: in Pool): List[ClassFile] {
 //   LLabel("isNone")
 //   LIload(1)                          // load defaultVal
 //   LIreturn
-
 func makeHelperClass(pool: in Pool): ClassFile {
   val insns: List[LInsn] = newList()
   insns.add(LAload(slot = 0))
@@ -86,12 +83,12 @@ func makeHelperClass(pool: in Pool): ClassFile {
   paramTypes.add(JInt)
 
   val fn = LFunc(
-    flags     = ACC_PUBLIC + ACC_STATIC,
-    name      = "unwrapOr",
-    params    = paramTypes,
-    ret       = JInt,
-    insns     = insns,
-    maxStack  = 2,
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = "unwrapOr",
+    params = paramTypes,
+    ret = JInt,
+    insns = insns,
+    maxStack = 2,
     maxLocals = 2
   )
 
@@ -99,16 +96,15 @@ func makeHelperClass(pool: in Pool): ClassFile {
   helperMethods.add(fn)
   val helperFields: List[LField] = newList()
   val helper = LRecord(
-    className        = "OptionHelper",
-    fields           = helperFields,
-    methods          = helperMethods,
+    className = "OptionHelper",
+    fields = helperFields,
+    methods = helperMethods,
     implementsIfaces = newList()
   )
   lowerRecord(helper, pool)
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
-
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b4"
   val _ = createDir(outDir)
@@ -128,8 +124,8 @@ func main(): Unit {
     val bytes = serializeClassWithPool(cf, pool)
     val path = outDir + "/" + name + ".class"
     match writeBytes(path, bytes) {
-      case Ok(_)    -> println("wrote " + name + ".class (" + toString(bytes.count) + " bytes)")
-      case Err(_)   -> println("writeBytes failed for " + name + ".class")
+      case Ok(_) -> println("wrote " + name + ".class (" + toString(bytes.count) + " bytes)")
+      case Err(_) -> println("writeBytes failed for " + name + ".class")
     }
     i = i + 1
   }
@@ -140,7 +136,7 @@ func main(): Unit {
   val helperBytes = serializeClassWithPool(helperCf, helperPool)
   val helperPath = outDir + "/OptionHelper.class"
   match writeBytes(helperPath, helperBytes) {
-    case Ok(_)    -> println("wrote OptionHelper.class (" + toString(helperBytes.count) + " bytes)")
-    case Err(_)   -> println("writeBytes failed for OptionHelper.class")
+    case Ok(_) -> println("wrote OptionHelper.class (" + toString(helperBytes.count) + " bytes)")
+    case Err(_) -> println("writeBytes failed for OptionHelper.class")
   }
 }

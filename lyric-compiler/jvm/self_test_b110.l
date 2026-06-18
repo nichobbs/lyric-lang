@@ -1,21 +1,20 @@
-// jvm/self_test_b110.l — Stage B110: lowerOpaqueType (opaque-type wrapper codegen).
-//
-// Creates an opaque type `OpaquePoint` with two int fields: x and y.
-// The class has:
-//   • private final synthetic `$x` and `$y` fields
-//   • a package-private constructor `<init>(int, int)V`
-//   • public bootstrap-grade accessors `$x()I` and `$y()I`
-//
-// A Main class:
-//   - Constructs OpaquePoint(3, 4) → prints point.$x=3 and point.$y=4
-//   - Constructs OpaquePoint(0, 0) → prints origin.$x=0 and origin.$y=0
-//
-// Java output (java -jar):
-//   point.$x=3
-//   point.$y=4
-//   origin.$x=0
-//   origin.$y=0
-
+//! jvm/self_test_b110.l — Stage B110: lowerOpaqueType (opaque-type wrapper codegen).
+//!
+//! Creates an opaque type `OpaquePoint` with two int fields: x and y.
+//! The class has:
+//!   • private final synthetic `$x` and `$y` fields
+//!   • a package-private constructor `<init>(int, int)V`
+//!   • public bootstrap-grade accessors `$x()I` and `$y()I`
+//!
+//! A Main class:
+//!   - Constructs OpaquePoint(3, 4) → prints point.$x=3 and point.$y=4
+//!   - Constructs OpaquePoint(0, 0) → prints origin.$x=0 and origin.$y=0
+//!
+//! Java output (java -jar):
+//!   point.$x=3
+//!   point.$y=4
+//!   origin.$x=0
+//!   origin.$y=0
 package Jvm.SelfTestB110
 
 import Std.Core
@@ -27,7 +26,6 @@ import Jvm.Lowering
 import Jvm.Driver
 
 // ── Build OpaquePoint class ───────────────────────────────────────────────────
-
 func makeOpaquePointBytes(): List[Byte] {
   val pool = poolNew()
   val flds: List[LOpaqueField] = newList()
@@ -38,20 +36,19 @@ func makeOpaquePointBytes(): List[Byte] {
 }
 
 // ── Build Main class ──────────────────────────────────────────────────────────
-
 func makeMainBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOutIdx  = poolFieldref(pool,  "java/lang/System",    "out",     "Ljava/io/PrintStream;")
+  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val concatIdx  = poolMethodref(pool, "java/lang/String",    "concat",  "(Ljava/lang/String;)Ljava/lang/String;")
-  val valueOfIdx = poolMethodref(pool, "java/lang/String",    "valueOf", "(I)Ljava/lang/String;")
+  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
+  val valueOfIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
 
-  val ptNewIdx  = poolClass(pool, "OpaquePoint")
+  val ptNewIdx = poolClass(pool, "OpaquePoint")
   val ptCtorIdx = poolMethodref(pool, "OpaquePoint", "<init>", "(II)V")
-  val ptXIdx    = poolMethodref(pool, "OpaquePoint", "$x",     "()I")
-  val ptYIdx    = poolMethodref(pool, "OpaquePoint", "$y",     "()I")
+  val ptXIdx = poolMethodref(pool, "OpaquePoint", "$x", "()I")
+  val ptYIdx = poolMethodref(pool, "OpaquePoint", "$y", "()I")
 
   // OpaquePoint point = new OpaquePoint(3, 4)
   emitNew(asm, ptNewIdx)
@@ -120,23 +117,22 @@ func makeMainBytes(): List[Byte] {
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
-
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b110"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val classes: List[BuiltClass] = newList()
   classes.add(BuiltClass(binaryName = "OpaquePoint", bytes = makeOpaquePointBytes()))
-  classes.add(BuiltClass(binaryName = "Main",        bytes = makeMainBytes()))
+  classes.add(BuiltClass(binaryName = "Main", bytes = makeMainBytes()))
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB110",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

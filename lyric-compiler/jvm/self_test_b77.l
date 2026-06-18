@@ -1,16 +1,15 @@
-// jvm/self_test_b77.l — Stage B77: short[] arrays (newarray T_SHORT, saload, sastore).
-//
-// Generates ShortArrays.class with:
-//   makeShorts()[S  — builds {100, 200, 300} via sastore
-//   sumShorts([S)I  — sums elements via saload
-//   getAt([SI)I     — returns element at index
-//
-// Main prints:
-//   sum=600
-//   at1=200
-//
-// Exercises: newarray T_SHORT, sastore, saload, arraylength, iinc.
-
+//! jvm/self_test_b77.l — Stage B77: short[] arrays (newarray T_SHORT, saload, sastore).
+//!
+//! Generates ShortArrays.class with:
+//!   makeShorts()[S  — builds {100, 200, 300} via sastore
+//!   sumShorts([S)I  — sums elements via saload
+//!   getAt([SI)I     — returns element at index
+//!
+//! Main prints:
+//!   sum=600
+//!   at1=200
+//!
+//! Exercises: newarray T_SHORT, sastore, saload, arraylength, iinc.
 package Jvm.SelfTestB77
 
 import Std.Core
@@ -96,17 +95,17 @@ func makeShortArraysBytes(): List[Byte] {
 }
 
 func makeMainClassBytes(): List[Byte] {
-  val pool      = poolNew()
-  val asm       = newAssembler(pool)
+  val pool = poolNew()
+  val asm = newAssembler(pool)
 
-  val sysOut    = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnI  = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
-  val printlnS  = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
+  val printlnS = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
   val concatRef = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
-  val valueOfI  = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
-  val makeRef   = poolMethodref(pool, "ShortArrays", "makeShorts", "()[S")
-  val sumRef    = poolMethodref(pool, "ShortArrays", "sumShorts",  "([S)I")
-  val getRef    = poolMethodref(pool, "ShortArrays", "getAt",      "([SI)I")
+  val valueOfI = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
+  val makeRef = poolMethodref(pool, "ShortArrays", "makeShorts", "()[S")
+  val sumRef = poolMethodref(pool, "ShortArrays", "sumShorts", "([S)I")
+  val getRef = poolMethodref(pool, "ShortArrays", "getAt", "([SI)I")
 
   // arr = ShortArrays.makeShorts()
   emitInvokestatic(asm, makeRef)
@@ -146,24 +145,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b77"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val shortArraysBytes = makeShortArraysBytes()
-  val mainBytes        = makeMainClassBytes()
+  val mainBytes = makeMainClassBytes()
 
   val shortArraysClass = BuiltClass(binaryName = "ShortArrays", bytes = shortArraysBytes)
-  val mainClass        = BuiltClass(binaryName = "Main",        bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(shortArraysClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB77",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

@@ -67,8 +67,8 @@
             "properties": {
                 "lyric.serverPath": {
                     "type": "string",
-                    "default": "lyric-lsp",
-                    "description": "Path to the lyric-lsp executable. Defaults to 'lyric-lsp' on $PATH. Build it with: cd bootstrap && dotnet publish src/Lyric.Lsp -c Release -o ../bin/lsp"
+                    "default": "lyric",
+                    "description": "Path to the lyric CLI executable for the LSP server (runs as 'lyric lsp'). Defaults to 'lyric' on $PATH."
                 },
                 "lyric.trace.server": {
                     "type": "string",

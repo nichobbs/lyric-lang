@@ -1,6 +1,5 @@
-// Named-argument record construction must store each value into its own field
-// regardless of call-site argument order (D-progress-357).
-
+//! Named-argument record construction must store each value into its own field
+//! regardless of call-site argument order (D-progress-357).
 @test_module
 package Lyric.NamedArgOrderSelfTest
 
@@ -11,16 +10,16 @@ record R3 {
   a: String
   b: Option[String]
   c: Bool
+  // A wider record mixing List / Option / Bool / Int fields, to exercise
+  // reordering across heterogeneous field types.
 }
 
-// A wider record mixing List / Option / Bool / Int fields, to exercise
-// reordering across heterogeneous field types.
 record Wide {
-  name:    String
-  flag:    Bool
-  opt:     Option[String]
-  count:   Int
-  label:   String
+  name: String
+  flag: Bool
+  opt: Option[String]
+  count: Int
+  label: String
 }
 
 test "named args in declaration order" {
@@ -28,7 +27,7 @@ test "named args in declaration order" {
   assertEqual(r.a, "A", "a")
   assertTrue(r.c, "c")
   match r.b {
-    case None    -> assertTrue(false, "b should be Some")
+    case None -> assertTrue(false, "b should be Some")
     case Some(v) -> assertEqual(v, "B", "b value")
   }
 }
@@ -38,7 +37,7 @@ test "named args in reverse order land in the right fields" {
   assertEqual(r.a, "A", "a (reverse-order)")
   assertTrue(r.c, "c (reverse-order)")
   match r.b {
-    case None    -> assertTrue(false, "b should be Some (reverse-order)")
+    case None -> assertTrue(false, "b should be Some (reverse-order)")
     case Some(v) -> assertEqual(v, "B", "b value (reverse-order)")
   }
 }
@@ -50,7 +49,7 @@ test "named args in scrambled order across heterogeneous fields" {
   assertEqualInt(w.count, 7, "count")
   assertEqual(w.label, "L", "label")
   match w.opt {
-    case None    -> assertTrue(false, "opt should be Some")
+    case None -> assertTrue(false, "opt should be Some")
     case Some(v) -> assertEqual(v, "O", "opt value")
   }
 }

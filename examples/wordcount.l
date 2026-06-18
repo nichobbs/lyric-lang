@@ -1,13 +1,12 @@
-// Word + line + character counts on an inline document.
-//
-// Bootstrap-grade `wc(1)`: walks one character at a time, tracking
-// "am I currently inside a run of non-whitespace?" to count words,
-// and tallies newlines + total chars.  No file I/O yet — extern
-// package wiring for `Std.File` is still WIP — so the document is
-// embedded.
-//
-// Run: lyric run examples/wordcount.l
-
+//! Word + line + character counts on an inline document.
+//!
+//! Bootstrap-grade `wc(1)`: walks one character at a time, tracking
+//! "am I currently inside a run of non-whitespace?" to count words,
+//! and tallies newlines + total chars.  No file I/O yet — extern
+//! package wiring for `Std.File` is still WIP — so the document is
+//! embedded.
+//!
+//! Run: lyric run examples/wordcount.l
 package Wc
 
 func isWs(c: in Char): Bool {

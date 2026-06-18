@@ -2,6 +2,7 @@
 
 _Status: R1–R6 shipped (D-progress-227–239). MSIL bridge tests (6) shipped (D-progress-240). Full parity smoke-test suite (20 programs × 3 paths = 60 tests) shipped (D-progress-241). All 60 tests passing._
 _Backing decision: D058 (see `docs/03-decision-log.md`)._
+_Note: the 60-test suite covers only a 20-program common subset; the full JVM production-readiness audit and remediation plan (closing the much larger gap beyond this subset) lives in `docs/44-jvm-production-readiness-plan.md`._
 
 ## 1. Motivation
 

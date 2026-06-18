@@ -1,8 +1,8 @@
-// stdlib/tests/uuid_tests.l — Tests for Std.Uuid.
-//
-// Covers: newUuid generates non-nil UUIDs, nilUuid format, uuidToString
-// produces the canonical hyphenated form, parseUuidOpt round-trips, and
-// parseUuidOpt returns None for invalid input.
+//! stdlib/tests/uuid_tests.l — Tests for Std.Uuid.
+//!
+//! Covers: newUuid generates non-nil UUIDs, nilUuid format, uuidToString
+//! produces the canonical hyphenated form, parseUuidOpt round-trips, and
+//! parseUuidOpt returns None for invalid input.
 package Std.Uuid.Tests
 
 import Std.Core
@@ -43,9 +43,7 @@ func testParseRoundTrip(): Unit {
 func testParseNil(): Unit {
   val nil_ = parseUuidOpt("00000000-0000-0000-0000-000000000000")
   assertTrue(isSome(nil_), "nil uuid parses ok")
-  assertEqual(uuidToString(unwrapOr(nil_, newUuid())),
-              "00000000-0000-0000-0000-000000000000",
-              "parsed nil matches")
+  assertEqual(uuidToString(unwrapOr(nil_, newUuid())), "00000000-0000-0000-0000-000000000000", "parsed nil matches")
 }
 
 func testParseInvalid(): Unit {

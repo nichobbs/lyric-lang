@@ -21,13 +21,46 @@ env:
   DOTNET_NOLOGO: true
 
 # ---------------------------------------------------------------------------
-# Build self-contained standalone binaries for all supported platforms.
-# Each matrix leg runs on the native OS, publishes a single-file binary,
-# optionally signs it, packages it into a zip/tar.gz, and uploads the
-# archive as a GitHub Release asset.
+# Create GitHub Release atomically before building binaries.
+# This prevents race conditions where one architecture fails after the
+# release is already created with incomplete assets.
 # ---------------------------------------------------------------------------
 jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.VERSION }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "VERSION=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        shell: bash
+        run: |
+          gh release create "v${{ steps.ver.outputs.VERSION }}" \
+            --draft \
+            --title "v${{ steps.ver.outputs.VERSION }}" \
+            --notes "Lyric compiler release"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  # Build self-contained standalone binaries for all supported platforms.
+  # Each matrix leg runs on the native OS, publishes a single-file binary,
+  # optionally signs it, packages it into a zip/tar.gz, and uploads the
+  # archive as a GitHub Release asset.
+  # ---------------------------------------------------------------------------
   build-standalone:
+    needs: [create-release]
     strategy:
       fail-fast: false
       matrix:
@@ -52,47 +85,62 @@ jobs:
 
     runs-on: ${{ matrix.os }}
 
+    # Optional-signing secrets are hoisted into `env` so the step `if:` guards
+    # below can test them.  The `secrets` context is NOT permitted inside `if:`
+    # conditionals — referencing it there makes the whole workflow file invalid
+    # ("Unrecognized named-value: 'secrets'") and every push startup-fails.
+    env:
+      AZURE_KEY_VAULT_URL: ${{ secrets.AZURE_KEY_VAULT_URL }}
+      APPLE_TEAM_ID:       ${{ secrets.APPLE_TEAM_ID }}
+
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
+      - name: Install ARM64 cross-compilation toolchain (Ubuntu)
+        if: matrix.os == 'ubuntu-latest' && matrix.rid == 'linux-arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-multiarch
+
+      - name: Install unzip (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          choco install unzip -y
+
       - name: Set up .NET
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
 
-      - name: Resolve version
-        id: ver
+      - name: Build stage 1 (self-hosted compiler)
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "VERSION=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
-          fi
+          ./scripts/bootstrap.sh --stage 1
 
-      - name: Restore
+      - name: Restore AOT project
         working-directory: bootstrap
-        run: dotnet restore Bootstrap.sln --runtime ${{ matrix.rid }}
+        run: dotnet restore src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj --runtime ${{ matrix.rid }}
 
-      - name: Publish self-contained binary
+      - name: Publish self-contained AOT binary
         shell: bash
         working-directory: bootstrap
         run: |
-          dotnet publish src/Lyric.Cli/Lyric.Cli.fsproj \
+          dotnet publish src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
             --configuration Release \
             --runtime ${{ matrix.rid }} \
             --self-contained true \
             -p:PublishSingleFile=true \
             -p:EnableCompressionInSingleFile=true \
-            -p:Version=${{ steps.ver.outputs.VERSION }} \
+            -p:Version=${{ needs.create-release.outputs.version }} \
             --output publish/${{ matrix.rid }} \
             --no-restore
 
       # ── Windows: Authenticode signing via Azure Key Vault ─────────────────
       - name: Sign Windows binary (Authenticode)
-        if: >
-          matrix.authenticode == true &&
-          secrets.AZURE_KEY_VAULT_URL != ''
+        if: matrix.authenticode == true && env.AZURE_KEY_VAULT_URL != ''
         shell: bash
         run: |
           dotnet tool install --global AzureSignTool --version 5.0.0
@@ -109,9 +157,7 @@ jobs:
 
       # ── macOS: codesign + notarize (osx-arm64 only) ─────────────────────
       - name: Sign and notarize macOS binary
-        if: >
-          matrix.notarize == true &&
-          secrets.APPLE_TEAM_ID != ''
+        if: matrix.notarize == true && env.APPLE_TEAM_ID != ''
         shell: bash
         env:
           APPLE_CERT_BASE64:    ${{ secrets.APPLE_DEVELOPER_CERT_BASE64 }}
@@ -142,7 +188,7 @@ jobs:
         if: matrix.archive_suffix == 'tar.gz'
         shell: bash
         run: |
-          VERSION="${{ steps.ver.outputs.VERSION }}"
+          VERSION="${{ needs.create-release.outputs.version }}"
           ARCHIVE="lyric-${VERSION}-${{ matrix.rid }}.tar.gz"
           tar -czf "$ARCHIVE" -C bootstrap/publish/${{ matrix.rid }} .
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
@@ -151,7 +197,7 @@ jobs:
         if: matrix.archive_suffix == 'zip'
         shell: pwsh
         run: |
-          $version  = "${{ steps.ver.outputs.VERSION }}"
+          $version  = "${{ needs.create-release.outputs.version }}"
           $archive  = "lyric-${version}-${{ matrix.rid }}.zip"
           Compress-Archive -Path "bootstrap/publish/${{ matrix.rid }}/*" `
                            -DestinationPath $archive
@@ -159,9 +205,7 @@ jobs:
 
       # ── macOS: submit for notarization after archive is ready ─────────────
       - name: Notarize macOS archive
-        if: >
-          matrix.notarize == true &&
-          secrets.APPLE_TEAM_ID != ''
+        if: matrix.notarize == true && env.APPLE_TEAM_ID != ''
         shell: bash
         run: |
           xcrun notarytool submit "$ARCHIVE" \
@@ -174,50 +218,77 @@ jobs:
 
       # ── Upload to GitHub Release ──────────────────────────────────────────
       - name: Upload release asset
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda  # v3.0.0
-        with:
-          tag_name: v${{ steps.ver.outputs.VERSION }}
-          fail_on_unmatched_files: true
-          files: ${{ env.ARCHIVE }}
+        shell: bash
+        run: |
+          gh release upload "v${{ needs.create-release.outputs.version }}" "$ARCHIVE"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ---------------------------------------------------------------------------
   # Build and publish the NuGet global tool package.
   # Run after binaries so the release page shows assets before the NuGet
   # package appears on nuget.org.
   # ---------------------------------------------------------------------------
+  # A job-level `if:` cannot read the `env` OR `secrets` context, so the
+  # "is NUGET_API_KEY configured?" check can't live on `publish-nuget`
+  # directly.  This tiny gate job reads the secret via `env` (allowed) and
+  # publishes a boolean output the downstream job can gate on.
+  secrets-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      has_nuget_key: ${{ steps.check.outputs.has_nuget_key }}
+    steps:
+      - id: check
+        shell: bash
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [ -n "$NUGET_API_KEY" ]; then
+            echo "has_nuget_key=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "has_nuget_key=false" >> "$GITHUB_OUTPUT"
+          fi
+
   publish-nuget:
     runs-on: ubuntu-latest
-    needs: build-standalone
-    if: ${{ secrets.NUGET_API_KEY != '' }}
+    needs: [build-standalone, secrets-gate, create-release]
+    if: needs.secrets-gate.outputs.has_nuget_key == 'true'
+
+    # Hoist the secrets into `env` rather than interpolating ${{ secrets.* }}
+    # into `run:` scripts: it lets the signing step's `if:` test the cert (the
+    # `secrets` context is not allowed in `if:`), and it keeps secret values out
+    # of the rendered shell command text (they're read from the environment at
+    # runtime instead of being substituted into the script).
+    env:
+      NUGET_SIGNING_CERT_BASE64:   ${{ secrets.NUGET_SIGNING_CERT_BASE64 }}
+      NUGET_SIGNING_CERT_PASSWORD: ${{ secrets.NUGET_SIGNING_CERT_PASSWORD }}
+      NUGET_API_KEY:               ${{ secrets.NUGET_API_KEY }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
-
-      - name: Resolve version
-        id: ver
-        shell: bash
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "VERSION=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Restore
         working-directory: bootstrap
         run: dotnet restore Bootstrap.sln
 
+      - name: Build stage 1 (for NuGet package)
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./scripts/bootstrap.sh --stage 1
+
       - name: Pack NuGet global tool
         working-directory: bootstrap
         run: |
-          dotnet pack src/Lyric.Cli/Lyric.Cli.fsproj \
+          dotnet pack src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
             --configuration Release \
-            -p:PackageVersion=${{ steps.ver.outputs.VERSION }} \
+            -p:PackageVersion=${{ needs.create-release.outputs.version }} \
             -p:PackAsTool=true \
             -p:ToolCommandName=lyric \
             -p:PackageId=lyric \
@@ -229,13 +300,13 @@ jobs:
       # repository secrets.  The certificate fingerprint should be recorded in
       # docs/34-distribution-strategy.md §8 (Code-signing).
       - name: Sign NuGet package
-        if: ${{ secrets.NUGET_SIGNING_CERT_BASE64 != '' }}
+        if: env.NUGET_SIGNING_CERT_BASE64 != ''
         run: |
-          echo "${{ secrets.NUGET_SIGNING_CERT_BASE64 }}" | base64 --decode \
+          echo "$NUGET_SIGNING_CERT_BASE64" | base64 --decode \
             > /tmp/nuget-signing.pfx
           dotnet nuget sign bootstrap/nupkgs/*.nupkg \
             --certificate-path /tmp/nuget-signing.pfx \
-            --certificate-password "${{ secrets.NUGET_SIGNING_CERT_PASSWORD }}" \
+            --certificate-password "$NUGET_SIGNING_CERT_PASSWORD" \
             --timestamper http://timestamp.digicert.com \
             --overwrite
           rm -f /tmp/nuget-signing.pfx
@@ -243,6 +314,24 @@ jobs:
       - name: Push to NuGet.org
         run: |
           dotnet nuget push bootstrap/nupkgs/*.nupkg \
-            --api-key "${{ secrets.NUGET_API_KEY }}" \
+            --api-key "$NUGET_API_KEY" \
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate
+
+  # ---------------------------------------------------------------------------
+  # Mark the release as ready (non-draft) after all uploads and publishing
+  # are complete.  Runs only if all prior jobs succeeded.
+  # ---------------------------------------------------------------------------
+  finalize-release:
+    runs-on: ubuntu-latest
+    needs: [create-release, build-standalone, publish-nuget, secrets-gate]
+    if: always() && (needs.build-standalone.result == 'success' || needs.build-standalone.result == 'skipped')
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Mark release as ready
+        shell: bash
+        run: |
+          gh release edit "v${{ needs.create-release.outputs.version }}" --draft=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
