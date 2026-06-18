@@ -760,7 +760,8 @@ func buildProject(
     restoredDllPaths = restoredDlls,
     activeFeatures   = activeFeatures,
     declaredFeatures = mfDeclared,
-    packageVersion   = manifest.packageSection.version
+    packageVersion   = manifest.packageSection.version,
+    buildKind        = "lib"
   )
 
   val result  = Emitter.emitProject(projReq)
@@ -2695,7 +2696,8 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
       restoredDllPaths = restoredDlls,
       activeFeatures   = activeFeatures,
       declaredFeatures = mfDeclared,
-      packageVersion   = manifest.packageSection.version
+      packageVersion   = manifest.packageSection.version,
+      buildKind        = "lib"
     )
     val result  = Emitter.emitProject(projReq)
     var hadBuildError = false

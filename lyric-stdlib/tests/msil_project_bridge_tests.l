@@ -304,7 +304,8 @@ func runEmitProject(label: in String, projectPkgs: in List[Emitter.ProjectPackag
     restoredDllPaths = newList(),
     activeFeatures   = newList(),
     declaredFeatures = newList(),
-    packageVersion   = "")
+    packageVersion   = "",
+    buildKind        = "lib")
   val result = Emitter.emitProject(req)
   match result.outputPath {
     case None -> {
@@ -396,7 +397,8 @@ func runEmitProjectWithFeatures(label: in String,
     restoredDllPaths = newList(),
     activeFeatures   = features,
     declaredFeatures = declared,
-    packageVersion   = "")
+    packageVersion   = "",
+    buildKind        = "lib")
   val result = Emitter.emitProject(req)
   match result.outputPath {
     case None -> {
@@ -625,7 +627,8 @@ func testRestoredDepWiringNoCrash(): Unit {
     restoredDllPaths = restoredDlls,
     activeFeatures   = newList(),
     declaredFeatures = newList(),
-    packageVersion   = "")
+    packageVersion   = "",
+    buildKind        = "lib")
   val result = Emitter.emitProject(req)
   // Expected: in-process loader reports DllMissing, emitter surfaces
   // via `failResult`, `outputPath = None`.

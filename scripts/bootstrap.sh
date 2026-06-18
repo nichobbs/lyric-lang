@@ -124,7 +124,7 @@ stage1() {
   # Build the self-hosted Lyric compiler packages
   info "  compiling Lyric compiler packages"
   cd "$REPO_ROOT/lyric-compiler/lyric"
-  LYRIC_STD_PATH="$STAGE1_DIR" "$STAGE0_BIN" build --manifest lyric.toml \
+  LYRIC_STD_PATH="$STDLIB_DIR" "$STAGE0_BIN" build --manifest lyric.toml \
     -o "$STAGE1_DIR/Lyric.Cli.dll" --target dotnet 2>&1 || \
     die "Lyric compiler build failed"
   cd "$REPO_ROOT"
