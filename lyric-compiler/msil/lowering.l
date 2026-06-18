@@ -659,6 +659,9 @@ pub union MInsn {
   // call RunBody() on the synthesised generator class before the MethodDef
   // table is fully populated (mirrors the MNewobjByName / MLdfldByName pattern).
   case MCallByName(className: String, methodName: String)
+  // Non-virtual `ldftn` that resolves the MethodDef token from a TypeDef name
+  // and method name at Phase 5 lowering time. Used by closure classes.
+  case MLdftnByName(ownerFqn: String, methodName: String)
 }
 
 // ── MField / MFunc / MRecord ──────────────────────────────────────────────────
@@ -1030,6 +1033,16 @@ pub record LoweringCtx {
   // a forward-reference problem.
   projectableCtorMDef: Map[String, Int]
   projectableCtorMDefKeys: List[String]
+  // Maps classFqn + "::" + methodName -> MethodDef row index (1-based).
+  // Pre-populated from the discovery pass so forward references to methods
+  // (such as .ctor of nested closures) resolve correctly during lowering.
+  predictedMethodRows: Map[String, Int]
+  predictedMethodRowKeys: List[String]
+  // Maps classFqn + "::" + fieldName -> FieldDef row index (1-based).
+  // Pre-populated from the discovery pass so forward references to fields
+  // (such as captured variables of nested closures) resolve correctly.
+  predictedFieldRows: Map[String, Int]
+  predictedFieldRowKeys: List[String]
   // Stdlib TypeRef row for `Std.Core.Result_Ok` open generic (the F#-compiled
   // case class name with underscore separator).  Populated by the codegen layer
   // after stdlib registration.  Empty list = stdlib not imported; skip
@@ -1187,6 +1200,10 @@ pub func newLoweringCtx(packageName: in String, major: in Int, minor: in Int): L
     projectableToViewMDefKeys = newList(),
     projectableCtorMDef = newMap(),
     projectableCtorMDefKeys = newList(),
+    predictedMethodRows = newMap(),
+    predictedMethodRowKeys = newList(),
+    predictedFieldRows = newMap(),
+    predictedFieldRowKeys = newList(),
     stdCoreResultOk2Row = newList(),
     stdCoreResultErr2Row = newList(),
     stdCoreResultRow = newList(),
@@ -2169,6 +2186,15 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
         panic("Msil.Lowering: MCallByName could not resolve '" + methodName + "' on type '" + className + "'")
       }
     }
+    case MLdftnByName(ownerFqn, methodName) -> {
+      val tdRow = findTypeDefRowByName(ctx, ownerFqn)
+      val mdRow = findMethodDefRowOfType(ctx, tdRow, methodName)
+      if mdRow > 0 {
+        emitLdftn(mb, 0x06000000 + mdRow)
+      } else {
+        panic("Msil.Lowering: MLdftnByName could not resolve '" + methodName + "' on type '" + ownerFqn + "'")
+      }
+    }
     case MCallAtmbStart(smFqn, atmbMrRow, isGeneric) -> {
       // Resolve MethodSpec for `ATMB[<T>].Start<SM>(ref SM)` at Phase 5.
       // The MemberRef for `ATMB.Start<!!0>` is atmbMrRow; we instantiate it
@@ -2470,6 +2496,14 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
     )
   )
   val selfTypeDefRow = t.typeDefs.count
+  if simpleNameRec.indexOf("__Closure_") >= 0 {
+    println(
+      "DEBUG lowerMRecord recordUserTypeDefRow: namespace=" + r.namespace + " simpleNameRec=" + simpleNameRec + " sName=" +
+        toString(sName) +
+        " selfTypeDefRow=" +
+        toString(selfTypeDefRow)
+    )
+  }
   recordUserTypeDefRow(ctx, r.namespace, simpleNameRec, selfTypeDefRow)
   // Emit GenericParam rows for an in-bundle generic record (#2362).
   emitGenericParamRows(ctx, selfTypeDefRow, r.generics)
@@ -2502,6 +2536,7 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
     val fSig = buildFieldSigWithCtx(f.fieldType, ctx)
     val bSig = internBlob(bh, "field_" + r.className + "_" + f.name, fSig)
     val fRow = addField(t, FieldRow(flags = f.flags, name = sF, signature = bSig))
+    recordPredictedFieldRow(ctx, r.className, f.name, fRow)
     fi = fi + 1
   }
 
@@ -2553,7 +2588,7 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
     val ctorRva2 = rvasC2[ctx.bodies.count - 1]
     val firstPrm2 = t.params_.count + 1
     addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-    addMethodDef(
+    val mRow = addMethodDef(
       t,
       MethodDefRow(
         rva = ctorRva2,
@@ -2564,6 +2599,7 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
         paramList = firstPrm2
       )
     )
+    recordPredictedMethodRow(ctx, r.className, ".ctor", mRow)
   } else {
     // Field-parameterised constructor: .ctor(field1, field2, ...)
     val ctorParams: List[MsilType] = newList()
@@ -2608,7 +2644,7 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
 
     addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
 
-    addMethodDef(
+    val mRow = addMethodDef(
       t,
       MethodDefRow(
         rva = ctorRva,
@@ -2619,6 +2655,7 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
         paramList = firstParam
       )
     )
+    recordPredictedMethodRow(ctx, r.className, ".ctor", mRow)
   }
 
   // Emit explicit instance methods — TypeDef and FieldDefs are already registered
@@ -2636,10 +2673,18 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
     val bMSig = internBlob(bh, "meth_" + r.className + "_" + m.name + "/" + toString(m.params.count), mSig)
     val fp = t.params_.count + 1
     addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-    addMethodDef(
+    val mRow = addMethodDef(
       t,
-      MethodDefRow(rva = mRva, implFlags = 0, flags = m.flags, name = sName2, signature = bMSig, paramList = fp)
+      MethodDefRow(
+        rva = mRva,
+        implFlags = 0,
+        flags = m.flags,
+        name = sName2,
+        signature = bMSig,
+        paramList = fp
+      )
     )
+    recordPredictedMethodRow(ctx, r.className, m.name, mRow)
     mi = mi + 1
   }
 }
@@ -2673,7 +2718,11 @@ pub func lowerMNullaryUnionCase(r: in MRecord, ctx: in LoweringCtx): Int {
   val sInstance = internString(sh, "Instance")
   val instSig = buildFieldSig(MObject)
   val bInstSig = internBlob(bh, "inst_" + r.className, instSig)
-  addField(t, FieldRow(flags = FDA_PUBLIC + FDA_STATIC + FDA_INIT_ONLY, name = sInstance, signature = bInstSig))
+  val fRow = addField(
+    t,
+    FieldRow(flags = FDA_PUBLIC + FDA_STATIC + FDA_INIT_ONLY, name = sInstance, signature = bInstSig)
+  )
+  recordPredictedFieldRow(ctx, r.className, "Instance", fRow)
 
   // Emit .ctor() — no parameters; calls the union base's protected .ctor.
   // If the base is a local TypeDef (union case hierarchy), chain through its
@@ -2706,7 +2755,7 @@ pub func lowerMNullaryUnionCase(r: in MRecord, ctx: in LoweringCtx): Int {
   val ctorSig = buildInstanceMethodSig(newList(), MVoid)
   val bCtorSig = internBlob(bh, "ctor_" + r.className, ctorSig)
   addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-  addMethodDef(
+  val mRow = addMethodDef(
     t,
     MethodDefRow(
       rva = ctorRva,
@@ -2717,6 +2766,7 @@ pub func lowerMNullaryUnionCase(r: in MRecord, ctx: in LoweringCtx): Int {
       paramList = fpCtor
     )
   )
+  recordPredictedMethodRow(ctx, r.className, ".ctor", mRow)
 
   // Emit .cctor() — creates the singleton Instance.
   // .ctor MethodDef token = 0x06000000 + firstMethod (already emitted above).
@@ -2734,7 +2784,7 @@ pub func lowerMNullaryUnionCase(r: in MRecord, ctx: in LoweringCtx): Int {
   val cctorSig = buildStaticMethodSig(newList(), MVoid)
   val bCctorSig = internBlob(bh, "cctor_" + r.className, cctorSig)
   addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-  addMethodDef(
+  val mRow2 = addMethodDef(
     t,
     MethodDefRow(
       rva = cctorRva,
@@ -2745,6 +2795,7 @@ pub func lowerMNullaryUnionCase(r: in MRecord, ctx: in LoweringCtx): Int {
       paramList = fpCctor
     )
   )
+  recordPredictedMethodRow(ctx, r.className, ".cctor", mRow2)
 
   // TypeDef row — sealed class extending the union base class (or Object as
   // fallback when the base is not a local TypeDef, e.g. for cross-package use).
@@ -2820,7 +2871,11 @@ pub func lowerMUnion(u: in MUnion, ctx: in LoweringCtx): Int {
     val bSig = internBlob(bh, "basemeth_" + u.baseName + "_" + m.name + "/" + toString(m.params.count), mSig)
     val fp = t.params_.count + 1
     addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-    addMethodDef(t, MethodDefRow(rva = mRva, implFlags = 0, flags = m.flags, name = sN, signature = bSig, paramList = fp))
+    val mRow = addMethodDef(
+      t,
+      MethodDefRow(rva = mRva, implFlags = 0, flags = m.flags, name = sN, signature = bSig, paramList = fp)
+    )
+    recordPredictedMethodRow(ctx, baseClassFqn, m.name, mRow)
     mi = mi + 1
   }
 
@@ -2841,7 +2896,7 @@ pub func lowerMUnion(u: in MUnion, ctx: in LoweringCtx): Int {
   val baseCtorRva = rvasBaseCtor[ctx.bodies.count - 1]
   val fpBaseCtor = t.params_.count + 1
   addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-  addMethodDef(
+  val mRow2 = addMethodDef(
     t,
     MethodDefRow(
       rva = baseCtorRva,
@@ -2852,6 +2907,7 @@ pub func lowerMUnion(u: in MUnion, ctx: in LoweringCtx): Int {
       paramList = fpBaseCtor
     )
   )
+  recordPredictedMethodRow(ctx, baseClassFqn, ".ctor", mRow2)
 
   // Abstract base TypeDef
   val baseRow = addTypeDef(
@@ -2920,13 +2976,20 @@ pub func distinctConvName(inner: in MsilType): String {
 
 // Add one synthesised method (body + a placeholder Param row + MethodDef row).
 // Mirrors the per-method emission the union/record lowerers use.
-func addSynthMethodDef(ctx: in LoweringCtx, mb: in MethodBody, name: in String, sigBlob: in Int, flags: in Int): Unit {
+func addSynthMethodDef(
+  ctx: in LoweringCtx,
+  classFqn: in String,
+  mb: in MethodBody,
+  name: in String,
+  sigBlob: in Int,
+  flags: in Int,
+): Unit {
   ctx.bodies.add(mb)
   val rvas = methodBodyRvas(ctx.bodies)
   val rva = rvas[ctx.bodies.count - 1]
   val fp = ctx.tables.params_.count + 1
   addParam(ctx.tables, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-  val _ = addMethodDef(
+  val mRow = addMethodDef(
     ctx.tables,
     MethodDefRow(
       rva = rva,
@@ -2937,6 +3000,7 @@ func addSynthMethodDef(ctx: in LoweringCtx, mb: in MethodBody, name: in String, 
       paramList = fp
     )
   )
+  recordPredictedMethodRow(ctx, classFqn, name, mRow)
 }
 
 // Emit the range bounds test for a distinct type into `mb`, branching to
@@ -3014,7 +3078,11 @@ pub func lowerMDistinctType(d: in MDistinctType, ctx: in LoweringCtx): Int {
   // ── value field ──
   val fSig = buildFieldSigWithCtx(d.inner, ctx)
   val bFSig = internBlob(bh, "dval_" + d.className, fSig)
-  addField(t, FieldRow(flags = FDA_PUBLIC + FDA_INIT_ONLY, name = internString(sh, "value"), signature = bFSig))
+  val fRow = addField(
+    t,
+    FieldRow(flags = FDA_PUBLIC + FDA_INIT_ONLY, name = internString(sh, "value"), signature = bFSig)
+  )
+  recordPredictedFieldRow(ctx, d.className, "value", fRow)
   val valueFieldTok = 0x04000000 + firstField
 
   val hasTryFrom = ctx.stdCoreResultOk2Row.count > 0 and ctx.stdCoreResultErr2Row.count > 0 and
@@ -3041,6 +3109,7 @@ pub func lowerMDistinctType(d: in MDistinctType, ctx: in LoweringCtx): Int {
   }
   addSynthMethodDef(
     ctx,
+    d.className,
     mbCtor,
     ".ctor",
     bCtorSig,
@@ -3079,7 +3148,7 @@ pub func lowerMDistinctType(d: in MDistinctType, ctx: in LoweringCtx): Int {
       emitRet(mbFrom)
     }
   }
-  addSynthMethodDef(ctx, mbFrom, "from", bFromSig, MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG)
+  addSynthMethodDef(ctx, d.className, mbFrom, "from", bFromSig, MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG)
 
   // ── Method 2: static tryFrom(x): Result[Self, String] (Result imported only) ──
   if hasTryFrom {
@@ -3140,7 +3209,7 @@ pub func lowerMDistinctType(d: in MDistinctType, ctx: in LoweringCtx): Int {
         emitRet(mbTry)
       }
     }
-    addSynthMethodDef(ctx, mbTry, "tryFrom", bTryFromSig, MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG)
+    addSynthMethodDef(ctx, d.className, mbTry, "tryFrom", bTryFromSig, MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG)
   }
 
   // ── Method 3: instance toX(): Underlying ──
@@ -3154,7 +3223,7 @@ pub func lowerMDistinctType(d: in MDistinctType, ctx: in LoweringCtx): Int {
       emitLdfld(mbConv, valueFieldTok)
       emitRet(mbConv)
     }
-    addSynthMethodDef(ctx, mbConv, convName, bConvSig, MDA_PUBLIC + MDA_HIDE_BY_SIG)
+    addSynthMethodDef(ctx, d.className, mbConv, convName, bConvSig, MDA_PUBLIC + MDA_HIDE_BY_SIG)
   }
 
   val typeRow = addTypeDef(
@@ -3198,7 +3267,11 @@ pub func lowerMRangeType(r: in MRangeType, ctx: in LoweringCtx): Int {
   // Single public initonly field named `value`.
   val fSig = buildFieldSigWithCtx(r.inner, ctx)
   val bFSig = internBlob(bh, "range_val_" + r.className, fSig)
-  addField(t, FieldRow(flags = FDA_PUBLIC + FDA_INIT_ONLY, name = internString(sh, "value"), signature = bFSig))
+  val fRow = addField(
+    t,
+    FieldRow(flags = FDA_PUBLIC + FDA_INIT_ONLY, name = internString(sh, "value"), signature = bFSig)
+  )
+  recordPredictedFieldRow(ctx, r.className, "value", fRow)
 
   // Exception and ArgumentOutOfRangeException TypeRefs for bounds-check throws.
   val trExc = ctxAddTypeRef(ctx, "System", "ArgumentOutOfRangeException", ctx.arRuntime)
@@ -3266,7 +3339,7 @@ pub func lowerMRangeType(r: in MRangeType, ctx: in LoweringCtx): Int {
   val sCtor = internString(sh, ".ctor")
   val firstParam = t.params_.count + 1
   addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-  addMethodDef(
+  val mRow = addMethodDef(
     t,
     MethodDefRow(
       rva = ctorRva,
@@ -3277,6 +3350,7 @@ pub func lowerMRangeType(r: in MRangeType, ctx: in LoweringCtx): Int {
       paramList = firstParam
     )
   )
+  recordPredictedMethodRow(ctx, r.className, ".ctor", mRow)
 
   val typeRow = addTypeDef(
     t,
@@ -3317,10 +3391,15 @@ pub func lowerMEnum(e: in MEnum, ctx: in LoweringCtx): Int {
   val sValueDunder = internString(sh, "value__")
   val i4Sig = buildFieldSig(MInt)
   val bI4Sig = internBlob(bh, "field_i4_sig", i4Sig)
-  addField(
+  val fRowVal = addField(
     t,
-    FieldRow(flags = FDA_PRIVATE + FDA_SPECIAL_NAME + FDA_RT_SPECIAL_NAME, name = sValueDunder, signature = bI4Sig)
+    FieldRow(
+      flags = FDA_PRIVATE + FDA_SPECIAL_NAME + FDA_RT_SPECIAL_NAME,
+      name = sValueDunder,
+      signature = bI4Sig
+    )
   )
+  recordPredictedFieldRow(ctx, e.className, "value__", fRowVal)
 
   // Emit one static literal field per case + a Constant row for its ordinal value.
   // The enum's own TypeDef is appended at the end of this function via
@@ -3344,6 +3423,7 @@ pub func lowerMEnum(e: in MEnum, ctx: in LoweringCtx): Int {
         signature = bCaseSig
       )
     )
+    recordPredictedFieldRow(ctx, e.className, e.cases[ci], caseFieldRow)
     // Constant row: ELEMENT_TYPE_I4 (0x08), parent = hconstField(caseFieldRow).
     val constBlob = buildI4ConstantBlob(ci)
     val bConst = internBlob(bh, "const_" + e.className + "_" + e.cases[ci], constBlob)
@@ -3424,7 +3504,7 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
         val bSig = internBlob(bh, "ifmeth_" + iface.className + "_" + m.name + "/" + toString(m.params.count), mSig)
         val fp = t.params_.count + 1
         addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-        addMethodDef(
+        val mRow = addMethodDef(
           t,
           MethodDefRow(
             rva = 0,
@@ -3435,6 +3515,7 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
             paramList = fp
           )
         )
+        recordPredictedMethodRow(ctx, iface.className, m.name, mRow)
       }
       case MIDim(dm) -> {
         val dmRva = dimRvas[dimBodyIdx[mi]]
@@ -3443,7 +3524,7 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
         val bDmSig = internBlob(bh, "ifdmeth_" + iface.className + "_" + dm.name + "/" + toString(dm.params.count), dmSig)
         val fpDm = t.params_.count + 1
         addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-        addMethodDef(
+        val dmRow = addMethodDef(
           t,
           MethodDefRow(
             rva = dmRva,
@@ -3454,6 +3535,7 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
             paramList = fpDm
           )
         )
+        recordPredictedMethodRow(ctx, iface.className, dm.name, dmRow)
       }
     }
     mi = mi + 1
@@ -3481,6 +3563,12 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
 // Uses #Strings heap interning — both `internString` calls are idempotent so
 // they do not pollute the heap.
 pub func findTypeDefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
+  match mapGet(ctx.typeDefRowByFqn, fqn) {
+    case Some(row) -> {
+      return row
+    }
+    case None -> ()
+  }
   // lowerMRecord stores the SIMPLE name in typeName and the namespace in
   // typeNamespace (e.g. "EnglishGreeter"/"ShMIface" for "ShMIface.EnglishGreeter").
   // It derives the simple name by stripping the namespace prefix, so a
@@ -3505,9 +3593,21 @@ pub func findTypeDefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
   val sNs = internString(ctx.strings, ns)
   val sSN = internString(ctx.strings, simpleName)
   val t = ctx.tables
+  if fqn.indexOf("__Closure_") >= 0 {
+    println(
+      "DEBUG findTypeDefRowByName: fqn=" + fqn + " ns=" + ns + " simpleName=" + simpleName + " sNs=" + toString(sNs) +
+        " sSN=" +
+        toString(sSN)
+    )
+  }
   var i = 0
   while i < t.typeDefs.count {
     val td = t.typeDefs[i]
+    if fqn.indexOf("__Closure_") >= 0 {
+      println(
+        "  Checking TypeDef " + toString(i + 1) + ": ns=" + toString(td.typeNamespace) + " name=" + toString(td.typeName)
+      )
+    }
     if td.typeNamespace == sNs and td.typeName == sSN {
       return i + 1
     }
@@ -3585,6 +3685,22 @@ pub func recordUserTypeDefRow(ctx: in LoweringCtx, namespace: in String, simpleN
   if not ctx.typeDefRowByFqn.containsKey(fqn) {
     ctx.typeDefRowByFqn.add(fqn, row)
     ctx.typeDefRowFqns.add(fqn)
+  }
+}
+
+pub func recordPredictedMethodRow(ctx: in LoweringCtx, classFqn: in String, methodName: in String, row: in Int): Unit {
+  val key = classFqn + "::" + methodName
+  if not ctx.predictedMethodRows.containsKey(key) {
+    ctx.predictedMethodRows.add(key, row)
+    ctx.predictedMethodRowKeys.add(key)
+  }
+}
+
+pub func recordPredictedFieldRow(ctx: in LoweringCtx, classFqn: in String, fieldName: in String, row: in Int): Unit {
+  val key = classFqn + "::" + fieldName
+  if not ctx.predictedFieldRows.containsKey(key) {
+    ctx.predictedFieldRows.add(key, row)
+    ctx.predictedFieldRowKeys.add(key)
   }
 }
 
@@ -3715,6 +3831,38 @@ pub func discoverTypeDefRowsInto(dst: in LoweringCtx, pkgs: in List[MPackage], h
       case None -> ()
     }
     ck = ck + 1
+  }
+  // Copy predictedMethodRows so the real pass can use them as forward references
+  // (e.g. nested closures/constructors can resolve MethodDef rows).
+  var pmk = 0
+  while pmk < dctx.predictedMethodRowKeys.count {
+    val pmKey = dctx.predictedMethodRowKeys[pmk]
+    match mapGet(dctx.predictedMethodRows, pmKey) {
+      case Some(row) -> {
+        if not dst.predictedMethodRows.containsKey(pmKey) {
+          dst.predictedMethodRows.add(pmKey, row)
+          dst.predictedMethodRowKeys.add(pmKey)
+        }
+      }
+      case None -> ()
+    }
+    pmk = pmk + 1
+  }
+  // Copy predictedFieldRows so the real pass can use them as forward references
+  // (e.g. nested closures/constructors can resolve FieldDef rows).
+  var pfk = 0
+  while pfk < dctx.predictedFieldRowKeys.count {
+    val pfKey = dctx.predictedFieldRowKeys[pfk]
+    match mapGet(dctx.predictedFieldRows, pfKey) {
+      case Some(row) -> {
+        if not dst.predictedFieldRows.containsKey(pfKey) {
+          dst.predictedFieldRows.add(pfKey, row)
+          dst.predictedFieldRowKeys.add(pfKey)
+        }
+      }
+      case None -> ()
+    }
+    pfk = pfk + 1
   }
   // Copy the declaration-order-independent allProjFqns set to the real context.
   var apk = 0
@@ -3972,19 +4120,35 @@ pub func dictTokensForLowering(ctx: in LoweringCtx, keyTy: in MsilType, valTy: i
 // TypeDef owns through the end of the table.  Returns 0 if not found.
 pub func findMethodDefRowOfType(ctx: in LoweringCtx, typeDefRow: in Int, methodName: in String): Int {
   val t = ctx.tables
-  if typeDefRow < 1 or typeDefRow > t.typeDefs.count {
+  if typeDefRow < 1 {
     return 0
   }
-  val sName = internString(ctx.strings, methodName)
-  val td = t.typeDefs[typeDefRow - 1]
-  val first = td.methodList
-  val last = if typeDefRow == t.typeDefs.count { t.methodDefs.count + 1 } else { t.typeDefs[typeDefRow].methodList }
-  var i = first
-  while i < last {
-    if t.methodDefs[i - 1].name == sName {
-      return i
+  if typeDefRow <= t.typeDefs.count {
+    val sName = internString(ctx.strings, methodName)
+    val td = t.typeDefs[typeDefRow - 1]
+    val first = td.methodList
+    val last = if typeDefRow == t.typeDefs.count { t.methodDefs.count + 1 } else { t.typeDefs[typeDefRow].methodList }
+    var i = first
+    while i < last {
+      if t.methodDefs[i - 1].name == sName {
+        return i
+      }
+      i = i + 1
     }
-    i = i + 1
+  }
+  val fqn = if typeDefRow >= 2 and typeDefRow - 2 < ctx.typeDefRowFqns.count {
+    ctx.typeDefRowFqns[typeDefRow - 2]
+  } else {
+    ""
+  }
+  if fqn.length > 0 {
+    val key = fqn + "::" + methodName
+    match mapGet(ctx.predictedMethodRows, key) {
+      case Some(row) -> {
+        return row
+      }
+      case None -> ()
+    }
   }
   0
 }
@@ -3995,19 +4159,32 @@ pub func findMethodDefRowOfType(ctx: in LoweringCtx, typeDefRow: in Int, methodN
 // Returns 0 if not found.
 pub func findFieldDefRowOfType(ctx: in LoweringCtx, typeDefRow: in Int, fieldName: in String): Int {
   val t = ctx.tables
-  if typeDefRow < 1 or typeDefRow > t.typeDefs.count {
-    return 0
-  }
-  val sName = internString(ctx.strings, fieldName)
-  val td = t.typeDefs[typeDefRow - 1]
-  val first = td.fieldList
-  val last = if typeDefRow == t.typeDefs.count { t.fields.count + 1 } else { t.typeDefs[typeDefRow].fieldList }
-  var i = first
-  while i < last {
-    if t.fields[i - 1].name == sName {
-      return i
+  if typeDefRow >= 1 and typeDefRow <= t.typeDefs.count {
+    val sName = internString(ctx.strings, fieldName)
+    val td = t.typeDefs[typeDefRow - 1]
+    val first = td.fieldList
+    val last = if typeDefRow == t.typeDefs.count { t.fields.count + 1 } else { t.typeDefs[typeDefRow].fieldList }
+    var i = first
+    while i < last {
+      if t.fields[i - 1].name == sName {
+        return i
+      }
+      i = i + 1
     }
-    i = i + 1
+  }
+  val fqn = if typeDefRow >= 2 and typeDefRow - 2 < ctx.typeDefRowFqns.count {
+    ctx.typeDefRowFqns[typeDefRow - 2]
+  } else {
+    ""
+  }
+  if fqn.length > 0 {
+    val key = fqn + "::" + fieldName
+    match mapGet(ctx.predictedFieldRows, key) {
+      case Some(row) -> {
+        return row
+      }
+      case None -> ()
+    }
   }
   0
 }
@@ -4182,7 +4359,8 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
       val sF = internString(sh, op.fields[origIdx2].name)
       val fSig = buildFieldSigWithCtx(viewFieldTypes[vfi2], ctx)
       val bSig = internBlob(bh, "vfield_" + viewFqn + "_" + op.fields[origIdx2].name, fSig)
-      addField(t, FieldRow(flags = FDA_PUBLIC, name = sF, signature = bSig))
+      val fRow = addField(t, FieldRow(flags = FDA_PUBLIC, name = sF, signature = bSig))
+      recordPredictedFieldRow(ctx, viewFqn, op.fields[origIdx2].name, fRow)
       vfi2 = vfi2 + 1
     }
 
@@ -4355,7 +4533,8 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
       // level visibility at the source level; the MSIL flag mirrors the
       // assembly boundary, which corresponds to the package/compilation-unit
       // boundary in the single-assembly output model.
-      addField(t, FieldRow(flags = FDA_ASSEMBLY, name = sF2, signature = bSig2))
+      val fRow = addField(t, FieldRow(flags = FDA_ASSEMBLY, name = sF2, signature = bSig2))
+      recordPredictedFieldRow(ctx, op.className, f.name, fRow)
       ofi = ofi + 1
     }
 
@@ -4518,7 +4697,8 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
       val sF = internString(sh, f.name)
       val fSig = buildFieldSigWithCtx(f.fieldType, ctx)
       val bSig = internBlob(bh, "ofield_" + op.className + "_" + f.name, fSig)
-      addField(t, FieldRow(flags = FDA_PRIVATE, name = sF, signature = bSig))
+      val fRow = addField(t, FieldRow(flags = FDA_PRIVATE, name = sF, signature = bSig))
+      recordPredictedFieldRow(ctx, op.className, f.name, fRow)
       fi = fi + 1
     }
 
@@ -4642,6 +4822,7 @@ pub func lowerMFuncsToHostClass(
     val fSig = buildFieldSigWithCtx(sf.fieldType, ctx)
     val bSig = internBlob(bh, "stfld_" + hostClass + "_" + sf.name, fSig)
     val fRow = addField(t, FieldRow(flags = sf.flags, name = sN, signature = bSig))
+    recordPredictedFieldRow(ctx, joinTypeFqn(hostClass, "Program"), sf.name, fRow)
     if sf.hasLiteral {
       // IConst: emit a Constant table row with the literal value.
       val constBlob = buildI4ConstantBlob(sf.constValue)
@@ -4689,7 +4870,7 @@ pub func lowerMFuncsToHostClass(
     val bCctorSig = internBlob(bh, "cctor_" + hostClass, cctorSig)
     val fpc = t.params_.count + 1
     addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-    addMethodDef(
+    val cctorRow = addMethodDef(
       t,
       MethodDefRow(
         rva = cRva,
@@ -4700,6 +4881,7 @@ pub func lowerMFuncsToHostClass(
         paramList = fpc
       )
     )
+    recordPredictedMethodRow(ctx, joinTypeFqn(hostClass, "Program"), ".cctor", cctorRow)
   }
 
   // Emit static methods.
@@ -4716,7 +4898,11 @@ pub func lowerMFuncsToHostClass(
     val bSig = internBlob(bh, "sfunc_" + hostClass + "_" + f.name + "/" + toString(f.params.count), mSig)
     val fp = t.params_.count + 1
     addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-    addMethodDef(t, MethodDefRow(rva = fRva, implFlags = 0, flags = f.flags, name = sN, signature = bSig, paramList = fp))
+    val mRow = addMethodDef(
+      t,
+      MethodDefRow(rva = fRva, implFlags = 0, flags = f.flags, name = sN, signature = bSig, paramList = fp)
+    )
+    recordPredictedMethodRow(ctx, joinTypeFqn(hostClass, "Program"), f.name, mRow)
     fi = fi + 1
   }
 
@@ -4859,7 +5045,8 @@ func lowerMConfig(
     val sN = internString(sh, f.name)
     val fSig = buildFieldSig(f.fieldType)
     val bSig = internBlob(bh, "cfgfld_" + ns + "_" + typeName + "_" + f.name, fSig)
-    val _ = addField(t, FieldRow(flags = FDA_PUBLIC + FDA_STATIC, name = sN, signature = bSig))
+    val fRow = addField(t, FieldRow(flags = FDA_PUBLIC + FDA_STATIC, name = sN, signature = bSig))
+    recordPredictedFieldRow(ctx, joinTypeFqn(ns, typeName), f.name, fRow)
     fi = fi + 1
   }
 
@@ -4946,7 +5133,7 @@ func lowerMConfig(
     val bCctorSig = internBlob(bh, "cfg_cctor_" + ns + "_" + typeName, cctorSig)
     val fpc = t.params_.count + 1
     addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-    addMethodDef(
+    val mRow = addMethodDef(
       t,
       MethodDefRow(
         rva = cctorRva,
@@ -4957,6 +5144,7 @@ func lowerMConfig(
         paramList = fpc
       )
     )
+    recordPredictedMethodRow(ctx, joinTypeFqn(ns, typeName), ".cctor", mRow)
   }
 
   val sName = internString(sh, typeName)
@@ -5027,6 +5215,22 @@ pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx, entryMethod
 
   // RVAs are set inline by each lowerM* call; no post-pass needed.
   // (See the same comment in lowerMPackage above.)
+
+  val sMain = internString(ctx.strings, "main")
+  var mi = 0
+  var actualMainRow = 0
+  while mi < ctx.tables.methodDefs.count {
+    if ctx.tables.methodDefs[mi].name == sMain {
+      actualMainRow = mi + 1
+    }
+    mi = mi + 1
+  }
+  println(
+    "DEBUG: lowerMPackageWithCtx: entryMethodToken = " + toString(entryMethodToken) + " (row " +
+      toString(entryMethodToken - 0x06000000) +
+      "), actualMainRow = " +
+      toString(actualMainRow)
+  )
 
   val inp = AssemblerInput(
     entryPointToken = entryMethodToken,

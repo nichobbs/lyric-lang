@@ -100,6 +100,18 @@ pub func symbolTypeIdOpt(s: in Symbol): Option[TypeId] {
   }
 }
 
+pub func symTableIsExternType(tbl: in SymbolTable, id: in TypeId): Bool {
+  var i = 0
+  while i < tbl.symbols.count {
+    match tbl.symbols[i].kind {
+      case DKExternType(tid, _) -> if typeIdEq(tid, id) { return true }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. SymbolTable — package-level symbol store (bootstrap: linear scan).
 // ─────────────────────────────────────────────────────────────────────────────

@@ -890,6 +890,20 @@ func lowerProtectedMethod(
   LFunc(flags = flags, name = name, params = paramTypes, ret = retTy, insns = insns, maxStack = 0, maxLocals = 0)
 }
 
+func filterOutInjectedSelf(params: in List[Param]): List[Param] {
+  val res: List[Param] = newList()
+  var i = 0
+  while i < params.count {
+    val p = params[i]
+    val isSelf = i == 0 and p.name == "self"
+    if not isSelf {
+      res.add(p)
+    }
+    i = i + 1
+  }
+  res
+}
+
 // Build a record instance method (`RMFunc`) as a true non-static instance method
 // (slot 0 = `this`, flags 0x0001).  A record method call `rec.m(args)` lowers to
 // `invokevirtual <recordClass>.m` at the call site (`lowerMethodCall`, J3
@@ -932,8 +946,9 @@ func lowerRecordMethod(
   )
   val insns: List[LInsn] = newList()
   val noExts: Map[String, String] = newMap()
-  val paramTypes = holderAwareParamTypes(fn.params, pkgName, true, typeParams, noExts)
-  setupInstanceParamSlotsAndHolders(ctxSelf, insns, fn.params, pkgName, typeParams)
+  val filteredParams = filterOutInjectedSelf(fn.params)
+  val paramTypes = holderAwareParamTypes(filteredParams, pkgName, true, typeParams, noExts)
+  setupInstanceParamSlotsAndHolders(ctxSelf, insns, filteredParams, pkgName, typeParams)
   lowerInstanceMethodBody(ctxSelf, insns, body, retTy)
   LFunc(flags = 0x0001, name = fn.name, params = paramTypes, ret = retTy, insns = insns, maxStack = 0, maxLocals = 0)
 }
@@ -2173,19 +2188,20 @@ func registerInstanceSigErased(
   owner: in String,
   typeParams: in List[String],
 ): Unit {
+  val filteredParams = filterOutInjectedSelf(params)
   // Use holderAwareParamTypes so out/inout params register as JArray(elemTy) in the
   // descriptor, matching the emitted method and the call-site wrapping (#1763).
   val noExts: Map[String, String] = newMap()
-  val ps = holderAwareParamTypes(params, owner, true, typeParams, noExts)
+  val ps = holderAwareParamTypes(filteredParams, owner, true, typeParams, noExts)
   val ret = match retOpt { case Some(te) -> typeExprToJvmErased(te, owner, typeParams); case None -> JVoid }
   val paramNames: List[String] = newList()
   val paramDefs: List[Option[Expr]] = newList()
   val modes: List[ParamMode] = newList()
   var pi = 0
-  while pi < params.count {
-    paramNames.add(params[pi].name)
-    paramDefs.add(params[pi].dflt)
-    modes.add(params[pi].mode)
+  while pi < filteredParams.count {
+    paramNames.add(filteredParams[pi].name)
+    paramDefs.add(filteredParams[pi].dflt)
+    modes.add(filteredParams[pi].mode)
     pi = pi + 1
   }
   val key = className + "#" + methodName

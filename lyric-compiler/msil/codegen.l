@@ -215,6 +215,8 @@ pub record CodegenCtx {
   // the lambda arg is lowered; consumed by lowerFuncMsil's `__lambda_*` path to
   // seed boxedParamTypes for un-annotated params.  #1939.
   lambdaParamTypes: Map[String, List[MsilType]]
+  // Propagated return MsilType for a lifted lambda, keyed by lambda name ("__lambda_<idx>").
+  lambdaReturnTypes: Map[String, MsilType]
   // Capturing closures (#1479).  Keyed by lambda name ("__lambda_<idx>"): the
   // enclosing-scope variable names a lambda captures, and their MsilTypes
   // (parallel lists).  Recorded at the capture site; consumed by lowerFuncMsil's
@@ -1533,6 +1535,7 @@ pub func newCodegenCtx(
     // flat "fqn/paramN" → name
     funcParamFnInner = newMap(),
     lambdaParamTypes = newMap(),
+    lambdaReturnTypes = newMap(),
     lambdaCaptureNames = newMap(),
     lambdaCaptureTypes = newMap(),
     lambdaCaptureCells = newMap(),
@@ -1776,7 +1779,410 @@ pub func registerTypeAliasMsil(cctx: in CodegenCtx, pkgName: in String, decl: in
   }
 }
 
+func copyList(lst: in List[String]): List[String] {
+  val res: List[String] = newList()
+  var idx = 0
+  while idx < lst.count {
+    res.add(lst[idx])
+    idx = idx + 1
+  }
+  res
+}
+
+func precomputeLambdasExpr(
+  e: in Expr,
+  ticker: in List[Int],
+  cctx: in CodegenCtx,
+  enclosingBound: in List[String],
+  deferredBlocks: in List[Block],
+  deferredEnclosingBound: in List[List[String]],
+  deferredParams: in List[List[LambdaParam]],
+): Unit {
+  match e.kind {
+    case ELambda(lparams, body) -> {
+      val idx = ticker.count
+      ticker.add(0)
+
+      val refs: List[String] = newList()
+      collectRefNamesBlock(body, refs)
+
+      val bound: List[String] = newList()
+      var p = 0
+      while p < lparams.count {
+        addNameOnce(bound, lparams[p].name)
+        p = p + 1
+      }
+      collectBoundNamesBlock(body, bound)
+
+      val caps: List[String] = newList()
+      var ri = 0
+      while ri < refs.count {
+        val nm = refs[ri]
+        if not nameListContains(bound, nm) {
+          if nameListContains(enclosingBound, nm) {
+            addNameOnce(caps, nm)
+          }
+        }
+        ri = ri + 1
+      }
+
+      val lname = "__lambda_" + toString(idx)
+      if not cctx.lambdaCaptureNames.containsKey(lname) {
+        cctx.lambdaCaptureNames.add(lname, caps)
+      }
+
+      val nextEnclosing = copyList(enclosingBound)
+      var bi = 0
+      while bi < bound.count {
+        addNameOnce(nextEnclosing, bound[bi])
+        bi = bi + 1
+      }
+
+      deferredBlocks.add(body)
+      deferredEnclosingBound.add(nextEnclosing)
+      deferredParams.add(lparams)
+    }
+    case ECall(fn, args) -> {
+      precomputeLambdasExpr(fn, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+      var ai = 0
+      while ai < args.count {
+        match args[ai] {
+          case CAPositional(ex) -> {
+            precomputeLambdasExpr(ex, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+          }
+          case CANamed(_, ex, _) -> {
+            precomputeLambdasExpr(ex, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+          }
+        }
+        ai = ai + 1
+      }
+    }
+    case EBinop(_, lhs, rhs) -> {
+      precomputeLambdasExpr(lhs, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+      precomputeLambdasExpr(rhs, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+    }
+    case EPrefix(_, operand) -> {
+      precomputeLambdasExpr(operand, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+    }
+    case EParen(inner) -> {
+      precomputeLambdasExpr(inner, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+    }
+    case EMember(recv, _) -> {
+      precomputeLambdasExpr(recv, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+    }
+    case EIf(cond, thenB, elseOpt, _) -> {
+      precomputeLambdasExpr(cond, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+      match thenB {
+        case EOBExpr(ex) -> {
+          precomputeLambdasExpr(ex, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+        }
+        case EOBBlock(blk) -> {
+          precomputeLambdasBlock(blk, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+        }
+      }
+      match elseOpt {
+        case Some(elseB) -> {
+          match elseB {
+            case EOBExpr(ex) -> {
+              precomputeLambdasExpr(ex, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+            }
+            case EOBBlock(blk) -> {
+              precomputeLambdasBlock(blk, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+            }
+          }
+        }
+        case None -> {
+        }
+      }
+    }
+    case EBlock(block) -> {
+      precomputeLambdasBlock(block, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+    }
+    case EUnsafe(block) -> {
+      precomputeLambdasBlock(block, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+    }
+    case EMatch(scr, arms) -> {
+      precomputeLambdasExpr(scr, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+      var ai = 0
+      while ai < arms.count {
+        match arms[ai].body {
+          case EOBExpr(ex) -> {
+            precomputeLambdasExpr(ex, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+          }
+          case EOBBlock(blk) -> {
+            precomputeLambdasBlock(blk, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+          }
+        }
+        ai = ai + 1
+      }
+    }
+    case EList(exprs) -> {
+      var ei = 0
+      while ei < exprs.count {
+        precomputeLambdasExpr(exprs[ei], ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+        ei = ei + 1
+      }
+    }
+    case EIndex(recv, indices) -> {
+      precomputeLambdasExpr(recv, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+      var ii = 0
+      while ii < indices.count {
+        precomputeLambdasExpr(
+          indices[ii],
+          ticker,
+          cctx,
+          enclosingBound,
+          deferredBlocks,
+          deferredEnclosingBound,
+          deferredParams
+        )
+        ii = ii + 1
+      }
+    }
+    case EAwait(inner) -> {
+      precomputeLambdasExpr(inner, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+    }
+    case EYield(inner) -> {
+      precomputeLambdasExpr(inner, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+    }
+    case ESpawn(inner) -> {
+      precomputeLambdasExpr(inner, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+    }
+    case ETry(inner) -> {
+      precomputeLambdasExpr(inner, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+    }
+    case EPropagate(inner) -> {
+      precomputeLambdasExpr(inner, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+    }
+    case EAssign(_, _, v) -> {
+      precomputeLambdasExpr(v, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+    }
+    case EInterpolated(segs) -> {
+      var si = 0
+      while si < segs.count {
+        match segs[si] {
+          case ISExpr(ex) -> {
+            precomputeLambdasExpr(ex, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+          }
+          case _ -> {
+          }
+        }
+        si = si + 1
+      }
+    }
+    case ETuple(exprs) -> {
+      var ei = 0
+      while ei < exprs.count {
+        precomputeLambdasExpr(exprs[ei], ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+        ei = ei + 1
+      }
+    }
+    case ETypeApp(fn, _) -> {
+      precomputeLambdasExpr(fn, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+    }
+    case _ -> {
+    }
+  }
+}
+
+func precomputeLambdasBlock(
+  blk: in Block,
+  ticker: in List[Int],
+  cctx: in CodegenCtx,
+  enclosingBound: in List[String],
+  deferredBlocks: in List[Block],
+  deferredEnclosingBound: in List[List[String]],
+  deferredParams: in List[List[LambdaParam]],
+): Unit {
+  val blockBound = copyList(enclosingBound)
+  var si = 0
+  while si < blk.statements.count {
+    precomputeLambdasStmt(
+      blk.statements[si],
+      ticker,
+      cctx,
+      blockBound,
+      deferredBlocks,
+      deferredEnclosingBound,
+      deferredParams
+    )
+    si = si + 1
+  }
+}
+
+func precomputeLambdasStmt(
+  s: in Statement,
+  ticker: in List[Int],
+  cctx: in CodegenCtx,
+  enclosingBound: in List[String],
+  deferredBlocks: in List[Block],
+  deferredEnclosingBound: in List[List[String]],
+  deferredParams: in List[List[LambdaParam]],
+): Unit {
+  match s.kind {
+    case SLocal(binding) -> match binding { case LBVal(pat, _, init) -> { precomputeLambdasExpr(init, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams); collectBoundNamesPattern(pat, enclosingBound) }; case LBLet(name, _, init) -> { precomputeLambdasExpr(init, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams); addNameOnce(enclosingBound, name) }; case LBVar(name, _, initOpt) -> { match initOpt { case Some(init) -> { precomputeLambdasExpr(init, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams) }; case None -> {  } }; addNameOnce(enclosingBound, name) } }
+    case SAssign(_, _, v) -> {
+      precomputeLambdasExpr(v, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+    }
+    case SReturn(valOpt) -> match valOpt { case Some(e) -> { precomputeLambdasExpr(e, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams) }; case None -> {  } }
+    case SExpr(e) -> {
+      precomputeLambdasExpr(e, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+    }
+    case SThrow(e) -> {
+      precomputeLambdasExpr(e, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+    }
+    case SWhile(_, cond, body) -> {
+      precomputeLambdasExpr(cond, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+      precomputeLambdasBlock(body, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+    }
+    case SFor(name, pat, iter, body) -> {
+      precomputeLambdasExpr(iter, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+      val loopBound = copyList(enclosingBound)
+      collectBoundNamesPattern(pat, loopBound)
+      var si = 0
+      while si < body.statements.count {
+        precomputeLambdasStmt(
+          body.statements[si],
+          ticker,
+          cctx,
+          loopBound,
+          deferredBlocks,
+          deferredEnclosingBound,
+          deferredParams
+        )
+        si = si + 1
+      }
+    }
+    case SLoop(_, body) -> {
+      precomputeLambdasBlock(body, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+    }
+    case SScope(_, body) -> {
+      precomputeLambdasBlock(body, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+    }
+    case SDefer(body) -> {
+      precomputeLambdasBlock(body, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+    }
+    case STry(body, catches, finally_) -> {
+      precomputeLambdasBlock(body, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+      var ci = 0
+      while ci < catches.count {
+        val catchBound = copyList(enclosingBound)
+        match catches[ci].bindName {
+          case Some(nm) -> {
+            addNameOnce(catchBound, nm)
+          }
+          case None -> {
+          }
+        }
+        val cblk = catches[ci].body
+        var csi = 0
+        while csi < cblk.statements.count {
+          precomputeLambdasStmt(
+            cblk.statements[csi],
+            ticker,
+            cctx,
+            catchBound,
+            deferredBlocks,
+            deferredEnclosingBound,
+            deferredParams
+          )
+          csi = csi + 1
+        }
+        ci = ci + 1
+      }
+      match finally_ {
+        case None -> {
+        }
+        case Some(fb) -> {
+          precomputeLambdasBlock(fb, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+        }
+      }
+    }
+    case SInvariant(e) -> {
+      precomputeLambdasExpr(e, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+    }
+    case SRule(lhs, rhs) -> {
+      precomputeLambdasExpr(lhs, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+      precomputeLambdasExpr(rhs, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+    }
+    case _ -> {
+    }
+  }
+}
+
+pub func precomputeLambdaCaptures(file: in SourceFile, cctx: in CodegenCtx): Unit {
+  val ticker: List[Int] = newList()
+  val deferredBlocks: List[Block] = newList()
+  val deferredEnclosingBound: List[List[String]] = newList()
+  val deferredParams: List[List[LambdaParam]] = newList()
+
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(decl) -> {
+        if not startsWith(decl.name, "__lambda_") {
+          val enclosingBound: List[String] = newList()
+          var pi = 0
+          while pi < decl.params.count {
+            addNameOnce(enclosingBound, decl.params[pi].name)
+            pi = pi + 1
+          }
+          match decl.body {
+            case Some(body) -> {
+              match body {
+                case FBBlock(block) -> {
+                  precomputeLambdasBlock(block, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+                }
+                case FBExpr(e) -> {
+                  precomputeLambdasExpr(e, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+                }
+              }
+            }
+            case None -> {
+            }
+          }
+        }
+      }
+      case IVal(decl) -> {
+        val enclosingBound: List[String] = newList()
+        precomputeLambdasExpr(decl.init, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+      }
+      case IConst(decl) -> {
+        val enclosingBound: List[String] = newList()
+        precomputeLambdasExpr(decl.init, ticker, cctx, enclosingBound, deferredBlocks, deferredEnclosingBound, deferredParams)
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+
+  var di = 0
+  while di < deferredBlocks.count {
+    val blk = deferredBlocks[di]
+    val enclosingBound = deferredEnclosingBound[di]
+    val blockBound = copyList(enclosingBound)
+    var si = 0
+    while si < blk.statements.count {
+      precomputeLambdasStmt(
+        blk.statements[si],
+        ticker,
+        cctx,
+        blockBound,
+        deferredBlocks,
+        deferredEnclosingBound,
+        deferredParams
+      )
+      si = si + 1
+    }
+    di = di + 1
+  }
+}
+
 pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in String): Unit {
+  // Precompute lambda captures so that reservation of MethodDef rows is accurate.
+  precomputeLambdaCaptures(file, cctx)
+
   // Collect IExternType names so auto-FFI call interception can resolve them.
   scanExternTypesMsil(cctx, file)
 
@@ -2766,6 +3172,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
   // Reserve MethodDef rows for synthesised generator classes (Phase 5, Epic #2070).
   // Each async generator contributes 6 rows before MPFuncs:
   //   .ctor (useDefaultCtor), MoveNext, SetStateMachine, GetAsyncEnumerator, MoveNextAsync, get_Current, DisposeAsync.
+  // Reserve MethodDef rows for capturing closures (#1877). Each closure contributes 2 rows: .ctor and the method.
   //
   // Ordering note (#2466): this pre-scan reserves ALL SM rows then ALL generator rows,
   // but codegenMPackage emits SM and generator MPRecord items in source-declaration order
@@ -2777,12 +3184,23 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
   // which is source order; the total reserved count is identical regardless of SM vs
   // generator interleaving, so IFunc token assignments are unaffected.
   var genClassCountPts = 0
+  var closureClassCountPts = 0
   var gkPts = 0
   while gkPts < file.items.count {
     match file.items[gkPts].kind {
       case IFunc(decl) -> {
         if decl.isAsync and funcBodyContainsYieldMsil(decl) {
           genClassCountPts = genClassCountPts + 1
+        } else if startsWith(decl.name, "__lambda_") {
+          match mapGet(cctx.lambdaCaptureNames, decl.name) {
+            case Some(c) -> {
+              if c.count > 0 {
+                closureClassCountPts = closureClassCountPts + 1
+              }
+            }
+            case None -> {
+            }
+          }
         }
       }
       case _ -> {
@@ -2793,6 +3211,8 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
   // 7 methods: .ctor, MoveNext, SetStateMachine, GetAsyncEnumerator, MoveNextAsync,
   //            get_Current, DisposeAsync.
   methodDefRow = methodDefRow + genClassCountPts * 7
+  // 2 methods: .ctor, __lambda_
+  methodDefRow = methodDefRow + closureClassCountPts * 2
   // Pass 2: MPFuncs — optional .cctor then IFunc items (in source order).
   if hasValCctor {
     methodDefRow = methodDefRow + 1
@@ -2806,11 +3226,22 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         // colliding on simple names.  Single-package call sites that use a
         // bare `funcName` rebuild the FQN as `fctx.pkgName + "." + funcName`
         // before lookup (see `lowerBuiltinOrStaticCallMsil`); lambdas use
-        // `fctx.pkgName + ".__lambda_<idx>"` for the same reason.
+        // fctx.pkgName + ".__lambda_<idx>"` for the same reason.
         val fqn = pkgName + "." + decl.name
         // Arity-qualified key (#1536) so same-name overloads don't collide on the bare FQN; bare FQN kept as a first-wins alias.
         val arityKey = fqn + "/" + toString(decl.params.count)
+
+        val isCapturingLambda = if startsWith(decl.name, "__lambda_") {
+          match mapGet(cctx.lambdaCaptureNames, decl.name) {
+            case Some(c) -> c.count > 0
+            case None -> false
+          }
+        } else {
+          false
+        }
+
         val funcTok = 0x06000000 + methodDefRow
+
         if not cctx.funcTokens.containsKey(arityKey) {
           cctx.funcTokens.add(arityKey, funcTok)
         }
@@ -2974,7 +3405,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         if not cctx.funcParamModes.containsKey(fqn) {
           cctx.funcParamModes.add(fqn, paramModes)
         }
-        methodDefRow = methodDefRow + 1
+        if not isCapturingLambda {
+          methodDefRow = methodDefRow + 1
+        }
       }
       // IWire emits exactly one static factory method (<name>_create) in MPFuncs.
       // Reserve its MethodDef row so subsequent IFunc token assignments remain correct.
@@ -3926,9 +4359,27 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
                 if startsWith(clrFqn, "Lyric.") {
                   MClass(className = resolveTypeFqn(cctx, pkgName, seg))
                 } else {
-                  ensureMetadataIndex(cctx)
-                  val refRow = internFfiTypeRefNested(cctx, clrFqn)
-                  MClassRef(typeRefCode = tdrTypeRef(refRow), clrFqn = clrFqn)
+                  if clrFqn == "System.Object" {
+                    MObject
+                  } else if clrFqn == "System.String" {
+                    MString
+                  } else if clrFqn == "System.Int32" {
+                    MInt
+                  } else if clrFqn == "System.Int64" {
+                    MLong
+                  } else if clrFqn == "System.Double" {
+                    MDouble
+                  } else if clrFqn == "System.Boolean" {
+                    MBool
+                  } else if clrFqn == "System.Char" {
+                    MChar
+                  } else if clrFqn == "System.Byte" {
+                    MByte
+                  } else {
+                    ensureMetadataIndex(cctx)
+                    val refRow = internFfiTypeRefNested(cctx, clrFqn)
+                    MClassRef(typeRefCode = tdrTypeRef(refRow), clrFqn = clrFqn)
+                  }
                 }
               }
               case None -> MClass(className = resolveTypeFqn(cctx, pkgName, seg))
@@ -4070,7 +4521,24 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
       if params.count == 0 and isVoidRet {
         MClass("System.Action")
       } else {
-        MObject
+        val typeArgs: List[MsilType] = newList()
+        var pi = 0
+        while pi < params.count {
+          typeArgs.add(typeExprToMsilCtx(cctx, params[pi], pkgName))
+          pi = pi + 1
+        }
+        if isVoidRet {
+          val trRow = internActionTypeRef(cctx, params.count)
+          val codedIdx = tdrTypeRef(trRow)
+          val headFqn = "System.Action`" + toString(params.count)
+          MGenericInst(typeRefCode = codedIdx, headFqn = headFqn, typeArgs = typeArgs)
+        } else {
+          typeArgs.add(retMsil)
+          val trRow = internFuncTypeRef(cctx, params.count)
+          val codedIdx = tdrTypeRef(trRow)
+          val headFqn = "System.Func`" + toString(params.count + 1)
+          MGenericInst(typeRefCode = codedIdx, headFqn = headFqn, typeArgs = typeArgs)
+        }
       }
     }
     case TArray(_, _) -> MObject
@@ -4600,21 +5068,17 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           }
         }
         case None -> {
-          // Captured enclosing variable inside a lifted closure body (#1479):
-          // read it from `object[] __caps` (slot 0) and unbox/cast to its type.
-          // A by-reference capture (`captureCellNames`) holds a `List[object]`
-          // cell in that slot — read element 0 of the cell instead of the slot.
-          match mapGet(fctx.captureNameToIndex, name) {
-            case Some(capIdx) -> {
-              emitLoadVarMsil(fctx, insns, 0)
-              insns.add(MLdcI4(v = capIdx))
-              insns.add(MLdelemRef)
-              val capTy = match mapGet(fctx.captureNameToType, name) { case Some(t) -> t; case None -> MObject }
+          // Captured enclosing variable inside a lifted closure body (#1479)
+          match mapGet(fctx.captureNameToType, name) {
+            case Some(capTy) -> {
+              insns.add(MLdarg(slot = 0))
+              val closureFqn = fctx.pkgName + ".__Closure_" + substring(fctx.funcName, 9, fctx.funcName.length - 9)
+              insns.add(MLdfldByName(ownerFqn = closureFqn, fieldName = name))
               if nameListContains(fctx.captureCellNames, name) {
                 insns.add(MLdcI4(v = 0))
                 insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
+                castObjectToMsil(cctx, insns, capTy)
               }
-              castObjectToMsil(cctx, insns, capTy)
               return capTy
             }
             case None -> {
@@ -5523,170 +5987,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     // <object,…,object> (the lifted method returns a boxed object / null), so
     // construction and invocation agree.  Parameter-taking lambdas are not yet
     // supported (params arrive boxed and untyped — #1939) and are rejected below.
-    case ELambda(lparams, lbody) -> {
-      // Capturing closures (#1479): a lambda is lifted to a `__lambda_<i>`
-      // static method.  When its body refers to a local/parameter of the
-      // enclosing function, those values are captured by-value into an
-      // `object[] __caps` that is bound as the delegate's (closed) target; the
-      // lifted method takes `__caps` as its first parameter and reads each
-      // capture from it (see lowerFuncMsil + EPath).  `lambdaCaptureNamesMsil`
-      // computes the capture set (free idents ∩ enclosing slots); their types
-      // come from the enclosing scope.
-      val caps = lambdaCaptureNamesMsil(fctx, lparams, lbody)
-      // Capture types (parallel to `caps`) and the subset captured by reference.
-      // A captured `var` was hoisted to a heap cell at its declaration (#1479 v2,
-      // pre-pass): its capture is the cell itself (by reference, element type =
-      // `hoistedCellType`).  An immutable binding is captured by value (its
-      // `fctx.types`).  A captured `var` that was *not* hoisted (a pre-pass miss)
-      // must never be silently captured by value — fail loud as a safety net.
-      val capTypes: List[MsilType] = newList()
-      val capCells: List[String] = newList()
-      var capTyI = 0
-      while capTyI < caps.count {
-        val cn = caps[capTyI]
-        if fctx.captureNameToIndex.containsKey(cn) {
-          // Re-captured from the enclosing lambda's own capture array (#1479 multi-level).
-          // Propagate the cell if the outer closure marked it as a cell capture;
-          // otherwise propagate the value type from captureNameToType.
-          // capTypes is added unconditionally; capCells only for cell captures (#2948).
-          capTypes.add(match mapGet(fctx.captureNameToType, cn) { case Some(t) -> t; case None -> MObject })
-          if nameListContains(fctx.captureCellNames, cn) {
-            capCells.add(cn)
-          }
-        } else {
-          match mapGet(fctx.hoistedCellSlot, cn) {
-            case Some(_) -> {
-              capTypes.add(match mapGet(fctx.hoistedCellType, cn) { case Some(t) -> t; case None -> MObject })
-              capCells.add(cn)
-            }
-            case None -> {
-              if nameListContains(fctx.mutableLocals, cn) {
-                panic(
-                  "Msil.Codegen: internal error — captured mutable (`var`) local '" + cn +
-                    "' was not hoisted to a heap cell (#1479 v2 closure-capture " +
-                    "pre-pass missed it).  Please report this with a reproducer."
-                )
-              }
-              capTypes.add(match mapGet(fctx.types, cn) { case Some(t) -> t; case None -> MObject })
-            }
-          }
-        }
-        capTyI = capTyI + 1
-      }
-      // Parameter-taking lambdas (#1939): the delegate is Func<object,…,object>,
-      // so arguments arrive boxed.  A param's logical type can come from an
-      // annotation (`{ x: Int -> … }`) or be *propagated* from the higher-order
-      // function's signature when the lambda is passed directly as an argument
-      // (recorded in lambdaParamTypes under this lambda's index).  Reject only a
-      // used param that has neither — its boxed value has no type to unbox to.
-      if lparams.count > 0 {
-        val lpRefs: List[String] = newList()
-        collectRefNamesBlock(lbody, lpRefs)
-        val propagated = match mapGet(cctx.lambdaParamTypes, "__lambda_" + toString(cctx.lambdaTicker.count)) {
-          case Some(ts) -> ts
-          case None -> newList()
-        }
-        var lpi2 = 0
-        while lpi2 < lparams.count {
-          val lp = lparams[lpi2]
-          val isUsed = nameListContains(lpRefs, lp.name)
-          val isAnnotated = match lp.ty { case Some(_) -> true; case None -> false }
-          val isPropagated = lpi2 < propagated.count
-          if isUsed and not isAnnotated and not isPropagated {
-            panic(
-              "Msil.Codegen: a lambda that uses an un-annotated parameter " + "('" + lp.name +
-                "') outside a direct higher-order-function call " +
-                "is not yet supported on --target dotnet — the boxed argument has " +
-                "no type to unbox to (#1939).  Annotate the parameter type (e.g. " +
-                "`{ " +
-                lp.name +
-                ": Int -> … }`), pass the lambda directly to a " +
-                "function with a typed `(…) -> R` parameter, use a zero-argument " +
-                "lambda, or lift the lambda to a top-level function."
-            )
-          }
-          lpi2 = lpi2 + 1
-        }
-      }
-      val idx = cctx.lambdaTicker.count
-      cctx.lambdaTicker.add(0)
-      val lname = "__lambda_" + toString(idx)
-      val nparams = lparams.count
-      // Record the capture set so lowerFuncMsil's `__lambda_*` path prepends the
-      // `object[] __caps` parameter and resolves captured reads (#1479).
-      if caps.count > 0 {
-        cctx.lambdaCaptureNames.add(lname, caps)
-        cctx.lambdaCaptureTypes.add(lname, capTypes)
-        cctx.lambdaCaptureCells.add(lname, capCells)
-      }
-      // FQN key (#1183 Phase 2): lambdas are package-scoped, registered by
-      // `addPackageTokens` as `<pkg>.__lambda_<idx>`.
-      val lambdaKey = fctx.pkgName + "." + lname
-      match mapGet(cctx.funcTokens, lambdaKey) {
-        case Some(tok) -> {
-          // Determine delegate type based on lambda return type.
-          // Lambdas that return void use System.Action; those with non-void returns use System.Func.
-          val retType = mapGet(cctx.funcRetTypes, lambdaKey)
-          val returnsVoid = match retType { case Some(MVoid) -> true; case None -> true; case _ -> false }
-          val ctorTok = if returnsVoid {
-            if nparams == 0 {
-              cctx.tokActionCtor
-            } else {
-              buildActionNCtorTok(cctx, nparams)
-            }
-          } else {
-            buildFuncNCtorTok(cctx, nparams)
-          }
-          // Delegate target: a closed-over `object[]` of captured values for a
-          // capturing lambda (each boxed), else `null` for a static delegate.
-          if caps.count > 0 {
-            insns.add(MLdcI4(v = caps.count))
-            insns.add(MNewarr(typeToken = 0x01000000 + boxTypeRef(cctx, MObject)))
-            var capStI = 0
-            while capStI < caps.count {
-              insns.add(MDup)
-              insns.add(MLdcI4(v = capStI))
-              val capName = caps[capStI]
-              if fctx.captureNameToIndex.containsKey(capName) {
-                // Re-capture from outer closure's __caps array (#1479 multi-level).
-                // Load __caps (slot 0), then index into it.  If it's a cell
-                // capture, the cell reference is already boxed as object in __caps
-                // and is forwarded directly.  If it's a value capture, the value
-                // is already boxed as object in __caps and is forwarded directly.
-                val outerIdx = match mapGet(fctx.captureNameToIndex, capName) { case Some(n) -> n; case None -> 0 }
-                emitLoadVarMsil(fctx, insns, 0)
-                insns.add(MLdcI4(v = outerIdx))
-                insns.add(MLdelemRef)
-              } else if nameListContains(capCells, capName) {
-                // By-reference: store the cell (a `List[object]` reference) itself
-                // so the closure and enclosing scope share it — no box (#1479 v2).
-                match mapGet(fctx.hoistedCellSlot, capName) {
-                  case Some(s) -> emitLoadVarMsil(fctx, insns, s)
-                  case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.hoistedCellSlot — lambdaCaptureNamesMsil should only return names present in the enclosing scope")
-                }
-              } else {
-                match mapGet(fctx.slots, capName) {
-                  case Some(s) -> emitLoadVarMsil(fctx, insns, s)
-                  case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots — lambdaCaptureNamesMsil should only return names present in the enclosing scope")
-                }
-                boxIfNeededMsil(cctx, insns, capTypes[capStI])
-              }
-              insns.add(MStelemRef)
-              capStI = capStI + 1
-            }
-          } else {
-            insns.add(MLdNull)
-          }
-          insns.add(MLdftn(methodToken = tok))
-          insns.add(MNewobj(ctorToken = ctorTok))
-          MObject
-        }
-        case None -> {
-          panic("Msil.Codegen: lambda token missing for " + lname + " — liftLambdasMsil pre-pass was not run")
-          MObject
-        }
-      }
-    }
+    case ELambda(lparams, lbody) -> lowerLambdaMsil(cctx, fctx, insns, lparams, lbody, None)
     case ERange(_) -> {
       // Ranges are supported as `for` iterators (`for i in lo .. hi`, see
       // `lowerForMsil`) and as match patterns; materialising `lo .. hi` as a
@@ -6431,14 +6732,11 @@ func lowerStmtsExprFromMsil(
   valTy
 }
 
-// Push a hoisted-`var` cell onto the stack (#1479 v2): either an enclosing-scope
-// cell at a local slot (`isCapture=false`, `idx`=slot) or a by-reference cell
-// captured into `object[] __caps` (`isCapture=true`, `idx`=capture index).
-func emitCellLoadMsil(fctx: in FuncCtx, insns: in List[MInsn], isCapture: in Bool, idx: in Int): Unit {
+func emitCellLoadMsil(fctx: in FuncCtx, insns: in List[MInsn], isCapture: in Bool, idx: in Int, name: in String): Unit {
   if isCapture {
-    emitLoadVarMsil(fctx, insns, 0)
-    insns.add(MLdcI4(v = idx))
-    insns.add(MLdelemRef)
+    insns.add(MLdarg(slot = 0))
+    val closureFqn = fctx.pkgName + ".__Closure_" + substring(fctx.funcName, 9, fctx.funcName.length - 9)
+    insns.add(MLdfldByName(ownerFqn = closureFqn, fieldName = name))
   } else {
     emitLoadVarMsil(fctx, insns, idx)
   }
@@ -6453,18 +6751,19 @@ func emitCellAssignMsil(
   insns: in List[MInsn],
   isCapture: in Bool,
   idx: in Int,
+  name: in String,
   elemTy: in MsilType,
   op: in AssignOp,
   value: in Expr,
 ): Unit {
-  emitCellLoadMsil(fctx, insns, isCapture, idx)
+  emitCellLoadMsil(fctx, insns, isCapture, idx, name)
   insns.add(MLdcI4(v = 0))
   match op {
     case AssEq -> {
       val _ = lowerExprMsil(cctx, fctx, insns, value)
     }
     case _ -> {
-      emitCellLoadMsil(fctx, insns, isCapture, idx)
+      emitCellLoadMsil(fctx, insns, isCapture, idx, name)
       insns.add(MLdcI4(v = 0))
       insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
       castObjectToMsil(cctx, insns, elemTy)
@@ -6494,7 +6793,7 @@ func lowerAssignExprMsil(
       match mapGet(fctx.hoistedCellSlot, name) {
         case Some(cellSlot) -> {
           val elemTy = match mapGet(fctx.hoistedCellType, name) { case Some(t) -> t; case None -> MObject }
-          emitCellAssignMsil(cctx, fctx, insns, false, cellSlot, elemTy, op, value)
+          emitCellAssignMsil(cctx, fctx, insns, false, cellSlot, name, elemTy, op, value)
           return MVoid
         }
         case None -> {
@@ -6557,13 +6856,11 @@ func lowerAssignExprMsil(
           MVoid
         }
         case None -> {
-          // Write to a by-reference cell captured into `object[] __caps` (a
-          // hoisted enclosing `var` reassigned from inside the closure) — #1479 v2.
-          match mapGet(fctx.captureNameToIndex, name) {
-            case Some(capIdx) -> {
+          // Write to a by-reference cell captured into the closure struct
+          match mapGet(fctx.captureNameToType, name) {
+            case Some(capTy) -> {
               if nameListContains(fctx.captureCellNames, name) {
-                val capTy = match mapGet(fctx.captureNameToType, name) { case Some(t) -> t; case None -> MObject }
-                emitCellAssignMsil(cctx, fctx, insns, true, capIdx, capTy, op, value)
+                emitCellAssignMsil(cctx, fctx, insns, true, 0, name, capTy, op, value)
                 return MVoid
               }
             }
@@ -8889,7 +9186,7 @@ func lowerBuiltinOrStaticCallMsil(
                             ph = ph + 1
                           }
                           pushCollExpect(fctx, pTy)
-                          val _ = lowerCallArgMsil(cctx, fctx, insns, callArgs[i])
+                          val aTy = lowerCallArgMsil(cctx, fctx, insns, callArgs[i])
                           popCollExpect(fctx)
                           while fctx.contextHintTyArgs.count > 0 {
                             fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
@@ -8898,6 +9195,9 @@ func lowerBuiltinOrStaticCallMsil(
                           while rh < savedHints.count {
                             fctx.contextHintTyArgs.add(savedHints[rh])
                             rh = rh + 1
+                          }
+                          if not isValueType(pTy) {
+                            boxIfNeededMsil(cctx, insns, aTy)
                           }
                         }
                         case MConcreteMap(keyTy, valTy) -> {
@@ -8917,7 +9217,7 @@ func lowerBuiltinOrStaticCallMsil(
                           fctx.contextHintTyArgs.add(keyTy)
                           fctx.contextHintTyArgs.add(valTy)
                           pushCollExpect(fctx, pTy)
-                          val _ = lowerCallArgMsil(cctx, fctx, insns, callArgs[i])
+                          val aTy = lowerCallArgMsil(cctx, fctx, insns, callArgs[i])
                           popCollExpect(fctx)
                           while fctx.contextHintTyArgs.count > 0 {
                             fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
@@ -8926,6 +9226,9 @@ func lowerBuiltinOrStaticCallMsil(
                           while rh < savedHints.count {
                             fctx.contextHintTyArgs.add(savedHints[rh])
                             rh = rh + 1
+                          }
+                          if not isValueType(pTy) {
+                            boxIfNeededMsil(cctx, insns, aTy)
                           }
                         }
                         case _ -> {
@@ -8938,6 +9241,9 @@ func lowerBuiltinOrStaticCallMsil(
                           // #2455: unbox a boxed (object) argument — e.g. a bound
                           // tuple element — to a value-type parameter.
                           coerceCallArgMsil(cctx, insns, aTy, pTy)
+                          if not isValueType(pTy) {
+                            boxIfNeededMsil(cctx, insns, aTy)
+                          }
                         }
                       }
                       i = i + 1
@@ -10808,6 +11114,296 @@ func lowerStmtsFromMsil(
 // ─────────────────────────────────────────────────────────────────────────────
 // §8. Function lowering.
 // ─────────────────────────────────────────────────────────────────────────────
+func buildDelegateCtorTok(cctx: in CodegenCtx, delegateTy: in MsilType): Int {
+  val ctorPs: List[MsilType] = newList()
+  ctorPs.add(MObject)
+  ctorPs.add(MNativeInt)
+  val sig = buildInstanceMethodSig(ctorPs, MVoid)
+  val key = msilTypeKeyStr(delegateTy)
+  match delegateTy {
+    case MGenericInst(typeRefCode, _, tsArgs) -> {
+      val tsBlob = buildGenericInstBlobWithCtx(cctx.lctx, typeRefCode, tsArgs)
+      val tsKey = "FFIDelSpec_" + key
+      val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+      val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "FFIDelCtor_" + key, sig)
+      return 0x0A000000 + mrRow
+    }
+    case MClassRef(typeRefCode, _) -> {
+      val mrRow = ctxAddMemberRef(cctx.lctx, typeRefCode, ".ctor", "FFIDelCtor_" + key, sig)
+      return 0x0A000000 + mrRow
+    }
+    case _ -> panic("Msil.Codegen: FFI delegate type must be MClassRef or MGenericInst")
+  }
+  0
+}
+
+func resolveDelegateSig(cctx: in CodegenCtx, delTy: in MsilType, params: in List[MsilType], retTy: inout MsilType): Bool {
+  match delTy {
+    case MGenericInst(_, headFqn, typeArgs) -> {
+      if headFqn == "System.Predicate`1" {
+        if typeArgs.count == 1 {
+          params.add(typeArgs[0])
+          retTy = MBool
+          return true
+        }
+      }
+      if headFqn == "System.Comparison`1" {
+        if typeArgs.count == 1 {
+          params.add(typeArgs[0])
+          params.add(typeArgs[0])
+          retTy = MInt
+          return true
+        }
+      }
+      if headFqn == "System.Converter`2" {
+        if typeArgs.count == 2 {
+          params.add(typeArgs[0])
+          retTy = typeArgs[1]
+          return true
+        }
+      }
+      if headFqn == "System.EventHandler`1" {
+        if typeArgs.count == 1 {
+          params.add(MObject)
+          params.add(typeArgs[0])
+          retTy = MVoid
+          return true
+        }
+      }
+      if startsWith(headFqn, "System.Action`") {
+        var ai = 0
+        while ai < typeArgs.count {
+          params.add(typeArgs[ai])
+          ai = ai + 1
+        }
+        retTy = MVoid
+        return true
+      }
+      if startsWith(headFqn, "System.Func`") {
+        var fi = 0
+        while fi < typeArgs.count - 1 {
+          params.add(typeArgs[fi])
+          fi = fi + 1
+        }
+        retTy = typeArgs[typeArgs.count - 1]
+        return true
+      }
+    }
+    case MClassRef(_, clrFqn) -> {
+      if clrFqn == "System.Action" {
+        retTy = MVoid
+        return true
+      }
+      if clrFqn == "System.EventHandler" {
+        params.add(MObject)
+        params.add(MObject)
+        retTy = MVoid
+        return true
+      }
+    }
+    case _ -> {
+    }
+  }
+  false
+}
+
+func lowerLambdaMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  lparams: in List[LambdaParam],
+  lbody: in Block,
+  expectedDelegateTy: in Option[MsilType],
+): MsilType {
+  val caps = lambdaCaptureNamesMsil(fctx, lparams, lbody)
+  val capTypes: List[MsilType] = newList()
+  val capCells: List[String] = newList()
+  var capTyI = 0
+  while capTyI < caps.count {
+    val cn = caps[capTyI]
+    if fctx.captureNameToIndex.containsKey(cn) {
+      capTypes.add(match mapGet(fctx.captureNameToType, cn) { case Some(t) -> t; case None -> MObject })
+      if nameListContains(fctx.captureCellNames, cn) {
+        capCells.add(cn)
+      }
+    } else {
+      match mapGet(fctx.hoistedCellSlot, cn) {
+        case Some(_) -> {
+          capTypes.add(match mapGet(fctx.hoistedCellType, cn) { case Some(t) -> t; case None -> MObject })
+          capCells.add(cn)
+        }
+        case None -> {
+          if nameListContains(fctx.mutableLocals, cn) {
+            panic("Msil.Codegen: internal error — captured mutable (`var`) local not hoisted")
+          }
+          capTypes.add(match mapGet(fctx.types, cn) { case Some(t) -> t; case None -> MObject })
+        }
+      }
+    }
+    capTyI = capTyI + 1
+  }
+  if lparams.count > 0 {
+    val lpRefs: List[String] = newList()
+    collectRefNamesBlock(lbody, lpRefs)
+    val propagated = match mapGet(cctx.lambdaParamTypes, "__lambda_" + toString(cctx.lambdaTicker.count)) {
+      case Some(ts) -> ts
+      case None -> newList()
+    }
+    var lpi2 = 0
+    while lpi2 < lparams.count {
+      val lp = lparams[lpi2]
+      val isUsed = nameListContains(lpRefs, lp.name)
+      val isAnnotated = match lp.ty { case Some(_) -> true; case None -> false }
+      val isPropagated = lpi2 < propagated.count
+      if isUsed and not isAnnotated and not isPropagated {
+        panic("Msil.Codegen: a lambda that uses an un-annotated parameter is not supported")
+      }
+      lpi2 = lpi2 + 1
+    }
+  }
+  val idx = cctx.lambdaTicker.count
+  cctx.lambdaTicker.add(0)
+  val lname = "__lambda_" + toString(idx)
+  val nparams = lparams.count
+
+  var resolvedDel = false
+  match expectedDelegateTy {
+    case Some(delTy) -> {
+      val dparams: List[MsilType] = newList()
+      var dret: MsilType = MObject
+      if resolveDelegateSig(cctx, delTy, dparams, dret) {
+        if cctx.lambdaParamTypes.containsKey(lname) {
+          cctx.lambdaParamTypes.remove(lname)
+        }
+        cctx.lambdaParamTypes.add(lname, dparams)
+
+        if cctx.lambdaReturnTypes.containsKey(lname) {
+          cctx.lambdaReturnTypes.remove(lname)
+        }
+        cctx.lambdaReturnTypes.add(lname, dret)
+
+        val lambdaKeyTemp = fctx.pkgName + "." + lname
+        if cctx.funcRetTypes.containsKey(lambdaKeyTemp) {
+          cctx.funcRetTypes.remove(lambdaKeyTemp)
+        }
+        cctx.funcRetTypes.add(lambdaKeyTemp, dret)
+
+        val arityKeyTemp = lambdaKeyTemp + "/" + toString(nparams)
+        if cctx.funcRetTypes.containsKey(arityKeyTemp) {
+          cctx.funcRetTypes.remove(arityKeyTemp)
+        }
+        cctx.funcRetTypes.add(arityKeyTemp, dret)
+
+        if cctx.funcParamTypes.containsKey(lambdaKeyTemp) {
+          cctx.funcParamTypes.remove(lambdaKeyTemp)
+        }
+        cctx.funcParamTypes.add(lambdaKeyTemp, dparams)
+
+        if cctx.funcParamTypes.containsKey(arityKeyTemp) {
+          cctx.funcParamTypes.remove(arityKeyTemp)
+        }
+        cctx.funcParamTypes.add(arityKeyTemp, dparams)
+
+        resolvedDel = true
+      }
+    }
+    case None -> {
+    }
+  }
+  if not resolvedDel {
+    val dret = if blockEndsWithExpr(lbody) { MObject } else { MVoid }
+    if cctx.lambdaReturnTypes.containsKey(lname) {
+      cctx.lambdaReturnTypes.remove(lname)
+    }
+    cctx.lambdaReturnTypes.add(lname, dret)
+    val lambdaKeyTemp = fctx.pkgName + "." + lname
+    if cctx.funcRetTypes.containsKey(lambdaKeyTemp) {
+      cctx.funcRetTypes.remove(lambdaKeyTemp)
+    }
+    cctx.funcRetTypes.add(lambdaKeyTemp, dret)
+
+    val arityKeyTemp = lambdaKeyTemp + "/" + toString(nparams)
+    if cctx.funcRetTypes.containsKey(arityKeyTemp) {
+      cctx.funcRetTypes.remove(arityKeyTemp)
+    }
+    cctx.funcRetTypes.add(arityKeyTemp, dret)
+  }
+  if caps.count > 0 {
+    if cctx.lambdaCaptureNames.containsKey(lname) {
+      cctx.lambdaCaptureNames.remove(lname)
+    }
+    cctx.lambdaCaptureNames.add(lname, caps)
+    if cctx.lambdaCaptureTypes.containsKey(lname) {
+      cctx.lambdaCaptureTypes.remove(lname)
+    }
+    cctx.lambdaCaptureTypes.add(lname, capTypes)
+    if cctx.lambdaCaptureCells.containsKey(lname) {
+      cctx.lambdaCaptureCells.remove(lname)
+    }
+    cctx.lambdaCaptureCells.add(lname, capCells)
+  }
+  val lambdaKey = fctx.pkgName + "." + lname
+  match mapGet(cctx.funcTokens, lambdaKey) {
+    case Some(tok) -> {
+      val retType = mapGet(cctx.funcRetTypes, lambdaKey)
+      val returnsVoid = match retType { case Some(MVoid) -> true; case None -> true; case _ -> false }
+      val ctorTok = match expectedDelegateTy {
+        case Some(delTy) -> buildDelegateCtorTok(cctx, delTy)
+        case None -> {
+          if returnsVoid {
+            if nparams == 0 {
+              cctx.tokActionCtor
+            } else {
+              buildActionNCtorTok(cctx, nparams)
+            }
+          } else {
+            buildFuncNCtorTok(cctx, nparams)
+          }
+        }
+      }
+      if caps.count > 0 {
+        val closureFqn = fctx.pkgName + ".__Closure_" + toString(idx)
+        insns.add(MNewobjByName(className = closureFqn))
+        var capStI = 0
+        while capStI < caps.count {
+          insns.add(MDup)
+          val capName = caps[capStI]
+          if fctx.captureNameToType.containsKey(capName) {
+            insns.add(MLdarg(slot = 0))
+            val outerClosureFqn = fctx.pkgName + ".__Closure_" + substring(fctx.funcName, 9, fctx.funcName.length - 9)
+            insns.add(MLdfldByName(ownerFqn = outerClosureFqn, fieldName = capName))
+          } else if nameListContains(capCells, capName) {
+            match mapGet(fctx.hoistedCellSlot, capName) {
+              case Some(s) -> emitLoadVarMsil(fctx, insns, s)
+              case None -> panic("ICE")
+            }
+          } else {
+            match mapGet(fctx.slots, capName) {
+              case Some(s) -> emitLoadVarMsil(fctx, insns, s)
+              case None -> panic("ICE")
+            }
+          }
+          insns.add(MStfldByName(ownerFqn = closureFqn, fieldName = capName))
+          capStI = capStI + 1
+        }
+        insns.add(MLdftnByName(ownerFqn = closureFqn, methodName = lname))
+      } else {
+        insns.add(MLdNull)
+        insns.add(MLdftn(methodToken = tok))
+      }
+      insns.add(MNewobj(ctorToken = ctorTok))
+      match expectedDelegateTy {
+        case Some(delTy) -> delTy
+        case None -> MObject
+      }
+    }
+    case None -> {
+      panic("Msil.Codegen: lambda token missing for " + lname)
+      MObject
+    }
+  }
+}
+
 // Create a fresh FuncCtx.  Parameters are added to `slots` and `types` but
 // NOT to `locals` (they are accessed via MLdarg, not MLdloc).
 func makeFuncCtxMsil(
@@ -11019,6 +11615,7 @@ func insnStackDelta(insn: in MInsn): Int {
     case MInitobj(_) -> -1
     case MCallAwaitUnsafeOnCompleted(_, _, _) -> 1
     case MCallByName(_, _) -> 1
+    case MLdftnByName(_, _) -> 1
   }
 }
 
@@ -11477,12 +12074,19 @@ func emitGenericExternMember(
   // `Some(...)` arm to `Option<object>`, after which `sig.paramTypes` below
   // would be an `Object` field read it cannot resolve.
   val asmName = assemblyForTypeMsil(cctx, resolvedFqn)
+  println("M1877 DEBUG: emitGenericExternMember: asmName for " + resolvedFqn + " is " + asmName)
   var sigOpt: Option[Mdr.DecodedMethodSig] = None
   match mapGet(cctx.metadataPathIndex, asmName) {
     case None -> {
+      println("M1877 DEBUG: asmName '" + asmName + "' NOT found in metadataPathIndex")
     }
     case Some(path) -> {
+      println("M1877 DEBUG: asmName '" + asmName + "' found in metadataPathIndex at path " + path)
       sigOpt = Mdr.decodeExternMethodSig(path, resolvedFqn, r.memberName, decl.params.count)
+      match sigOpt {
+        case None -> println("M1877 DEBUG: decodeExternMethodSig returned None for " + resolvedFqn + "." + r.memberName + " with decl.params.count=" + toString(decl.params.count))
+        case Some(_) -> println("M1877 DEBUG: decodeExternMethodSig returned Some for " + resolvedFqn + "." + r.memberName)
+      }
     }
   }
   match sigOpt {
@@ -11741,6 +12345,12 @@ func emitExternTargetBody(
         case Some(_) -> true
         case None -> clrAssemblyResolvable(resolvedFqn)
       }
+      println(
+        "M1877 DEBUG: emitExternTargetBody: target=" + target + ", resolvedFqn=" + resolvedFqn + ", isKnownFqn=" +
+          toString(isKnownFqn) +
+          ", containsBacktick=" +
+          toString(contains(r.typeName, "`"))
+      )
       // Generic declaring type (e.g. `ConcurrentDictionary`2`): a member of a
       // generic type cannot be referenced through a plain open-generic TypeRef
       // with a concrete-typed signature — ECMA-335 §II.22.25 requires a closed
@@ -11750,7 +12360,10 @@ func emitExternTargetBody(
       // erases the Lyric `ConcurrentDict[K,V]` value to `MObject`) and marshals
       // `out`/value-type arguments across the erasure boundary (#3392).
       if isKnownFqn and contains(r.typeName, "`") {
-        if emitGenericExternMember(cctx, fctx, insns, decl, r, resolvedFqn, paramTypes) {
+        println("M1877 DEBUG: entering emitGenericExternMember for " + resolvedFqn)
+        val res = emitGenericExternMember(cctx, fctx, insns, decl, r, resolvedFqn, paramTypes)
+        println("M1877 DEBUG: emitGenericExternMember result=" + toString(res))
+        if res {
           insns.add(MRet)
           return true
         }
@@ -14559,74 +15172,58 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   // representation (see typeExprToMsilGenBody / typeExprToMsilGenSig) instead of
   // a bogus `MClass(pkg + ".T")` that names no real CLR type.
   val fnGenerics = genericNamesOf(decl.generics)
-  val retTy = if startsWith(decl.name, "__lambda_") {
-    // Uniform Func ABI (#1877): synthetic lambdas return `object` (a boxed
-    // value, or `null` for a void body — coerced in the return path below).
-    // liftLambdasMsil sets decl.ret to Object, and the funcRetTypes mirror
-    // (used to pick the System.Func delegate at the construction site) reads
-    // the same Object, so construction and the emitted method signature agree.
-    // The earlier hardcoded `MVoid` made every lambda a void method wrapped in
-    // a Func delegate, so invoking it returned garbage and faulted on use.
-    MObject
-  } else {
-    match decl.ret {
-      case Some(te) -> {
-        // A generic-function `slice[T]` / bare-`T` return is emitted as plain
-        // `object` so a List-backed return value matches the signature; the
-        // caller tracks it via funcRetTypes and reads it through the IList path
-        // (#2557).
-        val resolved = if fnGenerics.count > 0 {
-          typeExprToMsilGenSig(cctx, te, pkgName, fnGenerics)
-        } else {
-          typeExprToMsilCtx(cctx, te, pkgName)
-        }
-        if elementTypeByte(resolved) == 0 {
-          MVoid
-        } else {
-          resolved
-        }
+  val isLambdaFn = startsWith(decl.name, "__lambda_")
+  val retTyTemp = match decl.ret {
+    case Some(te) -> {
+      // A generic-function `slice[T]` / bare-`T` return is emitted as plain
+      // `object` so a List-backed return value matches the signature; the
+      // caller tracks it via funcRetTypes and reads it through the IList path
+      // (#2557).
+      val resolved = if fnGenerics.count > 0 {
+        typeExprToMsilGenSig(cctx, te, pkgName, fnGenerics)
+      } else {
+        typeExprToMsilCtx(cctx, te, pkgName)
       }
-      case None -> MVoid
+      if elementTypeByte(resolved) == 0 {
+        MVoid
+      } else {
+        resolved
+      }
     }
+    case None -> MVoid
   }
-  // Capturing closure (#1479): a capturing `__lambda_*` takes a synthetic leading
-  // `object[] __caps` parameter (the closed-over delegate target).  It occupies
-  // slot 0, shifting the lambda's own params to 1+, so paramCount grows by one.
+  val retTy = if isLambdaFn {
+    match mapGet(cctx.lambdaReturnTypes, decl.name) {
+      case Some(t) -> t
+      case None -> retTyTemp
+    }
+  } else {
+    retTyTemp
+  }
+  // Capturing closure (#1479): a capturing `__lambda_*` is an instance method
+  // on a synthetic `__Closure_<i>` class. Slot 0 is the implicit `this` pointer.
   val lambdaCaps = match mapGet(cctx.lambdaCaptureNames, decl.name) { case Some(c) -> c; case None -> newList() }
   val lambdaCapTys = match mapGet(cctx.lambdaCaptureTypes, decl.name) { case Some(t) -> t; case None -> newList() }
   val hasCaps = lambdaCaps.count > 0
-  val effectiveParamCount = if hasCaps { decl.params.count + 1 } else { decl.params.count }
+  val effectiveParamCount = if hasCaps { 1 + decl.params.count } else { decl.params.count }
   val fctx = makeFuncCtxMsil(pkgName, className, decl.name, effectiveParamCount, retTy)
   val insns: List[MInsn] = newList()
 
-  // Allocate slots for parameters.  These occupy slots 0..N-1 in the
-  // combined slot space but are NOT added to fctx.locals.
-  val isLambdaFn = startsWith(decl.name, "__lambda_")
-  // Reserve slot 0 for `object[] __caps` and register each captured name's array
-  // index + logical type so EPath reads resolve to `__caps[i]` (#1479).
+  // Allocate slots for parameters.
   if hasCaps {
-    val capsSlot = fctx.slotTicker.count
-    fctx.slots.add("__caps", capsSlot)
-    fctx.types.add("__caps", MArray(elemTy = MObject))
-    fctx.slotTicker.add(0)
+    fctx.slotTicker.add(0) // slot 0 = this
     val capCells = match mapGet(cctx.lambdaCaptureCells, decl.name) { case Some(c) -> c; case None -> newList() }
     var cni = 0
     while cni < lambdaCaps.count {
+      fctx.captureNameToType.add(lambdaCaps[cni], if cni < lambdaCapTys.count { lambdaCapTys[cni] } else { MObject })
       fctx.captureNameToIndex.add(lambdaCaps[cni], cni)
-      fctx.captureNameToType.add(
-        lambdaCaps[cni],
-        match (if cni < lambdaCapTys.count { Some(value = lambdaCapTys[cni]) } else { None }) {
-          case Some(t) -> t
-          case None -> MObject
-        }
-      )
-      // A by-reference capture: `__caps[cni]` holds the hoisted `var`'s cell.
       if nameListContains(capCells, lambdaCaps[cni]) {
         fctx.captureCellNames.add(lambdaCaps[cni])
       }
       cni = cni + 1
     }
   }
+  val trueParamTypes: List[MsilType] = newList()
   // Parameter types propagated from a higher-order-function call site (#1939),
   // used when a lambda param is un-annotated.  Empty for non-lambdas (decl.name
   // is never a "__lambda_*" key) and lambdas not passed directly to a typed
@@ -14649,18 +15246,12 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
     } else {
       annotTy
     }
+    trueParamTypes.add(paramTy)
     val slot = fctx.slotTicker.count
     fctx.slots.add(p.name, slot)
     fctx.types.add(p.name, paramTy)
     if isByrefMode(p.mode) {
       fctx.byrefSlotTypes.add(slot, paramTy)
-    }
-    // A lambda parameter arrives boxed (`object`) in the Func delegate; when it
-    // has a known non-object logical type (annotation or propagated), record it
-    // so reads unbox/cast on load (#1939).  The signature itself stays `object`
-    // (forced below).
-    if isLambdaFn and paramTy != MObject {
-      fctx.boxedParamTypes.add(slot, paramTy)
     }
     // Record the declared return type of a function-typed param (a `(A,...) -> R`
     // value) so invoking it (`f()`) yields R rather than a bare object (#1877).
@@ -14753,20 +15344,12 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   // always ends in a terminal `ret`, so there is no fall-through into it.
   emitEpilogueMsil(fctx, insns)
 
-  // Build parameter type list for MFunc.  A lifted lambda's signature params are
-  // always `object` to match the `Func<object,…,object>` delegate it is wrapped
-  // in (#1939) — its annotated/inferred logical types live in boxedParamTypes
-  // and are unboxed on use, not in the signature.
+  // Build parameter type list for MFunc.
   val paramTypes: List[MsilType] = newList()
-  // Capturing lambda: the leading `object[] __caps` (closed-over target) is the
-  // method's first parameter (#1479).
-  if hasCaps {
-    paramTypes.add(MArray(elemTy = MObject))
-  }
   var pi2 = 0
   while pi2 < decl.params.count {
     if isLambdaFn {
-      paramTypes.add(MObject)
+      paramTypes.add(trueParamTypes[pi2])
     } else if fnGenerics.count > 0 {
       // Generic function (#2557): a `slice[T]` / bare-`T` parameter is emitted
       // as plain `object` in the signature so a List-backed argument matches the
@@ -17015,14 +17598,13 @@ func collectLambdasBfsExpr(e: in Expr, ticker: in List[Int], synths: in List[Ite
       // earlier split (Func for trailing-expr bodies, Action otherwise) let a
       // value-returning lambda be built as a void delegate that discarded its
       // result, so invoking it through its declared `(…) -> R` type mismatched.
-      val retSeg: List[String] = newList()
-      retSeg.add("Object")
-      val retTy: Option[TypeExpr] = Some(
-        TypeExpr(
-          kind = TRef(path = ModulePath(segments = retSeg, span = syntheticSpan())),
-          span = syntheticSpan()
-        )
-      )
+      val retTy: Option[TypeExpr] = if blockEndsWithExpr(body) {
+        val retSeg: List[String] = newList()
+        retSeg.add("Object")
+        Some(TypeExpr(kind = TRef(path = ModulePath(segments = retSeg, span = syntheticSpan())), span = syntheticSpan()))
+      } else {
+        None
+      }
       val decl = FunctionDecl(
         docComments = newList(),
         annotations = newList(),
@@ -18001,15 +18583,8 @@ func scanExternTypesMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
           var j = 0
           while j < items.count {
             val item = items[j]
-            val clrName = if baseNamespace.length > 0 {
-              baseNamespace + "." + item.name
-            } else {
-              item.name
-            }
-            val aliasName = match item.asAlias {
-              case Some(aliasName) -> aliasName
-              case _ -> item.name
-            }
+            val clrName = if baseNamespace.length > 0 { baseNamespace + "." + item.name } else { item.name }
+            val aliasName = match item.asAlias { case Some(aliasName) -> aliasName; case _ -> item.name }
             if not cctx.externTypeNames.containsKey(aliasName) {
               cctx.externTypeNames.add(aliasName, clrName)
             }
@@ -18017,15 +18592,8 @@ func scanExternTypesMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
           }
         }
         case Some(ISSingle(item)) -> {
-          val clrName = if baseNamespace.length > 0 {
-            baseNamespace + "." + item.name
-          } else {
-            item.name
-          }
-          val aliasName = match item.asAlias {
-            case Some(aliasName) -> aliasName
-            case _ -> item.name
-          }
+          val clrName = if baseNamespace.length > 0 { baseNamespace + "." + item.name } else { item.name }
+          val aliasName = match item.asAlias { case Some(aliasName) -> aliasName; case _ -> item.name }
           if not cctx.externTypeNames.containsKey(aliasName) {
             cctx.externTypeNames.add(aliasName, clrName)
           }
@@ -18043,7 +18611,6 @@ func scanExternTypesMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
     k = k + 1
   }
 }
-
 
 // ── Metadata-based auto-FFI resolution (epic #1622, Phase 3c) ─────────────────
 //
@@ -18173,17 +18740,54 @@ func internClassRef(cctx: in CodegenCtx, fqn: in String): Option[MsilType] {
 // (reference) types via an interned CLASS TypeRef.  None for anything else (or
 // when the type's assembly isn't indexed) — the caller falls back to legacy.
 func resolvedSigToMsil(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[MsilType] {
-  val pb = Mdr.sigPrimByte(sig)
-  if pb >= 0 {
-    elemByteToMsil(pb)
-  } else {
-    val fqn = Mdr.sigNamedFqn(sig)
-    if fqn.length == 0 {
-      None
-    } else if Mdr.sigNamedIsValueType(sig) {
-      internValueTypeRef(cctx, fqn)
-    } else {
-      internClassRef(cctx, fqn)
+  match sig {
+    case Mdr.STGenericInstNamed(vt, headFqn, args) -> {
+      var res: Option[MsilType] = None
+      val refOpt = if vt { internValueTypeRef(cctx, headFqn) } else { internClassRef(cctx, headFqn) }
+      match refOpt {
+        case Some(refMty) -> {
+          val typeRefCode = match refMty { case MValueTypeRef(trc, _) -> trc; case MClassRef(trc, _) -> trc; case _ -> -1 }
+          if typeRefCode >= 0 {
+            val mappedArgs: List[MsilType] = newList()
+            var argOk = true
+            var ai = 0
+            while ai < args.count {
+              match resolvedSigToMsil(cctx, args[ai]) {
+                case Some(argMty) -> mappedArgs.add(argMty)
+                case None -> {
+                  argOk = false
+                }
+              }
+              ai = ai + 1
+            }
+            if argOk {
+              if vt {
+                res = Some(value = MValueTypeGenericInst(typeRefCode = typeRefCode, headFqn = headFqn, typeArgs = mappedArgs))
+              } else {
+                res = Some(value = MGenericInst(typeRefCode = typeRefCode, headFqn = headFqn, typeArgs = mappedArgs))
+              }
+            }
+          }
+        }
+        case None -> {
+        }
+      }
+      res
+    }
+    case _ -> {
+      val pb = Mdr.sigPrimByte(sig)
+      if pb >= 0 {
+        elemByteToMsil(pb)
+      } else {
+        val fqn = Mdr.sigNamedFqn(sig)
+        if fqn.length == 0 {
+          None
+        } else if Mdr.sigNamedIsValueType(sig) {
+          internValueTypeRef(cctx, fqn)
+        } else {
+          internClassRef(cctx, fqn)
+        }
+      }
     }
   }
 }
@@ -18226,6 +18830,39 @@ func genericMemberSigToMsil(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[Ms
       res
     }
     case Mdr.STNamed(fqn, vt) -> if vt { internValueTypeRef(cctx, fqn) } else { internClassRef(cctx, fqn) }
+    case Mdr.STGenericInstNamed(vt, headFqn, args) -> {
+      var res: Option[MsilType] = None
+      val refOpt = if vt { internValueTypeRef(cctx, headFqn) } else { internClassRef(cctx, headFqn) }
+      match refOpt {
+        case Some(refMty) -> {
+          val typeRefCode = match refMty { case MValueTypeRef(trc, _) -> trc; case MClassRef(trc, _) -> trc; case _ -> -1 }
+          if typeRefCode >= 0 {
+            val mappedArgs: List[MsilType] = newList()
+            var argOk = true
+            var ai = 0
+            while ai < args.count {
+              match genericMemberSigToMsil(cctx, args[ai]) {
+                case Some(argMty) -> mappedArgs.add(argMty)
+                case None -> {
+                  argOk = false
+                }
+              }
+              ai = ai + 1
+            }
+            if argOk {
+              if vt {
+                res = Some(value = MValueTypeGenericInst(typeRefCode = typeRefCode, headFqn = headFqn, typeArgs = mappedArgs))
+              } else {
+                res = Some(value = MGenericInst(typeRefCode = typeRefCode, headFqn = headFqn, typeArgs = mappedArgs))
+              }
+            }
+          }
+        }
+        case None -> {
+        }
+      }
+      res
+    }
     case _ -> None
   }
 }
@@ -18377,6 +19014,7 @@ func argCoercionInsns(cctx: in CodegenCtx, argTy: in MsilType, paramSig: in Mdr.
 // carry each argument's already-lowered IL; `argTys` their MsilTypes.
 func emitResolvedAutoFfi(
   cctx: in CodegenCtx,
+  fctx: in FuncCtx,
   insns: in List[MInsn],
   asmName: in String,
   clrFqn: in String,
@@ -18385,6 +19023,7 @@ func emitResolvedAutoFfi(
   argBufs: in List[List[MInsn]],
   argTys: in List[MsilType],
   m: in Mdr.ResolvedMethod,
+  args: in List[CallArg],
 ): Option[MsilType] {
   // Constructor shorthand: .ctor is an instance method with implicit this, but
   // called via newobj (no pre-allocated receiver). Regular static/instance methods
@@ -18411,7 +19050,28 @@ func emitResolvedAutoFfi(
       case None -> {
         ok = false
       }
-      case Some(pm) -> match argCoercionInsns(cctx, argTys[pi], psig) { case None -> { ok = false }; case Some(cins) -> { paramMsil.add(pm); coercions.add(cins) } }
+      case Some(pm) -> {
+        paramMsil.add(pm)
+        val argExpr = callArgExpr(args[pi])
+        match argExpr.kind {
+          case ELambda(lparams, lbody) -> {
+            val buf = argBufs[pi]
+            val _ = lowerLambdaMsil(cctx, fctx, buf, lparams, lbody, Some(pm))
+            val emptyCoercion: List[MInsn] = newList()
+            coercions.add(emptyCoercion)
+          }
+          case _ -> {
+            match argCoercionInsns(cctx, argTys[pi], psig) {
+              case None -> {
+                ok = false
+              }
+              case Some(cins) -> {
+                coercions.add(cins)
+              }
+            }
+          }
+        }
+      }
     }
     pi = pi + 1
   }
@@ -18483,14 +19143,9 @@ func emitResolvedAutoFfi(
   }
 }
 
-// Emit a metadata-resolved auto-FFI *instance* call, or None to fall back.  The
-// receiver is already on the stack (lowered by the caller).  Builds an instance
-// (HASTHIS) MethodSig and emits `callvirt` against the real CLR method —
-// callvirt is valid for both virtual and non-virtual instance methods on a
-// reference receiver and performs the null check.  `argBufs` carry each
-// argument's already-lowered IL; `argTys` their MsilTypes.
 func emitResolvedInstanceAutoFfi(
   cctx: in CodegenCtx,
+  fctx: in FuncCtx,
   insns: in List[MInsn],
   asmName: in String,
   clrFqn: in String,
@@ -18498,6 +19153,7 @@ func emitResolvedInstanceAutoFfi(
   argBufs: in List[List[MInsn]],
   argTys: in List[MsilType],
   m: in Mdr.ResolvedMethod,
+  args: in List[CallArg],
 ): Option[MsilType] {
   val paramMsil: List[MsilType] = newList()
   val coercions: List[List[MInsn]] = newList()
@@ -18509,7 +19165,28 @@ func emitResolvedInstanceAutoFfi(
       case None -> {
         ok = false
       }
-      case Some(pm) -> match argCoercionInsns(cctx, argTys[pi], psig) { case None -> { ok = false }; case Some(cins) -> { paramMsil.add(pm); coercions.add(cins) } }
+      case Some(pm) -> {
+        paramMsil.add(pm)
+        val argExpr = callArgExpr(args[pi])
+        match argExpr.kind {
+          case ELambda(lparams, lbody) -> {
+            val buf = argBufs[pi]
+            val _ = lowerLambdaMsil(cctx, fctx, buf, lparams, lbody, Some(pm))
+            val emptyCoercion: List[MInsn] = newList()
+            coercions.add(emptyCoercion)
+          }
+          case _ -> {
+            match argCoercionInsns(cctx, argTys[pi], psig) {
+              case None -> {
+                ok = false
+              }
+              case Some(cins) -> {
+                coercions.add(cins)
+              }
+            }
+          }
+        }
+      }
     }
     pi = pi + 1
   }
@@ -18567,15 +19244,25 @@ func tryInstanceAutoFfiFromMetadata(
   var bad = false
   while ai < args.count and not bad {
     val buf: List[MInsn] = newList()
-    val t = lowerCallArgMsil(cctx, fctx, buf, args[ai])
-    match argTyToSig(t) {
-      case None -> {
-        bad = true
-      }
-      case Some(s) -> {
+    val argExpr = callArgExpr(args[ai])
+    match argExpr.kind {
+      case ELambda(_, _) -> {
         argBufs.add(buf)
-        argTys.add(t)
-        argSigs.add(s)
+        argTys.add(MObject)
+        argSigs.add(Mdr.STNamed(fqn = "__LambdaWildcard__", valueType = false))
+      }
+      case _ -> {
+        val t = lowerCallArgMsil(cctx, fctx, buf, args[ai])
+        match argTyToSig(t) {
+          case None -> {
+            bad = true
+          }
+          case Some(s) -> {
+            argBufs.add(buf)
+            argTys.add(t)
+            argSigs.add(s)
+          }
+        }
       }
     }
     ai = ai + 1
@@ -18585,7 +19272,7 @@ func tryInstanceAutoFfiFromMetadata(
   } else {
     match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, fqn, memberName, argSigs) {
       case None -> None
-      case Some(re) -> if re.sig.isStatic { None } else { emitResolvedInstanceAutoFfi(cctx, insns, re.assemblyName, fqn, memberName, argBufs, argTys, re.sig) }
+      case Some(re) -> if re.sig.isStatic { None } else { emitResolvedInstanceAutoFfi(cctx, fctx, insns, re.assemblyName, fqn, memberName, argBufs, argTys, re.sig, args) }
     }
     // A receiver-based call needs an instance method; a resolved static
     // means the name only exists as a static — fall back rather than
@@ -18627,15 +19314,25 @@ func tryAutoFfiFromMetadata(
   var bad = false
   while ai < args.count and not bad {
     val buf: List[MInsn] = newList()
-    val t = lowerCallArgMsil(cctx, fctx, buf, args[ai])
-    match argTyToSig(t) {
-      case None -> {
-        bad = true
-      }  // unsupported argument type → legacy path
-      case Some(s) -> {
+    val argExpr = callArgExpr(args[ai])
+    match argExpr.kind {
+      case ELambda(_, _) -> {
         argBufs.add(buf)
-        argTys.add(t)
-        argSigs.add(s)
+        argTys.add(MObject)
+        argSigs.add(Mdr.STNamed(fqn = "__LambdaWildcard__", valueType = false))
+      }
+      case _ -> {
+        val t = lowerCallArgMsil(cctx, fctx, buf, args[ai])
+        match argTyToSig(t) {
+          case None -> {
+            bad = true
+          }  // unsupported argument type → legacy path
+          case Some(s) -> {
+            argBufs.add(buf)
+            argTys.add(t)
+            argSigs.add(s)
+          }
+        }
       }
     }
     ai = ai + 1
@@ -18671,7 +19368,7 @@ func tryAutoFfiFromMetadata(
         }
         None
       }
-      case Some(re) -> emitResolvedAutoFfi(cctx, insns, re.assemblyName, clrFqn, resolveMethodName, methodName, argBufs, argTys, re.sig)
+      case Some(re) -> emitResolvedAutoFfi(cctx, fctx, insns, re.assemblyName, clrFqn, resolveMethodName, methodName, argBufs, argTys, re.sig, args)
     }
   }
 }
@@ -18823,7 +19520,6 @@ func implIfaceIsExternalClr(cctx: in CodegenCtx, decl: in ImplDecl): Bool {
 // that mention shapes the v1 cut can't represent (STMVar / STSzArray /
 // STByRef / STGenericInst) cause the impl to fall back to F0024 — a clean
 // build-time deferral instead of a silent miscompile.
-
 // Convert a metadata `SigType` to an `MsilType` suitable for inclusion in
 // an interface MemberRef signature.  `STVar(i)` is preserved as
 // `MTypeVar(i)` so the runtime substitutes against the TypeSpec's args.
@@ -18839,16 +19535,27 @@ func sigTypeToMsilForIface(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[Msi
       // an iface method that surfaces `int` via the named-FQN path matches an
       // impl method declared with the primitive Lyric type.  Otherwise emit
       // a class/value-type ref against the FQN.
-      val mapped = if fqn == "System.Int32" { Some(value = MInt) }
-        else if fqn == "System.Int64" { Some(value = MLong) }
-        else if fqn == "System.Boolean" { Some(value = MBool) }
-        else if fqn == "System.Char" { Some(value = MChar) }
-        else if fqn == "System.Byte" { Some(value = MByte) }
-        else if fqn == "System.Double" { Some(value = MDouble) }
-        else if fqn == "System.String" { Some(value = MString) }
-        else if fqn == "System.Object" { Some(value = MObject) }
-        else if fqn == "System.Void" { Some(value = MVoid) }
-        else { None }
+      val mapped = if fqn == "System.Int32" {
+        Some(value = MInt)
+      } else if fqn == "System.Int64" {
+        Some(value = MLong)
+      } else if fqn == "System.Boolean" {
+        Some(value = MBool)
+      } else if fqn == "System.Char" {
+        Some(value = MChar)
+      } else if fqn == "System.Byte" {
+        Some(value = MByte)
+      } else if fqn == "System.Double" {
+        Some(value = MDouble)
+      } else if fqn == "System.String" {
+        Some(value = MString)
+      } else if fqn == "System.Object" {
+        Some(value = MObject)
+      } else if fqn == "System.Void" {
+        Some(value = MVoid)
+      } else {
+        None
+      }
       match mapped {
         case Some(t) -> Some(value = t)
         case None -> {
@@ -18870,19 +19577,7 @@ func sigTypeToMsilForIface(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[Msi
       // STUnknown) remain unsupported and surface as F0024 upstream.
       match Mdr.sigVarIndex(sig) {
         case Some(idx) -> Some(value = MTypeVar(index = idx))
-        case None -> match Mdr.sigSzArrayElem(sig) {
-          case Some(elemSig) -> match sigTypeToMsilForIface(cctx, elemSig) {
-            case Some(elemTy) -> Some(value = MArray(elemTy = elemTy))
-            case None -> None
-          }
-          case None -> match Mdr.sigByRefInner(sig) {
-            case Some(innerSig) -> match sigTypeToMsilForIface(cctx, innerSig) {
-              case Some(innerTy) -> Some(value = MByRef(inner = innerTy))
-              case None -> None
-            }
-            case None -> None
-          }
-        }
+        case None -> match Mdr.sigSzArrayElem(sig) { case Some(elemSig) -> match sigTypeToMsilForIface(cctx, elemSig) { case Some(elemTy) -> Some(value = MArray(elemTy = elemTy)); case None -> None }; case None -> match Mdr.sigByRefInner(sig) { case Some(innerSig) -> match sigTypeToMsilForIface(cctx, innerSig) { case Some(innerTy) -> Some(value = MByRef(inner = innerTy)); case None -> None }; case None -> None } }
       }
     }
   }
@@ -18892,9 +19587,7 @@ func sigTypeToMsilForIface(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[Msi
 // `List[TypeArg]`) to `List[MsilType]` for use with `buildGenericInstBlobWithCtx`.
 // `None` is returned when any arg can't be lowered (e.g. an associated-type
 // or value argument that the v1 cut doesn't carry through).
-func lowerImplIfaceTypeArgsMsil(
-  cctx: in CodegenCtx, decl: in ImplDecl, pkgName: in String
-): Option[List[MsilType]] {
+func lowerImplIfaceTypeArgsMsil(cctx: in CodegenCtx, decl: in ImplDecl, pkgName: in String): Option[List[MsilType]] {
   val args = decl.iface.args
   val tys: List[MsilType] = newList()
   var i = 0
@@ -18910,9 +19603,7 @@ func lowerImplIfaceTypeArgsMsil(
 
 // Build a TypeSpec for a closed generic instantiation of an external iface
 // (e.g. `System.IEquatable\`1<MyPkg.Resource>`).  Returns the TypeSpec row.
-func ensureExternIfaceTypeSpecMsil(
-  cctx: in CodegenCtx, ifaceFqn: in String, argTys: in List[MsilType]
-): Int {
+func ensureExternIfaceTypeSpecMsil(cctx: in CodegenCtx, ifaceFqn: in String, argTys: in List[MsilType]): Int {
   ensureMetadataIndex(cctx)
   val ifaceRef = internFfiTypeRefNested(cctx, ifaceFqn)
   val key = "ts_extern_iface_" + ifaceFqn + "_" + msilTypeListKey(argTys)
@@ -19022,63 +19713,7 @@ func validateExternGenericIfacesMsil(cctx: in CodegenCtx, file: in SourceFile, p
               // fallback.  The InterfaceImpl will use the open TypeRef and
               // the load may still bind at run time for known BCL types.
             }
-            case Some(asmName) -> match mapGet(cctx.metadataPathIndex, asmName) {
-              case None -> {
-              }
-              case Some(asmPath) -> match Mdr.inspectInterfaceTarget(asmPath, ifaceFqn) {
-                case None -> {
-                  panic(
-                    "F0024: `impl " + decl.iface.head.segments[0] + "[…] for " +
-                      implTargetNameMsil(decl, pkgName) + "`: '" + ifaceFqn +
-                      "' was not found in the reference assembly's TypeDef table."
-                  )
-                }
-                case Some(insp) -> {
-                  if not insp.isInterface {
-                    panic(
-                      "F0020: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) +
-                        "`: '" + ifaceFqn + "' is not an interface."
-                    )
-                  }
-                  var mi = 0
-                  while mi < insp.methods.count {
-                    val m = insp.methods[mi]
-                    if m.isAbstract and not m.isStatic {
-                      var representable = true
-                      val rret = sigTypeToMsilForIface(cctx, m.returnType)
-                      match rret {
-                        case None -> {
-                          representable = false
-                        }
-                        case Some(_) -> {
-                        }
-                      }
-                      var pj = 0
-                      while pj < m.paramTypes.count and representable {
-                        match sigTypeToMsilForIface(cctx, m.paramTypes[pj]) {
-                          case None -> {
-                            representable = false
-                          }
-                          case Some(_) -> {
-                          }
-                        }
-                        pj = pj + 1
-                      }
-                      if not representable {
-                        panic(
-                          "F0024: `impl " + decl.iface.head.segments[0] + "[…] for " +
-                            implTargetNameMsil(decl, pkgName) + "`: iface method '" + m.name +
-                            "' has a signature shape (method generic / byref / array / nested generic) " +
-                            "not yet supported by the v1 generic-iface emission. Use a non-generic " +
-                            "interface or wait for the follow-up cut."
-                        )
-                      }
-                    }
-                    mi = mi + 1
-                  }
-                }
-              }
-            }
+            case Some(asmName) -> match mapGet(cctx.metadataPathIndex, asmName) { case None -> {  }; case Some(asmPath) -> match Mdr.inspectInterfaceTarget(asmPath, ifaceFqn) { case None -> { panic("F0024: `impl " + decl.iface.head.segments[0] + "[…] for " + implTargetNameMsil(decl, pkgName) + "`: '" + ifaceFqn + "' was not found in the reference assembly's TypeDef table.") }; case Some(insp) -> { if not insp.isInterface { panic("F0020: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: '" + ifaceFqn + "' is not an interface.") }; var mi = 0; while mi < insp.methods.count { val m = insp.methods[mi]; if m.isAbstract and not m.isStatic { var representable = true; val rret = sigTypeToMsilForIface(cctx, m.returnType); match rret { case None -> { representable = false }; case Some(_) -> {  } }; var pj = 0; while pj < m.paramTypes.count and representable { match sigTypeToMsilForIface(cctx, m.paramTypes[pj]) { case None -> { representable = false }; case Some(_) -> {  } }; pj = pj + 1 }; if not representable { panic("F0024: `impl " + decl.iface.head.segments[0] + "[…] for " + implTargetNameMsil(decl, pkgName) + "`: iface method '" + m.name + "' has a signature shape (method generic / byref / array / nested generic) " + "not yet supported by the v1 generic-iface emission. Use a non-generic " + "interface or wait for the follow-up cut.") } }; mi = mi + 1 } } } }
           }
         }
       }
@@ -19199,7 +19834,6 @@ pub func collectImplEntriesMsil(cctx: in CodegenCtx, file: in SourceFile, pkgNam
 // Anything richer (byref, pinned, custom modifiers) is treated as a "can't
 // verify" and silently skipped for that single method, the same way F0015
 // bails out via `canVerify`.
-
 func sigTypesEqualMsil(a: in Mdr.SigType, b: in Mdr.SigType): Bool {
   val pa = Mdr.sigPrimByte(a)
   val pb = Mdr.sigPrimByte(b)
@@ -19215,18 +19849,12 @@ func sigTypesEqualMsil(a: in Mdr.SigType, b: in Mdr.SigType): Bool {
   // matching shapes on both sides count as equal (an `STSzArray(T)` does not
   // satisfy a `T` slot).
   match Mdr.sigSzArrayElem(a) {
-    case Some(eaSig) -> match Mdr.sigSzArrayElem(b) {
-      case Some(ebSig) -> return sigTypesEqualMsil(eaSig, ebSig)
-      case None -> return false
-    }
+    case Some(eaSig) -> match Mdr.sigSzArrayElem(b) { case Some(ebSig) -> return sigTypesEqualMsil(eaSig, ebSig); case None -> return false }
     case None -> {
     }
   }
   match Mdr.sigByRefInner(a) {
-    case Some(iaSig) -> match Mdr.sigByRefInner(b) {
-      case Some(ibSig) -> return sigTypesEqualMsil(iaSig, ibSig)
-      case None -> return false
-    }
+    case Some(iaSig) -> match Mdr.sigByRefInner(b) { case Some(ibSig) -> return sigTypesEqualMsil(iaSig, ibSig); case None -> return false }
     case None -> {
     }
   }
@@ -19250,9 +19878,7 @@ func tryImplTyToSigMsil(t: in MsilType): Option[Mdr.SigType] {
   }
 }
 
-func implMethodToSigsMsil(
-  cctx: in CodegenCtx, fn: in FunctionDecl, pkgName: in String
-): Option[List[Mdr.SigType]] {
+func implMethodToSigsMsil(cctx: in CodegenCtx, fn: in FunctionDecl, pkgName: in String): Option[List[Mdr.SigType]] {
   val sigs: List[Mdr.SigType] = newList()
   var pi = 0
   while pi < fn.params.count {
@@ -19315,10 +19941,7 @@ func renderSigForDiagMsil(s: in Mdr.SigType): String {
     } else {
       match Mdr.sigSzArrayElem(s) {
         case Some(elem) -> renderSigForDiagMsil(elem) + "[]"
-        case None -> match Mdr.sigByRefInner(s) {
-          case Some(inner) -> "ref " + renderSigForDiagMsil(inner)
-          case None -> "<unknown shape>"
-        }
+        case None -> match Mdr.sigByRefInner(s) { case Some(inner) -> "ref " + renderSigForDiagMsil(inner); case None -> "<unknown shape>" }
       }
     }
   }
@@ -19390,14 +20013,8 @@ func msilTypeToSigForIface(t: in MsilType): Option[Mdr.SigType] {
     case MString -> Some(value = Mdr.mkPrimSig(0x0E))
     case MObject -> Some(value = Mdr.mkPrimSig(0x1C))
     case MVoid -> Some(value = Mdr.mkPrimSig(0x01))
-    case MArray(elemTy) -> match msilTypeToSigForIface(elemTy) {
-      case Some(es) -> Some(value = Mdr.mkSzArraySig(es))
-      case None -> None
-    }
-    case MByRef(inner) -> match msilTypeToSigForIface(inner) {
-      case Some(inS) -> Some(value = Mdr.mkByRefSig(inS))
-      case None -> None
-    }
+    case MArray(elemTy) -> match msilTypeToSigForIface(elemTy) { case Some(es) -> Some(value = Mdr.mkSzArraySig(es)); case None -> None }
+    case MByRef(inner) -> match msilTypeToSigForIface(inner) { case Some(inS) -> Some(value = Mdr.mkByRefSig(inS)); case None -> None }
     case MClass(name) -> Some(value = Mdr.mkNamedSig(name, false))
     case MClassRef(_, fqn) -> Some(value = Mdr.mkNamedSig(fqn, false))
     case MValueTypeRef(_, fqn) -> Some(value = Mdr.mkNamedSig(fqn, true))
@@ -19443,11 +20060,7 @@ func checkOneInterfaceMethodMsil(
   ifaceTypeArgs: in List[Mdr.SigType],
 ): Unit {
   match findImplFunctionDeclMsil(decl, ifaceMethod.name) {
-    case None -> panic(
-      "F0021: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) +
-        "`: interface method '" + ifaceMethod.name + "' is not implemented. " +
-        "Add `func " + ifaceMethod.name + "(…): …` to the impl block."
-    )
+    case None -> panic("F0021: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: interface method '" + ifaceMethod.name + "' is not implemented. " + "Add `func " + ifaceMethod.name + "(…): …` to the impl block.")
     case Some(implFn) -> {
       // Substitute STVar against the iface's resolved type args.  For
       // non-generic ifaces this is a no-op (typeArgs is empty); for
@@ -19476,9 +20089,12 @@ func checkOneInterfaceMethodMsil(
             val implParamCount = implSigs.count - 1
             if implParamCount != substParams.count {
               panic(
-                "F0022: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) +
-                  "`: method '" + ifaceMethod.name + "' takes " + toString(implParamCount) +
-                  " parameter(s) but the .NET interface declares " + toString(substParams.count) + "."
+                "F0022: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: method '" + ifaceMethod.name +
+                  "' takes " +
+                  toString(implParamCount) +
+                  " parameter(s) but the .NET interface declares " +
+                  toString(substParams.count) +
+                  "."
               )
             } else {
               var pk = 0
@@ -19487,10 +20103,14 @@ func checkOneInterfaceMethodMsil(
                 val got = implSigs[pk]
                 if not sigTypesEqualMsil(expected, got) {
                   panic(
-                    "F0022: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) +
-                      "`: method '" + ifaceMethod.name + "' parameter " + toString(pk + 1) +
-                      " has type " + renderSigForDiagMsil(got) +
-                      " but the .NET interface expects " + renderSigForDiagMsil(expected) + "."
+                    "F0022: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: method '" + ifaceMethod.name +
+                      "' parameter " +
+                      toString(pk + 1) +
+                      " has type " +
+                      renderSigForDiagMsil(got) +
+                      " but the .NET interface expects " +
+                      renderSigForDiagMsil(expected) +
+                      "."
                   )
                 }
                 pk = pk + 1
@@ -19498,9 +20118,12 @@ func checkOneInterfaceMethodMsil(
               val implRet = implSigs[implSigs.count - 1]
               if not sigTypesEqualMsil(substRet, implRet) {
                 panic(
-                  "F0023: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) +
-                    "`: method '" + ifaceMethod.name + "' returns " + renderSigForDiagMsil(implRet) +
-                    " but the .NET interface declares return type " + renderSigForDiagMsil(substRet) + "."
+                  "F0023: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: method '" + ifaceMethod.name +
+                    "' returns " +
+                    renderSigForDiagMsil(implRet) +
+                    " but the .NET interface declares return type " +
+                    renderSigForDiagMsil(substRet) +
+                    "."
                 )
               }
             }
@@ -19513,9 +20136,7 @@ func checkOneInterfaceMethodMsil(
 
 // Walk an external-interface `impl` block and validate it against the
 // reference assembly.  See the section header for diagnostic codes.
-func validateOneExternImplMsil(
-  cctx: in CodegenCtx, decl: in ImplDecl, pkgName: in String, ifaceFqn: in String
-): Unit {
+func validateOneExternImplMsil(cctx: in CodegenCtx, decl: in ImplDecl, pkgName: in String, ifaceFqn: in String): Unit {
   ensureMetadataIndex(cctx)
   match Mdr.assemblyForType(cctx.metadataTypeIndex, ifaceFqn) {
     case None -> {
@@ -19533,8 +20154,8 @@ func validateOneExternImplMsil(
         case Some(insp) -> {
           if not insp.isInterface {
             panic(
-              "F0020: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) +
-                "`: '" + ifaceFqn + "' resolves through `extern type` / `import extern` but its .NET metadata is " +
+              "F0020: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: '" + ifaceFqn +
+                "' resolves through `extern type` / `import extern` but its .NET metadata is " +
                 "not an interface (TypeAttributes.ClassSemanticsMask = 0). " +
                 "An `impl` block can only target a .NET interface."
             )
@@ -19835,6 +20456,9 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
   // because `addPackageTokens` registered FQNs `<pkg>.__lambda_0...` while
   // codegen looked up `<pkg>.__lambda_<bundleIdx>` (#1194).
   cctx.lambdaTicker.clear()
+  cctx.lambdaCaptureNames.clear()
+  cctx.lambdaCaptureTypes.clear()
+  cctx.lambdaCaptureCells.clear()
 
   val fns: List[MFunc] = newList()
   val staticFields: List[MStaticField] = newList()
@@ -19868,6 +20492,9 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
     )
   }
   val weavedFile = weaveSafety.file
+
+  // Re-populate lambda captures for this package during emission after clearing
+  precomputeLambdaCaptures(weavedFile, cctx)
 
   // ── #878: IImpl pre-pass ──────────────────────────────────────────────────
   // Mirrors the JVM backend's approach (`Jvm.Codegen.codegenPackage`): scan
@@ -19915,6 +20542,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
         items.add(MPRecord(rec = rec))
       }
       case IFunc(decl) -> {
+        println("Processing func: " + decl.name)
         // Route async SM synthesis: Phase B.1 (with awaits) or Phase B.0 (no awaits).
         // Generators and @externTarget async funcs use their existing paths.
         val isGenerator = decl.isAsync and funcBodyContainsYieldMsil(decl)
@@ -19929,7 +20557,59 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
         } else if isGenerator {
           synthesizeGeneratorMsil(cctx, decl, pkgName, items, fns)
         } else {
-          fns.add(lowerFuncMsil(cctx, decl, pkgName))
+          val lFunc = lowerFuncMsil(cctx, decl, pkgName)
+          if startsWith(decl.name, "__lambda_") {
+            val caps = match mapGet(cctx.lambdaCaptureNames, decl.name) { case Some(c) -> c; case None -> newList() }
+            println("Lambda " + decl.name + " caps count: " + toString(caps.count))
+            var capIdxTemp = 0
+            while capIdxTemp < caps.count {
+              println("  Cap: " + caps[capIdxTemp])
+              capIdxTemp = capIdxTemp + 1
+            }
+            if caps.count > 0 {
+              val capTys = match mapGet(cctx.lambdaCaptureTypes, decl.name) { case Some(t) -> t; case None -> newList() }
+              val capCells = match mapGet(cctx.lambdaCaptureCells, decl.name) { case Some(c) -> c; case None -> newList() }
+              val fields: List[MField] = newList()
+              var cni = 0
+              while cni < caps.count {
+                val cname = caps[cni]
+                val isCell = nameListContains(capCells, cname)
+                val cty = if isCell { MObject } else if cni < capTys.count { capTys[cni] } else { MObject }
+                fields.add(MField(flags = FDA_PUBLIC, name = cname, fieldType = cty))
+                cni = cni + 1
+              }
+              val closureName = "__Closure_" + substring(decl.name, 9, decl.name.length - 9)
+              val instFunc = MFunc(
+                flags = 0x0006,
+                // Public | HideBySig (no Static)
+                name = lFunc.name,
+                params = lFunc.params,
+                ret = lFunc.ret,
+                insns = lFunc.insns,
+                maxStack = lFunc.maxStack,
+                locals = lFunc.locals
+              )
+              val methods: List[MFunc] = newList()
+              methods.add(instFunc)
+              items.add(
+                MPRecord(
+                  rec = MRecord(
+                    className = pkgName + "." + closureName,
+                    namespace = pkgName,
+                    baseClass = "System.Object",
+                    fields = fields,
+                    methods = methods,
+                    useDefaultCtor = true,
+                    generics = newList()
+                  )
+                )
+              )
+            } else {
+              fns.add(lFunc)
+            }
+          } else {
+            fns.add(lFunc)
+          }
         }
         if isMainFuncMsil(decl) {
           hasMain = true
@@ -20636,7 +21316,8 @@ func registerRestoredFunc(cctx: in CodegenCtx, packageName: in String, fn: in Fu
   }
 
   val fqn = packageName + "." + fn.name
-  if cctx.funcTokens.containsKey(fqn) {
+  val arityKey = fqn + "/" + toString(fn.params.count)
+  if cctx.funcTokens.containsKey(arityKey) {
     return
   }
 
@@ -20652,13 +21333,22 @@ func registerRestoredFunc(cctx: in CodegenCtx, packageName: in String, fn: in Fu
   val retType = match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
 
   val funcSig = buildStaticMethodSigWithCtx(byrefWrapSigTypes(fn.params, paramTypes), retType, cctx.lctx)
-  val sigKey = "restored_func_" + fqn
+  val sigKey = "restored_func_" + arityKey
   val memberRow = ctxAddMemberRef(cctx.lctx, hostRefRow, fn.name, sigKey, funcSig)
-  cctx.funcTokens.add(fqn, 0x0A000000 + memberRow)
-  // Record the return type so SExpr call sites don't emit a spurious
-  // `pop` after void cross-assembly calls → InvalidProgramException.
-  cctx.funcRetTypes.add(fqn, retType)
-  cctx.funcParamModes.add(fqn, paramModesOf(fn.params))
+  val tok = 0x0A000000 + memberRow
+  val fnModes = paramModesOf(fn.params)
+
+  cctx.funcTokens.add(arityKey, tok)
+  cctx.funcRetTypes.add(arityKey, retType)
+  cctx.funcParamTypes.add(arityKey, paramTypes)
+  cctx.funcParamModes.add(arityKey, fnModes)
+
+  if not cctx.funcTokens.containsKey(fqn) {
+    cctx.funcTokens.add(fqn, tok)
+    cctx.funcRetTypes.add(fqn, retType)
+    cctx.funcParamTypes.add(fqn, paramTypes)
+    cctx.funcParamModes.add(fqn, fnModes)
+  }
 }
 
 // Allocate or reuse a cached TypeRef row for a union case class; arity > 0 stamps the suffix (e.g. "Maybe_Just`1`") matching lowerMUnion — CLR loader requires it; 0 keeps plain name for non-generic unions and stdlib.

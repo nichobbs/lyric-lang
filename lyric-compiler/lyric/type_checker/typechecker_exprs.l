@@ -1580,11 +1580,7 @@ func fieldTypeUsesVar(name: in String, ty: in Type): Bool {
 // `eraseTyVars` in `bindPatternTyped` for pattern-bound variables).  When true,
 // the inference failure for `name` is due to type-variable erasure, not a real
 // mismatch — T0110 should be suppressed for this parameter.
-func anyFieldArgIsLenientForParam(
-  name: in String,
-  fieldTypes: in List[Type],
-  orderedArgTypes: in List[Type],
-): Bool {
+func anyFieldArgIsLenientForParam(name: in String, fieldTypes: in List[Type], orderedArgTypes: in List[Type]): Bool {
   var i = 0
   while i < fieldTypes.count and i < orderedArgTypes.count {
     if fieldTypeUsesVar(name, fieldTypes[i]) {
@@ -3218,6 +3214,18 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
   // `() -> Never` passed to `assertPanics(label, fn: in () -> Unit)`.
   // Parameter lists must still match positionally (typeEquiv keeps the
   // call ABI sound).
+  match unrefine(paramTy) {
+    case TyUser(uid, _, _) -> {
+      if symTableIsExternType(tbl, uid) {
+        match unrefine(argTy) {
+          case TyFunction(_, _, _) -> return true
+          case _ -> ()
+        }
+      }
+    }
+    case _ -> {
+    }
+  }
   match unrefine(argTy) {
     case TyFunction(aps, ar, _) -> {
       match unrefine(paramTy) {

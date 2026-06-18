@@ -987,6 +987,7 @@ pub union SigType {
   // an `STClass`/`STValueType` token into it so resolved types and the caller's
   // argument types compare by name rather than by cross-assembly token.
   case STNamed(fqn: String, valueType: Bool)
+  case STGenericInstNamed(valueType: Bool, headFqn: String, args: List[SigType])
 }
 
 pub record DecodedMethodSig {
@@ -1258,6 +1259,7 @@ pub func sigClassToken(t: in SigType): Int {
   match t {
     case STClass(tok) -> tok
     case STValueType(tok) -> tok
+    case STGenericInst(_, tok, _) -> tok
     case _ -> -1
   }
 }
@@ -1266,6 +1268,8 @@ pub func sigClassToken(t: in SigType): Int {
 pub func sigIsValueType(t: in SigType): Bool {
   match t {
     case STValueType(_) -> true
+    case STGenericInst(vt, _, _) -> vt
+    case STGenericInstNamed(vt, _, _) -> vt
     case _ -> false
   }
 }
@@ -1280,6 +1284,7 @@ pub func mkNamedSig(fqn: in String, valueType: in Bool): SigType {
 pub func sigNamedFqn(t: in SigType): String {
   match t {
     case STNamed(fqn, _) -> fqn
+    case STGenericInstNamed(_, headFqn, _) -> headFqn
     case _ -> ""
   }
 }
@@ -1359,6 +1364,7 @@ pub func substituteVarsInSigType(s: in SigType, typeArgs: in List[SigType]): Sig
 pub func sigNamedIsValueType(t: in SigType): Bool {
   match t {
     case STNamed(_, vt) -> vt
+    case STGenericInstNamed(vt, _, _) -> vt
     case _ -> false
   }
 }
@@ -1801,6 +1807,22 @@ func numericRank(elemByte: in Int): Int {
 // Score one argument against one parameter: 2 = exact, 1 = widening / boxes to
 // object, -1 = incompatible.
 pub func scoreSigType(arg: in SigType, param: in SigType): Int {
+  match arg {
+    case STNamed(afqn, _) -> {
+      if afqn == "__LambdaWildcard__" {
+        match param {
+          case STClass(_) -> return 2
+          case STValueType(_) -> return 2
+          case STNamed(_, _) -> return 2
+          case STGenericInst(_, _, _) -> return 2
+          case STGenericInstNamed(_, _, _) -> return 2
+          case STPrim(pb) -> if pb == 0x1C { return 2 } else { return -1 }
+          case _ -> return -1
+        }
+      }
+    }
+    case _ -> ()
+  }
   match param {
     case STPrim(pb) -> match arg {
       case STPrim(ab) -> {
@@ -1824,6 +1846,7 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
     case STClass(pt) -> match arg { case STClass(at) -> if at == pt { 2 } else { -1 }; case _ -> -1 }
     case STValueType(pt) -> match arg { case STValueType(at) -> if at == pt { 2 } else { -1 }; case _ -> -1 }
     case STNamed(pfqn, pvt) -> match arg { case STNamed(afqn, avt) -> if afqn == pfqn and avt == pvt { 2 } else { -1 }; case _ -> -1 }
+    case STGenericInstNamed(pvt, pfqn, pargs) -> match arg { case STGenericInstNamed(avt, afqn, aargs) -> { if afqn == pfqn and avt == pvt and pargs.count == aargs.count { var matchOk = true; var ai = 0; while ai < pargs.count { if scoreSigType(aargs[ai], pargs[ai]) != 2 { matchOk = false }; ai = ai + 1 }; if matchOk { 2 } else { -1 } } else { -1 } }; case _ -> -1 }
     case STSzArray(pe) -> match arg {
       // CLR arrays with value-type elements are invariant — `int[]` cannot be
       // passed where `long[]` is expected.  Only accept an exact element match
@@ -1840,15 +1863,45 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
 // comparable to a caller's by-name argument types and directly mappable by the
 // emitter.  Primitive and other shapes pass through unchanged.
 pub func resolveSigTypeFqn(img: in PeImage, layout: in TableLayout, th: in TablesHeader, t: in SigType): SigType {
-  val tok = sigClassToken(t)
-  if tok < 0 {
-    t
-  } else {
-    val fqn = resolveTypeDefOrRefName(img, layout, th, tok)
-    if fqn.length == 0 {
-      t
-    } else {
-      STNamed(fqn = fqn, valueType = sigIsValueType(t))
+  match t {
+    case STGenericInst(vt, tok, args) -> {
+      val fqn = resolveTypeDefOrRefName(img, layout, th, tok)
+      if fqn.length == 0 {
+        t
+      } else {
+        val normArgs: List[SigType] = newList()
+        var ai = 0
+        while ai < args.count {
+          normArgs.add(resolveSigTypeFqn(img, layout, th, args[ai]))
+          ai = ai + 1
+        }
+        STGenericInstNamed(valueType = vt, headFqn = fqn, args = normArgs)
+      }
+    }
+    case STSzArray(ae) -> {
+      STSzArray(elem = resolveSigTypeFqn(img, layout, th, ae))
+    }
+    case STByRef(inner) -> {
+      STByRef(inner = resolveSigTypeFqn(img, layout, th, inner))
+    }
+    case STPtr(inner) -> {
+      STPtr(inner = resolveSigTypeFqn(img, layout, th, inner))
+    }
+    case STArray(elem, rank) -> {
+      STArray(elem = resolveSigTypeFqn(img, layout, th, elem), rank = rank)
+    }
+    case _ -> {
+      val tok = sigClassToken(t)
+      if tok < 0 {
+        t
+      } else {
+        val fqn = resolveTypeDefOrRefName(img, layout, th, tok)
+        if fqn.length == 0 {
+          t
+        } else {
+          STNamed(fqn = fqn, valueType = sigIsValueType(t))
+        }
+      }
     }
   }
 }
@@ -2178,9 +2231,7 @@ pub func allMethodSigsOn(
 // when the type is absent — callers (e.g. the F0020 check) treat absence
 // separately because it usually means the reference pack does not carry the
 // declaring assembly, not that the type is mis-declared.
-pub func typeIsInterface(
-  img: in PeImage, layout: in TableLayout, th: in TablesHeader, typeFqn: in String
-): Bool {
+pub func typeIsInterface(img: in PeImage, layout: in TableLayout, th: in TablesHeader, typeFqn: in String): Bool {
   val typeRow = findTypeDefByFqn(img, layout, th, typeFqn)
   if typeRow < 0 {
     return false

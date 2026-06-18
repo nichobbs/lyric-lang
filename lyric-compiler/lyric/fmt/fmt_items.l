@@ -163,7 +163,17 @@ pub func funcDoc(visStr: in String, fn: in FunctionDecl, ctx: inout FmtCtx): Lis
   val sigPrefix = visStr + asyncStr + "func " + fn.name + gens + "("
   val sigSuffix = ")" + retStr
   val paramsCol = sigPrefix.length
-  val sig = funcSigDocFromParts(sigPrefix, sigSuffix, paramsCol, ctx, fn.params)
+  val paramsFiltered: List[Param] = newList()
+  var pIdx = 0
+  while pIdx < fn.params.count {
+    val p = fn.params[pIdx]
+    val isInjectedSelf = p.name == "self" and p.span.startPos.offset == 0
+    if not isInjectedSelf {
+      paramsFiltered.add(p)
+    }
+    pIdx = pIdx + 1
+  }
+  val sig = funcSigDocFromParts(sigPrefix, sigSuffix, paramsCol, ctx, paramsFiltered)
 
   // Order on the wire: signature → where? → contracts → body.
   // The self-hosted parser accepts `where` only BEFORE the contract
