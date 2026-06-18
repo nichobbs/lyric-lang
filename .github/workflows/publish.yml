@@ -80,17 +80,28 @@ jobs:
 
       - name: Build stage 1 (self-hosted compiler)
         shell: bash
+        env:
+          LYRIC_VERSION: ${{ steps.ver.outputs.VERSION }}
         run: |
           ./scripts/bootstrap.sh --stage 1
 
-      - name: Compile Lyric CLI as self-contained executable
+      - name: Restore AOT project
+        working-directory: bootstrap
+        run: dotnet restore src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj --runtime ${{ matrix.rid }}
+
+      - name: Publish self-contained AOT binary
         shell: bash
+        working-directory: bootstrap
         run: |
-          ./bin/lyric build \
-            --manifest lyric-compiler/lyric/lyric.toml \
-            --target dotnet \
-            --force \
-            -o ./bootstrap/publish/${{ matrix.rid }}/lyric
+          dotnet publish src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
+            --configuration Release \
+            --runtime ${{ matrix.rid }} \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:EnableCompressionInSingleFile=true \
+            -p:Version=${{ steps.ver.outputs.VERSION }} \
+            --output publish/${{ matrix.rid }} \
+            --no-restore
 
       # ── Windows: Authenticode signing via Azure Key Vault ─────────────────
       - name: Sign Windows binary (Authenticode)
