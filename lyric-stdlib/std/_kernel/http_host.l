@@ -251,7 +251,6 @@ extern type ProtocolType = "System.Net.Sockets.ProtocolType"
 extern type Stream = "System.IO.Stream"
 extern type NetworkStream = "System.Net.Sockets.NetworkStream"
 extern type SocketsHttpConnectionContext = "System.Net.Http.SocketsHttpConnectionContext"
-extern type ValueTask[T] = "System.Threading.Tasks.ValueTask`1"
 extern type CancellationToken = "System.Threading.CancellationToken"
 
 // Extern constructors and methods for socket operations
@@ -277,11 +276,12 @@ func newNetworkStream(socket: in Socket, ownsSocket: in Bool): NetworkStream = (
 func socketDispose(socket: in Socket): Unit = ()
 
 @externTarget("System.Net.Http.SocketsHttpHandler.set_ConnectCallback")
-func setConnectCallback(handler: in SocketsHttpHandler, callback: in ((SocketsHttpConnectionContext, CancellationToken) -> ValueTask[Stream])): Unit = ()
+func setConnectCallback(handler: in SocketsHttpHandler, callback: in async (SocketsHttpConnectionContext, CancellationToken) -> Stream): Unit = ()
 
 // Create strongly-typed lambda for Unix socket connection (Epic #1877).
-// The lambda signature structurally matches Func<SocketsHttpConnectionContext, CancellationToken, ValueTask<Stream>>.
-func makeUnixSocketCallback(socketPath: in String): (SocketsHttpConnectionContext, CancellationToken) -> ValueTask[Stream] {
+// The lambda is async and returns Stream; Lyric's type system automatically
+// wraps it as Func<SocketsHttpConnectionContext, CancellationToken, ValueTask<Stream>>.
+func makeUnixSocketCallback(socketPath: in String): async (SocketsHttpConnectionContext, CancellationToken) -> Stream {
   { (context: SocketsHttpConnectionContext, cancellationToken: CancellationToken) ->
     val socket = newSocket(getAddressFamilyUnix(), getSocketTypeStream(), getProtocolTypeUnspecified())
     try {
