@@ -95,8 +95,11 @@ func writePeHdrs(w: in ByteWriter, textVSize: in Int, textRSize: in Int, imgSize
   w2p(w, 0x014C)   w2p(w, 1)      // Machine=I386, NumberOfSections=1
   w4p(w, 0)        w4p(w, 0)      // TimeDateStamp, PtrToSymbolTable
   w4p(w, 0)                        // NumberOfSymbols
+  w2p(w, 224)
+  // Characteristics: 0x0102 (EXECUTABLE_IMAGE | EXECUTABLE) for EXE,
+  // add 0x2000 (DLL) flag for DLL output
   val characteristics = if buildKind == "lib" { 0x2102 } else { 0x0102 }
-  w2p(w, 224)      w2p(w, characteristics) // SizeOfOptionalHeader=224, Characteristics
+  w2p(w, characteristics) // SizeOfOptionalHeader=224, Characteristics
 
   // PE32 optional header (96 bytes)
   w2p(w, 0x010B)                   // Magic: PE32
@@ -358,7 +361,7 @@ pub func assemblePe(inp: in AssemblerInput): ByteWriter {
   // Write PE image
   val w = bufNew()
   writeDos(w)                                              // 0x000–0x07F
-  writePeHdrs(w, textVSize, textRSize, imgSize, inp.buildKind) // 0x080–0x1FF
+  writePeHdrs(w, textVSize, textRSize, imgSize, inp.buildKind)            // 0x080–0x1FF
   writeClrHdr(w, mdRva, metaSize, inp.entryPointToken,
               rsrcRva, rawRsrcSize)                         // 0x200–0x247
 

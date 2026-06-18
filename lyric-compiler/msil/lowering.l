@@ -2392,8 +2392,7 @@ pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx,
     strings         = ctx.strings,
     us              = ctx.us,
     blobs           = ctx.blobs,
-    guids           = ctx.guids,
-    resourceData    = ctx.resourceData,
+    guids           = ctx.guids, resourceData = ctx.resourceData,
     buildKind       = buildKind)
 
   val peBuf = assemblePe(inp)
@@ -2432,8 +2431,7 @@ pub func lowerMPackagesWithCtx(pkgs: in List[MPackage], ctx: in LoweringCtx,
     strings         = ctx.strings,
     us              = ctx.us,
     blobs           = ctx.blobs,
-    guids           = ctx.guids,
-    resourceData    = ctx.resourceData,
+    guids           = ctx.guids, resourceData = ctx.resourceData,
     buildKind       = buildKind)
 
   val peBuf = assemblePe(inp)

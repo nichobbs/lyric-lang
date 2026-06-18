@@ -75,8 +75,8 @@ pub record EmitRequest {
   /// the REPL / direct API use), and the bridge falls back to the
   /// legacy default.  See #1364.
   packageVersion: String
-  /// Build kind: "lib" for DLL (default), "exe" for executable PE.
-  /// Controls the COFF header Characteristics field.
+  /// Build kind: "lib" for DLL, "exe" for EXE. Controls PE header
+  /// characteristics for standalone executables.
   buildKind: String
 }
 

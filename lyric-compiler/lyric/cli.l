@@ -331,7 +331,8 @@ func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarge
     assemblyName   = asmName,
     outputPath     = outPath,
     target         = target,
-    packageVersion = ""
+    packageVersion = "",
+    buildKind      = "lib"
   )
 
   val result = Emitter.emit(req)
@@ -2327,7 +2328,8 @@ func cmdTest(argv: in slice[String]): Int {
         assemblyName   = stem,
         outputPath     = outPath,
         target         = if targetJvm { Jvm } else { Dotnet },
-        packageVersion = ""
+        packageVersion = "",
+        buildKind      = "lib"
       )
       val result = Emitter.emit(req)
       var hadError = false
@@ -2827,7 +2829,8 @@ func cmdBench(argv: in slice[String]): Int {
         assemblyName   = stem,
         outputPath     = outPath,
         target         = Dotnet,
-        packageVersion = ""
+        packageVersion = "",
+        buildKind      = "lib"
       )
       val result = Emitter.emit(req)
       var hadError = false
