@@ -2344,7 +2344,9 @@ pub func lowerMPackage(pkg: in MPackage, entryMethodToken: in Int): List[Byte] {
     strings         = ctx.strings,
     us              = ctx.us,
     blobs           = ctx.blobs,
-    guids           = ctx.guids, resourceData = ctx.resourceData)
+    guids           = ctx.guids,
+    resourceData    = ctx.resourceData,
+    buildKind       = "lib")
 
   val peBuf = assemblePe(inp)
   bufToList(peBuf)
