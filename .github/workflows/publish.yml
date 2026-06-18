@@ -100,7 +100,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.rid == 'linux-arm64'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-multiarch
 
       - name: Set up .NET
         uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
