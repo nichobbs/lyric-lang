@@ -103,6 +103,8 @@ jobs:
 
       - name: Build stage 1 (self-hosted compiler)
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ./scripts/bootstrap.sh --stage 1
 
@@ -264,6 +266,8 @@ jobs:
 
       - name: Build stage 1 (for NuGet package)
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ./scripts/bootstrap.sh --stage 1
 

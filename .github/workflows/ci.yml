@@ -141,6 +141,8 @@ jobs:
         # (via BOOTSTRAP_FROM_RELEASE=1) to use as stage-0, eliminating the need
         # to build the F# compiler. This significantly speeds up CI.
         working-directory: ${{ github.workspace }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/bootstrap.sh --stage 1
 
       # Track A A1.4 (#860) deleted the F# user-facing CLI; the AOT

@@ -66,6 +66,7 @@ jobs:
       - name: Bootstrap stage 1 (F# → self-hosted packages)
         env:
           STAGE0_REUSE_PUBLISHED: "1"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/bootstrap.sh --stage 1
 
       - name: Build AOT entry-point
