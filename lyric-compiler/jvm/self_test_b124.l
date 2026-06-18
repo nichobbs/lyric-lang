@@ -1,19 +1,20 @@
-//! jvm/self_test_b124.l — Stage B124: lowerPackage (top-level integration entry point).
-//!
-//! Builds a package with three items:
-//!   1. LPRecord: Pair(a: JInt, b: JInt)
-//!   2. LPDistinctType: Weight wrapping JInt
-//!   3. LPFuncs: "Utils" with add(x: int, y: int): int = x + y
-//!
-//! A Main class exercises all three items:
-//!   - Pair(5, 7): prints "sum=12" (sum of fields via $a() and $b() accessors)
-//!   - Weight(100): prints "weight=100" (via $value() accessor)
-//!   - Utils.add(3, 4): prints "add=7"
-//!
-//! Java output (java -jar):
-//!   sum=12
-//!   weight=100
-//!   add=7
+// jvm/self_test_b124.l — Stage B124: lowerPackage (top-level integration entry point).
+//
+// Builds a package with three items:
+//   1. LPRecord: Pair(a: JInt, b: JInt)
+//   2. LPDistinctType: Weight wrapping JInt
+//   3. LPFuncs: "Utils" with add(x: int, y: int): int = x + y
+//
+// A Main class exercises all three items:
+//   - Pair(5, 7): prints "sum=12" (sum of fields via $a() and $b() accessors)
+//   - Weight(100): prints "weight=100" (via $value() accessor)
+//   - Utils.add(3, 4): prints "add=7"
+//
+// Java output (java -jar):
+//   sum=12
+//   weight=100
+//   add=7
+
 package Jvm.SelfTestB124
 
 import Std.Core
@@ -25,6 +26,7 @@ import Jvm.Lowering
 import Jvm.Driver
 
 // ── Build package items ───────────────────────────────────────────────────────
+
 func makePackageClasses(pool: in Pool): List[BuiltClass] {
   // LPRecord: Pair with two int fields
   val pairFields: List[LField] = newList()
@@ -45,12 +47,12 @@ func makePackageClasses(pool: in Pool): List[BuiltClass] {
   addInsns.add(LIadd)
   addInsns.add(LIreturn)
   val addFunc = LFunc(
-    flags = ACC_PUBLIC + ACC_STATIC,
-    name = "add",
-    params = addParams,
-    ret = JInt,
-    insns = addInsns,
-    maxStack = 2,
+    flags     = ACC_PUBLIC + ACC_STATIC,
+    name      = "add",
+    params    = addParams,
+    ret       = JInt,
+    insns     = addInsns,
+    maxStack  = 2,
     maxLocals = 2
   )
   val addFuncList: List[LFunc] = newList()
@@ -59,8 +61,7 @@ func makePackageClasses(pool: in Pool): List[BuiltClass] {
   val items: List[LPackageItem] = newList()
   items.add(LPRecord(rec = pairRec))
   items.add(LPDistinctType(dt = weightDt))
-  val noStaticVals: List[LStaticVal] = newList()
-  items.add(LPFuncs(funcsClass = "Utils", fns = addFuncList, staticVals = noStaticVals))
+  items.add(LPFuncs(funcsClass = "Utils", fns = addFuncList))
 
   val pkg = LPackage(packageName = "test", items = items)
   val cfs = lowerPackage(pkg, pool)
@@ -73,24 +74,25 @@ func makePackageClasses(pool: in Pool): List[BuiltClass] {
 }
 
 // ── Build Main class ──────────────────────────────────────────────────────────
+
 func makeMainBytes(pool: in Pool): List[Byte] {
   val asm = newAssembler(pool)
 
-  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOutIdx  = poolFieldref(pool,  "java/lang/System",    "out",     "Ljava/io/PrintStream;")
   val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
-  val vofIIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
+  val concatIdx  = poolMethodref(pool, "java/lang/String",    "concat",  "(Ljava/lang/String;)Ljava/lang/String;")
+  val vofIIdx    = poolMethodref(pool, "java/lang/String",    "valueOf", "(I)Ljava/lang/String;")
 
   val pairClass = poolClass(pool, "Pair")
-  val pairCtor = poolMethodref(pool, "Pair", "<init>", "(II)V")
-  val pairA = poolFieldref(pool, "Pair", "a", "I")
-  val pairB = poolFieldref(pool, "Pair", "b", "I")
+  val pairCtor  = poolMethodref(pool, "Pair",  "<init>", "(II)V")
+  val pairA     = poolFieldref(pool,  "Pair",  "a",      "I")
+  val pairB     = poolFieldref(pool,  "Pair",  "b",      "I")
 
-  val wtClass = poolClass(pool, "Weight")
-  val wtCtor = poolMethodref(pool, "Weight", "<init>", "(I)V")
-  val wtValue = poolMethodref(pool, "Weight", "$value", "()I")
+  val wtClass   = poolClass(pool, "Weight")
+  val wtCtor    = poolMethodref(pool, "Weight", "<init>",  "(I)V")
+  val wtValue   = poolMethodref(pool, "Weight", "$value",  "()I")
 
-  val utilAdd = poolMethodref(pool, "Utils", "add", "(II)I")
+  val utilAdd   = poolMethodref(pool, "Utils",  "add",     "(II)I")
 
   // Pair pair = new Pair(5, 7)
   emitNew(asm, pairClass)
@@ -151,10 +153,11 @@ func makeMainBytes(pool: in Pool): List[Byte] {
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
+
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b124"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
@@ -167,9 +170,9 @@ func main(): Unit {
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB124",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

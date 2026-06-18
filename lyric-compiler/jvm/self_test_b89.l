@@ -1,15 +1,16 @@
-//! jvm/self_test_b89.l — Stage B89: float[] arrays (newarray T_FLOAT, faload, fastore).
-//!
-//! Generates FloatArrays.class with:
-//!   makeFloats()[F    — builds {1.5f, 2.5f, 3.5f} via fastore
-//!   sumFloats([F)F    — sums elements via faload
-//!   getAt([FI)F       — returns element at index
-//!
-//! Main prints:
-//!   sum=7.5
-//!   at1=2.5
-//!
-//! Exercises: newarray T_FLOAT, fastore, faload, fadd, freturn, ldc (float).
+// jvm/self_test_b89.l — Stage B89: float[] arrays (newarray T_FLOAT, faload, fastore).
+//
+// Generates FloatArrays.class with:
+//   makeFloats()[F    — builds {1.5f, 2.5f, 3.5f} via fastore
+//   sumFloats([F)F    — sums elements via faload
+//   getAt([FI)F       — returns element at index
+//
+// Main prints:
+//   sum=7.5
+//   at1=2.5
+//
+// Exercises: newarray T_FLOAT, fastore, faload, fadd, freturn, ldc (float).
+
 package Jvm.SelfTestB89
 
 import Std.Core
@@ -95,16 +96,16 @@ func makeFloatArraysBytes(): List[Byte] {
 }
 
 func makeMainClassBytes(): List[Byte] {
-  val pool = poolNew()
-  val asm = newAssembler(pool)
+  val pool      = poolNew()
+  val asm       = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnS = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val sysOut    = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnS  = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
   val concatRef = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
-  val valueOfF = poolMethodref(pool, "java/lang/String", "valueOf", "(F)Ljava/lang/String;")
-  val makeRef = poolMethodref(pool, "FloatArrays", "makeFloats", "()[F")
-  val sumRef = poolMethodref(pool, "FloatArrays", "sumFloats", "([F)F")
-  val getRef = poolMethodref(pool, "FloatArrays", "getAt", "([FI)F")
+  val valueOfF  = poolMethodref(pool, "java/lang/String", "valueOf", "(F)Ljava/lang/String;")
+  val makeRef   = poolMethodref(pool, "FloatArrays", "makeFloats", "()[F")
+  val sumRef    = poolMethodref(pool, "FloatArrays", "sumFloats",  "([F)F")
+  val getRef    = poolMethodref(pool, "FloatArrays", "getAt",      "([FI)F")
 
   // arr = FloatArrays.makeFloats()   (slot 0)
   emitInvokestatic(asm, makeRef)
@@ -144,24 +145,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b89"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val floatArraysBytes = makeFloatArraysBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes        = makeMainClassBytes()
 
   val floatArraysClass = BuiltClass(binaryName = "FloatArrays", bytes = floatArraysBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass        = BuiltClass(binaryName = "Main",        bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(floatArraysClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB89",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

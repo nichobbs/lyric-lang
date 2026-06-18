@@ -1,17 +1,18 @@
-//! std/_kernel_jvm/random_host.l — JVM host boundary for java.util.Random (PRNG).
-//!
-//! Mirrors _kernel/random_host.l for the JVM target.
-//! Internal: only Std.Random should import this.
-//!
-//! Package name MUST match the .NET kernel (`Std.RandomHost`) because
-//! the consumer in `std/random.l` does `import Std.RandomHost` regardless
-//! of target.  A previous version of this file declared
-//! `package Std.Random` directly, colliding with the consumer package and
-//! leaving every `Std.Random.*` call on `--target jvm` unresolved.
-//!
-//! nextIntRange routes through a JVM shim because java.util.Random
-//! only exposes `nextInt(bound)` (i.e. [0, bound)); [min, max) is
-//! synthesised as `min + nextInt(max - min)`.
+// std/_kernel_jvm/random_host.l — JVM host boundary for java.util.Random (PRNG).
+//
+// Mirrors _kernel/random_host.l for the JVM target.
+// Internal: only Std.Random should import this.
+//
+// Package name MUST match the .NET kernel (`Std.RandomHost`) because
+// the consumer in `std/random.l` does `import Std.RandomHost` regardless
+// of target.  A previous version of this file declared
+// `package Std.Random` directly, colliding with the consumer package and
+// leaving every `Std.Random.*` call on `--target jvm` unresolved.
+//
+// nextIntRange routes through a JVM shim because java.util.Random
+// only exposes `nextInt(bound)` (i.e. [0, bound)); [min, max) is
+// synthesised as `min + nextInt(max - min)`.
+
 @axiom("java.util.Random conforms to its documented JDK contracts; lyric.stdlib.jvm.RandomHost wraps a process-wide instance")
 package Std.RandomHost
 

@@ -1,19 +1,20 @@
-//! jvm/self_test_b86.l — Stage B86: interface with default method.
-//!
-//! Generates:
-//!   Greeter.class  — interface:
-//!       abstract greet()String
-//!       default  greetLoud()String — returns this.greet().toUpperCase()
-//!   HelloGreeter.class — implements Greeter:
-//!       <init>()V, greet()String → "hello"
-//!
-//! Main prints:
-//!   hello
-//!   HELLO
-//!
-//! Exercises: ACC_INTERFACE + ACC_ABSTRACT flags, abstract method (no Code attr),
-//!            default interface method with Code, invokeinterface, interface
-//!            constant pool entry, ClassFile.interfaces list.
+// jvm/self_test_b86.l — Stage B86: interface with default method.
+//
+// Generates:
+//   Greeter.class  — interface:
+//       abstract greet()String
+//       default  greetLoud()String — returns this.greet().toUpperCase()
+//   HelloGreeter.class — implements Greeter:
+//       <init>()V, greet()String → "hello"
+//
+// Main prints:
+//   hello
+//   HELLO
+//
+// Exercises: ACC_INTERFACE + ACC_ABSTRACT flags, abstract method (no Code attr),
+//            default interface method with Code, invokeinterface, interface
+//            constant pool entry, ClassFile.interfaces list.
+
 package Jvm.SelfTestB86
 
 import Std.Core
@@ -28,13 +29,14 @@ func makeGreeterInterfaceBytes(): List[Byte] {
 
   // Abstract method: greet()String — no Code attribute
   val greetAttrs: List[Attribute] = newList()
-  val greetMethod = makeMethodInfo(ACC_PUBLIC + ACC_ABSTRACT, "greet", "()Ljava/lang/String;", greetAttrs)
+  val greetMethod = makeMethodInfo(ACC_PUBLIC + ACC_ABSTRACT, "greet",
+    "()Ljava/lang/String;", greetAttrs)
 
   // Default method: greetLoud()String
   // aload_0; invokeinterface Greeter.greet ()Ljava/lang/String; 1
   // invokevirtual String.toUpperCase ()Ljava/lang/String;
   // areturn
-  val greetRef = poolIfaceMethodref(pool, "Greeter", "greet", "()Ljava/lang/String;")
+  val greetRef   = poolIfaceMethodref(pool, "Greeter", "greet", "()Ljava/lang/String;")
   val toUpperRef = poolMethodref(pool, "java/lang/String", "toUpperCase", "()Ljava/lang/String;")
   val asmGL = newAssembler(pool)
   emitAload(asmGL, 0)
@@ -44,7 +46,8 @@ func makeGreeterInterfaceBytes(): List[Byte] {
   val glCode = assembleCode(asmGL, 1, 1)
   val glAttrs: List[Attribute] = newList()
   glAttrs.add(glCode)
-  val greetLoudMethod = makeMethodInfo(ACC_PUBLIC, "greetLoud", "()Ljava/lang/String;", glAttrs)
+  val greetLoudMethod = makeMethodInfo(ACC_PUBLIC, "greetLoud",
+    "()Ljava/lang/String;", glAttrs)
 
   val methods: List[MethodInfo] = newList()
   methods.add(greetMethod)
@@ -88,15 +91,15 @@ func makeHelloGreeterBytes(): List[Byte] {
 }
 
 func makeMainClassBytes(): List[Byte] {
-  val pool = poolNew()
-  val asm = newAssembler(pool)
+  val pool      = poolNew()
+  val asm       = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnS = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val hgClass = poolClass(pool, "HelloGreeter")
-  val hgInit = poolMethodref(pool, "HelloGreeter", "<init>", "()V")
-  val greetRef = poolIfaceMethodref(pool, "Greeter", "greet", "()Ljava/lang/String;")
-  val greetLRef = poolIfaceMethodref(pool, "Greeter", "greetLoud", "()Ljava/lang/String;")
+  val sysOut      = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnS    = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val hgClass     = poolClass(pool, "HelloGreeter")
+  val hgInit      = poolMethodref(pool, "HelloGreeter", "<init>", "()V")
+  val greetRef    = poolIfaceMethodref(pool, "Greeter", "greet",     "()Ljava/lang/String;")
+  val greetLRef   = poolIfaceMethodref(pool, "Greeter", "greetLoud", "()Ljava/lang/String;")
 
   // HelloGreeter g = new HelloGreeter()  slot 0
   emitNew(asm, hgClass)
@@ -131,17 +134,17 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b86"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
-  val greeterBytes = makeGreeterInterfaceBytes()
+  val greeterBytes     = makeGreeterInterfaceBytes()
   val helloGreeterBytes = makeHelloGreeterBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes        = makeMainClassBytes()
 
-  val greeterClass = BuiltClass(binaryName = "Greeter", bytes = greeterBytes)
+  val greeterClass      = BuiltClass(binaryName = "Greeter",      bytes = greeterBytes)
   val helloGreeterClass = BuiltClass(binaryName = "HelloGreeter", bytes = helloGreeterBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass         = BuiltClass(binaryName = "Main",         bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(greeterClass)
   classes.add(helloGreeterClass)
@@ -149,9 +152,9 @@ func main(): Unit {
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB86",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

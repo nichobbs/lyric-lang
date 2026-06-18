@@ -1,17 +1,18 @@
-//! jvm/self_test_b67.l — Stage B67: lookupswitch instruction.
-//!
-//! Generates Switch.class with:
-//!   dayType(I)String  — classifies day-of-week (1-7) as "weekday" or "weekend"
-//!                       using lookupswitch for 6 and 7 (weekend), default "weekday"
-//!   grade(I)String    — maps score bands: >=90=>"A", >=80=>"B", >=70=>"C", else=>"F"
-//!                       using tableswitch over [70..90] → 3 cases + default
-//!
-//! Main prints:
-//!   dayType(1)  → "weekday"
-//!   dayType(6)  → "weekend"
-//!   dayType(7)  → "weekend"
-//!
-//! Exercises: emitLookupSwitch with SwitchPair list, sorted keys requirement.
+// jvm/self_test_b67.l — Stage B67: lookupswitch instruction.
+//
+// Generates Switch.class with:
+//   dayType(I)String  — classifies day-of-week (1-7) as "weekday" or "weekend"
+//                       using lookupswitch for 6 and 7 (weekend), default "weekday"
+//   grade(I)String    — maps score bands: >=90=>"A", >=80=>"B", >=70=>"C", else=>"F"
+//                       using tableswitch over [70..90] → 3 cases + default
+//
+// Main prints:
+//   dayType(1)  → "weekday"
+//   dayType(6)  → "weekend"
+//   dayType(7)  → "weekend"
+//
+// Exercises: emitLookupSwitch with SwitchPair list, sorted keys requirement.
+
 package Jvm.SelfTestB67
 
 import Std.Core
@@ -51,12 +52,12 @@ func makeSwitchBytes(): List[Byte] {
 }
 
 func makeMainClassBytes(): List[Byte] {
-  val pool = poolNew()
-  val asm = newAssembler(pool)
+  val pool     = poolNew()
+  val asm      = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOut   = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val printlnS = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val dayRef = poolMethodref(pool, "Switch", "dayType", "(I)Ljava/lang/String;")
+  val dayRef   = poolMethodref(pool, "Switch", "dayType", "(I)Ljava/lang/String;")
 
   // println(Switch.dayType(1)) → "weekday"
   emitGetstatic(asm, sysOut)
@@ -91,24 +92,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b67"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val switchBytes = makeSwitchBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes   = makeMainClassBytes()
 
   val switchClass = BuiltClass(binaryName = "Switch", bytes = switchBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass   = BuiltClass(binaryName = "Main",   bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(switchClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB67",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

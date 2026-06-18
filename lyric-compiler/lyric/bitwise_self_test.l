@@ -1,33 +1,34 @@
-//! bitwise_self_test.l — first executable regression test for a
-//! *self-hosted-only* language feature: the bitwise integer methods
-//! `.and` / `.or` / `.xor` / `.shl` / `.shr` (#1610).
-//!
-//! Why this lives here and not in `lyric-stdlib/tests/*_tests.l`:
-//! those `_tests.l` files are compiled and run by the **F# stage-0**
-//! emitter (`Lyric.Emitter.Emitter` via `EmitTestKit.compileAndRun`),
-//! whose parser never learned keyword-named methods — `x.xor(y)` fails
-//! there with `P0081: expected an identifier after '.'`.  Bitwise ops
-//! exist only in the self-hosted compiler, so the test program itself
-//! must be compiled by the self-hosted pipeline.  This file is run by
-//! the native `lyric test` (issue #1611):
-//!
-//!   lyric test lyric-compiler/lyric/bitwise_self_test.l
-//!
-//! `lyric test` synthesises a runnable program from the `test` blocks
-//! and compiles it IN-PROCESS through the self-hosted `Msil.Bridge`
-//! (lexer -> parser -> type-checker -> mode-checker -> codegen -> MSIL
-//! PE), then executes it and asserts every embedded assertion held.
-//! No `LYRIC_LOAD_COMPILER=1` is needed because this module imports
-//! only `Std.*` (no compiler packages).  No new F#: discovery is the
-//! native Lyric path, mirroring `weaver_self_test.l` / `cfg_gate_self_test.l`.
-//!
-//! Coverage is restricted to signed `Int` and `Long`.  Both the MSIL
-//! (`lyric-compiler/msil/codegen.l`) and JVM (`lyric-compiler/jvm/codegen.l`)
-//! backends lower these to signed opcodes only — `shr` is arithmetic
-//! (sign-replicating), and neither backend has an unsigned integer
-//! type, so the logical-shift paths are unreachable and intentionally
-//! untested here.  Keeping to signed Int/Long makes every assertion
-//! below valid on both `--target dotnet` and `--target jvm`.
+// bitwise_self_test.l — first executable regression test for a
+// *self-hosted-only* language feature: the bitwise integer methods
+// `.and` / `.or` / `.xor` / `.shl` / `.shr` (#1610).
+//
+// Why this lives here and not in `lyric-stdlib/tests/*_tests.l`:
+// those `_tests.l` files are compiled and run by the **F# stage-0**
+// emitter (`Lyric.Emitter.Emitter` via `EmitTestKit.compileAndRun`),
+// whose parser never learned keyword-named methods — `x.xor(y)` fails
+// there with `P0081: expected an identifier after '.'`.  Bitwise ops
+// exist only in the self-hosted compiler, so the test program itself
+// must be compiled by the self-hosted pipeline.  This file is run by
+// the native `lyric test` (issue #1611):
+//
+//   lyric test lyric-compiler/lyric/bitwise_self_test.l
+//
+// `lyric test` synthesises a runnable program from the `test` blocks
+// and compiles it IN-PROCESS through the self-hosted `Msil.Bridge`
+// (lexer -> parser -> type-checker -> mode-checker -> codegen -> MSIL
+// PE), then executes it and asserts every embedded assertion held.
+// No `LYRIC_LOAD_COMPILER=1` is needed because this module imports
+// only `Std.*` (no compiler packages).  No new F#: discovery is the
+// native Lyric path, mirroring `weaver_self_test.l` / `cfg_gate_self_test.l`.
+//
+// Coverage is restricted to signed `Int` and `Long`.  Both the MSIL
+// (`lyric-compiler/msil/codegen.l`) and JVM (`lyric-compiler/jvm/codegen.l`)
+// backends lower these to signed opcodes only — `shr` is arithmetic
+// (sign-replicating), and neither backend has an unsigned integer
+// type, so the logical-shift paths are unreachable and intentionally
+// untested here.  Keeping to signed Int/Long makes every assertion
+// below valid on both `--target dotnet` and `--target jvm`.
+
 @test_module
 package Lyric.BitwiseSelfTest
 
@@ -37,6 +38,7 @@ import Std.Testing
 // ─────────────────────────────────────────────────────────────────────────────
 // Int — bitwise logical ops
 // ─────────────────────────────────────────────────────────────────────────────
+
 test "Int.and masks bits" {
   // 0b0101 & 0b0011 = 0b0001
   assertEqualInt(5.and(3), 1, "5 & 3")
@@ -90,6 +92,7 @@ test "Int bitwise ops on negative operands" {
 // ─────────────────────────────────────────────────────────────────────────────
 // Int — shifts (shl logical, shr arithmetic / sign-replicating)
 // ─────────────────────────────────────────────────────────────────────────────
+
 test "Int.shl shifts left" {
   assertEqualInt(1.shl(4), 16, "1 << 4")
   assertEqualInt(3.shl(2), 12, "3 << 2")
@@ -111,10 +114,12 @@ test "Int.shr is an arithmetic (sign-replicating) shift" {
 // Long — same surface, 64-bit width (exercises the LLand/LLor/LLxor/LLshl/LLshr
 // JVM opcodes and the I8 MSIL path, distinct from the 32-bit Int opcodes above)
 // ─────────────────────────────────────────────────────────────────────────────
+
 // `Long` values are written with the `i64` integer-literal suffix: the
 // self-hosted type-checker types an unsuffixed integer literal as `Int`
 // and does not widen it to `Long` at a binding site (T0060), so `5i64`
 // is the literal form that yields `PtLong`.
+
 test "Long.and / .or / .xor" {
   val a: Long = 5i64
   val b: Long = 3i64

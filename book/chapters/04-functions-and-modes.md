@@ -75,7 +75,7 @@ divmod(17, 5, quotient, remainder)
 // quotient is now 3, remainder is now 2
 ```
 
-The argument must be a writable l-value — a `var` local, another `out`/`inout` parameter, or a mutable field access (`obj.field`). You cannot pass an immutable binding (`val`/`let`/`in`), a literal, or a call result to an `out` parameter.
+The variables must be `var`, not `val`. You cannot pass an immutable binding to an `out` parameter.
 
 ### `inout` — read and write
 
@@ -261,7 +261,7 @@ Three things differ from what you might expect coming from C, Java, or Kotlin.
 val label = if score >= 60 then "pass" else "fail"
 ```
 
-Both branches must produce the same type — the compiler unifies them and reports an error if they disagree. A branch that diverges (`return`, `throw`, `break`, `continue`, or `panic`) has the bottom type `Never` and is absorbed, so it never forces a mismatch: `if c { x } else { return d }` is typed by its `then` branch. If you only write `if` without `else`, the expression produces `Unit`, which is fine for a statement but will cause a type error if you try to use the value. (In *statement* position, where the value is discarded, a branch that ends in a `Unit`-typed statement makes the whole `if` `Unit` — the branches are not required to agree.)
+Both branches must produce the same type. If you only write `if` without `else`, the expression produces `Unit`, which is fine for a statement but will cause a type error if you try to use the value.
 
 For the statement form you are more likely to write the block form:
 

@@ -1,12 +1,13 @@
-//! jvm/self_test_b120.l — Stage B120: lowerScopeBlock (StructuredTaskScope).
-//!
-//! Creates two Callable classes `TaskA` and `TaskB`, each writes to a static
-//! String field. A Main method uses lowerScopeBlock to fork them, join, and then
-//! reads both results.
-//!
-//! Java output (java -jar):
-//!   a=hello
-//!   b=world
+// jvm/self_test_b120.l — Stage B120: lowerScopeBlock (StructuredTaskScope).
+//
+// Creates two Callable classes `TaskA` and `TaskB`, each writes to a static
+// String field. A Main method uses lowerScopeBlock to fork them, join, and then
+// reads both results.
+//
+// Java output (java -jar):
+//   a=hello
+//   b=world
+
 package Jvm.SelfTestB120
 
 import Std.Core
@@ -18,6 +19,7 @@ import Jvm.Lowering
 import Jvm.Driver
 
 // ── Build ResultHolder class with static String fields ────────────────────────
+
 func makeHolderBytes(pool: in Pool): List[Byte] {
   val fa: List[Attribute] = newList()
   val fb: List[Attribute] = newList()
@@ -44,6 +46,7 @@ func makeHolderBytes(pool: in Pool): List[Byte] {
 }
 
 // ── Build TaskA: Callable that sets Holder.a = "hello" ───────────────────────
+
 func makeTaskABytes(pool: in Pool): List[Byte] {
   val asm = newAssembler(pool)
   val aRef = poolFieldref(pool, "Holder", "a", "Ljava/lang/String;")
@@ -57,12 +60,7 @@ func makeTaskABytes(pool: in Pool): List[Byte] {
   val callAttrs: List[Attribute] = newList()
   callAttrs.add(callCode)
   val callPs: List[JvmType] = newList()
-  val callMethod = makeMethodInfo(
-    ACC_PUBLIC,
-    "call",
-    buildDescriptor(callPs, JRef(className = "java/lang/Object")),
-    callAttrs
-  )
+  val callMethod = makeMethodInfo(ACC_PUBLIC, "call", buildDescriptor(callPs, JRef(className = "java/lang/Object")), callAttrs)
 
   // <init>
   val ctorAsm = newAssembler(pool)
@@ -86,6 +84,7 @@ func makeTaskABytes(pool: in Pool): List[Byte] {
 }
 
 // ── Build TaskB: Callable that sets Holder.b = "world" ───────────────────────
+
 func makeTaskBBytes(pool: in Pool): List[Byte] {
   val asm = newAssembler(pool)
   val bRef = poolFieldref(pool, "Holder", "b", "Ljava/lang/String;")
@@ -98,12 +97,7 @@ func makeTaskBBytes(pool: in Pool): List[Byte] {
   val callAttrs: List[Attribute] = newList()
   callAttrs.add(callCode)
   val callPs: List[JvmType] = newList()
-  val callMethod = makeMethodInfo(
-    ACC_PUBLIC,
-    "call",
-    buildDescriptor(callPs, JRef(className = "java/lang/Object")),
-    callAttrs
-  )
+  val callMethod = makeMethodInfo(ACC_PUBLIC, "call", buildDescriptor(callPs, JRef(className = "java/lang/Object")), callAttrs)
 
   val ctorAsm = newAssembler(pool)
   emitAload(ctorAsm, 0)
@@ -125,14 +119,15 @@ func makeTaskBBytes(pool: in Pool): List[Byte] {
 }
 
 // ── Build Main class using lowerScopeBlock ────────────────────────────────────
+
 func makeMainBytes(pool: in Pool): List[Byte] {
   val asm = newAssembler(pool)
 
-  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOutIdx  = poolFieldref(pool,  "java/lang/System",    "out",     "Ljava/io/PrintStream;")
   val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
-  val aRef = poolFieldref(pool, "Holder", "a", "Ljava/lang/String;")
-  val bRef = poolFieldref(pool, "Holder", "b", "Ljava/lang/String;")
+  val concatIdx  = poolMethodref(pool, "java/lang/String",    "concat",  "(Ljava/lang/String;)Ljava/lang/String;")
+  val aRef       = poolFieldref(pool,  "Holder", "a", "Ljava/lang/String;")
+  val bRef       = poolFieldref(pool,  "Holder", "b", "Ljava/lang/String;")
 
   // Use lowerScopeBlock: scopeSlot=1, tasks at slots 2 and 3
   val callableNames: List[String] = newList()
@@ -156,29 +151,7 @@ func makeMainBytes(pool: in Pool): List[Byte] {
 
   emitReturn(asm)
 
-  // Branches and the exception handler entry require a StackMapTable.
-  // The local-variable frame depends on which scope lowering path ran:
-  //   JDK ≤ 23: ShutdownOnFailure in slot 1 + two Subtask slots (slots 2, 3)
-  //   JDK ≥ 24: StructuredTaskScope (interface) in slot 1; firstTaskSlot (slot 2) is
-  //              used only in the catch handler as a Throwable save slot and is
-  //              therefore Top at every declared frame entry.
-  val frameLocals: List[VerifierType] = newList()
-  frameLocals.add(VObject(className = "[Ljava/lang/String;"))
-  if detectJavaFeatureVersion() >= 24 {
-    // Slot 1 = StructuredTaskScope (the sealed interface used by JDK 24+ path).
-    // Slots 2+ are not live at any branch target, so they are implicitly Top.
-    frameLocals.add(VObject(className = "java/util/concurrent/StructuredTaskScope"))
-  } else {
-    // Slot 1 must be declared as ShutdownOnFailure, not its supertype StructuredTaskScope.
-    // After each branch target, invokevirtual ShutdownOnFailure.close()V is emitted;
-    // invokevirtual requires the receiver's frame-declared type to be a subtype of the
-    // Methodref class (ShutdownOnFailure).  StructuredTaskScope is NOT a subtype of
-    // ShutdownOnFailure, so declaring the supertype here would cause a VerifyError.
-    frameLocals.add(VObject(className = "java/util/concurrent/StructuredTaskScope$ShutdownOnFailure"))
-    frameLocals.add(VObject(className = "java/util/concurrent/StructuredTaskScope$Subtask"))
-    frameLocals.add(VObject(className = "java/util/concurrent/StructuredTaskScope$Subtask"))
-  }
-  val codeAttr = assembleCodeWithFrames(asm, 6, 4, frameLocals)
+  val codeAttr = assembleCode(asm, 6, 4)
   val attrs: List[Attribute] = newList()
   attrs.add(codeAttr)
   val mainMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "main", "([Ljava/lang/String;)V", attrs)
@@ -189,25 +162,26 @@ func makeMainBytes(pool: in Pool): List[Byte] {
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
+
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b120"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val pool = poolNew()
   val classes: List[BuiltClass] = newList()
   classes.add(BuiltClass(binaryName = "Holder", bytes = makeHolderBytes(pool)))
-  classes.add(BuiltClass(binaryName = "TaskA", bytes = makeTaskABytes(pool)))
-  classes.add(BuiltClass(binaryName = "TaskB", bytes = makeTaskBBytes(pool)))
-  classes.add(BuiltClass(binaryName = "Main", bytes = makeMainBytes(pool)))
+  classes.add(BuiltClass(binaryName = "TaskA",  bytes = makeTaskABytes(pool)))
+  classes.add(BuiltClass(binaryName = "TaskB",  bytes = makeTaskBBytes(pool)))
+  classes.add(BuiltClass(binaryName = "Main",   bytes = makeMainBytes(pool)))
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB120",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

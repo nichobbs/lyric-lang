@@ -1,7 +1,7 @@
-//! stdlib/tests/iter_tests.l — Tests for Std.Iter.
-//!
-//! Covers non-allocating helpers (forEach side effects, fold, all, any,
-//! count, find, sumInt) and allocating helpers (map, filter, take, drop).
+// stdlib/tests/iter_tests.l — Tests for Std.Iter.
+//
+// Covers non-allocating helpers (forEach side effects, fold, all, any,
+// count, find, sumInt) and allocating helpers (map, filter, take, drop).
 package Std.Iter.Tests
 
 import Std.Core

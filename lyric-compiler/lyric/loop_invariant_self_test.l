@@ -1,21 +1,22 @@
-//! loop_invariant_self_test.l — regression coverage for loop `invariant:`
-//! runtime checking on the self-hosted MSIL target (epic #1470, Band 2 / docs/41
-//! M7).
-//!
-//! A loop `invariant:` clause is lowered by the contract elaborator into an
-//! `assert(inv)` at the top of the loop body (it fires on entry and at the start
-//! of each iteration); codegen then drops the now-redundant `SInvariant` marker
-//! (so codegen's `SInvariant -> {}` is correct, not a gap).  This test pins that
-//! behaviour, which previously had no native self-test: a holding invariant does
-//! not interfere, and a violated invariant panics at runtime.
-//!
-//! The violation case is observed with a `try`/`catch` *expression* (rather than
-//! `assertPanics`, whose closure argument hits an unrelated lambda/test-synth
-//! limitation) — itself exercising the value-producing try/catch fixed in #1823.
-//!
-//! Run via native `lyric test --target dotnet`.  Imports only `Std.*`.
-//!
-//!   lyric test lyric-compiler/lyric/loop_invariant_self_test.l
+// loop_invariant_self_test.l — regression coverage for loop `invariant:`
+// runtime checking on the self-hosted MSIL target (epic #1470, Band 2 / docs/41
+// M7).
+//
+// A loop `invariant:` clause is lowered by the contract elaborator into an
+// `assert(inv)` at the top of the loop body (it fires on entry and at the start
+// of each iteration); codegen then drops the now-redundant `SInvariant` marker
+// (so codegen's `SInvariant -> {}` is correct, not a gap).  This test pins that
+// behaviour, which previously had no native self-test: a holding invariant does
+// not interfere, and a violated invariant panics at runtime.
+//
+// The violation case is observed with a `try`/`catch` *expression* (rather than
+// `assertPanics`, whose closure argument hits an unrelated lambda/test-synth
+// limitation) — itself exercising the value-producing try/catch fixed in #1823.
+//
+// Run via native `lyric test --target dotnet`.  Imports only `Std.*`.
+//
+//   lyric test lyric-compiler/lyric/loop_invariant_self_test.l
+
 @test_module
 package Lyric.LoopInvariantSelfTest
 
@@ -59,3 +60,4 @@ test "a loop invariant that holds does not interfere with execution" {
 test "a violated loop invariant panics at runtime" {
   assertTrue(violationIsCaught(), "i < 2 invariant violated at i = 2 -> panic caught")
 }
+

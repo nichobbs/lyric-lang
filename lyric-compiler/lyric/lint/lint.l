@@ -1,6 +1,6 @@
-//! lint/lint.l — self-hosted `lyric lint` style and quality checker.
-//! Mirrors compiler/src/Lyric.Cli/Lint.fs (Phase 5 §M5.3 shim elimination).
-//! Five AST-only rules: L001-L005.
+// lint/lint.l — self-hosted `lyric lint` style and quality checker.
+// Mirrors compiler/src/Lyric.Cli/Lint.fs (Phase 5 §M5.3 shim elimination).
+// Five AST-only rules: L001-L005.
 package Lyric.Lint
 
 import Std.Core
@@ -9,30 +9,24 @@ import Lyric.Lexer
 import Lyric.Parser
 
 // ─── Diagnostic types ─────────────────────────────────────────────────────────
+
 pub union LintSev {
   case LintError
   case LintWarning
 }
 
 pub record LintDiag {
-  code: String
+  code:     String
   severity: LintSev
-  message: String
-  span: Span
-  // ─── Character helpers (ASCII only — naming rules are ASCII) ──────────────────
+  message:  String
+  span:     Span
 }
 
-func isAsciiUpper(c: in Char): Bool {
-  c >= 'A' and c <= 'Z'
-}
+// ─── Character helpers (ASCII only — naming rules are ASCII) ──────────────────
 
-func isAsciiLower(c: in Char): Bool {
-  c >= 'a' and c <= 'z'
-}
-
-func isAsciiDigit(c: in Char): Bool {
-  c >= '0' and c <= '9'
-}
+func isAsciiUpper(c: in Char): Bool { c >= 'A' and c <= 'Z' }
+func isAsciiLower(c: in Char): Bool { c >= 'a' and c <= 'z' }
+func isAsciiDigit(c: in Char): Bool { c >= '0' and c <= '9' }
 
 func startsUpper(s: in String): Bool {
   s.length > 0 and isAsciiUpper(s[0])
@@ -43,9 +37,7 @@ func startsLower(s: in String): Bool {
 }
 
 func isUpperSnake(s: in String): Bool {
-  if s.length == 0 {
-    return false
-  }
+  if s.length == 0 { return false }
   var i = 0
   var ok = true
   while i < s.length and ok {
@@ -59,6 +51,7 @@ func isUpperSnake(s: in String): Bool {
 }
 
 // ─── Rule helpers ─────────────────────────────────────────────────────────────
+
 func lintError(code: in String, msg: in String, sp: in Span): LintDiag {
   LintDiag(code = code, severity = LintError, message = msg, span = sp)
 }
@@ -69,36 +62,32 @@ func lintWarning(code: in String, msg: in String, sp: in Span): LintDiag {
 
 // L001 — type name must start with an uppercase letter.
 func checkTypeName(name: in String, sp: in Span): List[LintDiag] {
-  if startsUpper(name) {
-    return newList()
-  }
+  if startsUpper(name) { return newList() }
   val acc: List[LintDiag] = newList()
-  acc.add(lintError("L001", "type name '" + name + "' should be PascalCase (start with an uppercase letter)", sp))
+  acc.add(lintError("L001",
+    "type name '" + name + "' should be PascalCase (start with an uppercase letter)", sp))
   acc
 }
 
 // L002 — function name must start with a lowercase letter.
 func checkFuncName(name: in String, sp: in Span): List[LintDiag] {
-  if startsLower(name) {
-    return newList()
-  }
+  if startsLower(name) { return newList() }
   val acc: List[LintDiag] = newList()
-  acc.add(lintError("L002", "function name '" + name + "' should be camelCase (start with a lowercase letter)", sp))
+  acc.add(lintError("L002",
+    "function name '" + name + "' should be camelCase (start with a lowercase letter)", sp))
   acc
 }
 
 // L003 — pub item should have a doc comment.
-func checkPubDoc(
-  vis: in Option[Visibility], docs: in List[DocComment], name: in String, kind: in String, sp: in Span
-): List[LintDiag] {
+func checkPubDoc(vis: in Option[Visibility], docs: in List[DocComment],
+                 name: in String, kind: in String, sp: in Span): List[LintDiag] {
   match vis {
-    case None -> newList()
+    case None    -> newList()
     case Some(_) -> {
-      if docs.count > 0 {
-        return newList()
-      }
+      if docs.count > 0 { return newList() }
       val acc: List[LintDiag] = newList()
-      acc.add(lintWarning("L003", "pub " + kind + " '" + name + "' has no doc comment (///)", sp))
+      acc.add(lintWarning("L003",
+        "pub " + kind + " '" + name + "' has no doc comment (///)", sp))
       acc
     }
   }
@@ -114,20 +103,28 @@ func checkDocTodos(docs: in List[DocComment]): List[LintDiag] {
     var found = false
     var j = 0
     while j + 3 < docText.length and not found {
-      if (docText[j] == 'T' or docText[j] == 't') and (docText[j + 1] == 'O' or docText[j + 1] == 'o') and (docText[j + 2] == 'D' or docText[j + 2] == 'd') and (docText[j + 3] == 'O' or docText[j + 3] == 'o') {
+      if (docText[j] == 'T' or docText[j] == 't') and
+         (docText[j+1] == 'O' or docText[j+1] == 'o') and
+         (docText[j+2] == 'D' or docText[j+2] == 'd') and
+         (docText[j+3] == 'O' or docText[j+3] == 'o') {
         found = true
       }
       j = j + 1
     }
     var j2 = 0
     while j2 + 4 < docText.length and not found {
-      if (docText[j2] == 'F' or docText[j2] == 'f') and (docText[j2 + 1] == 'I' or docText[j2 + 1] == 'i') and (docText[j2 + 2] == 'X' or docText[j2 + 2] == 'x') and (docText[j2 + 3] == 'M' or docText[j2 + 3] == 'm') and (docText[j2 + 4] == 'E' or docText[j2 + 4] == 'e') {
+      if (docText[j2] == 'F' or docText[j2] == 'f') and
+         (docText[j2+1] == 'I' or docText[j2+1] == 'i') and
+         (docText[j2+2] == 'X' or docText[j2+2] == 'x') and
+         (docText[j2+3] == 'M' or docText[j2+3] == 'm') and
+         (docText[j2+4] == 'E' or docText[j2+4] == 'e') {
         found = true
       }
       j2 = j2 + 1
     }
     if found {
-      acc.add(lintWarning("L004", "doc comment contains TODO/FIXME: '" + docText + "'", d.span))
+      acc.add(lintWarning("L004",
+        "doc comment contains TODO/FIXME: '" + docText + "'", d.span))
     }
     i = i + 1
   }
@@ -135,13 +132,9 @@ func checkDocTodos(docs: in List[DocComment]): List[LintDiag] {
 }
 
 // L005 — pub func with a block body should declare at least one contract.
-// Suppressed when the module is annotated @runtime_checked.
-func checkPubContract(vis: in Option[Visibility], fn: in FunctionDecl, isRuntimeChecked: in Bool): List[LintDiag] {
-  if isRuntimeChecked {
-    return newList()
-  }
+func checkPubContract(vis: in Option[Visibility], fn: in FunctionDecl): List[LintDiag] {
   match vis {
-    case None -> newList()
+    case None    -> newList()
     case Some(_) -> {
       match fn.body {
         case Some(body) -> {
@@ -149,14 +142,9 @@ func checkPubContract(vis: in Option[Visibility], fn: in FunctionDecl, isRuntime
             case FBBlock(_) -> {
               if fn.contracts.count == 0 {
                 val acc: List[LintDiag] = newList()
-                acc.add(
-                  lintWarning(
-                    "L005",
-                    "pub func '" + fn.name +
-                      "' has no requires/ensures contracts — consider adding contracts or marking the module @runtime_checked",
-                    fn.span
-                  )
-                )
+                acc.add(lintWarning("L005",
+                  "pub func '" + fn.name + "' has no requires/ensures contracts — consider adding contracts or marking the module @runtime_checked",
+                  fn.span))
                 acc
               } else {
                 newList()
@@ -172,6 +160,7 @@ func checkPubContract(vis: in Option[Visibility], fn: in FunctionDecl, isRuntime
 }
 
 // ─── List concat helper ───────────────────────────────────────────────────────
+
 func appendDiags(target: in List[LintDiag], src: in List[LintDiag]) {
   var i = 0
   while i < src.count {
@@ -181,16 +170,17 @@ func appendDiags(target: in List[LintDiag], src: in List[LintDiag]) {
 }
 
 // ─── Item walker ──────────────────────────────────────────────────────────────
-func checkItem(item: in Item, isRuntimeChecked: in Bool): List[LintDiag] {
+
+func checkItem(item: in Item): List[LintDiag] {
   val acc: List[LintDiag] = newList()
-  val vis = item.visibility
+  val vis  = item.visibility
   val docs = item.docComments
   match item.kind {
     case IFunc(fn) -> {
       appendDiags(acc, checkFuncName(fn.name, fn.span))
       appendDiags(acc, checkPubDoc(vis, docs, fn.name, "func", item.span))
       appendDiags(acc, checkDocTodos(docs))
-      appendDiags(acc, checkPubContract(vis, fn, isRuntimeChecked))
+      appendDiags(acc, checkPubContract(vis, fn))
     }
     case IRecord(rd) -> {
       appendDiags(acc, checkTypeName(rd.name, rd.span))
@@ -284,7 +274,8 @@ func checkItem(item: in Item, isRuntimeChecked: in Bool): List[LintDiag] {
     case IConst(cd) -> {
       val nameOk = startsUpper(cd.name) or isUpperSnake(cd.name)
       if not nameOk {
-        acc.add(lintWarning("L001", "const '" + cd.name + "' should be PascalCase or UPPER_SNAKE_CASE", cd.span))
+        acc.add(lintWarning("L001",
+          "const '" + cd.name + "' should be PascalCase or UPPER_SNAKE_CASE", cd.span))
       }
       appendDiags(acc, checkPubDoc(vis, docs, cd.name, "const", item.span))
       appendDiags(acc, checkDocTodos(docs))
@@ -297,6 +288,7 @@ func checkItem(item: in Item, isRuntimeChecked: in Bool): List[LintDiag] {
 }
 
 // ─── Sort helper (insertion sort by line/col) ─────────────────────────────────
+
 func sortDiags(diags: in List[LintDiag]): List[LintDiag] {
   val n = diags.count
   var i = 1
@@ -305,10 +297,10 @@ func sortDiags(diags: in List[LintDiag]): List[LintDiag] {
     var j = i - 1
     while j >= 0 {
       val dj = diags[j]
-      val kLine = key.span.startPos.line
+      val kLine  = key.span.startPos.line
       val djLine = dj.span.startPos.line
-      val kCol = key.span.startPos.column
-      val djCol = dj.span.startPos.column
+      val kCol   = key.span.startPos.column
+      val djCol  = dj.span.startPos.column
       if djLine > kLine or (djLine == kLine and djCol > kCol) {
         diags[j + 1] = dj
         j = j - 1
@@ -323,22 +315,14 @@ func sortDiags(diags: in List[LintDiag]): List[LintDiag] {
 }
 
 // ─── Public entry ─────────────────────────────────────────────────────────────
+
 pub func lint(source: in String): List[LintDiag] {
-  val pr = parse(source)
+  val pr   = parse(source)
   val file = pr.file
-  var isRuntimeChecked = false
-  var ai = 0
-  while ai < file.fileAnnotations.count {
-    val ann = file.fileAnnotations[ai]
-    if ann.name.segments.count == 1 and ann.name.segments[0] == "runtime_checked" {
-      isRuntimeChecked = true
-    }
-    ai = ai + 1
-  }
   val acc: List[LintDiag] = newList()
   var i = 0
   while i < file.items.count {
-    appendDiags(acc, checkItem(file.items[i], isRuntimeChecked))
+    appendDiags(acc, checkItem(file.items[i]))
     i = i + 1
   }
   sortDiags(acc)

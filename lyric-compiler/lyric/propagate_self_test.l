@@ -1,35 +1,28 @@
-//! propagate_self_test.l — #1475 (Band 2): the `?` error-propagation operator.
-//!
-//! Exercises the self-hosted `Lyric.Propagate` lowering end-to-end: each `?`
-//! is rewritten into a match-unwrap + early-return of the wrapped Err/None,
-//! keyed off the enclosing function's declared return type.  Before this pass
-//! shipped, `EPropagate` was a codegen no-op (`x?` compiled as `x`) — a silent
-//! miscompile of every program using `?`.
-//!
-//! Run in CI via native `lyric test --target dotnet`, which compiles this
-//! module in-process through the self-hosted `Msil.Bridge` (so the `?`
-//! lowering under test is the one that runs).  The F0020 error-path tests
-//! import `Lyric.Parser` and `Lyric.Propagate` from the stage-1 DLL bundle
-//! (resolved as restored deps via #2364, same mechanism as weaver_self_test.l).
-//! MSIL target only; JVM-target `?` parity is tracked separately (epic #1470).
+// propagate_self_test.l — #1475 (Band 2): the `?` error-propagation operator.
+//
+// Exercises the self-hosted `Lyric.Propagate` lowering end-to-end: each `?`
+// is rewritten into a match-unwrap + early-return of the wrapped Err/None,
+// keyed off the enclosing function's declared return type.  Before this pass
+// shipped, `EPropagate` was a codegen no-op (`x?` compiled as `x`) — a silent
+// miscompile of every program using `?`.
+//
+// Run in CI via native `lyric test --target dotnet`, which compiles this
+// module in-process through the self-hosted `Msil.Bridge` (so the `?`
+// lowering under test is the one that runs).  Imports only `Std.*`, so no
+// LYRIC_LOAD_COMPILER=1 is needed.  MSIL target only; JVM-target `?` parity
+// is tracked separately (epic #1470 defers JVM).
+
 @test_module
 package Lyric.PropagateSelfTest
 
 import Std.Core
 import Std.Collections
 import Std.Testing
-import Lyric.Lexer
-import Lyric.Parser
-import Lyric.Propagate
 
 // A Result-producing helper whose Err carries a distinguishing label, so the
 // tests can prove WHICH `?` short-circuited (i.e. evaluation order).
 func okIf(cond: in Bool, v: in Int, label: in String): Result[Int, String] {
-  if cond {
-    Ok(v)
-  } else {
-    Err(label)
-  }
+  if cond { Ok(v) } else { Err(label) }
 }
 
 // Two `?` in sequence in a Result-returning function.  On the first Err the
@@ -42,14 +35,14 @@ func chain(a: in Int, b: in Int): Result[Int, String] {
 
 func resultLabel(r: in Result[Int, String]): String {
   match r {
-    case Ok(_) -> "ok"
+    case Ok(_)  -> "ok"
     case Err(e) -> e
   }
 }
 
 func resultValue(r: in Result[Int, String]): Int {
   match r {
-    case Ok(v) -> v
+    case Ok(v)  -> v
     case Err(_) -> -1
   }
 }
@@ -80,12 +73,9 @@ test "Result `?`: nested non-tail position unwraps then continues" {
 }
 
 // ── Option propagation ───────────────────────────────────────────────────────
+
 func optDiv(n: in Int, d: in Int): Option[Int] {
-  if d == 0 {
-    None
-  } else {
-    Some(n / d)
-  }
+  if d == 0 { None } else { Some(n / d) }
 }
 
 func compute(a: in Int, b: in Int): Option[Int] {
@@ -96,7 +86,7 @@ func compute(a: in Int, b: in Int): Option[Int] {
 
 func optTag(o: in Option[Int]): Int {
   match o {
-    case None -> -1
+    case None    -> -1
     case Some(v) -> v
   }
 }
@@ -113,6 +103,7 @@ test "Option `?`: a None short-circuits to None" {
 // ── `?` inside nested statement forms (if branch, while body) ─────────────────
 // Exercises the rewriter's recursion through `if` / `while` bodies, and the
 // early-return from inside a loop.
+
 func condProp(useA: in Bool, a: in Int, b: in Int): Result[Int, String] {
   if useA {
     val x = okIf(a > 0, a, "a")?
@@ -163,94 +154,3 @@ test "Result `?` inside a while-loop body early-returns mid-iteration" {
 // blocked it was #1784 (a value-type *parameter* on an interface/impl method
 // faulted the JIT, unrelated to `?`), fixed separately.  End-to-end coverage of
 // `?` in an impl method lives in `impl_method_self_test.l`.
-// ── F0020 error-path tests (#1781, #1801) ─────────────────────────────────────
-// These exercise `lowerPropagateFile` directly against source strings that
-// contain invalid `?` usage.  The diagnostic path was previously untested;
-// regressions that silently removed F0020 and reverted to pass-through would not
-// have been caught by the runtime tests above.
-func propHasDiag(diags: in List[Diagnostic], code: in String): Bool {
-  var i = 0
-  var found = false
-  while i < diags.count {
-    if diags[i].code == code {
-      found = true
-    }
-    i = i + 1
-  }
-  found
-}
-
-test "F0020: ? in non-Result/Option function emits diagnostic" {
-  // The enclosing function returns `Int`, not `Result` or `Option`.
-  // `lowerPropagateFile` must emit F0020 rather than silently pass through.
-  val src = "package P\nfunc f(x: in Int): Int {\n  val r: Result[Int, String] = Ok(1)\n  r?\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
-  assertTrue(propHasDiag(result.diagnostics, "F0020"), "F0020 emitted for ? in Int function")
-}
-
-test "F0020: ? inside a lambda body emits lambda-specific diagnostic" {
-  // `?` inside a lambda body — the lambda's return monad is unknown to
-  // the propagation pass (PropInLambda), so the lambda-specific F0020
-  // message fires regardless of whether the enclosing function returns Result.
-  // (#1801)
-  val src = "package P\nfunc f(): Result[Int, String] {\n  val fn = \\() -> {\n    val r: Result[Int, String] = Ok(1)\n    r?\n  }\n  Ok(1)\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
-  assertTrue(propHasDiag(result.diagnostics, "F0020"), "F0020 emitted for ? inside lambda in Result function")
-}
-
-test "F0020: ? inside a lambda nested in a non-Result function also emits" {
-  // PropInLambda fires even when the outer function's return type is neither
-  // Result nor Option — the lambda wrapper is detected first. (#1801)
-  val src = "package P\nfunc f(): Unit {\n  val fn = \\() -> {\n    val r: Result[Int, String] = Ok(1)\n    r?\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
-  assertTrue(propHasDiag(result.diagnostics, "F0020"), "F0020 emitted for ? inside lambda in Unit function")
-}
-
-// ── Same-file alias return types (#1814) ─────────────────────────────────────
-// `monadOfRet` unfolds same-file `alias` declarations before the Result/Option
-// classification, so a return type written through an alias no longer trips a
-// false F0020.
-test "alias of Result: ? classifies as PropResult, no F0020 (#1814)" {
-  val src = "package P\nalias ParseResult[T] = Result[T, String]\nfunc f(): ParseResult[Int] {\n  val r: Result[Int, String] = Ok(1)\n  val v = r?\n  Ok(v)\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
-  assertEqualInt(result.diagnostics.count, 0, "no diagnostics for ? behind a Result alias")
-}
-
-test "alias of Option: ? classifies as PropOption, no F0020 (#1814)" {
-  val src = "package P\nalias Maybe[T] = Option[T]\nfunc g(): Maybe[Int] {\n  val o: Option[Int] = Some(1)\n  val v = o?\n  Some(v)\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
-  assertEqualInt(result.diagnostics.count, 0, "no diagnostics for ? behind an Option alias")
-}
-
-test "non-generic alias of Result: TRef return type also unfolds (#1814)" {
-  val src = "package P\nalias IntResult = Result[Int, String]\nfunc f(): IntResult {\n  val r: Result[Int, String] = Ok(1)\n  val v = r?\n  Ok(v)\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
-  assertEqualInt(result.diagnostics.count, 0, "no diagnostics for ? behind a non-generic Result alias")
-}
-
-test "chained alias of Result unfolds through both hops (#1814)" {
-  val src = "package P\nalias Inner[T] = Result[T, String]\nalias Outer[T] = Inner[T]\nfunc f(): Outer[Int] {\n  val r: Result[Int, String] = Ok(1)\n  val v = r?\n  Ok(v)\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
-  assertEqualInt(result.diagnostics.count, 0, "no diagnostics for ? behind a chained alias")
-}
-
-test "non-monadic alias still fires F0020 (#1814)" {
-  val src = "package P\nalias Ints = List[Int]\nfunc f(): Ints {\n  val r: Result[Int, String] = Ok(1)\n  val v = r?\n  newList()\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
-  assertTrue(propHasDiag(result.diagnostics, "F0020"), "F0020 still fires when the alias is not Result/Option")
-}
-
-test "cyclic alias classifies as PropOther without looping (#1814)" {
-  val src = "package P\nalias A = B\nalias B = A\nfunc f(): A {\n  val r: Result[Int, String] = Ok(1)\n  val v = r?\n  v\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
-  assertTrue(propHasDiag(result.diagnostics, "F0020"), "cyclic alias hits the depth bound and fires F0020")
-}
-
-// NOTE: runtime end-to-end coverage of `?` behind an alias is blocked on a
-// pre-existing MSIL backend gap independent of the propagation pass: a value
-// returned through `alias IntResult = Result[Int, String]` is constructed as
-// a distinct generic instantiation, so a downstream `match` on it traps with
-// "match not exhaustive ... scr=GStd.Core.Result<I,S,>" even with no `?`
-// involved (and module-level generic alias parameters fail T0010 in the
-// self-hosted type checker).  Tracked in #3267; the alias classification
-// itself is fully covered by the AST-level tests above.

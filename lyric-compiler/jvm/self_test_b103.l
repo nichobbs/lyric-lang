@@ -1,16 +1,17 @@
-//! jvm/self_test_b103.l — Stage B103: maxStack/maxLocals inference.
-//!
-//! Identical to self_test_b102 except maxStack = 0 and maxLocals = 0 on
-//! both LFunc values.  lowerFunc must infer the correct values automatically.
-//!
-//! Java output (java -jar):
-//!   A=gradeStr(4)
-//!   B=gradeStr(3)
-//!   C=gradeStr(2)
-//!   ?=gradeStr(5)
-//!   Mon=dayName(1)
-//!   Wed=dayName(3)
-//!   ?=dayName(2)
+// jvm/self_test_b103.l — Stage B103: maxStack/maxLocals inference.
+//
+// Identical to self_test_b102 except maxStack = 0 and maxLocals = 0 on
+// both LFunc values.  lowerFunc must infer the correct values automatically.
+//
+// Java output (java -jar):
+//   A=gradeStr(4)
+//   B=gradeStr(3)
+//   C=gradeStr(2)
+//   ?=gradeStr(5)
+//   Mon=dayName(1)
+//   Wed=dayName(3)
+//   ?=dayName(2)
+
 package Jvm.SelfTestB103
 
 import Std.Core
@@ -59,12 +60,12 @@ func makeGradeStrMethod(): LFunc {
   val params: List[JvmType] = newList()
   params.add(JInt)
   LFunc(
-    flags = ACC_PUBLIC + ACC_STATIC,
-    name = "gradeStr",
-    params = params,
-    ret = JRef(className = "java/lang/String"),
-    insns = insns,
-    maxStack = 0,
+    flags     = ACC_PUBLIC + ACC_STATIC,
+    name      = "gradeStr",
+    params    = params,
+    ret       = JRef(className = "java/lang/String"),
+    insns     = insns,
+    maxStack  = 0,
     maxLocals = 0
   )
 }
@@ -101,12 +102,12 @@ func makeDayNameMethod(): LFunc {
   val params: List[JvmType] = newList()
   params.add(JInt)
   LFunc(
-    flags = ACC_PUBLIC + ACC_STATIC,
-    name = "dayName",
-    params = params,
-    ret = JRef(className = "java/lang/String"),
-    insns = insns,
-    maxStack = 0,
+    flags     = ACC_PUBLIC + ACC_STATIC,
+    name      = "dayName",
+    params    = params,
+    ret       = JRef(className = "java/lang/String"),
+    insns     = insns,
+    maxStack  = 0,
     maxLocals = 0
   )
 }
@@ -122,13 +123,13 @@ func makeSwitchBytes(): List[Byte] {
 
 func makeMainBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
-  val gradeStrIdx = poolMethodref(pool, "Switch", "gradeStr", "(I)Ljava/lang/String;")
-  val dayNameIdx = poolMethodref(pool, "Switch", "dayName", "(I)Ljava/lang/String;")
+  val sysOutIdx   = poolFieldref(pool,  "java/lang/System",    "out",      "Ljava/io/PrintStream;")
+  val printlnIdx  = poolMethodref(pool, "java/io/PrintStream", "println",  "(Ljava/lang/String;)V")
+  val concatIdx   = poolMethodref(pool, "java/lang/String",    "concat",   "(Ljava/lang/String;)Ljava/lang/String;")
+  val gradeStrIdx = poolMethodref(pool, "Switch",              "gradeStr", "(I)Ljava/lang/String;")
+  val dayNameIdx  = poolMethodref(pool, "Switch",              "dayName",  "(I)Ljava/lang/String;")
 
   // println(Switch.gradeStr(4) + "=gradeStr(4)")
   emitGetstatic(asm, sysOutIdx)
@@ -195,21 +196,21 @@ func makeMainBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b103"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val switchClass = BuiltClass(binaryName = "Switch", bytes = makeSwitchBytes())
-  val mainClass = BuiltClass(binaryName = "Main", bytes = makeMainBytes())
+  val mainClass   = BuiltClass(binaryName = "Main",   bytes = makeMainBytes())
   val classes: List[BuiltClass] = newList()
   classes.add(switchClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB103",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

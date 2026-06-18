@@ -1,19 +1,10 @@
 # 23 — F# Shim Elimination
 
-**Status: RUNTIME F# DECOMMISSION COMPLETE (D-progress-529).** The
-`lyric` AOT binary and every user-facing Lyric program now execute
-with **zero F# in the runtime closure** — no `Lyric.Emitter.dll`,
-no `FSharp.Core.dll`, no ecosystem host shims. The F# stage-0
-bootstrap compiler (`bootstrap/src/Lyric.{Lexer,Parser,TypeChecker,
-Emitter,Cli}/`) survives solely as a build tool: it compiles the
-self-hosted `.l` sources once, after which every subsequent `lyric`
-release is built by a prior self-hosted release. No user-initiated
-command ever invokes F# code at runtime.
-
-The original target — `bootstrap/src/Lyric.Stdlib/Stdlib.fs` — was
-deleted entirely in D-progress-140 (2026-04 era). The plan below
-describes the multi-stage journey; sections 4.1–4.3 are now
-**historical record** of how each bucket was retired.
+**Status: STDLIB SHIM ELIMINATED.** The original target —
+`bootstrap/src/Lyric.Stdlib/Stdlib.fs` — was deleted entirely in
+D-progress-140 (2026-04 era). The plan below describes the
+multi-stage journey; sections 4.1–4.3 are now **historical record**
+of how each bucket was retired.
 
 What remains, and the **current policy** (per `CLAUDE.md` §"F# is
 for the existing bootstrap compiler only"):
@@ -21,40 +12,17 @@ for the existing bootstrap compiler only"):
 - The F# stdlib shim project is **gone**. `Lyric.Stdlib.dll` is now
   the Lyric-compiled bundle from `lyric-stdlib/lyric.toml`, with no
   F# code and no `FSharp.Core.dll` runtime dep.
-- All ecosystem-library host shims have been deleted as each
-  library's kernel was ported to native `_kernel/*.l` BCL externs:
-  `Lyric.Storage.Host` (#1170 / #733), `Lyric.Auth.Host` (#1622
-  follow-up), `Lyric.Session.Host` (PR #3016 / #1777),
-  `Lyric.Ws.Host` (D-progress-426), `Lyric.Jobs.Host`,
-  `Lyric.Mq.Host`, `Lyric.Web.Host`, and `Lyric.Jvm.Hosts`
-  (PR #3053). No ecosystem host shim remains under
-  `bootstrap/src/`. **No new host shims** are permitted; new BCL
-  externs go in `lyric-<lib>/src/_kernel/**` or
-  `lyric-stdlib/std/_kernel/*.l` via `extern type` / `extern
-  package` declarations directly.
-- **`Lyric.Emitter.dll` and `FSharp.Core.dll` are no longer in the
-  stage-1 / stage-2 runtime bundle** (Band 5). All stdlib kernel
-  modules — `console_host.l`, `process_capture_host.l`,
-  `verifier_env_host.l`, `http_host.l` — migrated off
-  `Lyric.Emitter.*` host shims to direct BCL externs (#1489, #1493,
-  G12, #1576). Strings scan of every stage-1 Lyric DLL confirmed
-  zero `AssemblyRef` entries to either assembly. The
-  `Lyric.Cli.Aot` csproj no longer carries an explicit
-  `FSharp.Core.dll` reference.
-- **`lyric test` supports fixture declarations** (D-progress-474).
-  `fixture name[: T] = expr` items in `@test_module` files are
-  rewritten to module-level `val` declarations in the synthesised
-  source. The `FixtureUnsupported` outcome variant is removed.
-  Migration of `MsilSelfTestM2{a,b,c,d}.fs` to native `lyric test`
-  was initially blocked by two pre-existing bugs — the `ByteWriter`
-  name collision (#3085) and module-level `pub val` constants absent
-  from the F#-emitted contract metadata (#3086) — both fixed in
-  D-progress-500: codegen short-name resolution gained the type
-  checker's scope tiers, and `scripts/stage-selfhosted-compiler.sh`
-  stages self-hosted-emitted compiler DLLs (whose metadata carries
-  the vals) under `<libdir>/selfhosted` for `lyric test` to link.
-  The four F# wrappers are deleted; the tests run as `@test_module`
-  files via native `lyric test` in CI.
+- Ecosystem-library host shims still exist under
+  `bootstrap/src/Lyric.<X>.Host/` for: Auth, Jobs, Jvm.Hosts, Mq,
+  Session, Web, Ws. `Lyric.Storage.Host` was removed by PR #1170
+  (#733): the local-filesystem backend is now a fully native Lyric
+  implementation against direct BCL externs in
+  `lyric-storage/src/_kernel/net/storage_kernel.l`. The remaining
+  ecosystem shims are on the same deletion schedule as the stdlib
+  shim was — they're tolerated until the self-hosted replacement is
+  ready, then deleted. **No new host shims** are permitted; new BCL
+  externs go in `lyric-stdlib/std/_kernel/*.l` via `extern type` /
+  `extern package` declarations directly.
 - The F# stage-0 bootstrap compiler under `bootstrap/src/Lyric.{Lexer,
   Parser,TypeChecker,Emitter,Cli}/` continues to exist solely so the
   stage-0 binary can build the self-hosted Lyric compiler from `.l`
@@ -85,9 +53,9 @@ blocker is resolved, delete the F# and strike the row. Nothing here is
 | `Lyric.Lexer`, `Lyric.Parser`, `Lyric.TypeChecker`, `Lyric.Emitter` | The stage-0 bootstrap compiler. Stage-0 compiles the self-hosted `.l` compiler (and stdlib bundle) into DLLs; the self-hosted lexer/parser/checker/MSIL backend already exist in `lyric-compiler/` but are *built by* this F#. | A reproducible way to produce a stage-0 `lyric` binary without F# (e.g. a checked-in/cached bootstrap artefact or a prior self-hosted release building the next), plus the stage-2 reproducibility check (currently blocked — see `scripts/bootstrap.sh` stage 2). |
 | `Lyric.Cli` — `Program.fs` | Bootstrap-only entry point handling the four internal flags `--internal-build`, `--internal-project-build`, `--internal-contract-meta`, `--internal-manifest-build` that stage 1 and the emitProject subprocess hop rely on. The F# *user-facing* CLI dispatcher was already deleted (#860). | The self-hosted MSIL bridge handling project/manifest/contract-meta builds fully in-process (no subprocess hop), so the internal flags are no longer invoked. |
 | `Lyric.Cli` — `Manifest.fs` | TOML parser consumed by `--internal-manifest-build` (stage-1 stdlib bundle). Self-hosted equivalent already exists at `lyric-compiler/lyric/manifest.l`. | Same as the `Program.fs` row — once the in-process bridge drives the manifest build, this goes with it. |
-| `Lyric.Cli` — `SelfHosted*.fs` (`SelfHostedBridge.fs`, `SelfHostedMsil.fs`, `SelfHostedMsilProject.fs`, `SelfHostedJvm.fs`) | Test-infrastructure bridges that drive the self-hosted MSIL/JVM pipeline in-process via reflection (used by `bootstrap/tests/**`). `SelfHostedMsilProject.fs` bridges the project-level compilation path (`compileProjectToMsilWithRestoredEncoded`), used by `SelfHostedRestoredPackageE2ETests.fs`. Not on any compiled program's runtime closure. | Native test harness (Lyric-side) that exercises the self-hosted pipeline without an F# reflection bridge. |
+| `Lyric.Cli` — `SelfHosted*.fs` | Test-infrastructure bridges that drive the self-hosted MSIL/JVM pipeline in-process via reflection (used by `bootstrap/tests/**`). Not on any compiled program's runtime closure. | Native test harness (Lyric-side) that exercises the self-hosted pipeline without an F# reflection bridge. |
 | `Lyric.Cli.Aot` — `Program.cs` | Thin C# trampoline into the Lyric-emitted `Lyric.Cli.Program.main`. Not F# code; included here so the dependency picture is complete (#1526). | Retires together with the internal-flag handling above; the trampoline itself shrinks to nothing once NativeAOT publishing of the Lyric CLI is the shipping path. |
-| ~~All ecosystem-library host shims (`Lyric.Storage.Host`, `Lyric.Auth.Host`, `Lyric.Session.Host`, `Lyric.Ws.Host`, `Lyric.Jobs.Host`, `Lyric.Mq.Host`, `Lyric.Web.Host`, `Lyric.Jvm.Hosts`)~~ | All deleted — each library's kernel was ported to native `_kernel/*.l` BCL externs. | ~~Complete~~ — no ecosystem host shim remains. |
+| `Lyric.Jobs.Host`, `Lyric.Mq.Host`, `Lyric.Session.Host`, `Lyric.Web.Host`, `Lyric.Ws.Host`, `Lyric.Jvm.Hosts` | `@externTarget` host shims for ecosystem libraries' BCL/JVM boundaries. `Lyric.Storage.Host` was removed (#1170 / #733) and `Lyric.Auth.Host` was removed (#1622 follow-up) by porting their backends to native `_kernel/*.l` BCL externs. | Each library porting its kernel to native `extern type` / `extern package` declarations in `lyric-<lib>/src/_kernel/**`, the way Storage and Auth did. Tracked per-library. |
 | `bootstrap/tests/Lyric.{Lexer,Parser,TypeChecker,Emitter,Cli}.Tests` | Expecto runners. The Emitter suite also discovers and runs every self-hosted `*_self_test.l`; the Cli suite drives the self-hosted bridges. | Native `lyric test` discovering the `.l` self-tests directly (partially landed; see #1324) plus a Lyric-side runner for the F# unit coverage worth keeping. |
 
 ---
@@ -211,7 +179,7 @@ targeting.
 | `AmbientHost` | 35 | G11 (`AsyncLocal[T]` primitive) | Lyric `@asyncLocal val ambient: CancellationToken`. |
 | `TaskHost` | 25 | G12 (delegate lowering completeness audit) | Direct `@externTarget("System.Threading.Tasks.Task.…")` declarations. |
 | `JsonHost.Get*Slice` family + readers | ~150 | shipped per D-progress-139 (no G-item — fixed via three small emitter changes: leading-param exact-type filter on default-arg overload selection; `Ldarg`-not-`Ldarga` for inout-mode value-type receivers; culture-invariant `toString(Double | Float)`) | Pure-Lyric `lyricJsonGet*Slice` in `_kernel/json_host.l` driving `JsonElement+ArrayEnumerator` via a `while hostEnumMoveNext(en) { … }` loop. `Parse` / `EncodeString` / `RenderDoubleSlice` also retired (Parse → direct extern with default-arg struct; EncodeString → split into `JsonEncodedText.Encode` + `ToString` + Lyric concat; RenderDoubleSlice → inline `mkSliceHelperInline` with culture-invariant `toString`). |
-| ~~`HttpClientHost`~~, `HttpServerHost` | 200 | G12 audit | ~~`HttpClientHost.fs` deleted in PR #3027: F# emitter `EPath` handler now emits `ldsfld` for reference-typed module-level `pub val` fields; `hostDefaultClient()` returns `defaultClient` directly.~~ `HttpServerHost`: direct `@externTarget` against `System.Net.HttpListener.…` once delegate handling is audited. |
+| `HttpClientHost`, `HttpServerHost` | 200 | G12 audit | Direct `@externTarget` against `System.Net.Http.…` and `System.Net.HttpListener.…` once delegate handling is fully audited. Currently these wrap `Task<T>` returns and that path may already work — needs verification. |
 
 **Bucket C subtotal:** ~691 LoC eliminated (or migrated to direct
 `@externTarget` declarations, which moves them out of `Stdlib.fs`

@@ -1,18 +1,19 @@
-//! jvm/classfile.l — JVM §4 class-file data model and binary serializer.
-//!
-//! Provides the record types that describe a Java class (ClassFile, FieldInfo,
-//! MethodInfo, Attribute) and `serializeClass`, which lowers a ClassFile to a
-//! `List[Byte]` that the JVM accepts as a valid .class file (Java 21,
-//! major version 65, big-endian per JVMS §4).
-//!
-//! Serialization strategy: two-pass.
-//!   Pass 1 — intern all symbolic names into the constant pool (idempotent).
-//!   Pass 2 — emit the class body using the already-interned pool indices.
-//! The pool is then prepended with its count, followed by the body.
-//!
-//! Stage B1: ClassFile model and serializer only.  The Code attribute is
-//! built externally by Jvm.Bytecode and passed in as a pre-serialised
-//! List[Byte] inside an Attribute record.
+// jvm/classfile.l — JVM §4 class-file data model and binary serializer.
+//
+// Provides the record types that describe a Java class (ClassFile, FieldInfo,
+// MethodInfo, Attribute) and `serializeClass`, which lowers a ClassFile to a
+// `List[Byte]` that the JVM accepts as a valid .class file (Java 21,
+// major version 65, big-endian per JVMS §4).
+//
+// Serialization strategy: two-pass.
+//   Pass 1 — intern all symbolic names into the constant pool (idempotent).
+//   Pass 2 — emit the class body using the already-interned pool indices.
+// The pool is then prepended with its count, followed by the body.
+//
+// Stage B1: ClassFile model and serializer only.  The Code attribute is
+// built externally by Jvm.Bytecode and passed in as a pre-serialised
+// List[Byte] inside an Attribute record.
+
 package Jvm.Classfile
 
 import Std.Core
@@ -22,83 +23,59 @@ import Jvm.Kernel
 // ── Access flags (JVMS §4.1, §4.5, §4.6) ────────────────────────────────────
 // Bit-mask constants; combine with addition (`+`): `ACC_PUBLIC + ACC_FINAL`.
 // All JVMS flag bits are distinct, so addition is equivalent to bitwise-or.
-pub val ACC_PUBLIC: Int = 0x0001
 
-pub val ACC_PRIVATE: Int = 0x0002
-
-pub val ACC_PROTECTED: Int = 0x0004
-
-pub val ACC_STATIC: Int = 0x0008
-
-pub val ACC_FINAL: Int = 0x0010
-
-pub val ACC_SUPER: Int = 0x0020
-
-// always set on class_info
-pub val ACC_BRIDGE: Int = 0x0040
-
-// compiler-synthesised bridge method
-pub val ACC_VARARGS: Int = 0x0080
-
-pub val ACC_NATIVE: Int = 0x0100
-
-pub val ACC_INTERFACE: Int = 0x0200
-
-pub val ACC_ABSTRACT: Int = 0x0400
-
-pub val ACC_STRICT: Int = 0x0800
-
-// strictfp (deprecated in Java 17)
-pub val ACC_SYNTHETIC: Int = 0x1000
-
-pub val ACC_ANNOTATION: Int = 0x2000
-
-pub val ACC_ENUM: Int = 0x4000
-
-pub val ACC_MODULE: Int = 0x8000
+pub val ACC_PUBLIC     : Int = 0x0001
+pub val ACC_PRIVATE    : Int = 0x0002
+pub val ACC_PROTECTED  : Int = 0x0004
+pub val ACC_STATIC     : Int = 0x0008
+pub val ACC_FINAL      : Int = 0x0010
+pub val ACC_SUPER      : Int = 0x0020   // always set on class_info
+pub val ACC_BRIDGE     : Int = 0x0040   // compiler-synthesised bridge method
+pub val ACC_VARARGS    : Int = 0x0080
+pub val ACC_NATIVE     : Int = 0x0100
+pub val ACC_INTERFACE  : Int = 0x0200
+pub val ACC_ABSTRACT   : Int = 0x0400
+pub val ACC_STRICT     : Int = 0x0800   // strictfp (deprecated in Java 17)
+pub val ACC_SYNTHETIC  : Int = 0x1000
+pub val ACC_ANNOTATION : Int = 0x2000
+pub val ACC_ENUM       : Int = 0x4000
+pub val ACC_MODULE     : Int = 0x8000
 
 // ── MethodHandle reference-kind constants (JVMS §5.4.3.5) ───────────────────
-pub val REF_GETFIELD: Int = 1
-
-pub val REF_GETSTATIC: Int = 2
-
-pub val REF_PUTFIELD: Int = 3
-
-pub val REF_PUTSTATIC: Int = 4
-
-pub val REF_INVOKEVIRTUAL: Int = 5
-
-pub val REF_INVOKESTATIC: Int = 6
-
-pub val REF_INVOKESPECIAL: Int = 7
-
-pub val REF_NEWINVOKESPECIAL: Int = 8
-
-pub val REF_INVOKEINTERFACE: Int = 9
+pub val REF_GETFIELD          : Int = 1
+pub val REF_GETSTATIC         : Int = 2
+pub val REF_PUTFIELD          : Int = 3
+pub val REF_PUTSTATIC         : Int = 4
+pub val REF_INVOKEVIRTUAL     : Int = 5
+pub val REF_INVOKESTATIC      : Int = 6
+pub val REF_INVOKESPECIAL     : Int = 7
+pub val REF_NEWINVOKESPECIAL  : Int = 8
+pub val REF_INVOKEINTERFACE   : Int = 9
 
 // ── Data model ───────────────────────────────────────────────────────────────
+
 /// A single class-file attribute.  `bytes` is the raw `attribute_info.info`
 /// content (everything after the name_index and length).  The serializer
 /// writes name_index (u2) + length (u4) + bytes verbatim.
 pub record Attribute {
-  name: String
+  name:  String
   bytes: List[Byte]
 }
 
 /// A field_info entry (JVMS §4.5).
 pub record FieldInfo {
-  flags: Int
-  name: String
+  flags:      Int
+  name:       String
   descriptor: String
-  attrs: List[Attribute]
+  attrs:      List[Attribute]
 }
 
 /// A method_info entry (JVMS §4.6).
 pub record MethodInfo {
-  flags: Int
-  name: String
+  flags:      Int
+  name:       String
   descriptor: String
-  attrs: List[Attribute]
+  attrs:      List[Attribute]
 }
 
 /// Top-level class-file descriptor (JVMS §4.1).
@@ -106,16 +83,17 @@ pub record MethodInfo {
 pub record ClassFile {
   minorVersion: Int           // 0 for release; 65535 = preview features
   majorVersion: Int           // 65 = Java 21
-  flags: Int           // access_flags bitmask
-  thisClass: String        // internal binary name, e.g. "com/example/Foo"
-  superClass: String        // "" → java/lang/Object for classes; "" for interfaces
-  interfaces: List[String]
-  fields: List[FieldInfo]
-  methods: List[MethodInfo]
-  attrs: List[Attribute]
+  flags:        Int           // access_flags bitmask
+  thisClass:    String        // internal binary name, e.g. "com/example/Foo"
+  superClass:   String        // "" → java/lang/Object for classes; "" for interfaces
+  interfaces:   List[String]
+  fields:       List[FieldInfo]
+  methods:      List[MethodInfo]
+  attrs:        List[Attribute]
 }
 
 // ── Construction helpers ──────────────────────────────────────────────────────
+
 /// Create an `Attribute` from a `ByteWriter` snapshot.
 pub func attrFromWriter(name: in String, w: in ByteWriter): Attribute {
   Attribute(name = name, bytes = writerToList(w))
@@ -145,13 +123,13 @@ pub func makeClassWithMethods(thisClass: in String, methods: in List[MethodInfo]
   ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags = ACC_PUBLIC + ACC_SUPER,
-    thisClass = thisClass,
-    superClass = "java/lang/Object",
-    interfaces = newList(),
-    fields = newList(),
-    methods = methods,
-    attrs = newList()
+    flags        = ACC_PUBLIC + ACC_SUPER,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = newList(),
+    methods      = methods,
+    attrs        = newList()
   )
 }
 
@@ -164,13 +142,13 @@ pub func makeClassWithMethodsV49(thisClass: in String, methods: in List[MethodIn
   ClassFile(
     minorVersion = 0,
     majorVersion = 49,
-    flags = ACC_PUBLIC + ACC_SUPER,
-    thisClass = thisClass,
-    superClass = "java/lang/Object",
-    interfaces = newList(),
-    fields = newList(),
-    methods = methods,
-    attrs = newList()
+    flags        = ACC_PUBLIC + ACC_SUPER,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = newList(),
+    methods      = methods,
+    attrs        = newList()
   )
 }
 
@@ -180,13 +158,13 @@ pub func makeClass(thisClass: in String): ClassFile {
   ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags = ACC_PUBLIC + ACC_SUPER,
-    thisClass = thisClass,
-    superClass = "java/lang/Object",
-    interfaces = newList(),
-    fields = newList(),
-    methods = newList(),
-    attrs = newList()
+    flags        = ACC_PUBLIC + ACC_SUPER,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = newList(),
+    methods      = newList(),
+    attrs        = newList()
   )
 }
 
@@ -196,17 +174,18 @@ pub func makeInterface(thisClass: in String): ClassFile {
   ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags = ACC_PUBLIC + ACC_INTERFACE + ACC_ABSTRACT,
-    thisClass = thisClass,
-    superClass = "java/lang/Object",
-    interfaces = newList(),
-    fields = newList(),
-    methods = newList(),
-    attrs = newList()
+    flags        = ACC_PUBLIC + ACC_INTERFACE + ACC_ABSTRACT,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = newList(),
+    methods      = newList(),
+    attrs        = newList()
   )
 }
 
 // ── Internal serialization helpers ────────────────────────────────────────────
+
 // Intern an attribute's name and data into the pool (pass 1 only).
 func internAttr(attr: in Attribute, pool: in Pool): Unit {
   val _ = poolUtf8(pool, attr.name)
@@ -263,6 +242,7 @@ func emitMethod(m: in MethodInfo, pool: in Pool, buf: in ByteWriter): Unit {
 }
 
 // ── Public serializer ─────────────────────────────────────────────────────────
+
 /// Serialize `cf` to a JVM-loadable byte sequence using a caller-supplied pool.
 ///
 /// Use this when methods were assembled via `Jvm.Bytecode.assembleCode` with
@@ -281,7 +261,7 @@ pub func serializeClassWithPool(cf: in ClassFile, pool: in Pool): List[Byte] {
   // can re-call the same pool* functions and get the cached indices.
 
   val superName = if cf.superClass == "" then "java/lang/Object" else cf.superClass
-  val _thisIdx = poolClass(pool, cf.thisClass)
+  val _thisIdx  = poolClass(pool, cf.thisClass)
   val _superIdx = poolClass(pool, superName)
 
   for iface in cf.interfaces.toArray() {
@@ -346,6 +326,7 @@ pub func serializeClass(cf: in ClassFile): List[Byte] {
 }
 
 // ── Attribute builders ────────────────────────────────────────────────────────
+
 /// Build a `SourceFile` attribute.
 /// Used to map class files back to source for stack traces.
 pub func makeSourceFileAttr(pool: in Pool, fileName: in String): Attribute {
@@ -374,13 +355,13 @@ pub func makeCodeAttr(maxStack: in Int, maxLocals: in Int, code: in List[Byte]):
 /// `handlerPc` and `catchType` are the pool-index for the exception class
 /// (0 means catch-all / `finally`).
 pub func makeCodeAttrWithHandler(
-  maxStack: in Int,
-  maxLocals: in Int,
-  code: in List[Byte],
-  startPc: in Int,
-  endPc: in Int,
-  handlerPc: in Int,
-  catchType: in Int,
+  maxStack:   in Int,
+  maxLocals:  in Int,
+  code:       in List[Byte],
+  startPc:    in Int,
+  endPc:      in Int,
+  handlerPc:  in Int,
+  catchType:  in Int
 ): Attribute {
   val w = writerNew()
   writerU2(w, maxStack)
@@ -398,17 +379,11 @@ pub func makeCodeAttrWithHandler(
 
 /// Build a `Code` attribute with two exception handlers.
 pub func makeCodeAttrWith2Handlers(
-  maxStack: in Int,
-  maxLocals: in Int,
-  code: in List[Byte],
-  startPc1: in Int,
-  endPc1: in Int,
-  handlerPc1: in Int,
-  catchType1: in Int,
-  startPc2: in Int,
-  endPc2: in Int,
-  handlerPc2: in Int,
-  catchType2: in Int,
+  maxStack:    in Int,
+  maxLocals:   in Int,
+  code:        in List[Byte],
+  startPc1:    in Int, endPc1:    in Int, handlerPc1: in Int, catchType1: in Int,
+  startPc2:    in Int, endPc2:    in Int, handlerPc2: in Int, catchType2: in Int
 ): Attribute {
   val w = writerNew()
   writerU2(w, maxStack)
@@ -457,117 +432,131 @@ pub func makeExceptionsAttr(classIndices: in List[Int]): Attribute {
 /// Create a `ClassFile` with explicit fields and methods lists.
 /// Defaults: minor=0, major=65, ACC_PUBLIC|ACC_SUPER,
 /// superClass=java/lang/Object, no interfaces, no class attributes.
-pub func makeClassFull(thisClass: in String, fields: in List[FieldInfo], methods: in List[MethodInfo]): ClassFile {
+pub func makeClassFull(
+  thisClass: in String,
+  fields:    in List[FieldInfo],
+  methods:   in List[MethodInfo]
+): ClassFile {
   ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags = ACC_PUBLIC + ACC_SUPER,
-    thisClass = thisClass,
-    superClass = "java/lang/Object",
-    interfaces = newList(),
-    fields = fields,
-    methods = methods,
-    attrs = newList()
+    flags        = ACC_PUBLIC + ACC_SUPER,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = fields,
+    methods      = methods,
+    attrs        = newList()
   )
 }
 
 /// Create a class with explicit fields, interfaces, and methods.
 /// Defaults: minor=0, major=65, ACC_PUBLIC|ACC_SUPER, superClass=java/lang/Object.
 pub func makeClassFullWithInterfaces(
-  thisClass: in String,
+  thisClass:  in String,
   interfaces: in List[String],
-  fields: in List[FieldInfo],
-  methods: in List[MethodInfo],
+  fields:     in List[FieldInfo],
+  methods:    in List[MethodInfo]
 ): ClassFile {
   ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags = ACC_PUBLIC + ACC_SUPER,
-    thisClass = thisClass,
-    superClass = "java/lang/Object",
-    interfaces = interfaces,
-    fields = fields,
-    methods = methods,
-    attrs = newList()
+    flags        = ACC_PUBLIC + ACC_SUPER,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = interfaces,
+    fields       = fields,
+    methods      = methods,
+    attrs        = newList()
   )
 }
 
 /// Create a class that implements one or more interfaces.
 pub func makeClassWithInterfaces(
-  thisClass: in String, interfaces: in List[String], methods: in List[MethodInfo]
+  thisClass:  in String,
+  interfaces: in List[String],
+  methods:    in List[MethodInfo]
 ): ClassFile {
   ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags = ACC_PUBLIC + ACC_SUPER,
-    thisClass = thisClass,
-    superClass = "java/lang/Object",
-    interfaces = interfaces,
-    fields = newList(),
-    methods = methods,
-    attrs = newList()
+    flags        = ACC_PUBLIC + ACC_SUPER,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = interfaces,
+    fields       = newList(),
+    methods      = methods,
+    attrs        = newList()
   )
 }
 
 /// Create an interface ClassFile with the given methods.
 /// Uses ACC_PUBLIC|ACC_INTERFACE|ACC_ABSTRACT flags.
-pub func makeInterfaceWithMethods(thisClass: in String, methods: in List[MethodInfo]): ClassFile {
+pub func makeInterfaceWithMethods(
+  thisClass: in String,
+  methods:   in List[MethodInfo]
+): ClassFile {
   ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags = ACC_PUBLIC + ACC_INTERFACE + ACC_ABSTRACT,
-    thisClass = thisClass,
-    superClass = "java/lang/Object",
-    interfaces = newList(),
-    fields = newList(),
-    methods = methods,
-    attrs = newList()
+    flags        = ACC_PUBLIC + ACC_INTERFACE + ACC_ABSTRACT,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = newList(),
+    methods      = methods,
+    attrs        = newList()
   )
 }
 
 /// Create a class that carries only class-level attributes (no methods, no fields).
 /// Useful for attaching custom attributes (e.g. LyricSignature) to a class.
-pub func makeClassWithAttrs(thisClass: in String, classAttrs: in List[Attribute]): ClassFile {
+pub func makeClassWithAttrs(
+  thisClass:  in String,
+  classAttrs: in List[Attribute]
+): ClassFile {
   ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
-    thisClass = thisClass,
-    superClass = "java/lang/Object",
-    interfaces = newList(),
-    fields = newList(),
-    methods = newList(),
-    attrs = classAttrs
+    flags        = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = newList(),
+    methods      = newList(),
+    attrs        = classAttrs
   )
 }
 
 /// Create a class with class-level attributes (e.g. BootstrapMethods).
 pub func makeClassWithMethodsAndAttrs(
-  thisClass: in String, methods: in List[MethodInfo], classAttrs: in List[Attribute]
+  thisClass:  in String,
+  methods:    in List[MethodInfo],
+  classAttrs: in List[Attribute]
 ): ClassFile {
   ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags = ACC_PUBLIC + ACC_SUPER,
-    thisClass = thisClass,
-    superClass = "java/lang/Object",
-    interfaces = newList(),
-    fields = newList(),
-    methods = methods,
-    attrs = classAttrs
+    flags        = ACC_PUBLIC + ACC_SUPER,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = newList(),
+    methods      = methods,
+    attrs        = classAttrs
   )
 }
 
 /// Build a `BootstrapMethods` class-level attribute with a single entry
 /// and no static arguments.  `refKind` is typically 6 (REF_invokeStatic).
 pub func makeBootstrapMethodsSingle(
-  pool: in Pool,
-  refKind: in Int,
+  pool:      in Pool,
+  refKind:   in Int,
   className: in String,
-  name: in String,
-  desc: in String,
+  name:      in String,
+  desc:      in String
 ): Attribute {
-  val w = writerNew()
+  val w   = writerNew()
   val mhIdx = poolMethodHandle(pool, refKind, className, name, desc)
   writerU2(w, 1)       // num_bootstrap_methods
   writerU2(w, mhIdx)   // bootstrap_method_ref
@@ -577,58 +566,67 @@ pub func makeBootstrapMethodsSingle(
 
 /// Create an abstract class (`ACC_PUBLIC | ACC_SUPER | ACC_ABSTRACT`)
 /// with `java/lang/Object` as superclass.  Used as the base of a union hierarchy.
-pub func makeAbstractClass(thisClass: in String, fields: in List[FieldInfo], methods: in List[MethodInfo]): ClassFile {
+pub func makeAbstractClass(
+  thisClass: in String,
+  fields:    in List[FieldInfo],
+  methods:   in List[MethodInfo]
+): ClassFile {
   ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags = ACC_PUBLIC + ACC_SUPER + ACC_ABSTRACT,
-    thisClass = thisClass,
-    superClass = "java/lang/Object",
-    interfaces = newList(),
-    fields = fields,
-    methods = methods,
-    attrs = newList()
+    flags        = ACC_PUBLIC + ACC_SUPER + ACC_ABSTRACT,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = fields,
+    methods      = methods,
+    attrs        = newList()
   )
 }
 
 /// Create a final class (`ACC_PUBLIC | ACC_SUPER | ACC_FINAL`) with
 /// `java/lang/Object` as superclass.  Used for protected types and wire classes.
-pub func makeFinalClass(thisClass: in String, fields: in List[FieldInfo], methods: in List[MethodInfo]): ClassFile {
+pub func makeFinalClass(
+  thisClass: in String,
+  fields:    in List[FieldInfo],
+  methods:   in List[MethodInfo]
+): ClassFile {
   ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
-    thisClass = thisClass,
-    superClass = "java/lang/Object",
-    interfaces = newList(),
-    fields = fields,
-    methods = methods,
-    attrs = newList()
+    flags        = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = fields,
+    methods      = methods,
+    attrs        = newList()
   )
 }
 
 /// Create a concrete case class that extends `superClass`.
 /// Used for individual cases in a union type hierarchy.
 pub func makeCaseClass(
-  thisClass: in String,
+  thisClass:  in String,
   superClass: in String,
-  fields: in List[FieldInfo],
-  methods: in List[MethodInfo],
+  fields:     in List[FieldInfo],
+  methods:    in List[MethodInfo]
 ): ClassFile {
   ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags = ACC_PUBLIC + ACC_SUPER,
-    thisClass = thisClass,
-    superClass = superClass,
-    interfaces = newList(),
-    fields = fields,
-    methods = methods,
-    attrs = newList()
+    flags        = ACC_PUBLIC + ACC_SUPER,
+    thisClass    = thisClass,
+    superClass   = superClass,
+    interfaces   = newList(),
+    fields       = fields,
+    methods      = methods,
+    attrs        = newList()
   )
 }
 
 // ── B111-B116 attribute helpers ───────────────────────────────────────────────
+
 /// Build a `PermittedSubclasses` class-level attribute (JVMS §4.7.31).
 /// `caseNames` are the JVM binary names of the permitted subclasses.
 pub func makePermittedSubclassesAttr(caseNames: in List[String], pool: in Pool): Attribute {
@@ -659,8 +657,8 @@ pub func makeRecordAttr(fieldNames: in List[String], fieldDescs: in List[String]
 pub func makeSealedInterfaceWithMethods(
   thisClass: in String,
   caseNames: in List[String],
-  methods: in List[MethodInfo],
-  pool: in Pool,
+  methods:   in List[MethodInfo],
+  pool:      in Pool
 ): ClassFile {
   val permAttr = makePermittedSubclassesAttr(caseNames, pool)
   val classAttrs: List[Attribute] = newList()
@@ -668,62 +666,63 @@ pub func makeSealedInterfaceWithMethods(
   ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags = ACC_PUBLIC + ACC_INTERFACE + ACC_ABSTRACT,
-    thisClass = thisClass,
-    superClass = "java/lang/Object",
-    interfaces = newList(),
-    fields = newList(),
-    methods = methods,
-    attrs = classAttrs
+    flags        = ACC_PUBLIC + ACC_INTERFACE + ACC_ABSTRACT,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = newList(),
+    methods      = methods,
+    attrs        = classAttrs
   )
 }
 
 /// Build a final record class with a `Record` attribute and unmangled field accessors.
 pub func makeRecordClass(
-  thisClass: in String,
-  fields: in List[FieldInfo],
-  methods: in List[MethodInfo],
-  recordAttr: in Attribute,
+  thisClass:  in String,
+  fields:     in List[FieldInfo],
+  methods:    in List[MethodInfo],
+  recordAttr: in Attribute
 ): ClassFile {
   val classAttrs: List[Attribute] = newList()
   classAttrs.add(recordAttr)
   ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
-    thisClass = thisClass,
-    superClass = "java/lang/Record",
-    interfaces = newList(),
-    fields = fields,
-    methods = methods,
-    attrs = classAttrs
+    flags        = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Record",
+    interfaces   = newList(),
+    fields       = fields,
+    methods      = methods,
+    attrs        = classAttrs
   )
 }
 
 /// Build a case class that extends `superClass` and implements `iface`.
 pub func makeCaseClassImplementing(
-  thisClass: in String,
+  thisClass:  in String,
   superClass: in String,
-  iface: in String,
-  fields: in List[FieldInfo],
-  methods: in List[MethodInfo],
+  iface:      in String,
+  fields:     in List[FieldInfo],
+  methods:    in List[MethodInfo]
 ): ClassFile {
   val ifaces: List[String] = newList()
   ifaces.add(iface)
   ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
-    thisClass = thisClass,
-    superClass = superClass,
-    interfaces = ifaces,
-    fields = fields,
-    methods = methods,
-    attrs = newList()
+    flags        = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
+    thisClass    = thisClass,
+    superClass   = superClass,
+    interfaces   = ifaces,
+    fields       = fields,
+    methods      = methods,
+    attrs        = newList()
   )
 }
 
 // ── B126 annotation attribute helpers (JVMS §4.7.16, §4.7.22) ────────────────
+
 /// An element_value (JVMS §4.7.16.1).  Covers the tags needed for
 /// @LyricTest and the meta-annotations @Retention / @Target.
 /// Extend with more cases as new tags are required.
@@ -739,7 +738,7 @@ pub union AnnotationElementValue {
 
 /// A single name=value pair inside a RuntimeVisibleAnnotations entry.
 pub record AnnotationElement {
-  name: String
+  name:  String
   value: AnnotationElementValue
 }
 
@@ -747,7 +746,7 @@ pub record AnnotationElement {
 /// its element_value_pairs.
 pub record AnnotationEntry {
   typeDescriptor: String
-  elements: List[AnnotationElement]
+  elements:       List[AnnotationElement]
 }
 
 // Emit an element_value to `w` (JVMS §4.7.16.1).
@@ -816,20 +815,22 @@ pub func makeAnnotationDefaultAttr(pool: in Pool, defaultVal: in AnnotationEleme
 /// Pass `methods` = the annotation element method_infos.
 /// Pass `classAttrs` = class-level annotations (e.g. @Retention, @Target).
 pub func makeAnnotationInterfaceClass(
-  thisClass: in String, methods: in List[MethodInfo], classAttrs: in List[Attribute]
+  thisClass:  in String,
+  methods:    in List[MethodInfo],
+  classAttrs: in List[Attribute]
 ): ClassFile {
   val ifaces: List[String] = newList()
   ifaces.add("java/lang/annotation/Annotation")
   ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags = ACC_PUBLIC + ACC_ANNOTATION + ACC_INTERFACE + ACC_ABSTRACT,
-    thisClass = thisClass,
-    superClass = "java/lang/Object",
-    interfaces = ifaces,
-    fields = newList(),
-    methods = methods,
-    attrs = classAttrs
+    flags        = ACC_PUBLIC + ACC_ANNOTATION + ACC_INTERFACE + ACC_ABSTRACT,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = ifaces,
+    fields       = newList(),
+    methods      = methods,
+    attrs        = classAttrs
   )
 }
 
@@ -839,18 +840,23 @@ pub func makeAnnotationInterfaceClass(
 // manipulation so callers in other packages (e.g. Jvm.TestEngine) need only
 // work with `Attribute`, avoiding cross-package generic instantiation issues in
 // the bootstrap emitter's stdlib-artifact compilation path.
+
 /// Build a `RuntimeVisibleAnnotations` attribute carrying one
 /// `@Retention(RetentionPolicy.RUNTIME)` annotation.
 pub func makeRetentionRVAAttr(pool: in Pool): Attribute {
   val elems: List[AnnotationElement] = newList()
-  elems.add(
-    AnnotationElement(
-      name = "value",
-      value = AEVEnum(typeName = "Ljava/lang/annotation/RetentionPolicy;", constName = "RUNTIME")
+  elems.add(AnnotationElement(
+    name  = "value",
+    value = AEVEnum(
+      typeName  = "Ljava/lang/annotation/RetentionPolicy;",
+      constName = "RUNTIME"
     )
-  )
+  ))
   val anns: List[AnnotationEntry] = newList()
-  anns.add(AnnotationEntry(typeDescriptor = "Ljava/lang/annotation/Retention;", elements = elems))
+  anns.add(AnnotationEntry(
+    typeDescriptor = "Ljava/lang/annotation/Retention;",
+    elements       = elems
+  ))
   makeRuntimeVisibleAnnotationsAttr(pool, anns)
 }
 
@@ -858,14 +864,18 @@ pub func makeRetentionRVAAttr(pool: in Pool): Attribute {
 /// `@Target({ElementType.METHOD})` annotation.
 pub func makeTargetRVAAttr(pool: in Pool): Attribute {
   val elems: List[AnnotationElement] = newList()
-  elems.add(
-    AnnotationElement(
-      name = "value",
-      value = AEVSingleEnumArray(typeName = "Ljava/lang/annotation/ElementType;", constName = "METHOD")
+  elems.add(AnnotationElement(
+    name  = "value",
+    value = AEVSingleEnumArray(
+      typeName  = "Ljava/lang/annotation/ElementType;",
+      constName = "METHOD"
     )
-  )
+  ))
   val anns: List[AnnotationEntry] = newList()
-  anns.add(AnnotationEntry(typeDescriptor = "Ljava/lang/annotation/Target;", elements = elems))
+  anns.add(AnnotationEntry(
+    typeDescriptor = "Ljava/lang/annotation/Target;",
+    elements       = elems
+  ))
   makeRuntimeVisibleAnnotationsAttr(pool, anns)
 }
 
@@ -875,22 +885,30 @@ pub func makeTargetRVAAttr(pool: in Pool): Attribute {
 /// class file element, so callers must not also add the individual helpers.
 pub func makeRetentionAndTargetRVAAttr(pool: in Pool): Attribute {
   val retElems: List[AnnotationElement] = newList()
-  retElems.add(
-    AnnotationElement(
-      name = "value",
-      value = AEVEnum(typeName = "Ljava/lang/annotation/RetentionPolicy;", constName = "RUNTIME")
+  retElems.add(AnnotationElement(
+    name  = "value",
+    value = AEVEnum(
+      typeName  = "Ljava/lang/annotation/RetentionPolicy;",
+      constName = "RUNTIME"
     )
-  )
+  ))
   val tgtElems: List[AnnotationElement] = newList()
-  tgtElems.add(
-    AnnotationElement(
-      name = "value",
-      value = AEVSingleEnumArray(typeName = "Ljava/lang/annotation/ElementType;", constName = "METHOD")
+  tgtElems.add(AnnotationElement(
+    name  = "value",
+    value = AEVSingleEnumArray(
+      typeName  = "Ljava/lang/annotation/ElementType;",
+      constName = "METHOD"
     )
-  )
+  ))
   val anns: List[AnnotationEntry] = newList()
-  anns.add(AnnotationEntry(typeDescriptor = "Ljava/lang/annotation/Retention;", elements = retElems))
-  anns.add(AnnotationEntry(typeDescriptor = "Ljava/lang/annotation/Target;", elements = tgtElems))
+  anns.add(AnnotationEntry(
+    typeDescriptor = "Ljava/lang/annotation/Retention;",
+    elements       = retElems
+  ))
+  anns.add(AnnotationEntry(
+    typeDescriptor = "Ljava/lang/annotation/Target;",
+    elements       = tgtElems
+  ))
   makeRuntimeVisibleAnnotationsAttr(pool, anns)
 }
 
@@ -910,13 +928,19 @@ pub func makeAnnotationDefaultIntAttr(pool: in Pool): Attribute {
 /// `@LyricTest(displayName=..., sourceFile=..., sourceLine=...)` annotation.
 /// The annotation type descriptor is `Llyric/runtime/jvm/LyricTest;`.
 pub func makeLyricTestRVAAttr(
-  pool: in Pool, displayName: in String, sourceFile: in String, sourceLine: in Int
+  pool:        in Pool,
+  displayName: in String,
+  sourceFile:  in String,
+  sourceLine:  in Int
 ): Attribute {
   val elems: List[AnnotationElement] = newList()
   elems.add(AnnotationElement(name = "displayName", value = AEVString(value = displayName)))
-  elems.add(AnnotationElement(name = "sourceFile", value = AEVString(value = sourceFile)))
-  elems.add(AnnotationElement(name = "sourceLine", value = AEVInt(value = sourceLine)))
+  elems.add(AnnotationElement(name = "sourceFile",  value = AEVString(value = sourceFile)))
+  elems.add(AnnotationElement(name = "sourceLine",  value = AEVInt(value = sourceLine)))
   val anns: List[AnnotationEntry] = newList()
-  anns.add(AnnotationEntry(typeDescriptor = "Llyric/runtime/jvm/LyricTest;", elements = elems))
+  anns.add(AnnotationEntry(
+    typeDescriptor = "Llyric/runtime/jvm/LyricTest;",
+    elements       = elems
+  ))
   makeRuntimeVisibleAnnotationsAttr(pool, anns)
 }

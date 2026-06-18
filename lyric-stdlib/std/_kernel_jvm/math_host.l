@@ -1,20 +1,21 @@
-//! std/_kernel_jvm/math_host.l - JVM host boundary for java.lang.Math /
-//! java.lang.Double.
-//!
-//! Mirrors _kernel/math_host.l.  Most operations route directly to
-//! java.lang.Math static methods.  Four require lyric.stdlib.jvm.MathHost
-//! shims because the JVM API differs:
-//!
-//!   tau      — absent from java.lang.Math; shim returns 2.0 * Math.PI.
-//!   log2     — absent from java.lang.Math; shim returns log(x)/log(2).
-//!   truncate — absent from java.lang.Math; shim returns
-//!              x >= 0 ? floor(x) : ceil(x).
-//!   sign     — Math.signum returns double (-1.0/0.0/1.0); Lyric
-//!              declares Int; shim casts to int.
-//!
-//! isInfinity maps to Java's isInfinite (spelling differs from .NET).
-//!
-//! Internal: only Std.Math should import this.
+// std/_kernel_jvm/math_host.l - JVM host boundary for java.lang.Math /
+// java.lang.Double.
+//
+// Mirrors _kernel/math_host.l.  Most operations route directly to
+// java.lang.Math static methods.  Four require lyric.stdlib.jvm.MathHost
+// shims because the JVM API differs:
+//
+//   tau      — absent from java.lang.Math; shim returns 2.0 * Math.PI.
+//   log2     — absent from java.lang.Math; shim returns log(x)/log(2).
+//   truncate — absent from java.lang.Math; shim returns
+//              x >= 0 ? floor(x) : ceil(x).
+//   sign     — Math.signum returns double (-1.0/0.0/1.0); Lyric
+//              declares Int; shim casts to int.
+//
+// isInfinity maps to Java's isInfinite (spelling differs from .NET).
+//
+// Internal: only Std.Math should import this.
+
 @axiom("java.lang.Math and java.lang.Double operations conform to their documented JVM / IEEE 754 contracts")
 package Std.MathHost
 
@@ -22,6 +23,7 @@ package Std.MathHost
 // Constants.  PI and E are static fields on java.lang.Math.
 // Tau is absent — routed through MathHost shim.
 // =====================================================================
+
 @externTarget("java.lang.Math.PI")
 pub func hostPi(): Double = ()
 
@@ -35,12 +37,14 @@ pub func hostTau(): Double = ()
 // =====================================================================
 // Absolute value (Double).
 // =====================================================================
+
 @externTarget("java.lang.Math.abs")
 pub func hostAbsDouble(n: in Double): Double = ()
 
 // =====================================================================
 // Min / Max — pairwise (Double).  IEEE 754 NaN-propagating.
 // =====================================================================
+
 @externTarget("java.lang.Math.min")
 pub func hostMinPairDouble(a: in Double, b: in Double): Double = ()
 
@@ -50,6 +54,7 @@ pub func hostMaxPairDouble(a: in Double, b: in Double): Double = ()
 // =====================================================================
 // Powers / roots / logs.
 // =====================================================================
+
 @externTarget("java.lang.Math.pow")
 pub func hostPow(base_: in Double, exponent: in Double): Double = ()
 
@@ -76,6 +81,7 @@ pub func hostExp(x: in Double): Double = ()
 // =====================================================================
 // Trigonometry.  All angles in radians.
 // =====================================================================
+
 @externTarget("java.lang.Math.sin")
 pub func hostSin(x: in Double): Double = ()
 
@@ -103,6 +109,7 @@ pub func hostAtan2(y: in Double, x: in Double): Double = ()
 // Math.ceil maps to Ceiling; Math.floor maps to Floor.
 // Truncate (round toward zero) is absent; shim handles it.
 // =====================================================================
+
 @externTarget("java.lang.Math.floor")
 pub func hostFloor(x: in Double): Double = ()
 
@@ -121,6 +128,7 @@ pub func hostTruncate(x: in Double): Double = ()
 // =====================================================================
 // Sign / classification (Double).
 // =====================================================================
+
 // java.lang.Math.signum returns double; shim casts to int.
 @externTarget("lyric.stdlib.jvm.MathHost.sign")
 pub func hostSignDouble(n: in Double): Int = ()

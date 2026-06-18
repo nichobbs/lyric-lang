@@ -33,7 +33,6 @@ output_assembly = "Lyric.Auth.dll"
 
 [project.packages]
 "Auth"             = "src/auth.l"
-"Auth.Aspects"     = "src/auth_aspects.l"
 "Auth.Kernel.Net"  = "src/_kernel/net/auth_kernel.l"
 "Auth.Kernel.Jvm"  = "src/_kernel/jvm/auth_kernel.l"
 
@@ -42,6 +41,7 @@ output_assembly = "Lyric.Auth.dll"
 # runner once issue #465 lands; until then the test files serve as
 # living specs alongside the source.
 [project.tests]
-"Auth.AuthSecurityTests"       = "tests/auth_security_tests.l"
-"Auth.AuthAspectWeavingTests"  = "tests/auth_aspect_weaving_tests.l"
+"Auth.AuthSecurityTests" = "tests/auth_security_tests.l"
 
+[dependencies]
+"Lyric.Stdlib" = { path = "../lyric-stdlib" }

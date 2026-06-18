@@ -1,13 +1,14 @@
-//! jvm/self_test_b85.l — Stage B85: nested class calls (three-class chain).
-//!
-//! Generates:
-//!   MathOps.class  — add(int,int)int, mul(int,int)int
-//!   Formatter.class — format(int)String — calls MathOps.add + MathOps.mul,
-//!                     returns "add=%d,mul=%d"
-//!
-//! Main calls Formatter.format(3, 4) → "add=7,mul=12"
-//!
-//! Exercises: three-class dependency chain; one class calls another via invokestatic.
+// jvm/self_test_b85.l — Stage B85: nested class calls (three-class chain).
+//
+// Generates:
+//   MathOps.class  — add(int,int)int, mul(int,int)int
+//   Formatter.class — format(int)String — calls MathOps.add + MathOps.mul,
+//                     returns "add=%d,mul=%d"
+//
+// Main calls Formatter.format(3, 4) → "add=7,mul=12"
+//
+// Exercises: three-class dependency chain; one class calls another via invokestatic.
+
 package Jvm.SelfTestB85
 
 import Std.Core
@@ -54,16 +55,11 @@ func makeFormatterBytes(): List[Byte] {
 
   val addRef = poolMethodref(pool, "MathOps", "add", "(II)I")
   val mulRef = poolMethodref(pool, "MathOps", "mul", "(II)I")
-  val sbInit = poolMethodref(pool, "java/lang/StringBuilder", "<init>", "()V")
-  val sbClass = poolClass(pool, "java/lang/StringBuilder")
-  val sbAppendS = poolMethodref(
-    pool,
-    "java/lang/StringBuilder",
-    "append",
-    "(Ljava/lang/String;)Ljava/lang/StringBuilder;"
-  )
+  val sbInit    = poolMethodref(pool, "java/lang/StringBuilder", "<init>", "()V")
+  val sbClass   = poolClass(pool, "java/lang/StringBuilder")
+  val sbAppendS = poolMethodref(pool, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;")
   val sbAppendI = poolMethodref(pool, "java/lang/StringBuilder", "append", "(I)Ljava/lang/StringBuilder;")
-  val sbToStr = poolMethodref(pool, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;")
+  val sbToStr   = poolMethodref(pool, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;")
 
   // format(int a, int b)String — slot 0=a; slot 1=b
   val asm = newAssembler(pool)
@@ -87,7 +83,8 @@ func makeFormatterBytes(): List[Byte] {
   val code = assembleCode(asm, 4, 2)
   val attrs: List[Attribute] = newList()
   attrs.add(code)
-  val method = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "format", "(II)Ljava/lang/String;", attrs)
+  val method = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "format",
+    "(II)Ljava/lang/String;", attrs)
 
   val methods: List[MethodInfo] = newList()
   methods.add(method)
@@ -96,12 +93,12 @@ func makeFormatterBytes(): List[Byte] {
 }
 
 func makeMainClassBytes(): List[Byte] {
-  val pool = poolNew()
-  val asm = newAssembler(pool)
+  val pool      = poolNew()
+  val asm       = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnS = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val fmtRef = poolMethodref(pool, "Formatter", "format", "(II)Ljava/lang/String;")
+  val sysOut    = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnS  = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val fmtRef    = poolMethodref(pool, "Formatter", "format", "(II)Ljava/lang/String;")
 
   emitGetstatic(asm, sysOut)
   emitIconst(asm, 3)
@@ -123,17 +120,17 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b85"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
-  val mathOpsBytes = makeMathOpsBytes()
+  val mathOpsBytes   = makeMathOpsBytes()
   val formatterBytes = makeFormatterBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes      = makeMainClassBytes()
 
-  val mathOpsClass = BuiltClass(binaryName = "MathOps", bytes = mathOpsBytes)
+  val mathOpsClass   = BuiltClass(binaryName = "MathOps",   bytes = mathOpsBytes)
   val formatterClass = BuiltClass(binaryName = "Formatter", bytes = formatterBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass      = BuiltClass(binaryName = "Main",      bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(mathOpsClass)
   classes.add(formatterClass)
@@ -141,9 +138,9 @@ func main(): Unit {
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB85",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

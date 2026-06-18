@@ -1,23 +1,24 @@
-//! jvm/self_test_b41.l — Stage B41: String.equals and conditional string routing.
-//!
-//! Generates Greeter.class with:
-//!   greet(Ljava/lang/String;)Ljava/lang/String;
-//!       — if s.equals("Alice") return "Hello, Alice!"
-//!         else return "Hello, stranger!"
-//!
-//! Uses: aload_0; ldc "Alice"; invokevirtual String.equals; ifeq → else branch;
-//!       ldc "Hello, Alice!"; areturn; else: ldc "Hello, stranger!"; areturn
-//!
-//! Main:
-//!   greet("Alice")   → "Hello, Alice!"
-//!   greet("Bob")     → "Hello, stranger!"
-//!
-//! Expected output:
-//!   Hello, Alice!
-//!   Hello, stranger!
-//!
-//! Exercises: invokevirtual String.equals(Object)Z, ifeq branch,
-//! assembleCodeWithFrames with VObject frame for String parameter.
+// jvm/self_test_b41.l — Stage B41: String.equals and conditional string routing.
+//
+// Generates Greeter.class with:
+//   greet(Ljava/lang/String;)Ljava/lang/String;
+//       — if s.equals("Alice") return "Hello, Alice!"
+//         else return "Hello, stranger!"
+//
+// Uses: aload_0; ldc "Alice"; invokevirtual String.equals; ifeq → else branch;
+//       ldc "Hello, Alice!"; areturn; else: ldc "Hello, stranger!"; areturn
+//
+// Main:
+//   greet("Alice")   → "Hello, Alice!"
+//   greet("Bob")     → "Hello, stranger!"
+//
+// Expected output:
+//   Hello, Alice!
+//   Hello, stranger!
+//
+// Exercises: invokevirtual String.equals(Object)Z, ifeq branch,
+// assembleCodeWithFrames with VObject frame for String parameter.
+
 package Jvm.SelfTestB41
 
 import Std.Core
@@ -53,7 +54,12 @@ func makeGreeterClassBytes(): List[Byte] {
   val gCode = assembleCodeWithFrames(asmG, 2, 1, frameLocals)
   val gAttrs: List[Attribute] = newList()
   gAttrs.add(gCode)
-  val greetMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "greet", "(Ljava/lang/String;)Ljava/lang/String;", gAttrs)
+  val greetMethod = makeMethodInfo(
+    ACC_PUBLIC + ACC_STATIC,
+    "greet",
+    "(Ljava/lang/String;)Ljava/lang/String;",
+    gAttrs
+  )
 
   val methods: List[MethodInfo] = newList()
   methods.add(greetMethod)
@@ -63,9 +69,9 @@ func makeGreeterClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOut   = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val greetRef = poolMethodref(pool, "Greeter", "greet", "(Ljava/lang/String;)Ljava/lang/String;")
   val printlnS = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
 
@@ -96,24 +102,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b41"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val greeterBytes = makeGreeterClassBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes    = makeMainClassBytes()
 
   val greeterClass = BuiltClass(binaryName = "Greeter", bytes = greeterBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass    = BuiltClass(binaryName = "Main",    bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(greeterClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB41",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

@@ -1,5 +1,5 @@
-//! typechecker_resolver.l — resolves parser TypeExpr to checker Type.
-//! Mirrors compiler/src/Lyric.TypeChecker/Resolver.fs.
+// typechecker_resolver.l — resolves parser TypeExpr to checker Type.
+// Mirrors compiler/src/Lyric.TypeChecker/Resolver.fs.
 package Lyric.TypeChecker
 
 import Std.Core
@@ -10,12 +10,18 @@ import Lyric.Parser
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public entry point.
 // ─────────────────────────────────────────────────────────────────────────────
-pub func resolveType(tbl: in SymbolTable, ctx: in GenericContext, diag: in List[Diagnostic], te: in TypeExpr): Type {
+
+pub func resolveType(
+  tbl:  in SymbolTable,
+  ctx:  in GenericContext,
+  diag: in List[Diagnostic],
+  te:   in TypeExpr
+): Type {
   match te.kind {
-    case TUnit -> TyPrim(pt = PtUnit)
-    case TSelf -> TySelf
-    case TNever -> TyPrim(pt = PtNever)
-    case TError -> TyError
+    case TUnit        -> TyPrim(pt = PtUnit)
+    case TSelf        -> TySelf
+    case TNever       -> TyPrim(pt = PtNever)
+    case TError       -> TyError
     case TParen(inner) -> resolveType(tbl, ctx, diag, inner)
 
     case TTuple(elems) -> {
@@ -28,7 +34,8 @@ pub func resolveType(tbl: in SymbolTable, ctx: in GenericContext, diag: in List[
       TyTuple(elems = ts)
     }
 
-    case TNullable(inner) -> TyNullable(inner = resolveType(tbl, ctx, diag, inner))
+    case TNullable(inner) ->
+      TyNullable(inner = resolveType(tbl, ctx, diag, inner))
 
     case TFunction(ps, rte) -> {
       val pts: List[Type] = newList()
@@ -41,9 +48,11 @@ pub func resolveType(tbl: in SymbolTable, ctx: in GenericContext, diag: in List[
       TyFunction(params = pts, ret = rt, isAsync = false)
     }
 
-    case TArray(_, elem) -> TyArray(size = None, element = resolveType(tbl, ctx, diag, elem))
+    case TArray(_, elem) ->
+      TyArray(size = None, element = resolveType(tbl, ctx, diag, elem))
 
-    case TSlice(elem) -> TySlice(element = resolveType(tbl, ctx, diag, elem))
+    case TSlice(elem) ->
+      TySlice(element = resolveType(tbl, ctx, diag, elem))
 
     case TRef(path) -> {
       val args: List[Type] = newList()
@@ -55,11 +64,8 @@ pub func resolveType(tbl: in SymbolTable, ctx: in GenericContext, diag: in List[
       var i = 0
       while i < argsList.count {
         match argsList[i] {
-          case TAType(t) -> resolvedArgs.add(resolveType(tbl, ctx, diag, t))
-          case TAValue(ve) -> {
-            diag.add(errorDiagnostic("T0109", "value expression used as type argument", ve.span))
-            resolvedArgs.add(TyError)
-          }
+          case TAType(t)  -> resolvedArgs.add(resolveType(tbl, ctx, diag, t))
+          case TAValue(_) -> resolvedArgs.add(TyError)
         }
         i = i + 1
       }
@@ -69,8 +75,8 @@ pub func resolveType(tbl: in SymbolTable, ctx: in GenericContext, diag: in List[
     case TRefined(under, range) -> {
       val args: List[Type] = newList()
       val baseTy = resolveTypePath(tbl, ctx, diag, under, te.span, args)
-      val lo = rangeLo(range)
-      val hi = rangeHi(range)
+      val lo  = rangeLo(range)
+      val hi  = rangeHi(range)
       val inc = rangeHiInclusive(range)
       TyRefined(underlying = baseTy, lo = lo, hi = hi, hiInclusive = inc)
     }
@@ -80,34 +86,47 @@ pub func resolveType(tbl: in SymbolTable, ctx: in GenericContext, diag: in List[
 // ─────────────────────────────────────────────────────────────────────────────
 // §1a. Range-bound extraction (for inline refined types `T range lo .. hi`).
 // ─────────────────────────────────────────────────────────────────────────────
+
 // Extract a compile-time integer value from a bound expression, peeling a
 // unary minus and parentheses.  Returns `None` for any non-integer-literal
 // endpoint (those are out of scope for the inline range check; named
 // distinct range subtypes with computed bounds are Band-4 work).
 pub func exprLiteralLong(e: in Expr): Option[Long] {
   match e.kind {
-    case ELiteral(lit) -> match lit { case LInt(v, _, _) -> Some(value = v); case _ -> None }
+    case ELiteral(lit) ->
+      match lit {
+        case LInt(v, _) -> Some(value = v)
+        case _          -> None
+      }
     case EParen(inner) -> exprLiteralLong(inner)
-    case EPrefix(op, operand) -> match op { case PreNeg -> match exprLiteralLong(operand) { case Some(v) -> Some(value = 0i64 - v); case None -> None }; case _ -> None }
+    case EPrefix(op, operand) ->
+      match op {
+        case PreNeg ->
+          match exprLiteralLong(operand) {
+            case Some(v) -> Some(value = 0i64 - v)
+            case None    -> None
+          }
+        case _ -> None
+      }
     case _ -> None
   }
 }
 
 func rangeLo(rb: in RangeBound): Option[Long] {
   match rb {
-    case RBClosed(lo, _) -> exprLiteralLong(lo)
+    case RBClosed(lo, _)   -> exprLiteralLong(lo)
     case RBHalfOpen(lo, _) -> exprLiteralLong(lo)
-    case RBLowerOpen(_) -> None
-    case RBUpperOpen(lo) -> exprLiteralLong(lo)
+    case RBLowerOpen(_)    -> None
+    case RBUpperOpen(lo)   -> exprLiteralLong(lo)
   }
 }
 
 func rangeHi(rb: in RangeBound): Option[Long] {
   match rb {
-    case RBClosed(_, hi) -> exprLiteralLong(hi)
+    case RBClosed(_, hi)   -> exprLiteralLong(hi)
     case RBHalfOpen(_, hi) -> exprLiteralLong(hi)
-    case RBLowerOpen(hi) -> exprLiteralLong(hi)
-    case RBUpperOpen(_) -> None
+    case RBLowerOpen(hi)   -> exprLiteralLong(hi)
+    case RBUpperOpen(_)    -> None
   }
 }
 
@@ -116,178 +135,24 @@ func rangeHi(rb: in RangeBound): Option[Long] {
 // report `true` (the `MAX` end is inclusive).
 func rangeHiInclusive(rb: in RangeBound): Bool {
   match rb {
-    case RBClosed(_, _) -> true
+    case RBClosed(_, _)   -> true
     case RBHalfOpen(_, _) -> false
-    case RBLowerOpen(_) -> true
-    case RBUpperOpen(_) -> true
+    case RBLowerOpen(_)   -> true
+    case RBUpperOpen(_)   -> true
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Path resolution helper.
 // ─────────────────────────────────────────────────────────────────────────────
-// Resolve a symbol found in type position to a `Type`.  A `pub alias X = Y`
-// type-alias re-export (`DKTypeAlias`) is followed to its target `Y` — this is
-// how the stdlib re-exports an extern type for callers (`pub alias Random =
-// Std.RandomHost.Random`).  Concrete type symbols (records, unions, extern
-// types, …) resolve to their `TyUser`; a non-type symbol is a T0013.
-func symbolToType(
-  tbl: in SymbolTable,
-  ctx: in GenericContext,
-  diag: in List[Diagnostic],
-  sym: in Symbol,
-  args: in List[Type],
-  span: in Span,
-): Type {
-  match sym.kind {
-    case DKTypeAlias(decl) -> resolveAliasRhs(tbl, ctx, diag, decl, 0, args, span)
-    case _ -> match symbolTypeIdOpt(sym) { case Some(tid) -> { checkImportedVisibility(sym, span, diag); TyUser(id = tid, name = sym.name, args = args) }; case None -> { diag.add(errorDiagnostic("T0013", "'" + sym.name + "' is not a type", span)); TyError } }
-  }
-}
-
-// Follow a type alias's right-hand side to a concrete `Type`.  `depth` counts
-// how many alias hops have been followed on this chain.  Real alias chains are
-// a handful of links deep; passing the bound (64, see `resolveAliasPath`) means
-// the chain is cyclic (`alias A = B` / `alias B = A`) — a malformed program —
-// so it stops with a clean T0017 rather than recursing to a stack overflow.  A
-// bounded counter is used instead of a visited-name set because the F# stage-0
-// bootstrap emitter (which compiles this file) cannot yet codegen the
-// `List[String]` threading that would require; this mirrors the depth-bound the
-// YAML/JSON parser uses for nested collections.  `args` are the type arguments
-// supplied at the use site (empty for the non-generic re-export form the stdlib
-// uses).
-func resolveAliasRhs(
-  tbl: in SymbolTable,
-  ctx: in GenericContext,
-  diag: in List[Diagnostic],
-  decl: in TypeAliasDecl,
-  depth: in Int,
-  args: in List[Type],
-  span: in Span,
-): Type {
-  match decl.rhs.kind {
-    case TRef(path) -> resolveAliasPath(tbl, ctx, diag, path, depth, args, span)
-    case TGenericApp(head, argsList) -> {
-      val resolvedArgs: List[Type] = newList()
-      var i = 0
-      while i < argsList.count {
-        match argsList[i] {
-          case TAType(t) -> resolvedArgs.add(resolveType(tbl, ctx, diag, t))
-          case TAValue(ve) -> {
-            diag.add(errorDiagnostic("T0109", "value expression used as type argument in alias", ve.span))
-            resolvedArgs.add(TyError)
-          }
-        }
-        i = i + 1
-      }
-      resolveAliasPath(tbl, ctx, diag, head, depth, resolvedArgs, span)
-    }
-    case _ -> resolveType(tbl, ctx, diag, decl.rhs)
-  }
-}
-
-// The `TyUser` for `sym` when it is a concrete type symbol, else `None`.
-// Helper for `resolveAliasPath`'s scope-priority lookup (#2611).
-func concreteAliasTarget(sym: in Symbol, args: in List[Type], span: in Span, diag: in List[Diagnostic]): Option[Type] {
-  match symbolTypeIdOpt(sym) {
-    case Some(tid) -> {
-      checkImportedVisibility(sym, span, diag)
-      Some(value = TyUser(id = tid, name = sym.name, args = args))
-    }
-    case None -> None
-  }
-}
-
-// Resolve an alias target path to a `Type`, preferring a concrete (non-alias)
-// type symbol of the path's final segment so the lookup cannot loop back on
-// the alias being expanded.  Falls through to a chained alias (bounded to 64
-// hops so a cycle yields a T0017 rather than unbounded recursion), then to a
-// primitive, then to T0013.
-func resolveAliasPath(
-  tbl: in SymbolTable,
-  ctx: in GenericContext,
-  diag: in List[Diagnostic],
-  path: in ModulePath,
-  depth: in Int,
-  args: in List[Type],
-  span: in Span,
-): Type {
-  val last = path.segments[path.segments.count - 1]
-  match primFromString(last) {
-    case Some(prim) -> {
-      if args.count > 0 {
-        diag.add(errorDiagnostic("T0012", "primitive type '" + last + "' does not take type arguments", span))
-      }
-      return TyPrim(pt = prim)
-    }
-    case None -> {
-    }
-  }
-  // Scope-priority first (#2611): `symTableTryFindOne` honours the current
-  // resolution scope (current package > imports > any), so an alias target
-  // sharing its name with a type from another package resolves to the
-  // scope-closest declaration — mirroring `resolveTypePath`.  Only a concrete
-  // type symbol is taken here; an alias (no `TypeId`) falls through to the
-  // insertion-order scan below, which prefers concrete types so the lookup
-  // cannot loop back on the alias being expanded.
-  match symTableTryFindOne(tbl, last) {
-    case Some(scopedSym) -> {
-      match concreteAliasTarget(scopedSym, args, span, diag) {
-        case Some(t) -> {
-          return t
-        }
-        case None -> {
-        }
-      }
-    }
-    case None -> {
-    }
-  }
-  val all = symTableTryFindAll(tbl, last)
-  // Then, any concrete type (record / union / extern type / …).
-  var i = 0
-  while i < all.count {
-    match symbolTypeIdOpt(all[i]) {
-      case Some(tid) -> {
-        checkImportedVisibility(all[i], span, diag)
-        return TyUser(id = tid, name = all[i].name, args = args)
-      }
-      case None -> {
-      }
-    }
-    i = i + 1
-  }
-  // Then, a chained alias — but stop at the depth bound so a cycle
-  // (`alias A = B` / `alias B = A`) produces a clean diagnostic instead of
-  // recursing to a stack overflow.
-  var j = 0
-  while j < all.count {
-    match all[j].kind {
-      case DKTypeAlias(d2) -> {
-        if depth >= 64 {
-          diag.add(
-            errorDiagnostic("T0017", "type alias '" + d2.name + "' is part of a cycle and does not resolve to a type", span)
-          )
-          return TyError
-        }
-        return resolveAliasRhs(tbl, ctx, diag, d2, depth + 1, args, span)
-      }
-      case _ -> {
-      }
-    }
-    j = j + 1
-  }
-  diag.add(errorDiagnostic("T0013", "'" + last + "' is not a type", span))
-  TyError
-}
 
 func resolveTypePath(
-  tbl: in SymbolTable,
-  ctx: in GenericContext,
+  tbl:  in SymbolTable,
+  ctx:  in GenericContext,
   diag: in List[Diagnostic],
   path: in ModulePath,
   span: in Span,
-  args: in List[Type],
+  args: in List[Type]
 ): Type {
   if path.segments.count == 0 {
     diag.add(errorDiagnostic("T0010", "empty module path in type position", span))
@@ -298,37 +163,28 @@ func resolveTypePath(
     match primFromString(name) {
       case Some(prim) -> {
         if args.count > 0 {
-          diag.add(errorDiagnostic("T0012", "primitive type '" + name + "' does not take type arguments", span))
+          diag.add(errorDiagnostic("T0012",
+            "primitive type '" + name + "' does not take type arguments", span))
         }
         return TyPrim(pt = prim)
       }
-      case None -> {
-      }
+      case None -> {}
     }
     if gctxIsTypeParam(ctx, name) and args.count == 0 {
       return TyVar(name = name)
     }
     match symTableTryFindOne(tbl, name) {
-      case Some(sym) -> {
-        if symbolIsType(sym) {
-          return symbolToType(tbl, ctx, diag, sym, args, span)
-        }
-        // The scope-resolved symbol is not a type (e.g. a union case or
-        // function sharing a type's name — `Insn.Token` vs a sibling
-        // record `Token` in a flattened restored-contract source).  In
-        // type position a *type* symbol of the same name must win, so
-        // scan the full candidate set before reporting T0013 — mirrors
-        // `resolveAliasPath`'s concrete-type-first preference.
-        val all = symTableTryFindAll(tbl, name)
-        var ti = 0
-        while ti < all.count {
-          if symbolIsType(all[ti]) {
-            return symbolToType(tbl, ctx, diag, all[ti], args, span)
+      case Some(sym) ->
+        match symbolTypeIdOpt(sym) {
+          case Some(tid) -> {
+            checkImportedVisibility(sym, span, diag)
+            return TyUser(id = tid, name = sym.name, args = args)
           }
-          ti = ti + 1
+          case None -> {
+            diag.add(errorDiagnostic("T0013", "'" + name + "' is not a type", span))
+            return TyError
+          }
         }
-        return symbolToType(tbl, ctx, diag, sym, args, span)
-      }
       case None -> {
         diag.add(errorDiagnostic("T0010", "unknown type name '" + name + "'", span))
         return TyError
@@ -341,36 +197,28 @@ func resolveTypePath(
   // was imported.  Fall through to primitive check, then T0014.
   val last = path.segments[path.segments.count - 1]
   match symTableTryFindOne(tbl, last) {
-    case Some(sym) -> {
-      if symbolIsType(sym) {
-        return symbolToType(tbl, ctx, diag, sym, args, span)
-      }
-      // Same type-symbol preference as the single-segment arm: a non-type
-      // symbol shadowing a same-named type must not hide it in type position.
-      val all = symTableTryFindAll(tbl, last)
-      var ti = 0
-      while ti < all.count {
-        if symbolIsType(all[ti]) {
-          return symbolToType(tbl, ctx, diag, all[ti], args, span)
+    case Some(sym) ->
+      match symbolTypeIdOpt(sym) {
+        case Some(tid) -> {
+          checkImportedVisibility(sym, span, diag)
+          return TyUser(id = tid, name = sym.name, args = args)
         }
-        ti = ti + 1
+        case None -> {}
       }
-    }
-    case None -> {
-    }
+    case None -> {}
   }
   match primFromString(last) {
     case Some(prim) -> {
       if args.count > 0 {
-        diag.add(errorDiagnostic("T0012", "primitive type '" + last + "' does not take type arguments", span))
+        diag.add(errorDiagnostic("T0012",
+          "primitive type '" + last + "' does not take type arguments", span))
       }
       TyPrim(pt = prim)
     }
     case None -> {
-      val joined = modulePathJoin(path.segments)
-      diag.add(
-        errorDiagnostic("T0014", "unknown qualified type '" + joined + "' ('" + last + "' not found in scope)", span)
-      )
+      val joined = joinSegments(path.segments)
+      diag.add(errorDiagnostic("T0014",
+        "unknown qualified type '" + joined + "' ('" + last + "' not found in scope)", span))
       TyError
     }
   }
@@ -387,7 +235,7 @@ func resolveTypePath(
 // unaffected — a package is checked as one unit, so every sibling-file symbol
 // is in-package.  (The `V0007`/`V0008` codes suggested in #1484 are already
 // owned by the verifier; visibility uses the type-checker code T0097.)
-func checkImportedVisibility(sym: in Symbol, span: in Span, diag: in List[Diagnostic]): Unit {
+pub func checkImportedVisibility(sym: in Symbol, span: in Span, diag: in List[Diagnostic]): Unit {
   if sym.isImported {
     // Extern types / extern packages are host-binding (FFI boundary)
     // declarations: the pub/internal/package-private tiers do not apply to
@@ -395,14 +243,31 @@ func checkImportedVisibility(sym: in Symbol, span: in Span, diag: in List[Diagno
     // (no `pub` modifier) yet are referenced directly across every package, so
     // they must not be flagged.  Their cross-package accessibility is governed
     // by the kernel-boundary convention, not the visibility check.
-    val isExternBinding = match sym.kind { case DKExternType(_, _) -> true; case DKExtern(_) -> true; case _ -> false }
+    val isExternBinding =
+      match sym.kind {
+        case DKExternType(_, _) -> true
+        case DKExtern(_)        -> true
+        case _                  -> false
+      }
     if not isExternBinding {
       match sym.visibility {
-        case Some(_) -> {
-        }
-        // pub or internal — visible cross-package in a project
-        case None -> diag.add(errorDiagnostic("T0097", "'" + sym.name + "' is package-private and cannot be referenced from " + "another package (mark it `pub` or `internal`)", span))
+        case Some(_) -> {}   // pub or internal — visible cross-package in a project
+        case None    ->
+          diag.add(errorDiagnostic("T0097",
+            "'" + sym.name + "' is package-private and cannot be referenced from " +
+            "another package (mark it `pub` or `internal`)", span))
       }
     }
   }
+}
+
+func joinSegments(segs: in List[String]): String {
+  if segs.count == 0 { return "" }
+  var s = segs[0]
+  var i = 1
+  while i < segs.count {
+    s = s + "." + segs[i]
+    i = i + 1
+  }
+  s
 }

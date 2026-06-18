@@ -51,8 +51,7 @@ count_axioms_in_dir() {
     return
   fi
   # Match only `@axiom(` at column 0 (skips comment-mentions like `// see @axiom`).
-  # Trim leading whitespace from wc -l output (macOS wc pads with spaces).
-  grep -h '^@axiom(' "${files[@]}" 2>/dev/null | wc -l | tr -d ' '
+  grep -h '^@axiom(' "${files[@]}" 2>/dev/null | wc -l
 }
 
 list_axiom_files_in_dir() {

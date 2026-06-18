@@ -1,32 +1,33 @@
-//! Grpc — gRPC client and server API.
-//! Stability: @experimental — the API compiles and proto-encoding has
-//! unit-level tests, but the end-to-end client + server pair has not been
-//! exercised against a real gRPC service in CI.
-//!
-//! Client (outbound calls):
-//!   val ch = Grpc.openChannel("https://host:4317").unwrap()
-//!   val resp = Grpc.callUnary(ch, "svc.Name", "Method", payload, Grpc.defaultOptions())
-//!   Grpc.closeChannel(ch)
-//!
-//! Server (service hosting):
-//!   var registry = Grpc.create()
-//!   registry = Grpc.addMethod(registry, "MyService", "GetItem", "Pkg.handler")
-//!   Grpc.start(registry)              // blocks until SIGTERM
-//!   val h = Grpc.startHandle(registry) // non-blocking; call Grpc.stop(h, 5000) to drain
-//!
-//! Payload format: raw protobuf-encoded bytes (slice[Byte]).
-//! Use lyric-proto for encoding/decoding; the client layer is deliberately
-//! payload-agnostic so it works for any proto schema without code generation.
-//!
-//! Status codes: handlers return Result[T, GrpcStatus] where GrpcStatus.code
-//! is a GrpcStatusCode enum value.  Use the constructor helpers (Grpc.notFound,
-//! Grpc.unavailable, etc.) rather than building GrpcStatus directly.
-//!
-//! Auth parameters: the gRPC server kernel extracts the "authorization" metadata
-//! value and passes it as an `authToken: String` parameter to handlers that
-//! declare it.  The RequiresGrpcAuth aspect (Grpc.Aspects) reads args.authToken.
-//!
-//! See docs/37-grpc-proto-sketch.md.
+// Grpc — gRPC client and server API.
+// Stability: @experimental — the API compiles and proto-encoding has
+// unit-level tests, but the end-to-end client + server pair has not been
+// exercised against a real gRPC service in CI.
+//
+// Client (outbound calls):
+//   val ch = Grpc.openChannel("https://host:4317").unwrap()
+//   val resp = Grpc.callUnary(ch, "svc.Name", "Method", payload, Grpc.defaultOptions())
+//   Grpc.closeChannel(ch)
+//
+// Server (service hosting):
+//   val registry = Grpc.create()
+//   val registry = Grpc.addMethod(registry, "MyService", "GetItem", "Pkg.handler")
+//   Grpc.start(registry)              // blocks until SIGTERM
+//   val h = Grpc.startHandle(registry) // non-blocking; call Grpc.stop(h, 5000) to drain
+//
+// Payload format: raw protobuf-encoded bytes (slice[Byte]).
+// Use lyric-proto for encoding/decoding; the client layer is deliberately
+// payload-agnostic so it works for any proto schema without code generation.
+//
+// Status codes: handlers return Result[T, GrpcStatus] where GrpcStatus.code
+// is a GrpcStatusCode enum value.  Use the constructor helpers (Grpc.notFound,
+// Grpc.unavailable, etc.) rather than building GrpcStatus directly.
+//
+// Auth parameters: the gRPC server kernel extracts the "authorization" metadata
+// value and passes it as an `authToken: String` parameter to handlers that
+// declare it.  The RequiresGrpcAuth aspect (Grpc.Aspects) reads args.authToken.
+//
+// See docs/37-grpc-proto-sketch.md.
+
 @runtime_checked
 package Grpc
 
@@ -38,6 +39,7 @@ import Std.Collections
 import Std.Iter
 
 // ─── Client: default options ──────────────────────────────────────────────────
+
 /// Default call options: no deadline, no metadata.
 pub func defaultOptions(): GrpcCallOptions {
   GrpcCallOptions(timeoutMs = None, metadata = [])
@@ -76,9 +78,7 @@ func percentEncodeMetadata(s: in String): String {
 func metadataString(opts: in GrpcCallOptions): String {
   var result: String = ""
   for meta in opts.metadata {
-    if result.length > 0 {
-      result = result + ","
-    }
+    if result.length > 0 { result = result + "," }
     result = result + percentEncodeMetadata(meta.key) + ":" + percentEncodeMetadata(meta.value)
   }
   return result
@@ -86,142 +86,132 @@ func metadataString(opts: in GrpcCallOptions): String {
 
 func callTimeoutMs(opts: in GrpcCallOptions): Int {
   match opts.timeoutMs {
-    case None -> return 0
+    case None         -> return 0
     case Some(ms) -> return ms
   }
 }
 
 // ─── Client: channel lifecycle ────────────────────────────────────────────────
+
 /// Open a gRPC channel to `address` (e.g. "https://host:4317").
 /// Returns Err if the address is malformed or the channel cannot be created.
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func openChannel(address: in String): Result[GrpcChannel, String] {
   return Grpc.Kernel.Net.netOpenChannel(address)
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func openChannel(address: in String): Result[GrpcChannel, String] {
   return Grpc.Kernel.Jvm.netOpenChannel(address)
 }
 
 /// Close the channel and release all HTTP/2 connections.
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func closeChannel(channel: in GrpcChannel): Unit {
   Grpc.Kernel.Net.netCloseChannel(channel)
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func closeChannel(channel: in GrpcChannel): Unit {
   Grpc.Kernel.Jvm.netCloseChannel(channel)
 }
 
 // ─── Client: unary calls ──────────────────────────────────────────────────────
+
 /// Make a blocking unary gRPC call.
 ///
 /// `service` — fully-qualified proto service name (e.g. "pkg.MyService")
 /// `method`  — unqualified RPC method name (e.g. "GetItem")
 /// `payload` — protobuf-encoded request body
 /// `opts`    — deadline and metadata (use defaultOptions() for defaults)
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func callUnary(
   channel: in GrpcChannel,
   service: in String,
-  method: in String,
+  method:  in String,
   payload: in slice[Byte],
-  opts: in GrpcCallOptions,
+  opts:    in GrpcCallOptions
 ): Result[slice[Byte], GrpcStatus] {
   return Grpc.Kernel.Net.netCallUnary(channel, service, method, payload, callTimeoutMs(opts), metadataString(opts))
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func callUnary(
   channel: in GrpcChannel,
   service: in String,
-  method: in String,
+  method:  in String,
   payload: in slice[Byte],
-  opts: in GrpcCallOptions,
+  opts:    in GrpcCallOptions
 ): Result[slice[Byte], GrpcStatus] {
   return Grpc.Kernel.Jvm.netCallUnary(channel, service, method, payload, callTimeoutMs(opts), metadataString(opts))
 }
 
 // ─── Client: server-streaming calls ──────────────────────────────────────────
+
 /// Start a server-streaming gRPC call.
 /// Always call closeStream when done, even if nextMessage returned None.
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func openServerStream(
   channel: in GrpcChannel,
   service: in String,
-  method: in String,
+  method:  in String,
   payload: in slice[Byte],
-  opts: in GrpcCallOptions,
+  opts:    in GrpcCallOptions
 ): Result[GrpcStream, GrpcStatus] {
-  return Grpc.Kernel.Net.netOpenServerStream(
-    channel,
-    service,
-    method,
-    payload,
-    callTimeoutMs(opts),
-    metadataString(opts)
-  )
+  return Grpc.Kernel.Net.netOpenServerStream(channel, service, method, payload, callTimeoutMs(opts), metadataString(opts))
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func openServerStream(
   channel: in GrpcChannel,
   service: in String,
-  method: in String,
+  method:  in String,
   payload: in slice[Byte],
-  opts: in GrpcCallOptions,
+  opts:    in GrpcCallOptions
 ): Result[GrpcStream, GrpcStatus] {
-  return Grpc.Kernel.Jvm.netOpenServerStream(
-    channel,
-    service,
-    method,
-    payload,
-    callTimeoutMs(opts),
-    metadataString(opts)
-  )
+  return Grpc.Kernel.Jvm.netOpenServerStream(channel, service, method, payload, callTimeoutMs(opts), metadataString(opts))
 }
 
 /// Read the next message from a server-streaming response.
 /// Returns Some(bytes) for each message; None when the stream ends cleanly.
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func nextMessage(stream: in GrpcStream): Result[Option[slice[Byte]], GrpcStatus] {
   return Grpc.Kernel.Net.netNextStreamMessage(stream)
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func nextMessage(stream: in GrpcStream): Result[Option[slice[Byte]], GrpcStatus] {
   return Grpc.Kernel.Jvm.netNextStreamMessage(stream)
 }
 
 /// Release a server-streaming response handle.
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func closeStream(stream: in GrpcStream): Unit {
   Grpc.Kernel.Net.netCloseStream(stream)
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func closeStream(stream: in GrpcStream): Unit {
   Grpc.Kernel.Jvm.netCloseStream(stream)
 }
 
 // ─── Server: rate-limit wrapper (feature-gated) ───────────────────────────────
+
 /// Per-method in-process rate-limit check.  Feature-gated so aspects compile
 /// on both dotnet and jvm targets without referencing a platform-specific kernel.
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func checkRateLimit(method: in String, requestsPerMinute: in Int, burstSize: in Int): Bool
   requires: requestsPerMinute > 0
@@ -230,7 +220,7 @@ pub func checkRateLimit(method: in String, requestsPerMinute: in Int, burstSize:
   return Grpc.Kernel.Net.checkRateLimit(method, requestsPerMinute, burstSize)
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func checkRateLimit(method: in String, requestsPerMinute: in Int, burstSize: in Int): Bool
   requires: requestsPerMinute > 0
@@ -240,68 +230,68 @@ pub func checkRateLimit(method: in String, requestsPerMinute: in Int, burstSize:
 }
 
 // ─── Server: GrpcMetadata helper ─────────────────────────────────────────────
+
 /// Read a metadata key.  Returns None if the key is absent.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func metadataGet(entries: in slice[GrpcMetadataEntry], metaKey: in String): Option[String] {
   for meta in entries {
-    if meta.key == metaKey {
-      return Some(value = meta.value)
-    }
+    if meta.key == metaKey { return Some(value = meta.value) }
   }
   return None
 }
 
 // ─── Server: GrpcStatus constructors ─────────────────────────────────────────
+
 /// 3 INVALID_ARGUMENT — the caller sent a malformed or out-of-range value.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func invalidArgument(message: in String): GrpcStatus {
   GrpcStatus(code = GrpcStatusCode.InvalidArgument, message = message)
 }
 
 /// 5 NOT_FOUND — the requested resource does not exist.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func notFound(message: in String): GrpcStatus {
   GrpcStatus(code = GrpcStatusCode.NotFound, message = message)
 }
 
 /// 6 ALREADY_EXISTS — attempt to create a resource that already exists.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func alreadyExists(message: in String): GrpcStatus {
   GrpcStatus(code = GrpcStatusCode.AlreadyExists, message = message)
 }
 
 /// 7 PERMISSION_DENIED — caller authenticated but lacks sufficient privilege.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func permissionDenied(message: in String): GrpcStatus {
   GrpcStatus(code = GrpcStatusCode.PermissionDenied, message = message)
 }
 
 /// 8 RESOURCE_EXHAUSTED — quota exceeded or rate limited.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func resourceExhausted(message: in String): GrpcStatus {
   GrpcStatus(code = GrpcStatusCode.ResourceExhausted, message = message)
 }
 
 /// 9 FAILED_PRECONDITION — operation rejected due to system state.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func failedPrecondition(message: in String): GrpcStatus {
   GrpcStatus(code = GrpcStatusCode.FailedPrecondition, message = message)
 }
 
 /// 13 INTERNAL — unexpected server-side error.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func grpcInternal(message: in String): GrpcStatus {
   GrpcStatus(code = GrpcStatusCode.Internal, message = message)
 }
 
 /// 14 UNAVAILABLE — service temporarily unavailable; retry is appropriate.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func unavailable(message: in String): GrpcStatus {
   GrpcStatus(code = GrpcStatusCode.Unavailable, message = message)
 }
 
 /// 16 UNAUTHENTICATED — no valid credentials were supplied.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func unauthenticated(message: in String): GrpcStatus {
   GrpcStatus(code = GrpcStatusCode.Unauthenticated, message = message)
 }
@@ -310,16 +300,20 @@ pub func unauthenticated(message: in String): GrpcStatus {
 // GrpcRoute and ServiceRegistry are declared in Grpc.Types so that both Grpc
 // and the kernel packages (Grpc.Kernel.Net / Grpc.Kernel.Jvm) can reference
 // them without a circular import.
+
 /// Create an empty service registry.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func create(): ServiceRegistry {
   ServiceRegistry(routes = [])
 }
 
 /// Register a single RPC method.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func addMethod(
-  registry: in ServiceRegistry, service: in String, method: in String, handlerName: in String
+  registry:    in ServiceRegistry,
+  service:     in String,
+  method:      in String,
+  handlerName: in String
 ): ServiceRegistry
   requires: service.length > 0
   requires: method.length > 0
@@ -330,15 +324,16 @@ pub func addMethod(
 }
 
 // ─── Server: entry point ──────────────────────────────────────────────────────
+
 config GrpcServer {
-  host: String = "0.0.0.0"
-  port: Int = 50051
-  reflectionEnabled: Bool = false
-  maxConnectionIdleMs: Int = 300000
+  host:                String = "0.0.0.0"
+  port:                Int    = 50051
+  reflectionEnabled:   Bool   = false
+  maxConnectionIdleMs: Int    = 300000
 }
 
 /// Start the gRPC server.  Blocks until SIGTERM / SIGINT.
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func start(registry: in ServiceRegistry): Unit {
   Grpc.Kernel.Net.serve(
@@ -350,7 +345,7 @@ pub func start(registry: in ServiceRegistry): Unit {
   )
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func start(registry: in ServiceRegistry): Unit {
   Grpc.Kernel.Jvm.serve(
@@ -363,10 +358,11 @@ pub func start(registry: in ServiceRegistry): Unit {
 }
 
 // ─── Server: non-blocking start with graceful stop ────────────────────────────
+
 /// Start the gRPC server and return a handle that can be used to stop it.
 /// Unlike `start`, this function returns immediately; the server runs in the
 /// background.  Call `stop` to drain in-flight RPCs and shut it down.
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle {
   return Grpc.Kernel.Net.netStartHandle(
@@ -378,7 +374,7 @@ pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle {
   )
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle {
   return Grpc.Kernel.Jvm.netStartHandle(
@@ -392,7 +388,7 @@ pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle {
 
 /// Stop the gRPC server, waiting up to `drainTimeoutMs` milliseconds for
 /// in-flight RPCs to complete before forcibly closing connections.
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func stop(handle: in GrpcServerHandle, drainTimeoutMs: in Int): Unit
   requires: drainTimeoutMs >= 0
@@ -400,7 +396,7 @@ pub func stop(handle: in GrpcServerHandle, drainTimeoutMs: in Int): Unit
   Grpc.Kernel.Net.netStopHandle(handle, drainTimeoutMs)
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func stop(handle: in GrpcServerHandle, drainTimeoutMs: in Int): Unit
   requires: drainTimeoutMs >= 0

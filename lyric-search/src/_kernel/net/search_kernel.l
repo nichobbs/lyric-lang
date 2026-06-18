@@ -1,34 +1,43 @@
-//! Search.Kernel.Net — Elasticsearch and Meilisearch extern boundaries.
-//!
-//! Bridges the Search package to the .NET search client libraries:
-//!
-//!   Elasticsearch (feature = "elasticsearch"):
-//!     Elastic.Clients.Elasticsearch NuGet package.
-//!     connectElasticsearch() — connect with API key or basic auth
-//!     index / indexBatch / search / suggest / delete / deleteIndex / exists / createIndex
-//!
-//!   Meilisearch (feature = "meilisearch"):
-//!     Meilisearch .NET client NuGet package.
-//!     connectMeilisearch() — connect with API key
-//!     index / indexBatch / search / suggest / delete / deleteIndex / exists / createIndex
-//!
-//! All document payloads are passed as JSON strings to avoid tying the
-//! kernel interface to Lyric record types.  The Search package serialises
-//! and deserialises at the boundary; the kernel forwards to the .NET SDK.
-//!
-//! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+// Search.Kernel.Net — Elasticsearch and Meilisearch extern boundaries.
+//
+// Bridges the Search package to the .NET search client libraries:
+//
+//   Elasticsearch (feature = "elasticsearch"):
+//     Elastic.Clients.Elasticsearch NuGet package.
+//     connectElasticsearch() — connect with API key or basic auth
+//     index / indexBatch / search / suggest / delete / deleteIndex / exists / createIndex
+//
+//   Meilisearch (feature = "meilisearch"):
+//     Meilisearch .NET client NuGet package.
+//     connectMeilisearch() — connect with API key
+//     index / indexBatch / search / suggest / delete / deleteIndex / exists / createIndex
+//
+// All document payloads are passed as JSON strings to avoid tying the
+// kernel interface to Lyric record types.  The Search package serialises
+// and deserialises at the boundary; the kernel forwards to the .NET SDK.
+//
+// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+
 package Search.Kernel.Net
 
 import Std.Core
 
 // ─── Elasticsearch ────────────────────────────────────────────────────────────
+
 @axiom("Elastic.Clients.Elasticsearch .NET client")
 @cfg(feature = "elasticsearch")
 extern package Elastic.Clients.Elasticsearch {
   /// Open a connection to an Elasticsearch cluster.
   /// `apiKey` takes precedence over `username`/`password` when non-empty.
   /// Returns an opaque client handle.
-  pub func connect(url: String, apiKey: String, username: String, password: String, connectTimeoutMs: Int, requestTimeoutMs: Int): Result[Int, String]
+  pub func connect(
+    url:              String,
+    apiKey:           String,
+    username:         String,
+    password:         String,
+    connectTimeoutMs: Int,
+    requestTimeoutMs: Int
+  ): Result[Int, String]
     requires: url.length > 0
 
   /// Index a document described by a JSON string.
@@ -70,8 +79,9 @@ extern package Elastic.Clients.Elasticsearch {
   /// Create an index with the given mapping JSON.
   pub func createIndex(clientHandle: Int, index: String, mappingJson: String): Result[Unit, String]
     requires: index.length > 0
-  // ─── Meilisearch ──────────────────────────────────────────────────────────────
 }
+
+// ─── Meilisearch ──────────────────────────────────────────────────────────────
 
 @axiom("Meilisearch .NET client")
 @cfg(feature = "meilisearch")
@@ -121,19 +131,20 @@ extern package MeilisearchDotnet {
   /// Create an index with the given mapping JSON.
   pub func createIndex(clientHandle: Int, index: String, mappingJson: String): Result[Unit, String]
     requires: index.length > 0
-  // ─── Re-export wrappers — Elasticsearch ───────────────────────────────────────
 }
 
+// ─── Re-export wrappers — Elasticsearch ───────────────────────────────────────
+
 /// Connect to Elasticsearch.
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "elasticsearch")
 pub func connectElasticsearch(
-  url: in String,
-  apiKey: in String,
-  username: in String,
-  password: in String,
+  url:              in String,
+  apiKey:           in String,
+  username:         in String,
+  password:         in String,
   connectTimeoutMs: in Int,
-  requestTimeoutMs: in Int,
+  requestTimeoutMs: in Int
 ): Result[Int, String]
   requires: url.length > 0
 {
@@ -141,10 +152,15 @@ pub func connectElasticsearch(
 }
 
 // ─── Re-export wrappers — Meilisearch ─────────────────────────────────────────
+
 /// Connect to Meilisearch.
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "meilisearch")
-pub func connectMeilisearch(url: in String, apiKey: in String, connectTimeoutMs: in Int): Result[Int, String]
+pub func connectMeilisearch(
+  url:              in String,
+  apiKey:           in String,
+  connectTimeoutMs: in Int
+): Result[Int, String]
   requires: url.length > 0
 {
   return MeilisearchDotnet.connect(url, apiKey, connectTimeoutMs)
@@ -155,8 +171,9 @@ pub func connectMeilisearch(url: in String, apiKey: in String, connectTimeoutMs:
 // When both features are active the caller is responsible for using the
 // correct handle (Elasticsearch handles are produced by connectElasticsearch,
 // Meilisearch handles by connectMeilisearch).
+
 /// Index a document.  `docJson` is a serialised SearchDocument.
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "elasticsearch")
 pub func index(clientHandle: in Int, docJson: in String): Result[String, String]
   requires: docJson.length > 0
@@ -164,7 +181,7 @@ pub func index(clientHandle: in Int, docJson: in String): Result[String, String]
   return Elastic.Clients.Elasticsearch.index(clientHandle, docJson)
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "meilisearch")
 pub func index(clientHandle: in Int, docJson: in String): Result[String, String]
   requires: docJson.length > 0
@@ -173,7 +190,7 @@ pub func index(clientHandle: in Int, docJson: in String): Result[String, String]
 }
 
 /// Bulk-index documents.  `docsJson` is a serialised array of SearchDocument.
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "elasticsearch")
 pub func indexBatch(clientHandle: in Int, docsJson: in String): Result[String, String]
   requires: docsJson.length > 0
@@ -181,7 +198,7 @@ pub func indexBatch(clientHandle: in Int, docsJson: in String): Result[String, S
   return Elastic.Clients.Elasticsearch.indexBatch(clientHandle, docsJson)
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "meilisearch")
 pub func indexBatch(clientHandle: in Int, docsJson: in String): Result[String, String]
   requires: docsJson.length > 0
@@ -190,7 +207,7 @@ pub func indexBatch(clientHandle: in Int, docsJson: in String): Result[String, S
 }
 
 /// Execute a search query.  `queryJson` is a serialised SearchQuery.
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "elasticsearch")
 pub func search(clientHandle: in Int, queryJson: in String): Result[String, String]
   requires: queryJson.length > 0
@@ -198,7 +215,7 @@ pub func search(clientHandle: in Int, queryJson: in String): Result[String, Stri
   return Elastic.Clients.Elasticsearch.search(clientHandle, queryJson)
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "meilisearch")
 pub func search(clientHandle: in Int, queryJson: in String): Result[String, String]
   requires: queryJson.length > 0
@@ -207,11 +224,9 @@ pub func search(clientHandle: in Int, queryJson: in String): Result[String, Stri
 }
 
 /// Return autocomplete suggestions.
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "elasticsearch")
-pub func suggest(
-  clientHandle: in Int, index: in String, text: in String, field: in String, size: in Int
-): Result[String, String]
+pub func suggest(clientHandle: in Int, index: in String, text: in String, field: in String, size: in Int): Result[String, String]
   requires: index.length > 0
   requires: field.length > 0
   requires: size > 0
@@ -219,11 +234,9 @@ pub func suggest(
   return Elastic.Clients.Elasticsearch.suggest(clientHandle, index, text, field, size)
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "meilisearch")
-pub func suggest(
-  clientHandle: in Int, index: in String, text: in String, field: in String, size: in Int
-): Result[String, String]
+pub func suggest(clientHandle: in Int, index: in String, text: in String, field: in String, size: in Int): Result[String, String]
   requires: index.length > 0
   requires: field.length > 0
   requires: size > 0
@@ -232,7 +245,7 @@ pub func suggest(
 }
 
 /// Delete a document by index and ID.
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "elasticsearch")
 pub func delete(clientHandle: in Int, index: in String, id: in String): Result[Unit, String]
   requires: index.length > 0
@@ -241,7 +254,7 @@ pub func delete(clientHandle: in Int, index: in String, id: in String): Result[U
   return Elastic.Clients.Elasticsearch.delete(clientHandle, index, id)
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "meilisearch")
 pub func delete(clientHandle: in Int, index: in String, id: in String): Result[Unit, String]
   requires: index.length > 0
@@ -251,7 +264,7 @@ pub func delete(clientHandle: in Int, index: in String, id: in String): Result[U
 }
 
 /// Delete an entire index.
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "elasticsearch")
 pub func deleteIndex(clientHandle: in Int, index: in String): Result[Unit, String]
   requires: index.length > 0
@@ -259,7 +272,7 @@ pub func deleteIndex(clientHandle: in Int, index: in String): Result[Unit, Strin
   return Elastic.Clients.Elasticsearch.deleteIndex(clientHandle, index)
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "meilisearch")
 pub func deleteIndex(clientHandle: in Int, index: in String): Result[Unit, String]
   requires: index.length > 0
@@ -268,7 +281,7 @@ pub func deleteIndex(clientHandle: in Int, index: in String): Result[Unit, Strin
 }
 
 /// Check whether a document exists.
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "elasticsearch")
 pub func exists(clientHandle: in Int, index: in String, id: in String): Result[Bool, String]
   requires: index.length > 0
@@ -277,7 +290,7 @@ pub func exists(clientHandle: in Int, index: in String, id: in String): Result[B
   return Elastic.Clients.Elasticsearch.exists(clientHandle, index, id)
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "meilisearch")
 pub func exists(clientHandle: in Int, index: in String, id: in String): Result[Bool, String]
   requires: index.length > 0
@@ -287,7 +300,7 @@ pub func exists(clientHandle: in Int, index: in String, id: in String): Result[B
 }
 
 /// Create an index with the given mapping JSON.
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "elasticsearch")
 pub func createIndex(clientHandle: in Int, index: in String, mappingJson: in String): Result[Unit, String]
   requires: index.length > 0
@@ -295,7 +308,7 @@ pub func createIndex(clientHandle: in Int, index: in String, mappingJson: in Str
   return Elastic.Clients.Elasticsearch.createIndex(clientHandle, index, mappingJson)
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "meilisearch")
 pub func createIndex(clientHandle: in Int, index: in String, mappingJson: in String): Result[Unit, String]
   requires: index.length > 0

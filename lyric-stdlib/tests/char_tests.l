@@ -1,9 +1,9 @@
-//! stdlib/tests/char_tests.l — Tests for Std.Char.
-//!
-//! Covers: classification (isLetter, isDigit, isLetterOrDigit,
-//! isWhiteSpace, isUpper, isLower, isPunctuation, isControl),
-//! case conversion (toUpper, toLower), code-point bridge (toInt,
-//! fromInt, isAscii), and digit value helpers (digitValue, hexDigitValue).
+// stdlib/tests/char_tests.l — Tests for Std.Char.
+//
+// Covers: classification (isLetter, isDigit, isLetterOrDigit,
+// isWhiteSpace, isUpper, isLower, isPunctuation, isControl),
+// case conversion (toUpper, toLower), code-point bridge (toInt,
+// fromInt, isAscii), and digit value helpers (digitValue, hexDigitValue).
 package Std.Char.Tests
 
 import Std.Core
@@ -102,34 +102,34 @@ func testHexDigitValue(): Unit {
 }
 
 func testAsciiClassification(): Unit {
-  assertTrue(isAsciiUpper('A'), "A is ASCII upper")
-  assertTrue(isAsciiUpper('Z'), "Z is ASCII upper")
-  assertTrue(not isAsciiUpper('a'), "a is not ASCII upper")
-  assertTrue(not isAsciiUpper('0'), "0 is not ASCII upper")
+  assertTrue(isAsciiUpper('A'),        "A is ASCII upper")
+  assertTrue(isAsciiUpper('Z'),        "Z is ASCII upper")
+  assertTrue(not isAsciiUpper('a'),    "a is not ASCII upper")
+  assertTrue(not isAsciiUpper('0'),    "0 is not ASCII upper")
 
-  assertTrue(isAsciiLower('a'), "a is ASCII lower")
-  assertTrue(isAsciiLower('z'), "z is ASCII lower")
-  assertTrue(not isAsciiLower('A'), "A is not ASCII lower")
-  assertTrue(not isAsciiLower('0'), "0 is not ASCII lower")
+  assertTrue(isAsciiLower('a'),        "a is ASCII lower")
+  assertTrue(isAsciiLower('z'),        "z is ASCII lower")
+  assertTrue(not isAsciiLower('A'),    "A is not ASCII lower")
+  assertTrue(not isAsciiLower('0'),    "0 is not ASCII lower")
 
-  assertTrue(isAsciiLetter('a'), "a is ASCII letter")
-  assertTrue(isAsciiLetter('Z'), "Z is ASCII letter")
-  assertTrue(not isAsciiLetter('0'), "0 is not ASCII letter")
-  assertTrue(not isAsciiLetter(' '), "space is not ASCII letter")
+  assertTrue(isAsciiLetter('a'),       "a is ASCII letter")
+  assertTrue(isAsciiLetter('Z'),       "Z is ASCII letter")
+  assertTrue(not isAsciiLetter('0'),   "0 is not ASCII letter")
+  assertTrue(not isAsciiLetter(' '),   "space is not ASCII letter")
 
-  assertTrue(isAsciiDigit('0'), "0 is ASCII digit")
-  assertTrue(isAsciiDigit('9'), "9 is ASCII digit")
-  assertTrue(not isAsciiDigit('a'), "a is not ASCII digit")
-  assertTrue(not isAsciiDigit(' '), "space is not ASCII digit")
+  assertTrue(isAsciiDigit('0'),        "0 is ASCII digit")
+  assertTrue(isAsciiDigit('9'),        "9 is ASCII digit")
+  assertTrue(not isAsciiDigit('a'),    "a is not ASCII digit")
+  assertTrue(not isAsciiDigit(' '),    "space is not ASCII digit")
 
   assertTrue(isAsciiLetterOrDigit('a'), "a is ASCII letter or digit")
   assertTrue(isAsciiLetterOrDigit('5'), "5 is ASCII letter or digit")
   assertTrue(not isAsciiLetterOrDigit(' '), "space is not")
 
-  assertTrue(isAsciiWhiteSpace(' '), "space is ASCII whitespace")
-  assertTrue(isAsciiWhiteSpace('\t'), "tab is ASCII whitespace")
-  assertTrue(isAsciiWhiteSpace('\n'), "LF is ASCII whitespace")
-  assertTrue(isAsciiWhiteSpace('\r'), "CR is ASCII whitespace")
+  assertTrue(isAsciiWhiteSpace(' '),   "space is ASCII whitespace")
+  assertTrue(isAsciiWhiteSpace('\t'),  "tab is ASCII whitespace")
+  assertTrue(isAsciiWhiteSpace('\n'),  "LF is ASCII whitespace")
+  assertTrue(isAsciiWhiteSpace('\r'),  "CR is ASCII whitespace")
   assertTrue(not isAsciiWhiteSpace('a'), "a is not ASCII whitespace")
   assertTrue(not isAsciiWhiteSpace('0'), "0 is not ASCII whitespace")
 }

@@ -1,16 +1,17 @@
-//! jvm/self_test_b108.l — Stage B108: lowerDistinctType.
-//!
-//! Creates two distinct-type wrapper classes (§6.2 bootstrap form):
-//!   UserId  — wraps long  (type UserId = Long)
-//!   OrderId — wraps int   (type OrderId = Int)
-//! Each has a private final `$value` field, a public constructor, and a
-//! public `$value()` accessor.
-//!
-//! A Main class instantiates both, calls $value(), and prints results.
-//!
-//! Java output (java -jar):
-//!   userId.$value=42
-//!   orderId.$value=7
+// jvm/self_test_b108.l — Stage B108: lowerDistinctType.
+//
+// Creates two distinct-type wrapper classes (§6.2 bootstrap form):
+//   UserId  — wraps long  (type UserId = Long)
+//   OrderId — wraps int   (type OrderId = Int)
+// Each has a private final `$value` field, a public constructor, and a
+// public `$value()` accessor.
+//
+// A Main class instantiates both, calls $value(), and prints results.
+//
+// Java output (java -jar):
+//   userId.$value=42
+//   orderId.$value=7
+
 package Jvm.SelfTestB108
 
 import Std.Core
@@ -22,6 +23,7 @@ import Jvm.Lowering
 import Jvm.Driver
 
 // ── Build wrapper classes ─────────────────────────────────────────────────────
+
 func makeUserIdBytes(): List[Byte] {
   val pool = poolNew()
   val cf = lowerDistinctType(LDistinctType(wrapperClass = "UserId", underlyingType = JLong), pool)
@@ -35,21 +37,22 @@ func makeOrderIdBytes(): List[Byte] {
 }
 
 // ── Build Main class ──────────────────────────────────────────────────────────
+
 func makeMainBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOutIdx  = poolFieldref(pool,  "java/lang/System",    "out",     "Ljava/io/PrintStream;")
   val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
+  val concatIdx  = poolMethodref(pool, "java/lang/String",    "concat",  "(Ljava/lang/String;)Ljava/lang/String;")
 
-  val userIdNewIdx = poolClass(pool, "UserId")
-  val userIdCtorIdx = poolMethodref(pool, "UserId", "<init>", "(J)V")
-  val userIdAccIdx = poolMethodref(pool, "UserId", "$value", "()J")
+  val userIdNewIdx  = poolClass(pool, "UserId")
+  val userIdCtorIdx = poolMethodref(pool, "UserId",  "<init>", "(J)V")
+  val userIdAccIdx  = poolMethodref(pool, "UserId",  "$value", "()J")
 
-  val orderIdNewIdx = poolClass(pool, "OrderId")
+  val orderIdNewIdx  = poolClass(pool, "OrderId")
   val orderIdCtorIdx = poolMethodref(pool, "OrderId", "<init>", "(I)V")
-  val orderIdAccIdx = poolMethodref(pool, "OrderId", "$value", "()I")
+  val orderIdAccIdx  = poolMethodref(pool, "OrderId", "$value", "()I")
 
   val valueOfLIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(J)Ljava/lang/String;")
   val valueOfIIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
@@ -98,23 +101,24 @@ func makeMainBytes(): List[Byte] {
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
+
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b108"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val classes: List[BuiltClass] = newList()
-  classes.add(BuiltClass(binaryName = "UserId", bytes = makeUserIdBytes()))
+  classes.add(BuiltClass(binaryName = "UserId",  bytes = makeUserIdBytes()))
   classes.add(BuiltClass(binaryName = "OrderId", bytes = makeOrderIdBytes()))
-  classes.add(BuiltClass(binaryName = "Main", bytes = makeMainBytes()))
+  classes.add(BuiltClass(binaryName = "Main",    bytes = makeMainBytes()))
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB108",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

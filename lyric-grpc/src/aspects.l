@@ -1,45 +1,46 @@
-//! Grpc.Aspects — pub aspect templates for cross-cutting gRPC handler concerns.
-//!
-//! Provides three reusable template aspects that mirror Web.Aspects but
-//! target gRPC handlers (returning Result[T, GrpcStatus]).
-//!
-//!   RequiresGrpcAuth    — validates a bearer token; UNAUTHENTICATED (16) /
-//!                         PERMISSION_DENIED (7) on failure.
-//!                         C-mode (@inline_template): reads args.authToken.
-//!                         The gRPC kernel extracts the token from the
-//!                         "authorization" metadata header and passes it as
-//!                         the `authToken: String` handler parameter.
-//!
-//!   RequiresGrpcRole    — validates token AND checks a role claim.
-//!                         C-mode: reads args.authToken.
-//!
-//!   GrpcRateLimit       — per-method sliding-window rate limit; RESOURCE_EXHAUSTED
-//!                         (8) on excess.  B-mode: uses call.qualifiedName.
-//!
-//!   GrpcCircuitBreaker  — open-circuit short-circuit; UNAVAILABLE (14) when open.
-//!                         B-mode: uses call.qualifiedName.
-//!
-//! Both auth aspects delegate to lyric-auth (Auth.verifyJwt, Auth.rolesContain).
-//! GrpcCircuitBreaker delegates to lyric-resilience (Resilience.circuitIsOpen, etc.).
-//! The same underlying functions are used by Web.Aspects, so a single
-//! lyric-auth configuration covers HTTP and gRPC services uniformly.
-//!
-//! Typical consumer instantiation:
-//!
-//!   import Grpc.Aspects
-//!
-//!   aspect GrpcAuth from Grpc.Aspects.RequiresGrpcAuth {
-//!     matches: name like "get*" || name like "list*" || name like "create*"
-//!             || name like "update*" || name like "delete*"
-//!   }
-//!
-//!   aspect GrpcCircuit from Grpc.Aspects.GrpcCircuitBreaker {
-//!     matches: name like "get*" || name like "list*" || name like "create*"
-//!             || name like "update*" || name like "delete*"
-//!     inside: GrpcAuth
-//!   }
-//!
-//! See docs/37-grpc-proto-sketch.md §6.2.
+// Grpc.Aspects — pub aspect templates for cross-cutting gRPC handler concerns.
+//
+// Provides three reusable template aspects that mirror Web.Aspects but
+// target gRPC handlers (returning Result[T, GrpcStatus]).
+//
+//   RequiresGrpcAuth    — validates a bearer token; UNAUTHENTICATED (16) /
+//                         PERMISSION_DENIED (7) on failure.
+//                         C-mode (@inline_template): reads args.authToken.
+//                         The gRPC kernel extracts the token from the
+//                         "authorization" metadata header and passes it as
+//                         the `authToken: String` handler parameter.
+//
+//   RequiresGrpcRole    — validates token AND checks a role claim.
+//                         C-mode: reads args.authToken.
+//
+//   GrpcRateLimit       — per-method sliding-window rate limit; RESOURCE_EXHAUSTED
+//                         (8) on excess.  B-mode: uses call.qualifiedName.
+//
+//   GrpcCircuitBreaker  — open-circuit short-circuit; UNAVAILABLE (14) when open.
+//                         B-mode: uses call.qualifiedName.
+//
+// Both auth aspects delegate to lyric-auth (Auth.verifyJwt, Auth.rolesContain).
+// GrpcCircuitBreaker delegates to lyric-resilience (Resilience.circuitIsOpen, etc.).
+// The same underlying functions are used by Web.Aspects, so a single
+// lyric-auth configuration covers HTTP and gRPC services uniformly.
+//
+// Typical consumer instantiation:
+//
+//   import Grpc.Aspects
+//
+//   aspect GrpcAuth from Grpc.Aspects.RequiresGrpcAuth {
+//     matches: name like "get*" || name like "list*" || name like "create*"
+//             || name like "update*" || name like "delete*"
+//   }
+//
+//   aspect GrpcCircuit from Grpc.Aspects.GrpcCircuitBreaker {
+//     matches: name like "get*" || name like "list*" || name like "create*"
+//             || name like "update*" || name like "delete*"
+//     inside: GrpcAuth
+//   }
+//
+// See docs/37-grpc-proto-sketch.md §6.2.
+
 @runtime_checked
 package Grpc.Aspects
 
@@ -51,6 +52,7 @@ import Auth
 import Resilience
 
 // ─── RequiresGrpcAuth ─────────────────────────────────────────────────────────
+
 /// Validate a bearer token on every matched gRPC handler call.
 ///
 /// The handler must declare a parameter named `authToken: String`.  The gRPC
@@ -72,18 +74,21 @@ import Resilience
 ///   audience           String — expected aud claim; empty = skip check (default: "")
 ///   allowedAlgorithms  String — comma-separated allow-list of `alg` values
 ///                               (default: "HS256").  See RFC 8725 §3.1.
-@stable(since = "0.1")
+@stable(since="0.1")
 @inline_template
 pub aspect RequiresGrpcAuth {
   config {
-    enabled: Bool = true
+    enabled: Bool   = true
     @sensitive
     jwtSecret: String
-    issuer: String = ""
-    audience: String = ""
+    issuer:    String = ""
+    audience:  String = ""
     allowedAlgorithms: String = "HS256"
   }
-  requires: args.authToken != ""
+
+  requires:
+    args.authToken != ""
+
   around(call) -> ret {
     if not enabled {
       ret = call.proceed()
@@ -109,6 +114,7 @@ pub aspect RequiresGrpcAuth {
 }
 
 // ─── RequiresGrpcRole ─────────────────────────────────────────────────────────
+
 /// Validate a bearer token AND assert the caller holds a required role.
 ///
 /// First verifies the JWT (same rules as RequiresGrpcAuth), then extracts
@@ -124,19 +130,22 @@ pub aspect RequiresGrpcAuth {
 ///   audience           String — expected aud claim (default: "")
 ///   allowedRoles       String — comma-separated accepted role values (e.g. "admin,editor")
 ///   allowedAlgorithms  String — comma-separated allow-list of `alg` values (default: "HS256")
-@stable(since = "0.1")
+@stable(since="0.1")
 @inline_template
 pub aspect RequiresGrpcRole {
   config {
-    enabled: Bool = true
+    enabled: Bool   = true
     @sensitive
-    jwtSecret: String
-    issuer: String = ""
-    audience: String = ""
+    jwtSecret:    String
+    issuer:       String = ""
+    audience:     String = ""
     allowedRoles: String
     allowedAlgorithms: String = "HS256"
   }
-  requires: args.authToken != ""
+
+  requires:
+    args.authToken != ""
+
   around(call) -> ret {
     if not enabled {
       ret = call.proceed()
@@ -171,6 +180,7 @@ pub aspect RequiresGrpcRole {
 }
 
 // ─── GrpcRateLimit ────────────────────────────────────────────────────────────
+
 /// Enforce a per-method call rate limit.
 ///
 /// Uses call.qualifiedName as the rate-limit key.  When the limit is
@@ -182,13 +192,14 @@ pub aspect RequiresGrpcRole {
 ///   enabled           Bool — master switch (default: true)
 ///   requestsPerMinute Int  — maximum calls per 60-second window (default: 600)
 ///   burstSize         Int  — maximum calls in a single second (default: 50)
-@stable(since = "0.1")
+@stable(since="0.1")
 pub aspect GrpcRateLimit {
   config {
-    enabled: Bool = true
-    requestsPerMinute: Int = 600
-    burstSize: Int = 50
+    enabled:           Bool = true
+    requestsPerMinute: Int  = 600
+    burstSize:         Int  = 50
   }
+
   around(call) -> ret {
     if not enabled {
       ret = call.proceed()
@@ -204,6 +215,7 @@ pub aspect GrpcRateLimit {
 }
 
 // ─── GrpcCircuitBreaker ───────────────────────────────────────────────────────
+
 /// gRPC-specific circuit breaker: open circuit returns 14 UNAVAILABLE.
 ///
 /// Wraps Resilience.* kernel helpers and maps open-circuit failure to
@@ -216,14 +228,15 @@ pub aspect GrpcRateLimit {
 ///   name             String — circuit name; defaults to call.qualifiedName (default: "")
 ///   failureThreshold Int    — consecutive failures before opening (default: 5)
 ///   cooldownMs       Int    — ms before probing after open (default: 30000)
-@stable(since = "0.1")
+@stable(since="0.1")
 pub aspect GrpcCircuitBreaker {
   config {
-    enabled: Bool = true
-    name: String = ""
-    failureThreshold: Int = 5
-    cooldownMs: Int = 30000
+    enabled:          Bool   = true
+    name:             String = ""
+    failureThreshold: Int    = 5
+    cooldownMs:       Int    = 30000
   }
+
   around(call) -> ret {
     if not enabled {
       ret = call.proceed()
@@ -234,7 +247,7 @@ pub aspect GrpcCircuitBreaker {
       } else {
         ret = call.proceed()
         match ret {
-          case Ok(_) -> Resilience.circuitRecordSuccess(key)
+          case Ok(_)  -> Resilience.circuitRecordSuccess(key)
           case Err(_) -> Resilience.circuitRecordFailure(key, failureThreshold)
         }
       }

@@ -1,15 +1,16 @@
-//! jvm/self_test_b79.l — Stage B79: double[] arrays (newarray T_DOUBLE, daload, dastore).
-//!
-//! Generates DoubleArrays.class with:
-//!   makeDoubles()[D  — builds {1.5, 2.5, 3.5} via dastore
-//!   sumDoubles([D)D  — sums elements via daload
-//!   getAt([DI)D      — returns element at index
-//!
-//! Main prints:
-//!   sum=7.5
-//!   at1=2.5
-//!
-//! Exercises: newarray T_DOUBLE, dastore, daload, dadd, dreturn, ldc2_w (double).
+// jvm/self_test_b79.l — Stage B79: double[] arrays (newarray T_DOUBLE, daload, dastore).
+//
+// Generates DoubleArrays.class with:
+//   makeDoubles()[D  — builds {1.5, 2.5, 3.5} via dastore
+//   sumDoubles([D)D  — sums elements via daload
+//   getAt([DI)D      — returns element at index
+//
+// Main prints:
+//   sum=7.5
+//   at1=2.5
+//
+// Exercises: newarray T_DOUBLE, dastore, daload, dadd, dreturn, ldc2_w (double).
+
 package Jvm.SelfTestB79
 
 import Std.Core
@@ -95,16 +96,16 @@ func makeDoubleArraysBytes(): List[Byte] {
 }
 
 func makeMainClassBytes(): List[Byte] {
-  val pool = poolNew()
-  val asm = newAssembler(pool)
+  val pool      = poolNew()
+  val asm       = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnS = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val sysOut    = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnS  = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
   val concatRef = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
-  val valueOfD = poolMethodref(pool, "java/lang/String", "valueOf", "(D)Ljava/lang/String;")
-  val makeRef = poolMethodref(pool, "DoubleArrays", "makeDoubles", "()[D")
-  val sumRef = poolMethodref(pool, "DoubleArrays", "sumDoubles", "([D)D")
-  val getRef = poolMethodref(pool, "DoubleArrays", "getAt", "([DI)D")
+  val valueOfD  = poolMethodref(pool, "java/lang/String", "valueOf", "(D)Ljava/lang/String;")
+  val makeRef   = poolMethodref(pool, "DoubleArrays", "makeDoubles", "()[D")
+  val sumRef    = poolMethodref(pool, "DoubleArrays", "sumDoubles",  "([D)D")
+  val getRef    = poolMethodref(pool, "DoubleArrays", "getAt",       "([DI)D")
 
   // arr = DoubleArrays.makeDoubles()   (slot 0)
   emitInvokestatic(asm, makeRef)
@@ -144,24 +145,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b79"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val doubleArraysBytes = makeDoubleArraysBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes         = makeMainClassBytes()
 
   val doubleArraysClass = BuiltClass(binaryName = "DoubleArrays", bytes = doubleArraysBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass         = BuiltClass(binaryName = "Main",         bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(doubleArraysClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB79",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

@@ -1,6 +1,7 @@
-//! Tests for Std.Regex (#330) — the public Result-based regex wrapper.
-//! Uses the `func main(): Unit` + `println "ok"` shape discovered by
-//! StdlibLyricTests.fs.
+// Tests for Std.Regex (#330) — the public Result-based regex wrapper.
+// Uses the `func main(): Unit` + `println "ok"` shape discovered by
+// StdlibLyricTests.fs.
+
 package Std.Regex.Tests
 
 import Std.Core
@@ -8,9 +9,10 @@ import Std.Regex as Re
 import Std.Testing
 
 // ─── tryCompile ─────────────────────────────────────────────────────────────
+
 func testTryCompileOk(): Unit {
   match Re.tryCompile("h.llo") {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> assertTrue(false, "tryCompile('h.llo') should succeed")
   }
 }
@@ -18,11 +20,15 @@ func testTryCompileOk(): Unit {
 func testTryCompileInvalidPattern(): Unit {
   match Re.tryCompile("(unclosed") {
     case Ok(_) -> assertTrue(false, "tryCompile('(unclosed') should fail")
-    case Err(e) -> match e { case InvalidPattern(_) -> (); case TimedOut(_) -> assertTrue(false, "invalid pattern should not be TimedOut") }
+    case Err(e) -> match e {
+      case InvalidPattern(_) -> ()
+      case TimedOut(_) -> assertTrue(false, "invalid pattern should not be TimedOut")
+    }
   }
 }
 
 // ─── compile / isMatch (throwing API) ───────────────────────────────────────
+
 func testCompileAndIsMatch(): Unit {
   val r = Re.compile("h.llo")
   assertTrue(Re.isMatch(r, "hello world"), "h.llo matches 'hello world'")
@@ -34,21 +40,29 @@ func testIsMatchNoMatch(): Unit {
 }
 
 // ─── tryIsMatch ──────────────────────────────────────────────────────────────
+
 func testTryIsMatchSuccess(): Unit {
   match Re.tryCompile("h.llo") {
     case Err(_) -> assertTrue(false, "tryCompile failed")
-    case Ok(r) -> match Re.tryIsMatch(r, "hello world") { case Ok(b) -> assertTrue(b, "h.llo should match 'hello world'"); case Err(_) -> assertTrue(false, "tryIsMatch should not error on benign pattern") }
+    case Ok(r)  -> match Re.tryIsMatch(r, "hello world") {
+      case Ok(b)  -> assertTrue(b, "h.llo should match 'hello world'")
+      case Err(_) -> assertTrue(false, "tryIsMatch should not error on benign pattern")
+    }
   }
 }
 
 func testTryIsMatchNoMatch(): Unit {
   match Re.tryCompile("xyz") {
     case Err(_) -> assertTrue(false, "tryCompile failed")
-    case Ok(r) -> match Re.tryIsMatch(r, "hello world") { case Ok(b) -> assertTrue(not b, "xyz should not match 'hello world'"); case Err(_) -> assertTrue(false, "tryIsMatch should not error on benign pattern") }
+    case Ok(r)  -> match Re.tryIsMatch(r, "hello world") {
+      case Ok(b)  -> assertTrue(not b, "xyz should not match 'hello world'")
+      case Err(_) -> assertTrue(false, "tryIsMatch should not error on benign pattern")
+    }
   }
 }
 
 // ─── replace / tryReplace ───────────────────────────────────────────────────
+
 func testReplaceAll(): Unit {
   val r = Re.compile("foo")
   val result = Re.replace(r, "foofoo", "bar")
@@ -58,17 +72,22 @@ func testReplaceAll(): Unit {
 func testTryReplaceSuccess(): Unit {
   match Re.tryCompile("foo") {
     case Err(_) -> assertTrue(false, "tryCompile failed")
-    case Ok(r) -> match Re.tryReplace(r, "foofoo", "bar") { case Ok(s) -> assertTrue(s == "barbar", "tryReplace produced 'barbar'"); case Err(_) -> assertTrue(false, "tryReplace should not error") }
+    case Ok(r)  -> match Re.tryReplace(r, "foofoo", "bar") {
+      case Ok(s)  -> assertTrue(s == "barbar", "tryReplace produced 'barbar'")
+      case Err(_) -> assertTrue(false, "tryReplace should not error")
+    }
   }
 }
 
 // ─── compileWithTimeout ──────────────────────────────────────────────────────
+
 func testCompileWithTimeoutSmoke(): Unit {
   val r = Re.compileWithTimeout("h.llo", 5.0)
   assertTrue(Re.isMatch(r, "hello world"), "compileWithTimeout produces a working regex")
 }
 
 // ─── errorMessage ────────────────────────────────────────────────────────────
+
 func testErrorMessageTimedOut(): Unit {
   val msg = Re.errorMessage(TimedOut(message = "engine ran too long"))
   assertTrue(msg == "regex match timed out: engine ran too long", "TimedOut renders")
@@ -114,7 +133,8 @@ func testReDoSTimeoutFires(): Unit {
   hostile = hostile + "b"
   val r = Re.compileWithTimeout("(a+)+$", 0.1)
   match Re.tryIsMatch(r, hostile) {
-    case Ok(matched) -> println("testReDoSTimeoutFires: match returned " + toString(matched) + " (JVM — no timeout until #1103)")
+    case Ok(matched) ->
+      println("testReDoSTimeoutFires: match returned " + toString(matched) + " (JVM — no timeout until #1103)")
     case Err(_) -> ()
   }
 }
@@ -143,10 +163,17 @@ func testReDoSTimeoutFiresJvm(): Unit {
   hostile = hostile + "b"
   val r = Re.compileWithTimeout("(a+)+$", 1.5)
   match Re.tryIsMatch(r, hostile) {
-    case Ok(_) -> assertTrue(false, "JVM: catastrophic pattern should time out (#1103); shim missing?")
-    case Err(e) -> match e { case TimedOut(_) -> (); case InvalidPattern(_) -> assertTrue(false, "JVM: ReDoS guard surfaced InvalidPattern; expected TimedOut") }
+    case Ok(_) ->
+      assertTrue(false,
+        "JVM: catastrophic pattern should time out (#1103); shim missing?")
+    case Err(e) ->
+      match e {
+        case TimedOut(_)       -> ()  // expected path
+        case InvalidPattern(_) ->
+          assertTrue(false,
+            "JVM: ReDoS guard surfaced InvalidPattern; expected TimedOut")
+      }
   }
-  // expected path
 }
 
 func main(): Unit {

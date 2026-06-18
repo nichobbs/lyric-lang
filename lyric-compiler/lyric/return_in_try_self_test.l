@@ -1,21 +1,22 @@
-//! return_in_try_self_test.l — regression tests for returning out of a CLR
-//! protected region on the self-hosted MSIL target (#1477 foundation; epic
-//! #1470, Band 2).
-//!
-//! A `return` lowered inside a `try`/`catch`/`finally` previously emitted a bare
-//! `ret`, which is unverifiable IL out of a protected region — every such
-//! program faulted the JIT (`InvalidProgramException`).  Codegen now routes a
-//! `return` that escapes ≥1 open region through a single function epilogue: it
-//! stashes the value into a synthetic local and `leave`s to the epilogue (which
-//! runs any intervening `finally` before loading the value and returning).  This
-//! is the enabling fix for `defer`-at-scope-exit (the `try { rest } finally { D }`
-//! lowering), landing separately because it is an independent correctness fix.
-//!
-//! Run via native `lyric test --target dotnet`.  Imports only `Std.*`.
-//!
-//!   lyric test lyric-compiler/lyric/return_in_try_self_test.l
-//!
-//! MSIL target only; JVM parity is tracked under epic #1470's JVM-deferral note.
+// return_in_try_self_test.l — regression tests for returning out of a CLR
+// protected region on the self-hosted MSIL target (#1477 foundation; epic
+// #1470, Band 2).
+//
+// A `return` lowered inside a `try`/`catch`/`finally` previously emitted a bare
+// `ret`, which is unverifiable IL out of a protected region — every such
+// program faulted the JIT (`InvalidProgramException`).  Codegen now routes a
+// `return` that escapes ≥1 open region through a single function epilogue: it
+// stashes the value into a synthetic local and `leave`s to the epilogue (which
+// runs any intervening `finally` before loading the value and returning).  This
+// is the enabling fix for `defer`-at-scope-exit (the `try { rest } finally { D }`
+// lowering), landing separately because it is an independent correctness fix.
+//
+// Run via native `lyric test --target dotnet`.  Imports only `Std.*`.
+//
+//   lyric test lyric-compiler/lyric/return_in_try_self_test.l
+//
+// MSIL target only; JVM parity is tracked under epic #1470's JVM-deferral note.
+
 @test_module
 package Lyric.ReturnInTrySelfTest
 
@@ -149,14 +150,12 @@ test "conditional return in a try, then a trailing fall-through value" {
 
 test "void return inside a try/finally runs the finally" {
   val log1: List[Int] = newList()
-  voidReturnInTry(log1, 5)
-  // append 1, return, finally appends 99
+  voidReturnInTry(log1, 5)   // append 1, return, finally appends 99
   assertEqualInt(log1.count, 2, "early-return path: two entries")
   assertEqualInt(log1[0], 1, "early-return path: body entry")
   assertEqualInt(log1[1], 99, "early-return path: finally entry")
   val log2: List[Int] = newList()
-  voidReturnInTry(log2, -1)
-  // append 2, fall through, finally appends 99
+  voidReturnInTry(log2, -1)  // append 2, fall through, finally appends 99
   assertEqualInt(log2.count, 2, "fall-through path: two entries")
   assertEqualInt(log2[0], 2, "fall-through path: body entry")
   assertEqualInt(log2[1], 99, "fall-through path: finally entry")
@@ -183,12 +182,12 @@ test "a plain return (no enclosing try) is unaffected" {
 // reservation; the parallel `lowerImplMethodMsil` path is wired identically
 // but otherwise untested by this file.  An interface impl with a `return`
 // inside a `try`/`finally` pins that second code path.
+
 interface Compute {
   func step(x: in Int, log: in List[Int]): Int
 }
 
-record ComputeImpl {
-}
+record ComputeImpl {}
 
 impl Compute for ComputeImpl {
   func step(x: in Int, log: in List[Int]): Int {

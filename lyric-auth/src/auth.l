@@ -1,37 +1,38 @@
-//! Auth — transport-agnostic authentication and credential verification.
-//!
-//! Stability: @stable(since="0.1") — public API covered by the
-//! SemVer guarantee.  Per-function annotations track the same scope.
-//!
-//! Provides JWT, API-key, and role-claim primitives that work across HTTP,
-//! gRPC, WebSockets, message queues, and CLI tools.  Protocol-specific
-//! aspect *bindings* call these functions; the verification logic itself has
-//! no transport dependency.
-//!
-//! Functions:
-//!   Auth.verifyJwt          — validates a Bearer token against an explicit
-//!                             allow-list of `alg` values (HS256, RS256, etc.).
-//!                             Algorithm pinning prevents alg=none forgery and
-//!                             HS256/RS256 confusion (RFC 8725 §3.1).  Returns
-//!                             a typed Result so callers can distinguish
-//!                             algorithm rejection from signature failure
-//!                             (#1090).  Applies a 60-second clock-skew
-//!                             leeway by default (#1081).
-//!   Auth.verifyJwtWithSkew  — same as verifyJwt but with an explicit
-//!                             `clockSkewSeconds` argument.
-//!   Auth.extractClaim       — reads a named claim from a pre-verified JWT
-//!   Auth.verifyApiKey       — constant-time comparison; prevents timing attacks
-//!
-//! Typical usage from a protocol binding (e.g. Web.Aspects.RequiresAuth):
-//!
-//!   match Auth.verifyJwt(token, jwtSecret, issuer, audience, "HS256") {
-//!     case Ok(_)        -> ()  // proceed
-//!     case Err(jwtErr)  -> return Err(Web.forbidden(jwtErr.message))
-//!   }
-//!   val role = Auth.extractClaim(token, "role")
-//!
-//! See lyric-web/src/aspects.l for the HTTP bindings (RequiresAuth,
-//! RequiresRole, ApiKey).
+// Auth — transport-agnostic authentication and credential verification.
+//
+// Stability: @stable(since="0.1") — public API covered by the
+// SemVer guarantee.  Per-function annotations track the same scope.
+//
+// Provides JWT, API-key, and role-claim primitives that work across HTTP,
+// gRPC, WebSockets, message queues, and CLI tools.  Protocol-specific
+// aspect *bindings* call these functions; the verification logic itself has
+// no transport dependency.
+//
+// Functions:
+//   Auth.verifyJwt          — validates a Bearer token against an explicit
+//                             allow-list of `alg` values (HS256, RS256, etc.).
+//                             Algorithm pinning prevents alg=none forgery and
+//                             HS256/RS256 confusion (RFC 8725 §3.1).  Returns
+//                             a typed Result so callers can distinguish
+//                             algorithm rejection from signature failure
+//                             (#1090).  Applies a 60-second clock-skew
+//                             leeway by default (#1081).
+//   Auth.verifyJwtWithSkew  — same as verifyJwt but with an explicit
+//                             `clockSkewSeconds` argument.
+//   Auth.extractClaim       — reads a named claim from a pre-verified JWT
+//   Auth.verifyApiKey       — constant-time comparison; prevents timing attacks
+//
+// Typical usage from a protocol binding (e.g. Web.Aspects.RequiresAuth):
+//
+//   match Auth.verifyJwt(token, jwtSecret, issuer, audience, "HS256") {
+//     case Ok(_)        -> ()  // proceed
+//     case Err(jwtErr)  -> return Err(Web.forbidden(jwtErr.message))
+//   }
+//   val role = Auth.extractClaim(token, "role")
+//
+// See lyric-web/src/aspects.l for the HTTP bindings (RequiresAuth,
+// RequiresRole, ApiKey).
+
 @runtime_checked
 package Auth
 
@@ -42,6 +43,7 @@ import Auth.Kernel.Net as AuthKernelNet
 import Auth.Kernel.Jvm as AuthKernelJvm
 
 // ─── JwtError (#1090) ─────────────────────────────────────────────────────────
+
 /// Structured error returned by `verifyJwt` and `verifyJwtWithSkew`.
 ///
 /// `code` is a stable, machine-readable identifier suitable for logs and
@@ -65,9 +67,9 @@ import Auth.Kernel.Jvm as AuthKernelJvm
 ///   "NOT_YET_VALID"        — nbf in the future (beyond clockSkewSeconds)
 ///   "VERIFICATION_FAILED"  — JVM-only: any failure mode (JJWT does not
 ///                            surface fine-grained categories; tracked in #443)
-@stable(since = "0.1")
+@stable(since="0.1")
 pub record JwtError {
-  code: String
+  code:    String
   message: String
 }
 
@@ -77,55 +79,38 @@ pub record JwtError {
 /// from outliving their declared expiry by a meaningful amount.  See
 /// RFC 7519 §4.1.4 ("Implementers MAY provide for some small leeway,
 /// usually no more than a few minutes, to account for clock skew").
-@stable(since = "0.1")
-pub func defaultClockSkewSeconds(): Int {
-  60
-}
+@stable(since="0.1")
+pub func defaultClockSkewSeconds(): Int { 60 }
 
 // Map an error code returned by the kernel to a JwtError with a
 // human-readable message.  Kept in sync with the codes documented above.
 func makeJwtError(code: in String): JwtError {
-  val msg = if code == "MALFORMED_TOKEN" {
-    "JWT is malformed (expected header.payload.signature)"
-  } else if code == "MALFORMED_HEADER" {
-    "JWT header could not be decoded as base64url JSON"
-  } else if code == "ALG_REJECTED" {
-    "algorithm not permitted by allowedAlgorithms"
-  } else if code == "ALG_UNSUPPORTED" {
-    "algorithm is not implemented by this build (see #443)"
-  } else if code == "BAD_SIGNATURE" {
-    "JWT signature did not verify"
-  } else if code == "MALFORMED_PAYLOAD" {
-    "JWT payload could not be decoded as base64url JSON"
-  } else if code == "ISSUER_MISMATCH" {
-    "JWT iss claim did not match expected issuer"
-  } else if code == "AUDIENCE_MISMATCH" {
-    "JWT aud claim did not contain expected audience"
-  } else if code == "EXP_OVERFLOW" {
-    "JWT exp claim is malformed or overflows"
-  } else if code == "EXPIRED" {
-    "JWT has expired"
-  } else if code == "NBF_OVERFLOW" {
-    "JWT nbf claim is malformed or overflows"
-  } else if code == "NOT_YET_VALID" {
-    "JWT is not yet valid (nbf is in the future)"
-  } else if code == "VERIFICATION_FAILED" {
-    "JWT verification failed"
-  } else {
-    "JWT verification failed: " + code
-  }
+  val msg =
+    if code == "MALFORMED_TOKEN"     { "JWT is malformed (expected header.payload.signature)" }
+    else if code == "MALFORMED_HEADER"  { "JWT header could not be decoded as base64url JSON" }
+    else if code == "ALG_REJECTED"      { "algorithm not permitted by allowedAlgorithms" }
+    else if code == "ALG_UNSUPPORTED"   { "algorithm is not implemented by this build (see #443)" }
+    else if code == "BAD_SIGNATURE"     { "JWT signature did not verify" }
+    else if code == "MALFORMED_PAYLOAD" { "JWT payload could not be decoded as base64url JSON" }
+    else if code == "ISSUER_MISMATCH"   { "JWT iss claim did not match expected issuer" }
+    else if code == "AUDIENCE_MISMATCH" { "JWT aud claim did not contain expected audience" }
+    else if code == "EXP_OVERFLOW"      { "JWT exp claim is malformed or overflows" }
+    else if code == "EXPIRED"           { "JWT has expired" }
+    else if code == "NBF_OVERFLOW"      { "JWT nbf claim is malformed or overflows" }
+    else if code == "NOT_YET_VALID"     { "JWT is not yet valid (nbf is in the future)" }
+    else if code == "VERIFICATION_FAILED" { "JWT verification failed" }
+    else { "JWT verification failed: " + code }
   JwtError(code = code, message = msg)
 }
 
 // ─── JWT algorithm extraction (Lyric-level, no extern dependency) ─────────────
+
 // Find the first occurrence of `ch` in `s` at or after position `pos`.
 // Returns -1 if not found.
 func indexOfCharAfter(s: in String, ch: in Char, pos: in Int): Int {
   var i = pos
   while i < s.length {
-    if s[i] == ch {
-      return i
-    }
+    if s[i] == ch { return i }
     i = i + 1
   }
   return -1
@@ -140,19 +125,18 @@ func indexOfCharAfter(s: in String, ch: in Char, pos: in Int): Int {
 func jwtAlg(token: in String): String {
   // JWT format: base64url(header).base64url(payload).signature
   val dot = token.indexOf(".")
-  if dot < 0 {
-    return ""
-  }
+  if dot < 0 { return "" }
   // Convert base64url to standard base64: - → + and _ → /
-  val seg = token.substring(0, dot)
+  val seg   = token.substring(0, dot)
   val std64 = seg.replace("-", "+").replace("_", "/")
   // Add '=' padding so length is a multiple of 4.
   val rem = std64.length % 4
-  val padded = if rem == 0 { std64 } else if rem == 2 { std64 + "==" } else if rem == 3 { std64 + "=" } else { "" }
-  // rem == 1 is not valid base64url
-  if padded == "" {
-    return ""
-  }
+  val padded =
+    if rem == 0 { std64 }
+    else if rem == 2 { std64 + "==" }
+    else if rem == 3 { std64 + "=" }
+    else { "" }  // rem == 1 is not valid base64url
+  if padded == "" { return "" }
   // Decode to bytes then to a UTF-8 string.
   match tryDecodeBase64(padded) {
     case None -> return ""
@@ -165,16 +149,12 @@ func jwtAlg(token: in String): String {
           // matching last-wins parser semantics (RFC 8259 §4 permits duplicates;
           // many JWT libraries use the last value).  This prevents a crafted first
           // alg=RS256 from masking a final alg=none in the same header.
-          val pfx = "\"alg\":\""
+          val pfx    = "\"alg\":\""
           val pfxPos = header.lastIndexOf(pfx)
-          if pfxPos < 0 {
-            return ""
-          }
+          if pfxPos < 0 { return "" }
           val vs = pfxPos + pfx.length
           val ve = indexOfCharAfter(header, '"', vs)
-          if ve < 0 {
-            return ""
-          }
+          if ve < 0 { return "" }
           header.substring(vs, ve - vs)
         }
       }
@@ -183,6 +163,7 @@ func jwtAlg(token: in String): String {
 }
 
 // ─── JWT verification ─────────────────────────────────────────────────────────
+
 /// Validate a Bearer JWT with the default 60-second clock-skew leeway.
 ///
 /// SECURITY: `allowedAlgorithms` MUST be a non-empty, comma-separated
@@ -209,37 +190,39 @@ func jwtAlg(token: in String): String {
 ///
 /// Reference: RFC 8725 §3.1 (JWT Best Current Practices — algorithm
 /// pinning); RFC 7519 §4.1.4 (clock-skew leeway).
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func verifyJwt(
-  token: in String,
-  secret: in String,
-  issuer: in String,
-  audience: in String,
-  allowedAlgorithms: in String,
+  token:             in String,
+  secret:            in String,
+  issuer:            in String,
+  audience:          in String,
+  allowedAlgorithms: in String
 ): Result[Unit, JwtError]
   requires: secret.length > 0
   requires: allowedAlgorithms.length > 0
   // Case-insensitive check: catches "None", "NONE", "nOnE", etc.
   requires: not contains(toLower(allowedAlgorithms), "none")
 {
-  verifyJwtWithSkew(token, secret, issuer, audience, allowedAlgorithms, defaultClockSkewSeconds())
+  verifyJwtWithSkew(token, secret, issuer, audience, allowedAlgorithms,
+                    defaultClockSkewSeconds())
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func verifyJwt(
-  token: in String,
-  secret: in String,
-  issuer: in String,
-  audience: in String,
-  allowedAlgorithms: in String,
+  token:             in String,
+  secret:            in String,
+  issuer:            in String,
+  audience:          in String,
+  allowedAlgorithms: in String
 ): Result[Unit, JwtError]
   requires: secret.length > 0
   requires: allowedAlgorithms.length > 0
   requires: not contains(toLower(allowedAlgorithms), "none")
 {
-  verifyJwtWithSkew(token, secret, issuer, audience, allowedAlgorithms, defaultClockSkewSeconds())
+  verifyJwtWithSkew(token, secret, issuer, audience, allowedAlgorithms,
+                    defaultClockSkewSeconds())
 }
 
 /// Validate a Bearer JWT with an explicit `clockSkewSeconds` leeway.
@@ -255,15 +238,15 @@ pub func verifyJwt(
 /// Production callers should typically use `verifyJwt` and accept the
 /// default; this entry point exists for testing and for callers with
 /// stricter or more permissive operational requirements (#1081).
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func verifyJwtWithSkew(
-  token: in String,
-  secret: in String,
-  issuer: in String,
-  audience: in String,
+  token:             in String,
+  secret:            in String,
+  issuer:            in String,
+  audience:          in String,
   allowedAlgorithms: in String,
-  clockSkewSeconds: in Int,
+  clockSkewSeconds:  in Int
 ): Result[Unit, JwtError]
   requires: secret.length > 0
   requires: allowedAlgorithms.length > 0
@@ -284,21 +267,22 @@ pub func verifyJwtWithSkew(
   if not rolesContain(allowedAlgorithms, alg) {
     return Err(makeJwtError("ALG_REJECTED"))
   }
-  match AuthKernelNet.verifyJwtImpl(token, secret, issuer, audience, allowedAlgorithms, clockSkewSeconds) {
-    case Ok(unit) -> Ok(())
+  match AuthKernelNet.verifyJwtImpl(
+          token, secret, issuer, audience, allowedAlgorithms, clockSkewSeconds) {
+    case Ok(unit)  -> Ok(())
     case Err(code) -> Err(makeJwtError(code))
   }
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func verifyJwtWithSkew(
-  token: in String,
-  secret: in String,
-  issuer: in String,
-  audience: in String,
+  token:             in String,
+  secret:            in String,
+  issuer:            in String,
+  audience:          in String,
   allowedAlgorithms: in String,
-  clockSkewSeconds: in Int,
+  clockSkewSeconds:  in Int
 ): Result[Unit, JwtError]
   requires: secret.length > 0
   requires: allowedAlgorithms.length > 0
@@ -308,19 +292,19 @@ pub func verifyJwtWithSkew(
 {
   // Lyric-level algorithm pinning: same guard as the .NET overload above.
   val alg = jwtAlg(token)
-  if alg.length == 0 {
-    return Err(makeJwtError("MALFORMED_HEADER"))
-  }
+  if alg.length == 0 { return Err(makeJwtError("MALFORMED_HEADER")) }
   if not rolesContain(allowedAlgorithms, alg) {
     return Err(makeJwtError("ALG_REJECTED"))
   }
-  match AuthKernelJvm.verifyJwtImpl(token, secret, issuer, audience, allowedAlgorithms, clockSkewSeconds) {
-    case Ok(unit) -> Ok(())
+  match AuthKernelJvm.verifyJwtImpl(
+          token, secret, issuer, audience, allowedAlgorithms, clockSkewSeconds) {
+    case Ok(unit)  -> Ok(())
     case Err(code) -> Err(makeJwtError(code))
   }
 }
 
 // ─── Claim extraction ─────────────────────────────────────────────────────────
+
 /// Extract a named claim from a JWT payload.
 ///
 /// Call this ONLY on tokens already accepted by `verifyJwt`.  The function
@@ -331,7 +315,7 @@ pub func verifyJwtWithSkew(
 ///
 /// Claim values containing JSON escape sequences (`\"`, `\n`, `\uXXXX`) are
 /// decoded to their actual character contents (#1079).
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func extractClaim(token: in String, claimKey: in String): Option[String]
   requires: claimKey.length > 0
@@ -339,7 +323,7 @@ pub func extractClaim(token: in String, claimKey: in String): Option[String]
   return AuthKernelNet.extractClaimImpl(token, claimKey)
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func extractClaim(token: in String, claimKey: in String): Option[String]
   requires: claimKey.length > 0
@@ -348,6 +332,7 @@ pub func extractClaim(token: in String, claimKey: in String): Option[String]
 }
 
 // ─── API key verification ─────────────────────────────────────────────────────
+
 /// Byte-content-constant-time comparison of `provided` against `expected`.
 ///
 /// Returns true iff the two strings are byte-for-byte identical.  The
@@ -359,7 +344,7 @@ pub func extractClaim(token: in String, claimKey: in String): Option[String]
 ///
 /// Always supply the expected key as `expected` (not `provided`) to keep
 /// the length-constant guarantee aligned with the fixed expected key.
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func verifyApiKey(provided: in String, expected: in String): Bool
   requires: expected.length > 0
@@ -367,7 +352,7 @@ pub func verifyApiKey(provided: in String, expected: in String): Bool
   return AuthKernelNet.verifyApiKeyImpl(provided, expected)
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func verifyApiKey(provided: in String, expected: in String): Bool
   requires: expected.length > 0
@@ -376,6 +361,7 @@ pub func verifyApiKey(provided: in String, expected: in String): Bool
 }
 
 // ─── Role claim helpers ───────────────────────────────────────────────────────
+
 /// Check whether a comma-separated role string contains `role`.
 ///
 /// Used by RequiresRole bindings to match the `role` JWT claim against
@@ -389,25 +375,19 @@ pub func verifyApiKey(provided: in String, expected: in String): Bool
 /// loosen matching — a JWT claim of `"admin "` (trailing space) would
 /// match `"admin"`, which is a security regression.  Only entries in
 /// `allowedRoles` (caller-controlled) are trimmed for convenience.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func rolesContain(allowedRoles: in String, role: in String): Bool {
-  if allowedRoles.length == 0 {
-    return false
-  }
-  if role.length == 0 {
-    return false
-  }
+  if allowedRoles.length == 0 { return false }
+  if role.length == 0         { return false }
   // Simple linear scan — role lists are short; no allocation needed.
   var start: Int = 0
-  var i: Int = 0
+  var i:     Int = 0
   while i <= allowedRoles.length {
-    val atEnd = i == allowedRoles.length
+    val atEnd   = i == allowedRoles.length
     val atComma = not atEnd and (allowedRoles[i] == ',')
     if atEnd or atComma {
       val candidate = allowedRoles.substring(start, i - start).trim()
-      if candidate.length > 0 and candidate == role {
-        return true
-      }
+      if candidate.length > 0 and candidate == role { return true }
       start = i + 1
     }
     i = i + 1

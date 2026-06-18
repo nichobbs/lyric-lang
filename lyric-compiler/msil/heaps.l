@@ -1,23 +1,24 @@
-//! msil/heaps.l — ECMA-335 metadata heap builders (Stage M2a).
-//!
-//! Implements the four heaps used by the CLR metadata system:
-//!   #Strings — null-terminated UTF-8 strings; indices are byte offsets.
-//!   #Blob    — compressed-length-prefixed byte blobs; indices are byte offsets.
-//!   #US      — user string literals in UTF-16LE; indices are byte offsets.
-//!   #GUID    — 16-byte GUIDs; indices are 1-based.
-//!
-//! All four heap types expose the same lifecycle:
-//!   1. Construct with `new*Heap()`.
-//!   2. Intern or append entries; get back the heap index/offset.
-//!   3. Serialize with `serialize*(h, w)` to a ByteWriter at layout time.
-//!
-//! Duplicate detection:
-//!   StringHeap, BlobHeap, and UsHeap deduplicate entries by a string key
-//!   so the same logical entry always maps to the same heap index.
-//!   GuidHeap uses a sequential counter (no dedup) since each assembly
-//!   typically has at most one GUID (the module Mvid).
-//!
-//! References: ECMA-335 6th edition §II.24.2.
+// msil/heaps.l — ECMA-335 metadata heap builders (Stage M2a).
+//
+// Implements the four heaps used by the CLR metadata system:
+//   #Strings — null-terminated UTF-8 strings; indices are byte offsets.
+//   #Blob    — compressed-length-prefixed byte blobs; indices are byte offsets.
+//   #US      — user string literals in UTF-16LE; indices are byte offsets.
+//   #GUID    — 16-byte GUIDs; indices are 1-based.
+//
+// All four heap types expose the same lifecycle:
+//   1. Construct with `new*Heap()`.
+//   2. Intern or append entries; get back the heap index/offset.
+//   3. Serialize with `serialize*(h, w)` to a ByteWriter at layout time.
+//
+// Duplicate detection:
+//   StringHeap, BlobHeap, and UsHeap deduplicate entries by a string key
+//   so the same logical entry always maps to the same heap index.
+//   GuidHeap uses a sequential counter (no dedup) since each assembly
+//   typically has at most one GUID (the module Mvid).
+//
+// References: ECMA-335 6th edition §II.24.2.
+
 package Msil.Heaps
 
 import Msil.Kernel
@@ -49,8 +50,9 @@ func writeCompressedUInt(w: in ByteWriter, v: in Int): Unit {
 // ── #Strings heap (ECMA-335 §II.24.2.3) ──────────────────────────────────────
 // Null-terminated UTF-8 strings.  Heap offset 0 is the empty string (a single
 // 0x00 byte).  Duplicate strings share one heap entry.
+
 pub record StringHeap {
-  buf: ByteWriter
+  buf:     ByteWriter
   entries: Map[String, Int]
 }
 
@@ -86,8 +88,9 @@ pub func serializeStrings(h: in StringHeap, w: in ByteWriter): Unit {
 // ── #Blob heap (ECMA-335 §II.24.2.4) ─────────────────────────────────────────
 // Compressed-length-prefixed blobs.  Heap offset 0 is the empty blob (0x00).
 // `key` is a caller-supplied dedup identifier (typically the signature text).
+
 pub record BlobHeap {
-  buf: ByteWriter
+  buf:     ByteWriter
   entries: Map[String, Int]
 }
 
@@ -126,8 +129,9 @@ pub func serializeBlobs(h: in BlobHeap, w: in ByteWriter): Unit {
 //
 // Each blob contains: n×2 UTF-16LE bytes + 1 flag byte.
 // Flag byte: 0 if all code units are < 0x80; 1 if any code unit is ≥ 0x80.
+
 pub record UsHeap {
-  buf: ByteWriter
+  buf:     ByteWriter
   entries: Map[String, Int]
 }
 
@@ -157,11 +161,7 @@ pub func internUs(h: in UsHeap, s: in String): Int {
         }
         i = i + 1
       }
-      if hasHigh {
-        bufU1(h.buf, 1)
-      } else {
-        bufU1(h.buf, 0)
-      }
+      if hasHigh { bufU1(h.buf, 1) } else { bufU1(h.buf, 0) }
       off
     }
   }
@@ -178,8 +178,9 @@ pub func serializeUs(h: in UsHeap, w: in ByteWriter): Unit {
 // ── #GUID heap (ECMA-335 §II.24.2.5) ─────────────────────────────────────────
 // Sequence of 16-byte GUIDs.  Index 0 means "no GUID".  The first GUID added
 // has index 1, the second has index 2, and so on.
+
 pub record GuidHeap {
-  buf: ByteWriter
+  buf:   ByteWriter
   count: Int
 }
 

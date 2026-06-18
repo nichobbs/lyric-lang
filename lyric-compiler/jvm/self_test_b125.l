@@ -1,20 +1,21 @@
-//! jvm/self_test_b125.l — Stage B125: lowerOpaqueFacade (Java interop facade codegen).
-//!
-//! Creates an opaque type `OpaquePoint` with two int fields: x and y.
-//! Then generates its companion `OpaquePoint$Facade` class via lowerOpaqueFacade.
-//!
-//! The facade provides:
-//!   • static create(int, int): OpaquePoint  — constructs via the package-private ctor
-//!   • static x(OpaquePoint): int            — delegates to $x() accessor
-//!   • static y(OpaquePoint): int            — delegates to $y() accessor
-//!
-//! A Main class:
-//!   - Creates OpaquePoint(10, 20) via OpaquePoint$Facade.create(10, 20)
-//!   - Reads fields via OpaquePoint$Facade.x(obj) and OpaquePoint$Facade.y(obj)
-//!
-//! Java output (java -jar):
-//!   x=10
-//!   y=20
+// jvm/self_test_b125.l — Stage B125: lowerOpaqueFacade (Java interop facade codegen).
+//
+// Creates an opaque type `OpaquePoint` with two int fields: x and y.
+// Then generates its companion `OpaquePoint$Facade` class via lowerOpaqueFacade.
+//
+// The facade provides:
+//   • static create(int, int): OpaquePoint  — constructs via the package-private ctor
+//   • static x(OpaquePoint): int            — delegates to $x() accessor
+//   • static y(OpaquePoint): int            — delegates to $y() accessor
+//
+// A Main class:
+//   - Creates OpaquePoint(10, 20) via OpaquePoint$Facade.create(10, 20)
+//   - Reads fields via OpaquePoint$Facade.x(obj) and OpaquePoint$Facade.y(obj)
+//
+// Java output (java -jar):
+//   x=10
+//   y=20
+
 package Jvm.SelfTestB125
 
 import Std.Core
@@ -46,16 +47,16 @@ func makeFacadeBytes(): List[Byte] {
 
 func makeMainBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOutIdx  = poolFieldref(pool,  "java/lang/System",    "out",     "Ljava/io/PrintStream;")
   val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
-  val vofIIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
+  val concatIdx  = poolMethodref(pool, "java/lang/String",    "concat",  "(Ljava/lang/String;)Ljava/lang/String;")
+  val vofIIdx    = poolMethodref(pool, "java/lang/String",    "valueOf", "(I)Ljava/lang/String;")
 
   val facadeCreate = poolMethodref(pool, "OpaquePoint$Facade", "create", "(II)LOpaquePoint;")
-  val facadeX = poolMethodref(pool, "OpaquePoint$Facade", "x", "(LOpaquePoint;)I")
-  val facadeY = poolMethodref(pool, "OpaquePoint$Facade", "y", "(LOpaquePoint;)I")
+  val facadeX      = poolMethodref(pool, "OpaquePoint$Facade", "x",      "(LOpaquePoint;)I")
+  val facadeY      = poolMethodref(pool, "OpaquePoint$Facade", "y",      "(LOpaquePoint;)I")
 
   // OpaquePoint obj = OpaquePoint$Facade.create(10, 20)
   emitPushInt(asm, 10)
@@ -98,20 +99,20 @@ func makeMainBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b125"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val classes: List[BuiltClass] = newList()
-  classes.add(BuiltClass(binaryName = "OpaquePoint", bytes = makeOpaqueBytes()))
+  classes.add(BuiltClass(binaryName = "OpaquePoint",        bytes = makeOpaqueBytes()))
   classes.add(BuiltClass(binaryName = "OpaquePoint$Facade", bytes = makeFacadeBytes()))
-  classes.add(BuiltClass(binaryName = "Main", bytes = makeMainBytes()))
+  classes.add(BuiltClass(binaryName = "Main",               bytes = makeMainBytes()))
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB125",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

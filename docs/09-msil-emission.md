@@ -455,16 +455,6 @@ language reference §2.6's "explicit conversion required to interop
 with numeric APIs" — the compiler does not emit implicit conversions
 between a Lyric `enum` and `int`.
 
-At the IL level, enum *values* are ordinal `int32`s: a case reference
-emits `ldc.i4 <ordinal>`, a `case X ->` pattern compares ordinals with
-`ceq`, and enum-typed signature positions encode `ELEMENT_TYPE_I4` —
-never `ELEMENT_TYPE_CLASS` naming the enum TypeDef, which the CLR
-loader rejects with a value-type mismatch (an enum extends
-`System.Enum`, a value type). The CLR `enum` TypeDef (with its
-`value__` field and one literal field + `Constant` row per case) is
-still emitted for metadata fidelity and host-side interop. Both the
-F# bootstrap emitter and the self-hosted backend follow this model.
-
 ### 8.2 Variant-free unions vs. enums
 
 A `union` with all payload-free variants is *not* the same as an
@@ -1426,15 +1416,6 @@ AppDomain, reflects out `Msil.Bridge.Program.compileToMsil`, and caches the
 delegate process-wide.  `--target dotnet` (the default) routes through this
 bridge; `--target dotnet-legacy` falls back to the F# bootstrap emitter
 (`Lyric.Emitter`) as an escape hatch.
-
-### Self-hosted emitter diagnostics
-
-| Code | Condition | Notes |
-|---|---|---|
-| `F0015` | `@externTarget` declared signature does not match any overload of the named CLR method in reference-assembly metadata | Fired by `emitExternTargetBody` (Phase 4, `codegen.l`). Shows the declared Lyric signature and the target FQN. Skipped for `out`/`inout` params, generic shapes that have no `SigType` equivalent, and types absent from the metadata index (e.g. Lyric-host types in `Lyric.Emitter.dll`). |
-| `F0015-J` | JVM analog of F0015: `@externTarget` declared signature does not match any overload in JDK class metadata | Fired by `lowerExternTargetBody` (Phase 5, `jvm/codegen/04_calls.l`). Silenced when the class is absent from the JDK jmods / `LYRIC_FFI_JARS` index. |
-
-`F0010`–`F0013` are documented in `docs/24-build-features.md` (cfg-erasure diagnostics).
 
 ### Key design note: MemberRef signatures on TypeSpecs
 

@@ -1,22 +1,23 @@
-//! jvm/self_test_b51.l — Stage B51: java.util.HashMap (put, get, containsKey).
-//!
-//! Generates MapDemo.class with a static buildMap()Ljava/util/HashMap; that:
-//!   1. Creates new HashMap()
-//!   2. Puts ("name", "Alice") and ("score", "100")
-//!   3. Returns the map
-//!
-//! Main:
-//!   Creates the map, gets "name" and "score", prints both;
-//!   checks containsKey("name") → true (1), containsKey("age") → false (0).
-//!
-//! Expected output:
-//!   Alice
-//!   100
-//!   true
-//!   false
-//!
-//! Exercises: HashMap constructor, put(Object,Object)Object, get(Object)Object,
-//!            containsKey(Object)Z.
+// jvm/self_test_b51.l — Stage B51: java.util.HashMap (put, get, containsKey).
+//
+// Generates MapDemo.class with a static buildMap()Ljava/util/HashMap; that:
+//   1. Creates new HashMap()
+//   2. Puts ("name", "Alice") and ("score", "100")
+//   3. Returns the map
+//
+// Main:
+//   Creates the map, gets "name" and "score", prints both;
+//   checks containsKey("name") → true (1), containsKey("age") → false (0).
+//
+// Expected output:
+//   Alice
+//   100
+//   true
+//   false
+//
+// Exercises: HashMap constructor, put(Object,Object)Object, get(Object)Object,
+//            containsKey(Object)Z.
+
 package Jvm.SelfTestB51
 
 import Std.Core
@@ -30,16 +31,11 @@ func makeMapDemoClassBytes(): List[Byte] {
   val pool = poolNew()
 
   val hashMapClass = poolClass(pool, "java/util/HashMap")
-  val hashMapInit = poolMethodref(pool, "java/util/HashMap", "<init>", "()V")
-  val hashMapPut = poolMethodref(
-    pool,
-    "java/util/HashMap",
-    "put",
-    "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;"
-  )
-  val hashMapGet = poolMethodref(pool, "java/util/HashMap", "get", "(Ljava/lang/Object;)Ljava/lang/Object;")
+  val hashMapInit  = poolMethodref(pool, "java/util/HashMap", "<init>", "()V")
+  val hashMapPut   = poolMethodref(pool, "java/util/HashMap", "put",    "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;")
+  val hashMapGet   = poolMethodref(pool, "java/util/HashMap", "get",    "(Ljava/lang/Object;)Ljava/lang/Object;")
   val hashMapContains = poolMethodref(pool, "java/util/HashMap", "containsKey", "(Ljava/lang/Object;)Z")
-  val stringClass = poolClass(pool, "java/lang/String")
+  val stringClass  = poolClass(pool, "java/lang/String")
 
   // ── buildMap()Ljava/util/HashMap; ────────────────────────────────────────────
   val asmBuild = newAssembler(pool)
@@ -67,7 +63,9 @@ func makeMapDemoClassBytes(): List[Byte] {
   val buildCode = assembleCode(asmBuild, 3, 1)
   val buildAttrs: List[Attribute] = newList()
   buildAttrs.add(buildCode)
-  val buildMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "buildMap", "()Ljava/util/HashMap;", buildAttrs)
+  val buildMethod = makeMethodInfo(
+    ACC_PUBLIC + ACC_STATIC, "buildMap", "()Ljava/util/HashMap;", buildAttrs
+  )
 
   val methods: List[MethodInfo] = newList()
   methods.add(buildMethod)
@@ -77,13 +75,13 @@ func makeMapDemoClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnStr = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val sysOut      = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnStr  = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
   val printlnBool = poolMethodref(pool, "java/io/PrintStream", "println", "(Z)V")
-  val buildRef = poolMethodref(pool, "MapDemo", "buildMap", "()Ljava/util/HashMap;")
-  val hashMapGet = poolMethodref(pool, "java/util/HashMap", "get", "(Ljava/lang/Object;)Ljava/lang/Object;")
+  val buildRef    = poolMethodref(pool, "MapDemo", "buildMap", "()Ljava/util/HashMap;")
+  val hashMapGet  = poolMethodref(pool, "java/util/HashMap", "get", "(Ljava/lang/Object;)Ljava/lang/Object;")
   val hashMapContains = poolMethodref(pool, "java/util/HashMap", "containsKey", "(Ljava/lang/Object;)Z")
   val stringClass = poolClass(pool, "java/lang/String")
 
@@ -137,24 +135,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b51"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val mapDemoBytes = makeMapDemoClassBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes    = makeMainClassBytes()
 
   val mapDemoClass = BuiltClass(binaryName = "MapDemo", bytes = mapDemoBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass    = BuiltClass(binaryName = "Main",    bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(mapDemoClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB51",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

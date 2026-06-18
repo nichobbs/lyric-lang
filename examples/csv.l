@@ -1,7 +1,8 @@
-//! First real-world program through the bootstrap CLI.
-//!
-//! Parses a tiny inline CSV string (comma-separated, no quoting yet
-//! — bootstrap-grade) and prints each row's fields one per line.
+// First real-world program through the bootstrap CLI.
+//
+// Parses a tiny inline CSV string (comma-separated, no quoting yet
+// — bootstrap-grade) and prints each row's fields one per line.
+
 package CsvDemo
 
 // Print each comma-separated field of `line` on its own line.

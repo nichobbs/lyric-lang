@@ -1,26 +1,28 @@
-//! std/_kernel/char_host.l — host boundary for System.Char and System.Convert
-//! character operations.
-//!
-//! Provides Unicode-conformant classification (`IsLetter`, `IsDigit`, …),
-//! case conversion (`ToUpper`, `ToLower`), and the char ↔ Int code-point
-//! bridge (`Convert.ToInt32(char)` / `Convert.ToChar(int)`).
-//!
-//! `hostGetNumericValue` routes to `System.Char.GetNumericValue` which
-//! returns the numeric value of a decimal-digit or letter-digit character
-//! as a `double` (-1.0 when the character has no numeric value).  The
-//! Lyric-side `Std.Char.digitValue` / `hexDigitValue` helpers use the
-//! integer subtraction approach instead for ASCII ranges, so this is
-//! reserved for callers that need full Unicode numeric value coverage.
-//!
-//! Internal: only `Std.Char` should import this; per
-//! `compiler/lyric/std/_kernel/README.md` the kernel is the audited
-//! extern boundary, not a general-purpose API.
+// std/_kernel/char_host.l — host boundary for System.Char and System.Convert
+// character operations.
+//
+// Provides Unicode-conformant classification (`IsLetter`, `IsDigit`, …),
+// case conversion (`ToUpper`, `ToLower`), and the char ↔ Int code-point
+// bridge (`Convert.ToInt32(char)` / `Convert.ToChar(int)`).
+//
+// `hostGetNumericValue` routes to `System.Char.GetNumericValue` which
+// returns the numeric value of a decimal-digit or letter-digit character
+// as a `double` (-1.0 when the character has no numeric value).  The
+// Lyric-side `Std.Char.digitValue` / `hexDigitValue` helpers use the
+// integer subtraction approach instead for ASCII ranges, so this is
+// reserved for callers that need full Unicode numeric value coverage.
+//
+// Internal: only `Std.Char` should import this; per
+// `compiler/lyric/std/_kernel/README.md` the kernel is the audited
+// extern boundary, not a general-purpose API.
+
 @axiom("System.Char and System.Convert character operations conform to their documented .NET contracts")
 package Std.CharHost
 
 // =====================================================================
 // Classification.
 // =====================================================================
+
 @externTarget("System.Char.IsLetter")
 pub func hostIsLetter(c: in Char): Bool = ()
 
@@ -48,6 +50,7 @@ pub func hostIsControl(c: in Char): Bool = ()
 // =====================================================================
 // Case conversion.
 // =====================================================================
+
 @externTarget("System.Char.ToUpper")
 pub func hostToUpper(c: in Char): Char = ()
 
@@ -57,6 +60,7 @@ pub func hostToLower(c: in Char): Char = ()
 // =====================================================================
 // Code-point bridge.
 // =====================================================================
+
 // Return the UTF-16 code-unit value of `c` as an Int.
 // `System.Convert.ToInt32(char)` is the canonical overload.
 @externTarget("System.Convert.ToInt32")
@@ -70,6 +74,7 @@ pub func hostIntToChar(n: in Int): Char = ()
 // =====================================================================
 // Numeric value (Unicode).
 // =====================================================================
+
 // Returns the numeric value of `c` per Unicode, or -1.0 when none.
 @externTarget("System.Char.GetNumericValue")
 pub func hostGetNumericValue(c: in Char): Double = ()

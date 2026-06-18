@@ -29,7 +29,7 @@ Lyric JVM stdlib JAR (out-of-repo, ships with the JVM channel — see
 import Db
 
 // Requires the "postgres" feature and LYRIC_CONFIG_DB_CONNECTION_URL
-val conn = Db.connectFromEnv()?
+val conn = Db.connectPostgres()?
 
 match conn.query("SELECT id, name FROM users WHERE id = $1", ["42"]) {
   case Ok(rows) ->

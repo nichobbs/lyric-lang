@@ -38,11 +38,11 @@ export function deactivate(): Thenable<void> | undefined {
 
 function startLsp(context: vscode.ExtensionContext): void {
     const config = vscode.workspace.getConfiguration('lyric');
-    const serverPath = config.get<string>('serverPath', 'lyric');
+    const serverPath = config.get<string>('serverPath', 'lyric-lsp');
 
     const serverOptions: ServerOptions = {
         command: serverPath,
-        args: ['lsp'],
+        args: [],
         transport: TransportKind.stdio,
         options: { env: process.env },
     };
@@ -61,7 +61,7 @@ function startLsp(context: vscode.ExtensionContext): void {
         const msg = err instanceof Error ? err.message : String(err);
         vscode.window.showErrorMessage(
             `Lyric: failed to start language server (${serverPath}): ${msg}. ` +
-            `Set "lyric.serverPath" to the lyric binary (the LSP server runs via "lyric lsp").`,
+            `Set "lyric.serverPath" to the absolute path of the lyric-lsp binary.`,
         );
     });
 

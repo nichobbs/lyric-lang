@@ -1,14 +1,15 @@
-//! jvm/self_test_b49.l — Stage B49: String.format with an Object[] argument array.
-//!
-//! Generates Formatter.class with:
-//!   formatInt(I)Ljava/lang/String; — String.format("value=%d", new Object[]{Integer.valueOf(n)})
-//!
-//! Main prints:
-//!   formatInt(7)  → "value=7"
-//!   formatInt(99) → "value=99"
-//!
-//! Exercises: anewarray java/lang/Object, aastore, Integer.valueOf boxing,
-//!            invokestatic String.format(String,Object[])String.
+// jvm/self_test_b49.l — Stage B49: String.format with an Object[] argument array.
+//
+// Generates Formatter.class with:
+//   formatInt(I)Ljava/lang/String; — String.format("value=%d", new Object[]{Integer.valueOf(n)})
+//
+// Main prints:
+//   formatInt(7)  → "value=7"
+//   formatInt(99) → "value=99"
+//
+// Exercises: anewarray java/lang/Object, aastore, Integer.valueOf boxing,
+//            invokestatic String.format(String,Object[])String.
+
 package Jvm.SelfTestB49
 
 import Std.Core
@@ -21,14 +22,9 @@ import Jvm.Driver
 func makeFormatterClassBytes(): List[Byte] {
   val pool = poolNew()
 
-  val stringFormat = poolMethodref(
-    pool,
-    "java/lang/String",
-    "format",
-    "(Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;"
-  )
-  val intValueOf = poolMethodref(pool, "java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;")
-  val objClass = poolClass(pool, "java/lang/Object")
+  val stringFormat = poolMethodref(pool, "java/lang/String", "format", "(Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;")
+  val intValueOf   = poolMethodref(pool, "java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;")
+  val objClass     = poolClass(pool, "java/lang/Object")
 
   // ── formatInt(I)Ljava/lang/String; ───────────────────────────────────────────
   // slot 0 = n (int)
@@ -71,11 +67,11 @@ func makeFormatterClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOut     = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val printlnStr = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val fmtRef = poolMethodref(pool, "Formatter", "formatInt", "(I)Ljava/lang/String;")
+  val fmtRef     = poolMethodref(pool, "Formatter", "formatInt", "(I)Ljava/lang/String;")
 
   // println(Formatter.formatInt(7))   → "value=7"
   emitGetstatic(asm, sysOut)
@@ -104,24 +100,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b49"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val formatterBytes = makeFormatterClassBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes      = makeMainClassBytes()
 
   val formatterClass = BuiltClass(binaryName = "Formatter", bytes = formatterBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass      = BuiltClass(binaryName = "Main",      bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(formatterClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB49",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

@@ -1,25 +1,25 @@
-//! std/http_server.l - Tiny HTTP server on top of `HttpListener`.
-//!
-//! The canonical loop is:
-//!
-//!   func main(): Unit {
-//!     val srv = startListener("http://localhost:8080/")
-//!     while true {
-//!       val ctx = nextContext(srv)
-//!       val method = requestMethod(ctx)
-//!       val path = requestPath(ctx)
-//!       respondJson(ctx, 200, "{\"hello\": \"world\"}")
-//!     }
-//!   }
-//!
-//! Bootstrap-grade: synchronous, single-threaded, no router, no
-//! middleware.  Good enough to demonstrate end-to-end REST shape;
-//! real servers come later (or via a hand-curated wrapper around
-//! ASP.NET Core minimal APIs).
-//!
-//! G12 (`docs/23-fsharp-shim-elimination.md` §5; D-progress-NNN):
-//! the F# `Lyric.Stdlib.HttpServerHost` shim retires entirely.
-//! Direct-extern primitives + Lyric-level orchestration live below.
+// std/http_server.l - Tiny HTTP server on top of `HttpListener`.
+//
+// The canonical loop is:
+//
+//   func main(): Unit {
+//     val srv = startListener("http://localhost:8080/")
+//     while true {
+//       val ctx = nextContext(srv)
+//       val method = requestMethod(ctx)
+//       val path = requestPath(ctx)
+//       respondJson(ctx, 200, "{\"hello\": \"world\"}")
+//     }
+//   }
+//
+// Bootstrap-grade: synchronous, single-threaded, no router, no
+// middleware.  Good enough to demonstrate end-to-end REST shape;
+// real servers come later (or via a hand-curated wrapper around
+// ASP.NET Core minimal APIs).
+//
+// G12 (`docs/23-fsharp-shim-elimination.md` §5; D-progress-NNN):
+// the F# `Lyric.Stdlib.HttpServerHost` shim retires entirely.
+// Direct-extern primitives + Lyric-level orchestration live below.
 package Std.HttpServer
 
 import Std.Core
@@ -27,122 +27,90 @@ import Std.Core
 // =====================================================================
 // Extern types — BCL classes the helpers below reference.
 // =====================================================================
-extern type HttpListener = "System.Net.HttpListener"
 
-extern type HttpContext = "System.Net.HttpListenerContext"
-
+extern type HttpListener        = "System.Net.HttpListener"
+extern type HttpContext         = "System.Net.HttpListenerContext"
 extern type HttpListenerRequest = "System.Net.HttpListenerRequest"
-
 extern type HttpListenerResponse = "System.Net.HttpListenerResponse"
-
 extern type HttpListenerPrefixCollection = "System.Net.HttpListenerPrefixCollection"
-
-extern type Uri = "System.Uri"
-
-extern type Encoding = "System.Text.Encoding"
-
-extern type Stream = "System.IO.Stream"
-
-extern type StreamReader = "System.IO.StreamReader"
+extern type Uri                 = "System.Uri"
+extern type Encoding            = "System.Text.Encoding"
+extern type Stream              = "System.IO.Stream"
+extern type StreamReader        = "System.IO.StreamReader"
 
 // =====================================================================
 // Primitive externs (private to this kernel file).
 // =====================================================================
+
 @externTarget("System.Net.HttpListener..ctor")
 func newHttpListener(): HttpListener = ()
 
-// .NET properties are exposed as `get_<Name>` / `set_<Name>` methods
-// on the declaring type; @externTarget binds to method names, not property
-// names, so each property reader/writer must use the prefixed form.  Instance
-// properties also need `@externInstance` so the FFI emitter routes through
-// callvirt instead of treating them as static calls.
-@externInstance
-@externTarget("System.Net.HttpListener.get_Prefixes")
+@externTarget("System.Net.HttpListener.Prefixes")
 func listenerPrefixes(l: in HttpListener): HttpListenerPrefixCollection = ()
 
-@externInstance
 @externTarget("System.Net.HttpListenerPrefixCollection.Add")
 func prefixesAdd(p: in HttpListenerPrefixCollection, prefix: in String): Unit = ()
 
-@externInstance
 @externTarget("System.Net.HttpListener.Start")
 func listenerStart(l: in HttpListener): Unit = ()
 
-@externInstance
 @externTarget("System.Net.HttpListener.GetContext")
 func listenerGetContext(l: in HttpListener): HttpContext = ()
 
-@externInstance
 @externTarget("System.Net.HttpListener.Stop")
 func listenerStop(l: in HttpListener): Unit = ()
 
-@externInstance
-@externTarget("System.Net.HttpListenerContext.get_Request")
+@externTarget("System.Net.HttpListenerContext.Request")
 func ctxRequest(c: in HttpContext): HttpListenerRequest = ()
 
-@externInstance
-@externTarget("System.Net.HttpListenerContext.get_Response")
+@externTarget("System.Net.HttpListenerContext.Response")
 func ctxResponse(c: in HttpContext): HttpListenerResponse = ()
 
-@externInstance
-@externTarget("System.Net.HttpListenerRequest.get_HttpMethod")
+@externTarget("System.Net.HttpListenerRequest.HttpMethod")
 func requestHttpMethod(req: in HttpListenerRequest): String = ()
 
-@externInstance
-@externTarget("System.Net.HttpListenerRequest.get_Url")
+@externTarget("System.Net.HttpListenerRequest.Url")
 func requestUrl(req: in HttpListenerRequest): Uri = ()
 
-@externInstance
-@externTarget("System.Uri.get_AbsolutePath")
+@externTarget("System.Uri.AbsolutePath")
 func uriAbsolutePath(u: in Uri): String = ()
 
-@externInstance
-@externTarget("System.Net.HttpListenerRequest.get_InputStream")
+@externTarget("System.Net.HttpListenerRequest.InputStream")
 func requestInputStream(req: in HttpListenerRequest): Stream = ()
 
-@externInstance
-@externTarget("System.Net.HttpListenerRequest.get_ContentEncoding")
+@externTarget("System.Net.HttpListenerRequest.ContentEncoding")
 func requestContentEncoding(req: in HttpListenerRequest): Encoding = ()
 
 @externTarget("System.IO.StreamReader..ctor")
 func newStreamReader(stream: in Stream, encoding: in Encoding): StreamReader = ()
 
-@externInstance
 @externTarget("System.IO.StreamReader.ReadToEnd")
 func readerReadToEnd(r: in StreamReader): String = ()
 
-@externInstance
 @externTarget("System.Net.HttpListenerResponse.set_StatusCode")
 func setResponseStatus(resp: in HttpListenerResponse, status: in Int): Unit = ()
 
-@externInstance
 @externTarget("System.Net.HttpListenerResponse.set_ContentType")
 func setResponseContentType(resp: in HttpListenerResponse, ct: in String): Unit = ()
 
-@externInstance
 @externTarget("System.Net.HttpListenerResponse.set_ContentLength64")
 func setResponseContentLength(resp: in HttpListenerResponse, len: in Long): Unit = ()
 
-@externInstance
-@externTarget("System.Net.HttpListenerResponse.get_OutputStream")
+@externTarget("System.Net.HttpListenerResponse.OutputStream")
 func responseOutputStream(resp: in HttpListenerResponse): Stream = ()
 
-@externInstance
 @externTarget("System.IO.Stream.Write")
 func streamWrite(s: in Stream, buffer: in slice[Byte], offset: in Int, count: in Int): Unit = ()
 
-@externInstance
 @externTarget("System.IO.Stream.Close")
 func streamClose(s: in Stream): Unit = ()
 
-@externInstance
 @externTarget("System.Net.HttpListenerResponse.Close")
 func responseClose(resp: in HttpListenerResponse): Unit = ()
 
-@externTarget("System.Text.Encoding.get_UTF8")
+@externTarget("System.Text.Encoding.UTF8")
 func utf8(): Encoding = ()
 
-@externInstance
 @externTarget("System.Text.Encoding.GetBytes")
 func encodingGetBytes(e: in Encoding, s: in String): slice[Byte] = ()
 
@@ -152,6 +120,7 @@ func intToLong(n: in Int): Long = ()
 // =====================================================================
 // Public host helpers.
 // =====================================================================
+
 /// Construct + bind + start the listener for `prefix` (e.g.
 /// `"http://localhost:8080/"`).  The caller owns it and must call
 /// `stopListener` on shutdown.

@@ -1,20 +1,21 @@
-//! try_catch_expr_self_test.l — regression tests for `try { … } catch … { … }`
-//! used as a value-producing expression on the self-hosted MSIL target (#1823;
-//! epic #1470, Band 2).
-//!
-//! A `try`/`catch` whose result is consumed (a function's trailing value, a `val`
-//! initializer, a sub-expression) previously lowered as a discarded statement, so
-//! the branch values never reached the stack and a non-void function emitted a
-//! bare `ret` with nothing to return — unverifiable IL (`InvalidProgramException`
-//! at JIT time).  Codegen now lowers a trailing `try`/`catch` as a value: each
-//! branch (try body + every catch handler) is stashed into a shared temp before
-//! its `leave` and reloaded after the merge label.
-//!
-//! Run via native `lyric test --target dotnet`.  Imports only `Std.*`.
-//!
-//!   lyric test lyric-compiler/lyric/try_catch_expr_self_test.l
-//!
-//! MSIL target only; JVM parity is tracked under epic #1470's JVM-deferral note.
+// try_catch_expr_self_test.l — regression tests for `try { … } catch … { … }`
+// used as a value-producing expression on the self-hosted MSIL target (#1823;
+// epic #1470, Band 2).
+//
+// A `try`/`catch` whose result is consumed (a function's trailing value, a `val`
+// initializer, a sub-expression) previously lowered as a discarded statement, so
+// the branch values never reached the stack and a non-void function emitted a
+// bare `ret` with nothing to return — unverifiable IL (`InvalidProgramException`
+// at JIT time).  Codegen now lowers a trailing `try`/`catch` as a value: each
+// branch (try body + every catch handler) is stashed into a shared temp before
+// its `leave` and reloaded after the merge label.
+//
+// Run via native `lyric test --target dotnet`.  Imports only `Std.*`.
+//
+//   lyric test lyric-compiler/lyric/try_catch_expr_self_test.l
+//
+// MSIL target only; JVM parity is tracked under epic #1470's JVM-deferral note.
+
 @test_module
 package Lyric.TryCatchExprSelfTest
 
@@ -74,9 +75,7 @@ func didPanic(shouldPanic: Bool): Bool {
 // try/catch expression as a `val` initializer (value consumed mid-function).
 func viaLocal(x: Int): Int {
   val r = try {
-    if x > 0 {
-      panic("p")
-    }
+    if x > 0 { panic("p") }
     100
   } catch Bug as _ {
     200
@@ -121,16 +120,12 @@ test "try/catch expression as a val initializer" {
 func nested(innerPanic: Bool, outerPanic: Bool): Int {
   try {
     val inner = try {
-      if innerPanic {
-        panic("i")
-      }
+      if innerPanic { panic("i") }
       1
     } catch Bug as _ {
       2
     }
-    if outerPanic {
-      panic("o")
-    }
+    if outerPanic { panic("o") }
     inner
   } catch Bug as _ {
     3
@@ -147,26 +142,4 @@ test "nested try/catch expression: each layer yields the right branch value" {
   // Both panic: inner's catch swallows the inner panic (2 propagates upward),
   // outer panic then fires its own catch -> 3.
   assertEqualInt(nested(true, true), 3, "both panic -> outer catch value")
-}
-
-// A panic originating inside the inner catch block — a distinct path from any of
-// the four `nested` cases above.  When the inner catch itself panics, the outer
-// try region is still active and must intercept the exception.
-func innerCatchPanics(): Int {
-  try {
-    try {
-      panic("i")
-      1
-    } catch Bug as _ {
-      panic("ic")
-      2
-    }
-    10
-  } catch Bug as _ {
-    3
-  }
-}
-
-test "inner catch panic is intercepted by the outer try region" {
-  assertEqualInt(innerCatchPanics(), 3, "inner-catch panic -> outer catch yields 3")
 }

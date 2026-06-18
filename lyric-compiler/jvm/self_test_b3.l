@@ -1,11 +1,12 @@
-//! jvm/self_test_b3.l — Stage B3 smoke test for Jvm.Lowering.
-//!
-//! Builds two JVM class files using the high-level `LInsn` / `LRecord` API:
-//!
-//!   Adder.class  — a class with a static `add(int, int) : int` method.
-//!   Point.class  — a record class with `int x` and `int y` fields.
-//!
-//! Each class is written to /tmp/lyric-jvm-b3/ and the file name is printed.
+// jvm/self_test_b3.l — Stage B3 smoke test for Jvm.Lowering.
+//
+// Builds two JVM class files using the high-level `LInsn` / `LRecord` API:
+//
+//   Adder.class  — a class with a static `add(int, int) : int` method.
+//   Point.class  — a record class with `int x` and `int y` fields.
+//
+// Each class is written to /tmp/lyric-jvm-b3/ and the file name is printed.
+
 package Jvm.SelfTestB3
 
 import Std.Core
@@ -19,6 +20,7 @@ import Jvm.Lowering
 // public class Adder {
 //   public static int add(int a, int b) { return a + b; }
 // }
+
 func makeAdderBytes(): List[Byte] {
   val pool = poolNew()
 
@@ -29,12 +31,12 @@ func makeAdderBytes(): List[Byte] {
   addInsns.add(LIreturn)
 
   val addFunc = LFunc(
-    flags = ACC_PUBLIC + ACC_STATIC,
-    name = "add",
-    params = { val ps: List[JvmType] = newList(); ps.add(JInt); ps.add(JInt); ps },
-    ret = JInt,
-    insns = addInsns,
-    maxStack = 2,
+    flags     = ACC_PUBLIC + ACC_STATIC,
+    name      = "add",
+    params    = { val ps: List[JvmType] = newList(); ps.add(JInt); ps.add(JInt); ps },
+    ret       = JInt,
+    insns     = addInsns,
+    maxStack  = 2,
     maxLocals = 2
   )
 
@@ -42,7 +44,12 @@ func makeAdderBytes(): List[Byte] {
   adderMethods.add(addFunc)
 
   val adderFields: List[LField] = newList()
-  val adder = LRecord(className = "Adder", fields = adderFields, methods = adderMethods, implementsIfaces = newList())
+  val adder = LRecord(
+    className        = "Adder",
+    fields           = adderFields,
+    methods          = adderMethods,
+    implementsIfaces = newList()
+  )
 
   val cf = lowerRecord(adder, pool)
   serializeClassWithPool(cf, pool)
@@ -54,6 +61,7 @@ func makeAdderBytes(): List[Byte] {
 //   public int y;
 //   public Point(int x, int y) { this.x = x; this.y = y; }
 // }
+
 func makePointBytes(): List[Byte] {
   val pool = poolNew()
 
@@ -66,13 +74,19 @@ func makePointBytes(): List[Byte] {
 
   val pointMethods: List[LFunc] = newList()
 
-  val point = LRecord(className = "Point", fields = pointFields, methods = pointMethods, implementsIfaces = newList())
+  val point = LRecord(
+    className        = "Point",
+    fields           = pointFields,
+    methods          = pointMethods,
+    implementsIfaces = newList()
+  )
 
   val cf = lowerRecord(point, pool)
   serializeClassWithPool(cf, pool)
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
+
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b3"
   val _ = createDir(outDir)
@@ -80,14 +94,14 @@ func main(): Unit {
   val adderPath = outDir + "/Adder.class"
   val adderBytes = makeAdderBytes()
   match writeBytes(adderPath, adderBytes) {
-    case Ok(_) -> println("wrote Adder.class (" + toString(adderBytes.count) + " bytes)")
+    case Ok(_)    -> println("wrote Adder.class (" + toString(adderBytes.count) + " bytes)")
     case Err(err) -> println("writeBytes failed for Adder.class")
   }
 
   val pointPath = outDir + "/Point.class"
   val pointBytes = makePointBytes()
   match writeBytes(pointPath, pointBytes) {
-    case Ok(_) -> println("wrote Point.class (" + toString(pointBytes.count) + " bytes)")
+    case Ok(_)    -> println("wrote Point.class (" + toString(pointBytes.count) + " bytes)")
     case Err(err) -> println("writeBytes failed for Point.class")
   }
 }

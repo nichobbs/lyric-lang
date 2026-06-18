@@ -1,17 +1,18 @@
-//! jvm/self_test_b45.l — Stage B45: multiple interface implementation.
-//!
-//! Generates four class files:
-//!   Nameable.class  — interface with getName()Ljava/lang/String;
-//!   Scoreable.class — interface with getScore()I
-//!   Player.class    — implements both Nameable and Scoreable
-//!   Main.class      — calls both methods via invokeinterface
-//!
-//! Expected output:
-//!   Alice
-//!   42
-//!
-//! Exercises: ClassFile with interfaces list containing two entries,
-//!            invokeinterface on two different interface types.
+// jvm/self_test_b45.l — Stage B45: multiple interface implementation.
+//
+// Generates four class files:
+//   Nameable.class  — interface with getName()Ljava/lang/String;
+//   Scoreable.class — interface with getScore()I
+//   Player.class    — implements both Nameable and Scoreable
+//   Main.class      — calls both methods via invokeinterface
+//
+// Expected output:
+//   Alice
+//   42
+//
+// Exercises: ClassFile with interfaces list containing two entries,
+//            invokeinterface on two different interface types.
+
 package Jvm.SelfTestB45
 
 import Std.Core
@@ -27,19 +28,19 @@ func makeNameableBytes(): List[Byte] {
   val getNameMethod = makeMethodInfo(ACC_PUBLIC + ACC_ABSTRACT, "getName", "()Ljava/lang/String;", noAttrs)
   val methods: List[MethodInfo] = newList()
   methods.add(getNameMethod)
-  val ifaces: List[String] = newList()
+  val ifaces: List[String]    = newList()
   val fields: List[FieldInfo] = newList()
-  val attrs: List[Attribute] = newList()
+  val attrs:  List[Attribute] = newList()
   val cf = ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags = ACC_PUBLIC + ACC_INTERFACE + ACC_ABSTRACT,
-    thisClass = "Nameable",
-    superClass = "java/lang/Object",
-    interfaces = ifaces,
-    fields = fields,
-    methods = methods,
-    attrs = attrs
+    flags        = ACC_PUBLIC + ACC_INTERFACE + ACC_ABSTRACT,
+    thisClass    = "Nameable",
+    superClass   = "java/lang/Object",
+    interfaces   = ifaces,
+    fields       = fields,
+    methods      = methods,
+    attrs        = attrs
   )
   serializeClassWithPool(cf, pool)
 }
@@ -50,25 +51,25 @@ func makeScoreableBytes(): List[Byte] {
   val getScoreMethod = makeMethodInfo(ACC_PUBLIC + ACC_ABSTRACT, "getScore", "()I", noAttrs)
   val methods: List[MethodInfo] = newList()
   methods.add(getScoreMethod)
-  val ifaces: List[String] = newList()
+  val ifaces: List[String]    = newList()
   val fields: List[FieldInfo] = newList()
-  val attrs: List[Attribute] = newList()
+  val attrs:  List[Attribute] = newList()
   val cf = ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags = ACC_PUBLIC + ACC_INTERFACE + ACC_ABSTRACT,
-    thisClass = "Scoreable",
-    superClass = "java/lang/Object",
-    interfaces = ifaces,
-    fields = fields,
-    methods = methods,
-    attrs = attrs
+    flags        = ACC_PUBLIC + ACC_INTERFACE + ACC_ABSTRACT,
+    thisClass    = "Scoreable",
+    superClass   = "java/lang/Object",
+    interfaces   = ifaces,
+    fields       = fields,
+    methods      = methods,
+    attrs        = attrs
   )
   serializeClassWithPool(cf, pool)
 }
 
 func makePlayerBytes(): List[Byte] {
-  val pool = poolNew()
+  val pool    = poolNew()
   val objInit = poolMethodref(pool, "java/lang/Object", "<init>", "()V")
 
   // <init>()V
@@ -108,31 +109,31 @@ func makePlayerBytes(): List[Byte] {
   ifaces.add("Nameable")
   ifaces.add("Scoreable")
   val fields: List[FieldInfo] = newList()
-  val attrs: List[Attribute] = newList()
+  val attrs:  List[Attribute] = newList()
   val cf = ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags = ACC_PUBLIC + ACC_SUPER,
-    thisClass = "Player",
-    superClass = "java/lang/Object",
-    interfaces = ifaces,
-    fields = fields,
-    methods = methods,
-    attrs = attrs
+    flags        = ACC_PUBLIC + ACC_SUPER,
+    thisClass    = "Player",
+    superClass   = "java/lang/Object",
+    interfaces   = ifaces,
+    fields       = fields,
+    methods      = methods,
+    attrs        = attrs
   )
   serializeClassWithPool(cf, pool)
 }
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnStr = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
+  val sysOut      = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnStr  = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val printlnI    = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
   val playerClass = poolClass(pool, "Player")
-  val playerInit = poolMethodref(pool, "Player", "<init>", "()V")
-  val getNameIface = poolIfaceMethodref(pool, "Nameable", "getName", "()Ljava/lang/String;")
+  val playerInit  = poolMethodref(pool, "Player", "<init>", "()V")
+  val getNameIface  = poolIfaceMethodref(pool, "Nameable", "getName", "()Ljava/lang/String;")
   val getScoreIface = poolIfaceMethodref(pool, "Scoreable", "getScore", "()I")
 
   // val p = new Player()
@@ -170,19 +171,19 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b45"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
-  val nameableBytes = makeNameableBytes()
+  val nameableBytes  = makeNameableBytes()
   val scoreableBytes = makeScoreableBytes()
-  val playerBytes = makePlayerBytes()
-  val mainBytes = makeMainClassBytes()
+  val playerBytes    = makePlayerBytes()
+  val mainBytes      = makeMainClassBytes()
 
-  val nameableClass = BuiltClass(binaryName = "Nameable", bytes = nameableBytes)
+  val nameableClass  = BuiltClass(binaryName = "Nameable",  bytes = nameableBytes)
   val scoreableClass = BuiltClass(binaryName = "Scoreable", bytes = scoreableBytes)
-  val playerClass = BuiltClass(binaryName = "Player", bytes = playerBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val playerClass    = BuiltClass(binaryName = "Player",    bytes = playerBytes)
+  val mainClass      = BuiltClass(binaryName = "Main",      bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(nameableClass)
   classes.add(scoreableClass)
@@ -191,9 +192,9 @@ func main(): Unit {
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB45",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

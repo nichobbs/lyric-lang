@@ -1,18 +1,19 @@
-//! jvm/self_test_b66.l — Stage B66: String.valueOf for int, long, boolean.
-//!
-//! Generates Stringifier.class with:
-//!   intToStr(I)String    — String.valueOf(i)
-//!   longToStr(J)String   — String.valueOf(l)
-//!   boolToStr(I)String   — String.valueOf(z != 0)  using z as int (0=false,1=true)
-//!
-//! Main prints:
-//!   intToStr(42)         → "42"
-//!   intToStr(-100)       → "-100"
-//!   longToStr(999999999) → "999999999"
-//!   boolToStr(1)         → "true"
-//!   boolToStr(0)         → "false"
-//!
-//! Exercises: invokestatic String.valueOf(I), String.valueOf(J), String.valueOf(Z).
+// jvm/self_test_b66.l — Stage B66: String.valueOf for int, long, boolean.
+//
+// Generates Stringifier.class with:
+//   intToStr(I)String    — String.valueOf(i)
+//   longToStr(J)String   — String.valueOf(l)
+//   boolToStr(I)String   — String.valueOf(z != 0)  using z as int (0=false,1=true)
+//
+// Main prints:
+//   intToStr(42)         → "42"
+//   intToStr(-100)       → "-100"
+//   longToStr(999999999) → "999999999"
+//   boolToStr(1)         → "true"
+//   boolToStr(0)         → "false"
+//
+// Exercises: invokestatic String.valueOf(I), String.valueOf(J), String.valueOf(Z).
+
 package Jvm.SelfTestB66
 
 import Std.Core
@@ -23,10 +24,10 @@ import Jvm.Bytecode
 import Jvm.Driver
 
 func makeStringifierBytes(): List[Byte] {
-  val pool = poolNew()
-  val valueOfI = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
-  val valueOfJ = poolMethodref(pool, "java/lang/String", "valueOf", "(J)Ljava/lang/String;")
-  val valueOfZ = poolMethodref(pool, "java/lang/String", "valueOf", "(Z)Ljava/lang/String;")
+  val pool        = poolNew()
+  val valueOfI    = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
+  val valueOfJ    = poolMethodref(pool, "java/lang/String", "valueOf", "(J)Ljava/lang/String;")
+  val valueOfZ    = poolMethodref(pool, "java/lang/String", "valueOf", "(Z)Ljava/lang/String;")
 
   // intToStr(I)String
   val asmI = newAssembler(pool)
@@ -67,14 +68,14 @@ func makeStringifierBytes(): List[Byte] {
 }
 
 func makeMainClassBytes(): List[Byte] {
-  val pool = poolNew()
-  val asm = newAssembler(pool)
+  val pool      = poolNew()
+  val asm       = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnS = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val iRef = poolMethodref(pool, "Stringifier", "intToStr", "(I)Ljava/lang/String;")
-  val jRef = poolMethodref(pool, "Stringifier", "longToStr", "(J)Ljava/lang/String;")
-  val zRef = poolMethodref(pool, "Stringifier", "boolToStr", "(I)Ljava/lang/String;")
+  val sysOut    = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnS  = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val iRef      = poolMethodref(pool, "Stringifier", "intToStr",  "(I)Ljava/lang/String;")
+  val jRef      = poolMethodref(pool, "Stringifier", "longToStr", "(J)Ljava/lang/String;")
+  val zRef      = poolMethodref(pool, "Stringifier", "boolToStr", "(I)Ljava/lang/String;")
 
   // println(Stringifier.intToStr(42))         → "42"
   emitGetstatic(asm, sysOut)
@@ -122,24 +123,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b66"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val stringifierBytes = makeStringifierBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes        = makeMainClassBytes()
 
   val stringifierClass = BuiltClass(binaryName = "Stringifier", bytes = stringifierBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass        = BuiltClass(binaryName = "Main",        bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(stringifierClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB66",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

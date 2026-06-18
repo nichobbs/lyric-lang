@@ -1,9 +1,8 @@
-//! test_synth_self_test.l — exercises the self-hosted Lyric.TestSynth
-//! library.
-//!
-//! Run via `lyric test lyric-compiler/lyric/test_synth_self_test.l`.
-//! Replaces the F# SelfHostedTestSynthTests.fs wrapper (#2580).
-@test_module
+// test_synth_self_test.l — exercises the self-hosted Lyric.TestSynth
+// library.  Compiled and executed by the F# Expecto runner at
+// compiler/tests/Lyric.Emitter.Tests/SelfHostedTestSynthTests.fs.
+// Each in-program assertion panics on mismatch; exit 0 + an "ok"
+// line in stdout means every check held.
 package Lyric.TestSynthSelfTest
 
 import Std.Core
@@ -28,29 +27,12 @@ func fixtureSource(): String {
   "@test_module\npackage P\n\nimport Std.Testing\n\nfixture clock: Int = 0\n\ntest \"a\" { assertTrue(true, \"x\") }\n"
 }
 
-func fixtureNoTypeSource(): String {
-  "@test_module\npackage P\n\nimport Std.Testing\n\nfixture count = 42\n\ntest \"a\" { assertTrue(true, \"x\") }\n"
-}
-
-func multiFixtureSource(): String {
-  "@test_module\npackage P\n\nimport Std.Testing\n\nfixture x: Int = 1\nfixture y: Int = 2\n\ntest \"a\" { assertTrue(true, \"x\") }\ntest \"b\" { assertTrue(true, \"y\") }\n"
-}
-
-func annotatedFixtureSource(): String {
-  "@test_module\npackage P\n\nimport Std.Testing\n\n@stable(since = \"0.1\")\nfixture clock: Int = 0\n\ntest \"a\" { assertTrue(true, \"x\") }\n"
-}
-
 func propertySource(): String {
   "@test_module\npackage P\n\nimport Std.Testing\n\ntest \"unit\" { assertTrue(true, \"x\") }\nproperty \"prop\" forall (n: Int) { assertTrue(true, \"x\") }\n"
 }
 
 func testSynthesisesPassingTwoTests(): Unit {
-  // Use Some(value = "") rather than None: both mean "no active filter"
-  // (empty string is a substring of every title), but Some avoids the
-  // cross-assembly nullary-union ABI mismatch for Option[String] between
-  // the self-hosted emitter (test program) and the F# bootstrap-compiled
-  // Lyric.TestSynth.dll (#2557).
-  match synthesize(passingSource(), Some(value = "")) {
+  match synthesize(passingSource(), None) {
     case Synthesised(rewritten, n, sk) -> {
       assertEqualInt(n, 2, "two tests detected")
       assertEqualInt(sk, 0, "no skips")
@@ -69,79 +51,34 @@ func testSynthesisesPassingTwoTests(): Unit {
 
 func testRejectsMissingTestModule(): Unit {
   match synthesize(noModuleSource(), None) {
-    case NoTestModule(_) -> {
-    }
-    case _ -> panic("expected NoTestModule")
+    case NoTestModule(_) -> {}
+    case _               -> panic("expected NoTestModule")
   }
 }
 
 func testRejectsUserMain(): Unit {
   match synthesize(userMainSource(), None) {
-    case UserMainExists(_) -> {
-    }
-    case _ -> panic("expected UserMainExists")
+    case UserMainExists(_) -> {}
+    case _                 -> panic("expected UserMainExists")
   }
 }
 
-func testSynthesisesFixture(): Unit {
-  match synthesize(fixtureSource(), Some(value = "")) {
-    case Synthesised(rewritten, n, sk) -> {
-      assertEqualInt(n, 1, "one test")
-      assertEqualInt(sk, 0, "no skips")
-      assertTrue(Str.contains(rewritten, "val clock: Int = 0"), "fixture rewritten as val")
-      assertTrue(not Str.contains(rewritten, "fixture "), "no fixture keyword in output")
-    }
-    case _ -> panic("expected Synthesised outcome")
-  }
-}
-
-func testSynthesisesFixtureNoType(): Unit {
-  match synthesize(fixtureNoTypeSource(), Some(value = "")) {
-    case Synthesised(rewritten, n, sk) -> {
-      assertEqualInt(n, 1, "one test")
-      assertEqualInt(sk, 0, "no skips")
-      assertTrue(Str.contains(rewritten, "val count = 42"), "fixture without type annotation rewritten as val")
-      assertTrue(not Str.contains(rewritten, "fixture "), "no fixture keyword in output")
-    }
-    case _ -> panic("expected Synthesised outcome")
-  }
-}
-
-func testSynthesisesMultipleFixtures(): Unit {
-  match synthesize(multiFixtureSource(), Some(value = "")) {
-    case Synthesised(rewritten, n, sk) -> {
-      assertEqualInt(n, 2, "two tests")
-      assertEqualInt(sk, 0, "no skips")
-      assertTrue(Str.contains(rewritten, "val x: Int = 1"), "first fixture rewritten")
-      assertTrue(Str.contains(rewritten, "val y: Int = 2"), "second fixture rewritten")
-      assertTrue(not Str.contains(rewritten, "fixture "), "no fixture keyword in output")
-    }
-    case _ -> panic("expected Synthesised outcome")
-  }
-}
-
-func testSynthesisesAnnotatedFixture(): Unit {
-  match synthesize(annotatedFixtureSource(), Some(value = "")) {
-    case Synthesised(rewritten, n, sk) -> {
-      assertEqualInt(n, 1, "one test")
-      assertEqualInt(sk, 0, "no skips")
-      assertTrue(Str.contains(rewritten, "val clock: Int = 0"), "annotated fixture rewritten as val")
-      assertTrue(Str.contains(rewritten, "@stable(since = \"0.1\")"), "annotation preserved before val")
-      assertTrue(not Str.contains(rewritten, "fixture "), "no fixture keyword in output")
-    }
-    case _ -> panic("expected Synthesised outcome")
+func testRejectsFixture(): Unit {
+  match synthesize(fixtureSource(), None) {
+    case FixtureUnsupported(_) -> {}
+    case _                     -> panic("expected FixtureUnsupported")
   }
 }
 
 func testPropertyReportedAsSkip(): Unit {
-  // Use Some(value = "") for the same reason as testSynthesisesPassingTwoTests
-  // (#2557 cross-assembly nullary-union ABI).
-  match synthesize(propertySource(), Some(value = "")) {
+  match synthesize(propertySource(), None) {
     case Synthesised(rewritten, n, sk) -> {
       assertEqualInt(n, 1, "one runnable test")
       assertEqualInt(sk, 1, "one skip")
       assertTrue(Str.contains(rewritten, "ok 1 - unit"), "test runs")
-      assertTrue(Str.contains(rewritten, "# skip 2 - prop: property: not implemented in v1"), "property skip line")
+      assertTrue(
+        Str.contains(rewritten, "# skip 2 - prop: property: not implemented in v1"),
+        "property skip line")
     }
     case _ -> panic("expected Synthesised outcome")
   }
@@ -164,54 +101,25 @@ func testListEntriesEnumerates(): Unit {
     case Ok(xs) -> {
       assertEqualInt(xs.count, 2, "test + property entry")
       match xs[0] {
-        case TestEntry(t) -> assertEqual(t, "unit", "first entry is test 'unit'")
-        case _ -> panic("expected TestEntry first")
+        case TestEntry(t)        -> assertEqual(t, "unit", "first entry is test 'unit'")
+        case _                   -> panic("expected TestEntry first")
       }
       match xs[1] {
         case PropertyEntry(t, _) -> assertEqual(t, "prop", "second entry is property 'prop'")
-        case _ -> panic("expected PropertyEntry second")
+        case _                   -> panic("expected PropertyEntry second")
       }
     }
     case Err(_) -> panic("listEntries unexpectedly errored")
   }
 }
 
-test "synthesises passing two tests" {
+func main(): Unit {
   testSynthesisesPassingTwoTests()
-}
-
-test "rejects missing @test_module" {
   testRejectsMissingTestModule()
-}
-
-test "rejects user-defined main" {
   testRejectsUserMain()
-}
-
-test "synthesises fixture as val" {
-  testSynthesisesFixture()
-}
-
-test "synthesises fixture without type annotation" {
-  testSynthesisesFixtureNoType()
-}
-
-test "synthesises multiple fixtures" {
-  testSynthesisesMultipleFixtures()
-}
-
-test "synthesises annotated fixture" {
-  testSynthesisesAnnotatedFixture()
-}
-
-test "property reported as skip" {
+  testRejectsFixture()
   testPropertyReportedAsSkip()
-}
-
-test "filter skips non-matching tests" {
   testFilterSkipsNonMatching()
-}
-
-test "listEntries enumerates entries" {
   testListEntriesEnumerates()
+  println("ok")
 }

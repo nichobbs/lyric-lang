@@ -1,14 +1,15 @@
-//! jvm/self_test_b34.l — Stage B34: iinc (increment local variable in-place).
-//!
-//! Generates IncrOps.class with:
-//!   addFive(I)I  — uses iinc to add 1 to slot 0 five times, then iload+ireturn
-//!   addTen(I)I   — uses iinc with delta=10 to add 10 at once
-//!
-//! Main prints:
-//!   addFive(10)  = 15
-//!   addTen(100)  = 110
-//!
-//! Exercises: emitIinc with delta=1 and delta=10 (no branches needed).
+// jvm/self_test_b34.l — Stage B34: iinc (increment local variable in-place).
+//
+// Generates IncrOps.class with:
+//   addFive(I)I  — uses iinc to add 1 to slot 0 five times, then iload+ireturn
+//   addTen(I)I   — uses iinc with delta=10 to add 10 at once
+//
+// Main prints:
+//   addFive(10)  = 15
+//   addTen(100)  = 110
+//
+// Exercises: emitIinc with delta=1 and delta=10 (no branches needed).
+
 package Jvm.SelfTestB34
 
 import Std.Core
@@ -54,12 +55,12 @@ func makeIncrOpsClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val addFiveRef = poolMethodref(pool, "IncrOps", "addFive", "(I)I")
-  val addTenRef = poolMethodref(pool, "IncrOps", "addTen", "(I)I")
-  val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
+  val sysOut       = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val addFiveRef   = poolMethodref(pool, "IncrOps", "addFive", "(I)I")
+  val addTenRef    = poolMethodref(pool, "IncrOps", "addTen",  "(I)I")
+  val printlnI     = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
 
   // addFive(10) = 15
   emitGetstatic(asm, sysOut)
@@ -88,24 +89,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b34"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val incrOpsBytes = makeIncrOpsClassBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes    = makeMainClassBytes()
 
   val incrOpsClass = BuiltClass(binaryName = "IncrOps", bytes = incrOpsBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass    = BuiltClass(binaryName = "Main",    bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(incrOpsClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB34",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

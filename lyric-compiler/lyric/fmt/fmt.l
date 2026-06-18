@@ -1,22 +1,18 @@
-//! fmt/fmt.l — top-level entry points for the self-hosted Lyric formatter.
-//!
-//! `format(parsed)` walks the AST to produce canonical Lyric source, mirroring
-//! the F# bootstrap formatter at `compiler/src/Lyric.Cli/Fmt.fs`, and uses the
-//! red/green CST attached to `ParseResult` (Phase 5 §M5.1 stage 5′) to
-//! preserve line and block comments at item boundaries — the comments today's
-//! F# `lyric fmt` drops.  Item-internal comment preservation (inside function
-//! bodies, record fields, etc.) is woven in at structural boundaries the
-//! multi-line printers already visit (statements, member lists, call/list
-//! elements, binop operands, and — per #2453 — the arms of a `then`-form
-//! if-expression).  Trivia living deeper inside still-flat expression
-//! renderings (e.g. trailing comments on the fields of a multi-field union
-//! case) is the remaining per-expression-trivia work tracked under #2453.
-//!
-//! Public API (matches the Future-package contract advertised in
-//! compiler/lyric/lyric/cli.l):
-//!
-//!     pub func format(parsed: in ParseResult): String
-//!     pub func isFormatted(source: in String, parsed: in ParseResult): Bool
+// fmt/fmt.l — top-level entry points for the self-hosted Lyric formatter.
+//
+// `format(parsed)` walks the AST to produce canonical Lyric source, mirroring
+// the F# bootstrap formatter at `compiler/src/Lyric.Cli/Fmt.fs`, and uses the
+// red/green CST attached to `ParseResult` (Phase 5 §M5.1 stage 5′) to
+// preserve line and block comments at item boundaries — the comments today's
+// F# `lyric fmt` drops.  Item-internal comment preservation (inside function
+// bodies, record fields, etc.) is intentionally deferred until the CST is
+// refined to per-statement / per-expression granularity.
+//
+// Public API (matches the Future-package contract advertised in
+// compiler/lyric/lyric/cli.l):
+//
+//     pub func format(parsed: in ParseResult): String
+//     pub func isFormatted(source: in String, parsed: in ParseResult): Bool
 package Lyric.Fmt
 
 import Std.Core
@@ -33,18 +29,10 @@ import Lyric.Parser
 // appropriate boundary.  The list is in source order because the CST
 // visit is in source order.
 // ─────────────────────────────────────────────────────────────────────────────
+
 pub union HarvestedItem {
   /// A `//` or `/* */` comment.  `text` includes the leading prefix.
-  /// `trailing` is true when the comment sat on the same source line as
-  /// the preceding token (no newline between them) — i.e. an end-of-line
-  /// comment that must be re-attached to the previous output line rather
-  /// than emitted as a standalone leading line.  `gap` is the exact
-  /// source whitespace between the preceding token and the comment; for a
-  /// trailing comment it is re-emitted verbatim so hand-aligned comment
-  /// columns survive (the code before the comment renders at its source
-  /// width, so preserving the gap preserves the alignment).  Empty for a
-  /// leading comment.
-  case HiComment(text: String, offset: Int, trailing: Bool, gap: String)
+  case HiComment(text: String, offset: Int)
   /// One blank line in the original source (a run of 2+ consecutive
   /// `TKNewline` trivia).  Offset is the start of the run; multiple
   /// consecutive blank lines collapse to a single marker so the
@@ -55,8 +43,8 @@ pub union HarvestedItem {
 @pure
 func harvestedOffset(h: in HarvestedItem): Int {
   match h {
-    case HiComment(_, o, _, _) -> o
-    case HiBlank(o) -> o
+    case HiComment(_, o) -> o
+    case HiBlank(o)      -> o
   }
 }
 
@@ -68,7 +56,7 @@ func harvestedOffset(h: in HarvestedItem): Int {
 /// record / union / enum member).  Inline printers don't take it
 /// because nothing emits across multiple source lines.
 pub record FmtCtx {
-  items: List[HarvestedItem]
+  items:  List[HarvestedItem]
   cursor: Int
 }
 
@@ -82,9 +70,10 @@ pub func newFmtCtx(items: in List[HarvestedItem]): FmtCtx {
 /// alongside comments.
 pub func popTriviaBefore(ctx: inout FmtCtx, hi: in Int): List[String] {
   val acc: List[String] = newList()
-  while ctx.cursor < ctx.items.count and harvestedOffset(ctx.items[ctx.cursor]) < hi {
+  while ctx.cursor < ctx.items.count
+        and harvestedOffset(ctx.items[ctx.cursor]) < hi {
     match ctx.items[ctx.cursor] {
-      case HiComment(text, _, _, _) -> {
+      case HiComment(text, _) -> {
         val parts = Str.split(text, "\n")
         var j = 0
         while j < parts.length {
@@ -92,49 +81,11 @@ pub func popTriviaBefore(ctx: inout FmtCtx, hi: in Int): List[String] {
           j = j + 1
         }
       }
-      case HiBlank(_) -> {
-        acc.add("")
-      }
+      case HiBlank(_) -> { acc.add("") }
     }
     ctx.cursor = ctx.cursor + 1
   }
   acc
-}
-
-/// Like `popTriviaBefore`, but emits directly into a caller-owned line
-/// accumulator so that a *trailing* comment (one that sat on the same
-/// source line as the preceding token) is re-attached to the previous
-/// output line instead of being emitted as a standalone leading line.
-/// Leading comments and blank-line markers are appended as new lines,
-/// matching `popTriviaBefore`.  Used by the member / statement / arm
-/// list printers (which build an un-indented accumulator that the caller
-/// indents wholesale).
-pub func appendTriviaInto(acc: inout List[String], ctx: inout FmtCtx, hi: in Int, dropBlanks: in Bool): Unit {
-  while ctx.cursor < ctx.items.count and harvestedOffset(ctx.items[ctx.cursor]) < hi {
-    match ctx.items[ctx.cursor] {
-      case HiComment(text, _, trailing, gap) -> {
-        val parts = Str.split(text, "\n")
-        if trailing and acc.count > 0 and acc[acc.count - 1] != "" and parts.length == 1 {
-          // Re-emit the source gap verbatim so hand-aligned comment
-          // columns survive; fall back to two spaces if none was captured.
-          val sep = if gap != "" { gap } else { "  " }
-          acc[acc.count - 1] = acc[acc.count - 1] + sep + parts[0]
-        } else {
-          var j = 0
-          while j < parts.length {
-            acc.add(parts[j])
-            j = j + 1
-          }
-        }
-      }
-      case HiBlank(_) -> {
-        if not dropBlanks {
-          acc.add("")
-        }
-      }
-    }
-    ctx.cursor = ctx.cursor + 1
-  }
 }
 
 /// Pop every comment whose offset is `< hi` and render as `Doc` lines.
@@ -143,9 +94,10 @@ pub func appendTriviaInto(acc: inout List[String], ctx: inout FmtCtx, hi: in Int
 /// already emits its own spacing rules.
 pub func popCommentsBefore(ctx: inout FmtCtx, hi: in Int): List[String] {
   val acc: List[String] = newList()
-  while ctx.cursor < ctx.items.count and harvestedOffset(ctx.items[ctx.cursor]) < hi {
+  while ctx.cursor < ctx.items.count
+        and harvestedOffset(ctx.items[ctx.cursor]) < hi {
     match ctx.items[ctx.cursor] {
-      case HiComment(text, _, _, _) -> {
+      case HiComment(text, _) -> {
         val parts = Str.split(text, "\n")
         var j = 0
         while j < parts.length {
@@ -153,8 +105,7 @@ pub func popCommentsBefore(ctx: inout FmtCtx, hi: in Int): List[String] {
           j = j + 1
         }
       }
-      case HiBlank(_) -> {
-      }
+      case HiBlank(_) -> {}
     }
     ctx.cursor = ctx.cursor + 1
   }
@@ -165,7 +116,8 @@ pub func popCommentsBefore(ctx: inout FmtCtx, hi: in Int): List[String] {
 /// `< hi` without emission.  Used at item end to drop leftovers from
 /// expression sub-trees that are not yet ctx-aware.
 pub func skipCommentsBefore(ctx: inout FmtCtx, hi: in Int): Unit {
-  while ctx.cursor < ctx.items.count and harvestedOffset(ctx.items[ctx.cursor]) < hi {
+  while ctx.cursor < ctx.items.count
+        and harvestedOffset(ctx.items[ctx.cursor]) < hi {
     ctx.cursor = ctx.cursor + 1
   }
 }
@@ -186,22 +138,13 @@ func harvestTriviaFromToken(t: in SpannedToken, acc: inout List[HarvestedItem]):
   var newlineRun = 0
   var blankRecorded = false
   var runStart = 0
-  // The whitespace trivium immediately preceding the current position on
-  // the same line.  For a trailing comment it is the gap between the code
-  // and the `//`, re-emitted verbatim so aligned comment columns survive.
-  // Reset on every newline (whitespace after a newline is indentation, not
-  // a same-line gap).
-  var lastWs = ""
   var i = 0
   while i < t.leadingTrivia.count {
     val tr = t.leadingTrivia[i]
     match tr.kind {
       case TKNewline -> {
-        if newlineRun == 0 {
-          runStart = tr.span.startPos.offset
-        }
+        if newlineRun == 0 { runStart = tr.span.startPos.offset }
         newlineRun = newlineRun + 1
-        lastWs = ""
         if newlineRun >= 2 and not blankRecorded {
           acc.add(HiBlank(offset = runStart))
           blankRecorded = true
@@ -210,26 +153,16 @@ func harvestTriviaFromToken(t: in SpannedToken, acc: inout List[HarvestedItem]):
       case TKWhitespace -> {
         // Doesn't break a newline run — `\n  \n` is still a blank
         // line, just with leading spaces on the empty line.
-        // Accumulate across consecutive TKWhitespace segments so that
-        // the full gap before a trailing comment is captured even if
-        // the lexer emits multiple whitespace trivia in a row.
-        lastWs = lastWs + tr.text
       }
       case TKLineComment -> {
-        val isTrailing = newlineRun == 0
-        val gap = if isTrailing { lastWs } else { "" }
         newlineRun = 0
         blankRecorded = false
-        lastWs = ""
-        acc.add(HiComment(text = tr.text, offset = tr.span.startPos.offset, trailing = isTrailing, gap = gap))
+        acc.add(HiComment(text = tr.text, offset = tr.span.startPos.offset))
       }
       case TKBlockComment -> {
-        val isTrailing = newlineRun == 0
-        val gap = if isTrailing { lastWs } else { "" }
         newlineRun = 0
         blankRecorded = false
-        lastWs = ""
-        acc.add(HiComment(text = tr.text, offset = tr.span.startPos.offset, trailing = isTrailing, gap = gap))
+        acc.add(HiComment(text = tr.text, offset = tr.span.startPos.offset))
       }
     }
     i = i + 1
@@ -240,7 +173,7 @@ func harvestTriviaFromNode(n: in GreenNode, acc: inout List[HarvestedItem]): Uni
   var i = 0
   while i < n.children.count {
     match n.children[i] {
-      case GcToken(t) -> harvestTriviaFromToken(t, acc)
+      case GcToken(t)    -> harvestTriviaFromToken(t, acc)
       case GcNode(child) -> harvestTriviaFromNode(child, acc)
     }
     i = i + 1
@@ -259,21 +192,17 @@ func harvestTrivia(cst: in GreenNode): List[HarvestedItem] {
 // lock-step by the parser, so the n-th `SkItem` corresponds to the n-th AST
 // item.
 // ─────────────────────────────────────────────────────────────────────────────
+
 func collectItemNodes(n: in GreenNode, acc: inout List[GreenNode]): Unit {
   match n.kind {
-    case SkItem -> {
-      acc.add(n)
-      return
-    }
-    case _ -> {
-    }
+    case SkItem -> { acc.add(n); return }
+    case _      -> {}
   }
   var i = 0
   while i < n.children.count {
     match n.children[i] {
       case GcNode(child) -> collectItemNodes(child, acc)
-      case GcToken(_) -> {
-      }
+      case GcToken(_)    -> {}
     }
     i = i + 1
   }
@@ -300,9 +229,7 @@ func nodeStartOffset(n: in GreenNode): Int {
       }
       case GcNode(child) -> {
         val o = nodeStartOffset(child)
-        if o >= 0 {
-          return o
-        }
+        if o >= 0 { return o }
       }
     }
     i = i + 1
@@ -314,14 +241,10 @@ func nodeFirstTokenOffset(n: in GreenNode): Int {
   var i = 0
   while i < n.children.count {
     match n.children[i] {
-      case GcToken(t) -> {
-        return t.span.startPos.offset
-      }
+      case GcToken(t)    -> { return t.span.startPos.offset }
       case GcNode(child) -> {
         val o = nodeFirstTokenOffset(child)
-        if o >= 0 {
-          return o
-        }
+        if o >= 0 { return o }
       }
     }
     i = i + 1
@@ -338,23 +261,18 @@ func nodeLastTokenEndOffset(n: in GreenNode): Int {
   var i = n.children.count - 1
   while i >= 0 {
     match n.children[i] {
-      case GcToken(t) -> {
+      case GcToken(t)    -> {
         // Skip synthetic STMT_END tokens — their span is zero-width and
         // also at the next-token offset.  Real tokens have non-zero
         // span lengths.
         match t.token {
-          case TStmtEnd -> {
-          }
-          case _ -> {
-            return t.span.endPos.offset
-          }
+          case TStmtEnd -> {}
+          case _ -> { return t.span.endPos.offset }
         }
       }
       case GcNode(child) -> {
         val o = nodeLastTokenEndOffset(child)
-        if o >= 0 {
-          return o
-        }
+        if o >= 0 { return o }
       }
     }
     i = i - 1
@@ -369,38 +287,23 @@ func nodeLastTokenEndOffset(n: in GreenNode): Int {
 // between cases in a union, etc.) get woven in alongside the
 // already-handled inter-item comments.
 // ─────────────────────────────────────────────────────────────────────────────
-@stable(since = "0.1")
+
+@stable(since="0.1")
 pub func format(parsed: in ParseResult): String {
   val file = parsed.file
-  val cst = parsed.cst
+  val cst  = parsed.cst
   val nodes = itemNodes(cst)
-  var ctx = newFmtCtx(harvestTrivia(cst))
+  var ctx  = newFmtCtx(harvestTrivia(cst))
 
   val sb: List[String] = newList()
-
-  // File-header comments that precede the `package` declaration.  The
-  // language reference (§1.3) makes `//!` the canonical form for a
-  // module-level doc block, so `lyric fmt` auto-fixes a plain `//`
-  // (or stray `///`) header into `//!` rather than dropping it or
-  // leaving it in a non-doc form that the AST discards.  Block comments
-  // (`/* … */`) are left verbatim.  See `promoteModuleComment`.
-  val preHeader = popCommentsBefore(ctx, file.packageDecl.span.startPos.offset)
-  var ph = 0
-  while ph < preHeader.count {
-    sb.add(promoteModuleComment(preHeader[ph]))
-    ph = ph + 1
-  }
 
   // Module-doc comments.
   var i = 0
   while i < file.moduleDoc.count {
     val d = file.moduleDoc[i]
     val prefix = if d.isModule { "//!" } else { "///" }
-    if d.text == "" {
-      sb.add(prefix)
-    } else {
-      sb.add(prefix + " " + d.text)
-    }
+    if d.text == "" { sb.add(prefix) }
+    else { sb.add(prefix + " " + d.text) }
     i = i + 1
   }
 
@@ -414,17 +317,12 @@ pub func format(parsed: in ParseResult): String {
   // `package …`.
   sb.add("package " + pathStr(file.packageDecl.path))
 
-  // Any comment that still sits inside the `package` declaration's own
-  // span — e.g. a trailing `// note` on the `package` line — is emitted
-  // rather than skipped so no comment is lost.  Doc comments here were
-  // already rendered above via `file.moduleDoc`; only plain trivia can
-  // remain.
-  val pkgTail = popCommentsBefore(ctx, file.packageDecl.span.endPos.offset)
-  var pt = 0
-  while pt < pkgTail.count {
-    sb.add(pkgTail[pt])
-    pt = pt + 1
-  }
+  // The header (module doc + file annotations + package decl) ends at
+  // the package decl's last token.  Skip past any harvested comments
+  // that fall inside the header — they'd only be doc-comments which we
+  // already emit via `file.moduleDoc`, but the cursor must move past
+  // them so subsequent lookups stay honest.
+  skipCommentsBefore(ctx, file.packageDecl.span.endPos.offset)
 
   // Imports.
   if file.imports.count > 0 {
@@ -435,16 +333,10 @@ pub func format(parsed: in ParseResult): String {
       // Comments before this import (e.g. an explanatory line comment).
       val pre = popCommentsBefore(ctx, imp.span.startPos.offset)
       var k = 0
-      while k < pre.count {
-        sb.add(pre[k])
-        k = k + 1
-      }
+      while k < pre.count { sb.add(pre[k]); k = k + 1 }
       val ds = importDoc(imp)
       var j = 0
-      while j < ds.count {
-        sb.add(ds[j])
-        j = j + 1
-      }
+      while j < ds.count { sb.add(ds[j]); j = j + 1 }
       i = i + 1
     }
   }
@@ -456,27 +348,22 @@ pub func format(parsed: in ParseResult): String {
     var idx = 0
     while idx < n {
       val item = file.items[idx]
-      val itemStart = if idx < nodes.count { nodeFirstTokenOffset(nodes[idx]) } else { item.span.startPos.offset }
+      val itemStart =
+        if idx < nodes.count { nodeFirstTokenOffset(nodes[idx]) }
+        else                  { item.span.startPos.offset }
 
       // Comments between the previous item / header and this item's
       // first token (excluding any item-internal comments — those are
       // popped *during* `itemDoc` traversal).
-      val between = popCommentsBefore(ctx, if itemStart >= 0 { itemStart } else { item.span.startPos.offset })
-      if idx > 0 {
-        sb.add("")
-      }
+      val between =
+        popCommentsBefore(ctx, if itemStart >= 0 { itemStart } else { item.span.startPos.offset })
+      if idx > 0 { sb.add("") }
       var k = 0
-      while k < between.count {
-        sb.add(between[k])
-        k = k + 1
-      }
+      while k < between.count { sb.add(between[k]); k = k + 1 }
 
       val ds = itemDoc(item, ctx)
       var j = 0
-      while j < ds.count {
-        sb.add(ds[j])
-        j = j + 1
-      }
+      while j < ds.count { sb.add(ds[j]); j = j + 1 }
 
       // After emitting the item, fast-forward the cursor past any
       // comments that still sit inside the item's source range — those
@@ -484,16 +371,13 @@ pub func format(parsed: in ParseResult): String {
       // walk, but if a deeper construct is not yet ctx-aware (e.g. an
       // expression sub-tree), we don't want them re-emitting at the
       // next item boundary.
-      val itemEnd = if idx < nodes.count {
-        val o = nodeLastTokenEndOffset(nodes[idx])
-        if o >= 0 {
-          o
+      val itemEnd =
+        if idx < nodes.count {
+          val o = nodeLastTokenEndOffset(nodes[idx])
+          if o >= 0 { o } else { item.span.endPos.offset }
         } else {
           item.span.endPos.offset
         }
-      } else {
-        item.span.endPos.offset
-      }
       skipCommentsBefore(ctx, itemEnd)
       idx = idx + 1
     }
@@ -503,56 +387,19 @@ pub func format(parsed: in ParseResult): String {
     if tail.count > 0 {
       sb.add("")
       var k = 0
-      while k < tail.count {
-        sb.add(tail[k])
-        k = k + 1
-      }
+      while k < tail.count { sb.add(tail[k]); k = k + 1 }
     }
   } else {
     val tail = popCommentsBefore(ctx, parsed.source.length + 1)
     if tail.count > 0 {
       sb.add("")
       var k = 0
-      while k < tail.count {
-        sb.add(tail[k])
-        k = k + 1
-      }
+      while k < tail.count { sb.add(tail[k]); k = k + 1 }
     }
   }
 
   // Join with '\n', strip trailing whitespace per line.  Final newline.
   joinLines(sb)
-}
-
-/// Auto-fix a pre-`package` header comment into the canonical module-doc
-/// form `//!`.  In practice this only ever sees plain `//` lines: those
-/// are the trivia that precede `package`.  A `///` before `package` is a
-/// P0020 parse error (it has no item to document), so `--write` rejects
-/// the file via `formatSourceChecked` before `format` is ever called —
-/// the `///` normalisation here is a defensive fallback, not a supported
-/// `--write` path.  A `//` line and an already-`//!` line normalise to
-/// `//!`, preserving any text and alignment after the marker; block-comment
-/// fragments and non-comment lines pass through untouched.
-@pure
-func promoteModuleComment(line: in String): String {
-  var i = 0
-  while i < line.length and (line[i] == ' ' or line[i] == '\t') {
-    i = i + 1
-  }
-  // Must begin with `//`; otherwise (block-comment body, blank) leave as-is.
-  if i + 1 >= line.length or line[i] != '/' or line[i + 1] != '/' {
-    return line
-  }
-  val ws = Str.substring(line, 0, i)
-  var j = i
-  while j < line.length and line[j] == '/' {
-    j = j + 1
-  }
-  if j < line.length and line[j] == '!' {
-    j = j + 1
-  }
-  val rest = Str.substring(line, j, line.length - j)
-  ws + "//!" + rest
 }
 
 func joinLines(lines: in List[String]): String {
@@ -569,7 +416,8 @@ func joinLines(lines: in List[String]): String {
 // §5. `isFormatted` — true when `source` already matches its canonical form.
 // Mirrors the same helper in F# Fmt.fs.
 // ─────────────────────────────────────────────────────────────────────────────
-@stable(since = "0.1")
+
+@stable(since="0.1")
 pub func isFormatted(source: in String, parsed: in ParseResult): Bool {
   val canonical = format(parsed)
   normaliseEnd(source) == normaliseEnd(canonical)
@@ -588,373 +436,13 @@ func normaliseEnd(s: in String): String {
 // `SelfHostedBridge.fs` test harness also reaches them by reflection
 // across the language boundary.
 // ─────────────────────────────────────────────────────────────────────────────
-@stable(since = "0.1")
+
+@stable(since="0.1")
 pub func formatSource(source: in String): String {
   format(parse(source))
 }
 
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func isFormattedSource(source: in String): Bool {
   isFormatted(source, parse(source))
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §7. Loss-checked formatting.  `formatSourceChecked` formats a source
-// string and then PROVES the result is lossless before returning it:
-//
-//   1. the input must parse without error diagnostics,
-//   2. the formatted output must re-parse without error diagnostics,
-//   3. every comment / doc-comment payload in the input must survive in
-//      the output (marker-agnostic, so the `//` → `//!` module-comment
-//      auto-fix does not count as a loss), and
-//   4. the sequence of CODE tokens (everything but whitespace, comments,
-//      commas, statement-end, and EOF) must be IDENTICAL — so a dropped
-//      `pub`, a dropped `requires:` clause, a mangled `\u{…}` escape, or
-//      an inserted `{ }` block that rescopes a binding is all refused.
-//
-// `lyric fmt --write` routes through this so it can never silently change
-// a file's meaning: on any failure it refuses to overwrite and reports
-// the reason, leaving the file untouched.
-// ─────────────────────────────────────────────────────────────────────────────
-pub union FmtCheck {
-  /// Formatting succeeded and was proven lossless.
-  case FmtOk(text: String)
-  /// The input source has parse errors; it is not safe to reformat.
-  case FmtInputParseError(diagnostics: List[Diagnostic])
-  /// The formatted output failed to re-parse — a formatter bug.
-  case FmtOutputParseError(diagnostics: List[Diagnostic])
-  /// One or more comment payloads present in the input are absent from
-  /// the formatted output.
-  case FmtCommentLoss(dropped: List[String])
-  /// The code-token sequence changed between input and output — a token
-  /// was dropped, added, or reordered (so the formatter altered meaning,
-  /// not just layout).  `detail` describes the first divergence.
-  case FmtStructureChanged(detail: String)
-}
-
-@stable(since = "0.1")
-pub func formatSourceChecked(source: in String): FmtCheck {
-  val parsedIn = parse(source)
-  val inErrs = errorDiagnostics(parsedIn.diagnostics)
-  if inErrs.count > 0 {
-    return FmtInputParseError(diagnostics = inErrs)
-  }
-
-  val formatted = format(parsedIn)
-
-  val parsedOut = parse(formatted)
-  val outErrs = errorDiagnostics(parsedOut.diagnostics)
-  if outErrs.count > 0 {
-    return FmtOutputParseError(diagnostics = outErrs)
-  }
-
-  val droppedComments = multisetMissing(commentPayloads(source), commentPayloads(formatted))
-  if droppedComments.count > 0 {
-    return FmtCommentLoss(dropped = droppedComments)
-  }
-
-  val structDiff = structuralSequenceDiff(parsedIn.source, formatted)
-  if structDiff != "" {
-    return FmtStructureChanged(detail = structDiff)
-  }
-
-  FmtOk(text = formatted)
-}
-
-func errorDiagnostics(ds: in List[Diagnostic]): List[Diagnostic] {
-  val acc: List[Diagnostic] = newList()
-  var i = 0
-  while i < ds.count {
-    match ds[i].severity {
-      case DiagError -> acc.add(ds[i])
-      case DiagWarning -> {
-      }
-    }
-    i = i + 1
-  }
-  acc
-}
-
-/// The ordered code tokens of `source`: every lexed token's source text,
-/// excluding whitespace/newline trivia (never tokens), statement-end and
-/// EOF sentinels, doc/line/block comments, and commas.  Token text is
-/// sliced from the (CR/LF-normalised) source by span so punctuation,
-/// keywords, identifiers, and literals all compare by their exact
-/// spelling without a per-kind spelling table.  Commas are excluded so
-/// the "magic trailing comma" the formatter may add when breaking a list
-/// across lines is not flagged as a change (a comma that truly separated
-/// two items cannot vanish without breaking the re-parse, caught above).
-func codeTokens(source: in String): List[String] {
-  val lr = lex(source)
-  val acc: List[String] = newList()
-  var i = 0
-  while i < lr.tokens.count {
-    val t = lr.tokens[i]
-    val include = match t.token {
-      case TStmtEnd -> false
-      case TEof -> false
-      case TDocComment(_) -> false
-      case TModuleDocComment(_) -> false
-      case _ -> true
-    }
-    if include {
-      // String and character literals are compared by their *decoded*
-      // value, not their raw source spelling.  The formatter legitimately
-      // canonicalises escapes — e.g. a control character may render as
-      // `\u{0000}` while a printable non-ASCII scalar renders as the
-      // literal character — so `"\u{FFFD}"` and `"<U+FFFD>"` are the same
-      // token and must not be flagged as a code-token change.  Every
-      // other token (punctuation, keyword, identifier, numeric literal
-      // whose verbatim spelling the formatter preserves) compares by its
-      // exact source slice.
-      val st = t.span.startPos.offset
-      val en = t.span.endPos.offset
-      val text = match t.token {
-        case TString(s) -> "str:" + s
-        case TStringPart(s) -> "spart:" + s
-        case TChar(cp) -> "char:" + toString(cp)
-        case _ -> if en > st and st >= 0 and en <= source.length { Str.substring(source, st, en - st) } else { tokenKindTag(t.token) }
-      }
-      if text != "," {
-        acc.add(text)
-      }
-    }
-    i = i + 1
-  }
-  acc
-}
-
-@pure
-func tokenKindTag(tok: in Token): String {
-  match tok {
-    case TKeyword(kw) -> "kw:" + keywordSpelling(kw)
-    case TIdent(name) -> "id:" + name
-    case TString(s) -> "s:" + s
-    case TBool(b) -> if b { "true" } else { "false" }
-    case _ -> "<tok>"
-  }
-}
-
-/// Compare the code-token sequences of two sources.  Returns "" when they
-/// are identical, otherwise a one-line description of the first
-/// divergence (1-based token index and the differing texts).
-///
-/// Internal diagnostic helper, `pub` only so the formatter self-tests can
-/// pin the loss-check guard's behaviour; not `@stable` — the exact message
-/// format carries no compatibility promise and may change (#3258).
-pub func structuralSequenceDiff(a: in String, b: in String): String {
-  val ta = codeTokens(a)
-  val tb = codeTokens(b)
-  val n = if ta.count < tb.count { ta.count } else { tb.count }
-  var i = 0
-  while i < n {
-    if ta[i] != tb[i] {
-      return "token " + toString(i + 1) + " changed: `" + ta[i] + "` -> `" + tb[i] + "`"
-    }
-    i = i + 1
-  }
-  if ta.count != tb.count {
-    return "token count changed: " + toString(ta.count) + " -> " + toString(tb.count)
-  }
-  ""
-}
-
-/// True when the checked format succeeded losslessly.
-@stable(since = "0.1")
-pub func fmtCheckIsOk(c: in FmtCheck): Bool {
-  match c {
-    case FmtOk(_) -> true
-    case _ -> false
-  }
-}
-
-/// The formatted text — valid only when `fmtCheckIsOk` is true (empty
-/// string otherwise).
-@stable(since = "0.1")
-pub func fmtCheckText(c: in FmtCheck): String {
-  match c {
-    case FmtOk(t) -> t
-    case _ -> ""
-  }
-}
-
-/// A human-readable explanation of why a checked format was refused, or
-/// the empty string on success.  Drives the `lyric fmt` diagnostic.
-@stable(since = "0.1")
-pub func fmtCheckMessage(c: in FmtCheck): String {
-  match c {
-    case FmtOk(_) -> ""
-    case FmtInputParseError(ds) -> "fmt skipped — source has " + toString(ds.count) + " parse error(s); not safe to reformat:\n" + diagsMessage(ds)
-    case FmtOutputParseError(ds) -> "fmt aborted — formatter output does not parse (" + toString(ds.count) + " error(s)); file left unchanged (formatter bug):\n" + diagsMessage(ds)
-    case FmtCommentLoss(dropped) -> "fmt aborted — would drop " + toString(dropped.count) + " comment(s); file left unchanged:\n" + droppedMessage(dropped)
-    case FmtStructureChanged(detail) -> "fmt aborted — formatting would change the code-token sequence " + "(formatter bug); file left unchanged:\n  " + detail
-  }
-}
-
-func diagsMessage(ds: in List[Diagnostic]): String {
-  var s = ""
-  var i = 0
-  while i < ds.count {
-    val d = ds[i]
-    s = s + "  " + d.code + " [" + toString(d.span.startPos.line) + ":" + toString(d.span.startPos.column) + "]: " +
-      d.message +
-      "\n"
-    i = i + 1
-  }
-  s
-}
-
-func droppedMessage(xs: in List[String]): String {
-  var s = ""
-  var i = 0
-  while i < xs.count and i < 10 {
-    s = s + "  - " + xs[i] + "\n"
-    i = i + 1
-  }
-  if xs.count > 10 {
-    s = s + "  ... and " + toString(xs.count - 10) + " more\n"
-  }
-  s
-}
-
-/// Collapse internal whitespace runs and strip the comment marker so two
-/// comments compare equal modulo reflow and the `//` → `//!` auto-fix.
-@pure
-func normComment(raw: in String): String {
-  var s = Str.trim(raw)
-  if Str.startsWith(s, "/*") {
-    s = Str.substring(s, 2, s.length - 2)
-    if Str.endsWith(s, "*/") {
-      s = Str.substring(s, 0, s.length - 2)
-    }
-  } else {
-    var k = 0
-    while k < s.length and s[k] == '/' {
-      k = k + 1
-    }
-    if k < s.length and s[k] == '!' {
-      k = k + 1
-    }
-    s = Str.substring(s, k, s.length - k)
-  }
-  collapseWs(Str.trim(s))
-}
-
-@pure
-func collapseWs(s: in String): String {
-  val noTabs = Str.replace(s, "\t", " ")
-  val parts = Str.split(noTabs, " ")
-  val acc: List[String] = newList()
-  var i = 0
-  while i < parts.length {
-    if parts[i] != "" {
-      acc.add(parts[i])
-    }
-    i = i + 1
-  }
-  joinStrings(acc, " ")
-}
-
-/// Every comment and doc-comment payload in `source`, normalised and with
-/// empties dropped, in document order.
-func commentPayloads(source: in String): List[String] {
-  val lr = lex(source)
-  val acc: List[String] = newList()
-  var i = 0
-  while i < lr.tokens.count {
-    val t = lr.tokens[i]
-    var k = 0
-    while k < t.leadingTrivia.count {
-      val tr = t.leadingTrivia[k]
-      match tr.kind {
-        case TKLineComment -> {
-          val p = normComment(tr.text)
-          if p != "" {
-            acc.add(p)
-          }
-        }
-        case TKBlockComment -> {
-          val p = normComment(tr.text)
-          if p != "" {
-            acc.add(p)
-          }
-        }
-        case TKWhitespace -> {
-        }
-        case TKNewline -> {
-        }
-      }
-      k = k + 1
-    }
-    match t.token {
-      // Doc-comment token text already has its `///` / `//!` marker
-      // stripped by the lexer, so `normComment` (which strips a marker)
-      // must NOT run — otherwise doc content that itself begins with `//`
-      // or `/` (e.g. a code example `//   // note`, the `//`→`//!`
-      // auto-fix target) is over-stripped and falsely reported as a
-      // dropped comment.  Whitespace-collapse only.
-      case TDocComment(txt) -> {
-        val p = collapseWs(Str.trim(txt))
-        if p != "" {
-          acc.add(p)
-        }
-      }
-      case TModuleDocComment(txt) -> {
-        val p = collapseWs(Str.trim(txt))
-        if p != "" {
-          acc.add(p)
-        }
-      }
-      case _ -> {
-      }
-    }
-    i = i + 1
-  }
-  acc
-}
-
-/// Multiset difference `a \ b`: every element of `a` that appears more
-/// often in `a` than in `b`, with the surplus multiplicity.
-///
-/// O(n+m) via frequency maps: one pass to count `a`, one to count `b`,
-/// then a single pass over the unique keys collected from `a`.
-func multisetMissing(a: in List[String], b: in List[String]): List[String] {
-  val aFreq: Map[String, Int] = newMap()
-  val aKeys: List[String] = newList()
-  var i = 0
-  while i < a.count {
-    val v = a[i]
-    if aFreq.containsKey(v) {
-      aFreq[v] = aFreq[v] + 1
-    } else {
-      aFreq.add(v, 1)
-      aKeys.add(v)
-    }
-    i = i + 1
-  }
-  val bFreq: Map[String, Int] = newMap()
-  var j = 0
-  while j < b.count {
-    val v = b[j]
-    if bFreq.containsKey(v) {
-      bFreq[v] = bFreq[v] + 1
-    } else {
-      bFreq.add(v, 1)
-    }
-    j = j + 1
-  }
-  val missing: List[String] = newList()
-  var ki = 0
-  while ki < aKeys.count {
-    val v = aKeys[ki]
-    val ac = aFreq[v]
-    val bc = if bFreq.containsKey(v) { bFreq[v] } else { 0 }
-    var d = ac - bc
-    while d > 0 {
-      missing.add(v)
-      d = d - 1
-    }
-    ki = ki + 1
-  }
-  missing
 }

@@ -6,13 +6,17 @@ is to get you typing real code in 30 minutes, not to enumerate
 every language feature (`docs/01-language-reference.md` is the
 authoritative spec; `docs/02-worked-examples.md` is the gallery).
 
-This tutorial assumes you have the compiler built (see `README.md`):
+This tutorial assumes you have the bootstrap compiler built (see
+`README.md`):
 
-```sh
-make lyric
+```
+cd bootstrap
+dotnet build Bootstrap.sln
 ```
 
-You'll run programs with `./bin/lyric run path/to/program.l` (or build a standalone binary with `./bin/lyric build path/to/program.l`).
+You'll run programs with `dotnet run --project src/Lyric.Cli -- run
+path/to/program.l` (or build a standalone binary with
+`lyric build path/to/program.l`).
 
 ---
 
@@ -409,8 +413,9 @@ packages (the partial order permits it).
 
 ### 8.3 Running the verifier
 
-```sh
-./bin/lyric prove path/to/transfer.l
+```
+cd bootstrap
+lyric prove path/to/transfer.l
 ```
 
 On a fresh, unannotated `transfer.l` the prover will immediately
@@ -569,7 +574,8 @@ ensuring every assumption is explicitly bracketed.
   language looks the way it does — useful when something
   surprises you.
 - **Bootstrap progress**: `docs/10-bootstrap-progress.md`
-  tracks compiler progress vs the implementation plan.
+  tracks what's actually shipping in the bootstrap compiler
+  (Phase 1) vs. deferred to Phase 2/3/4.
 - **Standard library**: source lives in `lyric-stdlib/std/`.
   Each `.l` file is the authoritative API for its package; the
   doc comments are surfaced by `lyric doc <file>`.

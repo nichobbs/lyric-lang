@@ -1,11 +1,12 @@
-//! jvm/self_test_b26.l — Stage B26: long arithmetic (ldc2_w, lload, lmul, lreturn).
-//!
-//! Generates LongMath.class with a static product(J,J)J method that multiplies
-//! two longs and returns the result.  Main calls product(1000000L, 1000000L)
-//! and prints 1000000000000 (one trillion).
-//!
-//! Exercises: emitPushLong (ldc2_w), lload (wide slot semantics), lmul, lreturn,
-//! and println(J) for long output.
+// jvm/self_test_b26.l — Stage B26: long arithmetic (ldc2_w, lload, lmul, lreturn).
+//
+// Generates LongMath.class with a static product(J,J)J method that multiplies
+// two longs and returns the result.  Main calls product(1000000L, 1000000L)
+// and prints 1000000000000 (one trillion).
+//
+// Exercises: emitPushLong (ldc2_w), lload (wide slot semantics), lmul, lreturn,
+// and println(J) for long output.
+
 package Jvm.SelfTestB26
 
 import Std.Core
@@ -17,7 +18,7 @@ import Jvm.Driver
 
 func makeLongMathClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
   // product(J,J)J
   //   lload_0   (first  long param — occupies slots 0-1)
@@ -33,7 +34,12 @@ func makeLongMathClassBytes(): List[Byte] {
   val codeAttr = assembleCode(asm, 4, 4)
   val attrs: List[Attribute] = newList()
   attrs.add(codeAttr)
-  val productMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "product", "(JJ)J", attrs)
+  val productMethod = makeMethodInfo(
+    ACC_PUBLIC + ACC_STATIC,
+    "product",
+    "(JJ)J",
+    attrs
+  )
   val methods: List[MethodInfo] = newList()
   methods.add(productMethod)
   val cf = makeClassWithMethods("LongMath", methods)
@@ -42,11 +48,11 @@ func makeLongMathClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOut     = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val productRef = poolMethodref(pool, "LongMath", "product", "(JJ)J")
-  val printlnJ = poolMethodref(pool, "java/io/PrintStream", "println", "(J)V")
+  val printlnJ   = poolMethodref(pool, "java/io/PrintStream", "println", "(J)V")
 
   // System.out.println(LongMath.product(1000000L, 1000000L))
   emitGetstatic(asm, sysOut)
@@ -71,24 +77,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b26"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val longMathBytes = makeLongMathClassBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes     = makeMainClassBytes()
 
   val longMathClass = BuiltClass(binaryName = "LongMath", bytes = longMathBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass     = BuiltClass(binaryName = "Main",     bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(longMathClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB26",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

@@ -44,3 +44,5 @@ output_assembly = "Lyric.Resilience.dll"
 [project.tests]
 "Resilience.ResilienceTests" = "tests/resilience_tests.l"
 
+[dependencies]
+"Lyric.Stdlib" = { path = "../lyric-stdlib" }

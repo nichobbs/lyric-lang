@@ -1,8 +1,8 @@
-//! stdlib/tests/string_tests.l — Tests for Std.String.
-//!
-//! Tests string inspection, search, case conversion, construction, and
-//! character access functions. Each test function panics via Std.Testing
-//! on any mismatch; exit code 0 means all assertions held.
+// stdlib/tests/string_tests.l — Tests for Std.String.
+//
+// Tests string inspection, search, case conversion, construction, and
+// character access functions. Each test function panics via Std.Testing
+// on any mismatch; exit code 0 means all assertions held.
 package Std.String.Tests
 
 import Std.Core

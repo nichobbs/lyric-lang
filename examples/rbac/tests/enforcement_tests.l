@@ -1,9 +1,10 @@
-//! tests/enforcement_tests.l — unit tests for Rbac.Store JSON serialization
-//! and Rbac.Policy permission label round-trips.
-//!
-//! All tests are pure; no I/O or DB calls.
-//!
-//! Run:  lyric test examples/rbac/tests/enforcement_tests.l
+// tests/enforcement_tests.l — unit tests for Rbac.Store JSON serialization
+// and Rbac.Policy permission label round-trips.
+//
+// All tests are pure; no I/O or DB calls.
+//
+// Run:  lyric test examples/rbac/tests/enforcement_tests.l
+
 @test_module
 package Rbac.EnforcementTests
 
@@ -13,6 +14,7 @@ import Rbac.Policy
 import Rbac.Store
 
 // ─── permissionLabel ─────────────────────────────────────────────────────────
+
 test "permissionLabel for Read" {
   assertEqual(Rbac.Policy.permissionLabel(Permission.Read), "read", "label")
 }
@@ -34,6 +36,7 @@ test "permissionLabel for AdministerAll" {
 }
 
 // ─── Store.errorMessage ───────────────────────────────────────────────────────
+
 test "errorMessage UserNotFound contains id" {
   val msg = Rbac.Store.errorMessage(StoreError.UserNotFound(id = 7))
   assertTrue(msg.indexOf("7") >= 0, "id present")
@@ -57,6 +60,7 @@ test "errorMessage DatabaseError contains driver message" {
 // ─── Store.userToJson ─────────────────────────────────────────────────────────
 //
 // Substring checks assume compact JSON (no space after ":").
+
 test "userToJson includes id" {
   val u = User(id = 42, username = "alice", createdAt = "2024-01-01T00:00:00Z")
   val json = Rbac.Store.userToJson(u)
@@ -72,32 +76,29 @@ test "userToJson includes username" {
 test "userToJson is wrapped in braces" {
   val u = User(id = 1, username = "carol", createdAt = "2024-01-01T00:00:00Z")
   val json = Rbac.Store.userToJson(u)
-  assertTrue(json.length > 0, "json non-empty")
-  assertEqual(json.substring(0, 1), "{", "starts with {")
-  assertEqual(json.substring(json.length - 1, 1), "}", "ends with }")
+  assertEqual(json.first.toString(), "{", "starts with {")
+  assertEqual(json.last.toString(),  "}", "ends with }")
 }
 
 // ─── Store.assignmentToJson ───────────────────────────────────────────────────
+
 test "assignmentToJson includes role_name" {
-  val a = RoleAssignment(
-    userId = 1,
-    roleId = 2,
-    roleName = "manager",
-    grantedBy = 99,
-    grantedAt = "2024-06-01T00:00:00Z"
-  )
+  val a = RoleAssignment(userId = 1, roleId = 2, roleName = "manager",
+                          grantedBy = 99, grantedAt = "2024-06-01T00:00:00Z")
   val json = Rbac.Store.assignmentToJson(a)
   assertTrue(json.indexOf("manager") >= 0, "role name present")
 }
 
 test "assignmentToJson includes user_id" {
-  val a = RoleAssignment(userId = 5, roleId = 1, roleName = "user", grantedBy = 10, grantedAt = "2024-06-01T00:00:00Z")
+  val a = RoleAssignment(userId = 5, roleId = 1, roleName = "user",
+                          grantedBy = 10, grantedAt = "2024-06-01T00:00:00Z")
   val json = Rbac.Store.assignmentToJson(a)
   assertTrue(json.indexOf("\"user_id\":5") >= 0, "user_id present")
 }
 
 test "assignmentToJson includes granted_by" {
-  val a = RoleAssignment(userId = 1, roleId = 2, roleName = "user", grantedBy = 42, grantedAt = "2024-06-01T00:00:00Z")
+  val a = RoleAssignment(userId = 1, roleId = 2, roleName = "user",
+                          grantedBy = 42, grantedAt = "2024-06-01T00:00:00Z")
   val json = Rbac.Store.assignmentToJson(a)
   assertTrue(json.indexOf("\"granted_by\":42") >= 0, "granted_by present")
 }

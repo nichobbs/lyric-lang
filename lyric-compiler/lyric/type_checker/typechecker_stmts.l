@@ -1,5 +1,5 @@
-//! typechecker_stmts.l — statement and function-body type checking.
-//! Mirrors compiler/src/Lyric.TypeChecker/StmtChecker.fs.
+// typechecker_stmts.l — statement and function-body type checking.
+// Mirrors compiler/src/Lyric.TypeChecker/StmtChecker.fs.
 package Lyric.TypeChecker
 
 import Std.Core
@@ -10,26 +10,27 @@ import Lyric.Parser
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Pattern binding.
 // ─────────────────────────────────────────────────────────────────────────────
-func bindPattern(sc: in Scope, pat: in Pattern, ty: in Type): Unit {
+
+func bindPattern(
+  sc:  in Scope,
+  pat: in Pattern,
+  ty:  in Type
+): Unit {
   match pat.kind {
     case PBinding(name, innerOpt) -> {
       if name != "_" {
         scopeAdd(sc, LocalBinding(name = name, ty = ty, isMutable = false))
       }
       match innerOpt {
-        case None -> {
-        }
-        case Some(inner) -> bindPattern(sc, inner, ty)
+        case None         -> {}
+        case Some(inner)  -> bindPattern(sc, inner, ty)
       }
     }
-    case PWildcard -> {
-    }
+    case PWildcard -> {}
     case PTuple(patterns) -> {
-      val telems = match unrefine(ty) { case TyTuple(es) -> es; case _ -> newList() }
       var i = 0
       while i < patterns.count {
-        val et = if i < telems.count { telems[i] } else { TyError }
-        bindPattern(sc, patterns[i], et)
+        bindPattern(sc, patterns[i], TyError)
         i = i + 1
       }
     }
@@ -45,47 +46,7 @@ func bindPattern(sc: in Scope, pat: in Pattern, ty: in Type): Unit {
         bindPattern(sc, patterns[0], ty)
       }
     }
-    case PParen(inner) -> {
-      bindPattern(sc, inner, ty)
-    }
-    case PRecord(_, fields, _) -> {
-      // Field types are TyError here because bindPattern has no tbl access; the
-      // typed path (bindPatternTyped in typechecker_exprs.l) resolves real field types.
-      var i = 0
-      while i < fields.count {
-        match fields[i] {
-          case RPFNamed(_, p, _) -> bindPattern(sc, p, TyError)
-          case RPFShort(nm, _) -> scopeAdd(sc, LocalBinding(name = nm, ty = TyError, isMutable = false))
-        }
-        i = i + 1
-      }
-    }
-    case _ -> {
-    }
-  }
-}
-
-// A pattern usable as a `for` loop binding: a name (with an irrefutable
-// inner), `_`, parentheses, or a tuple of those.  Anything that can fail to
-// match an element (constructor, record, literal, range, …) is refutable.
-// Keep in sync with the accepted set of `bindForPatternMsil` in
-// `msil/codegen.l` (#3187).
-func forPatternIrrefutable(p: in Pattern): Bool {
-  match p.kind {
-    case PWildcard -> true
-    case PBinding(_, inner) -> match inner { case None -> true; case Some(ip) -> forPatternIrrefutable(ip) }
-    case PParen(ip) -> forPatternIrrefutable(ip)
-    case PTuple(ps) -> {
-      var i = 0
-      while i < ps.count {
-        if not forPatternIrrefutable(ps[i]) {
-          return false
-        }
-        i = i + 1
-      }
-      true
-    }
-    case _ -> false
+    case _ -> {}
   }
 }
 
@@ -94,40 +55,129 @@ func forPatternIrrefutable(p: in Pattern): Bool {
 // the statically-known bounds (T0015).  This is the inline-refined-type
 // construction check; validating constructions of *named* distinct range
 // subtypes (`type Age = Int range …`) is Band-4 work and is not covered here.
-func checkRefinedLiteralBound(declT: in Type, init: in Expr, diag: in List[Diagnostic]): Unit {
+func checkRefinedLiteralBound(
+  declT: in Type,
+  init:  in Expr,
+  diag:  in List[Diagnostic]
+): Unit {
   match declT {
-    case TyRefined(_, lo, hi, inc) -> match exprLiteralLong(init) { case None -> {  }; case Some(v) -> { val belowLo = match lo { case None -> false; case Some(l) -> v < l }; val aboveHi = match hi { case None -> false; case Some(h) -> if inc { v > h } else { v >= h } }; if belowLo or aboveHi { diag.add(errorDiagnostic("T0015", "literal " + toString(v) + " is out of range for type " + renderType(declT), init.span)) } } }
-    case _ -> {
-    }
+    case TyRefined(_, lo, hi, inc) ->
+      match exprLiteralLong(init) {
+        case None -> {}
+        case Some(v) -> {
+          val belowLo = match lo { case None -> false; case Some(l) -> v < l }
+          val aboveHi =
+            match hi {
+              case None    -> false
+              case Some(h) -> if inc { v > h } else { v >= h }
+            }
+          if belowLo or aboveHi {
+            diag.add(errorDiagnostic("T0015",
+              "literal " + toString(v) + " is out of range for type " +
+              renderType(declT), init.span))
+          }
+        }
+      }
+    case _ -> {}
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Statement checking.
 // ─────────────────────────────────────────────────────────────────────────────
+
 pub func checkStatement(
-  sc: in Scope,
-  tbl: in SymbolTable,
-  sigs: in Map[String, ResolvedSignature],
+  sc:           in Scope,
+  tbl:          in SymbolTable,
+  sigs:         in Map[String, ResolvedSignature],
   genericNames: in List[String],
-  returnTy: in Type,
-  diag: in List[Diagnostic],
-  stmt: in Statement,
+  returnTy:     in Type,
+  diag:         in List[Diagnostic],
+  stmt:         in Statement
 ): Unit {
   match stmt.kind {
-    case SLocal(binding) -> match binding { case LBVal(pat, tyOpt, init) -> { val initType = inferExpr(sc, tbl, sigs, diag, init); val bindType = match tyOpt { case None -> initType; case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0060", "val binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, init, diag); declT } }; bindPattern(sc, pat, bindType) }; case LBVar(name, tyOpt, initOpt) -> { val initType = match initOpt { case None -> TyError; case Some(e) -> inferExpr(sc, tbl, sigs, diag, e) }; val bindType = match tyOpt { case None -> initType; case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); match initOpt { case Some(initE) -> { if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0061", "var binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, initE, diag) }; case None -> {  } }; declT } }; scopeAdd(sc, LocalBinding(name = name, ty = bindType, isMutable = true)) }; case LBLet(name, tyOpt, init) -> { val initType = inferExpr(sc, tbl, sigs, diag, init); val bindType = match tyOpt { case None -> initType; case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0062", "let binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, init, diag); declT } }; scopeAdd(sc, LocalBinding(name = name, ty = bindType, isMutable = false)) } }
+    case SLocal(binding) ->
+      match binding {
+        case LBVal(pat, tyOpt, init) -> {
+          val initType = inferExpr(sc, tbl, sigs, diag, init)
+          val bindType =
+            match tyOpt {
+              case None     -> initType
+              case Some(te) -> {
+                val ctx = newGenericContext()
+                gctxPush(ctx, genericNames)
+                val declT = resolveType(tbl, ctx, diag, te)
+                if not typeEquiv(declT, initType) {
+                  diag.add(errorDiagnostic("T0060",
+                    "val binding declared as " + renderType(declT) +
+                    " but initialiser has type " + renderType(initType), stmt.span))
+                }
+                checkRefinedLiteralBound(declT, init, diag)
+                declT
+              }
+            }
+          bindPattern(sc, pat, bindType)
+        }
+
+        case LBVar(name, tyOpt, initOpt) -> {
+          val initType =
+            match initOpt {
+              case None    -> TyError
+              case Some(e) -> inferExpr(sc, tbl, sigs, diag, e)
+            }
+          val bindType =
+            match tyOpt {
+              case None     -> initType
+              case Some(te) -> {
+                val ctx = newGenericContext()
+                gctxPush(ctx, genericNames)
+                val declT = resolveType(tbl, ctx, diag, te)
+                match initOpt {
+                  case Some(initE) -> {
+                    if not typeEquiv(declT, initType) {
+                      diag.add(errorDiagnostic("T0061",
+                        "var binding declared as " + renderType(declT) +
+                        " but initialiser has type " + renderType(initType), stmt.span))
+                    }
+                    checkRefinedLiteralBound(declT, initE, diag)
+                  }
+                  case None -> {}
+                }
+                declT
+              }
+            }
+          scopeAdd(sc, LocalBinding(name = name, ty = bindType, isMutable = true))
+        }
+
+        case LBLet(name, tyOpt, init) -> {
+          val initType = inferExpr(sc, tbl, sigs, diag, init)
+          val bindType =
+            match tyOpt {
+              case None     -> initType
+              case Some(te) -> {
+                val ctx = newGenericContext()
+                gctxPush(ctx, genericNames)
+                val declT = resolveType(tbl, ctx, diag, te)
+                if not typeEquiv(declT, initType) {
+                  diag.add(errorDiagnostic("T0062",
+                    "let binding declared as " + renderType(declT) +
+                    " but initialiser has type " + renderType(initType), stmt.span))
+                }
+                checkRefinedLiteralBound(declT, init, diag)
+                declT
+              }
+            }
+          scopeAdd(sc, LocalBinding(name = name, ty = bindType, isMutable = false))
+        }
+      }
 
     case SAssign(target, _, value) -> {
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
-      val valueType = inferExpr(sc, tbl, sigs, diag, value)
-      if not argSatisfiesParam(tbl, targetType, valueType) {
-        diag.add(
-          errorDiagnostic(
-            "T0063",
-            "assigned value of type " + renderType(valueType) + " does not match target of type " + renderType(targetType),
-            stmt.span
-          )
-        )
+      val valueType  = inferExpr(sc, tbl, sigs, diag, value)
+      if not typeEquiv(targetType, valueType) {
+        diag.add(errorDiagnostic("T0063",
+          "assigned value of type " + renderType(valueType) +
+          " does not match target of type " + renderType(targetType), stmt.span))
       }
       // #1487 (§5.2): an `in` parameter — like a `val`/`let` binding — is
       // immutable and cannot be reassigned.  The checker records this as
@@ -135,22 +185,48 @@ pub func checkStatement(
       // assignment whose target is an immutable binding is rejected (T0087).
       // `var` locals and `out`/`inout` params are mutable and unaffected.
       match target.kind {
-        case EPath(p) -> if p.segments.count == 1 { match scopeTryFind(sc, p.segments[0]) { case Some(b) -> if not b.isMutable { diag.add(errorDiagnostic("T0087", t0087Msg(p.segments[0]), target.span)) }; case None -> {  } } }
-        case _ -> {
-        }
+        case EPath(p) ->
+          if p.segments.count == 1 {
+            match scopeTryFind(sc, p.segments[0]) {
+              case Some(b) ->
+                if not b.isMutable {
+                  diag.add(errorDiagnostic("T0087",
+                    "cannot reassign immutable binding '" + p.segments[0] +
+                    "' (a `val`/`let` or an `in` parameter)", stmt.span))
+                }
+              case None -> {}
+            }
+          }
+        case _ -> {}
       }
     }
 
-    case SReturn(valueOpt) -> match valueOpt { case None -> { if not typeEquiv(returnTy, TyPrim(pt = PtUnit)) { diag.add(errorDiagnostic("T0064", "return without value but enclosing function returns " + renderType(returnTy), stmt.span)) } }; case Some(e) -> { val t = inferExpr(sc, tbl, sigs, diag, e); val isNever = match t { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }; if not isNever and not typeAssignable(tbl, returnTy, t) { diag.add(errorDiagnostic("T0065", "returned value of type " + renderType(t) + " does not match declared return type " + renderType(returnTy), stmt.span)) } } }
+    case SReturn(valueOpt) ->
+      match valueOpt {
+        case None -> {
+          if not typeEquiv(returnTy, TyPrim(pt = PtUnit)) {
+            diag.add(errorDiagnostic("T0064",
+              "return without value but enclosing function returns " +
+              renderType(returnTy), stmt.span))
+          }
+        }
+        case Some(e) -> {
+          val t = inferExpr(sc, tbl, sigs, diag, e)
+          val isNever = match t { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }
+          if not isNever and not typeEquiv(t, returnTy) {
+            diag.add(errorDiagnostic("T0065",
+              "returned value of type " + renderType(t) +
+              " does not match declared return type " + renderType(returnTy), stmt.span))
+          }
+        }
+      }
 
     case SThrow(e) -> {
       val _ = inferExpr(sc, tbl, sigs, diag, e)
     }
 
-    case SBreak(_) -> {
-    }
-    case SContinue(_) -> {
-    }
+    case SBreak(_)    -> {}
+    case SContinue(_) -> {}
 
     case SInvariant(e) -> {
       val _ = inferExpr(sc, tbl, sigs, diag, e)
@@ -162,208 +238,92 @@ pub func checkStatement(
           // T0095: yield value must match the generator's declared element type.
           val innerTy = inferExpr(sc, tbl, sigs, diag, inner)
           val isNever = match innerTy { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }
-          val isErr = match innerTy { case TyError -> true; case _ -> false }
+          val isErr   = match innerTy { case TyError -> true; case _ -> false }
           if not isNever and not isErr and not typeEquiv(innerTy, returnTy) {
-            diag.add(
-              errorDiagnostic(
-                "T0095",
-                "yield value has type " + renderType(innerTy) + " but the generator's declared element type is " +
-                  renderType(returnTy),
-                e.span
-              )
-            )
+            diag.add(errorDiagnostic("T0095",
+              "yield value has type " + renderType(innerTy) +
+              " but the generator's declared element type is " + renderType(returnTy),
+              e.span))
           }
         }
-        case _ -> {
-          val _ = inferExpr(sc, tbl, sigs, diag, e)
-        }
+        case _ -> { val _ = inferExpr(sc, tbl, sigs, diag, e) }
       }
     }
 
     case SDefer(body) -> {
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body, false)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body)
     }
 
     case SScope(_, body) -> {
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body, false)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body)
     }
 
     case SLoop(_, body) -> {
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body, false)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body)
     }
 
     case SFor(_, pat, iter, body) -> {
       val iterType = inferExpr(sc, tbl, sigs, diag, iter)
-      val elemType = match iterType {
-        case TySlice(e) -> e
-        case TyArray(_, e) -> e
-        case TyUser(_, iterName, iterArgs) -> {
-          // DictKeyCollection[K,V] iterates over K; DictValueCollection[K,V] over V.
-          if iterName == "DictKeyCollection" and iterArgs.count == 2 {
-            iterArgs[0]
-          } else if iterName == "DictValueCollection" and iterArgs.count == 2 {
-            iterArgs[1]
-          } else {
-            TyError
-          }
+      val elemType =
+        match iterType {
+          case TySlice(e)    -> e
+          case TyArray(_, e) -> e
+          case _             -> TyError
         }
-        case _ -> TyError
-      }
-      // #3187: a `for` binding must be irrefutable — codegen has no failure
-      // path for a non-matching element, so a refutable pattern accepted here
-      // would reach the backends' defensive (no-IL) branch and produce a
-      // broken binary.  Mirrors `bindForPatternMsil`'s accepted set.
-      if not forPatternIrrefutable(pat) {
-        diag.add(
-          errorDiagnostic(
-            "T0112",
-            "a `for` loop variable must be an irrefutable pattern (a name, `_`, or a tuple of those); " +
-              "refutable patterns are not allowed in a `for` binding — use `match` inside the loop body instead",
-            pat.span
-          )
-        )
-      }
       scopePush(sc)
       bindPattern(sc, pat, elemType)
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body, false)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body)
       scopePop(sc)
     }
 
     case SWhile(_, cond, body) -> {
       val condT = inferExpr(sc, tbl, sigs, diag, cond)
       if not typeEquiv(condT, TyPrim(pt = PtBool)) {
-        diag.add(errorDiagnostic("T0066", "while-condition must be Bool (got " + renderType(condT) + ")", stmt.span))
+        diag.add(errorDiagnostic("T0066",
+          "while-condition must be Bool (got " + renderType(condT) + ")", stmt.span))
       }
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body, false)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body)
     }
 
     case STry(body, catches, finally_) -> {
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body, false)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body)
       var i = 0
       while i < catches.count {
         val c = catches[i]
         scopePush(sc)
         match c.bindName {
-          case None -> {
-          }
+          case None       -> {}
           case Some(bname) -> {
             scopeAdd(sc, LocalBinding(name = bname, ty = TyException, isMutable = false))
           }
         }
-        val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, c.body, false)
+        val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, c.body)
         scopePop(sc)
         i = i + 1
       }
       match finally_ {
-        case None -> {
-        }
-        case Some(fb) -> {
-          val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, fb, false)
-        }
+        case None     -> {}
+        case Some(fb) -> { val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, fb) }
       }
     }
 
-    case SItem(_) -> {
-    }
-    case SRule(_, _) -> {
-    }
+    case SItem(_)     -> {}
+    case SRule(_, _)  -> {}
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Block checking.
 // ─────────────────────────────────────────────────────────────────────────────
-// A statement after which control never falls through to a block value: an
-// explicit `return`/`throw`, or a loop `break`/`continue` (which transfers out
-// of the enclosing loop).  A block whose last statement is one of these has type
-// `Never` (bottom), so it unifies cleanly as a branch — `if c { return x } else
-// { y }` is typed by its `else` branch rather than false-mismatching `Unit` vs
-// the value type.  A trailing `SExpr` of type `Never` (e.g. `panic(...)`) is
-// already captured by `lastExprType`, so it is not listed here.
-func statementDiverges(stmt: in Statement): Bool {
-  match stmt.kind {
-    case SReturn(_) -> true
-    case SThrow(_) -> true
-    case SBreak(_) -> true
-    case SContinue(_) -> true
-    case _ -> false
-  }
-}
 
-// #2355 / #3262: emit T0067 when a value-position `try` handler's type can
-// neither satisfy nor be satisfied by the body type.  Never (a diverging
-// handler), TyError (an already-reported failure), and an Int/Long
-// literal-widening pair are absorbed — the same leniencies `unifyBranchTypes`
-// applies to `if`/`match` branches.
-//
-// Unit leniency is asymmetric and depends on whether the `try`'s value is
-// actually consumed (`handlerInValuePos`):
-//   - A Unit *body* means the `try` produces nothing on the happy path, so a
-//     non-Unit handler cannot create a value-position mismatch; always absorbed.
-//   - A Unit *handler* beside a non-Unit body is only safe in statement
-//     position (the value is discarded).  In value position the shared codegen
-//     temp would be left unassigned when the catch fires (#3262), so the Unit
-//     handler must raise T0067 there rather than being silently absorbed.
-func checkTryHandlerType(
-  tbl: in SymbolTable,
-  diag: in List[Diagnostic],
-  bodyTy: in Type,
-  handlerTy: in Type,
-  handlerInValuePos: in Bool,
-  span: in Span,
-): Unit {
-  if isNeverType(handlerTy) or isNeverType(bodyTy) {
-    return
-  }
-  val anyError = match handlerTy {
-    case TyError -> true
-    case _ -> match bodyTy { case TyError -> true; case _ -> false }
-  }
-  if anyError {
-    return
-  }
-  if isUnitType(bodyTy) {
-    return
-  }
-  if isUnitType(handlerTy) and not handlerInValuePos {
-    return
-  }
-  if argSatisfiesParam(tbl, bodyTy, handlerTy) or argSatisfiesParam(tbl, handlerTy, bodyTy) {
-    return
-  }
-  match mergeIntWiden(bodyTy, handlerTy) {
-    case Some(_) -> {
-      return
-    }
-    case None -> {
-    }
-  }
-  diag.add(
-    errorDiagnostic(
-      "T0067",
-      "catch handler type " + renderType(handlerTy) + " is incompatible with try body type " + renderType(bodyTy),
-      span
-    )
-  )
-}
-
-// `valuePos` is true when the trailing value of this block flows out to a
-// consumer that requires a value of a known type (a `val`/`let`/`var`
-// initialiser, a function body with a non-Unit return type, an `if`/`match`
-// value arm, or a value-position `{ … }` / `try` expression).  It governs the
-// asymmetric Unit-handler leniency in `checkTryHandlerType` (#3262): only a
-// genuinely statement-position `try` may absorb a Unit handler beside a
-// non-Unit body.  Statement-position callers (loop / catch / finally bodies)
-// pass false.
 pub func checkBlock(
-  sc: in Scope,
-  tbl: in SymbolTable,
-  sigs: in Map[String, ResolvedSignature],
+  sc:           in Scope,
+  tbl:          in SymbolTable,
+  sigs:         in Map[String, ResolvedSignature],
   genericNames: in List[String],
-  returnTy: in Type,
-  diag: in List[Diagnostic],
-  blk: in Block,
-  valuePos: in Bool,
+  returnTy:     in Type,
+  diag:         in List[Diagnostic],
+  blk:          in Block
 ): Type {
   scopePush(sc)
   var lastExprType: Type = TyPrim(pt = PtUnit)
@@ -372,65 +332,7 @@ pub func checkBlock(
     val stmt = blk.statements[i]
     match stmt.kind {
       case SExpr(e) -> {
-        // A brace / `unsafe` block used as a statement-expression carries the
-        // enclosing block's value-position only at the trailing statement;
-        // route it through `checkBlock` directly so a non-trailing block's
-        // value is correctly treated as discarded (#3262).  All other
-        // expression forms type via `inferExpr`.
-        val isLast = i == blk.statements.count - 1
-        match e.kind {
-          case EBlock(innerBlk) -> {
-            lastExprType = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, innerBlk, valuePos and isLast)
-          }
-          case EUnsafe(innerBlk) -> {
-            lastExprType = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, innerBlk, valuePos and isLast)
-          }
-          case _ -> {
-            lastExprType = inferExpr(sc, tbl, sigs, diag, e)
-          }
-        }
-      }
-      // Codegen lowers value-position try via a shared temp — type the expression as the body (or first handler if body is Never).
-      case STry(body, catches, fin) -> {
-        // The `try` value is consumed only when the enclosing block is in value
-        // position *and* this is the trailing statement; otherwise the value is
-        // discarded (#3262).
-        val tryValuePos = valuePos and i == blk.statements.count - 1
-        var resultTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body, tryValuePos)
-        var ci = 0
-        while ci < catches.count {
-          val c = catches[ci]
-          scopePush(sc)
-          match c.bindName {
-            case None -> {
-            }
-            case Some(bname) -> {
-              scopeAdd(sc, LocalBinding(name = bname, ty = TyException, isMutable = false))
-            }
-          }
-          val hTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, c.body, tryValuePos)
-          scopePop(sc)
-          if typeEquiv(resultTy, TyPrim(pt = PtNever)) {
-            resultTy = hTy
-          } else {
-            // #2355: codegen routes the body and every handler through one
-            // shared temp, so a non-diverging handler must produce a value
-            // compatible with the body type.  Never/TyError and a Unit body
-            // stay lenient, mirroring `unifyBranchTypes`; a Unit handler beside
-            // a non-Unit body is only absorbed in statement position (#3262).
-            checkTryHandlerType(tbl, diag, resultTy, hTy, tryValuePos, c.span)
-          }
-          ci = ci + 1
-        }
-        match fin {
-          case None -> {
-          }
-          case Some(fb) -> {
-            // The `finally` block's value is always discarded.
-            val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, fb, false)
-          }
-        }
-        lastExprType = resultTy
+        lastExprType = inferExpr(sc, tbl, sigs, diag, e)
       }
       case _ -> {
         checkStatement(sc, tbl, sigs, genericNames, returnTy, diag, stmt)
@@ -440,24 +342,18 @@ pub func checkBlock(
     i = i + 1
   }
   scopePop(sc)
-  // A block whose final statement transfers control away (return/throw/break/
-  // continue) yields no fall-through value: its type is `Never`.
-  if blk.statements.count > 0 and statementDiverges(blk.statements[blk.statements.count - 1]) {
-    return TyPrim(pt = PtNever)
-  }
   lastExprType
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. Function body checking.
 // ─────────────────────────────────────────────────────────────────────────────
+
 func hasExternTargetAnnotation(anns: in List[Annotation]): Bool {
   var i = 0
   while i < anns.count {
     val segs = anns[i].name.segments
-    if segs.count == 1 and segs[0] == "externTarget" {
-      return true
-    }
+    if segs.count == 1 and segs[0] == "externTarget" { return true }
     i = i + 1
   }
   false
@@ -478,161 +374,118 @@ func hasConflictingExternHints(anns: in List[Annotation]): Bool {
   while i < anns.count {
     val segs = anns[i].name.segments
     if segs.count == 1 {
-      if segs[0] == "externStatic" {
-        hasStatic = true
-      }
-      if segs[0] == "externInstance" {
-        hasInstance = true
-      }
+      if segs[0] == "externStatic"   { hasStatic   = true }
+      if segs[0] == "externInstance" { hasInstance = true }
     }
     i = i + 1
   }
   hasStatic and hasInstance
 }
 
-// T0086: sound never-assigned subset only; full all-paths definite-assignment is a follow-up.
+// ─────────────────────────────────────────────────────────────────────────────
+// §3a. `out` definite-assignment support (#1487 §5.2).
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Collect the names assigned anywhere in a function body.  Used to enforce that
+// every `out` parameter is assigned before the function returns (T0086).  The
+// check is the sound subset "never assigned anywhere is a definite violation";
+// full all-paths definite-assignment (partial-assignment detection) is a
+// follow-up.  The walk is complete over statement and block-bearing forms (so a
+// param assigned in any branch / loop / nested block is not falsely flagged).
+
 func addAssignedTarget(target: in Expr, acc: in List[String]): Unit {
   match target.kind {
-    case EPath(p) -> if p.segments.count == 1 { acc.add(p.segments[0]) }
+    case EPath(p)      -> if p.segments.count == 1 { acc.add(p.segments[0]) }
     case EParen(inner) -> addAssignedTarget(inner, acc)
-    case _ -> {
-    }
+    case _             -> {}
   }
 }
 
 func collectAssignedExpr(e: in Expr, acc: in List[String]): Unit {
   match e.kind {
-    case EAssign(t, _, v) -> {
-      addAssignedTarget(t, acc)
-      collectAssignedExpr(v, acc)
-    }
-    case EParen(inner) -> collectAssignedExpr(inner, acc)
+    case EAssign(t, _, v) -> { addAssignedTarget(t, acc); collectAssignedExpr(v, acc) }
+    case EParen(inner)    -> collectAssignedExpr(inner, acc)
     case EIf(c, tb, eb, _) -> {
       collectAssignedExpr(c, acc)
       collectAssignedEOB(tb, acc)
-      match eb {
-        case Some(x) -> collectAssignedEOB(x, acc)
-        case None -> {
-        }
-      }
+      match eb { case Some(x) -> collectAssignedEOB(x, acc); case None -> {} }
     }
     case EMatch(s, arms) -> {
       collectAssignedExpr(s, acc)
       var i = 0
       while i < arms.count {
-        match arms[i].guard {
-          case Some(g) -> collectAssignedExpr(g, acc)
-          case None -> {
-          }
-        }
+        match arms[i].guard { case Some(g) -> collectAssignedExpr(g, acc); case None -> {} }
         collectAssignedEOB(arms[i].body, acc)
         i = i + 1
       }
     }
-    case EBlock(b) -> collectAssignedBlock(b, acc)
-    case EUnsafe(b) -> collectAssignedBlock(b, acc)
-    case EBinop(_, l, r) -> {
-      collectAssignedExpr(l, acc)
-      collectAssignedExpr(r, acc)
-    }
-    case EPrefix(_, x) -> collectAssignedExpr(x, acc)
+    case EBlock(b)      -> collectAssignedBlock(b, acc)
+    case EUnsafe(b)     -> collectAssignedBlock(b, acc)
+    case EBinop(_, l, r) -> { collectAssignedExpr(l, acc); collectAssignedExpr(r, acc) }
+    case EPrefix(_, x)  -> collectAssignedExpr(x, acc)
     case ECall(f, args) -> {
       collectAssignedExpr(f, acc)
       var i = 0
       while i < args.count {
         match args[i] {
-          case CAPositional(ae) -> collectAssignedExpr(ae, acc)
+          case CAPositional(ae)  -> collectAssignedExpr(ae, acc)
           case CANamed(_, ae, _) -> collectAssignedExpr(ae, acc)
         }
         i = i + 1
       }
     }
-    case EMember(r, _) -> collectAssignedExpr(r, acc)
+    case EMember(r, _)  -> collectAssignedExpr(r, acc)
     case EIndex(r, idx) -> {
       collectAssignedExpr(r, acc)
       var i = 0
-      while i < idx.count {
-        collectAssignedExpr(idx[i], acc)
-        i = i + 1
-      }
+      while i < idx.count { collectAssignedExpr(idx[i], acc); i = i + 1 }
     }
-    case EPropagate(x) -> collectAssignedExpr(x, acc)
-    case EAwait(x) -> collectAssignedExpr(x, acc)
-    case EYield(x) -> collectAssignedExpr(x, acc)
-    case ESpawn(x) -> collectAssignedExpr(x, acc)
-    case EOld(x) -> collectAssignedExpr(x, acc)
-    case ETry(x) -> collectAssignedExpr(x, acc)
-    case ETuple(xs) -> {
-      var i = 0
-      while i < xs.count {
-        collectAssignedExpr(xs[i], acc)
-        i = i + 1
-      }
-    }
-    case EList(xs) -> {
-      var i = 0
-      while i < xs.count {
-        collectAssignedExpr(xs[i], acc)
-        i = i + 1
-      }
-    }
-    case ELambda(_, b) -> collectAssignedBlock(b, acc)
-    // Known false-negative: an assignment inside a lambda body suppresses T0086 even
-    // if the lambda is never called before the function exits.  The alternative
-    // (excluding ELambda) would false-positive valid capture-and-call patterns.
-    case _ -> {
-    }
+    case EPropagate(x)  -> collectAssignedExpr(x, acc)
+    case EAwait(x)      -> collectAssignedExpr(x, acc)
+    case EYield(x)      -> collectAssignedExpr(x, acc)
+    case ESpawn(x)      -> collectAssignedExpr(x, acc)
+    case EOld(x)        -> collectAssignedExpr(x, acc)
+    case ETry(x)        -> collectAssignedExpr(x, acc)
+    case ETuple(xs)     -> { var i = 0; while i < xs.count { collectAssignedExpr(xs[i], acc); i = i + 1 } }
+    case EList(xs)      -> { var i = 0; while i < xs.count { collectAssignedExpr(xs[i], acc); i = i + 1 } }
+    case ELambda(_, b)  -> collectAssignedBlock(b, acc)
+    case _              -> {}
   }
 }
 
 func collectAssignedEOB(eob: in ExprOrBlock, acc: in List[String]): Unit {
   match eob {
-    case EOBExpr(e) -> collectAssignedExpr(e, acc)
+    case EOBExpr(e)  -> collectAssignedExpr(e, acc)
     case EOBBlock(b) -> collectAssignedBlock(b, acc)
   }
 }
 
 func collectAssignedStmt(s: in Statement, acc: in List[String]): Unit {
   match s.kind {
-    case SAssign(t, _, v) -> {
-      addAssignedTarget(t, acc)
-      collectAssignedExpr(v, acc)
-    }
-    case SLocal(b) -> match b { case LBVal(_, _, init) -> collectAssignedExpr(init, acc); case LBLet(_, _, init) -> collectAssignedExpr(init, acc); case LBVar(_, _, initOpt) -> match initOpt { case Some(e) -> collectAssignedExpr(e, acc); case None -> {  } } }
-    case SReturn(vo) -> match vo { case Some(e) -> collectAssignedExpr(e, acc); case None -> {  } }
-    case SThrow(e) -> collectAssignedExpr(e, acc)
-    case SExpr(e) -> collectAssignedExpr(e, acc)
+    case SAssign(t, _, v) -> { addAssignedTarget(t, acc); collectAssignedExpr(v, acc) }
+    case SLocal(b) ->
+      match b {
+        case LBVal(_, _, init) -> collectAssignedExpr(init, acc)
+        case LBLet(_, _, init) -> collectAssignedExpr(init, acc)
+        case LBVar(_, _, initOpt) -> match initOpt { case Some(e) -> collectAssignedExpr(e, acc); case None -> {} }
+      }
+    case SReturn(vo) -> match vo { case Some(e) -> collectAssignedExpr(e, acc); case None -> {} }
+    case SThrow(e)   -> collectAssignedExpr(e, acc)
+    case SExpr(e)    -> collectAssignedExpr(e, acc)
     case SInvariant(e) -> collectAssignedExpr(e, acc)
-    case SRule(l, r) -> {
-      collectAssignedExpr(l, acc)
-      collectAssignedExpr(r, acc)
-    }
+    case SRule(l, r) -> { collectAssignedExpr(l, acc); collectAssignedExpr(r, acc) }
     case STry(body, catches, fin) -> {
       collectAssignedBlock(body, acc)
       var i = 0
-      while i < catches.count {
-        collectAssignedBlock(catches[i].body, acc)
-        i = i + 1
-      }
-      match fin {
-        case Some(fb) -> collectAssignedBlock(fb, acc)
-        case None -> {
-        }
-      }
+      while i < catches.count { collectAssignedBlock(catches[i].body, acc); i = i + 1 }
+      match fin { case Some(fb) -> collectAssignedBlock(fb, acc); case None -> {} }
     }
-    case SDefer(b) -> collectAssignedBlock(b, acc)
-    case SScope(_, b) -> collectAssignedBlock(b, acc)
-    case SFor(_, _, it, b) -> {
-      collectAssignedExpr(it, acc)
-      collectAssignedBlock(b, acc)
-    }
-    case SWhile(_, c, b) -> {
-      collectAssignedExpr(c, acc)
-      collectAssignedBlock(b, acc)
-    }
-    case SLoop(_, b) -> collectAssignedBlock(b, acc)
-    case _ -> {
-    }
+    case SDefer(b)        -> collectAssignedBlock(b, acc)
+    case SScope(_, b)     -> collectAssignedBlock(b, acc)
+    case SFor(_, _, it, b) -> { collectAssignedExpr(it, acc); collectAssignedBlock(b, acc) }
+    case SWhile(_, c, b)  -> { collectAssignedExpr(c, acc); collectAssignedBlock(b, acc) }
+    case SLoop(_, b)      -> collectAssignedBlock(b, acc)
+    case _                -> {}
   }
 }
 
@@ -650,66 +503,56 @@ func checkOutDefiniteAssignment(diag: in List[Diagnostic], fn: in FunctionDecl, 
   var hasOut = false
   var pi = 0
   while pi < sig.params.count {
-    match sig.params[pi].mode {
-      case PMOut -> {
-        hasOut = true
-      }
-      case _ -> {
-      }
-    }
+    match sig.params[pi].mode { case PMOut -> { hasOut = true } case _ -> {} }
     pi = pi + 1
   }
-  if not hasOut {
-    return
-  }
+  if not hasOut { return }
   val assigned: List[String] = newList()
-  var bodyless = false
   match fn.body {
-    case None -> {
-      bodyless = true
-    }
-    case Some(b) -> match b { case FBBlock(blk) -> collectAssignedBlock(blk, assigned); case FBExpr(e) -> collectAssignedExpr(e, assigned) }
-  }
-  if bodyless {
-    // body-less signatures (interface/extern decls): nothing to check; an empty
-    // `assigned` list would otherwise false-flag every `out` param as T0086.
-    return
+    case None -> {}
+    case Some(b) ->
+      match b {
+        case FBBlock(blk) -> collectAssignedBlock(blk, assigned)
+        case FBExpr(e)    -> collectAssignedExpr(e, assigned)
+      }
   }
   var k = 0
   while k < sig.params.count {
     val p = sig.params[k]
     match p.mode {
-      case PMOut -> if not listContainsStr(assigned, p.name) { diag.add(errorDiagnostic("T0086", "`out` parameter '" + p.name + "' is never assigned before the function returns", fn.span)) }
-      case _ -> {
-      }
+      case PMOut ->
+        if not listContainsStr(assigned, p.name) {
+          diag.add(errorDiagnostic("T0086",
+            "`out` parameter '" + p.name +
+            "' is never assigned before the function returns", fn.span))
+        }
+      case _ -> {}
     }
     k = k + 1
   }
 }
 
 pub func checkFunctionBody(
-  tbl: in SymbolTable,
+  tbl:  in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
   diag: in List[Diagnostic],
-  fn: in FunctionDecl,
-  sig: in ResolvedSignature,
+  fn:   in FunctionDecl,
+  sig:  in ResolvedSignature
 ): Unit {
   if hasExternTargetAnnotation(fn.annotations) {
     // F0002: both @externStatic and @externInstance on one extern.
     if hasConflictingExternHints(fn.annotations) {
-      diag.add(
-        errorDiagnostic(
-          "F0002",
-          "function '" + fn.name + "' has both @externStatic and " + "@externInstance — pick one (the FFI resolver cannot " +
-            "honour both, and will fall back to @externStatic)",
-          fn.span
-        )
-      )
+      diag.add(errorDiagnostic(
+        "F0002",
+        "function '" + fn.name + "' has both @externStatic and "
+        + "@externInstance — pick one (the FFI resolver cannot "
+        + "honour both, and will fall back to @externStatic)",
+        fn.span))
     }
     return
   }
 
-  val sc = newScopeForFunction(sig.returnTy, sig.generics)
+  val sc = newScope()
   var i = 0
   while i < sig.params.count {
     val p = sig.params[i]
@@ -719,9 +562,29 @@ pub func checkFunctionBody(
   }
 
   match fn.body {
-    case None -> {
-    }
-    case Some(body) -> match body { case FBExpr(e) -> { val bodyType = inferExpr(sc, tbl, sigs, diag, e); val isNever = match bodyType { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }; if not isNever and not typeAssignable(tbl, sig.returnTy, bodyType) { diag.add(errorDiagnostic("T0070", "function body has type " + renderType(bodyType) + " but declared return type is " + renderType(sig.returnTy), fn.span)) } }; case FBBlock(blk) -> { val bodyValuePos = not isUnitType(sig.returnTy); val bodyType = checkBlock(sc, tbl, sigs, sig.generics, sig.returnTy, diag, blk, bodyValuePos); val isUnit = match bodyType { case TyPrim(pt) -> match pt { case PtUnit -> true; case _ -> false }; case _ -> false }; val isNever = match bodyType { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }; if not isUnit and not isNever and not typeAssignable(tbl, sig.returnTy, bodyType) { diag.add(errorDiagnostic("T0070", "function body trailing expression has type " + renderType(bodyType) + " but declared return type is " + renderType(sig.returnTy), fn.span)) } } }
+    case None -> {}
+    case Some(body) ->
+      match body {
+        case FBExpr(e) -> {
+          val bodyType = inferExpr(sc, tbl, sigs, diag, e)
+          val isNever = match bodyType { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }
+          if not isNever and not typeEquiv(bodyType, sig.returnTy) {
+            diag.add(errorDiagnostic("T0070",
+              "function body has type " + renderType(bodyType) +
+              " but declared return type is " + renderType(sig.returnTy), fn.span))
+          }
+        }
+        case FBBlock(blk) -> {
+          val bodyType = checkBlock(sc, tbl, sigs, sig.generics, sig.returnTy, diag, blk)
+          val isUnit  = match bodyType { case TyPrim(pt) -> match pt { case PtUnit -> true; case _ -> false }; case _ -> false }
+          val isNever = match bodyType { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }
+          if not isUnit and not isNever and not typeEquiv(bodyType, sig.returnTy) {
+            diag.add(errorDiagnostic("T0070",
+              "function body trailing expression has type " + renderType(bodyType) +
+              " but declared return type is " + renderType(sig.returnTy), fn.span))
+          }
+        }
+      }
   }
   checkOutDefiniteAssignment(diag, fn, sig)
 }

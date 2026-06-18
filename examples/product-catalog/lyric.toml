@@ -27,13 +27,15 @@ output_assembly = "ProductCatalog.dll"
 [project.packages]
 "ProductCatalog.Domain"  = "src/domain.l"
 "ProductCatalog.Catalog" = "src/catalog.l"
+"ProductCatalog.Aspects" = "src/aspects.l"
 "ProductCatalog.Main"    = "src/main.l"
 
-[project.tests]
+[project.test_packages]
 "ProductCatalog.Tests.Domain"   = "tests/domain_tests.l"
 "ProductCatalog.Tests.Catalog"  = "tests/catalog_tests.l"
 
 [dependencies]
+"Lyric.Stdlib"     = { path = "../../stdlib" }
 "Lyric.Grpc"       = { path = "../../lyric-grpc" }
 "Lyric.Db"         = { path = "../../lyric-db" }
 "Lyric.Auth"       = { path = "../../lyric-auth" }

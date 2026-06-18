@@ -1,18 +1,19 @@
-//! jvm/self_test_b73.l — Stage B73: ifnull / ifnonnull / aconst_null.
-//!
-//! Generates NullCheck.class with:
-//!   isNull(Object)I    — returns 1 if ref is null, else 0  (ifnull branch)
-//!   orDefault(Object,String)String — returns ref if non-null, else "default"
-//!   makeNull()Object   — returns aconst_null
-//!
-//! Main prints:
-//!   isNull(null)         → 1
-//!   isNull("hi")         → 0
-//!   orDefault(null,"x")  → "x"
-//!   orDefault("y","x")   → "y"
-//!   isNull(makeNull())   → 1
-//!
-//! Exercises: emitIfnull, emitIfnonnull, emitAconstNull, areturn of null.
+// jvm/self_test_b73.l — Stage B73: ifnull / ifnonnull / aconst_null.
+//
+// Generates NullCheck.class with:
+//   isNull(Object)I    — returns 1 if ref is null, else 0  (ifnull branch)
+//   orDefault(Object,String)String — returns ref if non-null, else "default"
+//   makeNull()Object   — returns aconst_null
+//
+// Main prints:
+//   isNull(null)         → 1
+//   isNull("hi")         → 0
+//   orDefault(null,"x")  → "x"
+//   orDefault("y","x")   → "y"
+//   isNull(makeNull())   → 1
+//
+// Exercises: emitIfnull, emitIfnonnull, emitAconstNull, areturn of null.
+
 package Jvm.SelfTestB73
 
 import Std.Core
@@ -37,7 +38,8 @@ func makeNullCheckBytes(): List[Byte] {
   val isNullCode = assembleCode(asmIsNull, 1, 1)
   val isNullAttrs: List[Attribute] = newList()
   isNullAttrs.add(isNullCode)
-  val isNullMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "isNull", "(Ljava/lang/Object;)I", isNullAttrs)
+  val isNullMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "isNull",
+    "(Ljava/lang/Object;)I", isNullAttrs)
 
   // orDefault(Object,String)String  — slot 0=ref, slot 1=def
   val strClass = poolClass(pool, "java/lang/String")
@@ -53,12 +55,8 @@ func makeNullCheckBytes(): List[Byte] {
   val orCode = assembleCode(asmOr, 1, 2)
   val orAttrs: List[Attribute] = newList()
   orAttrs.add(orCode)
-  val orMethod = makeMethodInfo(
-    ACC_PUBLIC + ACC_STATIC,
-    "orDefault",
-    "(Ljava/lang/Object;Ljava/lang/String;)Ljava/lang/String;",
-    orAttrs
-  )
+  val orMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "orDefault",
+    "(Ljava/lang/Object;Ljava/lang/String;)Ljava/lang/String;", orAttrs)
 
   // makeNull()Object
   val asmMakeNull = newAssembler(pool)
@@ -67,7 +65,8 @@ func makeNullCheckBytes(): List[Byte] {
   val makeNullCode = assembleCode(asmMakeNull, 1, 0)
   val makeNullAttrs: List[Attribute] = newList()
   makeNullAttrs.add(makeNullCode)
-  val makeNullMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "makeNull", "()Ljava/lang/Object;", makeNullAttrs)
+  val makeNullMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "makeNull",
+    "()Ljava/lang/Object;", makeNullAttrs)
 
   val methods: List[MethodInfo] = newList()
   methods.add(isNullMethod)
@@ -78,15 +77,15 @@ func makeNullCheckBytes(): List[Byte] {
 }
 
 func makeMainClassBytes(): List[Byte] {
-  val pool = poolNew()
-  val asm = newAssembler(pool)
+  val pool       = poolNew()
+  val asm        = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
-  val printlnS = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val isNullRef = poolMethodref(pool, "NullCheck", "isNull", "(Ljava/lang/Object;)I")
-  val orRef = poolMethodref(pool, "NullCheck", "orDefault", "(Ljava/lang/Object;Ljava/lang/String;)Ljava/lang/String;")
-  val makeRef = poolMethodref(pool, "NullCheck", "makeNull", "()Ljava/lang/Object;")
+  val sysOut     = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnI   = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
+  val printlnS   = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val isNullRef  = poolMethodref(pool, "NullCheck", "isNull",    "(Ljava/lang/Object;)I")
+  val orRef      = poolMethodref(pool, "NullCheck", "orDefault", "(Ljava/lang/Object;Ljava/lang/String;)Ljava/lang/String;")
+  val makeRef    = poolMethodref(pool, "NullCheck", "makeNull",  "()Ljava/lang/Object;")
 
   // println(NullCheck.isNull(null)) → 1
   emitGetstatic(asm, sysOut)
@@ -136,24 +135,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b73"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val nullCheckBytes = makeNullCheckBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes      = makeMainClassBytes()
 
   val nullCheckClass = BuiltClass(binaryName = "NullCheck", bytes = nullCheckBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass      = BuiltClass(binaryName = "Main",      bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(nullCheckClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB73",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

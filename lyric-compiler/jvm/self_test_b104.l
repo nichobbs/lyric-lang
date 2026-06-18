@@ -1,17 +1,18 @@
-//! jvm/self_test_b104.l — Stage B104: lowerMatchUnion pattern-dispatch helper.
-//!
-//! Builds a Shape union with three cases:
-//!   Shape$Circle(radius: int)  — area = radius * radius
-//!   Shape$Line(len: int)       — area = len
-//!   Shape$Dot                  — area = 0
-//!
-//! A separate `Shapes` class holds a static `area(Shape) -> int` method
-//! generated using lowerMatchUnion.
-//!
-//! Java output (java -jar):
-//!   circle.area=16
-//!   line.area=7
-//!   dot.area=0
+// jvm/self_test_b104.l — Stage B104: lowerMatchUnion pattern-dispatch helper.
+//
+// Builds a Shape union with three cases:
+//   Shape$Circle(radius: int)  — area = radius * radius
+//   Shape$Line(len: int)       — area = len
+//   Shape$Dot                  — area = 0
+//
+// A separate `Shapes` class holds a static `area(Shape) -> int` method
+// generated using lowerMatchUnion.
+//
+// Java output (java -jar):
+//   circle.area=16
+//   line.area=7
+//   dot.area=0
+
 package Jvm.SelfTestB104
 
 import Std.Core
@@ -23,6 +24,7 @@ import Jvm.Lowering
 import Jvm.Driver
 
 // ── Build Shape union (abstract base + three case classes) ───────────────────
+
 func makeShapeBytes(): List[List[Byte]] {
   val pool = poolNew()
 
@@ -36,8 +38,8 @@ func makeShapeBytes(): List[List[Byte]] {
 
   val cases: List[LUnionCase] = newList()
   cases.add(LUnionCase(caseName = "Circle", fields = circleFields))
-  cases.add(LUnionCase(caseName = "Line", fields = lineFields))
-  cases.add(LUnionCase(caseName = "Dot", fields = dotFields))
+  cases.add(LUnionCase(caseName = "Line",   fields = lineFields))
+  cases.add(LUnionCase(caseName = "Dot",    fields = dotFields))
 
   val baseMethods: List[LFunc] = newList()
   val u = LUnion(baseName = "Shape", cases = cases, methods = baseMethods)
@@ -53,9 +55,10 @@ func makeShapeBytes(): List[List[Byte]] {
 }
 
 // ── Build Shapes utility class with static area(Shape) -> int ────────────────
+
 func makeShapesBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
   // arm bodies use slot 1 for the cast value; scrutinee is slot 0
   val circleBody: List[LInsn] = newList()
@@ -73,8 +76,8 @@ func makeShapesBytes(): List[Byte] {
 
   val arms: List[LMatchArm] = newList()
   arms.add(LMatchArm(caseClass = "Shape$Circle", boundSlot = 1, skipLabel = "skip_circle", bodyInsns = circleBody))
-  arms.add(LMatchArm(caseClass = "Shape$Line", boundSlot = 1, skipLabel = "skip_line", bodyInsns = lineBody))
-  arms.add(LMatchArm(caseClass = "Shape$Dot", boundSlot = 1, skipLabel = "skip_dot", bodyInsns = dotBody))
+  arms.add(LMatchArm(caseClass = "Shape$Line",   boundSlot = 1, skipLabel = "skip_line",   bodyInsns = lineBody))
+  arms.add(LMatchArm(caseClass = "Shape$Dot",    boundSlot = 1, skipLabel = "skip_dot",    bodyInsns = dotBody))
 
   // scrutinee = slot 0; all arms put an int on the stack then goto match_end
   lowerMatchUnion(asm, 0, arms, "match_end")
@@ -94,7 +97,12 @@ func makeShapesBytes(): List[Byte] {
 
   val areaDescPs: List[JvmType] = newList()
   areaDescPs.add(JRef(className = "Shape"))
-  val areaMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "area", buildDescriptor(areaDescPs, JInt), attrs)
+  val areaMethod = makeMethodInfo(
+    ACC_PUBLIC + ACC_STATIC,
+    "area",
+    buildDescriptor(areaDescPs, JInt),
+    attrs
+  )
 
   val methods: List[MethodInfo] = newList()
   methods.add(areaMethod)
@@ -103,38 +111,28 @@ func makeShapesBytes(): List[Byte] {
 }
 
 // ── Build Main class ──────────────────────────────────────────────────────────
+
 func makeMainBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOutIdx  = poolFieldref(pool,  "java/lang/System",    "out",     "Ljava/io/PrintStream;")
   val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
-  val valueOfIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
+  val concatIdx  = poolMethodref(pool, "java/lang/String",    "concat",  "(Ljava/lang/String;)Ljava/lang/String;")
+  val valueOfIdx = poolMethodref(pool, "java/lang/String",    "valueOf", "(I)Ljava/lang/String;")
 
-  val circleInitIdx = poolMethodref(pool, "Shape$Circle", "<init>", "(I)V")
-  val lineInitIdx = poolMethodref(pool, "Shape$Line", "<init>", "(I)V")
-  val dotInitIdx = poolMethodref(pool, "Shape$Dot", "<init>", "()V")
+  val circleInitIdx  = poolMethodref(pool, "Shape$Circle", "<init>", "(I)V")
+  val lineInitIdx    = poolMethodref(pool, "Shape$Line",   "<init>", "(I)V")
+  val dotInitIdx     = poolMethodref(pool, "Shape$Dot",    "<init>", "()V")
   val circleClassIdx = poolClass(pool, "Shape$Circle")
-  val lineClassIdx = poolClass(pool, "Shape$Line")
-  val dotClassIdx = poolClass(pool, "Shape$Dot")
-  val areaIdx = poolMethodref(pool, "Shapes", "area", "(LShape;)I")
+  val lineClassIdx   = poolClass(pool, "Shape$Line")
+  val dotClassIdx    = poolClass(pool, "Shape$Dot")
+  val areaIdx        = poolMethodref(pool, "Shapes", "area", "(LShape;)I")
 
   // slot 0: Circle(4), slot 1: Line(7), slot 2: Dot
-  emitNew(asm, circleClassIdx)
-  emitDup(asm)
-  emitPushInt(asm, 4)
-  emitInvokespecial(asm, circleInitIdx)
-  emitAstore(asm, 0)
-  emitNew(asm, lineClassIdx)
-  emitDup(asm)
-  emitPushInt(asm, 7)
-  emitInvokespecial(asm, lineInitIdx)
-  emitAstore(asm, 1)
-  emitNew(asm, dotClassIdx)
-  emitDup(asm)
-  emitInvokespecial(asm, dotInitIdx)
-  emitAstore(asm, 2)
+  emitNew(asm, circleClassIdx); emitDup(asm); emitPushInt(asm, 4); emitInvokespecial(asm, circleInitIdx); emitAstore(asm, 0)
+  emitNew(asm, lineClassIdx);   emitDup(asm); emitPushInt(asm, 7); emitInvokespecial(asm, lineInitIdx);   emitAstore(asm, 1)
+  emitNew(asm, dotClassIdx);    emitDup(asm);                       emitInvokespecial(asm, dotInitIdx);    emitAstore(asm, 2)
 
   // println("circle.area=" + String.valueOf(Shapes.area(circle)))
   emitGetstatic(asm, sysOutIdx)
@@ -176,10 +174,11 @@ func makeMainBytes(): List[Byte] {
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
+
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b104"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
@@ -198,13 +197,13 @@ func main(): Unit {
   }
 
   classes.add(BuiltClass(binaryName = "Shapes", bytes = makeShapesBytes()))
-  classes.add(BuiltClass(binaryName = "Main", bytes = makeMainBytes()))
+  classes.add(BuiltClass(binaryName = "Main",   bytes = makeMainBytes()))
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB104",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

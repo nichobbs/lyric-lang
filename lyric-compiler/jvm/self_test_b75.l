@@ -1,16 +1,17 @@
-//! jvm/self_test_b75.l — Stage B75: byte[] arrays (newarray T_BYTE, baload, bastore).
-//!
-//! Generates ByteArrays.class with:
-//!   makeBytes(I)byte[]    — allocates byte[n], fills [0..n-1] with (byte)i
-//!   sumBytes(byte[])I     — sums all elements (baload, sign-extended to int)
-//!   getAt(byte[],I)I      — returns arr[i] as int
-//!
-//! Main prints:
-//!   getAt(makeBytes(4), 2) → 2
-//!   sumBytes(makeBytes(4)) → 6  (0+1+2+3)
-//!
-//! Exercises: newarray T_BYTE, bastore (store int as byte), baload, arraylength,
-//!            iinc loop counter.
+// jvm/self_test_b75.l — Stage B75: byte[] arrays (newarray T_BYTE, baload, bastore).
+//
+// Generates ByteArrays.class with:
+//   makeBytes(I)byte[]    — allocates byte[n], fills [0..n-1] with (byte)i
+//   sumBytes(byte[])I     — sums all elements (baload, sign-extended to int)
+//   getAt(byte[],I)I      — returns arr[i] as int
+//
+// Main prints:
+//   getAt(makeBytes(4), 2) → 2
+//   sumBytes(makeBytes(4)) → 6  (0+1+2+3)
+//
+// Exercises: newarray T_BYTE, bastore (store int as byte), baload, arraylength,
+//            iinc loop counter.
+
 package Jvm.SelfTestB75
 
 import Std.Core
@@ -100,14 +101,14 @@ func makeByteArraysBytes(): List[Byte] {
 }
 
 func makeMainClassBytes(): List[Byte] {
-  val pool = poolNew()
-  val asm = newAssembler(pool)
+  val pool      = poolNew()
+  val asm       = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
-  val makeRef = poolMethodref(pool, "ByteArrays", "makeBytes", "(I)[B")
-  val sumRef = poolMethodref(pool, "ByteArrays", "sumBytes", "([B)I")
-  val getRef = poolMethodref(pool, "ByteArrays", "getAt", "([BI)I")
+  val sysOut    = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnI  = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
+  val makeRef   = poolMethodref(pool, "ByteArrays", "makeBytes", "(I)[B")
+  val sumRef    = poolMethodref(pool, "ByteArrays", "sumBytes",  "([B)I")
+  val getRef    = poolMethodref(pool, "ByteArrays", "getAt",     "([BI)I")
 
   // arr = ByteArrays.makeBytes(4)
   emitPushInt(asm, 4)
@@ -142,24 +143,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b75"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val byteArraysBytes = makeByteArraysBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes       = makeMainClassBytes()
 
   val byteArraysClass = BuiltClass(binaryName = "ByteArrays", bytes = byteArraysBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass       = BuiltClass(binaryName = "Main",       bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(byteArraysClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB75",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

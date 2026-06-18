@@ -43,6 +43,7 @@ postgres = []    # Npgsql PostgreSQL driver
 "JobQueue.JobQueueTests" = "tests/jobqueue_tests.l"
 
 [dependencies]
+"Lyric.Stdlib" = { path = "../../stdlib" }
 "Lyric.Web"    = { path = "../../lyric-web" }
 "Lyric.Db"     = { path = "../../lyric-db" }
 "Lyric.Health" = { path = "../../lyric-health" }

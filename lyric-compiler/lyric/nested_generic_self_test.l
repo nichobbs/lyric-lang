@@ -1,4 +1,5 @@
-//! #1687 regression: self-hosted MSIL mis-instantiated nested `Ok(None)` (D-progress-354).
+// #1687 regression: self-hosted MSIL mis-instantiated nested `Ok(None)` (D-progress-354).
+
 @test_module
 package Lyric.NestedGenericSelfTest
 
@@ -7,23 +8,27 @@ import Std.Collections
 import Std.Testing
 
 // Error payload for the outer Result's Err arm (mirrors lyric-session's shape).
-record NErr {
-  code: String
-  // Tag which arm fired (0=Err, 1=Ok/None, 2=Ok/Some) without reading the payload.
-}
+record NErr { code: String }
 
+// Tag which arm fired (0=Err, 1=Ok/None, 2=Ok/Some) without reading the payload.
 func classify(r: in Result[Option[String], NErr]): Int {
   match r {
-    case Err(_) -> 0
-    case Ok(opt) -> match opt { case None -> 1; case Some(_) -> 2 }
+    case Err(_)  -> 0
+    case Ok(opt) -> match opt {
+      case None    -> 1
+      case Some(_) -> 2
+    }
   }
 }
 
 // Recover the inner String when the value is `Ok(Some(...))`, else a sentinel.
 func innerOf(r: in Result[Option[String], NErr], sentinel: in String): String {
   match r {
-    case Err(_) -> sentinel
-    case Ok(opt) -> match opt { case None -> sentinel; case Some(v) -> v }
+    case Err(_)  -> sentinel
+    case Ok(opt) -> match opt {
+      case None    -> sentinel
+      case Some(v) -> v
+    }
   }
 }
 
@@ -39,6 +44,7 @@ func lookupF(data: in Map[String, String], id: in String): Result[Option[String]
 // ─────────────────────────────────────────────────────────────────────────────
 // Construction + match correctness for Result[Option[T], E]
 // ─────────────────────────────────────────────────────────────────────────────
+
 test "Ok(None) matches the Ok arm then the None arm" {
   val r: Result[Option[String], NErr] = Ok(None)
   assertEqualInt(classify(r), 1, "Ok(None) classifies as Ok->None")
@@ -62,6 +68,7 @@ test "Ok(Some(v)) preserves the inner String payload" {
 // ─────────────────────────────────────────────────────────────────────────────
 // The end-to-end map-driven shape from the #1687 repro
 // ─────────────────────────────────────────────────────────────────────────────
+
 test "lookup miss yields Ok(None)" {
   val store: Map[String, String] = newMap()
   assertEqualInt(classify(lookupF(store, "absent")), 1, "missing key -> Ok(None)")
@@ -77,10 +84,14 @@ test "lookup hit yields Ok(Some(value))" {
 // ─────────────────────────────────────────────────────────────────────────────
 // Option[Int] nesting — guards against type-arg erasure on the integer path
 // ─────────────────────────────────────────────────────────────────────────────
+
 func classifyInt(r: in Result[Option[Int], NErr]): Int {
   match r {
-    case Err(_) -> 0
-    case Ok(opt) -> match opt { case None -> 1; case Some(_) -> 2 }
+    case Err(_)  -> 0
+    case Ok(opt) -> match opt {
+      case None    -> 1
+      case Some(_) -> 2
+    }
   }
 }
 

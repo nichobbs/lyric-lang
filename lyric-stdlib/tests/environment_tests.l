@@ -1,7 +1,7 @@
-//! stdlib/tests/environment_tests.l — Tests for Std.Environment.
-//!
-//! Covers: getVar for an unknown variable, getVar for an empty key,
-//! getVarOrDefault, and args (returns a slice without panicking).
+// stdlib/tests/environment_tests.l — Tests for Std.Environment.
+//
+// Covers: getVar for an unknown variable, getVar for an empty key,
+// getVarOrDefault, and args (returns a slice without panicking).
 package Std.Environment.Tests
 
 import Std.Core
@@ -10,14 +10,14 @@ import Std.Testing
 
 func testGetVarMissing(): Unit {
   match getVar("LYRIC_TEST_DEFINITELY_NONEXISTENT_XYZ123") {
-    case Ok(_) -> assertTrue(false, "nonexistent var should not be Ok")
+    case Ok(_)  -> assertTrue(false, "nonexistent var should not be Ok")
     case Err(e) -> assertTrue(true, "nonexistent var returns Err")
   }
 }
 
 func testGetVarEmptyKey(): Unit {
   match getVar("") {
-    case Ok(_) -> assertTrue(false, "empty key should not be Ok")
+    case Ok(_)  -> assertTrue(false, "empty key should not be Ok")
     case Err(e) -> assertTrue(true, "empty key returns Err")
   }
 }

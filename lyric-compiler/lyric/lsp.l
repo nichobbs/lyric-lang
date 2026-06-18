@@ -1,22 +1,23 @@
-//! lsp.l — self-hosted LSP server for Lyric.
-//!
-//! Replaces compiler/src/Lyric.Lsp/Server.fs + JsonRpc.fs.
-//! Implements the Language Server Protocol 3.17 subset consumed by
-//! the Lyric VS Code extension: hover, completion, definition,
-//! signatureHelp, codeAction, rename, and document/workspace sync.
-//!
-//! Architecture
-//! ─────────────
-//! `lspInit()` returns an LspState whose mutable BCL-Dictionary fields
-//! carry per-session document and workspace state.  `lspHandle(state,json)`
-//! processes one JSON-RPC message and returns a list of outbound JSON
-//! strings.  `lspRunLoop()` drives the stdin→dispatch→stdout loop.
-//!
-//! Known limitation: Content-Length is measured in UTF-8 bytes but
-//! Console.Read() returns UTF-16 code units.  For the ASCII-heavy JSON
-//! that normal LSP traffic contains the counts are identical; high-Unicode
-//! source names would cause a short read on the message body.  A proper
-//! binary reader would require a new kernel extern.
+// lsp.l — self-hosted LSP server for Lyric.
+//
+// Replaces compiler/src/Lyric.Lsp/Server.fs + JsonRpc.fs.
+// Implements the Language Server Protocol 3.17 subset consumed by
+// the Lyric VS Code extension: hover, completion, definition,
+// signatureHelp, codeAction, rename, and document/workspace sync.
+//
+// Architecture
+// ─────────────
+// `lspInit()` returns an LspState whose mutable BCL-Dictionary fields
+// carry per-session document and workspace state.  `lspHandle(state,json)`
+// processes one JSON-RPC message and returns a list of outbound JSON
+// strings.  `lspRunLoop()` drives the stdin→dispatch→stdout loop.
+//
+// Known limitation: Content-Length is measured in UTF-8 bytes but
+// Console.Read() returns UTF-16 code units.  For the ASCII-heavy JSON
+// that normal LSP traffic contains the counts are identical; high-Unicode
+// source names would cause a short read on the message body.  A proper
+// binary reader would require a new kernel extern.
+
 package Lyric.Lsp
 
 import Std.Core
@@ -31,42 +32,27 @@ import Lyric.Parser
 import Lyric.TypeChecker
 import Lyric.ModeChecker
 import Lyric.Verifier
-import Msil.MetadataReader as Mdr
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. State types.
 // ─────────────────────────────────────────────────────────────────────────────
+
 pub record CachedDoc {
-  source: String
+  source:      String
   checkResult: CheckResult
   proofSummary: Option[ProofSummary]
-  // wsRoot / exitFlag are single-element Lists used as mutable boxes because
-  // Lyric records do not support `var` fields — a List<T> element serves the
-  // same purpose with in-place mutation.
 }
 
+// wsRoot / exitFlag are single-element Lists used as mutable boxes because
+// Lyric records do not support `var` fields — a List<T> element serves the
+// same purpose with in-place mutation.
 pub record LspState {
-  store: Map[String, CachedDoc]
-  wsRoot: List[String]
-  // box[String]
-  wsIndex: Map[String, String]
-  // pkgName → absPath
-  wsKeys: List[String]
-  // ordered mirror of wsIndex keys, for clearing
-  revDeps: Map[String, List[String]]
-  // importedURI → [consumerURI]
-  exit: List[Bool]
-  // box[Bool], true after "exit"
-  // Lazily-built reference-pack metadata indexes for the "Implement
-  // Interface" code action on extern targets.  Both empty until the
-  // first request.  Length-1 List[Bool] is used as a one-shot init
-  // sentinel (true once `ensureLspMetadataIndex` has run, regardless
-  // of whether the reference pack was found).
-  ffiTypeIndex: Map[String, String]
-  // FQN → assembly simple name
-  ffiPathIndex: Map[String, String]
-  // assembly simple name → on-disk path
-  ffiIndexInit: List[Bool]
+  store:   Map[String, CachedDoc]
+  wsRoot:  List[String]           // box[String]
+  wsIndex: Map[String, String]    // pkgName → absPath
+  wsKeys:  List[String]           // ordered mirror of wsIndex keys, for clearing
+  revDeps: Map[String, List[String]] // importedURI → [consumerURI]
+  exit:    List[Bool]             // box[Bool], true after "exit"
 }
 
 pub func lspInit(): LspState {
@@ -74,80 +60,57 @@ pub func lspInit(): LspState {
   wsRoot.add("")
   val exit: List[Bool] = newList()
   exit.add(false)
-  val ffiInit: List[Bool] = newList()
-  ffiInit.add(false)
   LspState(
-    store = newMap(),
-    wsRoot = wsRoot,
+    store   = newMap(),
+    wsRoot  = wsRoot,
     wsIndex = newMap(),
-    wsKeys = newList(),
+    wsKeys  = newList(),
     revDeps = newMap(),
-    exit = exit,
-    ffiTypeIndex = newMap(),
-    ffiPathIndex = newMap(),
-    ffiIndexInit = ffiInit
-  )
+    exit    = exit)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. JSON-RPC framing.
 // ─────────────────────────────────────────────────────────────────────────────
+
 func readLspFrame(): Option[String] {
   var contentLength = -1
-  var headerDone = false
-  var eof = false
+  var headerDone    = false
+  var eof           = false
   while not headerDone and not eof {
     var line = ""
     var lineDone = false
     while not lineDone and not eof {
-      val c = hostConsoleRead()
-      // System.Console.Read() — UTF-16 code unit or -1
-      if c < 0 {
-        eof = true
-      } else if c == 10 {
-        lineDone = true
-      } else if c == 13 {
-        // LF
-      } else {
-        // CR — skip
-        line = line + ("" + fromInt(c))
-      }
-      // fromInt: Std.Char → Char; "" + Char → String
+      val c = hostConsoleRead()       // System.Console.Read() — UTF-16 code unit or -1
+      if c < 0       { eof = true }
+      else if c == 10 { lineDone = true }   // LF
+      else if c == 13 { }                   // CR — skip
+      else { line = line + ("" + fromInt(c)) }  // fromInt: Std.Char → Char; "" + Char → String
     }
-    if eof {
-    } else if line.length == 0 {
-      headerDone = true
-    } else {
-      val colon = line.indexOf(":")
-      // BCL String.IndexOf → Int
+    if eof { }
+    else if line.length == 0 { headerDone = true }
+    else {
+      val colon = line.indexOf(":")    // BCL String.IndexOf → Int
       if colon > 0 {
-        val key = line.substring(0, colon).trim()
-        // BCL Substring / Trim
+        val key   = line.substring(0, colon).trim()    // BCL Substring / Trim
         val value = line.substring(colon + 1).trim()
         if key.toLower() == "content-length" {
           match parseOptInt(value) {
-            case None -> {
-            }
-            case Some(n) -> {
-              contentLength = n
-            }
+            case None    -> {}
+            case Some(n) -> { contentLength = n }
           }
         }
       }
     }
   }
-  if eof or contentLength < 0 {
-    return None
-  }
+  if eof or contentLength < 0 { return None }
   var body = ""
-  var rem = contentLength
+  var rem  = contentLength
   while rem > 0 {
     val c = hostConsoleRead()
-    if c < 0 {
-      return Some(value = body)
-    }
+    if c < 0 { return Some(value = body) }
     body = body + ("" + fromInt(c))
-    rem = rem - 1
+    rem  = rem - 1
   }
   Some(value = body)
 }
@@ -160,21 +123,10 @@ func writeLspFrame(json: in String): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. JSON building helpers.
 // ─────────────────────────────────────────────────────────────────────────────
-func jStr(s: in String): String {
-  encodeString(s)
-}
 
-func jInt(n: in Int): String {
-  "" + n
-}
-
-func jBool(b: in Bool): String {
-  if b {
-    "true"
-  } else {
-    "false"
-  }
-}
+func jStr(s: in String): String { encodeString(s) }
+func jInt(n: in Int): String { "" + n }
+func jBool(b: in Bool): String { if b { "true" } else { "false" } }
 
 func jPair(key: in String, v: in String): String {
   encodeString(key) + ":" + v
@@ -184,26 +136,20 @@ func jJoin(items: in List[String]): String {
   var r = ""
   var i = 0
   while i < items.count {
-    if i > 0 {
-      r = r + ","
-    }
+    if i > 0 { r = r + "," }
     r = r + items[i]
     i = i + 1
   }
   r
 }
 
-func jObj(fs: in List[String]): String {
-  "{" + jJoin(fs) + "}"
-}
-
-func jArr(es: in List[String]): String {
-  "[" + jJoin(es) + "]"
-}
+func jObj(fs: in List[String]): String { "{" + jJoin(fs) + "}" }
+func jArr(es: in List[String]): String { "[" + jJoin(es) + "]" }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. JSON-RPC message builders.
 // ─────────────────────────────────────────────────────────────────────────────
+
 func mkResponse(id: in String, result: in String): String {
   val fs: List[String] = newList()
   fs.add(jPair("jsonrpc", jStr("2.0")))
@@ -234,29 +180,30 @@ func mkNotif(method: in String, params: in String): String {
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. JSON extraction helpers.
 // ─────────────────────────────────────────────────────────────────────────────
+
 func jRootStr(json: in String, field: in String): String {
-  val doc = parseJson(json)
+  val doc  = parseJson(json)
   val root = rootElement(doc)
   match tryGetProperty(root, field) {
-    case None -> ""
+    case None    -> ""
     case Some(e) -> getString(e)
   }
 }
 
 func jRootInt(json: in String, field: in String): Int {
-  val doc = parseJson(json)
+  val doc  = parseJson(json)
   val root = rootElement(doc)
   match tryGetProperty(root, field) {
-    case None -> 0
-    case Some(e) -> match tryGetInt(e) { case None -> 0; case Some(n) -> n }
+    case None    -> 0
+    case Some(e) -> match tryGetInt(e) { case None -> 0 case Some(n) -> n }
   }
 }
 
 func jRaw(json: in String, field: in String): String {
-  val doc = parseJson(json)
+  val doc  = parseJson(json)
   val root = rootElement(doc)
   match tryGetProperty(root, field) {
-    case None -> "null"
+    case None    -> "null"
     case Some(e) -> getRawText(e)
   }
 }
@@ -264,25 +211,32 @@ func jRaw(json: in String, field: in String): String {
 func jNested2Str(doc: in JsonDoc, p1: in String, p2: in String): String {
   val root = rootElement(doc)
   match tryGetProperty(root, p1) {
-    case None -> ""
-    case Some(e1) -> match tryGetProperty(e1, p2) { case None -> ""; case Some(e2) -> getString(e2) }
+    case None    -> ""
+    case Some(e1) -> match tryGetProperty(e1, p2) {
+      case None    -> ""
+      case Some(e2) -> getString(e2)
+    }
   }
 }
 
 func jNested2Int(doc: in JsonDoc, p1: in String, p2: in String): Int {
   val root = rootElement(doc)
   match tryGetProperty(root, p1) {
-    case None -> 0
-    case Some(e1) -> match tryGetProperty(e1, p2) { case None -> 0; case Some(e2) -> match tryGetInt(e2) { case None -> 0; case Some(n) -> n } }
+    case None    -> 0
+    case Some(e1) -> match tryGetProperty(e1, p2) {
+      case None    -> 0
+      case Some(e2) -> match tryGetInt(e2) { case None -> 0 case Some(n) -> n }
+    }
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §6. LSP position/range/diagnostic serialisation.
 // ─────────────────────────────────────────────────────────────────────────────
+
 func toLspPos(p: in Position): String {
   val fs: List[String] = newList()
-  fs.add(jPair("line", jInt(p.line - 1)))
+  fs.add(jPair("line",      jInt(p.line - 1)))
   fs.add(jPair("character", jInt(p.column - 1)))
   jObj(fs)
 }
@@ -290,30 +244,27 @@ func toLspPos(p: in Position): String {
 func toLspRange(s: in Span): String {
   val fs: List[String] = newList()
   fs.add(jPair("start", toLspPos(s.startPos)))
-  fs.add(jPair("end", toLspPos(s.endPos)))
+  fs.add(jPair("end",   toLspPos(s.endPos)))
   jObj(fs)
 }
 
 func toLspDiag(d: in Diagnostic): String {
-  val sev = match d.severity { case DiagError -> 1; case DiagWarning -> 2 }
+  val sev = match d.severity { case DiagError -> 1 case DiagWarning -> 2 }
   val fs: List[String] = newList()
-  fs.add(jPair("range", toLspRange(d.span)))
+  fs.add(jPair("range",    toLspRange(d.span)))
   fs.add(jPair("severity", jInt(sev)))
-  fs.add(jPair("code", jStr(d.code)))
-  fs.add(jPair("source", jStr("lyric")))
-  fs.add(jPair("message", jStr(d.message)))
+  fs.add(jPair("code",     jStr(d.code)))
+  fs.add(jPair("source",   jStr("lyric")))
+  fs.add(jPair("message",  jStr(d.message)))
   jObj(fs)
 }
 
 func pushDiagnostics(uri: in String, diags: in List[Diagnostic]): String {
   val arr: List[String] = newList()
   var i = 0
-  while i < diags.count {
-    arr.add(toLspDiag(diags[i]))
-    i = i + 1
-  }
+  while i < diags.count { arr.add(toLspDiag(diags[i])); i = i + 1 }
   val fs: List[String] = newList()
-  fs.add(jPair("uri", jStr(uri)))
+  fs.add(jPair("uri",         jStr(uri)))
   fs.add(jPair("diagnostics", jArr(arr)))
   mkNotif("textDocument/publishDiagnostics", jObj(fs))
 }
@@ -321,51 +272,37 @@ func pushDiagnostics(uri: in String, diags: in List[Diagnostic]): String {
 // ─────────────────────────────────────────────────────────────────────────────
 // §7. File-system helpers.
 // ─────────────────────────────────────────────────────────────────────────────
+
 func uriToPath(uri: in String): String {
-  if uri.startsWith("file:///") {
-    uri.substring(7)
-  } else if uri.startsWith("file://") {
-    uri.substring(7)
-  } else {
-    uri
-  }
+  if uri.startsWith("file:///") { uri.substring(7) }
+  else if uri.startsWith("file://") { uri.substring(7) }
+  else { uri }
 }
 
 func pathToUri(path: in String): String {
-  if path.startsWith("/") {
-    "file://" + path
-  } else {
-    "file:///" + path
-  }
+  if path.startsWith("/") { "file://" + path }
+  else { "file:///" + path }
 }
 
 func enumLyricFilesRec(dir: in String, acc: in List[String]): Unit {
-  if not hostDirectoryExists(dir) {
-    return
-  }
+  if not hostDirectoryExists(dir) { return }
   val fs = hostEnumerateFiles(dir)
-  for f in fs {
-    if f.endsWith(".l") {
-      acc.add(f)
-    }
-  }
+  for f in fs { if f.endsWith(".l") { acc.add(f) } }
   val ds = hostEnumerateDirectories(dir)
-  for d in ds {
-    enumLyricFilesRec(d, acc)
-  }
+  for d in ds { enumLyricFilesRec(d, acc) }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §8. Workspace index management.
 // ─────────────────────────────────────────────────────────────────────────────
+
 func wsIndexClear(state: in LspState): Unit {
   var i = 0
   while i < state.wsKeys.count {
     state.wsIndex.remove(state.wsKeys[i])
     i = i + 1
   }
-  state.wsKeys.clear()
-  // BCL List.Clear()
+  state.wsKeys.clear()   // BCL List.Clear()
 }
 
 func wsIndexSet(state: in LspState, pkgName: in String, filePath: in String): Unit {
@@ -381,9 +318,7 @@ func wsIndexSet(state: in LspState, pkgName: in String, filePath: in String): Un
 
 func rebuildWsIndex(state: in LspState): Unit {
   val root = state.wsRoot[0]
-  if root.length == 0 {
-    return
-  }
+  if root.length == 0 { return }
   wsIndexClear(state)
   val files: List[String] = newList()
   enumLyricFilesRec(root, files)
@@ -391,24 +326,20 @@ func rebuildWsIndex(state: in LspState): Unit {
   while i < files.count {
     val fp = files[i]
     if hostFileExists(fp) {
-      val text = hostReadAllText(fp)
-      val parsed = parse(text)
+      val text   = hostReadAllText(fp)
+      val parsed     = parse(text)
       val parsedFile = parsed.file
-      val pkgDecl = parsedFile.packageDecl
-      val pkgPath = pkgDecl.path
-      val segs = pkgPath.segments
-      var pkg = ""
+      val pkgDecl    = parsedFile.packageDecl
+      val pkgPath    = pkgDecl.path
+      val segs       = pkgPath.segments
+      var pkg    = ""
       var si = 0
       while si < segs.count {
-        if si > 0 {
-          pkg = pkg + "."
-        }
+        if si > 0 { pkg = pkg + "." }
         pkg = pkg + segs[si]
         si = si + 1
       }
-      if pkg.length > 0 {
-        wsIndexSet(state, pkg, fp)
-      }
+      if pkg.length > 0 { wsIndexSet(state, pkg, fp) }
     }
     i = i + 1
   }
@@ -417,12 +348,10 @@ func rebuildWsIndex(state: in LspState): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §9. Document analysis.
 // ─────────────────────────────────────────────────────────────────────────────
+
 func collectDiags(src: in List[Diagnostic], dst: in List[Diagnostic]): Unit {
   var i = 0
-  while i < src.count {
-    dst.add(src[i])
-    i = i + 1
-  }
+  while i < src.count { dst.add(src[i]); i = i + 1 }
 }
 
 func buildImportedItems(state: in LspState, file: in SourceFile): List[Item] {
@@ -430,26 +359,23 @@ func buildImportedItems(state: in LspState, file: in SourceFile): List[Item] {
   val fileImports = file.imports
   var i = 0
   while i < fileImports.count {
-    val imp = fileImports[i]
+    val imp     = fileImports[i]
     val impPath = imp.path
     val impSegs = impPath.segments
     var pkg = ""
     var si = 0
     while si < impSegs.count {
-      if si > 0 {
-        pkg = pkg + "."
-      }
+      if si > 0 { pkg = pkg + "." }
       pkg = pkg + impSegs[si]
       si = si + 1
     }
     match mapGet(state.wsIndex, pkg) {
-      case None -> {
-      }
+      case None    -> {}
       case Some(fp) -> {
         if hostFileExists(fp) {
           val impParsed = parse(hostReadAllText(fp))
-          val impFile = impParsed.file
-          val impItems = impFile.items
+          val impFile   = impParsed.file
+          val impItems  = impFile.items
           var ki = 0
           while ki < impItems.count {
             items.add(impItems[ki])
@@ -473,55 +399,43 @@ func addRevDep(state: in LspState, importedUri: in String, consumerUri: in Strin
     case Some(cs) -> {
       var found = false
       var i = 0
-      while i < cs.count {
-        if cs[i] == consumerUri {
-          found = true
-        }
-        i = i + 1
-      }
-      if not found {
-        cs.add(consumerUri)
-      }
+      while i < cs.count { if cs[i] == consumerUri { found = true }; i = i + 1 }
+      if not found { cs.add(consumerUri) }
     }
   }
 }
 
 func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[String] {
   val acc: List[String] = newList()
-  val parsed = parse(text)
-  val parsedFile = parsed.file
+  val parsed        = parse(text)
+  val parsedFile    = parsed.file
   val importedItems = buildImportedItems(state, parsedFile)
-  val cr = checkWithImports(parsedFile, importedItems)
+  val cr            = checkWithImports(parsedFile, importedItems)
 
   // Update rev-deps: for each import in this file, register uri as a consumer.
   val parsedImports = parsedFile.imports
   var ii = 0
   while ii < parsedImports.count {
-    val imp = parsedImports[ii]
+    val imp     = parsedImports[ii]
     val impPath = imp.path
     val impSegs = impPath.segments
     var pkg = ""
     var si = 0
     while si < impSegs.count {
-      if si > 0 {
-        pkg = pkg + "."
-      }
+      if si > 0 { pkg = pkg + "." }
       pkg = pkg + impSegs[si]
       si = si + 1
     }
     match mapGet(state.wsIndex, pkg) {
-      case None -> {
-      }
-      case Some(fp) -> {
-        addRevDep(state, pathToUri(fp), uri)
-      }
+      case None    -> {}
+      case Some(fp) -> { addRevDep(state, pathToUri(fp), uri) }
     }
     ii = ii + 1
   }
 
   val allDiags: List[Diagnostic] = newList()
   collectDiags(parsed.diagnostics, allDiags)
-  collectDiags(cr.diagnostics, allDiags)
+  collectDiags(cr.diagnostics,     allDiags)
 
   // Run verifier (allow-unverified so unknowns become warnings, not errors).
   val proofResult = proveSourceWithOptions(text, true)
@@ -532,22 +446,21 @@ func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[
       var dup = false
       var di = 0
       while di < allDiags.count {
-        if allDiags[di].code == d.code and allDiags[di].span.startPos.line == d.span.startPos.line and allDiags[di].span.startPos.column == d.span.startPos.column {
+        if allDiags[di].code == d.code and
+           allDiags[di].span.startPos.line == d.span.startPos.line and
+           allDiags[di].span.startPos.column == d.span.startPos.column {
           dup = true
         }
         di = di + 1
       }
-      if not dup {
-        allDiags.add(d)
-      }
+      if not dup { allDiags.add(d) }
     }
     pi = pi + 1
   }
   val proofSummary = Some(value = proofResult)
 
   val doc = CachedDoc(source = text, checkResult = cr, proofSummary = proofSummary)
-  state.store.remove(uri)
-  // safe on absent key; avoids if-branch stack imbalance
+  state.store.remove(uri)   // safe on absent key; avoids if-branch stack imbalance
   state.store.add(uri, doc)
   acc.add(pushDiagnostics(uri, allDiags))
   acc
@@ -558,8 +471,7 @@ func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[
 // inference is not confused by the List[String] return type of the caller.
 func analyzeConsumer(state: in LspState, consumerUri: in String, acc: in List[String]): Unit {
   match mapGet(state.store, consumerUri) {
-    case None -> {
-    }
+    case None    -> {}
     case Some(d) -> {
       val msgs = analyzeAndStore(state, consumerUri, d.source)
       collectMsgs(msgs, acc)
@@ -584,67 +496,43 @@ func reAnalyzeConsumers(state: in LspState, changedUri: in String): List[String]
 
 func collectMsgs(src: in List[String], dst: in List[String]): Unit {
   var i = 0
-  while i < src.count {
-    dst.add(src[i])
-    i = i + 1
-  }
+  while i < src.count { dst.add(src[i]); i = i + 1 }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §10. Identifier/call-context helpers.
 // ─────────────────────────────────────────────────────────────────────────────
+
 func isIdChar(c: in Char): Bool {
-  isLetterOrDigit(c) or c == '_'
-  // Std.Char.isLetterOrDigit
+  isLetterOrDigit(c) or c == '_'     // Std.Char.isLetterOrDigit
 }
 
 func identAtLine(line: in String, zeroCol: in Int): Option[String] {
-  if zeroCol < 0 or zeroCol > line.length {
-    return None
-  }
+  if zeroCol < 0 or zeroCol > line.length { return None }
   var start = zeroCol
   var scanning = true
   while scanning and start > 0 {
-    val c = line[start - 1]
-    // BCL String indexer → Char
-    if isIdChar(c) {
-      start = start - 1
-    } else {
-      scanning = false
-    }
+    val c = line[start - 1]          // BCL String indexer → Char
+    if isIdChar(c) { start = start - 1 }
+    else { scanning = false }
   }
   var stopPos = zeroCol
   var scanning2 = true
   while scanning2 and stopPos < line.length {
     val c = line[stopPos]
-    if isIdChar(c) {
-      stopPos = stopPos + 1
-    } else {
-      scanning2 = false
-    }
+    if isIdChar(c) { stopPos = stopPos + 1 }
+    else { scanning2 = false }
   }
-  if start >= stopPos {
-    return None
-  }
-  val ident = line.substring(start, stopPos - start)
-  // BCL String.Substring(start, length)
-  if ident.length == 0 {
-    return None
-  }
+  if start >= stopPos { return None }
+  val ident = line.substring(start, stopPos - start)   // BCL String.Substring(start, length)
+  if ident.length == 0 { return None }
   val first = ident[0]
-  if isLetter(first) or first == '_' {
-    Some(value = ident)
-  } else {
-    None
-  }
+  if isLetter(first) or first == '_' { Some(value = ident) } else { None }
 }
 
 func identAtPos(text: in String, oneLine: in Int, oneCol: in Int): Option[String] {
-  val lines = text.split("\n")
-  // BCL String.Split → string[]
-  if oneLine < 1 or oneLine > lines.length {
-    return None
-  }
+  val lines = text.split("\n")    // BCL String.Split → string[]
+  if oneLine < 1 or oneLine > lines.length { return None }
   identAtLine(lines[oneLine - 1], oneCol - 1)
 }
 
@@ -652,50 +540,35 @@ func identAtPos(text: in String, oneLine: in Int, oneCol: in Int): Option[String
 // un-matched open paren, plus count how many commas at nesting 0 precede
 // the offset.  Returns (funcName, paramIndex) or None.
 func callContextAt(text: in String, offset: in Int): Option[String] {
-  var i = offset - 1
+  var i     = offset - 1
   var depth = 0
   var found = -1
-  var loop = true
+  var loop  = true
   while loop and i >= 0 {
     val c = text[i]
-    if c == ')' or c == ']' {
-      depth = depth + 1
-    } else if c == '(' or c == '[' {
-      if depth == 0 {
-        found = i
-        loop = false
-      } else {
-        depth = depth - 1
-      }
+    if c == ')' or c == ']' { depth = depth + 1 }
+    else if c == '(' or c == '[' {
+      if depth == 0 { found = i; loop = false }
+      else { depth = depth - 1 }
     }
     i = i - 1
   }
-  if found < 0 {
-    return None
-  }
+  if found < 0 { return None }
   // Trim whitespace to find identifier end.
   var j = found - 1
-  while j >= 0 and (text[j] == ' ' or text[j] == '\t') {
-    j = j - 1
-  }
+  while j >= 0 and (text[j] == ' ' or text[j] == '\t') { j = j - 1 }
   val endJ = j + 1
-  while j >= 0 and isIdChar(text[j]) {
-    j = j - 1
-  }
+  while j >= 0 and isIdChar(text[j]) { j = j - 1 }
   val funcName = text.substring(j + 1, endJ - (j + 1))
-  if funcName.length == 0 {
-    return None
-  }
-  if isDigit(funcName[0]) {
-    return None
-  }
+  if funcName.length == 0 { return None }
+  if isDigit(funcName[0]) { return None }
   Some(value = funcName)
 }
 
 func lineColToOffset(text: in String, line: in Int, col: in Int): Int {
   val lines = text.split("\n")
   var off = 0
-  var li = 0
+  var li  = 0
   while li < line - 1 and li < lines.length {
     off = off + lines[li].length + 1
     li = li + 1
@@ -706,30 +579,27 @@ func lineColToOffset(text: in String, line: in Int, col: in Int): Int {
 // ─────────────────────────────────────────────────────────────────────────────
 // §11. Symbol/type rendering.
 // ─────────────────────────────────────────────────────────────────────────────
+
 func renderType(cr: in CheckResult, ty: in Type): String {
   match ty {
-    case TyPrim(pt) -> primName(pt)
-    case TyTuple(elems) -> {
+    case TyPrim(pt)          -> primName(pt)
+    case TyTuple(elems)      -> {
       var s = "("
       var i = 0
       while i < elems.count {
-        if i > 0 {
-          s = s + ", "
-        }
+        if i > 0 { s = s + ", " }
         s = s + renderType(cr, elems[i])
         i = i + 1
       }
       s + ")"
     }
-    case TyNullable(inner) -> renderType(cr, inner) + "?"
+    case TyNullable(inner)   -> renderType(cr, inner) + "?"
     case TyFunction(ps, ret, isAsync) -> {
       val pref = if isAsync { "async " } else { "" }
       var s = pref + "("
       var i = 0
       while i < ps.count {
-        if i > 0 {
-          s = s + ", "
-        }
+        if i > 0 { s = s + ", " }
         s = s + renderType(cr, ps[i])
         i = i + 1
       }
@@ -737,42 +607,34 @@ func renderType(cr: in CheckResult, ty: in Type): String {
     }
     case TyArray(sizeOpt, elem) -> {
       match sizeOpt {
-        case None -> "array[?, " + renderType(cr, elem) + "]"
+        case None    -> "array[?, " + renderType(cr, elem) + "]"
         case Some(n) -> "array[" + ("" + n) + ", " + renderType(cr, elem) + "]"
       }
     }
-    case TySlice(elem) -> "slice[" + renderType(cr, elem) + "]"
+    case TySlice(elem)       -> "slice[" + renderType(cr, elem) + "]"
     case TyUser(id, declName, args) -> {
       // Prefer the name carried in the type (#425 item 6); fall back
       // to a symbol-table sweep when the constructor lacked context.
       var name = if declName.length > 0 { declName } else { "<type>" }
       if declName.length == 0 {
         val crSymTable = cr.symbols
-        val crSymList = crSymTable.symbols
+        val crSymList  = crSymTable.symbols
         var si = 0
         while si < crSymList.count {
           val sym = crSymList[si]
           match symbolTypeIdOpt(sym) {
-            case Some(tid) -> {
-              if tid.id == id.id {
-                name = sym.name
-              }
-            }
-            case None -> {
-            }
+            case Some(tid) -> { if tid.id == id.id { name = sym.name } }
+            case None      -> {}
           }
           si = si + 1
         }
       }
-      if args.count == 0 {
-        name
-      } else {
+      if args.count == 0 { name }
+      else {
         var s = name + "["
         var i = 0
         while i < args.count {
-          if i > 0 {
-            s = s + ", "
-          }
+          if i > 0 { s = s + ", " }
           s = s + renderType(cr, args[i])
           i = i + 1
         }
@@ -786,38 +648,29 @@ func renderType(cr: in CheckResult, ty: in Type): String {
       val loStr = match lo { case None -> ""; case Some(v) -> "" + v }
       val hiStr = match hi { case None -> ""; case Some(v) -> "" + v }
       val opBare = if inc { "..=" } else { ".." }
-      val left = if loStr.length > 0 { loStr + " " } else { "" }
-      val right = if hiStr.length > 0 { " " + hiStr } else { "" }
+      val left   = if loStr.length > 0 { loStr + " " } else { "" }
+      val right  = if hiStr.length > 0 { " " + hiStr } else { "" }
       renderType(cr, u) + " range " + left + opBare + right
     }
-    case TySelf -> "Self"
+    case TySelf  -> "Self"
     case TyVar(n) -> n
     case TyError -> "<error>"
-    case TyException -> "Exception"
   }
 }
 
 func renderMode(m: in ParamMode): String {
-  match m {
-    case PMIn -> "in"
-    case PMOut -> "out"
-    case PMInout -> "inout"
-  }
+  match m { case PMIn -> "in" case PMOut -> "out" case PMInout -> "inout" }
 }
 
 func renderSig(cr: in CheckResult, sig: in ResolvedSignature, name: in String): String {
   var s = ""
-  if sig.isAsync {
-    s = s + "async "
-  }
+  if sig.isAsync { s = s + "async " }
   s = s + "func " + name
   if sig.generics.count > 0 {
     s = s + "["
     var i = 0
     while i < sig.generics.count {
-      if i > 0 {
-        s = s + ", "
-      }
+      if i > 0 { s = s + ", " }
       s = s + sig.generics[i]
       i = i + 1
     }
@@ -826,9 +679,7 @@ func renderSig(cr: in CheckResult, sig: in ResolvedSignature, name: in String): 
   s = s + "("
   var pi = 0
   while pi < sig.params.count {
-    if pi > 0 {
-      s = s + ", "
-    }
+    if pi > 0 { s = s + ", " }
     val p = sig.params[pi]
     s = s + renderMode(p.mode) + " " + p.name + ": " + renderType(cr, p.ty)
     pi = pi + 1
@@ -837,79 +688,80 @@ func renderSig(cr: in CheckResult, sig: in ResolvedSignature, name: in String): 
 }
 
 func itemSummary(item: in Item): String {
-  val v = match item.visibility { case Some(_) -> "pub "; case None -> "" }
+  val v = match item.visibility { case Some(_) -> "pub " case None -> "" }
   match item.kind {
-    case IFunc(fd) -> v + "func " + fd.name + "(...)"
-    case IRecord(rd) -> v + "record " + rd.name
-    case IExposedRec(rd) -> v + "exposed record " + rd.name
-    case IUnion(ud) -> v + "union " + ud.name
-    case IEnum(ed) -> v + "enum " + ed.name
-    case IOpaque(od) -> v + "opaque type " + od.name
-    case IInterface(id) -> v + "interface " + id.name
-    case IConst(cd) -> v + "const " + cd.name
-    case ITypeAlias(ta) -> v + "alias " + ta.name
+    case IFunc(fd)         -> v + "func " + fd.name + "(...)"
+    case IRecord(rd)       -> v + "record " + rd.name
+    case IExposedRec(rd)   -> v + "exposed record " + rd.name
+    case IUnion(ud)        -> v + "union " + ud.name
+    case IEnum(ed)         -> v + "enum " + ed.name
+    case IOpaque(od)       -> v + "opaque type " + od.name
+    case IInterface(id)    -> v + "interface " + id.name
+    case IConst(cd)        -> v + "const " + cd.name
+    case ITypeAlias(ta)    -> v + "alias " + ta.name
     case IDistinctType(dt) -> v + "distinct type " + dt.name
-    case IExternType(et) -> "extern type " + et.name
-    case _ -> "(item)"
+    case IExternType(et)   -> "extern type " + et.name
+    case _                 -> "(item)"
   }
 }
 
 func itemName(item: in Item): Option[String] {
   match item.kind {
-    case IFunc(fd) -> Some(value = fd.name)
-    case IRecord(rd) -> Some(value = rd.name)
-    case IExposedRec(rd) -> Some(value = rd.name)
-    case IUnion(ud) -> Some(value = ud.name)
-    case IEnum(ed) -> Some(value = ed.name)
-    case IOpaque(od) -> Some(value = od.name)
-    case IInterface(id) -> Some(value = id.name)
-    case IConst(cd) -> Some(value = cd.name)
-    case ITypeAlias(ta) -> Some(value = ta.name)
+    case IFunc(fd)         -> Some(value = fd.name)
+    case IRecord(rd)       -> Some(value = rd.name)
+    case IExposedRec(rd)   -> Some(value = rd.name)
+    case IUnion(ud)        -> Some(value = ud.name)
+    case IEnum(ed)         -> Some(value = ed.name)
+    case IOpaque(od)       -> Some(value = od.name)
+    case IInterface(id)    -> Some(value = id.name)
+    case IConst(cd)        -> Some(value = cd.name)
+    case ITypeAlias(ta)    -> Some(value = ta.name)
     case IDistinctType(dt) -> Some(value = dt.name)
-    case IExternType(et) -> Some(value = et.name)
-    case _ -> None
+    case IExternType(et)   -> Some(value = et.name)
+    case _                 -> None
   }
 }
 
 func symKind(sym: in Symbol): Int {
   match sym.kind {
-    case DKFunc(_) -> 3
-    case DKRecord(_, _) -> 22
-    case DKExposedRec(_, _) -> 22
-    case DKUnion(_, _) -> 7
-    case DKEnum(_, _) -> 13
-    case DKOpaque(_, _) -> 22
-    case DKProtected(_, _) -> 22
-    case DKDistinctType(_, _) -> 22
-    case DKTypeAlias(_) -> 7
-    case DKInterface(_, _) -> 8
-    case DKConst(_) -> 21
-    case DKVal(_) -> 6
-    case _ -> 1
+    case DKFunc(_)           ->  3
+    case DKRecord(_,_)       -> 22
+    case DKExposedRec(_,_)   -> 22
+    case DKUnion(_,_)        ->  7
+    case DKEnum(_,_)         -> 13
+    case DKOpaque(_,_)       -> 22
+    case DKProtected(_,_)    -> 22
+    case DKDistinctType(_,_) -> 22
+    case DKTypeAlias(_)      ->  7
+    case DKInterface(_,_)    ->  8
+    case DKConst(_)          -> 21
+    case DKVal(_)            ->  6
+    case _                   ->  1
   }
 }
 
 func symDetail(sym: in Symbol): String {
-  val v = match sym.visibility { case Some(_) -> "pub "; case None -> "" }
+  val v = match sym.visibility { case Some(_) -> "pub " case None -> "" }
   match sym.kind {
-    case DKFunc(_) -> v + "func " + sym.name + "(...)"
-    case DKRecord(_, _) -> v + "record " + sym.name
-    case DKExposedRec(_, _) -> v + "exposed record " + sym.name
-    case DKUnion(_, _) -> v + "union " + sym.name
-    case DKEnum(_, _) -> v + "enum " + sym.name
-    case DKOpaque(_, _) -> v + "opaque type " + sym.name
-    case DKInterface(_, _) -> v + "interface " + sym.name
-    case DKConst(_) -> v + "const " + sym.name
-    case DKTypeAlias(_) -> v + "alias " + sym.name
-    case DKDistinctType(_, _) -> v + "distinct type " + sym.name
-    case DKExternType(_, _) -> "extern type " + sym.name
-    case _ -> sym.name
+    case DKFunc(_)           -> v + "func " + sym.name + "(...)"
+    case DKRecord(_,_)       -> v + "record " + sym.name
+    case DKExposedRec(_,_)   -> v + "exposed record " + sym.name
+    case DKUnion(_,_)        -> v + "union " + sym.name
+    case DKEnum(_,_)         -> v + "enum " + sym.name
+    case DKOpaque(_,_)       -> v + "opaque type " + sym.name
+    case DKInterface(_,_)    -> v + "interface " + sym.name
+    case DKConst(_)          -> v + "const " + sym.name
+    case DKTypeAlias(_)      -> v + "alias " + sym.name
+    case DKDistinctType(_,_) -> v + "distinct type " + sym.name
+    case DKExternType(_,_)   -> "extern type " + sym.name
+    case _                   -> sym.name
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §12. Occurrence finder (for rename).
 // ─────────────────────────────────────────────────────────────────────────────
+
 func occurrences(text: in String, name: in String): List[Span] {
   val result: List[Span] = newList()
   val lines = text.split("\n")
@@ -920,12 +772,11 @@ func occurrences(text: in String, name: in String): List[Span] {
     while ci <= line.length - name.length {
       if line.substring(ci, name.length) == name {
         val before = ci == 0 or not isIdChar(line[ci - 1])
-        val after = ci + name.length >= line.length or not isIdChar(line[ci + name.length])
+        val after  = ci + name.length >= line.length or not isIdChar(line[ci + name.length])
         if before and after {
           val sp = Span(
             startPos = Position(offset = 0, line = li + 1, column = ci + 1),
-            endPos = Position(offset = 0, line = li + 1, column = ci + name.length + 1)
-          )
+            endPos   = Position(offset = 0, line = li + 1, column = ci + name.length + 1))
           result.add(sp)
         }
       }
@@ -939,6 +790,7 @@ func occurrences(text: in String, name: in String): List[Span] {
 // ─────────────────────────────────────────────────────────────────────────────
 // §13. Initialize capabilities.
 // ─────────────────────────────────────────────────────────────────────────────
+
 func initResult(): String {
   val caps: List[String] = newList()
   val sync: List[String] = newList()
@@ -965,26 +817,29 @@ func initResult(): String {
   caps.add(jPair("codeActionProvider", jBool(true)))
   caps.add(jPair("renameProvider", jBool(true)))
   val info: List[String] = newList()
-  info.add(jPair("name", jStr("lyric-lsp")))
+  info.add(jPair("name",    jStr("lyric-lsp")))
   info.add(jPair("version", jStr("0.1.0")))
   val r: List[String] = newList()
   r.add(jPair("capabilities", jObj(caps)))
-  r.add(jPair("serverInfo", jObj(info)))
+  r.add(jPair("serverInfo",   jObj(info)))
   jObj(r)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §14. Handler implementations.
 // ─────────────────────────────────────────────────────────────────────────────
+
 func handleInitialize(state: in LspState, id: in String, params: in String): List[String] {
   val acc: List[String] = newList()
   acc.add(mkResponse(id, initResult()))
   // Extract workspace root — rootUri/rootPath are top-level fields of `params`.
-  val rootUri = jRootStr(params, "rootUri")
+  val rootUri  = jRootStr(params, "rootUri")
   val rootPath = jRootStr(params, "rootPath")
-  val wsRoot = if rootUri.length > 0 { uriToPath(rootUri) } else if rootPath.length > 0 { rootPath } else { "" }
-  state.wsRoot[0] = wsRoot
-  // mutate the box
+  val wsRoot =
+    if rootUri.length > 0   { uriToPath(rootUri) }
+    else if rootPath.length > 0 { rootPath }
+    else { "" }
+  state.wsRoot[0] = wsRoot   // mutate the box
   if wsRoot.length > 0 {
     rebuildWsIndex(state)
     // Pre-analyse all workspace files and push their diagnostics.
@@ -1006,12 +861,15 @@ func handleInitialize(state: in LspState, id: in String, params: in String): Lis
 func handleDocOpen(state: in LspState, params: in String): List[String] {
   val acc: List[String] = newList()
   val pdoc = parseJson(params)
-  val uri = jNested2Str(pdoc, "textDocument", "uri")
+  val uri  = jNested2Str(pdoc, "textDocument", "uri")
   // 'text' is nested inside 'textDocument'.
   val root = rootElement(pdoc)
   val text = match tryGetProperty(root, "textDocument") {
     case None -> ""
-    case Some(td) -> match tryGetProperty(td, "text") { case None -> ""; case Some(e) -> getString(e) }
+    case Some(td) -> match tryGetProperty(td, "text") {
+      case None -> ""
+      case Some(e) -> getString(e)
+    }
   }
   if uri.length > 0 {
     collectMsgs(analyzeAndStore(state, uri, text), acc)
@@ -1026,23 +884,19 @@ func handleDocChange(state: in LspState, params: in String): List[String] {
   val root = rootElement(pdoc)
   val uri = match tryGetProperty(root, "textDocument") {
     case None -> ""
-    case Some(td) -> match tryGetProperty(td, "uri") { case None -> ""; case Some(e) -> getString(e) }
+    case Some(td) -> match tryGetProperty(td, "uri") { case None -> "" case Some(e) -> getString(e) }
   }
   var newText = ""
   match tryGetProperty(root, "contentChanges") {
-    case None -> {
-    }
+    case None -> {}
     case Some(changesElem) -> {
       var en = enumerateArray(changesElem)
       var more = arrayMoveNext(en)
       while more {
         val ch = arrayCurrent(en)
         match tryGetProperty(ch, "text") {
-          case None -> {
-          }
-          case Some(te) -> {
-            newText = getString(te)
-          }
+          case None -> {}
+          case Some(te) -> { newText = getString(te) }
         }
         more = arrayMoveNext(en)
       }
@@ -1058,7 +912,7 @@ func handleDocChange(state: in LspState, params: in String): List[String] {
 func handleDocClose(state: in LspState, params: in String): List[String] {
   val acc: List[String] = newList()
   val pdoc = parseJson(params)
-  val uri = jNested2Str(pdoc, "textDocument", "uri")
+  val uri  = jNested2Str(pdoc, "textDocument", "uri")
   if uri.length > 0 {
     state.store.remove(uri)
     val empty: List[Diagnostic] = newList()
@@ -1068,51 +922,40 @@ func handleDocClose(state: in LspState, params: in String): List[String] {
 }
 
 func handleHover(state: in LspState, params: in String): String {
-  val pdoc = parseJson(params)
-  val uri = jNested2Str(pdoc, "textDocument", "uri")
+  val pdoc    = parseJson(params)
+  val uri     = jNested2Str(pdoc, "textDocument", "uri")
   val lineNum = jNested2Int(pdoc, "position", "line")
-  val colNum = jNested2Int(pdoc, "position", "character")
+  val colNum  = jNested2Int(pdoc, "position", "character")
   match mapGet(state.store, uri) {
-    case None -> {
-      return "{}"
-    }
+    case None -> { return "{}" }
     case Some(cached) -> {
       match identAtPos(cached.source, lineNum + 1, colNum + 1) {
-        case None -> {
-          return "{}"
-        }
+        case None      -> { return "{}" }
         case Some(ident) -> {
           val cr = cached.checkResult
-          val crFile = cr.file
+          val crFile  = cr.file
           val crItems = crFile.items
           var foundIt: Option[Item] = None
           var i = 0
           while i < crItems.count {
             match itemName(crItems[i]) {
-              case Some(n) -> {
-                if n == ident and isNone(foundIt) {
-                  foundIt = Some(value = crItems[i])
-                }
-              }
-              case None -> {
-              }
+              case Some(n) -> { if n == ident and isNone(foundIt) { foundIt = Some(value = crItems[i]) } }
+              case None    -> {}
             }
             i = i + 1
           }
           match foundIt {
-            case None -> {
-              return "{}"
-            }
+            case None    -> { return "{}" }
             case Some(it) -> {
               val body = match it.kind {
                 case IFunc(fd) -> {
                   val arityKey = fd.name + "/" + ("" + fd.params.count)
                   val sigOpt = match mapGet(cr.sigs, arityKey) {
-                    case None -> mapGet(cr.sigs, fd.name)
+                    case None    -> mapGet(cr.sigs, fd.name)
                     case Some(s) -> Some(value = s)
                   }
                   match sigOpt {
-                    case None -> itemSummary(it)
+                    case None    -> itemSummary(it)
                     case Some(s) -> renderSig(cr, s, fd.name)
                   }
                 }
@@ -1121,18 +964,16 @@ func handleHover(state: in LspState, params: in String): String {
               var fullBody = body
               var di = 0
               while di < it.docComments.count {
-                if di == 0 {
-                  fullBody = fullBody + "\n\n"
-                }
+                if di == 0 { fullBody = fullBody + "\n\n" }
                 fullBody = fullBody + it.docComments[di].text.trim() + "\n"
                 di = di + 1
               }
               val fs: List[String] = newList()
               val contents: List[String] = newList()
-              contents.add(jPair("kind", jStr("markdown")))
+              contents.add(jPair("kind",  jStr("markdown")))
               contents.add(jPair("value", jStr("```lyric\n" + fullBody + "\n```")))
               fs.add(jPair("contents", jObj(contents)))
-              fs.add(jPair("range", toLspRange(it.span)))
+              fs.add(jPair("range",    toLspRange(it.span)))
               return jObj(fs)
             }
           }
@@ -1145,22 +986,22 @@ func handleHover(state: in LspState, params: in String): String {
 
 func handleCompletion(state: in LspState, params: in String): String {
   val pdoc = parseJson(params)
-  val uri = jNested2Str(pdoc, "textDocument", "uri")
+  val uri  = jNested2Str(pdoc, "textDocument", "uri")
   match mapGet(state.store, uri) {
     case None -> "[]"
     case Some(cached) -> {
       val items: List[String] = newList()
-      val seen: Set[String] = newSet()
-      val cachedCr2 = cached.checkResult
-      val symTable2 = cachedCr2.symbols
-      val syms = symTable2.symbols
+      val seen: Set[String]   = newSet()
+      val cachedCr2  = cached.checkResult
+      val symTable2  = cachedCr2.symbols
+      val syms       = symTable2.symbols
       var i = 0
       while i < syms.count {
         val s = syms[i]
         if seen.add(s.name) {
           val compItem: List[String] = newList()
-          compItem.add(jPair("label", jStr(s.name)))
-          compItem.add(jPair("kind", jInt(symKind(s))))
+          compItem.add(jPair("label",  jStr(s.name)))
+          compItem.add(jPair("kind",   jInt(symKind(s))))
           compItem.add(jPair("detail", jStr(symDetail(s))))
           items.add(jObj(compItem))
         }
@@ -1172,38 +1013,28 @@ func handleCompletion(state: in LspState, params: in String): String {
 }
 
 func handleDefinition(state: in LspState, params: in String): String {
-  val pdoc = parseJson(params)
-  val uri = jNested2Str(pdoc, "textDocument", "uri")
+  val pdoc    = parseJson(params)
+  val uri     = jNested2Str(pdoc, "textDocument", "uri")
   val lineNum = jNested2Int(pdoc, "position", "line")
-  val colNum = jNested2Int(pdoc, "position", "character")
+  val colNum  = jNested2Int(pdoc, "position", "character")
   match mapGet(state.store, uri) {
-    case None -> {
-      return "[]"
-    }
+    case None -> { return "[]" }
     case Some(cached) -> {
       match identAtPos(cached.source, lineNum + 1, colNum + 1) {
-        case None -> {
-          return "[]"
-        }
+        case None      -> { return "[]" }
         case Some(ident) -> {
-          val cr = cached.checkResult
-          val crFile = cr.file
+          val cr      = cached.checkResult
+          val crFile  = cr.file
           val crItems = crFile.items
-          var foundSpan: Option[Span] = None
-          var foundUri: String = uri
+          var foundSpan: Option[Span]   = None
+          var foundUri:  String         = uri
           // Local search first.
           var i = 0
           var localDone = false
           while i < crItems.count and not localDone {
             match itemName(crItems[i]) {
-              case Some(n) -> {
-                if n == ident {
-                  foundSpan = Some(value = crItems[i].span)
-                  localDone = true
-                }
-              }
-              case None -> {
-              }
+              case Some(n) -> { if n == ident { foundSpan = Some(value = crItems[i].span); localDone = true } }
+              case None    -> {}
             }
             i = i + 1
           }
@@ -1214,12 +1045,12 @@ func handleDefinition(state: in LspState, params: in String): String {
             var fi = 0
             var wsDone = false
             while fi < files.count and not wsDone {
-              val fp = files[fi]
+              val fp  = files[fi]
               val fUri = pathToUri(fp)
               if fUri != uri and hostFileExists(fp) {
                 val impParsed = parse(hostReadAllText(fp))
-                val impFile = impParsed.file
-                val impItems = impFile.items
+                val impFile   = impParsed.file
+                val impItems  = impFile.items
                 var ki = 0
                 var fileDone = false
                 while ki < impItems.count and not fileDone {
@@ -1227,13 +1058,12 @@ func handleDefinition(state: in LspState, params: in String): String {
                     case Some(n) -> {
                       if n == ident {
                         foundSpan = Some(value = impItems[ki].span)
-                        foundUri = fUri
-                        fileDone = true
-                        wsDone = true
+                        foundUri  = fUri
+                        fileDone  = true
+                        wsDone    = true
                       }
                     }
-                    case None -> {
-                    }
+                    case None -> {}
                   }
                   ki = ki + 1
                 }
@@ -1242,12 +1072,10 @@ func handleDefinition(state: in LspState, params: in String): String {
             }
           }
           match foundSpan {
-            case None -> {
-              return "[]"
-            }
+            case None -> { return "[]" }
             case Some(span) -> {
               val fs: List[String] = newList()
-              fs.add(jPair("uri", jStr(foundUri)))
+              fs.add(jPair("uri",   jStr(foundUri)))
               fs.add(jPair("range", toLspRange(span)))
               return jObj(fs)
             }
@@ -1263,24 +1091,18 @@ func handleDefinition(state: in LspState, params: in String): String {
 // {"start":{"line":L,"character":C},"end":{"line":L2,"character":C2}}.
 // Line/character are 0-based (LSP convention).
 func textAtJsonRange(source: in String, rangeJson: in String): String {
-  val rdoc = parseJson(rangeJson)
+  val rdoc      = parseJson(rangeJson)
   val startLine = jNested2Int(rdoc, "start", "line")
   val startChar = jNested2Int(rdoc, "start", "character")
-  val endLine = jNested2Int(rdoc, "end", "line")
-  val endChar = jNested2Int(rdoc, "end", "character")
-  val lines = source.split("\n")
-  if startLine >= lines.length {
-    return ""
-  }
+  val endLine   = jNested2Int(rdoc, "end",   "line")
+  val endChar   = jNested2Int(rdoc, "end",   "character")
+  val lines     = source.split("\n")
+  if startLine >= lines.length { return "" }
   if startLine == endLine {
     val line = lines[startLine]
-    if startChar >= line.length {
-      return ""
-    }
+    if startChar >= line.length { return "" }
     val len = endChar - startChar
-    if len <= 0 {
-      return ""
-    }
+    if len <= 0 { return "" }
     val safeLen = if startChar + len > line.length { line.length - startChar } else { len }
     line.substring(startChar, safeLen)
   } else {
@@ -1302,49 +1124,38 @@ func textAtJsonRange(source: in String, rangeJson: in String): String {
 // Scan backwards from offset to find the opening paren of the nearest call,
 // then count top-level commas between that paren and the cursor.
 func callParamIndexAt(text: in String, offset: in Int): Int {
-  var i = offset - 1
+  var i     = offset - 1
   var depth = 0
   var found = -1
-  var loop = true
+  var loop  = true
   while loop and i >= 0 {
     val c = text[i]
-    if c == ')' or c == ']' {
-      depth = depth + 1
-    } else if c == '(' or c == '[' {
-      if depth == 0 {
-        found = i
-        loop = false
-      } else {
-        depth = depth - 1
-      }
+    if c == ')' or c == ']' { depth = depth + 1 }
+    else if c == '(' or c == '[' {
+      if depth == 0 { found = i; loop = false }
+      else { depth = depth - 1 }
     }
     i = i - 1
   }
-  if found < 0 {
-    return 0
-  }
+  if found < 0 { return 0 }
   var commas = 0
-  var j = found + 1
+  var j  = found + 1
   var d2 = 0
   while j < offset {
     val c = text[j]
-    if c == '(' or c == '[' {
-      d2 = d2 + 1
-    } else if c == ')' or c == ']' {
-      d2 = d2 - 1
-    } else if c == ',' and d2 == 0 {
-      commas = commas + 1
-    }
+    if c == '(' or c == '[' { d2 = d2 + 1 }
+    else if c == ')' or c == ']' { d2 = d2 - 1 }
+    else if c == ',' and d2 == 0 { commas = commas + 1 }
     j = j + 1
   }
   commas
 }
 
 func handleSignatureHelp(state: in LspState, params: in String): String {
-  val pdoc = parseJson(params)
-  val uri = jNested2Str(pdoc, "textDocument", "uri")
+  val pdoc    = parseJson(params)
+  val uri     = jNested2Str(pdoc, "textDocument", "uri")
   val lineNum = jNested2Int(pdoc, "position", "line")
-  val colNum = jNested2Int(pdoc, "position", "character")
+  val colNum  = jNested2Int(pdoc, "position", "character")
   match mapGet(state.store, uri) {
     case None -> "{}"
     case Some(cached) -> {
@@ -1352,15 +1163,13 @@ func handleSignatureHelp(state: in LspState, params: in String): String {
       match callContextAt(cached.source, off) {
         case None -> "{}"
         case Some(funcName) -> {
-          val cr = cached.checkResult
+          val cr         = cached.checkResult
           val crSymTable = cr.symbols
-          val crSymList = crSymTable.symbols
+          val crSymList  = crSymTable.symbols
           var sigOpt: Option[ResolvedSignature] = None
           match mapGet(cr.sigs, funcName) {
-            case Some(s) -> {
-              sigOpt = Some(value = s)
-            }
-            case None -> {
+            case Some(s) -> { sigOpt = Some(value = s) }
+            case None    -> {
               // Try name/N keys via symbol table.
               var si = 0
               var sigFound = false
@@ -1371,16 +1180,11 @@ func handleSignatureHelp(state: in LspState, params: in String): String {
                     case DKFunc(fd) -> {
                       val key = funcName + "/" + ("" + fd.params.count)
                       match mapGet(cr.sigs, key) {
-                        case Some(s) -> {
-                          sigOpt = Some(value = s)
-                          sigFound = true
-                        }
-                        case None -> {
-                        }
+                        case Some(s) -> { sigOpt = Some(value = s); sigFound = true }
+                        case None    -> {}
                       }
                     }
-                    case _ -> {
-                    }
+                    case _ -> {}
                   }
                 }
                 si = si + 1
@@ -1388,7 +1192,7 @@ func handleSignatureHelp(state: in LspState, params: in String): String {
             }
           }
           match sigOpt {
-            case None -> "{}"
+            case None    -> "{}"
             case Some(sg) -> {
               val pArr: List[String] = newList()
               var pi = 0
@@ -1402,13 +1206,13 @@ func handleSignatureHelp(state: in LspState, params: in String): String {
               }
               val sigLabel = renderSig(cr, sg, funcName)
               val sigObj: List[String] = newList()
-              sigObj.add(jPair("label", jStr(sigLabel)))
+              sigObj.add(jPair("label",      jStr(sigLabel)))
               sigObj.add(jPair("parameters", jArr(pArr)))
               val sigsArr: List[String] = newList()
               sigsArr.add(jObj(sigObj))
               val activeParam = callParamIndexAt(cached.source, off)
               val r: List[String] = newList()
-              r.add(jPair("signatures", jArr(sigsArr)))
+              r.add(jPair("signatures",     jArr(sigsArr)))
               r.add(jPair("activeSignature", jInt(0)))
               r.add(jPair("activeParameter", jInt(activeParam)))
               jObj(r)
@@ -1423,7 +1227,7 @@ func handleSignatureHelp(state: in LspState, params: in String): String {
 func findProofRequiredAnn(anns: in List[Annotation]): Option[Annotation] {
   var i = 0
   while i < anns.count {
-    val a = anns[i]
+    val a    = anns[i]
     val aName = a.name
     val aSegs = aName.segments
     if aSegs.count == 1 and aSegs[0] == "proof_required" {
@@ -1434,479 +1238,57 @@ func findProofRequiredAnn(anns: in List[Annotation]): Option[Annotation] {
   None
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// §15a. "Implement Interface" code-action support (D105 §B).
-// ─────────────────────────────────────────────────────────────────────────────
-// Lazily build the reference-pack metadata indexes on first use.  Idempotent.
-// When the reference pack is unavailable (SDK-less environment), the indexes
-// stay empty and the extern-impl scaffolder silently falls back to no-op.
-func ensureLspMetadataIndex(state: in LspState): Unit {
-  if state.ffiIndexInit[0] {
-    return
-  }
-  state.ffiIndexInit[0] = true
-  match Mdr.refPackDir() {
-    case None -> {
-    }
-    case Some(refDir) -> {
-      val paths = Mdr.enumRefAssemblies(refDir)
-      val ty = Mdr.buildTypeIndex(paths)
-      val pa = Mdr.buildPathIndex(paths)
-      for k in dictGetKeys(ty) {
-        match mapGet(ty, k) { case Some(v) -> state.ffiTypeIndex.add(k, v); case None -> {  } }
-      }
-      for k in dictGetKeys(pa) {
-        match mapGet(pa, k) { case Some(v) -> state.ffiPathIndex.add(k, v); case None -> {  } }
-      }
-    }
-  }
-}
-
-// Render a TypeExpr back as Lyric source text.  Recursive; handles primitive
-// names (`Int`, `String`, …), simple type refs (`Resource`), and generic
-// applications (`List[Int]`, `Map[String, Int]`).  Unknown / structural
-// shapes fall back to `Any` so the stub still parses; the user can fix up.
-func renderTypeExprAsLyricSource(te: in TypeExpr): String {
-  match te.kind {
-    case TRef(path) -> {
-      var s = ""
-      var i = 0
-      while i < path.segments.count {
-        if i > 0 {
-          s = s + "."
-        }
-        s = s + path.segments[i]
-        i = i + 1
-      }
-      s
-    }
-    case TGenericApp(head, args) -> {
-      var s = ""
-      var hi = 0
-      while hi < head.segments.count {
-        if hi > 0 {
-          s = s + "."
-        }
-        s = s + head.segments[hi]
-        hi = hi + 1
-      }
-      s = s + "["
-      var ai = 0
-      while ai < args.count {
-        if ai > 0 {
-          s = s + ", "
-        }
-        s = s + match args[ai] {
-          case TAType(t) -> renderTypeExprAsLyricSource(t)
-          case TAValue(_) -> "_"
-        }
-        ai = ai + 1
-      }
-      s = s + "]"
-      s
-    }
-    case _ -> "Any"
-  }
-}
-
-// Render one Lyric `Param` as `name: mode Type` (or just `name: Type` when
-// the mode keyword was omitted in the source).  Used when synthesising
-// native-interface method stubs from the iface's `IMSig` members.
-func renderParamAsLyricSource(p: in Param): String {
-  val modeStr = if p.modeExplicit {
-    match p.mode { case PMIn -> "in "; case PMOut -> "out "; case PMInout -> "inout " }
-  } else {
-    ""
-  }
-  p.name + ": " + modeStr + renderTypeExprAsLyricSource(p.ty)
-}
-
-// True when `s` is contained in (or touches the start of) the impl decl's
-// LSP-translated source span.  Used to identify an impl block at the
-// caret/selection range of a code-action request.
-func lspRangePositionInside(rng: in String, target: in Span): Bool {
-  val pdoc = parseJson(rng)
-  val r = rootElement(pdoc)
-  val sLine = match tryGetProperty(r, "start") {
-    case None -> -1
-    case Some(sp) -> match tryGetProperty(sp, "line") { case None -> -1; case Some(e) -> match tryGetInt(e) { case None -> -1; case Some(n) -> n + 1 } }
-  }
-  val sCol = match tryGetProperty(r, "start") {
-    case None -> -1
-    case Some(sp) -> match tryGetProperty(sp, "character") { case None -> -1; case Some(e) -> match tryGetInt(e) { case None -> -1; case Some(n) -> n + 1 } }
-  }
-  if sLine < 0 {
-    return false
-  }
-  val tsLine = target.startPos.line
-  val tsCol = target.startPos.column
-  val teLine = target.endPos.line
-  val teCol = target.endPos.column
-  val afterStart = sLine > tsLine or (sLine == tsLine and sCol >= tsCol)
-  val beforeEnd = sLine < teLine or (sLine == teLine and sCol <= teCol)
-  afterStart and beforeEnd
-}
-
-// Find an IImpl block in `file` whose span contains `rng`, or None.  The
-// first match wins (impl blocks don't nest).
-func findImplDeclAtRange(file: in SourceFile, rng: in String): Option[ImplDecl] {
-  var i = 0
-  while i < file.items.count {
-    match file.items[i].kind {
-      case IImpl(decl) -> {
-        if lspRangePositionInside(rng, decl.span) {
-          return Some(value = decl)
-        }
-      }
-      case _ -> {
-      }
-    }
-    i = i + 1
-  }
-  None
-}
-
-// Names of methods the user has already implemented in this impl block.
-// Compared against the iface's required-method list to compute the
-// scaffolder's "missing" set.
-func implMethodNames(decl: in ImplDecl): List[String] {
-  val names: List[String] = newList()
-  var i = 0
-  while i < decl.members.count {
-    match decl.members[i] {
-      case IMplFunc(fn) -> names.add(fn.name)
-      case IMplAssoc(_) -> {
-      }
-    }
-    i = i + 1
-  }
-  names
-}
-
-func listContainsString(xs: in List[String], s: in String): Bool {
-  var i = 0
-  while i < xs.count {
-    if xs[i] == s {
-      return true
-    }
-    i = i + 1
-  }
-  false
-}
-
-// Find the `DKInterface` symbol named `name`, or None.  Mirrors
-// `findInterfaceDecl` in `typechecker_checker.l` but lives here so the
-// LSP doesn't have to expose its symbol-table walker.
-func lspFindInterfaceDecl(tbl: in SymbolTable, name: in String): Option[InterfaceDecl] {
-  var i = 0
-  while i < tbl.symbols.count {
-    match tbl.symbols[i].kind {
-      case DKInterface(_, d) -> {
-        if tbl.symbols[i].name == name {
-          return Some(value = d)
-        }
-      }
-      case _ -> {
-      }
-    }
-    i = i + 1
-  }
-  None
-}
-
-// CLR FQN of a `DKExternType` symbol named `name`, or "" when no extern
-// type by that name is in scope.  Used by the extern-impl scaffolder to
-// route through `Mdr.inspectInterfaceTarget`.
-func lspFindExternTypeFqn(tbl: in SymbolTable, name: in String): String {
-  var i = 0
-  while i < tbl.symbols.count {
-    match tbl.symbols[i].kind {
-      case DKExternType(_, decl) -> {
-        if tbl.symbols[i].name == name {
-          return decl.clrName
-        }
-      }
-      case _ -> {
-      }
-    }
-    i = i + 1
-  }
-  ""
-}
-
-// Map a BCL SigType to its idiomatic Lyric source form.  Primitives use the
-// Lyric names (`Int`, `Long`, …); the void return becomes `Unit`.  Named
-// types fall through to their CLR FQN — the user can rewrite to a Lyric
-// alias.  Unsupported shapes (generics, byref, …) render as `Any` so the
-// stub still parses; the validation pass will surface the gap.
-func sigTypeToLyricSource(s: in Mdr.SigType): String {
-  val pb = Mdr.sigPrimByte(s)
-  if pb >= 0 {
-    if pb == 0x01 { "Unit" }
-    else if pb == 0x02 { "Bool" }
-    else if pb == 0x03 { "Char" }
-    else if pb == 0x05 { "Byte" }
-    else if pb == 0x08 { "Int" }
-    else if pb == 0x0A { "Long" }
-    else if pb == 0x0D { "Double" }
-    else if pb == 0x0E { "String" }
-    else if pb == 0x1C { "Any" }
-    else { "Any" }
-  } else {
-    val fqn = Mdr.sigNamedFqn(s)
-    if fqn.length > 0 { fqn } else { "Any" }
-  }
-}
-
-// True when `s` mentions a Var / MVar / GenericInst / ByRef / Array shape
-// that the scaffolder can't render cleanly.  Mirrors
-// `sigHasGenericOrByRefMsil` in codegen.l; methods whose signature trips
-// this are skipped (rather than rendered as `Any`-laden stubs that would
-// almost certainly be wrong).
-func sigIsRenderable(s: in Mdr.SigType): Bool {
-  if Mdr.sigPrimByte(s) >= 0 {
-    return true
-  }
-  if Mdr.sigNamedFqn(s).length > 0 {
-    return true
-  }
-  false
-}
-
-// Build a stub `func name(p1: in T1, …): Ret { panic("not implemented") }`
-// for one interface method.  `prefix` is the indent (whatever sits before
-// the closing brace) so the inserted line aligns visually.
-func stubFromNativeSig(sig: in FunctionSig, prefix: in String): String {
-  var src = prefix + "func " + sig.name + "("
-  var i = 0
-  while i < sig.params.count {
-    if i > 0 {
-      src = src + ", "
-    }
-    src = src + renderParamAsLyricSource(sig.params[i])
-    i = i + 1
-  }
-  src = src + "): "
-  src = src + match sig.ret { case None -> "Unit"; case Some(te) -> renderTypeExprAsLyricSource(te) }
-  src = src + " {\n" + prefix + "  panic(\"not implemented\")\n" + prefix + "}\n"
-  src
-}
-
-// Build a stub from an extern (metadata-resolved) method signature.  The
-// parameter names follow the standard `arg<N>` convention; metadata does
-// not preserve parameter names on every reference-pack assembly.  Modes
-// default to `in` for a value/class type — refining to out/inout is a
-// follow-up tied to the existing ByRef gap in the validation pass.
-func stubFromExternSig(m: in Mdr.ResolvedMethod, prefix: in String): String {
-  var src = prefix + "func " + m.name + "("
-  var i = 0
-  while i < m.paramTypes.count {
-    if i > 0 {
-      src = src + ", "
-    }
-    src = src + "arg" + toString(i + 1) + ": in " + sigTypeToLyricSource(m.paramTypes[i])
-    i = i + 1
-  }
-  src = src + "): " + sigTypeToLyricSource(m.returnType)
-  src = src + " {\n" + prefix + "  panic(\"not implemented\")\n" + prefix + "}\n"
-  src
-}
-
-// Convert a source-text byte offset to a 0-indexed LSP `Position` shape
-// (`{"line": …, "character": …}`).  Walks the prefix once; offsets past
-// end of source clamp to the EOF position.
-func offsetToLspPosJson(source: in String, offset: in Int): String {
-  var line = 0
-  var col = 0
-  var i = 0
-  val n = if offset < source.length { offset } else { source.length }
-  while i < n {
-    if source[i] == '\n' {
-      line = line + 1
-      col = 0
-    } else {
-      col = col + 1
-    }
-    i = i + 1
-  }
-  val fs: List[String] = newList()
-  fs.add(jPair("line", jInt(line)))
-  fs.add(jPair("character", jInt(col)))
-  jObj(fs)
-}
-
-// LSP range that covers the closing `}` of the impl block AND any
-// whitespace on the same line preceding it.  The code action replaces
-// the whole range with `<stubs><indent>}` — so the indent before `}`
-// isn't doubled in the output (and the single-line `impl … { }` shape
-// still works because in that case there's no preceding whitespace on
-// the `}`'s line).
-func implCloseBraceRange(source: in String, decl: in ImplDecl): String {
-  val endOff = decl.span.endPos.offset
-  var braceOff = if endOff > 0 { endOff - 1 } else { 0 }
-  var startOff = braceOff
-  while startOff > 0 and (source[startOff - 1] == ' ' or source[startOff - 1] == '\t') {
-    startOff = startOff - 1
-  }
-  val fs: List[String] = newList()
-  fs.add(jPair("start", offsetToLspPosJson(source, startOff)))
-  fs.add(jPair("end", offsetToLspPosJson(source, endOff)))
-  jObj(fs)
-}
-
-// Detect the indent of the line that contains the impl block's closing `}`.
-// Used so the synthesised stubs and the replacement `}` align visually
-// with the rest of the impl body.  Defaults to "" when the line couldn't
-// be identified (e.g. malformed source).
-func implBodyIndent(source: in String, decl: in ImplDecl): String {
-  val braceOff = if decl.span.endPos.offset > 0 { decl.span.endPos.offset - 1 } else { 0 }
-  var lineStart = braceOff
-  while lineStart > 0 and source[lineStart - 1] != '\n' {
-    lineStart = lineStart - 1
-  }
-  var p = lineStart
-  while p < braceOff and (source[p] == ' ' or source[p] == '\t') {
-    p = p + 1
-  }
-  source.substring(lineStart, p - lineStart)
-}
-
-// True when at least one `IMSig` member of the native iface lacks an impl.
-// Names matched by simple string equality.
-func nativeMissingMethods(iface: in InterfaceDecl, impls: in List[String]): List[FunctionSig] {
-  val missing: List[FunctionSig] = newList()
-  var i = 0
-  while i < iface.members.count {
-    match iface.members[i] {
-      case IMSig(sig) -> {
-        if not listContainsString(impls, sig.name) {
-          missing.add(sig)
-        }
-      }
-      case _ -> {
-      }
-    }
-    i = i + 1
-  }
-  missing
-}
-
-// Build the native-interface stub block for any methods missing from the
-// impl.  Returns "" when nothing is missing.
-func buildNativeStubBlock(iface: in InterfaceDecl, impls: in List[String], indent: in String): String {
-  val missing = nativeMissingMethods(iface, impls)
-  if missing.count == 0 {
-    return ""
-  }
-  var block = ""
-  var i = 0
-  while i < missing.count {
-    block = block + stubFromNativeSig(missing[i], indent + "  ")
-    i = i + 1
-  }
-  block
-}
-
-// Build the extern-interface stub block for any abstract methods missing
-// from the impl.  Reads the iface's metadata via `Mdr.inspectInterfaceTarget`;
-// returns "" when the reference pack is absent or every required method is
-// already implemented.  Skips methods whose signature mentions a generic /
-// byref / array shape (D105 §B v1 covers flat signatures only).
-func buildExternStubBlock(
-  state: in LspState, externFqn: in String, impls: in List[String], indent: in String
-): String {
-  ensureLspMetadataIndex(state)
-  match mapGet(state.ffiTypeIndex, externFqn) {
-    case None -> ""
-    case Some(asmName) -> match mapGet(state.ffiPathIndex, asmName) {
-      case None -> ""
-      case Some(asmPath) -> match Mdr.inspectInterfaceTarget(asmPath, externFqn) {
-        case None -> ""
-        case Some(insp) -> {
-          if not insp.isInterface {
-            return ""
-          }
-          var block = ""
-          var i = 0
-          while i < insp.methods.count {
-            val m = insp.methods[i]
-            if m.isAbstract and not m.isStatic and not listContainsString(impls, m.name) {
-              var renderable = sigIsRenderable(m.returnType)
-              var pj = 0
-              while pj < m.paramTypes.count and renderable {
-                if not sigIsRenderable(m.paramTypes[pj]) {
-                  renderable = false
-                }
-                pj = pj + 1
-              }
-              if renderable {
-                block = block + stubFromExternSig(m, indent + "  ")
-              }
-            }
-            i = i + 1
-          }
-          block
-        }
-      }
-    }
-  }
-}
-
 func handleCodeAction(state: in LspState, params: in String): String {
   val pdoc = parseJson(params)
   val root = rootElement(pdoc)
   val uri = match tryGetProperty(root, "textDocument") {
     case None -> ""
-    case Some(td) -> match tryGetProperty(td, "uri") { case None -> ""; case Some(e) -> getString(e) }
+    case Some(td) -> match tryGetProperty(td, "uri") { case None -> "" case Some(e) -> getString(e) }
   }
   val actions: List[String] = newList()
   match mapGet(state.store, uri) {
-    case None -> {
-    }
+    case None -> {}
     case Some(cached) -> {
-      val cachedCr = cached.checkResult
+      val cachedCr   = cached.checkResult
       val cachedFile = cachedCr.file
-      val fileAnns = cachedFile.fileAnnotations
+      val fileAnns   = cachedFile.fileAnnotations
       match tryGetProperty(root, "context") {
-        case None -> {
-        }
+        case None -> {}
         case Some(ctx) -> {
           match tryGetProperty(ctx, "diagnostics") {
-            case None -> {
-            }
+            case None -> {}
             case Some(diagsArr) -> {
               var en = enumerateArray(diagsArr)
               var more = arrayMoveNext(en)
               while more {
-                val diag = arrayCurrent(en)
-                val diagCode = match tryGetProperty(diag, "code") { case None -> ""; case Some(e) -> getString(e) }
-                val diagRange = match tryGetProperty(diag, "range") { case None -> "{}"; case Some(e) -> getRawText(e) }
+                val diag     = arrayCurrent(en)
+                val diagCode = match tryGetProperty(diag, "code") {
+                  case None -> ""
+                  case Some(e) -> getString(e)
+                }
+                val diagRange = match tryGetProperty(diag, "range") {
+                  case None -> "{}"
+                  case Some(e) -> getRawText(e)
+                }
                 if diagCode == "V0009" {
-                  val original = textAtJsonRange(cached.source, diagRange)
+                  val original  = textAtJsonRange(cached.source, diagRange)
                   val newTextV9 = if original.length > 0 { "unsafe { " + original + " }" } else { "unsafe { }" }
                   actions.add(mkCodeAction(uri, "Wrap in unsafe { }", diagRange, newTextV9))
                 }
                 if diagCode == "V0003" {
                   match findProofRequiredAnn(fileAnns) {
-                    case None -> {
-                    }
+                    case None -> {}
                     case Some(ann) -> {
                       val annRange = toLspRange(ann.span)
-                      actions.add(
-                        mkCodeAction(
-                          uri,
-                          "Allow unsafe blocks (@proof_required(unsafe_blocks_allowed))",
-                          annRange,
-                          "@proof_required(unsafe_blocks_allowed)"
-                        )
-                      )
+                      actions.add(mkCodeAction(uri,
+                        "Allow unsafe blocks (@proof_required(unsafe_blocks_allowed))",
+                        annRange, "@proof_required(unsafe_blocks_allowed)"))
                     }
                   }
                 }
                 if diagCode == "V0007" or diagCode == "V0008" {
                   match findProofRequiredAnn(fileAnns) {
-                    case None -> {
-                    }
+                    case None -> {}
                     case Some(ann) -> {
                       val annRange = toLspRange(ann.span)
                       actions.add(mkCodeAction(uri, "Downgrade to @runtime_checked", annRange, "@runtime_checked"))
@@ -1919,47 +1301,6 @@ func handleCodeAction(state: in LspState, params: in String): String {
           }
         }
       }
-      // ── D105 §B: "Implement <Iface>" proactive code action ───────────────
-      // Fires whenever the code-action request range overlaps an `impl Iface
-      // for Record { … }` block.  Builds method stubs for any required iface
-      // method that the user has not yet supplied:
-      //   - Native interfaces (DKInterface): walk IMSig members.
-      //   - Extern interfaces (DKExternType): consult the reference-pack
-      //     metadata via `Mdr.inspectInterfaceTarget` (lazy index).
-      // The replacement range is exactly the closing `}` so the inserted
-      // stubs land just before it; the `}` is reprinted at the end of the
-      // newText to keep the surrounding source intact.
-      val reqRange = match tryGetProperty(root, "range") {
-        case None -> "{}"
-        case Some(e) -> getRawText(e)
-      }
-      match findImplDeclAtRange(cachedFile, reqRange) {
-        case None -> {
-        }
-        case Some(implDecl) -> {
-          val ifaceSegs = implDecl.iface.head.segments
-          if ifaceSegs.count > 0 {
-            val ifaceName = ifaceSegs[ifaceSegs.count - 1]
-            val impls = implMethodNames(implDecl)
-            val indent = implBodyIndent(cached.source, implDecl)
-            val nativeBlock = match lspFindInterfaceDecl(cachedCr.symbols, ifaceName) {
-              case None -> ""
-              case Some(ifaceDecl) -> buildNativeStubBlock(ifaceDecl, impls, indent)
-            }
-            val stubBlock = if nativeBlock.length > 0 {
-              nativeBlock
-            } else {
-              val externFqn = lspFindExternTypeFqn(cachedCr.symbols, ifaceName)
-              if externFqn.length > 0 { buildExternStubBlock(state, externFqn, impls, indent) } else { "" }
-            }
-            if stubBlock.length > 0 {
-              val rng = implCloseBraceRange(cached.source, implDecl)
-              val newText = stubBlock + indent + "}"
-              actions.add(mkCodeAction(uri, "Implement " + ifaceName, rng, newText))
-            }
-          }
-        }
-      }
     }
   }
   jArr(actions)
@@ -1967,7 +1308,7 @@ func handleCodeAction(state: in LspState, params: in String): String {
 
 func mkCodeAction(uri: in String, title: in String, range: in String, newText: in String): String {
   val te: List[String] = newList()
-  te.add(jPair("range", range))
+  te.add(jPair("range",   range))
   te.add(jPair("newText", jStr(newText)))
   val edits: List[String] = newList()
   edits.add(jObj(te))
@@ -1977,36 +1318,32 @@ func mkCodeAction(uri: in String, title: in String, range: in String, newText: i
   edit.add(jPair("changes", jObj(changes)))
   val action: List[String] = newList()
   action.add(jPair("title", jStr(title)))
-  action.add(jPair("kind", jStr("quickfix")))
-  action.add(jPair("edit", jObj(edit)))
+  action.add(jPair("kind",  jStr("quickfix")))
+  action.add(jPair("edit",  jObj(edit)))
   jObj(action)
 }
 
 func handleRename(state: in LspState, params: in String): String {
-  val pdoc = parseJson(params)
-  val root = rootElement(pdoc)
-  val uri = jNested2Str(pdoc, "textDocument", "uri")
+  val pdoc    = parseJson(params)
+  val root    = rootElement(pdoc)
+  val uri     = jNested2Str(pdoc, "textDocument", "uri")
   val lineNum = jNested2Int(pdoc, "position", "line")
-  val colNum = jNested2Int(pdoc, "position", "character")
+  val colNum  = jNested2Int(pdoc, "position", "character")
   val newName = jRootStr(params, "newName")
   match mapGet(state.store, uri) {
-    case None -> "{}"
+    case None    -> "{}"
     case Some(cached) -> {
       match identAtPos(cached.source, lineNum + 1, colNum + 1) {
-        case None -> "{}"
+        case None      -> "{}"
         case Some(ident) -> {
           // Collect open URIs to rename across: current doc + its consumers.
           val uris: List[String] = newList()
           uris.add(uri)
           match mapGet(state.revDeps, uri) {
-            case None -> {
-            }
+            case None    -> {}
             case Some(cs) -> {
               var ci = 0
-              while ci < cs.count {
-                uris.add(cs[ci])
-                ci = ci + 1
-              }
+              while ci < cs.count { uris.add(cs[ci]); ci = ci + 1 }
             }
           }
           val changes: List[String] = newList()
@@ -2014,8 +1351,7 @@ func handleRename(state: in LspState, params: in String): String {
           while ui < uris.count {
             val openUri = uris[ui]
             match mapGet(state.store, openUri) {
-              case None -> {
-              }
+              case None    -> {}
               case Some(od) -> {
                 val spans = occurrences(od.source, ident)
                 if spans.count > 0 {
@@ -2023,7 +1359,7 @@ func handleRename(state: in LspState, params: in String): String {
                   var si = 0
                   while si < spans.count {
                     val te: List[String] = newList()
-                    te.add(jPair("range", toLspRange(spans[si])))
+                    te.add(jPair("range",   toLspRange(spans[si])))
                     te.add(jPair("newText", jStr(newName)))
                     edits.add(jObj(te))
                     si = si + 1
@@ -2046,11 +1382,15 @@ func handleRename(state: in LspState, params: in String): String {
 // ─────────────────────────────────────────────────────────────────────────────
 // §15. Main dispatch.
 // ─────────────────────────────────────────────────────────────────────────────
+
 pub func lspHandle(state: in LspState, json: in String): List[String] {
   val acc: List[String] = newList()
-  val pdoc = parseJson(json)
-  val root = rootElement(pdoc)
-  val method = match tryGetProperty(root, "method") { case None -> ""; case Some(e) -> getString(e) }
+  val pdoc   = parseJson(json)
+  val root   = rootElement(pdoc)
+  val method = match tryGetProperty(root, "method") {
+    case None -> ""
+    case Some(e) -> getString(e)
+  }
   val id = jRaw(json, "id")
   val params = jRaw(json, "params")
 
@@ -2094,6 +1434,7 @@ pub func lspHandle(state: in LspState, json: in String): List[String] {
 // ─────────────────────────────────────────────────────────────────────────────
 // §16. Test helper — workspace index snapshot.
 // ─────────────────────────────────────────────────────────────────────────────
+
 // Build a workspace index for `dir` and return the pkgName → absPath map.
 // Used by the F# test bridge to verify workspace indexing without running the
 // full server loop.
@@ -2107,14 +1448,13 @@ pub func lspBuildWorkspaceIndex(dir: in String): Map[String, String] {
 // ─────────────────────────────────────────────────────────────────────────────
 // §17. Run loop.
 // ─────────────────────────────────────────────────────────────────────────────
+
 pub func lspRunLoop(): Unit {
-  val state = lspInit()
+  val state     = lspInit()
   var keepGoing = true
   while keepGoing {
     match readLspFrame() {
-      case None -> {
-        keepGoing = false
-      }
+      case None -> { keepGoing = false }
       case Some(json) -> {
         val responses = lspHandle(state, json)
         var i = 0
@@ -2122,9 +1462,7 @@ pub func lspRunLoop(): Unit {
           writeLspFrame(responses[i])
           i = i + 1
         }
-        if state.exit[0] {
-          keepGoing = false
-        }
+        if state.exit[0] { keepGoing = false }
       }
     }
   }

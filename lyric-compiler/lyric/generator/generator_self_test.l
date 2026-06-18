@@ -1,10 +1,9 @@
-//! generator/generator_self_test.l — exercises the supply-chain
-//! enforcement helpers in `Lyric.Generator`.
-//!
-//! Run via `lyric test lyric-compiler/lyric/generator/generator_self_test.l`.
-//! Replaces the F# SelfHostedGeneratorTests.fs wrapper (#2580).
-@test_module
-package Lyric.GeneratorSelfTest
+// generator/generator_self_test.l — exercises the supply-chain
+// enforcement helpers in `Lyric.Generator`.  Compiled and executed by
+// SelfHostedGeneratorTests.fs.  Exit 0 + "ok" in stdout means every
+// assertion held.
+
+package Lyric.Generator.SelfTest
 
 import Std.Core
 import Std.Collections
@@ -15,9 +14,10 @@ import Lyric.Generator
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
 func parseOk(toml: in String, path: in String): Manifest {
   match parseManifest(toml, path) {
-    case Ok(m) -> m
+    case Ok(m)  -> m
     case Err(_) -> panic("parseOk: unexpected manifest parse error in fixture")
   }
 }
@@ -45,10 +45,11 @@ func depNoKind(): String {
 // ─────────────────────────────────────────────────────────────────────────────
 // G0008 — generator package not in [dependencies]
 // ─────────────────────────────────────────────────────────────────────────────
+
 func testG0008_DepNotDeclared(): Unit {
   val consumer = parseOk(consumerNoDeps(), "/test/consumer/lyric.toml")
   match checkGeneratorDeclaredIn(consumer, "Foo.Bar") {
-    case Ok(_) -> assertTrue(false, "G0008: expected Err when dep not declared")
+    case Ok(_)  -> assertTrue(false, "G0008: expected Err when dep not declared")
     case Err(e) -> {
       assertTrue(e.contains("G0008"), "G0008: diagnostic code present")
       assertTrue(e.contains("Foo.Bar"), "G0008: mentions generator package")
@@ -59,7 +60,7 @@ func testG0008_DepNotDeclared(): Unit {
 func testG0008_DepDeclared(): Unit {
   val consumer = parseOk(consumerWithDep(), "/test/consumer/lyric.toml")
   match checkGeneratorDeclaredIn(consumer, "Foo.Bar") {
-    case Ok(d) -> assertEqual(d.name, "Foo.Bar", "G0008: returns matched dep entry")
+    case Ok(d)  -> assertEqual(d.name, "Foo.Bar", "G0008: returns matched dep entry")
     case Err(e) -> assertTrue(false, "G0008: unexpected Err: " + e)
   }
 }
@@ -67,10 +68,11 @@ func testG0008_DepDeclared(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // G0002 — kind enforcement
 // ─────────────────────────────────────────────────────────────────────────────
+
 func testG0002_KindMatches(): Unit {
   val depMf = parseOk(depGenerator(), "/test/foo-bar/lyric.toml")
   match checkGeneratorKind("Foo.Bar", "/test/foo-bar/lyric.toml", depMf) {
-    case Ok(s) -> assertEqual(s, "", "G0002 happy path: Ok value is empty string sentinel")
+    case Ok(_)  -> ()
     case Err(e) -> assertTrue(false, "G0002 happy path: unexpected Err: " + e)
   }
 }
@@ -78,7 +80,7 @@ func testG0002_KindMatches(): Unit {
 func testG0002_KindWrong(): Unit {
   val depMf = parseOk(depWrongKind(), "/test/foo-bar/lyric.toml")
   match checkGeneratorKind("Foo.Bar", "/test/foo-bar/lyric.toml", depMf) {
-    case Ok(_) -> assertTrue(false, "G0002: expected Err for kind=\"library\"")
+    case Ok(_)  -> assertTrue(false, "G0002: expected Err for kind=\"library\"")
     case Err(e) -> {
       assertTrue(e.contains("G0002"), "G0002: diagnostic code present")
       assertTrue(e.contains("library"), "G0002: reports observed kind")
@@ -90,7 +92,7 @@ func testG0002_KindWrong(): Unit {
 func testG0002_KindMissing(): Unit {
   val depMf = parseOk(depNoKind(), "/test/foo-bar/lyric.toml")
   match checkGeneratorKind("Foo.Bar", "/test/foo-bar/lyric.toml", depMf) {
-    case Ok(_) -> assertTrue(false, "G0002: expected Err for missing kind")
+    case Ok(_)  -> assertTrue(false, "G0002: expected Err for missing kind")
     case Err(e) -> {
       assertTrue(e.contains("G0002"), "G0002: diagnostic code present")
       assertTrue(e.contains("missing"), "G0002: mentions 'missing'")
@@ -99,8 +101,13 @@ func testG0002_KindMissing(): Unit {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Entry point
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
 // scanDirectives — detection + false-positive guards (#698, #702)
 // ─────────────────────────────────────────────────────────────────────────────
+
 func testScanDirectives_DotInArg(): Unit {
   val src = "package P\n@generate(Foo.Bar)\npub record User { name: String }\n"
   val dirs = scanDirectives(src, "P")
@@ -108,8 +115,8 @@ func testScanDirectives_DotInArg(): Unit {
   if dirs.count >= 1 {
     val d = dirs[0]
     assertEqual(d.generatorArg, "Foo.Bar", "dotted arg captured")
-    assertEqual(d.typeName, "User", "type name captured")
-    assertEqual(d.typeKind, "record", "type kind captured")
+    assertEqual(d.typeName,     "User",    "type name captured")
+    assertEqual(d.typeKind,     "record",  "type kind captured")
   }
 }
 
@@ -122,7 +129,9 @@ func testScanDirectives_BareNameSkipped(): Unit {
 func testScanDirectives_StringLiteralIgnored(): Unit {
   // The @generate(Foo.Bar) sits inside a double-quoted literal and
   // must NOT trigger a directive (#702).
-  val src = "package P\n" + "func help(): String { \"@generate(Foo.Bar) pub record Doc { x: Int }\" }\n" +
+  val src =
+    "package P\n" +
+    "func help(): String { \"@generate(Foo.Bar) pub record Doc { x: Int }\" }\n" +
     "@generate(Foo.Bar)\n" +
     "pub record Real { y: Int }\n"
   val dirs = scanDirectives(src, "P")
@@ -133,7 +142,10 @@ func testScanDirectives_StringLiteralIgnored(): Unit {
 }
 
 func testScanDirectives_LineCommentIgnored(): Unit {
-  val src = "package P\n" + "// @generate(Foo.Bar) pub record Skip {}\n" + "@generate(Foo.Bar)\n" +
+  val src =
+    "package P\n" +
+    "// @generate(Foo.Bar) pub record Skip {}\n" +
+    "@generate(Foo.Bar)\n" +
     "pub record Keep { x: Int }\n"
   val dirs = scanDirectives(src, "P")
   assertEqualInt(dirs.count, 1, "line-commented directive ignored")
@@ -152,65 +164,51 @@ func testScanDirectives_LineCommentIgnored(): Unit {
 // test binary would exit non-zero with a clear stack trace pointing at
 // `Lyric.Generator.Program.preprocess`.
 // ─────────────────────────────────────────────────────────────────────────────
+
+// Source with no `@generate(X.Y)` directives — exercises the
+// `directives.count == 0` fast-path before any of the bug-prone code
+// runs.  Equivalent to `preprocess`'s happy path for the common case.
 func testPreprocess_NoDirectives_PassesThrough(): Unit {
   val src = "package P\nfunc main(): Unit { println(\"hi\") }\n"
-  match preprocess(src, "", "p.l") {
-    case Ok(s) -> assertEqual(s, src, "no-directives: source returned unchanged")
+  match preprocess(src, None, "p.l") {
+    case Ok(s)  -> assertEqual(s, src, "no-directives: source returned unchanged")
     case Err(e) -> assertTrue(false, "no-directives: unexpected Err: " + e)
   }
 }
 
+// Source WITH a `@generate(Foo.Bar)` directive but `manifestPath = None`.
+// Exercises the exact `val mfPath = match manifestPath { case None ->
+// return Err(...); case Some(p) -> p }` shape that triggered the
+// PathStackDepth bug at offset 0x6F.  Returns Err with the
+// "requires --manifest" message.
 func testPreprocess_DirectiveWithoutManifest_ReturnsErr(): Unit {
-  val src = "package P\n" + "@generate(Foo.Bar)\n" + "pub record Order { id: Int }\n"
-  match preprocess(src, "", "p.l") {
-    case Ok(_) -> assertTrue(false, "missing-manifest: expected Err, got Ok")
-    case Err(e) -> assertTrue(e.contains("--manifest"), "missing-manifest: error mentions --manifest (got: " + e + ")")
+  val src =
+    "package P\n" +
+    "@generate(Foo.Bar)\n" +
+    "pub record Order { id: Int }\n"
+  match preprocess(src, None, "p.l") {
+    case Ok(_)  -> assertTrue(false, "missing-manifest: expected Err, got Ok")
+    case Err(e) ->
+      assertTrue(e.contains("--manifest"),
+        "missing-manifest: error mentions --manifest (got: " + e + ")")
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Test items
-// ─────────────────────────────────────────────────────────────────────────────
-test "G0008 dep not declared" {
+func main(): Int {
   testG0008_DepNotDeclared()
-}
-
-test "G0008 dep declared" {
   testG0008_DepDeclared()
-}
-
-test "G0002 kind matches" {
   testG0002_KindMatches()
-}
-
-test "G0002 kind wrong" {
   testG0002_KindWrong()
-}
-
-test "G0002 kind missing" {
   testG0002_KindMissing()
-}
 
-test "scan directives dot in arg" {
   testScanDirectives_DotInArg()
-}
-
-test "scan directives bare name skipped" {
   testScanDirectives_BareNameSkipped()
-}
-
-test "scan directives string literal ignored" {
   testScanDirectives_StringLiteralIgnored()
-}
-
-test "scan directives line comment ignored" {
   testScanDirectives_LineCommentIgnored()
-}
 
-test "preprocess no directives passes through" {
   testPreprocess_NoDirectives_PassesThrough()
-}
-
-test "preprocess directive without manifest returns err" {
   testPreprocess_DirectiveWithoutManifest_ReturnsErr()
+
+  println("generator self-test: ok")
+  return 0
 }

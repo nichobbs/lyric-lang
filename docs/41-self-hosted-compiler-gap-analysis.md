@@ -24,8 +24,7 @@ re-audit corrects a 2026-05-20 finding the change is called out in §7._
 _JVM is **out of scope** for this audit (deliberately deferred per the review
 brief). The goal measured against is a **functionally complete, production-grade
 compiler written in Lyric — no F# shims, no workarounds — supporting all
-language features on the .NET runtime and AOT-compilable.** The JVM counterpart
-audit and remediation plan lives in `docs/44-jvm-production-readiness-plan.md`._
+language features on the .NET runtime and AOT-compilable.**_
 
 _All file:line citations are to the working branch at the time of audit. The
 audit was performed by reading the current source, not by trusting prior docs._
@@ -83,23 +82,25 @@ bar:
 4. **Generic *types*, key item kinds, and FFI shapes are erased or stubbed
    (HIGH).** User generic types (`record Box[T]`, `union Tree[T]`) are
    type-erased to a single non-generic TypeDef with `object` fields; protected
-   types emit **zero locking**; range-subtype bounds are dropped (no validation)
-   _(`@projectable` opaque twins are now generated on both targets — H2
-   resolved, PR #3015 + #3044)_; wire blocks drop
+   types emit **zero locking**; `@projectable` opaque twins are never generated;
+   range-subtype bounds are dropped (no validation); wire blocks drop
    `bind`/`scoped`/`provided`; default/named/`out`/`inout` arguments are
    mis-handled. _(An `@externTarget` whose signature touches a class/object
    type used to emit a runtime-throw stub; that is now resolved — #1504
    part 1 — encoding real `TypeRef`-backed MemberRefs.)_
 
-5. ~~**One F# DLL is still load-bearing at runtime and AOT is unconfigured
-   (HIGH).** Core stdlib kernels (`http`/`process` still — `console`/`env`/`log`
-   migrated to direct BCL externs in #1493) extern into `Lyric.Emitter.dll`.
-   No `<PublishAot>` is set anywhere, so the "AOT-compilable" goal is currently
-   aspirational.~~ _(**Band 5 COMPLETE as of 2026-06-12, §10.**  All F# host shims
-   deleted: `http_host.l` and `process_capture_host.l` now bind direct BCL externs
-   (#1576 codegen fix + #1489/#3016); `Lyric.Emitter.dll` + `FSharp.Core.dll`
-   removed from the stage-1 runtime bundle (#3034/#3062); AOT publishing wired and
-   CI smoke test running (#3197/#3201/#3206).)_
+5. **One F# DLL is still load-bearing at runtime and AOT is unconfigured
+   (HIGH).** _(`Msil.Kernel.ByteWriter` was a `Lyric.Jvm.Hosts.dll`
+   boundary on every emitted byte; #1492 replaced it with a pure-Lyric
+   `List[Byte]` buffer — `System.BitConverter` is the only host extern — with
+   byte-identical output, so `--target dotnet` no longer routes bytes through
+   that F# DLL.  Only `Lyric.Emitter.dll` remains load-bearing today; #1600.)_
+   Core stdlib kernels
+   (`http`/`process` still — `console`/`env`/`log` migrated to direct BCL
+   externs in #1493) extern into `Lyric.Emitter.dll` —
+   the same assembly that carries the Reflection.Emit F# emitter. No
+   `<PublishAot>` is set anywhere, so the "AOT-compilable" goal is currently
+   aspirational.
 
 **Bottom line.** The pipeline is now the right shape and a large slice of the
 language works end-to-end on self-hosted .NET. But a non-trivial program can
@@ -159,17 +160,17 @@ supporting all language features."
 
 | # | Gap | Evidence | Effort |
 |---|---|---|---|
-| C1 | Type checker is advisory on the single-file build path (`reportDiagnostics`), fatal on the project path (`reportAndAbort`). Type-broken single files compile to broken IL silently; same source diverges between paths. **Gate progress (#1488):** the single-file false-positive surface is being closed category by category before the flip. **(A) `result` contextual-keyword shadowing cleared (D086, D-progress-420):** a local named `result` now types as its binding, not the return type, clearing the `T0032`/`T0060` swarm on `environment_tests`/`path_tests`. **(C) argument-type overload resolution cleared (D-progress-421):** same-name/same-arity overloads (`toUpper` Char-vs-String, `join` String-vs-slice) now dispatch by argument type, clearing `string_tests`. **(B) generic return-type instantiation cleared (D-progress-424):** a generic call's return is inferred from its arguments (`unwrapOr(…): T` → `Int`), clearing `parse_tests`. With A/B/C done, `environment_tests`/`path_tests`/`string_tests`/`parse_tests` single-file builds are clean. **(D) cross-package name collision cleared (D-progress-427, superseded by D-progress-429):** the initial fix spread the file's imported packages last (`orderStdlibPkgsByImports`) so the imported package won last-registered-wins resolution; this was superseded by proper **package-scoped name resolution** (#2271, D-progress-429), where each imported package resolves against its own decls — so a file importing only `Std.Regex` resolves `RegexError` to `Std.Regex`'s union, clearing the phantom-`RegexBug` `T0016` and `RegexError`-vs-`RegexError` `T0043` on `regex_tests`. **(E) range-subtype arithmetic cleared (D-progress-431):** `isNumericType`/`isOrderedType` now recurse through `TyRefined`, so an inline `Int range 0 ..= 100` parameter is numeric/ordered — clearing the spurious `T0030`/`T0031`/`T0033` on `examples/prove_demo.l`. Remaining: **(F) interface subtyping at argument positions cleared (D-progress-432):** a `TrackedFeed` that `impl`s `PriceFeed` is now accepted where `PriceFeed` is expected (`argSatisfiesParam` + `SymbolTable.impls`), clearing the `T0043` half of `mocking_tests`. **(G) `@stubbable` synthesis ported (D-progress-433):** `Lyric.Stubbable` synthesises the `<Name>Stub` record + impl before type-check (`Msil.Bridge.stubbableRewriteFile`), so `PriceFeedStub`/`TaxProviderStub` resolve — `mocking_tests` now builds clean self-hosted. **(H) alias-aware qualified-call resolution (D-progress-434):** the alias rewriter now rewrites `Rx.tryCompile` to the fully-qualified `Std.RegexSafe.tryCompile` (instead of dropping the package), `ResolvedSignature` carries `originPackage`, and `findDirectSig` prefers the same-arity overload whose package matches the call's prefix — so `regex_safe_tests` (two identically-signatured `tryCompile` overloads disambiguated only by alias) builds clean. **(I) Byte/Int conversion surface cleared (D-progress-436/437):** the stage-0 emitter gained the spec §541 primitive conversion methods (`.toInt()` etc.) so spec-correct code compiles on both paths; `encoding_tests` and `metadata_reader_tests` (the latter via `LYRIC_LOAD_COMPILER`) are now clean. **FLIP DONE (D-progress-438):** with every single-file-buildable surface diagnostic-clean (all stdlib tests bar the two `LYRIC_LOAD_COMPILER`-only compiler-internal ones, all `examples/`), `bridge.l`'s single-file type-check is now `reportAndAbort` — type errors in `lyric build <file>` abort instead of emitting broken IL, matching the project path. Verified: emitter 843/843, cli 84/84, weaver/cfg_gate/bitwise/conv_methods self-tests green, examples + stdlib single-file sweep clean. Remaining (not flip blockers, tracked separately): `msil_project_bridge_tests` needs cross-target JVM-kernel `extern type` resolution in the `LYRIC_LOAD_COMPILER` loader (its closure pulls in `Jvm.Bridge`→`Jvm.Kernel`), and the JVM single-file path (`jvm/bridge.l`) flip. | `bridge.l` single-file path now `reportAndAbort` | **DONE** |
-| C2 | Type checker is unsound: several expr forms infer `TyError`, a universal unifier; no record-ctor checking; `index`/`lambda`/`if`/`match`-branch results untyped. **Shipped:** match exhaustiveness (T0016, #1483 split 1: unions/enums/`Bool`/unbounded scalars; `EMatch` infers its scrutinee); `EPropagate` (`?`) unwrap typing (#1483 split 2a). **`EIndex` unblocker shipped (2b, #1901, D-progress-405):** the numeric/character conversion-method family `.toByte()`/`.toInt()`/`.toLong()`/`.toChar()`/`.toDouble()` now type-checks (target primitive) and codegens to native width conversions on **both** targets (MSIL `conv.*`; JVM `i2l`/`l2i`/… with `.toByte()` masked to MSIL's unsigned `conv.u1` semantics), replacing the throw-stub. **`EIndex` element typing shipped (2b, #1901, D-progress-407):** `recv[i]` now carries the receiver's element type — `slice[T]`/`array[N,T]` → `T`, `String` → `Char`, `List[T]` → `T`, `Map[K,V]` → `V` — so byte/char indexing is sound (`a[i].toInt()` migrations in `lyric-auth`). **`EBlock`/`EUnsafe`/`EResult` shipped (D-progress-408, D081):** enclosing-function context (`returnTy`/`genericNames`) is now carried on `Scope`, so a value-position brace/`unsafe` block types as its trailing expression via a divergence-aware `checkBlock` (a `return`/`throw`/`break`/`continue`-terminated block is `Never`), and `result` types as the return type. **Parser statement-end fix shipped (#1943, D-progress-410):** a brace-terminated `if`/`match` in statement position is now a complete statement (not a binary-operator LHS), fixing the `if { return … }`-then-`-1` mis-parse that silently miscompiled the fall-through value — clearing the prerequisite for `EIf`-branch typing. **`EIf`-branch typing shipped (#1943, D-progress-414):** an `if`/`else` takes the unified type of its branches (T0067 on a mismatch); an `if` without `else` is `Unit`; a diverging branch is `Never` and is absorbed. **Generic union-constructor typing shipped (#2142 prereq, D-progress-418):** `Some(value=x)`/`Ok(v)`/`None` now type as the parent union instantiated from the argument types (`Some(value: String)` → `Option[String]`), not `TyError` — the prerequisite for `EMatch`-branch unification. **`EMatch`-branch typing shipped (#2142, D-progress-419):** a value-position `match` now takes the unified type of its arm bodies (T0067 on a genuine mismatch); each arm is checked with its pattern variables bound to their destructured types (`bindPatternTyped` — `Some(ns)` on `Option[T]` binds `ns:T`, constructor sub-patterns instantiate field types against the scrutinee's type args), nullary constructor patterns don't shadow the constructor in the arm body, and still-generic field types are erased to `TyError` (lenient) rather than tripping a false mismatch. **Argument-type overload resolution shipped (#1488 category C, D-progress-421):** same-name/same-arity functions that differ only in parameter types (`Std.Char.toUpper(Char)` vs `Std.String.toUpper(String)`; `Std.Path.join(String,String)` vs `Std.String.join(String,slice[String])`) no longer collide under first-in-wins — each non-generic sig registers under an indexed `arityKey@i` slot and `findDirectSig` picks the candidate whose params `typeEquiv`-match the args, after trying the shadow-preserving primary first. **Generic return-type instantiation shipped (#1488 category B, D-progress-424):** a generic call's return type is now inferred from the argument types (`unwrapOr(o: Option[T], default: T): T` on an `Option[Int]` returns `Int`, not the raw `TyVar("T")`) via `instantiateReturnType` (deep param/arg structural matching + `substituteTyVars`), clearing the `T0033` on `unwrapOr(…) < 0`. **RESOLVED (PR #2939):** remaining `TyError` forms (`ELambda`, `ETypeApp`, `EForall`/`EExists`, `EAssign`, tuple-destructure, record-ctor arg checking) now covered; alias types usable (`H16`); `where T: Marker` satisfaction checked at call sites (`H15`); numeric widening applied (`M6`). | `typechecker_exprs.l`, `typechecker_types.l:130-131`, `typechecker_stmts.l:14-51` | ✅ |
+| C1 | Type checker is advisory on the single-file build path (`reportDiagnostics`), fatal on the project path (`reportAndAbort`). Type-broken single files compile to broken IL silently; same source diverges between paths. | `bridge.l:92` vs `bridge.l:395` | S (flip) gated on C2 |
+| C2 | Type checker is unsound: several expr forms infer `TyError`, a universal unifier; no record-ctor checking; `index`/`lambda`/`if`/`match`-branch results untyped. **Shipped:** match exhaustiveness (T0016, #1483 split 1: unions/enums/`Bool`/unbounded scalars; `EMatch` infers its scrutinee); `EPropagate` (`?`) unwrap typing (#1483 split 2a). **`EIndex` deferred (2b, #1901):** typing `slice[Byte]` indexing as `Byte` exposed that no Byte→Int conversion both type-checks and codegens (`0 + byte` fails T0031, `byte.toInt()` has no MSIL intrinsic) — needs that intrinsic first. Remaining `TyError` forms: `EIndex`, `EIf`/`EMatch`-branch unification, `ELambda`, `EBlock`/`EUnsafe`, `EResult`/`EOld`, tuple-destructure sub-bindings, record-ctor argument checking (most need `returnTy`/`genericNames` threaded into `inferExpr`). | `typechecker_exprs.l`, `typechecker_types.l:130-131`, `typechecker_stmts.l:14-51` | L |
 | C3 | ~~`?` propagation (`EPropagate`) is a no-op — `x?` compiles as `x`, no unwrap, no early-return.~~ **RESOLVED (#1475).** The `Lyric.Propagate` middle-end pass (`lyric-compiler/lyric/propagate.l`, run from `bridge.l` after the elaborator) rewrites `e?` into a `match` that unwraps `Ok`/`Some` and early-returns `Err`/`None`, keyed off the enclosing function's declared return type; a non-`Result`/`Option` enclosing function is rejected with `F0020`. (`try?`/`ETry` is never produced by the self-hosted parser, so its codegen arm is dead.) Verified by `propagate_self_test.l` (incl. `?` inside a `while` loop, after #1779 fixed the `List[ValueType]` element-comparison miscompile). Note: `?` inside an impl/interface method body is still blocked by a pre-existing early-`return` codegen defect, #1784. | `propagate.l`; `bridge.l` | M |
-| C4 | ~~Silent miscompile of `async func`~~ **RESOLVED (D085–D091, Phases A–4, #2070):** `@externTarget async func` correctly unwraps `Task<T>→T` (Phase A, D-progress-415). User-defined `async func` synthesises a real `IAsyncStateMachine` + `AsyncTaskMethodBuilder<T>` state machine with genuine non-blocking suspend/resume (Phases B.0–B.3, D-progress-430–439). `ESpawn` lowers to the kickoff's `Task<T>` (Phase 4, D-progress-441, D091). Verified by `async_sm_self_test.l` (29 tests) and `async_extern_self_test.l` (4 tests). Known correctness gaps tracked separately: `await` inside `try` block emits invalid IL (#2725). Dynamic maxStack resolved (#2712, #3085). | `codegen.l` | RESOLVED |
-| C5 | ~~Async generators used eager collect-all into `List<object>`.~~ **RESOLVED (Phase 5, D-progress-444/445, D092, #2070):** `async func` bodies containing `yield` are synthesised as a `<FuncName>__Gen_N` class implementing `IAsyncEnumerable<object>` / `IAsyncEnumerator<object>` / `IAsyncDisposable`. Eager-producer pattern: kickoff allocates the class, copies params to fields, calls `RunBody()` (which collects all yields into `_values`), and returns `this`. `emitCollectionForMsil` dispatches via `GetAsyncEnumerator`/`MoveNextAsync`/`get_Current`; element-type unboxing via `castObjectToMsil` on each `get_Current()` result. Verified by `async_generator_self_test.l` (8 tests). JVM parity tracked in #2469; async-iterator (`await`+`yield`) deferred (#1490). | `codegen.l` `synthesizeGeneratorMsil`; `lowering.l` `MIAsyncEnumerable` | RESOLVED (MSIL); JVM #2469; async-iterator #1490 |
+| C4 | `await`/`spawn` lower synchronously; `async func` returns a bare value, not `Task[T]`; no `IAsyncStateMachine`. Silent miscompile of every async program. | `codegen.l:1755-1758,1782-1784,983-999`; no state machine in `msil/*` | XL |
+| C5 | Async generators use eager collect-all into `List<object>`, not lazy `IEnumerable`/`IAsyncEnumerable`; return type forced to List; unbounded generators buffer forever. | `codegen.l:1760-1780,983` | XL |
 | C6 | **Fixed (#1530).** Indexed assignment `a[i] = v` previously silently discarded the store (value evaluated then popped); the `EIndex` assignment target now emits `List[object]::set_Item`. Compound indexed forms (`a[i] += v`) hard-fail with a clear build error pending element-type plumbing (#1481). | `codegen.l` `lowerAssignExprMsil` EIndex arm | Resolved |
 | C7 | ~~`defer` runs its body inline immediately, not at scope exit.~~ **Resolved (#1477 / D-progress-374):** `defer { D }` lowers the rest of its scope to `try { rest } finally { D }`, so D runs on fall-off, early `return` (via the function epilogue, #1477 foundation), `break`/`continue` (via `leave`), and exception unwind; multiple defers nest in reverse order. | `codegen.l` `lowerStmtsFromMsil` / `lowerStmtsExprFromMsil` | ✅ |
-| C8 | **Fixed for in-bundle types (#2362 — D-progress-453 records, D-progress-455 unions).** In-bundle generic *records and unions* are reified: GenericParam rows (table 0x2A), VAR-typed fields (`value: T` → `FIELD VAR(0)`), arity-suffixed CLR type names (`Box`1`, `Maybe`1`, `Maybe_Just`1`), AutoLayout, construction via closed-instantiation TypeSpec `.ctor` MemberRefs, and TypeSpec-parented field reads — verified for multi-field value-type instantiations (`Pair[Int,Int]`, `Pairish[Int,Int]`). Unions: each case extends the open base instantiation (`Maybe`1<!0>`, a TypeSpec); nullary cases are `newobj`-each-time (no singleton — Q-GEN-001 resolved); matching via closed-TypeSpec isinst/castclass/ldfld. #2362 closed here: an exact stage-3 stdlib byte-match was **not pursued** (the self-hosted emitter already produces structurally-correct generic `Option`/`Result` but with the arity-suffix correctness fix F# omits, and self-compiling the whole stdlib is blocked on front-end completeness — §R7); see `docs/43`. **JVM parity gap (2026-06-07):** the JVM backend does not yet emit truly generic TypeDefs for in-bundle generic records/unions (no JVM equivalent of GenericParam rows, open-type field descriptors, or TypeSpec-parented construction); JVM generic-type emission is deferred and tracked under Band 4 of this doc and epic #2359. | `codegen.l` (`lowerRecordMsil`/`lowerUnionMsil`, `typeExprToMsilCtx`, `buildInBundleGenericCtorTok`, EMember, pattern test/bind); `lowering.l` (`lowerMRecord`/`lowerMUnion`, GenericParam emit); `tables.l` (GenericParam 0x2A) | In-bundle MSIL ✅; JVM deferred (#2359); stdlib self-compile under §R7 |
+| C8 | User-defined generic *types* are type-erased to one non-generic TypeDef with `object` fields; type-param field `T` resolves to a bogus `MClass("Pkg.T")`. No GenericParam rows; no per-type mono. | `codegen.l:4718-4791,1235,1268`; no GenericParam in `lowering.l` | L |
 | C9 | ~~`@externTarget` whose signature mentions any class/object type emits a runtime-throw stub instead of a real call.~~ **Resolved (#1504 part 1):** class-typed params/return now encode as real `ELEMENT_TYPE_CLASS + TypeDefOrRef` MemberRefs (`buildFfiMethodSigCtx`/`resolveFfiClassTypeRef`), resolving extern types via `externTypeNames` → CLR TypeRef. Verified end-to-end (`StringBuilder` ctor + instance calls). Remaining #1504 parts: unresolved-type diagnostic (H8), instance/non-void auto-FFI (H9), generic externs (blocked on #1497). | `codegen.l` `buildFfiMethodSigCtx` | ✅ |
 | C10 | ~~Opaque representation-hiding not enforced.~~ **RESOLVED (#1485):** cross-package **construction** of an opaque type is rejected (**T0100**), cross-package **pattern-matching** of its representation (record/constructor pattern) is rejected (**T0102**), and field reads on opaque values resolve to `TyError` (non-resolving). Construction calls also yield the constructed type with named-field validation (T0101). Binding/wildcard match arms remain legal (the value is opaque-but-usable). | `typechecker_exprs.l` (`inferConstruction`, `checkOpaquePatternHiding`) | M |
-| C11 | ~~`impl`/interface conformance never checked; default-interface-method bodies discarded.~~ **RESOLVED:** `checkImplConformance` reports missing abstract methods (**T0098**), arity mismatches (**T0099**), parameter-type mismatches (**T0106**), and return-type mismatches (**T0107**, #1486, #2939). Interface subtyping at argument positions wired via `SymbolTable.impls` / `argSatisfiesParam` (#1488). **DIM bodies lowered:** `IMFunc` members (carried as `MIDim` in `MInterface.members: List[MIfaceItem]`) compile via `lowerImplMethodMsil`; `lowerMInterface` dispatches a single `members` loop — `MIAbstract` → abstract MethodDef (RVA=0, Abstract flag), `MIDim` → concrete DIM MethodDef (compiled body, `Virtual+HideBySig+NewSlot`, no Abstract) — the CLR dispatches through the DIM when the implementing class provides no override. Verified by `shm_interface_default_method` in `SelfHostedMsilBridgeTests.fs`. | `typechecker_checker.l`; `codegen.l`; `lowering.l` | ✅ |
+| C11 | `impl`/interface conformance never checked (`IImpl(_) -> {}` no-op); missing/mismatched methods not reported; default-interface-method bodies discarded (emitted abstract). **PARTIALLY RESOLVED (#1486):** `checkImplConformance` (`typechecker_checker.l`, T5 pass) now reports a missing abstract interface method (**T0098**) and a parameter-arity mismatch (**T0099**). Pending: full signature *type* matching (generic/`Self`) and impl-body type-checking (overlap with #1483 record-ctor / expression-typing forms), plus the codegen default-interface-method-body emission. | `typechecker_checker.l`; `codegen.l:6275-6291` | M |
 | C12 | Protected types emit a plain record with **no lock field and no Enter/Exit** — zero mutual exclusion despite the doc-comment promising Monitor locking. | `codegen.l:5373-5482` | L |
 | C13 | ~~§5.2 parameter modes unenforced.~~ **Front-end RESOLVED (#1487).** Codegen passes `out`/`inout` by managed pointer (#1761). Type-checker §5.2 enforcement, all packages: **`in` no-rebind** (**T0087**, resolves the V0001 collision); **`out`/`inout` value-type argument must be a writable l-value** (**T0085**; reference-type `inout` records mutated in place are exempt); **`out` definite-assignment** (**T0086** — an `out` param never assigned in the body; the sound never-assigned subset, full all-paths partial-assignment detection a refinement). (JVM by-ref parity is follow-up #1763.) | T0085/T0086/T0087 present | M |
 
@@ -178,25 +179,25 @@ supporting all language features."
 | # | Gap | Evidence | Effort |
 |---|---|---|---|
 | H1 | ~~`==` does not dispatch to derived `equals`; no `GetHashCode` override.~~ **RESOLVED (#1480).** Two parts: (1) `==`/`!=` operator wiring — `BEq`/`BNeq` call the derived `<Type>.equals` for `@derive(Equals)` records/distinct types instead of static `Object.Equals`, so `a == b` is structural (recursive through nested derived records). (2) `Object.Equals(object)` + `GetHashCode()` virtual *overrides* are now synthesised on `@derive(Equals)`/`@derive(Hash)` record TypeDefs (`appendDeriveOverridesMsil`, delegating to the derived `equals`/`hash`; rows reserved in `addPackageTokens`), so BCL `Map`/`HashSet` key lookup is structural — two field-equal record instances hash and compare as the same key. Both depended on #1796 (mono no longer drops the synthesized helper). Verified by `equality_self_test.l` + `map_key_self_test.l`. (Map keys need both `@derive(Equals)` and `@derive(Hash)`, mirroring the .NET requirement. A `Map[Record, ValueType]` *value* still trips the unrelated #1835 bug.) | `codegen.l` `BEq`/`BNeq` → `derivedEqualsTokenMsil`; `appendDeriveOverridesMsil` | M |
-| H2 | ~~`@projectable` opaque twin + `toExposed`/`fromExposed` never generated — `isProjectable` is computed but never read in `lowerMOpaque`.~~ **RESOLVED (#1500 / PR #3015, MSIL; #3044, JVM).** `lowerMOpaque` emits the `<Name>View` TypeDef (visible fields, view-substituted nested types), `toView()`, and eligibility-gated `tryInto()` with a declaration-order-independent `allProjFqns` pre-scan; the JVM backend mirrors it via `LPProjectable` → `lowerProjectableType` (D-progress-492/493). Verified in CI by `msil_self_test_m87.l` + `projectable_jvm_self_test.l` (native `lyric test`, both targets). | `msil/lowering.l` `lowerMOpaque`; `jvm/lowering.l` `lowerProjectableType` | L |
-| H3 | **Fixed (#1501).** The distinct/range-type construction API is now synthesised by the self-hosted MSIL backend: `lowerMDistinctType` emits `.ctor(value)`, a static `from(x)` (throws `System.ArgumentOutOfRangeException` on a range violation), a static `tryFrom(x): Result[Self, String]` (returns `Err(message)`; emitted when `Std.Core.Result` is imported), and an inherent `toInt`/`toLong`/… projection; the `IDistinctType` codegen arm folds the `rangeClause` literals to integer/`Double` bounds and threads them onto `MDistinctType`. `TypeName.from`/`TypeName.tryFrom` resolve as static-on-type-name calls in `lowerMethodCallMsil`; `value.toInt()` resolves via the instance `methodTokens` path. Verified by `range_subtype_self_test.l` (closed/half-open boundaries, `Int`/`Long`, plain distinct round-trip) run under native `lyric test`. The pre-fix dead `lowerMRangeType` remains unused. Scope notes: `Double`-bound ranges are still rejected upstream by the type checker (`T0093`, integer literals only), so the `Double` bounds path is forward-compat only; and applying a generic stdlib helper (`isOk`) to a `Result` over a *user* type still erases its type arguments (#1498), so consumers use `match`. | `codegen.l` (`mkDistinctTypeIR`, IDistinctType arm, `lowerMethodCallMsil`), `lowering.l` (`lowerMDistinctType`) | **DONE** |
+| H2 | `@projectable` opaque twin + `toExposed`/`fromExposed` never generated — `isProjectable` is computed but never read in `lowerMOpaque`. | `codegen.l:6324-6330`, `lowering.l:1849-1944` | L |
+| H3 | Range-subtype bounds dropped at every layer: `IDistinctType` arm reads only `underlying`; `lowerMRangeType` is dead and also drops bounds; no construction validation. Front-end discards range in `TRefined`. | `codegen.l:6174-6180`, `lowering.l:1592-1599`, `typechecker_resolver.l:75-78` | M |
 | H4 | **PARTIAL (2026-06-03).** `WMExpose` members lower; `bind`/`scoped`/`provided` are still dropped (`case _ -> {}`) and there is no topological ordering / cycle detection. | `codegen.l` wire-block lowering (`WMExpose` only); `typechecker_checker.l` | L |
 | H5 | **PARTIAL (2026-06-03).** Record-constructor named args are now reordered to field-declaration order (`reorderCtorNamedArgs`, #1730 spinoff / f774979). **Function call sites still don't reorder named args and never fill defaults** (too few args → invalid IL). | `codegen.l` call-arg lowering; record ctor reorder present | M |
 | H6 | **PARTIAL (2026-06-03).** `monoFileWithImports` is now live and the bridge passes `collectStdlibGenericFuncs` (#1753/#1727), so **stdlib** generic functions specialize into the consumer bundle. **User cross-package generic functions** are still not collected (imported gen-decl set empty for user calls). | `mono.l` `monoFileWithImports`; `bridge.l` (stdlib funcs wired, user funcs empty) | M |
-| H7 | **PARTIAL (2026-06-07).** Generic *function* instantiation improved via #1727/#1753 mono. Generic *type* instantiation `Box[Int]` is now reified for in-bundle generic **records and unions** via the ctx-aware `typeExprToMsilCtx` (`MGenericInstByName`) — MSIL target only (D-progress-453 records, D-progress-455 unions, #2362). The legacy non-ctx `typeExprToMsil` still erases `TGenericApp`→`MObject` (only reached by callers that don't thread `cctx`). **JVM parity gap (2026-06-07):** the JVM backend does not yet emit truly generic TypeDefs for in-bundle types; JVM generic-type reification is deferred and tracked under epic #2359. | `codegen.l` `typeExprToMsilCtx` `TGenericApp` (in-bundle arm); legacy `typeExprToMsil`→`MObject` | M (MSIL in-bundle done; JVM deferred #2359) |
+| H7 | **PARTIAL (2026-06-03).** Generic *function* instantiation improved via #1727/#1753 mono. Generic *type* instantiation `Box[Int]` still falls to `MObject` (`TGenericApp` in non-ctx `typeExprToMsil`) — **blocked on C8** (user generic types are type-erased). | `codegen.l` `typeExprToMsil` `TGenericApp`→`MObject` | M |
 | H8 | ~~Unknown extern types silently bind to `System.Runtime` with no diagnostic.~~ **Resolved (#1504 H8):** `clrAssemblyResolvable` gates the FFI cascade; a type that is neither `System.*` nor a `Lyric.*` host now fails the build with a clear, type-specific diagnostic (codegen `panic`, matching the F0002 conflict panic) instead of mis-binding to `System.Runtime` → opaque runtime `TypeLoadException`. Applied on both the `@externTarget` and auto-FFI paths. | `ffi.l` `clrAssemblyResolvable` | ✅ |
 | H9 | ~~Auto-FFI scoring only handles static void-returning methods; instance/non-void silently mis-bind.~~ **Resolved (#1504 H9):** auto-FFI cannot resolve a method's real signature without .NET metadata (the self-hosted emitter has no reflection over reference assemblies; D-progress-268), so any shape beyond *static / void / parameterless* was an `(object…):void` guess that mis-bound at runtime (`MissingMethodException`). `emitAutoFfiCallMsil` now **fails the build with a clear diagnostic** for any argument-bearing auto-FFI call, directing the user to an `@externTarget` wrapper (which supplies the real signature and supports instance / non-void / typed-param / class returns after part 1). The parameterless static-void shape (`GC.Collect()`) still works.  **Open sub-case:** parameterless static methods with a *non-void* return type (e.g. `Guid.NewGuid()`) are still emitted with the hardcoded `():void` signature and throw `MissingMethodException` at runtime; tracked under epic #1622.  **Superseded by epic #1622** (real metadata-based resolution — design in `docs/42-extern-metadata-resolution.md`), which would remove the guess entirely. | `codegen.l` `emitAutoFfiCallMsil` | ✅ (stopgap; #1622 supersedes) |
 | H10 | Custom `@generate(Pkg.Name)` source generators exist (`generator/generator.l`) but are **never called from `bridge.l`** — inert on self-hosted .NET. | `generator/generator.l:1-16`; no ref in `bridge.l` | M |
 | H11 | `old()`/`forall`/`exists` in `@runtime_checked` contracts **panic** in codegen (elaborator passes them through). | `codegen.l:1851-1858`; `elaborator.l:361-362` | M |
-| H12 | Two F# DLLs were load-bearing at runtime. **ByteWriter resolved for MSIL (#1492):** `Msil.Kernel.ByteWriter` is now a pure-Lyric `List[Byte]` buffer (`System.BitConverter` the only host extern); a sample exercising Int/Long/Double/String compiles **byte-identical** to the old host (verified via `cmp`), and the MSIL path has zero `Jvm.Hosts` references (JVM target retains `Lyric.Jvm.Hosts`, out of scope per #1470). **Kernels partially resolved (#1493):** `console` (stderr → `Console.Error`/`TextWriter`), `env` (`verifier_env` → `Environment.GetEnvironmentVariable`), and `log` (→ console stderr) migrated to audited BCL externs, and the dead `ConsoleHelper`/`LogHelper`/`VerifierEnv` F# types were deleted. ~~Remaining (verified 2026-06-03): `http` `defaultClient` singleton (`http_host.l` → `Lyric.Emitter.HttpClientHost.defaultClient`, blocked on a package-level class-`val` `.cctor` codegen gap) and `process_capture` (`process_capture_host.l` → `Lyric.Emitter.ProcessCapture.*`, needs async, Band 3 #1489). Net remaining F#-host externs on the .NET path: **~11 live**.~~ **Fully resolved (#1493, 2026-06-12):** `http_host.l` `defaultClient` singleton uses `pub val defaultClient: HttpClient = newClient()` once the class-typed package-level `val` `.cctor` codegen gap was fixed (#1576/#3012); `process_capture_host.l` rewritten with direct BCL externs + concurrent async pipe drains (#1489/#3016); `Lyric.Session.Host.dll` deleted (#1777/#3016); all ecosystem shims deleted (#3053). `Lyric.Emitter.dll` + `FSharp.Core.dll` removed from stage-1 runtime bundle (#3034/#3062). Net F#-host externs: **0**. | `lyric-stdlib/std/_kernel/{http,process_capture}_host.l` | ✅ |
-| H13 | ~~No `<PublishAot>` configured; "AOT-compilable" unrealized and untested.~~ **RESOLVED (#3197/#3201/#3206):** AOT publishing wired; CI smoke test builds a hello-world Lyric program through `lyric build --release` + `dotnet publish -p:PublishAot=true` and runs the native ELF binary. Stage-1 DLL determinism CI-enforced (103/103 byte-identical, #3217). | `bootstrap/src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj`; `.github/workflows/ci.yml` | ✅ |
+| H12 | Two F# DLLs were load-bearing at runtime. **ByteWriter resolved for MSIL (#1492):** `Msil.Kernel.ByteWriter` is now a pure-Lyric `List[Byte]` buffer (`System.BitConverter` the only host extern); a sample exercising Int/Long/Double/String compiles **byte-identical** to the old host (verified via `cmp`), and the MSIL path has zero `Jvm.Hosts` references (JVM target retains `Lyric.Jvm.Hosts`, out of scope per #1470). **Kernels partially resolved (#1493):** `console` (stderr → `Console.Error`/`TextWriter`), `env` (`verifier_env` → `Environment.GetEnvironmentVariable`), and `log` (→ console stderr) migrated to audited BCL externs, and the dead `ConsoleHelper`/`LogHelper`/`VerifierEnv` F# types were deleted. Remaining (verified 2026-06-03): `http` `defaultClient` singleton (`http_host.l` → `Lyric.Emitter.HttpClientHost.defaultClient`, blocked on a package-level class-`val` `.cctor` codegen gap — a class-typed package-level `val` compiles but its static field stays null at runtime) and `process_capture` (`process_capture_host.l` → `Lyric.Emitter.ProcessCapture.*`, deadlock-safe concurrent stdout/stderr reads need async, Band 3 #1489). **Newly surfaced 2026-06-03 (not in the 05-29 audit):** (a) `lyric-stdlib/std/_kernel/testing_mocking.l` externs into `Lyric.Stdlib.StubCounterHost.*` with **no backing F# type** under `bootstrap/src/` — `@stubbable` counters are unresolved on the self-hosted path (see L5); (b) `Lyric.Session.Host.dll` (ecosystem `lyric-session`) is an F# host on its consumers' runtime closure (see L6). Net remaining F#-host externs on the .NET path: **~11 live + 4 broken `StubCounterHost` stubs**. | `msil/_kernel/kernel.l`; `lyric-stdlib/std/_kernel/{http,process_capture,testing_mocking}_host.l`; `scripts/bootstrap.sh` | M |
+| H13 | No `<PublishAot>` configured; "AOT-compilable" unrealized and untested. | `bootstrap/src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj` | M (gated on H12) |
 | H14 | ~~Visibility (`pub`/`internal`/`private`) stored but never enforced at use sites.~~ **RESOLVED (#1484).** `checkImportedVisibility` (`typechecker_resolver.l`) rejects a cross-package reference to a package-private (unmarked) symbol with **T0097** (`pub`/`internal` allowed cross-package within a project per ref §3.1); wired into `resolveTypePath` + `resolveExprPath`. (V0007/V0008 from the issue collide with the verifier, so the type-checker code T0097 is used.) | `typechecker_resolver.l` | M |
-| H15 | ~~`where T: Marker` bound satisfaction never checked at call sites; qualified constraint paths rejected (T0051).~~ **RESOLVED (PR #2939).** Bound satisfaction checked at generic call sites. | `typechecker_exprs.l:603-723`; `typechecker_checker.l:372-373` | ✅ |
-| H16 | ~~`alias X = Long` unresolvable as a type — alias has no `TypeId`, so `val v: X` → T0013 "not a type".~~ **RESOLVED (PR #2939).** Alias types now resolve as usable types. | `typechecker_symbols.l:85-98` | ✅ |
+| H15 | `where T: Marker` bound satisfaction never checked at call sites; qualified constraint paths rejected (T0051). | `typechecker_exprs.l:603-723`; `typechecker_checker.l:372-373` | L |
+| H16 | `alias X = Long` unresolvable as a type — alias has no `TypeId`, so `val v: X` → T0013 "not a type". | `typechecker_symbols.l:85-98` | M |
 | H17 | ~~Loop `break`/`continue` whose jump target is outside an enclosing `try` region emitted `MBr` (unverifiable IL across a protected-region boundary).~~ **Resolved (#1481 item 3 / D-progress-371):** codegen tracks protected-region nesting depth (`tryRegionStack`) and the depth each loop was entered at (`loopTryDepth`); a break/continue escaping ≥1 open region now emits `leave`. Covered by `loop_eh_collection_self_test.l`. | `codegen.l` `emitLoopJumpMsil` + `lowerTryCatchMsil` | ✅ |
 | H18 | ~~`Char`/`Float`/`Long` literal match patterns fall to the wildcard arm → always match.~~ **Resolved.** `Char` (#1769/#1770, D-progress-367), then `Long` (already emitting `MLdcI8+MCeq`) and `Float` (`MLdcR8+MCeq+MBrFalse`, #1481 item 1 / D-progress-370). All literal pattern kinds now emit real compares. | `codegen.l` `PLiteral` arm | ✅ |
 | H19 | ~~Range-for (`for i in 0..n`) and any `a..b` expression panic (`ERange`).~~ **Resolved (#1478):** `for i in lo .. hi` / `..= hi` / `..< hi` parse and lower to a counting loop (`lowerForMsil`/`emitCountingForMsil`). Only a *standalone* range value (`val r = lo .. hi`) still panics — no `Range` value type, unused in stdlib/ecosystem. | `codegen.l` `lowerForMsil`; `parser_exprs.l` for-iter | ✅ |
-| H20 | **RESOLVED (#1479 v1+v2).** Capturing closures work for both immutable and mutable captures, single level (including escaping closures returned from their defining function). **v1 (by value):** `lambdaCaptureNamesMsil` computes the capture set; immutable values are boxed into an `object[]` bound as the delegate's closed target, and the lifted `__lambda_*` reads each from a leading `object[] __caps` parameter (`ldelem.ref` + unbox). **v2 (by reference):** a captured `var` is hoisted (per a pre-pass over the function body) to a one-element `List[object]` heap **cell**; the closure captures the cell reference, so reassignments are shared in both directions (closure↔enclosing scope). Reads/writes route through `get_Item(0)`/`set_Item(0)`; compound `+=` honoured. Related: invoking a function-typed value `f()` (#1877) works via a uniform `Func` ABI; parameter-taking lambdas passed directly to a typed `(…) -> R` parameter work (#1939) — boxed args unboxed via annotation or HOF-signature propagation; combine freely with captures. Remaining (tracked in #1479): a lambda capturing from an enclosing **lambda**'s locals (multi-level nesting), and returned lambdas with un-annotated params (the orthogonal #1939 gap, fail-loud). Lambdas in `@test_module` self-tests hit #1854. | `codegen.l` `ELambda` arm + `lowerFuncMsil` `__caps`/cell path | ✅ |
+| H20 | **PARTIAL (#1479).** Capturing closures **work for immutable bindings** (v1): `lambdaCaptureNamesMsil` computes the capture set, the values are captured **by value** into an `object[]` bound as the delegate's closed target, and the lifted `__lambda_*` reads each from a leading `object[] __caps` parameter (`ldelem.ref` + unbox). Capturing a `var` fails loud (by-**reference** capture is v2). Related: invoking a function-typed value `f()` (#1877) works via a uniform `Func` ABI (thunks/suppliers/`() -> Unit` callbacks); parameter-taking lambdas passed directly to a typed `(…) -> R` parameter work (#1939) — boxed args unboxed via annotation or HOF-signature propagation; combine freely with captures. Remaining: by-ref (`var`) capture, nested closures. Lambdas in `@test_module` self-tests hit #1854. | `codegen.l` `ELambda` arm + `lowerFuncMsil` `__caps` path | ⚠ PARTIAL |
 | H21 | ~~`mapGet`/`map.remove` (#1602/#1727), `List.Contains`→`false`, `List.removeAt`→no-op, unknown method→pop+null.~~ **Resolved.** `mapGet`/`remove` (D-progress-364); `List.contains`/`removeAt` now emit real `List<object>::Contains`/`RemoveAt` and the unknown-method catch-all throws a clear runtime error instead of returning silent `null` (#1481 item 4 / D-progress-371). | `codegen.l` `lowerMethodCallMsil` | ✅ |
 | H22 | ~~Compound assignment ignores the operator: string `+=` emits numeric `MAdd`; field `r.f += v` only stores; `a[i] op= v` hard-fails.~~ **Resolved (#1481 item 2 / D-progress-370):** compound assignment is a real read-modify-write honouring the operator (String `+=` → `String.Concat`) for local / `result` / record-field / `List`-element / `Map`-value targets. | `codegen.l` `lowerAssignExprMsil` + `emitCompoundCombine*` | ✅ |
 
@@ -209,7 +210,7 @@ supporting all language features."
 | M3 | `IConfig` (config blocks, D046) compile to nothing — no env-var reader, no startup validation. | `codegen.l:6349` | MED |
 | M4 | `@derive(Ord)` missing on all type kinds; union/enum derives deferred to F#. | `derives.l:25-26` | MED |
 | M5 | ~~No MethodSpec table (tables stop at TypeSpec 0x1B) → cannot call open generic BCL methods.~~ **Resolved (#1497):** MethodSpec (table 0x2B) + `MethodSpecRow`/`addMethodSpec`/`ctxAddMethodSpec`/`buildMethodSpecBlob` shipped in `tables.l`/`lowering.l`, with serializer wiring (bitmask bit 43, row counts, row data). First consumer: an empty typed-slice literal `val xs: slice[T] = []` lowers to `System.Array.Empty<T>()` (a GENERIC-convention MemberRef instantiated by a MethodSpec) — fixing a latent miscompile (it previously emitted a `List<object>` that mis-read as `T[]`). Verified: PE carries a MethodSpec row decoding to the concrete element type; `shm_empty_slice_array_empty` bridge test. Generic-extern (#1504) and user-generic reify paths can now build on this. | `tables.l` `MethodSpecRow`; `lowering.l` `ctxAddMethodSpec` | ✅ |
-| M6 | ~~Numeric widening not applied (arithmetic requires exact `typeEquiv`); no checked-overflow awareness.~~ **RESOLVED (PR #2939).** Numeric widening now applied for `Int`/`Long` and `Float`/`Double` arithmetic positions. | `typechecker_exprs.l:206-211` | ✅ |
+| M6 | Numeric widening not applied (arithmetic requires exact `typeEquiv`); no checked-overflow awareness. | `typechecker_exprs.l:206-211` | MED |
 | M7 | ~~`SItem`/`SInvariant` silently dropped in codegen.~~ **Stale (verified 2026-06-03):** `SInvariant` is lowered to `assert(inv)` at the loop-body top by the contract elaborator, so codegen's `SInvariant -> {}` correctly drops the redundant marker — loop invariants *are* checked at runtime (a violated `invariant:` panics; covered by `loop_invariant_self_test.l`). `SItem` is **never produced by the parser** (a nested `func`/type inside a block fails to parse, P0080), so `SItem -> {}` is unreachable dead code, not a dropped feature. Neither is a real gap. | `codegen.l` (`SInvariant`/`SItem` arms); elaborator | ✅ |
 | M8 | Weaver `config`-fields-without-default emit a `panic` stub; `call.elapsed`/`call.caller` deferred (A0043 at weave time). | `weaver.l:24,30-35,773-780` | MED |
 | M9 | `pub use Foo.bar` symbol-level re-export (Q022-1): an `ImportDecl.isPubUse` flag exists and the formatter renders it, but there is still **no item-level AST node** carrying the re-exported symbol, so the typechecker/codegen can't surface a named re-export. | `parser_ast.l` (`isPubUse` flag only; no `IPubUse` item kind) | MED |
@@ -218,8 +219,8 @@ supporting all language features."
 | L2 | `ast.l` `ItemKind` diverges from the authoritative `parser_ast.l` (missing `IAspect`/`IConfig`) — latent maintenance hazard. | `lyric/ast.l:773` vs `parser_ast.l:623` | LOW |
 | L3 | `weaver_self_test.l`/`weaver_ci_test.l` not wired into CI (#1324). | CLAUDE.md / #1324 | LOW |
 | L4 | `Float` literals always lower to `MDouble` (32-bit `Float` not distinct); `BXor`/`Long` truncates to `MInt`. | `codegen.l:1459-1462,2142-2147` | LOW |
-| L5 | ~~**NEW (2026-06-03).** `testing_mocking.l` declares `extern` against `Lyric.Stdlib.StubCounterHost.{newCounter,record,count,wasCalledWith}` but no such F# type exists under `bootstrap/src/` (the `Lyric.Stdlib` F# project was deleted, D-progress-140). `@stubbable` call-count assertions therefore fail to resolve on the self-hosted .NET path.~~ **RESOLVED (#1776):** stale `_kernel/testing_mocking.l` + `_kernel_jvm/testing_mocking.l` deleted (D-progress-467); the pure-Lyric `StubCounter protected type` in `std/testing_mocking.l` is the sole implementation. `stubbable.l` now synthesises `_counter: StubCounter = makeStubCounter()` fields for every supported method and injects `import Std.Testing.Mocking` automatically; the synthesised impl increments the counter on entry. Covered by `stubbable_self_test.l` on the self-hosted path. | `lyric-compiler/lyric/stubbable.l` | ✅ |
-| L6 | ~~**NEW (2026-06-03).** `lyric-session` ships an F# host (`Lyric.Session.Host.dll`) that lands on consumers' runtime closure — a second load-bearing F# assembly beyond `Lyric.Emitter.dll`.~~ **RESOLVED (#1777/#3016):** `bootstrap/src/Lyric.Session.Host/` deleted; session kernel fully migrated to audited BCL externs (StackExchange.Redis 2.x direct externs) in `lyric-session/src/_kernel/net/session_kernel.l`. | `lyric-session/src/_kernel/net/session_kernel.l` | ✅ |
+| L5 | **NEW (2026-06-03).** `testing_mocking.l` declares `extern` against `Lyric.Stdlib.StubCounterHost.{newCounter,record,count,wasCalledWith}` but no such F# type exists under `bootstrap/src/` (the `Lyric.Stdlib` F# project was deleted, D-progress-140). `@stubbable` call-count assertions therefore fail to resolve on the self-hosted .NET path. Decide: synthesize counters in-emitter, route through a pure-Lyric kernel, or hard-error. | `lyric-stdlib/std/_kernel/testing_mocking.l` | MED |
+| L6 | **NEW (2026-06-03).** `lyric-session` ships an F# host (`Lyric.Session.Host.dll`) that lands on consumers' runtime closure — a second load-bearing F# assembly beyond `Lyric.Emitter.dll`. Migrate its boundary to audited BCL externs (`StackExchange.Redis` via `extern package`) per the no-F# rule. | `lyric-session/` host shim | MED |
 
 ---
 
@@ -255,17 +256,7 @@ supporting all language features."
   part 1) static/instance/ctor calls — class-typed params/return encode as real
   `TypeRef`-backed MemberRefs; `@externStatic`/`@externInstance` dispatch with
   conflict guard; unresolved externs emit an actionable runtime-throw stub
-  rather than invalid IL. **Generic *declaring types*** (e.g.
-  `ConcurrentDictionary`2`) are supported (#3392): `emitGenericExternMember`
-  emits a closed `<object,…>` GENERICINST TypeSpec parent with a `!0`/`!1`
-  (`MTypeVar`)-encoded member signature read from reference-assembly metadata
-  (`Mdr.decodeExternMethodSig`), casts the receiver to it, boxes value-type
-  arguments, and marshals `out` arguments across the `object`-erasure boundary.
-  The monomorphizer preserves `@externTarget` on specialised copies and keeps an
-  unspecialised generic extern (so a zero-arg ctor extern invoked from a
-  module-`val` initializer still resolves). This is what made the lyric-web
-  rate-limiter / lyric-resilience circuit-breaker kernels — which previously
-  monomorphised to an `ldnull; ret` stub (silent no-op / invalid IL) — work.
+  rather than invalid IL.
 - **Mode checker:** V0001–V0006, V0009–V0011 well-enforced for proof-required code
   (the strongest part of the front end).
 - **Front-end enforcement that does work:** operator typing (T0030–T0037),
@@ -327,14 +318,15 @@ make on user generic types is monomorphize-the-type (extend `mono.l`, consistent
 with the function strategy) vs. reify-as-CLI-generics (GenericParam +
 GenericParamConstraint + MethodSpec + `constrained.`) — see §6 band 4.
 
-### 5.5  AOT & F# residue (HIGH band) — **COMPLETE (2026-06-12)**
+### 5.5  AOT & F# residue (HIGH band)
 
-~~Two F# DLLs sit on every .NET program's runtime closure (H12).~~ All F# host
-shims have been eliminated (H12 ✅, H13 ✅ — see §10 "Band 5: COMPLETE"). The
-pure-Lyric byte accumulator shipped (#1492); every stdlib and ecosystem kernel
-(`http`, `process_capture`, `session`, et al.) binds direct BCL externs with no F#
-intermediary; `Lyric.Emitter.dll` + `FSharp.Core.dll` are no longer on the stage-1
-runtime bundle; and AOT publishing is wired with a CI smoke test running.
+Two F# DLLs sit on every .NET program's runtime closure (H12). They don't break
+codegen under AOT (resolution is table-driven, not reflection-driven), but they
+keep F# — including the Reflection.Emit emitter assembly — in the loop, blocking
+both "no F# in the .NET path" and a clean NativeAOT publish (H13). The fix is a
+pure-Lyric byte accumulator for the ByteWriter boundary and audited direct-BCL
+externs (`System.Console`/`Process`/`Net.Http`/`Environment`) for the kernel
+helpers, then `<PublishAot>` + a native-binary CI smoke test.
 
 ---
 
@@ -351,9 +343,8 @@ should precede feature-completion work, because they stop *silent* wrongness.
   inline-literal range check (T0015); `TyArray.size` pre-existing.  Remaining
   carriers (representation tag, `Future`/`Task`/channel) land append-only with
   their consuming tasks.
-- Type the `TyError` expression forms: `EMatch`/`EIf` branch unification
-  (**shipped** — D-progress-414/419), `EIndex` element type (**shipped** —
-  D-progress-407), `ELambda` param/return inference, `EPropagate` return-compat,
+- Type the `TyError` expression forms: `EMatch`/`EIf` branch unification, `EIndex`
+  element type, `ELambda` param/return inference, `EPropagate` return-compat,
   tuple-destructure sub-bindings, record-constructor argument checking.
 - Add match exhaustiveness (**shipped** — T0016, #1483 split 1), visibility
   enforcement, opaque hiding, impl/interface
@@ -375,43 +366,15 @@ should precede feature-completion work, because they stop *silent* wrongness.
 - Wire `==`/`GetHashCode` (and `Object.Equals` overrides) to the derived methods
   so structural equality and hashing actually work (H1).
 
-### Band 3 — Async (RESOLVED for MSIL, #2070)
-
-**All five phases shipped (D085–D092, Phases A–5):**
-- **Phase A (D-progress-415, D085):** `@externTarget async func` silent
-  miscompile fixed — `Task<T>→T` unwrapping via `get_Result()`/`Wait()` after
-  the BCL call.  `MLdflda` instruction added.
-- **Phase B.0 (D-progress-430, D086):** `IAsyncStateMachine` synthesis for
-  no-await `async func`: SM TypeDef + `AsyncTaskMethodBuilder<T>` + `SetResult`
-  epilogue + kickoff.
-- **Phase B.1 (D-progress-431, D087):** Single-await SM: `switch`-dispatch
-  `MoveNext`, `AwaitUnsafeOnCompleted`, suspend/resume state transitions,
-  `SetException` path.
-- **Phase B.2/B.2+/B.3 (D-progress-433/434/439, D088–D090):** Promoted
-  locals (local→field hoisting), `var` binding promotion, while/for/loop await
-  scan completeness fix, stack-spill for `EAwait` in expression-position binary
-  operands.
-- **Phase 4 (D-progress-441, D091):** `ESpawn` lowers to the kickoff's
-  `Task<T>`; `await` on `@externTarget` externs is a pass-through (non-Task
-  values bypass `.get_Result()`).
-- **Phase 5 (D-progress-444/445, D092):** `yield`-bearing `async func`
-  synthesised as eager-producer `IAsyncEnumerable<object>` class;
-  `emitCollectionForMsil` uses async-enumerator protocol with element-type
-  unboxing.
-
-Verified by `async_sm_self_test.l` (29 tests), `async_extern_self_test.l` (4
-tests), `async_generator_self_test.l` (8 tests).
-
-**Remaining correctness gaps (tracked separately):**
-- `await` inside `try` block emits invalid IL (#2725).
-- ~~Hardcoded `maxStack=8` risks `VerificationException` (#2712).~~ **RESOLVED (#3085)**: dynamic maxStack now computed.
-- Async-iterator (`await`+`yield` in the same body) not yet synthesised — a body combining both is a compile error (#1490).
-- JVM generator synthesis (#2469).
+### Band 3 — Async (CRITICAL)
+- Port `AsyncStateMachine.fs` + `AsyncGenerator.fs` to self-hosted MSIL codegen
+  (state machine, `Task[T]`/`ValueTask[T]` builders, lazy `IAsyncEnumerable[T]`,
+  `CancellationToken` threading). Until then, make `await`/`spawn`/async-generators
+  **panic with a tracked-issue message** rather than miscompile.
 
 ### Band 4 — Feature completion (HIGH)
 - User generic types (monomorphize or reify — decision required), protected-type
-  locking, ~~`@projectable` twins~~ (done — PR #3015 MSIL, #3044 JVM),
-  range-subtype validation, wire
+  locking, `@projectable` twins, range-subtype validation, wire
   `bind`/`scoped`/`provided` + ordering/cycle-detection, named/default/`out`/`inout`
   arguments, FFI class/object signatures + `clrAssemblyForType` hard-diagnostic
   fallback + auto-FFI beyond static-void, custom `@generate` generator wiring,
@@ -421,22 +384,12 @@ tests), `async_generator_self_test.l` (8 tests).
   Metadata-based extern resolution (replacing the hardcoded `clrAssemblyForType`
   table + the auto-FFI guess) is epic #1622 — design in
   `docs/42-extern-metadata-resolution.md`.
-  - **Open question — user generic types (C8), reify path:** the decision is to
-    *reify* (emit truly generic TypeDefs: GenericParam table + VAR fields +
-    instantiated TypeSpec construction/field/match), not erase. The execution
-    plan is `docs/43-in-bundle-generics-plan.md` (epic #2359, prerequisite for
-    full Stage 3 byte-match #2362). Open questions there: Q-GEN-001–Q-GEN-005.
 
-### Band 5 — F# elimination + AOT (HIGH) — **COMPLETE (2026-06-12)**
-
-All Band-5 items shipped. `Lyric.Jvm.Hosts` ByteWriter replaced by pure-Lyric
-`List[Byte]` (#1492). All stdlib + ecosystem F# host shims deleted: `http_host.l`
-and `process_capture_host.l` bind direct BCL externs (#1576/#3012, #1489/#3016);
-`Lyric.Session.Host` deleted (#1777/#3016); Jvm.Hosts/Jobs.Host/Mq.Host/Web.Host
-deleted (#3053). `Lyric.Emitter.dll` + `FSharp.Core.dll` removed from the stage-1
-runtime bundle (#3034/#3062). AOT publishing wired and CI smoke test running
-(#3197/#3201/#3206). Stage-1 determinism CI-enforced — 103/103 DLLs byte-identical
-(#3217). See §10 "Band 5: COMPLETE" for the full list.
+### Band 5 — F# elimination + AOT (HIGH)
+- Replace the `Lyric.Jvm.Hosts` ByteWriter boundary with a pure-Lyric byte
+  accumulator; move the `Lyric.Emitter`-hosted kernel helpers to audited direct
+  BCL externs; then add `<PublishAot>` (+ globalization/trim) and a CI smoke test
+  that runs a real `lyric build` through the native binary.
 
 ### Band 6 — Acceptance gate
 The self-hosted .NET compiler is production-ready when: every program in
@@ -517,79 +470,60 @@ section wins.
 | H21 — BCL stubs | `mapGet`→`Option`, real `Map.remove` | `List.Contains`→false, `removeAt`→no-op |
 | M9 — `pub use Foo.bar` | `isPubUse` flag + fmt rendering | item-level AST node + checker/codegen |
 
-### Still OPEN — the v1.0 gating list (updated 2026-06-09)
+### Still OPEN — the v1.0 gating list (unchanged in substance)
 
-_Several items the 2026-06-03 snapshot listed as open have since shipped.
-The authoritative tactical task list is `docs/12-todo-plan.md`._
-
-- **Band 1 (front-end soundness, CRITICAL): COMPLETE.** All Band-1 items are
-  resolved. Closed since 2026-06-03: advisory→fatal flip (C1, D-progress-438),
-  visibility enforcement (H14, #1484), opaque hiding (C10, #1485), parameter-mode
-  front-end (C13, #1487), `TyError` expression forms (C2, #2939), full
-  impl/interface conformance including DIM body lowering (C11, #1486/#2939),
-  `where`-bound satisfaction (H15, #2939), alias-as-type (H16, #2939), numeric
-  widening (M6, #2939).
-- **Band 2 (backend correctness, CRITICAL):** All major Band-2 items are now
-  resolved: `?` (C3, #1475), `==`/`Map`-key structural equality (H1,
-  #1480/#1837), `defer` (C7, #1477), all of #1481, try/catch-as-value-expression
-  IL (#1823). H20 (capturing closures) **RESOLVED** (#1479 v1+v2 — immutable by
-  value into `object[]`, `var` by heap-cell reference, single-level incl.
-  escaping). Function-value invocation (#1877/#1939) works for zero-arg and
-  annotated/HOF-propagated param-using lambdas. M7 is stale (loop invariants
-  lowered by the elaborator; `SItem` never produced by the parser). Remaining
-  tracked items: multi-level nested closure capture (#1479), lambdas in
-  `@test_module` bodies (#1854).
-- **Band 3 (async, CRITICAL): COMPLETE for MSIL.** All five phases of Epic
-  #2070 shipped (D085–D092): extern async unwrapping (Phase A), `IAsyncStateMachine`
-  synthesis with multi-await, promoted locals, and stack-spill (Phases B.0–B.3),
-  `ESpawn` (Phase 4), and eager-producer `IAsyncEnumerable<object>` generator
-  synthesis (Phase 5, D-progress-444/445, D092).  Verified by
-  `async_sm_self_test.l` (29), `async_extern_self_test.l` (4),
-  `async_generator_self_test.l` (8).  Open correctness bugs tracked separately:
-  #2725 (await-in-try).  Dynamic maxStack computation shipped (#3085).  JVM generator parity: #2469.
-- **Band 4 (feature completion, HIGH): COMPLETE.** All items resolved: C8
-  (cross-package generic records/unions #1496, #3079; in-bundle #2362), C12
-  (protected-type `Monitor.Enter`/`Exit` #1499, #3120), H2 (`@projectable` twins
-  #1500, PR #3015 MSIL + #3044 JVM), H3 (range-subtype validation #1501, #3112),
-  H4 (wire `@provided`/`WMBind` + topo sort #1502, #3050), H5 (named/default
-  args #1503, #3050), H6 (user cross-package generic-fn mono #1498, #2966), H10
-  (custom `@generate` wiring #1505, #2966), H11 (`old()`/`forall`/`exists`
-  lowering #1506, #2966), M3 (`config{}` lowering #1508, #2966), M4
-  (`@derive(Ord)`/union/enum derives #1507, #3120).
-- **Band 5 (F# elimination + AOT, HIGH): COMPLETE.** All ecosystem host shims
-  deleted (#3053: Jvm.Hosts, Jobs.Host, Mq.Host, Web.Host; #3016: Session.Host,
-  ProcessCapture, StubCounterHost; #3034/#3062: HttpClientHost `.cctor` #1576
-  fixed, `Lyric.Emitter.dll` + `FSharp.Core.dll` removed from stage-1 bundle).
-  AOT publishing wired and CI smoke test running (#3197/#3201/#3206). Stage-1
-  determinism CI-enforced — 103/103 DLLs byte-identical (#3217).
+- **Band 1 (front-end soundness, CRITICAL):** C1, C2, C10, C11, H14, H15, H16,
+  M6 — and the front-end half of C13. The type checker is still an advisory,
+  error-tolerant inference pass (`TyError` universal unifier), not a gatekeeper.
+- **Band 2 (backend correctness, CRITICAL):** C3 (`?` no-op, #1475), all of
+  **#1481** (items 1–2: Float/Long literal match compares + compound-assignment
+  operator, D-progress-370; items 3–4: break/continue-across-`try` → `leave`,
+  `List.contains`/`removeAt` real calls, unknown-method fail-loud, D-progress-371),
+  H17, C7 (`defer` now runs at scope exit, #1477), H1 (`==`/`Map`-key structural
+  equality, #1480/#1837), and the try/catch-as-value-expression invalid-IL gap
+  (#1823) are now fixed; M7 is **stale** (loop invariants are checked via the
+  elaborator's `assert` lowering; `SItem` is never produced by the parser).
+  **H20 (capturing closures)** is now PARTIAL (#1479): capturing an **immutable**
+  binding works (v1) — captured by value into an `object[]` bound as the
+  delegate's closed target, read back in the lifted body from a leading
+  `object[] __caps` parameter; capturing a `var` fails loud (by-ref capture is
+  v2, along with nested closures).
+  Invoking a function-typed value `f()` (#1877) is **fixed** for zero-argument
+  lambdas via a uniform `Func` ABI — thunks, suppliers, and `() -> Unit`
+  callbacks run correctly through higher-order functions. **Parameter-taking**
+  lambdas passed directly to a typed `(…) -> R` parameter now also work (#1939):
+  their boxed arguments are unboxed on load, with the param type taken from an
+  explicit annotation or **propagated from the higher-order function's
+  signature** at the call site. A param-using lambda with neither source (e.g.
+  one stored in a `val`) still fails loud. Lambdas in a `@test_module` still
+  produce no TAP output (#1854).
+- **Band 3 (async, CRITICAL):** C4, C5 — no `IAsyncStateMachine` / lazy
+  `IAsyncEnumerable` in `lyric-compiler/msil/`. `await`/`spawn`/`async func`
+  still lower synchronously and silently miscompile on the default self-hosted
+  `--target dotnet` path. Largest single remaining port.
+- **Band 4 (feature completion, HIGH):** C8 (generic types erased), H2
+  (`@projectable` twins), H3 (range-subtype validation), H10 (custom
+  `@generate` never invoked), H11 (`old()`/`forall`/`exists` panic), M3
+  (`config{}` no-op), M4 (`@derive(Ord)`/union/enum derives).
+- **Band 5 (F# elimination + AOT, HIGH):** H12 (HttpClientHost + ProcessCapture
+  + new L5 `StubCounterHost` + L6 `Lyric.Session.Host`), H13 (no `<PublishAot>`
+  anywhere — confirmed absent).
 
 ### New findings (2026-06-03, not in the 05-29 body)
 
-- **L5** — ~~`testing_mocking.l` externs into a non-existent `Lyric.Stdlib.StubCounterHost`;
-  `@stubbable` counters are broken on the self-hosted path.~~ **RESOLVED (#1776)**:
-  stale kernel externs deleted; `stubbable.l` wired to pure-Lyric `StubCounter`.
-  (Added to §3, resolved in same pass.)
-- **L6** — ~~`lyric-session` drags `Lyric.Session.Host.dll` (F#) onto consumers'
-  runtime closure — a second load-bearing F# assembly.~~ **RESOLVED (#1777,
-  #3016)**: Session.Host deleted; session kernel fully migrated to audited BCL
-  externs in `lyric-session/src/_kernel/net/session_kernel.l`. (Added to §3.)
+- **L5** — `testing_mocking.l` externs into a non-existent `Lyric.Stdlib.StubCounterHost`;
+  `@stubbable` counters are broken on the self-hosted path. (Added to §3.)
+- **L6** — `lyric-session` drags `Lyric.Session.Host.dll` (F#) onto consumers'
+  runtime closure — a second load-bearing F# assembly. (Added to §3.)
 
-### Bottom line (updated 2026-06-12)
+### Bottom line (2026-06-03)
 
-**Bands 1, 3–5 are complete; Band 2 is substantially resolved.** Band 1
-(front-end soundness), Band 3 (async for MSIL), Band 4 (feature completion), and
-Band 5 (F# elimination + AOT) have all shipped as of 2026-06-12. Band 2 (backend
-correctness) has all major items resolved with no remaining v1.0 blockers; open
-edge cases are tracked separately (see below).
-
-Open correctness bugs tracked separately and not blocking v1.0: #2725
-(await-in-try invalid IL), #2469 (JVM
-async-generator parity).  LOW-priority v1.1 items: multi-level closure nesting
-(#1479), lambdas in `@test_module` (#1854).
-
-The stage-1 self-hosted compiler (103 DLLs) is deterministic and CI-enforced
-byte-identical run-to-run (#3217).  The v1.0 acceptance gate is now Band 6:
-every program in `docs/02-worked-examples.md` builds and runs under `--target
-dotnet`; parity suite baseline; stdlib `lyric prove`/`test`/`doc` regression
-baseline.  `docs/12-todo-plan.md` is the authoritative task list;
-`docs/36-v1-roadmap.md` §R1–R6 are all done.
+The backend correctness floor has improved (5 silent-miscompile/codegen gaps
+closed, auto-FFI now metadata-driven), but the **two highest-severity bands are
+untouched**: the front end still does not reject invalid programs (Band 1), and
+`await`/`async` still silently miscompile (Band 3).  The Band 2 backend
+correctness floor is now substantially closed (`?` #1475, `==` #1480, `defer`
+#1477, plus the #1481 batch); `await`/`async` is the remaining silent
+miscompile.  No `<PublishAot>` exists. These — not the §R1–R6 items in
+`docs/36`, which are all done — are the real remaining v1.0 blockers, and are
+now tracked as `docs/36` §R7.

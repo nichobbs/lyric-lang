@@ -52,18 +52,10 @@ output_assembly = "Lyric.Stdlib.dll"
 "Std.Time"             = "std/time.l"
 
 # Tier 4 — structured data.
-# Std.Json was here; moved to F#-free self-hosted compile (D-progress-XXX).
-# "Std.Json"             = "std/json.l"
+"Std.Json"             = "std/json.l"
 
 # Tier 5 — testing utilities.
 "Std.Testing.Mocking"  = "std/testing_mocking.l"
-# NOTE: this manifest is the *bootstrap* bundle spec — it is built by the
-# F# stage-0 emitter (`scripts/bootstrap.sh`), which only handles this
-# smoke set.  The full self-hosted stdlib surface is verified separately
-# via `lyric-stdlib/lyric.full.toml` (`./bin/lyric build --manifest
-# lyric-stdlib/lyric.full.toml`), the stage-2 self-hosting path.  As the
-# F# emitter is retired, packages migrate from the full manifest into
-# this one.
 #   Std.Environment — Std.EnvironmentHost uses `extern package {}` syntax;
 #                     the type checker does not flatten EMSig members into the
 #                     symbol table, so `getEnvironmentVariable` etc. are

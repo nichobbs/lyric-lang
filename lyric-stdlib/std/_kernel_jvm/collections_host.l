@@ -1,22 +1,22 @@
-//! std/_kernel_jvm/collections_host.l - JVM host boundary for
-//! java.util.ArrayList and java.util.HashMap.
-//!
-//! Mirrors _kernel/collections_host.l for the JVM target.
-//!
-//! tryGetValue adapts Java's null-sentinel get() to the out-parameter +
-//! Bool pattern that Std.Collections.mapGet expects.  The shim checks
-//! containsKey before get so it correctly distinguishes a present null
-//! value from an absent key (though Lyric's type system forbids null
-//! values in Map[K, V] when V is non-nullable).
-//!
-//! Internal: only Std.Collections should import this.
+// std/_kernel_jvm/collections_host.l - JVM host boundary for
+// java.util.ArrayList and java.util.HashMap.
+//
+// Mirrors _kernel/collections_host.l for the JVM target.
+//
+// tryGetValue adapts Java's null-sentinel get() to the out-parameter +
+// Bool pattern that Std.Collections.mapGet expects.  The shim checks
+// containsKey before get so it correctly distinguishes a present null
+// value from an absent key (though Lyric's type system forbids null
+// values in Map[K, V] when V is non-nullable).
+//
+// Internal: only Std.Collections should import this.
+
 @axiom("java.util.ArrayList / HashMap conform to their documented JVM contracts")
 package Std.CollectionsHost
 
 import Std.Core
 
-extern type List[T] = "java.util.ArrayList"
-
+extern type List[T]   = "java.util.ArrayList"
 extern type Map[K, V] = "java.util.HashMap"
 
 // java.util.ArrayList no-arg constructor.
@@ -45,6 +45,7 @@ pub func tryGetValue[K, V](m: in Map[K, V], key: in K, value: out V): Bool = ()
 // `setToSlice` routes through the JVM shim because java.util.HashSet
 // has no .toArray(T[]) convenience variant matching the Lyric call shape.
 // =====================================================================
+
 extern type Set[T] = "java.util.HashSet"
 
 @externTarget("java.util.HashSet.<init>")

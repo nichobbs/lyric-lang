@@ -25,16 +25,18 @@ package TokenBucketProof
 //     cap clamps to capacity.
 //   make:  initial tokens == capacity, so the invariant holds from
 //     construction.
+
 pub protected type Bucket {
   var tokens: Double
   let capacity: Double
+
   invariant: tokens >= 0.0
   invariant: tokens <= capacity
-  pub entry tryAcquire(count: in Double): Bool
 
-    // Attempt to consume `count` tokens.  Returns true on success,
-    // leaving the bucket with `count` fewer tokens; returns false
-    // (no mutation) when insufficient tokens are available.
+  // Attempt to consume `count` tokens.  Returns true on success,
+  // leaving the bucket with `count` fewer tokens; returns false
+  // (no mutation) when insufficient tokens are available.
+  pub entry tryAcquire(count: in Double): Bool
     requires: count > 0.0
     requires: count <= capacity
   {
@@ -46,9 +48,9 @@ pub protected type Bucket {
     }
     return false
   }
-  pub entry refill(added: in Double): Unit
 
-    // Add `added` tokens, capped at capacity.
+  // Add `added` tokens, capped at capacity.
+  pub entry refill(added: in Double): Unit
     requires: added > 0.0
   {
     val newTokens = tokens + added
@@ -62,8 +64,8 @@ pub protected type Bucket {
 // token count equals the capacity, satisfying the invariant at construction.
 pub func make(capacity: in Double): Bucket
   requires: capacity > 0.0
-  ensures: result.tokens == capacity
-  ensures: result.capacity == capacity
+  ensures:  result.tokens == capacity
+  ensures:  result.capacity == capacity
 {
   return Bucket(tokens = capacity, capacity = capacity)
 }

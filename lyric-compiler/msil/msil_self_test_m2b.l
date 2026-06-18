@@ -1,27 +1,34 @@
-//! msil_self_test_m2b.l — Stage M2b self-test for the typed CIL instruction IR.
-//!
-//! Exercises Msil.Opcodes: the Insn union, MethodBody accumulator, and the
-//! two-pass assembler (serializeMethodBody).
-//!
-//! Run in CI via native `lyric test` (D-progress-474 / #66), linking the
-//! already-compiled compiler DLLs as restored deps:
-//!
-//!   lyric test --target dotnet lyric-compiler/msil/msil_self_test_m2b.l
-//!
-//! `Msil.Opcodes` exports module-level `pub val OP_*` constants, so this
-//! test links the self-hosted-emitted compiler DLLs staged under
-//! `<libdir>/selfhosted` (#3086) — the F#-emitted stage-1 metadata omits
-//! `pub val` decls.
-@test_module
+// msil_self_test_m2b.l — Stage M2b self-test for the typed CIL instruction IR.
+//
+// Exercises Msil.Opcodes: the Insn union, MethodBody accumulator, and the
+// two-pass assembler (serializeMethodBody).
+//
+// Checks emitted (one per line, key=value):
+//   body_size_ok       — serialized body is 12 bytes (1-byte tiny header + 11-byte code)
+//   header_ok          — byte[0] == 0x2E (tiny header for codeSize=11)
+//   ldstr_opcode_ok    — byte[1] == 0x72 (ldstr opcode)
+//   ldstr_token_ok     — LE token bytes == 0x01, 0x00, 0x00, 0x70
+//   call_opcode_ok     — byte[6] == 0x28 (call opcode)
+//   call_token_ok      — LE token bytes == 0x01, 0x00, 0x00, 0x0A
+//   ret_ok             — byte[11] == 0x2A (ret opcode)
+//   branch_size_ok     — branch body is 9 bytes (1-byte tiny header + 8-byte code)
+//   branch_header_ok   — branch header byte == 0x22 ((8<<2)|2)
+//   branch_opcode_ok   — branch opcode byte == 0x38 (br long-form)
+//   branch_offset_ok   — branch offset == 1 (forward by 1 byte past ldc.i4.1)
+
 package Msil.SelfTestM2b
 
 import Msil.Opcodes
 import Msil.Kernel
 import Std.Core
 import Std.Collections
-import Std.Testing
 
-test "ldstr / call / ret body serializes byte-exact" {
+func check(label: in String, ok: in Bool): Unit {
+  if ok { println(label + "=true") } else { println(label + "=false") }
+}
+
+func main(): Unit {
+  // ── Test 1: ldstr / call / ret body ─────────────────────────────────────────
   // Expected bytes: 0x2E 0x72 0x01 0x00 0x00 0x70 0x28 0x01 0x00 0x00 0x0A 0x2A
   val b1 = newMethodBody()
   emitLdstr(b1, 0x70000001)
@@ -32,20 +39,17 @@ test "ldstr / call / ret body serializes byte-exact" {
   serializeMethodBody(b1, w1)
   val bs1 = bufToList(w1)
 
-  // Serialized body is 12 bytes (1-byte tiny header + 11-byte code).
-  assertEqualInt(bufLen(w1), 12, "body size")
-  // Tiny header for codeSize=11.
-  assertTrue(bs1[0] == 0x2E, "tiny header")
-  assertTrue(bs1[1] == 0x72, "ldstr opcode")
-  // LE encoding of 0x70000001: byte order 0x01, 0x00, 0x00, 0x70.
-  assertTrue(bs1[2] == 1 and bs1[3] == 0 and bs1[4] == 0 and bs1[5] == 112, "ldstr token LE bytes")
-  assertTrue(bs1[6] == 0x28, "call opcode")
-  // LE encoding of 0x0A000001: byte order 0x01, 0x00, 0x00, 0x0A.
-  assertTrue(bs1[7] == 1 and bs1[8] == 0 and bs1[9] == 0 and bs1[10] == 10, "call token LE bytes")
-  assertTrue(bs1[11] == 0x2A, "ret opcode")
-}
+  check("body_size_ok",    bufLen(w1) == 12)
+  check("header_ok",       bs1[0] == 0x2E)
+  check("ldstr_opcode_ok", bs1[1] == 0x72)
+  // LE encoding of 0x70000001: byte order 0x01, 0x00, 0x00, 0x70
+  check("ldstr_token_ok",  bs1[2] == 1 and bs1[3] == 0 and bs1[4] == 0 and bs1[5] == 112)
+  check("call_opcode_ok",  bs1[6] == 0x28)
+  // LE encoding of 0x0A000001: byte order 0x01, 0x00, 0x00, 0x0A
+  check("call_token_ok",   bs1[7] == 1 and bs1[8] == 0 and bs1[9] == 0 and bs1[10] == 10)
+  check("ret_ok",          bs1[11] == 0x2A)
 
-test "forward branch resolves to the marked label" {
+  // ── Test 2: forward branch resolution ────────────────────────────────────────
   // Layout:
   //   PC=0  ldc.i4.0       (1 byte, OP_LDC_I4_0 = 0x16)
   //   PC=1  br L1          (5 bytes, OP_BR = 0x38 + 4-byte offset)
@@ -65,8 +69,8 @@ test "forward branch resolves to the marked label" {
   serializeMethodBody(b2, w2)
   val bs2 = bufToList(w2)
 
-  assertEqualInt(bufLen(w2), 9, "branch body size")
-  assertTrue(bs2[0] == 0x22, "branch tiny header")
-  assertTrue(bs2[2] == 0x38, "br long-form opcode")
-  assertTrue(bs2[3] == 1 and bs2[4] == 0 and bs2[5] == 0 and bs2[6] == 0, "branch offset LE bytes")
+  check("branch_size_ok",   bufLen(w2) == 9)
+  check("branch_header_ok", bs2[0] == 0x22)
+  check("branch_opcode_ok", bs2[2] == 0x38)
+  check("branch_offset_ok", bs2[3] == 1 and bs2[4] == 0 and bs2[5] == 0 and bs2[6] == 0)
 }

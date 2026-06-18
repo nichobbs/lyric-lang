@@ -20,8 +20,6 @@ output_assembly = "Mq.dll"
 "Mq.MqTests" = "tests/mq_tests.l"
 
 [features]
-default         = ["inmemory"]   # In-memory broker is the functional default transport (Phase 5 of #733)
-inmemory        = []   # In-process ConcurrentQueue broker (`Mq.Kernel.Net`, .NET-only)
 dotnet          = []   # Target the .NET kernel (`Mq.Kernel.Net`)
 jvm             = []   # Target the JVM kernel (`Mq.Kernel.Jvm`)
 rabbitmq        = []   # RabbitMQ via AMQP 0-9-1 (RabbitMQ.Client on .NET)
@@ -30,7 +28,8 @@ sqs             = []   # Amazon SQS (AWSSDK.SQS on .NET)
 kafka           = []   # Apache Kafka (Confluent.Kafka on .NET)
 
 [dependencies]
-"Lyric.Cache"  = { workspace = true }
+"Lyric.Stdlib" = { path = "../lyric-stdlib" }
+"Lyric.Cache"  = { path = "../lyric-cache" }
 
 # NOTE: The [nuget] table does not yet support per-feature gating (see docs/21-nuget-linking.md).
 # All four broker packages are restored unconditionally; only the active feature's code compiles.

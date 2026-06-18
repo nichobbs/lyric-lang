@@ -1,40 +1,40 @@
-//! std/task.l — Async task primitives + cancellation tokens.
-//!
-//! Phase C / D-progress-068.  Wraps the BCL's
-//! `System.Threading.Tasks.Task`,
-//! `System.Threading.CancellationTokenSource`, and
-//! `System.Threading.CancellationToken` so Lyric programs can
-//! thread cancellation through their async chains.
-//!
-//! Cooperative semantics: an awaited operation only honours
-//! cancellation if it accepts a token (e.g. `delayWithCancel(ms,
-//! token)` instead of `delay(ms)`).  A cancelled token causes
-//! `Task.Delay` and friends to throw `OperationCanceledException`
-//! at the suspend's resume point; the user's `try { ... } catch
-//! Exception { ... }` traps it.  Real `OperationCanceled`
-//! distinguishability is a Phase 4 follow-up.
-//!
-//! Structured concurrency lives in `withScope` / `withTimeout`
-//! (separate combinators in this module): each creates a fresh
-//! source, runs the user closure, and disposes the source on
-//! exit so spawned children don't leak.
-//!
-//! Group C / D-progress-stdlib-expand (2026-05):
-//!   - `extern type Scope = "Lyric.Stdlib.LyricTaskScope"` retired.
-//!     `Scope` is now a native Lyric `protected type` backed by a
-//!     `CancellationTokenSource` + `List[Task]`.  `TaskScopeHost`
-//!     statics are replaced by thin Lyric wrapper functions calling
-//!     the protected type's entry/func methods.  Bootstrap note:
-//!     the `ContinueWith`-based "cancel-siblings-on-first-fault"
-//!     feature is dropped for now; `Task.WhenAll` still propagates
-//!     the first exception to the caller.
-//!
-//! Group D1 / D-progress-stdlib-expand (2026-05):
-//!   - `@externTarget("Lyric.Stdlib.AmbientSlot.Slot")` retired.
-//!     The ambient `AsyncLocal[CancellationToken]` slot is now
-//!     declared with `@asyncLocal val __ambientSlot` so the emitter
-//!     synthesises the static `AsyncLocal<T>` field + `.cctor` init
-//!     directly on this package's program type.
+// std/task.l — Async task primitives + cancellation tokens.
+//
+// Phase C / D-progress-068.  Wraps the BCL's
+// `System.Threading.Tasks.Task`,
+// `System.Threading.CancellationTokenSource`, and
+// `System.Threading.CancellationToken` so Lyric programs can
+// thread cancellation through their async chains.
+//
+// Cooperative semantics: an awaited operation only honours
+// cancellation if it accepts a token (e.g. `delayWithCancel(ms,
+// token)` instead of `delay(ms)`).  A cancelled token causes
+// `Task.Delay` and friends to throw `OperationCanceledException`
+// at the suspend's resume point; the user's `try { ... } catch
+// Exception { ... }` traps it.  Real `OperationCanceled`
+// distinguishability is a Phase 4 follow-up.
+//
+// Structured concurrency lives in `withScope` / `withTimeout`
+// (separate combinators in this module): each creates a fresh
+// source, runs the user closure, and disposes the source on
+// exit so spawned children don't leak.
+//
+// Group C / D-progress-stdlib-expand (2026-05):
+//   - `extern type Scope = "Lyric.Stdlib.LyricTaskScope"` retired.
+//     `Scope` is now a native Lyric `protected type` backed by a
+//     `CancellationTokenSource` + `List[Task]`.  `TaskScopeHost`
+//     statics are replaced by thin Lyric wrapper functions calling
+//     the protected type's entry/func methods.  Bootstrap note:
+//     the `ContinueWith`-based "cancel-siblings-on-first-fault"
+//     feature is dropped for now; `Task.WhenAll` still propagates
+//     the first exception to the caller.
+//
+// Group D1 / D-progress-stdlib-expand (2026-05):
+//   - `@externTarget("Lyric.Stdlib.AmbientSlot.Slot")` retired.
+//     The ambient `AsyncLocal[CancellationToken]` slot is now
+//     declared with `@asyncLocal val __ambientSlot` so the emitter
+//     synthesises the static `AsyncLocal<T>` field + `.cctor` init
+//     directly on this package's program type.
 @runtime_checked
 package Std.Task
 
@@ -42,17 +42,15 @@ import Std.Core
 import Std.Errors
 import Std.CollectionsHost
 
-extern type Task = "System.Threading.Tasks.Task"
-
-extern type CancellationToken = "System.Threading.CancellationToken"
-
+extern type Task   = "System.Threading.Tasks.Task"
+extern type CancellationToken       = "System.Threading.CancellationToken"
 extern type CancellationTokenSource = "System.Threading.CancellationTokenSource"
-
-extern type AsyncLocal[T] = "System.Threading.AsyncLocal`1"
+extern type AsyncLocal[T]           = "System.Threading.AsyncLocal`1"
 
 // =====================================================================
 // Construction helpers.
 // =====================================================================
+
 /// A token that's never cancelled — equivalent to
 /// `CancellationToken.None` in the BCL.  Use as the "no
 /// cancellation requested" sentinel when an API requires a
@@ -78,6 +76,7 @@ pub func makeCancelSourceTimeout(ms: in Int): CancellationTokenSource = ()
 // =====================================================================
 // Source operations.
 // =====================================================================
+
 /// Project a token from a source.  Multiple calls return the
 /// same token (BCL semantics).
 @externTarget("System.Threading.CancellationTokenSource.Token")
@@ -99,6 +98,7 @@ pub func disposeSource(source: in CancellationTokenSource): Unit = ()
 // =====================================================================
 // Token observation.
 // =====================================================================
+
 /// Has cancellation been requested for this token's source?
 /// Async loops can poll this between iterations as a cheap
 /// alternative to `throwIfCancelled`.
@@ -115,6 +115,7 @@ pub func throwIfCancelled(token: in CancellationToken): Unit = ()
 // =====================================================================
 // Cancellable delay.
 // =====================================================================
+
 /// `Task.Delay(ms)` — non-cancellable timer.  Pre-Phase-C
 /// callers continue to use this; the SM will suspend until `ms`
 /// elapses.
@@ -131,6 +132,7 @@ pub func delayWithCancel(ms: in Int, token: in CancellationToken): Task = ()
 // =====================================================================
 // BCL primitives used by structured-concurrency wrappers.
 // =====================================================================
+
 /// `Task.Run(action, token)` — schedule a `() -> Unit` closure
 /// on the thread pool with scope-level cancellation.  Lyric's
 /// `() -> Unit` closures lower to `System.Action`, so the BCL
@@ -182,25 +184,16 @@ func taskWhenAll(tasks: in slice[Task]): Task = ()
 //       }
 //     }
 // =====================================================================
+
 pub protected type Scope {
   var source: CancellationTokenSource = makeCancelSource()
   var tasks: List[Task] = newList()
-  entry addChild(t: in Task): Unit {
 
-    tasks.add(t)
-  }
-  func token(): CancellationToken {
-    return sourceToken(source)
-  }
-  func snapshot(): slice[Task] {
-    return tasks.toArray()
-  }
-  entry cancel(): Unit {
-    cancelSource(source)
-  }
-  entry dispose(): Unit {
-    disposeSource(source)
-  }
+  entry addChild(t: in Task): Unit { tasks.add(t) }
+  func token(): CancellationToken { return sourceToken(source) }
+  func snapshot(): slice[Task] { return tasks.toArray() }
+  entry cancel(): Unit { cancelSource(source) }
+  entry dispose(): Unit { disposeSource(source) }
 }
 
 /// Construct a fresh scope.  The scope owns a cancellation source
@@ -208,20 +201,14 @@ pub protected type Scope {
 /// `scopeSpawn`, then `await awaitAll(scope)` to join them.  Always
 /// pair construction with `defer { cancelScope(scope);
 /// disposeScope(scope) }` so the source is released on scope exit.
-pub func makeScope(): Scope {
-  return Scope()
-}
+pub func makeScope(): Scope { return Scope() }
 
 /// Project the scope's cancellation token.  Pass to child tasks
 /// so they observe scope-level cancellation requests.
-pub func scopeToken(s: in Scope): CancellationToken {
-  return s.token()
-}
+pub func scopeToken(s: in Scope): CancellationToken { return s.token() }
 
 /// Register an existing `Task` as a child of the scope.
-pub func scopeAdd(s: in Scope, child: in Task): Unit {
-  s.addChild(child)
-}
+pub func scopeAdd(s: in Scope, child: in Task): Unit { s.addChild(child) }
 
 /// Spawn a zero-arg closure on the thread pool, scoped to `scope`.
 /// The closure runs on a thread-pool thread with the scope's token;
@@ -239,21 +226,15 @@ pub func scopeSpawn(s: in Scope, action: in () -> Unit): Unit {
 /// Wait for every registered child to complete.  When any child
 /// faults the call rethrows the underlying exception so the
 /// caller's `try/catch` surfaces it.
-pub func awaitAll(s: in Scope): Task {
-  return taskWhenAll(s.snapshot())
-}
+pub func awaitAll(s: in Scope): Task { return taskWhenAll(s.snapshot()) }
 
 /// Explicitly cancel the scope's source.  Idempotent.  Useful
 /// for defer-based cleanup that signals children to abort.
-pub func cancelScope(s: in Scope): Unit {
-  s.cancel()
-}
+pub func cancelScope(s: in Scope): Unit { s.cancel() }
 
 /// Release the scope's underlying source.  Always safe to call
 /// from a `defer { ... }`.
-pub func disposeScope(s: in Scope): Unit {
-  s.dispose()
-}
+pub func disposeScope(s: in Scope): Unit { s.dispose() }
 
 // =====================================================================
 // AsyncLocal-backed ambient cancellation (D-progress-071).
@@ -282,8 +263,8 @@ pub func disposeScope(s: in Scope): Unit {
 // token is installed; useful for libraries that want to fall
 // back to "no cancellation" when the caller didn't supply one.
 // =====================================================================
-@asyncLocal
-val __ambientSlot: AsyncLocal[CancellationToken] = ()
+
+@asyncLocal val __ambientSlot: AsyncLocal[CancellationToken] = ()
 
 @externTarget("System.Threading.AsyncLocal`1.Value")
 func ambientValue(slot: in AsyncLocal[CancellationToken]): CancellationToken = ()

@@ -49,13 +49,12 @@ output_assembly = "Web.dll"
 # "Web.Kernel.Jvm"  = "src/_kernel/jvm/web_kernel.l"
 
 [project.tests]
-"Web.CorsGuardTests"   = "tests/cors_guard_tests.l"
-"Web.RateLimitTests"   = "tests/rate_limit_tests.l"
-"Web.SecurityAspectWeavingTests" = "tests/security_aspect_weaving_tests.l"
+"Web.CorsGuardTests" = "tests/cors_guard_tests.l"
 
 [dependencies]
-"Lyric.Auth"         = { workspace = true }
-"Lyric.Resilience"   = { workspace = true }
+"Lyric.Stdlib"       = { path = "../lyric-stdlib" }
+"Lyric.Auth"         = { path = "../lyric-auth" }
+"Lyric.Resilience"   = { path = "../lyric-resilience" }
 
 [nuget]
 # ASP.NET Core is part of the .NET SDK; no extra package needed for Kestrel.

@@ -1,4 +1,5 @@
-//! Domain tests — proof oracle and helper function correctness.
+/// Domain tests — proof oracle and helper function correctness.
+
 @test_module
 package ProductCatalog.Tests.Domain
 
@@ -7,136 +8,142 @@ import Std.Testing
 import ProductCatalog.Domain
 
 // ─── categoryToString / categoryFromString round-trip ─────────────────────────
+
 test "categoryToString Electronics" {
-  assertTrue(categoryToString(Electronics) == "electronics", "categoryToString(Electronics)")
+  assert categoryToString(Electronics) == "electronics"
 }
 
 test "categoryToString Clothing" {
-  assertTrue(categoryToString(Clothing) == "clothing", "categoryToString(Clothing)")
+  assert categoryToString(Clothing) == "clothing"
 }
 
 test "categoryToString Books" {
-  assertTrue(categoryToString(Books) == "books", "categoryToString(Books)")
+  assert categoryToString(Books) == "books"
 }
 
 test "categoryToString Food" {
-  assertTrue(categoryToString(Food) == "food", "categoryToString(Food)")
+  assert categoryToString(Food) == "food"
 }
 
 test "categoryToString Home" {
-  assertTrue(categoryToString(Home) == "home", "categoryToString(Home)")
+  assert categoryToString(Home) == "home"
 }
 
 test "categoryToString Sports" {
-  assertTrue(categoryToString(Sports) == "sports", "categoryToString(Sports)")
+  assert categoryToString(Sports) == "sports"
 }
 
 test "categoryToString Other" {
-  assertTrue(categoryToString(Other) == "other", "categoryToString(Other)")
+  assert categoryToString(Other) == "other"
 }
 
 test "categoryFromString round-trip electronics" {
-  assertTrue(categoryToString(categoryFromString("electronics")) == "electronics", "categoryFromString round-trip")
+  assert categoryToString(categoryFromString("electronics")) == "electronics"
 }
 
 test "categoryFromString round-trip clothing" {
-  assertTrue(categoryToString(categoryFromString("clothing")) == "clothing", "categoryFromString round-trip")
+  assert categoryToString(categoryFromString("clothing")) == "clothing"
 }
 
 test "categoryFromString unknown maps to other" {
-  assertTrue(categoryToString(categoryFromString("gadgets")) == "other", "categoryFromString unknown")
+  assert categoryToString(categoryFromString("gadgets")) == "other"
 }
 
 test "categoryFromString empty maps to other" {
-  assertTrue(categoryToString(categoryFromString("")) == "other", "categoryFromString empty")
+  assert categoryToString(categoryFromString("")) == "other"
 }
 
 // ─── priceDollars formatting ──────────────────────────────────────────────────
+
 test "priceDollars zero" {
-  assertTrue(priceDollars(0) == "$0.00", "priceDollars(0)")
+  assert priceDollars(0) == "$0.00"
 }
 
 test "priceDollars one cent" {
-  assertTrue(priceDollars(1) == "$0.01", "priceDollars(1)")
+  assert priceDollars(1) == "$0.01"
 }
 
 test "priceDollars one dollar" {
-  assertTrue(priceDollars(100) == "$1.00", "priceDollars(100)")
+  assert priceDollars(100) == "$1.00"
 }
 
 test "priceDollars $9.99" {
-  assertTrue(priceDollars(999) == "$9.99", "priceDollars(999)")
+  assert priceDollars(999) == "$9.99"
 }
 
 test "priceDollars $100.00" {
-  assertTrue(priceDollars(10000) == "$100.00", "priceDollars(10000)")
+  assert priceDollars(10000) == "$100.00"
 }
 
 test "priceDollars $1000.50" {
-  assertTrue(priceDollars(100050) == "$1000.50", "priceDollars(100050)")
+  assert priceDollars(100050) == "$1000.50"
 }
 
 // ─── Proof oracles ────────────────────────────────────────────────────────────
+
 test "priceValid at zero" {
-  assertTrue(priceValid(0) == true, "priceValid(0)")
+  assert priceValid(0) == true
 }
 
 test "priceValid at max" {
-  assertTrue(priceValid(10_000_000) == true, "priceValid(10_000_000)")
+  assert priceValid(10_000_000) == true
 }
 
 test "priceValid mid-range" {
-  assertTrue(priceValid(4999) == true, "priceValid(4999)")
+  assert priceValid(4999) == true
 }
 
 test "nameValid single char" {
-  assertTrue(nameValid("A") == true, "nameValid(A)")
+  assert nameValid("A") == true
 }
 
 test "nameValid at length 200 boundary" {
   var s: String = ""
   var i: Int = 0
-  while i < 200 {
-    s = s + "x"
-    i = i + 1
-  }
-  assertTrue(nameValid(s) == true, "nameValid(200 chars)")
+  while i < 200 { s = s + "x"; i = i + 1 }
+  assert nameValid(s) == true
 }
 
 test "stockValid at zero" {
-  assertTrue(stockValid(0) == true, "stockValid(0)")
+  assert stockValid(0) == true
 }
 
 test "stockValid at max" {
-  assertTrue(stockValid(1_000_000) == true, "stockValid(1_000_000)")
+  assert stockValid(1_000_000) == true
 }
 
 test "priceEditNonNegating both zero" {
-  assertTrue(priceEditNonNegating(0, 0) == true, "priceEditNonNegating(0, 0)")
+  assert priceEditNonNegating(0, 0) == true
 }
 
 test "priceEditNonNegating increase" {
-  assertTrue(priceEditNonNegating(100, 200) == true, "priceEditNonNegating increase")
+  assert priceEditNonNegating(100, 200) == true
 }
 
 test "priceEditNonNegating decrease" {
-  assertTrue(priceEditNonNegating(500, 100) == true, "priceEditNonNegating decrease")
+  assert priceEditNonNegating(500, 100) == true
 }
 
 // ─── createRequestValid oracle ────────────────────────────────────────────────
+
 test "createRequestValid minimal" {
-  val req = CreateProductRequest(name = "Widget", description = "", category = "other", priceCents = 0, stockCount = 0, inStock = false)
-  assertTrue(createRequestValid(req) == true, "createRequestValid(minimal)")
+  val req = CreateProductRequest(
+    name        = "Widget",
+    description = "",
+    category    = "other",
+    priceCents  = 0,
+    stockCount  = 0
+  )
+  assert createRequestValid(req) == true
 }
 
 test "createRequestValid full" {
   val req = CreateProductRequest(
-    name = "Professional Laptop",
+    name        = "Professional Laptop",
     description = "High-performance laptop for developers",
-    category = "electronics",
-    priceCents = 249900,
-    stockCount = 50,
-    inStock = true
+    category    = "electronics",
+    priceCents  = 249900,
+    stockCount  = 50
   )
-  assertTrue(createRequestValid(req) == true, "createRequestValid(full)")
+  assert createRequestValid(req) == true
 }

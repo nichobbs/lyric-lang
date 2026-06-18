@@ -52,11 +52,11 @@ test "deposit increases balance" {
   "…": properties not implemented`) so the surface compiles
   without errors but the runner does not invent generators. v2
   adds property execution.
-* `fixture <name>[: <type>] = <expr>` — parsed and rewritten to a
-  module-level `val` declaration in the synthesised source
-  (D-progress-474), making the value available to all test functions
-  in the module. Worked-example §5 uses fixtures via `wire` blocks;
-  both `wire` and `fixture` items are now supported in v1.
+* `fixture <name>: <type> = <expr>` — parsed and currently rejected
+  with a hard `T0901 fixtures not yet supported` diagnostic at
+  test-emission time. Worked-example §5 uses fixtures via `wire`
+  blocks; v1 supports `wire` in tests just like in production code,
+  so the worked-example pattern still works without `fixture` items.
 
 #### 1.3 Assertion library
 
@@ -247,7 +247,7 @@ Q-J007e).
 | Code  | Meaning |
 |-------|---------|
 | T0900 | `lyric test` invoked on a file without `@test_module`. |
-| T0901 | *(Retired — D-progress-474. `fixture` declarations are now rewritten to `val`.)* |
+| T0901 | `fixture` declarations are not yet supported. |
 | T0902 | `@test_module` package may not declare `func main(): Unit`. |
 | T0903 | (reserved — single-arg `expect(...)` lowering is v2 work.) |
 | T0904 | `property` declarations are parsed but skipped at runtime. (Warning, not error — the v1 runner emits a TAP `# skip` line.) |

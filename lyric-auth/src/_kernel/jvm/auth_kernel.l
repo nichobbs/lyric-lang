@@ -1,24 +1,25 @@
-//! Auth.Kernel.Jvm — JVM authentication extern boundary.
-//!
-//! Bridges Auth's verification functions to io.jsonwebtoken (JJWT) for
-//! JWT handling and MessageDigest for constant-time key comparison.
-//!
-//! Only active when compiled with feature = "jvm" (Phase 6).
-//! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
-//!
-//! Algorithm enforcement is applied at the Lyric layer in Auth.verifyJwt
-//! before this extern is called, so alg=none and algorithm-confusion attacks
-//! are rejected before reaching the JVM validator.  The host shim should
-//! also configure JJWT's parser with the matching `SignatureAlgorithm`
-//! whitelist for defence-in-depth (see lyric-lang #443 and #315 follow-up).
-//!
-//! The Bool-returning extern is wrapped by `verifyJwtImpl` so the public
-//! surface matches the .NET kernel — both expose `Result[Unit, String]`
-//! where the string is a stable error code (#1090).  The JVM path cannot
-//! distinguish specific failure modes today (JJWT throws a single
-//! `JwtException` for any verification failure), so it returns either
-//! Ok(()) or Err("VERIFICATION_FAILED").  Surface-richer JVM errors are
-//! tracked in #443.
+// Auth.Kernel.Jvm — JVM authentication extern boundary.
+//
+// Bridges Auth's verification functions to io.jsonwebtoken (JJWT) for
+// JWT handling and MessageDigest for constant-time key comparison.
+//
+// Only active when compiled with feature = "jvm" (Phase 6).
+// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+//
+// Algorithm enforcement is applied at the Lyric layer in Auth.verifyJwt
+// before this extern is called, so alg=none and algorithm-confusion attacks
+// are rejected before reaching the JVM validator.  The host shim should
+// also configure JJWT's parser with the matching `SignatureAlgorithm`
+// whitelist for defence-in-depth (see lyric-lang #443 and #315 follow-up).
+//
+// The Bool-returning extern is wrapped by `verifyJwtImpl` so the public
+// surface matches the .NET kernel — both expose `Result[Unit, String]`
+// where the string is a stable error code (#1090).  The JVM path cannot
+// distinguish specific failure modes today (JJWT throws a single
+// `JwtException` for any verification failure), so it returns either
+// Ok(()) or Err("VERIFICATION_FAILED").  Surface-richer JVM errors are
+// tracked in #443.
+
 @cfg(feature = "jvm")
 package Auth.Kernel.Jvm
 
@@ -40,7 +41,14 @@ extern package io.jsonwebtoken {
   /// `clockSkewSeconds` in the eventual host implementation would silently
   /// re-introduce the strict-expiry behaviour fixed by #1081 — flagged in
   /// #1153 so the JJWT bridge is shipped with leeway enforcement intact.
-  pub func verifyJwt(token: String, secret: String, issuer: String, audience: String, allowedAlgorithms: String, clockSkewSeconds: Int): Bool
+  pub func verifyJwt(
+    token:             String,
+    secret:            String,
+    issuer:            String,
+    audience:          String,
+    allowedAlgorithms: String,
+    clockSkewSeconds:  Int
+  ): Bool
     requires: secret.length > 0
     requires: allowedAlgorithms.length > 0
     requires: clockSkewSeconds >= 0
@@ -66,14 +74,14 @@ extern package java.security {
 ///                                  issuer, audience, alg).  The JVM path
 ///                                  cannot distinguish failure modes today;
 ///                                  surface-rich errors tracked in #443.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func verifyJwtImpl(
-  token: in String,
-  secret: in String,
-  issuer: in String,
-  audience: in String,
+  token:             in String,
+  secret:            in String,
+  issuer:            in String,
+  audience:          in String,
   allowedAlgorithms: in String,
-  clockSkewSeconds: in Int,
+  clockSkewSeconds:  in Int
 ): Result[Unit, String]
   requires: secret.length > 0
   requires: allowedAlgorithms.length > 0
