@@ -102,33 +102,26 @@ try_bootstrap_from_release() {
       ;;
   esac
 
-  # Determine version to use: prefer LYRIC_VERSION env var, fall back to GitHub API query
-  local version
-  if [[ -n "${LYRIC_VERSION:-}" ]]; then
-    version="$LYRIC_VERSION"
-    info "Using LYRIC_VERSION=$version (from environment)"
+  # Fetch latest non-draft release version from GitHub API
+  local latest_release
+  if command -v jq &>/dev/null; then
+    # Use jq for robust JSON parsing if available
+    latest_release=$(curl -sSL "https://api.github.com/repos/nichobbs/lyric-lang/releases" \
+      2>/dev/null | jq -r '.[] | select(.draft == false) | .tag_name' | head -1)
   else
-    # Fetch latest non-draft release version from GitHub API
-    local latest_release
-    if command -v jq &>/dev/null; then
-      # Use jq for robust JSON parsing if available
-      latest_release=$(curl -sSL "https://api.github.com/repos/nichobbs/lyric-lang/releases" \
-        2>/dev/null | jq -r '.[] | select(.draft == false) | .tag_name' | head -1)
-    else
-      # Fall back to grep-based parsing if jq is not available
-      latest_release=$(curl -sSL "https://api.github.com/repos/nichobbs/lyric-lang/releases?per_page=30" \
-        2>/dev/null | grep '"draft": false' -B 5 | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": "\(.*\)".*/\1/')
-    fi
-
-    if [[ -z "$latest_release" ]]; then
-      info "  Failed to fetch latest non-draft release version from GitHub API"
-      return 1
-    fi
-
-    # Strip 'v' prefix from tag if present (v0.1.0 -> 0.1.0)
-    version="${latest_release#v}"
-    info "Detected latest non-draft release: $latest_release"
+    # Fall back to grep-based parsing if jq is not available
+    latest_release=$(curl -sSL "https://api.github.com/repos/nichobbs/lyric-lang/releases?per_page=30" \
+      2>/dev/null | grep '"draft": false' -B 5 | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": "\(.*\)".*/\1/')
   fi
+
+  if [[ -z "$latest_release" ]]; then
+    info "  Failed to fetch latest non-draft release version from GitHub API"
+    return 1
+  fi
+
+  # Strip 'v' prefix from tag if present (v0.1.0 -> 0.1.0)
+  local version="${latest_release#v}"
+  info "Detected latest non-draft release: $latest_release"
 
   # Construct the tag name (add 'v' prefix for the tag, keep version for file names)
   local latest_release="v${version}"
