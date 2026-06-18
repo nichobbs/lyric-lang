@@ -987,7 +987,14 @@ pub union SigType {
   // an `STClass`/`STValueType` token into it so resolved types and the caller's
   // argument types compare by name rather than by cross-assembly token.
   case STNamed(fqn: String, valueType: Bool)
-  case STGenericInstNamed(valueType: Bool, headFqn: String, args: List[SigType])
+  // A `STGenericInst` whose head token has been resolved to a fully-qualified
+  // name and whose args have been recursively normalised.  Produced by
+  // `resolveSigTypeFqn` (the existing call site that already collapses
+  // `STClass`/`STValueType` into `STNamed`) so the iface MemberRef shape
+  // can be compared across assemblies without tokens.  D105 §A's structural
+  // validation consumes this form for nested generic iface methods like
+  // `IEnumerable<T>.GetEnumerator(): IEnumerator<T>`.
+  case STNamedGenericInst(fqn: String, valueType: Bool, args: List[SigType])
 }
 
 pub record DecodedMethodSig {
@@ -1269,7 +1276,7 @@ pub func sigIsValueType(t: in SigType): Bool {
   match t {
     case STValueType(_) -> true
     case STGenericInst(vt, _, _) -> vt
-    case STGenericInstNamed(vt, _, _) -> vt
+    case STNamedGenericInst(_, vt, _) -> vt
     case _ -> false
   }
 }
@@ -1284,7 +1291,7 @@ pub func mkNamedSig(fqn: in String, valueType: in Bool): SigType {
 pub func sigNamedFqn(t: in SigType): String {
   match t {
     case STNamed(fqn, _) -> fqn
-    case STGenericInstNamed(_, headFqn, _) -> headFqn
+    case STNamedGenericInst(fqn, _, _) -> fqn
     case _ -> ""
   }
 }
@@ -1327,6 +1334,29 @@ pub func sigByRefInner(t: in SigType): Option[SigType] {
   }
 }
 
+// Resolved generic instantiation parts: the closed type's head FQN, whether
+// the head is a value type, and the per-position type arguments.  Bundled
+// into a record so the cross-package accessor returns a single value that
+// the codegen-side comparison can destructure without re-walking the union.
+pub record NamedGenericInstParts {
+  fqn: String
+  valueType: Bool
+  args: List[SigType]
+}
+
+// Construct an `STNamedGenericInst(fqn, valueType, args)`.
+pub func mkNamedGenericInstSig(fqn: in String, valueType: in Bool, args: in List[SigType]): SigType {
+  STNamedGenericInst(fqn = fqn, valueType = valueType, args = args)
+}
+
+// FQN/valueType/args of `t` when it is `STNamedGenericInst`, else `None`.
+pub func sigNamedGenericInstParts(t: in SigType): Option[NamedGenericInstParts] {
+  match t {
+    case STNamedGenericInst(fqn, vt, args) -> Some(value = NamedGenericInstParts(fqn = fqn, valueType = vt, args = args))
+    case _ -> None
+  }
+}
+
 // Substitute every `STVar(i)` occurrence in `s` with `typeArgs[i]`.  Used by
 // D105 §A's F0022/F0023 validation pass to compare an iface method's
 // signature (which carries `STVar` for each iface generic param) against
@@ -1356,6 +1386,15 @@ pub func substituteVarsInSigType(s: in SigType, typeArgs: in List[SigType]): Sig
       }
       STGenericInst(valueType = vt, token = tok, args = substArgs)
     }
+    case STNamedGenericInst(fqn, vt, args) -> {
+      val substArgs: List[SigType] = newList()
+      var i = 0
+      while i < args.count {
+        substArgs.add(substituteVarsInSigType(args[i], typeArgs))
+        i = i + 1
+      }
+      STNamedGenericInst(fqn = fqn, valueType = vt, args = substArgs)
+    }
     case _ -> s
   }
 }
@@ -1364,7 +1403,7 @@ pub func substituteVarsInSigType(s: in SigType, typeArgs: in List[SigType]): Sig
 pub func sigNamedIsValueType(t: in SigType): Bool {
   match t {
     case STNamed(_, vt) -> vt
-    case STGenericInstNamed(vt, _, _) -> vt
+    case STNamedGenericInst(_, vt, _) -> vt
     case _ -> false
   }
 }
@@ -1815,7 +1854,7 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
           case STValueType(_) -> return 2
           case STNamed(_, _) -> return 2
           case STGenericInst(_, _, _) -> return 2
-          case STGenericInstNamed(_, _, _) -> return 2
+          case STNamedGenericInst(_, _, _) -> return 2
           case STPrim(pb) -> if pb == 0x1C { return 2 } else { return -1 }
           case _ -> return -1
         }
@@ -1846,7 +1885,7 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
     case STClass(pt) -> match arg { case STClass(at) -> if at == pt { 2 } else { -1 }; case _ -> -1 }
     case STValueType(pt) -> match arg { case STValueType(at) -> if at == pt { 2 } else { -1 }; case _ -> -1 }
     case STNamed(pfqn, pvt) -> match arg { case STNamed(afqn, avt) -> if afqn == pfqn and avt == pvt { 2 } else { -1 }; case _ -> -1 }
-    case STGenericInstNamed(pvt, pfqn, pargs) -> match arg { case STGenericInstNamed(avt, afqn, aargs) -> { if afqn == pfqn and avt == pvt and pargs.count == aargs.count { var matchOk = true; var ai = 0; while ai < pargs.count { if scoreSigType(aargs[ai], pargs[ai]) != 2 { matchOk = false }; ai = ai + 1 }; if matchOk { 2 } else { -1 } } else { -1 } }; case _ -> -1 }
+    case STNamedGenericInst(pfqn, pvt, pargs) -> match arg { case STNamedGenericInst(afqn, avt, aargs) -> { if afqn == pfqn and avt == pvt and pargs.count == aargs.count { var matchOk = true; var ai = 0; while ai < pargs.count { if scoreSigType(aargs[ai], pargs[ai]) != 2 { matchOk = false }; ai = ai + 1 }; if matchOk { 2 } else { -1 } } else { -1 } }; case _ -> -1 }
     case STSzArray(pe) -> match arg {
       // CLR arrays with value-type elements are invariant — `int[]` cannot be
       // passed where `long[]` is expected.  Only accept an exact element match
@@ -1867,29 +1906,29 @@ pub func resolveSigTypeFqn(img: in PeImage, layout: in TableLayout, th: in Table
     case STGenericInst(vt, tok, args) -> {
       val fqn = resolveTypeDefOrRefName(img, layout, th, tok)
       if fqn.length == 0 {
-        t
+        // Token didn't resolve (unusual): fall through with original args
+        // recursively normalised so an STClass inside still becomes STNamed.
+        val normArgs: List[SigType] = newList()
+        var i = 0
+        while i < args.count {
+          normArgs.add(resolveSigTypeFqn(img, layout, th, args[i]))
+          i = i + 1
+        }
+        STGenericInst(valueType = vt, token = tok, args = normArgs)
       } else {
         val normArgs: List[SigType] = newList()
-        var ai = 0
-        while ai < args.count {
-          normArgs.add(resolveSigTypeFqn(img, layout, th, args[ai]))
-          ai = ai + 1
+        var i = 0
+        while i < args.count {
+          normArgs.add(resolveSigTypeFqn(img, layout, th, args[i]))
+          i = i + 1
         }
-        STGenericInstNamed(valueType = vt, headFqn = fqn, args = normArgs)
+        STNamedGenericInst(fqn = fqn, valueType = vt, args = normArgs)
       }
     }
-    case STSzArray(ae) -> {
-      STSzArray(elem = resolveSigTypeFqn(img, layout, th, ae))
-    }
-    case STByRef(inner) -> {
-      STByRef(inner = resolveSigTypeFqn(img, layout, th, inner))
-    }
-    case STPtr(inner) -> {
-      STPtr(inner = resolveSigTypeFqn(img, layout, th, inner))
-    }
-    case STArray(elem, rank) -> {
-      STArray(elem = resolveSigTypeFqn(img, layout, th, elem), rank = rank)
-    }
+    case STSzArray(elem) -> STSzArray(elem = resolveSigTypeFqn(img, layout, th, elem))
+    case STByRef(inner) -> STByRef(inner = resolveSigTypeFqn(img, layout, th, inner))
+    case STPtr(inner) -> STPtr(inner = resolveSigTypeFqn(img, layout, th, inner))
+    case STArray(elem, rank) -> STArray(elem = resolveSigTypeFqn(img, layout, th, elem), rank = rank)
     case _ -> {
       val tok = sigClassToken(t)
       if tok < 0 {
