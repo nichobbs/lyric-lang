@@ -102,20 +102,31 @@ try_bootstrap_from_release() {
       ;;
   esac
 
-  # Fetch latest release version from GitHub API
+  # Fetch latest non-draft release version from GitHub API
   local latest_release
-  latest_release=$(curl -sSL "https://api.github.com/repos/nichobbs/lyric-lang/releases/latest" \
-    2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": "\(.*\)".*/\1/')
+  if command -v jq &>/dev/null; then
+    # Use jq for robust JSON parsing if available
+    latest_release=$(curl -sSL "https://api.github.com/repos/nichobbs/lyric-lang/releases" \
+      2>/dev/null | jq -r '.[] | select(.draft == false) | .tag_name' | head -1)
+  else
+    # Fall back to grep-based parsing if jq is not available
+    latest_release=$(curl -sSL "https://api.github.com/repos/nichobbs/lyric-lang/releases?per_page=30" \
+      2>/dev/null | grep '"draft": false' -B 5 | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": "\(.*\)".*/\1/')
+  fi
 
   if [[ -z "$latest_release" ]]; then
-    info "  Failed to fetch latest release version from GitHub API"
+    info "  Failed to fetch latest non-draft release version from GitHub API"
     return 1
   fi
 
   # Strip 'v' prefix from tag if present (v0.1.0 -> 0.1.0)
   local version="${latest_release#v}"
+  info "Detected latest non-draft release: $latest_release"
 
-  info "Attempting to bootstrap from latest release ($latest_release, platform: $platform)..."
+  # Construct the tag name (add 'v' prefix for the tag, keep version for file names)
+  local latest_release="v${version}"
+
+  info "Attempting to bootstrap from release ($latest_release, platform: $platform)..."
 
   local archive_name="lyric-${version}-${platform}.tar.gz"
   local download_url="https://github.com/nichobbs/lyric-lang/releases/download/${latest_release}/${archive_name}"

@@ -30,7 +30,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.ver.outputs.VERSION }}
-      bootstrap-version: ${{ steps.bootstrap-ver.outputs.BOOTSTRAP_VERSION }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
@@ -51,20 +50,6 @@ jobs:
             --draft \
             --title "v${{ steps.ver.outputs.VERSION }}" \
             --notes "Lyric compiler release"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Query latest release for bootstrap
-        id: bootstrap-ver
-        shell: bash
-        run: |
-          # Get the latest non-draft release tag, stripping the 'v' prefix
-          LATEST=$(gh release list --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName' | sed 's/v//')
-          if [ -z "$LATEST" ]; then
-            echo "ERROR: No previous releases found"
-            exit 1
-          fi
-          echo "BOOTSTRAP_VERSION=$LATEST" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -118,8 +103,6 @@ jobs:
 
       - name: Build stage 1 (self-hosted compiler)
         shell: bash
-        env:
-          LYRIC_VERSION: ${{ needs.create-release.outputs.bootstrap-version }}
         run: |
           ./scripts/bootstrap.sh --stage 1
 
