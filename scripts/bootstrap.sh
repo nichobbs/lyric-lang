@@ -106,8 +106,9 @@ try_bootstrap_from_release() {
   local latest_release
   if command -v jq &>/dev/null; then
     # Use jq for robust JSON parsing if available
+    # Query for the first non-draft release with a valid tag_name
     latest_release=$(curl -sSL "https://api.github.com/repos/nichobbs/lyric-lang/releases" \
-      2>/dev/null | jq -r '.[] | select(.draft == false) | .tag_name' | head -1)
+      2>/dev/null | jq -r '.[] | select((.draft // true) == false) | select(.tag_name != null and .tag_name != "") | .tag_name' | head -1)
   else
     # Fall back to grep-based parsing if jq is not available
     latest_release=$(curl -sSL "https://api.github.com/repos/nichobbs/lyric-lang/releases?per_page=30" \
@@ -121,15 +122,17 @@ try_bootstrap_from_release() {
 
   # Strip 'v' prefix from tag if present (v0.1.0 -> 0.1.0)
   local version="${latest_release#v}"
-  info "Detected latest non-draft release: $latest_release"
+  info "Detected latest non-draft release: $latest_release (version: $version)"
 
   # Construct the tag name (add 'v' prefix for the tag, keep version for file names)
   local latest_release="v${version}"
 
-  info "Attempting to bootstrap from release ($latest_release, platform: $platform)..."
-
   local archive_name="lyric-${version}-${platform}.tar.gz"
   local download_url="https://github.com/nichobbs/lyric-lang/releases/download/${latest_release}/${archive_name}"
+
+  info "Bootstrapping from release: $latest_release (platform: $platform)"
+  info "  Archive: $archive_name"
+  info "  Download URL: $download_url"
 
   # Create temporary directory for download
   local temp_dir
@@ -137,11 +140,21 @@ try_bootstrap_from_release() {
   trap "rm -rf '$temp_dir'" RETURN
 
   # Try to download the release binary
-  info "  Downloading $archive_name..."
+  info "  Downloading..."
   if command -v curl &>/dev/null; then
-    curl -sSL "$download_url" -o "${temp_dir}/lyric.tar.gz" 2>/dev/null || return 1
+    if curl -sSL "$download_url" -o "${temp_dir}/lyric.tar.gz" 2>/dev/null; then
+      info "  Download successful"
+    else
+      info "  Download failed"
+      return 1
+    fi
   elif command -v wget &>/dev/null; then
-    wget -q "$download_url" -O "${temp_dir}/lyric.tar.gz" 2>/dev/null || return 1
+    if wget -q "$download_url" -O "${temp_dir}/lyric.tar.gz" 2>/dev/null; then
+      info "  Download successful"
+    else
+      info "  Download failed"
+      return 1
+    fi
   else
     info "  SKIP: Neither curl nor wget found"
     return 1
@@ -150,7 +163,7 @@ try_bootstrap_from_release() {
   # Extract to stage0-publish
   mkdir -p "$BUILD_DIR/stage0-publish"
   if tar -xzf "${temp_dir}/lyric.tar.gz" -C "$BUILD_DIR/stage0-publish"; then
-    info "  Successfully extracted release binary"
+    info "  Extraction successful"
     return 0
   else
     info "  Failed to extract release archive (file may be corrupted or missing)"
