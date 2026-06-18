@@ -135,11 +135,13 @@ try_bootstrap_from_release() {
 
   if command -v jq &>/dev/null; then
     # Use jq for robust JSON parsing if available
-    # Query for the first non-draft release with a valid tag_name
-    latest_release=$(echo "$api_response" | jq -r '.[] | select((.draft // true) == false) | select(.tag_name != null and .tag_name != "") | .tag_name' 2>/dev/null | head -1)
+    # Find the first non-draft release with a tag_name
+    # Note: draft field defaults to false if missing
+    latest_release=$(echo "$api_response" | jq -r '.[] | select((.draft // false) != true) | .tag_name | select(. != null and . != "")' 2>/dev/null | head -1)
   else
-    # Fall back to grep-based parsing if jq is not available
-    latest_release=$(echo "$api_response" | grep '"draft": false' -B 5 | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": "\(.*\)".*/\1/')
+    # Fall back to grep-based parsing without jq (for minimal environments)
+    # Normalize whitespace and split releases, then find first non-draft release's tag_name
+    latest_release=$(echo "$api_response" | tr -s '[:space:]' ' ' | sed 's/}, */}\n/g' | grep '"draft": false' | head -1 | grep -o '"tag_name": "[^"]*"' | sed 's/"tag_name": "\([^"]*\)"/\1/')
   fi
 
   if [[ -z "$latest_release" ]]; then
