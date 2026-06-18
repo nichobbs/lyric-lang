@@ -82,7 +82,8 @@ try_bootstrap_from_release() {
   fi
   # Detect platform and architecture for downloading the right binary
   local platform
-  case "$(uname -s)" in
+  local uname_sys="$(uname -s)"
+  case "$uname_sys" in
     Linux)
       case "$(uname -m)" in
         x86_64) platform="linux-x64" ;;
@@ -97,7 +98,12 @@ try_bootstrap_from_release() {
         *) return 1 ;;
       esac
       ;;
+    MINGW64_NT*|MSYS_NT*|CYGWIN_NT*)
+      # Windows Git Bash, MSYS2, or Cygwin
+      platform="win-x64"
+      ;;
     *)
+      info "Unsupported platform: $uname_sys"
       return 1
       ;;
   esac
