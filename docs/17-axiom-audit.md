@@ -807,6 +807,7 @@ recorded in the §19 baseline.
 | `Std.EnvironmentHost`    | `environment_host.l`         | 1      | 0           |
 | `Std.FileHost`           | `file_host.l`                | 1      | 0           |
 | `Std.FormatHost`         | `format_host.l`              | 1      | 0           |
+| `Std.HashHost`           | `hash_host.l`                | 1      | 0           |
 | `Std.HttpHost`           | `http_host.l`                | 1      | 0           |
 | `Std.JsonHost`           | `json_host.l`                | 1      | 0           |
 | `Std.LogHost`            | `log_host.l`                 | 1      | 0           |
@@ -821,11 +822,11 @@ recorded in the §19 baseline.
 | `Std.UnicodeHost`        | `unicode_host.l`             | 1      | 0           |
 | `Std.UuidHost`           | `uuid_host.l`                | 1      | 0           |
 | `Std.RegexHost`          | `regex_host.l`               | 1      | 0           |
-| **Total**                |                              | **22** | **0**       |
+| **Total**                |                              | **23** | **0**       |
 
 ### Combined total
 
-24 + 22 = **46** stable + **2** provisional = **48** `@axiom`
+24 + 23 = **47** stable + **2** provisional = **49** `@axiom`
 annotations covering the entire extern boundary across both
 targets.
 
