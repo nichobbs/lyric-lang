@@ -21,13 +21,44 @@ env:
   DOTNET_NOLOGO: true
 
 # ---------------------------------------------------------------------------
-# Build self-contained standalone binaries for all supported platforms.
-# Each matrix leg runs on the native OS, publishes a single-file binary,
-# optionally signs it, packages it into a zip/tar.gz, and uploads the
-# archive as a GitHub Release asset.
+# Create GitHub Release atomically before building binaries.
+# This prevents race conditions where one architecture fails after the
+# release is already created with incomplete assets.
 # ---------------------------------------------------------------------------
 jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.VERSION }}
+    steps:
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "VERSION=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        shell: bash
+        run: |
+          gh release create "v${{ steps.ver.outputs.VERSION }}" \
+            --draft \
+            --title "v${{ steps.ver.outputs.VERSION }}" \
+            --notes "Lyric compiler release"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  # Build self-contained standalone binaries for all supported platforms.
+  # Each matrix leg runs on the native OS, publishes a single-file binary,
+  # optionally signs it, packages it into a zip/tar.gz, and uploads the
+  # archive as a GitHub Release asset.
+  # ---------------------------------------------------------------------------
   build-standalone:
+    needs: [create-release]
     strategy:
       fail-fast: false
       matrix:
@@ -68,20 +99,10 @@ jobs:
         with:
           global-json-file: bootstrap/global.json
 
-      - name: Resolve version
-        id: ver
-        shell: bash
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "VERSION=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Build stage 1 (self-hosted compiler)
         shell: bash
         env:
-          LYRIC_VERSION: ${{ steps.ver.outputs.VERSION }}
+          LYRIC_VERSION: ${{ needs.create-release.outputs.version }}
         run: |
           ./scripts/bootstrap.sh --stage 1
 
@@ -99,7 +120,7 @@ jobs:
             --self-contained true \
             -p:PublishSingleFile=true \
             -p:EnableCompressionInSingleFile=true \
-            -p:Version=${{ steps.ver.outputs.VERSION }} \
+            -p:Version=${{ needs.create-release.outputs.version }} \
             --output publish/${{ matrix.rid }} \
             --no-restore
 
@@ -153,7 +174,7 @@ jobs:
         if: matrix.archive_suffix == 'tar.gz'
         shell: bash
         run: |
-          VERSION="${{ steps.ver.outputs.VERSION }}"
+          VERSION="${{ needs.create-release.outputs.version }}"
           ARCHIVE="lyric-${VERSION}-${{ matrix.rid }}.tar.gz"
           tar -czf "$ARCHIVE" -C bootstrap/publish/${{ matrix.rid }} .
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
@@ -162,7 +183,7 @@ jobs:
         if: matrix.archive_suffix == 'zip'
         shell: pwsh
         run: |
-          $version  = "${{ steps.ver.outputs.VERSION }}"
+          $version  = "${{ needs.create-release.outputs.version }}"
           $archive  = "lyric-${version}-${{ matrix.rid }}.zip"
           Compress-Archive -Path "bootstrap/publish/${{ matrix.rid }}/*" `
                            -DestinationPath $archive
@@ -183,11 +204,11 @@ jobs:
 
       # ── Upload to GitHub Release ──────────────────────────────────────────
       - name: Upload release asset
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda  # v3.0.0
-        with:
-          tag_name: v${{ steps.ver.outputs.VERSION }}
-          fail_on_unmatched_files: true
-          files: ${{ env.ARCHIVE }}
+        shell: bash
+        run: |
+          gh release upload "v${{ needs.create-release.outputs.version }}" "$ARCHIVE"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ---------------------------------------------------------------------------
   # Build and publish the NuGet global tool package.
@@ -216,7 +237,7 @@ jobs:
 
   publish-nuget:
     runs-on: ubuntu-latest
-    needs: [build-standalone, secrets-gate]
+    needs: [build-standalone, secrets-gate, create-release]
     if: needs.secrets-gate.outputs.has_nuget_key == 'true'
 
     # Hoist the secrets into `env` rather than interpolating ${{ secrets.* }}
@@ -237,16 +258,6 @@ jobs:
         with:
           global-json-file: bootstrap/global.json
 
-      - name: Resolve version
-        id: ver
-        shell: bash
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "VERSION=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Restore
         working-directory: bootstrap
         run: dotnet restore Bootstrap.sln
@@ -261,7 +272,7 @@ jobs:
         run: |
           dotnet pack src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
             --configuration Release \
-            -p:PackageVersion=${{ steps.ver.outputs.VERSION }} \
+            -p:PackageVersion=${{ needs.create-release.outputs.version }} \
             -p:PackAsTool=true \
             -p:ToolCommandName=lyric \
             -p:PackageId=lyric \
@@ -290,3 +301,19 @@ jobs:
             --api-key "$NUGET_API_KEY" \
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate
+
+  # ---------------------------------------------------------------------------
+  # Mark the release as ready (non-draft) after all uploads and publishing
+  # are complete.  Runs only if all prior jobs succeeded.
+  # ---------------------------------------------------------------------------
+  finalize-release:
+    runs-on: ubuntu-latest
+    needs: [create-release, build-standalone, publish-nuget, secrets-gate]
+    if: always() && (needs.build-standalone.result == 'success' || needs.build-standalone.result == 'skipped')
+    steps:
+      - name: Mark release as ready
+        shell: bash
+        run: |
+          gh release edit "v${{ needs.create-release.outputs.version }}" --draft=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
