@@ -105,32 +105,46 @@ try_bootstrap_from_release() {
   # Fetch latest non-draft release version from GitHub API
   local latest_release
   local api_url="https://api.github.com/repos/nichobbs/lyric-lang/releases"
+  local api_response
+  local curl_opts=()
 
   # Use GITHUB_TOKEN for authentication if available (increases rate limit from 60 to 5000 req/hr)
-  # Without auth: 60 requests/hour; with auth: 5000 requests/hour
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    curl_opts=(-H "Authorization: token $GITHUB_TOKEN")
+    info "  Using authenticated GitHub API (GITHUB_TOKEN set)"
+  else
+    info "  Using unauthenticated GitHub API (GITHUB_TOKEN not set, limited to 60 req/hr)"
+  fi
+
+  # Fetch API response and save to variable for debugging
+  api_response=$(curl -sSL "${curl_opts[@]}" "$api_url" 2>&1)
+
+  # Log the response (first 200 chars for debugging)
+  if [[ -n "$api_response" ]]; then
+    info "  API response (first 200 chars): ${api_response:0:200}"
+  else
+    info "  API returned empty response"
+    return 1
+  fi
+
+  # Check for error responses (e.g., "message": "Bad credentials")
+  if echo "$api_response" | grep -q '"message"'; then
+    info "  GitHub API error response detected"
+    return 1
+  fi
+
   if command -v jq &>/dev/null; then
     # Use jq for robust JSON parsing if available
     # Query for the first non-draft release with a valid tag_name
-    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-      latest_release=$(curl -sSL -H "Authorization: token $GITHUB_TOKEN" "$api_url" \
-        2>/dev/null | jq -r '.[] | select((.draft // true) == false) | select(.tag_name != null and .tag_name != "") | .tag_name' | head -1)
-    else
-      latest_release=$(curl -sSL "$api_url" \
-        2>/dev/null | jq -r '.[] | select((.draft // true) == false) | select(.tag_name != null and .tag_name != "") | .tag_name' | head -1)
-    fi
+    latest_release=$(echo "$api_response" | jq -r '.[] | select((.draft // true) == false) | select(.tag_name != null and .tag_name != "") | .tag_name' 2>/dev/null | head -1)
   else
     # Fall back to grep-based parsing if jq is not available
-    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-      latest_release=$(curl -sSL -H "Authorization: token $GITHUB_TOKEN" "$api_url?per_page=30" \
-        2>/dev/null | grep '"draft": false' -B 5 | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": "\(.*\)".*/\1/')
-    else
-      latest_release=$(curl -sSL "$api_url?per_page=30" \
-        2>/dev/null | grep '"draft": false' -B 5 | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": "\(.*\)".*/\1/')
-    fi
+    latest_release=$(echo "$api_response" | grep '"draft": false' -B 5 | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": "\(.*\)".*/\1/')
   fi
 
   if [[ -z "$latest_release" ]]; then
-    info "  Failed to fetch latest non-draft release version from GitHub API"
+    info "  Failed to extract release version from GitHub API response"
+    info "  Full API response: $api_response"
     return 1
   fi
 
