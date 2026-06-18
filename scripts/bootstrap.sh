@@ -135,11 +135,20 @@ try_bootstrap_from_release() {
 
   if command -v jq &>/dev/null; then
     # Use jq for robust JSON parsing if available
-    # Query for the first non-draft release with a valid tag_name
-    latest_release=$(echo "$api_response" | jq -r '.[] | select((.draft // true) == false) | select(.tag_name != null and .tag_name != "") | .tag_name' 2>/dev/null | head -1)
+    # Find the first non-draft release with a tag_name
+    # Note: draft field defaults to false if missing
+    latest_release=$(echo "$api_response" | jq -r '.[] | select((.draft // false) != true) | .tag_name | select(. != null and . != "")' 2>/dev/null | head -1)
   else
-    # Fall back to grep-based parsing if jq is not available
-    latest_release=$(echo "$api_response" | grep '"draft": false' -B 5 | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": "\(.*\)".*/\1/')
+    # Fall back to basic grep+sed for systems without jq
+    # Look for "draft": false, then extract the tag_name from that release block
+    # Use a multi-line approach: find the line with draft:false, then search backward/forward for tag_name
+    if echo "$api_response" | grep -q '"draft": false'; then
+      # Find the portion with non-draft releases and extract the first tag_name
+      # Convert multiline JSON to single line, split on "}, then grep for non-draft
+      latest_release=$(printf "%s" "$api_response" | tr '\n' ' ' | sed 's/"}, *"/"}\n"/g' | \
+        grep '"draft": false' | head -1 | \
+        sed 's/.*"tag_name": "\([^"]*\)".*/\1/')
+    fi
   fi
 
   if [[ -z "$latest_release" ]]; then
