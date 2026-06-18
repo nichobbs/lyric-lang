@@ -240,83 +240,16 @@ pub func hostClientNoRedirects(): HttpClient {
 
 // ---------------------------------------------------------------------------
 // Unix domain socket support for local protocol access (Docker, systemd, etc).
-// Pure Lyric implementation using strongly-typed lambda FFI delegates (Epic #1877).
+// Infrastructure bridge to Lyric.Cli.Aot.UnixSocketHttpClient (in AOT entry-point).
 // ---------------------------------------------------------------------------
+@externTarget("Lyric.Cli.Aot.UnixSocketHttpClient.CreateWithUnixSocket")
+pub func hostClientWithUnixSocket(socketPath: in String): HttpClient = ()
 
-// Extern types for Unix socket and async callback support
-extern type Socket = "System.Net.Sockets.Socket"
-extern type AddressFamily = "System.Net.Sockets.AddressFamily"
-extern type SocketType = "System.Net.Sockets.SocketType"
-extern type ProtocolType = "System.Net.Sockets.ProtocolType"
-extern type Stream = "System.IO.Stream"
-extern type NetworkStream = "System.Net.Sockets.NetworkStream"
-extern type SocketsHttpConnectionContext = "System.Net.Http.SocketsHttpConnectionContext"
-extern type CancellationToken = "System.Threading.CancellationToken"
+@externTarget("Lyric.Cli.Aot.UnixSocketHttpClient.CreateWithUnixSocketAndRedirects")
+pub func hostClientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: in Int): HttpClient = ()
 
-// Extern constructors and methods for socket operations
-@externTarget("System.Net.Sockets.AddressFamily.Unix")
-func getAddressFamilyUnix(): AddressFamily = ()
-
-@externTarget("System.Net.Sockets.SocketType.Stream")
-func getSocketTypeStream(): SocketType = ()
-
-@externTarget("System.Net.Sockets.ProtocolType.Unspecified")
-func getProtocolTypeUnspecified(): ProtocolType = ()
-
-@externTarget("System.Net.Sockets.Socket..ctor")
-func newSocket(addressFamily: in AddressFamily, socketType: in SocketType, protocolType: in ProtocolType): Socket = ()
-
-@externTarget("System.Net.Sockets.Socket.ConnectAsync")
-async func socketConnectAsync(socket: in Socket, endpoint: in UnixDomainSocketEndPoint, cancellationToken: in CancellationToken): Unit = ()
-
-@externTarget("System.Net.Sockets.NetworkStream..ctor")
-func newNetworkStream(socket: in Socket, ownsSocket: in Bool): NetworkStream = ()
-
-@externTarget("System.Net.Sockets.Socket.Dispose")
-func socketDispose(socket: in Socket): Unit = ()
-
-@externTarget("System.Net.Http.SocketsHttpHandler.set_ConnectCallback")
-func setConnectCallback(handler: in SocketsHttpHandler, callback: in ((SocketsHttpConnectionContext, CancellationToken) -> Stream)): Unit = ()
-
-// Create strongly-typed lambda for Unix socket connection (Epic #1877).
-// The lambda is async and returns Stream; Lyric's type system automatically
-// wraps it as Func<SocketsHttpConnectionContext, CancellationToken, ValueTask<Stream>>.
-func makeUnixSocketCallback(socketPath: in String): (SocketsHttpConnectionContext, CancellationToken) -> Stream {
-  { (context: SocketsHttpConnectionContext, cancellationToken: CancellationToken) ->
-    val socket = newSocket(getAddressFamilyUnix(), getSocketTypeStream(), getProtocolTypeUnspecified())
-    try {
-      val endpoint = newUnixDomainSocketEndPoint(socketPath)
-      await socketConnectAsync(socket, endpoint, cancellationToken)
-      newNetworkStream(socket, ownsSocket = true)
-    } catch {
-      case Bug as b -> {
-        socketDispose(socket)
-        throw Bug(message = b.message)
-      }
-    }
-  }
-}
-
-pub func hostClientWithUnixSocket(socketPath: in String): HttpClient {
-  val handler = newSocketsHandler()
-  setConnectCallback(handler, makeUnixSocketCallback(socketPath))
-  newClientFromHandler(handler)
-}
-
-pub func hostClientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: in Int): HttpClient {
-  val handler = newSocketsHandler()
-  socketsSetAllowAutoRedirect(handler, true)
-  socketsSetMaxAutomaticRedirections(handler, maxRedirects)
-  setConnectCallback(handler, makeUnixSocketCallback(socketPath))
-  newClientFromHandler(handler)
-}
-
-pub func hostClientWithUnixSocketNoRedirects(socketPath: in String): HttpClient {
-  val handler = newSocketsHandler()
-  socketsSetAllowAutoRedirect(handler, false)
-  setConnectCallback(handler, makeUnixSocketCallback(socketPath))
-  newClientFromHandler(handler)
-}
+@externTarget("Lyric.Cli.Aot.UnixSocketHttpClient.CreateWithUnixSocketNoRedirects")
+pub func hostClientWithUnixSocketNoRedirects(socketPath: in String): HttpClient = ()
 
 // `ResponseHeader` (G12 follow-up): native Lyric on top of
 // `HttpHeaders.TryGetValues(name, out IEnumerable<string>)` + a
