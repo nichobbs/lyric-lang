@@ -110,8 +110,15 @@ try_bootstrap_from_release() {
   else
     # Fetch latest non-draft release version from GitHub API
     local latest_release
-    latest_release=$(curl -sSL "https://api.github.com/repos/nichobbs/lyric-lang/releases?per_page=30" \
-      2>/dev/null | grep '"draft": false' -B 5 | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": "\(.*\)".*/\1/')
+    if command -v jq &>/dev/null; then
+      # Use jq for robust JSON parsing if available
+      latest_release=$(curl -sSL "https://api.github.com/repos/nichobbs/lyric-lang/releases" \
+        2>/dev/null | jq -r '.[] | select(.draft == false) | .tag_name' | head -1)
+    else
+      # Fall back to grep-based parsing if jq is not available
+      latest_release=$(curl -sSL "https://api.github.com/repos/nichobbs/lyric-lang/releases?per_page=30" \
+        2>/dev/null | grep '"draft": false' -B 5 | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": "\(.*\)".*/\1/')
+    fi
 
     if [[ -z "$latest_release" ]]; then
       info "  Failed to fetch latest non-draft release version from GitHub API"
