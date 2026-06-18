@@ -111,16 +111,16 @@ pub func hostDeleteFile(path: in String): Unit = ()
 // =====================================================================
 
 @externTarget("System.IO.Directory.Exists")
-pub func hostDirectoryExists(path: in String): Bool = ()
+pub func hostDirectoryExists(path: in String): Bool
 
 @externTarget("System.IO.Directory.CreateDirectory")
-pub func hostCreateDirectory(path: in String): Unit = ()
+pub func hostCreateDirectory(path: in String): Unit
 
 @externTarget("System.IO.Directory.GetFiles")
-pub func hostGetFiles(path: in String): slice[String] = ()
+pub func hostGetFiles(path: in String): slice[String]
 
 @externTarget("System.IO.Directory.GetDirectories")
-pub func hostGetDirectories(path: in String): slice[String] = ()
+pub func hostGetDirectories(path: in String): slice[String]
 
 // Audit logging hook moved out of the kernel to `Storage.auditLog`
 // (#1410): kernel files are the audited BCL boundary and must contain

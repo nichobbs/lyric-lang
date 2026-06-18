@@ -72,7 +72,7 @@ pub func nack(queueId: in Int, deliveryTag: in String, requeue: in Bool): Result
 @axiom("Lyric.Mq.InMemoryHost.close — drops all in-flight + pending state for the queue")
 @externTarget("Lyric.Mq.InMemoryHost.close")
 @cfg(feature = "inmemory")
-pub func close(queueId: in Int): Unit = ()
+pub func close(queueId: in Int): Unit
 
 // ─── Broker driver placeholders (#733 follow-ups) ────────────────────────────
 
