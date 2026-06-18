@@ -95,6 +95,24 @@ pub generic[T, E] func unwrapErrOr(r: in Result[T, E], default: in E): E {
   }
 }
 
+/// Extract the success value; panic on error with the error message.
+@stable(since="1.0")
+pub generic[T, E] func unwrapResult(r: in Result[T, E]): T {
+  match r {
+    case Ok(v)  -> v
+    case Err(_) -> panic("unwrapResult called on Err")
+  }
+}
+
+/// Apply `f` to the error value; pass an Ok through unchanged.
+@stable(since="1.0")
+pub generic[T, U, E] func mapResultErr(r: in Result[T, E], f: in (E) -> U): Result[T, U] {
+  match r {
+    case Ok(v)  -> Ok(value = v)
+    case Err(e) -> Err(error = f(e))
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Slice helpers - intentionally small until higher-order functions and
 // collection abstractions settle. These give examples and smoke tests a
