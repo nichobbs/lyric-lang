@@ -1638,7 +1638,25 @@ pub func addAssemblyToIndexesAndValueTypes(
 // Resolve a CLR type's fully-qualified name to its owning assembly's simple
 // name, or None when no indexed assembly defines it.
 pub func assemblyForType(index: in Map[String, String], typeFqn: in String): Option[String] {
-  mapGet(index, typeFqn)
+  match mapGet(index, typeFqn) {
+    case Some(asmName) -> Some(asmName)
+    case None -> {
+      var lastSpecialIdx = -1
+      var idx = 0
+      while idx < typeFqn.length {
+        val charStr = typeFqn.substring(idx, 1)
+        if charStr == "+" or charStr == "." {
+          lastSpecialIdx = idx
+        }
+        idx = idx + 1
+      }
+      if lastSpecialIdx >= 0 {
+        assemblyForType(index, typeFqn.substring(0, lastSpecialIdx))
+      } else {
+        None
+      }
+    }
+  }
 }
 
 // Scan the public TypeDef rows of `asmPath` and record each value type (any
@@ -1871,7 +1889,38 @@ pub func findTypeDefByFqn(img: in PeImage, layout: in TableLayout, th: in Tables
     }
     i = i + 1
   }
-  -1
+
+  // Fallback: handle dotted nested types (e.g. "System.Text.Json.JsonElement.ObjectEnumerator")
+  var dotIdx: Int = -1
+  var dIdx: Int = 0
+  while dIdx < typeFqn.length {
+    if typeFqn.substring(dIdx, 1) == "." {
+      dotIdx = dIdx
+    }
+    dIdx = dIdx + 1
+  }
+
+  if dotIdx >= 0 {
+    val outerFqn = typeFqn.substring(0, dotIdx)
+    val nestedName = typeFqn.substring(dotIdx + 1, typeFqn.length - dotIdx - 1)
+    val outerTypeDefIdx = findTypeDefByFqn(img, layout, th, outerFqn)
+    if outerTypeDefIdx >= 0 {
+      val nestedClassCount = rowCountOf(th, 0x29)
+      var ncIdx: Int = 1
+      while ncIdx <= nestedClassCount {
+        val nc = readNestedClass(img, layout, ncIdx)
+        if nc.enclosingTypeDef == outerTypeDefIdx {
+          val nestedTd = readTypeDef(img, layout, nc.nestedTypeDef)
+          if nestedTd.name == nestedName {
+            return nc.nestedTypeDef
+          }
+        }
+        ncIdx = ncIdx + 1
+      }
+    }
+  }
+
+  return -1
 }
 
 // MethodAttributes: Virtual = 0x0040.  Static (0x0010) is read off the
