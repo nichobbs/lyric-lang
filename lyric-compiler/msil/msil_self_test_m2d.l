@@ -176,7 +176,8 @@ test "assembled Hello-World PE has the stage-M1 structural layout" {
     us = uh,
     blobs = bh,
     guids = gh,
-    resourceData = newList()
+    resourceData = newList(),
+    buildKind = "lib"
   )
 
   val peBuf = assemblePe(inp)

@@ -5014,7 +5014,7 @@ func lowerMPackageItem(item: in MPackageItem, ctx: in LoweringCtx): Unit {
   }
 }
 
-pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx, entryMethodToken: in Int): List[Byte] {
+pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx, entryMethodToken: in Int, buildKind: in String): List[Byte] {
   val discPkgs: List[MPackage] = newList()
   discPkgs.add(pkg)
   discoverTypeDefRowsInto(ctx, discPkgs, ctx.stdCoreResultOk2Row.count > 0)
@@ -5036,7 +5036,8 @@ pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx, entryMethod
     us = ctx.us,
     blobs = ctx.blobs,
     guids = ctx.guids,
-    resourceData = ctx.resourceData
+    resourceData = ctx.resourceData,
+    buildKind = buildKind
   )
 
   val peBuf = assemblePe(inp)
@@ -5055,7 +5056,7 @@ pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx, entryMethod
 // host class per package's functions.  All cross-package call sites that
 // resolved to bundle-local `MethodDef` tokens during codegen point at the
 // correct row in the unified table.
-pub func lowerMPackagesWithCtx(pkgs: in List[MPackage], ctx: in LoweringCtx, entryMethodToken: in Int): List[Byte] {
+pub func lowerMPackagesWithCtx(pkgs: in List[MPackage], ctx: in LoweringCtx, entryMethodToken: in Int, buildKind: in String): List[Byte] {
   discoverTypeDefRowsInto(ctx, pkgs, ctx.stdCoreResultOk2Row.count > 0)
 
   var pi = 0
@@ -5077,7 +5078,8 @@ pub func lowerMPackagesWithCtx(pkgs: in List[MPackage], ctx: in LoweringCtx, ent
     us = ctx.us,
     blobs = ctx.blobs,
     guids = ctx.guids,
-    resourceData = ctx.resourceData
+    resourceData = ctx.resourceData,
+    buildKind = buildKind
   )
 
   val peBuf = assemblePe(inp)

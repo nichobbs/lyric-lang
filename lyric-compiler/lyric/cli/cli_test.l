@@ -49,7 +49,7 @@ func firstPackageNameOf(src: in String): String {
 func emitTestPlain(rewritten: in String, stem: in String, outPath: in String, targetJvm: in Bool): EmitResult {
   val tgt = if targetJvm { Jvm } else { Dotnet }
   Emitter.emit(
-    EmitRequest(source = rewritten, assemblyName = stem, outputPath = outPath, target = tgt, packageVersion = "")
+    EmitRequest(source = rewritten, assemblyName = stem, outputPath = outPath, target = tgt, packageVersion = "", buildKind = "lib")
   )
 }
 

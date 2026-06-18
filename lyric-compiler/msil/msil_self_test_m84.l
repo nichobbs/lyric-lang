@@ -177,6 +177,7 @@ func main(): Unit {
     blobs = bh,
     guids = gh,
     resourceData = rsrc
+    buildKind = "lib"
   )
 
   val peBuf = assemblePe(inp)

@@ -110,7 +110,8 @@ func runScript(script: in String, dllFile: in String, verbose: in Bool): Unit {
     assemblyName = "lyric_repl_session",
     outputPath = dllFile,
     target = Emitter.Dotnet,
-    packageVersion = ""
+    packageVersion = "",
+    buildKind = "lib"
   )
   val result = Emitter.emit(req)
 
