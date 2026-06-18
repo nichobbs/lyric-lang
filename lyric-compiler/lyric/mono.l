@@ -295,6 +295,50 @@ func typeArgListKey(args: in List[TypeArg]): String {
 // `TAValue` source (integer/bool/char/string) plus single-segment paths
 // (`EPath([N])`) used to forward an outer value generic into a nested
 // call.  Falls back to "Vx" for shapes mono can't render verbatim — the
+// Flatten a pure path expression (`EPath` / nested `EMember` over `EPath`)
+// to its dotted-segment list.  Returns an empty list as soon as a non-path
+// node is hit, so the result is safe to test with `count > 0` for "this
+// looked like a qualified path" (issue #3852-adjacent).
+func flattenPathExprSegsMono(e: in Expr): List[String] {
+  match e.kind {
+    case EPath(path) -> {
+      val segs: List[String] = newList()
+      var i = 0
+      while i < path.segments.count {
+        segs.add(path.segments[i])
+        i = i + 1
+      }
+      segs
+    }
+    case EMember(receiver, memberName) -> {
+      val pre = flattenPathExprSegsMono(receiver)
+      if pre.count == 0 {
+        return newList()
+      }
+      val segs: List[String] = newList()
+      var i = 0
+      while i < pre.count {
+        segs.add(pre[i])
+        i = i + 1
+      }
+      segs.add(memberName)
+      segs
+    }
+    case _ -> newList()
+  }
+}
+
+// True iff `state.funcDecls` has an entry for `name` whose declared parameter
+// count exactly matches `callArity`.  Used by `inferCallReturnTE`'s qualified-
+// call fall-through to guard against same-named functions in a different
+// package having an incompatible signature (issue #3852-adjacent).
+func funcDeclArityMatches(state: in MonoState, name: in String, callArity: in Int): Bool {
+  match mapGet(state.funcDecls, name) {
+    case None -> true
+    case Some(decl) -> decl.params.count == callArity
+  }
+}
+
 // resulting specialisation still has a unique name within the file
 // because callers de-duplicate via `state.seenSpecs`.
 func valueExprKey(e: in Expr): String {
@@ -1043,7 +1087,38 @@ func inferCallReturnTE(
     // `isOk(bucket.exists(...))` (where `bucket: StorageBucket`) could not
     // infer its argument type, so the generic `isOk` stayed type-erased and
     // failed at runtime (#3813, same failure mode as #3705).
-    case EMember(recv, methodName) -> inferMethodReturnTE(state, env, recv, methodName, args)
+    case EMember(recv, methodName) -> {
+      // Detect when the EMember chain flattens to a pure dotted path
+      // (e.g. `JobQueue.Domain.jobStatusFromString`) the parser left as
+      // nested `EMember(EMember(EPath["Pkg"], "Sub"), "fn")` rather than a
+      // multi-segment EPath.  Look up `<methodName>` in funcDecls /
+      // recordDecls by simple name so generic call sites like
+      // `isNone(Pkg.parse("x"))` can specialise off `parse`'s return type
+      // (issue #3852-adjacent).  Two safety guards: skip when a same-named
+      // generic exists (the rewriter would otherwise mis-specialise across
+      // packages) and require an exact arity match against funcDecls.
+      val flatSegs = flattenPathExprSegsMono(fn)
+      if flatSegs.count >= 2 {
+        match inferRecordCtorTE(state, methodName, None, fn.span) {
+          case Some(te) -> Some(value = te)
+          case None -> {
+            val hit: Option[TypeExpr] = if state.genDecls.containsKey(methodName) {
+              None
+            } else if funcDeclArityMatches(state, methodName, args.count) {
+              inferReturnFromName(state, env, methodName, args, None)
+            } else {
+              None
+            }
+            match hit {
+              case Some(te) -> Some(value = te)
+              case None -> inferMethodReturnTE(state, env, recv, methodName, args)
+            }
+          }
+        }
+      } else {
+        inferMethodReturnTE(state, env, recv, methodName, args)
+      }
+    }
     case _ -> None
   }
 }

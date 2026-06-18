@@ -101,6 +101,20 @@ pub func hostClientWithRedirects(maxRedirects: in Int): HttpClient = ()
 @externTarget("lyric.stdlib.jvm.HttpClientHost.clientNoRedirects")
 pub func hostClientNoRedirects(): HttpClient = ()
 
+// ---------------------------------------------------------------------------
+// Unix domain socket support (Phase 2 - JVM implementation TBD).
+// These stubs maintain API parity with .NET; JVM implementation to follow
+// as part of lyric-stdlib JVM kernel completion (issue #2663 band J2-J3).
+// ---------------------------------------------------------------------------
+@externTarget("lyric.stdlib.jvm.HttpClientHost.clientWithUnixSocket")
+pub func hostClientWithUnixSocket(socketPath: in String): HttpClient = ()
+
+@externTarget("lyric.stdlib.jvm.HttpClientHost.clientWithUnixSocketAndRedirects")
+pub func hostClientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: in Int): HttpClient = ()
+
+@externTarget("lyric.stdlib.jvm.HttpClientHost.clientWithUnixSocketNoRedirects")
+pub func hostClientWithUnixSocketNoRedirects(socketPath: in String): HttpClient = ()
+
 // Returns the first value of the named response header, or "" if absent.
 @externTarget("lyric.stdlib.jvm.HttpClientHost.responseHeader")
 pub func hostResponseHeader(response: in HttpResponseMessage, name: in String): String = ()

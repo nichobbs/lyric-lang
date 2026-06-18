@@ -29,7 +29,7 @@ output_assembly = "ProductCatalog.dll"
 "ProductCatalog.Catalog" = "src/catalog.l"
 "ProductCatalog.Main"    = "src/main.l"
 
-[project.test_packages]
+[project.tests]
 "ProductCatalog.Tests.Domain"   = "tests/domain_tests.l"
 "ProductCatalog.Tests.Catalog"  = "tests/catalog_tests.l"
 

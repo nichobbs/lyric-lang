@@ -81,6 +81,9 @@ output_assembly = "Lyric.Stdlib.Full.dll"
 "Std.Console"          = "std/console.l"
 "Std.Hash"             = "std/hash.l"
 
+# Tier 4.5 — HTTP server.
+"Std.HttpServer"       = "std/_kernel/http_server.l"
+
 # Tier 5 — structured data, markup, time.
 "Std.Time"             = "std/time.l"
 "Std.Json"             = "std/json.l"

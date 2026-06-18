@@ -96,22 +96,26 @@ func collectAliases(imports: in List[ImportDecl]): List[String] {
   var i = 0
   while i < imports.count {
     val imp = imports[i]
-    match asAliasOf(imp) {
-      case Some(name) -> entries.add(name + "=" + modulePathJoin(imp.path.segments))
-      case None -> ()
+    if not imp.isExtern {
+      match asAliasOf(imp) {
+        case Some(name) -> entries.add(name + "=" + modulePathJoin(imp.path.segments))
+        case None -> ()
+      }
     }
     i = i + 1
   }
   var j = 0
   while j < imports.count {
     val imp = imports[j]
-    match asAliasOf(imp) {
-      case Some(_) -> ()
-      case None -> {
-        if imp.path.segments.count >= 1 {
-          val tail = imp.path.segments[imp.path.segments.count - 1]
-          if not aliasContains(entries, tail) {
-            entries.add(tail + "=" + modulePathJoin(imp.path.segments))
+    if not imp.isExtern {
+      match asAliasOf(imp) {
+        case Some(_) -> ()
+        case None -> {
+          if imp.path.segments.count >= 1 {
+            val tail = imp.path.segments[imp.path.segments.count - 1]
+            if not aliasContains(entries, tail) {
+              entries.add(tail + "=" + modulePathJoin(imp.path.segments))
+            }
           }
         }
       }

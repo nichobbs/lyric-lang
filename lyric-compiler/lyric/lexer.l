@@ -211,6 +211,7 @@ pub union Keyword {
   case KwRequires
   case KwResult
   case KwReturn
+  case KwSatisfies
   case KwScope
   case KwScoped
   case KwSelf
@@ -398,6 +399,7 @@ pub func keywordSpelling(kw: in Keyword): String {
     case KwRequires -> "requires"
     case KwResult -> "result"
     case KwReturn -> "return"
+    case KwSatisfies -> "satisfies"
     case KwScope -> "scope"
     case KwScoped -> "scoped"
     case KwSelf -> "self"
@@ -524,6 +526,8 @@ pub func tryKeywordFromString(s: in String): Option[Keyword] {
     Some(value = KwResult)
   } else if s == "return" {
     Some(value = KwReturn)
+  } else if s == "satisfies" {
+    Some(value = KwSatisfies)
   } else if s == "scope" {
     Some(value = KwScope)
   } else if s == "scoped" {

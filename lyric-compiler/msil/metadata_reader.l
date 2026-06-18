@@ -987,6 +987,14 @@ pub union SigType {
   // an `STClass`/`STValueType` token into it so resolved types and the caller's
   // argument types compare by name rather than by cross-assembly token.
   case STNamed(fqn: String, valueType: Bool)
+  // A `STGenericInst` whose head token has been resolved to a fully-qualified
+  // name and whose args have been recursively normalised.  Produced by
+  // `resolveSigTypeFqn` (the existing call site that already collapses
+  // `STClass`/`STValueType` into `STNamed`) so the iface MemberRef shape
+  // can be compared across assemblies without tokens.  D105 §A's structural
+  // validation consumes this form for nested generic iface methods like
+  // `IEnumerable<T>.GetEnumerator(): IEnumerator<T>`.
+  case STNamedGenericInst(fqn: String, valueType: Bool, args: List[SigType])
 }
 
 pub record DecodedMethodSig {
@@ -1281,6 +1289,109 @@ pub func sigNamedFqn(t: in SigType): String {
   match t {
     case STNamed(fqn, _) -> fqn
     case _ -> ""
+  }
+}
+
+// The 0-based generic-type-parameter index when `t` is `STVar(i)`, else `None`.
+// Used by D105 §A to map iface-method `STVar` shapes onto `MTypeVar` so the
+// MemberRef signature substitutes correctly through the TypeSpec.
+pub func sigVarIndex(t: in SigType): Option[Int] {
+  match t {
+    case STVar(idx) -> Some(value = idx)
+    case _ -> None
+  }
+}
+
+// Construct an `STSzArray(elem)`.  Cross-package accessor used by D105 §A's
+// shape-lifting validation pass so callers can wrap a substituted element
+// type without touching the union internals.
+pub func mkSzArraySig(elem: in SigType): SigType {
+  STSzArray(elem = elem)
+}
+
+// Element type of `t` when it is `STSzArray(elem)`, else `None`.
+pub func sigSzArrayElem(t: in SigType): Option[SigType] {
+  match t {
+    case STSzArray(elem) -> Some(value = elem)
+    case _ -> None
+  }
+}
+
+// Construct an `STByRef(inner)`.  Cross-package accessor.
+pub func mkByRefSig(inner: in SigType): SigType {
+  STByRef(inner = inner)
+}
+
+// Inner type of `t` when it is `STByRef(inner)`, else `None`.
+pub func sigByRefInner(t: in SigType): Option[SigType] {
+  match t {
+    case STByRef(inner) -> Some(value = inner)
+    case _ -> None
+  }
+}
+
+// Resolved generic instantiation parts: the closed type's head FQN, whether
+// the head is a value type, and the per-position type arguments.  Bundled
+// into a record so the cross-package accessor returns a single value that
+// the codegen-side comparison can destructure without re-walking the union.
+pub record NamedGenericInstParts {
+  fqn: String
+  valueType: Bool
+  args: List[SigType]
+}
+
+// Construct an `STNamedGenericInst(fqn, valueType, args)`.
+pub func mkNamedGenericInstSig(fqn: in String, valueType: in Bool, args: in List[SigType]): SigType {
+  STNamedGenericInst(fqn = fqn, valueType = valueType, args = args)
+}
+
+// FQN/valueType/args of `t` when it is `STNamedGenericInst`, else `None`.
+pub func sigNamedGenericInstParts(t: in SigType): Option[NamedGenericInstParts] {
+  match t {
+    case STNamedGenericInst(fqn, vt, args) -> Some(value = NamedGenericInstParts(fqn = fqn, valueType = vt, args = args))
+    case _ -> None
+  }
+}
+
+// Substitute every `STVar(i)` occurrence in `s` with `typeArgs[i]`.  Used by
+// D105 §A's F0022/F0023 validation pass to compare an iface method's
+// signature (which carries `STVar` for each iface generic param) against
+// the impl method's concrete signature.  Out-of-range `STVar(i)` (i.e.
+// `i >= typeArgs.count`) is left unchanged — defensive default for
+// malformed metadata that the upstream consumer treats as a "can't verify"
+// case.  `STMVar`, `STPtr`, `STFnPtr`, and `STUnknown` are passed through;
+// the v1 F0022/F0023 cut bails on those upstream via `sigHasGenericOrByRefMsil`.
+pub func substituteVarsInSigType(s: in SigType, typeArgs: in List[SigType]): SigType {
+  match s {
+    case STVar(idx) -> {
+      if idx >= 0 and idx < typeArgs.count {
+        typeArgs[idx]
+      } else {
+        s
+      }
+    }
+    case STSzArray(elem) -> STSzArray(elem = substituteVarsInSigType(elem, typeArgs))
+    case STArray(elem, rank) -> STArray(elem = substituteVarsInSigType(elem, typeArgs), rank = rank)
+    case STByRef(inner) -> STByRef(inner = substituteVarsInSigType(inner, typeArgs))
+    case STGenericInst(vt, tok, args) -> {
+      val substArgs: List[SigType] = newList()
+      var i = 0
+      while i < args.count {
+        substArgs.add(substituteVarsInSigType(args[i], typeArgs))
+        i = i + 1
+      }
+      STGenericInst(valueType = vt, token = tok, args = substArgs)
+    }
+    case STNamedGenericInst(fqn, vt, args) -> {
+      val substArgs: List[SigType] = newList()
+      var i = 0
+      while i < args.count {
+        substArgs.add(substituteVarsInSigType(args[i], typeArgs))
+        i = i + 1
+      }
+      STNamedGenericInst(fqn = fqn, valueType = vt, args = substArgs)
+    }
+    case _ -> s
   }
 }
 
@@ -1694,6 +1805,11 @@ pub record ResolvedMethod {
   name: String
   isStatic: Bool
   isVirtual: Bool
+  // True iff the MethodAttributes.Abstract bit (0x0400) is set — i.e. the
+  // method has no body and an implementer must supply one.  Used by the
+  // D105 interface-impl conformance pass to distinguish required methods
+  // from C# 8 default interface methods.  Older callers leave this False.
+  isAbstract: Bool
   returnType: SigType
   paramTypes: List[SigType]
 }
@@ -1782,15 +1898,43 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
 // comparable to a caller's by-name argument types and directly mappable by the
 // emitter.  Primitive and other shapes pass through unchanged.
 pub func resolveSigTypeFqn(img: in PeImage, layout: in TableLayout, th: in TablesHeader, t: in SigType): SigType {
-  val tok = sigClassToken(t)
-  if tok < 0 {
-    t
-  } else {
-    val fqn = resolveTypeDefOrRefName(img, layout, th, tok)
-    if fqn.length == 0 {
-      t
-    } else {
-      STNamed(fqn = fqn, valueType = sigIsValueType(t))
+  match t {
+    case STGenericInst(vt, tok, args) -> {
+      val fqn = resolveTypeDefOrRefName(img, layout, th, tok)
+      if fqn.length == 0 {
+        // Token didn't resolve (unusual): fall through with original args
+        // recursively normalised so an STClass inside still becomes STNamed.
+        val normArgs: List[SigType] = newList()
+        var i = 0
+        while i < args.count {
+          normArgs.add(resolveSigTypeFqn(img, layout, th, args[i]))
+          i = i + 1
+        }
+        STGenericInst(valueType = vt, token = tok, args = normArgs)
+      } else {
+        val normArgs: List[SigType] = newList()
+        var i = 0
+        while i < args.count {
+          normArgs.add(resolveSigTypeFqn(img, layout, th, args[i]))
+          i = i + 1
+        }
+        STNamedGenericInst(fqn = fqn, valueType = vt, args = normArgs)
+      }
+    }
+    case STSzArray(elem) -> STSzArray(elem = resolveSigTypeFqn(img, layout, th, elem))
+    case STByRef(inner) -> STByRef(inner = resolveSigTypeFqn(img, layout, th, inner))
+    case _ -> {
+      val tok = sigClassToken(t)
+      if tok < 0 {
+        t
+      } else {
+        val fqn = resolveTypeDefOrRefName(img, layout, th, tok)
+        if fqn.length == 0 {
+          t
+        } else {
+          STNamed(fqn = fqn, valueType = sigIsValueType(t))
+        }
+      }
     }
   }
 }
@@ -1929,6 +2073,13 @@ func methodIsVirtual(flags: in Int): Bool {
   (flags / 64) % 2 == 1
 }
 
+// MethodAttributes: Abstract = 0x0400.  Interface methods that *must* be
+// implemented carry this bit; C# 8+ default interface methods carry only
+// Virtual and are optional.
+pub func methodIsAbstract(flags: in Int): Bool {
+  (flags / 1024) % 2 == 1
+}
+
 // Resolve the best-matching overload of `member` on `typeFqn` for `argTypes`,
 // reading from already-parsed metadata.  Returns None when the type is absent
 // or no overload is compatible.
@@ -1971,6 +2122,7 @@ pub func resolveOverloadIn(
                 name = md.name,
                 isStatic = not sig.hasThis,
                 isVirtual = methodIsVirtual(md.flags),
+                isAbstract = methodIsAbstract(md.flags),
                 returnType = resolveSigTypeFqn(img, layout, th, sig.returnType),
                 paramTypes = normParams
               )
@@ -2079,6 +2231,99 @@ pub func decodeExternMethodSig(
   match File.readBytes(asmPath) {
     case Err(_) -> None
     case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> None; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> None; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> None; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> None; case Ok(layout) -> decodeExternMethodSigIn(img, layout, th, typeFqn, member, declArity) } } } }
+  }
+}
+
+// ── Layer 5b: interface-impl conformance support (D105 Phase 2) ──────────────
+//
+// `TypeAttributes.ClassSemanticsMask` is the two-bit field at 0x20:
+//   0x00 = Class, 0x20 = Interface, 0x40 = reserved.
+// True iff this TypeDef row flags an interface (ECMA-335 §II.23.1.15).
+pub func isInterfaceTypeDef(flags: in Int): Bool {
+  (flags / 32) % 2 == 1
+}
+
+// All methods declared on the TypeDef at `typeFqn`, with their parameter and
+// return types normalised to `STNamed`-keyed FQNs (matching `resolveOverloadIn`).
+// `None` when the type is absent from the assembly.  Used by the MSIL backend's
+// interface-impl validation pass to enumerate the methods a Lyric `impl` block
+// must structurally satisfy.  The result preserves declaration order and
+// includes every method on the type — interfaces in the reference pack carry
+// only their abstract slots (their methods are flagged `Abstract` + `Virtual`),
+// but the caller does the filtering downstream so we don't have to expose every
+// MethodAttributes bit here.
+pub func allMethodSigsOn(
+  img: in PeImage, layout: in TableLayout, th: in TablesHeader, typeFqn: in String
+): Option[List[ResolvedMethod]] {
+  val typeRow = findTypeDefByFqn(img, layout, th, typeFqn)
+  if typeRow < 0 {
+    return None
+  }
+  val mr = methodRange(img, layout, th, typeRow)
+  val methods: List[ResolvedMethod] = newList()
+  var mi = mr.start
+  while mi <= mr.endRow {
+    val md = readMethodDef(img, layout, mi)
+    match decodeMethodSig(blobAt(img, layout, md.sigBlob)) {
+      case Err(_) -> {
+      }
+      case Ok(sig) -> {
+        val normParams: List[SigType] = newList()
+        var pj = 0
+        while pj < sig.paramTypes.count {
+          normParams.add(resolveSigTypeFqn(img, layout, th, sig.paramTypes[pj]))
+          pj = pj + 1
+        }
+        methods.add(
+          ResolvedMethod(
+            name = md.name,
+            isStatic = not sig.hasThis,
+            isVirtual = methodIsVirtual(md.flags),
+            isAbstract = methodIsAbstract(md.flags),
+            returnType = resolveSigTypeFqn(img, layout, th, sig.returnType),
+            paramTypes = normParams
+          )
+        )
+      }
+    }
+    mi = mi + 1
+  }
+  Some(value = methods)
+}
+
+// True iff `typeFqn` resolves to an interface in this assembly.  Returns false
+// when the type is absent — callers (e.g. the F0020 check) treat absence
+// separately because it usually means the reference pack does not carry the
+// declaring assembly, not that the type is mis-declared.
+pub func typeIsInterface(
+  img: in PeImage, layout: in TableLayout, th: in TablesHeader, typeFqn: in String
+): Bool {
+  val typeRow = findTypeDefByFqn(img, layout, th, typeFqn)
+  if typeRow < 0 {
+    return false
+  }
+  isInterfaceTypeDef(readTypeDef(img, layout, typeRow).flags)
+}
+
+// Inspection result for an external type used as an `impl` target: whether the
+// .NET type carries the `Interface` ClassSemantics bit, and the resolved
+// signatures of every method declared on it.  Lifecycle / disk-read errors
+// (missing file, malformed PE / metadata, type absent from the assembly)
+// collapse to `None`, mirroring `resolveOverload` — the caller treats that as
+// "can't verify" and falls back to runtime checks.
+pub record InterfaceInspection {
+  isInterface: Bool
+  methods: List[ResolvedMethod]
+}
+
+// Read-from-disk convenience wrapper that loads `asmPath` and inspects
+// `typeFqn` for an interface-impl validation pass.  Used by the MSIL
+// backend's `validateExternImplConformanceMsil`; co-located here so the
+// File / PE / metadata layering stays self-contained.
+pub func inspectInterfaceTarget(asmPath: in String, typeFqn: in String): Option[InterfaceInspection] {
+  match File.readBytes(asmPath) {
+    case Err(_) -> None
+    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> None; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> None; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> None; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> None; case Ok(layout) -> match allMethodSigsOn(img, layout, th, typeFqn) { case None -> None; case Some(ms) -> Some(value = InterfaceInspection(isInterface = typeIsInterface(img, layout, th, typeFqn), methods = ms)) } } } } }
   }
 }
 

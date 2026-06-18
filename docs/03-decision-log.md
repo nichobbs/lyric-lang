@@ -6388,6 +6388,117 @@ lib split, Phase 6).
 
 ---
 
+## D105 — `impl ExternInterface for Record` emits InterfaceImpl rows against the external TypeRef (docs/51)
+
+**Context.** Lyric programs already implement *native* Lyric interfaces with
+`impl Iface for Record { … }`, and `import extern` / `extern type` already let
+a program *name* an external .NET type. But the natural composition —
+`impl IDisposable for MyResource` — was a panic in the MSIL backend:
+`implIfaceNameMsil` (`lyric-compiler/msil/codegen.l`) qualified the
+single-segment interface name with the current package prefix
+(`pkgName + ".IDisposable"`), so `lowerMImpl`'s TypeRef lookup
+(`findTypeRefRowByName` for `MyPkg.IDisposable`) failed and the emitter
+panicked. The plumbing was otherwise in place — `lowerMImpl` already
+emits an `InterfaceImpl` row pointing at a `TypeRef` token when the
+target is external (`lyric-compiler/msil/lowering.l:4046`), `addInterfaceImpl`
++ `InterfaceImplRow` exist (`lyric-compiler/msil/tables.l`), and the
+self-hosted metadata reader already records `TypeDefRow.flags`
+(`lyric-compiler/msil/metadata_reader.l:511`).
+
+**Decision.** We treat external .NET interfaces as first-class `impl`
+targets without new syntax.
+
+1. **No syntax change.** An external interface is brought into scope via
+   the existing `import extern System.{ IDisposable }` form (D105
+   `import extern`) or `extern type IDisposable = "System.IDisposable"`.
+   Both already register a `DKExternType` symbol with the CLR FQN.
+   `impl IDisposable for Record { … }` parses identically to a native
+   `impl`; the AST does not distinguish targets.
+
+2. **Codegen resolves the FQN via the existing extern-type table.**
+   `implIfaceNameMsil` consults `cctx.externTypeNames` first; when the
+   single-segment iface name matches an imported extern, the table's CLR
+   FQN is emitted into the queued `MImplData.ifaceTypeName`. The
+   external TypeRef row is reserved during `collectImplEntriesMsil` so
+   `lowerMImpl`'s TypeRef lookup never fails. The CLR resolves interface
+   method dispatch by name + signature matching against the implementing
+   record's methods — no `MethodImpl` rows are required for non-generic
+   interfaces, matching the native-interface emission path.
+
+3. **Signature validation lives in a post-type-check FFI conformance
+   pass, not in the type checker.** The type checker is intentionally
+   backend-agnostic and does not load .NET reference assemblies
+   (`typechecker_checker.l` imports only `Std.*` and `Lyric.Parser`),
+   so `checkImplConformance` continues to silently skip extern targets
+   for the same reason it skips cross-package interfaces. The FFI
+   conformance pass — `validateExternImplConformanceMsil` in
+   `lyric-compiler/msil/codegen.l` — runs after `collectImplEntriesMsil`
+   (the TypeRef row is already reserved) and before lowering. It calls
+   `Mdr.inspectInterfaceTarget(asmPath, ifaceFqn)`, which loads the
+   reference assembly, locates the TypeDef, reads `ClassSemanticsMask`
+   (bit 0x20), and decodes every `MethodDef` row's signature through
+   `decodeMethodSig` + `resolveSigTypeFqn` so types compare by
+   normalised FQN. Four diagnostics emit via the same `panic`-style
+   surface F0015 uses:
+
+   - `F0020` — `extern type` resolves to a non-interface (the
+     `ClassSemanticsMask` bit is clear). The user wrote `impl Math for
+     R` against `System.Math` instead of a real interface.
+   - `F0021` — an abstract interface method (Virtual + Abstract bits
+     set) has no matching Lyric impl method. C# 8+ default interface
+     methods (Virtual only) are optional and skipped.
+   - `F0022` — an impl method's parameter arity or Nth parameter type
+     does not match the interface's MethodDef signature.
+   - `F0023` — an impl method's return type does not match the
+     interface's MethodDef return type.
+
+   When the reference pack is absent (`assemblyForType` returns None),
+   validation is skipped silently — mirroring F0015's fallback at
+   `codegen.l:11793`. Validation also bails (silently, per method) on
+   any signature that mentions a Var / MVar / GenericInst / ByRef /
+   Array shape — those land with the generic-external-interfaces
+   follow-up work. The trade-off is conservative: a real mismatch on
+   a non-generic shape fails the build; richer shapes still fall
+   through to the CLR loader at first use, same hazard as today's
+   hand-rolled `extern func`.
+
+4. **Generic external interfaces (`IEnumerable[T]`, `IEquatable[T]`),
+   property/event naming conventions (`get_X`/`set_X`), and bridge-thunk
+   synthesis** are explicitly deferred to a follow-up decision. Generic
+   support requires routing the queued `MImplData` through `MTypeSpec`
+   instead of a bare `TypeRef`, and explicit `MethodImpl` rows since
+   the CLR cannot name-match through a TypeSpec. The non-generic slice
+   here covers `IDisposable`, custom single-method callback interfaces,
+   and the bulk of practical BCL interop needs. Until the full support
+   ships, `validateNoExternGenericIfacesMsil`
+   (`lyric-compiler/msil/codegen.l`) detects `impl ExternIface[T] for R`
+   shapes and surfaces them as `F0024` — failing the build at the codegen
+   layer rather than silently emitting an InterfaceImpl row whose
+   TypeRef names the open generic type (which would never wire dispatch
+   at runtime). The diagnostic is emitted before `validateExternImplConformanceMsil`
+   so the user sees the more specific "not yet supported" message
+   instead of the F0022/F0023 "parameter mentions a generic param"
+   structural-mismatch noise.
+
+**Consequences.**
+
+- `IDisposable`, `IComparable`, `IEquatable` (non-generic), custom
+  C#-defined callback interfaces, and any BCL interface whose methods
+  are non-generic now work as `impl` targets.
+- The verification path is "metadata-direct" — same code path the
+  auto-FFI resolver uses for method calls. No extra dependencies, no
+  reflection, AOT-safe.
+- The decision stays compatible with future generic and
+  property-convention work: `MImplData` already carries an `ifaceTypeToken`
+  alongside `ifaceTypeName`, so the generic path will populate the
+  token with a TypeSpec without disturbing the non-generic path.
+
+**Related.** docs/51, docs/47 (`import extern`), epic #1622 (metadata-based
+auto-FFI), `lyric-compiler/lyric/auto_ffi_self_test.l` (precedent for
+metadata-direct tests).
+
+---
+
 ## D-progress-530 — Constructor shorthand for extern types (.new syntax)
 
 **Feature:** Enable direct constructor calls on external types via `.new(args)`

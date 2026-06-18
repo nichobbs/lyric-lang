@@ -75,9 +75,13 @@ pub func handleMetrics(): MetricsPayload {
 // Use Std.File, Std.Http, Std.Time for common BCL surfaces.
 // Only write extern declarations for BCL surface not covered by stdlib.
 
-// extern type example — resolves against real BCL metadata at compile time:
-// extern type Math = "System.Math"
+// import extern example — resolves against real BCL metadata at compile time:
+// import extern System.{ Math }
 // Math.Abs(-5)    // -> 5, statically bound, AOT-compatible
+//
+// Or use extern type to bind a specific type:
+// extern type StringBuilder = "System.Text.StringBuilder"
+// val sb = StringBuilder.new()  // supports constructor shorthand (.new)
 
 // extern package example — hand-written with axiom:
 // @axiom("System.Console.ReadLine returns null at EOF, non-null otherwise")

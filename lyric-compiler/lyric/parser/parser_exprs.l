@@ -289,6 +289,7 @@ pub func parseRangeBound(st: inout ParseState): RangeBound {
             case RParen -> true
             case RBracket -> true
             case RBrace -> true
+            case Eq -> true
             case _ -> false
           }
         }
