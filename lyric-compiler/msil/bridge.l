@@ -45,7 +45,7 @@ pub func compileToMsil(
   outputPath:    in String,
   stdlibSources: in List[String]
 ): Bool {
-  compileToMsilWithVersion(source, outputPath, stdlibSources, "")
+  compileToMsilWithVersion(source, outputPath, stdlibSources, "", "lib")
 }
 
 /// Variant of `compileToMsil` that accepts a `[package].version` string.

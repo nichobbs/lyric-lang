@@ -117,6 +117,10 @@ pub record EmitProjectRequest {
   /// `Lyric.Contract.<Pkg>` resources carry the real semver.  Empty
   /// string falls back to the bootstrap-grade `0.0.0.0` (#1364).
   packageVersion: String
+  /// "exe" for executable output (DllCharacteristics = 0x0000) or "lib"
+  /// (DllCharacteristics = 0x2000). Threaded to the MSIL emitter for
+  /// PE header generation. JVM target ignores this field.
+  buildKind: String
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
