@@ -61,8 +61,7 @@ func runBenchOnSource(
         assemblyName = stem,
         outputPath = outPath,
         target = benchTarget,
-        packageVersion = "",
-        buildKind = "lib"
+        packageVersion = ""
       )
       val result = Emitter.emit(req)
       var hadError = false

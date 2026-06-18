@@ -113,8 +113,7 @@ func cmdCheck(argv: in slice[String]): Int {
       assemblyName = stem,
       outputPath = outPath,
       target = checkTarget,
-      packageVersion = "",
-      buildKind = "lib"
+      packageVersion = ""
     )
     val result = Emitter.emit(req)
     var hadError = false
