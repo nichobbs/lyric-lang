@@ -78,15 +78,22 @@ jobs:
             echo "VERSION=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Restore
-        working-directory: bootstrap
-        run: dotnet restore Bootstrap.sln --runtime ${{ matrix.rid }}
+      - name: Build stage 1 (self-hosted compiler)
+        shell: bash
+        env:
+          LYRIC_VERSION: ${{ steps.ver.outputs.VERSION }}
+        run: |
+          ./scripts/bootstrap.sh --stage 1
 
-      - name: Publish self-contained binary
+      - name: Restore AOT project
+        working-directory: bootstrap
+        run: dotnet restore src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj --runtime ${{ matrix.rid }}
+
+      - name: Publish self-contained AOT binary
         shell: bash
         working-directory: bootstrap
         run: |
-          dotnet publish src/Lyric.Cli/Lyric.Cli.fsproj \
+          dotnet publish src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
             --configuration Release \
             --runtime ${{ matrix.rid }} \
             --self-contained true \
@@ -244,10 +251,15 @@ jobs:
         working-directory: bootstrap
         run: dotnet restore Bootstrap.sln
 
+      - name: Build stage 1 (for NuGet package)
+        shell: bash
+        run: |
+          ./scripts/bootstrap.sh --stage 1
+
       - name: Pack NuGet global tool
         working-directory: bootstrap
         run: |
-          dotnet pack src/Lyric.Cli/Lyric.Cli.fsproj \
+          dotnet pack src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
             --configuration Release \
             -p:PackageVersion=${{ steps.ver.outputs.VERSION }} \
             -p:PackAsTool=true \

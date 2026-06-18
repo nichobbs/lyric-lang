@@ -24,7 +24,36 @@ Lyric targets the .NET runtime (`--target dotnet`, leveraging reified generics, 
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
 
-### Build the compiler
+### Install Lyric (binary release)
+
+To download and install the latest pre-built Lyric compiler:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/install.sh | sh
+```
+
+This script:
+- Detects your platform (Linux, macOS, Windows)
+- Downloads the appropriate pre-built binary from [GitHub Releases](https://github.com/nichobbs/lyric-lang/releases)
+- Installs to `~/.lyric/bin` and updates your PATH
+
+Then start a new shell and run:
+```sh
+lyric --version
+```
+
+**Options:**
+```sh
+# Install a specific version
+curl -fsSL https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/install.sh | sh -s -- --version 0.1.0
+
+# Install to a custom directory
+curl -fsSL https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/install.sh | sh -s -- --dir /usr/local/bin
+```
+
+### Build the compiler (development)
+
+To build Lyric from source for development work:
 
 ```sh
 # Bootstrap the self-hosted Lyric compiler. This downloads the latest
