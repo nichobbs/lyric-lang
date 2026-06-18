@@ -164,7 +164,14 @@ try_bootstrap_from_release() {
   # Construct the tag name (add 'v' prefix for the tag, keep version for file names)
   local latest_release="v${version}"
 
-  local archive_name="lyric-${version}-${platform}.tar.gz"
+  # Determine archive format based on platform
+  local archive_suffix
+  case "$platform" in
+    win-x64) archive_suffix="zip" ;;
+    *) archive_suffix="tar.gz" ;;
+  esac
+
+  local archive_name="lyric-${version}-${platform}.${archive_suffix}"
   local download_url="https://github.com/nichobbs/lyric-lang/releases/download/${latest_release}/${archive_name}"
 
   info "Bootstrapping from release: $latest_release (platform: $platform)"
@@ -178,15 +185,16 @@ try_bootstrap_from_release() {
 
   # Try to download the release binary
   info "  Downloading..."
+  local archive_path="${temp_dir}/lyric.${archive_suffix}"
   if command -v curl &>/dev/null; then
-    if curl -sSL "$download_url" -o "${temp_dir}/lyric.tar.gz" 2>/dev/null; then
+    if curl -sSL "$download_url" -o "$archive_path" 2>/dev/null; then
       info "  Download successful"
     else
       info "  Download failed"
       return 1
     fi
   elif command -v wget &>/dev/null; then
-    if wget -q "$download_url" -O "${temp_dir}/lyric.tar.gz" 2>/dev/null; then
+    if wget -q "$download_url" -O "$archive_path" 2>/dev/null; then
       info "  Download successful"
     else
       info "  Download failed"
@@ -199,12 +207,27 @@ try_bootstrap_from_release() {
 
   # Extract to stage0-publish
   mkdir -p "$BUILD_DIR/stage0-publish"
-  if tar -xzf "${temp_dir}/lyric.tar.gz" -C "$BUILD_DIR/stage0-publish"; then
-    info "  Extraction successful"
-    return 0
+  if [[ "$archive_suffix" == "zip" ]]; then
+    if command -v unzip &>/dev/null; then
+      if unzip -q "$archive_path" -d "$BUILD_DIR/stage0-publish"; then
+        info "  Extraction successful"
+        return 0
+      else
+        info "  Failed to extract zip archive (file may be corrupted or missing)"
+        return 1
+      fi
+    else
+      info "  SKIP: unzip not found (required for .zip extraction)"
+      return 1
+    fi
   else
-    info "  Failed to extract release archive (file may be corrupted or missing)"
-    return 1
+    if tar -xzf "$archive_path" -C "$BUILD_DIR/stage0-publish"; then
+      info "  Extraction successful"
+      return 0
+    else
+      info "  Failed to extract tar.gz archive (file may be corrupted or missing)"
+      return 1
+    fi
   fi
 }
 
