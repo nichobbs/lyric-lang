@@ -19635,7 +19635,7 @@ func msilTypeToTypeExpr(t: in MsilType): TypeExpr {
     case _ -> segs.add("Object")
   }
   TypeExpr(
-    kind = TRef(path = ModulePath(segments = segs, span = syntheticSpan()), span = syntheticSpan()),
+    kind = TRef(path = ModulePath(segments = segs, span = syntheticSpan())),
     span = syntheticSpan()
   )
 }
