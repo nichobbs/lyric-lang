@@ -365,15 +365,14 @@ stage1() {
     fi
   }
 
-  # Build the stdlib bundle first (multi-package manifest).
-  # Track A A1.4: the F# user-facing `lyric build --manifest`
-  # dispatcher is gone; stage 1 drives the multi-package compile
-  # through the bootstrap-only `--internal-manifest-build` flag
-  # which reads `lyric.toml` and feeds the package list straight
-  # to `Emitter.emitProject`.
+  # Build the stdlib bundle first (multi-package manifest).  The released
+  # self-hosted stage-0 binary drives the multi-package compile through the
+  # public `lyric build --manifest` command, which reads `lyric.toml` and
+  # builds the [project.packages] list into one DLL.  `--no-restore` because
+  # the stdlib has no external dependencies.
   info "  compiling stdlib bundle"
-  invoke_stage0 --internal-manifest-build "$STDLIB_DIR/lyric.toml" \
-    -o "$STAGE1_DIR/Lyric.Stdlib.dll" --target dotnet 2>&1 || \
+  invoke_stage0 build --manifest "$STDLIB_DIR/lyric.toml" \
+    -o "$STAGE1_DIR/Lyric.Stdlib.dll" --target dotnet --no-restore 2>&1 || \
     die "stdlib bundle build failed"
 
   if [[ "$SKIP_CLI_BUNDLE" != "1" ]]; then
@@ -397,6 +396,8 @@ stage1_cli_bundle() {
 
   cat > "$driver_dir/driver.l" <<'EOF'
 // Auto-generated driver for the bootstrap CLI-bundle precompile.
+// Importing Lyric.Cli makes the per-package emitter discover and emit the
+// whole compiler-package closure (plus its stdlib import closure).
 package Lyric.CliBundle
 import Lyric.Cli
 import Std.Time
@@ -405,39 +406,21 @@ import Std.Testing.Mocking
 func main(): Unit { }
 EOF
 
-  local driver_out="$driver_dir/Lyric.CliBundle.dll"
-  local pre_snapshot
-  pre_snapshot="$(ls -d "$TMP_BASE"/lyric-stdlib-* 2>/dev/null || true)"
+  # Emit the driver's transitive import closure as per-package DLLs straight
+  # into the stage-1 output dir via the self-hosted per-package emitter
+  # (`emitPerPackageClosure`).  This replaces the retired F# `--internal-build`
+  # + /tmp-cache-harvest path: the released self-hosted binary emits each
+  # Lyric.* / Msil.* / Jvm.* / Std.* package as its own DLL directly.  Do NOT
+  # pin LYRIC_STD_PATH at the bundle dir here — the emitter must resolve every
+  # package from `lyric-stdlib/std` source to recompile the whole closure.
+  invoke_stage0 --internal-perpackage-build "$driver_dir/driver.l" \
+    "$STAGE1_DIR" --target dotnet 2>&1 || \
+    die "stage-1 CLI-bundle per-package emit failed"
 
-  LYRIC_STD_PATH="$STAGE1_DIR" \
-    invoke_stage0 --internal-build "$driver_dir/driver.l" -o "$driver_out" \
-    --target dotnet 2>&1 || \
-    die "stage-1 CLI-bundle driver compile failed"
-
-  local post_snapshot
-  post_snapshot="$(ls -d "$TMP_BASE"/lyric-stdlib-* 2>/dev/null || true)"
-  local new_dirs
-  new_dirs="$(comm -13 \
-    <(echo "$pre_snapshot"  | sort) \
-    <(echo "$post_snapshot" | sort) \
-    | grep -v '^$' || true)"
-
-  local cache_dir
-  cache_dir="$(echo "$new_dirs" | head -1)"
-  [[ -n "$cache_dir" && -d "$cache_dir" ]] || \
-    die "stage-1 CLI bundle: no new $TMP_BASE/lyric-stdlib-*/ cache found after compile"
-
-  info "  CLI bundle cache: $cache_dir"
-  local copied=0
-  for f in "$cache_dir"/*.dll; do
-    [[ -f "$f" ]] || continue
-    cp -f "$f" "$STAGE1_DIR/"
-    copied=$((copied + 1))
-  done
-
-  info "  copied $copied DLLs into $STAGE1_DIR"
   [[ -f "$STAGE1_DIR/Lyric.Lyric.Cli.dll" ]] || \
-    die "stage-1 CLI bundle: Lyric.Lyric.Cli.dll not found in $STAGE1_DIR after copy"
+    die "stage-1 CLI bundle: Lyric.Lyric.Cli.dll not found in $STAGE1_DIR after emit"
+  local copied
+  copied="$(ls "$STAGE1_DIR"/*.dll 2>/dev/null | wc -l)"
 
   if [[ "$SKIP_COREREF_REWRITE" != "1" ]]; then
     info "  retargeting System.Private.CoreLib refs -> public facades"
@@ -626,16 +609,16 @@ stage2() {
   verify_selfhosted_reproducible
 
   # (b) Informational stage-0 diagnostic.
-  info "Stage 2 (b): stage-0 (F#) reproducibility diagnostic (informational)"
+  info "Stage 2 (b): stage-0 reproducibility diagnostic (informational)"
 
   mkdir -p "$STAGE2_DIR"
 
-  # First, compile the stdlib bundle via the F# stage-0 path so we
+  # First, compile the stdlib bundle via the stage-0 binary so we
   # produce the top-level Lyric.Stdlib.dll the stage-1 bundle contains.
-  info "  compiling stdlib bundle (F# stage-0 path)"
+  info "  compiling stdlib bundle (stage-0 path)"
   LYRIC_STD_PATH="$STAGE1_DIR" \
-    "$STAGE0_BIN" --internal-manifest-build "$STDLIB_DIR/lyric.toml" \
-    -o "$STAGE2_DIR/Lyric.Stdlib.dll" --target dotnet 2>&1 || \
+    "$STAGE0_BIN" build --manifest "$STDLIB_DIR/lyric.toml" \
+    -o "$STAGE2_DIR/Lyric.Stdlib.dll" --target dotnet --no-restore 2>&1 || \
     die "stage-2 stdlib bundle build failed"
 
   # Re-run the same CLI-bundle precompile the stage-1 step used (identical
@@ -657,49 +640,18 @@ import Std.Testing.Mocking
 func main(): Unit { }
 EOF
 
-  local driver_out="$driver_dir/Lyric.CliBundleStage2.dll"
+  # Emit the closure as per-package DLLs straight into the stage-2 dir via the
+  # self-hosted per-package emitter — mirroring the stage-1 step.  As in stage 1,
+  # do NOT pin LYRIC_STD_PATH: the emitter resolves every package from source.
+  # The entry driver package itself is not emitted, only its closure, so the
+  # differing driver package name vs stage 1 does not affect the DLL set.
+  "$STAGE0_BIN" --internal-perpackage-build "$driver_dir/driver.l" \
+    "$STAGE2_DIR" --target dotnet 2>&1 || \
+    die "stage-2 CLI-bundle per-package emit failed"
 
-  # Snapshot pre-existing cache dirs so we can identify the new one.
-  local pre_snapshot
-  pre_snapshot="$(ls -d "$TMP_BASE"/lyric-stdlib-* 2>/dev/null || true)"
-
-  # Force the build via the host binary but direct the stdlib path
-  # at the stage-1 outputs so the bridge compiles against stage-1.
-  LYRIC_STD_PATH="$STAGE1_DIR" \
-    "$STAGE0_BIN" --internal-build "$driver_dir/driver.l" -o "$driver_out" \
-    --target dotnet 2>&1 || \
-    die "stage-2 CLI-bundle driver compile failed"
-
-  local post_snapshot
-  post_snapshot="$(ls -d "$TMP_BASE"/lyric-stdlib-* 2>/dev/null || true)"
-  local new_dirs
-  new_dirs="$(comm -13 \
-    <(echo "$pre_snapshot"  | sort) \
-    <(echo "$post_snapshot" | sort) \
-    | grep -v '^$' || true)"
-
-  local cache_dir
-  cache_dir="$(echo "$new_dirs" | head -1)"
-  [[ -n "$cache_dir" && -d "$cache_dir" ]] || \
-    die "stage-2 CLI bundle: no new $TMP_BASE/lyric-stdlib-*/ cache found after compile (pre='$pre_snapshot', post='$post_snapshot')"
-
-  info "  stage-2 CLI bundle cache: $cache_dir"
-  local copied=0
-  for f in "$cache_dir"/*.dll; do
-    [[ -f "$f" ]] || continue
-    cp -f "$f" "$STAGE2_DIR/"
-    copied=$((copied + 1))
-  done
-
-  # `FSharp.Core.dll` and `Lyric.Emitter.dll` are no longer bundled —
-  # see stage-1 comment above.  Stage-2 mirrors stage-1 for a fair comparison.
-
-  # Lyric.Session.Host is gone — see stage-1 comment above (#1777).
-  # Lyric.Jobs.Host is gone — see stage-1 comment above.
-  # Lyric.Mq.Host is gone — see stage-1 comment above.
-  # Lyric.Web.Host is gone — see stage-1 comment above.
-
-  info "  copied $copied DLLs into $STAGE2_DIR"
+  local copied
+  copied="$(ls "$STAGE2_DIR"/*.dll 2>/dev/null | wc -l)"
+  info "  emitted $copied DLLs into $STAGE2_DIR"
 
   # Retarget System.Private.CoreLib refs -> public facades so the stage-2
   # outputs match the stage-1 rewrite step.
