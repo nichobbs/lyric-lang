@@ -21847,10 +21847,10 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
                       fieldVarIdx = varIdx
                       buildGenericParamFieldSig(varIdx)
                     }
-                    case None -> buildFieldSig(MObject)
+                    case None -> buildFieldSig(typeExprToMsilCtx(cctx, ty, packageName))
                   }
                 } else {
-                  buildFieldSig(MObject)
+                  buildFieldSig(typeExprToMsilCtx(cctx, ty, packageName))
                 }
               }
               case UFPos(ty, _) -> {
@@ -21864,10 +21864,10 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
                       fieldVarIdx = varIdx
                       buildGenericParamFieldSig(varIdx)
                     }
-                    case None -> buildFieldSig(MObject)
+                    case None -> buildFieldSig(typeExprToMsilCtx(cctx, ty, packageName))
                   }
                 } else {
-                  buildFieldSig(MObject)
+                  buildFieldSig(typeExprToMsilCtx(cctx, ty, packageName))
                 }
               }
             }
@@ -21900,26 +21900,21 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
             fi = fi + 1
           }
           // Register constructor MemberRef so `Some(value = x)`, `Ok(value = x)`, etc.
-          // emit a `newobj` instruction.  Generic-parameter fields use MTypeVar(n) to
-          // match the F# bootstrap emitter's generic ctor sig; concrete fields use MObject.
+          // emit a `newobj` instruction.  Field types must be encoded with their
+          // real MSIL types (generic params -> MTypeVar(n), concrete types ->
+          // resolved, e.g. String -> ELEMENT_TYPE_STRING) so the ctor MemberRef
+          // sig byte-matches the case-class .ctor MethodDef the backend lowers
+          // (which uses real field types).  The earlier MObject fallback for
+          // concrete fields produced `..ctor(object,object)` refs that failed to
+          // bind against the `(string,string)` definition (TypeLoadException /
+          // ILC "missing method").  Mirrors registerRestoredUnionCase.
+          val ctorUGenerics = genericNamesOf(decl.generics)
           val ctorParams2: List[MsilType] = newList()
           var cpi = 0
           while cpi < decl.cases[ci].fields.count {
             val cpField = decl.cases[ci].fields[cpi]
             val cpTy = match cpField { case UFNamed(_, ty, _) -> ty; case UFPos(ty, _) -> ty }
-            val cpSeg = match cpTy.kind {
-              case TRef(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
-              case _ -> ""
-            }
-            val cpMsilTy: MsilType = if cpSeg.length > 0 {
-              match mapGet(typeParamVarIdx, cpSeg) {
-                case Some(varIdx) -> MTypeVar(index = varIdx)
-                case None -> MObject
-              }
-            } else {
-              MObject
-            }
-            ctorParams2.add(cpMsilTy)
+            ctorParams2.add(typeExprToMsilG(cctx, cpTy, packageName, ctorUGenerics))
             cpi = cpi + 1
           }
           val ctorSig2 = buildInstanceMethodSig(ctorParams2, MVoid)
