@@ -11739,7 +11739,7 @@ func buildFfiMethodSigCtx(
 ): List[Byte] {
   val w = bufNew()
   bufU1(w, if hasThis { 0x20 } else { 0x00 })
-  bufU1(w, params.count)
+  writeCompressedInt(w, params.count) // compressed per ECMA-335 §II.23.2.1 (>127 params needs 2 bytes)
   bufFfiType(cctx, w, ret)
   var i = 0
   while i < params.count {

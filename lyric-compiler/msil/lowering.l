@@ -385,7 +385,7 @@ pub func enumTypeToken(ctx: in LoweringCtx): Int {
 pub func buildStaticMethodSig(params: in List[MsilType], ret: in MsilType): List[Byte] {
   val w = bufNew()
   bufU1(w, 0x00)                     // DEFAULT call convention (static)
-  bufU1(w, params.count)             // param count
+  writeCompressedInt(w, params.count) // param count (ECMA-335 §II.23.2.1: compressed; >127 needs 2 bytes)
   bufMsilType(w, ret)                // return type
   var i = 0
   while i < params.count {
@@ -401,7 +401,7 @@ pub func buildStaticMethodSig(params: in List[MsilType], ret: in MsilType): List
 pub func buildInstanceMethodSig(params: in List[MsilType], ret: in MsilType): List[Byte] {
   val w = bufNew()
   bufU1(w, 0x20)                     // HASTHIS
-  bufU1(w, params.count)             // explicit param count (this excluded)
+  writeCompressedInt(w, params.count) // explicit param count (this excluded; compressed per ECMA-335)
   bufMsilType(w, ret)                // return type
   var i = 0
   while i < params.count {
@@ -428,7 +428,7 @@ pub func buildFieldSigWithCtx(t: in MsilType, ctx: in LoweringCtx): List[Byte] {
 pub func buildStaticMethodSigWithCtx(params: in List[MsilType], ret: in MsilType, ctx: in LoweringCtx): List[Byte] {
   val w = bufNew()
   bufU1(w, 0x00)                     // DEFAULT call convention (static)
-  bufU1(w, params.count)             // param count
+  writeCompressedInt(w, params.count) // param count (compressed per ECMA-335 §II.23.2.1)
   bufMsilTypeWithCtx(w, ret, ctx)    // return type
   var i = 0
   while i < params.count {
@@ -443,7 +443,7 @@ pub func buildStaticMethodSigWithCtx(params: in List[MsilType], ret: in MsilType
 pub func buildInstanceMethodSigWithCtx(params: in List[MsilType], ret: in MsilType, ctx: in LoweringCtx): List[Byte] {
   val w = bufNew()
   bufU1(w, 0x20)                     // HASTHIS
-  bufU1(w, params.count)             // explicit param count (this excluded)
+  writeCompressedInt(w, params.count) // explicit param count (this excluded; compressed per ECMA-335)
   bufMsilTypeWithCtx(w, ret, ctx)    // return type
   var i = 0
   while i < params.count {
