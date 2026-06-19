@@ -612,79 +612,100 @@ self-emit the compiler closure, AOT-link those self-emitted DLLs, and run
 dumping the offending MemberRef / MethodDef / TypeRef signature bytes from the
 self-emitted DLLs and comparing against the F#-emitted reference DLLs.
 
-### Root cause: the self-built stdlib diverges from the F#/prebuilt convention
+### The target architecture (confirmed)
 
-User-code builds (`lyric build/test`) link a **prebuilt** stdlib (F#-emitted in
-the mint, or the shipped self-built bundle) and the self-hosted emitter's
-*consumer* side already matches that convention.  But when the self-hosted
-emitter **rebuilds the stdlib from source** (as self-reproduction requires), it
-emits generic types under a *different* convention than both the prebuilt stdlib
-and its own consumers.  Every blocker below is an instance of this one split.
+`lyric build/test` resolves the stdlib it links from the compiled DLLs *shipped
+beside the compiler binary* — `findCompiledLibDir` (`cli/cli_shared.l`) checks
+`LYRIC_STDLIB_BIN`, then the AOT app base, then a walked-up `.bootstrap/stage1`.
+It is **not** a per-build recompile (the `/tmp/lyric-stdlib-*` recompile is used
+only for compile-time type resolution and then discarded).  So the intended
+model is exactly: the self-hosted compiler builds the stdlib once, ships it
+beside itself, and user code links *that*.  The whole toolchain must therefore
+agree on one generic-type ABI.
 
-1. **Generic-union/record TypeDef arity suffix (naming split).**
-   `lowering.l::lowerMUnion` (≈ line 2798) names a generic union's base + case
-   TypeDefs with the CLR arity suffix (`Std.Core.Option`1`, `Option_Some`1`,
-   `Result`2`) when `u.generics.count > 0`.  The F#-emitter and the prebuilt
-   stdlib name them **without** the suffix (`Std.Core.Option`, genericParams=1),
-   and consumer cross-package references (`registerStdlibTypeItem`,
-   `typeExprToMsilCtx`'s cross-package `MGenericInst` path) likewise emit the
-   **plain** name.  So a self-rebuilt stdlib (`Option`1` TypeDef) cannot be
-   bound by a consumer reference to `Option` →
-   `MissingMethodException`/`TypeLoadException` at first call.  The fix
-   direction is to make the self-built stdlib match the no-suffix convention
-   (NOT to add the suffix to consumers — that regresses user code that links the
-   prebuilt no-suffix stdlib; verified: it breaks `examples/rbac`
-   `roleFromString` `Option[Role]` matching).  The suffix was added for
-   in-bundle generic **value-type** layout (docs/43, D-progress-455); any
-   removal must stay value-type-aware so `inbundle_generics_self_test.l` keeps
-   passing.
+### Direction: one consistent ABI (the arity-suffixed one), end to end
 
-2. **`Unit`/`Never` generic argument representation (value split).**
-   For `Result[Unit, E]` / `Option[Unit]`, the F#-emitter and the consumer side
-   (`codegen.l::registerStdlibFunc` via `xrefUnitArgsToValueTuple`) encode the
-   `Unit` type-argument as `System.ValueTuple` (`ELEMENT_TYPE_VALUETYPE`).  The
-   self-built **producer** (`Std.File.createDir`'s MethodDef) encodes it as
-   `object` (`ELEMENT_TYPE_OBJECT`) — its def, `Result_Ok` construction, and
-   match all agree on `object` internally.  Cross-package the two disagree
-   (`Result`2<ValueTuple, IOError>` vs `Result`2<object, IOError>`) →
-   `MissingMethodException`.  The F#-compatible fix is to make the self-built
-   producer emit `ValueTuple` (def + `Result_Ok`/`Option_Some` construction +
-   match), not to flip the consumer to `object` (that regresses user code
-   against the prebuilt ValueTuple stdlib).
+The arity suffix (`Option`1`, `Result`2`, `Option_Some`1`) is the **correct CLR
+convention**; the F# emitter omits it (docs/43 calls it "the correctness fix F#
+omits").  The self-hosted emitter already produces it for the stdlib TypeDefs
+(`lowering.l::lowerMUnion` ≈ line 2798).  The blocker is purely that the emitter
+*consumes* generic types under the **plain** (no-suffix) name while *producing*
+them suffixed, and the bootstrap currently links a **no-suffix F#-emitted**
+stdlib (the mint reuse), so the two never line up.
 
-3. **Static-property extern getter resolution (producer bug, independent).**
-   `codegen.l::emitExternTargetBody` emits `@externTarget("Type.Member")` with
-   the literal member name and the declared static flag — it performs **no
-   property→getter resolution**.  A static property such as
-   `@externTarget("System.DateTime.UtcNow")` is emitted as a call to a
-   non-existent `System.DateTime::UtcNow()` (the real member is the getter
-   `get_UtcNow`) → `MissingMethodException` in the self-built `Std.TimeHost`.
-   The F#-emitter resolves the property to its accessor via reflection; the
-   metadata-direct reader can do the same (probe `get_<Member>` via
-   `Mdr.resolveExtern` and adopt the getter's own static/instance convention).
-   This only affects the self-built stdlib (the prebuilt `Std.TimeHost` already
-   carries `get_UtcNow`), so it is safe to fix in isolation.
+**Proven viable.** With consumers, the self-built stdlib, and the linked stdlib
+all using the suffix, a cross-package `Option[enum]` round-trips correctly
+(construct `Some(Color.Green)` in one package, `match` it in another, against a
+self-built suffix `Lyric.Stdlib.Core` → prints the right arm).  Earlier
+`examples/rbac` failures were **naming mismatches** (suffix consumer linking a
+*stale no-suffix* stdlib), not a generic-invariance bug — there is no invariance
+problem once both sides are suffixed.
 
-4. **Union-case cross-package ctor field types (consumer bug, independent).**
-   `codegen.l::registerStdlibTypeItem` erases concrete (non-type-parameter)
-   union-case ctor parameters to `object` in the cross-package MemberRef
-   (`IOError_IoError::.ctor(object, object)`), while the producer's MethodDef
-   uses the declared field types (`(string, string)`) — matching the
-   F#-emitter.  Result: `MissingMethodException` constructing a stdlib union
-   case with concrete fields cross-package.  The fix (use the declared MSIL
-   type, mirroring the producer's `typeExprToMsilG`) is F#-compatible and safe
-   to land independently of the naming/value splits above.
+### Validated fixes (7), all toward suffix-consistent self-build
 
-### Ordering and acceptance
+A patch carrying these is saved at `.bootstrap/_selfrepro_fixes.patch` during
+the investigation; each was confirmed by re-minting and advancing the
+reproduction cascade.  They are **not landed** (see "atomicity" below).
 
-Blockers (3) and (4) are independent, F#-compatible producer/consumer
-correctness fixes and can land first.  Blockers (1) and (2) are the structural
-work: bring the self-built stdlib's generic naming and `Unit`-argument
-representation into line with the F#/prebuilt convention so a self-rebuilt
-stdlib is binary-interchangeable with the prebuilt one.  The acceptance test is
-the reproduction loop above going green end-to-end (self-emitted compiler builds
-and runs the full corpus and its own `lyric test`), after which
-`stage1_cli_bundle` can drop the F#-closure reuse.  Every change in this area
-**must** be validated by compiling **and running** the example/test corpus with
-the rebuilt compiler — `ilverify` alone is insufficient (it passes structurally
-valid IL that still mis-binds at run time).
+1. **Consumer head-type suffix** (`codegen.l::registerStdlibTypeItem`): intern
+   the cross-package TypeRef for a generic stdlib record/union with its arity
+   suffix (`Std.Core.Option`1`), keyed under the plain FQN so lookups are
+   unchanged.
+2. **Consumer case-type suffix** (same fn): arity-suffix the union *case*
+   TypeRefs (`Option_Some`1`).
+3. **`Unit`-arg representation** (`codegen.l::registerStdlibFunc`): drop the
+   `xrefUnitArgsToValueTuple` lift so a `Unit`/`Never` generic argument is
+   `object` on both the consumer reference and the self-built producer (def +
+   construction + match all already agree on `object`).  [The alternative —
+   producer→`ValueTuple` to byte-match F# — is heavier; `object`-everywhere is
+   self-consistent and is what self-reproduction needs.]
+4. **Static/instance property extern getter** (`codegen.l::emitExternTargetBody`):
+   probe `get_<Member>` via `Mdr.resolveExtern`; if found, emit the getter with
+   the getter's own static/instance convention (`System.DateTime.UtcNow` →
+   `get_UtcNow()` static).
+5. **Union-case ctor field types** (`codegen.l::registerStdlibTypeItem`): encode
+   concrete (non-type-parameter) union-case ctor params with their declared MSIL
+   type (`IoError(path: String, message: String)` → `.ctor(string, string)`),
+   mirroring the producer's `typeExprToMsilG`.
+6. **Plain-name → suffix lookup fallback** (`lowering.l::findTypeDefRowByName`
+   and `findTypeRefRowByName`): when an exact plain-name lookup misses, probe the
+   `` `N `` suffixed forms, so `MIsinstByName` / `MCastclassByName` /
+   `MIsinstGeneric` (which pass plain case names) resolve the suffixed
+   TypeRef/TypeDef instead of degrading to `System.Object` (which makes `isinst`
+   unconditionally succeed and breaks match dispatch).
+7. **Nullable-reference FFI return** (`codegen.l::emitExternTargetBody`): a
+   `String?` extern return is `System.String` at the CLR level — unwrap
+   `TNullable` for the FFI MemberRef return so `Path.GetDirectoryName` binds
+   instead of degrading to `object`.
+
+### Remaining cascade (open)
+
+With (1)–(7) the self-emitted compiler builds `examples/rbac` past manifest
+parse, `Std.File`, `Std.Time`, and `Std.Path`, and currently stops at a
+`match not exhaustive` fall-through panic in `Lyric.Cli.lockNeedsRestore`
+(`match` on `Option[Workspace.WorkspaceContext]`) — i.e. that cross-package
+generic match still mis-dispatches for a record type argument, despite the enum
+case working.  More such cases are expected; each is the same class of
+cross-package generic-ABI consistency bug and must be driven out the same way.
+
+### Atomicity (why none of this is landed)
+
+These fixes **cannot land incrementally**.  CI builds via
+`bootstrap.sh --stage 1` with `LYRIC_BOOTSTRAP_MINT=1`, which reuses the
+F#-emitted (no-suffix) CLI closure *and* its no-suffix stdlib.  The AOT binary
+runs this (self-hosted) codegen, so with the suffix fixes its corpus builds emit
+suffix consumers that link the reused no-suffix stdlib → mismatch → CI red.
+Consistency requires the bootstrap to **drop the F# reuse and self-build the
+whole closure + stdlib** (suffix) in one step — which itself requires the full
+cascade above to be fixed first.  So the landing is necessarily atomic:
+finish the cascade, switch `stage1_cli_bundle` to a real self-emit, ship the
+self-built suffix stdlib, and validate the reproduction loop end-to-end.
+
+### Acceptance
+
+The reproduction loop (mint a stage-0 → `--internal-perpackage-build` the
+closure → AOT-link → build **and run** the full corpus + its `lyric test`, plus
+`inbundle_generics_self_test.l`) green end-to-end, with `stage1`/`stage2`
+byte-identical (#3217).  Every change here **must** be validated by compiling
+**and running** the corpus — `ilverify` alone passes structurally valid IL that
+still mis-binds at run time.
