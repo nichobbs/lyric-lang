@@ -7643,12 +7643,21 @@ func emitCaseFieldLoad(
   fieldName: in String,
 ): Unit {
   emitLoadSlot(insns, castSlot, paramCount)
+  // castSlot is typed `object` in the LocalVarSig (generic case types degrade to
+  // 0x1C), so re-assert the concrete case type with a castclass before the field
+  // load — otherwise the generic `ldfld` faults verification ("found object,
+  // expected Option_Some`1<…>").  Mirrors the non-generic `MClass` arm (#1442)
+  // and the local-load re-assert (`reassertLoadedLocalType`).
   match castTy {
-    case MGenericInst(_, _, typeArgs) -> insns.add(MLdfldGeneric(baseClassName = caseClass, typeArgs = typeArgs, fieldName = fieldName, fieldSig = fieldSig))
-    case MGenericInstByName(_, typeArgs) -> insns.add(MLdfldGeneric(baseClassName = caseClassBt, typeArgs = typeArgs, fieldName = fieldName, fieldSig = fieldSig))
+    case MGenericInst(_, _, typeArgs) -> {
+      insns.add(MCastclassGeneric(className = caseClass, typeArgs = typeArgs))
+      insns.add(MLdfldGeneric(baseClassName = caseClass, typeArgs = typeArgs, fieldName = fieldName, fieldSig = fieldSig))
+    }
+    case MGenericInstByName(_, typeArgs) -> {
+      insns.add(MCastclassGeneric(className = caseClassBt, typeArgs = typeArgs))
+      insns.add(MLdfldGeneric(baseClassName = caseClassBt, typeArgs = typeArgs, fieldName = fieldName, fieldSig = fieldSig))
+    }
     case _ -> {
-      // castSlot is typed as `object` in LocalVarSig, so castclass narrows to
-      // the concrete case class before ldfld (#1442).
       insns.add(MCastclassByName(className = caseClass))
       insns.add(MLdfld(fieldToken = fieldToken))
     }
