@@ -392,9 +392,24 @@ pub func assemblePe(inp: in AssemblerInput): ByteWriter {
   val guBuf = bufNew()
   serializeGuids(inp.guids, guBuf)
 
-  // Serialize #~ metadata tables stream
+  // Serialize #~ metadata tables stream.  The heapSizes flags byte selects
+  // 2- vs 4-byte heap-index widths: ECMA-335 §II.24.2.6 requires 4-byte
+  // indices for any heap whose data exceeds 0xFFFF bytes.  Large assemblies
+  // (e.g. per-package compiler DLLs with restored-dep TypeRef/MemberRef names)
+  // routinely push #Strings past 64 KB; without widening, every heap offset
+  // truncates to 2 bytes and aliases names to garbage.
+  var heapSizes = 0
+  if bufLen(strBuf) > 65535 {
+    heapSizes = heapSizes + 1   // bit 0: #Strings
+  }
+  if bufLen(guBuf) > 65535 {
+    heapSizes = heapSizes + 2   // bit 1: #GUID
+  }
+  if bufLen(blBuf) > 65535 {
+    heapSizes = heapSizes + 4   // bit 2: #Blob
+  }
   val tildeBuf = bufNew()
-  serializeTablesStream(inp.tables, 0, tildeBuf)
+  serializeTablesStream(inp.tables, heapSizes, tildeBuf)
 
   // Compute padded stream sizes
   val tSize = round4(bufLen(tildeBuf))
