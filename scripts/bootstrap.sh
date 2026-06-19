@@ -415,6 +415,28 @@ stage1() {
 # Stage 1 — CLI bundle precompile (Track A, A1.2)
 # ---------------------------------------------------------------------------
 stage1_cli_bundle() {
+  # When stage-0 was minted from the F# bootstrap compiler, the mint already
+  # emitted the entire Lyric.Cli closure (per-package, CoreLib-retargeted) into
+  # $STAGE1_DIR.  Those F#-emitted DLLs are the reference output.  The
+  # self-hosted MSIL emitter is not yet able to re-emit a *working* copy of
+  # itself (a residual cascade of generic-construction / extern-resolution bugs
+  # tracked toward full self-host), so re-emitting the closure here would
+  # replace the clean F#-emitted DLLs with ones that crash at run time.  Reuse
+  # the minted closure instead; only the freshly-built stdlib bundle needs its
+  # CoreLib refs retargeted (the mint already retargeted the closure DLLs, and
+  # the rewrite is idempotent for those).
+  if [[ "${LYRIC_BOOTSTRAP_MINT:-0}" == "1" ]] && [[ -f "$STAGE1_DIR/Lyric.Lyric.Cli.dll" ]]; then
+    info "Stage 1 (CLI bundle): reusing minted F#-emitted closure (self-hosted re-emit skipped)"
+    if [[ "$SKIP_COREREF_REWRITE" != "1" ]]; then
+      info "  retargeting System.Private.CoreLib refs -> public facades"
+      dotnet fsi "$REPO_ROOT/scripts/rewrite-corelib-refs.fsx" "$STAGE1_DIR"/*.dll \
+        > "$BUILD_DIR/rewrite-corelib-refs.log" 2>&1 || \
+        die "stage-1 CLI bundle: corelib-ref rewrite failed"
+    fi
+    ok "Stage 1 CLI bundle complete — minted F#-emitted closure in $STAGE1_DIR"
+    return
+  fi
+
   info "Stage 1 (CLI bundle): precompiling Lyric.Cli + transitive deps"
 
   local driver_dir="$BUILD_DIR/stage1-cli-driver"
