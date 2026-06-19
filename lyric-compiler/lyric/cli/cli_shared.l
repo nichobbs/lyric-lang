@@ -362,24 +362,21 @@ func walkUpForCompiledStdlib(start: in String, rel: in String): String {
 // `lyric-stdlib/bin`).  This replaces the previous reliance on the per-PID
 // `/tmp/lyric-stdlib-*` recompile byproduct for runtime co-location.  First
 // hit wins:
-//   1. $LYRIC_STDLIB_BIN          — explicit override
+//   1. $LYRIC_STDLIB_BIN          — explicit override (used as-is; dir or .dll)
 //   2. <appBaseDir>               — DLLs ship beside the binary
 //   3. <appBaseDir>/lib           — installed SDK layout
 //   4. walk up (appBase, cwd) for .bootstrap/stage1   — dev bootstrap output
 //   5. walk up (appBase, cwd) for lyric-stdlib/bin     — dev manifest build
-// Returns "" when no candidate holds `Lyric.Stdlib.dll`.
+// When $LYRIC_STDLIB_BIN is set it is returned unconditionally; otherwise
+// returns "" when no candidate holds `Lyric.Stdlib.dll`.
 func findCompiledLibDir(): String {
   val env = Environment.getVarOrDefault("LYRIC_STDLIB_BIN", "")
   if env.length > 0 {
-    // Explicit override: when LYRIC_STDLIB_BIN is set it takes precedence over
-    // ALL discovery and is used as-is — even when the directory carries only the
-    // split `Lyric.Stdlib.*.dll` per-package assemblies without the bundled
-    // `Lyric.Stdlib.dll` (a per-package self-build emits exactly that, so gating
-    // on `dirHasCompiledStdlib` here wrongly fell through to auto-discovery).
-    // Accepts either a directory, or a path to a specific DLL (its containing
-    // directory is used) — letting callers build several stdlib variants and
-    // explicitly link the one they want.
-    if Str.endsWith(env, ".dll") and File.fileExists(env) {
+    // Explicit override wins over all discovery and may name a directory or a
+    // specific DLL (gating on the bundled `Lyric.Stdlib.dll` wrongly skipped
+    // per-package self-builds, which emit only the split assemblies).  A `.dll`
+    // path resolves to its containing directory whether or not it exists yet.
+    if Str.endsWith(env, ".dll") {
       return Path.dirname(env)
     }
     return env
