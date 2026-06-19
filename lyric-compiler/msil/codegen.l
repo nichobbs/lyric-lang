@@ -4332,6 +4332,56 @@ func popCollExpect(fctx: in FuncCtx): Unit {
   }
 }
 
+// The generic type arguments of a type, or empty for a non-generic one.
+func genericArgsOfMsil(t: in MsilType): List[MsilType] {
+  match t {
+    case MGenericInst(_, _, args) -> args
+    case MGenericInstByName(_, args) -> args
+    case MValueTypeGenericInst(_, _, args) -> args
+    case _ -> newList()
+  }
+}
+
+// Override `contextHintTyArgs` with `retTy`'s generic type arguments so a bare
+// `None` / `Some(..)` / `Ok(..)` returned (or trailing) from a function whose
+// declared return is `Option[T]` / `Result[T,E]` constructs the *closed*
+// instantiation a cross-package `match` on the result will `isinst` against —
+// without it the nullary `None` erases its type argument and the consumer's
+// `Option_None`1<T>` test never matches (non-exhaustive at run time).  Returns
+// the saved hint to pass to `restoreHintTyArgs`; a no-op when `retTy` is
+// non-generic (the existing hint is preserved).
+func pushRetHintTyArgs(fctx: in FuncCtx, retTy: in MsilType): List[MsilType] {
+  val saved: List[MsilType] = newList()
+  var i = 0
+  while i < fctx.contextHintTyArgs.count {
+    saved.add(fctx.contextHintTyArgs[i])
+    i = i + 1
+  }
+  val args = genericArgsOfMsil(retTy)
+  if args.count > 0 {
+    while fctx.contextHintTyArgs.count > 0 {
+      fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+    }
+    var j = 0
+    while j < args.count {
+      fctx.contextHintTyArgs.add(args[j])
+      j = j + 1
+    }
+  }
+  saved
+}
+
+func restoreHintTyArgs(fctx: in FuncCtx, saved: in List[MsilType]): Unit {
+  while fctx.contextHintTyArgs.count > 0 {
+    fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+  }
+  var i = 0
+  while i < saved.count {
+    fctx.contextHintTyArgs.add(saved[i])
+    i = i + 1
+  }
+}
+
 // Recover the parent union FQN for a case-class ctor key (#2363 Stage 4).
 // Case classes are named `Union_Case`; since `_` is a valid identifier char the
 // parent can't be recovered by splitting the key, so it is looked up in the
@@ -10379,7 +10429,9 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         match valOpt {
           case Some(e) -> {
             pushCollExpect(fctx, fctx.declaredRetTy)
+            val savedRetHint1 = pushRetHintTyArgs(fctx, fctx.declaredRetTy)
             lowerExprMsil(cctx, fctx, insns, e)
+            restoreHintTyArgs(fctx, savedRetHint1)
             popCollExpect(fctx)
             if fctx.retvalSlot < 0 {
               fctx.retvalSlot = allocSlotMsil(fctx, "__retval", fctx.declaredRetTy)
@@ -10395,7 +10447,9 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         match valOpt {
           case Some(e) -> {
             pushCollExpect(fctx, fctx.declaredRetTy)
+            val savedRetHint2 = pushRetHintTyArgs(fctx, fctx.declaredRetTy)
             lowerExprMsil(cctx, fctx, insns, e)
+            restoreHintTyArgs(fctx, savedRetHint2)
             popCollExpect(fctx)
             insns.add(MRet)
           }
@@ -12596,34 +12650,52 @@ func inferCallReturnTypePB(
     case ECall(callee, args) -> {
       match callee.kind {
         case EPath(path) -> {
+          // Resolve the call's return type by mirroring the call-EMISSION
+          // resolution order (qualified path → current package → imported
+          // package).  The imported fallback is essential for cross-package
+          // calls written through an import alias (`Ws.findWorkspaceRoot` where
+          // `import Lyric.Workspace as Ws`): the literal `Ws.findWorkspaceRoot`
+          // FQN is never registered, so without resolving the alias the result
+          // type degraded to `object`, erasing a generic return (`Option[T]`,
+          // `Result[T,E]`) and forcing the match to the lossy erased dispatch
+          // path — which mis-dispatches a cross-package `Some`/`None`.
           val cnt = args.count
-          if path.segments.count == 1 {
-            val fqn = pkgName + "." + path.segments[0] + "/" + toString(cnt)
-            match mapGet(cctx.funcRetTypes, fqn) {
-              case Some(ty) -> ty
-              case None -> {
-                val fqn2 = pkgName + "." + path.segments[0]
-                match mapGet(cctx.funcRetTypes, fqn2) {
-                  case Some(ty) -> ty
-                  case None -> MObject
-                }
-              }
-            }
-          } else if path.segments.count >= 2 {
-            val fqn = joinSegsMsil(path.segments, ".") + "/" + toString(cnt)
-            match mapGet(cctx.funcRetTypes, fqn) {
-              case Some(ty) -> ty
-              case None -> {
-                val fqn2 = joinSegsMsil(path.segments, ".")
-                match mapGet(cctx.funcRetTypes, fqn2) {
-                  case Some(ty) -> ty
-                  case None -> MObject
-                }
-              }
-            }
-          } else {
-            MObject
+          val lastSeg = path.segments[path.segments.count - 1]
+          val candidates: List[String] = newList()
+          if path.segments.count >= 2 {
+            candidates.add(joinSegsMsil(path.segments, "."))
           }
+          candidates.add(pkgName + "." + lastSeg)
+          match mapGet(cctx.pkgImports, pkgName) {
+            case Some(imps) -> {
+              val imp = findImportedFqn(cctx, imps, lastSeg)
+              if imp.length > 0 {
+                candidates.add(imp)
+              }
+            }
+            case None -> ()
+          }
+          var result = MObject
+          var ci = 0
+          var done = false
+          while ci < candidates.count and not done {
+            val c = candidates[ci]
+            match mapGet(cctx.funcRetTypes, c + "/" + toString(cnt)) {
+              case Some(ty) -> {
+                result = ty
+                done = true
+              }
+              case None -> match mapGet(cctx.funcRetTypes, c) {
+                case Some(ty) -> {
+                  result = ty
+                  done = true
+                }
+                case None -> ()
+              }
+            }
+            ci = ci + 1
+          }
+          result
         }
         case _ -> MObject
       }
@@ -14761,7 +14833,9 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
               // instance the return signature requires.  Intermediate statements
               // push/pop their own collExpect on top, so only the tail inherits it.
               pushCollExpect(fctx, retTy)
+              val savedTrailHint = pushRetHintTyArgs(fctx, retTy)
               val trailTy = lowerBlockExprMsil(cctx, fctx, insns, block)
+              restoreHintTyArgs(fctx, savedTrailHint)
               popCollExpect(fctx)
               if not endsWithReturnMsil(insns) {
                 // Coerce the trailing value to the declared return type — boxes a
@@ -14779,7 +14853,9 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
           }
           case FBExpr(e) -> {
             pushCollExpect(fctx, retTy)
+            val savedExprHint = pushRetHintTyArgs(fctx, retTy)
             lowerExprMsil(cctx, fctx, insns, e)
+            restoreHintTyArgs(fctx, savedExprHint)
             popCollExpect(fctx)
             insns.add(MRet)
           }
