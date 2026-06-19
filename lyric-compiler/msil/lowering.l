@@ -5271,16 +5271,6 @@ pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx, entryMethod
   // RVAs are set inline by each lowerM* call; no post-pass needed.
   // (See the same comment in lowerMPackage above.)
 
-  val sMain = internString(ctx.strings, "main")
-  var mi = 0
-  var actualMainRow = 0
-  while mi < ctx.tables.methodDefs.count {
-    if ctx.tables.methodDefs[mi].name == sMain {
-      actualMainRow = mi + 1
-    }
-    mi = mi + 1
-  }
-
   val inp = AssemblerInput(
     entryPointToken = entryMethodToken,
     methodBodies = ctx.bodies,
