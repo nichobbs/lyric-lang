@@ -209,7 +209,7 @@ func parseDistinctTypeBody(st: inout ParseState, genericsPrefix: Option[GenericP
   )
 }
 
-func injectSelfIfNeeded(fn: in FunctionDecl, span: in Span): FunctionDecl {
+func injectSelfIfNeeded(fn: in FunctionDecl): FunctionDecl {
   if fn.params.count > 0 and fn.params[0].name == "self" {
     return fn
   }
@@ -265,7 +265,7 @@ func parseRecordMembers(st: inout ParseState): List[RecordMember] {
           }
           case KwFunc -> {
             val fn = parseFunctionDeclBody(st, None)
-            xs.add(RMFunc(fn = injectSelfIfNeeded(fn, fn.span)))
+            xs.add(RMFunc(fn = injectSelfIfNeeded(fn)))
           }
           case KwAsync -> {
             val next1 = peekAt(st, 1)
@@ -274,7 +274,7 @@ func parseRecordMembers(st: inout ParseState): List[RecordMember] {
                 match k2 {
                   case KwFunc -> {
                     val fn = parseFunctionDeclBody(st, None)
-                    xs.add(RMFunc(fn = injectSelfIfNeeded(fn, fn.span)))
+                    xs.add(RMFunc(fn = injectSelfIfNeeded(fn)))
                   }
                   case _ -> {
                     xs.add(RMField(field = parseFieldDecl(st)))
