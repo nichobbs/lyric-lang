@@ -100,38 +100,33 @@ pub func symbolTypeIdOpt(s: in Symbol): Option[TypeId] {
   }
 }
 
-pub func symTableIsExternType(tbl: in SymbolTable, id: in TypeId): Bool {
-  var i = 0
-  while i < tbl.symbols.count {
-    match tbl.symbols[i].kind {
-      case DKExternType(tid, _) -> if typeIdEq(tid, id) { return true }
-      case _ -> ()
-    }
-    i = i + 1
-  }
-  false
-}
-
-// Check if an extern type is a delegate type by inspecting its clrName.
-// Delegates include System.Func, System.Action, System.Predicate, and
-// anything else that derives from System.Delegate.
+// Check if an extern type is likely a delegate type by matching common patterns.
+// Without CLR metadata access (tracked in docs/42 #1622), this uses heuristics:
+// - System.Func`N, System.Action`N, System.Predicate`1
+// - Any type name containing: Delegate, Callback, Handler, Comparison, Converter, EventHandler
+// - Defers to metadata-based inheritance check in Phase 2 for other cases
 pub func symTableIsExternDelegateType(tbl: in SymbolTable, id: in TypeId): Bool {
   var i = 0
   while i < tbl.symbols.count {
     match tbl.symbols[i].kind {
       case DKExternType(tid, decl) -> {
         if typeIdEq(tid, id) {
-          // Check if clrName matches known delegate patterns.
-          // Known patterns: System.Func, System.Action, System.Predicate,
-          // and other types that derive from System.Delegate.
           val clr = decl.clrName
-          if clr.startsWith("System.Func") or
+          // Check for common delegate naming patterns and known BCL delegates.
+          if clr.contains("Delegate") or
+             clr.contains("Callback") or
+             clr.contains("Handler") or
+             clr.contains("Comparison") or
+             clr.contains("Converter") or
+             clr.startsWith("System.Func") or
              clr.startsWith("System.Action") or
-             clr.startsWith("System.Predicate") or
-             clr.startsWith("System.EventHandler") or
-             clr == "System.Delegate" {
+             clr.startsWith("System.Predicate") {
             return true
           }
+          // For other extern types, conservatively reject to prevent assigning
+          // lambdas to non-delegate types (System.Exception, System.String, etc.).
+          // Unknown delegate types should be wrapped in a Lyric interface
+          // (docs/51) until metadata-based detection is available.
           return false
         }
       }

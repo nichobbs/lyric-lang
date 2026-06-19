@@ -36,7 +36,7 @@ test "passing strongly-typed lambda to Predicate[T] FFI target" {
   listAdd(xs, 4)
   listAdd(xs, 5)
 
-  // lambda returns true for even numbers
+  // lambda predicate always returns true (removes all)
   val removed = listRemoveAll(xs, { x: Obj -> true })
   assertEqualInt(removed, 5, "removed all elements")
   assertEqualInt(listCount(xs), 0, "0 elements remaining")

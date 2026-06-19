@@ -12149,7 +12149,6 @@ func insnStackDelta(insn: in MInsn): Int {
     case MLdelemU1 -> -1
     case MLdelemI4 -> -1
     case MLdftn(_) -> 1
-    case MLdftnByName(_, _) -> 1
     case MLeave(_) -> 0
     case MEndfinally -> 0
     case MEHClause(_, _, _, _, _, _) -> 0

@@ -667,9 +667,6 @@ pub union MInsn {
   // call RunBody() on the synthesised generator class before the MethodDef
   // table is fully populated (mirrors the MNewobjByName / MLdfldByName pattern).
   case MCallByName(className: String, methodName: String)
-  // Non-virtual `ldftn` that resolves the MethodDef token from a TypeDef name
-  // and method name at Phase 5 lowering time. Used by closure classes.
-  case MLdftnByName(ownerFqn: String, methodName: String)
 }
 
 // ── MField / MFunc / MRecord ──────────────────────────────────────────────────
@@ -2202,15 +2199,6 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
         emitCall(mb, 0x06000000 + mdRow)
       } else {
         panic("Msil.Lowering: MCallByName could not resolve '" + methodName + "' on type '" + className + "'")
-      }
-    }
-    case MLdftnByName(ownerFqn, methodName) -> {
-      val tdRow = findTypeDefRowByName(ctx, ownerFqn)
-      val mdRow = findMethodDefRowOfType(ctx, tdRow, methodName)
-      if mdRow > 0 {
-        emitLdftn(mb, 0x06000000 + mdRow)
-      } else {
-        panic("Msil.Lowering: MLdftnByName could not resolve '" + methodName + "' on type '" + ownerFqn + "'")
       }
     }
     case MCallAtmbStart(smFqn, atmbMrRow, isGeneric) -> {
