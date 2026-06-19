@@ -1,4 +1,4 @@
-package Lyric.Cli.Quality
+package Lyric.Cli.Doc
 
 import Std.Core
 import Std.Collections
