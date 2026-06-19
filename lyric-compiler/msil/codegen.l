@@ -31,6 +31,7 @@ package Msil.Codegen
 import Std.Core
 import Std.Collections
 import Std.String
+import Std.Parse
 import Lyric.Parser
 import Lyric.Lexer
 import Lyric.RestoredPackages
@@ -6111,45 +6112,107 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           } else {
             buildFuncNCtorTok(cctx, nparams)
           }
-          // Delegate target: a closed-over `object[]` of captured values for a
-          // capturing lambda (each boxed), else `null` for a static delegate.
-          if caps.count > 0 {
-            insns.add(MLdcI4(v = caps.count))
-            insns.add(MNewarr(typeToken = 0x01000000 + boxTypeRef(cctx, MObject)))
-            var capStI = 0
-            while capStI < caps.count {
-              insns.add(MDup)
-              insns.add(MLdcI4(v = capStI))
-              val capName = caps[capStI]
-              if fctx.captureNameToIndex.containsKey(capName) {
-                // Re-capture from outer closure's __caps array (#1479 multi-level).
-                // Load __caps (slot 0), then index into it.  If it's a cell
-                // capture, the cell reference is already boxed as object in __caps
-                // and is forwarded directly.  If it's a value capture, the value
-                // is already boxed as object in __caps and is forwarded directly.
-                val outerIdx = match mapGet(fctx.captureNameToIndex, capName) { case Some(n) -> n; case None -> 0 }
-                emitLoadVarMsil(fctx, insns, 0)
-                insns.add(MLdcI4(v = outerIdx))
-                insns.add(MLdelemRef)
-              } else if nameListContains(capCells, capName) {
-                // By-reference: store the cell (a `List[object]` reference) itself
-                // so the closure and enclosing scope share it — no box (#1479 v2).
-                match mapGet(fctx.hoistedCellSlot, capName) {
-                  case Some(s) -> emitLoadVarMsil(fctx, insns, s)
-                  case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.hoistedCellSlot — lambdaCaptureNamesMsil should only return names present in the enclosing scope")
+          // Delegate target: Phase 2 tries to instantiate a __Closure<N> record if it
+          // exists; falls back to Phase 1 object[] for backwards compatibility.
+          // Phase 2: Check if this lambda has a closure record (created by synthesizeClosureRecordsForFile).
+          val hasClosureRecord = mapGet(cctx.lambdaHasClosures, idx)
+          match hasClosureRecord {
+            case Some(true) -> {
+              // Phase 2: Instantiate the closure record with captured values.
+              val closureName = "__Closure" + toString(idx)
+              val closureCtorKey = fctx.pkgName + "." + closureName
+              match mapGet(cctx.recordCtorTokens, closureCtorKey) {
+                case Some(ctorTok) -> {
+                  // Load each captured value as a constructor argument.
+                  var capArgI = 0
+                  while capArgI < caps.count {
+                    val capName = caps[capArgI]
+                    if fctx.captureNameToIndex.containsKey(capName) {
+                      // Re-capture from outer closure's __caps array (#1479 multi-level).
+                      val outerIdx = match mapGet(fctx.captureNameToIndex, capName) { case Some(n) -> n; case None -> 0 }
+                      emitLoadVarMsil(fctx, insns, 0)
+                      insns.add(MLdcI4(v = outerIdx))
+                      insns.add(MLdelemRef)
+                    } else if nameListContains(capCells, capName) {
+                      // By-reference: store the cell itself.
+                      match mapGet(fctx.hoistedCellSlot, capName) {
+                        case Some(s) -> emitLoadVarMsil(fctx, insns, s)
+                        case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.hoistedCellSlot")
+                      }
+                    } else {
+                      match mapGet(fctx.slots, capName) {
+                        case Some(s) -> emitLoadVarMsil(fctx, insns, s)
+                        case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots")
+                      }
+                    }
+                    capArgI = capArgI + 1
+                  }
+                  // Instantiate the closure record with captured values as constructor arguments.
+                  insns.add(MNewobj(ctorToken = ctorTok))
                 }
-              } else {
-                match mapGet(fctx.slots, capName) {
-                  case Some(s) -> emitLoadVarMsil(fctx, insns, s)
-                  case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots — lambdaCaptureNamesMsil should only return names present in the enclosing scope")
+                case _ -> {
+                  // Closure record exists but constructor token not found — fall back to Phase 1.
+                  // This can happen if closure synthesis occurs but token registration fails.
+                  insns.add(MLdcI4(v = caps.count))
+                  insns.add(MNewarr(typeToken = 0x01000000 + boxTypeRef(cctx, MObject)))
+                  var capStI = 0
+                  while capStI < caps.count {
+                    insns.add(MDup)
+                    insns.add(MLdcI4(v = capStI))
+                    val capName = caps[capStI]
+                    if fctx.captureNameToIndex.containsKey(capName) {
+                      val outerIdx = match mapGet(fctx.captureNameToIndex, capName) { case Some(n) -> n; case None -> 0 }
+                      emitLoadVarMsil(fctx, insns, 0)
+                      insns.add(MLdcI4(v = outerIdx))
+                      insns.add(MLdelemRef)
+                    } else if nameListContains(capCells, capName) {
+                      match mapGet(fctx.hoistedCellSlot, capName) {
+                        case Some(s) -> emitLoadVarMsil(fctx, insns, s)
+                        case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.hoistedCellSlot")
+                      }
+                    } else {
+                      match mapGet(fctx.slots, capName) {
+                        case Some(s) -> emitLoadVarMsil(fctx, insns, s)
+                        case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots")
+                      }
+                      boxIfNeededMsil(cctx, insns, capTypes[capStI])
+                    }
+                    insns.add(MStelemRef)
+                    capStI = capStI + 1
+                  }
                 }
-                boxIfNeededMsil(cctx, insns, capTypes[capStI])
               }
-              insns.add(MStelemRef)
-              capStI = capStI + 1
             }
-          } else {
-            insns.add(MLdNull)
+            case _ -> {
+              // Phase 1: Fall back to object[] for lambdas without closure records.
+              insns.add(MLdcI4(v = caps.count))
+              insns.add(MNewarr(typeToken = 0x01000000 + boxTypeRef(cctx, MObject)))
+              var capStI = 0
+              while capStI < caps.count {
+                insns.add(MDup)
+                insns.add(MLdcI4(v = capStI))
+                val capName = caps[capStI]
+                if fctx.captureNameToIndex.containsKey(capName) {
+                  val outerIdx = match mapGet(fctx.captureNameToIndex, capName) { case Some(n) -> n; case None -> 0 }
+                  emitLoadVarMsil(fctx, insns, 0)
+                  insns.add(MLdcI4(v = outerIdx))
+                  insns.add(MLdelemRef)
+                } else if nameListContains(capCells, capName) {
+                  match mapGet(fctx.hoistedCellSlot, capName) {
+                    case Some(s) -> emitLoadVarMsil(fctx, insns, s)
+                    case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.hoistedCellSlot")
+                  }
+                } else {
+                  match mapGet(fctx.slots, capName) {
+                    case Some(s) -> emitLoadVarMsil(fctx, insns, s)
+                    case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots")
+                  }
+                  boxIfNeededMsil(cctx, insns, capTypes[capStI])
+                }
+                insns.add(MStelemRef)
+                capStI = capStI + 1
+              }
+            }
           }
           insns.add(MLdftn(methodToken = tok))
           insns.add(MNewobj(ctorToken = ctorTok))
@@ -19375,7 +19438,7 @@ func analyzeLambdaCapturesFromAst(decl: in FunctionDecl): List[String] {
   }
   match decl.body {
     case Some(FBBlock(block)) -> collectBoundNamesBlock(block, bound)
-    case Some(FBExpr(e)) -> collectBoundNamesExpr(e, bound)
+    case Some(FBExpr(_)) -> ()
     case None -> ()
   }
 
@@ -19397,7 +19460,7 @@ func analyzeLambdaCapturesFromAst(decl: in FunctionDecl): List[String] {
 func extractLambdaIndexFromName(name: in String): Option[Int] {
   if startsWith(name, "__lambda_") {
     val indexStr = substring(name, 9, name.length - 9)
-    match parseIntOpt(indexStr) {
+    match parseOptInt(indexStr) {
       case Some(idx) -> Some(value = idx)
       case None -> None
     }
@@ -19416,7 +19479,7 @@ pub func scanClosureRecordsMsil(cctx: in CodegenCtx, file: in SourceFile): Unit 
         if startsWith(decl.name, "__Closure") {
           // Extract lambda index from __Closure<N>
           val indexStr = substring(decl.name, 9, decl.name.length - 9)
-          match parseIntOpt(indexStr) {
+          match parseOptInt(indexStr) {
             case Some(idx) -> {
               cctx.lambdaHasClosures.add(idx, true)
             }
@@ -19438,16 +19501,37 @@ pub func scanClosureRecordsMsil(cctx: in CodegenCtx, file: in SourceFile): Unit 
 // and closureCtorTokens are populated during addPackageTokens after tokens are assigned.
 pub func synthesizeClosureRecordsForFile(file: in SourceFile): SourceFile {
   val closureRecords: List[Item] = newList()
-  val lambdasByIndex: Map[Int, FunctionDecl] = newMap()
 
-  // Phase 1: Identify and collect all __lambda_* functions.
+  // Phase 1: Iterate through file items and synthesize closures for each __lambda_*.
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
       case IFunc(decl) -> {
         match extractLambdaIndexFromName(decl.name) {
-          case Some(idx) -> {
-            lambdasByIndex.add(idx, decl)
+          case Some(lambdaIdx) -> {
+            // Analyze what this lambda captures.
+            val captureNames = analyzeLambdaCapturesFromAst(decl)
+            if captureNames.count > 0 {
+              // TODO: Determine capture types. For now, default to MObject.
+              // Full implementation requires type-checking context.
+              val captureTypes: List[MsilType] = newList()
+              var ci = 0
+              while ci < captureNames.count {
+                captureTypes.add(MObject)
+                ci = ci + 1
+              }
+              // Synthesize the closure record.
+              val closureRecord = synthesizeClosureRecord(lambdaIdx, captureNames, captureTypes)
+              closureRecords.add(
+                Item(
+                  docComments = newList(),
+                  annotations = newList(),
+                  visibility = None,
+                  kind = IRecord(decl = closureRecord),
+                  span = syntheticSpan()
+                )
+              )
+            }
           }
           case None -> ()
         }
@@ -19455,44 +19539,6 @@ pub func synthesizeClosureRecordsForFile(file: in SourceFile): SourceFile {
       case _ -> ()
     }
     i = i + 1
-  }
-
-  if lambdasByIndex.count == 0 {
-    return file
-  }
-
-  // Phase 2: For each lambda with captures, synthesize a closure record.
-  var li = 0
-  while li < lambdasByIndex.count {
-    match lambdasByIndex.get(li) {
-      case Some(lambdaDecl) -> {
-        // Analyze what this lambda captures.
-        val captureNames = analyzeLambdaCapturesFromAst(lambdaDecl)
-        if captureNames.count > 0 {
-          // TODO: Determine capture types. For now, default to MObject.
-          // Full implementation requires type-checking context.
-          val captureTypes: List[MsilType] = newList()
-          var ci = 0
-          while ci < captureNames.count {
-            captureTypes.add(MObject)
-            ci = ci + 1
-          }
-          // Synthesize the closure record.
-          val closureRecord = synthesizeClosureRecord(li, captureNames, captureTypes)
-          closureRecords.add(
-            Item(
-              docComments = newList(),
-              annotations = newList(),
-              visibility = None,
-              kind = IRecord(decl = closureRecord),
-              span = syntheticSpan()
-            )
-          )
-        }
-      }
-      case None -> ()
-    }
-    li = li + 1
   }
 
   if closureRecords.count == 0 {
