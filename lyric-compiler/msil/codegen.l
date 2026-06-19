@@ -11686,6 +11686,86 @@ func listIndexOfInt(xs: in List[Int], v: in Int): Int {
   0 - 1
 }
 
+// docs/42 / #1622: resolve a `@externTarget` member from reference-assembly
+// metadata, recovering the real calling shape (static method, instance method
+// where declared param 0 is the receiver, or a property getter `get_<name>`)
+// and the real return / parameter `SigType`s.  This is what the F# emitter got
+// from reflection; the self-hosted emitter must read it from metadata so
+// hint-less BCL instance methods and properties bind without per-extern
+// `@externInstance` / `get_` annotations.  Returns `None` (fall back to the
+// declared-signature + static-default path) when the type isn't indexed, a
+// declared param can't be mapped to a `SigType`, or no overload matches.
+func resolveExternMemberMeta(
+  cctx: in CodegenCtx,
+  fqn: in String,
+  memberName: in String,
+  declParamTypes: in List[MsilType],
+): Option[Mdr.ResolvedMethod] {
+  ensureMetadataIndex(cctx)
+  match Mdr.assemblyForType(cctx.metadataTypeIndex, fqn) {
+    case None -> return None
+    case Some(_) -> ()
+  }
+  // SigTypes for all declared params (static shape) and for params[1:] (instance
+  // shape: param 0 is the receiver).  Bail to the fallback path if any declared
+  // param can't be mapped (generic / by-ref / unsupported shapes).
+  val allSigs: List[Mdr.SigType] = newList()
+  var i = 0
+  var ok = true
+  while i < declParamTypes.count and ok {
+    match argTyToSig(declParamTypes[i]) {
+      case Some(s) -> allSigs.add(s)
+      case None -> {
+        ok = false
+      }
+    }
+    i = i + 1
+  }
+  if not ok {
+    return None
+  }
+  val instSigs: List[Mdr.SigType] = newList()
+  var j = 1
+  while j < allSigs.count {
+    instSigs.add(allSigs[j])
+    j = j + 1
+  }
+  val getter = "get_" + memberName
+  // Trial 1: plain method, static shape (all declared params are method args).
+  match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, fqn, memberName, allSigs) {
+    case Some(re) -> {
+      val rm: Mdr.ResolvedMethod = re.sig
+      if rm.isStatic { return Some(value = rm) } else { () }
+    }
+    case None -> ()
+  }
+  // Trial 2: plain method, instance shape (param 0 is the receiver).
+  match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, fqn, memberName, instSigs) {
+    case Some(re) -> {
+      val rm: Mdr.ResolvedMethod = re.sig
+      if not rm.isStatic { return Some(value = rm) } else { () }
+    }
+    case None -> ()
+  }
+  // Trial 3: property getter, static shape.
+  match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, fqn, getter, allSigs) {
+    case Some(re) -> {
+      val rm: Mdr.ResolvedMethod = re.sig
+      if rm.isStatic { return Some(value = rm) } else { () }
+    }
+    case None -> ()
+  }
+  // Trial 4: property getter, instance shape.
+  match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, fqn, getter, instSigs) {
+    case Some(re) -> {
+      val rm: Mdr.ResolvedMethod = re.sig
+      if not rm.isStatic { return Some(value = rm) } else { () }
+    }
+    case None -> ()
+  }
+  None
+}
+
 func emitExternTargetBody(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -11871,23 +11951,57 @@ func emitExternTargetBody(
       // Build the method signature blob, encoding class-typed params/return
       // against their resolved TypeRefs.
       //
+      // docs/42: resolve the real BCL member (static method / instance method /
+      // property getter) and its return type from reference-assembly metadata.
+      // This corrects the hint-less @externTarget default (which assumed static
+      // and used the literal member name) so BCL instance methods and properties
+      // bind, and supplies the real return type (e.g. an enum-typed property
+      // getter) the declared Lyric type can't express.  Falls back to the
+      // declared signature + `r` when unresolved.
+      val metaResolved: Option[Mdr.ResolvedMethod] = if r.isCtor { None } else { resolveExternMemberMeta(cctx, resolvedFqn, r.memberName, paramTypes) }
+      val effIsStatic = match metaResolved {
+        case Some(m) -> {
+          val mm: Mdr.ResolvedMethod = m
+          mm.isStatic
+        }
+        case None -> r.isStatic
+      }
+      val effMemberName = match metaResolved {
+        case Some(m) -> {
+          val mm: Mdr.ResolvedMethod = m
+          mm.name
+        }
+        case None -> r.memberName
+      }
+      val metaRetTy: Option[MsilType] = match metaResolved {
+        case Some(m) -> {
+          val mm: Mdr.ResolvedMethod = m
+          sigTypeToMsilForIface(cctx, mm.returnType)
+        }
+        case None -> None
+      }
+      //
       // For async externs the BCL method returns Task (void) or Task<T> (non-void T).
       // Encode the actual BCL return type in the MemberRef so the CLR can resolve the
       // method at JIT time.  retTy (the Lyric-declared T) is used only for the unwrap
       // callvirt appended below.  Ctors are never async in the BCL; skip them.
       val bclRetTy = if decl.isAsync and not r.isCtor {
-        val isVoidRet = match retTy { case MVoid -> true; case _ -> false }
+        val baseRet = match metaRetTy { case Some(rt) -> rt; case None -> retTy }
+        val isVoidRet = match baseRet { case MVoid -> true; case _ -> false }
         if isVoidRet {
           MClassRef(typeRefCode = tdrTypeRef(cctx.trTask), clrFqn = "System.Threading.Tasks.Task")
         } else {
           val taskArgs: List[MsilType] = newList()
-          taskArgs.add(retTy)
+          taskArgs.add(baseRet)
           MGenericInst(typeRefCode = tdrTypeRef(cctx.trTask1), headFqn = "System.Threading.Tasks.Task", typeArgs = taskArgs)
         }
       } else {
-        match nullableInnerTy { case Some(vt) -> vt; case None -> retTy }
+        match nullableInnerTy {
+          case Some(vt) -> vt
+          case None -> match metaRetTy { case Some(rt) -> rt; case None -> retTy }
+        }
       }
-      val sig = if r.isStatic and not r.isCtor {
+      val sig = if effIsStatic and not r.isCtor {
         buildFfiMethodSigCtx(cctx, paramTypes, bclRetTy, false)
       } else if r.isCtor {
         // .ctor: HASTHIS, void return, all params explicit.
@@ -11903,7 +12017,7 @@ func emitExternTargetBody(
         }
         buildFfiMethodSigCtx(cctx, instArgs, bclRetTy, true)
       }
-      val mrRow = ctxAddMemberRef(cctx.lctx, tRefRow, r.memberName, "ffi_" + target, sig)
+      val mrRow = ctxAddMemberRef(cctx.lctx, tRefRow, effMemberName, "ffi_" + target, sig)
       val tok = 0x0A000000 + mrRow
 
       // Load every Lyric param in order.  For instance calls the
@@ -11922,7 +12036,7 @@ func emitExternTargetBody(
       }
       if r.isCtor {
         insns.add(MNewobj(ctorToken = tok))
-      } else if r.isStatic {
+      } else if effIsStatic {
         insns.add(MCall(methodToken = tok))
       } else {
         insns.add(MCallvirt(methodToken = tok))
