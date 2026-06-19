@@ -1,22 +1,21 @@
-// lyric/repl/repl.l — Lyric.Repl interactive REPL.
-//
-// Script-accumulation REPL: statements are collected into a synthesised
-// Lyric program and re-run after each line.  Two buffers are kept:
-//   topLevel  — top-level func/record/union definitions (entered via :fn…:end)
-//   body      — statements inside the synthesised main() func
-//
-// Meta-commands:
-//   :help  :h        show help
-//   :quit  :q        exit
-//   :clear           reset session
-//   :show            print accumulated script
-//   :fn … :end       enter a top-level definition block
-//   :run             re-run without adding a line
-//
-// Compilation uses Lyric.Emitter.emit (shells out to --internal-build);
-// the compiled DLL is executed via `dotnet exec`.  Compiler errors are
-// printed to stderr by the subprocess; the REPL continues.
-
+//! lyric/repl/repl.l — Lyric.Repl interactive REPL.
+//!
+//! Script-accumulation REPL: statements are collected into a synthesised
+//! Lyric program and re-run after each line.  Two buffers are kept:
+//!   topLevel  — top-level func/record/union definitions (entered via :fn…:end)
+//!   body      — statements inside the synthesised main() func
+//!
+//! Meta-commands:
+//!   :help  :h        show help
+//!   :quit  :q        exit
+//!   :clear           reset session
+//!   :show            print accumulated script
+//!   :fn … :end       enter a top-level definition block
+//!   :run             re-run without adding a line
+//!
+//! Compilation uses Lyric.Emitter.emit (shells out to --internal-build);
+//! the compiled DLL is executed via `dotnet exec`.  Compiler errors are
+//! printed to stderr by the subprocess; the REPL continues.
 @runtime_checked
 package Lyric.Repl
 
@@ -25,20 +24,27 @@ import Std.Collections
 import Std.Console as Console
 import Std.Errors
 import Std.File as File
-import Std.String as Str      // before Path so Path.join/2 wins over Str.join/2
+import Std.String as Str
+// before Path so Path.join/2 wins over Str.join/2
 import Std.Path as Path
 import Std.Process as Process
 import Std.Environment as Environment
-
 import Lyric.Emitter as Emitter
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Helpers
 // ─────────────────────────────────────────────────────────────────────────────
+func BANNER(): String {
+  "lyric repl 0.1.0  —  :help for help, :quit to exit"
+}
 
-func BANNER(): String { "lyric repl 0.1.0  —  :help for help, :quit to exit" }
-func PROMPT(): String { "> " }
-func CONT(): String   { "| " }
+func PROMPT(): String {
+  "> "
+}
+
+func CONT(): String {
+  "| "
+}
 
 func printHelp(): Unit {
   Console.println("Commands:")
@@ -54,28 +60,24 @@ func printHelp(): Unit {
 }
 
 func tempBase(): String {
-  Environment.getVarOrDefault("TMPDIR",
-    Environment.getVarOrDefault("TEMP",
-      Environment.getVarOrDefault("TMP", "/tmp")))
+  Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
 }
 
 // Remove all elements from `lst`.
 // Removes from the tail to stay O(n) (removeAt(0) on a list is O(n) per call).
 func clearList(lst: in List[String]): Unit {
-  while lst.count > 0 { lst.removeAt(lst.count - 1) }
+  while lst.count > 0 {
+    lst.removeAt(lst.count - 1)
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Script synthesis
 // ─────────────────────────────────────────────────────────────────────────────
-
 func PREAMBLE(): String {
-  "package ReplSession\n" +
-  "import Std.Core\n" +
-  "import Std.Console\n" +
-  "import Std.Collections\n" +
-  "import Std.String\n" +
-  "\n"
+  "package ReplSession\n" + "import Std.Core\n" + "import Std.Console\n" + "import Std.Collections\n" +
+    "import Std.String\n" +
+    "\n"
 }
 
 func buildScript(topLevel: in List[String], body: in List[String]): String {
@@ -96,12 +98,7 @@ func buildScript(topLevel: in List[String], body: in List[String]): String {
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Compile and run
 // ─────────────────────────────────────────────────────────────────────────────
-
-func runScript(
-    script:  in String,
-    dllFile: in String,
-    verbose: in Bool
-): Unit {
+func runScript(script: in String, dllFile: in String, verbose: in Bool): Unit {
   if verbose {
     Console.println("--- script ---")
     Console.println(script)
@@ -109,19 +106,20 @@ func runScript(
   }
 
   val req = Emitter.EmitRequest(
-    source         = script,
-    assemblyName   = "lyric_repl_session",
-    outputPath     = dllFile,
-    target         = Emitter.Dotnet,
-    packageVersion = "",
-    buildKind      = "lib"
+    source = script,
+    assemblyName = "lyric_repl_session",
+    outputPath = dllFile,
+    target = Emitter.Dotnet,
+    packageVersion = ""
   )
   val result = Emitter.emit(req)
 
   var hadError = false
   for d in result.diagnostics.toArray() {
     match d.severity {
-      case DiagError   -> { hadError = true }
+      case DiagError -> {
+        hadError = true
+      }
       case DiagWarning -> ()
     }
   }
@@ -135,7 +133,7 @@ func runScript(
   execArgs.add("exec")
   execArgs.add(dllFile)
   match Process.run("dotnet", execArgs) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(e) -> Console.error("repl: dotnet exec failed: " + IOError.message(e))
   }
 }
@@ -143,13 +141,14 @@ func runScript(
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. Main loop
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub func runRepl(argv: in slice[String]): Int {
   // Parse flags.
   var verbose = false
   var i = 0
   while i < argv.length {
-    if argv[i] == "--verbose" or argv[i] == "-v" { verbose = true }
+    if argv[i] == "--verbose" or argv[i] == "-v" {
+      verbose = true
+    }
     i += 1
   }
 
@@ -161,19 +160,18 @@ pub func runRepl(argv: in slice[String]): Int {
   // NOTE: two simultaneous `lyric repl` invocations sharing the same
   // LYRIC_REPL_DIR will race on session.l / session.dll.  A future
   // stdlib Process.pid() binding would let us append the PID suffix.
-  val replDir = Environment.getVarOrDefault("LYRIC_REPL_DIR",
-    Path.join(tempBase(), "lyric-repl"))
+  val replDir = Environment.getVarOrDefault("LYRIC_REPL_DIR", Path.join(tempBase(), "lyric-repl"))
   match File.createDir(replDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
   val srcFile = Path.join(replDir, "session.l")
   val dllFile = Path.join(replDir, "session.dll")
 
   val topLevel: List[String] = newList()
-  val body: List[String]     = newList()
-  val fnBuf: List[String]    = newList()
-  var fnMode  = false
+  val body: List[String] = newList()
+  val fnBuf: List[String] = newList()
+  var fnMode = false
   var running = true
 
   while running {
@@ -223,7 +221,9 @@ pub func runRepl(argv: in slice[String]): Int {
               var fnText = ""
               var fi = 0
               while fi < fnBuf.count {
-                if fi > 0 { fnText = fnText + "\n" }
+                if fi > 0 {
+                  fnText = fnText + "\n"
+                }
                 fnText = fnText + fnBuf[fi]
                 fi += 1
               }
@@ -244,7 +244,9 @@ pub func runRepl(argv: in slice[String]): Int {
             runScript(buildScript(topLevel, body), dllFile, verbose)
           }
         } else if Str.isEmpty(t) {
-          if fnMode { fnBuf.add(line) }
+          if fnMode {
+            fnBuf.add(line)
+          }
           // blank lines outside :fn are ignored
         } else if fnMode {
           fnBuf.add(line)

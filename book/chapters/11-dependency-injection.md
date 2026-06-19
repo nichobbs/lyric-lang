@@ -113,7 +113,7 @@ The wire block compiles to a module with a `bootstrap` function and accessor pro
 ```lyric
 // Program entry point
 func main(): Unit {
-  val config = AppConfig.load(RawConfig.readFromEnvironment()).unwrap()
+  val config = unwrapResult(AppConfig.load(RawConfig.readFromEnvironment()))
   val app = ProductionApp.bootstrap(config, CancellationToken.none())
   // app.transferService is the resolved TransferService
   HttpServer.run(app.transferService, config.port)
@@ -160,15 +160,15 @@ wire TestWire {
 test "successful transfer credits the destination" {
   val alice = makeAccount(id = "A", balance = 1_000_00)
   val bob   = makeAccount(id = "B", balance = 0)
-  val now   = Instant.fromIso8601("2026-04-29T00:00:00Z").unwrap()
+  val now   = unwrapResult(Instant.fromIso8601("2026-04-29T00:00:00Z"))
 
   val w = TestWire.bootstrap(alice, bob, now)
-  val key = IdempotencyKey.tryFrom("op-1").unwrap()
-  val amount = Amount.make(Cents.tryFrom(100_00).unwrap()).unwrap()
+  val key    = unwrapResult(IdempotencyKey.tryFrom("op-1"))
+  val amount = unwrapResult(Amount.make(unwrapResult(Cents.tryFrom(100_00))))
 
   val receipt = await transfer(w.svc, alice.id, bob.id, amount, key)
-  expect(receipt.isOk)
-  expect(w.accounts.recorded("saveAll").length == 1)
+  assertTrue(isOk(receipt), "transfer should succeed")
+  assertEqualInt(w.accounts.recorded("saveAll").length, 1, "saveAll called once")
 }
 ```
 

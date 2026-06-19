@@ -93,7 +93,7 @@ reference another Lyric project on the local file-system:
 ```toml
 [dependencies]
 "Lyric.Web"    = { path = "../lyric-web" }
-"Lyric.Stdlib" = { path = "../lyric-stdlib" }
+"Lyric.Logging" = { path = "../lyric-logging" }
 ```
 
 **Semantics:**
@@ -118,6 +118,12 @@ reference another Lyric project on the local file-system:
   avoid them.
 - The `path` form and the registry/NuGet forms are mutually exclusive for a
   given package name within one `[dependencies]` block.
+- **`Lyric.Stdlib` must not appear in any non-stdlib `[dependencies]` table.**
+  The compiler resolves `import Std.*` as a built-in via the SDK discovery
+  chain (`isBuiltinHead` in the emitter) regardless of what `[dependencies]`
+  declares.  Listing `"Lyric.Stdlib"` here produces a spurious "no lyric.toml
+  found" warning and implies the user carries the stdlib source tree beside
+  their project, which is not the intended layout.
 
 ## 4. Compilation pipeline
 

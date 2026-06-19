@@ -1,9 +1,9 @@
-// stdlib/tests/set_tests.l — Tests for Std.Set.
-//
-// Covers: construction, membership, removal, size, fromSlice, setElements,
-// setUnion, setIntersection, setDifference, setIsSubset, setEquals.
-// Since sets have unordered iteration, tests rely on setContains and setSize
-// rather than positional element checks.
+//! stdlib/tests/set_tests.l — Tests for Std.Set.
+//!
+//! Covers: construction, membership, removal, size, fromSlice, setElements,
+//! setUnion, setIntersection, setDifference, setIsSubset, setEquals.
+//! Since sets have unordered iteration, tests rely on setContains and setSize
+//! rather than positional element checks.
 package Std.Set.Tests
 
 import Std.Core
@@ -102,7 +102,7 @@ func testDifference(): Unit {
 
 func testSubset(): Unit {
   val full = setFromSlice([1, 2, 3, 4, 5])
-  val sub  = setFromSlice([2, 4])
+  val sub = setFromSlice([2, 4])
   val disjoint = setFromSlice([6, 7])
 
   assertTrue(setIsSubset(sub, full), "sub is subset of full")

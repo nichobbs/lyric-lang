@@ -1,8 +1,13 @@
 # Chapter 27: Health Checks
 
-The `lyric-health` library adds liveness and readiness health-check endpoints
-to a `Web.Router`.  Orchestrators such as Kubernetes probe these endpoints to
+The `lyric-health` library runs liveness and readiness health checks for a
+web service.  Orchestrators such as Kubernetes probe health endpoints to
 decide whether to restart a pod or remove it from the load balancer.
+
+Checks are registered as **function references** (closures) and invoked
+directly when checks run — the same AOT-safe registration model as
+`Lambda.Direct` (Chapter 28 / `docs/35-lambda-library.md` §10).  No
+runtime reflection or name-based dispatch is involved.
 
 ## Adding the dependency
 
@@ -19,24 +24,39 @@ decide whether to restart a pod or remove it from the load balancer.
 import Web
 import Health
 
-func checkDb(): Result[Unit, String] {
-  // returns Ok(()) when healthy, Err("reason") when not
-  Ok(())
+func checkDb(): CheckStatus {
+  // returns Health.pass() when healthy, Health.fail("reason") when not
+  Health.pass()
+}
+
+func buildHealth(): HealthRegistry {
+  var health = Health.create()
+  health = Health.addLivenessCheck(health, "self", { -> Health.pass() })
+  health = Health.addReadinessCheck(health, "db", { -> checkDb() })
+  return health
+}
+
+// Web routes are name-based, so the endpoints are ordinary handlers
+// in your own package:
+pub func healthLive(): Result[String, ApiError] {
+  Health.runLiveness(buildHealth())
+}
+
+pub func healthReady(): Result[String, ApiError] {
+  Health.runReadiness(buildHealth())
 }
 
 func main(): Unit {
   var router = Web.create()
   router = Web.addGet(router, "/users/{id}", "MyService.Handlers.getUser")
-
-  var health = Health.create()
-  health = Health.addReadinessCheck(health, "db", "MyService.checkDb")
-  router = Health.registerRoutes(router, health)
+  router = Web.addGet(router, "/health/live", "MyService.healthLive")
+  router = Web.addGet(router, "/health/ready", "MyService.healthReady")
 
   Web.start(router)
 }
 ```
 
-This registers:
+This serves:
 
 - `GET /health/live` — runs all liveness checks
 - `GET /health/ready` — runs all readiness checks
@@ -44,13 +64,16 @@ This registers:
 ## Check function signature
 
 ```lyric
-func myCheck(): Result[Unit, String]
+() -> CheckStatus
 ```
 
-- Return `Ok(())` when the check passes.
-- Return `Err("human-readable reason")` when it fails.
-- The function is referenced by its fully-qualified Lyric name.
-- The kernel resolves it via DLL reflection at request time.
+- Return `Health.pass()` when the check succeeds.
+- Return `Health.fail("human-readable reason")` when it fails.
+- Register the handler as a closure:
+  `Health.addReadinessCheck(health, "db", { -> checkDb() })`.
+- The closure is stored in the registry and invoked directly by
+  `runChecks` — the compiler roots it at the registration site, so the
+  model is compatible with Native AOT trimming.
 
 ## Liveness vs readiness
 
@@ -64,10 +87,26 @@ exhaustion, deadlock).  Use readiness for conditions that indicate temporary
 unavailability (database not yet connected, warm-up in progress).
 
 ```lyric
-health = Health.addLivenessCheck(health,  "goroutine-leak", "MyService.checkLeaks")
-health = Health.addReadinessCheck(health, "db",             "MyService.checkDb")
-health = Health.addReadinessCheck(health, "cache",          "MyService.checkCache")
+health = Health.addLivenessCheck(health,  "leak-detector", { -> checkLeaks() })
+health = Health.addReadinessCheck(health, "db",            { -> checkDb() })
+health = Health.addReadinessCheck(health, "cache",         { -> checkCache() })
 ```
+
+## Running checks
+
+`runChecks(registry, group)` invokes every handler registered for the
+group exactly once, in registration order, and returns a `HealthReport`:
+
+```lyric
+val report = Health.runChecks(registry, Readiness)
+report.healthy   // Bool — true only when every check in the group passed
+report.body      // String — the JSON response body below
+```
+
+`runLiveness(registry)` / `runReadiness(registry)` map the report onto
+the lyric-web handler convention (`Result[String, ApiError]`):
+`Ok(body)` when healthy, `Err(ApiError)` with status 503 naming the
+failing checks when degraded.
 
 ## Response format
 
@@ -99,60 +138,48 @@ HTTP status: `200 OK`
 
 HTTP status: `503 Service Unavailable`
 
-## Configuration
-
-Endpoint paths (env prefix `LYRIC_CONFIG_HEALTH_ENDPOINTS_`):
-
-| Env var | Default | Meaning |
-|---|---|---|
-| `LIVEPATH` | `/health/live` | Liveness endpoint path |
-| `READYPATH` | `/health/ready` | Readiness endpoint path |
-
-Override these when the defaults conflict with another route in your service.
-
-## Implementation status
-
-> **Note:** The DLL-reflection dispatcher that resolves check functions by name
-> and executes them at request time has not yet shipped.  Until it does,
-> `Health.registerRoutes` installs the endpoints but **checks are never
-> called** — both `/health/live` and `/health/ready` unconditionally return
-> `{"status":"ok"}` regardless of what checks are registered.  Do not rely
-> on these endpoints for real health signalling yet (see `docs/14-native-stdlib-plan.md`).
-
 ## API summary
 
 ```lyric
 Health.create(): HealthRegistry
-Health.addLivenessCheck(registry, name, handlerName): HealthRegistry
-Health.addReadinessCheck(registry, name, handlerName): HealthRegistry
-Health.registerRoutes(router, registry): Web.Router
+Health.addLivenessCheck(registry, name, handler): HealthRegistry
+Health.addReadinessCheck(registry, name, handler): HealthRegistry
+Health.pass(): CheckStatus
+Health.fail(detail): CheckStatus
+Health.runChecks(registry, group): HealthReport
+Health.runLiveness(registry): Result[String, ApiError]
+Health.runReadiness(registry): Result[String, ApiError]
+Health.isLiveness(group): Bool
+Health.isReadiness(group): Bool
 ```
 
 All builder functions are pure: they return a new `HealthRegistry` without
-modifying the original.  `registerRoutes` is the only function that touches
-the `Web.Router`.
+modifying the original.  To inspect a stored check's group, prefer
+`isLiveness` / `isReadiness` over matching `CheckGroup` from a consuming
+package (cross-package union case dispatch is not yet reliable in the
+self-hosted backend; the helpers match inside the defining assembly).
 
 ## Database health check example
 
 ```lyric
 import Db
 
-func checkDb(): Result[Unit, String] {
-  val conn = match Db.connectPostgres() {
+func checkDb(): CheckStatus {
+  val conn = match Db.connectFromEnv() {
     case Ok(c)  -> c
-    case Err(e) -> return Err("connect: " + e.message)
+    case Err(e) -> return Health.fail("connect: " + e.message)
   }
-  val result = match conn.execute("SELECT 1", []) {
-    case Ok(_)  -> Ok(())
-    case Err(e) -> Err("ping: " + e.message)
+  val status = match conn.execute("SELECT 1", []) {
+    case Ok(_)  -> Health.pass()
+    case Err(e) -> Health.fail("ping: " + e.message)
   }
   conn.close()
-  return result
+  return status
 }
 ```
 
 Register it:
 
 ```lyric
-health = Health.addReadinessCheck(health, "db", "MyService.checkDb")
+health = Health.addReadinessCheck(health, "db", { -> checkDb() })
 ```

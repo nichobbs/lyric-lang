@@ -1,92 +1,136 @@
-// Health — liveness and readiness health-check endpoints for lyric-web services.
-//
-// Stability: @experimental — the registry API compiles and shape-tests
-// pass, but the kernel dispatcher that actually invokes registered
-// check functions has not landed yet.  `runChecks` panics rather than
-// silently reporting "ok" so that production callers cannot accidentally
-// ship a service whose health endpoints fail to exercise the registered
-// checks.  WARNING: experimental — once the dispatcher lands, the
-// `__handleLiveness` / `__handleReadiness` exit point and the `runChecks`
-// internal will change shape.
-//
-// Registers `/health/live` and `/health/ready` routes on a `Router`.
-// Check functions are stored in a `HealthRegistry` value and run on each
-// request to the corresponding endpoint.
-//
-// Usage:
-//
-//   import Health
-//   import Web
-//
-//   func checkDb(conn: in DbConnection): Result[Unit, String] {
-//     match conn.execute("SELECT 1", []) {
-//       case Ok(_) -> Ok(())
-//       case Err(e) -> Err("db: " + e.message)
-//     }
-//   }
-//
-//   func main(): Unit {
-//     var router = Web.create()
-//     router = addGet(router, "/users/{id}", "MyService.Handlers.getUser")
-//
-//     var health = Health.create()
-//     health = Health.addReadinessCheck(health, "db", "MyService.checkDb")
-//     router = Health.registerRoutes(router, health)
-//
-//     Web.start(router)
-//   }
-//
-// Response shape (JSON):
-//   { "status": "ok" | "degraded",
-//     "checks": { "<name>": { "status": "ok" | "fail", "detail": "..." } } }
-//
-// Runtime config env vars (LYRIC_CONFIG_HEALTH_ENDPOINTS_*):
-//   LYRIC_CONFIG_HEALTH_ENDPOINTS_LIVEPATH   — liveness path  (default: /health/live)
-//   LYRIC_CONFIG_HEALTH_ENDPOINTS_READYPATH  — readiness path (default: /health/ready)
-//
-// See docs/03-decision-log.md D057 and lyric-health/README.md.
-
+//! Health — liveness and readiness health checks for lyric-web services.
+//!
+//! Checks are registered as function references (closures), the same
+//! AOT-safe model as `Lambda.Direct` (docs/35-lambda-library.md §10):
+//! the compiler roots each handler at the registration site, so no
+//! runtime reflection or name-based dispatch is involved.  `runChecks`
+//! invokes every registered handler for the requested group and
+//! aggregates the outcomes into the JSON response shape below.
+//!
+//! Usage:
+//!
+//!   import Health
+//!   import Web
+//!
+//!   func checkDb(): CheckStatus {
+//!     match Db.ping() {
+//!       case Ok(_) -> return Health.pass()
+//!       case Err(e) -> return Health.fail("db: " + e.message)
+//!     }
+//!   }
+//!
+//!   func buildHealth(): HealthRegistry {
+//!     var health = Health.create()
+//!     health = Health.addLivenessCheck(health, "self", { -> Health.pass() })
+//!     health = Health.addReadinessCheck(health, "db", { -> checkDb() })
+//!     return health
+//!   }
+//!
+//!   // Web routes are name-based, so expose the endpoints as ordinary
+//!   // handlers in your own package and register them with addGet:
+//!   pub func healthLive(): Result[String, ApiError] {
+//!     return Health.runLiveness(buildHealth())
+//!   }
+//!
+//!   pub func healthReady(): Result[String, ApiError] {
+//!     return Health.runReadiness(buildHealth())
+//!   }
+//!
+//!   func main(): Unit {
+//!     var router = Web.create()
+//!     router = addGet(router, "/health/live", "MyService.healthLive")
+//!     router = addGet(router, "/health/ready", "MyService.healthReady")
+//!     Web.start(router)
+//!   }
+//!
+//! Response shape (JSON):
+//!   { "status": "ok" | "degraded",
+//!     "checks": { "<name>": { "status": "ok" | "fail", "detail": "..." } } }
+//!
+//! `runLiveness` / `runReadiness` map the aggregated report onto the
+//! lyric-web handler convention: Ok(body) with the JSON above when every
+//! check passes, Err(503 ApiError listing the failing checks) otherwise.
+//!
+//! See docs/03-decision-log.md D057 and D099, and lyric-health/README.md.
 @runtime_checked
 package Health
 
 import Std.Core
+import Std.Char
 import Std.Iter
 import Web
 
-// ─── Check descriptor ─────────────────────────────────────────────────────────
-
+// ─── Check vocabulary ─────────────────────────────────────────────────────────
 /// The group a health check belongs to.
-@stable(since="0.1")
-pub enum CheckGroup {
-  case Liveness    // always runs; indicates whether the process should be killed
-  case Readiness   // indicates whether the process is ready to receive traffic
+@stable(since = "0.1")
+pub union CheckGroup {
+  /// Always runs; a failure indicates the process should be restarted.
+  case Liveness
+  /// Indicates whether the process is ready to receive traffic.
+  case Readiness
+}
+
+/// True when `group` is `Liveness`.  Prefer this (and `isReadiness`)
+/// over matching `CheckGroup` from a consuming package: union case
+/// dispatch across a restored-package boundary is not yet reliable in
+/// the self-hosted backend (W0003 isinst fallback), while this helper
+/// matches inside the defining assembly where dispatch is exact.
+@stable(since = "0.1")
+pub func isLiveness(group: in CheckGroup): Bool {
+  match group {
+    case Liveness -> return true
+    case Readiness -> return false
+  }
+}
+
+/// True when `group` is `Readiness`.  See `isLiveness` for why this
+/// helper exists.
+@stable(since = "0.1")
+pub func isReadiness(group: in CheckGroup): Bool {
+  return not isLiveness(group)
+}
+
+/// The outcome of a single health check.  Construct with `pass()` or
+/// `fail(detail)` rather than building the record directly.
+@stable(since = "0.1")
+pub record CheckStatus {
+  healthy: Bool
+  detail: String
+}
+
+/// A passing check outcome.
+@stable(since = "0.1")
+pub func pass(): CheckStatus {
+  return CheckStatus(healthy = true, detail = "")
+}
+
+/// A failing check outcome carrying a human-readable reason.
+@stable(since = "0.1")
+pub func fail(detail: in String): CheckStatus {
+  return CheckStatus(healthy = false, detail = detail)
 }
 
 /// A registered health check: a name, the group it belongs to, and the
-/// fully-qualified name of the check function.
-///
-/// The check function must have signature `(): Result[Unit, String]`.
-/// The kernel resolves it via DLL reflection when the health endpoint is hit,
-/// matching the same dispatch model as `Web.Route.handlerName`.
-@stable(since="0.1")
+/// check function itself.  The handler is stored as a function reference
+/// and invoked directly by `runChecks` — no reflection, no name lookup.
+@stable(since = "0.1")
 pub record HealthCheck {
-  name:        String
-  group:       CheckGroup
-  handlerName: String    // fully-qualified Lyric function name
+  name: String
+  group: CheckGroup
+  handler: () -> CheckStatus
 }
 
 // ─── Registry ─────────────────────────────────────────────────────────────────
-
 /// An immutable collection of health checks.  Build with `Health.create()`,
-/// extend with `addLivenessCheck` / `addReadinessCheck`, then call
-/// `Health.registerRoutes(router, registry)`.
-@stable(since="0.1")
+/// extend with `addLivenessCheck` / `addReadinessCheck`, then run with
+/// `runChecks`, `runLiveness`, or `runReadiness`.
+@stable(since = "0.1")
 pub record HealthRegistry {
   checks: slice[HealthCheck]
 }
 
 /// Create an empty registry.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func create(): HealthRegistry {
   val empty: slice[HealthCheck] = []
   return HealthRegistry(checks = empty)
@@ -94,123 +138,174 @@ pub func create(): HealthRegistry {
 
 /// Register a liveness check.
 ///
-/// `handlerName` must be the fully-qualified Lyric function name of a function
-/// with signature `(): Result[Unit, String]`.
-/// Returns Ok(()) when healthy; Err(detail) when unhealthy.
-@stable(since="0.1")
-pub func addLivenessCheck(
-  registry:    in HealthRegistry,
-  name:        in String,
-  handlerName: in String
-): HealthRegistry
+/// `handler` returns `pass()` when the process is healthy and
+/// `fail(detail)` when it should be restarted.
+@stable(since = "0.1")
+pub func addLivenessCheck(registry: in HealthRegistry, name: in String, handler: in () -> CheckStatus): HealthRegistry
   requires: name.length > 0
-  requires: handlerName.length > 0
 {
-  val check = HealthCheck(
-    name        = name,
-    group       = CheckGroup.Liveness,
-    handlerName = handlerName)
+  val check = HealthCheck(name = name, group = Liveness, handler = handler)
   return HealthRegistry(checks = concat(registry.checks, [check]))
 }
 
 /// Register a readiness check.
 ///
-/// `handlerName` must be the fully-qualified Lyric function name of a function
-/// with signature `(): Result[Unit, String]`.
-/// Returns Ok(()) when ready; Err(detail) when not ready.
-@stable(since="0.1")
-pub func addReadinessCheck(
-  registry:    in HealthRegistry,
-  name:        in String,
-  handlerName: in String
-): HealthRegistry
+/// `handler` returns `pass()` when the process is ready for traffic and
+/// `fail(detail)` when it should be removed from the load balancer.
+@stable(since = "0.1")
+pub func addReadinessCheck(registry: in HealthRegistry, name: in String, handler: in () -> CheckStatus): HealthRegistry
   requires: name.length > 0
-  requires: handlerName.length > 0
 {
-  val check = HealthCheck(
-    name        = name,
-    group       = CheckGroup.Readiness,
-    handlerName = handlerName)
+  val check = HealthCheck(name = name, group = Readiness, handler = handler)
   return HealthRegistry(checks = concat(registry.checks, [check]))
 }
 
-// ─── Config ───────────────────────────────────────────────────────────────────
-
-/// URL paths for the two health endpoints.
-config Endpoints {
-  livePath:  String = "/health/live"
-  readyPath: String = "/health/ready"
+// ─── Running checks ───────────────────────────────────────────────────────────
+/// The aggregated outcome of running one check group: whether every check
+/// passed, and the JSON response body describing each check.
+@stable(since = "0.1")
+pub record HealthReport {
+  healthy: Bool
+  body: String
 }
 
-// ─── Route registration ───────────────────────────────────────────────────────
-
-/// The liveness handler name used internally.  The kernel resolves this to the
-/// built-in handler that runs liveness checks from the registry.
-val livenessHandlerName  = "Health.__handleLiveness"
-val readinessHandlerName = "Health.__handleReadiness"
-
-/// Register the liveness and readiness routes on `router` and attach the
-/// given registry so the kernel dispatches checks at request time.
+/// Run every check registered for `group` and aggregate the outcomes.
 ///
-/// The registered routes are:
-///   GET <Endpoints.livePath>   → run all Liveness checks
-///   GET <Endpoints.readyPath>  → run all Readiness checks
-@stable(since="0.1")
-pub func registerRoutes(router: in Router, registry: in HealthRegistry): Router {
-  val r1 = addGet(router, "/health/live",  "Health.__handleLiveness")
-  val r2 = addGet(r1,     "/health/ready", "Health.__handleReadiness")
-  return attachRegistry(r2, registry)
+/// Each handler is invoked exactly once, in registration order.  The
+/// report body is the JSON response shape documented in the module
+/// header; `healthy` is true only when every check in the group passed.
+/// A group with no registered checks reports healthy.
+@stable(since = "0.1")
+pub func runChecks(registry: in HealthRegistry, group: in CheckGroup): HealthReport {
+  val run = runGroup(registry, group)
+  return HealthReport(healthy = run.healthy, body = run.body)
 }
 
-// ─── Internal handlers (called by the kernel dispatcher) ─────────────────────
-
-/// Built-in liveness handler.  Runs all `CheckGroup.Liveness` checks and
-/// returns the aggregated JSON response.
-///
-/// WARNING: `pub` visibility is required so the kernel dispatcher can resolve
-/// this function by name.  Do not call it directly from application code.
-/// Until the kernel dispatcher ships, `runChecks` is a stub that always
-/// returns `{"status":"ok"}` regardless of registered checks — see below.
-pub func __handleLiveness(): Result[String, ApiError] {
-  return runChecks(CheckGroup.Liveness)
+/// Run all liveness checks and map the report onto the lyric-web handler
+/// convention: Ok(JSON body) when healthy, Err(503 ApiError) when degraded.
+/// The ApiError message lists the failing check names; the full per-check
+/// JSON is available via `runChecks` when the caller needs it.
+@stable(since = "0.1")
+pub func runLiveness(registry: in HealthRegistry): Result[String, ApiError] {
+  return reportToHandlerResult(registry, Liveness)
 }
 
-/// Built-in readiness handler.  Runs all `CheckGroup.Readiness` checks and
-/// returns the aggregated JSON response.
-///
-/// WARNING: same caveats as `__handleLiveness`; stub returns ok unconditionally.
-pub func __handleReadiness(): Result[String, ApiError] {
-  return runChecks(CheckGroup.Readiness)
+/// Run all readiness checks and map the report onto the lyric-web handler
+/// convention: Ok(JSON body) when ready, Err(503 ApiError) when degraded.
+@stable(since = "0.1")
+pub func runReadiness(registry: in HealthRegistry): Result[String, ApiError] {
+  return reportToHandlerResult(registry, Readiness)
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
+// One pass over a check group: every matching handler is invoked exactly
+// once, and the pass accumulates both the JSON body and the failing-check
+// name list so the ApiError mapping never re-runs handlers.
+record GroupRun {
+  healthy: Bool
+  body: String
+  failing: String
+}
 
-// Run all checks for the given group and build a JSON response string.
-//
-// NOT YET FUNCTIONAL.  The kernel dispatcher (pending milestone) will
-// resolve each handlerName via DLL reflection and call the actual check
-// functions; until then this function panics rather than silently
-// reporting "ok" for an unimplemented liveness/readiness pipeline
-// (#367 / #425 item 5 honest framing — a silent stub on a health
-// endpoint would let a degraded service ship as healthy).  Real
-// dispatcher work is tracked in docs/14.
-func runChecks(group: in CheckGroup): Result[String, ApiError] {
-  // The match keeps the parameter live so the panic message includes
-  // the requested group; today's Lyric panic does not interpolate, so
-  // we encode it in the literal string.
-  match group {
-    case Liveness  -> panic("Health.runChecks(Liveness): kernel dispatcher not yet implemented — see docs/14 and #367.  Do not deploy lyric-health as a production health endpoint until this lands.")
-    case Readiness -> panic("Health.runChecks(Readiness): kernel dispatcher not yet implemented — see docs/14 and #367.  Do not deploy lyric-health as a production health endpoint until this lands.")
+func runGroup(registry: in HealthRegistry, group: in CheckGroup): GroupRun {
+  var allHealthy = true
+  var checksJson = ""
+  var failing = ""
+  var first = true
+  var i = 0
+  while i < registry.checks.length {
+    val check = registry.checks[i]
+    if sameGroup(check.group, group) {
+      val handler = check.handler
+      val status = handler()
+      if not status.healthy {
+        allHealthy = false
+        if failing.length > 0 {
+          failing = failing + ", "
+        }
+        failing = failing + check.name
+      }
+      if not first {
+        checksJson = checksJson + ","
+      }
+      checksJson = checksJson + "\"" + jsonEscape(check.name) + "\":" + checkJson(status)
+      first = false
+    }
+    i = i + 1
+  }
+  val overall = if allHealthy { "ok" } else { "degraded" }
+  val body = "{\"status\":\"" + overall + "\",\"checks\":{" + checksJson + "}}"
+  return GroupRun(healthy = allHealthy, body = body, failing = failing)
+}
+
+func reportToHandlerResult(registry: in HealthRegistry, group: in CheckGroup): Result[String, ApiError] {
+  val run = runGroup(registry, group)
+  if run.healthy {
+    return Ok(run.body)
+  }
+  return Err(serviceUnavailable("health checks degraded: " + run.failing))
+}
+
+func sameGroup(a: in CheckGroup, b: in CheckGroup): Bool {
+  match a {
+    case Liveness -> {
+      match b {
+        case Liveness -> return true
+        case Readiness -> return false
+      }
+    }
+    case Readiness -> {
+      match b {
+        case Liveness -> return false
+        case Readiness -> return true
+      }
+    }
   }
 }
 
-// Attach the registry to the router so the kernel knows which checks to run.
-//
-// NOT YET FUNCTIONAL: the registry is silently dropped until the router
-// supports arbitrary route annotations (tracked as a follow-up milestone).
-func attachRegistry(router: in Router, registry: in HealthRegistry): Router {
-  // TODO: encode registry into router metadata once the router supports
-  //       arbitrary route annotations (tracked as a follow-up milestone).
-  //       For now, the registry is stored at module scope and read by the kernel.
-  return router
+func checkJson(status: in CheckStatus): String {
+  if status.healthy {
+    return "{\"status\":\"ok\",\"detail\":\"\"}"
+  }
+  return "{\"status\":\"fail\",\"detail\":\"" + jsonEscape(status.detail) + "\"}"
+}
+
+// The lowercase hex digit for a value in 0..15.
+func hexDigit(n: in Int): String {
+  val digits = "0123456789abcdef"
+  return digits[n].toString()
+}
+
+// Escape special characters for JSON string embedding.  Per RFC 8259
+// §7, every control character in U+0000..U+001F must be escaped: the
+// shorthands `\b` `\f` `\n` `\r` `\t` for the five named controls, and
+// the `\u00XX` six-character form for the rest.
+func jsonEscape(s: in String): String {
+  var buf: String = ""
+  var i: Int = 0
+  while i < s.length {
+    val ch = s[i]
+    if ch == '"' {
+      buf = buf + "\\\""
+    } else if ch == '\\' {
+      buf = buf + "\\\\"
+    } else if ch == '\u{0008}' {
+      buf = buf + "\\b"
+    } else if ch == '\u{000c}' {
+      buf = buf + "\\f"
+    } else if ch == '\n' {
+      buf = buf + "\\n"
+    } else if ch == '\r' {
+      buf = buf + "\\r"
+    } else if ch == '\t' {
+      buf = buf + "\\t"
+    } else if toInt(ch) < 32 {
+      val code = toInt(ch)
+      buf = buf + "\\u00" + hexDigit(code / 16) + hexDigit(code % 16)
+    } else {
+      buf = buf + ch.toString()
+    }
+    i = i + 1
+  }
+  return buf
 }

@@ -1,30 +1,32 @@
-// lyric/contract_meta.l — Lyric.ContractMeta bootstrap package.
-//
-// Public surface:
-//   readFromFile(path)             — extract the `Lyric.Contract`
-//                                    JSON resource from a DLL.
-//   readAllContractsFromFile(path) — every `Lyric.Contract.<Pkg>`
-//                                    resource in a bundled DLL.
-//   parseFromJson(json)            — structured Contract / ContractDecl.
-//   diffContracts(oldJson, newJson)— rendered diff entries.
-//   hasBreakingChanges(entries)    — pure check on the diff entries.
-//
-// IN-PROCESS RESOURCE READS (#1229 Phase A.3): `readFromFile` and
-// `readAllContractsFromFile` now use `Std.AssemblyResources` to walk
-// embedded resources directly via `System.Reflection.Assembly`, with
-// `Std.Encoding.tryDecodeUtf8` converting the bytes to JSON strings
-// in-process.  Replaces the `lyric --internal-contract-meta read`
-// subprocess shellout that the previous versions used.  Mirrors
-// `bootstrap/src/Lyric.Emitter/ContractMeta.fs::readFromAssembly` and
-// `readAllContractsFromAssembly`.
-//
-// IN-PROCESS PARSER (#1229 Phase A.1): `parseFromJson(json)` parses
-// the JSON blob into structured records using `Std.Json` directly.
-//
-// SUBPROCESS RESIDUE: `diffContracts` is the only subprocess hop
-// remaining in this package — porting the diff logic to Lyric is
-// tracked under #1229 follow-ups.
-
+//! lyric/contract_meta.l — Lyric.ContractMeta bootstrap package.
+//!
+//! Public surface:
+//!   readFromFile(path)             — extract the `Lyric.Contract`
+//!                                    JSON resource from a DLL.
+//!   readAllContractsFromFile(path) — every `Lyric.Contract.<Pkg>`
+//!                                    resource in a bundled DLL.
+//!   parseFromJson(json)            — structured Contract / ContractDecl.
+//!   diffContracts(oldJson, newJson)— rendered diff entries.
+//!   hasBreakingChanges(entries)    — pure check on the diff entries.
+//!
+//! IN-PROCESS RESOURCE READS (#1229 Phase A.3, #3201): `readFromFile`
+//! and `readAllContractsFromFile` walk embedded resources via the
+//! metadata-direct reader (`Msil.MetadataReader`) — pure byte reading of
+//! the PE/CLI metadata (ManifestResource table + Resources data region),
+//! with `Std.Encoding.tryDecodeUtf8` converting the bytes to JSON strings
+//! in-process.  No subprocess and no runtime `Assembly.Load`, so it works
+//! under Native AOT (which has no IL loader).  Replaces the
+//! `lyric --internal-contract-meta read` subprocess shellout that the
+//! earliest versions used.  Mirrors
+//! `bootstrap/src/Lyric.Emitter/ContractMeta.fs::readFromAssembly` and
+//! `readAllContractsFromAssembly`.
+//!
+//! IN-PROCESS PARSER (#1229 Phase A.1): `parseFromJson(json)` parses
+//! the JSON blob into structured records using `Std.Json` directly.
+//!
+//! SUBPROCESS RESIDUE: `diffContracts` is the only subprocess hop
+//! remaining in this package — porting the diff logic to Lyric is
+//! tracked under #1229 follow-ups.
 @runtime_checked
 package Lyric.ContractMeta
 
@@ -40,7 +42,7 @@ import Std.Json
 import Std.Encoding as Encoding
 import Lyric.Lexer
 import Lyric.Parser
-import Std.AssemblyResources as AsmRes
+import Msil.MetadataReader as Mdr
 import Lyric.CliShell as CliShell
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -51,8 +53,9 @@ import Lyric.CliShell as CliShell
 // surface: when the local function and the cross-package alias share
 // a name, the bootstrap resolver shadows the call site with the
 // enclosing module's symbol, producing infinite recursion at runtime.
-
-func cliShellExe(): String { CliShell.lyrExe() }
+func cliShellExe(): String {
+  CliShell.lyrExe()
+}
 
 func cliShellArgs(subcmd: in List[String]): List[String] {
   CliShell.lyrArgs(subcmd)
@@ -61,22 +64,21 @@ func cliShellArgs(subcmd: in List[String]): List[String] {
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. readFromFile / readAllContractsFromFile (in-process)
 // ─────────────────────────────────────────────────────────────────────────────
-
 /// One entry from a bundled DLL's per-package contract resources.
 /// Single-package assemblies surface as one entry with
 /// `packageName = ""` (legacy `Lyric.Contract` resource form).
 /// Project-as-DLL bundles surface one entry per package
 /// (`Lyric.Contract.<PackageName>` resources).
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record ContractEntry {
   packageName: String
-  json:        String
+  json: String
+  // Decode a UTF-8 byte slice to a string, or None when the bytes aren't
+  // valid UTF-8.  The slice is a Lyric.Contract resource payload — JSON
+  // in practice — but this helper does no JSON-aware parsing; the name
+  // reflects the byte-level operation (#1251).
 }
 
-// Decode a UTF-8 byte slice to a string, or None when the bytes aren't
-// valid UTF-8.  The slice is a Lyric.Contract resource payload — JSON
-// in practice — but this helper does no JSON-aware parsing; the name
-// reflects the byte-level operation (#1251).
 func decodeUtf8Resource(bytes: in slice[Byte]): Option[String] {
   Encoding.tryDecodeUtf8(bytes)
 }
@@ -84,21 +86,21 @@ func decodeUtf8Resource(bytes: in slice[Byte]): Option[String] {
 /// Read the embedded `Lyric.Contract` JSON resource from `dllPath`.
 /// Returns `Some(json)` if the resource is present, `None` otherwise.
 ///
-/// Walks the assembly's manifest resources directly via
-/// `Std.AssemblyResources` — no subprocess.  When the assembly is a
-/// project-as-DLL bundle (no top-level `Lyric.Contract`, only
-/// `Lyric.Contract.<Pkg>` resources), callers should use
-/// `readAllContractsFromFile` instead.
+/// Walks the assembly's manifest resources via the metadata-direct
+/// reader (`Msil.MetadataReader`) — pure byte reading of the PE/CLI
+/// metadata, no subprocess and no runtime `Assembly.Load`, so it works
+/// under Native AOT.  When the assembly is a project-as-DLL bundle (no
+/// top-level `Lyric.Contract`, only `Lyric.Contract.<Pkg>` resources),
+/// callers should use `readAllContractsFromFile` instead.
 ///
-/// **Throws** on missing or unreadable `path` (the underlying BCL
-/// `Assembly.LoadFrom` raises `FileNotFoundException` /
-/// `BadImageFormatException`); callers that need a typed-error shape
-/// should wrap the call in `try` (#1252).
-@stable(since="0.1")
+/// Returns `None` (rather than throwing) when `path` is missing,
+/// unreadable, or not a well-formed managed PE image — the same outcome
+/// as a present DLL that carries no `Lyric.Contract` resource.
+@stable(since = "0.1")
 pub func readFromFile(path: in String): Option[String] {
-  val ar = AsmRes.openAssembly(path)
-  match AsmRes.tryReadResource(ar, "Lyric.Contract") {
-    case None        -> None
+  val ri = match Mdr.openResourceImage(path) { case Some(v) -> v; case None -> return None }
+  match Mdr.tryReadResourceIn(ri, "Lyric.Contract") {
+    case None -> None
     case Some(bytes) -> decodeUtf8Resource(bytes)
   }
 }
@@ -110,63 +112,65 @@ pub func readFromFile(path: in String): Option[String] {
 /// an empty list when no contract resources are present (e.g. a
 /// non-Lyric assembly).
 ///
-/// In-process via `Std.AssemblyResources`.  Mirrors F#
-/// `Lyric.Emitter.ContractMeta.readAllContractsFromAssembly`.
-@stable(since="0.1")
+/// In-process via the metadata-direct reader (`Msil.MetadataReader`).
+/// Mirrors F# `Lyric.Emitter.ContractMeta.readAllContractsFromAssembly`.
+@stable(since = "0.1")
 pub func readAllContractsFromFile(path: in String): List[ContractEntry] {
-  val ar     = AsmRes.openAssembly(path)
-  val names  = AsmRes.resourceNames(ar)
   val result: List[ContractEntry] = newList()
+  match Mdr.openResourceImage(path) {
+    case None -> result
+    case Some(ri) -> {
+      val names = Mdr.resourceNamesIn(ri)
 
-  // 1. Legacy single-package form: a bare `Lyric.Contract`.
-  match AsmRes.tryReadResource(ar, "Lyric.Contract") {
-    case Some(bytes) -> {
-      match decodeUtf8Resource(bytes) {
-        case Some(json) -> result.add(ContractEntry(packageName = "", json = json))
-        case None       -> ()
-      }
-    }
-    case None -> ()
-  }
-
-  // 2. Per-package form: `Lyric.Contract.<Pkg>`.  Strip the prefix to
-  //    recover the package name.  Both forms can co-exist in
-  //    pathological assemblies; we surface both.
-  val prefix = "Lyric.Contract."
-  var i = 0
-  while i < names.length {
-    val name = names[i]
-    if Str.startsWith(name, prefix) {
-      // `String.substring(start, count)`: the second arg is a length, NOT an
-      // end-index — passing `name.length` directly triggered an
-      // `ArgumentOutOfRangeException` (`requires: start + count <= s.length`).
-      val pkgName = name.substring(prefix.length, name.length - prefix.length)
-      match AsmRes.tryReadResource(ar, name) {
+      // 1. Legacy single-package form: a bare `Lyric.Contract`.
+      match Mdr.tryReadResourceIn(ri, "Lyric.Contract") {
         case Some(bytes) -> {
           match decodeUtf8Resource(bytes) {
-            case Some(json) ->
-              result.add(ContractEntry(packageName = pkgName, json = json))
+            case Some(json) -> result.add(ContractEntry(packageName = "", json = json))
             case None -> ()
           }
         }
         case None -> ()
       }
-    }
-    i = i + 1
-  }
 
-  result
+      // 2. Per-package form: `Lyric.Contract.<Pkg>`.  Strip the prefix to
+      //    recover the package name.  Both forms can co-exist in
+      //    pathological assemblies; we surface both.
+      val prefix = "Lyric.Contract."
+      var i = 0
+      while i < names.count {
+        val name = names[i]
+        if Str.startsWith(name, prefix) {
+          // `String.substring(start, count)`: the second arg is a length, NOT
+          // an end-index — passing `name.length` directly triggered an
+          // `ArgumentOutOfRangeException` (`requires: start + count <= s.length`).
+          val pkgName = name.substring(prefix.length, name.length - prefix.length)
+          match Mdr.tryReadResourceIn(ri, name) {
+            case Some(bytes) -> {
+              match decodeUtf8Resource(bytes) {
+                case Some(json) -> result.add(ContractEntry(packageName = pkgName, json = json))
+                case None -> ()
+              }
+            }
+            case None -> ()
+          }
+        }
+        i = i + 1
+      }
+
+      result
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. diffContracts
 // ─────────────────────────────────────────────────────────────────────────────
-
 /// Diff two Lyric.Contract JSON blobs.
 /// Returns a list of rendered diff entries (each entry may be multi-line).
 /// Entries are separated by blank lines in the subprocess output;
 /// this function splits on `\n\n` and returns one entry per element.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func diffContracts(oldJson: in String, newJson: in String): List[String] {
   val subcmd: List[String] = newList()
   subcmd.add("--internal-contract-meta")
@@ -191,20 +195,18 @@ pub func diffContracts(oldJson: in String, newJson: in String): List[String] {
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. hasBreakingChanges
 // ─────────────────────────────────────────────────────────────────────────────
-
 /// Return true if any rendered entry represents a breaking change.
 ///
 /// Breaking entries are those that:
 ///   - start with "  - " (removed item) and are not @experimental
 ///   - start with "  ~ " (changed signature) and are not @experimental
 ///   - contain "[breaking]" (contract-clause breaking change)
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func hasBreakingChanges(entries: in List[String]): Bool {
   var breaking = false
   for e in entries.toArray() {
-    val isStructuralBreak =
-      (Str.startsWith(e, "  - ") or Str.startsWith(e, "  ~ "))
-      and not Str.contains(e, "[experimental]")
+    val isStructuralBreak = (Str.startsWith(e, "  - ") or Str.startsWith(e, "  ~ ")) and
+      not Str.contains(e, "[experimental]")
     val isContractBreak = Str.contains(e, "[breaking]")
     if isStructuralBreak or isContractBreak {
       breaking = true
@@ -222,102 +224,131 @@ pub func hasBreakingChanges(entries: in List[String]): Bool {
 // `parseFromJson` produces these directly from a JSON string via
 // `Std.Json`, with no subprocess hop, so the self-hosted MSIL bridge can
 // consume restored-dependency contract surfaces in-process.
-
 /// One serialised public declaration.  Mirrors F#
 /// `Lyric.Emitter.ContractMeta.ContractDecl`.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record ContractParam {
   name: String
   /// Signature type-string (e.g. "Int", "in slice[Byte]").
-  ty:   String
+  ty: String
 }
 
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record ContractDecl {
   /// "func" | "record" | "union" | "enum" | "extern_type" | …
-  kind:           String
-  name:           String
+  kind: String
+  name: String
   /// Canonical signature / shape, free-form.
-  repr:           String
+  repr: String
+  /// Visibility level: "pub" | "internal" | "" (package-private).
+  /// Format v3+; absent in v1-v2 (defaults to "pub" for backward compat).
+  visibility: String
   /// @pure annotation present on this declaration.
-  isPure:         Bool
+  isPure: Bool
   /// Stability level (D040 / Q011):
   ///   ""               — unannotated (treated as stable for enforcement).
   ///   "stable:X.Y"     — `@stable(since="X.Y")`.
   ///   "experimental"   — `@experimental`.
-  stability:      String
+  stability: String
   /// Source-level strings of the function's `requires:` clauses.
   /// Field name is `requiresClauses` (not `requires`) because
   /// `requires` is a Lyric reserved word.
   requiresClauses: List[String]
   /// Source-level strings of the function's `ensures:` clauses.
   /// Field name is `ensuresClauses` (not `ensures`) for the same reason.
-  ensuresClauses:  List[String]
+  ensuresClauses: List[String]
   /// Source-level string of the function's body (only populated when
   /// `isPure = true` and the body is an expression form suitable for
   /// one-level unfolding).
-  body:            Option[String]
+  body: Option[String]
   /// Structured parameters: (name, type-string).
-  params:          List[ContractParam]
+  params: List[ContractParam]
+}
+
+/// One direct dependency in a contract's dependency manifest (format v3+).
+@stable(since = "0.1")
+pub record ContractDependency {
+  packageName: String
+  version: String
+  /// SHA256 hash of the dependency's contract JSON.
+  contractHash: String
 }
 
 /// Serialised contract for one emitted assembly.  Mirrors F#
 /// `Lyric.Emitter.ContractMeta.Contract`.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record Contract {
-  packageName:   String
-  version:       String
+  packageName: String
+  version: String
   /// Verification level: `runtime_checked` / `proof_required` /
   /// `proof_required(unsafe_blocks_allowed)` /
   /// `proof_required(checked_arithmetic)` / `axiom`.
-  level:         String
+  level: String
   formatVersion: Int
-  decls:         List[ContractDecl]
+  decls: List[ContractDecl]
+  /// Direct dependencies' contract metadata (format v3+; absent in v1-v2).
+  dependencies: List[ContractDependency]
+  /// SHA256 hash of this contract's JSON (format v3+; absent in v1-v2).
+  contractHash: String
+  // JsonValueKind ordinals (matches `System.Text.Json.JsonValueKind`):
+  //   0=Undefined  1=Object  2=Array  3=String  4=Number  5=True  6=False  7=Null
 }
 
-// JsonValueKind ordinals (matches `System.Text.Json.JsonValueKind`):
-//   0=Undefined  1=Object  2=Array  3=String  4=Number  5=True  6=False  7=Null
 val JK_OBJECT = 1
-val JK_ARRAY  = 2
+
+val JK_ARRAY = 2
+
 val JK_STRING = 3
+
 val JK_NUMBER = 4
-val JK_TRUE   = 5
+
+val JK_TRUE = 5
 
 func getStr(elem: in JsonElement, name: in String, fallback: in String): String {
   match tryGetProperty(elem, name) {
-    case None    -> fallback
+    case None -> fallback
     case Some(e) -> {
-      if valueKind(e) == JK_STRING { getString(e) } else { fallback }
+      if valueKind(e) == JK_STRING {
+        getString(e)
+      } else {
+        fallback
+      }
     }
   }
 }
 
 func getOptStr(elem: in JsonElement, name: in String): Option[String] {
   match tryGetProperty(elem, name) {
-    case None    -> None
+    case None -> None
     case Some(e) -> {
-      if valueKind(e) == JK_STRING { Some(value = getString(e)) } else { None }
+      if valueKind(e) == JK_STRING {
+        Some(value = getString(e))
+      } else {
+        None
+      }
     }
   }
 }
 
 func getBool(elem: in JsonElement, name: in String): Bool {
   match tryGetProperty(elem, name) {
-    case None    -> false
+    case None -> false
     case Some(e) -> valueKind(e) == JK_TRUE
   }
 }
 
 func getInt(elem: in JsonElement, name: in String, fallback: in Int): Int {
   match tryGetProperty(elem, name) {
-    case None    -> fallback
+    case None -> fallback
     case Some(e) -> {
       if valueKind(e) == JK_NUMBER {
         match tryGetInt(e) {
           case Some(v) -> v
-          case None    -> fallback
+          case None -> fallback
         }
-      } else { fallback }
+      } else {
+        fallback
+      }
     }
   }
 }
@@ -328,14 +359,17 @@ func getInt(elem: in JsonElement, name: in String, fallback: in Int): Int {
 func getStrArray(elem: in JsonElement, name: in String): List[String] {
   val result: List[String] = newList()
   match tryGetProperty(elem, name) {
-    case None    -> result
+    case None -> result
     case Some(a) -> {
       if valueKind(a) == JK_ARRAY {
         var en = enumerateArray(a)
         while arrayMoveNext(en) {
           val v = arrayCurrent(en)
-          if valueKind(v) == JK_STRING { result.add(getString(v)) }
-          else                          { result.add("") }
+          if valueKind(v) == JK_STRING {
+            result.add(getString(v))
+          } else {
+            result.add("")
+          }
         }
       }
       result
@@ -346,16 +380,14 @@ func getStrArray(elem: in JsonElement, name: in String): List[String] {
 func getParams(elem: in JsonElement): List[ContractParam] {
   val result: List[ContractParam] = newList()
   match tryGetProperty(elem, "params") {
-    case None    -> result
+    case None -> result
     case Some(a) -> {
       if valueKind(a) == JK_ARRAY {
         var en = enumerateArray(a)
         while arrayMoveNext(en) {
           val v = arrayCurrent(en)
           if valueKind(v) == JK_OBJECT {
-            result.add(ContractParam(
-              name = getStr(v, "name", ""),
-              ty   = getStr(v, "type", "")))
+            result.add(ContractParam(name = getStr(v, "name", ""), ty = getStr(v, "type", "")))
           }
         }
       }
@@ -366,15 +398,44 @@ func getParams(elem: in JsonElement): List[ContractParam] {
 
 func parseDecl(el: in JsonElement): ContractDecl {
   ContractDecl(
-    kind            = getStr(el, "kind", ""),
-    name            = getStr(el, "name", ""),
-    repr            = getStr(el, "repr", ""),
-    isPure          = getBool(el, "pure"),
-    stability       = getStr(el, "stability", ""),
+    kind = getStr(el, "kind", ""),
+    name = getStr(el, "name", ""),
+    repr = getStr(el, "repr", ""),
+    visibility = getStr(el, "visibility", "pub"),
+    isPure = getBool(el, "pure"),
+    stability = getStr(el, "stability", ""),
     requiresClauses = getStrArray(el, "requires"),
-    ensuresClauses  = getStrArray(el, "ensures"),
-    body            = getOptStr(el, "body"),
-    params          = getParams(el))
+    ensuresClauses = getStrArray(el, "ensures"),
+    body = getOptStr(el, "body"),
+    params = getParams(el)
+  )
+}
+
+func parseDependency(el: in JsonElement): ContractDependency {
+  ContractDependency(
+    packageName = getStr(el, "packageName", ""),
+    version = getStr(el, "version", ""),
+    contractHash = getStr(el, "contractHash", "")
+  )
+}
+
+func getDependencies(elem: in JsonElement): List[ContractDependency] {
+  val result: List[ContractDependency] = newList()
+  match tryGetProperty(elem, "dependencies") {
+    case None -> result
+    case Some(a) -> {
+      if valueKind(a) == JK_ARRAY {
+        var en = enumerateArray(a)
+        while arrayMoveNext(en) {
+          val v = arrayCurrent(en)
+          if valueKind(v) == JK_OBJECT {
+            result.add(parseDependency(v))
+          }
+        }
+      }
+      result
+    }
+  }
 }
 
 // Walk the parsed root.  Returns None when the root isn't a JSON object
@@ -383,28 +444,37 @@ func parseDecl(el: in JsonElement): ContractDecl {
 // bootstrap emitter does not currently hoist defers from inside try
 // blocks.
 func parseFromRoot(root: in JsonElement): Option[Contract] {
-  if valueKind(root) != JK_OBJECT { return None }
+  if valueKind(root) != JK_OBJECT {
+    return None
+  }
 
   val decls: List[ContractDecl] = newList()
   match tryGetProperty(root, "decls") {
-    case None    -> ()
+    case None -> ()
     case Some(a) -> {
       if valueKind(a) == JK_ARRAY {
         var en = enumerateArray(a)
         while arrayMoveNext(en) {
           val el = arrayCurrent(en)
-          if valueKind(el) == JK_OBJECT { decls.add(parseDecl(el)) }
+          if valueKind(el) == JK_OBJECT {
+            decls.add(parseDecl(el))
+          }
         }
       }
     }
   }
 
-  Some(value = Contract(
-    packageName   = getStr(root, "packageName", ""),
-    version       = getStr(root, "version", "0.0.0"),
-    level         = getStr(root, "level", "runtime_checked"),
-    formatVersion = getInt(root, "formatVersion", 1),
-    decls         = decls))
+  Some(
+    value = Contract(
+      packageName = getStr(root, "packageName", ""),
+      version = getStr(root, "version", "0.0.0"),
+      level = getStr(root, "level", "runtime_checked"),
+      formatVersion = getInt(root, "formatVersion", 1),
+      decls = decls,
+      dependencies = getDependencies(root),
+      contractHash = getStr(root, "contractHash", "")
+    )
+  )
 }
 
 // Parse + walk + dispose, with no try/catch.  Caller wraps in try.
@@ -414,7 +484,9 @@ func parseFromRoot(root: in JsonElement): Option[Contract] {
 // Tracked in #1241.
 func parseAndWalk(json: in String): Option[Contract] {
   val doc = parseJson(json)
-  defer { disposeJson(doc) }
+  defer {
+    disposeJson(doc)
+  }
   parseFromRoot(rootElement(doc))
 }
 
@@ -425,9 +497,11 @@ func parseAndWalk(json: in String): Option[Contract] {
 /// exactly so format-1 and format-2 payloads round-trip identically.
 ///
 /// Used by the self-hosted MSIL bridge's restored-dependency loader.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func parseFromJson(json: in String): Option[Contract] {
-  if Str.isEmpty(Str.trim(json)) { return None }
+  if Str.isEmpty(Str.trim(json)) {
+    return None
+  }
   // `parseJson` is backed by `System.Text.Json.JsonDocument.Parse`,
   // which throws on syntactically invalid input — surface those as
   // `None` so callers don't need their own try/catch (matches the F#
@@ -448,7 +522,6 @@ pub func parseFromJson(json: in String): Option[Contract] {
 // `bootstrap/src/Lyric.Emitter/ContractMeta.fs::toJson`.  Used by the
 // bridge to build the `Lyric.Contract` resource that gets embedded in
 // every emitted assembly.
-
 // Escape one character for inclusion in a JSON string literal.  Returns
 // the escaped sequence (length ≥ 1).  Handles `"`, `\`, `\n`, `\r`, `\t`;
 // every other character passes through verbatim.  Control characters
@@ -457,18 +530,30 @@ pub func parseFromJson(json: in String): Option[Contract] {
 // names), so a full `\u00XX` escaper is unnecessary.  Matches the F#
 // `ContractMeta.toJson` minimal-set policy (#1338).
 func escapeJsonChar(c: in String): String {
-  if c.length == 0 { return "" }
-  if c == "\"" { return "\\\"" }
-  if c == "\\" { return "\\\\" }
-  if c == "\n" { return "\\n" }
-  if c == "\r" { return "\\r" }
-  if c == "\t" { return "\\t" }
+  if c.length == 0 {
+    return ""
+  }
+  if c == "\"" {
+    return "\\\""
+  }
+  if c == "\\" {
+    return "\\\\"
+  }
+  if c == "\n" {
+    return "\\n"
+  }
+  if c == "\r" {
+    return "\\r"
+  }
+  if c == "\t" {
+    return "\\t"
+  }
   c
 }
 
 // Escape a string for inclusion in a JSON string literal.  Walks
 // the characters via `Std.String.substring(i, 1)`.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func escapeJson(s: in String): String {
   var result = ""
   var i = 0
@@ -485,7 +570,9 @@ func renderStringArray(xs: in List[String]): String {
   var sb = "["
   var i = 0
   while i < xs.count {
-    if i > 0 { sb = sb + "," }
+    if i > 0 {
+      sb = sb + ","
+    }
     sb = sb + "\"" + escapeJson(xs[i]) + "\""
     i = i + 1
   }
@@ -497,7 +584,9 @@ func renderParams(ps: in List[ContractParam]): String {
   var sb = "["
   var i = 0
   while i < ps.count {
-    if i > 0 { sb = sb + "," }
+    if i > 0 {
+      sb = sb + ","
+    }
     sb = sb + "{\"name\":\"" + escapeJson(ps[i].name) + "\""
     sb = sb + ",\"type\":\"" + escapeJson(ps[i].ty) + "\"}"
     i = i + 1
@@ -508,11 +597,14 @@ func renderParams(ps: in List[ContractParam]): String {
 // Render one `ContractDecl` as a JSON object.  Mirrors F#
 // `renderDecl`: only emits the optional fields when they carry
 // non-empty content, so the JSON stays byte-stable against the
-// F# producer.
-func renderDecl(d: in ContractDecl): String {
+// F# producer. Visibility is emitted in v3+.
+func renderDecl(d: in ContractDecl, formatVersion: in Int): String {
   var sb = "{\"kind\":\"" + escapeJson(d.kind) + "\""
   sb = sb + ",\"name\":\"" + escapeJson(d.name) + "\""
   sb = sb + ",\"repr\":\"" + escapeJson(d.repr) + "\""
+  if formatVersion >= 3 and Str.isNotEmpty(d.visibility) {
+    sb = sb + ",\"visibility\":\"" + escapeJson(d.visibility) + "\""
+  }
   if Str.isNotEmpty(d.stability) {
     sb = sb + ",\"stability\":\"" + escapeJson(d.stability) + "\""
   }
@@ -526,8 +618,10 @@ func renderDecl(d: in ContractDecl): String {
     sb = sb + ",\"ensures\":" + renderStringArray(d.ensuresClauses)
   }
   match d.body {
-    case Some(body) -> { sb = sb + ",\"body\":\"" + escapeJson(body) + "\"" }
-    case None       -> ()
+    case Some(body) -> {
+      sb = sb + ",\"body\":\"" + escapeJson(body) + "\""
+    }
+    case None -> ()
   }
   if d.params.count > 0 {
     sb = sb + ",\"params\":" + renderParams(d.params)
@@ -535,22 +629,54 @@ func renderDecl(d: in ContractDecl): String {
   sb + "}"
 }
 
-/// Render a `Contract` as JSON, preserving `c.formatVersion` (format-1
-/// or format-2) so the output round-trips byte-stably through
-/// `parseFromJson` without loss.  Mirrors
-/// `bootstrap/src/Lyric.Emitter/ContractMeta.fs::toJson`.
-@stable(since="0.1")
+// Render one `ContractDependency` as a JSON object.
+func renderDependency(dep: in ContractDependency): String {
+  var sb = "{\"packageName\":\"" + escapeJson(dep.packageName) + "\""
+  sb = sb + ",\"version\":\"" + escapeJson(dep.version) + "\""
+  sb = sb + ",\"contractHash\":\"" + escapeJson(dep.contractHash) + "\"}"
+  sb
+}
+
+// Render dependencies array as JSON.
+func renderDependencies(deps: in List[ContractDependency]): String {
+  var sb = "["
+  var i = 0
+  while i < deps.count {
+    if i > 0 {
+      sb = sb + ","
+    }
+    sb = sb + renderDependency(deps[i])
+    i = i + 1
+  }
+  sb + "]"
+}
+
+/// Render a `Contract` as JSON.  For v3+ contracts, includes
+/// dependencies and contractHash. Preserves `c.formatVersion`
+/// so v1-v2 round-trips byte-stably.
+@stable(since = "0.1")
 pub func contractToJson(c: in Contract): String {
   var sb = "{\n"
   sb = sb + "  \"formatVersion\": " + toString(c.formatVersion) + ",\n"
   sb = sb + "  \"packageName\": \"" + escapeJson(c.packageName) + "\",\n"
   sb = sb + "  \"version\": \"" + escapeJson(c.version) + "\",\n"
   sb = sb + "  \"level\": \"" + escapeJson(c.level) + "\",\n"
+
+  // v3: always emit contractHash and dependencies (even empty list) to match
+  // the F# renderer's unconditional output — parsers expecting the key present
+  // in v3 must not receive a missing field (#2719).
+  if c.formatVersion >= 3 {
+    sb = sb + "  \"contractHash\": \"" + escapeJson(c.contractHash) + "\",\n"
+    sb = sb + "  \"dependencies\": " + renderDependencies(c.dependencies) + ",\n"
+  }
+
   sb = sb + "  \"decls\": [\n"
   var i = 0
   while i < c.decls.count {
-    if i > 0 { sb = sb + ",\n" }
-    sb = sb + "    " + renderDecl(c.decls[i])
+    if i > 0 {
+      sb = sb + ",\n"
+    }
+    sb = sb + "    " + renderDecl(c.decls[i], c.formatVersion)
     i = i + 1
   }
   sb + "\n  ]\n}\n"
@@ -575,14 +701,15 @@ pub func contractToJson(c: in Contract): String {
 // during restored-dep loading: a parseable Lyric declaration that the
 // type-checker can re-consume.  For the bootstrap, we hand-render each
 // kind (proper formatter integration is a follow-up).
-
 // True iff `vis` is `Some(VisPub(_))`.
 func isPubVis(vis: in Option[Visibility]): Bool {
   var isPub = false
   match vis {
     case Some(v) -> {
       match v {
-        case VisPub(_)      -> { isPub = true }
+        case VisPub(_) -> {
+          isPub = true
+        }
         case VisInternal(_) -> ()
       }
     }
@@ -597,22 +724,19 @@ func isPubVis(vis: in Option[Visibility]): Bool {
 // cleanly.
 func renderTypeExpr(te: in TypeExpr): String {
   match te.kind {
-    case TUnit              -> "Unit"
-    case TNever             -> "Never"
-    case TSelf              -> "Self"
-    case TRef(path)         -> joinDots(path.segments)
-    case TGenericApp(h, args) ->
-      joinDots(h.segments) + "[" + renderTypeArgList(args) + "]"
-    case TSlice(elem)       -> "slice[" + renderTypeExpr(elem) + "]"
-    case TNullable(inner)   -> renderTypeExpr(inner) + "?"
-    case TParen(inner)      -> renderTypeExpr(inner)
-    case TArray(size, elem) ->
-      "array[" + renderTypeArg(size) + ", " + renderTypeExpr(elem) + "]"
-    case TTuple(ts)         -> "(" + renderTypeExprList(ts) + ")"
-    case TFunction(ps, r)   ->
-      "(" + renderTypeExprList(ps) + ") -> " + renderTypeExpr(r)
-    case TRefined(p, _)     -> joinDots(p.segments)
-    case TError             -> "Unit"
+    case TUnit -> "Unit"
+    case TNever -> "Never"
+    case TSelf -> "Self"
+    case TRef(path) -> joinDots(path.segments)
+    case TGenericApp(h, args) -> joinDots(h.segments) + "[" + renderTypeArgList(args) + "]"
+    case TSlice(elem) -> "slice[" + renderTypeExpr(elem) + "]"
+    case TNullable(inner) -> renderTypeExpr(inner) + "?"
+    case TParen(inner) -> renderTypeExpr(inner)
+    case TArray(size, elem) -> "array[" + renderTypeArg(size) + ", " + renderTypeExpr(elem) + "]"
+    case TTuple(ts) -> "(" + renderTypeExprList(ts) + ")"
+    case TFunction(ps, r) -> "(" + renderTypeExprList(ps) + ") -> " + renderTypeExpr(r)
+    case TRefined(p, _) -> joinDots(p.segments)
+    case TError -> "Unit"
   }
 }
 
@@ -621,7 +745,9 @@ func renderTypeExprList(ts: in List[TypeExpr]): String {
   var s = ""
   var i = 0
   while i < ts.count {
-    if i > 0 { s = s + ", " }
+    if i > 0 {
+      s = s + ", "
+    }
     s = s + renderTypeExpr(ts[i])
     i = i + 1
   }
@@ -647,8 +773,8 @@ func renderConstExpr(e: in Expr): String {
   match e.kind {
     case ELiteral(lit) -> {
       match lit {
-        case LInt(v, _) -> toString(v)
-        case _          -> "0"
+        case LInt(v, _, _) -> toString(v)
+        case _ -> "0"
       }
     }
     case _ -> "0"
@@ -660,7 +786,9 @@ func renderTypeArgList(args: in List[TypeArg]): String {
   var s = ""
   var i = 0
   while i < args.count {
-    if i > 0 { s = s + ", " }
+    if i > 0 {
+      s = s + ", "
+    }
     s = s + renderTypeArg(args[i])
     i = i + 1
   }
@@ -672,7 +800,9 @@ func joinDots(segs: in List[String]): String {
   var s = ""
   var i = 0
   while i < segs.count {
-    if i > 0 { s = s + "." }
+    if i > 0 {
+      s = s + "."
+    }
     s = s + segs[i]
     i = i + 1
   }
@@ -684,11 +814,7 @@ func joinDots(segs: in List[String]): String {
 // bootstrap parser is happy with either form, and the contract
 // surface is read-only anyway).
 func renderParam(p: in Param): String {
-  val modeStr = match p.mode {
-    case PMIn    -> "in "
-    case PMOut   -> "out "
-    case PMInout -> "inout "
-  }
+  val modeStr = match p.mode { case PMIn -> "in "; case PMOut -> "out "; case PMInout -> "inout " }
   p.name + ": " + modeStr + renderTypeExpr(p.ty)
 }
 
@@ -696,7 +822,7 @@ func renderParam(p: in Param): String {
 // `GPType` → bare name; `GPValue` → `name: constraint`.
 func renderGenericParam(gp: in GenericParam): String {
   match gp {
-    case GPType(name, _)             -> name
+    case GPType(name, _) -> name
     case GPValue(name, constraint, _) -> name + ": " + renderTypeExpr(constraint)
   }
 }
@@ -709,11 +835,15 @@ func renderGenerics(g: in Option[GenericParams]): String {
   match g {
     case None -> ""
     case Some(gp) -> {
-      if gp.params.count == 0 { return "" }
+      if gp.params.count == 0 {
+        return ""
+      }
       var s = "["
       var i = 0
       while i < gp.params.count {
-        if i > 0 { s = s + ", " }
+        if i > 0 {
+          s = s + ", "
+        }
         s = s + renderGenericParam(gp.params[i])
         i = i + 1
       }
@@ -731,7 +861,9 @@ func reprForRecord(decl: in RecordDecl): String {
   while i < decl.members.count {
     match decl.members[i] {
       case RMField(f) -> {
-        if emittedAny { fields = fields + ", " }
+        if emittedAny {
+          fields = fields + ", "
+        }
         fields = fields + f.name + ": " + renderTypeExpr(f.ty)
         emittedAny = true
       }
@@ -750,16 +882,14 @@ func reprForFunc(fn: in FunctionDecl): String {
   var params = ""
   var i = 0
   while i < fn.params.count {
-    if i > 0 { params = params + ", " }
+    if i > 0 {
+      params = params + ", "
+    }
     params = params + renderParam(fn.params[i])
     i = i + 1
   }
-  val retStr = match fn.ret {
-    case Some(t) -> ": " + renderTypeExpr(t)
-    case None    -> ""
-  }
-  "pub func " + fn.name + renderGenerics(fn.generics) +
-    "(" + params + ")" + retStr
+  val retStr = match fn.ret { case Some(t) -> ": " + renderTypeExpr(t); case None -> "" }
+  "pub func " + fn.name + renderGenerics(fn.generics) + "(" + params + ")" + retStr
 }
 
 // Build the `pub union Name { case A, case B(x: T) }` repr for a union.
@@ -767,7 +897,9 @@ func reprForUnion(decl: in UnionDecl): String {
   var cases = ""
   var i = 0
   while i < decl.cases.count {
-    if i > 0 { cases = cases + ", " }
+    if i > 0 {
+      cases = cases + ", "
+    }
     val c = decl.cases[i]
     if c.fields.count == 0 {
       cases = cases + "case " + c.name
@@ -775,10 +907,16 @@ func reprForUnion(decl: in UnionDecl): String {
       var fs = ""
       var j = 0
       while j < c.fields.count {
-        if j > 0 { fs = fs + ", " }
+        if j > 0 {
+          fs = fs + ", "
+        }
         match c.fields[j] {
-          case UFNamed(n, ty, _) -> { fs = fs + n + ": " + renderTypeExpr(ty) }
-          case UFPos(ty, _)      -> { fs = fs + renderTypeExpr(ty) }
+          case UFNamed(n, ty, _) -> {
+            fs = fs + n + ": " + renderTypeExpr(ty)
+          }
+          case UFPos(ty, _) -> {
+            fs = fs + renderTypeExpr(ty)
+          }
         }
         j = j + 1
       }
@@ -789,17 +927,30 @@ func reprForUnion(decl: in UnionDecl): String {
   "pub union " + decl.name + renderGenerics(decl.generics) + " { " + cases + " }"
 }
 
-// Build the `pub enum Name { A, B, C }` repr.  EnumDecls carry just
-// case names in the bootstrap parser.
+// Build the `pub enum Name { case A; case B; case C }` repr.  EnumDecls
+// carry just case names in the bootstrap parser.  Each case must be
+// prefixed with `case` so the synthesised source re-parses (the parser
+// emits P0140 "expected 'case' to start an enum case" otherwise).
+// Mirrors the F# writer `ContractMeta.fs::declOfItem` (IEnum branch).
 func reprForEnum(decl: in EnumDecl): String {
   var cases = ""
   var i = 0
   while i < decl.cases.count {
-    if i > 0 { cases = cases + ", " }
-    cases = cases + decl.cases[i].name
+    if i > 0 {
+      cases = cases + "; "
+    }
+    cases = cases + "case " + decl.cases[i].name
     i = i + 1
   }
   "pub enum " + decl.name + " { " + cases + " }"
+}
+
+// Protected types are opaque externally — represent them as opaque
+// types so a cross-package consumer's contract type-check can resolve
+// references to the name without exposing the locked internal state.
+// Mirrors the F# writer `ContractMeta.fs::declOfItem` (IProtected branch).
+func reprForProtected(decl: in ProtectedTypeDecl): String {
+  "pub opaque type " + decl.name + renderGenerics(decl.generics)
 }
 
 // Build the head-only `impl <Iface> for <Target> {}` repr for a restored
@@ -811,9 +962,13 @@ func reprForEnum(decl: in EnumDecl): String {
 // emitted.
 func reprForImplHead(decl: in ImplDecl): Option[String] {
   val targetName = implTargetSimpleName(decl)
-  if Str.isEmpty(targetName) { return None }
+  if Str.isEmpty(targetName) {
+    return None
+  }
   val ifaceName = joinDots(decl.iface.head.segments)
-  if Str.isEmpty(ifaceName) { return None }
+  if Str.isEmpty(ifaceName) {
+    return None
+  }
   Some(value = "impl " + ifaceName + " for " + targetName + " {}")
 }
 
@@ -821,21 +976,40 @@ func reprForImplHead(decl: in ImplDecl): Option[String] {
 // whose method table the consumer needs to populate).
 func implReprName(decl: in ImplDecl): String {
   val t = implTargetSimpleName(decl)
-  if Str.isEmpty(t) { "__impl" } else { t }
+  if Str.isEmpty(t) {
+    "__impl"
+  } else {
+    t
+  }
 }
 
 // Extract the simple (last-segment) name of an impl's target type, or "" when
 // the target is not a plain `TRef` / `TGenericApp` head.
 func implTargetSimpleName(decl: in ImplDecl): String {
   match decl.target.kind {
-    case TRef(path)          -> lastSegOf(path.segments)
-    case TGenericApp(h, _)   -> lastSegOf(h.segments)
-    case _                   -> ""
+    case TRef(path) -> lastSegOf(path.segments)
+    case TGenericApp(h, _) -> lastSegOf(h.segments)
+    case _ -> ""
   }
 }
 
 func lastSegOf(segs: in List[String]): String {
-  if segs.count == 0 { "" } else { segs[segs.count - 1] }
+  if segs.count == 0 {
+    ""
+  } else {
+    segs[segs.count - 1]
+  }
+}
+
+func strListContains(list: in List[String], s: in String): Bool {
+  var j = 0
+  while j < list.count {
+    if list[j] == s {
+      return true
+    }
+    j = j + 1
+  }
+  false
 }
 
 // Build the `pub interface Name { ... }` repr with each abstract
@@ -847,15 +1021,16 @@ func reprForInterface(decl: in InterfaceDecl): String {
   while i < decl.members.count {
     match decl.members[i] {
       case IMSig(sig) -> {
-        if Str.isNotEmpty(members) { members = members + "; " }
+        if Str.isNotEmpty(members) {
+          members = members + "; "
+        }
         members = members + reprForFunctionSig(sig)
       }
       case _ -> ()
     }
     i = i + 1
   }
-  "pub interface " + decl.name + renderGenerics(decl.generics) +
-    " { " + members + " }"
+  "pub interface " + decl.name + renderGenerics(decl.generics) + " { " + members + " }"
 }
 
 // Render a FunctionSig (interface-method head form, no body).
@@ -863,23 +1038,20 @@ func reprForFunctionSig(sig: in FunctionSig): String {
   var params = ""
   var i = 0
   while i < sig.params.count {
-    if i > 0 { params = params + ", " }
+    if i > 0 {
+      params = params + ", "
+    }
     params = params + renderParam(sig.params[i])
     i = i + 1
   }
-  val retStr = match sig.ret {
-    case Some(t) -> ": " + renderTypeExpr(t)
-    case None    -> ""
-  }
-  "func " + sig.name + renderGenerics(sig.generics) +
-    "(" + params + ")" + retStr
+  val retStr = match sig.ret { case Some(t) -> ": " + renderTypeExpr(t); case None -> "" }
+  "func " + sig.name + renderGenerics(sig.generics) + "(" + params + ")" + retStr
 }
 
 // `pub type Name = <underlying>` for distinct types.  Renders the
 // declared underlying type rather than guessing `Int`.
 func reprForDistinct(decl: in DistinctTypeDecl): String {
-  "pub type " + decl.name + renderGenerics(decl.generics) +
-    " = " + renderTypeExpr(decl.underlying)
+  "pub type " + decl.name + renderGenerics(decl.generics) + " = " + renderTypeExpr(decl.underlying)
 }
 
 // `pub opaque type Name { f1: T1, ... }` — emits the structural
@@ -893,7 +1065,9 @@ func reprForOpaque(decl: in OpaqueTypeDecl): String {
   while i < decl.members.count {
     match decl.members[i] {
       case OMField(f) -> {
-        if emittedAny { fields = fields + ", " }
+        if emittedAny {
+          fields = fields + ", "
+        }
         fields = fields + f.name + ": " + renderTypeExpr(f.ty)
         emittedAny = true
       }
@@ -901,29 +1075,92 @@ func reprForOpaque(decl: in OpaqueTypeDecl): String {
     }
     i = i + 1
   }
-  "pub opaque type " + decl.name + renderGenerics(decl.generics) +
-    " { " + fields + " }"
+  "pub opaque type " + decl.name + renderGenerics(decl.generics) + " { " + fields + " }"
 }
 
 // `pub alias Name = <rhs>` — renders the actual aliased TypeExpr.
 func reprForTypeAlias(decl: in TypeAliasDecl): String {
-  "pub alias " + decl.name + renderGenerics(decl.generics) +
-    " = " + renderTypeExpr(decl.rhs)
+  "pub alias " + decl.name + renderGenerics(decl.generics) + " = " + renderTypeExpr(decl.rhs)
 }
 
-// Construct a default ContractDecl with the three required fields and
-// everything else zeroed.  Mirrors F# `ContractDecl.basic`.
-func basicDecl(kind: in String, name: in String, repr: in String): ContractDecl {
+// `extern type Name[T] = "Clr.Fully.Qualified.Name"` — renders the CLR
+// binding declaration so a cross-package consumer can resolve function
+// signatures that reference this extern type.  Mirrors the F# writer's
+// `IExternType _ -> true` visibility rule: all extern types are included
+// regardless of `pub`, since they act as type anchors for any public
+// function whose signature references them.
+func reprForExternType(decl: in ExternTypeDecl): String {
+  "extern type " + decl.name + renderGenerics(decl.generics) + " = \"" + decl.clrName + "\""
+}
+
+// Convert an AST Visibility option to the JSON-visible string used by ContractDecl.
+// "pub" for VisPub, "internal" for VisInternal, "" for None (package-private).
+func visibilityStr(vis: in Option[Visibility]): String {
+  match vis {
+    case Some(v) -> match v { case VisPub(_) -> "pub"; case VisInternal(_) -> "internal" }
+    case None -> ""
+  }
+}
+
+// Construct a default ContractDecl with the given fields and everything else zeroed.
+// Mirrors F# `ContractDecl.basic`.  `vis` is the raw AST visibility of the item so
+// v3 emission carries the correct value (fixes #2728 — never hardcode "pub").
+func basicDecl(kind: in String, name: in String, repr: in String, vis: in Option[Visibility]): ContractDecl {
   ContractDecl(
-    kind            = kind,
-    name            = name,
-    repr            = repr,
-    isPure          = false,
-    stability       = "",
+    kind = kind,
+    name = name,
+    repr = repr,
+    visibility = visibilityStr(vis),
+    isPure = false,
+    stability = "",
     requiresClauses = newList(),
-    ensuresClauses  = newList(),
-    body            = None,
-    params          = newList())
+    ensuresClauses = newList(),
+    body = None,
+    params = newList()
+  )
+}
+
+// True when `e` is a bare integer literal — the only initializer form the
+// MSIL backend folds to a single `ldc.i4` and inlines at the use site
+// (codegen `addPackageTokens` IConst/IVal).  Cross-package inlining of a
+// module-level constant only carries this form; non-literal initializers
+// are not compile-time foldable and fall outside the inlinable surface.
+func isIntLiteralExpr(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(lit) -> match lit { case LInt(_, _, _) -> true; case _ -> false }
+    case _ -> false
+  }
+}
+
+// Repr for a module-level `pub const`: `pub const NAME: TYPE = N`.  The
+// value is part of the public ABI because consumers inline it at compile
+// time, so it round-trips into the contract and the synthesised source.
+func reprForConst(decl: in ConstDecl): String {
+  "pub const " + decl.name + ": " + renderTypeExpr(decl.ty) + " = " + renderConstExpr(decl.init)
+}
+
+// Simple binding name of a `val` whose pattern is a plain binding, or "".
+func bindingName(p: in Pattern): String {
+  match p.kind {
+    case PBinding(name, _) -> name
+    case _ -> ""
+  }
+}
+
+// Repr for an inlinable module-level `pub val` — a plain binding with an
+// explicit type and an integer-literal initializer (`pub val NAME: TYPE =
+// N`).  Returns None for destructuring patterns, missing type
+// annotations, or non-literal inits: those are not compile-time inlinable
+// (cross-package field access for runtime `val`s is separate work), so
+// they stay out of the inlinable-constant contract surface.
+func reprForInlinableVal(decl: in ValDecl): Option[String] {
+  if not isIntLiteralExpr(decl.init) {
+    return None
+  }
+  match decl.pattern.kind {
+    case PBinding(name, _) -> match decl.ty { case Some(te) -> Some(value = "pub val " + name + ": " + renderTypeExpr(te) + " = " + renderConstExpr(decl.init)); case None -> None }
+    case _ -> None
+  }
 }
 
 // Find a single-segment file-level annotation by name.  Returns the
@@ -953,8 +1190,10 @@ func proofRequiredModifier(ann: in Annotation): String {
   while i < ann.args.count {
     if Str.isEmpty(modifier) {
       match ann.args[i] {
-        case ABare(name, _) -> { modifier = name }
-        case _              -> ()
+        case ABare(name, _) -> {
+          modifier = name
+        }
+        case _ -> ()
       }
     }
     i = i + 1
@@ -968,7 +1207,7 @@ func proofRequiredModifier(ann: in Annotation): String {
 /// → "proof_required" or "proof_required(<modifier>)"; otherwise
 /// "runtime_checked" (the default for both `@runtime_checked` and
 /// unannotated files).
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func levelOfFile(file: in SourceFile): String {
   match findFileAnnotation(file, "axiom") {
     case Some(_) -> "axiom"
@@ -976,9 +1215,13 @@ pub func levelOfFile(file: in SourceFile): String {
       match findFileAnnotation(file, "proof_required") {
         case Some(ann) -> {
           val m = proofRequiredModifier(ann)
-          if m == "unsafe_blocks_allowed" { "proof_required(unsafe_blocks_allowed)" }
-          else if m == "checked_arithmetic" { "proof_required(checked_arithmetic)" }
-          else { "proof_required" }
+          if m == "unsafe_blocks_allowed" {
+            "proof_required(unsafe_blocks_allowed)"
+          } else if m == "checked_arithmetic" {
+            "proof_required(checked_arithmetic)"
+          } else {
+            "proof_required"
+          }
         }
         case None -> "runtime_checked"
       }
@@ -1000,57 +1243,98 @@ pub func levelOfFile(file: in SourceFile): String {
 ///
 /// Used by the self-hosted MSIL bridge to build the `Lyric.Contract`
 /// resource payload before assembly emission.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func buildContractFromFile(file: in SourceFile, version: in String): Contract {
   val decls: List[ContractDecl] = newList()
+
+  // Pre-pass: collect names of all pub type-like items so impl-block
+  // filtering can check whether the impl target is a public type.
+  // Impl blocks whose target is a non-pub type (e.g. `impl MailSender for
+  // NativeSender` where NativeSender is private) must be excluded: the
+  // synthesised preamble won't declare the private type, causing T0010
+  // "unknown type" during round-trip type-checking.
+  val pubTypeNames: List[String] = newList()
+  var pi = 0
+  while pi < file.items.count {
+    val pit = file.items[pi]
+    if isPubVis(pit.visibility) {
+      match pit.kind {
+        case IRecord(r) -> pubTypeNames.add(r.name)
+        case IUnion(u) -> pubTypeNames.add(u.name)
+        case IEnum(e) -> pubTypeNames.add(e.name)
+        case IInterface(ix) -> pubTypeNames.add(ix.name)
+        case IDistinctType(d) -> pubTypeNames.add(d.name)
+        case IOpaque(o) -> pubTypeNames.add(o.name)
+        case IProtected(p) -> pubTypeNames.add(p.name)
+        case IExternType(et) -> pubTypeNames.add(et.name)
+        case _ -> ()
+      }
+    }
+    pi = pi + 1
+  }
+
   var i = 0
   while i < file.items.count {
     val it = file.items[i]
     if isPubVis(it.visibility) {
       match it.kind {
-        case IRecord(r) ->
-          decls.add(basicDecl("record", r.name, reprForRecord(r)))
-        case IFunc(f) ->
-          decls.add(basicDecl("func", f.name, reprForFunc(f)))
-        case IUnion(u) ->
-          decls.add(basicDecl("union", u.name, reprForUnion(u)))
-        case IEnum(e) ->
-          decls.add(basicDecl("enum", e.name, reprForEnum(e)))
-        case IInterface(ix) ->
-          decls.add(basicDecl("interface", ix.name, reprForInterface(ix)))
-        case IDistinctType(d) ->
-          decls.add(basicDecl("distinct", d.name, reprForDistinct(d)))
-        case IOpaque(o) ->
-          decls.add(basicDecl("opaque", o.name, reprForOpaque(o)))
-        case ITypeAlias(a) ->
-          decls.add(basicDecl("alias", a.name, reprForTypeAlias(a)))
+        case IRecord(r) -> decls.add(basicDecl("record", r.name, reprForRecord(r), it.visibility))
+        case IFunc(f) -> decls.add(basicDecl("func", f.name, reprForFunc(f), it.visibility))
+        case IUnion(u) -> decls.add(basicDecl("union", u.name, reprForUnion(u), it.visibility))
+        case IEnum(e) -> decls.add(basicDecl("enum", e.name, reprForEnum(e), it.visibility))
+        case IInterface(ix) -> decls.add(basicDecl("interface", ix.name, reprForInterface(ix), it.visibility))
+        case IDistinctType(d) -> decls.add(basicDecl("distinct", d.name, reprForDistinct(d), it.visibility))
+        case IOpaque(o) -> decls.add(basicDecl("opaque", o.name, reprForOpaque(o), it.visibility))
+        case ITypeAlias(a) -> decls.add(basicDecl("alias", a.name, reprForTypeAlias(a), it.visibility))
+        // Module-level compile-time constants whose value crosses package
+        // boundaries by inlining (see codegen `addPackageTokens`).  A
+        // consumer compiled separately (per-package emit) needs the value
+        // from the producer's contract; carry it here.
+        case IConst(c) -> decls.add(basicDecl("const", c.name, reprForConst(c), it.visibility))
+        case IVal(v) -> match reprForInlinableVal(v) { case Some(repr) -> decls.add(basicDecl("val", bindingName(v.pattern), repr, it.visibility)); case None -> () }
         case _ -> ()
       }
     }
     // `impl` blocks carry no visibility token (they are not pub/private), so
-    // they sit outside the `isPubVis` guard above.  Record the impl→interface
-    // binding so a cross-package consumer learns which interface a public
-    // record satisfies — the consumer needs it to register the record's
-    // instance methods (it dispatches `store.set(...)` on the concrete record
-    // type, keyed `<pkg>.<Record>/<method>`, which is absent from the type
-    // surface otherwise) (#1602).  The repr is the head-only `impl I for T {}`
-    // form: an empty body re-parses + re-typechecks cleanly, and the method
-    // signatures are recovered from the already-emitted `interface` decl.
+    // they sit outside the `isPubVis` guard above.  Only include impl blocks
+    // whose target type is pub-declared: a private-target impl (e.g.
+    // `impl MailSender for NativeSender`) would reference a type absent from
+    // the synthesised preamble and cause T0010 during round-trip type-checking.
+    // Extern types are always included regardless of visibility: they act as
+    // type anchors for public function signatures, matching the F# writer's
+    // `IExternType _ | IProtected _ -> true` visibility rule.
     match it.kind {
       case IImpl(idecl) -> {
-        match reprForImplHead(idecl) {
-          case Some(repr) -> decls.add(basicDecl("impl", implReprName(idecl), repr))
-          case None       -> ()
+        val targetName = implTargetSimpleName(idecl)
+        if strListContains(pubTypeNames, targetName) {
+          match reprForImplHead(idecl) {
+            // impl blocks have no visibility keyword; use None (package-private string "")
+            // which `renderDecl` omits for v1/v2.  For v3 the F# writer also uses "" here.
+            case Some(repr) -> decls.add(basicDecl("impl", implReprName(idecl), repr, None))
+            case None -> ()
+          }
         }
+      }
+      // Protected types are emitted regardless of visibility: their name
+      // can appear in a public signature (e.g. `pub func mk(): CbState`)
+      // even when the type itself is package-private, so the synthesised
+      // contract source must always declare the anchor.  Matches the F#
+      // writer's `IExternType _ | IProtected _ -> true` visibility rule.
+      case IProtected(p) -> decls.add(basicDecl("opaque", p.name, reprForProtected(p), it.visibility))
+      case IExternType(et) -> {
+        decls.add(basicDecl("extern_type", et.name, reprForExternType(et), it.visibility))
       }
       case _ -> ()
     }
     i = i + 1
   }
   Contract(
-    packageName   = joinDots(file.packageDecl.path.segments),
-    version       = version,
-    level         = levelOfFile(file),
+    packageName = joinDots(file.packageDecl.path.segments),
+    version = version,
+    level = levelOfFile(file),
     formatVersion = 2,
-    decls         = decls)
+    decls = decls,
+    dependencies = newList(),
+    contractHash = ""
+  )
 }

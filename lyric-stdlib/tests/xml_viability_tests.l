@@ -1,13 +1,12 @@
-// stdlib/tests/xml_viability_tests.l — Viability probe for a pure-Lyric XML parser.
-//
-// Tests three things that could block Option B (a hand-rolled parser):
-//
-//   1. Self-referential union: `XmlNode` holds `List[XmlNode]` children.
-//   2. Recursive traversal: functions that structurally walk the tree.
-//   3. Character-level string parsing: the primitives a real XML parser uses.
-//
-// A clean exit (code 0 + "ok" in stdout) confirms the emitter handles all three.
-
+//! stdlib/tests/xml_viability_tests.l — Viability probe for a pure-Lyric XML parser.
+//!
+//! Tests three things that could block Option B (a hand-rolled parser):
+//!
+//!   1. Self-referential union: `XmlNode` holds `List[XmlNode]` children.
+//!   2. Recursive traversal: functions that structurally walk the tree.
+//!   3. Character-level string parsing: the primitives a real XML parser uses.
+//!
+//! A clean exit (code 0 + "ok" in stdout) confirms the emitter handles all three.
 package Xml.Viability.Tests
 
 import Std.Core
@@ -19,15 +18,13 @@ import Std.Testing
 // ---------------------------------------------------------------------------
 // 1. Data model — the self-referential union type under test.
 // ---------------------------------------------------------------------------
-
 union XmlNode {
   case Element(tag: String, children: List[XmlNode])
   case Text(value: String)
+  // ---------------------------------------------------------------------------
+  // 2. Recursive traversal functions.
+  // ---------------------------------------------------------------------------
 }
-
-// ---------------------------------------------------------------------------
-// 2. Recursive traversal functions.
-// ---------------------------------------------------------------------------
 
 func countNodes(node: in XmlNode): Int {
   match node {
@@ -63,12 +60,16 @@ func treeDepth(node: in XmlNode): Int {
   match node {
     case Text(v) -> 1
     case Element(tag, children) -> {
-      if children.count == 0 { return 1 }
+      if children.count == 0 {
+        return 1
+      }
       var maxChild = 0
       var i = 0
       while i < children.count {
         val d = treeDepth(children[i])
-        if d > maxChild { maxChild = d }
+        if d > maxChild {
+          maxChild = d
+        }
         i += 1
       }
       1 + maxChild
@@ -82,26 +83,24 @@ func treeDepth(node: in XmlNode): Int {
 // Token kinds: 1=open-angle, 2=close-angle, 3=slash, 4=equals,
 //              5=whitespace, 6=name-char
 // ---------------------------------------------------------------------------
-
 func tokenize(src: in String): List[Int] {
   val tokens: List[Int] = newList()
   var i = 0
   while i < src.length {
     val c = src[i]
-    val kind =
-      if c == '<' {
-        1
-      } else if c == '>' {
-        2
-      } else if c == '/' {
-        3
-      } else if c == '=' {
-        4
-      } else if isWhiteSpace(c) {
-        5
-      } else {
-        6
-      }
+    val kind = if c == '<' {
+      1
+    } else if c == '>' {
+      2
+    } else if c == '/' {
+      3
+    } else if c == '=' {
+      4
+    } else if isWhiteSpace(c) {
+      5
+    } else {
+      6
+    }
     tokens.add(kind)
     i += 1
   }
@@ -111,7 +110,6 @@ func tokenize(src: in String): List[Int] {
 // ---------------------------------------------------------------------------
 // Tests.
 // ---------------------------------------------------------------------------
-
 func testSelfReferentialUnion(): Unit {
   // Build: <root><child>hello</child><child>world</child></root>
   val inner1: List[XmlNode] = newList()

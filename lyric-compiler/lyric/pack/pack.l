@@ -1,10 +1,10 @@
-// pack/pack.l — self-hosted csproj XML generator for `lyric publish` / `lyric restore`.
-// Mirrors the XML-generation portion of compiler/src/Lyric.Cli/Pack.fs
-// (Phase 5 §M5.3 shim elimination).  Process invocation (dotnet pack/restore)
-// stays in the F# Pack.fs.
-//
-// Only Registry(version) deps emit <PackageReference>; Workspace/Path/Git deps
-// are resolved locally by Lyric.Workspace and never expressed as NuGet refs.
+//! pack/pack.l — self-hosted csproj XML generator for `lyric publish` / `lyric restore`.
+//! Mirrors the XML-generation portion of compiler/src/Lyric.Cli/Pack.fs
+//! (Phase 5 §M5.3 shim elimination).  Process invocation (dotnet pack/restore)
+//! stays in the F# Pack.fs.
+//!
+//! Only Registry(version) deps emit <PackageReference>; Workspace/Path/Git deps
+//! are resolved locally by Lyric.Workspace and never expressed as NuGet refs.
 package Lyric.Pack
 
 import Std.Core
@@ -13,7 +13,6 @@ import Std.String as Str
 import Lyric.Manifest
 
 // ─── Character helpers ────────────────────────────────────────────────────────
-
 pub func xmlEscape(s: in String): String {
   var r = Str.replace(s, "&", "&amp;")
   r = Str.replace(r, "<", "&lt;")
@@ -28,8 +27,7 @@ pub func sanitisedPackageName(raw: in String): String {
   var i = 0
   while i < raw.length {
     val c = raw[i]
-    if (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
-       (c >= '0' and c <= '9') or c == '.' or c == '_' or c == '-' {
+    if (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '.' or c == '_' or c == '-' {
       s = s + ("" + c)
     }
     i = i + 1
@@ -48,11 +46,14 @@ pub func getFileName(path: in String): String {
     }
     i = i + 1
   }
-  if best >= path.length { path } else { Str.substring(path, best, path.length - best) }
+  if best >= path.length {
+    path
+  } else {
+    Str.substring(path, best, path.length - best)
+  }
 }
 
 // ─── Publish csproj ───────────────────────────────────────────────────────────
-
 /// Generate the `.csproj` content for `lyric publish`.
 /// `dllAbsPath` must be an absolute path (the F# caller resolves it before
 /// passing it here via the bridge).
@@ -66,23 +67,29 @@ pub func publishCsproj(m: in Manifest, dllAbsPath: in String): String {
     var authorStr = ""
     var ai = 0
     while ai < pkg.authors.count {
-      if ai > 0 { authorStr = authorStr + ";" }
+      if ai > 0 {
+        authorStr = authorStr + ";"
+      }
       authorStr = authorStr + xmlEscape(pkg.authors[ai])
       ai = ai + 1
     }
     authorsXml = "    <Authors>" + authorStr + "</Authors>"
   }
 
-  val descXml =
-    if Str.isEmpty(pkg.description) { "" }
-    else { "    <Description>" + xmlEscape(pkg.description) + "</Description>" }
+  val descXml = if Str.isEmpty(pkg.description) {
+    ""
+  } else {
+    "    <Description>" + xmlEscape(pkg.description) + "</Description>"
+  }
 
-  val licXml =
-    if Str.isEmpty(pkg.license) { "" }
-    else { "    <PackageLicenseExpression>" + xmlEscape(pkg.license) + "</PackageLicenseExpression>" }
+  val licXml = if Str.isEmpty(pkg.license) {
+    ""
+  } else {
+    "    <PackageLicenseExpression>" + xmlEscape(pkg.license) + "</PackageLicenseExpression>"
+  }
 
   val repoXml = match pkg.repository {
-    case None    -> ""
+    case None -> ""
     case Some(r) -> "    <RepositoryUrl>" + xmlEscape(r) + "</RepositoryUrl>"
   }
 
@@ -92,9 +99,8 @@ pub func publishCsproj(m: in Manifest, dllAbsPath: in String): String {
     val d = m.deps[di]
     match d.source {
       case Registry(version) -> {
-        depsXml = depsXml +
-          "    <PackageReference Include=\"" + xmlEscape(d.name) +
-          "\" Version=\"" + xmlEscape(version) + "\" />\n"
+        depsXml = depsXml + "    <PackageReference Include=\"" + xmlEscape(d.name) + "\" Version=\"" + xmlEscape(version) +
+          "\" />\n"
       }
       case _ -> ()
     }
@@ -109,15 +115,23 @@ pub func publishCsproj(m: in Manifest, dllAbsPath: in String): String {
   xml = xml + "    <NoWarn>$(NoWarn);NU5128</NoWarn>\n"
   xml = xml + "    <PackageId>" + xmlEscape(sanitisedId) + "</PackageId>\n"
   xml = xml + "    <Version>" + xmlEscape(pkg.version) + "</Version>\n"
-  if not Str.isEmpty(authorsXml) { xml = xml + authorsXml + "\n" }
-  if not Str.isEmpty(descXml)    { xml = xml + descXml    + "\n" }
-  if not Str.isEmpty(licXml)     { xml = xml + licXml     + "\n" }
-  if not Str.isEmpty(repoXml)    { xml = xml + repoXml    + "\n" }
+  if not Str.isEmpty(authorsXml) {
+    xml = xml + authorsXml + "\n"
+  }
+  if not Str.isEmpty(descXml) {
+    xml = xml + descXml + "\n"
+  }
+  if not Str.isEmpty(licXml) {
+    xml = xml + licXml + "\n"
+  }
+  if not Str.isEmpty(repoXml) {
+    xml = xml + repoXml + "\n"
+  }
   xml = xml + "  </PropertyGroup>\n"
   xml = xml + "  <ItemGroup>\n"
-  xml = xml +
-    "    <None Include=\"" + xmlEscape(dllAbsPath) +
-    "\" Pack=\"true\" PackagePath=\"lib/net10.0/" + xmlEscape(assemblyFile) + "\" />\n"
+  xml = xml + "    <None Include=\"" + xmlEscape(dllAbsPath) + "\" Pack=\"true\" PackagePath=\"lib/net10.0/" +
+    xmlEscape(assemblyFile) +
+    "\" />\n"
   xml = xml + "  </ItemGroup>\n"
   if not Str.isEmpty(depsXml) {
     xml = xml + "  <ItemGroup>\n"
@@ -128,7 +142,6 @@ pub func publishCsproj(m: in Manifest, dllAbsPath: in String): String {
 }
 
 // ─── Restore csproj ───────────────────────────────────────────────────────────
-
 /// Generate the `.csproj` content for `lyric restore`.
 pub func restoreCsproj(m: in Manifest): String {
   val pkg = m.packageSection
@@ -139,9 +152,9 @@ pub func restoreCsproj(m: in Manifest): String {
     val d = m.deps[di]
     match d.source {
       case Registry(version) -> {
-        lyricDepsXml = lyricDepsXml +
-          "    <PackageReference Include=\"" + xmlEscape(d.name) +
-          "\" Version=\"" + xmlEscape(version) + "\" />\n"
+        lyricDepsXml = lyricDepsXml + "    <PackageReference Include=\"" + xmlEscape(d.name) + "\" Version=\"" +
+          xmlEscape(version) +
+          "\" />\n"
       }
       case _ -> ()
     }
@@ -150,24 +163,21 @@ pub func restoreCsproj(m: in Manifest): String {
 
   var nugetDepsXml = ""
   match m.nuget {
-    case None    -> ()
+    case None -> ()
     case Some(n) -> {
       var ni = 0
       while ni < n.entries.count {
         val e = n.entries[ni]
-        nugetDepsXml = nugetDepsXml +
-          "    <PackageReference Include=\"" + xmlEscape(e.name) +
-          "\" Version=\"" + xmlEscape(e.version) + "\" />\n"
+        nugetDepsXml = nugetDepsXml + "    <PackageReference Include=\"" + xmlEscape(e.name) + "\" Version=\"" +
+          xmlEscape(e.version) +
+          "\" />\n"
         ni = ni + 1
       }
     }
   }
 
   val target = match m.nuget {
-    case Some(n) -> match n.target {
-      case Some(t) -> t
-      case None    -> "net10.0"
-    }
+    case Some(n) -> match n.target { case Some(t) -> t; case None -> "net10.0" }
     case None -> "net10.0"
   }
 
@@ -182,7 +192,9 @@ pub func restoreCsproj(m: in Manifest): String {
   xml = xml + "    <IncludeBuildOutput>false</IncludeBuildOutput>\n"
   xml = xml + "  </PropertyGroup>\n"
   xml = xml + "  <ItemGroup>\n"
-  if not Str.isEmpty(combined) { xml = xml + combined }
+  if not Str.isEmpty(combined) {
+    xml = xml + combined
+  }
   xml = xml + "  </ItemGroup>\n"
   xml + "</Project>\n"
 }

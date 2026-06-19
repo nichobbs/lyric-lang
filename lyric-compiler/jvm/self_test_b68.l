@@ -1,18 +1,17 @@
-// jvm/self_test_b68.l — Stage B68: tableswitch instruction.
-//
-// Generates Grades.class with:
-//   letterGrade(I)String  — maps score/10 to letter: 10,9->"A", 8->"B", 7->"C", else->"F"
-//                           using tableswitch over [7..10]
-//
-// Main prints:
-//   letterGrade(95) → "A"   (95/10 = 9 → case 9)
-//   letterGrade(100)→ "A"   (100/10 = 10 → case 10)
-//   letterGrade(83) → "B"   (83/10 = 8 → case 8)
-//   letterGrade(72) → "C"   (72/10 = 7 → case 7)
-//   letterGrade(60) → "F"   (60/10 = 6 → default)
-//
-// Exercises: emitTableSwitch with contiguous case range and shared labels.
-
+//! jvm/self_test_b68.l — Stage B68: tableswitch instruction.
+//!
+//! Generates Grades.class with:
+//!   letterGrade(I)String  — maps score/10 to letter: 10,9->"A", 8->"B", 7->"C", else->"F"
+//!                           using tableswitch over [7..10]
+//!
+//! Main prints:
+//!   letterGrade(95) → "A"   (95/10 = 9 → case 9)
+//!   letterGrade(100)→ "A"   (100/10 = 10 → case 10)
+//!   letterGrade(83) → "B"   (83/10 = 8 → case 8)
+//!   letterGrade(72) → "C"   (72/10 = 7 → case 7)
+//!   letterGrade(60) → "F"   (60/10 = 6 → default)
+//!
+//! Exercises: emitTableSwitch with contiguous case range and shared labels.
 package Jvm.SelfTestB68
 
 import Std.Core
@@ -32,10 +31,14 @@ func makeGradesBytes(): List[Byte] {
   emitPushInt(asmGrade, 10)
   emitIdiv(asmGrade)
   val caseLabels: List[String] = newList()
-  caseLabels.add("GRADE_C")    // 7
-  caseLabels.add("GRADE_B")    // 8
-  caseLabels.add("GRADE_A")    // 9
-  caseLabels.add("GRADE_A")    // 10
+  caseLabels.add("GRADE_C")
+  // 7
+  caseLabels.add("GRADE_B")
+  // 8
+  caseLabels.add("GRADE_A")
+  // 9
+  caseLabels.add("GRADE_A")
+  // 10
   emitTableSwitch(asmGrade, 7, 10, "GRADE_F", caseLabels)
   emitLabel(asmGrade, "GRADE_A")
   emitPushString(asmGrade, "A")
@@ -61,12 +64,12 @@ func makeGradesBytes(): List[Byte] {
 }
 
 func makeMainClassBytes(): List[Byte] {
-  val pool      = poolNew()
-  val asm       = newAssembler(pool)
+  val pool = poolNew()
+  val asm = newAssembler(pool)
 
-  val sysOut    = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnS  = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val gradeRef  = poolMethodref(pool, "Grades", "letterGrade", "(I)Ljava/lang/String;")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnS = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val gradeRef = poolMethodref(pool, "Grades", "letterGrade", "(I)Ljava/lang/String;")
 
   // println(Grades.letterGrade(95)) → "A"
   emitGetstatic(asm, sysOut)
@@ -113,24 +116,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b68"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val gradesBytes = makeGradesBytes()
-  val mainBytes   = makeMainClassBytes()
+  val mainBytes = makeMainClassBytes()
 
   val gradesClass = BuiltClass(binaryName = "Grades", bytes = gradesBytes)
-  val mainClass   = BuiltClass(binaryName = "Main",   bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(gradesClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB68",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

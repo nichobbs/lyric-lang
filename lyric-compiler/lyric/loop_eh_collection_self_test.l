@@ -1,26 +1,25 @@
-// loop_eh_collection_self_test.l — executable regression tests for the
-// remaining two #1481 (epic #1470, Band 2) self-hosted MSIL backend fixes:
-//
-//   Item 3 — break/continue across a `try` region must emit `leave`.  A
-//   `break`/`continue` whose target loop was entered *outside* an enclosing
-//   `try`/`catch` jumps across a CLR protected-region boundary; the backend
-//   previously emitted a plain `br`, which is unverifiable IL
-//   (`InvalidProgramException` at JIT time).  The fix tracks protected-region
-//   nesting depth and emits `leave` when the jump escapes one or more open
-//   regions.
-//
-//   Item 4 — `List.contains` / `List.removeAt` BCL stubs.  `xs.contains(v)`
-//   previously popped its argument and pushed `false` (every membership test
-//   wrong); `xs.removeAt(i)` popped and did nothing (silent no-op).  Both now
-//   emit the real `List<object>::Contains(object)` / `RemoveAt(int32)` calls.
-//
-// Run via native `lyric test --target dotnet` — compiled in-process through the
-// self-hosted `Msil.Bridge`.  Imports only `Std.*` (no `LYRIC_LOAD_COMPILER=1`).
-//
-//   lyric test lyric-compiler/lyric/loop_eh_collection_self_test.l
-//
-// MSIL target only; JVM parity is tracked under epic #1470's JVM-deferral note.
-
+//! loop_eh_collection_self_test.l — executable regression tests for the
+//! remaining two #1481 (epic #1470, Band 2) self-hosted MSIL backend fixes:
+//!
+//!   Item 3 — break/continue across a `try` region must emit `leave`.  A
+//!   `break`/`continue` whose target loop was entered *outside* an enclosing
+//!   `try`/`catch` jumps across a CLR protected-region boundary; the backend
+//!   previously emitted a plain `br`, which is unverifiable IL
+//!   (`InvalidProgramException` at JIT time).  The fix tracks protected-region
+//!   nesting depth and emits `leave` when the jump escapes one or more open
+//!   regions.
+//!
+//!   Item 4 — `List.contains` / `List.removeAt` BCL stubs.  `xs.contains(v)`
+//!   previously popped its argument and pushed `false` (every membership test
+//!   wrong); `xs.removeAt(i)` popped and did nothing (silent no-op).  Both now
+//!   emit the real `List<object>::Contains(object)` / `RemoveAt(int32)` calls.
+//!
+//! Run via native `lyric test --target dotnet` — compiled in-process through the
+//! self-hosted `Msil.Bridge`.  Imports only `Std.*` (no `LYRIC_LOAD_COMPILER=1`).
+//!
+//!   lyric test lyric-compiler/lyric/loop_eh_collection_self_test.l
+//!
+//! MSIL target only; JVM parity is tracked under epic #1470's JVM-deferral note.
 @test_module
 package Lyric.LoopEhCollectionSelfTest
 
@@ -31,7 +30,6 @@ import Std.Testing
 // ─────────────────────────────────────────────────────────────────────────────
 // Item 3 — break / continue out of a `try` or `catch` body (must lower to `leave`).
 // ─────────────────────────────────────────────────────────────────────────────
-
 // `break` from inside a `try` whose enclosing loop sits outside the protected
 // region.  Sums elements until the first negative, then breaks out of both the
 // try and the while.
@@ -160,7 +158,6 @@ test "break inside a catch handler emits leave, not br" {
 // ─────────────────────────────────────────────────────────────────────────────
 // Item 4 — List.contains / List.removeAt real BCL calls.
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "List.contains reflects membership" {
   val xs: List[Int] = newList()
   xs.add(10)

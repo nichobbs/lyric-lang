@@ -1,5 +1,13 @@
 # 36 — v1.0 Roadmap
 
+> **SUPERSEDED FOR TRACKING (2026-06-09).** §R1–R6 are all complete (see
+> status lines in each section below). §R7 (self-hosted soundness/correctness
+> floor) is the only remaining v1.0 work, and its tracking has moved to
+> `docs/12-todo-plan.md`, which is the single source of truth for outstanding
+> tasks. This document is retained as a **historical record** of the R1–R6
+> milestones and their acceptance criteria. The §§3–5 workarounds and deferred
+> items remain accurate and can be referenced directly.
+
 This document is the actionable pre-release checklist.  Every item either
 blocks the `v1.0` tag or is a tracked production-quality gap deferred to
 a specific 1.x milestone with an open issue.  Per `CLAUDE.md`,
@@ -311,6 +319,22 @@ Gaps below are now closed.
 pipeline.  Depends on G5.  This is a Phase-7 deliverable and does NOT block
 1.0 — `dotnet tool install lyric` is the primary channel.
 
+_Progress (2026-06-11, D-progress-502):_ the **determinism foundation** is
+shipped and CI-enforced, and it already spans the **whole self-hosted compiler**,
+not just the stdlib.  The self-hosted MSIL backend is reproducible by
+construction (fixed Module MVID in `lowering.l`, zero PE `TimeDateStamp` in
+`assembler.l`, no embedded wall-clock).  `scripts/verify-reproducible-emit.sh`
+(wired into `bootstrap.sh` stage 2 (a) and a dedicated CI step) double-builds and
+exact-`cmp`s two corpora: the `lyric-stdlib/lyric.full.toml` bundle AND the
+entire `Lyric.Cli` closure (103/103 DLLs via `--internal-perpackage-build`).  The
+F# stage-0 emitter remains non-reproducible by design (random MVID + PE timestamp
++ a `Lyric.SdkVersion` `build_date` wall-clock) and frozen on a deletion
+schedule, so it is *not* the trust anchor; stage 2 (b) tracks its drift
+informationally.  The residual work for Q-dist-001 is the **cross-emitter
+byte-match** — making the F#-emitted and self-hosted-emitted compilers
+byte-identical — which is gated on §R7 (front-end completeness / codegen
+convergence; see docs/43) below, not on compilability.
+
 ---
 
 ### R7 — Self-hosted `--target dotnet` soundness & correctness floor  *(NEW; the real v1.0 blocker)*
@@ -327,11 +351,11 @@ wrongness*):
 
 | Band | Severity | Blocks v1.0? | Summary |
 |---|---|---|---|
-| **R7.1 Front-end soundness** | CRITICAL | **Yes** | Type checker is an advisory inference pass, not a gatekeeper: `TyError` matches anything, no match-exhaustiveness, no visibility/opaque/impl-conformance enforcement, no §5.2 parameter-mode pass. Single-file path is advisory (`bridge.l`), project path is fatal — same source diverges. Gaps C1, C2, C10, C11, H14, H15, H16, M6 + front-end half of C13. |
-| **R7.2 Backend correctness** | CRITICAL | **Yes** | `?` no-op (C3, #1475) and all of #1481 — compound-assign operator (H22), Float/Long literal match (H18), break/continue-across-`try` → `leave` (H17), `List.contains`/`removeAt` + unknown-method fail-loud (H21) — are **fixed**, as are `defer`-at-scope-exit (C7, #1477), `==`/`Map`-key structural equality (H1, #1480/#1837), and try/catch-as-value-expression IL (#1823). M7 is stale (loop invariants checked via the elaborator; `SItem` never parsed). Capturing closures (H20, #1479) now fail loud rather than silently miscompiling; display-class synthesis remains (gated with function-value invocation #1877). **The honest interim for any not-yet-lowered node is a hard diagnostic, never a silent pass-through.** |
+| **R7.1 Front-end soundness** | CRITICAL | **Yes** | **Shipped:** gatekeeper flip (C1, D-progress-438) — single-file now aborts on type errors, matching the project path; match exhaustiveness (T0016, #1483); visibility enforcement (H14, #1484); opaque representation-hiding (C10, #1485); §5.2 parameter-mode pass (C13-front-end, #1487); `EIndex`/`EIf`/`EMatch`/`EPropagate` expression typing; `EBlock`/`EUnsafe`/`EResult` (D-progress-408); impl-conformance start (C11 PARTIAL, #1486). **Remaining:** `TyError` still a universal unifier; remaining TyError expression forms — `ELambda`, `ETypeApp`, `EForall`/`EExists`, `EAssign`, tuple-destructure, record-ctor arg checking (C2); full impl-conformance sig-type matching + default method bodies (C11); `where T: Marker` bound satisfaction (H15); `alias X = Long` as a usable type (H16); numeric widening (M6). |
+| **R7.2 Backend correctness** | CRITICAL | **Yes** (nearly closed — multi-level nesting #1479 remains) | `?` (C3, #1475), all of #1481 (H22/H18/H17/H21), `defer` (C7, #1477), `==`/`Map`-key (H1, #1480/#1837), try/catch-as-value (#1823) all **fixed**. M7 stale (loop invariants via elaborator; `SItem` never parsed). Capturing closures (H20, #1479) **RESOLVED** — immutable by-value (`object[]` closed target) and `var` by-reference (heap cell), single-level incl. escaping closures. Function-value invocation (#1877) and param-taking lambdas (#1939) **fixed**. Remaining: multi-level lambda nesting (nested lambda captures enclosing lambda's locals, #1479); lambdas in `@test_module` (#1854, LOW). **The honest interim for any not-yet-lowered node is a hard diagnostic, never a silent pass-through.** |
 | **R7.3 Async** | CRITICAL | **Yes** | No `IAsyncStateMachine` / lazy `IAsyncEnumerable` in `lyric-compiler/msil/`. `await`/`spawn`/`async func` lower synchronously and silently miscompile (C4, C5). Largest single port (~110 KB of F# `AsyncStateMachine.fs`/`AsyncGenerator.fs` to port). Until ported, these must **panic with a tracked-issue message**, not miscompile. |
-| **R7.4 Feature completion** | HIGH | Per-feature | User generic *types* type-erased (C8); `@projectable` twins (H2); range-subtype validation (H3); custom `@generate` never invoked (H10); `old()`/quantifiers panic (H11); `config{}` no-op (M3); `@derive(Ord)`/union-enum derives (M4); cross-package generic-fn mono for user code (H6); wire `bind`/`scoped`/`provided` (H4); call-site named/default args (H5). |
-| **R7.5 F# elimination + AOT** | HIGH | **Yes** (AOT goal) | Two-plus F# DLLs still load-bearing: `Lyric.Emitter.dll` via `http_host.l` (`HttpClientHost`, blocked on package class-`val` `.cctor` codegen) and `process_capture_host.l` (needs async, R7.3); plus newly-found `StubCounterHost` (broken `@stubbable`, L5) and `Lyric.Session.Host.dll` (L6). No `<PublishAot>` is configured anywhere (H13) — the "AOT-compilable" exit criterion is unrealised and untested. |
+| **R7.4 Feature completion** | HIGH | Per-feature | User cross-package generic *types* type-erased (C8 — in-bundle generic records/unions now reified, #2362/D-progress-453/455; cross-package still erased); `@projectable` twins (H2); range-subtype validation (H3); custom `@generate` never invoked (H10); `old()`/quantifiers panic (H11); `config{}` no-op (M3); `@derive(Ord)`/union-enum derives (M4); cross-package generic-fn mono for user code (H6 — stdlib wired, user funcs not yet collected); wire `bind`/`scoped`/`provided` (H4 — `WMExpose` lowers, remainder dropped); call-site named/default args (H5 — record ctor reorder done, function call-site broken). |
+| **R7.5 F# elimination + AOT** | HIGH | **Yes** (AOT goal) | Two-plus F# DLLs still load-bearing: `Lyric.Emitter.dll` via `http_host.l` (`HttpClientHost`, blocked on package class-`val` `.cctor` codegen) and `process_capture_host.l` (needs async, R7.3); `Lyric.Session.Host.dll` (L6). `StubCounterHost` (L5) resolved (#1776). No `<PublishAot>` is configured anywhere (H13) — the "AOT-compilable" exit criterion is unrealised and untested. |
 
 **Acceptance gate (from `docs/41` §6 Band 6):** every program in
 `docs/02-worked-examples.md` builds and runs under `--target dotnet`; the parity

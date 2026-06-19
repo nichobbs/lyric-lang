@@ -1,21 +1,20 @@
-// jvm/self_test_b105.l — Stage B105: lowerMatchInt and lowerMatchStr helpers.
-//
-// Adds `LIntArm`/`lowerMatchInt` (lookupswitch dispatch) and
-// `LStrArm`/`lowerMatchStr` (String.equals chain dispatch) to lowering.l.
-//
-// Creates an IntOp class (emitted as Java 5 / V49 to avoid StackMapTable
-// complexity at merge points) with two static methods:
-//   intName(int n): String   — 1→"one", 2→"two", 3→"three", else "?"
-//   strCode(String s): int   — "a"→1, "b"→2, "c"→3, else 0
-//
-// Java output (java -jar):
-//   intName(1)=one
-//   intName(2)=two
-//   intName(4)=?
-//   strCode(a)=1
-//   strCode(b)=2
-//   strCode(x)=0
-
+//! jvm/self_test_b105.l — Stage B105: lowerMatchInt and lowerMatchStr helpers.
+//!
+//! Adds `LIntArm`/`lowerMatchInt` (lookupswitch dispatch) and
+//! `LStrArm`/`lowerMatchStr` (String.equals chain dispatch) to lowering.l.
+//!
+//! Creates an IntOp class (emitted as Java 5 / V49 to avoid StackMapTable
+//! complexity at merge points) with two static methods:
+//!   intName(int n): String   — 1→"one", 2→"two", 3→"three", else "?"
+//!   strCode(String s): int   — "a"→1, "b"→2, "c"→3, else 0
+//!
+//! Java output (java -jar):
+//!   intName(1)=one
+//!   intName(2)=two
+//!   intName(4)=?
+//!   strCode(a)=1
+//!   strCode(b)=2
+//!   strCode(x)=0
 package Jvm.SelfTestB105
 
 import Std.Core
@@ -27,7 +26,6 @@ import Jvm.Lowering
 import Jvm.Driver
 
 // ── Build IntOp class (V49) ───────────────────────────────────────────────────
-
 func makeIntNameMethod(pool: in Pool): MethodInfo {
   val asm = newAssembler(pool)
 
@@ -48,8 +46,8 @@ func makeIntNameMethod(pool: in Pool): MethodInfo {
   defaultBody.add(LAreturn)
 
   val arms: List[LIntArm] = newList()
-  arms.add(LIntArm(key = 1, caseLabel = "case_one",   bodyInsns = oneBody))
-  arms.add(LIntArm(key = 2, caseLabel = "case_two",   bodyInsns = twoBody))
+  arms.add(LIntArm(key = 1, caseLabel = "case_one", bodyInsns = oneBody))
+  arms.add(LIntArm(key = 2, caseLabel = "case_two", bodyInsns = twoBody))
   arms.add(LIntArm(key = 3, caseLabel = "case_three", bodyInsns = threeBody))
 
   lowerMatchInt(asm, 0, arms, "case_default", defaultBody, "end_int")
@@ -64,12 +62,7 @@ func makeIntNameMethod(pool: in Pool): MethodInfo {
 
   val ps: List[JvmType] = newList()
   ps.add(JInt)
-  makeMethodInfo(
-    ACC_PUBLIC + ACC_STATIC,
-    "intName",
-    buildDescriptor(ps, JRef(className = "java/lang/String")),
-    attrs
-  )
+  makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "intName", buildDescriptor(ps, JRef(className = "java/lang/String")), attrs)
 }
 
 func makeStrCodeMethod(pool: in Pool): MethodInfo {
@@ -108,12 +101,7 @@ func makeStrCodeMethod(pool: in Pool): MethodInfo {
 
   val ps: List[JvmType] = newList()
   ps.add(JRef(className = "java/lang/String"))
-  makeMethodInfo(
-    ACC_PUBLIC + ACC_STATIC,
-    "strCode",
-    buildDescriptor(ps, JInt),
-    attrs
-  )
+  makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "strCode", buildDescriptor(ps, JInt), attrs)
 }
 
 func makeIntOpBytes(): List[Byte] {
@@ -126,15 +114,14 @@ func makeIntOpBytes(): List[Byte] {
 }
 
 // ── Build Main class ──────────────────────────────────────────────────────────
-
 func makeMainBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOutIdx  = poolFieldref(pool,  "java/lang/System",    "out",     "Ljava/io/PrintStream;")
+  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val concatIdx  = poolMethodref(pool, "java/lang/String",    "concat",  "(Ljava/lang/String;)Ljava/lang/String;")
-  val valueOfIdx = poolMethodref(pool, "java/lang/String",    "valueOf", "(I)Ljava/lang/String;")
+  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
+  val valueOfIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
   val intNameIdx = poolMethodref(pool, "IntOp", "intName", "(I)Ljava/lang/String;")
   val strCodeIdx = poolMethodref(pool, "IntOp", "strCode", "(Ljava/lang/String;)I")
 
@@ -202,23 +189,22 @@ func makeMainBytes(): List[Byte] {
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
-
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b105"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val classes: List[BuiltClass] = newList()
   classes.add(BuiltClass(binaryName = "IntOp", bytes = makeIntOpBytes()))
-  classes.add(BuiltClass(binaryName = "Main",  bytes = makeMainBytes()))
+  classes.add(BuiltClass(binaryName = "Main", bytes = makeMainBytes()))
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB105",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

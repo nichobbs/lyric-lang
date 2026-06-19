@@ -1,28 +1,27 @@
-// bench/bench_synth.l — self-hosted benchmark synthesizer for `lyric bench`.
-//
-// Given a Lyric source string annotated with `@bench_module` at the file
-// level and one or more `@bench` annotations on zero-argument functions,
-// produce a new source string where a synthesised `func main(): Int` is
-// appended that:
-//
-//   1. Warms up each `@bench` function <warmup> times (un-timed).
-//   2. Runs each `@bench` function <runs> times and records wall-clock time
-//      via `Std.Time.now()` / `since()` / `totalMillis()`.
-//   3. Prints min / max / mean milliseconds per bench to stdout.
-//
-// The rewrite preserves the original source bytes for all non-synthesised
-// items so that type-checker diagnostics still point at user code.
-//
-// Requirements for the input bench module:
-//   * `@bench_module` annotation at the file level.
-//   * `import Std.Time` — used by the synthesised harness.
-//   * Each benchmarked function must have signature `func name(): Unit`.
-//   * No user-defined `func main()`.
-//
-// If `Std.Time` is not already imported, the synthesiser injects
-// `import Std.Time` immediately before the first item so the
-// harness functions resolve correctly.
-
+//! bench/bench_synth.l — self-hosted benchmark synthesizer for `lyric bench`.
+//!
+//! Given a Lyric source string annotated with `@bench_module` at the file
+//! level and one or more `@bench` annotations on zero-argument functions,
+//! produce a new source string where a synthesised `func main(): Int` is
+//! appended that:
+//!
+//!   1. Warms up each `@bench` function <warmup> times (un-timed).
+//!   2. Runs each `@bench` function <runs> times and records wall-clock time
+//!      via `Std.Time.now()` / `since()` / `totalMillis()`.
+//!   3. Prints min / max / mean milliseconds per bench to stdout.
+//!
+//! The rewrite preserves the original source bytes for all non-synthesised
+//! items so that type-checker diagnostics still point at user code.
+//!
+//! Requirements for the input bench module:
+//!   * `@bench_module` annotation at the file level.
+//!   * `import Std.Time` — used by the synthesised harness.
+//!   * Each benchmarked function must have signature `func name(): Unit`.
+//!   * No user-defined `func main()`.
+//!
+//! If `Std.Time` is not already imported, the synthesiser injects
+//! `import Std.Time` immediately before the first item so the
+//! harness functions resolve correctly.
 package Lyric.BenchSynth
 
 import Std.Core
@@ -34,24 +33,24 @@ import Lyric.Parser
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public surface.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub union Outcome {
   case BenchSynthesised(source: String, benchCount: Int)
   case NoBenchModule(span: Span)
-  case UserMainExists(span: Span)
-  case ParseFailures(diagnostics: List[Diagnostic])
+  case BenchUserMainExists(span: Span)
+  case BenchParseFailures(diagnostics: List[Diagnostic])
+  // ─────────────────────────────────────────────────────────────────────────────
+  // §2. Helpers.
+  // ─────────────────────────────────────────────────────────────────────────────
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §2. Helpers.
-// ─────────────────────────────────────────────────────────────────────────────
 
 record BenchSlot {
   name: String
 }
 
 func annotationName(a: in Annotation): String {
-  if a.name.segments.count == 0 { return "" }
+  if a.name.segments.count == 0 {
+    return ""
+  }
   var s = a.name.segments[0]
   var i = 1
   while i < a.name.segments.count {
@@ -96,7 +95,8 @@ func userMainSpan(items: in List[Item]): Option[Span] {
           found = Some(value = it.span)
         }
       }
-      case _ -> {}
+      case _ -> {
+      }
     }
     i = i + 1
   }
@@ -110,7 +110,8 @@ func parseErrors(diags: in List[Diagnostic]): List[Diagnostic] {
     val d = diags[i]
     match d.severity {
       case DiagError -> acc.add(d)
-      case _ -> {}
+      case _ -> {
+      }
     }
     i = i + 1
   }
@@ -158,9 +159,8 @@ func escapeForLiteral(s: in String): String {
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Synthesised main builder.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func synthesizeMain(benches: in List[BenchSlot], runs: in Int, warmup: in Int): String {
-  val runsStr  = toString(runs)
+  val runsStr = toString(runs)
   val warmupStr = toString(warmup)
   // runs as a Double literal for mean computation (avoids Int/Double division).
   val runsF = runsStr + ".0"
@@ -170,19 +170,19 @@ func synthesizeMain(benches: in List[BenchSlot], runs: in Int, warmup: in Int): 
   sb = sb + "  println(\"\")\n"
   var i = 0
   while i < benches.count {
-    val b     = benches[i]
-    val name  = b.name
+    val b = benches[i]
+    val name = b.name
     val nameEsc = escapeForLiteral(name)
-    val idx   = toString(i)
-    val wVar  = "__lyric_w_"   + idx
-    val rVar  = "__lyric_r_"   + idx
-    val minV  = "__lyric_min_" + idx
-    val maxV  = "__lyric_max_" + idx
-    val sumV  = "__lyric_sum_" + idx
+    val idx = toString(i)
+    val wVar = "__lyric_w_" + idx
+    val rVar = "__lyric_r_" + idx
+    val minV = "__lyric_min_" + idx
+    val maxV = "__lyric_max_" + idx
+    val sumV = "__lyric_sum_" + idx
     val meanV = "__lyric_mean_" + idx
-    val t0V   = "__lyric_t0_"  + idx
-    val t1V   = "__lyric_t1_"  + idx
-    val msV   = "__lyric_ms_"  + idx
+    val t0V = "__lyric_t0_" + idx
+    val t1V = "__lyric_t1_" + idx
+    val msV = "__lyric_ms_" + idx
     // Warmup loop.
     sb = sb + "  var " + wVar + " = 0\n"
     sb = sb + "  while " + wVar + " < " + warmupStr + " {\n"
@@ -219,20 +219,20 @@ func synthesizeMain(benches: in List[BenchSlot], runs: in Int, warmup: in Int): 
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. `synthesize` — main entry point.
 // ─────────────────────────────────────────────────────────────────────────────
-
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func synthesizeBench(source: in String, runs: in Int, warmup: in Int, filter: in String): Outcome {
-  val pf   = parse(source)
+  val pf = parse(source)
   val errs = parseErrors(pf.diagnostics)
   if errs.count > 0 {
-    return ParseFailures(diagnostics = errs)
+    return BenchParseFailures(diagnostics = errs)
   }
   if not hasBenchModule(pf.file) {
     return NoBenchModule(span = pf.file.span)
   }
   match userMainSpan(pf.file.items) {
-    case Some(sp) -> return UserMainExists(span = sp)
-    case None     -> {}
+    case Some(sp) -> return BenchUserMainExists(span = sp)
+    case None -> {
+    }
   }
 
   // Collect @bench function names by walking the AST items.
@@ -252,7 +252,8 @@ pub func synthesizeBench(source: in String, runs: in Int, warmup: in Int, filter
           }
         }
       }
-      case _ -> {}
+      case _ -> {
+      }
     }
     i = i + 1
   }

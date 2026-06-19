@@ -1,27 +1,26 @@
-// mono_shadow_self_test.l — #1855: a user-defined function must shadow an
-// imported generic of the same bare name in the monomorphizer.
-//
-// `Std.Core` exports proof-only generic identities in `core_proof.l`
-// (`identity`, `tag`, `pickFirst`, ...).  The monomorphizer seeds its
-// `genDecls` worklist with imported generics keyed by bare name.  Before the
-// fix it added an imported generic to `genDecls` even when the user's file
-// already defined a *non-generic* function of that name (the local is tracked
-// in `funcDecls` but not `genDecls`, so the "local shadows" guard missed it).
-//
-// The result: a user `func tag(o: in Option[Int]): Int` call was
-// monomorphised against the stdlib `tag[T](x: in T): T` — producing a broken
-// identity specialisation `tag__Option_Int` (return type `Option<Int>` instead
-// of `Int`, body just forwards its argument, the `match` dropped) that the call
-// site then targeted.  It surfaced specifically when the argument carried an
-// explicit type annotation (e.g. `val o: Option[Int] = Some(7)`), because that
-// is what let the bogus type-arg inference complete; the runtime symptom was
-// `Common Language Runtime detected an invalid program.`
-//
-// Run in CI via native `lyric test --target dotnet` (compiles in-process
-// through the self-hosted `Msil.Bridge`, which runs the monomorphizer with the
-// stdlib generics as imports — so the shadowing path under test is exercised).
-// Imports only `Std.*`.
-
+//! mono_shadow_self_test.l — #1855: a user-defined function must shadow an
+//! imported generic of the same bare name in the monomorphizer.
+//!
+//! `Std.Core` exports proof-only generic identities in `core_proof.l`
+//! (`identity`, `tag`, `pickFirst`, ...).  The monomorphizer seeds its
+//! `genDecls` worklist with imported generics keyed by bare name.  Before the
+//! fix it added an imported generic to `genDecls` even when the user's file
+//! already defined a *non-generic* function of that name (the local is tracked
+//! in `funcDecls` but not `genDecls`, so the "local shadows" guard missed it).
+//!
+//! The result: a user `func tag(o: in Option[Int]): Int` call was
+//! monomorphised against the stdlib `tag[T](x: in T): T` — producing a broken
+//! identity specialisation `tag__Option_Int` (return type `Option<Int>` instead
+//! of `Int`, body just forwards its argument, the `match` dropped) that the call
+//! site then targeted.  It surfaced specifically when the argument carried an
+//! explicit type annotation (e.g. `val o: Option[Int] = Some(7)`), because that
+//! is what let the bogus type-arg inference complete; the runtime symptom was
+//! `Common Language Runtime detected an invalid program.`
+//!
+//! Run in CI via native `lyric test --target dotnet` (compiles in-process
+//! through the self-hosted `Msil.Bridge`, which runs the monomorphizer with the
+//! stdlib generics as imports — so the shadowing path under test is exercised).
+//! Imports only `Std.*`.
 @test_module
 package Lyric.MonoShadowSelfTest
 
@@ -33,7 +32,7 @@ import Std.Testing
 func tag(o: in Option[Int]): Int {
   match o {
     case Some(v) -> v
-    case None    -> -1
+    case None -> -1
   }
 }
 
@@ -42,17 +41,19 @@ func tag(o: in Option[Int]): Int {
 func identity(o: in Option[Int]): String {
   match o {
     case Some(_) -> "some"
-    case None    -> "none"
+    case None -> "none"
   }
 }
 
-// Local union (not stdlib) — same shadowing path, different value type.
-union Box { case Empty  case Full(v: Int) }
-
-func tagBox(b: in Box): Int {
-  match b {
-    case Full(v) -> v
-    case Empty   -> -1
+// `pickFirst` collides with `Std.Core.pickFirst[T, U]` (a proof generic that
+// takes two arguments and returns the first).  The local two-argument function
+// must win — any monomorphisation against the stdlib generic would produce a
+// different return type and body, crashing the call site.
+func pickFirst(a: in Int, b: in Int): String {
+  if a > b {
+    "a"
+  } else {
+    "b"
   }
 }
 
@@ -77,7 +78,7 @@ test "shadowed `identity` returns the user result, not the stdlib identity" {
   assertEqual(identity(o), "some", "user identity(Some) -> \"some\"")
 }
 
-test "shadowing also covers a local-union annotated local" {
-  val b: Box = Full(42)
-  assertEqualInt(tagBox(b), 42, "tagBox(Full(42)) -> 42")
+test "shadowed `pickFirst` uses the local two-Int->String body, not the stdlib generic" {
+  assertEqual(pickFirst(5, 3), "a", "5 > 3 -> a")
+  assertEqual(pickFirst(2, 9), "b", "2 < 9 -> b")
 }

@@ -13,35 +13,21 @@
 //!
 //! Only active when compiled with feature = "jvm" (Phase 6).
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
-
 @cfg(feature = "jvm")
 package Storage.Kernel.Jvm
 
 // ─── Amazon S3 provider ───────────────────────────────────────────────────────
-
 @axiom("AWS SDK for Java v2 — software.amazon.awssdk.services.s3.S3Client")
 @cfg(feature = "s3")
 extern package software.amazon.awssdk.services.s3.S3Client {
   /// Open an S3 client for the given bucket.  Returns an opaque bucket handle.
   /// Pass empty strings for accessKey/secretKey to use the ambient IAM role.
   /// Pass an empty endpointUrl to use the default AWS regional endpoint.
-  pub func connect(
-    region:      String,
-    bucket:      String,
-    accessKey:   String,
-    secretKey:   String,
-    endpointUrl: String
-  ): Result[Int, String]
+  pub func connect(region: String, bucket: String, accessKey: String, secretKey: String, endpointUrl: String): Result[Int, String]
 
   /// Upload an object.  userMetaJson is a JSON object of string key-value pairs.
   /// Returns JSON-serialised StorageMetadata on success.
-  pub func put(
-    bucketHandle: Int,
-    key:          String,
-    dataBase64:   String,
-    contentType:  String,
-    userMetaJson: String
-  ): Result[String, String]
+  pub func put(bucketHandle: Int, key: String, dataBase64: String, contentType: String, userMetaJson: String): Result[String, String]
 
   /// Download an object.  Returns JSON-serialised StorageObject on success.
   pub func get(bucketHandle: Int, key: String): Result[String, String]
@@ -50,25 +36,15 @@ extern package software.amazon.awssdk.services.s3.S3Client {
   pub func delete(bucketHandle: Int, key: String): Result[Unit, String]
 
   /// List objects with an optional prefix.  Returns JSON-serialised ListResult.
-  pub func list(
-    bucketHandle:      Int,
-    prefix:            String,
-    continuationToken: String,
-    maxKeys:           Int
-  ): Result[String, String]
+  pub func list(bucketHandle: Int, prefix: String, continuationToken: String, maxKeys: Int): Result[String, String]
 
   /// Generate a pre-signed URL valid for `expiresInSeconds` seconds.
-  pub func presignedUrl(
-    bucketHandle:     Int,
-    key:              String,
-    expiresInSeconds: Int
-  ): Result[String, String]
+  pub func presignedUrl(bucketHandle: Int, key: String, expiresInSeconds: Int): Result[String, String]
 
   /// Check whether an object exists.
   pub func exists(bucketHandle: Int, key: String): Result[Bool, String]
+  // ─── Azure Blob Storage provider ─────────────────────────────────────────────
 }
-
-// ─── Azure Blob Storage provider ─────────────────────────────────────────────
 
 @axiom("Azure Storage Blob SDK for Java — com.azure.storage.blob.BlobServiceClient")
 @cfg(feature = "azureblob")
@@ -77,13 +53,7 @@ extern package com.azure.storage.blob.BlobServiceClient {
   pub func connect(connectionString: String, containerName: String): Result[Int, String]
 
   /// Upload a blob.  Returns JSON-serialised StorageMetadata on success.
-  pub func put(
-    bucketHandle: Int,
-    key:          String,
-    dataBase64:   String,
-    contentType:  String,
-    userMetaJson: String
-  ): Result[String, String]
+  pub func put(bucketHandle: Int, key: String, dataBase64: String, contentType: String, userMetaJson: String): Result[String, String]
 
   /// Download a blob.  Returns JSON-serialised StorageObject on success.
   pub func get(bucketHandle: Int, key: String): Result[String, String]
@@ -92,25 +62,15 @@ extern package com.azure.storage.blob.BlobServiceClient {
   pub func delete(bucketHandle: Int, key: String): Result[Unit, String]
 
   /// List blobs with an optional prefix.  Returns JSON-serialised ListResult.
-  pub func list(
-    bucketHandle:      Int,
-    prefix:            String,
-    continuationToken: String,
-    maxKeys:           Int
-  ): Result[String, String]
+  pub func list(bucketHandle: Int, prefix: String, continuationToken: String, maxKeys: Int): Result[String, String]
 
   /// Generate a SAS URL valid for `expiresInSeconds` seconds.
-  pub func presignedUrl(
-    bucketHandle:     Int,
-    key:              String,
-    expiresInSeconds: Int
-  ): Result[String, String]
+  pub func presignedUrl(bucketHandle: Int, key: String, expiresInSeconds: Int): Result[String, String]
 
   /// Check whether a blob exists.
   pub func exists(bucketHandle: Int, key: String): Result[Bool, String]
+  // ─── Local filesystem provider ────────────────────────────────────────────────
 }
-
-// ─── Local filesystem provider ────────────────────────────────────────────────
 
 @axiom("Local filesystem storage using java.nio.file.Files via lyric.storage.LocalFs")
 @cfg(feature = "local")
@@ -119,13 +79,7 @@ extern package lyric.storage.LocalFs {
   pub func connect(basePath: String, bucketName: String): Result[Int, String]
 
   /// Write a file.  Returns JSON-serialised StorageMetadata on success.
-  pub func put(
-    bucketHandle: Int,
-    key:          String,
-    dataBase64:   String,
-    contentType:  String,
-    userMetaJson: String
-  ): Result[String, String]
+  pub func put(bucketHandle: Int, key: String, dataBase64: String, contentType: String, userMetaJson: String): Result[String, String]
 
   /// Read a file.  Returns JSON-serialised StorageObject on success.
   pub func get(bucketHandle: Int, key: String): Result[String, String]
@@ -134,52 +88,38 @@ extern package lyric.storage.LocalFs {
   pub func delete(bucketHandle: Int, key: String): Result[Unit, String]
 
   /// List files with an optional prefix.  Returns JSON-serialised ListResult.
-  pub func list(
-    bucketHandle:      Int,
-    prefix:            String,
-    continuationToken: String,
-    maxKeys:           Int
-  ): Result[String, String]
+  pub func list(bucketHandle: Int, prefix: String, continuationToken: String, maxKeys: Int): Result[String, String]
 
   /// Return a file:// URL; expiresInSeconds is ignored for local storage.
-  pub func presignedUrl(
-    bucketHandle:     Int,
-    key:              String,
-    expiresInSeconds: Int
-  ): Result[String, String]
+  pub func presignedUrl(bucketHandle: Int, key: String, expiresInSeconds: Int): Result[String, String]
 
   /// Check whether a file exists.
   pub func exists(bucketHandle: Int, key: String): Result[Bool, String]
+  // ─── Audit logging ────────────────────────────────────────────────────────────
 }
-
-// ─── Audit logging ────────────────────────────────────────────────────────────
 
 @axiom("Audit logging via java.util.logging")
 extern package lyric.storage.Audit {
   /// Emit a structured audit log entry for a storage operation.
   pub func auditLog(operation: String, level: String, detail: String): Unit
+  // ─── Re-exports with `in` mode ────────────────────────────────────────────────
 }
-
-// ─── Re-exports with `in` mode ────────────────────────────────────────────────
 
 /// Connect to an Amazon S3 bucket.
 @cfg(feature = "s3")
 pub func connectS3(
-  region:      in String,
-  bucket:      in String,
-  accessKey:   in String,
-  secretKey:   in String,
-  endpointUrl: in String
+  region: in String,
+  bucket: in String,
+  accessKey: in String,
+  secretKey: in String,
+  endpointUrl: in String,
 ): Result[Int, String] {
   software.amazon.awssdk.services.s3.S3Client.connect(region, bucket, accessKey, secretKey, endpointUrl)
 }
 
 /// Connect to an Azure Blob Storage container.
 @cfg(feature = "azureblob")
-pub func connectAzure(
-  connectionString: in String,
-  containerName:    in String
-): Result[Int, String] {
+pub func connectAzure(connectionString: in String, containerName: in String): Result[Int, String] {
   com.azure.storage.blob.BlobServiceClient.connect(connectionString, containerName)
 }
 
@@ -193,10 +133,10 @@ pub func connectLocal(basePath: in String, bucketName: in String): Result[Int, S
 @cfg(feature = "s3")
 pub func put(
   bucketHandle: in Int,
-  key:          in String,
-  dataBase64:   in String,
-  contentType:  in String,
-  userMetaJson: in String
+  key: in String,
+  dataBase64: in String,
+  contentType: in String,
+  userMetaJson: in String,
 ): Result[String, String] {
   return software.amazon.awssdk.services.s3.S3Client.put(bucketHandle, key, dataBase64, contentType, userMetaJson)
 }
@@ -205,10 +145,10 @@ pub func put(
 @cfg(feature = "azureblob")
 pub func put(
   bucketHandle: in Int,
-  key:          in String,
-  dataBase64:   in String,
-  contentType:  in String,
-  userMetaJson: in String
+  key: in String,
+  dataBase64: in String,
+  contentType: in String,
+  userMetaJson: in String,
 ): Result[String, String] {
   return com.azure.storage.blob.BlobServiceClient.put(bucketHandle, key, dataBase64, contentType, userMetaJson)
 }
@@ -217,10 +157,10 @@ pub func put(
 @cfg(feature = "local")
 pub func put(
   bucketHandle: in Int,
-  key:          in String,
-  dataBase64:   in String,
-  contentType:  in String,
-  userMetaJson: in String
+  key: in String,
+  dataBase64: in String,
+  contentType: in String,
+  userMetaJson: in String,
 ): Result[String, String] {
   return lyric.storage.LocalFs.put(bucketHandle, key, dataBase64, contentType, userMetaJson)
 }
@@ -264,10 +204,7 @@ pub func delete(bucketHandle: in Int, key: in String): Result[Unit, String] {
 /// List objects in the S3 bucket.
 @cfg(feature = "s3")
 pub func list(
-  bucketHandle:      in Int,
-  prefix:            in String,
-  continuationToken: in String,
-  maxKeys:           in Int
+  bucketHandle: in Int, prefix: in String, continuationToken: in String, maxKeys: in Int
 ): Result[String, String] {
   return software.amazon.awssdk.services.s3.S3Client.list(bucketHandle, prefix, continuationToken, maxKeys)
 }
@@ -275,10 +212,7 @@ pub func list(
 /// List objects in the Azure Blob container.
 @cfg(feature = "azureblob")
 pub func list(
-  bucketHandle:      in Int,
-  prefix:            in String,
-  continuationToken: in String,
-  maxKeys:           in Int
+  bucketHandle: in Int, prefix: in String, continuationToken: in String, maxKeys: in Int
 ): Result[String, String] {
   return com.azure.storage.blob.BlobServiceClient.list(bucketHandle, prefix, continuationToken, maxKeys)
 }
@@ -286,41 +220,26 @@ pub func list(
 /// List objects in the local filesystem store.
 @cfg(feature = "local")
 pub func list(
-  bucketHandle:      in Int,
-  prefix:            in String,
-  continuationToken: in String,
-  maxKeys:           in Int
+  bucketHandle: in Int, prefix: in String, continuationToken: in String, maxKeys: in Int
 ): Result[String, String] {
   return lyric.storage.LocalFs.list(bucketHandle, prefix, continuationToken, maxKeys)
 }
 
 /// Generate a pre-signed URL for the S3 bucket.
 @cfg(feature = "s3")
-pub func presignedUrl(
-  bucketHandle:     in Int,
-  key:              in String,
-  expiresInSeconds: in Int
-): Result[String, String] {
+pub func presignedUrl(bucketHandle: in Int, key: in String, expiresInSeconds: in Int): Result[String, String] {
   return software.amazon.awssdk.services.s3.S3Client.presignedUrl(bucketHandle, key, expiresInSeconds)
 }
 
 /// Generate a SAS URL for the Azure Blob container.
 @cfg(feature = "azureblob")
-pub func presignedUrl(
-  bucketHandle:     in Int,
-  key:              in String,
-  expiresInSeconds: in Int
-): Result[String, String] {
+pub func presignedUrl(bucketHandle: in Int, key: in String, expiresInSeconds: in Int): Result[String, String] {
   return com.azure.storage.blob.BlobServiceClient.presignedUrl(bucketHandle, key, expiresInSeconds)
 }
 
 /// Return a file:// URL for the local filesystem object.
 @cfg(feature = "local")
-pub func presignedUrl(
-  bucketHandle:     in Int,
-  key:              in String,
-  expiresInSeconds: in Int
-): Result[String, String] {
+pub func presignedUrl(bucketHandle: in Int, key: in String, expiresInSeconds: in Int): Result[String, String] {
   return lyric.storage.LocalFs.presignedUrl(bucketHandle, key, expiresInSeconds)
 }
 

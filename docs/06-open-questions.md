@@ -531,6 +531,18 @@ questions"` for their current status.
 
 ---
 
+## Match pattern questions (Q-MP-001 and later)
+
+---
+
+## Q-MP-001: Const pattern syntax and scoping
+
+**Status:** RESOLVED → D-progress-523; codegen representation codified in D101.
+
+**Decision:** `@Ident` syntax adopted. `case @NAME ->` in a match arm compares the scrutinee against the compile-time value of `val`/`const NAME`. The `@` prefix is unambiguous: it cannot precede an identifier in annotation or binding-pattern contexts. The referenced name must resolve to a `val` initialised with a literal (or a `const` declaration); dynamic vals (T0069), generic vals (T0071), non-val names (T0072), and type mismatches (T0068) are rejected at type-check time. The type checker validates the const pattern but retains the `PConstRef` node; each backend lowers it to the same comparison as a literal pattern (no runtime overhead). The choice to keep `PConstRef` through to codegen rather than rewrite to `PLiteral` at type-check is recorded in D101 (docs/03). See `docs/46-const-patterns.md` for the complete design.
+
+---
+
 ## JS / WASM Component Model questions
 
 JS-target and WASM Component Model open questions (Q-JS-001–Q-JS-006 and
@@ -555,3 +567,61 @@ Source generator open questions (Q-SG-001–Q-SG-004) are maintained in
 `docs/40-source-generators.md` §10.  They live there because they require
 source-generator design context to evaluate.  All Q-SG entries are currently
 open.
+
+---
+
+## JVM stdlib portability questions
+
+**Q-JVM-001 (open):** `Std.Environment.setVar` is marked `@stable(since = "1.0")` but
+its JVM implementation (`lyric-stdlib/std/_kernel_jvm/environment_host.l`) is a
+silent no-op — the JVM platform has no portable `setenv` equivalent, and the
+`lyric` CLI always runs on .NET.  Two sub-questions:
+
+1. Should `@stable` be deferred until the JVM behaviour is defined (either a real
+   implementation or a documented first-class limitation)?
+2. Should calling `setVar` in a JVM-targeted compilation emit a compile-time note
+   so callers are not silently surprised?
+
+The function works correctly on .NET; the stability question is purely about the
+cross-platform contract.  Tracked in review issue #3534.
+
+---
+
+## Maven protocol test coverage
+
+**Q-MV-001 (open):** The three pure helpers in `cli_restore.l` —
+`jsonEscape`, `buildMavenResolverRequest`, and `extractMavenJarPaths` — have
+non-trivial string-manipulation logic and implicit invariants (compact-JSON
+protocol, unescape order) but no `@test_module` coverage.
+
+The blocker is that these functions are private to the `Lyric.Cli` package and
+depend on `MavenSection` (from `Lyric.Manifest`), so a standalone `@test_module`
+cannot import them without either making them `pub` or extracting them into a
+separate `Lyric.MavenProtocol` package.
+
+Tracked in review issue #3549.  Resolution options:
+- Extract to a `Lyric.MavenProtocol` package with `pub` visibility and a
+  dedicated `maven_protocol_self_test.l`.
+- Make the helpers `pub` in `cli_restore.l` and test from a `cli_restore_self_test.l`
+  (accepts the full `Lyric.Cli` import closure).
+
+---
+
+## FFI ergonomics improvements
+
+**Q47-001–Q47-004 (import extern syntax, open):**
+See `docs/47-import-extern-syntax.md` for the full design sketch. The proposal
+unifies external-type imports with Lyric package imports via `import extern
+Docker.DotNet.{ DockerClient as HostClient }` syntax, replacing scattered
+`extern type` declarations. Open questions:
+- Q47-001: Namespace resolution (full FQN vs. by-namespace search)?
+- Q47-002: Name collision semantics (shadowing vs. error)?
+- Q47-003: Tooling support (doc rendering, API diffs)?
+- Q47-004: Visibility in `pub use` re-exports?
+
+**Q48-001–Q48-003 (Constructor shorthand):**
+See `docs/48-constructor-shorthand.md`. Propose enabling `.new(args)` calls on external types (already works on JVM; MSIL still requires `@externTarget`
+wrappers). Leverages Phase 3c auto-FFI infrastructure. Design questions:
+- Q48-001: Generic constructors (`List[T].new(capacity)`; requires template instantiation; part of Q022-4).
+- Q48-002: Async constructors (`async T.new(...)`).
+- Q48-003: Static factory methods (already supported via auto-FFI; no special syntax needed).

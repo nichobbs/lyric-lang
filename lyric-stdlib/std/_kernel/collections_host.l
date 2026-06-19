@@ -1,23 +1,23 @@
-// std/_kernel/collections_host.l - host boundary for the BCL generic
-// collections backing `Std.Collections.List` and `Std.Collections.Map`.
-//
-// Declares the `extern type` aliases and host constructors directly.
-// `Std.Collections` `import`s this package; downstream `import
-// Std.Collections` transitively pulls these declarations in via the
-// artifact-dependency walker, so user code continues to see `List[T]`
-// and `Map[K, V]` as bare names with full BCL method dispatch
-// (`xs.add(item)`, `xs[i]`, `m.containsKey(k)`).
-//
-// Internal: only `Std.Collections` should import this; per
-// `compiler/lyric/std/_kernel/README.md` the kernel is the audited
-// extern boundary, not a general-purpose API.
-
+//! std/_kernel/collections_host.l - host boundary for the BCL generic
+//! collections backing `Std.Collections.List` and `Std.Collections.Map`.
+//!
+//! Declares the `extern type` aliases and host constructors directly.
+//! `Std.Collections` `import`s this package; downstream `import
+//! Std.Collections` transitively pulls these declarations in via the
+//! artifact-dependency walker, so user code continues to see `List[T]`
+//! and `Map[K, V]` as bare names with full BCL method dispatch
+//! (`xs.add(item)`, `xs[i]`, `m.containsKey(k)`).
+//!
+//! Internal: only `Std.Collections` should import this; per
+//! `compiler/lyric/std/_kernel/README.md` the kernel is the audited
+//! extern boundary, not a general-purpose API.
 @axiom("System.Collections.Generic.List / Dictionary conform to their documented .NET contracts")
 package Std.CollectionsHost
 
 import Std.Core
 
-extern type List[T]   = "System.Collections.Generic.List`1"
+extern type List[T] = "System.Collections.Generic.List`1"
+
 extern type Map[K, V] = "System.Collections.Generic.Dictionary`2"
 
 @externTarget("System.Collections.Generic.List`1..ctor")
@@ -48,8 +48,29 @@ pub func tryGetValue[K, V](m: in Map[K, V], key: in K, value: out V): Bool = ()
 // It is now implemented in pure Lyric in `set.l` using `for x in s`
 // (IEnumerable for-loop) and `List[T].toArray()`.  No extern needed.
 // =====================================================================
-
 extern type Set[T] = "System.Collections.Generic.HashSet`1"
 
 @externTarget("System.Collections.Generic.HashSet`1..ctor")
 pub func newSet[T](): Set[T] = ()
+
+// =====================================================================
+// Dict key/value collection views — BCL nested types on Dictionary`2.
+//
+// `DictKeyCollection[K, V]` and `DictValueCollection[K, V]` expose the
+// key and value collections of a `Map[K, V]` without copying.  Both
+// types implement IEnumerable<K> / IEnumerable<V> (not IList), so
+// iteration is handled by the self-hosted emitter's IEnumerator path.
+//
+// CLR nested-type FQN uses `+` as the enclosing-type separator.
+// =====================================================================
+extern type DictKeyCollection[K, V] = "System.Collections.Generic.Dictionary`2+KeyCollection"
+
+extern type DictValueCollection[K, V] = "System.Collections.Generic.Dictionary`2+ValueCollection"
+
+@externTarget("System.Collections.Generic.Dictionary`2.get_Keys")
+@externInstance
+pub func dictGetKeys[K, V](m: in Map[K, V]): DictKeyCollection[K, V] = ()
+
+@externTarget("System.Collections.Generic.Dictionary`2.get_Values")
+@externInstance
+pub func dictGetValues[K, V](m: in Map[K, V]): DictValueCollection[K, V] = ()

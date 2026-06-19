@@ -1,6 +1,6 @@
-// parser_exprs.l — generic params, where-clauses, type expressions,
-// patterns, and the full expression/block/statement grammar.
-// Mirrors the corresponding sections of compiler/src/Lyric.Parser/Parser.fs.
+//! parser_exprs.l — generic params, where-clauses, type expressions,
+//! patterns, and the full expression/block/statement grammar.
+//! Mirrors the corresponding sections of compiler/src/Lyric.Parser/Parser.fs.
 package Lyric.Parser
 
 import Std.Core
@@ -10,7 +10,6 @@ import Lyric.Lexer
 // ─────────────────────────────────────────────────────────────────────────────
 // AST constructor helpers.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub func mkExpr(kind: in ExprKind, span: in Span): Expr {
   Expr(kind = kind, span = span)
 }
@@ -27,10 +26,26 @@ pub func mkStmt(kind: in StatementKind, span: in Span): Statement {
   Statement(kind = kind, span = span)
 }
 
+// Must appear before parsePrimaryExpr: Lyric's resolver does not support forward references.
+func isQuantifierContext(st: in ParseState): Bool {
+  val tokAfterName = peekAt(st, 1)
+  if not isPunct(tokAfterName.token, LParen) {
+    false
+  } else {
+    val tokAfterParen = peekAt(st, 2)
+    match tokAfterParen.token {
+      case TIdent(_) -> {
+        val tokAfterIdent = peekAt(st, 3)
+        isPunct(tokAfterIdent.token, Colon)
+      }
+      case _ -> false
+    }
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Generic parameters.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func parseGenericParam(st: inout ParseState): GenericParam {
   val nameTok = peek(st)
   match tryEatIdent(st) {
@@ -45,7 +60,9 @@ func parseGenericParam(st: inout ParseState): GenericParam {
     }
     case None -> {
       emitErr(st, "P0090", "expected an identifier in generic parameter list", nameTok.span)
-      if not isAtEnd(st) { val _ = advance(st) }
+      if not isAtEnd(st) {
+        val _ = advance(st)
+      }
       GPType(name = "<error>", span = nameTok.span)
     }
   }
@@ -54,14 +71,17 @@ func parseGenericParam(st: inout ParseState): GenericParam {
 pub func parseGenericParamsOpt(st: inout ParseState): Option[GenericParams] {
   // Two forms: bare-bracket `[T, U]` or legacy `generic[T, U]`.
   val isGenericKw = isKw(peekToken(st), KwGeneric)
-  val isBracket   = isPunct(peekToken(st), LBracket)
+  val isBracket = isPunct(peekToken(st), LBracket)
   if not isGenericKw and not isBracket {
     None
   } else {
     val startTok = peek(st)
-    if isGenericKw { val _ = advance(st) }
+    if isGenericKw {
+      val _ = advance(st)
+    }
     match tryEatPunct(st, LBracket) {
-      case Some(_) -> {}
+      case Some(_) -> {
+      }
       case None -> {
         emitErr(st, "P0091", "expected '[' to open generic parameter list", peekSpan(st))
       }
@@ -96,7 +116,9 @@ pub func parseConstraintRef(st: inout ParseState): ConstraintRef {
   val head = parseModulePath(st)
   if isPunct(peekToken(st), LBracket) {
     val args = parseTypeArgs(st)
-    val lastSpan = if args.count == 0 { head.span } else {
+    val lastSpan = if args.count == 0 {
+      head.span
+    } else {
       match args[args.count - 1] {
         case TAType(ty) -> ty.span
         case TAValue(e) -> e.span
@@ -125,7 +147,8 @@ pub func parseWhereClauseOpt(st: inout ParseState): Option[WhereClause] {
       }
     }
     match tryEatPunct(st, Colon) {
-      case Some(_) -> {}
+      case Some(_) -> {
+      }
       case None -> {
         emitErr(st, "P0094", "expected ':' after the bound's type variable", peekSpan(st))
       }
@@ -142,8 +165,7 @@ pub func parseWhereClauseOpt(st: inout ParseState): Option[WhereClause] {
       }
     }
     val lastSp = constraints[constraints.count - 1].span
-    xs.add(WhereBound(name = name.name, constraints = constraints,
-                      span = joinSpans(name.span, lastSp)))
+    xs.add(WhereBound(name = name.name, constraints = constraints, span = joinSpans(name.span, lastSp)))
     // Additional bounds separated by commas.
     var keepBounds = true
     while keepBounds {
@@ -158,7 +180,8 @@ pub func parseWhereClauseOpt(st: inout ParseState): Option[WhereClause] {
           }
         }
         match tryEatPunct(st, Colon) {
-          case Some(_) -> {}
+          case Some(_) -> {
+          }
           case None -> {
             emitErr(st, "P0094", "expected ':' after the bound's type variable", peekSpan(st))
           }
@@ -175,8 +198,7 @@ pub func parseWhereClauseOpt(st: inout ParseState): Option[WhereClause] {
           }
         }
         val ls2 = cs[cs.count - 1].span
-        xs.add(WhereBound(name = n2.name, constraints = cs,
-                          span = joinSpans(n2.span, ls2)))
+        xs.add(WhereBound(name = n2.name, constraints = cs, span = joinSpans(n2.span, ls2)))
       } else {
         keepBounds = false
       }
@@ -189,7 +211,8 @@ pub func parseWhereClauseOpt(st: inout ParseState): Option[WhereClause] {
 pub func parseInvariantClause(st: inout ParseState): InvariantClause {
   val startTok = advance(st)  // 'invariant'
   match tryEatPunct(st, Colon) {
-    case Some(_) -> {}
+    case Some(_) -> {
+    }
     case None -> {
       emitErr(st, "P0095", "expected ':' after 'invariant'", peekSpan(st))
     }
@@ -234,7 +257,6 @@ pub func prependLoopInvariants(invs: in List[InvariantClause], body: in Block): 
 // ─────────────────────────────────────────────────────────────────────────────
 // Range bounds.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub func parseRangeBound(st: inout ParseState): RangeBound {
   if isPunct(peekToken(st), DotDotEq) {
     val _ = advance(st)
@@ -243,7 +265,7 @@ pub func parseRangeBound(st: inout ParseState): RangeBound {
   } else if isPunct(peekToken(st), DotDot) or isPunct(peekToken(st), DotDotLt) {
     val opTok = advance(st)
     val hi = parseExpr(st)
-    val lo = mkExpr(ELiteral(lit = LInt(value = 0i64, suffix = NoIntSuffix)), opTok.span)
+    val lo = mkExpr(ELiteral(lit = LInt(value = 0i64, suffix = NoIntSuffix, raw = "")), opTok.span)
     RBHalfOpen(lo = lo, hi = hi)
   } else {
     val lo = parseExpr(st)
@@ -259,21 +281,21 @@ pub func parseRangeBound(st: inout ParseState): RangeBound {
       val _ = advance(st)
       // `lo ..` (upper-open) or `lo .. hi` (half-open).
       val nextTok = peekToken(st)
-      val isEnd =
-        match nextTok {
-          case TStmtEnd -> true
-          case TPunct(p) -> {
-            match p {
-              case Comma -> true
-              case RParen -> true
-              case RBracket -> true
-              case RBrace -> true
-              case _ -> false
-            }
+      val isEnd = match nextTok {
+        case TStmtEnd -> true
+        case TPunct(p) -> {
+          match p {
+            case Comma -> true
+            case RParen -> true
+            case RBracket -> true
+            case RBrace -> true
+            case Eq -> true
+            case _ -> false
           }
-          case TEof -> true
-          case _ -> false
         }
+        case TEof -> true
+        case _ -> false
+      }
       if isEnd {
         RBUpperOpen(lo = lo)
       } else {
@@ -290,16 +312,15 @@ pub func parseRangeBound(st: inout ParseState): RangeBound {
 // ─────────────────────────────────────────────────────────────────────────────
 // Type arguments and type expressions.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func parseTypeArg(st: inout ParseState): TypeArg {
   match peekToken(st) {
-    case TInt(_, _)          -> TAValue(expr = parseExpr(st))
-    case TFloat(_, _)        -> TAValue(expr = parseExpr(st))
-    case TChar(_)            -> TAValue(expr = parseExpr(st))
-    case TString(_)          -> TAValue(expr = parseExpr(st))
-    case TTripleString(_)    -> TAValue(expr = parseExpr(st))
-    case TRawString(_)       -> TAValue(expr = parseExpr(st))
-    case TBool(_)            -> TAValue(expr = parseExpr(st))
+    case TInt(_, _, _) -> TAValue(expr = parseExpr(st))
+    case TFloat(_, _, _) -> TAValue(expr = parseExpr(st))
+    case TChar(_) -> TAValue(expr = parseExpr(st))
+    case TString(_) -> TAValue(expr = parseExpr(st))
+    case TTripleString(_) -> TAValue(expr = parseExpr(st))
+    case TRawString(_) -> TAValue(expr = parseExpr(st))
+    case TBool(_) -> TAValue(expr = parseExpr(st))
     case TPunct(p) -> {
       match p {
         case Minus -> TAValue(expr = parseExpr(st))
@@ -328,7 +349,8 @@ pub func parseTypeArgs(st: inout ParseState): List[TypeArg] {
     }
   }
   match tryEatPunct(st, RBracket) {
-    case Some(_) -> {}
+    case Some(_) -> {
+    }
     case None -> {
       emitErr(st, "P0061", "expected ']' to close type-argument list", peekSpan(st))
     }
@@ -379,7 +401,8 @@ func parseAtomNonParenType(st: inout ParseState): TypeExpr {
         val _ = advance(st)  // '['
         val size = parseTypeArg(st)
         match tryEatPunct(st, Comma) {
-          case Some(_) -> {}
+          case Some(_) -> {
+          }
           case None -> {
             emitErr(st, "P0062", "expected ',' between size and element type in array[...]", peekSpan(st))
           }
@@ -409,7 +432,9 @@ func parseAtomNonParenType(st: inout ParseState): TypeExpr {
         val path = parseModulePath(st)
         if isPunct(peekToken(st), LBracket) {
           val args = parseTypeArgs(st)
-          val lastSpan = if args.count == 0 { path.span } else {
+          val lastSpan = if args.count == 0 {
+            path.span
+          } else {
             match args[args.count - 1] {
               case TAType(ty) -> ty.span
               case TAValue(e) -> e.span
@@ -420,10 +445,10 @@ func parseAtomNonParenType(st: inout ParseState): TypeExpr {
           val _ = advance(st)
           val bound = parseRangeBound(st)
           val endSpan = match bound {
-            case RBClosed(_, hi)   -> hi.span
+            case RBClosed(_, hi) -> hi.span
             case RBHalfOpen(_, hi) -> hi.span
-            case RBLowerOpen(hi)   -> hi.span
-            case RBUpperOpen(lo)   -> lo.span
+            case RBLowerOpen(hi) -> hi.span
+            case RBUpperOpen(lo) -> lo.span
           }
           mkType(TRefined(underlying = path, range = bound), joinSpans(path.span, endSpan))
         } else {
@@ -433,7 +458,9 @@ func parseAtomNonParenType(st: inout ParseState): TypeExpr {
     }
     case _ -> {
       emitErr(st, "P0050", "expected a type", tok.span)
-      if not isAtEnd(st) { val _ = advance(st) }
+      if not isAtEnd(st) {
+        val _ = advance(st)
+      }
       mkType(TError, tok.span)
     }
   }
@@ -453,10 +480,13 @@ pub func parseTypeExprNoArrow(st: inout ParseState): TypeExpr {
       }
     }
     val span = joinSpans(startSpan, closeSpan)
-    val nodeKind =
-      if inner.count == 0 { TUnit }
-      else if inner.count == 1 { TParen(inner = inner[0]) }
-      else { TTuple(types = inner) }
+    val nodeKind = if inner.count == 0 {
+      TUnit
+    } else if inner.count == 1 {
+      TParen(inner = inner[0])
+    } else {
+      TTuple(types = inner)
+    }
     applyNullableSuffix(st, mkType(nodeKind, span))
   } else {
     val atom = parseAtomNonParenType(st)
@@ -482,10 +512,13 @@ pub func parseTypeExpr(st: inout ParseState): TypeExpr {
       mkType(TFunction(parameters = inner, retTy = retTy), joinSpans(startSpan, retTy.span))
     } else {
       val span = joinSpans(startSpan, closeSpan)
-      val nodeKind =
-        if inner.count == 0 { TUnit }
-        else if inner.count == 1 { TParen(inner = inner[0]) }
-        else { TTuple(types = inner) }
+      val nodeKind = if inner.count == 0 {
+        TUnit
+      } else if inner.count == 1 {
+        TParen(inner = inner[0])
+      } else {
+        TTuple(types = inner)
+      }
       applyNullableSuffix(st, mkType(nodeKind, span))
     }
   } else {
@@ -496,8 +529,7 @@ pub func parseTypeExpr(st: inout ParseState): TypeExpr {
       val retTy = parseTypeExpr(st)
       val paramList: List[TypeExpr] = newList()
       paramList.add(withSuffix)
-      mkType(TFunction(parameters = paramList, retTy = retTy),
-             joinSpans(withSuffix.span, retTy.span))
+      mkType(TFunction(parameters = paramList, retTy = retTy), joinSpans(withSuffix.span, retTy.span))
     } else {
       withSuffix
     }
@@ -507,10 +539,9 @@ pub func parseTypeExpr(st: inout ParseState): TypeExpr {
 // ─────────────────────────────────────────────────────────────────────────────
 // Patterns.
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Helper record to return (fields, ignoreRest) without a tuple.
 record RecordPatternResult {
-  fields:     List[RecordPatternField]
+  fields: List[RecordPatternField]
   ignoreRest: Bool
 }
 
@@ -533,12 +564,13 @@ func parseRecordPatternFields(st: inout ParseState): RecordPatternResult {
           if isPunct(peekToken(st), Eq) {
             val _ = advance(st)
             val pat = parsePattern(st)
-            fields.add(RPFNamed(name = name, pattern = pat,
-                                span = joinSpans(nameTok.span, pat.span)))
+            fields.add(RPFNamed(name = name, pattern = pat, span = joinSpans(nameTok.span, pat.span)))
           } else {
             fields.add(RPFShort(name = name, span = nameTok.span))
           }
-          if isPunct(peekToken(st), Comma) { val _ = advance(st) }
+          if isPunct(peekToken(st), Comma) {
+            val _ = advance(st)
+          }
         }
         case _ -> {
           emitErr(st, "P0070", "expected a field name or '..' in record pattern", peekSpan(st))
@@ -548,7 +580,8 @@ func parseRecordPatternFields(st: inout ParseState): RecordPatternResult {
     }
   }
   match tryEatPunct(st, RBrace) {
-    case Some(_) -> {}
+    case Some(_) -> {
+    }
     case None -> {
       emitErr(st, "P0071", "expected '}' to close record pattern", peekSpan(st))
     }
@@ -574,7 +607,8 @@ func parsePatternArgs(st: inout ParseState): List[Pattern] {
     }
   }
   match tryEatPunct(st, RParen) {
-    case Some(_) -> {}
+    case Some(_) -> {
+    }
     case None -> {
       emitErr(st, "P0072", "expected ')' to close constructor-pattern arguments", peekSpan(st))
     }
@@ -597,16 +631,20 @@ func parsePrimaryPattern(st: inout ParseState): Pattern {
           mkPat(PConstructor(head = path, args = args), joinSpans(path.span, lastSpan))
         } else if isPunct(peekToken(st), LBrace) {
           val res = parseRecordPatternFields(st)
-          mkPat(PRecord(head = path, fields = res.fields, ignoreRest = res.ignoreRest),
-                joinSpans(path.span, peekSpan(st)))
+          mkPat(PRecord(head = path, fields = res.fields, ignoreRest = res.ignoreRest), joinSpans(path.span, peekSpan(st)))
         } else if isPunct(peekToken(st), At) and path.segments.count == 1 {
           val _ = advance(st)
           val inner = parsePrimaryPattern(st)
-          mkPat(PBinding(name = path.segments[0], inner = Some(value = inner)),
-                joinSpans(path.span, inner.span))
+          mkPat(PBinding(name = path.segments[0], inner = Some(value = inner)), joinSpans(path.span, inner.span))
         } else if path.segments.count == 1 {
-          // TODO(#1891): workaround for PConstructor MObject codegen bug —
-          // an inline `None` would route through the buggy lowering path.
+          // RETAINED for #1891: hoisting `None` into a typed `noInner` local is
+          // load-bearing here, not stylistic.  When the self-hosted compiler
+          // compiles *this* parser, an inline `inner = None` makes the produced
+          // parser miscompile single-segment patterns (notably `case None`),
+          // so exhaustiveness later reports spurious T0016 missing-`None`.  The
+          // codegen fix landed for typed PConstructor *bindings* but does not
+          // cover inline-`None`-into-an-`Option[Pattern]` field, so this hoist
+          // stays until that path is fixed.  Tracked under #1891.
           val noInner: Option[Pattern] = None
           mkPat(PBinding(name = path.segments[0], inner = noInner), path.span)
         } else {
@@ -618,22 +656,36 @@ func parsePrimaryPattern(st: inout ParseState): Pattern {
       match k {
         case KwResult -> {
           val _ = advance(st)
-          // TODO(#1891): workaround for PConstructor MObject codegen bug.
-          val noInner: Option[Pattern] = None
-          mkPat(PBinding(name = "result", inner = noInner), tok.span)
+          mkPat(PBinding(name = "result", inner = None), tok.span)
         }
-        case _ -> {
-          // Literal-led patterns: TBool.
-          val firstExpr = parseExpr(st)
-          mkPat(PLiteral(lit = LBool(value = false)), firstExpr.span)
+        case _ -> match contextualIdentKeyword(k) {
+          // A pure position-introducer keyword (`entry`, `type`, …) used as a
+          // `val`/`match` binding name binds like any identifier (D093).
+          case Some(name) -> {
+            val _ = advance(st)
+            mkPat(PBinding(name = name, inner = None), tok.span)
+          }
+          case None -> {
+            // A reserved keyword (not a contextual identifier) in pattern
+            // position — name it explicitly rather than mis-parsing it as a
+            // literal (D093).
+            emitErr(
+              st,
+              "P0051",
+              "'" + keywordSpelling(k) + "' is a reserved keyword and cannot be used as a binding name",
+              tok.span
+            )
+            val _ = advance(st)
+            mkPat(PWildcard, tok.span)
+          }
         }
       }
     }
-    case TInt(_, _) -> {
+    case TInt(_, _, _) -> {
       val firstExpr = parseExpr(st)
       parseLiteralOrRangePat(st, firstExpr)
     }
-    case TFloat(_, _) -> {
+    case TFloat(_, _, _) -> {
       val firstExpr = parseExpr(st)
       parseLiteralOrRangePat(st, firstExpr)
     }
@@ -705,16 +757,31 @@ func parsePrimaryPattern(st: inout ParseState): Pattern {
             }
           }
         }
+        case At -> {
+          val atSpan = tok.span
+          val _ = advance(st)
+          match tryEatIdent(st) {
+            case Some(ns) -> mkPat(PConstRef(name = ns.name), joinSpans(atSpan, ns.span))
+            case None -> {
+              emitErr(st, "P0076", "expected an identifier after '@' in const pattern", peekSpan(st))
+              mkPat(PError, atSpan)
+            }
+          }
+        }
         case _ -> {
           emitErr(st, "P0075", "expected a pattern", tok.span)
-          if not isAtEnd(st) { val _ = advance(st) }
+          if not isAtEnd(st) {
+            val _ = advance(st)
+          }
           mkPat(PError, tok.span)
         }
       }
     }
     case _ -> {
       emitErr(st, "P0075", "expected a pattern", tok.span)
-      if not isAtEnd(st) { val _ = advance(st) }
+      if not isAtEnd(st) {
+        val _ = advance(st)
+      }
       mkPat(PError, tok.span)
     }
   }
@@ -726,13 +793,11 @@ func parseLiteralOrRangePat(st: inout ParseState, firstExpr: in Expr): Pattern {
   if isPunct(peekToken(st), DotDotEq) {
     val _ = advance(st)
     val hi = parseExpr(st)
-    mkPat(PRange(lo = firstExpr, inclusive = true, hi = hi),
-          joinSpans(firstExpr.span, hi.span))
+    mkPat(PRange(lo = firstExpr, inclusive = true, hi = hi), joinSpans(firstExpr.span, hi.span))
   } else if isPunct(peekToken(st), DotDot) or isPunct(peekToken(st), DotDotLt) {
     val _ = advance(st)
     val hi = parseExpr(st)
-    mkPat(PRange(lo = firstExpr, inclusive = false, hi = hi),
-          joinSpans(firstExpr.span, hi.span))
+    mkPat(PRange(lo = firstExpr, inclusive = false, hi = hi), joinSpans(firstExpr.span, hi.span))
   } else {
     match firstExpr.kind {
       case ELiteral(lit) -> mkPat(PLiteral(lit = lit), firstExpr.span)
@@ -742,13 +807,15 @@ func parseLiteralOrRangePat(st: inout ParseState, firstExpr: in Expr): Pattern {
             match inner.kind {
               case ELiteral(lit) -> {
                 match lit {
-                  case LInt(v, sfx) -> {
-                    val negV = 0 - v
-                    mkPat(PLiteral(lit = LInt(value = negV, suffix = sfx)), firstExpr.span)
+                  case LInt(v, sfx, innerRaw) -> {
+                    val negV = 0i64 - v
+                    val negRaw = if innerRaw != "" { "-" + innerRaw } else { "" }
+                    mkPat(PLiteral(lit = LInt(value = negV, suffix = sfx, raw = negRaw)), firstExpr.span)
                   }
-                  case LFloat(v, sfx) -> {
+                  case LFloat(v, sfx, innerRaw) -> {
                     val negV = 0.0 - v
-                    mkPat(PLiteral(lit = LFloat(value = negV, suffix = sfx)), firstExpr.span)
+                    val negRaw = if innerRaw != "" { "-" + innerRaw } else { "" }
+                    mkPat(PLiteral(lit = LFloat(value = negV, suffix = sfx, raw = negRaw)), firstExpr.span)
                   }
                   case _ -> {
                     emitErr(st, "P0073", "expected a literal pattern", firstExpr.span)
@@ -780,7 +847,10 @@ func parseTypeTestPattern(st: inout ParseState): Pattern {
   val primary = parsePrimaryPattern(st)
   if isKw(peekToken(st), KwIs) {
     val _ = advance(st)
-    val ty = parseTypeExpr(st)
+    // `parseTypeExprNoArrow`, not `parseTypeExpr`: a match arm's `->` follows the
+    // type-test pattern (`case x is T -> body`), so consuming a trailing `->` as
+    // a function-type arrow would swallow the arm separator (P0202).
+    val ty = parseTypeExprNoArrow(st)
     mkPat(PTypeTest(inner = primary, ty = ty), joinSpans(primary.span, ty.span))
   } else {
     primary
@@ -811,21 +881,20 @@ pub func parsePattern(st: inout ParseState): Pattern {
 // ─────────────────────────────────────────────────────────────────────────────
 // Expressions — primary, postfix, prefix, binary precedence cascade.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub func parsePrimaryExpr(st: inout ParseState): Expr {
   val tok = peek(st)
   match tok.token {
-    case TInt(_, _) -> {
+    case TInt(_, _, _) -> {
       val t = advance(st)
       match t.token {
-        case TInt(v, sfx) -> mkExpr(ELiteral(lit = LInt(value = v, suffix = sfx)), t.span)
+        case TInt(v, sfx, raw) -> mkExpr(ELiteral(lit = LInt(value = v, suffix = sfx, raw = raw)), t.span)
         case _ -> mkExpr(EError, t.span)
       }
     }
-    case TFloat(_, _) -> {
+    case TFloat(_, _, _) -> {
       val t = advance(st)
       match t.token {
-        case TFloat(v, sfx) -> mkExpr(ELiteral(lit = LFloat(value = v, suffix = sfx)), t.span)
+        case TFloat(v, sfx, raw) -> mkExpr(ELiteral(lit = LFloat(value = v, suffix = sfx, raw = raw)), t.span)
         case _ -> mkExpr(EError, t.span)
       }
     }
@@ -872,14 +941,17 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
         match peekToken(st) {
           case TStringPart(s) -> {
             val t = advance(st)
-            if s.length > 0 { segs.add(ISText(text = s, span = t.span)) }
+            if s.length > 0 {
+              segs.add(ISText(text = s, span = t.span))
+            }
           }
           case TStringHoleStart -> {
             val _ = advance(st)
             val inner = parseExpr(st)
             segs.add(ISExpr(expr = inner))
             match tryEatPunct(st, RBrace) {
-              case Some(_) -> {}
+              case Some(_) -> {
+              }
               case None -> {
                 emitErr(st, "P0150", "expected '}' to close interpolation hole", peekSpan(st))
               }
@@ -901,8 +973,7 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
       match p {
         case LParen -> {
           // Check for `(Ident range ...)`  type-as-expression form.
-          val isTypeExpr =
-            (match peekAt(st, 1).token { case TIdent(_) -> true; case _ -> false }) and
+          val isTypeExpr = (match peekAt(st, 1).token { case TIdent(_) -> true; case _ -> false }) and
             (identStr(peekAt(st, 2).token) == "range")
           if isTypeExpr {
             val _ = advance(st)
@@ -916,7 +987,7 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
             }
             val head = match ty.kind {
               case TRefined(mp, _) -> mp
-              case TRef(mp)        -> mp
+              case TRef(mp) -> mp
               case _ -> ModulePath(segments = newList(), span = ty.span)
             }
             mkExpr(EPath(path = head), joinSpans(tok.span, ty.span))
@@ -1029,7 +1100,8 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
         case KwOld -> {
           val opTok = advance(st)
           match tryEatPunct(st, LParen) {
-            case Some(_) -> {}
+            case Some(_) -> {
+            }
             case None -> {
               emitErr(st, "P0190", "expected '(' after 'old'", peekSpan(st))
             }
@@ -1059,10 +1131,28 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
           val blk = Block(statements = singletonList(stmt), span = stmt.span)
           mkExpr(EBlock(block = blk), stmt.span)
         }
-        case _ -> {
-          emitErr(st, "P0050", "expected an expression", tok.span)
-          val _ = advance(st)
-          mkExpr(EError, tok.span)
+        case _ -> match contextualIdentKeyword(k) {
+          // A pure position-introducer keyword (`entry`, `type`, …) used as a
+          // value is an ordinary identifier reference (D093).
+          case Some(name) -> {
+            val nameTok = advance(st)
+            val segs: List[String] = newList()
+            segs.add(name)
+            mkExpr(EPath(path = ModulePath(segments = segs, span = nameTok.span)), nameTok.span)
+          }
+          case None -> {
+            // A genuinely reserved keyword in expression position: name it
+            // explicitly rather than emitting a bare "expected an expression",
+            // so the author sees the actual cause (D093).
+            emitErr(
+              st,
+              "P0051",
+              "'" + keywordSpelling(k) + "' is a reserved keyword and cannot be used as an identifier or value here",
+              tok.span
+            )
+            val _ = advance(st)
+            mkExpr(EError, tok.span)
+          }
         }
       }
     }
@@ -1071,9 +1161,9 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
         val opTok = advance(st)
         val body = parseBlock(st)
         mkExpr(EUnsafe(block = body), joinSpans(opTok.span, body.span))
-      } else if name == "forall" {
+      } else if name == "forall" and isQuantifierContext(st) {
         parseQuantifierExpr(st, true)
-      } else if name == "exists" {
+      } else if name == "exists" and isQuantifierContext(st) {
         parseQuantifierExpr(st, false)
       } else if name == "break" {
         val stmt = parseStatement(st)
@@ -1208,46 +1298,49 @@ pub func parseIfExpr(st: inout ParseState): Expr {
     val _ = advance(st)
     val thenExpr = parseExpr(st)
     match tryEatKw(st, KwElse) {
-      case Some(_) -> {}
+      case Some(_) -> {
+      }
       case None -> {
         emitErr(st, "P0200", "expected 'else' in `if … then … else …` expression", peekSpan(st))
       }
     }
     val elseExpr = parseExpr(st)
-    mkExpr(EIf(cond = cond,
-               thenBranch = EOBExpr(expr = thenExpr),
-               elseBranch = Some(value = EOBExpr(expr = elseExpr)),
-               thenForm = true),
-           joinSpans(startTok.span, elseExpr.span))
+    mkExpr(
+      EIf(
+        cond = cond,
+        thenBranch = EOBExpr(expr = thenExpr),
+        elseBranch = Some(value = EOBExpr(expr = elseExpr)),
+        thenForm = true
+      ),
+      joinSpans(startTok.span, elseExpr.span)
+    )
   } else {
     val thenBlock = parseBlock(st)
-    val elseBranch: Option[ExprOrBlock] =
-      if isKw(peekToken(st), KwElse) {
-        val _ = advance(st)
-        if isKw(peekToken(st), KwIf) {
-          val elseIf = parseIfExpr(st)
-          Some(value = EOBExpr(expr = elseIf))
-        } else {
-          val blk = parseBlock(st)
-          Some(value = EOBBlock(block = blk))
-        }
+    val elseBranch: Option[ExprOrBlock] = if isKw(peekToken(st), KwElse) {
+      val _ = advance(st)
+      if isKw(peekToken(st), KwIf) {
+        val elseIf = parseIfExpr(st)
+        Some(value = EOBExpr(expr = elseIf))
       } else {
-        None
+        val blk = parseBlock(st)
+        Some(value = EOBBlock(block = blk))
       }
+    } else {
+      None
+    }
     val endSpan = match elseBranch {
       case Some(eob) -> {
         match eob {
-          case EOBExpr(e)  -> e.span
+          case EOBExpr(e) -> e.span
           case EOBBlock(b) -> b.span
         }
       }
       case None -> thenBlock.span
     }
-    mkExpr(EIf(cond = cond,
-               thenBranch = EOBBlock(block = thenBlock),
-               elseBranch = elseBranch,
-               thenForm = false),
-           joinSpans(startTok.span, endSpan))
+    mkExpr(
+      EIf(cond = cond, thenBranch = EOBBlock(block = thenBlock), elseBranch = elseBranch, thenForm = false),
+      joinSpans(startTok.span, endSpan)
+    )
   }
 }
 
@@ -1272,30 +1365,28 @@ func parseMatchArmBody(st: inout ParseState): ExprOrBlock {
 func parseMatchArm(st: inout ParseState): MatchArm {
   val startSpan = peekSpan(st)
   match tryEatKw(st, KwCase) {
-    case Some(_) -> {}
+    case Some(_) -> {
+    }
     case None -> {
       emitErr(st, "P0201", "expected 'case' to start a match arm", peekSpan(st))
     }
   }
   val pat = parsePattern(st)
-  val guard: Option[Expr] =
-    if isKw(peekToken(st), KwWhere) or isKw(peekToken(st), KwIf) {
-      val _ = advance(st)
-      Some(value = parseExpr(st))
-    } else {
-      None
-    }
+  val guard: Option[Expr] = if isKw(peekToken(st), KwWhere) or isKw(peekToken(st), KwIf) {
+    val _ = advance(st)
+    Some(value = parseExpr(st))
+  } else {
+    None
+  }
   match tryEatPunct(st, Arrow) {
-    case Some(_) -> {}
+    case Some(_) -> {
+    }
     case None -> {
       emitErr(st, "P0202", "expected '->' after match-arm pattern", peekSpan(st))
     }
   }
   val body = parseMatchArmBody(st)
-  val endSpan = match body {
-    case EOBExpr(e)  -> e.span
-    case EOBBlock(b) -> b.span
-  }
+  val endSpan = match body { case EOBExpr(e) -> e.span; case EOBBlock(b) -> b.span }
   MatchArm(pattern = pat, guard = guard, body = body, span = joinSpans(startSpan, endSpan))
 }
 
@@ -1303,7 +1394,8 @@ pub func parseMatchExpr(st: inout ParseState): Expr {
   val startTok = advance(st)  // 'match'
   val scrutinee = parseExpr(st)
   match tryEatPunct(st, LBrace) {
-    case Some(_) -> {}
+    case Some(_) -> {
+    }
     case None -> {
       emitErr(st, "P0203", "expected '{' to start match arms", peekSpan(st))
     }
@@ -1328,10 +1420,12 @@ pub func parseMatchExpr(st: inout ParseState): Expr {
               val _ = advance(st)
               val _ = skipStmtEnds(st)
             }
-            case _ -> {}
+            case _ -> {
+            }
           }
         }
-        case _ -> {}
+        case _ -> {
+        }
       }
     }
     forceAdvanceIfStuck(st, before)
@@ -1356,7 +1450,8 @@ func parseQuantifierBinder(st: inout ParseState): PropertyBinder {
     }
   }
   match tryEatPunct(st, Colon) {
-    case Some(_) -> {}
+    case Some(_) -> {
+    }
     case None -> {
       emitErr(st, "P0301", "expected ':' in quantifier binder", peekSpan(st))
     }
@@ -1368,7 +1463,8 @@ func parseQuantifierBinder(st: inout ParseState): PropertyBinder {
 func parseQuantifierExpr(st: inout ParseState, isForall: in Bool): Expr {
   val startTok = advance(st)  // 'forall' or 'exists'
   match tryEatPunct(st, LParen) {
-    case Some(_) -> {}
+    case Some(_) -> {
+    }
     case None -> {
       emitErr(st, "P0302", "expected '(' after quantifier", peekSpan(st))
     }
@@ -1389,33 +1485,34 @@ func parseQuantifierExpr(st: inout ParseState, isForall: in Bool): Expr {
     }
   }
   match tryEatPunct(st, RParen) {
-    case Some(_) -> {}
+    case Some(_) -> {
+    }
     case None -> {
       emitErr(st, "P0303", "expected ')' to close quantifier binder list", peekSpan(st))
     }
   }
   val _ = skipStmtEnds(st)
-  val whereExpr: Option[Expr] =
-    if isKw(peekToken(st), KwWhere) {
-      val _ = advance(st)
-      Some(value = parseOrExpr(st))
-    } else {
-      None
-    }
+  val whereExpr: Option[Expr] = if isKw(peekToken(st), KwWhere) {
+    val _ = advance(st)
+    Some(value = parseOrExpr(st))
+  } else {
+    None
+  }
   val _ = skipStmtEnds(st)
-  val body =
-    if identStr(peekToken(st)) == "implies" {
-      val _ = advance(st)
-      parseExpr(st)
-    } else if isPunct(peekToken(st), LBrace) {
-      val blk = parseBlock(st)
-      mkExpr(EBlock(block = blk), blk.span)
-    } else {
-      parseExpr(st)
-    }
-  val kind =
-    if isForall { EForall(binders = binders, whereExpr = whereExpr, body = body) }
-    else        { EExists(binders = binders, whereExpr = whereExpr, body = body) }
+  val body = if identStr(peekToken(st)) == "implies" {
+    val _ = advance(st)
+    parseExpr(st)
+  } else if isPunct(peekToken(st), LBrace) {
+    val blk = parseBlock(st)
+    mkExpr(EBlock(block = blk), blk.span)
+  } else {
+    parseExpr(st)
+  }
+  val kind = if isForall {
+    EForall(binders = binders, whereExpr = whereExpr, body = body)
+  } else {
+    EExists(binders = binders, whereExpr = whereExpr, body = body)
+  }
   mkExpr(kind, joinSpans(startTok.span, body.span))
 }
 
@@ -1445,16 +1542,14 @@ pub func parseLambdaExpr(st: inout ParseState): Expr {
       match peekToken(st) {
         case TIdent(name) -> {
           val nameTok = advance(st)
-          val ty: Option[TypeExpr] =
-            if isPunct(peekToken(st), Colon) {
-              val _ = advance(st)
-              Some(value = parseTypeExprNoArrow(st))
-            } else {
-              None
-            }
+          val ty: Option[TypeExpr] = if isPunct(peekToken(st), Colon) {
+            val _ = advance(st)
+            Some(value = parseTypeExprNoArrow(st))
+          } else {
+            None
+          }
           val endSp = match ty { case Some(t) -> t.span; case None -> nameTok.span }
-          lambdaParams.add(LambdaParam(name = name, ty = ty,
-                                       span = joinSpans(nameTok.span, endSp)))
+          lambdaParams.add(LambdaParam(name = name, ty = ty, span = joinSpans(nameTok.span, endSp)))
           if isPunct(peekToken(st), Comma) {
             val _ = advance(st)
           } else {
@@ -1499,10 +1594,12 @@ pub func parseLambdaExpr(st: inout ParseState): Expr {
             val _ = advance(st)
             val _ = skipStmtEnds(st)
           }
-          case _ -> {}
+          case _ -> {
+          }
         }
       }
-      case _ -> {}
+      case _ -> {
+      }
     }
     forceAdvanceIfStuck(st, before)
   }
@@ -1515,12 +1612,10 @@ pub func parseLambdaExpr(st: inout ParseState): Expr {
   }
   val body = Block(statements = stmts, span = joinSpans(startTok.span, endSpan))
   if hasArrow {
-    mkExpr(ELambda(lambdaParams = lambdaParams, body = body),
-           joinSpans(startTok.span, endSpan))
+    mkExpr(ELambda(lambdaParams = lambdaParams, body = body), joinSpans(startTok.span, endSpan))
   } else {
     val emptyParams: List[LambdaParam] = newList()
-    mkExpr(ELambda(lambdaParams = emptyParams, body = body),
-           joinSpans(startTok.span, endSpan))
+    mkExpr(ELambda(lambdaParams = emptyParams, body = body), joinSpans(startTok.span, endSpan))
   }
 }
 
@@ -1533,26 +1628,9 @@ pub func parseLambdaExpr(st: inout ParseState): Expr {
 // earlier unrelated L0010 in place.
 func cancelMinValueDiagIfWrapped(st: inout ParseState, inner: in Expr): Unit {
   match inner.kind {
-    case ELiteral(lit) ->
-      match lit {
-        case LInt(v, _) -> {
-          if v == -9223372036854775808i64 {
-            val innerEnd = inner.span.endPos.offset
-            var i = st.diags.count - 1
-            var done = false
-            while not done and i >= 0 {
-              val d = st.diags[i]
-              if d.code == "L0010" and d.span.endPos.offset == innerEnd {
-                st.diags.removeAt(i)
-                done = true
-              }
-              i = i - 1
-            }
-          }
-        }
-        case _ -> {}
-      }
-    case _ -> {}
+    case ELiteral(lit) -> match lit { case LInt(v, _, _) -> { if v == -9223372036854775808i64 { val innerEnd = inner.span.endPos.offset; var i = st.diags.count - 1; var done = false; while not done and i >= 0 { val d = st.diags[i]; if d.code == "L0010" and d.span.endPos.offset == innerEnd { st.diags.removeAt(i); done = true }; i = i - 1 } } }; case _ -> {  } }
+    case _ -> {
+    }
   }
 }
 
@@ -1639,12 +1717,19 @@ func parseCoalesceExpr(st: inout ParseState): Expr {
 func parseCompareExpr(st: inout ParseState): Expr {
   val lhs = parseCoalesceExpr(st)
   var op: Option[BinOp] = None
-  if isPunct(peekToken(st), EqEq)  { op = Some(value = BEq)  }
-  else if isPunct(peekToken(st), NotEq) { op = Some(value = BNeq) }
-  else if isPunct(peekToken(st), Lt)    { op = Some(value = BLt)  }
-  else if isPunct(peekToken(st), LtEq)  { op = Some(value = BLte) }
-  else if isPunct(peekToken(st), Gt)    { op = Some(value = BGt)  }
-  else if isPunct(peekToken(st), GtEq)  { op = Some(value = BGte) }
+  if isPunct(peekToken(st), EqEq) {
+    op = Some(value = BEq)
+  } else if isPunct(peekToken(st), NotEq) {
+    op = Some(value = BNeq)
+  } else if isPunct(peekToken(st), Lt) {
+    op = Some(value = BLt)
+  } else if isPunct(peekToken(st), LtEq) {
+    op = Some(value = BLte)
+  } else if isPunct(peekToken(st), Gt) {
+    op = Some(value = BGt)
+  } else if isPunct(peekToken(st), GtEq) {
+    op = Some(value = BGte)
+  }
   match op {
     case None -> lhs
     case Some(binop) -> {
@@ -1652,17 +1737,25 @@ func parseCompareExpr(st: inout ParseState): Expr {
       val rhs = parseCoalesceExpr(st)
       // Detect chained comparison.
       var chainOp: Option[BinOp] = None
-      if isPunct(peekToken(st), EqEq)  { chainOp = Some(value = BEq)  }
-      else if isPunct(peekToken(st), NotEq) { chainOp = Some(value = BNeq) }
-      else if isPunct(peekToken(st), Lt)    { chainOp = Some(value = BLt)  }
-      else if isPunct(peekToken(st), LtEq)  { chainOp = Some(value = BLte) }
-      else if isPunct(peekToken(st), Gt)    { chainOp = Some(value = BGt)  }
-      else if isPunct(peekToken(st), GtEq)  { chainOp = Some(value = BGte) }
+      if isPunct(peekToken(st), EqEq) {
+        chainOp = Some(value = BEq)
+      } else if isPunct(peekToken(st), NotEq) {
+        chainOp = Some(value = BNeq)
+      } else if isPunct(peekToken(st), Lt) {
+        chainOp = Some(value = BLt)
+      } else if isPunct(peekToken(st), LtEq) {
+        chainOp = Some(value = BLte)
+      } else if isPunct(peekToken(st), Gt) {
+        chainOp = Some(value = BGt)
+      } else if isPunct(peekToken(st), GtEq) {
+        chainOp = Some(value = BGte)
+      }
       match chainOp {
         case Some(_) -> {
           emitErr(st, "P0082", "comparison operators do not chain (use parentheses)", peekSpan(st))
         }
-        case None -> {}
+        case None -> {
+        }
       }
       mkExpr(EBinop(op = binop, lhs = lhs, rhs = rhs), joinSpans(lhs.span, rhs.span))
     }
@@ -1733,7 +1826,6 @@ pub func parseExpr(st: inout ParseState): Expr {
 // ─────────────────────────────────────────────────────────────────────────────
 // Blocks and statements.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub func parseBlock(st: inout ParseState): Block {
   // Each `{ … }` block becomes an `SkBlock` CST node, regardless of
   // whether it's a function body, lambda body, or control-flow
@@ -1765,10 +1857,12 @@ pub func parseBlock(st: inout ParseState): Block {
                 val _ = advance(st)
                 val _ = skipStmtEnds(st)
               }
-              case _ -> {}
+              case _ -> {
+              }
             }
           }
-          case _ -> {}
+          case _ -> {
+          }
         }
         forceAdvanceIfStuck(st, before)
       }
@@ -1815,19 +1909,18 @@ func parseStatementInner(st: inout ParseState): Statement {
         }
         case KwReturn -> {
           val _ = advance(st)
-          val value: Option[Expr] =
-            match peekToken(st) {
-              case TStmtEnd -> None
-              case TPunct(p) -> {
-                match p {
-                  case RBrace -> None
-                  case Semi -> None
-                  case _ -> Some(value = parseExpr(st))
-                }
+          val value: Option[Expr] = match peekToken(st) {
+            case TStmtEnd -> None
+            case TPunct(p) -> {
+              match p {
+                case RBrace -> None
+                case Semi -> None
+                case _ -> Some(value = parseExpr(st))
               }
-              case TEof -> None
-              case _ -> Some(value = parseExpr(st))
             }
+            case TEof -> None
+            case _ -> Some(value = parseExpr(st))
+          }
           val endSpan = match value { case Some(e) -> e.span; case None -> startSpan }
           mkStmt(SReturn(value = value), joinSpans(startSpan, endSpan))
         }
@@ -1848,19 +1941,16 @@ func parseStatementInner(st: inout ParseState): Statement {
               keepGoing = false
             }
           }
-          val finally_ : Option[Block] =
-            if identStr(peekToken(st)) == "finally" {
-              val _ = advance(st)
-              Some(parseBlock(st))
-            } else {
-              None
-            }
-          val endSpan =
-            match finally_ {
-              case Some(fb) -> fb.span
-              case None ->
-                if catches.count > 0 { catches[catches.count - 1].span } else { body.span }
-            }
+          val finally_: Option[Block] = if identStr(peekToken(st)) == "finally" {
+            val _ = advance(st)
+            Some(parseBlock(st))
+          } else {
+            None
+          }
+          val endSpan = match finally_ {
+            case Some(fb) -> fb.span
+            case None -> if catches.count > 0 { catches[catches.count - 1].span } else { body.span }
+          }
           mkStmt(STry(body = body, catches = catches, finally_ = finally_), joinSpans(startSpan, endSpan))
         }
         case KwDo -> {
@@ -1877,7 +1967,8 @@ func parseStatementInner(st: inout ParseState): Statement {
           val _ = advance(st)
           val pat = parsePattern(st)
           match tryEatKw(st, KwIn) {
-            case Some(_) -> {}
+            case Some(_) -> {
+            }
             case None -> {
               emitErr(st, "P0221", "expected 'in' in for-loop", peekSpan(st))
             }
@@ -1888,30 +1979,25 @@ func parseStatementInner(st: inout ParseState): Statement {
           // wrap the bounds in an `ERange` (#1478).  `..` / `..<` are half-open
           // (hi excluded); `..=` is closed.
           val iterLo = parseExpr(st)
-          val iter =
-            if isPunct(peekToken(st), DotDotEq) {
-              val _ = advance(st)
-              val hi = parseExpr(st)
-              mkExpr(ERange(bound = RBClosed(lo = iterLo, hi = hi)),
-                     joinSpans(iterLo.span, hi.span))
-            } else if isPunct(peekToken(st), DotDotLt) {
-              val _ = advance(st)
-              val hi = parseExpr(st)
-              mkExpr(ERange(bound = RBHalfOpen(lo = iterLo, hi = hi)),
-                     joinSpans(iterLo.span, hi.span))
-            } else if isPunct(peekToken(st), DotDot) {
-              val _ = advance(st)
-              val hi = parseExpr(st)
-              mkExpr(ERange(bound = RBHalfOpen(lo = iterLo, hi = hi)),
-                     joinSpans(iterLo.span, hi.span))
-            } else {
-              iterLo
-            }
+          val iter = if isPunct(peekToken(st), DotDotEq) {
+            val _ = advance(st)
+            val hi = parseExpr(st)
+            mkExpr(ERange(bound = RBClosed(lo = iterLo, hi = hi)), joinSpans(iterLo.span, hi.span))
+          } else if isPunct(peekToken(st), DotDotLt) {
+            val _ = advance(st)
+            val hi = parseExpr(st)
+            mkExpr(ERange(bound = RBHalfOpen(lo = iterLo, hi = hi)), joinSpans(iterLo.span, hi.span))
+          } else if isPunct(peekToken(st), DotDot) {
+            val _ = advance(st)
+            val hi = parseExpr(st)
+            mkExpr(ERange(bound = RBHalfOpen(lo = iterLo, hi = hi)), joinSpans(iterLo.span, hi.span))
+          } else {
+            iterLo
+          }
           val invs = parseLoopInvariants(st)
           val rawBody = parseBlock(st)
           val body = prependLoopInvariants(invs, rawBody)
-          mkStmt(SFor(label = None, pat = pat, iter = iter, body = body),
-                 joinSpans(startSpan, body.span))
+          mkStmt(SFor(label = None, pat = pat, iter = iter, body = body), joinSpans(startSpan, body.span))
         }
         case KwWhile -> {
           val _ = advance(st)
@@ -1919,8 +2005,27 @@ func parseStatementInner(st: inout ParseState): Statement {
           val invs = parseLoopInvariants(st)
           val rawBody = parseBlock(st)
           val body = prependLoopInvariants(invs, rawBody)
-          mkStmt(SWhile(label = None, cond = cond, body = body),
-                 joinSpans(startSpan, body.span))
+          mkStmt(SWhile(label = None, cond = cond, body = body), joinSpans(startSpan, body.span))
+        }
+        // A brace-terminated `if`/`match` in *statement* position is a complete
+        // statement: it does not become the left operand of a trailing binary
+        // operator (the "expr-with-block" rule, mirroring Rust).  Inside a block
+        // the lexer emits no STMT_END separators (it relies on the block parser),
+        // so without this an idiomatic
+        //     if cond { return x }
+        //     -1
+        // would mis-parse as `(if cond { return x }) - 1` — a single `EBinop`
+        // that silently miscompiles the fall-through value (#1943).  Value
+        // position is unaffected: `val x = if c { a } else { b } - 1` still goes
+        // through the `KwVal` path's `parseExpr`, where the `if` is an ordinary
+        // operand.
+        case KwIf -> {
+          val e = parseIfExpr(st)
+          mkStmt(SExpr(expr = e), joinSpans(startSpan, e.span))
+        }
+        case KwMatch -> {
+          val e = parseMatchExpr(st)
+          mkStmt(SExpr(expr = e), joinSpans(startSpan, e.span))
         }
         case _ -> {
           parseExprStatement(st, startSpan)
@@ -1930,19 +2035,11 @@ func parseStatementInner(st: inout ParseState): Statement {
     case TIdent(name) -> {
       if name == "break" {
         val _ = advance(st)
-        val label: Option[String] =
-          match tryEatIdent(st) {
-            case Some(ns) -> Some(value = ns.name)
-            case None -> None
-          }
+        val label: Option[String] = match tryEatIdent(st) { case Some(ns) -> Some(value = ns.name); case None -> None }
         mkStmt(SBreak(label = label), joinSpans(startSpan, peekSpan(st)))
       } else if name == "continue" {
         val _ = advance(st)
-        val label: Option[String] =
-          match tryEatIdent(st) {
-            case Some(ns) -> Some(value = ns.name)
-            case None -> None
-          }
+        val label: Option[String] = match tryEatIdent(st) { case Some(ns) -> Some(value = ns.name); case None -> None }
         mkStmt(SContinue(label = label), joinSpans(startSpan, peekSpan(st)))
       } else if name == "defer" {
         val _ = advance(st)
@@ -1959,28 +2056,39 @@ func parseStatementInner(st: inout ParseState): Statement {
 func parseExprStatement(st: inout ParseState, startSpan: in Span): Statement {
   val e = parseExpr(st)
   // Distinguish: assignment, stub-builder rule (`->`), or plain expression.
-  if isPunct(peekToken(st), Eq) or isPunct(peekToken(st), PlusEq)
-     or isPunct(peekToken(st), MinusEq) or isPunct(peekToken(st), StarEq)
-     or isPunct(peekToken(st), SlashEq) or isPunct(peekToken(st), PercentEq) {
+  if isPunct(peekToken(st), Eq) or isPunct(peekToken(st), PlusEq) or isPunct(peekToken(st), MinusEq) or isPunct(peekToken(st), StarEq) or isPunct(peekToken(st), SlashEq) or isPunct(peekToken(st), PercentEq) {
     var assignOp = AssEq
     match peekToken(st) {
       case TPunct(p) -> {
         match p {
-          case Eq        -> { assignOp = AssEq }
-          case PlusEq    -> { assignOp = AssPlus }
-          case MinusEq   -> { assignOp = AssMinus }
-          case StarEq    -> { assignOp = AssStar }
-          case SlashEq   -> { assignOp = AssSlash }
-          case PercentEq -> { assignOp = AssPercent }
-          case _ -> {}
+          case Eq -> {
+            assignOp = AssEq
+          }
+          case PlusEq -> {
+            assignOp = AssPlus
+          }
+          case MinusEq -> {
+            assignOp = AssMinus
+          }
+          case StarEq -> {
+            assignOp = AssStar
+          }
+          case SlashEq -> {
+            assignOp = AssSlash
+          }
+          case PercentEq -> {
+            assignOp = AssPercent
+          }
+          case _ -> {
+          }
         }
       }
-      case _ -> {}
+      case _ -> {
+      }
     }
     val _ = advance(st)
     val value = parseExpr(st)
-    mkStmt(SAssign(target = e, op = assignOp, value = value),
-           joinSpans(startSpan, value.span))
+    mkStmt(SAssign(target = e, op = assignOp, value = value), joinSpans(startSpan, value.span))
   } else if isPunct(peekToken(st), Arrow) {
     val _ = advance(st)
     val rhs = parseExpr(st)
@@ -1997,13 +2105,15 @@ pub func parseLocalBinding(st: inout ParseState): LocalBinding {
         case KwVal -> {
           val _ = advance(st)
           val pat = parsePattern(st)
-          val ty: Option[TypeExpr] =
-            if isPunct(peekToken(st), Colon) {
-              val _ = advance(st)
-              Some(value = parseTypeExpr(st))
-            } else { None }
+          val ty: Option[TypeExpr] = if isPunct(peekToken(st), Colon) {
+            val _ = advance(st)
+            Some(value = parseTypeExpr(st))
+          } else {
+            None
+          }
           match tryEatPunct(st, Eq) {
-            case Some(_) -> {}
+            case Some(_) -> {
+            }
             case None -> {
               emitErr(st, "P0210", "expected '=' in 'val' binding", peekSpan(st))
             }
@@ -2014,28 +2124,32 @@ pub func parseLocalBinding(st: inout ParseState): LocalBinding {
         case KwVar -> {
           val _ = advance(st)
           val ns = readIdent(st, "var binding")
-          val ty: Option[TypeExpr] =
-            if isPunct(peekToken(st), Colon) {
-              val _ = advance(st)
-              Some(value = parseTypeExpr(st))
-            } else { None }
-          val init: Option[Expr] =
-            if isPunct(peekToken(st), Eq) {
-              val _ = advance(st)
-              Some(value = parseExpr(st))
-            } else { None }
+          val ty: Option[TypeExpr] = if isPunct(peekToken(st), Colon) {
+            val _ = advance(st)
+            Some(value = parseTypeExpr(st))
+          } else {
+            None
+          }
+          val init: Option[Expr] = if isPunct(peekToken(st), Eq) {
+            val _ = advance(st)
+            Some(value = parseExpr(st))
+          } else {
+            None
+          }
           LBVar(name = ns.name, ty = ty, init = init)
         }
         case KwLet -> {
           val _ = advance(st)
           val ns = readIdent(st, "let binding")
-          val ty: Option[TypeExpr] =
-            if isPunct(peekToken(st), Colon) {
-              val _ = advance(st)
-              Some(value = parseTypeExpr(st))
-            } else { None }
+          val ty: Option[TypeExpr] = if isPunct(peekToken(st), Colon) {
+            val _ = advance(st)
+            Some(value = parseTypeExpr(st))
+          } else {
+            None
+          }
           match tryEatPunct(st, Eq) {
-            case Some(_) -> {}
+            case Some(_) -> {
+            }
             case None -> {
               emitErr(st, "P0211", "expected '=' in 'let' binding", peekSpan(st))
             }
@@ -2065,22 +2179,20 @@ pub func parseLocalBinding(st: inout ParseState): LocalBinding {
 func parseCatchClause(st: inout ParseState): CatchClause {
   val startTok = advance(st)  // 'catch'
   val ns = readIdent(st, "catch type")
-  val bindName: Option[String] =
-    if isKw(peekToken(st), KwAs) {
-      val _ = advance(st)
-      match tryEatIdent(st) {
-        case Some(n) -> Some(value = n.name)
-        case None -> {
-          emitErr(st, "P0220", "expected identifier after 'as' in catch", peekSpan(st))
-          None
-        }
+  val bindName: Option[String] = if isKw(peekToken(st), KwAs) {
+    val _ = advance(st)
+    match tryEatIdent(st) {
+      case Some(n) -> Some(value = n.name)
+      case None -> {
+        emitErr(st, "P0220", "expected identifier after 'as' in catch", peekSpan(st))
+        None
       }
-    } else {
-      None
     }
+  } else {
+    None
+  }
   val body = parseBlock(st)
-  CatchClause(typeName = ns.name, bindName = bindName, body = body,
-              span = joinSpans(startTok.span, body.span))
+  CatchClause(typeName = ns.name, bindName = bindName, body = body, span = joinSpans(startTok.span, body.span))
 }
 
 // isPunct for TStmtEnd — small helper used in parseMatchExpr above.

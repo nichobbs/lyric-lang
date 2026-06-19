@@ -1,5 +1,5 @@
-// modechecker_check.l — call-graph and structural checks.
-// Mirrors compiler/src/Lyric.Verifier/ModeCheck.fs.
+//! modechecker_check.l — call-graph and structural checks.
+//! Mirrors compiler/src/Lyric.Verifier/ModeCheck.fs.
 package Lyric.ModeChecker
 
 import Std.Core
@@ -10,48 +10,41 @@ import Lyric.Parser
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public types.
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Metadata the mode checker needs about each locally declared callee.
 pub record CalleeInfo {
-  name:   String
-  level:  VerificationLevel
+  name: String
+  level: VerificationLevel
   isPure: Bool
+  // Simplified cross-package import metadata (replaces Imports.ImportedPackage
+  // for the self-hosted pipeline; only the name and level string are needed).
 }
 
-// Simplified cross-package import metadata (replaces Imports.ImportedPackage
-// for the self-hosted pipeline; only the name and level string are needed).
 pub record ImportedMeta {
-  name:  String
+  name: String
   level: String
+  // Result returned by the public entry points.
 }
 
-// Result returned by the public entry points.
 pub record ModeCheckResult {
-  level:       VerificationLevel
+  level: VerificationLevel
   diagnostics: List[Diagnostic]
+  // ─────────────────────────────────────────────────────────────────────────────
+  // §2. Callee table construction.
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Build a Map<name, CalleeInfo> from the file's local function declarations.
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// §2. Callee table construction.
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Build a Map<name, CalleeInfo> from the file's local function declarations.
-pub func calleeTableOfFile(
-  fileLevel: in VerificationLevel,
-  file:      in SourceFile
-): Map[String, CalleeInfo] {
+pub func calleeTableOfFile(fileLevel: in VerificationLevel, file: in SourceFile): Map[String, CalleeInfo] {
   val m: Map[String, CalleeInfo] = newMap()
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
       case IFunc(fn) -> {
-        val info = CalleeInfo(
-          name   = fn.name,
-          level  = levelOfFunction(fileLevel, fn),
-          isPure = isFuncPure(fn))
+        val info = CalleeInfo(name = fn.name, level = levelOfFunction(fileLevel, fn), isPure = isFuncPure(fn))
         m.add(fn.name, info)
       }
-      case _ -> {}
+      case _ -> {
+      }
     }
     i = i + 1
   }
@@ -61,33 +54,33 @@ pub func calleeTableOfFile(
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. AST walker — V0002/V0003 (call-graph and unsafe-block checks).
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Context threaded through the expression/block walkers.
 record WalkCtx {
-  fnName:  String
+  fnName: String
   fnLevel: VerificationLevel
   callees: Map[String, CalleeInfo]
-  imports: List[ImportedMeta]    // cross-package callee resolution
-  diag:    List[Diagnostic]
+  imports: List[ImportedMeta]
+  // cross-package callee resolution
+  diag: List[Diagnostic]
+  // Check a single resolved callee against the V0002 call-graph rule.
 }
 
-// Check a single resolved callee against the V0002 call-graph rule.
-func checkCallee(
-  ctx:        in WalkCtx,
-  calleeName: in String,
-  span:       in Span
-): Unit {
+func checkCallee(ctx: in WalkCtx, calleeName: in String, span: in Span): Unit {
   match mapGet(ctx.callees, calleeName) {
-    case None    -> {}   // unknown — skip conservatively (M4.1 deferral)
+    case None -> {
+    }
+    // unknown — skip conservatively (M4.1 deferral)
     case Some(info) -> {
       val admissible = vlDominates(info.level, ctx.fnLevel) or info.isPure
       if not admissible {
-        ctx.diag.add(errorDiagnostic("V0002",
-          "proof-required function '" + ctx.fnName +
-          "' may not call '" + calleeName +
-          "' (" + vlDisplay(info.level) +
-          "); upgrade callee, mark @pure, or shift caller to @runtime_checked",
-          span))
+        ctx.diag.add(
+          errorDiagnostic(
+            "V0002",
+            "proof-required function '" + ctx.fnName + "' may not call '" + calleeName + "' (" + vlDisplay(info.level) +
+              "); upgrade callee, mark @pure, or shift caller to @runtime_checked",
+            span
+          )
+        )
       }
     }
   }
@@ -99,12 +92,16 @@ func checkCallee(
 func extractQualifiedName(e: in Expr): String {
   match e.kind {
     case EPath(path) -> {
-      if path.segments.count == 1 { return path.segments[0] }
+      if path.segments.count == 1 {
+        return path.segments[0]
+      }
       ""
     }
     case EMember(recv, memberName) -> {
       val prefix = extractQualifiedName(recv)
-      if prefix == "" { return "" }
+      if prefix == "" {
+        return ""
+      }
       prefix + "." + memberName
     }
     case _ -> ""
@@ -115,24 +112,24 @@ func extractQualifiedName(e: in Expr): String {
 // the V0002 rule.  Uses the imported package's level as a proxy for the callee
 // since we don't carry per-function metadata from the import.
 // If the package level doesn't dominate the caller's level, V0002 fires.
-func checkCrossPackageCallee(
-  ctx:     in WalkCtx,
-  pkgName: in String,
-  span:    in Span
-): Unit {
+func checkCrossPackageCallee(ctx: in WalkCtx, pkgName: in String, span: in Span): Unit {
   var ji = 0
   while ji < ctx.imports.count {
     if ctx.imports[ji].name == pkgName {
       val pkgLevel = levelStringToMode(ctx.imports[ji].level)
       val admissible = vlDominates(pkgLevel, ctx.fnLevel)
       if not admissible {
-        ctx.diag.add(errorDiagnostic("V0002",
-          "proof-required function '" + ctx.fnName +
-          "' calls into " + vlDisplay(pkgLevel) + " package '" + pkgName +
-          "'; upgrade callee package or shift caller to @runtime_checked",
-          span))
+        ctx.diag.add(
+          errorDiagnostic(
+            "V0002",
+            "proof-required function '" + ctx.fnName + "' calls into " + vlDisplay(pkgLevel) + " package '" + pkgName +
+              "'; upgrade callee package or shift caller to @runtime_checked",
+            span
+          )
+        )
       }
-      return  // stop after first matching import (imports are unique after parsing)
+      return
+      // stop after first matching import (imports are unique after parsing)
     }
     ji = ji + 1
   }
@@ -143,21 +140,21 @@ func checkCrossPackageCallee(
 func walkExprCalls(ctx: in WalkCtx, e: in Expr): Unit {
   match e.kind {
     case EAwait(inner) -> {
-      ctx.diag.add(errorDiagnostic("V0002",
-        "await not admitted in proof-required function '" + ctx.fnName + "'",
-        e.span))
+      ctx.diag.add(errorDiagnostic("V0002", "await not admitted in proof-required function '" + ctx.fnName + "'", e.span))
       walkExprCalls(ctx, inner)
     }
     case EYield(inner) -> {
-      ctx.diag.add(errorDiagnostic("V0002",
-        "yield not admitted in proof-required function '" + ctx.fnName + "': async generators are not in the VC fragment",
-        e.span))
+      ctx.diag.add(
+        errorDiagnostic(
+          "V0002",
+          "yield not admitted in proof-required function '" + ctx.fnName + "': async generators are not in the VC fragment",
+          e.span
+        )
+      )
       walkExprCalls(ctx, inner)
     }
     case ESpawn(inner) -> {
-      ctx.diag.add(errorDiagnostic("V0002",
-        "spawn not admitted in proof-required function '" + ctx.fnName + "'",
-        e.span))
+      ctx.diag.add(errorDiagnostic("V0002", "spawn not admitted in proof-required function '" + ctx.fnName + "'", e.span))
       walkExprCalls(ctx, inner)
     }
     case ECall(fn, args) -> {
@@ -175,32 +172,34 @@ func walkExprCalls(ctx: in WalkCtx, e: in Expr): Unit {
             checkCrossPackageCallee(ctx, pkgName, e.span)
           }
         }
-        case _ -> {}
+        case _ -> {
+        }
       }
       walkExprCalls(ctx, fn)
       var ai = 0
       while ai < args.count {
         match args[ai] {
           case CANamed(_, v, _) -> walkExprCalls(ctx, v)
-          case CAPositional(v)  -> walkExprCalls(ctx, v)
+          case CAPositional(v) -> walkExprCalls(ctx, v)
         }
         ai = ai + 1
       }
     }
     case EUnsafe(blk) -> {
       match ctx.fnLevel {
-        case VLProofRequiredUnsafe -> {}
+        case VLProofRequiredUnsafe -> {
+        }
         case _ -> {
-          ctx.diag.add(errorDiagnostic("V0003",
-            "unsafe block requires @proof_required(unsafe_blocks_allowed) on the package",
-            e.span))
+          ctx.diag.add(
+            errorDiagnostic("V0003", "unsafe block requires @proof_required(unsafe_blocks_allowed) on the package", e.span)
+          )
         }
       }
       walkBlockCalls(ctx, blk)
     }
-    case EParen(inner)     -> walkExprCalls(ctx, inner)
-    case ETry(inner)       -> walkExprCalls(ctx, inner)
-    case EOld(inner)       -> walkExprCalls(ctx, inner)
+    case EParen(inner) -> walkExprCalls(ctx, inner)
+    case ETry(inner) -> walkExprCalls(ctx, inner)
+    case EOld(inner) -> walkExprCalls(ctx, inner)
     case EPropagate(inner) -> walkExprCalls(ctx, inner)
     case ETuple(exprs) -> {
       var i = 0
@@ -221,7 +220,8 @@ func walkExprCalls(ctx: in WalkCtx, e: in Expr): Unit {
       walkEobCalls(ctx, thenBranch)
       match elseOpt {
         case Some(eb) -> walkEobCalls(ctx, eb)
-        case None     -> {}
+        case None -> {
+        }
       }
     }
     case EMatch(scrutinee, arms) -> {
@@ -232,7 +232,8 @@ func walkExprCalls(ctx: in WalkCtx, e: in Expr): Unit {
         walkEobCalls(ctx, arm.body)
         match arm.guard {
           case Some(g) -> walkExprCalls(ctx, g)
-          case None    -> {}
+          case None -> {
+          }
         }
         ai = ai + 1
       }
@@ -241,17 +242,19 @@ func walkExprCalls(ctx: in WalkCtx, e: in Expr): Unit {
       walkExprCalls(ctx, body)
       match whereOpt {
         case Some(w) -> walkExprCalls(ctx, w)
-        case None    -> {}
+        case None -> {
+        }
       }
     }
     case EExists(_, whereOpt, body) -> {
       walkExprCalls(ctx, body)
       match whereOpt {
         case Some(w) -> walkExprCalls(ctx, w)
-        case None    -> {}
+        case None -> {
+        }
       }
     }
-    case ETypeApp(fn, _)       -> walkExprCalls(ctx, fn)
+    case ETypeApp(fn, _) -> walkExprCalls(ctx, fn)
     case EIndex(recv, indices) -> {
       walkExprCalls(ctx, recv)
       var ii = 0
@@ -260,47 +263,59 @@ func walkExprCalls(ctx: in WalkCtx, e: in Expr): Unit {
         ii = ii + 1
       }
     }
-    case EMember(recv, _)  -> walkExprCalls(ctx, recv)
-    case EPrefix(_, x)     -> walkExprCalls(ctx, x)
-    case EBinop(_, l, r)   -> {
+    case EMember(recv, _) -> walkExprCalls(ctx, recv)
+    case EPrefix(_, x) -> walkExprCalls(ctx, x)
+    case EBinop(_, l, r) -> {
       walkExprCalls(ctx, l)
       walkExprCalls(ctx, r)
     }
-    case EAssign(t, _, v)  -> {
+    case EAssign(t, _, v) -> {
       walkExprCalls(ctx, t)
       walkExprCalls(ctx, v)
     }
-    case EBlock(blk)       -> walkBlockCalls(ctx, blk)
-    case ELambda(_, body)  -> walkBlockCalls(ctx, body)
+    case EBlock(blk) -> walkBlockCalls(ctx, blk)
+    case ELambda(_, body) -> walkBlockCalls(ctx, body)
     case EInterpolated(segs) -> {
       var si = 0
       while si < segs.count {
         match segs[si] {
-          case ISExpr(x)    -> walkExprCalls(ctx, x)
-          case ISText(_, _) -> {}
+          case ISExpr(x) -> walkExprCalls(ctx, x)
+          case ISText(_, _) -> {
+          }
         }
         si = si + 1
       }
     }
     case ERange(bound) -> {
       match bound {
-        case RBClosed(lo, hi)   -> { walkExprCalls(ctx, lo); walkExprCalls(ctx, hi) }
-        case RBHalfOpen(lo, hi) -> { walkExprCalls(ctx, lo); walkExprCalls(ctx, hi) }
-        case RBLowerOpen(hi)    -> walkExprCalls(ctx, hi)
-        case RBUpperOpen(lo)    -> walkExprCalls(ctx, lo)
+        case RBClosed(lo, hi) -> {
+          walkExprCalls(ctx, lo)
+          walkExprCalls(ctx, hi)
+        }
+        case RBHalfOpen(lo, hi) -> {
+          walkExprCalls(ctx, lo)
+          walkExprCalls(ctx, hi)
+        }
+        case RBLowerOpen(hi) -> walkExprCalls(ctx, hi)
+        case RBUpperOpen(lo) -> walkExprCalls(ctx, lo)
       }
     }
-    case ELiteral(_) -> {}
-    case EPath(_)    -> {}
-    case ESelf       -> {}
-    case EResult     -> {}
-    case EError      -> {}
+    case ELiteral(_) -> {
+    }
+    case EPath(_) -> {
+    }
+    case ESelf -> {
+    }
+    case EResult -> {
+    }
+    case EError -> {
+    }
   }
 }
 
 func walkEobCalls(ctx: in WalkCtx, eob: in ExprOrBlock): Unit {
   match eob {
-    case EOBExpr(e)    -> walkExprCalls(ctx, e)
+    case EOBExpr(e) -> walkExprCalls(ctx, e)
     case EOBBlock(blk) -> walkBlockCalls(ctx, blk)
   }
 }
@@ -311,24 +326,29 @@ func walkBlockCalls(ctx: in WalkCtx, blk: in Block): Unit {
     match blk.statements[i].kind {
       case SLocal(binding) -> {
         match binding {
-          case LBVal(_, _, init)  -> walkExprCalls(ctx, init)
-          case LBLet(_, _, init)  -> walkExprCalls(ctx, init)
+          case LBVal(_, _, init) -> walkExprCalls(ctx, init)
+          case LBLet(_, _, init) -> walkExprCalls(ctx, init)
           case LBVar(_, _, initOpt) -> {
             match initOpt {
               case Some(init) -> walkExprCalls(ctx, init)
-              case None       -> {}
+              case None -> {
+              }
             }
           }
         }
       }
-      case SAssign(t, _, v)    -> { walkExprCalls(ctx, t); walkExprCalls(ctx, v) }
-      case SReturn(valOpt)     -> {
+      case SAssign(t, _, v) -> {
+        walkExprCalls(ctx, t)
+        walkExprCalls(ctx, v)
+      }
+      case SReturn(valOpt) -> {
         match valOpt {
           case Some(v) -> walkExprCalls(ctx, v)
-          case None    -> {}
+          case None -> {
+          }
         }
       }
-      case SThrow(x)           -> walkExprCalls(ctx, x)
+      case SThrow(x) -> walkExprCalls(ctx, x)
       case STry(body, catches, finally_) -> {
         walkBlockCalls(ctx, body)
         var ci = 0
@@ -337,21 +357,34 @@ func walkBlockCalls(ctx: in WalkCtx, blk: in Block): Unit {
           ci = ci + 1
         }
         match finally_ {
-          case None     -> {}
+          case None -> {
+          }
           case Some(fb) -> walkBlockCalls(ctx, fb)
         }
       }
-      case SDefer(body)        -> walkBlockCalls(ctx, body)
-      case SScope(_, body)     -> walkBlockCalls(ctx, body)
-      case SFor(_, _, iter, body) -> { walkExprCalls(ctx, iter); walkBlockCalls(ctx, body) }
-      case SWhile(_, cond, body)  -> { walkExprCalls(ctx, cond); walkBlockCalls(ctx, body) }
-      case SLoop(_, body)         -> walkBlockCalls(ctx, body)
-      case SExpr(x)               -> walkExprCalls(ctx, x)
-      case SInvariant(x)          -> walkExprCalls(ctx, x)
-      case SRule(l, r)            -> { walkExprCalls(ctx, l); walkExprCalls(ctx, r) }
-      case SBreak(_)    -> {}
-      case SContinue(_) -> {}
-      case SItem(_)     -> {}
+      case SDefer(body) -> walkBlockCalls(ctx, body)
+      case SScope(_, body) -> walkBlockCalls(ctx, body)
+      case SFor(_, _, iter, body) -> {
+        walkExprCalls(ctx, iter)
+        walkBlockCalls(ctx, body)
+      }
+      case SWhile(_, cond, body) -> {
+        walkExprCalls(ctx, cond)
+        walkBlockCalls(ctx, body)
+      }
+      case SLoop(_, body) -> walkBlockCalls(ctx, body)
+      case SExpr(x) -> walkExprCalls(ctx, x)
+      case SInvariant(x) -> walkExprCalls(ctx, x)
+      case SRule(l, r) -> {
+        walkExprCalls(ctx, l)
+        walkExprCalls(ctx, r)
+      }
+      case SBreak(_) -> {
+      }
+      case SContinue(_) -> {
+      }
+      case SItem(_) -> {
+      }
     }
     i = i + 1
   }
@@ -360,41 +393,33 @@ func walkBlockCalls(ctx: in WalkCtx, blk: in Block): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. Check a single function (V0002/V0003/V0005).
 // ─────────────────────────────────────────────────────────────────────────────
-
 // V0005: walk a block looking for loops without `SInvariant` in their body.
-func checkLoopInvariants(
-  diag:   in List[Diagnostic],
-  fnName: in String,
-  blk:    in Block
-): Unit {
+func checkLoopInvariants(diag: in List[Diagnostic], fnName: in String, blk: in Block): Unit {
   var i = 0
   while i < blk.statements.count {
     val st = blk.statements[i]
     match st.kind {
       case SFor(_, _, _, body) -> {
         if not bodyHasInvariant(body) {
-          diag.add(errorDiagnostic("V0005",
-            "loop in proof-required function '" + fnName +
-            "' lacks an invariant: clause",
-            st.span))
+          diag.add(
+            errorDiagnostic("V0005", "loop in proof-required function '" + fnName + "' lacks an invariant: clause", st.span)
+          )
         }
         checkLoopInvariants(diag, fnName, body)
       }
       case SWhile(_, _, body) -> {
         if not bodyHasInvariant(body) {
-          diag.add(errorDiagnostic("V0005",
-            "loop in proof-required function '" + fnName +
-            "' lacks an invariant: clause",
-            st.span))
+          diag.add(
+            errorDiagnostic("V0005", "loop in proof-required function '" + fnName + "' lacks an invariant: clause", st.span)
+          )
         }
         checkLoopInvariants(diag, fnName, body)
       }
       case SLoop(_, body) -> {
         if not bodyHasInvariant(body) {
-          diag.add(errorDiagnostic("V0005",
-            "loop in proof-required function '" + fnName +
-            "' lacks an invariant: clause",
-            st.span))
+          diag.add(
+            errorDiagnostic("V0005", "loop in proof-required function '" + fnName + "' lacks an invariant: clause", st.span)
+          )
         }
         checkLoopInvariants(diag, fnName, body)
       }
@@ -406,13 +431,15 @@ func checkLoopInvariants(
           ci = ci + 1
         }
         match finally_ {
-          case None     -> {}
+          case None -> {
+          }
           case Some(fb) -> checkLoopInvariants(diag, fnName, fb)
         }
       }
-      case SDefer(body)    -> checkLoopInvariants(diag, fnName, body)
+      case SDefer(body) -> checkLoopInvariants(diag, fnName, body)
       case SScope(_, body) -> checkLoopInvariants(diag, fnName, body)
-      case _ -> {}
+      case _ -> {
+      }
     }
     i = i + 1
   }
@@ -422,8 +449,11 @@ func bodyHasInvariant(body: in Block): Bool {
   var i = 0
   while i < body.statements.count {
     match body.statements[i].kind {
-      case SInvariant(_) -> { return true }
-      case _             -> {}
+      case SInvariant(_) -> {
+        return true
+      }
+      case _ -> {
+      }
     }
     i = i + 1
   }
@@ -434,23 +464,21 @@ func bodyHasInvariant(body: in Block): Bool {
 // Only called when fnLevel is proof-required.
 func checkFunctionCalls(
   fileLevel: in VerificationLevel,
-  callees:   in Map[String, CalleeInfo],
-  imports:   in List[ImportedMeta],
-  diag:      in List[Diagnostic],
-  fn:        in FunctionDecl
+  callees: in Map[String, CalleeInfo],
+  imports: in List[ImportedMeta],
+  diag: in List[Diagnostic],
+  fn: in FunctionDecl,
 ): Unit {
   val fnLevel = levelOfFunction(fileLevel, fn)
-  if not vlIsProofRequired(fnLevel) { return }
+  if not vlIsProofRequired(fnLevel) {
+    return
+  }
 
-  val ctx = WalkCtx(
-    fnName  = fn.name,
-    fnLevel = fnLevel,
-    callees = callees,
-    imports = imports,
-    diag    = diag)
+  val ctx = WalkCtx(fnName = fn.name, fnLevel = fnLevel, callees = callees, imports = imports, diag = diag)
 
   match fn.body {
-    case None -> {}
+    case None -> {
+    }
     case Some(body) -> {
       match body {
         case FBExpr(e) -> walkExprCalls(ctx, e)
@@ -460,28 +488,34 @@ func checkFunctionCalls(
           while i < blk.statements.count {
             val st = blk.statements[i]
             match st.kind {
-              case SExpr(e)          -> walkExprCalls(ctx, e)
-              case SAssign(t, _, v)  -> { walkExprCalls(ctx, t); walkExprCalls(ctx, v) }
-              case SReturn(valOpt)   -> {
+              case SExpr(e) -> walkExprCalls(ctx, e)
+              case SAssign(t, _, v) -> {
+                walkExprCalls(ctx, t)
+                walkExprCalls(ctx, v)
+              }
+              case SReturn(valOpt) -> {
                 match valOpt {
                   case Some(v) -> walkExprCalls(ctx, v)
-                  case None    -> {}
+                  case None -> {
+                  }
                 }
               }
-              case SThrow(x)         -> walkExprCalls(ctx, x)
-              case SLocal(binding)   -> {
+              case SThrow(x) -> walkExprCalls(ctx, x)
+              case SLocal(binding) -> {
                 match binding {
-                  case LBVal(_, _, init)    -> walkExprCalls(ctx, init)
-                  case LBLet(_, _, init)    -> walkExprCalls(ctx, init)
+                  case LBVal(_, _, init) -> walkExprCalls(ctx, init)
+                  case LBLet(_, _, init) -> walkExprCalls(ctx, init)
                   case LBVar(_, _, initOpt) -> {
                     match initOpt {
                       case Some(init) -> walkExprCalls(ctx, init)
-                      case None       -> {}
+                      case None -> {
+                      }
                     }
                   }
                 }
               }
-              case _ -> {}
+              case _ -> {
+              }
             }
             i = i + 1
           }
@@ -495,12 +529,7 @@ func checkFunctionCalls(
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. V0004 — @axiom function must not have a body.
 // ─────────────────────────────────────────────────────────────────────────────
-
-func checkAxiomBodies(
-  fileLevel: in VerificationLevel,
-  file:      in SourceFile,
-  diag:      in List[Diagnostic]
-): Unit {
+func checkAxiomBodies(fileLevel: in VerificationLevel, file: in SourceFile, diag: in List[Diagnostic]): Unit {
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -510,17 +539,18 @@ func checkAxiomBodies(
           case VLAxiom -> {
             match fn.body {
               case Some(_) -> {
-                diag.add(errorDiagnostic("V0004",
-                  "@axiom function '" + fn.name + "' must not have a body",
-                  fn.span))
+                diag.add(errorDiagnostic("V0004", "@axiom function '" + fn.name + "' must not have a body", fn.span))
               }
-              case None -> {}
+              case None -> {
+              }
             }
           }
-          case _ -> {}
+          case _ -> {
+          }
         }
       }
-      case _ -> {}
+      case _ -> {
+      }
     }
     i = i + 1
   }
@@ -529,20 +559,19 @@ func checkAxiomBodies(
 // ─────────────────────────────────────────────────────────────────────────────
 // §6. V0006 — quantifier binders must have bounded domains.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func isUnboundedDomain(te: in TypeExpr): Bool {
   match te.kind {
     case TRef(path) -> {
       if path.segments.count == 1 {
         val nm = path.segments[0]
-        nm == "Int"    or nm == "Long"   or nm == "Nat"    or
-        nm == "Float"  or nm == "Double" or nm == "String" or
-        nm == "UInt"   or nm == "ULong"
+        nm == "Int" or nm == "Long" or nm == "Nat" or nm == "Float" or nm == "Double" or nm == "String" or nm == "UInt" or
+          nm == "ULong"
       } else {
         false
       }
     }
-    case TRefined(_, _) -> false  // range subtype: bounded
+    case TRefined(_, _) -> false
+    // range subtype: bounded
     case TGenericApp(_, _) -> false
     case TArray(_, _) -> false
     case TSlice(_) -> false
@@ -550,28 +579,29 @@ func isUnboundedDomain(te: in TypeExpr): Bool {
   }
 }
 
-func walkExprQuantifiers(
-  fileLevel: in VerificationLevel,
-  diag:      in List[Diagnostic],
-  e:         in Expr
-): Unit {
+func walkExprQuantifiers(fileLevel: in VerificationLevel, diag: in List[Diagnostic], e: in Expr): Unit {
   match e.kind {
     case EForall(binders, whereOpt, body) -> {
       var bi = 0
       while bi < binders.count {
         val b = binders[bi]
         if isUnboundedDomain(b.ty) {
-          diag.add(errorDiagnostic("V0006",
-            "quantifier binder '" + b.name +
-            "' has unbounded domain in proof-required code; constrain to a slice, set, range subtype, or finite enum",
-            b.span))
+          diag.add(
+            errorDiagnostic(
+              "V0006",
+              "quantifier binder '" + b.name +
+                "' has unbounded domain in proof-required code; constrain to a slice, set, range subtype, or finite enum",
+              b.span
+            )
+          )
         }
         bi = bi + 1
       }
       walkExprQuantifiers(fileLevel, diag, body)
       match whereOpt {
         case Some(w) -> walkExprQuantifiers(fileLevel, diag, w)
-        case None    -> {}
+        case None -> {
+        }
       }
     }
     case EExists(binders, whereOpt, body) -> {
@@ -579,34 +609,40 @@ func walkExprQuantifiers(
       while bi < binders.count {
         val b = binders[bi]
         if isUnboundedDomain(b.ty) {
-          diag.add(errorDiagnostic("V0006",
-            "quantifier binder '" + b.name +
-            "' has unbounded domain in proof-required code; constrain to a slice, set, range subtype, or finite enum",
-            b.span))
+          diag.add(
+            errorDiagnostic(
+              "V0006",
+              "quantifier binder '" + b.name +
+                "' has unbounded domain in proof-required code; constrain to a slice, set, range subtype, or finite enum",
+              b.span
+            )
+          )
         }
         bi = bi + 1
       }
       walkExprQuantifiers(fileLevel, diag, body)
       match whereOpt {
         case Some(w) -> walkExprQuantifiers(fileLevel, diag, w)
-        case None    -> {}
+        case None -> {
+        }
       }
     }
-    case EParen(inner)     -> walkExprQuantifiers(fileLevel, diag, inner)
-    case EOld(inner)       -> walkExprQuantifiers(fileLevel, diag, inner)
-    case ETry(inner)       -> walkExprQuantifiers(fileLevel, diag, inner)
-    case EAwait(inner)     -> walkExprQuantifiers(fileLevel, diag, inner)
-    case EYield(inner)     -> walkExprQuantifiers(fileLevel, diag, inner)
-    case ESpawn(inner)     -> walkExprQuantifiers(fileLevel, diag, inner)
+    case EParen(inner) -> walkExprQuantifiers(fileLevel, diag, inner)
+    case EOld(inner) -> walkExprQuantifiers(fileLevel, diag, inner)
+    case ETry(inner) -> walkExprQuantifiers(fileLevel, diag, inner)
+    case EAwait(inner) -> walkExprQuantifiers(fileLevel, diag, inner)
+    case EYield(inner) -> walkExprQuantifiers(fileLevel, diag, inner)
+    case ESpawn(inner) -> walkExprQuantifiers(fileLevel, diag, inner)
     case EPropagate(inner) -> walkExprQuantifiers(fileLevel, diag, inner)
-    case ETuple(exprs)     -> walkExprQList(fileLevel, diag, exprs)
-    case EList(exprs)      -> walkExprQList(fileLevel, diag, exprs)
+    case ETuple(exprs) -> walkExprQList(fileLevel, diag, exprs)
+    case EList(exprs) -> walkExprQList(fileLevel, diag, exprs)
     case EIf(cond, thenBranch, elseOpt, _) -> {
       walkExprQuantifiers(fileLevel, diag, cond)
       walkEobQuantifiers(fileLevel, diag, thenBranch)
       match elseOpt {
         case Some(eb) -> walkEobQuantifiers(fileLevel, diag, eb)
-        case None     -> {}
+        case None -> {
+        }
       }
     }
     case EMatch(scrutinee, arms) -> {
@@ -617,7 +653,8 @@ func walkExprQuantifiers(
         walkEobQuantifiers(fileLevel, diag, arm.body)
         match arm.guard {
           case Some(g) -> walkExprQuantifiers(fileLevel, diag, g)
-          case None    -> {}
+          case None -> {
+          }
         }
         ai = ai + 1
       }
@@ -628,38 +665,35 @@ func walkExprQuantifiers(
       while ai < args.count {
         match args[ai] {
           case CANamed(_, v, _) -> walkExprQuantifiers(fileLevel, diag, v)
-          case CAPositional(v)  -> walkExprQuantifiers(fileLevel, diag, v)
+          case CAPositional(v) -> walkExprQuantifiers(fileLevel, diag, v)
         }
         ai = ai + 1
       }
     }
-    case ETypeApp(fn, _)       -> walkExprQuantifiers(fileLevel, diag, fn)
+    case ETypeApp(fn, _) -> walkExprQuantifiers(fileLevel, diag, fn)
     case EIndex(recv, indices) -> {
       walkExprQuantifiers(fileLevel, diag, recv)
       walkExprQList(fileLevel, diag, indices)
     }
-    case EMember(recv, _)  -> walkExprQuantifiers(fileLevel, diag, recv)
-    case EPrefix(_, x)     -> walkExprQuantifiers(fileLevel, diag, x)
-    case EBinop(_, l, r)   -> {
+    case EMember(recv, _) -> walkExprQuantifiers(fileLevel, diag, recv)
+    case EPrefix(_, x) -> walkExprQuantifiers(fileLevel, diag, x)
+    case EBinop(_, l, r) -> {
       walkExprQuantifiers(fileLevel, diag, l)
       walkExprQuantifiers(fileLevel, diag, r)
     }
-    case EAssign(t, _, v)  -> {
+    case EAssign(t, _, v) -> {
       walkExprQuantifiers(fileLevel, diag, t)
       walkExprQuantifiers(fileLevel, diag, v)
     }
-    case EBlock(blk)       -> walkBlockQuantifiers(fileLevel, diag, blk)
-    case EUnsafe(blk)      -> walkBlockQuantifiers(fileLevel, diag, blk)
-    case ELambda(_, body)  -> walkBlockQuantifiers(fileLevel, diag, body)
-    case _                 -> {}
+    case EBlock(blk) -> walkBlockQuantifiers(fileLevel, diag, blk)
+    case EUnsafe(blk) -> walkBlockQuantifiers(fileLevel, diag, blk)
+    case ELambda(_, body) -> walkBlockQuantifiers(fileLevel, diag, body)
+    case _ -> {
+    }
   }
 }
 
-func walkExprQList(
-  fileLevel: in VerificationLevel,
-  diag:      in List[Diagnostic],
-  exprs:     in List[Expr]
-): Unit {
+func walkExprQList(fileLevel: in VerificationLevel, diag: in List[Diagnostic], exprs: in List[Expr]): Unit {
   var i = 0
   while i < exprs.count {
     walkExprQuantifiers(fileLevel, diag, exprs[i])
@@ -667,58 +701,52 @@ func walkExprQList(
   }
 }
 
-func walkEobQuantifiers(
-  fileLevel: in VerificationLevel,
-  diag:      in List[Diagnostic],
-  eob:       in ExprOrBlock
-): Unit {
+func walkEobQuantifiers(fileLevel: in VerificationLevel, diag: in List[Diagnostic], eob: in ExprOrBlock): Unit {
   match eob {
-    case EOBExpr(e)    -> walkExprQuantifiers(fileLevel, diag, e)
+    case EOBExpr(e) -> walkExprQuantifiers(fileLevel, diag, e)
     case EOBBlock(blk) -> walkBlockQuantifiers(fileLevel, diag, blk)
   }
 }
 
-func walkBlockQuantifiers(
-  fileLevel: in VerificationLevel,
-  diag:      in List[Diagnostic],
-  blk:       in Block
-): Unit {
+func walkBlockQuantifiers(fileLevel: in VerificationLevel, diag: in List[Diagnostic], blk: in Block): Unit {
   var i = 0
   while i < blk.statements.count {
     val st = blk.statements[i]
     match st.kind {
-      case SExpr(x)            -> walkExprQuantifiers(fileLevel, diag, x)
-      case SAssign(t, _, v)    -> { walkExprQuantifiers(fileLevel, diag, t); walkExprQuantifiers(fileLevel, diag, v) }
-      case SReturn(valOpt)     -> {
+      case SExpr(x) -> walkExprQuantifiers(fileLevel, diag, x)
+      case SAssign(t, _, v) -> {
+        walkExprQuantifiers(fileLevel, diag, t)
+        walkExprQuantifiers(fileLevel, diag, v)
+      }
+      case SReturn(valOpt) -> {
         match valOpt {
           case Some(v) -> walkExprQuantifiers(fileLevel, diag, v)
-          case None    -> {}
+          case None -> {
+          }
         }
       }
-      case SThrow(x)           -> walkExprQuantifiers(fileLevel, diag, x)
-      case SLocal(binding)     -> {
+      case SThrow(x) -> walkExprQuantifiers(fileLevel, diag, x)
+      case SLocal(binding) -> {
         match binding {
-          case LBVal(_, _, init)    -> walkExprQuantifiers(fileLevel, diag, init)
-          case LBLet(_, _, init)    -> walkExprQuantifiers(fileLevel, diag, init)
+          case LBVal(_, _, init) -> walkExprQuantifiers(fileLevel, diag, init)
+          case LBLet(_, _, init) -> walkExprQuantifiers(fileLevel, diag, init)
           case LBVar(_, _, initOpt) -> {
             match initOpt {
               case Some(init) -> walkExprQuantifiers(fileLevel, diag, init)
-              case None       -> {}
+              case None -> {
+              }
             }
           }
         }
       }
-      case _ -> {}
+      case _ -> {
+      }
     }
     i = i + 1
   }
 }
 
-func checkQuantifierDomains(
-  fileLevel: in VerificationLevel,
-  file:      in SourceFile,
-  diag:      in List[Diagnostic]
-): Unit {
+func checkQuantifierDomains(fileLevel: in VerificationLevel, file: in SourceFile, diag: in List[Diagnostic]): Unit {
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -728,17 +756,19 @@ func checkQuantifierDomains(
           var ci = 0
           while ci < fn.contracts.count {
             match fn.contracts[ci] {
-              case CCRequires(expr, _)  -> walkExprQuantifiers(fileLevel, diag, expr)
-              case CCEnsures(expr, _)   -> walkExprQuantifiers(fileLevel, diag, expr)
-              case CCWhen(expr, _)      -> walkExprQuantifiers(fileLevel, diag, expr)
+              case CCRequires(expr, _) -> walkExprQuantifiers(fileLevel, diag, expr)
+              case CCEnsures(expr, _) -> walkExprQuantifiers(fileLevel, diag, expr)
+              case CCWhen(expr, _) -> walkExprQuantifiers(fileLevel, diag, expr)
               case CCDecreases(expr, _) -> walkExprQuantifiers(fileLevel, diag, expr)
-              case CCRaises(_, _)       -> {}
+              case CCRaises(_, _) -> {
+              }
             }
             ci = ci + 1
           }
         }
       }
-      case _ -> {}
+      case _ -> {
+      }
     }
     i = i + 1
   }
@@ -747,42 +777,42 @@ func checkQuantifierDomains(
 // ─────────────────────────────────────────────────────────────────────────────
 // §7. V0009 — `assume` only in unsafe blocks in proof-required code.
 // ─────────────────────────────────────────────────────────────────────────────
-
-func walkExprAssume(
-  diag:     in List[Diagnostic],
-  inUnsafe: in Bool,
-  e:        in Expr
-): Unit {
+func walkExprAssume(diag: in List[Diagnostic], inUnsafe: in Bool, e: in Expr): Unit {
   match e.kind {
     case ECall(callee, args) -> {
       match callee.kind {
         case EPath(path) -> {
           if path.segments.count == 1 and path.segments[0] == "assume" and not inUnsafe {
-            diag.add(errorDiagnostic("V0009",
-              "assume may only appear inside an unsafe { } block in proof-required code; wrap in unsafe { } or remove",
-              e.span))
+            diag.add(
+              errorDiagnostic(
+                "V0009",
+                "assume may only appear inside an unsafe { } block in proof-required code; wrap in unsafe { } or remove",
+                e.span
+              )
+            )
           }
         }
-        case _ -> {}
+        case _ -> {
+        }
       }
       walkExprAssume(diag, inUnsafe, callee)
       var ai = 0
       while ai < args.count {
         match args[ai] {
           case CANamed(_, v, _) -> walkExprAssume(diag, inUnsafe, v)
-          case CAPositional(v)  -> walkExprAssume(diag, inUnsafe, v)
+          case CAPositional(v) -> walkExprAssume(diag, inUnsafe, v)
         }
         ai = ai + 1
       }
     }
-    case EUnsafe(blk)      -> walkBlockAssume(diag, true, blk)
-    case EBlock(blk)       -> walkBlockAssume(diag, inUnsafe, blk)
-    case EParen(inner)     -> walkExprAssume(diag, inUnsafe, inner)
-    case EOld(inner)       -> walkExprAssume(diag, inUnsafe, inner)
-    case ETry(inner)       -> walkExprAssume(diag, inUnsafe, inner)
-    case EAwait(inner)     -> walkExprAssume(diag, inUnsafe, inner)
-    case EYield(inner)     -> walkExprAssume(diag, inUnsafe, inner)
-    case ESpawn(inner)     -> walkExprAssume(diag, inUnsafe, inner)
+    case EUnsafe(blk) -> walkBlockAssume(diag, true, blk)
+    case EBlock(blk) -> walkBlockAssume(diag, inUnsafe, blk)
+    case EParen(inner) -> walkExprAssume(diag, inUnsafe, inner)
+    case EOld(inner) -> walkExprAssume(diag, inUnsafe, inner)
+    case ETry(inner) -> walkExprAssume(diag, inUnsafe, inner)
+    case EAwait(inner) -> walkExprAssume(diag, inUnsafe, inner)
+    case EYield(inner) -> walkExprAssume(diag, inUnsafe, inner)
+    case ESpawn(inner) -> walkExprAssume(diag, inUnsafe, inner)
     case EPropagate(inner) -> walkExprAssume(diag, inUnsafe, inner)
     case ETuple(exprs) -> {
       var i = 0
@@ -803,7 +833,8 @@ func walkExprAssume(
       walkEobAssume(diag, inUnsafe, thenBranch)
       match elseOpt {
         case Some(eb) -> walkEobAssume(diag, inUnsafe, eb)
-        case None     -> {}
+        case None -> {
+        }
       }
     }
     case EMatch(scrutinee, arms) -> {
@@ -814,7 +845,8 @@ func walkExprAssume(
         walkEobAssume(diag, inUnsafe, arm.body)
         match arm.guard {
           case Some(g) -> walkExprAssume(diag, inUnsafe, g)
-          case None    -> {}
+          case None -> {
+          }
         }
         ai = ai + 1
       }
@@ -823,17 +855,19 @@ func walkExprAssume(
       walkExprAssume(diag, inUnsafe, body)
       match whereOpt {
         case Some(w) -> walkExprAssume(diag, inUnsafe, w)
-        case None    -> {}
+        case None -> {
+        }
       }
     }
     case EExists(_, whereOpt, body) -> {
       walkExprAssume(diag, inUnsafe, body)
       match whereOpt {
         case Some(w) -> walkExprAssume(diag, inUnsafe, w)
-        case None    -> {}
+        case None -> {
+        }
       }
     }
-    case ETypeApp(fn, _)       -> walkExprAssume(diag, inUnsafe, fn)
+    case ETypeApp(fn, _) -> walkExprAssume(diag, inUnsafe, fn)
     case EIndex(recv, indices) -> {
       walkExprAssume(diag, inUnsafe, recv)
       var ii = 0
@@ -842,86 +876,95 @@ func walkExprAssume(
         ii = ii + 1
       }
     }
-    case EMember(recv, _)  -> walkExprAssume(diag, inUnsafe, recv)
-    case EPrefix(_, x)     -> walkExprAssume(diag, inUnsafe, x)
-    case EBinop(_, l, r)   -> {
+    case EMember(recv, _) -> walkExprAssume(diag, inUnsafe, recv)
+    case EPrefix(_, x) -> walkExprAssume(diag, inUnsafe, x)
+    case EBinop(_, l, r) -> {
       walkExprAssume(diag, inUnsafe, l)
       walkExprAssume(diag, inUnsafe, r)
     }
-    case EAssign(t, _, v)  -> {
+    case EAssign(t, _, v) -> {
       walkExprAssume(diag, inUnsafe, t)
       walkExprAssume(diag, inUnsafe, v)
     }
-    case ELambda(_, body)  -> walkBlockAssume(diag, inUnsafe, body)
+    case ELambda(_, body) -> walkBlockAssume(diag, inUnsafe, body)
     case EInterpolated(segs) -> {
       var si = 0
       while si < segs.count {
         match segs[si] {
-          case ISExpr(x)    -> walkExprAssume(diag, inUnsafe, x)
-          case ISText(_, _) -> {}
+          case ISExpr(x) -> walkExprAssume(diag, inUnsafe, x)
+          case ISText(_, _) -> {
+          }
         }
         si = si + 1
       }
     }
     case ERange(bound) -> {
       match bound {
-        case RBClosed(lo, hi)   -> { walkExprAssume(diag, inUnsafe, lo); walkExprAssume(diag, inUnsafe, hi) }
-        case RBHalfOpen(lo, hi) -> { walkExprAssume(diag, inUnsafe, lo); walkExprAssume(diag, inUnsafe, hi) }
-        case RBLowerOpen(hi)    -> walkExprAssume(diag, inUnsafe, hi)
-        case RBUpperOpen(lo)    -> walkExprAssume(diag, inUnsafe, lo)
+        case RBClosed(lo, hi) -> {
+          walkExprAssume(diag, inUnsafe, lo)
+          walkExprAssume(diag, inUnsafe, hi)
+        }
+        case RBHalfOpen(lo, hi) -> {
+          walkExprAssume(diag, inUnsafe, lo)
+          walkExprAssume(diag, inUnsafe, hi)
+        }
+        case RBLowerOpen(hi) -> walkExprAssume(diag, inUnsafe, hi)
+        case RBUpperOpen(lo) -> walkExprAssume(diag, inUnsafe, lo)
       }
     }
-    case ELiteral(_) -> {}
-    case EPath(_)    -> {}
-    case ESelf       -> {}
-    case EResult     -> {}
-    case EError      -> {}
+    case ELiteral(_) -> {
+    }
+    case EPath(_) -> {
+    }
+    case ESelf -> {
+    }
+    case EResult -> {
+    }
+    case EError -> {
+    }
   }
 }
 
-func walkEobAssume(
-  diag:     in List[Diagnostic],
-  inUnsafe: in Bool,
-  eob:      in ExprOrBlock
-): Unit {
+func walkEobAssume(diag: in List[Diagnostic], inUnsafe: in Bool, eob: in ExprOrBlock): Unit {
   match eob {
-    case EOBExpr(e)    -> walkExprAssume(diag, inUnsafe, e)
+    case EOBExpr(e) -> walkExprAssume(diag, inUnsafe, e)
     case EOBBlock(blk) -> walkBlockAssume(diag, inUnsafe, blk)
   }
 }
 
-func walkBlockAssume(
-  diag:     in List[Diagnostic],
-  inUnsafe: in Bool,
-  blk:      in Block
-): Unit {
+func walkBlockAssume(diag: in List[Diagnostic], inUnsafe: in Bool, blk: in Block): Unit {
   var i = 0
   while i < blk.statements.count {
     val st = blk.statements[i]
     match st.kind {
-      case SExpr(x)            -> walkExprAssume(diag, inUnsafe, x)
-      case SAssign(t, _, v)    -> { walkExprAssume(diag, inUnsafe, t); walkExprAssume(diag, inUnsafe, v) }
-      case SReturn(valOpt)     -> {
+      case SExpr(x) -> walkExprAssume(diag, inUnsafe, x)
+      case SAssign(t, _, v) -> {
+        walkExprAssume(diag, inUnsafe, t)
+        walkExprAssume(diag, inUnsafe, v)
+      }
+      case SReturn(valOpt) -> {
         match valOpt {
           case Some(v) -> walkExprAssume(diag, inUnsafe, v)
-          case None    -> {}
+          case None -> {
+          }
         }
       }
-      case SThrow(x)           -> walkExprAssume(diag, inUnsafe, x)
-      case SInvariant(x)       -> walkExprAssume(diag, inUnsafe, x)
-      case SLocal(binding)     -> {
+      case SThrow(x) -> walkExprAssume(diag, inUnsafe, x)
+      case SInvariant(x) -> walkExprAssume(diag, inUnsafe, x)
+      case SLocal(binding) -> {
         match binding {
-          case LBVal(_, _, init)    -> walkExprAssume(diag, inUnsafe, init)
-          case LBLet(_, _, init)    -> walkExprAssume(diag, inUnsafe, init)
+          case LBVal(_, _, init) -> walkExprAssume(diag, inUnsafe, init)
+          case LBLet(_, _, init) -> walkExprAssume(diag, inUnsafe, init)
           case LBVar(_, _, initOpt) -> {
             match initOpt {
               case Some(init) -> walkExprAssume(diag, inUnsafe, init)
-              case None       -> {}
+              case None -> {
+              }
             }
           }
         }
       }
-      case STry(body, catches, finally_)    -> {
+      case STry(body, catches, finally_) -> {
         walkBlockAssume(diag, inUnsafe, body)
         var ci = 0
         while ci < catches.count {
@@ -929,36 +972,41 @@ func walkBlockAssume(
           ci = ci + 1
         }
         match finally_ {
-          case None     -> {}
+          case None -> {
+          }
           case Some(fb) -> walkBlockAssume(diag, inUnsafe, fb)
         }
       }
-      case SDefer(body)           -> walkBlockAssume(diag, inUnsafe, body)
-      case SScope(_, body)        -> walkBlockAssume(diag, inUnsafe, body)
+      case SDefer(body) -> walkBlockAssume(diag, inUnsafe, body)
+      case SScope(_, body) -> walkBlockAssume(diag, inUnsafe, body)
       case SFor(_, _, iter, body) -> {
         walkExprAssume(diag, inUnsafe, iter)
         walkBlockAssume(diag, inUnsafe, body)
       }
-      case SWhile(_, cond, body)  -> {
+      case SWhile(_, cond, body) -> {
         walkExprAssume(diag, inUnsafe, cond)
         walkBlockAssume(diag, inUnsafe, body)
       }
-      case SLoop(_, body)         -> walkBlockAssume(diag, inUnsafe, body)
-      case SRule(l, r)            -> { walkExprAssume(diag, inUnsafe, l); walkExprAssume(diag, inUnsafe, r) }
-      case SBreak(_)    -> {}
-      case SContinue(_) -> {}
-      case SItem(_)     -> {}
+      case SLoop(_, body) -> walkBlockAssume(diag, inUnsafe, body)
+      case SRule(l, r) -> {
+        walkExprAssume(diag, inUnsafe, l)
+        walkExprAssume(diag, inUnsafe, r)
+      }
+      case SBreak(_) -> {
+      }
+      case SContinue(_) -> {
+      }
+      case SItem(_) -> {
+      }
     }
     i = i + 1
   }
 }
 
-func checkAssumeUsage(
-  fileLevel: in VerificationLevel,
-  file:      in SourceFile,
-  diag:      in List[Diagnostic]
-): Unit {
-  if not vlIsProofRequired(fileLevel) { return }
+func checkAssumeUsage(fileLevel: in VerificationLevel, file: in SourceFile, diag: in List[Diagnostic]): Unit {
+  if not vlIsProofRequired(fileLevel) {
+    return
+  }
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -966,17 +1014,19 @@ func checkAssumeUsage(
         val fnLevel = levelOfFunction(fileLevel, fn)
         if vlIsProofRequired(fnLevel) {
           match fn.body {
-            case None -> {}
+            case None -> {
+            }
             case Some(body) -> {
               match body {
-                case FBExpr(e)    -> walkExprAssume(diag, false, e)
+                case FBExpr(e) -> walkExprAssume(diag, false, e)
                 case FBBlock(blk) -> walkBlockAssume(diag, false, blk)
               }
             }
           }
         }
       }
-      case _ -> {}
+      case _ -> {
+      }
     }
     i = i + 1
   }
@@ -985,38 +1035,46 @@ func checkAssumeUsage(
 // ─────────────────────────────────────────────────────────────────────────────
 // §8. V0001 — @proof_required package must not import @runtime_checked.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func levelStringToMode(s: in String): VerificationLevel {
-  if s == "proof_required"              { return VLProofRequired }
-  if s == "proof_required_unsafe"       { return VLProofRequiredUnsafe }
-  if s == "proof_required_checked"      { return VLProofRequiredChecked }
-  if s == "axiom"                       { return VLAxiom }
+  if s == "proof_required" {
+    return VLProofRequired
+  }
+  if s == "proof_required_unsafe" {
+    return VLProofRequiredUnsafe
+  }
+  if s == "proof_required_checked" {
+    return VLProofRequiredChecked
+  }
+  if s == "axiom" {
+    return VLAxiom
+  }
   VLRuntimeChecked
 }
 
 func checkImportLevels(
   fileLevel: in VerificationLevel,
-  file:      in SourceFile,
-  imports:   in List[ImportedMeta],
-  diag:      in List[Diagnostic]
+  file: in SourceFile,
+  imports: in List[ImportedMeta],
+  diag: in List[Diagnostic],
 ): Unit {
-  if not vlIsProofRequired(fileLevel) { return }
+  if not vlIsProofRequired(fileLevel) {
+    return
+  }
   var i = 0
   while i < file.imports.count {
     val imp = file.imports[i]
     val segs = imp.path.segments
-    val pkgName: String =
-      if segs.count == 0 {
-        ""
-      } else {
-        var nm = segs[0]
-        var si = 1
-        while si < segs.count {
-          nm = nm + "." + segs[si]
-          si = si + 1
-        }
-        nm
+    val pkgName: String = if segs.count == 0 {
+      ""
+    } else {
+      var nm = segs[0]
+      var si = 1
+      while si < segs.count {
+        nm = nm + "." + segs[si]
+        si = si + 1
       }
+      nm
+    }
     if pkgName != "" {
       var ji = 0
       while ji < imports.count {
@@ -1024,13 +1082,17 @@ func checkImportLevels(
           val calleeLevel = levelStringToMode(imports[ji].level)
           match calleeLevel {
             case VLRuntimeChecked -> {
-              diag.add(errorDiagnostic("V0001",
-                "proof-required package may not import @runtime_checked package '" +
-                pkgName +
-                "'; mark callees @axiom or shift to @runtime_checked",
-                imp.span))
+              diag.add(
+                errorDiagnostic(
+                  "V0001",
+                  "proof-required package may not import @runtime_checked package '" + pkgName +
+                    "'; mark callees @axiom or shift to @runtime_checked",
+                  imp.span
+                )
+              )
             }
-            case _ -> {}
+            case _ -> {
+            }
           }
         }
         ji = ji + 1
@@ -1041,15 +1103,324 @@ func checkImportLevels(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §9. Public entry points.
+// §9. V0012 — await inside a try/catch/finally in an async func.
+// The CLR verifier rejects AwaitUnsafeOnCompleted inside a protected region;
+// diagnose at compile time instead of emitting invalid IL.
+//
+// Scope: all packages except @axiom kernel files.  @axiom files are excluded
+// because they compile through the F# bootstrap emitter which can hoist awaits
+// out of protected regions; the self-hosted emitter that compiles user code
+// cannot.  The guard covers @runtime_checked, @proof_required,
+// @proof_required_unsafe, @proof_required_checked, and unannotated packages.
+// Stdlib.Http was restructured to hoist all awaits before try blocks (issue
+// #2985).
 // ─────────────────────────────────────────────────────────────────────────────
+record AwaitTryCtx {
+  fnName: String
+  inTry: Bool
+  diag: List[Diagnostic]
+}
 
-pub func checkFileWithImports(
-  file:    in SourceFile,
-  imports: in List[ImportedMeta]
-): ModeCheckResult {
+func walkExprOrBlockForAwaitInTry(ctx: in AwaitTryCtx, eob: in ExprOrBlock): Unit {
+  match eob {
+    case EOBExpr(e) -> walkExprForAwaitInTry(ctx, e)
+    case EOBBlock(blk) -> walkBlockForAwaitInTry(ctx, blk)
+  }
+}
+
+func walkExprForAwaitInTry(ctx: in AwaitTryCtx, e: in Expr): Unit {
+  match e.kind {
+    case EAwait(inner) -> {
+      if ctx.inTry {
+        ctx.diag.add(
+          errorDiagnostic(
+            "V0012",
+            "await inside a try/catch/finally in async function '" + ctx.fnName +
+              "' emits invalid IL; restructure to await before or after the try block",
+            e.span
+          )
+        )
+      }
+      walkExprForAwaitInTry(ctx, inner)
+    }
+    case EParen(inner) -> walkExprForAwaitInTry(ctx, inner)
+    case ETuple(exprs) -> {
+      var i = 0
+      while i < exprs.count {
+        walkExprForAwaitInTry(ctx, exprs[i])
+        i = i + 1
+      }
+    }
+    case EList(exprs) -> {
+      var i = 0
+      while i < exprs.count {
+        walkExprForAwaitInTry(ctx, exprs[i])
+        i = i + 1
+      }
+    }
+    case EIf(cond, thenB, elseOpt, _) -> {
+      walkExprForAwaitInTry(ctx, cond)
+      walkExprOrBlockForAwaitInTry(ctx, thenB)
+      match elseOpt {
+        case Some(elseB) -> walkExprOrBlockForAwaitInTry(ctx, elseB)
+        case None -> {
+        }
+      }
+    }
+    case EMatch(scrutinee, arms) -> {
+      walkExprForAwaitInTry(ctx, scrutinee)
+      var i = 0
+      while i < arms.count {
+        match arms[i].guard {
+          case Some(g) -> walkExprForAwaitInTry(ctx, g)
+          case None -> {
+          }
+        }
+        walkExprOrBlockForAwaitInTry(ctx, arms[i].body)
+        i = i + 1
+      }
+    }
+    case EYield(inner) -> walkExprForAwaitInTry(ctx, inner)
+    case ESpawn(inner) -> walkExprForAwaitInTry(ctx, inner)
+    case ETry(inner) -> walkExprForAwaitInTry(ctx, inner)
+    case EOld(inner) -> walkExprForAwaitInTry(ctx, inner)
+    case EPropagate(inner) -> walkExprForAwaitInTry(ctx, inner)
+    case EPrefix(_, operand) -> walkExprForAwaitInTry(ctx, operand)
+    case EBinop(_, lhs, rhs) -> {
+      walkExprForAwaitInTry(ctx, lhs)
+      walkExprForAwaitInTry(ctx, rhs)
+    }
+    case EAssign(target, _, value) -> {
+      walkExprForAwaitInTry(ctx, target)
+      walkExprForAwaitInTry(ctx, value)
+    }
+    case ECall(fn, args) -> {
+      walkExprForAwaitInTry(ctx, fn)
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CANamed(_, v, _) -> walkExprForAwaitInTry(ctx, v)
+          case CAPositional(x) -> walkExprForAwaitInTry(ctx, x)
+        }
+        i = i + 1
+      }
+    }
+    case ETypeApp(fn, _) -> walkExprForAwaitInTry(ctx, fn)
+    case EIndex(recv, indices) -> {
+      walkExprForAwaitInTry(ctx, recv)
+      var i = 0
+      while i < indices.count {
+        walkExprForAwaitInTry(ctx, indices[i])
+        i = i + 1
+      }
+    }
+    case EMember(recv, _) -> walkExprForAwaitInTry(ctx, recv)
+    case EBlock(blk) -> walkBlockForAwaitInTry(ctx, blk)
+    case EUnsafe(blk) -> walkBlockForAwaitInTry(ctx, blk)
+    case ELambda(_, body) -> {
+      val lambdaCtx = AwaitTryCtx(fnName = ctx.fnName, inTry = false, diag = ctx.diag)
+      walkBlockForAwaitInTry(lambdaCtx, body)
+    }
+    case EInterpolated(segs) -> {
+      var i = 0
+      while i < segs.count {
+        match segs[i] {
+          case ISExpr(x) -> walkExprForAwaitInTry(ctx, x)
+          case ISText(_, _) -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case ERange(bound) -> {
+      match bound {
+        case RBClosed(lo, hi) -> {
+          walkExprForAwaitInTry(ctx, lo)
+          walkExprForAwaitInTry(ctx, hi)
+        }
+        case RBHalfOpen(lo, hi) -> {
+          walkExprForAwaitInTry(ctx, lo)
+          walkExprForAwaitInTry(ctx, hi)
+        }
+        case RBLowerOpen(hi) -> walkExprForAwaitInTry(ctx, hi)
+        case RBUpperOpen(lo) -> walkExprForAwaitInTry(ctx, lo)
+      }
+    }
+    case EForall(_, whereOpt, body) -> {
+      match whereOpt {
+        case Some(w) -> walkExprForAwaitInTry(ctx, w)
+        case None -> {
+        }
+      }
+      walkExprForAwaitInTry(ctx, body)
+    }
+    case EExists(_, whereOpt, body) -> {
+      match whereOpt {
+        case Some(w) -> walkExprForAwaitInTry(ctx, w)
+        case None -> {
+        }
+      }
+      walkExprForAwaitInTry(ctx, body)
+    }
+    case ELiteral(_) -> {
+    }
+    case EPath(_) -> {
+    }
+    case ESelf -> {
+    }
+    case EResult -> {
+    }
+    case EError -> {
+    }
+  }
+}
+
+func walkStmtForAwaitInTry(ctx: in AwaitTryCtx, st: in Statement): Unit {
+  match st.kind {
+    case SExpr(x) -> walkExprForAwaitInTry(ctx, x)
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(_, _, init) -> walkExprForAwaitInTry(ctx, init)
+        case LBLet(_, _, init) -> walkExprForAwaitInTry(ctx, init)
+        case LBVar(_, _, initOpt) -> {
+          match initOpt {
+            case Some(init) -> walkExprForAwaitInTry(ctx, init)
+            case None -> {
+            }
+          }
+        }
+      }
+    }
+    case SAssign(t, _, v) -> {
+      walkExprForAwaitInTry(ctx, t)
+      walkExprForAwaitInTry(ctx, v)
+    }
+    case SReturn(valOpt) -> {
+      match valOpt {
+        case Some(v) -> walkExprForAwaitInTry(ctx, v)
+        case None -> {
+        }
+      }
+    }
+    case SThrow(x) -> walkExprForAwaitInTry(ctx, x)
+    case STry(body, catches, finally_) -> {
+      val innerCtx = AwaitTryCtx(fnName = ctx.fnName, inTry = true, diag = ctx.diag)
+      walkBlockForAwaitInTry(innerCtx, body)
+      var ci = 0
+      while ci < catches.count {
+        walkBlockForAwaitInTry(innerCtx, catches[ci].body)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> walkBlockForAwaitInTry(innerCtx, fb)
+        case None -> {
+        }
+      }
+    }
+    case SDefer(body) -> walkBlockForAwaitInTry(ctx, body)
+    case SScope(_, body) -> walkBlockForAwaitInTry(ctx, body)
+    case SFor(_, _, iter, body) -> {
+      walkExprForAwaitInTry(ctx, iter)
+      walkBlockForAwaitInTry(ctx, body)
+    }
+    case SWhile(_, cond, body) -> {
+      walkExprForAwaitInTry(ctx, cond)
+      walkBlockForAwaitInTry(ctx, body)
+    }
+    case SLoop(_, body) -> walkBlockForAwaitInTry(ctx, body)
+    case SInvariant(x) -> walkExprForAwaitInTry(ctx, x)
+    case SRule(l, r) -> {
+      walkExprForAwaitInTry(ctx, l)
+      walkExprForAwaitInTry(ctx, r)
+    }
+    case SBreak(_) -> {
+    }
+    case SContinue(_) -> {
+    }
+    case SItem(_) -> {
+    }
+  }
+}
+
+func walkBlockForAwaitInTry(ctx: in AwaitTryCtx, blk: in Block): Unit {
+  var i = 0
+  while i < blk.statements.count {
+    walkStmtForAwaitInTry(ctx, blk.statements[i])
+    i = i + 1
+  }
+}
+
+func checkFuncForAwaitInTry(fn: in FunctionDecl, diag: in List[Diagnostic]): Unit {
+  if fn.isAsync {
+    match fn.body {
+      case None -> {
+      }
+      case Some(body) -> {
+        val ctx = AwaitTryCtx(fnName = fn.name, inTry = false, diag = diag)
+        match body {
+          case FBExpr(e) -> walkExprForAwaitInTry(ctx, e)
+          case FBBlock(blk) -> walkBlockForAwaitInTry(ctx, blk)
+        }
+      }
+    }
+  }
+}
+
+func checkAwaitInTry(file: in SourceFile, fileLevel: in VerificationLevel, diag: in List[Diagnostic]): Unit {
+  if vlIsAxiom(fileLevel) {
+    return
+  }
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(fn) -> checkFuncForAwaitInTry(fn, diag)
+      case IRecord(decl) | IExposedRec(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case RMFunc(fn) -> checkFuncForAwaitInTry(fn, diag)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case IInterface(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMFunc(fn) -> checkFuncForAwaitInTry(fn, diag)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case IImpl(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMplFunc(fn) -> checkFuncForAwaitInTry(fn, diag)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §10. Public entry points.
+// ─────────────────────────────────────────────────────────────────────────────
+pub func checkFileWithImports(file: in SourceFile, imports: in List[ImportedMeta]): ModeCheckResult {
   val diag: List[Diagnostic] = newList()
   val fileLevel = levelOfFile(file, diag)
+  checkAwaitInTry(file, fileLevel, diag)
   if not vlIsProofRequired(fileLevel) {
     return ModeCheckResult(level = fileLevel, diagnostics = diag)
   }
@@ -1058,7 +1429,8 @@ pub func checkFileWithImports(
   while i < file.items.count {
     match file.items[i].kind {
       case IFunc(fn) -> checkFunctionCalls(fileLevel, callees, imports, diag, fn)
-      case _         -> {}
+      case _ -> {
+      }
     }
     i = i + 1
   }

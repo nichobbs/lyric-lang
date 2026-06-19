@@ -11,14 +11,12 @@
 //!
 //! Only active when compiled with feature = "jvm" (Phase 6).
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
-
 @cfg(feature = "jvm")
 package Ws.Kernel.Jvm
 
 import Std.Core
 
 // ─── WebSocket server ─────────────────────────────────────────────────────────
-
 @axiom("Undertow WebSockets JSR-356 (io.undertow:undertow-websockets-jsr)")
 extern package lyric.ws.UndertowWsServer {
   /// Allocate a connection registry.  Returns an opaque integer handle that
@@ -49,9 +47,8 @@ extern package lyric.ws.UndertowWsServer {
   /// Return whether the given connection is currently open.
   pub func isConnected(registryHandle: Int, connectionId: String): Bool
     requires: connectionId.length > 0
+  // ─── Rate limiting ────────────────────────────────────────────────────────────
 }
-
-// ─── Rate limiting ────────────────────────────────────────────────────────────
 
 @axiom("In-process sliding-window rate limiter (java.util.concurrent, Undertow)")
 extern package lyric.ws.UndertowRateLimiter {
@@ -62,19 +59,20 @@ extern package lyric.ws.UndertowRateLimiter {
     requires: key.length > 0
     requires: messagesPerMinute > 0
     requires: burstSize > 0
+  // ─── Re-export wrappers ───────────────────────────────────────────────────────
 }
 
-// ─── Re-export wrappers ───────────────────────────────────────────────────────
-
 /// Allocate a kernel connection registry.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func createRegistry(maxMessageSizeBytes: in Int, pingIntervalMs: in Int): Result[Int, String] {
   return lyric.ws.UndertowWsServer.createRegistry(maxMessageSizeBytes, pingIntervalMs)
 }
 
 /// Send a typed WebSocket frame to a single connection.
-@stable(since="0.1")
-pub func send(registryHandle: in Int, connectionId: in String, messageType: in String, data: in String): Result[Unit, String]
+@stable(since = "0.1")
+pub func send(
+  registryHandle: in Int, connectionId: in String, messageType: in String, data: in String
+): Result[Unit, String]
   requires: connectionId.length > 0
   requires: messageType.length > 0
 {
@@ -82,7 +80,7 @@ pub func send(registryHandle: in Int, connectionId: in String, messageType: in S
 }
 
 /// Broadcast a typed WebSocket frame to all open connections.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func broadcast(registryHandle: in Int, messageType: in String, data: in String): Result[Unit, String]
   requires: messageType.length > 0
 {
@@ -90,7 +88,7 @@ pub func broadcast(registryHandle: in Int, messageType: in String, data: in Stri
 }
 
 /// Close a connection with an RFC 6455 numeric close code.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func close(registryHandle: in Int, connectionId: in String, code: in Int, reason: in String): Result[Unit, String]
   requires: connectionId.length > 0
 {
@@ -98,13 +96,13 @@ pub func close(registryHandle: in Int, connectionId: in String, code: in Int, re
 }
 
 /// Return the number of currently open connections.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func connectionCount(registryHandle: in Int): Int {
   return lyric.ws.UndertowWsServer.connectionCount(registryHandle)
 }
 
 /// Return whether the given connection is currently open.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func isConnected(registryHandle: in Int, connectionId: in String): Bool
   requires: connectionId.length > 0
 {
@@ -112,7 +110,7 @@ pub func isConnected(registryHandle: in Int, connectionId: in String): Bool
 }
 
 /// Check whether a key is within the per-minute rate limit.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in Int): Bool
   requires: key.length > 0
   requires: messagesPerMinute > 0

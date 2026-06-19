@@ -1,9 +1,8 @@
-// std/path.l - platform-aware path utilities.
-//
-// Path helpers are pure string/path computations over the host path
-// rules. They do not touch the filesystem and therefore do not return
-// IOError.
-
+//! std/path.l - platform-aware path utilities.
+//!
+//! Path helpers are pure string/path computations over the host path
+//! rules. They do not touch the filesystem and therefore do not return
+//! IOError.
 @runtime_checked
 package Std.Path
 
@@ -20,7 +19,7 @@ import Std.PathHost
 /// let sub = "projects"
 /// let result = join(root, sub)  // "/home/user/projects" on Unix
 /// ```
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func join(base: in String, relative: in String): String {
   if base.length == 0 {
     return relative
@@ -39,7 +38,7 @@ pub func join(base: in String, relative: in String): String {
 /// extension("archive.tar.gz") // ".gz"
 /// extension("README")         // ""
 /// ```
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func extension(path: in String): String {
   return hostPathGetExtension(path)
 }
@@ -54,7 +53,7 @@ pub func extension(path: in String): String {
 ///
 /// For paths ending in a separator, the host boundary decides whether
 /// this is empty or normalized first.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func basename(path: in String): String {
   return hostPathGetFileName(path)
 }
@@ -69,17 +68,21 @@ pub func basename(path: in String): String {
 ///
 /// Paths with no directory component use "." so callers can compose
 /// with relative paths without handling null.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func dirname(path: in String): String {
   val dir = hostPathGetDirectoryName(path) ?? ""
-  if dir == "" { "." } else { dir }
+  if dir == "" {
+    "."
+  } else {
+    dir
+  }
 }
 
 /// Check whether a path is absolute under the host platform's path
 /// rules.
 ///
 /// This is a syntax check only; it does not verify existence.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func isAbsolute(path: in String): Bool {
   if path.length == 0 {
     return false
@@ -91,7 +94,7 @@ pub func isAbsolute(path: in String): Bool {
 /// rules.
 ///
 /// Empty paths are treated as relative by convention.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func isRelative(path: in String): Bool {
   return not isAbsolute(path)
 }

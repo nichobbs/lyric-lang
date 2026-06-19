@@ -1,15 +1,14 @@
-// std/app.l - minimal application host helpers.
-//
-// App helpers compose existing stdlib pieces. They should not hide IO,
-// logging, or process exit policy from callers.
-
+//! std/app.l - minimal application host helpers.
+//!
+//! App helpers compose existing stdlib pieces. They should not hide IO,
+//! logging, or process exit policy from callers.
 @runtime_checked
 package Std.App
 
 import Std.Errors
 import Std.File as File
 
-@stable(since="1.0")
+@stable(since = "1.0")
 pub opaque type Config {
   path: String
   rawText: String
@@ -23,8 +22,8 @@ pub opaque type Config {
 ///
 /// Applications that need richer top-level error reporting should catch
 /// domain errors before they reach this host wrapper.
-@stable(since="1.0")
-pub func run(main: func Unit): Int {
+@stable(since = "1.0")
+pub func run(main: () -> Unit): Int {
   return try {
     main()
     0
@@ -45,7 +44,7 @@ pub func run(main: func Unit): Int {
 /// JSON/env binding is deliberately not hidden here. Future config
 /// helpers can layer source-generated decoding on top of this raw
 /// boundary.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func withConfig(configPath: in String): Result[Config, IOError] {
   match File.readText(configPath) {
     case Err(e) -> Err(error = e)
@@ -55,14 +54,14 @@ pub func withConfig(configPath: in String): Result[Config, IOError] {
 
 /// Return the path a Config was loaded from.
 @pure
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func Config.path(config: in Config): String {
   return config.path
 }
 
 /// Return the raw config text.
 @pure
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func Config.rawText(config: in Config): String {
   return config.rawText
 }

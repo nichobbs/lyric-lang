@@ -1,14 +1,13 @@
-// std/_kernel_jvm/file_host.l — JVM host boundary for file and directory I/O.
-//
-// Mirrors _kernel/file_host.l for the JVM target.  Routes through the
-// lyric.stdlib.jvm.FileHost shim (also used by _kernel_jvm/io.l's
-// Std.IO package), which wraps java.nio.file.Files / java.nio.file.Path.
-//
-// Provides the same Std.FileHost package surface as _kernel/file_host.l
-// so that Std.File can import Std.FileHost on both targets without change.
-//
-// Internal: only Std.File should import this.
-
+//! std/_kernel_jvm/file_host.l — JVM host boundary for file and directory I/O.
+//!
+//! Mirrors _kernel/file_host.l for the JVM target.  Routes through the
+//! lyric.stdlib.jvm.FileHost shim (also used by _kernel_jvm/io.l's
+//! Std.IO package), which wraps java.nio.file.Files / java.nio.file.Path.
+//!
+//! Provides the same Std.FileHost package surface as _kernel/file_host.l
+//! so that Std.File can import Std.FileHost on both targets without change.
+//!
+//! Internal: only Std.File should import this.
 @axiom("lyric.stdlib.jvm.FileHost operations conform to their documented JVM contracts")
 package Std.FileHost
 
@@ -28,26 +27,22 @@ extern package lyric.stdlib.jvm.FileHost {
   // Bytes-mode I/O backed by java.nio.file.Files.readAllBytes / write.
   pub func readAllBytes(path: in String): slice[Byte]
   pub func writeAllBytes(path: in String, bytes: in slice[Byte]): Unit
+  // Re-export with the names Std.File expects (matching _kernel/file_host.l).
 }
 
-// Re-export with the names Std.File expects (matching _kernel/file_host.l).
-pub func hostFileExists(path: in String): Bool =
-  lyric.stdlib.jvm.FileHost.fileExists(path)
+pub func hostFileExists(path: in String): Bool = lyric.stdlib.jvm.FileHost.fileExists(path)
 
-pub func hostDirectoryExists(path: in String): Bool =
-  lyric.stdlib.jvm.FileHost.directoryExists(path)
+pub func hostDirectoryExists(path: in String): Bool = lyric.stdlib.jvm.FileHost.directoryExists(path)
 
-pub func hostReadAllText(path: in String): String =
-  lyric.stdlib.jvm.FileHost.readAllText(path)
+pub func hostReadAllText(path: in String): String = lyric.stdlib.jvm.FileHost.readAllText(path)
 
-pub func hostWriteAllText(path: in String, contents: in String): Unit =
-  lyric.stdlib.jvm.FileHost.writeAllText(path, contents)
+pub func hostWriteAllText(path: in String, contents: in String): Unit = lyric.stdlib.jvm.FileHost.writeAllText(path, contents)
 
-pub func hostCreateDirectory(path: in String): Unit =
-  lyric.stdlib.jvm.FileHost.createDirectory(path)
+// Note: `hostCreateDirectory` intentionally returns `Unit` in the JVM kernel
+// as the underlying wrapper handles it, whereas the .NET kernel returns
+// `DirectoryInfo` to match the BCL signature.
+pub func hostCreateDirectory(path: in String): Unit = lyric.stdlib.jvm.FileHost.createDirectory(path)
 
-pub func hostReadAllBytes(path: in String): slice[Byte] =
-  lyric.stdlib.jvm.FileHost.readAllBytes(path)
+pub func hostReadAllBytes(path: in String): slice[Byte] = lyric.stdlib.jvm.FileHost.readAllBytes(path)
 
-pub func hostWriteAllBytes(path: in String, bytes: in slice[Byte]): Unit =
-  lyric.stdlib.jvm.FileHost.writeAllBytes(path, bytes)
+pub func hostWriteAllBytes(path: in String, bytes: in slice[Byte]): Unit = lyric.stdlib.jvm.FileHost.writeAllBytes(path, bytes)

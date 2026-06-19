@@ -1,7 +1,7 @@
-// stdlib/tests/errors_tests.l — Tests for Std.Errors.
-//
-// Verifies that the union constructors exist and that the `message`
-// helper renders a non-empty, human-readable string for every variant.
+//! stdlib/tests/errors_tests.l — Tests for Std.Errors.
+//!
+//! Verifies that the union constructors exist and that the `message`
+//! helper renders a non-empty, human-readable string for every variant.
 package Std.Errors.Tests
 
 import Std.Errors

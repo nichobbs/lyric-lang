@@ -1,33 +1,33 @@
-// lyric/manifest.l — TOML manifest parser for lyric.toml (Phase 5 §M5.3).
-//
-// Parses the lyric.toml subset used by the Lyric package system.
-// The grammar covers:
-//   [package]           — package identity (name, version, description, authors, license)
-//   [project]           — project-mode bundling (name, output, output_assembly)
-//   [project.packages]  — map of package-name -> source-path
-//   [dependencies]      — map of package-name -> dep-source (string, inline-table)
-//   [nuget]             — map of NuGet-id -> version string
-//   [nuget.options]     — target TFM and allow_native flag
-//   [workspace]         — workspace root declaration (exclude list, overrides)
-//   [workspace.overrides] — per-package path overrides for fork/patch workflows
-//   [registry]          — custom registry feed URLs
-//
-// Supported dependency source forms in [dependencies]:
-//   "1.0.0"                             — registry form (version string)
-//   { workspace = true }                — workspace-local source
-//   { workspace = true, version = "x" } — workspace-local with version check
-//   { path = "../relative/dir" }        — local path
-//   { git = "https://...", tag = "v1" } — git tag (immutable)
-//   { git = "https://...", rev = "sha"} — git commit (immutable)
-//   { git = "https://...", branch = "main" } — git branch (mutable, warns)
-//   { git = "...", tag = "v1", subdir = "lyric-foo" } — monorepo subdir
-//   Any form may include:  registry = "https://..."
-//
-// Mirrors the F# Manifest.fs parser in compiler/src/Lyric.Cli/Manifest.fs.
-// Values in unsupported sections are silently ignored; unrecognised keys in
-// known sections produce ManifestError.UnknownKey (not a hard error, reported
-// after a successful parse as a warning in the CLI).
-
+//! lyric/manifest.l — TOML manifest parser for lyric.toml (Phase 5 §M5.3).
+//!
+//! Parses the lyric.toml subset used by the Lyric package system.
+//! The grammar covers:
+//!   [package]           — package identity (name, version, description, authors, license)
+//!   [project]           — project-mode bundling (name, output, output_assembly)
+//!   [project.packages]  — map of package-name -> source-path
+//!   [dependencies]      — map of package-name -> dep-source (string, inline-table)
+//!   [nuget]             — map of NuGet-id -> version string
+//!   [nuget.options]     — target TFM and allow_native flag
+//!   [build]             — output kind configuration (kind: "lib" or "exe")
+//!   [workspace]         — workspace root declaration (exclude list, overrides)
+//!   [workspace.overrides] — per-package path overrides for fork/patch workflows
+//!   [registry]          — custom registry feed URLs
+//!
+//! Supported dependency source forms in [dependencies]:
+//!   "1.0.0"                             — registry form (version string)
+//!   { workspace = true }                — workspace-local source
+//!   { workspace = true, version = "x" } — workspace-local with version check
+//!   { path = "../relative/dir" }        — local path
+//!   { git = "https://...", tag = "v1" } — git tag (immutable)
+//!   { git = "https://...", rev = "sha"} — git commit (immutable)
+//!   { git = "https://...", branch = "main" } — git branch (mutable, warns)
+//!   { git = "...", tag = "v1", subdir = "lyric-foo" } — monorepo subdir
+//!   Any form may include:  registry = "https://..."
+//!
+//! Mirrors the F# Manifest.fs parser in compiler/src/Lyric.Cli/Manifest.fs.
+//! Values in unsupported sections are silently ignored; unrecognised keys in
+//! known sections produce ManifestError.UnknownKey (not a hard error, reported
+//! after a successful parse as a warning in the CLI).
 package Lyric.Manifest
 
 import Std.Core
@@ -39,7 +39,6 @@ import Std.String as Str
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public types
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub union ManifestError {
   /// Syntax error in the TOML source.
   case ParseError(filePath: String, line: Int, column: Int, message: String)
@@ -51,25 +50,25 @@ pub union ManifestError {
 
 pub func ManifestError.message(e: in ManifestError): String {
   match e {
-    case ParseError(fp, ln, col, msg) ->
-      fp + ":" + Str.fromInt(ln) + ":" + Str.fromInt(col) + ": " + msg
-    case MissingField(section, field) ->
-      "[" + section + "] missing required field '" + field + "'"
-    case InvalidField(section, field, msg) ->
-      "[" + section + "] invalid value for '" + field + "': " + msg
+    case ParseError(fp, ln, col, msg) -> fp + ":" + toString(ln) + ":" + toString(col) + ": " + msg
+    // `toString`, not `Str.fromInt`: this file imports Std.String and Std.Char,
+    // and the F# emitter mis-resolves `Str.fromInt` to `Std.Char.fromInt`,
+    // rendering line/column as garbled characters (same root as #2082).
+    case MissingField(section, field) -> "[" + section + "] missing required field '" + field + "'"
+    case InvalidField(section, field, msg) -> "[" + section + "] invalid value for '" + field + "': " + msg
   }
 }
 
 pub record PackageSection {
-  name:        String
-  version:     String
+  name: String
+  version: String
   description: String
-  authors:     List[String]
-  license:     String
-  repository:  Option[String]
+  authors: List[String]
+  license: String
+  repository: Option[String]
   /// Package kind — `Some("source-generator")` for generator packages,
   /// `None` for normal library or application packages.
-  kind:        Option[String]
+  kind: Option[String]
 }
 
 pub record PackageEntry {
@@ -78,24 +77,17 @@ pub record PackageEntry {
 }
 
 pub record ProjectSection {
-  name:           String
-  output:         String
+  name: String
+  output: String
   outputAssembly: Option[String]
-  packages:       List[PackageEntry]
+  packages: List[PackageEntry]
   // `[project.tests]` entries.  Mapping from synthetic-package-name
   // (e.g. "Auth.AuthSecurityTests") to test file path.  Consumed by
   // `lyric test --manifest <toml>` (#465).
-  tests:          List[PackageEntry]
+  tests: List[PackageEntry]
 }
 
 // ── Dependency source forms ──────────────────────────────────────────────────
-
-pub union GitRef {
-  case Tag(name: String)
-  case Rev(sha: String)
-  case Branch(name: String)
-}
-
 pub union DepSource {
   /// Plain version string resolved from the configured registry.
   case Registry(version: String)
@@ -104,26 +96,51 @@ pub union DepSource {
   case Workspace(version: Option[String])
   /// Local filesystem path (relative to the manifest directory).
   case Path(dir: String)
-  /// Git repository source.
-  case Git(url: String, ref: GitRef, subdir: Option[String])
+  /// Git repository source.  The ref is stored as two primitive fields
+  /// (`refKind` in {"tag","rev","branch"}, `refValue` the name/SHA) rather than
+  /// a nested `GitRef` union: the F# stage-0 emitter reads a union-typed field
+  /// of a union case back as null (#2126), so the typed `ref: GitRef` arrived
+  /// null at consumers.  The flat encoding round-trips correctly on both
+  /// emitters; callers use the `refKind` and `refValue` fields directly.
+  case Git(url: String, refKind: String, refValue: String, subdir: Option[String])
 }
 
 pub record DependencyEntry {
-  name:     String
-  source:   DepSource
+  name: String
+  source: DepSource
   /// Per-dependency registry override URL (overrides `[registry].dotnet`).
   registry: Option[String]
 }
 
 pub record NugetEntry {
-  name:    String
+  name: String
   version: String
 }
 
 pub record NugetSection {
-  entries:     List[NugetEntry]
-  target:      Option[String]
+  entries: List[NugetEntry]
+  target: Option[String]
   allowNative: Bool
+}
+
+/// A single `[maven]` coordinate entry per `docs/31-maven-linking.md` (D053).
+/// `group`/`artifact` are the two halves of the `groupId:artifactId` key
+/// (split on the single `:`); `version` is the resolved version string
+/// (passed opaquely to the resolver).
+pub record MavenEntry {
+  group: String
+  artifact: String
+  version: String
+}
+
+/// `[maven]` section per `docs/31-maven-linking.md` (D053).  Parallels
+/// `NugetSection`.  `repositories` defaults to `["central"]` (Maven Central);
+/// `javaVersion` is `None` when the `[maven.options]` `java_version` key is
+/// absent (the resolver then substitutes the project's `jvm_target`).
+pub record MavenSection {
+  entries: List[MavenEntry]
+  repositories: List[String]
+  javaVersion: Option[String]
 }
 
 /// `[features]` section per `docs/24-build-features.md` (D045).  v1
@@ -139,20 +156,19 @@ pub record FeaturesSection {
 }
 
 // ── Workspace types ──────────────────────────────────────────────────────────
-
 /// A single `[workspace.overrides]` entry.
 pub record WorkspaceOverride {
   /// Lyric package name (e.g. `"Lyric.Cache"`).
   name: String
   /// Directory to use instead of the workspace-discovered or registry-resolved
   /// source.  Relative to the workspace root; the resolver makes it absolute.
-  dir:  String
+  dir: String
 }
 
 /// `[workspace]` table in the root `lyric.toml`.
 pub record WorkspaceSection {
   /// Root-relative path prefixes to exclude from member discovery.
-  exclude:   List[String]
+  exclude: List[String]
   /// Per-package path overrides for fork/patch workflows.
   overrides: List[WorkspaceOverride]
 }
@@ -160,33 +176,42 @@ pub record WorkspaceSection {
 /// Per-target custom registry feed URLs from `[registry]`.
 pub record RegistryConfig {
   dotnet: Option[String]
-  jvm:    Option[String]
+  jvm: Option[String]
+}
+
+/// `[build]` section for output kind configuration.
+/// For Dotnet target: `kind = "lib"` produces .dll (default), `kind = "exe"` produces .exe
+/// (both runnable via `dotnet exec <file>`). For Jvm target: kind is currently a no-op.
+pub record BuildSection {
+  kind: String
 }
 
 /// Parsed form of a virtual workspace root (`lyric.toml` with `[workspace]`
 /// but no `[package]`).
 pub record WorkspaceRoot {
-  filePath:  String
+  filePath: String
   workspace: WorkspaceSection
-  registry:  Option[RegistryConfig]
+  registry: Option[RegistryConfig]
 }
 
 pub record Manifest {
-  filePath:       String
+  filePath: String
   packageSection: PackageSection
-  project:        Option[ProjectSection]
-  deps:           List[DependencyEntry]
-  nuget:          Option[NugetSection]
-  features:       Option[FeaturesSection]
+  project: Option[ProjectSection]
+  deps: List[DependencyEntry]
+  nuget: Option[NugetSection]
+  maven: Option[MavenSection]
+  features: Option[FeaturesSection]
+  /// Non-None when this manifest also declares a `[build]` table.
+  build: Option[BuildSection]
   /// Non-None when this manifest also declares a `[workspace]` table.
-  workspace:      Option[WorkspaceSection]
-  registry:       Option[RegistryConfig]
+  workspace: Option[WorkspaceSection]
+  registry: Option[RegistryConfig]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Internal parser types
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Typed value inside an inline table `{ key = val, ... }`.
 union TVal {
   case TVStr(s: String)
@@ -195,7 +220,7 @@ union TVal {
 
 // A single key–value pair inside an inline table.
 record InlinePair {
-  key:  String
+  key: String
   tval: TVal
 }
 
@@ -211,19 +236,21 @@ union Value {
 // A single parsed key-value binding with its TOML section context.
 record Entry {
   section: String
-  key:     String
-  value:   Value
+  key: String
+  value: Value
 }
 
 // Parsing cursor; pos/line/col are mutated via inout parameter passing.
 record Cursor {
   text: String
-  pos:  Int
+  pos: Int
   line: Int
-  col:  Int
+  col: Int
 }
 
-func charToString(c: in Char): String { "" + c }
+func charToString(c: in Char): String {
+  "" + c
+}
 
 func makeCursor(text: in String): Cursor {
   Cursor(text = text, pos = 0, line = 1, col = 1)
@@ -239,14 +266,23 @@ func peek(c: in Cursor): Char {
 
 func peekAt(c: in Cursor, offset: in Int): Char {
   val idx = c.pos + offset
-  if idx < c.text.length { c.text[idx] } else { '\u{0000}' }
+  if idx < c.text.length {
+    c.text[idx]
+  } else {
+    '\u{0000}'
+  }
 }
 
 func skipOne(c: inout Cursor): Unit {
   if not isAtEnd(c) {
     val ch = c.text[c.pos]
     c.pos = c.pos + 1
-    if ch == '\n' { c.line = c.line + 1; c.col = 1 } else { c.col = c.col + 1 }
+    if ch == '\n' {
+      c.line = c.line + 1
+      c.col = 1
+    } else {
+      c.col = c.col + 1
+    }
   }
 }
 
@@ -260,7 +296,9 @@ func skipToEndOfLine(c: inout Cursor): Unit {
   while not isAtEnd(c) and peek(c) != '\n' {
     skipOne(c)
   }
-  if not isAtEnd(c) { skipOne(c) }
+  if not isAtEnd(c) {
+    skipOne(c)
+  }
 }
 
 func skipBlankAndCommentLines(c: inout Cursor): Unit {
@@ -280,10 +318,9 @@ func skipBlankAndCommentLines(c: inout Cursor): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Lexing helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
 func isIdentChar(ch: in Char): Bool {
-  (ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or
-  (ch >= '0' and ch <= '9') or ch == '_' or ch == '-' or ch == '.'
+  (ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or (ch >= '0' and ch <= '9') or ch == '_' or ch == '-' or
+    ch == '.'
 }
 
 // Collect a bare key (alphanumeric, underscores, hyphens).
@@ -311,12 +348,19 @@ func parseQuotedString(c: inout Cursor, filePath: in String): Result[String, Man
       }
       val esc = peek(c)
       skipOne(c)
-      if esc == 'n'  { s = s + "\n" }
-      else if esc == 't'  { s = s + "\t" }
-      else if esc == 'r'  { s = s + "\r" }
-      else if esc == '"'  { s = s + "\"" }
-      else if esc == '\\' { s = s + "\\" }
-      else { s = s + "\\" + charToString(esc) }
+      if esc == 'n' {
+        s = s + "\n"
+      } else if esc == 't' {
+        s = s + "\t"
+      } else if esc == 'r' {
+        s = s + "\r"
+      } else if esc == '"' {
+        s = s + "\""
+      } else if esc == '\\' {
+        s = s + "\\"
+      } else {
+        s = s + "\\" + charToString(esc)
+      }
     } else {
       s = s + charToString(ch)
       skipOne(c)
@@ -339,8 +383,14 @@ func parseKey(c: inout Cursor, filePath: in String): Result[String, ManifestErro
   } else if isIdentChar(peek(c)) {
     Ok(value = parseBareKey(c))
   } else {
-    Err(error = ParseError(filePath = filePath, line = c.line, column = c.col,
-                           message = "unexpected character '" + charToString(peek(c)) + "' in key"))
+    Err(
+      error = ParseError(
+        filePath = filePath,
+        line = c.line,
+        column = c.col,
+        message = "unexpected character '" + charToString(peek(c)) + "' in key"
+      )
+    )
   }
 }
 
@@ -361,17 +411,25 @@ func parseStringArray(c: inout Cursor, filePath: in String): Result[List[String]
     } else if ch == '"' {
       match parseQuotedString(c, filePath) {
         case Err(e) -> return Err(error = e)
-        case Ok(s)  -> {
+        case Ok(s) -> {
           items.add(s)
           skipWhitespace(c)
-          if not isAtEnd(c) and peek(c) == ',' { skipOne(c) }
+          if not isAtEnd(c) and peek(c) == ',' {
+            skipOne(c)
+          }
         }
       }
     } else if ch == '#' or ch == '\n' {
       skipToEndOfLine(c)
     } else {
-      return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col,
-                                    message = "expected string or ']' in array"))
+      return Err(
+        error = ParseError(
+          filePath = filePath,
+          line = c.line,
+          column = c.col,
+          message = "expected string or ']' in array"
+        )
+      )
     }
   }
   Ok(value = items)
@@ -386,7 +444,9 @@ func parseInlineTable(c: inout Cursor, filePath: in String): Result[List[InlineP
   while keepGoing and not isAtEnd(c) {
     skipWhitespace(c)
     if isAtEnd(c) {
-      return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col, message = "unterminated inline table"))
+      return Err(
+        error = ParseError(filePath = filePath, line = c.line, column = c.col, message = "unterminated inline table")
+      )
     }
     val ch = peek(c)
     if ch == '}' {
@@ -400,40 +460,67 @@ func parseInlineTable(c: inout Cursor, filePath: in String): Result[List[InlineP
         case Ok(key) -> {
           skipWhitespace(c)
           if isAtEnd(c) or peek(c) != '=' {
-            return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col,
-                                          message = "expected '=' in inline table after '" + key + "'"))
+            return Err(
+              error = ParseError(
+                filePath = filePath,
+                line = c.line,
+                column = c.col,
+                message = "expected '=' in inline table after '" + key + "'"
+              )
+            )
           }
           skipOne(c)  // consume `=`
           skipWhitespace(c)
           if isAtEnd(c) {
-            return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col,
-                                          message = "expected value in inline table"))
+            return Err(
+              error = ParseError(
+                filePath = filePath,
+                line = c.line,
+                column = c.col,
+                message = "expected value in inline table"
+              )
+            )
           }
           val vc = peek(c)
           if vc == '"' {
             match parseQuotedString(c, filePath) {
               case Err(e) -> return Err(error = e)
-              case Ok(s)  -> pairs.add(InlinePair(key = key, tval = TVStr(s = s)))
+              case Ok(s) -> pairs.add(InlinePair(key = key, tval = TVStr(s = s)))
             }
           } else if vc == 't' and peekAt(c, 1) == 'r' and peekAt(c, 2) == 'u' and peekAt(c, 3) == 'e' {
-            skipOne(c); skipOne(c); skipOne(c); skipOne(c)
+            skipOne(c)
+            skipOne(c)
+            skipOne(c)
+            skipOne(c)
             pairs.add(InlinePair(key = key, tval = TVBool(b = true)))
           } else if vc == 'f' and peekAt(c, 1) == 'a' and peekAt(c, 2) == 'l' and peekAt(c, 3) == 's' and peekAt(c, 4) == 'e' {
-            skipOne(c); skipOne(c); skipOne(c); skipOne(c); skipOne(c)
+            skipOne(c)
+            skipOne(c)
+            skipOne(c)
+            skipOne(c)
+            skipOne(c)
             pairs.add(InlinePair(key = key, tval = TVBool(b = false)))
           } else if vc == '[' {
             // Array value (e.g. features = ["aws"]) — consume and skip;
             // InlinePair only tracks strings and bools so arrays are discarded.
             match parseStringArray(c, filePath) {
               case Err(e) -> return Err(error = e)
-              case Ok(_)  -> ()  // intentionally dropped
+              case Ok(_) -> ()  // intentionally dropped
             }
           } else {
-            return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col,
-                                          message = "expected string or bool value in inline table"))
+            return Err(
+              error = ParseError(
+                filePath = filePath,
+                line = c.line,
+                column = c.col,
+                message = "expected string or bool value in inline table"
+              )
+            )
           }
           skipWhitespace(c)
-          if not isAtEnd(c) and peek(c) == ',' { skipOne(c) }
+          if not isAtEnd(c) and peek(c) == ',' {
+            skipOne(c)
+          }
         }
       }
     }
@@ -451,23 +538,30 @@ func parseValue(c: inout Cursor, filePath: in String): Result[Value, ManifestErr
   if ch == '"' {
     match parseQuotedString(c, filePath) {
       case Err(e) -> Err(error = e)
-      case Ok(s)  -> Ok(value = VStr(s = s))
+      case Ok(s) -> Ok(value = VStr(s = s))
     }
   } else if ch == '[' {
     match parseStringArray(c, filePath) {
-      case Err(e)    -> Err(error = e)
+      case Err(e) -> Err(error = e)
       case Ok(items) -> Ok(value = VStrList(items = items))
     }
   } else if ch == '{' {
     match parseInlineTable(c, filePath) {
-      case Err(e)    -> Err(error = e)
+      case Err(e) -> Err(error = e)
       case Ok(pairs) -> Ok(value = VTable(pairs = pairs))
     }
   } else if ch == 't' and peekAt(c, 1) == 'r' and peekAt(c, 2) == 'u' and peekAt(c, 3) == 'e' {
-    skipOne(c); skipOne(c); skipOne(c); skipOne(c)
+    skipOne(c)
+    skipOne(c)
+    skipOne(c)
+    skipOne(c)
     Ok(value = VBool(b = true))
   } else if ch == 'f' and peekAt(c, 1) == 'a' and peekAt(c, 2) == 'l' and peekAt(c, 3) == 's' and peekAt(c, 4) == 'e' {
-    skipOne(c); skipOne(c); skipOne(c); skipOne(c); skipOne(c)
+    skipOne(c)
+    skipOne(c)
+    skipOne(c)
+    skipOne(c)
+    skipOne(c)
     Ok(value = VBool(b = false))
   } else if ch >= '0' and ch <= '9' {
     var n = 0
@@ -477,8 +571,14 @@ func parseValue(c: inout Cursor, filePath: in String): Result[Value, ManifestErr
     }
     Ok(value = VInt(n = n))
   } else {
-    Err(error = ParseError(filePath = filePath, line = c.line, column = c.col,
-                           message = "unexpected character '" + charToString(ch) + "' in value"))
+    Err(
+      error = ParseError(
+        filePath = filePath,
+        line = c.line,
+        column = c.col,
+        message = "unexpected character '" + charToString(ch) + "' in value"
+      )
+    )
   }
 }
 
@@ -493,7 +593,14 @@ func parseSectionHeader(c: inout Cursor, filePath: in String): Result[String, Ma
     skipOne(c)
   }
   if isAtEnd(c) or peek(c) == '\n' {
-    return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col, message = "unterminated section header"))
+    return Err(
+      error = ParseError(
+        filePath = filePath,
+        line = c.line,
+        column = c.col,
+        message = "unterminated section header"
+      )
+    )
   }
   skipOne(c)  // consume `]`
   Ok(value = Str.trim(section))
@@ -502,7 +609,6 @@ func parseSectionHeader(c: inout Cursor, filePath: in String): Result[String, Ma
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. Entry collection pass
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Scan the entire source text and produce a flat list of (section, key, value)
 // entries.  The list is then assembled into a typed Manifest.
 func collectEntries(text: in String, filePath: in String): Result[List[Entry], ManifestError] {
@@ -516,23 +622,31 @@ func collectEntries(text: in String, filePath: in String): Result[List[Entry], M
       // done
     } else if peek(c) == '[' {
       match parseSectionHeader(c, filePath) {
-        case Err(e)  -> return Err(error = e)
-        case Ok(sec) -> { currentSection = sec }
+        case Err(e) -> return Err(error = e)
+        case Ok(sec) -> {
+          currentSection = sec
+        }
       }
       skipToEndOfLine(c)
     } else if isIdentChar(peek(c)) or peek(c) == '"' {
       match parseKey(c, filePath) {
-        case Err(e)   -> return Err(error = e)
-        case Ok(key)  -> {
+        case Err(e) -> return Err(error = e)
+        case Ok(key) -> {
           skipWhitespace(c)
           if isAtEnd(c) or peek(c) != '=' {
-            return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col,
-                                          message = "expected '=' after key '" + key + "'"))
+            return Err(
+              error = ParseError(
+                filePath = filePath,
+                line = c.line,
+                column = c.col,
+                message = "expected '=' after key '" + key + "'"
+              )
+            )
           }
           skipOne(c)  // consume `=`
           match parseValue(c, filePath) {
             case Err(e) -> return Err(error = e)
-            case Ok(v)  -> {
+            case Ok(v) -> {
               entries.add(Entry(section = currentSection, key = key, value = v))
               skipToEndOfLine(c)
             }
@@ -540,8 +654,14 @@ func collectEntries(text: in String, filePath: in String): Result[List[Entry], M
         }
       }
     } else {
-      return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col,
-                                    message = "unexpected character '" + charToString(peek(c)) + "'"))
+      return Err(
+        error = ParseError(
+          filePath = filePath,
+          line = c.line,
+          column = c.col,
+          message = "unexpected character '" + charToString(peek(c)) + "'"
+        )
+      )
     }
   }
   Ok(value = entries)
@@ -550,7 +670,6 @@ func collectEntries(text: in String, filePath: in String): Result[List[Entry], M
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. Typed assembly
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Look up a string entry in the flat list for a given section + key.
 func findString(entries: in List[Entry], section: in String, key: in String): Option[String] {
   var i = 0
@@ -559,7 +678,7 @@ func findString(entries: in List[Entry], section: in String, key: in String): Op
     if e.section == section and e.key == key {
       match e.value {
         case VStr(s) -> return Some(value = s)
-        case _       -> return None
+        case _ -> return None
       }
     }
     i += 1
@@ -574,7 +693,7 @@ func findStringList(entries: in List[Entry], section: in String, key: in String)
     if e.section == section and e.key == key {
       match e.value {
         case VStrList(items) -> return Some(value = items)
-        case _               -> return None
+        case _ -> return None
       }
     }
     i += 1
@@ -589,7 +708,7 @@ func findBool(entries: in List[Entry], section: in String, key: in String, defau
     if e.section == section and e.key == key {
       match e.value {
         case VBool(b) -> return b
-        case _        -> return default
+        case _ -> return default
       }
     }
     i += 1
@@ -600,7 +719,7 @@ func findBool(entries: in List[Entry], section: in String, key: in String, defau
 func requireString(entries: in List[Entry], section: in String, key: in String): Result[String, ManifestError] {
   match findString(entries, section, key) {
     case Some(s) -> Ok(value = s)
-    case None    -> Err(error = MissingField(section = section, field = key))
+    case None -> Err(error = MissingField(section = section, field = key))
   }
 }
 
@@ -613,7 +732,7 @@ func collectSectionPairs(entries: in List[Entry], section: in String): List[Pack
     if e.section == section {
       match e.value {
         case VStr(s) -> pairs.add(PackageEntry(name = e.key, path = s))
-        case _       -> ()  // non-string values in pair sections are silently ignored
+        case _ -> ()  // non-string values in pair sections are silently ignored
       }
     }
     i += 1
@@ -624,54 +743,68 @@ func collectSectionPairs(entries: in List[Entry], section: in String): List[Pack
 func assemblePackage(entries: in List[Entry]): Result[PackageSection, ManifestError] {
   match requireString(entries, "package", "name") {
     case Err(e) -> Err(error = e)
-    case Ok(name) ->
-      match requireString(entries, "package", "version") {
-        case Err(e) -> Err(error = e)
-        case Ok(version) -> {
-          val description = unwrapOr(findString(entries, "package", "description"), "")
-          val authors: List[String] = unwrapOr(findStringList(entries, "package", "authors"), newList())
-          val license     = unwrapOr(findString(entries, "package", "license"), "")
-          val repository  = findString(entries, "package", "repository")
-          val kind        = findString(entries, "package", "kind")
-          Ok(value = PackageSection(
-            name        = name,
-            version     = version,
-            description = description,
-            authors     = authors,
-            license     = license,
-            repository  = repository,
-            kind        = kind))
-        }
-      }
+    case Ok(name) -> match requireString(entries, "package", "version") { case Err(e) -> Err(error = e); case Ok(version) -> { val description = unwrapOr(findString(entries, "package", "description"), ""); val authors: List[String] = unwrapOr(findStringList(entries, "package", "authors"), newList()); val license = unwrapOr(findString(entries, "package", "license"), ""); val repository = findString(entries, "package", "repository"); val kind = findString(entries, "package", "kind"); Ok(value = PackageSection(name = name, version = version, description = description, authors = authors, license = license, repository = repository, kind = kind)) } }
   }
 }
 
 func hasSection(entries: in List[Entry], section: in String): Bool {
   var i = 0
   while i < entries.count {
-    if entries[i].section == section { return true }
+    if entries[i].section == section {
+      return true
+    }
     i += 1
   }
   false
 }
 
 func assembleProject(entries: in List[Entry]): Option[ProjectSection] {
-  if not hasSection(entries, "project") { return None }
-  val name           = unwrapOr(findString(entries, "project", "name"), "")
-  val output         = unwrapOr(findString(entries, "project", "output"), "single")
+  if not hasSection(entries, "project") {
+    return None
+  }
+  val name = unwrapOr(findString(entries, "project", "name"), "")
+  val output = unwrapOr(findString(entries, "project", "output"), "single")
   val outputAssembly = findString(entries, "project", "output_assembly")
-  val packages       = collectSectionPairs(entries, "project.packages")
-  val tests          = collectSectionPairs(entries, "project.tests")
-  Some(value = ProjectSection(
-    name           = name,
-    output         = output,
-    outputAssembly = outputAssembly,
-    packages       = packages,
-    tests          = tests))
+  val packages = collectSectionPairs(entries, "project.packages")
+  val tests = collectSectionPairs(entries, "project.tests")
+  Some(
+    value = ProjectSection(
+      name = name,
+      output = output,
+      outputAssembly = outputAssembly,
+      packages = packages,
+      tests = tests
+    )
+  )
+}
+
+func assembleBuild(entries: in List[Entry]): Result[Option[BuildSection], ManifestError] {
+  if not hasSection(entries, "build") {
+    return Ok(value = None)
+  }
+  match findString(entries, "build", "kind") {
+    case Some(kind) -> {
+      // Validate: kind must be one of "lib" or "exe"
+      if kind == "lib" or kind == "exe" {
+        Ok(value = Some(value = BuildSection(kind = kind)))
+      } else {
+        Err(
+          error = InvalidField(
+            section = "build",
+            field = "kind",
+            message = "must be \"lib\" or \"exe\", got \"" + kind + "\""
+          )
+        )
+      }
+    }
+    case None -> {
+      // Default to "lib" when [build] exists but kind is missing
+      Ok(value = Some(value = BuildSection(kind = "lib")))
+    }
+  }
 }
 
 // ── Inline table helpers ─────────────────────────────────────────────────────
-
 func findInlineStr(pairs: in List[InlinePair], key: in String): Option[String] {
   var i = 0
   while i < pairs.count {
@@ -679,7 +812,7 @@ func findInlineStr(pairs: in List[InlinePair], key: in String): Option[String] {
     if p.key == key {
       match p.tval {
         case TVStr(s) -> return Some(value = s)
-        case _        -> return None
+        case _ -> return None
       }
     }
     i += 1
@@ -694,7 +827,7 @@ func findInlineBool(pairs: in List[InlinePair], key: in String, default: in Bool
     if p.key == key {
       match p.tval {
         case TVBool(b) -> return b
-        case _         -> return default
+        case _ -> return default
       }
     }
     i += 1
@@ -703,7 +836,9 @@ func findInlineBool(pairs: in List[InlinePair], key: in String, default: in Bool
 }
 
 // Build a DepSource from an inline table.
-func buildDepSource(depName: in String, pairs: in List[InlinePair], section: in String): Result[DepSource, ManifestError] {
+func buildDepSource(
+  depName: in String, pairs: in List[InlinePair], section: in String
+): Result[DepSource, ManifestError] {
   // Check for workspace = true
   if findInlineBool(pairs, "workspace", false) {
     val versionOpt = findInlineStr(pairs, "version")
@@ -712,38 +847,44 @@ func buildDepSource(depName: in String, pairs: in List[InlinePair], section: in 
   // Check for path = "..."
   match findInlineStr(pairs, "path") {
     case Some(dir) -> return Ok(value = Path(dir = dir))
-    case None      -> ()
+    case None -> ()
   }
   // Check for git = "..."
   match findInlineStr(pairs, "git") {
     case Some(url) -> {
       val subdir = findInlineStr(pairs, "subdir")
-      val ref: GitRef = match findInlineStr(pairs, "tag") {
-        case Some(t) -> Tag(name = t)
-        case None    -> match findInlineStr(pairs, "rev") {
-          case Some(r) -> Rev(sha = r)
-          case None    -> match findInlineStr(pairs, "branch") {
-            case Some(b) -> Branch(name = b)
-            case None    ->
-              return Err(error = InvalidField(
-                section = section,
-                field   = depName,
-                message = "git dep requires one of: tag, rev, branch"))
-          }
-        }
+      // Construct the GitRef inline in each branch and return immediately,
+      // rather than binding `val ref: GitRef = match ...` and storing it in the
+      // record afterwards.  The F# stage-0 emitter reads a union value produced
+      // by a nested `match` expression back as null when it lands in a record
+      // field, so `Git.ref` arrived null at the consumer (#2126); the
+      // early-return form sidesteps that.
+      match findInlineStr(pairs, "tag") {
+        case Some(t) -> return Ok(value = Git(url = url, refKind = "tag", refValue = t, subdir = subdir))
+        case None -> ()
       }
-      return Ok(value = Git(url = url, ref = ref, subdir = subdir))
+      match findInlineStr(pairs, "rev") {
+        case Some(r) -> return Ok(value = Git(url = url, refKind = "rev", refValue = r, subdir = subdir))
+        case None -> ()
+      }
+      match findInlineStr(pairs, "branch") {
+        case Some(b) -> return Ok(value = Git(url = url, refKind = "branch", refValue = b, subdir = subdir))
+        case None -> ()
+      }
+      return Err(
+        error = InvalidField(
+          section = section,
+          field = depName,
+          message = "git dep requires one of: tag, rev, branch"
+        )
+      )
     }
     case None -> ()
   }
   // Explicit version key in inline table: { version = "1.0.0" }
   match findInlineStr(pairs, "version") {
     case Some(v) -> Ok(value = Registry(version = v))
-    case None    ->
-      Err(error = InvalidField(
-        section = section,
-        field   = depName,
-        message = "dep must have one of: version, workspace = true, path, git"))
+    case None -> Err(error = InvalidField(section = section, field = depName, message = "dep must have one of: version, workspace = true, path, git"))
   }
 }
 
@@ -754,19 +895,11 @@ func assembleDeps(entries: in List[Entry]): Result[List[DependencyEntry], Manife
     val e = entries[i]
     if e.section == "dependencies" {
       match e.value {
-        case VStr(v) ->
-          depList.add(DependencyEntry(
-            name     = e.key,
-            source   = Registry(version = v),
-            registry = None))
+        case VStr(v) -> depList.add(DependencyEntry(name = e.key, source = Registry(version = v), registry = None))
         case VTable(pairs) -> {
           match buildDepSource(e.key, pairs, "dependencies") {
             case Err(me) -> return Err(error = me)
-            case Ok(src) ->
-              depList.add(DependencyEntry(
-                name     = e.key,
-                source   = src,
-                registry = findInlineStr(pairs, "registry")))
+            case Ok(src) -> depList.add(DependencyEntry(name = e.key, source = src, registry = findInlineStr(pairs, "registry")))
           }
         }
         case _ -> ()
@@ -781,7 +914,9 @@ func assembleDeps(entries: in List[Entry]): Result[List[DependencyEntry], Manife
 func listContains(xs: in List[String], target: in String): Bool {
   var i = 0
   while i < xs.count {
-    if xs[i] == target { return true }
+    if xs[i] == target {
+      return true
+    }
     i += 1
   }
   false
@@ -792,7 +927,10 @@ func sortStringList(xs: in List[String]): List[String] {
   // feature) and the sort runs once per build.
   val sorted: List[String] = newList()
   var i = 0
-  while i < xs.count { sorted.add(xs[i]); i += 1 }
+  while i < xs.count {
+    sorted.add(xs[i])
+    i += 1
+  }
   var k = 1
   while k < sorted.count {
     val cur = sorted[k]
@@ -812,7 +950,9 @@ func sortStringList(xs: in List[String]): List[String] {
 /// key produces `Err(InvalidField)`.  Returns `Ok(None)` when the
 /// section is absent.
 func assembleFeatures(entries: in List[Entry]): Result[Option[FeaturesSection], ManifestError] {
-  if not hasSection(entries, "features") { return Ok(value = None) }
+  if not hasSection(entries, "features") {
+    return Ok(value = None)
+  }
   val declared: List[String] = newList()
   var defaults: Option[List[String]] = None
   var i = 0
@@ -820,22 +960,8 @@ func assembleFeatures(entries: in List[Entry]): Result[Option[FeaturesSection], 
     val e = entries[i]
     if e.section == "features" {
       match e.value {
-        case VStrList(items) ->
-          if e.key == "default" {
-            defaults = Some(value = items)
-          } else if items.count > 0 {
-            return Err(error = InvalidField(
-              section = "features",
-              field   = e.key,
-              message = "v1 requires an empty array (feature implications are deferred to v1.1)"))
-          } else {
-            declared.add(e.key)
-          }
-        case _ ->
-          return Err(error = InvalidField(
-            section = "features",
-            field   = e.key,
-            message = "expected an array (use [] for v1)"))
+        case VStrList(items) -> if e.key == "default" { defaults = Some(value = items) } else if items.count > 0 { return Err(error = InvalidField(section = "features", field = e.key, message = "v1 requires an empty array (feature implications are deferred to v1.1)")) } else { declared.add(e.key) }
+        case _ -> return Err(error = InvalidField(section = "features", field = e.key, message = "expected an array (use [] for v1)"))
       }
     }
     i += 1
@@ -846,20 +972,29 @@ func assembleFeatures(entries: in List[Entry]): Result[Option[FeaturesSection], 
   while di < defaultList.count {
     val name = defaultList[di]
     if not listContains(declared, name) {
-      return Err(error = InvalidField(
-        section = "features",
-        field   = "default",
-        message = "references undeclared feature '" + name + "'"))
+      return Err(
+        error = InvalidField(
+          section = "features",
+          field = "default",
+          message = "references undeclared feature '" + name + "'"
+        )
+      )
     }
     di += 1
   }
-  Ok(value = Some(value = FeaturesSection(
-    declared = sortStringList(declared),
-    defaults = defaultList)))
+  Ok(value = Some(value = FeaturesSection(declared = sortStringList(declared), defaults = defaultList)))
 }
 
-func assembleNuget(entries: in List[Entry]): Option[NugetSection] {
-  if not hasSection(entries, "nuget") { return None }
+/// Assemble the `[nuget]` / `[nuget.options]` tables.  Each
+/// `Package.Name = "version"` entry becomes a `NugetEntry`; the extended
+/// `{ version = "...", ... }` inline-table form is also accepted.  An entry
+/// whose value is neither a string nor an inline table carrying a `version`
+/// key produces `Err(InvalidField)` (#2744).  Returns `Ok(None)` when no
+/// `[nuget]` table is present.
+func assembleNuget(entries: in List[Entry]): Result[Option[NugetSection], ManifestError] {
+  if not hasSection(entries, "nuget") {
+    return Ok(value = None)
+  }
   val nugetEntries: List[NugetEntry] = newList()
   var i = 0
   while i < entries.count {
@@ -871,24 +1006,117 @@ func assembleNuget(entries: in List[Entry]): Option[NugetSection] {
           // Support { version = "1.0.0", features = [...] } form in [nuget].
           match findInlineStr(pairs, "version") {
             case Some(v) -> nugetEntries.add(NugetEntry(name = e.key, version = v))
-            case None    -> ()
+            case None -> return Err(
+              error = InvalidField(
+                section = "nuget",
+                field = e.key,
+                message = "expected a version string or an inline table with a 'version' key"
+              )
+            )
           }
         }
-        case _ -> ()
+        case _ -> return Err(
+          error = InvalidField(
+            section = "nuget",
+            field = e.key,
+            message = "expected a version string or an inline table with a 'version' key"
+          )
+        )
       }
     }
     i += 1
   }
-  val target      = findString(entries, "nuget.options", "target")
+  val target = findString(entries, "nuget.options", "target")
   val allowNative = findBool(entries, "nuget.options", "allow_native", false)
-  Some(value = NugetSection(
-    entries     = nugetEntries,
-    target      = target,
-    allowNative = allowNative))
+  Ok(value = Some(value = NugetSection(entries = nugetEntries, target = target, allowNative = allowNative)))
+}
+
+/// Validate a `[maven]` coordinate key + version and, on success, append the
+/// resulting `MavenEntry` to `acc`.  The key must be exactly `groupId:artifactId`
+/// (a single `:` separating two non-empty halves), and the version must not be a
+/// `-SNAPSHOT` build (B0054, `docs/31-maven-linking.md` §11).  Returns
+/// `Some(ManifestError)` on a validation failure (entry not appended), `None`
+/// otherwise.  Mirrors the F# reference in `bootstrap/src/Lyric.Cli/Manifest.fs`.
+func collectMavenEntry(acc: in List[MavenEntry], key: in String, version: in String): Option[ManifestError] {
+  val parts = Str.split(key, ":")
+  if parts.length != 2 or parts[0] == "" or parts[1] == "" {
+    return Some(
+      value = InvalidField(
+        section = "maven",
+        field = key,
+        message = "expected a Maven coordinate in \"groupId:artifactId\" format"
+      )
+    )
+  }
+  if Str.endsWith(version, "-SNAPSHOT") {
+    return Some(
+      value = InvalidField(
+        section = "maven",
+        field = key,
+        message = "SNAPSHOT versions are not allowed; pin a release version (B0054)"
+      )
+    )
+  }
+  acc.add(MavenEntry(group = parts[0], artifact = parts[1], version = version))
+  None
+}
+
+/// Assemble the `[maven]` / `[maven.options]` tables per
+/// `docs/31-maven-linking.md` (D053).  Mirrors `assembleNuget`/`assembleFeatures`:
+/// each `groupId:artifactId = "version"` entry becomes a `MavenEntry`, and the
+/// extended `{ version = "...", ... }` inline-table form is also accepted.
+/// Coordinate keys must be exactly `groupId:artifactId` and versions must not
+/// be `-SNAPSHOT` builds (B0054) — either produces `Err(InvalidField)`.
+/// An entry whose value is neither a string nor an inline table carrying a
+/// `version` key also produces `Err(InvalidField)` (#2744).
+/// `[maven.options].repositories` defaults to `["central"]`; `java_version`
+/// is optional.  Returns `Ok(None)` when no `[maven]` table is present.
+func assembleMaven(entries: in List[Entry]): Result[Option[MavenSection], ManifestError] {
+  if not hasSection(entries, "maven") {
+    return Ok(value = None)
+  }
+  val mavenEntries: List[MavenEntry] = newList()
+  var i = 0
+  while i < entries.count {
+    val e = entries[i]
+    if e.section == "maven" {
+      val versionOpt: Option[String] = match e.value {
+        case VStr(v) -> Some(value = v)
+        // Support { version = "2.17.0", ... } form in [maven].
+        case VTable(pairs) -> findInlineStr(pairs, "version")
+        case _ -> None
+      }
+      // Return on the first invalid entry, mirroring assembleNuget's
+      // early-return control flow.
+      match versionOpt {
+        case None -> return Err(
+          error = InvalidField(
+            section = "maven",
+            field = e.key,
+            message = "expected a version string or an inline table with a 'version' key"
+          )
+        )
+        case Some(v) -> match collectMavenEntry(mavenEntries, e.key, v) { case Some(err) -> return Err(error = err); case None -> () }
+      }
+    }
+    i += 1
+  }
+  val repositories: List[String] = match findStringList(entries, "maven.options", "repositories") {
+    case Some(repos) -> repos
+    case None -> {
+      val def: List[String] = newList()
+      def.add("central")
+      def
+    }
+  }
+  val javaVersion = findString(entries, "maven.options", "java_version")
+  Ok(value = Some(value = MavenSection(entries = mavenEntries, repositories = repositories, javaVersion = javaVersion)))
 }
 
 func assembleWorkspace(entries: in List[Entry]): Option[WorkspaceSection] {
-  if not hasSection(entries, "workspace") { return None }
+  if not hasSection(entries, "workspace") {
+    return None
+  }
   val exclude: List[String] = unwrapOr(findStringList(entries, "workspace", "exclude"), newList())
   val overrides: List[WorkspaceOverride] = newList()
   var i = 0
@@ -896,13 +1124,9 @@ func assembleWorkspace(entries: in List[Entry]): Option[WorkspaceSection] {
     val e = entries[i]
     if e.section == "workspace.overrides" {
       match e.value {
-        case VTable(pairs) ->
-          match findInlineStr(pairs, "path") {
-            case Some(dir) -> overrides.add(WorkspaceOverride(name = e.key, dir = dir))
-            case None      -> ()
-          }
+        case VTable(pairs) -> match findInlineStr(pairs, "path") { case Some(dir) -> overrides.add(WorkspaceOverride(name = e.key, dir = dir)); case None -> () }
         case VStr(dir) -> overrides.add(WorkspaceOverride(name = e.key, dir = dir))
-        case _         -> ()
+        case _ -> ()
       }
     }
     i += 1
@@ -911,16 +1135,20 @@ func assembleWorkspace(entries: in List[Entry]): Option[WorkspaceSection] {
 }
 
 func assembleRegistry(entries: in List[Entry]): Option[RegistryConfig] {
-  if not hasSection(entries, "registry") { return None }
-  Some(value = RegistryConfig(
-    dotnet = findString(entries, "registry", "dotnet"),
-    jvm    = findString(entries, "registry", "jvm")))
+  if not hasSection(entries, "registry") {
+    return None
+  }
+  Some(
+    value = RegistryConfig(
+      dotnet = findString(entries, "registry", "dotnet"),
+      jvm = findString(entries, "registry", "jvm")
+    )
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §6. Public entry points
 // ─────────────────────────────────────────────────────────────────────────────
-
 /// Parse the contents of a `lyric.toml` member manifest (must have `[package]`).
 ///
 /// `text` is the raw UTF-8 source; `filePath` is used only for error messages.
@@ -930,34 +1158,8 @@ func assembleRegistry(entries: in List[Entry]): Option[RegistryConfig] {
 /// silently ignored in this bootstrap-grade parser.
 pub func parseManifest(text: in String, filePath: in String): Result[Manifest, ManifestError] {
   match collectEntries(text, filePath) {
-    case Err(e)      -> Err(error = e)
-    case Ok(entries) ->
-      match assemblePackage(entries) {
-        case Err(e)   -> Err(error = e)
-        case Ok(pkg)  -> {
-          val project = assembleProject(entries)
-          val nuget   = assembleNuget(entries)
-          val ws      = assembleWorkspace(entries)
-          val reg     = assembleRegistry(entries)
-          match assembleDeps(entries) {
-            case Err(e)    -> Err(error = e)
-            case Ok(deps)  ->
-              match assembleFeatures(entries) {
-                case Err(e)          -> Err(error = e)
-                case Ok(featuresOpt) ->
-                  Ok(value = Manifest(
-                    filePath       = filePath,
-                    packageSection = pkg,
-                    project        = project,
-                    deps           = deps,
-                    nuget          = nuget,
-                    features       = featuresOpt,
-                    workspace      = ws,
-                    registry       = reg))
-              }
-          }
-        }
-      }
+    case Err(e) -> Err(error = e)
+    case Ok(entries) -> match assemblePackage(entries) { case Err(e) -> Err(error = e); case Ok(pkg) -> { val project = assembleProject(entries); val ws = assembleWorkspace(entries); val reg = assembleRegistry(entries); match assembleNuget(entries) { case Err(e) -> Err(error = e); case Ok(nuget) -> match assembleDeps(entries) { case Err(e) -> Err(error = e); case Ok(deps) -> match assembleFeatures(entries) { case Err(e) -> Err(error = e); case Ok(featuresOpt) -> match assembleMaven(entries) { case Err(e) -> Err(error = e); case Ok(mavenOpt) -> match assembleBuild(entries) { case Err(e) -> Err(error = e); case Ok(buildOpt) -> Ok(value = Manifest(filePath = filePath, packageSection = pkg, project = project, deps = deps, nuget = nuget, maven = mavenOpt, features = featuresOpt, build = buildOpt, workspace = ws, registry = reg)) } } } } } } }
   }
 }
 
@@ -968,16 +1170,8 @@ pub func parseManifest(text: in String, filePath: in String): Result[Manifest, M
 /// errors are forwarded as `Err(ManifestError)`.
 pub func parseWorkspaceRoot(text: in String, filePath: in String): Result[Option[WorkspaceRoot], ManifestError] {
   match collectEntries(text, filePath) {
-    case Err(e)      -> Err(error = e)
-    case Ok(entries) ->
-      match assembleWorkspace(entries) {
-        case None    -> Ok(value = None)
-        case Some(ws) ->
-          Ok(value = Some(value = WorkspaceRoot(
-            filePath  = filePath,
-            workspace = ws,
-            registry  = assembleRegistry(entries))))
-      }
+    case Err(e) -> Err(error = e)
+    case Ok(entries) -> match assembleWorkspace(entries) { case None -> Ok(value = None); case Some(ws) -> Ok(value = Some(value = WorkspaceRoot(filePath = filePath, workspace = ws, registry = assembleRegistry(entries)))) }
   }
 }
 
@@ -987,7 +1181,7 @@ pub func parseWorkspaceRoot(text: in String, filePath: in String): Result[Option
 pub func depRegistryVersion(source: in DepSource): Option[String] {
   match source {
     case Registry(v) -> Some(value = v)
-    case _           -> None
+    case _ -> None
   }
 }
 
@@ -996,15 +1190,19 @@ pub func depRegistryVersion(source: in DepSource): Option[String] {
 pub func getManifestFeaturesOrEmpty(m: in Manifest): FeaturesSection {
   match m.features {
     case Some(f) -> return f
-    case None    -> return FeaturesSection(declared = newList(), defaults = newList())
+    case None -> return FeaturesSection(declared = newList(), defaults = newList())
   }
 }
 
 /// Return the `defaults` field of a FeaturesSection (intra-package accessor).
-pub func featureSectionDefaults(s: in FeaturesSection): List[String] { s.defaults }
+pub func featureSectionDefaults(s: in FeaturesSection): List[String] {
+  s.defaults
+}
 
 /// Return the `declared` field of a FeaturesSection (intra-package accessor).
-pub func featureSectionDeclared(s: in FeaturesSection): List[String] { s.declared }
+pub func featureSectionDeclared(s: in FeaturesSection): List[String] {
+  s.declared
+}
 
 /// Return the `default` feature list from the manifest's `[features]` section,
 /// or an empty list if the section is absent.
@@ -1028,7 +1226,7 @@ pub func getManifestFeatureDeclared(m: in Manifest): List[String] {
 pub func readFeatureDefaultsFromToml(text: in String, filePath: in String): List[String] {
   val result: List[String] = newList()
   match collectEntries(text, filePath) {
-    case Err(_)      -> ()
+    case Err(_) -> ()
     case Ok(entries) -> {
       var i = 0
       while i < entries.count {
@@ -1057,7 +1255,7 @@ pub func readFeatureDefaultsFromToml(text: in String, filePath: in String): List
 pub func readFeatureDeclaredFromToml(text: in String, filePath: in String): List[String] {
   val result: List[String] = newList()
   match collectEntries(text, filePath) {
-    case Err(_)      -> ()
+    case Err(_) -> ()
     case Ok(entries) -> {
       var i = 0
       while i < entries.count {

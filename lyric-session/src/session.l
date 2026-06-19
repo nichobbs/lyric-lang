@@ -1,45 +1,44 @@
-// Session — distributed session management for Lyric web applications.
-//
-// Stability: @experimental — the surface compiles and the in-memory
-// store has tests, but the Redis-backed store has not been exercised
-// against a real Redis cluster in CI.
-// WARNING: experimental — no stability guarantee.  Public functions
-// may change shape, add parameters, or be renamed before the surface
-// freezes for `1.0`.
-//
-// Provides a `SessionStore` interface with Redis-backed and in-process
-// implementations.  Both share the same API; swap the store at startup
-// via factory functions without changing application code.
-//
-// Typical usage:
-//
-//   import Session
-//
-//   // In-process (single-instance):
-//   var store = Session.inMemory()
-//
-//   // Redis-backed (multi-instance):
-//   match Session.connectRedis() {
-//     case Ok(store) -> ...
-//     case Err(e)    -> ...
-//   }
-//
-//   // Use the store:
-//   match Session.create(store) {
-//     case Ok(sessionId) ->
-//       Session.set(store, sessionId, "userId", "42")
-//     case Err(e) -> ...
-//   }
-//
-// Runtime config env vars (LYRIC_CONFIG_SESSION_*):
-//   LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS    — session TTL in seconds (default: 3600)
-//   LYRIC_CONFIG_SESSION_SESSION_COOKIENAME    — session cookie name (default: LYRIC_SESSION)
-//   LYRIC_CONFIG_SESSION_SESSION_SECURE        — Secure cookie flag (default: true)
-//   LYRIC_CONFIG_SESSION_SESSION_HTTPONLY      — HttpOnly cookie flag (default: true)
-//   LYRIC_CONFIG_SESSION_SESSION_SAMESITE      — SameSite policy (default: Lax)
-//   LYRIC_CONFIG_SESSION_REDISSESSION_URL      — Redis connection URL (redis feature)
-//   LYRIC_CONFIG_SESSION_REDISSESSION_KEYPREFIX — key namespace prefix (default: session:)
-
+//! Session — distributed session management for Lyric web applications.
+//!
+//! Stability: @experimental — the surface compiles and the in-memory
+//! store has tests, but the Redis-backed store has not been exercised
+//! against a real Redis cluster in CI.
+//! WARNING: experimental — no stability guarantee.  Public functions
+//! may change shape, add parameters, or be renamed before the surface
+//! freezes for `1.0`.
+//!
+//! Provides a `SessionStore` interface with Redis-backed and in-process
+//! implementations.  Both share the same API; swap the store at startup
+//! via factory functions without changing application code.
+//!
+//! Typical usage:
+//!
+//!   import Session
+//!
+//!   // In-process (single-instance):
+//!   var store = Session.inMemory()
+//!
+//!   // Redis-backed (multi-instance):
+//!   match Session.connectRedis() {
+//!     case Ok(store) -> ...
+//!     case Err(e)    -> ...
+//!   }
+//!
+//!   // Use the store:
+//!   match Session.create(store) {
+//!     case Ok(sessionId) ->
+//!       Session.set(store, sessionId, "userId", "42")
+//!     case Err(e) -> ...
+//!   }
+//!
+//! Runtime config env vars (LYRIC_CONFIG_SESSION_*):
+//!   LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS    — session TTL in seconds (default: 3600)
+//!   LYRIC_CONFIG_SESSION_SESSION_COOKIENAME    — session cookie name (default: LYRIC_SESSION)
+//!   LYRIC_CONFIG_SESSION_SESSION_SECURE        — Secure cookie flag (default: true)
+//!   LYRIC_CONFIG_SESSION_SESSION_HTTPONLY      — HttpOnly cookie flag (default: true)
+//!   LYRIC_CONFIG_SESSION_SESSION_SAMESITE      — SameSite policy (default: Lax)
+//!   LYRIC_CONFIG_SESSION_REDISSESSION_URL      — Redis connection URL (redis feature)
+//!   LYRIC_CONFIG_SESSION_REDISSESSION_KEYPREFIX — key namespace prefix (default: session:)
 @runtime_checked
 package Session
 
@@ -52,45 +51,41 @@ import Std.Uuid
 import Session.Kernel.Net as SessionKernel
 
 // ─── Session identity ─────────────────────────────────────────────────────────
-
 /// Session identifier: a plain String assigned by the store at creation time.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub alias SessionId = String
 
 // ─── Error type ───────────────────────────────────────────────────────────────
-
 /// Error returned by SessionStore operations.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record SessionError {
   message: String
-  code:    String
+  code: String
 }
 
 // ─── Session data ─────────────────────────────────────────────────────────────
-
 /// A single key-value entry in a session.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record SessionEntry {
-  key:   String
+  key: String
   value: String
 }
 
 /// The full contents of a session, including timing metadata.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record SessionData {
-  id:             String
-  entries:        Map[String, String]
-  createdAt:      Long   // epoch millis
+  id: String
+  entries: Map[String, String]
+  createdAt: Long   // epoch millis
   lastAccessedAt: Long   // epoch millis
-  expiresAt:      Long   // epoch millis; 0 = no expiry
+  expiresAt: Long   // epoch millis; 0 = no expiry
 }
 
 // ─── Store interface ──────────────────────────────────────────────────────────
-
 /// Backing store for session state.  Implement this interface to plug in
 /// alternative stores.  Use `Session.inMemory()` or `Session.connectRedis()`
 /// for the bundled implementations.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub interface SessionStore {
   /// Create a new empty session and return its ID.
   func create(): Result[String, SessionError]
@@ -124,7 +119,6 @@ pub interface SessionStore {
 }
 
 // ─── Native (Redis) store ─────────────────────────────────────────────────────
-
 /// Redis-backed session store.  Obtain via `Session.connectRedis()`.
 ///
 /// **NOTE:** `set`, `delete`, `clear`, and `touch` perform load-modify-save
@@ -134,7 +128,7 @@ pub interface SessionStore {
 @experimental
 @cfg(feature = "redis")
 pub record NativeSessionStore {
-  storeHandle: Int
+  storeHandle: SessionKernel.RedisStoreHandle
 }
 
 @experimental
@@ -142,19 +136,14 @@ pub record NativeSessionStore {
 impl SessionStore for NativeSessionStore {
   func create(): Result[String, SessionError] {
     match SessionKernel.create(self.storeHandle, 3600) {
-      case Ok(id)   -> Ok(id)
+      case Ok(id) -> Ok(id)
       case Err(err) -> Err(SessionError(message = err, code = "CREATE_FAILED"))
     }
   }
 
   func load(sessionId: in String): Result[Option[SessionData], SessionError] {
     match SessionKernel.load(self.storeHandle, sessionId) {
-      case Ok(json) ->
-        if json == "" {
-          Ok(None)
-        } else {
-          Ok(Some(value = parseSessionJson(sessionId, json)))
-        }
+      case Ok(json) -> if json == "" { Ok(None) } else { Ok(Some(value = parseSessionJson(sessionId, json))) }
       case Err(err) -> Err(SessionError(message = err, code = "LOAD_FAILED"))
     }
   }
@@ -162,32 +151,28 @@ impl SessionStore for NativeSessionStore {
   func save(data: in SessionData): Result[Unit, SessionError] {
     val json = serializeSessionJson(data)
     match SessionKernel.save(self.storeHandle, data.id, json) {
-      case Ok(u)    -> Ok(u)
+      case Ok(u) -> Ok(u)
       case Err(err) -> Err(SessionError(message = err, code = "SAVE_FAILED"))
     }
   }
 
   func destroy(sessionId: in String): Result[Unit, SessionError] {
     match SessionKernel.destroy(self.storeHandle, sessionId) {
-      case Ok(u)    -> Ok(u)
+      case Ok(u) -> Ok(u)
       case Err(err) -> Err(SessionError(message = err, code = "DESTROY_FAILED"))
     }
   }
 
   func touch(sessionId: in String): Result[Unit, SessionError] {
     match SessionKernel.touch(self.storeHandle, sessionId, 3600) {
-      case Ok(u)    -> Ok(u)
+      case Ok(u) -> Ok(u)
       case Err(err) -> Err(SessionError(message = err, code = "TOUCH_FAILED"))
     }
   }
 
   func get(sessionId: in String, key: in String): Result[Option[String], SessionError] {
     match load(sessionId) {
-      case Ok(opt) ->
-        match opt {
-          case None       -> Ok(None)
-          case Some(data) -> Ok(mapGet(data.entries, key))
-        }
+      case Ok(opt) -> match opt { case None -> Ok(None); case Some(data) -> Ok(mapGet(data.entries, key)) }
       case Err(e) -> Err(e)
     }
   }
@@ -200,78 +185,36 @@ impl SessionStore for NativeSessionStore {
     // The caller must obtain a fresh id from `create()` first.  See
     // RFC 6265 §8.4 and lyric-lang #316.
     match load(sessionId) {
-      case Ok(opt) ->
-        match opt {
-          case None ->
-            Err(SessionError(
-              message = "session not found; call create() to obtain a fresh id before set()",
-              code    = "SESSION_NOT_FOUND"))
-          case Some(existing) -> {
-            existing.entries[key] = value
-            val updated = SessionData(
-              id             = existing.id,
-              entries        = existing.entries,
-              createdAt      = existing.createdAt,
-              lastAccessedAt = nowMs(),
-              expiresAt      = existing.expiresAt)
-            save(updated)
-          }
-        }
+      case Ok(opt) -> match opt { case None -> Err(SessionError(message = "session not found; call create() to obtain a fresh id before set()", code = "SESSION_NOT_FOUND")); case Some(existing) -> { existing.entries[key] = value; val updated = SessionData(id = existing.id, entries = existing.entries, createdAt = existing.createdAt, lastAccessedAt = nowMs(), expiresAt = existing.expiresAt); save(updated) } }
       case Err(e) -> Err(e)
     }
   }
 
   func delete(sessionId: in String, key: in String): Result[Unit, SessionError] {
     match load(sessionId) {
-      case Ok(opt) ->
-        match opt {
-          case None       -> Ok(())
-          case Some(data) -> {
-            data.entries.remove(key)
-            val updated = SessionData(
-              id             = data.id,
-              entries        = data.entries,
-              createdAt      = data.createdAt,
-              lastAccessedAt = nowMs(),
-              expiresAt      = data.expiresAt)
-            save(updated)
-          }
-        }
+      case Ok(opt) -> match opt { case None -> Ok(()); case Some(data) -> { data.entries.remove(key); val updated = SessionData(id = data.id, entries = data.entries, createdAt = data.createdAt, lastAccessedAt = nowMs(), expiresAt = data.expiresAt); save(updated) } }
       case Err(e) -> Err(e)
     }
   }
 
   func clear(sessionId: in String): Result[Unit, SessionError] {
     match load(sessionId) {
-      case Ok(opt) ->
-        match opt {
-          case None       -> Ok(())
-          case Some(data) -> {
-            val updated = SessionData(
-              id             = data.id,
-              entries        = newMap(),
-              createdAt      = data.createdAt,
-              lastAccessedAt = nowMs(),
-              expiresAt      = data.expiresAt)
-            save(updated)
-          }
-        }
+      case Ok(opt) -> match opt { case None -> Ok(()); case Some(data) -> { val updated = SessionData(id = data.id, entries = newMap(), createdAt = data.createdAt, lastAccessedAt = nowMs(), expiresAt = data.expiresAt); save(updated) } }
       case Err(e) -> Err(e)
     }
   }
 }
 
 // ─── In-process store ─────────────────────────────────────────────────────────
-
 /// In-process session store backed by a mutable Map.
 ///
 /// Suitable for single-instance deployments or development.  Session state is
 /// lost on process restart.  Not thread-safe; wrap in a protected type for
 /// concurrent access once the protected-type weaver ships.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record InProcessSessionStore {
   var sessions: Map[String, SessionData]
-  ttlSeconds:   Long
+  ttlSeconds: Long
 }
 
 impl SessionStore for InProcessSessionStore {
@@ -279,11 +222,12 @@ impl SessionStore for InProcessSessionStore {
     val id = uuidToString(newUuid())
     val ts = nowMs()
     val data = SessionData(
-      id             = id,
-      entries        = newMap(),
-      createdAt      = ts,
+      id = id,
+      entries = newMap(),
+      createdAt = ts,
       lastAccessedAt = ts,
-      expiresAt      = defaultExpiresAt(self.ttlSeconds))
+      expiresAt = defaultExpiresAt(self.ttlSeconds)
+    )
     self.sessions[id] = data
     return Ok(id)
   }
@@ -327,11 +271,12 @@ impl SessionStore for InProcessSessionStore {
         Ok(())
       } else {
         val updated = SessionData(
-          id             = data.id,
-          entries        = data.entries,
-          createdAt      = data.createdAt,
+          id = data.id,
+          entries = data.entries,
+          createdAt = data.createdAt,
           lastAccessedAt = ts,
-          expiresAt      = defaultExpiresAt(self.ttlSeconds))
+          expiresAt = defaultExpiresAt(self.ttlSeconds)
+        )
         self.save(updated)
       }
     }
@@ -357,25 +302,32 @@ impl SessionStore for InProcessSessionStore {
     // matching NativeSessionStore.set() comment.  Callers must obtain
     // a fresh id from create() before invoking set().
     if not self.sessions.containsKey(sessionId) {
-      Err(SessionError(
-        message = "session not found; call create() to obtain a fresh id before set()",
-        code    = "SESSION_NOT_FOUND"))
+      Err(
+        SessionError(
+          message = "session not found; call create() to obtain a fresh id before set()",
+          code = "SESSION_NOT_FOUND"
+        )
+      )
     } else {
       val existing = self.sessions[sessionId]
       val ts = nowMs()
       if existing.expiresAt != 0i64 and existing.expiresAt < ts {
         self.sessions.remove(sessionId)
-        Err(SessionError(
-          message = "session not found; call create() to obtain a fresh id before set()",
-          code    = "SESSION_NOT_FOUND"))
+        Err(
+          SessionError(
+            message = "session not found; call create() to obtain a fresh id before set()",
+            code = "SESSION_NOT_FOUND"
+          )
+        )
       } else {
         existing.entries[key] = value
         val updated = SessionData(
-          id             = existing.id,
-          entries        = existing.entries,
-          createdAt      = existing.createdAt,
+          id = existing.id,
+          entries = existing.entries,
+          createdAt = existing.createdAt,
           lastAccessedAt = ts,
-          expiresAt      = existing.expiresAt)
+          expiresAt = existing.expiresAt
+        )
         self.save(updated)
       }
     }
@@ -393,11 +345,12 @@ impl SessionStore for InProcessSessionStore {
       } else {
         data.entries.remove(key)
         val updated = SessionData(
-          id             = data.id,
-          entries        = data.entries,
-          createdAt      = data.createdAt,
+          id = data.id,
+          entries = data.entries,
+          createdAt = data.createdAt,
           lastAccessedAt = nowMs(),
-          expiresAt      = data.expiresAt)
+          expiresAt = data.expiresAt
+        )
         self.save(updated)
       }
     }
@@ -414,11 +367,12 @@ impl SessionStore for InProcessSessionStore {
         Ok(())
       } else {
         val updated = SessionData(
-          id             = data.id,
-          entries        = newMap(),
-          createdAt      = data.createdAt,
+          id = data.id,
+          entries = newMap(),
+          createdAt = data.createdAt,
           lastAccessedAt = nowMs(),
-          expiresAt      = data.expiresAt)
+          expiresAt = data.expiresAt
+        )
         self.save(updated)
       }
     }
@@ -430,9 +384,7 @@ impl SessionStore for InProcessSessionStore {
 // runtime: LYRIC_CONFIG_SESSION_TTLSECONDS, LYRIC_CONFIG_SESSION_COOKIENAME,
 // LYRIC_CONFIG_SESSION_SECURE, LYRIC_CONFIG_SESSION_HTTPONLY,
 // LYRIC_CONFIG_SESSION_SAMESITE, LYRIC_CONFIG_REDISSESSION_URL.
-
 // ─── Factory ──────────────────────────────────────────────────────────────────
-
 /// Connect to Redis and return a distributed session store.
 /// Reads connection settings from the RedisSession config block.
 ///
@@ -441,55 +393,54 @@ impl SessionStore for InProcessSessionStore {
 /// echo back (StackExchange.Redis sometimes embeds the connect string
 /// in `RedisConnectionException`) cannot leak the embedded password
 /// into the caller's error surface (#357 / #477 / #1071).
-@stable(since="0.1")
+@stable(since = "0.1")
 @cfg(feature = "redis")
 pub func connectRedis(): Result[SessionStore, SessionError] {
   match SessionKernel.connect("", "session:") {
     case Ok(handle) -> Ok(NativeSessionStore(storeHandle = handle))
-    case Err(err)   -> Err(SessionError(message = maskUrlCredentials(err), code = "CONNECT_FAILED"))
+    case Err(err) -> Err(SessionError(message = maskUrlCredentials(err), code = "CONNECT_FAILED"))
   }
 }
 
 /// Create an in-process session store using the configured TTL.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func inMemory(): InProcessSessionStore {
   return InProcessSessionStore(sessions = newMap(), ttlSeconds = 3600i64)
 }
 
 // ─── Convenience public API ───────────────────────────────────────────────────
-
 /// Create a new empty session and return its ID.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func create(store: in SessionStore): Result[String, SessionError] {
   return store.create()
 }
 
 /// Load a session by ID.  Returns None if the session does not exist or has expired.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func load(store: in SessionStore, sessionId: in String): Result[Option[SessionData], SessionError] {
   return store.load(sessionId)
 }
 
 /// Persist a session.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func save(store: in SessionStore, data: in SessionData): Result[Unit, SessionError] {
   return store.save(data)
 }
 
 /// Permanently remove a session.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func destroy(store: in SessionStore, sessionId: in String): Result[Unit, SessionError] {
   return store.destroy(sessionId)
 }
 
 /// Refresh a session's expiry without changing its contents.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func touch(store: in SessionStore, sessionId: in String): Result[Unit, SessionError] {
   return store.touch(sessionId)
 }
 
 /// Return the value for a key in the session.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func get(store: in SessionStore, sessionId: in String, key: in String): Result[Option[String], SessionError] {
   return store.get(sessionId, key)
 }
@@ -500,7 +451,7 @@ pub func get(store: in SessionStore, sessionId: in String, key: in String): Resu
 /// when `sessionId` does not name an existing session — `set()` does
 /// not auto-create.  This is intentional: see #316 (session
 /// fixation).  Callers must obtain a fresh id from `create()` first.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func set(store: in SessionStore, sessionId: in String, key: in String, value: in String): Result[Unit, SessionError] {
   return store.set(sessionId, key, value)
 }
@@ -512,7 +463,7 @@ pub func set(store: in SessionStore, sessionId: in String, key: in String, value
 /// the standard "delete-of-nothing-is-a-no-op" convention.  Contrast
 /// with `set()`, which surfaces `SESSION_NOT_FOUND` so a fixation
 /// attempt cannot create the missing session as a side-effect.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func delete(store: in SessionStore, sessionId: in String, key: in String): Result[Unit, SessionError] {
   return store.delete(sessionId, key)
 }
@@ -521,13 +472,12 @@ pub func delete(store: in SessionStore, sessionId: in String, key: in String): R
 ///
 /// Like `delete()`, returns `Ok(())` when `sessionId` does not name
 /// an existing session.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func clear(store: in SessionStore, sessionId: in String): Result[Unit, SessionError] {
   return store.clear(sessionId)
 }
 
 // ─── URL credential masking ───────────────────────────────────────────────────
-
 /// Replace the password portion of a `scheme://user:password@host[:port][/...]`
 /// URL with `***`, leaving every other component intact.
 ///
@@ -546,14 +496,16 @@ pub func clear(store: in SessionStore, sessionId: in String): Result[Unit, Sessi
 ///   `redis://host:6379/0`              → `redis://host:6379/0`
 ///   `not a url`                        → `not a url`
 @pure
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func maskUrlCredentials(url: in String): String {
   // Find the scheme separator.
   match indexOf(url, "://") {
     case None -> url
     case Some(schemeEnd) -> {
       val authStart = schemeEnd + 3
-      if authStart >= url.length { return url }
+      if authStart >= url.length {
+        return url
+      }
       val tail = substring(url, authStart)
       // Authority component runs until the path/query/fragment marker.
       // Pin the boundary so an `@` in a later path segment can't be
@@ -567,20 +519,20 @@ pub func maskUrlCredentials(url: in String): String {
       while mi < markers.count {
         match indexOf(tail, markers[mi]) {
           case Some(n) -> if n < authEnd { authEnd = n }
-          case None    -> ()
+          case None -> ()
         }
         mi = mi + 1
       }
       val authority = substring(tail, 0, authEnd)
-      val rest      = substring(tail, authEnd)
+      val rest = substring(tail, authEnd)
       // userinfo terminates at the first `@` inside the authority.
       match indexOf(authority, "@") {
-        case None       -> url   // no credentials present
+        case None -> url   // no credentials present
         case Some(atIx) -> {
           val userinfo = substring(authority, 0, atIx)
           val hostport = substring(authority, atIx)   // includes the `@`
           match indexOf(userinfo, ":") {
-            case None        -> url   // username-only, no password to mask
+            case None -> url   // username-only, no password to mask
             case Some(colon) -> {
               val user = substring(userinfo, 0, colon)
               return substring(url, 0, schemeEnd + 3) + user + ":***" + hostport + rest
@@ -593,7 +545,6 @@ pub func maskUrlCredentials(url: in String): String {
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
-
 // Current time in epoch milliseconds.
 func nowMs(): Long {
   return nowEpochMillis()
@@ -623,50 +574,45 @@ func serializeSessionJson(data: in SessionData): String {
   var first = true
   for k in data.entries {
     val v = data.entries[k]
-    if not first { entriesJson = entriesJson + "," }
+    if not first {
+      entriesJson = entriesJson + ","
+    }
     entriesJson = entriesJson + "\"" + jsonEscapeStr(k) + "\":\"" + jsonEscapeStr(v) + "\""
     first = false
   }
   entriesJson = entriesJson + "}"
-  return "{\"id\":\"" + jsonEscapeStr(data.id) + "\","
-       + "\"createdAt\":" + data.createdAt.toString() + ","
-       + "\"lastAccessedAt\":" + data.lastAccessedAt.toString() + ","
-       + "\"expiresAt\":" + data.expiresAt.toString() + ","
-       + "\"entries\":" + entriesJson + "}"
+  return "{\"id\":\"" + jsonEscapeStr(data.id) + "\"," + "\"createdAt\":" + data.createdAt.toString() + "," +
+    "\"lastAccessedAt\":" +
+    data.lastAccessedAt.toString() +
+    "," +
+    "\"expiresAt\":" +
+    data.expiresAt.toString() +
+    "," +
+    "\"entries\":" +
+    entriesJson +
+    "}"
 }
 
 // Deserialize the SessionData protocol format returned by Session.Kernel.Net.load.
 // Wire format: {"id":"...","createdAt":N,"lastAccessedAt":N,"expiresAt":N,"entries":{...}}
 @cfg(feature = "redis")
 func parseSessionJson(sessionId: in String, json: in String): SessionData {
-  val doc  = parseJson(json)
+  val doc = parseJson(json)
   val root = rootElement(doc)
-  var createdAt:      Long              = 0i64
-  var lastAccessedAt: Long              = 0i64
-  var expiresAt:      Long              = 0i64
-  var entries:        Map[String, String] = newMap()
+  var createdAt: Long = 0i64
+  var lastAccessedAt: Long = 0i64
+  var expiresAt: Long = 0i64
+  var entries: Map[String, String] = newMap()
   match tryGetProperty(root, "createdAt") {
-    case Some(v) ->
-      match tryGetLong(v) {
-        case Some(n) -> { createdAt = n }
-        case None    -> ()
-      }
+    case Some(v) -> match tryGetLong(v) { case Some(n) -> { createdAt = n }; case None -> () }
     case None -> ()
   }
   match tryGetProperty(root, "lastAccessedAt") {
-    case Some(v) ->
-      match tryGetLong(v) {
-        case Some(n) -> { lastAccessedAt = n }
-        case None    -> ()
-      }
+    case Some(v) -> match tryGetLong(v) { case Some(n) -> { lastAccessedAt = n }; case None -> () }
     case None -> ()
   }
   match tryGetProperty(root, "expiresAt") {
-    case Some(v) ->
-      match tryGetLong(v) {
-        case Some(n) -> { expiresAt = n }
-        case None    -> ()
-      }
+    case Some(v) -> match tryGetLong(v) { case Some(n) -> { expiresAt = n }; case None -> () }
     case None -> ()
   }
   match tryGetProperty(root, "entries") {
@@ -674,17 +620,18 @@ func parseSessionJson(sessionId: in String, json: in String): SessionData {
       var en = enumerateObject(obj)
       while objectMoveNext(en) {
         val prop = objectCurrent(en)
-        val k    = propertyName(prop)
-        val v    = getString(propertyValue(prop))
+        val k = propertyName(prop)
+        val v = getString(propertyValue(prop))
         entries[k] = v
       }
     }
     case None -> ()
   }
   return SessionData(
-    id             = sessionId,
-    entries        = entries,
-    createdAt      = createdAt,
+    id = sessionId,
+    entries = entries,
+    createdAt = createdAt,
     lastAccessedAt = lastAccessedAt,
-    expiresAt      = expiresAt)
+    expiresAt = expiresAt
+  )
 }

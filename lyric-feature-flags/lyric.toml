@@ -15,8 +15,9 @@ output_assembly = "Flags.dll"
 "Flags.Aspects"    = "src/flags_aspects.l"
 "Flags.Kernel.Net" = "src/_kernel/net"
 
+[project.tests]
+"Flags.FlagsTests" = "tests/flags_tests.l"
+
 [features]
 remote = []   # Remote flag store via HTTP polling (custom endpoint, LaunchDarkly, Unleash)
 
-[dependencies]
-"Lyric.Stdlib" = { path = "../lyric-stdlib" }

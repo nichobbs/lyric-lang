@@ -1,72 +1,71 @@
-// lyric/mono.l — self-hosted monomorphizer (Phase 5 §M5.2).
-//
-// Call-site monomorphizer for generic functions.  Specialises same-package
-// generic functions plus any caller-supplied "imported" generic decls
-// (cross-package, opt-in via `monoFileWithImports`) into concrete copies
-// the self-hosted PE/JVM emitter can lower without paramaterised IL.
-//
-// Algorithm:
-//   1. Collect all generic IFunc items from the SourceFile into a lookup map.
-//      Merge any caller-supplied `importedGenDecls` into the same lookup so
-//      cross-package call sites become eligible.
-//   2. Walk non-generic function bodies, rewriting call sites that reference
-//      known generic functions.  At each such call site, infer the concrete
-//      type arguments by unifying the function's TypeExpr parameter types
-//      against the known types of the argument expressions (literals and
-//      variables declared with explicit type annotations).  Explicit
-//      `f[T1, …](args)` type applications bypass inference and carry both
-//      `TAType` and `TAValue` arguments straight into the substitution maps.
-//   3. If all type parameters and value parameters are resolved, compute a
-//      mangled specialised name (e.g. `mapFoo__Int__String`,
-//      `ones__V_3`), queue a SpecRequest, and rewrite the call to use the
-//      specialised name.
-//   4. Process the worklist: for each SpecRequest, substitute the type and
-//      value vars in the generic FunctionDecl's param/ret TypeExprs *and*
-//      in its body, validate any declared `where` bounds against the
-//      substituted types, then walk the specialised body (which may
-//      enqueue further SpecRequests for nested generic calls).
-//   5. Return a MonoResult carrying the rewritten SourceFile (generic IFunc
-//      items removed, specialised items appended) and a rewrites map.
-//
-// Capabilities (#858, docs/41 §9 Band 5):
-//   • Type-level generics (`GPType`) — full call-site inference + explicit
-//     type-app specialisation.
-//   • Value-level generics (`GPValue`) — explicit-type-app specialisation
-//     only.  Each unique value (literal or path) produces a distinct
-//     specialisation keyed by its source text.  Value-param references
-//     are substituted inside the body (EPath sites + TypeArg shapes such
-//     as `Array[Int, N]` / `Foo[Int, N]`).
-//   • Cross-package generics — accepted via `monoFileWithImports`; the
-//     specialised copy is appended to the user's file.  Soundness depends
-//     on the imported function's body referencing only items the user's
-//     compilation unit can resolve (BCL primitives, imported types,
-//     other already-specialised generics).  The wider Band 6 plumbing
-//     of `Lyric.RestoredPackages` is what unlocks consuming non-trivial
-//     stdlib generics across the boundary.
-//   • Constraint validation — best-effort: when a `where T: Marker` bound
-//     is declared and `T` substitutes to a primitive, the well-known
-//     marker set (`Equals`, `Hash`, `Show`, `Ord`, `Compare`) is checked
-//     and a `M0001` diagnostic is emitted on confirmed mismatch.  Unknown
-//     concrete types accept silently (best-effort) since cross-package
-//     trait dispatch information is not yet plumbed through.
-//
-// Limitations (still Phase 5 bootstrap grade):
-//   • Type inference covers literals, explicitly-annotated variables,
-//     function parameters, structural binary ops, same-package
-//     function-call returns (after substituting inferred or explicit
-//     type args, including default methods on impl / interface
-//     blocks), and field projections into same-package records.
-//     Lambdas, BCL method returns, and impl-block dispatch via the
-//     type-class targeting layer still fall through to un-specialised
-//     — those call sites stay generic in the emitted IL, which is
-//     correct only for imported generics (which use real CLR
-//     generics).
-//   • Constraint dispatch (re-routing a `T.compare(x)` call inside a
-//     specialised body to the concrete type's compare implementation) is
-//     not yet implemented — it relies on cross-package symbol resolution
-//     (`docs/41` §9 Band 6) and the trait dispatch table emitted by the
-//     F# bootstrap compiler today.
-
+//! lyric/mono.l — self-hosted monomorphizer (Phase 5 §M5.2).
+//!
+//! Call-site monomorphizer for generic functions.  Specialises same-package
+//! generic functions plus any caller-supplied "imported" generic decls
+//! (cross-package, opt-in via `monoFileWithImports`) into concrete copies
+//! the self-hosted PE/JVM emitter can lower without paramaterised IL.
+//!
+//! Algorithm:
+//!   1. Collect all generic IFunc items from the SourceFile into a lookup map.
+//!      Merge any caller-supplied `importedGenDecls` into the same lookup so
+//!      cross-package call sites become eligible.
+//!   2. Walk non-generic function bodies, rewriting call sites that reference
+//!      known generic functions.  At each such call site, infer the concrete
+//!      type arguments by unifying the function's TypeExpr parameter types
+//!      against the known types of the argument expressions (literals and
+//!      variables declared with explicit type annotations).  Explicit
+//!      `f[T1, …](args)` type applications bypass inference and carry both
+//!      `TAType` and `TAValue` arguments straight into the substitution maps.
+//!   3. If all type parameters and value parameters are resolved, compute a
+//!      mangled specialised name (e.g. `mapFoo__Int__String`,
+//!      `ones__V_3`), queue a SpecRequest, and rewrite the call to use the
+//!      specialised name.
+//!   4. Process the worklist: for each SpecRequest, substitute the type and
+//!      value vars in the generic FunctionDecl's param/ret TypeExprs *and*
+//!      in its body, validate any declared `where` bounds against the
+//!      substituted types, then walk the specialised body (which may
+//!      enqueue further SpecRequests for nested generic calls).
+//!   5. Return a MonoResult carrying the rewritten SourceFile (generic IFunc
+//!      items removed, specialised items appended) and a rewrites map.
+//!
+//! Capabilities (#858, docs/41 §9 Band 5):
+//!   • Type-level generics (`GPType`) — full call-site inference + explicit
+//!     type-app specialisation.
+//!   • Value-level generics (`GPValue`) — explicit-type-app specialisation
+//!     only.  Each unique value (literal or path) produces a distinct
+//!     specialisation keyed by its source text.  Value-param references
+//!     are substituted inside the body (EPath sites + TypeArg shapes such
+//!     as `Array[Int, N]` / `Foo[Int, N]`).
+//!   • Cross-package generics — accepted via `monoFileWithImports`; the
+//!     specialised copy is appended to the user's file.  Soundness depends
+//!     on the imported function's body referencing only items the user's
+//!     compilation unit can resolve (BCL primitives, imported types,
+//!     other already-specialised generics).  The wider Band 6 plumbing
+//!     of `Lyric.RestoredPackages` is what unlocks consuming non-trivial
+//!     stdlib generics across the boundary.
+//!   • Constraint validation — best-effort: when a `where T: Marker` bound
+//!     is declared and `T` substitutes to a primitive, the well-known
+//!     marker set (`Equals`, `Hash`, `Show`, `Ord`, `Compare`) is checked
+//!     and a `M0001` diagnostic is emitted on confirmed mismatch.  Unknown
+//!     concrete types accept silently (best-effort) since cross-package
+//!     trait dispatch information is not yet plumbed through.
+//!
+//! Limitations (still Phase 5 bootstrap grade):
+//!   • Type inference covers literals, explicitly-annotated variables,
+//!     function parameters, structural binary ops, same-package
+//!     function-call returns (after substituting inferred or explicit
+//!     type args, including default methods on impl / interface
+//!     blocks), and field projections into same-package records.
+//!     Lambdas, BCL method returns, and impl-block dispatch via the
+//!     type-class targeting layer still fall through to un-specialised
+//!     — those call sites stay generic in the emitted IL, which is
+//!     correct only for imported generics (which use real CLR
+//!     generics).
+//!   • Constraint dispatch (re-routing a `T.compare(x)` call inside a
+//!     specialised body to the concrete type's compare implementation) is
+//!     not yet implemented — it relies on cross-package symbol resolution
+//!     (`docs/41` §9 Band 6) and the trait dispatch table emitted by the
+//!     F# bootstrap compiler today.
 package Lyric.Mono
 
 import Std.Core
@@ -78,16 +77,15 @@ import Lyric.Parser
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public types
 // ─────────────────────────────────────────────────────────────────────────────
-
 /// Result of the monomorphisation pass.
 pub record MonoResult {
   /// Rewritten SourceFile: generic IFunc items are removed, specialised
   /// IFunc items are appended, and call sites in non-generic items are
   /// rewritten to use the specialised names.
-  file:        SourceFile
+  file: SourceFile
   /// Maps generic function names to the last-seen specialised name (for
   /// downstream diagnostics; not needed for correctness).
-  rewrites:    Map[String, String]
+  rewrites: Map[String, String]
   /// Monomorphisation diagnostics — populated when the pass detects a
   /// where-bound violation (`M0001`: a concrete type argument fails its
   /// declared `where T: Marker` constraint).  Other failure modes (e.g.
@@ -97,52 +95,60 @@ pub record MonoResult {
   /// bridges route this list through `reportAndAbort` so M0001s abort
   /// codegen the same way parse/type-check/mode-check diagnostics do.
   diagnostics: List[Diagnostic]
+  // ─────────────────────────────────────────────────────────────────────────────
+  // §2. Internal state
+  // ─────────────────────────────────────────────────────────────────────────────
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// §2. Internal state
-// ─────────────────────────────────────────────────────────────────────────────
-
 record SpecRequest {
-  specName:   String
-  baseDecl:   FunctionDecl
-  subst:      Map[String, TypeExpr]
+  specName: String
+  baseDecl: FunctionDecl
+  subst: Map[String, TypeExpr]
   valueSubst: Map[String, Expr]
-  callSpan:   Span
+  callSpan: Span
 }
 
 record MonoState {
   /// Generic functions defined in this package (callable from anywhere
   /// in the file).  Used to look up specialisation candidates.
-  genDecls:    Map[String, FunctionDecl]
+  genDecls: Map[String, FunctionDecl]
   /// All functions visible to the file (same-package + cross-package
   /// imports merged through `monoFileWithImports`).  Used by
   /// `inferExprTE` to look up the return type of a callee when
   /// inferring type arguments through nested calls (#349).
-  funcDecls:   Map[String, FunctionDecl]
+  funcDecls: Map[String, FunctionDecl]
   /// Same-package record decls (and exposed records), keyed by simple
   /// name.  Used by `inferExprTE` to resolve field projections
   /// (`recv.field`) to the field's declared TypeExpr, after
   /// substituting the record's generic parameters with the receiver's
   /// concrete type arguments (#349).
   recordDecls: Map[String, RecordDecl]
-  seenSpecs:   Map[String, Bool]
-  allSpecs:    List[SpecRequest]
-  diags:       List[Diagnostic]
+  /// Interface decls visible to the file (same-package + cross-package
+  /// imports), keyed by simple name.  Used by `inferExprTE` to resolve a
+  /// method-call return type (`recv.method(...)`) when `recv` is an
+  /// interface-typed value, after substituting the interface's generic
+  /// parameters with the receiver's concrete type arguments (#3813).
+  ifaceDecls: Map[String, InterfaceDecl]
+  seenSpecs: Map[String, Bool]
+  allSpecs: List[SpecRequest]
+  diags: List[Diagnostic]
 }
 
 func newMonoState(
-  genDecls:    in Map[String, FunctionDecl],
-  funcDecls:   in Map[String, FunctionDecl],
-  recordDecls: in Map[String, RecordDecl]
+  genDecls: in Map[String, FunctionDecl],
+  funcDecls: in Map[String, FunctionDecl],
+  recordDecls: in Map[String, RecordDecl],
+  ifaceDecls: in Map[String, InterfaceDecl],
 ): MonoState {
   MonoState(
-    genDecls    = genDecls,
-    funcDecls   = funcDecls,
+    genDecls = genDecls,
+    funcDecls = funcDecls,
     recordDecls = recordDecls,
-    seenSpecs   = newMap(),
-    allSpecs    = newList(),
-    diags       = newList())
+    ifaceDecls = ifaceDecls,
+    seenSpecs = newMap(),
+    allSpecs = newList(),
+    diags = newList()
+  )
 }
 
 // #349: collect generic IFunc methods nested inside `interface I { … }`
@@ -151,9 +157,9 @@ func newMonoState(
 // through CLR runtime generics.  Only default-bodied (`IMFunc`)
 // methods are candidates; pure signatures (`IMSig`) are abstract.
 func collectIfaceGenerics(
-  decl:      in InterfaceDecl,
-  genDecls:  in Map[String, FunctionDecl],
-  funcDecls: in Map[String, FunctionDecl]
+  decl: in InterfaceDecl,
+  genDecls: in Map[String, FunctionDecl],
+  funcDecls: in Map[String, FunctionDecl],
 ): Unit {
   var i = 0
   while i < decl.members.count {
@@ -180,9 +186,9 @@ func collectIfaceGenerics(
 // #349: collect generic IFunc methods nested inside `impl T for X { … }`
 // blocks.  Mirror of collectIfaceGenerics — see that comment.
 func collectImplGenerics(
-  decl:      in ImplDecl,
-  genDecls:  in Map[String, FunctionDecl],
-  funcDecls: in Map[String, FunctionDecl]
+  decl: in ImplDecl,
+  genDecls: in Map[String, FunctionDecl],
+  funcDecls: in Map[String, FunctionDecl],
 ): Unit {
   var i = 0
   while i < decl.members.count {
@@ -209,9 +215,13 @@ func collectImplGenerics(
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Synthetic span / path helpers
 // ─────────────────────────────────────────────────────────────────────────────
+func synPos(): Position {
+  Position(offset = 0, line = 1, column = 1)
+}
 
-func synPos(): Position { Position(offset = 0, line = 1, column = 1) }
-func synSpan(): Span { Span(startPos = synPos(), endPos = synPos()) }
+func synSpan(): Span {
+  Span(startPos = synPos(), endPos = synPos())
+}
 
 func singleSegPath(name: in String): ModulePath {
   val segs: List[String] = newList()
@@ -229,22 +239,21 @@ func singleSegPathExpr(name: in String, span: in Span): Expr {
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. TypeExpr key (for mangled specialisation names)
 // ─────────────────────────────────────────────────────────────────────────────
-
 func typeExprKey(te: in TypeExpr): String {
   match te.kind {
-    case TRef(path)         -> pathSegsKey(path.segments)
+    case TRef(path) -> pathSegsKey(path.segments)
     case TGenericApp(h, gargs) -> pathSegsKey(h.segments) + "_" + typeArgListKey(gargs)
-    case TUnit              -> "Unit"
-    case TNever             -> "Never"
-    case TSelf              -> "Self"
-    case TArray(_, elem)    -> "Arr_" + typeExprKey(elem)
-    case TSlice(elem)       -> "Slice_" + typeExprKey(elem)
-    case TNullable(inner)   -> "Nullable_" + typeExprKey(inner)
-    case TTuple(ts)         -> "Tup_" + typeExprListKey(ts)
-    case TFunction(ps, r)   -> "Fn_" + typeExprListKey(ps) + "_" + typeExprKey(r)
-    case TParen(inner)      -> typeExprKey(inner)
-    case TRefined(p, _)     -> pathSegsKey(p.segments)
-    case TError             -> "Err"
+    case TUnit -> "Unit"
+    case TNever -> "Never"
+    case TSelf -> "Self"
+    case TArray(_, elem) -> "Arr_" + typeExprKey(elem)
+    case TSlice(elem) -> "Slice_" + typeExprKey(elem)
+    case TNullable(inner) -> "Nullable_" + typeExprKey(inner)
+    case TTuple(ts) -> "Tup_" + typeExprListKey(ts)
+    case TFunction(ps, r) -> "Fn_" + typeExprListKey(ps) + "_" + typeExprKey(r)
+    case TParen(inner) -> typeExprKey(inner)
+    case TRefined(p, _) -> pathSegsKey(p.segments)
+    case TError -> "Err"
   }
 }
 
@@ -252,7 +261,9 @@ func pathSegsKey(segs: in List[String]): String {
   var acc = ""
   var i = 0
   while i < segs.count {
-    if i > 0 { acc = acc + "." }
+    if i > 0 {
+      acc = acc + "."
+    }
     acc = acc + segs[i]
     i = i + 1
   }
@@ -263,10 +274,16 @@ func typeArgListKey(args: in List[TypeArg]): String {
   var acc = ""
   var i = 0
   while i < args.count {
-    if i > 0 { acc = acc + "_" }
+    if i > 0 {
+      acc = acc + "_"
+    }
     match args[i] {
-      case TAType(te) -> { acc = acc + typeExprKey(te) }
-      case TAValue(e) -> { acc = acc + "V" + valueExprKey(e) }
+      case TAType(te) -> {
+        acc = acc + typeExprKey(te)
+      }
+      case TAValue(e) -> {
+        acc = acc + "V" + valueExprKey(e)
+      }
     }
     i = i + 1
   }
@@ -278,20 +295,64 @@ func typeArgListKey(args: in List[TypeArg]): String {
 // `TAValue` source (integer/bool/char/string) plus single-segment paths
 // (`EPath([N])`) used to forward an outer value generic into a nested
 // call.  Falls back to "Vx" for shapes mono can't render verbatim — the
+// Flatten a pure path expression (`EPath` / nested `EMember` over `EPath`)
+// to its dotted-segment list.  Returns an empty list as soon as a non-path
+// node is hit, so the result is safe to test with `count > 0` for "this
+// looked like a qualified path" (issue #3852-adjacent).
+func flattenPathExprSegsMono(e: in Expr): List[String] {
+  match e.kind {
+    case EPath(path) -> {
+      val segs: List[String] = newList()
+      var i = 0
+      while i < path.segments.count {
+        segs.add(path.segments[i])
+        i = i + 1
+      }
+      segs
+    }
+    case EMember(receiver, memberName) -> {
+      val pre = flattenPathExprSegsMono(receiver)
+      if pre.count == 0 {
+        return newList()
+      }
+      val segs: List[String] = newList()
+      var i = 0
+      while i < pre.count {
+        segs.add(pre[i])
+        i = i + 1
+      }
+      segs.add(memberName)
+      segs
+    }
+    case _ -> newList()
+  }
+}
+
+// True iff `state.funcDecls` has an entry for `name` whose declared parameter
+// count exactly matches `callArity`.  Used by `inferCallReturnTE`'s qualified-
+// call fall-through to guard against same-named functions in a different
+// package having an incompatible signature (issue #3852-adjacent).
+func funcDeclArityMatches(state: in MonoState, name: in String, callArity: in Int): Bool {
+  match mapGet(state.funcDecls, name) {
+    case None -> true
+    case Some(decl) -> decl.params.count == callArity
+  }
+}
+
 // resulting specialisation still has a unique name within the file
 // because callers de-duplicate via `state.seenSpecs`.
 func valueExprKey(e: in Expr): String {
   match e.kind {
     case ELiteral(lit) -> {
       match lit {
-        case LInt(value, _)   -> longLitKey(value)
-        case LBool(b)         -> if b { "true" } else { "false" }
-        case LChar(cp)        -> "c" + toString(cp)
-        case LString(s)       -> "s" + toString(s.length)
+        case LInt(value, _, _) -> longLitKey(value)
+        case LBool(b) -> if b { "true" } else { "false" }
+        case LChar(cp) -> "c" + toString(cp)
+        case LString(s) -> "s" + toString(s.length)
         case LTripleString(s) -> "s" + toString(s.length)
-        case LRawString(s)    -> "s" + toString(s.length)
-        case LFloat(_, _)     -> "f"
-        case LUnit            -> "u"
+        case LRawString(s) -> "s" + toString(s.length)
+        case LFloat(_, _, _) -> "f"
+        case LUnit -> "u"
       }
     }
     case EPath(path) -> pathSegsKey(path.segments)
@@ -314,7 +375,9 @@ func typeExprListKey(ts: in List[TypeExpr]): String {
   var acc = ""
   var i = 0
   while i < ts.count {
-    if i > 0 { acc = acc + "_" }
+    if i > 0 {
+      acc = acc + "_"
+    }
     acc = acc + typeExprKey(ts[i])
     i = i + 1
   }
@@ -325,21 +388,18 @@ func typeExprListKey(ts: in List[TypeExpr]): String {
 // §5. TypeExpr substitution (type-var name → concrete TypeExpr,
 //     value-var name → concrete Expr)
 // ─────────────────────────────────────────────────────────────────────────────
-
-func substTypeExpr(
-  subst:      in Map[String, TypeExpr],
-  valueSubst: in Map[String, Expr],
-  te:         in TypeExpr
-): TypeExpr {
+func substTypeExpr(subst: in Map[String, TypeExpr], valueSubst: in Map[String, Expr], te: in TypeExpr): TypeExpr {
   val s = te.span
   match te.kind {
     case TRef(path) -> {
       if path.segments.count == 1 {
         match mapGet(subst, path.segments[0]) {
           case Some(concrete) -> concrete
-          case None           -> te
+          case None -> te
         }
-      } else { te }
+      } else {
+        te
+      }
     }
     case TGenericApp(h, args) -> {
       val newArgs: List[TypeArg] = newList()
@@ -353,25 +413,25 @@ func substTypeExpr(
     case TTuple(ts) -> {
       val newTs: List[TypeExpr] = newList()
       var i = 0
-      while i < ts.count { newTs.add(substTypeExpr(subst, valueSubst, ts[i])); i = i + 1 }
+      while i < ts.count {
+        newTs.add(substTypeExpr(subst, valueSubst, ts[i]))
+        i = i + 1
+      }
       TypeExpr(kind = TTuple(types = newTs), span = s)
     }
-    case TNullable(inner) ->
-      TypeExpr(kind = TNullable(inner = substTypeExpr(subst, valueSubst, inner)), span = s)
-    case TSlice(elem) ->
-      TypeExpr(kind = TSlice(element = substTypeExpr(subst, valueSubst, elem)), span = s)
-    case TArray(sz, elem) ->
-      TypeExpr(kind = TArray(
-        size    = substTypeArg(subst, valueSubst, sz),
-        element = substTypeExpr(subst, valueSubst, elem)), span = s)
+    case TNullable(inner) -> TypeExpr(kind = TNullable(inner = substTypeExpr(subst, valueSubst, inner)), span = s)
+    case TSlice(elem) -> TypeExpr(kind = TSlice(element = substTypeExpr(subst, valueSubst, elem)), span = s)
+    case TArray(sz, elem) -> TypeExpr(kind = TArray(size = substTypeArg(subst, valueSubst, sz), element = substTypeExpr(subst, valueSubst, elem)), span = s)
     case TFunction(ps, r) -> {
       val newPs: List[TypeExpr] = newList()
       var i = 0
-      while i < ps.count { newPs.add(substTypeExpr(subst, valueSubst, ps[i])); i = i + 1 }
+      while i < ps.count {
+        newPs.add(substTypeExpr(subst, valueSubst, ps[i]))
+        i = i + 1
+      }
       TypeExpr(kind = TFunction(parameters = newPs, retTy = substTypeExpr(subst, valueSubst, r)), span = s)
     }
-    case TParen(inner) ->
-      TypeExpr(kind = TParen(inner = substTypeExpr(subst, valueSubst, inner)), span = s)
+    case TParen(inner) -> TypeExpr(kind = TParen(inner = substTypeExpr(subst, valueSubst, inner)), span = s)
     case _ -> te
   }
 }
@@ -381,16 +441,10 @@ func substTypeExpr(
 // may reference a value-generic parameter (`Array[Int, N]` shape); we
 // rewrite that Expr via `substExprValue` so the specialised TypeArg
 // carries the substituted concrete value.
-func substTypeArg(
-  subst:      in Map[String, TypeExpr],
-  valueSubst: in Map[String, Expr],
-  arg:        in TypeArg
-): TypeArg {
+func substTypeArg(subst: in Map[String, TypeExpr], valueSubst: in Map[String, Expr], arg: in TypeArg): TypeArg {
   match arg {
-    case TAType(inner) ->
-      TAType(ty = substTypeExpr(subst, valueSubst, inner))
-    case TAValue(e)    ->
-      TAValue(expr = substExprValue(valueSubst, e))
+    case TAType(inner) -> TAType(ty = substTypeExpr(subst, valueSubst, inner))
+    case TAValue(e) -> TAValue(expr = substExprValue(valueSubst, e))
   }
 }
 
@@ -411,57 +465,53 @@ func substExprValue(valueSubst: in Map[String, Expr], expr: in Expr): Expr {
       if path.segments.count == 1 {
         match mapGet(valueSubst, path.segments[0]) {
           case Some(replacement) -> replacement
-          case None              -> expr
+          case None -> expr
         }
-      } else { expr }
+      } else {
+        expr
+      }
     }
-    case EParen(inner) ->
-      Expr(kind = EParen(inner = substExprValue(valueSubst, inner)), span = s)
-    case EBinop(op, lhs, rhs) ->
-      Expr(kind = EBinop(
-        op  = op,
-        lhs = substExprValue(valueSubst, lhs),
-        rhs = substExprValue(valueSubst, rhs)), span = s)
-    case EPrefix(op, operand) ->
-      Expr(kind = EPrefix(op = op, operand = substExprValue(valueSubst, operand)), span = s)
-    case EMember(recv, name) ->
-      Expr(kind = EMember(
-        receiver   = substExprValue(valueSubst, recv),
-        memberName = name), span = s)
+    case EParen(inner) -> Expr(kind = EParen(inner = substExprValue(valueSubst, inner)), span = s)
+    case EBinop(op, lhs, rhs) -> Expr(kind = EBinop(op = op, lhs = substExprValue(valueSubst, lhs), rhs = substExprValue(valueSubst, rhs)), span = s)
+    case EPrefix(op, operand) -> Expr(kind = EPrefix(op = op, operand = substExprValue(valueSubst, operand)), span = s)
+    case EMember(recv, name) -> Expr(kind = EMember(receiver = substExprValue(valueSubst, recv), memberName = name), span = s)
     case EIndex(recv, idxs) -> {
       val newIdxs: List[Expr] = newList()
       var i = 0
-      while i < idxs.count { newIdxs.add(substExprValue(valueSubst, idxs[i])); i = i + 1 }
-      Expr(kind = EIndex(
-        receiver = substExprValue(valueSubst, recv),
-        indices  = newIdxs), span = s)
+      while i < idxs.count {
+        newIdxs.add(substExprValue(valueSubst, idxs[i]))
+        i = i + 1
+      }
+      Expr(kind = EIndex(receiver = substExprValue(valueSubst, recv), indices = newIdxs), span = s)
     }
     case ECall(fn, args) -> {
       val newArgs: List[CallArg] = newList()
       var i = 0
       while i < args.count {
         match args[i] {
-          case CAPositional(e)      ->
-            newArgs.add(CAPositional(expr = substExprValue(valueSubst, e)))
-          case CANamed(n, e, span)  ->
-            newArgs.add(CANamed(name = n, value = substExprValue(valueSubst, e), span = span))
+          case CAPositional(e) -> newArgs.add(CAPositional(expr = substExprValue(valueSubst, e)))
+          case CANamed(n, e, span) -> newArgs.add(CANamed(name = n, value = substExprValue(valueSubst, e), span = span))
         }
         i = i + 1
       }
-      Expr(kind = ECall(
-        fn   = substExprValue(valueSubst, fn),
-        args = newArgs), span = s)
+      Expr(kind = ECall(fn = substExprValue(valueSubst, fn), args = newArgs), span = s)
     }
     case ETuple(es) -> {
       val newEs: List[Expr] = newList()
       var i = 0
-      while i < es.count { newEs.add(substExprValue(valueSubst, es[i])); i = i + 1 }
+      while i < es.count {
+        newEs.add(substExprValue(valueSubst, es[i]))
+        i = i + 1
+      }
       Expr(kind = ETuple(exprs = newEs), span = s)
     }
     case EList(es) -> {
       val newEs: List[Expr] = newList()
       var i = 0
-      while i < es.count { newEs.add(substExprValue(valueSubst, es[i])); i = i + 1 }
+      while i < es.count {
+        newEs.add(substExprValue(valueSubst, es[i]))
+        i = i + 1
+      }
       Expr(kind = EList(exprs = newEs), span = s)
     }
     case ETypeApp(fn, targs) -> {
@@ -470,42 +520,38 @@ func substExprValue(valueSubst: in Map[String, Expr], expr: in Expr): Expr {
       while i < targs.count {
         match targs[i] {
           case TAType(inner) -> newTargs.add(TAType(ty = inner))
-          case TAValue(e)    -> newTargs.add(TAValue(expr = substExprValue(valueSubst, e)))
+          case TAValue(e) -> newTargs.add(TAValue(expr = substExprValue(valueSubst, e)))
         }
         i = i + 1
       }
-      Expr(kind = ETypeApp(
-        fn   = substExprValue(valueSubst, fn),
-        args = newTargs), span = s)
+      Expr(kind = ETypeApp(fn = substExprValue(valueSubst, fn), args = newTargs), span = s)
     }
-    case EAssign(target, op, value) ->
-      Expr(kind = EAssign(
-        target = substExprValue(valueSubst, target),
-        op     = op,
-        value  = substExprValue(valueSubst, value)), span = s)
-    case EAwait(inner) ->
-      Expr(kind = EAwait(inner = substExprValue(valueSubst, inner)), span = s)
-    case EYield(inner) ->
-      Expr(kind = EYield(inner = substExprValue(valueSubst, inner)), span = s)
-    case ESpawn(inner) ->
-      Expr(kind = ESpawn(inner = substExprValue(valueSubst, inner)), span = s)
-    case ETry(inner) ->
-      Expr(kind = ETry(inner = substExprValue(valueSubst, inner)), span = s)
-    case EPropagate(inner) ->
-      Expr(kind = EPropagate(inner = substExprValue(valueSubst, inner)), span = s)
+    case EAssign(target, op, value) -> Expr(kind = EAssign(target = substExprValue(valueSubst, target), op = op, value = substExprValue(valueSubst, value)), span = s)
+    case EAwait(inner) -> Expr(kind = EAwait(inner = substExprValue(valueSubst, inner)), span = s)
+    case EYield(inner) -> Expr(kind = EYield(inner = substExprValue(valueSubst, inner)), span = s)
+    case ESpawn(inner) -> Expr(kind = ESpawn(inner = substExprValue(valueSubst, inner)), span = s)
+    case ETry(inner) -> Expr(kind = ETry(inner = substExprValue(valueSubst, inner)), span = s)
+    case EPropagate(inner) -> Expr(kind = EPropagate(inner = substExprValue(valueSubst, inner)), span = s)
     case EIf(cond, thenB, elseB, form) -> {
       // Typed `var` + assignment, not a two-arm match: a bare-`None`
       // arm widens to `None<object>` and corrupts an else-less `if`.
       var newElse: Option[ExprOrBlock] = None
       match elseB {
-        case None    -> {}
-        case Some(e) -> { newElse = Some(value = substEOBValue(valueSubst, e)) }
+        case None -> {
+        }
+        case Some(e) -> {
+          newElse = Some(value = substEOBValue(valueSubst, e))
+        }
       }
-      Expr(kind = EIf(
-        cond       = substExprValue(valueSubst, cond),
-        thenBranch = substEOBValue(valueSubst, thenB),
-        elseBranch = newElse,
-        thenForm   = form), span = s)
+      Expr(
+        kind = EIf(
+          cond = substExprValue(valueSubst, cond),
+          thenBranch = substEOBValue(valueSubst, thenB),
+          elseBranch = newElse,
+          thenForm = form
+        ),
+        span = s
+      )
     }
     case EMatch(scrut, arms) -> {
       val newArms: List[MatchArm] = newList()
@@ -516,31 +562,29 @@ func substExprValue(valueSubst: in Map[String, Expr], expr: in Expr): Expr {
         // arm widens to `None<object>` and corrupts a guardless match arm.
         var newGuard: Option[Expr] = None
         match arm.guard {
-          case None    -> {}
-          case Some(g) -> { newGuard = Some(value = substExprValue(valueSubst, g)) }
+          case None -> {
+          }
+          case Some(g) -> {
+            newGuard = Some(value = substExprValue(valueSubst, g))
+          }
         }
-        newArms.add(MatchArm(
-          pattern = arm.pattern,
-          guard   = newGuard,
-          body    = substEOBValue(valueSubst, arm.body),
-          span    = arm.span))
+        newArms.add(
+          MatchArm(pattern = arm.pattern, guard = newGuard, body = substEOBValue(valueSubst, arm.body), span = arm.span)
+        )
         i = i + 1
       }
       Expr(kind = EMatch(scrutinee = substExprValue(valueSubst, scrut), arms = newArms), span = s)
     }
-    case EBlock(blk) ->
-      Expr(kind = EBlock(block = substBlockValue(valueSubst, blk)), span = s)
-    case EUnsafe(blk) ->
-      Expr(kind = EUnsafe(block = substBlockValue(valueSubst, blk)), span = s)
-    case ELambda(lparams, body) ->
-      Expr(kind = ELambda(lambdaParams = lparams, body = substBlockValue(valueSubst, body)), span = s)
+    case EBlock(blk) -> Expr(kind = EBlock(block = substBlockValue(valueSubst, blk)), span = s)
+    case EUnsafe(blk) -> Expr(kind = EUnsafe(block = substBlockValue(valueSubst, blk)), span = s)
+    case ELambda(lparams, body) -> Expr(kind = ELambda(lambdaParams = lparams, body = substBlockValue(valueSubst, body)), span = s)
     case EInterpolated(segs) -> {
       val newSegs: List[InterpolatedSegment] = newList()
       var i = 0
       while i < segs.count {
         match segs[i] {
           case ISText(t, sp) -> newSegs.add(ISText(text = t, span = sp))
-          case ISExpr(e)     -> newSegs.add(ISExpr(expr = substExprValue(valueSubst, e)))
+          case ISExpr(e) -> newSegs.add(ISExpr(expr = substExprValue(valueSubst, e)))
         }
         i = i + 1
       }
@@ -552,7 +596,7 @@ func substExprValue(valueSubst: in Map[String, Expr], expr: in Expr): Expr {
 
 func substEOBValue(valueSubst: in Map[String, Expr], eob: in ExprOrBlock): ExprOrBlock {
   match eob {
-    case EOBExpr(e)  -> EOBExpr(expr = substExprValue(valueSubst, e))
+    case EOBExpr(e) -> EOBExpr(expr = substExprValue(valueSubst, e))
     case EOBBlock(b) -> EOBBlock(block = substBlockValue(valueSubst, b))
   }
 }
@@ -570,67 +614,53 @@ func substBlockValue(valueSubst: in Map[String, Expr], blk: in Block): Block {
 func substStmtValue(valueSubst: in Map[String, Expr], stmt: in Statement): Statement {
   val s = stmt.span
   match stmt.kind {
-    case SLocal(binding) ->
-      Statement(kind = SLocal(binding = substBindingValue(valueSubst, binding)), span = s)
-    case SAssign(target, op, value) ->
-      Statement(kind = SAssign(
-        target = substExprValue(valueSubst, target),
-        op     = op,
-        value  = substExprValue(valueSubst, value)), span = s)
+    case SLocal(binding) -> Statement(kind = SLocal(binding = substBindingValue(valueSubst, binding)), span = s)
+    case SAssign(target, op, value) -> Statement(kind = SAssign(target = substExprValue(valueSubst, target), op = op, value = substExprValue(valueSubst, value)), span = s)
     case SReturn(opt) -> {
       // Typed `var` + assignment, not a two-arm match.
       var newOpt: Option[Expr] = None
       match opt {
-        case None    -> {}
-        case Some(e) -> { newOpt = Some(value = substExprValue(valueSubst, e)) }
+        case None -> {
+        }
+        case Some(e) -> {
+          newOpt = Some(value = substExprValue(valueSubst, e))
+        }
       }
       Statement(kind = SReturn(value = newOpt), span = s)
     }
-    case SThrow(e) ->
-      Statement(kind = SThrow(expr = substExprValue(valueSubst, e)), span = s)
-    case SExpr(e) ->
-      Statement(kind = SExpr(expr = substExprValue(valueSubst, e)), span = s)
-    case SWhile(lbl, cond, body) ->
-      Statement(kind = SWhile(
-        label = lbl,
-        cond  = substExprValue(valueSubst, cond),
-        body  = substBlockValue(valueSubst, body)), span = s)
-    case SFor(lbl, pat, iter, body) ->
-      Statement(kind = SFor(
-        label = lbl,
-        pat   = pat,
-        iter  = substExprValue(valueSubst, iter),
-        body  = substBlockValue(valueSubst, body)), span = s)
-    case SLoop(lbl, body) ->
-      Statement(kind = SLoop(label = lbl, body = substBlockValue(valueSubst, body)), span = s)
-    case SDefer(body) ->
-      Statement(kind = SDefer(body = substBlockValue(valueSubst, body)), span = s)
-    case SScope(lbl, body) ->
-      Statement(kind = SScope(binding = lbl, body = substBlockValue(valueSubst, body)), span = s)
-    case SInvariant(e) ->
-      Statement(kind = SInvariant(expr = substExprValue(valueSubst, e)), span = s)
-    case SRule(lhs, rhs) ->
-      Statement(kind = SRule(
-        lhs = substExprValue(valueSubst, lhs),
-        rhs = substExprValue(valueSubst, rhs)), span = s)
+    case SThrow(e) -> Statement(kind = SThrow(expr = substExprValue(valueSubst, e)), span = s)
+    case SExpr(e) -> Statement(kind = SExpr(expr = substExprValue(valueSubst, e)), span = s)
+    case SWhile(lbl, cond, body) -> Statement(kind = SWhile(label = lbl, cond = substExprValue(valueSubst, cond), body = substBlockValue(valueSubst, body)), span = s)
+    case SFor(lbl, pat, iter, body) -> Statement(kind = SFor(label = lbl, pat = pat, iter = substExprValue(valueSubst, iter), body = substBlockValue(valueSubst, body)), span = s)
+    case SLoop(lbl, body) -> Statement(kind = SLoop(label = lbl, body = substBlockValue(valueSubst, body)), span = s)
+    case SDefer(body) -> Statement(kind = SDefer(body = substBlockValue(valueSubst, body)), span = s)
+    case SScope(lbl, body) -> Statement(kind = SScope(binding = lbl, body = substBlockValue(valueSubst, body)), span = s)
+    case SInvariant(e) -> Statement(kind = SInvariant(expr = substExprValue(valueSubst, e)), span = s)
+    case SRule(lhs, rhs) -> Statement(kind = SRule(lhs = substExprValue(valueSubst, lhs), rhs = substExprValue(valueSubst, rhs)), span = s)
     case STry(body, catches, finally_) -> {
       val newBody = substBlockValue(valueSubst, body)
       val newCatches: List[CatchClause] = newList()
       var i = 0
       while i < catches.count {
         val cc = catches[i]
-        newCatches.add(CatchClause(
-          typeName = cc.typeName,
-          bindName = cc.bindName,
-          body     = substBlockValue(valueSubst, cc.body),
-          span     = cc.span))
+        newCatches.add(
+          CatchClause(
+            typeName = cc.typeName,
+            bindName = cc.bindName,
+            body = substBlockValue(valueSubst, cc.body),
+            span = cc.span
+          )
+        )
         i = i + 1
       }
       // Typed `var` + assignment, not a two-arm match.
       var newFinally: Option[Block] = None
       match finally_ {
-        case None     -> {}
-        case Some(fb) -> { newFinally = Some(value = substBlockValue(valueSubst, fb)) }
+        case None -> {
+        }
+        case Some(fb) -> {
+          newFinally = Some(value = substBlockValue(valueSubst, fb))
+        }
       }
       Statement(kind = STry(body = newBody, catches = newCatches, finally_ = newFinally), span = s)
     }
@@ -640,36 +670,32 @@ func substStmtValue(valueSubst: in Map[String, Expr], stmt: in Statement): State
 
 func substBindingValue(valueSubst: in Map[String, Expr], binding: in LocalBinding): LocalBinding {
   match binding {
-    case LBVal(pat, tyOpt, init) ->
-      LBVal(pat = pat, ty = tyOpt, init = substExprValue(valueSubst, init))
+    case LBVal(pat, tyOpt, init) -> LBVal(pat = pat, ty = tyOpt, init = substExprValue(valueSubst, init))
     case LBVar(name, tyOpt, initOpt) -> {
       // Typed `var` + assignment, not a two-arm match.
       var newInit: Option[Expr] = None
       match initOpt {
-        case None    -> {}
-        case Some(e) -> { newInit = Some(value = substExprValue(valueSubst, e)) }
+        case None -> {
+        }
+        case Some(e) -> {
+          newInit = Some(value = substExprValue(valueSubst, e))
+        }
       }
       LBVar(name = name, ty = tyOpt, init = newInit)
     }
-    case LBLet(name, tyOpt, init) ->
-      LBLet(name = name, ty = tyOpt, init = substExprValue(valueSubst, init))
+    case LBLet(name, tyOpt, init) -> LBLet(name = name, ty = tyOpt, init = substExprValue(valueSubst, init))
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §6. Unification — TypeExpr-level, structural, one-sided
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Unify `paramTE` (may contain TRef to a type param name listed in
 // `typeParams`) against `argTE` (concrete caller type).  Bindings are
 // accumulated in `subst` (map from type-param name → concrete TypeExpr).
 // Conflicts are silently ignored (first-binding wins).
-
 func unifyTE(
-  typeParams: in List[String],
-  paramTE:    in TypeExpr,
-  argTE:      in TypeExpr,
-  subst:      in Map[String, TypeExpr]
+  typeParams: in List[String], paramTE: in TypeExpr, argTE: in TypeExpr, subst: in Map[String, TypeExpr]
 ): Unit {
   match paramTE.kind {
     case TRef(path) -> {
@@ -692,7 +718,7 @@ func unifyTE(
                 case TAType(te1) -> {
                   match a2[i] {
                     case TAType(te2) -> unifyTE(typeParams, te1, te2, subst)
-                    case _           -> ()
+                    case _ -> ()
                   }
                 }
                 case _ -> ()
@@ -707,7 +733,7 @@ func unifyTE(
     case TNullable(inner1) -> {
       match argTE.kind {
         case TNullable(inner2) -> unifyTE(typeParams, inner1, inner2, subst)
-        case _                 -> ()
+        case _ -> ()
       }
     }
     case TTuple(ts1) -> {
@@ -724,12 +750,25 @@ func unifyTE(
         case _ -> ()
       }
     }
+    case TSlice(elem1) -> {
+      // Unify the element types of `slice[T]` against `slice[Int]` so a generic
+      // `slice[T]` parameter binds `T` from a slice/list-literal argument and the
+      // call monomorphises (#2557).
+      match argTE.kind {
+        case TSlice(elem2) -> unifyTE(typeParams, elem1, elem2, subst)
+        case TArray(_, elem2) -> unifyTE(typeParams, elem1, elem2, subst)
+        case _ -> ()
+      }
+    }
     case TFunction(ps1, r1) -> {
       match argTE.kind {
         case TFunction(ps2, r2) -> {
           if ps1.count == ps2.count {
             var i = 0
-            while i < ps1.count { unifyTE(typeParams, ps1[i], ps2[i], subst); i = i + 1 }
+            while i < ps1.count {
+              unifyTE(typeParams, ps1[i], ps2[i], subst)
+              i = i + 1
+            }
             unifyTE(typeParams, r1, r2, subst)
           }
         }
@@ -743,7 +782,9 @@ func unifyTE(
 func listContainsStr(xs: in List[String], s: in String): Bool {
   var i = 0
   while i < xs.count {
-    if xs[i] == s { return true }
+    if xs[i] == s {
+      return true
+    }
     i = i + 1
   }
   false
@@ -752,7 +793,6 @@ func listContainsStr(xs: in List[String], s: in String): Bool {
 // ─────────────────────────────────────────────────────────────────────────────
 // §7. Generic parameter name extraction
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Names of `GPType` (type-level) generic parameters in source order.
 func extractTypeParamNames(gps: in Option[GenericParams]): List[String] {
   val names: List[String] = newList()
@@ -762,7 +802,7 @@ func extractTypeParamNames(gps: in Option[GenericParams]): List[String] {
       var i = 0
       while i < gp.params.count {
         match gp.params[i] {
-          case GPType(name, _)  -> names.add(name)
+          case GPType(name, _) -> names.add(name)
           case GPValue(_, _, _) -> ()
         }
         i = i + 1
@@ -781,8 +821,8 @@ func extractValueParamNames(gps: in Option[GenericParams]): List[String] {
       var i = 0
       while i < gp.params.count {
         match gp.params[i] {
-          case GPType(_, _)         -> ()
-          case GPValue(name, _, _)  -> names.add(name)
+          case GPType(_, _) -> ()
+          case GPValue(name, _, _) -> names.add(name)
         }
         i = i + 1
       }
@@ -795,7 +835,7 @@ func extractValueParamNames(gps: in Option[GenericParams]): List[String] {
 // false = GPType).  Used by the explicit-type-app path to dispatch each
 // supplied TypeArg into either `subst` or `valueSubst`.
 record GenericParamInfo {
-  name:    String
+  name: String
   isValue: Bool
 }
 
@@ -807,10 +847,8 @@ func extractAllParamInfo(gps: in Option[GenericParams]): List[GenericParamInfo] 
       var i = 0
       while i < gp.params.count {
         match gp.params[i] {
-          case GPType(name, _)      ->
-            infos.add(GenericParamInfo(name = name, isValue = false))
-          case GPValue(name, _, _)  ->
-            infos.add(GenericParamInfo(name = name, isValue = true))
+          case GPType(name, _) -> infos.add(GenericParamInfo(name = name, isValue = false))
+          case GPValue(name, _, _) -> infos.add(GenericParamInfo(name = name, isValue = true))
         }
         i = i + 1
       }
@@ -822,16 +860,15 @@ func extractAllParamInfo(gps: in Option[GenericParams]): List[GenericParamInfo] 
 // ─────────────────────────────────────────────────────────────────────────────
 // §8. Specialised function name mangling
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Mangle the specialised function name from the base name + the ordered
 // list of generic params, looking up each substitution in either
 // `subst` (for `GPType`) or `valueSubst` (for `GPValue`).  Value-arg
 // segments are prefixed with `V` to keep them disjoint from type keys.
 func specFuncName(
-  base:       in String,
-  allParams:  in List[GenericParamInfo],
-  subst:      in Map[String, TypeExpr],
-  valueSubst: in Map[String, Expr]
+  base: in String,
+  allParams: in List[GenericParamInfo],
+  subst: in Map[String, TypeExpr],
+  valueSubst: in Map[String, Expr],
 ): String {
   var acc = base
   var i = 0
@@ -841,13 +878,21 @@ func specFuncName(
     if p.isValue {
       acc = acc + "V"
       match mapGet(valueSubst, p.name) {
-        case Some(e)  -> { acc = acc + valueExprKey(e) }
-        case None     -> { acc = acc + "Unknown" }
+        case Some(e) -> {
+          acc = acc + valueExprKey(e)
+        }
+        case None -> {
+          acc = acc + "Unknown"
+        }
       }
     } else {
       match mapGet(subst, p.name) {
-        case Some(te) -> { acc = acc + typeExprKey(te) }
-        case None     -> { acc = acc + "Unknown" }
+        case Some(te) -> {
+          acc = acc + typeExprKey(te)
+        }
+        case None -> {
+          acc = acc + "Unknown"
+        }
       }
     }
     i = i + 1
@@ -858,43 +903,33 @@ func specFuncName(
 // ─────────────────────────────────────────────────────────────────────────────
 // §9. Simplified type inference — expression → TypeExpr option
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Returns the declared TypeExpr for an expression when it can be determined
 // from the local type environment or literal shape alone.  Returns None for
 // complex sub-expressions (calls, field projections, binary ops, etc.).
-
 func inferLitTE(lit: in Literal, span: in Span): Option[TypeExpr] {
   match lit {
-    case LInt(_, suffix) -> {
+    case LInt(_, suffix, _) -> {
       val name = match suffix {
-        case I8          -> "Byte"
-        case I16         -> "Short"
-        case I32         -> "Int"
-        case I64         -> "Long"
-        case U8          -> "Byte"
-        case U16         -> "UShort"
-        case U32         -> "UInt"
-        case U64         -> "ULong"
+        case I8 -> "Byte"
+        case I16 -> "Short"
+        case I32 -> "Int"
+        case I64 -> "Long"
+        case U8 -> "Byte"
+        case U16 -> "UShort"
+        case U32 -> "UInt"
+        case U64 -> "ULong"
         case NoIntSuffix -> "Int"
       }
       Some(value = TypeExpr(kind = TRef(path = singleSegPath(name)), span = span))
     }
-    case LFloat(_, suffix) -> {
-      val name = match suffix {
-        case F32         -> "Float"
-        case F64         -> "Double"
-        case NoFloatSuffix -> "Double"
-      }
+    case LFloat(_, suffix, _) -> {
+      val name = match suffix { case F32 -> "Float"; case F64 -> "Double"; case NoFloatSuffix -> "Double" }
       Some(value = TypeExpr(kind = TRef(path = singleSegPath(name)), span = span))
     }
-    case LBool(_) ->
-      Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = span))
-    case LString(_) | LTripleString(_) | LRawString(_) ->
-      Some(value = TypeExpr(kind = TRef(path = singleSegPath("String")), span = span))
-    case LChar(_) ->
-      Some(value = TypeExpr(kind = TRef(path = singleSegPath("Char")), span = span))
-    case LUnit ->
-      Some(value = TypeExpr(kind = TUnit, span = span))
+    case LBool(_) -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = span))
+    case LString(_) | LTripleString(_) | LRawString(_) -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("String")), span = span))
+    case LChar(_) -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Char")), span = span))
+    case LUnit -> Some(value = TypeExpr(kind = TUnit, span = span))
   }
 }
 
@@ -908,12 +943,14 @@ func inferLitTE(lit: in Literal, span: in Span): Option[TypeExpr] {
 // (and remains correct for imported generics that use CLR generics).
 func inferExprTE(state: in MonoState, env: in Map[String, TypeExpr], expr: in Expr): Option[TypeExpr] {
   match expr.kind {
-    case ELiteral(lit)  -> inferLitTE(lit, expr.span)
-    case EParen(inner)  -> inferExprTE(state, env, inner)
-    case EPath(path)    -> {
+    case ELiteral(lit) -> inferLitTE(lit, expr.span)
+    case EParen(inner) -> inferExprTE(state, env, inner)
+    case EPath(path) -> {
       if path.segments.count == 1 {
         mapGet(env, path.segments[0])
-      } else { None }
+      } else {
+        None
+      }
     }
     case EBinop(op, lhs, _) -> {
       match op {
@@ -922,15 +959,15 @@ func inferExprTE(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
         case BMul -> inferExprTE(state, env, lhs)
         case BDiv -> inferExprTE(state, env, lhs)
         case BMod -> inferExprTE(state, env, lhs)
-        case BEq  -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
+        case BEq -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
         case BNeq -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
-        case BLt  -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
+        case BLt -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
         case BLte -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
-        case BGt  -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
+        case BGt -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
         case BGte -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
         case BAnd -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
-        case BOr  -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
-        case _    -> None
+        case BOr -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
+        case _ -> None
       }
     }
     case ECall(fn, args) -> inferCallReturnTE(state, env, fn, args)
@@ -945,18 +982,35 @@ func inferExprTE(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
     // `data` un-typed and a later generic call on `data.field` could not
     // infer its type arguments (#1727).
     case EIndex(recv, _) -> inferIndexTE(state, env, recv)
-    case _              -> None
+    // A list/slice literal `[e0, …]` infers to `slice[ElemType]` from its first
+    // element, so a generic call whose parameter is `slice[T]` (e.g.
+    // `glen([1,2,3])` / `Sort.sortInts([3,1,2])`) unifies `T` and monomorphises
+    // into a concrete `__Int` copy rather than staying a generic method whose
+    // `slice[T]` parameter cannot name a real CLR type.  An empty literal
+    // carries no element type, so it stays `None` (the call falls back to the
+    // generic erased path, as before).
+    // Note: only the first element is sampled.  If `es[0]` is not inferable
+    // (e.g. `nil`, an untyped variable, or a nested generic call with no type
+    // annotation) but later elements are, inference still returns `None` and
+    // the call falls through to the erased path — a safe degradation.
+    case EList(es) -> {
+      if es.count == 0 {
+        None
+      } else {
+        match inferExprTE(state, env, es[0]) {
+          case Some(elemTE) -> Some(value = TypeExpr(kind = TSlice(element = elemTE), span = expr.span))
+          case None -> None
+        }
+      }
+    }
+    case _ -> None
   }
 }
 
 // Infer the element type produced by indexing `recv` (`recv[i]`).  Map -> V,
 // List / slice / array -> element type.  Returns None for any other receiver
 // shape or when the receiver type can't be inferred.
-func inferIndexTE(
-  state: in MonoState,
-  env:   in Map[String, TypeExpr],
-  recv:  in Expr
-): Option[TypeExpr] {
+func inferIndexTE(state: in MonoState, env: in Map[String, TypeExpr], recv: in Expr): Option[TypeExpr] {
   match inferExprTE(state, env, recv) {
     case None -> None
     case Some(recvTy) -> {
@@ -965,15 +1019,25 @@ func inferIndexTE(
           if head.segments.count == 1 {
             val h = head.segments[0]
             if h == "Map" and args.count == 2 {
-              match args[1] { case TAType(v) -> Some(value = v) case TAValue(_) -> None }
+              match args[1] {
+                case TAType(v) -> Some(value = v)
+                case TAValue(_) -> None
+              }
             } else if h == "List" and args.count == 1 {
-              match args[0] { case TAType(t) -> Some(value = t) case TAValue(_) -> None }
-            } else { None }
-          } else { None }
+              match args[0] {
+                case TAType(t) -> Some(value = t)
+                case TAValue(_) -> None
+              }
+            } else {
+              None
+            }
+          } else {
+            None
+          }
         }
-        case TSlice(elem)    -> Some(value = elem)
+        case TSlice(elem) -> Some(value = elem)
         case TArray(_, elem) -> Some(value = elem)
-        case _               -> None
+        case _ -> None
       }
     }
   }
@@ -986,10 +1050,7 @@ func inferIndexTE(
 // targs)` for generics).  Returns None for unknown callees or
 // inference shapes the helper can't handle.
 func inferCallReturnTE(
-  state: in MonoState,
-  env:   in Map[String, TypeExpr],
-  fn:    in Expr,
-  args:  in List[CallArg]
+  state: in MonoState, env: in Map[String, TypeExpr], fn: in Expr, args: in List[CallArg]
 ): Option[TypeExpr] {
   match fn.kind {
     case EPath(path) -> {
@@ -997,9 +1058,11 @@ func inferCallReturnTE(
         val name = path.segments[0]
         match inferRecordCtorTE(state, name, None, fn.span) {
           case Some(te) -> Some(value = te)
-          case None     -> inferReturnFromName(state, env, name, args, None)
+          case None -> inferReturnFromName(state, env, name, args, None)
         }
-      } else { None }
+      } else {
+        None
+      }
     }
     case ETypeApp(innerFn, targs) -> {
       match innerFn.kind {
@@ -1008,14 +1071,207 @@ func inferCallReturnTE(
             val name = p.segments[0]
             match inferRecordCtorTE(state, name, Some(value = targs), fn.span) {
               case Some(te) -> Some(value = te)
-              case None     -> inferReturnFromName(state, env, name, args, Some(value = targs))
+              case None -> inferReturnFromName(state, env, name, args, Some(value = targs))
             }
-          } else { None }
+          } else {
+            None
+          }
         }
         case _ -> None
       }
     }
+    // Method call `recv.method(args)` — the callee is an `EMember`.  Infer
+    // the receiver's type, find the method on its interface/record decl, and
+    // return the method's declared return type with the receiver's generic
+    // type-args substituted.  Without this a call like
+    // `isOk(bucket.exists(...))` (where `bucket: StorageBucket`) could not
+    // infer its argument type, so the generic `isOk` stayed type-erased and
+    // failed at runtime (#3813, same failure mode as #3705).
+    case EMember(recv, methodName) -> {
+      // Detect when the EMember chain flattens to a pure dotted path
+      // (e.g. `JobQueue.Domain.jobStatusFromString`) the parser left as
+      // nested `EMember(EMember(EPath["Pkg"], "Sub"), "fn")` rather than a
+      // multi-segment EPath.  Look up `<methodName>` in funcDecls /
+      // recordDecls by simple name so generic call sites like
+      // `isNone(Pkg.parse("x"))` can specialise off `parse`'s return type
+      // (issue #3852-adjacent).  Two safety guards: skip when a same-named
+      // generic exists (the rewriter would otherwise mis-specialise across
+      // packages) and require an exact arity match against funcDecls.
+      val flatSegs = flattenPathExprSegsMono(fn)
+      if flatSegs.count >= 2 {
+        match inferRecordCtorTE(state, methodName, None, fn.span) {
+          case Some(te) -> Some(value = te)
+          case None -> {
+            val hit: Option[TypeExpr] = if state.genDecls.containsKey(methodName) {
+              None
+            } else if funcDeclArityMatches(state, methodName, args.count) {
+              inferReturnFromName(state, env, methodName, args, None)
+            } else {
+              None
+            }
+            match hit {
+              case Some(te) -> Some(value = te)
+              case None -> inferMethodReturnTE(state, env, recv, methodName, args)
+            }
+          }
+        }
+      } else {
+        inferMethodReturnTE(state, env, recv, methodName, args)
+      }
+    }
     case _ -> None
+  }
+}
+
+// Infer the return type of `recv.method(args)`.  Resolves `recv`'s type to a
+// known interface (or record) decl, locates `method`, and returns its
+// declared return type after substituting the type's generic parameters with
+// the receiver's concrete type arguments and inferring any method-level
+// generics from the call arguments.  Returns None when the receiver type is
+// unknown, the method has no declared return, or a method-level type param
+// cannot be inferred.
+func inferMethodReturnTE(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  recv: in Expr,
+  methodName: in String,
+  args: in List[CallArg],
+): Option[TypeExpr] {
+  match inferExprTE(state, env, recv) {
+    case None -> None
+    case Some(recvTy) -> {
+      val typeName = match recvTy.kind {
+        case TRef(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
+        case TGenericApp(head, _) -> if head.segments.count == 1 { head.segments[0] } else { "" }
+        case _ -> ""
+      }
+      if typeName.length == 0 {
+        None
+      } else {
+        val recvArgs: List[TypeArg] = match recvTy.kind { case TGenericApp(_, a) -> a; case _ -> newList() }
+        // Interfaces first (the common case — `bucket.exists` on
+        // `StorageBucket`), then records (methods declared in a record body).
+        val ifaceOpt: Option[InterfaceDecl] = mapGet(state.ifaceDecls, typeName)
+        match ifaceOpt {
+          case Some(idecl) -> lookupIfaceMethodRetTE(state, env, idecl, methodName, recvArgs, args)
+          case None -> {
+            val recOpt: Option[RecordDecl] = mapGet(state.recordDecls, typeName)
+            match recOpt {
+              case None -> None
+              case Some(rdecl) -> lookupRecordMethodRetTE(state, env, rdecl, methodName, recvArgs, args)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// Look up `methodName` among an interface's members and return its declared
+// return type, substituted for the interface's generic params (bound to
+// `recvArgs`) plus any method-level generics inferred from `args`.
+func lookupIfaceMethodRetTE(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  idecl: in InterfaceDecl,
+  methodName: in String,
+  recvArgs: in List[TypeArg],
+  args: in List[CallArg],
+): Option[TypeExpr] {
+  val typeParams = extractTypeParamNames(idecl.generics)
+  var i = 0
+  while i < idecl.members.count {
+    match idecl.members[i] {
+      case IMSig(sig) -> {
+        if sig.name == methodName {
+          return substMethodRetTE(state, env, typeParams, recvArgs, sig.generics, sig.params, sig.ret, args)
+        }
+      }
+      case IMFunc(fn) -> {
+        if fn.name == methodName {
+          return substMethodRetTE(state, env, typeParams, recvArgs, fn.generics, fn.params, fn.ret, args)
+        }
+      }
+      case IMAssoc(_) -> ()
+    }
+    i = i + 1
+  }
+  None
+}
+
+// Counterpart of `lookupIfaceMethodRetTE` for methods declared inside a
+// record body (`RMFunc`).
+func lookupRecordMethodRetTE(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  rdecl: in RecordDecl,
+  methodName: in String,
+  recvArgs: in List[TypeArg],
+  args: in List[CallArg],
+): Option[TypeExpr] {
+  val typeParams = extractTypeParamNames(rdecl.generics)
+  var i = 0
+  while i < rdecl.members.count {
+    match rdecl.members[i] {
+      case RMFunc(fn) -> {
+        if fn.name == methodName {
+          return substMethodRetTE(state, env, typeParams, recvArgs, fn.generics, fn.params, fn.ret, args)
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  None
+}
+
+// Build the substitution for a method's return type: the declaring type's
+// generic params bind to `recvArgs`; method-level generics are inferred from
+// the call `args` (via `unifyTE`).  Returns the substituted return type, or
+// None when there is no declared return or a method generic stays unbound.
+func substMethodRetTE(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  typeParams: in List[String],
+  recvArgs: in List[TypeArg],
+  methodGenerics: in Option[GenericParams],
+  params: in List[Param],
+  ret: in Option[TypeExpr],
+  args: in List[CallArg],
+): Option[TypeExpr] {
+  match ret {
+    case None -> None
+    case Some(r) -> {
+      val subst: Map[String, TypeExpr] = newMap()
+      val valueSubst: Map[String, Expr] = newMap()
+      // Bind the declaring type's params to the receiver's concrete args.
+      if typeParams.count == recvArgs.count {
+        var i = 0
+        while i < typeParams.count {
+          match recvArgs[i] {
+            case TAType(te) -> subst.add(typeParams[i], te)
+            case TAValue(_) -> ()
+          }
+          i = i + 1
+        }
+      }
+      // Infer method-level generics from the call arguments.
+      val methodParams = extractTypeParamNames(methodGenerics)
+      if methodParams.count > 0 {
+        var ai = 0
+        while ai < args.count and ai < params.count {
+          match inferExprTE(state, env, callArgExpr(args[ai])) {
+            case Some(argTE) -> unifyTE(methodParams, params[ai].ty, argTE, subst)
+            case None -> ()
+          }
+          ai = ai + 1
+        }
+        if not substIsComplete(methodParams, subst) {
+          return None
+        }
+      }
+      Some(value = substTypeExpr(subst, valueSubst, r))
+    }
   }
 }
 
@@ -1024,16 +1280,15 @@ func inferCallReturnTE(
 // ECall (the ECall arm of inferCallReturnTE above handles the
 // callable shape itself).
 func inferTypeAppValueTE(
-  state: in MonoState,
-  env:   in Map[String, TypeExpr],
-  fn:    in Expr,
-  targs: in List[TypeArg]
+  state: in MonoState, env: in Map[String, TypeExpr], fn: in Expr, targs: in List[TypeArg]
 ): Option[TypeExpr] {
   match fn.kind {
     case EPath(p) -> {
       if p.segments.count == 1 {
         inferReturnFromName(state, env, p.segments[0], newList(), Some(value = targs))
-      } else { None }
+      } else {
+        None
+      }
     }
     case _ -> None
   }
@@ -1042,10 +1297,7 @@ func inferTypeAppValueTE(
 // If `name` is a same-package record, return its TypeExpr (with
 // `targs` supplied for the generic params).  Otherwise None.
 func inferRecordCtorTE(
-  state: in MonoState,
-  name:  in String,
-  targs: in Option[List[TypeArg]],
-  span:  in Span
+  state: in MonoState, name: in String, targs: in Option[List[TypeArg]], span: in Span
 ): Option[TypeExpr] {
   // Bootstrap-grade emitter quirk: hold the lookup in a typed
   // binding so the F# type checker doesn't unify V in mapGet[String, V]
@@ -1076,19 +1328,19 @@ func inferRecordCtorTE(
 // positional arguments.  None when the callee is unknown, has no
 // declared return type, or inference leaves any type param unbound.
 func inferReturnFromName(
-  state:        in MonoState,
-  env:          in Map[String, TypeExpr],
-  fname:        in String,
-  args:         in List[CallArg],
-  explicitArgs: in Option[List[TypeArg]]
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  fname: in String,
+  args: in List[CallArg],
+  explicitArgs: in Option[List[TypeArg]],
 ): Option[TypeExpr] {
   val declOpt: Option[FunctionDecl] = mapGet(state.funcDecls, fname)
   match declOpt {
     case None -> None
     case Some(decl) -> {
       val typeParams = extractTypeParamNames(decl.generics)
-      val subst:      Map[String, TypeExpr] = newMap()
-      val valueSubst: Map[String, Expr]     = newMap()
+      val subst: Map[String, TypeExpr] = newMap()
+      val valueSubst: Map[String, Expr] = newMap()
       match explicitArgs {
         case Some(targs) -> {
           if targs.count == typeParams.count {
@@ -1119,7 +1371,7 @@ func inferReturnFromName(
         None
       } else {
         match decl.ret {
-          case None    -> None
+          case None -> None
           case Some(r) -> Some(value = substTypeExpr(subst, valueSubst, r))
         }
       }
@@ -1130,12 +1382,7 @@ func inferReturnFromName(
 // Infer the type of `recv.field` when `recv` resolves to a
 // same-package record (or exposed record) type.  Returns None for
 // imported records, method projections, or undeclared field names.
-func inferMemberTE(
-  state: in MonoState,
-  env:   in Map[String, TypeExpr],
-  recv:  in Expr,
-  name:  in String
-): Option[TypeExpr] {
+func inferMemberTE(state: in MonoState, env: in Map[String, TypeExpr], recv: in Expr, name: in String): Option[TypeExpr] {
   match inferExprTE(state, env, recv) {
     case None -> None
     case Some(recvTy) -> {
@@ -1143,12 +1390,16 @@ func inferMemberTE(
         case TRef(path) -> {
           if path.segments.count == 1 {
             lookupFieldTE(state, path.segments[0], name, newList())
-          } else { None }
+          } else {
+            None
+          }
         }
         case TGenericApp(head, args) -> {
           if head.segments.count == 1 {
             lookupFieldTE(state, head.segments[0], name, args)
-          } else { None }
+          } else {
+            None
+          }
         }
         case _ -> None
       }
@@ -1162,19 +1413,16 @@ func inferMemberTE(
 // declared TypeExpr is substituted using the record's GPType params
 // → recordArgs binding before being returned.
 func lookupFieldTE(
-  state:      in MonoState,
-  recordName: in String,
-  field:      in String,
-  recordArgs: in List[TypeArg]
+  state: in MonoState, recordName: in String, field: in String, recordArgs: in List[TypeArg]
 ): Option[TypeExpr] {
   // Same emitter quirk as inferRecordCtorTE — keep the binding typed.
   val recOpt: Option[RecordDecl] = mapGet(state.recordDecls, recordName)
   match recOpt {
     case None -> None
     case Some(rdecl) -> {
-      val typeParams  = extractTypeParamNames(rdecl.generics)
-      val subst:      Map[String, TypeExpr] = newMap()
-      val valueSubst: Map[String, Expr]     = newMap()
+      val typeParams = extractTypeParamNames(rdecl.generics)
+      val subst: Map[String, TypeExpr] = newMap()
+      val valueSubst: Map[String, Expr] = newMap()
       if typeParams.count == recordArgs.count {
         var i = 0
         while i < typeParams.count {
@@ -1205,28 +1453,33 @@ func lookupFieldTE(
 // ─────────────────────────────────────────────────────────────────────────────
 // §10. Substitution completeness check
 // ─────────────────────────────────────────────────────────────────────────────
-
 func substIsComplete(typeParams: in List[String], subst: in Map[String, TypeExpr]): Bool {
   var i = 0
   while i < typeParams.count {
-    if not subst.containsKey(typeParams[i]) { return false }
+    if not subst.containsKey(typeParams[i]) {
+      return false
+    }
     i = i + 1
   }
   true
 }
 
 func allParamsBound(
-  allParams:  in List[GenericParamInfo],
-  subst:      in Map[String, TypeExpr],
-  valueSubst: in Map[String, Expr]
+  allParams: in List[GenericParamInfo],
+  subst: in Map[String, TypeExpr],
+  valueSubst: in Map[String, Expr],
 ): Bool {
   var i = 0
   while i < allParams.count {
     val p = allParams[i]
     if p.isValue {
-      if not valueSubst.containsKey(p.name) { return false }
+      if not valueSubst.containsKey(p.name) {
+        return false
+      }
     } else {
-      if not subst.containsKey(p.name) { return false }
+      if not subst.containsKey(p.name) {
+        return false
+      }
     }
     i = i + 1
   }
@@ -1234,25 +1487,310 @@ func allParamsBound(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §10b. Body type-annotation substitution (#2557)
+// ─────────────────────────────────────────────────────────────────────────────
+// `specializeFunc` substitutes type variables in the signature (params / return)
+// but, before this pass, shared the body verbatim.  A typed local in the body —
+// `val acc: List[T] = newList()` — therefore kept its `T`, and codegen lowered
+// `List[T]` to a `List<Pkg.T>` instance over a non-existent CLR type ("Common
+// Language Runtime detected an invalid program").  These helpers rewrite every
+// TypeExpr annotation reachable from the body (local bindings, lambda parameter
+// annotations, explicit type applications) with `substTypeExpr`, leaving the
+// rest of the AST structurally unchanged.
+func substTypesBlock(subst: in Map[String, TypeExpr], valueSubst: in Map[String, Expr], blk: in Block): Block {
+  val newStmts: List[Statement] = newList()
+  var i = 0
+  while i < blk.statements.count {
+    newStmts.add(substTypesStmt(subst, valueSubst, blk.statements[i]))
+    i = i + 1
+  }
+  Block(statements = newStmts, span = blk.span)
+}
+
+func substTypesOptTy(
+  subst: in Map[String, TypeExpr], valueSubst: in Map[String, Expr], oty: in Option[TypeExpr]
+): Option[TypeExpr] {
+  match oty {
+    case Some(te) -> Some(value = substTypeExpr(subst, valueSubst, te))
+    case None -> None
+  }
+}
+
+func substTypesStmt(subst: in Map[String, TypeExpr], valueSubst: in Map[String, Expr], stmt: in Statement): Statement {
+  val s = stmt.span
+  val k = match stmt.kind {
+    case SLocal(binding) -> {
+      val nb = match binding {
+        case LBVal(pat, ty, init) -> LBVal(pat = pat, ty = substTypesOptTy(subst, valueSubst, ty), init = substTypesExpr(subst, valueSubst, init))
+        case LBVar(name, ty, init) -> {
+          val ni = match init { case Some(e) -> Some(value = substTypesExpr(subst, valueSubst, e)); case None -> None }
+          LBVar(name = name, ty = substTypesOptTy(subst, valueSubst, ty), init = ni)
+        }
+        case LBLet(name, ty, init) -> LBLet(name = name, ty = substTypesOptTy(subst, valueSubst, ty), init = substTypesExpr(subst, valueSubst, init))
+      }
+      SLocal(binding = nb)
+    }
+    case SAssign(target, op, value) -> SAssign(target = substTypesExpr(subst, valueSubst, target), op = op, value = substTypesExpr(subst, valueSubst, value))
+    case SReturn(value) -> {
+      match value {
+        case Some(e) -> SReturn(value = Some(value = substTypesExpr(subst, valueSubst, e)))
+        case None -> SReturn(value = None)
+      }
+    }
+    case SBreak(label) -> SBreak(label = label)
+    case SContinue(label) -> SContinue(label = label)
+    case SThrow(expr) -> SThrow(expr = substTypesExpr(subst, valueSubst, expr))
+    case STry(body, catches, finally_) -> {
+      val newCatches: List[CatchClause] = newList()
+      var ci = 0
+      while ci < catches.count {
+        val c = catches[ci]
+        newCatches.add(
+          CatchClause(
+            typeName = c.typeName,
+            bindName = c.bindName,
+            body = substTypesBlock(subst, valueSubst, c.body),
+            span = c.span
+          )
+        )
+        ci = ci + 1
+      }
+      val newFin = match finally_ { case Some(b) -> Some(value = substTypesBlock(subst, valueSubst, b)); case None -> None }
+      STry(body = substTypesBlock(subst, valueSubst, body), catches = newCatches, finally_ = newFin)
+    }
+    case SDefer(body) -> SDefer(body = substTypesBlock(subst, valueSubst, body))
+    case SScope(binding, body) -> SScope(binding = binding, body = substTypesBlock(subst, valueSubst, body))
+    case SFor(label, pat, iter, body) -> SFor(label = label, pat = pat, iter = substTypesExpr(subst, valueSubst, iter), body = substTypesBlock(subst, valueSubst, body))
+    case SWhile(label, cond, body) -> SWhile(label = label, cond = substTypesExpr(subst, valueSubst, cond), body = substTypesBlock(subst, valueSubst, body))
+    case SLoop(label, body) -> SLoop(label = label, body = substTypesBlock(subst, valueSubst, body))
+    case SInvariant(expr) -> SInvariant(expr = substTypesExpr(subst, valueSubst, expr))
+    case SExpr(expr) -> SExpr(expr = substTypesExpr(subst, valueSubst, expr))
+    case SRule(lhs, rhs) -> SRule(lhs = substTypesExpr(subst, valueSubst, lhs), rhs = substTypesExpr(subst, valueSubst, rhs))
+    case SItem(item) -> SItem(item = item)
+  }
+  Statement(kind = k, span = s)
+}
+
+func substTypesEOB(subst: in Map[String, TypeExpr], valueSubst: in Map[String, Expr], eob: in ExprOrBlock): ExprOrBlock {
+  match eob {
+    case EOBExpr(e) -> EOBExpr(expr = substTypesExpr(subst, valueSubst, e))
+    case EOBBlock(b) -> EOBBlock(block = substTypesBlock(subst, valueSubst, b))
+  }
+}
+
+func substTypesExpr(subst: in Map[String, TypeExpr], valueSubst: in Map[String, Expr], expr: in Expr): Expr {
+  val s = expr.span
+  val k = match expr.kind {
+    case EParen(inner) -> EParen(inner = substTypesExpr(subst, valueSubst, inner))
+    case ETuple(es) -> {
+      val ne: List[Expr] = newList()
+      var i = 0
+      while i < es.count {
+        ne.add(substTypesExpr(subst, valueSubst, es[i]))
+        i = i + 1
+      }
+      ETuple(exprs = ne)
+    }
+    case EList(es) -> {
+      val ne: List[Expr] = newList()
+      var i = 0
+      while i < es.count {
+        ne.add(substTypesExpr(subst, valueSubst, es[i]))
+        i = i + 1
+      }
+      EList(exprs = ne)
+    }
+    case EIf(cond, thenBranch, elseBranch, thenForm) -> {
+      val ne = match elseBranch { case Some(eb) -> Some(value = substTypesEOB(subst, valueSubst, eb)); case None -> None }
+      EIf(
+        cond = substTypesExpr(subst, valueSubst, cond),
+        thenBranch = substTypesEOB(subst, valueSubst, thenBranch),
+        elseBranch = ne,
+        thenForm = thenForm
+      )
+    }
+    case EMatch(scrutinee, arms) -> {
+      val na: List[MatchArm] = newList()
+      var i = 0
+      while i < arms.count {
+        val arm = arms[i]
+        val ng = match arm.guard { case Some(g) -> Some(value = substTypesExpr(subst, valueSubst, g)); case None -> None }
+        na.add(
+          MatchArm(pattern = arm.pattern, guard = ng, body = substTypesEOB(subst, valueSubst, arm.body), span = arm.span)
+        )
+        i = i + 1
+      }
+      EMatch(scrutinee = substTypesExpr(subst, valueSubst, scrutinee), arms = na)
+    }
+    case EAwait(inner) -> EAwait(inner = substTypesExpr(subst, valueSubst, inner))
+    case EYield(inner) -> EYield(inner = substTypesExpr(subst, valueSubst, inner))
+    case ESpawn(inner) -> ESpawn(inner = substTypesExpr(subst, valueSubst, inner))
+    case ETry(inner) -> ETry(inner = substTypesExpr(subst, valueSubst, inner))
+    case EOld(inner) -> EOld(inner = substTypesExpr(subst, valueSubst, inner))
+    case ELambda(lambdaParams, body) -> {
+      val nps: List[LambdaParam] = newList()
+      var i = 0
+      while i < lambdaParams.count {
+        val lp = lambdaParams[i]
+        nps.add(LambdaParam(name = lp.name, ty = substTypesOptTy(subst, valueSubst, lp.ty), span = lp.span))
+        i = i + 1
+      }
+      ELambda(lambdaParams = nps, body = substTypesBlock(subst, valueSubst, body))
+    }
+    case ECall(fn, args) -> {
+      val na: List[CallArg] = newList()
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CAPositional(e) -> na.add(CAPositional(expr = substTypesExpr(subst, valueSubst, e)))
+          case CANamed(n, e, span) -> na.add(CANamed(name = n, value = substTypesExpr(subst, valueSubst, e), span = span))
+        }
+        i = i + 1
+      }
+      ECall(fn = substTypesExpr(subst, valueSubst, fn), args = na)
+    }
+    case ETypeApp(fn, args) -> {
+      val na: List[TypeArg] = newList()
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case TAType(te) -> na.add(TAType(ty = substTypeExpr(subst, valueSubst, te)))
+          case TAValue(e) -> na.add(TAValue(expr = substTypesExpr(subst, valueSubst, e)))
+        }
+        i = i + 1
+      }
+      ETypeApp(fn = substTypesExpr(subst, valueSubst, fn), args = na)
+    }
+    case EIndex(receiver, indices) -> {
+      val ni: List[Expr] = newList()
+      var i = 0
+      while i < indices.count {
+        ni.add(substTypesExpr(subst, valueSubst, indices[i]))
+        i = i + 1
+      }
+      EIndex(receiver = substTypesExpr(subst, valueSubst, receiver), indices = ni)
+    }
+    case EMember(receiver, memberName) -> EMember(receiver = substTypesExpr(subst, valueSubst, receiver), memberName = memberName)
+    case EPropagate(inner) -> EPropagate(inner = substTypesExpr(subst, valueSubst, inner))
+    case EPrefix(op, operand) -> EPrefix(op = op, operand = substTypesExpr(subst, valueSubst, operand))
+    case EBinop(op, lhs, rhs) -> EBinop(op = op, lhs = substTypesExpr(subst, valueSubst, lhs), rhs = substTypesExpr(subst, valueSubst, rhs))
+    case ERange(bound) -> {
+      val nb = match bound {
+        case RBClosed(lo, hi) -> RBClosed(lo = substTypesExpr(subst, valueSubst, lo), hi = substTypesExpr(subst, valueSubst, hi))
+        case RBHalfOpen(lo, hi) -> RBHalfOpen(lo = substTypesExpr(subst, valueSubst, lo), hi = substTypesExpr(subst, valueSubst, hi))
+        case RBLowerOpen(hi) -> RBLowerOpen(hi = substTypesExpr(subst, valueSubst, hi))
+        case RBUpperOpen(lo) -> RBUpperOpen(lo = substTypesExpr(subst, valueSubst, lo))
+      }
+      ERange(bound = nb)
+    }
+    case EAssign(target, op, value) -> EAssign(target = substTypesExpr(subst, valueSubst, target), op = op, value = substTypesExpr(subst, valueSubst, value))
+    case EBlock(block) -> EBlock(block = substTypesBlock(subst, valueSubst, block))
+    case EUnsafe(block) -> EUnsafe(block = substTypesBlock(subst, valueSubst, block))
+    case EInterpolated(segments) -> {
+      val ns: List[InterpolatedSegment] = newList()
+      var i = 0
+      while i < segments.count {
+        match segments[i] {
+          case ISText(text, span) -> ns.add(ISText(text = text, span = span))
+          case ISExpr(e) -> ns.add(ISExpr(expr = substTypesExpr(subst, valueSubst, e)))
+        }
+        i = i + 1
+      }
+      EInterpolated(segments = ns)
+    }
+    // All remaining ExprKind variants (ELiteral, ECall, EIndex, EBinOp, etc.)
+    // pass through unchanged.  None of the unlisted variants embed a TypeExpr
+    // directly — type annotations are carried at the statement level
+    // (SLocal with a declared type) and handled by substTypesStmt.  If new
+    // expression forms with embedded TypeExprs are added to ExprKind, they
+    // must be listed explicitly here.
+    case _ -> expr.kind
+  }
+  Expr(kind = k, span = s)
+}
+
+func substTypesFunctionBody(
+  subst: in Map[String, TypeExpr], valueSubst: in Map[String, Expr], body: in FunctionBody
+): FunctionBody {
+  match body {
+    case FBExpr(e) -> FBExpr(expr = substTypesExpr(subst, valueSubst, e))
+    case FBBlock(b) -> FBBlock(block = substTypesBlock(subst, valueSubst, b))
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §11. Function specialisation — substitute type vars in decl structure
 // ─────────────────────────────────────────────────────────────────────────────
+// The `"Type.Member"` string of an `@externTarget(...)` annotation, or "".
+func externTargetStringMono(anns: in List[Annotation]): String {
+  var i = 0
+  while i < anns.count {
+    val segs = anns[i].name.segments
+    if segs.count == 1 and segs[0] == "externTarget" {
+      var j = 0
+      while j < anns[i].args.count {
+        match anns[i].args[j] {
+          case ALiteral(v, _) -> match v { case AVString(s, _) -> { return s }; case _ -> () }
+          case AAName(_, v, _) -> match v { case AVString(s, _) -> { return s }; case _ -> () }
+          case _ -> ()
+        }
+        j = j + 1
+      }
+    }
+    i = i + 1
+  }
+  ""
+}
+
+// True iff the function is an `@externTarget` over a *generic declaring type*
+// (the target's type name carries a `\`N` arity suffix, e.g.
+// `ConcurrentDictionary\`2`).  Only such externs are kept un-specialised by the
+// monomorphizer: the MSIL backend's `emitGenericExternMember` can emit them, and
+// a zero-arg ctor extern invoked from a module-`val` initializer (never walked
+// by the monomorphizer) needs the generic definition to survive.  An extern over
+// a NON-generic type (`Monitor.Enter`) is always reachable through its
+// specialised call-site copies and never needs keeping; keeping it broadly would
+// also force the JVM backend — which has no generic-extern emission — to compile
+// erased collection-kernel externs (`newList` → `java.util.ArrayList.<init>`)
+// it previously dropped, tripping F0015-J.
+func annsKeepGenericExternMono(anns: in List[Annotation]): Bool {
+  Str.contains(externTargetStringMono(anns), "`")
+}
+
+// True iff the annotation list carries `@axiom(...)`.
+func annsHaveAxiomMono(anns: in List[Annotation]): Bool {
+  var i = 0
+  while i < anns.count {
+    val segs = anns[i].name.segments
+    if segs.count == 1 and segs[0] == "axiom" {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
 
 func specializeFunc(
-  decl:       in FunctionDecl,
-  specName:   in String,
-  subst:      in Map[String, TypeExpr],
-  valueSubst: in Map[String, Expr]
+  decl: in FunctionDecl,
+  specName: in String,
+  subst: in Map[String, TypeExpr],
+  valueSubst: in Map[String, Expr],
 ): FunctionDecl {
   val newParams: List[Param] = newList()
   var i = 0
   while i < decl.params.count {
     val p = decl.params[i]
-    newParams.add(Param(
-      mode = p.mode,
-      name = p.name,
-      ty   = substTypeExpr(subst, valueSubst, p.ty),
-      dflt = p.dflt,
-      span = p.span))
+    newParams.add(
+      Param(
+        mode = p.mode,
+        modeExplicit = p.modeExplicit,
+        name = p.name,
+        ty = substTypeExpr(subst, valueSubst, p.ty),
+        dflt = p.dflt,
+        annotations = p.annotations,
+        span = p.span
+      )
+    )
     i = i + 1
   }
   // Build `newRet` via a typed `var` + assignment rather than a `match`
@@ -1266,30 +1804,57 @@ func specializeFunc(
   // `Option[TypeExpr]`) keeps the type argument concrete.
   var newRet: Option[TypeExpr] = None
   match decl.ret {
-    case None    -> {}
-    case Some(r) -> { newRet = Some(value = substTypeExpr(subst, valueSubst, r)) }
+    case None -> {
+    }
+    case Some(r) -> {
+      newRet = Some(value = substTypeExpr(subst, valueSubst, r))
+    }
   }
   val emptyDocs: List[DocComment] = newList()
-  val emptyAnns: List[Annotation] = newList()
+  // Preserve `@externTarget` (and the `@externStatic` / `@externInstance`
+  // resolve hints) on the specialised copy: a monomorphised generic extern
+  // wrapper (`cdSetItem[K, V]` -> `cdSetItem__String__RateEntry`) must keep
+  // its kernel-boundary annotation, or codegen falls through to the
+  // placeholder `= ()` body and emits a broken `ldnull; ret` stub — invalid
+  // IL for a `Unit`/void return, and a silent always-false for a `Bool`
+  // return (#3392 / #3175).  Every other annotation (`@stable`, `@axiom`,
+  // doc markers, …) is intentionally dropped — a specialised copy is a fresh
+  // codegen target, not a re-published surface.
+  val keptAnns: List[Annotation] = newList()
+  var ai = 0
+  while ai < decl.annotations.count {
+    val segs = decl.annotations[ai].name.segments
+    if segs.count == 1 and (segs[0] == "externTarget" or segs[0] == "externStatic" or segs[0] == "externInstance") {
+      keptAnns.add(decl.annotations[ai])
+    }
+    ai = ai + 1
+  }
+  // Substitute type-variable annotations inside the body too (#2557): a typed
+  // local such as `val acc: List[T]` must become `List[Int]` in the specialised
+  // copy, otherwise codegen emits a `List<Pkg.T>` over a non-existent CLR type.
+  val newBody = match decl.body {
+    case Some(b) -> Some(value = substTypesFunctionBody(subst, valueSubst, b))
+    case None -> None
+  }
   FunctionDecl(
     docComments = emptyDocs,
-    annotations = emptyAnns,
-    visibility  = None,
-    isAsync     = decl.isAsync,
-    name        = specName,
-    generics    = None,
-    params      = newParams,
-    ret         = newRet,
+    annotations = keptAnns,
+    visibility = None,
+    isAsync = decl.isAsync,
+    name = specName,
+    generics = None,
+    params = newParams,
+    ret = newRet,
     whereClause = None,
-    contracts   = decl.contracts,
-    body        = decl.body,
-    span        = decl.span)
+    contracts = decl.contracts,
+    body = newBody,
+    span = decl.span
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §11b. Constraint validation
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Validate that the type substitution satisfies the function's declared
 // `where T: …` bounds.  This is a best-effort spot check: well-known
 // derive markers (Equals, Hash, Show, Ord, Compare) are validated against
@@ -1298,10 +1863,10 @@ func specializeFunc(
 // because cross-package symbol resolution lives in Band 6.  Confirmed
 // mismatches produce an `M0001` error diagnostic at the call site span.
 func validateWhereBounds(
-  decl:     in FunctionDecl,
-  subst:    in Map[String, TypeExpr],
+  decl: in FunctionDecl,
+  subst: in Map[String, TypeExpr],
   callSpan: in Span,
-  diags:    in List[Diagnostic]
+  diags: in List[Diagnostic],
 ): Unit {
   match decl.whereClause {
     case None -> ()
@@ -1318,13 +1883,18 @@ func validateWhereBounds(
               if cref.head.segments.count == 1 {
                 val markerName = cref.head.segments[0]
                 if isKnownMarker(markerName) and not satisfiesMarker(concrete, markerName) {
-                  diags.add(errorDiagnostic("M0001",
-                    "generic call '" + decl.name +
-                    "': type argument '" + bound.name + " = " +
-                    renderTypeExpr(concrete) +
-                    "' does not satisfy 'where " + bound.name + ": " +
-                    markerName + "'",
-                    callSpan))
+                  diags.add(
+                    errorDiagnostic(
+                      "M0001",
+                      "generic call '" + decl.name + "': type argument '" + bound.name + " = " + renderTypeExpr(concrete) +
+                        "' does not satisfy 'where " +
+                        bound.name +
+                        ": " +
+                        markerName +
+                        "'",
+                      callSpan
+                    )
+                  )
                 }
               }
               j = j + 1
@@ -1338,8 +1908,7 @@ func validateWhereBounds(
 }
 
 func isKnownMarker(name: in String): Bool {
-  name == "Equals" or name == "Hash" or name == "Show"
-    or name == "Ord" or name == "Compare"
+  name == "Equals" or name == "Hash" or name == "Show" or name == "Ord" or name == "Compare"
 }
 
 // Primitive types satisfy every well-known derive marker (the BCL
@@ -1366,82 +1935,71 @@ func satisfiesMarker(te: in TypeExpr, marker: in String): Bool {
       }
     }
     case TGenericApp(_, _) -> true
-    case TTuple(_)         -> true
-    case _                 -> true
+    case TTuple(_) -> true
+    case _ -> true
   }
 }
 
 func isPrimitiveName(name: in String): Bool {
-  name == "Int" or name == "Long" or name == "Short" or name == "Byte"
-    or name == "UInt" or name == "ULong" or name == "UShort" or name == "UByte"
-    or name == "Float" or name == "Double"
-    or name == "Bool" or name == "Char" or name == "String"
+  name == "Int" or name == "Long" or name == "Short" or name == "Byte" or name == "UInt" or name == "ULong" or
+    name == "UShort" or
+    name == "UByte" or
+    name == "Float" or
+    name == "Double" or
+    name == "Bool" or
+    name == "Char" or
+    name == "String"
 }
 
 func renderTypeExpr(te: in TypeExpr): String {
   match te.kind {
-    case TRef(path)            -> pathSegsKey(path.segments)
-    case TGenericApp(h, args)  -> pathSegsKey(h.segments) + "[" + typeArgListKey(args) + "]"
-    case TUnit                 -> "Unit"
-    case TNever                -> "Never"
-    case TSelf                 -> "Self"
-    case TArray(_, elem)       -> "Array[…, " + renderTypeExpr(elem) + "]"
-    case TSlice(elem)          -> "slice[" + renderTypeExpr(elem) + "]"
-    case TNullable(inner)      -> renderTypeExpr(inner) + "?"
-    case TTuple(ts)            -> "(" + typeExprListKey(ts) + ")"
-    case TFunction(ps, r)      -> "(" + typeExprListKey(ps) + ") -> " + renderTypeExpr(r)
-    case TParen(inner)         -> renderTypeExpr(inner)
-    case TRefined(p, _)        -> pathSegsKey(p.segments)
-    case TError                -> "<error>"
+    case TRef(path) -> pathSegsKey(path.segments)
+    case TGenericApp(h, args) -> pathSegsKey(h.segments) + "[" + typeArgListKey(args) + "]"
+    case TUnit -> "Unit"
+    case TNever -> "Never"
+    case TSelf -> "Self"
+    case TArray(_, elem) -> "Array[…, " + renderTypeExpr(elem) + "]"
+    case TSlice(elem) -> "slice[" + renderTypeExpr(elem) + "]"
+    case TNullable(inner) -> renderTypeExpr(inner) + "?"
+    case TTuple(ts) -> "(" + typeExprListKey(ts) + ")"
+    case TFunction(ps, r) -> "(" + typeExprListKey(ps) + ") -> " + renderTypeExpr(r)
+    case TParen(inner) -> renderTypeExpr(inner)
+    case TRefined(p, _) -> pathSegsKey(p.segments)
+    case TError -> "<error>"
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §12. AST rewriting — call-site replacement and subtree walk
 // ─────────────────────────────────────────────────────────────────────────────
-
 func callArgExpr(arg: in CallArg): Expr {
   match arg {
-    case CAPositional(e)    -> e
-    case CANamed(_, e, _)   -> e
+    case CAPositional(e) -> e
+    case CANamed(_, e, _) -> e
   }
 }
 
-func rewriteCallArgs(
-  state: in MonoState,
-  env:   in Map[String, TypeExpr],
-  args:  in List[CallArg]
-): List[CallArg] {
+func rewriteCallArgs(state: in MonoState, env: in Map[String, TypeExpr], args: in List[CallArg]): List[CallArg] {
   val buf: List[CallArg] = newList()
   var i = 0
   while i < args.count {
     match args[i] {
-      case CAPositional(e)      ->
-        buf.add(CAPositional(expr = rewriteExpr(state, env, e)))
-      case CANamed(n, e, span)  ->
-        buf.add(CANamed(name = n, value = rewriteExpr(state, env, e), span = span))
+      case CAPositional(e) -> buf.add(CAPositional(expr = rewriteExpr(state, env, e)))
+      case CANamed(n, e, span) -> buf.add(CANamed(name = n, value = rewriteExpr(state, env, e), span = span))
     }
     i = i + 1
   }
   buf
 }
 
-func rewriteEOB(
-  state: in MonoState,
-  env:   in Map[String, TypeExpr],
-  eob:   in ExprOrBlock
-): ExprOrBlock {
+func rewriteEOB(state: in MonoState, env: in Map[String, TypeExpr], eob: in ExprOrBlock): ExprOrBlock {
   match eob {
-    case EOBExpr(e)  -> EOBExpr(expr = rewriteExpr(state, env, e))
+    case EOBExpr(e) -> EOBExpr(expr = rewriteExpr(state, env, e))
     case EOBBlock(b) -> EOBBlock(block = rewriteBlock(state, env, b))
   }
 }
 
-func rewriteMatchArms(
-  state: in MonoState,
-  env:   in Map[String, TypeExpr],
-  arms:  in List[MatchArm]
-): List[MatchArm] {
+func rewriteMatchArms(state: in MonoState, env: in Map[String, TypeExpr], arms: in List[MatchArm]): List[MatchArm] {
   val buf: List[MatchArm] = newList()
   var i = 0
   while i < arms.count {
@@ -1451,41 +2009,34 @@ func rewriteMatchArms(
     // neither arm of codegen's instantiation-sensitive `match guard`.
     var newGuard: Option[Expr] = None
     match arm.guard {
-      case None    -> {}
-      case Some(g) -> { newGuard = Some(value = rewriteExpr(state, env, g)) }
+      case None -> {
+      }
+      case Some(g) -> {
+        newGuard = Some(value = rewriteExpr(state, env, g))
+      }
     }
-    buf.add(MatchArm(
-      pattern = arm.pattern,
-      guard   = newGuard,
-      body    = rewriteEOB(state, env, arm.body),
-      span    = arm.span))
+    buf.add(MatchArm(pattern = arm.pattern, guard = newGuard, body = rewriteEOB(state, env, arm.body), span = arm.span))
     i = i + 1
   }
   buf
 }
 
 func rewriteInterpolSegs(
-  state: in MonoState,
-  env:   in Map[String, TypeExpr],
-  segs:  in List[InterpolatedSegment]
+  state: in MonoState, env: in Map[String, TypeExpr], segs: in List[InterpolatedSegment]
 ): List[InterpolatedSegment] {
   val buf: List[InterpolatedSegment] = newList()
   var i = 0
   while i < segs.count {
     match segs[i] {
       case ISText(t, sp) -> buf.add(ISText(text = t, span = sp))
-      case ISExpr(e)     -> buf.add(ISExpr(expr = rewriteExpr(state, env, e)))
+      case ISExpr(e) -> buf.add(ISExpr(expr = rewriteExpr(state, env, e)))
     }
     i = i + 1
   }
   buf
 }
 
-func rewriteExpr(
-  state: in MonoState,
-  env:   in Map[String, TypeExpr],
-  expr:  in Expr
-): Expr {
+func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Expr): Expr {
   val s = expr.span
   match expr.kind {
 
@@ -1516,17 +2067,21 @@ func rewriteExpr(
                   case Some(baseDecl) -> {
                     val allParams = extractAllParamInfo(baseDecl.generics)
                     if allParams.count > 0 and targs.count == allParams.count {
-                      val subst:      Map[String, TypeExpr] = newMap()
-                      val valueSubst: Map[String, Expr]     = newMap()
+                      val subst: Map[String, TypeExpr] = newMap()
+                      val valueSubst: Map[String, Expr] = newMap()
                       var i = 0
                       while i < allParams.count {
                         val p = allParams[i]
                         match targs[i] {
                           case TAType(te) -> {
-                            if not p.isValue { subst.add(p.name, te) }
+                            if not p.isValue {
+                              subst.add(p.name, te)
+                            }
                           }
                           case TAValue(e) -> {
-                            if p.isValue { valueSubst.add(p.name, e) }
+                            if p.isValue {
+                              valueSubst.add(p.name, e)
+                            }
                           }
                         }
                         i = i + 1
@@ -1537,12 +2092,9 @@ func rewriteExpr(
                         if not state.seenSpecs.containsKey(name) {
                           state.seenSpecs.add(name, true)
                           val specDecl = specializeFunc(baseDecl, name, subst, valueSubst)
-                          state.allSpecs.add(SpecRequest(
-                            specName   = name,
-                            baseDecl   = specDecl,
-                            subst      = subst,
-                            valueSubst = valueSubst,
-                            callSpan   = fn.span))
+                          state.allSpecs.add(
+                            SpecRequest(specName = name, baseDecl = specDecl, subst = subst, valueSubst = valueSubst, callSpan = fn.span)
+                          )
                         }
                         val newFn = singleSegPathExpr(name, fn.span)
                         return Expr(kind = ECall(fn = newFn, args = newArgs), span = s)
@@ -1550,15 +2102,13 @@ func rewriteExpr(
                     }
                     Expr(kind = ECall(fn = fn, args = newArgs), span = s)
                   }
-                  case None ->
-                    Expr(kind = ECall(fn = fn, args = newArgs), span = s)
+                  case None -> Expr(kind = ECall(fn = fn, args = newArgs), span = s)
                 }
               } else {
                 Expr(kind = ECall(fn = fn, args = newArgs), span = s)
               }
             }
-            case _ ->
-              Expr(kind = ECall(fn = rewriteExpr(state, env, fn), args = newArgs), span = s)
+            case _ -> Expr(kind = ECall(fn = rewriteExpr(state, env, fn), args = newArgs), span = s)
           }
         }
         case EPath(path) -> {
@@ -1566,9 +2116,13 @@ func rewriteExpr(
             val fname = path.segments[0]
             match mapGet(state.genDecls, fname) {
               case Some(baseDecl) -> {
-                val typeParams  = extractTypeParamNames(baseDecl.generics)
+                val typeParams = extractTypeParamNames(baseDecl.generics)
                 val valueParams = extractValueParamNames(baseDecl.generics)
-                if typeParams.count > 0 and valueParams.count == 0 {
+                // A genuine call to this generic can never supply more arguments
+                // than it has parameters; reject that case so an unrelated
+                // same-named function isn't hijacked into a broken specialisation
+                // (the unqualified sibling of the #3627 collision).
+                if typeParams.count > 0 and valueParams.count == 0 and args.count <= baseDecl.params.count {
                   // Pure type-generic call site: existing inference path
                   // (value generics require explicit `f[N]` type apps).
                   val subst: Map[String, TypeExpr] = newMap()
@@ -1590,12 +2144,9 @@ func rewriteExpr(
                     if not state.seenSpecs.containsKey(name) {
                       state.seenSpecs.add(name, true)
                       val specDecl = specializeFunc(baseDecl, name, subst, emptyValueSubst)
-                      state.allSpecs.add(SpecRequest(
-                        specName   = name,
-                        baseDecl   = specDecl,
-                        subst      = subst,
-                        valueSubst = emptyValueSubst,
-                        callSpan   = fn.span))
+                      state.allSpecs.add(
+                        SpecRequest(specName = name, baseDecl = specDecl, subst = subst, valueSubst = emptyValueSubst, callSpan = fn.span)
+                      )
                     }
                     val newFn = singleSegPathExpr(name, fn.span)
                     return Expr(kind = ECall(fn = newFn, args = newArgs), span = s)
@@ -1603,40 +2154,76 @@ func rewriteExpr(
                 }
                 Expr(kind = ECall(fn = fn, args = newArgs), span = s)
               }
-              case None ->
-                Expr(kind = ECall(fn = fn, args = newArgs), span = s)
+              case None -> Expr(kind = ECall(fn = fn, args = newArgs), span = s)
             }
           } else {
-            Expr(kind = ECall(fn = fn, args = newArgs), span = s)
+            // Multi-segment qualified call: try the last segment as a generic
+            // so `Validation.toResult(42,[])` specialises when `toResult[T]` is
+            // in genDecls (imported from the `Validation` in-bundle package).
+            // Same inference path as the single-segment case above (#2932).
+            val qfname = path.segments[path.segments.count - 1]
+            match mapGet(state.genDecls, qfname) {
+              case Some(qBaseDecl) -> {
+                val qTypeParams = extractTypeParamNames(qBaseDecl.generics)
+                val qValueParams = extractValueParamNames(qBaseDecl.generics)
+                // Guard against a bare-name collision: `genDecls` is keyed by
+                // last segment only, so `Pkg.fn(a, b, c)` could otherwise match
+                // an unrelated generic `fn[T](x)` in a *different* package (e.g.
+                // `Testing.assertEq(a, b, msg)` vs `Std.Core.Proof.assertEq[T](x)`,
+                // #3627).  A genuine call to this generic can never supply more
+                // arguments than it has parameters, so reject that case and leave
+                // the call for normal (non-generic) resolution.
+                if qTypeParams.count > 0 and qValueParams.count == 0 and args.count <= qBaseDecl.params.count {
+                  val qSubst: Map[String, TypeExpr] = newMap()
+                  var qi = 0
+                  while qi < args.count and qi < qBaseDecl.params.count {
+                    match inferExprTE(state, env, callArgExpr(args[qi])) {
+                      case Some(qArgTE) -> unifyTE(qTypeParams, qBaseDecl.params[qi].ty, qArgTE, qSubst)
+                      case None -> ()
+                    }
+                    qi = qi + 1
+                  }
+                  if substIsComplete(qTypeParams, qSubst) {
+                    val qAllParams = extractAllParamInfo(qBaseDecl.generics)
+                    val qEmptyVS: Map[String, Expr] = newMap()
+                    val qName = specFuncName(qfname, qAllParams, qSubst, qEmptyVS)
+                    validateWhereBounds(qBaseDecl, qSubst, fn.span, state.diags)
+                    if not state.seenSpecs.containsKey(qName) {
+                      state.seenSpecs.add(qName, true)
+                      val qSpecDecl = specializeFunc(qBaseDecl, qName, qSubst, qEmptyVS)
+                      state.allSpecs.add(
+                        SpecRequest(specName = qName, baseDecl = qSpecDecl, subst = qSubst, valueSubst = qEmptyVS, callSpan = fn.span)
+                      )
+                    }
+                    val qNewFn = singleSegPathExpr(qName, fn.span)
+                    return Expr(kind = ECall(fn = qNewFn, args = newArgs), span = s)
+                  }
+                }
+                Expr(kind = ECall(fn = fn, args = newArgs), span = s)
+              }
+              case None -> Expr(kind = ECall(fn = fn, args = newArgs), span = s)
+            }
           }
         }
-        case _ ->
-          Expr(kind = ECall(fn = rewriteExpr(state, env, fn), args = newArgs), span = s)
+        case _ -> Expr(kind = ECall(fn = rewriteExpr(state, env, fn), args = newArgs), span = s)
       }
     }
 
     // ── Recursive sub-expression rewriting ───────────────────────────────
-    case EBinop(op, lhs, rhs) ->
-      Expr(kind = EBinop(
-        op  = op,
-        lhs = rewriteExpr(state, env, lhs),
-        rhs = rewriteExpr(state, env, rhs)), span = s)
+    case EBinop(op, lhs, rhs) -> Expr(kind = EBinop(op = op, lhs = rewriteExpr(state, env, lhs), rhs = rewriteExpr(state, env, rhs)), span = s)
 
-    case EPrefix(op, operand) ->
-      Expr(kind = EPrefix(op = op, operand = rewriteExpr(state, env, operand)), span = s)
+    case EPrefix(op, operand) -> Expr(kind = EPrefix(op = op, operand = rewriteExpr(state, env, operand)), span = s)
 
-    case EMember(recv, name) ->
-      Expr(kind = EMember(
-        receiver   = rewriteExpr(state, env, recv),
-        memberName = name), span = s)
+    case EMember(recv, name) -> Expr(kind = EMember(receiver = rewriteExpr(state, env, recv), memberName = name), span = s)
 
     case EIndex(recv, idxs) -> {
       val newIdxs: List[Expr] = newList()
       var i = 0
-      while i < idxs.count { newIdxs.add(rewriteExpr(state, env, idxs[i])); i = i + 1 }
-      Expr(kind = EIndex(
-        receiver = rewriteExpr(state, env, recv),
-        indices  = newIdxs), span = s)
+      while i < idxs.count {
+        newIdxs.add(rewriteExpr(state, env, idxs[i]))
+        i = i + 1
+      }
+      Expr(kind = EIndex(receiver = rewriteExpr(state, env, recv), indices = newIdxs), span = s)
     }
 
     case EIf(cond, thenB, elseB, form) -> {
@@ -1648,84 +2235,75 @@ func rewriteExpr(
       // pop — corrupting any function the monomorphizer rewrites.
       var newElse: Option[ExprOrBlock] = None
       match elseB {
-        case None    -> {}
-        case Some(e) -> { newElse = Some(value = rewriteEOB(state, env, e)) }
+        case None -> {
+        }
+        case Some(e) -> {
+          newElse = Some(value = rewriteEOB(state, env, e))
+        }
       }
-      Expr(kind = EIf(
-        cond       = rewriteExpr(state, env, cond),
-        thenBranch = rewriteEOB(state, env, thenB),
-        elseBranch = newElse,
-        thenForm   = form), span = s)
+      Expr(
+        kind = EIf(
+          cond = rewriteExpr(state, env, cond),
+          thenBranch = rewriteEOB(state, env, thenB),
+          elseBranch = newElse,
+          thenForm = form
+        ),
+        span = s
+      )
     }
 
-    case EMatch(scrut, arms) ->
-      Expr(kind = EMatch(
-        scrutinee = rewriteExpr(state, env, scrut),
-        arms      = rewriteMatchArms(state, env, arms)), span = s)
+    case EMatch(scrut, arms) -> Expr(kind = EMatch(scrutinee = rewriteExpr(state, env, scrut), arms = rewriteMatchArms(state, env, arms)), span = s)
 
-    case EBlock(blk) ->
-      Expr(kind = EBlock(block = rewriteBlock(state, env, blk)), span = s)
+    case EBlock(blk) -> Expr(kind = EBlock(block = rewriteBlock(state, env, blk)), span = s)
 
-    case EUnsafe(blk) ->
-      Expr(kind = EUnsafe(block = rewriteBlock(state, env, blk)), span = s)
+    case EUnsafe(blk) -> Expr(kind = EUnsafe(block = rewriteBlock(state, env, blk)), span = s)
 
-    case EAwait(inner)     ->
-      Expr(kind = EAwait(inner = rewriteExpr(state, env, inner)), span = s)
+    case EAwait(inner) -> Expr(kind = EAwait(inner = rewriteExpr(state, env, inner)), span = s)
 
-    case EYield(inner)     ->
-      Expr(kind = EYield(inner = rewriteExpr(state, env, inner)), span = s)
+    case EYield(inner) -> Expr(kind = EYield(inner = rewriteExpr(state, env, inner)), span = s)
 
-    case ESpawn(inner)     ->
-      Expr(kind = ESpawn(inner = rewriteExpr(state, env, inner)), span = s)
+    case ESpawn(inner) -> Expr(kind = ESpawn(inner = rewriteExpr(state, env, inner)), span = s)
 
-    case ETry(inner)       ->
-      Expr(kind = ETry(inner = rewriteExpr(state, env, inner)), span = s)
+    case ETry(inner) -> Expr(kind = ETry(inner = rewriteExpr(state, env, inner)), span = s)
 
-    case EPropagate(inner) ->
-      Expr(kind = EPropagate(inner = rewriteExpr(state, env, inner)), span = s)
+    case EPropagate(inner) -> Expr(kind = EPropagate(inner = rewriteExpr(state, env, inner)), span = s)
 
-    case EParen(inner) ->
-      Expr(kind = EParen(inner = rewriteExpr(state, env, inner)), span = s)
+    case EParen(inner) -> Expr(kind = EParen(inner = rewriteExpr(state, env, inner)), span = s)
 
     case ETuple(es) -> {
       val newEs: List[Expr] = newList()
       var i = 0
-      while i < es.count { newEs.add(rewriteExpr(state, env, es[i])); i = i + 1 }
+      while i < es.count {
+        newEs.add(rewriteExpr(state, env, es[i]))
+        i = i + 1
+      }
       Expr(kind = ETuple(exprs = newEs), span = s)
     }
 
     case EList(es) -> {
       val newEs: List[Expr] = newList()
       var i = 0
-      while i < es.count { newEs.add(rewriteExpr(state, env, es[i])); i = i + 1 }
+      while i < es.count {
+        newEs.add(rewriteExpr(state, env, es[i]))
+        i = i + 1
+      }
       Expr(kind = EList(exprs = newEs), span = s)
     }
 
-    case EAssign(target, op, value) ->
-      Expr(kind = EAssign(
-        target = rewriteExpr(state, env, target),
-        op     = op,
-        value  = rewriteExpr(state, env, value)), span = s)
+    case EAssign(target, op, value) -> Expr(kind = EAssign(target = rewriteExpr(state, env, target), op = op, value = rewriteExpr(state, env, value)), span = s)
 
-    case EInterpolated(segs) ->
-      Expr(kind = EInterpolated(segments = rewriteInterpolSegs(state, env, segs)), span = s)
+    case EInterpolated(segs) -> Expr(kind = EInterpolated(segments = rewriteInterpolSegs(state, env, segs)), span = s)
 
-    case ELambda(lparams, body) ->
-      Expr(kind = ELambda(lambdaParams = lparams, body = rewriteBlock(state, env, body)), span = s)
+    case ELambda(lparams, body) -> Expr(kind = ELambda(lambdaParams = lparams, body = rewriteBlock(state, env, body)), span = s)
 
-    case ETypeApp(fn, targs) ->
-      Expr(kind = ETypeApp(fn = rewriteExpr(state, env, fn), args = targs), span = s)
+    case ETypeApp(fn, targs) -> Expr(kind = ETypeApp(fn = rewriteExpr(state, env, fn), args = targs), span = s)
 
     // Leaves: literals, EPath, ESelf, EResult, EOld, EForall, EExists, ERange, EError
     case _ -> expr
   }
 }
 
-func rewriteBlock(
-  state: in MonoState,
-  env:   in Map[String, TypeExpr],
-  blk:   in Block
-): Block {
+func rewriteBlock(state: in MonoState, env: in Map[String, TypeExpr], blk: in Block): Block {
   val newStmts: List[Statement] = newList()
   var i = 0
   while i < blk.statements.count {
@@ -1735,21 +2313,12 @@ func rewriteBlock(
   Block(statements = newStmts, span = blk.span)
 }
 
-func rewriteStmt(
-  state: in MonoState,
-  env:   in Map[String, TypeExpr],
-  stmt:  in Statement
-): Statement {
+func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in Statement): Statement {
   val s = stmt.span
   match stmt.kind {
-    case SLocal(binding) ->
-      Statement(kind = SLocal(binding = rewriteBinding(state, env, binding)), span = s)
+    case SLocal(binding) -> Statement(kind = SLocal(binding = rewriteBinding(state, env, binding)), span = s)
 
-    case SAssign(target, op, value) ->
-      Statement(kind = SAssign(
-        target = rewriteExpr(state, env, target),
-        op     = op,
-        value  = rewriteExpr(state, env, value)), span = s)
+    case SAssign(target, op, value) -> Statement(kind = SAssign(target = rewriteExpr(state, env, target), op = op, value = rewriteExpr(state, env, value)), span = s)
 
     case SReturn(opt) -> {
       // Typed `var` + assignment, not a two-arm `None`/`Some` match — see the
@@ -1757,47 +2326,32 @@ func rewriteStmt(
       // widen the match to `Option<object>` and corrupt the rewritten `return`.
       var newOpt: Option[Expr] = None
       match opt {
-        case None    -> {}
-        case Some(e) -> { newOpt = Some(value = rewriteExpr(state, env, e)) }
+        case None -> {
+        }
+        case Some(e) -> {
+          newOpt = Some(value = rewriteExpr(state, env, e))
+        }
       }
       Statement(kind = SReturn(value = newOpt), span = s)
     }
 
-    case SThrow(e) ->
-      Statement(kind = SThrow(expr = rewriteExpr(state, env, e)), span = s)
+    case SThrow(e) -> Statement(kind = SThrow(expr = rewriteExpr(state, env, e)), span = s)
 
-    case SExpr(e) ->
-      Statement(kind = SExpr(expr = rewriteExpr(state, env, e)), span = s)
+    case SExpr(e) -> Statement(kind = SExpr(expr = rewriteExpr(state, env, e)), span = s)
 
-    case SWhile(lbl, cond, body) ->
-      Statement(kind = SWhile(
-        label = lbl,
-        cond  = rewriteExpr(state, env, cond),
-        body  = rewriteBlock(state, env, body)), span = s)
+    case SWhile(lbl, cond, body) -> Statement(kind = SWhile(label = lbl, cond = rewriteExpr(state, env, cond), body = rewriteBlock(state, env, body)), span = s)
 
-    case SFor(lbl, pat, iter, body) ->
-      Statement(kind = SFor(
-        label = lbl,
-        pat   = pat,
-        iter  = rewriteExpr(state, env, iter),
-        body  = rewriteBlock(state, env, body)), span = s)
+    case SFor(lbl, pat, iter, body) -> Statement(kind = SFor(label = lbl, pat = pat, iter = rewriteExpr(state, env, iter), body = rewriteBlock(state, env, body)), span = s)
 
-    case SLoop(lbl, body) ->
-      Statement(kind = SLoop(label = lbl, body = rewriteBlock(state, env, body)), span = s)
+    case SLoop(lbl, body) -> Statement(kind = SLoop(label = lbl, body = rewriteBlock(state, env, body)), span = s)
 
-    case SDefer(body) ->
-      Statement(kind = SDefer(body = rewriteBlock(state, env, body)), span = s)
+    case SDefer(body) -> Statement(kind = SDefer(body = rewriteBlock(state, env, body)), span = s)
 
-    case SScope(lbl, body) ->
-      Statement(kind = SScope(binding = lbl, body = rewriteBlock(state, env, body)), span = s)
+    case SScope(lbl, body) -> Statement(kind = SScope(binding = lbl, body = rewriteBlock(state, env, body)), span = s)
 
-    case SInvariant(e) ->
-      Statement(kind = SInvariant(expr = rewriteExpr(state, env, e)), span = s)
+    case SInvariant(e) -> Statement(kind = SInvariant(expr = rewriteExpr(state, env, e)), span = s)
 
-    case SRule(lhs, rhs) ->
-      Statement(kind = SRule(
-        lhs = rewriteExpr(state, env, lhs),
-        rhs = rewriteExpr(state, env, rhs)), span = s)
+    case SRule(lhs, rhs) -> Statement(kind = SRule(lhs = rewriteExpr(state, env, lhs), rhs = rewriteExpr(state, env, rhs)), span = s)
 
     case STry(body, catches, finally_) -> {
       val newBody = rewriteBlock(state, env, body)
@@ -1805,11 +2359,14 @@ func rewriteStmt(
       var i = 0
       while i < catches.count {
         val cc = catches[i]
-        newCatches.add(CatchClause(
-          typeName = cc.typeName,
-          bindName = cc.bindName,
-          body     = rewriteBlock(state, env, cc.body),
-          span     = cc.span))
+        newCatches.add(
+          CatchClause(
+            typeName = cc.typeName,
+            bindName = cc.bindName,
+            body = rewriteBlock(state, env, cc.body),
+            span = cc.span
+          )
+        )
         i = i + 1
       }
       // Typed `var` + assignment, not a two-arm match — see the `EIf` note
@@ -1817,8 +2374,11 @@ func rewriteStmt(
       // try/finally lowering.
       var newFinally: Option[Block] = None
       match finally_ {
-        case None     -> {}
-        case Some(fb) -> { newFinally = Some(value = rewriteBlock(state, env, fb)) }
+        case None -> {
+        }
+        case Some(fb) -> {
+          newFinally = Some(value = rewriteBlock(state, env, fb))
+        }
       }
       Statement(kind = STry(body = newBody, catches = newCatches, finally_ = newFinally), span = s)
     }
@@ -1834,19 +2394,15 @@ func rewriteStmt(
 // reach record field projections through `b.<field>` later.  Re-binding
 // `var` / `let` with a fresh annotation drops the prior env entry so
 // shadows reflect the new type (closes the MEDIUM #349 gap).
-func rewriteBinding(
-  state:   in MonoState,
-  env:     in Map[String, TypeExpr],
-  binding: in LocalBinding
-): LocalBinding {
+func rewriteBinding(state: in MonoState, env: in Map[String, TypeExpr], binding: in LocalBinding): LocalBinding {
   match binding {
     case LBVal(pat, tyOpt, init) -> {
       match tyOpt {
         case Some(te) -> trackPatternEnv(env, pat, te)
-        case None     -> {
+        case None -> {
           match inferExprTE(state, env, init) {
             case Some(inferred) -> trackPatternEnv(env, pat, inferred)
-            case None           -> ()
+            case None -> ()
           }
         }
       }
@@ -1855,7 +2411,9 @@ func rewriteBinding(
     case LBVar(name, tyOpt, initOpt) -> {
       match tyOpt {
         case Some(te) -> {
-          if env.containsKey(name) { env.remove(name) }
+          if env.containsKey(name) {
+            env.remove(name)
+          }
           env.add(name, te)
         }
         case None -> {
@@ -1863,7 +2421,9 @@ func rewriteBinding(
             case Some(init) -> {
               match inferExprTE(state, env, init) {
                 case Some(inferred) -> {
-                  if env.containsKey(name) { env.remove(name) }
+                  if env.containsKey(name) {
+                    env.remove(name)
+                  }
                   env.add(name, inferred)
                 }
                 case None -> ()
@@ -1877,21 +2437,28 @@ func rewriteBinding(
       // arm would be `None<object>` and corrupt an init-less `var` binding.
       var newInit: Option[Expr] = None
       match initOpt {
-        case None    -> {}
-        case Some(e) -> { newInit = Some(value = rewriteExpr(state, env, e)) }
+        case None -> {
+        }
+        case Some(e) -> {
+          newInit = Some(value = rewriteExpr(state, env, e))
+        }
       }
       LBVar(name = name, ty = tyOpt, init = newInit)
     }
     case LBLet(name, tyOpt, init) -> {
       match tyOpt {
         case Some(te) -> {
-          if env.containsKey(name) { env.remove(name) }
+          if env.containsKey(name) {
+            env.remove(name)
+          }
           env.add(name, te)
         }
         case None -> {
           match inferExprTE(state, env, init) {
             case Some(inferred) -> {
-              if env.containsKey(name) { env.remove(name) }
+              if env.containsKey(name) {
+                env.remove(name)
+              }
               env.add(name, inferred)
             }
             case None -> ()
@@ -1906,7 +2473,9 @@ func rewriteBinding(
 func trackPatternEnv(env: in Map[String, TypeExpr], pat: in Pattern, te: in TypeExpr): Unit {
   match pat.kind {
     case PBinding(name, _) -> {
-      if not env.containsKey(name) { env.add(name, te) }
+      if not env.containsKey(name) {
+        env.add(name, te)
+      }
     }
     case _ -> ()
   }
@@ -1915,7 +2484,6 @@ func trackPatternEnv(env: in Map[String, TypeExpr], pat: in Pattern, te: in Type
 // ─────────────────────────────────────────────────────────────────────────────
 // §13. Parameter-seeded type environment
 // ─────────────────────────────────────────────────────────────────────────────
-
 func seedEnvFromParams(params: in List[Param]): Map[String, TypeExpr] {
   val env: Map[String, TypeExpr] = newMap()
   var i = 0
@@ -1929,22 +2497,22 @@ func seedEnvFromParams(params: in List[Param]): Map[String, TypeExpr] {
 // ─────────────────────────────────────────────────────────────────────────────
 // §14. Rewrite a FunctionBody
 // ─────────────────────────────────────────────────────────────────────────────
-
 func rewriteFuncBody(
-  state:  in MonoState,
-  env:    in Map[String, TypeExpr],
-  body:   in Option[FunctionBody]
+  state: in MonoState, env: in Map[String, TypeExpr], body: in Option[FunctionBody]
 ): Option[FunctionBody] {
   // Typed `var` + assignment, not a two-arm match: a bare-`None` arm
   // would be `None<object>` and corrupt a body-less function's `decl.body`.
   var newBody: Option[FunctionBody] = None
   match body {
-    case None -> {}
+    case None -> {
+    }
     case Some(fb) -> {
-      newBody = Some(value = match fb {
-        case FBBlock(blk) -> FBBlock(block = rewriteBlock(state, env, blk))
-        case FBExpr(e)    -> FBExpr(expr  = rewriteExpr(state, env, e))
-      })
+      newBody = Some(
+        value = match fb {
+          case FBBlock(blk) -> FBBlock(block = rewriteBlock(state, env, blk))
+          case FBExpr(e) -> FBExpr(expr = rewriteExpr(state, env, e))
+        }
+      )
     }
   }
   newBody
@@ -1954,45 +2522,44 @@ func rewriteFuncBody(
 // sites specialised), preserving every other field.  Shared by the Phase-2
 // `IImpl` / `IInterface` arms so impl and interface default-method bodies get
 // the same generic-call rewriting as free functions (#1727).
-func rewriteMethodDecl(
-  state: in MonoState,
-  env:   in Map[String, TypeExpr],
-  fn:    in FunctionDecl
-): FunctionDecl {
+func rewriteMethodDecl(state: in MonoState, env: in Map[String, TypeExpr], fn: in FunctionDecl): FunctionDecl {
   val newBody = rewriteFuncBody(state, env, fn.body)
   FunctionDecl(
     docComments = fn.docComments,
     annotations = fn.annotations,
-    visibility  = fn.visibility,
-    isAsync     = fn.isAsync,
-    name        = fn.name,
-    generics    = fn.generics,
-    params      = fn.params,
-    ret         = fn.ret,
+    visibility = fn.visibility,
+    isAsync = fn.isAsync,
+    name = fn.name,
+    generics = fn.generics,
+    params = fn.params,
+    ret = fn.ret,
     whereClause = fn.whereClause,
-    contracts   = fn.contracts,
-    body        = newBody,
-    span        = fn.span)
+    contracts = fn.contracts,
+    body = newBody,
+    span = fn.span
+  )
 }
 
 // One-shot value-generic substitution over a FunctionBody.  Replaces every
 // `EPath([N])` whose name `N` is in `valueSubst` with the bound Expr.
 // Skipped when the substitution map is empty (the common case for pure
 // type-generic specialisations).
-func substValueInBody(
-  valueSubst: in Map[String, Expr],
-  body:       in Option[FunctionBody]
-): Option[FunctionBody] {
-  if valueSubst.count == 0 { return body }
+func substValueInBody(valueSubst: in Map[String, Expr], body: in Option[FunctionBody]): Option[FunctionBody] {
+  if valueSubst.count == 0 {
+    return body
+  }
   // Typed `var` + assignment, not a two-arm match.
   var newBody: Option[FunctionBody] = None
   match body {
-    case None -> {}
+    case None -> {
+    }
     case Some(fb) -> {
-      newBody = Some(value = match fb {
-        case FBBlock(blk) -> FBBlock(block = substBlockValue(valueSubst, blk))
-        case FBExpr(e)    -> FBExpr(expr  = substExprValue(valueSubst, e))
-      })
+      newBody = Some(
+        value = match fb {
+          case FBBlock(blk) -> FBBlock(block = substBlockValue(valueSubst, blk))
+          case FBExpr(e) -> FBExpr(expr = substExprValue(valueSubst, e))
+        }
+      )
     }
   }
   newBody
@@ -2001,7 +2568,6 @@ func substValueInBody(
 // ─────────────────────────────────────────────────────────────────────────────
 // §15. Main entry point
 // ─────────────────────────────────────────────────────────────────────────────
-
 /// Monomorphise all same-package generic functions in `file`.
 ///
 /// Returns a `MonoResult` whose `file` field contains:
@@ -2024,9 +2590,39 @@ pub func monoFile(file: in SourceFile): MonoResult {
 /// responsibility: the imported function's body must reference only items
 /// the user's compilation unit can resolve.  Used by the MSIL / JVM bridges
 /// once Band 6 (`Lyric.RestoredPackages`) is wired through.
-pub func monoFileWithImports(
-  file:              in SourceFile,
-  importedGenDecls:  in List[FunctionDecl]
+pub func monoFileWithImports(file: in SourceFile, importedGenDecls: in List[FunctionDecl]): MonoResult {
+  val emptyIfaces: List[InterfaceDecl] = newList()
+  monoFileWithImportsAndIfaces(file, importedGenDecls, emptyIfaces)
+}
+
+/// As `monoFileWithImports`, but also takes the interface decls visible to
+/// `file` (same-package interfaces are collected from the file itself;
+/// `importedIfaceDecls` carries cross-package ones).  These let the inferer
+/// resolve a method-call return type (`recv.method(...)`) on an
+/// interface-typed receiver, which is what lets a generic predicate over the
+/// method's result — e.g. `isOk(bucket.exists(...))` — specialise instead of
+/// staying type-erased (#3813).
+pub func monoFileWithImportsAndIfaces(
+  file: in SourceFile,
+  importedGenDecls: in List[FunctionDecl],
+  importedIfaceDecls: in List[InterfaceDecl],
+): MonoResult {
+  val emptyRecs: List[RecordDecl] = newList()
+  monoFileWithImportsAndTypeDecls(file, importedGenDecls, importedIfaceDecls, emptyRecs)
+}
+
+/// As `monoFileWithImportsAndIfaces`, but also takes cross-package *record*
+/// decls.  These let the inferer resolve a field projection (`recv.field`) on
+/// a value whose record type is declared in another package, so a generic
+/// predicate over that field — e.g. `isSome(page.nextContinuationToken)` where
+/// `page: ListResult` is an imported record and `nextContinuationToken:
+/// Option[String]` — specialises instead of staying type-erased (#3813
+/// follow-up; the lyric-storage `list` pagination case).
+pub func monoFileWithImportsAndTypeDecls(
+  file: in SourceFile,
+  importedGenDecls: in List[FunctionDecl],
+  importedIfaceDecls: in List[InterfaceDecl],
+  importedRecordDecls: in List[RecordDecl],
 ): MonoResult {
   // ── Phase 1: collect generic function decls ─────────────────────────────
   // #349: also collect every IFunc (generic + non-generic) and every
@@ -2035,9 +2631,11 @@ pub func monoFileWithImports(
   // Generic methods nested inside interface / impl blocks are walked
   // by `collectIfaceGenerics` / `collectImplGenerics` so default-bodied
   // generic methods also become specialisation candidates.
-  val genDecls:    Map[String, FunctionDecl] = newMap()
-  val funcDecls:   Map[String, FunctionDecl] = newMap()
-  val recordDecls: Map[String, RecordDecl]   = newMap()
+  val genDecls: Map[String, FunctionDecl] = newMap()
+  val funcDecls: Map[String, FunctionDecl] = newMap()
+  val recordDecls: Map[String, RecordDecl] = newMap()
+  // #3813: interface decls keyed by simple name, for method-return inference.
+  val ifaceDecls: Map[String, InterfaceDecl] = newMap()
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -2064,11 +2662,39 @@ pub func monoFileWithImports(
           recordDecls.add(decl.name, decl)
         }
       }
-      case IInterface(decl) -> collectIfaceGenerics(decl, genDecls, funcDecls)
-      case IImpl(decl)      -> collectImplGenerics(decl, genDecls, funcDecls)
+      case IInterface(decl) -> {
+        if not ifaceDecls.containsKey(decl.name) {
+          ifaceDecls.add(decl.name, decl)
+        }
+        collectIfaceGenerics(decl, genDecls, funcDecls)
+      }
+      case IImpl(decl) -> collectImplGenerics(decl, genDecls, funcDecls)
       case _ -> ()
     }
     i = i + 1
+  }
+
+  // Merge imported (cross-package) interface decls.  Same-package wins on
+  // name collision, mirroring the imported-generic merge below.
+  var ii2 = 0
+  while ii2 < importedIfaceDecls.count {
+    val idf = importedIfaceDecls[ii2]
+    if not ifaceDecls.containsKey(idf.name) {
+      ifaceDecls.add(idf.name, idf)
+    }
+    ii2 = ii2 + 1
+  }
+
+  // Merge imported (cross-package) record decls — same-package wins.  Lets
+  // `recv.field` projections resolve when `recv`'s record type is declared in
+  // another package (#3813 follow-up).
+  var ir2 = 0
+  while ir2 < importedRecordDecls.count {
+    val rdf = importedRecordDecls[ir2]
+    if not recordDecls.containsKey(rdf.name) {
+      recordDecls.add(rdf.name, rdf)
+    }
+    ir2 = ir2 + 1
   }
 
   // Merge imported generic decls (cross-package surface).  Same-package
@@ -2104,11 +2730,11 @@ pub func monoFileWithImports(
   // If nothing to monomorphise, return early.
   if genDecls.count == 0 {
     val emptyRewrites: Map[String, String] = newMap()
-    val emptyDiags:    List[Diagnostic]    = newList()
+    val emptyDiags: List[Diagnostic] = newList()
     return MonoResult(file = file, rewrites = emptyRewrites, diagnostics = emptyDiags)
   }
 
-  val state = newMonoState(genDecls, funcDecls, recordDecls)
+  val state = newMonoState(genDecls, funcDecls, recordDecls, ifaceDecls)
 
   // ── Phase 2: rewrite non-generic items ──────────────────────────────────
   val rewrittenItems: List[Item] = newList()
@@ -2120,31 +2746,46 @@ pub func monoFileWithImports(
         match decl.generics {
           case Some(_) -> {
             // Generic functions are dropped here; specialisations are added below.
-            ()
+            //
+            // Exception: a generic `@externTarget` kernel wrapper is kept (with
+            // its type parameters erased by codegen's generic-extern path).  A
+            // call site reached by the monomorphizer is still rewritten to a
+            // concrete copy, but call sites the monomorphizer does NOT walk —
+            // e.g. a zero-argument ctor extern (`newConcurrentDict()`) invoked
+            // from a module-level `val` initializer — keep calling the generic
+            // name, which would resolve to nothing if it were dropped.  `@axiom`
+            // generics stay dropped (proof-only, never emitted as runtime code).
+            if annsKeepGenericExternMono(decl.annotations) and not annsHaveAxiomMono(decl.annotations) {
+              rewrittenItems.add(item)
+            }
           }
           // Wildcard (not `case None`): a `@derive`-synthesised `None` lowers to a bare null that `isinst` misses — see #1796.
           case _ -> {
-            val env  = seedEnvFromParams(decl.params)
+            val env = seedEnvFromParams(decl.params)
             val newBody = rewriteFuncBody(state, env, decl.body)
             val newDecl = FunctionDecl(
               docComments = decl.docComments,
               annotations = decl.annotations,
-              visibility  = decl.visibility,
-              isAsync     = decl.isAsync,
-              name        = decl.name,
-              generics    = None,
-              params      = decl.params,
-              ret         = decl.ret,
+              visibility = decl.visibility,
+              isAsync = decl.isAsync,
+              name = decl.name,
+              generics = None,
+              params = decl.params,
+              ret = decl.ret,
               whereClause = decl.whereClause,
-              contracts   = decl.contracts,
-              body        = newBody,
-              span        = decl.span)
-            rewrittenItems.add(Item(
-              docComments = item.docComments,
-              annotations = item.annotations,
-              visibility  = item.visibility,
-              kind        = IFunc(decl = newDecl),
-              span        = item.span))
+              contracts = decl.contracts,
+              body = newBody,
+              span = decl.span
+            )
+            rewrittenItems.add(
+              Item(
+                docComments = item.docComments,
+                annotations = item.annotations,
+                visibility = item.visibility,
+                kind = IFunc(decl = newDecl),
+                span = item.span
+              )
+            )
           }
         }
       }
@@ -2170,18 +2811,24 @@ pub func monoFileWithImports(
           }
           mi = mi + 1
         }
-        rewrittenItems.add(Item(
-          docComments = item.docComments,
-          annotations = item.annotations,
-          visibility  = item.visibility,
-          kind        = IImpl(decl = ImplDecl(
-            generics    = decl.generics,
-            iface       = decl.iface,
-            target      = decl.target,
-            whereClause = decl.whereClause,
-            members     = newMembers,
-            span        = decl.span)),
-          span = item.span))
+        rewrittenItems.add(
+          Item(
+            docComments = item.docComments,
+            annotations = item.annotations,
+            visibility = item.visibility,
+            kind = IImpl(
+              decl = ImplDecl(
+                generics = decl.generics,
+                iface = decl.iface,
+                target = decl.target,
+                whereClause = decl.whereClause,
+                members = newMembers,
+                span = decl.span
+              )
+            ),
+            span = item.span
+          )
+        )
       }
       case IInterface(decl) -> {
         val newMembers: List[InterfaceMember] = newList()
@@ -2192,22 +2839,28 @@ pub func monoFileWithImports(
               val env = seedEnvFromParams(fn.params)
               newMembers.add(IMFunc(fn = rewriteMethodDecl(state, env, fn)))
             }
-            case IMSig(sig)    -> newMembers.add(IMSig(sig = sig))
-            case IMAssoc(a)    -> newMembers.add(IMAssoc(assoc = a))
+            case IMSig(sig) -> newMembers.add(IMSig(sig = sig))
+            case IMAssoc(a) -> newMembers.add(IMAssoc(assoc = a))
           }
           mi = mi + 1
         }
-        rewrittenItems.add(Item(
-          docComments = item.docComments,
-          annotations = item.annotations,
-          visibility  = item.visibility,
-          kind        = IInterface(decl = InterfaceDecl(
-            name        = decl.name,
-            generics    = decl.generics,
-            whereClause = decl.whereClause,
-            members     = newMembers,
-            span        = decl.span)),
-          span = item.span))
+        rewrittenItems.add(
+          Item(
+            docComments = item.docComments,
+            annotations = item.annotations,
+            visibility = item.visibility,
+            kind = IInterface(
+              decl = InterfaceDecl(
+                name = decl.name,
+                generics = decl.generics,
+                whereClause = decl.whereClause,
+                members = newMembers,
+                span = decl.span
+              )
+            ),
+            span = item.span
+          )
+        )
       }
       case _ -> rewrittenItems.add(item)
     }
@@ -2230,10 +2883,12 @@ pub func monoFileWithImports(
   var wi = 0
   while wi < state.allSpecs.count {
     if wi >= specBudget {
-      panic("Lyric.Mono: specialisation budget exhausted (" + toString(specBudget)
-        + " specs).  Most likely a generic function recurses with an unbounded "
-        + "type-argument shape (e.g. `f[T] = … f[List[T]] …`).  Refactor to "
-        + "stop instantiating with strictly larger types.")
+      panic(
+        "Lyric.Mono: specialisation budget exhausted (" + toString(specBudget) +
+          " specs).  Most likely a generic function recurses with an unbounded " +
+          "type-argument shape (e.g. `f[T] = … f[List[T]] …`).  Refactor to " +
+          "stop instantiating with strictly larger types."
+      )
     }
     val req = state.allSpecs[wi]
     // The baseDecl already has type-var and value-var substitution applied
@@ -2241,21 +2896,22 @@ pub func monoFileWithImports(
     // the body too (e.g. `for i in 0..N` → `for i in 0..3`), then walk
     // for nested generic calls.
     val substitutedBody = substValueInBody(req.valueSubst, req.baseDecl.body)
-    val env    = seedEnvFromParams(req.baseDecl.params)
+    val env = seedEnvFromParams(req.baseDecl.params)
     val newBody = rewriteFuncBody(state, env, substitutedBody)
     val finalDecl = FunctionDecl(
       docComments = req.baseDecl.docComments,
       annotations = req.baseDecl.annotations,
-      visibility  = req.baseDecl.visibility,
-      isAsync     = req.baseDecl.isAsync,
-      name        = req.baseDecl.name,
-      generics    = None,
-      params      = req.baseDecl.params,
-      ret         = req.baseDecl.ret,
+      visibility = req.baseDecl.visibility,
+      isAsync = req.baseDecl.isAsync,
+      name = req.baseDecl.name,
+      generics = None,
+      params = req.baseDecl.params,
+      ret = req.baseDecl.ret,
       whereClause = None,
-      contracts   = req.baseDecl.contracts,
-      body        = newBody,
-      span        = req.baseDecl.span)
+      contracts = req.baseDecl.contracts,
+      body = newBody,
+      span = req.baseDecl.span
+    )
     finalSpecDecls.add(finalDecl)
     wi = wi + 1
   }
@@ -2265,7 +2921,10 @@ pub func monoFileWithImports(
 
   // Non-generic items (rewritten call sites)
   var ri = 0
-  while ri < rewrittenItems.count { allItems.add(rewrittenItems[ri]); ri = ri + 1 }
+  while ri < rewrittenItems.count {
+    allItems.add(rewrittenItems[ri])
+    ri = ri + 1
+  }
 
   // Specialised function items (each gets a fresh empty doc/ann list)
   var si = 0
@@ -2273,12 +2932,9 @@ pub func monoFileWithImports(
     val sd = finalSpecDecls[si]
     val specDocs: List[DocComment] = newList()
     val specAnns: List[Annotation] = newList()
-    allItems.add(Item(
-      docComments = specDocs,
-      annotations = specAnns,
-      visibility  = None,
-      kind        = IFunc(decl = sd),
-      span        = sd.span))
+    allItems.add(
+      Item(docComments = specDocs, annotations = specAnns, visibility = None, kind = IFunc(decl = sd), span = sd.span)
+    )
     si = si + 1
   }
 
@@ -2297,12 +2953,13 @@ pub func monoFileWithImports(
   }
 
   val newFile = SourceFile(
-    moduleDoc       = file.moduleDoc,
+    moduleDoc = file.moduleDoc,
     fileAnnotations = file.fileAnnotations,
-    packageDecl     = file.packageDecl,
-    imports         = file.imports,
-    items           = allItems,
-    span            = file.span)
+    packageDecl = file.packageDecl,
+    imports = file.imports,
+    items = allItems,
+    span = file.span
+  )
 
   MonoResult(file = newFile, rewrites = rewrites, diagnostics = state.diags)
 }

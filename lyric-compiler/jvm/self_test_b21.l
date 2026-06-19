@@ -1,12 +1,11 @@
-// jvm/self_test_b21.l — Stage B21: String concatenation via StringBuilder.
-//
-// Generates a class with a concat(String, String) static helper that uses
-// StringBuilder to concatenate two strings, demonstrating the JVM lowering
-// pattern for Lyric's `+` operator on String.
-//
-// Exercises: new StringBuilder, invokespecial <init>()V,
-// invokevirtual append(String)LStringBuilder, invokevirtual toString()String.
-
+//! jvm/self_test_b21.l — Stage B21: String concatenation via StringBuilder.
+//!
+//! Generates a class with a concat(String, String) static helper that uses
+//! StringBuilder to concatenate two strings, demonstrating the JVM lowering
+//! pattern for Lyric's `+` operator on String.
+//!
+//! Exercises: new StringBuilder, invokespecial <init>()V,
+//! invokevirtual append(String)LStringBuilder, invokevirtual toString()String.
 package Jvm.SelfTestB21
 
 import Std.Core
@@ -18,7 +17,7 @@ import Jvm.Driver
 
 func makeStrUtilClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
   // concat(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;
   //   new StringBuilder
@@ -31,10 +30,15 @@ func makeStrUtilClassBytes(): List[Byte] {
   //   invokevirtual StringBuilder.toString()String
   //   areturn
 
-  val sbClass   = poolClass(pool, "java/lang/StringBuilder")
-  val sbInit    = poolMethodref(pool, "java/lang/StringBuilder", "<init>", "()V")
-  val sbAppend  = poolMethodref(pool, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;")
-  val sbToStr   = poolMethodref(pool, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;")
+  val sbClass = poolClass(pool, "java/lang/StringBuilder")
+  val sbInit = poolMethodref(pool, "java/lang/StringBuilder", "<init>", "()V")
+  val sbAppend = poolMethodref(
+    pool,
+    "java/lang/StringBuilder",
+    "append",
+    "(Ljava/lang/String;)Ljava/lang/StringBuilder;"
+  )
+  val sbToStr = poolMethodref(pool, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;")
 
   emitNew(asm, sbClass)
   emitDup(asm)
@@ -63,11 +67,11 @@ func makeStrUtilClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOut    = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val concatRef = poolMethodref(pool, "StrUtil", "concat", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;")
-  val println_  = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val println_ = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
 
   emitGetstatic(asm, sysOut)
   emitPushString(asm, "hello ")
@@ -89,24 +93,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b21"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val strUtilBytes = makeStrUtilClassBytes()
-  val mainBytes    = makeMainClassBytes()
+  val mainBytes = makeMainClassBytes()
 
   val strUtilClass = BuiltClass(binaryName = "StrUtil", bytes = strUtilBytes)
-  val mainClass    = BuiltClass(binaryName = "Main",    bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(strUtilClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB21",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

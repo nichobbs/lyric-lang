@@ -1,7 +1,7 @@
-// parser_core.l — ParseState, cursor helpers, token predicates, span
-// utilities, diagnostics, module-path, annotations, package, imports.
-// Mirrors Lyric.Parser.Cursor + the top-of-file parsing logic in
-// compiler/src/Lyric.Parser/Parser.fs (parseModulePath through parseImports).
+//! parser_core.l — ParseState, cursor helpers, token predicates, span
+//! utilities, diagnostics, module-path, annotations, package, imports.
+//! Mirrors Lyric.Parser.Cursor + the top-of-file parsing logic in
+//! compiler/src/Lyric.Parser/Parser.fs (parseModulePath through parseImports).
 package Lyric.Parser
 
 import Std.Core
@@ -11,20 +11,18 @@ import Lyric.Lexer
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper record: named (name, span) pair — avoids tuple returns.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub record NameAndSpan {
   name: String
   span: Span
+  // ─────────────────────────────────────────────────────────────────────────────
+  // ParseState — mutable cursor over a token stream.
+  // ─────────────────────────────────────────────────────────────────────────────
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ParseState — mutable cursor over a token stream.
-// ─────────────────────────────────────────────────────────────────────────────
-
 pub record ParseState {
-  tokens:    List[SpannedToken]
-  pos:       Int
-  diags:     List[Diagnostic]
+  tokens: List[SpannedToken]
+  pos: Int
+  diags: List[Diagnostic]
   /// Concrete-syntax-tree event log — see `parser_cst.l`.  Token
   /// indices in `CeStart` / `CeFinish` reference `tokens` directly,
   /// so internal `mark` / `reset` speculation does not need to
@@ -42,7 +40,6 @@ pub func makeParseState(tokens: in List[SpannedToken], diags: in List[Diagnostic
 // `cstStart(st, kind)` ... `cstFinish(st)`; tokens consumed in
 // between (via `advance` / `tryEatXxx`) are claimed by that node.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub func cstStart(st: inout ParseState, kind: in SyntaxKind): Unit {
   st.cstEvents.add(CeStart(kind = kind, tokenStart = st.pos))
 }
@@ -54,7 +51,6 @@ pub func cstFinish(st: inout ParseState): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // Cursor helpers.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub func isAtEnd(st: in ParseState): Bool {
   if st.pos >= st.tokens.count {
     true
@@ -122,11 +118,15 @@ pub func lastSpan(st: in ParseState): Span {
 
 pub func advance(st: inout ParseState): SpannedToken {
   val t = peek(st)
-  if st.pos < st.tokens.count { st.pos = st.pos + 1 }
+  if st.pos < st.tokens.count {
+    st.pos = st.pos + 1
+  }
   t
 }
 
-pub func mark(st: in ParseState): Int { st.pos }
+pub func mark(st: in ParseState): Int {
+  st.pos
+}
 
 pub func reset(st: inout ParseState, pos: in Int) {
   st.pos = pos
@@ -141,7 +141,9 @@ pub func skipStmtEnds(st: inout ParseState): Int {
         st.pos = st.pos + 1
         n = n + 1
       }
-      case _ -> { keepGoing = false }
+      case _ -> {
+        keepGoing = false
+      }
     }
   }
   n
@@ -150,7 +152,6 @@ pub func skipStmtEnds(st: inout ParseState): Int {
 // ─────────────────────────────────────────────────────────────────────────────
 // Token predicate helpers.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub func isKw(tok: in Token, kw: in Keyword): Bool {
   match tok {
     case TKeyword(k) -> k == kw
@@ -175,7 +176,6 @@ pub func identStr(tok: in Token): String {
 // ─────────────────────────────────────────────────────────────────────────────
 // Token-eating helpers — return Option[SpannedToken].
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub func tryEatKw(st: inout ParseState, kw: in Keyword): Option[SpannedToken] {
   val t = peek(st)
   if isKw(t.token, kw) {
@@ -207,8 +207,40 @@ pub func tryEatIdent(st: inout ParseState): Option[NameAndSpan] {
   }
 }
 
+// Hard keywords (grammar §1.5) that are nonetheless accepted as ordinary
+// identifiers, because they are *pure position-introducers*: each carries
+// keyword meaning only at item position (or, for `entry`, inside a
+// `protected type` body), and never in expression, statement, or
+// binding-name position.  Accepting them as identifiers there removes a
+// class of needless parse failures (`val entry = …`, `record.field`,
+// `var type = …`) without any grammar ambiguity, mirroring how `result`
+// is already accepted.  Operators (`and`/`or`/`is`/`as`), expression or
+// statement starters (`if`/`match`/`return`/`for`/…), parameter/visibility
+// modifiers (`in`/`out`/`pub`/…), and literals (`true`/`self`/…) are
+// deliberately NOT in this set — admitting them as identifiers would be
+// genuinely ambiguous or harm readability.  Returns the keyword's source
+// spelling when it is contextually identifier-usable.  (D093)
+pub func contextualIdentKeyword(k: in Keyword): Option[String] {
+  match k {
+    case KwType -> Some(value = "type")
+    case KwAlias -> Some(value = "alias")
+    case KwRecord -> Some(value = "record")
+    case KwUnion -> Some(value = "union")
+    case KwEnum -> Some(value = "enum")
+    case KwInterface -> Some(value = "interface")
+    case KwWire -> Some(value = "wire")
+    case KwFixture -> Some(value = "fixture")
+    case KwProperty -> Some(value = "property")
+    case KwTest -> Some(value = "test")
+    case KwEntry -> Some(value = "entry")
+    case _ -> None
+  }
+}
+
 // `result` is a contextual keyword: valid as an identifier everywhere
-// except inside `ensures:` expression position.
+// except inside `ensures:` expression position.  The pure
+// position-introducer keywords in `contextualIdentKeyword` are likewise
+// accepted as identifier names here.
 pub func tryEatIdentOrContextual(st: inout ParseState): Option[NameAndSpan] {
   val t = peek(st)
   match t.token {
@@ -222,18 +254,19 @@ pub func tryEatIdentOrContextual(st: inout ParseState): Option[NameAndSpan] {
           st.pos = st.pos + 1
           Some(value = NameAndSpan(name = "result", span = t.span))
         }
-        case _ -> None
+        case _ -> match contextualIdentKeyword(k) { case Some(name) -> { st.pos = st.pos + 1; Some(value = NameAndSpan(name = name, span = t.span)) }; case None -> None }
       }
     }
     case _ -> None
   }
 }
 
-// Accept an identifier OR any keyword as a member / method name after `.`.
-// A keyword is unambiguous in member position (only a member name is valid
-// after a `.`), and several built-in methods use reserved spellings — the
-// bitwise integer methods `and` / `or` / `xor` in particular.  The
-// keyword's source spelling becomes the member name.
+// Accept an identifier OR one of the allowlisted keywords as a member / method
+// name after `.`.  Only `and`, `or`, and `xor` are accepted as keywords here
+// because they are the only reserved spellings used as built-in method names
+// (the bitwise integer methods).  All other keywords at member position remain
+// a parse error (P0081), preserving clear diagnostics for mistakes like
+// `x.if(...)` or `x.return`.
 pub func tryEatMemberName(st: inout ParseState): Option[NameAndSpan] {
   val t = peek(st)
   match t.token {
@@ -242,8 +275,13 @@ pub func tryEatMemberName(st: inout ParseState): Option[NameAndSpan] {
       Some(value = NameAndSpan(name = name, span = t.span))
     }
     case TKeyword(k) -> {
-      st.pos = st.pos + 1
-      Some(value = NameAndSpan(name = keywordSpelling(k), span = t.span))
+      val allowed = k == KwAnd or k == KwOr or k == KwXor
+      if allowed {
+        st.pos = st.pos + 1
+        Some(value = NameAndSpan(name = keywordSpelling(k), span = t.span))
+      } else {
+        None
+      }
     }
     case _ -> None
   }
@@ -252,7 +290,6 @@ pub func tryEatMemberName(st: inout ParseState): Option[NameAndSpan] {
 // ─────────────────────────────────────────────────────────────────────────────
 // Span utilities.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub func joinSpans(a: in Span, b: in Span): Span {
   makeSpan(a.startPos, b.endPos)
 }
@@ -264,7 +301,6 @@ pub func syntheticSpan(): Span {
 // ─────────────────────────────────────────────────────────────────────────────
 // Diagnostic helpers.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub func emitErr(st: inout ParseState, code: in String, msg: in String, sp: in Span) {
   st.diags.add(errorDiagnostic(code, msg, sp))
 }
@@ -281,7 +317,23 @@ pub func readIdent(st: inout ParseState, whatFor: in String): NameAndSpan {
     case Some(ns) -> ns
     case None -> {
       val sp = peekSpan(st)
-      emitErr(st, "P0103", "expected an identifier for " + whatFor + " name", sp)
+      // When the offending token is a reserved keyword, name it explicitly
+      // (P0051) instead of the generic P0103 — `let match = …` / `func type()`
+      // otherwise produced a misleading "expected an identifier" with no hint
+      // that the cause is a reserved word (D093).
+      match peekToken(st) {
+        case TKeyword(k) -> {
+          emitErr(
+            st,
+            "P0051",
+            "'" + keywordSpelling(k) + "' is a reserved keyword and cannot be used as a " + whatFor + " name",
+            sp
+          )
+        }
+        case _ -> {
+          emitErr(st, "P0103", "expected an identifier for " + whatFor + " name", sp)
+        }
+      }
       NameAndSpan(name = "<error>", span = sp)
     }
   }
@@ -289,7 +341,9 @@ pub func readIdent(st: inout ParseState, whatFor: in String): NameAndSpan {
 
 // mergeGenericsInfo: combine a prefix generic-params with a suffix one;
 // report P0102 if both are present and return the prefix.
-pub func mergeGenericsInfo(st: inout ParseState, prefix: in Option[GenericParams], suffix: in Option[GenericParams]): Option[GenericParams] {
+pub func mergeGenericsInfo(
+  st: inout ParseState, prefix: in Option[GenericParams], suffix: in Option[GenericParams]
+): Option[GenericParams] {
   match prefix {
     case Some(p) -> {
       match suffix {
@@ -307,18 +361,17 @@ pub func mergeGenericsInfo(st: inout ParseState, prefix: in Option[GenericParams
 // ─────────────────────────────────────────────────────────────────────────────
 // Module path: IDENT { '.' IDENT }
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub func parseModulePath(st: inout ParseState): ModulePath {
   val segments: List[String] = newList()
   val initSp = peekSpan(st)
   var startP = initSp.startPos
-  var endP   = initSp.endPos
+  var endP = initSp.endPos
   var haveStart = false
 
   match tryEatIdent(st) {
     case Some(ns) -> {
       startP = ns.span.startPos
-      endP   = ns.span.endPos
+      endP = ns.span.endPos
       haveStart = true
       segments.add(ns.name)
     }
@@ -330,11 +383,11 @@ pub func parseModulePath(st: inout ParseState): ModulePath {
   var keepGoing = true
   while keepGoing {
     // Only continue past '.' when the token after it is also an identifier.
-    val nextIsDotIdent =
-      isPunct(peekToken(st), Dot) and
+    val nextIsDotIdent = isPunct(peekToken(st), Dot) and
       (match peekAt(st, 1).token { case TIdent(_) -> true; case _ -> false })
     if nextIsDotIdent {
-      val _ = advance(st)  // '.'
+      val _ = advance(st)
+      // '.'
       match tryEatIdent(st) {
         case Some(ns) -> {
           if not haveStart {
@@ -344,7 +397,9 @@ pub func parseModulePath(st: inout ParseState): ModulePath {
           endP = ns.span.endPos
           segments.add(ns.name)
         }
-        case None -> { keepGoing = false }
+        case None -> {
+          keepGoing = false
+        }
       }
     } else {
       keepGoing = false
@@ -357,37 +412,37 @@ pub func parseModulePath(st: inout ParseState): ModulePath {
 // ─────────────────────────────────────────────────────────────────────────────
 // Annotations.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func parseAnnotationArg(st: inout ParseState): AnnotationArg {
   val startSp = peekSpan(st)
   match peekToken(st) {
     case TIdent(name) -> {
       val nameTok = advance(st)
       if isPunct(peekToken(st), Eq) {
-        val _ = advance(st)  // '='
+        val _ = advance(st)
+        // '='
         val valueTok = advance(st)
         val value = match valueTok.token {
-          case TInt(v, _)    -> AVInt(value = v, span = valueTok.span)
-          case TString(s)    -> AVString(value = s, span = valueTok.span)
-          case TBool(b)      -> AVBool(value = b, span = valueTok.span)
-          case TIdent(id)    -> AVIdent(value = id, span = valueTok.span)
+          case TInt(v, _, _) -> AVInt(value = v, span = valueTok.span)
+          case TString(s) -> AVString(value = s, span = valueTok.span)
+          case TBool(b) -> AVBool(value = b, span = valueTok.span)
+          case TIdent(id) -> AVIdent(value = id, span = valueTok.span)
           case _ -> {
             emitErr(st, "P0011", "expected a literal or identifier as annotation value", valueTok.span)
             AVIdent(value = "<error>", span = valueTok.span)
           }
         }
         val endSp = match value {
-          case AVInt(_, s)    -> s
+          case AVInt(_, s) -> s
           case AVString(_, s) -> s
-          case AVBool(_, s)   -> s
-          case AVIdent(_, s)  -> s
+          case AVBool(_, s) -> s
+          case AVIdent(_, s) -> s
         }
         AAName(name = name, value = value, span = joinSpans(nameTok.span, endSp))
       } else {
         ABare(name = name, span = startSp)
       }
     }
-    case TInt(v, _) -> {
+    case TInt(v, _, _) -> {
       val t = advance(st)
       ALiteral(value = AVInt(value = v, span = t.span), span = t.span)
     }
@@ -433,7 +488,9 @@ pub func parseAnnotation(st: inout ParseState): Option[Annotation] {
         }
       }
       match tryEatPunct(st, RParen) {
-        case Some(t) -> { endSpan = t.span }
+        case Some(t) -> {
+          endSpan = t.span
+        }
         case None -> {
           emitErr(st, "P0012", "expected ')' to close annotation argument list", peekSpan(st))
         }
@@ -454,7 +511,9 @@ pub func parseItemAnnotations(st: inout ParseState): List[Annotation] {
         xs.add(a)
         val _ = skipStmtEnds(st)
       }
-      case None -> { keepGoing = false }
+      case None -> {
+        keepGoing = false
+      }
     }
   }
   xs
@@ -465,8 +524,45 @@ pub func parseTrailingAnnotations(st: inout ParseState): List[Annotation] {
   var keepGoing = true
   while keepGoing {
     match parseAnnotation(st) {
-      case Some(a) -> { xs.add(a) }
-      case None -> { keepGoing = false }
+      case Some(a) -> {
+        xs.add(a)
+      }
+      case None -> {
+        keepGoing = false
+      }
+    }
+  }
+  xs
+}
+
+/// Like `parseTrailingAnnotations`, but only consumes an annotation that
+/// sits on the *same source line* as the preceding token.  Inside a `{ }`
+/// body (record / config field lists) the lexer emits no statement-end
+/// tokens between members, so the plain greedy form would swallow the
+/// *next* member's leading annotation — e.g. in
+///
+///     @proto_field(1) id:   Long
+///     @proto_field(2) name: String
+///
+/// `id`'s trailing-annotation scan would eat `@proto_field(2)`, leaving
+/// `name` unannotated and reordering both annotations onto `id`.  The
+/// grammar's trailing `[ Annotation ]` on a `FieldDecl` is always on the
+/// field's own line, so the line check captures exactly the legal form.
+pub func parseSameLineTrailingAnnotations(st: inout ParseState): List[Annotation] {
+  val xs: List[Annotation] = newList()
+  var keepGoing = true
+  while keepGoing {
+    if peekSpan(st).startPos.line != lastSpan(st).endPos.line {
+      keepGoing = false
+    } else {
+      match parseAnnotation(st) {
+        case Some(a) -> {
+          xs.add(a)
+        }
+        case None -> {
+          keepGoing = false
+        }
+      }
     }
   }
   xs
@@ -480,8 +576,12 @@ pub func parseFileLevelAnnotations(st: inout ParseState): List[Annotation] {
   while keepGoing {
     val _ = skipStmtEnds(st)
     match parseAnnotation(st) {
-      case Some(a) -> { xs.add(a) }
-      case None -> { keepGoing = false }
+      case Some(a) -> {
+        xs.add(a)
+      }
+      case None -> {
+        keepGoing = false
+      }
     }
   }
   cstFinish(st)
@@ -491,7 +591,6 @@ pub func parseFileLevelAnnotations(st: inout ParseState): List[Annotation] {
 // ─────────────────────────────────────────────────────────────────────────────
 // Doc-comment harvesting.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub func parseModuleDocComments(st: inout ParseState): List[DocComment] {
   cstStart(st, SkModuleDocSection)
   val _ = skipStmtEnds(st)
@@ -505,7 +604,9 @@ pub func parseModuleDocComments(st: inout ParseState): List[DocComment] {
         val _ = advance(st)
         xs.add(DocComment(isModule = true, text = text, span = sp))
       }
-      case _ -> { keepGoing = false }
+      case _ -> {
+        keepGoing = false
+      }
     }
   }
   cstFinish(st)
@@ -523,7 +624,9 @@ pub func parseItemDocComments(st: inout ParseState): List[DocComment] {
         xs.add(DocComment(isModule = false, text = text, span = sp))
         val _ = skipStmtEnds(st)
       }
-      case _ -> { keepGoing = false }
+      case _ -> {
+        keepGoing = false
+      }
     }
   }
   xs
@@ -532,7 +635,6 @@ pub func parseItemDocComments(st: inout ParseState): List[DocComment] {
 // ─────────────────────────────────────────────────────────────────────────────
 // Package declaration and imports.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub func parsePackageDecl(st: inout ParseState): PackageDecl {
   val _ = skipStmtEnds(st)
   cstStart(st, SkPackageDecl)
@@ -553,11 +655,8 @@ pub func parsePackageDecl(st: inout ParseState): PackageDecl {
         // "expected 'package'" message (the package usually IS present, just
         // after the stray doc comment).
         val msg = match peekToken(st) {
-          case TDocComment(_) ->
-            "a '///' doc comment before 'package' has no item to document; " +
-            "use '//!' for a module-level doc comment"
-          case _ ->
-            "expected 'package' declaration at the head of the file"
+          case TDocComment(_) -> "a '///' doc comment before 'package' has no item to document; " + "use '//!' for a module-level doc comment"
+          case _ -> "expected 'package' declaration at the head of the file"
         }
         emitErr(st, "P0020", msg, peekSpan(st))
       }
@@ -583,8 +682,7 @@ func parseImportItem(st: inout ParseState): ImportItem {
     case Some(_) -> {
       match tryEatIdent(st) {
         case Some(al) -> {
-          ImportItem(name = ns.name, asAlias = Some(value = al.name),
-                     span = joinSpans(ns.span, al.span))
+          ImportItem(name = ns.name, asAlias = Some(value = al.name), span = joinSpans(ns.span, al.span))
         }
         case None -> {
           emitErr(st, "P0031", "expected identifier after 'as' in import group", peekSpan(st))
@@ -597,52 +695,63 @@ func parseImportItem(st: inout ParseState): ImportItem {
 }
 
 func parseImportDecl(st: inout ParseState): Option[ImportDecl] {
-  val isPubUse =
-    isKw(peekToken(st), KwPub) and isKw(peekAt(st, 1).token, KwUse)
+  val isPubUse = isKw(peekToken(st), KwPub) and isKw(peekAt(st, 1).token, KwUse)
   val isImport = isKw(peekToken(st), KwImport)
   if not isImport and not isPubUse {
     None
   } else {
     cstStart(st, SkImportDecl)
     val startSp = peekSpan(st)
+    var isExtern = false
     if isPubUse {
-      val _ = advance(st)  // pub
-      val _ = advance(st)  // use
+      val _ = advance(st)
+      // pub
+      val _ = advance(st)
+      // use
     } else {
-      val _ = advance(st)  // import
+      val _ = advance(st)
+      // import
+    }
+    if isKw(peekToken(st), KwExtern) {
+      val _ = advance(st)
+      isExtern = true
     }
     val path = parseModulePath(st)
 
     // Optional `.{...}` group selector.
-    val selector: Option[ImportSelector] =
-      if isPunct(peekToken(st), Dot) and isPunct(peekAt(st, 1).token, LBrace) {
-        val _ = advance(st)  // '.'
-        val _ = advance(st)  // '{'
-        val items: List[ImportItem] = newList()
-        if not isPunct(peekToken(st), RBrace) {
-          items.add(parseImportItem(st))
-          var keepGoing = true
-          while keepGoing {
-            if isPunct(peekToken(st), Comma) {
-              val _ = advance(st)
-              if not isPunct(peekToken(st), RBrace) {
-                items.add(parseImportItem(st))
-              }
-            } else {
-              keepGoing = false
+    val selector: Option[ImportSelector] = if isPunct(peekToken(st), Dot) and isPunct(peekAt(st, 1).token, LBrace) {
+      val _ = advance(st)
+      // '.'
+      val _ = advance(st)
+      // '{'
+      val items: List[ImportItem] = newList()
+      if not isPunct(peekToken(st), RBrace) {
+        items.add(parseImportItem(st))
+        var keepGoing = true
+        while keepGoing {
+          if isPunct(peekToken(st), Comma) {
+            val _ = advance(st)
+            if not isPunct(peekToken(st), RBrace) {
+              items.add(parseImportItem(st))
             }
+          } else {
+            keepGoing = false
           }
         }
-        match tryEatPunct(st, RBrace) {
-          case Some(_) -> {}
-          case None -> {
-            emitErr(st, "P0032", "expected '}' to close import group", peekSpan(st))
-          }
-        }
-        Some(value = ISGroup(items = items))
-      } else {
-        None
       }
+      match tryEatPunct(st, RBrace) {
+        case Some(_) -> {
+        }
+        case None -> {
+          emitErr(st, "P0032", "expected '}' to close import group", peekSpan(st))
+        }
+      }
+      Some(value = ISGroup(items = items))
+    } else {
+      None
+    }
+
+
 
     var endSp = path.span
     val result = match tryEatKw(st, KwAs) {
@@ -650,23 +759,43 @@ func parseImportDecl(st: inout ParseState): Option[ImportDecl] {
         match tryEatIdent(st) {
           case Some(al) -> {
             endSp = al.span
-            Some(value = ImportDecl(path = path, selector = selector,
-                                    asAlias = Some(value = al.name),
-                                    isPubUse = isPubUse,
-                                    span = joinSpans(startSp, endSp)))
+            Some(
+              value = ImportDecl(
+                path = path,
+                selector = selector,
+                asAlias = Some(value = al.name),
+                isPubUse = isPubUse,
+                isExtern = isExtern,
+                span = joinSpans(startSp, endSp)
+              )
+            )
           }
           case None -> {
             emitErr(st, "P0033", "expected identifier after 'as' in import", peekSpan(st))
-            Some(value = ImportDecl(path = path, selector = selector,
-                                    asAlias = None, isPubUse = isPubUse,
-                                    span = joinSpans(startSp, endSp)))
+            Some(
+              value = ImportDecl(
+                path = path,
+                selector = selector,
+                asAlias = None,
+                isPubUse = isPubUse,
+                isExtern = isExtern,
+                span = joinSpans(startSp, endSp)
+              )
+            )
           }
         }
       }
       case None -> {
-        Some(value = ImportDecl(path = path, selector = selector,
-                                asAlias = None, isPubUse = isPubUse,
-                                span = joinSpans(startSp, endSp)))
+        Some(
+          value = ImportDecl(
+            path = path,
+            selector = selector,
+            asAlias = None,
+            isPubUse = isPubUse,
+            isExtern = isExtern,
+            span = joinSpans(startSp, endSp)
+          )
+        )
       }
     }
     cstFinish(st)
@@ -682,8 +811,12 @@ pub func parseImports(st: inout ParseState): List[ImportDecl] {
   while keepGoing {
     val _ = skipStmtEnds(st)
     match parseImportDecl(st) {
-      case Some(d) -> { xs.add(d) }
-      case None -> { keepGoing = false }
+      case Some(d) -> {
+        xs.add(d)
+      }
+      case None -> {
+        keepGoing = false
+      }
     }
   }
   cstFinish(st)

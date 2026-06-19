@@ -1,18 +1,17 @@
-// jvm/self_test_b80.l — Stage B80: System.arraycopy (native bulk array copy).
-//
-// Generates ArrayCopy.class with:
-//   copyRange(int[], int, int, int)int[]
-//     — allocates dst[len], calls System.arraycopy(src,srcPos,dst,0,len), returns dst
-//   concat(int[], int[])int[]
-//     — allocates dst[a.length+b.length], copies a then b
-//
-// Main prints:
-//   copy=2,3,4
-//   cat=1,2,3,4,5
-//
-// Exercises: System.arraycopy (invokestatic with 5 args), arraylength,
-//            newarray T_INT, iaload for printing.
-
+//! jvm/self_test_b80.l — Stage B80: System.arraycopy (native bulk array copy).
+//!
+//! Generates ArrayCopy.class with:
+//!   copyRange(int[], int, int, int)int[]
+//!     — allocates dst[len], calls System.arraycopy(src,srcPos,dst,0,len), returns dst
+//!   concat(int[], int[])int[]
+//!     — allocates dst[a.length+b.length], copies a then b
+//!
+//! Main prints:
+//!   copy=2,3,4
+//!   cat=1,2,3,4,5
+//!
+//! Exercises: System.arraycopy (invokestatic with 5 args), arraylength,
+//!            newarray T_INT, iaload for printing.
 package Jvm.SelfTestB80
 
 import Std.Core
@@ -25,8 +24,7 @@ import Jvm.Driver
 func makeArrayCopyBytes(): List[Byte] {
   val pool = poolNew()
 
-  val sysArraycopy = poolMethodref(pool, "java/lang/System", "arraycopy",
-    "(Ljava/lang/Object;ILjava/lang/Object;II)V")
+  val sysArraycopy = poolMethodref(pool, "java/lang/System", "arraycopy", "(Ljava/lang/Object;ILjava/lang/Object;II)V")
 
   // copyRange(int[] src, int srcPos, int len)int[]
   // slot 0=src; slot 1=srcPos; slot 2=len; slot 3=dst
@@ -91,28 +89,48 @@ func makeArrayCopyBytes(): List[Byte] {
 }
 
 func makeMainClassBytes(): List[Byte] {
-  val pool      = poolNew()
-  val asm       = newAssembler(pool)
+  val pool = poolNew()
+  val asm = newAssembler(pool)
 
-  val sysOut    = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnS  = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val sbInit    = poolMethodref(pool, "java/lang/StringBuilder", "<init>", "()V")
-  val sbClass   = poolClass(pool, "java/lang/StringBuilder")
-  val sbAppendS = poolMethodref(pool, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnS = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val sbInit = poolMethodref(pool, "java/lang/StringBuilder", "<init>", "()V")
+  val sbClass = poolClass(pool, "java/lang/StringBuilder")
+  val sbAppendS = poolMethodref(
+    pool,
+    "java/lang/StringBuilder",
+    "append",
+    "(Ljava/lang/String;)Ljava/lang/StringBuilder;"
+  )
   val sbAppendI = poolMethodref(pool, "java/lang/StringBuilder", "append", "(I)Ljava/lang/StringBuilder;")
-  val sbToStr   = poolMethodref(pool, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;")
-  val copyRef   = poolMethodref(pool, "ArrayCopy", "copyRange", "([III)[I")
-  val catRef    = poolMethodref(pool, "ArrayCopy", "concat",    "([I[I)[I")
+  val sbToStr = poolMethodref(pool, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;")
+  val copyRef = poolMethodref(pool, "ArrayCopy", "copyRange", "([III)[I")
+  val catRef = poolMethodref(pool, "ArrayCopy", "concat", "([I[I)[I")
 
   // Build src = {1,2,3,4,5}  (slot 0)
   emitPushInt(asm, 5)
   emitNewarray(asm, T_INT)
   emitAstore(asm, 0)
-  emitAload(asm, 0)  emitIconst(asm, 0)  emitIconst(asm, 1)  emitIastore(asm)
-  emitAload(asm, 0)  emitIconst(asm, 1)  emitPushInt(asm, 2)  emitIastore(asm)
-  emitAload(asm, 0)  emitIconst(asm, 2)  emitPushInt(asm, 3)  emitIastore(asm)
-  emitAload(asm, 0)  emitIconst(asm, 3)  emitPushInt(asm, 4)  emitIastore(asm)
-  emitAload(asm, 0)  emitIconst(asm, 4)  emitPushInt(asm, 5)  emitIastore(asm)
+  emitAload(asm, 0)
+  emitIconst(asm, 0)
+  emitIconst(asm, 1)
+  emitIastore(asm)
+  emitAload(asm, 0)
+  emitIconst(asm, 1)
+  emitPushInt(asm, 2)
+  emitIastore(asm)
+  emitAload(asm, 0)
+  emitIconst(asm, 2)
+  emitPushInt(asm, 3)
+  emitIastore(asm)
+  emitAload(asm, 0)
+  emitIconst(asm, 3)
+  emitPushInt(asm, 4)
+  emitIastore(asm)
+  emitAload(asm, 0)
+  emitIconst(asm, 4)
+  emitPushInt(asm, 5)
+  emitIastore(asm)
 
   // copy = copyRange(src, 1, 3)  slot 1
   emitAload(asm, 0)
@@ -125,15 +143,30 @@ func makeMainClassBytes(): List[Byte] {
   emitPushInt(asm, 3)
   emitNewarray(asm, T_INT)
   emitAstore(asm, 2)
-  emitAload(asm, 2)  emitIconst(asm, 0)  emitIconst(asm, 1)  emitIastore(asm)
-  emitAload(asm, 2)  emitIconst(asm, 1)  emitPushInt(asm, 2)  emitIastore(asm)
-  emitAload(asm, 2)  emitIconst(asm, 2)  emitPushInt(asm, 3)  emitIastore(asm)
+  emitAload(asm, 2)
+  emitIconst(asm, 0)
+  emitIconst(asm, 1)
+  emitIastore(asm)
+  emitAload(asm, 2)
+  emitIconst(asm, 1)
+  emitPushInt(asm, 2)
+  emitIastore(asm)
+  emitAload(asm, 2)
+  emitIconst(asm, 2)
+  emitPushInt(asm, 3)
+  emitIastore(asm)
 
   emitPushInt(asm, 2)
   emitNewarray(asm, T_INT)
   emitAstore(asm, 3)
-  emitAload(asm, 3)  emitIconst(asm, 0)  emitPushInt(asm, 4)  emitIastore(asm)
-  emitAload(asm, 3)  emitIconst(asm, 1)  emitPushInt(asm, 5)  emitIastore(asm)
+  emitAload(asm, 3)
+  emitIconst(asm, 0)
+  emitPushInt(asm, 4)
+  emitIastore(asm)
+  emitAload(asm, 3)
+  emitIconst(asm, 1)
+  emitPushInt(asm, 5)
+  emitIastore(asm)
 
   // cat = concat(a, b)  slot 4
   emitAload(asm, 2)
@@ -148,15 +181,21 @@ func makeMainClassBytes(): List[Byte] {
   emitInvokespecial(asm, sbInit)
   emitPushString(asm, "copy=")
   emitInvokevirtual(asm, sbAppendS)
-  emitAload(asm, 1)  emitIconst(asm, 0)  emitIaload(asm)
+  emitAload(asm, 1)
+  emitIconst(asm, 0)
+  emitIaload(asm)
   emitInvokevirtual(asm, sbAppendI)
   emitPushString(asm, ",")
   emitInvokevirtual(asm, sbAppendS)
-  emitAload(asm, 1)  emitIconst(asm, 1)  emitIaload(asm)
+  emitAload(asm, 1)
+  emitIconst(asm, 1)
+  emitIaload(asm)
   emitInvokevirtual(asm, sbAppendI)
   emitPushString(asm, ",")
   emitInvokevirtual(asm, sbAppendS)
-  emitAload(asm, 1)  emitPushInt(asm, 2)  emitIaload(asm)
+  emitAload(asm, 1)
+  emitPushInt(asm, 2)
+  emitIaload(asm)
   emitInvokevirtual(asm, sbAppendI)
   emitInvokevirtual(asm, sbToStr)
   emitInvokevirtual(asm, printlnS)
@@ -168,15 +207,34 @@ func makeMainClassBytes(): List[Byte] {
   emitInvokespecial(asm, sbInit)
   emitPushString(asm, "cat=")
   emitInvokevirtual(asm, sbAppendS)
-  emitAload(asm, 4)  emitIconst(asm, 0)  emitIaload(asm)  emitInvokevirtual(asm, sbAppendI)
-  emitPushString(asm, ",")  emitInvokevirtual(asm, sbAppendS)
-  emitAload(asm, 4)  emitIconst(asm, 1)  emitIaload(asm)  emitInvokevirtual(asm, sbAppendI)
-  emitPushString(asm, ",")  emitInvokevirtual(asm, sbAppendS)
-  emitAload(asm, 4)  emitIconst(asm, 2)  emitIaload(asm)  emitInvokevirtual(asm, sbAppendI)
-  emitPushString(asm, ",")  emitInvokevirtual(asm, sbAppendS)
-  emitAload(asm, 4)  emitIconst(asm, 3)  emitIaload(asm)  emitInvokevirtual(asm, sbAppendI)
-  emitPushString(asm, ",")  emitInvokevirtual(asm, sbAppendS)
-  emitAload(asm, 4)  emitIconst(asm, 4)  emitIaload(asm)  emitInvokevirtual(asm, sbAppendI)
+  emitAload(asm, 4)
+  emitIconst(asm, 0)
+  emitIaload(asm)
+  emitInvokevirtual(asm, sbAppendI)
+  emitPushString(asm, ",")
+  emitInvokevirtual(asm, sbAppendS)
+  emitAload(asm, 4)
+  emitIconst(asm, 1)
+  emitIaload(asm)
+  emitInvokevirtual(asm, sbAppendI)
+  emitPushString(asm, ",")
+  emitInvokevirtual(asm, sbAppendS)
+  emitAload(asm, 4)
+  emitIconst(asm, 2)
+  emitIaload(asm)
+  emitInvokevirtual(asm, sbAppendI)
+  emitPushString(asm, ",")
+  emitInvokevirtual(asm, sbAppendS)
+  emitAload(asm, 4)
+  emitIconst(asm, 3)
+  emitIaload(asm)
+  emitInvokevirtual(asm, sbAppendI)
+  emitPushString(asm, ",")
+  emitInvokevirtual(asm, sbAppendS)
+  emitAload(asm, 4)
+  emitIconst(asm, 4)
+  emitIaload(asm)
+  emitInvokevirtual(asm, sbAppendI)
   emitInvokevirtual(asm, sbToStr)
   emitInvokevirtual(asm, printlnS)
 
@@ -195,24 +253,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b80"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val arrayCopyBytes = makeArrayCopyBytes()
-  val mainBytes      = makeMainClassBytes()
+  val mainBytes = makeMainClassBytes()
 
   val arrayCopyClass = BuiltClass(binaryName = "ArrayCopy", bytes = arrayCopyBytes)
-  val mainClass      = BuiltClass(binaryName = "Main",      bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(arrayCopyClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB80",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

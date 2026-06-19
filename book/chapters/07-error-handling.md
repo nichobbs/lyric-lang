@@ -80,14 +80,17 @@ On each line with `?`: if the expression is `Ok(v)`, the `?` unwraps it to `v` a
 
 Two requirements apply. The enclosing function must return `Result` — the compiler rejects `?` in a function with a non-`Result` return type (this is D027 in the decision log; using `?` in a non-Result context would turn explicit error propagation into a hidden panic, which is exactly the confusion the distinction is meant to prevent). The error type must be compatible — if `AccountId.tryFrom` returns `Result[AccountId, ParseError]` but the function returns `Result[Receipt, TransferError]`, the types must match or you need to convert.
 
-Converting error types uses `.mapErr`:
+Converting error types uses `mapResultErr`:
 
 ```lyric
-val dbUrl = Url.tryFrom(raw.databaseUrl)
-    .mapErr { _ -> InvalidUrl("databaseUrl", raw.databaseUrl) }?
+import Std.Core
+
+val dbUrl = mapResultErr(
+    Url.tryFrom(raw.databaseUrl),
+    { _ -> InvalidUrl("databaseUrl", raw.databaseUrl) })?
 ```
 
-`.mapErr` takes a closure from the original error type to the new one. Here, any parse failure in `Url.tryFrom` becomes an `InvalidUrl` error in the caller's error type. The `?` then propagates that converted error if needed.
+`mapResultErr` takes a `Result` and a closure from the original error type to the new one. Here, any parse failure in `Url.tryFrom` becomes an `InvalidUrl` error in the caller's error type. The `?` then propagates that converted error if needed.
 
 You will see this pattern any time errors cross a package boundary — domains define their own error types, and the conversion point is explicit in the code rather than hidden.
 
@@ -157,18 +160,20 @@ Here the `try`/`catch Bug` is the translation boundary between .NET BCL semantic
 
 The compiler emits a warning on `catch Bug` outside of recognised boundary contexts. If you find yourself catching bugs in the middle of application logic, the right response is usually to ask why the bug was raised — either the contract is wrong, the input validation is missing, or the code has a genuine defect.
 
-**`unwrap()`** asserts that a `Result` is `Ok`, raising a bug if it is `Err`:
+**`unwrapResult`** asserts that a `Result` is `Ok`, raising a bug if it is `Err`:
 
 ```lyric
+import Std.Core
+
 // Fine — the PEM string is a compile-time constant; a bug here means the
 // constant itself is wrong, not a runtime condition
-val cert = Cert.parse(HARDCODED_PEM).unwrap()
+val cert = unwrapResult(Cert.parse(HARDCODED_PEM))
 
 // Wrong — user input can fail; use match or ? instead
-val id = AccountId.tryFrom(req.userId).unwrap()  // panics on malformed input
+val id = unwrapResult(AccountId.tryFrom(req.userId))  // panics on malformed input
 ```
 
-`unwrap()` is appropriate when you have a value that cannot be `Err` by construction, and you want the program to fail loudly if your reasoning turns out to be wrong. It is not appropriate for user input, for I/O results, or for anything that could plausibly fail in normal operation.
+`unwrapResult` is appropriate when you have a value that cannot be `Err` by construction, and you want the program to fail loudly if your reasoning turns out to be wrong. It is not appropriate for user input, for I/O results, or for anything that could plausibly fail in normal operation.
 
 ## Error design guidelines
 
@@ -180,7 +185,7 @@ A few conventions that emerge from experience with `Result`-based error handling
 
 **Error unions are `pub` when callers handle them, package-private when they do not.** A `ValidationError` that is fully handled inside a package before anything is returned to callers does not need to be `pub`. Only export what callers need to match on.
 
-**Convert at package boundaries with `.mapErr`.** When errors cross a package boundary, the conversion point is the boundary function. The downstream package should not need to import the upstream package's error type just to propagate it unchanged.
+**Convert at package boundaries with `mapResultErr`.** When errors cross a package boundary, the conversion point is the boundary function. The downstream package should not need to import the upstream package's error type just to propagate it unchanged.
 
 **Reserve `panic` for programmer mistakes.** `panic` means "the program's invariants are violated; aborting is the only safe option." It is appropriate when a required-to-be-valid internal state is not valid. It is not appropriate for anything a user input or external system could cause.
 
@@ -188,9 +193,9 @@ A few conventions that emerge from experience with `Result`-based error handling
 
 1. Write a `union ValidationError { case Empty; case TooLong(max: Int, actual: Int); case InvalidChar(c: Char) }` and a `func validateUsername(s: in String): Result[String, ValidationError]` that rejects empty strings, strings over 20 characters, and strings containing non-alphanumeric characters. Pattern-match on the result in a caller and produce a human-readable message for each case.
 
-2. Write three functions that each return a `Result` with a different error type. Write a fourth function that calls all three in sequence using `?` and `.mapErr` to convert all errors to a common `union AppError { ... }`. Observe what the compiler says if you forget to convert one of the error types before applying `?`.
+2. Write three functions that each return a `Result` with a different error type. Write a fourth function that calls all three in sequence using `?` and `mapResultErr` to convert all errors to a common `union AppError { ... }`. Observe what the compiler says if you forget to convert one of the error types before applying `?`.
 
-3. Write a function where `unwrap()` is justified — for example, parsing a compile-time constant string as a URL. Write a second function where `unwrap()` on the same operation would be wrong — where the value comes from user input. Explain the difference in one sentence.
+3. Write a function where `unwrapResult` is justified — for example, parsing a compile-time constant string as a URL. Write a second function where `unwrapResult` on the same operation would be wrong — where the value comes from user input. Explain the difference in one sentence.
 
 4. The `??` operator provides a default value for `Option[T]`. Write a function `firstNonEmpty(xs: in slice[Option[String]]): String` that returns the first `Some` value, or `"none"` if all are `None`. Use `??` in the loop body.
 

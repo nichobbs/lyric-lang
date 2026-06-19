@@ -1,19 +1,18 @@
-// tests/auth_security_tests.l — security regression suite for the
-// lyric-auth library.
-//
-// Pins:
-//   * JWT algorithm-pinning (#315, #1090) — algorithm rejection surfaces
-//     a typed Err with ALG_REJECTED, distinguishable from BAD_SIGNATURE.
-//   * Role allow-list (#360).
-//   * exp/nbf overflow protection (#1078).
-//   * Clock-skew leeway (#1081) — default 60 s, configurable.
-//   * RFC 7519 §4.1.3 array-form `aud` (#1089).
-//   * JSON escape decoding in claim values (#1079).
-//   * parseLong: Result-typed, distinct overflow vs parse_error (#1088).
-//
-// Run via the multi-package test runner once issue #465 lands; until then
-// the test file serves as a living spec alongside the source.
-
+//! tests/auth_security_tests.l — security regression suite for the
+//! lyric-auth library.
+//!
+//! Pins:
+//!   * JWT algorithm-pinning (#315, #1090) — algorithm rejection surfaces
+//!     a typed Err with ALG_REJECTED, distinguishable from BAD_SIGNATURE.
+//!   * Role allow-list (#360).
+//!   * exp/nbf overflow protection (#1078).
+//!   * Clock-skew leeway (#1081) — default 60 s, configurable.
+//!   * RFC 7519 §4.1.3 array-form `aud` (#1089).
+//!   * JSON escape decoding in claim values (#1079).
+//!   * parseLong: Result-typed, distinct overflow vs parse_error (#1088).
+//!
+//! Run via the multi-package test runner once issue #465 lands; until then
+//! the test file serves as a living spec alongside the source.
 @test_module
 package Auth.AuthSecurityTests
 
@@ -25,51 +24,39 @@ import Std.Testing
 import Auth as Auth
 
 // ─── Role membership (#360) ───────────────────────────────────────────────────
-
 test "rolesContain matches an exact single role" {
-  assertTrue(Auth.rolesContain("admin", "admin"),
-    "single-element allow-list matches identical role")
+  assertTrue(Auth.rolesContain("admin", "admin"), "single-element allow-list matches identical role")
 }
 
 test "rolesContain matches one role from a comma-separated list" {
-  assertTrue(Auth.rolesContain("admin,manager", "manager"),
-    "manager is one of [admin, manager]")
-  assertTrue(Auth.rolesContain("admin,manager", "admin"),
-    "admin is one of [admin, manager]")
+  assertTrue(Auth.rolesContain("admin,manager", "manager"), "manager is one of [admin, manager]")
+  assertTrue(Auth.rolesContain("admin,manager", "admin"), "admin is one of [admin, manager]")
 }
 
 test "rolesContain rejects a role not in the allow-list" {
-  assertTrue(not Auth.rolesContain("admin,manager", "viewer"),
-    "viewer not in [admin, manager]")
+  assertTrue(not Auth.rolesContain("admin,manager", "viewer"), "viewer not in [admin, manager]")
 }
 
 test "rolesContain rejects an empty role claim" {
-  assertTrue(not Auth.rolesContain("admin,manager", ""),
-    "empty role must not match")
+  assertTrue(not Auth.rolesContain("admin,manager", ""), "empty role must not match")
 }
 
 test "rolesContain rejects against an empty allow-list" {
-  assertTrue(not Auth.rolesContain("", "admin"),
-    "empty allow-list must reject every role")
+  assertTrue(not Auth.rolesContain("", "admin"), "empty allow-list must reject every role")
 }
 
 test "rolesContain trims whitespace around comma-separated entries (#360)" {
-  assertTrue(Auth.rolesContain("admin, manager", "manager"),
-    "leading space after comma should not break role matching")
-  assertTrue(Auth.rolesContain(" admin , manager ", "admin"),
-    "surrounding whitespace should be tolerated")
-  assertTrue(Auth.rolesContain("admin,\tmanager", "manager"),
-    "tab after comma should be tolerated")
+  assertTrue(Auth.rolesContain("admin, manager", "manager"), "leading space after comma should not break role matching")
+  assertTrue(Auth.rolesContain(" admin , manager ", "admin"), "surrounding whitespace should be tolerated")
+  assertTrue(Auth.rolesContain("admin,\tmanager", "manager"), "tab after comma should be tolerated")
 }
 
 test "rolesContain skips empty / whitespace-only entries" {
-  assertTrue(not Auth.rolesContain("admin, ,manager", " "),
-    "whitespace-only entry must not match a whitespace role")
+  assertTrue(not Auth.rolesContain("admin, ,manager", " "), "whitespace-only entry must not match a whitespace role")
   // Trailing comma must not create an empty match path that lets an
   // empty role claim slip through (defense-in-depth — empty role is
   // already rejected at the boundary).
-  assertTrue(not Auth.rolesContain("admin,", ""),
-    "trailing comma must not match empty role")
+  assertTrue(not Auth.rolesContain("admin,", ""), "trailing comma must not match empty role")
 }
 
 // ─── JWT algorithm pinning (#315, #1090) ──────────────────────────────────────
@@ -86,97 +73,61 @@ test "rolesContain skips empty / whitespace-only entries" {
 // match instead of factoring a helper function because the bootstrap type
 // checker rejects `Auth.JwtError` in function signatures inside
 // @test_module files.
-
 test "verifyJwt with a malformed token under HS256 pin returns Err" {
-  val r = Auth.verifyJwt("not.a.jwt", "test-secret",
-                         "issuer-x", "audience-y", "HS256")
-  val isOk = match r {
-    case Ok(v)  -> true
-    case Err(e) -> false
-  }
+  val r = Auth.verifyJwt("not.a.jwt", "test-secret", "issuer-x", "audience-y", "HS256")
+  val isOk = match r { case Ok(v) -> true; case Err(e) -> false }
   assertTrue(not isOk, "malformed token must fail closed under HS256 pin")
 }
 
 test "verifyJwt multi-algorithm pin (HS256,RS256) still fails closed on junk" {
-  val r = Auth.verifyJwt("not.a.jwt", "test-secret",
-                         "issuer-x", "audience-y", "HS256,RS256")
-  val isOk = match r {
-    case Ok(v)  -> true
-    case Err(e) -> false
-  }
+  val r = Auth.verifyJwt("not.a.jwt", "test-secret", "issuer-x", "audience-y", "HS256,RS256")
+  val isOk = match r { case Ok(v) -> true; case Err(e) -> false }
   assertTrue(not isOk, "multi-algorithm pin must still fail closed on junk")
 }
 
 // ─── jwtAlg extraction (#553) ─────────────────────────────────────────────────
 // jwtAlg is package-private; tested via verifyJwt which short-circuits to Err
 // before the kernel when the extracted alg is missing or not in the allow-list.
-
 test "jwtAlg: no-padding header (rem==0) correctly extracts HS256" {
   // Header: {"alg":"HS256","typ":"JWT"} → eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9 (len=36, rem=0)
   // Alg is HS256 which IS in the allow-list, so we reach the kernel.
   // The kernel rejects the fake signature with BAD_SIGNATURE.
-  val r = Auth.verifyJwt(
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.fakesig",
-    "test-secret", "", "", "HS256")
-  val code = match r {
-    case Ok(v)  -> "OK"
-    case Err(e) -> e.code
-  }
-  assertEqual(code, "BAD_SIGNATURE",
-    "HS256 + fake signature → BAD_SIGNATURE (alg passed pinning, signature did not verify)")
+  val r = Auth.verifyJwt("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.fakesig", "test-secret", "", "", "HS256")
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(
+    code,
+    "BAD_SIGNATURE",
+    "HS256 + fake signature → BAD_SIGNATURE (alg passed pinning, signature did not verify)"
+  )
 }
 
 test "jwtAlg: missing alg returns MALFORMED_HEADER (rem==2 padding path)" {
   // Header: {"typ":"JWT"} → eyJ0eXAiOiJKV1QifQ (len=18, rem=2; needs == padding)
   // No "alg" key → Lyric-level jwtAlg returns "" → MALFORMED_HEADER.
-  val r = Auth.verifyJwt(
-    "eyJ0eXAiOiJKV1QifQ.payload.fakesig",
-    "test-secret", "", "", "HS256")
-  val code = match r {
-    case Ok(v)  -> "OK"
-    case Err(e) -> e.code
-  }
-  assertEqual(code, "MALFORMED_HEADER",
-    "missing alg → MALFORMED_HEADER (no algorithm to enforce)")
+  val r = Auth.verifyJwt("eyJ0eXAiOiJKV1QifQ.payload.fakesig", "test-secret", "", "", "HS256")
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(code, "MALFORMED_HEADER", "missing alg → MALFORMED_HEADER (no algorithm to enforce)")
 }
 
 test "jwtAlg: empty JSON header has no alg (rem==3 padding path)" {
   // Header: {} → e30 (len=3, rem=3; needs = padding)
-  val r = Auth.verifyJwt(
-    "e30.payload.fakesig",
-    "test-secret", "", "", "HS256")
-  val code = match r {
-    case Ok(v)  -> "OK"
-    case Err(e) -> e.code
-  }
-  assertEqual(code, "MALFORMED_HEADER",
-    "empty header object → MALFORMED_HEADER")
+  val r = Auth.verifyJwt("e30.payload.fakesig", "test-secret", "", "", "HS256")
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(code, "MALFORMED_HEADER", "empty header object → MALFORMED_HEADER")
 }
 
 test "jwtAlg: invalid rem==1 segment is treated as malformed" {
   // A base64url segment whose length % 4 == 1 is not valid base64url.
   // "aaaaa" is 5 chars; 5 % 4 = 1.
-  val r = Auth.verifyJwt(
-    "aaaaa.payload.fakesig",
-    "test-secret", "", "", "HS256")
-  val code = match r {
-    case Ok(v)  -> "OK"
-    case Err(e) -> e.code
-  }
-  assertEqual(code, "MALFORMED_HEADER",
-    "rem==1 header → MALFORMED_HEADER")
+  val r = Auth.verifyJwt("aaaaa.payload.fakesig", "test-secret", "", "", "HS256")
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(code, "MALFORMED_HEADER", "rem==1 header → MALFORMED_HEADER")
 }
 
 test "jwtAlg: token with no dot separator fails closed" {
-  val r = Auth.verifyJwt(
-    "nodot",
-    "test-secret", "", "", "HS256")
-  val code = match r {
-    case Ok(v)  -> "OK"
-    case Err(e) -> e.code
-  }
-  assertEqual(code, "MALFORMED_HEADER",
-    "no dot in token → MALFORMED_HEADER (no header to parse)")
+  val r = Auth.verifyJwt("nodot", "test-secret", "", "", "HS256")
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(code, "MALFORMED_HEADER", "no dot in token → MALFORMED_HEADER (no header to parse)")
 }
 
 // ─── #1090: typed Err for algorithm rejection ─────────────────────────────────
@@ -184,40 +135,22 @@ test "jwtAlg: token with no dot separator fails closed" {
 // callers can tell it apart from a cryptographic signature failure.  Before
 // #1090 every non-success collapsed into a bare `false`, masking the
 // distinction.
-
 test "verifyJwt: alg not in allow-list returns Err(ALG_REJECTED) (#1090)" {
   // Header: {"alg":"RS256"} → eyJhbGciOiJSUzI1NiJ9 (len=20, rem=0)
   // allowedAlgorithms = "HS256" → ALG_REJECTED at the Lyric layer, before kernel.
-  val r = Auth.verifyJwt(
-    "eyJhbGciOiJSUzI1NiJ9.payload.fakesig",
-    "test-secret", "", "", "HS256")
-  val code = match r {
-    case Ok(v)  -> "OK"
-    case Err(e) -> e.code
-  }
-  assertEqual(code, "ALG_REJECTED",
-    "alg not in allowedAlgorithms → ALG_REJECTED (not BAD_SIGNATURE)")
+  val r = Auth.verifyJwt("eyJhbGciOiJSUzI1NiJ9.payload.fakesig", "test-secret", "", "", "HS256")
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(code, "ALG_REJECTED", "alg not in allowedAlgorithms → ALG_REJECTED (not BAD_SIGNATURE)")
 }
 
 test "verifyJwt: ALG_REJECTED is distinct from BAD_SIGNATURE (#1090)" {
   // Same header but allow-list now includes HS256 only.  The two Err codes
   // are produced by different paths; this test pins that they differ.
-  val rsRejected = Auth.verifyJwt(
-    "eyJhbGciOiJSUzI1NiJ9.payload.fakesig",
-    "test-secret", "", "", "HS256")
-  val hsBadSig = Auth.verifyJwt(
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.fakesig",
-    "test-secret", "", "", "HS256")
-  val codeRs = match rsRejected {
-    case Ok(v)  -> "OK"
-    case Err(e) -> e.code
-  }
-  val codeHs = match hsBadSig {
-    case Ok(v)  -> "OK"
-    case Err(e) -> e.code
-  }
-  assertTrue(codeRs != codeHs,
-    "ALG_REJECTED and BAD_SIGNATURE must be distinguishable error codes")
+  val rsRejected = Auth.verifyJwt("eyJhbGciOiJSUzI1NiJ9.payload.fakesig", "test-secret", "", "", "HS256")
+  val hsBadSig = Auth.verifyJwt("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.fakesig", "test-secret", "", "", "HS256")
+  val codeRs = match rsRejected { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  val codeHs = match hsBadSig { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertTrue(codeRs != codeHs, "ALG_REJECTED and BAD_SIGNATURE must be distinguishable error codes")
   assertEqual(codeRs, "ALG_REJECTED", "alg-not-in-allow-list code")
   assertEqual(codeHs, "BAD_SIGNATURE", "alg-allowed-but-sig-fails code")
 }
@@ -227,20 +160,23 @@ test "verifyJwt: ALG_REJECTED is distinct from BAD_SIGNATURE (#1090)" {
 // A crafted header {"alg":"RS256","alg":"HS256"} tries to mask the real alg behind
 // a trusted-looking first alg value.  lastIndexOf in jwtAlg picks up "HS256" (last),
 // which is then checked against the allow-list — so the attack is detected.
-
 test "duplicate alg attack: lastIndexOf picks last alg, rejects wrong algorithm" {
   // Header: {"alg":"RS256","typ":"JWT","alg":"HS256"} (last alg = HS256)
   // → eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImFsZyI6IkhTMjU2In0 (len=55, rem=3; needs = padding)
   // allowedAlgorithms = "RS256" — last alg is "HS256" which is not in {"RS256"}.
   val r = Auth.verifyJwt(
     "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImFsZyI6IkhTMjU2In0.payload.fakesig",
-    "test-secret", "", "", "RS256")
-  val code = match r {
-    case Ok(v)  -> "OK"
-    case Err(e) -> e.code
-  }
-  assertEqual(code, "ALG_REJECTED",
-    "duplicate alg header: last alg (HS256) not in RS256-only allow-list — ALG_REJECTED")
+    "test-secret",
+    "",
+    "",
+    "RS256"
+  )
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(
+    code,
+    "ALG_REJECTED",
+    "duplicate alg header: last alg (HS256) not in RS256-only allow-list — ALG_REJECTED"
+  )
 }
 
 test "duplicate alg attack: both algs in allow-list — still fails on invalid sig" {
@@ -250,13 +186,13 @@ test "duplicate alg attack: both algs in allow-list — still fails on invalid s
   // "HS256" and that the token is still validated (not silently accepted).
   val r = Auth.verifyJwt(
     "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImFsZyI6IkhTMjU2In0.payload.fakesig",
-    "test-secret", "", "", "HS256,RS256")
-  val code = match r {
-    case Ok(v)  -> "OK"
-    case Err(e) -> e.code
-  }
-  assertEqual(code, "BAD_SIGNATURE",
-    "alg accepted, signature rejected → BAD_SIGNATURE")
+    "test-secret",
+    "",
+    "",
+    "HS256,RS256"
+  )
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(code, "BAD_SIGNATURE", "alg accepted, signature rejected → BAD_SIGNATURE")
 }
 
 // ─── exp/nbf overflow regression (#1078) ─────────────────────────────────────
@@ -314,6 +250,25 @@ test "duplicate alg attack: both algs in allow-list — still fails on invalid s
 // print(make(b'{"exp":"abc"}'))
 // # → eyJhbGciOiJIUzI1NiJ9.eyJleHAiOiJhYmMifQ.NCnzMSVqHiR3EKJFPFXm7gGpVfsgxO7Q7nY_Kf_3E5I
 // ```
+test "exp non-numeric regression: validly-signed token with string exp is rejected (#1161)" {
+  // Payload: {"exp":"abc"} — non-numeric exp claim.
+  // getLongClaimFromJson returns Err("parse_error"); validatePayload maps all
+  // getLongClaimFromJson errors to EXP_OVERFLOW (intentional: both parse-error
+  // and arithmetic-overflow indicate a malformed/unsafe exp claim).
+  val r = Auth.verifyJwt(
+    "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOiJhYmMifQ.NCnzMSVqHiR3EKJFPFXm7gGpVfsgxO7Q7nY_Kf_3E5I",
+    "test-secret",
+    "",
+    "",
+    "HS256"
+  )
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(
+    code,
+    "EXP_OVERFLOW",
+    "non-numeric exp → EXP_OVERFLOW (both parse-error and overflow map to the same code)"
+  )
+}
 
 test "exp overflow regression: validly-signed token with 20-digit exp is rejected (#1078)" {
   // Payload: {"exp":99999999999999999999} — 20 digits, overflows Long.
@@ -321,54 +276,53 @@ test "exp overflow regression: validly-signed token with 20-digit exp is rejecte
   // With the fix parseLong returns Err("overflow") → EXP_OVERFLOW.
   val r = Auth.verifyJwt(
     "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjk5OTk5OTk5OTk5OTk5OTk5OTk5fQ.XSpwX_lbCxe7CP2z2kBxvBf7Hm-l14y_8YcA2UHqcdc",
-    "test-secret", "", "", "HS256")
-  val code = match r {
-    case Ok(v)  -> "OK"
-    case Err(e) -> e.code
-  }
-  assertEqual(code, "EXP_OVERFLOW",
-    "20-digit exp → EXP_OVERFLOW (parseLong overflow → typed error code)")
+    "test-secret",
+    "",
+    "",
+    "HS256"
+  )
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(code, "EXP_OVERFLOW", "20-digit exp → EXP_OVERFLOW (parseLong overflow → typed error code)")
 }
 
 test "nbf overflow regression: validly-signed token with 20-digit nbf is rejected (#1078)" {
   val r = Auth.verifyJwt(
     "eyJhbGciOiJIUzI1NiJ9.eyJuYmYiOjk5OTk5OTk5OTk5OTk5OTk5OTk5fQ.wfVtcqqLpXnI_yfTav0k0p4g1b8wsvJPPJ9x94JEkjA",
-    "test-secret", "", "", "HS256")
-  val code = match r {
-    case Ok(v)  -> "OK"
-    case Err(e) -> e.code
-  }
-  assertEqual(code, "NBF_OVERFLOW",
-    "20-digit nbf → NBF_OVERFLOW")
+    "test-secret",
+    "",
+    "",
+    "HS256"
+  )
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(code, "NBF_OVERFLOW", "20-digit nbf → NBF_OVERFLOW")
 }
 
 // ─── #1089: RFC 7519 §4.1.3 array-form aud ────────────────────────────────────
-
 test "verifyJwt: array-form aud containing expected audience verifies (#1089)" {
   // Payload: {"aud":["api.example.com","admin"]}, signed with HMAC-SHA256("test-secret").
   // Token reconstruction documented in the Python snippet above.
   val r = Auth.verifyJwt(
     "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOlsiYXBpLmV4YW1wbGUuY29tIiwiYWRtaW4iXX0.MaU1v7iUF4ZuurYpCTzGSeJQaGpj-PgemuvBvUZUwJE",
-    "test-secret", "", "api.example.com", "HS256")
-  val isOk = match r {
-    case Ok(v)  -> true
-    case Err(e) -> false
-  }
-  assertTrue(isOk,
-    "array-form aud containing the expected audience must verify (RFC 7519 §4.1.3)")
+    "test-secret",
+    "",
+    "api.example.com",
+    "HS256"
+  )
+  val isOk = match r { case Ok(v) -> true; case Err(e) -> false }
+  assertTrue(isOk, "array-form aud containing the expected audience must verify (RFC 7519 §4.1.3)")
 }
 
 test "verifyJwt: array-form aud not containing expected audience returns AUDIENCE_MISMATCH (#1089)" {
   // Same array-form aud but the caller expects "billing" which is not in the array.
   val r = Auth.verifyJwt(
     "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOlsiYXBpLmV4YW1wbGUuY29tIiwiYWRtaW4iXX0.MaU1v7iUF4ZuurYpCTzGSeJQaGpj-PgemuvBvUZUwJE",
-    "test-secret", "", "billing", "HS256")
-  val code = match r {
-    case Ok(v)  -> "OK"
-    case Err(e) -> e.code
-  }
-  assertEqual(code, "AUDIENCE_MISMATCH",
-    "audience absent from array → AUDIENCE_MISMATCH")
+    "test-secret",
+    "",
+    "billing",
+    "HS256"
+  )
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(code, "AUDIENCE_MISMATCH", "audience absent from array → AUDIENCE_MISMATCH")
 }
 
 test "verifyJwt: string-form aud still verifies (#1089 backwards-compat)" {
@@ -376,12 +330,70 @@ test "verifyJwt: string-form aud still verifies (#1089 backwards-compat)" {
   // — the array support is additive, not a replacement.
   val r = Auth.verifyJwt(
     "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJhcGkuZXhhbXBsZS5jb20ifQ.IO4WPTpwyrGklp1bW9Gnu_ETf8-b-PMSxkT_OKctPnc",
-    "test-secret", "", "api.example.com", "HS256")
-  val isOk = match r {
-    case Ok(v)  -> true
-    case Err(e) -> false
-  }
+    "test-secret",
+    "",
+    "api.example.com",
+    "HS256"
+  )
+  val isOk = match r { case Ok(v) -> true; case Err(e) -> false }
   assertTrue(isOk, "single-string aud match must continue to verify")
+}
+
+// ─── #2714: duplicate aud keys must be rejected ───────────────────────────────
+// RFC 8259 §4 says duplicate JSON keys SHOULD NOT appear.  In a security
+// context the ambiguity is exploitable: one system may resolve the first
+// occurrence while another resolves the last.  `verifyJwt` rejects tokens
+// with any duplicate `aud` key with AUDIENCE_MISMATCH, regardless of whether
+// the token's audience might otherwise match (#2714).
+//
+// These two tests update the earlier #1289 regression tests which pinned
+// last-wins behavior on cross-form duplicate `aud` payloads.  The tokens
+// are unchanged; the expected error is now AUDIENCE_MISMATCH in all cases
+// because the duplicate-detection fires before audience matching.
+//
+// Token construction (Python snippet above):
+//   # string-form before array-form:
+//   print(make(b'{"aud":"string-form","aud":["api.example.com","admin"]}'))
+//   # → eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJzdHJpbmctZm9ybSIsImF1ZCI6WyJhcGkuZXhhbXBsZS5jb20iLCJhZG1pbiJdfQ.JfVRxKPvRE6tg-Hx38rEtkx6uW9OFYQYft0Qp5c2YWg
+//
+//   # array-form before string-form:
+//   print(make(b'{"aud":["api.example.com","admin"],"aud":"string-form"}'))
+//   # → eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOlsiYXBpLmV4YW1wbGUuY29tIiwiYWRtaW4iXSwiYXVkIjoic3RyaW5nLWZvcm0ifQ.w_IKJJM4012nafutKKKl9jkiAz-lEIZFyicsvC87hB0
+test "duplicate aud: string-form before array-form is rejected with AUDIENCE_MISMATCH (#2714)" {
+  // Payload: {"aud":"string-form","aud":["api.example.com","admin"]}
+  // Both string-form and array-form present → duplicate aud key detected →
+  // AUDIENCE_MISMATCH before audience matching.
+  val r = Auth.verifyJwt(
+    "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJzdHJpbmctZm9ybSIsImF1ZCI6WyJhcGkuZXhhbXBsZS5jb20iLCJhZG1pbiJdfQ.JfVRxKPvRE6tg-Hx38rEtkx6uW9OFYQYft0Qp5c2YWg",
+    "test-secret",
+    "",
+    "api.example.com",
+    "HS256"
+  )
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(
+    code,
+    "AUDIENCE_MISMATCH",
+    "duplicate aud (string-form then array-form) must be rejected with AUDIENCE_MISMATCH (#2714)"
+  )
+}
+
+test "duplicate aud: array-form before string-form is rejected with AUDIENCE_MISMATCH (#2714)" {
+  // Payload: {"aud":["api.example.com","admin"],"aud":"string-form"}
+  // Same duplicate-aud rejection regardless of which form appears first.
+  val r = Auth.verifyJwt(
+    "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOlsiYXBpLmV4YW1wbGUuY29tIiwiYWRtaW4iXSwiYXVkIjoic3RyaW5nLWZvcm0ifQ.w_IKJJM4012nafutKKKl9jkiAz-lEIZFyicsvC87hB0",
+    "test-secret",
+    "",
+    "api.example.com",
+    "HS256"
+  )
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(
+    code,
+    "AUDIENCE_MISMATCH",
+    "duplicate aud (array-form then string-form) must be rejected with AUDIENCE_MISMATCH (#2714)"
+  )
 }
 
 // ─── #1079: JSON escape decoding in claim values ─────────────────────────────
@@ -389,24 +401,18 @@ test "verifyJwt: string-form aud still verifies (#1089 backwards-compat)" {
 // Before #1079 a `sub` claim of `"O\"Brien"` was returned as the literal bytes
 // `O\"Brien` (with the backslash), and `"line1\nline2"` was returned with a
 // literal `\n` rather than a real newline.
-
 test "extractClaim: claim value with escaped quote is decoded (#1079)" {
   // Payload: {"sub":"O\"Brien"} (after JSON unescaping it is O"Brien).
   // Signed with HMAC-SHA256("test-secret").
   val token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJPXCJCcmllbiJ9.0nB7w7b6e6YyAFrSNy7OjM2q26WIoSykU-cv0sw1xC0"
   // First confirm verification passes (so we know the payload is parsed).
   val v = Auth.verifyJwt(token, "test-secret", "", "", "HS256")
-  val isOk = match v {
-    case Ok(u)  -> true
-    case Err(e) -> false
-  }
-  assertTrue(isOk,
-    "token with escaped sub value must still verify (signature is over the encoded payload)")
+  val isOk = match v { case Ok(u) -> true; case Err(e) -> false }
+  assertTrue(isOk, "token with escaped sub value must still verify (signature is over the encoded payload)")
   match Auth.extractClaim(token, "sub") {
     case None -> assertTrue(false, "sub claim must be extracted")
     case Some(value) -> {
-      assertEqual(value, "O\"Brien",
-        "escaped quote in sub must decode to a literal quote character (#1079)")
+      assertEqual(value, "O\"Brien", "escaped quote in sub must decode to a literal quote character (#1079)")
     }
   }
 }
@@ -425,10 +431,8 @@ test "extractClaim: simple ASCII claim still extracts (#1079 regression guard)" 
 // the parameter plumbing and contract: skewSeconds=0 must enforce strict
 // expiry semantics, and the default skew is exposed for callers via
 // defaultClockSkewSeconds().
-
 test "defaultClockSkewSeconds is 60 (#1081)" {
-  assertTrue(Auth.defaultClockSkewSeconds() == 60,
-    "industry-standard 60-second leeway (Auth0, AWS Cognito)")
+  assertTrue(Auth.defaultClockSkewSeconds() == 60, "industry-standard 60-second leeway (Auth0, AWS Cognito)")
 }
 
 test "verifyJwtWithSkew: zero skew with an expired token rejects (#1081)" {
@@ -436,13 +440,14 @@ test "verifyJwtWithSkew: zero skew with an expired token rejects (#1081)" {
   // Token construction documented in the Python snippet above.
   val r = Auth.verifyJwtWithSkew(
     "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjF9.ll37qi5BStXya0qqqwLHM0oKvWoHHZMdnStJSCMiyPM",
-    "test-secret", "", "", "HS256", 0)
-  val code = match r {
-    case Ok(v)  -> "OK"
-    case Err(e) -> e.code
-  }
-  assertEqual(code, "EXPIRED",
-    "exp in the past with zero skew → EXPIRED")
+    "test-secret",
+    "",
+    "",
+    "HS256",
+    0
+  )
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(code, "EXPIRED", "exp in the past with zero skew → EXPIRED")
 }
 
 test "verifyJwtWithSkew: large skew widens the validity window (#1081)" {
@@ -452,11 +457,13 @@ test "verifyJwtWithSkew: large skew widens the validity window (#1081)" {
   // an Int parameter without overflow (#1149).
   val r = Auth.verifyJwtWithSkew(
     "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjF9.ll37qi5BStXya0qqqwLHM0oKvWoHHZMdnStJSCMiyPM",
-    "test-secret", "", "", "HS256", 2000000000)
-  val isOk = match r {
-    case Ok(v)  -> true
-    case Err(e) -> false
-  }
+    "test-secret",
+    "",
+    "",
+    "HS256",
+    2000000000
+  )
+  val isOk = match r { case Ok(v) -> true; case Err(e) -> false }
   assertTrue(isOk, "exp=1 with absurdly large skew must verify (window widened)")
 }
 
@@ -464,18 +471,11 @@ test "verifyJwtWithSkew: large skew widens the validity window (#1081)" {
 // When the caller allow-lists an algorithm the kernel does not implement
 // (e.g. RS256 on the .NET kernel today, #443), we surface ALG_UNSUPPORTED
 // rather than masking it as BAD_SIGNATURE.
-
 test "verifyJwt: alg allowed but unsupported by kernel returns ALG_UNSUPPORTED (#1090)" {
   // Token alg = RS256, caller allows RS256, but the .NET kernel only
   // implements HS256.  Surface this as ALG_UNSUPPORTED so operators see
   // the kernel limitation in logs instead of a generic verification failure.
-  val r = Auth.verifyJwt(
-    "eyJhbGciOiJSUzI1NiJ9.payload.fakesig",
-    "test-secret", "", "", "RS256")
-  val code = match r {
-    case Ok(v)  -> "OK"
-    case Err(e) -> e.code
-  }
-  assertEqual(code, "ALG_UNSUPPORTED",
-    "alg-allowed-but-not-implemented → ALG_UNSUPPORTED (not BAD_SIGNATURE)")
+  val r = Auth.verifyJwt("eyJhbGciOiJSUzI1NiJ9.payload.fakesig", "test-secret", "", "", "RS256")
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(code, "ALG_UNSUPPORTED", "alg-allowed-but-not-implemented → ALG_UNSUPPORTED (not BAD_SIGNATURE)")
 }

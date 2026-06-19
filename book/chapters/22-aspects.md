@@ -168,11 +168,15 @@ empty); `annotations` is `slice[String]` carrying the matched
 function's annotation short-names.  The weaver pre-scans the body and
 only emits the locals that are actually read — aspects that don't
 reference `call.*` produce byte-identical wrappers to the weaver's
-pre-tier-6 output. `call.elapsed` and `call.caller` need runtime
-instrumentation (timestamp capture around `proceed`, caller-site stack
-walk) and are not yet wired; references to either surface as an
-**A0043** weave-time diagnostic naming the unrecognised field and
-listing the recognised ones. Follow-up tracked in issue #1298.
+pre-tier-6 output.  The runtime field `call.elapsed` (`Option[Int]`,
+milliseconds) is wired (#1298): the weaver captures
+`Std.Time.monotonicNanos()` around each `proceed(args)` call and
+auto-injects `import Std.Time` (deduplicated) into the woven file;
+the value reads `Some(ms)` after `proceed` returns and `None` before
+`proceed` runs or when the body never calls it.  `call.caller` needs
+a caller-site stack walk that is not implemented; references surface
+as an **A0043** weave-time diagnostic naming the unrecognised field
+and listing the recognised ones.
 
 **`config {}` injection.** Each `config { }` field with a literal
 default is materialised by the weaver as a synthetic

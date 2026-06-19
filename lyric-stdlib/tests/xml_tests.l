@@ -1,8 +1,8 @@
-// stdlib/tests/xml_tests.l — Tests for Std.Xml.
-//
-// Covers: document parsing, self-closing elements, nested elements,
-// text content, attributes, entity references, CDATA, comments,
-// XML declaration, findFirst/findAll, and error cases.
+//! stdlib/tests/xml_tests.l — Tests for Std.Xml.
+//!
+//! Covers: document parsing, self-closing elements, nested elements,
+//! text content, attributes, entity references, CDATA, comments,
+//! XML declaration, findFirst/findAll, and error cases.
 package Std.Xml.Tests
 
 import Std.Core
@@ -17,7 +17,7 @@ func testSelfClosing(): Unit {
       val root = documentRoot(doc)
       match elementTag(root) {
         case Some(t) -> assertTrue(t == "br", "self-closing tag")
-        case None    -> assertTrue(false, "self-closing: expected element")
+        case None -> assertTrue(false, "self-closing: expected element")
       }
       assertEqualInt(elementChildren(root).count, 0, "self-closing has no children")
     }
@@ -41,15 +41,15 @@ func testAttributes(): Unit {
       val root = documentRoot(doc)
       match getAttribute(root, "x") {
         case Some(v) -> assertTrue(v == "1", "attr x")
-        case None    -> assertTrue(false, "attr x missing")
+        case None -> assertTrue(false, "attr x missing")
       }
       match getAttribute(root, "y") {
         case Some(v) -> assertTrue(v == "hello", "attr y")
-        case None    -> assertTrue(false, "attr y missing")
+        case None -> assertTrue(false, "attr y missing")
       }
       match getAttribute(root, "z") {
         case Some(v) -> assertTrue(v == "bye", "attr z single-quote")
-        case None    -> assertTrue(false, "attr z missing")
+        case None -> assertTrue(false, "attr z missing")
       }
       assertTrue(isNone(getAttribute(root, "missing")), "missing attr is None")
     }
@@ -97,7 +97,7 @@ func testEntityInAttr(): Unit {
     case Ok(doc) -> {
       match getAttribute(documentRoot(doc), "val") {
         case Some(v) -> assertTrue(v == "a&b", "entity in attribute value")
-        case None    -> assertTrue(false, "val attr missing")
+        case None -> assertTrue(false, "val attr missing")
       }
     }
   }
@@ -129,7 +129,7 @@ func testXmlDeclaration(): Unit {
     case Ok(doc) -> {
       match elementTag(documentRoot(doc)) {
         case Some(t) -> assertTrue(t == "root", "root after xml decl")
-        case None    -> assertTrue(false, "xml decl: expected element")
+        case None -> assertTrue(false, "xml decl: expected element")
       }
     }
   }
@@ -141,7 +141,7 @@ func testDocType(): Unit {
     case Ok(doc) -> {
       match elementTag(documentRoot(doc)) {
         case Some(t) -> assertTrue(t == "html", "root after DOCTYPE")
-        case None    -> assertTrue(false, "doctype: expected element")
+        case None -> assertTrue(false, "doctype: expected element")
       }
     }
   }
@@ -152,11 +152,11 @@ func testFindFirst(): Unit {
     case Err(e) -> assertTrue(false, "findFirst: " + XmlError.message(e))
     case Ok(doc) -> {
       match findFirst(documentRoot(doc), "b") {
-        case None    -> assertTrue(false, "findFirst b: not found")
+        case None -> assertTrue(false, "findFirst b: not found")
         case Some(n) -> {
           match getAttribute(n, "id") {
             case Some(v) -> assertTrue(v == "1", "findFirst returns first depth-first match")
-            case None    -> assertTrue(false, "findFirst: id attr missing")
+            case None -> assertTrue(false, "findFirst: id attr missing")
           }
         }
       }
@@ -202,7 +202,7 @@ func testErrorMismatched(): Unit {
 func testErrorEmpty(): Unit {
   match parseXml("") {
     case Err(e) -> assertTrue(XmlError.message(e).length > 0, "empty doc error")
-    case Ok(_)  -> assertTrue(false, "empty doc should fail")
+    case Ok(_) -> assertTrue(false, "empty doc should fail")
   }
 }
 
@@ -218,7 +218,6 @@ func testElementChildren(): Unit {
 }
 
 // ── Depth guard (#583) ─────────────────────────────────────────────────────────
-
 func testXmlDepthGuard(): Unit {
   // 2000 nested elements must be rejected by the depth guard.
   var open = ""
@@ -231,7 +230,7 @@ func testXmlDepthGuard(): Unit {
   }
   match parseXml(open + close) {
     case Err(e) -> assertTrue(XmlError.message(e).length > 0, "XML depth guard fires on 2000-deep document")
-    case Ok(_)  -> assertTrue(false, "2000-deep XML must be rejected")
+    case Ok(_) -> assertTrue(false, "2000-deep XML must be rejected")
   }
 }
 
@@ -247,7 +246,7 @@ func testXmlDepthBoundary(): Unit {
   }
   match parseXml(open + close) {
     case Err(e) -> assertTrue(false, "100-deep XML should parse: " + XmlError.message(e))
-    case Ok(_)  -> assertTrue(true, "100-deep XML parsed ok")
+    case Ok(_) -> assertTrue(true, "100-deep XML parsed ok")
   }
 }
 

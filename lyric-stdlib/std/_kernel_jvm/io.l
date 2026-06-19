@@ -1,11 +1,10 @@
-// std/_kernel_jvm/io.l - trusted JVM host boundary for stdlib IO.
-//
-// Mirrors _kernel/io.l for the JVM target.  All routing goes through
-// lyric.stdlib.jvm.ConsoleHost / lyric.stdlib.jvm.FileHost shim
-// classes rather than BCL statics.  The shim classes wrap:
-//   ConsoleHost: java.lang.System.{out,err,in} + BufferedReader
-//   FileHost:    java.nio.file.Files / java.nio.file.Path
-
+//! std/_kernel_jvm/io.l - trusted JVM host boundary for stdlib IO.
+//!
+//! Mirrors _kernel/io.l for the JVM target.  All routing goes through
+//! lyric.stdlib.jvm.ConsoleHost / lyric.stdlib.jvm.FileHost shim
+//! classes rather than BCL statics.  The shim classes wrap:
+//!   ConsoleHost: java.lang.System.{out,err,in} + BufferedReader
+//!   FileHost:    java.nio.file.Files / java.nio.file.Path
 @axiom("lyric.stdlib.jvm ConsoleHost and FileHost operations conform to their documented JVM contracts")
 package Std.IO
 

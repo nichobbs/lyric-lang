@@ -1,20 +1,19 @@
-// msil/assembler.l — Single-assembly PE layout engine (Stage M2d / M4).
-//
-// Takes a populated AssemblerInput (tables, heaps, one or more MethodBodies,
-// entry token) and produces a complete, CLR-runnable .NET PE image in a
-// ByteWriter.
-//
-// File layout (FILE_ALIGN = 0x200):
-//   0x000–0x07F  DOS stub (128 bytes)
-//   0x080–0x1FF  PE/COFF headers + section table, padded to FILE_ALIGN
-//   0x200–0x247  CLR IMAGE_COR20_HEADER (72 bytes)
-//   0x248–…      Method bodies (each serialized by Msil.Opcodes, in order)
-//   <after last body> BSJB metadata root + 5 stream headers + stream data
-//   <align>      Zero-padding to FILE_ALIGN
-//
-// Caller must set MethodDef.rva for each method using methodBodyRvas()
-// before calling assemblePe.
-
+//! msil/assembler.l — Single-assembly PE layout engine (Stage M2d / M4).
+//!
+//! Takes a populated AssemblerInput (tables, heaps, one or more MethodBodies,
+//! entry token) and produces a complete, CLR-runnable .NET PE image in a
+//! ByteWriter.
+//!
+//! File layout (FILE_ALIGN = 0x200):
+//!   0x000–0x07F  DOS stub (128 bytes)
+//!   0x080–0x1FF  PE/COFF headers + section table, padded to FILE_ALIGN
+//!   0x200–0x247  CLR IMAGE_COR20_HEADER (72 bytes)
+//!   0x248–…      Method bodies (each serialized by Msil.Opcodes, in order)
+//!   <after last body> BSJB metadata root + 5 stream headers + stream data
+//!   <align>      Zero-padding to FILE_ALIGN
+//!
+//! Caller must set MethodDef.rva for each method using methodBodyRvas()
+//! before calling assemblePe.
 package Msil.Assembler
 
 import Msil.Kernel
@@ -31,35 +30,35 @@ pub val FIRST_METHOD_RVA: Int = 0x2048
 // Input descriptor for the multi-method PE assembler.
 pub record AssemblerInput {
   entryPointToken: Int       // e.g. 0x06000001 for MethodDef[1]
-  methodBodies:    List[MethodBody]
-  tables:          MetadataTables
-  strings:         StringHeap
-  us:              UsHeap
-  blobs:           BlobHeap
-  guids:           GuidHeap
+  methodBodies: List[MethodBody]
+  tables: MetadataTables
+  strings: StringHeap
+  us: UsHeap
+  blobs: BlobHeap
+  guids: GuidHeap
   /// Managed-resource payload bytes, concatenated.  Each resource is a
   /// 4-byte little-endian length prefix followed by the resource data.
   /// `tables.manifestResources` carries the per-resource offsets into
   /// this buffer.  When empty (the common case for assemblies with no
   /// embedded resources), the CLR header's Resources directory entry
   /// is left zero.
-  resourceData:    List[Byte]
-  /// Build kind: "lib" for DLL (PE subsystem/characteristics for library),
-  /// "exe" for EXE (PE subsystem/characteristics for executable).
-  buildKind:       String
+  resourceData: List[Byte]
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
-
 func round4(v: in Int): Int {
   val r = v % 4
-  if r == 0 { return v }
+  if r == 0 {
+    return v
+  }
   return v + (4 - r)
 }
 
 func roundTo(v: in Int, align: in Int): Int {
   val r = v % align
-  if r == 0 { return v }
+  if r == 0 {
+    return v
+  }
   return v + (align - r)
 }
 
@@ -76,7 +75,6 @@ func w4p(w: in ByteWriter, v: in Int): Unit {
 }
 
 // ── DOS MZ stub (128 bytes) ───────────────────────────────────────────────────
-
 func writeDos(w: in ByteWriter): Unit {
   bufU1(w, 0x4D)  // 'M'
   bufU1(w, 0x5A)  // 'Z'
@@ -86,58 +84,75 @@ func writeDos(w: in ByteWriter): Unit {
 }
 
 // ── PE/COFF headers, padded to file offset 0x200 (384 bytes) ─────────────────
-
-func writePeHdrs(w: in ByteWriter, textVSize: in Int, textRSize: in Int, imgSize: in Int, buildKind: in String): Unit {
+func writePeHdrs(w: in ByteWriter, textVSize: in Int, textRSize: in Int, imgSize: in Int): Unit {
   // PE signature "PE\0\0"
-  bufU1(w, 0x50)  bufU1(w, 0x45)  bufU1(w, 0x00)  bufU1(w, 0x00)
+  bufU1(w, 0x50)
+  bufU1(w, 0x45)
+  bufU1(w, 0x00)
+  bufU1(w, 0x00)
 
   // COFF header (20 bytes)
-  w2p(w, 0x014C)   w2p(w, 1)      // Machine=I386, NumberOfSections=1
-  w4p(w, 0)        w4p(w, 0)      // TimeDateStamp, PtrToSymbolTable
+  w2p(w, 0x014C)
+  w2p(w, 1)      // Machine=I386, NumberOfSections=1
+  w4p(w, 0)
+  w4p(w, 0)      // TimeDateStamp, PtrToSymbolTable
   w4p(w, 0)                        // NumberOfSymbols
   w2p(w, 224)
-  // Characteristics: 0x0102 (EXECUTABLE_IMAGE | EXECUTABLE) for EXE,
-  // add 0x2000 (DLL) flag for DLL output
-  val characteristics = if buildKind == "lib" { 0x2102 } else { 0x0102 }
-  w2p(w, characteristics) // SizeOfOptionalHeader=224, Characteristics
+  w2p(w, 0x0102) // SizeOfOptionalHeader=224, Characteristics
 
   // PE32 optional header (96 bytes)
   w2p(w, 0x010B)                   // Magic: PE32
-  bufU1(w, 0x30)   bufU1(w, 0x00) // MajorLinkerVersion, MinorLinkerVersion
+  bufU1(w, 0x30)
+  bufU1(w, 0x00) // MajorLinkerVersion, MinorLinkerVersion
   w4p(w, textRSize)                // SizeOfCode (file-aligned .text)
-  w4p(w, 0)        w4p(w, 0)      // SizeOfInitializedData, SizeOfUninitializedData
+  w4p(w, 0)
+  w4p(w, 0)      // SizeOfInitializedData, SizeOfUninitializedData
   w4p(w, 0)                        // AddressOfEntryPoint (managed; set via CLR header)
   w4p(w, 0x2000)                   // BaseOfCode
   w4p(w, 0)                        // BaseOfData
   w4p(w, 0x400000)                 // ImageBase
   w4p(w, 0x2000)                   // SectionAlignment
   w4p(w, 0x200)                    // FileAlignment
-  w2p(w, 4)        w2p(w, 0)      // MajorOSVersion, MinorOSVersion
-  w2p(w, 0)        w2p(w, 0)      // MajorImageVersion, MinorImageVersion
-  w2p(w, 4)        w2p(w, 0)      // MajorSubsystemVersion, MinorSubsystemVersion
+  w2p(w, 4)
+  w2p(w, 0)      // MajorOSVersion, MinorOSVersion
+  w2p(w, 0)
+  w2p(w, 0)      // MajorImageVersion, MinorImageVersion
+  w2p(w, 4)
+  w2p(w, 0)      // MajorSubsystemVersion, MinorSubsystemVersion
   w4p(w, 0)                        // Win32VersionValue
   w4p(w, imgSize)                  // SizeOfImage
   w4p(w, 0x200)                    // SizeOfHeaders
   w4p(w, 0)                        // CheckSum
-  w2p(w, 3)        w2p(w, 0)      // Subsystem=CUI, DllCharacteristics
-  w4p(w, 0x100000) w4p(w, 0x1000) // SizeOfStackReserve, SizeOfStackCommit
-  w4p(w, 0x100000) w4p(w, 0x1000) // SizeOfHeapReserve, SizeOfHeapCommit
-  w4p(w, 0)        w4p(w, 16)     // LoaderFlags, NumberOfRvaAndSizes
+  w2p(w, 3)
+  w2p(w, 0)      // Subsystem=CUI, DllCharacteristics
+  w4p(w, 0x100000)
+  w4p(w, 0x1000) // SizeOfStackReserve, SizeOfStackCommit
+  w4p(w, 0x100000)
+  w4p(w, 0x1000) // SizeOfHeapReserve, SizeOfHeapCommit
+  w4p(w, 0)
+  w4p(w, 16)     // LoaderFlags, NumberOfRvaAndSizes
 
   // Data directories (128 bytes: 16 × 8)
   bufZero(w, 112)                  // [0..13]: unused
-  w4p(w, 0x2000)   w4p(w, 72)     // [14]: CLR runtime header RVA and size
+  w4p(w, 0x2000)
+  w4p(w, 72)     // [14]: CLR runtime header RVA and size
   bufZero(w, 8)                    // [15]: reserved
 
   // Section table: .text (40 bytes)
-  bufU1(w, 0x2E)  bufU1(w, 0x74)  bufU1(w, 0x65)  bufU1(w, 0x78)
-  bufU1(w, 0x74)  bufZero(w, 3)   // ".text\0\0\0"
+  bufU1(w, 0x2E)
+  bufU1(w, 0x74)
+  bufU1(w, 0x65)
+  bufU1(w, 0x78)
+  bufU1(w, 0x74)
+  bufZero(w, 3)   // ".text\0\0\0"
   w4p(w, textVSize)                // VirtualSize (actual content)
   w4p(w, 0x2000)                   // VirtualAddress
   w4p(w, textRSize)                // SizeOfRawData (file-aligned)
   w4p(w, 0x200)                    // PointerToRawData
-  w4p(w, 0)        w4p(w, 0)      // PointerToRelocations, PointerToLinenumbers
-  w2p(w, 0)        w2p(w, 0)      // NumberOfRelocations, NumberOfLinenumbers
+  w4p(w, 0)
+  w4p(w, 0)      // PointerToRelocations, PointerToLinenumbers
+  w2p(w, 0)
+  w2p(w, 0)      // NumberOfRelocations, NumberOfLinenumbers
   w4p(w, 0x60000020)              // Characteristics: code+readable+executable
 
   // Pad to file offset 0x200
@@ -145,9 +160,9 @@ func writePeHdrs(w: in ByteWriter, textVSize: in Int, textRSize: in Int, imgSize
 }
 
 // ── CLR IMAGE_COR20_HEADER (72 bytes at file offset 0x200) ───────────────────
-
-func writeClrHdr(w: in ByteWriter, mdRva: in Int, mdSize: in Int,
-                 entryToken: in Int, rsrcRva: in Int, rsrcSize: in Int): Unit {
+func writeClrHdr(
+  w: in ByteWriter, mdRva: in Int, mdSize: in Int, entryToken: in Int, rsrcRva: in Int, rsrcSize: in Int
+): Unit {
   w4p(w, 72)          // cb
   w2p(w, 2)           // MajorRuntimeVersion
   w2p(w, 5)           // MinorRuntimeVersion
@@ -161,13 +176,14 @@ func writeClrHdr(w: in ByteWriter, mdRva: in Int, mdSize: in Int,
 }
 
 // ── BSJB metadata root + 5 stream headers + stream data ──────────────────────
-
-func writeMeta(w: in ByteWriter,
-               tildeBuf: in ByteWriter,
-               strBuf:   in ByteWriter,
-               usBuf:    in ByteWriter,
-               blBuf:    in ByteWriter,
-               guBuf:    in ByteWriter): Unit {
+func writeMeta(
+  w: in ByteWriter,
+  tildeBuf: in ByteWriter,
+  strBuf: in ByteWriter,
+  usBuf: in ByteWriter,
+  blBuf: in ByteWriter,
+  guBuf: in ByteWriter,
+): Unit {
   // Capture raw sizes before appending
   val tRaw = bufLen(tildeBuf)
   val sRaw = bufLen(strBuf)
@@ -191,58 +207,111 @@ func writeMeta(w: in ByteWriter,
   val gOff = bOff + bSize
 
   // BSJB root header (32 bytes)
-  bufU1(w, 0x42)  bufU1(w, 0x53)  bufU1(w, 0x4A)  bufU1(w, 0x42)  // "BSJB"
-  w2p(w, 1)       w2p(w, 1)       // MajorVersion=1, MinorVersion=1
+  bufU1(w, 0x42)
+  bufU1(w, 0x53)
+  bufU1(w, 0x4A)
+  bufU1(w, 0x42)  // "BSJB"
+  w2p(w, 1)
+  w2p(w, 1)       // MajorVersion=1, MinorVersion=1
   w4p(w, 0)                        // Reserved
   w4p(w, 12)                       // VersionLength=12
   // "v4.0.30319\0\0" (12 bytes)
-  bufU1(w, 0x76)  bufU1(w, 0x34)  bufU1(w, 0x2E)  bufU1(w, 0x30)  bufU1(w, 0x2E)
-  bufU1(w, 0x33)  bufU1(w, 0x30)  bufU1(w, 0x33)  bufU1(w, 0x31)  bufU1(w, 0x39)
-  bufU1(w, 0x00)  bufU1(w, 0x00)
+  bufU1(w, 0x76)
+  bufU1(w, 0x34)
+  bufU1(w, 0x2E)
+  bufU1(w, 0x30)
+  bufU1(w, 0x2E)
+  bufU1(w, 0x33)
+  bufU1(w, 0x30)
+  bufU1(w, 0x33)
+  bufU1(w, 0x31)
+  bufU1(w, 0x39)
+  bufU1(w, 0x00)
+  bufU1(w, 0x00)
   w2p(w, 0)                        // Flags
   w2p(w, 5)                        // NumberOfStreams
 
   // Stream header 1: "#~\0\0" (12 bytes)
-  w4p(w, tOff)    w4p(w, tSize)
-  bufU1(w, 0x23)  bufU1(w, 0x7E)  bufU1(w, 0x00)  bufU1(w, 0x00)
+  w4p(w, tOff)
+  w4p(w, tSize)
+  bufU1(w, 0x23)
+  bufU1(w, 0x7E)
+  bufU1(w, 0x00)
+  bufU1(w, 0x00)
 
   // Stream header 2: "#Strings\0\0\0\0" (20 bytes)
-  w4p(w, sOff)    w4p(w, sSize)
-  bufU1(w, 0x23)  bufU1(w, 0x53)  bufU1(w, 0x74)  bufU1(w, 0x72)
-  bufU1(w, 0x69)  bufU1(w, 0x6E)  bufU1(w, 0x67)  bufU1(w, 0x73)
-  bufU1(w, 0x00)  bufU1(w, 0x00)  bufU1(w, 0x00)  bufU1(w, 0x00)
+  w4p(w, sOff)
+  w4p(w, sSize)
+  bufU1(w, 0x23)
+  bufU1(w, 0x53)
+  bufU1(w, 0x74)
+  bufU1(w, 0x72)
+  bufU1(w, 0x69)
+  bufU1(w, 0x6E)
+  bufU1(w, 0x67)
+  bufU1(w, 0x73)
+  bufU1(w, 0x00)
+  bufU1(w, 0x00)
+  bufU1(w, 0x00)
+  bufU1(w, 0x00)
 
   // Stream header 3: "#US\0" (12 bytes)
-  w4p(w, uOff)    w4p(w, uSize)
-  bufU1(w, 0x23)  bufU1(w, 0x55)  bufU1(w, 0x53)  bufU1(w, 0x00)
+  w4p(w, uOff)
+  w4p(w, uSize)
+  bufU1(w, 0x23)
+  bufU1(w, 0x55)
+  bufU1(w, 0x53)
+  bufU1(w, 0x00)
 
   // Stream header 4: "#Blob\0\0\0" (16 bytes)
-  w4p(w, bOff)    w4p(w, bSize)
-  bufU1(w, 0x23)  bufU1(w, 0x42)  bufU1(w, 0x6C)  bufU1(w, 0x6F)
-  bufU1(w, 0x62)  bufU1(w, 0x00)  bufU1(w, 0x00)  bufU1(w, 0x00)
+  w4p(w, bOff)
+  w4p(w, bSize)
+  bufU1(w, 0x23)
+  bufU1(w, 0x42)
+  bufU1(w, 0x6C)
+  bufU1(w, 0x6F)
+  bufU1(w, 0x62)
+  bufU1(w, 0x00)
+  bufU1(w, 0x00)
+  bufU1(w, 0x00)
 
   // Stream header 5: "#GUID\0\0\0" (16 bytes)
-  w4p(w, gOff)    w4p(w, gSize)
-  bufU1(w, 0x23)  bufU1(w, 0x47)  bufU1(w, 0x55)  bufU1(w, 0x49)
-  bufU1(w, 0x44)  bufU1(w, 0x00)  bufU1(w, 0x00)  bufU1(w, 0x00)
+  w4p(w, gOff)
+  w4p(w, gSize)
+  bufU1(w, 0x23)
+  bufU1(w, 0x47)
+  bufU1(w, 0x55)
+  bufU1(w, 0x49)
+  bufU1(w, 0x44)
+  bufU1(w, 0x00)
+  bufU1(w, 0x00)
+  bufU1(w, 0x00)
 
   // Stream data: append each buffer then zero-pad to its declared size
-  bufAppend(w, tildeBuf)   bufZero(w, tSize - tRaw)
-  bufAppend(w, strBuf)     bufZero(w, sSize - sRaw)
-  bufAppend(w, usBuf)      bufZero(w, uSize - uRaw)
-  bufAppend(w, blBuf)      bufZero(w, bSize - bRaw)
-  bufAppend(w, guBuf)      bufZero(w, gSize - gRaw)
+  bufAppend(w, tildeBuf)
+  bufZero(w, tSize - tRaw)
+  bufAppend(w, strBuf)
+  bufZero(w, sSize - sRaw)
+  bufAppend(w, usBuf)
+  bufZero(w, uSize - uRaw)
+  bufAppend(w, blBuf)
+  bufZero(w, bSize - bRaw)
+  bufAppend(w, guBuf)
+  bufZero(w, gSize - gRaw)
 }
 
 // ── Public helpers ────────────────────────────────────────────────────────────
-
 // True when the first byte of a serialized method body marks the FAT format
 // (ECMA-335 II.25.4.3 — flags bits 0..1 = 0b11 means FAT).  FAT bodies must
 // start at a 4-byte aligned offset (II.25.4.5); TINY bodies have no such
 // requirement.
 func isFatBody(buf: in ByteWriter): Bool {
   val bs = bufToList(buf)
-  if bs.count == 0 { false } else { (bs[0] % 4) == 3 }
+  if bs.count == 0 {
+    false
+  } else {
+    (bs[0].toInt() % 4) == 3
+  }
 }
 
 /// Compute the RVA for each method body in `bodies`.
@@ -270,9 +339,7 @@ pub func methodBodyRvas(bodies: in List[MethodBody]): List[Int] {
   while i < count {
     rvas.add(rva)
     val raw = bufLen(bufs[i])
-    val padded =
-      if (i + 1) < count and isFatBody(bufs[i + 1]) { round4(rva + raw) - rva }
-      else { raw }
+    val padded = if (i + 1) < count and isFatBody(bufs[i + 1]) { round4(rva + raw) - rva } else { raw }
     rva = rva + padded
     i = i + 1
   }
@@ -280,7 +347,6 @@ pub func methodBodyRvas(bodies: in List[MethodBody]): List[Int] {
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
-
 /// Assemble a complete, CLR-runnable PE image.
 ///
 /// Caller must populate `inp.tables` with MethodDef.rva values obtained
@@ -306,9 +372,7 @@ pub func assemblePe(inp: in AssemblerInput): ByteWriter {
   i = 0
   while i < mbCount {
     val raw = bufLen(mbBufs[i])
-    val pad =
-      if (i + 1) < mbCount and isFatBody(mbBufs[i + 1]) { round4(currentPos + raw) - currentPos - raw }
-      else { 0 }
+    val pad = if (i + 1) < mbCount and isFatBody(mbBufs[i + 1]) { round4(currentPos + raw) - currentPos - raw } else { 0 }
     mbPadSizes.add(pad)
     mbTotalRaw = mbTotalRaw + raw + pad
     currentPos = currentPos + raw + pad
@@ -328,9 +392,24 @@ pub func assemblePe(inp: in AssemblerInput): ByteWriter {
   val guBuf = bufNew()
   serializeGuids(inp.guids, guBuf)
 
-  // Serialize #~ metadata tables stream
+  // Serialize #~ metadata tables stream.  The heapSizes flags byte selects
+  // 2- vs 4-byte heap-index widths: ECMA-335 §II.24.2.6 requires 4-byte
+  // indices for any heap whose data exceeds 0xFFFF bytes.  Large assemblies
+  // (e.g. per-package compiler DLLs with restored-dep TypeRef/MemberRef names)
+  // routinely push #Strings past 64 KB; without widening, every heap offset
+  // truncates to 2 bytes and aliases names to garbage.
+  var heapSizes = 0
+  if bufLen(strBuf) > 65535 {
+    heapSizes = heapSizes + 1   // bit 0: #Strings
+  }
+  if bufLen(guBuf) > 65535 {
+    heapSizes = heapSizes + 2   // bit 1: #GUID
+  }
+  if bufLen(blBuf) > 65535 {
+    heapSizes = heapSizes + 4   // bit 2: #Blob
+  }
   val tildeBuf = bufNew()
-  serializeTablesStream(inp.tables, 0, tildeBuf)
+  serializeTablesStream(inp.tables, heapSizes, tildeBuf)
 
   // Compute padded stream sizes
   val tSize = round4(bufLen(tildeBuf))
@@ -348,22 +427,21 @@ pub func assemblePe(inp: in AssemblerInput): ByteWriter {
   // requires the region to be 4-byte aligned, so we round up the raw
   // size before the metadata RVA computation.
   // PE layout
-  val clrHdrSz  = 72
-  val rawRsrcSize  = inp.resourceData.count
-  val padRsrcSize  = round4(rawRsrcSize)
+  val clrHdrSz = 72
+  val rawRsrcSize = inp.resourceData.count
+  val padRsrcSize = round4(rawRsrcSize)
   val hasResources = rawRsrcSize > 0
-  val rsrcRva      = if hasResources { 0x2000 + clrHdrSz + mbTotalRaw } else { 0 }
-  val mdRva     = 0x2000 + clrHdrSz + mbTotalRaw + padRsrcSize   // metadata RVA in .text section
+  val rsrcRva = if hasResources { 0x2000 + clrHdrSz + mbTotalRaw } else { 0 }
+  val mdRva = 0x2000 + clrHdrSz + mbTotalRaw + padRsrcSize   // metadata RVA in .text section
   val textVSize = clrHdrSz + mbTotalRaw + padRsrcSize + metaSize  // actual content bytes in .text
   val textRSize = roundTo(textVSize, 0x200)          // file-aligned .text size
-  val imgSize   = 0x2000 + roundTo(textVSize, 0x2000)  // SizeOfImage
+  val imgSize = 0x2000 + roundTo(textVSize, 0x2000)  // SizeOfImage
 
   // Write PE image
   val w = bufNew()
   writeDos(w)                                              // 0x000–0x07F
-  writePeHdrs(w, textVSize, textRSize, imgSize, inp.buildKind)            // 0x080–0x1FF
-  writeClrHdr(w, mdRva, metaSize, inp.entryPointToken,
-              rsrcRva, rawRsrcSize)                         // 0x200–0x247
+  writePeHdrs(w, textVSize, textRSize, imgSize)            // 0x080–0x1FF
+  writeClrHdr(w, mdRva, metaSize, inp.entryPointToken, rsrcRva, rawRsrcSize)                         // 0x200–0x247
 
   // Method bodies, each followed by zero-padding to a 4-byte boundary so
   // that the next FAT-format body satisfies the ECMA-335 alignment rule.
@@ -380,7 +458,7 @@ pub func assemblePe(inp: in AssemblerInput): ByteWriter {
   if hasResources {
     var ri = 0
     while ri < rawRsrcSize {
-      bufU1(w, inp.resourceData[ri])
+      bufU1(w, inp.resourceData[ri].toInt())
       ri = ri + 1
     }
     bufZero(w, padRsrcSize - rawRsrcSize)
@@ -390,4 +468,3 @@ pub func assemblePe(inp: in AssemblerInput): ByteWriter {
   bufZero(w, textRSize - textVSize)                        // section padding
   return w
 }
-

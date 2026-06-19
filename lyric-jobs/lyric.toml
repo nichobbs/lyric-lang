@@ -15,13 +15,16 @@ output_assembly = "Jobs.dll"
 "Jobs.Aspects"    = "src/jobs_aspects.l"
 "Jobs.Kernel.Net" = "src/_kernel/net/jobs_kernel.l"
 
+[project.tests]
+"Jobs.JobsTests" = "tests/jobs_tests.l"
+
 [features]
+inprocess = []  # in-memory scheduler backend (Jobs.Kernel.Net inprocess path)
 hangfire = []   # Hangfire backend for .NET (Hangfire.Core + Hangfire.SqlServer)
 quartz   = []   # Quartz.NET scheduler
 
 [dependencies]
-"Lyric.Stdlib"     = { path = "../lyric-stdlib" }
-"Lyric.Resilience" = { path = "../lyric-resilience" }
+"Lyric.Resilience" = { workspace = true }
 
 [nuget]
 # feature = "hangfire" — Hangfire job scheduler for .NET

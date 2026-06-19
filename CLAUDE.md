@@ -4,8 +4,8 @@ Guidance for Claude Code (and future agents) working in this repository.
 
 ## What this repository is
 
-Lyric is a safety-oriented application language targeting .NET. The bootstrap
-compiler is written in F# and lives in `bootstrap/`. The repository contains:
+Lyric is a safety-oriented application language targeting .NET. The self-hosted
+compiler is written in Lyric and lives in `lyric-compiler/lyric/`. The repository contains:
 
 - `README.md` — entry point. Lists the documentation map and reading order.
 - `docs/00-overview.md` — design philosophy, target audience.
@@ -65,6 +65,15 @@ backing entry's id.
 - `docs/40-source-generators.md` — custom source generator API: `@generate` unified annotation form (replaces `@derive`), built-in vs custom generator resolution, `Lyric.GeneratorSdk` types, subprocess bridge model, security and trust, phasing, and open questions Q-SG-001–Q-SG-004. _Specced in D075._
 - `docs/41-self-hosted-compiler-gap-analysis.md` — static audit (2026-05-20) of the self-hosted compiler vs. the language reference. Documents the pipeline disconnect (self-hosted backends bypass middle-end), per-feature MSIL and JVM coverage, F#-only constructs, and a seven-band remediation plan toward a production-ready self-hosted compiler on both targets. _Unbacked — see §9 bands for planned remediation._
 - `docs/42-extern-metadata-resolution.md` — metadata-based extern signature resolution design (epic #1622, Band 4 of #1470): replaces the hardcoded `clrAssemblyForType` table + the auto-FFI `(object…) : void` guess with a **pure-Lyric CLI-metadata reader** that parses reference-assembly bytes directly (inverting the emitter's `pe.l`/`tables.l`/`heaps.l` writer). Resolves the D-progress-268 `Type.GetType`-null blocker (pure byte reading, no runtime type loading), rejects `System.Reflection.Metadata` (struct-FFI-hostile) and `MetadataLoadContext` (NuGet-only/AOT-risk), and lays out a five-phase plan. _Unbacked — see §5 for the phased plan; open questions Q-MD-001–Q-MD-005._
+- `docs/43-in-bundle-generics-plan.md` — execution plan for emitting *truly generic* in-bundle types (GenericParam table 0x2A + VAR fields + instantiated TypeSpec construction/field/match) in the self-hosted MSIL backend, so generic records/unions and the stdlib `Option`/`Result` byte-match the F# emitter. The prerequisite for full Stage 3 (#2362) byte-match within epic #2359 (Stages 1/2/4 merged; Stage 5 #2364 pending). Recommends an `MGenericInstByName`/`MNewobjGenericByName` by-name encoding (TypeDef resolved at lowering), documents the validated GenericParam wire format vs `Lyric.Stdlib.dll`, and sequences Box[T] → Maybe[T] → stdlib stage-3 byte-match. _Implemented for in-bundle types (D-progress-453 records, D-progress-455 unions): in-bundle generic **records and unions** ship (GenericParam table 0x2A + VAR fields + arity-suffixed names + TypeSpec construction/field-read; union cases extend the open base instantiation `Maybe`1<!0>`, nullary cases are `newobj`-each-time with no singleton), verified by `inbundle_generics_self_test.l` (16 cases). #2362 is closed: the exact stage-3 stdlib byte-match was **not pursued** — the self-hosted emitter already produces structurally-correct generic `Option`/`Result` but carries the arity-suffix correctness fix F# omits, and self-compiling the whole stdlib is blocked on self-hosted front-end completeness (docs/41 §R7). Plan corrections: the `` `<arity> `` name suffix is required for multi-field value-type layout, and a generic type's ctor must `stfld` through the open self-TypeSpec. **Q-GEN-001 resolved** (F# emits no singleton for `Option_None`; nullary generic cases are constructed via `newobj`). Open questions Q-GEN-002–Q-GEN-005 (linked from docs/41 Band 4)._
+- `docs/44-jvm-production-readiness-plan.md` — JVM production-readiness audit and remediation plan: the JVM counterpart to docs/41 (which excludes JVM) and docs/33 (narrow 20-program parity). Audits the self-hosted JVM backend code-as-source-of-truth (validated by building/running real programs on JDK 21), catalogues BLOCKER/MAJOR/MINOR findings (closures panic, async/`?` synchronous stubs, aspects not woven, `Float`→`double` and complex-assignment silent miscompiles, generics erased, `_kernel_jvm` never loaded by the self-hosted source loader, Maven self-hosting absent + orphaned `resolver/`, F#-host `Lyric.Jvm.Hosts` debt, CLI emits `.dll`+`runtimeconfig.json` for JVM), and sequences remediation into bands J0–J7. Documents the two JVM code paths (emission library vs user compile pipeline); J0 items are done and the JVM umbrella epic is #2663 (sub-tasks #2664–#2670). _Unbacked — needs a decision-log entry codifying band order and the G1 channel decision._
+- `docs/45-contract-metadata-direct-resolution.md` — contract metadata distribution design for restored Lyric packages: migrates from current synthesis → parse → recheck per consumer to metadata-direct symbol table construction (mirroring auto-FFI for external types). Adds explicit `visibility` field and dependency manifest to metadata; validates once at library build. Breaks v2 support immediately (format version 3). Eliminates per-consumer overhead, simplifies preamble logic, strengthens visibility guarantees. _Specced in D098. Phase 1 (`Lyric.ContractMetaEmit` v3 emitter) shipped in D-progress-471. Phases 2–5 deferred pending #2580._
+- `docs/46-const-patterns.md` — const patterns in match arms: `@Ident` syntax to reference compile-time `val` constants instead of raw literals, disambiguated from variable bindings, zero runtime overhead via type-check-time constant resolution. _Shipped in D-progress-523. Q-MP-001 resolved._
+- `docs/47-import-extern-syntax.md` — `import extern` syntax for external types: unify Lyric package imports and external-type imports under one mechanism, with aliasing at the import site. Reduces boilerplate and makes the FFI boundary clearer. _Specced in D105 (Q47-001–Q47-004 resolved); Phase 1 parser support in PR #3728; Phase 2 type-checker integration deferred._
+- `docs/48-constructor-shorthand.md` — Constructor shorthand for extern types: enable `.new(args)` calls on external types, eliminating `@externTarget` wrapper functions and aligning MSIL with JVM behavior. _Specced in D106 (Q48-003 resolved); Q48-001 (generic constructors) and Q48-002 (async constructors) deferred to follow-up._
+- `docs/49-methods-in-types.md` — Methods inside type definitions: design space that led to D037. Documents how methods in type bodies desugar to UFCS-style functions, with explicit receiver (`self: in Type`) and zero new semantic surface area. Pressure-test record of design tensions (principle vs. pragmatism, parser simplicity, compatibility) that influenced the shipped design. _Specced in D037 (accepted 2026-04-30)._
+- `docs/51-ffi-interfaces-proposal.md` — Implementing external .NET interfaces from Lyric: an `impl <ExternInterface> for Record { … }` block emits an `InterfaceImpl` row against the existing TypeRef, with the CLR FQN resolved through the `import extern` / `extern type` table. _Specced in D105. Phases 1 (non-generic emission), 2 (metadata-based signature validation, `F0020`–`F0023`), and 3 (widening to extern-interface-typed bindings / parameters) shipped; closed generic external interfaces (`IEquatable<T>`, `IComparable<T>`, `IEnumerable<T>`-shaped) ship via TypeSpec emission + CLR name-matching through the TypeSpec; structural validation substitutes `STVar` against the iface's resolved type args and lifts F0024 for `STSzArray` / `STByRef` / `STNamedGenericInst` shapes. `F0024` was removed: TypeSpec emission produces structurally-valid IL for any closed instantiation, Phase 2 F0020–F0023 catches every build-time-detectable structural mismatch (with `STVar` substitution + recursive `STSzArray` / `STByRef` / `STNamedGenericInst` handling), and the runtime catches the rest as `TypeLoadException`.  `STMVar` (method-generic iface methods) and exotic shapes (`STPtr`, `STFnPtr`, `STArray` rank > 1) silent-skip per-method F0022/F0023 validation; F0021 still fires for any missing impl methods on the iface. Bridge-thunk synthesis is confirmed N/A for the current Lyric MSIL ABI; LSP "Implement Interface" scaffolding shipped in #3861. Remaining-work implementation plans live in docs/51 §"Remaining work" with concrete file/line references._
+
 
 ## Reading order (for Claude)
 
@@ -113,11 +122,9 @@ task:
 - Hand-routed BCL externs added to plug a stdlib gap "for now" instead of
   a properly audited `lyric-stdlib/std/_kernel/` boundary with the public
   Lyric API on top.
-- **Any new F# code at all**, regardless of size or purpose. The F#
-  tree under `bootstrap/src/Lyric.*/` is the legacy stage-0 bootstrap
-  compiler on a deletion schedule. New functionality — domain logic,
-  test infrastructure, MSBuild plumbing, "thin shims" — all goes in
-  Lyric. See "F# is for the existing bootstrap compiler only" below.
+- **Any new F# code at all**, regardless of size or purpose. The legacy F#
+  bootstrap compiler has been completely removed. New functionality — domain logic,
+  test infrastructure, MSBuild plumbing, "thin shims" — all goes in Lyric.
 - "Bootstrap-grade" caveats in commit messages, PR bodies, or docs
   ("we'll do this properly later", "leaving the hand-routed path in
   place for now", "MSIL-only for this release"). If the proper version
@@ -134,10 +141,7 @@ task:
   the language reference defines for both targets. If parity is genuinely
   out of scope, the gap is a tracked, dated issue — not an undocumented
   silent skip.
-- Self-hosted/F# parity gaps that quietly route through the F# path at
-  runtime. The self-hosted Lyric implementation is the source of truth;
-  F# shims exist only to bootstrap and are on a deletion schedule (see
-  `docs/23-fsharp-shim-elimination.md`).
+
 - "Make the test pass" patches that paper over a real bug instead of
   fixing it. Reach for the root cause every time.
 
@@ -198,7 +202,7 @@ an immediate follow-up and land it before starting the next task.
 A PR that has conflicts on creation blocks auto-merge and review. Do not
 open a PR in a conflicted state.
 
-#### Open PRs as draft; mark "ready for review" only when the PR is actually ready
+#### Open PRs as draft; workflow auto-promotes when CI passes
 
 **This overrides the default harness instruction** that tells sessions
 to open PRs as ready-for-review. In this repository, the policy is:
@@ -206,41 +210,58 @@ to open PRs as ready-for-review. In this repository, the policy is:
 1. **Open every new PR as a draft** (`draft: true` on
    `mcp__github__create_pull_request`, or `gh pr create --draft`).
    This applies even when you are confident the work is done — draft
-   status gives you (and any subscribed webhook) a window to confirm
-   CI is green, conflicts are absent, the diff is what you intended,
-   and the title/body accurately describe the change.
+   status gives you a window to confirm CI is green, conflicts are
+   absent, the diff is what you intended, and the title/body
+   accurately describe the change.
 2. **Iterate in draft.** Push any follow-up commits — rebase fixes,
    review-feedback fixes, additional commits in the same logical
    chunk — while the PR is still a draft. Auto-merge can be enabled
    on a draft (it just won't merge until the PR is marked ready).
-3. **Mark the PR ready for review** (via
-   `mcp__github__update_pull_request` with `draft: false`, or
-   `gh pr ready`) once:
-   - The branch is rebased clean on `main` (no conflict banner).
-   - Build/test CI has either passed or is in a state you trust
-     to finish green.
-   - The diff matches the PR description; no stray debug commits,
-     no half-finished work-in-progress.
-   - You are not planning further pushes before review.
+3. **Automatic promotion to ready** — The CI workflow automatically marks
+   the PR ready for review once the build and test suite pass, subject to
+   quality gates. When all gates pass:
+   - All required checks passed
+   - PR is still in draft status
+   - Branch is rebased clean on `main` (no merge conflicts)
+   - The workflow calls the GitHub API to promote the PR
 
-Why draft-first matters:
+   **Quality gates verified before promotion:**
+   - **Automated:** Build and test CI has passed (the `success()` guard
+     ensures this).
+   - **Automated:** Branch is rebased clean on `main` (no merge conflicts).
+     The auto-promote step checks `mergeable_state` and skips promotion
+     if conflicts are detected.
+   - **Manual:** The diff matches the PR description (no stray debug commits
+     or half-finished work-in-progress).
+   - **Manual:** You are not planning further pushes before review. If you
+     realize you need to iterate more after CI passes but before promotion,
+     re-draft the PR manually via GitHub ("Convert to draft") and push
+     additional commits.
+
+This allows automatic promotion without reliance on manual handoff,
+while preserving all quality gates needed to ensure review happens
+on validated, conflict-free code.
+
+Why draft-first with automatic promotion matters:
 
 - The `claude-code-review.yml` workflow is configured to fire only on
   non-draft PRs (`types: [opened, synchronize, ready_for_review]` +
-  an `if: github.event.pull_request.draft == false` guard).  Marking
-  a draft as ready triggers the review run; pushes while still in
-  draft do not.  This avoids burning a review pass on a PR that the
-  author is still actively iterating on, and keeps review feedback
-  focused on the final intended state.
+  an `if: github.event.pull_request.draft == false` guard).  The
+  auto-promote step triggers this review run once the build passes,
+  ensuring review feedback is focused on code that has already passed
+  automated validation and is in a stable state.
 - A draft PR is a clear signal to humans skimming the PR list that
-  the author is still working on it, even before any "WIP" prefix.
-- Marking ready becomes the explicit handoff point — the moment the
-  author asserts "this is the final state I want reviewed and
-  merged."
+  the author is still iterating on it. Once CI passes and the workflow
+  promotes it, ready status signals "this code is validated and ready
+  for human review."
+- Workflow-based promotion removes manual handoff friction while
+  preserving validation gates: code must pass all automated checks
+  (CI, merge conflicts) before entering the review phase.
 
 When the assigned task spans multiple PRs, each PR follows this
-lifecycle independently: open the next one as a draft, iterate,
-mark ready when finished, move on.
+lifecycle independently: open as draft, iterate, and the workflow
+will automatically promote to ready once CI passes. Move on to the
+next PR while waiting for review feedback on the current one.
 
 #### After creating a PR
 
@@ -465,60 +486,11 @@ Do this as part of the same turn that handles the merge webhook
 runs cleaner when an open issue list always reflects in-flight
 work, not historical bookkeeping debt.
 
-### F# is for the existing bootstrap compiler only — no new F# code
+### No F# code allowed
 
-**The F# tree under `bootstrap/src/Lyric.*/` is the legacy bootstrap
-compiler. It is the source of truth for nothing user-facing. It exists
-solely so the stage-0 binary can build the self-hosted Lyric compiler
-from `.l` sources, after which stage-1 takes over. Every production
-surface — compiler, standard library, ecosystem libraries, tooling —
-runs through `.l` code.**
+**The repository has been fully transitioned to the self-hosted compiler. F# is completely gone.**
 
-**No new F# code.** This is absolute. Not "no new domain logic." Not
-"no shims unless they're thin." **No new F#, full stop.**
-
-Specifically, the following are **not** acceptable, regardless of
-how small or how clearly motivated:
-
-- New F# files in `bootstrap/src/Lyric.*/` projects.
-- New F# files in `bootstrap/tests/Lyric.*Tests/`. Self-tests are
-  written in Lyric (`*_self_test.l`) and discovered by existing
-  Lyric-aware infrastructure. Do not add a `SelfHostedXxxTests.fs`
-  runner for a new self-test; if discovery doesn't work, fix the
-  discovery in Lyric, or file a tracking issue and skip the wiring
-  until the Lyric path is ready.
-- New F# types, functions, modules, or members added to existing F#
-  files — even if the surrounding file is "obviously" the right
-  place. The right place is `.l`.
-- "Just a thin shim" F# code added to bridge a Lyric package into
-  the F# test harness, F# CLI, or F# emitter. Build the bridge in
-  Lyric or via the in-process MSIL bridge instead.
-- `@externTarget` annotations pointing at new F# host code in
-  `bootstrap/src/Lyric.*.Host/`. New BCL boundaries go in
-  `lyric-stdlib/std/_kernel/*.l` via `extern type` / `extern package`
-  declarations directly, with no F# intermediary.
-- New F# infrastructure for MSBuild / NuGet / publish that the
-  self-hosted CLI doesn't already have. If the self-hosted CLI
-  needs it, add it in `lyric-compiler/lyric/`.
-
-**The only acceptable F# edits** are bug fixes to existing F# code
-that the stage-0 bootstrap depends on, and only when:
-
-1. The bug blocks stage-0 → stage-1 bootstrap from completing, AND
-2. The corresponding self-hosted code is already correct (or will be
-   in the same PR), AND
-3. The fix has no design implications — it's mechanically restoring
-   what the F# was supposed to do.
-
-If you find yourself wanting to add F# code for any other reason,
-stop. The answer is "build it in Lyric, or file a tracking issue
-that says exactly what stage-1 needs to ship before the work can
-land."
-
-**The F# surface is on a deletion schedule**, not a stewardship
-schedule. See `docs/23-fsharp-shim-elimination.md`. Every F# file
-that still exists is debt; nothing in the F# tree is "owned" or
-"maintained" — it's tolerated until the self-hosted replacement
+**No F# code.** This is absolute. All production surface — compiler, standard library, ecosystem libraries, tooling — is written in Lyric (`.l`). Any new files or changes must be implemented in Lyric. Do not introduce any F# code or shims under any circumstances.
 is ready, at which point the F# file is deleted.
 
 **Production-grade self-hosted, not bootstrap-grade anything.** The
@@ -540,7 +512,8 @@ Rules for where new code goes:
   (as a `Lyric.<Feature>` package).  The AOT entry-point project
   (`bootstrap/src/Lyric.Cli.Aot/`) trampolines into the Lyric-emitted
   `Lyric.Cli.Program.main`, so new commands land in
-  `lyric-compiler/lyric/cli.l`'s dispatcher.
+  `lyric-compiler/lyric/cli/cli_main.l`'s dispatcher (the `Lyric.Cli`
+  package lives in `lyric-compiler/lyric/cli/`).
 - **New externs** → `lyric-stdlib/std/_kernel/` only, via `extern type`
   / `extern package` in `.l`. No `@externTarget` declarations pointing
   at F# host code.
@@ -557,6 +530,40 @@ Rules for where new code goes:
 - Prefer editing existing files to creating new ones.
 - Don't write code comments that restate what code does — only comments
   for non-obvious *why*.
+
+### Formatting — run `lyric fmt` before every commit
+
+Before committing, run the **self-hosted** formatter over every `.l`
+file you changed:
+
+```sh
+# after `make lyric` (gives ./bin/lyric):
+for f in $(git diff --name-only --diff-filter=ACM -- '*.l'); do
+  ./bin/lyric fmt --write "$f" || echo "SKIPPED (unsafe to format): $f"
+done
+```
+
+`lyric fmt` (the self-hosted formatter in `lyric-compiler/lyric/fmt/`) is
+the single source of truth for Lyric source layout. Key properties:
+
+- It **auto-fixes** a file's plain `//` module-level header block to the
+  canonical `//!` form (the language reference, §1.3, makes `//!` the
+  inner/module doc form; a plain `//` banner before `package` is
+  otherwise discarded by the AST). A `///` before `package` is a P0020
+  parse error (no item to document) — `fmt` refuses such a file rather
+  than auto-fixing it; change the `///` to `//!` yourself.
+- It is **loss-checked**: `--write` re-parses its own output and
+  **refuses to write** (non-zero exit, prints the reason, leaves the file
+  untouched) if formatting would drop a comment, a contract clause
+  (`requires:`/`ensures:`/…), or any token such as a `pub` modifier or
+  identifier, or if the input or output does not parse cleanly. See
+  `Lyric.Fmt.formatSourceChecked`.
+
+A refusal means the file hit a self-hosted parser gap or a formatter bug
+— **fix the underlying issue or leave the file unstaged; never
+hand-format around a refusal**, and never reintroduce an ad-hoc
+formatter (the F# bootstrap formatter that stripped `//` comments was
+removed). Do not use any other formatter on `.l` files.
 
 ### Branches
 
@@ -586,34 +593,14 @@ need direction and have nothing else productive to do**.  Specifically:
   external dependency), park it with a clear note and move on to the
   next independent stage rather than stopping the session.
 - Only stop and ask the user when **every** remaining task is
-  blocked, or when an action falls outside the scope of the assigned
-  task (e.g. modifying CI policy, force-pushing, touching another
-  repo).
-- Honour the existing safety rules (no `--no-verify`, no force-push
-  without permission, etc.) — autonomy is about throughput, not
-  about side-stepping guardrails.
+  blocked, or when an action falls The self-hosted compiler and runtime libraries make up the entire build chain:
 
-### Tools and build
-
-The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
-
-- `bootstrap/Bootstrap.sln` — the solution.
-- `bootstrap/global.json` — pins SDK to 10.0.x.
-- `bootstrap/Directory.Build.props` — `TargetFramework=net10.0`,
-  `TreatWarningsAsErrors=true`, `Nullable=enable`.
-- `.claude/hooks/session-start.sh` — bootstraps the SDK + runtime
-  pinned by `bootstrap/global.json` into `~/.dotnet` so Claude Code
-  on the web sessions can build / test without manual setup.
-  Idempotent.
-- `bootstrap/src/Lyric.Lexer/` — the lexer (Phase 1, milestone M1.1, complete).
-- `bootstrap/src/Lyric.Parser/` — the parser (Phase 1, milestone M1.1, complete).
-- `bootstrap/src/Lyric.TypeChecker/` — the type checker (Phase 1, milestone M1.2, complete).
 - `lyric-stdlib/std/` — Lyric-language standard library source (`.l` files).
   The emitter resolves `import Std.X` by locating `lyric-stdlib/std/<x>.l` here,
   walking up from the binary's base directory or honoring `LYRIC_STD_PATH`.
   The `lyric-stdlib/std/_kernel/` subdirectory holds the audited extern boundary
   (see `docs/14-native-stdlib-plan.md` Decision F): only kernel files may
-  contain `@externTarget` / `extern type` declarations.
+  contain `@externTarget` / `extern type` declarations or `import extern` statements.
   Key modules: `Std.Core` (Option, Result), `Std.Collections` (List, Map),
   `Std.String`, `Std.Char`, `Std.Json` (BCL-backed, `.NET`-only),
   `Std.Time` (Instant, Duration, Clock, SystemClock, toEpochMillis),
@@ -622,15 +609,10 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
   `Std.Yaml` (pure-Lyric YAML 1.2 + JSON parser, cross-platform, D065).
 - `lyric-stdlib/tests/` — Lyric-language test suite for the stdlib. Each
   `*_tests.l` file is a standalone Lyric program that imports the modules
-  it covers and asserts correctness via `Std.Testing`. The F# runner
-  `bootstrap/tests/Lyric.Emitter.Tests/StdlibLyricTests.fs` discovers and
-  executes these files automatically as part of the emitter test suite.
-- The F# `bootstrap/src/Lyric.Stdlib/` project was deleted entirely
-  (D-progress-140).  Every former `Lyric.Stdlib.*` host target has
-  migrated to direct BCL externs in `lyric-stdlib/std/_kernel/*.l` or
-  inline codegen, so the assembly was empty of types and adding nothing.
-  The Lyric-compiled stdlib bundle (per `lyric-stdlib/lyric.toml`) now ships
+  it covers and asserts correctness via `Std.Testing`.
+- The Lyric-compiled stdlib bundle (per `lyric-stdlib/lyric.toml`) ships
   as `Lyric.Stdlib.dll` directly — the SDK's `lib/Lyric.Stdlib.dll` is
+  this bundle. `lib/Lyric.Stdlib.dll` is
   this bundle, not the retired F# shim.
 - `bootstrap/src/Lyric.Emitter/` — the MSIL emitter (Phase 1, milestone M1.3,
   complete). Lowers a parsed + type-checked Lyric source to a `dotnet exec`-
@@ -658,6 +640,12 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     `typechecker_resolver.l`, `typechecker_scope.l`,
     `typechecker_signature.l`, `typechecker_stmts.l`,
     `typechecker_symbols.l`, `typechecker_types.l`.
+    **This is the type checker used for all user-code compilation** —
+    `Msil.Bridge` (for `--target dotnet`) and `Jvm.Bridge` (for
+    `--target jvm`) both `import Lyric.TypeChecker` and call
+    `checkFile`.  Any T004x type error reported during `lyric build /
+    lyric test` comes from    `typechecker_exprs.l` (or the other files
+    in this directory).
   - `mode_checker/` — self-hosted mode checker `Lyric.ModeChecker`
     (PR #198, D-progress-133); two files: `modechecker_mode.l`,
     `modechecker_check.l`.  Enforces V0001–V0006 / V0009–V0011
@@ -682,10 +670,7 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     rewriter that backs `lyric test`.  Walks a `@test_module` file's
     AST, replaces each `ITest` with a synthesised `func __lyric_test_<i>`,
     and appends a synthesised `func main(): Int` that runs them and
-    prints TAP-shaped output.  Mirrors the F# `bootstrap/src/Lyric.Cli/TestSynth.fs`
-    (which the F# CLI still calls today; routing `lyric test` through
-    this Lyric implementation is a follow-up stage, matching the
-    formatter's pattern in D-progress-131).
+    prints TAP-shaped output. This is fully self-hosted and handles `lyric test` completely.
   - `mono.l` — `Lyric.Mono` monomorphizer (M5.2 stage 4, D-progress-229).
     Call-site monomorphizer for generic functions defined in the same
     compilation unit.  Collects all generic `IFunc` items, walks non-generic
@@ -695,7 +680,13 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
   - `manifest.l` — `Lyric.Manifest` TOML parser for `lyric.toml`
     (M5.3 stage 1, D-progress-129).  Parses the subset of TOML used by the
     Lyric package system (`[package]`, `[project]`, `[dependencies]`,
-    `[nuget]`, `[nuget.options]`, `[features]`).
+    `[nuget]`, `[nuget.options]`, `[maven]`, `[maven.options]`,
+    `[features]`).  `[maven]` parsing (D053 / `docs/31-maven-linking.md`;
+    J5 M-6 parsing slice, #2668) mirrors `[nuget]`: `assembleMaven`
+    yields a `MavenSection` of `MavenEntry` coordinate/version pairs
+    plus `repositories` (default `["central"]`) and an optional
+    `java_version`.  The Maven resolution/download path (M-7) is not
+    yet wired.
   - `cfg.l` — `Lyric.Cfg` compile-time feature erasure (D045 /
     D-progress-299).  Self-hosted port of `bootstrap/src/Lyric.Emitter/Cfg.fs`.
     Provides `applyCfgErasure(active, declared, sf): CfgErasureResult`
@@ -713,12 +704,20 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
   - `test_synth/test_synth.l` — `Lyric.TestSynth` rewriter (see above).
   - `test_synth_bridge.l` — `Lyric.TestSynthBridge` protocol bridge used
     by `SelfHostedTestSynth.fs` (D-progress-231).
-  - `cli.l` — `Lyric.Cli` full command dispatcher (M5.3, D-progress-260).
-    Handles all CLI commands: `build`, `run`, `fmt`, `lint`, `prove`
-    (including `--json`, `--explain`, `--goal`), `doc`, `public-api-diff`,
-    `restore`, `publish`, `repl`, `test`, `bench`, `openapi`, `lsp`
-    (dispatched into `Lyric.Lsp.lspRunLoop`), and `--version`.  Wired
-    as the primary dispatcher via `SelfHostedCli.fs`.
+  - `cli/` — `Lyric.Cli` full command dispatcher (M5.3, D-progress-260);
+    split into 13 files: `cli_shared.l` (helpers), `cli_build.l`,
+    `cli_run.l`, `cli_fmt.l`, `cli_lint.l`, `cli_prove.l`, `cli_doc.l`,
+    `cli_restore.l`, `cli_publish.l`, `cli_test.l`, `cli_bench.l`,
+    `cli_openapi.l`, `cli_main.l` (dispatcher).  Handles all CLI commands:
+    `build`, `run`, `fmt`, `lint`, `prove` (including `--json`,
+    `--explain`, `--goal`), `doc`, `public-api-diff`, `restore`, `publish`,
+    `repl`, `test`, `bench`, `openapi`, `lsp` (dispatched into
+    `Lyric.Lsp.lspRunLoop`), and `--version`.  Also handles the internal
+    flag `--internal-perpackage-build <entry.l> <outDir> [--target jvm]`
+    (emit a driver's transitive `Std.*` import closure into per-package
+    `Lyric.Stdlib.<X>.dll` assemblies; used by the self-hosted stdlib build
+    pipeline, not user-facing).  Wired as the primary dispatcher via
+    `SelfHostedCli.fs`.
   - `repl/repl.l` — `Lyric.Repl` interactive REPL (D-progress-260).
     Script-accumulation loop; entry point `pub func runRepl(argv)`.
     `lyric repl` routes through this package via `SelfHostedCli`.
@@ -731,6 +730,16 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     compiled DLLs in-process via `Std.AssemblyResources` (no subprocess
     hop), parses to structured `Contract` / `ContractDecl`, and diffs
     public API surfaces for `public-api-diff`.
+  - `contract_meta_emit.l` — `Lyric.ContractMetaEmit` package
+    (D-progress-471 / docs/45).  Emits contract metadata version 3 with
+    SHA-256 integrity hashing via a two-pass protocol: serializes with blank
+    contractHash, computes SHA-256 of the blank JSON, then re-serializes with
+    hash embedded.  Public entry point: `emitContractMetadata(contract): String`.
+  - `contract_meta_emit_self_test.l` — `@test_module` covering the two-pass
+    hashing protocol and JSON structure consistency (`testEmitSimpleContract`,
+    `testHashConsistency`).  **Currently not wired into CI** — requires the
+    in-process MSIL bridge to load `Lyric.ContractMeta` (a compiler package)
+    when running via `lyric test`.  Tracked in issue #2580.
   - `restored_packages.l` — `Lyric.RestoredPackages` package
     (#1229 Phase A.3.2, D-progress-303).  Composes the contract-meta
     in-process readers into a single
@@ -745,6 +754,16 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     `driver.l` (`prove(source): VerifySummary` entry point).  The
     driver invokes `Lyric.Weaver.weaveFile` before VC generation so
     proofs discharge against the woven body (D-progress-292 / #336).
+  - `stubbable.l` — `Lyric.Stubbable` AST transform (D-progress-433): for each
+    non-generic `@stubbable` interface, appends a synthesised `Stub` record +
+    `impl` before type-check; entry point `stubbableRewriteFile(file): SourceFile`.
+    For each supported method, the synthesised record adds a `_value` field (for
+    non-Unit returns) and a `_counter: StubCounter = makeStubCounter()` field;
+    the `impl` increments the counter on entry before returning the value.
+    `import Std.Testing.Mocking` is injected automatically (deduplicated) whenever
+    any stub is synthesised, so `StubCounter` / `makeStubCounter()` /
+    `stubCounterIncrement` are always in scope without requiring the user to add
+    the import.  Generic interfaces, `Self`-bearing and async methods are skipped.
   - `weaver/weaver.l` — `Lyric.Weaver` package (D-progress-292).
     Self-hosted port of `bootstrap/src/Lyric.Emitter/Weaver.fs`.
     Replaces each aspect-matched IFunc with a renamed
@@ -753,11 +772,18 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     so `lyric prove` sees the woven body (#336).
   - `lexer_self_test.l`, `parser_self_test.l`,
     `typechecker_self_test.l`, `modechecker_self_test.l`,
-    `contract_elaborator_self_test.l`, `test_synth_self_test.l`,
-    `manifest_self_test.l`, `fmt_self_test.l`, `cfg_self_test.l`,
+    `contract_elaborator_self_test.l`, `cfg_self_test.l`,
+    `derives_self_test.l`, `mono_self_test.l`, `fmt_self_test.l`,
+    `result_generic_specialization_self_test.l`, `stubbable_self_test.l` —
+    `@test_module` self-tests run in CI via native `lyric test`
+    (linking the compiler DLLs as restored deps, #2364 / D-progress-456);
+    their former F# `SelfHosted*Tests.fs` wrappers were deleted.
+  - `test_synth_self_test.l`, `manifest_self_test.l`,
     `contract_meta_self_test.l`, `restored_packages_self_test.l`,
-    `verifier_self_test.l` —
-    self-test consumers run by the F# emitter test suite.
+    `verifier_self_test.l`, `generator/generator_self_test.l` —
+    `func main` self-test consumers still run by the F# emitter test suite
+    via `SelfHosted*Tests.fs`; their migration to native `lyric test` is
+    deferred (each surfaces a real self-hosted gap, tracked in #2580).
   - `weaver_self_test.l` — `@test_module` covering the todo/06
     weaver features (config wiring #683, call context #682,
     `@inline_template` #681) plus regression cases for the
@@ -773,8 +799,7 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     features: config-block prelude injection (A0044 on missing default),
     call-context short-name injection (A0043 on unknown field), and
     `@inline_template` argument rewriting (A0042 on arity mismatch).
-    Written as a plain program so it can be compiled and run by the
-    bootstrap F# emitter without `Lyric.TestSynth` rewriting.
+    Written as a plain program so it can be compiled and run without `Lyric.TestSynth` rewriting.
     **Not yet wired into CI** — pending the `lyric test` infrastructure
     in #1324 that would let the CI runner resolve `Lyric.Weaver` imports.
     Manual-run instructions are in the file's header.
@@ -787,14 +812,25 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     self-hosted `Jvm.Bridge` (`compileToJarBundled` bundles the user
     package plus its transitive stdlib-import closure into one runnable
     JAR) and runs it under `java`.  Both assert every runtime value.
-    The F# stage-0 emitter that backs `lyric-stdlib/tests/*_tests.l`
-    can't host this — its parser rejects keyword-named methods
-    (`x.xor(y)` → P0081).  Imports only `Std.*`, so no
-    `LYRIC_LOAD_COMPILER=1` is needed.  The JVM path required a round of
+    Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1` is needed. The JVM path required a round of
     JVM-backend hardening (expression-position if/match/try, union
     field binding, i64 literals, comparison materialization, basic-block
-    stackmap frames, String predicate methods) plus deploying FSharp.Core
-    beside the AOT binary for the JVM kernel's F# host shim.
+    stackmap frames, String predicate methods).
+  - `aspect_weave_self_test.l` — `@test_module` end-to-end regression test
+    for aspect weaving (#3402).  Runs real woven functions and asserts
+    runtime values: out-variable `ret = proceed()` advice (the headline
+    #3402 form that produced `InvalidProgramException` before the weaver
+    lowered the `around(...) -> ret` binding), the `call.proceed()` library-
+    template spelling, short-circuit advice (target not run), a
+    `call.shortName`-gated proceed, expression-style advice, and a
+    `Unit`-returning woven function.  Run in CI via native `lyric test` on
+    **both targets** (like `bitwise_self_test.l`): `--target dotnet` through
+    `Msil.Bridge`, `--target jvm` through `Jvm.Bridge` `compileToJarBundled`.
+    Imports only `Std.*` (no `LYRIC_LOAD_COMPILER=1`).
+    Cross-package `from`-instance library aspects are now supported by the
+    weaver (D-progress-525, #3414); `aspect_weave_self_test.l` does not yet
+    exercise the multi-file scenario where a consumer package imports a
+    library template — a runtime test is tracked separately (#3498).
   - `auto_ffi_self_test.l` — `@test_module` covering self-hosted
     metadata-based auto-FFI resolution (epic #1622, Phase 3c): the MSIL
     emitter resolves `ExternTypeName.method(args)` calls from real .NET
@@ -804,6 +840,23 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     `Math.Max(2,5)` through the self-hosted `Msil.Bridge`, whose codegen
     reads the reference pack at compile time, then asserts the runtime
     values).  Imports only `Std.*`.
+  - `auto_ffi_jvm_self_test.l` — `@test_module` covering the JVM analog of
+    epic #1622: the self-hosted JVM emitter resolves
+    `extern type T = "java.lang.Math"` / `T.method(args)` calls from real JDK
+    metadata at compile time and emits the real
+    `invokestatic owner.name(desc)` (static), `invokevirtual` (instance), or
+    `new + invokespecial <init>` (constructor via `T.new(args)`) instead of the
+    legacy `([Object…])Object` guess.  Also covers Maven/non-JDK JAR resolution
+    via `LYRIC_FFI_JARS`.  The resolver (`lyric-compiler/jvm/auto_ffi.l`
+    + `zip_reader.l` + `class_reader.l` + `deflate.l`) is a pure-Lyric stack
+    that reads the `.class` entry straight out of `java.base.jmod` (a ZIP of
+    DEFLATE-compressed class files behind a 4-byte JMOD magic header),
+    enumerating entries via the ZIP **central directory** (JMOD entries use
+    streaming data descriptors, so local-header sizes are zero) and scoring
+    overloads in `Jvm.AutoFfi.findBestMethod` / `findBestConstructor`.  Run in
+    CI via native `lyric test --target jvm` (compiles the module in-process
+    through the self-hosted `Jvm.Bridge` `compileToJarBundled` and runs it
+    under `java`).  Imports only `Std.*`.
   `Lyric` is registered as a built-in head in `Emitter.fs:isBuiltinHead`,
   so `import Lyric.<X>` resolves under this directory.  The
   `Lyric.<X>` namespace is reserved for the self-hosted compiler
@@ -816,8 +869,7 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
   `ParseResult.cst` (with `ParseResult.source` for byte-faithful
   reconstruction via `nodeSourceText`).  CST types and the
   event-based builder live in
-  `lyric-compiler/lyric/parser/parser_cst.l`.  The F# bootstrap
-  parser/lexer are deliberately untouched.
+  `lyric-compiler/lyric/parser/parser_cst.l`.
 - `bootstrap/src/Lyric.Cli/` — bootstrap-only entry point.  Track A
   A1.4 (#860) deleted the F# user-facing CLI dispatcher; every user
   command (`lyric build`, `lyric run`, `lyric fmt`, `lyric publish`,
@@ -840,12 +892,7 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     test-infrastructure shims that drive the self-hosted MSIL / JVM
     pipeline in-process via reflection.  Used by
     `bootstrap/tests/Lyric.Cli.Tests/SelfHosted{Msil,Jvm}BridgeTests.fs`.
-- `bootstrap/tests/Lyric.Lexer.Tests/`, `bootstrap/tests/Lyric.Parser.Tests/`,
-  `bootstrap/tests/Lyric.TypeChecker.Tests/`,
-  `bootstrap/tests/Lyric.Emitter.Tests/`, and
-  `bootstrap/tests/Lyric.Cli.Tests/` — Expecto-based tests (console-app
-  projects; F# does not coexist cleanly with the new Microsoft.Testing.Platform
-  xunit runner — Expecto is the F#-native alternative).
+- `bootstrap/tests/Lyric.Emitter.Tests/` — test project that hosts and runs self-hosted self-tests.
 
 ### Other top-level directories
 
@@ -942,24 +989,33 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   bootstrap (F# → self-hosted → self-hosted² binary comparison).
 - `examples/` — standalone Lyric example programs referenced from the
   book and README.
+- `native/` — native (LLVM) backend planning documents.
+  - `native/plan/` — complete implementation plan for the LLVM native backend:
+    `README.md` (overview), `01-design-decisions.md` (D-N-001–D-N-013),
+    `02-architecture.md` (IR types, pipeline, Hello World example),
+    `03-type-mapping.md` (Lyric → LLVM IR type map),
+    `04-arc-design.md` (ARC runtime, lyric_rt.h),
+    `05-ffi-design.md` (extern func, NativePtr, _kernel_native/),
+    `06-async-design.md` (LLVM coro.*, Phase 2 async),
+    `07-stdlib-port.md` (@cfg(target=...) conditional imports),
+    `08-work-items.md` (43 ordered work items, N0–N8).
+    All 13 decisions are mirrored in `docs/03-decision-log.md` (D-N-001–D-N-013).
+    **Agents implementing the native backend must read this directory before starting.**
 
-Build: `cd bootstrap && dotnet build Bootstrap.sln`.
+Build: `make lyric`.
 
 Run tests:
-```
-cd bootstrap
-dotnet run --project tests/Lyric.Lexer.Tests
-dotnet run --project tests/Lyric.Parser.Tests
-dotnet run --project tests/Lyric.TypeChecker.Tests
-dotnet run --project tests/Lyric.Emitter.Tests
-dotnet run --project tests/Lyric.Cli.Tests
+```bash
+# Run a specific self-test
+make self-test NAME=parser
+
+# Run the emitter tests (which hosts self-tests)
+dotnet run --project bootstrap/tests/Lyric.Emitter.Tests
 ```
 
 #### Iteration loops — pick the smallest one that exercises your change
 
-A full `lyric` binary rebuild is **stage-0 (F#) → stage-1 (self-hosted
-DLLs + CLI bundle) → AOT entry-point build**.  The expensive part is
-stage-1, not stage-0, so don't rebuild more than the change needs.  The
+A full `lyric` binary rebuild is **stage-1 (self-hosted DLLs + CLI bundle) → AOT entry-point build**. The expensive part is stage-1, so don't rebuild more than the change needs. The
 `Makefile` at the repo root wraps these with the gotchas baked in
 (`make help` lists every target):
 
@@ -985,24 +1041,16 @@ stage-1, not stage-0, so don't rebuild more than the change needs.  The
   Equivalently by hand: `./scripts/bootstrap.sh --stage 1` then
   `dotnet build bootstrap/src/Lyric.Cli.Aot`.  **Rebuild both** after a
   compiler `.l` change or you'll run stale DLLs.
+  `make lyric` also stages the self-hosted per-package compiler DLLs
+  under `<libdir>/selfhosted/` (~80 s, #3086) — needed by `lyric test`
+  for `@test_module`s that reference module-level `pub val` constants
+  from compiler packages.
+  Skip it with `SKIP_SELFHOSTED_COMPILER=1 make lyric` when iterating
+  on something else; re-stage later with `make selfhosted-compiler`.
 
-`scripts/bootstrap.sh` honours `$TMPDIR` (it mirrors the F# emitter's
-`Path.GetTempPath()`), so the old `TMPDIR=/tmp ./scripts/bootstrap.sh`
-workaround is no longer needed — run it with whatever `$TMPDIR` your
-environment sets.
+`scripts/bootstrap.sh` honours `$TMPDIR`, so run it with whatever `$TMPDIR` your environment sets.
 
-M1.4 shipped contract elaboration, async, FFI, variant-bearing unions,
-interfaces, and monomorphised generics in the F# bootstrap emitter.
-One construct remains bootstrap-grade per `docs/03-decision-log.md` D035:
-FFI is hand-routed through BCL externs instead of reflection-driven.
-Async ships with real `IAsyncStateMachine` state machines (Phase A–B+++,
-D-progress-033..260), including `IAsyncEnumerable<T>` generator synthesis.
-All new language features beyond this point are implemented in the
-self-hosted Lyric compiler under `lyric-compiler/lyric/`.  The F#
-tree is the stage-0 bootstrap compiler — closed to new code, on a
-deletion schedule.  Do not add F# files, F# tests, F# CLI dispatch,
-or F# externs host shims.  See the "F# is for the existing bootstrap
-compiler only" section above for the full rule and rationale.
+All language features are implemented in the self-hosted Lyric compiler under `lyric-compiler/lyric/`. The legacy F# bootstrap compiler has been completely removed. F# is completely gone. Do not add F# files, F# tests, F# CLI dispatch, or F# externs host shims. See the "No F# code allowed" section above for the full rule and rationale.
 
 ## Glossary (project-specific terms)
 

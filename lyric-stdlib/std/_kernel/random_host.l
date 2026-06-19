@@ -1,11 +1,10 @@
-// std/_kernel/random_host.l - host boundary for System.Random (PRNG).
-//
-// WARNING: System.Random is a PRNG, NOT a cryptographically secure RNG.
-// Do NOT expose this directly for security-sensitive uses. See
-// secure_random_host.l for cryptographic randomness.
-//
-// Internal: only Std.Random should import this.
-
+//! std/_kernel/random_host.l - host boundary for System.Random (PRNG).
+//!
+//! WARNING: System.Random is a PRNG, NOT a cryptographically secure RNG.
+//! Do NOT expose this directly for security-sensitive uses. See
+//! secure_random_host.l for cryptographic randomness.
+//!
+//! Internal: only Std.Random should import this.
 @axiom("System.Random conforms to its documented .NET contracts; the Shared property returns a thread-safe shared instance (documented since .NET 6)")
 package Std.RandomHost
 

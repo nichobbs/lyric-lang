@@ -1,44 +1,43 @@
-// AwsXRay — AWS X-Ray active tracing for Lyric Lambda handlers.
-// Stability: @experimental — the active-tracing aspect compiles and unit
-// tests cover the AWS X-Ray header shape, but the end-to-end pipeline has not
-// been exercised against a live X-Ray segment service in CI.
-//
-// The Lambda runtime opens a top-level X-Ray segment for every invocation
-// when active tracing is enabled on the Lambda function.  This library
-// wraps individual Lyric function calls as subsegments of that top-level
-// segment via the Tracing pub aspect template.
-//
-// Primary usage: instantiate the Tracing aspect template with a matches
-// selector.  The aspect wraps each matched call in an X-Ray subsegment.
-//
-//   import AwsXRay
-//
-//   aspect TraceHandlers from AwsXRay.Tracing {
-//     matches: name like "handle*"
-//   }
-//
-// The subsegment name is the function's qualified name (e.g.
-// "MyApp.Orders.handleCreate").  On error the subsegment is closed with
-// the error message recorded under the "error" annotation.
-//
-// Secondary usage: attach annotations and metadata to the current subsegment
-// from within a handler body.
-//
-//   func handleCreate(event: ApiGwV2Event, ctx: LambdaContext): Result[ApiGwResponse, LambdaError] {
-//     val seg = AwsXRay.currentSubsegment()
-//     AwsXRay.annotate(seg, "orderId", event.pathParameters.get("id"))
-//     ...
-//   }
-//
-// Annotations are indexed by X-Ray and appear in filter expressions.
-// Metadata is not indexed and can hold arbitrary string values.
-//
-// IAM requirements:
-//   The Lambda execution role must have xray:PutTraceSegments and
-//   xray:PutTelemetryRecords on * (standard X-Ray active tracing policy).
-//
-// See docs/35-lambda-library.md §13, decision log D064.
-
+//! AwsXRay — AWS X-Ray active tracing for Lyric Lambda handlers.
+//! Stability: @experimental — the active-tracing aspect compiles and unit
+//! tests cover the AWS X-Ray header shape, but the end-to-end pipeline has not
+//! been exercised against a live X-Ray segment service in CI.
+//!
+//! The Lambda runtime opens a top-level X-Ray segment for every invocation
+//! when active tracing is enabled on the Lambda function.  This library
+//! wraps individual Lyric function calls as subsegments of that top-level
+//! segment via the Tracing pub aspect template.
+//!
+//! Primary usage: instantiate the Tracing aspect template with a matches
+//! selector.  The aspect wraps each matched call in an X-Ray subsegment.
+//!
+//!   import AwsXRay
+//!
+//!   aspect TraceHandlers from AwsXRay.Tracing {
+//!     matches: name like "handle*"
+//!   }
+//!
+//! The subsegment name is the function's qualified name (e.g.
+//! "MyApp.Orders.handleCreate").  On error the subsegment is closed with
+//! the error message recorded under the "error" annotation.
+//!
+//! Secondary usage: attach annotations and metadata to the current subsegment
+//! from within a handler body.
+//!
+//!   func handleCreate(event: ApiGwV2Event, ctx: LambdaContext): Result[ApiGwResponse, LambdaError] {
+//!     val seg = AwsXRay.currentSubsegment()
+//!     AwsXRay.annotate(seg, "orderId", event.pathParameters.get("id"))
+//!     ...
+//!   }
+//!
+//! Annotations are indexed by X-Ray and appear in filter expressions.
+//! Metadata is not indexed and can hold arbitrary string values.
+//!
+//! IAM requirements:
+//!   The Lambda execution role must have xray:PutTraceSegments and
+//!   xray:PutTelemetryRecords on * (standard X-Ray active tracing policy).
+//!
+//! See docs/35-lambda-library.md §13, decision log D064.
 @runtime_checked
 package AwsXRay
 
@@ -46,11 +45,10 @@ import Std.Core
 import Std.Char as Ch
 
 // ─── SubsegmentHandle ─────────────────────────────────────────────────────────
-
 /// An active X-Ray subsegment.
 /// Valid for the lifetime of the function call wrapped by the Tracing aspect.
 /// Do not store beyond the handler's return.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub opaque type SubsegmentHandle {
   // kernel-managed subsegment reference
 }
@@ -60,20 +58,22 @@ pub opaque type SubsegmentHandle {
 // Exactly one extern package block is active per build (selected by @cfg).
 // Functions are named with a kernel_ prefix to avoid conflicts between blocks.
 // These are package-internal; the public API is the pub functions below.
-
 @cfg(feature = "local")
 func kernel_beginSubsegment(name: String): SubsegmentHandle {
   return SubsegmentHandle()
 }
 
 @cfg(feature = "local")
-func kernel_endSubsegment(handle: SubsegmentHandle): Unit { }
+func kernel_endSubsegment(handle: SubsegmentHandle): Unit {
+}
 
 @cfg(feature = "local")
-func kernel_addAnnotation(handle: SubsegmentHandle, key: String, value: String): Unit { }
+func kernel_addAnnotation(handle: SubsegmentHandle, key: String, value: String): Unit {
+}
 
 @cfg(feature = "local")
-func kernel_addMetadata(handle: SubsegmentHandle, key: String, value: String): Unit { }
+func kernel_addMetadata(handle: SubsegmentHandle, key: String, value: String): Unit {
+}
 
 @cfg(feature = "local")
 func kernel_currentSubsegment(): SubsegmentHandle {
@@ -107,11 +107,10 @@ extern package com.amazonaws.xray {
 }
 
 // ─── Helpers available inside wrapped handlers ────────────────────────────────
-
 /// Return the active subsegment opened by the enclosing Tracing aspect call.
 /// Returns a no-op handle when called outside an aspect-wrapped function or
 /// when the local feature is active.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func currentSubsegment(): SubsegmentHandle {
   return kernel_currentSubsegment()
 }
@@ -121,14 +120,15 @@ pub func currentSubsegment(): SubsegmentHandle {
 /// Both key and value must be non-empty strings.
 /// No-op when built with the local feature.
 @cfg(feature = "local")
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func annotate(handle: in SubsegmentHandle, key: in String, value: in String): Unit
   requires: key.length > 0
   requires: value.length > 0
-{ }
+{
+}
 
 @cfg(feature = "aws")
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func annotate(handle: in SubsegmentHandle, key: in String, value: in String): Unit
   requires: key.length > 0
   requires: value.length > 0
@@ -137,7 +137,7 @@ pub func annotate(handle: in SubsegmentHandle, key: in String, value: in String)
 }
 
 @cfg(feature = "jvm")
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func annotate(handle: in SubsegmentHandle, key: in String, value: in String): Unit
   requires: key.length > 0
   requires: value.length > 0
@@ -150,14 +150,15 @@ pub func annotate(handle: in SubsegmentHandle, key: in String, value: in String)
 /// Both key and value must be non-empty strings.
 /// No-op when built with the local feature.
 @cfg(feature = "local")
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func metadata(handle: in SubsegmentHandle, key: in String, value: in String): Unit
   requires: key.length > 0
   requires: value.length > 0
-{ }
+{
+}
 
 @cfg(feature = "aws")
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func metadata(handle: in SubsegmentHandle, key: in String, value: in String): Unit
   requires: key.length > 0
   requires: value.length > 0
@@ -166,7 +167,7 @@ pub func metadata(handle: in SubsegmentHandle, key: in String, value: in String)
 }
 
 @cfg(feature = "jvm")
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func metadata(handle: in SubsegmentHandle, key: in String, value: in String): Unit
   requires: key.length > 0
   requires: value.length > 0
@@ -175,7 +176,6 @@ pub func metadata(handle: in SubsegmentHandle, key: in String, value: in String)
 }
 
 // ─── Tracing aspect template ──────────────────────────────────────────────────
-
 /// Wrap each matched function call in an X-Ray subsegment.
 ///
 /// B-mode: uses only call.qualifiedName so it composes generically across
@@ -193,12 +193,11 @@ pub func metadata(handle: in SubsegmentHandle, key: in String, value: in String)
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
 ///   enabled Bool — master switch; when false the aspect is a transparent pass-through
 ///                  (default: true)
-@stable(since="0.1")
+@stable(since = "0.1")
 pub aspect Tracing {
   config {
     enabled: Bool = true
   }
-
   around(call) -> ret {
     if not enabled {
       ret = call.proceed()
@@ -206,8 +205,10 @@ pub aspect Tracing {
       val seg = kernel_beginSubsegment(call.qualifiedName)
       ret = call.proceed()
       match ret {
-        case Err(e) -> { kernel_addAnnotation(seg, "error", sanitizeAnnotation(e.toString())) }
-        case _      -> ()
+        case Err(e) -> {
+          kernel_addAnnotation(seg, "error", sanitizeAnnotation(e.toString()))
+        }
+        case _ -> ()
       }
       kernel_endSubsegment(seg)
     }
@@ -219,7 +220,13 @@ pub aspect Tracing {
 // are technically invalid in UTF-8 but this is a conservative safe bound.
 func utf8CharBytes(c: in Char): Int {
   val code = Ch.toInt(c)
-  if code < 0x80 { 1 } else if code < 0x800 { 2 } else { 3 }
+  if code < 0x80 {
+    1
+  } else if code < 0x800 {
+    2
+  } else {
+    3
+  }
 }
 
 // CWE-117 defense: replace structured-log / HTML injection chars and cap below X-Ray's 1024-byte limit.
