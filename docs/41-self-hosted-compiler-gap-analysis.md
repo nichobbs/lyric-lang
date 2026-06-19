@@ -593,3 +593,98 @@ every program in `docs/02-worked-examples.md` builds and runs under `--target
 dotnet`; parity suite baseline; stdlib `lyric prove`/`test`/`doc` regression
 baseline.  `docs/12-todo-plan.md` is the authoritative task list;
 `docs/36-v1-roadmap.md` §R1–R6 are all done.
+
+## §11  Self-reproduction blocker map (2026-06-19)
+
+The bootstrap currently mints a clean stage-0 from the F#-emitter git history
+(`LYRIC_BOOTSTRAP_MINT=1`) and **reuses that F#-emitted CLI closure** instead of
+letting the self-hosted MSIL emitter re-emit a working copy of itself
+(`scripts/bootstrap.sh::stage1_cli_bundle`).  Removing that reuse — true
+self-reproduction — is still blocked.  This section records the exact,
+source-verified blockers found while driving the self-emitted compiler against
+the example corpus, so a focused effort can act on a map rather than
+re-discover them.
+
+**Reproduction loop used:** mint a stage-0 from current source (F# emitter →
+stage-1 DLLs → AOT binary), then `lyric --internal-perpackage-build` to
+self-emit the compiler closure, AOT-link those self-emitted DLLs, and run
+`lyric build`/`test` over the corpus.  Each failure below was confirmed by
+dumping the offending MemberRef / MethodDef / TypeRef signature bytes from the
+self-emitted DLLs and comparing against the F#-emitted reference DLLs.
+
+### Root cause: the self-built stdlib diverges from the F#/prebuilt convention
+
+User-code builds (`lyric build/test`) link a **prebuilt** stdlib (F#-emitted in
+the mint, or the shipped self-built bundle) and the self-hosted emitter's
+*consumer* side already matches that convention.  But when the self-hosted
+emitter **rebuilds the stdlib from source** (as self-reproduction requires), it
+emits generic types under a *different* convention than both the prebuilt stdlib
+and its own consumers.  Every blocker below is an instance of this one split.
+
+1. **Generic-union/record TypeDef arity suffix (naming split).**
+   `lowering.l::lowerMUnion` (≈ line 2798) names a generic union's base + case
+   TypeDefs with the CLR arity suffix (`Std.Core.Option`1`, `Option_Some`1`,
+   `Result`2`) when `u.generics.count > 0`.  The F#-emitter and the prebuilt
+   stdlib name them **without** the suffix (`Std.Core.Option`, genericParams=1),
+   and consumer cross-package references (`registerStdlibTypeItem`,
+   `typeExprToMsilCtx`'s cross-package `MGenericInst` path) likewise emit the
+   **plain** name.  So a self-rebuilt stdlib (`Option`1` TypeDef) cannot be
+   bound by a consumer reference to `Option` →
+   `MissingMethodException`/`TypeLoadException` at first call.  The fix
+   direction is to make the self-built stdlib match the no-suffix convention
+   (NOT to add the suffix to consumers — that regresses user code that links the
+   prebuilt no-suffix stdlib; verified: it breaks `examples/rbac`
+   `roleFromString` `Option[Role]` matching).  The suffix was added for
+   in-bundle generic **value-type** layout (docs/43, D-progress-455); any
+   removal must stay value-type-aware so `inbundle_generics_self_test.l` keeps
+   passing.
+
+2. **`Unit`/`Never` generic argument representation (value split).**
+   For `Result[Unit, E]` / `Option[Unit]`, the F#-emitter and the consumer side
+   (`codegen.l::registerStdlibFunc` via `xrefUnitArgsToValueTuple`) encode the
+   `Unit` type-argument as `System.ValueTuple` (`ELEMENT_TYPE_VALUETYPE`).  The
+   self-built **producer** (`Std.File.createDir`'s MethodDef) encodes it as
+   `object` (`ELEMENT_TYPE_OBJECT`) — its def, `Result_Ok` construction, and
+   match all agree on `object` internally.  Cross-package the two disagree
+   (`Result`2<ValueTuple, IOError>` vs `Result`2<object, IOError>`) →
+   `MissingMethodException`.  The F#-compatible fix is to make the self-built
+   producer emit `ValueTuple` (def + `Result_Ok`/`Option_Some` construction +
+   match), not to flip the consumer to `object` (that regresses user code
+   against the prebuilt ValueTuple stdlib).
+
+3. **Static-property extern getter resolution (producer bug, independent).**
+   `codegen.l::emitExternTargetBody` emits `@externTarget("Type.Member")` with
+   the literal member name and the declared static flag — it performs **no
+   property→getter resolution**.  A static property such as
+   `@externTarget("System.DateTime.UtcNow")` is emitted as a call to a
+   non-existent `System.DateTime::UtcNow()` (the real member is the getter
+   `get_UtcNow`) → `MissingMethodException` in the self-built `Std.TimeHost`.
+   The F#-emitter resolves the property to its accessor via reflection; the
+   metadata-direct reader can do the same (probe `get_<Member>` via
+   `Mdr.resolveExtern` and adopt the getter's own static/instance convention).
+   This only affects the self-built stdlib (the prebuilt `Std.TimeHost` already
+   carries `get_UtcNow`), so it is safe to fix in isolation.
+
+4. **Union-case cross-package ctor field types (consumer bug, independent).**
+   `codegen.l::registerStdlibTypeItem` erases concrete (non-type-parameter)
+   union-case ctor parameters to `object` in the cross-package MemberRef
+   (`IOError_IoError::.ctor(object, object)`), while the producer's MethodDef
+   uses the declared field types (`(string, string)`) — matching the
+   F#-emitter.  Result: `MissingMethodException` constructing a stdlib union
+   case with concrete fields cross-package.  The fix (use the declared MSIL
+   type, mirroring the producer's `typeExprToMsilG`) is F#-compatible and safe
+   to land independently of the naming/value splits above.
+
+### Ordering and acceptance
+
+Blockers (3) and (4) are independent, F#-compatible producer/consumer
+correctness fixes and can land first.  Blockers (1) and (2) are the structural
+work: bring the self-built stdlib's generic naming and `Unit`-argument
+representation into line with the F#/prebuilt convention so a self-rebuilt
+stdlib is binary-interchangeable with the prebuilt one.  The acceptance test is
+the reproduction loop above going green end-to-end (self-emitted compiler builds
+and runs the full corpus and its own `lyric test`), after which
+`stage1_cli_bundle` can drop the F#-closure reuse.  Every change in this area
+**must** be validated by compiling **and running** the example/test corpus with
+the rebuilt compiler — `ilverify` alone is insufficient (it passes structurally
+valid IL that still mis-binds at run time).
