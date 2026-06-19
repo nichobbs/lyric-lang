@@ -19337,8 +19337,78 @@ pub func lambdaCaptureNamesMsil(fctx: in FuncCtx, lparams: in List[LambdaParam],
   caps
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 2: Closure class synthesis (strongly-typed lambdas, Epic #1877 Part 2)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// For each capturing lambda, synthesize a closure record type with fields for
+// each captured variable. The lambda becomes an instance method of the closure
+// record, enabling true JIT optimization (typed method signature instead of
+// object parameters). At the lambda site, instantiate the closure and pass it
+// as the delegate target.
+
+// Create a FieldDecl for a lambda capture (name: captured type).
+func makeClosureField(name: String, ty: TypeExpr): FieldDecl {
+  FieldDecl(
+    docComments = newList(),
+    annotations = newList(),
+    name = name,
+    ty = ty,
+    initializer = None,
+    span = syntheticSpan()
+  )
+}
+
+// Create a TypeExpr for an MsilType (back-convert MSIL types to AST).
+// Used to generate closure record field type annotations.
+func msilTypeToTypeExpr(t: in MsilType): TypeExpr {
+  val segs: List[String] = newList()
+  match t {
+    case MBool -> segs.add("Bool")
+    case MChar -> segs.add("Char")
+    case MByte -> segs.add("Byte")
+    case MInt -> segs.add("Int")
+    case MLong -> segs.add("Long")
+    case MDouble -> segs.add("Double")
+    case MString -> segs.add("String")
+    case MObject -> segs.add("Object")
+    case MUnit -> segs.add("Unit")
+    case _ -> segs.add("Object")
+  }
+  TypeExpr(
+    kind = TRef(path = ModulePath(segments = segs, span = syntheticSpan()), span = syntheticSpan()),
+    span = syntheticSpan()
+  )
+}
+
+// Synthesize a closure record for a capturing lambda.
+// Record name: __Closure<lambdaIndex>
+// Fields: one per captured variable with actual type from capTypes
+func synthesizeClosureRecord(lambdaIdx: Int, capNames: List[String], capTypes: List[MsilType]): RecordDecl {
+  val fields: List[RecordMember] = newList()
+  var i = 0
+  while i < capNames.count {
+    val fieldTy = if i < capTypes.count {
+      msilTypeToTypeExpr(capTypes[i])
+    } else {
+      msilTypeToTypeExpr(MObject)
+    }
+    fields.add(RMField(field = makeClosureField(capNames[i], fieldTy)))
+    i = i + 1
+  }
+
+  RecordDecl(
+    name = "__Closure" + toString(lambdaIdx),
+    generics = None,
+    whereClause = None,
+    members = fields,
+    span = syntheticSpan()
+  )
+}
+
 // BFS-based liftLambdasMsil: extract all ELambda nodes into synthetic IFunc
 // items in breadth-first order so lambda indices match the codegen traversal.
+// Phase 2: Also synthesize closure record types for capturing lambdas.
 pub func liftLambdasMsil(file: in SourceFile): SourceFile {
   val ticker: List[Int] = newList()
   val synths: List[Item] = newList()
