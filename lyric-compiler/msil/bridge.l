@@ -207,19 +207,12 @@ pub func compileToMsilWithVersion(
   // so that addPackageTokens assigns them stable MethodDef tokens before codegen.
   val liftedFile = liftLambdasMsil(weavedFile)
 
-  // Phase 2: Synthesize closure record types for capturing lambdas.
-  // Each capturing lambda gets a __Closure<N> record with typed fields.
-  val closureFile = synthesizeClosureRecordsForFile(liftedFile)
-
   // Pre-scan the AST to assign deterministic MethodDef / FieldDef tokens for
   // same-package types and functions.
-  addPackageTokens(cctx, closureFile, pkgName)
-
-  // Phase 2: Register which lambdas have closure records.
-  scanClosureRecordsMsil(cctx, closureFile)
+  addPackageTokens(cctx, liftedFile, pkgName)
 
   // Walk the AST and produce the MSIL package IR.
-  val pkg = codegenMPackage(closureFile, cctx)
+  val pkg = codegenMPackage(liftedFile, cctx)
 
   // Determine the entry-point MethodDef token (0 = no entry point / library).
   val entryToken = resolveEntryToken(cctx)
@@ -768,9 +761,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     }
     val weaved = weaveRes.file
     val lifted = liftLambdasMsil(weaved)
-    val withClosures = synthesizeClosureRecordsForFile(lifted)
-    addPackageTokens(cctx, withClosures, perPkgNames[li])
-    scanClosureRecordsMsil(cctx, withClosures)
+    addPackageTokens(cctx, lifted, perPkgNames[li])
     // Project-as-DLL embedding: each package's contract goes in its
     // own `Lyric.Contract.<Pkg>` resource so the in-process loader can
     // surface them per-package (matching the F# bundled-DLL layout).
@@ -778,8 +769,8 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     // the bundle; per-package versioning is out of scope for #1364 and
     // tracked separately.
     val bundleVer = if packageVersion.length == 0 { "0.0.0" } else { packageVersion }
-    embedLyricContract(cctx.lctx, withClosures, "Lyric.Contract." + perPkgNames[li], bundleVer)
-    liftedFiles.add(withClosures)
+    embedLyricContract(cctx.lctx, lifted, "Lyric.Contract." + perPkgNames[li], bundleVer)
+    liftedFiles.add(lifted)
     li = li + 1
   }
 
