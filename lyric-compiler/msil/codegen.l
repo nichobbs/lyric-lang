@@ -19471,7 +19471,7 @@ func analyzeLambdaCapturesFromAst(decl: in FunctionDecl): List[String] {
 // Returns: Some(N) if the name is __lambda_N, None otherwise.
 func extractLambdaIndexFromName(name: in String): Option[Int] {
   if startsWith(name, "__lambda_") {
-    val indexStr = substring(name, 9, name.length - 9)
+    val indexStr = substring(name, 9, name.length)
     match parseOptInt(indexStr) {
       case Some(idx) -> Some(value = idx)
       case None -> None
@@ -19490,7 +19490,7 @@ pub func scanClosureRecordsMsil(cctx: in CodegenCtx, file: in SourceFile): Unit 
       case IRecord(decl) -> {
         if startsWith(decl.name, "__Closure") {
           // Extract lambda index from __Closure<N>
-          val indexStr = substring(decl.name, 9, decl.name.length - 9)
+          val indexStr = substring(decl.name, 9, decl.name.length)
           match parseOptInt(indexStr) {
             case Some(idx) -> {
               cctx.lambdaHasClosures.add(idx, true)
@@ -19537,8 +19537,8 @@ pub func synthesizeClosureRecordsForFile(file: in SourceFile): SourceFile {
 
           if captures.count > 0 {
             // This is a capturing lambda. Extract its index and create a closure record.
-            val nameWithoutPrefix = f.name.slice("__lambda_".length, f.name.length)
-            match tryFromString(nameWithoutPrefix) {
+            val idxStr = substring(f.name, 9, f.name.length)
+            match parseOptInt(idxStr) {
               case Some(idx) -> {
                 // Create __Closure<idx> record with the lambda as an instance method.
                 val closureRec = synthesizeClosureRecordWithMethod(
@@ -19586,9 +19586,10 @@ pub func synthesizeClosureRecordsForFile(file: in SourceFile): SourceFile {
   }
 
   SourceFile(
-    source = file.source,
-    fileName = file.fileName,
-    package = file.package,
+    moduleDoc = file.moduleDoc,
+    fileAnnotations = file.fileAnnotations,
+    packageDecl = file.packageDecl,
+    imports = file.imports,
     items = allItems,
     span = file.span
   )
@@ -19681,16 +19682,18 @@ func synthesizeClosureRecordWithMethod(
         while ci < capNames.count {
           val capName = capNames[ci]
           // Create: val <capName> = self.<capName>
+          val selfSegs: List[String] = newList()
+          selfSegs.add("self")
           val fieldAccess = Expr(
             kind = EMember(
-              recv = Expr(kind = EPath(path = ModulePath(segments = newList() + "self", span = syntheticSpan())), span = syntheticSpan()),
+              recv = Expr(kind = EPath(path = ModulePath(segments = selfSegs, span = syntheticSpan())), span = syntheticSpan()),
               field = capName
             ),
             span = syntheticSpan()
           )
           // Create a simple name pattern for the binding
           val pattern = Pattern(
-            kind = PName(name = capName, isWildcard = false),
+            kind = PBinding(name = capName, inner = None),
             span = syntheticSpan()
           )
           val localBinding = LocalBinding(
@@ -19718,15 +19721,17 @@ func synthesizeClosureRecordWithMethod(
         var ci = 0
         while ci < capNames.count {
           val capName = capNames[ci]
+          val selfSegs: List[String] = newList()
+          selfSegs.add("self")
           val fieldAccess = Expr(
             kind = EMember(
-              recv = Expr(kind = EPath(path = ModulePath(segments = newList() + "self", span = syntheticSpan())), span = syntheticSpan()),
+              recv = Expr(kind = EPath(path = ModulePath(segments = selfSegs, span = syntheticSpan())), span = syntheticSpan()),
               field = capName
             ),
             span = syntheticSpan()
           )
           val pattern = Pattern(
-            kind = PName(name = capName, isWildcard = false),
+            kind = PBinding(name = capName, inner = None),
             span = syntheticSpan()
           )
           val localBinding = LocalBinding(
