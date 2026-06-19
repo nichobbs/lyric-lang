@@ -19352,9 +19352,10 @@ func makeClosureField(name: String, ty: TypeExpr): FieldDecl {
   FieldDecl(
     docComments = newList(),
     annotations = newList(),
+    visibility = None,
+    isMutable = false,
     name = name,
     ty = ty,
-    initializer = None,
     span = syntheticSpan()
   )
 }
