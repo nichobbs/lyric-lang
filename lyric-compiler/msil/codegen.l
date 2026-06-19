@@ -16220,7 +16220,21 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   var pi2 = 0
   while pi2 < decl.params.count {
     if isLambdaFn {
-      paramTypes.add(MObject)
+      // Use the true parameter type (annotation or propagated) for the lambda
+      // method signature, not MObject. This enables strongly-typed delegates
+      // matching actual parameters, so the JIT sees real types (#1877).
+      val p = decl.params[pi2]
+      val annotTy = if fnGenerics.count > 0 {
+        typeExprToMsilGenBody(cctx, p.ty, pkgName, fnGenerics)
+      } else {
+        typeExprToMsilCtx(cctx, p.ty, pkgName)
+      }
+      val trueTy = if annotTy == MObject and pi2 < lambdaPropagated.count {
+        lambdaPropagated[pi2]
+      } else {
+        annotTy
+      }
+      paramTypes.add(trueTy)
     } else if fnGenerics.count > 0 {
       // Generic function (#2557): a `slice[T]` / bare-`T` parameter is emitted
       // as plain `object` in the signature so a List-backed argument matches the
