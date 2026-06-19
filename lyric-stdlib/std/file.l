@@ -211,6 +211,28 @@ pub func readBytesOrPanic(path: in String): slice[Byte] {
   hostReadAllBytes(path)
 }
 
+/// Read the entire contents of `path` as a `String`, panicking on an
+/// empty path or any host failure (missing file, permission denied) instead
+/// of returning a `Result`.
+///
+/// Use this when a read failure is a programmer error or an unrecoverable
+/// precondition violation — the caller has already established the file
+/// exists and is readable, so a recoverable `Result.Err` would only be
+/// unwrapped-or-panicked at the call site anyway.  When a missing or
+/// unreadable file is an expected, recoverable outcome, use `readText`,
+/// which reports failures as `Result.Err(IOError)`.
+@stable(since = "1.0")
+pub func readTextOrPanic(path: in String): String {
+  if path.length == 0 {
+    panic("Std.File.readTextOrPanic: path must not be empty")
+  }
+  try {
+    hostReadAllText(path)
+  } catch Bug as b {
+    panic("Std.File.readTextOrPanic: " + b.message)
+  }
+}
+
 /// Write raw bytes to `path` (creating or replacing).
 ///
 /// Returns `Ok(())` on success, `Err(InvalidPath)` for empty paths,
