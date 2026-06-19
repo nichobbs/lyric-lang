@@ -4,6 +4,8 @@
 //! Passes a lambda structurally to an FFI delegate parameter
 //! System.Predicate`1 on System.Collections.Generic.List`1.RemoveAll
 //! to ensure nominal delegate instantiation with zero-thunks.
+//!
+//!   lyric test --target dotnet lyric-compiler/lyric/lambda_ffi_delegate_self_test.l
 @test_module
 package Lyric.LambdaFfiDelegateSelfTest
 
