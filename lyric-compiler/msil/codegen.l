@@ -19514,13 +19514,97 @@ pub func scanClosureRecordsMsil(cctx: in CodegenCtx, file: in SourceFile): Unit 
 // Capture field types default to the actual MsilType captured during ELambda lowering
 // (stored in cctx.lambdaCaptureTypesByIndex), or MObject if not available.
 pub func synthesizeClosureRecordsForFile(file: in SourceFile): SourceFile {
-  // Phase 2 closure synthesis is deferred (#1877 Part 2). The architecture requires:
-  // 1. Converting lambdas from static functions to instance methods on closure records
-  // 2. Updating codegen to use instance method tokens instead of function tokens
-  // 3. Careful handling of parameter conversion (__caps parameter removal)
-  // These changes require coordination across multiple subsystems and proper testing.
-  // For now, Phase 1 (strongly-typed lambda parameters) is production-ready.
-  file
+  // Phase 2 closure synthesis: for each capturing lambda (__lambda_<i> with __caps param),
+  // create a __Closure<i> record containing the lambda as an instance method with
+  // parameters adjusted (remove __caps, inject self).
+  //
+  // This requires one pass:
+  // 1. Find each __lambda_<i> with __caps
+  // 2. Create __Closure<i> with instance method (converted from the static lambda)
+  // 3. Remove the static lambda from top-level items (no duplication)
+  //
+  // Capture types are initially All MObject; they're refined during codegen's
+  // scanClosureRecordsMsil to match the actual types analyzed from the lambda body.
+  val closureRecords: List[RecordDecl] = newList()
+  val nonLambdaItems: List[Item] = newList()
+  val lambdasByName: Map[String, FunctionDecl] = newMap()
+
+  // First pass: collect lambda functions by name for later conversion.
+  var i = 0
+  while i < file.items.count {
+    val item = file.items[i]
+    match item {
+      case IFunc(f) -> {
+        if f.name.startsWith("__lambda_") {
+          lambdasByName.put(f.name, f)
+        }
+      }
+      case _ -> {}
+    }
+    i = i + 1
+  }
+
+  // Second pass: process items, synthesizing closure records for capturing lambdas.
+  i = 0
+  while i < file.items.count {
+    val item = file.items[i]
+    match item {
+      case IFunc(f) -> {
+        // Check if this is a capturing lambda (__lambda_<i> with __caps param).
+        if f.name.startsWith("__lambda_") and f.params.count > 0 and f.params[0].name == "__caps" {
+          // Extract lambda index.
+          val nameWithoutPrefix = f.name.slice("__lambda_".length, f.name.length)
+          match tryFromString(nameWithoutPrefix) {
+            case Some(idx) -> {
+              // Convert the static lambda function to an instance method in a closure record.
+              // Start with an empty capture list (types refined during codegen).
+              val closureRec = synthesizeClosureRecordWithMethod(
+                lambdaIdx = idx,
+                capNames = newList(),
+                capTypes = newList(),
+                lambdaFunc = f
+              )
+              closureRecords.add(closureRec)
+              // Do NOT add the static lambda to nonLambdaItems; it's now an instance method.
+            }
+            case None -> {
+              // Malformed lambda name; keep as-is.
+              nonLambdaItems.add(item)
+            }
+          }
+        } else {
+          // Keep non-capturing lambdas and regular functions.
+          nonLambdaItems.add(item)
+        }
+      }
+      case _ -> {
+        // Keep all non-function items.
+        nonLambdaItems.add(item)
+      }
+    }
+    i = i + 1
+  }
+
+  // Combine non-lambda items and closure records.
+  val allItems: List[Item] = newList()
+  i = 0
+  while i < nonLambdaItems.count {
+    allItems.add(nonLambdaItems[i])
+    i = i + 1
+  }
+  i = 0
+  while i < closureRecords.count {
+    allItems.add(IRecord(closureRecords[i]))
+    i = i + 1
+  }
+
+  SourceFile(
+    source = file.source,
+    fileName = file.fileName,
+    package = file.package,
+    items = allItems,
+    span = file.span
+  )
 }
 
 // Create a FieldDecl for a lambda capture (name: captured type).
