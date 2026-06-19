@@ -133,16 +133,24 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
 
-      - name: Bootstrap stage 1 (download released binary → self-hosted packages)
+      - name: Bootstrap stage 1 (mint clean stage-0 from F# history → self-hosted packages)
         if: steps.changes.outputs.has_code_changes == 'true'
         # Stage 1 is required: the AOT smoke test, ecosystem tests, and
         # the cli.l re-parse guarantee all depend on the stage-1 bundle.
-        # The bootstrap script downloads the latest released binary by default
-        # (via BOOTSTRAP_FROM_RELEASE=1) to use as stage-0, eliminating the need
-        # to build the F# compiler. This significantly speeds up CI.
+        #
+        # The currently-published release stage-0 binary is regressed (>64 KB
+        # string-heap truncation + missing generic-case arity suffix), so it
+        # emits a corrupt Lyric.Lyric.Cli.dll and the AOT entry-point cannot
+        # resolve Lyric.Cli.Program.  Until a fixed binary ships, mint a clean
+        # stage-0 from the historical F# bootstrap compiler (the current
+        # self-hosted emitter source is bug-free; the mint bakes it into a
+        # working binary).  Requires full git history (checkout fetch-depth: 0,
+        # set above) to reach the F# commit.  Remove LYRIC_BOOTSTRAP_MINT once a
+        # fixed self-hosted binary is released.
         working-directory: ${{ github.workspace }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LYRIC_BOOTSTRAP_MINT: '1'
         run: ./scripts/bootstrap.sh --stage 1
 
       # Track A A1.4 (#860) deleted the F# user-facing CLI; the AOT

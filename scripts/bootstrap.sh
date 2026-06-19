@@ -244,11 +244,38 @@ stage0() {
   mkdir -p "$BUILD_DIR/stage0-publish"
   mkdir -p "$(dirname "$STAGE0_BIN")"
 
-  # Download self-hosted binary from latest release (F# bootstrap is deleted)
-  if ! try_bootstrap_from_release; then
-    die "Stage 0: failed to download self-hosted binary from GitHub releases (F# bootstrap no longer available)"
+  # The published release stage-0 binary is currently regressed: it mis-emits
+  # >64 KB string-heap indices (truncated to 2 bytes) and generic-union case
+  # TypeRefs (missing the `\`N` arity suffix), corrupting any large per-package
+  # DLL — notably Lyric.Lyric.Cli, whose type names come back mangled so the AOT
+  # entry-point cannot resolve `Lyric.Cli.Program`.  Both bugs are fixed in the
+  # current self-hosted emitter source but are baked into the released binary,
+  # so a clean checkout cannot escape them via the download.
+  #
+  # `scripts/mint-stage0-fsharp.sh` rebuilds the historical F# bootstrap
+  # compiler (a separate emitter with neither bug) from git history and uses it
+  # to produce a clean stage-0 carrying the current (fixed) self-hosted emitter.
+  # Opt in with LYRIC_BOOTSTRAP_MINT=1 (set in CI until a fixed binary ships);
+  # otherwise download, and fall back to minting if the download fails.  The
+  # mint populates $BUILD_DIR/stage0-publish, which try_bootstrap_from_release
+  # then reuses instead of downloading.
+  if [[ "${LYRIC_BOOTSTRAP_MINT:-0}" == "1" ]] && \
+     [[ ! -f "$BUILD_DIR/stage0-publish/lyric" ]] && \
+     [[ ! -f "$BUILD_DIR/stage0-publish/lyric.dll" ]] && \
+     [[ ! -f "$BUILD_DIR/stage0-publish/lyric.exe" ]]; then
+    info "Stage 0: LYRIC_BOOTSTRAP_MINT=1 — minting clean stage-0 from F# history"
+    FAST="${MINT_FAST:-1}" bash "$REPO_ROOT/scripts/mint-stage0-fsharp.sh" \
+      || die "Stage 0: mint failed (scripts/mint-stage0-fsharp.sh)"
   fi
-  info "Stage 0: using self-hosted binary from release"
+
+  # Download self-hosted binary from latest release (reuses a minted
+  # stage0-publish if present), minting from F# history if the download fails.
+  if ! try_bootstrap_from_release; then
+    info "Stage 0: release download failed — minting clean stage-0 from F# history"
+    FAST="${MINT_FAST:-1}" bash "$REPO_ROOT/scripts/mint-stage0-fsharp.sh" \
+      || die "Stage 0: download failed AND mint failed (scripts/mint-stage0-fsharp.sh)"
+  fi
+  info "Stage 0: using self-hosted binary"
 
   # Publish output handling:
   #   * Linux/macOS: native executable "lyric" (no extension) + runtimeconfig.json
