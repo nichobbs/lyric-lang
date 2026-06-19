@@ -11742,6 +11742,31 @@ func emitExternTargetBody(
       }
       val retTy = match decl.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid }
 
+      // `T?` lowers to `Option[T]` (lang-ref §"? operator"; Lyric has no
+      // CLR-nullable).  A `@externTarget` whose declared return is `T?` therefore
+      // calls a BCL method that returns the underlying CLR type `T` (possibly
+      // null) and must wrap the result into `Option_Some(v)` / `Option_None`.
+      // `nullableInnerTy` is `Some(vt)` for a reference-typed `T?` return: the
+      // MemberRef is then encoded with `vt` (the real BCL return) and the body
+      // emits the Option-wrapping null-check after the call.  Value-typed `T?`
+      // (rare) keeps the legacy path (None here).
+      val nullableInnerTy: Option[MsilType] = match decl.ret {
+        case Some(te) -> match te.kind {
+          case TNullable(inner) -> {
+            val it = typeExprToMsilCtx(cctx, inner, pkgName)
+            match it {
+              case MString -> Some(value = it)
+              case MClass(_) -> Some(value = it)
+              case MClassRef(_, _) -> Some(value = it)
+              case MArray(_) -> Some(value = it)
+              case _ -> None
+            }
+          }
+          case _ -> None
+        }
+        case None -> None
+      }
+
       // Phase 4: prefer the metadata type index over the prefix-based guard so
       // types from NuGet-restored assemblies (not `System.*` / `Lyric.*`) are
       // accepted when their DLL is in the index (added by ensureMetadataIndex).
@@ -11860,7 +11885,7 @@ func emitExternTargetBody(
           MGenericInst(typeRefCode = tdrTypeRef(cctx.trTask1), headFqn = "System.Threading.Tasks.Task", typeArgs = taskArgs)
         }
       } else {
-        retTy
+        match nullableInnerTy { case Some(vt) -> vt; case None -> retTy }
       }
       val sig = if r.isStatic and not r.isCtor {
         buildFfiMethodSigCtx(cctx, paramTypes, bclRetTy, false)
@@ -11922,6 +11947,38 @@ func emitExternTargetBody(
           val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, "get_Result", "mr_task_getresult_" + tsKey, mrSig)
           insns.add(MCallvirt(methodToken = 0x0A000000 + mrRow))
         }
+      }
+      // `T?` return marshaling: the BCL call left the underlying value (or null)
+      // on the stack; wrap it into Option_Some(v) / Option_None so the Lyric
+      // caller (which `match`es Some/None) sees a proper Option union.  Skipped
+      // for async (Task-returning) externs, which keep the legacy path.
+      match nullableInnerTy {
+        case Some(vt) -> {
+          if not decl.isAsync {
+            val noneL = freshLabelMsil(fctx)
+            val endL = freshLabelMsil(fctx)
+            insns.add(MDup)
+            insns.add(MBrFalse(label = noneL))
+            // non-null: Some(value)
+            val sArg: List[MsilType] = newList()
+            sArg.add(vt)
+            val sCtx: List[MsilType] = newList()
+            sCtx.add(vt)
+            val sParent: List[MsilType] = newList()
+            val _s = buildGenericCaseCtorTok(cctx, "Std.Core.Option_Some", sArg, sCtx, sParent, insns)
+            insns.add(MBr(label = endL))
+            // null: pop the null reference, build None
+            insns.add(MLabel(id = noneL))
+            insns.add(MPop)
+            val nArg: List[MsilType] = newList()
+            val nCtx: List[MsilType] = newList()
+            nCtx.add(vt)
+            val nParent: List[MsilType] = newList()
+            val _n = buildGenericCaseCtorTok(cctx, "Std.Core.Option_None", nArg, nCtx, nParent, insns)
+            insns.add(MLabel(id = endL))
+          }
+        }
+        case None -> ()
       }
       insns.add(MRet)
       true
