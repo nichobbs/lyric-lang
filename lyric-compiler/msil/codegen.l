@@ -8969,6 +8969,39 @@ func lowerBuiltinOrStaticCallMsil(
                             rh = rh + 1
                           }
                         }
+                        // A cross-package generic parameter (`Option[String]` from
+                        // another package) lowers to MGenericInstByName; thread its
+                        // args the same way so a bare `None` argument builds
+                        // Option_None`1<String> rather than erasing to <Object>
+                        // (which then fails the load-site castclass).  Mirrors the
+                        // MGenericInst case above.
+                        case MGenericInstByName(_, pArgs) -> {
+                          val savedHints: List[MsilType] = newList()
+                          var sh = 0
+                          while sh < fctx.contextHintTyArgs.count {
+                            savedHints.add(fctx.contextHintTyArgs[sh])
+                            sh = sh + 1
+                          }
+                          while fctx.contextHintTyArgs.count > 0 {
+                            fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+                          }
+                          var ph = 0
+                          while ph < pArgs.count {
+                            fctx.contextHintTyArgs.add(pArgs[ph])
+                            ph = ph + 1
+                          }
+                          pushCollExpect(fctx, pTy)
+                          val _ = lowerCallArgMsil(cctx, fctx, insns, callArgs[i])
+                          popCollExpect(fctx)
+                          while fctx.contextHintTyArgs.count > 0 {
+                            fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+                          }
+                          var rh = 0
+                          while rh < savedHints.count {
+                            fctx.contextHintTyArgs.add(savedHints[rh])
+                            rh = rh + 1
+                          }
+                        }
                         case MConcreteMap(keyTy, valTy) -> {
                           // Thread the map's key and value types into contextHintTyArgs
                           // so a bare `newMap()` argument builds Map[K,V], not the
