@@ -19471,12 +19471,19 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
   }
 
   // Build new items list: original items + synthetic lambdas.
+  // Phase 2: Closure records are synthesized alongside lambdas and inserted
+  // before the lambda function items so they're type-registered first.
   val newItems: List[Item] = newList()
   var j = 0
   while j < file.items.count {
     newItems.add(file.items[j])
     j = j + 1
   }
+
+  // For Phase 2, closure records would be inserted here based on capture
+  // analysis of the __lambda_* functions in synths. This requires computing
+  // captures without full FuncCtx (deferred to complete Phase 2).
+
   var k = 0
   while k < synths.count {
     newItems.add(synths[k])
