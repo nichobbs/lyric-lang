@@ -387,15 +387,56 @@ stage1() {
 # ---------------------------------------------------------------------------
 # Stage 1 — CLI bundle precompile (Track A, A1.2)
 # ---------------------------------------------------------------------------
+# Retarget System.Private.CoreLib refs in a directory's DLLs to the public
+# facades (so the AOT linker / framework loader can resolve them).
+rewrite_corelib_refs() {
+  local dir="$1" log="$2"
+  if [[ "$SKIP_COREREF_REWRITE" == "1" ]]; then
+    info "SKIP_COREREF_REWRITE=1; leaving DLLs in $dir with raw CoreLib refs"
+    return 0
+  fi
+  info "  retargeting System.Private.CoreLib refs -> public facades ($dir)"
+  dotnet fsi "$REPO_ROOT/scripts/rewrite-corelib-refs.fsx" "$dir"/*.dll \
+    > "$log" 2>&1 || die "corelib-ref rewrite failed for $dir (see $log)"
+}
+
+# Run a freshly-built minimal bootstrap compiler binary (lyric apphost or DLL).
+run_boot_bin() {
+  local bin_dir="$1"; shift
+  if [[ -x "$bin_dir/lyric" ]]; then
+    "$bin_dir/lyric" "$@"
+  elif [[ -f "$bin_dir/lyric.dll" ]]; then
+    dotnet "$bin_dir/lyric.dll" "$@"
+  else
+    die "minimal bootstrap compiler binary not found in $bin_dir"
+  fi
+}
+
+# Stage 1 CLI bundle — TWO-PHASE self-host.
+#
+# The full Lyric.Cli dispatcher references every subcommand package, so its
+# emitted assembly's string heap is irreducibly >64 KB.  The legacy stage-0
+# emitter truncates string-heap indices past 64 KB, so it CANNOT emit a correct
+# full dispatcher.  Instead:
+#
+#   Phase 1   stage-0 emits the *minimal* closure (Lyric.CliBootstrap: build +
+#             internal per-package emit).  That closure — including the entire
+#             front-end and back-end — is wholly under 64 KB, so stage-0 emits
+#             it correctly.
+#   Phase 1a  Build a framework-dependent `lyric` binary from the minimal
+#             closure (entry = Lyric.CliBootstrap.Program.main).  This binary
+#             carries the heap-correct emitter.
+#   Phase 1b  Run that binary to re-emit the FULL Lyric.Cli closure (incl. the
+#             >64 KB dispatcher) into STAGE1_DIR — now correct.
 stage1_cli_bundle() {
-  info "Stage 1 (CLI bundle): precompiling Lyric.Cli + transitive deps"
+  info "Stage 1 (CLI bundle): two-phase self-host (minimal entry -> full closure)"
 
   local driver_dir="$BUILD_DIR/stage1-cli-driver"
   rm -rf "$driver_dir"
   mkdir -p "$driver_dir"
 
   cat > "$driver_dir/driver.l" <<'EOF'
-// Auto-generated driver for the bootstrap CLI-bundle precompile.
+// Auto-generated driver for the bootstrap CLI-bundle precompile (full closure).
 // Importing Lyric.Cli makes the per-package emitter discover and emit the
 // whole compiler-package closure (plus its stdlib import closure).
 package Lyric.CliBundle
@@ -406,30 +447,59 @@ import Std.Testing.Mocking
 func main(): Unit { }
 EOF
 
-  # Emit the driver's transitive import closure as per-package DLLs straight
-  # into the stage-1 output dir via the self-hosted per-package emitter
-  # (`emitPerPackageClosure`).  This replaces the retired F# `--internal-build`
-  # + /tmp-cache-harvest path: the released self-hosted binary emits each
-  # Lyric.* / Msil.* / Jvm.* / Std.* package as its own DLL directly.  Do NOT
-  # pin LYRIC_STD_PATH at the bundle dir here — the emitter must resolve every
-  # package from `lyric-stdlib/std` source to recompile the whole closure.
-  invoke_stage0 --internal-perpackage-build "$driver_dir/driver.l" \
+  cat > "$driver_dir/bootdriver.l" <<'EOF'
+// Auto-generated driver for the bootstrap CLI-bundle phase 1 (minimal closure).
+// Lyric.CliBootstrap is the minimal entry (build + internal per-package emit);
+// its closure includes the full front-end/back-end but stays under 64 KB.
+package Lyric.CliBootstrapBundle
+import Lyric.CliBootstrap
+import Std.Time
+import Std.Math
+import Std.Testing.Mocking
+func main(): Unit { }
+EOF
+
+  local stage1_min="$BUILD_DIR/stage1-min"
+  rm -rf "$stage1_min"
+  mkdir -p "$stage1_min"
+
+  # Phase 1: stage-0 emits the minimal closure (all DLLs < 64 KB -> correct).
+  # Do NOT pin LYRIC_STD_PATH — the emitter must resolve every package from
+  # lyric-stdlib/std source to recompile the whole closure.
+  info "  phase 1: stage-0 emits minimal bootstrap closure -> $stage1_min"
+  invoke_stage0 --internal-perpackage-build "$driver_dir/bootdriver.l" \
+    "$stage1_min" --target dotnet 2>&1 || \
+    die "stage-1 phase 1 (minimal closure) per-package emit failed"
+  [[ -f "$stage1_min/Lyric.Lyric.CliBootstrap.dll" ]] || \
+    die "stage-1 phase 1: Lyric.Lyric.CliBootstrap.dll not found in $stage1_min after emit"
+  rewrite_corelib_refs "$stage1_min" "$BUILD_DIR/rewrite-corelib-refs-min.log"
+
+  # Phase 1a: build the minimal (heap-correct) compiler binary.  A framework-
+  # dependent build is enough — the binary only re-emits the full closure once.
+  local aot_proj="$COMPILER_DIR/src/Lyric.Cli.Aot"
+  local boot_bin_dir="$BUILD_DIR/stage1-bootbin"
+  rm -rf "$boot_bin_dir"
+  mkdir -p "$boot_bin_dir"
+  info "  phase 1a: building minimal bootstrap compiler binary"
+  dotnet build "$aot_proj" --configuration Release --no-incremental \
+    -p:DefineConstants=BOOTSTRAP_ENTRY -p:StageDir="$stage1_min" -p:PublishAot=false \
+    -o "$boot_bin_dir" \
+    > "$BUILD_DIR/bootbin-build.log" 2>&1 || \
+    die "stage-1 phase 1a: minimal bootstrap compiler build failed (see $BUILD_DIR/bootbin-build.log)"
+
+  # Phase 1b: the heap-correct minimal compiler re-emits the FULL closure
+  # (including the >64 KB Lyric.Cli dispatcher) correctly into STAGE1_DIR.
+  info "  phase 1b: minimal compiler re-emits full Lyric.Cli closure -> $STAGE1_DIR"
+  run_boot_bin "$boot_bin_dir" --internal-perpackage-build "$driver_dir/driver.l" \
     "$STAGE1_DIR" --target dotnet 2>&1 || \
-    die "stage-1 CLI-bundle per-package emit failed"
+    die "stage-1 phase 1b (full closure) per-package emit failed"
 
   [[ -f "$STAGE1_DIR/Lyric.Lyric.Cli.dll" ]] || \
-    die "stage-1 CLI bundle: Lyric.Lyric.Cli.dll not found in $STAGE1_DIR after emit"
+    die "stage-1 CLI bundle: Lyric.Lyric.Cli.dll not found in $STAGE1_DIR after phase 1b"
   local copied
   copied="$(ls "$STAGE1_DIR"/*.dll 2>/dev/null | wc -l)"
 
-  if [[ "$SKIP_COREREF_REWRITE" != "1" ]]; then
-    info "  retargeting System.Private.CoreLib refs -> public facades"
-    dotnet fsi "$REPO_ROOT/scripts/rewrite-corelib-refs.fsx" "$STAGE1_DIR"/*.dll \
-      > "$BUILD_DIR/rewrite-corelib-refs.log" 2>&1 || \
-      die "stage-1 CLI bundle: corelib-ref rewrite failed"
-  else
-    info "SKIP_COREREF_REWRITE=1; leaving stage-1 DLLs with raw CoreLib refs"
-  fi
+  rewrite_corelib_refs "$STAGE1_DIR" "$BUILD_DIR/rewrite-corelib-refs.log"
 
   ok "Stage 1 CLI bundle complete — Lyric.Lyric.Cli.dll + $((copied - 1)) deps in $STAGE1_DIR"
 }
