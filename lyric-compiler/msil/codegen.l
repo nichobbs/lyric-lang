@@ -290,6 +290,12 @@ pub record CodegenCtx {
   actionTypeRefs: Map[String, Int]  // toString(nparams) → TypeRef row for System.Action`N
   externTypeNames: Map[String, String]  // Lyric name → CLR FQN (from IExternType items)
   lambdaTicker: List[Int]  // length = next __lambda_<i> index
+  // Phase 2 closure class info: for each __lambda_<i>, track whether it has a
+  // corresponding __Closure<i> record (captures != empty). Keyed by lambda index.
+  lambdaHasClosures: Map[Int, Bool]
+  // Closure record constructor tokens, keyed by closure name (__Closure<i>).
+  // Populated by addPackageTokens when closure records are present.
+  closureCtorTokens: Map[String, Int]
   // Instance method MethodDef tokens, keyed by "FQClassName/methodName".  Populated
   // by `addPackageTokens` for record methods, interface methods (abstract slots),
   // and impl methods folded into the implementing record.  `lowerMethodCallMsil`
@@ -1625,6 +1631,8 @@ pub func newCodegenCtx(
     actionTypeRefs = newMap(),
     externTypeNames = newMap(),
     lambdaTicker = newList(),
+    lambdaHasClosures = newMap(),
+    closureCtorTokens = newMap(),
     methodTokens = newMap(),
     methodRetTypes = newMap(),
     methodParamTypes = newMap(),
@@ -19346,6 +19354,150 @@ pub func lambdaCaptureNamesMsil(fctx: in FuncCtx, lparams: in List[LambdaParam],
 // record, enabling true JIT optimization (typed method signature instead of
 // object parameters). At the lambda site, instantiate the closure and pass it
 // as the delegate target.
+
+// Analyze a lambda function's body to determine captured names (free variables).
+// Returns: List of names referenced in the lambda body but not bound within it.
+func analyzeLambdaCapturesFromAst(decl: in FunctionDecl): List[String] {
+  // Collect all variable references in the lambda body.
+  val refs: List[String] = newList()
+  match decl.body {
+    case Some(FBBlock(block)) -> collectRefNamesBlock(block, refs)
+    case Some(FBExpr(e)) -> collectRefNamesExpr(e, refs)
+    case None -> ()
+  }
+
+  // Collect all names bound within the lambda (parameters + locals).
+  val bound: List[String] = newList()
+  var pi = 0
+  while pi < decl.params.count {
+    addNameOnce(bound, decl.params[pi].name)
+    pi = pi + 1
+  }
+  match decl.body {
+    case Some(FBBlock(block)) -> collectBoundNamesBlock(block, bound)
+    case Some(FBExpr(e)) -> collectBoundNamesExpr(e, bound)
+    case None -> ()
+  }
+
+  // Captures = references that aren't bound within the lambda.
+  val captures: List[String] = newList()
+  var ri = 0
+  while ri < refs.count {
+    val name = refs[ri]
+    if not nameListContains(bound, name) {
+      addNameOnce(captures, name)
+    }
+    ri = ri + 1
+  }
+  captures
+}
+
+// Extract lambda index from a lambda function name (__lambda_N).
+// Returns: Some(N) if the name is __lambda_N, None otherwise.
+func extractLambdaIndexFromName(name: in String): Option[Int] {
+  if startsWith(name, "__lambda_") {
+    val indexStr = substring(name, 9, name.length - 9)
+    match parseIntOpt(indexStr) {
+      case Some(idx) -> Some(value = idx)
+      case None -> None
+    }
+  } else {
+    None
+  }
+}
+
+// Phase 2: Synthesize closure record types for capturing lambdas.
+// For each __lambda_* function in the file, analyze its captures and create
+// a corresponding __Closure<N> record with typed fields.
+// Returns: Updated file with closure records prepended before lambda functions.
+// Note: This function only creates the record definitions. The CodegenCtx.lambdaHasClosures
+// and closureCtorTokens are populated during addPackageTokens after tokens are assigned.
+pub func synthesizeClosureRecordsForFile(file: in SourceFile): SourceFile {
+  val closureRecords: List[Item] = newList()
+  val lambdasByIndex: Map[Int, FunctionDecl] = newMap()
+
+  // Phase 1: Identify and collect all __lambda_* functions.
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(decl) -> {
+        match extractLambdaIndexFromName(decl.name) {
+          case Some(idx) -> {
+            lambdasByIndex.add(idx, decl)
+          }
+          case None -> ()
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+
+  if lambdasByIndex.count == 0 {
+    return file
+  }
+
+  // Phase 2: For each lambda with captures, synthesize a closure record.
+  var li = 0
+  while li < lambdasByIndex.count {
+    match lambdasByIndex.get(li) {
+      case Some(lambdaDecl) -> {
+        // Analyze what this lambda captures.
+        val captureNames = analyzeLambdaCapturesFromAst(lambdaDecl)
+        if captureNames.count > 0 {
+          // TODO: Determine capture types. For now, default to MObject.
+          // Full implementation requires type-checking context.
+          val captureTypes: List[MsilType] = newList()
+          var ci = 0
+          while ci < captureNames.count {
+            captureTypes.add(MObject)
+            ci = ci + 1
+          }
+          // Synthesize the closure record.
+          val closureRecord = synthesizeClosureRecord(li, captureNames, captureTypes)
+          closureRecords.add(
+            Item(
+              docComments = newList(),
+              annotations = newList(),
+              visibility = None,
+              kind = IRecord(decl = closureRecord),
+              span = syntheticSpan()
+            )
+          )
+        }
+      }
+      case None -> ()
+    }
+    li = li + 1
+  }
+
+  if closureRecords.count == 0 {
+    return file
+  }
+
+  // Phase 3: Build new items list: closure records + original items.
+  // Closure records must precede lambda functions so they're type-registered first.
+  val newItems: List[Item] = newList()
+  var ci = 0
+  while ci < closureRecords.count {
+    newItems.add(closureRecords[ci])
+    ci = ci + 1
+  }
+  var j = 0
+  while j < file.items.count {
+    newItems.add(file.items[j])
+    j = j + 1
+  }
+
+  SourceFile(
+    moduleDoc = file.moduleDoc,
+    fileAnnotations = file.fileAnnotations,
+    packageDecl = file.packageDecl,
+    imports = file.imports,
+    items = newItems,
+    span = file.span
+  )
+}
 
 // Create a FieldDecl for a lambda capture (name: captured type).
 func makeClosureField(name: String, ty: TypeExpr): FieldDecl {

@@ -207,9 +207,13 @@ pub func compileToMsilWithVersion(
   // so that addPackageTokens assigns them stable MethodDef tokens before codegen.
   val liftedFile = liftLambdasMsil(weavedFile)
 
+  // Phase 2: Synthesize closure record types for capturing lambdas.
+  // Each capturing lambda gets a __Closure<N> record with typed fields.
+  val closureFile = synthesizeClosureRecordsForFile(liftedFile)
+
   // Pre-scan the AST to assign deterministic MethodDef / FieldDef tokens for
   // same-package types and functions.
-  addPackageTokens(cctx, liftedFile, pkgName)
+  addPackageTokens(cctx, closureFile, pkgName)
 
   // Walk the AST and produce the MSIL package IR.
   val pkg = codegenMPackage(liftedFile, cctx)
@@ -761,7 +765,8 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     }
     val weaved = weaveRes.file
     val lifted = liftLambdasMsil(weaved)
-    addPackageTokens(cctx, lifted, perPkgNames[li])
+    val withClosures = synthesizeClosureRecordsForFile(lifted)
+    addPackageTokens(cctx, withClosures, perPkgNames[li])
     // Project-as-DLL embedding: each package's contract goes in its
     // own `Lyric.Contract.<Pkg>` resource so the in-process loader can
     // surface them per-package (matching the F# bundled-DLL layout).
