@@ -19510,6 +19510,7 @@ pub func scanClosureRecordsMsil(cctx: in CodegenCtx, file: in SourceFile): Unit 
 // (stored in cctx.lambdaCaptureTypesByIndex), or MObject if not available.
 pub func synthesizeClosureRecordsForFile(file: in SourceFile): SourceFile {
   val closureRecords: List[Item] = newList()
+  val lambdaFuncsToMove: List[String] = newList()  // Names of __lambda_* to move into closure records
 
   // Phase 1: Iterate through file items and synthesize closures for each __lambda_*.
   var i = 0
@@ -19530,8 +19531,8 @@ pub func synthesizeClosureRecordsForFile(file: in SourceFile): SourceFile {
                 captureTypes.add(MObject)
                 ci = ci + 1
               }
-              // Synthesize the closure record.
-              val closureRecord = synthesizeClosureRecord(lambdaIdx, captureNames, captureTypes)
+              // Synthesize the closure record with the lambda as an instance method.
+              val closureRecord = synthesizeClosureRecordWithMethod(lambdaIdx, captureNames, captureTypes, decl)
               closureRecords.add(
                 Item(
                   docComments = newList(),
@@ -19541,6 +19542,8 @@ pub func synthesizeClosureRecordsForFile(file: in SourceFile): SourceFile {
                   span = syntheticSpan()
                 )
               )
+              // Mark this lambda function for removal from top-level items.
+              lambdaFuncsToMove.add(decl.name)
             }
           }
           case None -> ()
@@ -19555,8 +19558,8 @@ pub func synthesizeClosureRecordsForFile(file: in SourceFile): SourceFile {
     return file
   }
 
-  // Phase 3: Build new items list: closure records + original items.
-  // Closure records must precede lambda functions so they're type-registered first.
+  // Phase 2: Build new items list, filtering out lambda functions that are now methods.
+  // Closure records must precede remaining lambda functions so they're type-registered first.
   val newItems: List[Item] = newList()
   var ci = 0
   while ci < closureRecords.count {
@@ -19565,7 +19568,24 @@ pub func synthesizeClosureRecordsForFile(file: in SourceFile): SourceFile {
   }
   var j = 0
   while j < file.items.count {
-    newItems.add(file.items[j])
+    val item = file.items[j]
+    // Skip lambda functions that were moved into closure records.
+    var shouldSkip = false
+    var ki = 0
+    while ki < lambdaFuncsToMove.count {
+      match item.kind {
+        case IFunc(decl) -> {
+          if decl.name == lambdaFuncsToMove[ki] {
+            shouldSkip = true
+          }
+        }
+        case _ -> ()
+      }
+      ki = ki + 1
+    }
+    if not shouldSkip {
+      newItems.add(item)
+    }
     j = j + 1
   }
 
@@ -19618,8 +19638,140 @@ func msilTypeToTypeExpr(t: in MsilType): TypeExpr {
 // Synthesize a closure record for a capturing lambda.
 // Record name: __Closure<lambdaIndex>
 // Fields: one per captured variable with actual type from capTypes
-// Note: Instance methods are added by the caller after the lambda __lambda_<i>
-// function is created, so we can reference it properly.
+// Method: the __lambda_<i> function as an instance method (RMFunc)
+//
+// Phase 2: The __lambda_<N> function is converted from a top-level static function
+// to an instance method of the closure record. The method:
+// 1. Has the original lambda parameters (no synthetic __caps parameter)
+// 2. Will access captures as self.<fieldname> instead of __caps[i]
+// 3. Will be called on a closure instance to create a delegate
+func synthesizeClosureRecordWithMethod(
+  lambdaIdx: Int,
+  capNames: List[String],
+  capTypes: List[MsilType],
+  lambdaFunc: in FunctionDecl
+): RecordDecl {
+  val members: List[RecordMember] = newList()
+
+  // Add capture fields.
+  var i = 0
+  while i < capNames.count {
+    val fieldTy = if i < capTypes.count {
+      msilTypeToTypeExpr(capTypes[i])
+    } else {
+      msilTypeToTypeExpr(MObject)
+    }
+    members.add(RMField(field = makeClosureField(capNames[i], fieldTy)))
+    i = i + 1
+  }
+
+  // Convert the lambda function to an instance method of the closure record.
+  // Remove the synthetic __caps parameter (slot 0) if it exists.
+  val methodParams = removeLambdaCapsParameter(lambdaFunc.params)
+
+  val methodFunc = FunctionDecl(
+    docComments = lambdaFunc.docComments,
+    annotations = lambdaFunc.annotations,
+    visibility = lambdaFunc.visibility,
+    isAsync = lambdaFunc.isAsync,
+    name = lambdaFunc.name,
+    generics = lambdaFunc.generics,
+    params = methodParams,  // Original params, without __caps
+    ret = lambdaFunc.ret,
+    whereClause = lambdaFunc.whereClause,
+    contracts = lambdaFunc.contracts,
+    body = lambdaFunc.body,
+    span = lambdaFunc.span
+  )
+
+  // Inject the `self` parameter into the method (this happens manually here
+  // since we're synthesizing the method outside the parser's normal flow).
+  // The parser's injectSelfIfNeeded would do this during record member parsing,
+  // but we're doing it programmatically.
+  val methodFuncWithSelf = injectSelfParameterIntoMethod(methodFunc)
+
+  // Add the method to the closure record.
+  members.add(RMFunc(fn = methodFuncWithSelf))
+
+  RecordDecl(
+    name = "__Closure" + toString(lambdaIdx),
+    generics = None,
+    whereClause = None,
+    members = members,
+    span = syntheticSpan()
+  )
+}
+
+// Inject a `self` parameter into a synthesized method.
+// This replicates the parser's injectSelfIfNeeded logic but is called
+// programmatically when synthesizing closure record methods.
+func injectSelfParameterIntoMethod(fn: in FunctionDecl): FunctionDecl {
+  // If the method already has a self parameter, return it unchanged.
+  if fn.params.count > 0 and fn.params[0].name == "self" {
+    return fn
+  }
+
+  // Create a new `self: in __Closure<N>` parameter.
+  // The type will be a reference to the enclosing record, resolved during type-checking.
+  val newParams: List[Param] = newList()
+  val selfParam = Param(
+    mode = PMIn,
+    modeExplicit = false,
+    name = "self",
+    ty = mkType(TSelf, syntheticSpan()),
+    dflt = None,
+    annotations = newList(),
+    span = syntheticSpan()
+  )
+  newParams.add(selfParam)
+
+  // Copy the remaining parameters.
+  var i = 0
+  while i < fn.params.count {
+    newParams.add(fn.params[i])
+    i = i + 1
+  }
+
+  FunctionDecl(
+    docComments = fn.docComments,
+    annotations = fn.annotations,
+    visibility = fn.visibility,
+    isAsync = fn.isAsync,
+    name = fn.name,
+    generics = fn.generics,
+    params = newParams,
+    ret = fn.ret,
+    whereClause = fn.whereClause,
+    contracts = fn.contracts,
+    body = fn.body,
+    span = fn.span
+  )
+}
+
+// Remove the synthetic __caps parameter from a lambda's parameter list.
+// The __caps parameter is always first (slot 0) if present and is identified
+// by the name "__caps".
+func removeLambdaCapsParameter(params: in List[Param]): List[Param] {
+  if params.count == 0 {
+    return params
+  }
+  // Check if first parameter is __caps.
+  if params[0].name == "__caps" {
+    val newParams: List[Param] = newList()
+    var i = 1
+    while i < params.count {
+      newParams.add(params[i])
+      i = i + 1
+    }
+    newParams
+  } else {
+    params
+  }
+}
+
+// Synthesize a closure record for a capturing lambda (original single-field version).
+// This is retained for backward compatibility with Phase 1 code that doesn't yet
+// extract the lambda function.
 func synthesizeClosureRecord(lambdaIdx: Int, capNames: List[String], capTypes: List[MsilType]): RecordDecl {
   val fields: List[RecordMember] = newList()
   var i = 0
