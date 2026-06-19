@@ -21752,9 +21752,25 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
   }
   val typeFqn = packageName + "." + typeName
   val typeRefKey = packageName + "/" + typeFqn
+  // Generic stdlib types (e.g. `Option[T]`, `Result[T,E]`) are emitted by the
+  // self-hosted backend with an arity-suffixed TypeDef name (`Option`1`,
+  // docs/43).  The consumer-side TypeRef and `genericTypeArity` entry MUST use
+  // the same suffix, or type-annotation lowering emits a bare `Std.Core.Option`
+  // reference that fails to bind against the `Option`1` definition at load time
+  // (TypeLoadException).  Mirrors `registerRestoredUnion` / `ensureCaseClassTypeRefRow`.
+  val typeArity = match it.kind {
+    case IUnion(decl) -> genericNamesOf(decl.generics).count
+    case IRecord(decl) -> genericNamesOf(decl.generics).count
+    case IExposedRec(decl) -> genericNamesOf(decl.generics).count
+    case _ -> 0
+  }
+  val typeRefName = if typeArity > 0 { typeName + "`" + toString(typeArity) } else { typeName }
   if not cctx.ffiTypeRefs.containsKey(typeRefKey) {
-    val row = ctxAddTypeRef(cctx.lctx, packageName, typeName, asmRefRow)
+    val row = ctxAddTypeRef(cctx.lctx, packageName, typeRefName, asmRefRow)
     cctx.ffiTypeRefs.add(typeRefKey, row)
+  }
+  if typeArity > 0 and not cctx.genericTypeArity.containsKey(typeFqn) {
+    cctx.genericTypeArity.add(typeFqn, typeArity)
   }
   registerTypeFqnCandidate(cctx, typeName, typeFqn)
   match it.kind {
@@ -21785,13 +21801,23 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
       while ci < decl.cases.count {
         val caseName = decl.cases[ci].name
         val ctorKey = packageName + "." + decl.name + "_" + caseName
-        val caseClassName = decl.name + "_" + caseName
+        // Generic union cases get the arity suffix too (`Option_Some`1`), matching
+        // the self-hosted case-class TypeDef name and `genericTypeArity` so
+        // construction / isinst / field access bind correctly cross-assembly.
+        val caseClassName = if unionTypeParamCount > 0 {
+          decl.name + "_" + caseName + "`" + toString(unionTypeParamCount)
+        } else {
+          decl.name + "_" + caseName
+        }
         val caseRefKey = packageName + "/" + ctorKey
         // Register case-class TypeRef so MIsinstByName can find it via
         // findTypeRefRowByName instead of falling back to System.Object.
         if not cctx.ffiTypeRefs.containsKey(caseRefKey) {
           val caseRow = ctxAddTypeRef(cctx.lctx, packageName, caseClassName, asmRefRow)
           cctx.ffiTypeRefs.add(caseRefKey, caseRow)
+        }
+        if unionTypeParamCount > 0 and not cctx.genericTypeArity.containsKey(ctorKey) {
+          cctx.genericTypeArity.add(ctorKey, unionTypeParamCount)
         }
         val caseRow = match mapGet(cctx.ffiTypeRefs, caseRefKey) { case Some(r) -> r; case None -> 0 }
         // Register field MemberRefs so `ldfld` can read fields of cross-assembly
