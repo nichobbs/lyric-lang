@@ -370,7 +370,18 @@ func walkUpForCompiledStdlib(start: in String, rel: in String): String {
 // Returns "" when no candidate holds `Lyric.Stdlib.dll`.
 func findCompiledLibDir(): String {
   val env = Environment.getVarOrDefault("LYRIC_STDLIB_BIN", "")
-  if dirHasCompiledStdlib(env) {
+  if env.length > 0 {
+    // Explicit override: when LYRIC_STDLIB_BIN is set it takes precedence over
+    // ALL discovery and is used as-is — even when the directory carries only the
+    // split `Lyric.Stdlib.*.dll` per-package assemblies without the bundled
+    // `Lyric.Stdlib.dll` (a per-package self-build emits exactly that, so gating
+    // on `dirHasCompiledStdlib` here wrongly fell through to auto-discovery).
+    // Accepts either a directory, or a path to a specific DLL (its containing
+    // directory is used) — letting callers build several stdlib variants and
+    // explicitly link the one they want.
+    if Str.endsWith(env, ".dll") and File.fileExists(env) {
+      return Path.dirname(env)
+    }
     return env
   }
   val appBase = Environment.appBaseDirectory()
