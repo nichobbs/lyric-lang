@@ -19561,6 +19561,8 @@ func msilTypeToTypeExpr(t: in MsilType): TypeExpr {
 // Synthesize a closure record for a capturing lambda.
 // Record name: __Closure<lambdaIndex>
 // Fields: one per captured variable with actual type from capTypes
+// Note: Instance methods are added by the caller after the lambda __lambda_<i>
+// function is created, so we can reference it properly.
 func synthesizeClosureRecord(lambdaIdx: Int, capNames: List[String], capTypes: List[MsilType]): RecordDecl {
   val fields: List[RecordMember] = newList()
   var i = 0
