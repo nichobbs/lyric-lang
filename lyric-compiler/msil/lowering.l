@@ -1824,12 +1824,8 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MStarg(slot) -> emitStarg_S(mb, slot)
     case MLdloc(slot) -> emitLdloc(mb, slot)
     case MStloc(slot) -> emitStloc(mb, slot)
-    // Short-form ldloca.s/ldarga.s encode the slot in a single byte (0-255);
-    // a method with >255 locals (large CLI commands) overflows it, truncating
-    // the index to garbage and producing invalid IL.  Use the 2-byte
-    // (`0xFE`-prefixed) long form past 255.  ECMA-335 §III.1.7.2 / III.3.
-    case MLdloca(slot) -> if slot <= 255 { emitLdloca_S(mb, slot) } else { emitLdloca(mb, slot) }
-    case MLdarga(slot) -> if slot <= 255 { emitLdarga_S(mb, slot) } else { emitLdarga(mb, slot) }
+    case MLdloca(slot) -> emitLdloca_S(mb, slot)
+    case MLdarga(slot) -> emitLdarga_S(mb, slot)
     case MLdind(ty) -> emitLdindForType(mb, ty)
     case MStind(ty) -> emitStindForType(mb, ty)
     case MAdd -> emitAdd(mb)
