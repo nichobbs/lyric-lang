@@ -1,4 +1,4 @@
-package Lyric.Cli.Build
+package Lyric.Cli
 
 import Std.Core
 import Std.Collections
@@ -20,11 +20,9 @@ import Lyric.Emitter as Emitter
 import Lyric.CfgGate as CfgGate
 import Std.Time as Time
 import Std.Format as Format
-import Lyric.Cli.Shared
-import Lyric.Cli.Restore
 
 // Helper to extract build kind from manifest if available, defaulting to "lib".
-pub func readBuildKindFromManifest(manifestOpt: in Option[String]): String {
+func readBuildKindFromManifest(manifestOpt: in Option[String]): String {
   match manifestOpt {
     case None -> "lib"
     case Some(mfPath) -> {
@@ -45,7 +43,7 @@ pub func readBuildKindFromManifest(manifestOpt: in Option[String]): String {
 // Returns the exit code: 0 on success, 1 on error.
 // `manifestPath` is forwarded to the generator pre-processor so custom
 // @generate(Pkg.Name) annotations can resolve their generator DLLs.
-pub func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarget, manifestPath: in Option[String]): Int {
+func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarget, manifestPath: in Option[String]): Int {
   val buildStart = Time.now()
   var source = match File.readText(sourcePath) {
     case Ok(text) -> text
@@ -125,7 +123,7 @@ pub func buildOne(sourcePath: in String, outPath: in String, target: in CompileT
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Build command
 // ─────────────────────────────────────────────────────────────────────────────
-pub func cmdBuild(argv: in slice[String]): Int {
+func cmdBuild(argv: in slice[String]): Int {
   var force = false
   var explicitOut: Option[String] = None
   var manifestArg: Option[String] = None
@@ -311,7 +309,7 @@ pub func cmdBuild(argv: in slice[String]): Int {
 // then produce a self-contained native binary via Lyric.Release.  The default
 // output is the source stem with no extension (an executable), next to the
 // source unless `-o` overrides it.
-pub func buildReleaseSingle(
+func buildReleaseSingle(
   sourcePath: in String,
   explicitOut: in Option[String],
   target: in CompileTarget,
@@ -357,7 +355,7 @@ pub func buildReleaseSingle(
 // self-contained native binary via Lyric.Release.  The entry package — the one
 // whose source declares `func main()` — is detected before the build so the
 // trampoline can be written immediately after `dotnet publish` finishes.
-pub func buildReleaseProject(
+func buildReleaseProject(
   mfPath: in String,
   explicitOut: in Option[String],
   target: in CompileTarget,
@@ -559,7 +557,7 @@ pub func buildReleaseProject(
 // its typed-lambda generics — the bundled `sortStrings` crashes at runtime.
 // This workaround can be retired once stage-2 self-hosting lands (cli.l
 // compiled exclusively by the self-hosted compiler).  Tracking: #2592 slice 4.
-pub func sortFileList(xs: in List[String]): List[String] {
+func sortFileList(xs: in List[String]): List[String] {
   val remaining: List[String] = newList()
   var c = 0
   while c < xs.count {
@@ -584,7 +582,7 @@ pub func sortFileList(xs: in List[String]): List[String] {
 
 // Project-mode build: reads [project.packages] from lyric.toml and
 // bundles every package's .l files into a single DLL.
-pub func buildProject(
+func buildProject(
   mfPath: in String,
   explicitOut: in Option[String],
   target: in CompileTarget,
@@ -972,7 +970,7 @@ pub func buildProject(
 // Compute the default output artifact path for a project build (no explicit -o).
 // Mirrors the extension logic in buildProject so runProjectOnce finds the file.
 // `buildKind` comes from the manifest's [build] section, default "lib".
-pub func projectBinOutputPath(
+func projectBinOutputPath(
   mfDir: in String, proj: in ProjectSection, target: in CompileTarget, buildKind: in String
 ): String {
   val ext = outputExt(target, buildKind)
@@ -983,7 +981,7 @@ pub func projectBinOutputPath(
 // Collect all .l source file paths from [project.packages] in a lyric.toml.
 // Returns (paths, hadFatal). A file entry yields itself; a directory entry yields
 // all .l files under it, sorted deterministically.
-pub func collectProjectSourcePaths(mfPath: in String): (List[String], Bool) {
+func collectProjectSourcePaths(mfPath: in String): (List[String], Bool) {
   val paths: List[String] = newList()
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
@@ -1040,50 +1038,4 @@ pub func collectProjectSourcePaths(mfPath: in String): (List[String], Bool) {
     pi += 1
   };
   (paths, hadFatal)
-}
-
-// Internal (#2592 stage-2): emit a driver's transitive `Std.*` / compiler-package
-// import closure into per-package DLLs via the self-hosted emitter.  Lives here
-// (rather than the dispatcher) so `cli_main` need not import the heavy
-// `Lyric.Emitter` surface, keeping its emitted assembly's string heap small.
-// `--internal-perpackage-build <entry.l> <outDir> [--target jvm]`.
-pub func cmdInternalPerpackage(argv: in slice[String]): Int {
-  if argv.length < 3 {
-    printErr("usage: lyric --internal-perpackage-build <entry.l> <outDir> [--target jvm]")
-    return 1
-  }
-  val entryPath = argv[1]
-  val outDir = argv[2]
-  val tgt = if argv.length >= 5 and argv[3] == "--target" and argv[4] == "jvm" { Jvm } else { Dotnet }
-  match File.readText(entryPath) {
-    case Err(e) -> {
-      printErr("perpackage: cannot read " + entryPath + ": " + IOError.message(e))
-      1
-    }
-    case Ok(entrySrc) -> {
-      val res = Emitter.emitPerPackageClosure(entrySrc, outDir, tgt)
-      var hadError = false
-      for d in res.diagnostics.toArray() {
-        printDiag(d)
-        match d.severity {
-          case DiagError -> { hadError = true }
-          case DiagWarning -> ()
-        }
-      }
-      if hadError {
-        1
-      } else {
-        match res.outputPath {
-          case Some(_) -> {
-            Console.println("per-package stdlib emitted to " + outDir)
-            0
-          }
-          case None -> {
-            printErr("perpackage: emit failed")
-            1
-          }
-        }
-      }
-    }
-  }
 }

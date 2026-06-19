@@ -1,4 +1,4 @@
-package Lyric.Cli.Build
+package Lyric.Cli
 
 import Std.Core
 import Std.Collections
@@ -15,7 +15,6 @@ import Lyric.Manifest as Mf
 import Lyric.Lexer
 import Lyric.Emitter as Emitter
 import Lyric.Discovery as Disc
-import Lyric.Cli.Shared
 
 // Build a project and run its output artifact.
 func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in CompileTarget): Int {
@@ -222,7 +221,7 @@ func projectWatchFiles(mfPath: in String): List[String] {
   files
 }
 
-pub func cmdRun(argv: in slice[String]): Int {
+func cmdRun(argv: in slice[String]): Int {
   var watch = false
   var sourcePath = ""
   var haveSource = false

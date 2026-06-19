@@ -17,14 +17,5 @@ namespace Lyric.Cli.Aot;
 
 public static class Program
 {
-#if BOOTSTRAP_ENTRY
-    // Stage-1 phase-1 bootstrap build: trampoline into the minimal
-    // Lyric.CliBootstrap entry (build + internal per-package emit only).  Its
-    // emitted closure stays under the legacy stage-0's 64 KB string-heap limit,
-    // so stage-0 emits it correctly; the resulting heap-correct compiler then
-    // re-emits the full Lyric.Cli closure.  See scripts/bootstrap.sh.
-    public static int Main(string[] args) => Lyric.CliBootstrap.Program.main(args);
-#else
     public static int Main(string[] args) => Lyric.Cli.Program.main(args);
-#endif
 }

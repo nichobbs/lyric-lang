@@ -1,4 +1,4 @@
-package Lyric.Cli.Restore
+package Lyric.Cli
 
 import Std.Core
 import Std.Collections
@@ -20,7 +20,6 @@ import Lyric.Discovery as Disc
 import Lyric.Init as Init
 import Lyric.GitDep as GitDep
 import Lyric.Lockfile as LF
-import Lyric.Cli.Shared
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §10. Restore command
@@ -124,7 +123,7 @@ func lockSha512OfNupkg(name: in String, version: in String): Option[String] {
 // `lyric init [<dir>] [--name <Name>] [--lib] [--force]` — scaffold a new
 // application (or `--lib` library) package in <dir> (default the current
 // directory): a lyric.toml, src/main.l (or src/lib.l), and a .gitignore (#1972).
-pub func cmdInit(argv: in slice[String]): Int {
+func cmdInit(argv: in slice[String]): Int {
   var dir = "."
   var haveDir = false
   var nameOverride: Option[String] = None
@@ -335,7 +334,7 @@ func removeTomlEntry(text: in String, table: in String, key: in String): String 
 
 // `lyric remove <name> [--nuget] [--manifest <m>] [--no-restore]` — remove a
 // dependency from [dependencies] (or [nuget]) and restore (#1974).
-pub func cmdRemove(argv: in slice[String]): Int {
+func cmdRemove(argv: in slice[String]): Int {
   var manifestArg: Option[String] = None
   var isNuget = false
   var noRestore = false
@@ -439,7 +438,7 @@ pub func cmdRemove(argv: in slice[String]): Int {
 // `lyric add <name>[@<version>] [--path <p>] [--git <url> [--tag|--rev|--branch <ref>] [--subdir <d>]]
 //   [--nuget] [--manifest <m>] [--no-restore]` — add or update a dependency in the
 // discovered manifest's [dependencies] (or [nuget]) table, then restore (#1973).
-pub func cmdAdd(argv: in slice[String]): Int {
+func cmdAdd(argv: in slice[String]): Int {
   var manifestArg: Option[String] = None
   var pathArg: Option[String] = None
   var gitArg: Option[String] = None
@@ -691,7 +690,7 @@ pub func cmdAdd(argv: in slice[String]): Int {
   runRestore(mfPath, false)
 }
 
-pub func cmdRestore(argv: in slice[String]): Int {
+func cmdRestore(argv: in slice[String]): Int {
   var manifestArg: Option[String] = None
   var lockedMode = false
 
@@ -904,7 +903,7 @@ func restoreMavenJars(manifest: in Manifest, mfDir: in String): Int {
 // writing `lyric.lock` (or verifying it under `lockedMode`).  Extracted from
 // cmdRestore so `lyric build` can auto-restore when the lock is missing or
 // stale.
-pub func runRestore(mfPath: in String, lockedMode: in Bool): Int {
+func runRestore(mfPath: in String, lockedMode: in Bool): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
     case Err(e) -> {

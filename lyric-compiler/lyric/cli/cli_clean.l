@@ -1,4 +1,4 @@
-package Lyric.Cli.Build
+package Lyric.Cli
 
 import Std.Core
 import Std.Collections
@@ -6,12 +6,11 @@ import Std.Console as Console
 import Std.File as File
 import Std.Path as Path
 import Lyric.Discovery as Disc
-import Lyric.Cli.Shared
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §11e. Clean command
 // ─────────────────────────────────────────────────────────────────────────────
-pub func cmdClean(argv: in slice[String]): Int {
+func cmdClean(argv: in slice[String]): Int {
   var manifestArg: Option[String] = None
   val positional: List[String] = newList()
 

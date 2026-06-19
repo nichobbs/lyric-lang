@@ -1,4 +1,4 @@
-package Lyric.Cli.Quality
+package Lyric.Cli
 
 import Std.Core
 import Std.Collections
@@ -8,12 +8,11 @@ import Std.String as Str
 import Std.Path as Path
 import Lyric.OpenApiParser as OAParser
 import Lyric.OpenApiGen as OAGen
-import Lyric.Cli.Shared
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §11e. OpenAPI command
 // ─────────────────────────────────────────────────────────────────────────────
-pub func cmdOpenApi(argv: in slice[String]): Int {
+func cmdOpenApi(argv: in slice[String]): Int {
   var explicitOut: Option[String] = None
   var clientName = "ApiClient"
   var packageName = "Api.Client"

@@ -28,16 +28,8 @@
        all stdlib kernel modules migrated off Lyric.Emitter.* host shims to
        direct BCL externs; no Lyric-compiled DLL carries an AssemblyRef to
        either assembly (docs/23-fsharp-shim-elimination.md Band 5). -->
-  <!-- Stage DLL directory.  Defaults to the final stage-1 output.  The
-       stage-1 phase-1 bootstrap build overrides it (-p:StageDir=<abs path>)
-       to the minimal-closure dir, paired with -p:DefineConstants=BOOTSTRAP_ENTRY
-       so the entry trampolines into Lyric.CliBootstrap.Program.main. -->
-  <PropertyGroup>
-    <StageDir Condition="'$(StageDir)' == ''">$(MSBuildThisFileDirectory)../../../.bootstrap/stage1</StageDir>
-  </PropertyGroup>
-
   <ItemGroup>
-    <Reference Include="$(StageDir)/Lyric.*.dll">
+    <Reference Include="../../../.bootstrap/stage1/Lyric.*.dll">
       <Private>true</Private>
     </Reference>
   </ItemGroup>
