@@ -678,15 +678,67 @@ reproduction cascade.  They are **not landed** (see "atomicity" below).
    `TNullable` for the FFI MemberRef return so `Path.GetDirectoryName` binds
    instead of degrading to `object`.
 
+### Update (2026-06-19, session 2): landed cascade + signature fixes
+
+Driving the self-emitted compiler against `examples/rbac` and single-file
+builds surfaced — and **landed fixes for** — a series of self-hosted-codegen
+bugs that blocked the reproduction loop well before any suffix concern.  These
+are committed (verified: a stage-0 minted from this source builds `fizzbuzz`
+and `examples/rbac` end-to-end), independent of the suffix work above:
+
+- **Nested constructor patterns were never tested** (`lowerPatternTestMsil`):
+  the `PConstructor` arm emitted only the head `isinst`, never recursing into
+  field sub-patterns, so `Ok(None)` matched any `Ok(..)` — a `match` listing
+  `Ok(None)` before `Ok(Some(x))` swallowed every `Ok(Some(..))` (and leaked
+  the extracted payload).  Fixed with `patternIsRefutableMsil` +
+  `testCaseFieldMsil`.  This was the real `lockNeedsRestore` /
+  `findWorkspaceRoot` blocker (the `Ok(Some(ws))` workspace-root parse).
+- **Return/val hint leaked into intermediate statements**
+  (`lowerStmtsExprFromMsil`): the block-level return-type hint applied to every
+  statement, so `curName = Some(s)` in a `Result[LockFile,_]` function built
+  `Option_Some<LockFile>`.  Intermediate statements now run with a cleared hint;
+  LB bindings use annotation-scoped hints (`pushAnnoHintTyArgs`).
+- **`String.split` / `newListWithCapacity` / `List.clear`** had no intrinsic →
+  erased/`unsupported method` panics.  `Std.String.split` is now pure-Lyric
+  (indexOf/substring, backend-agnostic); `newListWithCapacity` builds the
+  concrete list; `.clear()` routes through non-generic `IList.Clear()`.
+- **Alias-qualified (`Str.split`) and type-associated (`IOError.message`)
+  calls** parsed as `EMember` mis-routed to value method-dispatch; resolved via
+  `pkgImportAliases` and an imported-qualified (`<imp>.<recv>.<member>`)
+  fallback.
+- **Method-sig param count written as a single byte** (`build*MethodSig`):
+  ECMA-335 §II.23.2.1 requires a compressed int.  `CodegenCtx`'s 171-param
+  record ctor had a malformed signature → `TypeLoadException: The signature is
+  incorrect` on every self-emitted compile.  Now `writeCompressedInt`.
+
 ### Remaining cascade (open)
 
-With (1)–(7) the self-emitted compiler builds `examples/rbac` past manifest
-parse, `Std.File`, `Std.Time`, and `Std.Path`, and currently stops at a
-`match not exhaustive` fall-through panic in `Lyric.Cli.lockNeedsRestore`
-(`match` on `Option[Workspace.WorkspaceContext]`) — i.e. that cross-package
-generic match still mis-dispatches for a record type argument, despite the enum
-case working.  More such cases are expected; each is the same class of
-cross-package generic-ABI consistency bug and must be driven out the same way.
+With the above landed, the self-emitted compiler **parses and runs deep into
+compilation** of the corpus and now stops at a `match not exhaustive` panic in
+`Lyric.Parser.parseParam`: `val dflt = match tryEatPunct(st, Eq) { case Some(_)
+-> Some(parseExpr(st)); case None -> None }` builds the `None` as
+`Option_None<object>` (the bare-`None` arm has no payload to infer `T` from), so
+the following `match dflt` (typed `Option<Expr>`) fails generic invariance.
+
+This is a self-hosted-emitter **type-inference gap** distinct from the suffix
+ABI: a bare nullary case in a match arm (or any construction with no annotation,
+return, or call-arg hint) erases its type argument.  Two fixes were attempted
+and **reverted** because the self-hosted emitter is currently fragile here:
+
+1. A codegen two-phase / hint-inference scheme in `lowerMatchExprMsil` (infer
+   the bare-`None` arm's `T` from a sibling `Some(e)` arm) — broke the parser
+   (mis-typed `None` in parser loops → corruption / OOM).
+2. The source workaround `val dflt: Option[Expr] = …` — adding the annotation
+   made `parseParam` mis-emit and **corrupted the whole `Lyric.Parser` DLL's
+   metadata** (header-parse `P0020` failures on every input), implicating a
+   self-hosted-emitter bug in emitting an in-bundle `Option<LocalType>`
+   (`Option_None<Expr>`) TypeSpec/MemberRef within a function.
+
+So the next blocker is genuinely in the emitter's generic-construction /
+in-bundle-TypeSpec path, not just inference — it needs dedicated, careful work
+(every change validated by re-minting and running the corpus, since a malformed
+metadata row silently corrupts an entire DLL).  More bare-`None`-class sites are
+expected behind it; each is the same erasure/ABI class.
 
 ### Atomicity (why none of this is landed)
 
