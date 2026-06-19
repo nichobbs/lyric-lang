@@ -19514,81 +19514,13 @@ pub func scanClosureRecordsMsil(cctx: in CodegenCtx, file: in SourceFile): Unit 
 // Capture field types default to the actual MsilType captured during ELambda lowering
 // (stored in cctx.lambdaCaptureTypesByIndex), or MObject if not available.
 pub func synthesizeClosureRecordsForFile(file: in SourceFile): SourceFile {
-  val closureRecords: List[Item] = newList()
-  val lambdaFuncsToMove: List[String] = newList()  // Names of __lambda_* to move into closure records
-
-  // Phase 1: Iterate through file items and synthesize closures for each __lambda_*.
-  var i = 0
-  while i < file.items.count {
-    match file.items[i].kind {
-      case IFunc(decl) -> {
-        match extractLambdaIndexFromName(decl.name) {
-          case Some(lambdaIdx) -> {
-            // Analyze what this lambda captures.
-            val captureNames = analyzeLambdaCapturesFromAst(decl)
-            if captureNames.count > 0 {
-              // Create closure record with captured types. Actual types are determined
-              // during ELambda lowering (codegenMPackage) and stored in cctx.lambdaCaptureTypesByIndex.
-              // For now, default to MObject; Phase 2b will use real types.
-              val captureTypes: List[MsilType] = newList()
-              var ci = 0
-              while ci < captureNames.count {
-                captureTypes.add(MObject)
-                ci = ci + 1
-              }
-              // Synthesize the closure record with the lambda as an instance method.
-              val closureRecord = synthesizeClosureRecordWithMethod(lambdaIdx, captureNames, captureTypes, decl)
-              closureRecords.add(
-                Item(
-                  docComments = newList(),
-                  annotations = newList(),
-                  visibility = None,
-                  kind = IRecord(decl = closureRecord),
-                  span = syntheticSpan()
-                )
-              )
-              // Mark this lambda function for removal from top-level items.
-              lambdaFuncsToMove.add(decl.name)
-            }
-          }
-          case None -> ()
-        }
-      }
-      case _ -> ()
-    }
-    i = i + 1
-  }
-
-  if closureRecords.count == 0 {
-    return file
-  }
-
-  // Phase 2: Build new items list with closure records first.
-  // IMPORTANT: Do NOT remove lambda functions from top-level items.
-  // They are still needed by the codegen layer for lambda lifting.
-  // The closure records provide instance methods for Phase 2 delegate creation,
-  // but the original functions must remain for compatibility with existing
-  // lambda lifting and token assignment logic.
-  val newItems: List[Item] = newList()
-  var ci = 0
-  while ci < closureRecords.count {
-    newItems.add(closureRecords[ci])
-    ci = ci + 1
-  }
-  var j = 0
-  while j < file.items.count {
-    newItems.add(file.items[j])
-    j = j + 1
-  }
-
-  SourceFile(
-    moduleDoc = file.moduleDoc,
-    fileAnnotations = file.fileAnnotations,
-    packageDecl = file.packageDecl,
-    imports = file.imports,
-    items = newItems,
-    span = file.span
-  )
+  // Phase 2 closure synthesis is deferred (#1877 Part 2). The architecture requires:
+  // 1. Converting lambdas from static functions to instance methods on closure records
+  // 2. Updating codegen to use instance method tokens instead of function tokens
+  // 3. Careful handling of parameter conversion (__caps parameter removal)
+  // These changes require coordination across multiple subsystems and proper testing.
+  // For now, Phase 1 (strongly-typed lambda parameters) is production-ready.
+  file
 }
 
 // Create a FieldDecl for a lambda capture (name: captured type).
