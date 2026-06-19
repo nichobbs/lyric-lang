@@ -22245,19 +22245,24 @@ func registerStdlibFunc(cctx: in CodegenCtx, packageName: in String, hostRefRow:
   val fqn = packageName + "." + fn.name
   val arityKey = fqn + "/" + toString(fn.params.count)
 
-  // F#-built producer: a `Unit`/`Never` generic ARGUMENT encodes as
-  // System.ValueTuple at value position (xrefUnitArgsToValueTuple), so this
-  // cross-package reference byte-matches `Result[Unit, E]` / `Option[Unit]`
-  // returns and binds (D-progress-469 facet 3).  In-bundle definitions keep
-  // the object-argument representation, so they are untouched.
+  // A `Unit`/`Never` generic ARGUMENT in a self-hosted-emitted stdlib is encoded
+  // as `object` end-to-end (the def's MethodDef, the case ctor, and match all
+  // agree on the object representation — see `xrefUnitArgsToValueTuple`'s note).
+  // A cross-package reference must therefore ALSO encode `Result[Unit, E]` /
+  // `Option[Unit]` with an `object` argument to byte-match the self-emitted
+  // producer; applying the F#-era `ValueTuple` rewrite here yielded
+  // `Result`2<ValueTuple, E>` refs that failed to bind against the self-hosted
+  // `Result`2<object, E>` definition (ILC "missing method").  The rewrite was a
+  // shim for consuming the F#-built stdlib; under a self-hosted stdlib it is
+  // wrong, so resolve types directly.
   val paramTypes: List[MsilType] = newList()
   var pi = 0
   while pi < fn.params.count {
-    paramTypes.add(xrefUnitArgsToValueTuple(cctx, typeExprToMsilCtx(cctx, fn.params[pi].ty, packageName)))
+    paramTypes.add(typeExprToMsilCtx(cctx, fn.params[pi].ty, packageName))
     pi = pi + 1
   }
   val retType = match fn.ret {
-    case Some(te) -> xrefUnitArgsToValueTuple(cctx, typeExprToMsilCtx(cctx, te, packageName))
+    case Some(te) -> typeExprToMsilCtx(cctx, te, packageName)
     case None -> MVoid
   }
   val funcSig = buildStaticMethodSigWithCtx(byrefWrapSigTypes(fn.params, paramTypes), retType, cctx.lctx)
