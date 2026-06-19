@@ -19588,6 +19588,7 @@ func makeClosureField(name: String, ty: TypeExpr): FieldDecl {
     isMutable = false,
     name = name,
     ty = ty,
+    dflt = None,
     span = syntheticSpan()
   )
 }
