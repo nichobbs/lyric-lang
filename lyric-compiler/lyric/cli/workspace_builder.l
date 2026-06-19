@@ -10,7 +10,7 @@
 //! This ensures that `lyric build` in a workspace automatically builds all
 //! transitive dependencies in correct order, eliminating the manual burden
 //! of building dependencies upfront.
-package Lyric.Cli
+package Lyric.Cli.Build
 
 import Std.Core
 import Std.Collections
@@ -22,6 +22,7 @@ import Std.Errors
 import Lyric.Manifest as Mf
 import Lyric.Workspace as Ws
 import Lyric.Emitter as Emitter
+import Lyric.Cli.Shared
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public API

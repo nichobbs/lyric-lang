@@ -68,7 +68,7 @@
 //!     pub func readFromFile(path: in String): Option[String]
 //!     pub func diffContracts(oldJson: in String, newJson: in String): List[String]
 //!     pub func hasBreakingChanges(entries: in List[String]): Bool
-package Lyric.Cli
+package Lyric.Cli.Shared
 
 import Std.Core
 import Std.Collections
@@ -88,18 +88,18 @@ import Lyric.Lockfile as LF
 import Lyric.Discovery as Disc
 import Lyric.Emitter as Emitter
 
-func VERSION(): String {
+pub func VERSION(): String {
   "0.1.0"
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Helpers
 // ─────────────────────────────────────────────────────────────────────────────
-func printErr(message: in String): Unit {
+pub func printErr(message: in String): Unit {
   Console.error(message)
 }
 
-func printDiag(d: in Diagnostic): Unit {
+pub func printDiag(d: in Diagnostic): Unit {
   val sev = match d.severity { case DiagError -> "error"; case DiagWarning -> "warning" }
   printErr(
     d.code + " " + sev + " [" + toString(d.span.startPos.line) + ":" + toString(d.span.startPos.column) + "]: " +
@@ -110,7 +110,7 @@ func printDiag(d: in Diagnostic): Unit {
 // Single source of truth for the help text, grouped by workflow so it stays
 // scannable.  `printUsage` writes it to stderr (the error/no-args paths);
 // `lyric --help` writes the same text to stdout and exits 0.
-func usageText(): String {
+pub func usageText(): String {
   "Usage: lyric [command] [args]\n" + "\n" + "  Run `lyric` with no command inside a project to build it.\n" + "\n" +
     "Project:\n" +
     "  lyric init    [<dir>] [--name <Name>] [--lib] [--force]\n" +
@@ -176,14 +176,14 @@ func usageText(): String {
     "  lint: L001-L005 style checks. --error-on-warning exits 1 on warnings."
 }
 
-func printUsage(): Unit {
+pub func printUsage(): Unit {
   printErr(usageText())
 }
 
 // Resolve the manifest a manifest-consuming command should use: an explicit
 // --manifest wins; otherwise discover the nearest lyric.toml by walking up
 // from the current directory (the project-aware default).
-func discoverManifest(explicit: in Option[String]): Option[String] {
+pub func discoverManifest(explicit: in Option[String]): Option[String] {
   match explicit {
     case Some(p) -> Some(value = p)
     case None -> Disc.findNearestManifest(Environment.currentDirectory())
@@ -197,7 +197,7 @@ func discoverManifest(explicit: in Option[String]): Option[String] {
 // lock read/parse failure so a fresh restore corrects a corrupt lock.  The
 // lock is resolved at the workspace root when one is found, else beside the
 // manifest, matching `runRestore`'s own lock placement.
-func lockNeedsRestore(mfPath: in String, manifest: in Manifest): Bool {
+pub func lockNeedsRestore(mfPath: in String, manifest: in Manifest): Bool {
   if manifest.deps.count == 0 {
     return false
   }
@@ -229,7 +229,7 @@ func lockNeedsRestore(mfPath: in String, manifest: in Manifest): Bool {
 }
 
 // Return the stem of a filename (basename without final extension).
-func stemOf(base: in String, extLen: in Int): String {
+pub func stemOf(base: in String, extLen: in Int): String {
   val n = base.length
   if n > extLen {
     base.substring(0, n - extLen)
@@ -241,7 +241,7 @@ func stemOf(base: in String, extLen: in Int): String {
 // Return the output file extension for a given target and build kind.
 // For Dotnet: ".dll" if kind="lib" (default), ".exe" if kind="exe"
 // For Jvm: ".jar" (kind is currently a no-op)
-func outputExt(target: in Emitter.CompileTarget, kind: in String): String {
+pub func outputExt(target: in Emitter.CompileTarget, kind: in String): String {
   match target {
     case Emitter.Dotnet -> {
       if kind == "exe" {
@@ -255,7 +255,7 @@ func outputExt(target: in Emitter.CompileTarget, kind: in String): String {
 }
 
 // Return the build kind from a manifest's [build] section, defaulting to "lib".
-func getBuildKind(m: in Mf.Manifest): String {
+pub func getBuildKind(m: in Mf.Manifest): String {
   match m.build {
     case Some(section) -> section.kind
     case None -> "lib"
@@ -269,7 +269,7 @@ func getBuildKind(m: in Mf.Manifest): String {
 // so they're maintained in one place (#1093).  `extra` is inserted at
 // the end of the `runtimeOptions` block; pass an empty string for the
 // minimal form, or the comma-prefixed `additionalProbingPaths` section.
-func runtimeConfigJson(extra: in String): String {
+pub func runtimeConfigJson(extra: in String): String {
   "{\n" + "  \"runtimeOptions\": {\n" + "    \"tfm\": \"net10.0\",\n" + "    \"framework\": {\n" +
     "      \"name\": \"Microsoft.NETCore.App\",\n" +
     "      \"version\": \"10.0.0\"\n" +
@@ -283,7 +283,7 @@ func runtimeConfigJson(extra: in String): String {
 // Write a minimal runtimeconfig.json next to `dllPath` so `dotnet exec`
 // resolves the right runtime.  Failures are reported as warnings, not
 // hard errors, because the DLL is already written at this point.
-func writeRuntimeConfig(dllPath: in String): Unit {
+pub func writeRuntimeConfig(dllPath: in String): Unit {
   val dir = Path.dirname(dllPath)
   val base = stemOf(Path.basename(dllPath), 4)  // strip ".dll"
   val cfgPath = Path.join(dir, base + ".runtimeconfig.json")
@@ -297,7 +297,7 @@ func writeRuntimeConfig(dllPath: in String): Unit {
 // Like writeRuntimeConfig but includes additionalProbingPaths in the JSON so
 // that `dotnet exec` can locate referenced DLLs (e.g. Lyric.Stdlib.Testing)
 // that live in dependency bin directories rather than the output directory.
-func writeRuntimeConfigWithProbing(dllPath: in String, probingPaths: in List[String]): Unit {
+pub func writeRuntimeConfigWithProbing(dllPath: in String, probingPaths: in List[String]): Unit {
   val dir = Path.dirname(dllPath)
   val base = stemOf(Path.basename(dllPath), 4)  // strip ".dll"
   val cfgPath = Path.join(dir, base + ".runtimeconfig.json")
@@ -327,13 +327,13 @@ func writeRuntimeConfigWithProbing(dllPath: in String, probingPaths: in List[Str
 }
 
 // True when `dir` holds the fully-compiled stdlib bundle.
-func dirHasCompiledStdlib(dir: in String): Bool {
+pub func dirHasCompiledStdlib(dir: in String): Bool {
   dir.length > 0 and File.fileExists(Path.join(dir, "Lyric.Stdlib.dll"))
 }
 
 // Walk up from `start` (max 32 hops) looking for `<dir>/<rel>` that holds
 // the compiled stdlib bundle; returns that directory or "".
-func walkUpForCompiledStdlib(start: in String, rel: in String): String {
+pub func walkUpForCompiledStdlib(start: in String, rel: in String): String {
   if start.length == 0 {
     return ""
   }
@@ -368,7 +368,7 @@ func walkUpForCompiledStdlib(start: in String, rel: in String): String {
 //   4. walk up (appBase, cwd) for .bootstrap/stage1   — dev bootstrap output
 //   5. walk up (appBase, cwd) for lyric-stdlib/bin     — dev manifest build
 // Returns "" when no candidate holds `Lyric.Stdlib.dll`.
-func findCompiledLibDir(): String {
+pub func findCompiledLibDir(): String {
   val env = Environment.getVarOrDefault("LYRIC_STDLIB_BIN", "")
   if dirHasCompiledStdlib(env) {
     return env
@@ -414,7 +414,7 @@ func findCompiledLibDir(): String {
 // non-fatal — the run then surfaces the original assembly-load error.
 // Always overwrites existing DLLs so stale copies from previous runs are
 // replaced when the stdlib is rebuilt.
-func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
+pub func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
   if srcDir.length == 0 {
     return
   }
@@ -447,7 +447,7 @@ func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
 // so the referenced DLL must sit next to the consumer for `dotnet exec` to
 // load it.  Best-effort: failures are non-fatal (the run then surfaces the
 // original load error).
-func copyRestoredDepDlls(outPath: in String, restoredDlls: in List[String]): Unit {
+pub func copyRestoredDepDlls(outPath: in String, restoredDlls: in List[String]): Unit {
   val destDir = Path.dirname(outPath)
   var i = 0
   while i < restoredDlls.count {

@@ -1,4 +1,4 @@
-package Lyric.Cli
+package Lyric.Cli.Quality
 
 import Std.Core
 import Std.Collections
@@ -10,6 +10,8 @@ import Std.Environment as Environment
 import Lyric.Manifest as Mf
 import Lyric.Fmt as Fmt
 import Lyric.Discovery as Disc
+import Lyric.Cli.Shared
+import Lyric.Cli.Build
 
 // Returns true when any op in the CONTEXT-window around `pos` is a change (not equal).
 func isInHunk(pos: in Int, tags: in List[Int], opCnt: in Int, context: in Int): Bool {
@@ -181,7 +183,7 @@ func diffLinesUnified(aPath: in String, aText: in String, bText: in String): Str
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. Fmt command
 // ─────────────────────────────────────────────────────────────────────────────
-func cmdFmt(argv: in slice[String]): Int {
+pub func cmdFmt(argv: in slice[String]): Int {
   var checkMode = false
   var writeMode = false
   var stdinMode = false

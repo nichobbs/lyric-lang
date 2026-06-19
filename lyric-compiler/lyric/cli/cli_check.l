@@ -1,4 +1,4 @@
-package Lyric.Cli
+package Lyric.Cli.Build
 
 import Std.Core
 import Std.Collections
@@ -11,11 +11,12 @@ import Lyric.Manifest as Mf
 import Lyric.Lexer
 import Lyric.Emitter as Emitter
 import Lyric.Discovery as Disc
+import Lyric.Cli.Shared
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §11f. Check command — type-check without producing a usable output artifact
 // ─────────────────────────────────────────────────────────────────────────────
-func cmdCheck(argv: in slice[String]): Int {
+pub func cmdCheck(argv: in slice[String]): Int {
   var manifestArg: Option[String] = None
   var targetJvm = false
   val positional: List[String] = newList()

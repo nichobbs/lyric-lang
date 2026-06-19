@@ -1,4 +1,4 @@
-package Lyric.Cli
+package Lyric.Cli.Doc
 
 import Std.Core
 import Std.Collections
@@ -13,6 +13,8 @@ import Lyric.Lexer
 import Lyric.ModeChecker as MC
 import Lyric.Verifier as Verifier
 import Lyric.Discovery as Disc
+import Lyric.Cli.Shared
+import Lyric.Cli.Build
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §7. Prove command
@@ -45,7 +47,7 @@ func jsonStr(s: in String): String {
   "\"" + jsonEsc(s) + "\""
 }
 
-func cmdProve(argv: in slice[String]): Int {
+pub func cmdProve(argv: in slice[String]): Int {
   var verbose = false
   var allowUnverified = false
   var jsonOutput = false

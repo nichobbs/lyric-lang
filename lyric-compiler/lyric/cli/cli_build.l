@@ -1,4 +1,4 @@
-package Lyric.Cli
+package Lyric.Cli.Build
 
 import Std.Core
 import Std.Collections
@@ -20,9 +20,11 @@ import Lyric.Emitter as Emitter
 import Lyric.CfgGate as CfgGate
 import Std.Time as Time
 import Std.Format as Format
+import Lyric.Cli.Shared
+import Lyric.Cli.Restore
 
 // Helper to extract build kind from manifest if available, defaulting to "lib".
-func readBuildKindFromManifest(manifestOpt: in Option[String]): String {
+pub func readBuildKindFromManifest(manifestOpt: in Option[String]): String {
   match manifestOpt {
     case None -> "lib"
     case Some(mfPath) -> {
@@ -43,7 +45,7 @@ func readBuildKindFromManifest(manifestOpt: in Option[String]): String {
 // Returns the exit code: 0 on success, 1 on error.
 // `manifestPath` is forwarded to the generator pre-processor so custom
 // @generate(Pkg.Name) annotations can resolve their generator DLLs.
-func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarget, manifestPath: in Option[String]): Int {
+pub func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarget, manifestPath: in Option[String]): Int {
   val buildStart = Time.now()
   var source = match File.readText(sourcePath) {
     case Ok(text) -> text
@@ -123,7 +125,7 @@ func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarge
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Build command
 // ─────────────────────────────────────────────────────────────────────────────
-func cmdBuild(argv: in slice[String]): Int {
+pub func cmdBuild(argv: in slice[String]): Int {
   var force = false
   var explicitOut: Option[String] = None
   var manifestArg: Option[String] = None
@@ -309,7 +311,7 @@ func cmdBuild(argv: in slice[String]): Int {
 // then produce a self-contained native binary via Lyric.Release.  The default
 // output is the source stem with no extension (an executable), next to the
 // source unless `-o` overrides it.
-func buildReleaseSingle(
+pub func buildReleaseSingle(
   sourcePath: in String,
   explicitOut: in Option[String],
   target: in CompileTarget,
@@ -355,7 +357,7 @@ func buildReleaseSingle(
 // self-contained native binary via Lyric.Release.  The entry package — the one
 // whose source declares `func main()` — is detected before the build so the
 // trampoline can be written immediately after `dotnet publish` finishes.
-func buildReleaseProject(
+pub func buildReleaseProject(
   mfPath: in String,
   explicitOut: in Option[String],
   target: in CompileTarget,
@@ -557,7 +559,7 @@ func buildReleaseProject(
 // its typed-lambda generics — the bundled `sortStrings` crashes at runtime.
 // This workaround can be retired once stage-2 self-hosting lands (cli.l
 // compiled exclusively by the self-hosted compiler).  Tracking: #2592 slice 4.
-func sortFileList(xs: in List[String]): List[String] {
+pub func sortFileList(xs: in List[String]): List[String] {
   val remaining: List[String] = newList()
   var c = 0
   while c < xs.count {
@@ -582,7 +584,7 @@ func sortFileList(xs: in List[String]): List[String] {
 
 // Project-mode build: reads [project.packages] from lyric.toml and
 // bundles every package's .l files into a single DLL.
-func buildProject(
+pub func buildProject(
   mfPath: in String,
   explicitOut: in Option[String],
   target: in CompileTarget,
@@ -970,7 +972,7 @@ func buildProject(
 // Compute the default output artifact path for a project build (no explicit -o).
 // Mirrors the extension logic in buildProject so runProjectOnce finds the file.
 // `buildKind` comes from the manifest's [build] section, default "lib".
-func projectBinOutputPath(
+pub func projectBinOutputPath(
   mfDir: in String, proj: in ProjectSection, target: in CompileTarget, buildKind: in String
 ): String {
   val ext = outputExt(target, buildKind)
@@ -981,7 +983,7 @@ func projectBinOutputPath(
 // Collect all .l source file paths from [project.packages] in a lyric.toml.
 // Returns (paths, hadFatal). A file entry yields itself; a directory entry yields
 // all .l files under it, sorted deterministically.
-func collectProjectSourcePaths(mfPath: in String): (List[String], Bool) {
+pub func collectProjectSourcePaths(mfPath: in String): (List[String], Bool) {
   val paths: List[String] = newList()
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text

@@ -1,4 +1,4 @@
-package Lyric.Cli
+package Lyric.Cli.Test
 
 import Std.Core
 import Std.Collections
@@ -15,6 +15,8 @@ import Lyric.Lexer
 import Lyric.Emitter as Emitter
 import Lyric.BenchSynth as BenchSynth
 import Lyric.Discovery as Disc
+import Lyric.Cli.Shared
+import Lyric.Cli.Build
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §11d. Bench command
@@ -114,7 +116,7 @@ func runBenchOnSource(
   }
 }
 
-func cmdBench(argv: in slice[String]): Int {
+pub func cmdBench(argv: in slice[String]): Int {
   var runsArg = 100
   var warmupArg = 5
   var filterArg = ""

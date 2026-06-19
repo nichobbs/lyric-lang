@@ -1,4 +1,4 @@
-package Lyric.Cli
+package Lyric.Cli.Restore
 
 import Std.Core
 import Std.Collections
@@ -16,11 +16,12 @@ import Lyric.Manifest as Mf
 import Lyric.Pack as Pack
 import Lyric.Workspace as Ws
 import Lyric.Discovery as Disc
+import Lyric.Cli.Shared
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §11. Publish command
 // ─────────────────────────────────────────────────────────────────────────────
-func cmdPublish(argv: in slice[String]): Int {
+pub func cmdPublish(argv: in slice[String]): Int {
   var manifestArg: Option[String] = None
   var dllOverride: Option[String] = None
   var outputDir: Option[String] = None
@@ -291,7 +292,7 @@ func cmdPublish(argv: in slice[String]): Int {
 // ─────────────────────────────────────────────────────────────────────────────
 // §11a. Search command
 // ─────────────────────────────────────────────────────────────────────────────
-func cmdSearch(argv: in slice[String]): Int {
+pub func cmdSearch(argv: in slice[String]): Int {
   val positional: List[String] = newList()
   var allMode = false
 

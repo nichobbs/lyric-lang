@@ -11,6 +11,12 @@ import Lyric.Lexer
 import Lyric.Discovery as Disc
 import Lyric.Lsp as Lsp
 import Lyric.CliSuggest as Suggest
+import Lyric.Cli.Shared
+import Lyric.Cli.Restore
+import Lyric.Cli.Build
+import Lyric.Cli.Quality
+import Lyric.Cli.Doc
+import Lyric.Cli.Test
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §12. Entry point

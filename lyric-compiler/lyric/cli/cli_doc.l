@@ -1,4 +1,4 @@
-package Lyric.Cli
+package Lyric.Cli.Doc
 
 import Std.Core
 import Std.Collections
@@ -11,11 +11,13 @@ import Lyric.Manifest as Mf
 import Lyric.Doc as Doc
 import Lyric.ContractMeta as Meta
 import Lyric.Discovery as Disc
+import Lyric.Cli.Shared
+import Lyric.Cli.Build
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §8. Doc command
 // ─────────────────────────────────────────────────────────────────────────────
-func cmdDoc(argv: in slice[String]): Int {
+pub func cmdDoc(argv: in slice[String]): Int {
   var explicitOut: Option[String] = None
   var manifestArg: Option[String] = None
   val positional: List[String] = newList()
@@ -162,7 +164,7 @@ func cmdDoc(argv: in slice[String]): Int {
 // ─────────────────────────────────────────────────────────────────────────────
 // §9. Public-api-diff command
 // ─────────────────────────────────────────────────────────────────────────────
-func cmdPublicApiDiff(argv: in slice[String]): Int {
+pub func cmdPublicApiDiff(argv: in slice[String]): Int {
   // Collect positional arguments (the two DLL paths).
   val positional: List[String] = newList()
   var i = 1

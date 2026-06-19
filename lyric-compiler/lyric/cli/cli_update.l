@@ -1,4 +1,4 @@
-package Lyric.Cli
+package Lyric.Cli.Restore
 
 import Std.Core
 import Std.Collections
@@ -12,11 +12,12 @@ import Lyric.Lexer
 import Lyric.Workspace as Ws
 import Lyric.Lockfile as LF
 import Lyric.Discovery as Disc
+import Lyric.Cli.Shared
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §11g. Update command — re-resolve all deps and rewrite lyric.lock
 // ─────────────────────────────────────────────────────────────────────────────
-func cmdUpdate(argv: in slice[String]): Int {
+pub func cmdUpdate(argv: in slice[String]): Int {
   var manifestArg: Option[String] = None
 
   var i = 1
@@ -70,7 +71,7 @@ func cmdUpdate(argv: in slice[String]): Int {
 // ─────────────────────────────────────────────────────────────────────────────
 // §11h. Deps command — print the resolved dependency tree from lyric.lock
 // ─────────────────────────────────────────────────────────────────────────────
-func cmdDeps(argv: in slice[String]): Int {
+pub func cmdDeps(argv: in slice[String]): Int {
   var manifestArg: Option[String] = None
 
   var i = 1

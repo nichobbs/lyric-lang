@@ -1,4 +1,4 @@
-package Lyric.Cli
+package Lyric.Cli.Test
 
 import Std.Core
 import Std.Collections
@@ -18,11 +18,13 @@ import Lyric.Repl as Repl
 import Lyric.Discovery as Disc
 import Lyric.CfgGate as CfgGate
 import Lyric.Workspace as Ws
+import Lyric.Cli.Shared
+import Lyric.Cli.Build
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §11b. Repl command
 // ─────────────────────────────────────────────────────────────────────────────
-func cmdRepl(argv: in slice[String]): Int {
+pub func cmdRepl(argv: in slice[String]): Int {
   Repl.runRepl(argv)
 }
 
@@ -86,7 +88,7 @@ func emitTestLinked(
   )
 }
 
-func cmdTest(argv: in slice[String]): Int {
+pub func cmdTest(argv: in slice[String]): Int {
   var filterArg: Option[String] = None
   var manifestArg: Option[String] = None
   var listMode = false

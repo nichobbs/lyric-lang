@@ -1,4 +1,4 @@
-package Lyric.Cli
+package Lyric.Cli.Quality
 
 import Std.Core
 import Std.Collections
@@ -11,11 +11,13 @@ import Lyric.Manifest as Mf
 import Lyric.Lexer
 import Lyric.Lint as Lint
 import Lyric.Discovery as Disc
+import Lyric.Cli.Shared
+import Lyric.Cli.Build
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §6. Lint command
 // ─────────────────────────────────────────────────────────────────────────────
-func cmdLint(argv: in slice[String]): Int {
+pub func cmdLint(argv: in slice[String]): Int {
   var errorOnWarning = false
   var manifestArg: Option[String] = None
   val positional: List[String] = newList()
