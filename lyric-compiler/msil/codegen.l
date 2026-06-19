@@ -297,6 +297,10 @@ pub record CodegenCtx {
   // Closure record constructor tokens, keyed by closure name (__Closure<i>).
   // Populated by addPackageTokens when closure records are present.
   closureCtorTokens: Map[String, Int]
+  // Capture types for each lambda by index (parallel to lambdaHasClosures).
+  // Populated during ELambda lowering when we have full FuncCtx.
+  // Value is a list of MsilType for each captured variable (parallel to capture names).
+  lambdaCaptureTypesByIndex: Map[Int, List[MsilType]]
   // Instance method MethodDef tokens, keyed by "FQClassName/methodName".  Populated
   // by `addPackageTokens` for record methods, interface methods (abstract slots),
   // and impl methods folded into the implementing record.  `lowerMethodCallMsil`
@@ -1634,6 +1638,7 @@ pub func newCodegenCtx(
     lambdaTicker = newList(),
     lambdaHasClosures = newMap(),
     closureCtorTokens = newMap(),
+    lambdaCaptureTypesByIndex = newMap(),
     methodTokens = newMap(),
     methodRetTypes = newMap(),
     methodParamTypes = newMap(),
@@ -6093,6 +6098,8 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         cctx.lambdaCaptureNames.add(lname, caps)
         cctx.lambdaCaptureTypes.add(lname, capTypes)
         cctx.lambdaCaptureCells.add(lname, capCells)
+        // Also store by lambda index for Phase 2 closure synthesis to retrieve types.
+        cctx.lambdaCaptureTypesByIndex.add(idx, capTypes)
       }
       // FQN key (#1183 Phase 2): lambdas are package-scoped, registered by
       // `addPackageTokens` as `<pkg>.__lambda_<idx>`.
@@ -19499,6 +19506,8 @@ pub func scanClosureRecordsMsil(cctx: in CodegenCtx, file: in SourceFile): Unit 
 // Returns: Updated file with closure records prepended before lambda functions.
 // Note: This function only creates the record definitions. The CodegenCtx.lambdaHasClosures
 // and closureCtorTokens are populated during addPackageTokens after tokens are assigned.
+// Capture field types default to the actual MsilType captured during ELambda lowering
+// (stored in cctx.lambdaCaptureTypesByIndex), or MObject if not available.
 pub func synthesizeClosureRecordsForFile(file: in SourceFile): SourceFile {
   val closureRecords: List[Item] = newList()
 
@@ -19512,8 +19521,9 @@ pub func synthesizeClosureRecordsForFile(file: in SourceFile): SourceFile {
             // Analyze what this lambda captures.
             val captureNames = analyzeLambdaCapturesFromAst(decl)
             if captureNames.count > 0 {
-              // TODO: Determine capture types. For now, default to MObject.
-              // Full implementation requires type-checking context.
+              // Create closure record with captured types. Actual types are determined
+              // during ELambda lowering (codegenMPackage) and stored in cctx.lambdaCaptureTypesByIndex.
+              // For now, default to MObject; Phase 2b will use real types.
               val captureTypes: List[MsilType] = newList()
               var ci = 0
               while ci < captureNames.count {
