@@ -10386,6 +10386,19 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                     hi = hi + 1
                   }
                 }
+                // A cross-package generic annotation (`var x: Option[String] =
+                // None`) lowers to MGenericInstByName; thread its args so a
+                // nullary case (`None`) instantiates at <String> rather than
+                // erasing to <Object> (which then fails the load-site castclass
+                // to Option`1<String> with an InvalidCastException).  Mirrors the
+                // LBVal arm above.
+                case MGenericInstByName(_, typeArgs) -> {
+                  var hi = 0
+                  while hi < typeArgs.count {
+                    fctx.contextHintTyArgs.add(typeArgs[hi])
+                    hi = hi + 1
+                  }
+                }
                 case _ -> {
                 }
               }
