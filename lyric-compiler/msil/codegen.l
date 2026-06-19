@@ -77,7 +77,6 @@ pub record CodegenCtx {
   tokExcGetMessage: Int  // Exception.get_Message(): string  instance HASTHIS
   tokObjGetType: Int  // Object.GetType(): Type  instance HASTHIS
   tokTypeGetName: Int  // Type.get_Name: string  instance HASTHIS
-  tokTypeGetFullName: Int  // Type.get_FullName: string (diagnostic)
   // List<object> via TypeSpec (for newList() and list operations)
   tokListObjCtor: Int  // List<object>::.ctor()  newobj
   tokListObjAdd: Int  // List<object>::Add(object): void  callvirt
@@ -706,17 +705,6 @@ pub func newCodegenCtx(
       "get_Name",
       "type_get_name",
       buildInstanceMethodSig(typeGetNamePs, MString)
-    )
-
-  // Type.get_FullName: string  (temporary, for non-exhaustive-match diagnostics)
-  val typeGetFullNamePs: List[MsilType] = newList()
-  val tokTypeGetFullName = 0x0A000000 +
-    ctxAddMemberRef(
-      lctx,
-      trType,
-      "get_FullName",
-      "type_get_fullname",
-      buildInstanceMethodSig(typeGetFullNamePs, MString)
     )
 
   // ── List<object> via TypeSpec ──────────────────────────────────────────────
@@ -1536,7 +1524,6 @@ pub func newCodegenCtx(
     tokExcGetMessage = tokExcGetMessage,
     tokObjGetType = tokObjGetType,
     tokTypeGetName = tokTypeGetName,
-    tokTypeGetFullName = tokTypeGetFullName,
     tokInvariantCulture = tokInvariantCulture,
     tokDateTimeToStringO = tokDateTimeToStringO,
     usDateTimeFormatO = usDateTimeFormatO,
@@ -7106,14 +7093,9 @@ func lowerMatchExprMsil(
   val matchErrMsg = "Msil.Codegen: match not exhaustive in " + fctx.className + "." + fctx.funcName + " scr=" +
     msilTypeKey(scrutTy) +
     " arms=" +
-    toString(arms.count) +
-    " rtt="
+    toString(arms.count)
   val msgTok = ctxInternUs(cctx.lctx, matchErrMsg)
   insns.add(MLdStr(token = msgTok))
-  emitLoadSlot(insns, scrutSlot, fctx.paramCount)
-  insns.add(MCallvirt(methodToken = cctx.tokObjGetType))
-  insns.add(MCallvirt(methodToken = cctx.tokTypeGetFullName))
-  insns.add(MCall(methodToken = cctx.tokConcat2))
   insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
   insns.add(MThrow)
 
