@@ -6192,32 +6192,37 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             }
             case _ -> {
               // Phase 1: Fall back to object[] for lambdas without closure records.
-              insns.add(MLdcI4(v = caps.count))
-              insns.add(MNewarr(typeToken = 0x01000000 + boxTypeRef(cctx, MObject)))
-              var capStI = 0
-              while capStI < caps.count {
-                insns.add(MDup)
-                insns.add(MLdcI4(v = capStI))
-                val capName = caps[capStI]
-                if fctx.captureNameToIndex.containsKey(capName) {
-                  val outerIdx = match mapGet(fctx.captureNameToIndex, capName) { case Some(n) -> n; case None -> 0 }
-                  emitLoadVarMsil(fctx, insns, 0)
-                  insns.add(MLdcI4(v = outerIdx))
-                  insns.add(MLdelemRef)
-                } else if nameListContains(capCells, capName) {
-                  match mapGet(fctx.hoistedCellSlot, capName) {
-                    case Some(s) -> emitLoadVarMsil(fctx, insns, s)
-                    case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.hoistedCellSlot")
+              if caps.count > 0 {
+                insns.add(MLdcI4(v = caps.count))
+                insns.add(MNewarr(typeToken = 0x01000000 + boxTypeRef(cctx, MObject)))
+                var capStI = 0
+                while capStI < caps.count {
+                  insns.add(MDup)
+                  insns.add(MLdcI4(v = capStI))
+                  val capName = caps[capStI]
+                  if fctx.captureNameToIndex.containsKey(capName) {
+                    val outerIdx = match mapGet(fctx.captureNameToIndex, capName) { case Some(n) -> n; case None -> 0 }
+                    emitLoadVarMsil(fctx, insns, 0)
+                    insns.add(MLdcI4(v = outerIdx))
+                    insns.add(MLdelemRef)
+                  } else if nameListContains(capCells, capName) {
+                    match mapGet(fctx.hoistedCellSlot, capName) {
+                      case Some(s) -> emitLoadVarMsil(fctx, insns, s)
+                      case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.hoistedCellSlot")
+                    }
+                  } else {
+                    match mapGet(fctx.slots, capName) {
+                      case Some(s) -> emitLoadVarMsil(fctx, insns, s)
+                      case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots")
+                    }
+                    boxIfNeededMsil(cctx, insns, capTypes[capStI])
                   }
-                } else {
-                  match mapGet(fctx.slots, capName) {
-                    case Some(s) -> emitLoadVarMsil(fctx, insns, s)
-                    case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots")
-                  }
-                  boxIfNeededMsil(cctx, insns, capTypes[capStI])
+                  insns.add(MStelemRef)
+                  capStI = capStI + 1
                 }
-                insns.add(MStelemRef)
-                capStI = capStI + 1
+              } else {
+                // Non-capturing lambda: delegate target is null (static method).
+                insns.add(MLdNull)
               }
             }
           }
