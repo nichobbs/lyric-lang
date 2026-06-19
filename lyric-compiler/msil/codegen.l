@@ -19406,6 +19406,30 @@ func extractLambdaIndexFromName(name: in String): Option[Int] {
   }
 }
 
+// Scan a file for __Closure<N> records and populate the CodegenCtx closure tracking maps.
+// Called during addPackageTokens to register which lambdas have closure records.
+pub func scanClosureRecordsMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IRecord(decl) -> {
+        if startsWith(decl.name, "__Closure") {
+          // Extract lambda index from __Closure<N>
+          val indexStr = substring(decl.name, 9, decl.name.length - 9)
+          match parseIntOpt(indexStr) {
+            case Some(idx) -> {
+              cctx.lambdaHasClosures.add(idx, true)
+            }
+            case None -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
 // Phase 2: Synthesize closure record types for capturing lambdas.
 // For each __lambda_* function in the file, analyze its captures and create
 // a corresponding __Closure<N> record with typed fields.

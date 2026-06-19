@@ -215,8 +215,11 @@ pub func compileToMsilWithVersion(
   // same-package types and functions.
   addPackageTokens(cctx, closureFile, pkgName)
 
+  // Phase 2: Register which lambdas have closure records.
+  scanClosureRecordsMsil(cctx, closureFile)
+
   // Walk the AST and produce the MSIL package IR.
-  val pkg = codegenMPackage(liftedFile, cctx)
+  val pkg = codegenMPackage(closureFile, cctx)
 
   // Determine the entry-point MethodDef token (0 = no entry point / library).
   val entryToken = resolveEntryToken(cctx)
@@ -767,6 +770,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     val lifted = liftLambdasMsil(weaved)
     val withClosures = synthesizeClosureRecordsForFile(lifted)
     addPackageTokens(cctx, withClosures, perPkgNames[li])
+    scanClosureRecordsMsil(cctx, withClosures)
     // Project-as-DLL embedding: each package's contract goes in its
     // own `Lyric.Contract.<Pkg>` resource so the in-process loader can
     // surface them per-package (matching the F# bundled-DLL layout).
@@ -774,8 +778,8 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     // the bundle; per-package versioning is out of scope for #1364 and
     // tracked separately.
     val bundleVer = if packageVersion.length == 0 { "0.0.0" } else { packageVersion }
-    embedLyricContract(cctx.lctx, lifted, "Lyric.Contract." + perPkgNames[li], bundleVer)
-    liftedFiles.add(lifted)
+    embedLyricContract(cctx.lctx, withClosures, "Lyric.Contract." + perPkgNames[li], bundleVer)
+    liftedFiles.add(withClosures)
     li = li + 1
   }
 
