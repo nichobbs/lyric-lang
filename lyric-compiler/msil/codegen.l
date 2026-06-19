@@ -19514,66 +19514,53 @@ pub func scanClosureRecordsMsil(cctx: in CodegenCtx, file: in SourceFile): Unit 
 // Capture field types default to the actual MsilType captured during ELambda lowering
 // (stored in cctx.lambdaCaptureTypesByIndex), or MObject if not available.
 pub func synthesizeClosureRecordsForFile(file: in SourceFile): SourceFile {
-  // Phase 2 closure synthesis: for each capturing lambda (__lambda_<i> with __caps param),
-  // create a __Closure<i> record containing the lambda as an instance method with
-  // parameters adjusted (remove __caps, inject self).
+  // Phase 2 closure synthesis: for each capturing lambda, create a __Closure<i> record
+  // containing the lambda as an instance method with parameters adjusted.
   //
-  // This requires one pass:
-  // 1. Find each __lambda_<i> with __caps
-  // 2. Create __Closure<i> with instance method (converted from the static lambda)
-  // 3. Remove the static lambda from top-level items (no duplication)
-  //
-  // Capture types are initially All MObject; they're refined during codegen's
-  // scanClosureRecordsMsil to match the actual types analyzed from the lambda body.
+  // Steps:
+  // 1. Scan for __lambda_<i> functions
+  // 2. For each, analyze its body to detect captured variables
+  // 3. If captures found, create __Closure<i> with instance method
+  // 4. Remove the static lambda (no duplication)
+  // 5. Keep non-capturing lambdas as static functions
   val closureRecords: List[RecordDecl] = newList()
   val nonLambdaItems: List[Item] = newList()
-  val lambdasByName: Map[String, FunctionDecl] = newMap()
 
-  // First pass: collect lambda functions by name for later conversion.
   var i = 0
   while i < file.items.count {
     val item = file.items[i]
     match item {
       case IFunc(f) -> {
         if f.name.startsWith("__lambda_") {
-          lambdasByName.put(f.name, f)
-        }
-      }
-      case _ -> {}
-    }
-    i = i + 1
-  }
+          // Analyze the lambda body to detect captures.
+          val captures = analyzeLambdaCapturesFromAst(f)
 
-  // Second pass: process items, synthesizing closure records for capturing lambdas.
-  i = 0
-  while i < file.items.count {
-    val item = file.items[i]
-    match item {
-      case IFunc(f) -> {
-        // Check if this is a capturing lambda (__lambda_<i> with __caps param).
-        if f.name.startsWith("__lambda_") and f.params.count > 0 and f.params[0].name == "__caps" {
-          // Extract lambda index.
-          val nameWithoutPrefix = f.name.slice("__lambda_".length, f.name.length)
-          match tryFromString(nameWithoutPrefix) {
-            case Some(idx) -> {
-              // Convert the static lambda function to an instance method in a closure record.
-              // Start with an empty capture list (types refined during codegen).
-              val closureRec = synthesizeClosureRecordWithMethod(
-                lambdaIdx = idx,
-                capNames = newList(),
-                capTypes = newList(),
-                lambdaFunc = f
-              )
-              closureRecords.add(closureRec)
-              // Do NOT add the static lambda to nonLambdaItems; it's now an instance method.
+          if captures.count > 0 {
+            // This is a capturing lambda. Extract its index and create a closure record.
+            val nameWithoutPrefix = f.name.slice("__lambda_".length, f.name.length)
+            match tryFromString(nameWithoutPrefix) {
+              case Some(idx) -> {
+                // Create __Closure<idx> record with the lambda as an instance method.
+                val closureRec = synthesizeClosureRecordWithMethod(
+                  lambdaIdx = idx,
+                  capNames = captures,
+                  capTypes = newList(),  // Types refined during codegen
+                  lambdaFunc = f
+                )
+                closureRecords.add(closureRec)
+                // Do NOT add the static lambda to nonLambdaItems; it's now an instance method.
+              }
+              case None -> {
+                // Malformed lambda name; keep as-is.
+                nonLambdaItems.add(item)
+              }
             }
-            case None -> {
-              // Malformed lambda name; keep as-is.
-              nonLambdaItems.add(item)
-            }
+          } else {
+            // Non-capturing lambda; keep as-is.
+            nonLambdaItems.add(item)
           }
         } else {
-          // Keep non-capturing lambdas and regular functions.
+          // Regular function; keep as-is.
           nonLambdaItems.add(item)
         }
       }
@@ -19674,8 +19661,95 @@ func synthesizeClosureRecordWithMethod(
   }
 
   // Convert the lambda function to an instance method of the closure record.
-  // Remove the synthetic __caps parameter (slot 0) if it exists.
+  // Keep the __caps parameter but inject synthetic assignments at the beginning
+  // of the method body to bind each captured variable to `self.<fieldname>`.
+  // This allows the lambda body to reference captures by name without modification.
+
   val methodParams = removeLambdaCapsParameter(lambdaFunc.params)
+
+  // Create method body with synthetic assignments for captured variables.
+  // Add `val <capName> = self.<capName>` at the start of the body.
+  val adjustedBody = if capNames.count == 0 {
+    // No captures; body unchanged.
+    lambdaFunc.body
+  } else {
+    match lambdaFunc.body {
+      case Some(FBBlock(block)) -> {
+        // Prepend capture-binding statements to the block.
+        val synthStmts: List[Statement] = newList()
+        var ci = 0
+        while ci < capNames.count {
+          val capName = capNames[ci]
+          // Create: val <capName> = self.<capName>
+          val fieldAccess = Expr(
+            kind = EMember(
+              recv = Expr(kind = EPath(path = ModulePath(segments = newList() + "self", span = syntheticSpan())), span = syntheticSpan()),
+              field = capName
+            ),
+            span = syntheticSpan()
+          )
+          // Create a simple name pattern for the binding
+          val pattern = Pattern(
+            kind = PName(name = capName, isWildcard = false),
+            span = syntheticSpan()
+          )
+          val localBinding = LocalBinding(
+            kind = LBVal(pat = pattern, ty = None, init = fieldAccess)
+          )
+          val stmt = Statement(
+            kind = SLocal(binding = localBinding),
+            span = syntheticSpan()
+          )
+          synthStmts.add(stmt)
+          ci = ci + 1
+        }
+        // Add original statements.
+        ci = 0
+        while ci < block.statements.count {
+          synthStmts.add(block.statements[ci])
+          ci = ci + 1
+        }
+        // Create new block with synthetic + original statements.
+        Some(FBBlock(block = Block(statements = synthStmts, span = block.span)))
+      }
+      case Some(FBExpr(expr)) -> {
+        // For expression bodies, wrap in a block with capture bindings.
+        val synthStmts: List[Statement] = newList()
+        var ci = 0
+        while ci < capNames.count {
+          val capName = capNames[ci]
+          val fieldAccess = Expr(
+            kind = EMember(
+              recv = Expr(kind = EPath(path = ModulePath(segments = newList() + "self", span = syntheticSpan())), span = syntheticSpan()),
+              field = capName
+            ),
+            span = syntheticSpan()
+          )
+          val pattern = Pattern(
+            kind = PName(name = capName, isWildcard = false),
+            span = syntheticSpan()
+          )
+          val localBinding = LocalBinding(
+            kind = LBVal(pat = pattern, ty = None, init = fieldAccess)
+          )
+          val stmt = Statement(
+            kind = SLocal(binding = localBinding),
+            span = syntheticSpan()
+          )
+          synthStmts.add(stmt)
+          ci = ci + 1
+        }
+        // Add the original expression as the last statement.
+        val exprStmt = Statement(
+          kind = SExpr(expr = expr),
+          span = syntheticSpan()
+        )
+        synthStmts.add(exprStmt)
+        Some(FBBlock(block = Block(statements = synthStmts, span = syntheticSpan())))
+      }
+      case _ -> lambdaFunc.body
+    }
+  }
 
   val methodFunc = FunctionDecl(
     docComments = lambdaFunc.docComments,
@@ -19688,7 +19762,7 @@ func synthesizeClosureRecordWithMethod(
     ret = lambdaFunc.ret,
     whereClause = lambdaFunc.whereClause,
     contracts = lambdaFunc.contracts,
-    body = lambdaFunc.body,
+    body = adjustedBody,  // Body with capture-binding statements
     span = lambdaFunc.span
   )
 
