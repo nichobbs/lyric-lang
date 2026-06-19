@@ -112,6 +112,36 @@ pub func symTableIsExternType(tbl: in SymbolTable, id: in TypeId): Bool {
   false
 }
 
+// Check if an extern type is a delegate type by inspecting its clrName.
+// Delegates include System.Func, System.Action, System.Predicate, and
+// anything else that derives from System.Delegate.
+pub func symTableIsExternDelegateType(tbl: in SymbolTable, id: in TypeId): Bool {
+  var i = 0
+  while i < tbl.symbols.count {
+    match tbl.symbols[i].kind {
+      case DKExternType(tid, decl) -> {
+        if typeIdEq(tid, id) {
+          // Check if clrName matches known delegate patterns.
+          // Known patterns: System.Func, System.Action, System.Predicate,
+          // and other types that derive from System.Delegate.
+          val clr = decl.clrName
+          if clr.startsWith("System.Func") or
+             clr.startsWith("System.Action") or
+             clr.startsWith("System.Predicate") or
+             clr.startsWith("System.EventHandler") or
+             clr == "System.Delegate" {
+            return true
+          }
+          return false
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. SymbolTable — package-level symbol store (bootstrap: linear scan).
 // ─────────────────────────────────────────────────────────────────────────────

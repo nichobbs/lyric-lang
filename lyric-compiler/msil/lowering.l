@@ -2532,14 +2532,6 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
     )
   )
   val selfTypeDefRow = t.typeDefs.count
-  if simpleNameRec.indexOf("__Closure_") >= 0 {
-    println(
-      "DEBUG lowerMRecord recordUserTypeDefRow: namespace=" + r.namespace + " simpleNameRec=" + simpleNameRec + " sName=" +
-        toString(sName) +
-        " selfTypeDefRow=" +
-        toString(selfTypeDefRow)
-    )
-  }
   recordUserTypeDefRow(ctx, r.namespace, simpleNameRec, selfTypeDefRow)
   // Emit GenericParam rows for an in-bundle generic record (#2362).
   emitGenericParamRows(ctx, selfTypeDefRow, r.generics)
@@ -3634,21 +3626,9 @@ pub func findTypeDefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
   val sNs = internString(ctx.strings, ns)
   val sSN = internString(ctx.strings, simpleName)
   val t = ctx.tables
-  if fqn.indexOf("__Closure_") >= 0 {
-    println(
-      "DEBUG findTypeDefRowByName: fqn=" + fqn + " ns=" + ns + " simpleName=" + simpleName + " sNs=" + toString(sNs) +
-        " sSN=" +
-        toString(sSN)
-    )
-  }
   var i = 0
   while i < t.typeDefs.count {
     val td = t.typeDefs[i]
-    if fqn.indexOf("__Closure_") >= 0 {
-      println(
-        "  Checking TypeDef " + toString(i + 1) + ": ns=" + toString(td.typeNamespace) + " name=" + toString(td.typeName)
-      )
-    }
     if td.typeNamespace == sNs and td.typeName == sSN {
       return i + 1
     }
@@ -5312,12 +5292,6 @@ pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx, entryMethod
     }
     mi = mi + 1
   }
-  println(
-    "DEBUG: lowerMPackageWithCtx: entryMethodToken = " + toString(entryMethodToken) + " (row " +
-      toString(entryMethodToken - 0x06000000) +
-      "), actualMainRow = " +
-      toString(actualMainRow)
-  )
 
   val inp = AssemblerInput(
     entryPointToken = entryMethodToken,

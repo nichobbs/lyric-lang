@@ -1677,9 +1677,7 @@ func embedLyricContract(lctx: in LoweringCtx, file: in SourceFile, resourceName:
 // Resolve the bundle-wide entry-point MethodDef token.  Returns 0
 // (= library / no entry point) when no `main()` was registered.
 func resolveEntryToken(cctx: in CodegenCtx): Int {
-  println("DEBUG: resolveEntryToken: mainEntryToken count = " + toString(cctx.mainEntryToken.count))
   if cctx.mainEntryToken.count > 0 {
-    println("DEBUG: resolveEntryToken: mainEntryToken[0] = " + toString(cctx.mainEntryToken[0]))
     cctx.mainEntryToken[0]
   } else {
     0

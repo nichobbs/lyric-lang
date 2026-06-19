@@ -3214,9 +3214,14 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
   // `() -> Never` passed to `assertPanics(label, fn: in () -> Unit)`.
   // Parameter lists must still match positionally (typeEquiv keeps the
   // call ABI sound).
+  //
+  // A lambda can also satisfy a delegate-typed extern parameter (e.g.,
+  // System.Predicate<T>, System.Func<T,R>), enabling FFI delegate
+  // instantiation (#1877, docs/50).  Non-delegate extern types reject
+  // lambdas to prevent type-safety regressions (#3889).
   match unrefine(paramTy) {
     case TyUser(uid, _, _) -> {
-      if symTableIsExternType(tbl, uid) {
+      if symTableIsExternDelegateType(tbl, uid) {
         match unrefine(argTy) {
           case TyFunction(_, _, _) -> return true
           case _ -> ()
