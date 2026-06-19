@@ -7827,8 +7827,12 @@ func lowerPatternBindMsil(
         match castTy {
           case MGenericInst(_, _, typeArgs) -> insns.add(MCastclassGeneric(className = caseClass, typeArgs = typeArgs))
           case MGenericInstByName(_, typeArgs) -> insns.add(MCastclassGeneric(className = caseClassBt, typeArgs = typeArgs))
-          case _ -> {
-          }
+          // Non-generic union case: narrow the scrutinee from the union type to
+          // the concrete case class before storing into the case-typed castSlot.
+          // Omitting this stores the un-narrowed union value into a case-typed
+          // slot — the JIT accepts it unverified, but ILC / ilverify reject it
+          // ("found <Union>, expected <Union>_<Case>").
+          case _ -> insns.add(MCastclassByName(className = caseClass))
         }
         val castSlot = allocSlotMsil(fctx, "__cast_" + caseName + "_" + toString(fctx.slotTicker.count), castTy)
         emitStoreSlot(insns, castSlot, fctx.paramCount)
