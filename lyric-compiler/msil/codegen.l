@@ -19563,8 +19563,12 @@ pub func synthesizeClosureRecordsForFile(file: in SourceFile): SourceFile {
     return file
   }
 
-  // Phase 2: Build new items list, filtering out lambda functions that are now methods.
-  // Closure records must precede remaining lambda functions so they're type-registered first.
+  // Phase 2: Build new items list with closure records first.
+  // IMPORTANT: Do NOT remove lambda functions from top-level items.
+  // They are still needed by the codegen layer for lambda lifting.
+  // The closure records provide instance methods for Phase 2 delegate creation,
+  // but the original functions must remain for compatibility with existing
+  // lambda lifting and token assignment logic.
   val newItems: List[Item] = newList()
   var ci = 0
   while ci < closureRecords.count {
@@ -19573,24 +19577,7 @@ pub func synthesizeClosureRecordsForFile(file: in SourceFile): SourceFile {
   }
   var j = 0
   while j < file.items.count {
-    val item = file.items[j]
-    // Skip lambda functions that were moved into closure records.
-    var shouldSkip = false
-    var ki = 0
-    while ki < lambdaFuncsToMove.count {
-      match item.kind {
-        case IFunc(decl) -> {
-          if decl.name == lambdaFuncsToMove[ki] {
-            shouldSkip = true
-          }
-        }
-        case _ -> ()
-      }
-      ki = ki + 1
-    }
-    if not shouldSkip {
-      newItems.add(item)
-    }
+    newItems.add(file.items[j])
     j = j + 1
   }
 
