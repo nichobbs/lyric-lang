@@ -15,7 +15,6 @@ import Lyric.Cli.Shared
 import Lyric.Cli.Restore
 import Lyric.Cli.Build
 import Lyric.Cli.Quality
-import Lyric.Cli.Doc
 import Lyric.Cli.Test
 
 // ─────────────────────────────────────────────────────────────────────────────
