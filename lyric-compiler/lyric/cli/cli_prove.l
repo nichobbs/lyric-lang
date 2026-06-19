@@ -1,4 +1,4 @@
-package Lyric.Cli.Doc
+package Lyric.Cli.Prove
 
 import Std.Core
 import Std.Collections

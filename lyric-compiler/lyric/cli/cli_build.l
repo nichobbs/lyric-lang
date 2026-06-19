@@ -1041,3 +1041,49 @@ pub func collectProjectSourcePaths(mfPath: in String): (List[String], Bool) {
   };
   (paths, hadFatal)
 }
+
+// Internal (#2592 stage-2): emit a driver's transitive `Std.*` / compiler-package
+// import closure into per-package DLLs via the self-hosted emitter.  Lives here
+// (rather than the dispatcher) so `cli_main` need not import the heavy
+// `Lyric.Emitter` surface, keeping its emitted assembly's string heap small.
+// `--internal-perpackage-build <entry.l> <outDir> [--target jvm]`.
+pub func cmdInternalPerpackage(argv: in slice[String]): Int {
+  if argv.length < 3 {
+    printErr("usage: lyric --internal-perpackage-build <entry.l> <outDir> [--target jvm]")
+    return 1
+  }
+  val entryPath = argv[1]
+  val outDir = argv[2]
+  val tgt = if argv.length >= 5 and argv[3] == "--target" and argv[4] == "jvm" { Jvm } else { Dotnet }
+  match File.readText(entryPath) {
+    case Err(e) -> {
+      printErr("perpackage: cannot read " + entryPath + ": " + IOError.message(e))
+      1
+    }
+    case Ok(entrySrc) -> {
+      val res = Emitter.emitPerPackageClosure(entrySrc, outDir, tgt)
+      var hadError = false
+      for d in res.diagnostics.toArray() {
+        printDiag(d)
+        match d.severity {
+          case DiagError -> { hadError = true }
+          case DiagWarning -> ()
+        }
+      }
+      if hadError {
+        1
+      } else {
+        match res.outputPath {
+          case Some(_) -> {
+            Console.println("per-package stdlib emitted to " + outDir)
+            0
+          }
+          case None -> {
+            printErr("perpackage: emit failed")
+            1
+          }
+        }
+      }
+    }
+  }
+}

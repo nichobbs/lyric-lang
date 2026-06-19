@@ -6,16 +6,15 @@ import Std.Console as Console
 import Std.File as File
 import Std.Environment as Environment
 import Std.Errors
-import Lyric.Emitter as Emitter
-import Lyric.Lexer
 import Lyric.Discovery as Disc
-import Lyric.Lsp as Lsp
 import Lyric.CliSuggest as Suggest
 import Lyric.Cli.Shared
 import Lyric.Cli.Restore
 import Lyric.Cli.Build
 import Lyric.Cli.Quality
 import Lyric.Cli.Doc
+import Lyric.Cli.Prove
+import Lyric.Cli.Lsp
 import Lyric.Cli.Test
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -48,45 +47,7 @@ pub func main(argv: in slice[String]): Int {
   // emitter.  `--internal-perpackage-build <entry.l> <outDir> [--target jvm]`.
   // Not a user-facing command; used to produce the self-hosted stdlib layout.
   if cmd == "--internal-perpackage-build" {
-    if argv.length < 3 {
-      printErr("usage: lyric --internal-perpackage-build <entry.l> <outDir> [--target jvm]")
-      return 1
-    }
-    val entryPath = argv[1]
-    val outDir = argv[2]
-    val tgt = if argv.length >= 5 and argv[3] == "--target" and argv[4] == "jvm" { Jvm } else { Dotnet }
-    match File.readText(entryPath) {
-      case Err(e) -> {
-        printErr("perpackage: cannot read " + entryPath + ": " + IOError.message(e))
-        return 1
-      }
-      case Ok(entrySrc) -> {
-        val res = Emitter.emitPerPackageClosure(entrySrc, outDir, tgt)
-        var hadError = false
-        for d in res.diagnostics.toArray() {
-          printDiag(d)
-          match d.severity {
-            case DiagError -> {
-              hadError = true
-            }
-            case DiagWarning -> ()
-          }
-        }
-        if hadError {
-          return 1
-        }
-        match res.outputPath {
-          case Some(_) -> {
-            Console.println("per-package stdlib emitted to " + outDir)
-            return 0
-          }
-          case None -> {
-            printErr("perpackage: emit failed")
-            return 1
-          }
-        }
-      }
-    }
+    return cmdInternalPerpackage(argv)
   }
 
   if cmd == "--version" or cmd == "-v" {
@@ -184,12 +145,7 @@ pub func main(argv: in slice[String]): Int {
   }
 
   if cmd == "lsp" {
-    // Dispatch to the self-hosted LSP stdio loop in
-    // `lyric-compiler/lyric/lsp.l`.  No CLI args are consumed —
-    // the language server speaks the Language Server Protocol
-    // over stdin/stdout per LSP §3.0.
-    Lsp.lspRunLoop()
-    return 0
+    return cmdLsp()
   }
 
   printErr("unknown command: " + cmd)
