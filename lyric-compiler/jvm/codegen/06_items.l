@@ -890,7 +890,7 @@ func lowerProtectedMethod(
   LFunc(flags = flags, name = name, params = paramTypes, ret = retTy, insns = insns, maxStack = 0, maxLocals = 0)
 }
 
-func filterOutInjectedSelf(params: in List[Param]): List[Param] {
+func stripLeadingSelfParam(params: in List[Param]): List[Param] {
   val res: List[Param] = newList()
   var i = 0
   while i < params.count {
@@ -946,7 +946,7 @@ func lowerRecordMethod(
   )
   val insns: List[LInsn] = newList()
   val noExts: Map[String, String] = newMap()
-  val filteredParams = filterOutInjectedSelf(fn.params)
+  val filteredParams = stripLeadingSelfParam(fn.params)
   val paramTypes = holderAwareParamTypes(filteredParams, pkgName, true, typeParams, noExts)
   setupInstanceParamSlotsAndHolders(ctxSelf, insns, filteredParams, pkgName, typeParams)
   lowerInstanceMethodBody(ctxSelf, insns, body, retTy)
@@ -2188,7 +2188,7 @@ func registerInstanceSigErased(
   owner: in String,
   typeParams: in List[String],
 ): Unit {
-  val filteredParams = filterOutInjectedSelf(params)
+  val filteredParams = stripLeadingSelfParam(params)
   // Use holderAwareParamTypes so out/inout params register as JArray(elemTy) in the
   // descriptor, matching the emitted method and the call-site wrapping (#1763).
   val noExts: Map[String, String] = newMap()
