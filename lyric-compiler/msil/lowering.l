@@ -3513,6 +3513,27 @@ pub func findTypeDefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
     }
     i = i + 1
   }
+  // Arity-suffix fallback: a generic type's TypeDef carries a `` `N `` suffix
+  // (`Option`1`), but callers pass the plain dotted name (codegen maps are keyed
+  // plainly via `stripGenericArity`).  Probe the suffixed forms so a plain-name
+  // lookup still resolves the generic TypeDef.  Read-only `mapGet`.
+  var defArity = 1
+  while defArity <= 9 {
+    match mapGet(ctx.strings.entries, simpleName + "`" + toString(defArity)) {
+      case Some(suffOff) -> {
+        var dj = 0
+        while dj < t.typeDefs.count {
+          val td2 = t.typeDefs[dj]
+          if td2.typeNamespace == sNs and td2.typeName == suffOff {
+            return dj + 1
+          }
+          dj = dj + 1
+        }
+      }
+      case None -> ()
+    }
+    defArity = defArity + 1
+  }
   0
 }
 
@@ -3561,6 +3582,29 @@ pub func findTypeRefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
       return i + 1
     }
     i = i + 1
+  }
+  // Arity-suffix fallback (see `findTypeDefRowByName`): a cross-package generic
+  // type's TypeRef carries a `` `N `` suffix (`Option_Some`1`), but
+  // `MIsinstByName` / `MCastclassByName` / `MIsinstGeneric` pass the plain
+  // dotted case name.  Without this the lookup misses, the caller degrades to
+  // System.Object, and `isinst` unconditionally succeeds — breaking match
+  // dispatch on cross-package generic unions.  Read-only `mapGet`.
+  var refArity = 1
+  while refArity <= 9 {
+    match mapGet(ctx.strings.entries, simpleName + "`" + toString(refArity)) {
+      case Some(suffOff) -> {
+        var rj = 0
+        while rj < t.typeRefs.count {
+          val tr2 = t.typeRefs[rj]
+          if tr2.typeNamespace == sNs and tr2.typeName == suffOff {
+            return rj + 1
+          }
+          rj = rj + 1
+        }
+      }
+      case None -> ()
+    }
+    refArity = refArity + 1
   }
   0
 }

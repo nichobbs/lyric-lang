@@ -11741,6 +11741,17 @@ func emitExternTargetBody(
         pi = pi + 1
       }
       val retTy = match decl.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid }
+      // For the FFI/BCL MemberRef signature a nullable *reference* return
+      // (`String?`) is just the underlying reference type at the CLR level —
+      // nullability is an annotation, not a distinct type (`System.IO.Path.
+      // GetDirectoryName` returns `System.String`).  Without unwrapping, the
+      // `TNullable -> MObject` mapping degrades the MemberRef return to `object`
+      // and the call mis-binds with MissingMethodException.  The Lyric MethodDef
+      // return stays `object` (assignable from the reference type on `ret`).
+      val ffiRetTy = match decl.ret {
+        case Some(te) -> match te.kind { case TNullable(inner) -> typeExprToMsilCtx(cctx, inner, pkgName); case _ -> retTy }
+        case None -> MVoid
+      }
 
       // Phase 4: prefer the metadata type index over the prefix-based guard so
       // types from NuGet-restored assemblies (not `System.*` / `Lyric.*`) are
@@ -11843,6 +11854,28 @@ func emitExternTargetBody(
         }
       }
 
+      // Property access: an `@externTarget("Type.Member")` names a CLR property
+      // when the declaring type exposes a `get_<Member>` accessor rather than a
+      // plain method of that name.  Emit a call to the getter, with the getter's
+      // own static/instance calling convention (`System.DateTime.UtcNow` →
+      // `get_UtcNow()` static; `System.TimeSpan.TotalMilliseconds` →
+      // `get_TotalMilliseconds()` HASTHIS).  The F# bootstrap emitter resolved
+      // this via reflection; the metadata-direct reader does the same.  Falls
+      // back to the literal member (real method, or reference pack absent).
+      // Property getters take no value args, so the probe passes an empty list.
+      var emitMember = r.memberName
+      var emitIsStatic = r.isStatic
+      if not r.isCtor {
+        val noArgs: List[Mdr.SigType] = newList()
+        match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, resolvedFqn, "get_" + r.memberName, noArgs) {
+          case Some(gp) -> {
+            emitMember = "get_" + r.memberName
+            emitIsStatic = gp.sig.isStatic
+          }
+          case None -> ()
+        }
+      }
+
       // Build the method signature blob, encoding class-typed params/return
       // against their resolved TypeRefs.
       //
@@ -11860,9 +11893,9 @@ func emitExternTargetBody(
           MGenericInst(typeRefCode = tdrTypeRef(cctx.trTask1), headFqn = "System.Threading.Tasks.Task", typeArgs = taskArgs)
         }
       } else {
-        retTy
+        ffiRetTy
       }
-      val sig = if r.isStatic and not r.isCtor {
+      val sig = if emitIsStatic and not r.isCtor {
         buildFfiMethodSigCtx(cctx, paramTypes, bclRetTy, false)
       } else if r.isCtor {
         // .ctor: HASTHIS, void return, all params explicit.
@@ -11878,7 +11911,7 @@ func emitExternTargetBody(
         }
         buildFfiMethodSigCtx(cctx, instArgs, bclRetTy, true)
       }
-      val mrRow = ctxAddMemberRef(cctx.lctx, tRefRow, r.memberName, "ffi_" + target, sig)
+      val mrRow = ctxAddMemberRef(cctx.lctx, tRefRow, emitMember, "ffi_" + target, sig)
       val tok = 0x0A000000 + mrRow
 
       // Load every Lyric param in order.  For instance calls the
@@ -11897,7 +11930,7 @@ func emitExternTargetBody(
       }
       if r.isCtor {
         insns.add(MNewobj(ctorToken = tok))
-      } else if r.isStatic {
+      } else if emitIsStatic {
         insns.add(MCall(methodToken = tok))
       } else {
         insns.add(MCallvirt(methodToken = tok))
@@ -21750,10 +21783,16 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
     case IProtected(decl) -> decl.name
     case _ -> return
   }
+  val typeArity = match it.kind {
+    case IRecord(decl) -> genericNamesOf(decl.generics).count
+    case IUnion(decl) -> genericNamesOf(decl.generics).count
+    case _ -> 0
+  }
+  val typeRefName = if typeArity > 0 { typeName + "`" + toString(typeArity) } else { typeName }
   val typeFqn = packageName + "." + typeName
   val typeRefKey = packageName + "/" + typeFqn
   if not cctx.ffiTypeRefs.containsKey(typeRefKey) {
-    val row = ctxAddTypeRef(cctx.lctx, packageName, typeName, asmRefRow)
+    val row = ctxAddTypeRef(cctx.lctx, packageName, typeRefName, asmRefRow)
     cctx.ffiTypeRefs.add(typeRefKey, row)
   }
   registerTypeFqnCandidate(cctx, typeName, typeFqn)
@@ -21781,11 +21820,12 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
         }
         case None -> 0
       }
+      val caseArity = genericNamesOf(decl.generics).count
       var ci = 0
       while ci < decl.cases.count {
         val caseName = decl.cases[ci].name
         val ctorKey = packageName + "." + decl.name + "_" + caseName
-        val caseClassName = decl.name + "_" + caseName
+        val caseClassName = if caseArity > 0 { decl.name + "_" + caseName + "`" + toString(caseArity) } else { decl.name + "_" + caseName }
         val caseRefKey = packageName + "/" + ctorKey
         // Register case-class TypeRef so MIsinstByName can find it via
         // findTypeRefRowByName instead of falling back to System.Object.
@@ -21885,13 +21925,19 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
               case TRef(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
               case _ -> ""
             }
+            // Generic-parameter fields use MTypeVar(n); concrete fields use their
+            // declared MSIL type (e.g. `IoError(path: String, message: String)` →
+            // `.ctor(string, string)`) to match the producer's ctor MethodDef
+            // (`typeExprToMsilG` → `buildInstanceMethodSig`).  Erasing concrete
+            // fields to `object` here made the consumer's newobj MemberRef
+            // (`(object, object)`) diverge from the producer and fault at run time.
             val cpMsilTy: MsilType = if cpSeg.length > 0 {
               match mapGet(typeParamVarIdx, cpSeg) {
                 case Some(varIdx) -> MTypeVar(index = varIdx)
-                case None -> MObject
+                case None -> typeExprToMsilCtx(cctx, cpTy, packageName)
               }
             } else {
-              MObject
+              typeExprToMsilCtx(cctx, cpTy, packageName)
             }
             ctorParams2.add(cpMsilTy)
             cpi = cpi + 1
@@ -22167,19 +22213,22 @@ func registerStdlibFunc(cctx: in CodegenCtx, packageName: in String, hostRefRow:
   val fqn = packageName + "." + fn.name
   val arityKey = fqn + "/" + toString(fn.params.count)
 
-  // F#-built producer: a `Unit`/`Never` generic ARGUMENT encodes as
-  // System.ValueTuple at value position (xrefUnitArgsToValueTuple), so this
-  // cross-package reference byte-matches `Result[Unit, E]` / `Option[Unit]`
-  // returns and binds (D-progress-469 facet 3).  In-bundle definitions keep
-  // the object-argument representation, so they are untouched.
+  // A `Unit`/`Never` generic ARGUMENT is represented as `object` end-to-end by
+  // the self-hosted emitter — the self-built producer's MethodDef, its
+  // `Result_Ok`/`Option_Some` construction, and consumer pattern matches all
+  // agree on `object` at the `!0` slot.  (The earlier `xrefUnitArgsToValueTuple`
+  // lift here assumed an F#-built producer whose MethodDef encodes `Unit` as
+  // `System.ValueTuple`; against the self-built producer that lift makes the
+  // consumer's MemberRef diverge and the call faults at run time.)  Keeping
+  // `object` on both sides is what lets the self-hosted compiler reproduce.
   val paramTypes: List[MsilType] = newList()
   var pi = 0
   while pi < fn.params.count {
-    paramTypes.add(xrefUnitArgsToValueTuple(cctx, typeExprToMsilCtx(cctx, fn.params[pi].ty, packageName)))
+    paramTypes.add(typeExprToMsilCtx(cctx, fn.params[pi].ty, packageName))
     pi = pi + 1
   }
   val retType = match fn.ret {
-    case Some(te) -> xrefUnitArgsToValueTuple(cctx, typeExprToMsilCtx(cctx, te, packageName))
+    case Some(te) -> typeExprToMsilCtx(cctx, te, packageName)
     case None -> MVoid
   }
   val funcSig = buildStaticMethodSigWithCtx(byrefWrapSigTypes(fn.params, paramTypes), retType, cctx.lctx)
