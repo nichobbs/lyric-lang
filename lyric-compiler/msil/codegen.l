@@ -77,6 +77,7 @@ pub record CodegenCtx {
   tokExcGetMessage: Int  // Exception.get_Message(): string  instance HASTHIS
   tokObjGetType: Int  // Object.GetType(): Type  instance HASTHIS
   tokTypeGetName: Int  // Type.get_Name: string  instance HASTHIS
+  tokTypeGetFullName: Int  // Type.get_FullName: string (diagnostic)
   // List<object> via TypeSpec (for newList() and list operations)
   tokListObjCtor: Int  // List<object>::.ctor()  newobj
   tokListObjAdd: Int  // List<object>::Add(object): void  callvirt
@@ -94,6 +95,7 @@ pub record CodegenCtx {
   // implemented by every `List<T>` and `T[]`, so the cast and member calls bind
   // regardless of element type.
   tokIListCast: Int  // castclass System.Collections.IList (TypeRef token)
+  tokIListClear: Int  // IList.Clear(): void  callvirt
   tokIListGetItem: Int  // IList.get_Item(int32): object  callvirt
   tokICollGetCount: Int  // ICollection.get_Count(): int32  callvirt
   // String intrinsic members (instance HASTHIS)
@@ -349,6 +351,12 @@ pub record CodegenCtx {
   // `lowerBuiltinOrStaticCallMsil` can fall back to each imported package's
   // FQN-keyed funcs when a bare call doesn't match the current package.
   pkgImports: Map[String, List[String]]
+  // Per-package import aliases (`import Std.String as Str`).  Keyed by
+  // `<pkgName>/<alias>` → the real dotted package name (`Std.String`), so an
+  // alias-qualified call (`Str.split(..)`) parsed as `EMember(EPath["Str"], …)`
+  // can resolve to the free function `Std.String.split` instead of mis-routing
+  // to value method-dispatch.
+  pkgImportAliases: Map[String, String]
   // Cross-package union case lookup (#1183 codegen port).  Maps a union
   // case's simple name (e.g. "Some") to its FQN ctor key
   // (e.g. "Std.Core.Option$Some") so the construction site can resolve
@@ -672,7 +680,10 @@ pub func newCodegenCtx(
       buildInstanceMethodSig(excGetMsgPs, MString)
     )
 
-  // Object.GetType(): Type  instance HASTHIS
+  // Object.GetType(): Type  instance HASTHIS.  The return type is part of the
+  // MemberRef signature used for resolution, so it must be the concrete
+  // `System.Type` — encoding it as `object` produces an unresolvable
+  // `object GetType()` ref (MissingMethodException at first call).
   val objGetTypePs: List[MsilType] = newList()
   val tokObjGetType = 0x0A000000 +
     ctxAddMemberRef(
@@ -680,7 +691,10 @@ pub func newCodegenCtx(
       lctx.trObject,
       "GetType",
       "obj_gettype",
-      buildInstanceMethodSig(objGetTypePs, MObject)
+      buildInstanceMethodSig(
+        objGetTypePs,
+        MClassRef(typeRefCode = tdrTypeRef(trType), clrFqn = "System.Type")
+      )
     )
 
   // Type.get_Name: string  instance HASTHIS  (Type is reference type; return MString)
@@ -692,6 +706,17 @@ pub func newCodegenCtx(
       "get_Name",
       "type_get_name",
       buildInstanceMethodSig(typeGetNamePs, MString)
+    )
+
+  // Type.get_FullName: string  (temporary, for non-exhaustive-match diagnostics)
+  val typeGetFullNamePs: List[MsilType] = newList()
+  val tokTypeGetFullName = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trType,
+      "get_FullName",
+      "type_get_fullname",
+      buildInstanceMethodSig(typeGetFullNamePs, MString)
     )
 
   // ── List<object> via TypeSpec ──────────────────────────────────────────────
@@ -820,6 +845,18 @@ pub func newCodegenCtx(
       buildInstanceMethodSig(icollCntPs, MInt)
     )
   val tokIListCast = 0x01000000 + trIList
+  // Non-generic IList::Clear(): void — clears a list regardless of element type,
+  // so `xs.clear()` works whether `xs` is a concrete `List<Foo>` or an erased
+  // `List<object>` (mirrors the `.count` path through non-generic ICollection).
+  val iListClearPs: List[MsilType] = newList()
+  val tokIListClear = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trIList,
+      "Clear",
+      "ilist_clear",
+      buildInstanceMethodSig(iListClearPs, MVoid)
+    )
 
   // ── Non-generic IEnumerable / IEnumerator for the MExternEnumerable protocol ──
   val trIEnumerable = ctxAddTypeRef(lctx, "System.Collections", "IEnumerable", lctx.arRuntime)
@@ -1499,6 +1536,7 @@ pub func newCodegenCtx(
     tokExcGetMessage = tokExcGetMessage,
     tokObjGetType = tokObjGetType,
     tokTypeGetName = tokTypeGetName,
+    tokTypeGetFullName = tokTypeGetFullName,
     tokInvariantCulture = tokInvariantCulture,
     tokDateTimeToStringO = tokDateTimeToStringO,
     usDateTimeFormatO = usDateTimeFormatO,
@@ -1512,6 +1550,7 @@ pub func newCodegenCtx(
     tokListObjRemoveAt = tokListObjRemoveAt,
     tokListObjTypeSpec = 0x1B000000 + tsListObj,
     tokIListCast = tokIListCast,
+    tokIListClear = tokIListClear,
     tokIListGetItem = tokIListGetItem,
     tokICollGetCount = tokICollGetCount,
     tokDictObjCtor = tokDictObjCtor,
@@ -1592,6 +1631,7 @@ pub func newCodegenCtx(
     nextFieldDefRow = newList(),
     mainEntryToken = newList(),
     pkgImports = newMap(),
+    pkgImportAliases = newMap(),
     unionCaseCtorByName = newMap(),
     caseParentUnion = newMap(),
     typeFqnByName = newMap(),
@@ -1799,7 +1839,20 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
   var mi = 0
   while mi < file.imports.count {
     val imp = file.imports[mi]
-    importedDottedNames.add(joinSegsMsil(imp.path.segments, "."))
+    val impDotted = joinSegsMsil(imp.path.segments, ".")
+    importedDottedNames.add(impDotted)
+    // Record the `as Alias` rebinding so an alias-qualified free-function call
+    // (`Str.split(..)` for `import Std.String as Str`) resolves to the real
+    // package FQN in `lowerMethodCallMsil`'s static-call fast path.
+    match imp.asAlias {
+      case Some(al) -> {
+        val aliasKey = pkgName + "/" + al
+        if not cctx.pkgImportAliases.containsKey(aliasKey) {
+          cctx.pkgImportAliases.add(aliasKey, impDotted)
+        }
+      }
+      case None -> ()
+    }
     mi = mi + 1
   }
   cctx.pkgImports.add(pkgName, importedDottedNames)
@@ -4382,6 +4435,33 @@ func restoreHintTyArgs(fctx: in FuncCtx, saved: in List[MsilType]): Unit {
   }
 }
 
+// Establish a *fresh* hint scope for a local binding's initialiser from the
+// binding's annotation `annoTy`.  Unlike `pushRetHintTyArgs`, this ALWAYS
+// clears the current hint first — a local binding is its own construction
+// context, so a nested `None` / nullary case in its initialiser must read only
+// this binding's annotated type args, never an enclosing block's leaked
+// return-type hint.  When `annoTy` is non-generic the hint is cleared to empty
+// (the construction erases its args as it would with no surrounding context).
+// Returns the saved hint to pass to `restoreHintTyArgs`.
+func pushAnnoHintTyArgs(fctx: in FuncCtx, annoTy: in MsilType): List[MsilType] {
+  val saved: List[MsilType] = newList()
+  var i = 0
+  while i < fctx.contextHintTyArgs.count {
+    saved.add(fctx.contextHintTyArgs[i])
+    i = i + 1
+  }
+  while fctx.contextHintTyArgs.count > 0 {
+    fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+  }
+  val args = genericArgsOfMsil(annoTy)
+  var j = 0
+  while j < args.count {
+    fctx.contextHintTyArgs.add(args[j])
+    j = j + 1
+  }
+  saved
+}
+
 // Recover the parent union FQN for a case-class ctor key (#2363 Stage 4).
 // Case classes are named `Union_Case`; since `_` is a valid identifier char the
 // parent can't be recovered by splitting the key, so it is looked up in the
@@ -6417,12 +6497,20 @@ func lowerStmtsExprFromMsil(
     }
   }
   if deferIdx < 0 {
-    // No defer in [start..]: lower as a plain trailing-value block.
+    // No defer in [start..]: lower as a plain trailing-value block.  The
+    // construction hint (`contextHintTyArgs` — set by the caller from the
+    // function's declared return type, or a `val`/assignment target) belongs to
+    // the TRAILING value only.  Clearing it across the intermediate statements
+    // stops it leaking into an intermediate `x = Some(v)` / `f(None)` and
+    // building a wrong-typed generic value (e.g. `Option_Some<LockFile>` for a
+    // `curName = Some(s)` inside a function returning `Result[LockFile, …]`).
+    val savedBlockHint = pushAnnoHintTyArgs(fctx, MObject)
     var i = start
     while i < n - 1 {
       lowerStmtMsil(cctx, fctx, insns, stmts[i])
       i = i + 1
     }
+    restoreHintTyArgs(fctx, savedBlockHint)
     val last = stmts[n - 1]
     return match last.kind {
       case SExpr(e) -> lowerExprMsil(cctx, fctx, insns, e)
@@ -6437,12 +6525,16 @@ func lowerStmtsExprFromMsil(
     }
   }
   // Statements before the defer run normally; the rest produce the value inside
-  // a try/finally whose finally is the deferred block.
+  // a try/finally whose finally is the deferred block.  Clear the trailing hint
+  // across these intermediate statements (see the non-defer path above); the
+  // recursive call for the value-producing tail re-applies it to its own trailing.
+  val savedDeferHint = pushAnnoHintTyArgs(fctx, MObject)
   var k = start
   while k < deferIdx {
     lowerStmtMsil(cctx, fctx, insns, stmts[k])
     k = k + 1
   }
+  restoreHintTyArgs(fctx, savedDeferHint)
   val deferBody = match stmts[deferIdx].kind {
     case SDefer(b) -> b
     case _ -> panic("Msil.Codegen: lowerStmtsExprFromMsil: deferIdx points at non-SDefer statement (compiler bug)")
@@ -7014,9 +7106,14 @@ func lowerMatchExprMsil(
   val matchErrMsg = "Msil.Codegen: match not exhaustive in " + fctx.className + "." + fctx.funcName + " scr=" +
     msilTypeKey(scrutTy) +
     " arms=" +
-    toString(arms.count)
+    toString(arms.count) +
+    " rtt="
   val msgTok = ctxInternUs(cctx.lctx, matchErrMsg)
   insns.add(MLdStr(token = msgTok))
+  emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+  insns.add(MCallvirt(methodToken = cctx.tokObjGetType))
+  insns.add(MCallvirt(methodToken = cctx.tokTypeGetFullName))
+  insns.add(MCall(methodToken = cctx.tokConcat2))
   insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
   insns.add(MThrow)
 
@@ -7137,6 +7234,104 @@ func pickCaseFqnByScrutinee(
     }
   }
   pickCaseFqnByScope(cctx, fctx, candidates)
+}
+
+// True when a name resolves to a nullary union/enum case (so `case None ->`
+// and `Ok(None)`-style sub-patterns are refutable rather than plain binds).
+func nameIsNullaryCaseMsil(cctx: in CodegenCtx, fctx: in FuncCtx, name: in String): Bool {
+  cctx.recordCtorTokens.containsKey(fctx.pkgName + "." + name) or cctx.unionCaseCtorByName.containsKey(name) or
+    cctx.enumCaseOrdinals.containsKey(name)
+}
+
+// True when matching `pat` can fail at runtime (so the test phase must emit a
+// check).  Plain variable binds and wildcards are irrefutable; constructor /
+// literal / range / nullary-case sub-patterns are refutable.  Used to decide
+// whether a constructor field needs a recursive test (a nested `Ok(None)` must
+// not silently match an `Ok(Some(..))` — the historical test-phase gap that let
+// the first `Ok(..)` arm swallow every `Ok` value).
+func patternIsRefutableMsil(cctx: in CodegenCtx, fctx: in FuncCtx, pat: in Pattern): Bool {
+  match pat.kind {
+    case PWildcard -> false
+    case PBinding(name, innerOpt) -> {
+      match innerOpt {
+        case Some(inner) -> patternIsRefutableMsil(cctx, fctx, inner)
+        case None -> nameIsNullaryCaseMsil(cctx, fctx, name)
+      }
+    }
+    case PParen(inner) -> patternIsRefutableMsil(cctx, fctx, inner)
+    case PConstructor(_, _) -> true
+    case PLiteral(_) -> true
+    case PConstRef(_) -> true
+    case PRange(_, _, _) -> true
+    case PTypeTest(_, _) -> true
+    case PTuple(elems) -> {
+      var ti = 0
+      var anyRef = false
+      while ti < elems.count {
+        if patternIsRefutableMsil(cctx, fctx, elems[ti]) {
+          anyRef = true
+        }
+        ti = ti + 1
+      }
+      anyRef
+    }
+    case PRecord(_, fields, _) -> {
+      var ri = 0
+      var anyRefR = false
+      while ri < fields.count {
+        match fields[ri] {
+          case RPFNamed(_, subPat, _) -> {
+            if patternIsRefutableMsil(cctx, fctx, subPat) {
+              anyRefR = true
+            }
+          }
+          case RPFShort(_, _) -> ()
+        }
+        ri = ri + 1
+      }
+      anyRefR
+    }
+    // An or-pattern needs a runtime test (it fails when no alternative matches).
+    case POr(_) -> true
+    // A parse-error pattern carries no testable shape; emit no field test.
+    case PError -> false
+  }
+}
+
+// Test phase analogue of `bindPositionalFieldMsil`: extract constructor field
+// `fi` from the cast scrutinee and recursively test its sub-pattern, jumping to
+// `failLabel` on mismatch.  Only refutable sub-patterns produce code — an
+// irrefutable bind/wildcard needs no field load here (the bind phase performs
+// the actual extraction).
+func testCaseFieldMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  castTy: in MsilType,
+  castSlot: in Int,
+  caseClass: in String,
+  caseClassBt: in String,
+  fi: in Int,
+  fieldPat: in Pattern,
+  failLabel: in Int,
+): Unit {
+  if not patternIsRefutableMsil(cctx, fctx, fieldPat) {
+    return
+  }
+  val fldKey = caseClass + "/field" + toString(fi)
+  val fTok = match mapGet(cctx.fieldTokens, fldKey) { case Some(t) -> t; case None -> 0 }
+  if fTok > 0 {
+    val fSig = match mapGet(cctx.fieldSigBytes, fldKey) { case Some(s) -> s; case None -> buildFieldSig(MObject) }
+    val actualFieldName = match mapGet(cctx.fieldDeclaredNames, fldKey) {
+      case Some(n) -> n
+      case None -> "field" + toString(fi)
+    }
+    val fieldTy = resolveConcreteMsilFieldTy(cctx, castTy, fldKey)
+    emitCaseFieldLoad(insns, castTy, castSlot, fctx.paramCount, caseClass, caseClassBt, fTok, fSig, actualFieldName)
+    val fldSlot = allocSlotMsil(fctx, "__ftest_" + toString(fi) + "_" + toString(fctx.slotTicker.count), fieldTy)
+    emitStoreSlot(insns, fldSlot, fctx.paramCount)
+    lowerPatternTestMsil(cctx, fctx, insns, fieldPat, fldSlot, fieldTy, failLabel)
+  }
 }
 
 // Emit a runtime test for a pattern.  Jumps to `failLabel` if the test fails.
@@ -7441,6 +7636,51 @@ func lowerPatternTestMsil(
           }
         }
         insns.add(MBrFalse(label = failLabel))
+        // Recurse the test into refutable field sub-patterns (#3280 fixed the
+        // bind phase; the test phase must mirror it).  Without this an arm like
+        // `Ok(None)` silently matched any `Ok(..)` value — the nested sub-pattern
+        // was never checked — so a `match` listing `Ok(None)` before
+        // `Ok(Some(x))` routed every `Ok(Some(..))` into the `Ok(None)` arm.
+        var anyFieldRefutable = false
+        var rfi0 = 0
+        while rfi0 < args.count {
+          if patternIsRefutableMsil(cctx, fctx, args[rfi0]) {
+            anyFieldRefutable = true
+          }
+          rfi0 = rfi0 + 1
+        }
+        if anyFieldRefutable {
+          val caseClassBt = match scrutTy {
+            case MGenericInstByName(_, typeArgsB) -> genericBacktickFqn(caseClass, typeArgsB.count)
+            case _ -> caseClass
+          }
+          val castTy = match scrutTy {
+            case MGenericInst(_, _, typeArgs) -> {
+              val dotIdx = caseClass.lastIndexOf(".")
+              val caseKey = if dotIdx < 0 { "" } else { caseClass.substring(0, dotIdx) + "/" + caseClass }
+              match mapGet(cctx.ffiTypeRefs, caseKey) {
+                case Some(refRow) -> MGenericInst(typeRefCode = tdrTypeRef(refRow), headFqn = caseClass, typeArgs = typeArgs)
+                case None -> MClass(className = caseClass)
+              }
+            }
+            case MGenericInstByName(_, typeArgs) -> MGenericInstByName(headFqn = caseClassBt, typeArgs = typeArgs)
+            case _ -> MClass(className = caseClass)
+          }
+          emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+          match castTy {
+            case MGenericInst(_, _, typeArgs) -> insns.add(MCastclassGeneric(className = caseClass, typeArgs = typeArgs))
+            case MGenericInstByName(_, typeArgs) -> insns.add(MCastclassGeneric(className = caseClassBt, typeArgs = typeArgs))
+            case _ -> {
+            }
+          }
+          val castSlot = allocSlotMsil(fctx, "__casttest_" + caseName + "_" + toString(fctx.slotTicker.count), castTy)
+          emitStoreSlot(insns, castSlot, fctx.paramCount)
+          var tfi = 0
+          while tfi < args.count {
+            testCaseFieldMsil(cctx, fctx, insns, castTy, castSlot, caseClass, caseClassBt, tfi, args[tfi], failLabel)
+            tfi = tfi + 1
+          }
+        }
       } else {
         // MObject scrutinee (e.g. an erased `slice` element from
         // `list.toArray()`, or a `mapGet` result): the static type doesn't name
@@ -8452,6 +8692,28 @@ func lowerBuiltinOrStaticCallMsil(
         MObject
       }
     }
+  } else if funcName == "newListWithCapacity" {
+    // Same as `newList` — capacity is an optimisation hint only.  The kernel
+    // declares `newListWithCapacity[T](capacity): List[T]` (a builtin stub with
+    // an empty body); intercept it here so the annotated-accumulator pattern
+    // (`val acc: List[String] = newListWithCapacity(n)`) builds the concrete
+    // `List`1<T>` rather than calling the stub and yielding an untyped
+    // `List<object>` (an InvalidCastException at the typed consumer).  Evaluate
+    // the capacity argument for any side effects, then discard it.
+    if args.count >= 1 {
+      lowerCallArgMsil(cctx, fctx, insns, args[0])
+      insns.add(MPop)
+    }
+    match collExpectTop(fctx) {
+      case MConcreteList(e) -> {
+        insns.add(MListOp(op = LoCtor, elemTy = e))
+        MConcreteList(elemTy = e)
+      }
+      case _ -> {
+        insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
+        MObject
+      }
+    }
   } else if funcName == "newMap" {
     // Build a concrete `Dictionary`2<K,V>` when the context expects one;
     // otherwise the legacy `Dictionary<object,object>`.
@@ -9167,9 +9429,64 @@ func lowerMethodCallMsil(
     fqnSegs.add(memberName)
     val callFqn = joinSegsMsil(fqnSegs, ".")
     val callArityFqn = callFqn + "/" + toString(args.count)
+    // A single-segment receiver may be an import alias (`import Std.String as
+    // Str` → `Str.split(..)`).  Resolve it to the real package FQN and try that
+    // free-function key too — without this the alias literal (`Str.split`) never
+    // matches a `funcTokens` key (`Std.String.split`) and the call mis-routes to
+    // value method-dispatch (an "unsupported method" runtime throw).
+    val aliasResolvedFqn = if recvSegs.count == 1 and not fctx.slots.containsKey(recvSegs[0]) {
+      match mapGet(cctx.pkgImportAliases, fctx.pkgName + "/" + recvSegs[0]) {
+        case Some(realPkg) -> realPkg + "." + memberName
+        case None -> ""
+      }
+    } else {
+      ""
+    }
     if cctx.funcTokens.containsKey(callArityFqn) or cctx.funcTokens.containsKey(callFqn) {
       val staticPath = ModulePath(segments = fqnSegs, span = recv.span)
       return lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, memberName, staticPath, args)
+    }
+    if aliasResolvedFqn.length > 0 and (cctx.funcTokens.containsKey(aliasResolvedFqn + "/" + toString(args.count)) or cctx.funcTokens.containsKey(aliasResolvedFqn)) {
+      // Build a synthetic EPath carrying the resolved package FQN so the static
+      // lowering sees the real package, not the alias.
+      val realSegs: List[String] = newList()
+      match mapGet(cctx.pkgImportAliases, fctx.pkgName + "/" + recvSegs[0]) {
+        case Some(realPkg) -> {
+          val parts = split(realPkg, ".")
+          var pi = 0
+          while pi < parts.length {
+            realSegs.add(parts[pi])
+            pi = pi + 1
+          }
+        }
+        case None -> ()
+      }
+      realSegs.add(memberName)
+      val aliasPath = ModulePath(segments = realSegs, span = recv.span)
+      return lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, memberName, aliasPath, args)
+    }
+    // Type-associated function call through an imported type (D037):
+    // `IOError.message(e)` parses as `EMember(EPath["IOError"], "message")` and
+    // the bare `IOError.message` key is absent (the function registers under its
+    // defining package, `Std.Errors.IOError.message`).  Walk this package's
+    // imports and try `<imp>.<recv-path>.<member>` — the same import-shadowing
+    // fallback `lowerBuiltinOrStaticCallMsil` uses for bare calls, extended to a
+    // qualified receiver.  Without it the call mis-routes to value method-dispatch
+    // (an "unsupported method" runtime throw).
+    val importedQualFqn = match mapGet(cctx.pkgImports, fctx.pkgName) {
+      case Some(imps) -> findImportedFqn(cctx, imps, callFqn)
+      case None -> ""
+    }
+    if importedQualFqn.length > 0 {
+      val impSegs = split(importedQualFqn, ".")
+      val impPathSegs: List[String] = newList()
+      var ipi = 0
+      while ipi < impSegs.length {
+        impPathSegs.add(impSegs[ipi])
+        ipi = ipi + 1
+      }
+      val importedPath = ModulePath(segments = impPathSegs, span = recv.span)
+      return lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, memberName, importedPath, args)
     }
     // Qualified union-case construction (#3840): `StoreError.UserNotFound(id = 7)`
     // parses as `EMember(EPath["StoreError"], "UserNotFound")`, not as a 2-segment
@@ -9564,6 +9881,15 @@ func lowerMethodCallMsil(
         MBool
       }
     }
+  } else if memberName == "clear" and args.count == 0 {
+    // `xs.clear()` — remove all elements.  Route through the non-generic
+    // `IList.Clear()` so it works whether the receiver is a concrete
+    // `List<Foo>` or an erased `List<object>` (generics are invariant, so a
+    // concrete-typed `List`1<Foo>::Clear` MemberRef would not bind an erased
+    // receiver — the non-generic interface sidesteps that, like `.count`).
+    insns.add(MCastclass(typeToken = cctx.tokIListCast))
+    insns.add(MCallvirt(methodToken = cctx.tokIListClear))
+    MVoid
   } else if memberName == "removeAt" {
     // List<object>::RemoveAt(int32): void — receiver List already on stack;
     // push the int32 index and call RemoveAt.  Wrong-arity falls through to
@@ -9696,6 +10022,29 @@ func lowerMethodCallMsil(
     lowerCallArgMsil(cctx, fctx, insns, args[0])
     insns.add(MCallvirt(methodToken = cctx.tokStringEndsWith))
     MBool
+  } else if memberName == "split" and args.count == 1 {
+    // `s.split(sep)` has no single clean BCL intrinsic (`String.Split` needs a
+    // `StringSplitOptions` operand), so route method syntax to the pure-Lyric
+    // `Std.String.split(s, sep)` free function — one implementation across both
+    // backends.  The receiver `s` is already on the stack and becomes the first
+    // argument; push the separator and emit a static call.
+    val splitTok = match mapGet(cctx.funcTokens, "Std.String.split/2") {
+      case Some(t) -> t
+      case None -> match mapGet(cctx.funcTokens, "Std.String.split") { case Some(t) -> t; case None -> 0 }
+    }
+    if splitTok > 0 {
+      lowerCallArgMsil(cctx, fctx, insns, args[0])
+      insns.add(MCall(methodToken = splitTok))
+      MArray(elemTy = MString)
+    } else {
+      // Std.String not in scope (shouldn't happen for a String receiver, but be
+      // explicit rather than silently mis-binding): throw at the call site.
+      val sm = "Std.String.split unavailable at this call site (Std.String not linked)"
+      insns.add(MLdStr(token = ctxInternUs(cctx.lctx, sm)))
+      insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+      insns.add(MThrow)
+      MArray(elemTy = MString)
+    }
   } else if memberName == "toLower" and args.count == 0 {
     insns.add(MCallvirt(methodToken = cctx.tokStringToLower))
     MString
@@ -10215,31 +10564,12 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       match binding {
         case LBVal(pat, tyOpt, init) -> {
           val annoTy = match tyOpt { case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName); case None -> MObject }
-          val prevHintLen = fctx.contextHintTyArgs.count
-          match annoTy {
-            case MGenericInst(_, _, typeArgs) -> {
-              var hi = 0
-              while hi < typeArgs.count {
-                fctx.contextHintTyArgs.add(typeArgs[hi])
-                hi = hi + 1
-              }
-            }
-            // An in-bundle generic type annotation (`val m: Maybe[Int] = Nothing`)
-            // threads its concrete args so a payload-light construction (a nullary
-            // case, or a case that pins only some params) instantiates at the
-            // annotated args rather than erasing the rest to `object` — otherwise
-            // the value's runtime instantiation won't match the `match` scrutinee
-            // type and every arm's `isinst` fails (#2362).
-            case MGenericInstByName(_, typeArgs) -> {
-              var hi = 0
-              while hi < typeArgs.count {
-                fctx.contextHintTyArgs.add(typeArgs[hi])
-                hi = hi + 1
-              }
-            }
-            case _ -> {
-            }
-          }
+          // Establish a fresh hint scope from this binding's annotation: a
+          // generic annotation (`val m: Option[List[String]] = None`) threads its
+          // concrete args so a nullary `None` instantiates closed (#2362), and
+          // clearing first stops an enclosing block's return-type hint from
+          // leaking in (which would instantiate the `None` at the wrong args).
+          val savedAnnoHint = pushAnnoHintTyArgs(fctx, annoTy)
           // Empty typed-slice literal (`val xs: slice[T] = []`): the generic
           // `[]` otherwise lowers to a `List<object>`, which then mis-reads as
           // a `T[]` at the MArray-typed local (#1497).  Emit a real empty
@@ -10258,45 +10588,18 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             case _ -> lowerExprMsil(cctx, fctx, insns, init)
           }
           popCollExpect(fctx)
-          while fctx.contextHintTyArgs.count > prevHintLen {
-            fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
-          }
+          restoreHintTyArgs(fctx, savedAnnoHint)
           val effectiveTy = if annoTy != MObject { annoTy } else { initTy }
           lowerLocalPatBindMsil(cctx, fctx, insns, pat, effectiveTy, tyOpt)
         }
         case LBLet(name, tyOpt, init) -> {
           val annoTy = match tyOpt { case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName); case None -> MObject }
-          val prevHintLen = fctx.contextHintTyArgs.count
-          match annoTy {
-            case MGenericInst(_, _, typeArgs) -> {
-              var hi = 0
-              while hi < typeArgs.count {
-                fctx.contextHintTyArgs.add(typeArgs[hi])
-                hi = hi + 1
-              }
-            }
-            // An in-bundle generic type annotation (`val m: Maybe[Int] = Nothing`)
-            // threads its concrete args so a payload-light construction (a nullary
-            // case, or a case that pins only some params) instantiates at the
-            // annotated args rather than erasing the rest to `object` — otherwise
-            // the value's runtime instantiation won't match the `match` scrutinee
-            // type and every arm's `isinst` fails (#2362).
-            case MGenericInstByName(_, typeArgs) -> {
-              var hi = 0
-              while hi < typeArgs.count {
-                fctx.contextHintTyArgs.add(typeArgs[hi])
-                hi = hi + 1
-              }
-            }
-            case _ -> {
-            }
-          }
+          // Fresh hint scope from the annotation (see LBVal above).
+          val savedAnnoHint = pushAnnoHintTyArgs(fctx, annoTy)
           pushCollExpect(fctx, annoTy)
           val initTy = lowerExprMsil(cctx, fctx, insns, init)
           popCollExpect(fctx)
-          while fctx.contextHintTyArgs.count > prevHintLen {
-            fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
-          }
+          restoreHintTyArgs(fctx, savedAnnoHint)
           val ty = if annoTy != MObject { annoTy } else { initTy }
           val slot = allocSlotMsil(fctx, name, ty)
           emitStoreSlot(insns, slot, fctx.paramCount)
@@ -10336,24 +10639,12 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
                 insns.add(MDup)
               }
-              val prevHintLen = fctx.contextHintTyArgs.count
-              match annoTy {
-                case MGenericInst(_, _, typeArgs) -> {
-                  var hi = 0
-                  while hi < typeArgs.count {
-                    fctx.contextHintTyArgs.add(typeArgs[hi])
-                    hi = hi + 1
-                  }
-                }
-                case _ -> {
-                }
-              }
+              // Fresh hint scope from the annotation (see LBVal above).
+              val savedAnnoHint = pushAnnoHintTyArgs(fctx, annoTy)
               pushCollExpect(fctx, annoTy)
               val initTy = lowerExprMsil(cctx, fctx, insns, init)
               popCollExpect(fctx)
-              while fctx.contextHintTyArgs.count > prevHintLen {
-                fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
-              }
+              restoreHintTyArgs(fctx, savedAnnoHint)
               val ty = if annoTy != MObject { annoTy } else { initTy }
               if isHoisted {
                 finishHoistedCellMsil(cctx, fctx, insns, name, ty)
@@ -12685,13 +12976,7 @@ func inferCallReturnTypePB(
                 result = ty
                 done = true
               }
-              case None -> match mapGet(cctx.funcRetTypes, c) {
-                case Some(ty) -> {
-                  result = ty
-                  done = true
-                }
-                case None -> ()
-              }
+              case None -> match mapGet(cctx.funcRetTypes, c) { case Some(ty) -> { result = ty; done = true }; case None -> () }
             }
             ci = ci + 1
           }
@@ -18120,15 +18405,8 @@ func scanExternTypesMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
           var j = 0
           while j < items.count {
             val item = items[j]
-            val clrName = if baseNamespace.length > 0 {
-              baseNamespace + "." + item.name
-            } else {
-              item.name
-            }
-            val aliasName = match item.asAlias {
-              case Some(aliasName) -> aliasName
-              case _ -> item.name
-            }
+            val clrName = if baseNamespace.length > 0 { baseNamespace + "." + item.name } else { item.name }
+            val aliasName = match item.asAlias { case Some(aliasName) -> aliasName; case _ -> item.name }
             if not cctx.externTypeNames.containsKey(aliasName) {
               cctx.externTypeNames.add(aliasName, clrName)
             }
@@ -18136,15 +18414,8 @@ func scanExternTypesMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
           }
         }
         case Some(ISSingle(item)) -> {
-          val clrName = if baseNamespace.length > 0 {
-            baseNamespace + "." + item.name
-          } else {
-            item.name
-          }
-          val aliasName = match item.asAlias {
-            case Some(aliasName) -> aliasName
-            case _ -> item.name
-          }
+          val clrName = if baseNamespace.length > 0 { baseNamespace + "." + item.name } else { item.name }
+          val aliasName = match item.asAlias { case Some(aliasName) -> aliasName; case _ -> item.name }
           if not cctx.externTypeNames.containsKey(aliasName) {
             cctx.externTypeNames.add(aliasName, clrName)
           }
@@ -18162,7 +18433,6 @@ func scanExternTypesMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
     k = k + 1
   }
 }
-
 
 // ── Metadata-based auto-FFI resolution (epic #1622, Phase 3c) ─────────────────
 //
@@ -18942,7 +19212,6 @@ func implIfaceIsExternalClr(cctx: in CodegenCtx, decl: in ImplDecl): Bool {
 // that mention shapes the v1 cut can't represent (STMVar / STSzArray /
 // STByRef / STGenericInst) cause the impl to fall back to F0024 — a clean
 // build-time deferral instead of a silent miscompile.
-
 // Convert a metadata `SigType` to an `MsilType` suitable for inclusion in
 // an interface MemberRef signature.  `STVar(i)` is preserved as
 // `MTypeVar(i)` so the runtime substitutes against the TypeSpec's args.
@@ -18958,16 +19227,27 @@ func sigTypeToMsilForIface(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[Msi
       // an iface method that surfaces `int` via the named-FQN path matches an
       // impl method declared with the primitive Lyric type.  Otherwise emit
       // a class/value-type ref against the FQN.
-      val mapped = if fqn == "System.Int32" { Some(value = MInt) }
-        else if fqn == "System.Int64" { Some(value = MLong) }
-        else if fqn == "System.Boolean" { Some(value = MBool) }
-        else if fqn == "System.Char" { Some(value = MChar) }
-        else if fqn == "System.Byte" { Some(value = MByte) }
-        else if fqn == "System.Double" { Some(value = MDouble) }
-        else if fqn == "System.String" { Some(value = MString) }
-        else if fqn == "System.Object" { Some(value = MObject) }
-        else if fqn == "System.Void" { Some(value = MVoid) }
-        else { None }
+      val mapped = if fqn == "System.Int32" {
+        Some(value = MInt)
+      } else if fqn == "System.Int64" {
+        Some(value = MLong)
+      } else if fqn == "System.Boolean" {
+        Some(value = MBool)
+      } else if fqn == "System.Char" {
+        Some(value = MChar)
+      } else if fqn == "System.Byte" {
+        Some(value = MByte)
+      } else if fqn == "System.Double" {
+        Some(value = MDouble)
+      } else if fqn == "System.String" {
+        Some(value = MString)
+      } else if fqn == "System.Object" {
+        Some(value = MObject)
+      } else if fqn == "System.Void" {
+        Some(value = MVoid)
+      } else {
+        None
+      }
       match mapped {
         case Some(t) -> Some(value = t)
         case None -> {
@@ -18991,19 +19271,7 @@ func sigTypeToMsilForIface(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[Msi
       // unsupported and surface as F0024 upstream.
       match Mdr.sigVarIndex(sig) {
         case Some(idx) -> Some(value = MTypeVar(index = idx))
-        case None -> match Mdr.sigSzArrayElem(sig) {
-          case Some(elemSig) -> match sigTypeToMsilForIface(cctx, elemSig) {
-            case Some(elemTy) -> Some(value = MArray(elemTy = elemTy))
-            case None -> None
-          }
-          case None -> match Mdr.sigByRefInner(sig) {
-            case Some(innerSig) -> match sigTypeToMsilForIface(cctx, innerSig) {
-              case Some(innerTy) -> Some(value = MByRef(inner = innerTy))
-              case None -> None
-            }
-            case None -> sigTypeToMsilForIfaceGenericInst(cctx, sig)
-          }
-        }
+        case None -> match Mdr.sigSzArrayElem(sig) { case Some(elemSig) -> match sigTypeToMsilForIface(cctx, elemSig) { case Some(elemTy) -> Some(value = MArray(elemTy = elemTy)); case None -> None }; case None -> match Mdr.sigByRefInner(sig) { case Some(innerSig) -> match sigTypeToMsilForIface(cctx, innerSig) { case Some(innerTy) -> Some(value = MByRef(inner = innerTy)); case None -> None }; case None -> sigTypeToMsilForIfaceGenericInst(cctx, sig) } }
       }
     }
   }
@@ -19044,9 +19312,7 @@ func sigTypeToMsilForIfaceGenericInst(cctx: in CodegenCtx, sig: in Mdr.SigType):
 // `List[TypeArg]`) to `List[MsilType]` for use with `buildGenericInstBlobWithCtx`.
 // `None` is returned when any arg can't be lowered (e.g. an associated-type
 // or value argument that the v1 cut doesn't carry through).
-func lowerImplIfaceTypeArgsMsil(
-  cctx: in CodegenCtx, decl: in ImplDecl, pkgName: in String
-): Option[List[MsilType]] {
+func lowerImplIfaceTypeArgsMsil(cctx: in CodegenCtx, decl: in ImplDecl, pkgName: in String): Option[List[MsilType]] {
   val args = decl.iface.args
   val tys: List[MsilType] = newList()
   var i = 0
@@ -19062,9 +19328,7 @@ func lowerImplIfaceTypeArgsMsil(
 
 // Build a TypeSpec for a closed generic instantiation of an external iface
 // (e.g. `System.IEquatable\`1<MyPkg.Resource>`).  Returns the TypeSpec row.
-func ensureExternIfaceTypeSpecMsil(
-  cctx: in CodegenCtx, ifaceFqn: in String, argTys: in List[MsilType]
-): Int {
+func ensureExternIfaceTypeSpecMsil(cctx: in CodegenCtx, ifaceFqn: in String, argTys: in List[MsilType]): Int {
   ensureMetadataIndex(cctx)
   val ifaceRef = internFfiTypeRefNested(cctx, ifaceFqn)
   val key = "ts_extern_iface_" + ifaceFqn + "_" + msilTypeListKey(argTys)
@@ -19175,7 +19439,6 @@ func buildExternIfaceMethodRowsMsil(
 // typo guard for "iface FQN not in metadata index" — which `assemblyForType`
 // already skips silently (the index is not exhaustive of every restored
 // dep), so the panic was unreachable.  The pass is gone.
-
 // Pre-pass: collect every IImpl block into `cctx.implEntries`.  Each impl
 // method is lowered through `lowerImplMethodMsil` so it carries virtual
 // instance-method flags and slot 0 = `this`; the methods are NOT added to
@@ -19288,7 +19551,6 @@ pub func collectImplEntriesMsil(cctx: in CodegenCtx, file: in SourceFile, pkgNam
 // Anything richer (byref, pinned, custom modifiers) is treated as a "can't
 // verify" and silently skipped for that single method, the same way F0015
 // bails out via `canVerify`.
-
 func sigTypesEqualMsil(a: in Mdr.SigType, b: in Mdr.SigType): Bool {
   val pa = Mdr.sigPrimByte(a)
   val pb = Mdr.sigPrimByte(b)
@@ -19304,39 +19566,18 @@ func sigTypesEqualMsil(a: in Mdr.SigType, b: in Mdr.SigType): Bool {
   // matching shapes on both sides count as equal (an `STSzArray(T)` does not
   // satisfy a `T` slot).
   match Mdr.sigSzArrayElem(a) {
-    case Some(eaSig) -> match Mdr.sigSzArrayElem(b) {
-      case Some(ebSig) -> return sigTypesEqualMsil(eaSig, ebSig)
-      case None -> return false
-    }
+    case Some(eaSig) -> match Mdr.sigSzArrayElem(b) { case Some(ebSig) -> return sigTypesEqualMsil(eaSig, ebSig); case None -> return false }
     case None -> {
     }
   }
   match Mdr.sigByRefInner(a) {
-    case Some(iaSig) -> match Mdr.sigByRefInner(b) {
-      case Some(ibSig) -> return sigTypesEqualMsil(iaSig, ibSig)
-      case None -> return false
-    }
+    case Some(iaSig) -> match Mdr.sigByRefInner(b) { case Some(ibSig) -> return sigTypesEqualMsil(iaSig, ibSig); case None -> return false }
     case None -> {
     }
   }
   // Closed generic instantiations: same head FQN + same args by position.
   match Mdr.sigNamedGenericInstParts(a) {
-    case Some(pa) -> match Mdr.sigNamedGenericInstParts(b) {
-      case Some(pb) -> {
-        if pa.fqn != pb.fqn or pa.valueType != pb.valueType or pa.args.count != pb.args.count {
-          return false
-        }
-        var i = 0
-        while i < pa.args.count {
-          if not sigTypesEqualMsil(pa.args[i], pb.args[i]) {
-            return false
-          }
-          i = i + 1
-        }
-        return true
-      }
-      case None -> return false
-    }
+    case Some(pa) -> match Mdr.sigNamedGenericInstParts(b) { case Some(pb) -> { if pa.fqn != pb.fqn or pa.valueType != pb.valueType or pa.args.count != pb.args.count { return false }; var i = 0; while i < pa.args.count { if not sigTypesEqualMsil(pa.args[i], pb.args[i]) { return false }; i = i + 1 }; return true }; case None -> return false }
     case None -> {
     }
   }
@@ -19360,9 +19601,7 @@ func tryImplTyToSigMsil(t: in MsilType): Option[Mdr.SigType] {
   }
 }
 
-func implMethodToSigsMsil(
-  cctx: in CodegenCtx, fn: in FunctionDecl, pkgName: in String
-): Option[List[Mdr.SigType]] {
+func implMethodToSigsMsil(cctx: in CodegenCtx, fn: in FunctionDecl, pkgName: in String): Option[List[Mdr.SigType]] {
   val sigs: List[Mdr.SigType] = newList()
   var pi = 0
   while pi < fn.params.count {
@@ -19425,24 +19664,7 @@ func renderSigForDiagMsil(s: in Mdr.SigType): String {
     } else {
       match Mdr.sigSzArrayElem(s) {
         case Some(elem) -> renderSigForDiagMsil(elem) + "[]"
-        case None -> match Mdr.sigByRefInner(s) {
-          case Some(inner) -> "ref " + renderSigForDiagMsil(inner)
-          case None -> match Mdr.sigNamedGenericInstParts(s) {
-            case Some(parts) -> {
-              var rendered = parts.fqn + "<"
-              var i = 0
-              while i < parts.args.count {
-                if i > 0 {
-                  rendered = rendered + ", "
-                }
-                rendered = rendered + renderSigForDiagMsil(parts.args[i])
-                i = i + 1
-              }
-              rendered + ">"
-            }
-            case None -> "<unknown shape>"
-          }
-        }
+        case None -> match Mdr.sigByRefInner(s) { case Some(inner) -> "ref " + renderSigForDiagMsil(inner); case None -> match Mdr.sigNamedGenericInstParts(s) { case Some(parts) -> { var rendered = parts.fqn + "<"; var i = 0; while i < parts.args.count { if i > 0 { rendered = rendered + ", " }; rendered = rendered + renderSigForDiagMsil(parts.args[i]); i = i + 1 }; rendered + ">" }; case None -> "<unknown shape>" } }
       }
     }
   }
@@ -19551,14 +19773,8 @@ func msilTypeToSigForIface(t: in MsilType): Option[Mdr.SigType] {
     case MString -> Some(value = Mdr.mkPrimSig(0x0E))
     case MObject -> Some(value = Mdr.mkPrimSig(0x1C))
     case MVoid -> Some(value = Mdr.mkPrimSig(0x01))
-    case MArray(elemTy) -> match msilTypeToSigForIface(elemTy) {
-      case Some(es) -> Some(value = Mdr.mkSzArraySig(es))
-      case None -> None
-    }
-    case MByRef(inner) -> match msilTypeToSigForIface(inner) {
-      case Some(inS) -> Some(value = Mdr.mkByRefSig(inS))
-      case None -> None
-    }
+    case MArray(elemTy) -> match msilTypeToSigForIface(elemTy) { case Some(es) -> Some(value = Mdr.mkSzArraySig(es)); case None -> None }
+    case MByRef(inner) -> match msilTypeToSigForIface(inner) { case Some(inS) -> Some(value = Mdr.mkByRefSig(inS)); case None -> None }
     case MGenericInstByName(headFqn, typeArgs) -> msilGenericArgsToSig(headFqn, typeArgs, false)
     case MGenericInst(_, headFqn, typeArgs) -> msilGenericArgsToSig(headFqn, typeArgs, false)
     case MValueTypeGenericInst(_, headFqn, typeArgs) -> msilGenericArgsToSig(headFqn, typeArgs, true)
@@ -19607,11 +19823,7 @@ func checkOneInterfaceMethodMsil(
   ifaceTypeArgs: in List[Mdr.SigType],
 ): Unit {
   match findImplFunctionDeclMsil(decl, ifaceMethod.name) {
-    case None -> panic(
-      "F0021: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) +
-        "`: interface method '" + ifaceMethod.name + "' is not implemented. " +
-        "Add `func " + ifaceMethod.name + "(…): …` to the impl block."
-    )
+    case None -> panic("F0021: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: interface method '" + ifaceMethod.name + "' is not implemented. " + "Add `func " + ifaceMethod.name + "(…): …` to the impl block.")
     case Some(implFn) -> {
       // Substitute STVar against the iface's resolved type args.  For
       // non-generic ifaces this is a no-op (typeArgs is empty); for
@@ -19640,9 +19852,12 @@ func checkOneInterfaceMethodMsil(
             val implParamCount = implSigs.count - 1
             if implParamCount != substParams.count {
               panic(
-                "F0022: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) +
-                  "`: method '" + ifaceMethod.name + "' takes " + toString(implParamCount) +
-                  " parameter(s) but the .NET interface declares " + toString(substParams.count) + "."
+                "F0022: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: method '" + ifaceMethod.name +
+                  "' takes " +
+                  toString(implParamCount) +
+                  " parameter(s) but the .NET interface declares " +
+                  toString(substParams.count) +
+                  "."
               )
             } else {
               var pk = 0
@@ -19651,10 +19866,14 @@ func checkOneInterfaceMethodMsil(
                 val got = implSigs[pk]
                 if not sigTypesEqualMsil(expected, got) {
                   panic(
-                    "F0022: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) +
-                      "`: method '" + ifaceMethod.name + "' parameter " + toString(pk + 1) +
-                      " has type " + renderSigForDiagMsil(got) +
-                      " but the .NET interface expects " + renderSigForDiagMsil(expected) + "."
+                    "F0022: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: method '" + ifaceMethod.name +
+                      "' parameter " +
+                      toString(pk + 1) +
+                      " has type " +
+                      renderSigForDiagMsil(got) +
+                      " but the .NET interface expects " +
+                      renderSigForDiagMsil(expected) +
+                      "."
                   )
                 }
                 pk = pk + 1
@@ -19662,9 +19881,12 @@ func checkOneInterfaceMethodMsil(
               val implRet = implSigs[implSigs.count - 1]
               if not sigTypesEqualMsil(substRet, implRet) {
                 panic(
-                  "F0023: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) +
-                    "`: method '" + ifaceMethod.name + "' returns " + renderSigForDiagMsil(implRet) +
-                    " but the .NET interface declares return type " + renderSigForDiagMsil(substRet) + "."
+                  "F0023: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: method '" + ifaceMethod.name +
+                    "' returns " +
+                    renderSigForDiagMsil(implRet) +
+                    " but the .NET interface declares return type " +
+                    renderSigForDiagMsil(substRet) +
+                    "."
                 )
               }
             }
@@ -19698,9 +19920,7 @@ func warnFfiIndexEmptyOnceMsil(cctx: in CodegenCtx): Unit {
   )
 }
 
-func validateOneExternImplMsil(
-  cctx: in CodegenCtx, decl: in ImplDecl, pkgName: in String, ifaceFqn: in String
-): Unit {
+func validateOneExternImplMsil(cctx: in CodegenCtx, decl: in ImplDecl, pkgName: in String, ifaceFqn: in String): Unit {
   ensureMetadataIndex(cctx)
   match Mdr.assemblyForType(cctx.metadataTypeIndex, ifaceFqn) {
     case None -> {
@@ -19718,8 +19938,8 @@ func validateOneExternImplMsil(
       //     `TypeLoadException`; raise it at build time instead.
       if cctx.metadataTypeIndex.count > 0 {
         panic(
-          "F0024: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) +
-            "`: '" + ifaceFqn + "' is not present in any reference-pack or restored-dependency " +
+          "F0024: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: '" + ifaceFqn +
+            "' is not present in any reference-pack or restored-dependency " +
             "assembly's TypeDef table.  Check the `extern type` FQN for typos " +
             "(BCL convention: `Namespace.SimpleName\\`<arity>`, e.g. `System.IEquatable\\`1`).  " +
             "Validation is silent-skipped only when no reference pack is loaded " +
@@ -19739,8 +19959,8 @@ func validateOneExternImplMsil(
         case Some(insp) -> {
           if not insp.isInterface {
             panic(
-              "F0020: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) +
-                "`: '" + ifaceFqn + "' resolves through `extern type` / `import extern` but its .NET metadata is " +
+              "F0020: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: '" + ifaceFqn +
+                "' resolves through `extern type` / `import extern` but its .NET metadata is " +
                 "not an interface (TypeAttributes.ClassSemanticsMask = 0). " +
                 "An `impl` block can only target a .NET interface."
             )
@@ -21901,7 +22121,11 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
       while ci < decl.cases.count {
         val caseName = decl.cases[ci].name
         val ctorKey = packageName + "." + decl.name + "_" + caseName
-        val caseClassName = if caseArity > 0 { decl.name + "_" + caseName + "`" + toString(caseArity) } else { decl.name + "_" + caseName }
+        val caseClassName = if caseArity > 0 {
+          decl.name + "_" + caseName + "`" + toString(caseArity)
+        } else {
+          decl.name + "_" + caseName
+        }
         val caseRefKey = packageName + "/" + ctorKey
         // Register case-class TypeRef so MIsinstByName can find it via
         // findTypeRefRowByName instead of falling back to System.Object.
@@ -22303,10 +22527,7 @@ func registerStdlibFunc(cctx: in CodegenCtx, packageName: in String, hostRefRow:
     paramTypes.add(typeExprToMsilCtx(cctx, fn.params[pi].ty, packageName))
     pi = pi + 1
   }
-  val retType = match fn.ret {
-    case Some(te) -> typeExprToMsilCtx(cctx, te, packageName)
-    case None -> MVoid
-  }
+  val retType = match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
   val funcSig = buildStaticMethodSigWithCtx(byrefWrapSigTypes(fn.params, paramTypes), retType, cctx.lctx)
   val fnModes = paramModesOf(fn.params)
   // Register with an arity-specific key so overloaded stdlib functions
