@@ -2275,7 +2275,22 @@ func buildLocalVarSigWithCtx(locals: in List[MsilType], ctx: in LoweringCtx): Li
           bufU1(w, 0x12)  // ELEMENT_TYPE_CLASS
           writeCompressedInt(w, tdrTypeDef(defRow))
         } else {
-          bufU1(w, 0x1C)  // fallback to Object (TypeDef not found in bundle)
+          // Not an in-bundle TypeDef — try a cross-assembly TypeRef before
+          // erasing to Object.  A cross-package record-typed local (e.g. a
+          // `val w = bufNew()` of type `Msil.Kernel.ByteWriter` in Msil.Lowering)
+          // is tracked concretely by codegen, so erasing only the LocalVarSig to
+          // Object desynced the verifier: the unchecked `ldloc`/store passed an
+          // `object` where the concrete type was expected (StackUnexpected →
+          // InvalidProgramException).  Encode `ELEMENT_TYPE_CLASS + TypeRef`,
+          // mirroring `bufMsilTypeWithCtx`, so the local is genuinely typed
+          // (#3920).
+          val refRow = findTypeRefRowByName(ctx, name)
+          if refRow > 0 {
+            bufU1(w, 0x12)  // ELEMENT_TYPE_CLASS
+            writeCompressedInt(w, tdrTypeRef(refRow))
+          } else {
+            bufU1(w, 0x1C)  // fallback to Object (neither TypeDef nor TypeRef found)
+          }
         }
       }
       case MGenericInst(_, _, _) -> bufU1(w, 0x1C)
