@@ -8227,6 +8227,18 @@ func lowerPatternBindMsil(
           case MGenericInst(_, _, typeArgs) -> insns.add(MCastclassGeneric(className = caseClass, typeArgs = typeArgs))
           case MGenericInstByName(_, typeArgs) -> insns.add(MCastclassGeneric(className = caseClassBt, typeArgs = typeArgs))
           case _ -> {
+            // Non-generic union case: narrow the scrutinee from the base union
+            // type to the concrete case class (`MsilType` → `MsilType_MClass`)
+            // before storing into the case-typed `castSlot`.  Without this the
+            // store puts the base-typed value into a case-typed local — invalid
+            // IL (`StackUnexpected`) that the CLR rejects with
+            // InvalidProgramException when the local resolves to the concrete
+            // case TypeDef.  This was masked for cross-package union matches
+            // (the local erases to `object`, so the unchecked store verified),
+            // but bit every *same-package* union match — e.g. `MsilType`
+            // matches in Msil.Lowering's `elementTypeByte` / `bufMsilType`,
+            // which broke the self-emitted compiler's MFunc lowering (#3920).
+            insns.add(MCastclassByName(className = caseClass))
           }
         }
         val castSlot = allocSlotMsil(fctx, "__cast_" + caseName + "_" + toString(fctx.slotTicker.count), castTy)
