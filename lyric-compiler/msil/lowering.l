@@ -2297,8 +2297,17 @@ func buildLocalVarSigWithCtx(locals: in List[MsilType], ctx: in LoweringCtx): Li
       case MGenericInstByName(_, _) -> bufU1(w, 0x1C)
       case MValueTypeGenericInst(_, _, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       case MArray(_) -> bufU1(w, 0x1C)
-      case MConcreteList(_) -> bufU1(w, 0x1C)
-      case MConcreteMap(_, _) -> bufU1(w, 0x1C)
+      // A concrete-collection local holds a genuine `List`1<elem>` /
+      // `Dictionary`2<k,v>` at run time (`MListOp(LoCtor)` emits
+      // `newobj List`1<elem>`), and codegen tracks the slot concretely, so
+      // erasing only the LocalVarSig to Object desynced the verifier (the
+      // `MListOp` / call sites operate on the concrete type while `ldloc`
+      // yielded `object`) → StackUnexpected / InvalidProgramException.  Encode
+      // the full closed GENERICINST via `bufMsilTypeWithCtx` (which itself
+      // falls back to Object if `List`1` / `Dictionary`2` TypeRefs are absent),
+      // matching the runtime value (#3920).
+      case MConcreteList(_) -> bufMsilTypeWithCtx(w, locals[i], ctx)
+      case MConcreteMap(_, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       case MClassRef(_, _) -> bufU1(w, 0x1C)
       case MValueTypeRef(typeRefCode, _) -> {
         bufU1(w, 0x11)
