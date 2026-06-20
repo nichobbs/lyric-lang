@@ -21188,6 +21188,17 @@ func registerRestoredFunc(cctx: in CodegenCtx, packageName: in String, fn: in Fu
   // `pop` after void cross-assembly calls → InvalidProgramException.
   cctx.funcRetTypes.add(fqn, retType)
   cctx.funcParamModes.add(fqn, paramModesOf(fn.params))
+  // Record the declared parameter MsilTypes so a cross-package call site can
+  // push each parameter's expected type onto `collExpect` (lowerCallMsil),
+  // exactly as the same-package path does (see funcParamTypes above).  Without
+  // this, a bare `newList()` / `newMap()` passed to a restored function's
+  // concrete-collection parameter (e.g. `buildInstanceMethodSig(newList(), …)`
+  // in Msil.Codegen calling into Msil.Lowering) erases to `List<object>` and
+  // then fails the callee's `castclass List<T>` on entry with
+  // InvalidCastException (#3920 self-host cascade).
+  if not cctx.funcParamTypes.containsKey(fqn) {
+    cctx.funcParamTypes.add(fqn, paramTypes)
+  }
 }
 
 // Allocate or reuse a cached TypeRef row for a union case class; arity > 0 stamps the suffix (e.g. "Maybe_Just`1`") matching lowerMUnion — CLR loader requires it; 0 keeps plain name for non-generic unions and stdlib.
