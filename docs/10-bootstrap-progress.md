@@ -25414,3 +25414,30 @@ constructors) to follow-up.
 - `docs/48-constructor-shorthand.md`: Status updated from "Unbacked (D106)" to
   "Specced (D106)".
 - `CLAUDE.md` sketch-list entries updated to reflect decision backing.
+
+### D107 — self-host cascade fixes + nullable-BCL → `Option[T]` FFI coercion (docs/41 §11)
+
+Self-hosting hardening: the self-emitted MSIL backend now compiles and runs the
+core examples through a fully self-emitted compiler closure (fizzbuzz/primes/csv
+build+run via the self-emitted binary). The cascade of self-host-only codegen
+defects fixed along the way:
+
+- Cross-package nullary union-case equality: non-generic nullary cases load the
+  defining assembly's `Instance` singleton (was `newobj`-per-use, breaking
+  reference equality — the `P0020 expected 'package'` self-host blocker).
+- Value-type instance externs (`TimeSpan.TotalMilliseconds`): `ldarga` + `call`
+  (was `ldarg` + `callvirt`, which crashes the JIT).
+- LocalVarSig slot identity: same-named match-arm locals of distinct reference
+  types (`ListOp`/`DictOp`, `List<A>`/`List<B>`) get fresh slots; concrete
+  collection / generic-instantiation locals encode concretely (were erased to
+  object, desyncing the verifier).
+- `lowerM*` Int-return tails; catch-binding `castclass System.Exception` before
+  `get_Message`.
+
+Nullable-BCL FFI (D107): `@externTarget` functions returning `Option[T]` (T a
+reference type) bind the MemberRef to the BCL's real nullable `T` and coerce
+null → `None` / value → `Some(value)` at the call boundary, so no `null` literal
+or nullable type enters the language. Phase 1 (this entry) ships the MSIL
+emitter convention + `extern_option_self_test.l` (wired into CI); Phase 2
+migrates the `_kernel/` nullable externs and removes `case null` once a release
+carrying the convention becomes the bootstrap seed.

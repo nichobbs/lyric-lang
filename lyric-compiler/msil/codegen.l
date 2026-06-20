@@ -3346,7 +3346,7 @@ func msilTypeListIdentical(a: in List[MsilType], b: in List[MsilType]): Bool {
   } else {
     var i = 0
     var ok = true
-    while i < a.count {
+    while i < a.count and ok {
       if not msilTypeIdentical(a[i], b[i]) {
         ok = false
       }
@@ -4577,6 +4577,49 @@ func msilHeadFqnMsil(t: in MsilType): String {
     case MGenericInstByName(fqn, _) -> stripGenericArity(fqn)
     case MValueTypeGenericInst(_, fqn, _) -> stripGenericArity(fqn)
     case _ -> ""
+  }
+}
+
+// The type arguments of a generic-instantiation MsilType (empty for non-generic).
+func msilGenericTypeArgsMsil(t: in MsilType): List[MsilType] {
+  match t {
+    case MGenericInst(_, _, targs) -> targs
+    case MGenericInstByName(_, targs) -> targs
+    case MValueTypeGenericInst(_, _, targs) -> targs
+    case _ -> newList()
+  }
+}
+
+// When an `@externTarget` declares its return as `Option[T]` with `T` a
+// reference type, the wrapped BCL method actually returns a nullable reference
+// `T` (e.g. `Environment.GetEnvironmentVariable: string?`).  The emitter binds
+// the MemberRef to `T` and coerces the possibly-null result into `Option[T]` at
+// the call boundary — `null -> None`, `value -> Some(value)` — so the language
+// needs no `null` literal or nullable type to consume nullable BCL APIs (the
+// audited `_kernel/` boundary declares `Option[T]` and the coercion happens
+// here).  Returns the inner reference type when the convention applies, or
+// `MVoid` (a value type, never a valid coercion inner) as the "no coercion"
+// sentinel — using the codegen's own `MsilType` union rather than a
+// `Std.Core.Option` so the hot path matches reliably in-package.
+func externOptionCoerceInner(t: in MsilType): MsilType {
+  if msilHeadFqnMsil(t) == "Std.Core.Option" {
+    val targs = msilGenericTypeArgsMsil(t)
+    if targs.count == 1 and not isValueType(targs[0]) {
+      targs[0]
+    } else {
+      MVoid
+    }
+  } else {
+    MVoid
+  }
+}
+
+// True when `externOptionCoerceInner` returned a real coercion inner (i.e. not
+// the `MVoid` sentinel).
+func externOptionCoerces(t: in MsilType): Bool {
+  match t {
+    case MVoid -> false
+    case _ -> true
   }
 }
 
@@ -12385,6 +12428,12 @@ func emitExternTargetBody(
         case None -> MVoid
       }
 
+      // `Option[T]` return convention (#null-free FFI): the BCL method returns a
+      // nullable reference `T`; bind the MemberRef to `T` and coerce to
+      // `Option[T]` after the call.  Disabled for async/ctor (separate paths).
+      val optCoerceInner = if decl.isAsync { MVoid } else { externOptionCoerceInner(retTy) }
+      val optCoerces = externOptionCoerces(optCoerceInner)
+
       // Phase 4: prefer the metadata type index over the prefix-based guard so
       // types from NuGet-restored assemblies (not `System.*` / `Lyric.*`) are
       // accepted when their DLL is in the index (added by ensureMetadataIndex).
@@ -12599,17 +12648,36 @@ func emitExternTargetBody(
       // available (already receiver-excluded for instance methods), else the
       // Lyric-declared types — all params for a static call or ctor, the
       // receiver-skipped tail for an instance call.
-      val instArgsLegacy: List[MsilType] = newList()
-      var iiLegacy = 1
-      while iiLegacy < paramTypes.count {
-        instArgsLegacy.add(paramTypes[iiLegacy])
-        iiLegacy = iiLegacy + 1
-      }
       val sigParams = match resolvedMethodParams {
         case Some(mp) -> mp
-        case None -> if (emitIsStatic and not r.isCtor) or r.isCtor { paramTypes } else { instArgsLegacy }
+        case None -> {
+          if (emitIsStatic and not r.isCtor) or r.isCtor {
+            paramTypes
+          } else {
+            // Instance call without metadata: drop the receiver (param 0).  Built
+            // here (not unconditionally) so the metadata-resolved and ctor paths
+            // allocate nothing.
+            val instArgsLegacy: List[MsilType] = newList()
+            var iiLegacy = 1
+            while iiLegacy < paramTypes.count {
+              instArgsLegacy.add(paramTypes[iiLegacy])
+              iiLegacy = iiLegacy + 1
+            }
+            instArgsLegacy
+          }
+        }
       }
-      val sigRet = match resolvedMethodRet { case Some(rm) -> rm; case None -> bclRetTy }
+      // Under the Option[T] coercion convention the MemberRef must bind to the
+      // BCL's real (nullable reference) return `T` (= optCoerceInner), not the
+      // Lyric `Option[T]`; the coercion to `Option[T]` is emitted after the call.
+      val sigRet = if optCoerces {
+        optCoerceInner
+      } else {
+        match resolvedMethodRet {
+          case Some(rm) -> rm
+          case None -> bclRetTy
+        }
+      }
       val sig = if emitIsStatic and not r.isCtor {
         buildFfiMethodSigCtx(cctx, sigParams, sigRet, false)
       } else if r.isCtor {
@@ -12676,6 +12744,44 @@ func emitExternTargetBody(
           val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, "get_Result", "mr_task_getresult_" + tsKey, mrSig)
           insns.add(MCallvirt(methodToken = 0x0A000000 + mrRow))
         }
+      }
+      // Option[T] coercion: the BCL call left a (possibly null) `inner` reference
+      // on the stack; wrap it into `Option[inner]` — null -> None, else Some(v).
+      if optCoerces {
+        val inner = optCoerceInner
+        val noneL = freshLabelMsil(fctx)
+        val doneL = freshLabelMsil(fctx)
+        insns.add(MDup)
+        insns.add(MBrFalse(label = noneL))
+        // non-null: Some(value) — the inner reference is on the stack.
+        val someArgTys: List[MsilType] = newList()
+        someArgTys.add(inner)
+        val someCtx: List[MsilType] = newList()
+        someCtx.add(inner)
+        val someParent: List[MsilType] = newList()
+        val someOk = buildGenericCaseCtorTok(cctx, "Std.Core.Option_Some", someArgTys, someCtx, someParent, insns)
+        if someOk == 0 {
+          panic(
+            "Msil.Codegen: @externTarget '" + target + "' on '" + decl.name +
+              "' declares an Option[T] return but Std.Core.Option is not in scope — import Std.Core in the module."
+          )
+        }
+        insns.add(MBr(label = doneL))
+        // null: drop it and build None.
+        insns.add(MLabel(id = noneL))
+        insns.add(MPop)
+        val noneArgTys: List[MsilType] = newList()
+        val noneCtx: List[MsilType] = newList()
+        noneCtx.add(inner)
+        val noneParent: List[MsilType] = newList()
+        val noneOk = buildGenericCaseCtorTok(cctx, "Std.Core.Option_None", noneArgTys, noneCtx, noneParent, insns)
+        if noneOk == 0 {
+          panic(
+            "Msil.Codegen: @externTarget '" + target + "' on '" + decl.name +
+              "' declares an Option[T] return but Std.Core.Option_None is not resolvable."
+          )
+        }
+        insns.add(MLabel(id = doneL))
       }
       insns.add(MRet)
       true

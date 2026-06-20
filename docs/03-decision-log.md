@@ -6554,6 +6554,59 @@ sb.Capacity).  The test is wired into CI.
 
 ---
 
+## D107 — `@externTarget` functions returning `Option[T]` coerce a nullable BCL reference to `None`/`Some` at the call boundary
+
+**Status:** Accepted (Phase 1: MSIL emitter convention shipped; Phase 2:
+stdlib migration + `case null` removal deferred).
+
+**Context.** Many BCL methods return a nullable reference (e.g.
+`System.Environment.GetEnvironmentVariable: string?`,
+`System.Console.ReadLine: string?`, `System.IO.Path.GetDirectoryName:
+string?`). The self-hosted compiler has no `null` literal or nullable-match
+support, and the audited `_kernel/` boundary historically modelled these with a
+`String?` extern return matched by `case null` — a construct the self-hosted
+front-end silently miscompiles (the `case null` arm parses as a catch-all
+binding, so the null test is dropped and e.g. `getVar` always returns the
+no-value branch). The goal is to consume nullable BCL APIs **without** adding a
+`null` literal or nullable type to the language.
+
+**Decision.** When an `@externTarget` function (non-ctor, non-async) declares its
+return type as `Option[T]` with `T` a reference type, the MSIL emitter binds the
+MemberRef to the BCL's real nullable reference return `T` and emits a coercion
+immediately after the call: a null reference becomes `None`, a non-null
+reference becomes `Some(value)`. `Option`/`Some`/`None` are constructed with the
+existing generic-case constructor machinery (`buildGenericCaseCtorTok`), the same
+path `mapGet` uses. This keeps the entire surface above the audited boundary on
+`Option[T]` — matched with ordinary `case None`/`case Some(v)`, which the
+self-hosted compiler fully supports — and needs no `null` in the language.
+
+**Why an emitter convention and not a new builtin.** A typecheck-visible builtin
+(e.g. `isNull`) used by the stdlib breaks the bootstrap: the frozen seed
+compiler (which compiles the stdlib transitively imported by the compiler) does
+not know the new name and rejects it. The `Option[T]` return convention adds no
+new name — the seed typechecks the stdlib signatures unchanged — so the new
+behaviour lives entirely in the self-hosted emitter and is bootstrap-safe.
+
+**Phasing.** Phase 1 (this entry) ships the emitter convention plus a wired
+self-test (`lyric-compiler/lyric/extern_option_self_test.l`); the stdlib is
+unchanged so the current seed keeps building it. Phase 2 — after a release
+carrying this convention becomes the seed — migrates the `_kernel/` nullable
+externs (`environment_host`, `console_host`, `path_host`) to `Option[T]` returns
+and removes the `case null` usages, completing the null-free FFI boundary. JVM
+emitter parity is tracked for Phase 2.
+
+The convention is matched in the emitter via the codegen's own `MsilType` union
+(an `MVoid` "no coercion" sentinel), **not** a locally-constructed
+`Std.Core.Option`: returning/matching an in-package `Option` from the FFI hot
+path fell through both arms (an in-package Option-identity hazard), corrupting
+the bound return type of every `@externTarget` in the function.
+
+**Related:** docs/14 (native stdlib / extern boundary), docs/42 (metadata
+resolution), docs/01 §11.3 (`@externTarget` reference), D105 (extern
+interfaces), D106 (constructor shorthand).
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
