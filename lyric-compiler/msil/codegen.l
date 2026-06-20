@@ -4943,6 +4943,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                       match mapGet(cctx.singletonFieldTokens, ctorKey) {
                         case Some(fldTok) -> {
                           insns.add(MLdsfld(fieldToken = fldTok))
+                          insns.add(MCastclassByName(className = caseParentFqnMsil(cctx, ctorKey)))
                           MClass(className = caseParentFqnMsil(cctx, ctorKey))
                         }
                         case None -> {
@@ -5044,6 +5045,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         if cctx.singletonFieldTokens.containsKey(nmCaseFqn) {
           val nmFldTok = match mapGet(cctx.singletonFieldTokens, nmCaseFqn) { case Some(t) -> t; case None -> 0 }
           insns.add(MLdsfld(fieldToken = nmFldTok))
+          insns.add(MCastclassByName(className = caseParentFqnMsil(cctx, nmCaseFqn)))
           MClass(className = caseParentFqnMsil(cctx, nmCaseFqn))
         } else {
           match mapGet(cctx.recordCtorTokens, nmCaseFqn) {
@@ -9239,6 +9241,7 @@ func lowerBuiltinOrStaticCallMsil(
             match mapGet(cctx.singletonFieldTokens, ctorKey) {
               case Some(fldTok) -> {
                 insns.add(MLdsfld(fieldToken = fldTok))
+                insns.add(MCastclassByName(className = caseParentFqnMsil(cctx, ctorKey)))
                 MClass(className = caseParentFqnMsil(cctx, ctorKey))
               }
               case None -> {
