@@ -5374,6 +5374,11 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               // TyException built-in members: .message and .typeName.
               // Catch-clause exception bindings are stored as MObject; detect by member name.
               if memberName == "message" {
+                // The catch binding is an `MObject` slot, but `Exception.get_Message`
+                // is HASTHIS on `System.Exception`: cast the object receiver to
+                // Exception before the callvirt or the verifier rejects it
+                // (CallVirtOnValueType-adjacent StackUnexpected) and some JITs fault.
+                insns.add(MCastclass(typeToken = 0x01000000 + cctx.trException))
                 insns.add(MCallvirt(methodToken = cctx.tokExcGetMessage))
                 MString
               } else if memberName == "typeName" {
