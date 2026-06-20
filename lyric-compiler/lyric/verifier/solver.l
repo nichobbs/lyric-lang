@@ -12,6 +12,7 @@ package Lyric.Verifier
 
 import Std.Core
 import Std.Collections
+import Std.String
 import Std.File
 import Std.ProcessCapture
 import Std.VerifierEnvHost
