@@ -25445,13 +25445,14 @@ carrying the convention becomes the bootstrap seed.
 **Release cutover to fully self-hosted builds.** The published seed used by
 `bootstrap.sh`'s download path predates these cascade fixes and miscompiles the
 current compiler sources, so it cannot bootstrap a fully self-hosted build. The
-path forward: (1) cut an **interim mint-seeded release** — `publish.yml` now sets
-`LYRIC_BOOTSTRAP_MINT=1` + `--stage 1` so the release binary is minted from the
-historical F# compiler (correct emitter) carrying the current fixes; (2) flip
-`bootstrap.sh`/CI off the F# mint to download that release as the seed, and
+path forward: (1) cut an **interim mint-seeded release** — `publish.yml` takes a
+`seed` workflow_dispatch input (`download` default | `mint`); dispatch it with
+`seed: mint` to mint the release binary from the historical F# compiler (correct
+emitter) carrying the current fixes, with `--stage 1`; (2) once that release is
+published, all future releases (tag push, or `seed: download`) seed from it —
 re-enable the strict `--stage 2` reproducibility gate (both stages then
-self-hosted-emitted ⇒ byte-identical) — F# leaves the bootstrap here; (3) land
+self-hosted-emitted ⇒ byte-identical) and F# leaves the bootstrap here; (3) land
 D107 Phase 2 so the self-hosted compiler builds the stdlib itself, retiring the
-F# stdlib-reuse path. The interim release's `--stage 2` gate is intentionally
-skipped because an F#-emitted stage-1 and a self-hosted-emitted stage-2 diverge
-(e.g. the generic arity suffix F# omits).
+F# stdlib-reuse path. The interim (`seed: mint`) release skips `--stage 2`
+because an F#-emitted stage-1 and a self-hosted-emitted stage-2 legitimately
+diverge (e.g. the generic arity suffix F# omits).
