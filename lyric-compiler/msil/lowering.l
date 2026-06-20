@@ -2293,8 +2293,13 @@ func buildLocalVarSigWithCtx(locals: in List[MsilType], ctx: in LoweringCtx): Li
           }
         }
       }
-      case MGenericInst(_, _, _) -> bufU1(w, 0x1C)
-      case MGenericInstByName(_, _) -> bufU1(w, 0x1C)
+      // Closed generic-instantiation locals (e.g. `Option_Some`1<int32>` from a
+      // `case Some(x) ->` cast-slot) are tracked concretely by codegen, so encode
+      // the closed GENERICINST inline via `bufMsilTypeWithCtx` rather than erasing
+      // to Object — otherwise `ldloc` yields `object` where the concrete generic
+      // type is expected (StackUnexpected → InvalidProgramException) (#3920).
+      case MGenericInst(_, _, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
+      case MGenericInstByName(_, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       case MValueTypeGenericInst(_, _, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       case MArray(_) -> bufU1(w, 0x1C)
       // A concrete-collection local holds a genuine `List`1<elem>` /
