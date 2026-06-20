@@ -25440,7 +25440,8 @@ null → `None` / value → `Some(value)` at the call boundary, so no `null` lit
 or nullable type enters the language. Phase 1 (this entry) ships the MSIL
 emitter convention + `extern_option_self_test.l` (wired into CI); Phase 2
 migrates the `_kernel/` nullable externs and removes `case null` once a release
-carrying the convention becomes the bootstrap seed.
+carrying the convention becomes the bootstrap seed. JVM emitter parity (Phase 1
+is MSIL-only) is tracked in #3932.
 
 **Release cutover to fully self-hosted builds.** The published seed used by
 `bootstrap.sh`'s download path predates these cascade fixes and miscompiles the

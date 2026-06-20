@@ -6593,7 +6593,7 @@ unchanged so the current seed keeps building it. Phase 2 — after a release
 carrying this convention becomes the seed — migrates the `_kernel/` nullable
 externs (`environment_host`, `console_host`, `path_host`) to `Option[T]` returns
 and removes the `case null` usages, completing the null-free FFI boundary. JVM
-emitter parity is tracked for Phase 2.
+emitter parity is tracked in #3932 (Phase 1 is MSIL-only).
 
 The convention is matched in the emitter via the codegen's own `MsilType` union
 (an `MVoid` "no coercion" sentinel), **not** a locally-constructed

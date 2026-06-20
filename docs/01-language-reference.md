@@ -1231,6 +1231,10 @@ Callers above the kernel boundary match an ordinary `Option` (`case None` /
 `case Some(v)`) — no `null` handling is ever required.  The convention applies
 only when `T` is a reference type; value-type inners are not coerced.
 
+> **Target status.**  Phase 1 implements this convention in the MSIL backend
+> (`--target dotnet`).  JVM emitter parity (`--target jvm`) is tracked in #3932
+> and lands with D107 Phase 2.
+
 **Static vs. instance call detection.**  Both backends need to know
 whether a `@externTarget` binding is a static or instance call.  The
 explicit form is two paired annotations (#370):
