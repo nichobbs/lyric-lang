@@ -711,34 +711,83 @@ and `examples/rbac` end-to-end), independent of the suffix work above:
   record ctor had a malformed signature → `TypeLoadException: The signature is
   incorrect` on every self-emitted compile.  Now `writeCompressedInt`.
 
-### Remaining cascade (open)
+### Update (2026-06-20, session 3): parser blocker root-caused and fixed
 
-With the above landed, the self-emitted compiler **parses and runs deep into
-compilation** of the corpus and now stops at a `match not exhaustive` panic in
-`Lyric.Parser.parseParam`: `val dflt = match tryEatPunct(st, Eq) { case Some(_)
--> Some(parseExpr(st)); case None -> None }` builds the `None` as
-`Option_None<object>` (the bare-`None` arm has no payload to infer `T` from), so
-the following `match dflt` (typed `Option<Expr>`) fails generic invariance.
+The 2026-06-19 "remaining cascade" entry mis-attributed the blocker.  Careful
+runtime bisection (re-minting + reflecting into the self-emitted DLLs +
+calling `parse`/`isKw` directly) established the real picture:
 
-This is a self-hosted-emitter **type-inference gap** distinct from the suffix
-ABI: a bare nullary case in a match arm (or any construction with no annotation,
-return, or call-arg hint) erases its type argument.  Two fixes were attempted
-and **reverted** because the self-hosted emitter is currently fragile here:
+1. **bare-`None` inference — LANDED (correct fix).**  `lowerMatchExprMsil` now
+   carries a *running canonical* hint: a bare nullary arm (`case None -> None`)
+   lowered after a concrete `Option`-headed sibling (`case Some(e) -> Some(…)`)
+   reuses that sibling's type args, so `parseParam`'s `dflt` builds
+   `Option_None<Expr>` (verified in the self-emitted IL — the TypeSpec resolves
+   to `Option_None\`1<Lyric.Parser.Expr>`, not `<object>`).  The gate is narrow
+   (`None` only, `Std.Core.Option`-headed canonical only, unhinted matches only)
+   to avoid mis-typing a `None` from a non-`Option` sibling.  The earlier
+   "broke the parser / OOM" attempt was a different, unrestricted form.
 
-1. A codegen two-phase / hint-inference scheme in `lowerMatchExprMsil` (infer
-   the bare-`None` arm's `T` from a sibling `Some(e)` arm) — broke the parser
-   (mis-typed `None` in parser loops → corruption / OOM).
-2. The source workaround `val dflt: Option[Expr] = …` — adding the annotation
-   made `parseParam` mis-emit and **corrupted the whole `Lyric.Parser` DLL's
-   metadata** (header-parse `P0020` failures on every input), implicating a
-   self-hosted-emitter bug in emitting an in-bundle `Option<LocalType>`
-   (`Option_None<Expr>`) TypeSpec/MemberRef within a function.
+2. **The "P0020 corrupts the whole DLL" claim was a MISDIAGNOSIS.**  Reflecting
+   into the self-emitted DLLs showed they load cleanly (no metadata corruption);
+   `parsePackageDecl`/`isKw`/`tryEatKw` are byte-identical and resolve identical
+   tokens with vs. without the bare-`None` fix.  The bare-`None` fix did not
+   corrupt anything — it *removed* the `parseParam` hard-crash that had been
+   **masking** a pre-existing, separate blocker that fails far earlier.
 
-So the next blocker is genuinely in the emitter's generic-construction /
-in-bundle-TypeSpec path, not just inference — it needs dedicated, careful work
-(every change validated by re-minting and running the corpus, since a malformed
-metadata row silently corrupts an entire DLL).  More bare-`None`-class sites are
-expected behind it; each is the same erasure/ABI class.
+3. **The real parser blocker — cross-package nullary-case equality — FIXED.**
+   A non-generic nullary union case carries a static `Instance` singleton
+   (`lowerMNullaryUnionCase`) so `==` and nullary pattern tests compare by
+   reference (unions get no structural `Equals` override; `==` lowers to
+   `Object.Equals`).  The singleton is only registered in `singletonFieldTokens`
+   for the package that *defines* the union, so when a **consumer** package
+   constructed a cross-package nullary case (e.g. the parser passing `KwPackage`
+   — defined in `Lyric.Lexer` — to `tryEatKw`), construction fell through to
+   `newobj`, minting a fresh instance.  `Object.Equals(lexer-token-singleton,
+   parser-fresh-newobj)` is then `false`, so `tryEatKw` never matched and the
+   self-emitted compiler rejected **every** file with `P0020 expected
+   'package'`.  This hit baseline too (it just crashed at `parseParam` first).
+   Fix: `registerRestoredUnionCase` now registers a cross-assembly FieldRef
+   MemberRef to the case's `Instance` field in `singletonFieldTokens`, so the
+   bare-path nullary construction emits `ldsfld Instance` (the singleton) cross
+   package, exactly as it already does same-package.  Verified: the self-emitted
+   parser parses `package P …` with **0 diagnostics**.
+
+4. **First codegen-time extern fix — LANDED.**  With the parser unblocked the
+   self-emitted compiler reaches codegen and hit
+   `MissingMethodException: Byte[] Encoding.GetBytes(Encoding, String)` from
+   `Std.EncodingHost.hostEncodeUtf8` (an *instance* method `Encoding.GetBytes`).
+   The self-hosted `@externTarget` resolver defaults an un-hinted target to
+   *static* (`resolveExternTarget`: "callers must annotate instance externs with
+   `@externInstance`"), which the F# emitter never required (it used reflection).
+   Fix: add `@externInstance` to `hostEncodeUtf8`.  (Other instance externs in
+   `std/_kernel/` that are reached during a compile may need the same; string /
+   map / `toString` are emitter intrinsics, not externs, so they are unaffected.)
+
+### Remaining cascade (open) — generic-collection signature consistency
+
+With (1)–(4) the self-emitted compiler parses, type-checks, and runs into MSIL
+codegen, where it now stops at:
+
+```
+InvalidCastException: cannot cast List`1[System.Object] to List`1[Msil.Lowering.MsilType]
+  at Msil.Lowering.buildInstanceMethodSig(List, MsilType)
+  at Msil.Codegen.newCodegenCtx(...)
+```
+
+Root: the self-hosted emitter is **inconsistent about generic-collection
+erasure**.  A `List[T]` method *parameter* is emitted as the concrete
+`List<T>` (the method body `castclass List<T>` on first use of the param),
+but a `newList()` *construction* erases to `List<object>` unless a `collExpect`
+hint forces it concrete — and the hint is applied inconsistently (in one
+function, two identically-written `val xs: List[MsilType] = newList()` bindings
+produce one concrete and one erased list).  A cross-call then passes
+`List<object>` into a `List<T>` parameter and the entry cast throws.  The F#
+emitter sidesteps this by erasing **everything** to `List<object>` uniformly.
+The production fix is to make the self-hosted emitter consistent (either erase
+collection params to `List<object>` to match construction, or make `collExpect`
+reliably concrete at every `newList()` with a known element type) — a dedicated
+generic-collection slice, validated by re-minting and *running* the corpus.
+More sites of this class are expected behind it.
 
 ### Atomicity (why none of this is landed)
 

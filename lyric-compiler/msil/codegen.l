@@ -4449,6 +4449,69 @@ func pushAnnoHintTyArgs(fctx: in FuncCtx, annoTy: in MsilType): List[MsilType] {
   saved
 }
 
+// Count of concrete (non-erased) generic type arguments in `args`.
+func countConcreteArgsMsil(args: in List[MsilType]): Int {
+  var n = 0
+  var i = 0
+  while i < args.count {
+    val erased = match args[i] {
+      case MObject -> true
+      case MClass(c) -> c == "System.Object" or c == "object"
+      case _ -> false
+    }
+    if not erased {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  n
+}
+
+// The head FQN of a generic instantiation, arity suffix stripped.
+func msilHeadFqnMsil(t: in MsilType): String {
+  match t {
+    case MGenericInst(_, fqn, _) -> stripGenericArity(fqn)
+    case MGenericInstByName(fqn, _) -> stripGenericArity(fqn)
+    case MValueTypeGenericInst(_, fqn, _) -> stripGenericArity(fqn)
+    case _ -> ""
+  }
+}
+
+// Establish a fresh hint scope from an explicit type-argument list.
+func pushHintArgsDirectMsil(fctx: in FuncCtx, args: in List[MsilType]): List[MsilType] {
+  val saved: List[MsilType] = newList()
+  var i = 0
+  while i < fctx.contextHintTyArgs.count {
+    saved.add(fctx.contextHintTyArgs[i])
+    i = i + 1
+  }
+  while fctx.contextHintTyArgs.count > 0 {
+    fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+  }
+  var j = 0
+  while j < args.count {
+    fctx.contextHintTyArgs.add(args[j])
+    j = j + 1
+  }
+  saved
+}
+
+// True when a match-arm body is a bare nullary-case construction (`None`, …).
+func armBodyIsBareNullaryCaseMsil(cctx: in CodegenCtx, fctx: in FuncCtx, body: in ExprOrBlock): Bool {
+  match body {
+    case EOBExpr(e) -> {
+      match e.kind {
+        case EPath(path) -> {
+          val nm = lastSegmentMsil(path)
+          nm == "None" and nameIsNullaryCaseMsil(cctx, fctx, nm)
+        }
+        case _ -> false
+      }
+    }
+    case EOBBlock(_) -> false
+  }
+}
+
 // Recover the parent union FQN for a case-class ctor key (#2363 Stage 4).
 // Case classes are named `Union_Case`; since `_` is a valid identifier char the
 // parent can't be recovered by splitting the key, so it is looked up in the
@@ -6963,6 +7026,14 @@ func lowerMatchExprMsil(
   scrutinee: in Expr,
   arms: in List[MatchArm],
 ): MsilType {
+  // Whether the match has an enclosing construction hint (a binding annotation
+  // `val x: Option[T] = match …`, or a return-position match in an `Option[T]`
+  // function).  When present, a bare `None` arm already reads it via
+  // `contextHintTyArgs` and builds the closed `Option_None<T>` — so the
+  // running-canon inference below must NOT fire (it is only for the *unhinted*
+  // `val dflt = match …` form, e.g. `parseParam`; firing it for hinted matches
+  // regressed other parser sites — #3920).
+  val hasEntryHint: Bool = fctx.contextHintTyArgs.count > 0
   val scrutTy = lowerExprMsil(cctx, fctx, insns, scrutinee)
   val scrutSlot = allocSlotMsil(fctx, "__scrut_" + toString(fctx.slotTicker.count), scrutTy)
   emitStoreSlot(insns, scrutSlot, fctx.paramCount)
@@ -6984,6 +7055,17 @@ func lowerMatchExprMsil(
   val armTys: List[MsilType] = newList()
   val armNextLs: List[Int] = newList()
   val armRets: List[Bool] = newList()
+  // Bare-nullary-case arm type inference (#3920): a bare `None` arm carries no
+  // `T`, so it erases to `Option_None<object>` while a concrete sibling builds
+  // `Option_Some<Expr>`; a downstream `match` then `isinst`s `Option_None`1<Expr>`
+  // and misses at run time.  We keep the original single-pass lowering ORDER
+  // (reordering corrupts the emitted method bodies — see reverted approaches in
+  // #3920) and only carry a *running* canonical hint: the most-concrete generic
+  // args of any concrete fall-through arm lowered SO FAR.  When a bare nullary
+  // arm is reached after a concrete sibling (the common `Some(e)` / `None` order),
+  // it is lowered with that hint and builds the closed `Option_None<Expr>`.
+  val runningCanon: List[MsilType] = newList()
+  var runBest = 0
   var i = 0
   while i < arms.count {
     val arm = arms[i]
@@ -6999,11 +7081,42 @@ func lowerMatchExprMsil(
       case None -> {
       }
     }
-    val armTy = lowerExprOrBlockMsil(cctx, fctx, armInsns, arm.body)
+    val bare = (not hasEntryHint) and armBodyIsBareNullaryCaseMsil(cctx, fctx, arm.body)
+    val armTy = if bare and runningCanon.count > 0 {
+      val savedH = pushHintArgsDirectMsil(fctx, runningCanon)
+      val t = lowerExprOrBlockMsil(cctx, fctx, armInsns, arm.body)
+      restoreHintTyArgs(fctx, savedH)
+      t
+    } else {
+      lowerExprOrBlockMsil(cctx, fctx, armInsns, arm.body)
+    }
+    val ret = endsWithReturnMsil(armInsns)
+    // Update the running canonical from a concrete `Option`-headed fall-through
+    // arm only — a bare `None` is `Option_None`, so its type args must come from
+    // a sibling `Some(e)` (also `Option`), never from a `Result`/`List` arm that
+    // merely shares the match (which would mis-type `None` and break a downstream
+    // `None`-guarded loop → non-termination, #3920).
+    if (not bare) and (not ret) and msilHeadFqnMsil(armTy) == "Std.Core.Option" {
+      val a = genericArgsOfMsil(armTy)
+      if a.count > 0 {
+        val cc = countConcreteArgsMsil(a)
+        if cc > runBest {
+          runBest = cc
+          while runningCanon.count > 0 {
+            runningCanon.removeAt(runningCanon.count - 1)
+          }
+          var ka = 0
+          while ka < a.count {
+            runningCanon.add(a[ka])
+            ka = ka + 1
+          }
+        }
+      }
+    }
     armBuffers.add(armInsns)
     armTys.add(armTy)
     armNextLs.add(nextArmL)
-    armRets.add(endsWithReturnMsil(armInsns))
+    armRets.add(ret)
     i = i + 1
   }
 
@@ -21201,6 +21314,27 @@ func registerRestoredUnionCase(
   val sigKey = "restored_ucase_" + caseFqn
   val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, ".ctor", sigKey, ctorSig)
   cctx.recordCtorTokens.add(caseFqn, 0x0A000000 + memberRow)
+
+  // A non-generic nullary case carries a static `Instance` singleton (emitted by
+  // `lowerMNullaryUnionCase`) so that `==` and nullary-case pattern tests compare
+  // by reference.  For a CROSS-package case the singleton field lives in another
+  // assembly, so register a FieldRef MemberRef to it in `singletonFieldTokens`;
+  // without this, the bare-path construction (`EPath` nullary case) falls back to
+  // `newobj`, minting a fresh instance.  Two references to the same nullary case
+  // across a package boundary (e.g. the lexer's `KwPackage` stored in a token vs.
+  // the parser's `tryEatKw(st, KwPackage)` argument) would then be distinct
+  // objects, so `Object.Equals` returns false and every cross-package
+  // nullary-case comparison silently fails (#3920 — the self-host parser blocker:
+  // `tryEatKw` never matched, so the self-emitted compiler rejected every file
+  // with P0020).
+  if c.fields.count == 0 and uGenerics.count == 0 {
+    if not cctx.singletonFieldTokens.containsKey(caseFqn) {
+      val instSig = buildFieldSig(MObject)
+      val instSigKey = "restored_ucsingleton_" + caseFqn
+      val instRow = ctxAddMemberRef(cctx.lctx, typeRefRow, "Instance", instSigKey, instSig)
+      cctx.singletonFieldTokens.add(caseFqn, 0x0A000000 + instRow)
+    }
+  }
 
   // For generic union cases, route construction through buildInBundleGenericCtorTok
   // (which emits MNewobjGenericByName → TypeSpec-parented .ctor at Phase 5) and
