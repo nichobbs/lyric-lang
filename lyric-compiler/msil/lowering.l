@@ -2671,6 +2671,7 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
     )
     mi = mi + 1
   }
+  selfTypeDefRow
 }
 
 // ── Union lowering ────────────────────────────────────────────────────────────
@@ -2804,10 +2805,12 @@ pub func lowerMNullaryUnionCase(r: in MRecord, ctx: in LoweringCtx): Int {
       methodList = firstMethod
     )
   )
-  recordUserTypeDefRow(ctx, r.namespace, simpleNameRec, t.typeDefs.count)
+  val caseTypeDefRow = t.typeDefs.count
+  recordUserTypeDefRow(ctx, r.namespace, simpleNameRec, caseTypeDefRow)
   // A nullary case of a generic union re-declares the union's type parameters
   // (e.g. `Option_None` carries `[T]`), matching the F# emitter (#2362).
-  emitGenericParamRows(ctx, t.typeDefs.count, r.generics)
+  emitGenericParamRows(ctx, caseTypeDefRow, r.generics)
+  caseTypeDefRow
 }
 
 // Lower an MUnion as an abstract base class + one sealed case class per variant.
@@ -3501,7 +3504,9 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
       methodList = firstMethod
     )
   )
-  recordUserTypeDefRow(ctx, iface.namespace, simpleNameIface, t.typeDefs.count)
+  val ifaceTypeDefRow = t.typeDefs.count
+  recordUserTypeDefRow(ctx, iface.namespace, simpleNameIface, ifaceTypeDefRow)
+  ifaceTypeDefRow
 }
 
 // ── Impl lowering ─────────────────────────────────────────────────────────────
@@ -4804,7 +4809,9 @@ pub func lowerMFuncsToHostClass(
       methodList = firstMethod
     )
   )
-  recordUserTypeDefRow(ctx, hostClass, "Program", t.typeDefs.count)
+  val programTypeDefRow = t.typeDefs.count
+  recordUserTypeDefRow(ctx, hostClass, "Program", programTypeDefRow)
+  programTypeDefRow
 }
 
 // ── Package lowering ───────────────────────────────────────────────────────────

@@ -3247,15 +3247,112 @@ pub func freshLabelMsil(fctx: in FuncCtx): Int {
 // Two types are LocalVarSig-compatible iff this function returns the same byte.
 // MClass and MGenericInst both encode as 0x1C (object), so they are always
 // compatible — only distinct primitive types conflict.
-func localVarSlotByte(t: in MsilType): Int {
-  match t {
-    case MClass(_) -> 0x1C
-    case MGenericInst(_, _, _) -> 0x1C
-    // Concrete collections occupy object slots (they degrade to 0x1C in the
-    // LocalVarSig), so slot-compatibility keys them as object too.
-    case MConcreteList(_) -> 0x1C
-    case MConcreteMap(_, _) -> 0x1C
-    case other -> elementTypeByte(other)
+// Structural equality on MsilType, used to decide whether a same-named local
+// slot can be reused.  Two slots may share a combined-slot index only when
+// their LocalVarSig encodings are byte-identical; since `MConcreteList` /
+// `MConcreteMap` / `MGenericInst` / `MClass` now encode concretely in the
+// LocalVarSig (not erased to object), reference-type slot byte equality alone no
+// longer guarantees a compatible slot — e.g. `ListOp` and `DictOp` both key as
+// 0x1C but are unrelated reference types, so storing a `DictOp` into a slot the
+// LocalVarSig declares `ListOp` faults the verifier (StackUnexpected).  This
+// helper requires exact type identity so a reused slot's declared type always
+// matches every value stored into it.
+func msilTypeIdentical(a: in MsilType, b: in MsilType): Bool {
+  match a {
+    case MInt -> match b { case MInt -> true; case other -> false }
+    case MLong -> match b { case MLong -> true; case other -> false }
+    case MDouble -> match b { case MDouble -> true; case other -> false }
+    case MBool -> match b { case MBool -> true; case other -> false }
+    case MChar -> match b { case MChar -> true; case other -> false }
+    case MString -> match b { case MString -> true; case other -> false }
+    case MVoid -> match b { case MVoid -> true; case other -> false }
+    case MObject -> match b { case MObject -> true; case other -> false }
+    case MByte -> match b { case MByte -> true; case other -> false }
+    case MNativeInt -> match b { case MNativeInt -> true; case other -> false }
+    case MClass(an) -> match b { case MClass(bn) -> an == bn; case other -> false }
+    case MTypeVar(ai) -> match b { case MTypeVar(bi) -> ai == bi; case other -> false }
+    case MListOf(ae) -> match b { case MListOf(be) -> msilTypeIdentical(ae, be); case other -> false }
+    case MConcreteList(ae) -> {
+      match b {
+        case MConcreteList(be) -> msilTypeIdentical(ae, be)
+        case other -> false
+      }
+    }
+    case MIAsyncEnumerable(ae) -> {
+      match b {
+        case MIAsyncEnumerable(be) -> msilTypeIdentical(ae, be)
+        case other -> false
+      }
+    }
+    case MArray(ae) -> match b { case MArray(be) -> msilTypeIdentical(ae, be); case other -> false }
+    case MMapOf(ak, av) -> {
+      match b {
+        case MMapOf(bk, bv) -> msilTypeIdentical(ak, bk) and msilTypeIdentical(av, bv)
+        case other -> false
+      }
+    }
+    case MConcreteMap(ak, av) -> {
+      match b {
+        case MConcreteMap(bk, bv) -> msilTypeIdentical(ak, bk) and msilTypeIdentical(av, bv)
+        case other -> false
+      }
+    }
+    case MByRef(ai) -> match b { case MByRef(bi) -> msilTypeIdentical(ai, bi); case other -> false }
+    case MValueTypeRef(ac, af) -> {
+      match b {
+        case MValueTypeRef(bc, bf) -> ac == bc and af == bf
+        case other -> false
+      }
+    }
+    case MClassRef(ac, af) -> {
+      match b {
+        case MClassRef(bc, bf) -> ac == bc and af == bf
+        case other -> false
+      }
+    }
+    case MGenericInst(ac, ah, aargs) -> {
+      match b {
+        case MGenericInst(bc, bh, bargs) -> ac == bc and ah == bh and msilTypeListIdentical(aargs, bargs)
+        case other -> false
+      }
+    }
+    case MValueTypeGenericInst(ac, ah, aargs) -> {
+      match b {
+        case MValueTypeGenericInst(bc, bh, bargs) -> {
+          ac == bc and ah == bh and msilTypeListIdentical(aargs, bargs)
+        }
+        case other -> false
+      }
+    }
+    case MGenericInstByName(ah, aargs) -> {
+      match b {
+        case MGenericInstByName(bh, bargs) -> ah == bh and msilTypeListIdentical(aargs, bargs)
+        case other -> false
+      }
+    }
+    case MExternEnumerable(ae) -> {
+      match b {
+        case MExternEnumerable(be) -> msilTypeIdentical(ae, be)
+        case other -> false
+      }
+    }
+    case other -> false
+  }
+}
+
+func msilTypeListIdentical(a: in List[MsilType], b: in List[MsilType]): Bool {
+  if a.count != b.count {
+    false
+  } else {
+    var i = 0
+    var ok = true
+    while i < a.count {
+      if not msilTypeIdentical(a[i], b[i]) {
+        ok = false
+      }
+      i = i + 1
+    }
+    ok
   }
 }
 
@@ -3263,13 +3360,15 @@ func localVarSlotByte(t: in MsilType): Int {
 // Locals (slot >= paramCount) are appended to `fctx.locals`.
 // Returns the combined slot index (used as the key in the slots map).
 //
-// If `name` is already registered with the same LocalVarSig-byte type, the
+// If `name` is already registered with a structurally identical MsilType, the
 // existing slot is reused (MSIL locals are function-wide; disjoint branches
-// sharing the same binding name safely reuse the same slot).  When the same
-// name reappears with a different type byte (e.g. the same binding name in
-// two match arms typed `MLong` and `MDouble`), a fresh slot is allocated and
-// the name mapping is retargeted so subsequent EPath lookups in this arm see
-// the correctly-typed local.
+// sharing the same binding name and type safely reuse the same slot).  When the
+// same name reappears with any different type — a different type byte (e.g.
+// `MLong` then `MDouble`) OR a same-byte-but-distinct reference type (e.g.
+// `ListOp` then `DictOp`, or `List`1<A>` then `List`1<B>`, which now encode
+// concretely in the LocalVarSig) — a fresh slot is allocated and the name
+// mapping is retargeted so subsequent EPath lookups in this arm see the
+// correctly-typed local and stores match the slot's declared LocalVarSig type.
 //
 // CALLER CONSTRAINT: the retargeting path is only safe when no live code
 // holds a cached reference to the old slot.  Today only `lowerPatternBindMsil`
@@ -3282,19 +3381,8 @@ pub func allocSlotMsil(fctx: in FuncCtx, name: in String, ty: in MsilType): Int 
   match mapGet(fctx.slots, name) {
     case Some(existing) -> {
       val existingTy = match mapGet(fctx.types, name) { case Some(t) -> t; case None -> ty }
-      if localVarSlotByte(existingTy) == localVarSlotByte(ty) {
-        // Slot reused, but the tracked type must still be refreshed to the new
-        // binding's type: two same-named locals that share an object-byte slot
-        // (e.g. a `List[InterpolatedSegment]` then a `List[String]` in two
-        // match arms) must each see their own element type, or the stale type
-        // mis-routes a later EIndex/`.add` (harmless while every list is
-        // `List<object>`, a fault once element types are concrete).
-        // Short-circuit the remove+add mutation when the type is already correct
-        // to avoid gratuitous map churn on same-type re-binds.
-        if existingTy != ty {
-          fctx.types.remove(name)
-          fctx.types.add(name, ty)
-        }
+      if msilTypeIdentical(existingTy, ty) {
+        // Exact type match: reuse the slot and its LocalVarSig entry unchanged.
         existing
       } else {
         val slot = fctx.slotTicker.count
@@ -4189,6 +4277,21 @@ func isValueType(ty: in MsilType): Bool {
     case MChar -> true
     case MByte -> true
     case _ -> false
+  }
+}
+
+// True when `ty` is a CLR value type usable as an instance-call receiver — the
+// primitives plus the struct-extern encodings (`MValueTypeRef` such as
+// `System.TimeSpan` / `System.DateTime`, and `MValueTypeGenericInst`).  A
+// value-type instance member must be reached with the receiver's ADDRESS
+// (`ldarga`) and a non-virtual `call`; emitting `ldarg` (the value) + `callvirt`
+// produces IL that crashes the JIT (CallVirtOnValueType), so the FFI emission
+// path branches on this.
+func isValueTypeReceiverMsil(ty: in MsilType): Bool {
+  match ty {
+    case MValueTypeRef(_, _) -> true
+    case MValueTypeGenericInst(_, _, _) -> true
+    case other -> isValueType(other)
   }
 }
 
@@ -12438,6 +12541,14 @@ func emitExternTargetBody(
       val mrRow = ctxAddMemberRef(cctx.lctx, tRefRow, emitMember, "ffi_" + target, sig)
       val tok = 0x0A000000 + mrRow
 
+      // A value-type instance member (e.g. `System.TimeSpan.TotalMilliseconds`)
+      // must be reached through the receiver's ADDRESS and a non-virtual `call`:
+      // the receiver is param 0, and when its declared type is a struct the
+      // verifier (and the JIT, fatally) requires `ldarga` + `call`, not `ldarg`
+      // + `callvirt`.  Reference-type receivers keep `ldarg` + `callvirt`.
+      val valueTypeReceiver = not r.isCtor and not emitIsStatic and decl.params.count > 0 and
+        isValueTypeReceiverMsil(paramTypes[0])
+
       // Load every Lyric param in order.  For instance calls the
       // receiver is param 0 and lands on the stack first; for static
       // calls every param is explicit.  For `out`/`inout` parameters,
@@ -12447,6 +12558,8 @@ func emitExternTargetBody(
       while li < decl.params.count {
         if isByrefMode(decl.params[li].mode) {
           insns.add(MLdarga(slot = li))
+        } else if li == 0 and valueTypeReceiver {
+          insns.add(MLdarga(slot = li))
         } else {
           insns.add(MLdarg(slot = li))
         }
@@ -12455,6 +12568,8 @@ func emitExternTargetBody(
       if r.isCtor {
         insns.add(MNewobj(ctorToken = tok))
       } else if emitIsStatic {
+        insns.add(MCall(methodToken = tok))
+      } else if valueTypeReceiver {
         insns.add(MCall(methodToken = tok))
       } else {
         insns.add(MCallvirt(methodToken = tok))
