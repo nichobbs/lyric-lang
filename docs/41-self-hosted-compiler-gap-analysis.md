@@ -763,31 +763,60 @@ calling `parse`/`isKw` directly) established the real picture:
    `std/_kernel/` that are reached during a compile may need the same; string /
    map / `toString` are emitter intrinsics, not externs, so they are unaffected.)
 
-### Remaining cascade (open) — generic-collection signature consistency
+### Update (2026-06-20, session 4): codegen reached; cascade is the generic-collection ABI
 
-With (1)–(4) the self-emitted compiler parses, type-checks, and runs into MSIL
-codegen, where it now stops at:
+Two more fixes (5 total now) push the self-emitted compiler past `newCodegenCtx`
+and into per-function codegen:
+
+5. **`funcParamTypes` for restored functions — LANDED.**  `registerRestoredFunc`
+   recorded a restored function's token, return type, and parameter *modes* but
+   not its parameter *MsilTypes*.  The call-site `collExpect` propagation reads
+   `funcParamTypes[tokKey]`, so a bare `newList()` / `newMap()` passed to a
+   restored function's `List[T]` / `Map[K,V]` parameter (e.g.
+   `buildInstanceMethodSig(newList(), …)` in `newCodegenCtx` → Msil.Lowering)
+   erased to `List<object>` and failed the callee's `castclass List<T>` on entry
+   (InvalidCastException).  Now registered.
+
+6. **Scalar params erased in the cross-package hint — LANDED.**  (5) made
+   *every* parameter precise, including value-type scalars.  But a cross-package
+   *call result* used as an argument is currently typed `MObject` (its
+   `funcRetTypes` return type is not threaded through to the call-arg type) while
+   the value on the stack is the raw scalar — so `coerceCallArgMsil` saw
+   (`MObject` arg, `MInt` param) and emitted `unbox.any int` against an unboxed
+   int → NullReferenceException in `newCodegenCtx` (the `buildGenericInstBlob(
+   tdrTypeRef(...), …)` call).  Fix: record scalar parameters as `MObject` in the
+   cross-package construction-hint table (`collHintParamType`), matching the F#
+   emitter's uniform erasure, so the coercion is a no-op; concrete collection /
+   generic parameters stay precise so the `collExpect` hint still fires.
+
+**Next blocker (same class, in per-function lowering):**
 
 ```
-InvalidCastException: cannot cast List`1[System.Object] to List`1[Msil.Lowering.MsilType]
-  at Msil.Lowering.buildInstanceMethodSig(List, MsilType)
-  at Msil.Codegen.newCodegenCtx(...)
+InvalidCastException: cannot cast List`1[System.Object] to List`1[System.String]
+  at Msil.Codegen.lowerFuncMsil(CodegenCtx, FunctionDecl, String)
 ```
 
-Root: the self-hosted emitter is **inconsistent about generic-collection
-erasure**.  A `List[T]` method *parameter* is emitted as the concrete
-`List<T>` (the method body `castclass List<T>` on first use of the param),
-but a `newList()` *construction* erases to `List<object>` unless a `collExpect`
-hint forces it concrete — and the hint is applied inconsistently (in one
-function, two identically-written `val xs: List[MsilType] = newList()` bindings
-produce one concrete and one erased list).  A cross-call then passes
-`List<object>` into a `List<T>` parameter and the entry cast throws.  The F#
-emitter sidesteps this by erasing **everything** to `List<object>` uniformly.
-The production fix is to make the self-hosted emitter consistent (either erase
-collection params to `List<object>` to match construction, or make `collExpect`
-reliably concrete at every `newList()` with a known element type) — a dedicated
-generic-collection slice, validated by re-minting and *running* the corpus.
-More sites of this class are expected behind it.
+Root (confirmed pervasive): the self-hosted emitter is **inconsistent about
+generic-collection erasure**.  A `List[T]` / `Map[K,V]` *parameter*, *local
+slot*, or *field* is emitted as the concrete `List<T>` (with a `castclass`
+on use), but a `newList()` / `newMap()` *construction* — and a cross-package
+*call result* — erases to `List<object>` unless a `collExpect` hint forces it
+concrete, and the hint does not reach every site (call results carry no element
+type; some `newList()` bindings miss the hint).  Wherever an erased value meets
+a precise slot the invariant cast throws.  The F# emitter sidesteps this by
+erasing **everything** to `List<object>` uniformly.
+
+This is **pervasive, not a finite cascade** — every `List[T]`/`Map[K,V]`
+parameter/local/field across the parser and codegen is a candidate site, and
+each surfaces only when the prior is fixed.  The production fix is a **systematic
+generic-collection ABI decision applied uniformly**: either (a) erase all
+collection parameters/locals/fields to `List<object>` (match the F# emitter and
+the default `newList()` erasure), or (b) make construction (and cross-package
+call-result typing) reliably concrete at every site.  Option (a) is the smaller,
+lower-risk change and matches the working F# ABI; option (b) preserves element-
+type tracking but must be exhaustive.  Either way it is a dedicated slice,
+validated by re-minting and *running* the corpus, not incremental per-site
+patching.
 
 ### Atomicity (why none of this is landed)
 
