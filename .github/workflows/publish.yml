@@ -92,10 +92,15 @@ jobs:
           - os: macos-latest
             rid: osx-x64
             archive_suffix: tar.gz
-          - os: windows-latest
-            rid: win-x64
-            archive_suffix: zip
-            authenticode: true
+          # win-x64 temporarily disabled: the F# `seed: mint` stage-0 fails on
+          # Windows (the F# emitter's package cache lands in %TEMP% instead of
+          # the script's $FSCACHE, because .NET Path.GetTempPath() reads TMP/TEMP
+          # on Windows, not TMPDIR — so the harvest finds no DLLs).  Re-enable
+          # once fixed.  Tracking: #3941.
+          # - os: windows-latest
+          #   rid: win-x64
+          #   archive_suffix: zip
+          #   authenticode: true
 
     runs-on: ${{ matrix.os }}
 
