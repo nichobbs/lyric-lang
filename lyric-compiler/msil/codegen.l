@@ -21196,8 +21196,41 @@ func registerRestoredFunc(cctx: in CodegenCtx, packageName: in String, fn: in Fu
   // in Msil.Codegen calling into Msil.Lowering) erases to `List<object>` and
   // then fails the callee's `castclass List<T>` on entry with
   // InvalidCastException (#3920 self-host cascade).
+  //
+  // Value-type scalar parameters (Int/Long/Double/Bool/Char/Byte) are recorded
+  // as MObject here, NOT their precise type.  A cross-package *call result* used
+  // as such an argument is currently tracked as MObject (its return type is not
+  // threaded through the call-arg type), while the value on the stack is the raw
+  // scalar.  If the parameter were recorded precisely, `coerceCallArgMsil` would
+  // see (MObject arg, MInt param) and emit `unbox.any int` against the raw
+  // scalar — a NullReferenceException at run time.  Recording the scalar
+  // parameter as MObject keeps the coercion a no-op (matching the F# emitter's
+  // uniform erasure), while concrete collection / generic parameters stay
+  // precise so the collExpect construction hint above still fires (#3920).
+  val hintParamTypes: List[MsilType] = newList()
+  var hpi = 0
+  while hpi < paramTypes.count {
+    hintParamTypes.add(collHintParamType(paramTypes[hpi]))
+    hpi = hpi + 1
+  }
   if not cctx.funcParamTypes.containsKey(fqn) {
-    cctx.funcParamTypes.add(fqn, paramTypes)
+    cctx.funcParamTypes.add(fqn, hintParamTypes)
+  }
+}
+
+// Erase a value-type scalar parameter MsilType to MObject for the cross-package
+// `funcParamTypes` construction-hint table; pass every other type through
+// unchanged.  See `registerRestoredFunc` for why scalars must not be recorded
+// precisely (the `coerceCallArgMsil` `unbox.any` hazard, #3920).
+func collHintParamType(t: in MsilType): MsilType {
+  match t {
+    case MInt -> MObject
+    case MLong -> MObject
+    case MDouble -> MObject
+    case MBool -> MObject
+    case MChar -> MObject
+    case MByte -> MObject
+    case _ -> t
   }
 }
 
