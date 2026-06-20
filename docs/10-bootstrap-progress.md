@@ -25441,3 +25441,17 @@ or nullable type enters the language. Phase 1 (this entry) ships the MSIL
 emitter convention + `extern_option_self_test.l` (wired into CI); Phase 2
 migrates the `_kernel/` nullable externs and removes `case null` once a release
 carrying the convention becomes the bootstrap seed.
+
+**Release cutover to fully self-hosted builds.** The published seed used by
+`bootstrap.sh`'s download path predates these cascade fixes and miscompiles the
+current compiler sources, so it cannot bootstrap a fully self-hosted build. The
+path forward: (1) cut an **interim mint-seeded release** — `publish.yml` now sets
+`LYRIC_BOOTSTRAP_MINT=1` + `--stage 1` so the release binary is minted from the
+historical F# compiler (correct emitter) carrying the current fixes; (2) flip
+`bootstrap.sh`/CI off the F# mint to download that release as the seed, and
+re-enable the strict `--stage 2` reproducibility gate (both stages then
+self-hosted-emitted ⇒ byte-identical) — F# leaves the bootstrap here; (3) land
+D107 Phase 2 so the self-hosted compiler builds the stdlib itself, retiring the
+F# stdlib-reuse path. The interim release's `--stage 2` gate is intentionally
+skipped because an F#-emitted stage-1 and a self-hosted-emitted stage-2 diverge
+(e.g. the generic arity suffix F# omits).

@@ -95,6 +95,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # Full history so the interim mint-seeded release can reach the
+          # historical F# bootstrap commit (LYRIC_BOOTSTRAP_MINT below).
+          fetch-depth: 0
 
       - name: Install ARM64 cross-compilation toolchain (Ubuntu)
         if: matrix.os == 'ubuntu-latest' && matrix.rid == 'linux-arm64'
@@ -115,8 +119,23 @@ jobs:
 
       - name: Build stage 1 (self-hosted compiler)
         shell: bash
+        # INTERIM mint-seeded release (D107 / docs/10): the latest published
+        # release predates the self-host cascade fixes (cross-package nullary
+        # equality, slot identity, value-type externs, the Option[T] FFI
+        # coercion), so seeding stage-0 from that download would MISCOMPILE the
+        # current compiler sources.  Mint a clean stage-0 from the historical F#
+        # bootstrap compiler instead (its emitter is correct; it bakes the
+        # current — fixed — self-hosted source into a working stage-1 binary).
+        # `--stage 1` only: the strict `--stage 2` reproducibility gate compares
+        # the F#-emitted stage-1 against the self-hosted-emitted stage-2, which
+        # legitimately diverge (e.g. the generic arity suffix F# omits), so it
+        # cannot pass for an F#-seeded build.  Once THIS release is published and
+        # becomes the download seed, flip back to the download path + `--stage 2`
+        # (both stages self-hosted-emitted ⇒ byte-identical) and drop the mint —
+        # that is the point at which F# leaves the bootstrap entirely.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LYRIC_BOOTSTRAP_MINT: '1'
         run: |
           ./scripts/bootstrap.sh --stage 1
 
