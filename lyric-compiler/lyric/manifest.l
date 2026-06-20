@@ -287,7 +287,10 @@ func skipOne(c: inout Cursor): Unit {
 }
 
 func skipWhitespace(c: inout Cursor): Unit {
-  while not isAtEnd(c) and (peek(c) == ' ' or peek(c) == '\t') {
+  // `\r` is treated as horizontal whitespace so CRLF (`\r\n`) manifests parse on
+  // any platform: the `\r` is skipped and the `\n` remains the line terminator.
+  // Without this a Windows (CRLF) checkout fails with "unexpected character '\r'".
+  while not isAtEnd(c) and (peek(c) == ' ' or peek(c) == '\t' or peek(c) == '\r') {
     skipOne(c)
   }
 }

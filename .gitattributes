@@ -1,23 +1,25 @@
 * text=auto
 
-# Source code — always normalised to LF.  F# files contain `'\x00'`
-# character literals which trip git's binary-detection heuristic and
-# hide diffs from review; this attribute forces text-mode diffing.
-*.fs   text diff
-*.fsi  text diff
-*.fsx  text diff
-*.fsproj text diff
+# Source code — always normalised to LF on checkout (eol=lf), not just in the
+# repo.  Without eol=lf a Windows checkout gets CRLF, and self-hosted parsers
+# that read these files as build inputs (e.g. the lyric.toml manifest parser)
+# fail on the stray '\r'.  `diff` forces text-mode diffing for files whose
+# bytes (e.g. F#/Lyric `'\x00'` char literals) trip git's binary heuristic.
+*.fs   text eol=lf diff
+*.fsi  text eol=lf diff
+*.fsx  text eol=lf diff
+*.fsproj text eol=lf diff
 
-*.cs   text diff
-*.csproj text diff
+*.cs   text eol=lf diff
+*.csproj text eol=lf diff
 
-*.l    text diff
-*.toml text diff
-*.md   text diff
-*.yml  text diff
-*.yaml text diff
+*.l    text eol=lf diff
+*.toml text eol=lf diff
+*.md   text eol=lf diff
+*.yml  text eol=lf diff
+*.yaml text eol=lf diff
 *.sh   text eol=lf
-*.json text diff
+*.json text eol=lf diff
 
 # Binary
 *.png  binary
