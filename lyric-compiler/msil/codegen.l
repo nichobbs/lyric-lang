@@ -4512,6 +4512,38 @@ func armBodyIsBareNullaryCaseMsil(cctx: in CodegenCtx, fctx: in FuncCtx, body: i
   }
 }
 
+// True when a match-arm body is a bare empty-collection construction
+// (`newList()` / `newMap()`), which — like a bare `None` — carries no element
+// type and erases to `List<object>` / `Dictionary<object,object>` unless the
+// surrounding context supplies one.  The recurring `match mapGet(m, k) { case
+// Some(c) -> c; case None -> newList() }` idiom hits this: the `Some` arm yields
+// the concrete `List<T>` from the map while the `None` arm's `newList()` erases,
+// and the binding slot (the concrete `List<T>`) then fails a `castclass` when
+// the `None` branch is taken (#3920 self-host cascade).
+func armBodyIsBareNewCollMsil(body: in ExprOrBlock): Bool {
+  match body {
+    case EOBExpr(e) -> {
+      match e.kind {
+        case ECall(fn, args) -> {
+          if args.count == 0 {
+            match fn.kind {
+              case EPath(path) -> {
+                val nm = lastSegmentMsil(path)
+                nm == "newList" or nm == "newMap"
+              }
+              case _ -> false
+            }
+          } else {
+            false
+          }
+        }
+        case _ -> false
+      }
+    }
+    case EOBBlock(_) -> false
+  }
+}
+
 // Recover the parent union FQN for a case-class ctor key (#2363 Stage 4).
 // Case classes are named `Union_Case`; since `_` is a valid identifier char the
 // parent can't be recovered by splitting the key, so it is looked up in the
@@ -7066,6 +7098,12 @@ func lowerMatchExprMsil(
   // it is lowered with that hint and builds the closed `Option_None<Expr>`.
   val runningCanon: List[MsilType] = newList()
   var runBest = 0
+  // Parallel running canonical for bare empty-collection arms (`newList()` /
+  // `newMap()`): the most recent concrete `MConcreteList` / `MConcreteMap` of a
+  // fall-through arm.  A bare `newList()` arm reached after a concrete-collection
+  // sibling is lowered with that type pushed onto `collExpect` so it builds the
+  // matching concrete collection rather than the erased `List<object>` (#3920).
+  var runningCollCanon: MsilType = MObject
   var i = 0
   while i < arms.count {
     val arm = arms[i]
@@ -7082,15 +7120,27 @@ func lowerMatchExprMsil(
       }
     }
     val bare = (not hasEntryHint) and armBodyIsBareNullaryCaseMsil(cctx, fctx, arm.body)
+    val bareColl = (not hasEntryHint) and armBodyIsBareNewCollMsil(arm.body)
     val armTy = if bare and runningCanon.count > 0 {
       val savedH = pushHintArgsDirectMsil(fctx, runningCanon)
       val t = lowerExprOrBlockMsil(cctx, fctx, armInsns, arm.body)
       restoreHintTyArgs(fctx, savedH)
       t
+    } else if bareColl and isConcreteCollTy(runningCollCanon) {
+      pushCollExpect(fctx, runningCollCanon)
+      val t = lowerExprOrBlockMsil(cctx, fctx, armInsns, arm.body)
+      popCollExpect(fctx)
+      t
     } else {
       lowerExprOrBlockMsil(cctx, fctx, armInsns, arm.body)
     }
     val ret = endsWithReturnMsil(armInsns)
+    // Track the most-concrete collection type of a fall-through arm so a bare
+    // `newList()` / `newMap()` sibling builds the matching concrete collection
+    // (the `Some(c) -> c` arm of the `match mapGet(...)` idiom, #3920).
+    if (not bareColl) and (not ret) and isConcreteCollTy(armTy) {
+      runningCollCanon = armTy
+    }
     // Update the running canonical from a concrete `Option`-headed fall-through
     // arm only — a bare `None` is `Option_None`, so its type args must come from
     // a sibling `Some(e)` (also `Option`), never from a `Result`/`List` arm that
