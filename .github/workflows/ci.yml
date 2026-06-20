@@ -200,6 +200,22 @@ jobs:
             "$lyric_bin" build "$ex" -o "$out" --force
           done
 
+      # Verify the SELF-HOSTED emitter produces valid IL (#3943).  The AOT
+      # binary built above routes `--target dotnet` through Msil.Bridge, so
+      # emitting the whole Lyric.Cli closure and running `ilverify` over it
+      # catches self-hosted-emitter IL bugs (union match-arm type tracking,
+      # value-erased-to-object, list element-type confusion) that the F# mint
+      # build cannot — they only bite the download-seed AOT release path.
+      # continue-on-error while the backlog of emitter fixes lands; flip to a
+      # hard gate (remove continue-on-error) once it reports 0 errors.
+      - name: ilverify self-hosted emitter IL (informational; #3943)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        continue-on-error: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          bash scripts/ilverify-selfhosted.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+
       # Run/test single-file examples to catch runtime regressions.
       - name: Run single-file examples
         if: steps.changes.outputs.has_code_changes == 'true'
