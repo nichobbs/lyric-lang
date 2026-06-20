@@ -1212,6 +1212,29 @@ If you need a generic list-add wrapper, implement it in Lyric using a kernel-lev
 monomorphised helper and expose a generic Lyric function that delegates to the
 concrete helper.
 
+**Nullable BCL returns → `Option[T]` (D107).**  Many BCL methods return a
+nullable reference (e.g. `System.Environment.GetEnvironmentVariable: string?`,
+`System.Console.ReadLine: string?`, `System.IO.Path.GetDirectoryName: string?`).
+Lyric has no `null` literal or nullable type, so a kernel `@externTarget` that
+wraps such a method declares its return as `Option[T]` (with `T` a reference
+type).  The emitter binds the underlying MemberRef to the BCL's real `T` and
+coerces the result at the call boundary — a null reference becomes `None`, a
+non-null reference becomes `Some(value)`:
+
+```
+// GetEnvironmentVariable returns string? in the BCL; the kernel exposes Option.
+@externTarget("System.Environment.GetEnvironmentVariable")
+pub func getEnvVar(key: in String): Option[String]
+```
+
+Callers above the kernel boundary match an ordinary `Option` (`case None` /
+`case Some(v)`) — no `null` handling is ever required.  The convention applies
+only when `T` is a reference type; value-type inners are not coerced.
+
+> **Target status.**  Phase 1 implements this convention in the MSIL backend
+> (`--target dotnet`).  JVM emitter parity (`--target jvm`) is tracked in #3932
+> and lands with D107 Phase 2.
+
 **Static vs. instance call detection.**  Both backends need to know
 whether a `@externTarget` binding is a static or instance call.  The
 explicit form is two paired annotations (#370):

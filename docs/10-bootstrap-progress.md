@@ -25414,3 +25414,46 @@ constructors) to follow-up.
 - `docs/48-constructor-shorthand.md`: Status updated from "Unbacked (D106)" to
   "Specced (D106)".
 - `CLAUDE.md` sketch-list entries updated to reflect decision backing.
+
+### D107 — self-host cascade fixes + nullable-BCL → `Option[T]` FFI coercion (docs/41 §11)
+
+Self-hosting hardening: the self-emitted MSIL backend now compiles and runs the
+core examples through a fully self-emitted compiler closure (fizzbuzz/primes/csv
+build+run via the self-emitted binary). The cascade of self-host-only codegen
+defects fixed along the way:
+
+- Cross-package nullary union-case equality: non-generic nullary cases load the
+  defining assembly's `Instance` singleton (was `newobj`-per-use, breaking
+  reference equality — the `P0020 expected 'package'` self-host blocker).
+- Value-type instance externs (`TimeSpan.TotalMilliseconds`): `ldarga` + `call`
+  (was `ldarg` + `callvirt`, which crashes the JIT).
+- LocalVarSig slot identity: same-named match-arm locals of distinct reference
+  types (`ListOp`/`DictOp`, `List<A>`/`List<B>`) get fresh slots; concrete
+  collection / generic-instantiation locals encode concretely (were erased to
+  object, desyncing the verifier).
+- `lowerM*` Int-return tails; catch-binding `castclass System.Exception` before
+  `get_Message`.
+
+Nullable-BCL FFI (D107): `@externTarget` functions returning `Option[T]` (T a
+reference type) bind the MemberRef to the BCL's real nullable `T` and coerce
+null → `None` / value → `Some(value)` at the call boundary, so no `null` literal
+or nullable type enters the language. Phase 1 (this entry) ships the MSIL
+emitter convention + `extern_option_self_test.l` (wired into CI); Phase 2
+migrates the `_kernel/` nullable externs and removes `case null` once a release
+carrying the convention becomes the bootstrap seed. JVM emitter parity (Phase 1
+is MSIL-only) is tracked in #3932.
+
+**Release cutover to fully self-hosted builds.** The published seed used by
+`bootstrap.sh`'s download path predates these cascade fixes and miscompiles the
+current compiler sources, so it cannot bootstrap a fully self-hosted build. The
+path forward: (1) cut an **interim mint-seeded release** — `publish.yml` takes a
+`seed` workflow_dispatch input (`download` default | `mint`); dispatch it with
+`seed: mint` to mint the release binary from the historical F# compiler (correct
+emitter) carrying the current fixes, with `--stage 1`; (2) once that release is
+published, all future releases (tag push, or `seed: download`) seed from it —
+re-enable the strict `--stage 2` reproducibility gate (both stages then
+self-hosted-emitted ⇒ byte-identical) and F# leaves the bootstrap here; (3) land
+D107 Phase 2 so the self-hosted compiler builds the stdlib itself, retiring the
+F# stdlib-reuse path. The interim (`seed: mint`) release skips `--stage 2`
+because an F#-emitted stage-1 and a self-hosted-emitted stage-2 legitimately
+diverge (e.g. the generic arity suffix F# omits).

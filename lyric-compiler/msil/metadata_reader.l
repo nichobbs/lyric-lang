@@ -2234,6 +2234,147 @@ pub func decodeExternMethodSig(
   }
 }
 
+// Like `scoreSigType`, but additionally accepts a NAMED reference argument
+// flowing into a NAMED reference parameter of a different type as an implicit
+// upcast (e.g. a `CultureInfo` argument into an `IFormatProvider` parameter),
+// scored 1 — below an exact match's 2, so an exact overload always wins.  Only
+// named-reference↔named-reference is relaxed: reference upcasts are free in IL,
+// but value-type and primitive mismatches are not, so e.g. a `string` argument
+// still never binds to an interface-typed parameter (that stays -1).
+pub func scoreSigTypeLenient(arg: in SigType, param: in SigType): Int {
+  val s = scoreSigType(arg, param)
+  if s >= 0 {
+    s
+  } else {
+    val argRefNamed = match arg { case STNamed(_, vt) -> not vt; case _ -> false }
+    val paramRefNamed = match param { case STNamed(_, vt) -> not vt; case _ -> false }
+    if argRefNamed and paramRefNamed {
+      1
+    } else {
+      0 - 1
+    }
+  }
+}
+
+// Sum of per-parameter lenient scores, or -1 on arity mismatch / any
+// incompatible parameter.  The lenient counterpart of `scoreParams`.
+pub func scoreParamsLenient(argTypes: in List[SigType], params: in List[SigType]): Int {
+  if params.count != argTypes.count {
+    return 0 - 1
+  }
+  var total = 0
+  var i = 0
+  while i < argTypes.count {
+    val s = scoreSigTypeLenient(argTypes[i], params[i])
+    if s < 0 {
+      return 0 - 1
+    }
+    total = total + s
+    i = i + 1
+  }
+  total
+}
+
+// Resolve a non-generic method extern's true signature, disambiguating same-
+// name/same-arity overloads by scoring the caller's argument types (lenient on
+// named-reference upcasts).  `fullArgTypes` is the Lyric wrapper's complete
+// argument list (the receiver is arg 0 for instance methods); an instance
+// candidate (`hasThis`, BCL param count == fullArgTypes.count - 1) is scored
+// against the receiver-excluded tail, a static candidate (BCL param count ==
+// fullArgTypes.count) against the whole list.  Instance candidates win ties so
+// the convention matches reflection's bias.  Returns the normalised
+// `DecodedMethodSig` (`hasThis` + FQN-named param/return types) so the emitter
+// can encode the BCL method's real signature — fixing both the
+// instance-vs-static guess and Lyric-vs-BCL parameter-type mismatches.  None
+// when the type is absent or no overload is compatible.
+pub func resolveExternMethodScoredIn(
+  img: in PeImage,
+  layout: in TableLayout,
+  th: in TablesHeader,
+  typeFqn: in String,
+  member: in String,
+  fullArgTypes: in List[SigType],
+): Option[DecodedMethodSig] {
+  val typeRow = findTypeDefByFqn(img, layout, th, typeFqn)
+  if typeRow < 0 {
+    return None
+  }
+  val declArity = fullArgTypes.count
+  val tail: List[SigType] = newList()
+  var ti = 1
+  while ti < fullArgTypes.count {
+    tail.add(fullArgTypes[ti])
+    ti = ti + 1
+  }
+  val mr = methodRange(img, layout, th, typeRow)
+  var best: Option[DecodedMethodSig] = None
+  var bestScore = 0 - 1
+  var bestIsInstance = false
+  var mi = mr.start
+  while mi <= mr.endRow {
+    val md = readMethodDef(img, layout, mi)
+    if md.name == member {
+      match decodeMethodSig(blobAt(img, layout, md.sigBlob)) {
+        case Err(_) -> {
+        }
+        case Ok(sig) -> {
+          val normParams: List[SigType] = newList()
+          var pj = 0
+          while pj < sig.paramTypes.count {
+            normParams.add(resolveSigTypeFqn(img, layout, th, sig.paramTypes[pj]))
+            pj = pj + 1
+          }
+          val isInstance = sig.hasThis
+          val score = if isInstance and normParams.count == declArity - 1 {
+            scoreParamsLenient(tail, normParams)
+          } else if not isInstance and normParams.count == declArity {
+            scoreParamsLenient(fullArgTypes, normParams)
+          } else {
+            0 - 1
+          }
+          val better = if score < 0 {
+            false
+          } else if score > bestScore {
+            true
+          } else if score == bestScore and isInstance and not bestIsInstance {
+            true
+          } else {
+            false
+          }
+          if better {
+            bestScore = score
+            bestIsInstance = isInstance
+            best = Some(
+              value = DecodedMethodSig(
+                hasThis = sig.hasThis,
+                isGeneric = sig.isGeneric,
+                genParamCount = sig.genParamCount,
+                returnType = resolveSigTypeFqn(img, layout, th, sig.returnType),
+                paramTypes = normParams
+              )
+            )
+          }
+        }
+      }
+    }
+    mi = mi + 1
+  }
+  best
+}
+
+// Read-from-disk convenience wrapper over `resolveExternMethodScoredIn`.
+pub func resolveExternMethodScored(
+  asmPath: in String,
+  typeFqn: in String,
+  member: in String,
+  fullArgTypes: in List[SigType],
+): Option[DecodedMethodSig] {
+  match File.readBytes(asmPath) {
+    case Err(_) -> None
+    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> None; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> None; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> None; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> None; case Ok(layout) -> resolveExternMethodScoredIn(img, layout, th, typeFqn, member, fullArgTypes) } } } }
+  }
+}
+
 // ── Layer 5b: interface-impl conformance support (D105 Phase 2) ──────────────
 //
 // `TypeAttributes.ClassSemanticsMask` is the two-bit field at 0x20:
@@ -2295,9 +2436,7 @@ pub func allMethodSigsOn(
 // when the type is absent — callers (e.g. the F0020 check) treat absence
 // separately because it usually means the reference pack does not carry the
 // declaring assembly, not that the type is mis-declared.
-pub func typeIsInterface(
-  img: in PeImage, layout: in TableLayout, th: in TablesHeader, typeFqn: in String
-): Bool {
+pub func typeIsInterface(img: in PeImage, layout: in TableLayout, th: in TablesHeader, typeFqn: in String): Bool {
   val typeRow = findTypeDefByFqn(img, layout, th, typeFqn)
   if typeRow < 0 {
     return false

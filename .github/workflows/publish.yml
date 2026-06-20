@@ -11,6 +11,20 @@ on:
       version:
         description: 'Version to publish (e.g. 0.1.0)'
         required: true
+      seed:
+        description: >-
+          Bootstrap stage-0 seed. "download" (default) seeds from the latest
+          published self-hosted release; "mint" seeds from the historical F#
+          bootstrap compiler. Use "mint" for the interim release that first
+          carries the self-host cascade fixes (the current published release
+          predates them and would miscompile); use "download" once a fixed
+          release exists as the seed (the path that drops F#).
+        required: false
+        default: 'download'
+        type: choice
+        options:
+          - download
+          - mint
 
 permissions:
   contents: write   # upload release assets
@@ -95,6 +109,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # Full history so a `seed: mint` release can reach the historical F#
+          # bootstrap commit; harmless (just a deeper fetch) for `seed: download`.
+          fetch-depth: 0
 
       - name: Install ARM64 cross-compilation toolchain (Ubuntu)
         if: matrix.os == 'ubuntu-latest' && matrix.rid == 'linux-arm64'
@@ -115,8 +133,27 @@ jobs:
 
       - name: Build stage 1 (self-hosted compiler)
         shell: bash
+        # Stage-0 seed is selected by the `seed` workflow_dispatch input
+        # (default "download"; tag-push releases always use the default).
+        #
+        #   download → seed from the latest published self-hosted release. This
+        #     is the steady-state path that keeps F# out of the bootstrap; it
+        #     requires that the published release already carries the current
+        #     compiler fixes (otherwise it miscompiles the sources).
+        #   mint     → seed from the historical F# bootstrap compiler. Used for
+        #     the INTERIM release that first carries the self-host cascade fixes
+        #     (D107 / docs/10), since the current published release predates them.
+        #     F#'s emitter is correct, so it bakes the fixed self-hosted source
+        #     into a working stage-1 binary.
+        #
+        # `--stage 1` only: the strict `--stage 2` reproducibility gate compares
+        # the seed-emitted stage-1 against the self-hosted-emitted stage-2. For a
+        # mint seed these legitimately diverge (e.g. the generic arity suffix F#
+        # omits); for a download seed they are byte-identical. Re-enabling
+        # `--stage 2` is a follow-up once the download seed is the norm.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LYRIC_BOOTSTRAP_MINT: ${{ inputs.seed == 'mint' && '1' || '' }}
         run: |
           ./scripts/bootstrap.sh --stage 1
 

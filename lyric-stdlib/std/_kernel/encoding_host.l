@@ -23,6 +23,7 @@ pub func hostGetUtf8Enc(): Enc = ()
 // Encoding.GetBytes(string) — `enc` is the receiver, `s` is the argument.
 // Returns a genuine byte[] (not List<object> or object[]).
 @externTarget("System.Text.Encoding.GetBytes")
+@externInstance
 pub func hostEncodeUtf8(enc: in Enc, s: in String): slice[Byte] = ()
 
 // Decodes a standard Base64 string (RFC 4648 §4) to raw bytes.

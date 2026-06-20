@@ -2275,15 +2275,44 @@ func buildLocalVarSigWithCtx(locals: in List[MsilType], ctx: in LoweringCtx): Li
           bufU1(w, 0x12)  // ELEMENT_TYPE_CLASS
           writeCompressedInt(w, tdrTypeDef(defRow))
         } else {
-          bufU1(w, 0x1C)  // fallback to Object (TypeDef not found in bundle)
+          // Not an in-bundle TypeDef — try a cross-assembly TypeRef before
+          // erasing to Object.  A cross-package record-typed local (e.g. a
+          // `val w = bufNew()` of type `Msil.Kernel.ByteWriter` in Msil.Lowering)
+          // is tracked concretely by codegen, so erasing only the LocalVarSig to
+          // Object desynced the verifier: the unchecked `ldloc`/store passed an
+          // `object` where the concrete type was expected (StackUnexpected →
+          // InvalidProgramException).  Encode `ELEMENT_TYPE_CLASS + TypeRef`,
+          // mirroring `bufMsilTypeWithCtx`, so the local is genuinely typed
+          // (#3920).
+          val refRow = findTypeRefRowByName(ctx, name)
+          if refRow > 0 {
+            bufU1(w, 0x12)  // ELEMENT_TYPE_CLASS
+            writeCompressedInt(w, tdrTypeRef(refRow))
+          } else {
+            bufU1(w, 0x1C)  // fallback to Object (neither TypeDef nor TypeRef found)
+          }
         }
       }
-      case MGenericInst(_, _, _) -> bufU1(w, 0x1C)
-      case MGenericInstByName(_, _) -> bufU1(w, 0x1C)
+      // Closed generic-instantiation locals (e.g. `Option_Some`1<int32>` from a
+      // `case Some(x) ->` cast-slot) are tracked concretely by codegen, so encode
+      // the closed GENERICINST inline via `bufMsilTypeWithCtx` rather than erasing
+      // to Object — otherwise `ldloc` yields `object` where the concrete generic
+      // type is expected (StackUnexpected → InvalidProgramException) (#3920).
+      case MGenericInst(_, _, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
+      case MGenericInstByName(_, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       case MValueTypeGenericInst(_, _, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       case MArray(_) -> bufU1(w, 0x1C)
-      case MConcreteList(_) -> bufU1(w, 0x1C)
-      case MConcreteMap(_, _) -> bufU1(w, 0x1C)
+      // A concrete-collection local holds a genuine `List`1<elem>` /
+      // `Dictionary`2<k,v>` at run time (`MListOp(LoCtor)` emits
+      // `newobj List`1<elem>`), and codegen tracks the slot concretely, so
+      // erasing only the LocalVarSig to Object desynced the verifier (the
+      // `MListOp` / call sites operate on the concrete type while `ldloc`
+      // yielded `object`) → StackUnexpected / InvalidProgramException.  Encode
+      // the full closed GENERICINST via `bufMsilTypeWithCtx` (which itself
+      // falls back to Object if `List`1` / `Dictionary`2` TypeRefs are absent),
+      // matching the runtime value (#3920).
+      case MConcreteList(_) -> bufMsilTypeWithCtx(w, locals[i], ctx)
+      case MConcreteMap(_, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       case MClassRef(_, _) -> bufU1(w, 0x1C)
       case MValueTypeRef(typeRefCode, _) -> {
         bufU1(w, 0x11)
@@ -2642,6 +2671,7 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
     )
     mi = mi + 1
   }
+  selfTypeDefRow
 }
 
 // ── Union lowering ────────────────────────────────────────────────────────────
@@ -2775,10 +2805,12 @@ pub func lowerMNullaryUnionCase(r: in MRecord, ctx: in LoweringCtx): Int {
       methodList = firstMethod
     )
   )
-  recordUserTypeDefRow(ctx, r.namespace, simpleNameRec, t.typeDefs.count)
+  val caseTypeDefRow = t.typeDefs.count
+  recordUserTypeDefRow(ctx, r.namespace, simpleNameRec, caseTypeDefRow)
   // A nullary case of a generic union re-declares the union's type parameters
   // (e.g. `Option_None` carries `[T]`), matching the F# emitter (#2362).
-  emitGenericParamRows(ctx, t.typeDefs.count, r.generics)
+  emitGenericParamRows(ctx, caseTypeDefRow, r.generics)
+  caseTypeDefRow
 }
 
 // Lower an MUnion as an abstract base class + one sealed case class per variant.
@@ -3472,7 +3504,9 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
       methodList = firstMethod
     )
   )
-  recordUserTypeDefRow(ctx, iface.namespace, simpleNameIface, t.typeDefs.count)
+  val ifaceTypeDefRow = t.typeDefs.count
+  recordUserTypeDefRow(ctx, iface.namespace, simpleNameIface, ifaceTypeDefRow)
+  ifaceTypeDefRow
 }
 
 // ── Impl lowering ─────────────────────────────────────────────────────────────
@@ -4775,7 +4809,9 @@ pub func lowerMFuncsToHostClass(
       methodList = firstMethod
     )
   )
-  recordUserTypeDefRow(ctx, hostClass, "Program", t.typeDefs.count)
+  val programTypeDefRow = t.typeDefs.count
+  recordUserTypeDefRow(ctx, hostClass, "Program", programTypeDefRow)
+  programTypeDefRow
 }
 
 // ── Package lowering ───────────────────────────────────────────────────────────

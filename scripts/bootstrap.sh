@@ -419,12 +419,26 @@ stage1_cli_bundle() {
   # emitted the entire Lyric.Cli closure (per-package, CoreLib-retargeted) into
   # $STAGE1_DIR.  Those F#-emitted DLLs are the reference output.  The
   # self-hosted MSIL emitter is not yet able to re-emit a *working* copy of
-  # itself (a residual cascade of generic-construction / extern-resolution bugs
-  # tracked toward full self-host), so re-emitting the closure here would
-  # replace the clean F#-emitted DLLs with ones that crash at run time.  Reuse
-  # the minted closure instead; only the freshly-built stdlib bundle needs its
-  # CoreLib refs retargeted (the mint already retargeted the closure DLLs, and
-  # the rewrite is idempotent for those).
+  # itself, so re-emitting the closure here would replace the clean F#-emitted
+  # DLLs with ones that crash at run time.  Reuse the minted closure instead;
+  # only the freshly-built stdlib bundle needs its CoreLib refs retargeted (the
+  # mint already retargeted the closure DLLs, and the rewrite is idempotent for
+  # those).
+  #
+  # Progress toward dropping this reuse branch (#3920): the self-host PARSER
+  # blocker is fixed — cross-package nullary union-case construction now loads
+  # the case singleton (`ldsfld Instance`) instead of `newobj`-ing a fresh
+  # instance, so `==` / pattern tests across a package boundary (e.g. the
+  # lexer's `KwPackage` token vs. the parser's `tryEatKw(KwPackage)` argument)
+  # compare equal again (was: every cross-package nullary compare returned
+  # false, so the self-emitted parser rejected every file with P0020).  With
+  # that fixed plus the bare-`None` arm inference fix, a self-emitted compiler
+  # parses + type-checks + reaches codegen.  The remaining blocker is a
+  # generic-collection signature inconsistency in codegen: `List[T]` method
+  # *parameters* are emitted as the concrete `List<T>` (with a castclass on
+  # entry) while `newList()` *constructions* erase to `List<object>`, so a
+  # cross-call passes `List<object>` into a `List<T>` parameter and the entry
+  # cast throws `InvalidCastException`.  Tracked toward full self-host.
   if [[ "${LYRIC_BOOTSTRAP_MINT:-0}" == "1" ]] && [[ -f "$STAGE1_DIR/Lyric.Lyric.Cli.dll" ]]; then
     info "Stage 1 (CLI bundle): reusing minted F#-emitted closure (self-hosted re-emit skipped)"
     if [[ "$SKIP_COREREF_REWRITE" != "1" ]]; then

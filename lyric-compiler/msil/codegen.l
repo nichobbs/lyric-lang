@@ -3247,15 +3247,112 @@ pub func freshLabelMsil(fctx: in FuncCtx): Int {
 // Two types are LocalVarSig-compatible iff this function returns the same byte.
 // MClass and MGenericInst both encode as 0x1C (object), so they are always
 // compatible — only distinct primitive types conflict.
-func localVarSlotByte(t: in MsilType): Int {
-  match t {
-    case MClass(_) -> 0x1C
-    case MGenericInst(_, _, _) -> 0x1C
-    // Concrete collections occupy object slots (they degrade to 0x1C in the
-    // LocalVarSig), so slot-compatibility keys them as object too.
-    case MConcreteList(_) -> 0x1C
-    case MConcreteMap(_, _) -> 0x1C
-    case other -> elementTypeByte(other)
+// Structural equality on MsilType, used to decide whether a same-named local
+// slot can be reused.  Two slots may share a combined-slot index only when
+// their LocalVarSig encodings are byte-identical; since `MConcreteList` /
+// `MConcreteMap` / `MGenericInst` / `MClass` now encode concretely in the
+// LocalVarSig (not erased to object), reference-type slot byte equality alone no
+// longer guarantees a compatible slot — e.g. `ListOp` and `DictOp` both key as
+// 0x1C but are unrelated reference types, so storing a `DictOp` into a slot the
+// LocalVarSig declares `ListOp` faults the verifier (StackUnexpected).  This
+// helper requires exact type identity so a reused slot's declared type always
+// matches every value stored into it.
+func msilTypeIdentical(a: in MsilType, b: in MsilType): Bool {
+  match a {
+    case MInt -> match b { case MInt -> true; case other -> false }
+    case MLong -> match b { case MLong -> true; case other -> false }
+    case MDouble -> match b { case MDouble -> true; case other -> false }
+    case MBool -> match b { case MBool -> true; case other -> false }
+    case MChar -> match b { case MChar -> true; case other -> false }
+    case MString -> match b { case MString -> true; case other -> false }
+    case MVoid -> match b { case MVoid -> true; case other -> false }
+    case MObject -> match b { case MObject -> true; case other -> false }
+    case MByte -> match b { case MByte -> true; case other -> false }
+    case MNativeInt -> match b { case MNativeInt -> true; case other -> false }
+    case MClass(an) -> match b { case MClass(bn) -> an == bn; case other -> false }
+    case MTypeVar(ai) -> match b { case MTypeVar(bi) -> ai == bi; case other -> false }
+    case MListOf(ae) -> match b { case MListOf(be) -> msilTypeIdentical(ae, be); case other -> false }
+    case MConcreteList(ae) -> {
+      match b {
+        case MConcreteList(be) -> msilTypeIdentical(ae, be)
+        case other -> false
+      }
+    }
+    case MIAsyncEnumerable(ae) -> {
+      match b {
+        case MIAsyncEnumerable(be) -> msilTypeIdentical(ae, be)
+        case other -> false
+      }
+    }
+    case MArray(ae) -> match b { case MArray(be) -> msilTypeIdentical(ae, be); case other -> false }
+    case MMapOf(ak, av) -> {
+      match b {
+        case MMapOf(bk, bv) -> msilTypeIdentical(ak, bk) and msilTypeIdentical(av, bv)
+        case other -> false
+      }
+    }
+    case MConcreteMap(ak, av) -> {
+      match b {
+        case MConcreteMap(bk, bv) -> msilTypeIdentical(ak, bk) and msilTypeIdentical(av, bv)
+        case other -> false
+      }
+    }
+    case MByRef(ai) -> match b { case MByRef(bi) -> msilTypeIdentical(ai, bi); case other -> false }
+    case MValueTypeRef(ac, af) -> {
+      match b {
+        case MValueTypeRef(bc, bf) -> ac == bc and af == bf
+        case other -> false
+      }
+    }
+    case MClassRef(ac, af) -> {
+      match b {
+        case MClassRef(bc, bf) -> ac == bc and af == bf
+        case other -> false
+      }
+    }
+    case MGenericInst(ac, ah, aargs) -> {
+      match b {
+        case MGenericInst(bc, bh, bargs) -> ac == bc and ah == bh and msilTypeListIdentical(aargs, bargs)
+        case other -> false
+      }
+    }
+    case MValueTypeGenericInst(ac, ah, aargs) -> {
+      match b {
+        case MValueTypeGenericInst(bc, bh, bargs) -> {
+          ac == bc and ah == bh and msilTypeListIdentical(aargs, bargs)
+        }
+        case other -> false
+      }
+    }
+    case MGenericInstByName(ah, aargs) -> {
+      match b {
+        case MGenericInstByName(bh, bargs) -> ah == bh and msilTypeListIdentical(aargs, bargs)
+        case other -> false
+      }
+    }
+    case MExternEnumerable(ae) -> {
+      match b {
+        case MExternEnumerable(be) -> msilTypeIdentical(ae, be)
+        case other -> false
+      }
+    }
+    case other -> false
+  }
+}
+
+func msilTypeListIdentical(a: in List[MsilType], b: in List[MsilType]): Bool {
+  if a.count != b.count {
+    false
+  } else {
+    var i = 0
+    var ok = true
+    while i < a.count and ok {
+      if not msilTypeIdentical(a[i], b[i]) {
+        ok = false
+      }
+      i = i + 1
+    }
+    ok
   }
 }
 
@@ -3263,13 +3360,15 @@ func localVarSlotByte(t: in MsilType): Int {
 // Locals (slot >= paramCount) are appended to `fctx.locals`.
 // Returns the combined slot index (used as the key in the slots map).
 //
-// If `name` is already registered with the same LocalVarSig-byte type, the
+// If `name` is already registered with a structurally identical MsilType, the
 // existing slot is reused (MSIL locals are function-wide; disjoint branches
-// sharing the same binding name safely reuse the same slot).  When the same
-// name reappears with a different type byte (e.g. the same binding name in
-// two match arms typed `MLong` and `MDouble`), a fresh slot is allocated and
-// the name mapping is retargeted so subsequent EPath lookups in this arm see
-// the correctly-typed local.
+// sharing the same binding name and type safely reuse the same slot).  When the
+// same name reappears with any different type — a different type byte (e.g.
+// `MLong` then `MDouble`) OR a same-byte-but-distinct reference type (e.g.
+// `ListOp` then `DictOp`, or `List`1<A>` then `List`1<B>`, which now encode
+// concretely in the LocalVarSig) — a fresh slot is allocated and the name
+// mapping is retargeted so subsequent EPath lookups in this arm see the
+// correctly-typed local and stores match the slot's declared LocalVarSig type.
 //
 // CALLER CONSTRAINT: the retargeting path is only safe when no live code
 // holds a cached reference to the old slot.  Today only `lowerPatternBindMsil`
@@ -3282,19 +3381,8 @@ pub func allocSlotMsil(fctx: in FuncCtx, name: in String, ty: in MsilType): Int 
   match mapGet(fctx.slots, name) {
     case Some(existing) -> {
       val existingTy = match mapGet(fctx.types, name) { case Some(t) -> t; case None -> ty }
-      if localVarSlotByte(existingTy) == localVarSlotByte(ty) {
-        // Slot reused, but the tracked type must still be refreshed to the new
-        // binding's type: two same-named locals that share an object-byte slot
-        // (e.g. a `List[InterpolatedSegment]` then a `List[String]` in two
-        // match arms) must each see their own element type, or the stale type
-        // mis-routes a later EIndex/`.add` (harmless while every list is
-        // `List<object>`, a fault once element types are concrete).
-        // Short-circuit the remove+add mutation when the type is already correct
-        // to avoid gratuitous map churn on same-type re-binds.
-        if existingTy != ty {
-          fctx.types.remove(name)
-          fctx.types.add(name, ty)
-        }
+      if msilTypeIdentical(existingTy, ty) {
+        // Exact type match: reuse the slot and its LocalVarSig entry unchanged.
         existing
       } else {
         val slot = fctx.slotTicker.count
@@ -4192,6 +4280,21 @@ func isValueType(ty: in MsilType): Bool {
   }
 }
 
+// True when `ty` is a CLR value type usable as an instance-call receiver — the
+// primitives plus the struct-extern encodings (`MValueTypeRef` such as
+// `System.TimeSpan` / `System.DateTime`, and `MValueTypeGenericInst`).  A
+// value-type instance member must be reached with the receiver's ADDRESS
+// (`ldarga`) and a non-virtual `call`; emitting `ldarg` (the value) + `callvirt`
+// produces IL that crashes the JIT (CallVirtOnValueType), so the FFI emission
+// path branches on this.
+func isValueTypeReceiverMsil(ty: in MsilType): Bool {
+  match ty {
+    case MValueTypeRef(_, _) -> true
+    case MValueTypeGenericInst(_, _, _) -> true
+    case other -> isValueType(other)
+  }
+}
+
 // Numeric / character primitives that the conversion-method intrinsics
 // (`.toInt()`/`.toLong()`/`.toByte()`/`.toChar()`/`.toDouble()`, #1901) accept
 // as a receiver.  `Bool` is deliberately excluded — it is not a numeric type.
@@ -4447,6 +4550,144 @@ func pushAnnoHintTyArgs(fctx: in FuncCtx, annoTy: in MsilType): List[MsilType] {
     j = j + 1
   }
   saved
+}
+
+// Count of concrete (non-erased) generic type arguments in `args`.
+func countConcreteArgsMsil(args: in List[MsilType]): Int {
+  var n = 0
+  var i = 0
+  while i < args.count {
+    val erased = match args[i] {
+      case MObject -> true
+      case MClass(c) -> c == "System.Object" or c == "object"
+      case _ -> false
+    }
+    if not erased {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  n
+}
+
+// The head FQN of a generic instantiation, arity suffix stripped.
+func msilHeadFqnMsil(t: in MsilType): String {
+  match t {
+    case MGenericInst(_, fqn, _) -> stripGenericArity(fqn)
+    case MGenericInstByName(fqn, _) -> stripGenericArity(fqn)
+    case MValueTypeGenericInst(_, fqn, _) -> stripGenericArity(fqn)
+    case _ -> ""
+  }
+}
+
+// The type arguments of a generic-instantiation MsilType (empty for non-generic).
+func msilGenericTypeArgsMsil(t: in MsilType): List[MsilType] {
+  match t {
+    case MGenericInst(_, _, targs) -> targs
+    case MGenericInstByName(_, targs) -> targs
+    case MValueTypeGenericInst(_, _, targs) -> targs
+    case _ -> newList()
+  }
+}
+
+// When an `@externTarget` declares its return as `Option[T]` with `T` a
+// reference type, the wrapped BCL method actually returns a nullable reference
+// `T` (e.g. `Environment.GetEnvironmentVariable: string?`).  The emitter binds
+// the MemberRef to `T` and coerces the possibly-null result into `Option[T]` at
+// the call boundary — `null -> None`, `value -> Some(value)` — so the language
+// needs no `null` literal or nullable type to consume nullable BCL APIs (the
+// audited `_kernel/` boundary declares `Option[T]` and the coercion happens
+// here).  Returns the inner reference type when the convention applies, or
+// `MVoid` (a value type, never a valid coercion inner) as the "no coercion"
+// sentinel — using the codegen's own `MsilType` union rather than a
+// `Std.Core.Option` so the hot path matches reliably in-package.
+func externOptionCoerceInner(t: in MsilType): MsilType {
+  if msilHeadFqnMsil(t) == "Std.Core.Option" {
+    val targs = msilGenericTypeArgsMsil(t)
+    if targs.count == 1 and not isValueType(targs[0]) {
+      targs[0]
+    } else {
+      MVoid
+    }
+  } else {
+    MVoid
+  }
+}
+
+// True when `externOptionCoerceInner` returned a real coercion inner (i.e. not
+// the `MVoid` sentinel).
+func externOptionCoerces(t: in MsilType): Bool {
+  match t {
+    case MVoid -> false
+    case _ -> true
+  }
+}
+
+// Establish a fresh hint scope from an explicit type-argument list.
+func pushHintArgsDirectMsil(fctx: in FuncCtx, args: in List[MsilType]): List[MsilType] {
+  val saved: List[MsilType] = newList()
+  var i = 0
+  while i < fctx.contextHintTyArgs.count {
+    saved.add(fctx.contextHintTyArgs[i])
+    i = i + 1
+  }
+  while fctx.contextHintTyArgs.count > 0 {
+    fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+  }
+  var j = 0
+  while j < args.count {
+    fctx.contextHintTyArgs.add(args[j])
+    j = j + 1
+  }
+  saved
+}
+
+// True when a match-arm body is a bare nullary-case construction (`None`, …).
+func armBodyIsBareNullaryCaseMsil(cctx: in CodegenCtx, fctx: in FuncCtx, body: in ExprOrBlock): Bool {
+  match body {
+    case EOBExpr(e) -> {
+      match e.kind {
+        case EPath(path) -> {
+          val nm = lastSegmentMsil(path)
+          nm == "None" and nameIsNullaryCaseMsil(cctx, fctx, nm)
+        }
+        case _ -> false
+      }
+    }
+    case EOBBlock(_) -> false
+  }
+}
+
+// True when a match-arm body is a bare empty-collection construction
+// (`newList()` / `newMap()`), which — like a bare `None` — carries no element
+// type and erases to `List<object>` / `Dictionary<object,object>` unless the
+// surrounding context supplies one.  The recurring `match mapGet(m, k) { case
+// Some(c) -> c; case None -> newList() }` idiom hits this: the `Some` arm yields
+// the concrete `List<T>` from the map while the `None` arm's `newList()` erases,
+// and the binding slot (the concrete `List<T>`) then fails a `castclass` when
+// the `None` branch is taken (#3920 self-host cascade).
+func armBodyIsBareNewCollMsil(body: in ExprOrBlock): Bool {
+  match body {
+    case EOBExpr(e) -> {
+      match e.kind {
+        case ECall(fn, args) -> {
+          if args.count == 0 {
+            match fn.kind {
+              case EPath(path) -> {
+                val nm = lastSegmentMsil(path)
+                nm == "newList" or nm == "newMap"
+              }
+              case _ -> false
+            }
+          } else {
+            false
+          }
+        }
+        case _ -> false
+      }
+    }
+    case EOBBlock(_) -> false
+  }
 }
 
 // Recover the parent union FQN for a case-class ctor key (#2363 Stage 4).
@@ -4848,6 +5089,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                       match mapGet(cctx.singletonFieldTokens, ctorKey) {
                         case Some(fldTok) -> {
                           insns.add(MLdsfld(fieldToken = fldTok))
+                          insns.add(MCastclassByName(className = caseParentFqnMsil(cctx, ctorKey)))
                           MClass(className = caseParentFqnMsil(cctx, ctorKey))
                         }
                         case None -> {
@@ -4949,6 +5191,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         if cctx.singletonFieldTokens.containsKey(nmCaseFqn) {
           val nmFldTok = match mapGet(cctx.singletonFieldTokens, nmCaseFqn) { case Some(t) -> t; case None -> 0 }
           insns.add(MLdsfld(fieldToken = nmFldTok))
+          insns.add(MCastclassByName(className = caseParentFqnMsil(cctx, nmCaseFqn)))
           MClass(className = caseParentFqnMsil(cctx, nmCaseFqn))
         } else {
           match mapGet(cctx.recordCtorTokens, nmCaseFqn) {
@@ -5174,6 +5417,11 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               // TyException built-in members: .message and .typeName.
               // Catch-clause exception bindings are stored as MObject; detect by member name.
               if memberName == "message" {
+                // The catch binding is an `MObject` slot, but `Exception.get_Message`
+                // is HASTHIS on `System.Exception`: cast the object receiver to
+                // Exception before the callvirt or the verifier rejects it
+                // (CallVirtOnValueType-adjacent StackUnexpected) and some JITs fault.
+                insns.add(MCastclass(typeToken = 0x01000000 + cctx.trException))
                 insns.add(MCallvirt(methodToken = cctx.tokExcGetMessage))
                 MString
               } else if memberName == "typeName" {
@@ -6963,6 +7211,14 @@ func lowerMatchExprMsil(
   scrutinee: in Expr,
   arms: in List[MatchArm],
 ): MsilType {
+  // Whether the match has an enclosing construction hint (a binding annotation
+  // `val x: Option[T] = match …`, or a return-position match in an `Option[T]`
+  // function).  When present, a bare `None` arm already reads it via
+  // `contextHintTyArgs` and builds the closed `Option_None<T>` — so the
+  // running-canon inference below must NOT fire (it is only for the *unhinted*
+  // `val dflt = match …` form, e.g. `parseParam`; firing it for hinted matches
+  // regressed other parser sites — #3920).
+  val hasEntryHint: Bool = fctx.contextHintTyArgs.count > 0
   val scrutTy = lowerExprMsil(cctx, fctx, insns, scrutinee)
   val scrutSlot = allocSlotMsil(fctx, "__scrut_" + toString(fctx.slotTicker.count), scrutTy)
   emitStoreSlot(insns, scrutSlot, fctx.paramCount)
@@ -6984,6 +7240,23 @@ func lowerMatchExprMsil(
   val armTys: List[MsilType] = newList()
   val armNextLs: List[Int] = newList()
   val armRets: List[Bool] = newList()
+  // Bare-nullary-case arm type inference (#3920): a bare `None` arm carries no
+  // `T`, so it erases to `Option_None<object>` while a concrete sibling builds
+  // `Option_Some<Expr>`; a downstream `match` then `isinst`s `Option_None`1<Expr>`
+  // and misses at run time.  We keep the original single-pass lowering ORDER
+  // (reordering corrupts the emitted method bodies — see reverted approaches in
+  // #3920) and only carry a *running* canonical hint: the most-concrete generic
+  // args of any concrete fall-through arm lowered SO FAR.  When a bare nullary
+  // arm is reached after a concrete sibling (the common `Some(e)` / `None` order),
+  // it is lowered with that hint and builds the closed `Option_None<Expr>`.
+  val runningCanon: List[MsilType] = newList()
+  var runBest = 0
+  // Parallel running canonical for bare empty-collection arms (`newList()` /
+  // `newMap()`): the most recent concrete `MConcreteList` / `MConcreteMap` of a
+  // fall-through arm.  A bare `newList()` arm reached after a concrete-collection
+  // sibling is lowered with that type pushed onto `collExpect` so it builds the
+  // matching concrete collection rather than the erased `List<object>` (#3920).
+  var runningCollCanon: MsilType = MObject
   var i = 0
   while i < arms.count {
     val arm = arms[i]
@@ -6999,11 +7272,54 @@ func lowerMatchExprMsil(
       case None -> {
       }
     }
-    val armTy = lowerExprOrBlockMsil(cctx, fctx, armInsns, arm.body)
+    val bare = (not hasEntryHint) and armBodyIsBareNullaryCaseMsil(cctx, fctx, arm.body)
+    val bareColl = (not hasEntryHint) and armBodyIsBareNewCollMsil(arm.body)
+    val armTy = if bare and runningCanon.count > 0 {
+      val savedH = pushHintArgsDirectMsil(fctx, runningCanon)
+      val t = lowerExprOrBlockMsil(cctx, fctx, armInsns, arm.body)
+      restoreHintTyArgs(fctx, savedH)
+      t
+    } else if bareColl and isConcreteCollTy(runningCollCanon) {
+      pushCollExpect(fctx, runningCollCanon)
+      val t = lowerExprOrBlockMsil(cctx, fctx, armInsns, arm.body)
+      popCollExpect(fctx)
+      t
+    } else {
+      lowerExprOrBlockMsil(cctx, fctx, armInsns, arm.body)
+    }
+    val ret = endsWithReturnMsil(armInsns)
+    // Track the most-concrete collection type of a fall-through arm so a bare
+    // `newList()` / `newMap()` sibling builds the matching concrete collection
+    // (the `Some(c) -> c` arm of the `match mapGet(...)` idiom, #3920).
+    if (not bareColl) and (not ret) and isConcreteCollTy(armTy) {
+      runningCollCanon = armTy
+    }
+    // Update the running canonical from a concrete `Option`-headed fall-through
+    // arm only — a bare `None` is `Option_None`, so its type args must come from
+    // a sibling `Some(e)` (also `Option`), never from a `Result`/`List` arm that
+    // merely shares the match (which would mis-type `None` and break a downstream
+    // `None`-guarded loop → non-termination, #3920).
+    if (not bare) and (not ret) and msilHeadFqnMsil(armTy) == "Std.Core.Option" {
+      val a = genericArgsOfMsil(armTy)
+      if a.count > 0 {
+        val cc = countConcreteArgsMsil(a)
+        if cc > runBest {
+          runBest = cc
+          while runningCanon.count > 0 {
+            runningCanon.removeAt(runningCanon.count - 1)
+          }
+          var ka = 0
+          while ka < a.count {
+            runningCanon.add(a[ka])
+            ka = ka + 1
+          }
+        }
+      }
+    }
     armBuffers.add(armInsns)
     armTys.add(armTy)
     armNextLs.add(nextArmL)
-    armRets.add(endsWithReturnMsil(armInsns))
+    armRets.add(ret)
     i = i + 1
   }
 
@@ -7898,6 +8214,25 @@ func bindNamedFieldMsil(
 ): Unit {
   match fieldPat.kind {
     case PBinding(fname, innerOpt) -> {
+      // A nullary-case field sub-pattern (`Ok(None)`, `Cons(_, Nil)`) parses as
+      // `PBinding(<CaseName>, None)` — the parser cannot tell a nullary case
+      // apart from a fresh variable binding.  It is a *test*, not a binding:
+      // `patternIsRefutableMsil` already routes it through `testCaseFieldMsil`,
+      // so binding a slot here is wrong — it would shadow the case name with the
+      // (typed-by-the-scrutinee) extracted payload, so a later construction of
+      // that case in the arm body (`Ok(None) -> Ok(None)`) resolves `None` to
+      // the slot (carrying the scrutinee's `Option<DbRow>`) instead of building
+      // a fresh `Option<User>` from context — a generic-invariance "match not
+      // exhaustive" at run time (the `examples/rbac` self-host blocker).  Mirror
+      // the top-level `PBinding` handler and skip the slot for known cases.
+      match innerOpt {
+        case None -> {
+          if nameIsNullaryCaseMsil(cctx, fctx, fname) {
+            return
+          }
+        }
+        case Some(_) -> ()
+      }
       val fByName = cctx.fieldTokens.containsKey(caseClass + "/" + fname)
       val sigLookupKey = if fByName { caseClass + "/" + fname } else { caseClass + "/field" + toString(fi) }
       val fTok = match mapGet(cctx.fieldTokens, sigLookupKey) { case Some(t) -> t; case None -> 0 }
@@ -8045,6 +8380,18 @@ func lowerPatternBindMsil(
           case MGenericInst(_, _, typeArgs) -> insns.add(MCastclassGeneric(className = caseClass, typeArgs = typeArgs))
           case MGenericInstByName(_, typeArgs) -> insns.add(MCastclassGeneric(className = caseClassBt, typeArgs = typeArgs))
           case _ -> {
+            // Non-generic union case: narrow the scrutinee from the base union
+            // type to the concrete case class (`MsilType` → `MsilType_MClass`)
+            // before storing into the case-typed `castSlot`.  Without this the
+            // store puts the base-typed value into a case-typed local — invalid
+            // IL (`StackUnexpected`) that the CLR rejects with
+            // InvalidProgramException when the local resolves to the concrete
+            // case TypeDef.  This was masked for cross-package union matches
+            // (the local erases to `object`, so the unchecked store verified),
+            // but bit every *same-package* union match — e.g. `MsilType`
+            // matches in Msil.Lowering's `elementTypeByte` / `bufMsilType`,
+            // which broke the self-emitted compiler's MFunc lowering (#3920).
+            insns.add(MCastclassByName(className = caseClass))
           }
         }
         val castSlot = allocSlotMsil(fctx, "__cast_" + caseName + "_" + toString(fctx.slotTicker.count), castTy)
@@ -9045,6 +9392,7 @@ func lowerBuiltinOrStaticCallMsil(
             match mapGet(cctx.singletonFieldTokens, ctorKey) {
               case Some(fldTok) -> {
                 insns.add(MLdsfld(fieldToken = fldTok))
+                insns.add(MCastclassByName(className = caseParentFqnMsil(cctx, ctorKey)))
                 MClass(className = caseParentFqnMsil(cctx, ctorKey))
               }
               case None -> {
@@ -12080,6 +12428,12 @@ func emitExternTargetBody(
         case None -> MVoid
       }
 
+      // `Option[T]` return convention (#null-free FFI): the BCL method returns a
+      // nullable reference `T`; bind the MemberRef to `T` and coerce to
+      // `Option[T]` after the call.  Disabled for async/ctor (separate paths).
+      val optCoerceInner = if decl.isAsync { MVoid } else { externOptionCoerceInner(retTy) }
+      val optCoerces = externOptionCoerces(optCoerceInner)
+
       // Phase 4: prefer the metadata type index over the prefix-based guard so
       // types from NuGet-restored assemblies (not `System.*` / `Lyric.*`) are
       // accepted when their DLL is in the index (added by ensureMetadataIndex).
@@ -12203,6 +12557,74 @@ func emitExternTargetBody(
         }
       }
 
+      // Metadata-direct method resolution (docs/42): for a plain method extern
+      // (not a ctor, not resolved as a property above, not async — async keeps
+      // its Task-return path below) decode the BCL method's true signature so
+      // (a) the instance/static calling convention comes from the metadata
+      // `hasThis` rather than the @externInstance-or-default-static guess in
+      // `resolveExternTarget`, and (b) each MemberRef param/return encodes the
+      // BCL method's ACTUAL type.  Without this, `System.Double.ToString(string,
+      // IFormatProvider)` declared with a Lyric `CultureInfo` wrapper param
+      // encodes `CultureInfo` into the MemberRef and fails to bind at run time
+      // (MissingMethodException), and instance methods without an explicit
+      // `@externInstance` are emitted static.  Reference upcasts (a CultureInfo
+      // argument flowing into an IFormatProvider parameter) are implicit in IL,
+      // so only the signature encoding needs the BCL type.  Falls back to the
+      // Lyric-declared types when the reference pack is absent or the method is
+      // not found.
+      var resolvedMethodParams: Option[List[MsilType]] = None
+      var resolvedMethodRet: Option[MsilType] = None
+      // Lyric-declared argument SigTypes, used to disambiguate same-arity
+      // overloads.  If any param can't be described as a SigType (a generic or
+      // shape the metadata path can't express), skip metadata-direct resolution
+      // and fall back to the Lyric-declared signature.
+      val argSigs: List[Mdr.SigType] = newList()
+      var argSigsOk = true
+      var asi = 0
+      while asi < paramTypes.count {
+        match argTyToSig(paramTypes[asi]) {
+          case Some(s) -> argSigs.add(s)
+          case None -> {
+            argSigsOk = false
+          }
+        }
+        asi = asi + 1
+      }
+      if not r.isCtor and not decl.isAsync and emitMember == r.memberName and argSigsOk {
+        match mapGet(cctx.metadataPathIndex, assemblyForTypeMsil(cctx, resolvedFqn)) {
+          case None -> ()
+          case Some(asmPath) -> {
+            match Mdr.resolveExternMethodScored(asmPath, resolvedFqn, r.memberName, argSigs) {
+              case None -> ()
+              case Some(msig) -> {
+                val mParams: List[MsilType] = newList()
+                var convOk = true
+                var mk = 0
+                while mk < msig.paramTypes.count {
+                  match resolvedSigToMsil(cctx, msig.paramTypes[mk]) {
+                    case Some(m) -> mParams.add(m)
+                    case None -> {
+                      convOk = false
+                    }
+                  }
+                  mk = mk + 1
+                }
+                match resolvedSigToMsil(cctx, msig.returnType) {
+                  case Some(rm) -> {
+                    if convOk {
+                      emitIsStatic = not msig.hasThis
+                      resolvedMethodParams = Some(value = mParams)
+                      resolvedMethodRet = Some(value = rm)
+                    }
+                  }
+                  case None -> ()
+                }
+              }
+            }
+          }
+        }
+      }
+
       // Build the method signature blob, encoding class-typed params/return
       // against their resolved TypeRefs.
       //
@@ -12222,24 +12644,60 @@ func emitExternTargetBody(
       } else {
         ffiRetTy
       }
+      // BCL param list for the MemberRef: the metadata-resolved types when
+      // available (already receiver-excluded for instance methods), else the
+      // Lyric-declared types — all params for a static call or ctor, the
+      // receiver-skipped tail for an instance call.
+      val sigParams = match resolvedMethodParams {
+        case Some(mp) -> mp
+        case None -> {
+          if (emitIsStatic and not r.isCtor) or r.isCtor {
+            paramTypes
+          } else {
+            // Instance call without metadata: drop the receiver (param 0).  Built
+            // here (not unconditionally) so the metadata-resolved and ctor paths
+            // allocate nothing.
+            val instArgsLegacy: List[MsilType] = newList()
+            var iiLegacy = 1
+            while iiLegacy < paramTypes.count {
+              instArgsLegacy.add(paramTypes[iiLegacy])
+              iiLegacy = iiLegacy + 1
+            }
+            instArgsLegacy
+          }
+        }
+      }
+      // Under the Option[T] coercion convention the MemberRef must bind to the
+      // BCL's real (nullable reference) return `T` (= optCoerceInner), not the
+      // Lyric `Option[T]`; the coercion to `Option[T]` is emitted after the call.
+      val sigRet = if optCoerces {
+        optCoerceInner
+      } else {
+        match resolvedMethodRet {
+          case Some(rm) -> rm
+          case None -> bclRetTy
+        }
+      }
       val sig = if emitIsStatic and not r.isCtor {
-        buildFfiMethodSigCtx(cctx, paramTypes, bclRetTy, false)
+        buildFfiMethodSigCtx(cctx, sigParams, sigRet, false)
       } else if r.isCtor {
         // .ctor: HASTHIS, void return, all params explicit.
         buildFfiMethodSigCtx(cctx, paramTypes, MVoid, true)
       } else {
-        // Instance method: skip the first Lyric param (it's the
-        // receiver — already on the stack as `this`).
-        val instArgs: List[MsilType] = newList()
-        var ii = 1
-        while ii < paramTypes.count {
-          instArgs.add(paramTypes[ii])
-          ii = ii + 1
-        }
-        buildFfiMethodSigCtx(cctx, instArgs, bclRetTy, true)
+        // Instance method: the receiver is implicit via HASTHIS; sigParams holds
+        // only the non-receiver params.
+        buildFfiMethodSigCtx(cctx, sigParams, sigRet, true)
       }
       val mrRow = ctxAddMemberRef(cctx.lctx, tRefRow, emitMember, "ffi_" + target, sig)
       val tok = 0x0A000000 + mrRow
+
+      // A value-type instance member (e.g. `System.TimeSpan.TotalMilliseconds`)
+      // must be reached through the receiver's ADDRESS and a non-virtual `call`:
+      // the receiver is param 0, and when its declared type is a struct the
+      // verifier (and the JIT, fatally) requires `ldarga` + `call`, not `ldarg`
+      // + `callvirt`.  Reference-type receivers keep `ldarg` + `callvirt`.
+      val valueTypeReceiver = not r.isCtor and not emitIsStatic and decl.params.count > 0 and
+        isValueTypeReceiverMsil(paramTypes[0])
 
       // Load every Lyric param in order.  For instance calls the
       // receiver is param 0 and lands on the stack first; for static
@@ -12250,6 +12708,8 @@ func emitExternTargetBody(
       while li < decl.params.count {
         if isByrefMode(decl.params[li].mode) {
           insns.add(MLdarga(slot = li))
+        } else if li == 0 and valueTypeReceiver {
+          insns.add(MLdarga(slot = li))
         } else {
           insns.add(MLdarg(slot = li))
         }
@@ -12258,6 +12718,8 @@ func emitExternTargetBody(
       if r.isCtor {
         insns.add(MNewobj(ctorToken = tok))
       } else if emitIsStatic {
+        insns.add(MCall(methodToken = tok))
+      } else if valueTypeReceiver {
         insns.add(MCall(methodToken = tok))
       } else {
         insns.add(MCallvirt(methodToken = tok))
@@ -12282,6 +12744,44 @@ func emitExternTargetBody(
           val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, "get_Result", "mr_task_getresult_" + tsKey, mrSig)
           insns.add(MCallvirt(methodToken = 0x0A000000 + mrRow))
         }
+      }
+      // Option[T] coercion: the BCL call left a (possibly null) `inner` reference
+      // on the stack; wrap it into `Option[inner]` — null -> None, else Some(v).
+      if optCoerces {
+        val inner = optCoerceInner
+        val noneL = freshLabelMsil(fctx)
+        val doneL = freshLabelMsil(fctx)
+        insns.add(MDup)
+        insns.add(MBrFalse(label = noneL))
+        // non-null: Some(value) — the inner reference is on the stack.
+        val someArgTys: List[MsilType] = newList()
+        someArgTys.add(inner)
+        val someCtx: List[MsilType] = newList()
+        someCtx.add(inner)
+        val someParent: List[MsilType] = newList()
+        val someOk = buildGenericCaseCtorTok(cctx, "Std.Core.Option_Some", someArgTys, someCtx, someParent, insns)
+        if someOk == 0 {
+          panic(
+            "Msil.Codegen: @externTarget '" + target + "' on '" + decl.name +
+              "' declares an Option[T] return but Std.Core.Option is not in scope — import Std.Core in the module."
+          )
+        }
+        insns.add(MBr(label = doneL))
+        // null: drop it and build None.
+        insns.add(MLabel(id = noneL))
+        insns.add(MPop)
+        val noneArgTys: List[MsilType] = newList()
+        val noneCtx: List[MsilType] = newList()
+        noneCtx.add(inner)
+        val noneParent: List[MsilType] = newList()
+        val noneOk = buildGenericCaseCtorTok(cctx, "Std.Core.Option_None", noneArgTys, noneCtx, noneParent, insns)
+        if noneOk == 0 {
+          panic(
+            "Msil.Codegen: @externTarget '" + target + "' on '" + decl.name +
+              "' declares an Option[T] return but Std.Core.Option_None is not resolvable."
+          )
+        }
+        insns.add(MLabel(id = doneL))
       }
       insns.add(MRet)
       true
@@ -21056,6 +21556,50 @@ func registerRestoredFunc(cctx: in CodegenCtx, packageName: in String, fn: in Fu
   // `pop` after void cross-assembly calls → InvalidProgramException.
   cctx.funcRetTypes.add(fqn, retType)
   cctx.funcParamModes.add(fqn, paramModesOf(fn.params))
+  // Record the declared parameter MsilTypes so a cross-package call site can
+  // push each parameter's expected type onto `collExpect` (lowerCallMsil),
+  // exactly as the same-package path does (see funcParamTypes above).  Without
+  // this, a bare `newList()` / `newMap()` passed to a restored function's
+  // concrete-collection parameter (e.g. `buildInstanceMethodSig(newList(), …)`
+  // in Msil.Codegen calling into Msil.Lowering) erases to `List<object>` and
+  // then fails the callee's `castclass List<T>` on entry with
+  // InvalidCastException (#3920 self-host cascade).
+  //
+  // Value-type scalar parameters (Int/Long/Double/Bool/Char/Byte) are recorded
+  // as MObject here, NOT their precise type.  A cross-package *call result* used
+  // as such an argument is currently tracked as MObject (its return type is not
+  // threaded through the call-arg type), while the value on the stack is the raw
+  // scalar.  If the parameter were recorded precisely, `coerceCallArgMsil` would
+  // see (MObject arg, MInt param) and emit `unbox.any int` against the raw
+  // scalar — a NullReferenceException at run time.  Recording the scalar
+  // parameter as MObject keeps the coercion a no-op (matching the F# emitter's
+  // uniform erasure), while concrete collection / generic parameters stay
+  // precise so the collExpect construction hint above still fires (#3920).
+  val hintParamTypes: List[MsilType] = newList()
+  var hpi = 0
+  while hpi < paramTypes.count {
+    hintParamTypes.add(collHintParamType(paramTypes[hpi]))
+    hpi = hpi + 1
+  }
+  if not cctx.funcParamTypes.containsKey(fqn) {
+    cctx.funcParamTypes.add(fqn, hintParamTypes)
+  }
+}
+
+// Erase a value-type scalar parameter MsilType to MObject for the cross-package
+// `funcParamTypes` construction-hint table; pass every other type through
+// unchanged.  See `registerRestoredFunc` for why scalars must not be recorded
+// precisely (the `coerceCallArgMsil` `unbox.any` hazard, #3920).
+func collHintParamType(t: in MsilType): MsilType {
+  match t {
+    case MInt -> MObject
+    case MLong -> MObject
+    case MDouble -> MObject
+    case MBool -> MObject
+    case MChar -> MObject
+    case MByte -> MObject
+    case _ -> t
+  }
 }
 
 // Allocate or reuse a cached TypeRef row for a union case class; arity > 0 stamps the suffix (e.g. "Maybe_Just`1`") matching lowerMUnion — CLR loader requires it; 0 keeps plain name for non-generic unions and stdlib.
@@ -21182,6 +21726,27 @@ func registerRestoredUnionCase(
   val sigKey = "restored_ucase_" + caseFqn
   val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, ".ctor", sigKey, ctorSig)
   cctx.recordCtorTokens.add(caseFqn, 0x0A000000 + memberRow)
+
+  // A non-generic nullary case carries a static `Instance` singleton (emitted by
+  // `lowerMNullaryUnionCase`) so that `==` and nullary-case pattern tests compare
+  // by reference.  For a CROSS-package case the singleton field lives in another
+  // assembly, so register a FieldRef MemberRef to it in `singletonFieldTokens`;
+  // without this, the bare-path construction (`EPath` nullary case) falls back to
+  // `newobj`, minting a fresh instance.  Two references to the same nullary case
+  // across a package boundary (e.g. the lexer's `KwPackage` stored in a token vs.
+  // the parser's `tryEatKw(st, KwPackage)` argument) would then be distinct
+  // objects, so `Object.Equals` returns false and every cross-package
+  // nullary-case comparison silently fails (#3920 — the self-host parser blocker:
+  // `tryEatKw` never matched, so the self-emitted compiler rejected every file
+  // with P0020).
+  if c.fields.count == 0 and uGenerics.count == 0 {
+    if not cctx.singletonFieldTokens.containsKey(caseFqn) {
+      val instSig = buildFieldSig(MObject)
+      val instSigKey = "restored_ucsingleton_" + caseFqn
+      val instRow = ctxAddMemberRef(cctx.lctx, typeRefRow, "Instance", instSigKey, instSig)
+      cctx.singletonFieldTokens.add(caseFqn, 0x0A000000 + instRow)
+    }
+  }
 
   // For generic union cases, route construction through buildInBundleGenericCtorTok
   // (which emits MNewobjGenericByName → TypeSpec-parented .ctor at Phase 5) and
