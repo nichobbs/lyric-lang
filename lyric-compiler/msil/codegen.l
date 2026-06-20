@@ -7898,6 +7898,25 @@ func bindNamedFieldMsil(
 ): Unit {
   match fieldPat.kind {
     case PBinding(fname, innerOpt) -> {
+      // A nullary-case field sub-pattern (`Ok(None)`, `Cons(_, Nil)`) parses as
+      // `PBinding(<CaseName>, None)` — the parser cannot tell a nullary case
+      // apart from a fresh variable binding.  It is a *test*, not a binding:
+      // `patternIsRefutableMsil` already routes it through `testCaseFieldMsil`,
+      // so binding a slot here is wrong — it would shadow the case name with the
+      // (typed-by-the-scrutinee) extracted payload, so a later construction of
+      // that case in the arm body (`Ok(None) -> Ok(None)`) resolves `None` to
+      // the slot (carrying the scrutinee's `Option<DbRow>`) instead of building
+      // a fresh `Option<User>` from context — a generic-invariance "match not
+      // exhaustive" at run time (the `examples/rbac` self-host blocker).  Mirror
+      // the top-level `PBinding` handler and skip the slot for known cases.
+      match innerOpt {
+        case None -> {
+          if nameIsNullaryCaseMsil(cctx, fctx, fname) {
+            return
+          }
+        }
+        case Some(_) -> ()
+      }
       val fByName = cctx.fieldTokens.containsKey(caseClass + "/" + fname)
       val sigLookupKey = if fByName { caseClass + "/" + fname } else { caseClass + "/field" + toString(fi) }
       val fTok = match mapGet(cctx.fieldTokens, sigLookupKey) { case Some(t) -> t; case None -> 0 }

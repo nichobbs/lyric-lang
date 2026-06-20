@@ -18,6 +18,15 @@
          (#3201 / docs/45 / docs/42). -->
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Directory holding the stage-1 compiler+stdlib DLLs the AOT linker
+         references.  Defaults to the repo's `.bootstrap/stage1`, but can be
+         overridden (`-p:StageDir=/abs/path`) so a caller can AOT-link a
+         *specific* self-emitted closure instead of whatever happens to be in
+         `.bootstrap/stage1`.  Previously this path was hardcoded in the
+         <Reference> glob, so the override was silently ignored and binaries
+         "built from a self-emit" actually linked the stale `.bootstrap/stage1`
+         contents — masking self-host regressions. -->
+    <StageDir Condition="'$(StageDir)' == ''">$(MSBuildThisFileDirectory)../../../.bootstrap/stage1</StageDir>
   </PropertyGroup>
 
   <!-- Stage-1 DLL references.  The wildcard pulls in every artefact
@@ -29,7 +38,7 @@
        direct BCL externs; no Lyric-compiled DLL carries an AssemblyRef to
        either assembly (docs/23-fsharp-shim-elimination.md Band 5). -->
   <ItemGroup>
-    <Reference Include="../../../.bootstrap/stage1/Lyric.*.dll">
+    <Reference Include="$(StageDir)/Lyric.*.dll">
       <Private>true</Private>
     </Reference>
   </ItemGroup>
