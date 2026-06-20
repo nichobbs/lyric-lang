@@ -12503,6 +12503,74 @@ func emitExternTargetBody(
         }
       }
 
+      // Metadata-direct method resolution (docs/42): for a plain method extern
+      // (not a ctor, not resolved as a property above, not async — async keeps
+      // its Task-return path below) decode the BCL method's true signature so
+      // (a) the instance/static calling convention comes from the metadata
+      // `hasThis` rather than the @externInstance-or-default-static guess in
+      // `resolveExternTarget`, and (b) each MemberRef param/return encodes the
+      // BCL method's ACTUAL type.  Without this, `System.Double.ToString(string,
+      // IFormatProvider)` declared with a Lyric `CultureInfo` wrapper param
+      // encodes `CultureInfo` into the MemberRef and fails to bind at run time
+      // (MissingMethodException), and instance methods without an explicit
+      // `@externInstance` are emitted static.  Reference upcasts (a CultureInfo
+      // argument flowing into an IFormatProvider parameter) are implicit in IL,
+      // so only the signature encoding needs the BCL type.  Falls back to the
+      // Lyric-declared types when the reference pack is absent or the method is
+      // not found.
+      var resolvedMethodParams: Option[List[MsilType]] = None
+      var resolvedMethodRet: Option[MsilType] = None
+      // Lyric-declared argument SigTypes, used to disambiguate same-arity
+      // overloads.  If any param can't be described as a SigType (a generic or
+      // shape the metadata path can't express), skip metadata-direct resolution
+      // and fall back to the Lyric-declared signature.
+      val argSigs: List[Mdr.SigType] = newList()
+      var argSigsOk = true
+      var asi = 0
+      while asi < paramTypes.count {
+        match argTyToSig(paramTypes[asi]) {
+          case Some(s) -> argSigs.add(s)
+          case None -> {
+            argSigsOk = false
+          }
+        }
+        asi = asi + 1
+      }
+      if not r.isCtor and not decl.isAsync and emitMember == r.memberName and argSigsOk {
+        match mapGet(cctx.metadataPathIndex, assemblyForTypeMsil(cctx, resolvedFqn)) {
+          case None -> ()
+          case Some(asmPath) -> {
+            match Mdr.resolveExternMethodScored(asmPath, resolvedFqn, r.memberName, argSigs) {
+              case None -> ()
+              case Some(msig) -> {
+                val mParams: List[MsilType] = newList()
+                var convOk = true
+                var mk = 0
+                while mk < msig.paramTypes.count {
+                  match resolvedSigToMsil(cctx, msig.paramTypes[mk]) {
+                    case Some(m) -> mParams.add(m)
+                    case None -> {
+                      convOk = false
+                    }
+                  }
+                  mk = mk + 1
+                }
+                match resolvedSigToMsil(cctx, msig.returnType) {
+                  case Some(rm) -> {
+                    if convOk {
+                      emitIsStatic = not msig.hasThis
+                      resolvedMethodParams = Some(value = mParams)
+                      resolvedMethodRet = Some(value = rm)
+                    }
+                  }
+                  case None -> ()
+                }
+              }
+            }
+          }
+        }
+      }
+
       // Build the method signature blob, encoding class-typed params/return
       // against their resolved TypeRefs.
       //
@@ -12522,21 +12590,30 @@ func emitExternTargetBody(
       } else {
         ffiRetTy
       }
+      // BCL param list for the MemberRef: the metadata-resolved types when
+      // available (already receiver-excluded for instance methods), else the
+      // Lyric-declared types — all params for a static call or ctor, the
+      // receiver-skipped tail for an instance call.
+      val instArgsLegacy: List[MsilType] = newList()
+      var iiLegacy = 1
+      while iiLegacy < paramTypes.count {
+        instArgsLegacy.add(paramTypes[iiLegacy])
+        iiLegacy = iiLegacy + 1
+      }
+      val sigParams = match resolvedMethodParams {
+        case Some(mp) -> mp
+        case None -> if (emitIsStatic and not r.isCtor) or r.isCtor { paramTypes } else { instArgsLegacy }
+      }
+      val sigRet = match resolvedMethodRet { case Some(rm) -> rm; case None -> bclRetTy }
       val sig = if emitIsStatic and not r.isCtor {
-        buildFfiMethodSigCtx(cctx, paramTypes, bclRetTy, false)
+        buildFfiMethodSigCtx(cctx, sigParams, sigRet, false)
       } else if r.isCtor {
         // .ctor: HASTHIS, void return, all params explicit.
         buildFfiMethodSigCtx(cctx, paramTypes, MVoid, true)
       } else {
-        // Instance method: skip the first Lyric param (it's the
-        // receiver — already on the stack as `this`).
-        val instArgs: List[MsilType] = newList()
-        var ii = 1
-        while ii < paramTypes.count {
-          instArgs.add(paramTypes[ii])
-          ii = ii + 1
-        }
-        buildFfiMethodSigCtx(cctx, instArgs, bclRetTy, true)
+        // Instance method: the receiver is implicit via HASTHIS; sigParams holds
+        // only the non-receiver params.
+        buildFfiMethodSigCtx(cctx, sigParams, sigRet, true)
       }
       val mrRow = ctxAddMemberRef(cctx.lctx, tRefRow, emitMember, "ffi_" + target, sig)
       val tok = 0x0A000000 + mrRow
