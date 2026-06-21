@@ -7794,7 +7794,12 @@ func lowerPatternTestMsil(
         case LString(s) -> {
           val sTok = ctxInternUs(cctx.lctx, s)
           insns.add(MLdStr(token = sTok))
-          insns.add(MCeq)
+          // String patterns compare by VALUE, not reference: `ceq` only matches
+          // when the scrutinee and the literal are the same interned object, so a
+          // non-interned scrutinee (a concatenation, a cross-assembly literal, a
+          // value read from input) never matched (#3943-adjacent rbac regression).
+          // Use `Object.Equals(object, object)` like the String `PConstRef` path.
+          insns.add(MCall(methodToken = cctx.tokObjectStaticEquals))
           insns.add(MBrFalse(label = failLabel))
         }
         case LChar(cp) -> {
@@ -7821,16 +7826,16 @@ func lowerPatternTestMsil(
         }
         case LTripleString(s) -> {
           // Triple-quoted and raw string literals carry a plain String payload,
-          // so they compare exactly like LString (#1792).
+          // so they compare exactly like LString (#1792) — by value, not ref.
           val sTok = ctxInternUs(cctx.lctx, s)
           insns.add(MLdStr(token = sTok))
-          insns.add(MCeq)
+          insns.add(MCall(methodToken = cctx.tokObjectStaticEquals))
           insns.add(MBrFalse(label = failLabel))
         }
         case LRawString(s) -> {
           val sTok = ctxInternUs(cctx.lctx, s)
           insns.add(MLdStr(token = sTok))
-          insns.add(MCeq)
+          insns.add(MCall(methodToken = cctx.tokObjectStaticEquals))
           insns.add(MBrFalse(label = failLabel))
         }
         case LUnit -> {
