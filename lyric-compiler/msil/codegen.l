@@ -11078,13 +11078,25 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           case Some(e) -> {
             pushCollExpect(fctx, fctx.declaredRetTy)
             val savedRetHint1 = pushRetHintTyArgs(fctx, fctx.declaredRetTy)
-            lowerExprMsil(cctx, fctx, insns, e)
+            val retExprTy1 = lowerExprMsil(cctx, fctx, insns, e)
             restoreHintTyArgs(fctx, savedRetHint1)
             popCollExpect(fctx)
-            if fctx.retvalSlot < 0 {
-              fctx.retvalSlot = allocSlotMsil(fctx, "__retval", fctx.declaredRetTy)
+            // A void/Unit function with `return <expr>` (commonly `return ()`):
+            // the expression runs for side effects but produces no return value.
+            // Don't stash into a void `__retval` slot (invalid IL); just discard
+            // any non-void value before leaving to the epilogue (which rets void).
+            val retIsVoid1 = match fctx.declaredRetTy { case MVoid -> true; case _ -> false }
+            if retIsVoid1 {
+              match retExprTy1 {
+                case MVoid -> ()
+                case _ -> insns.add(MPop)
+              }
+            } else {
+              if fctx.retvalSlot < 0 {
+                fctx.retvalSlot = allocSlotMsil(fctx, "__retval", fctx.declaredRetTy)
+              }
+              emitStoreSlot(insns, fctx.retvalSlot, fctx.paramCount)
             }
-            emitStoreSlot(insns, fctx.retvalSlot, fctx.paramCount)
           }
           case None -> {
           }
@@ -11096,9 +11108,20 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           case Some(e) -> {
             pushCollExpect(fctx, fctx.declaredRetTy)
             val savedRetHint2 = pushRetHintTyArgs(fctx, fctx.declaredRetTy)
-            lowerExprMsil(cctx, fctx, insns, e)
+            val retExprTy2 = lowerExprMsil(cctx, fctx, insns, e)
             restoreHintTyArgs(fctx, savedRetHint2)
             popCollExpect(fctx)
+            // A void/Unit function with `return <expr>` (commonly `return ()`):
+            // the expression runs for side effects, but its value must not remain
+            // on the stack at `ret` — invalid IL ("stack must be empty on return
+            // from a void function").  Mirror the SExpr discard (#3943).
+            val retIsVoid2 = match fctx.declaredRetTy { case MVoid -> true; case _ -> false }
+            if retIsVoid2 {
+              match retExprTy2 {
+                case MVoid -> ()
+                case _ -> insns.add(MPop)
+              }
+            }
             insns.add(MRet)
           }
           case None -> {
@@ -12782,7 +12805,14 @@ func emitExternTargetBody(
         // only the non-receiver params.
         buildFfiMethodSigCtx(cctx, sigParams, sigRet, true)
       }
-      val mrRow = ctxAddMemberRef(cctx.lctx, tRefRow, emitMember, "ffi_" + target, sig)
+      // The #Blob intern key must vary with the signature *contents*: two
+      // wrappers can target the same `Type.Member` but bind different overloads
+      // (e.g. `Directory.Delete(string)` vs `Directory.Delete(string, bool)`).
+      // `internBlob` dedups by key and discards the colliding blob, so a bare
+      // `"ffi_" + target` key made the second wrapper reuse the first's sig blob
+      // — the call popped the wrong arity and left a value on the stack (#3943).
+      val ffiSigKey = ffiMemberRefSigKey(target, r.isCtor, emitIsStatic, paramTypes, sigParams, sigRet)
+      val mrRow = ctxAddMemberRef(cctx.lctx, tRefRow, emitMember, ffiSigKey, sig)
       val tok = 0x0A000000 + mrRow
 
       // A value-type instance member (e.g. `System.TimeSpan.TotalMilliseconds`)
@@ -19230,6 +19260,39 @@ func argTyToSig(t: in MsilType): Option[Mdr.SigType] {
     } else {
       None
     }
+  }
+}
+
+// Blob-intern key for an `@externTarget` MemberRef signature.  Must vary with
+// the signature contents (calling convention + param/return types) so two
+// wrappers naming the same `Type.Member` but binding different overloads get
+// distinct #Blob entries; keying on `target` alone made `internBlob` alias the
+// second wrapper onto the first's blob (#3943).  Mirrors the per-branch sig
+// construction in `emitExternTargetBody`: ctors encode `paramTypes -> void`,
+// other calls encode `sigParams -> sigRet`.
+func ffiMemberRefSigKey(
+  target: in String,
+  isCtor: in Bool,
+  emitIsStatic: in Bool,
+  paramTypes: in List[MsilType],
+  sigParams: in List[MsilType],
+  sigRet: in MsilType,
+): String {
+  var k = "ffi_" + target + "#" + (if isCtor { "c" } else if emitIsStatic { "s" } else { "i" })
+  if isCtor {
+    var i = 0
+    while i < paramTypes.count {
+      k = k + "_" + msilTypeKeyStr(paramTypes[i])
+      i = i + 1
+    }
+    k + "->void"
+  } else {
+    var i = 0
+    while i < sigParams.count {
+      k = k + "_" + msilTypeKeyStr(sigParams[i])
+      i = i + 1
+    }
+    k + "->" + msilTypeKeyStr(sigRet)
   }
 }
 
