@@ -122,9 +122,13 @@ echo "stage-selfhosted-stdlib: staged $staged DLL(s) into ${#LIB_DIRS[@]} lib di
 # suffix.  The patch script is idempotent: DLLs already using the suffix are
 # not modified.
 #
-# Lyric.Stdlib.Collections.dll is also force-replaced so MapEntry`2 is
-# correct; it too is always consumed via self-hosted-emitted code paths.
-FORCE_REPLACE=(Core Collections)
+# Collections is intentionally excluded from FORCE_REPLACE: the self-hosted
+# emitter does not emit a Std.Collections.Program module class, but the
+# F#-built TypeChecker loads that class to import package symbols at compile
+# time.  Replacing Collections would break every build with a TypeLoadException
+# on 'Std.Collections.Program'.  MapEntry`2 correctness in Collections is
+# deferred until the self-hosted emitter emits Program for all packages.
+FORCE_REPLACE=(Core)
 force_replaced=0
 for pkg in "${FORCE_REPLACE[@]}"; do
   src_dll="$out/Lyric.Stdlib.$pkg.dll"
@@ -139,10 +143,10 @@ for pkg in "${FORCE_REPLACE[@]}"; do
     force_replaced=$((force_replaced + 1))
   done
 done
-echo "stage-selfhosted-stdlib: force-replaced Core+Collections in ${#LIB_DIRS[@]} lib dir(s) ($force_replaced copy operation(s))"
+echo "stage-selfhosted-stdlib: force-replaced Core in ${#LIB_DIRS[@]} lib dir(s) ($force_replaced copy operation(s))"
 
 # Patch TypeRefs in all other DLLs (both compiler packages and remaining
-# stdlib DLLs) to match the arity-suffix TypeDefs in the new Core/Collections.
+# stdlib DLLs) to match the arity-suffix TypeDefs in the new Core.
 patch_log="$REPO_ROOT/.bootstrap/patch-stdlib-generics.log"
 mkdir -p "$(dirname "$patch_log")"
 echo "stage-selfhosted-stdlib: patching TypeRefs in lib dirs (log: $patch_log)"
