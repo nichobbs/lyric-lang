@@ -12795,13 +12795,15 @@ func emitExternTargetBody(
 
       // Load every Lyric param in order.  For instance calls the
       // receiver is param 0 and lands on the stack first; for static
-      // calls every param is explicit.  For `out`/`inout` parameters,
-      // load the address (via ldarga) instead of the value (via ldarg)
-      // so the BCL method can write back through the pointer.
+      // calls every param is explicit.  An `out`/`inout` parameter is ALREADY a
+      // managed pointer (`T&`) in the wrapper's own signature, so forwarding it
+      // to the BCL method's by-ref parameter is a plain `ldarg` (load the
+      // pointer value) — NOT `ldarga`, which would load the address of the
+      // pointer slot (`T&&`) and fault the verifier with ByrefOfByref (#3943).
       var li = 0
       while li < decl.params.count {
         if isByrefMode(decl.params[li].mode) {
-          insns.add(MLdarga(slot = li))
+          insns.add(MLdarg(slot = li))
         } else if li == 0 and valueTypeReceiver {
           insns.add(MLdarga(slot = li))
         } else {

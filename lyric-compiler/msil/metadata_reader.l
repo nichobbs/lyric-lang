@@ -2334,7 +2334,7 @@ pub func scoreParamsLenient(argTypes: in List[SigType], params: in List[SigType]
 // longer).  Used for prefix matches where the caller supplies fewer arguments
 // than the BCL method declares and the trailing params are optional.  Returns -1
 // when any leading param is incompatible.
-pub func scoreParamsPrefix(argTypes: in List[SigType], params: in List[SigType]): Int {
+func scoreParamsPrefix(argTypes: in List[SigType], params: in List[SigType]): Int {
   if params.count < argTypes.count {
     return 0 - 1
   }
@@ -2387,11 +2387,11 @@ func methodTrailingOptionalCount(
   }
   val md = readMethodDef(img, layout, methodRow)
   val pstart = md.paramListStart
-  val totalMethods = th.rowCounts[0x06]
+  val totalMethods = rowCountOf(th, 0x06)
   val pend = if methodRow < totalMethods {
     readMethodDef(img, layout, methodRow + 1).paramListStart
   } else {
-    th.rowCounts[0x08] + 1
+    rowCountOf(th, 0x08) + 1
   }
   var cnt = 0
   var s = totalParams
