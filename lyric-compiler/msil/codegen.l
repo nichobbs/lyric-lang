@@ -21798,6 +21798,10 @@ func registerRestoredUnion(cctx: in CodegenCtx, packageName: in String, decl: in
 // case's ctor.  Skips items whose TypeRef wasn't allocated and
 // private funcs (no public surface).
 func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact): Unit {
+  // Hoist the DLL read outside the items loop — one parse per artifact, not
+  // one per IUnion item.  coreDllHasAritySuffixTypeDef returns false on any
+  // read/parse failure (safe default: no Instance singletons).
+  val hasInstances = Mdr.dllHasNullaryInstanceField(art.dllPath)
   val items = art.source.items
   var i = 0
   while i < items.count {
@@ -21814,7 +21818,6 @@ func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact): 
         // func helpers re-resolve their own AssemblyRef internally, so
         // hoisting it eagerly was inconsistent (#1295).
         val asmRefRow = ensureAssemblyRefForArtifact(cctx, art.packageName)
-        val hasInstances = Mdr.dllHasNullaryInstanceField(art.dllPath)
         registerRestoredUnion(cctx, art.packageName, decl, asmRefRow, hasInstances)
       }
       case IInterface(decl) -> {

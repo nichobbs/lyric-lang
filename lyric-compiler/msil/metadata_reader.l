@@ -2722,43 +2722,17 @@ func coreDllHasAritySuffixTypeDef(dllPath: in String): Bool {
   }
 }
 
-// Read the declared name of Field table row `row` (1-based).  Field row
-// layout: flags(2) + name(stringIdx) + sig(blobIdx).
-func readFieldName(img: in PeImage, layout: in TableLayout, row: in Int): String {
-  val b = img.bytes
-  val o = layout.dataStart[0x04] + (row - 1) * layout.rowSize[0x04]
-  var p = o + 2
-  val nameI = rdIdx(b, p, layout.stringIdx)
-  stringAt(img, layout, nameI)
-}
-
-// True when any Field row in the DLL at `dllPath` is named "Instance",
-// indicating the DLL was produced by the self-hosted emitter (which emits a
-// static `Instance` singleton for every non-generic nullary union case).
-// F#-compiled DLLs from the LYRIC_BOOTSTRAP_MINT path do not carry these
-// fields; for them the codegen falls back to `newobj .ctor()`.
-// Returns false when the file is missing, unreadable, or cannot be parsed
-// (safe default: assume F# convention, no Instance fields).
+// True when the DLL at `dllPath` was produced by the self-hosted emitter,
+// which emits a static `Instance` singleton for every non-generic nullary
+// union case.  Delegates to arity-suffix detection: self-hosted DLLs use
+// backtick-suffixed TypeDef names (e.g. `Maybe`1`); F#-emitted DLLs do not.
+// Using the arity-suffix as the proxy is reliable and avoids a fragile
+// Field-table scan (F#-emitted DLLs can also contain fields named "Instance"
+// via F# DU conventions, which would mislead a name-based scan).
+// Returns false when the file is missing, unreadable, or carries no backtick
+// TypeDefs (F# bootstrap / LYRIC_BOOTSTRAP_MINT path).
 pub func dllHasNullaryInstanceField(dllPath: in String): Bool {
-  match File.readBytes(dllPath) {
-    case Err(_) -> false
-    case Ok(raw) ->
-      match parseAssemblyImage(raw.toArray()) {
-        case None -> false
-        case Some(ri) -> {
-          val fieldCount = rowCountOf(ri.th, 0x04)
-          var row = 1
-          var found = false
-          while row <= fieldCount and not found {
-            if readFieldName(ri.img, ri.layout, row) == "Instance" {
-              found = true
-            }
-            row = row + 1
-          }
-          found
-        }
-      }
-  }
+  coreDllHasAritySuffixTypeDef(dllPath)
 }
 
 // Return `path + /Lyric.Stdlib.Core.dll` when it exists, else "".
