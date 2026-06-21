@@ -45,7 +45,7 @@ jobs:
     outputs:
       version: ${{ steps.ver.outputs.VERSION }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Resolve version
         id: ver
@@ -113,7 +113,7 @@ jobs:
       APPLE_TEAM_ID:       ${{ secrets.APPLE_TEAM_ID }}
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           # Full history so a `seed: mint` release can reach the historical F#
           # bootstrap commit; harmless (just a deeper fetch) for `seed: download`.
@@ -307,7 +307,7 @@ jobs:
       NUGET_API_KEY:               ${{ secrets.NUGET_API_KEY }}
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Set up .NET
         uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
@@ -369,7 +369,7 @@ jobs:
     needs: [create-release, build-standalone, publish-nuget, secrets-gate]
     if: always() && (needs.build-standalone.result == 'success' || needs.build-standalone.result == 'skipped')
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Mark release as ready
         shell: bash
