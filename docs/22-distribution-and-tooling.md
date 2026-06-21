@@ -138,11 +138,21 @@ The compiler and stdlib carry a shared version file. `make lyric` writes
 }
 ```
 
-`lyric version` prints all four fields and exits 0:
+`lyric --version` (or `lyric -v`) prints the compiler version and exits 0:
 
 ```
-lyric 0.1.0  (language 0.1, stdlib 0.1.0, built 2026-05-20T00:00:00Z)
+lyric 0.1.0
 ```
+
+`lyric version` (the subcommand) reads the nearest `lyric.toml` and prints
+the package name and version, then exits 0:
+
+```
+myapp 1.2.3
+```
+
+It also accepts `--set <semver>` to update the version in `lyric.toml`, and
+`--workspace` to update all workspace members at once.
 
 On every startup, `checkSdkVersion()` reads `sdk-version.json` from the
 resolved lib directory and compares `compiler_version` to the binary's own

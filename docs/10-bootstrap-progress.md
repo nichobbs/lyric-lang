@@ -125,7 +125,7 @@ deferred to Phase 3 by design.
 | M5.3 — self-hosted stdlib / formatter / package manager / CLI | **Shipped** (`Lyric.Manifest`, `Lyric.Fmt` CST formatter, `Lyric.ManifestBridge`, `Lyric.TestSynthBridge`, `Lyric.Cli` full command dispatcher handling all CLI commands natively via `SelfHostedCli.fs`) | — |
 | M5.3 — project-aware CLI: `run`, `fmt`, `lint`, `prove`, `doc`, `test`, `bench` all auto-discover `lyric.toml` when invoked with no source file; `--manifest` override; `fmt` dry-run/`--write` distinction; `run --target dotnet\|jvm` for project mode | **Shipped** (PR #3063) | — |
 | M5.3 — `bench --target jvm`; `fmt --stdin` + multi-file variadic; `lint` project-mode summary + exit-code fix; `test` `@test_module` fallback scan; `check`, `clean`, `update`, `deps` new commands; `bench` double-read optimization | **Shipped** (PR #3102) | — |
-| D109 / Q-dist-007 — `lyric version` command + `checkSdkVersion()` SDK mismatch guard; `sdk-version.json` side-file written by `make lyric`; `[nuget]` allowed in all manifest types (Q-W-001) | **Shipped** (PR #3960) | D-progress-TBD |
+| D109 / Q-dist-007 — `lyric version` command + `checkSdkVersion()` SDK mismatch guard; `sdk-version.json` side-file written by `make lyric`; `[nuget]` allowed in all manifest types (Q-W-001) | **Shipped** (PR #3960) | — |
 
 ### Phase 2 — type system completion (complete)
 

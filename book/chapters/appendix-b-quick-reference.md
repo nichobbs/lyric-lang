@@ -794,7 +794,7 @@ lyric init demo --name Demo --force    # override the package name; overwrite an
 
 # Project-aware defaults
 lyric                                  # build the current project (discovers nearest lyric.toml)
-lyric version                          # print compiler + stdlib + language versions and exit 0
+lyric version                          # print package name and version from nearest lyric.toml and exit 0
 lyric --help                           # grouped command list (also -h / help); exits 0
                                        # build / restore / run / fmt / lint / prove / doc / test /
                                        # bench all discover the nearest lyric.toml by walking up

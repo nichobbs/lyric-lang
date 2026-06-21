@@ -2737,14 +2737,14 @@ func readFieldName(img: in PeImage, layout: in TableLayout, row: in Int): String
 // static `Instance` singleton for every non-generic nullary union case).
 // F#-compiled DLLs from the LYRIC_BOOTSTRAP_MINT path do not carry these
 // fields; for them the codegen falls back to `newobj .ctor()`.
-// Returns true when the file is missing or unreadable (safe default: non-MINT
-// builds always have Instance fields).
+// Returns false when the file is missing, unreadable, or cannot be parsed
+// (safe default: assume F# convention, no Instance fields).
 pub func dllHasNullaryInstanceField(dllPath: in String): Bool {
   match File.readBytes(dllPath) {
-    case Err(_) -> true
+    case Err(_) -> false
     case Ok(raw) ->
       match parseAssemblyImage(raw.toArray()) {
-        case None -> true
+        case None -> false
         case Some(ri) -> {
           val fieldCount = rowCountOf(ri.th, 0x04)
           var row = 1
