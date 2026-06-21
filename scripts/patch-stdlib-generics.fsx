@@ -1,16 +1,20 @@
-// patch-stdlib-generics.fsx — retarget TypeDefs and TypeRefs in F#-emitted DLLs so they
-// match the arity-suffix naming convention used by the self-hosted emitter.
+// patch-stdlib-generics.fsx — retarget TypeRefs in F#-emitted Lyric.Stdlib.*.dll
+// files to match the arity-suffix naming convention used by the self-hosted emitter.
 //
 // WHY THIS EXISTS
 // ---------------
 // The F# bootstrap compiler emits generic TypeDefs WITHOUT the CLR arity
 // suffix (e.g. `Option` instead of `Option`1`, `Result` instead of
-// `Result`2`).  The self-hosted MSIL emitter always adds the suffix, so:
+// `Result`2`).  The self-hosted MSIL emitter probes the installed
+// Lyric.Stdlib.Core.dll at compile time (bridge.l::detectStdlibUsesAritySuffix)
+// and adapts its TypeRef emission to match the installed convention.  This
+// makes arity-suffix patching of TypeDefs (Pass 1) obsolete.
 //
-//   * F#-built `Lyric.Stdlib.Core.dll`     → TypeDefs: Option, Result, ...
-//   * Self-hosted-built `Lyric.Stdlib.Core.dll` → TypeDefs: Option`1, Result`2, ...
-//   * All F#-built DLLs that import Core   → TypeRefs:  Option, Result, ...
-//   * User code compiled by self-hosted emitter → TypeRefs: Option`1, Result`2, ...
+// Pass 2 (TypeRef patching in Lyric.Stdlib.*.dll) remains available as a
+// correctness safety net for cross-stdlib TypeRefs (e.g. Sort.dll referencing
+// Core types).  It is a no-op when the rename map is empty (e.g. in
+// LYRIC_BOOTSTRAP_MINT=1 mode where the per-package output carries no
+// arity-suffix TypeDefs).
 //
 // HOW IT WORKS
 // ------------
@@ -19,38 +23,25 @@
 //        (namespace, base_name_without_suffix) -> arity_suffixed_name
 //      e.g. ("Std.Core", "Option") -> "Option`1"
 //   2. Walk every Lyric.Stdlib.*.dll in each target <dir> and rename
-//      matching TypeDefs in place (so the F#-built Core etc. gain the
-//      correct arity-suffix TypeDef names while keeping all their methods).
-//   3. Walk every Lyric.Stdlib.*.dll in each target <dir> and rename
 //      matching TypeRefs in place so all stdlib cross-assembly references
 //      use the suffixed name.
 //
-// Both passes are idempotent: a name that already carries the suffix will
+// Pass 2 is idempotent: a TypeRef that already carries the suffix will
 // not match any rename-map key and will not be modified.
 //
-// SCOPE RESTRICTION ON PASS 2
+// SCOPE RESTRICTION ON Pass 2
 // ---------------------------
-// Pass 2 intentionally targets only Lyric.Stdlib.*.dll files (same glob as
-// Pass 1) and NOT the compiler DLLs (Lyric.Lyric.*.dll, Lyric.Msil.*.dll,
-// Lyric.Jvm.*.dll, etc.).  Mono.Cecil's full metadata round-trip (asm.Write)
-// corrupts static `Instance` singleton fields in F#-built compiler DLLs —
-// e.g. `SyntaxKind_SkPackageDecl.Instance` in Lyric.Lyric.Parser.dll and
-// `MsilType_MInt.Instance` in Lyric.Msil.Lowering.dll — which causes
-// `MissingFieldException` at runtime.  Compiler DLL TypeRefs to Core types
-// (Option, Result …) are left with the un-suffixed names; this is acceptable
-// because the compiler DLL code paths exercised by the current test suite do
-// not JIT-compile methods that reference those generic TypeRefs at runtime.
-//
-// NOT force-replacing Core: the self-hosted Core has a different ABI for
-// generic functions (e.g. unwrapOr signature) vs. the F#-built Core that
-// the F#-built TypeChecker was compiled against.  Patching TypeDefs
-// in-place preserves all existing methods.
+// Intentionally targets only Lyric.Stdlib.*.dll files and NOT the compiler
+// DLLs (Lyric.Lyric.*.dll, Lyric.Msil.*.dll, Lyric.Jvm.*.dll, etc.).
+// Mono.Cecil's full metadata round-trip (asm.Write) corrupts static `Instance`
+// singleton fields in F#-built compiler DLLs — e.g.
+// `SyntaxKind_SkPackageDecl.Instance` in Lyric.Lyric.Parser.dll and
+// `MsilType_MInt.Instance` in Lyric.Msil.Lowering.dll — causing
+// `MissingFieldException` at runtime.
 //
 // Run:  dotnet fsi scripts/patch-stdlib-generics.fsx --source <dir> <dir> [<dir>...]
-//   --source <dir>  : directory containing self-hosted-built DLLs used to
-//                     discover arity-suffix TypeDef names (the per-package
-//                     emit temp dir from stage-selfhosted-stdlib.sh).
-//                     Must precede the target <dir>... arguments.
+//   --source <dir>  : directory containing self-hosted per-package emit output
+//                     (for rename map).  Must precede the target <dir>... arguments.
 
 #r "nuget: Mono.Cecil, 0.11.6"
 
@@ -82,28 +73,6 @@ let buildRenameMap (sourceDir: string) : Map<string * string, string> =
                 eprintfn "  warning: skipping %s while building rename map: %s"
                     (Path.GetFileName dll) ex.Message
     map
-
-// Patch TypeDefs in a Lyric.Stdlib.*.dll file in place.
-// Returns the number of TypeDef renames made.
-let patchTypeDefs (renameMap: Map<string * string, string>) (path: string) : int =
-    try
-        use asm = AssemblyDefinition.ReadAssembly(path, ReaderParameters(ReadWrite = true))
-        let m = asm.MainModule
-        let mutable rewrites = 0
-        for td in m.Types do
-            let key = (td.Namespace, td.Name)
-            match Map.tryFind key renameMap with
-            | Some newName when td.Name <> newName ->
-                td.Name  <- newName
-                rewrites <- rewrites + 1
-            | _ -> ()
-        if rewrites > 0 then
-            asm.Write()
-        rewrites
-    with ex ->
-        eprintfn "  warning: could not patch TypeDefs in %s: %s"
-            (Path.GetFileName path) ex.Message
-        0
 
 // Patch TypeRefs in one DLL file in place.
 // Returns the number of TypeRef renames made.
@@ -143,9 +112,11 @@ let main (args: string[]) =
     let renameMap = buildRenameMap sourceDir
 
     if Map.isEmpty renameMap then
-        eprintfn "  ERROR: no arity-suffix TypeDefs found in '%s'" sourceDir
-        eprintfn "         Has --internal-perpackage-build run successfully?"
-        Environment.Exit 1
+        printfn "  info: no arity-suffix TypeDefs found in '%s' — rename map is empty, skipping patches"
+            sourceDir
+        printfn "patch-stdlib-generics: done — nothing to patch"
+        0
+    else
 
     printfn "  rename map (%d entries):" renameMap.Count
     for ((ns, baseName), newName) in Map.toSeq renameMap do
@@ -154,26 +125,12 @@ let main (args: string[]) =
     let mutable totalPatched  = 0
     let mutable totalRewrites = 0
 
-    // Pass 1: patch TypeDefs in Lyric.Stdlib.*.dll files in the target dirs.
-    // This renames the generic TypeDef entries in the F#-built stdlib DLLs
-    // (e.g. Option -> Option`1 in Lyric.Stdlib.Core.dll) so they match the
-    // arity-suffix convention without replacing the DLLs (which would change
-    // the method ABI the F#-built TypeChecker was compiled against).
-    printfn "patch-stdlib-generics: pass 1 — patching TypeDefs in stdlib DLLs..."
-    for dir in targetDirs do
-        if Directory.Exists dir then
-            for dll in Directory.GetFiles(dir, "Lyric.Stdlib.*.dll") do
-                let rewrites = patchTypeDefs renameMap dll
-                if rewrites > 0 then
-                    totalPatched  <- totalPatched  + 1
-                    totalRewrites <- totalRewrites + rewrites
-                    printfn "  patched TypeDefs in %-50s (%d rename(s))"
-                        (Path.GetFileName dll) rewrites
-
-    // Pass 2: patch TypeRefs in Lyric.Stdlib.*.dll files in the target dirs.
-    // Restricted to stdlib DLLs (same glob as Pass 1) to avoid Mono.Cecil's
-    // asm.Write() corrupting static Instance singletons in compiler DLLs.
-    printfn "patch-stdlib-generics: pass 2 — patching TypeRefs in Lyric.Stdlib.*.dll..."
+    // Patch TypeRefs in Lyric.Stdlib.*.dll files in the target dirs.
+    // Restricted to stdlib DLLs to avoid Mono.Cecil's asm.Write() corrupting
+    // static Instance singletons in compiler DLLs (MissingFieldException).
+    // TypeDef patching (the former Pass 1) is no longer needed: bridge.l probes
+    // Core.dll at compile time and emits TypeRefs matching the installed convention.
+    printfn "patch-stdlib-generics: patching TypeRefs in Lyric.Stdlib.*.dll..."
     for dir in targetDirs do
         if Directory.Exists dir then
             for dll in Directory.GetFiles(dir, "Lyric.Stdlib.*.dll") do
