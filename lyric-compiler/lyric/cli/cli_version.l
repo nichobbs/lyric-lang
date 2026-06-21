@@ -6,6 +6,7 @@ import Std.Console as Console
 import Std.File as File
 import Std.String as Str
 import Std.Path as Path
+import Std.Parse as Parse
 import Std.Environment as Environment
 import Std.Errors
 import Lyric.Manifest as Mf
@@ -16,8 +17,21 @@ import Lyric.Discovery as Disc
 // §14. lyric version — print and update package versions
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Return "" if `v` looks like a valid semver (MAJOR.MINOR.PATCH[+-suffix]),
-// or a human-readable diagnostic string if not.
+// Return true when `s` is a non-negative decimal integer with no leading zeros
+// (or "0" itself).
+func isNonNegativeInt(s: in String): Bool {
+  if s.length == 0 {
+    return false
+  }
+  match Parse.parseOptInt(s) {
+    case None -> false
+    case Some(n) -> n >= 0
+  }
+}
+
+// Return "" if `v` looks like a valid semver (MAJOR.MINOR.PATCH[+-suffix])
+// where MAJOR, MINOR, and PATCH are non-negative integers, or a human-readable
+// diagnostic string if not.
 func validateSemver(v: in String): String {
   if v.length == 0 {
     return "version cannot be empty"
@@ -29,6 +43,29 @@ func validateSemver(v: in String): String {
   val second = v.indexOf(".", first + 1)
   if second <= first + 1 {
     return "invalid semver '" + v + "': expected MAJOR.MINOR.PATCH"
+  }
+  val major = v.substring(0, first)
+  val minor = v.substring(first + 1, second - first - 1)
+  // PATCH ends at the first '+' or '-' (pre-release / build metadata) or EOL.
+  val patchStart = second + 1
+  val patchRaw = v.substring(patchStart, v.length - patchStart)
+  val plusPos = patchRaw.indexOf("+")
+  val dashPos = patchRaw.indexOf("-")
+  val patch = if plusPos >= 0 and (dashPos < 0 or plusPos < dashPos) {
+    patchRaw.substring(0, plusPos)
+  } else if dashPos >= 0 {
+    patchRaw.substring(0, dashPos)
+  } else {
+    patchRaw
+  }
+  if not isNonNegativeInt(major) {
+    return "invalid semver '" + v + "': MAJOR must be a non-negative integer"
+  }
+  if not isNonNegativeInt(minor) {
+    return "invalid semver '" + v + "': MINOR must be a non-negative integer"
+  }
+  if not isNonNegativeInt(patch) {
+    return "invalid semver '" + v + "': PATCH must be a non-negative integer"
   }
   ""
 }

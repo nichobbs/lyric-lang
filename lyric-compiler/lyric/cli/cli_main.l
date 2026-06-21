@@ -93,6 +93,13 @@ pub func main(argv: in slice[String]): Int {
     return 0
   }
 
+  // `lyric version` reads/writes lyric.toml and has no dependency on
+  // Lyric.Stdlib.dll, so it must not be blocked by a strict SDK version
+  // mismatch.  Dispatch it before the SDK check, alongside --version/--help.
+  if cmd == "version" {
+    return cmdVersion(argv)
+  }
+
   // Check that the SDK (Lyric.Stdlib.dll) was built by this same compiler
   // version.  A mismatch is a warning by default; LYRIC_STRICT_SDK_VERSION=1
   // makes it a hard error (exit 1).
@@ -183,10 +190,6 @@ pub func main(argv: in slice[String]): Int {
 
   if cmd == "openapi" {
     return cmdOpenApi(argv)
-  }
-
-  if cmd == "version" {
-    return cmdVersion(argv)
   }
 
   if cmd == "lsp" {
