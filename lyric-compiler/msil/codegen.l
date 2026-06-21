@@ -7305,6 +7305,28 @@ func lowerMatchExprMsil(
   // it is lowered with that hint and builds the closed `Option_None<Expr>`.
   val runningCanon: List[MsilType] = newList()
   var runBest = 0
+  // Seed the running canonical from the SCRUTINEE's Option type args (#3943).
+  // The running canon is forward-only (reordering arms corrupts emitted bodies,
+  // #3920), so a `None`-FIRST arm is lowered before any concrete sibling can seed
+  // it and erases to `Option_None<object>`.  The dominant unhinted idiom is an
+  // identity-preserving Option rewrite
+  //   `match opt { case None -> None; case Some(e) -> Some(f(e)) }`
+  // where `f` preserves the payload type, so the result's args equal the
+  // scrutinee's — seeding from the scrutinee fixes the None-first case without
+  // reordering.  `runBest` stays 0 so any concrete fall-through arm still
+  // OVERRIDES the seed (a type-CHANGING rewrite's concrete arm wins); the seed is
+  // a pure fallback for bare arms reached before any concrete arm.  Gated on
+  // `not hasEntryHint` to match the #3920 running-canon rule.
+  if (not hasEntryHint) and msilHeadFqnMsil(scrutTy) == "Std.Core.Option" {
+    val seedArgs = genericArgsOfMsil(scrutTy)
+    if seedArgs.count > 0 and countConcreteArgsMsil(seedArgs) > 0 {
+      var si = 0
+      while si < seedArgs.count {
+        runningCanon.add(seedArgs[si])
+        si = si + 1
+      }
+    }
+  }
   // Parallel running canonical for bare empty-collection arms (`newList()` /
   // `newMap()`): the most recent concrete `MConcreteList` / `MConcreteMap` of a
   // fall-through arm.  A bare `newList()` arm reached after a concrete-collection
