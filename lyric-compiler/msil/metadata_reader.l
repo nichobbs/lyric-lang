@@ -1996,6 +1996,12 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
       case STSzArray(ae) -> if scoreSigType(ae, pe) == 2 { 2 } else { -1 }
       case _ -> -1
     }
+    // A by-ref / `out` / `ref` parameter matches a by-ref argument of the same
+    // pointee.  Required so the metadata-direct resolver can score an instance
+    // method that carries an `out`/`ref` parameter (e.g. `JsonElement.
+    // TryGetProperty(string, out JsonElement)`) and thus detect `hasThis`
+    // instead of falling back to the static-call guess (#3943).
+    case STByRef(pi) -> match arg { case STByRef(ai) -> scoreSigType(ai, pi); case _ -> -1 }
     case _ -> -1
   }
 }

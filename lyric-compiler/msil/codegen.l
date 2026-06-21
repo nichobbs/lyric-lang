@@ -19305,6 +19305,16 @@ func internClassRef(cctx: in CodegenCtx, fqn: in String): Option[MsilType] {
 // (reference) types via an interned CLASS TypeRef.  None for anything else (or
 // when the type's assembly isn't indexed) — the caller falls back to legacy.
 func resolvedSigToMsil(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[MsilType] {
+  // A by-ref resolved param (`out`/`ref`) maps to `MByRef(inner)` so the
+  // MemberRef signature encodes `T&` — otherwise a metadata-resolved instance
+  // method with an out-param can't be expressed and resolution discards it
+  // (falling back to the static-call guess, #3943).
+  match Mdr.sigByRefInner(sig) {
+    case Some(inner) -> {
+      return match resolvedSigToMsil(cctx, inner) { case Some(m) -> Some(value = MByRef(inner = m)); case None -> None }
+    }
+    case None -> ()
+  }
   val pb = Mdr.sigPrimByte(sig)
   if pb >= 0 {
     elemByteToMsil(pb)
@@ -19366,6 +19376,16 @@ func genericMemberSigToMsil(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[Ms
 // resolution: primitives by element byte, value/class externs by FQN.  None for
 // argument types the metadata path can't describe (caller falls back).
 func argTyToSig(t: in MsilType): Option[Mdr.SigType] {
+  // A by-ref / `out` / `inout` parameter contributes a by-ref SigType so the
+  // metadata-direct resolver can score (and thus instance-detect) externs that
+  // carry an `out`/`ref` parameter, rather than bailing to the static guess
+  // (#3943).
+  match t {
+    case MByRef(inner) -> {
+      return match argTyToSig(inner) { case Some(s) -> Some(value = Mdr.mkByRefSig(s)); case None -> None }
+    }
+    case _ -> ()
+  }
   val eb = msilToElemByte(t)
   if eb >= 0 {
     Some(value = Mdr.mkPrimSig(eb))
