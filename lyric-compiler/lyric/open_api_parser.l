@@ -139,7 +139,7 @@ func buildRequiredList(schemaElem: in JsonElement): List[String] {
   match tryArr(schemaElem, "required") {
     case None -> ()
     case Some(arr) -> {
-      var en: JsonArrayEnumerator = enumerateArray(arr)
+      var en: JsonArrayCursor = enumerateArray(arr)
       while arrayMoveNext(en) {
         val item = arrayCurrent(en)
         if valueKind(item) == 3 {
@@ -153,7 +153,7 @@ func buildRequiredList(schemaElem: in JsonElement): List[String] {
 
 func parseObjectProps(propsElem: in JsonElement, reqList: in List[String]): List[ParsedProperty] {
   val result: List[ParsedProperty] = newList()
-  var en: JsonObjectEnumerator = enumerateObject(propsElem)
+  var en: JsonObjectCursor = enumerateObject(propsElem)
   while objectMoveNext(en) {
     val prop = objectCurrent(en)
     val propName = propertyName(prop)
@@ -188,7 +188,7 @@ func parseParameter(elem: in JsonElement): ParsedParam {
 
 func parseParamList(arr: in JsonElement): List[ParsedParam] {
   val result: List[ParsedParam] = newList()
-  var en: JsonArrayEnumerator = enumerateArray(arr)
+  var en: JsonArrayCursor = enumerateArray(arr)
   while arrayMoveNext(en) {
     result.add(parseParameter(arrayCurrent(en)))
   }
@@ -201,7 +201,7 @@ func parseTagList(elem: in JsonElement): List[String] {
   match tryArr(elem, "tags") {
     case None -> ()
     case Some(arr) -> {
-      var en: JsonArrayEnumerator = enumerateArray(arr)
+      var en: JsonArrayCursor = enumerateArray(arr)
       while arrayMoveNext(en) {
         val item = arrayCurrent(en)
         if valueKind(item) == 3 {
@@ -293,7 +293,7 @@ func parseOp(verb: in String, path: in String, elem: in JsonElement, pathLevelPa
     case None -> ()
     case Some(responses) -> {
       var found = false
-      var en: JsonObjectEnumerator = enumerateObject(responses)
+      var en: JsonObjectCursor = enumerateObject(responses)
       while objectMoveNext(en) and not found {
         val rProp = objectCurrent(en)
         val code = propertyName(rProp)
@@ -338,7 +338,7 @@ func parsePaths(root: in JsonElement): List[ParsedOp] {
   match tryObj(root, "paths") {
     case None -> ()
     case Some(paths) -> {
-      var pathEn: JsonObjectEnumerator = enumerateObject(paths)
+      var pathEn: JsonObjectCursor = enumerateObject(paths)
       while objectMoveNext(pathEn) {
         val pathProp = objectCurrent(pathEn)
         val path = propertyName(pathProp)
@@ -349,7 +349,7 @@ func parsePaths(root: in JsonElement): List[ParsedOp] {
           case Some(arr) -> parseParamList(arr)
         }
 
-        var opEn: JsonObjectEnumerator = enumerateObject(pathItem)
+        var opEn: JsonObjectCursor = enumerateObject(pathItem)
         while objectMoveNext(opEn) {
           val opProp = objectCurrent(opEn)
           val verb = Str.toLower(propertyName(opProp))
@@ -410,7 +410,7 @@ pub func parseSpec(json: in String): Result[ParsedSpec, String] {
   match tryArr(root, "servers") {
     case None -> ()
     case Some(arr) -> {
-      var en: JsonArrayEnumerator = enumerateArray(arr)
+      var en: JsonArrayCursor = enumerateArray(arr)
       if arrayMoveNext(en) {
         val first = arrayCurrent(en)
         val url = strProp(first, "url")
