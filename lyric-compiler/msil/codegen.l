@@ -22946,12 +22946,6 @@ pub record StdlibPkg {
 /// host class `<pkgName>.Program` in the corresponding DLL — the
 /// same shape `addPackageTokens` produces for user packages.
 ///
-// Delegates to Mdr.detectStdlibCoreDllUsesAritySuffix so callers that
-// import Msil.Codegen (but not Msil.MetadataReader directly) can probe
-// the installed Core.dll without adding a new cross-package import.
-pub func detectStdlibCoreDllUsesAritySuffix(): Bool {
-  Mdr.detectStdlibCoreDllUsesAritySuffix()
-}
 
 /// Empty `pkgs` is a no-op — single-package compiles with no stdlib
 /// imports still work because their callsite codegen never reaches
