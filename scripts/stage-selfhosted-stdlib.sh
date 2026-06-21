@@ -7,10 +7,10 @@
 # closure plus the F#-buildable bundle "smoke set", so packages F# cannot
 # compile (e.g. Std.Sort's typed-lambda generics) never ship — a user program
 # importing them fails at run time with `Could not load file or assembly
-# 'Lyric.Stdlib.Sort'`.  The self-hosted emitter CAN build them, and a
-# self-hosted-built *leaf* package binds against the F#-built Core/Collections
-# (it references generic stdlib types non-suffixed, matching the F# producer),
-# so the two coexist in one lib dir.
+# 'Lyric.Stdlib.Sort'`.  The self-hosted emitter CAN build them.  After staging,
+# this script also replaces the F#-built Core/Collections with self-hosted ones
+# (which use CLR arity-suffix naming) and patches TypeRefs in all remaining
+# F#-built DLLs to match, so the whole lib dir has a consistent ABI.
 #
 # Scope: only packages VERIFIED to bind against the F#-built stdlib are shipped
 # (see CURATED_PACKAGES below).  Packages with known self-hosted binding bugs are
@@ -106,3 +106,50 @@ for dir in "${LIB_DIRS[@]}"; do
 done
 
 echo "stage-selfhosted-stdlib: staged $staged DLL(s) into ${#LIB_DIRS[@]} lib dir(s) (curated: ${CURATED_PACKAGES[*]})"
+
+# ── ABI-suffix alignment ──────────────────────────────────────────────────────
+# The F# bootstrap emitter (used by LYRIC_BOOTSTRAP_MINT=1) names generic
+# TypeDefs WITHOUT the CLR arity suffix: Option, Result, etc.  The
+# self-hosted MSIL emitter always adds the suffix (Option`1, Result`2) in
+# every DLL it produces — including in compiled user code.  This mismatch
+# causes a TypeLoadException at runtime ("Could not load type
+# 'Std.Core.Option`1' from assembly 'Lyric.Stdlib.Core'") for any user
+# program that uses Option or Result.
+#
+# Fix: replace the F#-built Lyric.Stdlib.Core.dll with the self-hosted-built
+# version (which has arity-suffix TypeDefs), then patch every F#-built DLL
+# in the lib dirs so its TypeRefs to those generic types gain the matching
+# suffix.  The patch script is idempotent: DLLs already using the suffix are
+# not modified.
+#
+# Lyric.Stdlib.Collections.dll is also force-replaced so MapEntry`2 is
+# correct; it too is always consumed via self-hosted-emitted code paths.
+FORCE_REPLACE=(Core Collections)
+force_replaced=0
+for pkg in "${FORCE_REPLACE[@]}"; do
+  src_dll="$out/Lyric.Stdlib.$pkg.dll"
+  if [[ ! -f "$src_dll" ]]; then
+    echo "stage-selfhosted-stdlib: WARNING: $src_dll not found; skipping force-replace for $pkg" >&2
+    continue
+  fi
+  for dir in "${LIB_DIRS[@]}"; do
+    [[ -d "$dir" ]] || continue
+    # cp without -n: overwrite any F#-built version already present.
+    cp -f "$src_dll" "$dir/"
+    force_replaced=$((force_replaced + 1))
+  done
+done
+echo "stage-selfhosted-stdlib: force-replaced Core+Collections in ${#LIB_DIRS[@]} lib dir(s) ($force_replaced copy operation(s))"
+
+# Patch TypeRefs in all other DLLs (both compiler packages and remaining
+# stdlib DLLs) to match the arity-suffix TypeDefs in the new Core/Collections.
+patch_log="$REPO_ROOT/.bootstrap/patch-stdlib-generics.log"
+mkdir -p "$(dirname "$patch_log")"
+echo "stage-selfhosted-stdlib: patching TypeRefs in lib dirs (log: $patch_log)"
+if ! dotnet fsi "$REPO_ROOT/scripts/patch-stdlib-generics.fsx" "${LIB_DIRS[@]}" \
+     > "$patch_log" 2>&1; then
+  echo "stage-selfhosted-stdlib: ERROR: patch-stdlib-generics.fsx failed" >&2
+  cat "$patch_log" >&2
+  exit 1
+fi
+cat "$patch_log"
