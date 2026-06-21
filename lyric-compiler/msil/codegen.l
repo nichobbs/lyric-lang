@@ -4690,6 +4690,32 @@ func pushHintArgsDirectMsil(fctx: in FuncCtx, args: in List[MsilType]): List[Msi
 }
 
 // True when a match-arm body is a bare nullary-case construction (`None`, …).
+// The trailing value-expression of a block when the block has no `defer` (a
+// `defer` routes the block result through try/finally, so the last `SExpr` is not
+// the block's direct value).  Lets the bare-construction detectors below see the
+// common `case Err(e) -> { stmt; newList() }` / `{ stmt; None }` block-arm idiom
+// rather than bailing on every block (#3943).
+func blockTrailingExprMsil(blk: in Block): Option[Expr] {
+  var di = 0
+  while di < blk.statements.count {
+    match blk.statements[di].kind {
+      case SDefer(_) -> {
+        return None
+      }
+      case _ -> ()
+    }
+    di = di + 1
+  }
+  if blk.statements.count == 0 {
+    None
+  } else {
+    match blk.statements[blk.statements.count - 1].kind {
+      case SExpr(e) -> Some(value = e)
+      case _ -> None
+    }
+  }
+}
+
 func armBodyIsBareNullaryCaseMsil(cctx: in CodegenCtx, fctx: in FuncCtx, body: in ExprOrBlock): Bool {
   match body {
     case EOBExpr(e) -> {
@@ -4701,7 +4727,12 @@ func armBodyIsBareNullaryCaseMsil(cctx: in CodegenCtx, fctx: in FuncCtx, body: i
         case _ -> false
       }
     }
-    case EOBBlock(_) -> false
+    case EOBBlock(blk) -> {
+      match blockTrailingExprMsil(blk) {
+        case Some(e) -> armBodyIsBareNullaryCaseMsil(cctx, fctx, EOBExpr(expr = e))
+        case None -> false
+      }
+    }
   }
 }
 
@@ -4733,7 +4764,12 @@ func armBodyIsBareNewCollMsil(body: in ExprOrBlock): Bool {
         case _ -> false
       }
     }
-    case EOBBlock(_) -> false
+    case EOBBlock(blk) -> {
+      match blockTrailingExprMsil(blk) {
+        case Some(e) -> armBodyIsBareNewCollMsil(EOBExpr(expr = e))
+        case None -> false
+      }
+    }
   }
 }
 
