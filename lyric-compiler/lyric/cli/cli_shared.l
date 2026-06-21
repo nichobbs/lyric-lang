@@ -492,7 +492,26 @@ func destDirHasCompilerDll(dir: in String): Bool {
   }
 }
 
-func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
+// True when any entry in `dlls` (each "<name>\t<path>" or a bare path) is a
+// self-hosted compiler package assembly (`Lyric.Lyric.*.dll`) — the signal that
+// the consumer links the mint-emitted compiler closure and so needs the
+// non-suffixed runtime stdlib (see `copyRuntimeDepsBeside`).
+func pathListHasCompilerDll(dlls: in List[String]): Bool {
+  var i = 0
+  while i < dlls.count {
+    val dllEntry = dlls[i]
+    val tab = dllEntry.indexOf("\t")
+    val p = if tab >= 0 { dllEntry.substring(tab + 1, dllEntry.length - tab - 1) } else { dllEntry }
+    val base = Path.basename(p)
+    if Str.startsWith(base, "Lyric.Lyric.") and Str.endsWith(base, ".dll") {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+func copyRuntimeDepsBeside(outPath: in String, srcDir: in String, linksCompiler: in Bool): Unit {
   if srcDir.length == 0 {
     return
   }
@@ -510,14 +529,18 @@ func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
   // stdlib is already suffixed), so this falls back to `srcDir` unchanged.
   //
   // EXCEPTION: when the output links the self-hosted compiler packages
-  // (`Lyric.Lyric.*.dll`, e.g. a `@test_module` importing `Lyric.Verifier`),
-  // those package DLLs are themselves mint-emitted (non-suffixed references), so
-  // they require the matching non-suffixed runtime stdlib — using the suffixed
-  // userlib would fault them instead.  Detect that case by the presence of a
-  // `Lyric.Lyric.*.dll` already co-located beside the output and keep `srcDir`.
+  // (e.g. a `@test_module` importing `Lyric.Weaver` / `Lyric.Verifier`), those
+  // package DLLs are themselves mint-emitted (non-suffixed references), so they
+  // require the matching non-suffixed runtime stdlib — using the suffixed
+  // userlib would fault them with `Could not load type 'Std.Core.Option'`.
+  // `linksCompiler` is passed by the caller, which knows the compiler closure was
+  // linked (the compiler DLLs are co-located only *after* this runs, so a dir
+  // scan here would miss them); the `LYRIC_LOAD_COMPILER` env var is also honoured
+  // as a fallback for recompile-from-source compiler-linked runs.
   val userlib = Path.join(srcDir, "userlib")
-  val linksCompiler = destDirHasCompilerDll(destDir)
-  val stdlibSrc = if (not linksCompiler) and File.fileExists(Path.join(userlib, "Lyric.Stdlib.Core.dll")) {
+  val loadCompiler = Environment.getVarOrDefault("LYRIC_LOAD_COMPILER", "") != ""
+  val effLinksCompiler = linksCompiler or loadCompiler or destDirHasCompilerDll(destDir)
+  val stdlibSrc = if (not effLinksCompiler) and File.fileExists(Path.join(userlib, "Lyric.Stdlib.Core.dll")) {
     userlib
   } else {
     srcDir

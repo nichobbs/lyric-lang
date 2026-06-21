@@ -67,7 +67,7 @@ func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in Com
       }
     }
     case Dotnet -> {
-      copyRuntimeDepsBeside(outPath, findCompiledLibDir())
+      copyRuntimeDepsBeside(outPath, findCompiledLibDir(), false)
       val execArgs: List[String] = newList()
       execArgs.add("exec")
       execArgs.add(outPath)
@@ -141,7 +141,7 @@ func runOnce(sourcePath: in String, userArgs: in List[String], target: in Compil
     case Dotnet -> {
       // Co-locate the fully-compiled stdlib runtime assemblies beside the output
       // so a program using real stdlib `pub func`s resolves them under `dotnet exec`.
-      copyRuntimeDepsBeside(outPath, findCompiledLibDir())
+      copyRuntimeDepsBeside(outPath, findCompiledLibDir(), false)
       val execArgs: List[String] = newList()
       execArgs.add("exec")
       execArgs.add(outPath)
