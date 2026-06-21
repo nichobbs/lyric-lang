@@ -116,41 +116,21 @@ echo "stage-selfhosted-stdlib: staged $staged DLL(s) into ${#LIB_DIRS[@]} lib di
 # 'Std.Core.Option`1' from assembly 'Lyric.Stdlib.Core'") for any user
 # program that uses Option or Result.
 #
-# Fix: replace the F#-built Lyric.Stdlib.Core.dll with the self-hosted-built
-# version (which has arity-suffix TypeDefs), then patch every F#-built DLL
-# in the lib dirs so its TypeRefs to those generic types gain the matching
-# suffix.  The patch script is idempotent: DLLs already using the suffix are
-# not modified.
+# Fix: patch the TypeDef entries in F#-built Lyric.Stdlib.*.dll files
+# in-place (e.g. Option → Option`1 in Lyric.Stdlib.Core.dll), then patch
+# TypeRefs in every DLL in the lib dirs to match.  This keeps the F#-built
+# DLLs' method ABIs intact — we do NOT replace them with self-hosted
+# versions, because the self-hosted stdlib has a different ABI for generic
+# functions (e.g. unwrapOr) that the F#-built TypeChecker was compiled
+# against.  Both passes are idempotent.
 #
-# Collections is intentionally excluded from FORCE_REPLACE: the self-hosted
-# emitter does not emit a Std.Collections.Program module class, but the
-# F#-built TypeChecker loads that class to import package symbols at compile
-# time.  Replacing Collections would break every build with a TypeLoadException
-# on 'Std.Collections.Program'.  MapEntry`2 correctness in Collections is
-# deferred until the self-hosted emitter emits Program for all packages.
-FORCE_REPLACE=(Core)
-force_replaced=0
-for pkg in "${FORCE_REPLACE[@]}"; do
-  src_dll="$out/Lyric.Stdlib.$pkg.dll"
-  if [[ ! -f "$src_dll" ]]; then
-    echo "stage-selfhosted-stdlib: WARNING: $src_dll not found; skipping force-replace for $pkg" >&2
-    continue
-  fi
-  for dir in "${LIB_DIRS[@]}"; do
-    [[ -d "$dir" ]] || continue
-    # cp without -n: overwrite any F#-built version already present.
-    cp -f "$src_dll" "$dir/"
-    force_replaced=$((force_replaced + 1))
-  done
-done
-echo "stage-selfhosted-stdlib: force-replaced Core in ${#LIB_DIRS[@]} lib dir(s) ($force_replaced copy operation(s))"
-
-# Patch TypeRefs in all other DLLs (both compiler packages and remaining
-# stdlib DLLs) to match the arity-suffix TypeDefs in the new Core.
+# The rename map is derived from the self-hosted per-package emit output
+# in $out (the temp dir), not from the lib dirs, since the lib dirs still
+# hold the F#-built DLLs (no arity suffix) at this point.
 patch_log="$REPO_ROOT/.bootstrap/patch-stdlib-generics.log"
 mkdir -p "$(dirname "$patch_log")"
-echo "stage-selfhosted-stdlib: patching TypeRefs in lib dirs (log: $patch_log)"
-if ! dotnet fsi "$REPO_ROOT/scripts/patch-stdlib-generics.fsx" "${LIB_DIRS[@]}" \
+echo "stage-selfhosted-stdlib: patching TypeDefs+TypeRefs in lib dirs (log: $patch_log)"
+if ! dotnet fsi "$REPO_ROOT/scripts/patch-stdlib-generics.fsx" --source "$out" "${LIB_DIRS[@]}" \
      > "$patch_log" 2>&1; then
   echo "stage-selfhosted-stdlib: ERROR: patch-stdlib-generics.fsx failed" >&2
   cat "$patch_log" >&2
