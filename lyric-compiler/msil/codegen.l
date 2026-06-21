@@ -3351,6 +3351,12 @@ func msilTypeIdentical(a: in MsilType, b: in MsilType): Bool {
         case other -> false
       }
     }
+    case MTuple(aelems) -> {
+      match b {
+        case MTuple(belems) -> msilTypeListIdentical(aelems, belems)
+        case other -> false
+      }
+    }
     case other -> false
   }
 }
@@ -4208,7 +4214,20 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
     }
     case TSlice(elem) -> MArray(elemTy = sliceElemMsilCtx(cctx, elem, pkgName))
     case TNullable(_) -> MObject
-    case TTuple(_) -> MObject
+    case TTuple(tupTypes) -> {
+      // Tuples lower to `List<object>` at runtime (erased to MObject in every
+      // signature), but the element types are tracked so PTuple destructuring
+      // can `castclass` each `get_Item` result to its declared element type
+      // rather than leaving it as `object` (which desynced the verifier at
+      // tuple binding sites).  See MTuple in lowering.l.
+      val tupElems: List[MsilType] = newList()
+      var tti = 0
+      while tti < tupTypes.count {
+        tupElems.add(typeExprToMsilCtx(cctx, tupTypes[tti], pkgName))
+        tti = tti + 1
+      }
+      MTuple(elems = tupElems)
+    }
     case TFunction(params, ret) -> {
       // Map Lyric function types to the CLR delegate types the bootstrap F# emitter uses
       // (#1877 uniform ABI). All Lyric values are boxed to System.Object in the
@@ -4271,7 +4290,15 @@ pub func typeExprToMsil(te: in TypeExpr, pkgName: in String): MsilType {
     case TSlice(elem) -> MArray(elemTy = sliceElemMsil(elem, pkgName))
     case TGenericApp(_, _) -> MObject
     case TNullable(_) -> MObject
-    case TTuple(_) -> MObject
+    case TTuple(tupTypes) -> {
+      val tupElems: List[MsilType] = newList()
+      var tti = 0
+      while tti < tupTypes.count {
+        tupElems.add(typeExprToMsil(tupTypes[tti], pkgName))
+        tti = tti + 1
+      }
+      MTuple(elems = tupElems)
+    }
     case TFunction(_, _) -> MObject
     case TArray(_, _) -> MObject
     case TRefined(_, _) -> MInt
@@ -5519,15 +5546,22 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     // Tuples are represented at runtime as List<object> with each element boxed.
     case ETuple(exprs) -> {
       insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
+      // Runtime representation is `List<object>` (each element boxed).  The
+      // element types are collected and returned as MTuple so a downstream
+      // destructuring can narrow each element to its concrete type even when the
+      // binding carries no annotation; MTuple itself erases to object (0x1C) in
+      // every signature, so the produced value is a plain object reference.
+      val eteElemTys: List[MsilType] = newList()
       var etei = 0
       while etei < exprs.count {
         insns.add(MDup)
         val eteTy = lowerExprMsil(cctx, fctx, insns, exprs[etei])
+        eteElemTys.add(eteTy)
         boxIfNeededMsil(cctx, insns, eteTy)
         insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
         etei = etei + 1
       }
-      MObject
+      MTuple(elems = eteElemTys)
     }
 
     // ── List literal ───────────────────────────────────────────────────────────
@@ -8472,16 +8506,32 @@ func lowerPatternBindMsil(
       }
     }
     case PTuple(tupleSubPats) -> {
-      // Extract each element from the List<object> tuple representation.
+      // Extract each element from the List<object> tuple representation.  When the
+      // scrutinee's type tracks the tuple element types (MTuple), narrow each
+      // `get_Item` result (typed `object`) to its declared element type and bind
+      // at that type so the element slot is genuinely typed — an object slot left
+      // the verifier finding `object` where the concrete element type was
+      // expected (StackUnexpected at the destructured binding's first use, #3943).
+      val tupElemTys: List[MsilType] = match scrutTy { case MTuple(elems) -> elems; case _ -> newList() }
       var pti = 0
       while pti < tupleSubPats.count {
         emitLoadSlot(insns, scrutSlot, fctx.paramCount)
         insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
         insns.add(MLdcI4(v = pti))
         insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
-        val ptElemSlot = allocSlotMsil(fctx, "__tup_" + toString(pti) + "_" + toString(fctx.slotTicker.count), MObject)
+        val ptElemTy = if pti < tupElemTys.count { tupElemTys[pti] } else { MObject }
+        // `get_Item` returns object; narrow to the tracked element type
+        // (`unbox.any` for value elements, `castclass` for reference elements).
+        // A nested tuple element stays `object` (its runtime rep is itself a
+        // List<object>), so MTuple/MObject element types are no-ops here.
+        match ptElemTy {
+          case MObject -> ()
+          case MTuple(_) -> ()
+          case _ -> castObjectToMsil(cctx, insns, ptElemTy)
+        }
+        val ptElemSlot = allocSlotMsil(fctx, "__tup_" + toString(pti) + "_" + toString(fctx.slotTicker.count), ptElemTy)
         emitStoreSlot(insns, ptElemSlot, fctx.paramCount)
-        lowerPatternBindMsil(cctx, fctx, insns, tupleSubPats[pti], ptElemSlot, MObject)
+        lowerPatternBindMsil(cctx, fctx, insns, tupleSubPats[pti], ptElemSlot, ptElemTy)
         pti = pti + 1
       }
     }
@@ -12198,6 +12248,15 @@ func msilTypeKeyStr(t: in MsilType): String {
       var ai = 0
       while ai < args.count {
         k = k + "_" + msilTypeKeyStr(args[ai])
+        ai = ai + 1
+      }
+      k
+    }
+    case MTuple(elems) -> {
+      var k = "tup"
+      var ai = 0
+      while ai < elems.count {
+        k = k + "_" + msilTypeKeyStr(elems[ai])
         ai = ai + 1
       }
       k

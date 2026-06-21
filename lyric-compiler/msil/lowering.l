@@ -159,6 +159,13 @@ pub union MsilType {
   // so that extern types like DictKeyCollection[K,V] can be iterated with
   // `for x in collection` without requiring the type to implement IList.
   case MExternEnumerable(elemTy: MsilType)
+  // Lyric tuple `(A, B, ...)` — runtime representation is List<object>, so this
+  // serialises as MObject (0x1C) in all MSIL signatures (like MListOf).  The
+  // element types are carried purely for codegen tracking so that PTuple
+  // destructuring can `castclass` each `get_Item` result to its declared
+  // element type instead of leaving it as `object`, which desynced the verifier
+  // ("found object expected List<X>/Option/Result") at tuple binding sites.
+  case MTuple(elems: List[MsilType])
 }
 
 // Return the ECMA-335 ELEMENT_TYPE byte for the given MsilType.
@@ -191,6 +198,7 @@ pub func elementTypeByte(t: in MsilType): Int {
     case MIAsyncEnumerable(_) -> 0x1C  // erased to object in signatures
     case MGenericInstByName(_, _) -> 0x15  // GENERICINST prefix; full encoding via bufMsilTypeWithCtx
     case MExternEnumerable(_) -> 0x1C  // erased to object in signatures
+    case MTuple(_) -> 0x1C  // same as Object: runtime rep is List<object>
   }
 }
 
@@ -1561,6 +1569,16 @@ pub func msilTypeKey(t: in MsilType): String {
         i = i + 1
       }
       key + ">"
+    }
+    case MTuple(elems) -> {
+      var key = "TUP("
+      var i = 0
+      while i < elems.count {
+        key = key + msilTypeKey(elems[i])
+        key = key + ","
+        i = i + 1
+      }
+      key + ")"
     }
   }
 }
