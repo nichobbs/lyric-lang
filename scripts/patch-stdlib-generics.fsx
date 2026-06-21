@@ -74,6 +74,20 @@ let buildRenameMap (sourceDir: string) : Map<string * string, string> =
                     (Path.GetFileName dll) ex.Message
     map
 
+// Return true when Lyric.Stdlib.Core.dll in `dir` uses CLR arity-suffix TypeDef
+// naming (e.g. Option`1, Result`2).  Returns false when the DLL is absent or
+// carries no backtick TypeDefs (F# bootstrap convention: Option, Result).
+// Used to gate Pass 2: patching TypeRefs in a dir where Core uses NO arity
+// suffix would create a mismatch (patched TypeRef Option`1 vs TypeDef Option).
+let dirCoreUsesAritySuffix (dir: string) : bool =
+    let coreDll = Path.Combine(dir, "Lyric.Stdlib.Core.dll")
+    if not (File.Exists coreDll) then false
+    else
+        try
+            use asm = AssemblyDefinition.ReadAssembly coreDll
+            asm.MainModule.Types |> Seq.exists (fun t -> t.Name.Contains('`'))
+        with _ -> false
+
 // Patch TypeRefs in one DLL file in place.
 // Returns the number of TypeRef renames made.
 let patchTypeRefs (renameMap: Map<string * string, string>) (path: string) : int =
@@ -130,9 +144,19 @@ let main (args: string[]) =
     // static Instance singletons in compiler DLLs (MissingFieldException).
     // TypeDef patching (the former Pass 1) is no longer needed: bridge.l probes
     // Core.dll at compile time and emits TypeRefs matching the installed convention.
+    //
+    // Guard: only patch a target dir when its Lyric.Stdlib.Core.dll already uses
+    // arity-suffix TypeDefs.  If Core.dll uses the F# convention (no arity suffix,
+    // e.g. LYRIC_BOOTSTRAP_MINT=1 builds), patching TypeRefs in other stdlib DLLs
+    // to add the suffix would make them inconsistent with Core.dll (TypeRef
+    // Option`1 vs TypeDef Option → MissingMethodException at runtime).
     printfn "patch-stdlib-generics: patching TypeRefs in Lyric.Stdlib.*.dll..."
     for dir in targetDirs do
         if Directory.Exists dir then
+            if not (dirCoreUsesAritySuffix dir) then
+                printfn "  skipping %s — Core.dll uses no arity suffix (F# convention), patching would cause mismatch"
+                    dir
+            else
             for dll in Directory.GetFiles(dir, "Lyric.Stdlib.*.dll") do
                 let rewrites = patchTypeRefs renameMap dll
                 if rewrites > 0 then
