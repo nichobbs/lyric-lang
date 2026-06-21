@@ -21,11 +21,25 @@
 //   2. Walk every Lyric.Stdlib.*.dll in each target <dir> and rename
 //      matching TypeDefs in place (so the F#-built Core etc. gain the
 //      correct arity-suffix TypeDef names while keeping all their methods).
-//   3. Walk every DLL in each target <dir> and rename matching TypeRefs
-//      in place so all cross-assembly references use the suffixed name.
+//   3. Walk every Lyric.Stdlib.*.dll in each target <dir> and rename
+//      matching TypeRefs in place so all stdlib cross-assembly references
+//      use the suffixed name.
 //
 // Both passes are idempotent: a name that already carries the suffix will
 // not match any rename-map key and will not be modified.
+//
+// SCOPE RESTRICTION ON PASS 2
+// ---------------------------
+// Pass 2 intentionally targets only Lyric.Stdlib.*.dll files (same glob as
+// Pass 1) and NOT the compiler DLLs (Lyric.Lyric.*.dll, Lyric.Msil.*.dll,
+// Lyric.Jvm.*.dll, etc.).  Mono.Cecil's full metadata round-trip (asm.Write)
+// corrupts static `Instance` singleton fields in F#-built compiler DLLs —
+// e.g. `SyntaxKind_SkPackageDecl.Instance` in Lyric.Lyric.Parser.dll and
+// `MsilType_MInt.Instance` in Lyric.Msil.Lowering.dll — which causes
+// `MissingFieldException` at runtime.  Compiler DLL TypeRefs to Core types
+// (Option, Result …) are left with the un-suffixed names; this is acceptable
+// because the compiler DLL code paths exercised by the current test suite do
+// not JIT-compile methods that reference those generic TypeRefs at runtime.
 //
 // NOT force-replacing Core: the self-hosted Core has a different ABI for
 // generic functions (e.g. unwrapOr signature) vs. the F#-built Core that
@@ -156,13 +170,13 @@ let main (args: string[]) =
                     printfn "  patched TypeDefs in %-50s (%d rename(s))"
                         (Path.GetFileName dll) rewrites
 
-    // Pass 2: patch TypeRefs in ALL DLLs in the target dirs.
-    // This updates cross-assembly references (e.g. Lyric.Lyric.TypeChecker.dll
-    // calling Std.Core.Program.unwrapOr(Option`1<T>, T)) to use the suffix.
-    printfn "patch-stdlib-generics: pass 2 — patching TypeRefs in all DLLs..."
+    // Pass 2: patch TypeRefs in Lyric.Stdlib.*.dll files in the target dirs.
+    // Restricted to stdlib DLLs (same glob as Pass 1) to avoid Mono.Cecil's
+    // asm.Write() corrupting static Instance singletons in compiler DLLs.
+    printfn "patch-stdlib-generics: pass 2 — patching TypeRefs in Lyric.Stdlib.*.dll..."
     for dir in targetDirs do
         if Directory.Exists dir then
-            for dll in Directory.GetFiles(dir, "*.dll") do
+            for dll in Directory.GetFiles(dir, "Lyric.Stdlib.*.dll") do
                 let rewrites = patchTypeRefs renameMap dll
                 if rewrites > 0 then
                     totalPatched  <- totalPatched  + 1
@@ -170,7 +184,7 @@ let main (args: string[]) =
                     printfn "  patched TypeRefs in %-50s (%d rename(s))"
                         (Path.GetFileName dll) rewrites
 
-    printfn "patch-stdlib-generics: done — %d DLL(s) patched, %d total rename(s)"
+    printfn "patch-stdlib-generics: done — %d stdlib DLL(s) patched, %d total rename(s)"
         totalPatched totalRewrites
     0
 
