@@ -183,6 +183,12 @@ jobs:
           # run time.  Runs once after the AOT build; later steps in this job
           # reuse the populated lib dir.
           bash scripts/stage-selfhosted-stdlib.sh "$lyric_bin" "$(dirname "$lyric_bin")" .bootstrap/stage1
+          # Stage a self-hosted-emitted (arity-suffixed) copy of the full stdlib
+          # under `<lib-dir>/userlib/` for USER-CODE linking.  The mint compiler's
+          # own runtime stdlib is non-suffixed, but it emits user code with
+          # suffixed generic refs (`Option`1`); linking the suffixed userlib stdlib
+          # lets cross-package generic construction resolve at run time (#3943).
+          bash scripts/stage-userlib-stdlib.sh "$lyric_bin" "$(dirname "$lyric_bin")" .bootstrap/stage1
           for ex in examples/*.l; do
             # `@proof_required` files are verifier-only — they have no
             # `func main` so `lyric build` doesn't apply.  The AOT
