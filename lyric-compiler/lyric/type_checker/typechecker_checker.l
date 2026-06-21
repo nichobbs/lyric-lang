@@ -1491,15 +1491,8 @@ pub func registerExternalImports(
           var j = 0
           while j < items.count {
             val item = items[j]
-            val externalFqn = if baseNamespace.length > 0 {
-              baseNamespace + "." + item.name
-            } else {
-              item.name
-            }
-            val symbolName = match item.asAlias {
-              case Some(aliasName) -> aliasName
-              case None -> item.name
-            }
+            val externalFqn = if baseNamespace.length > 0 { baseNamespace + "." + item.name } else { item.name }
+            val symbolName = match item.asAlias { case Some(aliasName) -> aliasName; case None -> item.name }
             // Deduplicate by external FQN like regular `extern type`.
             val tid = match findExternTypeIdByClr(tbl, externalFqn) {
               case Some(existing) -> existing
@@ -1515,15 +1508,8 @@ pub func registerExternalImports(
           }
         }
         case Some(ISSingle(item)) -> {
-          val externalFqn = if baseNamespace.length > 0 {
-            baseNamespace + "." + item.name
-          } else {
-            item.name
-          }
-          val symbolName = match item.asAlias {
-            case Some(aliasName) -> aliasName
-            case None -> item.name
-          }
+          val externalFqn = if baseNamespace.length > 0 { baseNamespace + "." + item.name } else { item.name }
+          val symbolName = match item.asAlias { case Some(aliasName) -> aliasName; case None -> item.name }
           // Deduplicate by external FQN like regular `extern type`.
           val tid = match findExternTypeIdByClr(tbl, externalFqn) {
             case Some(existing) -> existing
@@ -1708,7 +1694,69 @@ func checkWithImportedPackagesCore(
     m = m + 1
   }
 
+  // T6: FFI-boundary lint (W0006).  A public function must not expose an
+  // IMPORTED nested CLR extern type (clrName containing `+`, e.g.
+  // `JsonElement+ArrayEnumerator`) in its signature: those are BCL
+  // implementation-detail structs whose FFI boundary is meant to stay in
+  // `_kernel/` (a kernel file declares the extern type locally — not imported —
+  // and is therefore exempt).  Leaking one pushes the BCL type into every
+  // consumer's emitted IL (#3943).  Wrap it in an opaque Lyric type instead.
+  checkExternBoundaryLeaks(tbl, diag, file.items)
+
   CheckResult(file = file, symbols = tbl, sigs = sigs, diagnostics = diag)
+}
+
+// The simple (last-segment) type name a `TypeExpr` names, or "" for a shape
+// that doesn't directly name a type.  `slice[T]` / `T?` unwrap to their element
+// so a leaked extern surfaces through them too.
+func externLeakTypeName(te: in TypeExpr): String {
+  match te.kind {
+    case TRef(path) -> if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "" }
+    case TNullable(inner) -> externLeakTypeName(inner)
+    case TSlice(element) -> externLeakTypeName(element)
+    case TParen(inner) -> externLeakTypeName(inner)
+    case _ -> ""
+  }
+}
+
+// Emit W0006 if `name` resolves to an imported nested extern type.
+func checkExternLeakType(
+  tbl: in SymbolTable, diag: in List[Diagnostic], name: in String, sp: in Span, fnName: in String
+): Unit {
+  if name.length == 0 {
+    return
+  }
+  match symTableTryFindOne(tbl, name) {
+    case None -> ()
+    case Some(sym) -> match sym.kind { case DKExternType(_, d) -> { if sym.isImported and contains(d.clrName, "+") { diag.add(warningDiagnostic("W0006", "public function '" + fnName + "' exposes imported nested extern type '" + name + "' (" + d.clrName + ") in its signature; wrap it in an opaque Lyric type so the FFI boundary stays in _kernel/", sp)) } }; case _ -> () }
+  }
+}
+
+func checkExternBoundaryLeaks(tbl: in SymbolTable, diag: in List[Diagnostic], items: in List[Item]): Unit {
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IFunc(decl) -> {
+        val isPub = match decl.visibility {
+          case Some(v) -> match v { case VisPub(_) -> true; case _ -> false }
+          case None -> false
+        }
+        if isPub {
+          var p = 0
+          while p < decl.params.count {
+            checkExternLeakType(tbl, diag, externLeakTypeName(decl.params[p].ty), decl.params[p].ty.span, decl.name)
+            p = p + 1
+          }
+          match decl.ret {
+            case Some(rt) -> checkExternLeakType(tbl, diag, externLeakTypeName(rt), rt.span, decl.name)
+            case None -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
 }
 
 // Flat-imports compatibility shim.  Wraps every imported item into one
