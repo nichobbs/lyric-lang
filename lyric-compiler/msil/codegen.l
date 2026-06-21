@@ -22566,7 +22566,7 @@ func foldRangeBound(e: in Expr): RangeBoundVal {
         case PreNeg -> {
           val inner = foldRangeBound(operand)
           if inner.ok {
-            RangeBoundVal(ok = true, isFloat = inner.isFloat, l = 0 - inner.l, d = 0.0 - inner.d)
+            RangeBoundVal(ok = true, isFloat = inner.isFloat, l = 0i64 - inner.l, d = 0.0 - inner.d)
           } else {
             failVal
           }
@@ -22631,8 +22631,8 @@ func mkDistinctTypeIR(
     inner = inner,
     hasRange = false,
     rangeIsFloat = false,
-    minI = 0,
-    maxI = 0,
+    minI = 0i64,
+    maxI = 0i64,
     minF = 0.0,
     maxF = 0.0,
     upperExclusive = false
