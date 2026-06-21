@@ -1638,12 +1638,6 @@ func elaborateItem(it: in Item): Item {
 }
 
 pub func elaborateFile(file: in SourceFile): SourceFile {
-  // @proof_required files: contract clauses are SMT obligations for `lyric prove`,
-  // not runtime assertions.  Return the file unchanged so the MSIL emitter emits
-  // no runtime checks while the verifier still sees the original clauses via fn.contracts.
-  if fileIsProofRequired(file) {
-    return file
-  }
   val newItems: List[Item] = newList()
   val isProofRequired = fileIsProofRequired(file)
   var i = 0
