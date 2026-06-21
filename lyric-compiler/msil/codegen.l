@@ -7969,6 +7969,13 @@ func lowerPatternTestMsil(
             case MGenericInst(_, _, typeArgs) -> insns.add(MCastclassGeneric(className = caseClass, typeArgs = typeArgs))
             case MGenericInstByName(_, typeArgs) -> insns.add(MCastclassGeneric(className = caseClassBt, typeArgs = typeArgs))
             case _ -> {
+              // Non-generic case: narrow the base-union scrutinee to the case
+              // class before storing it into the case-typed `castSlot`.  Without
+              // this the slot (LocalVarSig type = caseClass) receives a base-typed
+              // value — invalid IL (`found 'Term' expected 'Term_TBuiltin'`),
+              // which the JIT rejects as InvalidProgramException and NativeAOT's
+              // ilc rejects as a codegen failure (#3943).
+              insns.add(MCastclassByName(className = caseClass))
             }
           }
           val castSlot = allocSlotMsil(fctx, "__casttest_" + caseName + "_" + toString(fctx.slotTicker.count), castTy)
