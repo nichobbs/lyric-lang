@@ -958,6 +958,61 @@ pub func methodRange(img: in PeImage, layout: in TableLayout, th: in TablesHeade
   RowRange(start = start, endRow = last)
 }
 
+// Inclusive [start, end] 1-based Field range (table 0x04) owned by TypeDef
+// `typeRow` (the rows from this type's `fieldListStart` up to the next type's,
+// exclusive).  Mirrors `methodRange`.
+pub func fieldRange(img: in PeImage, layout: in TableLayout, th: in TablesHeader, typeRow: in Int): RowRange {
+  val start = readTypeDef(img, layout, typeRow).fieldListStart
+  val typeCount = rowCountOf(th, 0x02)
+  val last = if typeRow < typeCount {
+    readTypeDef(img, layout, typeRow + 1).fieldListStart - 1
+  } else {
+    rowCountOf(th, 0x04)
+  }
+  RowRange(start = start, endRow = last)
+}
+
+// True iff `typeFqn` declares a STATIC field named `fieldName` (FieldAttributes
+// Static = 0x0010, ECMA-335 §II.23.1.5).  Used to resolve an `@externTarget`
+// that names a static field (e.g. `System.Diagnostics.Stopwatch.Frequency`,
+// `System.Guid.Empty`) so the MSIL backend emits `ldsfld` instead of mis-
+// emitting a method call.  Reads the Field table directly: flags(u16) +
+// name(#String) + sig(#Blob).
+pub func isStaticFieldExternIn(
+  img: in PeImage,
+  layout: in TableLayout,
+  th: in TablesHeader,
+  typeFqn: in String,
+  fieldName: in String,
+): Bool {
+  val typeRow = findTypeDefByFqn(img, layout, th, typeFqn)
+  if typeRow < 0 {
+    return false
+  }
+  val fr = fieldRange(img, layout, th, typeRow)
+  val b = img.bytes
+  var row = fr.start
+  while row <= fr.endRow {
+    val o = layout.dataStart[0x04] + (row - 1) * layout.rowSize[0x04]
+    val flags = rdU16(b, o)
+    val nameI = rdIdx(b, o + 2, layout.stringIdx)
+    val nm = stringAt(img, layout, nameI)
+    if nm == fieldName {
+      return (flags / 16) % 2 == 1
+    }
+    row = row + 1
+  }
+  false
+}
+
+// Read-from-disk wrapper over `isStaticFieldExternIn`.
+pub func isStaticFieldExtern(asmPath: in String, typeFqn: in String, fieldName: in String): Bool {
+  match File.readBytes(asmPath) {
+    case Err(_) -> false
+    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> false; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> false; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> false; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> false; case Ok(layout) -> isStaticFieldExternIn(img, layout, th, typeFqn, fieldName) } } } }
+  }
+}
+
 // ── Layer 5: signature-blob decoder ──────────────────────────────────────────
 //
 // Decodes a MethodDefSig / MethodRefSig blob (ECMA-335 §II.23.2.1) into a

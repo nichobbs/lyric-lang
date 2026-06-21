@@ -12626,6 +12626,31 @@ func emitExternTargetBody(
         }
       }
 
+      // Static-field extern: an `@externTarget("Type.Field")` that names a static
+      // FIELD (e.g. `System.Diagnostics.Stopwatch.Frequency`, `System.Guid.Empty`)
+      // rather than a method or property.  Without this the codegen falls through
+      // to the method path and emits `call <ret> Type::Field()`, which binds to no
+      // method (`MissingMethod` at run time).  Probe only a zero-arg, non-void
+      // wrapper that did not resolve as a property; emit `ldsfld` through a
+      // FieldRef when the metadata confirms a static field of that name. (#3943)
+      if not r.isCtor and not decl.isAsync and decl.params.count == 0 and emitMember == r.memberName {
+        val isVoidFieldRet = match ffiRetTy { case MVoid -> true; case _ -> false }
+        if not isVoidFieldRet {
+          match mapGet(cctx.metadataPathIndex, asmName) {
+            case Some(asmPath) -> {
+              if Mdr.isStaticFieldExtern(asmPath, resolvedFqn, r.memberName) {
+                val fldSig = buildFieldSigWithCtx(ffiRetTy, cctx.lctx)
+                val frRow = ctxAddMemberRef(cctx.lctx, tRefRow, r.memberName, "ffifld_" + target, fldSig)
+                insns.add(MLdsfld(fieldToken = 0x0A000000 + frRow))
+                insns.add(MRet)
+                return true
+              }
+            }
+            case None -> ()
+          }
+        }
+      }
+
       // Metadata-direct method resolution (docs/42): for a plain method extern
       // (not a ctor, not resolved as a property above, not async — async keeps
       // its Task-return path below) decode the BCL method's true signature so
