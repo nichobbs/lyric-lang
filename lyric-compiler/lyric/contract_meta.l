@@ -35,7 +35,7 @@ import Std.Collections
 import Std.Errors
 import Std.File
 import Std.Process
-import Std.ProcessCapture
+import Std.ProcessCapture as ProcCapture
 import Std.Environment as Environment
 import Std.String as Str
 import Std.Json
@@ -176,7 +176,7 @@ pub func diffContracts(oldJson: in String, newJson: in String): List[String] {
   subcmd.add("--internal-contract-meta")
   subcmd.add("diff")
   val stdin = oldJson + "\n---\n" + newJson
-  val output = runCapture(cliShellExe(), cliShellArgs(subcmd), stdin)
+  val output = ProcCapture.runCapture(cliShellExe(), cliShellArgs(subcmd), stdin)
 
   // Entries are separated by blank lines (\n\n).
   val rawParts = Str.split(output, "\n\n")

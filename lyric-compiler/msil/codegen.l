@@ -7341,7 +7341,7 @@ func lowerMatchExprMsil(
     } else {
       lowerExprOrBlockMsil(cctx, fctx, armInsns, arm.body)
     }
-    val ret = endsWithReturnMsil(armInsns)
+    val ret = endsWithReturnMsil(armInsns) or armEndsInLoopJumpMsil(armInsns)
     // Track the most-concrete collection type of a fall-through arm so a bare
     // `newList()` / `newMap()` sibling builds the matching concrete collection
     // (the `Some(c) -> c` arm of the `match mapGet(...)` idiom, #3920).
@@ -8299,19 +8299,20 @@ func bindNamedFieldMsil(
         }
         case Some(_) -> ()
       }
-      val fByName = cctx.fieldTokens.containsKey(caseClass + "/" + fname)
-      val sigLookupKey = if fByName { caseClass + "/" + fname } else { caseClass + "/field" + toString(fi) }
+      // Lyric has no named-field pattern syntax: PConstructor sub-patterns are
+      // purely positional, so `fname` here is always a FRESH binding variable,
+      // never a field selector.  Look the field up by its POSITIONAL key
+      // (`caseClass/fieldN`, always registered alongside the by-name key — see
+      // the field-registration block) rather than by the binding's name: a
+      // by-name lookup mis-binds when a fresh binding name collides with a
+      // different field's declared name on the same case (e.g. `case EPrefix(_,
+      // op)` bound field 0 `op: PrefixOp` instead of field 1 `operand: Expr`,
+      // #3943).  Mirrors `bindPositionalFieldMsil`.
+      val sigLookupKey = caseClass + "/field" + toString(fi)
       val fTok = match mapGet(cctx.fieldTokens, sigLookupKey) { case Some(t) -> t; case None -> 0 }
       if fTok > 0 {
         val fSig = match mapGet(cctx.fieldSigBytes, sigLookupKey) { case Some(s) -> s; case None -> buildFieldSig(MObject) }
-        val actualFieldName = if fByName {
-          fname
-        } else {
-          match mapGet(cctx.fieldDeclaredNames, sigLookupKey) {
-            case Some(n) -> n
-            case None -> fname
-          }
-        }
+        val actualFieldName = match mapGet(cctx.fieldDeclaredNames, sigLookupKey) { case Some(n) -> n; case None -> fname }
         val concreteFieldTy = resolveConcreteMsilFieldTy(cctx, castTy, sigLookupKey)
         emitCaseFieldLoad(insns, castTy, castSlot, fctx.paramCount, caseClass, caseClassBt, fTok, fSig, actualFieldName)
         val fSlot = allocSlotMsil(fctx, fname, concreteFieldTy)
@@ -9118,6 +9119,19 @@ func lowerBuiltinOrStaticCallMsil(
       case MByte -> {
         insns.add(MLdcI4(v = 0))
         MByte
+      }
+      // A value-type (struct) target — e.g. `var elem: JsonElement = default()`
+      // where JsonElement is `System.Text.Json.JsonElement`.  `ldnull` would push
+      // a Nullobjref where the unboxed struct is required (#3943); zero it in
+      // place via `ldloca` + `initobj` (the proven idiom in
+      // `emitExternOptionalDefault`) and load the value.
+      case MValueTypeRef(_, clrFqn) -> {
+        val refRow = internFfiTypeRefNested(cctx, clrFqn)
+        val dvSlot = allocSlotMsil(fctx, "__default_vt_" + toString(fctx.slotTicker.count), defWant)
+        insns.add(MLdloca(slot = dvSlot - fctx.paramCount))
+        insns.add(MInitobj(typeToken = 0x01000000 + refRow))
+        emitLoadSlot(insns, dvSlot, fctx.paramCount)
+        defWant
       }
       case _ -> {
         insns.add(MLdNull)
@@ -11773,6 +11787,41 @@ func endsWithReturnMsil(insns: in List[MInsn]): Bool {
       // A label may be a branch target from code above (e.g. the after-label
       // of a match expression), so we cannot treat instructions before it as
       // the effective end of the method.  Stop scanning and report "no terminal".
+      case MLabel(_) -> {
+        return false
+      }
+      case _ -> {
+        return false
+      }
+    }
+  }
+  false
+}
+
+// True when the instruction buffer ends in an unconditional loop jump
+// (`MBr`/`MLeave` emitted by a `continue`/`break`).  Such a match arm exits the
+// enclosing loop and never reaches the match join, exactly like `return`/`throw`
+// — so it must be excluded from fall-through reconciliation.  Otherwise a
+// `case Err(e) -> { …; continue }` arm contributes its `MVoid` block type, forces
+// the match's `resultTy` to `MVoid`, and a spurious `MPop` is emitted on a
+// sibling value-producing arm (`case Ok(t) -> t`), underflowing the stack
+// (#3943).  A bare trailing `MBr`/`MLeave` in an arm buffer is only ever the
+// loop jump: the match's own `MBr afterL` is appended later (pass 2), and any
+// arm-internal forward jump is followed by its target `MLabel` (handled below),
+// so it is never the last instruction.
+func armEndsInLoopJumpMsil(insns: in List[MInsn]): Bool {
+  var i = insns.count - 1
+  while i >= 0 {
+    match insns[i] {
+      case MBr(_) -> {
+        return true
+      }
+      case MLeave(_) -> {
+        return true
+      }
+      case MNop -> {
+        i = i - 1
+      }
       case MLabel(_) -> {
         return false
       }
@@ -22432,12 +22481,12 @@ record RangeBoundVal {
 }
 
 func foldRangeBound(e: in Expr): RangeBoundVal {
-  val failVal = RangeBoundVal(ok = false, isFloat = false, l = 0, d = 0.0)
+  val failVal = RangeBoundVal(ok = false, isFloat = false, l = 0i64, d = 0.0)
   match e.kind {
     case ELiteral(lit) -> {
       match lit {
         case LInt(v, _, _) -> RangeBoundVal(ok = true, isFloat = false, l = v, d = 0.0)
-        case LFloat(v, _, _) -> RangeBoundVal(ok = true, isFloat = true, l = 0, d = v)
+        case LFloat(v, _, _) -> RangeBoundVal(ok = true, isFloat = true, l = 0i64, d = v)
         case _ -> failVal
       }
     }
@@ -22491,8 +22540,8 @@ func mkDistinctRanged(
       inner = inner,
       hasRange = false,
       rangeIsFloat = false,
-      minI = 0,
-      maxI = 0,
+      minI = 0i64,
+      maxI = 0i64,
       minF = 0.0,
       maxF = 0.0,
       upperExclusive = false
