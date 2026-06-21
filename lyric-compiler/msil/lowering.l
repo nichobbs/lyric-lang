@@ -2216,12 +2216,14 @@ func buildLocalVarSig(locals: in List[MsilType]): List[Byte] {
       case MClass(_) -> bufU1(w, 0x1C)   // Object: avoids malformed CLASS+TypeDefOrRef entry
       case MGenericInst(_, _, _) -> bufU1(w, 0x1C)  // same: TypeRef token not valid in LocalVarSig
       case MValueTypeGenericInst(_, _, _) -> bufU1(w, 0x1C)  // struct generics also degrade (rare as locals)
-      // A slice local degrades to Object too: the codegen treats slices as
-      // opaque references (a `byte[]` value is still an object), and
-      // `elementTypeByte(MArray)` is only the 0x1D SZARRAY *prefix* — writing
-      // it alone produces a malformed LocalVarSig (dangling prefix, no element
-      // type) that corrupts the evaluation stack at run time (AccessViolation).
-      case MArray(_) -> bufU1(w, 0x1C)
+      // A slice/array local is encoded concretely as SZARRAY + element type
+      // (e.g. `byte[]` = 0x1D 0x05) — NOT degraded to Object.  Codegen tracks
+      // slice locals as `MArray`, so an object-typed slot desynced the verifier:
+      // `ldloc` yielded `object` where a `T[]` was expected (StackUnexpected,
+      // e.g. the metadata reader's `val b = img.bytes` → `rdU8(b, ...)`, #3943).
+      // `bufMsilType` writes the SZARRAY prefix *with* its element type, so the
+      // signature is well-formed (the earlier bare-0x1D worry doesn't apply).
+      case MArray(_) -> bufMsilType(w, locals[i])
       // Concrete collections degrade to Object in LocalVarSig like MGenericInst:
       // the local slot is an object reference that op sites `castclass` to the
       // concrete TypeSpec; the open GENERICINST token is not valid in a
@@ -2301,7 +2303,10 @@ func buildLocalVarSigWithCtx(locals: in List[MsilType], ctx: in LoweringCtx): Li
       case MGenericInst(_, _, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       case MGenericInstByName(_, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       case MValueTypeGenericInst(_, _, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
-      case MArray(_) -> bufU1(w, 0x1C)
+      // Slice/array locals encode concretely as SZARRAY + element (#3943); see
+      // the base `buildLocalVarSig`.  `bufMsilTypeWithCtx` types reference
+      // element types via their TypeRef/TypeDef token where available.
+      case MArray(_) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       // A concrete-collection local holds a genuine `List`1<elem>` /
       // `Dictionary`2<k,v>` at run time (`MListOp(LoCtor)` emits
       // `newobj List`1<elem>`), and codegen tracks the slot concretely, so
