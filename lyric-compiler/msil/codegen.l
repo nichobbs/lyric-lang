@@ -101,6 +101,7 @@ pub record CodegenCtx {
   tokStringGetChars: Int  // String.get_Chars(int32): char
   tokStringGetLength: Int  // String.get_Length(): int32
   tokStringSubstring: Int  // String.Substring(int32,int32): string
+  tokStringSubstring1: Int  // String.Substring(int32): string
   tokStringReplace: Int  // String.Replace(string,string): string
   tokStringIsNormalized: Int  // String.IsNormalized(): bool
   tokStringNormalize: Int  // String.Normalize(): string
@@ -1096,6 +1097,18 @@ pub func newCodegenCtx(
       buildInstanceMethodSig(strSubPs, MString)
     )
 
+  // 29a. String.Substring(int32): string  instance HASTHIS (index → end)
+  val strSub1Ps: List[MsilType] = newList()
+  strSub1Ps.add(MInt)
+  val tokStringSubstring1 = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trString,
+      "Substring",
+      "str_substring1",
+      buildInstanceMethodSig(strSub1Ps, MString)
+    )
+
   // 29b. String.Replace(string, string): string  instance HASTHIS
   val strReplacePs: List[MsilType] = newList()
   strReplacePs.add(MString)
@@ -1588,6 +1601,7 @@ pub func newCodegenCtx(
     tokStringGetChars = tokStringGetChars,
     tokStringGetLength = tokStringGetLength,
     tokStringSubstring = tokStringSubstring,
+    tokStringSubstring1 = tokStringSubstring1,
     tokStringReplace = tokStringReplace,
     tokStringIsNormalized = tokStringIsNormalized,
     tokStringNormalize = tokStringNormalize,
@@ -10287,7 +10301,7 @@ func lowerMethodCallMsil(
     // 3-arg form: Str.substring(str, start, len) — module-qualified free function.
     //   The module receiver (null) is on the stack; pop it, push the 3 real args.
     // 2-arg form: str.substring(start, len) — instance method, receiver already on stack.
-    // 1-arg form: stubbed.
+    // 1-arg form: str.substring(start) — instance method, index → end.
     if args.count == 3 {
       insns.add(MPop)
       lowerCallArgMsil(cctx, fctx, insns, args[0])
@@ -10301,11 +10315,12 @@ func lowerMethodCallMsil(
       insns.add(MCallvirt(methodToken = cctx.tokStringSubstring))
       MString
     } else if args.count == 1 {
+      // 1-arg form: str.substring(start): string — index → end of string.
+      // Receiver already on the stack; push the start index, callvirt the
+      // single-int overload `String.Substring(int32)`.
       lowerCallArgMsil(cctx, fctx, insns, args[0])
-      insns.add(MPop)
-      insns.add(MPop)
-      insns.add(MLdNull)
-      MObject
+      insns.add(MCallvirt(methodToken = cctx.tokStringSubstring1))
+      MString
     } else {
       insns.add(MPop)
       insns.add(MLdNull)
