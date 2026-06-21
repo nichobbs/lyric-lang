@@ -23,6 +23,10 @@ func isNonNegativeInt(s: in String): Bool {
   if s.length == 0 {
     return false
   }
+  // Reject leading zeros ("007", "01") — invalid per semver spec.
+  if s.length > 1 and s.startsWith("0") {
+    return false
+  }
   match Parse.parseOptInt(s) {
     case None -> false
     case Some(n) -> n >= 0
