@@ -93,6 +93,14 @@ pub func main(argv: in slice[String]): Int {
     return 0
   }
 
+  // Check that the SDK (Lyric.Stdlib.dll) was built by this same compiler
+  // version.  A mismatch is a warning by default; LYRIC_STRICT_SDK_VERSION=1
+  // makes it a hard error (exit 1).
+  val sdkCheck = checkSdkVersion()
+  if sdkCheck != 0 {
+    return sdkCheck
+  }
+
   if cmd == "build" {
     return cmdBuild(argv)
   }
@@ -175,6 +183,10 @@ pub func main(argv: in slice[String]): Int {
 
   if cmd == "openapi" {
     return cmdOpenApi(argv)
+  }
+
+  if cmd == "version" {
+    return cmdVersion(argv)
   }
 
   if cmd == "lsp" {

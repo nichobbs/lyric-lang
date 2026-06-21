@@ -6607,6 +6607,83 @@ interfaces), D106 (constructor shorthand).
 
 ---
 
+## D108 — `[nuget]` entries are allowed in all manifests; no application-manifest restriction
+
+**Status:** ACCEPTED
+
+**Context.** `docs/38-workspace.md` §8 speculated about prohibiting `[nuget]`
+/ `[platform.dotnet]` entries in application manifests (executables), on the
+theory that all NuGet boundary code should live behind Lyric wrapper libraries.
+Q-W-001 asked how a developer would consume an arbitrary NuGet package that has
+no Lyric wrapper yet, noting that requiring a wrapper adds ceremony.
+
+**Decision.** `[nuget]` (and its future rename `[platform.dotnet]`) is allowed
+in any Lyric manifest — library or application — without restriction.
+Application code that needs an unencapsulated NuGet package declares it in its
+own `[nuget]` table directly. The "prohibit in executables" enforcement,
+`@unsafe_native` escape-hatch design, and the forced `lyric migrate --workspace`
+codemod path (Q-W-004) are all dropped.
+
+**Rationale.**
+- The Lyric ecosystem is early: most NuGet packages do not yet have Lyric
+  wrappers, and blocking application developers from using the underlying
+  packages would make the language impractical.
+- The transitive propagation benefit (docs/38 §4) still applies once wrapper
+  libraries exist — applications that depend on `Lyric.Grpc` do not need to
+  re-declare `Grpc.Net.Client`. The restriction only provided value at the margin
+  of a fully-wrapped ecosystem.
+- The escape-hatch design (`@unsafe_native`) reliably becomes the norm before
+  any enforcement value is realised — the language spec should not encode
+  ecosystem-maturity-dependent enforcement rules.
+
+**Implications.** Q-W-003 (rename `[nuget]` → `[platform.dotnet]`) and Q-W-004
+(migration codemod) are moot given this decision. Q-W-002 (published manifest
+format for transitive NuGet graph reconstruction) remains open and unaffected.
+
+**Related:** docs/38-workspace.md §8, docs/39-package-registry.md §9, D073.
+
+---
+
+## D109 — SDK version check at CLI startup (Q-dist-007)
+
+**Status:** ACCEPTED
+
+**Context.** `docs/22-distribution-and-tooling.md` §5 specifies a
+`Lyric.SdkVersion` embedded resource inside `Lyric.Stdlib.dll` carrying
+`language_version`, `stdlib_version`, `compiler_version`, and `build_date`.
+Q-dist-007 tracked the unimplemented check: at CLI startup, read the version
+resource and warn (or error) when the stdlib DLL was built by a different
+compiler version.
+
+**Decision.** The version check is implemented as `checkSdkVersion()` in
+`lyric-compiler/lyric/cli/cli_shared.l`, called from `cli_main.l` after the
+early-exit flags (`--version`, `--help`, internal flags) and before command
+dispatch.
+
+**Implementation details.**
+- Rather than reading an embedded PE resource (which requires PE parsing), the
+  check reads a companion JSON file `sdk-version.json` placed beside
+  `Lyric.Stdlib.dll` by the build pipeline.  This avoids a dependency on the
+  metadata reader just for the startup check.
+- Format: `{"language_version":"0.1","stdlib_version":"0.1.0","compiler_version":"0.1.0","build_date":"..."}`.
+  Written by `make lyric` (Makefile) immediately after the stage-1 stdlib build.
+- A missing `sdk-version.json` (dev builds, CI environments before the file
+  was introduced) is silently ignored — the check is best-effort and must not
+  break existing workflows.
+- A mismatch prints a warning to stderr: `warning: SDK version mismatch: ...`.
+- `LYRIC_STRICT_SDK_VERSION=1` converts the warning to a hard error (exit 1),
+  for CI environments that want to enforce alignment.
+
+**Relation to `Lyric.SdkVersion` resource.** The embedded-resource form
+described in docs/22 is not yet implemented (requires PE writer involvement in
+the stdlib build).  The `sdk-version.json` side-file is the interim mechanism;
+the embedded resource form can be layered on top later without changing the
+CLI's observable behaviour.
+
+**Related:** docs/22-distribution-and-tooling.md §5, docs/34-distribution-strategy.md §5, D059.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
