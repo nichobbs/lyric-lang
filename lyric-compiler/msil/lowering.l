@@ -2245,9 +2245,12 @@ func buildLocalVarSig(locals: in List[MsilType]): List[Byte] {
         bufU1(w, 0x11)
         writeCompressedInt(w, typeRefCode)
       }
-      // A class-ref local is a reference, so it degrades to Object safely
-      // (like MClass above) — an object-typed slot holds any ref correctly.
-      case MClassRef(_, _) -> bufU1(w, 0x1C)
+      // An extern class-ref local (e.g. `ProcessStartInfo`) is tracked
+      // concretely by codegen, so encode CLASS + its TypeRef rather than erasing
+      // to Object — an object slot desynced the verifier (`ldloc` yielded
+      // `object` where the concrete class was expected, #3943).  `bufMsilType`
+      // writes ELEMENT_TYPE_CLASS + the carried TypeRef token.
+      case MClassRef(_, _) -> bufMsilType(w, locals[i])
       case other -> bufU1(w, elementTypeByte(other))
     }
     i = i + 1
@@ -2318,7 +2321,9 @@ func buildLocalVarSigWithCtx(locals: in List[MsilType], ctx: in LoweringCtx): Li
       // matching the runtime value (#3920).
       case MConcreteList(_) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       case MConcreteMap(_, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
-      case MClassRef(_, _) -> bufU1(w, 0x1C)
+      // Extern class-ref local: encode CLASS + TypeRef concretely (#3943); see
+      // the base `buildLocalVarSig`.
+      case MClassRef(_, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       case MValueTypeRef(typeRefCode, _) -> {
         bufU1(w, 0x11)
         writeCompressedInt(w, typeRefCode)
