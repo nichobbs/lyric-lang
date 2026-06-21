@@ -1,7 +1,8 @@
 # 38 — Workspace, Git Dependencies, and Local Library Resolution
 
-**Status:** Specced in D073. Open questions Q-W-001 through Q-W-004 (native dep
-elimination) remain unresolved.
+**Status:** Specced in D073. Q-W-001 resolved (D108): `[nuget]` allowed in all
+manifests without restriction. Q-W-002 open. Q-W-003 and Q-W-004 moot given
+Q-W-001 resolution (no enforcement to migrate from).
 
 ---
 
@@ -312,11 +313,14 @@ application, not a library). Libraries keep `[platform.*]` freely.
 
 **Implications and open questions:**
 
-**Q-W-001** — How does a developer use an arbitrary NuGet package that has no
-Lyric wrapper yet? Requiring a wrapper library for every native dep adds
-ceremony. One escape hatch: an `@unsafe_native` annotation on the dep entry
-that explicitly opts out of the prohibition and emits a prominent warning. Risk:
-the escape hatch becomes the norm.
+**Q-W-001** — **Resolved (D108).** `[nuget]` and `[platform.dotnet]` entries
+are allowed in any manifest — library or application — without restriction.
+Application code that needs an arbitrary NuGet package with no Lyric wrapper
+lists it in its own `[nuget]` table directly.  The proposed `@unsafe_native`
+escape hatch and the "prohibit in executables" enforcement are not pursued:
+the ecosystem is too early to constrain this, and the transitive-propagation
+benefit (§4) still applies once wrapper libraries exist.  The rename from
+`[nuget]` to `[platform.dotnet]` is likewise deferred (Q-W-003).
 
 **Q-W-002** — Published manifest format. When a library with `[platform.dotnet]`
 entries is published, the registry must embed those entries so downstream

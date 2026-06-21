@@ -265,7 +265,7 @@ jobs:
           for ex in rbac ledger jobqueue product-catalog; do
             echo "=== test examples/$ex ==="
             "$lyric_bin" test --manifest "examples/$ex/lyric.toml" > /tmp/"$ex".test.log 2>&1 \
-              && echo "PASS" || { echo "FAIL"; tail -30 /tmp/"$ex".test.log; exit 1; }
+              && echo "PASS" || { echo "FAIL"; cat /tmp/"$ex".test.log; exit 1; }
           done
 
       # Prove proof-only examples.

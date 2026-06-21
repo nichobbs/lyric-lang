@@ -136,6 +136,12 @@ func usageText(): String {
     "                (removes a dependency from [dependencies] (or [nuget]) and restores)\n" +
     "  lyric publish [--manifest <lyric.toml>] [--dll <path>] [-o <dir>] [--registry <url>] [--api-key <key>]\n" +
     "  lyric search  <term>\n" +
+    "  lyric version [--manifest <lyric.toml>]\n" +
+    "                (print the current package version)\n" +
+    "  lyric version --set <semver> [--manifest <lyric.toml>]\n" +
+    "                (update [package].version in lyric.toml)\n" +
+    "  lyric version --workspace [--set <semver>]\n" +
+    "                (print or update versions for all workspace members; warns on misalignment)\n" +
     "\n" +
     "Dev loop:\n" +
     "  lyric run     [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm] [--watch] [-- <args>...]\n" +
@@ -178,6 +184,51 @@ func usageText(): String {
 
 func printUsage(): Unit {
   printErr(usageText())
+}
+
+// Read the sdk-version.json side-file from beside Lyric.Stdlib.dll and check
+// that its compiler_version matches this binary's VERSION().  Missing file is
+// silently ignored (dev builds and environments without a published SDK do not
+// carry the file).  Returns 0 on match or absent file; returns 1 when
+// LYRIC_STRICT_SDK_VERSION=1 and a mismatch is detected.
+func checkSdkVersion(): Int {
+  val libDir = findCompiledLibDir()
+  if libDir.length == 0 {
+    return 0
+  }
+  val sdkVersionPath = Path.join(libDir, "sdk-version.json")
+  if not File.fileExists(sdkVersionPath) {
+    return 0
+  }
+  val text = match File.readText(sdkVersionPath) {
+    case Err(_) -> return 0
+    case Ok(t) -> t
+  }
+  // Minimal extraction: find "compiler_version": "X.Y.Z" in the JSON blob.
+  val key = "\"compiler_version\": \""
+  val keyPos = text.indexOf(key)
+  if keyPos < 0 {
+    return 0
+  }
+  val valueStart = keyPos + key.length
+  val closeQuote = text.indexOf("\"", valueStart)
+  if closeQuote < 0 {
+    return 0
+  }
+  val sdkVer = text.substring(valueStart, closeQuote - valueStart)
+  if sdkVer == VERSION() {
+    return 0
+  }
+  printErr(
+    "warning: SDK version mismatch: compiler is " + VERSION() +
+      " but Lyric.Stdlib.dll was built with compiler " + sdkVer + "."
+  )
+  printErr("  Hint: run 'lyric restore' or reinstall the Lyric SDK to align versions.")
+  if Environment.getVarOrDefault("LYRIC_STRICT_SDK_VERSION", "") == "1" {
+    printErr("error: aborting due to LYRIC_STRICT_SDK_VERSION=1")
+    return 1
+  }
+  0
 }
 
 // Resolve the manifest a manifest-consuming command should use: an explicit

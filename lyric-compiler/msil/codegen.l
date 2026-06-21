@@ -21642,6 +21642,7 @@ func registerRestoredUnionCase(
   c: in UnionCase,
   asmRefRow: in Int,
   uGenerics: in List[String],
+  hasNullaryInstances: Bool,
 ): Unit {
   val caseClassName = unionName + "_" + c.name
   val caseFqn = packageName + "." + caseClassName
@@ -21739,7 +21740,7 @@ func registerRestoredUnionCase(
   // nullary-case comparison silently fails (#3920 — the self-host parser blocker:
   // `tryEatKw` never matched, so the self-emitted compiler rejected every file
   // with P0020).
-  if c.fields.count == 0 and uGenerics.count == 0 {
+  if c.fields.count == 0 and uGenerics.count == 0 and hasNullaryInstances {
     if not cctx.singletonFieldTokens.containsKey(caseFqn) {
       val instSig = buildFieldSig(MObject)
       val instSigKey = "restored_ucsingleton_" + caseFqn
@@ -21766,7 +21767,7 @@ func registerRestoredUnionCase(
 // For generic unions, also seeds the arity-suffixed TypeRef for the union base
 // and genericTypeArity so typeExprToMsilCtx returns MGenericInstByName for
 // type annotations like `val m: Maybe[Int]`.
-func registerRestoredUnion(cctx: in CodegenCtx, packageName: in String, decl: in UnionDecl, asmRefRow: in Int): Unit {
+func registerRestoredUnion(cctx: in CodegenCtx, packageName: in String, decl: in UnionDecl, asmRefRow: in Int, hasNullaryInstances: Bool): Unit {
   val uGenerics = genericNamesOf(decl.generics)
   val uArity = uGenerics.count
   val unionFqn = packageName + "." + decl.name
@@ -21787,7 +21788,7 @@ func registerRestoredUnion(cctx: in CodegenCtx, packageName: in String, decl: in
 
   var ci = 0
   while ci < decl.cases.count {
-    registerRestoredUnionCase(cctx, packageName, decl.name, decl.cases[ci], asmRefRow, uGenerics)
+    registerRestoredUnionCase(cctx, packageName, decl.name, decl.cases[ci], asmRefRow, uGenerics, hasNullaryInstances)
     ci = ci + 1
   }
 }
@@ -21797,6 +21798,10 @@ func registerRestoredUnion(cctx: in CodegenCtx, packageName: in String, decl: in
 // case's ctor.  Skips items whose TypeRef wasn't allocated and
 // private funcs (no public surface).
 func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact): Unit {
+  // Hoist the DLL read outside the items loop — one parse per artifact, not
+  // one per IUnion item.  coreDllHasAritySuffixTypeDef returns false on any
+  // read/parse failure (safe default: no Instance singletons).
+  val hasInstances = Mdr.dllHasNullaryInstanceField(art.dllPath)
   val items = art.source.items
   var i = 0
   while i < items.count {
@@ -21813,7 +21818,7 @@ func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact): 
         // func helpers re-resolve their own AssemblyRef internally, so
         // hoisting it eagerly was inconsistent (#1295).
         val asmRefRow = ensureAssemblyRefForArtifact(cctx, art.packageName)
-        registerRestoredUnion(cctx, art.packageName, decl, asmRefRow)
+        registerRestoredUnion(cctx, art.packageName, decl, asmRefRow, hasInstances)
       }
       case IInterface(decl) -> {
         registerRestoredInterface(cctx, art.packageName, decl)
@@ -22304,7 +22309,7 @@ pub record StdlibPkg {
 /// imports still work because their callsite codegen never reaches
 /// the `funcTokens` lookup (handled by the hardcoded builtin arms in
 /// `lowerBuiltinOrStaticCallMsil`).
-pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibPkg]): Unit {
+pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibPkg], usesAritySuffix: Bool): Unit {
   // Pass 1: register all type items across every package first.  This
   // populates `typeFqnByName` and `ffiTypeRefs` before any function
   // signature is resolved, so cross-package generic return types (e.g.
@@ -22320,7 +22325,7 @@ pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibP
       match it.kind {
         case IFunc(_) -> {
         }
-        case _ -> registerStdlibTypeItem(cctx, pkg.name, it, asmRefRow)
+        case _ -> registerStdlibTypeItem(cctx, pkg.name, it, asmRefRow, usesAritySuffix)
       }
       ii = ii + 1
     }
@@ -22336,7 +22341,7 @@ pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibP
     while ii < pkg.items.count {
       val it: Item = pkg.items[ii]
       match it.kind {
-        case IFunc(decl) -> registerStdlibFunc(cctx, pkg.name, hostRefRow, decl)
+        case IFunc(decl) -> registerStdlibFunc(cctx, pkg.name, hostRefRow, decl, usesAritySuffix)
         case _ -> {
         }
       }
@@ -22586,7 +22591,7 @@ func buildGenericCaseCtorTok(
 // (`Option$Some`, `Option$None`) so that `MIsinstByName` resolves to
 // a TypeRef token rather than falling back to System.Object.
 // Mirrors the `registerRestoredTypeDecl` + `registerRestoredUnionCase` logic.
-func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in Item, asmRefRow: in Int): Unit {
+func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in Item, asmRefRow: in Int, usesAritySuffix: Bool): Unit {
   // Extern types declared in the stdlib `_kernel/` boundary (e.g.
   // `extern type Uuid = "System.Guid"`) carry the Lyric-name → CLR-FQN
   // mapping a consumer needs to encode the type correctly in cross-package
@@ -22631,7 +22636,7 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
     case IUnion(decl) -> genericNamesOf(decl.generics).count
     case _ -> 0
   }
-  val typeRefName = if typeArity > 0 { typeName + "`" + toString(typeArity) } else { typeName }
+  val typeRefName = if typeArity > 0 and usesAritySuffix { typeName + "`" + toString(typeArity) } else { typeName }
   val typeFqn = packageName + "." + typeName
   val typeRefKey = packageName + "/" + typeFqn
   if not cctx.ffiTypeRefs.containsKey(typeRefKey) {
@@ -22668,7 +22673,7 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
       while ci < decl.cases.count {
         val caseName = decl.cases[ci].name
         val ctorKey = packageName + "." + decl.name + "_" + caseName
-        val caseClassName = if caseArity > 0 {
+        val caseClassName = if caseArity > 0 and usesAritySuffix {
           decl.name + "_" + caseName + "`" + toString(caseArity)
         } else {
           decl.name + "_" + caseName
@@ -23043,7 +23048,7 @@ func splitDottedName(name: in String): List[String] {
 // `registerRestoredFunc`, which already uses the ctx-aware builder.
 // On resolution error, inherits `registerRestoredFunc`'s policy: the
 // unresolvable slot degrades to MObject in the encoded signature (#2821).
-func registerStdlibFunc(cctx: in CodegenCtx, packageName: in String, hostRefRow: in Int, fn: in FunctionDecl): Unit {
+func registerStdlibFunc(cctx: in CodegenCtx, packageName: in String, hostRefRow: in Int, fn: in FunctionDecl, usesAritySuffix: Bool): Unit {
   val isPub = match fn.visibility { case Some(VisPub(_)) -> true; case _ -> false }
   if not isPub {
     return
@@ -23060,21 +23065,19 @@ func registerStdlibFunc(cctx: in CodegenCtx, packageName: in String, hostRefRow:
   val fqn = packageName + "." + fn.name
   val arityKey = fqn + "/" + toString(fn.params.count)
 
-  // A `Unit`/`Never` generic ARGUMENT is represented as `object` end-to-end by
-  // the self-hosted emitter — the self-built producer's MethodDef, its
-  // `Result_Ok`/`Option_Some` construction, and consumer pattern matches all
-  // agree on `object` at the `!0` slot.  (The earlier `xrefUnitArgsToValueTuple`
-  // lift here assumed an F#-built producer whose MethodDef encodes `Unit` as
-  // `System.ValueTuple`; against the self-built producer that lift makes the
-  // consumer's MemberRef diverge and the call faults at run time.)  Keeping
-  // `object` on both sides is what lets the self-hosted compiler reproduce.
+  // When the stdlib DLL was produced by the self-hosted emitter (`usesAritySuffix
+  // = true`), a `Unit`/`Never` generic argument is `object` end-to-end (def,
+  // ctor, and match all agree).  When it was produced by the F# emitter
+  // (`usesAritySuffix = false`), the convention is `System.ValueTuple` at value
+  // position (`TypeMap.fs`); the MemberRef must match to avoid MissingMethodException.
   val paramTypes: List[MsilType] = newList()
   var pi = 0
   while pi < fn.params.count {
     paramTypes.add(typeExprToMsilCtx(cctx, fn.params[pi].ty, packageName))
     pi = pi + 1
   }
-  val retType = match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
+  val retTypeRaw = match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
+  val retType = if not usesAritySuffix { xrefUnitArgsToValueTuple(cctx, retTypeRaw) } else { retTypeRaw }
   val funcSig = buildStaticMethodSigWithCtx(byrefWrapSigTypes(fn.params, paramTypes), retType, cctx.lctx)
   val fnModes = paramModesOf(fn.params)
   // Register with an arity-specific key so overloaded stdlib functions
