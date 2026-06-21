@@ -150,7 +150,6 @@ pub record CodegenCtx {
   tokDictObjGetCount: Int  // Dictionary<object,object>::get_Count(): int32  callvirt
   tokDictObjContainsKey: Int  // Dictionary<object,object>::ContainsKey(object): bool  callvirt
   tokDictObjRemove: Int  // Dictionary<object,object>::Remove(object): bool  callvirt
-  tokDictObjTryGetValue: Int  // Dictionary<object,object>::TryGetValue(object, object): bool
   // Intra-package pre-computed tokens
   recordCtorTokens: Map[String, Int]  // className → MethodDef token
   // Distinct/range-subtype static factory tokens (#1501): className → MethodDef
@@ -986,10 +985,13 @@ pub func newCodegenCtx(
       buildInstanceMethodSig(dictRmPs, MBool)
     )
 
-  // 23. Dictionary<object,object>::TryGetValue(object, out object): bool  HASTHIS
-  // Signature: HASTHIS, 2 params, bool return, object key, byref-object value
-  // For bootstrap we use get_Item instead; register as a stub pointing to get_Item sig.
-  val tokDictObjTryGetValue = tokDictObjGetItem  // bootstrap: alias to get_Item
+  // 23. `tryGetValue(map, key, out slot)` is lowered as an intrinsic in
+  // `lowerBuiltinOrStaticCallMsil` (ContainsKey + get_Item into the out slot),
+  // not through a `Dictionary.TryGetValue(!0, !1&)` MemberRef: the erased object
+  // dict's value param is `object&`, which a value-type out slot (`Int&`) cannot
+  // satisfy.  The earlier bootstrap alias here pointed at `get_Item` but was
+  // never used — the call site emitted no call at all, so the self-hosted
+  // `tryGetValue` returned garbage (#3943).  No object-dict token is needed.
 
   // 23b. Dictionary<object,object>::get_Keys(): KeyCollection<!0,!1>  HASTHIS  (#3511)
   val dictGkRetArgs: List[MsilType] = newList()
@@ -1561,7 +1563,6 @@ pub func newCodegenCtx(
     tokDictObjGetCount = tokDictObjGetCount,
     tokDictObjContainsKey = tokDictObjContainsKey,
     tokDictObjRemove = tokDictObjRemove,
-    tokDictObjTryGetValue = tokDictObjTryGetValue,
     recordCtorTokens = recCtorToks,
     distinctFromTokens = newMap(),
     distinctTryFromTokens = newMap(),
@@ -9031,8 +9032,43 @@ func lowerBuiltinOrStaticCallMsil(
     insns.add(MConvR8)
     MDouble
   } else if funcName == "default" {
-    insns.add(MLdNull)
-    MObject
+    // `default()` must yield the zero value of the *expected* type, not a bare
+    // `ldnull`.  For a primitive target (`var slot: Int = default()`, the
+    // `tryGetValue(map, key, out slot)` idiom) `ldnull` pushes a Nullobjref
+    // where an Int32/Int64/Double is required — invalid IL (#3943).  The
+    // declared type flows in via the var-initializer `collExpect` hint; emit the
+    // numeric zero for primitives and fall back to `ldnull` for reference types.
+    val defWant = collExpectTop(fctx)
+    match defWant {
+      case MLong -> {
+        insns.add(MLdcI8(v = intToLong(0)))
+        MLong
+      }
+      case MDouble -> {
+        insns.add(MLdcR8(v = 0.0))
+        MDouble
+      }
+      case MInt -> {
+        insns.add(MLdcI4(v = 0))
+        MInt
+      }
+      case MBool -> {
+        insns.add(MLdcI4(v = 0))
+        MBool
+      }
+      case MChar -> {
+        insns.add(MLdcI4(v = 0))
+        MChar
+      }
+      case MByte -> {
+        insns.add(MLdcI4(v = 0))
+        MByte
+      }
+      case _ -> {
+        insns.add(MLdNull)
+        MObject
+      }
+    }
   } else if funcName == "newList" {
     // Build a concrete `List`1<Foo>` when the context expects one (the
     // annotated-accumulator pattern `val acc: List[Foo] = newList()` flows the
@@ -9159,6 +9195,60 @@ func lowerBuiltinOrStaticCallMsil(
       insns.add(MLdNull)
       MObject
     }
+  } else if funcName == "tryGetValue" and args.count == 3 {
+    // `tryGetValue(m, key, out slot): Bool` — lower to
+    //   if m.ContainsKey(key) { slot = (V) m[key]; true } else { false }
+    // The kernel extern carries no @externTarget and was never intercepted, so
+    // the fallback call path emitted the args with NO call and the out slot by
+    // value — the receiver/key were left on the stack and the result was
+    // garbage (#3943).  A `Dictionary.TryGetValue(!0, !1&)` MemberRef can't be
+    // used either: through the erased object dict its value param is `object&`,
+    // which a value-type out slot (`Int&`) cannot bind.  ContainsKey + get_Item
+    // sidesteps both problems and works for concrete and object dicts alike.
+    // The out slot is written only on the found path — matching `out` semantics
+    // for the dominant `if tryGetValue(m, k, slot) { ...use slot... }` idiom.
+    val outNameTgv = match callArgExpr(args[2]).kind { case EPath(p) -> lastSegmentMsil(p); case _ -> "" }
+    val mSlotTgv = allocSlotMsil(fctx, "__tgv_m_" + toString(fctx.slotTicker.count), MObject)
+    val mArgTyTgv = lowerCallArgMsil(cctx, fctx, insns, args[0])
+    emitStoreSlot(insns, mSlotTgv, fctx.paramCount)
+    val mapKeyTyTgv = match mArgTyTgv { case MConcreteMap(kt, _) -> kt; case _ -> MObject }
+    val kSlotTgv = allocSlotMsil(fctx, "__tgv_k_" + toString(fctx.slotTicker.count), mapKeyTyTgv)
+    val kArgTyTgv = lowerCallArgMsil(cctx, fctx, insns, args[1])
+    collBoxIfNeeded(cctx, insns, kArgTyTgv, mArgTyTgv)
+    emitStoreSlot(insns, kSlotTgv, fctx.paramCount)
+    // The out slot's declared type is the cast target when an object dict's
+    // `get_Item` yields `object`; fall back to the map's tracked value type.
+    val outSlotTyTgv = match mapGet(fctx.types, outNameTgv) {
+      case Some(t) -> t
+      case None -> match mArgTyTgv { case MConcreteMap(_, vt) -> vt; case MMapOf(_, vt) -> vt; case _ -> MObject }
+    }
+    val elseLTgv = freshLabelMsil(fctx)
+    val endLTgv = freshLabelMsil(fctx)
+    emitLoadSlot(insns, mSlotTgv, fctx.paramCount)
+    emitDictCastRecv(cctx, insns, mArgTyTgv)
+    emitLoadSlot(insns, kSlotTgv, fctx.paramCount)
+    emitDictContainsKey(cctx, insns, mArgTyTgv)
+    insns.add(MBrFalse(label = elseLTgv))
+    // then: slot = (V) m[key]; result = true
+    emitLoadSlot(insns, mSlotTgv, fctx.paramCount)
+    emitDictCastRecv(cctx, insns, mArgTyTgv)
+    emitLoadSlot(insns, kSlotTgv, fctx.paramCount)
+    emitDictGetItem(cctx, insns, mArgTyTgv)
+    match mArgTyTgv {
+      case MConcreteMap(_, _) -> ()
+      case _ -> castObjectToMsil(cctx, insns, outSlotTyTgv)
+    }
+    match mapGet(fctx.slots, outNameTgv) {
+      case Some(os) -> emitStoreSlot(insns, os, fctx.paramCount)
+      case None -> insns.add(MPop)
+    }
+    insns.add(MLdcI4(v = 1))
+    insns.add(MBr(label = endLTgv))
+    // else: result = false
+    insns.add(MLabel(id = elseLTgv))
+    insns.add(MLdcI4(v = 0))
+    insns.add(MLabel(id = endLTgv))
+    MBool
   } else if funcName == "dictGetKeys" or startsWith(funcName, "dictGetKeys__") {
     // `dictGetKeys(m)` — emit `m.get_Keys()` inline and return `MExternEnumerable(keyTy)`
     // so the surrounding `for k in ...` loop uses the IEnumerator protocol (#3511).
