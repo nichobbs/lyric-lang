@@ -1057,15 +1057,6 @@ pub record LoweringCtx {
   // the discover and real passes always agree on tryInto() eligibility.
   allProjFqns: Map[String, Bool]
   allProjFqnKeys: List[String]
-  // True when the installed Lyric.Stdlib.Core.dll uses CLR arity-suffix naming
-  // (e.g. Option`1, Result`2).  The self-hosted emitter always emits arity
-  // suffixes, but the F# bootstrap compiler did not.  Bridge.l probes Core.dll
-  // at compile start and sets this field; registerStdlibTypeItem uses it to
-  // emit TypeRef names matching the actual TypeDef convention so that
-  // TypeLoadException is avoided in LYRIC_BOOTSTRAP_MINT=1 environments.
-  // Defaults to true (self-hosted convention); set to false when F#-built Core
-  // is detected.
-  stdlibUsesAritySuffix: Bool
 }
 
 // Build and intern the Microsoft framework public key token blob.
@@ -1208,8 +1199,7 @@ pub func newLoweringCtx(packageName: in String, major: in Int, minor: in Int): L
     stdCoreResultErr2Row = newList(),
     stdCoreResultRow = newList(),
     allProjFqns = newMap(),
-    allProjFqnKeys = newList(),
-    stdlibUsesAritySuffix = true
+    allProjFqnKeys = newList()
   )
 }
 
