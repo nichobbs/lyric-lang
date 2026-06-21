@@ -38,7 +38,7 @@ jobs:
       # resolution.  Claude is given tools (bash, file read/write, gh CLI)
       # and instructed to resolve each conflict conservatively.
       - name: Resolve conflicting PRs with Claude
-        uses: anthropics/claude-code-action@d5726de019ec4498aa667642bc3a80fca83aa102  # beta
+        uses: anthropics/claude-code-action@2fee15510437d71399d9139ed60433470484a8fb  # beta
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
