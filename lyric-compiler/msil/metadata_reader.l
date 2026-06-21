@@ -819,23 +819,28 @@ pub func readTypeDef(img: in PeImage, layout: in TableLayout, row: in Int): Type
   )
 }
 
-// A TypeRef row's name and namespace (ECMA §II.22.38).
+// A TypeRef row's name, namespace, and ResolutionScope coded token (ECMA
+// §II.22.38).  The ResolutionScope is needed to name a NESTED type: a nested
+// TypeRef carries an EMPTY namespace and its ResolutionScope is the enclosing
+// TypeRef (tag 3 of the ResolutionScope coded index), so the full name is
+// `<enclosing>+<name>`.
 pub record TypeRefRow {
   name: String
   namespaceName: String
+  resolutionScope: Int
 }
 
 // Read TypeRef row `row` (1-based).  Columns: ResolutionScope(coded),
-// Name(#String), Namespace(#String).  Only the name/namespace are kept (the
-// resolution scope — which assembly defines the type — is not needed to name it).
+// Name(#String), Namespace(#String).
 pub func readTypeRef(img: in PeImage, layout: in TableLayout, row: in Int): TypeRefRow {
   val b = img.bytes
   val o = layout.dataStart[0x01] + (row - 1) * layout.rowSize[0x01]
-  var p = o + layout.resolutionScopeIdx      // skip ResolutionScope
+  val rs = rdIdx(b, o, layout.resolutionScopeIdx)
+  var p = o + layout.resolutionScopeIdx
   val nameI = rdIdx(b, p, layout.stringIdx)
   p = p + layout.stringIdx
   val nsI = rdIdx(b, p, layout.stringIdx)
-  TypeRefRow(name = stringAt(img, layout, nameI), namespaceName = stringAt(img, layout, nsI))
+  TypeRefRow(name = stringAt(img, layout, nameI), namespaceName = stringAt(img, layout, nsI), resolutionScope = rs)
 }
 
 // A NestedClass row mapping (ECMA §II.22.32).
@@ -857,10 +862,36 @@ pub func readNestedClass(img: in PeImage, layout: in TableLayout, row: in Int): 
   NestedClassRow(nestedTypeDef = nestedI, enclosingTypeDef = enclosingI)
 }
 
+// The enclosing TypeDef row of nested TypeDef `row`, or -1 if `row` is not
+// nested.  Scans the NestedClass table (ECMA §II.22.32) for the row whose
+// NestedClass column equals `row`.
+func enclosingTypeDefRow(img: in PeImage, layout: in TableLayout, th: in TablesHeader, row: in Int): Int {
+  val n = rowCountOf(th, 0x29)
+  var i = 1
+  while i <= n {
+    val nc = readNestedClass(img, layout, i)
+    if nc.nestedTypeDef == row {
+      return nc.enclosingTypeDef
+    }
+    i = i + 1
+  }
+  -1
+}
+
 // Resolve a TypeDefOrRef coded index (the 2-bit-tagged token a CLASS /
 // VALUETYPE / GENERICINST signature carries) to the referenced type's
 // fully-qualified name.  Tag 0 = TypeDef, 1 = TypeRef, 2 = TypeSpec.
 // TypeSpec (generic instantiations etc.) and out-of-range rows return "".
+//
+// NESTED types are named `<enclosing>+<nested>` (ECMA §II.22.38 / II.14.4): a
+// nested type carries an EMPTY namespace, so without the enclosing chain a
+// method whose signature mentions a nested type (e.g. `JsonElement.
+// EnumerateArray(): JsonElement+ArrayEnumerator`) resolved its return type to a
+// bare `ArrayEnumerator` that `resolvedSigToMsil` could not map — which made the
+// metadata-direct extern resolver bail and fall back to the static-call guess,
+// emitting an instance method as static (MissingMethodException, #3943).  A
+// nested TypeDef is detected via the NestedClass table; a nested TypeRef via a
+// ResolutionScope whose coded tag is TypeRef (3).
 pub func resolveTypeDefOrRefName(
   img: in PeImage, layout: in TableLayout, th: in TablesHeader, codedToken: in Int
 ): String {
@@ -877,7 +908,17 @@ pub func resolveTypeDefOrRefName(
     if td.namespaceName.length > 0 {
       td.namespaceName + "." + td.name
     } else {
-      td.name
+      val encRow = enclosingTypeDefRow(img, layout, th, row)
+      if encRow > 0 {
+        val encFqn = resolveTypeDefOrRefName(img, layout, th, encRow * 4)
+        if encFqn.length > 0 {
+          encFqn + "+" + td.name
+        } else {
+          td.name
+        }
+      } else {
+        td.name
+      }
     }
   } else if tag == 1 {
     if row > rowCountOf(th, 0x01) {
@@ -887,7 +928,18 @@ pub func resolveTypeDefOrRefName(
     if tr.namespaceName.length > 0 {
       tr.namespaceName + "." + tr.name
     } else {
-      tr.name
+      val rsTag = tr.resolutionScope % 4
+      val rsRow = tr.resolutionScope / 4
+      if rsTag == 3 and rsRow > 0 {
+        val encFqn = resolveTypeDefOrRefName(img, layout, th, rsRow * 4 + 1)
+        if encFqn.length > 0 {
+          encFqn + "+" + tr.name
+        } else {
+          tr.name
+        }
+      } else {
+        tr.name
+      }
     }
   } else {
     ""

@@ -104,9 +104,11 @@ pub func hostValueKind(elem: in JsonElement): Int = ()
 @externTarget("System.Text.Json.JsonElement.EnumerateArray")
 pub func hostEnumerateArray(elem: in JsonElement): JsonArrayEnumerator = ()
 
+@externInstance
 @externTarget("System.Text.Json.JsonElement+ArrayEnumerator.MoveNext")
 pub func hostEnumMoveNext(en: inout JsonArrayEnumerator): Bool = ()
 
+@externInstance
 @externTarget("System.Text.Json.JsonElement+ArrayEnumerator.Current")
 pub func hostEnumCurrent(en: inout JsonArrayEnumerator): JsonElement = ()
 
@@ -117,9 +119,11 @@ pub func hostEnumCurrent(en: inout JsonArrayEnumerator): JsonElement = ()
 @externTarget("System.Text.Json.JsonElement.EnumerateObject")
 pub func hostEnumerateObject(elem: in JsonElement): JsonObjectEnumerator = ()
 
+@externInstance
 @externTarget("System.Text.Json.JsonElement+ObjectEnumerator.MoveNext")
 pub func hostEnumObjectMoveNext(en: inout JsonObjectEnumerator): Bool = ()
 
+@externInstance
 @externTarget("System.Text.Json.JsonElement+ObjectEnumerator.Current")
 pub func hostEnumObjectCurrent(en: inout JsonObjectEnumerator): JsonProperty = ()
 

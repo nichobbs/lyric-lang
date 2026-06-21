@@ -4306,6 +4306,11 @@ func isValueTypeReceiverMsil(ty: in MsilType): Bool {
   match ty {
     case MValueTypeRef(_, _) -> true
     case MValueTypeGenericInst(_, _, _) -> true
+    // A value-type instance method reached through an `inout`/`out` receiver
+    // (`hostEnumMoveNext(en: inout ArrayEnumerator)`) is still a value-type
+    // call: the byref already IS the managed `this` pointer, so it must use
+    // `call` (not `callvirt`).  #3943.
+    case MByRef(inner) -> isValueTypeReceiverMsil(inner)
     case other -> isValueType(other)
   }
 }
@@ -12648,7 +12653,14 @@ func emitExternTargetBody(
       }
 
       val asmName = assemblyForTypeMsil(cctx, resolvedFqn)
-      val tRefRow = internFfiTypeRef(cctx, asmName, r.namespaceStr, r.typeName)
+      // A nested declaring type (`@externTarget("JsonElement+ArrayEnumerator.
+      // MoveNext")`) needs a nested TypeRef (ResolutionScope = the enclosing
+      // type), not a flat one whose "+"-bearing name faults at load (#3943).
+      val tRefRow = if contains(resolvedFqn, "+") {
+        internFfiTypeRefNested(cctx, resolvedFqn)
+      } else {
+        internFfiTypeRef(cctx, asmName, r.namespaceStr, r.typeName)
+      }
 
       // Phase 4 (F0015): verify the declared @externTarget signature against
       // reference-assembly metadata so a mis-transcribed Lyric signature is
@@ -19248,6 +19260,14 @@ func assemblyForTypeMsil(cctx: in CodegenCtx, clrFqn: in String): String {
 // metadata index) and return the matching `MValueTypeRef`, or None when the
 // type's assembly isn't indexed.
 func internValueTypeRef(cctx: in CodegenCtx, fqn: in String): Option[MsilType] {
+  // Nested value type (`JsonElement+ArrayEnumerator`): route through the nested
+  // TypeRef builder so the ResolutionScope is the enclosing type.  Without this
+  // a nested return/param type fails to resolve here, the metadata-direct extern
+  // resolver bails, and an instance method is mis-emitted as static (#3943).
+  if contains(fqn, "+") {
+    val refRow = internFfiTypeRefNested(cctx, fqn)
+    return Some(value = MValueTypeRef(typeRefCode = tdrTypeRef(refRow), clrFqn = fqn))
+  }
   match Mdr.assemblyForType(cctx.metadataTypeIndex, fqn) {
     case None -> None
     case Some(asm) -> {
@@ -19264,6 +19284,12 @@ func internValueTypeRef(cctx: in CodegenCtx, fqn: in String): Option[MsilType] {
 // method signature encodes CLASS + TypeRef (a MemberRef return/param that says
 // `object` would fail to bind to a method that really returns the class).
 func internClassRef(cctx: in CodegenCtx, fqn: in String): Option[MsilType] {
+  // Nested reference type: route through the nested TypeRef builder (see
+  // `internValueTypeRef`) so the ResolutionScope is the enclosing type (#3943).
+  if contains(fqn, "+") {
+    val refRow = internFfiTypeRefNested(cctx, fqn)
+    return Some(value = MClassRef(typeRefCode = tdrTypeRef(refRow), clrFqn = fqn))
+  }
   match Mdr.assemblyForType(cctx.metadataTypeIndex, fqn) {
     case None -> None
     case Some(asm) -> {
