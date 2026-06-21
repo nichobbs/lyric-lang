@@ -22304,7 +22304,7 @@ pub record StdlibPkg {
 /// imports still work because their callsite codegen never reaches
 /// the `funcTokens` lookup (handled by the hardcoded builtin arms in
 /// `lowerBuiltinOrStaticCallMsil`).
-pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibPkg]): Unit {
+pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibPkg], usesAritySuffix: Bool): Unit {
   // Pass 1: register all type items across every package first.  This
   // populates `typeFqnByName` and `ffiTypeRefs` before any function
   // signature is resolved, so cross-package generic return types (e.g.
@@ -22320,7 +22320,7 @@ pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibP
       match it.kind {
         case IFunc(_) -> {
         }
-        case _ -> registerStdlibTypeItem(cctx, pkg.name, it, asmRefRow)
+        case _ -> registerStdlibTypeItem(cctx, pkg.name, it, asmRefRow, usesAritySuffix)
       }
       ii = ii + 1
     }
@@ -22586,7 +22586,7 @@ func buildGenericCaseCtorTok(
 // (`Option$Some`, `Option$None`) so that `MIsinstByName` resolves to
 // a TypeRef token rather than falling back to System.Object.
 // Mirrors the `registerRestoredTypeDecl` + `registerRestoredUnionCase` logic.
-func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in Item, asmRefRow: in Int): Unit {
+func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in Item, asmRefRow: in Int, usesAritySuffix: Bool): Unit {
   // Extern types declared in the stdlib `_kernel/` boundary (e.g.
   // `extern type Uuid = "System.Guid"`) carry the Lyric-name → CLR-FQN
   // mapping a consumer needs to encode the type correctly in cross-package
@@ -22631,7 +22631,7 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
     case IUnion(decl) -> genericNamesOf(decl.generics).count
     case _ -> 0
   }
-  val typeRefName = if typeArity > 0 { typeName + "`" + toString(typeArity) } else { typeName }
+  val typeRefName = if typeArity > 0 and usesAritySuffix { typeName + "`" + toString(typeArity) } else { typeName }
   val typeFqn = packageName + "." + typeName
   val typeRefKey = packageName + "/" + typeFqn
   if not cctx.ffiTypeRefs.containsKey(typeRefKey) {
@@ -22668,7 +22668,7 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
       while ci < decl.cases.count {
         val caseName = decl.cases[ci].name
         val ctorKey = packageName + "." + decl.name + "_" + caseName
-        val caseClassName = if caseArity > 0 {
+        val caseClassName = if caseArity > 0 and usesAritySuffix {
           decl.name + "_" + caseName + "`" + toString(caseArity)
         } else {
           decl.name + "_" + caseName

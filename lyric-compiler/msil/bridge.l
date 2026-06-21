@@ -30,6 +30,7 @@ import Msil.Lowering
 import Msil.Codegen
 import Msil.Tables
 import Msil.Heaps
+import Msil.MetadataReader as Mdr
 
 /// Compile `source` to a .NET PE DLL at `outputPath` using the self-hosted
 /// MSIL pipeline.
@@ -181,7 +182,11 @@ pub func compileToMsilWithVersion(
   // in `compileProjectToMsilWithRestoredAndVersion` for the full
   // rationale (mirrors the F# emitter's `resolveStdlibImports` +
   // `emitAssembly` import-table population).
-  registerStdlibArtifactTokens(cctx, stdlibPkgs)
+  // Probe the installed Core.dll to determine whether it uses CLR arity-suffix
+  // TypeDef naming (self-hosted convention) or the F# bootstrap convention.
+  // Pass the result directly rather than storing it in LoweringCtx to avoid
+  // cross-package nested record field assignment.
+  registerStdlibArtifactTokens(cctx, stdlibPkgs, Mdr.detectStdlibCoreDllUsesAritySuffix())
   seedResultTypeRefs(cctx)
 
   // Run the aspect weaver before the token pre-scan so that the pre-scan
@@ -649,7 +654,9 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // (the F# emitter handles that), but the guard makes the bridge
   // robust to a future refactor that routes stdlib compilation
   // through the in-process path.
-  registerStdlibArtifactTokens(cctx, filterStdlibPkgsByBundle(stdlibPkgs, perPkgNames))
+  // Probe the installed Core.dll to determine naming convention; pass
+  // the result directly rather than storing in LoweringCtx.
+  registerStdlibArtifactTokens(cctx, filterStdlibPkgsByBundle(stdlibPkgs, perPkgNames), Mdr.detectStdlibCoreDllUsesAritySuffix())
   seedResultTypeRefs(cctx)
   // Seed cross-package symbol tables with the restored artifacts' type
   // surface so the per-package addPackageTokens pre-scan sees restored

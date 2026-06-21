@@ -257,6 +257,40 @@ test "multiple ensures" {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §8b. @proof_required files are reconstructed without contract injection —
+// contracts are SMT obligations only, not runtime assertions.
+// ─────────────────────────────────────────────────────────────────────────────
+test "proof_required file skipped entirely" {
+  // A @proof_required function with requires+ensures must NOT have runtime
+  // asserts injected — the elaborator reconstructs the SourceFile but skips
+  // calling elaborateFunction for IFunc items.
+  val src =
+    "@proof_required\n" + "package P\n" + "import Std.Core\n" +
+    "pub func f(x: in Bool): Bool\n" + "  requires: x\n" + "  ensures: result == true\n" +
+    "{\n" + "  return true\n" + "}\n"
+  val file = parseAndElaborate(src)
+  val fn = firstFunction(file, "f")
+  // Body should contain exactly the original `return true` — no synthetic
+  // let-binding or assert call injected by the elaborator.
+  match fn.body {
+    case None -> assertTrue(false, "proof_required: function body disappeared")
+    case Some(body) -> {
+      match body {
+        case FBBlock(blk) -> {
+          // Original body: single `return true` statement — no assert or let injected.
+          assertEqualInt(blk.statements.count, 1, "proof_required: body has exactly 1 stmt (no elaboration)")
+          assertTrue(not isAssertCall(blk.statements[0]), "proof_required: stmt[0] is not an injected assert")
+          assertTrue(not isLetBinding(blk.statements[0]), "proof_required: stmt[0] is not a synthetic let-binding")
+        }
+        case FBExpr(_) -> assertTrue(false, "proof_required: unexpected FBExpr body")
+      }
+    }
+  }
+  // Original contract clauses must be preserved for lyric prove.
+  assertEqualInt(fn.contracts.count, 2, "proof_required: both contracts preserved")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §9. @axiom functions are skipped (no body to elaborate).
 // ─────────────────────────────────────────────────────────────────────────────
 test "axiom skipped" {
