@@ -97,7 +97,7 @@ func runBenchOnSource(
         }
       } else {
         // Harness imports Std.Time, so stdlib DLLs must be co-located beside the output (mirrors runOnce).
-        copyRuntimeDepsBeside(outPath, findCompiledLibDir(), false)
+        copyRuntimeDepsBeside(outPath, findCompiledLibDir())
         writeRuntimeConfig(outPath)
         val execArgs: List[String] = newList()
         execArgs.add("exec")

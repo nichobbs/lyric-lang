@@ -293,7 +293,7 @@ func cmdTest(argv: in slice[String]): Int {
       val testOutDir2 = Path.dirname(outPath)
       val libDir = findCompiledLibDir()
       if libDir.length > 0 {
-        copyRuntimeDepsBeside(outPath, libDir, compilerDlls.count > 0)
+        copyRuntimeDepsBeside(outPath, libDir)
       } else {
         // Fallback for environments without a discoverable compiled stdlib
         // (e.g. an isolated temp checkout): recover the DLLs the in-process
@@ -980,7 +980,7 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
         jvmRes.exitCode
       }
     } else {
-      copyRuntimeDepsBeside(outPath, Environment.appBaseDirectory(), pathListHasCompilerDll(restoredDlls))
+      copyRuntimeDepsBeside(outPath, Environment.appBaseDirectory())
       // Co-locate each local-path dependency's output DLL (e.g. a sibling
       // package's `Cache.dll`) beside the test assembly — a flat probing path
       // can't resolve the dep's non-NuGet bin layout.  This subsumes the manual

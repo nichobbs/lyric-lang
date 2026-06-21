@@ -189,6 +189,14 @@ jobs:
           # suffixed generic refs (`Option`1`); linking the suffixed userlib stdlib
           # lets cross-package generic construction resolve at run time (#3943).
           bash scripts/stage-userlib-stdlib.sh "$lyric_bin" "$(dirname "$lyric_bin")" .bootstrap/stage1
+          # Stage the self-hosted-emitted (arity-suffixed) compiler package DLLs
+          # under `<lib-dir>/selfhosted/` and ship them in the build artifact, so
+          # downstream `@test_module`s that import `Lyric.*` compiler packages
+          # (weaver_self_test et al. in compiler-self-tests-*) link the SUFFIXED
+          # compiler DLLs — matching the suffixed userlib stdlib their test
+          # programs are emitted against (mint stage-1 DLLs would be non-suffixed
+          # and fault with `Could not load type 'Std.Core.Option`1'`).  #3943.
+          bash scripts/stage-selfhosted-compiler.sh "$lyric_bin" "$(dirname "$lyric_bin")" .bootstrap/stage1
           for ex in examples/*.l; do
             # `@proof_required` files are verifier-only — they have no
             # `func main` so `lyric build` doesn't apply.  The AOT

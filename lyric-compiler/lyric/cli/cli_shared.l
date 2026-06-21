@@ -473,78 +473,30 @@ func findCompiledLibDir(): String {
 // non-fatal — the run then surfaces the original assembly-load error.
 // Always overwrites existing DLLs so stale copies from previous runs are
 // replaced when the stdlib is rebuilt.
-// True when `dir` already holds a self-hosted compiler package assembly
-// (`Lyric.Lyric.*.dll`), the signal that the consumer being built links the
-// mint-emitted compiler closure and therefore needs the non-suffixed runtime
-// stdlib rather than the suffixed userlib one.
-func destDirHasCompilerDll(dir: in String): Bool {
-  match File.listFiles(dir) {
-    case Err(_) -> false
-    case Ok(fs) -> {
-      for f in fs.toArray() {
-        val base = Path.basename(f)
-        if Str.startsWith(base, "Lyric.Lyric.") and Str.endsWith(base, ".dll") {
-          return true
-        }
-      }
-      false
-    }
-  }
-}
-
-// True when any entry in `dlls` (each "<name>\t<path>" or a bare path) is a
-// self-hosted compiler package assembly (`Lyric.Lyric.*.dll`) — the signal that
-// the consumer links the mint-emitted compiler closure and so needs the
-// non-suffixed runtime stdlib (see `copyRuntimeDepsBeside`).
-func pathListHasCompilerDll(dlls: in List[String]): Bool {
-  var i = 0
-  while i < dlls.count {
-    val dllEntry = dlls[i]
-    val tab = dllEntry.indexOf("\t")
-    val p = if tab >= 0 { dllEntry.substring(tab + 1, dllEntry.length - tab - 1) } else { dllEntry }
-    val base = Path.basename(p)
-    if Str.startsWith(base, "Lyric.Lyric.") and Str.endsWith(base, ".dll") {
-      return true
-    }
-    i = i + 1
-  }
-  false
-}
-
-func copyRuntimeDepsBeside(outPath: in String, srcDir: in String, linksCompiler: in Bool): Unit {
+func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
   if srcDir.length == 0 {
     return
   }
   val destDir = Path.dirname(outPath)
-  // User code is always emitted with arity-suffixed generic type references
-  // (`Option`1`, `Result_Ok`1`), but a mint-bootstrapped toolchain's own runtime
+  // ALL compiled output (user programs, test programs, woven code) is emitted by
+  // the self-hosted codegen with arity-suffixed generic type references
+  // (`Option`1`, `Result_Ok`1`).  A mint-bootstrapped toolchain's own runtime
   // stdlib (the `Lyric.Stdlib.*.dll` beside the compiler) is built by the
-  // non-suffixing stage-0 emitter.  Linking that mint stdlib for user output
-  // makes cross-package generic construction (`Some(x)` in package A consumed by
-  // package B) fault at load time with `Could not load type 'Std.Core.Option`1'`.
-  // When a self-hosted-emitted (suffixed) stdlib is staged under
-  // `<srcDir>/userlib/`, link the `Lyric.Stdlib.*.dll` from THERE so the user's
-  // suffixed references resolve; the compiler keeps its own non-suffixed stdlib
-  // for its process.  A fully self-hosted toolchain has no `userlib/` (its own
-  // stdlib is already suffixed), so this falls back to `srcDir` unchanged.
+  // non-suffixing stage-0 emitter, so linking it for output faults at load with
+  // `Could not load type 'Std.Core.Option`1'`.  When a self-hosted-emitted
+  // (suffixed) stdlib is staged under `<srcDir>/userlib/`, link THAT for output
+  // so the suffixed references resolve; the compiler keeps its own non-suffixed
+  // stdlib in its process's appBase, untouched.  A fully self-hosted toolchain
+  // has no `userlib/` (its own stdlib is already suffixed) and falls back to
+  // `srcDir`.
   //
-  // EXCEPTION: when the output links the self-hosted compiler packages
-  // (e.g. a `@test_module` importing `Lyric.Weaver` / `Lyric.Verifier`), those
-  // package DLLs are themselves mint-emitted (non-suffixed references), so they
-  // require the matching non-suffixed runtime stdlib — using the suffixed
-  // userlib would fault them with `Could not load type 'Std.Core.Option'`.
-  // `linksCompiler` is passed by the caller, which knows the compiler closure was
-  // linked (the compiler DLLs are co-located only *after* this runs, so a dir
-  // scan here would miss them); the `LYRIC_LOAD_COMPILER` env var is also honoured
-  // as a fallback for recompile-from-source compiler-linked runs.
+  // Output that links compiler packages (a `@test_module` importing
+  // `Lyric.Weaver` etc.) must link the SELF-HOSTED (suffixed) compiler DLLs from
+  // `<libdir>/selfhosted/` — not the mint stage-1 bundle — so they too match the
+  // suffixed `userlib` Core; that staging is the toolchain build's job
+  // (`stage-selfhosted-compiler.sh`), not this co-location step.
   val userlib = Path.join(srcDir, "userlib")
-  val loadCompiler = Environment.getVarOrDefault("LYRIC_LOAD_COMPILER", "") != ""
-  val effLinksCompiler = linksCompiler or loadCompiler or destDirHasCompilerDll(destDir)
-  val stdlibSrc = if (not effLinksCompiler) and File.fileExists(Path.join(userlib, "Lyric.Stdlib.Core.dll")) {
-    userlib
-  } else {
-    srcDir
-  }
+  val stdlibSrc = if File.fileExists(Path.join(userlib, "Lyric.Stdlib.Core.dll")) { userlib } else { srcDir }
   // Stdlib façades + their `*Host` shims come from `stdlibSrc` (the suffixed
   // userlib when present); everything else (`FSharp.Core.dll`, the emitter shim)
   // always comes from `srcDir`.
