@@ -2275,8 +2275,78 @@ pub func scoreParamsLenient(argTypes: in List[SigType], params: in List[SigType]
   total
 }
 
-// Resolve a non-generic method extern's true signature, disambiguating same-
-// name/same-arity overloads by scoring the caller's argument types (lenient on
+// Score `argTypes` against the leading `argTypes.count` of `params` (which may be
+// longer).  Used for prefix matches where the caller supplies fewer arguments
+// than the BCL method declares and the trailing params are optional.  Returns -1
+// when any leading param is incompatible.
+pub func scoreParamsPrefix(argTypes: in List[SigType], params: in List[SigType]): Int {
+  if params.count < argTypes.count {
+    return 0 - 1
+  }
+  var total = 0
+  var i = 0
+  while i < argTypes.count {
+    val s = scoreSigTypeLenient(argTypes[i], params[i])
+    if s < 0 {
+      return 0 - 1
+    }
+    total = total + s
+    i = i + 1
+  }
+  total
+}
+
+// True iff the param with 1-based `seq` on the method whose Param rows span
+// [pstart, pend) carries the `Optional` flag (ECMA-335 §II.23.1.13, 0x0010).
+// A trailing param with no Param row at all is NOT optional (returns false), so
+// a prefix match is only attempted when every unfilled position is provably
+// optional.
+func paramSeqOptional(img: in PeImage, layout: in TableLayout, pstart: in Int, pend: in Int, seq: in Int): Bool {
+  var pr = pstart
+  while pr < pend {
+    val prow = readParam(img, layout, pr)
+    if prow.sequence == seq {
+      // Param.Optional flag = 0x0010 (bit 4); test it arithmetically (the
+      // bitwise `.and` method is keyword-named and won't parse on a field
+      // receiver), matching this file's other flag tests.
+      return (prow.flags / 16) % 2 == 1
+    }
+    pr = pr + 1
+  }
+  false
+}
+
+// Count of contiguous trailing optional params on MethodDef `methodRow` (which
+// declares `totalParams` params).  BCL optional params are always trailing and
+// contiguous, so a caller supplying `totalParams - N` arguments may omit the
+// last N iff `N <= methodTrailingOptionalCount(...)`.
+func methodTrailingOptionalCount(
+  img: in PeImage,
+  layout: in TableLayout,
+  th: in TablesHeader,
+  methodRow: in Int,
+  totalParams: in Int,
+): Int {
+  if totalParams <= 0 {
+    return 0
+  }
+  val md = readMethodDef(img, layout, methodRow)
+  val pstart = md.paramListStart
+  val totalMethods = th.rowCounts[0x06]
+  val pend = if methodRow < totalMethods {
+    readMethodDef(img, layout, methodRow + 1).paramListStart
+  } else {
+    th.rowCounts[0x08] + 1
+  }
+  var cnt = 0
+  var s = totalParams
+  while s >= 1 and paramSeqOptional(img, layout, pstart, pend, s) {
+    cnt = cnt + 1
+    s = s - 1
+  }
+  cnt
+}
+
 // named-reference upcasts).  `fullArgTypes` is the Lyric wrapper's complete
 // argument list (the receiver is arg 0 for instance methods); an instance
 // candidate (`hasThis`, BCL param count == fullArgTypes.count - 1) is scored
@@ -2325,10 +2395,33 @@ pub func resolveExternMethodScoredIn(
             pj = pj + 1
           }
           val isInstance = sig.hasThis
-          val score = if isInstance and normParams.count == declArity - 1 {
-            scoreParamsLenient(tail, normParams)
-          } else if not isInstance and normParams.count == declArity {
-            scoreParamsLenient(fullArgTypes, normParams)
+          // Exact-arity matches earn a large bonus so they always beat a
+          // shorter-supplied prefix match against a longer overload whose
+          // trailing params are optional (e.g. `JsonEncodedText.Encode(string)`
+          // resolving to `Encode(string, JavaScriptEncoder = null)`).  Prefix
+          // matches keep their raw (non-negative) score so they are still
+          // selectable when no exact overload exists; the emitter fills the
+          // unsupplied trailing optionals with their type defaults.
+          val exactBonus = 1000000
+          val nReal = normParams.count
+          val score = if isInstance and nReal == declArity - 1 {
+            val sc = scoreParamsLenient(tail, normParams)
+            if sc < 0 {
+              sc
+            } else {
+              sc + exactBonus
+            }
+          } else if not isInstance and nReal == declArity {
+            val sc = scoreParamsLenient(fullArgTypes, normParams)
+            if sc < 0 {
+              sc
+            } else {
+              sc + exactBonus
+            }
+          } else if isInstance and nReal > declArity - 1 and nReal - (declArity - 1) <= methodTrailingOptionalCount(img, layout, th, mi, nReal) {
+            scoreParamsPrefix(tail, normParams)
+          } else if not isInstance and nReal > declArity and nReal - declArity <= methodTrailingOptionalCount(img, layout, th, mi, nReal) {
+            scoreParamsPrefix(fullArgTypes, normParams)
           } else {
             0 - 1
           }

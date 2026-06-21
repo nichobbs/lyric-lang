@@ -12388,6 +12388,48 @@ func listIndexOfInt(xs: in List[Int], v: in Int): Int {
   0 - 1
 }
 
+// Push the type default for an unsupplied trailing optional BCL parameter
+// (see the fill loop in `emitExternTargetBody`).  Reference types default to
+// `null`; primitives/enums to their zero bit pattern — matching the
+// overwhelmingly common `= null` / `= 0` / `= false` / `= default` BCL
+// optional defaults.  A value-type struct optional (rare) panics rather than
+// silently miscompiling: declare it explicitly in the `@externTarget` wrapper.
+func emitExternOptionalDefault(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  ty: in MsilType,
+  target: in String,
+  fnName: in String,
+): Unit {
+  match ty {
+    case MBool -> insns.add(MLdcI4(v = 0))
+    case MChar -> insns.add(MLdcI4(v = 0))
+    case MByte -> insns.add(MLdcI4(v = 0))
+    case MInt -> insns.add(MLdcI4(v = 0))
+    case MLong -> insns.add(MLdcI8(v = 0i64))
+    case MDouble -> insns.add(MLdcR8(v = 0.0))
+    case MString -> insns.add(MLdNull)
+    case MObject -> insns.add(MLdNull)
+    case MClass(_) -> insns.add(MLdNull)
+    case MClassRef(_, _) -> insns.add(MLdNull)
+    case MGenericInst(_, _, _) -> insns.add(MLdNull)
+    case MGenericInstByName(_, _) -> insns.add(MLdNull)
+    case MArray(_) -> insns.add(MLdNull)
+    // A value-type struct optional (e.g. `JsonDocumentOptions options = default`)
+    // is its zero bit pattern: allocate a local, `initobj` it, and load the
+    // value — the same idiom used for CancellationToken / ValueTask defaults.
+    case MValueTypeRef(_, clrFqn) -> {
+      val refRow = internFfiTypeRefNested(cctx, clrFqn)
+      val slot = allocSlotMsil(fctx, "__opt_default_" + toString(fctx.slotTicker.count), ty)
+      insns.add(MLdloca(slot = slot - fctx.paramCount))
+      insns.add(MInitobj(typeToken = 0x01000000 + refRow))
+      emitLoadSlot(insns, slot, fctx.paramCount)
+    }
+    case _ -> panic("Msil.Codegen: @externTarget '" + target + "' on '" + fnName + "' resolves to a BCL overload with a trailing " + "optional parameter of an unsupported type (" + msilTypeKeyStr(ty) + "); declare that parameter explicitly in the wrapper.")
+  }
+}
+
 func emitExternTargetBody(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -12741,6 +12783,25 @@ func emitExternTargetBody(
           insns.add(MLdarg(slot = li))
         }
         li = li + 1
+      }
+      // Fill any trailing optional BCL params the Lyric wrapper does not supply.
+      // Metadata-direct resolution can match a longer overload whose trailing
+      // params are optional (e.g. `JsonEncodedText.Encode(string)` resolving to
+      // `Encode(string, JavaScriptEncoder = null)`); `sigParams` then holds more
+      // (non-receiver) params than the Lyric signature provided.  Push each
+      // unfilled param's type default so the stack matches the MemberRef sig.
+      // (Non-default optional constants — a rare `= 5` — are not yet honoured;
+      // the type default is used, matching the common `= null` / `= 0` cases.)
+      match resolvedMethodParams {
+        case Some(mp) -> {
+          val providedNonReceiver = if emitIsStatic { decl.params.count } else { decl.params.count - 1 }
+          var fk = providedNonReceiver
+          while fk < mp.count {
+            emitExternOptionalDefault(cctx, fctx, insns, mp[fk], target, decl.name)
+            fk = fk + 1
+          }
+        }
+        case None -> ()
       }
       if r.isCtor {
         insns.add(MNewobj(ctorToken = tok))
