@@ -150,10 +150,12 @@ async func contentReadAsBytesCancel(c: in HttpContent, token: in CancellationTok
 // #333: process-wide HttpClientHandle singleton — initialised once in the package `.cctor`,
 // reused on every request.  Per-call construction exhausts the TCP socket pool
 // (sockets stay in TIME_WAIT for two MSL after GC).
-pub val defaultClient: HttpClientHandle = newClient()
+// Named `processClient` (not `defaultClient`) to avoid a name-resolution clash with
+// the `Std.Http.defaultClient()` factory function when both packages are compiled together.
+val processClient: HttpClientHandle = newClient()
 
 pub func hostDefaultClient(): HttpClientHandle {
-  defaultClient
+  processClient
 }
 
 pub func hostMakeRequest(httpMethod: in String, url: in String): HttpRequestMessage {
