@@ -36,4 +36,5 @@ pub func hostExitCode(proc: in ProcessHandle): Int = ()
 /// Release the OS handle held by `proc`.
 /// Must be called after `hostWait` / `hostExitCode` to avoid handle leaks.
 @externTarget("System.Diagnostics.Process.Dispose")
+@externInstance
 pub func hostDisposeProc(proc: in ProcessHandle): Unit = ()
