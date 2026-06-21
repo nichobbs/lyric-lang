@@ -26,6 +26,7 @@ import Lyric.RestoredPackages
 import Lyric.ContractMeta as Meta
 import Std.Encoding as Encoding
 import Lyric.Weaver as Weaver
+import Std.Environment as Environment
 import Msil.Lowering
 import Msil.Codegen
 import Msil.Tables
