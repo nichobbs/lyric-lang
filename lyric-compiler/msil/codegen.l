@@ -6954,9 +6954,17 @@ func lowerAssignExprMsil(
               insns.add(MLdarg(slot = slot))
               match assignOpArithInsnMsil(op) {
                 case None -> {
+                  // Push the target's generic args as a construction hint too, so
+                  // a bare `None` / `Some(x)` assigned to an `Option[T]` byref
+                  // (`inout`/`out`) param builds the closed `Option_None<T>`
+                  // instead of erasing to `Option_None<object>` — collExpect alone
+                  // only drives newList/newMap; bare nullary cases read
+                  // contextHintTyArgs (#3943, lockfile flushBlock).
+                  val savedH = pushAnnoHintTyArgs(fctx, elemTy)
                   pushCollExpect(fctx, elemTy)
                   lowerExprMsil(cctx, fctx, insns, value)
                   popCollExpect(fctx)
+                  restoreHintTyArgs(fctx, savedH)
                 }
                 case Some(arith) -> {
                   insns.add(MDup)
@@ -6975,9 +6983,14 @@ func lowerAssignExprMsil(
               // A `xs = newList()` reassignment must build the concrete instance
               // the local's tracked type expects — a later concrete op would fault
               // if handed a plain `List<object>` where `List<Foo>` is required.
+              // Likewise push the local's generic args as a construction hint so a
+              // bare `x = None` / `x = Some(v)` to an `Option[T]` local builds the
+              // closed `Option_None<T>` rather than erasing to object (#3943).
+              val savedH = pushAnnoHintTyArgs(fctx, ty)
               pushCollExpect(fctx, ty)
               lowerExprMsil(cctx, fctx, insns, value)
               popCollExpect(fctx)
+              restoreHintTyArgs(fctx, savedH)
               emitStoreSlot(insns, slot, fctx.paramCount)
               if fctx.phaseBCtx.count > 0 {
                 phaseBSyncLocalIfPromoted(fctx.phaseBCtx[0], insns, name, slot - fctx.paramCount)
