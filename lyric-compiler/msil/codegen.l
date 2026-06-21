@@ -6669,18 +6669,36 @@ func lowerBinopMsil(
       MInt
     }
     case BCoalesce -> {
-      // Null-coalescing: if lhs is non-null use it, else use rhs.
+      // Null-coalescing: if lhs is non-null use it, else use rhs.  A nullable lhs
+      // (`String?`/`Int?`) is tracked as `MObject`, so the non-null path leaves a
+      // raw `object` while the null path leaves the concrete `rhs` value — the
+      // join then disagreed (`found object expected string`, #3943).  Lower `rhs`
+      // first to learn the result type, narrow the non-null lhs to it
+      // (castclass / unbox.any), and report that type so both paths agree.
       val lhsTy = lowerExprMsil(cctx, fctx, insns, lhs)
+      val rhsInsns: List[MInsn] = newList()
+      val rhsTy = lowerExprMsil(cctx, fctx, rhsInsns, rhs)
+      val resTy = match lhsTy { case MObject -> rhsTy; case _ -> lhsTy }
       val nullL = freshLabelMsil(fctx)
       val afterL = freshLabelMsil(fctx)
       insns.add(MDup)
       insns.add(MBrFalse(label = nullL))
+      // Non-null path: narrow the kept lhs value (typed `object` for a nullable)
+      // to the result type so it matches the rhs branch at the join.
+      match lhsTy {
+        case MObject -> castObjectToMsil(cctx, insns, resTy)
+        case _ -> ()
+      }
       insns.add(MBr(label = afterL))
       insns.add(MLabel(id = nullL))
       insns.add(MPop)
-      lowerExprMsil(cctx, fctx, insns, rhs)
+      var ci = 0
+      while ci < rhsInsns.count {
+        insns.add(rhsInsns[ci])
+        ci = ci + 1
+      }
       insns.add(MLabel(id = afterL))
-      lhsTy
+      resTy
     }
     case BImplies -> {
       // p => q  ≡  !p || q
