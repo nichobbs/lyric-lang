@@ -124,18 +124,32 @@ for diagnostics.
 
 ## 5. Versioning
 
-The stdlib carries its own SemVer independent of the language. The
-SDK install ships `lib/Lyric.Stdlib.dll` with a `Lyric.SdkVersion`
-embedded resource:
+**Decision log:** D109 (Q-dist-007). **Status:** Shipped (PR #3960).
+
+The compiler and stdlib carry a shared version file. `make lyric` writes
+`sdk-version.json` into the stage-1 lib directory:
 
 ```json
 {
   "language_version": "0.1",
-  "stdlib_version":   "0.1.0",
-  "compiler_version": "0.1.0+sha<commit>",
-  "build_date":       "2026-05-05T00:00:00Z"
+  "stdlib_version": "0.1.0",
+  "compiler_version": "0.1.0",
+  "build_date": "2026-05-20T00:00:00Z"
 }
 ```
+
+`lyric version` prints all four fields and exits 0:
+
+```
+lyric 0.1.0  (language 0.1, stdlib 0.1.0, built 2026-05-20T00:00:00Z)
+```
+
+On every startup, `checkSdkVersion()` reads `sdk-version.json` from the
+resolved lib directory and compares `compiler_version` to the binary's own
+`VERSION()`. A mismatch prints a warning on stderr; setting
+`LYRIC_STRICT_SDK_VERSION=1` promotes the warning to a fatal error (exits 1).
+A missing `sdk-version.json` is silently ignored (dev-checkout and
+non-SDK installs do not carry the file).
 
 `lyric build` warns when the stdlib's `language_version` doesn't match
 the source's `package` declaration (cross-compatibility check —

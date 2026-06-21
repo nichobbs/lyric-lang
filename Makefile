@@ -82,7 +82,7 @@ lyric: aot ## Build the end-to-end `lyric` binary and symlink it to ./bin/lyric
 	@ln -sf "../$(AOT_BIN)" bin/lyric
 	@echo "lyric binary ready: ./bin/lyric -> $(AOT_BIN)"
 	@echo "writing sdk-version.json to .bootstrap/stage1/ (D109 / Q-dist-007) ..."
-	@printf '{"language_version":"0.1","stdlib_version":"0.1.0","compiler_version":"0.1.0","build_date":"%s"}\n' \
+	@printf '{"language_version": "0.1","stdlib_version": "0.1.0","compiler_version": "0.1.0","build_date": "%s"}\n' \
 	    "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 	    > .bootstrap/stage1/sdk-version.json
 	@echo "staging self-hosted-only stdlib packages (#2592: Std.Sort et al.) ..."
