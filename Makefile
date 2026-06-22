@@ -124,8 +124,6 @@ lyric: aot ## Build the end-to-end `lyric` binary and symlink it to ./bin/lyric
 	@bash scripts/stage-selfhosted-stdlib.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
 	@echo "staging suffixed userlib stdlib for user-code linking (#3943) ..."
 	@bash scripts/stage-userlib-stdlib.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
-	@echo "staging suffixed userlib stdlib (second run: arity TypeRefs in cross-stdlib DLLs) ..."
-	@bash scripts/stage-userlib-stdlib.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
 ifeq ($(SKIP_SELFHOSTED_COMPILER),1)
 	@echo "SKIP_SELFHOSTED_COMPILER=1; skipping the self-hosted compiler-DLL staging"
 else
