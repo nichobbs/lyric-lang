@@ -32,6 +32,7 @@ import Std.Core
 import Std.Collections
 import Std.String
 import Lyric.Parser
+import Lyric.Lexer
 import Lyric.RestoredPackages
 import Lyric.Weaver as Weaver
 import Msil.Lowering

@@ -1150,14 +1150,20 @@ func handleCompletion(state: in LspState, params: in String): String {
     case None -> "[]"
     case Some(cached) -> {
       val items: List[String] = newList()
-      val seen: Set[String] = newSet()
+      // Dedup completion labels by name.  A `Map[String, Bool]` is used as the
+      // seen-set: `newMap` is a first-class codegen builtin, whereas `newSet`
+      // (the `HashSet`1` extern ctor in `Std.CollectionsHost`) is not yet
+      // resolved by the self-hosted emitter when its defining package is not a
+      // direct import, so a bare `newSet()` here erased and dropped (#3943).
+      val seen: Map[String, Bool] = newMap()
       val cachedCr2 = cached.checkResult
       val symTable2 = cachedCr2.symbols
       val syms = symTable2.symbols
       var i = 0
       while i < syms.count {
         val s = syms[i]
-        if seen.add(s.name) {
+        if not seen.containsKey(s.name) {
+          seen.add(s.name, true)
           val compItem: List[String] = newList()
           compItem.add(jPair("label", jStr(s.name)))
           compItem.add(jPair("kind", jInt(symKind(s))))
