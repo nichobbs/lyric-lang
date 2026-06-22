@@ -12598,6 +12598,20 @@ func resolveFfiClassTypeRef(cctx: in CodegenCtx, className: in String): Int {
 // FFI-resolvable cross-assembly type; otherwise it degrades to
 // `ELEMENT_TYPE_OBJECT` (the pre-#1504 behaviour).  All other types reuse the
 // shared `bufMsilType` encoder.
+// Re-intern an extern type by its CLR FQN in THIS codegen context, returning the
+// TypeRef row.  Companion of `resolveFfiClassTypeRef` for a type whose CLR FQN is
+// already known (carried by `MClassRef` / `MValueTypeRef`).  Returns -1 for an
+// empty FQN or a nested (`Outer+Inner`) type, which needs the enclosing-scope
+// encoding the caller's carried token already holds.
+func resolveFfiClassTypeRefByFqn(cctx: in CodegenCtx, clrFqn: in String): Int {
+  if clrFqn == "" or contains(clrFqn, "+") {
+    return 0 - 1
+  }
+  val sp = splitTypeFqn(clrFqn)
+  val asm = assemblyForTypeMsil(cctx, clrFqn)
+  internFfiTypeRef(cctx, asm, sp.ns, sp.name)
+}
+
 func bufFfiType(cctx: in CodegenCtx, w: in ByteWriter, t: in MsilType): Unit {
   match t {
     case MClass(className) -> {
@@ -12607,6 +12621,31 @@ func bufFfiType(cctx: in CodegenCtx, w: in ByteWriter, t: in MsilType): Unit {
         writeCompressedInt(w, (row * 4) + 1)  // TypeDefOrRef coded index (TypeRef tag = 1)
       } else {
         bufU1(w, 0x1C)  // ELEMENT_TYPE_OBJECT fallback
+      }
+    }
+    // `MClassRef` / `MValueTypeRef` carry a coded TypeRef token captured by an
+    // earlier `typeExprToMsilCtx` call.  In the per-package closure path that
+    // token is unreliable across the build/serialize context boundary (it can
+    // decode to an unrelated type's row), so re-intern by the carried CLR FQN in
+    // THIS context — the ctx-independent identity — exactly as the `MClass` arm
+    // and the `MGenericInstByName` head resolution do.  Falls back to the carried
+    // token (via `bufMsilType`) only for nested / unresolvable FQNs (#3990).
+    case MClassRef(_, clrFqn) -> {
+      val row = resolveFfiClassTypeRefByFqn(cctx, clrFqn)
+      if row >= 0 {
+        bufU1(w, 0x12)  // ELEMENT_TYPE_CLASS
+        writeCompressedInt(w, (row * 4) + 1)
+      } else {
+        bufMsilType(w, t)
+      }
+    }
+    case MValueTypeRef(_, clrFqn) -> {
+      val row = resolveFfiClassTypeRefByFqn(cctx, clrFqn)
+      if row >= 0 {
+        bufU1(w, 0x11)  // ELEMENT_TYPE_VALUETYPE
+        writeCompressedInt(w, (row * 4) + 1)
+      } else {
+        bufMsilType(w, t)
       }
     }
     case _ -> bufMsilType(w, t)

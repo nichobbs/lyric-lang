@@ -1601,6 +1601,40 @@ pub func buildGenericInstBlob(typeDefOrRef: in Int, argTypes: in List[MsilType])
   bufToList(w)
 }
 
+// Resolve the TypeDefOrRef token for an `MClassRef` / `MValueTypeRef` extern
+// type, preferring a fresh by-name lookup over the carried `typeRefCode`.
+//
+// `MClassRef` / `MValueTypeRef` cache a coded TypeDefOrRef (`tdrTypeRef(row)`)
+// captured by codegen.  In the per-package closure path an `MFunc`'s parameter /
+// return `MsilType`s are built in one `LoweringCtx` but serialized in another
+// (each package emits its own DLL with its own TypeRef table), so the cached
+// raw row points at whatever type happens to occupy that row in the SERIALIZE
+// context — e.g. `System.Diagnostics.Process` (row 169 at build time) decoding
+// to `Std.Task.Scope` (row 42 at serialize time), an unloadable cross-binding
+// (#3990).  The carried `clrFqn` is the ctx-independent identity, so re-resolve
+// it here exactly as the `MClass` arm does — mirroring `MGenericInstByName`,
+// whose by-name head resolution is already robust across this boundary.
+//
+// Falls back to the cached `typeRefCode` when the FQN cannot be resolved by name
+// in this context: nested types (`Enclosing+Nested`, whose TypeRef name is the
+// bare nested name with a TypeRef ResolutionScope `findTypeRefRowByName` cannot
+// reconstruct) and any type whose TypeRef was not seeded under its plain
+// `ns.name` key.  An empty `clrFqn` (legacy callers that did not record one)
+// also falls through to the cached token.
+func resolveExternRefToken(ctx: in LoweringCtx, clrFqn: in String, cachedToken: in Int): Int {
+  if clrFqn.length == 0 {
+    return cachedToken
+  }
+  if clrFqn.indexOf("+") >= 0 {
+    return cachedToken
+  }
+  val refRow = findTypeRefRowByName(ctx, clrFqn)
+  if refRow > 0 {
+    return tdrTypeRef(refRow)
+  }
+  cachedToken
+}
+
 // Context-aware variant of bufMsilType.  For MClass types, looks up the
 // TypeDef row first (in-bundle) then the TypeRef row (cross-assembly) and
 // encodes as ELEMENT_TYPE_CLASS + compressed TypeDefOrRef coded index.
@@ -1627,13 +1661,13 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
       bufU1(w, 0x13)
       bufU1(w, idx)
     }
-    case MValueTypeRef(typeRefCode, _) -> {
+    case MValueTypeRef(typeRefCode, clrFqn) -> {
       bufU1(w, 0x11)  // ELEMENT_TYPE_VALUETYPE
-      writeCompressedInt(w, typeRefCode)
+      writeCompressedInt(w, resolveExternRefToken(ctx, clrFqn, typeRefCode))
     }
-    case MClassRef(typeRefCode, _) -> {
+    case MClassRef(typeRefCode, clrFqn) -> {
       bufU1(w, 0x12)  // ELEMENT_TYPE_CLASS
-      writeCompressedInt(w, typeRefCode)
+      writeCompressedInt(w, resolveExternRefToken(ctx, clrFqn, typeRefCode))
     }
     case MArray(elem) -> {
       bufU1(w, 0x1D)  // ELEMENT_TYPE_SZARRAY
