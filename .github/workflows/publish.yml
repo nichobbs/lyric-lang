@@ -25,6 +25,14 @@ on:
         options:
           - download
           - mint
+      publish_ecosystem:
+        description: >-
+          Publish ecosystem libraries (lyric-web, lyric-auth, lyric-cache, etc.)
+          as individual NuGet packages after the global tool is pushed.
+          Uncheck to publish the `lyric` tool only.
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write   # upload release assets
@@ -380,6 +388,10 @@ jobs:
   publish-ecosystem:
     runs-on: ubuntu-latest
     needs: [publish-nuget, create-release]
+    # Skipped when workflow_dispatch is used with publish_ecosystem unchecked.
+    # Tag-push releases always publish ecosystem libs (inputs.publish_ecosystem
+    # is empty for tag pushes, so != 'false' evaluates to true).
+    if: inputs.publish_ecosystem != 'false'
 
     env:
       NUGET_SIGNING_CERT_BASE64:   ${{ secrets.NUGET_SIGNING_CERT_BASE64 }}
