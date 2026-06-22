@@ -23452,6 +23452,36 @@ func registerStdlibTypeItem(
           if unionTypeParamCount > 0 and not cctx.caseTypeParamCount.containsKey(ctorKey) {
             cctx.caseTypeParamCount.add(ctorKey, unionTypeParamCount)
           }
+          // A non-generic nullary case carries a static `Instance` singleton
+          // (emitted by lowerMNullaryUnionCase) so that `==` and nullary-case
+          // pattern tests compare by reference.  For a CROSS-package case the
+          // singleton field lives in another assembly, so register a FieldRef
+          // MemberRef to it in singletonFieldTokens; without this the bare-path
+          // construction (EPath nullary case, codegen.l ~5173) falls back to
+          // `newobj`, minting a fresh instance.  Two references to the same
+          // nullary case across a package boundary (e.g. the lexer's KwPackage
+          // stored in a token vs. the parser's `tryEatKw(st, KwPackage)`
+          // argument) would then be distinct objects, so `Object.Equals`
+          // returns false and every cross-package nullary-case comparison
+          // silently fails (#3920 — the self-host parser blocker: `tryEatKw`
+          // never matched, so the self-emitted compiler rejected every file
+          // with P0020).  The Instance field is `static initonly` typed Object,
+          // matching lowerMNullaryUnionCase's `buildFieldSig(MObject)`.
+          //
+          // Gated on `usesAritySuffix`: a self-hosted-emitted stdlib (arity
+          // suffix) always carries the `Instance` singleton, but an F#-mint
+          // stdlib (no suffix) may not — registering the MemberRef against a
+          // DLL that lacks the field would fault with `MissingFieldException`
+          // at run time.  When the suffix is absent we leave the historic
+          // `newobj` path in place (unchanged mint behaviour).
+          if usesAritySuffix and decl.cases[ci].fields.count == 0 and caseArity == 0 {
+            if not cctx.singletonFieldTokens.containsKey(ctorKey) {
+              val instSig = buildFieldSig(MObject)
+              val instSigKey = "stdlib_ucsingleton_" + ctorKey
+              val instMrRow = ctxAddMemberRef(cctx.lctx, caseRow, "Instance", instSigKey, instSig)
+              cctx.singletonFieldTokens.add(ctorKey, 0x0A000000 + instMrRow)
+            }
+          }
         }
         if cctx.unionCaseCtorByName.containsKey(caseName) {
           match mapGet(cctx.unionCaseCtorByName, caseName) {

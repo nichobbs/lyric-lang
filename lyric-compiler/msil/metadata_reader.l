@@ -2900,7 +2900,6 @@ pub func tryReadResourceIn(ri: in ResourceImage, name: in String): Option[slice[
 // emitter must emit TypeRefs that match whichever convention is used by the
 // installed Lyric.Stdlib.Core.dll, or the CLR throws TypeLoadException at
 // runtime.
-
 // True when any TypeDef in the DLL at `dllPath` has a backtick in its name,
 // indicating the self-hosted arity-suffix convention.  Returns false when the
 // file is missing, unreadable, or carries no backtick TypeDefs (F# bootstrap
@@ -2908,37 +2907,35 @@ pub func tryReadResourceIn(ri: in ResourceImage, name: in String): Option[slice[
 func coreDllHasAritySuffixTypeDef(dllPath: in String): Bool {
   match File.readBytes(dllPath) {
     case Err(_) -> false
-    case Ok(raw) ->
-      match parseAssemblyImage(raw.toArray()) {
-        case None -> false
-        case Some(ri) -> {
-          val typeDefCount = rowCountOf(ri.th, 2)
-          var row = 1
-          var found = false
-          while row <= typeDefCount and not found {
-            val td = readTypeDef(ri.img, ri.layout, row)
-            if Str.contains(td.name, "`") {
-              found = true
-            }
-            row = row + 1
-          }
-          found
-        }
-      }
+    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) { case None -> false; case Some(ri) -> { val typeDefCount = rowCountOf(ri.th, 2); var row = 1; var found = false; while row <= typeDefCount and not found { val td = readTypeDef(ri.img, ri.layout, row); if Str.contains(td.name, "`") { found = true }; row = row + 1 }; found } }
   }
 }
 
-// True when the DLL at `dllPath` was produced by the self-hosted emitter,
-// which emits a static `Instance` singleton for every non-generic nullary
-// union case.  Delegates to arity-suffix detection: self-hosted DLLs use
-// backtick-suffixed TypeDef names (e.g. `Maybe`1`); F#-emitted DLLs do not.
-// Using the arity-suffix as the proxy is reliable and avoids a fragile
-// Field-table scan (F#-emitted DLLs can also contain fields named "Instance"
-// via F# DU conventions, which would mislead a name-based scan).
-// Returns false when the file is missing, unreadable, or carries no backtick
-// TypeDefs (F# bootstrap / LYRIC_BOOTSTRAP_MINT path).
+// True when the DLL at `dllPath` carries the self-hosted emitter's static
+// `Instance` singleton scheme for non-generic nullary union cases.  Scans the
+// Field table directly for a `static` field named exactly "Instance" declared
+// on a union-case-shaped TypeDef (name contains `_`, e.g. `Keyword_KwPackage`),
+// which is precisely what `lowerMNullaryUnionCase` emits and what a cross-
+// package `ldsfld Instance` resolves against.
+//
+// An earlier version delegated to arity-suffix detection (`Maybe`1``), but that
+// proxy is WRONG for self-hosted DLLs that define no generic type at all —
+// `Lyric.Lexer` declares the non-generic `Keyword` / `Token` / `Punct` unions
+// and nothing generic, so it carries no backtick TypeDef even though every one
+// of its ~70 keyword cases has an `Instance` singleton.  The proxy returned
+// false, so the restored path skipped the singleton MemberRef and the self-
+// emitted parser constructed each `KwFunc` / `KwPackage` via `newobj` — a fresh
+// instance that never `Object.Equals` the lexer's token keyword, so `isKw` /
+// `tryEatKw` always failed and the parser looped (#3920 self-re-emit blocker).
+// The direct field scan is exact: it returns true iff the `ldsfld Instance`
+// the consumer will emit actually resolves, so it cannot false-positive into a
+// `MissingFieldException` (the failure mode the name-scan was avoided for).
+// Returns false when the file is missing, unreadable, or carries no such field.
 pub func dllHasNullaryInstanceField(dllPath: in String): Bool {
-  coreDllHasAritySuffixTypeDef(dllPath)
+  match File.readBytes(dllPath) {
+    case Err(_) -> false
+    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) { case None -> false; case Some(ri) -> { val b = ri.img.bytes; val typeDefCount = rowCountOf(ri.th, 0x02); var row = 1; var found = false; while row <= typeDefCount and not found { val td = readTypeDef(ri.img, ri.layout, row); if Str.contains(td.name, "_") { val fr = fieldRange(ri.img, ri.layout, ri.th, row); var frow = fr.start; while frow <= fr.endRow and not found { val o = ri.layout.dataStart[0x04] + (frow - 1) * ri.layout.rowSize[0x04]; val flags = rdU16(b, o); val nameI = rdIdx(b, o + 2, ri.layout.stringIdx); val nm = stringAt(ri.img, ri.layout, nameI); if nm == "Instance" and (flags / 16) % 2 == 1 { found = true }; frow = frow + 1 } }; row = row + 1 }; found } }
+  }
 }
 
 // Return `path + /Lyric.Stdlib.Core.dll` when it exists, else "".
@@ -2947,7 +2944,11 @@ func findCoreDllInDir(dir: in String): String {
     return ""
   }
   val p = Path.join(dir, "Lyric.Stdlib.Core.dll")
-  if File.fileExists(p) { p } else { "" }
+  if File.fileExists(p) {
+    p
+  } else {
+    ""
+  }
 }
 
 // Walk up from `start` (max 32 hops) looking for `Path.join(start, rel)`
@@ -3043,4 +3044,37 @@ pub func detectStdlibCoreDllUsesAritySuffix(): Bool {
     return true
   }
   coreDllHasAritySuffixTypeDef(p)
+}
+
+// Determine whether the `Std.Core` image THIS compilation will link against
+// uses the CLR arity-suffix TypeDef naming (`Option`1`).  Resolution order
+// (most-specific first), each reading the EXACT Core the emitted consumers will
+// load at runtime rather than an ambient on-disk Core:
+//   1. A restored/threaded `Std.Core` DLL — the per-package closure threads each
+//      already-emitted sibling as a restored dep (compiler-package phase).
+//   2. A `Lyric.Stdlib.Core.dll` co-located with the output directory — the
+//      per-package closure emits `Std.Core` into `outDir` before its consumers
+//      (topological order), so a Core-consumer always sees the freshly-emitted
+//      (suffixed) Core beside its own output.
+//   3. The ambient on-disk Core (regular `lyric build`; filesystem walk).
+//
+// This is the linchpin of self-re-emit consistency (#3920): the self-hosted
+// emitter ALWAYS stamps the arity suffix on its generic TypeDefs, so when a
+// per-package closure re-emits `Std.Core` with the suffix, every consumer in
+// that closure must reference it WITH the suffix — even when an older
+// no-suffix (F#-mint) Core still sits elsewhere on disk.  The bare filesystem
+// walk would read that stale Core and emit no-suffix TypeRefs against a
+// suffix-defining Core, producing the `TypeLoadException: Could not load type
+// 'Std.Core.Option'` that corrupts every download-seeded release.  Regular
+// builds (no co-located/restored Core) fall through to the ambient walk, so
+// their behaviour is unchanged.
+pub func detectLinkedCoreUsesAritySuffix(outputPath: in String, restoredCorePath: in String): Bool {
+  if restoredCorePath.length > 0 {
+    return coreDllHasAritySuffixTypeDef(restoredCorePath)
+  }
+  val colocated = findCoreDllInDir(Path.dirname(outputPath))
+  if colocated.length > 0 {
+    return coreDllHasAritySuffixTypeDef(colocated)
+  }
+  detectStdlibCoreDllUsesAritySuffix()
 }

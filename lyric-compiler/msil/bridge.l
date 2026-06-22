@@ -186,7 +186,7 @@ pub func compileToMsilWithVersion(
   // TypeDef naming (self-hosted convention) or the F# bootstrap convention.
   // Pass the result directly rather than storing it in LoweringCtx to avoid
   // cross-package nested record field assignment.
-  registerStdlibArtifactTokens(cctx, stdlibPkgs, Mdr.detectStdlibCoreDllUsesAritySuffix())
+  registerStdlibArtifactTokens(cctx, stdlibPkgs, Mdr.detectLinkedCoreUsesAritySuffix(outputPath, ""))
   seedResultTypeRefs(cctx)
 
   // Run the aspect weaver before the token pre-scan so that the pre-scan
@@ -255,6 +255,21 @@ pub record ProjectPackagePayload {
 record ParsedUserPkg {
   name: String
   file: SourceFile
+}
+
+/// Return the DLL path of a restored/threaded `Std.Core` artifact, or "" when
+/// the compilation does not thread Core as a restored dependency.  Used to pin
+/// the arity-suffix convention to the EXACT Core image the emitted consumers
+/// will link against (see `Mdr.detectLinkedCoreUsesAritySuffix`, #3920).
+func restoredCoreDllPath(restoredArtifacts: in List[SynthesisedArtifact]): String {
+  var i = 0
+  while i < restoredArtifacts.count {
+    if restoredArtifacts[i].packageName == "Std.Core" {
+      return restoredArtifacts[i].dllPath
+    }
+    i = i + 1
+  }
+  ""
 }
 
 /// Compile a list of packages into ONE bundled .NET PE DLL using the
@@ -656,7 +671,11 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // through the in-process path.
   // Probe the installed Core.dll to determine naming convention; pass
   // the result directly rather than storing in LoweringCtx.
-  registerStdlibArtifactTokens(cctx, filterStdlibPkgsByBundle(stdlibPkgs, perPkgNames), Mdr.detectStdlibCoreDllUsesAritySuffix())
+  registerStdlibArtifactTokens(
+    cctx,
+    filterStdlibPkgsByBundle(stdlibPkgs, perPkgNames),
+    Mdr.detectLinkedCoreUsesAritySuffix(outputPath, restoredCoreDllPath(restoredArtifacts))
+  )
   seedResultTypeRefs(cctx)
   // Seed cross-package symbol tables with the restored artifacts' type
   // surface so the per-package addPackageTokens pre-scan sees restored
