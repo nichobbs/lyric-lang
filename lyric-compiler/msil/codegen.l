@@ -6192,6 +6192,36 @@ func derivedEqualsTokenMsil(cctx: in CodegenCtx, ty: in MsilType): Int {
   }
 }
 
+// Normalize an i4/i8 numeric comparison pair on the stack top (lhs underneath,
+// rhs on top) to a common i8 width before `ceq` / `clt` / `cgt`.  An integer
+// literal whose magnitude exceeds Int32.Max is typed `Long` (`ldc.i8`), so
+// `acc == -2147483648` (Int32.MinValue) compares an i4 against an i8 and the
+// verifier rejects the `ceq` (`StackUnexpected found Long expected Int32`,
+// #3943: Std.Parse.parseOptInt).  Widen the i4-class operand to i8: the rhs (on
+// top) is converted in place; the lhs (underneath) is widened by spilling the
+// rhs to a temp, converting, then reloading.  No-op unless exactly one operand
+// is `Long` and the other is an i4-class integer (`Int` / `Byte` / `Char`).
+func normalizeIntCmpWidthMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  lhsTy: in MsilType,
+  rhsTy: in MsilType,
+): Unit {
+  val lI8 = match lhsTy { case MLong -> true; case _ -> false }
+  val rI8 = match rhsTy { case MLong -> true; case _ -> false }
+  val lI4 = match lhsTy { case MInt -> true; case MByte -> true; case MChar -> true; case _ -> false }
+  val rI4 = match rhsTy { case MInt -> true; case MByte -> true; case MChar -> true; case _ -> false }
+  if lI8 and rI4 {
+    insns.add(MConvI8)
+  } else if lI4 and rI8 {
+    val tmp = allocSlotMsil(fctx, "__cmpw_" + toString(fctx.slotTicker.count), MLong)
+    emitStoreSlot(insns, tmp, fctx.paramCount)
+    insns.add(MConvI8)
+    emitLoadSlot(insns, tmp, fctx.paramCount)
+  }
+}
+
 func lowerBinopMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -6246,6 +6276,7 @@ func lowerBinopMsil(
       }
       match beqLhsTy {
         case MInt | MBool | MChar | MLong | MDouble | MByte -> {
+          normalizeIntCmpWidthMsil(cctx, fctx, insns, beqLhsTy, beqRhsTy)
           insns.add(MCeq)
           MBool
         }
@@ -6279,6 +6310,7 @@ func lowerBinopMsil(
       }
       match bneqLhsTy {
         case MInt | MBool | MChar | MLong | MDouble | MByte -> {
+          normalizeIntCmpWidthMsil(cctx, fctx, insns, bneqLhsTy, bneqRhsTy)
           insns.add(MCeq)
           insns.add(MLdcI4(v = 1))
           insns.add(MXor)
@@ -8328,6 +8360,16 @@ func lowerPatternTestMsil(
       while ai < patterns.count {
         val nextAltL = freshLabelMsil(fctx)
         lowerPatternTestMsil(cctx, fctx, insns, patterns[ai], scrutSlot, scrutTy, nextAltL)
+        // This alternative matched: bind ITS variables before jumping to the
+        // shared success label.  An or-pattern's bindings cannot be emitted by
+        // the (alternative-agnostic) bind pass — only here do we know which
+        // alternative matched — so `lowerPatternBindMsil(POr)` is a no-op and the
+        // binding happens per-alternative on its matching path.  `allocSlotMsil`
+        // reuses a slot by name, so `A(x) | B(x)` binds `x` into one slot with
+        // its concrete (per-alternative) type.  Without this the or-pattern
+        // variable was never bound and erased to `object` (#3943: ModeChecker
+        // `IRecord(decl) | IExposedRec(decl)` left `decl.members` typed object).
+        lowerPatternBindMsil(cctx, fctx, insns, patterns[ai], scrutSlot, scrutTy)
         insns.add(MBr(label = succeedL))
         insns.add(MLabel(id = nextAltL))
         ai = ai + 1
