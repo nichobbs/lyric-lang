@@ -434,8 +434,9 @@ jobs:
           echo "::add-mask::$NUGET_KEY"
           echo "nuget_key=$NUGET_KEY" >> "$GITHUB_OUTPUT"
 
-      # Sign ecosystem packages if a code-signing certificate is configured.
-      # Writes the decoded PFX to /tmp for use by the build-and-publish step.
+      # Decode the signing certificate so lyric publish can sign each .nupkg
+      # immediately after dotnet pack and before dotnet nuget push.
+      # lyric publish reads LYRIC_NUGET_SIGNING_CERT / _PASSWORD / _TIMESTAMPER.
       - name: Decode NuGet signing certificate
         if: env.NUGET_SIGNING_CERT_BASE64 != ''
         run: |
@@ -445,10 +446,15 @@ jobs:
       # `lyric build` auto-restores NuGet deps when the lock file is absent or
       # stale.  `lyric publish --skip-duplicate` is idempotent: re-publishing
       # an already-uploaded version is treated as a no-op.
+      # Signing (when LYRIC_NUGET_SIGNING_CERT is set) is performed by
+      # `lyric publish` itself after dotnet pack and before dotnet nuget push.
       - name: Build and publish ecosystem libraries
         shell: bash
         env:
           LYRIC_NUGET_API_KEY: ${{ steps.nuget-auth.outputs.nuget_key }}
+          LYRIC_NUGET_SIGNING_CERT: /tmp/nuget-signing.pfx
+          LYRIC_NUGET_SIGNING_CERT_PASSWORD: ${{ secrets.NUGET_SIGNING_CERT_PASSWORD }}
+          LYRIC_NUGET_SIGNING_TIMESTAMPER: http://timestamp.digicert.com
         run: |
           set -euo pipefail
           LYRIC=./bin/lyric
@@ -457,18 +463,6 @@ jobs:
             local manifest="$1"
             echo "=== Building ${manifest} ==="
             "$LYRIC" build --manifest "$manifest"
-
-            # Sign the packed .nupkg when the signing certificate is present.
-            if [ -f /tmp/nuget-signing.pfx ]; then
-              local mf_dir
-              mf_dir=$(dirname "$manifest")
-              dotnet nuget sign "${mf_dir}/bin/nupkg/"*.nupkg \
-                --certificate-path /tmp/nuget-signing.pfx \
-                --certificate-password "$NUGET_SIGNING_CERT_PASSWORD" \
-                --timestamper http://timestamp.digicert.com \
-                --overwrite
-            fi
-
             echo "=== Publishing ${manifest} ==="
             "$LYRIC" publish --manifest "$manifest" --skip-duplicate
           }
