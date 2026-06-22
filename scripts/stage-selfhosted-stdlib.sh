@@ -7,10 +7,7 @@
 # closure plus the F#-buildable bundle "smoke set", so packages F# cannot
 # compile (e.g. Std.Sort's typed-lambda generics) never ship — a user program
 # importing them fails at run time with `Could not load file or assembly
-# 'Lyric.Stdlib.Sort'`.  The self-hosted emitter CAN build them.  After staging,
-# this script also replaces the F#-built Core/Collections with self-hosted ones
-# (which use CLR arity-suffix naming) and patches TypeRefs in all remaining
-# F#-built DLLs to match, so the whole lib dir has a consistent ABI.
+# 'Lyric.Stdlib.Sort'`.  The self-hosted emitter CAN build them.
 #
 # Scope: only packages VERIFIED to bind against the F#-built stdlib are shipped
 # (see CURATED_PACKAGES below).  Packages with known self-hosted binding bugs are
@@ -106,34 +103,3 @@ for dir in "${LIB_DIRS[@]}"; do
 done
 
 echo "stage-selfhosted-stdlib: staged $staged DLL(s) into ${#LIB_DIRS[@]} lib dir(s) (curated: ${CURATED_PACKAGES[*]})"
-
-# ── ABI-suffix alignment ──────────────────────────────────────────────────────
-# The F# bootstrap emitter (used by LYRIC_BOOTSTRAP_MINT=1) names generic
-# TypeDefs WITHOUT the CLR arity suffix: Option, Result, etc.  The
-# self-hosted MSIL emitter always adds the suffix (Option`1, Result`2) in
-# every DLL it produces — including in compiled user code.  This mismatch
-# causes a TypeLoadException at runtime ("Could not load type
-# 'Std.Core.Option`1' from assembly 'Lyric.Stdlib.Core'") for any user
-# program that uses Option or Result.
-#
-# Fix: patch the TypeDef entries in F#-built Lyric.Stdlib.*.dll files
-# in-place (e.g. Option → Option`1 in Lyric.Stdlib.Core.dll), then patch
-# TypeRefs in every DLL in the lib dirs to match.  This keeps the F#-built
-# DLLs' method ABIs intact — we do NOT replace them with self-hosted
-# versions, because the self-hosted stdlib has a different ABI for generic
-# functions (e.g. unwrapOr) that the F#-built TypeChecker was compiled
-# against.  Both passes are idempotent.
-#
-# The rename map is derived from the self-hosted per-package emit output
-# in $out (the temp dir), not from the lib dirs, since the lib dirs still
-# hold the F#-built DLLs (no arity suffix) at this point.
-patch_log="$REPO_ROOT/.bootstrap/patch-stdlib-generics.log"
-mkdir -p "$(dirname "$patch_log")"
-echo "stage-selfhosted-stdlib: patching TypeDefs+TypeRefs in lib dirs (log: $patch_log)"
-if ! dotnet fsi "$REPO_ROOT/scripts/patch-stdlib-generics.fsx" --source "$out" "${LIB_DIRS[@]}" \
-     > "$patch_log" 2>&1; then
-  echo "stage-selfhosted-stdlib: ERROR: patch-stdlib-generics.fsx failed" >&2
-  cat "$patch_log" >&2
-  exit 1
-fi
-cat "$patch_log"
