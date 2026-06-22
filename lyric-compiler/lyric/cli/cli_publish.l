@@ -26,6 +26,7 @@ func cmdPublish(argv: in slice[String]): Int {
   var outputDir: Option[String] = None
   var registryUrl: Option[String] = None
   var apiKey: Option[String] = None
+  var skipDuplicate = false
 
   var i = 1
   while i < argv.length {
@@ -70,6 +71,9 @@ func cmdPublish(argv: in slice[String]): Int {
         printErr("publish: --api-key requires an argument")
         return 1
       }
+    } else if arg == "--skip-duplicate" {
+      skipDuplicate = true
+      i += 1
     } else {
       printErr("publish: unrecognised flag '" + arg + "'")
       i += 1
@@ -273,6 +277,9 @@ func cmdPublish(argv: in slice[String]): Int {
   pushArgs.add(pushRegistry)
   pushArgs.add("--api-key")
   pushArgs.add(pushKey)
+  if skipDuplicate {
+    pushArgs.add("--skip-duplicate")
+  }
   val pushExit = match Process.run("dotnet", pushArgs) {
     case Ok(code) -> code
     case Err(e) -> {
