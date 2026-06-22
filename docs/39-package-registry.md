@@ -320,9 +320,12 @@ automate this; until it ships, publish manually in this order:
 in the workspace. A future `lyric version --workspace 0.2.0` command will
 automate this (Q-R-004).
 
-**CI publish gate.** The `.github/workflows/publish.yml` workflow (extended from
-`docs/34-distribution-strategy.md` §7) runs `lyric publish` for each workspace
-member in dependency order when a version tag is pushed.
+**CI publish gate.** The `.github/workflows/publish.yml` workflow runs
+`lyric publish` for each workspace member in dependency order when a version
+tag is pushed.  The `publish-ecosystem` job drives this: it bootstraps the
+`lyric` CLI, then calls `lyric build` + `lyric publish --skip-duplicate` for
+each library in the tier ordering above.  Authentication uses NuGet Trusted
+Publishing (OIDC) — see `docs/34-distribution-strategy.md` §7 for setup.
 
 ---
 
