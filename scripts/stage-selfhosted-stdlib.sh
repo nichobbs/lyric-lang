@@ -7,10 +7,7 @@
 # closure plus the F#-buildable bundle "smoke set", so packages F# cannot
 # compile (e.g. Std.Sort's typed-lambda generics) never ship — a user program
 # importing them fails at run time with `Could not load file or assembly
-# 'Lyric.Stdlib.Sort'`.  The self-hosted emitter CAN build them, and a
-# self-hosted-built *leaf* package binds against the F#-built Core/Collections
-# (it references generic stdlib types non-suffixed, matching the F# producer),
-# so the two coexist in one lib dir.
+# 'Lyric.Stdlib.Sort'`.  The self-hosted emitter CAN build them.
 #
 # Scope: only packages VERIFIED to bind against the F#-built stdlib are shipped
 # (see CURATED_PACKAGES below).  Packages with known self-hosted binding bugs are

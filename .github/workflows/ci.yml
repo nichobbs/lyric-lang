@@ -189,14 +189,14 @@ jobs:
           # suffixed generic refs (`Option`1`); linking the suffixed userlib stdlib
           # lets cross-package generic construction resolve at run time (#3943).
           bash scripts/stage-userlib-stdlib.sh "$lyric_bin" "$(dirname "$lyric_bin")" .bootstrap/stage1
-          # Stage the self-hosted-emitted (arity-suffixed) compiler package DLLs
-          # under `<lib-dir>/selfhosted/` and ship them in the build artifact, so
-          # downstream `@test_module`s that import `Lyric.*` compiler packages
-          # (weaver_self_test et al. in compiler-self-tests-*) link the SUFFIXED
-          # compiler DLLs — matching the suffixed userlib stdlib their test
-          # programs are emitted against (mint stage-1 DLLs would be non-suffixed
-          # and fault with `Could not load type 'Std.Core.Option`1'`).  #3943.
-          bash scripts/stage-selfhosted-compiler.sh "$lyric_bin" "$(dirname "$lyric_bin")" .bootstrap/stage1
+          # Second run: the first run created userlib/Lyric.Stdlib.Core.dll whose
+          # TypeDefs carry arity suffixes.  Re-running stage-userlib-stdlib.sh now
+          # causes detectStdlibCoreDllUsesAritySuffix() to return true (it probes
+          # userlib/ first), so the emitter produces stdlib DLLs whose internal
+          # TypeRefs also use arity suffixes — matching the refs emitted into user
+          # code.  Without this second run the first-run DLLs have non-arity TypeRefs
+          # internally, producing "Method not found" faults at runtime (#3943).
+          bash scripts/stage-userlib-stdlib.sh "$lyric_bin" "$(dirname "$lyric_bin")" .bootstrap/stage1
           for ex in examples/*.l; do
             # `@proof_required` files are verifier-only — they have no
             # `func main` so `lyric build` doesn't apply.  The AOT
@@ -314,11 +314,24 @@ jobs:
         if: steps.changes.outputs.has_code_changes == 'true'
         run: bash scripts/check_assembly_refs.sh .bootstrap/stage1
 
-      # Ecosystem security regression tests — exercises lyric-auth (#315, #360)
-      # and lyric-session (#316) through the multi-package test runner added in
-      # #465.  Skipped silently if the stage-1 bundle or AOT binary is absent
-      # (mirrors the AOT smoke step above).  Fails CI when tests are present
-      # and actually fail, so security regressions are caught on every push.
+      # Remove userlib/ and stage non-arity selfhosted compiler DLLs for artifact.
+      # userlib/ (arity-suffixed stdlib) is needed only for the multi-package
+      # tests above.  Downstream compiler-self-tests-* jobs must NOT inherit it:
+      # its presence makes detectStdlibCoreDllUsesAritySuffix() return true, so
+      # those jobs compile with arity TypeRefs against the non-arity stage-1
+      # runtime stdlib, producing TypeLoadException / MethodNotFoundException (#3943).
+      # After removing userlib/, stage-selfhosted-compiler.sh runs with detection=false
+      # → selfhosted compiler DLLs carry non-arity TypeRefs, consistent with stage-1.
+      - name: Clean up userlib and stage non-arity selfhosted compiler DLLs
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          bin_dir="$(dirname "$lyric_bin")"
+          rm -rf "$bin_dir/userlib" .bootstrap/stage1/userlib
+          bash scripts/stage-selfhosted-compiler.sh "$lyric_bin" "$bin_dir" .bootstrap/stage1
+
       - name: Upload build artifacts
         if: steps.changes.outputs.has_code_changes == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1

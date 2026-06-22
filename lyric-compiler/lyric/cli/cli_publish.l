@@ -254,7 +254,7 @@ func cmdPublish(argv: in slice[String]): Int {
 
   // Sign the .nupkg if LYRIC_NUGET_SIGNING_CERT points at a PFX file.
   val signingCert = match Environment.getVar("LYRIC_NUGET_SIGNING_CERT") { case Ok(p) -> p; case Err(_) -> "" }
-  if not Str.isEmpty(signingCert) && File.fileExists(signingCert) {
+  if not Str.isEmpty(signingCert) and File.fileExists(signingCert) {
     val signingPassword = match Environment.getVar("LYRIC_NUGET_SIGNING_CERT_PASSWORD") { case Ok(p) -> p; case Err(_) -> "" }
     val signingTimestamper = match Environment.getVar("LYRIC_NUGET_SIGNING_TIMESTAMPER") { case Ok(t) -> t; case Err(_) -> "http://timestamp.digicert.com" }
     val signArgs: List[String] = newList()
