@@ -1233,79 +1233,6 @@ func stdlibEntryImports(entrySource: in String, compilerPayloads: in List[Projec
   "package __stdlib_entry__\n" + Str.joinList("\n", lines) + "\n"
 }
 
-// Collect the names of every module-level `pub val` declared by the closure's
-// payloads (column-0 `pub val NAME...` lines).  Function-local vals are
-// indented, so a column-0 prefix test is exact for formatted compiler sources
-// (`lyric fmt` enforces top-level items at column 0).  Multi-line string
-// literal CONTENT is not excluded, so a column-0 `pub val X` line inside an
-// embedded source-text string would also be collected — like the
-// `sourceReferencesAnyName` scan below, that false positive merely links the
-// self-hosted DLL set for a test that didn't strictly need it, which is safe
-// (#3203).
-func closureModuleValNames(payloads: in List[ProjectPackagePayload]): List[String] {
-  val names: List[String] = newList()
-  var i = 0
-  while i < payloads.count {
-    val lines = Str.split(payloads[i].source, "\n")
-    var li = 0
-    while li < lines.length {
-      val line = lines[li]
-      if Str.startsWith(line, "pub val ") {
-        var e = 8
-        while e < line.length and isIdentCharEmitter(line[e]) {
-          e = e + 1
-        }
-        if e > 8 {
-          val nm = Str.substring(line, 8, e - 8)
-          if indexOfString(names, nm) < 0 {
-            names.add(nm)
-          }
-        }
-      }
-      li = li + 1
-    }
-    i = i + 1
-  }
-  names
-}
-
-// True iff `c` is an identifier character (ASCII).  Used for the
-// whole-identifier boundary check in `sourceReferencesAnyName`.
-@pure
-func isIdentCharEmitter(c: in Char): Bool {
-  c == '_' or (c >= '0' and c <= '9') or (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z')
-}
-
-// True when `src` references any of `names` as a whole identifier.  A plain
-// substring hit is rejected when either neighbour is an identifier character,
-// so `MDA_PUBLIC` does not match inside `MDA_PUBLIC_KEY`.  Comments and string
-// literals are not excluded — a false positive merely links the self-hosted
-// DLL set for a test that didn't strictly need it, which is safe.
-func sourceReferencesAnyName(src: in String, names: in List[String]): Bool {
-  var ni = 0
-  while ni < names.count {
-    val name = names[ni]
-    var from = 0
-    var searching = true
-    while searching {
-      val hit = src.indexOf(name, from)
-      if hit < 0 {
-        searching = false
-      } else {
-        val beforeOk = hit == 0 or not isIdentCharEmitter(src[hit - 1])
-        val endPos = hit + name.length
-        val afterOk = endPos >= src.length or not isIdentCharEmitter(src[endPos])
-        if beforeOk and afterOk {
-          return true
-        }
-        from = hit + 1
-      }
-    }
-    ni = ni + 1
-  }
-  false
-}
-
 // Direct compiler-package imports of one payload's merged source.
 func compilerImportsOf(payloadSource: in String): List[String] {
   val lines: List[String] = newList()
@@ -1516,14 +1443,13 @@ pub func emitPerPackageClosure(entrySource: in String, outDir: in String, target
 }
 
 // #2364 Stage 5: compute the restored-DLL list for a `@test_module` that imports
-// `Lyric.*` compiler packages.  Reuses `loadCompilerPayloads` to resolve the
-// transitive compiler-package import closure from source, then maps each closure
-// package to its already-compiled DLL in `libDir` (the F#-built compiler DLLs are
-// named `Lyric.<package>.dll`, e.g. `Lyric.Lyric.Weaver.dll`).  Returns
-// "<pkg>\t<dllPath>" entries (the `restoredDllPaths` encoding); empty when the
-// test imports no compiler packages or the compiler source / libDir is absent.
-// This is the linked-DLL replacement for the `LYRIC_LOAD_COMPILER` recompile path:
-// the test links the compiler DLLs as restored deps instead of recompiling them.
+// `Lyric.*` compiler packages.  Resolves the transitive compiler-package import
+// closure of `testSource` and returns "<pkg>\t<dllPath>" entries
+// (the `restoredDllPaths` encoding).  Prefers the self-hosted-emitted
+// (arity-suffixed) DLLs under `<libDir>/selfhosted/` (#3943); falls back to
+// F#-emitted stage-1 DLLs with a diagnostic when the self-hosted set is absent
+// or incomplete.  Returns an empty list when `testSource` imports no compiler
+// packages or the compiler source / libDir is absent.
 pub func compilerClosureDllPaths(testSource: in String, libDir: in String): List[String] {
   val dlls: List[String] = newList()
   if libDir.length == 0 {
@@ -1537,51 +1463,41 @@ pub func compilerClosureDllPaths(testSource: in String, libDir: in String): List
     return dlls
   }
   val payloads = loadCompilerPayloads(compilerDir, testSource)
-  // #3086: when the TEST SOURCE references a module-level `pub val` constant
-  // exported by its compiler closure, link the self-hosted-emitted
-  // per-package compiler DLLs staged under `<libDir>/selfhosted` (by
-  // `scripts/stage-selfhosted-compiler.sh`) instead of the F#-emitted
-  // stage-1 bundle DLLs.  The F# contract-metadata writer has no `IVal`
-  // arm, so its DLLs silently drop the constants and such a test fails with
-  // T0020 "unknown name"; the self-hosted writer emits them.  The gate is
-  // deliberately the test source's OWN references — not merely "the closure
-  // exports vals" — because constants used internally by the precompiled
-  // DLLs need no metadata, and tests like
-  // `msil_project_bridge_self_test.l` (whose `Msil.Bridge` closure pulls in
-  // val-exporting packages it never names) must keep linking the F#-built
-  // DLLs: the full self-hosted compiler stack is not yet execution-clean
-  // (docs/41 R7).  The self-hosted set is only used when it covers the
-  // WHOLE closure so a single test never links a mix of the two emitters'
-  // outputs.
-  if sourceReferencesAnyName(testSource, closureModuleValNames(payloads)) {
-    val shDir = Path.join(libDir, "selfhosted")
-    var shComplete = payloads.count > 0
-    var shi = 0
-    while shi < payloads.count {
-      if not File.fileExists(Path.join(shDir, "Lyric." + payloads[shi].name + ".dll")) {
-        shComplete = false
-      }
-      shi = shi + 1
+  // Always prefer the self-hosted-emitted (arity-suffixed) compiler DLLs staged
+  // under `<libDir>/selfhosted/` by `stage-selfhosted-compiler.sh` (#3943).
+  // The F#-emitted stage-1 DLLs type nullary union case `Instance` fields as
+  // the concrete case type, while the self-hosted emitter generates
+  // `ldsfld object ...::Instance` — a mismatch that faults with
+  // MissingFieldException at runtime.  The self-hosted DLLs also carry
+  // arity-suffixed stdlib TypeRefs, consistent with the `userlib/` stdlib
+  // that `copyRuntimeDepsBeside` links for user-program output.
+  val shDir = Path.join(libDir, "selfhosted")
+  var shComplete = payloads.count > 0
+  var shi = 0
+  while shi < payloads.count {
+    if not File.fileExists(Path.join(shDir, "Lyric." + payloads[shi].name + ".dll")) {
+      shComplete = false
     }
-    if shComplete {
-      var sj = 0
-      while sj < payloads.count {
-        val shPkg = payloads[sj].name
-        dlls.add(shPkg + "\t" + Path.join(shDir, "Lyric." + shPkg + ".dll"))
-        sj = sj + 1
-      }
-      return dlls
+    shi = shi + 1
+  }
+  if shComplete {
+    var sj = 0
+    while sj < payloads.count {
+      val shPkg = payloads[sj].name
+      dlls.add(shPkg + "\t" + Path.join(shDir, "Lyric." + shPkg + ".dll"))
+      sj = sj + 1
     }
-    if payloads.count > 0 {
-      Console.error(
-        "test: warning: the test references module-level `pub val` constants from its compiler-package closure, " +
-          "but no complete self-hosted compiler-DLL set was found under '" +
-          shDir +
-          "'. " +
-          "Falling back to the F#-emitted stage-1 DLLs, whose contract metadata omits the constants " +
-          "(T0020 likely; see #3086). Run `make selfhosted-compiler` to stage the self-hosted set."
-      )
-    }
+    return dlls
+  }
+  if payloads.count > 0 {
+    Console.error(
+      "test: warning: no complete self-hosted compiler-DLL set found under '" +
+        shDir +
+        "'; falling back to F#-emitted stage-1 DLLs. " +
+        "This may cause MissingFieldException for nullary union case Instance " +
+        "fields or T0020 for pub val constants (#3086, #3943). " +
+        "Run `make selfhosted-compiler` to stage the self-hosted set."
+    )
   }
   var i = 0
   while i < payloads.count {

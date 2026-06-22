@@ -2989,6 +2989,16 @@ func findCoreDllPath(): String {
     return fromEnv
   }
   val appBase = Environment.appBaseDirectory()
+  // Prefer `userlib/Core.dll` over the main lib-dir Core.dll when it exists.
+  // `stage-userlib-stdlib.sh` stages a self-hosted-emitted (arity-suffixed)
+  // stdlib under `<appBase>/userlib/` for user-code output (#3943).
+  // `copyRuntimeDepsBeside` links from `userlib/` when present, so the
+  // arity-suffix detection must probe that copy to keep compile-time TypeRef
+  // encoding consistent with the runtime stdlib that user programs load.
+  val fromUserlib = findCoreDllInDir(Path.join(appBase, "userlib"))
+  if fromUserlib.length > 0 {
+    return fromUserlib
+  }
   val fromAppBase = findCoreDllInDir(appBase)
   if fromAppBase.length > 0 {
     return fromAppBase

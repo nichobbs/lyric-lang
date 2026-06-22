@@ -24181,33 +24181,22 @@ the F# writer:
   copies the per-package DLLs into `<libdir>/selfhosted/` — a dedicated
   subdirectory, deliberately leaving the F#-emitted DLLs beside the AOT
   binary untouched as the toolchain's own runtime.
-- `Emitter.compilerClosureDllPaths` prefers the staged self-hosted set when
-  (a) the test SOURCE references a module-level `pub val` name exported by
-  its compiler closure (the exact condition under which the F#-emitted
-  metadata cannot serve it; `closureModuleValNames` +
-  `sourceReferencesAnyName` over the payload sources) and (b) the
-  `selfhosted/` dir covers the WHOLE closure, so a single test never links a
-  mix of the two emitters' outputs.  The gate is the test's own references —
-  not merely "the closure exports vals" — because constants used internally
-  by the precompiled DLLs need no metadata, and tests whose closure pulls in
-  val-exporting packages they never name (e.g.
-  `msil_project_bridge_self_test.l`, whose `Msil.Bridge` closure includes
-  `Msil.Opcodes`) must keep linking the F#-built DLLs: the full self-hosted
-  compiler stack is not yet execution-clean (docs/41 R7; running
-  `Msil.Bridge` from the self-hosted set currently throws
-  `TypeLoadException: The signature is incorrect`).  Tests that reference no
-  closure vals keep the F#-built DLLs — no behaviour change for the
-  existing native self-tests.
+- `Emitter.compilerClosureDllPaths` unconditionally prefers the staged
+  self-hosted set when the `selfhosted/` dir covers the WHOLE closure (#3943).
+  The earlier `pub val` gate (`closureModuleValNames` + `sourceReferencesAnyName`)
+  was removed: the self-hosted emitter generates `ldsfld object ...::Instance` for
+  nullary union cases while the F#-emitted stage-1 DLLs type `Instance` as the
+  concrete case type, causing MissingFieldException when any test linked the F#
+  DLLs.  Falling back to stage-1 DLLs now only happens when the self-hosted set
+  is absent or incomplete, with a diagnostic.
 - `make lyric` runs the staging step (opt out with
   `SKIP_SELFHOSTED_COMPILER=1`; re-stage alone with
   `make selfhosted-compiler`); the CI step stages before running the M2
   tests.
 
-**Test coverage split:** M2a's closure (`Msil.Heaps`/`Msil.Kernel`) exports no
-module vals, so it links the F#-emitted DLLs and pins the #3085 codegen fix
-against the F# producer ABI; M2b–M2d import val-exporting packages
-(`Msil.Opcodes`, `Msil.Tables`, `Msil.Assembler`) and pin the #3086
-self-hosted-DLL staging path.
+**Test coverage:** M2a–M2d and `lowering_token_self_test.l` all link the
+self-hosted compiler DLLs (the `pub val` gate that once kept M2a on F#-built
+DLLs was removed; see #3943 and D-progress-523-bis).
 
 ### D-progress-501 — Multi-package `lyric build --release` (Native AOT project mode) (#1975, #3206)
 
