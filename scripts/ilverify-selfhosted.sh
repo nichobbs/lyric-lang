@@ -48,9 +48,29 @@ fi
 [[ -n "$ILVERIFY" ]] || { echo "FATAL: ilverify not available" >&2; exit 2; }
 
 # 1. Emit the self-hosted compiler closure (per-package DLLs) with the
-#    self-hosted emitter.  Mirrors the stage-2 / reproducibility driver.
+#    self-hosted emitter — TWICE, so the closure is ARITY-CONSISTENT.
+#
+# Why two passes:  the self-hosted emitter stamps the CLR arity suffix on
+# generic TypeDefs (`Std.Core.Option`1`), but its cross-assembly *TypeRef*
+# path matches whatever `Lyric.Stdlib.Core.dll` it detects on disk
+# (`Mdr.detectStdlibCoreDllUsesAritySuffix`): the F# bootstrap stdlib omits
+# the suffix (`Std.Core.Option`), the self-hosted stdlib carries it.  In a
+# MINT build the on-disk Core beside the binary is the F#-emitted one, so a
+# single-pass emit produces consumers that reference `Std.Core.Option` (no
+# suffix) while the freshly-emitted stdlib defines `Std.Core.Option`1` — an
+# *internal* mismatch that makes ilverify report ~1300 spurious
+# `[ClassLoadGeneral] Failed to load type 'Std.Core.Option'` errors that say
+# nothing about the emitter's IL validity (#3943).
+#
+# To "check what's actually going on" we must verify a set where the emitter,
+# the compiler/CLI, and the stdlib are all self-hosted *and consistent*.  So:
+#   pass 1 → $OUT      : produces a self-hosted (arity-suffixed) stdlib.
+#   pass 2 → $OUT2     : re-emit with LYRIC_STDLIB_BIN=$OUT so the consumer
+#                        TypeRefs detect the arity stdlib and match it.
+# We verify $OUT2 against $OUT2's own DLLs: arity refs ↔ arity defs.
 OUT="$BUILD_DIR/ilverify-out"
-rm -rf "$OUT"; mkdir -p "$OUT"
+OUT2="$BUILD_DIR/ilverify-out2"
+rm -rf "$OUT" "$OUT2"; mkdir -p "$OUT" "$OUT2"
 DRIVER_DIR="$BUILD_DIR/ilverify-driver"
 rm -rf "$DRIVER_DIR"; mkdir -p "$DRIVER_DIR"
 cat > "$DRIVER_DIR/driver.l" <<'EOF'
@@ -64,48 +84,75 @@ import Std.Testing.Mocking
 func main(): Unit { }
 EOF
 
-echo "[ilverify] emitting self-hosted closure via $LYRIC_BIN"
+echo "[ilverify] pass 1: emitting self-hosted closure via $LYRIC_BIN"
 "$LYRIC_BIN" --internal-perpackage-build "$DRIVER_DIR/driver.l" "$OUT" --target dotnet \
-  || { echo "FATAL: self-hosted closure emit failed" >&2; exit 1; }
+  || { echo "FATAL: self-hosted closure emit (pass 1) failed" >&2; exit 1; }
+[[ -f "$OUT/Lyric.Stdlib.Core.dll" ]] \
+  || { echo "FATAL: pass 1 did not emit Lyric.Stdlib.Core.dll into $OUT" >&2; exit 1; }
 
-emitted="$(ls "$OUT"/Lyric.*.dll 2>/dev/null | wc -l)"
-[[ "$emitted" -gt 0 ]] || { echo "FATAL: no Lyric.*.dll emitted into $OUT" >&2; exit 1; }
-echo "[ilverify] emitted $emitted Lyric DLL(s)"
+echo "[ilverify] pass 2: re-emitting against the self-hosted (arity) stdlib in $OUT"
+LYRIC_STDLIB_BIN="$OUT" "$LYRIC_BIN" --internal-perpackage-build "$DRIVER_DIR/driver.l" "$OUT2" --target dotnet \
+  || { echo "FATAL: self-hosted closure emit (pass 2) failed" >&2; exit 1; }
+
+emitted="$(ls "$OUT2"/Lyric.*.dll 2>/dev/null | wc -l)"
+[[ "$emitted" -gt 0 ]] || { echo "FATAL: no Lyric.*.dll emitted into $OUT2" >&2; exit 1; }
+echo "[ilverify] emitted $emitted Lyric DLL(s) (arity-consistent closure)"
 
 # 2. Build the reference set: every emitted DLL + the shared framework.
 SYSDIR="$(dirname "$(ls "$DOTNET_ROOT"/shared/Microsoft.NETCore.App/*/System.Runtime.dll 2>/dev/null | sort | tail -1)")"
 [[ -d "$SYSDIR" ]] || { echo "FATAL: could not locate Microsoft.NETCore.App shared framework under $DOTNET_ROOT" >&2; exit 2; }
 
 refs=()
-for d in "$OUT"/*.dll; do refs+=( -r "$d" ); done
+for d in "$OUT2"/*.dll; do refs+=( -r "$d" ); done
 for d in "$SYSDIR"/*.dll; do refs+=( -r "$d" ); done
 
-# 3. Verify each emitted Lyric package DLL.  Collect a per-DLL error count.
-total_errors=0
-failed_dlls=()
-for d in "$OUT"/Lyric.*.dll; do
+# 3. Verify each emitted Lyric package DLL.  Bucket findings:
+#    * IL-validity   — StackUnexpected / StackUnderflow / PathStackDepth / …:
+#                      genuine self-hosted MSIL emitter bugs.  GATE-BLOCKING.
+#    * resolution    — ClassLoadGeneral / MissingMethod: ilverify could not
+#                      load a referenced type/method.  These are dominated by
+#                      extern-FFI host shims whose BCL targets ilverify cannot
+#                      resolve reflection-only (`System.Text.Json.JsonElement`
+#                      nested enumerators, `Dictionary`.KeyCollection, `Task`1`,
+#                      …).  INFORMATIONAL — not an IL-validity defect.
+il_errors=0
+res_errors=0
+il_failed_dlls=()
+res_failed_dlls=()
+for d in "$OUT2"/Lyric.*.dll; do
   name="$(basename "$d")"
   out="$("$ILVERIFY" "$d" "${refs[@]}" 2>&1 || true)"
-  # ilverify prints one "[IL]: Error ..." line per finding.  "Missing method"
-  # / "Failed to load type" for reflection-only auto-FFI host shims are a
-  # separate (known) class; count only IL validity errors here.
-  n="$(printf '%s\n' "$out" | grep -c '\[IL\]: Error' || true)"
-  if [[ "$n" -gt 0 ]]; then
-    echo "::group::$name — $n IL error(s)"
-    printf '%s\n' "$out" | grep '\[IL\]: Error' | sed 's/^/  /'
+  errlines="$(printf '%s\n' "$out" | grep '\[IL\]: Error' || true)"
+  [[ -z "$errlines" ]] && continue
+  il="$(printf '%s\n' "$errlines" | grep -vE 'ClassLoadGeneral|MissingMethod' | grep -c '\[IL\]: Error' || true)"
+  res="$(printf '%s\n' "$errlines" | grep -cE 'ClassLoadGeneral|MissingMethod' || true)"
+  if [[ "$il" -gt 0 ]]; then
+    echo "::group::$name — $il IL-validity error(s)"
+    printf '%s\n' "$errlines" | grep -vE 'ClassLoadGeneral|MissingMethod' | sed 's/^/  /'
     echo "::endgroup::"
-    total_errors=$((total_errors + n))
-    failed_dlls+=( "$name:$n" )
+    il_errors=$((il_errors + il)); il_failed_dlls+=( "$name:$il" )
+  fi
+  if [[ "$res" -gt 0 ]]; then
+    res_errors=$((res_errors + res)); res_failed_dlls+=( "$name:$res" )
   fi
 done
 
 echo ""
-echo "[ilverify] ==== summary ===="
-if [[ "$total_errors" -eq 0 ]]; then
-  echo "[ilverify] OK: self-hosted-emitted IL is verifiable ($emitted DLLs, 0 errors)"
+echo "[ilverify] ==== summary (arity-consistent self-hosted closure) ===="
+echo "[ilverify] DLLs verified                : $emitted"
+echo "[ilverify] IL-validity errors (gate)    : $il_errors across ${#il_failed_dlls[@]} DLL(s)"
+echo "[ilverify] resolution/extern (info only): $res_errors across ${#res_failed_dlls[@]} DLL(s)"
+if [[ "$res_errors" -gt 0 ]]; then
+  echo "[ilverify]   (ClassLoadGeneral/MissingMethod — ilverify cannot reflection-load"
+  echo "[ilverify]    extern-FFI BCL targets; not IL-validity defects)"
+  for fd in "${res_failed_dlls[@]}"; do echo "[ilverify]   - $fd"; done
+fi
+
+if [[ "$il_errors" -eq 0 ]]; then
+  echo "[ilverify] OK: self-hosted-emitted IL is verifiable ($emitted DLLs, 0 IL-validity errors)"
   exit 0
 fi
-echo "[ilverify] FAIL: $total_errors IL error(s) across ${#failed_dlls[@]} DLL(s):" >&2
-for fd in "${failed_dlls[@]}"; do echo "  - $fd" >&2; done
+echo "[ilverify] FAIL: $il_errors IL-validity error(s) across ${#il_failed_dlls[@]} DLL(s):" >&2
+for fd in "${il_failed_dlls[@]}"; do echo "  - $fd" >&2; done
 echo "[ilverify] These are self-hosted MSIL emitter bugs (see #3943)." >&2
 exit 1
