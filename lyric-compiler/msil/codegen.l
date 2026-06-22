@@ -6728,6 +6728,44 @@ func lowerExprOrBlockMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[
 
 // INVARIANT: each branch must be label-self-contained (no MBr to a label defined outside).
 // Cross-frame control flow across this boundary risks silent JIT failures (global label IDs in temp lists).
+// Lower one branch of an `if`-expression with a construction hint derived from
+// its SIBLING branch's already-known concrete type.  A bare `newList()` /
+// `newMap()` / `None` carries no element/type-arg information on its own and
+// erases to `object`; when the sibling branch is a concrete `List[T]` /
+// `Map[K,V]` / `Option[T]`, threading that type in lets the bare construction
+// build the matching concrete value instead.  Without this the two branches
+// arrive at the join with different stack types and ilverify/JIT reject the
+// merge (`StackUnexpected found object expected List`1<…>` / `Option`1<…>`,
+// #3943: `findGenericInPair`'s `if typeIdEq {a} else {newList()}`, and the
+// `if cond {Some(x)} else {None}` idioms).  Mirrors `lowerMatchExprMsil`'s
+// runningCanon / runningCollCanon arm hint-seeding.
+func lowerBranchWithSiblingHintMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  branch: in ExprOrBlock,
+  siblingTy: in MsilType,
+): MsilType {
+  if isConcreteCollTy(siblingTy) {
+    pushCollExpect(fctx, siblingTy)
+    val t = lowerExprOrBlockMsil(cctx, fctx, insns, branch)
+    popCollExpect(fctx)
+    t
+  } else if msilHeadFqnMsil(siblingTy) == "Std.Core.Option" {
+    val a = genericArgsOfMsil(siblingTy)
+    if a.count > 0 and countConcreteArgsMsil(a) > 0 {
+      val saved = pushHintArgsDirectMsil(fctx, a)
+      val t = lowerExprOrBlockMsil(cctx, fctx, insns, branch)
+      restoreHintTyArgs(fctx, saved)
+      t
+    } else {
+      lowerExprOrBlockMsil(cctx, fctx, insns, branch)
+    }
+  } else {
+    lowerExprOrBlockMsil(cctx, fctx, insns, branch)
+  }
+}
+
 func lowerIfExprMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -6746,10 +6784,22 @@ func lowerIfExprMsil(
     case Some(elseBranch) -> {
       // Lower both branches into temporary lists so we know both types before
       // deciding how to normalise the stack depth at the afterL join point.
+      // Thread each branch's concrete collection/Option type into the other so a
+      // bare `newList()` / `None` sibling builds the matching concrete value
+      // rather than erasing to `object` (#3943).  Lower `then` first; lower
+      // `else` with `then`'s type as the hint.  If `then` itself erased while
+      // `else` came out concrete, re-lower `then` with `else`'s type as the hint
+      // (the bare construction is the `then` branch — `if c {newList()} else {a}`).
       val thenInsns: List[MInsn] = newList()
-      val thenTy = lowerExprOrBlockMsil(cctx, fctx, thenInsns, thenBranch)
+      var thenTy = lowerExprOrBlockMsil(cctx, fctx, thenInsns, thenBranch)
       val elseInsns: List[MInsn] = newList()
-      val elseTy = lowerExprOrBlockMsil(cctx, fctx, elseInsns, elseBranch)
+      val elseTy = lowerBranchWithSiblingHintMsil(cctx, fctx, elseInsns, elseBranch, thenTy)
+      if not isConcreteCollTy(thenTy) and msilHeadFqnMsil(thenTy) != "Std.Core.Option" and (isConcreteCollTy(elseTy) or msilHeadFqnMsil(elseTy) == "Std.Core.Option") {
+        while thenInsns.count > 0 {
+          thenInsns.removeAt(thenInsns.count - 1)
+        }
+        thenTy = lowerBranchWithSiblingHintMsil(cctx, fctx, thenInsns, thenBranch, elseTy)
+      }
 
       // Emit the then block.
       var ti = 0
@@ -9294,7 +9344,19 @@ func lowerBuiltinOrStaticCallMsil(
       val mArgTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
       emitStoreSlot(insns, mSlot, fctx.paramCount)
       val mapValTy = match mArgTy { case MMapOf(_, vt) -> vt; case MConcreteMap(_, vt) -> vt; case _ -> MObject }
-      val vTy: MsilType = if fctx.contextHintTyArgs.count > 0 { fctx.contextHintTyArgs[0] } else { mapValTy }
+      // A concrete `Dictionary<K,V>` reads its value already-typed via `get_Item`
+      // (the `MConcreteMap` arm below emits no narrowing cast), so the `Option`
+      // payload type MUST be that `V` — the surrounding context hint (e.g. the
+      // enclosing function's `Option[Other]` return type) does NOT override it,
+      // or the `Some` ctor wraps a real `V` where the hinted type is expected,
+      // producing a `StackUnexpected` (#3943: `externValueTypeMsil` wrapped the
+      // `string` from `externTypeNames` in `Option_Some<MsilType>`).  For an
+      // erased map (`MMapOf` / `MObject`, whose `get_Item` yields `object` and is
+      // then narrowed to `vTy`) the hint is authoritative and still wins.
+      val vTy: MsilType = match mArgTy {
+        case MConcreteMap(_, vt) -> vt
+        case _ -> if fctx.contextHintTyArgs.count > 0 { fctx.contextHintTyArgs[0] } else { mapValTy }
+      }
       // A concrete `Dictionary<K,V>` keys and reads unboxed — the `!0` MemberRef
       // binds to the concrete key type, so the key temp is not boxed.
       val mapKeyTy = match mArgTy { case MConcreteMap(kt, _) -> kt; case _ -> MObject }
@@ -22278,7 +22340,13 @@ func registerRestoredUnionCase(
 // For generic unions, also seeds the arity-suffixed TypeRef for the union base
 // and genericTypeArity so typeExprToMsilCtx returns MGenericInstByName for
 // type annotations like `val m: Maybe[Int]`.
-func registerRestoredUnion(cctx: in CodegenCtx, packageName: in String, decl: in UnionDecl, asmRefRow: in Int, hasNullaryInstances: Bool): Unit {
+func registerRestoredUnion(
+  cctx: in CodegenCtx,
+  packageName: in String,
+  decl: in UnionDecl,
+  asmRefRow: in Int,
+  hasNullaryInstances: Bool,
+): Unit {
   val uGenerics = genericNamesOf(decl.generics)
   val uArity = uGenerics.count
   val unionFqn = packageName + "." + decl.name
@@ -23102,7 +23170,13 @@ func buildGenericCaseCtorTok(
 // (`Option$Some`, `Option$None`) so that `MIsinstByName` resolves to
 // a TypeRef token rather than falling back to System.Object.
 // Mirrors the `registerRestoredTypeDecl` + `registerRestoredUnionCase` logic.
-func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in Item, asmRefRow: in Int, usesAritySuffix: Bool): Unit {
+func registerStdlibTypeItem(
+  cctx: in CodegenCtx,
+  packageName: in String,
+  it: in Item,
+  asmRefRow: in Int,
+  usesAritySuffix: Bool,
+): Unit {
   // Extern types declared in the stdlib `_kernel/` boundary (e.g.
   // `extern type Uuid = "System.Guid"`) carry the Lyric-name → CLR-FQN
   // mapping a consumer needs to encode the type correctly in cross-package
@@ -23559,7 +23633,13 @@ func splitDottedName(name: in String): List[String] {
 // `registerRestoredFunc`, which already uses the ctx-aware builder.
 // On resolution error, inherits `registerRestoredFunc`'s policy: the
 // unresolvable slot degrades to MObject in the encoded signature (#2821).
-func registerStdlibFunc(cctx: in CodegenCtx, packageName: in String, hostRefRow: in Int, fn: in FunctionDecl, usesAritySuffix: Bool): Unit {
+func registerStdlibFunc(
+  cctx: in CodegenCtx,
+  packageName: in String,
+  hostRefRow: in Int,
+  fn: in FunctionDecl,
+  usesAritySuffix: Bool,
+): Unit {
   val isPub = match fn.visibility { case Some(VisPub(_)) -> true; case _ -> false }
   if not isPub {
     return
