@@ -189,6 +189,14 @@ jobs:
           # suffixed generic refs (`Option`1`); linking the suffixed userlib stdlib
           # lets cross-package generic construction resolve at run time (#3943).
           bash scripts/stage-userlib-stdlib.sh "$lyric_bin" "$(dirname "$lyric_bin")" .bootstrap/stage1
+          # Second run: the first run created userlib/Lyric.Stdlib.Core.dll whose
+          # TypeDefs carry arity suffixes.  Re-running stage-userlib-stdlib.sh now
+          # causes detectStdlibCoreDllUsesAritySuffix() to return true (it probes
+          # userlib/ first), so the emitter produces stdlib DLLs whose internal
+          # TypeRefs also use arity suffixes — matching the refs emitted into user
+          # code.  Without this second run the first-run DLLs have non-arity TypeRefs
+          # internally, producing "Method not found" faults at runtime (#3943).
+          bash scripts/stage-userlib-stdlib.sh "$lyric_bin" "$(dirname "$lyric_bin")" .bootstrap/stage1
           # Stage the self-hosted-emitted (arity-suffixed) compiler package DLLs
           # under `<lib-dir>/selfhosted/` and ship them in the build artifact, so
           # downstream `@test_module`s that import `Lyric.*` compiler packages
