@@ -1729,10 +1729,16 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
           gi = gi + 1
         }
       } else {
-        println(
-          "W0005: bufMsilTypeWithCtx: TypeRef/TypeDef not found for MGenericInstByName '" + headFqn +
-            "' — signature degraded to System.Object (#2494)"
-        )
+        // The throwaway discovery context (discoverTypeDefRowsInto) only learns
+        // in-bundle TypeDef rows — it lacks the seeded external TypeRefs, so a
+        // closed external generic legitimately degrades there; the real pass
+        // resolves it.  Suppress the warning during discovery to avoid noise.
+        if ctx.discovering.count == 0 {
+          println(
+            "W0005: bufMsilTypeWithCtx: TypeRef/TypeDef not found for MGenericInstByName '" + headFqn +
+              "' — signature degraded to System.Object (#2494)"
+          )
+        }
         bufU1(w, 0x1C)
       }
     }

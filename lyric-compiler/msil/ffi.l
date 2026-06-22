@@ -106,7 +106,14 @@ pub record TypeFqnSplit {
 }
 
 pub func splitTypeFqn(typeFqn: in String): TypeFqnSplit {
-  match Str.lastIndexOf(typeFqn, ".") {
+  // A reflection-style generic instantiation (`Base`N[arg,...]`, e.g.
+  // `System.Threading.Tasks.Task`1[System.String]`) keeps its bracketed
+  // argument list attached to the simple name: the ns/name boundary is the
+  // last '.' BEFORE the first '[' — any '.' inside the brackets belongs to an
+  // argument FQN (`System.String`), not the namespace (#3990).
+  val headEnd = match Str.indexOf(typeFqn, "[") { case Some(bi) -> bi; case None -> typeFqn.length }
+  val head = Str.substring(typeFqn, 0, headEnd)
+  match Str.lastIndexOf(head, ".") {
     case None -> TypeFqnSplit(ns = "", name = typeFqn)
     case Some(dotIdx) -> {
       val ns = Str.substring(typeFqn, 0, dotIdx)

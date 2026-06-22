@@ -3930,6 +3930,146 @@ func externValueTypeMsil(cctx: in CodegenCtx, seg: in String): Option[MsilType] 
   }
 }
 
+// Drop a reflection-style generic-instantiation argument list, recovering the
+// open base FQN (`System.Threading.Tasks.Task`1[System.String]` →
+// `System.Threading.Tasks.Task`1`).  Returns the input unchanged when there is
+// no bracket.
+func stripGenericInstArgs(clrFqn: in String): String {
+  val br = clrFqn.indexOf("[")
+  if br < 0 {
+    clrFqn
+  } else {
+    clrFqn.substring(0, br)
+  }
+}
+
+// Parsed argument MsilTypes of a reflection-style closed generic, or empty when
+// `clrFqn` is not bracketed.  Used by the closed-generic `@externTarget` member
+// emitter to instantiate the declaring TypeSpec with the EXACT args (#3990).
+func externClosedGenericArgs(cctx: in CodegenCtx, clrFqn: in String): List[MsilType] {
+  val acc: List[MsilType] = newList()
+  val br = clrFqn.indexOf("[")
+  if br < 0 or not endsWith(clrFqn, "]") {
+    return acc
+  }
+  val inside = clrFqn.substring(br + 1, clrFqn.length - br - 2)
+  val argFqns = parseGenericInstArgFqns(inside)
+  var ai = 0
+  while ai < argFqns.count {
+    acc.add(clrArgFqnToMsil(cctx, argFqns[ai]))
+    ai = ai + 1
+  }
+  acc
+}
+
+// Split the top-level comma-separated argument FQNs out of a reflection-style
+// generic instantiation's bracket body.  Respects nesting so
+// `System.String,System.Int32[]` and a nested `...[X],...[Y]` split correctly.
+func parseGenericInstArgFqns(inside: in String): List[String] {
+  val acc: List[String] = newList()
+  var depth = 0
+  var start = 0
+  var i = 0
+  while i < inside.length {
+    val c = inside[i]
+    if c == '[' {
+      depth = depth + 1
+    } else if c == ']' {
+      depth = depth - 1
+    } else if c == ',' and depth == 0 {
+      acc.add(inside.substring(start, i - start))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  if i > start {
+    acc.add(inside.substring(start, i - start))
+  }
+  acc
+}
+
+// Map a single CLR generic-instantiation argument FQN to an MsilType.  Handles
+// the array suffix (`System.Byte[]`), the primitive/string set, nested generic
+// instantiations, BCL value types (VALUETYPE), and falls back to a reference
+// TypeRef.  Used to decode a closed generic named via reflection syntax (#3990).
+func clrArgFqnToMsil(cctx: in CodegenCtx, argFqn: in String): MsilType {
+  if endsWith(argFqn, "[]") {
+    val elem = argFqn.substring(0, argFqn.length - 2)
+    return MArray(elemTy = clrArgFqnToMsil(cctx, elem))
+  }
+  if contains(argFqn, "[") {
+    match externClosedGenericMsil(cctx, argFqn) {
+      case Some(m) -> return m
+      case None -> ()
+    }
+  }
+  if argFqn == "System.String" {
+    return MString
+  }
+  if argFqn == "System.Int32" {
+    return MInt
+  }
+  if argFqn == "System.Int64" {
+    return MLong
+  }
+  if argFqn == "System.Boolean" {
+    return MBool
+  }
+  if argFqn == "System.Double" or argFqn == "System.Single" {
+    return MDouble
+  }
+  if argFqn == "System.Byte" {
+    return MByte
+  }
+  if argFqn == "System.Char" {
+    return MChar
+  }
+  if argFqn == "System.Object" {
+    return MObject
+  }
+  val refRow = internFfiTypeRefNested(cctx, argFqn)
+  if Mdr.isValueTypeFqn(cctx.metadataVtypeSet, argFqn) or clrIsValueType(argFqn) {
+    MValueTypeRef(typeRefCode = tdrTypeRef(refRow), clrFqn = argFqn)
+  } else {
+    MClassRef(typeRefCode = tdrTypeRef(refRow), clrFqn = argFqn)
+  }
+}
+
+// When `clrFqn` is a reflection-style closed generic (`Base`N[arg,...]`, e.g.
+// `System.Threading.Tasks.Task`1[System.String]`), lower it to the CANONICAL
+// closed-generic carrier `MGenericInstByName` (the same representation auto-FFI
+// produces for `STNamedGenericInst`), seeding the base's TypeRef so the encoder's
+// TypeRef fallback resolves it.  Returns None for a non-generic FQN.
+//
+// CLI metadata has no bracketed-name TypeRef: a closed generic must be a
+// TypeSpec, so emitting such an `extern type` as a flat `MClassRef` produced an
+// unloadable type and a runtime TypeLoadException (#3990).  `MGenericInstByName`
+// is preferred over a bespoke `MGenericInst(typeRefCode=…)` because the encoder
+// (lowering.l) already resolves the head via TypeDef→TypeRef fallback, keeping
+// this consistent with the `import extern` / auto-FFI paths.
+func externClosedGenericMsil(cctx: in CodegenCtx, clrFqn: in String): Option[MsilType] {
+  val br = clrFqn.indexOf("[")
+  if br < 0 or not endsWith(clrFqn, "]") {
+    return None
+  }
+  val baseFqn = clrFqn.substring(0, br)
+  val inside = clrFqn.substring(br + 1, clrFqn.length - br - 2)
+  val argFqns = parseGenericInstArgFqns(inside)
+  if argFqns.count == 0 {
+    return None
+  }
+  val argTys: List[MsilType] = newList()
+  var ai = 0
+  while ai < argFqns.count {
+    argTys.add(clrArgFqnToMsil(cctx, argFqns[ai]))
+    ai = ai + 1
+  }
+  // Seed the base generic TypeRef (`Task`1`) so findTypeRefRowByName resolves
+  // the head when the encoder builds the GENERICINST TypeSpec.
+  val _baseRow = internFfiTypeRefNested(cctx, baseFqn)
+  Some(value = MGenericInstByName(headFqn = baseFqn, typeArgs = argTys))
+}
+
 // Intern a TypeRef row for a (possibly nested) CLR type FQN.  A nested type
 // ("Enclosing+Nested", ECMA-335 §II.22.38) is encoded as a TypeRef whose
 // ResolutionScope is the enclosing type's TypeRef row — NOT a flat TypeRef
@@ -4086,9 +4226,17 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
                 if startsWith(clrFqn, "Lyric.") {
                   MClass(className = resolveTypeFqn(cctx, pkgName, seg))
                 } else {
-                  ensureMetadataIndex(cctx)
-                  val refRow = internFfiTypeRefNested(cctx, clrFqn)
-                  MClassRef(typeRefCode = tdrTypeRef(refRow), clrFqn = clrFqn)
+                  // A reflection-style closed generic (`Task`1[System.String]`)
+                  // lowers to the canonical GENERICINST carrier; a flat
+                  // bracketed-name TypeRef is unloadable (#3990).
+                  match externClosedGenericMsil(cctx, clrFqn) {
+                    case Some(gi) -> gi
+                    case None -> {
+                      ensureMetadataIndex(cctx)
+                      val refRow = internFfiTypeRefNested(cctx, clrFqn)
+                      MClassRef(typeRefCode = tdrTypeRef(refRow), clrFqn = clrFqn)
+                    }
+                  }
                 }
               }
               case None -> MClass(className = resolveTypeFqn(cctx, pkgName, seg))
@@ -12580,10 +12728,17 @@ func genericArityOfName(simpleName: in String): Int {
   }
   var n = 0
   var i = bt + 1
+  // Read the digit run immediately after the backtick, then STOP — for a
+  // reflection-style instantiation (`Task`1[System.String]`) the chars after
+  // the digits are the bracketed argument list, which can itself carry digits
+  // (`Dictionary`2[System.Int32,…]`); accumulating those corrupts the arity.
+  var done = false
   while i < simpleName.length {
     val d = decimalDigitValue(simpleName[i])
-    if d >= 0 {
+    if d >= 0 and not done {
       n = n * 10 + d
+    } else {
+      done = true
     }
     i = i + 1
   }
@@ -12622,18 +12777,44 @@ func emitGenericExternMember(
   if arity <= 0 {
     return false
   }
+  // A reflection-style CLOSED instantiation (`Task`1[System.String]`) resolves
+  // its declaring-type identity (assembly, metadata signature, TypeRef) by the
+  // OPEN base (`...Task`1`); the bracketed args are carried separately and used
+  // as the TypeSpec instantiation below.  A bare open generic
+  // (`ConcurrentDictionary`2`, the erasure case) has no brackets, so these are
+  // no-ops (#3990).
+  val baseResolvedFqn = stripGenericInstArgs(resolvedFqn)
+  val baseTypeName = stripGenericInstArgs(r.typeName)
   // Resolve the BCL member's true signature (hasThis + exact VAR positions).
   // Build `sigOpt` via a typed `var` + assignment rather than a `match`
   // expression: the bootstrap F# emitter unifies a `match`'s `None` arm with the
   // `Some(...)` arm to `Option<object>`, after which `sig.paramTypes` below
   // would be an `Object` field read it cannot resolve.
-  val asmName = assemblyForTypeMsil(cctx, resolvedFqn)
+  val asmName = assemblyForTypeMsil(cctx, baseResolvedFqn)
   var sigOpt: Option[Mdr.DecodedMethodSig] = None
+  // The MemberRef name actually emitted.  Rewritten to the `get_`-prefixed
+  // getter when the member names a property (`Task`1[System.String].Result` →
+  // `get_Result`): a property has no method row of its own name (#3990).
+  var effMember = r.memberName
   match mapGet(cctx.metadataPathIndex, asmName) {
     case None -> {
     }
     case Some(path) -> {
-      sigOpt = Mdr.decodeExternMethodSig(path, resolvedFqn, r.memberName, decl.params.count)
+      sigOpt = Mdr.decodeExternMethodSig(path, baseResolvedFqn, r.memberName, decl.params.count)
+      match sigOpt {
+        case Some(_) -> ()
+        case None -> {
+          val getter = "get_" + r.memberName
+          val s2 = Mdr.decodeExternMethodSig(path, baseResolvedFqn, getter, decl.params.count)
+          match s2 {
+            case Some(_) -> {
+              sigOpt = s2
+              effMember = getter
+            }
+            case None -> ()
+          }
+        }
+      }
     }
   }
   match sigOpt {
@@ -12668,17 +12849,32 @@ func emitGenericExternMember(
         return false
       }
 
-      // Closed GENERICINST TypeSpec `T<object,…>`.
+      // Closed GENERICINST TypeSpec.  For a bare open generic the args erase to
+      // `<object,…>` (matching `typeExprToMsilCtx`'s erasure of the Lyric
+      // wrapper type); for a reflection-style closed instantiation
+      // (`Task`1[System.String]`) the EXACT args are used so the TypeSpec is
+      // `Task`1<string>` — `Task<object>` would not bind a `Task<string>`
+      // receiver (no generic covariance) and would fault at the member ref
+      // (#3990).
       val ns = r.namespaceStr
-      val typeRefRow = internFfiTypeRef(cctx, asmName, ns, r.typeName)
-      val objArgs: List[MsilType] = newList()
-      var ai = 0
-      while ai < arity {
-        objArgs.add(MObject)
-        ai = ai + 1
+      val typeRefRow = internFfiTypeRef(cctx, asmName, ns, baseTypeName)
+      val exactArgs = externClosedGenericArgs(cctx, resolvedFqn)
+      val tsArgs: List[MsilType] = newList()
+      if exactArgs.count == arity {
+        var ea = 0
+        while ea < exactArgs.count {
+          tsArgs.add(exactArgs[ea])
+          ea = ea + 1
+        }
+      } else {
+        var ai = 0
+        while ai < arity {
+          tsArgs.add(MObject)
+          ai = ai + 1
+        }
       }
       val tsKey = "ts_genextern_" + resolvedFqn
-      val tsBlob = buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(typeRefRow), objArgs)
+      val tsBlob = buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(typeRefRow), tsArgs)
       val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
       val tsTok = 0x1B000000 + tsRow
 
@@ -12693,14 +12889,14 @@ func emitGenericExternMember(
       // member name: two overloads of the same name on the same generic type
       // (e.g. distinct-arity `TryGetValue`s, or a `.ctor()` vs `.ctor(int,int)`)
       // would otherwise alias to the first-registered MemberRef (#3429).
-      var mrKey = "mr_genextern_" + resolvedFqn + "." + r.memberName + "/" + toString(memberParams.count)
+      var mrKey = "mr_genextern_" + resolvedFqn + "." + effMember + "/" + toString(memberParams.count)
       var mki = 0
       while mki < memberParams.count {
         mrKey = mrKey + "_" + msilTypeKeyStr(memberParams[mki])
         mki = mki + 1
       }
       mrKey = mrKey + "_ret_" + msilTypeKeyStr(if r.isCtor { MVoid } else { memberRet })
-      val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, r.memberName, mrKey, memberSig)
+      val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, effMember, mrKey, memberSig)
       val mrTok = 0x0A000000 + mrRow
 
       // Pre-allocate marshalling temps for concrete `out`/`inout` pointee types
@@ -12947,9 +13143,13 @@ func emitExternTargetBody(
       // accepted when their DLL is in the index (added by ensureMetadataIndex).
       val resolvedFqn = if r.namespaceStr == "" { r.typeName } else { r.namespaceStr + "." + r.typeName }
       ensureMetadataIndex(cctx)
-      val isKnownFqn = match Mdr.assemblyForType(cctx.metadataTypeIndex, resolvedFqn) {
+      // A reflection-style closed generic (`Task`1[System.String].Result`)
+      // resolves its declaring-type identity by the OPEN base (`...Task`1`); the
+      // bracketed instantiation is unresolvable by name in the index (#3990).
+      val knownCheckFqn = stripGenericInstArgs(resolvedFqn)
+      val isKnownFqn = match Mdr.assemblyForType(cctx.metadataTypeIndex, knownCheckFqn) {
         case Some(_) -> true
-        case None -> clrAssemblyResolvable(resolvedFqn)
+        case None -> clrAssemblyResolvable(knownCheckFqn)
       }
       // Generic declaring type (e.g. `ConcurrentDictionary`2`): a member of a
       // generic type cannot be referenced through a plain open-generic TypeRef
