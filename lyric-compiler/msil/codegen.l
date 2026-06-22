@@ -22946,7 +22946,6 @@ pub record StdlibPkg {
 /// host class `<pkgName>.Program` in the corresponding DLL — the
 /// same shape `addPackageTokens` produces for user packages.
 ///
-
 /// Empty `pkgs` is a no-op — single-package compiles with no stdlib
 /// imports still work because their callsite codegen never reaches
 /// the `funcTokens` lookup (handled by the hardcoded builtin arms in
