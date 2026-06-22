@@ -356,12 +356,13 @@ jobs:
         id: nuget-auth
         shell: bash
         run: |
-          OIDC_TOKEN=$(curl -sH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=nuget.org" | jq -r .value)
-          NUGET_KEY=$(curl -s -X POST \
+          set -euo pipefail
+          OIDC_TOKEN=$(curl -fsH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=nuget.org" | jq -er .value)
+          NUGET_KEY=$(curl -fs -X POST \
             -H "Content-Type: application/json" \
             -d "{\"oidcToken\": \"${OIDC_TOKEN}\"}" \
-            "https://api.nuget.org/v1/authentication/authenticate" | jq -r .value)
+            "https://api.nuget.org/v1/authentication/authenticate" | jq -er .value)
           echo "::add-mask::$NUGET_KEY"
           echo "nuget_key=$NUGET_KEY" >> "$GITHUB_OUTPUT"
 
@@ -423,12 +424,13 @@ jobs:
         id: nuget-auth
         shell: bash
         run: |
-          OIDC_TOKEN=$(curl -sH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=nuget.org" | jq -r .value)
-          NUGET_KEY=$(curl -s -X POST \
+          set -euo pipefail
+          OIDC_TOKEN=$(curl -fsH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=nuget.org" | jq -er .value)
+          NUGET_KEY=$(curl -fs -X POST \
             -H "Content-Type: application/json" \
             -d "{\"oidcToken\": \"${OIDC_TOKEN}\"}" \
-            "https://api.nuget.org/v1/authentication/authenticate" | jq -r .value)
+            "https://api.nuget.org/v1/authentication/authenticate" | jq -er .value)
           echo "::add-mask::$NUGET_KEY"
           echo "nuget_key=$NUGET_KEY" >> "$GITHUB_OUTPUT"
 
