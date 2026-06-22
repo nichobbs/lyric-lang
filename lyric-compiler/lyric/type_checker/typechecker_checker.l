@@ -4,6 +4,7 @@ package Lyric.TypeChecker
 
 import Std.Core
 import Std.Collections
+import Std.String
 import Lyric.Lexer
 import Lyric.Parser
 

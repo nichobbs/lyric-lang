@@ -9060,6 +9060,17 @@ func coerceCallArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in Ms
           case _ -> ()
         }
       }
+      // Integer-width coercion at the call boundary.  An integer literal whose
+      // magnitude exceeds Int32.Max is typed `Long` (`ldc.i8`), so passing e.g.
+      // `0xCAFEBABE` to an `Int` parameter pushes an i8 where i4 is expected
+      // (`StackUnexpected found Long expected Int32`, #3943:
+      // `writerU4(w, 0xCAFEBABE)` in classfile.l).  Narrow `Long -> Int`
+      // (`conv.i4`, taking the low 32 bits — the intended u4 bit pattern) and
+      // widen `Int -> Long` (`conv.i8`) so the argument matches the parameter.
+      case MLong -> match toTy { case MInt -> insns.add(MConvI4); case MByte -> insns.add(MConvI4); case _ -> () }
+      case MInt -> match toTy { case MLong -> insns.add(MConvI8); case _ -> () }
+      case MByte -> match toTy { case MLong -> insns.add(MConvI8); case _ -> () }
+      case MChar -> match toTy { case MLong -> insns.add(MConvI8); case _ -> () }
       case _ -> ()
     }
   }
@@ -9754,6 +9765,14 @@ func lowerBuiltinOrStaticCallMsil(
             // local — a function-typed *parameter* was previously loaded with
             // `ldloc(slot - paramCount)`, which is invalid IL (#1877).
             emitLoadSlot(insns, slot, fctx.paramCount)
+            // A function-typed parameter / local is declared `object` in the
+            // method signature and LocalVarSig (the uniform lambda ABI erases the
+            // delegate to `object`), but `callvirt Func`(N+1)::Invoke` requires the
+            // receiver to be that concrete `Func` TypeSpec.  Narrow the loaded
+            // `object` to the Func TypeSpec first, or the verifier rejects the
+            // call (`StackUnexpected found object expected Func`2<…>`, #3943:
+            // Std.Core.countWhere invoking its `pred` parameter).
+            insns.add(MCastclass(typeToken = 0x1B000000 + internFuncNTypeSpec(cctx, args.count)))
             var i = 0
             while i < args.count {
               val argTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
