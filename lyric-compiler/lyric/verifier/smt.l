@@ -8,6 +8,7 @@ package Lyric.Verifier
 
 import Std.Core
 import Std.Collections
+import Std.String
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Sort and identifier rendering.

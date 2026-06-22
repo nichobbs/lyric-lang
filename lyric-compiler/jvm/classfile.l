@@ -327,7 +327,13 @@ pub func serializeClassWithPool(cf: in ClassFile, pool: in Pool): List[Byte] {
 
   // ── Combine header + pool + body ─────────────────────────────────────────
   val result = writerNew()
-  writerU4(result, 0xCAFEBABE)
+  // JVM class-file magic number 0xCAFEBABE, written as its signed 32-bit value
+  // (-889275714).  The hex literal 0xCAFEBABE (3405691582) exceeds Int32.Max so
+  // it is typed `Long`, which does not match `writerU4`'s `Int` parameter across
+  // the package boundary in the self-hosted MSIL emitter (the cross-package
+  // call-arg `Long -> Int` narrowing does not fire; #3943).  The low 32 bits are
+  // identical, so `writerU4` still emits the four bytes 0xCA 0xFE 0xBA 0xBE.
+  writerU4(result, -889275714)
   writerU2(result, cf.minorVersion)
   writerU2(result, cf.majorVersion)
   poolWriteTo(pool, result)    // constant_pool_count + entries

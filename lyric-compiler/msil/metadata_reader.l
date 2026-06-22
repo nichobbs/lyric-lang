@@ -819,23 +819,28 @@ pub func readTypeDef(img: in PeImage, layout: in TableLayout, row: in Int): Type
   )
 }
 
-// A TypeRef row's name and namespace (ECMA §II.22.38).
+// A TypeRef row's name, namespace, and ResolutionScope coded token (ECMA
+// §II.22.38).  The ResolutionScope is needed to name a NESTED type: a nested
+// TypeRef carries an EMPTY namespace and its ResolutionScope is the enclosing
+// TypeRef (tag 3 of the ResolutionScope coded index), so the full name is
+// `<enclosing>+<name>`.
 pub record TypeRefRow {
   name: String
   namespaceName: String
+  resolutionScope: Int
 }
 
 // Read TypeRef row `row` (1-based).  Columns: ResolutionScope(coded),
-// Name(#String), Namespace(#String).  Only the name/namespace are kept (the
-// resolution scope — which assembly defines the type — is not needed to name it).
+// Name(#String), Namespace(#String).
 pub func readTypeRef(img: in PeImage, layout: in TableLayout, row: in Int): TypeRefRow {
   val b = img.bytes
   val o = layout.dataStart[0x01] + (row - 1) * layout.rowSize[0x01]
-  var p = o + layout.resolutionScopeIdx      // skip ResolutionScope
+  val rs = rdIdx(b, o, layout.resolutionScopeIdx)
+  var p = o + layout.resolutionScopeIdx
   val nameI = rdIdx(b, p, layout.stringIdx)
   p = p + layout.stringIdx
   val nsI = rdIdx(b, p, layout.stringIdx)
-  TypeRefRow(name = stringAt(img, layout, nameI), namespaceName = stringAt(img, layout, nsI))
+  TypeRefRow(name = stringAt(img, layout, nameI), namespaceName = stringAt(img, layout, nsI), resolutionScope = rs)
 }
 
 // A NestedClass row mapping (ECMA §II.22.32).
@@ -857,10 +862,36 @@ pub func readNestedClass(img: in PeImage, layout: in TableLayout, row: in Int): 
   NestedClassRow(nestedTypeDef = nestedI, enclosingTypeDef = enclosingI)
 }
 
+// The enclosing TypeDef row of nested TypeDef `row`, or -1 if `row` is not
+// nested.  Scans the NestedClass table (ECMA §II.22.32) for the row whose
+// NestedClass column equals `row`.
+func enclosingTypeDefRow(img: in PeImage, layout: in TableLayout, th: in TablesHeader, row: in Int): Int {
+  val n = rowCountOf(th, 0x29)
+  var i = 1
+  while i <= n {
+    val nc = readNestedClass(img, layout, i)
+    if nc.nestedTypeDef == row {
+      return nc.enclosingTypeDef
+    }
+    i = i + 1
+  }
+  -1
+}
+
 // Resolve a TypeDefOrRef coded index (the 2-bit-tagged token a CLASS /
 // VALUETYPE / GENERICINST signature carries) to the referenced type's
 // fully-qualified name.  Tag 0 = TypeDef, 1 = TypeRef, 2 = TypeSpec.
 // TypeSpec (generic instantiations etc.) and out-of-range rows return "".
+//
+// NESTED types are named `<enclosing>+<nested>` (ECMA §II.22.38 / II.14.4): a
+// nested type carries an EMPTY namespace, so without the enclosing chain a
+// method whose signature mentions a nested type (e.g. `JsonElement.
+// EnumerateArray(): JsonElement+ArrayEnumerator`) resolved its return type to a
+// bare `ArrayEnumerator` that `resolvedSigToMsil` could not map — which made the
+// metadata-direct extern resolver bail and fall back to the static-call guess,
+// emitting an instance method as static (MissingMethodException, #3943).  A
+// nested TypeDef is detected via the NestedClass table; a nested TypeRef via a
+// ResolutionScope whose coded tag is TypeRef (3).
 pub func resolveTypeDefOrRefName(
   img: in PeImage, layout: in TableLayout, th: in TablesHeader, codedToken: in Int
 ): String {
@@ -877,7 +908,17 @@ pub func resolveTypeDefOrRefName(
     if td.namespaceName.length > 0 {
       td.namespaceName + "." + td.name
     } else {
-      td.name
+      val encRow = enclosingTypeDefRow(img, layout, th, row)
+      if encRow > 0 {
+        val encFqn = resolveTypeDefOrRefName(img, layout, th, encRow * 4)
+        if encFqn.length > 0 {
+          encFqn + "+" + td.name
+        } else {
+          td.name
+        }
+      } else {
+        td.name
+      }
     }
   } else if tag == 1 {
     if row > rowCountOf(th, 0x01) {
@@ -887,7 +928,18 @@ pub func resolveTypeDefOrRefName(
     if tr.namespaceName.length > 0 {
       tr.namespaceName + "." + tr.name
     } else {
-      tr.name
+      val rsTag = tr.resolutionScope % 4
+      val rsRow = tr.resolutionScope / 4
+      if rsTag == 3 and rsRow > 0 {
+        val encFqn = resolveTypeDefOrRefName(img, layout, th, rsRow * 4 + 1)
+        if encFqn.length > 0 {
+          encFqn + "+" + tr.name
+        } else {
+          tr.name
+        }
+      } else {
+        tr.name
+      }
     }
   } else {
     ""
@@ -956,6 +1008,61 @@ pub func methodRange(img: in PeImage, layout: in TableLayout, th: in TablesHeade
     rowCountOf(th, 0x06)
   }
   RowRange(start = start, endRow = last)
+}
+
+// Inclusive [start, end] 1-based Field range (table 0x04) owned by TypeDef
+// `typeRow` (the rows from this type's `fieldListStart` up to the next type's,
+// exclusive).  Mirrors `methodRange`.
+pub func fieldRange(img: in PeImage, layout: in TableLayout, th: in TablesHeader, typeRow: in Int): RowRange {
+  val start = readTypeDef(img, layout, typeRow).fieldListStart
+  val typeCount = rowCountOf(th, 0x02)
+  val last = if typeRow < typeCount {
+    readTypeDef(img, layout, typeRow + 1).fieldListStart - 1
+  } else {
+    rowCountOf(th, 0x04)
+  }
+  RowRange(start = start, endRow = last)
+}
+
+// True iff `typeFqn` declares a STATIC field named `fieldName` (FieldAttributes
+// Static = 0x0010, ECMA-335 §II.23.1.5).  Used to resolve an `@externTarget`
+// that names a static field (e.g. `System.Diagnostics.Stopwatch.Frequency`,
+// `System.Guid.Empty`) so the MSIL backend emits `ldsfld` instead of mis-
+// emitting a method call.  Reads the Field table directly: flags(u16) +
+// name(#String) + sig(#Blob).
+pub func isStaticFieldExternIn(
+  img: in PeImage,
+  layout: in TableLayout,
+  th: in TablesHeader,
+  typeFqn: in String,
+  fieldName: in String,
+): Bool {
+  val typeRow = findTypeDefByFqn(img, layout, th, typeFqn)
+  if typeRow < 0 {
+    return false
+  }
+  val fr = fieldRange(img, layout, th, typeRow)
+  val b = img.bytes
+  var row = fr.start
+  while row <= fr.endRow {
+    val o = layout.dataStart[0x04] + (row - 1) * layout.rowSize[0x04]
+    val flags = rdU16(b, o)
+    val nameI = rdIdx(b, o + 2, layout.stringIdx)
+    val nm = stringAt(img, layout, nameI)
+    if nm == fieldName {
+      return (flags / 16) % 2 == 1
+    }
+    row = row + 1
+  }
+  false
+}
+
+// Read-from-disk wrapper over `isStaticFieldExternIn`.
+pub func isStaticFieldExtern(asmPath: in String, typeFqn: in String, fieldName: in String): Bool {
+  match File.readBytes(asmPath) {
+    case Err(_) -> false
+    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> false; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> false; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> false; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> false; case Ok(layout) -> isStaticFieldExternIn(img, layout, th, typeFqn, fieldName) } } } }
+  }
 }
 
 // ── Layer 5: signature-blob decoder ──────────────────────────────────────────
@@ -1889,6 +1996,12 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
       case STSzArray(ae) -> if scoreSigType(ae, pe) == 2 { 2 } else { -1 }
       case _ -> -1
     }
+    // A by-ref / `out` / `ref` parameter matches a by-ref argument of the same
+    // pointee.  Required so the metadata-direct resolver can score an instance
+    // method that carries an `out`/`ref` parameter (e.g. `JsonElement.
+    // TryGetProperty(string, out JsonElement)`) and thus detect `hasThis`
+    // instead of falling back to the static-call guess (#3943).
+    case STByRef(pi) -> match arg { case STByRef(ai) -> scoreSigType(ai, pi); case _ -> -1 }
     case _ -> -1
   }
 }
@@ -2275,8 +2388,78 @@ pub func scoreParamsLenient(argTypes: in List[SigType], params: in List[SigType]
   total
 }
 
-// Resolve a non-generic method extern's true signature, disambiguating same-
-// name/same-arity overloads by scoring the caller's argument types (lenient on
+// Score `argTypes` against the leading `argTypes.count` of `params` (which may be
+// longer).  Used for prefix matches where the caller supplies fewer arguments
+// than the BCL method declares and the trailing params are optional.  Returns -1
+// when any leading param is incompatible.
+func scoreParamsPrefix(argTypes: in List[SigType], params: in List[SigType]): Int {
+  if params.count < argTypes.count {
+    return 0 - 1
+  }
+  var total = 0
+  var i = 0
+  while i < argTypes.count {
+    val s = scoreSigTypeLenient(argTypes[i], params[i])
+    if s < 0 {
+      return 0 - 1
+    }
+    total = total + s
+    i = i + 1
+  }
+  total
+}
+
+// True iff the param with 1-based `seq` on the method whose Param rows span
+// [pstart, pend) carries the `Optional` flag (ECMA-335 §II.23.1.13, 0x0010).
+// A trailing param with no Param row at all is NOT optional (returns false), so
+// a prefix match is only attempted when every unfilled position is provably
+// optional.
+func paramSeqOptional(img: in PeImage, layout: in TableLayout, pstart: in Int, pend: in Int, seq: in Int): Bool {
+  var pr = pstart
+  while pr < pend {
+    val prow = readParam(img, layout, pr)
+    if prow.sequence == seq {
+      // Param.Optional flag = 0x0010 (bit 4); test it arithmetically (the
+      // bitwise `.and` method is keyword-named and won't parse on a field
+      // receiver), matching this file's other flag tests.
+      return (prow.flags / 16) % 2 == 1
+    }
+    pr = pr + 1
+  }
+  false
+}
+
+// Count of contiguous trailing optional params on MethodDef `methodRow` (which
+// declares `totalParams` params).  BCL optional params are always trailing and
+// contiguous, so a caller supplying `totalParams - N` arguments may omit the
+// last N iff `N <= methodTrailingOptionalCount(...)`.
+func methodTrailingOptionalCount(
+  img: in PeImage,
+  layout: in TableLayout,
+  th: in TablesHeader,
+  methodRow: in Int,
+  totalParams: in Int,
+): Int {
+  if totalParams <= 0 {
+    return 0
+  }
+  val md = readMethodDef(img, layout, methodRow)
+  val pstart = md.paramListStart
+  val totalMethods = rowCountOf(th, 0x06)
+  val pend = if methodRow < totalMethods {
+    readMethodDef(img, layout, methodRow + 1).paramListStart
+  } else {
+    rowCountOf(th, 0x08) + 1
+  }
+  var cnt = 0
+  var s = totalParams
+  while s >= 1 and paramSeqOptional(img, layout, pstart, pend, s) {
+    cnt = cnt + 1
+    s = s - 1
+  }
+  cnt
+}
+
 // named-reference upcasts).  `fullArgTypes` is the Lyric wrapper's complete
 // argument list (the receiver is arg 0 for instance methods); an instance
 // candidate (`hasThis`, BCL param count == fullArgTypes.count - 1) is scored
@@ -2325,10 +2508,33 @@ pub func resolveExternMethodScoredIn(
             pj = pj + 1
           }
           val isInstance = sig.hasThis
-          val score = if isInstance and normParams.count == declArity - 1 {
-            scoreParamsLenient(tail, normParams)
-          } else if not isInstance and normParams.count == declArity {
-            scoreParamsLenient(fullArgTypes, normParams)
+          // Exact-arity matches earn a large bonus so they always beat a
+          // shorter-supplied prefix match against a longer overload whose
+          // trailing params are optional (e.g. `JsonEncodedText.Encode(string)`
+          // resolving to `Encode(string, JavaScriptEncoder = null)`).  Prefix
+          // matches keep their raw (non-negative) score so they are still
+          // selectable when no exact overload exists; the emitter fills the
+          // unsupplied trailing optionals with their type defaults.
+          val exactBonus = 1000000
+          val nReal = normParams.count
+          val score = if isInstance and nReal == declArity - 1 {
+            val sc = scoreParamsLenient(tail, normParams)
+            if sc < 0 {
+              sc
+            } else {
+              sc + exactBonus
+            }
+          } else if not isInstance and nReal == declArity {
+            val sc = scoreParamsLenient(fullArgTypes, normParams)
+            if sc < 0 {
+              sc
+            } else {
+              sc + exactBonus
+            }
+          } else if isInstance and nReal > declArity - 1 and nReal - (declArity - 1) <= methodTrailingOptionalCount(img, layout, th, mi, nReal) {
+            scoreParamsPrefix(tail, normParams)
+          } else if not isInstance and nReal > declArity and nReal - declArity <= methodTrailingOptionalCount(img, layout, th, mi, nReal) {
+            scoreParamsPrefix(fullArgTypes, normParams)
           } else {
             0 - 1
           }

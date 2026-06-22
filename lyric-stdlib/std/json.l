@@ -161,38 +161,54 @@ pub func valueKind(elem: in JsonElement): Int {
 // =====================================================================
 // Array enumeration — lower-level wrappers so callers can iterate
 // `JsonElement` arrays without going through the slice-reader helpers.
+//
+// The raw BCL enumerator struct (`JsonElement+ArrayEnumerator`) is a kernel
+// FFI type; exposing it directly in this public, non-kernel API leaked the FFI
+// boundary into every consumer's emitted IL.  `JsonArrayCursor` wraps it in an
+// opaque Lyric record so callers iterate without naming (or emitting) the BCL
+// type.  Callers don't change: `var c = enumerateArray(e)` infers the cursor.
 // =====================================================================
-@stable(since = "1.0")
-pub func enumerateArray(elem: in JsonElement): JsonArrayEnumerator {
-  hostEnumerateArray(elem)
+pub record JsonArrayCursor {
+  var en: JsonArrayEnumerator
 }
 
 @stable(since = "1.0")
-pub func arrayMoveNext(en: inout JsonArrayEnumerator): Bool {
-  hostEnumMoveNext(en)
+pub func enumerateArray(elem: in JsonElement): JsonArrayCursor {
+  JsonArrayCursor(en = hostEnumerateArray(elem))
 }
 
 @stable(since = "1.0")
-pub func arrayCurrent(en: inout JsonArrayEnumerator): JsonElement {
-  hostEnumCurrent(en)
+pub func arrayMoveNext(cur: inout JsonArrayCursor): Bool {
+  hostEnumMoveNext(cur.en)
+}
+
+@stable(since = "1.0")
+pub func arrayCurrent(cur: inout JsonArrayCursor): JsonElement {
+  hostEnumCurrent(cur.en)
 }
 
 // =====================================================================
-// Object enumeration — iterate `JsonElement` object properties.
+// Object enumeration — iterate `JsonElement` object properties.  Wrapped the
+// same way as the array cursor above (the BCL `ObjectEnumerator` struct stays
+// behind `JsonObjectCursor`).
 // =====================================================================
-@stable(since = "1.0")
-pub func enumerateObject(elem: in JsonElement): JsonObjectEnumerator {
-  hostEnumerateObject(elem)
+pub record JsonObjectCursor {
+  var en: JsonObjectEnumerator
 }
 
 @stable(since = "1.0")
-pub func objectMoveNext(en: inout JsonObjectEnumerator): Bool {
-  hostEnumObjectMoveNext(en)
+pub func enumerateObject(elem: in JsonElement): JsonObjectCursor {
+  JsonObjectCursor(en = hostEnumerateObject(elem))
 }
 
 @stable(since = "1.0")
-pub func objectCurrent(en: inout JsonObjectEnumerator): JsonProperty {
-  hostEnumObjectCurrent(en)
+pub func objectMoveNext(cur: inout JsonObjectCursor): Bool {
+  hostEnumObjectMoveNext(cur.en)
+}
+
+@stable(since = "1.0")
+pub func objectCurrent(cur: inout JsonObjectCursor): JsonProperty {
+  hostEnumObjectCurrent(cur.en)
 }
 
 @stable(since = "1.0")

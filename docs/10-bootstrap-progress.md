@@ -9,6 +9,58 @@ what has shipped and what remains open.
 
 ---
 
+## Bootstrap vs self-hosted — which compiler am I running?
+
+Most wasted debugging time on this project comes from not knowing **which of
+three compilers** produced a binary or a failure.  They are not
+interchangeable, and a failure under one is not a failure under another.
+
+| # | Compiler | Built by | IL validity | Build command | Use it to… |
+|---|----------|----------|-------------|---------------|-----------|
+| 1 | **mint stage-0** | `scripts/mint-stage0-fsharp.sh` (rebuilds the historical F# bootstrap from git history) | valid (F# emitter is correct) | `LYRIC_BOOTSTRAP_MINT=1` seeds it automatically | seed stage-1; never run directly |
+| 2 | **mint stage-1** (the **bootstrap** compiler) | the mint seed compiling the self-hosted `.l` sources | **valid — this is exactly what CI ships** | `make mint` | **all day-to-day dev.** It *runs* the self-hosted codegen, so compiling a program exercises the self-hosted emitter on user code while staying runnable. |
+| 3 | **self-hosted stage-1** | the self-hosted compiler compiling **itself** (default `scripts/bootstrap.sh` re-emit; a bare `make lyric`) | **not yet valid** — the self-hosted emitter still mis-emits parts of its own closure | `make lyric` | the END GOAL; only runnable once `make ilverify` reports **0** |
+
+Key consequence: **a bare `make lyric` builds compiler #3**, which today can
+fault at startup (`InvalidProgramException` / `match not exhaustive`) because
+the self-hosted emitter does not yet produce valid IL for its whole closure.
+For a working dev toolchain use **`make mint`** (#2).  CI builds #2 via
+`LYRIC_BOOTSTRAP_MINT=1`; that is why CI is green while `make lyric` may not run.
+
+### The IL-validity gate
+
+`make ilverify` (→ `scripts/ilverify-selfhosted.sh`) emits the **entire
+compiler closure with the self-hosted emitter** and runs `ilverify` over every
+DLL.  Its error count is the distance between compiler #2 and a runnable
+compiler #3.  When it reports 0, the full self-hosted toolchain becomes usable
+and the `userlib`/`selfhosted` staging (uniform arity-suffixed ABI) can replace
+the mint closure everywhere.  Tracked under #3943.
+
+### "Is this a real bug?" — one command
+
+```sh
+make mint                              # build the CI-faithful toolchain once
+make selfhost-check FILE=repro.l       # → scripts/selfhost-check.sh
+```
+
+`selfhost-check` compiles `repro.l` with compiler #2 (self-hosted codegen),
+runs it, and `ilverify`s the emitted DLL, printing a verdict:
+
+* **OK** — compiles, runs, valid IL → the emitter handles this construct; a
+  failure seen elsewhere was an environment artifact (wrong binary, stale DLLs,
+  or a suffix-vs-non-suffix stdlib ABI mismatch).
+* **REAL SELF-HOSTED BUG** — compile error, runtime fault, or invalid IL, with
+  the pinpointing output inline.
+
+The recurring **ABI artifact** to rule out: the self-hosted emitter names
+generic types with an arity suffix (`Option`1`), while the mint stdlib uses the
+unsuffixed `Option`.  Linking a program emitted by the self-hosted codegen
+against the mint (unsuffixed) stdlib faults with `Could not load type
+'Std.Core.Option`1'`.  `make mint` stages a suffixed `userlib/` stdlib beside
+the binary for exactly this reason; `selfhost-check` co-locates it automatically.
+
+---
+
 ## Status against `05-implementation-plan.md`
 
 ### Phase 0 — design freeze

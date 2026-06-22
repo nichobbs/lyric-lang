@@ -183,6 +183,20 @@ jobs:
           # run time.  Runs once after the AOT build; later steps in this job
           # reuse the populated lib dir.
           bash scripts/stage-selfhosted-stdlib.sh "$lyric_bin" "$(dirname "$lyric_bin")" .bootstrap/stage1
+          # Stage a self-hosted-emitted (arity-suffixed) copy of the full stdlib
+          # under `<lib-dir>/userlib/` for USER-CODE linking.  The mint compiler's
+          # own runtime stdlib is non-suffixed, but it emits user code with
+          # suffixed generic refs (`Option`1`); linking the suffixed userlib stdlib
+          # lets cross-package generic construction resolve at run time (#3943).
+          bash scripts/stage-userlib-stdlib.sh "$lyric_bin" "$(dirname "$lyric_bin")" .bootstrap/stage1
+          # Stage the self-hosted-emitted (arity-suffixed) compiler package DLLs
+          # under `<lib-dir>/selfhosted/` and ship them in the build artifact, so
+          # downstream `@test_module`s that import `Lyric.*` compiler packages
+          # (weaver_self_test et al. in compiler-self-tests-*) link the SUFFIXED
+          # compiler DLLs — matching the suffixed userlib stdlib their test
+          # programs are emitted against (mint stage-1 DLLs would be non-suffixed
+          # and fault with `Could not load type 'Std.Core.Option`1'`).  #3943.
+          bash scripts/stage-selfhosted-compiler.sh "$lyric_bin" "$(dirname "$lyric_bin")" .bootstrap/stage1
           for ex in examples/*.l; do
             # `@proof_required` files are verifier-only — they have no
             # `func main` so `lyric build` doesn't apply.  The AOT
@@ -199,6 +213,11 @@ jobs:
             out="/tmp/$(basename "$ex" .l).dll"
             "$lyric_bin" build "$ex" -o "$out" --force
           done
+
+      # NOTE: the self-hosted-emitter IL-validity check (`ilverify`) is NOT run
+      # here.  It lives in the standalone, non-required `ilverify-informational`
+      # job below — keeping a non-enforcing measurement out of the required build
+      # job (#3956).  Developers run it on demand via `make ilverify`.
 
       # Run/test single-file examples to catch runtime regressions.
       - name: Run single-file examples
@@ -309,6 +328,44 @@ jobs:
             .bootstrap/stage1
             bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}
           retention-days: 1
+
+  # Self-hosted-emitter IL-validity measurement (#3943).  This is INTENTIONALLY
+  # a standalone, NON-REQUIRED job: it is not in `build-and-test`'s `needs`, so
+  # it never gates auto-merge.  It emits the whole Lyric.Cli closure with the
+  # self-hosted emitter and runs `ilverify` over every DLL, catching
+  # self-hosted-emitter IL bugs the F# mint build cannot (union match-arm type
+  # tracking, value-erased-to-object, list element-type confusion).  It is
+  # expected RED while the #3943 backlog clears (no `continue-on-error` masking
+  # — the check honestly reflects the count); when it reaches 0 it can be
+  # promoted into the required suite as a hard gate.  Developers run the same
+  # check locally via `make ilverify`.  Kept out of the required `build` job so
+  # a non-enforcing measurement never pollutes the gating CI suite (#3956).
+  ilverify-informational:
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: read
+    if: needs.build.outputs.has_code_changes == 'true'
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
+        with:
+          global-json-file: bootstrap/global.json
+      - name: Download build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: build-artifacts
+      - name: Restore executable permissions
+        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+      - name: ilverify self-hosted emitter IL (#3943 backlog tracking)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          bash scripts/ilverify-selfhosted.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
 
   # Placeholder job retained for workflow structure. The F# test suites
   # (Lexer, Parser, TypeChecker, Emitter, CLI) were deleted when the F#

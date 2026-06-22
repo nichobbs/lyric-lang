@@ -159,6 +159,13 @@ pub union MsilType {
   // so that extern types like DictKeyCollection[K,V] can be iterated with
   // `for x in collection` without requiring the type to implement IList.
   case MExternEnumerable(elemTy: MsilType)
+  // Lyric tuple `(A, B, ...)` — runtime representation is List<object>, so this
+  // serialises as MObject (0x1C) in all MSIL signatures (like MListOf).  The
+  // element types are carried purely for codegen tracking so that PTuple
+  // destructuring can `castclass` each `get_Item` result to its declared
+  // element type instead of leaving it as `object`, which desynced the verifier
+  // ("found object expected List<X>/Option/Result") at tuple binding sites.
+  case MTuple(elems: List[MsilType])
 }
 
 // Return the ECMA-335 ELEMENT_TYPE byte for the given MsilType.
@@ -191,6 +198,7 @@ pub func elementTypeByte(t: in MsilType): Int {
     case MIAsyncEnumerable(_) -> 0x1C  // erased to object in signatures
     case MGenericInstByName(_, _) -> 0x15  // GENERICINST prefix; full encoding via bufMsilTypeWithCtx
     case MExternEnumerable(_) -> 0x1C  // erased to object in signatures
+    case MTuple(_) -> 0x1C  // same as Object: runtime rep is List<object>
   }
 }
 
@@ -1562,6 +1570,16 @@ pub func msilTypeKey(t: in MsilType): String {
       }
       key + ">"
     }
+    case MTuple(elems) -> {
+      var key = "TUP("
+      var i = 0
+      while i < elems.count {
+        key = key + msilTypeKey(elems[i])
+        key = key + ","
+        i = i + 1
+      }
+      key + ")"
+    }
   }
 }
 
@@ -2216,12 +2234,14 @@ func buildLocalVarSig(locals: in List[MsilType]): List[Byte] {
       case MClass(_) -> bufU1(w, 0x1C)   // Object: avoids malformed CLASS+TypeDefOrRef entry
       case MGenericInst(_, _, _) -> bufU1(w, 0x1C)  // same: TypeRef token not valid in LocalVarSig
       case MValueTypeGenericInst(_, _, _) -> bufU1(w, 0x1C)  // struct generics also degrade (rare as locals)
-      // A slice local degrades to Object too: the codegen treats slices as
-      // opaque references (a `byte[]` value is still an object), and
-      // `elementTypeByte(MArray)` is only the 0x1D SZARRAY *prefix* — writing
-      // it alone produces a malformed LocalVarSig (dangling prefix, no element
-      // type) that corrupts the evaluation stack at run time (AccessViolation).
-      case MArray(_) -> bufU1(w, 0x1C)
+      // A slice/array local is encoded concretely as SZARRAY + element type
+      // (e.g. `byte[]` = 0x1D 0x05) — NOT degraded to Object.  Codegen tracks
+      // slice locals as `MArray`, so an object-typed slot desynced the verifier:
+      // `ldloc` yielded `object` where a `T[]` was expected (StackUnexpected,
+      // e.g. the metadata reader's `val b = img.bytes` → `rdU8(b, ...)`, #3943).
+      // `bufMsilType` writes the SZARRAY prefix *with* its element type, so the
+      // signature is well-formed (the earlier bare-0x1D worry doesn't apply).
+      case MArray(_) -> bufMsilType(w, locals[i])
       // Concrete collections degrade to Object in LocalVarSig like MGenericInst:
       // the local slot is an object reference that op sites `castclass` to the
       // concrete TypeSpec; the open GENERICINST token is not valid in a
@@ -2243,9 +2263,12 @@ func buildLocalVarSig(locals: in List[MsilType]): List[Byte] {
         bufU1(w, 0x11)
         writeCompressedInt(w, typeRefCode)
       }
-      // A class-ref local is a reference, so it degrades to Object safely
-      // (like MClass above) — an object-typed slot holds any ref correctly.
-      case MClassRef(_, _) -> bufU1(w, 0x1C)
+      // An extern class-ref local (e.g. `ProcessStartInfo`) is tracked
+      // concretely by codegen, so encode CLASS + its TypeRef rather than erasing
+      // to Object — an object slot desynced the verifier (`ldloc` yielded
+      // `object` where the concrete class was expected, #3943).  `bufMsilType`
+      // writes ELEMENT_TYPE_CLASS + the carried TypeRef token.
+      case MClassRef(_, _) -> bufMsilType(w, locals[i])
       case other -> bufU1(w, elementTypeByte(other))
     }
     i = i + 1
@@ -2301,7 +2324,10 @@ func buildLocalVarSigWithCtx(locals: in List[MsilType], ctx: in LoweringCtx): Li
       case MGenericInst(_, _, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       case MGenericInstByName(_, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       case MValueTypeGenericInst(_, _, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
-      case MArray(_) -> bufU1(w, 0x1C)
+      // Slice/array locals encode concretely as SZARRAY + element (#3943); see
+      // the base `buildLocalVarSig`.  `bufMsilTypeWithCtx` types reference
+      // element types via their TypeRef/TypeDef token where available.
+      case MArray(_) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       // A concrete-collection local holds a genuine `List`1<elem>` /
       // `Dictionary`2<k,v>` at run time (`MListOp(LoCtor)` emits
       // `newobj List`1<elem>`), and codegen tracks the slot concretely, so
@@ -2313,7 +2339,9 @@ func buildLocalVarSigWithCtx(locals: in List[MsilType], ctx: in LoweringCtx): Li
       // matching the runtime value (#3920).
       case MConcreteList(_) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       case MConcreteMap(_, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
-      case MClassRef(_, _) -> bufU1(w, 0x1C)
+      // Extern class-ref local: encode CLASS + TypeRef concretely (#3943); see
+      // the base `buildLocalVarSig`.
+      case MClassRef(_, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       case MValueTypeRef(typeRefCode, _) -> {
         bufU1(w, 0x11)
         writeCompressedInt(w, typeRefCode)
@@ -2326,54 +2354,33 @@ func buildLocalVarSigWithCtx(locals: in List[MsilType], ctx: in LoweringCtx): Li
 }
 
 // Build a content-based intern key for a LocalVarSig blob.
-// Uses the same element-type encoding as buildLocalVarSig so that two
-// local-var lists with identical encoded types share one blob entry.
-// Must NOT use the function name as the key: two functions in different
-// packages may share the same simple name (e.g. `advance` in Lyric.Lexer
-// and Lyric.Parser) but have different local types, causing the second
-// function's LocalVarSig to be silently aliased to the first's (#1442).
+// Must produce a DISTINCT key for every distinct `buildLocalVarSigWithCtx`
+// blob: `internBlob` dedups purely by this key and discards the second
+// blob's bytes on a collision, so two local-var lists that encode to
+// different blobs but share a key alias to the first's blob — giving the
+// second function a LocalVarSig with the wrong slot types (StackUnexpected /
+// InvalidProgramException) (#1442, #3943).
+//
+// `msilTypeKey` is the canonical per-type discriminator — documented to
+// distinguish every concrete encoding produced by `bufMsilType` (and hence by
+// `bufMsilTypeWithCtx`, which `buildLocalVarSigWithCtx` uses for
+// MConcreteList / MConcreteMap / MGenericInst / MGenericInstByName /
+// MValueTypeGenericInst).  Keying every local on it keeps the intern key in
+// lock-step with the encoder: identical MsilType sequences share one blob
+// (correct), and any difference the encoder represents concretely (a list's
+// element type, a generic's args, a class FQN) yields a different key.  Two
+// types that the encoder erases to the same byte (e.g. MClassRef vs MArray,
+// both Object in LocalVarSig) get distinct keys and hence redundant — but
+// byte-identical — blobs, which is harmless.
+//
+// This previously mirrored the *old* erase-to-Object `buildLocalVarSig`, but
+// #3920 switched `lowerMFunc` to the concrete-encoding `buildLocalVarSigWithCtx`
+// without updating this key, reintroducing exactly the aliasing #1442 fixed.
 func buildLvSigKey(locals: in List[MsilType]): String {
   var key = "lv_"
   var i = 0
   while i < locals.count {
-    // Value-typed locals encode their TypeRef token, so two distinct structs
-    // (System.Guid vs System.DateTime) produce different LocalVarSig blobs and
-    // must NOT share an intern key — fold the TypeRef code into the key
-    // (#1602).  Reference / primitive locals key on the element-type byte.
-    match locals[i] {
-      case MValueTypeRef(typeRefCode, _) -> {
-        key = key + "vt" + toString(typeRefCode) + "_"
-      }
-      // MClass(fqn) locals are encoded with the real TypeDef token in
-      // buildLocalVarSigWithCtx, so they must key on the FQN to avoid
-      // aliasing two different SM classes to the same LocalVarSig blob.
-      case MClass(fqn) -> {
-        key = key + "cls_" + fqn + "_"
-      }
-      // MValueTypeGenericInst locals are encoded with the full GENERICINST
-      // VALUETYPE signature in buildLocalVarSigWithCtx; key on typeRefCode +
-      // arg types so distinct instantiations (e.g. TaskAwaiter<Int> vs
-      // TaskAwaiter<String>) don't alias to the same LocalVarSig blob.
-      case MValueTypeGenericInst(typeRefCode, _, typeArgs) -> {
-        key = key + "vtgi" + toString(typeRefCode) + "_"
-        var tai = 0
-        while tai < typeArgs.count {
-          key = key + msilTypeKey(typeArgs[tai]) + "_"
-          tai = tai + 1
-        }
-      }
-      case _ -> {
-        val b = match locals[i] {
-          case MClassRef(_, _) -> 0x1C
-          case MGenericInst(_, _, _) -> 0x1C
-          case MGenericInstByName(_, _) -> 0x1C
-          case MConcreteList(_) -> 0x1C
-          case MConcreteMap(_, _) -> 0x1C
-          case other -> elementTypeByte(other)
-        }
-        key = key + toString(b) + "_"
-      }
-    }
+    key = key + msilTypeKey(locals[i]) + "_"
     i = i + 1
   }
   key
