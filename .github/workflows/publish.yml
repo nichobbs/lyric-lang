@@ -367,9 +367,11 @@ jobs:
           echo "nuget_key=$NUGET_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Push to NuGet.org
+        env:
+          NUGET_KEY: ${{ steps.nuget-auth.outputs.nuget_key }}
         run: |
           dotnet nuget push bootstrap/nupkgs/*.nupkg \
-            --api-key "${{ steps.nuget-auth.outputs.nuget_key }}" \
+            --api-key "$NUGET_KEY" \
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate
 
