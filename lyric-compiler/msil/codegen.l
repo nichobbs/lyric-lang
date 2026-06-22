@@ -4058,6 +4058,11 @@ func externClosedGenericMsil(cctx: in CodegenCtx, clrFqn: in String): Option[Msi
   if argFqns.count == 0 {
     return None
   }
+  // The arg loop reads `cctx.metadataVtypeSet` (value-type classification) and
+  // both this function and `clrArgFqnToMsil` intern TypeRefs whose assembly is
+  // resolved from the metadata index — ensure it is built first, matching the
+  // unconditional `ensureMetadataIndex` of the non-generic extern path (#4003).
+  ensureMetadataIndex(cctx)
   val argTys: List[MsilType] = newList()
   var ai = 0
   while ai < argFqns.count {
