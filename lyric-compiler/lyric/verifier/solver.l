@@ -62,7 +62,8 @@ pub func parseModel(modelText: in String): List[CounterexampleBinding] {
   while i < lines.count {
     val line = lines[i].trim()
     if line.startsWith("(define-fun ") {
-      val header = line.substring("(define-fun ".length)
+      val dfLen = "(define-fun ".length
+      val header = line.substring(dfLen, line.length - dfLen)
       // Split into: name  ()  sort  rest
       val parts = splitSpaces(header, 4)
       if parts.count >= 3 and parts[1] == "()" {
@@ -160,7 +161,7 @@ func splitSpaces(s: in String, maxParts: in Int): List[String] {
             current = ""
             if result.count >= maxParts - 1 {
               // Remainder goes into last part.
-              val rest = s.substring(i + 1).trim()
+              val rest = s.substring(i + 1, s.length - i - 1).trim()
               if rest.length > 0 {
                 result.add(rest)
               }
@@ -469,6 +470,6 @@ func pathBaseName(path: in String): String {
   if pos < 0 {
     path
   } else {
-    path.substring(pos + 1)
+    path.substring(pos + 1, path.length - pos - 1)
   }
 }

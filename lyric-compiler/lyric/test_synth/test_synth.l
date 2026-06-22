@@ -310,7 +310,7 @@ pub func synthesize(source: in String, filter: in Option[String]): Outcome {
     i = i + 1
   }
   if cursor < source.length {
-    sb = sb + source.substring(cursor)
+    sb = sb + source.substring(cursor, source.length - cursor)
   }
   sb = sb + "\n\n"
   sb = sb + synthesizeMain(tests, skipped, filter)

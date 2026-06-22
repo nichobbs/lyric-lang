@@ -106,7 +106,7 @@ pub func substring(s: in String, start: in Int): String
   requires: start >= 0
   requires: start <= s.length
 {
-  return s.substring(start)
+  return s.substring(start, s.length - start)
 }
 
 // Return the substring bounded by start and character count.

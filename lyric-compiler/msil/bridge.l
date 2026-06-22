@@ -823,7 +823,7 @@ pub func compileProjectToMsilEncoded(
       return false
     }
     val name = line.substring(0, tabPos)
-    val src = line.substring(tabPos + 1)
+    val src = line.substring(tabPos + 1, line.length - tabPos - 1)
     packages.add(ProjectPackagePayload(name = name, source = src))
     i = i + 1
   }
@@ -862,7 +862,7 @@ pub func compileProjectToMsilWithRestoredEncoded(
       return false
     }
     val name = line.substring(0, tabPos)
-    val src = line.substring(tabPos + 1)
+    val src = line.substring(tabPos + 1, line.length - tabPos - 1)
     packages.add(ProjectPackagePayload(name = name, source = src))
     i = i + 1
   }

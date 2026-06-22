@@ -16751,7 +16751,7 @@ func globMatchMsil(glob: in String, name: in String): Bool {
         return true
       }
       while ni < name.length {
-        if globMatchMsil(glob.substring(gi), name.substring(ni)) {
+        if globMatchMsil(glob.substring(gi, glob.length - gi), name.substring(ni, name.length - ni)) {
           return true
         }
         ni = ni + 1

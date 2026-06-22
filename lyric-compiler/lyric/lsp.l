@@ -123,7 +123,7 @@ func readLspFrame(): Option[String] {
       if colon > 0 {
         val key = line.substring(0, colon).trim()
         // BCL Substring / Trim
-        val value = line.substring(colon + 1).trim()
+        val value = line.substring(colon + 1, line.length - colon - 1).trim()
         if key.toLower() == "content-length" {
           match parseOptInt(value) {
             case None -> {
@@ -323,9 +323,9 @@ func pushDiagnostics(uri: in String, diags: in List[Diagnostic]): String {
 // ─────────────────────────────────────────────────────────────────────────────
 func uriToPath(uri: in String): String {
   if uri.startsWith("file:///") {
-    uri.substring(7)
+    uri.substring(7, uri.length - 7)
   } else if uri.startsWith("file://") {
-    uri.substring(7)
+    uri.substring(7, uri.length - 7)
   } else {
     uri
   }
@@ -1284,7 +1284,8 @@ func textAtJsonRange(source: in String, rangeJson: in String): String {
     val safeLen = if startChar + len > line.length { line.length - startChar } else { len }
     line.substring(startChar, safeLen)
   } else {
-    var resultStr = lines[startLine].substring(startChar)
+    val firstLine = lines[startLine]
+    var resultStr = firstLine.substring(startChar, firstLine.length - startChar)
     var li = startLine + 1
     while li < endLine and li < lines.length {
       resultStr = resultStr + "\n" + lines[li]
@@ -1453,10 +1454,18 @@ func ensureLspMetadataIndex(state: in LspState): Unit {
       val ty = Mdr.buildTypeIndex(paths)
       val pa = Mdr.buildPathIndex(paths)
       for k in dictGetKeys(ty) {
-        match mapGet(ty, k) { case Some(v) -> state.ffiTypeIndex.add(k, v); case None -> {  } }
+        match mapGet(ty, k) {
+          case Some(v) -> state.ffiTypeIndex.add(k, v)
+          case None -> {
+          }
+        }
       }
       for k in dictGetKeys(pa) {
-        match mapGet(pa, k) { case Some(v) -> state.ffiPathIndex.add(k, v); case None -> {  } }
+        match mapGet(pa, k) {
+          case Some(v) -> state.ffiPathIndex.add(k, v)
+          case None -> {
+          }
+        }
       }
     }
   }
@@ -1496,10 +1505,7 @@ func renderTypeExprAsLyricSource(te: in TypeExpr): String {
         if ai > 0 {
           s = s + ", "
         }
-        s = s + match args[ai] {
-          case TAType(t) -> renderTypeExprAsLyricSource(t)
-          case TAValue(_) -> "_"
-        }
+        s = s + match args[ai] { case TAType(t) -> renderTypeExprAsLyricSource(t); case TAValue(_) -> "_" }
         ai = ai + 1
       }
       s = s + "]"
@@ -1514,7 +1520,11 @@ func renderTypeExprAsLyricSource(te: in TypeExpr): String {
 // native-interface method stubs from the iface's `IMSig` members.
 func renderParamAsLyricSource(p: in Param): String {
   val modeStr = if p.modeExplicit {
-    match p.mode { case PMIn -> "in "; case PMOut -> "out "; case PMInout -> "inout " }
+    match p.mode {
+      case PMIn -> "in "
+      case PMOut -> "out "
+      case PMInout -> "inout "
+    }
   } else {
     ""
   }
@@ -1642,19 +1652,34 @@ func lspFindExternTypeFqn(tbl: in SymbolTable, name: in String): String {
 func sigTypeToLyricSource(s: in Mdr.SigType): String {
   val pb = Mdr.sigPrimByte(s)
   if pb >= 0 {
-    if pb == 0x01 { "Unit" }
-    else if pb == 0x02 { "Bool" }
-    else if pb == 0x03 { "Char" }
-    else if pb == 0x05 { "Byte" }
-    else if pb == 0x08 { "Int" }
-    else if pb == 0x0A { "Long" }
-    else if pb == 0x0D { "Double" }
-    else if pb == 0x0E { "String" }
-    else if pb == 0x1C { "Any" }
-    else { "Any" }
+    if pb == 0x01 {
+      "Unit"
+    } else if pb == 0x02 {
+      "Bool"
+    } else if pb == 0x03 {
+      "Char"
+    } else if pb == 0x05 {
+      "Byte"
+    } else if pb == 0x08 {
+      "Int"
+    } else if pb == 0x0A {
+      "Long"
+    } else if pb == 0x0D {
+      "Double"
+    } else if pb == 0x0E {
+      "String"
+    } else if pb == 0x1C {
+      "Any"
+    } else {
+      "Any"
+    }
   } else {
     val fqn = Mdr.sigNamedFqn(s)
-    if fqn.length > 0 { fqn } else { "Any" }
+    if fqn.length > 0 {
+      fqn
+    } else {
+      "Any"
+    }
   }
 }
 
@@ -1812,43 +1837,11 @@ func buildNativeStubBlock(iface: in InterfaceDecl, impls: in List[String], inden
 // returns "" when the reference pack is absent or every required method is
 // already implemented.  Skips methods whose signature mentions a generic /
 // byref / array shape (D105 §B v1 covers flat signatures only).
-func buildExternStubBlock(
-  state: in LspState, externFqn: in String, impls: in List[String], indent: in String
-): String {
+func buildExternStubBlock(state: in LspState, externFqn: in String, impls: in List[String], indent: in String): String {
   ensureLspMetadataIndex(state)
   match mapGet(state.ffiTypeIndex, externFqn) {
     case None -> ""
-    case Some(asmName) -> match mapGet(state.ffiPathIndex, asmName) {
-      case None -> ""
-      case Some(asmPath) -> match Mdr.inspectInterfaceTarget(asmPath, externFqn) {
-        case None -> ""
-        case Some(insp) -> {
-          if not insp.isInterface {
-            return ""
-          }
-          var block = ""
-          var i = 0
-          while i < insp.methods.count {
-            val m = insp.methods[i]
-            if m.isAbstract and not m.isStatic and not listContainsString(impls, m.name) {
-              var renderable = sigIsRenderable(m.returnType)
-              var pj = 0
-              while pj < m.paramTypes.count and renderable {
-                if not sigIsRenderable(m.paramTypes[pj]) {
-                  renderable = false
-                }
-                pj = pj + 1
-              }
-              if renderable {
-                block = block + stubFromExternSig(m, indent + "  ")
-              }
-            }
-            i = i + 1
-          }
-          block
-        }
-      }
-    }
+    case Some(asmName) -> match mapGet(state.ffiPathIndex, asmName) { case None -> ""; case Some(asmPath) -> match Mdr.inspectInterfaceTarget(asmPath, externFqn) { case None -> ""; case Some(insp) -> { if not insp.isInterface { return "" }; var block = ""; var i = 0; while i < insp.methods.count { val m = insp.methods[i]; if m.isAbstract and not m.isStatic and not listContainsString(impls, m.name) { var renderable = sigIsRenderable(m.returnType); var pj = 0; while pj < m.paramTypes.count and renderable { if not sigIsRenderable(m.paramTypes[pj]) { renderable = false }; pj = pj + 1 }; if renderable { block = block + stubFromExternSig(m, indent + "  ") } }; i = i + 1 }; block } } }
   }
 }
 
@@ -1929,10 +1922,7 @@ func handleCodeAction(state: in LspState, params: in String): String {
       // The replacement range is exactly the closing `}` so the inserted
       // stubs land just before it; the `}` is reprinted at the end of the
       // newText to keep the surrounding source intact.
-      val reqRange = match tryGetProperty(root, "range") {
-        case None -> "{}"
-        case Some(e) -> getRawText(e)
-      }
+      val reqRange = match tryGetProperty(root, "range") { case None -> "{}"; case Some(e) -> getRawText(e) }
       match findImplDeclAtRange(cachedFile, reqRange) {
         case None -> {
         }
@@ -1950,7 +1940,11 @@ func handleCodeAction(state: in LspState, params: in String): String {
               nativeBlock
             } else {
               val externFqn = lspFindExternTypeFqn(cachedCr.symbols, ifaceName)
-              if externFqn.length > 0 { buildExternStubBlock(state, externFqn, impls, indent) } else { "" }
+              if externFqn.length > 0 {
+                buildExternStubBlock(state, externFqn, impls, indent)
+              } else {
+                ""
+              }
             }
             if stubBlock.length > 0 {
               val rng = implCloseBraceRange(cached.source, implDecl)

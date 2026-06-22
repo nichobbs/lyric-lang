@@ -693,7 +693,8 @@ func importLinePackage(line: in String): String {
   if not Str.startsWith(trimmed, prefix) {
     return ""
   }
-  val rest = Str.trim(trimmed.substring(prefix.length))
+  val pfxLen = prefix.length
+  val rest = Str.trim(trimmed.substring(pfxLen, trimmed.length - pfxLen))
   // The package path is the first whitespace-delimited token; an ` as
   // <alias>` clause (or a trailing comment) follows a space.
   val parts = Str.split(rest, " ")
