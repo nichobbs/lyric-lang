@@ -3979,6 +3979,47 @@ func valueTupleMsilCtx(cctx: in CodegenCtx): MsilType {
   MValueTypeRef(typeRefCode = tdrTypeRef(refRow), clrFqn = "System.ValueTuple")
 }
 
+// Rewrite the type-ARGUMENT lists of every generic instantiation in `ty`
+// (recursively), replacing a `MVoid` argument with `System.ValueTuple`.  A
+// `MVoid` reaches a generic-argument slot only from a `Unit` / `Never` type
+// argument (`typeExprToMsilCtx` maps both to `MVoid`), so this is an exact
+// "`Unit`-at-value-position" rewrite.  The TOP-LEVEL type is left untouched —
+// a function returning bare `Unit` still returns `void`.
+//
+// This is applied ONLY when encoding a cross-package REFERENCE to an
+// F#-built producer (`registerStdlibFunc`).  The F# emitter encodes a
+// `Unit`/`Never` generic argument as `System.ValueTuple` at value position
+// (`TypeMap.fs`), so a self-hosted consumer's MemberRef must match to bind
+// (otherwise `Result[Unit, E]` degrades to `Result<object, E>` and faults with
+// MissingMethodException).  It is deliberately NOT applied to the in-bundle
+// definition / value-construction path (`typeExprToMsilCtx` proper): a
+// self-hosted package's own `Result[Unit, E]` values are represented with an
+// `object` argument end-to-end (def, ctor, and match all agree), and lifting
+// only the type to `ValueTuple` without changing the value representation
+// silently miscompiles them.
+func xrefUnitArgsToValueTuple(cctx: in CodegenCtx, ty: in MsilType): MsilType {
+  match ty {
+    case MGenericInst(trc, fqn, targs) -> MGenericInst(typeRefCode = trc, headFqn = fqn, typeArgs = xrefRewriteArgList(cctx, targs))
+    case MGenericInstByName(fqn, targs) -> MGenericInstByName(headFqn = fqn, typeArgs = xrefRewriteArgList(cctx, targs))
+    case MValueTypeGenericInst(trc, fqn, targs) -> MValueTypeGenericInst(typeRefCode = trc, headFqn = fqn, typeArgs = xrefRewriteArgList(cctx, targs))
+    case _ -> ty
+  }
+}
+
+func xrefRewriteArgList(cctx: in CodegenCtx, args: in List[MsilType]): List[MsilType] {
+  val acc: List[MsilType] = newList()
+  var i = 0
+  while i < args.count {
+    val a = args[i]
+    match a {
+      case MVoid -> acc.add(valueTupleMsilCtx(cctx))
+      case _ -> acc.add(xrefUnitArgsToValueTuple(cctx, a))
+    }
+    i = i + 1
+  }
+  acc
+}
+
 // type references via the codegen context (#1183 codegen port).
 pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String): MsilType {
   match te.kind {
@@ -22909,7 +22950,7 @@ pub record StdlibPkg {
 /// imports still work because their callsite codegen never reaches
 /// the `funcTokens` lookup (handled by the hardcoded builtin arms in
 /// `lowerBuiltinOrStaticCallMsil`).
-pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibPkg]): Unit {
+pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibPkg], usesAritySuffix: Bool): Unit {
   // Pass 1: register all type items across every package first.  This
   // populates `typeFqnByName` and `ffiTypeRefs` before any function
   // signature is resolved, so cross-package generic return types (e.g.
@@ -22925,7 +22966,7 @@ pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibP
       match it.kind {
         case IFunc(_) -> {
         }
-        case _ -> registerStdlibTypeItem(cctx, pkg.name, it, asmRefRow)
+        case _ -> registerStdlibTypeItem(cctx, pkg.name, it, asmRefRow, usesAritySuffix)
       }
       ii = ii + 1
     }
@@ -22941,7 +22982,7 @@ pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibP
     while ii < pkg.items.count {
       val it: Item = pkg.items[ii]
       match it.kind {
-        case IFunc(decl) -> registerStdlibFunc(cctx, pkg.name, hostRefRow, decl)
+        case IFunc(decl) -> registerStdlibFunc(cctx, pkg.name, hostRefRow, decl, usesAritySuffix)
         case _ -> {
         }
       }
@@ -23196,6 +23237,7 @@ func registerStdlibTypeItem(
   packageName: in String,
   it: in Item,
   asmRefRow: in Int,
+  usesAritySuffix: Bool,
 ): Unit {
   // Extern types declared in the stdlib `_kernel/` boundary (e.g.
   // `extern type Uuid = "System.Guid"`) carry the Lyric-name → CLR-FQN
@@ -23241,7 +23283,7 @@ func registerStdlibTypeItem(
     case IUnion(decl) -> genericNamesOf(decl.generics).count
     case _ -> 0
   }
-  val typeRefName = if typeArity > 0 { typeName + "`" + toString(typeArity) } else { typeName }
+  val typeRefName = if typeArity > 0 and usesAritySuffix { typeName + "`" + toString(typeArity) } else { typeName }
   val typeFqn = packageName + "." + typeName
   val typeRefKey = packageName + "/" + typeFqn
   if not cctx.ffiTypeRefs.containsKey(typeRefKey) {
@@ -23278,7 +23320,7 @@ func registerStdlibTypeItem(
       while ci < decl.cases.count {
         val caseName = decl.cases[ci].name
         val ctorKey = packageName + "." + decl.name + "_" + caseName
-        val caseClassName = if caseArity > 0 {
+        val caseClassName = if caseArity > 0 and usesAritySuffix {
           decl.name + "_" + caseName + "`" + toString(caseArity)
         } else {
           decl.name + "_" + caseName
@@ -23658,6 +23700,7 @@ func registerStdlibFunc(
   packageName: in String,
   hostRefRow: in Int,
   fn: in FunctionDecl,
+  usesAritySuffix: Bool,
 ): Unit {
   val isPub = match fn.visibility { case Some(VisPub(_)) -> true; case _ -> false }
   if not isPub {
@@ -23675,13 +23718,19 @@ func registerStdlibFunc(
   val fqn = packageName + "." + fn.name
   val arityKey = fqn + "/" + toString(fn.params.count)
 
+  // When the stdlib DLL was produced by the self-hosted emitter (`usesAritySuffix
+  // = true`), a `Unit`/`Never` generic argument is `object` end-to-end (def,
+  // ctor, and match all agree).  When it was produced by the F# emitter
+  // (`usesAritySuffix = false`), the convention is `System.ValueTuple` at value
+  // position (`TypeMap.fs`); the MemberRef must match to avoid MissingMethodException.
   val paramTypes: List[MsilType] = newList()
   var pi = 0
   while pi < fn.params.count {
     paramTypes.add(typeExprToMsilCtx(cctx, fn.params[pi].ty, packageName))
     pi = pi + 1
   }
-  val retType = match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
+  val retTypeRaw = match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
+  val retType = if not usesAritySuffix { xrefUnitArgsToValueTuple(cctx, retTypeRaw) } else { retTypeRaw }
   val funcSig = buildStaticMethodSigWithCtx(byrefWrapSigTypes(fn.params, paramTypes), retType, cctx.lctx)
   val fnModes = paramModesOf(fn.params)
   // Register with an arity-specific key so overloaded stdlib functions

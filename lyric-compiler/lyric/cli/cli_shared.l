@@ -478,21 +478,25 @@ func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
     return
   }
   val destDir = Path.dirname(outPath)
-  // Resolve the stdlib source directory for user-code runtime DLLs.
-  // Priority (first hit wins):
-  //   1. $LYRIC_STDLIB_BIN — explicit override; may be a DLL path (use its
-  //      directory) or a directory.
-  //   2. <srcDir>/userlib/ — self-hosted-emitted arity-suffix stdlib staged by
-  //      stage-userlib-stdlib.sh for mint-bootstrap toolchains.
-  //   3. srcDir — fully self-hosted toolchain (stdlib already arity-suffixed).
-  val envStdlib = Environment.getVarOrDefault("LYRIC_STDLIB_BIN", "")
-  val stdlibSrc =
-    if envStdlib.length > 0 {
-      if Str.endsWith(envStdlib, ".dll") { Path.dirname(envStdlib) } else { envStdlib }
-    } else {
-      val userlib = Path.join(srcDir, "userlib")
-      if File.fileExists(Path.join(userlib, "Lyric.Stdlib.Core.dll")) { userlib } else { srcDir }
-    }
+  // ALL compiled output (user programs, test programs, woven code) is emitted by
+  // the self-hosted codegen with arity-suffixed generic type references
+  // (`Option`1`, `Result_Ok`1`).  A mint-bootstrapped toolchain's own runtime
+  // stdlib (the `Lyric.Stdlib.*.dll` beside the compiler) is built by the
+  // non-suffixing stage-0 emitter, so linking it for output faults at load with
+  // `Could not load type 'Std.Core.Option`1'`.  When a self-hosted-emitted
+  // (suffixed) stdlib is staged under `<srcDir>/userlib/`, link THAT for output
+  // so the suffixed references resolve; the compiler keeps its own non-suffixed
+  // stdlib in its process's appBase, untouched.  A fully self-hosted toolchain
+  // has no `userlib/` (its own stdlib is already suffixed) and falls back to
+  // `srcDir`.
+  //
+  // Output that links compiler packages (a `@test_module` importing
+  // `Lyric.Weaver` etc.) must link the SELF-HOSTED (suffixed) compiler DLLs from
+  // `<libdir>/selfhosted/` — not the mint stage-1 bundle — so they too match the
+  // suffixed `userlib` Core; that staging is the toolchain build's job
+  // (`stage-selfhosted-compiler.sh`), not this co-location step.
+  val userlib = Path.join(srcDir, "userlib")
+  val stdlibSrc = if File.fileExists(Path.join(userlib, "Lyric.Stdlib.Core.dll")) { userlib } else { srcDir }
   // Stdlib façades + their `*Host` shims come from `stdlibSrc` (the suffixed
   // userlib when present); everything else (`FSharp.Core.dll`, the emitter shim)
   // always comes from `srcDir`.
