@@ -16117,13 +16117,11 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
     if isByrefMode(p.mode) {
       fctx.byrefSlotTypes.add(slot, paramTy)
     }
-    // A lambda parameter arrives boxed (`object`) in the Func delegate; when it
-    // has a known non-object logical type (annotation or propagated), record it
-    // so reads unbox/cast on load (#1939).  The signature itself stays `object`
-    // (forced below).
-    if isLambdaFn and paramTy != MObject {
-      fctx.boxedParamTypes.add(slot, paramTy)
-    }
+    // Phase 1 strongly-typed lambdas: the lambda method signature uses actual
+    // parameter types (Int, String, etc.), not object. Parameters arrive with their
+    // declared types and do NOT need unboxing. boxedParamTypes is not used for
+    // Phase 1 lambdas; it was part of the object-uniformity approach that Phase 1
+    // supersedes (#1877, #1939).
     // Record the declared return type of a function-typed param (a `(A,...) -> R`
     // value) so invoking it (`f()`) yields R rather than a bare object (#1877).
     match p.ty.kind {
