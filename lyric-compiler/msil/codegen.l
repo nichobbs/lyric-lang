@@ -107,6 +107,8 @@ pub record CodegenCtx {
   tokStringIsNormalized: Int  // String.IsNormalized(): bool
   tokStringNormalize: Int  // String.Normalize(): string
   tokStringTrim: Int  // String.Trim(): string
+  tokStringTrimStart: Int  // String.TrimStart(): string
+  tokStringTrimEnd: Int  // String.TrimEnd(): string
   tokStringIndexOf: Int  // String.IndexOf(string): int32  (-1 if absent)
   tokStringLastIndexOf: Int  // String.LastIndexOf(string): int32  (-1 if absent)
   tokStringStartsWith: Int  // String.StartsWith(string): bool
@@ -1152,6 +1154,26 @@ pub func newCodegenCtx(
   val tokStringTrim = 0x0A000000 +
     ctxAddMemberRef(lctx, trString, "Trim", "str_trim", buildInstanceMethodSig(strTrimPs, MString))
 
+  val strTrimStartPs: List[MsilType] = newList()
+  val tokStringTrimStart = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trString,
+      "TrimStart",
+      "str_trimstart",
+      buildInstanceMethodSig(strTrimStartPs, MString)
+    )
+
+  val strTrimEndPs: List[MsilType] = newList()
+  val tokStringTrimEnd = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trString,
+      "TrimEnd",
+      "str_trimend",
+      buildInstanceMethodSig(strTrimEndPs, MString)
+    )
+
   val strIndexOfPs: List[MsilType] = newList()
   strIndexOfPs.add(MString)
   val tokStringIndexOf = 0x0A000000 +
@@ -1608,6 +1630,8 @@ pub func newCodegenCtx(
     tokStringIsNormalized = tokStringIsNormalized,
     tokStringNormalize = tokStringNormalize,
     tokStringTrim = tokStringTrim,
+    tokStringTrimStart = tokStringTrimStart,
+    tokStringTrimEnd = tokStringTrimEnd,
     tokStringIndexOf = tokStringIndexOf,
     tokStringLastIndexOf = tokStringLastIndexOf,
     tokStringStartsWith = tokStringStartsWith,
@@ -10732,6 +10756,14 @@ func lowerMethodCallMsil(
   } else if memberName == "trim" and args.count == 0 {
     // String.Trim(): string  instance HASTHIS — receiver already on stack.
     insns.add(MCallvirt(methodToken = cctx.tokStringTrim))
+    MString
+  } else if memberName == "trimStart" and args.count == 0 {
+    // String.TrimStart(): string  — trims leading whitespace.
+    insns.add(MCallvirt(methodToken = cctx.tokStringTrimStart))
+    MString
+  } else if memberName == "trimEnd" and args.count == 0 {
+    // String.TrimEnd(): string  — trims trailing whitespace.
+    insns.add(MCallvirt(methodToken = cctx.tokStringTrimEnd))
     MString
   } else if memberName == "indexOf" and args.count == 1 {
     // String.IndexOf(string): int32 — BCL semantics (-1 when absent),
