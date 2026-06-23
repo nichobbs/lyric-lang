@@ -19372,10 +19372,6 @@ pub func lambdaCaptureNamesMsil(fctx: in FuncCtx, lparams: in List[LambdaParam],
 //   - extractLambdaIndexFromName
 
 // BFS-based liftLambdasMsil: extract all ELambda nodes into synthetic IFunc
-  )
-}
-
-// BFS-based liftLambdasMsil: extract all ELambda nodes into synthetic IFunc
 // items in breadth-first order so lambda indices match the codegen traversal.
 // Phase 2: Also synthesize closure record types for capturing lambdas.
 pub func liftLambdasMsil(file: in SourceFile): SourceFile {
