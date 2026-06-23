@@ -6684,6 +6684,89 @@ CLI's observable behaviour.
 
 ---
 
+## D110 — Isolated per-stage toolchains; stage 2 (true-builds-true) is the ship/test toolchain; reproducibility is a non-blocking diagnostic
+
+**Decision.** The self-hosting build is organised into four stages, each a
+**complete, self-consistent toolchain for ONE compiler generation**, written to
+its own isolated root and never co-mingled with another generation's artefacts:
+
+- **Stage 0** — acquire a *seed* binary (downloaded self-hosted release, or the
+  minted F# bootstrap from git history). Output `.bootstrap/stage0-publish/`.
+- **Stage 1** — the seed compiles the current true-compiler sources into a
+  *runnable* true compiler + the smoke stdlib needed to run it. Output
+  `.bootstrap/stage1/` (flat). Intrinsically **ABI-mixed** (its own runtime
+  stdlib is seed-emitted/non-arity-suffixed while the code it *emits* is
+  arity-suffixed), so it is a **build-only** toolchain, not a ship/test one.
+- **Stage 2** — the stage-1 true compiler rebuilds **itself + the full stdlib**
+  into an isolated, self-consistent root `.bootstrap/stage2/{lib,bin}` via a
+  single `--internal-perpackage-build` over a driver importing `Lyric.Cli` plus
+  every public `Std.*` package. Every compiler and stdlib package is emitted
+  per-package, arity-suffixed, and mutually consistent. **This is the toolchain
+  everything is tested against and that ships.**
+- **Stage 3** — reproducibility fixpoint: stage 2 emits the stdlib bundle and
+  its own closure twice; the images must be byte-identical (`cmp`).
+
+**Runnability-first inversion.** The gating property is "**the true compiler
+builds AND runs everything**", not "two stages are byte-identical". Building the
+stage-2 toolchain is the runnability gate: when the self-hosted emitter has a
+bug, the per-package emit may still succeed but the AOT-linked binary faults at
+startup — that surfaces as a **clean, specific failure** (a real emitter bug to
+fix) instead of being masked by build-system noise. The byte-for-byte
+reproducibility check (Q-dist-001) moves to stage 3 as a **non-blocking
+diagnostic** (`SKIP_VERIFY`-gated), reported but never fatal, and skipped with a
+"pending" note while the stage-2 toolchain is not yet runnable.
+
+**Resolution contract.** A toolchain pins its **own** stdlib: tests/CI set
+`LYRIC_STDLIB_BIN=.bootstrap/stage2/lib` to select the stage-2 generation, with
+no cross-generation fallback. The stage-2 binary's `bin/` co-locates its stdlib
+so it also resolves with zero configuration. This is the target that replaces
+the previous silent-fallback chain and the `userlib/` ABI-sniff / `selfhosted/`
+staging hacks (which existed only because stage 1 mixed a seed-emitted
+non-suffixed stdlib with self-hosted patches — a second ABI that stage 2
+eliminates by construction). Removing those fallbacks from the CLI source
+(`cli_shared.l` / `emitter.l`) is a tracked follow-up.
+
+**Stdlib packaging — single DLL is the target (aligned with distribution).**
+The current self-hosted emitter writes cross-assembly references to stdlib types
+under **per-package assembly names** (`[Lyric.Stdlib.Core]Std.Core.Option`), so
+each `Std.X` must deploy as its own `Lyric.Stdlib.X.dll` for those references to
+resolve at runtime (.NET resolves a TypeRef by `(assembly identity, type
+name)`). That per-package form is a **bootstrap-era artefact**, and it conflicts
+with the distribution strategy (docs/22 §2, docs/34), which mandates a **single
+`Lyric.Stdlib.dll`** in `lib/` carrying every package's `Lyric.Contract.<X>`
+resource — explicitly *replacing* the ~25 per-package DLLs. The decision is to
+**collapse stdlib to that single DLL**: change the emitter's stdlib reference
+convention so stdlib types resolve to the single assembly identity
+`Lyric.Stdlib` (drop the `stdlibAssemblyName → Lyric.Stdlib.<X>` mapping in
+`codegen.l`), after which one `Lyric.Stdlib.dll` satisfies both compile-time
+(the contract resources) and runtime (the type definitions). This does *not*
+make stdlib an inconsistent special case: the compiler's own `Lyric.Lyric.*` /
+`Lyric.Msil.*` packages stay per-package because they are **build intermediates
+AOT-linked into the `lyric` binary**, never distributed, whereas the stdlib is a
+**distributed artefact** user programs link. The emitter reference-convention
+change is a tracked follow-up (it is a `.l` change, verifiable only against a
+runnable self-hosted toolchain or CI's emitter — currently gated by the
+arity-suffix blocker below). Until it lands, `build_stage2` emits the stdlib
+per-package because that is the only form the current emitter references; it
+switches to the single bundle (`lyric.full.toml` `output = "single"`) once the
+convention changes, with no bootstrap-stage changes required.
+
+**Status (2026-06-23).** Implemented in `scripts/bootstrap.sh` (`build_stage2`,
+`stage3`, isolated `.bootstrap/stage2/{lib,bin}`) and `Makefile`
+(`stage2`/`stage3`/`run-stage2`). Verified end-to-end via the minted seed:
+stage 2 emits 123 self-hosted DLLs and the runnability smoke surfaces the real
+blocker non-fatally — `System.TypeLoadException: Could not load type
+'Std.Core.Option' from assembly 'Lyric.Stdlib.Core'` (the docs/43 arity-suffix
+mismatch: consumer references `Option`, producer defines `Option`1` — right
+assembly, wrong type name). The CLI strict-resolution cleanup and the CI
+restructure onto the stage-2 artifact are tracked follow-ups; they require a
+runnable self-hosted toolchain (or CI's emitter) to verify, which the surfaced
+blocker currently gates.
+
+**Related:** docs/41 / docs/43 (arity-suffix self-host gaps), D059, Q-dist-001.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

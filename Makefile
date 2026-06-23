@@ -39,13 +39,15 @@
 #      development: it RUNS the self-hosted codegen, so compiling a program with
 #      it exercises the self-hosted emitter on USER code while staying runnable.
 #
-#   3. SELF-HOSTED STAGE-1 — the self-hosted compiler compiled BY ITSELF (the
-#      default `scripts/bootstrap.sh` re-emit, what a bare `make lyric`
-#      produces).  This is the END GOAL but is only runnable once the
-#      self-hosted EMITTER produces valid IL for its own closure — measured by
-#      `make ilverify`.  Until that reports 0, this binary may fault
-#      (InvalidProgramException / "match not exhaustive"); do NOT use it as your
-#      dev toolchain.  `make ilverify` is the gate.
+#   3. SELF-HOSTED STAGE-2 — the self-hosted compiler compiled BY ITSELF, built
+#      as an ISOLATED, self-consistent toolchain by `make stage2`
+#      (.bootstrap/stage2/{lib,bin}; no co-mingling with the seed).  This is the
+#      END GOAL and the SHIP/TEST toolchain: run everything against it via
+#      `make run-stage2 ARGS=...` (which pins LYRIC_STDLIB_BIN to its own
+#      stdlib).  It is only runnable once the self-hosted EMITTER produces valid
+#      IL for its own closure; `make stage2` reports the blocker non-fatally
+#      when it does not, and `make ilverify` quantifies it.  Until stage 2 runs,
+#      use the mint toolchain (#2) for day-to-day development.
 #
 # Decision rule when a test/program misbehaves:
 #   * Reproduce with `make mint` (CI-faithful, known-good).  If it still fails,
@@ -62,6 +64,7 @@ BUILD_CONFIG ?= Release
 AOT_BIN := bootstrap/src/Lyric.Cli.Aot/bin/$(BUILD_CONFIG)/net10.0/lyric
 
 .PHONY: help stage1 stage1-fast aot lyric selfhosted-compiler \
+        stage2 stage3 run-stage2 \
         mint ilverify selfhost-check \
         test test-lexer test-parser test-typechecker test-emitter \
         self-test clean
@@ -137,6 +140,29 @@ endif
 # SKIP_SELFHOSTED_COMPILER=1`, or to refresh them without a full rebuild).
 selfhosted-compiler: ## Stage self-hosted compiler DLLs under <libdir>/selfhosted (#3086)
 	@bash scripts/stage-selfhosted-compiler.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
+
+# ── Isolated self-hosted ship/test toolchain (stage 2) ──────────────────────
+# Stage 2 is the SHIP/TEST toolchain: the stage-1 true compiler rebuilds itself
+# and the full stdlib into an isolated, self-consistent root
+# (.bootstrap/stage2/{lib,bin}) with NO co-mingling of the seed's artefacts.
+# Everything (compiler self-tests, stdlib, ecosystem, user code) should be run
+# against THIS toolchain, pinned via `LYRIC_STDLIB_BIN=.bootstrap/stage2/lib`.
+# Building it is the runnability gate: a self-hosted emitter bug surfaces here
+# as a clean, specific failure rather than as build-system noise.  Requires a
+# stage-1 build first (`make stage1` or `make mint`).
+stage2: ## Build the isolated self-hosted ship/test toolchain (.bootstrap/stage2)
+	./scripts/bootstrap.sh --stage 2
+	@echo "stage-2 toolchain: .bootstrap/stage2/bin/lyric"
+	@echo "run things against it with: LYRIC_STDLIB_BIN=$$PWD/.bootstrap/stage2/lib .bootstrap/stage2/bin/lyric ..."
+
+stage3: ## Run the reproducibility-fixpoint diagnostic over stage 2 (non-blocking)
+	./scripts/bootstrap.sh --stage 3
+
+# Convenience: run an arbitrary `lyric` invocation against the stage-2 toolchain
+# with the stdlib pinned.  Usage: make run-stage2 ARGS="test path/to/foo.l"
+run-stage2: ## Run the stage-2 toolchain with stdlib pinned, e.g. ARGS="--version"
+	@test -x .bootstrap/stage2/bin/lyric || { echo "no stage-2 toolchain; run 'make stage2' first"; exit 2; }
+	LYRIC_STDLIB_BIN="$$PWD/.bootstrap/stage2/lib" .bootstrap/stage2/bin/lyric $(ARGS)
 
 # ── Bootstrap (mint) toolchain + self-hosted-emitter diagnostics ────────────
 # The CI-faithful, known-good dev toolchain.  Builds mint stage-1 (F#-emitted,
