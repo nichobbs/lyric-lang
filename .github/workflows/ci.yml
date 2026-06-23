@@ -3501,7 +3501,7 @@ jobs:
           fi
           printf 'package HttpAll\nimport Std.Http\nimport Std.HttpServer\nimport Std.Rest\nfunc main(): Unit { }\n' > "$work/http.l"
           "$lyric_bin" --internal-perpackage-build "$work/http.l" "$work/httpout" --target dotnet
-          for dll in Lyric.Stdlib.Http.dll Lyric.Stdlib.Rest.dll Lyric.Stdlib.HttpServer.dll; do
+          for dll in Lyric.Stdlib.Http.dll Lyric.Stdlib.Rest.dll Lyric.Stdlib.HttpServer.dll Lyric.Stdlib.Task.dll Lyric.Stdlib.HttpHost.dll; do
             if [ ! -f "$work/httpout/$dll" ]; then
               echo "::error::expected HTTP per-package DLL missing: $dll"
               exit 1

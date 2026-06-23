@@ -20,7 +20,7 @@ license     = "Apache-2.0"
 [project]
 name            = "Lyric.Stdlib.Full"
 output          = "single"
-output_assembly = "Lyric.Stdlib.Full.dll"
+output_assembly = "Lyric.Stdlib.dll"
 
 [project.packages]
 # Tier 0 — base layer.

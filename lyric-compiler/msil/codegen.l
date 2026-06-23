@@ -23299,7 +23299,7 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
     case IUnion(decl) -> genericNamesOf(decl.generics).count
     case _ -> 0
   }
-  // Stdlib is always the self-hosted single `Lyric.Stdlib` bundle (D110), which
+  // Stdlib is always the self-hosted single `Lyric.Stdlib` bundle (D111), which
   // names generic types with the CLR arity suffix (`Option`1`); always match it.
   val typeRefName = if typeArity > 0 { typeName + "`" + toString(typeArity) } else { typeName }
   val typeFqn = packageName + "." + typeName
@@ -23643,7 +23643,7 @@ func ensureStdlibAssemblyRef(cctx: in CodegenCtx, packageName: in String): Int {
 //   <single-segment>          → Lyric.<segment>
 //
 // All `Std.*` packages now resolve to the SINGLE `Lyric.Stdlib` assembly
-// identity (D110), so one deployed `Lyric.Stdlib.dll` (the `output = "single"`
+// identity (D111), so one deployed `Lyric.Stdlib.dll` (the `output = "single"`
 // bundle carrying every package) satisfies every stdlib reference at runtime.
 // This is the distribution-mandated shape (docs/22 §2, docs/34: one
 // `lib/Lyric.Stdlib.dll`, replacing the ~25 per-package DLLs) and matches how
@@ -23740,7 +23740,7 @@ func registerStdlibFunc(cctx: in CodegenCtx, packageName: in String, hostRefRow:
   val fqn = packageName + "." + fn.name
   val arityKey = fqn + "/" + toString(fn.params.count)
 
-  // Stdlib is always the self-hosted single `Lyric.Stdlib` bundle (D110): a
+  // Stdlib is always the self-hosted single `Lyric.Stdlib` bundle (D111): a
   // `Unit`/`Never` generic argument is `object` end-to-end (def, ctor, and match
   // all agree), so the return type is taken as-is (the F# `System.ValueTuple`
   // convention no longer occurs).

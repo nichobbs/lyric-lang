@@ -596,7 +596,7 @@ build_stage2() {
   ok "  emitted $n self-hosted DLLs (compiler + stdlib)"
 
   # 3b. Build the SINGLE full stdlib bundle (`Lyric.Stdlib.dll`).  Post-collapse
-  #     (D110) every `Std.*` reference — in the compiler closure above and in any
+  #     (D111) every `Std.*` reference — in the compiler closure above and in any
   #     user program — resolves to the single `Lyric.Stdlib` assembly identity, so
   #     this one bundle (carrying every package from `lyric.full.toml`) is what
   #     satisfies those references at runtime.  The per-package

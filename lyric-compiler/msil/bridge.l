@@ -182,7 +182,7 @@ pub func compileToMsilWithVersion(
   // in `compileProjectToMsilWithRestoredAndVersion` for the full
   // rationale (mirrors the F# emitter's `resolveStdlibImports` +
   // `emitAssembly` import-table population).
-  // Stdlib is always the self-hosted single `Lyric.Stdlib` bundle (D110), so the
+  // Stdlib is always the self-hosted single `Lyric.Stdlib` bundle (D111), so the
   // arity-suffix convention is fixed — no probe of the installed DLL is needed.
   registerStdlibArtifactTokens(cctx, stdlibPkgs)
   seedResultTypeRefs(cctx)
@@ -652,7 +652,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // (the F# emitter handles that), but the guard makes the bridge
   // robust to a future refactor that routes stdlib compilation
   // through the in-process path.
-  // Stdlib is always the self-hosted single `Lyric.Stdlib` bundle (D110): the
+  // Stdlib is always the self-hosted single `Lyric.Stdlib` bundle (D111): the
   // arity-suffix convention is fixed, so no installed-DLL probe is needed.
   registerStdlibArtifactTokens(cctx, filterStdlibPkgsByBundle(stdlibPkgs, perPkgNames))
   seedResultTypeRefs(cctx)
