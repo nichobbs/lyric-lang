@@ -14086,6 +14086,28 @@ func collectAwaitTypesExprPB(
       collectAwaitTypesExprPB(cctx, pkgName, l, acc, spawnNms, spawnTys)
       collectAwaitTypesExprPB(cctx, pkgName, r, acc, spawnNms, spawnTys)
     }
+    // A `match` can contain awaits in its scrutinee, an arm guard, or an arm
+    // body.  Phase B (`lowerMatchExprMsil`) lowers them in exactly this order —
+    // scrutinee first, then per arm: guard, then body — so the Phase A count must
+    // walk the same order, or the await index N runs past the pre-sized
+    // `resumeLabels` / `awaiterFieldNames` and faults (index out of range).
+    case EMatch(scrutinee, arms) -> {
+      collectAwaitTypesExprPB(cctx, pkgName, scrutinee, acc, spawnNms, spawnTys)
+      var ami = 0
+      while ami < arms.count {
+        val arm = arms[ami]
+        match arm.guard {
+          case Some(g) -> collectAwaitTypesExprPB(cctx, pkgName, g, acc, spawnNms, spawnTys)
+          case None -> {
+          }
+        }
+        match arm.body {
+          case EOBBlock(b) -> collectAwaitTypesBlockPB(cctx, pkgName, b, acc, spawnNms, spawnTys)
+          case EOBExpr(e2) -> collectAwaitTypesExprPB(cctx, pkgName, e2, acc, spawnNms, spawnTys)
+        }
+        ami = ami + 1
+      }
+    }
     case _ -> {
     }
   }
@@ -23635,18 +23657,26 @@ func stdlibAssemblyName(packageName: in String): String {
     return "Lyric.Unknown"
   }
   val head = segs[0]
-  if head == "Std" {
-    // Single-DLL stdlib: all `Std.*` types live in one `Lyric.Stdlib` assembly.
-    return "Lyric.Stdlib"
-  }
-  // Non-`Std` heads (compiler packages): concatenate tail segments WITHOUT
-  // separators, matching the per-package DLL naming for `Lyric.<X>`.
+  // Concatenate tail segments WITHOUT separators (the per-package DLL convention).
   var tail = ""
   var i = 1
   while i < segs.count {
     tail = tail + segs[i]
     i = i + 1
   }
+  if head == "Std" {
+    // HYBRID (D111): the HTTP/async surface stays PER-PACKAGE.  The self-hosted
+    // emitter cannot yet bundle these async-`Task`/`Result`-heavy packages into
+    // the single `output = "single"` assembly (Phase A undercounts cross-package
+    // `match await` and the bundled `HttpServer` emits invalid IL); they ship as
+    // `Lyric.Stdlib.<X>.dll` deployed alongside the bundle.  Tracked in #4030.
+    if tail == "Http" or tail == "HttpServer" or tail == "Rest" or tail == "Task" or tail == "HttpHost" {
+      return "Lyric.Stdlib." + tail
+    }
+    // Single-DLL stdlib: every other `Std.*` type lives in one `Lyric.Stdlib`.
+    return "Lyric.Stdlib"
+  }
+  // Non-`Std` heads (compiler packages): per-package `Lyric.<X>` naming.
   if segs.count == 1 {
     "Lyric." + head
   } else {

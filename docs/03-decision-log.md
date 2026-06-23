@@ -6796,6 +6796,18 @@ compiler uses (`Std.UnicodeHost`, `Std.CollectionsHost`, `Std.VerifierEnvHost`);
 added so the single bundle covers the whole compiler closure. `build_stage2`
 (`bootstrap.sh`) now builds the single bundle into `.bootstrap/stage2/lib`.
 
+**HTTP/async hybrid carve-out (#4030).** The HTTP/async surface — `Std.Http`,
+`Std.HttpServer`, `Std.Rest`, `Std.Task`, `Std.HttpHost` — is **not** in the
+single bundle: the self-hosted emitter cannot yet emit these async-`Task` /
+`Result`-heavy packages into the `output = "single"` assembly (Phase A
+undercounts a cross-package `match await`, and a bundled `HttpServer` emits
+invalid IL). They ship **per-package** (`Lyric.Stdlib.<X>.dll`, deployed by
+`stage-selfhosted-stdlib.sh`), and `stdlibAssemblyName` keeps their references on
+the `Lyric.Stdlib.<X>` identity via a small denylist. They build and run
+correctly per-package (as they did pre-collapse); the cross-package
+`EMatch`-await Phase-A gap was fixed in passing (`collectAwaitTypesExprPB` now
+walks `match`). Re-bundling them is tracked in #4030.
+
 **Keystone effect.** The collapse *also fixes the stage-2 self-hosting startup
 blocker* from D110: the `Std.Core.Option` TypeLoadException was the per-package +
 suffix-detection mismatch. With the collapse, the stage-2 self-hosted binary
