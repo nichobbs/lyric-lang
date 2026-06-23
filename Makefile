@@ -123,12 +123,8 @@ lyric: aot ## Build the end-to-end `lyric` binary and symlink it to ./bin/lyric
 	@printf '{"language_version": "0.1","stdlib_version": "0.1.0","compiler_version": "0.1.0","build_date": "%s"}\n' \
 	    "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 	    > .bootstrap/stage1/sdk-version.json
-	@echo "staging self-hosted-only stdlib packages (#2592: Std.Sort et al.) ..."
+	@echo "deploying the single full Lyric.Stdlib.dll bundle (D111) ..."
 	@bash scripts/stage-selfhosted-stdlib.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
-	@echo "staging suffixed userlib stdlib for user-code linking (#3943) ..."
-	@bash scripts/stage-userlib-stdlib.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
-	@echo "staging suffixed userlib stdlib (second run: arity TypeRefs in cross-stdlib DLLs) ..."
-	@bash scripts/stage-userlib-stdlib.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
 ifeq ($(SKIP_SELFHOSTED_COMPILER),1)
 	@echo "SKIP_SELFHOSTED_COMPILER=1; skipping the self-hosted compiler-DLL staging"
 else
@@ -178,7 +174,6 @@ mint: ## Build the CI-faithful mint (bootstrap) toolchain -> ./bin/lyric (valid 
 	@ln -sf "../$(AOT_BIN)" bin/lyric
 	@echo "mint (bootstrap) lyric ready: ./bin/lyric -> $(AOT_BIN)  [valid IL, CI-faithful]"
 	@bash scripts/stage-selfhosted-stdlib.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
-	@bash scripts/stage-userlib-stdlib.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
 
 # Measure self-hosted-EMITTER IL validity: emit the whole compiler closure with
 # the self-hosted emitter (the AOT binary routes --target dotnet through

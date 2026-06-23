@@ -599,9 +599,9 @@ build_stage2() {
   #     (D110) every `Std.*` reference — in the compiler closure above and in any
   #     user program — resolves to the single `Lyric.Stdlib` assembly identity, so
   #     this one bundle (carrying every package from `lyric.full.toml`) is what
-  #     satisfies those references at runtime.  It overwrites the per-package
-  #     `Lyric.Stdlib.*.dll` emitted by the closure pass with the single authoritative
-  #     assembly; the leftover per-package DLLs are unreferenced and harmless.
+  #     satisfies those references at runtime.  The per-package
+  #     `Lyric.Stdlib.*.dll` the closure pass emitted are then removed so the
+  #     output directory holds exactly one authoritative stdlib assembly.
   info "  building the single full stdlib bundle -> $STAGE2_LIB_DIR/Lyric.Stdlib.dll"
   "$AOT_OUT" build --manifest "$STDLIB_DIR/lyric.full.toml" \
     -o "$STAGE2_LIB_DIR/Lyric.Stdlib.dll" --target dotnet --no-restore \
@@ -610,6 +610,11 @@ build_stage2() {
          die "stage-2 single stdlib bundle build FAILED — see $BUILD_DIR/stage2-stdlib.log"; }
   [[ -f "$STAGE2_LIB_DIR/Lyric.Stdlib.dll" ]] \
     || die "stage-2 single stdlib bundle not produced in $STAGE2_LIB_DIR"
+  # Drop the now-redundant per-package stdlib DLLs (the `.` after `Lyric.Stdlib`
+  # matches `Lyric.Stdlib.Core.dll` etc. but not the bundle `Lyric.Stdlib.dll`).
+  shopt -s nullglob
+  rm -f "$STAGE2_LIB_DIR"/Lyric.Stdlib.*.dll
+  shopt -u nullglob
   ok "  built single Lyric.Stdlib.dll bundle"
 
   # 4. AOT-link the stage-2 binary from the self-hosted closure.  The

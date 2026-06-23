@@ -2893,13 +2893,16 @@ pub func tryReadResourceIn(ri: in ResourceImage, name: in String): Option[slice[
   None
 }
 
-// ── Stdlib arity-suffix detection ────────────────────────────────────────────
-// The F# bootstrap compiler emits generic TypeDefs WITHOUT the CLR arity
-// suffix (Option, Result) while the self-hosted emitter always adds them
-// (Option`1, Result`2).  At user-code compile time the self-hosted MSIL
-// emitter must emit TypeRefs that match whichever convention is used by the
-// installed Lyric.Stdlib.Core.dll, or the CLR throws TypeLoadException at
-// runtime.
+// ── Emitter-convention detection (restored non-stdlib artifacts) ─────────────
+// The F# bootstrap compiler emits generic TypeDefs WITHOUT the CLR arity suffix
+// (Option, Result) and constructs nullary union cases with `newobj`; the
+// self-hosted emitter always adds the suffix (Option`1) and uses a static
+// `Instance` singleton.  Post-collapse (D111) the stdlib is a single
+// self-hosted bundle, so this no longer disambiguates stdlib — it is used only
+// to detect the convention of restored *non-stdlib* artifacts (the F#-emitted
+// compiler closure linked by the self-tests in the mint path), via
+// `dllHasNullaryInstanceField`, so cross-package nullary union-case
+// construction matches the producer DLL.
 // True when any TypeDef in the DLL at `dllPath` has a backtick in its name,
 // indicating the self-hosted arity-suffix convention.  Returns false when the
 // file is missing, unreadable, or carries no backtick TypeDefs (F# bootstrap

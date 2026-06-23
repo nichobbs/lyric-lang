@@ -183,20 +183,10 @@ jobs:
           # run time.  Runs once after the AOT build; later steps in this job
           # reuse the populated lib dir.
           bash scripts/stage-selfhosted-stdlib.sh "$lyric_bin" "$(dirname "$lyric_bin")" .bootstrap/stage1
-          # Stage a self-hosted-emitted (arity-suffixed) copy of the full stdlib
-          # under `<lib-dir>/userlib/` for USER-CODE linking.  The mint compiler's
-          # own runtime stdlib is non-suffixed, but it emits user code with
-          # suffixed generic refs (`Option`1`); linking the suffixed userlib stdlib
-          # lets cross-package generic construction resolve at run time (#3943).
-          bash scripts/stage-userlib-stdlib.sh "$lyric_bin" "$(dirname "$lyric_bin")" .bootstrap/stage1
-          # Second run: the first run created userlib/Lyric.Stdlib.Core.dll whose
-          # TypeDefs carry arity suffixes.  Re-running stage-userlib-stdlib.sh now
-          # causes detectStdlibCoreDllUsesAritySuffix() to return true (it probes
-          # userlib/ first), so the emitter produces stdlib DLLs whose internal
-          # TypeRefs also use arity suffixes — matching the refs emitted into user
-          # code.  Without this second run the first-run DLLs have non-arity TypeRefs
-          # internally, producing "Method not found" faults at runtime (#3943).
-          bash scripts/stage-userlib-stdlib.sh "$lyric_bin" "$(dirname "$lyric_bin")" .bootstrap/stage1
+          # Post-collapse (D111) every Std.* reference resolves to the single
+          # Lyric.Stdlib bundle deployed above, so the per-package userlib/ stdlib
+          # staging is no longer needed (and would shadow the bundle via
+          # copyRuntimeDepsBeside) — removed.
           for ex in examples/*.l; do
             # `@proof_required` files are verifier-only — they have no
             # `func main` so `lyric build` doesn't apply.  The AOT
@@ -314,22 +304,18 @@ jobs:
         if: steps.changes.outputs.has_code_changes == 'true'
         run: bash scripts/check_assembly_refs.sh .bootstrap/stage1
 
-      # Remove userlib/ and stage non-arity selfhosted compiler DLLs for artifact.
-      # userlib/ (arity-suffixed stdlib) is needed only for the multi-package
-      # tests above.  Downstream compiler-self-tests-* jobs must NOT inherit it:
-      # its presence makes detectStdlibCoreDllUsesAritySuffix() return true, so
-      # those jobs compile with arity TypeRefs against the non-arity stage-1
-      # runtime stdlib, producing TypeLoadException / MethodNotFoundException (#3943).
-      # After removing userlib/, stage-selfhosted-compiler.sh runs with detection=false
-      # → selfhosted compiler DLLs carry non-arity TypeRefs, consistent with stage-1.
-      - name: Clean up userlib and stage non-arity selfhosted compiler DLLs
+      # Stage the self-hosted compiler DLLs for the downstream
+      # compiler-self-tests-* jobs (which link compiler packages that export
+      # module-level `pub val` constants, #3086).  Post-collapse (D111) there is
+      # no userlib/ to clean up and no two-ABI detection to keep consistent — the
+      # single Lyric.Stdlib bundle is the only stdlib ABI.
+      - name: Stage self-hosted compiler DLLs
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           bin_dir="$(dirname "$lyric_bin")"
-          rm -rf "$bin_dir/userlib" .bootstrap/stage1/userlib
           bash scripts/stage-selfhosted-compiler.sh "$lyric_bin" "$bin_dir" .bootstrap/stage1
 
       - name: Upload build artifacts

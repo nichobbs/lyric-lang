@@ -86,6 +86,12 @@ output_assembly = "Lyric.Stdlib.Full.dll"
 
 # Tier 4.5 — HTTP server.
 "Std.HttpServer"       = "std/_kernel/http_server.l"
+# NOTE: Std.Http / Std.Rest (the async HTTP client + REST layer) are NOT bundled
+# yet — the self-hosted emitter degrades their `Result`2` / async-`Task`
+# signatures and faults when emitting them into the single `output = "single"`
+# bundle (W0005 → crash).  They built as per-package fill-ins under the old
+# scheme; bundling them needs the emitter's cross-package generic registration
+# fixed for the async/Result-heavy surface.  Tracked as a follow-up.
 
 # Tier 5 — structured data, markup, time.
 "Std.Time"             = "std/time.l"
