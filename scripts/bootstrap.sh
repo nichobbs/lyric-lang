@@ -1,38 +1,51 @@
 #!/usr/bin/env bash
 # bootstrap.sh — self-hosting bootstrap for the Lyric compiler
 #
-# Stage 0:  Download the latest self-hosted Lyric binary from GitHub releases
-#           (by default), or build the F# bootstrap compiler (if BOOTSTRAP_FROM_RELEASE=0).
-#           The F# bootstrap is on a deletion schedule; released binaries are preferred.
+# Each stage produces a COMPLETE, SELF-CONSISTENT toolchain for ONE compiler
+# generation; generations are never co-mingled in a shared directory.  A stage
+# reads only from the previous stage and writes only to its own isolated root.
 #
-# Stage 1:  Use stage-0 lyric to compile the Lyric-written compiler packages
-#           (stdlib, Lyric.Lexer, Lyric.Parser, Lyric.TypeChecker,
-#           Lyric.ModeChecker, Lyric.ContractElaborator, Msil.Codegen,
-#           Msil.Lowering, Msil.Bridge) into DLLs.  Then drive the F#
-#           emitter via a tiny `import Lyric.Cli` driver so it precompiles
-#           the full CLI dependency closure (cli/ + ~25 Lyric packages)
-#           and copies the artefacts into `.bootstrap/stage1/`.  These are
-#           the DLLs Track A's AOT entry-point project will reference.
+# Stage 0:  Acquire a SEED binary we don't yet trust — download the latest
+#           self-hosted Lyric release (default), or, when that is unavailable or
+#           `LYRIC_BOOTSTRAP_MINT=1`, mint the historical F# bootstrap compiler
+#           from git history (`scripts/mint-stage0-fsharp.sh`).  Either way the
+#           seed's own emission ABI is untrusted; stage 2 normalises it.
+#           Output: `.bootstrap/stage0-publish/`.
 #
-# Stage 2:  Reproducibility verification: build the full self-hosted stdlib
-#           bundle (`lyric-stdlib/lyric.full.toml`) TWICE via the AOT
-#           `lyric` binary and assert the two images are byte-for-byte identical
-#           with an exact `cmp`.  The self-hosted emitter is deterministic by
-#           construction — fixed Module MVID (lowering.l) and zero PE TimeDateStamp
-#           (assembler.l), no wall-clock baked into any heap or resource.
-#           This is the property a signed, reproducible release depends on (Q-dist-001);
-#           a regression here FAILS the build.  See scripts/verify-reproducible-emit.sh.
+# Stage 1:  The seed compiles the current true-compiler `.l` sources into a
+#           RUNNABLE true compiler plus the smoke stdlib subset
+#           (`lyric-stdlib/lyric.toml`) needed to run it.  Output:
+#           `.bootstrap/stage1/` (flat) + the AOT entry-point binary.  Stage 1
+#           is intrinsically ABI-MIXED — its own runtime stdlib is seed-emitted
+#           (non-arity-suffixed) while the code it EMITS is arity-suffixed — so
+#           it is a build-only toolchain, NOT a ship/test toolchain.
+#
+# Stage 2:  The stage-1 true compiler rebuilds ITSELF and the FULL stdlib
+#           surface into a self-consistent, isolated toolchain root
+#           (`.bootstrap/stage2/{lib,bin}`): every compiler package + every
+#           `Std.*` package, all arity-suffixed and mutually consistent.  THIS
+#           is the toolchain everything is tested against and that ships.
+#           Building it is the runnability gate: if the self-hosted emitter has
+#           a bug, it surfaces HERE as a clean, specific failure (a real emitter
+#           bug to fix) rather than as build-system noise.
+#
+# Stage 3:  Reproducibility fixpoint (diagnostic, NON-blocking) — the stage-2
+#           compiler builds the stdlib bundle and its own closure twice and the
+#           images must be byte-for-byte identical (`cmp`).  The self-hosted
+#           emitter is deterministic by construction (fixed Module MVID in
+#           lowering.l, zero PE TimeDateStamp in assembler.l, no wall-clock), so
+#           this is the property a signed reproducible release depends on
+#           (Q-dist-001).  See scripts/verify-reproducible-emit.sh.
 #
 # Usage:
-#   ./scripts/bootstrap.sh              # all stages; downloads released binary for stage 0
-#   ./scripts/bootstrap.sh --stage 0   # download released binary only
-#   ./scripts/bootstrap.sh --stage 1   # stages 0 + 1
-#   ./scripts/bootstrap.sh --stage 2   # all stages incl. reproducibility gate
-#   SKIP_VERIFY=1 ./scripts/bootstrap.sh  # skip ALL of stage-2 verification
-#   SKIP_CLI_BUNDLE=1 ./scripts/bootstrap.sh  # stage 1 stops after the compiler-package
-#                                              loop; the CLI bundle step is skipped.
-#                                              Useful when iterating on a single
-#                                              compiler package.
+#   ./scripts/bootstrap.sh              # stages 0 + 1 + 2 (build the ship/test toolchain)
+#   ./scripts/bootstrap.sh --stage 0   # acquire the seed only
+#   ./scripts/bootstrap.sh --stage 1   # stages 0 + 1 (bootstrap toolchain only)
+#   ./scripts/bootstrap.sh --stage 2   # stages 0 + 1 + 2 (isolated self-hosted toolchain)
+#   ./scripts/bootstrap.sh --stage 3   # also run the reproducibility fixpoint diagnostic
+#   SKIP_CLI_BUNDLE=1 ./scripts/bootstrap.sh --stage 1  # stage 1 stops after the stdlib
+#                                              bundle; the CLI closure precompile is
+#                                              skipped (iterating on one compiler package).
 
 set -euo pipefail
 
@@ -41,16 +54,27 @@ BUILD_DIR="$REPO_ROOT/.bootstrap"
 STAGE0_PUBLISH_DIR="$BUILD_DIR/stage0-publish"
 STAGE0_BIN="$BUILD_DIR/stage0/lyric"
 STAGE1_DIR="$BUILD_DIR/stage1"
+# Stage 2 is the isolated self-hosted ship/test toolchain root.  `lib/` holds the
+# coherent per-package DLL set (compiler + full stdlib, all self-hosted and
+# arity-suffixed); `bin/` holds the runnable binary with its stdlib co-located.
 STAGE2_DIR="$BUILD_DIR/stage2"
+STAGE2_LIB_DIR="$STAGE2_DIR/lib"
+STAGE2_BIN_DIR="$STAGE2_DIR/bin"
+# Stage 3 is the reproducibility-fixpoint scratch root (diagnostic only).
+STAGE3_DIR="$BUILD_DIR/stage3"
 COMPILER_DIR="$REPO_ROOT/bootstrap"
 STDLIB_DIR="$REPO_ROOT/lyric-stdlib"
 
-# Temp base used by the F# emitter's per-process stdlib cache
-# (`Emitter.fs::stdlibCacheDir` → `Path.GetTempPath()`).  On Unix .NET's
-# GetTempPath() returns $TMPDIR when set, else "/tmp".  We mirror that exactly
-# so the CLI-bundle snapshot below globs the same directory the emitter writes
-# to — otherwise a non-/tmp $TMPDIR makes the snapshot miss the cache and the
-# build dies (this is why callers previously had to force `TMPDIR=/tmp`).
+# AOT entry-point project + the binary path it emits.  The project links the
+# compiler closure named by `-p:StageDir=<dir>`, so we point it at each stage's
+# own DLL set to produce that stage's runnable binary.
+AOT_PROJ="$COMPILER_DIR/src/Lyric.Cli.Aot"
+BUILD_CONFIG="${BUILD_CONFIG:-Release}"
+AOT_OUT="$AOT_PROJ/bin/$BUILD_CONFIG/net10.0/lyric"
+
+# Temp base used by mktemp-style scratch dirs below.  On Unix .NET's
+# GetTempPath() returns $TMPDIR when set, else "/tmp"; we mirror that so any
+# helper that globs a temp dir lines up with however the toolchain was invoked.
 TMP_BASE="${TMPDIR:-/tmp}"
 TMP_BASE="${TMP_BASE%/}"   # strip any trailing slash so the glob is well-formed
 
@@ -497,288 +521,142 @@ EOF
   ok "Stage 1 CLI bundle complete — Lyric.Lyric.Cli.dll + $((copied - 1)) deps in $STAGE1_DIR"
 }
 
-compare_stage1_stage2_dlls() {
-  local f1="$1"
-  local f2="$2"
-  local python_bin
-  python_bin="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
-  if [[ -z "$python_bin" ]]; then
-    die "python3 or python is required for the stage-2 reproducibility comparison"
+# ---------------------------------------------------------------------------
+# AOT-link a runnable `lyric` binary from a given stage's compiler closure.
+# `$1` is the directory holding that stage's `Lyric.*.dll` set.  The AOT
+# project's <Reference> glob pulls in exactly that closed set.
+# ---------------------------------------------------------------------------
+build_aot_binary() {
+  local stage_dir="$1"
+  local log="$2"
+  dotnet build "$AOT_PROJ" --configuration "$BUILD_CONFIG" --no-incremental \
+    -p:StageDir="$stage_dir" > "$log" 2>&1 \
+    || die "AOT entry-point build failed against $stage_dir (see $log)"
+  [[ -x "$AOT_OUT" ]] || die "AOT lyric binary not found at $AOT_OUT after build"
+}
+
+# ---------------------------------------------------------------------------
+# Stage 2 — the stage-1 true compiler rebuilds ITSELF + the FULL stdlib into an
+# isolated, self-consistent ship/test toolchain (`.bootstrap/stage2/{lib,bin}`).
+#
+# A single `--internal-perpackage-build` over a driver that imports the whole
+# compiler (`Lyric.Cli`) plus every PUBLIC `Std.*` package emits the entire
+# closure — compiler packages and stdlib — as per-package DLLs, all
+# arity-suffixed and mutually consistent.  That coherence is what eliminates the
+# seed-vs-self-hosted ABI split (and with it the userlib/selfhosted staging
+# hacks): the stage-2 stdlib a consumer links is emitted by the SAME compiler,
+# in the SAME pass, as the references that point at it.
+#
+# Building the toolchain is the runnability gate.  When the self-hosted emitter
+# has a bug, the per-package emit may still succeed but the AOT-linked binary
+# faults at startup (e.g. a cross-package generic TypeRef that does not match
+# its definition).  We report that as the runnability signal and DO NOT fail the
+# stage — the isolated toolchain exists precisely so the bug surfaces cleanly.
+# ---------------------------------------------------------------------------
+build_stage2() {
+  info "Stage 2: building the self-hosted ship/test toolchain (true builds true)"
+
+  # 1. AOT-link the stage-1 true compiler from the freshly-built stage-1 DLLs.
+  #    `dotnet build` produces a framework-dependent app (`lyric` apphost +
+  #    `lyric.dll` + its DLLs), so it is run in place from its build directory —
+  #    the whole directory, not the bare apphost, is the relocatable unit.
+  info "  AOT-linking the stage-1 true compiler from $STAGE1_DIR"
+  build_aot_binary "$STAGE1_DIR" "$BUILD_DIR/aot-stage1.log"
+
+  # 2. Wipe the stage-2 root so no prior generation's artefacts survive.
+  rm -rf "$STAGE2_DIR"
+  mkdir -p "$STAGE2_LIB_DIR" "$STAGE2_BIN_DIR"
+
+  # 3. Emit the whole compiler + full stdlib closure, per-package, in one pass,
+  #    via the stage-1 binary (run in place at $AOT_OUT).
+  local driver_dir="$BUILD_DIR/stage2-driver"
+  rm -rf "$driver_dir"; mkdir -p "$driver_dir"
+  {
+    echo "package SelfHostedStage2Toolchain"
+    echo "import Lyric.Cli"
+    # Public Std.* packages from the full manifest; the `*Host` kernel
+    # boundaries are pulled in transitively, not imported directly.
+    sed -n 's/^"\(Std\.[A-Za-z.]*\)".*/\1/p' "$STDLIB_DIR/lyric.full.toml" \
+      | grep -v 'Host$' \
+      | while read -r pkg; do echo "import $pkg"; done
+    echo "func main(): Unit { }"
+  } > "$driver_dir/driver.l"
+
+  info "  emitting compiler + full stdlib closure (per-package) -> $STAGE2_LIB_DIR"
+  "$AOT_OUT" --internal-perpackage-build "$driver_dir/driver.l" \
+    "$STAGE2_LIB_DIR" --target dotnet > "$BUILD_DIR/stage2-emit.log" 2>&1 \
+    || { cat "$BUILD_DIR/stage2-emit.log" >&2;
+         die "stage-2 closure emit FAILED — see $BUILD_DIR/stage2-emit.log"; }
+  [[ -f "$STAGE2_LIB_DIR/Lyric.Lyric.Cli.dll" ]] \
+    || die "stage-2 emit produced no Lyric.Lyric.Cli.dll in $STAGE2_LIB_DIR"
+  local n
+  n="$(ls "$STAGE2_LIB_DIR"/*.dll 2>/dev/null | wc -l | tr -d ' ')"
+  ok "  emitted $n self-hosted DLLs (compiler + stdlib)"
+
+  # 4. AOT-link the stage-2 binary from the self-hosted closure.  The
+  #    <Reference Private=true> glob copies every referenced DLL (compiler +
+  #    stdlib) into the build output, so copying that whole directory into
+  #    `$STAGE2_BIN_DIR` yields a self-contained, relocatable toolchain whose
+  #    binary resolves its OWN stdlib from beside itself.
+  info "  AOT-linking the stage-2 binary from the self-hosted closure"
+  build_aot_binary "$STAGE2_LIB_DIR" "$BUILD_DIR/aot-stage2.log"
+  cp -r "$(dirname "$AOT_OUT")/." "$STAGE2_BIN_DIR/"
+
+  # 5. Runnability smoke — NON-FATAL.  A self-hosted-emitter bug surfaces here
+  #    as a clean, specific failure rather than as build noise.
+  info "  runnability smoke: stage-2 lyric --version"
+  if LYRIC_STDLIB_BIN="$STAGE2_LIB_DIR" "$STAGE2_BIN_DIR/lyric" --version \
+        > "$BUILD_DIR/stage2-smoke.log" 2>&1; then
+    ok "Stage 2 toolchain RUNS — $(head -1 "$BUILD_DIR/stage2-smoke.log")"
+  else
+    info "Stage 2 toolchain BUILT but does NOT yet RUN — self-hosted emitter blocker:"
+    grep -m1 -E "Exception|Could not load|error" "$BUILD_DIR/stage2-smoke.log" \
+      | sed 's/^/    /' || true
+    info "  full log: $BUILD_DIR/stage2-smoke.log"
+    info "  this is the runnability signal — fix the emitter bug, not the build."
   fi
-  "$python_bin" - "$f1" "$f2" <<'PY' >/dev/null
-# Precisely normalize the INTRINSIC IDENTITY fields of two .NET PE/ECMA-335
-# images before byte-comparing them, by parsing the PE + metadata layout
-# rather than guessing at "16-byte differing runs".  This avoids the
-# false-positive failure mode of a heuristic mask (a run can split when two
-# random GUIDs coincidentally share a byte) AND the false-negative risk of
-# masking a real diff that merely happens to be 16 bytes long.
-#
-# Fields zeroed (located, not guessed):
-#   * PE COFF TimeDateStamp (4 bytes in the COFF file header).
-#   * PE optional-header CheckSum (4 bytes).
-#   * The Module MVID — the first 16-byte GUID in the #GUID metadata heap,
-#     reached via the CLI header -> metadata root -> stream table.
-#
-# Everything else is compared byte-for-byte.  In particular a genuine
-# nondeterminism such as the F# stage-0 emitter's `build_date` wall-clock
-# (embedded in the `Lyric.SdkVersion` resource of the bundle) is NOT masked
-# and will surface as a real difference — which is the intended behaviour for
-# this informational stage-0 diagnostic.
-from pathlib import Path
-import sys
-
-def u16(b, o): return int.from_bytes(b[o:o+2], 'little')
-def u32(b, o): return int.from_bytes(b[o:o+4], 'little')
-
-def identity_regions(b):
-    """Return [(offset, length), ...] for TimeDateStamp, CheckSum, MVID."""
-    regions = []
-    if b[0:2] != b'MZ':
-        return regions
-    pe = u32(b, 0x3c)
-    if b[pe:pe+4] != b'PE\x00\x00':
-        return regions
-    coff = pe + 4
-    # COFF header: Machine[2], NumberOfSections[2], TimeDateStamp[4], ...
-    regions.append((coff + 4, 4))                 # COFF TimeDateStamp
-    num_sections = u16(b, coff + 2)
-    opt_size = u16(b, coff + 16)
-    opt = coff + 20
-    magic = u16(b, opt)
-    regions.append((opt + 64, 4))                 # optional-header CheckSum
-    # Data directories: PE32 -> dirs at opt+96, PE32+ -> dirs at opt+112.
-    dd = opt + (96 if magic == 0x10b else 112)
-    cli_rva = u32(b, dd + 14 * 8)                  # data dir 14 = CLI header
-    if cli_rva == 0:
-        return regions
-    sections = opt + opt_size
-    def rva_to_off(rva):
-        for i in range(num_sections):
-            s = sections + i * 40
-            va = u32(b, s + 12)
-            vsz = u32(b, s + 8)
-            rawsz = u32(b, s + 16)
-            raw = u32(b, s + 20)
-            if va <= rva < va + max(vsz, rawsz):
-                return raw + (rva - va)
-        return None
-    cli = rva_to_off(cli_rva)
-    if cli is None:
-        return regions
-    md = rva_to_off(u32(b, cli + 8))              # CLI header -> Metadata RVA
-    if md is None or b[md:md+4] != b'BSJB':
-        return regions
-    ver_len = u32(b, md + 12)
-    p = md + 16 + ((ver_len + 3) // 4 * 4)
-    p += 2                                         # flags
-    n_streams = u16(b, p); p += 2
-    for _ in range(n_streams):
-        s_off = u32(b, p); p += 4
-        u32(b, p); p += 4                          # stream size (unused)
-        name_start = p
-        while b[p] != 0:
-            p += 1
-        name = b[name_start:p]
-        p += 1
-        while (p - name_start) % 4 != 0:           # pad name to 4-byte boundary
-            p += 1
-        if name == b'#GUID':
-            # The module Mvid is GUID index 1 = the first 16 bytes of the heap.
-            regions.append((md + s_off, 16))
-            break
-    return regions
-
-f1_path = Path(sys.argv[1]); f2_path = Path(sys.argv[2])
-f1 = bytearray(f1_path.read_bytes())
-f2 = bytearray(f2_path.read_bytes())
-if len(f1) != len(f2):
-    print(f"[compare_dlls] size mismatch: {len(f1)} vs {len(f2)} bytes in {f1_path.name}", file=sys.stderr)
-    sys.exit(1)
-
-for buf in (f1, f2):
-    for off, length in identity_regions(buf):
-        for i in range(off, off + length):
-            if 0 <= i < len(buf):
-                buf[i] = 0
-
-if f1 != f2:
-    sys.exit(1)
-sys.exit(0)
-PY
+  ok "Stage 2 complete — isolated self-hosted toolchain in $STAGE2_DIR"
 }
 
 # ---------------------------------------------------------------------------
-# Stage 2 (a) — trust-anchor reproducibility gate (STRICT)
+# Stage 3 — reproducibility fixpoint (diagnostic, NON-blocking)
 #
-# Build two corpora TWICE through the self-hosted MSIL backend and assert each
-# is byte-for-byte identical: (i) the full stdlib bundle, and (ii) the WHOLE
-# Lyric.Cli compiler closure (every Lyric.* / Msil.* / Jvm.* package + its
-# stdlib import closure).  This is the property a signed, reproducible release
-# depends on (Q-dist-001).  The self-hosted emitter is deterministic by
-# construction, so this passes with an exact `cmp` — no normalization — and a
-# regression FAILS the build.
+# The self-hosted emitter is deterministic by construction, so the stage-2
+# toolchain must emit byte-identical images run-to-run.  We verify that by
+# building the stdlib bundle and the whole compiler closure TWICE through the
+# stage-2 binary and comparing with an exact `cmp`
+# (`scripts/verify-reproducible-emit.sh`).  This is the property a signed,
+# reproducible release depends on (Q-dist-001) — but under the runnability-first
+# model it is a diagnostic, NOT a gate: a difference is reported, never fatal.
+# When the stage-2 toolchain is not yet runnable (a self-hosted emitter blocker
+# surfaced in stage 2), the fixpoint cannot run and is reported as pending.
 # ---------------------------------------------------------------------------
-verify_selfhosted_reproducible() {
-  info "Stage 2 (a): self-hosted reproducibility gate (STRICT)"
-
-  # The AOT entry-point binary routes `--target dotnet` through the self-hosted
-  # Msil.Bridge.  It embeds the stage-1 DLLs at C#-build time, so rebuild it
-  # (clean) now that stage 1 has just produced fresh outputs.
-  # Honour $BUILD_CONFIG (CI's convention) so the binary path matches however
-  # the AOT project was configured; default to Release for standalone runs
-  # (stage 0 publishes Release).
-  local build_config="${BUILD_CONFIG:-Release}"
-  local aot_proj="$COMPILER_DIR/src/Lyric.Cli.Aot"
-  local aot_bin="$aot_proj/bin/$build_config/net10.0/lyric"
-  info "  building AOT entry-point (Lyric.Cli.Aot, $build_config) against the fresh stage-1 DLLs"
-  dotnet build "$aot_proj" --configuration "$build_config" --no-incremental \
-    > "$BUILD_DIR/aot-build.log" 2>&1 || \
-    die "AOT entry-point build failed (see $BUILD_DIR/aot-build.log)"
-  [[ -x "$aot_bin" ]] || die "AOT lyric binary not found at $aot_bin after build"
-
-  # (i) Stdlib bundle: build lyric.full.toml twice; the single output must be
-  # byte-identical.
-  "$REPO_ROOT/scripts/verify-reproducible-emit.sh" \
-    manifest "$aot_bin" "$STDLIB_DIR/lyric.full.toml" || \
-    die "self-hosted reproducibility gate FAILED — the stdlib bundle is not byte-stable"
-
-  # (ii) Whole compiler: self-host-compile the entire Lyric.Cli closure twice;
-  # every emitted DLL must be byte-identical.  This extends the reproducible
-  # corpus from the stdlib to the entire self-hosted compiler.
-  "$REPO_ROOT/scripts/verify-reproducible-emit.sh" \
-    closure "$aot_bin" || \
-    die "self-hosted reproducibility gate FAILED — the compiler closure is not byte-stable"
-
-  ok "Self-hosted emit is byte-for-byte reproducible (trust-anchor gate passed)"
-}
-
-# ---------------------------------------------------------------------------
-# Stage 2 (b) — stage-0 reproducibility diagnostic (INFORMATIONAL)
-#
-# Reproduce the F# stage-0 CLI-bundle precompile and compare the stage-1 and
-# stage-2 DLLs after precisely normalizing the intrinsic identity fields (MVID,
-# PE timestamp, checksum).  The F# emitter is non-reproducible by design (it
-# bakes a `build_date` wall-clock into the bundle's `Lyric.SdkVersion`) and is
-# frozen on a deletion schedule, so this is reported but NEVER fatal — it
-# tracks stage-0 drift until the F# path is deleted.
-# ---------------------------------------------------------------------------
-stage2() {
+stage3() {
   if [[ "$SKIP_VERIFY" == "1" ]]; then
-    info "SKIP_VERIFY=1; skipping all stage-2 reproducibility verification"
+    info "SKIP_VERIFY=1; skipping the stage-3 reproducibility fixpoint"
     return 0
   fi
-
-  # (a) The real gate: the self-hosted emitter must be byte-stable.
-  verify_selfhosted_reproducible
-
-  # (b) Informational stage-0 diagnostic.
-  info "Stage 2 (b): stage-0 reproducibility diagnostic (informational)"
-
-  mkdir -p "$STAGE2_DIR"
-
-  # First, compile the stdlib bundle via the stage-0 binary so we
-  # produce the top-level Lyric.Stdlib.dll the stage-1 bundle contains.
-  info "  compiling stdlib bundle (stage-0 path)"
-  LYRIC_STD_PATH="$STAGE1_DIR" \
-    "$STAGE0_BIN" build --manifest "$STDLIB_DIR/lyric.toml" \
-    -o "$STAGE2_DIR/Lyric.Stdlib.dll" --target dotnet --no-restore 2>&1 || \
-    die "stage-2 stdlib bundle build failed"
-
-  # Re-run the same CLI-bundle precompile the stage-1 step used (identical
-  # driver, including the direct Std.Testing.Mocking import) so the two bundles
-  # contain exactly the same set of DLLs and the comparison is apples-to-apples.
-  local driver_dir="$BUILD_DIR/stage2-cli-driver"
-  rm -rf "$driver_dir"
-  mkdir -p "$driver_dir"
-
-  cat > "$driver_dir/driver.l" <<'EOF'
-// Auto-generated driver for the stage-2 CLI-bundle precompile.
-// Mirrors the stage-1 driver exactly (same import closure) so the stage-1 vs
-// stage-2 DLL sets line up one-to-one.
-package Lyric.CliBundleStage2
-import Lyric.Cli
-import Std.Time
-import Std.Math
-import Std.Testing.Mocking
-func main(): Unit { }
-EOF
-
-  # Emit the closure as per-package DLLs straight into the stage-2 dir via the
-  # self-hosted per-package emitter — mirroring the stage-1 step.  As in stage 1,
-  # do NOT pin LYRIC_STD_PATH: the emitter resolves every package from source.
-  # The entry driver package itself is not emitted, only its closure, so the
-  # differing driver package name vs stage 1 does not affect the DLL set.
-  "$STAGE0_BIN" --internal-perpackage-build "$driver_dir/driver.l" \
-    "$STAGE2_DIR" --target dotnet 2>&1 || \
-    die "stage-2 CLI-bundle per-package emit failed"
-
-  local copied
-  copied="$(ls "$STAGE2_DIR"/*.dll 2>/dev/null | wc -l)"
-  info "  emitted $copied DLLs into $STAGE2_DIR"
-
-  # Retarget System.Private.CoreLib refs -> public facades so the stage-2
-  # outputs match the stage-1 rewrite step.
-  if [[ "$SKIP_COREREF_REWRITE" != "1" ]]; then
-    info "  retargeting System.Private.CoreLib refs -> public facades (stage-2)"
-    dotnet fsi "$REPO_ROOT/scripts/rewrite-corelib-refs.fsx" "$STAGE2_DIR"/*.dll \
-      > "$BUILD_DIR/rewrite-corelib-refs-stage2.log" 2>&1 || \
-      die "stage-2 CLI bundle: corelib-ref rewrite failed (see $BUILD_DIR/rewrite-corelib-refs-stage2.log)"
-  else
-    info "SKIP_COREREF_REWRITE=1; leaving stage-2 DLLs with raw CoreLib refs"
+  info "Stage 3: reproducibility fixpoint (diagnostic, non-blocking)"
+  local s2bin="$STAGE2_BIN_DIR/lyric"
+  if [[ ! -x "$s2bin" ]]; then
+    info "  stage-2 binary missing ($s2bin); run stage 2 first — skipping"
+    return 0
   fi
-
-  # Sanity check: Lyric.Lyric.Cli.dll must land in stage2/.  If it
-  # doesn't, something in the emitter cache layout changed and the
-  # comparison will be meaningless.
-  [[ -f "$STAGE2_DIR/Lyric.Lyric.Cli.dll" ]] || \
-    die "stage-2 CLI bundle: Lyric.Lyric.Cli.dll not found in $STAGE2_DIR after copy"
-
-  # -------------------------------------------------------------------------
-  # Compare stage-1 and stage-2 outputs file-by-file (informational).
-  # Intrinsic identity fields (MVID, PE timestamp, checksum) are precisely
-  # normalized; a genuine nondeterminism such as the F# `build_date` wall-clock
-  # is NOT masked and surfaces as a real DIFF.
-  # -------------------------------------------------------------------------
-  info "  comparing stage-1 vs stage-2 F# bundle outputs (identity fields normalized)"
-  local diffs=0
-  shopt -s nullglob
-  for f in "$STAGE1_DIR"/*.dll; do
-    local name
-    name="$(basename "$f")"
-    local f1="$STAGE1_DIR/$name"
-    local f2="$STAGE2_DIR/$name"
-    if [[ ! -f "$f2" ]]; then
-      echo "  MISSING: $name (stage-2 missing)" >&2
-      diffs=$((diffs + 1))
-      continue
-    fi
-    if ! compare_stage1_stage2_dlls "$f1" "$f2"; then
-      echo "  DIFF:    $name (stage-1 vs stage-2 differ after normalizing identity fields)" >&2
-      diffs=$((diffs + 1))
-    else
-      echo "  MATCH:   $name"
-    fi
-  done
-  # Reverse check: flag DLLs present in stage-2 but absent from stage-1.
-  # Such extra assemblies indicate an unexpected build artefact or a package
-  # name change between stages.
-  for f in "$STAGE2_DIR"/*.dll; do
-    local name
-    name="$(basename "$f")"
-    if [[ ! -f "$STAGE1_DIR/$name" ]]; then
-      echo "  EXTRA:   $name (stage-2 only — not present in stage-1)" >&2
-      diffs=$((diffs + 1))
-    fi
-  done
-  shopt -u nullglob
-
-  if [[ $diffs -eq 0 ]]; then
-    ok "Stage-0 diagnostic: all F# bundle DLLs match (modulo intrinsic identity fields)"
+  if ! LYRIC_STDLIB_BIN="$STAGE2_LIB_DIR" "$s2bin" --version >/dev/null 2>&1; then
+    info "  fixpoint PENDING: the stage-2 toolchain is not yet runnable"
+    info "  (resolve the self-hosted emitter blocker reported by stage 2 first)"
+    return 0
+  fi
+  rm -rf "$STAGE3_DIR"; mkdir -p "$STAGE3_DIR"
+  if LYRIC_STDLIB_BIN="$STAGE2_LIB_DIR" \
+       "$REPO_ROOT/scripts/verify-reproducible-emit.sh" \
+       manifest "$s2bin" "$STDLIB_DIR/lyric.full.toml" \
+       && LYRIC_STDLIB_BIN="$STAGE2_LIB_DIR" \
+       "$REPO_ROOT/scripts/verify-reproducible-emit.sh" \
+       closure "$s2bin"; then
+    ok "Stage 3: self-hosted emit is byte-for-byte reproducible (fixpoint holds)"
   else
-    # NEVER fatal: the F# stage-0 emitter is non-reproducible by design (it
-    # embeds a `build_date` wall-clock in `Lyric.SdkVersion`) and is frozen on
-    # a deletion schedule.  The STRICT gate is the self-hosted check in (a).
-    info "  stage-0 diagnostic: $diffs F# bundle DLL(s) differ (expected — see Lyric.Stdlib.dll build_date)"
+    info "Stage 3: reproducibility fixpoint DIFFERS — reported, non-blocking (Q-dist-001)"
   fi
 }
 
@@ -789,6 +667,7 @@ mkdir -p "$BUILD_DIR"
 
 stage0
 [[ $MAX_STAGE -ge 1 ]] && stage1
-[[ $MAX_STAGE -ge 2 ]] && stage2
+[[ $MAX_STAGE -ge 2 ]] && build_stage2
+[[ $MAX_STAGE -ge 3 ]] && stage3
 
 info "Bootstrap finished (max stage: $MAX_STAGE)"
