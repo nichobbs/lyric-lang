@@ -19350,99 +19350,28 @@ pub func lambdaCaptureNamesMsil(fctx: in FuncCtx, lparams: in List[LambdaParam],
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Phase 2: Closure class synthesis (strongly-typed lambdas, Epic #1877 Part 2)
-// ─────────────────────────────────────────────────────────────────────────────
+// Phase 2 closure synthesis is deferred to Epic #1877 Part 2. The implementation requires:
+// - Emitting __lambda_N as instance methods on the closure record (not static functions)
+// - Typed closure record fields matching actual capture types
+// - Proper delegate target instantiation (__Closure<N> instance for instance method)
+// - Boxing/unboxing of value-typed captures in the closure constructor
 //
-// For each capturing lambda, synthesize a closure record type with fields for
-// each captured variable. The lambda becomes an instance method of the closure
-// record, enabling true JIT optimization (typed method signature instead of
-// object parameters). At the lambda site, instantiate the closure and pass it
-// as the delegate target.
+// Tracked in GitHub issue #3923 with complete architectural design.
 
-// Analyze a lambda function's body to determine captured names (free variables).
-// Returns: List of names referenced in the lambda body but not bound within it.
-func analyzeLambdaCapturesFromAst(decl: in FunctionDecl): List[String] {
-  // Collect all variable references in the lambda body.
-  val refs: List[String] = newList()
-  match decl.body {
-    case Some(FBBlock(block)) -> collectRefNamesBlock(block, refs)
-    case Some(FBExpr(e)) -> collectRefNamesExpr(e, refs)
-    case None -> ()
-  }
+// Dead Phase 2 helper functions removed; see #3906.
+// When Phase 2 is implemented, these functions should be restored and properly wired:
+//   - synthesizeClosureRecordsForFile
+//   - scanClosureRecordsMsil
+//   - synthesizeClosureRecordWithMethod
+//   - injectSelfParameterIntoMethod
+//   - removeLambdaCapsParameter
+//   - synthesizeClosureRecord
+//   - makeClosureField
+//   - msilTypeToTypeExpr
+//   - analyzeLambdaCapturesFromAst
+//   - extractLambdaIndexFromName
 
-  // Collect all names bound within the lambda (parameters + locals).
-  val bound: List[String] = newList()
-  var pi = 0
-  while pi < decl.params.count {
-    addNameOnce(bound, decl.params[pi].name)
-    pi = pi + 1
-  }
-  match decl.body {
-    case Some(FBBlock(block)) -> collectBoundNamesBlock(block, bound)
-    case Some(FBExpr(_)) -> ()
-    case None -> ()
-  }
-
-  // Captures = references that aren't bound within the lambda.
-  val captures: List[String] = newList()
-  var ri = 0
-  while ri < refs.count {
-    val name = refs[ri]
-    if not nameListContains(bound, name) {
-      addNameOnce(captures, name)
-    }
-    ri = ri + 1
-  }
-  captures
-}
-
-// Extract lambda index from a lambda function name (__lambda_N).
-// Returns: Some(N) if the name is __lambda_N, None otherwise.
-func extractLambdaIndexFromName(name: in String): Option[Int] {
-  if startsWith(name, "__lambda_") {
-    val indexStr = substring(name, 9, name.length)
-    match parseOptInt(indexStr) {
-      case Some(idx) -> Some(value = idx)
-      case None -> None
-    }
-  } else {
-    None
-  }
-}
-
-// Scan a file for __Closure<N> records and populate the CodegenCtx closure tracking maps.
-// Called during addPackageTokens to register which lambdas have closure records.
-pub func scanClosureRecordsMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
-  var i = 0
-  while i < file.items.count {
-    match file.items[i].kind {
-      case IRecord(decl) -> {
-        if startsWith(decl.name, "__Closure") {
-          // Extract lambda index from __Closure<N>
-          val indexStr = substring(decl.name, 9, decl.name.length)
-          match parseOptInt(indexStr) {
-            case Some(idx) -> {
-              cctx.lambdaHasClosures.add(idx, true)
-            }
-            case None -> ()
-          }
-        }
-      }
-      case _ -> ()
-    }
-    i = i + 1
-  }
-}
-
-// Phase 2: Synthesize closure record types for capturing lambdas.
-// For each __lambda_* function in the file, analyze its captures and create
-// a corresponding __Closure<N> record with typed fields.
-// Returns: Updated file with closure records prepended before lambda functions.
-// Note: This function only creates the record definitions. The CodegenCtx.lambdaHasClosures
-// and closureCtorTokens are populated during addPackageTokens after tokens are assigned.
-// Capture field types default to the actual MsilType captured during ELambda lowering
-// (stored in cctx.lambdaCaptureTypesByIndex), or MObject if not available.
-pub func synthesizeClosureRecordsForFile(file: in SourceFile): SourceFile {
+// BFS-based liftLambdasMsil: extract all ELambda nodes into synthetic IFunc
   // Phase 2 closure synthesis: for each capturing lambda, create a __Closure<i> record
   // containing the lambda as an instance method with parameters adjusted.
   //
