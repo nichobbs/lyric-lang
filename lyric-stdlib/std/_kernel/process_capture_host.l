@@ -59,30 +59,38 @@ func psiNoWindow(psi: in Psi, v: in Bool): Unit = ()
 @externTarget("System.Diagnostics.Process.Start")
 func procStart(psi: in Psi): Proc = ()
 
+@externInstance
 @externTarget("System.Diagnostics.Process.StandardInput")
 func procStdinWriter(p: in Proc): ProcWriter = ()
 
+@externInstance
 @externTarget("System.Diagnostics.Process.StandardOutput")
 func procStdoutReader(p: in Proc): ProcReader = ()
 
+@externInstance
 @externTarget("System.Diagnostics.Process.StandardError")
 func procStderrReader(p: in Proc): ProcReader = ()
 
 // Returns true when the process exited within `ms` milliseconds, false on
 // timeout.  .NET 5+ overload; we target .NET 10 so this is always available.
+@externInstance
 @externTarget("System.Diagnostics.Process.WaitForExit")
 func procWaitMs(p: in Proc, ms: in Int): Bool = ()
 
+@externInstance
 @externTarget("System.Diagnostics.Process.Kill")
 func procKillTree(p: in Proc, entireProcessTree: in Bool): Unit = ()
 
+@externInstance
 @externTarget("System.Diagnostics.Process.ExitCode")
 func procExitCode(p: in Proc): Int = ()
 
 // ── Stdin write ────────────────────────────────────────────────────────────
+@externInstance
 @externTarget("System.IO.StreamWriter.Write")
 func writerWrite(w: in ProcWriter, s: in String): Unit = ()
 
+@externInstance
 @externTarget("System.IO.StreamWriter.Close")
 func writerClose(w: in ProcWriter): Unit = ()
 
@@ -90,12 +98,14 @@ func writerClose(w: in ProcWriter): Unit = ()
 // Starts a background read to end-of-stream.  Calling this WITHOUT `await`
 // returns the underlying Task<string> immediately; the read runs on the
 // thread pool so both stdout and stderr can drain concurrently.
+@externInstance
 @externTarget("System.IO.TextReader.ReadToEndAsync")
 func startReadAll(r: in ProcReader): TaskStr = ()
 
 // Blocks the calling thread until the Task<string> completes and returns its
 // result.  Only called after the child has exited (or been killed), so the
 // task completes immediately in practice.
+@externInstance
 @externTarget("System.Threading.Tasks.Task`1[System.String].Result")
 func taskStrResult(t: in TaskStr): String = ()
 
@@ -104,6 +114,7 @@ func taskStrResult(t: in TaskStr): String = ()
 // Used to cap pipe-drain collection after a process kill so a slow kernel
 // reap or a race between kill and child writes cannot hang the caller
 // indefinitely (#3029).
+@externInstance
 @externTarget("System.Threading.Tasks.Task.Wait")
 func taskWaitMs(t: in TaskStr, milliseconds: in Int): Bool = ()
 
