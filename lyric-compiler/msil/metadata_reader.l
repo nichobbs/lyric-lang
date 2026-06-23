@@ -2903,6 +2903,30 @@ pub func tryReadResourceIn(ri: in ResourceImage, name: in String): Option[slice[
 // compiler closure linked by the self-tests in the mint path), via
 // `dllHasNullaryInstanceField`, so cross-package nullary union-case
 // construction matches the producer DLL.
+// True when any TypeDef in the CLI image `bytes` has a backtick in its name,
+// indicating the self-hosted arity-suffix convention.  Split out from
+// `coreDllHasAritySuffixTypeDef` so the multi-line body stays readable — `lyric
+// fmt` collapses a nested-match `Ok(raw) ->` arm onto a single line regardless
+// of length, so keeping the scan in its own function avoids that.
+func imageHasBacktickTypeDef(bytes: in slice[Byte]): Bool {
+  match parseAssemblyImage(bytes) {
+    case None -> false
+    case Some(ri) -> {
+      val typeDefCount = rowCountOf(ri.th, 2)
+      var row = 1
+      var found = false
+      while row <= typeDefCount and not found {
+        val td = readTypeDef(ri.img, ri.layout, row)
+        if Str.contains(td.name, "`") {
+          found = true
+        }
+        row = row + 1
+      }
+      found
+    }
+  }
+}
+
 // True when any TypeDef in the DLL at `dllPath` has a backtick in its name,
 // indicating the self-hosted arity-suffix convention.  Returns false when the
 // file is missing, unreadable, or carries no backtick TypeDefs (F# bootstrap
@@ -2910,7 +2934,7 @@ pub func tryReadResourceIn(ri: in ResourceImage, name: in String): Option[slice[
 func coreDllHasAritySuffixTypeDef(dllPath: in String): Bool {
   match File.readBytes(dllPath) {
     case Err(_) -> false
-    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) { case None -> false; case Some(ri) -> { val typeDefCount = rowCountOf(ri.th, 2); var row = 1; var found = false; while row <= typeDefCount and not found { val td = readTypeDef(ri.img, ri.layout, row); if Str.contains(td.name, "`") { found = true }; row = row + 1 }; found } }
+    case Ok(raw) -> imageHasBacktickTypeDef(raw.toArray())
   }
 }
 
