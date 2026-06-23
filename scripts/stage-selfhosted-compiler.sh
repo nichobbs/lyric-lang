@@ -58,6 +58,18 @@ if [[ ! -f "$bundle" ]]; then
   exit 1
 fi
 
+# Content check (#4043): the old per-package staging asserted the CLI and both
+# backends emitted as their own DLLs.  The single bundle has no per-package
+# files, so verify instead that it carries the embedded `Lyric.Contract.<Pkg>`
+# metadata resource for each — a dropped import path (e.g. a missing JVM-backend
+# edge) would otherwise yield a bundle that links but silently lacks a backend.
+for pkg in Lyric.Cli Msil.Codegen Jvm.Codegen; do
+  if ! strings -n 8 "$bundle" | grep -q "Lyric.Contract.$pkg"; then
+    echo "stage-selfhosted-compiler: bundle is missing the Lyric.Contract.$pkg resource (malformed emit?)" >&2
+    exit 1
+  fi
+done
+
 staged=0
 for dir in "${LIB_DIRS[@]}"; do
   [[ -d "$dir" ]] || continue
