@@ -67,15 +67,15 @@ func psiNoWindow(psi: in Psi, v: in Bool): Unit = ()
 func procStart(psi: in Psi): Proc = ()
 
 @externInstance
-@externTarget("System.Diagnostics.Process.StandardInput")
+@externTarget("System.Diagnostics.Process.get_StandardInput")
 func procStdinWriter(p: in Proc): ProcWriter = ()
 
 @externInstance
-@externTarget("System.Diagnostics.Process.StandardOutput")
+@externTarget("System.Diagnostics.Process.get_StandardOutput")
 func procStdoutReader(p: in Proc): ProcReader = ()
 
 @externInstance
-@externTarget("System.Diagnostics.Process.StandardError")
+@externTarget("System.Diagnostics.Process.get_StandardError")
 func procStderrReader(p: in Proc): ProcReader = ()
 
 // Returns true when the process exited within `ms` milliseconds, false on
@@ -89,7 +89,7 @@ func procWaitMs(p: in Proc, ms: in Int): Bool = ()
 func procKillTree(p: in Proc, entireProcessTree: in Bool): Unit = ()
 
 @externInstance
-@externTarget("System.Diagnostics.Process.ExitCode")
+@externTarget("System.Diagnostics.Process.get_ExitCode")
 func procExitCode(p: in Proc): Int = ()
 
 // ── Stdin write ────────────────────────────────────────────────────────────

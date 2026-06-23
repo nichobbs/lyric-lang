@@ -50,7 +50,7 @@ pub func hostParseJson(s: in String): JsonDoc = ()
 pub func hostDisposeJson(d: in JsonDoc): Unit = ()
 
 @externInstance
-@externTarget("System.Text.Json.JsonDocument.RootElement")
+@externTarget("System.Text.Json.JsonDocument.get_RootElement")
 pub func hostRootElement(d: in JsonDoc): JsonElement = ()
 
 // =====================================================================
@@ -105,7 +105,7 @@ pub func hostTryGetDouble(elem: in JsonElement, value: out Double): Bool = ()
 pub func hostGetRawText(elem: in JsonElement): String = ()
 
 @externInstance
-@externTarget("System.Text.Json.JsonElement.ValueKind")
+@externTarget("System.Text.Json.JsonElement.get_ValueKind")
 pub func hostValueKind(elem: in JsonElement): Int = ()
 
 // =====================================================================
@@ -124,7 +124,7 @@ pub func hostEnumerateArray(elem: in JsonElement): JsonArrayEnumerator = ()
 pub func hostEnumMoveNext(en: inout JsonArrayEnumerator): Bool = ()
 
 @externInstance
-@externTarget("System.Text.Json.JsonElement+ArrayEnumerator.Current")
+@externTarget("System.Text.Json.JsonElement+ArrayEnumerator.get_Current")
 pub func hostEnumCurrent(en: inout JsonArrayEnumerator): JsonElement = ()
 
 // =====================================================================
@@ -140,15 +140,15 @@ pub func hostEnumerateObject(elem: in JsonElement): JsonObjectEnumerator = ()
 pub func hostEnumObjectMoveNext(en: inout JsonObjectEnumerator): Bool = ()
 
 @externInstance
-@externTarget("System.Text.Json.JsonElement+ObjectEnumerator.Current")
+@externTarget("System.Text.Json.JsonElement+ObjectEnumerator.get_Current")
 pub func hostEnumObjectCurrent(en: inout JsonObjectEnumerator): JsonProperty = ()
 
 @externInstance
-@externTarget("System.Text.Json.JsonProperty.Name")
+@externTarget("System.Text.Json.JsonProperty.get_Name")
 pub func hostPropertyName(prop: in JsonProperty): String = ()
 
 @externInstance
-@externTarget("System.Text.Json.JsonProperty.Value")
+@externTarget("System.Text.Json.JsonProperty.get_Value")
 pub func hostPropertyValue(prop: in JsonProperty): JsonElement = ()
 
 // =====================================================================
