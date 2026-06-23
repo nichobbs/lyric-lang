@@ -19,7 +19,7 @@ interchangeable, and a failure under one is not a failure under another.
 |---|----------|----------|-------------|---------------|-----------|
 | 1 | **mint stage-0** | `scripts/mint-stage0-fsharp.sh` (rebuilds the historical F# bootstrap from git history) | valid (F# emitter is correct) | `LYRIC_BOOTSTRAP_MINT=1` seeds it automatically | seed stage-1; never run directly |
 | 2 | **mint stage-1** (the **bootstrap** compiler) | the mint seed compiling the self-hosted `.l` sources | **valid — this is exactly what CI ships** | `make mint` | **all day-to-day dev.** It *runs* the self-hosted codegen, so compiling a program exercises the self-hosted emitter on user code while staying runnable. |
-| 3 | **self-hosted stage-1** | the self-hosted compiler compiling **itself** (default `scripts/bootstrap.sh` re-emit; a bare `make lyric`) | **not yet valid** — the self-hosted emitter still mis-emits parts of its own closure | `make lyric` | the END GOAL; only runnable once `make ilverify` reports **0** |
+| 3 | **self-hosted stage-2** | the stage-1 true compiler compiling **itself + the full stdlib** into an isolated toolchain (`.bootstrap/stage2/{lib,bin}`) | **not yet runnable** — the self-hosted emitter still mis-emits parts of its own closure | `make stage2` | the END GOAL and SHIP/TEST toolchain; run things via `make run-stage2 ARGS=…` once it runs |
 
 Key consequence: **a bare `make lyric` builds compiler #3**, which today can
 fault at startup (`InvalidProgramException` / `match not exhaustive`) because
@@ -35,6 +35,42 @@ DLL.  Its error count is the distance between compiler #2 and a runnable
 compiler #3.  When it reports 0, the full self-hosted toolchain becomes usable
 and the `userlib`/`selfhosted` staging (uniform arity-suffixed ABI) can replace
 the mint closure everywhere.  Tracked under #3943.
+
+### The isolated stage-2 toolchain (`make stage2`) — D110
+
+`make stage2` (→ `scripts/bootstrap.sh --stage 2`) builds compiler #3 as an
+**isolated, self-consistent toolchain** under `.bootstrap/stage2/{lib,bin}`: the
+stage-1 true compiler re-emits **itself + the full stdlib** in one
+`--internal-perpackage-build` pass (123 DLLs — every compiler and `Std.*`
+package, all arity-suffixed and mutually consistent), then AOT-links the binary
+against that closure.  Because the stage-2 stdlib a consumer links is emitted by
+the *same* compiler, in the *same* pass, as the references that point at it,
+there is no seed-vs-self-hosted ABI split — which is what makes the `userlib`
+ABI-sniff and `selfhosted/` staging unnecessary in this layout (D110).
+
+Building the toolchain is the **runnability gate**: the per-package emit can
+succeed while the AOT-linked binary still faults at startup, and that fault is
+the signal.  `make stage2` reports it **non-fatally** rather than failing the
+build, so an emitter bug surfaces as a clean, specific failure instead of as
+build noise.  As of 2026-06-23 the surfaced blocker is
+`System.TypeLoadException: Could not load type 'Std.Core.Option' from assembly
+'Lyric.Stdlib.Core'` — the docs/43 arity-suffix mismatch (the consumer
+references `Option`, the producer defines `Option`1`: right assembly, wrong
+type name).  Run things against the toolchain with
+`make run-stage2 ARGS="…"` (which pins `LYRIC_STDLIB_BIN=.bootstrap/stage2/lib`);
+`make stage3` runs the reproducibility fixpoint as a non-blocking diagnostic.
+
+`make stage2` currently produces **per-package** stdlib DLLs
+(`Lyric.Stdlib.<X>.dll`) because the current emitter references stdlib types
+under per-package assembly names — a bootstrap-era artefact.  The **target** is
+a **single `Lyric.Stdlib.dll`**, which is what the distribution strategy
+mandates (docs/22 §2, docs/34: one `lib/Lyric.Stdlib.dll` replacing the ~25
+per-package DLLs).  Collapsing to it requires changing the emitter's stdlib
+reference convention to the single `Lyric.Stdlib` assembly identity (D110); the
+compiler's own `Lyric.Lyric.*` packages stay per-package because they are
+AOT-linked into the binary, not distributed.  `build_stage2` switches to
+`lyric.full.toml`'s `output = "single"` stdlib once that convention change
+lands.
 
 ### "Is this a real bug?" — one command
 
