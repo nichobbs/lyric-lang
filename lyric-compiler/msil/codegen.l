@@ -13093,12 +13093,27 @@ func emitExternTargetBody(
       // Property getters take no value args, so the probe passes an empty list.
       var emitMember = r.memberName
       var emitIsStatic = r.isStatic
+      // A property getter resolved here encodes its ACTUAL return type into the
+      // MemberRef signature (captured below).  A property returning an enum —
+      // `JsonElement.ValueKind` -> `System.Text.Json.JsonValueKind` — must encode
+      // the enum valuetype, not the declared Lyric `Int`; otherwise the CLR can't
+      // bind `get_ValueKind` and the call faults with MissingMethodException at
+      // run time.  The metadata-direct *method* path below only runs for plain
+      // methods (`emitMember == r.memberName`), so the getter return type is
+      // resolved here instead.
+      var propGetterRet: Option[MsilType] = None
       if not r.isCtor {
         val noArgs: List[Mdr.SigType] = newList()
         match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, resolvedFqn, "get_" + r.memberName, noArgs) {
           case Some(gp) -> {
             emitMember = "get_" + r.memberName
             emitIsStatic = gp.sig.isStatic
+            match resolvedSigToMsil(cctx, gp.sig.returnType) {
+              case Some(rm) -> {
+                propGetterRet = Some(value = rm)
+              }
+              case None -> ()
+            }
           }
           case None -> ()
         }
@@ -13247,7 +13262,7 @@ func emitExternTargetBody(
       } else {
         match resolvedMethodRet {
           case Some(rm) -> rm
-          case None -> bclRetTy
+          case None -> match propGetterRet { case Some(rm) -> rm; case None -> bclRetTy }
         }
       }
       val sig = if emitIsStatic and not r.isCtor {
