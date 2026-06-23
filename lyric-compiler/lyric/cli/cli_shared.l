@@ -496,11 +496,15 @@ func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
   // suffixed `userlib` Core; that staging is the toolchain build's job
   // (`stage-selfhosted-compiler.sh`), not this co-location step.
   val userlib = Path.join(srcDir, "userlib")
-  val stdlibSrc = if File.fileExists(Path.join(userlib, "Lyric.Stdlib.Core.dll")) { userlib } else { srcDir }
-  // Stdlib façades + their `*Host` shims come from `stdlibSrc` (the suffixed
-  // userlib when present); everything else (`FSharp.Core.dll`, the emitter shim)
-  // always comes from `srcDir`.
-  match File.listFiles(stdlibSrc) {
+  val userlibActive = File.fileExists(Path.join(userlib, "Lyric.Stdlib.Core.dll"))
+  // Copy Lyric.Stdlib.*.dll from srcDir first (the base set — may include modules
+  // the compiler closure doesn't import, e.g. Lyric.Stdlib.Sort.dll).  Then, when
+  // userlib/ is active, overlay it: copying from userlib/ overwrites srcDir copies
+  // for modules present in both, so the arity-suffixed self-hosted versions win.
+  // This union strategy ensures every stdlib module available in the toolchain dir
+  // is co-located beside the output, regardless of which subset the userlib/ staging
+  // driver imported.
+  match File.listFiles(srcDir) {
     case Err(_) -> ()
     case Ok(fs) -> {
       for f in fs.toArray() {
@@ -512,6 +516,25 @@ func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
               val _ = File.writeBytes(dest, bs)
             }
             case Err(_) -> ()
+          }
+        }
+      }
+    }
+  }
+  if userlibActive {
+    match File.listFiles(userlib) {
+      case Err(_) -> ()
+      case Ok(fs) -> {
+        for f in fs.toArray() {
+          val base = Path.basename(f)
+          if Str.startsWith(base, "Lyric.Stdlib") and Str.endsWith(base, ".dll") {
+            val dest = Path.join(destDir, base)
+            match File.readBytes(f) {
+              case Ok(bs) -> {
+                val _ = File.writeBytes(dest, bs)
+              }
+              case Err(_) -> ()
+            }
           }
         }
       }
