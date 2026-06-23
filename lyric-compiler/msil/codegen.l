@@ -36,6 +36,7 @@ import Lyric.Lexer
 import Lyric.RestoredPackages
 import Lyric.Weaver as Weaver
 import Msil.Lowering
+import Msil.Tables
 import Msil.Ffi
 import Msil.Kernel
 import Msil.MetadataReader as Mdr
