@@ -13305,12 +13305,23 @@ func emitExternTargetBody(
       // Property getters take no value args, so the probe passes an empty list.
       var emitMember = r.memberName
       var emitIsStatic = r.isStatic
+      // When a property getter resolves via metadata, capture its ACTUAL return
+      // type so the MemberRef signature names the BCL type rather than the
+      // Lyric-declared one.  This matters when the two differ — most sharply for
+      // an enum property (`JsonElement.ValueKind` returns the value type
+      // `System.Text.Json.JsonValueKind`, which the Lyric wrapper declares as
+      // `Int`): a MemberRef encoding `get_ValueKind(): int32` binds to no method
+      // (the real getter returns the enum), faulting with MissingMethodException
+      // at run time (#3989).  The enum's underlying representation is `int32`, so
+      // the value the wrapper yields is still usable as a Lyric `Int`.
+      var propGetterRet: Option[MsilType] = None
       if not r.isCtor {
         val noArgs: List[Mdr.SigType] = newList()
         match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, resolvedFqn, "get_" + r.memberName, noArgs) {
           case Some(gp) -> {
             emitMember = "get_" + r.memberName
             emitIsStatic = gp.sig.isStatic
+            propGetterRet = resolvedSigToMsil(cctx, gp.sig.returnType)
           }
           case None -> ()
         }
@@ -13457,9 +13468,12 @@ func emitExternTargetBody(
       val sigRet = if optCoerces {
         optCoerceInner
       } else {
-        match resolvedMethodRet {
-          case Some(rm) -> rm
-          case None -> bclRetTy
+        match propGetterRet {
+          case Some(pr) -> pr
+          case None -> match resolvedMethodRet {
+            case Some(rm) -> rm
+            case None -> bclRetTy
+          }
         }
       }
       val sig = if emitIsStatic and not r.isCtor {
