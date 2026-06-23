@@ -9646,11 +9646,20 @@ func lowerBuiltinOrStaticCallMsil(
       match mapGet(cctx.unionCaseCtorByName, funcName) {
         case Some(candidates) -> pickCaseFqnByQualifier(cctx, fctx, candidates, callQualifier)
         case None -> {
-          // Cross-package record: look up simple name in typeFqnByName to
-          // get the FQN, then verify it has a ctor registered.
-          match mapGet(cctx.typeFqnByName, funcName) {
-            case Some(fqn) -> if cctx.recordCtorTokens.containsKey(fqn) { fqn } else { localCtorKey }
-            case None -> localCtorKey
+          // Cross-package record: resolve the simple name to its FQN with the
+          // import-aware scope-tier resolver (mirrors the type checker), NOT the
+          // first-wins `typeFqnByName` map.  Two packages can declare the same
+          // short record name (e.g. `Msil.Tables.TypeRefRow` vs
+          // `Msil.MetadataReader.TypeRefRow`); in a single bundle the first-wins
+          // map binds every consumer to whichever registered first, so a
+          // construction in a package that imports only ONE of them mis-resolves
+          // to the other's ctor — a different field layout that faults the
+          // verifier with StackUnexpected (found Int32, expected string).
+          val resolvedCtorFqn = resolveTypeFqn(cctx, fctx.pkgName, funcName)
+          if cctx.recordCtorTokens.containsKey(resolvedCtorFqn) {
+            resolvedCtorFqn
+          } else {
+            localCtorKey
           }
         }
       }
