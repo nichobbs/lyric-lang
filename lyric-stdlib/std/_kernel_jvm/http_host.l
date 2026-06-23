@@ -24,14 +24,14 @@ package Std.HttpHost
 
 import Std.Task
 
-extern type HttpClient = "java.net.http.HttpClient"
+extern type HttpClientHandle = "java.net.http.HttpClient"
 
 extern type HttpRequestMessage = "lyric.stdlib.jvm.HttpRequestBuilder"
 
 extern type HttpResponseMessage = "lyric.stdlib.jvm.HttpResponseWrapper"
 
 @externTarget("lyric.stdlib.jvm.HttpClientHost.defaultClient")
-pub func hostDefaultClient(): HttpClient = ()
+pub func hostDefaultClient(): HttpClientHandle = ()
 
 @externTarget("lyric.stdlib.jvm.HttpClientHost.makeRequest")
 pub func hostMakeRequest(method: in String, url: in String): HttpRequestMessage = ()
@@ -45,14 +45,14 @@ pub func hostWithStringBody(request: in HttpRequestMessage, contentType: in Stri
 // Lowers to HttpClient.send(request.build(), BodyHandlers.ofByteArray())
 // on the calling virtual thread.
 @externTarget("lyric.stdlib.jvm.HttpClientHost.send")
-pub async func hostSend(client: in HttpClient, request: in HttpRequestMessage): HttpResponseMessage = ()
+pub async func hostSend(client: in HttpClientHandle, request: in HttpRequestMessage): HttpResponseMessage = ()
 
 @externTarget("lyric.stdlib.jvm.HttpClientHost.get")
-pub async func hostGet(client: in HttpClient, url: in String): HttpResponseMessage = ()
+pub async func hostGet(client: in HttpClientHandle, url: in String): HttpResponseMessage = ()
 
 @externTarget("lyric.stdlib.jvm.HttpClientHost.postString")
 pub async func hostPostString(
-  client: in HttpClient, url: in String, body: in String, contentType: in String
+  client: in HttpClientHandle, url: in String, body: in String, contentType: in String
 ): HttpResponseMessage = ()
 
 @externTarget("lyric.stdlib.jvm.HttpClientHost.statusCode")
@@ -72,17 +72,17 @@ pub async func hostReadBodyBytes(response: in HttpResponseMessage): slice[Byte] 
 // -------------------------------------------------------------------------
 @externTarget("lyric.stdlib.jvm.HttpClientHost.sendWithCancel")
 pub async func hostSendWithCancel(
-  client: in HttpClient, request: in HttpRequestMessage, token: in CancellationToken
+  client: in HttpClientHandle, request: in HttpRequestMessage, token: in CancellationToken
 ): HttpResponseMessage = ()
 
 @externTarget("lyric.stdlib.jvm.HttpClientHost.getWithCancel")
 pub async func hostGetWithCancel(
-  client: in HttpClient, url: in String, token: in CancellationToken
+  client: in HttpClientHandle, url: in String, token: in CancellationToken
 ): HttpResponseMessage = ()
 
 @externTarget("lyric.stdlib.jvm.HttpClientHost.postStringWithCancel")
 pub async func hostPostStringWithCancel(
-  client: in HttpClient,
+  client: in HttpClientHandle,
   url: in String,
   body: in String,
   contentType: in String,
@@ -95,11 +95,11 @@ pub async func hostReadBodyTextWithCancel(response: in HttpResponseMessage, toke
 // Builds an HttpClient with a redirect policy of NORMAL (follows up to
 // maxRedirects hops; 0 disables following).
 @externTarget("lyric.stdlib.jvm.HttpClientHost.clientWithRedirects")
-pub func hostClientWithRedirects(maxRedirects: in Int): HttpClient = ()
+pub func hostClientWithRedirects(maxRedirects: in Int): HttpClientHandle = ()
 
 // Builds an HttpClient with redirect policy NEVER.
 @externTarget("lyric.stdlib.jvm.HttpClientHost.clientNoRedirects")
-pub func hostClientNoRedirects(): HttpClient = ()
+pub func hostClientNoRedirects(): HttpClientHandle = ()
 
 // ---------------------------------------------------------------------------
 // Unix domain socket support (Phase 2 - JVM implementation TBD).
@@ -107,14 +107,107 @@ pub func hostClientNoRedirects(): HttpClient = ()
 // as part of lyric-stdlib JVM kernel completion (issue #2663 band J2-J3).
 // ---------------------------------------------------------------------------
 @externTarget("lyric.stdlib.jvm.HttpClientHost.clientWithUnixSocket")
-pub func hostClientWithUnixSocket(socketPath: in String): HttpClient = ()
+pub func hostClientWithUnixSocket(socketPath: in String): HttpClientHandle = ()
 
 @externTarget("lyric.stdlib.jvm.HttpClientHost.clientWithUnixSocketAndRedirects")
-pub func hostClientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: in Int): HttpClient = ()
+pub func hostClientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: in Int): HttpClientHandle = ()
 
 @externTarget("lyric.stdlib.jvm.HttpClientHost.clientWithUnixSocketNoRedirects")
-pub func hostClientWithUnixSocketNoRedirects(socketPath: in String): HttpClient = ()
+pub func hostClientWithUnixSocketNoRedirects(socketPath: in String): HttpClientHandle = ()
 
 // Returns the first value of the named response header, or "" if absent.
 @externTarget("lyric.stdlib.jvm.HttpClientHost.responseHeader")
 pub func hostResponseHeader(response: in HttpResponseMessage, name: in String): String = ()
+
+// ---------------------------------------------------------------------------
+// V0012-safe wrappers — mirrors _kernel/http_host.l.
+//
+// On JVM, virtual threads have no CLR protected-region restriction, so these
+// can use await-in-try directly.  They exist to provide a uniform Std.HttpHost
+// surface between .NET and JVM targets.
+// ---------------------------------------------------------------------------
+pub async func hostSendSafe(client: in HttpClientHandle, request: in HttpRequestMessage): Result[HttpResponseMessage, String] {
+  return try {
+    Ok(value = await hostSend(client, request))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+pub async func hostGetSafe(client: in HttpClientHandle, url: in String): Result[HttpResponseMessage, String] {
+  return try {
+    Ok(value = await hostGet(client, url))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+pub async func hostPostStringSafe(
+  client: in HttpClientHandle, url: in String, body: in String, contentType: in String
+): Result[HttpResponseMessage, String] {
+  return try {
+    Ok(value = await hostPostString(client, url, body, contentType))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+pub async func hostReadBodyTextSafe(response: in HttpResponseMessage): Result[String, String] {
+  return try {
+    Ok(value = await hostReadBodyText(response))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+pub async func hostReadBodyBytesSafe(response: in HttpResponseMessage): Result[slice[Byte], String] {
+  return try {
+    Ok(value = await hostReadBodyBytes(response))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+pub async func hostSendWithCancelSafe(
+  client: in HttpClientHandle, request: in HttpRequestMessage, token: in CancellationToken
+): Result[HttpResponseMessage, String] {
+  return try {
+    Ok(value = await hostSendWithCancel(client, request, token))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+pub async func hostGetWithCancelSafe(
+  client: in HttpClientHandle, url: in String, token: in CancellationToken
+): Result[HttpResponseMessage, String] {
+  return try {
+    Ok(value = await hostGetWithCancel(client, url, token))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+pub async func hostPostStringWithCancelSafe(
+  client: in HttpClientHandle,
+  url: in String,
+  body: in String,
+  contentType: in String,
+  token: in CancellationToken,
+): Result[HttpResponseMessage, String] {
+  return try {
+    Ok(value = await hostPostStringWithCancel(client, url, body, contentType, token))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+pub async func hostReadBodyTextWithCancelSafe(
+  response: in HttpResponseMessage, token: in CancellationToken
+): Result[String, String] {
+  return try {
+    Ok(value = await hostReadBodyTextWithCancel(response, token))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
