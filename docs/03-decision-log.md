@@ -6826,6 +6826,53 @@ remains gated by the separate parser bug.
 
 ---
 
+## D112 — Self-hosted compiler self-tests link a single `Lyric.Compiler.dll` bundle
+
+**Context.** D111 collapsed the stdlib to one assembly and unblocked stage-2
+startup, surfacing the next blocker it named: the self-hosted-emitted **compiler**
+mis-parses its own input. Root-caused (docs/41 §R7) to the **per-package
+cross-package emission** path: when the self-hosted emitter compiles each compiler
+package into its own `Lyric.<Pkg>.dll` and threads the others as restored deps,
+cross-package type references corrupt across the assembly boundary — a
+self-hosted-emitted `Lyric.Parser` produces per-token `IError` garbage even on
+`package P`. The same closure built as **one assembly** parses correctly
+(in-bundle references are internal, never crossing the boundary).
+
+**Decision.** Compiler self-tests link the self-hosted compiler as a **single
+`Lyric.Compiler.dll` bundle** — the compiler analogue of D111's stdlib bundle.
+
+- **Producer.** `Emitter.emitCompilerBundle(entrySource, outPath, Dotnet)`
+  (`emitter.l`) reuses `loadCompilerPayloads` (multi-file discovery, import-closure
+  filtering, topo-sort) and emits the whole `Lyric.Cli` closure into ONE
+  `output = "single"` assembly named `Lyric.Compiler`. `Std.*` imports resolve
+  from source and are referenced externally as `Lyric.Stdlib`. Driven by the
+  internal CLI flag `--internal-compiler-bundle-build <entry.l> <outPath>`.
+- **Consumer.** `compilerClosureDllPaths` prefers
+  `<libDir>/selfhosted/Lyric.Compiler.dll` when staged, threading it as a
+  **single** restored-dep entry. `loadRestoredPackage` yields one artifact per
+  `Lyric.Contract.<Pkg>` resource in the bundle; `assemblySimpleNameFromDll`
+  derives every `AssemblyRef` from the bundle's file stem (`Lyric.Compiler`), so a
+  self-test resolves a self-consistent compiler from the one file with **no
+  `stdlibAssemblyName` change** for compiler heads.
+- **Staging.** `stage-selfhosted-compiler.sh` builds the bundle via the new flag
+  and deploys `Lyric.Compiler.dll` into each `selfhosted/` dir (replacing the
+  per-package `--internal-perpackage-build` staging).
+
+**Why not fix per-package emission directly.** The single bundle gets the
+self-tests green now (path A); fixing the per-package cross-package corruption
+(path B) is still required for **external dependencies** (genuinely separate
+assemblies) and is tracked separately. `--internal-perpackage-build` is retained
+as the R7 front-end-completeness gate ("Whole compiler self-host-compiles").
+
+**Verification.** Clean-room via the minted seed: the whole compiler builds into
+one 3.6 MB `Lyric.Compiler.dll`; the `parser` self-test (corrupt under
+per-package) passes 67/67 against the bundle, alongside `typechecker` (235),
+`modechecker` (30), `contract_elaborator` (30), and others.
+
+**Related:** D110, D111, docs/41 §R7, docs/43.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

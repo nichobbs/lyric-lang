@@ -304,12 +304,13 @@ jobs:
         if: steps.changes.outputs.has_code_changes == 'true'
         run: bash scripts/check_assembly_refs.sh .bootstrap/stage1
 
-      # Stage the self-hosted compiler DLLs for the downstream
-      # compiler-self-tests-* jobs (which link compiler packages that export
-      # module-level `pub val` constants, #3086).  Post-collapse (D111) there is
-      # no userlib/ to clean up and no two-ABI detection to keep consistent — the
-      # single Lyric.Stdlib bundle is the only stdlib ABI.
-      - name: Stage self-hosted compiler DLLs
+      # Stage the self-hosted compiler as a single Lyric.Compiler.dll bundle for
+      # the downstream compiler-self-tests-* jobs.  Each @test_module links the
+      # bundle as one restored dep, so its Lyric.* imports resolve inside ONE
+      # assembly — sidestepping the per-package cross-package emission corruption
+      # (docs/41 §R7) that mis-parses even `package P`.  The bundle also carries
+      # each package's `pub val` constants (the original #3086 reason for staging).
+      - name: Stage self-hosted compiler bundle
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |

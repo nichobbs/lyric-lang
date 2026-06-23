@@ -1442,6 +1442,70 @@ pub func emitPerPackageClosure(entrySource: in String, outDir: in String, target
   EmitResult(outputPath = Some(value = outDir), diagnostics = newList())
 }
 
+/// Compile `entrySource`'s transitive compiler-package import closure into a
+/// SINGLE `Lyric.Compiler.dll` bundle — the compiler analogue of the
+/// `lyric.full.toml` stdlib bundle (D111).  Unlike `emitPerPackageClosure`,
+/// every compiler package lands in ONE assembly, so cross-package references
+/// are in-bundle (internal) rather than crossing the per-package assembly
+/// boundary whose self-hosted emission is not yet execution-clean (docs/41
+/// §R7 — the per-package emitter corrupts cross-package types so a
+/// self-hosted-emitted parser mis-parses even `package P`).  `Std.*` imports
+/// resolve from source and are referenced externally as `Lyric.Stdlib`.
+///
+/// Compiler self-tests link the bundle as a single restored dep:
+/// `assemblySimpleNameFromDll` derives the `AssemblyRef` from the bundle's
+/// file stem, so every in-bundle package resolves to `Lyric.Compiler` with no
+/// per-package assembly-name remapping in `stdlibAssemblyName`.
+pub func emitCompilerBundle(entrySource: in String, outPath: in String, target: in CompileTarget): EmitResult {
+  // Single-assembly bundle emit is a .NET concept; the JVM toolchain bundles
+  // a package's transitive closure into one JAR via `compileToJarBundled`.
+  match target {
+    case Jvm -> return failResult("compiler bundle emit: --target jvm is not supported (the JVM toolchain bundles into a single JAR)")
+    case Dotnet -> ()
+  }
+  val outDir = Path.dirname(outPath)
+  if Str.isNotEmpty(outDir) {
+    match File.createDir(outDir) {
+      case Ok(_) -> ()
+      case Err(e) -> return failResult("compiler bundle emit: cannot create output directory '" + outDir + "': " + IOError.message(e))
+    }
+  }
+  val compilerDir = locateCompilerDir()
+  if compilerDir.length == 0 {
+    return failResult("compiler bundle emit: could not locate the compiler source tree")
+  }
+  val payloads = loadCompilerPayloads(compilerDir, entrySource)
+  if payloads.count == 0 {
+    return failResult("compiler bundle emit: no compiler packages in the entry's import closure")
+  }
+  // Each payload is one merged package source; wrap it as a single-source
+  // ProjectPackage.  `emitProject` re-merges multi-source packages, but
+  // `loadCompilerPayloads` already produced one unit per package.
+  val pkgs: List[ProjectPackage] = newList()
+  var i = 0
+  while i < payloads.count {
+    val srcs: List[String] = newList()
+    srcs.add(payloads[i].source)
+    pkgs.add(ProjectPackage(name = payloads[i].name, sources = srcs))
+    i = i + 1
+  }
+  val noFeatures: List[String] = newList()
+  val noRestored: List[String] = newList()
+  val noDepTemplateSrcs: List[ProjectPackage] = newList()
+  val req = EmitProjectRequest(
+    packages = pkgs,
+    assemblyName = "Lyric.Compiler",
+    outputPath = outPath,
+    target = target,
+    restoredDllPaths = noRestored,
+    activeFeatures = noFeatures,
+    declaredFeatures = noFeatures,
+    packageVersion = "0.1.0",
+    depTemplateSrcs = noDepTemplateSrcs
+  )
+  emitProject(req)
+}
+
 // #2364 Stage 5: compute the restored-DLL list for a `@test_module` that imports
 // `Lyric.*` compiler packages.  Reuses `loadCompilerPayloads` to resolve the
 // transitive compiler-package import closure from source, then maps each closure
@@ -1492,6 +1556,21 @@ pub func compilerClosureDllPaths(testSource: in String, libDir: in String): List
   // writer drops, #3086).  Fall back to the F#-emitted DLLs only when the
   // self-hosted set is incomplete (a staging gap).
   val shDir = Path.join(libDir, "selfhosted")
+  // D111: prefer the SINGLE self-hosted compiler bundle (`Lyric.Compiler.dll`)
+  // when staged.  It carries every compiler package as a `Lyric.Contract.<Pkg>`
+  // resource, so `loadRestoredPackage` yields one artifact per package from the
+  // one DLL — and `assemblySimpleNameFromDll` derives every AssemblyRef from the
+  // bundle's file stem (`Lyric.Compiler`).  The bundle's in-bundle cross-package
+  // references are internal, sidestepping the per-package emission corruption
+  // (docs/41 §R7), so a self-test that links it resolves a self-consistent
+  // compiler.  A single restored-dep entry is threaded (the bridge loads ALL
+  // packages from it); threading one entry per package would re-load the bundle
+  // N times and double-register every artifact.
+  val bundle = Path.join(shDir, "Lyric.Compiler.dll")
+  if payloads.count > 0 and File.fileExists(bundle) {
+    dlls.add("Lyric.Compiler\t" + bundle)
+    return dlls
+  }
   var shComplete = payloads.count > 0
   var shi = 0
   while shi < payloads.count {
