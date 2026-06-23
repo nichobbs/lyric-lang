@@ -64,7 +64,11 @@ fi
 # metadata resource for each — a dropped import path (e.g. a missing JVM-backend
 # edge) would otherwise yield a bundle that links but silently lacks a backend.
 for pkg in Lyric.Cli Msil.Codegen Jvm.Codegen; do
-  if ! strings -n 8 "$bundle" | grep -q "Lyric.Contract.$pkg"; then
+  # `grep -c` (not `grep -q`) reads all of `strings`' output: `grep -q` exits on
+  # the first match and SIGPIPEs `strings`, which under `set -o pipefail` fails
+  # the pipeline even though the resource is present.
+  found="$(strings -n 8 "$bundle" | grep -cF "Lyric.Contract.$pkg" || true)"
+  if [[ "$found" -eq 0 ]]; then
     echo "stage-selfhosted-compiler: bundle is missing the Lyric.Contract.$pkg resource (malformed emit?)" >&2
     exit 1
   fi
