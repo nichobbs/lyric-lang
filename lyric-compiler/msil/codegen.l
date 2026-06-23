@@ -12603,8 +12603,18 @@ func resolveFfiClassTypeRef(cctx: in CodegenCtx, className: in String): Int {
 // already known (carried by `MClassRef` / `MValueTypeRef`).  Returns -1 for an
 // empty FQN or a nested (`Outer+Inner`) type, which needs the enclosing-scope
 // encoding the caller's carried token already holds.
+//
+// Scoped to genuine BCL types (`System.*` / `Microsoft.*`) — see
+// `resolveExternRefToken` in lowering.l for the rationale: only those exhibit the
+// per-package cross-context stale-row aliasing (#3990), while re-resolving a
+// Lyric-emitted cross-package type by name can pick a different TypeRef row than
+// the producer used and break cross-package `Instance`-field references. Non-BCL
+// FQNs return -1 so the caller keeps the carried token.
 func resolveFfiClassTypeRefByFqn(cctx: in CodegenCtx, clrFqn: in String): Int {
   if clrFqn == "" or contains(clrFqn, "+") {
+    return 0 - 1
+  }
+  if not (startsWith(clrFqn, "System.") or startsWith(clrFqn, "Microsoft.")) {
     return 0 - 1
   }
   val sp = splitTypeFqn(clrFqn)

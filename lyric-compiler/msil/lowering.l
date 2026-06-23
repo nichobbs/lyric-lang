@@ -1615,17 +1615,28 @@ pub func buildGenericInstBlob(typeDefOrRef: in Int, argTypes: in List[MsilType])
 // it here exactly as the `MClass` arm does — mirroring `MGenericInstByName`,
 // whose by-name head resolution is already robust across this boundary.
 //
-// Falls back to the cached `typeRefCode` when the FQN cannot be resolved by name
-// in this context: nested types (`Enclosing+Nested`, whose TypeRef name is the
-// bare nested name with a TypeRef ResolutionScope `findTypeRefRowByName` cannot
-// reconstruct) and any type whose TypeRef was not seeded under its plain
-// `ns.name` key.  An empty `clrFqn` (legacy callers that did not record one)
-// also falls through to the cached token.
+// Scoped to genuine BCL types (`System.*` / `Microsoft.*`): only those exhibit
+// the per-package cross-context stale-row aliasing (the closure's BCL externs —
+// Process / Task / StreamReader — are all `System.*`).  A Lyric-emitted cross-
+// package type (`Std.*`, `Lyric.*`, a user package) carries a token that is
+// already correct in the restored-dep linking path, and re-resolving it by name
+// can pick a *different* TypeRef row (first-match / arity-suffix ambiguity) than
+// the producer used — which desynced the consumer's `Instance`-field MemberRef
+// signature from the producer's field and broke cross-package nullary union-case
+// singletons (#3990 regression on `parser_self_test`).  Those keep their token.
+//
+// Falls back to the cached `typeRefCode` for a non-BCL FQN, a nested type
+// (`Enclosing+Nested`, whose TypeRef name is the bare nested name with a TypeRef
+// ResolutionScope `findTypeRefRowByName` cannot reconstruct), an empty `clrFqn`,
+// or any type whose TypeRef was not seeded under its plain `ns.name` key.
 func resolveExternRefToken(ctx: in LoweringCtx, clrFqn: in String, cachedToken: in Int): Int {
   if clrFqn.length == 0 {
     return cachedToken
   }
   if clrFqn.indexOf("+") >= 0 {
+    return cachedToken
+  }
+  if not (clrFqn.indexOf("System.") == 0 or clrFqn.indexOf("Microsoft.") == 0) {
     return cachedToken
   }
   val refRow = findTypeRefRowByName(ctx, clrFqn)
