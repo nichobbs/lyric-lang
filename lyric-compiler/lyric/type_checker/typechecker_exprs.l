@@ -922,14 +922,7 @@ func builtinMember(recvRaw: in Type, name: in String): Option[Type] {
       }
       None
     }
-    case TyPrim(pt) -> match pt {
-      case PtString -> {
-        if name == "length" { return Some(value = TyPrim(pt = PtInt)) }
-        if name == "isEmpty" { return Some(value = TyPrim(pt = PtBool)) }
-        None
-      }
-      case _ -> None
-    }
+    case TyPrim(pt) -> match pt { case PtString -> { if name == "length" { return Some(value = TyPrim(pt = PtInt)) }; if name == "isEmpty" { return Some(value = TyPrim(pt = PtBool)) }; None }; case _ -> None }
     case TyException -> {
       if name == "message" {
         return Some(value = TyPrim(pt = PtString))
@@ -2851,7 +2844,7 @@ pub func inferExpr(
       // user-type receiver falls through to the general EMember path (#2700).
       var cachedRecvType: Option[Type] = None
       match fn.kind {
-        case EMember(recvE, mname) -> match numericConvTarget(mname) { case Some(target) -> if args.count == 0 { val rt = inferExpr(sc, tbl, sigs, diag, recvE); if isNumericOrCharType(rt) { return TyPrim(pt = target) }; if isNonConvertiblePrimitive(rt) { diag.add(errorDiagnostic("T0103", "conversion method '" + mname + "' is not applicable to " + renderType(rt), recvE.span)); return TyError }; match rt { case TyError -> return TyError; case _ -> {  } }; cachedRecvType = Some(value = rt) }; case None -> { if (mname == "trim" or mname == "trimEnd" or mname == "trimStart") and args.count == 0 { val srt = inferExpr(sc, tbl, sigs, diag, recvE); match unrefine(srt) { case TyPrim(pt) -> match pt { case PtString -> return TyPrim(pt = PtString); case _ -> { } }; case _ -> { } }; cachedRecvType = Some(value = srt) } } }
+        case EMember(recvE, mname) -> match numericConvTarget(mname) { case Some(target) -> if args.count == 0 { val rt = inferExpr(sc, tbl, sigs, diag, recvE); if isNumericOrCharType(rt) { return TyPrim(pt = target) }; if isNonConvertiblePrimitive(rt) { diag.add(errorDiagnostic("T0103", "conversion method '" + mname + "' is not applicable to " + renderType(rt), recvE.span)); return TyError }; match rt { case TyError -> return TyError; case _ -> {  } }; cachedRecvType = Some(value = rt) }; case None -> {  } }
         case _ -> {
         }
       }
