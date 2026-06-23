@@ -22,7 +22,7 @@ import Std.Task
 // is the host-side type for a value that flows through Std.Http but
 // stays opaque from the user's perspective.
 // =====================================================================
-extern type HttpClient = "System.Net.Http.HttpClient"
+extern type HttpClientHandle = "System.Net.Http.HttpClient"
 
 extern type HttpClientHandler = "System.Net.Http.HttpClientHandler"
 
@@ -73,10 +73,10 @@ func newStringContent(body: in String, encoding: in Encoding, mediaType: in Stri
 func setRequestContent(req: in HttpRequestMessage, content: in StringContent): Unit = ()
 
 @externTarget("System.Net.Http.HttpClient..ctor")
-func newClient(): HttpClient = ()
+func newClient(): HttpClientHandle = ()
 
 @externTarget("System.Net.Http.HttpClient..ctor")
-func newClientFromHandler(handler: in HttpClientHandler): HttpClient = ()
+func newClientFromHandler(handler: in HttpClientHandler): HttpClientHandle = ()
 
 @externTarget("System.Net.Http.HttpClientHandler..ctor")
 func newHandler(): HttpClientHandler = ()
@@ -100,25 +100,25 @@ func socketsSetAllowAutoRedirect(h: in SocketsHttpHandler, v: in Bool): Unit = (
 func socketsSetMaxAutomaticRedirections(h: in SocketsHttpHandler, n: in Int): Unit = ()
 
 @externTarget("System.Net.Http.HttpClient.SendAsync")
-async func clientSendAsync(client: in HttpClient, request: in HttpRequestMessage): HttpResponseMessage = ()
+async func clientSendAsync(client: in HttpClientHandle, request: in HttpRequestMessage): HttpResponseMessage = ()
 
 @externTarget("System.Net.Http.HttpClient.SendAsync")
 async func clientSendAsyncCancel(
-  client: in HttpClient, request: in HttpRequestMessage, token: in CancellationToken
+  client: in HttpClientHandle, request: in HttpRequestMessage, token: in CancellationToken
 ): HttpResponseMessage = ()
 
 @externTarget("System.Net.Http.HttpClient.GetAsync")
-async func clientGetAsync(client: in HttpClient, url: in String): HttpResponseMessage = ()
+async func clientGetAsync(client: in HttpClientHandle, url: in String): HttpResponseMessage = ()
 
 @externTarget("System.Net.Http.HttpClient.GetAsync")
-async func clientGetAsyncCancel(client: in HttpClient, url: in String, token: in CancellationToken): HttpResponseMessage = ()
+async func clientGetAsyncCancel(client: in HttpClientHandle, url: in String, token: in CancellationToken): HttpResponseMessage = ()
 
 @externTarget("System.Net.Http.HttpClient.PostAsync")
-async func clientPostAsync(client: in HttpClient, url: in String, content: in StringContent): HttpResponseMessage = ()
+async func clientPostAsync(client: in HttpClientHandle, url: in String, content: in StringContent): HttpResponseMessage = ()
 
 @externTarget("System.Net.Http.HttpClient.PostAsync")
 async func clientPostAsyncCancel(
-  client: in HttpClient,
+  client: in HttpClientHandle,
   url: in String,
   content: in StringContent,
   token: in CancellationToken,
@@ -147,13 +147,15 @@ async func contentReadAsBytesCancel(c: in HttpContent, token: in CancellationTok
 // `import Std.HttpHost as HostHttp`.  Each is either a thin alias or
 // a multi-step composition that wraps the primitives above.
 // =====================================================================
-// #333: process-wide HttpClient singleton — initialised once in the package `.cctor`,
+// #333: process-wide HttpClientHandle singleton — initialised once in the package `.cctor`,
 // reused on every request.  Per-call construction exhausts the TCP socket pool
 // (sockets stay in TIME_WAIT for two MSL after GC).
-pub val defaultClient: HttpClient = newClient()
+// Named `processClient` (not `defaultClient`) to avoid a name-resolution clash with
+// the `Std.Http.defaultClient()` factory function when both packages are compiled together.
+val processClient: HttpClientHandle = newClient()
 
-pub func hostDefaultClient(): HttpClient {
-  defaultClient
+pub func hostDefaultClient(): HttpClientHandle {
+  processClient
 }
 
 pub func hostMakeRequest(httpMethod: in String, url: in String): HttpRequestMessage {
@@ -170,16 +172,16 @@ pub func hostWithStringBody(request: in HttpRequestMessage, contentType: in Stri
   request
 }
 
-pub async func hostSend(client: in HttpClient, request: in HttpRequestMessage): HttpResponseMessage {
+pub async func hostSend(client: in HttpClientHandle, request: in HttpRequestMessage): HttpResponseMessage {
   await clientSendAsync(client, request)
 }
 
-pub async func hostGet(client: in HttpClient, url: in String): HttpResponseMessage {
+pub async func hostGet(client: in HttpClientHandle, url: in String): HttpResponseMessage {
   await clientGetAsync(client, url)
 }
 
 pub async func hostPostString(
-  client: in HttpClient, url: in String, body: in String, contentType: in String
+  client: in HttpClientHandle, url: in String, body: in String, contentType: in String
 ): HttpResponseMessage {
   await clientPostAsync(client, url, newStringContent(body, utf8(), contentType))
 }
@@ -200,19 +202,19 @@ pub async func hostReadBodyBytes(response: in HttpResponseMessage): slice[Byte] 
 // Phase C cancellation-aware overloads (D-progress-070).
 // ---------------------------------------------------------------------------
 pub async func hostSendWithCancel(
-  client: in HttpClient, request: in HttpRequestMessage, token: in CancellationToken
+  client: in HttpClientHandle, request: in HttpRequestMessage, token: in CancellationToken
 ): HttpResponseMessage {
   await clientSendAsyncCancel(client, request, token)
 }
 
 pub async func hostGetWithCancel(
-  client: in HttpClient, url: in String, token: in CancellationToken
+  client: in HttpClientHandle, url: in String, token: in CancellationToken
 ): HttpResponseMessage {
   await clientGetAsyncCancel(client, url, token)
 }
 
 pub async func hostPostStringWithCancel(
-  client: in HttpClient,
+  client: in HttpClientHandle,
   url: in String,
   body: in String,
   contentType: in String,
@@ -225,14 +227,14 @@ pub async func hostReadBodyTextWithCancel(response: in HttpResponseMessage, toke
   await contentReadAsStringCancel(responseContent(response), token)
 }
 
-pub func hostClientWithRedirects(maxRedirects: in Int): HttpClient {
+pub func hostClientWithRedirects(maxRedirects: in Int): HttpClientHandle {
   val handler = newHandler()
   setAllowAutoRedirect(handler, true)
   setMaxAutomaticRedirections(handler, maxRedirects)
   newClientFromHandler(handler)
 }
 
-pub func hostClientNoRedirects(): HttpClient {
+pub func hostClientNoRedirects(): HttpClientHandle {
   val handler = newHandler()
   setAllowAutoRedirect(handler, false)
   newClientFromHandler(handler)
@@ -243,13 +245,13 @@ pub func hostClientNoRedirects(): HttpClient {
 // Infrastructure bridge to Lyric.Cli.Aot.UnixSocketHttpClient (in AOT entry-point).
 // ---------------------------------------------------------------------------
 @externTarget("Lyric.Cli.Aot.UnixSocketHttpClient.CreateWithUnixSocket")
-pub func hostClientWithUnixSocket(socketPath: in String): HttpClient = ()
+pub func hostClientWithUnixSocket(socketPath: in String): HttpClientHandle = ()
 
 @externTarget("Lyric.Cli.Aot.UnixSocketHttpClient.CreateWithUnixSocketAndRedirects")
-pub func hostClientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: in Int): HttpClient = ()
+pub func hostClientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: in Int): HttpClientHandle = ()
 
 @externTarget("Lyric.Cli.Aot.UnixSocketHttpClient.CreateWithUnixSocketNoRedirects")
-pub func hostClientWithUnixSocketNoRedirects(socketPath: in String): HttpClient = ()
+pub func hostClientWithUnixSocketNoRedirects(socketPath: in String): HttpClientHandle = ()
 
 // `ResponseHeader` (G12 follow-up): native Lyric on top of
 // `HttpHeaders.TryGetValues(name, out IEnumerable<string>)` + a
@@ -312,7 +314,7 @@ pub func hostResponseHeader(response: in HttpResponseMessage, name: in String): 
 // compiles through the F# bootstrap emitter which can hoist awaits — the
 // wrappers below are therefore permitted to use await-in-try.
 // ---------------------------------------------------------------------------
-pub async func hostSendSafe(client: in HttpClient, request: in HttpRequestMessage): Result[HttpResponseMessage, String] {
+pub async func hostSendSafe(client: in HttpClientHandle, request: in HttpRequestMessage): Result[HttpResponseMessage, String] {
   return try {
     Ok(value = await clientSendAsync(client, request))
   } catch Bug as b {
@@ -320,7 +322,7 @@ pub async func hostSendSafe(client: in HttpClient, request: in HttpRequestMessag
   }
 }
 
-pub async func hostGetSafe(client: in HttpClient, url: in String): Result[HttpResponseMessage, String] {
+pub async func hostGetSafe(client: in HttpClientHandle, url: in String): Result[HttpResponseMessage, String] {
   return try {
     Ok(value = await clientGetAsync(client, url))
   } catch Bug as b {
@@ -329,7 +331,7 @@ pub async func hostGetSafe(client: in HttpClient, url: in String): Result[HttpRe
 }
 
 pub async func hostPostStringSafe(
-  client: in HttpClient, url: in String, body: in String, contentType: in String
+  client: in HttpClientHandle, url: in String, body: in String, contentType: in String
 ): Result[HttpResponseMessage, String] {
   return try {
     Ok(value = await clientPostAsync(client, url, newStringContent(body, utf8(), contentType)))
@@ -355,7 +357,7 @@ pub async func hostReadBodyBytesSafe(response: in HttpResponseMessage): Result[s
 }
 
 pub async func hostSendWithCancelSafe(
-  client: in HttpClient, request: in HttpRequestMessage, token: in CancellationToken
+  client: in HttpClientHandle, request: in HttpRequestMessage, token: in CancellationToken
 ): Result[HttpResponseMessage, String] {
   return try {
     Ok(value = await clientSendAsyncCancel(client, request, token))
@@ -365,7 +367,7 @@ pub async func hostSendWithCancelSafe(
 }
 
 pub async func hostGetWithCancelSafe(
-  client: in HttpClient, url: in String, token: in CancellationToken
+  client: in HttpClientHandle, url: in String, token: in CancellationToken
 ): Result[HttpResponseMessage, String] {
   return try {
     Ok(value = await clientGetAsyncCancel(client, url, token))
@@ -375,7 +377,7 @@ pub async func hostGetWithCancelSafe(
 }
 
 pub async func hostPostStringWithCancelSafe(
-  client: in HttpClient,
+  client: in HttpClientHandle,
   url: in String,
   body: in String,
   contentType: in String,

@@ -66,6 +66,218 @@ pub opaque type Headers {
   request: HostHttp.HttpRequestMessage
 }
 
+// ---------------------------------------------------------------------------
+// HttpClient interface — the public contract for outbound HTTP transport.
+//
+// Callers receive an HttpClient from the factory functions or from
+// HttpClientBuilder.build(); they never construct HttpClientImpl directly.
+// Holding the interface rather than a concrete type allows dependency
+// injection, test doubles, and alternative transport implementations.
+// ---------------------------------------------------------------------------
+/// Contract for outbound HTTP transport.
+///
+/// All methods accept the URL as a plain `String`; validation and
+/// `InvalidUrl` errors are surfaced through the `Result` return type.
+/// For requests that need custom headers or non-string bodies, use
+/// `send` with a pre-built `HttpRequest`.
+@stable(since = "1.1")
+pub interface HttpClient {
+  /// Send a pre-built HTTP request.
+  async func send(request: in HttpRequest): Result[HttpResponse, HttpError]
+
+  /// GET the given URL.
+  async func get(url: in String): Result[HttpResponse, HttpError]
+
+  /// POST a UTF-8 text body to the given URL.
+  async func post(url: in String, body: in String): Result[HttpResponse, HttpError]
+
+  /// PUT a UTF-8 text body to the given URL.
+  async func put(url: in String, body: in String): Result[HttpResponse, HttpError]
+
+  /// DELETE the resource at the given URL.
+  async func delete(url: in String): Result[HttpResponse, HttpError]
+
+  /// PATCH a UTF-8 text body to the given URL.
+  async func patch(url: in String, body: in String): Result[HttpResponse, HttpError]
+}
+
+// Private concrete implementation backed by a kernel HttpClientHandle.
+// Constructed only by the factory functions and HttpClientBuilder.build().
+record HttpClientImpl {
+  handle: HostHttp.HttpClientHandle
+}
+
+impl HttpClient for HttpClientImpl {
+  async func send(request: in HttpRequest): Result[HttpResponse, HttpError] {
+    val result = await HostHttp.hostSendSafe(self.handle, request.handle)
+    match result {
+      case Err(message) -> return Err(error = ConnectionFailed(url = request.url, message = message))
+      case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = request.url))
+    }
+  }
+
+  async func get(url: in String): Result[HttpResponse, HttpError] {
+    match Url.tryFrom(url) {
+      case Err(e) -> return Err(error = e)
+      case Ok(parsed) -> {
+        val result = await HostHttp.hostGetSafe(self.handle, parsed.value)
+        match result {
+          case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
+          case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = parsed.value))
+        }
+      }
+    }
+  }
+
+  async func post(url: in String, body: in String): Result[HttpResponse, HttpError] {
+    match Url.tryFrom(url) {
+      case Err(e) -> return Err(error = e)
+      case Ok(parsed) -> {
+        val result = await HostHttp.hostPostStringSafe(self.handle, parsed.value, body, "text/plain; charset=utf-8")
+        match result {
+          case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
+          case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = parsed.value))
+        }
+      }
+    }
+  }
+
+  async func put(url: in String, body: in String): Result[HttpResponse, HttpError] {
+    match Url.tryFrom(url) {
+      case Err(e) -> return Err(error = e)
+      case Ok(parsed) -> {
+        val req = HttpRequest(
+          handle = HostHttp.hostWithStringBody(
+            HostHttp.hostMakeRequest("PUT", parsed.value),
+            "text/plain; charset=utf-8",
+            body
+          ),
+          url = parsed.value
+        )
+        val result = await HostHttp.hostSendSafe(self.handle, req.handle)
+        match result {
+          case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
+          case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = parsed.value))
+        }
+      }
+    }
+  }
+
+  async func delete(url: in String): Result[HttpResponse, HttpError] {
+    match Url.tryFrom(url) {
+      case Err(e) -> return Err(error = e)
+      case Ok(parsed) -> {
+        val req = HttpRequest(handle = HostHttp.hostMakeRequest("DELETE", parsed.value), url = parsed.value)
+        val result = await HostHttp.hostSendSafe(self.handle, req.handle)
+        match result {
+          case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
+          case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = parsed.value))
+        }
+      }
+    }
+  }
+
+  async func patch(url: in String, body: in String): Result[HttpResponse, HttpError] {
+    match Url.tryFrom(url) {
+      case Err(e) -> return Err(error = e)
+      case Ok(parsed) -> {
+        val req = HttpRequest(
+          handle = HostHttp.hostWithStringBody(
+            HostHttp.hostMakeRequest("PATCH", parsed.value),
+            "text/plain; charset=utf-8",
+            body
+          ),
+          url = parsed.value
+        )
+        val result = await HostHttp.hostSendSafe(self.handle, req.handle)
+        match result {
+          case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
+          case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = parsed.value))
+        }
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// HttpClientBuilder — fluent configuration for HttpClient instances.
+//
+// Each with* method returns a new builder value; call build() to obtain
+// the configured HttpClient.  The factory convenience functions
+// (defaultClient, clientWithUnixSocket, etc.) cover the common cases.
+// ---------------------------------------------------------------------------
+/// Builder for configuring an HttpClient.
+///
+/// ```lyric
+/// val client = HttpClientBuilder.new()
+///     .withUnixSocket("/var/run/docker.sock")
+///     .withNoRedirects()
+///     .build()
+/// ```
+@stable(since = "1.1")
+pub record HttpClientBuilder {
+  socketPath: Option[String]
+  maxRedirects: Option[Int]
+  noRedirects: Bool
+}
+
+/// Construct a default builder (TCP transport, redirect-following, process-wide singleton).
+@stable(since = "1.1")
+pub func HttpClientBuilder.new(): HttpClientBuilder {
+  HttpClientBuilder(socketPath = None, maxRedirects = None, noRedirects = false)
+}
+
+/// Route all requests through the Unix domain socket at `path`.
+///
+/// Common paths: Docker at `/var/run/docker.sock`, systemd at
+/// `/run/systemd/private/io.systemd.Journal`.
+@stable(since = "1.1")
+pub func HttpClientBuilder.withUnixSocket(b: in HttpClientBuilder, path: in String): HttpClientBuilder
+  requires: path.length > 0
+{
+  HttpClientBuilder(socketPath = Some(value = path), maxRedirects = b.maxRedirects, noRedirects = b.noRedirects)
+}
+
+/// Follow up to `max` redirects automatically.
+@stable(since = "1.1")
+pub func HttpClientBuilder.withRedirects(b: in HttpClientBuilder, max: in Int): HttpClientBuilder
+  requires: max >= 0
+{
+  HttpClientBuilder(socketPath = b.socketPath, maxRedirects = Some(value = max), noRedirects = false)
+}
+
+/// Do not follow redirects.  3xx responses are returned to the caller as-is.
+@stable(since = "1.1")
+pub func HttpClientBuilder.withNoRedirects(b: in HttpClientBuilder): HttpClientBuilder {
+  HttpClientBuilder(socketPath = b.socketPath, maxRedirects = None, noRedirects = true)
+}
+
+/// Build the configured `HttpClient`.
+@stable(since = "1.1")
+pub func HttpClientBuilder.build(b: in HttpClientBuilder): HttpClient {
+  val handle = match b.socketPath {
+    case Some(path) ->
+      if b.noRedirects {
+        HostHttp.hostClientWithUnixSocketNoRedirects(path)
+      } else {
+        match b.maxRedirects {
+          case Some(n) -> HostHttp.hostClientWithUnixSocketAndRedirects(path, n)
+          case None -> HostHttp.hostClientWithUnixSocket(path)
+        }
+      }
+    case None ->
+      if b.noRedirects {
+        HostHttp.hostClientNoRedirects()
+      } else {
+        match b.maxRedirects {
+          case Some(n) -> HostHttp.hostClientWithRedirects(n)
+          case None -> HostHttp.hostDefaultClient()
+        }
+      }
+  }
+  HttpClientImpl(handle = handle)
+}
+
 @pure
 func methodName(method: in HttpMethod): String {
   match method {
@@ -153,9 +365,13 @@ pub func withTextBody(request: in HttpRequest, text: in String): HttpRequest {
 }
 
 // ---------------------------------------------------------------------------
-// HTTP client operations.
+// Free-function HTTP operations — use the process-wide default client.
+//
+// These remain for callers that don't need per-call client configuration.
+// For custom transport (Unix sockets, redirect policy, etc.) use
+// HttpClientBuilder.build() and call methods on the resulting HttpClient.
 // ---------------------------------------------------------------------------
-/// Send a prepared HTTP request.
+/// Send a prepared HTTP request using the default client.
 ///
 /// # Errors
 /// - `ConnectionFailed`: DNS, connection, TLS, cancellation, or other
@@ -174,7 +390,7 @@ pub async func sendAsync(request: in HttpRequest): Result[HttpResponse, HttpErro
   }
 }
 
-/// GET a URL string.
+/// GET a URL string using the default client.
 ///
 /// # Preconditions as data
 /// - `url` must be a valid HTTP(S) URL or `InvalidUrl` is returned.
@@ -196,11 +412,7 @@ pub async func getAsync(url: in String): Result[HttpResponse, HttpError] {
   }
 }
 
-/// POST a UTF-8 text body to a URL.
-///
-/// This is the Phase 4 string-body convenience. JSON callers should use
-/// `request(POST, url) |> withJsonBody(...) |> sendAsync(...)` once pipe
-/// style is available, or the explicit nested-call equivalent.
+/// POST a UTF-8 text body to a URL using the default client.
 @stable(since = "1.0")
 pub async func postAsync(url: in String, body: in String): Result[HttpResponse, HttpError] {
   match Url.tryFrom(url) {
@@ -441,15 +653,28 @@ pub func HttpResponse.header(response: in HttpResponse, name: in String): Option
   }
 }
 
+// ---------------------------------------------------------------------------
+// HttpClient factory convenience functions.
+//
+// These wrap HttpClientBuilder for the common single-option cases.
+// For composite configuration, use HttpClientBuilder directly.
+// ---------------------------------------------------------------------------
+/// Return the process-wide default HttpClient (TCP, follows redirects).
+///
+/// Prefer this over constructing a new client per request.  The singleton
+/// handle avoids TCP socket-pool exhaustion from repeated construction.
+@stable(since = "1.1")
+pub func defaultClient(): HttpClient {
+  HttpClientImpl(handle = HostHttp.hostDefaultClient())
+}
+
 /// Construct an `HttpClient` that follows up to `maxRedirects`
-/// redirects automatically.  Pair with `sendAsync` / `sendWithCancelAsync`
-/// when the caller wants follow-redirect behaviour without
-/// inspecting 3xx responses themselves.
+/// redirects automatically.
 @stable(since = "1.0")
-pub func clientWithRedirects(maxRedirects: in Int): HostHttp.HttpClient
+pub func clientWithRedirects(maxRedirects: in Int): HttpClient
   requires: maxRedirects >= 0
 {
-  return HostHttp.hostClientWithRedirects(maxRedirects)
+  HttpClientImpl(handle = HostHttp.hostClientWithRedirects(maxRedirects))
 }
 
 /// Construct an `HttpClient` that does NOT follow redirects.
@@ -457,8 +682,8 @@ pub func clientWithRedirects(maxRedirects: in Int): HostHttp.HttpClient
 /// themselves (e.g. capturing the `Location` header via
 /// `HttpResponse.header(...)`).
 @stable(since = "1.0")
-pub func clientNoRedirects(): HostHttp.HttpClient {
-  return HostHttp.hostClientNoRedirects()
+pub func clientNoRedirects(): HttpClient {
+  HttpClientImpl(handle = HostHttp.hostClientNoRedirects())
 }
 
 // ---------------------------------------------------------------------------
@@ -473,20 +698,12 @@ pub func clientNoRedirects(): HostHttp.HttpClient {
 /// # Preconditions as data
 /// - `socketPath` must be a valid path to an accessible Unix socket.
 ///
-/// Connection failures are represented as `ConnectionFailed` by `sendAsync`.
-///
-/// # Examples
-/// ```lyric
-/// val dockerClient = clientWithUnixSocket("/var/run/docker.sock")
-/// val response = await sendAsync(
-///   request(GET, Url.tryFrom("http://docker/v1.40/containers/json") |> assertOk())
-/// ) |> assertOk()
-/// ```
+/// Connection failures are represented as `ConnectionFailed` by `send`.
 @stable(since = "1.1")
-pub func clientWithUnixSocket(socketPath: in String): HostHttp.HttpClient
+pub func clientWithUnixSocket(socketPath: in String): HttpClient
   requires: socketPath.length > 0
 {
-  return HostHttp.hostClientWithUnixSocket(socketPath)
+  HttpClientImpl(handle = HostHttp.hostClientWithUnixSocket(socketPath))
 }
 
 /// Construct an `HttpClient` connected to a Unix domain socket with redirect following.
@@ -495,11 +712,11 @@ pub func clientWithUnixSocket(socketPath: in String): HostHttp.HttpClient
 /// - `socketPath` must be a valid path to an accessible Unix socket.
 /// - `maxRedirects` must be non-negative.
 @stable(since = "1.1")
-pub func clientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: in Int): HostHttp.HttpClient
+pub func clientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: in Int): HttpClient
   requires: socketPath.length > 0
   requires: maxRedirects >= 0
 {
-  return HostHttp.hostClientWithUnixSocketAndRedirects(socketPath, maxRedirects)
+  HttpClientImpl(handle = HostHttp.hostClientWithUnixSocketAndRedirects(socketPath, maxRedirects))
 }
 
 /// Construct an `HttpClient` connected to a Unix domain socket without redirect following.
@@ -509,10 +726,10 @@ pub func clientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: i
 /// # Preconditions as data
 /// - `socketPath` must be a valid path to an accessible Unix socket.
 @stable(since = "1.1")
-pub func clientWithUnixSocketNoRedirects(socketPath: in String): HostHttp.HttpClient
+pub func clientWithUnixSocketNoRedirects(socketPath: in String): HttpClient
   requires: socketPath.length > 0
 {
-  return HostHttp.hostClientWithUnixSocketNoRedirects(socketPath)
+  HttpClientImpl(handle = HostHttp.hostClientWithUnixSocketNoRedirects(socketPath))
 }
 
 // Future: scoped HttpClient (per-Scope cancellation flow) needs the
