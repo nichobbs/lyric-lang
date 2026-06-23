@@ -6110,14 +6110,17 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // Lambdas that return void use System.Action; those with non-void returns use System.Func.
           val retType = mapGet(cctx.funcRetTypes, lambdaKey)
           val returnsVoid = match retType { case Some(MVoid) -> true; case None -> true; case _ -> false }
+          // Phase 1 strongly-typed lambdas: retrieve the propagated parameter types
+          // so the delegate constructor token matches the actual method signature.
+          val propagatedParamTypes = match mapGet(cctx.lambdaParamTypes, lname) { case Some(ts) -> ts; case None -> newList() }
           val ctorTok = if returnsVoid {
             if nparams == 0 {
               cctx.tokActionCtor
             } else {
-              buildActionNCtorTok(cctx, nparams)
+              buildActionNCtorTokWithTypes(cctx, nparams, propagatedParamTypes)
             }
           } else {
-            buildFuncNCtorTok(cctx, nparams)
+            buildFuncNCtorTokWithTypes(cctx, nparams, propagatedParamTypes)
           }
           // Delegate target: Phase 2 tries to instantiate a __Closure<N> record if it
           // exists; falls back to Phase 1 object[] for backwards compatibility.
@@ -12333,6 +12336,34 @@ func buildActionNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
   0x0A000000 + mrRow
 }
 
+// Build a newobj token for System.Action`(nparams)<T1,...,Tn>::.ctor(object, nativeint)
+// with actual parameter types instead of hardcoded object.
+// Used by Phase 1 strongly-typed lambdas to match the method signature.
+func buildActionNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType]): Int {
+  // If we have fewer actual types than expected params, fall back to the object-based version
+  if paramTypes.count < nparams {
+    return buildActionNCtorTok(cctx, nparams)
+  }
+  val trN = internActionTypeRef(cctx, nparams)
+  // TypeDefOrRef coded index for a TypeRef at row R: (R << 2) | 1
+  val codedIdx = (trN * 4) + 1
+  val actualArgs: List[MsilType] = newList()
+  var ai = 0
+  while ai < nparams {
+    actualArgs.add(paramTypes[ai])
+    ai = ai + 1
+  }
+  val gblob = buildGenericInstBlob(codedIdx, actualArgs)
+  val specKey = "ActionSpec_typed_" + toString(nparams)
+  val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
+  val ctorPs: List[MsilType] = newList()
+  ctorPs.add(MObject)
+  ctorPs.add(MNativeInt)
+  val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
+  val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "action_ctor_typed_" + toString(nparams), ctorSig)
+  0x0A000000 + mrRow
+}
+
 // Get or create a TypeRef for System.Func`(nparams+1) where nparams is the lambda parameter count.
 // Reuses the actionTypeRefs map with a "func_N" key to avoid collisions.
 func internFuncTypeRef(cctx: in CodegenCtx, nparams: in Int): Int {
@@ -12386,6 +12417,34 @@ func buildFuncNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
   ctorPs.add(MNativeInt)
   val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
   val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "func_ctor_" + toString(nparams), ctorSig)
+  0x0A000000 + mrRow
+}
+
+// Build a newobj token for System.Func`(nparams+1)<T1,...,Tn,object>::.ctor(object, nativeint)
+// with actual parameter types instead of hardcoded object.
+// Used by Phase 1 strongly-typed lambdas to match the method signature.
+func buildFuncNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType]): Int {
+  // If we have fewer actual types than expected params, fall back to the object-based version
+  if paramTypes.count < nparams {
+    return buildFuncNCtorTok(cctx, nparams)
+  }
+  // Build the generic instantiation blob with the actual parameter types plus object return type
+  val trN = internFuncTypeRef(cctx, nparams)
+  val codedIdx = (trN * 4) + 1
+  val actualArgs: List[MsilType] = newList()
+  var ai = 0
+  while ai < nparams {
+    actualArgs.add(paramTypes[ai])
+    ai = ai + 1
+  }
+  actualArgs.add(MObject) // return type is always object for lambda delegates
+  val gblob = buildGenericInstBlob(codedIdx, actualArgs)
+  val tsRow = ctxAddTypeSpec(cctx.lctx, "FuncSpec_typed_" + toString(nparams), gblob)
+  val ctorPs: List[MsilType] = newList()
+  ctorPs.add(MObject)
+  ctorPs.add(MNativeInt)
+  val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
+  val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "func_ctor_typed_" + toString(nparams), ctorSig)
   0x0A000000 + mrRow
 }
 
