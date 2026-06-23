@@ -22514,7 +22514,7 @@ func registerRestoredUnionCase(
   c: in UnionCase,
   asmRefRow: in Int,
   uGenerics: in List[String],
-  hasNullaryInstances: Bool,
+  instKind: in Mdr.InstanceFieldKind,
 ): Unit {
   val caseClassName = unionName + "_" + c.name
   val caseFqn = packageName + "." + caseClassName
@@ -22612,9 +22612,17 @@ func registerRestoredUnionCase(
   // nullary-case comparison silently fails (#3920 — the self-host parser blocker:
   // `tryEatKw` never matched, so the self-emitted compiler rejected every file
   // with P0020).
-  if c.fields.count == 0 and uGenerics.count == 0 and hasNullaryInstances {
+  if c.fields.count == 0 and uGenerics.count == 0 and instKind.hasInstances {
     if not cctx.singletonFieldTokens.containsKey(caseFqn) {
-      val instSig = buildFieldSig(MObject)
+      // The MemberRef field sig must byte-match the FieldDef sig in the target DLL.
+      // F#-era DLLs declare Instance as FIELD CLASS <TypeDef> (element type 0x12);
+      // self-hosted DLLs declare it as FIELD OBJECT (element type 0x1c).  The CLR
+      // rejects a MemberRef whose sig element type differs from the FieldDef, so
+      // we emit CLASS + TypeRef when the DLL uses CLASS-typed Instance fields.
+      // The TypeRef-encoded token is (typeRefRow * 4 + 1): TypeDefOrRefOrSpecEncoded
+      // with tag 01 (TypeRef).  The CLR resolves the TypeRef to the TypeDef in the
+      // target DLL, making the types equivalent for resolution purposes.
+      val instSig = if instKind.isClassTyped { buildClassFieldSig(typeRefRow * 4 + 1) } else { buildFieldSig(MObject) }
       val instSigKey = "restored_ucsingleton_" + caseFqn
       val instRow = ctxAddMemberRef(cctx.lctx, typeRefRow, "Instance", instSigKey, instSig)
       cctx.singletonFieldTokens.add(caseFqn, 0x0A000000 + instRow)
@@ -22644,7 +22652,7 @@ func registerRestoredUnion(
   packageName: in String,
   decl: in UnionDecl,
   asmRefRow: in Int,
-  hasNullaryInstances: Bool,
+  instKind: in Mdr.InstanceFieldKind,
 ): Unit {
   val uGenerics = genericNamesOf(decl.generics)
   val uArity = uGenerics.count
@@ -22666,7 +22674,7 @@ func registerRestoredUnion(
 
   var ci = 0
   while ci < decl.cases.count {
-    registerRestoredUnionCase(cctx, packageName, decl.name, decl.cases[ci], asmRefRow, uGenerics, hasNullaryInstances)
+    registerRestoredUnionCase(cctx, packageName, decl.name, decl.cases[ci], asmRefRow, uGenerics, instKind)
     ci = ci + 1
   }
 }
@@ -22677,9 +22685,12 @@ func registerRestoredUnion(
 // private funcs (no public surface).
 func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact): Unit {
   // Hoist the DLL read outside the items loop — one parse per artifact, not
-  // one per IUnion item.  coreDllHasAritySuffixTypeDef returns false on any
-  // read/parse failure (safe default: no Instance singletons).
-  val hasInstances = Mdr.dllHasNullaryInstanceField(art.dllPath)
+  // one per IUnion item.  Returns hasInstances=false on any read/parse failure
+  // (safe default: no Instance MemberRefs emitted, no resolution error).
+  // isClassTyped distinguishes F#-era DLLs (CLASS-typed Instance fields,
+  // element type 0x12) from self-hosted DLLs (OBJECT-typed, 0x1c) so that the
+  // MemberRef signature byte-matches the FieldDef the CLR will resolve.
+  val instKind = Mdr.dllNullaryInstanceInfo(art.dllPath)
   val items = art.source.items
   var i = 0
   while i < items.count {
@@ -22696,7 +22707,7 @@ func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact): 
         // func helpers re-resolve their own AssemblyRef internally, so
         // hoisting it eagerly was inconsistent (#1295).
         val asmRefRow = ensureAssemblyRefForArtifact(cctx, art.packageName)
-        registerRestoredUnion(cctx, art.packageName, decl, asmRefRow, hasInstances)
+        registerRestoredUnion(cctx, art.packageName, decl, asmRefRow, instKind)
       }
       case IInterface(decl) -> {
         registerRestoredInterface(cctx, art.packageName, decl)

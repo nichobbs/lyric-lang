@@ -2964,3 +2964,31 @@ pub func dllHasNullaryInstanceField(dllPath: in String): Bool {
     case Ok(raw) -> match parseAssemblyImage(raw.toArray()) { case None -> false; case Some(ri) -> { val b = ri.img.bytes; val typeDefCount = rowCountOf(ri.th, 0x02); var row = 1; var found = false; while row <= typeDefCount and not found { val td = readTypeDef(ri.img, ri.layout, row); if Str.contains(td.name, "_") { val fr = fieldRange(ri.img, ri.layout, ri.th, row); var frow = fr.start; while frow <= fr.endRow and not found { val o = ri.layout.dataStart[0x04] + (frow - 1) * ri.layout.rowSize[0x04]; val flags = rdU16(b, o); val nameI = rdIdx(b, o + 2, ri.layout.stringIdx); val nm = stringAt(ri.img, ri.layout, nameI); if nm == "Instance" and (flags / 16) % 2 == 1 { found = true }; frow = frow + 1 } }; row = row + 1 }; found } }
   }
 }
+
+// Information about nullary union case Instance singleton fields in a DLL.
+// `hasInstances` is true when the DLL contains at least one static field named
+// "Instance" on a TypeDef whose name contains "_" (the naming convention for
+// union case classes).  `isClassTyped` is true when that field's FieldSig uses
+// ELEMENT_TYPE_CLASS (0x12) rather than ELEMENT_TYPE_OBJECT (0x1c): CLASS-typed
+// Instance fields come from DLLs emitted by the F#-era bootstrap compiler;
+// DLLs emitted by the current self-hosted compiler use ELEMENT_TYPE_OBJECT.
+// This distinction matters for MemberRef resolution: the CLR rejects a MemberRef
+// whose field signature differs from the FieldDef's field signature, so
+// `registerRestoredUnionCase` must create MemberRefs with the same element type
+// that the target DLL actually declares.
+pub record InstanceFieldKind {
+  hasInstances: Bool
+  isClassTyped: Bool
+}
+
+// Scan `dllPath` once and return how its nullary-case Instance fields are typed.
+// Returns `hasInstances = false` when the file is missing, unreadable, or
+// contains no Instance field on a "_"-named TypeDef.  Returns
+// `InstanceFieldKind(false, false)` on any parse failure (safe default: no
+// MemberRefs emitted, no resolution error).
+pub func dllNullaryInstanceInfo(dllPath: in String): InstanceFieldKind {
+  match File.readBytes(dllPath) {
+    case Err(_) -> InstanceFieldKind(hasInstances = false, isClassTyped = false)
+    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) { case None -> InstanceFieldKind(hasInstances = false, isClassTyped = false); case Some(ri) -> { val b = ri.img.bytes; val typeDefCount = rowCountOf(ri.th, 0x02); var row = 1; var found = false; var classTyped = false; while row <= typeDefCount and not found { val td = readTypeDef(ri.img, ri.layout, row); if Str.contains(td.name, "_") { val fr = fieldRange(ri.img, ri.layout, ri.th, row); var frow = fr.start; while frow <= fr.endRow and not found { val o = ri.layout.dataStart[0x04] + (frow - 1) * ri.layout.rowSize[0x04]; val flags = rdU16(b, o); val nameI = rdIdx(b, o + 2, ri.layout.stringIdx); val nm = stringAt(ri.img, ri.layout, nameI); if nm == "Instance" and (flags / 16) % 2 == 1 { found = true; val sigI = rdIdx(b, o + 2 + ri.layout.stringIdx, ri.layout.blobIdx); val sig = blobAt(ri.img, ri.layout, sigI); classTyped = sig.length >= 2 and rdU8(sig, 1) == 0x12 }; frow = frow + 1 } }; row = row + 1 }; InstanceFieldKind(hasInstances = found, isClassTyped = classTyped) } }
+  }
+}
