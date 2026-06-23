@@ -1233,70 +1233,6 @@ func stdlibEntryImports(entrySource: in String, compilerPayloads: in List[Projec
   "package __stdlib_entry__\n" + Str.joinList("\n", lines) + "\n"
 }
 
-func closureModuleValNames(payloads: in List[ProjectPackagePayload]): List[String] {
-  val names: List[String] = newList()
-  var i = 0
-  while i < payloads.count {
-    val lines = Str.split(payloads[i].source, "\n")
-    var li = 0
-    while li < lines.length {
-      val line = lines[li]
-      if Str.startsWith(line, "pub val ") {
-        var e = 8
-        while e < line.length and isIdentCharEmitter(line[e]) {
-          e = e + 1
-        }
-        if e > 8 {
-          val nm = Str.substring(line, 8, e - 8)
-          if indexOfString(names, nm) < 0 {
-            names.add(nm)
-          }
-        }
-      }
-      li = li + 1
-    }
-    i = i + 1
-  }
-  names
-}
-
-// True iff `c` is an identifier character (ASCII).  Used for the
-// whole-identifier boundary check in `sourceReferencesAnyName`.
-@pure
-func isIdentCharEmitter(c: in Char): Bool {
-  c == '_' or (c >= '0' and c <= '9') or (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z')
-}
-
-// True when `src` references any of `names` as a whole identifier.  A plain
-// substring hit is rejected when either neighbour is an identifier character,
-// so `MDA_PUBLIC` does not match inside `MDA_PUBLIC_KEY`.  Comments and string
-// literals are not excluded — a false positive merely links the self-hosted
-// DLL set for a test that didn't strictly need it, which is safe.
-func sourceReferencesAnyName(src: in String, names: in List[String]): Bool {
-  var ni = 0
-  while ni < names.count {
-    val name = names[ni]
-    var from = 0
-    var searching = true
-    while searching {
-      val hit = src.indexOf(name, from)
-      if hit < 0 {
-        searching = false
-      } else {
-        val beforeOk = hit == 0 or not isIdentCharEmitter(src[hit - 1])
-        val endPos = hit + name.length
-        val afterOk = endPos >= src.length or not isIdentCharEmitter(src[endPos])
-        if beforeOk and afterOk {
-          return true
-        }
-        from = hit + 1
-      }
-    }
-    ni = ni + 1
-  }
-  false
-}
-
 // Direct compiler-package imports of one payload's merged source.
 func compilerImportsOf(payloadSource: in String): List[String] {
   val lines: List[String] = newList()
@@ -1544,35 +1480,42 @@ pub func compilerClosureDllPaths(testSource: in String, libDir: in String): List
   // (docs/41 R7).  The self-hosted set is only used when it covers the
   // WHOLE closure so a single test never links a mix of the two emitters'
   // outputs.
-  if sourceReferencesAnyName(testSource, closureModuleValNames(payloads)) {
-    val shDir = Path.join(libDir, "selfhosted")
-    var shComplete = payloads.count > 0
-    var shi = 0
-    while shi < payloads.count {
-      if not File.fileExists(Path.join(shDir, "Lyric." + payloads[shi].name + ".dll")) {
-        shComplete = false
-      }
-      shi = shi + 1
+  // ALWAYS prefer the complete self-hosted compiler-DLL set under
+  // `<libDir>/selfhosted` (D111): the stdlib collapse makes the self-hosted
+  // emitter unconditionally arity-suffix generic types, so a self-hosted-compiled
+  // test that linked the F#-emitted (non-arity) stage-1 DLLs would mismatch their
+  // field/type signatures (e.g. `FunctionDecl.body: Option`1` vs `Option`) and
+  // fault at run time with "Field not found".  A single test must NEVER link a mix
+  // of the two emitters' outputs — and post-collapse the F#-emitted DLLs are the
+  // wrong arity for everything, so the self-hosted set is the only consistent
+  // choice (it also carries the `pub val` contract constants the F# metadata
+  // writer drops, #3086).  Fall back to the F#-emitted DLLs only when the
+  // self-hosted set is incomplete (a staging gap).
+  val shDir = Path.join(libDir, "selfhosted")
+  var shComplete = payloads.count > 0
+  var shi = 0
+  while shi < payloads.count {
+    if not File.fileExists(Path.join(shDir, "Lyric." + payloads[shi].name + ".dll")) {
+      shComplete = false
     }
-    if shComplete {
-      var sj = 0
-      while sj < payloads.count {
-        val shPkg = payloads[sj].name
-        dlls.add(shPkg + "\t" + Path.join(shDir, "Lyric." + shPkg + ".dll"))
-        sj = sj + 1
-      }
-      return dlls
+    shi = shi + 1
+  }
+  if shComplete {
+    var sj = 0
+    while sj < payloads.count {
+      val shPkg = payloads[sj].name
+      dlls.add(shPkg + "\t" + Path.join(shDir, "Lyric." + shPkg + ".dll"))
+      sj = sj + 1
     }
-    if payloads.count > 0 {
-      Console.error(
-        "test: warning: the test references module-level `pub val` constants from its compiler-package closure, " +
-          "but no complete self-hosted compiler-DLL set was found under '" +
-          shDir +
-          "'. " +
-          "Falling back to the F#-emitted stage-1 DLLs, whose contract metadata omits the constants " +
-          "(T0020 likely; see #3086). Run `make selfhosted-compiler` to stage the self-hosted set."
-      )
-    }
+    return dlls
+  }
+  if payloads.count > 0 {
+    Console.error(
+      "test: warning: no complete self-hosted compiler-DLL set was found under '" + shDir +
+        "'. Falling back to the F#-emitted stage-1 DLLs, whose arity convention no " +
+        "longer matches the self-hosted emitter (D111) and whose contract metadata " +
+        "omits `pub val` constants (#3086). Run `make selfhosted-compiler` to stage the self-hosted set."
+    )
   }
   var i = 0
   while i < payloads.count {
