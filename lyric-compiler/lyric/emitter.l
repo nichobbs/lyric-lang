@@ -1233,15 +1233,6 @@ func stdlibEntryImports(entrySource: in String, compilerPayloads: in List[Projec
   "package __stdlib_entry__\n" + Str.joinList("\n", lines) + "\n"
 }
 
-// Collect the names of every module-level `pub val` declared by the closure's
-// payloads (column-0 `pub val NAME...` lines).  Function-local vals are
-// indented, so a column-0 prefix test is exact for formatted compiler sources
-// (`lyric fmt` enforces top-level items at column 0).  Multi-line string
-// literal CONTENT is not excluded, so a column-0 `pub val X` line inside an
-// embedded source-text string would also be collected — like the
-// `sourceReferencesAnyName` scan below, that false positive merely links the
-// self-hosted DLL set for a test that didn't strictly need it, which is safe
-// (#3203).
 func closureModuleValNames(payloads: in List[ProjectPackagePayload]): List[String] {
   val names: List[String] = newList()
   var i = 0
