@@ -31,24 +31,31 @@ extern type TaskStr = "System.Threading.Tasks.Task`1[System.String]"
 @externTarget("System.Diagnostics.ProcessStartInfo..ctor")
 func newPsi(): Psi = ()
 
+@externInstance
 @externTarget("System.Diagnostics.ProcessStartInfo.set_FileName")
 func psiFileName(psi: in Psi, v: in String): Unit = ()
 
+@externInstance
 @externTarget("System.Diagnostics.ProcessStartInfo.set_Arguments")
 func psiArguments(psi: in Psi, v: in String): Unit = ()
 
+@externInstance
 @externTarget("System.Diagnostics.ProcessStartInfo.set_RedirectStandardInput")
 func psiRedirectInput(psi: in Psi, v: in Bool): Unit = ()
 
+@externInstance
 @externTarget("System.Diagnostics.ProcessStartInfo.set_RedirectStandardOutput")
 func psiRedirectOutput(psi: in Psi, v: in Bool): Unit = ()
 
+@externInstance
 @externTarget("System.Diagnostics.ProcessStartInfo.set_RedirectStandardError")
 func psiRedirectError(psi: in Psi, v: in Bool): Unit = ()
 
+@externInstance
 @externTarget("System.Diagnostics.ProcessStartInfo.set_UseShellExecute")
 func psiUseShell(psi: in Psi, v: in Bool): Unit = ()
 
+@externInstance
 @externTarget("System.Diagnostics.ProcessStartInfo.set_CreateNoWindow")
 func psiNoWindow(psi: in Psi, v: in Bool): Unit = ()
 
