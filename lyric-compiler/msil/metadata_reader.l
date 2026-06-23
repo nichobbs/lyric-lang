@@ -2900,7 +2900,6 @@ pub func tryReadResourceIn(ri: in ResourceImage, name: in String): Option[slice[
 // emitter must emit TypeRefs that match whichever convention is used by the
 // installed Lyric.Stdlib.Core.dll, or the CLR throws TypeLoadException at
 // runtime.
-
 // True when any TypeDef in the DLL at `dllPath` has a backtick in its name,
 // indicating the self-hosted arity-suffix convention.  Returns false when the
 // file is missing, unreadable, or carries no backtick TypeDefs (F# bootstrap
@@ -2908,23 +2907,7 @@ pub func tryReadResourceIn(ri: in ResourceImage, name: in String): Option[slice[
 func coreDllHasAritySuffixTypeDef(dllPath: in String): Bool {
   match File.readBytes(dllPath) {
     case Err(_) -> false
-    case Ok(raw) ->
-      match parseAssemblyImage(raw.toArray()) {
-        case None -> false
-        case Some(ri) -> {
-          val typeDefCount = rowCountOf(ri.th, 2)
-          var row = 1
-          var found = false
-          while row <= typeDefCount and not found {
-            val td = readTypeDef(ri.img, ri.layout, row)
-            if Str.contains(td.name, "`") {
-              found = true
-            }
-            row = row + 1
-          }
-          found
-        }
-      }
+    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) { case None -> false; case Some(ri) -> { val typeDefCount = rowCountOf(ri.th, 2); var row = 1; var found = false; while row <= typeDefCount and not found { val td = readTypeDef(ri.img, ri.layout, row); if Str.contains(td.name, "`") { found = true }; row = row + 1 }; found } }
   }
 }
 
@@ -2939,109 +2922,4 @@ func coreDllHasAritySuffixTypeDef(dllPath: in String): Bool {
 // TypeDefs (F# bootstrap / LYRIC_BOOTSTRAP_MINT path).
 pub func dllHasNullaryInstanceField(dllPath: in String): Bool {
   coreDllHasAritySuffixTypeDef(dllPath)
-}
-
-
-// Return `path + /Lyric.Stdlib.Core.dll` when it exists, else "".
-func findCoreDllInDir(dir: in String): String {
-  if dir.length == 0 {
-    return ""
-  }
-  val p = Path.join(dir, "Lyric.Stdlib.Core.dll")
-  if File.fileExists(p) { p } else { "" }
-}
-
-// Walk up from `start` (max 32 hops) looking for `Path.join(start, rel)`
-// that contains `Lyric.Stdlib.Core.dll`.  Returns the DLL path or "".
-func walkUpForCoreDll(start: in String, rel: in String): String {
-  if start.length == 0 {
-    return ""
-  }
-  var dir = start
-  var hop = 0
-  while hop < 32 {
-    val p = findCoreDllInDir(Path.join(dir, rel))
-    if p.length > 0 {
-      return p
-    }
-    val parent = Path.dirname(dir)
-    if parent.length == 0 or parent == dir {
-      return ""
-    }
-    dir = parent
-    hop = hop + 1
-  }
-  ""
-}
-
-// Locate `Lyric.Stdlib.Core.dll` using the same candidate order as
-// `Lyric.Emitter.findCompiledStdlibDir` (without the circular dependency):
-//   1. $LYRIC_STDLIB_BIN
-//   2. binary directory (appBaseDirectory)
-//   3. appBaseDirectory/lib
-//   4. walk up from appBase / cwd for .bootstrap/stage1
-//   5. walk up from appBase / cwd for lyric-stdlib/bin
-//   6. walk up from appBase / cwd for .lyric-test
-// Returns the DLL path, or "" when not found.
-func findCoreDllPath(): String {
-  val env = Environment.getVarOrDefault("LYRIC_STDLIB_BIN", "")
-  val fromEnv = findCoreDllInDir(env)
-  if fromEnv.length > 0 {
-    return fromEnv
-  }
-  val appBase = Environment.appBaseDirectory()
-  // Prefer `userlib/Core.dll` over the main lib-dir Core.dll when it exists.
-  // `stage-userlib-stdlib.sh` stages a self-hosted-emitted (arity-suffixed)
-  // stdlib under `<appBase>/userlib/` for user-code output (#3943).
-  // `copyRuntimeDepsBeside` links from `userlib/` when present, so the
-  // arity-suffix detection must probe that copy to keep compile-time TypeRef
-  // encoding consistent with the runtime stdlib that user programs load.
-  val fromUserlib = findCoreDllInDir(Path.join(appBase, "userlib"))
-  if fromUserlib.length > 0 {
-    return fromUserlib
-  }
-  val fromAppBase = findCoreDllInDir(appBase)
-  if fromAppBase.length > 0 {
-    return fromAppBase
-  }
-  val fromLib = findCoreDllInDir(Path.join(appBase, "lib"))
-  if fromLib.length > 0 {
-    return fromLib
-  }
-  val cwd = Environment.currentDirectory()
-  var hit = walkUpForCoreDll(appBase, Path.join(".bootstrap", "stage1"))
-  if hit.length > 0 {
-    return hit
-  }
-  hit = walkUpForCoreDll(cwd, Path.join(".bootstrap", "stage1"))
-  if hit.length > 0 {
-    return hit
-  }
-  hit = walkUpForCoreDll(appBase, Path.join("lyric-stdlib", "bin"))
-  if hit.length > 0 {
-    return hit
-  }
-  hit = walkUpForCoreDll(cwd, Path.join("lyric-stdlib", "bin"))
-  if hit.length > 0 {
-    return hit
-  }
-  hit = walkUpForCoreDll(appBase, ".lyric-test")
-  if hit.length > 0 {
-    return hit
-  }
-  walkUpForCoreDll(cwd, ".lyric-test")
-}
-
-// Returns true when the installed `Lyric.Stdlib.Core.dll` uses CLR
-// arity-suffix TypeDef naming (self-hosted convention: Option`1,
-// Result`2), false when it uses the F# bootstrap convention (Option,
-// Result), and true when Core.dll cannot be found (safe default: the
-// self-hosted emitter is the production case; absent DLL means a
-// non-MINT build).
-pub func detectStdlibCoreDllUsesAritySuffix(): Bool {
-  val p = findCoreDllPath()
-  if p.length == 0 {
-    return true
-  }
-  coreDllHasAritySuffixTypeDef(p)
 }

@@ -46,6 +46,8 @@
 #   SKIP_CLI_BUNDLE=1 ./scripts/bootstrap.sh --stage 1  # stage 1 stops after the stdlib
 #                                              bundle; the CLI closure precompile is
 #                                              skipped (iterating on one compiler package).
+#   SKIP_VERIFY=1 ./scripts/bootstrap.sh --stage 3      # skip the stage-3 reproducibility
+#                                              fixpoint diagnostic (it is non-blocking anyway).
 
 set -euo pipefail
 
@@ -576,7 +578,7 @@ build_stage2() {
     echo "import Lyric.Cli"
     # Public Std.* packages from the full manifest; the `*Host` kernel
     # boundaries are pulled in transitively, not imported directly.
-    sed -n 's/^"\(Std\.[A-Za-z.]*\)".*/\1/p' "$STDLIB_DIR/lyric.full.toml" \
+    sed -n 's/^"\(Std\.[A-Za-z0-9.]*\)".*/\1/p' "$STDLIB_DIR/lyric.full.toml" \
       | grep -v 'Host$' \
       | while read -r pkg; do echo "import $pkg"; done
     echo "func main(): Unit { }"
@@ -592,6 +594,23 @@ build_stage2() {
   local n
   n="$(ls "$STAGE2_LIB_DIR"/*.dll 2>/dev/null | wc -l | tr -d ' ')"
   ok "  emitted $n self-hosted DLLs (compiler + stdlib)"
+
+  # 3b. Build the SINGLE full stdlib bundle (`Lyric.Stdlib.dll`).  Post-collapse
+  #     (D110) every `Std.*` reference — in the compiler closure above and in any
+  #     user program — resolves to the single `Lyric.Stdlib` assembly identity, so
+  #     this one bundle (carrying every package from `lyric.full.toml`) is what
+  #     satisfies those references at runtime.  It overwrites the per-package
+  #     `Lyric.Stdlib.*.dll` emitted by the closure pass with the single authoritative
+  #     assembly; the leftover per-package DLLs are unreferenced and harmless.
+  info "  building the single full stdlib bundle -> $STAGE2_LIB_DIR/Lyric.Stdlib.dll"
+  "$AOT_OUT" build --manifest "$STDLIB_DIR/lyric.full.toml" \
+    -o "$STAGE2_LIB_DIR/Lyric.Stdlib.dll" --target dotnet --no-restore \
+    > "$BUILD_DIR/stage2-stdlib.log" 2>&1 \
+    || { cat "$BUILD_DIR/stage2-stdlib.log" >&2;
+         die "stage-2 single stdlib bundle build FAILED — see $BUILD_DIR/stage2-stdlib.log"; }
+  [[ -f "$STAGE2_LIB_DIR/Lyric.Stdlib.dll" ]] \
+    || die "stage-2 single stdlib bundle not produced in $STAGE2_LIB_DIR"
+  ok "  built single Lyric.Stdlib.dll bundle"
 
   # 4. AOT-link the stage-2 binary from the self-hosted closure.  The
   #    <Reference Private=true> glob copies every referenced DLL (compiler +
@@ -610,7 +629,7 @@ build_stage2() {
     ok "Stage 2 toolchain RUNS — $(head -1 "$BUILD_DIR/stage2-smoke.log")"
   else
     info "Stage 2 toolchain BUILT but does NOT yet RUN — self-hosted emitter blocker:"
-    grep -m1 -E "Exception|Could not load|error" "$BUILD_DIR/stage2-smoke.log" \
+    grep -m1 -E "Exception|Could not load|[Ee]rror" "$BUILD_DIR/stage2-smoke.log" \
       | sed 's/^/    /' || true
     info "  full log: $BUILD_DIR/stage2-smoke.log"
     info "  this is the runnability signal — fix the emitter bug, not the build."

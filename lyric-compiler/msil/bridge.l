@@ -182,11 +182,9 @@ pub func compileToMsilWithVersion(
   // in `compileProjectToMsilWithRestoredAndVersion` for the full
   // rationale (mirrors the F# emitter's `resolveStdlibImports` +
   // `emitAssembly` import-table population).
-  // Probe the installed Core.dll to determine whether it uses CLR arity-suffix
-  // TypeDef naming (self-hosted convention) or the F# bootstrap convention.
-  // Pass the result directly rather than storing it in LoweringCtx to avoid
-  // cross-package nested record field assignment.
-  registerStdlibArtifactTokens(cctx, stdlibPkgs, Mdr.detectStdlibCoreDllUsesAritySuffix())
+  // Stdlib is always the self-hosted single `Lyric.Stdlib` bundle (D110), so the
+  // arity-suffix convention is fixed — no probe of the installed DLL is needed.
+  registerStdlibArtifactTokens(cctx, stdlibPkgs)
   seedResultTypeRefs(cctx)
 
   // Run the aspect weaver before the token pre-scan so that the pre-scan
@@ -654,9 +652,9 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // (the F# emitter handles that), but the guard makes the bridge
   // robust to a future refactor that routes stdlib compilation
   // through the in-process path.
-  // Probe the installed Core.dll to determine naming convention; pass
-  // the result directly rather than storing in LoweringCtx.
-  registerStdlibArtifactTokens(cctx, filterStdlibPkgsByBundle(stdlibPkgs, perPkgNames), Mdr.detectStdlibCoreDllUsesAritySuffix())
+  // Stdlib is always the self-hosted single `Lyric.Stdlib` bundle (D110): the
+  // arity-suffix convention is fixed, so no installed-DLL probe is needed.
+  registerStdlibArtifactTokens(cctx, filterStdlibPkgsByBundle(stdlibPkgs, perPkgNames))
   seedResultTypeRefs(cctx)
   // Seed cross-package symbol tables with the restored artifacts' type
   // surface so the per-package addPackageTokens pre-scan sees restored

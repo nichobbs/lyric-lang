@@ -6767,6 +6767,53 @@ blocker currently gates.
 
 ---
 
+## D111 — Single-DLL stdlib emitter collapse implemented; `usesAritySuffix` detection removed
+
+**Decision (implements the D110 follow-up).** The self-hosted MSIL emitter now
+references every `Std.*` type under the **single `Lyric.Stdlib` assembly
+identity** instead of per-package `Lyric.Stdlib.<X>`. `stdlibAssemblyName`
+(`codegen.l`) returns `"Lyric.Stdlib"` for all `Std.*` packages; one deployed
+`Lyric.Stdlib.dll` (the `output = "single"` bundle from `lyric.full.toml`,
+carrying every package) satisfies every stdlib reference at runtime. This is the
+distribution-mandated shape (docs/22 §2, docs/34). Compiler packages
+(`Lyric.<X>`) keep per-package names — they are build intermediates AOT-linked
+into the binary, not distributed.
+
+**`usesAritySuffix` removed.** With stdlib always the single self-hosted-emitted
+bundle, the two-ABI detection that probed the installed `Lyric.Stdlib.Core.dll`
+is vestigial: the emitter unconditionally emits the self-hosted (arity-suffixed)
+convention. Removed `detectStdlibCoreDllUsesAritySuffix`, `findCoreDllPath`,
+`findCoreDllInDir`, `walkUpForCoreDll` (and the `usesAritySuffix` parameter
+threaded through `registerStdlibArtifactTokens` / `registerStdlibTypeItem` /
+`registerStdlibFunc`, including the F#-only `xrefUnitArgsToValueTuple` return
+branch). `coreDllHasAritySuffixTypeDef` / `dllHasNullaryInstanceField` are
+**kept** — they still detect the convention of restored *non-stdlib* artifacts
+(the F#-emitted compiler closure linked by the self-tests in the mint path); they
+become vestigial only when the F# mint seed is retired.
+
+**Bundle completeness.** `lyric.full.toml` was missing three kernel packages the
+compiler uses (`Std.UnicodeHost`, `Std.CollectionsHost`, `Std.VerifierEnvHost`);
+added so the single bundle covers the whole compiler closure. `build_stage2`
+(`bootstrap.sh`) now builds the single bundle into `.bootstrap/stage2/lib`.
+
+**Keystone effect.** The collapse *also fixes the stage-2 self-hosting startup
+blocker* from D110: the `Std.Core.Option` TypeLoadException was the per-package +
+suffix-detection mismatch. With the collapse, the stage-2 self-hosted binary
+**starts and runs the compile pipeline** (it no longer faults at load). The next
+surfaced blocker is a separate self-hosted **parser** miscompile (`P0040` on
+function bodies) — exactly the deeper bug the runnability-first model is meant to
+expose; tracked separately.
+
+**Verification.** Clean-room verified via the minted seed: a user program now
+references only `[Lyric.Stdlib]`, links the single bundle, and runs correctly;
+the whole compiler still type-checks and the compiler binary starts. The stage-2
+binary builds and starts (the Option blocker is gone); full stage-2 self-hosting
+remains gated by the separate parser bug.
+
+**Related:** D110, docs/22 §2, docs/34, docs/43.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

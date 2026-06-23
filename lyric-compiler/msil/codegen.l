@@ -22950,7 +22950,7 @@ pub record StdlibPkg {
 /// imports still work because their callsite codegen never reaches
 /// the `funcTokens` lookup (handled by the hardcoded builtin arms in
 /// `lowerBuiltinOrStaticCallMsil`).
-pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibPkg], usesAritySuffix: Bool): Unit {
+pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibPkg]): Unit {
   // Pass 1: register all type items across every package first.  This
   // populates `typeFqnByName` and `ffiTypeRefs` before any function
   // signature is resolved, so cross-package generic return types (e.g.
@@ -22966,7 +22966,7 @@ pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibP
       match it.kind {
         case IFunc(_) -> {
         }
-        case _ -> registerStdlibTypeItem(cctx, pkg.name, it, asmRefRow, usesAritySuffix)
+        case _ -> registerStdlibTypeItem(cctx, pkg.name, it, asmRefRow)
       }
       ii = ii + 1
     }
@@ -22982,7 +22982,7 @@ pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibP
     while ii < pkg.items.count {
       val it: Item = pkg.items[ii]
       match it.kind {
-        case IFunc(decl) -> registerStdlibFunc(cctx, pkg.name, hostRefRow, decl, usesAritySuffix)
+        case IFunc(decl) -> registerStdlibFunc(cctx, pkg.name, hostRefRow, decl)
         case _ -> {
         }
       }
@@ -23232,13 +23232,7 @@ func buildGenericCaseCtorTok(
 // (`Option$Some`, `Option$None`) so that `MIsinstByName` resolves to
 // a TypeRef token rather than falling back to System.Object.
 // Mirrors the `registerRestoredTypeDecl` + `registerRestoredUnionCase` logic.
-func registerStdlibTypeItem(
-  cctx: in CodegenCtx,
-  packageName: in String,
-  it: in Item,
-  asmRefRow: in Int,
-  usesAritySuffix: Bool,
-): Unit {
+func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in Item, asmRefRow: in Int): Unit {
   // Extern types declared in the stdlib `_kernel/` boundary (e.g.
   // `extern type Uuid = "System.Guid"`) carry the Lyric-name → CLR-FQN
   // mapping a consumer needs to encode the type correctly in cross-package
@@ -23283,7 +23277,9 @@ func registerStdlibTypeItem(
     case IUnion(decl) -> genericNamesOf(decl.generics).count
     case _ -> 0
   }
-  val typeRefName = if typeArity > 0 and usesAritySuffix { typeName + "`" + toString(typeArity) } else { typeName }
+  // Stdlib is always the self-hosted single `Lyric.Stdlib` bundle (D110), which
+  // names generic types with the CLR arity suffix (`Option`1`); always match it.
+  val typeRefName = if typeArity > 0 { typeName + "`" + toString(typeArity) } else { typeName }
   val typeFqn = packageName + "." + typeName
   val typeRefKey = packageName + "/" + typeFqn
   if not cctx.ffiTypeRefs.containsKey(typeRefKey) {
@@ -23320,7 +23316,7 @@ func registerStdlibTypeItem(
       while ci < decl.cases.count {
         val caseName = decl.cases[ci].name
         val ctorKey = packageName + "." + decl.name + "_" + caseName
-        val caseClassName = if caseArity > 0 and usesAritySuffix {
+        val caseClassName = if caseArity > 0 {
           decl.name + "_" + caseName + "`" + toString(caseArity)
         } else {
           decl.name + "_" + caseName
@@ -23616,40 +23612,42 @@ func ensureStdlibAssemblyRef(cctx: in CodegenCtx, packageName: in String): Int {
   row
 }
 
-// Translate a Lyric package name into the F# emitter's stdlib
-// assembly-name convention so cross-emitter PE bindings line up:
-//   Std.Encoding              → Lyric.Stdlib.Encoding
-//   Std.Collections           → Lyric.Stdlib.Collections
-//   Std.CollectionsHost       → Lyric.Stdlib.CollectionsHost
-//   Std.Collections.Host      → Lyric.Stdlib.Collections.Host  (3+ seg)
+// Translate a Lyric package name into the assembly name a consumer's PE
+// references for that package's types:
+//   Std.Core                  → Lyric.Stdlib   (every Std.* collapses here)
+//   Std.Collections           → Lyric.Stdlib
+//   Std.Testing.Mocking       → Lyric.Stdlib
 //   Lyric.Lexer               → Lyric.Lyric.Lexer
 //   <single-segment>          → Lyric.<segment>
 //
-// Mirrors `bootstrap/src/Lyric.Emitter/Emitter.fs::ensureStdlibArtifact`'s
-// `assemblyName` block.  Tail segments are joined with `.` so a
-// 3+-segment package keeps its segment boundaries — every current
-// stdlib package is 2-segment, but `Std.A.B` and `Std.AB` must yield
-// distinct DLL names (`Lyric.Stdlib.A.B` vs `Lyric.Stdlib.AB`) when
-// the surface grows (review #1427).
+// All `Std.*` packages now resolve to the SINGLE `Lyric.Stdlib` assembly
+// identity (D110), so one deployed `Lyric.Stdlib.dll` (the `output = "single"`
+// bundle carrying every package) satisfies every stdlib reference at runtime.
+// This is the distribution-mandated shape (docs/22 §2, docs/34: one
+// `lib/Lyric.Stdlib.dll`, replacing the ~25 per-package DLLs) and matches how
+// `import Std.X` resolves its surface from the bundle's per-package
+// `Lyric.Contract.<X>` resources.  Non-`Std` heads keep per-package names: the
+// compiler's own `Lyric.<X>` packages are build intermediates AOT-linked into
+// the binary, not distributed, so they stay individually addressable.
 func stdlibAssemblyName(packageName: in String): String {
   val segs = splitDottedName(packageName)
   if segs.count == 0 {
     return "Lyric.Unknown"
   }
   val head = segs[0]
-  // Concatenate tail segments WITHOUT separators — mirrors the F# emitter's
-  // `String.concat "" rest` convention (Emitter.fs).  E.g. "Std.Testing.Mocking"
-  // → tail = "TestingMocking" → "Lyric.Stdlib.TestingMocking", matching the
-  // F#-emitted DLL name.  Single-segment tails are unaffected.
+  if head == "Std" {
+    // Single-DLL stdlib: all `Std.*` types live in one `Lyric.Stdlib` assembly.
+    return "Lyric.Stdlib"
+  }
+  // Non-`Std` heads (compiler packages): concatenate tail segments WITHOUT
+  // separators, matching the per-package DLL naming for `Lyric.<X>`.
   var tail = ""
   var i = 1
   while i < segs.count {
     tail = tail + segs[i]
     i = i + 1
   }
-  if head == "Std" {
-    "Lyric.Stdlib." + tail
-  } else if segs.count == 1 {
+  if segs.count == 1 {
     "Lyric." + head
   } else {
     "Lyric." + head + "." + tail
@@ -23695,13 +23693,7 @@ func splitDottedName(name: in String): List[String] {
 // `registerRestoredFunc`, which already uses the ctx-aware builder.
 // On resolution error, inherits `registerRestoredFunc`'s policy: the
 // unresolvable slot degrades to MObject in the encoded signature (#2821).
-func registerStdlibFunc(
-  cctx: in CodegenCtx,
-  packageName: in String,
-  hostRefRow: in Int,
-  fn: in FunctionDecl,
-  usesAritySuffix: Bool,
-): Unit {
+func registerStdlibFunc(cctx: in CodegenCtx, packageName: in String, hostRefRow: in Int, fn: in FunctionDecl): Unit {
   val isPub = match fn.visibility { case Some(VisPub(_)) -> true; case _ -> false }
   if not isPub {
     return
@@ -23718,19 +23710,17 @@ func registerStdlibFunc(
   val fqn = packageName + "." + fn.name
   val arityKey = fqn + "/" + toString(fn.params.count)
 
-  // When the stdlib DLL was produced by the self-hosted emitter (`usesAritySuffix
-  // = true`), a `Unit`/`Never` generic argument is `object` end-to-end (def,
-  // ctor, and match all agree).  When it was produced by the F# emitter
-  // (`usesAritySuffix = false`), the convention is `System.ValueTuple` at value
-  // position (`TypeMap.fs`); the MemberRef must match to avoid MissingMethodException.
+  // Stdlib is always the self-hosted single `Lyric.Stdlib` bundle (D110): a
+  // `Unit`/`Never` generic argument is `object` end-to-end (def, ctor, and match
+  // all agree), so the return type is taken as-is (the F# `System.ValueTuple`
+  // convention no longer occurs).
   val paramTypes: List[MsilType] = newList()
   var pi = 0
   while pi < fn.params.count {
     paramTypes.add(typeExprToMsilCtx(cctx, fn.params[pi].ty, packageName))
     pi = pi + 1
   }
-  val retTypeRaw = match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
-  val retType = if not usesAritySuffix { xrefUnitArgsToValueTuple(cctx, retTypeRaw) } else { retTypeRaw }
+  val retType = match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
   val funcSig = buildStaticMethodSigWithCtx(byrefWrapSigTypes(fn.params, paramTypes), retType, cctx.lctx)
   val fnModes = paramModesOf(fn.params)
   // Register with an arity-specific key so overloaded stdlib functions

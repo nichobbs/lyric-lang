@@ -49,6 +49,9 @@ output_assembly = "Lyric.Stdlib.Full.dll"
 "Std.JsonHost"         = "std/_kernel/json_host.l"
 "Std.MathHost"         = "std/_kernel/math_host.l"
 "Std.ParseHost"        = "std/_kernel/parse_host.l"
+"Std.UnicodeHost"      = "std/_kernel/unicode_host.l"
+"Std.CollectionsHost"  = "std/_kernel/collections_host.l"
+"Std.VerifierEnvHost"  = "std/_kernel/verifier_env_host.l"
 
 # Tier 1 — collections, regex, processes.
 "Std.Regex"            = "std/regex.l"
