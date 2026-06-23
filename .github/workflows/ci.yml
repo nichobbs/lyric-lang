@@ -3298,7 +3298,7 @@ jobs:
       - name: Restore executable permissions
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
 
-      - name: Per-package stdlib emit (#2592 self-hosted Std.Sort)
+      - name: Single-bundle stdlib (self-hosted Std.Sort)
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -3308,12 +3308,7 @@ jobs:
             exit 1
           fi
           work="$(mktemp -d)"
-          cat > "$work/driver.l" <<'LYR'
-          package SortDriver
-          import Std.Core
-          import Std.Sort
-          func main(): Unit { }
-          LYR
+          mkdir -p "$work/out"
           cat > "$work/prog.l" <<'LYR'
           package SortProg
           import Std.Core
@@ -3328,13 +3323,15 @@ jobs:
             }
           }
           LYR
-          "$lyric_bin" --internal-perpackage-build "$work/driver.l" "$work/out"
-          for dll in Lyric.Stdlib.Core.dll Lyric.Stdlib.Sort.dll Lyric.Stdlib.Collections.dll; do
-            if [ ! -f "$work/out/$dll" ]; then
-              echo "::error::per-package emit did not produce $dll"
-              exit 1
-            fi
-          done
+          # Post-collapse (D111): stdlib is the single Lyric.Stdlib.dll bundle, so a
+          # program importing Std.Sort links that one assembly — not a per-package
+          # Lyric.Stdlib.Sort.dll.  Build the bundle beside the program and run it.
+          "$lyric_bin" build --manifest lyric-stdlib/lyric.full.toml \
+            -o "$work/out/Lyric.Stdlib.dll" --target dotnet --no-restore
+          if [ ! -f "$work/out/Lyric.Stdlib.dll" ]; then
+            echo "::error::single stdlib bundle not produced"
+            exit 1
+          fi
           "$lyric_bin" build "$work/prog.l" -o "$work/out/prog.dll"
           got="$(cd "$work/out" && dotnet prog.dll | tr '\n' ' ' | sed 's/ *$//')"
           echo "sort output: '$got'"
@@ -3342,7 +3339,7 @@ jobs:
             echo "::error::self-hosted Std.Sort returned '$got', expected '1 2 3 4 5'"
             exit 1
           fi
-          echo "self-hosted per-package Std.Sort returns sorted output"
+          echo "self-hosted Std.Sort returns sorted output (single bundle)"
 
       # Cross-package compile-time constant inlining (#2592 slice 1).  A
       # module-level `pub val` / `pub const` with an integer-literal
@@ -3491,16 +3488,22 @@ jobs:
           fi
           work="$(mktemp -d)"
           trap 'rm -rf "$work"' EXIT
-          mods="$(grep -rhoE '^package Std\.[A-Za-z.]+' lyric-stdlib/std/*.l | sed 's/^package //' | sort -u)"
-          {
-            echo "package StdAll"
-            for m in $mods; do echo "import $m"; done
-            echo "func main(): Unit { }"
-          } > "$work/all.l"
-          "$lyric_bin" --internal-perpackage-build "$work/all.l" "$work/out"
-          for dll in Lyric.Stdlib.Sort.dll Lyric.Stdlib.Http.dll Lyric.Stdlib.Rest.dll Lyric.Stdlib.Core.dll; do
-            if [ ! -f "$work/out/$dll" ]; then
-              echo "::error::expected self-hosted stdlib DLL missing: $dll"
+          mkdir -p "$work/out"
+          # Post-collapse (D111): the bundle packages self-host-compile into the
+          # single Lyric.Stdlib.dll; the HTTP/async surface self-host-compiles
+          # per-package (the #4030 hybrid).  Building both is the "all Std.*
+          # self-host-compile" guard.
+          "$lyric_bin" build --manifest lyric-stdlib/lyric.full.toml \
+            -o "$work/out/Lyric.Stdlib.dll" --target dotnet --no-restore
+          if [ ! -f "$work/out/Lyric.Stdlib.dll" ]; then
+            echo "::error::single stdlib bundle not produced"
+            exit 1
+          fi
+          printf 'package HttpAll\nimport Std.Http\nimport Std.HttpServer\nimport Std.Rest\nfunc main(): Unit { }\n' > "$work/http.l"
+          "$lyric_bin" --internal-perpackage-build "$work/http.l" "$work/httpout" --target dotnet
+          for dll in Lyric.Stdlib.Http.dll Lyric.Stdlib.Rest.dll Lyric.Stdlib.HttpServer.dll; do
+            if [ ! -f "$work/httpout/$dll" ]; then
+              echo "::error::expected HTTP per-package DLL missing: $dll"
               exit 1
             fi
           done
@@ -3579,8 +3582,10 @@ jobs:
         run: |
           set -euo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -f "$(dirname "$lyric_bin")/Lyric.Stdlib.Sort.dll" ]; then
-            echo "::error::Lyric.Stdlib.Sort.dll not staged in the toolchain lib dir"
+          # Post-collapse (D111): Std.Sort ships inside the single Lyric.Stdlib.dll
+          # bundle, not a per-package Lyric.Stdlib.Sort.dll.
+          if [ ! -f "$(dirname "$lyric_bin")/Lyric.Stdlib.dll" ]; then
+            echo "::error::Lyric.Stdlib.dll bundle not staged in the toolchain lib dir"
             exit 1
           fi
           work="$(mktemp -d)"
@@ -4127,8 +4132,8 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin"
             exit 1
           fi
-          if [ ! -f "$(dirname "$lyric_bin")/Lyric.Stdlib.Sort.dll" ]; then
-            echo "::error::Lyric.Stdlib.Sort.dll not staged — slice-4 test cannot run"
+          if [ ! -f "$(dirname "$lyric_bin")/Lyric.Stdlib.dll" ]; then
+            echo "::error::Lyric.Stdlib.dll bundle not staged — slice-4 test cannot run"
             exit 1
           fi
           work="$(mktemp -d)"
@@ -4198,7 +4203,7 @@ jobs:
       # (in-flight, not DLL-restored), which avoids DLL-based recursive lookup.
       # DLL presence is the authoritative check for slice 4; correctness of the
       # Xml and Yaml APIs is covered by the stdlib emitter test suite.
-      - name: Std.Xml and Std.Yaml staged (#2592 slice 4)
+      - name: Std.Xml and Std.Yaml bundled (#2592 slice 4)
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -4207,15 +4212,23 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin"
             exit 1
           fi
-          if [ ! -f "$(dirname "$lyric_bin")/Lyric.Stdlib.Xml.dll" ]; then
-            echo "::error::Lyric.Stdlib.Xml.dll not staged — curated-package exclusion not retired"
+          # Post-collapse (D111): Std.Xml and Std.Yaml ship inside the single
+          # Lyric.Stdlib.dll bundle, not per-package DLLs.  Assert the bundle is
+          # staged and actually defines the Xml/Yaml types.
+          bundle="$(dirname "$lyric_bin")/Lyric.Stdlib.dll"
+          if [ ! -f "$bundle" ]; then
+            echo "::error::Lyric.Stdlib.dll bundle not staged alongside the AOT binary"
             exit 1
           fi
-          if [ ! -f "$(dirname "$lyric_bin")/Lyric.Stdlib.Yaml.dll" ]; then
-            echo "::error::Lyric.Stdlib.Yaml.dll not staged — curated-package exclusion not retired"
+          if ! strings "$bundle" | grep -q "Std.Xml"; then
+            echo "::error::Std.Xml not present in the Lyric.Stdlib.dll bundle"
             exit 1
           fi
-          echo "Std.Xml and Std.Yaml DLLs are staged alongside the AOT binary"
+          if ! strings "$bundle" | grep -q "Std.Yaml"; then
+            echo "::error::Std.Yaml not present in the Lyric.Stdlib.dll bundle"
+            exit 1
+          fi
+          echo "Std.Xml and Std.Yaml are bundled in Lyric.Stdlib.dll"
 
       # Slice-length / String-comparison self-test (#2539).  Exercises two
       # self-hosted MSIL codegen fixes: (1) `String` relational operators
