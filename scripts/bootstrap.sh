@@ -443,30 +443,25 @@ stage1() {
 stage1_cli_bundle() {
   # When stage-0 was minted from the F# bootstrap compiler, the mint already
   # emitted the entire Lyric.Cli closure (per-package, CoreLib-retargeted) into
-  # $STAGE1_DIR.  Those F#-emitted DLLs are the reference output.  The
-  # self-hosted MSIL emitter is not yet able to re-emit a *working* copy of
-  # itself, so re-emitting the closure here would replace the clean F#-emitted
-  # DLLs with ones that crash at run time.  Reuse the minted closure instead;
-  # only the freshly-built stdlib bundle needs its CoreLib refs retargeted (the
-  # mint already retargeted the closure DLLs, and the rewrite is idempotent for
-  # those).
+  # $STAGE1_DIR.  Those F#-emitted DLLs are the reference output for STAGE 1, the
+  # ABI-mixed bootstrap toolchain.  Reuse the minted closure here; only the
+  # freshly-built stdlib bundle needs its CoreLib refs retargeted (the mint
+  # already retargeted the closure DLLs, and the rewrite is idempotent for those).
   #
-  # Progress toward dropping this reuse branch (#3920): the self-host PARSER
-  # blocker is fixed — cross-package nullary union-case construction now loads
-  # the case singleton (`ldsfld Instance`) instead of `newobj`-ing a fresh
-  # instance, so `==` / pattern tests across a package boundary (e.g. the
-  # lexer's `KwPackage` token vs. the parser's `tryEatKw(KwPackage)` argument)
-  # compare equal again (was: every cross-package nullary compare returned
-  # false, so the self-emitted parser rejected every file with P0020).  With
-  # that fixed plus the bare-`None` arm inference fix, a self-emitted compiler
-  # parses + type-checks + reaches codegen.  The remaining blocker is a
-  # generic-collection signature inconsistency in codegen: `List[T]` method
-  # *parameters* are emitted as the concrete `List<T>` (with a castclass on
-  # entry) while `newList()` *constructions* erase to `List<object>`, so a
-  # cross-call passes `List<object>` into a `List<T>` parameter and the entry
-  # cast throws `InvalidCastException`.  Tracked toward full self-host.
+  # This reuse is a STAGE-1 detail, not a self-host limitation.  Stage 2 — the
+  # stage-1 compiler rebuilding ITSELF — now produces a fully runnable,
+  # byte-for-byte reproducible toolchain (D-progress-531: stage 2 RUNS, stage 3
+  # closure 101/101 DLLs + stdlib byte-identical).  The last per-package blocker
+  # (#3920 / #4020) was a cross-package nullary-union-case singleton
+  # mis-detection: the restored path used an arity-suffix proxy that missed the
+  # non-generic `Lyric.Lexer`, so the self-emitted parser `newobj`'d keyword
+  # cases that never `Object.Equals`'d the lexer's tokens and hung on
+  # `opaque type` (the one item consumed via `tryEatKw`).  #4020 detects the
+  # `Instance` field directly, clearing it.  Stage 1 still reuses the minted
+  # closure only because it is intentionally ABI-mixed (its own runtime stdlib is
+  # seed-emitted); stage 2 is the self-consistent ship/test toolchain.
   if [[ "${LYRIC_BOOTSTRAP_MINT:-0}" == "1" ]] && [[ -f "$STAGE1_DIR/Lyric.Lyric.Cli.dll" ]]; then
-    info "Stage 1 (CLI bundle): reusing minted F#-emitted closure (self-hosted re-emit skipped)"
+    info "Stage 1 (CLI bundle): reusing minted F#-emitted closure (intentional — stage 1 is the ABI-mixed bootstrap toolchain; stage 2 is the self-hosted rebuild)"
     if [[ "$SKIP_COREREF_REWRITE" != "1" ]]; then
       info "  retargeting System.Private.CoreLib refs -> public facades"
       dotnet fsi "$REPO_ROOT/scripts/rewrite-corelib-refs.fsx" "$STAGE1_DIR"/*.dll \
