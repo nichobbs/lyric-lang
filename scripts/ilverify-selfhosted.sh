@@ -98,23 +98,51 @@ emitted="$(ls "$OUT2"/Lyric.*.dll 2>/dev/null | wc -l)"
 [[ "$emitted" -gt 0 ]] || { echo "FATAL: no Lyric.*.dll emitted into $OUT2" >&2; exit 1; }
 echo "[ilverify] emitted $emitted Lyric DLL(s) (arity-consistent closure)"
 
-# 2. Build the reference set: every emitted DLL + the shared framework.
+# 2. Build the reference set: every emitted DLL + the shared framework +
+#    the self-hosted Lyric.Stdlib.dll bundle.
+#
+# WHY Lyric.Stdlib.dll is required:
+#   `stdlibAssemblyName()` (codegen.l) maps every `Std.*` type (except the
+#   Http/async surface) to AssemblyRef `"Lyric.Stdlib"` — the single bundle
+#   identity mandated by D111.  `--internal-perpackage-build` only emits
+#   per-package DLLs (`Lyric.Stdlib.Core.dll`, …), not the bundle, so without
+#   this line every compiler-package method whose signature references a stdlib
+#   type produces `[FileLoadErrorGeneric] Failed to load assembly 'Lyric.Stdlib'`
+#   — masking all real IL-validity signal with ~1500 spurious errors.
+#
+# `stage-selfhosted-stdlib.sh` (run by the build job) already built a
+# self-hosted, arity-consistent `Lyric.Stdlib.dll` and deployed it beside the
+# AOT binary, so we just need to include it here.  The per-package HTTP/async
+# DLLs beside it cover the `Lyric.Stdlib.Http` etc. references.
 SYSDIR="$(dirname "$(ls "$DOTNET_ROOT"/shared/Microsoft.NETCore.App/*/System.Runtime.dll 2>/dev/null | sort | tail -1)")"
 [[ -d "$SYSDIR" ]] || { echo "FATAL: could not locate Microsoft.NETCore.App shared framework under $DOTNET_ROOT" >&2; exit 2; }
 
+LYRIC_DIR="$(dirname "$LYRIC_BIN")"
+
 refs=()
 for d in "$OUT2"/*.dll; do refs+=( -r "$d" ); done
+# Include the self-hosted Lyric.Stdlib.dll bundle (and per-package HTTP DLLs)
+# from the AOT binary's lib dir so `Lyric.Stdlib` assembly references resolve.
+if [[ -f "$LYRIC_DIR/Lyric.Stdlib.dll" ]]; then
+  refs+=( -r "$LYRIC_DIR/Lyric.Stdlib.dll" )
+else
+  echo "[ilverify] WARNING: Lyric.Stdlib.dll not found beside the AOT binary — FileLoadErrorGeneric errors expected" >&2
+fi
+for d in "$LYRIC_DIR"/Lyric.Stdlib.*.dll; do
+  [[ -f "$d" ]] && refs+=( -r "$d" )
+done
 for d in "$SYSDIR"/*.dll; do refs+=( -r "$d" ); done
 
 # 3. Verify each emitted Lyric package DLL.  Bucket findings:
 #    * IL-validity   — StackUnexpected / StackUnderflow / PathStackDepth / …:
 #                      genuine self-hosted MSIL emitter bugs.  GATE-BLOCKING.
-#    * resolution    — ClassLoadGeneral / MissingMethod: ilverify could not
-#                      load a referenced type/method.  These are dominated by
-#                      extern-FFI host shims whose BCL targets ilverify cannot
-#                      resolve reflection-only (`System.Text.Json.JsonElement`
-#                      nested enumerators, `Dictionary`.KeyCollection, `Task`1`,
-#                      …).  INFORMATIONAL — not an IL-validity defect.
+#    * resolution    — ClassLoadGeneral / MissingMethod / FileLoadErrorGeneric:
+#                      ilverify could not load a referenced type, method, or
+#                      assembly.  Dominated by extern-FFI host shims whose BCL
+#                      targets ilverify cannot resolve reflection-only
+#                      (`System.Text.Json.JsonElement` nested enumerators,
+#                      `Dictionary`.KeyCollection, `Task`1`, …).
+#                      INFORMATIONAL — not an IL-validity defect.
 il_errors=0
 res_errors=0
 il_failed_dlls=()
@@ -124,11 +152,11 @@ for d in "$OUT2"/Lyric.*.dll; do
   out="$("$ILVERIFY" "$d" "${refs[@]}" 2>&1 || true)"
   errlines="$(printf '%s\n' "$out" | grep '\[IL\]: Error' || true)"
   [[ -z "$errlines" ]] && continue
-  il="$(printf '%s\n' "$errlines" | grep -vE 'ClassLoadGeneral|MissingMethod' | grep -c '\[IL\]: Error' || true)"
-  res="$(printf '%s\n' "$errlines" | grep -cE 'ClassLoadGeneral|MissingMethod' || true)"
+  il="$(printf '%s\n' "$errlines" | grep -vE 'ClassLoadGeneral|MissingMethod|FileLoadErrorGeneric' | grep -c '\[IL\]: Error' || true)"
+  res="$(printf '%s\n' "$errlines" | grep -cE 'ClassLoadGeneral|MissingMethod|FileLoadErrorGeneric' || true)"
   if [[ "$il" -gt 0 ]]; then
     echo "::group::$name — $il IL-validity error(s)"
-    printf '%s\n' "$errlines" | grep -vE 'ClassLoadGeneral|MissingMethod' | sed 's/^/  /'
+    printf '%s\n' "$errlines" | grep -vE 'ClassLoadGeneral|MissingMethod|FileLoadErrorGeneric' | sed 's/^/  /'
     echo "::endgroup::"
     il_errors=$((il_errors + il)); il_failed_dlls+=( "$name:$il" )
   fi
@@ -143,8 +171,9 @@ echo "[ilverify] DLLs verified                : $emitted"
 echo "[ilverify] IL-validity errors (gate)    : $il_errors across ${#il_failed_dlls[@]} DLL(s)"
 echo "[ilverify] resolution/extern (info only): $res_errors across ${#res_failed_dlls[@]} DLL(s)"
 if [[ "$res_errors" -gt 0 ]]; then
-  echo "[ilverify]   (ClassLoadGeneral/MissingMethod — ilverify cannot reflection-load"
-  echo "[ilverify]    extern-FFI BCL targets; not IL-validity defects)"
+  echo "[ilverify]   (ClassLoadGeneral/MissingMethod/FileLoadErrorGeneric — ilverify"
+  echo "[ilverify]    cannot reflection-load extern-FFI BCL targets or optional"
+  echo "[ilverify]    assembly refs; not IL-validity defects)"
   for fd in "${res_failed_dlls[@]}"; do echo "[ilverify]   - $fd"; done
 fi
 
