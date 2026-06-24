@@ -336,6 +336,11 @@ jobs:
 
       - name: Pack NuGet global tool
         working-directory: bootstrap
+        # bootstrap/Directory.Build.props sets IsPackable=false for every
+        # project under bootstrap/, so `dotnet pack` is a silent no-op (restore
+        # only, no .nupkg) without the IsPackable=true override.  PublishAot is
+        # the AOT *standalone binary* concern (build-standalone); a global tool
+        # is a portable framework-dependent IL package, so disable AOT here.
         run: |
           dotnet pack src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
             --configuration Release \
@@ -343,6 +348,8 @@ jobs:
             -p:PackAsTool=true \
             -p:ToolCommandName=lyric \
             -p:PackageId=lyric \
+            -p:IsPackable=true \
+            -p:PublishAot=false \
             --output nupkgs \
             --no-restore
 
