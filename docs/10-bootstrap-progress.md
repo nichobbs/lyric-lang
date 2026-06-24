@@ -52,25 +52,23 @@ Building the toolchain is the **runnability gate**: the per-package emit can
 succeed while the AOT-linked binary still faults at startup, and that fault is
 the signal.  `make stage2` reports it **non-fatally** rather than failing the
 build, so an emitter bug surfaces as a clean, specific failure instead of as
-build noise.  As of 2026-06-23 the surfaced blocker is
-`System.TypeLoadException: Could not load type 'Std.Core.Option' from assembly
-'Lyric.Stdlib.Core'` — the docs/43 arity-suffix mismatch (the consumer
-references `Option`, the producer defines `Option`1`: right assembly, wrong
-type name).  Run things against the toolchain with
+build noise.
+
+**Stdlib is now a single `Lyric.Stdlib.dll` (D111).**  The emitter references
+every `Std.*` type under the single `Lyric.Stdlib` assembly identity, and
+`build_stage2` builds the `output = "single"` bundle (from `lyric.full.toml`,
+which now also carries the kernel packages the compiler uses — `Std.UnicodeHost`,
+`Std.CollectionsHost`, `Std.VerifierEnvHost`) into `.bootstrap/stage2/lib`.  This
+is the distribution-mandated shape (docs/22 §2, docs/34) and it **fixed the
+stage-2 startup blocker**: the old `Could not load type 'Std.Core.Option' from
+assembly 'Lyric.Stdlib.Core'` was the per-package + suffix-detection mismatch, so
+with the collapse the stage-2 self-hosted binary now **starts and runs the
+compile pipeline**.  The two-ABI `usesAritySuffix` detection is gone (stdlib is
+always the self-hosted/suffixed bundle).  The next surfaced blocker is a separate
+self-hosted **parser** miscompile (`P0040` on function bodies) — the deeper bug
+the runnability gate now exposes.  Run things against the toolchain with
 `make run-stage2 ARGS="…"` (which pins `LYRIC_STDLIB_BIN=.bootstrap/stage2/lib`);
 `make stage3` runs the reproducibility fixpoint as a non-blocking diagnostic.
-
-`make stage2` currently produces **per-package** stdlib DLLs
-(`Lyric.Stdlib.<X>.dll`) because the current emitter references stdlib types
-under per-package assembly names — a bootstrap-era artefact.  The **target** is
-a **single `Lyric.Stdlib.dll`**, which is what the distribution strategy
-mandates (docs/22 §2, docs/34: one `lib/Lyric.Stdlib.dll` replacing the ~25
-per-package DLLs).  Collapsing to it requires changing the emitter's stdlib
-reference convention to the single `Lyric.Stdlib` assembly identity (D110); the
-compiler's own `Lyric.Lyric.*` packages stay per-package because they are
-AOT-linked into the binary, not distributed.  `build_stage2` switches to
-`lyric.full.toml`'s `output = "single"` stdlib once that convention change
-lands.
 
 ### "Is this a real bug?" — one command
 

@@ -1233,70 +1233,6 @@ func stdlibEntryImports(entrySource: in String, compilerPayloads: in List[Projec
   "package __stdlib_entry__\n" + Str.joinList("\n", lines) + "\n"
 }
 
-func closureModuleValNames(payloads: in List[ProjectPackagePayload]): List[String] {
-  val names: List[String] = newList()
-  var i = 0
-  while i < payloads.count {
-    val lines = Str.split(payloads[i].source, "\n")
-    var li = 0
-    while li < lines.length {
-      val line = lines[li]
-      if Str.startsWith(line, "pub val ") {
-        var e = 8
-        while e < line.length and isIdentCharEmitter(line[e]) {
-          e = e + 1
-        }
-        if e > 8 {
-          val nm = Str.substring(line, 8, e - 8)
-          if indexOfString(names, nm) < 0 {
-            names.add(nm)
-          }
-        }
-      }
-      li = li + 1
-    }
-    i = i + 1
-  }
-  names
-}
-
-// True iff `c` is an identifier character (ASCII).  Used for the
-// whole-identifier boundary check in `sourceReferencesAnyName`.
-@pure
-func isIdentCharEmitter(c: in Char): Bool {
-  c == '_' or (c >= '0' and c <= '9') or (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z')
-}
-
-// True when `src` references any of `names` as a whole identifier.  A plain
-// substring hit is rejected when either neighbour is an identifier character,
-// so `MDA_PUBLIC` does not match inside `MDA_PUBLIC_KEY`.  Comments and string
-// literals are not excluded — a false positive merely links the self-hosted
-// DLL set for a test that didn't strictly need it, which is safe.
-func sourceReferencesAnyName(src: in String, names: in List[String]): Bool {
-  var ni = 0
-  while ni < names.count {
-    val name = names[ni]
-    var from = 0
-    var searching = true
-    while searching {
-      val hit = src.indexOf(name, from)
-      if hit < 0 {
-        searching = false
-      } else {
-        val beforeOk = hit == 0 or not isIdentCharEmitter(src[hit - 1])
-        val endPos = hit + name.length
-        val afterOk = endPos >= src.length or not isIdentCharEmitter(src[endPos])
-        if beforeOk and afterOk {
-          return true
-        }
-        from = hit + 1
-      }
-    }
-    ni = ni + 1
-  }
-  false
-}
-
 // Direct compiler-package imports of one payload's merged source.
 func compilerImportsOf(payloadSource: in String): List[String] {
   val lines: List[String] = newList()
@@ -1506,6 +1442,70 @@ pub func emitPerPackageClosure(entrySource: in String, outDir: in String, target
   EmitResult(outputPath = Some(value = outDir), diagnostics = newList())
 }
 
+/// Compile `entrySource`'s transitive compiler-package import closure into a
+/// SINGLE `Lyric.Compiler.dll` bundle — the compiler analogue of the
+/// `lyric.full.toml` stdlib bundle (D111).  Unlike `emitPerPackageClosure`,
+/// every compiler package lands in ONE assembly, so cross-package references
+/// are in-bundle (internal) rather than crossing the per-package assembly
+/// boundary whose self-hosted emission is not yet execution-clean (docs/41
+/// §R7 — the per-package emitter corrupts cross-package types so a
+/// self-hosted-emitted parser mis-parses even `package P`).  `Std.*` imports
+/// resolve from source and are referenced externally as `Lyric.Stdlib`.
+///
+/// Compiler self-tests link the bundle as a single restored dep:
+/// `assemblySimpleNameFromDll` derives the `AssemblyRef` from the bundle's
+/// file stem, so every in-bundle package resolves to `Lyric.Compiler` with no
+/// per-package assembly-name remapping in `stdlibAssemblyName`.
+pub func emitCompilerBundle(entrySource: in String, outPath: in String, target: in CompileTarget): EmitResult {
+  // Single-assembly bundle emit is a .NET concept; the JVM toolchain bundles
+  // a package's transitive closure into one JAR via `compileToJarBundled`.
+  match target {
+    case Jvm -> return failResult("compiler bundle emit: --target jvm is not supported (the JVM toolchain bundles into a single JAR)")
+    case Dotnet -> ()
+  }
+  val outDir = Path.dirname(outPath)
+  if Str.isNotEmpty(outDir) {
+    match File.createDir(outDir) {
+      case Ok(_) -> ()
+      case Err(e) -> return failResult("compiler bundle emit: cannot create output directory '" + outDir + "': " + IOError.message(e))
+    }
+  }
+  val compilerDir = locateCompilerDir()
+  if compilerDir.length == 0 {
+    return failResult("compiler bundle emit: could not locate the compiler source tree")
+  }
+  val payloads = loadCompilerPayloads(compilerDir, entrySource)
+  if payloads.count == 0 {
+    return failResult("compiler bundle emit: no compiler packages in the entry's import closure")
+  }
+  // Each payload is one merged package source; wrap it as a single-source
+  // ProjectPackage.  `emitProject` re-merges multi-source packages, but
+  // `loadCompilerPayloads` already produced one unit per package.
+  val pkgs: List[ProjectPackage] = newList()
+  var i = 0
+  while i < payloads.count {
+    val srcs: List[String] = newList()
+    srcs.add(payloads[i].source)
+    pkgs.add(ProjectPackage(name = payloads[i].name, sources = srcs))
+    i = i + 1
+  }
+  val noFeatures: List[String] = newList()
+  val noRestored: List[String] = newList()
+  val noDepTemplateSrcs: List[ProjectPackage] = newList()
+  val req = EmitProjectRequest(
+    packages = pkgs,
+    assemblyName = "Lyric.Compiler",
+    outputPath = outPath,
+    target = target,
+    restoredDllPaths = noRestored,
+    activeFeatures = noFeatures,
+    declaredFeatures = noFeatures,
+    packageVersion = "0.1.0",
+    depTemplateSrcs = noDepTemplateSrcs
+  )
+  emitProject(req)
+}
+
 // #2364 Stage 5: compute the restored-DLL list for a `@test_module` that imports
 // `Lyric.*` compiler packages.  Reuses `loadCompilerPayloads` to resolve the
 // transitive compiler-package import closure from source, then maps each closure
@@ -1544,35 +1544,57 @@ pub func compilerClosureDllPaths(testSource: in String, libDir: in String): List
   // (docs/41 R7).  The self-hosted set is only used when it covers the
   // WHOLE closure so a single test never links a mix of the two emitters'
   // outputs.
-  if sourceReferencesAnyName(testSource, closureModuleValNames(payloads)) {
-    val shDir = Path.join(libDir, "selfhosted")
-    var shComplete = payloads.count > 0
-    var shi = 0
-    while shi < payloads.count {
-      if not File.fileExists(Path.join(shDir, "Lyric." + payloads[shi].name + ".dll")) {
-        shComplete = false
-      }
-      shi = shi + 1
+  // ALWAYS prefer the complete self-hosted compiler-DLL set under
+  // `<libDir>/selfhosted` (D111): the stdlib collapse makes the self-hosted
+  // emitter unconditionally arity-suffix generic types, so a self-hosted-compiled
+  // test that linked the F#-emitted (non-arity) stage-1 DLLs would mismatch their
+  // field/type signatures (e.g. `FunctionDecl.body: Option`1` vs `Option`) and
+  // fault at run time with "Field not found".  A single test must NEVER link a mix
+  // of the two emitters' outputs — and post-collapse the F#-emitted DLLs are the
+  // wrong arity for everything, so the self-hosted set is the only consistent
+  // choice (it also carries the `pub val` contract constants the F# metadata
+  // writer drops, #3086).  Fall back to the F#-emitted DLLs only when the
+  // self-hosted set is incomplete (a staging gap).
+  val shDir = Path.join(libDir, "selfhosted")
+  // D111: prefer the SINGLE self-hosted compiler bundle (`Lyric.Compiler.dll`)
+  // when staged.  It carries every compiler package as a `Lyric.Contract.<Pkg>`
+  // resource, so `loadRestoredPackage` yields one artifact per package from the
+  // one DLL — and `assemblySimpleNameFromDll` derives every AssemblyRef from the
+  // bundle's file stem (`Lyric.Compiler`).  The bundle's in-bundle cross-package
+  // references are internal, sidestepping the per-package emission corruption
+  // (docs/41 §R7), so a self-test that links it resolves a self-consistent
+  // compiler.  A single restored-dep entry is threaded (the bridge loads ALL
+  // packages from it); threading one entry per package would re-load the bundle
+  // N times and double-register every artifact.
+  val bundle = Path.join(shDir, "Lyric.Compiler.dll")
+  if payloads.count > 0 and File.fileExists(bundle) {
+    dlls.add("Lyric.Compiler\t" + bundle)
+    return dlls
+  }
+  var shComplete = payloads.count > 0
+  var shi = 0
+  while shi < payloads.count {
+    if not File.fileExists(Path.join(shDir, "Lyric." + payloads[shi].name + ".dll")) {
+      shComplete = false
     }
-    if shComplete {
-      var sj = 0
-      while sj < payloads.count {
-        val shPkg = payloads[sj].name
-        dlls.add(shPkg + "\t" + Path.join(shDir, "Lyric." + shPkg + ".dll"))
-        sj = sj + 1
-      }
-      return dlls
+    shi = shi + 1
+  }
+  if shComplete {
+    var sj = 0
+    while sj < payloads.count {
+      val shPkg = payloads[sj].name
+      dlls.add(shPkg + "\t" + Path.join(shDir, "Lyric." + shPkg + ".dll"))
+      sj = sj + 1
     }
-    if payloads.count > 0 {
-      Console.error(
-        "test: warning: the test references module-level `pub val` constants from its compiler-package closure, " +
-          "but no complete self-hosted compiler-DLL set was found under '" +
-          shDir +
-          "'. " +
-          "Falling back to the F#-emitted stage-1 DLLs, whose contract metadata omits the constants " +
-          "(T0020 likely; see #3086). Run `make selfhosted-compiler` to stage the self-hosted set."
-      )
-    }
+    return dlls
+  }
+  if payloads.count > 0 {
+    Console.error(
+      "test: warning: no complete self-hosted compiler-DLL set was found under '" + shDir +
+        "'. Falling back to the F#-emitted stage-1 DLLs, whose arity convention no " +
+        "longer matches the self-hosted emitter (D111) and whose contract metadata " +
+        "omits `pub val` constants (#3086). Run `make selfhosted-compiler` to stage the self-hosted set."
+    )
   }
   var i = 0
   while i < payloads.count {
