@@ -193,6 +193,22 @@ pub record FuncCtx {
   // Both empty for functions with no `out`/`inout` parameters.
   holderArraySlot: Map[Int, Int]
   holderElemType: Map[Int, JvmType]
+  // By-reference closure capture (#1479 v2 JVM equivalent, epic #1877 Stage 2).
+  // `hoistedVarNames` is the pre-pass set of names referenced inside any lambda
+  // in this function; a `var` local in this set is hoisted to a one-element
+  // typed array heap cell so the closure and enclosing scope share one mutable
+  // location.  When such a `var` is declared, its cell slot + logical element
+  // type are recorded in `hoistedCellSlot`/`hoistedCellType`; reads/writes of
+  // the name (here and in the closure) route through array element access
+  // (`aaload` / `aastore` + `astore` / `aload`).
+  hoistedVarNames: List[String]
+  hoistedCellSlot: Map[String, Int]
+  hoistedCellType: Map[String, JvmType]
+  // Inside a lifted `__lambda_*`: capture names whose `__caps[i]` slot holds a
+  // by-reference cell (a hoisted `var`) rather than a by-value boxed copy.
+  // Reads emit `__caps[i]` then `aaload` + unbox; writes emit `__caps[i]` then
+  // `aastore`.
+  captureCellNames: List[String]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -74,7 +74,11 @@ func makeFuncCtx(
     opaqueTypes = opaqueTypes,
     closureAcc = closureAcc,
     holderArraySlot = newMap(),
-    holderElemType = newMap()
+    holderElemType = newMap(),
+    hoistedVarNames = newList(),
+    hoistedCellSlot = newMap(),
+    hoistedCellType = newMap(),
+    captureCellNames = newList()
   )
 }
 
@@ -126,7 +130,11 @@ func makeFuncCtxForGenerator(
     opaqueTypes = opaqueTypes,
     closureAcc = closureAcc,
     holderArraySlot = newMap(),
-    holderElemType = newMap()
+    holderElemType = newMap(),
+    hoistedVarNames = newList(),
+    hoistedCellSlot = newMap(),
+    hoistedCellType = newMap(),
+    captureCellNames = newList()
   )
 }
 
@@ -180,7 +188,11 @@ func makeFuncCtxInstance(
     opaqueTypes = opaqueTypes,
     closureAcc = closureAcc,
     holderArraySlot = newMap(),
-    holderElemType = newMap()
+    holderElemType = newMap(),
+    hoistedVarNames = newList(),
+    hoistedCellSlot = newMap(),
+    hoistedCellType = newMap(),
+    captureCellNames = newList()
   )
 }
 

@@ -1864,6 +1864,150 @@ func collectBoundNamesExpr(e: in Expr, acc: in List[String]): Unit {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Hoisting pre-pass: detect `var` bindings referenced inside any lambda in the
+// enclosing function.  These must be hoisted to heap-allocated cells so mutations
+// are observed through the closure (by-ref capture, epic #1877 Stage 2).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Collect all names referenced inside any lambda in an expression.
+func collectInLambdaNamesExpr(e: in Expr, acc: in List[String]): Unit {
+  match e.kind {
+    case ELambda(_, body) -> {
+      // Walk the lambda body and collect all referenced names.
+      collectRefNamesBlock(body, acc)
+    }
+    case ECall(fn, args) -> {
+      collectInLambdaNamesExpr(fn, acc)
+      var ai = 0
+      while ai < args.count {
+        match args[ai] {
+          case CAPositional(ex) -> collectInLambdaNamesExpr(ex, acc)
+          case CANamed(_, ex, _) -> collectInLambdaNamesExpr(ex, acc)
+        }
+        ai = ai + 1
+      }
+    }
+    case EBinop(_, lhs, rhs) -> {
+      collectInLambdaNamesExpr(lhs, acc)
+      collectInLambdaNamesExpr(rhs, acc)
+    }
+    case EPrefix(_, operand) -> collectInLambdaNamesExpr(operand, acc)
+    case EParen(inner) -> collectInLambdaNamesExpr(inner, acc)
+    case EMember(recv, _) -> collectInLambdaNamesExpr(recv, acc)
+    case EIf(cond, thenB, elseOpt, _) -> {
+      collectInLambdaNamesExpr(cond, acc)
+      collectInLambdaNamesOrdBlock(thenB, acc)
+      match elseOpt {
+        case Some(eb) -> collectInLambdaNamesOrdBlock(eb, acc)
+        case None -> ()
+      }
+    }
+    case EBlock(block) -> collectInLambdaNamesBlock(block, acc)
+    case EUnsafe(block) -> collectInLambdaNamesBlock(block, acc)
+    case EMatch(scr, arms) -> {
+      collectInLambdaNamesExpr(scr, acc)
+      var ai = 0
+      while ai < arms.count {
+        collectInLambdaNamesOrdBlock(arms[ai].body, acc)
+        ai = ai + 1
+      }
+    }
+    case EList(exprs) -> {
+      var ei = 0
+      while ei < exprs.count {
+        collectInLambdaNamesExpr(exprs[ei], acc)
+        ei = ei + 1
+      }
+    }
+    case ETuple(exprs) -> {
+      var ei = 0
+      while ei < exprs.count {
+        collectInLambdaNamesExpr(exprs[ei], acc)
+        ei = ei + 1
+      }
+    }
+    case EIndex(recv, indices) -> {
+      collectInLambdaNamesExpr(recv, acc)
+      var ii = 0
+      while ii < indices.count {
+        collectInLambdaNamesExpr(indices[ii], acc)
+        ii = ii + 1
+      }
+    }
+    case EAwait(inner) -> collectInLambdaNamesExpr(inner, acc)
+    case EYield(inner) -> collectInLambdaNamesExpr(inner, acc)
+    case ESpawn(inner) -> collectInLambdaNamesExpr(inner, acc)
+    case ETry(inner) -> collectInLambdaNamesExpr(inner, acc)
+    case EPropagate(inner) -> collectInLambdaNamesExpr(inner, acc)
+    case EAssign(target, _, v) -> {
+      collectInLambdaNamesExpr(target, acc)
+      collectInLambdaNamesExpr(v, acc)
+    }
+    case EInterpolated(segs) -> {
+      var si = 0
+      while si < segs.count {
+        match segs[si] {
+          case ISExpr(ex) -> collectInLambdaNamesExpr(ex, acc)
+          case _ -> ()
+        }
+        si = si + 1
+      }
+    }
+    case ETypeApp(fn, _) -> collectInLambdaNamesExpr(fn, acc)
+    case _ -> ()
+  }
+}
+
+func collectInLambdaNamesOrdBlock(ob: in ExprOrBlock, acc: in List[String]): Unit {
+  match ob {
+    case EOBExpr(ex) -> collectInLambdaNamesExpr(ex, acc)
+    case EOBBlock(blk) -> collectInLambdaNamesBlock(blk, acc)
+  }
+}
+
+func collectInLambdaNamesBlock(b: in Block, acc: in List[String]): Unit {
+  var i = 0
+  while i < b.statements.count {
+    collectInLambdaNamesStmt(b.statements[i], acc)
+    i = i + 1
+  }
+}
+
+func collectInLambdaNamesStmt(s: in Statement, acc: in List[String]): Unit {
+  match s.kind {
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(_, _, init) -> collectInLambdaNamesExpr(init, acc)
+        case LBLet(_, _, init) -> collectInLambdaNamesExpr(init, acc)
+        case LBVar(_, _, initOpt) -> {
+          match initOpt {
+            case Some(init) -> collectInLambdaNamesExpr(init, acc)
+            case None -> ()
+          }
+        }
+      }
+    }
+    case SAssign(target, _, v) -> {
+      collectInLambdaNamesExpr(target, acc)
+      collectInLambdaNamesExpr(v, acc)
+    }
+    case SReturn(eOpt) -> match eOpt { case Some(e) -> collectInLambdaNamesExpr(e, acc); case None -> () }
+    case SExpr(e) -> collectInLambdaNamesExpr(e, acc)
+    case SThrow(e) -> collectInLambdaNamesExpr(e, acc)
+    case SWhile(_, cond, body) -> {
+      collectInLambdaNamesExpr(cond, acc)
+      collectInLambdaNamesBlock(body, acc)
+    }
+    case SLoop(_, body) -> collectInLambdaNamesBlock(body, acc)
+    case SFor(_, _, iter, body) -> {
+      collectInLambdaNamesExpr(iter, acc)
+      collectInLambdaNamesBlock(body, acc)
+    }
+    case _ -> ()
+  }
+}
+
 // The capture set: free references resolving to an enclosing slot, minus the
 // lambda's own params and any names bound inside the body.  Order-preserving and
 // deduped so capture-field / ctor-arg / load ordering stays consistent.
