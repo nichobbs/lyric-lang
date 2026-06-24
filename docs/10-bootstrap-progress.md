@@ -25457,6 +25457,26 @@ COMPLETE.  Formal declaration in decision-log D-progress-529.
 
 ---
 
+### D-progress-531 — Self-hosting fixpoint HOLDS: stage-2 runs, stage-3 byte-reproducible
+
+The stage-2 *self-hosted-built* toolchain (`.bootstrap/stage2/bin/lyric`) builds
+and runs every command — including `opaque type` programs — and
+`scripts/bootstrap.sh --stage 3` confirms the reproducibility fixpoint: the whole
+self-hosted compiler closure (**101/101 DLLs**) and `Lyric.Stdlib.dll` re-emit
+byte-for-byte identical. This supersedes the D111 keystone note's "full stage-2
+self-hosting remains gated by the separate parser bug": that parser miscompile
+was the per-package nullary-union-case `Instance`-singleton mis-detection (an
+arity-suffix proxy that missed the non-generic `Lyric.Lexer`, so the self-emitted
+`Lyric.Parser` `newobj`'d keyword cases that never `Object.Equals`'d the lexer's
+tokens, hanging `parseItems` on `opaque type`). Fixed in #4020 by scanning for
+the `Instance` field directly. The single-bundle path (D112) never hit this,
+which is why the compiler self-tests stayed green throughout.
+
+**See also:** D-progress-531 + docs/41 §R7 (headline update) for the full
+analysis; #4020 (the fix); `scripts/bootstrap.sh` stage-1/2/3 comments.
+
+---
+
 ### D105 / D106 — Parser support for `import extern` syntax and constructor shorthand (docs/47, docs/48)
 
 Phase 1 of docs/47 (`import extern` syntax) and docs/48 (constructor shorthand)

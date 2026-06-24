@@ -45,6 +45,20 @@ bytes directly, with **no F# `--internal-build` subprocess hop** for .NET and no
 `System.Reflection.Emit`. That is a genuine, large advance and the bands below
 should not re-litigate it.
 
+**Update (D-progress-531): the per-package self-hosting fixpoint now holds.**
+The stage-2 *self-hosted-built* toolchain builds AND runs every command, and
+stage 3 re-emits the whole compiler closure (101/101 DLLs) + `Lyric.Stdlib.dll`
+byte-for-byte. The last per-package blocker — a parser infinite loop on
+`opaque type` (the one item consumed via `tryEatKw`, a reference-equality
+keyword compare) — was a cross-package nullary-union-case singleton
+mis-detection: the restored-union path used an arity-suffix proxy that missed
+the non-generic `Lyric.Lexer`, so the consumer `newobj`'d a fresh keyword that
+never `Object.Equals`'d the lexer's token. Fixed in #4020 by detecting the
+`Instance` field directly. The C8 "stdlib self-compile blocked on front-end
+completeness" caveat is therefore lifted for the *emission/runnability* axis;
+the remaining bands (soundness floor, async, etc.) are feature/soundness
+completeness, not self-host runnability.
+
 What remains between today's state and "production-grade, all features, .NET,
 AOT" falls into **five bands**, ordered by how badly they break the production
 bar:

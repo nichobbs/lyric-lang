@@ -6554,6 +6554,52 @@ sb.Capacity).  The test is wired into CI.
 
 ---
 
+## D-progress-531 — Self-hosting fixpoint HOLDS: stage-2 toolchain runs, stage-3 byte-reproducible (supersedes the D111 "remains gated" note)
+
+**Status:** Verified. The stage-2 *self-hosted-built* toolchain
+(`.bootstrap/stage2/bin/lyric`) builds and runs every command (including
+`opaque type` programs), and `scripts/bootstrap.sh --stage 3` reports the
+reproducibility fixpoint holding: the whole self-hosted compiler closure
+(**101/101 DLLs**) and `Lyric.Stdlib.dll` re-emit **byte-for-byte identical**.
+This records a milestone that landed but was left undocumented; it supersedes the
+D111 keystone note's "full stage-2 self-hosting remains gated by the separate
+parser bug" and the docs/41 §R7 "stdlib self-compile blocked on front-end
+completeness" caveat (for the emission/runnability axis).
+
+**The "separate parser bug" was the per-package nullary-singleton mis-detection,
+fixed in #4020.** The D111 keystone note flagged a self-hosted parser miscompile
+that hung the stage-2 binary. Root cause (confirmed by re-deriving it from a
+hang-state managed-stack sample → `Lyric.Parser.skipStmtEnds` ← `parseItemOpt`
+looping on `opaque type`): `opaque type` is the only item whose leading keyword
+is consumed via `tryEatKw` (a value compare through `isKw` → `object.Equals`)
+rather than an unconditional `advance`. The self-hosted emitter gives nullary
+union cases no structural `Equals`, relying on a shared static `Instance`
+singleton for reference-equality. The restored-union registration decided whether
+to load that singleton (vs `newobj` a fresh instance) using an **arity-suffix
+proxy** that returned false for `Lyric.Lexer` — self-hosted-emitted, ~130
+`Instance` singletons, but no generic TypeDef — so `Lyric.Parser` built
+`new Keyword_KwOpaque()` that never `Object.Equals`'d the lexer's token keyword,
+and `parseItems` re-dispatched the same `opaque` token forever. #4020 replaced
+the proxy with a direct `Instance`-field scan (`dllNullaryInstanceInfo` /
+`imageNullaryInstanceInfo`, which additionally records the CLASS-vs-OBJECT
+field-sig convention so restored MemberRefs match the producer DLL). The single
+`Lyric.Compiler.dll` bundle (D112) never hit this — in-bundle the singleton is
+loaded directly — which is why the compiler self-tests stayed green throughout.
+
+**Verification.** `bootstrap.sh --stage 3` (LYRIC_BOOTSTRAP_MINT): "Stage 2
+toolchain RUNS — lyric 0.1.0"; "whole self-hosted compiler closure is
+byte-for-byte reproducible (101/101 DLLs)"; "Lyric.Stdlib.dll … byte-for-byte
+reproducible"; "Stage 3 … fixpoint holds". Stage-2 `lyric run` on an
+`opaque type` program prints and exits 0. The remaining docs/41 bands (soundness
+floor, async, etc.) are feature/soundness completeness, not self-host
+runnability.
+
+**Related:** #4020 (the Instance-detection fix), D111/D112 (stdlib + compiler
+bundle collapse), #3920 (the original cross-package nullary-case blocker),
+docs/41 §R7, `scripts/bootstrap.sh` stage-2/3 comments.
+
+---
+
 ## D107 — `@externTarget` functions returning `Option[T]` coerce a nullable BCL reference to `None`/`Some` at the call boundary
 
 **Status:** Accepted (Phase 1: MSIL emitter convention shipped; Phase 2:
