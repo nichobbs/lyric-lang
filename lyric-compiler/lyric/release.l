@@ -236,6 +236,19 @@ func copyExecutable(src: in String, dst: in String): Result[Unit, String] {
   }
 }
 
+// Resolve `p` to an absolute path against the process working directory.  The
+// generated host.csproj lives in a staging dir and `dotnet publish` resolves
+// <Reference> paths relative to the CSPROJ's own directory, so a relative ref
+// (e.g. from a relative source path) would resolve under the staging dir and
+// fail to link.  All host.csproj references are run through this.
+func absPath(p: in String): String {
+  if Path.isAbsolute(p) {
+    p
+  } else {
+    Path.join(Environment.currentDirectory(), p)
+  }
+}
+
 /// Produce a native binary from an already-built program DLL via .NET Native AOT.
 ///
 /// `programDll` — absolute path to the compiled program (single DLL for a
@@ -255,22 +268,25 @@ pub func buildReleaseDotnet(
     releaseErr("could not determine the entry package (no `package` declaration found)")
     return 1
   }
-  val programDir = Path.dirname(programDll)
+  val absProgramDll = absPath(programDll)
+  val programDir = Path.dirname(absProgramDll)
   // Stage the host project alongside the program DLL — `buildOne` already
   // created this directory (`.lyric-release/`), so we avoid a Std.Directory
   // dependency.  `dotnet publish -o` creates the output dir itself.
   val hostDir = programDir
 
   // Assemble the reference set: program DLL + restored deps + stdlib bundle.
+  // Every ref is made absolute (see `absPath`) so host.csproj links regardless
+  // of the caller's working directory or a relative source path.
   val refs: List[String] = newList()
-  refs.add(programDll)
+  refs.add(absProgramDll)
   var i = 0
   while i < extraRefs.count {
-    refs.add(extraRefs[i])
+    refs.add(absPath(extraRefs[i]))
     i += 1
   }
   match locateStdlib(programDir) {
-    case Some(p) -> refs.add(p)
+    case Some(p) -> refs.add(absPath(p))
     case None -> {
       // Fail with a clear Lyric diagnostic rather than letting `dotnet
       // publish` fail later with a cryptic ILC link error (#2020).
