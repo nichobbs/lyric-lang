@@ -269,7 +269,7 @@ pub func synthesizeBench(source: in String, runs: in Int, warmup: in Int, filter
       sb = source.substring(0, firstItemStart)
     }
     sb = sb + "\nimport Std.Time\n"
-    sb = sb + source.substring(firstItemStart)
+    sb = sb + source.substring(firstItemStart, source.length - firstItemStart)
   } else {
     sb = source
   }

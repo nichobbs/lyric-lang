@@ -6554,6 +6554,325 @@ sb.Capacity).  The test is wired into CI.
 
 ---
 
+## D107 — `@externTarget` functions returning `Option[T]` coerce a nullable BCL reference to `None`/`Some` at the call boundary
+
+**Status:** Accepted (Phase 1: MSIL emitter convention shipped; Phase 2:
+stdlib migration + `case null` removal deferred).
+
+**Context.** Many BCL methods return a nullable reference (e.g.
+`System.Environment.GetEnvironmentVariable: string?`,
+`System.Console.ReadLine: string?`, `System.IO.Path.GetDirectoryName:
+string?`). The self-hosted compiler has no `null` literal or nullable-match
+support, and the audited `_kernel/` boundary historically modelled these with a
+`String?` extern return matched by `case null` — a construct the self-hosted
+front-end silently miscompiles (the `case null` arm parses as a catch-all
+binding, so the null test is dropped and e.g. `getVar` always returns the
+no-value branch). The goal is to consume nullable BCL APIs **without** adding a
+`null` literal or nullable type to the language.
+
+**Decision.** When an `@externTarget` function (non-ctor, non-async) declares its
+return type as `Option[T]` with `T` a reference type, the MSIL emitter binds the
+MemberRef to the BCL's real nullable reference return `T` and emits a coercion
+immediately after the call: a null reference becomes `None`, a non-null
+reference becomes `Some(value)`. `Option`/`Some`/`None` are constructed with the
+existing generic-case constructor machinery (`buildGenericCaseCtorTok`), the same
+path `mapGet` uses. This keeps the entire surface above the audited boundary on
+`Option[T]` — matched with ordinary `case None`/`case Some(v)`, which the
+self-hosted compiler fully supports — and needs no `null` in the language.
+
+**Why an emitter convention and not a new builtin.** A typecheck-visible builtin
+(e.g. `isNull`) used by the stdlib breaks the bootstrap: the frozen seed
+compiler (which compiles the stdlib transitively imported by the compiler) does
+not know the new name and rejects it. The `Option[T]` return convention adds no
+new name — the seed typechecks the stdlib signatures unchanged — so the new
+behaviour lives entirely in the self-hosted emitter and is bootstrap-safe.
+
+**Phasing.** Phase 1 (this entry) ships the emitter convention plus a wired
+self-test (`lyric-compiler/lyric/extern_option_self_test.l`); the stdlib is
+unchanged so the current seed keeps building it. Phase 2 — after a release
+carrying this convention becomes the seed — migrates the `_kernel/` nullable
+externs (`environment_host`, `console_host`, `path_host`) to `Option[T]` returns
+and removes the `case null` usages, completing the null-free FFI boundary. JVM
+emitter parity is tracked in #3932 (Phase 1 is MSIL-only).
+
+The convention is matched in the emitter via the codegen's own `MsilType` union
+(an `MVoid` "no coercion" sentinel), **not** a locally-constructed
+`Std.Core.Option`: returning/matching an in-package `Option` from the FFI hot
+path fell through both arms (an in-package Option-identity hazard), corrupting
+the bound return type of every `@externTarget` in the function.
+
+**Related:** docs/14 (native stdlib / extern boundary), docs/42 (metadata
+resolution), docs/01 §11.3 (`@externTarget` reference), D105 (extern
+interfaces), D106 (constructor shorthand).
+
+---
+
+## D108 — `[nuget]` entries are allowed in all manifests; no application-manifest restriction
+
+**Status:** ACCEPTED
+
+**Context.** `docs/38-workspace.md` §8 speculated about prohibiting `[nuget]`
+/ `[platform.dotnet]` entries in application manifests (executables), on the
+theory that all NuGet boundary code should live behind Lyric wrapper libraries.
+Q-W-001 asked how a developer would consume an arbitrary NuGet package that has
+no Lyric wrapper yet, noting that requiring a wrapper adds ceremony.
+
+**Decision.** `[nuget]` (and its future rename `[platform.dotnet]`) is allowed
+in any Lyric manifest — library or application — without restriction.
+Application code that needs an unencapsulated NuGet package declares it in its
+own `[nuget]` table directly. The "prohibit in executables" enforcement,
+`@unsafe_native` escape-hatch design, and the forced `lyric migrate --workspace`
+codemod path (Q-W-004) are all dropped.
+
+**Rationale.**
+- The Lyric ecosystem is early: most NuGet packages do not yet have Lyric
+  wrappers, and blocking application developers from using the underlying
+  packages would make the language impractical.
+- The transitive propagation benefit (docs/38 §4) still applies once wrapper
+  libraries exist — applications that depend on `Lyric.Grpc` do not need to
+  re-declare `Grpc.Net.Client`. The restriction only provided value at the margin
+  of a fully-wrapped ecosystem.
+- The escape-hatch design (`@unsafe_native`) reliably becomes the norm before
+  any enforcement value is realised — the language spec should not encode
+  ecosystem-maturity-dependent enforcement rules.
+
+**Implications.** Q-W-003 (rename `[nuget]` → `[platform.dotnet]`) and Q-W-004
+(migration codemod) are moot given this decision. Q-W-002 (published manifest
+format for transitive NuGet graph reconstruction) remains open and unaffected.
+
+**Related:** docs/38-workspace.md §8, docs/39-package-registry.md §9, D073.
+
+---
+
+## D109 — SDK version check at CLI startup (Q-dist-007)
+
+**Status:** ACCEPTED
+
+**Context.** `docs/22-distribution-and-tooling.md` §5 specifies a
+`Lyric.SdkVersion` embedded resource inside `Lyric.Stdlib.dll` carrying
+`language_version`, `stdlib_version`, `compiler_version`, and `build_date`.
+Q-dist-007 tracked the unimplemented check: at CLI startup, read the version
+resource and warn (or error) when the stdlib DLL was built by a different
+compiler version.
+
+**Decision.** The version check is implemented as `checkSdkVersion()` in
+`lyric-compiler/lyric/cli/cli_shared.l`, called from `cli_main.l` after the
+early-exit flags (`--version`, `--help`, internal flags) and before command
+dispatch.
+
+**Implementation details.**
+- Rather than reading an embedded PE resource (which requires PE parsing), the
+  check reads a companion JSON file `sdk-version.json` placed beside
+  `Lyric.Stdlib.dll` by the build pipeline.  This avoids a dependency on the
+  metadata reader just for the startup check.
+- Format: `{"language_version":"0.1","stdlib_version":"0.1.0","compiler_version":"0.1.0","build_date":"..."}`.
+  Written by `make lyric` (Makefile) immediately after the stage-1 stdlib build.
+- A missing `sdk-version.json` (dev builds, CI environments before the file
+  was introduced) is silently ignored — the check is best-effort and must not
+  break existing workflows.
+- A mismatch prints a warning to stderr: `warning: SDK version mismatch: ...`.
+- `LYRIC_STRICT_SDK_VERSION=1` converts the warning to a hard error (exit 1),
+  for CI environments that want to enforce alignment.
+
+**Relation to `Lyric.SdkVersion` resource.** The embedded-resource form
+described in docs/22 is not yet implemented (requires PE writer involvement in
+the stdlib build).  The `sdk-version.json` side-file is the interim mechanism;
+the embedded resource form can be layered on top later without changing the
+CLI's observable behaviour.
+
+**Related:** docs/22-distribution-and-tooling.md §5, docs/34-distribution-strategy.md §5, D059.
+
+---
+
+## D110 — Isolated per-stage toolchains; stage 2 (true-builds-true) is the ship/test toolchain; reproducibility is a non-blocking diagnostic
+
+**Decision.** The self-hosting build is organised into four stages, each a
+**complete, self-consistent toolchain for ONE compiler generation**, written to
+its own isolated root and never co-mingled with another generation's artefacts:
+
+- **Stage 0** — acquire a *seed* binary (downloaded self-hosted release, or the
+  minted F# bootstrap from git history). Output `.bootstrap/stage0-publish/`.
+- **Stage 1** — the seed compiles the current true-compiler sources into a
+  *runnable* true compiler + the smoke stdlib needed to run it. Output
+  `.bootstrap/stage1/` (flat). Intrinsically **ABI-mixed** (its own runtime
+  stdlib is seed-emitted/non-arity-suffixed while the code it *emits* is
+  arity-suffixed), so it is a **build-only** toolchain, not a ship/test one.
+- **Stage 2** — the stage-1 true compiler rebuilds **itself + the full stdlib**
+  into an isolated, self-consistent root `.bootstrap/stage2/{lib,bin}` via a
+  single `--internal-perpackage-build` over a driver importing `Lyric.Cli` plus
+  every public `Std.*` package. Every compiler and stdlib package is emitted
+  per-package, arity-suffixed, and mutually consistent. **This is the toolchain
+  everything is tested against and that ships.**
+- **Stage 3** — reproducibility fixpoint: stage 2 emits the stdlib bundle and
+  its own closure twice; the images must be byte-identical (`cmp`).
+
+**Runnability-first inversion.** The gating property is "**the true compiler
+builds AND runs everything**", not "two stages are byte-identical". Building the
+stage-2 toolchain is the runnability gate: when the self-hosted emitter has a
+bug, the per-package emit may still succeed but the AOT-linked binary faults at
+startup — that surfaces as a **clean, specific failure** (a real emitter bug to
+fix) instead of being masked by build-system noise. The byte-for-byte
+reproducibility check (Q-dist-001) moves to stage 3 as a **non-blocking
+diagnostic** (`SKIP_VERIFY`-gated), reported but never fatal, and skipped with a
+"pending" note while the stage-2 toolchain is not yet runnable.
+
+**Resolution contract.** A toolchain pins its **own** stdlib: tests/CI set
+`LYRIC_STDLIB_BIN=.bootstrap/stage2/lib` to select the stage-2 generation, with
+no cross-generation fallback. The stage-2 binary's `bin/` co-locates its stdlib
+so it also resolves with zero configuration. This is the target that replaces
+the previous silent-fallback chain and the `userlib/` ABI-sniff / `selfhosted/`
+staging hacks (which existed only because stage 1 mixed a seed-emitted
+non-suffixed stdlib with self-hosted patches — a second ABI that stage 2
+eliminates by construction). Removing those fallbacks from the CLI source
+(`cli_shared.l` / `emitter.l`) is a tracked follow-up.
+
+**Stdlib packaging — single DLL is the target (aligned with distribution).**
+The current self-hosted emitter writes cross-assembly references to stdlib types
+under **per-package assembly names** (`[Lyric.Stdlib.Core]Std.Core.Option`), so
+each `Std.X` must deploy as its own `Lyric.Stdlib.X.dll` for those references to
+resolve at runtime (.NET resolves a TypeRef by `(assembly identity, type
+name)`). That per-package form is a **bootstrap-era artefact**, and it conflicts
+with the distribution strategy (docs/22 §2, docs/34), which mandates a **single
+`Lyric.Stdlib.dll`** in `lib/` carrying every package's `Lyric.Contract.<X>`
+resource — explicitly *replacing* the ~25 per-package DLLs. The decision is to
+**collapse stdlib to that single DLL**: change the emitter's stdlib reference
+convention so stdlib types resolve to the single assembly identity
+`Lyric.Stdlib` (drop the `stdlibAssemblyName → Lyric.Stdlib.<X>` mapping in
+`codegen.l`), after which one `Lyric.Stdlib.dll` satisfies both compile-time
+(the contract resources) and runtime (the type definitions). This does *not*
+make stdlib an inconsistent special case: the compiler's own `Lyric.Lyric.*` /
+`Lyric.Msil.*` packages stay per-package because they are **build intermediates
+AOT-linked into the `lyric` binary**, never distributed, whereas the stdlib is a
+**distributed artefact** user programs link. The emitter reference-convention
+change is a tracked follow-up (it is a `.l` change, verifiable only against a
+runnable self-hosted toolchain or CI's emitter — currently gated by the
+arity-suffix blocker below). Until it lands, `build_stage2` emits the stdlib
+per-package because that is the only form the current emitter references; it
+switches to the single bundle (`lyric.full.toml` `output = "single"`) once the
+convention changes, with no bootstrap-stage changes required.
+
+**Status (2026-06-23).** Implemented in `scripts/bootstrap.sh` (`build_stage2`,
+`stage3`, isolated `.bootstrap/stage2/{lib,bin}`) and `Makefile`
+(`stage2`/`stage3`/`run-stage2`). Verified end-to-end via the minted seed:
+stage 2 emits 123 self-hosted DLLs and the runnability smoke surfaces the real
+blocker non-fatally — `System.TypeLoadException: Could not load type
+'Std.Core.Option' from assembly 'Lyric.Stdlib.Core'` (the docs/43 arity-suffix
+mismatch: consumer references `Option`, producer defines `Option`1` — right
+assembly, wrong type name). The CLI strict-resolution cleanup and the CI
+restructure onto the stage-2 artifact are tracked follow-ups; they require a
+runnable self-hosted toolchain (or CI's emitter) to verify, which the surfaced
+blocker currently gates.
+
+**Related:** docs/41 / docs/43 (arity-suffix self-host gaps), D059, Q-dist-001.
+
+---
+
+## D111 — Single-DLL stdlib emitter collapse implemented; `usesAritySuffix` detection removed
+
+**Decision (implements the D110 follow-up).** The self-hosted MSIL emitter now
+references every `Std.*` type under the **single `Lyric.Stdlib` assembly
+identity** instead of per-package `Lyric.Stdlib.<X>`. `stdlibAssemblyName`
+(`codegen.l`) returns `"Lyric.Stdlib"` for all `Std.*` packages; one deployed
+`Lyric.Stdlib.dll` (the `output = "single"` bundle from `lyric.full.toml`,
+carrying every package) satisfies every stdlib reference at runtime. This is the
+distribution-mandated shape (docs/22 §2, docs/34). Compiler packages
+(`Lyric.<X>`) keep per-package names — they are build intermediates AOT-linked
+into the binary, not distributed.
+
+**`usesAritySuffix` removed.** With stdlib always the single self-hosted-emitted
+bundle, the two-ABI detection that probed the installed `Lyric.Stdlib.Core.dll`
+is vestigial: the emitter unconditionally emits the self-hosted (arity-suffixed)
+convention. Removed `detectStdlibCoreDllUsesAritySuffix`, `findCoreDllPath`,
+`findCoreDllInDir`, `walkUpForCoreDll` (and the `usesAritySuffix` parameter
+threaded through `registerStdlibArtifactTokens` / `registerStdlibTypeItem` /
+`registerStdlibFunc`, including the F#-only `xrefUnitArgsToValueTuple` return
+branch). `coreDllHasAritySuffixTypeDef` / `dllHasNullaryInstanceField` are
+**kept** — they still detect the convention of restored *non-stdlib* artifacts
+(the F#-emitted compiler closure linked by the self-tests in the mint path); they
+become vestigial only when the F# mint seed is retired.
+
+**Bundle completeness.** `lyric.full.toml` was missing three kernel packages the
+compiler uses (`Std.UnicodeHost`, `Std.CollectionsHost`, `Std.VerifierEnvHost`);
+added so the single bundle covers the whole compiler closure. `build_stage2`
+(`bootstrap.sh`) now builds the single bundle into `.bootstrap/stage2/lib`.
+
+**HTTP/async hybrid carve-out (#4030).** The HTTP/async surface — `Std.Http`,
+`Std.HttpServer`, `Std.Rest`, `Std.Task`, `Std.HttpHost` — is **not** in the
+single bundle: the self-hosted emitter cannot yet emit these async-`Task` /
+`Result`-heavy packages into the `output = "single"` assembly (Phase A
+undercounts a cross-package `match await`, and a bundled `HttpServer` emits
+invalid IL). They ship **per-package** (`Lyric.Stdlib.<X>.dll`, deployed by
+`stage-selfhosted-stdlib.sh`), and `stdlibAssemblyName` keeps their references on
+the `Lyric.Stdlib.<X>` identity via a small denylist. They build and run
+correctly per-package (as they did pre-collapse); the cross-package
+`EMatch`-await Phase-A gap was fixed in passing (`collectAwaitTypesExprPB` now
+walks `match`). Re-bundling them is tracked in #4030.
+
+**Keystone effect.** The collapse *also fixes the stage-2 self-hosting startup
+blocker* from D110: the `Std.Core.Option` TypeLoadException was the per-package +
+suffix-detection mismatch. With the collapse, the stage-2 self-hosted binary
+**starts and runs the compile pipeline** (it no longer faults at load). The next
+surfaced blocker is a separate self-hosted **parser** miscompile (`P0040` on
+function bodies) — exactly the deeper bug the runnability-first model is meant to
+expose; tracked separately.
+
+**Verification.** Clean-room verified via the minted seed: a user program now
+references only `[Lyric.Stdlib]`, links the single bundle, and runs correctly;
+the whole compiler still type-checks and the compiler binary starts. The stage-2
+binary builds and starts (the Option blocker is gone); full stage-2 self-hosting
+remains gated by the separate parser bug.
+
+**Related:** D110, docs/22 §2, docs/34, docs/43.
+
+---
+
+## D112 — Self-hosted compiler self-tests link a single `Lyric.Compiler.dll` bundle
+
+**Context.** D111 collapsed the stdlib to one assembly and unblocked stage-2
+startup, surfacing the next blocker it named: the self-hosted-emitted **compiler**
+mis-parses its own input. Root-caused (docs/41 §R7) to the **per-package
+cross-package emission** path: when the self-hosted emitter compiles each compiler
+package into its own `Lyric.<Pkg>.dll` and threads the others as restored deps,
+cross-package type references corrupt across the assembly boundary — a
+self-hosted-emitted `Lyric.Parser` produces per-token `IError` garbage even on
+`package P`. The same closure built as **one assembly** parses correctly
+(in-bundle references are internal, never crossing the boundary).
+
+**Decision.** Compiler self-tests link the self-hosted compiler as a **single
+`Lyric.Compiler.dll` bundle** — the compiler analogue of D111's stdlib bundle.
+
+- **Producer.** `Emitter.emitCompilerBundle(entrySource, outPath, Dotnet)`
+  (`emitter.l`) reuses `loadCompilerPayloads` (multi-file discovery, import-closure
+  filtering, topo-sort) and emits the whole `Lyric.Cli` closure into ONE
+  `output = "single"` assembly named `Lyric.Compiler`. `Std.*` imports resolve
+  from source and are referenced externally as `Lyric.Stdlib`. Driven by the
+  internal CLI flag `--internal-compiler-bundle-build <entry.l> <outPath>`.
+- **Consumer.** `compilerClosureDllPaths` prefers
+  `<libDir>/selfhosted/Lyric.Compiler.dll` when staged, threading it as a
+  **single** restored-dep entry. `loadRestoredPackage` yields one artifact per
+  `Lyric.Contract.<Pkg>` resource in the bundle; `assemblySimpleNameFromDll`
+  derives every `AssemblyRef` from the bundle's file stem (`Lyric.Compiler`), so a
+  self-test resolves a self-consistent compiler from the one file with **no
+  `stdlibAssemblyName` change** for compiler heads.
+- **Staging.** `stage-selfhosted-compiler.sh` builds the bundle via the new flag
+  and deploys `Lyric.Compiler.dll` into each `selfhosted/` dir (replacing the
+  per-package `--internal-perpackage-build` staging).
+
+**Why not fix per-package emission directly.** The single bundle gets the
+self-tests green now (path A); fixing the per-package cross-package corruption
+(path B) is still required for **external dependencies** (genuinely separate
+assemblies) and is tracked separately. `--internal-perpackage-build` is retained
+as the R7 front-end-completeness gate ("Whole compiler self-host-compiles").
+
+**Verification.** Clean-room via the minted seed: the whole compiler builds into
+one 3.6 MB `Lyric.Compiler.dll`; the `parser` self-test (corrupt under
+per-package) passes 67/67 against the bundle, alongside `typechecker` (235),
+`modechecker` (30), `contract_elaborator` (30), and others.
+
+**Related:** D110, D111, docs/41 §R7, docs/43.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

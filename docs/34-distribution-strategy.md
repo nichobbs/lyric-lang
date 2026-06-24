@@ -260,32 +260,61 @@ Releases are published by pushing a version tag (e.g. `git tag v0.1.0 && git pus
 4. **Packages** each binary into a `.tar.gz` (Linux / macOS) or `.zip` (Windows)
    archive named `lyric-<version>-<rid>.<ext>`.
 5. **Uploads** all archives as GitHub Release assets.
-6. **Packs** the NuGet global-tool package with `dotnet pack -p:PackAsTool=true`.
+6. **Packs** the NuGet global-tool package (`lyric`) with `dotnet pack -p:PackAsTool=true`.
 7. **Signs** the `.nupkg` with `dotnet nuget sign` if `NUGET_SIGNING_CERT_BASE64`
    and `NUGET_SIGNING_CERT_PASSWORD` secrets are set.
-8. **Pushes** to NuGet.org using the `NUGET_API_KEY` secret.
+8. **Pushes** to NuGet.org via **NuGet Trusted Publishing** (OIDC): a short-lived
+   API key is obtained by exchanging the GitHub Actions OIDC token with NuGet.org's
+   authentication endpoint — no long-lived `NUGET_API_KEY` secret is required.
+9. **Builds and publishes each ecosystem library** (`lyric-web`, `lyric-auth`,
+   `lyric-cache`, etc.) as an individual NuGet package in topological dependency
+   order, also using NuGet Trusted Publishing.  `lyric build` and `lyric publish`
+   drive the per-library build and pack; `--skip-duplicate` makes the step
+   idempotent on workflow retries.  See `docs/39-package-registry.md` §8 for the
+   full library ordering.
+
+### NuGet Trusted Publishing — one-time setup
+
+NuGet Trusted Publishing replaces the static `NUGET_API_KEY` secret with an
+ephemeral, OIDC-issued key.  Each NuGet package ID that this workflow pushes
+must have a trusted publisher configured on NuGet.org before the first
+automated release:
+
+1. Navigate to the package's page on NuGet.org (sign in as `lyric-lang`).
+2. Go to **Manage package** → **Trusted publishers** → **Add trusted publisher**.
+3. Select **GitHub Actions** and fill in:
+   - **Owner:** `lyric-lang`
+   - **Repository:** `lyric-lang`
+   - **Workflow:** `.github/workflows/publish.yml`
+   - **Environment:** _(leave blank unless the job uses a named environment)_
+4. Save.  Repeat for every package ID the workflow publishes.
+
+For the first-ever publish of a new package ID (NuGet.org requires the package
+to exist before the trusted publisher can be added), publish once manually with
+a personal API key, then configure the trusted publisher, and all subsequent
+releases use the OIDC path.
 
 ### Required repository secrets
 
 | Secret | Purpose |
 |---|---|
-| `NUGET_API_KEY` | NuGet.org API key for `dotnet nuget push` |
-| `NUGET_SIGNING_CERT_BASE64` | Base64-encoded PFX for NuGet package signing |
-| `NUGET_SIGNING_CERT_PASSWORD` | Password for the PFX |
-| `AZURE_KEY_VAULT_URL` | Azure Key Vault URL for Authenticode signing |
-| `AZURE_TENANT_ID` | Azure AD tenant for AzureSignTool |
-| `AZURE_CLIENT_ID` | Service principal client ID |
-| `AZURE_CLIENT_SECRET` | Service principal client secret |
-| `AZURE_CERT_NAME` | Certificate name inside the vault |
-| `APPLE_TEAM_ID` | Apple Developer team ID |
-| `APPLE_ID` | Apple ID email for notarytool |
-| `APPLE_APP_PASSWORD` | App-specific password for notarytool |
-| `APPLE_DEVELOPER_CERT_BASE64` | Base64-encoded Developer ID p12 certificate |
-| `APPLE_DEVELOPER_CERT_PASSWORD` | Password for the p12 |
-| `APPLE_DEVELOPER_ID` | "Developer ID Application: Name (TEAMID)" string |
+| `NUGET_SIGNING_CERT_BASE64` | Base64-encoded PFX for NuGet package signing (optional) |
+| `NUGET_SIGNING_CERT_PASSWORD` | Password for the PFX (optional) |
+| `AZURE_KEY_VAULT_URL` | Azure Key Vault URL for Authenticode signing (optional) |
+| `AZURE_TENANT_ID` | Azure AD tenant for AzureSignTool (optional) |
+| `AZURE_CLIENT_ID` | Service principal client ID (optional) |
+| `AZURE_CLIENT_SECRET` | Service principal client secret (optional) |
+| `AZURE_CERT_NAME` | Certificate name inside the vault (optional) |
+| `APPLE_TEAM_ID` | Apple Developer team ID (optional) |
+| `APPLE_ID` | Apple ID email for notarytool (optional) |
+| `APPLE_APP_PASSWORD` | App-specific password for notarytool (optional) |
+| `APPLE_DEVELOPER_CERT_BASE64` | Base64-encoded Developer ID p12 certificate (optional) |
+| `APPLE_DEVELOPER_CERT_PASSWORD` | Password for the p12 (optional) |
+| `APPLE_DEVELOPER_ID` | "Developer ID Application: Name (TEAMID)" string (optional) |
 
-Signing steps are silently skipped if the corresponding secrets are absent.  A
-release without signing is valid for developer previews; production releases
+`NUGET_API_KEY` is no longer used; NuGet publishing authenticates via OIDC.
+All signing steps are silently skipped if the corresponding secrets are absent.
+A release without signing is valid for developer previews; production releases
 targeted at enterprise deployments should have all secrets configured.
 
 ### Code-signing certificate fingerprint

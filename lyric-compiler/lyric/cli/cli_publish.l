@@ -26,6 +26,7 @@ func cmdPublish(argv: in slice[String]): Int {
   var outputDir: Option[String] = None
   var registryUrl: Option[String] = None
   var apiKey: Option[String] = None
+  var skipDuplicate = false
 
   var i = 1
   while i < argv.length {
@@ -70,6 +71,9 @@ func cmdPublish(argv: in slice[String]): Int {
         printErr("publish: --api-key requires an argument")
         return 1
       }
+    } else if arg == "--skip-duplicate" {
+      skipDuplicate = true
+      i += 1
     } else {
       printErr("publish: unrecognised flag '" + arg + "'")
       i += 1
@@ -248,6 +252,37 @@ func cmdPublish(argv: in slice[String]): Int {
   val nupkgPath = Path.join(outDir, pkg.name + "." + pkg.version + ".nupkg")
   Console.println("publish: packed " + nupkgPath)
 
+  // Sign the .nupkg if LYRIC_NUGET_SIGNING_CERT points at a PFX file.
+  val signingCert = match Environment.getVar("LYRIC_NUGET_SIGNING_CERT") { case Ok(p) -> p; case Err(_) -> "" }
+  if not Str.isEmpty(signingCert) and File.fileExists(signingCert) {
+    val signingPassword = match Environment.getVar("LYRIC_NUGET_SIGNING_CERT_PASSWORD") { case Ok(p) -> p; case Err(_) -> "" }
+    val signingTimestamper = match Environment.getVar("LYRIC_NUGET_SIGNING_TIMESTAMPER") { case Ok(t) -> t; case Err(_) -> "http://timestamp.digicert.com" }
+    val signArgs: List[String] = newList()
+    signArgs.add("nuget")
+    signArgs.add("sign")
+    signArgs.add(nupkgPath)
+    signArgs.add("--certificate-path")
+    signArgs.add(signingCert)
+    if not Str.isEmpty(signingPassword) {
+      signArgs.add("--certificate-password")
+      signArgs.add(signingPassword)
+    }
+    signArgs.add("--timestamper")
+    signArgs.add(signingTimestamper)
+    signArgs.add("--overwrite")
+    val signExit = match Process.run("dotnet", signArgs) {
+      case Ok(code) -> code
+      case Err(e) -> {
+        printErr("publish: dotnet nuget sign failed: " + IOError.message(e))
+        return 1
+      }
+    }
+    if signExit != 0 {
+      return signExit
+    }
+    Console.println("publish: signed " + nupkgPath)
+  }
+
   // Determine push registry and API key.
   val pushRegistry = match registryUrl {
     case Some(url) -> url
@@ -273,6 +308,9 @@ func cmdPublish(argv: in slice[String]): Int {
   pushArgs.add(pushRegistry)
   pushArgs.add("--api-key")
   pushArgs.add(pushKey)
+  if skipDuplicate {
+    pushArgs.add("--skip-duplicate")
+  }
   val pushExit = match Process.run("dotnet", pushArgs) {
     case Ok(code) -> code
     case Err(e) -> {

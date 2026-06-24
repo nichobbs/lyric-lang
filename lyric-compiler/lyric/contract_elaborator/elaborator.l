@@ -96,6 +96,15 @@ func functionIsAxiom(fn: in FunctionDecl): Bool {
   hasSimpleAnnotation("axiom", fn.annotations)
 }
 
+// True when the file carries `@proof_required` (with or without a modifier).
+// In @proof_required files, contract clauses are SMT obligations consumed by
+// `lyric prove` — they must NOT be lowered to runtime assert() calls by the
+// elaborator.  The verifier reads the original clauses directly from
+// fn.contracts, so the SourceFile is returned unchanged.
+func fileIsProofRequired(file: in SourceFile): Bool {
+  hasSimpleAnnotation("proof_required", file.fileAnnotations)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Synthetic-name counter.  The elaborator threads a `RenameCounter`
 //     through each function so generated locals in nested scopes do not
@@ -1630,9 +1639,22 @@ func elaborateItem(it: in Item): Item {
 
 pub func elaborateFile(file: in SourceFile): SourceFile {
   val newItems: List[Item] = newList()
+  val isProofRequired = fileIsProofRequired(file)
   var i = 0
   while i < file.items.count {
-    newItems.add(elaborateItem(file.items[i]))
+    if isProofRequired {
+      // @proof_required files: contract clauses are SMT obligations for `lyric prove`,
+      // not runtime assertions.  Reconstruct Item wrappers without calling
+      // elaborateFunction so no runtime assert() calls are injected.
+      // The verifier reads the original clauses from fn.contracts unchanged.
+      val it = file.items[i]
+      match it.kind {
+        case IFunc(fn) -> newItems.add(Item(docComments = it.docComments, annotations = it.annotations, visibility = it.visibility, kind = IFunc(decl = fn), span = it.span))
+        case _ -> newItems.add(it)
+      }
+    } else {
+      newItems.add(elaborateItem(file.items[i]))
+    }
     i = i + 1
   }
   SourceFile(

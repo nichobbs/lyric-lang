@@ -19,6 +19,42 @@
 #
 # Since scripts/bootstrap.sh now honours $TMPDIR (it mirrors the F# emitter's
 # Path.GetTempPath()), none of these targets need the old `TMPDIR=/tmp` prefix.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# BOOTSTRAP (mint) vs SELF-HOSTED — which compiler am I running?
+# ─────────────────────────────────────────────────────────────────────────────
+# There are THREE compilers in play.  Knowing which one you built is the
+# difference between "this is a real self-hosted bug" and "I'm running the wrong
+# binary".  See docs/10-bootstrap-progress.md §"Bootstrap vs self-hosted" for
+# the full model.  In short:
+#
+#   1. MINT STAGE-0  — the historical F# bootstrap compiler, rebuilt from git
+#      history by scripts/mint-stage0-fsharp.sh.  Its emitter is correct, so
+#      everything it produces is VALID IL.  This is the seed CI uses
+#      (LYRIC_BOOTSTRAP_MINT=1).
+#
+#   2. MINT STAGE-1 (a.k.a. the BOOTSTRAP compiler) — the self-hosted compiler
+#      `.l` sources compiled BY the mint seed.  Valid IL; this is exactly what
+#      CI ships and runs.  Build it with `make mint`.  Use it for all day-to-day
+#      development: it RUNS the self-hosted codegen, so compiling a program with
+#      it exercises the self-hosted emitter on USER code while staying runnable.
+#
+#   3. SELF-HOSTED STAGE-2 — the self-hosted compiler compiled BY ITSELF, built
+#      as an ISOLATED, self-consistent toolchain by `make stage2`
+#      (.bootstrap/stage2/{lib,bin}; no co-mingling with the seed).  This is the
+#      END GOAL and the SHIP/TEST toolchain: run everything against it via
+#      `make run-stage2 ARGS=...` (which pins LYRIC_STDLIB_BIN to its own
+#      stdlib).  It is only runnable once the self-hosted EMITTER produces valid
+#      IL for its own closure; `make stage2` reports the blocker non-fatally
+#      when it does not, and `make ilverify` quantifies it.  Until stage 2 runs,
+#      use the mint toolchain (#2) for day-to-day development.
+#
+# Decision rule when a test/program misbehaves:
+#   * Reproduce with `make mint` (CI-faithful, known-good).  If it still fails,
+#     the bug is real (self-hosted emitter or logic).  `make selfhost-check
+#     FILE=repro.l` classifies it (valid IL + runs vs invalid IL).
+#   * If it only fails with a bare `make lyric` binary, you were running the
+#     not-yet-runnable full self-hosted toolchain — rebuild with `make mint`.
 
 BUILD_CONFIG ?= Release
 # `net10.0` must stay in sync with the TFM in `bootstrap/global.json` and
@@ -28,6 +64,8 @@ BUILD_CONFIG ?= Release
 AOT_BIN := bootstrap/src/Lyric.Cli.Aot/bin/$(BUILD_CONFIG)/net10.0/lyric
 
 .PHONY: help stage1 stage1-fast aot lyric selfhosted-compiler \
+        stage2 stage3 run-stage2 \
+        mint ilverify selfhost-check \
         test test-lexer test-parser test-typechecker test-emitter \
         self-test clean
 
@@ -81,7 +119,11 @@ lyric: aot ## Build the end-to-end `lyric` binary and symlink it to ./bin/lyric
 	@mkdir -p bin
 	@ln -sf "../$(AOT_BIN)" bin/lyric
 	@echo "lyric binary ready: ./bin/lyric -> $(AOT_BIN)"
-	@echo "staging self-hosted-only stdlib packages (#2592: Std.Sort et al.) ..."
+	@echo "writing sdk-version.json to .bootstrap/stage1/ (D109 / Q-dist-007) ..."
+	@printf '{"language_version": "0.1","stdlib_version": "0.1.0","compiler_version": "0.1.0","build_date": "%s"}\n' \
+	    "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+	    > .bootstrap/stage1/sdk-version.json
+	@echo "deploying the single full Lyric.Stdlib.dll bundle (D111) ..."
 	@bash scripts/stage-selfhosted-stdlib.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
 ifeq ($(SKIP_SELFHOSTED_COMPILER),1)
 	@echo "SKIP_SELFHOSTED_COMPILER=1; skipping the self-hosted compiler-DLL staging"
@@ -94,6 +136,60 @@ endif
 # SKIP_SELFHOSTED_COMPILER=1`, or to refresh them without a full rebuild).
 selfhosted-compiler: ## Stage self-hosted compiler DLLs under <libdir>/selfhosted (#3086)
 	@bash scripts/stage-selfhosted-compiler.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
+
+# ── Isolated self-hosted ship/test toolchain (stage 2) ──────────────────────
+# Stage 2 is the SHIP/TEST toolchain: the stage-1 true compiler rebuilds itself
+# and the full stdlib into an isolated, self-consistent root
+# (.bootstrap/stage2/{lib,bin}) with NO co-mingling of the seed's artefacts.
+# Everything (compiler self-tests, stdlib, ecosystem, user code) should be run
+# against THIS toolchain, pinned via `LYRIC_STDLIB_BIN=.bootstrap/stage2/lib`.
+# Building it is the runnability gate: a self-hosted emitter bug surfaces here
+# as a clean, specific failure rather than as build-system noise.  Requires a
+# stage-1 build first (`make stage1` or `make mint`).
+stage2: ## Build the isolated self-hosted ship/test toolchain (.bootstrap/stage2)
+	./scripts/bootstrap.sh --stage 2
+	@echo "stage-2 toolchain: .bootstrap/stage2/bin/lyric"
+	@echo "run things against it with: LYRIC_STDLIB_BIN=$$PWD/.bootstrap/stage2/lib .bootstrap/stage2/bin/lyric ..."
+
+stage3: ## Run the reproducibility-fixpoint diagnostic over stage 2 (non-blocking)
+	./scripts/bootstrap.sh --stage 3
+
+# Convenience: run an arbitrary `lyric` invocation against the stage-2 toolchain
+# with the stdlib pinned.  Usage: make run-stage2 ARGS="test path/to/foo.l"
+run-stage2: ## Run the stage-2 toolchain with stdlib pinned, e.g. ARGS="--version"
+	@test -x .bootstrap/stage2/bin/lyric || { echo "no stage-2 toolchain; run 'make stage2' first"; exit 2; }
+	LYRIC_STDLIB_BIN="$$PWD/.bootstrap/stage2/lib" .bootstrap/stage2/bin/lyric $(ARGS)
+
+# ── Bootstrap (mint) toolchain + self-hosted-emitter diagnostics ────────────
+# The CI-faithful, known-good dev toolchain.  Builds mint stage-1 (F#-emitted,
+# valid IL — what CI ships) and the AOT entry point on top of it, then stages
+# the runtime stdlib.  Use this for day-to-day development and for reproducing
+# failures: if a program/test fails here, the bug is real.  Contrast with a
+# bare `make lyric`, which builds the not-yet-runnable full self-hosted stage-1.
+mint: ## Build the CI-faithful mint (bootstrap) toolchain -> ./bin/lyric (valid IL)
+	LYRIC_BOOTSTRAP_MINT=1 ./scripts/bootstrap.sh --stage 1
+	@touch .bootstrap/stage1.stamp
+	dotnet build bootstrap/src/Lyric.Cli.Aot --configuration $(BUILD_CONFIG) --no-incremental
+	@mkdir -p bin
+	@ln -sf "../$(AOT_BIN)" bin/lyric
+	@echo "mint (bootstrap) lyric ready: ./bin/lyric -> $(AOT_BIN)  [valid IL, CI-faithful]"
+	@bash scripts/stage-selfhosted-stdlib.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
+
+# Measure self-hosted-EMITTER IL validity: emit the whole compiler closure with
+# the self-hosted emitter (the AOT binary routes --target dotnet through
+# Msil.Bridge) and run `ilverify` over every emitted DLL.  0 errors is the gate
+# for the full self-hosted toolchain (item 3 above) being runnable.  Requires a
+# built binary — run `make mint` (or `make lyric`) first.
+ilverify: ## Run the self-hosted-emitter IL-validity gate (scripts/ilverify-selfhosted.sh)
+	bash scripts/ilverify-selfhosted.sh "$(AOT_BIN)"
+
+# Classify a single repro: is a misbehaving construct a REAL self-hosted-emitter
+# bug, or an environment artifact?  Compiles FILE with the mint (bootstrap)
+# toolchain — which runs the self-hosted codegen — then runs it and ilverifies
+# the emitted DLL, printing a verdict.  Usage: make selfhost-check FILE=repro.l
+selfhost-check: ## Classify a repro: real self-hosted bug vs artifact (FILE=repro.l)
+	@if [ -z "$(FILE)" ]; then echo "usage: make selfhost-check FILE=path/to/repro.l"; exit 2; fi
+	bash scripts/selfhost-check.sh "$(FILE)"
 
 # ── F# test suites (Expecto console apps) ───────────────────────────────────
 

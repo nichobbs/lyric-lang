@@ -118,12 +118,9 @@ pub func dominanceTransitive(a: in Role, b: in Role, c: in Role): Bool
   ensures: result == true
   ensures: dominates(a, c)
 {
-  assert
-  roleLevel(a) >= roleLevel(b)
-  assert
-  roleLevel(b) >= roleLevel(c)
-  assert
-  roleLevel(a) >= roleLevel(c)
+  assert(roleLevel(a) >= roleLevel(b))
+  assert(roleLevel(b) >= roleLevel(c))
+  assert(roleLevel(a) >= roleLevel(c))
   return true
 }
 
@@ -149,7 +146,7 @@ pub func adminHoldsAll(perm: in Permission): Bool
   ensures: result == true
   ensures: hasPermission(Role.Admin, perm)
 {
-  return true
+  return hasPermission(Role.Admin, perm)
 }
 
 /// Prove that a Guest can never manage users or administer the system.

@@ -136,6 +136,12 @@ func usageText(): String {
     "                (removes a dependency from [dependencies] (or [nuget]) and restores)\n" +
     "  lyric publish [--manifest <lyric.toml>] [--dll <path>] [-o <dir>] [--registry <url>] [--api-key <key>]\n" +
     "  lyric search  <term>\n" +
+    "  lyric version [--manifest <lyric.toml>]\n" +
+    "                (print the current package version)\n" +
+    "  lyric version --set <semver> [--manifest <lyric.toml>]\n" +
+    "                (update [package].version in lyric.toml)\n" +
+    "  lyric version --workspace [--set <semver>]\n" +
+    "                (print or update versions for all workspace members; warns on misalignment)\n" +
     "\n" +
     "Dev loop:\n" +
     "  lyric run     [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm] [--watch] [-- <args>...]\n" +
@@ -178,6 +184,51 @@ func usageText(): String {
 
 func printUsage(): Unit {
   printErr(usageText())
+}
+
+// Read the sdk-version.json side-file from beside Lyric.Stdlib.dll and check
+// that its compiler_version matches this binary's VERSION().  Missing file is
+// silently ignored (dev builds and environments without a published SDK do not
+// carry the file).  Returns 0 on match or absent file; returns 1 when
+// LYRIC_STRICT_SDK_VERSION=1 and a mismatch is detected.
+func checkSdkVersion(): Int {
+  val libDir = findCompiledLibDir()
+  if libDir.length == 0 {
+    return 0
+  }
+  val sdkVersionPath = Path.join(libDir, "sdk-version.json")
+  if not File.fileExists(sdkVersionPath) {
+    return 0
+  }
+  val text = match File.readText(sdkVersionPath) {
+    case Err(_) -> return 0
+    case Ok(t) -> t
+  }
+  // Minimal extraction: find "compiler_version": "X.Y.Z" in the JSON blob.
+  val key = "\"compiler_version\": \""
+  val keyPos = text.indexOf(key)
+  if keyPos < 0 {
+    return 0
+  }
+  val valueStart = keyPos + key.length
+  val closeQuote = text.indexOf("\"", valueStart)
+  if closeQuote < 0 {
+    return 0
+  }
+  val sdkVer = text.substring(valueStart, closeQuote - valueStart)
+  if sdkVer == VERSION() {
+    return 0
+  }
+  printErr(
+    "warning: SDK version mismatch: compiler is " + VERSION() +
+      " but Lyric.Stdlib.dll was built with compiler " + sdkVer + "."
+  )
+  printErr("  Hint: run 'lyric restore' or reinstall the Lyric SDK to align versions.")
+  if Environment.getVarOrDefault("LYRIC_STRICT_SDK_VERSION", "") == "1" {
+    printErr("error: aborting due to LYRIC_STRICT_SDK_VERSION=1")
+    return 1
+  }
+  0
 }
 
 // Resolve the manifest a manifest-consuming command should use: an explicit
@@ -362,15 +413,23 @@ func walkUpForCompiledStdlib(start: in String, rel: in String): String {
 // `lyric-stdlib/bin`).  This replaces the previous reliance on the per-PID
 // `/tmp/lyric-stdlib-*` recompile byproduct for runtime co-location.  First
 // hit wins:
-//   1. $LYRIC_STDLIB_BIN          — explicit override
+//   1. $LYRIC_STDLIB_BIN          — explicit override (used as-is; dir or .dll)
 //   2. <appBaseDir>               — DLLs ship beside the binary
 //   3. <appBaseDir>/lib           — installed SDK layout
 //   4. walk up (appBase, cwd) for .bootstrap/stage1   — dev bootstrap output
 //   5. walk up (appBase, cwd) for lyric-stdlib/bin     — dev manifest build
-// Returns "" when no candidate holds `Lyric.Stdlib.dll`.
+// When $LYRIC_STDLIB_BIN is set it is returned unconditionally; otherwise
+// returns "" when no candidate holds `Lyric.Stdlib.dll`.
 func findCompiledLibDir(): String {
   val env = Environment.getVarOrDefault("LYRIC_STDLIB_BIN", "")
-  if dirHasCompiledStdlib(env) {
+  if env.length > 0 {
+    // Explicit override wins over all discovery and may name a directory or a
+    // specific DLL (gating on the bundled `Lyric.Stdlib.dll` wrongly skipped
+    // per-package self-builds, which emit only the split assemblies).  A `.dll`
+    // path resolves to its containing directory whether or not it exists yet.
+    if Str.endsWith(env, ".dll") {
+      return Path.dirname(env)
+    }
     return env
   }
   val appBase = Environment.appBaseDirectory()
@@ -419,14 +478,74 @@ func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
     return
   }
   val destDir = Path.dirname(outPath)
+  // ALL compiled output (user programs, test programs, woven code) is emitted by
+  // the self-hosted codegen with arity-suffixed generic type references
+  // (`Option`1`, `Result_Ok`1`).  A mint-bootstrapped toolchain's own runtime
+  // stdlib (the `Lyric.Stdlib.*.dll` beside the compiler) is built by the
+  // non-suffixing stage-0 emitter, so linking it for output faults at load with
+  // `Could not load type 'Std.Core.Option`1'`.  When a self-hosted-emitted
+  // (suffixed) stdlib is staged under `<srcDir>/userlib/`, link THAT for output
+  // so the suffixed references resolve; the compiler keeps its own non-suffixed
+  // stdlib in its process's appBase, untouched.  A fully self-hosted toolchain
+  // has no `userlib/` (its own stdlib is already suffixed) and falls back to
+  // `srcDir`.
+  //
+  // Output that links compiler packages (a `@test_module` importing
+  // `Lyric.Weaver` etc.) must link the SELF-HOSTED (suffixed) compiler DLLs from
+  // `<libdir>/selfhosted/` — not the mint stage-1 bundle — so they too match the
+  // suffixed `userlib` Core; that staging is the toolchain build's job
+  // (`stage-selfhosted-compiler.sh`), not this co-location step.
+  val userlib = Path.join(srcDir, "userlib")
+  val userlibActive = File.fileExists(Path.join(userlib, "Lyric.Stdlib.Core.dll"))
+  // Copy Lyric.Stdlib.*.dll from srcDir first (the base set — may include modules
+  // the compiler closure doesn't import, e.g. Lyric.Stdlib.Sort.dll).  Then, when
+  // userlib/ is active, overlay it: copying from userlib/ overwrites srcDir copies
+  // for modules present in both, so the arity-suffixed self-hosted versions win.
+  // This union strategy ensures every stdlib module available in the toolchain dir
+  // is co-located beside the output, regardless of which subset the userlib/ staging
+  // driver imported.
   match File.listFiles(srcDir) {
     case Err(_) -> ()
     case Ok(fs) -> {
       for f in fs.toArray() {
         val base = Path.basename(f)
-        val wanted = (Str.startsWith(base, "Lyric.Stdlib") and Str.endsWith(base, ".dll")) or base == "FSharp.Core.dll" or
-          base == "Lyric.Emitter.dll"
-        if wanted {
+        if Str.startsWith(base, "Lyric.Stdlib") and Str.endsWith(base, ".dll") {
+          val dest = Path.join(destDir, base)
+          match File.readBytes(f) {
+            case Ok(bs) -> {
+              val _ = File.writeBytes(dest, bs)
+            }
+            case Err(_) -> ()
+          }
+        }
+      }
+    }
+  }
+  if userlibActive {
+    match File.listFiles(userlib) {
+      case Err(_) -> ()
+      case Ok(fs) -> {
+        for f in fs.toArray() {
+          val base = Path.basename(f)
+          if Str.startsWith(base, "Lyric.Stdlib") and Str.endsWith(base, ".dll") {
+            val dest = Path.join(destDir, base)
+            match File.readBytes(f) {
+              case Ok(bs) -> {
+                val _ = File.writeBytes(dest, bs)
+              }
+              case Err(_) -> ()
+            }
+          }
+        }
+      }
+    }
+  }
+  match File.listFiles(srcDir) {
+    case Err(_) -> ()
+    case Ok(fs) -> {
+      for f in fs.toArray() {
+        val base = Path.basename(f)
+        if base == "FSharp.Core.dll" or base == "Lyric.Emitter.dll" {
           val dest = Path.join(destDir, base)
           match File.readBytes(f) {
             case Ok(bs) -> {

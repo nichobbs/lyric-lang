@@ -106,7 +106,7 @@ pub func substring(s: in String, start: in Int): String
   requires: start >= 0
   requires: start <= s.length
 {
-  return s.substring(start)
+  return s.substring(start, s.length - start)
 }
 
 // Return the substring bounded by start and character count.
@@ -161,11 +161,32 @@ pub func replace(s: in String, oldValue: in String, newValue: in String): String
 }
 
 // Split a string on a separator, returning a slice of the parts.
-// Maps to String.Split(string?) — available in .NET 5+.
+// Pure-Lyric implementation using indexOf/substring; avoids per-backend BCL
+// String.Split intrinsics so the self-hosted compiler emits identical code on
+// MSIL and JVM.  Matches .NET semantics: an empty separator yields the whole
+// string unchanged; adjacent separators produce empty parts.
 @pure
 @stable(since = "1.0")
 pub func split(s: in String, separator: in String): slice[String] {
-  s.split(separator)
+  val parts: List[String] = newList()
+  if separator.length == 0 {
+    parts.add(s)
+    return parts.toArray()
+  }
+  var rest = s
+  var more = true
+  while more {
+    val i = rest.indexOf(separator)
+    if i < 0 {
+      parts.add(rest)
+      more = false
+    } else {
+      parts.add(rest.substring(0, i))
+      val nextStart = i + separator.length
+      rest = rest.substring(nextStart, rest.length - nextStart)
+    }
+  }
+  parts.toArray()
 }
 
 // Join a slice of strings with a separator.

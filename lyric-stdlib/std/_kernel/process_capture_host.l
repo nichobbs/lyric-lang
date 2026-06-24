@@ -21,34 +21,47 @@ extern type ProcWriter = "System.IO.StreamWriter"
 
 extern type ProcReader = "System.IO.StreamReader"
 
-// Task<string> — used to start concurrent async pipe drains before waiting
-// for the child process to exit, preventing the pipe-buffer-full deadlock
-// that sequential synchronous reads would cause when the child writes more
-// than the OS pipe buffer (typically 64 KB) to one stream.
-extern type TaskStr = "System.Threading.Tasks.Task`1[System.String]"
+// Non-generic Task (base class) — returned by Stream.CopyToAsync(Stream).
+// Using the non-generic base avoids the Task<T> invariant-generic TypeSpec
+// issue that arose with the retired Task<string> / ReadToEndAsync approach.
+extern type Task = "System.Threading.Tasks.Task"
+
+// System.IO.Stream — the type of StreamReader.BaseStream, and the target
+// type for CopyToAsync.
+extern type Stream = "System.IO.Stream"
+
+// MemoryStream used as an in-memory accumulator for each pipe drain.
+extern type MemStream = "System.IO.MemoryStream"
 
 // ── ProcessStartInfo setup ─────────────────────────────────────────────────
 @externTarget("System.Diagnostics.ProcessStartInfo..ctor")
 func newPsi(): Psi = ()
 
+@externInstance
 @externTarget("System.Diagnostics.ProcessStartInfo.set_FileName")
 func psiFileName(psi: in Psi, v: in String): Unit = ()
 
+@externInstance
 @externTarget("System.Diagnostics.ProcessStartInfo.set_Arguments")
 func psiArguments(psi: in Psi, v: in String): Unit = ()
 
+@externInstance
 @externTarget("System.Diagnostics.ProcessStartInfo.set_RedirectStandardInput")
 func psiRedirectInput(psi: in Psi, v: in Bool): Unit = ()
 
+@externInstance
 @externTarget("System.Diagnostics.ProcessStartInfo.set_RedirectStandardOutput")
 func psiRedirectOutput(psi: in Psi, v: in Bool): Unit = ()
 
+@externInstance
 @externTarget("System.Diagnostics.ProcessStartInfo.set_RedirectStandardError")
 func psiRedirectError(psi: in Psi, v: in Bool): Unit = ()
 
+@externInstance
 @externTarget("System.Diagnostics.ProcessStartInfo.set_UseShellExecute")
 func psiUseShell(psi: in Psi, v: in Bool): Unit = ()
 
+@externInstance
 @externTarget("System.Diagnostics.ProcessStartInfo.set_CreateNoWindow")
 func psiNoWindow(psi: in Psi, v: in Bool): Unit = ()
 
@@ -59,53 +72,93 @@ func psiNoWindow(psi: in Psi, v: in Bool): Unit = ()
 @externTarget("System.Diagnostics.Process.Start")
 func procStart(psi: in Psi): Proc = ()
 
-@externTarget("System.Diagnostics.Process.StandardInput")
+@externInstance
+@externTarget("System.Diagnostics.Process.get_StandardInput")
 func procStdinWriter(p: in Proc): ProcWriter = ()
 
-@externTarget("System.Diagnostics.Process.StandardOutput")
+@externInstance
+@externTarget("System.Diagnostics.Process.get_StandardOutput")
 func procStdoutReader(p: in Proc): ProcReader = ()
 
-@externTarget("System.Diagnostics.Process.StandardError")
+@externInstance
+@externTarget("System.Diagnostics.Process.get_StandardError")
 func procStderrReader(p: in Proc): ProcReader = ()
 
 // Returns true when the process exited within `ms` milliseconds, false on
 // timeout.  .NET 5+ overload; we target .NET 10 so this is always available.
+@externInstance
 @externTarget("System.Diagnostics.Process.WaitForExit")
 func procWaitMs(p: in Proc, ms: in Int): Bool = ()
 
+@externInstance
 @externTarget("System.Diagnostics.Process.Kill")
 func procKillTree(p: in Proc, entireProcessTree: in Bool): Unit = ()
 
-@externTarget("System.Diagnostics.Process.ExitCode")
+@externInstance
+@externTarget("System.Diagnostics.Process.get_ExitCode")
 func procExitCode(p: in Proc): Int = ()
 
 // ── Stdin write ────────────────────────────────────────────────────────────
+@externInstance
 @externTarget("System.IO.StreamWriter.Write")
 func writerWrite(w: in ProcWriter, s: in String): Unit = ()
 
+@externInstance
 @externTarget("System.IO.StreamWriter.Close")
 func writerClose(w: in ProcWriter): Unit = ()
 
-// ── Async pipe drain ───────────────────────────────────────────────────────
-// Starts a background read to end-of-stream.  Calling this WITHOUT `await`
-// returns the underlying Task<string> immediately; the read runs on the
-// thread pool so both stdout and stderr can drain concurrently.
-@externTarget("System.IO.TextReader.ReadToEndAsync")
-func startReadAll(r: in ProcReader): TaskStr = ()
+// ── Async pipe drain (MemoryStream-based) ─────────────────────────────────
+// Instead of ReadToEndAsync() → Task<string> (which hits invariant-generic
+// cast issues with the current TypeSpec builder), we drain each pipe's
+// underlying Stream into a MemoryStream via CopyToAsync() → Task (non-
+// generic base class).  Both drains start concurrently before WaitForExit,
+// preventing the pipe-buffer-full deadlock (#3029).
 
-// Blocks the calling thread until the Task<string> completes and returns its
-// result.  Only called after the child has exited (or been killed), so the
-// task completes immediately in practice.
-@externTarget("System.Threading.Tasks.Task`1[System.String].Result")
-func taskStrResult(t: in TaskStr): String = ()
+// The underlying raw Stream from a StreamReader — the drain target for
+// CopyToAsync so we bypass the generic Task<string> problem.
+@externInstance
+@externTarget("System.IO.StreamReader.get_BaseStream")
+func readerBaseStream(r: in ProcReader): Stream = ()
 
-// Blocks the calling thread for up to `milliseconds`.  Returns true if the
-// task completed within the timeout, false if the timeout elapsed first.
-// Used to cap pipe-drain collection after a process kill so a slow kernel
-// reap or a race between kill and child writes cannot hang the caller
-// indefinitely (#3029).
+// Create a fresh MemoryStream accumulator.
+@externTarget("System.IO.MemoryStream..ctor")
+func newMemStream(): MemStream = ()
+
+// Drain `src` into `dst` asynchronously and return a non-generic Task.
+// `dst` is declared as MemStream (not Stream) so the F# stage-0 bootstrap
+// type-checker accepts call sites that pass MemStream values.  The self-hosted
+// auto-FFI resolver uses scoreSigTypeLenient to match STNamed(MemStream) against
+// BCL's Stream parameter and emits the correct MemberRef for
+// Stream.CopyToAsync(Stream destination) at compile time.
+@externInstance
+@externTarget("System.IO.Stream.CopyToAsync")
+func streamCopyTo(src: in Stream, dst: in MemStream): Task = ()
+
+// Block for up to `ms` milliseconds until the drain Task completes.
+// Returns true on completion, false on timeout.
+@externInstance
 @externTarget("System.Threading.Tasks.Task.Wait")
-func taskWaitMs(t: in TaskStr, milliseconds: in Int): Bool = ()
+func drainWaitMs(t: in Task, ms: in Int): Bool = ()
+
+// Seek the MemStream back to the start so the StreamReader sees the full
+// content.  Position is Int64 (Long); pass 0i64.
+@externInstance
+@externTarget("System.IO.Stream.set_Position")
+func memStreamResetPos(ms: in MemStream, pos: in Long): Unit = ()
+
+// Wrap a MemStream in a new StreamReader for decoding.  Reuses the ProcReader
+// extern type (same CLR type).  `s` is declared as MemStream (not Stream) so
+// the F# stage-0 bootstrap type-checker accepts call sites passing MemStream
+// values.  scoreSigTypeLenient resolves the correct BCL StreamReader(Stream)
+// MemberRef at compile time via the self-hosted auto-FFI path.
+@externTarget("System.IO.StreamReader..ctor")
+func newProcReaderFrom(s: in MemStream): ProcReader = ()
+
+// Synchronously read all remaining content from a StreamReader.  Safe here
+// because all content is already buffered in the MemStream.
+@externInstance
+@externTarget("System.IO.TextReader.ReadToEnd")
+func readAllSync(r: in ProcReader): String = ()
 
 // ── Public result record ───────────────────────────────────────────────────
 // Replaces the former opaque `extern type ProcessCaptureResult =
@@ -157,8 +210,10 @@ func runImpl(exe: in String, args: in String, stdinContent: in String, timeoutMs
   // Both tasks start immediately on the thread pool, preventing the
   // deadlock where a child that writes > 64 KB to one pipe blocks
   // waiting for the reader while the parent is blocked on WaitForExit.
-  val stdoutTask = startReadAll(procStdoutReader(proc))
-  val stderrTask = startReadAll(procStderrReader(proc))
+  val stdoutBuf = newMemStream()
+  val stderrBuf = newMemStream()
+  val stdoutTask = streamCopyTo(readerBaseStream(procStdoutReader(proc)), stdoutBuf)
+  val stderrTask = streamCopyTo(readerBaseStream(procStderrReader(proc)), stderrBuf)
 
   // Wait for the child to finish (or for the timeout to expire).
   val exited = procWaitMs(proc, timeoutMs)
@@ -171,35 +226,27 @@ func runImpl(exe: in String, args: in String, stdinContent: in String, timeoutMs
     }
   }
 
-  // Collect task results.  The child has either exited or been killed, so
-  // both pipe write-ends are closed and the tasks normally complete immediately.
-  // When the child was killed, apply a 5-second fallback timeout per task so
+  // Collect drain results with a 5-second fallback timeout per task so
   // a slow kernel reap or a race between kill and child writes cannot block
-  // the calling thread indefinitely (#3029 — mirrors the F# original's
-  // `task.Wait(5000)` guard).
+  // the calling thread indefinitely (#3029).  After the task completes,
+  // reset the MemStream position and wrap in a StreamReader to decode.
   val drainTimeoutMs = 5000
   val stdout = try {
-    if timedOut {
-      if taskWaitMs(stdoutTask, drainTimeoutMs) {
-        taskStrResult(stdoutTask)
-      } else {
-        ""
-      }
+    if drainWaitMs(stdoutTask, drainTimeoutMs) {
+      memStreamResetPos(stdoutBuf, 0i64)
+      readAllSync(newProcReaderFrom(stdoutBuf))
     } else {
-      taskStrResult(stdoutTask)
+      ""
     }
   } catch Bug as _ {
     ""
   }
   val stderr = try {
-    if timedOut {
-      if taskWaitMs(stderrTask, drainTimeoutMs) {
-        taskStrResult(stderrTask)
-      } else {
-        ""
-      }
+    if drainWaitMs(stderrTask, drainTimeoutMs) {
+      memStreamResetPos(stderrBuf, 0i64)
+      readAllSync(newProcReaderFrom(stderrBuf))
     } else {
-      taskStrResult(stderrTask)
+      ""
     }
   } catch Bug as _ {
     ""

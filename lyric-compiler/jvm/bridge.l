@@ -7,6 +7,7 @@ package Jvm.Bridge
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Std.Console as Console
 import Lyric.Lexer
 import Lyric.Parser
@@ -781,10 +782,7 @@ func collectFuncCallKeys(decl: in FunctionDecl, registry: in Map[String, JvmFunc
 // the form `TypeName.method` (e.g. `Point.equals`, `Color.show`), which always
 // contain a dot.  Bare names (e.g. `classify`, `main`) are not derive-free.
 func isDeriveFreeName(name: in String): Bool {
-  match lastIndexOf(name, ".") {
-    case Some(_) -> true
-    case None -> false
-  }
+  Str.contains(name, ".")
 }
 
 // Register IFunc items whose name contains a "." — the `TypeName.method` form
@@ -836,10 +834,7 @@ func collectDeriveFreeSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]
 // `<name>__aspect_<AspectName>` (the outermost wrapper keeps the original
 // name).  All carry the `__aspect_` infix; the original name does not.
 func isAspectWovenName(name: in String): Bool {
-  match lastIndexOf(name, "__aspect_") {
-    case Some(_) -> true
-    case None -> false
-  }
+  Str.contains(name, "__aspect_")
 }
 
 // Register the sigs of aspect-weave-synthesised functions (`__aspect_target`

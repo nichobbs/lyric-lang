@@ -679,6 +679,20 @@ func w8(buf: in ByteWriter, v: in Long): Unit {
   bufI8Le(buf, v)
 }
 
+// Emit a heap index (#Strings / #GUID / #Blob reference): 4 bytes when the
+// corresponding heap uses wide (4-byte) indices per the heapSizes flags, else
+// 2 bytes.  ECMA-335 §II.24.2.6: a heap index is 4 bytes when that heap's data
+// exceeds 0xFFFF bytes.  Without this, large assemblies (e.g. per-package
+// compiler DLLs whose #Strings heap exceeds 64 KB) silently truncate every
+// heap offset to 2 bytes, aliasing type/member names to garbage.
+func wHeap(buf: in ByteWriter, v: in Int, wide: in Bool): Unit {
+  if wide {
+    w4(buf, v)
+  } else {
+    w2(buf, v)
+  }
+}
+
 // Write the #~ stream body for `t` into `buf`.
 // `heapSizes` is a 3-bit flags byte:
 //   bit 0: Strings heap uses 4-byte indices (set if > 0xFFFF bytes)
@@ -692,6 +706,15 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   bufU1(buf, 0)      // minor version
   bufU1(buf, heapSizes)
   bufU1(buf, 1)      // reserved (bit 1 always set)
+
+  // Heap-index widths derived from the heapSizes flags byte (bit 0 = #Strings,
+  // bit 1 = #GUID, bit 2 = #Blob).  Heap-reference columns below are written
+  // through `wHeap` with these widths; simple/coded table indices stay 2 bytes
+  // (their width depends on target table row counts, not heap byte sizes, and
+  // per-package DLLs stay well under 64 K rows per table).
+  val wideStr: Bool = (heapSizes % 2) == 1
+  val wideGuid: Bool = ((heapSizes / 2) % 2) == 1
+  val wideBlob: Bool = ((heapSizes / 4) % 2) == 1
 
   // Valid bitmask
   var valid: Long = 0i64
@@ -816,24 +839,21 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   }
 
   // Row data — each table in table-number order.
-  // Row wire format: all heap indices (Strings, GUID, Blob) and simple table
-  // indices are written as 2 bytes.  The `heapSizes` byte is written into the
-  // stream header above so the CLR knows the intended index widths, but the
-  // row data always uses 2-byte indices here.  This is valid as long as no
-  // individual heap exceeds 65535 bytes (heapSizes=0 is the only supported
-  // value for the current self-hosted emitter).  Assemblies with heaps ≥ 64 KB
-  // would require 4-byte indices and a heapSizes != 0 header — that path is not
-  // yet implemented; all heap-index writes below must be widened when needed.
+  // Row wire format: heap indices (#Strings, #GUID, #Blob) are written through
+  // `wHeap` at the width the `heapSizes` header declares (2 bytes by default,
+  // 4 bytes for any heap exceeding 65535 bytes).  Simple/coded table indices
+  // stay 2 bytes — their width tracks target table row counts, which stay below
+  // 64 K for the per-package DLLs this emitter produces.
 
   // Module rows (table 0x00)
   var mi = 0
   while mi < t.modules.count {
     val r = t.modules[mi]
     w2(buf, r.generation)
-    w2(buf, r.name)
-    w2(buf, r.mvid)
-    w2(buf, r.encId)
-    w2(buf, r.encBaseId)
+    wHeap(buf, r.name, wideStr)
+    wHeap(buf, r.mvid, wideGuid)
+    wHeap(buf, r.encId, wideGuid)
+    wHeap(buf, r.encBaseId, wideGuid)
     mi = mi + 1
   }
 
@@ -842,8 +862,8 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   while tri < t.typeRefs.count {
     val r = t.typeRefs[tri]
     w2(buf, r.resolutionScope)
-    w2(buf, r.typeName)
-    w2(buf, r.typeNamespace)
+    wHeap(buf, r.typeName, wideStr)
+    wHeap(buf, r.typeNamespace, wideStr)
     tri = tri + 1
   }
 
@@ -852,8 +872,8 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   while tdi < t.typeDefs.count {
     val r = t.typeDefs[tdi]
     w4(buf, r.flags)
-    w2(buf, r.typeName)
-    w2(buf, r.typeNamespace)
+    wHeap(buf, r.typeName, wideStr)
+    wHeap(buf, r.typeNamespace, wideStr)
     w2(buf, r.extends)
     w2(buf, r.fieldList)
     w2(buf, r.methodList)
@@ -865,8 +885,8 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   while fi < t.fields.count {
     val r = t.fields[fi]
     w2(buf, r.flags)
-    w2(buf, r.name)
-    w2(buf, r.signature)
+    wHeap(buf, r.name, wideStr)
+    wHeap(buf, r.signature, wideBlob)
     fi = fi + 1
   }
 
@@ -877,8 +897,8 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     w4(buf, r.rva)
     w2(buf, r.implFlags)
     w2(buf, r.flags)
-    w2(buf, r.name)
-    w2(buf, r.signature)
+    wHeap(buf, r.name, wideStr)
+    wHeap(buf, r.signature, wideBlob)
     w2(buf, r.paramList)
     mdi = mdi + 1
   }
@@ -889,7 +909,7 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     val r = t.params_[pi]
     w2(buf, r.flags)
     w2(buf, r.sequence)
-    w2(buf, r.name)
+    wHeap(buf, r.name, wideStr)
     pi = pi + 1
   }
 
@@ -907,8 +927,8 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   while mri < t.memberRefs.count {
     val r = t.memberRefs[mri]
     w2(buf, r.class)
-    w2(buf, r.name)
-    w2(buf, r.signature)
+    wHeap(buf, r.name, wideStr)
+    wHeap(buf, r.signature, wideBlob)
     mri = mri + 1
   }
 
@@ -919,7 +939,7 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     bufU1(buf, r.type_)
     bufU1(buf, 0)           // padding byte (always 0)
     w2(buf, r.parent)
-    w2(buf, r.value)
+    wHeap(buf, r.value, wideBlob)
     coni = coni + 1
   }
 
@@ -929,7 +949,7 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     val r = t.customAttrs[cai]
     w2(buf, r.parent)
     w2(buf, r.type_)
-    w2(buf, r.value)
+    wHeap(buf, r.value, wideBlob)
     cai = cai + 1
   }
 
@@ -937,7 +957,7 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   var ssi = 0
   while ssi < t.standAloneSigs.count {
     val r = t.standAloneSigs[ssi]
-    w2(buf, r.signature)
+    wHeap(buf, r.signature, wideBlob)
     ssi = ssi + 1
   }
 
@@ -955,7 +975,7 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   var tsi = 0
   while tsi < t.typeSpecs.count {
     val r = t.typeSpecs[tsi]
-    w2(buf, r.signature)
+    wHeap(buf, r.signature, wideBlob)
     tsi = tsi + 1
   }
 
@@ -969,9 +989,9 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     w2(buf, r.buildNumber)
     w2(buf, r.revisionNumber)
     w4(buf, r.flags)
-    w2(buf, r.publicKey)
-    w2(buf, r.name)
-    w2(buf, r.culture)
+    wHeap(buf, r.publicKey, wideBlob)
+    wHeap(buf, r.name, wideStr)
+    wHeap(buf, r.culture, wideStr)
     ai = ai + 1
   }
 
@@ -984,10 +1004,10 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     w2(buf, r.buildNumber)
     w2(buf, r.revisionNumber)
     w4(buf, r.flags)
-    w2(buf, r.publicKeyToken)
-    w2(buf, r.name)
-    w2(buf, r.culture)
-    w2(buf, r.hashValue)
+    wHeap(buf, r.publicKeyToken, wideBlob)
+    wHeap(buf, r.name, wideStr)
+    wHeap(buf, r.culture, wideStr)
+    wHeap(buf, r.hashValue, wideBlob)
     ari = ari + 1
   }
 
@@ -1003,7 +1023,7 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     val r = t.manifestResources[mri]
     w4(buf, r.offset)
     w4(buf, r.flags)
-    w2(buf, r.name)
+    wHeap(buf, r.name, wideStr)
     w2(buf, r.implementation)
     mri = mri + 1
   }
@@ -1037,7 +1057,7 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     w2(buf, r.number)
     w2(buf, r.flags)
     w2(buf, r.owner)
-    w2(buf, r.name)
+    wHeap(buf, r.name, wideStr)
     gpi = gpi + 1
   }
 
@@ -1047,7 +1067,7 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   while msi < t.methodSpecs.count {
     val r = t.methodSpecs[msi]
     w2(buf, r.method)
-    w2(buf, r.instantiation)
+    wHeap(buf, r.instantiation, wideBlob)
     msi = msi + 1
   }
 }

@@ -303,7 +303,35 @@ pub func loadClass(ctx: in AutoFfiCtx, javaFqn: in String): Option[ClassInfo] {
     mi = mi + 1
   }
 
-  val loaded = loadClassInfo(ctx, javaFqn)
+  var currentFqn = javaFqn
+  var loaded: Option[ClassInfo] = None
+  var done = false
+
+  while not done {
+    loaded = loadClassInfo(ctx, currentFqn)
+    match loaded {
+      case Some(_) -> {
+        done = true
+      }
+      case None -> {
+        // Try replacing the last dot with '$'
+        var lastDotIdx = -1
+        var idx = 0
+        while idx < currentFqn.length {
+          if currentFqn.substring(idx, 1) == "." {
+            lastDotIdx = idx
+          }
+          idx = idx + 1
+        }
+        if lastDotIdx >= 0 {
+          currentFqn = currentFqn.substring(0, lastDotIdx) + "$" + currentFqn.substring(lastDotIdx + 1, currentFqn.length - lastDotIdx - 1)
+        } else {
+          done = true
+        }
+      }
+    }
+  }
+
   // Pass `ci` as a direct function argument from the match arm expression
   // (not inside a block body) so stage-0 lowers the binding correctly.
   match loaded {

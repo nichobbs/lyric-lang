@@ -794,6 +794,7 @@ lyric init demo --name Demo --force    # override the package name; overwrite an
 
 # Project-aware defaults
 lyric                                  # build the current project (discovers nearest lyric.toml)
+lyric version                          # print package name and version from nearest lyric.toml and exit 0
 lyric --help                           # grouped command list (also -h / help); exits 0
                                        # build / restore / run / fmt / lint / prove / doc / test /
                                        # bench all discover the nearest lyric.toml by walking up
@@ -975,6 +976,7 @@ lyric public-api-diff <old.dll> <new.dll>  # diff pub surfaces; exits 0 (compati
 | `LYRIC_CLI_DLL` | unset | When the CLI is running as a `dotnet exec <dll>` invocation rather than an AppHost-native binary, the DLL path.  `Program.fs` populates from `Assembly.GetEntryAssembly`; the AOT trampoline does NOT (#1082).  Required (and must be exported by the caller) when invoking the AOT binary for any command that hits the subprocess fallback. |
 | `LYRIC_FORCE_SUBPROCESS` | `0` | When set to `1`, every `lyric build` runs through the subprocess shellout to `lyric --internal-build` even for `--target dotnet`.  Default is the in-process MSIL emit path that lands `Msil.Bridge.compileToMsil` directly without spawning a subprocess.  Used by the bootstrap reproducibility pipeline to compare in-process vs subprocess output during the Track A migration (`docs/41 §860`). |
 | `LYRIC_STD_PATH` | unset | Override the stdlib source root (`lyric-stdlib/std/`) used by the F# emitter's package-import resolver.  Mainly useful when running stage-1 / stage-2 bootstrap builds out of a non-standard layout. |
+| `LYRIC_STDLIB_BIN` | unset | Override which **compiled** stdlib assemblies a build links against (the `Lyric.Stdlib.*.dll` runtime DLLs co-located beside the output by `lyric build`/`run`/`test`).  When set it takes precedence over all auto-discovery (app-base dir, `lib/`, walked-up `.bootstrap/stage1`).  Accepts either a **directory** containing the split per-package DLLs, or a path to a **specific `.dll`** (its containing directory is used) — so you can build several stdlib variants and link a chosen one explicitly.  Unlike auto-discovery, it does not require the bundled `Lyric.Stdlib.dll` to be present (a per-package self-build emits only the split assemblies). |
 
 ---
 

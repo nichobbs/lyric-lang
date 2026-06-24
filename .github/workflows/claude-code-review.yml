@@ -84,7 +84,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
@@ -109,7 +109,7 @@ jobs:
       - name: Run Claude Code Review (Sonnet)
         id: claude-review
         continue-on-error: true
-        uses: anthropics/claude-code-action@v1.0.148
+        uses: anthropics/claude-code-action@v1.0.153
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: ${{ env.REVIEW_PROMPT }}
@@ -122,7 +122,7 @@ jobs:
       - name: Run Claude Code Review (Haiku fallback)
         id: claude-review-haiku
         if: steps.claude-review.outcome == 'failure'
-        uses: anthropics/claude-code-action@v1.0.148
+        uses: anthropics/claude-code-action@v1.0.153
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: ${{ env.REVIEW_PROMPT }}

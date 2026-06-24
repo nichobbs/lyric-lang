@@ -1992,15 +1992,37 @@ func parseExternTypeBody(st: inout ParseState): ExternTypeDecl {
       val tok = advance(st)
       NameAndSpan(name = s, span = tok.span)
     }
+    case TIdent(_) -> {
+      val path = parseModulePath(st)
+      NameAndSpan(name = modulePathJoin(path.segments), span = path.span)
+    }
     case _ -> {
-      emitErr(st, "P0274", "expected a string literal naming the CLR type (e.g. \"System.DateTime\")", peekSpan(st))
+      emitErr(st, "P0274", "expected a type path or a string literal naming the host type (e.g. \"System.DateTime\")", peekSpan(st))
       NameAndSpan(name = "<error>", span = peekSpan(st))
     }
+  }
+  var hasBacktick = false
+  var sIdx = 0
+  while sIdx < clrNameResult.name.length {
+    if clrNameResult.name.substring(sIdx, 1) == "`" {
+      hasBacktick = true
+    }
+    sIdx = sIdx + 1
+  }
+  val finalClrName = match generics {
+    case Some(gps) -> {
+      if gps.params.count > 0 and not hasBacktick {
+        clrNameResult.name + "`" + toString(gps.params.count)
+      } else {
+        clrNameResult.name
+      }
+    }
+    case None -> clrNameResult.name
   }
   ExternTypeDecl(
     name = ns.name,
     generics = generics,
-    clrName = clrNameResult.name,
+    clrName = finalClrName,
     span = joinSpans(startTok.span, clrNameResult.span)
   )
 }

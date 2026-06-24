@@ -1,24 +1,27 @@
 #!/usr/bin/env bash
-# stage-selfhosted-compiler.sh — stage the self-hosted-emitted per-package
-# compiler DLLs under <lib-dir>/selfhosted so native `lyric test` links them
-# as restored deps instead of the F#-emitted stage-1 bundle DLLs (#3086).
+# stage-selfhosted-compiler.sh — stage the self-hosted-emitted compiler as a
+# SINGLE `Lyric.Compiler.dll` bundle under <lib-dir>/selfhosted so native
+# `lyric test` links it as one restored dep (D111).
 #
-# Why this exists: the stage-1 compiler DLLs beside the AOT binary are emitted
-# by the F# stage-0 `--internal-build`, whose contract-metadata writer has no
-# `IVal` arm — module-level `pub val` constants (e.g. `Msil.Tables`' MDA_* /
-# TDF_* flag values) are silently absent from the embedded `Lyric.Contract`
-# resource.  A `@test_module` that links such a package as a restored dep then
-# fails with T0020 "unknown name".  The self-hosted contract writer emits the
-# vals, so `Emitter.compilerClosureDllPaths` prefers a complete self-hosted
-# closure under `<lib-dir>/selfhosted/` when one is staged.
+# Why a single bundle (not per-package): the self-hosted emitter's per-package
+# cross-package emission is not execution-clean (docs/41 §R7) — types defined in
+# one compiler package and referenced from another corrupt across the assembly
+# boundary, so a self-hosted-emitted parser mis-parses even `package P`.
+# Bundling the whole `Lyric.Cli` import closure into ONE assembly makes every
+# cross-package reference in-bundle (internal), sidestepping the corruption.
+# The bundle also carries each package's `pub val` constants in its
+# `Lyric.Contract.<Pkg>` metadata (the original #3086 reason this staging
+# exists — the retired F# writer dropped them).
 #
-# The staged set is the whole `Lyric.Cli` import closure — every Lyric.* /
-# Msil.* / Jvm.* compiler package plus the stdlib packages they pull in —
-# produced by one `--internal-perpackage-build` run (the same emit CI's
-# "Whole compiler self-host-compiles" gate validates).  Staging into a
-# dedicated `selfhosted/` subdirectory deliberately leaves the F#-emitted
-# DLLs beside the AOT binary untouched: those remain the toolchain's own
-# runtime until the self-hosted-built-toolchain switch (docs/23).
+# `loadRestoredPackage` yields one artifact per `Lyric.Contract.<Pkg>` resource
+# from the single DLL, and `assemblySimpleNameFromDll` derives every AssemblyRef
+# from the bundle's file stem (`Lyric.Compiler`), so a consumer self-test
+# resolves a self-consistent compiler from the one file.
+# `Emitter.compilerClosureDllPaths` prefers `<lib-dir>/selfhosted/Lyric.Compiler.dll`
+# when present.
+#
+# Staging into a dedicated `selfhosted/` subdirectory deliberately leaves the
+# stage-1 DLLs beside the AOT binary untouched (the toolchain's own runtime).
 #
 # Usage: stage-selfhosted-compiler.sh <lyric-binary> <lib-dir> [<lib-dir> ...]
 set -euo pipefail
@@ -36,36 +39,48 @@ trap 'rm -rf "$emit_dir"' EXIT
 
 driver="$emit_dir/driver.l"
 cat > "$driver" <<'EOF'
-// Auto-generated driver for the self-hosted compiler-DLL staging step.
-// Importing Lyric.Cli makes emitPerPackageClosure discover and emit the
-// whole compiler-package closure (plus its stdlib import closure).
+// Auto-generated driver for the self-hosted compiler-bundle staging step.
+// Importing Lyric.Cli makes emitCompilerBundle discover and emit the whole
+// compiler-package closure as one Lyric.Compiler.dll (Std.* referenced
+// externally as Lyric.Stdlib).
 package SelfHostedCompilerStage
 import Lyric.Cli
 func main(): Unit { }
 EOF
 
-out="$emit_dir/out"
-if ! "$LYRIC_BIN" --internal-perpackage-build "$driver" "$out" 2>&1; then
-  echo "stage-selfhosted-compiler: --internal-perpackage-build failed (see above)." >&2
+bundle="$emit_dir/Lyric.Compiler.dll"
+if ! "$LYRIC_BIN" --internal-compiler-bundle-build "$driver" "$bundle" 2>&1; then
+  echo "stage-selfhosted-compiler: --internal-compiler-bundle-build failed (see above)." >&2
+  exit 1
+fi
+if [[ ! -f "$bundle" ]]; then
+  echo "stage-selfhosted-compiler: Lyric.Compiler.dll not produced" >&2
   exit 1
 fi
 
-# Sanity: the closure must include the CLI itself and both backends.
-for dll in Lyric.Lyric.Cli.dll Lyric.Msil.Codegen.dll Lyric.Jvm.Codegen.dll; do
-  if [[ ! -f "$out/$dll" ]]; then
-    echo "stage-selfhosted-compiler: expected $dll missing from the emit output" >&2
+# Content check (#4043): the old per-package staging asserted the CLI and both
+# backends emitted as their own DLLs.  The single bundle has no per-package
+# files, so verify instead that it carries the embedded `Lyric.Contract.<Pkg>`
+# metadata resource for each — a dropped import path (e.g. a missing JVM-backend
+# edge) would otherwise yield a bundle that links but silently lacks a backend.
+for pkg in Lyric.Cli Msil.Codegen Jvm.Codegen; do
+  # `grep -c` (not `grep -q`) reads all of `strings`' output: `grep -q` exits on
+  # the first match and SIGPIPEs `strings`, which under `set -o pipefail` fails
+  # the pipeline even though the resource is present.
+  found="$(strings -n 8 "$bundle" | grep -cF "Lyric.Contract.$pkg" || true)"
+  if [[ "$found" -eq 0 ]]; then
+    echo "stage-selfhosted-compiler: bundle is missing the Lyric.Contract.$pkg resource (malformed emit?)" >&2
     exit 1
   fi
 done
 
 staged=0
+stdlib_staged=0
 for dir in "${LIB_DIRS[@]}"; do
   [[ -d "$dir" ]] || continue
   mkdir -p "$dir/selfhosted"
-  for dll in "$out"/*.dll; do
-    cp -f "$dll" "$dir/selfhosted/"
-    staged=$((staged + 1))
-  done
+  cp -f "$bundle" "$dir/selfhosted/"
+  staged=$((staged + 1))
 done
 
-echo "stage-selfhosted-compiler: staged $staged DLL(s) into ${#LIB_DIRS[@]} selfhosted dir(s)"
+echo "stage-selfhosted-compiler: staged Lyric.Compiler.dll into $staged selfhosted dir(s)"

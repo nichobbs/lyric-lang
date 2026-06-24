@@ -165,9 +165,11 @@ extern type MemStream = "System.IO.MemoryStream"
 func newMemStream(): MemStream = ()
 
 @externTarget("System.IO.Stream.WriteByte")
+@externInstance
 func memStreamWriteByte(s: in MemStream, b: in Byte): Unit = ()
 
 @externTarget("System.IO.MemoryStream.ToArray")
+@externInstance
 func memStreamToArray(s: in MemStream): slice[Byte] = ()
 
 /// Append an 8-byte big-endian long (class-file CONSTANT_Long/Double values).

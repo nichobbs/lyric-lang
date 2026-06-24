@@ -30,6 +30,7 @@ import Msil.Lowering
 import Msil.Codegen
 import Msil.Tables
 import Msil.Heaps
+import Msil.MetadataReader as Mdr
 
 /// Compile `source` to a .NET PE DLL at `outputPath` using the self-hosted
 /// MSIL pipeline.
@@ -181,6 +182,8 @@ pub func compileToMsilWithVersion(
   // in `compileProjectToMsilWithRestoredAndVersion` for the full
   // rationale (mirrors the F# emitter's `resolveStdlibImports` +
   // `emitAssembly` import-table population).
+  // Stdlib is always the self-hosted single `Lyric.Stdlib` bundle (D111), so the
+  // arity-suffix convention is fixed — no probe of the installed DLL is needed.
   registerStdlibArtifactTokens(cctx, stdlibPkgs)
   seedResultTypeRefs(cctx)
 
@@ -251,6 +254,7 @@ record ParsedUserPkg {
   name: String
   file: SourceFile
 }
+
 
 /// Compile a list of packages into ONE bundled .NET PE DLL using the
 /// self-hosted MSIL pipeline (#1183, Phase 1 — independent-package bundle).
@@ -649,6 +653,8 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // (the F# emitter handles that), but the guard makes the bridge
   // robust to a future refactor that routes stdlib compilation
   // through the in-process path.
+  // Stdlib is always the self-hosted single `Lyric.Stdlib` bundle (D111): the
+  // arity-suffix convention is fixed, so no installed-DLL probe is needed.
   registerStdlibArtifactTokens(cctx, filterStdlibPkgsByBundle(stdlibPkgs, perPkgNames))
   seedResultTypeRefs(cctx)
   // Seed cross-package symbol tables with the restored artifacts' type
@@ -816,7 +822,7 @@ pub func compileProjectToMsilEncoded(
       return false
     }
     val name = line.substring(0, tabPos)
-    val src = line.substring(tabPos + 1)
+    val src = line.substring(tabPos + 1, line.length - tabPos - 1)
     packages.add(ProjectPackagePayload(name = name, source = src))
     i = i + 1
   }
@@ -855,7 +861,7 @@ pub func compileProjectToMsilWithRestoredEncoded(
       return false
     }
     val name = line.substring(0, tabPos)
-    val src = line.substring(tabPos + 1)
+    val src = line.substring(tabPos + 1, line.length - tabPos - 1)
     packages.add(ProjectPackagePayload(name = name, source = src))
     i = i + 1
   }

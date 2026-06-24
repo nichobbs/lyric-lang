@@ -33,6 +33,17 @@ extern type Typ = "System.Type"
 
 extern type Obj = "System.Object"
 
+// Unquoted dotted path declarations
+extern type UnquotedMath = System.Math
+extern type UnquotedPath = System.IO.Path
+extern type UnquotedObjectEnumerator = System.Text.Json.JsonElement.ObjectEnumerator
+
+test "UnquotedMath and UnquotedPath resolve and compile correctly" {
+  assertEqualInt(UnquotedMath.Max(20, 50), 50, "UnquotedMath.Max(20,50)")
+  assertEqual(UnquotedPath.GetFileName("/tmp/unquoted.txt"), "unquoted.txt", "UnquotedPath.GetFileName")
+}
+
+
 test "Math.Max binds the int overload" {
   assertEqualInt(Math.Max(2, 5), 5, "Max(2,5)")
   assertEqualInt(Math.Max(10, 3), 10, "Max(10,3)")

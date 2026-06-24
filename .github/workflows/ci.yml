@@ -25,7 +25,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
           filter: blob:none
@@ -115,7 +115,7 @@ jobs:
 
       - name: Set up Java 21 (for JVM emitter tests — class files target major version 65)
         if: steps.changes.outputs.has_code_changes == 'true'
-        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654  # v5.2.0
+        uses: actions/setup-java@ad2b38190b15e4d6bdf0c97fb4fca8412226d287  # v5.3.0
         with:
           distribution: temurin
           java-version: '21'
@@ -133,14 +133,24 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
 
-      - name: Bootstrap stage 1 (download released binary → self-hosted packages)
+      - name: Bootstrap stage 1 (mint clean stage-0 from F# history → self-hosted packages)
         if: steps.changes.outputs.has_code_changes == 'true'
         # Stage 1 is required: the AOT smoke test, ecosystem tests, and
         # the cli.l re-parse guarantee all depend on the stage-1 bundle.
-        # The bootstrap script downloads the latest released binary by default
-        # (via BOOTSTRAP_FROM_RELEASE=1) to use as stage-0, eliminating the need
-        # to build the F# compiler. This significantly speeds up CI.
+        #
+        # The currently-published release stage-0 binary is regressed (>64 KB
+        # string-heap truncation + missing generic-case arity suffix), so it
+        # emits a corrupt Lyric.Lyric.Cli.dll and the AOT entry-point cannot
+        # resolve Lyric.Cli.Program.  Until a fixed binary ships, mint a clean
+        # stage-0 from the historical F# bootstrap compiler (the current
+        # self-hosted emitter source is bug-free; the mint bakes it into a
+        # working binary).  Requires full git history (checkout fetch-depth: 0,
+        # set above) to reach the F# commit.  Remove LYRIC_BOOTSTRAP_MINT once a
+        # fixed self-hosted binary is released.
         working-directory: ${{ github.workspace }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LYRIC_BOOTSTRAP_MINT: '1'
         run: ./scripts/bootstrap.sh --stage 1
 
       # Track A A1.4 (#860) deleted the F# user-facing CLI; the AOT
@@ -173,6 +183,10 @@ jobs:
           # run time.  Runs once after the AOT build; later steps in this job
           # reuse the populated lib dir.
           bash scripts/stage-selfhosted-stdlib.sh "$lyric_bin" "$(dirname "$lyric_bin")" .bootstrap/stage1
+          # Post-collapse (D111) every Std.* reference resolves to the single
+          # Lyric.Stdlib bundle deployed above, so the per-package userlib/ stdlib
+          # staging is no longer needed (and would shadow the bundle via
+          # copyRuntimeDepsBeside) — removed.
           for ex in examples/*.l; do
             # `@proof_required` files are verifier-only — they have no
             # `func main` so `lyric build` doesn't apply.  The AOT
@@ -189,6 +203,11 @@ jobs:
             out="/tmp/$(basename "$ex" .l).dll"
             "$lyric_bin" build "$ex" -o "$out" --force
           done
+
+      # NOTE: the self-hosted-emitter IL-validity check (`ilverify`) is NOT run
+      # here.  It lives in the standalone, non-required `ilverify-informational`
+      # job below — keeping a non-enforcing measurement out of the required build
+      # job (#3956).  Developers run it on demand via `make ilverify`.
 
       # Run/test single-file examples to catch runtime regressions.
       - name: Run single-file examples
@@ -255,7 +274,7 @@ jobs:
           for ex in rbac ledger jobqueue product-catalog; do
             echo "=== test examples/$ex ==="
             "$lyric_bin" test --manifest "examples/$ex/lyric.toml" > /tmp/"$ex".test.log 2>&1 \
-              && echo "PASS" || { echo "FAIL"; tail -30 /tmp/"$ex".test.log; exit 1; }
+              && echo "PASS" || { echo "FAIL"; cat /tmp/"$ex".test.log; exit 1; }
           done
 
       # Prove proof-only examples.
@@ -285,11 +304,21 @@ jobs:
         if: steps.changes.outputs.has_code_changes == 'true'
         run: bash scripts/check_assembly_refs.sh .bootstrap/stage1
 
-      # Ecosystem security regression tests — exercises lyric-auth (#315, #360)
-      # and lyric-session (#316) through the multi-package test runner added in
-      # #465.  Skipped silently if the stage-1 bundle or AOT binary is absent
-      # (mirrors the AOT smoke step above).  Fails CI when tests are present
-      # and actually fail, so security regressions are caught on every push.
+      # Stage the self-hosted compiler as a single Lyric.Compiler.dll bundle for
+      # the downstream compiler-self-tests-* jobs.  Each @test_module links the
+      # bundle as one restored dep, so its Lyric.* imports resolve inside ONE
+      # assembly — sidestepping the per-package cross-package emission corruption
+      # (docs/41 §R7) that mis-parses even `package P`.  The bundle also carries
+      # each package's `pub val` constants (the original #3086 reason for staging).
+      - name: Stage self-hosted compiler bundle
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          bin_dir="$(dirname "$lyric_bin")"
+          bash scripts/stage-selfhosted-compiler.sh "$lyric_bin" "$bin_dir" .bootstrap/stage1
+
       - name: Upload build artifacts
         if: steps.changes.outputs.has_code_changes == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -299,6 +328,44 @@ jobs:
             .bootstrap/stage1
             bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}
           retention-days: 1
+
+  # Self-hosted-emitter IL-validity measurement (#3943).  This is INTENTIONALLY
+  # a standalone, NON-REQUIRED job: it is not in `build-and-test`'s `needs`, so
+  # it never gates auto-merge.  It emits the whole Lyric.Cli closure with the
+  # self-hosted emitter and runs `ilverify` over every DLL, catching
+  # self-hosted-emitter IL bugs the F# mint build cannot (union match-arm type
+  # tracking, value-erased-to-object, list element-type confusion).  It is
+  # expected RED while the #3943 backlog clears (no `continue-on-error` masking
+  # — the check honestly reflects the count); when it reaches 0 it can be
+  # promoted into the required suite as a hard gate.  Developers run the same
+  # check locally via `make ilverify`.  Kept out of the required `build` job so
+  # a non-enforcing measurement never pollutes the gating CI suite (#3956).
+  ilverify-informational:
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: read
+    if: needs.build.outputs.has_code_changes == 'true'
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
+        with:
+          global-json-file: bootstrap/global.json
+      - name: Download build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: build-artifacts
+      - name: Restore executable permissions
+        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+      - name: ilverify self-hosted emitter IL (#3943 backlog tracking)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          bash scripts/ilverify-selfhosted.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
 
   # Placeholder job retained for workflow structure. The F# test suites
   # (Lexer, Parser, TypeChecker, Emitter, CLI) were deleted when the F#
@@ -312,7 +379,7 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
           filter: blob:none
@@ -321,7 +388,7 @@ jobs:
         with:
           global-json-file: bootstrap/global.json
       - name: Set up Java 21 (for JVM emitter tests — class files target major version 65)
-        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654  # v5.2.0
+        uses: actions/setup-java@ad2b38190b15e4d6bdf0c97fb4fca8412226d287  # v5.3.0
         with:
           distribution: temurin
           java-version: '21'
@@ -342,7 +409,7 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
           filter: blob:none
@@ -706,6 +773,21 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/auto_ffi_self_test.l
+
+      - name: Extern Option[T] null-coercion self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping extern-option self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping extern-option self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/extern_option_self_test.l
 
       - name: FFI interface impl self-test (D105, native lyric test)
         working-directory: ${{ github.workspace }}
@@ -1379,7 +1461,7 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
           filter: blob:none
@@ -1985,7 +2067,7 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
           filter: blob:none
@@ -2220,7 +2302,7 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
           filter: blob:none
@@ -2229,7 +2311,7 @@ jobs:
         with:
           global-json-file: bootstrap/global.json
       - name: Set up Java 21 (for JVM emitter tests)
-        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654  # v5.2.0
+        uses: actions/setup-java@ad2b38190b15e4d6bdf0c97fb4fca8412226d287  # v5.3.0
         with:
           distribution: temurin
           java-version: '21'
@@ -2819,7 +2901,7 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
           filter: blob:none
@@ -3002,7 +3084,7 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
           filter: blob:none
@@ -3202,7 +3284,7 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
           filter: blob:none
@@ -3217,7 +3299,7 @@ jobs:
       - name: Restore executable permissions
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
 
-      - name: Per-package stdlib emit (#2592 self-hosted Std.Sort)
+      - name: Single-bundle stdlib (self-hosted Std.Sort)
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -3227,12 +3309,7 @@ jobs:
             exit 1
           fi
           work="$(mktemp -d)"
-          cat > "$work/driver.l" <<'LYR'
-          package SortDriver
-          import Std.Core
-          import Std.Sort
-          func main(): Unit { }
-          LYR
+          mkdir -p "$work/out"
           cat > "$work/prog.l" <<'LYR'
           package SortProg
           import Std.Core
@@ -3247,13 +3324,15 @@ jobs:
             }
           }
           LYR
-          "$lyric_bin" --internal-perpackage-build "$work/driver.l" "$work/out"
-          for dll in Lyric.Stdlib.Core.dll Lyric.Stdlib.Sort.dll Lyric.Stdlib.Collections.dll; do
-            if [ ! -f "$work/out/$dll" ]; then
-              echo "::error::per-package emit did not produce $dll"
-              exit 1
-            fi
-          done
+          # Post-collapse (D111): stdlib is the single Lyric.Stdlib.dll bundle, so a
+          # program importing Std.Sort links that one assembly — not a per-package
+          # Lyric.Stdlib.Sort.dll.  Build the bundle beside the program and run it.
+          "$lyric_bin" build --manifest lyric-stdlib/lyric.full.toml \
+            -o "$work/out/Lyric.Stdlib.dll" --target dotnet --no-restore
+          if [ ! -f "$work/out/Lyric.Stdlib.dll" ]; then
+            echo "::error::single stdlib bundle not produced"
+            exit 1
+          fi
           "$lyric_bin" build "$work/prog.l" -o "$work/out/prog.dll"
           got="$(cd "$work/out" && dotnet prog.dll | tr '\n' ' ' | sed 's/ *$//')"
           echo "sort output: '$got'"
@@ -3261,7 +3340,7 @@ jobs:
             echo "::error::self-hosted Std.Sort returned '$got', expected '1 2 3 4 5'"
             exit 1
           fi
-          echo "self-hosted per-package Std.Sort returns sorted output"
+          echo "self-hosted Std.Sort returns sorted output (single bundle)"
 
       # Cross-package compile-time constant inlining (#2592 slice 1).  A
       # module-level `pub val` / `pub const` with an integer-literal
@@ -3331,34 +3410,21 @@ jobs:
           fi
           echo "cross-package pub val inlines through restored-dep contract metadata"
 
-      # Per-package compiler emit (#2592 slice 2).  emitPerPackageClosure now
-      # emits the COMPILER-package closure (Lyric.* / Msil.* / Jvm.*) — not just
-      # the stdlib — as separate Lyric.<Pkg>.dll assemblies, threading each
-      # package's transitive compiler-import closure (already emitted) as
-      # restored deps, so cross-package types AND inlined constants (#2592
-      # slice 1) resolve across the assembly boundary.  This emits the
-      # typechecker self-test's compiler closure (Lexer + Parser + TypeChecker)
-      # and asserts the per-package DLLs exist, then runs the self-test against
-      # the emit output as a TRIPWIRE (not a pass gate).  Before #3199 this
-      # step claimed to execute the self-hosted-emitted DLLs but never did:
-      # findCompiledLibDir gates the LYRIC_STDLIB_BIN override through
-      # dirHasCompiledStdlib, which requires the *bundle* Lyric.Stdlib.dll as a
-      # marker that --internal-perpackage-build does not emit, so the override
-      # was silently rejected and the F#-linked path was validated instead.
-      # The bundle is now copied in so the override is honored — but executing
-      # the self-hosted-emitted closure currently fails on a known
-      # producer/consumer naming gap: the per-package emitter DEFINES generic
-      # stdlib types arity-suffixed (`Option`1`, the docs/43 correctness fix)
-      # while consumer references are emitted UNSUFFIXED to match the F#-built
-      # DLLs they normally link, so the run dies with "Could not load type
-      # 'Std.Core.Option'" (further execution-cleanliness gaps are tracked in
-      # docs/41 R7).  The exact failure signature varies by environment (the
-      # type-load error locally; per-test failures on CI runners), so the
-      # tripwire pins only the PASS direction: a PASS means either the
-      # override silently fell back to the F#-linked path again
-      # (dirHasCompiledStdlib regression) or the naming gap was fixed — in the
-      # latter case promote this to a positive pass gate.  Any failure is the
-      # known-gap state; its tail is printed for visibility.
+      # Per-package compiler emit (#2592 slice 2, #3199 positive pass gate).
+      # emitPerPackageClosure emits the COMPILER-package closure (Lyric.* /
+      # Msil.* / Jvm.*) as separate Lyric.<Pkg>.dll assemblies, threading each
+      # package's transitive compiler-import closure as restored deps, so
+      # cross-package types AND inlined constants (#2592 slice 1) resolve
+      # across the assembly boundary.  This emits the typechecker self-test's
+      # compiler closure (Lexer + Parser + TypeChecker) and asserts the
+      # per-package DLLs exist, then runs the self-test against the emit
+      # output as a POSITIVE PASS GATE.  The former docs/43 producer/consumer
+      # naming gap (per-package emitter defined generic stdlib types
+      # arity-suffixed while consumer TypeRefs were emitted unsuffixed) is
+      # fixed by the always-emit-arity-TypeRefs change (#3199): both producer
+      # and consumer now use the suffixed form consistently.  The bundle marker
+      # `Lyric.Stdlib.dll` is copied in so `findCompiledLibDir` honors the
+      # LYRIC_STDLIB_BIN override through `dirHasCompiledStdlib`.
       - name: Per-package compiler emit (#2592 self-hosted compiler DLLs)
         working-directory: ${{ github.workspace }}
         run: |
@@ -3383,11 +3449,11 @@ jobs:
           rc=0
           out="$(LYRIC_STDLIB_BIN="$work/out" "$lyric_bin" test "$st" --target dotnet 2>&1)" || rc=$?
           printf '%s\n' "$out" | tail -20
-          if [ "$rc" -eq 0 ]; then
-            echo "::error::typechecker self-test PASSED against the per-package emit output. Either LYRIC_STDLIB_BIN silently fell back to the F#-linked path (dirHasCompiledStdlib regression) or the docs/43 naming gap is fixed — if the latter, promote this tripwire to a positive pass gate (#3199)."
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::typechecker self-test FAILED against per-package emit output (docs/43 naming gap re-opened, or LYRIC_STDLIB_BIN silently fell back to the F#-linked path)"
             exit 1
           fi
-          echo "per-package compiler closure emits and links; LYRIC_STDLIB_BIN honored; execution still blocked by the known docs/43 producer/consumer gap (tripwire, #3199)"
+          echo "per-package compiler closure emits and runs correctly (docs/43 naming gap fixed, positive pass gate #3199)"
 
       # Full self-hosted stdlib (#2592 slice 3).  Every Std.* package — including
       # ones the F# stage-0 emitter cannot compile (e.g. Std.Sort, whose
@@ -3410,16 +3476,22 @@ jobs:
           fi
           work="$(mktemp -d)"
           trap 'rm -rf "$work"' EXIT
-          mods="$(grep -rhoE '^package Std\.[A-Za-z.]+' lyric-stdlib/std/*.l | sed 's/^package //' | sort -u)"
-          {
-            echo "package StdAll"
-            for m in $mods; do echo "import $m"; done
-            echo "func main(): Unit { }"
-          } > "$work/all.l"
-          "$lyric_bin" --internal-perpackage-build "$work/all.l" "$work/out"
-          for dll in Lyric.Stdlib.Sort.dll Lyric.Stdlib.Http.dll Lyric.Stdlib.Rest.dll Lyric.Stdlib.Core.dll; do
-            if [ ! -f "$work/out/$dll" ]; then
-              echo "::error::expected self-hosted stdlib DLL missing: $dll"
+          mkdir -p "$work/out"
+          # Post-collapse (D111): the bundle packages self-host-compile into the
+          # single Lyric.Stdlib.dll; the HTTP/async surface self-host-compiles
+          # per-package (the #4030 hybrid).  Building both is the "all Std.*
+          # self-host-compile" guard.
+          "$lyric_bin" build --manifest lyric-stdlib/lyric.full.toml \
+            -o "$work/out/Lyric.Stdlib.dll" --target dotnet --no-restore
+          if [ ! -f "$work/out/Lyric.Stdlib.dll" ]; then
+            echo "::error::single stdlib bundle not produced"
+            exit 1
+          fi
+          printf 'package HttpAll\nimport Std.Http\nimport Std.HttpServer\nimport Std.Rest\nfunc main(): Unit { }\n' > "$work/http.l"
+          "$lyric_bin" --internal-perpackage-build "$work/http.l" "$work/httpout" --target dotnet
+          for dll in Lyric.Stdlib.Http.dll Lyric.Stdlib.Rest.dll Lyric.Stdlib.HttpServer.dll Lyric.Stdlib.Task.dll Lyric.Stdlib.HttpHost.dll; do
+            if [ ! -f "$work/httpout/$dll" ]; then
+              echo "::error::expected HTTP per-package DLL missing: $dll"
               exit 1
             fi
           done
@@ -3498,8 +3570,10 @@ jobs:
         run: |
           set -euo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -f "$(dirname "$lyric_bin")/Lyric.Stdlib.Sort.dll" ]; then
-            echo "::error::Lyric.Stdlib.Sort.dll not staged in the toolchain lib dir"
+          # Post-collapse (D111): Std.Sort ships inside the single Lyric.Stdlib.dll
+          # bundle, not a per-package Lyric.Stdlib.Sort.dll.
+          if [ ! -f "$(dirname "$lyric_bin")/Lyric.Stdlib.dll" ]; then
+            echo "::error::Lyric.Stdlib.dll bundle not staged in the toolchain lib dir"
             exit 1
           fi
           work="$(mktemp -d)"
@@ -4046,8 +4120,8 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin"
             exit 1
           fi
-          if [ ! -f "$(dirname "$lyric_bin")/Lyric.Stdlib.Sort.dll" ]; then
-            echo "::error::Lyric.Stdlib.Sort.dll not staged — slice-4 test cannot run"
+          if [ ! -f "$(dirname "$lyric_bin")/Lyric.Stdlib.dll" ]; then
+            echo "::error::Lyric.Stdlib.dll bundle not staged — slice-4 test cannot run"
             exit 1
           fi
           work="$(mktemp -d)"
@@ -4117,7 +4191,7 @@ jobs:
       # (in-flight, not DLL-restored), which avoids DLL-based recursive lookup.
       # DLL presence is the authoritative check for slice 4; correctness of the
       # Xml and Yaml APIs is covered by the stdlib emitter test suite.
-      - name: Std.Xml and Std.Yaml staged (#2592 slice 4)
+      - name: Std.Xml and Std.Yaml bundled (#2592 slice 4)
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -4126,15 +4200,23 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin"
             exit 1
           fi
-          if [ ! -f "$(dirname "$lyric_bin")/Lyric.Stdlib.Xml.dll" ]; then
-            echo "::error::Lyric.Stdlib.Xml.dll not staged — curated-package exclusion not retired"
+          # Post-collapse (D111): Std.Xml and Std.Yaml ship inside the single
+          # Lyric.Stdlib.dll bundle, not per-package DLLs.  Assert the bundle is
+          # staged and actually defines the Xml/Yaml types.
+          bundle="$(dirname "$lyric_bin")/Lyric.Stdlib.dll"
+          if [ ! -f "$bundle" ]; then
+            echo "::error::Lyric.Stdlib.dll bundle not staged alongside the AOT binary"
             exit 1
           fi
-          if [ ! -f "$(dirname "$lyric_bin")/Lyric.Stdlib.Yaml.dll" ]; then
-            echo "::error::Lyric.Stdlib.Yaml.dll not staged — curated-package exclusion not retired"
+          if ! strings "$bundle" | grep -q "Std.Xml"; then
+            echo "::error::Std.Xml not present in the Lyric.Stdlib.dll bundle"
             exit 1
           fi
-          echo "Std.Xml and Std.Yaml DLLs are staged alongside the AOT binary"
+          if ! strings "$bundle" | grep -q "Std.Yaml"; then
+            echo "::error::Std.Yaml not present in the Lyric.Stdlib.dll bundle"
+            exit 1
+          fi
+          echo "Std.Xml and Std.Yaml are bundled in Lyric.Stdlib.dll"
 
       # Slice-length / String-comparison self-test (#2539).  Exercises two
       # self-hosted MSIL codegen fixes: (1) `String` relational operators
@@ -4153,7 +4235,7 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
           filter: blob:none
@@ -4581,7 +4663,7 @@ jobs:
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
           filter: blob:none

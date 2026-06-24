@@ -593,3 +593,249 @@ every program in `docs/02-worked-examples.md` builds and runs under `--target
 dotnet`; parity suite baseline; stdlib `lyric prove`/`test`/`doc` regression
 baseline.  `docs/12-todo-plan.md` is the authoritative task list;
 `docs/36-v1-roadmap.md` §R1–R6 are all done.
+
+## §11  Self-reproduction blocker map (2026-06-19)
+
+The bootstrap currently mints a clean stage-0 from the F#-emitter git history
+(`LYRIC_BOOTSTRAP_MINT=1`) and **reuses that F#-emitted CLI closure** instead of
+letting the self-hosted MSIL emitter re-emit a working copy of itself
+(`scripts/bootstrap.sh::stage1_cli_bundle`).  Removing that reuse — true
+self-reproduction — is still blocked.  This section records the exact,
+source-verified blockers found while driving the self-emitted compiler against
+the example corpus, so a focused effort can act on a map rather than
+re-discover them.
+
+**Reproduction loop used:** mint a stage-0 from current source (F# emitter →
+stage-1 DLLs → AOT binary), then `lyric --internal-perpackage-build` to
+self-emit the compiler closure, AOT-link those self-emitted DLLs, and run
+`lyric build`/`test` over the corpus.  Each failure below was confirmed by
+dumping the offending MemberRef / MethodDef / TypeRef signature bytes from the
+self-emitted DLLs and comparing against the F#-emitted reference DLLs.
+
+### The target architecture (confirmed)
+
+`lyric build/test` resolves the stdlib it links from the compiled DLLs *shipped
+beside the compiler binary* — `findCompiledLibDir` (`cli/cli_shared.l`) checks
+`LYRIC_STDLIB_BIN`, then the AOT app base, then a walked-up `.bootstrap/stage1`.
+It is **not** a per-build recompile (the `/tmp/lyric-stdlib-*` recompile is used
+only for compile-time type resolution and then discarded).  So the intended
+model is exactly: the self-hosted compiler builds the stdlib once, ships it
+beside itself, and user code links *that*.  The whole toolchain must therefore
+agree on one generic-type ABI.
+
+### Direction: one consistent ABI (the arity-suffixed one), end to end
+
+The arity suffix (`Option`1`, `Result`2`, `Option_Some`1`) is the **correct CLR
+convention**; the F# emitter omits it (docs/43 calls it "the correctness fix F#
+omits").  The self-hosted emitter already produces it for the stdlib TypeDefs
+(`lowering.l::lowerMUnion` ≈ line 2798).  The blocker is purely that the emitter
+*consumes* generic types under the **plain** (no-suffix) name while *producing*
+them suffixed, and the bootstrap currently links a **no-suffix F#-emitted**
+stdlib (the mint reuse), so the two never line up.
+
+**Proven viable.** With consumers, the self-built stdlib, and the linked stdlib
+all using the suffix, a cross-package `Option[enum]` round-trips correctly
+(construct `Some(Color.Green)` in one package, `match` it in another, against a
+self-built suffix `Lyric.Stdlib.Core` → prints the right arm).  Earlier
+`examples/rbac` failures were **naming mismatches** (suffix consumer linking a
+*stale no-suffix* stdlib), not a generic-invariance bug — there is no invariance
+problem once both sides are suffixed.
+
+### Validated fixes (7), all toward suffix-consistent self-build
+
+A patch carrying these is saved at `.bootstrap/_selfrepro_fixes.patch` during
+the investigation; each was confirmed by re-minting and advancing the
+reproduction cascade.  They are **not landed** (see "atomicity" below).
+
+1. **Consumer head-type suffix** (`codegen.l::registerStdlibTypeItem`): intern
+   the cross-package TypeRef for a generic stdlib record/union with its arity
+   suffix (`Std.Core.Option`1`), keyed under the plain FQN so lookups are
+   unchanged.
+2. **Consumer case-type suffix** (same fn): arity-suffix the union *case*
+   TypeRefs (`Option_Some`1`).
+3. **`Unit`-arg representation** (`codegen.l::registerStdlibFunc`): drop the
+   `xrefUnitArgsToValueTuple` lift so a `Unit`/`Never` generic argument is
+   `object` on both the consumer reference and the self-built producer (def +
+   construction + match all already agree on `object`).  [The alternative —
+   producer→`ValueTuple` to byte-match F# — is heavier; `object`-everywhere is
+   self-consistent and is what self-reproduction needs.]
+4. **Static/instance property extern getter** (`codegen.l::emitExternTargetBody`):
+   probe `get_<Member>` via `Mdr.resolveExtern`; if found, emit the getter with
+   the getter's own static/instance convention (`System.DateTime.UtcNow` →
+   `get_UtcNow()` static).
+5. **Union-case ctor field types** (`codegen.l::registerStdlibTypeItem`): encode
+   concrete (non-type-parameter) union-case ctor params with their declared MSIL
+   type (`IoError(path: String, message: String)` → `.ctor(string, string)`),
+   mirroring the producer's `typeExprToMsilG`.
+6. **Plain-name → suffix lookup fallback** (`lowering.l::findTypeDefRowByName`
+   and `findTypeRefRowByName`): when an exact plain-name lookup misses, probe the
+   `` `N `` suffixed forms, so `MIsinstByName` / `MCastclassByName` /
+   `MIsinstGeneric` (which pass plain case names) resolve the suffixed
+   TypeRef/TypeDef instead of degrading to `System.Object` (which makes `isinst`
+   unconditionally succeed and breaks match dispatch).
+7. **Nullable-reference FFI return** (`codegen.l::emitExternTargetBody`): a
+   `String?` extern return is `System.String` at the CLR level — unwrap
+   `TNullable` for the FFI MemberRef return so `Path.GetDirectoryName` binds
+   instead of degrading to `object`.
+
+### Update (2026-06-19, session 2): landed cascade + signature fixes
+
+Driving the self-emitted compiler against `examples/rbac` and single-file
+builds surfaced — and **landed fixes for** — a series of self-hosted-codegen
+bugs that blocked the reproduction loop well before any suffix concern.  These
+are committed (verified: a stage-0 minted from this source builds `fizzbuzz`
+and `examples/rbac` end-to-end), independent of the suffix work above:
+
+- **Nested constructor patterns were never tested** (`lowerPatternTestMsil`):
+  the `PConstructor` arm emitted only the head `isinst`, never recursing into
+  field sub-patterns, so `Ok(None)` matched any `Ok(..)` — a `match` listing
+  `Ok(None)` before `Ok(Some(x))` swallowed every `Ok(Some(..))` (and leaked
+  the extracted payload).  Fixed with `patternIsRefutableMsil` +
+  `testCaseFieldMsil`.  This was the real `lockNeedsRestore` /
+  `findWorkspaceRoot` blocker (the `Ok(Some(ws))` workspace-root parse).
+- **Return/val hint leaked into intermediate statements**
+  (`lowerStmtsExprFromMsil`): the block-level return-type hint applied to every
+  statement, so `curName = Some(s)` in a `Result[LockFile,_]` function built
+  `Option_Some<LockFile>`.  Intermediate statements now run with a cleared hint;
+  LB bindings use annotation-scoped hints (`pushAnnoHintTyArgs`).
+- **`String.split` / `newListWithCapacity` / `List.clear`** had no intrinsic →
+  erased/`unsupported method` panics.  `Std.String.split` is now pure-Lyric
+  (indexOf/substring, backend-agnostic); `newListWithCapacity` builds the
+  concrete list; `.clear()` routes through non-generic `IList.Clear()`.
+- **Alias-qualified (`Str.split`) and type-associated (`IOError.message`)
+  calls** parsed as `EMember` mis-routed to value method-dispatch; resolved via
+  `pkgImportAliases` and an imported-qualified (`<imp>.<recv>.<member>`)
+  fallback.
+- **Method-sig param count written as a single byte** (`build*MethodSig`):
+  ECMA-335 §II.23.2.1 requires a compressed int.  `CodegenCtx`'s 171-param
+  record ctor had a malformed signature → `TypeLoadException: The signature is
+  incorrect` on every self-emitted compile.  Now `writeCompressedInt`.
+
+### Update (2026-06-20, session 3): parser blocker root-caused and fixed
+
+The 2026-06-19 "remaining cascade" entry mis-attributed the blocker.  Careful
+runtime bisection (re-minting + reflecting into the self-emitted DLLs +
+calling `parse`/`isKw` directly) established the real picture:
+
+1. **bare-`None` inference — LANDED (correct fix).**  `lowerMatchExprMsil` now
+   carries a *running canonical* hint: a bare nullary arm (`case None -> None`)
+   lowered after a concrete `Option`-headed sibling (`case Some(e) -> Some(…)`)
+   reuses that sibling's type args, so `parseParam`'s `dflt` builds
+   `Option_None<Expr>` (verified in the self-emitted IL — the TypeSpec resolves
+   to `Option_None\`1<Lyric.Parser.Expr>`, not `<object>`).  The gate is narrow
+   (`None` only, `Std.Core.Option`-headed canonical only, unhinted matches only)
+   to avoid mis-typing a `None` from a non-`Option` sibling.  The earlier
+   "broke the parser / OOM" attempt was a different, unrestricted form.
+
+2. **The "P0020 corrupts the whole DLL" claim was a MISDIAGNOSIS.**  Reflecting
+   into the self-emitted DLLs showed they load cleanly (no metadata corruption);
+   `parsePackageDecl`/`isKw`/`tryEatKw` are byte-identical and resolve identical
+   tokens with vs. without the bare-`None` fix.  The bare-`None` fix did not
+   corrupt anything — it *removed* the `parseParam` hard-crash that had been
+   **masking** a pre-existing, separate blocker that fails far earlier.
+
+3. **The real parser blocker — cross-package nullary-case equality — FIXED.**
+   A non-generic nullary union case carries a static `Instance` singleton
+   (`lowerMNullaryUnionCase`) so `==` and nullary pattern tests compare by
+   reference (unions get no structural `Equals` override; `==` lowers to
+   `Object.Equals`).  The singleton is only registered in `singletonFieldTokens`
+   for the package that *defines* the union, so when a **consumer** package
+   constructed a cross-package nullary case (e.g. the parser passing `KwPackage`
+   — defined in `Lyric.Lexer` — to `tryEatKw`), construction fell through to
+   `newobj`, minting a fresh instance.  `Object.Equals(lexer-token-singleton,
+   parser-fresh-newobj)` is then `false`, so `tryEatKw` never matched and the
+   self-emitted compiler rejected **every** file with `P0020 expected
+   'package'`.  This hit baseline too (it just crashed at `parseParam` first).
+   Fix: `registerRestoredUnionCase` now registers a cross-assembly FieldRef
+   MemberRef to the case's `Instance` field in `singletonFieldTokens`, so the
+   bare-path nullary construction emits `ldsfld Instance` (the singleton) cross
+   package, exactly as it already does same-package.  Verified: the self-emitted
+   parser parses `package P …` with **0 diagnostics**.
+
+4. **First codegen-time extern fix — LANDED.**  With the parser unblocked the
+   self-emitted compiler reaches codegen and hit
+   `MissingMethodException: Byte[] Encoding.GetBytes(Encoding, String)` from
+   `Std.EncodingHost.hostEncodeUtf8` (an *instance* method `Encoding.GetBytes`).
+   The self-hosted `@externTarget` resolver defaults an un-hinted target to
+   *static* (`resolveExternTarget`: "callers must annotate instance externs with
+   `@externInstance`"), which the F# emitter never required (it used reflection).
+   Fix: add `@externInstance` to `hostEncodeUtf8`.  (Other instance externs in
+   `std/_kernel/` that are reached during a compile may need the same; string /
+   map / `toString` are emitter intrinsics, not externs, so they are unaffected.)
+
+### Update (2026-06-20, session 4): codegen reached; cascade is the generic-collection ABI
+
+Two more fixes (5 total now) push the self-emitted compiler past `newCodegenCtx`
+and into per-function codegen:
+
+5. **`funcParamTypes` for restored functions — LANDED.**  `registerRestoredFunc`
+   recorded a restored function's token, return type, and parameter *modes* but
+   not its parameter *MsilTypes*.  The call-site `collExpect` propagation reads
+   `funcParamTypes[tokKey]`, so a bare `newList()` / `newMap()` passed to a
+   restored function's `List[T]` / `Map[K,V]` parameter (e.g.
+   `buildInstanceMethodSig(newList(), …)` in `newCodegenCtx` → Msil.Lowering)
+   erased to `List<object>` and failed the callee's `castclass List<T>` on entry
+   (InvalidCastException).  Now registered.
+
+6. **Scalar params erased in the cross-package hint — LANDED.**  (5) made
+   *every* parameter precise, including value-type scalars.  But a cross-package
+   *call result* used as an argument is currently typed `MObject` (its
+   `funcRetTypes` return type is not threaded through to the call-arg type) while
+   the value on the stack is the raw scalar — so `coerceCallArgMsil` saw
+   (`MObject` arg, `MInt` param) and emitted `unbox.any int` against an unboxed
+   int → NullReferenceException in `newCodegenCtx` (the `buildGenericInstBlob(
+   tdrTypeRef(...), …)` call).  Fix: record scalar parameters as `MObject` in the
+   cross-package construction-hint table (`collHintParamType`), matching the F#
+   emitter's uniform erasure, so the coercion is a no-op; concrete collection /
+   generic parameters stay precise so the `collExpect` hint still fires.
+
+**Next blocker (same class, in per-function lowering):**
+
+```
+InvalidCastException: cannot cast List`1[System.Object] to List`1[System.String]
+  at Msil.Codegen.lowerFuncMsil(CodegenCtx, FunctionDecl, String)
+```
+
+Root (confirmed pervasive): the self-hosted emitter is **inconsistent about
+generic-collection erasure**.  A `List[T]` / `Map[K,V]` *parameter*, *local
+slot*, or *field* is emitted as the concrete `List<T>` (with a `castclass`
+on use), but a `newList()` / `newMap()` *construction* — and a cross-package
+*call result* — erases to `List<object>` unless a `collExpect` hint forces it
+concrete, and the hint does not reach every site (call results carry no element
+type; some `newList()` bindings miss the hint).  Wherever an erased value meets
+a precise slot the invariant cast throws.  The F# emitter sidesteps this by
+erasing **everything** to `List<object>` uniformly.
+
+This is **pervasive, not a finite cascade** — every `List[T]`/`Map[K,V]`
+parameter/local/field across the parser and codegen is a candidate site, and
+each surfaces only when the prior is fixed.  The production fix is a **systematic
+generic-collection ABI decision applied uniformly**: either (a) erase all
+collection parameters/locals/fields to `List<object>` (match the F# emitter and
+the default `newList()` erasure), or (b) make construction (and cross-package
+call-result typing) reliably concrete at every site.  Option (a) is the smaller,
+lower-risk change and matches the working F# ABI; option (b) preserves element-
+type tracking but must be exhaustive.  Either way it is a dedicated slice,
+validated by re-minting and *running* the corpus, not incremental per-site
+patching.
+
+### Atomicity (why none of this is landed)
+
+These fixes **cannot land incrementally**.  CI builds via
+`bootstrap.sh --stage 1` with `LYRIC_BOOTSTRAP_MINT=1`, which reuses the
+F#-emitted (no-suffix) CLI closure *and* its no-suffix stdlib.  The AOT binary
+runs this (self-hosted) codegen, so with the suffix fixes its corpus builds emit
+suffix consumers that link the reused no-suffix stdlib → mismatch → CI red.
+Consistency requires the bootstrap to **drop the F# reuse and self-build the
+whole closure + stdlib** (suffix) in one step — which itself requires the full
+cascade above to be fixed first.  So the landing is necessarily atomic:
+finish the cascade, switch `stage1_cli_bundle` to a real self-emit, ship the
+self-built suffix stdlib, and validate the reproduction loop end-to-end.
+
+### Acceptance
+
+The reproduction loop (mint a stage-0 → `--internal-perpackage-build` the
+closure → AOT-link → build **and run** the full corpus + its `lyric test`, plus
+`inbundle_generics_self_test.l`) green end-to-end, with `stage1`/`stage2`
+byte-identical (#3217).  Every change here **must** be validated by compiling
+**and running** the corpus — `ilverify` alone passes structurally valid IL that
+still mis-binds at run time.

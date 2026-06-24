@@ -26,6 +26,10 @@ extern type CD[K, V] = "System.Collections.Concurrent.ConcurrentDictionary`2"
 
 extern type Tup[A, B] = "System.Tuple`2"
 
+// Unquoted generic type declarations (omitting backtick and arity suffix)
+extern type UnquotedCD[K, V] = System.Collections.Concurrent.ConcurrentDictionary
+extern type UnquotedTup[A, B] = System.Tuple
+
 @externTarget("System.Collections.Concurrent.ConcurrentDictionary`2..ctor")
 func newCD[K, V](): CD[K, V] = ()
 
@@ -38,16 +42,18 @@ func cdAdd[K, V](dict: in CD[K, V], key: in K, value: in V): Bool = ()
 @externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.set_Item")
 func cdSet[K, V](dict: in CD[K, V], key: in K, value: in V): Unit = ()
 
-// `Tuple`2(T1, T2)` is a reference type with exactly one (unambiguous)
-// two-argument constructor, so it exercises the non-zero-argument generic ctor
-// path (`newobj` after the argument-push loop, #3419) — including value-type
-// argument boxing at the `!0` position.  `ToString()` returns a concrete
-// `String`, so the round-trip needs no generic-return handling.
 @externTarget("System.Tuple`2..ctor")
 func newTup[A, B](a: in A, b: in B): Tup[A, B] = ()
 
 @externTarget("System.Tuple`2.ToString")
 func tupToString[A, B](t: in Tup[A, B]): String = ()
+
+@externTarget("System.Tuple`2..ctor")
+func newUnquotedTup[A, B](a: in A, b: in B): UnquotedTup[A, B] = ()
+
+@externTarget("System.Tuple`2.ToString")
+func unquotedTupToString[A, B](t: in UnquotedTup[A, B]): String = ()
+
 
 record Counter {
   var n: Int = 0
@@ -106,3 +112,9 @@ test "value-type key (Int) is boxed at the call boundary" {
   var miss: Counter = default()
   assertFalse(cdGet(mapInt, 99, miss), "absent Int key returns false")
 }
+
+test "Unquoted generic Tuple constructs and round-trips correctly" {
+  val t = newUnquotedTup(2, "hello")
+  assertEqual(unquotedTupToString(t), "(2, hello)", "UnquotedTuple(2, \"hello\").ToString()")
+}
+

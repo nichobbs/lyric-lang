@@ -472,6 +472,8 @@ By default, declarations are package-private (visible only within the same packa
 
 Visibility is enforced at use sites: referencing a package-private declaration (no modifier) from another package is a compile error (**T0097**). `pub` and `internal` declarations are both referenceable across packages within a project; the cross-*project* hiding of `internal` is enforced by the publish/restore layer, which only includes `pub` declarations in a package's external contract. Extern types / extern packages (FFI host-binding declarations, e.g. the `List`/`Map` aliases) are not subject to these tiers — their cross-package use is governed by the kernel-boundary convention.
 
+A public function that exposes an **imported nested** host extern type (a CLR FQN containing `+`, e.g. `System.Text.Json.JsonElement+ArrayEnumerator`) in its signature emits a warning (**W0006**): these are host implementation-detail structs whose FFI boundary is meant to stay in the `_kernel/` layer. A kernel file that *declares* the extern type locally is exempt; the fix for a consumer is to wrap the host type in an opaque Lyric type (as `Std.Json` does with `JsonArrayCursor` / `JsonObjectCursor`). Top-level domain extern types (e.g. `JsonElement` itself) are deliberately re-exposable and are not flagged.
+
 ```
 pub type AccountId = Long range 0 ..= MAX_ACCOUNT_ID
 pub func openAccount(owner: in CustomerId): AccountId
@@ -1211,6 +1213,29 @@ pub func intListAdd(xs: inout IntList, v: in Int): Unit
 If you need a generic list-add wrapper, implement it in Lyric using a kernel-level
 monomorphised helper and expose a generic Lyric function that delegates to the
 concrete helper.
+
+**Nullable BCL returns → `Option[T]` (D107).**  Many BCL methods return a
+nullable reference (e.g. `System.Environment.GetEnvironmentVariable: string?`,
+`System.Console.ReadLine: string?`, `System.IO.Path.GetDirectoryName: string?`).
+Lyric has no `null` literal or nullable type, so a kernel `@externTarget` that
+wraps such a method declares its return as `Option[T]` (with `T` a reference
+type).  The emitter binds the underlying MemberRef to the BCL's real `T` and
+coerces the result at the call boundary — a null reference becomes `None`, a
+non-null reference becomes `Some(value)`:
+
+```
+// GetEnvironmentVariable returns string? in the BCL; the kernel exposes Option.
+@externTarget("System.Environment.GetEnvironmentVariable")
+pub func getEnvVar(key: in String): Option[String]
+```
+
+Callers above the kernel boundary match an ordinary `Option` (`case None` /
+`case Some(v)`) — no `null` handling is ever required.  The convention applies
+only when `T` is a reference type; value-type inners are not coerced.
+
+> **Target status.**  Phase 1 implements this convention in the MSIL backend
+> (`--target dotnet`).  JVM emitter parity (`--target jvm`) is tracked in #3932
+> and lands with D107 Phase 2.
 
 **Static vs. instance call detection.**  Both backends need to know
 whether a `@externTarget` binding is a static or instance call.  The

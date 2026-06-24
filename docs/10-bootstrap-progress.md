@@ -9,6 +9,92 @@ what has shipped and what remains open.
 
 ---
 
+## Bootstrap vs self-hosted — which compiler am I running?
+
+Most wasted debugging time on this project comes from not knowing **which of
+three compilers** produced a binary or a failure.  They are not
+interchangeable, and a failure under one is not a failure under another.
+
+| # | Compiler | Built by | IL validity | Build command | Use it to… |
+|---|----------|----------|-------------|---------------|-----------|
+| 1 | **mint stage-0** | `scripts/mint-stage0-fsharp.sh` (rebuilds the historical F# bootstrap from git history) | valid (F# emitter is correct) | `LYRIC_BOOTSTRAP_MINT=1` seeds it automatically | seed stage-1; never run directly |
+| 2 | **mint stage-1** (the **bootstrap** compiler) | the mint seed compiling the self-hosted `.l` sources | **valid — this is exactly what CI ships** | `make mint` | **all day-to-day dev.** It *runs* the self-hosted codegen, so compiling a program exercises the self-hosted emitter on user code while staying runnable. |
+| 3 | **self-hosted stage-2** | the stage-1 true compiler compiling **itself + the full stdlib** into an isolated toolchain (`.bootstrap/stage2/{lib,bin}`) | **not yet runnable** — the self-hosted emitter still mis-emits parts of its own closure | `make stage2` | the END GOAL and SHIP/TEST toolchain; run things via `make run-stage2 ARGS=…` once it runs |
+
+Key consequence: **a bare `make lyric` builds compiler #3**, which today can
+fault at startup (`InvalidProgramException` / `match not exhaustive`) because
+the self-hosted emitter does not yet produce valid IL for its whole closure.
+For a working dev toolchain use **`make mint`** (#2).  CI builds #2 via
+`LYRIC_BOOTSTRAP_MINT=1`; that is why CI is green while `make lyric` may not run.
+
+### The IL-validity gate
+
+`make ilverify` (→ `scripts/ilverify-selfhosted.sh`) emits the **entire
+compiler closure with the self-hosted emitter** and runs `ilverify` over every
+DLL.  Its error count is the distance between compiler #2 and a runnable
+compiler #3.  When it reports 0, the full self-hosted toolchain becomes usable
+and the `userlib`/`selfhosted` staging (uniform arity-suffixed ABI) can replace
+the mint closure everywhere.  Tracked under #3943.
+
+### The isolated stage-2 toolchain (`make stage2`) — D110
+
+`make stage2` (→ `scripts/bootstrap.sh --stage 2`) builds compiler #3 as an
+**isolated, self-consistent toolchain** under `.bootstrap/stage2/{lib,bin}`: the
+stage-1 true compiler re-emits **itself + the full stdlib** in one
+`--internal-perpackage-build` pass (123 DLLs — every compiler and `Std.*`
+package, all arity-suffixed and mutually consistent), then AOT-links the binary
+against that closure.  Because the stage-2 stdlib a consumer links is emitted by
+the *same* compiler, in the *same* pass, as the references that point at it,
+there is no seed-vs-self-hosted ABI split — which is what makes the `userlib`
+ABI-sniff and `selfhosted/` staging unnecessary in this layout (D110).
+
+Building the toolchain is the **runnability gate**: the per-package emit can
+succeed while the AOT-linked binary still faults at startup, and that fault is
+the signal.  `make stage2` reports it **non-fatally** rather than failing the
+build, so an emitter bug surfaces as a clean, specific failure instead of as
+build noise.
+
+**Stdlib is now a single `Lyric.Stdlib.dll` (D111).**  The emitter references
+every `Std.*` type under the single `Lyric.Stdlib` assembly identity, and
+`build_stage2` builds the `output = "single"` bundle (from `lyric.full.toml`,
+which now also carries the kernel packages the compiler uses — `Std.UnicodeHost`,
+`Std.CollectionsHost`, `Std.VerifierEnvHost`) into `.bootstrap/stage2/lib`.  This
+is the distribution-mandated shape (docs/22 §2, docs/34) and it **fixed the
+stage-2 startup blocker**: the old `Could not load type 'Std.Core.Option' from
+assembly 'Lyric.Stdlib.Core'` was the per-package + suffix-detection mismatch, so
+with the collapse the stage-2 self-hosted binary now **starts and runs the
+compile pipeline**.  The two-ABI `usesAritySuffix` detection is gone (stdlib is
+always the self-hosted/suffixed bundle).  The next surfaced blocker is a separate
+self-hosted **parser** miscompile (`P0040` on function bodies) — the deeper bug
+the runnability gate now exposes.  Run things against the toolchain with
+`make run-stage2 ARGS="…"` (which pins `LYRIC_STDLIB_BIN=.bootstrap/stage2/lib`);
+`make stage3` runs the reproducibility fixpoint as a non-blocking diagnostic.
+
+### "Is this a real bug?" — one command
+
+```sh
+make mint                              # build the CI-faithful toolchain once
+make selfhost-check FILE=repro.l       # → scripts/selfhost-check.sh
+```
+
+`selfhost-check` compiles `repro.l` with compiler #2 (self-hosted codegen),
+runs it, and `ilverify`s the emitted DLL, printing a verdict:
+
+* **OK** — compiles, runs, valid IL → the emitter handles this construct; a
+  failure seen elsewhere was an environment artifact (wrong binary, stale DLLs,
+  or a suffix-vs-non-suffix stdlib ABI mismatch).
+* **REAL SELF-HOSTED BUG** — compile error, runtime fault, or invalid IL, with
+  the pinpointing output inline.
+
+The recurring **ABI artifact** to rule out: the self-hosted emitter names
+generic types with an arity suffix (`Option`1`), while the mint stdlib uses the
+unsuffixed `Option`.  Linking a program emitted by the self-hosted codegen
+against the mint (unsuffixed) stdlib faults with `Could not load type
+'Std.Core.Option`1'`.  `make mint` stages a suffixed `userlib/` stdlib beside
+the binary for exactly this reason; `selfhost-check` co-locates it automatically.
+
+---
+
 ## Status against `05-implementation-plan.md`
 
 ### Phase 0 — design freeze
@@ -125,6 +211,7 @@ deferred to Phase 3 by design.
 | M5.3 — self-hosted stdlib / formatter / package manager / CLI | **Shipped** (`Lyric.Manifest`, `Lyric.Fmt` CST formatter, `Lyric.ManifestBridge`, `Lyric.TestSynthBridge`, `Lyric.Cli` full command dispatcher handling all CLI commands natively via `SelfHostedCli.fs`) | — |
 | M5.3 — project-aware CLI: `run`, `fmt`, `lint`, `prove`, `doc`, `test`, `bench` all auto-discover `lyric.toml` when invoked with no source file; `--manifest` override; `fmt` dry-run/`--write` distinction; `run --target dotnet\|jvm` for project mode | **Shipped** (PR #3063) | — |
 | M5.3 — `bench --target jvm`; `fmt --stdin` + multi-file variadic; `lint` project-mode summary + exit-code fix; `test` `@test_module` fallback scan; `check`, `clean`, `update`, `deps` new commands; `bench` double-read optimization | **Shipped** (PR #3102) | — |
+| D109 / Q-dist-007 — `lyric version` command + `checkSdkVersion()` SDK mismatch guard; `sdk-version.json` side-file written by `make lyric`; `[nuget]` allowed in all manifest types (Q-W-001) | **Shipped** (PR #3960) | — |
 
 ### Phase 2 — type system completion (complete)
 
@@ -25414,3 +25501,46 @@ constructors) to follow-up.
 - `docs/48-constructor-shorthand.md`: Status updated from "Unbacked (D106)" to
   "Specced (D106)".
 - `CLAUDE.md` sketch-list entries updated to reflect decision backing.
+
+### D107 — self-host cascade fixes + nullable-BCL → `Option[T]` FFI coercion (docs/41 §11)
+
+Self-hosting hardening: the self-emitted MSIL backend now compiles and runs the
+core examples through a fully self-emitted compiler closure (fizzbuzz/primes/csv
+build+run via the self-emitted binary). The cascade of self-host-only codegen
+defects fixed along the way:
+
+- Cross-package nullary union-case equality: non-generic nullary cases load the
+  defining assembly's `Instance` singleton (was `newobj`-per-use, breaking
+  reference equality — the `P0020 expected 'package'` self-host blocker).
+- Value-type instance externs (`TimeSpan.TotalMilliseconds`): `ldarga` + `call`
+  (was `ldarg` + `callvirt`, which crashes the JIT).
+- LocalVarSig slot identity: same-named match-arm locals of distinct reference
+  types (`ListOp`/`DictOp`, `List<A>`/`List<B>`) get fresh slots; concrete
+  collection / generic-instantiation locals encode concretely (were erased to
+  object, desyncing the verifier).
+- `lowerM*` Int-return tails; catch-binding `castclass System.Exception` before
+  `get_Message`.
+
+Nullable-BCL FFI (D107): `@externTarget` functions returning `Option[T]` (T a
+reference type) bind the MemberRef to the BCL's real nullable `T` and coerce
+null → `None` / value → `Some(value)` at the call boundary, so no `null` literal
+or nullable type enters the language. Phase 1 (this entry) ships the MSIL
+emitter convention + `extern_option_self_test.l` (wired into CI); Phase 2
+migrates the `_kernel/` nullable externs and removes `case null` once a release
+carrying the convention becomes the bootstrap seed. JVM emitter parity (Phase 1
+is MSIL-only) is tracked in #3932.
+
+**Release cutover to fully self-hosted builds.** The published seed used by
+`bootstrap.sh`'s download path predates these cascade fixes and miscompiles the
+current compiler sources, so it cannot bootstrap a fully self-hosted build. The
+path forward: (1) cut an **interim mint-seeded release** — `publish.yml` takes a
+`seed` workflow_dispatch input (`download` default | `mint`); dispatch it with
+`seed: mint` to mint the release binary from the historical F# compiler (correct
+emitter) carrying the current fixes, with `--stage 1`; (2) once that release is
+published, all future releases (tag push, or `seed: download`) seed from it —
+re-enable the strict `--stage 2` reproducibility gate (both stages then
+self-hosted-emitted ⇒ byte-identical) and F# leaves the bootstrap here; (3) land
+D107 Phase 2 so the self-hosted compiler builds the stdlib itself, retiring the
+F# stdlib-reuse path. The interim (`seed: mint`) release skips `--stage 2`
+because an F#-emitted stage-1 and a self-hosted-emitted stage-2 legitimately
+diverge (e.g. the generic arity suffix F# omits).

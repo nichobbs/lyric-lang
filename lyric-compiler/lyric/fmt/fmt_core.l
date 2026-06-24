@@ -492,18 +492,7 @@ pub func patStr(p: in Pattern): String {
     case PWildcard -> "_"
     case PLiteral(l) -> litStr(l)
     case PRange(lo, incl, hi) -> patRangeStr(lo, incl, hi)
-    case PBinding(n, innerP) -> {
-      // The `match innerP { Some / None }` shape silently falls through
-      // under the bootstrap codegen for `Option[Pattern]` here (the
-      // value is destructured out of `PBinding` and re-matched in one
-      // arm).  `isSome` + `unwrapOr` route around it; both are cheap
-      // and the recursion terminates on the inner pattern's kind.
-      if isSome(innerP) {
-        n + " @ " + patStr(unwrapOr(innerP, p))
-      } else {
-        n
-      }
-    }
+    case PBinding(n, innerP) -> patBindingStr(n, innerP)
     case PConstructor(head, args) -> patCtorStr(head, args)
     case PRecord(head, fs, rest) -> patRecordStr(head, fs, rest)
     case PTuple(patterns) -> patTupleStr(patterns)

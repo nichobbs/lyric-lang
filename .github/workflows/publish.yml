@@ -11,23 +11,78 @@ on:
       version:
         description: 'Version to publish (e.g. 0.1.0)'
         required: true
+      seed:
+        description: >-
+          Bootstrap stage-0 seed. "download" (default) seeds from the latest
+          published self-hosted release; "mint" seeds from the historical F#
+          bootstrap compiler. Use "mint" for the interim release that first
+          carries the self-host cascade fixes (the current published release
+          predates them and would miscompile); use "download" once a fixed
+          release exists as the seed (the path that drops F#).
+        required: false
+        default: 'download'
+        type: choice
+        options:
+          - download
+          - mint
+      publish_ecosystem:
+        description: >-
+          Publish ecosystem libraries (lyric-web, lyric-auth, lyric-cache, etc.)
+          as individual NuGet packages after the global tool is pushed.
+          Uncheck to publish the `lyric` tool only.
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write   # upload release assets
-  id-token: write   # OIDC for key-vault signing
+  id-token: write   # OIDC for NuGet trusted publishing and key-vault signing
 
 env:
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
   DOTNET_NOLOGO: true
 
 # ---------------------------------------------------------------------------
-# Build self-contained standalone binaries for all supported platforms.
-# Each matrix leg runs on the native OS, publishes a single-file binary,
-# optionally signs it, packages it into a zip/tar.gz, and uploads the
-# archive as a GitHub Release asset.
+# Create GitHub Release atomically before building binaries.
+# This prevents race conditions where one architecture fails after the
+# release is already created with incomplete assets.
 # ---------------------------------------------------------------------------
 jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.VERSION }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "VERSION=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        shell: bash
+        run: |
+          gh release create "v${{ steps.ver.outputs.VERSION }}" \
+            --draft \
+            --title "v${{ steps.ver.outputs.VERSION }}" \
+            --notes "Lyric compiler release"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  # Build self-contained standalone binaries for all supported platforms.
+  # Each matrix leg runs on the native OS, publishes a single-file binary,
+  # optionally signs it, packages it into a zip/tar.gz, and uploads the
+  # archive as a GitHub Release asset.
+  # ---------------------------------------------------------------------------
   build-standalone:
+    needs: [create-release]
     strategy:
       fail-fast: false
       matrix:
@@ -45,10 +100,15 @@ jobs:
           - os: macos-latest
             rid: osx-x64
             archive_suffix: tar.gz
-          - os: windows-latest
-            rid: win-x64
-            archive_suffix: zip
-            authenticode: true
+          # win-x64 temporarily disabled: the F# `seed: mint` stage-0 fails on
+          # Windows (the F# emitter's package cache lands in %TEMP% instead of
+          # the script's $FSCACHE, because .NET Path.GetTempPath() reads TMP/TEMP
+          # on Windows, not TMPDIR — so the harvest finds no DLLs).  Re-enable
+          # once fixed.  Tracking: #3941.
+          # - os: windows-latest
+          #   rid: win-x64
+          #   archive_suffix: zip
+          #   authenticode: true
 
     runs-on: ${{ matrix.os }}
 
@@ -61,38 +121,70 @@ jobs:
       APPLE_TEAM_ID:       ${{ secrets.APPLE_TEAM_ID }}
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          # Full history so a `seed: mint` release can reach the historical F#
+          # bootstrap commit; harmless (just a deeper fetch) for `seed: download`.
+          fetch-depth: 0
+
+      - name: Install ARM64 cross-compilation toolchain (Ubuntu)
+        if: matrix.os == 'ubuntu-latest' && matrix.rid == 'linux-arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-multiarch
+
+      - name: Install unzip (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          choco install unzip -y
 
       - name: Set up .NET
         uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
 
-      - name: Resolve version
-        id: ver
+      - name: Build stage 1 (self-hosted compiler)
         shell: bash
+        # Stage-0 seed is selected by the `seed` workflow_dispatch input
+        # (default "download"; tag-push releases always use the default).
+        #
+        #   download → seed from the latest published self-hosted release. This
+        #     is the steady-state path that keeps F# out of the bootstrap; it
+        #     requires that the published release already carries the current
+        #     compiler fixes (otherwise it miscompiles the sources).
+        #   mint     → seed from the historical F# bootstrap compiler. Used for
+        #     the INTERIM release that first carries the self-host cascade fixes
+        #     (D107 / docs/10), since the current published release predates them.
+        #     F#'s emitter is correct, so it bakes the fixed self-hosted source
+        #     into a working stage-1 binary.
+        #
+        # `--stage 1` only: the strict `--stage 2` reproducibility gate compares
+        # the seed-emitted stage-1 against the self-hosted-emitted stage-2. For a
+        # mint seed these legitimately diverge (e.g. the generic arity suffix F#
+        # omits); for a download seed they are byte-identical. Re-enabling
+        # `--stage 2` is a follow-up once the download seed is the norm.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LYRIC_BOOTSTRAP_MINT: ${{ inputs.seed == 'mint' && '1' || '' }}
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "VERSION=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
-          fi
+          ./scripts/bootstrap.sh --stage 1
 
-      - name: Restore
+      - name: Restore AOT project
         working-directory: bootstrap
-        run: dotnet restore Bootstrap.sln --runtime ${{ matrix.rid }}
+        run: dotnet restore src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj --runtime ${{ matrix.rid }}
 
-      - name: Publish self-contained binary
+      - name: Publish self-contained AOT binary
         shell: bash
         working-directory: bootstrap
         run: |
-          dotnet publish src/Lyric.Cli/Lyric.Cli.fsproj \
+          dotnet publish src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
             --configuration Release \
             --runtime ${{ matrix.rid }} \
             --self-contained true \
             -p:PublishSingleFile=true \
             -p:EnableCompressionInSingleFile=true \
-            -p:Version=${{ steps.ver.outputs.VERSION }} \
+            -p:Version=${{ needs.create-release.outputs.version }} \
             --output publish/${{ matrix.rid }} \
             --no-restore
 
@@ -146,7 +238,7 @@ jobs:
         if: matrix.archive_suffix == 'tar.gz'
         shell: bash
         run: |
-          VERSION="${{ steps.ver.outputs.VERSION }}"
+          VERSION="${{ needs.create-release.outputs.version }}"
           ARCHIVE="lyric-${VERSION}-${{ matrix.rid }}.tar.gz"
           tar -czf "$ARCHIVE" -C bootstrap/publish/${{ matrix.rid }} .
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
@@ -155,7 +247,7 @@ jobs:
         if: matrix.archive_suffix == 'zip'
         shell: pwsh
         run: |
-          $version  = "${{ steps.ver.outputs.VERSION }}"
+          $version  = "${{ needs.create-release.outputs.version }}"
           $archive  = "lyric-${version}-${{ matrix.rid }}.zip"
           Compress-Archive -Path "bootstrap/publish/${{ matrix.rid }}/*" `
                            -DestinationPath $archive
@@ -176,80 +268,65 @@ jobs:
 
       # ── Upload to GitHub Release ──────────────────────────────────────────
       - name: Upload release asset
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda  # v3.0.0
-        with:
-          tag_name: v${{ steps.ver.outputs.VERSION }}
-          fail_on_unmatched_files: true
-          files: ${{ env.ARCHIVE }}
+        shell: bash
+        run: |
+          gh release upload "v${{ needs.create-release.outputs.version }}" "$ARCHIVE"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ---------------------------------------------------------------------------
-  # Build and publish the NuGet global tool package.
+  # Build and publish the NuGet global tool package (lyric).
+  #
+  # Authentication uses NuGet Trusted Publishing (OIDC): an ephemeral API key
+  # is obtained by exchanging the GitHub Actions OIDC token with NuGet.org's
+  # authentication endpoint.  No long-lived NUGET_API_KEY secret is required.
+  #
+  # Prerequisites on NuGet.org (one-time setup per package):
+  #   1. Publish the package at least once manually to claim the package ID.
+  #   2. In the NuGet.org package settings, add a GitHub Actions trusted
+  #      publisher scoped to owner "lyric-lang", repository "lyric-lang",
+  #      and workflow ".github/workflows/publish.yml".
+  #
   # Run after binaries so the release page shows assets before the NuGet
   # package appears on nuget.org.
   # ---------------------------------------------------------------------------
-  # A job-level `if:` cannot read the `env` OR `secrets` context, so the
-  # "is NUGET_API_KEY configured?" check can't live on `publish-nuget`
-  # directly.  This tiny gate job reads the secret via `env` (allowed) and
-  # publishes a boolean output the downstream job can gate on.
-  secrets-gate:
-    runs-on: ubuntu-latest
-    outputs:
-      has_nuget_key: ${{ steps.check.outputs.has_nuget_key }}
-    steps:
-      - id: check
-        shell: bash
-        env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
-        run: |
-          if [ -n "$NUGET_API_KEY" ]; then
-            echo "has_nuget_key=true"  >> "$GITHUB_OUTPUT"
-          else
-            echo "has_nuget_key=false" >> "$GITHUB_OUTPUT"
-          fi
-
   publish-nuget:
     runs-on: ubuntu-latest
-    needs: [build-standalone, secrets-gate]
-    if: needs.secrets-gate.outputs.has_nuget_key == 'true'
+    needs: [build-standalone, create-release]
 
-    # Hoist the secrets into `env` rather than interpolating ${{ secrets.* }}
-    # into `run:` scripts: it lets the signing step's `if:` test the cert (the
-    # `secrets` context is not allowed in `if:`), and it keeps secret values out
-    # of the rendered shell command text (they're read from the environment at
-    # runtime instead of being substituted into the script).
+    # Hoist the optional signing secrets into `env` rather than interpolating
+    # ${{ secrets.* }} into `run:` scripts: the `secrets` context is not
+    # allowed in `if:` conditionals, so the step guard reads from `env`.
     env:
       NUGET_SIGNING_CERT_BASE64:   ${{ secrets.NUGET_SIGNING_CERT_BASE64 }}
       NUGET_SIGNING_CERT_PASSWORD: ${{ secrets.NUGET_SIGNING_CERT_PASSWORD }}
-      NUGET_API_KEY:               ${{ secrets.NUGET_API_KEY }}
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Set up .NET
         uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
         with:
           global-json-file: bootstrap/global.json
 
-      - name: Resolve version
-        id: ver
-        shell: bash
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "VERSION=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Restore
         working-directory: bootstrap
         run: dotnet restore Bootstrap.sln
 
+      - name: Build stage 1 (for NuGet package)
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LYRIC_BOOTSTRAP_MINT: ${{ inputs.seed == 'mint' && '1' || '' }}
+        run: |
+          ./scripts/bootstrap.sh --stage 1
+
       - name: Pack NuGet global tool
         working-directory: bootstrap
         run: |
-          dotnet pack src/Lyric.Cli/Lyric.Cli.fsproj \
+          dotnet pack src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
             --configuration Release \
-            -p:PackageVersion=${{ steps.ver.outputs.VERSION }} \
+            -p:PackageVersion=${{ needs.create-release.outputs.version }} \
             -p:PackAsTool=true \
             -p:ToolCommandName=lyric \
             -p:PackageId=lyric \
@@ -272,9 +349,178 @@ jobs:
             --overwrite
           rm -f /tmp/nuget-signing.pfx
 
+      # Exchange the GitHub Actions OIDC token for a short-lived NuGet API key.
+      # The trusted publisher must be configured on NuGet.org for the `lyric`
+      # package before this step will succeed.
+      - name: Obtain NuGet API key via trusted publishing
+        id: nuget-auth
+        shell: bash
+        run: |
+          set -euo pipefail
+          OIDC_TOKEN=$(curl -fsH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=nuget.org" | jq -er .value)
+          NUGET_KEY=$(curl -fs -X POST \
+            -H "Content-Type: application/json" \
+            -d "{\"oidcToken\": \"${OIDC_TOKEN}\"}" \
+            "https://api.nuget.org/v1/authentication/authenticate" | jq -er .value)
+          echo "::add-mask::$NUGET_KEY"
+          echo "nuget_key=$NUGET_KEY" >> "$GITHUB_OUTPUT"
+
       - name: Push to NuGet.org
+        env:
+          NUGET_KEY: ${{ steps.nuget-auth.outputs.nuget_key }}
         run: |
           dotnet nuget push bootstrap/nupkgs/*.nupkg \
-            --api-key "$NUGET_API_KEY" \
+            --api-key "$NUGET_KEY" \
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate
+
+  # ---------------------------------------------------------------------------
+  # Build and publish each ecosystem library as an individual NuGet package,
+  # in topological dependency order (docs/39-package-registry.md §8).
+  #
+  # Uses the same OIDC trusted-publishing mechanism as publish-nuget.
+  # Each package ID must have a trusted publisher configured on NuGet.org
+  # pointing to this workflow before it can be published this way.
+  #
+  # The `lyric` CLI binary (built from stage-1 + AOT) drives `lyric build`
+  # and `lyric publish` for each library.  `lyric publish` reads
+  # LYRIC_NUGET_API_KEY from the environment and passes it to
+  # `dotnet nuget push`.
+  # ---------------------------------------------------------------------------
+  publish-ecosystem:
+    runs-on: ubuntu-latest
+    needs: [publish-nuget, create-release]
+    # Skipped when workflow_dispatch is used with publish_ecosystem unchecked.
+    # Tag-push releases always publish ecosystem libs (inputs.publish_ecosystem
+    # is empty for tag pushes, so != 'false' evaluates to true).
+    if: inputs.publish_ecosystem != 'false'
+
+    env:
+      NUGET_SIGNING_CERT_BASE64:   ${{ secrets.NUGET_SIGNING_CERT_BASE64 }}
+      NUGET_SIGNING_CERT_PASSWORD: ${{ secrets.NUGET_SIGNING_CERT_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
+        with:
+          global-json-file: bootstrap/global.json
+
+      - name: Build stage 1 (self-hosted compiler)
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LYRIC_BOOTSTRAP_MINT: ${{ inputs.seed == 'mint' && '1' || '' }}
+        run: |
+          ./scripts/bootstrap.sh --stage 1
+
+      - name: Build AOT CLI binary and stage stdlib
+        shell: bash
+        run: |
+          touch .bootstrap/stage1.stamp
+          SKIP_SELFHOSTED_COMPILER=1 make lyric
+
+      - name: Obtain NuGet API key via trusted publishing
+        id: nuget-auth
+        shell: bash
+        run: |
+          set -euo pipefail
+          OIDC_TOKEN=$(curl -fsH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=nuget.org" | jq -er .value)
+          NUGET_KEY=$(curl -fs -X POST \
+            -H "Content-Type: application/json" \
+            -d "{\"oidcToken\": \"${OIDC_TOKEN}\"}" \
+            "https://api.nuget.org/v1/authentication/authenticate" | jq -er .value)
+          echo "::add-mask::$NUGET_KEY"
+          echo "nuget_key=$NUGET_KEY" >> "$GITHUB_OUTPUT"
+
+      # Decode the signing certificate so lyric publish can sign each .nupkg
+      # immediately after dotnet pack and before dotnet nuget push.
+      # lyric publish reads LYRIC_NUGET_SIGNING_CERT / _PASSWORD / _TIMESTAMPER.
+      - name: Decode NuGet signing certificate
+        if: env.NUGET_SIGNING_CERT_BASE64 != ''
+        run: |
+          echo "$NUGET_SIGNING_CERT_BASE64" | base64 --decode > /tmp/nuget-signing.pfx
+
+      # Build and publish each library in topological dependency order.
+      # `lyric build` auto-restores NuGet deps when the lock file is absent or
+      # stale.  `lyric publish --skip-duplicate` is idempotent: re-publishing
+      # an already-uploaded version is treated as a no-op.
+      # Signing (when LYRIC_NUGET_SIGNING_CERT is set) is performed by
+      # `lyric publish` itself after dotnet pack and before dotnet nuget push.
+      - name: Build and publish ecosystem libraries
+        shell: bash
+        env:
+          LYRIC_NUGET_API_KEY: ${{ steps.nuget-auth.outputs.nuget_key }}
+          LYRIC_NUGET_SIGNING_CERT: /tmp/nuget-signing.pfx
+          LYRIC_NUGET_SIGNING_CERT_PASSWORD: ${{ secrets.NUGET_SIGNING_CERT_PASSWORD }}
+          LYRIC_NUGET_SIGNING_TIMESTAMPER: http://timestamp.digicert.com
+        run: |
+          set -euo pipefail
+          LYRIC=./bin/lyric
+
+          publish_lib() {
+            local manifest="$1"
+            echo "=== Building ${manifest} ==="
+            "$LYRIC" build --manifest "$manifest"
+            echo "=== Publishing ${manifest} ==="
+            "$LYRIC" publish --manifest "$manifest" --skip-duplicate
+          }
+
+          # Tier 1: no Lyric package dependencies.
+          publish_lib lyric-resilience/lyric.toml
+          publish_lib lyric-validation/lyric.toml
+          publish_lib lyric-logging/lyric.toml
+          publish_lib lyric-cache/lyric.toml
+
+          # Tier 2: depends on Tier 1.
+          publish_lib lyric-auth/lyric.toml
+          publish_lib lyric-otel/lyric.toml
+          publish_lib lyric-proto/lyric.toml
+
+          # Tier 3: depends on Tier 1–2.
+          publish_lib lyric-grpc/lyric.toml
+          publish_lib lyric-web/lyric.toml
+          publish_lib lyric-db/lyric.toml
+          publish_lib lyric-health/lyric.toml
+          publish_lib lyric-mq/lyric.toml
+          publish_lib lyric-jobs/lyric.toml
+          publish_lib lyric-mail/lyric.toml
+          publish_lib lyric-storage/lyric.toml
+          publish_lib lyric-ws/lyric.toml
+          publish_lib lyric-session/lyric.toml
+          publish_lib lyric-search/lyric.toml
+          publish_lib lyric-feature-flags/lyric.toml
+          publish_lib lyric-i18n/lyric.toml
+          publish_lib lyric-testing/lyric.toml
+
+          # Tier 4: depends on Tier 3.
+          publish_lib lyric-lambda/lyric.toml
+
+      - name: Remove signing certificate
+        if: always() && env.NUGET_SIGNING_CERT_BASE64 != ''
+        run: rm -f /tmp/nuget-signing.pfx
+
+  # ---------------------------------------------------------------------------
+  # Mark the release as ready (non-draft) after all uploads and publishing
+  # are complete.  Runs only if all prior jobs succeeded or were skipped.
+  # ---------------------------------------------------------------------------
+  finalize-release:
+    runs-on: ubuntu-latest
+    needs: [create-release, build-standalone, publish-nuget, publish-ecosystem]
+    if: >-
+      always() &&
+      (needs.build-standalone.result == 'success' || needs.build-standalone.result == 'skipped') &&
+      (needs.publish-nuget.result == 'success' || needs.publish-nuget.result == 'skipped') &&
+      (needs.publish-ecosystem.result == 'success' || needs.publish-ecosystem.result == 'skipped')
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Mark release as ready
+        shell: bash
+        run: |
+          gh release edit "v${{ needs.create-release.outputs.version }}" --draft=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
