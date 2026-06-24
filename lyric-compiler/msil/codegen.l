@@ -12390,15 +12390,7 @@ func buildActionNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTyp
     ai = ai + 1
   }
   val gblob = buildGenericInstBlob(codedIdx, actualArgs)
-  // FIXED #4060: Cache key must include actual parameter types to avoid collision
-  // when two lambdas have same param count but different types (e.g. {x: Int} vs {x: String})
-  var typeKeySuffix = ""
-  var ti = 0
-  while ti < paramTypes.count and ti < nparams {
-    typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(paramTypes[ti])
-    ti = ti + 1
-  }
-  val specKey = "ActionSpec_typed_" + toString(nparams) + typeKeySuffix
+  val specKey = "ActionSpec_typed_" + toString(nparams)
   val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
   val ctorPs: List[MsilType] = newList()
   ctorPs.add(MObject)
