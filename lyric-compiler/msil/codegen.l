@@ -12477,11 +12477,11 @@ func buildFuncNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
   0x0A000000 + mrRow
 }
 
-// Build a newobj token for System.Func`(nparams+1)<T1,...,Tn,TResult>::.ctor(object, nativeint)
-// with actual parameter types and return type.
-// Used by Phase 1 strongly-typed lambdas when HOF type propagation provides concrete types.
-// Matches the approach in buildActionNCtorTokWithTypes: use actual types from propagation,
-// fall back to object-based delegates when no propagation available.
+// Build a newobj token for System.Func`(nparams+1)<object,...,object,TResult>::.ctor(object, nativeint)
+// with object-based parameter types but actual return type.
+// Phase 1 limitation: delegate must remain object-based for HOF parameter type compatibility,
+// even when HOF type propagation provides concrete parameter types (those are deferred to Phase 2).
+// The return type uses actual type to match the lambda method signature.
 func buildFuncNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType], retType: in MsilType): Int {
   // If we have fewer actual types than expected params, fall back to the object-based version
   if paramTypes.count < nparams {
@@ -12493,8 +12493,10 @@ func buildFuncNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTypes
   val actualArgs: List[MsilType] = newList()
   var ai = 0
   while ai < nparams {
-    // Use actual parameter types from propagation
-    actualArgs.add(paramTypes[ai])
+    // Use object-based parameters for HOF delegate compatibility.
+    // Propagated types influence the lambda method signature but not the delegate type.
+    // The delegate must match the HOF parameter type, which is object-based at the MSIL level.
+    actualArgs.add(MObject)
     ai = ai + 1
   }
   actualArgs.add(retType)
@@ -16406,11 +16408,10 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
     if isByrefMode(p.mode) {
       fctx.byrefSlotTypes.add(slot, paramTy)
     }
-    // Phase 1 strongly-typed lambdas: the lambda method signature uses actual
-    // parameter types (Int, String, etc.), not object. Parameters arrive with their
-    // declared types and do NOT need unboxing. boxedParamTypes is not used for
-    // Phase 1 lambdas; it was part of the object-uniformity approach that Phase 1
-    // supersedes (#1877, #1939).
+    // Phase 1: lambda method signature uses object-based parameters for delegate
+    // compatibility. Declared and propagated parameter types influence the type-checker
+    // but are not reflected in the MSIL signature; strongly-typed lambda methods
+    // are deferred to Phase 2 (#1877, #1939).
     // Record the declared return type of a function-typed param (a `(A,...) -> R`
     // value) so invoking it (`f()`) yields R rather than a bare object (#1877).
     match p.ty.kind {
@@ -16519,21 +16520,12 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   var pi2 = 0
   while pi2 < decl.params.count {
     if isLambdaFn {
-      // Use the true parameter type (annotation or propagated) for the lambda
-      // method signature, not MObject. This enables strongly-typed delegates
-      // matching actual parameters, so the JIT sees real types (#1877).
-      val p = decl.params[pi2]
-      val annotTy = if fnGenerics.count > 0 {
-        typeExprToMsilGenBody(cctx, p.ty, pkgName, fnGenerics)
-      } else {
-        typeExprToMsilCtx(cctx, p.ty, pkgName)
-      }
-      val trueTy = if annotTy == MObject and pi2 < lambdaPropagated.count {
-        lambdaPropagated[pi2]
-      } else {
-        annotTy
-      }
-      paramTypes.add(trueTy)
+      // Phase 1: lambda method signature uses object-based parameters to match
+      // the object-based delegate wrapper (Func<object,...,object>). Propagated
+      // and annotated parameter types are collected for type-checking but not
+      // reflected in the compiled method signature. Strongly-typed lambda method
+      // signatures are deferred to Phase 2 with closure class synthesis (#1877).
+      paramTypes.add(MObject)
     } else if fnGenerics.count > 0 {
       // Generic function (#2557): a `slice[T]` / bare-`T` parameter is emitted
       // as plain `object` in the signature so a List-backed argument matches the
