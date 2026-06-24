@@ -14385,6 +14385,13 @@ func collectAwaitTypesExprPB(
         ami = ami + 1
       }
     }
+    // Phase B's `lowerExprMsil` descends into these expression kinds, so Phase A
+    // must count any awaits nested inside them or the resumeLabels index runs past
+    // the pre-allocated size and faults.
+    case ETry(inner) -> collectAwaitTypesExprPB(cctx, pkgName, inner, acc, spawnNms, spawnTys)
+    case EPropagate(inner) -> collectAwaitTypesExprPB(cctx, pkgName, inner, acc, spawnNms, spawnTys)
+    case EMember(recv, _) -> collectAwaitTypesExprPB(cctx, pkgName, recv, acc, spawnNms, spawnTys)
+    case EPrefix(_, op) -> collectAwaitTypesExprPB(cctx, pkgName, op, acc, spawnNms, spawnTys)
     case _ -> {
     }
   }
