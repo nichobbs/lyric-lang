@@ -6132,23 +6132,25 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // The method signature uses: annotation if present, else propagated type (from HOF), else object.
           // We must use the SAME logic here to ensure delegate TypeSpec matches the method signature.
           var propagatedParamTypes = match mapGet(cctx.lambdaParamTypes, lname) { case Some(ts) -> ts; case None -> newList() }
-          // Compute delegate parameter types: annotation (explicit type in lambda source) or propagated (HOF context).
-          var delegateParamTypes = newList()
-          var lpi = 0
-          while lpi < lparams.count {
-            val lparam = lparams[lpi]
-            val annotTy = match lparam.ty {
-              case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName)
-              case None -> MObject
+          // Compute delegate parameter types: use annotations from lambda source, or propagated (HOF), or fallback to object.
+          var delegateParamTypes: List[MsilType] = newList()
+          if nparams > 0 {
+            var lpi = 0
+            while lpi < nparams and lpi < lparams.count {
+              val lparam = lparams[lpi]
+              val annotTy = match lparam.ty {
+                case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName)
+                case None -> MObject
+              }
+              // Use the same logic as lowerFuncMsil line 16531-16535: if annotation is object and propagation available, use propagated
+              val paramTy = if annotTy == MObject and lpi < propagatedParamTypes.count {
+                propagatedParamTypes[lpi]
+              } else {
+                annotTy
+              }
+              delegateParamTypes.add(paramTy)
+              lpi = lpi + 1
             }
-            // Use the same logic as lowerFuncMsil line 16531-16535: if annotation is object and propagation available, use propagated
-            val paramTy = if annotTy == MObject and lpi < propagatedParamTypes.count {
-              propagatedParamTypes[lpi]
-            } else {
-              annotTy
-            }
-            delegateParamTypes.add(paramTy)
-            lpi = lpi + 1
           }
           // Delegate type selection for Phase 1 lambdas: use Func/Action with actual types.
           // All lambdas use Func<T1,...,Tn,TResult> or Action<T1,...,Tn> regardless of shape.
