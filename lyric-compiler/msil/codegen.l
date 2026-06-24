@@ -6128,27 +6128,27 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // Lambdas that return void use System.Action; those with non-void returns use System.Func.
           val retType = mapGet(cctx.funcRetTypes, lambdaKey)
           val returnsVoid = match retType { case Some(MVoid) -> true; case None -> true; case _ -> false }
-          // Phase 1 strongly-typed lambdas: retrieve the propagated parameter types
-          // so the delegate constructor token matches the actual method signature.
+          // Phase 1 strongly-typed lambdas: compute delegate parameter types matching the method signature.
+          // The method signature uses: annotation if present, else propagated type (from HOF), else object.
+          // We must use the SAME logic here to ensure delegate TypeSpec matches the method signature.
           var propagatedParamTypes = match mapGet(cctx.lambdaParamTypes, lname) { case Some(ts) -> ts; case None -> newList() }
-          // FIXED #4067: For explicitly-annotated lambdas outside HOF context, derive param types from annotations
-          // instead of falling back to object-based delegates (which would mismatch the actual method signature).
-          if propagatedParamTypes.count == 0 and nparams > 0 {
-            var paramIdx = 0
-            while paramIdx < nparams {
-              val param = lparams[paramIdx]
-              match param.ty {
-                case Some(te) -> {
-                  // Explicitly annotated: use the annotated type
-                  propagatedParamTypes.add(typeExprToMsilCtx(cctx, te, fctx.pkgName))
-                }
-                case None -> {
-                  // Unannotated: will use object (no other choice outside HOF context)
-                  propagatedParamTypes.add(MObject)
-                }
-              }
-              paramIdx = paramIdx + 1
+          // Compute delegate parameter types: annotation (explicit type in lambda source) or propagated (HOF context).
+          var delegateParamTypes = newList()
+          var lpi = 0
+          while lpi < lparams.count {
+            val lparam = lparams[lpi]
+            val annotTy = match lparam.ty {
+              case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName)
+              case None -> MObject
             }
+            // Use the same logic as lowerFuncMsil line 16531-16535: if annotation is object and propagation available, use propagated
+            val paramTy = if annotTy == MObject and lpi < propagatedParamTypes.count {
+              propagatedParamTypes[lpi]
+            } else {
+              annotTy
+            }
+            delegateParamTypes.add(paramTy)
+            lpi = lpi + 1
           }
           // Delegate type selection for Phase 1 lambdas: use Func/Action with actual types.
           // All lambdas use Func<T1,...,Tn,TResult> or Action<T1,...,Tn> regardless of shape.
@@ -6163,11 +6163,11 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             if nparams == 0 {
               cctx.tokActionCtor
             } else {
-              buildActionNCtorTokWithTypes(cctx, nparams, propagatedParamTypes)
+              buildActionNCtorTokWithTypes(cctx, nparams, delegateParamTypes)
             }
           } else {
             val actualRetType = match retType { case Some(t) -> t; case None -> MObject }
-            buildFuncNCtorTokWithTypes(cctx, nparams, propagatedParamTypes, actualRetType)
+            buildFuncNCtorTokWithTypes(cctx, nparams, delegateParamTypes, actualRetType)
           }
           // Delegate target: Phase 2 tries to instantiate a __Closure<N> record if it
           // exists; falls back to Phase 1 object[] for backwards compatibility.
@@ -12493,38 +12493,40 @@ func buildFuncNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
   0x0A000000 + mrRow
 }
 
-// Build a newobj token for System.Func`(nparams+1)<object,...,object,TResult>::.ctor(object, nativeint)
-// with object-based parameter types but actual return type.
-// Parameter types remain object-based for compatibility with generic code that was compiled
-// expecting Func<object,...,object,TResult>. Return type uses actual type to fix #4074
-// (otherwise invalid IL: method returning int32 but Func<object,...,object,object> expects object).
-// Used by Phase 1 strongly-typed lambdas to match the method signature.
+// Build a newobj token for System.Func`(nparams+1)<T1,...,Tn,TResult>::.ctor(object, nativeint)
+// with actual parameter types and return type.
+// Used by Phase 1 strongly-typed lambdas when HOF type propagation provides concrete types.
+// Matches the approach in buildActionNCtorTokWithTypes: use actual types from propagation,
+// fall back to object-based delegates when no propagation available.
 func buildFuncNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType], retType: in MsilType): Int {
   // If we have fewer actual types than expected params, fall back to the object-based version
   if paramTypes.count < nparams {
     return buildFuncNCtorTok(cctx, nparams)
   }
-  // Build the generic instantiation blob with object-based parameter types plus actual return type
   val trN = internFuncTypeRef(cctx, nparams)
+  // TypeDefOrRef coded index for a TypeRef at row R: (R << 2) | 1
   val codedIdx = (trN * 4) + 1
   val actualArgs: List[MsilType] = newList()
   var ai = 0
   while ai < nparams {
-    // Use object for parameter types (for generic code compatibility)
-    actualArgs.add(MObject)
+    // Use actual parameter types from propagation
+    actualArgs.add(paramTypes[ai])
     ai = ai + 1
   }
   actualArgs.add(retType)
   val gblob = buildGenericInstBlob(codedIdx, actualArgs)
-  // FIXED #4060: Cache key must include actual parameter types to avoid collision
-  // when two lambdas have same param count but different types (e.g. {x: Int} vs {x: String})
+  // FIXED #4060/#4088: Cache key must include both parameter types and return type to avoid collision.
+  // Two lambdas with same param count but different types or returns must be distinct:
+  // e.g. {x: Int -> x} (Func<Int,Int>) vs {x: Int -> x > 0} (Func<Int,Bool>).
   var typeKeySuffix = ""
   var ti = 0
   while ti < paramTypes.count and ti < nparams {
     typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(paramTypes[ti])
     ti = ti + 1
   }
-  val tsRow = ctxAddTypeSpec(cctx.lctx, "FuncSpec_typed_" + toString(nparams) + typeKeySuffix, gblob)
+  typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(retType)
+  val specKey = "FuncSpec_typed_" + toString(nparams) + typeKeySuffix
+  val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
   val ctorPs: List[MsilType] = newList()
   ctorPs.add(MObject)
   ctorPs.add(MNativeInt)
