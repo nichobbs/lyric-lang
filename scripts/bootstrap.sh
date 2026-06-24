@@ -420,11 +420,22 @@ stage1() {
 
   # Build the stdlib bundle first (multi-package manifest).  The released
   # self-hosted stage-0 binary drives the multi-package compile through the
-  # public `lyric build --manifest` command, which reads `lyric.toml` and
-  # builds the [project.packages] list into one DLL.  `--no-restore` because
-  # the stdlib has no external dependencies.
+  # public `lyric build --manifest` command, building the [project.packages]
+  # list into one `Lyric.Stdlib.dll`.  `--no-restore` because the stdlib has
+  # no external dependencies.
+  #
+  # Use the FULL manifest (every bundleable Std.* package), NOT the historical
+  # 15-package smoke set (`lyric.toml`).  Post-#4025 every Std.* reference
+  # collapses to the single `Lyric.Stdlib` assembly, so a stage-1 bundle that
+  # omits a CLI import (e.g. Std.File) makes the framework-dependent
+  # AOT-entry binary fail to load at startup
+  # (`TypeLoadException: Std.File.Program from Lyric.Stdlib`).  The full bundle
+  # carries the whole CLI closure, so the stage-1 binary runs — and it matches
+  # what stage 2 and stage-selfhosted-stdlib.sh build, eliminating the
+  # smoke/full divergence.  The not-yet-bundleable HTTP/async packages (#4030)
+  # are excluded from the manifest and emitted per-package separately.
   info "  compiling stdlib bundle"
-  invoke_stage0 build --manifest "$STDLIB_DIR/lyric.toml" \
+  invoke_stage0 build --manifest "$STDLIB_DIR/lyric.full.toml" \
     -o "$STAGE1_DIR/Lyric.Stdlib.dll" --target dotnet --no-restore 2>&1 || \
     die "stdlib bundle build failed"
 
