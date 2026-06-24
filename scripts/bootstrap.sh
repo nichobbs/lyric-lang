@@ -461,7 +461,7 @@ stage1_cli_bundle() {
   # closure only because it is intentionally ABI-mixed (its own runtime stdlib is
   # seed-emitted); stage 2 is the self-consistent ship/test toolchain.
   if [[ "${LYRIC_BOOTSTRAP_MINT:-0}" == "1" ]] && [[ -f "$STAGE1_DIR/Lyric.Lyric.Cli.dll" ]]; then
-    info "Stage 1 (CLI bundle): reusing minted F#-emitted closure (self-hosted re-emit skipped)"
+    info "Stage 1 (CLI bundle): reusing minted F#-emitted closure (intentional — stage 1 is the ABI-mixed bootstrap toolchain; stage 2 is the self-hosted rebuild)"
     if [[ "$SKIP_COREREF_REWRITE" != "1" ]]; then
       info "  retargeting System.Private.CoreLib refs -> public facades"
       dotnet fsi "$REPO_ROOT/scripts/rewrite-corelib-refs.fsx" "$STAGE1_DIR"/*.dll \
