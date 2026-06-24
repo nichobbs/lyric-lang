@@ -106,13 +106,31 @@ pub record TypeFqnSplit {
 }
 
 pub func splitTypeFqn(typeFqn: in String): TypeFqnSplit {
-  match Str.lastIndexOf(typeFqn, ".") {
-    case None -> TypeFqnSplit(ns = "", name = typeFqn)
-    case Some(dotIdx) -> {
-      val ns = Str.substring(typeFqn, 0, dotIdx)
-      val name = Str.substring(typeFqn, dotIdx + 1, typeFqn.length - dotIdx - 1)
-      TypeFqnSplit(ns = ns, name = name)
+  // Find the last `.` that is NOT inside a generic-instantiation bracket.
+  // A closed generic FQN such as `System.Threading.Tasks.Task`1[System.String]`
+  // carries `.`-bearing type arguments inside `[...]`; splitting on the bracket-
+  // interior dot would corrupt both the namespace and the (backtick-bearing)
+  // type name, hiding the generic-extern routing in codegen (#4025).
+  var depth = 0
+  var splitAt = -1
+  var i = 0
+  while i < typeFqn.length {
+    val c = typeFqn[i]
+    if c == '[' {
+      depth = depth + 1
+    } else if c == ']' {
+      depth = depth - 1
+    } else if c == '.' and depth == 0 {
+      splitAt = i
     }
+    i = i + 1
+  }
+  if splitAt < 0 {
+    TypeFqnSplit(ns = "", name = typeFqn)
+  } else {
+    val ns = Str.substring(typeFqn, 0, splitAt)
+    val name = Str.substring(typeFqn, splitAt + 1, typeFqn.length - splitAt - 1)
+    TypeFqnSplit(ns = ns, name = name)
   }
 }
 

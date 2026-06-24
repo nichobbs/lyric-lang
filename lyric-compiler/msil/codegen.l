@@ -4110,6 +4110,15 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
                 // in-bundle and cross-Lyric-package types.
                 if startsWith(clrFqn, "Lyric.") {
                   MClass(className = resolveTypeFqn(cctx, pkgName, seg))
+                } else if contains(clrFqn, "[") {
+                  // A closed generic-instantiation FQN (`Task`1[System.String]`)
+                  // has no flat TypeRef identity — `internFfiTypeRefNested` would
+                  // mint a TypeRef literally named `Task`1[System.String]`, which
+                  // faults at load with TypeLoadException (#4025).  Erase the
+                  // reference-typed value to `object`; member calls on it route
+                  // through `emitGenericExternMember`, which builds the proper
+                  // closed GENERICINST TypeSpec and `castclass`es the receiver.
+                  MObject
                 } else {
                   ensureMetadataIndex(cctx)
                   val refRow = internFfiTypeRefNested(cctx, clrFqn)
@@ -19824,6 +19833,38 @@ func resolvedSigToMsil(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[MsilTyp
     }
     case None -> ()
   }
+  // A closed generic instantiation (`Task`1<String>`, `List`1<Int>`) — the
+  // return/param type of BCL methods such as `TextReader.ReadToEndAsync()`.
+  // Encode it as a real closed GENERICINST so the MemberRef binds to the BCL
+  // method (a degraded `object` return would mis-bind with MissingMethodException
+  // — #4025), interning the open-generic TypeRef and recurring on each arg.
+  match Mdr.sigNamedGenericInstParts(sig) {
+    case Some(parts) -> {
+      val margs: List[MsilType] = newList()
+      var giOk = true
+      var gai = 0
+      while gai < parts.args.count {
+        match resolvedSigToMsil(cctx, parts.args[gai]) {
+          case Some(m) -> margs.add(m)
+          case None -> {
+            giOk = false
+          }
+        }
+        gai = gai + 1
+      }
+      if not giOk {
+        return None
+      }
+      ensureMetadataIndex(cctx)
+      val giRefRow = internFfiTypeRefNested(cctx, parts.fqn)
+      if parts.valueType {
+        return Some(value = MValueTypeGenericInst(typeRefCode = tdrTypeRef(giRefRow), headFqn = parts.fqn, typeArgs = margs))
+      } else {
+        return Some(value = MGenericInst(typeRefCode = tdrTypeRef(giRefRow), headFqn = parts.fqn, typeArgs = margs))
+      }
+    }
+    case None -> ()
+  }
   val pb = Mdr.sigPrimByte(sig)
   if pb >= 0 {
     elemByteToMsil(pb)
@@ -22114,11 +22155,19 @@ func registerUnionCases(cctx: in CodegenCtx, packageName: in String, unionName: 
   // Loop exits via the early `return`s below (`indexOf` no-match
   // or `nameStart >= repr.length`); `idx` is non-negative by
   // construction (#1279).
+  //
+  // Search the remainder from `idx` with the 1-arg `indexOf` and re-base to an
+  // absolute offset: the self-hosted backends lower only the single-argument
+  // `String.indexOf` intrinsic (a 2-arg `indexOf(needle, idx)` would fall
+  // through to the unsupported-method throw stub at run time, #4025), and the
+  // codebase deliberately keeps string handling free of per-backend BCL
+  // overloads so MSIL and JVM emit identical code (cf. `Std.String.split`).
   while true {
-    val hit = repr.indexOf(needle, idx)
-    if hit < 0 {
+    val rel = repr.substring(idx, repr.length - idx).indexOf(needle)
+    if rel < 0 {
       return
     }
+    val hit = idx + rel
     val nameStart = hit + needle.length
     if nameStart >= repr.length {
       return
