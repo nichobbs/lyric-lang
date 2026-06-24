@@ -2347,22 +2347,25 @@ pub func decodeExternMethodSig(
   }
 }
 
-// Like `scoreSigType`, but additionally accepts a NAMED reference argument
-// flowing into a NAMED reference parameter of a different type as an implicit
-// upcast (e.g. a `CultureInfo` argument into an `IFormatProvider` parameter),
-// scored 1 — below an exact match's 2, so an exact overload always wins.  Only
-// named-reference↔named-reference is relaxed: reference upcasts are free in IL,
-// but value-type and primitive mismatches are not, so e.g. a `string` argument
-// still never binds to an interface-typed parameter (that stays -1).
+// Like `scoreSigType`, but additionally accepts:
+//  - a NAMED reference argument into a NAMED reference parameter of a different
+//    type (implicit upcast, e.g. CultureInfo → IFormatProvider), scored 1;
+//  - an erased extern-type argument (MObject → STPrim(0x1C)) into any
+//    non-value-type NAMED parameter, scored 1.
+// Both are below an exact match's 2, so an exact overload always wins.
+// Value-type and primitive mismatches remain -1.
 pub func scoreSigTypeLenient(arg: in SigType, param: in SigType): Int {
   val s = scoreSigType(arg, param)
   if s >= 0 {
     s
   } else {
-    val argRefNamed = match arg { case STNamed(_, vt) -> not vt; case _ -> false }
-    val paramRefNamed = match param { case STNamed(_, vt) -> not vt; case _ -> false }
-    if argRefNamed and paramRefNamed {
-      1
+    val paramIsRefNamed = match param { case STNamed(_, vt) -> not vt; case _ -> false }
+    if paramIsRefNamed {
+      // Any reference-typed arg (named or erased-object) flows into a named
+      // reference parameter as an implicit upcast.
+      val argIsObject = match arg { case STPrim(b) -> b == 0x1C; case _ -> false }
+      val argIsRefNamed = match arg { case STNamed(_, vt) -> not vt; case _ -> false }
+      if argIsObject or argIsRefNamed { 1 } else { 0 - 1 }
     } else {
       0 - 1
     }
@@ -2517,7 +2520,21 @@ pub func resolveExternMethodScoredIn(
           // unsupplied trailing optionals with their type defaults.
           val exactBonus = 1000000
           val nReal = normParams.count
-          val score = if isInstance and nReal == declArity - 1 {
+          // Constructors: hasThis is set in the CLR sig convention even though the
+          // receiver is implicitly allocated by newobj and is NOT listed as an
+          // explicit parameter.  Score against fullArgTypes directly (no head-drop)
+          // with nReal == declArity, before the generic instance branch which would
+          // compute nReal == declArity - 1 and always miss.
+          val score = if member == ".ctor" and nReal == declArity {
+            val sc = scoreParamsLenient(fullArgTypes, normParams)
+            if sc < 0 {
+              sc
+            } else {
+              sc + exactBonus
+            }
+          } else if member == ".ctor" and nReal > declArity and nReal - declArity <= methodTrailingOptionalCount(img, layout, th, mi, nReal) {
+            scoreParamsPrefix(fullArgTypes, normParams)
+          } else if isInstance and nReal == declArity - 1 {
             val sc = scoreParamsLenient(tail, normParams)
             if sc < 0 {
               sc
@@ -2901,7 +2918,7 @@ pub func tryReadResourceIn(ri: in ResourceImage, name: in String): Option[slice[
 // self-hosted bundle, so this no longer disambiguates stdlib — it is used only
 // to detect the convention of restored *non-stdlib* artifacts (the F#-emitted
 // compiler closure linked by the self-tests in the mint path), via
-// `dllHasNullaryInstanceField`, so cross-package nullary union-case
+// `dllNullaryInstanceInfo`, so cross-package nullary union-case
 // construction matches the producer DLL.
 // True when any TypeDef in the CLI image `bytes` has a backtick in its name,
 // indicating the self-hosted arity-suffix convention.  Split out from
@@ -2938,15 +2955,79 @@ func coreDllHasAritySuffixTypeDef(dllPath: in String): Bool {
   }
 }
 
-// True when the DLL at `dllPath` was produced by the self-hosted emitter,
-// which emits a static `Instance` singleton for every non-generic nullary
-// union case.  Delegates to arity-suffix detection: self-hosted DLLs use
-// backtick-suffixed TypeDef names (e.g. `Maybe`1`); F#-emitted DLLs do not.
-// Using the arity-suffix as the proxy is reliable and avoids a fragile
-// Field-table scan (F#-emitted DLLs can also contain fields named "Instance"
-// via F# DU conventions, which would mislead a name-based scan).
-// Returns false when the file is missing, unreadable, or carries no backtick
-// TypeDefs (F# bootstrap / LYRIC_BOOTSTRAP_MINT path).
-pub func dllHasNullaryInstanceField(dllPath: in String): Bool {
-  coreDllHasAritySuffixTypeDef(dllPath)
+// Information about nullary union case Instance singleton fields in a DLL.
+// `hasInstances` is true when the DLL contains at least one static field named
+// "Instance" on a TypeDef whose name contains "_" (the naming convention for
+// union case classes).  `isClassTyped` is true when that field's FieldSig uses
+// ELEMENT_TYPE_CLASS (0x12) rather than ELEMENT_TYPE_OBJECT (0x1c): CLASS-typed
+// Instance fields come from DLLs emitted by the F#-era bootstrap compiler;
+// DLLs emitted by the current self-hosted compiler use ELEMENT_TYPE_OBJECT.
+// This distinction matters for MemberRef resolution: the CLR rejects a MemberRef
+// whose field signature differs from the FieldDef's field signature, so
+// `registerRestoredUnionCase` must create MemberRefs with the same element type
+// that the target DLL actually declares.
+//
+// Background: an earlier approach used the arity-suffix proxy
+// (`coreDllHasAritySuffixTypeDef`), but that is WRONG for self-hosted DLLs
+// that define no generic type — `Lyric.Lexer` carries ~70 keyword union cases
+// each with an `Instance` singleton yet has no backtick TypeDef, so the proxy
+// returned false and the restored path fell back to `newobj`, producing fresh
+// instances that never `Object.Equals` the lexer's keyword tokens (#3920).
+pub record InstanceFieldKind {
+  hasInstances: Bool
+  isClassTyped: Bool
+}
+
+// Helper: scan a parsed CLI image for nullary-case Instance fields and return
+// their element-type convention.  Extracted from `dllNullaryInstanceInfo` so
+// the multi-line loop body stays readable — `lyric fmt` collapses a nested-match
+// `Ok(raw) ->` arm onto a single line regardless of length (same pattern as
+// `imageHasBacktickTypeDef`).
+func imageNullaryInstanceInfo(bytes: in slice[Byte]): InstanceFieldKind {
+  match parseAssemblyImage(bytes) {
+    case None -> InstanceFieldKind(hasInstances = false, isClassTyped = false)
+    case Some(ri) -> {
+      val b = ri.img.bytes
+      val typeDefCount = rowCountOf(ri.th, 0x02)
+      var row = 1
+      var found = false
+      var classTyped = false
+      while row <= typeDefCount and not found {
+        val td = readTypeDef(ri.img, ri.layout, row)
+        if Str.contains(td.name, "_") {
+          val fr = fieldRange(ri.img, ri.layout, ri.th, row)
+          var frow = fr.start
+          while frow <= fr.endRow and not found {
+            val o = ri.layout.dataStart[0x04] + (frow - 1) * ri.layout.rowSize[0x04]
+            val flags = rdU16(b, o)
+            val nameI = rdIdx(b, o + 2, ri.layout.stringIdx)
+            val nm = stringAt(ri.img, ri.layout, nameI)
+            // Bit 4 of FieldAttributes is Static (0x0010); (flags / 16) % 2 == 1 tests it.
+            if nm == "Instance" and (flags / 16) % 2 == 1 {
+              found = true
+              val sigI = rdIdx(b, o + 2 + ri.layout.stringIdx, ri.layout.blobIdx)
+              val sig = blobAt(ri.img, ri.layout, sigI)
+              // Byte 1 of the FieldSig blob is the element type:
+              // 0x12 = ELEMENT_TYPE_CLASS (F#-era); 0x1c = ELEMENT_TYPE_OBJECT (self-hosted).
+              classTyped = sig.length >= 2 and rdU8(sig, 1) == 0x12
+            }
+            frow = frow + 1
+          }
+        }
+        row = row + 1
+      }
+      InstanceFieldKind(hasInstances = found, isClassTyped = classTyped)
+    }
+  }
+}
+
+// Scan `dllPath` once and return how its nullary-case Instance fields are typed.
+// Returns `InstanceFieldKind(false, false)` when the file is missing, unreadable,
+// or contains no Instance field on a "_"-named TypeDef — safe default (no
+// MemberRefs emitted, no resolution error).
+pub func dllNullaryInstanceInfo(dllPath: in String): InstanceFieldKind {
+  match File.readBytes(dllPath) {
+    case Err(_) -> InstanceFieldKind(hasInstances = false, isClassTyped = false)
+    case Ok(raw) -> imageNullaryInstanceInfo(raw.toArray())
+  }
 }
