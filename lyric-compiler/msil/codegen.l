@@ -22029,8 +22029,18 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
             case MLdNull -> {
               // Unit literal `()` → MLdNull: null is the .NET default for reference
               // fields, so no .cctor needed (consistent with addPackageTokens treating
-              // LUnit as a literal).
-              sfInitInsns = newList()
+              // LUnit as a literal).  Guard on the source expression so that any
+              // hypothetical future expression that also lowers to MLdNull (but for
+              // which Phase 3 did count a .cctor) does not accidentally suppress it.
+              match decl.init.kind {
+                case ELiteral(lit) -> {
+                  match lit {
+                    case LUnit -> { sfInitInsns = newList() }
+                    case _ -> { }
+                  }
+                }
+                case _ -> { }
+              }
             }
             case _ -> {
             }
