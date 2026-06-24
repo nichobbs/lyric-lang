@@ -6128,30 +6128,12 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // Lambdas that return void use System.Action; those with non-void returns use System.Func.
           val retType = mapGet(cctx.funcRetTypes, lambdaKey)
           val returnsVoid = match retType { case Some(MVoid) -> true; case None -> true; case _ -> false }
-          // Phase 1 strongly-typed lambdas: compute delegate parameter types matching the method signature.
-          // The method signature uses: annotation if present, else propagated type (from HOF), else object.
-          // We must use the SAME logic here to ensure delegate TypeSpec matches the method signature.
-          var propagatedParamTypes = match mapGet(cctx.lambdaParamTypes, lname) { case Some(ts) -> ts; case None -> newList() }
-          // Compute delegate parameter types: use annotations from lambda source, or propagated (HOF), or fallback to object.
-          var delegateParamTypes: List[MsilType] = newList()
-          if nparams > 0 {
-            var lpi = 0
-            while lpi < nparams and lpi < lparams.count {
-              val lparam = lparams[lpi]
-              val annotTy = match lparam.ty {
-                case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName)
-                case None -> MObject
-              }
-              // Use the same logic as lowerFuncMsil line 16531-16535: if annotation is object and propagation available, use propagated
-              val paramTy = if annotTy == MObject and lpi < propagatedParamTypes.count {
-                propagatedParamTypes[lpi]
-              } else {
-                annotTy
-              }
-              delegateParamTypes.add(paramTy)
-              lpi = lpi + 1
-            }
-          }
+          // Phase 1 strongly-typed lambdas: delegate parameter types match HOF propagation.
+          // Only use types propagated by the type-checker when the lambda is passed to a HOF (T)->R.
+          // Fallback to object-based delegates for generic code compatibility (explicit annotations
+          // are preserved in the method signature, but don't override the delegate TypeSpec to avoid
+          // breaking HOF compatibility when annotations exist outside HOF context - see #4077).
+          var delegateParamTypes = match mapGet(cctx.lambdaParamTypes, lname) { case Some(ts) -> ts; case None -> newList() }
           // Delegate type selection for Phase 1 lambdas: use Func/Action with actual types.
           // All lambdas use Func<T1,...,Tn,TResult> or Action<T1,...,Tn> regardless of shape.
           // Note #4077 (deferred to Phase 2): Predicate[T] and Comparison[T] special-casing
