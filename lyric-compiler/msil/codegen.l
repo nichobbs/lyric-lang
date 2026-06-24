@@ -19674,6 +19674,37 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
       case IConst(decl) -> {
         collectLambdasBfsExpr(decl.init, ticker, synths, deferred)
       }
+      case IRecord(decl) -> {
+        // Walk record member methods (D037: methods-in-types implicit self).
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case RMFunc(fn) -> {
+              match fn.body {
+                case Some(body) -> {
+                  match body {
+                    case FBBlock(block) -> {
+                      var si = 0
+                      while si < block.statements.count {
+                        collectLambdasBfsStmt(block.statements[si], ticker, synths, deferred)
+                        si = si + 1
+                      }
+                    }
+                    case FBExpr(e) -> {
+                      collectLambdasBfsExpr(e, ticker, synths, deferred)
+                    }
+                  }
+                }
+                case None -> {
+                }
+              }
+            }
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
       case _ -> {
       }
     }

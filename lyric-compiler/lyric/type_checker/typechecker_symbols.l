@@ -100,11 +100,6 @@ pub func symbolTypeIdOpt(s: in Symbol): Option[TypeId] {
   }
 }
 
-// Check if an extern type is likely a delegate type by matching common patterns.
-// Without CLR metadata access (tracked in docs/42 #1622), this uses heuristics:
-// - System.Func`N, System.Action`N, System.Predicate`1
-// - Any type name containing: Delegate, Callback, Handler, Comparison, Converter, EventHandler
-// - Defers to metadata-based inheritance check in Phase 2 for other cases
 // Check if an extern type is a Func or Action delegate (Phase 1 scope).
 // Phase 1 (M5.2-M5.3) supports only System.Func and System.Action delegates.
 // Other delegate types (Predicate, EventHandler, Comparison, Converter, etc.)
