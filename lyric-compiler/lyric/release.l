@@ -158,19 +158,6 @@ func locateStdlib(programDllDir: in String): Option[String] {
   None
 }
 
-// Copy `src` to `dst` preserving the executable bit (native binaries must stay
-// runnable).
-func copyExecutable(src: in String, dst: in String): Result[Unit, String] {
-  val args: List[String] = newList()
-  args.add("-p")
-  args.add(src)
-  args.add(dst)
-  match Process.run("cp", args) {
-    case Ok(code) -> if code == 0 { Ok(value = ()) } else { Err(error = "cp exited " + toString(code)) }
-    case Err(e) -> Err(error = "cp failed: " + IOError.message(e))
-  }
-}
-
 // Resolve `p` to an absolute path against the process working directory.
 func absPath(p: in String): String {
   if Path.isAbsolute(p) {
@@ -694,7 +681,7 @@ pub func buildReleaseDotnet(
       "clang not found on PATH; install it before building Native AOT binaries\n"
         + "  Debian/Ubuntu: apt install clang\n"
         + "  Fedora:        dnf install clang\n"
-        + "  Alpine:        apk add clang"
+        + "  Alpine:        apk add clang binutils"
     )
     return 1
   }
