@@ -2904,7 +2904,7 @@ pub func tryReadResourceIn(ri: in ResourceImage, name: in String): Option[slice[
 // self-hosted bundle, so this no longer disambiguates stdlib — it is used only
 // to detect the convention of restored *non-stdlib* artifacts (the F#-emitted
 // compiler closure linked by the self-tests in the mint path), via
-// `dllHasNullaryInstanceField`, so cross-package nullary union-case
+// `dllNullaryInstanceInfo`, so cross-package nullary union-case
 // construction matches the producer DLL.
 // True when any TypeDef in the CLI image `bytes` has a backtick in its name,
 // indicating the self-hosted arity-suffix convention.  Split out from
@@ -2941,33 +2941,6 @@ func coreDllHasAritySuffixTypeDef(dllPath: in String): Bool {
   }
 }
 
-// True when the DLL at `dllPath` carries the self-hosted emitter's static
-// `Instance` singleton scheme for non-generic nullary union cases.  Scans the
-// Field table directly for a `static` field named exactly "Instance" declared
-// on a union-case-shaped TypeDef (name contains `_`, e.g. `Keyword_KwPackage`),
-// which is precisely what `lowerMNullaryUnionCase` emits and what a cross-
-// package `ldsfld Instance` resolves against.
-//
-// An earlier version delegated to arity-suffix detection (`Maybe`1``), but that
-// proxy is WRONG for self-hosted DLLs that define no generic type at all —
-// `Lyric.Lexer` declares the non-generic `Keyword` / `Token` / `Punct` unions
-// and nothing generic, so it carries no backtick TypeDef even though every one
-// of its ~70 keyword cases has an `Instance` singleton.  The proxy returned
-// false, so the restored path skipped the singleton MemberRef and the self-
-// emitted parser constructed each `KwFunc` / `KwPackage` via `newobj` — a fresh
-// instance that never `Object.Equals` the lexer's token keyword, so `isKw` /
-// `tryEatKw` always failed and the parser looped (#3920 self-re-emit blocker).
-// The direct field scan is exact: it returns true iff the `ldsfld Instance`
-// the consumer will emit actually resolves, so it cannot false-positive into a
-// `MissingFieldException` (the failure mode the name-scan was avoided for).
-// Returns false when the file is missing, unreadable, or carries no such field.
-pub func dllHasNullaryInstanceField(dllPath: in String): Bool {
-  match File.readBytes(dllPath) {
-    case Err(_) -> false
-    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) { case None -> false; case Some(ri) -> { val b = ri.img.bytes; val typeDefCount = rowCountOf(ri.th, 0x02); var row = 1; var found = false; while row <= typeDefCount and not found { val td = readTypeDef(ri.img, ri.layout, row); if Str.contains(td.name, "_") { val fr = fieldRange(ri.img, ri.layout, ri.th, row); var frow = fr.start; while frow <= fr.endRow and not found { val o = ri.layout.dataStart[0x04] + (frow - 1) * ri.layout.rowSize[0x04]; val flags = rdU16(b, o); val nameI = rdIdx(b, o + 2, ri.layout.stringIdx); val nm = stringAt(ri.img, ri.layout, nameI); if nm == "Instance" and (flags / 16) % 2 == 1 { found = true }; frow = frow + 1 } }; row = row + 1 }; found } }
-  }
-}
-
 // Information about nullary union case Instance singleton fields in a DLL.
 // `hasInstances` is true when the DLL contains at least one static field named
 // "Instance" on a TypeDef whose name contains "_" (the naming convention for
@@ -2979,19 +2952,68 @@ pub func dllHasNullaryInstanceField(dllPath: in String): Bool {
 // whose field signature differs from the FieldDef's field signature, so
 // `registerRestoredUnionCase` must create MemberRefs with the same element type
 // that the target DLL actually declares.
+//
+// Background: an earlier approach used the arity-suffix proxy
+// (`coreDllHasAritySuffixTypeDef`), but that is WRONG for self-hosted DLLs
+// that define no generic type — `Lyric.Lexer` carries ~70 keyword union cases
+// each with an `Instance` singleton yet has no backtick TypeDef, so the proxy
+// returned false and the restored path fell back to `newobj`, producing fresh
+// instances that never `Object.Equals` the lexer's keyword tokens (#3920).
 pub record InstanceFieldKind {
   hasInstances: Bool
   isClassTyped: Bool
 }
 
+// Helper: scan a parsed CLI image for nullary-case Instance fields and return
+// their element-type convention.  Extracted from `dllNullaryInstanceInfo` so
+// the multi-line loop body stays readable — `lyric fmt` collapses a nested-match
+// `Ok(raw) ->` arm onto a single line regardless of length (same pattern as
+// `imageHasBacktickTypeDef`).
+func imageNullaryInstanceInfo(bytes: in slice[Byte]): InstanceFieldKind {
+  match parseAssemblyImage(bytes) {
+    case None -> InstanceFieldKind(hasInstances = false, isClassTyped = false)
+    case Some(ri) -> {
+      val b = ri.img.bytes
+      val typeDefCount = rowCountOf(ri.th, 0x02)
+      var row = 1
+      var found = false
+      var classTyped = false
+      while row <= typeDefCount and not found {
+        val td = readTypeDef(ri.img, ri.layout, row)
+        if Str.contains(td.name, "_") {
+          val fr = fieldRange(ri.img, ri.layout, ri.th, row)
+          var frow = fr.start
+          while frow <= fr.endRow and not found {
+            val o = ri.layout.dataStart[0x04] + (frow - 1) * ri.layout.rowSize[0x04]
+            val flags = rdU16(b, o)
+            val nameI = rdIdx(b, o + 2, ri.layout.stringIdx)
+            val nm = stringAt(ri.img, ri.layout, nameI)
+            // Bit 4 of FieldAttributes is Static (0x0010); (flags / 16) % 2 == 1 tests it.
+            if nm == "Instance" and (flags / 16) % 2 == 1 {
+              found = true
+              val sigI = rdIdx(b, o + 2 + ri.layout.stringIdx, ri.layout.blobIdx)
+              val sig = blobAt(ri.img, ri.layout, sigI)
+              // Byte 1 of the FieldSig blob is the element type:
+              // 0x12 = ELEMENT_TYPE_CLASS (F#-era); 0x1c = ELEMENT_TYPE_OBJECT (self-hosted).
+              classTyped = sig.length >= 2 and rdU8(sig, 1) == 0x12
+            }
+            frow = frow + 1
+          }
+        }
+        row = row + 1
+      }
+      InstanceFieldKind(hasInstances = found, isClassTyped = classTyped)
+    }
+  }
+}
+
 // Scan `dllPath` once and return how its nullary-case Instance fields are typed.
-// Returns `hasInstances = false` when the file is missing, unreadable, or
-// contains no Instance field on a "_"-named TypeDef.  Returns
-// `InstanceFieldKind(false, false)` on any parse failure (safe default: no
+// Returns `InstanceFieldKind(false, false)` when the file is missing, unreadable,
+// or contains no Instance field on a "_"-named TypeDef — safe default (no
 // MemberRefs emitted, no resolution error).
 pub func dllNullaryInstanceInfo(dllPath: in String): InstanceFieldKind {
   match File.readBytes(dllPath) {
     case Err(_) -> InstanceFieldKind(hasInstances = false, isClassTyped = false)
-    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) { case None -> InstanceFieldKind(hasInstances = false, isClassTyped = false); case Some(ri) -> { val b = ri.img.bytes; val typeDefCount = rowCountOf(ri.th, 0x02); var row = 1; var found = false; var classTyped = false; while row <= typeDefCount and not found { val td = readTypeDef(ri.img, ri.layout, row); if Str.contains(td.name, "_") { val fr = fieldRange(ri.img, ri.layout, ri.th, row); var frow = fr.start; while frow <= fr.endRow and not found { val o = ri.layout.dataStart[0x04] + (frow - 1) * ri.layout.rowSize[0x04]; val flags = rdU16(b, o); val nameI = rdIdx(b, o + 2, ri.layout.stringIdx); val nm = stringAt(ri.img, ri.layout, nameI); if nm == "Instance" and (flags / 16) % 2 == 1 { found = true; val sigI = rdIdx(b, o + 2 + ri.layout.stringIdx, ri.layout.blobIdx); val sig = blobAt(ri.img, ri.layout, sigI); classTyped = sig.length >= 2 and rdU8(sig, 1) == 0x12 }; frow = frow + 1 } }; row = row + 1 }; InstanceFieldKind(hasInstances = found, isClassTyped = classTyped) } }
+    case Ok(raw) -> imageNullaryInstanceInfo(raw.toArray())
   }
 }
