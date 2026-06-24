@@ -333,7 +333,7 @@ func buildReleaseSingle(
   val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case Dotnet -> Release.DotnetAot }
   // JVM (GraalVM) release fails loud without doing a wasted .NET build.
   match releaseTarget {
-    case JvmNativeImage -> return Release.buildRelease(releaseTarget, "", "", newList(), ridArg, "")
+    case JvmNativeImage -> return Release.buildRelease(releaseTarget, "", "", newList(), ridArg, "", false)
     case DotnetAot -> ()
   }
 
@@ -354,14 +354,28 @@ func buildReleaseSingle(
 
   val srcDir = Path.dirname(sourcePath)
   val stem = stemOf(Path.basename(sourcePath), 2)  // strip ".l"
-  val stagingDll = Path.join(Path.join(srcDir, ".lyric-release"), stem + ".dll")
+  // Name the staging assembly after the PACKAGE, not the source filename.  The
+  // AOT trampoline references `<pkgName>.Program.main`, and AOT resolves it
+  // through the assembly's identity; if the assembly were named from the file
+  // stem (e.g. `im.dll` for `package IntMain`) that reference fails to load at
+  // runtime (FileNotFoundException for the package-named assembly).  The native
+  // output keeps the file-stem name (what the user expects from `foo.l`).
+  val stagingDll = Path.join(Path.join(srcDir, ".lyric-release"), pkgName + ".dll")
   val buildExit = buildOne(sourcePath, stagingDll, Dotnet, manifestArg)
   if buildExit != 0 {
     return buildExit
   }
 
   val outNative = match explicitOut { case Some(o) -> o; case None -> Path.join(srcDir, stem) }
-  Release.buildRelease(releaseTarget, stagingDll, pkgName, newList(), ridArg, outNative)
+  Release.buildRelease(
+    releaseTarget,
+    stagingDll,
+    pkgName,
+    newList(),
+    ridArg,
+    outNative,
+    Release.mainReturnsInt(srcText)
+  )
 }
 
 // Project-mode `lyric build --release` (no explicit source file): compile every
@@ -383,7 +397,7 @@ func buildReleaseProject(
   // fails loud without performing a wasted managed build.
   val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case Dotnet -> Release.DotnetAot }
   match releaseTarget {
-    case JvmNativeImage -> return Release.buildRelease(releaseTarget, "", "", newList(), ridArg, "")
+    case JvmNativeImage -> return Release.buildRelease(releaseTarget, "", "", newList(), ridArg, "", false)
     case DotnetAot -> ()
   }
 
@@ -421,6 +435,9 @@ func buildReleaseProject(
   // Every entry candidate is collected before reporting so a conflict lists
   // all offending packages at once instead of one pair per rebuild (#3219).
   val entryPkgNames: List[String] = newList()
+  // Return type of the entry package's `main`, captured alongside the entry
+  // detection so the AOT trampoline matches its emitted signature.
+  var entryReturnsInt = false
   var pi = 0
   while pi < proj.packages.count {
     val pkgEntry = proj.packages[pi]
@@ -463,6 +480,7 @@ func buildReleaseProject(
     }
     if Release.declaresEntryMain(combined) {
       entryPkgNames.add(pkgEntry.name)
+      entryReturnsInt = Release.mainReturnsInt(combined)
     }
     pi += 1
   }
@@ -560,7 +578,7 @@ func buildReleaseProject(
 
   val stem = stemOf(dllBase, 4)
   val outNative = match explicitOut { case Some(o) -> o; case None -> Path.join(mfDir, stem) }
-  Release.buildRelease(releaseTarget, stagingDll, entryPkgName, extraRefs, ridArg, outNative)
+  Release.buildRelease(releaseTarget, stagingDll, entryPkgName, extraRefs, ridArg, outNative, entryReturnsInt)
 }
 
 // Deterministic ascending sort of a file-path list.
