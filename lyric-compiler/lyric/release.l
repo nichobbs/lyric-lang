@@ -168,7 +168,6 @@ func absPath(p: in String): String {
 }
 
 // ─── ILC toolchain discovery ─────────────────────────────────────────────────
-
 // Probe `.csproj` content for a given RID.  No C# source files are included;
 // `dotnet restore` pulls the ILC packages and writes `project.assets.json` so
 // we can read the NuGet cache location and ILC version without driving
@@ -177,12 +176,12 @@ func absPath(p: in String): String {
 // requires net8.0 minimum; we lock to net10.0 because that is the minimum SDK
 // version Lyric requires (see docs/05-implementation-plan.md §Prerequisites).
 func probeProjectContent(rid: in String): String {
-  "<Project Sdk=\"Microsoft.NET.Sdk\">\n" +
-    "  <PropertyGroup>\n" +
-    "    <OutputType>Exe</OutputType>\n" +
+  "<Project Sdk=\"Microsoft.NET.Sdk\">\n" + "  <PropertyGroup>\n" + "    <OutputType>Exe</OutputType>\n" +
     "    <TargetFramework>net10.0</TargetFramework>\n" +
     "    <PublishAot>true</PublishAot>\n" +
-    "    <RuntimeIdentifier>" + rid + "</RuntimeIdentifier>\n" +
+    "    <RuntimeIdentifier>" +
+    rid +
+    "</RuntimeIdentifier>\n" +
     "    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>\n" +
     "  </PropertyGroup>\n" +
     "</Project>\n"
@@ -241,10 +240,7 @@ func parseIlcVersion(assetsJson: in String, rid: in String): Option[String] {
 func semverMajor(version: in String): Int {
   match Str.indexOf(version, ".") {
     case None -> 0
-    case Some(dot) -> match Parse.tryParseInt(Str.substring(version, 0, dot)) {
-      case Ok(n) -> n
-      case Err(_) -> 0
-    }
+    case Some(dot) -> match Parse.tryParseInt(Str.substring(version, 0, dot)) { case Ok(n) -> n; case Err(_) -> 0 }
   }
 }
 
@@ -272,12 +268,15 @@ func restoreIlcProbe(stageDir: in String, rid: in String): Result[IlcPaths, Stri
   restoreArgs.add("--nologo")
   val restoreResult = PC.runCaptureWithDiagnosticsTimeout("dotnet", restoreArgs, "", 300000)
   if restoreResult.timedOut {
-    return Err(error = "dotnet restore for ILC toolchain timed out (5-minute limit); check network connectivity or NuGet feed availability")
+    return Err(
+      error = "dotnet restore for ILC toolchain timed out (5-minute limit); check network connectivity or NuGet feed availability"
+    )
   }
   if restoreResult.exitCode != 0 {
     return Err(
       error = "dotnet restore for ILC toolchain failed (exit " + toString(restoreResult.exitCode) + "):\n" +
-        restoreResult.stdout + restoreResult.stderr
+        restoreResult.stdout +
+        restoreResult.stderr
     )
   }
 
@@ -297,9 +296,13 @@ func restoreIlcProbe(stageDir: in String, rid: in String): Result[IlcPaths, Stri
     case Some(v) -> v
     case None -> return Err(
       error = "could not find ILC version for RID '" + rid + "' in project.assets.json. " +
-        "ILC is a NuGet package (runtime." + rid + ".Microsoft.DotNet.ILCompiler), not a workload — " +
+        "ILC is a NuGet package (runtime." +
+        rid +
+        ".Microsoft.DotNet.ILCompiler), not a workload — " +
         "check that the NuGet feed is reachable and retry: " +
-        "`dotnet restore --verbosity detailed " + csprojPath + "`"
+        "`dotnet restore --verbosity detailed " +
+        csprojPath +
+        "`"
     )
   }
 
@@ -332,7 +335,12 @@ func restoreIlcProbe(stageDir: in String, rid: in String): Result[IlcPaths, Stri
   if not File.dirExists(sdkPath) {
     return Err(
       error = "NativeAOT runtime pack not found at '" + nativeaotRoot + "'. " +
-        "Expected microsoft.netcore.app.runtime.nativeaot." + rid + "/" + ilcVersion + " in " + pkgsDir
+        "Expected microsoft.netcore.app.runtime.nativeaot." +
+        rid +
+        "/" +
+        ilcVersion +
+        " in " +
+        pkgsDir
     )
   }
 
@@ -340,7 +348,6 @@ func restoreIlcProbe(stageDir: in String, rid: in String): Result[IlcPaths, Stri
 }
 
 // ─── ILC RSP construction ─────────────────────────────────────────────────────
-
 // Feature flags and runtime knobs for AOT compilation.  These disable
 // reflection-heavy and JIT-dependent subsystems incompatible with static
 // compilation and trim unused framework code paths.  The list mirrors what
@@ -350,7 +357,9 @@ func appendAotFeatureLines(lines: in List[String]): Unit {
   lines.add("--feature:Microsoft.Extensions.DependencyInjection.VerifyOpenGenericServiceTrimmability=true")
   lines.add("--feature:System.ComponentModel.DefaultValueAttribute.IsSupported=false")
   lines.add("--feature:System.ComponentModel.Design.IDesignerHost.IsSupported=false")
-  lines.add("--feature:System.ComponentModel.TypeConverter.EnableUnsafeBinaryFormatterInDesigntimeLicenseContextSerialization=false")
+  lines.add(
+    "--feature:System.ComponentModel.TypeConverter.EnableUnsafeBinaryFormatterInDesigntimeLicenseContextSerialization=false"
+  )
   lines.add("--feature:System.ComponentModel.TypeDescriptor.IsComObjectDescriptorSupported=false")
   lines.add("--feature:System.Data.DataSet.XmlSerializationIsSupported=false")
   lines.add("--feature:System.Diagnostics.Tracing.EventSource.IsSupported=false")
@@ -375,7 +384,9 @@ func appendAotFeatureLines(lines: in List[String]): Unit {
   lines.add("--runtimeknob:Microsoft.Extensions.DependencyInjection.VerifyOpenGenericServiceTrimmability=true")
   lines.add("--runtimeknob:System.ComponentModel.DefaultValueAttribute.IsSupported=false")
   lines.add("--runtimeknob:System.ComponentModel.Design.IDesignerHost.IsSupported=false")
-  lines.add("--runtimeknob:System.ComponentModel.TypeConverter.EnableUnsafeBinaryFormatterInDesigntimeLicenseContextSerialization=false")
+  lines.add(
+    "--runtimeknob:System.ComponentModel.TypeConverter.EnableUnsafeBinaryFormatterInDesigntimeLicenseContextSerialization=false"
+  )
   lines.add("--runtimeknob:System.ComponentModel.TypeDescriptor.IsComObjectDescriptorSupported=false")
   lines.add("--runtimeknob:System.Data.DataSet.XmlSerializationIsSupported=false")
   lines.add("--runtimeknob:System.Diagnostics.Tracing.EventSource.IsSupported=false")
@@ -389,7 +400,9 @@ func appendAotFeatureLines(lines: in List[String]): Unit {
   lines.add("--runtimeknob:System.Runtime.InteropServices.BuiltInComInterop.IsSupported=false")
   lines.add("--runtimeknob:System.Runtime.InteropServices.EnableConsumingManagedCodeFromNativeHosting=false")
   lines.add("--runtimeknob:System.Runtime.InteropServices.EnableCppCLIHostActivation=false")
-  lines.add("--runtimeknob:System.Runtime.InteropServices.Marshalling.EnableGeneratedComInterfaceComImportInterop=false")
+  lines.add(
+    "--runtimeknob:System.Runtime.InteropServices.Marshalling.EnableGeneratedComInterfaceComImportInterop=false"
+  )
   lines.add("--runtimeknob:System.Runtime.Serialization.EnableUnsafeBinaryFormatterSerialization=false")
   lines.add("--runtimeknob:System.StartupHookProvider.IsSupported=false")
   lines.add("--runtimeknob:System.Text.Encoding.EnableUnsafeUTF7Encoding=false")
@@ -405,7 +418,13 @@ func ridOs(rid: in String): String {
     case None -> rid
     case Some(i) -> {
       val os = Str.substring(rid, 0, i)
-      if os == "osx" { "osx" } else if os == "win" { "windows" } else { os }
+      if os == "osx" {
+        "osx"
+      } else if os == "win" {
+        "windows"
+      } else {
+        os
+      }
     }
   }
 }
@@ -450,9 +469,7 @@ func buildIlcRsp(
       }
     }
     case Err(e) -> {
-      return Err(
-        error = "could not enumerate framework DLLs from '" + paths.frameworkPath + "': " + IOError.message(e)
-      )
+      return Err(error = "could not enumerate framework DLLs from '" + paths.frameworkPath + "': " + IOError.message(e))
     }
   }
 
@@ -538,7 +555,6 @@ func buildIlcRsp(
 }
 
 // ─── Linker invocation (Unix / clang) ────────────────────────────────────────
-
 // Build the clang linker argument list for a Unix native executable.
 // Returns all args in the order: obj file, -o output, native libs, linker flags.
 func buildLinkerArgsUnix(
@@ -615,7 +631,6 @@ func buildLinkerArgsUnix(
 }
 
 // ─── Top-level release pipeline ──────────────────────────────────────────────
-
 /// Produce a native binary from an already-built program DLL via .NET Native AOT.
 ///
 /// Drives `ilc` and the platform linker directly — no generated C#, no
@@ -686,23 +701,16 @@ pub func buildReleaseDotnet(
   val clangCheck = PC.runCaptureWithDiagnosticsTimeout("clang", clangVersionArgs, "", 10000)
   if clangCheck.exitCode != 0 {
     releaseErr(
-      "clang not found on PATH; install it before building Native AOT binaries\n"
-        + "  Debian/Ubuntu: apt install clang\n"
-        + "  Fedora:        dnf install clang\n"
-        + "  Alpine:        apk add clang binutils"
+      "clang not found on PATH; install it before building Native AOT binaries\n" + "  Debian/Ubuntu: apt install clang\n" +
+        "  Fedora:        dnf install clang\n" +
+        "  Alpine:        apk add clang binutils"
     )
     return 1
   }
 
   // Ensure the ILC toolchain is present in the NuGet cache and discover its paths.
   Console.println("release: resolving ILC toolchain for " + rid + " ...")
-  val paths = match restoreIlcProbe(stageDir, rid) {
-    case Ok(p) -> p
-    case Err(msg) -> {
-      releaseErr(msg)
-      return 1
-    }
-  }
+  val paths = match restoreIlcProbe(stageDir, rid) { case Ok(p) -> p; case Err(msg) -> { releaseErr(msg); return 1 } }
 
   // Derive output paths.
   val stem = match Str.indexOf(Path.basename(absProgramDll), ".") {
