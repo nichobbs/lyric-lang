@@ -6131,7 +6131,26 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           val returnsVoid = match retType { case Some(MVoid) -> true; case None -> true; case _ -> false }
           // Phase 1 strongly-typed lambdas: retrieve the propagated parameter types
           // so the delegate constructor token matches the actual method signature.
-          val propagatedParamTypes = match mapGet(cctx.lambdaParamTypes, lname) { case Some(ts) -> ts; case None -> newList() }
+          var propagatedParamTypes = match mapGet(cctx.lambdaParamTypes, lname) { case Some(ts) -> ts; case None -> newList() }
+          // FIXED #4067: For explicitly-annotated lambdas outside HOF context, derive param types from annotations
+          // instead of falling back to object-based delegates (which would mismatch the actual method signature).
+          if propagatedParamTypes.count == 0 and nparams > 0 {
+            var paramIdx = 0
+            while paramIdx < nparams {
+              val param = lparams[paramIdx]
+              match param.ty {
+                case Some(te) -> {
+                  // Explicitly annotated: use the annotated type
+                  propagatedParamTypes.add(typeExprToMsilCtx(cctx, te, fctx.pkgName))
+                }
+                case None -> {
+                  // Unannotated: will use object (no other choice outside HOF context)
+                  propagatedParamTypes.add(MObject)
+                }
+              }
+              paramIdx = paramIdx + 1
+            }
+          }
           val ctorTok = if returnsVoid {
             if nparams == 0 {
               cctx.tokActionCtor
@@ -12390,13 +12409,22 @@ func buildActionNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTyp
     ai = ai + 1
   }
   val gblob = buildGenericInstBlob(codedIdx, actualArgs)
-  val specKey = "ActionSpec_typed_" + toString(nparams)
+  // FIXED #4060/#4066: Cache keys must include actual parameter types to avoid collision
+  // when two lambdas have same param count but different types (e.g. {x: Int} vs {x: String})
+  var typeKeySuffix = ""
+  var ti = 0
+  while ti < paramTypes.count and ti < nparams {
+    typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(paramTypes[ti])
+    ti = ti + 1
+  }
+  val specKey = "ActionSpec_typed_" + toString(nparams) + typeKeySuffix
   val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
   val ctorPs: List[MsilType] = newList()
   ctorPs.add(MObject)
   ctorPs.add(MNativeInt)
   val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
-  val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "action_ctor_typed_" + toString(nparams), ctorSig)
+  // FIXED #4066: MemberRef cache key must also include type suffix to avoid collision
+  val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "action_ctor_typed_" + toString(nparams) + typeKeySuffix, ctorSig)
   0x0A000000 + mrRow
 }
 
@@ -12488,7 +12516,8 @@ func buildFuncNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTypes
   ctorPs.add(MObject)
   ctorPs.add(MNativeInt)
   val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
-  val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "func_ctor_typed_" + toString(nparams), ctorSig)
+  // FIXED #4066: MemberRef cache key must also include type suffix to avoid collision
+  val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "func_ctor_typed_" + toString(nparams) + typeKeySuffix, ctorSig)
   0x0A000000 + mrRow
 }
 
