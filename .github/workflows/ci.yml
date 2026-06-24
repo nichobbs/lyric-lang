@@ -3410,34 +3410,21 @@ jobs:
           fi
           echo "cross-package pub val inlines through restored-dep contract metadata"
 
-      # Per-package compiler emit (#2592 slice 2).  emitPerPackageClosure now
-      # emits the COMPILER-package closure (Lyric.* / Msil.* / Jvm.*) — not just
-      # the stdlib — as separate Lyric.<Pkg>.dll assemblies, threading each
-      # package's transitive compiler-import closure (already emitted) as
-      # restored deps, so cross-package types AND inlined constants (#2592
-      # slice 1) resolve across the assembly boundary.  This emits the
-      # typechecker self-test's compiler closure (Lexer + Parser + TypeChecker)
-      # and asserts the per-package DLLs exist, then runs the self-test against
-      # the emit output as a TRIPWIRE (not a pass gate).  Before #3199 this
-      # step claimed to execute the self-hosted-emitted DLLs but never did:
-      # findCompiledLibDir gates the LYRIC_STDLIB_BIN override through
-      # dirHasCompiledStdlib, which requires the *bundle* Lyric.Stdlib.dll as a
-      # marker that --internal-perpackage-build does not emit, so the override
-      # was silently rejected and the F#-linked path was validated instead.
-      # The bundle is now copied in so the override is honored — but executing
-      # the self-hosted-emitted closure currently fails on a known
-      # producer/consumer naming gap: the per-package emitter DEFINES generic
-      # stdlib types arity-suffixed (`Option`1`, the docs/43 correctness fix)
-      # while consumer references are emitted UNSUFFIXED to match the F#-built
-      # DLLs they normally link, so the run dies with "Could not load type
-      # 'Std.Core.Option'" (further execution-cleanliness gaps are tracked in
-      # docs/41 R7).  The exact failure signature varies by environment (the
-      # type-load error locally; per-test failures on CI runners), so the
-      # tripwire pins only the PASS direction: a PASS means either the
-      # override silently fell back to the F#-linked path again
-      # (dirHasCompiledStdlib regression) or the naming gap was fixed — in the
-      # latter case promote this to a positive pass gate.  Any failure is the
-      # known-gap state; its tail is printed for visibility.
+      # Per-package compiler emit (#2592 slice 2, #3199 positive pass gate).
+      # emitPerPackageClosure emits the COMPILER-package closure (Lyric.* /
+      # Msil.* / Jvm.*) as separate Lyric.<Pkg>.dll assemblies, threading each
+      # package's transitive compiler-import closure as restored deps, so
+      # cross-package types AND inlined constants (#2592 slice 1) resolve
+      # across the assembly boundary.  This emits the typechecker self-test's
+      # compiler closure (Lexer + Parser + TypeChecker) and asserts the
+      # per-package DLLs exist, then runs the self-test against the emit
+      # output as a POSITIVE PASS GATE.  The former docs/43 producer/consumer
+      # naming gap (per-package emitter defined generic stdlib types
+      # arity-suffixed while consumer TypeRefs were emitted unsuffixed) is
+      # fixed by the always-emit-arity-TypeRefs change (#3199): both producer
+      # and consumer now use the suffixed form consistently.  The bundle marker
+      # `Lyric.Stdlib.dll` is copied in so `findCompiledLibDir` honors the
+      # LYRIC_STDLIB_BIN override through `dirHasCompiledStdlib`.
       - name: Per-package compiler emit (#2592 self-hosted compiler DLLs)
         working-directory: ${{ github.workspace }}
         run: |
@@ -3462,11 +3449,11 @@ jobs:
           rc=0
           out="$(LYRIC_STDLIB_BIN="$work/out" "$lyric_bin" test "$st" --target dotnet 2>&1)" || rc=$?
           printf '%s\n' "$out" | tail -20
-          if [ "$rc" -eq 0 ]; then
-            echo "::error::typechecker self-test PASSED against the per-package emit output. Either LYRIC_STDLIB_BIN silently fell back to the F#-linked path (dirHasCompiledStdlib regression) or the docs/43 naming gap is fixed — if the latter, promote this tripwire to a positive pass gate (#3199)."
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::typechecker self-test FAILED against per-package emit output (docs/43 naming gap re-opened, or LYRIC_STDLIB_BIN silently fell back to the F#-linked path)"
             exit 1
           fi
-          echo "per-package compiler closure emits and links; LYRIC_STDLIB_BIN honored; execution still blocked by the known docs/43 producer/consumer gap (tripwire, #3199)"
+          echo "per-package compiler closure emits and runs correctly (docs/43 naming gap fixed, positive pass gate #3199)"
 
       # Full self-hosted stdlib (#2592 slice 3).  Every Std.* package — including
       # ones the F# stage-0 emitter cannot compile (e.g. Std.Sort, whose
