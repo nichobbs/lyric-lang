@@ -173,6 +173,9 @@ func absPath(p: in String): String {
 // `dotnet restore` pulls the ILC packages and writes `project.assets.json` so
 // we can read the NuGet cache location and ILC version without driving
 // `dotnet publish` or generating any C#.
+// The probe TFM must match the .NET SDK version we target. Native AOT via ILC
+// requires net8.0 minimum; we lock to net10.0 because that is the minimum SDK
+// version Lyric requires (see docs/05-implementation-plan.md §Prerequisites).
 func probeProjectContent(rid: in String): String {
   "<Project Sdk=\"Microsoft.NET.Sdk\">\n" +
     "  <PropertyGroup>\n" +
@@ -185,11 +188,13 @@ func probeProjectContent(rid: in String): String {
     "</Project>\n"
 }
 
-// Extract the value of a `"key": "value"` JSON string field.
-// Finds the first occurrence of `"<key>":` and returns the quoted value after it.
+// Extract the value of a top-level `"key": "value"` JSON string field.
+// Searches for `\n  "<key>":` (newline + two-space indent) to match root-level
+// keys in a pretty-printed `project.assets.json` and avoid false matches on
+// identically-named keys inside nested library entries.
 // Only handles simple string values (no nested objects).
 func jsonStringField(json: in String, key: in String): Option[String] {
-  val tag = "\"" + key + "\":"
+  val tag = "\n  \"" + key + "\":"
   match Str.indexOf(json, tag) {
     case None -> None
     case Some(tagIdx) -> {
@@ -266,6 +271,9 @@ func restoreIlcProbe(stageDir: in String, rid: in String): Result[IlcPaths, Stri
   restoreArgs.add(csprojPath)
   restoreArgs.add("--nologo")
   val restoreResult = PC.runCaptureWithDiagnosticsTimeout("dotnet", restoreArgs, "", 300000)
+  if restoreResult.timedOut {
+    return Err(error = "dotnet restore for ILC toolchain timed out (5-minute limit); check network connectivity or NuGet feed availability")
+  }
   if restoreResult.exitCode != 0 {
     return Err(
       error = "dotnet restore for ILC toolchain failed (exit " + toString(restoreResult.exitCode) + "):\n" +
