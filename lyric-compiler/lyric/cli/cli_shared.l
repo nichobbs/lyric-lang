@@ -200,10 +200,7 @@ func checkSdkVersion(): Int {
   if not File.fileExists(sdkVersionPath) {
     return 0
   }
-  val text = match File.readText(sdkVersionPath) {
-    case Err(_) -> return 0
-    case Ok(t) -> t
-  }
+  val text = match File.readText(sdkVersionPath) { case Err(_) -> return 0; case Ok(t) -> t }
   // Minimal extraction: find "compiler_version": "X.Y.Z" in the JSON blob.
   val key = "\"compiler_version\": \""
   val keyPos = text.indexOf(key)
@@ -220,8 +217,9 @@ func checkSdkVersion(): Int {
     return 0
   }
   printErr(
-    "warning: SDK version mismatch: compiler is " + VERSION() +
-      " but Lyric.Stdlib.dll was built with compiler " + sdkVer + "."
+    "warning: SDK version mismatch: compiler is " + VERSION() + " but Lyric.Stdlib.dll was built with compiler " +
+      sdkVer +
+      "."
   )
   printErr("  Hint: run 'lyric restore' or reinstall the Lyric SDK to align versions.")
   if Environment.getVarOrDefault("LYRIC_STRICT_SDK_VERSION", "") == "1" {
@@ -457,90 +455,32 @@ func findCompiledLibDir(): String {
   ""
 }
 
-// Co-locate the split stdlib runtime assemblies (`Lyric.Stdlib.*.dll` — the
-// per-package façades, their `*Host` shims) plus `FSharp.Core.dll` from the
-// SDK/publish lib dir `srcDir` next to the assembly at `outPath`.  The
-// self-hosted codegen references the stdlib under split per-package assembly
-// names, but a manifest dependency build only ships the bundled
-// `Lyric.Stdlib.dll`; co-locating the split DLLs lets `dotnet exec` resolve
-// them (flat `additionalProbingPaths` do not work for a non-NuGet layout).
-// Best-effort: existing files are left in place and copy failures are
-// non-fatal — the run then surfaces the original assembly-load error.
-// Always overwrites existing DLLs so stale copies from previous runs are
-// replaced when the stdlib is rebuilt.
+// Co-locate the stdlib runtime assemblies (the single `Lyric.Stdlib.dll` bundle
+// plus the per-package HTTP/async DLLs not yet bundleable, #4030) from the
+// SDK/publish lib dir `srcDir` next to the assembly at `outPath`, so `dotnet
+// exec` resolves them at run time (flat `additionalProbingPaths` do not work
+// for a non-NuGet layout).  Best-effort: copy failures are non-fatal — the run
+// then surfaces the original assembly-load error.  Always overwrites existing
+// DLLs so stale copies from previous runs are replaced when the stdlib is
+// rebuilt.
 func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
   if srcDir.length == 0 {
     return
   }
   val destDir = Path.dirname(outPath)
-  // ALL compiled output (user programs, test programs, woven code) is emitted by
-  // the self-hosted codegen with arity-suffixed generic type references
-  // (`Option`1`, `Result_Ok`1`).  A mint-bootstrapped toolchain's own runtime
-  // stdlib (the `Lyric.Stdlib.*.dll` beside the compiler) is built by the
-  // non-suffixing stage-0 emitter, so linking it for output faults at load with
-  // `Could not load type 'Std.Core.Option`1'`.  When a self-hosted-emitted
-  // (suffixed) stdlib is staged under `<srcDir>/userlib/`, link THAT for output
-  // so the suffixed references resolve; the compiler keeps its own non-suffixed
-  // stdlib in its process's appBase, untouched.  A fully self-hosted toolchain
-  // has no `userlib/` (its own stdlib is already suffixed) and falls back to
-  // `srcDir`.
-  //
-  // Output that links compiler packages (a `@test_module` importing
-  // `Lyric.Weaver` etc.) must link the SELF-HOSTED (suffixed) compiler DLLs from
-  // `<libdir>/selfhosted/` — not the mint stage-1 bundle — so they too match the
-  // suffixed `userlib` Core; that staging is the toolchain build's job
-  // (`stage-selfhosted-compiler.sh`), not this co-location step.
-  val userlib = Path.join(srcDir, "userlib")
-  val userlibActive = File.fileExists(Path.join(userlib, "Lyric.Stdlib.Core.dll"))
-  // Copy Lyric.Stdlib.*.dll from srcDir first (the base set — may include modules
-  // the compiler closure doesn't import, e.g. Lyric.Stdlib.Sort.dll).  Then, when
-  // userlib/ is active, overlay it: copying from userlib/ overwrites srcDir copies
-  // for modules present in both, so the arity-suffixed self-hosted versions win.
-  // This union strategy ensures every stdlib module available in the toolchain dir
-  // is co-located beside the output, regardless of which subset the userlib/ staging
-  // driver imported.
+  // Co-locate the stdlib beside the output: copy every Lyric.Stdlib*.dll (the
+  // single Lyric.Stdlib.dll bundle plus the per-package HTTP/async DLLs that are
+  // not yet bundleable, #4030) from the toolchain dir so `dotnet exec` resolves
+  // them at run time.  The self-hosted emitter always emits arity-suffixed
+  // generic references (#4019) and the stdlib beside the compiler is itself
+  // self-hosted, so the historical mint-vs-self-hosted `userlib/` overlay and the
+  // F#-era FSharp.Core/Lyric.Emitter copy are gone.
   match File.listFiles(srcDir) {
     case Err(_) -> ()
     case Ok(fs) -> {
       for f in fs.toArray() {
         val base = Path.basename(f)
         if Str.startsWith(base, "Lyric.Stdlib") and Str.endsWith(base, ".dll") {
-          val dest = Path.join(destDir, base)
-          match File.readBytes(f) {
-            case Ok(bs) -> {
-              val _ = File.writeBytes(dest, bs)
-            }
-            case Err(_) -> ()
-          }
-        }
-      }
-    }
-  }
-  if userlibActive {
-    match File.listFiles(userlib) {
-      case Err(_) -> ()
-      case Ok(fs) -> {
-        for f in fs.toArray() {
-          val base = Path.basename(f)
-          if Str.startsWith(base, "Lyric.Stdlib") and Str.endsWith(base, ".dll") {
-            val dest = Path.join(destDir, base)
-            match File.readBytes(f) {
-              case Ok(bs) -> {
-                val _ = File.writeBytes(dest, bs)
-              }
-              case Err(_) -> ()
-            }
-          }
-        }
-      }
-    }
-  }
-  match File.listFiles(srcDir) {
-    case Err(_) -> ()
-    case Ok(fs) -> {
-      for f in fs.toArray() {
-        val base = Path.basename(f)
-        if base == "FSharp.Core.dll" or base == "Lyric.Emitter.dll" {
           val dest = Path.join(destDir, base)
           match File.readBytes(f) {
             case Ok(bs) -> {
