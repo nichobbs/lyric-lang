@@ -6150,24 +6150,35 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               paramIdx = paramIdx + 1
             }
           }
-          // FIXED #4070: Choose the correct delegate type based on the lambda's signature.
-          // Predicate[T]: (T) -> bool
-          // Comparison[T]: (T, T) -> int
-          // Otherwise: Action<T,...> or Func<T,...,R>
+          // Delegate type selection for Phase 1 lambdas.
+          // Special-case Predicate[T] and Comparison[T] only for explicitly-annotated lambdas
+          // to avoid #4077 regression where shape-based detection breaks HOF parameter passing.
+          // Propagated types from HOF generics use Func/Action regardless of shape.
+          var hasExplicitAnnotation = false
+          if nparams > 0 {
+            var pIdx = 0
+            while pIdx < nparams {
+              if match lparams[pIdx].ty { case Some(_) -> true; case None -> false } {
+                hasExplicitAnnotation = true
+              }
+              pIdx = pIdx + 1
+            }
+          }
           val ctorTok = if returnsVoid {
             if nparams == 0 {
               cctx.tokActionCtor
             } else {
               buildActionNCtorTokWithTypes(cctx, nparams, propagatedParamTypes)
             }
-          } else if nparams == 1 and match retType { case Some(MBool) -> true; case _ -> false } {
-            // Single parameter returning bool: use Predicate[T]
+          } else if hasExplicitAnnotation and nparams == 1 and match retType { case Some(MBool) -> true; case _ -> false } {
+            // Explicitly-annotated single parameter returning bool: use Predicate[T] (FFI delegate case)
             buildPredicateCtorTok(cctx, propagatedParamTypes[0])
-          } else if nparams == 2 and match retType { case Some(MInt) -> true; case _ -> false } {
-            // Two parameters returning int: use Comparison[T]
+          } else if hasExplicitAnnotation and nparams == 2 and match retType { case Some(MInt) -> true; case _ -> false } {
+            // Explicitly-annotated two parameters returning int: use Comparison[T] (FFI delegate case)
             buildComparisonCtorTok(cctx, propagatedParamTypes[0])
           } else {
-            buildFuncNCtorTokWithTypes(cctx, nparams, propagatedParamTypes)
+            val actualRetType = match retType { case Some(t) -> t; case None -> MObject }
+            buildFuncNCtorTokWithTypes(cctx, nparams, propagatedParamTypes, actualRetType)
           }
           // Delegate target: Phase 2 tries to instantiate a __Closure<N> record if it
           // exists; falls back to Phase 1 object[] for backwards compatibility.
@@ -12521,15 +12532,15 @@ func buildFuncNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
   0x0A000000 + mrRow
 }
 
-// Build a newobj token for System.Func`(nparams+1)<T1,...,Tn,object>::.ctor(object, nativeint)
-// with actual parameter types instead of hardcoded object.
+// Build a newobj token for System.Func`(nparams+1)<T1,...,Tn,TResult>::.ctor(object, nativeint)
+// with actual parameter types and actual return type instead of hardcoded object.
 // Used by Phase 1 strongly-typed lambdas to match the method signature.
-func buildFuncNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType]): Int {
+func buildFuncNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType], retType: in MsilType): Int {
   // If we have fewer actual types than expected params, fall back to the object-based version
   if paramTypes.count < nparams {
     return buildFuncNCtorTok(cctx, nparams)
   }
-  // Build the generic instantiation blob with the actual parameter types plus object return type
+  // Build the generic instantiation blob with the actual parameter types plus actual return type
   val trN = internFuncTypeRef(cctx, nparams)
   val codedIdx = (trN * 4) + 1
   val actualArgs: List[MsilType] = newList()
@@ -12538,7 +12549,7 @@ func buildFuncNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTypes
     actualArgs.add(paramTypes[ai])
     ai = ai + 1
   }
-  actualArgs.add(MObject) // return type is always object for lambda delegates
+  actualArgs.add(retType)
   val gblob = buildGenericInstBlob(codedIdx, actualArgs)
   // FIXED #4060: Cache key must include actual parameter types to avoid collision
   // when two lambdas have same param count but different types (e.g. {x: Int} vs {x: String})
