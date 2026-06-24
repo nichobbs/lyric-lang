@@ -3216,9 +3216,11 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
   // call ABI sound).
   //
   // A lambda can also satisfy a delegate-typed extern parameter (e.g.,
-  // System.Predicate<T>, System.Func<T,R>), enabling FFI delegate
+  // System.Func<T,R>, System.Action<T>), enabling FFI delegate
   // instantiation (#1877, docs/50).  Non-delegate extern types reject
-  // lambdas to prevent type-safety regressions (#3889).
+  // lambdas to prevent type-safety regressions (#3889).  Phase 2 (docs/42)
+  // will add metadata-based detection for Predicate, Comparison, and custom
+  // delegate types.
   match unrefine(paramTy) {
     case TyUser(uid, _, _) -> {
       if symTableIsExternDelegateType(tbl, uid) {
