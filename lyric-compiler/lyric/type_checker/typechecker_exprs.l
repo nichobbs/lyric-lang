@@ -1580,11 +1580,7 @@ func fieldTypeUsesVar(name: in String, ty: in Type): Bool {
 // `eraseTyVars` in `bindPatternTyped` for pattern-bound variables).  When true,
 // the inference failure for `name` is due to type-variable erasure, not a real
 // mismatch — T0110 should be suppressed for this parameter.
-func anyFieldArgIsLenientForParam(
-  name: in String,
-  fieldTypes: in List[Type],
-  orderedArgTypes: in List[Type],
-): Bool {
+func anyFieldArgIsLenientForParam(name: in String, fieldTypes: in List[Type], orderedArgTypes: in List[Type]): Bool {
   var i = 0
   while i < fieldTypes.count and i < orderedArgTypes.count {
     if fieldTypeUsesVar(name, fieldTypes[i]) {
@@ -3218,6 +3214,25 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
   // `() -> Never` passed to `assertPanics(label, fn: in () -> Unit)`.
   // Parameter lists must still match positionally (typeEquiv keeps the
   // call ABI sound).
+  //
+  // A lambda can also satisfy a delegate-typed extern parameter (e.g.,
+  // System.Func<T,R>, System.Action<T>), enabling FFI delegate
+  // instantiation (#1877, docs/50).  Non-delegate extern types reject
+  // lambdas to prevent type-safety regressions (#3889).  Phase 2 (docs/42)
+  // will add metadata-based detection for Predicate, Comparison, and custom
+  // delegate types.
+  match unrefine(paramTy) {
+    case TyUser(uid, _, _) -> {
+      if symTableIsExternDelegateType(tbl, uid) {
+        match unrefine(argTy) {
+          case TyFunction(_, _, _) -> return true
+          case _ -> ()
+        }
+      }
+    }
+    case _ -> {
+    }
+  }
   match unrefine(argTy) {
     case TyFunction(aps, ar, _) -> {
       match unrefine(paramTy) {

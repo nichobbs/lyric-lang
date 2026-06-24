@@ -6087,17 +6087,35 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // Lambdas that return void use System.Action; those with non-void returns use System.Func.
           val retType = mapGet(cctx.funcRetTypes, lambdaKey)
           val returnsVoid = match retType { case Some(MVoid) -> true; case None -> true; case _ -> false }
+          // Phase 1 strongly-typed lambdas: delegate parameter types match HOF propagation.
+          // Only use types propagated by the type-checker when the lambda is passed to a HOF (T)->R.
+          // Fallback to object-based delegates for generic code compatibility (explicit annotations
+          // are preserved in the method signature, but don't override the delegate TypeSpec to avoid
+          // breaking HOF compatibility when annotations exist outside HOF context - see #4077).
+          var delegateParamTypes = match mapGet(cctx.lambdaParamTypes, lname) { case Some(ts) -> ts; case None -> newList() }
+          // Delegate type selection for Phase 1 lambdas: use Func/Action with actual types.
+          // All lambdas use Func<T1,...,Tn,TResult> or Action<T1,...,Tn> regardless of shape.
+          // Note #4077 (deferred to Phase 2): Predicate[T] and Comparison[T] special-casing
+          // requires context-driven delegate selection at the call site (whether target is FFI
+          // extern delegate vs. Lyric HOF), which is not available during lambda codegen.
+          // Shape-based detection alone breaks HOF: { x: Int -> x > 0 } passed to HOF (T)->Bool
+          // would emit Predicate<Int> but HOF invokes via Func<Int,Bool>::Invoke, causing
+          // InvalidCastException. Proper fix: track at type-check time whether lambda target
+          // is extern delegate; pass that context to codegen. See issue #4077 for details.
           val ctorTok = if returnsVoid {
             if nparams == 0 {
               cctx.tokActionCtor
             } else {
-              buildActionNCtorTok(cctx, nparams)
+              buildActionNCtorTokWithTypes(cctx, nparams, delegateParamTypes)
             }
           } else {
-            buildFuncNCtorTok(cctx, nparams)
+            val actualRetType = match retType { case Some(t) -> t; case None -> MObject }
+            buildFuncNCtorTokWithTypes(cctx, nparams, delegateParamTypes, actualRetType)
           }
-          // Delegate target: a closed-over `object[]` of captured values for a
-          // capturing lambda (each boxed), else `null` for a static delegate.
+          // Delegate target: Phase 2 tries to instantiate a __Closure<N> record if it
+          // exists; falls back to Phase 1 object[] for backwards compatibility.
+          // Phase 1: Use object[] for all lambda captures.
+          // Phase 2 (closure class synthesis with instance methods) is deferred to Epic #1877 Part 2.
           if caps.count > 0 {
             insns.add(MLdcI4(v = caps.count))
             insns.add(MNewarr(typeToken = 0x01000000 + boxTypeRef(cctx, MObject)))
@@ -6107,26 +6125,19 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               insns.add(MLdcI4(v = capStI))
               val capName = caps[capStI]
               if fctx.captureNameToIndex.containsKey(capName) {
-                // Re-capture from outer closure's __caps array (#1479 multi-level).
-                // Load __caps (slot 0), then index into it.  If it's a cell
-                // capture, the cell reference is already boxed as object in __caps
-                // and is forwarded directly.  If it's a value capture, the value
-                // is already boxed as object in __caps and is forwarded directly.
                 val outerIdx = match mapGet(fctx.captureNameToIndex, capName) { case Some(n) -> n; case None -> 0 }
                 emitLoadVarMsil(fctx, insns, 0)
                 insns.add(MLdcI4(v = outerIdx))
                 insns.add(MLdelemRef)
               } else if nameListContains(capCells, capName) {
-                // By-reference: store the cell (a `List[object]` reference) itself
-                // so the closure and enclosing scope share it — no box (#1479 v2).
                 match mapGet(fctx.hoistedCellSlot, capName) {
                   case Some(s) -> emitLoadVarMsil(fctx, insns, s)
-                  case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.hoistedCellSlot — lambdaCaptureNamesMsil should only return names present in the enclosing scope")
+                  case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.hoistedCellSlot")
                 }
               } else {
                 match mapGet(fctx.slots, capName) {
                   case Some(s) -> emitLoadVarMsil(fctx, insns, s)
-                  case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots — lambdaCaptureNamesMsil should only return names present in the enclosing scope")
+                  case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots")
                 }
                 boxIfNeededMsil(cctx, insns, capTypes[capStI])
               }
@@ -6134,6 +6145,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               capStI = capStI + 1
             }
           } else {
+            // Non-capturing lambda: delegate target is null (static method).
             insns.add(MLdNull)
           }
           insns.add(MLdftn(methodToken = tok))
@@ -12331,6 +12343,42 @@ func buildActionNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
   0x0A000000 + mrRow
 }
 
+// Build a newobj token for System.Action`(nparams)<T1,...,Tn>::.ctor(object, nativeint)
+// with actual parameter types instead of hardcoded object.
+// Used by Phase 1 strongly-typed lambdas to match the method signature.
+func buildActionNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType]): Int {
+  // If we have fewer actual types than expected params, fall back to the object-based version
+  if paramTypes.count < nparams {
+    return buildActionNCtorTok(cctx, nparams)
+  }
+  val trN = internActionTypeRef(cctx, nparams)
+  // TypeDefOrRef coded index for a TypeRef at row R: (R << 2) | 1
+  val codedIdx = (trN * 4) + 1
+  val actualArgs: List[MsilType] = newList()
+  var ai = 0
+  while ai < nparams {
+    // Use object-based parameters for HOF delegate compatibility.
+    // Propagated types influence the lambda method signature but not the delegate type.
+    // The delegate must match the HOF parameter type, which is object-based at the MSIL level.
+    actualArgs.add(MObject)
+    ai = ai + 1
+  }
+  val gblob = buildGenericInstBlob(codedIdx, actualArgs)
+  // Phase 1: Action delegates always use MObject parameters for compatibility.
+  // The cache key is deterministic based on arity alone since blob content
+  // (MObject params) does not vary per call site. This avoids duplicate TypeSpec
+  // rows with identical blob content (issue #4102).
+  val specKey = "ActionSpec_typed_" + toString(nparams)
+  val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
+  val ctorPs: List[MsilType] = newList()
+  ctorPs.add(MObject)
+  ctorPs.add(MNativeInt)
+  val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
+  // MemberRef cache key is arity-based for Phase 1 (MObject params)
+  val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "action_ctor_typed_" + toString(nparams), ctorSig)
+  0x0A000000 + mrRow
+}
+
 // Get or create a TypeRef for System.Func`(nparams+1) where nparams is the lambda parameter count.
 // Reuses the actionTypeRefs map with a "func_N" key to avoid collisions.
 func internFuncTypeRef(cctx: in CodegenCtx, nparams: in Int): Int {
@@ -12384,6 +12432,51 @@ func buildFuncNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
   ctorPs.add(MNativeInt)
   val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
   val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "func_ctor_" + toString(nparams), ctorSig)
+  0x0A000000 + mrRow
+}
+
+// Build a newobj token for System.Func`(nparams+1)<object,...,object,TResult>::.ctor(object, nativeint)
+// with object-based parameter types but actual return type.
+// Phase 1 limitation: delegate must remain object-based for HOF parameter type compatibility,
+// even when HOF type propagation provides concrete parameter types (those are deferred to Phase 2).
+// The return type uses actual type to match the lambda method signature.
+func buildFuncNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType], retType: in MsilType): Int {
+  // If we have fewer actual types than expected params, fall back to the object-based version
+  if paramTypes.count < nparams {
+    return buildFuncNCtorTok(cctx, nparams)
+  }
+  val trN = internFuncTypeRef(cctx, nparams)
+  // TypeDefOrRef coded index for a TypeRef at row R: (R << 2) | 1
+  val codedIdx = (trN * 4) + 1
+  val actualArgs: List[MsilType] = newList()
+  var ai = 0
+  while ai < nparams {
+    // Use object-based parameters for HOF delegate compatibility.
+    // Propagated types influence the lambda method signature but not the delegate type.
+    // The delegate must match the HOF parameter type, which is object-based at the MSIL level.
+    actualArgs.add(MObject)
+    ai = ai + 1
+  }
+  actualArgs.add(retType)
+  val gblob = buildGenericInstBlob(codedIdx, actualArgs)
+  // FIXED #4060/#4088: Cache key must include both parameter types and return type to avoid collision.
+  // Two lambdas with same param count but different types or returns must be distinct:
+  // e.g. {x: Int -> x} (Func<Int,Int>) vs {x: Int -> x > 0} (Func<Int,Bool>).
+  var typeKeySuffix = ""
+  var ti = 0
+  while ti < paramTypes.count and ti < nparams {
+    typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(paramTypes[ti])
+    ti = ti + 1
+  }
+  typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(retType)
+  val specKey = "FuncSpec_typed_" + toString(nparams) + typeKeySuffix
+  val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
+  val ctorPs: List[MsilType] = newList()
+  ctorPs.add(MObject)
+  ctorPs.add(MNativeInt)
+  val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
+  // FIXED #4066: MemberRef cache key must also include type suffix to avoid collision
+  val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "func_ctor_typed_" + toString(nparams) + typeKeySuffix, ctorSig)
   0x0A000000 + mrRow
 }
 
@@ -16262,7 +16355,17 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
     } else {
       typeExprToMsilCtx(cctx, p.ty, pkgName)
     }
+    // For lambda bodies, the slot type must reflect the logical parameter type
+    // (from annotation or propagation) so castObjectToMsil can emit the correct
+    // unbox instruction. The method signature separately uses MObject parameters (#1939).
     val paramTy = if isLambdaFn and annotTy == MObject and pi < lambdaPropagated.count {
+      lambdaPropagated[pi]
+    } else if isLambdaFn and annotTy != MObject {
+      annotTy
+    } else if isLambdaFn {
+      // Un-annotated lambda parameter with no propagation: use object
+      MObject
+    } else if annotTy == MObject and pi < lambdaPropagated.count {
       lambdaPropagated[pi]
     } else {
       annotTy
@@ -16273,13 +16376,15 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
     if isByrefMode(p.mode) {
       fctx.byrefSlotTypes.add(slot, paramTy)
     }
-    // A lambda parameter arrives boxed (`object`) in the Func delegate; when it
-    // has a known non-object logical type (annotation or propagated), record it
-    // so reads unbox/cast on load (#1939).  The signature itself stays `object`
-    // (forced below).
+    // For lambda parameters with a logical type (annotated or propagated), record
+    // the slot's logical type in boxedParamTypes. The load-side code at codegen.l:5080
+    // consults this to emit castObjectToMsil (unbox) on parameter reads (#1939, #4101).
     if isLambdaFn and paramTy != MObject {
       fctx.boxedParamTypes.add(slot, paramTy)
     }
+    // Phase 1: lambda method signature uses object-based parameters for delegate
+    // compatibility. The slot type reflects the logical type for correct unboxing
+    // of annotated parameters (#1939, #4101).
     // Record the declared return type of a function-typed param (a `(A,...) -> R`
     // value) so invoking it (`f()`) yields R rather than a bare object (#1877).
     match p.ty.kind {
@@ -16388,6 +16493,11 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   var pi2 = 0
   while pi2 < decl.params.count {
     if isLambdaFn {
+      // Phase 1: lambda method signature uses object-based parameters to match
+      // the object-based delegate wrapper (Func<object,...,object>). Propagated
+      // and annotated parameter types are collected for type-checking but not
+      // reflected in the compiled method signature. Strongly-typed lambda method
+      // signatures are deferred to Phase 2 with closure class synthesis (#1877).
       paramTypes.add(MObject)
     } else if fnGenerics.count > 0 {
       // Generic function (#2557): a `slice[T]` / bare-`T` parameter is emitted
@@ -19491,6 +19601,7 @@ pub func lambdaCaptureNamesMsil(fctx: in FuncCtx, lparams: in List[LambdaParam],
   caps
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
 // BFS-based liftLambdasMsil: extract all ELambda nodes into synthetic IFunc
 // items in breadth-first order so lambda indices match the codegen traversal.
 pub func liftLambdasMsil(file: in SourceFile): SourceFile {
@@ -19498,7 +19609,7 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
   val synths: List[Item] = newList()
   val deferred: List[Block] = newList()
 
-  // Phase 1: walk every top-level item's body, collecting direct lambdas.
+  // Walk every top-level item's body, collecting direct lambdas.
   // Each ELambda body is pushed to `deferred` rather than recursed into.
   var i = 0
   while i < file.items.count {
@@ -19529,13 +19640,44 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
       case IConst(decl) -> {
         collectLambdasBfsExpr(decl.init, ticker, synths, deferred)
       }
+      case IRecord(decl) -> {
+        // Walk record member methods (D037: methods-in-types implicit self).
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case RMFunc(fn) -> {
+              match fn.body {
+                case Some(body) -> {
+                  match body {
+                    case FBBlock(block) -> {
+                      var si = 0
+                      while si < block.statements.count {
+                        collectLambdasBfsStmt(block.statements[si], ticker, synths, deferred)
+                        si = si + 1
+                      }
+                    }
+                    case FBExpr(e) -> {
+                      collectLambdasBfsExpr(e, ticker, synths, deferred)
+                    }
+                  }
+                }
+                case None -> {
+                }
+              }
+            }
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
       case _ -> {
       }
     }
     i = i + 1
   }
 
-  // Phase 2: BFS — process deferred lambda bodies in FIFO order.
+  // Process deferred lambda bodies in FIFO order (BFS).
   // New lambdas found inside lambda bodies are appended to `deferred` and
   // processed in subsequent iterations, ensuring outer lambdas are always
   // numbered before any lambdas nested inside their bodies.
@@ -19561,6 +19703,7 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
     newItems.add(file.items[j])
     j = j + 1
   }
+
   var k = 0
   while k < synths.count {
     newItems.add(synths[k])

@@ -209,6 +209,42 @@ func parseDistinctTypeBody(st: inout ParseState, genericsPrefix: Option[GenericP
   )
 }
 
+func injectSelfIfNeeded(fn: in FunctionDecl): FunctionDecl {
+  if fn.params.count > 0 and fn.params[0].name == "self" {
+    return fn
+  }
+  val newParams: List[Param] = newList()
+  val selfParam = Param(
+    mode = PMIn,
+    modeExplicit = false,
+    name = "self",
+    ty = mkType(TSelf, syntheticSpan()),
+    dflt = None,
+    annotations = newList(),
+    span = syntheticSpan()
+  )
+  newParams.add(selfParam)
+  var i = 0
+  while i < fn.params.count {
+    newParams.add(fn.params[i])
+    i = i + 1
+  }
+  FunctionDecl(
+    docComments = fn.docComments,
+    annotations = fn.annotations,
+    visibility = fn.visibility,
+    isAsync = fn.isAsync,
+    name = fn.name,
+    generics = fn.generics,
+    params = newParams,
+    ret = fn.ret,
+    whereClause = fn.whereClause,
+    contracts = fn.contracts,
+    body = fn.body,
+    span = fn.span
+  )
+}
+
 func parseRecordMembers(st: inout ParseState): List[RecordMember] {
   match tryEatPunct(st, LBrace) {
     case Some(_) -> {
@@ -228,7 +264,8 @@ func parseRecordMembers(st: inout ParseState): List[RecordMember] {
             xs.add(RMInvariant(inv = parseInvariantClause(st)))
           }
           case KwFunc -> {
-            xs.add(RMFunc(fn = parseFunctionDeclBody(st, None)))
+            val fn = parseFunctionDeclBody(st, None)
+            xs.add(RMFunc(fn = injectSelfIfNeeded(fn)))
           }
           case KwAsync -> {
             val next1 = peekAt(st, 1)
@@ -236,7 +273,8 @@ func parseRecordMembers(st: inout ParseState): List[RecordMember] {
               case TKeyword(k2) -> {
                 match k2 {
                   case KwFunc -> {
-                    xs.add(RMFunc(fn = parseFunctionDeclBody(st, None)))
+                    val fn = parseFunctionDeclBody(st, None)
+                    xs.add(RMFunc(fn = injectSelfIfNeeded(fn)))
                   }
                   case _ -> {
                     xs.add(RMField(field = parseFieldDecl(st)))
@@ -2777,19 +2815,30 @@ func isFlatImpl(st: in ParseState): Bool {
     match tok {
       case TKeyword(k) -> {
         match k {
-          case KwFor -> { return true }
-          case KwWhere -> { return false }
-          case _ -> {}
+          case KwFor -> {
+            return true
+          }
+          case KwWhere -> {
+            return false
+          }
+          case _ -> {
+          }
         }
       }
       case TPunct(p) -> {
         match p {
-          case LBrace -> { return false }
-          case _ -> {}
+          case LBrace -> {
+            return false
+          }
+          case _ -> {
+          }
         }
       }
-      case TEof -> { return false }
-      case _ -> {}
+      case TEof -> {
+        return false
+      }
+      case _ -> {
+      }
     }
     i = i + 1
   }
@@ -2802,36 +2851,38 @@ func parseNestedImpl(
   anns: in List[Annotation],
   vis: in Option[Visibility],
   genericsPrefix: in Option[GenericParams],
-  prefixStart: in Span
+  prefixStart: in Span,
 ): List[Item] {
   val startTok = advance(st) // 'impl'
   val suffixGenerics = parseGenericParamsOpt(st)
   val generics = mergeGenericsInfo(st, genericsPrefix, suffixGenerics)
-  
+
   val target = parseTypeExpr(st)
   val _ = skipStmtEnds(st)
   val whereClause = parseWhereClauseOpt(st)
   val _ = skipStmtEnds(st)
   val _ = parseTrailingAnnotations(st)
-  
+
   match tryEatPunct(st, LBrace) {
-    case Some(_) -> {}
+    case Some(_) -> {
+    }
     case None -> {
       emitErr(st, "P0181", "expected '{' to start nested satisfies block", peekSpan(st))
     }
   }
-  
+
   val _ = skipStmtEnds(st)
   val items: List[Item] = newList()
-  
+
   while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
     val before = mark(st)
     val satisfDocs = parseItemDocComments(st)
     val satisfAnns = parseItemAnnotations(st)
     val _ = skipStmtEnds(st)
-    
+
     match tryEatKw(st, KwSatisfies) {
-      case Some(_) -> {}
+      case Some(_) -> {
+      }
       case None -> {
         emitErr(st, "P0182", "expected 'satisfies' keyword", peekSpan(st))
         if not isAtEnd(st) {
@@ -2840,13 +2891,13 @@ func parseNestedImpl(
         val _ = skipStmtEnds(st)
       }
     }
-    
+
     val iface = parseConstraintRef(st)
     val _ = skipStmtEnds(st)
     val _ = parseTrailingAnnotations(st)
     val members = parseImplMembers(st)
     val endSpan = lastSpan(st)
-    
+
     val decl = ImplDecl(
       generics = generics,
       iface = iface,
@@ -2855,7 +2906,7 @@ func parseNestedImpl(
       members = members,
       span = joinSpans(startTok.span, endSpan)
     )
-    
+
     val combinedDocs: List[DocComment] = newList()
     var d = 0
     while d < docs.count {
@@ -2867,7 +2918,7 @@ func parseNestedImpl(
       combinedDocs.add(satisfDocs[d])
       d = d + 1
     }
-    
+
     val combinedAnns: List[Annotation] = newList()
     var a = 0
     while a < anns.count {
@@ -2879,7 +2930,7 @@ func parseNestedImpl(
       combinedAnns.add(satisfAnns[a])
       a = a + 1
     }
-    
+
     val item = Item(
       docComments = combinedDocs,
       annotations = combinedAnns,
@@ -2888,18 +2939,19 @@ func parseNestedImpl(
       span = joinSpans(prefixStart, endSpan)
     )
     items.add(item)
-    
+
     val _ = skipStmtEnds(st)
     forceAdvanceIfStuck(st, before)
   }
-  
+
   match tryEatPunct(st, RBrace) {
-    case Some(_) -> {}
+    case Some(_) -> {
+    }
     case None -> {
       emitErr(st, "P0183", "expected '}' to close nested satisfies block", peekSpan(st))
     }
   }
-  
+
   items
 }
 
@@ -2998,10 +3050,12 @@ func parseItemOpt(st: inout ParseState): Option[List[Item]] {
             return Some(value = nestedItems)
           }
         }
-        case _ -> {}
+        case _ -> {
+        }
       }
     }
-    case _ -> {}
+    case _ -> {
+    }
   }
 
   val kind = match nextTok.token {
