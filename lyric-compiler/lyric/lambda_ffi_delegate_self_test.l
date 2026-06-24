@@ -58,8 +58,10 @@ test "assign lambda with type annotation to Func[Obj, Bool]" {
   listAdd(xs, 2)
   listAdd(xs, 3)
 
-  // Assign lambda to Func delegate type.
+  // Assign lambda to Func delegate type and invoke it at runtime.
   // With annotation { x: Obj -> ... }, the type-checker sees Obj and accepts it.
   val checker: Func[Obj, Bool] = { x: Obj -> x != null }
-  assertEqualInt(listCount(xs), 3, "list still has 3 elements")
+  // Invoke the delegate on a list element and verify it returns true.
+  val result: Bool = checker(xs[0])
+  assertTrue(result, "delegate invoked and returned true for non-null element")
 }

@@ -16417,6 +16417,12 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
     if isByrefMode(p.mode) {
       fctx.byrefSlotTypes.add(slot, paramTy)
     }
+    // For lambda parameters with a logical type (annotated or propagated), record
+    // the slot's logical type in boxedParamTypes. The load-side code at codegen.l:5080
+    // consults this to emit castObjectToMsil (unbox) on parameter reads (#1939, #4101).
+    if isLambdaFn and paramTy != MObject {
+      fctx.boxedParamTypes.add(slot, paramTy)
+    }
     // Phase 1: lambda method signature uses object-based parameters for delegate
     // compatibility. The slot type reflects the logical type for correct unboxing
     // of annotated parameters (#1939, #4101).
