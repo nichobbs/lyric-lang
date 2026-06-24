@@ -113,7 +113,20 @@ func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarge
   // a JVM build produces a self-contained runnable JAR, so emitting one there
   // would leave stray .NET tooling cruft next to the JAR.
   match target {
-    case Dotnet -> writeRuntimeConfig(outPath)
+    case Dotnet -> {
+      writeRuntimeConfig(outPath)
+      // A runnable program (declares a zero-arg `main`) needs its managed
+      // dependencies beside the output to run standalone — `dotnet exec` (and a
+      // native apphost) resolve from the assembly's own directory and there is
+      // no probing path back to the toolchain lib dir.  Co-locate the stdlib
+      // bundle so `lyric build prog.l` yields a working artifact, mirroring
+      // `lyric run`.  Libraries (no `main`) are left untouched: colocation there
+      // is unnecessary and must never run for a stdlib self-build (which has no
+      // `main` and would otherwise be clobbered by the seed bundle).
+      if Release.declaresEntryMain(source) {
+        copyRuntimeDepsBeside(outPath, findCompiledLibDir())
+      }
+    }
     case Jvm -> ()
   }
   val elapsedMs = Time.totalMillis(Time.since(Time.now(), buildStart))
@@ -985,6 +998,13 @@ func buildProject(
             return 1
           }
         }
+        // Co-locate the stdlib bundle and restored dependencies beside the
+        // launcher so the produced binary runs standalone: the apphost
+        // `./<name>` resolves its managed deps from its own directory.  Only for
+        // `kind = "exe"` — a `kind = "lib"` build (including the stdlib bundle
+        // itself) is a consumable artifact, not a runnable one.
+        copyRuntimeDepsBeside(outPath, findCompiledLibDir())
+        copyRestoredDepDlls(outPath, restoredDlls)
       }
     }
     case Jvm -> {
