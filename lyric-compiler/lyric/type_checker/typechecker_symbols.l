@@ -112,16 +112,11 @@ pub func symTableIsExternDelegateType(tbl: in SymbolTable, id: in TypeId): Bool 
       case DKExternType(tid, decl) -> {
         if typeIdEq(tid, id) {
           val clr = decl.clrName
-          // Check for known delegate naming patterns and BCL delegates.
-          // Be conservative to avoid false positives (e.g. HttpClientHandler is NOT a delegate).
-          if clr.contains("Delegate") or
-             clr.contains("Callback") or
-             clr.contains("EventHandler") or
-             clr.contains("Comparison") or
-             clr.contains("Converter") or
-             clr.startsWith("System.Func") or
-             clr.startsWith("System.Action") or
-             clr.startsWith("System.Predicate") {
+          // Phase 1 (M5.2-M5.3): only Func and Action delegate types.
+          // Other delegate types (Predicate, EventHandler, Comparison, Converter)
+          // are deferred to Phase 2 (issue #3923) for proper support with
+          // context-driven delegate selection and closure class synthesis.
+          if clr.startsWith("System.Func") or clr.startsWith("System.Action") {
             return true
           }
           // For other extern types, conservatively reject to prevent assigning
