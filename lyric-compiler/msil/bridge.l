@@ -30,7 +30,6 @@ import Msil.Lowering
 import Msil.Codegen
 import Msil.Tables
 import Msil.Heaps
-import Msil.MetadataReader as Mdr
 
 /// Compile `source` to a .NET PE DLL at `outputPath` using the self-hosted
 /// MSIL pipeline.

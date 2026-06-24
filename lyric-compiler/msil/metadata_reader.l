@@ -2910,51 +2910,6 @@ pub func tryReadResourceIn(ri: in ResourceImage, name: in String): Option[slice[
   None
 }
 
-// ── Emitter-convention detection (restored non-stdlib artifacts) ─────────────
-// The F# bootstrap compiler emits generic TypeDefs WITHOUT the CLR arity suffix
-// (Option, Result) and constructs nullary union cases with `newobj`; the
-// self-hosted emitter always adds the suffix (Option`1) and uses a static
-// `Instance` singleton.  Post-collapse (D111) the stdlib is a single
-// self-hosted bundle, so this no longer disambiguates stdlib — it is used only
-// to detect the convention of restored *non-stdlib* artifacts (the F#-emitted
-// compiler closure linked by the self-tests in the mint path), via
-// `dllNullaryInstanceInfo`, so cross-package nullary union-case
-// construction matches the producer DLL.
-// True when any TypeDef in the CLI image `bytes` has a backtick in its name,
-// indicating the self-hosted arity-suffix convention.  Split out from
-// `coreDllHasAritySuffixTypeDef` so the multi-line body stays readable — `lyric
-// fmt` collapses a nested-match `Ok(raw) ->` arm onto a single line regardless
-// of length, so keeping the scan in its own function avoids that.
-func imageHasBacktickTypeDef(bytes: in slice[Byte]): Bool {
-  match parseAssemblyImage(bytes) {
-    case None -> false
-    case Some(ri) -> {
-      val typeDefCount = rowCountOf(ri.th, 2)
-      var row = 1
-      var found = false
-      while row <= typeDefCount and not found {
-        val td = readTypeDef(ri.img, ri.layout, row)
-        if Str.contains(td.name, "`") {
-          found = true
-        }
-        row = row + 1
-      }
-      found
-    }
-  }
-}
-
-// True when any TypeDef in the DLL at `dllPath` has a backtick in its name,
-// indicating the self-hosted arity-suffix convention.  Returns false when the
-// file is missing, unreadable, or carries no backtick TypeDefs (F# bootstrap
-// convention).
-func coreDllHasAritySuffixTypeDef(dllPath: in String): Bool {
-  match File.readBytes(dllPath) {
-    case Err(_) -> false
-    case Ok(raw) -> imageHasBacktickTypeDef(raw.toArray())
-  }
-}
-
 // Information about nullary union case Instance singleton fields in a DLL.
 // `hasInstances` is true when the DLL contains at least one static field named
 // "Instance" on a TypeDef whose name contains "_" (the naming convention for
@@ -2981,8 +2936,7 @@ pub record InstanceFieldKind {
 // Helper: scan a parsed CLI image for nullary-case Instance fields and return
 // their element-type convention.  Extracted from `dllNullaryInstanceInfo` so
 // the multi-line loop body stays readable — `lyric fmt` collapses a nested-match
-// `Ok(raw) ->` arm onto a single line regardless of length (same pattern as
-// `imageHasBacktickTypeDef`).
+// `Ok(raw) ->` arm onto a single line regardless of length.
 func imageNullaryInstanceInfo(bytes: in slice[Byte]): InstanceFieldKind {
   match parseAssemblyImage(bytes) {
     case None -> InstanceFieldKind(hasInstances = false, isClassTyped = false)

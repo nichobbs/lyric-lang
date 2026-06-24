@@ -4004,47 +4004,6 @@ func valueTupleMsilCtx(cctx: in CodegenCtx): MsilType {
   MValueTypeRef(typeRefCode = tdrTypeRef(refRow), clrFqn = "System.ValueTuple")
 }
 
-// Rewrite the type-ARGUMENT lists of every generic instantiation in `ty`
-// (recursively), replacing a `MVoid` argument with `System.ValueTuple`.  A
-// `MVoid` reaches a generic-argument slot only from a `Unit` / `Never` type
-// argument (`typeExprToMsilCtx` maps both to `MVoid`), so this is an exact
-// "`Unit`-at-value-position" rewrite.  The TOP-LEVEL type is left untouched —
-// a function returning bare `Unit` still returns `void`.
-//
-// This is applied ONLY when encoding a cross-package REFERENCE to an
-// F#-built producer (`registerStdlibFunc`).  The F# emitter encodes a
-// `Unit`/`Never` generic argument as `System.ValueTuple` at value position
-// (`TypeMap.fs`), so a self-hosted consumer's MemberRef must match to bind
-// (otherwise `Result[Unit, E]` degrades to `Result<object, E>` and faults with
-// MissingMethodException).  It is deliberately NOT applied to the in-bundle
-// definition / value-construction path (`typeExprToMsilCtx` proper): a
-// self-hosted package's own `Result[Unit, E]` values are represented with an
-// `object` argument end-to-end (def, ctor, and match all agree), and lifting
-// only the type to `ValueTuple` without changing the value representation
-// silently miscompiles them.
-func xrefUnitArgsToValueTuple(cctx: in CodegenCtx, ty: in MsilType): MsilType {
-  match ty {
-    case MGenericInst(trc, fqn, targs) -> MGenericInst(typeRefCode = trc, headFqn = fqn, typeArgs = xrefRewriteArgList(cctx, targs))
-    case MGenericInstByName(fqn, targs) -> MGenericInstByName(headFqn = fqn, typeArgs = xrefRewriteArgList(cctx, targs))
-    case MValueTypeGenericInst(trc, fqn, targs) -> MValueTypeGenericInst(typeRefCode = trc, headFqn = fqn, typeArgs = xrefRewriteArgList(cctx, targs))
-    case _ -> ty
-  }
-}
-
-func xrefRewriteArgList(cctx: in CodegenCtx, args: in List[MsilType]): List[MsilType] {
-  val acc: List[MsilType] = newList()
-  var i = 0
-  while i < args.count {
-    val a = args[i]
-    match a {
-      case MVoid -> acc.add(valueTupleMsilCtx(cctx))
-      case _ -> acc.add(xrefUnitArgsToValueTuple(cctx, a))
-    }
-    i = i + 1
-  }
-  acc
-}
-
 // type references via the codegen context (#1183 codegen port).
 pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String): MsilType {
   match te.kind {
