@@ -148,6 +148,11 @@ jobs:
   # ---------------------------------------------------------------------------
   build-standalone:
     needs: [create-release, build-stdlib-bundle]
+    # A `mint` seed skips build-stdlib-bundle (its `if: inputs.seed != 'mint'`),
+    # and GitHub Actions skips a job when a needed job is skipped — so a
+    # mint-seeded run produces NO standalone binaries.  That is intentional:
+    # mint is unsupported in this fork (the historical F# commits are absent),
+    # so we never publish a mint-seeded release.  Use `seed: download`.
     strategy:
       fail-fast: false
       matrix:
@@ -466,7 +471,11 @@ jobs:
             lyric --version "${{ needs.create-release.outputs.version }}"
           /tmp/lyric-tool/lyric --version
           printf 'package Smoke\nimport Std.Core\nimport Std.Console as Console\nfunc main(): Unit { Console.print("tool smoke ok") }\n' > /tmp/smoke.l
-          /tmp/lyric-tool/lyric run /tmp/smoke.l
+          # Assert the OUTPUT, not just the exit code: a runtime that produces
+          # wrong output but still exits 0 would otherwise slip through.
+          out="$(/tmp/lyric-tool/lyric run /tmp/smoke.l)"
+          echo "$out"
+          echo "$out" | grep -q "tool smoke ok"
 
       # Sign the NuGet package if a code-signing certificate is configured.
       # Set NUGET_SIGNING_CERT_BASE64 and NUGET_SIGNING_CERT_PASSWORD in
