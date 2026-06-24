@@ -12651,6 +12651,79 @@ func genericArityOfName(simpleName: in String): Int {
 // Does not append `MRet` (the caller does).  Returns false — having emitted
 // nothing — when the metadata signature can't be resolved or carries a shape
 // this path can't encode, so the caller falls back to the legacy path.
+// Strip a trailing concrete generic instantiation `[...]` from a CLR type name,
+// keeping the arity-suffixed open-generic name: `Task`1[System.String]` ->
+// `Task`1`.  Names without a `[` pass through unchanged.
+func stripBracketSuffix(name: in String): String {
+  val br = name.indexOf("[")
+  if br < 0 { name } else { name.substring(0, br) }
+}
+
+// Parse the concrete type-argument FQNs out of a bracketed generic instantiation
+// suffix: `Task`1[System.String]` -> ["System.String"].  Returns an empty list
+// when there is no `[...]`.  Assumes non-nested args (no generic-of-generic),
+// which covers the BCL extern shapes the kernel declares (Task`1[System.String]).
+func parseBracketArgFqns(name: in String): List[String] {
+  val acc: List[String] = newList()
+  val br = name.indexOf("[")
+  if br < 0 {
+    return acc
+  }
+  val close = name.lastIndexOf("]")
+  if close <= br {
+    return acc
+  }
+  // Manual comma-scan of the instantiation body.  Avoids `Str.split` /
+  // `.length`-on-inferred-value patterns the F# seed emitter mis-types.
+  var cur = ""
+  var i = br + 1
+  while i < close {
+    val ch = name.substring(i, 1)
+    if ch == "," {
+      val t = cur.trim()
+      if t.length > 0 {
+        acc.add(t)
+      }
+      cur = ""
+    } else {
+      cur = cur + ch
+    }
+    i = i + 1
+  }
+  val tail = cur.trim()
+  if tail.length > 0 {
+    acc.add(tail)
+  }
+  acc
+}
+
+// Map a CLR type-argument FQN to the MsilType used as a closed TypeSpec arg.
+// BCL primitives map to their value types; everything else interns a class
+// TypeRef so the closed instantiation matches the runtime object exactly (e.g.
+// `Task`1<String>`, not the `<object>` erasure that fails a generic-invariant
+// receiver `castclass`).
+func argFqnToMsil(cctx: in CodegenCtx, fqn: in String): MsilType {
+  if fqn == "System.String" {
+    MString
+  } else if fqn == "System.Int32" {
+    MInt
+  } else if fqn == "System.Int64" {
+    MLong
+  } else if fqn == "System.Double" {
+    MDouble
+  } else if fqn == "System.Boolean" {
+    MBool
+  } else if fqn == "System.Char" {
+    MChar
+  } else if fqn == "System.Byte" {
+    MByte
+  } else {
+    ensureMetadataIndex(cctx)
+    val refRow = internFfiTypeRefNested(cctx, fqn)
+    MClassRef(typeRefCode = tdrTypeRef(refRow), clrFqn = fqn)
+  }
+}
+
 func emitGenericExternMember(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -12664,18 +12737,43 @@ func emitGenericExternMember(
   if arity <= 0 {
     return false
   }
+  // A concrete instantiation suffix (`Task`1[System.String]`) names a CLOSED
+  // generic created by a BCL method; the open-generic type name and the concrete
+  // type args are recovered so the TypeSpec parent matches the runtime instance
+  // exactly (the `<object,…>` erasure below is only valid for instances Lyric
+  // itself constructs object-erased).
+  val cleanTypeName = stripBracketSuffix(r.typeName)
+  val cleanFqn = stripBracketSuffix(resolvedFqn)
+  val concreteArgs = parseBracketArgFqns(r.typeName)
   // Resolve the BCL member's true signature (hasThis + exact VAR positions).
   // Build `sigOpt` via a typed `var` + assignment rather than a `match`
   // expression: the bootstrap F# emitter unifies a `match`'s `None` arm with the
   // `Some(...)` arm to `Option<object>`, after which `sig.paramTypes` below
   // would be an `Object` field read it cannot resolve.
-  val asmName = assemblyForTypeMsil(cctx, resolvedFqn)
+  val asmName = assemblyForTypeMsil(cctx, cleanFqn)
   var sigOpt: Option[Mdr.DecodedMethodSig] = None
+  // The MemberRef name actually emitted: the literal member, or its `get_<M>`
+  // property accessor when the member names a CLR property rather than a method
+  // (e.g. `Task`1.Result` -> `get_Result`).
+  var emitMemberName = r.memberName
   match mapGet(cctx.metadataPathIndex, asmName) {
     case None -> {
     }
     case Some(path) -> {
-      sigOpt = Mdr.decodeExternMethodSig(path, resolvedFqn, r.memberName, decl.params.count)
+      sigOpt = Mdr.decodeExternMethodSig(path, cleanFqn, r.memberName, decl.params.count)
+      match sigOpt {
+        case Some(_) -> ()
+        case None -> {
+          val getter = "get_" + r.memberName
+          match Mdr.decodeExternMethodSig(path, cleanFqn, getter, decl.params.count) {
+            case Some(gsig) -> {
+              sigOpt = Some(value = gsig)
+              emitMemberName = getter
+            }
+            case None -> ()
+          }
+        }
+      }
     }
   }
   match sigOpt {
@@ -12710,14 +12808,25 @@ func emitGenericExternMember(
         return false
       }
 
-      // Closed GENERICINST TypeSpec `T<object,…>`.
+      // Closed GENERICINST TypeSpec.  A bracketed concrete instantiation supplies
+      // the real type args (so a generic-invariant receiver `castclass` matches
+      // the runtime instance); otherwise the args erase to `<object,…>` (valid
+      // because Lyric constructs those instances object-erased).
       val ns = r.namespaceStr
-      val typeRefRow = internFfiTypeRef(cctx, asmName, ns, r.typeName)
+      val typeRefRow = internFfiTypeRef(cctx, asmName, ns, cleanTypeName)
       val objArgs: List[MsilType] = newList()
-      var ai = 0
-      while ai < arity {
-        objArgs.add(MObject)
-        ai = ai + 1
+      if concreteArgs.count == arity {
+        var cai = 0
+        while cai < concreteArgs.count {
+          objArgs.add(argFqnToMsil(cctx, concreteArgs[cai]))
+          cai = cai + 1
+        }
+      } else {
+        var ai = 0
+        while ai < arity {
+          objArgs.add(MObject)
+          ai = ai + 1
+        }
       }
       val tsKey = "ts_genextern_" + resolvedFqn
       val tsBlob = buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(typeRefRow), objArgs)
@@ -12735,14 +12844,14 @@ func emitGenericExternMember(
       // member name: two overloads of the same name on the same generic type
       // (e.g. distinct-arity `TryGetValue`s, or a `.ctor()` vs `.ctor(int,int)`)
       // would otherwise alias to the first-registered MemberRef (#3429).
-      var mrKey = "mr_genextern_" + resolvedFqn + "." + r.memberName + "/" + toString(memberParams.count)
+      var mrKey = "mr_genextern_" + resolvedFqn + "." + emitMemberName + "/" + toString(memberParams.count)
       var mki = 0
       while mki < memberParams.count {
         mrKey = mrKey + "_" + msilTypeKeyStr(memberParams[mki])
         mki = mki + 1
       }
       mrKey = mrKey + "_ret_" + msilTypeKeyStr(if r.isCtor { MVoid } else { memberRet })
-      val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, r.memberName, mrKey, memberSig)
+      val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, emitMemberName, mrKey, memberSig)
       val mrTok = 0x0A000000 + mrRow
 
       // Pre-allocate marshalling temps for concrete `out`/`inout` pointee types
