@@ -284,8 +284,11 @@ jobs:
   # Prerequisites on NuGet.org (one-time setup per package):
   #   1. Publish the package at least once manually to claim the package ID.
   #   2. In the NuGet.org package settings, add a GitHub Actions trusted
-  #      publisher scoped to owner "lyric-lang", repository "lyric-lang",
-  #      and workflow ".github/workflows/publish.yml".
+  #      publisher scoped to owner "nichobbs", repository "lyric-lang",
+  #      and workflow ".github/workflows/publish.yml".  The owner/repo MUST
+  #      match this repository — the OIDC token subject is
+  #      `repo:nichobbs/lyric-lang:...`, so a publisher registered for any
+  #      other owner (e.g. the upstream "lyric-lang" org) will never match.
   #
   # Run after binaries so the release page shows assets before the NuGet
   # package appears on nuget.org.
@@ -364,12 +367,42 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          OIDC_TOKEN=$(curl -fsH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=nuget.org" | jq -er .value)
-          NUGET_KEY=$(curl -fs -X POST \
+
+          # The runner only injects these when the job has `id-token: write`.
+          if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
+            echo "::error::OIDC env vars missing — the job lacks 'permissions: id-token: write'." >&2
+            exit 1
+          fi
+
+          # 1. Mint a GitHub OIDC token scoped to the nuget.org audience.
+          oidc_code=$(curl -sS -o /tmp/oidc.json -w '%{http_code}' \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=nuget.org") || oidc_code=000
+          if [[ "$oidc_code" != "200" ]]; then
+            echo "::error::GitHub OIDC token request failed (HTTP $oidc_code):" >&2
+            cat /tmp/oidc.json >&2 2>/dev/null || true
+            exit 1
+          fi
+          OIDC_TOKEN=$(jq -er .value < /tmp/oidc.json) \
+            || { echo "::error::OIDC response had no .value field." >&2; exit 1; }
+          echo "::add-mask::$OIDC_TOKEN"
+
+          # 2. Exchange the OIDC token for a short-lived NuGet API key
+          #    (trusted publishing). A non-200 here almost always means the
+          #    trusted publisher is not registered on NuGet.org for this
+          #    package, or is scoped to the wrong owner/repo/workflow.
+          nuget_code=$(curl -sS -o /tmp/nuget.json -w '%{http_code}' -X POST \
             -H "Content-Type: application/json" \
             -d "{\"oidcToken\": \"${OIDC_TOKEN}\"}" \
-            "https://api.nuget.org/v1/authentication/authenticate" | jq -er .value)
+            "https://api.nuget.org/v1/authentication/authenticate") || nuget_code=000
+          if [[ "$nuget_code" != "200" ]]; then
+            echo "::error::NuGet trusted-publishing auth failed (HTTP $nuget_code). Confirm a GitHub Actions trusted publisher is registered on NuGet.org for this package with owner 'nichobbs', repository 'lyric-lang', workflow '.github/workflows/publish.yml':" >&2
+            cat /tmp/nuget.json >&2 2>/dev/null || true
+            exit 1
+          fi
+          NUGET_KEY=$(jq -er .value < /tmp/nuget.json) \
+            || { echo "::error::NuGet auth response had no .value field." >&2; exit 1; }
+          rm -f /tmp/oidc.json /tmp/nuget.json
           echo "::add-mask::$NUGET_KEY"
           echo "nuget_key=$NUGET_KEY" >> "$GITHUB_OUTPUT"
 
@@ -436,12 +469,42 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          OIDC_TOKEN=$(curl -fsH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=nuget.org" | jq -er .value)
-          NUGET_KEY=$(curl -fs -X POST \
+
+          # The runner only injects these when the job has `id-token: write`.
+          if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
+            echo "::error::OIDC env vars missing — the job lacks 'permissions: id-token: write'." >&2
+            exit 1
+          fi
+
+          # 1. Mint a GitHub OIDC token scoped to the nuget.org audience.
+          oidc_code=$(curl -sS -o /tmp/oidc.json -w '%{http_code}' \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=nuget.org") || oidc_code=000
+          if [[ "$oidc_code" != "200" ]]; then
+            echo "::error::GitHub OIDC token request failed (HTTP $oidc_code):" >&2
+            cat /tmp/oidc.json >&2 2>/dev/null || true
+            exit 1
+          fi
+          OIDC_TOKEN=$(jq -er .value < /tmp/oidc.json) \
+            || { echo "::error::OIDC response had no .value field." >&2; exit 1; }
+          echo "::add-mask::$OIDC_TOKEN"
+
+          # 2. Exchange the OIDC token for a short-lived NuGet API key
+          #    (trusted publishing). A non-200 here almost always means the
+          #    trusted publisher is not registered on NuGet.org for this
+          #    package, or is scoped to the wrong owner/repo/workflow.
+          nuget_code=$(curl -sS -o /tmp/nuget.json -w '%{http_code}' -X POST \
             -H "Content-Type: application/json" \
             -d "{\"oidcToken\": \"${OIDC_TOKEN}\"}" \
-            "https://api.nuget.org/v1/authentication/authenticate" | jq -er .value)
+            "https://api.nuget.org/v1/authentication/authenticate") || nuget_code=000
+          if [[ "$nuget_code" != "200" ]]; then
+            echo "::error::NuGet trusted-publishing auth failed (HTTP $nuget_code). Confirm a GitHub Actions trusted publisher is registered on NuGet.org for this package with owner 'nichobbs', repository 'lyric-lang', workflow '.github/workflows/publish.yml':" >&2
+            cat /tmp/nuget.json >&2 2>/dev/null || true
+            exit 1
+          fi
+          NUGET_KEY=$(jq -er .value < /tmp/nuget.json) \
+            || { echo "::error::NuGet auth response had no .value field." >&2; exit 1; }
+          rm -f /tmp/oidc.json /tmp/nuget.json
           echo "::add-mask::$NUGET_KEY"
           echo "nuget_key=$NUGET_KEY" >> "$GITHUB_OUTPUT"
 
