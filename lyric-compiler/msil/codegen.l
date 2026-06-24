@@ -14243,7 +14243,22 @@ func inferCallReturnTypePB(
           val lastSeg = path.segments[path.segments.count - 1]
           val candidates: List[String] = newList()
           if path.segments.count >= 2 {
-            candidates.add(joinSegsMsil(path.segments, "."))
+            val joinedPath = joinSegsMsil(path.segments, ".")
+            candidates.add(joinedPath)
+            // Also try import-prefixed qualified paths so that cross-package
+            // UFCS calls like `HttpResponse.bodyText(r)` (where `bodyText` is
+            // declared in `Std.Http` as `HttpResponse.bodyText`) resolve to
+            // the real key `"Std.Http.HttpResponse.bodyText"` in funcRetTypes.
+            match mapGet(cctx.pkgImports, pkgName) {
+              case Some(imps) -> {
+                var pfxI = 0
+                while pfxI < imps.count {
+                  candidates.add(imps[pfxI] + "." + joinedPath)
+                  pfxI = pfxI + 1
+                }
+              }
+              case None -> ()
+            }
           }
           candidates.add(pkgName + "." + lastSeg)
           match mapGet(cctx.pkgImports, pkgName) {
@@ -21878,6 +21893,14 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
         // When the init is a single ldc.i4 (literal Int), inline into constValues
         // and pass an empty initInsns to avoid generating a .cctor for this field.
         // All uses of the val in this package will emit ldc.i4 directly.
+        //
+        // Similarly, when the init is `()` (unit literal), lowerExprMsil emits a
+        // single MLdNull.  Reference fields default to null in .NET, so MLdNull +
+        // stsfld is redundant — suppress the .cctor for this case too.  This keeps
+        // the Phase-3 addPackageTokens pre-scan (which treats LUnit as a literal and
+        // never counts a .cctor row) in sync with Phase-4 emit, preventing a
+        // MethodDef-row-count discrepancy that would shift all later packages' tokens
+        // in a multi-package bundle (e.g. Std.Task's @asyncLocal val __ambientSlot).
         var sfInitInsns = initInsns
         if initInsns.count == 1 {
           match initInsns[0] {
@@ -21895,6 +21918,12 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
                 cctx.constValues.add(fieldName, v)
                 sfInitInsns = newList()
               }
+            }
+            case MLdNull -> {
+              // Unit literal `()` → MLdNull: null is the .NET default for reference
+              // fields, so no .cctor needed (consistent with addPackageTokens treating
+              // LUnit as a literal).
+              sfInitInsns = newList()
             }
             case _ -> {
             }
@@ -24033,15 +24062,7 @@ func stdlibAssemblyName(packageName: in String): String {
     i = i + 1
   }
   if head == "Std" {
-    // HYBRID (D111): the HTTP/async surface stays PER-PACKAGE.  The self-hosted
-    // emitter cannot yet bundle these async-`Task`/`Result`-heavy packages into
-    // the single `output = "single"` assembly (Phase A undercounts cross-package
-    // `match await` and the bundled `HttpServer` emits invalid IL); they ship as
-    // `Lyric.Stdlib.<X>.dll` deployed alongside the bundle.  Tracked in #4030.
-    if tail == "Http" or tail == "HttpServer" or tail == "Rest" or tail == "Task" or tail == "HttpHost" {
-      return "Lyric.Stdlib." + tail
-    }
-    // Single-DLL stdlib: every other `Std.*` type lives in one `Lyric.Stdlib`.
+    // Single-DLL stdlib: every `Std.*` type lives in one `Lyric.Stdlib` (D111).
     return "Lyric.Stdlib"
   }
   // Non-`Std` heads (compiler packages): per-package `Lyric.<X>` naming.
