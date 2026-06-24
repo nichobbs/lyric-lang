@@ -1766,9 +1766,9 @@ func leadingIdent(s: in String): String {
   delims.add("\t")
   var di = 0
   while di < delims.count {
-    match Str.indexOf(s, delims[di]) {
-      case Some(idx) -> if idx < cut { cut = idx }
-      case None -> ()
+    val idx = s.indexOf(delims[di])
+    if idx >= 0 and idx < cut {
+      cut = idx
     }
     di = di + 1
   }

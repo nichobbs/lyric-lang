@@ -2347,22 +2347,25 @@ pub func decodeExternMethodSig(
   }
 }
 
-// Like `scoreSigType`, but additionally accepts a NAMED reference argument
-// flowing into a NAMED reference parameter of a different type as an implicit
-// upcast (e.g. a `CultureInfo` argument into an `IFormatProvider` parameter),
-// scored 1 — below an exact match's 2, so an exact overload always wins.  Only
-// named-reference↔named-reference is relaxed: reference upcasts are free in IL,
-// but value-type and primitive mismatches are not, so e.g. a `string` argument
-// still never binds to an interface-typed parameter (that stays -1).
+// Like `scoreSigType`, but additionally accepts:
+//  - a NAMED reference argument into a NAMED reference parameter of a different
+//    type (implicit upcast, e.g. CultureInfo → IFormatProvider), scored 1;
+//  - an erased extern-type argument (MObject → STPrim(0x1C)) into any
+//    non-value-type NAMED parameter, scored 1.
+// Both are below an exact match's 2, so an exact overload always wins.
+// Value-type and primitive mismatches remain -1.
 pub func scoreSigTypeLenient(arg: in SigType, param: in SigType): Int {
   val s = scoreSigType(arg, param)
   if s >= 0 {
     s
   } else {
-    val argRefNamed = match arg { case STNamed(_, vt) -> not vt; case _ -> false }
-    val paramRefNamed = match param { case STNamed(_, vt) -> not vt; case _ -> false }
-    if argRefNamed and paramRefNamed {
-      1
+    val paramIsRefNamed = match param { case STNamed(_, vt) -> not vt; case _ -> false }
+    if paramIsRefNamed {
+      // Any reference-typed arg (named or erased-object) flows into a named
+      // reference parameter as an implicit upcast.
+      val argIsObject = match arg { case STPrim(b) -> b == 0x1C; case _ -> false }
+      val argIsRefNamed = match arg { case STNamed(_, vt) -> not vt; case _ -> false }
+      if argIsObject or argIsRefNamed { 1 } else { 0 - 1 }
     } else {
       0 - 1
     }
