@@ -234,6 +234,12 @@ pub record CodegenCtx {
   // itself, so the lifted body reads/writes it via `get_Item(0)`/`set_Item(0)`
   // (#1479 v2).  Captures absent from this list are by-value boxed copies.
   lambdaCaptureCells: Map[String, List[String]]
+  // Stage 1 (#1877): synthesized closure classes for lambda capture.
+  // Key = lambda name (e.g. "__lambda_0"); value = corresponding MRecord closure class.
+  lambdaClosureClasses: Map[String, MRecord]
+  // Constructor tokens for synthesized closure classes.
+  // Key = lambda name (e.g. "__lambda_0"); value = MemberRef token for __Closure_<i>.ctor.
+  lambdaClosureCtorTokens: Map[String, Int]
   // Compile-time const values: registered by IConst pre-scan so that EPath
   // references to const names inline ldc.i4 instead of ldsfld.
   constValues: Map[String, Int]  // constName → inlined Int value
@@ -1609,6 +1615,8 @@ pub func newCodegenCtx(
     lambdaCaptureNames = newMap(),
     lambdaCaptureTypes = newMap(),
     lambdaCaptureCells = newMap(),
+    lambdaClosureClasses = newMap(),
+    lambdaClosureCtorTokens = newMap(),
     constValues = newMap(),
     constBareClaimed = newMap(),
     enumTypeNames = newMap(),
@@ -3259,6 +3267,10 @@ pub record FuncCtx {
   // result to `R`.  Consulted when a function-typed value is invoked (`f()`) so
   // the call yields the declared type.  Absent ⇒ default to `object`.  #1877.
   funcValRetTypes: Map[String, MsilType]
+  // Parameter types for function-typed locals/parameters, keyed by variable name.
+  // Maps to the full parameter list (in order) to enable typed delegate ABI
+  // at the invoke site. Populated alongside funcValRetTypes. (#1877 Phase 3)
+  funcValParamTypes: Map[String, List[MsilType]]
   // Logical type of a lifted lambda's parameter slot.  Lambda params arrive
   // boxed (`object`) in the `Func<object,…>` delegate signature; this records
   // the type each is logically used as so reads `unbox.any`/`castclass` it on
@@ -4246,20 +4258,24 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
       MTuple(elems = tupElems)
     }
     case TFunction(params, ret) -> {
-      // Map Lyric function types to the CLR delegate types the bootstrap F# emitter uses
-      // (#1877 uniform ABI). All Lyric values are boxed to System.Object in the
-      // bootstrap model, so params always erase to object.
-      // `() -> Unit` maps to System.Action (no type parameters).
-      // All other arities and return types remain System.Object for now; a full
-      // multi-arity mapping lands with epic #1877.
-      // Note: the parser produces TRef(["Unit"]) for the `Unit` name, not TUnit,
-      // so we resolve `ret` recursively and check for MVoid.
+      // Map Lyric function types to the CLR delegate types (#1877 Phase 3 — Strongly-typed invoke).
+      // Resolve return type and build the appropriate System.Action / System.Func delegate.
       val retMsil = typeExprToMsilCtx(cctx, ret, pkgName)
       val isVoidRet = match retMsil { case MVoid -> true; case _ -> false }
+      // () -> Unit maps to System.Action (no type parameters)
       if params.count == 0 and isVoidRet {
         MClass("System.Action")
+      // () -> TReturn (any return type) maps to System.Func<TReturn>
+      } else if params.count == 0 and not isVoidRet {
+        MClass("System.Func`1")
+      // (T1, ..., Tn) -> Unit maps to System.Action<T1,...,Tn>
+      } else if isVoidRet {
+        val sb: String = "System.Action`" + toString(params.count)
+        MClass(sb)
+      // (T1, ..., Tn) -> TReturn maps to System.Func<T1,...,Tn,TReturn>
       } else {
-        MObject
+        val sb: String = "System.Func`" + toString(params.count + 1)
+        MClass(sb)
       }
     }
     case TArray(_, _) -> MObject
@@ -9840,28 +9856,78 @@ func lowerBuiltinOrStaticCallMsil(
             // local — a function-typed *parameter* was previously loaded with
             // `ldloc(slot - paramCount)`, which is invalid IL (#1877).
             emitLoadSlot(insns, slot, fctx.paramCount)
-            // A function-typed parameter / local is declared `object` in the
-            // method signature and LocalVarSig (the uniform lambda ABI erases the
-            // delegate to `object`), but `callvirt Func`(N+1)::Invoke` requires the
-            // receiver to be that concrete `Func` TypeSpec.  Narrow the loaded
-            // `object` to the Func TypeSpec first, or the verifier rejects the
-            // call (`StackUnexpected found object expected Func`2<…>`, #3943:
-            // Std.Core.countWhere invoking its `pred` parameter).
-            insns.add(MCastclass(typeToken = 0x1B000000 + internFuncNTypeSpec(cctx, args.count)))
+
+            // Phase 3 (#1877): Check if we have tracked parameter types for this function
+            // to enable strongly-typed invoke (no boxing of arguments).
+            val trackedParamTypes = mapGet(fctx.funcValParamTypes, funcName)
+            val trackedRetType = mapGet(fctx.funcValRetTypes, funcName)
+            val useTypedInvoke = match trackedParamTypes { case Some(pts) -> pts.count == args.count; case None -> false }
+
+            // Collect argument types as we lower them
+            val argTypes: List[MsilType] = newList()
             var i = 0
             while i < args.count {
               val argTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
-              // Func<object,...>.Invoke expects object for every param — box value types.
-              boxIfNeededMsil(cctx, insns, argTy)
+              argTypes.add(argTy)
               i = i + 1
             }
-            insns.add(MCallvirt(methodToken = buildFuncNInvokeTok(cctx, args.count)))
-            // The delegate's declared return type (tracked for function-typed
-            // params/locals) drives result materialisation: a void delegate
-            // discards the `object`; otherwise it is unboxed/cast to R.
-            match mapGet(fctx.funcValRetTypes, funcName) {
-              case Some(rt) -> match rt { case MVoid -> { insns.add(MPop); MVoid }; case _ -> { materializeBoxedElemMsil(cctx, insns, rt); rt } }
-              case None -> MObject
+
+            // Emit castclass and callvirt with appropriate typing
+            if useTypedInvoke {
+              // Phase 3: Strongly-typed invoke path — no boxing of arguments.
+              // Cast to the properly-typed delegate and call the typed Invoke method.
+              match trackedParamTypes {
+                case Some(pts) -> {
+                  match trackedRetType {
+                    case Some(rt) -> {
+                      // Build a typed invoke token and emit the call directly
+                      val invokeToken = buildFuncNInvokeTokWithTypes(cctx, args.count, pts, rt)
+                      insns.add(MCallvirt(methodToken = invokeToken))
+                      // Handle return type: void delegates pop the result, others materialize it
+                      match rt {
+                        case MVoid -> { insns.add(MPop); MVoid }
+                        case _ -> { rt }
+                      }
+                    }
+                    case None -> {
+                      // Fallback if return type wasn't tracked (should not happen for well-typed code)
+                      insns.add(MCastclass(typeToken = 0x1B000000 + internFuncNTypeSpec(cctx, args.count)))
+                      var j = 0
+                      while j < argTypes.count {
+                        boxIfNeededMsil(cctx, insns, argTypes[j])
+                        j = j + 1
+                      }
+                      insns.add(MCallvirt(methodToken = buildFuncNInvokeTok(cctx, args.count)))
+                      MObject
+                    }
+                  }
+                }
+                case None -> MObject
+              }
+            } else {
+              // Phase 1 fallback: Object-based uniform ABI (keep current behavior for compatibility).
+              // A function-typed parameter / local is declared `object` in the
+              // method signature and LocalVarSig (the uniform lambda ABI erases the
+              // delegate to `object`), but `callvirt Func`(N+1)::Invoke` requires the
+              // receiver to be that concrete `Func` TypeSpec.  Narrow the loaded
+              // `object` to the Func TypeSpec first, or the verifier rejects the
+              // call (`StackUnexpected found object expected Func`2<…>`, #3943:
+              // Std.Core.countWhere invoking its `pred` parameter).
+              insns.add(MCastclass(typeToken = 0x1B000000 + internFuncNTypeSpec(cctx, args.count)))
+              var i2 = 0
+              while i2 < argTypes.count {
+                // Func<object,...>.Invoke expects object for every param — box value types.
+                boxIfNeededMsil(cctx, insns, argTypes[i2])
+                i2 = i2 + 1
+              }
+              insns.add(MCallvirt(methodToken = buildFuncNInvokeTok(cctx, args.count)))
+              // The delegate's declared return type (tracked for function-typed
+              // params/locals) drives result materialisation: a void delegate
+              // discards the `object`; otherwise it is unboxed/cast to R.
+              match mapGet(fctx.funcValRetTypes, funcName) {
+                case Some(rt) -> match rt { case MVoid -> { insns.add(MPop); MVoid }; case _ -> { materializeBoxedElemMsil(cctx, insns, rt); rt } }
+                case None -> MObject
+              }
             }
           }
           case None -> {
@@ -11380,9 +11446,17 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           match tyOpt {
             case Some(te) -> {
               match te.kind {
-                case TFunction(_, retTe) -> {
+                case TFunction(paramTes, retTe) -> {
                   if not fctx.funcValRetTypes.containsKey(name) {
                     fctx.funcValRetTypes.add(name, typeExprToMsilCtx(cctx, retTe, fctx.pkgName))
+                    // Also track parameter types for typed invoke ABI (#1877 Phase 3)
+                    val paramMsilTys: List[MsilType] = newList()
+                    var pi = 0
+                    while pi < paramTes.count {
+                      paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pi], fctx.pkgName))
+                      pi = pi + 1
+                    }
+                    fctx.funcValParamTypes.add(name, paramMsilTys)
                   }
                 }
                 case _ -> ()
@@ -11980,6 +12054,7 @@ func makeFuncCtxMsil(
   val collExpect: List[MsilType] = newList()
   val byrefSlotTypes: Map[Int, MsilType] = newMap()
   val funcValRetTypes: Map[String, MsilType] = newMap()
+  val funcValParamTypes: Map[String, List[MsilType]] = newMap()
   val boxedParamTypes: Map[Int, MsilType] = newMap()
   val captureNameToIndex: Map[String, Int] = newMap()
   val captureNameToType: Map[String, MsilType] = newMap()
@@ -12011,6 +12086,7 @@ func makeFuncCtxMsil(
     collExpect = collExpect,
     byrefSlotTypes = byrefSlotTypes,
     funcValRetTypes = funcValRetTypes,
+    funcValParamTypes = funcValParamTypes,
     boxedParamTypes = boxedParamTypes,
     captureNameToIndex = captureNameToIndex,
     captureNameToType = captureNameToType,
@@ -12430,6 +12506,49 @@ func buildFuncNInvokeTok(cctx: in CodegenCtx, nparams: in Int): Int {
   }
   val invokeSig = buildInstanceMethodSig(invokePs, MTypeVar(index = nparams))
   val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, "Invoke", "func_invoke_" + toString(nparams), invokeSig)
+  0x0A000000 + mrRow
+}
+
+// Build a callvirt token for a strongly-typed System.Func<T1,...,Tn,TReturn>::Invoke(T1,...,Tn): TReturn.
+// This is the Phase 3 variant that emits typed parameters and return type instead of object-based.
+// Used for lambda invocation when parameter and return types are known at the call site.
+// (#1877 Phase 3 — Strongly-typed invoke ABI)
+func buildFuncNInvokeTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType], retType: in MsilType): Int {
+  // If we have fewer actual types than expected params, fall back to the object-based version
+  if paramTypes.count < nparams {
+    return buildFuncNInvokeTok(cctx, nparams)
+  }
+  val trN = internFuncTypeRef(cctx, nparams)
+  // TypeDefOrRef coded index for a TypeRef at row R: (R << 2) | 1
+  val codedIdx = (trN * 4) + 1
+  val actualArgs: List[MsilType] = newList()
+  var ai = 0
+  while ai < nparams {
+    // Use actual parameter types (not object-based) for strongly-typed invoke.
+    actualArgs.add(paramTypes[ai])
+    ai = ai + 1
+  }
+  actualArgs.add(retType)
+  val gblob = buildGenericInstBlob(codedIdx, actualArgs)
+  // Cache key must include both parameter types and return type to avoid collision.
+  // Two lambdas with same param count but different types or returns must be distinct.
+  var typeKeySuffix = ""
+  var ti = 0
+  while ti < paramTypes.count and ti < nparams {
+    typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(paramTypes[ti])
+    ti = ti + 1
+  }
+  typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(retType)
+  val specKey = "FuncSpec_invoke_typed_" + toString(nparams) + typeKeySuffix
+  val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
+  val invokePs: List[MsilType] = newList()
+  var pi = 0
+  while pi < nparams {
+    invokePs.add(paramTypes[pi])
+    pi = pi + 1
+  }
+  val invokeSig = buildInstanceMethodSig(invokePs, retType)
+  val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, "Invoke", "func_invoke_typed_" + toString(nparams) + typeKeySuffix, invokeSig)
   0x0A000000 + mrRow
 }
 
@@ -17084,8 +17203,16 @@ pub func lowerImplMethodMsil(
     // Record the declared return type of a function-typed param (a `(A,...) -> R`
     // value) so invoking it (`f()`) yields R rather than a bare object (#1877).
     match p.ty.kind {
-      case TFunction(_, retTe) -> {
+      case TFunction(paramTes, retTe) -> {
         fctx.funcValRetTypes.add(p.name, typeExprToMsilCtx(cctx, retTe, pkgName))
+        // Also track parameter types for typed invoke ABI (#1877 Phase 3)
+        val paramMsilTys: List[MsilType] = newList()
+        var pjj = 0
+        while pjj < paramTes.count {
+          paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pjj], pkgName))
+          pjj = pjj + 1
+        }
+        fctx.funcValParamTypes.add(p.name, paramMsilTys)
       }
       case _ -> {
       }
@@ -17519,6 +17646,33 @@ func recordFieldMsilType(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Strin
   } else {
     typeExprToMsilCtx(cctx, te, pkgName)
   }
+}
+
+// Synthesize a __Closure_<i> record for a capturing lambda (Stage 1, #1877).
+// Creates one public field per captured variable with its original type.
+// The record is stored in cctx.lambdaClosureClasses for later registration.
+func synthesizeClosureClassMsil(cctx: in CodegenCtx, lambdaName: in String, pkgName: in String, capNames: in List[String], capTypes: in List[MsilType]): MRecord {
+  val closureIdx = cctx.lambdaTicker.count
+  val closureClassName = pkgName + ".__Closure_" + toString(closureIdx)
+  val fields: List[MField] = newList()
+  var fi = 0
+  while fi < capNames.count {
+    val fieldName = "__f" + toString(fi)
+    val fieldType = if fi < capTypes.count { capTypes[fi] } else { MObject }
+    fields.add(MField(flags = 0x0006, name = fieldName, fieldType = fieldType))
+    fi = fi + 1
+  }
+  val closure = MRecord(
+    className = closureClassName,
+    namespace = pkgName,
+    baseClass = "System.Object",
+    fields = fields,
+    methods = newList(),
+    useDefaultCtor = false,
+    generics = newList()
+  )
+  cctx.lambdaClosureClasses.add(lambdaName, closure)
+  closure
 }
 
 pub func lowerRecordMsil(cctx: in CodegenCtx, decl: in RecordDecl, pkgName: in String): MRecord {

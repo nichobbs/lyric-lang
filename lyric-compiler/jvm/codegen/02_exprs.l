@@ -227,8 +227,26 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       match lookupSlot(ctx, name) {
         case Some(slot) -> {
           val ty = match lookupType(ctx, name) { case Some(t) -> t; case None -> JRef(className = "java/lang/Object") }
-          emitLoad(insns, slot, ty)
-          ty
+          // Check if this is a hoisted var (by-ref capture in closures)
+          match mapGet(ctx.hoistedCellSlot, name) {
+            case Some(cellSlot) -> {
+              // Load from cell[0]
+              val cellElemTy = match mapGet(ctx.hoistedCellType, name) {
+                case Some(t) -> t
+                case None -> ty
+              }
+              val cellType = JArray(elem = cellElemTy)
+              emitLoad(insns, cellSlot, cellType)
+              insns.add(LIconst(v = 0))
+              emitArrayLoad(insns, cellElemTy)
+              cellElemTy
+            }
+            case None -> {
+              // Normal load
+              emitLoad(insns, slot, ty)
+              ty
+            }
+          }
         }
         case None -> {
           // Inside an instance method (a protected-type entry / helper), a bare
@@ -2077,18 +2095,34 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
 
   val caps = lambdaCaptureNamesJvm(ctx, lparams, body)
   // Capture types come from the enclosing scope (by value, per §5.4 / docs/01:
-  // `val` bindings are captured by value).  A captured `var` is currently also
-  // snapshotted by value on the JVM — mutation-after-capture is not reflected
-  // (the by-reference `var` path needs heap-cell hoisting; tracked for J2b+).
+  // `val` bindings are captured by value).  A captured `var` that is hoisted
+  // (referenced inside a lambda) is captured by reference: the closure field
+  // holds the cell array, not the value.  Mutation-after-capture is reflected
+  // through the cell (epic #1877 Stage 2).
   val captures: List[LClosureCapture] = newList()
   var ci = 0
   while ci < caps.count {
     val cn = caps[ci]
-    val cty = match lookupType(ctx, cn) {
-      case Some(t) -> t
-      case None -> match selfFieldType(ctx, cn) { case Some(ft) -> ft; case None -> JRef(className = "java/lang/Object") }
+    // Check if this capture is a hoisted cell
+    match mapGet(ctx.hoistedCellSlot, cn) {
+      case Some(_) -> {
+        // Hoisted var: capture the cell array, not the value
+        val elemTy = match mapGet(ctx.hoistedCellType, cn) {
+          case Some(t) -> t
+          case None -> JRef(className = "java/lang/Object")
+        }
+        val cellType = JArray(elem = elemTy)
+        captures.add(LClosureCapture(captureName = cn, captureType = cellType))
+      }
+      case None -> {
+        // Normal capture: get the enclosing-scope type
+        val cty = match lookupType(ctx, cn) {
+          case Some(t) -> t
+          case None -> match selfFieldType(ctx, cn) { case Some(ft) -> ft; case None -> JRef(className = "java/lang/Object") }
+        }
+        captures.add(LClosureCapture(captureName = cn, captureType = cty))
+      }
     }
-    captures.add(LClosureCapture(captureName = cn, captureType = cty))
     ci = ci + 1
   }
 
@@ -2133,13 +2167,32 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
     pi = pi + 1
   }
   // Read each capture field into a local of the capture's type.
+  // For hoisted cells, the local stores the cell array itself; access inside
+  // the closure body will go through cell[0].
   var cj = 0
   while cj < captures.count {
     val cap = captures[cj]
+    // Check if this capture is a hoisted cell
+    val isHoistedCell = match mapGet(ctx.hoistedCellType, cap.captureName) {
+      case Some(_) -> true
+      case None -> false
+    }
+    if isHoistedCell {
+      bodyCtx.captureCellNames.add(cap.captureName)
+    }
     val cslot = allocSlot(bodyCtx, cap.captureName, cap.captureType)
     bodyInsns.add(LAload(slot = 0))
     bodyInsns.add(LGetfield(owner = closureClass, name = cap.captureName, t = cap.captureType))
     emitStore(bodyInsns, cslot, cap.captureType)
+    // For hoisted cells, also record the cell slot and element type in the body context
+    if isHoistedCell {
+      val elemTy = match mapGet(ctx.hoistedCellType, cap.captureName) {
+        case Some(t) -> t
+        case None -> JRef(className = "java/lang/Object")
+      }
+      bodyCtx.hoistedCellSlot.add(cap.captureName, cslot)
+      bodyCtx.hoistedCellType.add(cap.captureName, elemTy)
+    }
     cj = cj + 1
   }
   // Lower the lambda body in expression position; box the value to Object and
@@ -2174,13 +2227,28 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
     // Load the captured value to pass to the closure ctor.  A local/param is
     // read from its slot; an enclosing-receiver field (`selfClass`) is read via
     // `aload_0; getfield selfClass.<name>` (#2864 — record-method / protected-
-    // entry lambdas capturing a bare field).
-    match lookupSlot(ctx, cap.captureName) {
-      case Some(s) -> emitLoad(insns, s, cap.captureType)
-      case None -> {
-        val selfCls = match ctx.selfClass { case Some(c) -> c; case None -> "" }
-        insns.add(LAload(slot = 0))
-        insns.add(LGetfield(owner = selfCls, name = cap.captureName, t = cap.captureType))
+    // entry lambdas capturing a bare field).  For hoisted vars, the capture type
+    // is the cell array (by reference), so load the cell slot directly.
+    val isHoistedCell = match mapGet(ctx.hoistedCellSlot, cap.captureName) {
+      case Some(_) -> true
+      case None -> false
+    }
+    if isHoistedCell {
+      match mapGet(ctx.hoistedCellSlot, cap.captureName) {
+        case Some(cellSlot) -> {
+          val cellType = cap.captureType
+          emitLoad(insns, cellSlot, cellType)
+        }
+        case None -> insns.add(LAconstNull)
+      }
+    } else {
+      match lookupSlot(ctx, cap.captureName) {
+        case Some(s) -> emitLoad(insns, s, cap.captureType)
+        case None -> {
+          val selfCls = match ctx.selfClass { case Some(c) -> c; case None -> "" }
+          insns.add(LAload(slot = 0))
+          insns.add(LGetfield(owner = selfCls, name = cap.captureName, t = cap.captureType))
+        }
       }
     }
     ck = ck + 1
