@@ -484,6 +484,7 @@ jobs:
             lyric-compiler/lyric/manifest_self_test.l \
             lyric-compiler/lyric/verifier_self_test.l \
             lyric-compiler/lyric/closure_correctness_self_test.l \
+            lyric-compiler/lyric/lambda_phase2_closure_synthesis_self_test.l \
             lyric-compiler/lyric/pconstructor_typed_binding_self_test.l \
             lyric-compiler/lyric/generator/generator_self_test.l ; do
             echo "=== $t ==="
