@@ -89,6 +89,15 @@ dotnet hello.dll           # run the produced assembly
 
 `lyric build` is incremental: if neither the source nor the standard library has changed since the last build, it is a no-op. Pass `--force` to rebuild unconditionally.
 
+A project can produce a directly-runnable launcher instead of a bare `.dll` by setting `kind = "exe"` in its `lyric.toml`:
+
+```toml
+[build]
+kind = "exe"   # default: "lib"
+```
+
+This emits a native *apphost* launcher beside the managed DLL — `bin/<name>` (or `<name>.exe` on Windows) — so the program starts with `./<name>` rather than `dotnet <name>.dll`, and `lyric run` execs it directly. It is still framework-dependent (a .NET runtime must be installed). The `bundle` (self-contained) and `aot` (native, no runtime) kinds are reserved for future use; for a fully self-contained native binary today, use `lyric build --release` (see §"Native binaries" below).
+
 Inside a project, you can drop the arguments entirely. Running `lyric` with no
 command builds the current project, and `lyric build` / `lyric restore` find the
 project's `lyric.toml` by walking up from your working directory — so they work

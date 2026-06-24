@@ -14,6 +14,7 @@ import Std.Time as Time
 import Lyric.Manifest as Mf
 import Lyric.Lexer
 import Lyric.Emitter as Emitter
+import Lyric.AppHost as AppHost
 import Lyric.Discovery as Disc
 
 // Build a project and run its output artifact.
@@ -68,17 +69,40 @@ func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in Com
     }
     case Dotnet -> {
       copyRuntimeDepsBeside(outPath, findCompiledLibDir())
-      val execArgs: List[String] = newList()
-      execArgs.add("exec")
-      execArgs.add(outPath)
-      for a in userArgs.toArray() {
-        execArgs.add(a)
+      // For `kind = "exe"` builds, prefer the native apphost launcher emitted
+      // beside the DLL: run it directly with no `dotnet exec` prefix.
+      val launcher = if buildKind == "exe" {
+        match AppHost.launcherPathForDll(outPath) {
+          case Some(p) -> if File.fileExists(p) { Some(value = p) } else { None }
+          case None -> None
+        }
+      } else {
+        None
       }
-      match Process.run("dotnet", execArgs) {
-        case Ok(code) -> code
-        case Err(e) -> {
-          printErr("run: failed to start dotnet: " + IOError.message(e))
-          1
+      match launcher {
+        case Some(launcherPath) -> {
+          match Process.run(launcherPath, userArgs) {
+            case Ok(code) -> code
+            case Err(e) -> {
+              printErr("run: failed to start launcher: " + IOError.message(e))
+              1
+            }
+          }
+        }
+        case None -> {
+          val execArgs: List[String] = newList()
+          execArgs.add("exec")
+          execArgs.add(outPath)
+          for a in userArgs.toArray() {
+            execArgs.add(a)
+          }
+          match Process.run("dotnet", execArgs) {
+            case Ok(code) -> code
+            case Err(e) -> {
+              printErr("run: failed to start dotnet: " + IOError.message(e))
+              1
+            }
+          }
         }
       }
     }

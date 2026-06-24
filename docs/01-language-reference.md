@@ -539,6 +539,24 @@ file_layout = "split"   # default: "unified"
 
 In split mode, packages are authored as `<package>.lspec` (containing `pub` declarations only) and `<package>.lbody` (containing implementations). Semantics are identical to unified files; the split is purely an authoring choice for teams that want Ada-style discipline.
 
+### 3.5 Build kind — `[build]`
+
+A project's `lyric.toml` may declare an output kind that controls what artifact `lyric build` produces on the **.NET** target:
+
+```toml
+[build]
+kind = "exe"   # default: "lib"
+```
+
+| `kind` | Artifact | Runs as | Runtime needed? |
+|---|---|---|---|
+| `"lib"` | managed `<name>.dll` + `<name>.runtimeconfig.json` | `dotnet exec <name>.dll` | .NET runtime |
+| `"exe"` | the above **plus** a native apphost launcher `<name>` (`<name>.exe` on Windows) | `./<name>` directly | .NET runtime (framework-dependent) |
+| `"bundle"` | self-contained launcher with the runtime bundled | `./<name>` | none — *planned, not yet emitted* |
+| `"aot"` | native ahead-of-time compiled binary | `./<name>` | none — *planned, not yet emitted* |
+
+`kind = "exe"` writes a *native* launcher beside the managed DLL by binding the .NET SDK's apphost template (the launcher boots the CLR and runs the assembly), so the program starts with `./myapp` instead of `dotnet myapp.dll`. It is still framework-dependent — a .NET runtime must be installed. `bundle` and `aot` are accepted by the manifest parser but their emission is not yet implemented; declaring them is a hard build error rather than a silent fallback to a library. For a self-contained native binary today, use `lyric build --release` (§ below). On the **JVM** target, `kind` is currently a no-op (the `.jar` is already self-launching via `java -jar`).
+
 ## 4. Expressions
 
 ### 4.1 Operator precedence
@@ -1420,7 +1438,7 @@ method-syntax form.
 
 `--release` is supported for both **single-file** and **project-mode** (multi-package `lyric.toml`) programs on the **.NET** target. In project mode the entry package — the one whose source declares a zero-argument `func main()` — is auto-detected across all `[project.packages]` entries; exactly one package must declare `func main()` (zero or multiple entries are a hard error). Local path dependencies declared in `[dependencies]` are automatically collected as AOT linker references. The JVM target (GraalVM `native-image`, designed behind the same `ReleaseTarget` seam) is not yet implemented and fails loud rather than silently producing a managed artifact (#1975).
 
-`lyric run [<source.l>] [--target dotnet|jvm]` — compiles and immediately executes, mirroring `lyric build` then running the produced artifact. `--target dotnet` (the default) builds the `.dll` and runs it via `dotnet exec`; `--target jvm` builds the self-contained `.jar` and runs it via `java -jar`. On `--target dotnet`, arguments after `--` are forwarded verbatim to the program and the program's exit code becomes `lyric run`'s exit code. On `--target jvm` this works for a no-argument `main` whose output goes to stdout; a `main(slice[String])` that takes arguments currently hits a JVM `VerifyError`, and the `Int` return is not yet propagated to the process exit code (both tracked in #3303). With no source file, `lyric run` discovers the nearest `lyric.toml` and runs the project's entry artifact; `--target` applies to the project build. Intermediate artifacts are written under `.lyric-run/`.
+`lyric run [<source.l>] [--target dotnet|jvm]` — compiles and immediately executes, mirroring `lyric build` then running the produced artifact. `--target dotnet` (the default) builds the `.dll` and runs it via `dotnet exec`; `--target jvm` builds the self-contained `.jar` and runs it via `java -jar`. On `--target dotnet`, arguments after `--` are forwarded verbatim to the program and the program's exit code becomes `lyric run`'s exit code. On `--target jvm` this works for a no-argument `main` whose output goes to stdout; a `main(slice[String])` that takes arguments currently hits a JVM `VerifyError`, and the `Int` return is not yet propagated to the process exit code (both tracked in #3303). With no source file, `lyric run` discovers the nearest `lyric.toml` and runs the project's entry artifact; `--target` applies to the project build. For a project whose `[build] kind = "exe"`, `lyric run` executes the native apphost launcher directly rather than via `dotnet exec`. Intermediate artifacts are written under `.lyric-run/`.
 
 **Project-aware defaults.** Running `lyric` with no command builds the current
 project: it discovers the nearest `lyric.toml` by walking up from the working
