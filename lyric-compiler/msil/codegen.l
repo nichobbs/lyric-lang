@@ -36,6 +36,7 @@ import Lyric.Lexer
 import Lyric.RestoredPackages
 import Lyric.Weaver as Weaver
 import Msil.Lowering
+import Msil.Tables
 import Msil.Ffi
 import Msil.Kernel
 import Msil.MetadataReader as Mdr
@@ -107,6 +108,8 @@ pub record CodegenCtx {
   tokStringIsNormalized: Int  // String.IsNormalized(): bool
   tokStringNormalize: Int  // String.Normalize(): string
   tokStringTrim: Int  // String.Trim(): string
+  tokStringTrimStart: Int  // String.TrimStart(): string
+  tokStringTrimEnd: Int  // String.TrimEnd(): string
   tokStringIndexOf: Int  // String.IndexOf(string): int32  (-1 if absent)
   tokStringLastIndexOf: Int  // String.LastIndexOf(string): int32  (-1 if absent)
   tokStringStartsWith: Int  // String.StartsWith(string): bool
@@ -1152,6 +1155,26 @@ pub func newCodegenCtx(
   val tokStringTrim = 0x0A000000 +
     ctxAddMemberRef(lctx, trString, "Trim", "str_trim", buildInstanceMethodSig(strTrimPs, MString))
 
+  val strTrimStartPs: List[MsilType] = newList()
+  val tokStringTrimStart = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trString,
+      "TrimStart",
+      "str_trimstart",
+      buildInstanceMethodSig(strTrimStartPs, MString)
+    )
+
+  val strTrimEndPs: List[MsilType] = newList()
+  val tokStringTrimEnd = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trString,
+      "TrimEnd",
+      "str_trimend",
+      buildInstanceMethodSig(strTrimEndPs, MString)
+    )
+
   val strIndexOfPs: List[MsilType] = newList()
   strIndexOfPs.add(MString)
   val tokStringIndexOf = 0x0A000000 +
@@ -1608,6 +1631,8 @@ pub func newCodegenCtx(
     tokStringIsNormalized = tokStringIsNormalized,
     tokStringNormalize = tokStringNormalize,
     tokStringTrim = tokStringTrim,
+    tokStringTrimStart = tokStringTrimStart,
+    tokStringTrimEnd = tokStringTrimEnd,
     tokStringIndexOf = tokStringIndexOf,
     tokStringLastIndexOf = tokStringLastIndexOf,
     tokStringStartsWith = tokStringStartsWith,
@@ -4085,6 +4110,15 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
                 // in-bundle and cross-Lyric-package types.
                 if startsWith(clrFqn, "Lyric.") {
                   MClass(className = resolveTypeFqn(cctx, pkgName, seg))
+                } else if contains(clrFqn, "[") {
+                  // A closed generic-instantiation FQN (`Task`1[System.String]`)
+                  // has no flat TypeRef identity — `internFfiTypeRefNested` would
+                  // mint a TypeRef literally named `Task`1[System.String]`, which
+                  // faults at load with TypeLoadException (#4025).  Erase the
+                  // reference-typed value to `object`; member calls on it route
+                  // through `emitGenericExternMember`, which builds the proper
+                  // closed GENERICINST TypeSpec and `castclass`es the receiver.
+                  MObject
                 } else {
                   ensureMetadataIndex(cctx)
                   val refRow = internFfiTypeRefNested(cctx, clrFqn)
@@ -9622,11 +9656,20 @@ func lowerBuiltinOrStaticCallMsil(
       match mapGet(cctx.unionCaseCtorByName, funcName) {
         case Some(candidates) -> pickCaseFqnByQualifier(cctx, fctx, candidates, callQualifier)
         case None -> {
-          // Cross-package record: look up simple name in typeFqnByName to
-          // get the FQN, then verify it has a ctor registered.
-          match mapGet(cctx.typeFqnByName, funcName) {
-            case Some(fqn) -> if cctx.recordCtorTokens.containsKey(fqn) { fqn } else { localCtorKey }
-            case None -> localCtorKey
+          // Cross-package record: resolve the simple name to its FQN with the
+          // import-aware scope-tier resolver (mirrors the type checker), NOT the
+          // first-wins `typeFqnByName` map.  Two packages can declare the same
+          // short record name (e.g. `Msil.Tables.TypeRefRow` vs
+          // `Msil.MetadataReader.TypeRefRow`); in a single bundle the first-wins
+          // map binds every consumer to whichever registered first, so a
+          // construction in a package that imports only ONE of them mis-resolves
+          // to the other's ctor — a different field layout that faults the
+          // verifier with StackUnexpected (found Int32, expected string).
+          val resolvedCtorFqn = resolveTypeFqn(cctx, fctx.pkgName, funcName)
+          if cctx.recordCtorTokens.containsKey(resolvedCtorFqn) {
+            resolvedCtorFqn
+          } else {
+            localCtorKey
           }
         }
       }
@@ -10732,6 +10775,14 @@ func lowerMethodCallMsil(
   } else if memberName == "trim" and args.count == 0 {
     // String.Trim(): string  instance HASTHIS — receiver already on stack.
     insns.add(MCallvirt(methodToken = cctx.tokStringTrim))
+    MString
+  } else if memberName == "trimStart" and args.count == 0 {
+    // String.TrimStart(): string  — trims leading whitespace.
+    insns.add(MCallvirt(methodToken = cctx.tokStringTrimStart))
+    MString
+  } else if memberName == "trimEnd" and args.count == 0 {
+    // String.TrimEnd(): string  — trims trailing whitespace.
+    insns.add(MCallvirt(methodToken = cctx.tokStringTrimEnd))
     MString
   } else if memberName == "indexOf" and args.count == 1 {
     // String.IndexOf(string): int32 — BCL semantics (-1 when absent),
@@ -12609,6 +12660,79 @@ func genericArityOfName(simpleName: in String): Int {
 // Does not append `MRet` (the caller does).  Returns false — having emitted
 // nothing — when the metadata signature can't be resolved or carries a shape
 // this path can't encode, so the caller falls back to the legacy path.
+// Strip a trailing concrete generic instantiation `[...]` from a CLR type name,
+// keeping the arity-suffixed open-generic name: `Task`1[System.String]` ->
+// `Task`1`.  Names without a `[` pass through unchanged.
+func stripBracketSuffix(name: in String): String {
+  val br = name.indexOf("[")
+  if br < 0 { name } else { name.substring(0, br) }
+}
+
+// Parse the concrete type-argument FQNs out of a bracketed generic instantiation
+// suffix: `Task`1[System.String]` -> ["System.String"].  Returns an empty list
+// when there is no `[...]`.  Assumes non-nested args (no generic-of-generic),
+// which covers the BCL extern shapes the kernel declares (Task`1[System.String]).
+func parseBracketArgFqns(name: in String): List[String] {
+  val acc: List[String] = newList()
+  val br = name.indexOf("[")
+  if br < 0 {
+    return acc
+  }
+  val close = name.lastIndexOf("]")
+  if close <= br {
+    return acc
+  }
+  // Manual comma-scan of the instantiation body.  Avoids `Str.split` /
+  // `.length`-on-inferred-value patterns the F# seed emitter mis-types.
+  var cur = ""
+  var i = br + 1
+  while i < close {
+    val ch = name.substring(i, 1)
+    if ch == "," {
+      val t = cur.trim()
+      if t.length > 0 {
+        acc.add(t)
+      }
+      cur = ""
+    } else {
+      cur = cur + ch
+    }
+    i = i + 1
+  }
+  val tail = cur.trim()
+  if tail.length > 0 {
+    acc.add(tail)
+  }
+  acc
+}
+
+// Map a CLR type-argument FQN to the MsilType used as a closed TypeSpec arg.
+// BCL primitives map to their value types; everything else interns a class
+// TypeRef so the closed instantiation matches the runtime object exactly (e.g.
+// `Task`1<String>`, not the `<object>` erasure that fails a generic-invariant
+// receiver `castclass`).
+func argFqnToMsil(cctx: in CodegenCtx, fqn: in String): MsilType {
+  if fqn == "System.String" {
+    MString
+  } else if fqn == "System.Int32" {
+    MInt
+  } else if fqn == "System.Int64" {
+    MLong
+  } else if fqn == "System.Double" {
+    MDouble
+  } else if fqn == "System.Boolean" {
+    MBool
+  } else if fqn == "System.Char" {
+    MChar
+  } else if fqn == "System.Byte" {
+    MByte
+  } else {
+    ensureMetadataIndex(cctx)
+    val refRow = internFfiTypeRefNested(cctx, fqn)
+    MClassRef(typeRefCode = tdrTypeRef(refRow), clrFqn = fqn)
+  }
+}
+
 func emitGenericExternMember(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -12622,18 +12746,43 @@ func emitGenericExternMember(
   if arity <= 0 {
     return false
   }
+  // A concrete instantiation suffix (`Task`1[System.String]`) names a CLOSED
+  // generic created by a BCL method; the open-generic type name and the concrete
+  // type args are recovered so the TypeSpec parent matches the runtime instance
+  // exactly (the `<object,…>` erasure below is only valid for instances Lyric
+  // itself constructs object-erased).
+  val cleanTypeName = stripBracketSuffix(r.typeName)
+  val cleanFqn = stripBracketSuffix(resolvedFqn)
+  val concreteArgs = parseBracketArgFqns(r.typeName)
   // Resolve the BCL member's true signature (hasThis + exact VAR positions).
   // Build `sigOpt` via a typed `var` + assignment rather than a `match`
   // expression: the bootstrap F# emitter unifies a `match`'s `None` arm with the
   // `Some(...)` arm to `Option<object>`, after which `sig.paramTypes` below
   // would be an `Object` field read it cannot resolve.
-  val asmName = assemblyForTypeMsil(cctx, resolvedFqn)
+  val asmName = assemblyForTypeMsil(cctx, cleanFqn)
   var sigOpt: Option[Mdr.DecodedMethodSig] = None
+  // The MemberRef name actually emitted: the literal member, or its `get_<M>`
+  // property accessor when the member names a CLR property rather than a method
+  // (e.g. `Task`1.Result` -> `get_Result`).
+  var emitMemberName = r.memberName
   match mapGet(cctx.metadataPathIndex, asmName) {
     case None -> {
     }
     case Some(path) -> {
-      sigOpt = Mdr.decodeExternMethodSig(path, resolvedFqn, r.memberName, decl.params.count)
+      sigOpt = Mdr.decodeExternMethodSig(path, cleanFqn, r.memberName, decl.params.count)
+      match sigOpt {
+        case Some(_) -> ()
+        case None -> {
+          val getter = "get_" + r.memberName
+          match Mdr.decodeExternMethodSig(path, cleanFqn, getter, decl.params.count) {
+            case Some(gsig) -> {
+              sigOpt = Some(value = gsig)
+              emitMemberName = getter
+            }
+            case None -> ()
+          }
+        }
+      }
     }
   }
   match sigOpt {
@@ -12668,14 +12817,25 @@ func emitGenericExternMember(
         return false
       }
 
-      // Closed GENERICINST TypeSpec `T<object,…>`.
+      // Closed GENERICINST TypeSpec.  A bracketed concrete instantiation supplies
+      // the real type args (so a generic-invariant receiver `castclass` matches
+      // the runtime instance); otherwise the args erase to `<object,…>` (valid
+      // because Lyric constructs those instances object-erased).
       val ns = r.namespaceStr
-      val typeRefRow = internFfiTypeRef(cctx, asmName, ns, r.typeName)
+      val typeRefRow = internFfiTypeRef(cctx, asmName, ns, cleanTypeName)
       val objArgs: List[MsilType] = newList()
-      var ai = 0
-      while ai < arity {
-        objArgs.add(MObject)
-        ai = ai + 1
+      if concreteArgs.count == arity {
+        var cai = 0
+        while cai < concreteArgs.count {
+          objArgs.add(argFqnToMsil(cctx, concreteArgs[cai]))
+          cai = cai + 1
+        }
+      } else {
+        var ai = 0
+        while ai < arity {
+          objArgs.add(MObject)
+          ai = ai + 1
+        }
       }
       val tsKey = "ts_genextern_" + resolvedFqn
       val tsBlob = buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(typeRefRow), objArgs)
@@ -12693,14 +12853,14 @@ func emitGenericExternMember(
       // member name: two overloads of the same name on the same generic type
       // (e.g. distinct-arity `TryGetValue`s, or a `.ctor()` vs `.ctor(int,int)`)
       // would otherwise alias to the first-registered MemberRef (#3429).
-      var mrKey = "mr_genextern_" + resolvedFqn + "." + r.memberName + "/" + toString(memberParams.count)
+      var mrKey = "mr_genextern_" + resolvedFqn + "." + emitMemberName + "/" + toString(memberParams.count)
       var mki = 0
       while mki < memberParams.count {
         mrKey = mrKey + "_" + msilTypeKeyStr(memberParams[mki])
         mki = mki + 1
       }
       mrKey = mrKey + "_ret_" + msilTypeKeyStr(if r.isCtor { MVoid } else { memberRet })
-      val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, r.memberName, mrKey, memberSig)
+      val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, emitMemberName, mrKey, memberSig)
       val mrTok = 0x0A000000 + mrRow
 
       // Pre-allocate marshalling temps for concrete `out`/`inout` pointee types
@@ -13061,12 +13221,27 @@ func emitExternTargetBody(
       // Property getters take no value args, so the probe passes an empty list.
       var emitMember = r.memberName
       var emitIsStatic = r.isStatic
+      // A property getter resolved here encodes its ACTUAL return type into the
+      // MemberRef signature (captured below).  A property returning an enum —
+      // `JsonElement.ValueKind` -> `System.Text.Json.JsonValueKind` — must encode
+      // the enum valuetype, not the declared Lyric `Int`; otherwise the CLR can't
+      // bind `get_ValueKind` and the call faults with MissingMethodException at
+      // run time.  The metadata-direct *method* path below only runs for plain
+      // methods (`emitMember == r.memberName`), so the getter return type is
+      // resolved here instead.
+      var propGetterRet: Option[MsilType] = None
       if not r.isCtor {
         val noArgs: List[Mdr.SigType] = newList()
         match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, resolvedFqn, "get_" + r.memberName, noArgs) {
           case Some(gp) -> {
             emitMember = "get_" + r.memberName
             emitIsStatic = gp.sig.isStatic
+            match resolvedSigToMsil(cctx, gp.sig.returnType) {
+              case Some(rm) -> {
+                propGetterRet = Some(value = rm)
+              }
+              case None -> ()
+            }
           }
           case None -> ()
         }
@@ -13215,7 +13390,7 @@ func emitExternTargetBody(
       } else {
         match resolvedMethodRet {
           case Some(rm) -> rm
-          case None -> bclRetTy
+          case None -> match propGetterRet { case Some(rm) -> rm; case None -> bclRetTy }
         }
       }
       val sig = if emitIsStatic and not r.isCtor {
@@ -14085,6 +14260,28 @@ func collectAwaitTypesExprPB(
     case EBinop(_, l, r) -> {
       collectAwaitTypesExprPB(cctx, pkgName, l, acc, spawnNms, spawnTys)
       collectAwaitTypesExprPB(cctx, pkgName, r, acc, spawnNms, spawnTys)
+    }
+    // A `match` can contain awaits in its scrutinee, an arm guard, or an arm
+    // body.  Phase B (`lowerMatchExprMsil`) lowers them in exactly this order —
+    // scrutinee first, then per arm: guard, then body — so the Phase A count must
+    // walk the same order, or the await index N runs past the pre-sized
+    // `resumeLabels` / `awaiterFieldNames` and faults (index out of range).
+    case EMatch(scrutinee, arms) -> {
+      collectAwaitTypesExprPB(cctx, pkgName, scrutinee, acc, spawnNms, spawnTys)
+      var ami = 0
+      while ami < arms.count {
+        val arm = arms[ami]
+        match arm.guard {
+          case Some(g) -> collectAwaitTypesExprPB(cctx, pkgName, g, acc, spawnNms, spawnTys)
+          case None -> {
+          }
+        }
+        match arm.body {
+          case EOBBlock(b) -> collectAwaitTypesBlockPB(cctx, pkgName, b, acc, spawnNms, spawnTys)
+          case EOBExpr(e2) -> collectAwaitTypesExprPB(cctx, pkgName, e2, acc, spawnNms, spawnTys)
+        }
+        ami = ami + 1
+      }
     }
     case _ -> {
     }
@@ -19636,6 +19833,38 @@ func resolvedSigToMsil(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[MsilTyp
     }
     case None -> ()
   }
+  // A closed generic instantiation (`Task`1<String>`, `List`1<Int>`) — the
+  // return/param type of BCL methods such as `TextReader.ReadToEndAsync()`.
+  // Encode it as a real closed GENERICINST so the MemberRef binds to the BCL
+  // method (a degraded `object` return would mis-bind with MissingMethodException
+  // — #4025), interning the open-generic TypeRef and recurring on each arg.
+  match Mdr.sigNamedGenericInstParts(sig) {
+    case Some(parts) -> {
+      val margs: List[MsilType] = newList()
+      var giOk = true
+      var gai = 0
+      while gai < parts.args.count {
+        match resolvedSigToMsil(cctx, parts.args[gai]) {
+          case Some(m) -> margs.add(m)
+          case None -> {
+            giOk = false
+          }
+        }
+        gai = gai + 1
+      }
+      if not giOk {
+        return None
+      }
+      ensureMetadataIndex(cctx)
+      val giRefRow = internFfiTypeRefNested(cctx, parts.fqn)
+      if parts.valueType {
+        return Some(value = MValueTypeGenericInst(typeRefCode = tdrTypeRef(giRefRow), headFqn = parts.fqn, typeArgs = margs))
+      } else {
+        return Some(value = MGenericInst(typeRefCode = tdrTypeRef(giRefRow), headFqn = parts.fqn, typeArgs = margs))
+      }
+    }
+    case None -> ()
+  }
   val pb = Mdr.sigPrimByte(sig)
   if pb >= 0 {
     elemByteToMsil(pb)
@@ -21926,11 +22155,19 @@ func registerUnionCases(cctx: in CodegenCtx, packageName: in String, unionName: 
   // Loop exits via the early `return`s below (`indexOf` no-match
   // or `nameStart >= repr.length`); `idx` is non-negative by
   // construction (#1279).
+  //
+  // Search the remainder from `idx` with the 1-arg `indexOf` and re-base to an
+  // absolute offset: the self-hosted backends lower only the single-argument
+  // `String.indexOf` intrinsic (a 2-arg `indexOf(needle, idx)` would fall
+  // through to the unsupported-method throw stub at run time, #4025), and the
+  // codebase deliberately keeps string handling free of per-backend BCL
+  // overloads so MSIL and JVM emit identical code (cf. `Std.String.split`).
   while true {
-    val hit = repr.indexOf(needle, idx)
-    if hit < 0 {
+    val rel = repr.substring(idx, repr.length - idx).indexOf(needle)
+    if rel < 0 {
       return
     }
+    val hit = idx + rel
     val nameStart = hit + needle.length
     if nameStart >= repr.length {
       return
@@ -22950,7 +23187,7 @@ pub record StdlibPkg {
 /// imports still work because their callsite codegen never reaches
 /// the `funcTokens` lookup (handled by the hardcoded builtin arms in
 /// `lowerBuiltinOrStaticCallMsil`).
-pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibPkg], usesAritySuffix: Bool): Unit {
+pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibPkg]): Unit {
   // Pass 1: register all type items across every package first.  This
   // populates `typeFqnByName` and `ffiTypeRefs` before any function
   // signature is resolved, so cross-package generic return types (e.g.
@@ -22966,7 +23203,7 @@ pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibP
       match it.kind {
         case IFunc(_) -> {
         }
-        case _ -> registerStdlibTypeItem(cctx, pkg.name, it, asmRefRow, usesAritySuffix)
+        case _ -> registerStdlibTypeItem(cctx, pkg.name, it, asmRefRow)
       }
       ii = ii + 1
     }
@@ -22982,7 +23219,7 @@ pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibP
     while ii < pkg.items.count {
       val it: Item = pkg.items[ii]
       match it.kind {
-        case IFunc(decl) -> registerStdlibFunc(cctx, pkg.name, hostRefRow, decl, usesAritySuffix)
+        case IFunc(decl) -> registerStdlibFunc(cctx, pkg.name, hostRefRow, decl)
         case _ -> {
         }
       }
@@ -23232,13 +23469,7 @@ func buildGenericCaseCtorTok(
 // (`Option$Some`, `Option$None`) so that `MIsinstByName` resolves to
 // a TypeRef token rather than falling back to System.Object.
 // Mirrors the `registerRestoredTypeDecl` + `registerRestoredUnionCase` logic.
-func registerStdlibTypeItem(
-  cctx: in CodegenCtx,
-  packageName: in String,
-  it: in Item,
-  asmRefRow: in Int,
-  usesAritySuffix: Bool,
-): Unit {
+func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in Item, asmRefRow: in Int): Unit {
   // Extern types declared in the stdlib `_kernel/` boundary (e.g.
   // `extern type Uuid = "System.Guid"`) carry the Lyric-name → CLR-FQN
   // mapping a consumer needs to encode the type correctly in cross-package
@@ -23283,7 +23514,9 @@ func registerStdlibTypeItem(
     case IUnion(decl) -> genericNamesOf(decl.generics).count
     case _ -> 0
   }
-  val typeRefName = if typeArity > 0 and usesAritySuffix { typeName + "`" + toString(typeArity) } else { typeName }
+  // Stdlib is always the self-hosted single `Lyric.Stdlib` bundle (D111), which
+  // names generic types with the CLR arity suffix (`Option`1`); always match it.
+  val typeRefName = if typeArity > 0 { typeName + "`" + toString(typeArity) } else { typeName }
   val typeFqn = packageName + "." + typeName
   val typeRefKey = packageName + "/" + typeFqn
   if not cctx.ffiTypeRefs.containsKey(typeRefKey) {
@@ -23320,7 +23553,7 @@ func registerStdlibTypeItem(
       while ci < decl.cases.count {
         val caseName = decl.cases[ci].name
         val ctorKey = packageName + "." + decl.name + "_" + caseName
-        val caseClassName = if caseArity > 0 and usesAritySuffix {
+        val caseClassName = if caseArity > 0 {
           decl.name + "_" + caseName + "`" + toString(caseArity)
         } else {
           decl.name + "_" + caseName
@@ -23616,31 +23849,30 @@ func ensureStdlibAssemblyRef(cctx: in CodegenCtx, packageName: in String): Int {
   row
 }
 
-// Translate a Lyric package name into the F# emitter's stdlib
-// assembly-name convention so cross-emitter PE bindings line up:
-//   Std.Encoding              → Lyric.Stdlib.Encoding
-//   Std.Collections           → Lyric.Stdlib.Collections
-//   Std.CollectionsHost       → Lyric.Stdlib.CollectionsHost
-//   Std.Collections.Host      → Lyric.Stdlib.Collections.Host  (3+ seg)
+// Translate a Lyric package name into the assembly name a consumer's PE
+// references for that package's types:
+//   Std.Core                  → Lyric.Stdlib   (every Std.* collapses here)
+//   Std.Collections           → Lyric.Stdlib
+//   Std.Testing.Mocking       → Lyric.Stdlib
 //   Lyric.Lexer               → Lyric.Lyric.Lexer
 //   <single-segment>          → Lyric.<segment>
 //
-// Mirrors `bootstrap/src/Lyric.Emitter/Emitter.fs::ensureStdlibArtifact`'s
-// `assemblyName` block.  Tail segments are joined with `.` so a
-// 3+-segment package keeps its segment boundaries — every current
-// stdlib package is 2-segment, but `Std.A.B` and `Std.AB` must yield
-// distinct DLL names (`Lyric.Stdlib.A.B` vs `Lyric.Stdlib.AB`) when
-// the surface grows (review #1427).
+// All `Std.*` packages now resolve to the SINGLE `Lyric.Stdlib` assembly
+// identity (D111), so one deployed `Lyric.Stdlib.dll` (the `output = "single"`
+// bundle carrying every package) satisfies every stdlib reference at runtime.
+// This is the distribution-mandated shape (docs/22 §2, docs/34: one
+// `lib/Lyric.Stdlib.dll`, replacing the ~25 per-package DLLs) and matches how
+// `import Std.X` resolves its surface from the bundle's per-package
+// `Lyric.Contract.<X>` resources.  Non-`Std` heads keep per-package names: the
+// compiler's own `Lyric.<X>` packages are build intermediates AOT-linked into
+// the binary, not distributed, so they stay individually addressable.
 func stdlibAssemblyName(packageName: in String): String {
   val segs = splitDottedName(packageName)
   if segs.count == 0 {
     return "Lyric.Unknown"
   }
   val head = segs[0]
-  // Concatenate tail segments WITHOUT separators — mirrors the F# emitter's
-  // `String.concat "" rest` convention (Emitter.fs).  E.g. "Std.Testing.Mocking"
-  // → tail = "TestingMocking" → "Lyric.Stdlib.TestingMocking", matching the
-  // F#-emitted DLL name.  Single-segment tails are unaffected.
+  // Concatenate tail segments WITHOUT separators (the per-package DLL convention).
   var tail = ""
   var i = 1
   while i < segs.count {
@@ -23648,8 +23880,19 @@ func stdlibAssemblyName(packageName: in String): String {
     i = i + 1
   }
   if head == "Std" {
-    "Lyric.Stdlib." + tail
-  } else if segs.count == 1 {
+    // HYBRID (D111): the HTTP/async surface stays PER-PACKAGE.  The self-hosted
+    // emitter cannot yet bundle these async-`Task`/`Result`-heavy packages into
+    // the single `output = "single"` assembly (Phase A undercounts cross-package
+    // `match await` and the bundled `HttpServer` emits invalid IL); they ship as
+    // `Lyric.Stdlib.<X>.dll` deployed alongside the bundle.  Tracked in #4030.
+    if tail == "Http" or tail == "HttpServer" or tail == "Rest" or tail == "Task" or tail == "HttpHost" {
+      return "Lyric.Stdlib." + tail
+    }
+    // Single-DLL stdlib: every other `Std.*` type lives in one `Lyric.Stdlib`.
+    return "Lyric.Stdlib"
+  }
+  // Non-`Std` heads (compiler packages): per-package `Lyric.<X>` naming.
+  if segs.count == 1 {
     "Lyric." + head
   } else {
     "Lyric." + head + "." + tail
@@ -23695,13 +23938,7 @@ func splitDottedName(name: in String): List[String] {
 // `registerRestoredFunc`, which already uses the ctx-aware builder.
 // On resolution error, inherits `registerRestoredFunc`'s policy: the
 // unresolvable slot degrades to MObject in the encoded signature (#2821).
-func registerStdlibFunc(
-  cctx: in CodegenCtx,
-  packageName: in String,
-  hostRefRow: in Int,
-  fn: in FunctionDecl,
-  usesAritySuffix: Bool,
-): Unit {
+func registerStdlibFunc(cctx: in CodegenCtx, packageName: in String, hostRefRow: in Int, fn: in FunctionDecl): Unit {
   val isPub = match fn.visibility { case Some(VisPub(_)) -> true; case _ -> false }
   if not isPub {
     return
@@ -23718,19 +23955,17 @@ func registerStdlibFunc(
   val fqn = packageName + "." + fn.name
   val arityKey = fqn + "/" + toString(fn.params.count)
 
-  // When the stdlib DLL was produced by the self-hosted emitter (`usesAritySuffix
-  // = true`), a `Unit`/`Never` generic argument is `object` end-to-end (def,
-  // ctor, and match all agree).  When it was produced by the F# emitter
-  // (`usesAritySuffix = false`), the convention is `System.ValueTuple` at value
-  // position (`TypeMap.fs`); the MemberRef must match to avoid MissingMethodException.
+  // Stdlib is always the self-hosted single `Lyric.Stdlib` bundle (D111): a
+  // `Unit`/`Never` generic argument is `object` end-to-end (def, ctor, and match
+  // all agree), so the return type is taken as-is (the F# `System.ValueTuple`
+  // convention no longer occurs).
   val paramTypes: List[MsilType] = newList()
   var pi = 0
   while pi < fn.params.count {
     paramTypes.add(typeExprToMsilCtx(cctx, fn.params[pi].ty, packageName))
     pi = pi + 1
   }
-  val retTypeRaw = match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
-  val retType = if not usesAritySuffix { xrefUnitArgsToValueTuple(cctx, retTypeRaw) } else { retTypeRaw }
+  val retType = match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
   val funcSig = buildStaticMethodSigWithCtx(byrefWrapSigTypes(fn.params, paramTypes), retType, cctx.lctx)
   val fnModes = paramModesOf(fn.params)
   // Register with an arity-specific key so overloaded stdlib functions

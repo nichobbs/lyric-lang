@@ -83,6 +83,52 @@ pub func main(argv: in slice[String]): Int {
     }
   }
 
+  // Internal (D111): emit the whole compiler-package import closure of a driver
+  // into a SINGLE `Lyric.Compiler.dll` bundle via the self-hosted emitter.
+  // `--internal-compiler-bundle-build <entry.l> <outPath>`.  Not user-facing;
+  // produces the single-assembly compiler the self-tests link (sidestepping the
+  // per-package cross-package emission corruption, docs/41 §R7).
+  if cmd == "--internal-compiler-bundle-build" {
+    if argv.length < 3 {
+      printErr("usage: lyric --internal-compiler-bundle-build <entry.l> <outPath>")
+      return 1
+    }
+    val entryPath = argv[1]
+    val outPath = argv[2]
+    match File.readText(entryPath) {
+      case Err(e) -> {
+        printErr("compiler-bundle: cannot read " + entryPath + ": " + IOError.message(e))
+        return 1
+      }
+      case Ok(entrySrc) -> {
+        val res = Emitter.emitCompilerBundle(entrySrc, outPath, Dotnet)
+        var hadError = false
+        for d in res.diagnostics.toArray() {
+          printDiag(d)
+          match d.severity {
+            case DiagError -> {
+              hadError = true
+            }
+            case DiagWarning -> ()
+          }
+        }
+        if hadError {
+          return 1
+        }
+        match res.outputPath {
+          case Some(_) -> {
+            Console.println("compiler bundle emitted to " + outPath)
+            return 0
+          }
+          case None -> {
+            printErr("compiler-bundle: emit failed")
+            return 1
+          }
+        }
+      }
+    }
+  }
+
   if cmd == "--version" or cmd == "-v" {
     Console.println("lyric " + VERSION())
     return 0

@@ -6767,6 +6767,112 @@ blocker currently gates.
 
 ---
 
+## D111 — Single-DLL stdlib emitter collapse implemented; `usesAritySuffix` detection removed
+
+**Decision (implements the D110 follow-up).** The self-hosted MSIL emitter now
+references every `Std.*` type under the **single `Lyric.Stdlib` assembly
+identity** instead of per-package `Lyric.Stdlib.<X>`. `stdlibAssemblyName`
+(`codegen.l`) returns `"Lyric.Stdlib"` for all `Std.*` packages; one deployed
+`Lyric.Stdlib.dll` (the `output = "single"` bundle from `lyric.full.toml`,
+carrying every package) satisfies every stdlib reference at runtime. This is the
+distribution-mandated shape (docs/22 §2, docs/34). Compiler packages
+(`Lyric.<X>`) keep per-package names — they are build intermediates AOT-linked
+into the binary, not distributed.
+
+**`usesAritySuffix` removed.** With stdlib always the single self-hosted-emitted
+bundle, the two-ABI detection that probed the installed `Lyric.Stdlib.Core.dll`
+is vestigial: the emitter unconditionally emits the self-hosted (arity-suffixed)
+convention. Removed `detectStdlibCoreDllUsesAritySuffix`, `findCoreDllPath`,
+`findCoreDllInDir`, `walkUpForCoreDll` (and the `usesAritySuffix` parameter
+threaded through `registerStdlibArtifactTokens` / `registerStdlibTypeItem` /
+`registerStdlibFunc`, including the F#-only `xrefUnitArgsToValueTuple` return
+branch). `coreDllHasAritySuffixTypeDef` / `dllHasNullaryInstanceField` are
+**kept** — they still detect the convention of restored *non-stdlib* artifacts
+(the F#-emitted compiler closure linked by the self-tests in the mint path); they
+become vestigial only when the F# mint seed is retired.
+
+**Bundle completeness.** `lyric.full.toml` was missing three kernel packages the
+compiler uses (`Std.UnicodeHost`, `Std.CollectionsHost`, `Std.VerifierEnvHost`);
+added so the single bundle covers the whole compiler closure. `build_stage2`
+(`bootstrap.sh`) now builds the single bundle into `.bootstrap/stage2/lib`.
+
+**HTTP/async hybrid carve-out (#4030).** The HTTP/async surface — `Std.Http`,
+`Std.HttpServer`, `Std.Rest`, `Std.Task`, `Std.HttpHost` — is **not** in the
+single bundle: the self-hosted emitter cannot yet emit these async-`Task` /
+`Result`-heavy packages into the `output = "single"` assembly (Phase A
+undercounts a cross-package `match await`, and a bundled `HttpServer` emits
+invalid IL). They ship **per-package** (`Lyric.Stdlib.<X>.dll`, deployed by
+`stage-selfhosted-stdlib.sh`), and `stdlibAssemblyName` keeps their references on
+the `Lyric.Stdlib.<X>` identity via a small denylist. They build and run
+correctly per-package (as they did pre-collapse); the cross-package
+`EMatch`-await Phase-A gap was fixed in passing (`collectAwaitTypesExprPB` now
+walks `match`). Re-bundling them is tracked in #4030.
+
+**Keystone effect.** The collapse *also fixes the stage-2 self-hosting startup
+blocker* from D110: the `Std.Core.Option` TypeLoadException was the per-package +
+suffix-detection mismatch. With the collapse, the stage-2 self-hosted binary
+**starts and runs the compile pipeline** (it no longer faults at load). The next
+surfaced blocker is a separate self-hosted **parser** miscompile (`P0040` on
+function bodies) — exactly the deeper bug the runnability-first model is meant to
+expose; tracked separately.
+
+**Verification.** Clean-room verified via the minted seed: a user program now
+references only `[Lyric.Stdlib]`, links the single bundle, and runs correctly;
+the whole compiler still type-checks and the compiler binary starts. The stage-2
+binary builds and starts (the Option blocker is gone); full stage-2 self-hosting
+remains gated by the separate parser bug.
+
+**Related:** D110, docs/22 §2, docs/34, docs/43.
+
+---
+
+## D112 — Self-hosted compiler self-tests link a single `Lyric.Compiler.dll` bundle
+
+**Context.** D111 collapsed the stdlib to one assembly and unblocked stage-2
+startup, surfacing the next blocker it named: the self-hosted-emitted **compiler**
+mis-parses its own input. Root-caused (docs/41 §R7) to the **per-package
+cross-package emission** path: when the self-hosted emitter compiles each compiler
+package into its own `Lyric.<Pkg>.dll` and threads the others as restored deps,
+cross-package type references corrupt across the assembly boundary — a
+self-hosted-emitted `Lyric.Parser` produces per-token `IError` garbage even on
+`package P`. The same closure built as **one assembly** parses correctly
+(in-bundle references are internal, never crossing the boundary).
+
+**Decision.** Compiler self-tests link the self-hosted compiler as a **single
+`Lyric.Compiler.dll` bundle** — the compiler analogue of D111's stdlib bundle.
+
+- **Producer.** `Emitter.emitCompilerBundle(entrySource, outPath, Dotnet)`
+  (`emitter.l`) reuses `loadCompilerPayloads` (multi-file discovery, import-closure
+  filtering, topo-sort) and emits the whole `Lyric.Cli` closure into ONE
+  `output = "single"` assembly named `Lyric.Compiler`. `Std.*` imports resolve
+  from source and are referenced externally as `Lyric.Stdlib`. Driven by the
+  internal CLI flag `--internal-compiler-bundle-build <entry.l> <outPath>`.
+- **Consumer.** `compilerClosureDllPaths` prefers
+  `<libDir>/selfhosted/Lyric.Compiler.dll` when staged, threading it as a
+  **single** restored-dep entry. `loadRestoredPackage` yields one artifact per
+  `Lyric.Contract.<Pkg>` resource in the bundle; `assemblySimpleNameFromDll`
+  derives every `AssemblyRef` from the bundle's file stem (`Lyric.Compiler`), so a
+  self-test resolves a self-consistent compiler from the one file with **no
+  `stdlibAssemblyName` change** for compiler heads.
+- **Staging.** `stage-selfhosted-compiler.sh` builds the bundle via the new flag
+  and deploys `Lyric.Compiler.dll` into each `selfhosted/` dir (replacing the
+  per-package `--internal-perpackage-build` staging).
+
+**Why not fix per-package emission directly.** The single bundle gets the
+self-tests green now (path A); fixing the per-package cross-package corruption
+(path B) is still required for **external dependencies** (genuinely separate
+assemblies) and is tracked separately. `--internal-perpackage-build` is retained
+as the R7 front-end-completeness gate ("Whole compiler self-host-compiles").
+
+**Verification.** Clean-room via the minted seed: the whole compiler builds into
+one 3.6 MB `Lyric.Compiler.dll`; the `parser` self-test (corrupt under
+per-package) passes 67/67 against the bundle, alongside `typechecker` (235),
+`modechecker` (30), `contract_elaborator` (30), and others.
+
+**Related:** D110, D111, docs/41 §R7, docs/43.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
