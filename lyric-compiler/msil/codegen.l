@@ -12521,21 +12521,25 @@ func buildFuncNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
   0x0A000000 + mrRow
 }
 
-// Build a newobj token for System.Func`(nparams+1)<T1,...,Tn,TResult>::.ctor(object, nativeint)
-// with actual parameter types and actual return type instead of hardcoded object.
+// Build a newobj token for System.Func`(nparams+1)<object,...,object,TResult>::.ctor(object, nativeint)
+// with object-based parameter types but actual return type.
+// Parameter types remain object-based for compatibility with generic code that was compiled
+// expecting Func<object,...,object,TResult>. Return type uses actual type to fix #4074
+// (otherwise invalid IL: method returning int32 but Func<object,...,object,object> expects object).
 // Used by Phase 1 strongly-typed lambdas to match the method signature.
 func buildFuncNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType], retType: in MsilType): Int {
   // If we have fewer actual types than expected params, fall back to the object-based version
   if paramTypes.count < nparams {
     return buildFuncNCtorTok(cctx, nparams)
   }
-  // Build the generic instantiation blob with the actual parameter types plus actual return type
+  // Build the generic instantiation blob with object-based parameter types plus actual return type
   val trN = internFuncTypeRef(cctx, nparams)
   val codedIdx = (trN * 4) + 1
   val actualArgs: List[MsilType] = newList()
   var ai = 0
   while ai < nparams {
-    actualArgs.add(paramTypes[ai])
+    // Use object for parameter types (for generic code compatibility)
+    actualArgs.add(MObject)
     ai = ai + 1
   }
   actualArgs.add(retType)
