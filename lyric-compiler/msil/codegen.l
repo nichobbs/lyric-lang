@@ -1913,7 +1913,13 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         constEnv.add(decl.name, isLit)
       }
       case IVal(decl) -> {
-        val isLit = isLiteralI4ExprMsilWithEnv(decl.init, constEnv)
+        // @asyncLocal vals require a .cctor (new AsyncLocal<object>()) even though
+        // their declared init is `()` (unit literal), which isLiteralI4ExprMsilWithEnv
+        // would otherwise classify as a literal (no .cctor).  Force isLit=false so
+        // the .cctor MethodDef row is reserved and the field is registered as a
+        // static-val slot (#2972).
+        val isAsyncLocal0 = hasAnnotationMsil(file.items[pi].annotations, "asyncLocal")
+        val isLit = if isAsyncLocal0 { false } else { isLiteralI4ExprMsilWithEnv(decl.init, constEnv) }
         if not isLit {
           hasValCctor = true
         }
@@ -2818,7 +2824,10 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         // synthetic name to avoid a row-count mismatch if the invariant is ever
         // violated.  Each IVal item allocates exactly one FieldDef row.
         val valName = match decl.pattern.kind { case PBinding(n, _) -> n; case _ -> "__val_" + toString(fieldDefRow) }
-        val isLit = isLiteralI4ExprMsilWithEnv(decl.init, constEnv)
+        // @asyncLocal: unit-literal init must not suppress the field token (same
+        // reasoning as the first pre-scan above — see isAsyncLocal0 comment).
+        val isAsyncLocalPv = hasAnnotationMsil(file.items[pv].annotations, "asyncLocal")
+        val isLit = if isAsyncLocalPv { false } else { isLiteralI4ExprMsilWithEnv(decl.init, constEnv) }
         if not isLit {
           val fieldTok = 0x04000000 + fieldDefRow
           val valTy = match decl.ty { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MObject }
@@ -4369,7 +4378,10 @@ func findImportedFqn(cctx: in CodegenCtx, imports: in List[String], funcName: in
   ""
 }
 
-// Return the TypeRef row for boxing the given value type.
+// Return the TypeRef row for boxing (or unboxing) a value type.
+// MValueTypeRef encodes an extern BCL value type; its typeRefCode is a
+// TypeDefOrRef coded index (tdrTypeRef(row) = row*4+1), so the raw row is
+// (code-1)/4, which gives the 0x01000000-token the JIT needs for box/unbox.any.
 func boxTypeRef(cctx: in CodegenCtx, ty: in MsilType): Int {
   match ty {
     case MInt -> cctx.trInt32
@@ -4378,6 +4390,7 @@ func boxTypeRef(cctx: in CodegenCtx, ty: in MsilType): Int {
     case MBool -> cctx.trBoolean
     case MChar -> cctx.trChar
     case MByte -> cctx.trByte
+    case MValueTypeRef(code, _) -> (code - 1) / 4
     case _ -> cctx.lctx.trObject
   }
 }
@@ -12793,6 +12806,7 @@ func emitGenericExternMember(
   r: in FfiResolved,
   resolvedFqn: in String,
   paramTypes: in List[MsilType],
+  lyricRetTy: in MsilType,
 ): Bool {
   val arity = genericArityOfName(r.typeName)
   if arity <= 0 {
@@ -13022,6 +13036,16 @@ func emitGenericExternMember(
           insns.add(MLdloc(slot = resIdx))
         }
       }
+      // When the BCL return is a type-variable (STVar, erased to `object` by the
+      // GENERICINST TypeSpec) and the Lyric wrapper declares a BCL value-type return
+      // (e.g. `CancellationToken` from `AsyncLocal`1.get_Value()`), the erased
+      // `object` on the stack must be unboxed back to the concrete value type before
+      // `ret` — otherwise the CLR would refuse a valuetype-returning MethodDef that
+      // leaves a reference on the stack (#2972).
+      val retIsTypeVar = match memberRet { case MTypeVar(_) -> true; case _ -> false }
+      if retIsTypeVar and isValueTypeReceiverMsil(lyricRetTy) {
+        insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, lyricRetTy)))
+      }
       true
     }
   }
@@ -13172,7 +13196,7 @@ func emitExternTargetBody(
       // erases the Lyric `ConcurrentDict[K,V]` value to `MObject`) and marshals
       // `out`/value-type arguments across the erasure boundary (#3392).
       if isKnownFqn and contains(r.typeName, "`") {
-        if emitGenericExternMember(cctx, fctx, insns, decl, r, resolvedFqn, paramTypes) {
+        if emitGenericExternMember(cctx, fctx, insns, decl, r, resolvedFqn, paramTypes, retTy) {
           insns.add(MRet)
           return true
         }
@@ -21882,14 +21906,35 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
       }
       case IVal(decl) -> {
         // Module-level runtime value → static readonly field initialized in .cctor.
-        val initFctx = makeFuncCtxMsil(pkgName, pkgName, "__val_init", 0, MVoid)
-        val initInsns: List[MInsn] = newList()
-        val valTy = lowerExprMsil(cctx, initFctx, initInsns, decl.init)
-        val fieldTy = match decl.ty { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> valTy }
+        val isAsyncLocalVal = hasAnnotationMsil(item.annotations, "asyncLocal")
         val fieldName = match decl.pattern.kind {
           case PBinding(name, _) -> name
           case _ -> "__val_" + toString(staticFields.count)
         }
+        val initFctx = makeFuncCtxMsil(pkgName, pkgName, "__val_init", 0, MVoid)
+        val initInsns: List[MInsn] = newList()
+        val valTy = if isAsyncLocalVal {
+          // @asyncLocal: synthesise `new AsyncLocal<object>()` instead of running
+          // lowerExprMsil on the unit-literal stub.  Register the BCL TypeRef eagerly
+          // here (before .cctor lowering) so MNewobjGenericByName / findTypeRefRowByName
+          // can find it, then build the TypeSpec-parented .ctor MemberRef (#2972).
+          val alAsmName = assemblyForTypeMsil(cctx, "System.Threading.AsyncLocal`1")
+          val alTrRow = internFfiTypeRef(cctx, alAsmName, "System.Threading", "AsyncLocal`1")
+          val alObjArgs: List[MsilType] = newList()
+          alObjArgs.add(MObject)
+          val alTsBlob = buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(alTrRow), alObjArgs)
+          val alTsKey = "asynclocal_cctor_ts_" + pkgName + "_" + fieldName
+          val alTsRow = ctxAddTypeSpec(cctx.lctx, alTsKey, alTsBlob)
+          val alCtorParams: List[MsilType] = newList()
+          val alCtorSig = buildInstanceMethodSig(alCtorParams, MVoid)
+          val alMrKey = "asynclocal_cctor_mr_" + pkgName + "_" + fieldName
+          val alMrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, alTsRow, ".ctor", alMrKey, alCtorSig)
+          initInsns.add(MNewobj(ctorToken = 0x0A000000 + alMrRow))
+          MObject
+        } else {
+          lowerExprMsil(cctx, initFctx, initInsns, decl.init)
+        }
+        val fieldTy = match decl.ty { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> valTy }
         // When the init is a single ldc.i4 (literal Int), inline into constValues
         // and pass an empty initInsns to avoid generating a .cctor for this field.
         // All uses of the val in this package will emit ldc.i4 directly.
@@ -21900,9 +21945,13 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
         // the Phase-3 addPackageTokens pre-scan (which treats LUnit as a literal and
         // never counts a .cctor row) in sync with Phase-4 emit, preventing a
         // MethodDef-row-count discrepancy that would shift all later packages' tokens
-        // in a multi-package bundle (e.g. Std.Task's @asyncLocal val __ambientSlot).
+        // in a multi-package bundle.
+        //
+        // @asyncLocal vals intentionally bypass this block: their initInsns holds the
+        // MNewobj instruction, not MLdNull, and addPackageTokens already reserved the
+        // .cctor row with isLit=false (see isAsyncLocal0 comment in first pre-scan).
         var sfInitInsns = initInsns
-        if initInsns.count == 1 {
+        if not isAsyncLocalVal and initInsns.count == 1 {
           match initInsns[0] {
             case MLdcI4(v) -> {
               // Guard with containsKey: same first-wins semantics as IConst above.
