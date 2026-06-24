@@ -97,8 +97,9 @@ func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in Com
           if buildKind == "exe" {
             printErr(
               "run: warning: no native launcher found for this 'kind = \"exe\"' build; " +
-              "falling back to 'dotnet exec' (set DOTNET_ROOT to a .NET SDK install " +
-              "so the apphost template can be located)"
+              "falling back to 'dotnet exec' (install a Microsoft.NETCore.App.Host.<rid> " +
+              "runtime pack, or set DOTNET_ROOT to a .NET install that has one, so the " +
+              "apphost template can be located)"
             )
           }
           val execArgs: List[String] = newList()

@@ -829,7 +829,8 @@ lyric build --no-restore               # build against the lock as-is (skip auto
 #   kind = "lib"     -> managed foo.dll + foo.runtimeconfig.json (run via `dotnet exec`)
 #   kind = "exe"     -> the above PLUS a native apphost launcher `foo` (`foo.exe` on
 #                       Windows); run directly with `./foo` (still needs .NET installed).
-#                       `lyric run` execs the launcher instead of `dotnet exec`.
+#                       `lyric run` execs the launcher instead of `dotnet exec`; if the
+#                       launcher is missing it warns and falls back to `dotnet exec`.
 #   kind = "bundle"  -> self-contained (runtime bundled) — planned, build errors for now
 #   kind = "aot"     -> native AOT, no runtime — planned; use `lyric build --release` today
 
