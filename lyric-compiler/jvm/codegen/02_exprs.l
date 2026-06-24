@@ -2049,7 +2049,13 @@ func lambdaCaptureNamesJvm(ctx: in FuncCtx, lparams: in List[LambdaParam], body:
       // latter occurs when the lambda lives in a record-method / protected-entry
       // body and references a bare field name (#2864).  Both are snapshotted
       // into the closure's ctor-bound capture fields.
+      // Stage 4: Also check for hoisted `var` cells from enclosing scope
+      // (multi-level nesting: a nested lambda may capture a `var` that was hoisted
+      // in the enclosing lambda's scope).
       if ctx.slots.containsKey(nm) {
+        addNameOnceJvm(caps, nm)
+      } else if ctx.hoistedCellSlot.containsKey(nm) {
+        // Hoisted var: re-capture the cell reference for multi-level nesting.
         addNameOnceJvm(caps, nm)
       } else {
         match selfFieldType(ctx, nm) {

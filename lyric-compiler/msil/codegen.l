@@ -3493,11 +3493,13 @@ pub func allocSlotMsil(fctx: in FuncCtx, name: in String, ty: in MsilType): Int 
   }
 }
 
-// Finish a hoisted-`var` heap cell (#1479 v2).  Precondition: the stack holds
-// `(cell, cell, rawValue)` — i.e. a freshly `newobj`'d `List[object]` duplicated,
-// with the initial value on top.  Boxes the value, `Add`s it as element 0,
-// allocates an object-typed slot for the cell, stores it, and records the cell
-// slot + logical element type so reads/writes of the name route through it.
+// Finish a hoisted-`var` heap cell (#1479 v2, Stage 4: typed cells).
+// Precondition: the stack holds `(value, dup-of-value)` after array creation.
+// Stage 4 improvement: use a typed 1-element array instead of List[object].
+// For value types (int, long, double, bool), the array is unboxed (int32[], etc.).
+// For reference types, we use object[].
+// This eliminates the per-read unbox overhead and per-write boxing overhead
+// that List[object] incurred.
 pub func finishHoistedCellMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -3505,13 +3507,48 @@ pub func finishHoistedCellMsil(
   name: in String,
   elemTy: in MsilType,
 ): Unit {
-  boxIfNeededMsil(cctx, insns, elemTy)
-  insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
-  val cellSlot = allocSlotMsil(fctx, name, MObject)
-  emitStoreSlot(insns, cellSlot, fctx.paramCount)
-  fctx.mutableLocals.add(name)
-  fctx.hoistedCellSlot.add(name, cellSlot)
-  fctx.hoistedCellType.add(name, elemTy)
+  // Determine if we can use a typed array for this element type.
+  // If yes, use stelem.<type>; if no, fall back to List[object].
+  match arrayElemTokenOpt(cctx, elemTy) {
+    case Some(elemToken) -> {
+      // Typed array path: create 1-element array and store unboxed value.
+      // Stack precondition: (array-ref, value-copy, value)
+      // After this: array-ref is on stack, to be stored in cellSlot.
+      // Stack transformation:
+      //   Before: (array-ref, value-copy, value)
+      //   stelem.<type>: (array-ref)
+      insns.add(MStelem(typeToken = elemToken))
+      // Allocate cell slot with array type
+      val arrayTy = match elemTy {
+        case MInt -> MArray(elem = MInt)
+        case MLong -> MArray(elem = MLong)
+        case MDouble -> MArray(elem = MDouble)
+        case MBool -> MArray(elem = MBool)
+        case MChar -> MArray(elem = MChar)
+        case MByte -> MArray(elem = MByte)
+        case MString -> MArray(elem = MString)
+        case MObject -> MArray(elem = MObject)
+        case _ -> MObject  // Fallback (shouldn't reach here if arrayElemTokenOpt succeeded)
+      }
+      val cellSlot = allocSlotMsil(fctx, name, arrayTy)
+      emitStoreSlot(insns, cellSlot, fctx.paramCount)
+      fctx.mutableLocals.add(name)
+      fctx.hoistedCellSlot.add(name, cellSlot)
+      fctx.hoistedCellType.add(name, elemTy)
+    }
+    case None -> {
+      // Fallback path for complex types: use List[object] (boxing required).
+      // Stack precondition: (List[object], List[object], value)
+      // This path is taken for user-defined types, generics, etc.
+      boxIfNeededMsil(cctx, insns, elemTy)
+      insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
+      val cellSlot = allocSlotMsil(fctx, name, MObject)
+      emitStoreSlot(insns, cellSlot, fctx.paramCount)
+      fctx.mutableLocals.add(name)
+      fctx.hoistedCellSlot.add(name, cellSlot)
+      fctx.hoistedCellType.add(name, elemTy)
+    }
+  }
 }
 
 // True for parameter modes that pass a managed pointer (`T&`): `out` and `inout`.
@@ -5060,16 +5097,37 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     // ── Path (variable or function reference) ─────────────────────────────────
     case EPath(path) -> {
       val name = lastSegmentMsil(path)
-      // A `var` hoisted to a heap cell (#1479 v2): read element 0 of the cell
-      // and unbox/cast.  Checked before the plain-slot path (the slot holds the
-      // cell reference, not the value).
+      // A `var` hoisted to a heap cell (#1479 v2, Stage 4: typed cells).
+      // Read element 0 of the cell. For typed arrays (int[], long[], etc.),
+      // use ldelem.<type> directly (no unbox). For List[object] fallback, use get_Item + cast.
+      // Checked before the plain-slot path (the slot holds the cell reference, not the value).
       match mapGet(fctx.hoistedCellSlot, name) {
         case Some(cellSlot) -> {
           val elemTy = match mapGet(fctx.hoistedCellType, name) { case Some(t) -> t; case None -> MObject }
           emitLoadVarMsil(fctx, insns, cellSlot)
           insns.add(MLdcI4(v = 0))
-          insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
-          castObjectToMsil(cctx, insns, elemTy)
+          // Check if we can use typed ldelem for this element type.
+          match arrayElemTokenOpt(cctx, elemTy) {
+            case Some(_) -> {
+              // Typed array: use ldelem.<type> directly (no unbox needed for value types).
+              match elemTy {
+                case MInt -> insns.add(MLdelemI4)
+                case MLong -> insns.add(MLdelemI8)
+                case MDouble -> insns.add(MLdelemR8)
+                case MBool -> insns.add(MLdelemI4)  // bool is i1, but ldelem.i4 works for i1
+                case MChar -> insns.add(MLdelemI4)  // char is u2, but ldelem.i4 works
+                case MByte -> insns.add(MLdelemU1)
+                case MString -> insns.add(MLdelemRef)
+                case MObject -> insns.add(MLdelemRef)
+                case _ -> insns.add(MLdelemRef)  // Fallback for unknown types
+              }
+            }
+            case None -> {
+              // List[object] fallback: use get_Item and cast.
+              insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
+              castObjectToMsil(cctx, insns, elemTy)
+            }
+          }
           return elemTy
         }
         case None -> {
@@ -7063,8 +7121,9 @@ func emitCellLoadMsil(fctx: in FuncCtx, insns: in List[MInsn], isCapture: in Boo
 }
 
 // Store to element 0 of a hoisted-`var` cell, honouring compound operators
-// (#1479 v2).  `AssEq` overwrites; a compound op reads the current element,
+// (#1479 v2, Stage 4: typed cells).  `AssEq` overwrites; a compound op reads the current element,
 // combines it with the rhs (String `+=` concatenates), and writes back.
+// For typed arrays, uses stelem directly. For List[object], boxes and calls set_Item.
 func emitCellAssignMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -7084,13 +7143,33 @@ func emitCellAssignMsil(
     case _ -> {
       emitCellLoadMsil(fctx, insns, isCapture, idx)
       insns.add(MLdcI4(v = 0))
-      insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
-      castObjectToMsil(cctx, insns, elemTy)
+      // For compound ops, read current value based on cell type.
+      match arrayElemTokenOpt(cctx, elemTy) {
+        case Some(elemToken) -> {
+          // Typed array: use ldelem directly
+          insns.add(MLdelem(typeToken = elemToken))
+        }
+        case None -> {
+          // List[object]: use get_Item + cast
+          insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
+          castObjectToMsil(cctx, insns, elemTy)
+        }
+      }
       emitCompoundCombineMsil(cctx, fctx, insns, op, elemTy, value)
     }
   }
-  boxIfNeededMsil(cctx, insns, elemTy)
-  insns.add(MCallvirt(methodToken = cctx.tokListObjSetItem))
+  // Store the value: for typed arrays use stelem, for List[object] use set_Item.
+  match arrayElemTokenOpt(cctx, elemTy) {
+    case Some(elemToken) -> {
+      // Typed array: store directly without boxing
+      insns.add(MStelem(typeToken = elemToken))
+    }
+    case None -> {
+      // List[object]: box and call set_Item
+      boxIfNeededMsil(cctx, insns, elemTy)
+      insns.add(MCallvirt(methodToken = cctx.tokListObjSetItem))
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -11482,9 +11561,23 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           match initOpt {
             case Some(init) -> {
               val annoTy = match tyOpt { case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName); case None -> MObject }
+              // Stage 4: Prepare to create typed cell if hoisted.
+              var needsArrayDup = false
               if isHoisted {
-                insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
-                insns.add(MDup)
+                match arrayElemTokenOpt(cctx, annoTy) {
+                  case Some(elemToken) -> {
+                    // Will create typed array; prepare by creating 1-element array and dup.
+                    insns.add(MLdcI4(v = 1))
+                    insns.add(MNewarr(typeToken = elemToken))
+                    insns.add(MDup)
+                    needsArrayDup = true
+                  }
+                  case None -> {
+                    // Will fall back to List[object]; create and dup.
+                    insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
+                    insns.add(MDup)
+                  }
+                }
               }
               // Fresh hint scope from the annotation (see LBVal above).
               val savedAnnoHint = pushAnnoHintTyArgs(fctx, annoTy)
@@ -11507,17 +11600,39 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             case None -> {
               val ty = match tyOpt { case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName); case None -> MInt }
               if isHoisted and ty != MVoid {
-                insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
-                insns.add(MDup)
-                match ty {
-                  case MLong -> {
-                    insns.add(MLdcI8(v = intToLong(0)))
+                // Stage 4: Create typed array for hoisted cell instead of List[object].
+                // Check if we can use a typed array for this type.
+                match arrayElemTokenOpt(cctx, ty) {
+                  case Some(elemToken) -> {
+                    // Typed array: create 1-element array, push default value, finish with stelem.
+                    insns.add(MLdcI4(v = 1))
+                    insns.add(MNewarr(typeToken = elemToken))
+                    insns.add(MDup)
+                    // Push default value (0 for int/long, 0.0 for double, false for bool, null for object)
+                    match ty {
+                      case MLong -> insns.add(MLdcI8(v = intToLong(0)))
+                      case MDouble -> insns.add(MLdcR8(v = 0.0))
+                      case MBool -> insns.add(MLdcI4(v = 0))
+                      case MObject -> insns.add(MLdNull)
+                      case MString -> insns.add(MLdNull)
+                      case _ -> insns.add(MLdcI4(v = 0))
+                    }
                   }
-                  case MDouble -> {
-                    insns.add(MLdcR8(v = 0.0))
-                  }
-                  case _ -> {
-                    insns.add(MLdcI4(v = 0))
+                  case None -> {
+                    // Complex type: fall back to List[object] (will be boxed in finishHoistedCellMsil).
+                    insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
+                    insns.add(MDup)
+                    match ty {
+                      case MLong -> {
+                        insns.add(MLdcI8(v = intToLong(0)))
+                      }
+                      case MDouble -> {
+                        insns.add(MLdcR8(v = 0.0))
+                      }
+                      case _ -> {
+                        insns.add(MLdcI4(v = 0))
+                      }
+                    }
                   }
                 }
                 finishHoistedCellMsil(cctx, fctx, insns, name, ty)

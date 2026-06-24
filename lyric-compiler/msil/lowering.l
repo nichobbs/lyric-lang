@@ -617,6 +617,8 @@ pub union MInsn {
   case MLdelemRef                      // ldelem.ref — reference array element (String[], object[])
   case MLdelemU1                       // ldelem.u1  — byte array element (byte[])
   case MLdelemI4                       // ldelem.i4  — int32 array element (int[])
+  case MLdelemI8                       // ldelem.i8  — int64 array element (long[])  (#1877 Stage 4)
+  case MLdelemR8                       // ldelem.r8  — float64 array element (double[]) (#1877 Stage 4)
   case MLdftn(methodToken: Int)        // ldftn — load function pointer (ELEMENT_TYPE_I on stack)
 
   // Exception-handling instructions and meta-instruction
@@ -2159,6 +2161,8 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MLdelemRef -> emitLdelem_Ref(mb)
     case MLdelemU1 -> emitLdelem_U1(mb)
     case MLdelemI4 -> emitLdelem_I4(mb)
+    case MLdelemI8 -> emitLdelem_I8(mb)
+    case MLdelemR8 -> emitLdelem_R8(mb)
     case MLdftn(tok) -> emitLdftn(mb, tok)
     case MLeave(lbl) -> emitLeave(mb, lbl)
     case MEndfinally -> emitEndfinally(mb)
