@@ -125,11 +125,12 @@ func readerBaseStream(r: in ProcReader): Stream = ()
 func newMemStream(): MemStream = ()
 
 // Drain `src` into `dst` asynchronously and return a non-generic Task.
-// The dst MemStream widens to the Stream parameter via the metadata-direct
-// resolver's lenient named-reference matching.
+// Both parameters use `Stream` so the emitted MemberRef matches the BCL
+// `Stream.CopyToAsync(Stream destination)` signature exactly; the MemStream
+// caller-value widens to Stream at the call site (MemoryStream : Stream).
 @externInstance
 @externTarget("System.IO.Stream.CopyToAsync")
-func streamCopyTo(src: in Stream, dst: in MemStream): Task = ()
+func streamCopyTo(src: in Stream, dst: in Stream): Task = ()
 
 // Block for up to `ms` milliseconds until the drain Task completes.
 // Returns true on completion, false on timeout.
@@ -144,10 +145,11 @@ func drainWaitMs(t: in Task, ms: in Int): Bool = ()
 func memStreamResetPos(ms: in MemStream, pos: in Long): Unit = ()
 
 // Wrap a MemStream in a new StreamReader for decoding.  Reuses the ProcReader
-// extern type (same CLR type).  The MemStream argument widens to the Stream
-// constructor parameter via lenient matching.
+// extern type (same CLR type).  The `s` parameter is typed as Stream so the
+// emitted MemberRef matches `StreamReader(Stream)` exactly; the MemStream
+// caller-value widens to Stream at the call site (MemoryStream : Stream).
 @externTarget("System.IO.StreamReader..ctor")
-func newProcReaderFrom(s: in MemStream): ProcReader = ()
+func newProcReaderFrom(s: in Stream): ProcReader = ()
 
 // Synchronously read all remaining content from a StreamReader.  Safe here
 // because all content is already buffered in the MemStream.

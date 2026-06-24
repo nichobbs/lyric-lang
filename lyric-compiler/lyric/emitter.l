@@ -1756,22 +1756,20 @@ func isTypeDeclKind(kind: in String): Bool {
 // a `case `-split fragment (e.g. "Header; case Cookie }" -> "Header").
 func leadingIdent(s: in String): String {
   var cut = Str.length(s)
-  val delims: List[String] = newList()
-  delims.add("(")
-  delims.add(" ")
-  delims.add(";")
-  delims.add(",")
-  delims.add("}")
-  delims.add("\n")
-  delims.add("\t")
-  var di = 0
-  while di < delims.count {
-    val idx = s.indexOf(delims[di])
-    if idx >= 0 and idx < cut {
-      cut = idx
-    }
-    di = di + 1
-  }
+  val i0 = s.indexOf("(")
+  if i0 >= 0 and i0 < cut { cut = i0 }
+  val i1 = s.indexOf(" ")
+  if i1 >= 0 and i1 < cut { cut = i1 }
+  val i2 = s.indexOf(";")
+  if i2 >= 0 and i2 < cut { cut = i2 }
+  val i3 = s.indexOf(",")
+  if i3 >= 0 and i3 < cut { cut = i3 }
+  val i4 = s.indexOf("}")
+  if i4 >= 0 and i4 < cut { cut = i4 }
+  val i5 = s.indexOf("\n")
+  if i5 >= 0 and i5 < cut { cut = i5 }
+  val i6 = s.indexOf("\t")
+  if i6 >= 0 and i6 < cut { cut = i6 }
   Str.substring(s, 0, cut)
 }
 
