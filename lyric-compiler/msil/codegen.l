@@ -3087,6 +3087,26 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
     j = j + 1
   }
 
+  // SM field-count pass: runs after Pass 2 so cctx.funcRetTypes is fully
+  // populated for within-package async functions.  collectAwaitTypesPhaseBMsil
+  // needs those return-type entries to count awaiter fields accurately; doing
+  // this count in the earlier SM pre-scan (before Pass 2) would undercount
+  // awaits on same-package async functions whose return types aren't registered
+  // until Pass 2 runs.
+  var smfk = 0
+  while smfk < file.items.count {
+    match file.items[smfk].kind {
+      case IFunc(decl) -> {
+        if decl.isAsync and not funcBodyContainsYieldMsil(decl) and not hasExternTargetMsil(decl.annotations) {
+          fieldDefRow = fieldDefRow + countSmFieldsMsil(cctx, pkgName, decl)
+        }
+      }
+      case _ -> {
+      }
+    }
+    smfk = smfk + 1
+  }
+
   // Sync the persistent counters so a follow-up `addPackageTokens` call
   // (multi-package compile, #1183) starts where this one left off.  Pad the
   // counter list to length = (methodDefRow - 1) — the highest row this call
@@ -14273,6 +14293,15 @@ func inferCallReturnTypePB(
           if path.segments.count >= 2 {
             val joinedPath = joinSegsMsil(path.segments, ".")
             candidates.add(joinedPath)
+            // Alias resolution: `Alias.func(args)` where `import Pkg as Alias`.
+            // Phase B resolves the alias via pkgImportAliases; Phase A must too
+            // or await counts diverge and resumeLabels index faults.
+            if path.segments.count == 2 {
+              match mapGet(cctx.pkgImportAliases, pkgName + "/" + path.segments[0]) {
+                case Some(realPkg) -> candidates.add(realPkg + "." + path.segments[1])
+                case None -> ()
+              }
+            }
             match mapGet(cctx.pkgImports, pkgName) {
               case Some(imps) -> {
                 var pfxI = 0
@@ -14325,6 +14354,15 @@ func inferCallReturnTypePB(
               val joinedPath = joinSegsMsil(recvPath.segments, ".") + "." + field
               val candidates: List[String] = newList()
               candidates.add(joinedPath)
+              // Alias resolution: `Alias.method(args)` where `import Pkg as Alias`.
+              // Phase B uses pkgImportAliases to resolve the alias; Phase A must do
+              // the same or await counts diverge and resumeLabels index faults.
+              if recvPath.segments.count == 1 {
+                match mapGet(cctx.pkgImportAliases, pkgName + "/" + recvPath.segments[0]) {
+                  case Some(realPkg) -> candidates.add(realPkg + "." + field)
+                  case None -> ()
+                }
+              }
               match mapGet(cctx.pkgImports, pkgName) {
                 case Some(imps) -> {
                   var pfxI = 0
@@ -14539,6 +14577,401 @@ func collectAwaitTypesPhaseBMsil(cctx: in CodegenCtx, pkgName: in String, decl: 
     case Some(body) -> match body { case FBBlock(blk) -> collectAwaitTypesBlockPB(cctx, pkgName, blk, result, spawnNms, spawnTys); case FBExpr(e) -> collectAwaitTypesExprPB(cctx, pkgName, e, result, spawnNms, spawnTys) }
   }
   result
+}
+
+// SM-field pre-scan helpers: count the promoted-local and spill SM fields that
+// Phase B synthesizeAsyncSmPhaseBMsil will create for a given async function,
+// without performing full IL codegen.  Used by addPackageTokens to advance
+// fieldDefRow past the SM-class fields that precede the package's regular types.
+
+func countPromotedLocalsExpr(
+  cctx: in CodegenCtx,
+  pkgName: in String,
+  hoistedNms: in List[String],
+  e: in Expr,
+  seen: in List[String],
+): Unit {
+  match e.kind {
+    case EBlock(b) -> countPromotedLocalsBlock(cctx, pkgName, hoistedNms, b, seen)
+    case EUnsafe(b) -> countPromotedLocalsBlock(cctx, pkgName, hoistedNms, b, seen)
+    case EParen(inner) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, inner, seen)
+    case EIf(c, t, el, _) -> {
+      countPromotedLocalsExpr(cctx, pkgName, hoistedNms, c, seen)
+      match t {
+        case EOBBlock(b) -> countPromotedLocalsBlock(cctx, pkgName, hoistedNms, b, seen)
+        case EOBExpr(e2) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, e2, seen)
+      }
+      match el {
+        case Some(eb) -> {
+          match eb {
+            case EOBBlock(b) -> countPromotedLocalsBlock(cctx, pkgName, hoistedNms, b, seen)
+            case EOBExpr(e2) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, e2, seen)
+          }
+        }
+        case None -> ()
+      }
+    }
+    case EMatch(scr, arms) -> {
+      countPromotedLocalsExpr(cctx, pkgName, hoistedNms, scr, seen)
+      var ami = 0
+      while ami < arms.count {
+        match arms[ami].body {
+          case EOBBlock(b) -> countPromotedLocalsBlock(cctx, pkgName, hoistedNms, b, seen)
+          case EOBExpr(e2) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, e2, seen)
+        }
+        ami = ami + 1
+      }
+    }
+    case ECall(callee, args) -> {
+      countPromotedLocalsExpr(cctx, pkgName, hoistedNms, callee, seen)
+      var ai = 0
+      while ai < args.count {
+        val argE = match args[ai] { case CAPositional(ex) -> ex; case CANamed(_, ex, _) -> ex }
+        countPromotedLocalsExpr(cctx, pkgName, hoistedNms, argE, seen)
+        ai = ai + 1
+      }
+    }
+    case EBinop(_, l, r) -> {
+      countPromotedLocalsExpr(cctx, pkgName, hoistedNms, l, seen)
+      countPromotedLocalsExpr(cctx, pkgName, hoistedNms, r, seen)
+    }
+    case EPrefix(_, op) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, op, seen)
+    case EMember(recv, _) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, recv, seen)
+    case EAwait(inner) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, inner, seen)
+    case ESpawn(inner) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, inner, seen)
+    case ETry(inner) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, inner, seen)
+    case EPropagate(inner) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, inner, seen)
+    case EAssign(lhs, _, rhs) -> {
+      countPromotedLocalsExpr(cctx, pkgName, hoistedNms, lhs, seen)
+      countPromotedLocalsExpr(cctx, pkgName, hoistedNms, rhs, seen)
+    }
+    case ETuple(elems) -> {
+      var ti = 0
+      while ti < elems.count {
+        countPromotedLocalsExpr(cctx, pkgName, hoistedNms, elems[ti], seen)
+        ti = ti + 1
+      }
+    }
+    case EList(elems) -> {
+      var li = 0
+      while li < elems.count {
+        countPromotedLocalsExpr(cctx, pkgName, hoistedNms, elems[li], seen)
+        li = li + 1
+      }
+    }
+    case EIndex(recv, indices) -> {
+      countPromotedLocalsExpr(cctx, pkgName, hoistedNms, recv, seen)
+      var idi = 0
+      while idi < indices.count {
+        countPromotedLocalsExpr(cctx, pkgName, hoistedNms, indices[idi], seen)
+        idi = idi + 1
+      }
+    }
+    case EInterpolated(segs) -> {
+      var ipi = 0
+      while ipi < segs.count {
+        match segs[ipi] {
+          case ISExpr(ex) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, ex, seen)
+          case ISText(_, _) -> ()
+        }
+        ipi = ipi + 1
+      }
+    }
+    case ETypeApp(inner, _) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, inner, seen)
+    case ERange(bound) -> {
+      match bound {
+        case RBClosed(lo, hi) -> {
+          countPromotedLocalsExpr(cctx, pkgName, hoistedNms, lo, seen)
+          countPromotedLocalsExpr(cctx, pkgName, hoistedNms, hi, seen)
+        }
+        case RBHalfOpen(lo, hi) -> {
+          countPromotedLocalsExpr(cctx, pkgName, hoistedNms, lo, seen)
+          countPromotedLocalsExpr(cctx, pkgName, hoistedNms, hi, seen)
+        }
+        case RBLowerOpen(hi) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, hi, seen)
+        case RBUpperOpen(lo) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, lo, seen)
+      }
+    }
+    case ELambda(_, _) -> ()
+    case _ -> ()
+  }
+}
+
+func countPromotedLocalsBlock(
+  cctx: in CodegenCtx,
+  pkgName: in String,
+  hoistedNms: in List[String],
+  blk: in Block,
+  seen: in List[String],
+): Unit {
+  var i = 0
+  while i < blk.statements.count {
+    countPromotedLocalsStmt(cctx, pkgName, hoistedNms, blk.statements[i], seen)
+    i = i + 1
+  }
+}
+
+func countPromotedLocalsStmt(
+  cctx: in CodegenCtx,
+  pkgName: in String,
+  hoistedNms: in List[String],
+  stmt: in Statement,
+  seen: in List[String],
+): Unit {
+  match stmt.kind {
+    case SLocal(binding) -> {
+      match binding {
+        case LBLet(name, _, init) -> {
+          if not nameListContains(seen, name) {
+            seen.add(name)
+          }
+          countPromotedLocalsExpr(cctx, pkgName, hoistedNms, init, seen)
+        }
+        case LBVar(name, tyOpt, initOpt) -> {
+          match initOpt {
+            case Some(init) -> {
+              if not nameListContains(hoistedNms, name) {
+                if not nameListContains(seen, name) {
+                  seen.add(name)
+                }
+              }
+              countPromotedLocalsExpr(cctx, pkgName, hoistedNms, init, seen)
+            }
+            case None -> {
+              val ty = match tyOpt { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MInt }
+              if ty != MVoid and not nameListContains(hoistedNms, name) {
+                if not nameListContains(seen, name) {
+                  seen.add(name)
+                }
+              }
+            }
+          }
+        }
+        case LBVal(_, _, init) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, init, seen)
+      }
+    }
+    case SExpr(e) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, e, seen)
+    case SReturn(valOpt) -> {
+      match valOpt {
+        case Some(e) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, e, seen)
+        case None -> ()
+      }
+    }
+    case SAssign(_, _, v) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, v, seen)
+    case SThrow(e) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, e, seen)
+    case SWhile(_, cond, body) -> {
+      countPromotedLocalsExpr(cctx, pkgName, hoistedNms, cond, seen)
+      countPromotedLocalsBlock(cctx, pkgName, hoistedNms, body, seen)
+    }
+    case SFor(_, _, iter, body) -> {
+      countPromotedLocalsExpr(cctx, pkgName, hoistedNms, iter, seen)
+      countPromotedLocalsBlock(cctx, pkgName, hoistedNms, body, seen)
+    }
+    case SLoop(_, body) -> countPromotedLocalsBlock(cctx, pkgName, hoistedNms, body, seen)
+    case SScope(_, body) -> countPromotedLocalsBlock(cctx, pkgName, hoistedNms, body, seen)
+    case SDefer(body) -> countPromotedLocalsBlock(cctx, pkgName, hoistedNms, body, seen)
+    case STry(body, catches, finally_) -> {
+      countPromotedLocalsBlock(cctx, pkgName, hoistedNms, body, seen)
+      var ci = 0
+      while ci < catches.count {
+        countPromotedLocalsBlock(cctx, pkgName, hoistedNms, catches[ci].body, seen)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> countPromotedLocalsBlock(cctx, pkgName, hoistedNms, fb, seen)
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
+func countSpillsExpr(e: in Expr): Int {
+  match e.kind {
+    case EBinop(op, l, r) -> {
+      val spillHere = match op {
+        case BEq | BNeq | BLt | BGt | BLte | BGte | BAdd | BSub | BMul | BDiv | BMod | BXor -> {
+          if exprContainsAwaitMsil(r) { 1 } else { 0 }
+        }
+        case _ -> 0
+      }
+      spillHere + countSpillsExpr(l) + countSpillsExpr(r)
+    }
+    case EBlock(b) -> countSpillsBlock(b)
+    case EUnsafe(b) -> countSpillsBlock(b)
+    case EParen(inner) -> countSpillsExpr(inner)
+    case EIf(c, t, el, _) -> {
+      var n = countSpillsExpr(c)
+      n = n + match t { case EOBBlock(b) -> countSpillsBlock(b); case EOBExpr(e2) -> countSpillsExpr(e2) }
+      n = n + match el {
+        case Some(eb) -> match eb { case EOBBlock(b) -> countSpillsBlock(b); case EOBExpr(e2) -> countSpillsExpr(e2) }
+        case None -> 0
+      }
+      n
+    }
+    case EMatch(scr, arms) -> {
+      var n = countSpillsExpr(scr)
+      var ami = 0
+      while ami < arms.count {
+        n = n + match arms[ami].body { case EOBBlock(b) -> countSpillsBlock(b); case EOBExpr(e2) -> countSpillsExpr(e2) }
+        ami = ami + 1
+      }
+      n
+    }
+    case ECall(callee, args) -> {
+      var n = countSpillsExpr(callee)
+      var ai = 0
+      while ai < args.count {
+        val argE = match args[ai] { case CAPositional(ex) -> ex; case CANamed(_, ex, _) -> ex }
+        n = n + countSpillsExpr(argE)
+        ai = ai + 1
+      }
+      n
+    }
+    case EPrefix(_, op) -> countSpillsExpr(op)
+    case EMember(recv, _) -> countSpillsExpr(recv)
+    case EAwait(inner) -> countSpillsExpr(inner)
+    case ESpawn(inner) -> countSpillsExpr(inner)
+    case ETry(inner) -> countSpillsExpr(inner)
+    case EPropagate(inner) -> countSpillsExpr(inner)
+    case EAssign(lhs, _, rhs) -> countSpillsExpr(lhs) + countSpillsExpr(rhs)
+    case ETuple(elems) -> {
+      var n = 0
+      var ti = 0
+      while ti < elems.count {
+        n = n + countSpillsExpr(elems[ti])
+        ti = ti + 1
+      }
+      n
+    }
+    case EList(elems) -> {
+      var n = 0
+      var li = 0
+      while li < elems.count {
+        n = n + countSpillsExpr(elems[li])
+        li = li + 1
+      }
+      n
+    }
+    case EIndex(recv, indices) -> {
+      var n = countSpillsExpr(recv)
+      var idi = 0
+      while idi < indices.count {
+        n = n + countSpillsExpr(indices[idi])
+        idi = idi + 1
+      }
+      n
+    }
+    case EInterpolated(segs) -> {
+      var n = 0
+      var ipi = 0
+      while ipi < segs.count {
+        match segs[ipi] {
+          case ISExpr(ex) -> { n = n + countSpillsExpr(ex) }
+          case ISText(_, _) -> ()
+        }
+        ipi = ipi + 1
+      }
+      n
+    }
+    case ETypeApp(inner, _) -> countSpillsExpr(inner)
+    case ERange(bound) -> {
+      match bound {
+        case RBClosed(lo, hi) -> countSpillsExpr(lo) + countSpillsExpr(hi)
+        case RBHalfOpen(lo, hi) -> countSpillsExpr(lo) + countSpillsExpr(hi)
+        case RBLowerOpen(hi) -> countSpillsExpr(hi)
+        case RBUpperOpen(lo) -> countSpillsExpr(lo)
+      }
+    }
+    case ELambda(_, _) -> 0
+    case _ -> 0
+  }
+}
+
+func countSpillsBlock(blk: in Block): Int {
+  var n = 0
+  var i = 0
+  while i < blk.statements.count {
+    n = n + countSpillsStmt(blk.statements[i])
+    i = i + 1
+  }
+  n
+}
+
+func countSpillsStmt(stmt: in Statement): Int {
+  match stmt.kind {
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(_, _, init) -> countSpillsExpr(init)
+        case LBLet(_, _, init) -> countSpillsExpr(init)
+        case LBVar(_, _, initOpt) -> match initOpt { case Some(init) -> countSpillsExpr(init); case None -> 0 }
+      }
+    }
+    case SExpr(e) -> countSpillsExpr(e)
+    case SReturn(valOpt) -> match valOpt { case Some(e) -> countSpillsExpr(e); case None -> 0 }
+    case SAssign(_, _, v) -> countSpillsExpr(v)
+    case SThrow(e) -> countSpillsExpr(e)
+    case SWhile(_, c, b) -> countSpillsExpr(c) + countSpillsBlock(b)
+    case SFor(_, _, i, b) -> countSpillsExpr(i) + countSpillsBlock(b)
+    case SLoop(_, b) -> countSpillsBlock(b)
+    case SScope(_, b) -> countSpillsBlock(b)
+    case SDefer(b) -> countSpillsBlock(b)
+    case STry(b, catches, finally_) -> {
+      var n = countSpillsBlock(b)
+      var ci = 0
+      while ci < catches.count {
+        n = n + countSpillsBlock(catches[ci].body)
+        ci = ci + 1
+      }
+      n = n + match finally_ { case None -> 0; case Some(fb) -> countSpillsBlock(fb) }
+      n
+    }
+    case _ -> 0
+  }
+}
+
+// Count the total number of FieldDef rows a Phase-B SM class will emit for
+// `decl`.  Mirrors the field layout of synthesizeAsyncSmPhaseBMsil:
+//   base     = 2 (__state, __builder) + params.count
+//   awCount  = number of awaiter fields (one per distinct await task type)
+//   promoted = deduplicated LBLet/LBVar names that get hoisted to SM fields
+//   spills   = BinopKind spill fields created when RHS of a binop contains await
+func countSmFieldsMsil(cctx: in CodegenCtx, pkgName: in String, decl: in FunctionDecl): Int {
+  val base = 2 + decl.params.count
+  if not funcBodyContainsAwaitMsil(decl) {
+    return base
+  }
+  val awCount = collectAwaitTypesPhaseBMsil(cctx, pkgName, decl).count
+  val hoistedNms: List[String] = newList()
+  match decl.body {
+    case Some(body) -> {
+      match body {
+        case FBBlock(blk) -> collectInLambdaNamesBlock(blk, hoistedNms)
+        case FBExpr(e) -> collectInLambdaNamesExpr(e, hoistedNms)
+      }
+    }
+    case None -> ()
+  }
+  val seen: List[String] = newList()
+  match decl.body {
+    case Some(body) -> {
+      match body {
+        case FBBlock(blk) -> countPromotedLocalsBlock(cctx, pkgName, hoistedNms, blk, seen)
+        case FBExpr(e) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, e, seen)
+      }
+    }
+    case None -> ()
+  }
+  val spillCount = match decl.body {
+    case Some(body) -> {
+      match body {
+        case FBBlock(blk) -> countSpillsBlock(blk)
+        case FBExpr(e) -> countSpillsExpr(e)
+      }
+    }
+    case None -> 0
+  }
+  base + awCount + seen.count + spillCount
 }
 
 // Register a local as a promoted SM field (first time only) and emit a store
