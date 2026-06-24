@@ -112,10 +112,11 @@ pub func symTableIsExternDelegateType(tbl: in SymbolTable, id: in TypeId): Bool 
       case DKExternType(tid, decl) -> {
         if typeIdEq(tid, id) {
           val clr = decl.clrName
-          // Check for common delegate naming patterns and known BCL delegates.
+          // Check for known delegate naming patterns and BCL delegates.
+          // Be conservative to avoid false positives (e.g. HttpClientHandler is NOT a delegate).
           if clr.contains("Delegate") or
              clr.contains("Callback") or
-             clr.contains("Handler") or
+             clr.contains("EventHandler") or
              clr.contains("Comparison") or
              clr.contains("Converter") or
              clr.startsWith("System.Func") or
@@ -124,7 +125,7 @@ pub func symTableIsExternDelegateType(tbl: in SymbolTable, id: in TypeId): Bool 
             return true
           }
           // For other extern types, conservatively reject to prevent assigning
-          // lambdas to non-delegate types (System.Exception, System.String, etc.).
+          // lambdas to non-delegate types (System.Exception, System.String, HttpClientHandler, etc.).
           // Unknown delegate types should be wrapped in a Lyric interface
           // (docs/51) until metadata-based detection is available.
           return false

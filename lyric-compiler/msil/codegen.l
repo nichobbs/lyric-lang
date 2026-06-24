@@ -294,16 +294,6 @@ pub record CodegenCtx {
   actionTypeRefs: Map[String, Int]  // toString(nparams) → TypeRef row for System.Action`N
   externTypeNames: Map[String, String]  // Lyric name → CLR FQN (from IExternType items)
   lambdaTicker: List[Int]  // length = next __lambda_<i> index
-  // Phase 2 closure class info: for each __lambda_<i>, track whether it has a
-  // corresponding __Closure<i> record (captures != empty). Keyed by lambda index.
-  lambdaHasClosures: Map[Int, Bool]
-  // Closure record constructor tokens, keyed by closure name (__Closure<i>).
-  // Populated by addPackageTokens when closure records are present.
-  closureCtorTokens: Map[String, Int]
-  // Capture types for each lambda by index (parallel to lambdaHasClosures).
-  // Populated during ELambda lowering when we have full FuncCtx.
-  // Value is a list of MsilType for each captured variable (parallel to capture names).
-  lambdaCaptureTypesByIndex: Map[Int, List[MsilType]]
   // Instance method MethodDef tokens, keyed by "FQClassName/methodName".  Populated
   // by `addPackageTokens` for record methods, interface methods (abstract slots),
   // and impl methods folded into the implementing record.  `lowerMethodCallMsil`
@@ -1661,9 +1651,6 @@ pub func newCodegenCtx(
     actionTypeRefs = newMap(),
     externTypeNames = newMap(),
     lambdaTicker = newList(),
-    lambdaHasClosures = newMap(),
-    closureCtorTokens = newMap(),
-    lambdaCaptureTypesByIndex = newMap(),
     methodTokens = newMap(),
     methodRetTypes = newMap(),
     methodParamTypes = newMap(),
@@ -12405,7 +12392,15 @@ func buildActionNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTyp
     ai = ai + 1
   }
   val gblob = buildGenericInstBlob(codedIdx, actualArgs)
-  val specKey = "ActionSpec_typed_" + toString(nparams)
+  // FIXED #4060: Cache key must include actual parameter types to avoid collision
+  // when two lambdas have same param count but different types (e.g. {x: Int} vs {x: String})
+  var typeKeySuffix = ""
+  var ti = 0
+  while ti < paramTypes.count and ti < nparams {
+    typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(paramTypes[ti])
+    ti = ti + 1
+  }
+  val specKey = "ActionSpec_typed_" + toString(nparams) + typeKeySuffix
   val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
   val ctorPs: List[MsilType] = newList()
   ctorPs.add(MObject)
@@ -12490,7 +12485,15 @@ func buildFuncNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTypes
   }
   actualArgs.add(MObject) // return type is always object for lambda delegates
   val gblob = buildGenericInstBlob(codedIdx, actualArgs)
-  val tsRow = ctxAddTypeSpec(cctx.lctx, "FuncSpec_typed_" + toString(nparams), gblob)
+  // FIXED #4060: Cache key must include actual parameter types to avoid collision
+  // when two lambdas have same param count but different types (e.g. {x: Int} vs {x: String})
+  var typeKeySuffix = ""
+  var ti = 0
+  while ti < paramTypes.count and ti < nparams {
+    typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(paramTypes[ti])
+    ti = ti + 1
+  }
+  val tsRow = ctxAddTypeSpec(cctx.lctx, "FuncSpec_typed_" + toString(nparams) + typeKeySuffix, gblob)
   val ctorPs: List[MsilType] = newList()
   ctorPs.add(MObject)
   ctorPs.add(MNativeInt)
