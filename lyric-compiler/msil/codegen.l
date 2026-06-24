@@ -6119,8 +6119,6 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         cctx.lambdaCaptureNames.add(lname, caps)
         cctx.lambdaCaptureTypes.add(lname, capTypes)
         cctx.lambdaCaptureCells.add(lname, capCells)
-        // Also store by lambda index for Phase 2 closure synthesis to retrieve types.
-        cctx.lambdaCaptureTypesByIndex.add(idx, capTypes)
       }
       // FQN key (#1183 Phase 2): lambdas are package-scoped, registered by
       // `addPackageTokens` as `<pkg>.__lambda_<idx>`.
