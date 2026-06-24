@@ -16397,7 +16397,11 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
     } else {
       typeExprToMsilCtx(cctx, p.ty, pkgName)
     }
-    val paramTy = if isLambdaFn and annotTy == MObject and pi < lambdaPropagated.count {
+    // Phase 1: for lambdas, slot type must be object-based to match the method
+    // signature. Propagated types are used by type-checking but not emitted to MSIL.
+    val paramTy = if isLambdaFn {
+      MObject
+    } else if annotTy == MObject and pi < lambdaPropagated.count {
       lambdaPropagated[pi]
     } else {
       annotTy
