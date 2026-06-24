@@ -12437,34 +12437,6 @@ func buildActionNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTyp
   0x0A000000 + mrRow
 }
 
-// Get or create a TypeRef for System.Predicate`1.
-// Reuses the actionTypeRefs map with a "predicate_1" key to avoid collisions.
-func internPredicateTypeRef(cctx: in CodegenCtx): Int {
-  val key = "predicate_1"
-  match mapGet(cctx.actionTypeRefs, key) {
-    case Some(r) -> r
-    case None -> {
-      val tRow = ctxAddTypeRef(cctx.lctx, "System", "Predicate`1", cctx.lctx.arRuntime)
-      cctx.actionTypeRefs.add(key, tRow)
-      tRow
-    }
-  }
-}
-
-// Get or create a TypeRef for System.Comparison`1.
-// Reuses the actionTypeRefs map with a "comparison_1" key to avoid collisions.
-func internComparisonTypeRef(cctx: in CodegenCtx): Int {
-  val key = "comparison_1"
-  match mapGet(cctx.actionTypeRefs, key) {
-    case Some(r) -> r
-    case None -> {
-      val tRow = ctxAddTypeRef(cctx.lctx, "System", "Comparison`1", cctx.lctx.arRuntime)
-      cctx.actionTypeRefs.add(key, tRow)
-      tRow
-    }
-  }
-}
-
 // Get or create a TypeRef for System.Func`(nparams+1) where nparams is the lambda parameter count.
 // Reuses the actionTypeRefs map with a "func_N" key to avoid collisions.
 func internFuncTypeRef(cctx: in CodegenCtx, nparams: in Int): Int {
@@ -12559,44 +12531,6 @@ func buildFuncNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTypes
   val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
   // FIXED #4066: MemberRef cache key must also include type suffix to avoid collision
   val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "func_ctor_typed_" + toString(nparams) + typeKeySuffix, ctorSig)
-  0x0A000000 + mrRow
-}
-
-// Build a newobj token for System.Predicate`1<T>::.ctor(object, nativeint) with typed parameter.
-// Used when a lambda with signature (T) -> bool is passed to a Predicate[T] parameter.
-func buildPredicateCtorTok(cctx: in CodegenCtx, paramType: in MsilType): Int {
-  val trN = internPredicateTypeRef(cctx)
-  val codedIdx = (trN * 4) + 1
-  val actualArgs: List[MsilType] = newList()
-  actualArgs.add(paramType)
-  val gblob = buildGenericInstBlob(codedIdx, actualArgs)
-  var typeKeySuffix = "_" + msilTypeKeyStr(paramType)
-  val specKey = "PredicateSpec_typed_" + typeKeySuffix
-  val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
-  val ctorPs: List[MsilType] = newList()
-  ctorPs.add(MObject)
-  ctorPs.add(MNativeInt)
-  val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
-  val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "predicate_ctor_typed" + typeKeySuffix, ctorSig)
-  0x0A000000 + mrRow
-}
-
-// Build a newobj token for System.Comparison`1<T>::.ctor(object, nativeint) with typed parameters.
-// Used when a lambda with signature (T, T) -> int is passed to a Comparison[T] parameter.
-func buildComparisonCtorTok(cctx: in CodegenCtx, paramType: in MsilType): Int {
-  val trN = internComparisonTypeRef(cctx)
-  val codedIdx = (trN * 4) + 1
-  val actualArgs: List[MsilType] = newList()
-  actualArgs.add(paramType)
-  val gblob = buildGenericInstBlob(codedIdx, actualArgs)
-  var typeKeySuffix = "_" + msilTypeKeyStr(paramType)
-  val specKey = "ComparisonSpec_typed_" + typeKeySuffix
-  val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
-  val ctorPs: List[MsilType] = newList()
-  ctorPs.add(MObject)
-  ctorPs.add(MNativeInt)
-  val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
-  val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "comparison_ctor_typed" + typeKeySuffix, ctorSig)
   0x0A000000 + mrRow
 }
 
