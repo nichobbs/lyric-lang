@@ -6150,12 +6150,15 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               paramIdx = paramIdx + 1
             }
           }
-          // Delegate type selection for Phase 1 lambdas.
-          // Use Func/Action with actual parameter types and return type.
-          // Note #4077: Predicate/Comparison shape-based special casing is disabled pending
-          // proper FFI context detection. Shape matching alone breaks HOF calls where the
-          // delegate type is determined by the HOF signature, not the lambda shape.
-          // Full solution: track at type-check time whether lambda target is extern delegate.
+          // Delegate type selection for Phase 1 lambdas: use Func/Action with actual types.
+          // All lambdas use Func<T1,...,Tn,TResult> or Action<T1,...,Tn> regardless of shape.
+          // Note #4077 (deferred to Phase 2): Predicate[T] and Comparison[T] special-casing
+          // requires context-driven delegate selection at the call site (whether target is FFI
+          // extern delegate vs. Lyric HOF), which is not available during lambda codegen.
+          // Shape-based detection alone breaks HOF: { x: Int -> x > 0 } passed to HOF (T)->Bool
+          // would emit Predicate<Int> but HOF invokes via Func<Int,Bool>::Invoke, causing
+          // InvalidCastException. Proper fix: track at type-check time whether lambda target
+          // is extern delegate; pass that context to codegen. See issue #4077 for details.
           val ctorTok = if returnsVoid {
             if nparams == 0 {
               cctx.tokActionCtor
