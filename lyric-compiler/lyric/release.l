@@ -482,7 +482,17 @@ func buildIlcRsp(
     }
   }
 
-  // Private SDK DLLs from native/ (System.Private.* — initassembly roots).
+  // Private SDK DLLs from native/ — compiled as ILC *inputs* (not -r:) so
+  // that [RuntimeExport]-attributed managed functions (InitializeModules,
+  // GetRuntimeException, RuntimeFailFast, ThreadEntryPoint, AppendExceptionStackFrame,
+  // GetSystemArrayEEType, RhThrowEx, RhRethrow, ProcessFinalizers, etc.) are
+  // compiled into the output object file by this ILC invocation.
+  // The pre-compiled libRuntime.WorkstationGC.a provides only the C/assembly
+  // GC primitives (RhNewObject, RhpNewArrayFast, etc.); the managed-tier init
+  // and exception sequences live in these managed assemblies and MUST be
+  // compiled fresh — passing them as -r: leaves the [RuntimeExport] symbols
+  // absent from Hello.o and the linker reports them as undefined from
+  // libbootstrapper.o (#4139 linker fix).
   val privateDlls: List[String] = newList()
   privateDlls.add("System.Private.CoreLib.dll")
   privateDlls.add("System.Private.Reflection.Execution.dll")
@@ -492,7 +502,7 @@ func buildIlcRsp(
   while pi < privateDlls.count {
     val p = Path.join(paths.sdkPath, privateDlls[pi])
     if File.fileExists(p) {
-      lines.add("-r:" + p)
+      lines.add(p)
     }
     pi += 1
   }
@@ -583,7 +593,13 @@ func buildLinkerArgsUnix(
   args.add(Path.join(sdk, "libSystem.Net.Security.Native.a"))
   args.add(Path.join(sdk, "libSystem.Security.Cryptography.Native.OpenSsl.a"))
 
-  // Runtime bootstrapper + GC + minipal
+  // Runtime bootstrapper + GC + minipal.  --start-group/--end-group lets
+  // ld.bfd handle the circular symbol deps between Hello.o, libbootstrapper.o,
+  // and libRuntime.WorkstationGC.a: Hello.o needs RhNewObject/RhTypeCast etc.
+  // from WorkstationGC; WorkstationGC needs RhExceptionHandling_FailedAllocation
+  // etc. from Hello.o; libbootstrapper.o needs InitializeModules from Hello.o.
+  // Without the group, a single left-to-right scan leaves some symbols unresolved.
+  args.add("-Wl,--start-group")
   args.add(Path.join(sdk, "libbootstrapper.o"))
   args.add(Path.join(sdk, "libRuntime.WorkstationGC.a"))
   args.add(Path.join(sdk, "libeventpipe-disabled.a"))
@@ -594,6 +610,7 @@ func buildLinkerArgsUnix(
   args.add(Path.join(sdk, "libstandalonegc-disabled.a"))
   args.add(Path.join(sdk, "libaotminipal.a"))
   args.add(Path.join(sdk, "libstdc++compat.a"))
+  args.add("-Wl,--end-group")
 
   // Compression + Brotli
   args.add(Path.join(sdk, "libz.a"))
