@@ -429,19 +429,35 @@ jobs:
         with:
           global-json-file: bootstrap/global.json
 
-      - name: Build stage 1 (self-hosted compiler)
+      # Reuse the self-contained binary build-standalone already published to
+      # this release instead of rebuilding the whole compiler (stage 1 + AOT)
+      # from scratch.  build-standalone runs before this job (via publish-nuget),
+      # so the asset exists; `gh release download` works on the still-draft
+      # release with GITHUB_TOKEN.  This publishes the ecosystem libraries with
+      # the exact `lyric` binary being shipped, and skips a multi-minute rebuild.
+      - name: Download released lyric binary
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LYRIC_BOOTSTRAP_MINT: ${{ inputs.seed == 'mint' && '1' || '' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ./scripts/bootstrap.sh --stage 1
+          set -euo pipefail
+          mkdir -p bin
+          gh release download "v${{ needs.create-release.outputs.version }}" \
+            --pattern 'lyric-*-linux-x64.tar.gz' --output /tmp/lyric.tgz
+          tar -xzf /tmp/lyric.tgz -C bin
+          chmod +x bin/lyric
+          ./bin/lyric --version
 
-      - name: Build AOT CLI binary and stage stdlib
+      # Deploy the full Lyric.Stdlib.dll bundle (+ per-package HTTP DLLs) beside
+      # the binary so `lyric build` can link the ecosystem libraries against it.
+      # The released AOT binary carries its own statically-linked stdlib, so it
+      # runs and can emit the bundle (unlike the framework-dependent `make lyric`
+      # binary, which resolves the smaller bootstrap bundle from disk).
+      - name: Stage the full stdlib bundle beside the binary
         shell: bash
         run: |
-          touch .bootstrap/stage1.stamp
-          SKIP_SELFHOSTED_COMPILER=1 make lyric
+          set -euo pipefail
+          bash scripts/stage-selfhosted-stdlib.sh ./bin/lyric "$(pwd)/bin"
 
       # Same Trusted Publishing exchange as publish-nuget — see that job's
       # NuGet login step for the one-time nuget.org policy setup.
