@@ -96,7 +96,7 @@ A project can produce a directly-runnable launcher instead of a bare `.dll` by s
 kind = "exe"   # default: "lib"
 ```
 
-This emits a native *apphost* launcher beside the managed DLL — `bin/<name>` (or `<name>.exe` on Windows) — so the program starts with `./<name>` rather than `dotnet <name>.dll`, and `lyric run` execs it directly. It is still framework-dependent (a .NET runtime must be installed). The `bundle` (self-contained) and `aot` (native, no runtime) kinds are reserved for future use; for a fully self-contained native binary today, use `lyric build --release` (see §"Native binaries" below).
+This emits a native *apphost* launcher beside the managed DLL — `bin/<name>` (or `<name>.exe` on Windows) — so the program starts with `./<name>` rather than `dotnet <name>.dll`, and `lyric run` execs it directly. It is still framework-dependent (a .NET runtime must be installed). The `bundle` (self-contained) kind is reserved for future use. `kind = "aot"` produces a native binary with no runtime dependency and is equivalent to `lyric build --release` (see §"Native binaries" below); it requires `clang` on `PATH` and is currently Linux-only (`x64`/`arm64`; macOS and Windows tracked in #1975).
 
 Inside a project, you can drop the arguments entirely. Running `lyric` with no
 command builds the current project, and `lyric build` / `lyric restore` find the
@@ -139,18 +139,18 @@ lyric build --release hello.l
 ./hello
 ```
 
-Under the hood the compiler builds the managed DLL, generates a small host
-project referencing it and the standard library, and runs
-`dotnet publish -p:PublishAot=true`; any ILC trim/AOT warnings are shown.
-`--rid <rid>` selects a runtime identifier (default: your host), and `-o`
-overrides the output path.
+Under the hood the compiler invokes `ilc` (the .NET Native AOT compiler) and
+`clang` directly — no generated C#, no `dotnet publish`. `clang` must be on
+`PATH` (e.g. `apt install clang` on Debian/Ubuntu, `dnf install clang` on
+Fedora). Any ILC trim/AOT warnings are shown. `--rid <rid>` selects a runtime
+identifier (default: your host), and `-o` overrides the output path.
 
-> **Scope today.** `--release` covers single-file programs on the .NET target.
-> Project-mode `--release` and the JVM target (GraalVM `native-image`) are
-> tracked in [#1975] and fail loud rather than emitting a managed artifact. For
-> a project, build the framework-dependent DLL (`lyric build`) and run it with
-> `dotnet`, or install the compiler as a .NET global tool
-> (`dotnet tool install lyric`).
+This is equivalent to setting `[build] kind = "aot"` in your `lyric.toml` and
+running `lyric build`.
+
+> **Scope today.** `--release` covers Linux `x64` and `arm64`. macOS and
+> Windows are tracked in [#1975] and fail loud rather than emitting a managed
+> artifact. The JVM (GraalVM `native-image`) target is also tracked in #1975.
 
 [#1975]: https://github.com/nichobbs/lyric-lang/issues/1975
 

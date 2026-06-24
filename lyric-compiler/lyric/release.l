@@ -101,39 +101,6 @@ pub func declaresEntryMain(source: in String): Bool {
   false
 }
 
-// Whether the entry `main` is declared to return `Int` (vs `Unit`/void).
-// Still exposed for callers that need to surface this information, but
-// no longer required by `buildReleaseDotnet` (ILC reads the entry point
-// token directly from the PE metadata).
-pub func mainReturnsInt(source: in String): Bool {
-  val lines = Str.split(source, "\n")
-  var inTripleString = false
-  var i = 0
-  while i < lines.length {
-    val line = Str.trim(lines[i])
-    if not inTripleString and (Str.startsWith(line, "func main") or Str.startsWith(line, "pub func main")) {
-      val afterMain = Str.trim(afterToken(line, "main"))
-      if Str.startsWith(afterMain, "()") {
-        val afterParen = Str.trim(afterToken(afterMain, "()"))
-        if Str.startsWith(afterParen, ":") {
-          val retPart = Str.trim(afterToken(afterParen, ":"))
-          // Exact `Int`, not a prefix of a longer type name (`IntFoo`): the
-          // type token must be followed by a delimiter or end-of-string.
-          if Str.startsWith(retPart, "Int") {
-            val rest = Str.substring(retPart, 3, Str.length(retPart) - 3)
-            if rest == "" or Str.startsWith(rest, " ") or Str.startsWith(rest, "\t") or Str.startsWith(rest, "{") or Str.startsWith(rest, "(") {
-              return true
-            }
-          }
-        }
-      }
-    }
-    inTripleString = advanceTripleState(lines[i], inTripleString)
-    i += 1
-  }
-  false
-}
-
 // Advance the triple-quoted-string state across one raw source line.
 func advanceTripleState(line: in String, inTriple: in Bool): Bool {
   var state = inTriple
@@ -294,9 +261,11 @@ func semverMajor(version: in String): Int {
 // Returns Err with a diagnostic message on any failure.
 func restoreIlcProbe(stageDir: in String, rid: in String): Result[IlcPaths, String] {
   val probeDir = Path.join(stageDir, "ilc-probe")
-  match File.createDir(probeDir) {
-    case Ok(_) -> ()
-    case Err(e) -> return Err(error = "could not create ILC probe dir: " + IOError.message(e))
+  if not File.dirExists(probeDir) {
+    match File.createDir(probeDir) {
+      case Ok(_) -> ()
+      case Err(e) -> return Err(error = "could not create ILC probe dir: " + IOError.message(e))
+    }
   }
   val csprojPath = Path.join(probeDir, "probe.csproj")
   match File.writeText(csprojPath, probeProjectContent(rid)) {
@@ -713,6 +682,20 @@ pub func buildReleaseDotnet(
   }
   if os == "osx" {
     releaseErr("macOS native linking is not yet implemented (ld64 flags differ from Linux ELF); tracked in #1975")
+    return 1
+  }
+
+  // Verify clang is on PATH before the slow ILC probe and compile steps.
+  val clangVersionArgs: List[String] = newList()
+  clangVersionArgs.add("--version")
+  val clangCheck = PC.runCaptureWithDiagnosticsTimeout("clang", clangVersionArgs, "", 10000)
+  if clangCheck.exitCode != 0 {
+    releaseErr(
+      "clang not found on PATH; install it before building Native AOT binaries\n"
+        + "  Debian/Ubuntu: apt install clang\n"
+        + "  Fedora:        dnf install clang\n"
+        + "  Alpine:        apk add clang"
+    )
     return 1
   }
 
