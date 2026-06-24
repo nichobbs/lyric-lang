@@ -76,13 +76,78 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ---------------------------------------------------------------------------
+  # Build the deployable standard-library bundle (Lyric.Stdlib.dll) ONCE and
+  # share it with every packaging job.  A shipped `lyric` binary carries its
+  # stdlib statically linked for its OWN use, but building USER code needs a
+  # loose Lyric.Stdlib.dll to link against and copy beside the output
+  # (findCompiledStdlibDir -> <binary>/lib).  Without this the standalone
+  # release and the NuGet tool cannot compile user programs.
+  #
+  # The bundle is a managed (RID-independent) assembly, so one build serves
+  # every platform — but it MUST be emitted by the CURRENT compiler source
+  # (the arity-suffix / single-assembly-collapse conventions changed in
+  # #4019/#4025), so we AOT-publish a runnable current-source binary here and
+  # run the same stage-selfhosted-stdlib.sh ci.yml uses.  The five HTTP/async
+  # packages that are not yet bundleable (#4030) are emitted alongside.
+  build-stdlib-bundle:
+    needs: [create-release]
+    if: inputs.seed != 'mint'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
+        with:
+          global-json-file: bootstrap/global.json
+
+      - name: Build stage 1 (self-hosted compiler)
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LYRIC_BOOTSTRAP_MINT: ${{ inputs.seed == 'mint' && '1' || '' }}
+        run: ./scripts/bootstrap.sh --stage 1
+
+      # A self-contained AOT binary runs on this host (the framework-dependent
+      # `dotnet build` binary resolves the smaller bootstrap bundle from disk
+      # and cannot start post-#4025), so use it to emit the full bundle.
+      - name: Publish a runnable current-source binary
+        working-directory: bootstrap
+        run: |
+          dotnet restore src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj --runtime linux-x64
+          dotnet publish src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
+            --configuration Release \
+            --runtime linux-x64 \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            --output publish/bundle-host \
+            --no-restore
+
+      - name: Emit the stdlib bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p stdlib-out
+          bash scripts/stage-selfhosted-stdlib.sh \
+            bootstrap/publish/bundle-host/lyric "$(pwd)/stdlib-out"
+          echo "=== staged stdlib assemblies ==="
+          ls -la stdlib-out
+
+      - name: Upload stdlib bundle artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: stdlib-bundle
+          path: stdlib-out/Lyric.Stdlib*.dll
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
   # Build self-contained standalone binaries for all supported platforms.
   # Each matrix leg runs on the native OS, publishes a single-file binary,
   # optionally signs it, packages it into a zip/tar.gz, and uploads the
   # archive as a GitHub Release asset.
   # ---------------------------------------------------------------------------
   build-standalone:
-    needs: [create-release]
+    needs: [create-release, build-stdlib-bundle]
     strategy:
       fail-fast: false
       matrix:
@@ -232,6 +297,18 @@ jobs:
           rm -f /tmp/cert.p12
 
           # Re-archive after signing (archive is created below and submitted).
+
+      # ── Bundle the deployable stdlib beside the binary ────────────────────
+      # Place Lyric.Stdlib.dll (+ the per-package HTTP DLLs) in a `lib/` dir so
+      # an installed `lyric` resolves the stdlib via findCompiledStdlibDir's
+      # `<binary>/lib` branch and can compile user code.  The bundle is
+      # RID-independent, so the single artifact from build-stdlib-bundle serves
+      # every platform.
+      - name: Stage stdlib bundle into lib/
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: stdlib-bundle
+          path: bootstrap/publish/${{ matrix.rid }}/lib
 
       # ── Package archive ───────────────────────────────────────────────────
       - name: Package tar.gz archive (Linux / macOS)

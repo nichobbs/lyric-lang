@@ -147,11 +147,17 @@ func afterToken(line: in String, token: in String): String {
 
 // Locate the stdlib bundle (`Lyric.Stdlib.dll`).  Probe the program DLL's own
 // directory first (project-mode bundles sit beside it), then the running
-// binary's base directory (where the SDK ships the bundle).
+// binary's base directory and its `lib/` subdirectory — the standalone release
+// and SDK ship the bundle under `<binary>/lib/` (matching the build/run path's
+// findCompiledStdlibDir), so this path must agree or `--release` cannot find a
+// bundle that `lyric build` resolved fine.
 func locateStdlib(programDllDir: in String): Option[String] {
+  val appBase = Environment.appBaseDirectory()
   val candidates: List[String] = newList()
   candidates.add(Path.join(programDllDir, "Lyric.Stdlib.dll"))
-  candidates.add(Path.join(Environment.appBaseDirectory(), "Lyric.Stdlib.dll"))
+  candidates.add(Path.join(Path.join(programDllDir, "lib"), "Lyric.Stdlib.dll"))
+  candidates.add(Path.join(appBase, "Lyric.Stdlib.dll"))
+  candidates.add(Path.join(Path.join(appBase, "lib"), "Lyric.Stdlib.dll"))
   var i = 0
   while i < candidates.count {
     if File.fileExists(candidates[i]) {
