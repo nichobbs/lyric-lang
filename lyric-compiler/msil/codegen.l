@@ -21719,6 +21719,90 @@ func deriveConfigEnvVarName(pkgName: in String, blockName: in String, fieldName:
   "LYRIC_CONFIG_" + pkgUpper + "_" + blockUpper + "_" + fieldUpper
 }
 
+// Phase 2.1: Closure Record Synthesis (Foundation)
+// For each lambda with captures, generate a __ClosureLambda_<idx> record type with
+// typed fields for each capture and a parametrized constructor.
+// This enables Phase 2.2's instance-method invocation and Phase 2.3's typed
+// closure instantiation (eliminating object[] arrays and boxing/unboxing).
+func synthesizeClosureRecordsPhase2(
+  cctx: in CodegenCtx,
+  pkgName: in String,
+  items: in List[MPackageItem],
+): Unit {
+  var lamIdx = 0
+  while lamIdx < cctx.lambdaCaptureTypesByIndex.count {
+    match mapGet(cctx.lambdaCaptureTypesByIndex, lamIdx) {
+      case Some(capTypes) -> {
+        if capTypes.count > 0 {
+          val lamName = "__lambda_" + toString(lamIdx)
+          val capNames = match mapGet(cctx.lambdaCaptureNames, lamName) {
+            case Some(c) -> c
+            case None -> newList()
+          }
+
+          // Create typed field for each capture.
+          val closureFields: List[MField] = newList()
+          var capIdx = 0
+          while capIdx < capNames.count {
+            if capIdx < capTypes.count {
+              val capName = capNames[capIdx]
+              val capType = capTypes[capIdx]
+              closureFields.add(MField(flags = FDA_PUBLIC, name = capName, fieldType = capType))
+            }
+            capIdx = capIdx + 1
+          }
+
+          // Create parametrized constructor: take all captures as parameters.
+          val ctorParams: List[MsilType] = newList()
+          var cpIdx = 0
+          while cpIdx < closureFields.count {
+            ctorParams.add(closureFields[cpIdx].fieldType)
+            cpIdx = cpIdx + 1
+          }
+
+          // Constructor body: ldarg.0; call Object::.ctor(); [ldarg.n; stfld field_n]×n; ret
+          val ctorInsns: List[MInsn] = newList()
+          ctorInsns.add(MLdarg(slot = 0))
+          ctorInsns.add(MCall(methodToken = 0x0A000000 + 1))  // Object::.ctor() placeholder
+          var fi = 0
+          while fi < closureFields.count {
+            ctorInsns.add(MLdarg(slot = 0))
+            ctorInsns.add(MLdarg(slot = fi + 1))
+            ctorInsns.add(MStfld(fieldToken = 0x04000000 + fi + 1))  // Placeholder row
+            fi = fi + 1
+          }
+          ctorInsns.add(MRet)
+
+          val ctorFunc = MFunc(
+            flags = MDA_PUBLIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
+            name = ".ctor",
+            params = ctorParams,
+            ret = MVoid,
+            insns = ctorInsns,
+            maxStack = 2,
+            locals = newList()
+          )
+
+          // Create the closure record.
+          val closureFqn = pkgName + ".__ClosureLambda_" + toString(lamIdx)
+          val closureRec = MRecord(
+            className = closureFqn,
+            namespace = pkgName,
+            baseClass = "System.Object",
+            fields = closureFields,
+            methods = newList(ctorFunc),
+            useDefaultCtor = false,  // We have a custom parametrized constructor
+            generics = newList()
+          )
+          items.add(MPRecord(rec = closureRec))
+        }
+      }
+      case None -> ()
+    }
+    lamIdx = lamIdx + 1
+  }
+}
+
 // The caller must subsequently call `lowerMPackageWithCtx(pkg, cctx.lctx, entryToken)`
 // to emit the PE bytes.
 pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
@@ -22153,6 +22237,11 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
     )
     ie = ie + 1
   }
+
+  // Phase 2.1: Synthesize closure record types for lambdas with captures.
+  // These strongly-typed records will be used in Phase 2.2-2.3 for instance-method
+  // invocation and typed closure instantiation, eliminating boxing/unboxing overhead.
+  synthesizeClosureRecordsPhase2(cctx, pkgName, items)
 
   MPackage(packageName = pkgName, items = items)
 }
