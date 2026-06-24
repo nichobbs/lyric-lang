@@ -55,7 +55,7 @@ jobs:
 
       - name: Restore bootstrap
         working-directory: bootstrap
-        run: dotnet restore Bootstrap.sln
+        run: dotnet restore src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj
 
       - name: Cache stage-0 F# publish
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
