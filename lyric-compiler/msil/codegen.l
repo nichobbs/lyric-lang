@@ -31,7 +31,6 @@ package Msil.Codegen
 import Std.Core
 import Std.Collections
 import Std.String
-import Std.Parse
 import Lyric.Parser
 import Lyric.Lexer
 import Lyric.RestoredPackages
@@ -19721,19 +19720,6 @@ pub func lambdaCaptureNamesMsil(fctx: in FuncCtx, lparams: in List[LambdaParam],
 // - Boxing/unboxing of value-typed captures in the closure constructor
 //
 // Tracked in GitHub issue #3923 with complete architectural design.
-
-// Dead Phase 2 helper functions removed; see #3906.
-// When Phase 2 is implemented, these functions should be restored and properly wired:
-//   - synthesizeClosureRecordsForFile
-//   - scanClosureRecordsMsil
-//   - synthesizeClosureRecordWithMethod
-//   - injectSelfParameterIntoMethod
-//   - removeLambdaCapsParameter
-//   - synthesizeClosureRecord
-//   - makeClosureField
-//   - msilTypeToTypeExpr
-//   - analyzeLambdaCapturesFromAst
-//   - extractLambdaIndexFromName
 
 // BFS-based liftLambdasMsil: extract all ELambda nodes into synthetic IFunc
 // items in breadth-first order so lambda indices match the codegen traversal.
