@@ -32,7 +32,14 @@ func listAdd[T](xs: in List[T], x: in T): Unit = ()
 @externTarget("System.Collections.Generic.List`1.get_Count")
 func listCount[T](xs: in List[T]): Int = ()
 
-test "passing strongly-typed lambda to Func[T, Bool] FFI target" {
+@externTarget("System.Collections.Generic.List`1.ForEach")
+func listForEach[T](xs: in List[T], action: in Action[T]): Unit = ()
+
+// Helper: test a predicate against multiple values and count matches
+@externTarget("System.Linq.Enumerable.Count")
+func linqCount(source: in Obj, predicate: in Func[Obj, Bool]): Int = ()
+
+test "passing strongly-typed lambda to Func[T, Bool] FFI parameter" {
   val xs: List[Obj] = newList()
   listAdd(xs, 1)
   listAdd(xs, 2)
@@ -40,18 +47,20 @@ test "passing strongly-typed lambda to Func[T, Bool] FFI target" {
   listAdd(xs, 4)
   listAdd(xs, 5)
 
-  // Test that lambda works with Func delegate type in FFI context
-  val matcher: Func[Obj, Bool] = { x: Obj -> true }
-  assertEqualInt(xs.count, 5, "all 5 elements present")
+  // Directly pass lambda to function expecting Func[T, Bool] parameter
+  // This tests argSatisfiesParam and delegate creation at the call site
+  val matchCount = linqCount(xs, { x: Obj -> true })
+  assertEqualInt(matchCount, 5, "all 5 elements match predicate")
 }
 
-test "passing strongly-typed lambda to Action[T] FFI target" {
+test "passing strongly-typed lambda to Action[T] FFI parameter" {
   val xs: List[Obj] = newList()
   listAdd(xs, 1)
   listAdd(xs, 2)
   listAdd(xs, 3)
 
-  // Test that lambda works with Action delegate type in FFI context
-  val printer: Action[Obj] = { x: Obj -> () }
-  assertEqualInt(xs.count, 3, "all 3 elements present")
+  // Directly pass lambda to function expecting Action[T] parameter
+  // This tests argSatisfiesParam and delegate creation at the call site
+  listForEach(xs, { _: Obj -> () })
+  assertEqualInt(xs.count, 3, "all 3 elements present after ForEach")
 }

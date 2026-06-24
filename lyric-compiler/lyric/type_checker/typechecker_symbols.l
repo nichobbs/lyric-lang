@@ -105,6 +105,10 @@ pub func symbolTypeIdOpt(s: in Symbol): Option[TypeId] {
 // - System.Func`N, System.Action`N, System.Predicate`1
 // - Any type name containing: Delegate, Callback, Handler, Comparison, Converter, EventHandler
 // - Defers to metadata-based inheritance check in Phase 2 for other cases
+// Check if an extern type is a Func or Action delegate (Phase 1 scope).
+// Phase 1 (M5.2-M5.3) supports only System.Func and System.Action delegates.
+// Other delegate types (Predicate, EventHandler, Comparison, Converter, etc.)
+// are deferred to Phase 2 for proper support with metadata-based detection.
 pub func symTableIsExternDelegateType(tbl: in SymbolTable, id: in TypeId): Bool {
   var i = 0
   while i < tbl.symbols.count {
@@ -112,10 +116,6 @@ pub func symTableIsExternDelegateType(tbl: in SymbolTable, id: in TypeId): Bool 
       case DKExternType(tid, decl) -> {
         if typeIdEq(tid, id) {
           val clr = decl.clrName
-          // Phase 1 (M5.2-M5.3): only Func and Action delegate types.
-          // Other delegate types (Predicate, EventHandler, Comparison, Converter)
-          // are deferred to Phase 2 (issue #3923) for proper support with
-          // context-driven delegate selection and closure class synthesis.
           if clr.startsWith("System.Func") or clr.startsWith("System.Action") {
             return true
           }

@@ -12398,7 +12398,10 @@ func buildActionNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTyp
   val actualArgs: List[MsilType] = newList()
   var ai = 0
   while ai < nparams {
-    actualArgs.add(paramTypes[ai])
+    // Use object-based parameters for HOF delegate compatibility.
+    // Propagated types influence the lambda method signature but not the delegate type.
+    // The delegate must match the HOF parameter type, which is object-based at the MSIL level.
+    actualArgs.add(MObject)
     ai = ai + 1
   }
   val gblob = buildGenericInstBlob(codedIdx, actualArgs)
@@ -19633,23 +19636,14 @@ pub func lambdaCaptureNamesMsil(fctx: in FuncCtx, lparams: in List[LambdaParam],
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Phase 2 closure synthesis is deferred to Epic #1877 Part 2. The implementation requires:
-// - Emitting __lambda_N as instance methods on the closure record (not static functions)
-// - Typed closure record fields matching actual capture types
-// - Proper delegate target instantiation (__Closure<N> instance for instance method)
-// - Boxing/unboxing of value-typed captures in the closure constructor
-//
-// Tracked in GitHub issue #3923 with complete architectural design.
-
 // BFS-based liftLambdasMsil: extract all ELambda nodes into synthetic IFunc
 // items in breadth-first order so lambda indices match the codegen traversal.
-// Phase 2: Also synthesize closure record types for capturing lambdas.
 pub func liftLambdasMsil(file: in SourceFile): SourceFile {
   val ticker: List[Int] = newList()
   val synths: List[Item] = newList()
   val deferred: List[Block] = newList()
 
-  // Phase 1: walk every top-level item's body, collecting direct lambdas.
+  // Walk every top-level item's body, collecting direct lambdas.
   // Each ELambda body is pushed to `deferred` rather than recursed into.
   var i = 0
   while i < file.items.count {
@@ -19686,7 +19680,7 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
     i = i + 1
   }
 
-  // Phase 2: BFS — process deferred lambda bodies in FIFO order.
+  // Process deferred lambda bodies in FIFO order (BFS).
   // New lambdas found inside lambda bodies are appended to `deferred` and
   // processed in subsequent iterations, ensuring outer lambdas are always
   // numbered before any lambdas nested inside their bodies.
@@ -19706,18 +19700,12 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
   }
 
   // Build new items list: original items + synthetic lambdas.
-  // Phase 2: Closure records are synthesized alongside lambdas and inserted
-  // before the lambda function items so they're type-registered first.
   val newItems: List[Item] = newList()
   var j = 0
   while j < file.items.count {
     newItems.add(file.items[j])
     j = j + 1
   }
-
-  // For Phase 2, closure records would be inserted here based on capture
-  // analysis of the __lambda_* functions in synths. This requires computing
-  // captures without full FuncCtx (deferred to complete Phase 2).
 
   var k = 0
   while k < synths.count {
