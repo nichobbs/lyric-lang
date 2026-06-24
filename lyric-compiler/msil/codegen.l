@@ -12405,22 +12405,18 @@ func buildActionNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTyp
     ai = ai + 1
   }
   val gblob = buildGenericInstBlob(codedIdx, actualArgs)
-  // FIXED #4060/#4066: Cache keys must include actual parameter types to avoid collision
-  // when two lambdas have same param count but different types (e.g. {x: Int} vs {x: String})
-  var typeKeySuffix = ""
-  var ti = 0
-  while ti < paramTypes.count and ti < nparams {
-    typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(paramTypes[ti])
-    ti = ti + 1
-  }
-  val specKey = "ActionSpec_typed_" + toString(nparams) + typeKeySuffix
+  // Phase 1: Action delegates always use MObject parameters for compatibility.
+  // The cache key is deterministic based on arity alone since blob content
+  // (MObject params) does not vary per call site. This avoids duplicate TypeSpec
+  // rows with identical blob content (issue #4102).
+  val specKey = "ActionSpec_typed_" + toString(nparams)
   val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
   val ctorPs: List[MsilType] = newList()
   ctorPs.add(MObject)
   ctorPs.add(MNativeInt)
   val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
-  // FIXED #4066: MemberRef cache key must also include type suffix to avoid collision
-  val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "action_ctor_typed_" + toString(nparams) + typeKeySuffix, ctorSig)
+  // MemberRef cache key is arity-based for Phase 1 (MObject params)
+  val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "action_ctor_typed_" + toString(nparams), ctorSig)
   0x0A000000 + mrRow
 }
 
@@ -16400,9 +16396,15 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
     } else {
       typeExprToMsilCtx(cctx, p.ty, pkgName)
     }
-    // Phase 1: for lambdas, slot type must be object-based to match the method
-    // signature. Propagated types are used by type-checking but not emitted to MSIL.
-    val paramTy = if isLambdaFn {
+    // For lambda bodies, the slot type must reflect the logical parameter type
+    // (from annotation or propagation) so castObjectToMsil can emit the correct
+    // unbox instruction. The method signature separately uses MObject parameters (#1939).
+    val paramTy = if isLambdaFn and annotTy == MObject and pi < lambdaPropagated.count {
+      lambdaPropagated[pi]
+    } else if isLambdaFn and annotTy != MObject {
+      annotTy
+    } else if isLambdaFn {
+      // Un-annotated lambda parameter with no propagation: use object
       MObject
     } else if annotTy == MObject and pi < lambdaPropagated.count {
       lambdaPropagated[pi]
@@ -16416,9 +16418,8 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
       fctx.byrefSlotTypes.add(slot, paramTy)
     }
     // Phase 1: lambda method signature uses object-based parameters for delegate
-    // compatibility. Declared and propagated parameter types influence the type-checker
-    // but are not reflected in the MSIL signature; strongly-typed lambda methods
-    // are deferred to Phase 2 (#1877, #1939).
+    // compatibility. The slot type reflects the logical type for correct unboxing
+    // of annotated parameters (#1939, #4101).
     // Record the declared return type of a function-typed param (a `(A,...) -> R`
     // value) so invoking it (`f()`) yields R rather than a bare object (#1877).
     match p.ty.kind {

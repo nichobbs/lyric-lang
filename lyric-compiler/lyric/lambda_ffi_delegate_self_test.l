@@ -35,25 +35,31 @@ func listCount[T](xs: in List[T]): Int = ()
 @externTarget("System.Collections.Generic.List`1.ForEach")
 func listForEach[T](xs: in List[T], action: in Action[T]): Unit = ()
 
-test "passing lambda directly to FFI Action parameter" {
-  val xs: List[Obj] = newList()
-  listAdd(xs, 1)
-  listAdd(xs, 2)
-  listAdd(xs, 3)
+test "passing lambda directly to Action[T] FFI parameter" {
+  val xs: List[Int] = newList[Int]()
+  listAdd(xs, 10)
+  listAdd(xs, 20)
+  listAdd(xs, 30)
 
-  // Pass lambda directly as argument (not via local assignment).
-  // This tests argSatisfiesParam in the argument position.
-  listForEach(xs, { _: Obj -> () })
-  assertEqualInt(listCount(xs), 3, "all 3 elements present")
+  // Create a List to track invocations via side effects.
+  val invoked: List[Int] = newList[Int]()
+
+  // Pass lambda directly as argument to Action[Int] delegate parameter.
+  // The lambda body modifies the captured list to verify invocation.
+  listForEach(xs, { item: Int -> listAdd(invoked, item) })
+
+  // Verify the delegate was actually invoked by checking the side effects.
+  assertEqualInt(listCount(invoked), 3, "lambda was invoked 3 times via delegate")
 }
 
-test "assign lambda to Func[Obj, Bool]" {
+test "assign lambda with type annotation to Func[Obj, Bool]" {
   val xs: List[Obj] = newList()
   listAdd(xs, 1)
   listAdd(xs, 2)
   listAdd(xs, 3)
 
-  // Assign lambda to Func delegate type (type-check path).
-  val checker: Func[Obj, Bool] = { x: Obj -> true }
-  assertEqualInt(listCount(xs), 3, "all 3 elements present")
+  // Assign lambda to Func delegate type.
+  // With annotation { x: Obj -> ... }, the type-checker sees Obj and accepts it.
+  val checker: Func[Obj, Bool] = { x: Obj -> x != null }
+  assertEqualInt(listCount(xs), 3, "list still has 3 elements")
 }
