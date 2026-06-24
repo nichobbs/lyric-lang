@@ -117,8 +117,13 @@ pub func mainReturnsInt(source: in String): Bool {
         val afterParen = Str.trim(afterToken(afterMain, "()"))
         if Str.startsWith(afterParen, ":") {
           val retPart = Str.trim(afterToken(afterParen, ":"))
+          // Exact `Int`, not a prefix of a longer type name (`IntFoo`): the
+          // type token must be followed by a delimiter or end-of-string.
           if Str.startsWith(retPart, "Int") {
-            return true
+            val rest = Str.substring(retPart, 3, Str.length(retPart) - 3)
+            if rest == "" or Str.startsWith(rest, " ") or Str.startsWith(rest, "\t") or Str.startsWith(rest, "{") or Str.startsWith(rest, "(") {
+              return true
+            }
           }
         }
       }
@@ -298,7 +303,7 @@ pub func buildReleaseDotnet(
   extraRefs: in List[String],
   ridOpt: in Option[String],
   outPath: in String,
-  mainReturnsInt: in Bool,
+  returnsInt: in Bool,
 ): Int {
   if pkgName == "" {
     releaseErr("could not determine the entry package (no `package` declaration found)")
@@ -341,7 +346,7 @@ pub func buildReleaseDotnet(
       return 1
     }
   }
-  match writeTrampoline(hostDir, pkgName, mainReturnsInt) {
+  match writeTrampoline(hostDir, pkgName, returnsInt) {
     case Ok(_) -> ()
     case Err(m) -> {
       releaseErr(m)
@@ -399,10 +404,10 @@ pub func buildRelease(
   extraRefs: in List[String],
   ridOpt: in Option[String],
   outPath: in String,
-  mainReturnsInt: in Bool,
+  returnsInt: in Bool,
 ): Int {
   match target {
-    case DotnetAot -> buildReleaseDotnet(programDll, pkgName, extraRefs, ridOpt, outPath, mainReturnsInt)
+    case DotnetAot -> buildReleaseDotnet(programDll, pkgName, extraRefs, ridOpt, outPath, returnsInt)
     case JvmNativeImage -> {
       releaseErr("`--release --target jvm` (GraalVM native-image) is not yet implemented; tracked in #1975")
       1
