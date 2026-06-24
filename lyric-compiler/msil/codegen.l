@@ -23712,13 +23712,11 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
           // with P0020).  The Instance field is `static initonly` typed Object,
           // matching lowerMNullaryUnionCase's `buildFieldSig(MObject)`.
           //
-          // Gated on `usesAritySuffix`: a self-hosted-emitted stdlib (arity
-          // suffix) always carries the `Instance` singleton, but an F#-mint
-          // stdlib (no suffix) may not — registering the MemberRef against a
-          // DLL that lacks the field would fault with `MissingFieldException`
-          // at run time.  When the suffix is absent we leave the historic
-          // `newobj` path in place (unchanged mint behaviour).
-          if usesAritySuffix and decl.cases[ci].fields.count == 0 and caseArity == 0 {
+          // D111: stdlib is always the single self-hosted bundle, which always
+          // carries `Instance` singletons for nullary union cases.  The former
+          // `usesAritySuffix` gate (true for self-hosted, false for F#-mint)
+          // was removed when per-package F#-mint stdlib DLLs were retired.
+          if decl.cases[ci].fields.count == 0 and caseArity == 0 {
             if not cctx.singletonFieldTokens.containsKey(ctorKey) {
               val instSig = buildFieldSig(MObject)
               val instSigKey = "stdlib_ucsingleton_" + ctorKey
