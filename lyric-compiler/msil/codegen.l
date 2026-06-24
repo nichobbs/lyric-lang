@@ -5695,10 +5695,9 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     // Non-Task values (blocking @externTarget async, or already-resolved results)
     // are passed through as-is: the value is already on the stack.
     //
-    // TODO(#2737): await inside a try/catch/finally region is unsupported —
-    // the CLR protected region would span a suspend/resume point — and causes
-    // InvalidProgramException at runtime.  The mode checker does not reject it
-    // yet; V0012 covers return-in-try but not await-in-try.
+    // Guard: the mode checker (V0012) rejects `await` inside a try/catch/finally
+    // region in an async function before codegen runs, so the emit paths below never
+    // see an await inside a CLR protected region (#2737).
     case EAwait(inner) -> {
       val taskTy = lowerExprMsil(cctx, fctx, insns, inner)
       if not isTaskTypeMsil(cctx, taskTy) {
