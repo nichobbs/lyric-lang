@@ -354,7 +354,13 @@ func buildReleaseSingle(
 
   val srcDir = Path.dirname(sourcePath)
   val stem = stemOf(Path.basename(sourcePath), 2)  // strip ".l"
-  val stagingDll = Path.join(Path.join(srcDir, ".lyric-release"), stem + ".dll")
+  // Name the staging assembly after the PACKAGE, not the source filename.  The
+  // AOT trampoline references `<pkgName>.Program.main`, and AOT resolves it
+  // through the assembly's identity; if the assembly were named from the file
+  // stem (e.g. `im.dll` for `package IntMain`) that reference fails to load at
+  // runtime (FileNotFoundException for the package-named assembly).  The native
+  // output keeps the file-stem name (what the user expects from `foo.l`).
+  val stagingDll = Path.join(Path.join(srcDir, ".lyric-release"), pkgName + ".dll")
   val buildExit = buildOne(sourcePath, stagingDll, Dotnet, manifestArg)
   if buildExit != 0 {
     return buildExit
