@@ -4382,6 +4382,8 @@ func findImportedFqn(cctx: in CodegenCtx, imports: in List[String], funcName: in
 // MValueTypeRef encodes an extern BCL value type; its typeRefCode is a
 // TypeDefOrRef coded index (tdrTypeRef(row) = row*4+1), so the raw row is
 // (code-1)/4, which gives the 0x01000000-token the JIT needs for box/unbox.any.
+// MValueTypeRef is only produced by internFfiTypeRef, which always allocates a
+// TypeRef row (never TypeDef or TypeSpec), so the TypeRef-kind formula is safe.
 func boxTypeRef(cctx: in CodegenCtx, ty: in MsilType): Int {
   match ty {
     case MInt -> cctx.trInt32
@@ -5697,7 +5699,10 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     //
     // Guard: the mode checker (V0012) rejects `await` inside a try/catch/finally
     // region in an async function before codegen runs, so the emit paths below never
-    // see an await inside a CLR protected region (#2737).
+    // see an await inside a CLR protected region (#2737).  Exception: `@axiom`
+    // bodies bypass V0012.  Their awaits target `@externTarget async` functions
+    // that return T (not Task<T>), so `isTaskTypeMsil` is false and no SM resume
+    // label is emitted inside the CLR protected region.
     case EAwait(inner) -> {
       val taskTy = lowerExprMsil(cctx, fctx, insns, inner)
       if not isTaskTypeMsil(cctx, taskTy) {
@@ -14268,10 +14273,6 @@ func inferCallReturnTypePB(
           if path.segments.count >= 2 {
             val joinedPath = joinSegsMsil(path.segments, ".")
             candidates.add(joinedPath)
-            // Also try import-prefixed qualified paths so that cross-package
-            // UFCS calls like `HttpResponse.bodyText(r)` (where `bodyText` is
-            // declared in `Std.Http` as `HttpResponse.bodyText`) resolve to
-            // the real key `"Std.Http.HttpResponse.bodyText"` in funcRetTypes.
             match mapGet(cctx.pkgImports, pkgName) {
               case Some(imps) -> {
                 var pfxI = 0
@@ -14308,6 +14309,57 @@ func inferCallReturnTypePB(
             ci = ci + 1
           }
           result
+        }
+        // `TypeName.method(recv, args)` parses as
+        // ECall(EMember(EPath(["TypeName"]), "method"), args) — the parser
+        // builds left-to-right postfix so the `.method` becomes an EMember
+        // node before the call `(` is consumed.  Reconstruct the qualified
+        // name from the receiver path and field, then resolve via funcRetTypes
+        // using the same import-prefix expansion as the EPath multi-segment
+        // branch above, so Phase A counts the await correctly and allocates
+        // the SM resume label that Phase B will consume.
+        case EMember(recv, field) -> {
+          match recv.kind {
+            case EPath(recvPath) -> {
+              val cnt = args.count
+              val joinedPath = joinSegsMsil(recvPath.segments, ".") + "." + field
+              val candidates: List[String] = newList()
+              candidates.add(joinedPath)
+              match mapGet(cctx.pkgImports, pkgName) {
+                case Some(imps) -> {
+                  var pfxI = 0
+                  while pfxI < imps.count {
+                    candidates.add(imps[pfxI] + "." + joinedPath)
+                    pfxI = pfxI + 1
+                  }
+                }
+                case None -> ()
+              }
+              candidates.add(pkgName + "." + field)
+              match mapGet(cctx.pkgImports, pkgName) {
+                case Some(imps) -> {
+                  val imp = findImportedFqn(cctx, imps, field)
+                  if imp.length > 0 {
+                    candidates.add(imp)
+                  }
+                }
+                case None -> ()
+              }
+              var result = MObject
+              var ci = 0
+              var done = false
+              while ci < candidates.count and not done {
+                val c = candidates[ci]
+                match mapGet(cctx.funcRetTypes, c + "/" + toString(cnt)) {
+                  case Some(ty) -> { result = ty; done = true }
+                  case None -> match mapGet(cctx.funcRetTypes, c) { case Some(ty) -> { result = ty; done = true }; case None -> () }
+                }
+                ci = ci + 1
+              }
+              result
+            }
+            case _ -> MObject
+          }
         }
         case _ -> MObject
       }
