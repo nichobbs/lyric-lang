@@ -9880,7 +9880,10 @@ func lowerBuiltinOrStaticCallMsil(
                 case Some(pts) -> {
                   match trackedRetType {
                     case Some(rt) -> {
-                      // Build a typed invoke token and emit the call directly
+                      // Build TypeSpec for the strongly-typed delegate and emit castclass
+                      val typeSpec = buildFuncNTypedTypeSpec(cctx, args.count, pts, rt)
+                      insns.add(MCastclass(typeToken = 0x1B000000 + typeSpec))
+                      // Build a typed invoke token and emit the call directly (no boxing)
                       val invokeToken = buildFuncNInvokeTokWithTypes(cctx, args.count, pts, rt)
                       insns.add(MCallvirt(methodToken = invokeToken))
                       // Handle return type: void delegates pop the result, others materialize it
@@ -12507,6 +12510,39 @@ func buildFuncNInvokeTok(cctx: in CodegenCtx, nparams: in Int): Int {
   val invokeSig = buildInstanceMethodSig(invokePs, MTypeVar(index = nparams))
   val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, "Invoke", "func_invoke_" + toString(nparams), invokeSig)
   0x0A000000 + mrRow
+}
+
+// Build a TypeSpec row for a strongly-typed System.Func<T1,...,Tn,TReturn> or System.Action<T1,...,Tn>.
+// Returns the TypeSpec row index for use in castclass / newobj instructions.
+// Shared cache key logic with buildFuncNCtorTokWithTypes to ensure consistency.
+// (#1877 Phase 3 — Strongly-typed invoke ABI)
+func buildFuncNTypedTypeSpec(cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType], retType: in MsilType): Int {
+  // If we have fewer actual types than expected params, fall back to the object-based TypeSpec
+  if paramTypes.count < nparams {
+    return internFuncNTypeSpec(cctx, nparams)
+  }
+  val trN = internFuncTypeRef(cctx, nparams)
+  // TypeDefOrRef coded index for a TypeRef at row R: (R << 2) | 1
+  val codedIdx = (trN * 4) + 1
+  val actualArgs: List[MsilType] = newList()
+  var ai = 0
+  while ai < nparams {
+    // Use actual parameter types (not object-based) for strongly-typed delegate.
+    actualArgs.add(paramTypes[ai])
+    ai = ai + 1
+  }
+  actualArgs.add(retType)
+  val gblob = buildGenericInstBlob(codedIdx, actualArgs)
+  // Cache key must include both parameter types and return type to avoid collision.
+  var typeKeySuffix = ""
+  var ti = 0
+  while ti < paramTypes.count and ti < nparams {
+    typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(paramTypes[ti])
+    ti = ti + 1
+  }
+  typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(retType)
+  val specKey = "FuncSpec_typed_" + toString(nparams) + typeKeySuffix
+  ctxAddTypeSpec(cctx.lctx, specKey, gblob)
 }
 
 // Build a callvirt token for a strongly-typed System.Func<T1,...,Tn,TReturn>::Invoke(T1,...,Tn): TReturn.
