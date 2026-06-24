@@ -2520,7 +2520,21 @@ pub func resolveExternMethodScoredIn(
           // unsupplied trailing optionals with their type defaults.
           val exactBonus = 1000000
           val nReal = normParams.count
-          val score = if isInstance and nReal == declArity - 1 {
+          // Constructors: hasThis is set in the CLR sig convention even though the
+          // receiver is implicitly allocated by newobj and is NOT listed as an
+          // explicit parameter.  Score against fullArgTypes directly (no head-drop)
+          // with nReal == declArity, before the generic instance branch which would
+          // compute nReal == declArity - 1 and always miss.
+          val score = if member == ".ctor" and nReal == declArity {
+            val sc = scoreParamsLenient(fullArgTypes, normParams)
+            if sc < 0 {
+              sc
+            } else {
+              sc + exactBonus
+            }
+          } else if member == ".ctor" and nReal > declArity and nReal - declArity <= methodTrailingOptionalCount(img, layout, th, mi, nReal) {
+            scoreParamsPrefix(fullArgTypes, normParams)
+          } else if isInstance and nReal == declArity - 1 {
             val sc = scoreParamsLenient(tail, normParams)
             if sc < 0 {
               sc

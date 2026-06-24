@@ -13305,7 +13305,7 @@ func emitExternTargetBody(
         }
         asi = asi + 1
       }
-      if not r.isCtor and not decl.isAsync and emitMember == r.memberName and argSigsOk {
+      if not decl.isAsync and emitMember == r.memberName and argSigsOk {
         match mapGet(cctx.metadataPathIndex, assemblyForTypeMsil(cctx, resolvedFqn)) {
           case None -> ()
           case Some(asmPath) -> {
@@ -13327,7 +13327,12 @@ func emitExternTargetBody(
                 match resolvedSigToMsil(cctx, msig.returnType) {
                   case Some(rm) -> {
                     if convOk {
-                      emitIsStatic = not msig.hasThis
+                      // Do not overwrite emitIsStatic for constructors: ctors
+                      // always use newobj (emitIsStatic=true from FfiResolved)
+                      // regardless of the CLR hasThis convention bit.
+                      if not r.isCtor {
+                        emitIsStatic = not msig.hasThis
+                      }
                       resolvedMethodParams = Some(value = mParams)
                       resolvedMethodRet = Some(value = rm)
                     }
@@ -13397,7 +13402,14 @@ func emitExternTargetBody(
         buildFfiMethodSigCtx(cctx, sigParams, sigRet, false)
       } else if r.isCtor {
         // .ctor: HASTHIS, void return, all params explicit.
-        buildFfiMethodSigCtx(cctx, paramTypes, MVoid, true)
+        // Prefer metadata-resolved param types so the MemberRef encodes the
+        // BCL-declared types (e.g. Stream instead of MemoryStream) and the
+        // CLR can resolve the overload at JIT time.
+        val ctorParams = match resolvedMethodParams {
+          case Some(mp) -> mp
+          case None -> paramTypes
+        }
+        buildFfiMethodSigCtx(cctx, ctorParams, MVoid, true)
       } else {
         // Instance method: the receiver is implicit via HASTHIS; sigParams holds
         // only the non-receiver params.
