@@ -25472,7 +25472,7 @@ tokens, hanging `parseItems` on `opaque type`). Fixed in #4020 by scanning for
 the `Instance` field directly. The single-bundle path (D112) never hit this,
 which is why the compiler self-tests stayed green throughout.
 
-**See also:** D-progress-531 + docs/41 §R7 (headline update) for the full
+**See also:** D-progress-531 + docs/41 (intro Update + C8/§R7 band note) for the full
 analysis; #4020 (the fix); `scripts/bootstrap.sh` stage-1/2/3 comments.
 
 ---
