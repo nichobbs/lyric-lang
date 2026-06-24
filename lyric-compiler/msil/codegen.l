@@ -6151,31 +6151,17 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             }
           }
           // Delegate type selection for Phase 1 lambdas.
-          // Special-case Predicate[T] and Comparison[T] only for explicitly-annotated lambdas
-          // to avoid #4077 regression where shape-based detection breaks HOF parameter passing.
-          // Propagated types from HOF generics use Func/Action regardless of shape.
-          var hasExplicitAnnotation = false
-          if nparams > 0 {
-            var pIdx = 0
-            while pIdx < nparams {
-              if match lparams[pIdx].ty { case Some(_) -> true; case None -> false } {
-                hasExplicitAnnotation = true
-              }
-              pIdx = pIdx + 1
-            }
-          }
+          // Use Func/Action with actual parameter types and return type.
+          // Note #4077: Predicate/Comparison shape-based special casing is disabled pending
+          // proper FFI context detection. Shape matching alone breaks HOF calls where the
+          // delegate type is determined by the HOF signature, not the lambda shape.
+          // Full solution: track at type-check time whether lambda target is extern delegate.
           val ctorTok = if returnsVoid {
             if nparams == 0 {
               cctx.tokActionCtor
             } else {
               buildActionNCtorTokWithTypes(cctx, nparams, propagatedParamTypes)
             }
-          } else if hasExplicitAnnotation and nparams == 1 and match retType { case Some(MBool) -> true; case _ -> false } {
-            // Explicitly-annotated single parameter returning bool: use Predicate[T] (FFI delegate case)
-            buildPredicateCtorTok(cctx, propagatedParamTypes[0])
-          } else if hasExplicitAnnotation and nparams == 2 and match retType { case Some(MInt) -> true; case _ -> false } {
-            // Explicitly-annotated two parameters returning int: use Comparison[T] (FFI delegate case)
-            buildComparisonCtorTok(cctx, propagatedParamTypes[0])
           } else {
             val actualRetType = match retType { case Some(t) -> t; case None -> MObject }
             buildFuncNCtorTokWithTypes(cctx, nparams, propagatedParamTypes, actualRetType)
