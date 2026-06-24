@@ -1,11 +1,11 @@
 //! release_self_test.l — exercises the pure helpers of Lyric.Release
 //! (entry-point/package detection) via the native `@test_module` runner.
 //!
-//! These cover the source-introspection that picks the AOT trampoline's entry
-//! type.  The toolchain-driving parts of Lyric.Release (dotnet publish, file
-//! staging) are integration-tested by the "release e2e" CI step against the
-//! real binary — they can't run through `lyric test` (host-backed stdlib at
-//! runtime, #2001).
+//! These cover the source-introspection used to detect entry packages and
+//! validate release builds.  The toolchain-driving parts of Lyric.Release
+//! (ilc + clang invocation, ILC probe restore, file staging) are
+//! integration-tested by the "release e2e" CI step against the real binary —
+//! they can't run through `lyric test` (host-backed stdlib at runtime, #2001).
 //!
 //! Runs in CI via:
 //!
