@@ -49,41 +49,25 @@ pub record AppHostTemplate {
 // §1. Placeholder binding (pure — hermetically testable)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Find the first occurrence of `needle` in `hay`, or -1 if absent.
-/// Naive scan; the apphost template is well under 100 KB so this is fine.
-pub func findBytes(hay: in List[Byte], needle: in slice[Byte]): Int {
-  if needle.length == 0 {
-    return -1
-  }
-  val last = hay.count - needle.length
-  var i = 0
-  while i <= last {
-    var k = 0
-    var matched = true
-    while k < needle.length {
-      if hay[i + k] != needle[k] {
-        matched = false
-        k = needle.length
-      } else {
-        k += 1
-      }
-    }
-    if matched {
-      return i
-    }
-    i += 1
-  }
-  -1
+/// The result of a single placeholder scan: how many non-overlapping
+/// occurrences of the needle were found, and the offset of the first (or -1).
+record PlaceholderScan {
+  count: Int
+  firstOffset: Int
 }
 
-/// Count non-overlapping occurrences of `needle` in `hay` (used to reject
-/// templates whose placeholder is ambiguous).
-func countBytes(hay: in List[Byte], needle: in slice[Byte]): Int {
+/// Scan `hay` for `needle` in one pass, reporting both the count of
+/// non-overlapping occurrences and the offset of the first.  The binder needs
+/// both the count (to reject missing/ambiguous placeholders) and the offset (to
+/// splice), so a single scan replaces what was two.  Naive O(n·m) match; the
+/// apphost template is well under 100 KB so this is fine.
+func scanPlaceholder(hay: in List[Byte], needle: in slice[Byte]): PlaceholderScan {
   if needle.length == 0 {
-    return 0
+    return PlaceholderScan(count = 0, firstOffset = -1)
   }
   val last = hay.count - needle.length
   var count = 0
+  var firstOffset = -1
   var i = 0
   while i <= last {
     var k = 0
@@ -97,13 +81,21 @@ func countBytes(hay: in List[Byte], needle: in slice[Byte]): Int {
       }
     }
     if matched {
+      if firstOffset < 0 {
+        firstOffset = i
+      }
       count += 1
       i += needle.length
     } else {
       i += 1
     }
   }
-  count
+  PlaceholderScan(count = count, firstOffset = firstOffset)
+}
+
+/// Find the first occurrence of `needle` in `hay`, or -1 if absent.
+pub func findBytes(hay: in List[Byte], needle: in slice[Byte]): Int {
+  scanPlaceholder(hay, needle).firstOffset
 }
 
 /// Splice `appRelDllPath` into a copy of `templateBytes`, returning the bound
@@ -117,14 +109,14 @@ pub func bindAppHost(
   templateBytes: in List[Byte], appRelDllPath: in String
 ): Result[List[Byte], String] {
   val needle = Enc.encodeUtf8(PLACEHOLDER)
-  val occurrences = countBytes(templateBytes, needle)
-  if occurrences == 0 {
+  val scan = scanPlaceholder(templateBytes, needle)
+  if scan.count == 0 {
     return Err(error = "apphost template does not contain the app-binary-path placeholder")
   }
-  if occurrences > 1 {
+  if scan.count > 1 {
     return Err(error = "apphost template contains the placeholder more than once (ambiguous)")
   }
-  val idx = findBytes(templateBytes, needle)
+  val idx = scan.firstOffset
 
   if idx + RESERVED_BYTES > templateBytes.count {
     return Err(
@@ -278,10 +270,37 @@ func apphostFileName(rid: in String): String {
   }
 }
 
+/// Choose the apphost template to use from the discovered `candidates`.  When
+/// `hostRid` is known (non-empty) and a candidate matches it, that one wins —
+/// this is what makes the right architecture get picked on machines with
+/// several `Microsoft.NETCore.App.Host.<rid>` packs installed (cross-compilation
+/// setups).  Otherwise the first discovered candidate is used (the single-RID
+/// common case, and the JVM/unknown-host case where `hostRid` is empty).
+/// Pure and hermetically testable.
+pub func preferHostRid(
+  candidates: in List[AppHostTemplate], hostRid: in String
+): Option[AppHostTemplate] {
+  if hostRid.length > 0 {
+    var ci = 0
+    while ci < candidates.count {
+      if candidates[ci].rid == hostRid {
+        return Some(value = candidates[ci])
+      }
+      ci += 1
+    }
+  }
+  if candidates.count > 0 {
+    return Some(value = candidates[0])
+  }
+  None
+}
+
 /// Locate the apphost template for the host machine.  Probes each candidate
-/// .NET root for a `Microsoft.NETCore.App.Host.<rid>` pack and returns the
-/// highest-versioned template found, deriving the RID from the pack name.
+/// .NET root for `Microsoft.NETCore.App.Host.<rid>` packs, collecting the
+/// highest-versioned template in each, then prefers the one whose RID matches
+/// the host runtime identifier (falling back to the first discovered).
 pub func locateTemplate(): Option[AppHostTemplate] {
+  val candidates: List[AppHostTemplate] = newList()
   val roots = candidateDotnetRoots()
   var ri = 0
   while ri < roots.count {
@@ -305,7 +324,7 @@ pub func locateTemplate(): Option[AppHostTemplate] {
                     Path.join("native", apphostFileName(rid))
                   )
                   if File.fileExists(ahPath) {
-                    return Some(value = AppHostTemplate(path = ahPath, rid = rid))
+                    candidates.add(AppHostTemplate(path = ahPath, rid = rid))
                   }
                 }
                 case None -> ()
@@ -319,7 +338,7 @@ pub func locateTemplate(): Option[AppHostTemplate] {
     }
     ri += 1
   }
-  None
+  preferHostRid(candidates, Environment.runtimeIdentifier())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

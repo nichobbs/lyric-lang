@@ -92,6 +92,22 @@ pub func runtimeDirectory(): String {
   hostRuntimeDirectory()
 }
 
+/// The .NET runtime identifier of the running process — e.g. `"linux-x64"`,
+/// `"win-x64"`, `"osx-arm64"`.
+///
+/// Used by the self-hosted compiler to pick the apphost pack matching the host
+/// when several `Microsoft.NETCore.App.Host.<rid>` packs are installed.
+///
+/// On .NET, delegates to
+/// `System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier` and is
+/// always non-empty.  On JVM (where the .NET RID has no equivalent) this
+/// returns an empty string; callers should treat empty as "unknown" and fall
+/// back to a host-independent choice.
+@stable(since = "1.0")
+pub func runtimeIdentifier(): String {
+  hostRuntimeIdentifier()
+}
+
 /// Set (or replace) a process-level environment variable.
 ///
 /// The new value is visible to subsequent `getVar` / `getVarOrDefault` calls

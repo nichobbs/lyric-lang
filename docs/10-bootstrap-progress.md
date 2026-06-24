@@ -25603,3 +25603,23 @@ shared prerequisite for both the future `bundle` (runtime bundled) and `aot`
 slice of moving the deployable-artifact pipeline off the C# `Lyric.Cli.Aot`
 trampoline. `exe` is still framework-dependent (a .NET runtime must be installed)
 — it removes the `dotnet` invocation, not the runtime dependency.
+
+**Post-merge review follow-ups (#4080, #4082, #4085).** Three refinements from
+the PR review landed after the initial merge:
+
+- *Host-RID pack selection (#4080).* `locateTemplate` now collects every
+  discovered `Microsoft.NETCore.App.Host.<rid>` pack and prefers the one whose
+  RID matches the host, instead of taking the first in filesystem order — so the
+  right architecture is chosen on machines with several Host packs installed
+  (cross-compilation setups). The host RID comes from a new stable stdlib
+  primitive, `Std.Environment.runtimeIdentifier()` (`.NET`:
+  `RuntimeInformation.RuntimeIdentifier`; JVM: `""` per the "empty = unavailable"
+  convention). The selection is factored into a pure, hermetically-tested
+  `preferHostRid`; an empty/unknown host RID falls back to the first pack.
+- *Single-pass placeholder scan (#4082).* The binder's ambiguity check and offset
+  lookup are now one `scanPlaceholder` pass (count + first offset) instead of two;
+  `findBytes` delegates to it.
+- *Non-silent run fallback (#4085).* When a `kind = "exe"` build has no native
+  launcher beside the DLL (no apphost template located, or the file was removed),
+  `lyric run` still falls back to `dotnet exec` but now prints a warning naming
+  the cause, rather than degrading silently.

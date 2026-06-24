@@ -186,3 +186,47 @@ test "launcherName is RID-aware" {
   assertEqual(AppHost.launcherName("hello", "osx-arm64"), "hello", "launcherName: bare on macOS")
   assertEqual(AppHost.launcherName("hello", "win-x64"), "hello.exe", "launcherName: .exe on windows")
 }
+
+// A two-RID candidate list, in discovery order: linux first, then windows.
+func twoRidCandidates(): List[AppHost.AppHostTemplate] {
+  val cs: List[AppHost.AppHostTemplate] = newList()
+  cs.add(AppHost.AppHostTemplate(path = "/packs/linux/apphost", rid = "linux-x64"))
+  cs.add(AppHost.AppHostTemplate(path = "/packs/win/apphost.exe", rid = "win-x64"))
+  cs
+}
+
+// The rid of a preferHostRid result, or "<none>" when None.
+func pickedRid(picked: in Option[AppHost.AppHostTemplate]): String {
+  match picked {
+    case Some(t) -> t.rid
+    case None -> "<none>"
+  }
+}
+
+// preferHostRid picks the candidate matching the host RID when one is present —
+// the cross-compilation case that motivated #4080.
+test "preferHostRid selects the host-matching pack" {
+  val picked = AppHost.preferHostRid(twoRidCandidates(), "win-x64")
+  assertEqual(pickedRid(picked), "win-x64", "preferHostRid: matches host rid even when not first")
+}
+
+// With no host-RID match, preferHostRid falls back to the first discovered pack
+// (preserving the prior single-RID behavior).
+test "preferHostRid falls back to first on no match" {
+  val picked = AppHost.preferHostRid(twoRidCandidates(), "osx-arm64")
+  assertEqual(pickedRid(picked), "linux-x64", "preferHostRid: no match -> first candidate")
+}
+
+// An unknown host RID (empty string — the JVM / native-AOT case) also falls
+// back to the first discovered pack rather than dropping to None.
+test "preferHostRid falls back to first on empty host rid" {
+  val picked = AppHost.preferHostRid(twoRidCandidates(), "")
+  assertEqual(pickedRid(picked), "linux-x64", "preferHostRid: empty rid -> first candidate")
+}
+
+// With no candidates at all, preferHostRid yields None regardless of host RID.
+test "preferHostRid yields None when no candidates" {
+  val empty: List[AppHost.AppHostTemplate] = newList()
+  assertEqual(pickedRid(AppHost.preferHostRid(empty, "linux-x64")), "<none>", "preferHostRid: empty -> None")
+  assertEqual(pickedRid(AppHost.preferHostRid(empty, "")), "<none>", "preferHostRid: empty+unknown -> None")
+}

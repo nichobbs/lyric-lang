@@ -40,6 +40,15 @@ pub func hostCurrentDirectory(): String = ()
 @externTarget("System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory")
 pub func hostRuntimeDirectory(): String = ()
 
+// The .NET runtime identifier of the running process (`"linux-x64"`,
+// `"win-x64"`, `"osx-arm64"`, …).  Wraps the static property
+// `System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier`.
+// Used to pick the host-matching apphost pack on machines with several
+// installed.  Always non-empty on .NET.
+@axiom("System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier conforms to its documented .NET contract")
+@externTarget("System.Runtime.InteropServices.RuntimeInformation.get_RuntimeIdentifier")
+pub func hostRuntimeIdentifier(): String = ()
+
 // Set (or unset) a process-level environment variable.  Wraps
 // `System.Environment.SetEnvironmentVariable(string, string)`.  The new
 // value is visible to `GetEnvironmentVariable` in the same process and

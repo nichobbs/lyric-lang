@@ -90,6 +90,17 @@ func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in Com
           }
         }
         case None -> {
+          // A `kind = "exe"` build should have a native launcher beside the
+          // DLL; if it is missing (no apphost template on this host, or the
+          // file was removed) we still run via `dotnet exec` so `lyric run`
+          // keeps working, but say so rather than falling back silently.
+          if buildKind == "exe" {
+            printErr(
+              "run: warning: no native launcher found for this 'kind = \"exe\"' build; " +
+              "falling back to 'dotnet exec' (set DOTNET_ROOT to a .NET SDK install " +
+              "so the apphost template can be located)"
+            )
+          }
           val execArgs: List[String] = newList()
           execArgs.add("exec")
           execArgs.add(outPath)
