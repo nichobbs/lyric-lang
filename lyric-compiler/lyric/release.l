@@ -246,7 +246,14 @@ func jsonStringField(json: in String, key: in String): Option[String] {
       // Find closing quote (not preceded by backslash — simple case)
       match Str.indexOf(inner, "\"") {
         case None -> None
-        case Some(closeIdx) -> Some(value = Str.substring(inner, 0, closeIdx))
+        case Some(closeIdx) -> {
+          val raw = Str.substring(inner, 0, closeIdx)
+          // Minimal JSON string unescape: \\ → \ for Windows NuGet cache paths.
+          // Full Unicode/surrogate-pair decoding is not needed here — only the
+          // packagesPath value is consumed, and its only special chars are
+          // backslash-escaped backslashes on Windows.
+          Some(value = Str.replace(raw, "\\\\", "\\"))
+        }
       }
     }
   }
@@ -300,7 +307,7 @@ func restoreIlcProbe(stageDir: in String, rid: in String): Result[IlcPaths, Stri
   restoreArgs.add("restore")
   restoreArgs.add(csprojPath)
   restoreArgs.add("--nologo")
-  val restoreResult = PC.runCaptureWithDiagnosticsTimeout("dotnet", restoreArgs, "", 120000)
+  val restoreResult = PC.runCaptureWithDiagnosticsTimeout("dotnet", restoreArgs, "", 300000)
   if restoreResult.exitCode != 0 {
     return Err(
       error = "dotnet restore for ILC toolchain failed (exit " + toString(restoreResult.exitCode) + "):\n" +
@@ -324,8 +331,9 @@ func restoreIlcProbe(stageDir: in String, rid: in String): Result[IlcPaths, Stri
     case Some(v) -> v
     case None -> return Err(
       error = "could not find ILC version for RID '" + rid + "' in project.assets.json. " +
-        "Ensure the .NET NativeAOT workload is installed: `dotnet workload install wasm-tools` or check " +
-        "`dotnet workload list`"
+        "ILC is a NuGet package (runtime." + rid + ".Microsoft.DotNet.ILCompiler), not a workload — " +
+        "check that the NuGet feed is reachable and retry: " +
+        "`dotnet restore --verbosity detailed " + csprojPath + "`"
     )
   }
 
@@ -757,6 +765,10 @@ pub func buildReleaseDotnet(
   val os = ridOs(rid)
   if os == "windows" {
     releaseErr("Windows native linking is not yet implemented; tracked in #1975")
+    return 1
+  }
+  if os == "osx" {
+    releaseErr("macOS native linking is not yet implemented (ld64 flags differ from Linux ELF); tracked in #1975")
     return 1
   }
   Console.println("release: linking native binary ...")
