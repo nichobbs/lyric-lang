@@ -140,6 +140,8 @@ func advanceTripleState(line: in String, inTriple: in Bool): Bool {
   var i = 0
   val n = Str.length(line)
   while i < n {
+    // A `//` outside a triple-quoted span starts a line comment that swallows
+    // the rest of the line — including any `"""` in its tail (#3248).
     if not state and i + 1 < n and Str.substring(line, i, 2) == "//" {
       return state
     }
@@ -363,7 +365,7 @@ func restoreIlcProbe(stageDir: in String, rid: in String): Result[IlcPaths, Stri
   val sdkPath = Path.join(nativeaotRoot, "native")
   val frameworkPath = Path.join(Path.join(nativeaotRoot, "lib"), tfm)
 
-  if not File.dirExists(Path.join(nativeaotRoot, "native")) {
+  if not File.dirExists(sdkPath) {
     return Err(
       error = "NativeAOT runtime pack not found at '" + nativeaotRoot + "'. " +
         "Expected microsoft.netcore.app.runtime.nativeaot." + rid + "/" + ilcVersion + " in " + pkgsDir
