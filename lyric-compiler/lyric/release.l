@@ -703,6 +703,19 @@ pub func buildReleaseDotnet(
     }
   }
 
+  // Reject unsupported OS targets before the slow ILC probe + compile steps
+  // so users get an immediate error rather than waiting 10+ minutes.
+  val os = ridOs(rid)
+  val arch = ridArch(rid)
+  if os == "windows" {
+    releaseErr("Windows native linking is not yet implemented; tracked in #1975")
+    return 1
+  }
+  if os == "osx" {
+    releaseErr("macOS native linking is not yet implemented (ld64 flags differ from Linux ELF); tracked in #1975")
+    return 1
+  }
+
   // Ensure the ILC toolchain is present in the NuGet cache and discover its paths.
   Console.println("release: resolving ILC toolchain for " + rid + " ...")
   val paths = match restoreIlcProbe(stageDir, rid) {
@@ -763,16 +776,6 @@ pub func buildReleaseDotnet(
   }
 
   // Run platform linker.
-  val arch = ridArch(rid)
-  val os = ridOs(rid)
-  if os == "windows" {
-    releaseErr("Windows native linking is not yet implemented; tracked in #1975")
-    return 1
-  }
-  if os == "osx" {
-    releaseErr("macOS native linking is not yet implemented (ld64 flags differ from Linux ELF); tracked in #1975")
-    return 1
-  }
   Console.println("release: linking native binary ...")
   val linkerArgs = buildLinkerArgsUnix(objFile, exportsFile, outPath, paths.sdkPath, arch)
   val linkResult = PC.runCaptureWithDiagnosticsTimeout("clang", linkerArgs, "", 300000)
