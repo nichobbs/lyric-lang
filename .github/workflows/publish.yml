@@ -311,7 +311,7 @@ jobs:
 
       - name: Restore
         working-directory: bootstrap
-        run: dotnet restore Bootstrap.sln
+        run: dotnet restore src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj
 
       - name: Build stage 1 (for NuGet package)
         shell: bash
