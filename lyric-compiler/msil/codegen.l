@@ -14722,6 +14722,12 @@ func countPromotedLocalsStmt(
     case SLocal(binding) -> {
       match binding {
         case LBLet(name, _, init) -> {
+          // No hoistedNms guard needed: Phase B always calls
+          // phaseBRegisterAndSyncLocal for LBLet unconditionally (the let
+          // handler has no isHoisted branch).  Immutable let bindings are
+          // never put in heap cells when captured by lambdas — they are closed
+          // over by value — so the original binding still needs an SM field to
+          // survive suspension regardless of whether it appears in hoistedNms.
           if not nameListContains(seen, name) {
             seen.add(name)
           }
