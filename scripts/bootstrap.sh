@@ -13,8 +13,8 @@
 #           Output: `.bootstrap/stage0-publish/`.
 #
 # Stage 1:  The seed compiles the current true-compiler `.l` sources into a
-#           RUNNABLE true compiler plus the smoke stdlib subset
-#           (`lyric-stdlib/lyric.toml`) needed to run it.  Output:
+#           RUNNABLE true compiler plus the full stdlib bundle
+#           (`lyric-stdlib/lyric.full.toml`) needed to run it.  Output:
 #           `.bootstrap/stage1/` (flat) + the AOT entry-point binary.  Stage 1
 #           is intrinsically ABI-MIXED — its own runtime stdlib is seed-emitted
 #           (non-arity-suffixed) while the code it EMITS is arity-suffixed — so
