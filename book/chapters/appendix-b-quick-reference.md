@@ -825,6 +825,14 @@ lyric build --manifest lyric.toml      # build from project manifest
                                        # ([nuget]/[maven] edits aren't detected — run `lyric restore`)
 lyric build --no-restore               # build against the lock as-is (skip auto-restore)
 
+# Build kind (manifest [build] kind, .NET target; default "lib")
+#   kind = "lib"     -> managed foo.dll + foo.runtimeconfig.json (run via `dotnet exec`)
+#   kind = "exe"     -> the above PLUS a native apphost launcher `foo` (`foo.exe` on
+#                       Windows); run directly with `./foo` (still needs .NET installed).
+#                       `lyric run` execs the launcher instead of `dotnet exec`.
+#   kind = "bundle"  -> self-contained (runtime bundled) — planned, build errors for now
+#   kind = "aot"     -> native AOT, no runtime — planned; use `lyric build --release` today
+
 # Build features (compile-time gating; see chapter 20 §20.7)
 lyric build --features X,Y <file.l>    # additive over manifest's [features] default
 lyric build --no-default-features      # suppress the default = […] set

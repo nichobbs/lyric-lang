@@ -289,18 +289,13 @@ func stemOf(base: in String, extLen: in Int): String {
   }
 }
 
-// Return the output file extension for a given target and build kind.
-// For Dotnet: ".dll" if kind="lib" (default), ".exe" if kind="exe"
-// For Jvm: ".jar" (kind is currently a no-op)
+// Return the output file extension for the managed assembly of a build.
+// On Dotnet the assembly is always a managed `.dll`; `kind = "exe"` produces a
+// separate native apphost launcher beside it (see `Lyric.AppHost`), it does not
+// rename the assembly.  For Jvm: ".jar" (kind is currently a no-op).
 func outputExt(target: in Emitter.CompileTarget, kind: in String): String {
   match target {
-    case Emitter.Dotnet -> {
-      if kind == "exe" {
-        ".exe"
-      } else {
-        ".dll"
-      }
-    }
+    case Emitter.Dotnet -> ".dll"
     case Emitter.Jvm -> ".jar"
   }
 }

@@ -180,8 +180,16 @@ pub record RegistryConfig {
 }
 
 /// `[build]` section for output kind configuration.
-/// For Dotnet target: `kind = "lib"` produces .dll (default), `kind = "exe"` produces .exe
-/// (both runnable via `dotnet exec <file>`). For Jvm target: kind is currently a no-op.
+/// For the Dotnet target, `kind` selects the produced artifact:
+///   - `"lib"`    — managed `.dll` (default), run via `dotnet exec`.
+///   - `"exe"`    — managed `.dll` plus a native apphost launcher and
+///                  `.runtimeconfig.json`; runs directly (`./<name>`) but still
+///                  needs a .NET runtime installed (framework-dependent).
+///   - `"bundle"` — self-contained: launcher with the runtime bundled
+///                  (planned; not yet emitted).
+///   - `"aot"`    — native ahead-of-time compiled binary, no runtime
+///                  dependency (planned; not yet emitted).
+/// For the Jvm target, `kind` is currently a no-op.
 pub record BuildSection {
   kind: String
 }
@@ -787,15 +795,15 @@ func assembleBuild(entries: in List[Entry]): Result[Option[BuildSection], Manife
   }
   match findString(entries, "build", "kind") {
     case Some(kind) -> {
-      // Validate: kind must be one of "lib" or "exe"
-      if kind == "lib" or kind == "exe" {
+      // Validate: kind must be one of "lib", "exe", "bundle", or "aot".
+      if kind == "lib" or kind == "exe" or kind == "bundle" or kind == "aot" {
         Ok(value = Some(value = BuildSection(kind = kind)))
       } else {
         Err(
           error = InvalidField(
             section = "build",
             field = "kind",
-            message = "must be \"lib\" or \"exe\", got \"" + kind + "\""
+            message = "must be \"lib\", \"exe\", \"bundle\", or \"aot\", got \"" + kind + "\""
           )
         )
       }

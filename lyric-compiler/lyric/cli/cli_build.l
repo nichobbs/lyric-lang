@@ -17,6 +17,7 @@ import Lyric.Workspace as Ws
 import Lyric.Release as Release
 import Lyric.Generator as Generator
 import Lyric.Emitter as Emitter
+import Lyric.AppHost as AppHost
 import Lyric.CfgGate as CfgGate
 import Std.Time as Time
 import Std.Format as Format
@@ -662,6 +663,29 @@ func buildProject(
 
   val mfDir = Path.dirname(mfPath)
   val buildKind = getBuildKind(manifest)
+  // `bundle` (self-contained) and `aot` are accepted by the manifest parser
+  // but their emission is not yet implemented; fail loudly rather than
+  // silently producing a plain library.  Only meaningful for the Dotnet target
+  // (Jvm treats `kind` as a no-op).
+  match target {
+    case Dotnet -> {
+      if buildKind == "bundle" {
+        printErr(
+          mfPath +
+            ": [build] kind = \"bundle\" (self-contained) is not yet implemented; use \"exe\" for a framework-dependent launcher or \"lib\" for a managed DLL"
+        )
+        return 1
+      }
+      if buildKind == "aot" {
+        printErr(
+          mfPath +
+            ": [build] kind = \"aot\" (native ahead-of-time) is not yet implemented; use \"exe\" for a framework-dependent launcher or \"lib\" for a managed DLL"
+        )
+        return 1
+      }
+    }
+    case Jvm -> ()
+  }
   val outPath = match explicitOut {
     case Some(o) -> o
     case None -> {
@@ -949,7 +973,20 @@ func buildProject(
   }
 
   match target {
-    case Dotnet -> writeRuntimeConfig(outPath)
+    case Dotnet -> {
+      writeRuntimeConfig(outPath)
+      // `kind = "exe"`: emit a native apphost launcher beside the managed DLL
+      // so the program runs directly (`./<name>`) without a `dotnet` prefix.
+      if buildKind == "exe" {
+        match AppHost.emitAppHost(outPath) {
+          case Ok(launcherPath) -> Console.println("  launcher: " + launcherPath)
+          case Err(m) -> {
+            printErr("build: apphost emission failed: " + m)
+            return 1
+          }
+        }
+      }
+    }
     case Jvm -> {
       if mavenJarColonSep.length > 0 {
         val mpPath = Path.join(outDir, "module-path.txt")

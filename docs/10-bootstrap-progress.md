@@ -25564,3 +25564,42 @@ D107 Phase 2 so the self-hosted compiler builds the stdlib itself, retiring the
 F# stdlib-reuse path. The interim (`seed: mint`) release skips `--stage 2`
 because an F#-emitted stage-1 and a self-hosted-emitted stage-2 legitimately
 diverge (e.g. the generic arity suffix F# omits).
+
+### D-progress-532 — `[build] kind = "exe"`: native apphost launcher emission
+
+`lyric build` on the .NET target now produces a directly-runnable native
+launcher for projects whose `lyric.toml` declares `[build] kind = "exe"`, the
+first step toward emitting self-contained and native-AOT artifacts directly from
+the self-hosted toolchain (and toward retiring the C# AOT entry-point wrapper).
+
+**What shipped.** A new self-hosted package `Lyric.AppHost`
+(`lyric-compiler/lyric/app_host.l`) binds the .NET SDK's per-RID apphost
+template: it locates the `Microsoft.NETCore.App.Host.<rid>` pack (reusing the
+`DOTNET_ROOT`/`~/.dotnet`/`/usr/share/dotnet` probe order from
+`Msil.MetadataReader`), reads the template bytes, splices the managed DLL's file
+name into the embedded app-binary-path placeholder (the ASCII of
+SHA-256("foobar"), a 1024-byte reserved region) followed by a NUL terminator
+with the remainder zero-filled — mirroring
+`Microsoft.NET.HostModel.AppHost.HostWriter` — writes the launcher beside the
+DLL, and marks it executable (`chmod +x` on Unix; ad-hoc `codesign` on macOS,
+where editing the binary invalidates the signature). `cli_build` calls
+`emitAppHost` after a successful `exe` build; `cli_run` execs the launcher
+directly instead of `dotnet exec`. The pure splice logic is covered hermetically
+by `app_host_self_test.l` (wired into the CI compiler self-test list).
+
+**Build-kind taxonomy.** The `[build] kind` field now accepts `lib` (default,
+unchanged), `exe` (this entry), `bundle` (self-contained), and `aot` (native
+AOT). The managed assembly is always emitted as `<name>.dll` on .NET — `exe` adds
+a launcher beside it rather than renaming the assembly (the prior behaviour,
+which renamed the managed PE to `.exe`, is replaced). `bundle` and `aot` parse
+and validate but are not yet emitted: declaring them is a hard build error
+pointing at `exe`/`lib`, not a silent fallback. For a self-contained native
+binary today, `lyric build --release` remains the path (csproj + `dotnet publish`
+Native AOT).
+
+**Why this matters for the C# wrapper.** The framework-dependent apphost is the
+shared prerequisite for both the future `bundle` (runtime bundled) and `aot`
+(native, no runtime) kinds; landing host-launcher emission in Lyric is the first
+slice of moving the deployable-artifact pipeline off the C# `Lyric.Cli.Aot`
+trampoline. `exe` is still framework-dependent (a .NET runtime must be installed)
+— it removes the `dotnet` invocation, not the runtime dependency.
