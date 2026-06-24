@@ -23852,6 +23852,7 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
             // non-generic fields) in fieldVarIdx so lowerPatternBindMsil can
             // recover the concrete bound-variable type without byte-level access.
             var fieldVarIdx = -1
+            val fieldTyExpr = match field { case UFNamed(_, ty, _) -> ty; case UFPos(ty, _) -> ty }
             val fieldSig = match field {
               case UFNamed(_, ty, _) -> {
                 val seg = match ty.kind {
@@ -23864,10 +23865,10 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
                       fieldVarIdx = varIdx
                       buildGenericParamFieldSig(varIdx)
                     }
-                    case None -> buildFieldSig(MObject)
+                    case None -> buildFieldSig(typeExprToMsilCtx(cctx, ty, packageName))
                   }
                 } else {
-                  buildFieldSig(MObject)
+                  buildFieldSig(typeExprToMsilCtx(cctx, ty, packageName))
                 }
               }
               case UFPos(ty, _) -> {
@@ -23881,13 +23882,14 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
                       fieldVarIdx = varIdx
                       buildGenericParamFieldSig(varIdx)
                     }
-                    case None -> buildFieldSig(MObject)
+                    case None -> buildFieldSig(typeExprToMsilCtx(cctx, ty, packageName))
                   }
                 } else {
-                  buildFieldSig(MObject)
+                  buildFieldSig(typeExprToMsilCtx(cctx, ty, packageName))
                 }
               }
             }
+            val concreteFieldMsilTy = if fieldVarIdx >= 0 { MObject } else { typeExprToMsilCtx(cctx, fieldTyExpr, packageName) }
             val sigKey = "stdlib_field_" + ctorKey + "_" + declaredName
             val fieldMrRow = ctxAddMemberRef(cctx.lctx, caseRow, declaredName, sigKey, fieldSig)
             val fieldTok = 0x0A000000 + fieldMrRow
@@ -23901,6 +23903,9 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
             if not cctx.fieldVarIndices.containsKey(byNameKey) {
               cctx.fieldVarIndices.add(byNameKey, fieldVarIdx)
             }
+            if not cctx.fieldMsilTypes.containsKey(byNameKey) {
+              cctx.fieldMsilTypes.add(byNameKey, concreteFieldMsilTy)
+            }
             val byPosKey = ctorKey + "/field" + toString(fi)
             if not cctx.fieldTokens.containsKey(byPosKey) {
               cctx.fieldTokens.add(byPosKey, fieldTok)
@@ -23910,6 +23915,9 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
             }
             if not cctx.fieldVarIndices.containsKey(byPosKey) {
               cctx.fieldVarIndices.add(byPosKey, fieldVarIdx)
+            }
+            if not cctx.fieldMsilTypes.containsKey(byPosKey) {
+              cctx.fieldMsilTypes.add(byPosKey, concreteFieldMsilTy)
             }
             if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
               cctx.fieldDeclaredNames.add(byPosKey, declaredName)
