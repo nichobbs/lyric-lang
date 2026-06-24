@@ -6868,6 +6868,12 @@ the whole compiler still type-checks and the compiler binary starts. The stage-2
 binary builds and starts (the Option blocker is gone); full stage-2 self-hosting
 remains gated by the separate parser bug.
 
+**UPDATE (superseded in part by D-progress-531):** "full stage-2 self-hosting
+remains gated by the separate parser bug" is no longer true. That parser bug was
+the per-package nullary-union-case `Instance`-singleton mis-detection (fixed in
+#4020); the stage-2 toolchain now runs and the stage-3 reproducibility fixpoint
+holds (101/101 closure DLLs + stdlib byte-identical). See D-progress-531.
+
 **Related:** D110, docs/22 §2, docs/34, docs/43.
 
 ---
