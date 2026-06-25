@@ -75,18 +75,27 @@ DLL="$OUT_DIR/ClosureZeroOverheadTestMsil.dll"
 [[ -f "$DLL" ]] || { echo "FATAL: compiled DLL not found at $DLL" >&2; exit 1; }
 
 # Find ildasm (the IL disassembler).
-ILDASM="$(command -v ildasm || true)"
-if [[ -z "$ILDASM" ]]; then
-  # Try to find it in the .NET SDK directory.
-  ILDASM="$(find "$DOTNET_ROOT"/sdk -name ildasm -type f 2>/dev/null | head -1 || true)"
+# Strategy: try command-v first (direct PATH), then SDK paths, then dotnet-ildasm tool.
+ILDASM=""
+
+# Attempt 1: Check PATH
+if ILDASM=$(command -v ildasm 2>/dev/null); then
+  : # found
+elif ILDASM=$(command -v ildasm.exe 2>/dev/null); then
+  : # found (Windows)
+# Attempt 2: Check .NET SDK directory structure
+elif [[ -n "$DOTNET_ROOT" ]] && [[ -d "$DOTNET_ROOT/sdk" ]]; then
+  ILDASM=$(find "$DOTNET_ROOT/sdk" -name "ildasm*" -type f 2>/dev/null | head -1)
+# Attempt 3: Try dotnet-ildasm tool
+elif ILDASM=$(command -v dotnet-ildasm 2>/dev/null); then
+  : # found
 fi
-if [[ -z "$ILDASM" ]]; then
-  # Try dotnet-ildasm tool (if installed as global tool).
-  ILDASM="$(command -v dotnet-ildasm || true)"
-fi
+
 if [[ -z "$ILDASM" ]]; then
   echo "ERROR: ildasm not found" >&2
-  echo "  install: dotnet tool install -g dotnet-ildasm" >&2
+  echo "  DOTNET_ROOT=$DOTNET_ROOT" >&2
+  echo "  install (Linux/macOS): dotnet tool install -g dotnet-ildasm" >&2
+  echo "  install (Windows): .NET SDK includes ildasm.exe in <DOTNET_ROOT>/sdk/<version>/bin/" >&2
   echo "[assert-no-box-msil] SKIP: cannot disassemble (ildasm not available)"
   exit 77  # skip code
 fi

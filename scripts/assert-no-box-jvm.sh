@@ -107,8 +107,11 @@ unzip -q "$JAR" -d "$EXTRACT_DIR" || true
 DISASM_FILE="$WORK_DIR/disasm.txt"
 echo "[assert-no-box-jvm] disassembling bytecode via javap"
 {
-  for classfile in $(find "$EXTRACT_DIR" -name "*.class" -type f); do
-    "$JAVAP" -c -private "$classfile" 2>/dev/null || true
+  find "$EXTRACT_DIR" -name "*.class" -type f | while read -r classfile; do
+    # Extract fully-qualified class name from file path
+    # e.g. classes/com/example/ClosureTest.class → com.example.ClosureTest
+    classname=$(echo "$classfile" | sed "s|^$EXTRACT_DIR/||" | sed 's/\.class$//' | tr '/' '.')
+    "$JAVAP" -c -private "$classname" 2>/dev/null || "$JAVAP" -c -private "$classfile" 2>/dev/null || true
   done
 } > "$DISASM_FILE" 2>&1 || true
 
