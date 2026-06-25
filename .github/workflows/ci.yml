@@ -367,12 +367,13 @@ jobs:
   # resulting IL/bytecode to count BOX instructions (MSIL) and boxing calls (JVM).
   #
   # At Stage 0, these jobs report baselines and exit with continue-on-error=true
-  # (EXPECT-FAIL CI status). At Stage 2+, when optimization lands, they will be
-  # marked as required gates (continue-on-error=false) and enforced to 0.
+  # Stage 2+ required gates: zero-boxing must be maintained (continue-on-error: false).
+  # These jobs verify that closure class synthesis avoids boxing overhead for primitive
+  # captures. Fails if any BOX instructions (MSIL) or valueOf calls (JVM) are found.
   #
   # Developers run these locally via:
-  #   scripts/assert-no-box-msil.sh ./bin/lyric 0  (Stage 0 baseline)
-  #   scripts/assert-no-box-jvm.sh ./bin/lyric 0   (Stage 0 baseline)
+  #   scripts/assert-no-box-msil.sh ./bin/lyric 2  (Stage 2 gate)
+  #   scripts/assert-no-box-jvm.sh ./bin/lyric 2   (Stage 2 gate)
   closure-zero-overhead-msil:
     runs-on: windows-latest
     needs: [build]
