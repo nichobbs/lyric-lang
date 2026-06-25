@@ -25702,3 +25702,44 @@ is the seed, `build_aot_binary()` can switch to the pure-Lyric path and
 
 **See also:** `docs/23-fsharp-shim-elimination.md` §"Remaining F#" entry for
 `Lyric.Cli.Aot`.
+
+### D-progress-535 — Epic #1877 Phase 2: Closure class synthesis for zero-overhead lambda captures
+
+Closure class synthesis (Epic #1877 Phase 2) synthesizes strongly-typed closure
+records with typed fields matching captured variables, eliminating the uniform
+`object[]` fallback and enabling zero-allocation captures for value types.
+
+**Closure analysis pre-passes.** Both MSIL and JVM backends identify mutable
+captures (vars that are mutated inside the closure) via `collectMutableVarsBlock`
+(JVM) and equivalent MSIL logic. This separates the concerns: which names appear
+in the closure body, and which of those need by-reference semantics.
+
+**Closure class generation.** `synthesizeClosureClassMsil` generates a record
+type with typed fields for each capture. For mutable captures, a typed array
+cell (`MArray[T]`) stores the value, enabling by-reference mutation without
+boxing the closure itself.
+
+**Hoisted cell slots.** Mutable captures are stored in strongly-typed array cells.
+The array element (not the array) holds the boxed wrapper (if needed). This
+design avoids boxing the entire closure when only a subset of captures are mutable.
+
+**Typed ldelem instructions.** Hoisted cell loads now emit correct MSIL instructions:
+- `ldelem.u1` for bool (i1)
+- `ldelem.u2` for char (u2, unsigned 16-bit)
+- `ldelem.i4` for int (i4)
+- `ldelem.ref` for reference types
+
+This ensures ECMA-335 compliance and proper ilverify verification.
+
+**Dual-target test corpus.** `closure_zero_overhead_self_test.l` (16 cases) exercises:
+primitive captures, escaping closures, by-ref mutations, multi-level nesting, and
+closure-returning-closure patterns. All cases run identically on both MSIL and JVM.
+
+**Decision log.** D113 records the design decisions for closure synthesis.
+
+**Related issues.**
+- #4183: Closure class synthesis wiring (resolved)
+- #4199: finishHoistedCellMsil stelem stack ordering (resolved)
+- #4211: MSIL bool/char ldelem instruction selection (resolved)
+- #4214: MLong/MDouble hoisted-var cell boxing (in progress)
+- Remaining: #4189 ✓, #4177 ✓, etc.
