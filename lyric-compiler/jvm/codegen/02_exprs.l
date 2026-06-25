@@ -1927,6 +1927,10 @@ func collectInLambdaNamesExpr(e: in Expr, acc: in List[String]): Unit {
       collectInLambdaNamesExpr(scr, acc)
       var ai = 0
       while ai < arms.count {
+        match arms[ai].guard {
+          case Some(guardExpr) -> collectInLambdaNamesExpr(guardExpr, acc)
+          case None -> ()
+        }
         collectInLambdaNamesOrdBlock(arms[ai].body, acc)
         ai = ai + 1
       }
@@ -2040,6 +2044,7 @@ func collectInLambdaNamesStmt(s: in Statement, acc: in List[String]): Unit {
         case None -> ()
       }
     }
+    case SInvariant(e) -> collectInLambdaNamesExpr(e, acc)
     case _ -> ()
   }
 }
