@@ -4520,7 +4520,7 @@ func canUseTypedArrayLoad(ty: in MsilType): Bool {
     case MInt -> true        // Use MLdelemI4
     case MLong -> true       // Use MLdelemI8
     case MDouble -> true     // Use MLdelemR8
-    case MBool -> true       // Use MLdelemI4
+    case MBool -> true       // Use MLdelemU1
     case MChar -> true       // Use MLdelemU2
     case MByte -> true       // Use MLdelemU1
     case MString -> true     // Use MLdelemRef
