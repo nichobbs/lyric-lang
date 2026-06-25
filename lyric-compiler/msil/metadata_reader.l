@@ -2988,33 +2988,3 @@ pub func dllNullaryInstanceInfo(dllPath: in String): InstanceFieldKind {
   }
 }
 // Return `path + /Lyric.Stdlib.Core.dll` when it exists, else "".
-func findCoreDllInDir(dir: in String): String {
-  if dir.length == 0 {
-    return ""
-  }
-  val p = Path.join(dir, "Lyric.Stdlib.Core.dll")
-  if File.fileExists(p) { p } else { "" }
-}
-
-// Walk up from `start` (max 32 hops) looking for `Path.join(start, rel)`
-// that contains `Lyric.Stdlib.Core.dll`.  Returns the DLL path or "".
-func walkUpForCoreDll(start: in String, rel: in String): String {
-  if start.length == 0 {
-    return ""
-  }
-  var dir = start
-  var hop = 0
-  while hop < 32 {
-    val p = findCoreDllInDir(Path.join(dir, rel))
-    if p.length > 0 {
-      return p
-    }
-    dir = Path.dirname(dir)
-    if dir == Path.dirname(dir) {
-      // Reached filesystem root
-      return ""
-    }
-    hop = hop + 1
-  }
-  ""
-}

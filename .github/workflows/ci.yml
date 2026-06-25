@@ -373,7 +373,7 @@ jobs:
   #   scripts/assert-no-box-msil.sh ./bin/lyric 0  (Stage 0 baseline)
   #   scripts/assert-no-box-jvm.sh ./bin/lyric 0   (Stage 0 baseline)
   closure-zero-overhead-msil:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     needs: [build]
     permissions:
       contents: read

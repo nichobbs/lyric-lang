@@ -3512,12 +3512,18 @@ pub func finishHoistedCellMsil(
   match arrayElemTokenOpt(cctx, elemTy) {
     case Some(elemToken) -> {
       // Typed array path: create 1-element array and store unboxed value.
-      // Stack precondition: (array-ref, value-copy, value)
-      // After this: array-ref is on stack, to be stored in cellSlot.
-      // Stack transformation:
-      //   Before: (array-ref, value-copy, value)
-      //   stelem.<type>: (array-ref)
-      insns.add(MStelem(typeToken = elemToken))
+      // Stack precondition: (array-ref, array-ref, value)
+      // The stelem instruction requires [array-ref, index, value] on the stack.
+      // The caller pushes [array-ref, array-ref, value], so we need to:
+      // 1. Store value in a temp to free stack space
+      // 2. Push index 0
+      // 3. Restore value from temp
+      // 4. Call stelem, leaving one array-ref on stack
+      val tempSlot = allocSlotMsil(fctx, "__finishCell_temp_" + toString(fctx.slotTicker.count), elemTy)
+      insns.add(MStloc(slot = tempSlot - fctx.paramCount))      // Pop value → [array-ref, array-ref]
+      insns.add(MLdcI4(v = 0))                                  // Push index → [array-ref, array-ref, 0]
+      insns.add(MLdloc(slot = tempSlot - fctx.paramCount))      // Push value → [array-ref, array-ref, 0, value]
+      insns.add(MStelem(typeToken = elemToken))                 // Pop 3, store → [array-ref]
       // Allocate cell slot with array type
       val arrayTy = match elemTy {
         case MInt -> MArray(elem = MInt)
@@ -17811,9 +17817,8 @@ func recordFieldMsilType(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Strin
 // Synthesize a __Closure_<i> record for a capturing lambda (Stage 1, #1877).
 // Creates one public field per captured variable with its original type.
 // The record is stored in cctx.lambdaClosureClasses for later registration.
-func synthesizeClosureClassMsil(cctx: in CodegenCtx, lambdaName: in String, pkgName: in String, capNames: in List[String], capTypes: in List[MsilType]): MRecord {
-  val closureIdx = cctx.lambdaTicker.count
-  val closureClassName = pkgName + ".__Closure_" + toString(closureIdx)
+func synthesizeClosureClassMsil(cctx: in CodegenCtx, lambdaName: in String, pkgName: in String, lambdaIdx: in Int, capNames: in List[String], capTypes: in List[MsilType]): MRecord {
+  val closureClassName = pkgName + ".__Closure_" + toString(lambdaIdx)
   val fields: List[MField] = newList()
   var fi = 0
   while fi < capNames.count {
@@ -17831,7 +17836,6 @@ func synthesizeClosureClassMsil(cctx: in CodegenCtx, lambdaName: in String, pkgN
     useDefaultCtor = false,
     generics = newList()
   )
-  cctx.lambdaClosureClasses.add(lambdaName, closure)
   closure
 }
 
