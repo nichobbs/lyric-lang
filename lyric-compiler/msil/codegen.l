@@ -2010,6 +2010,56 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
     ipi = ipi + 1
   }
 
+  // Pre-pass 0: register async SM function return types so that
+  // countSmFieldsMsil (called inline in Pass 1 for SM funcs) can accurately
+  // count awaiter fields for same-package async function calls.
+  // inferCallReturnTypePB / isTaskTypeMsil only need to know that a callee IS
+  // a Task — the inner T is irrelevant for counting — so we restrict this
+  // pre-pass to SM functions only.  Non-async and generator functions MUST
+  // wait for Pass 2 (when local enum types are already registered in
+  // cctx.enumTypeNames): calling typeExprToMsilCtx before enumTypeNames is
+  // populated resolves any local-enum type-arg as MClass instead of MInt,
+  // and since Pass 2's containsKey guard skips re-registration the wrong
+  // type persists, causing InvalidProgramException (#4187).
+  var pp0 = 0
+  while pp0 < file.items.count {
+    match file.items[pp0].kind {
+      case IFunc(decl) -> {
+        if decl.isAsync {
+          val isGen0 = funcBodyContainsYieldMsil(decl)
+          val isSm0 = not isGen0 and not hasExternTargetMsil(decl.annotations)
+          if isSm0 {
+            val fqn0 = pkgName + "." + decl.name
+            val arityKey0 = fqn0 + "/" + toString(decl.params.count)
+            if not cctx.funcRetTypes.containsKey(arityKey0) {
+              val bareRetTy0 = match decl.ret {
+                case Some(te) -> {
+                  val r = typeExprToMsilCtx(cctx, te, pkgName)
+                  if elementTypeByte(r) == 0 { MVoid } else { r }
+                }
+                case None -> MVoid
+              }
+              val retTy0 = if bareRetTy0 == MVoid {
+                MClassRef(typeRefCode = tdrTypeRef(cctx.trTask), clrFqn = "System.Threading.Tasks.Task")
+              } else {
+                val kfRetArgs0: List[MsilType] = newList()
+                kfRetArgs0.add(bareRetTy0)
+                MGenericInst(typeRefCode = tdrTypeRef(cctx.trTask1), headFqn = "System.Threading.Tasks.Task`1", typeArgs = kfRetArgs0)
+              }
+              cctx.funcRetTypes.add(arityKey0, retTy0)
+              if not cctx.funcRetTypes.containsKey(fqn0) {
+                cctx.funcRetTypes.add(fqn0, retTy0)
+              }
+            }
+          }
+        }
+      }
+      case _ -> {
+      }
+    }
+    pp0 = pp0 + 1
+  }
+
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -2792,8 +2842,29 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         registerEnumDeclMsil(cctx, pkgName, decl)
         fieldDefRow = fieldDefRow + 1 + decl.cases.count
       }
-      // IRangeType, IImpl: 0 MethodDef rows in non-MPFuncs.
-      // IConst, IVal, IFunc: handled below (go to MPFuncs, emitted last).
+      case IFunc(decl) -> {
+        // Async SM and generator classes are emitted as MPRecord items in source
+        // order (interleaved with IRecord items), so both FieldDef rows and
+        // MethodDef rows must be counted here in source order.  This keeps
+        // cctx.fieldTokens and cctx.recordCtorTokens correct for subsequent
+        // user-defined types: a record that appears after an SM or generator
+        // function in source order must account for the SM/generator class
+        // methods that precede its own .ctor in the MethodDef table.
+        // Pre-pass 0 above has already populated cctx.funcRetTypes so
+        // countSmFieldsMsil can resolve same-package awaiter types accurately.
+        val isGenP1 = decl.isAsync and funcBodyContainsYieldMsil(decl)
+        val isSmP1 = decl.isAsync and not isGenP1 and not hasExternTargetMsil(decl.annotations)
+        if isSmP1 {
+          fieldDefRow = fieldDefRow + countSmFieldsMsil(cctx, pkgName, decl)
+          // SM class emits .ctor (no-arg), MoveNext, SetStateMachine.
+          methodDefRow = methodDefRow + 3
+        } else if isGenP1 {
+          // Generator class emits 7 methods: .ctor, MoveNext, SetStateMachine,
+          // GetAsyncEnumerator, MoveNextAsync, get_Current, DisposeAsync.
+          methodDefRow = methodDefRow + 7
+        }
+      }
+      // IRangeType, IImpl, IConst, IVal: no FieldDef rows in the TypeDef section.
       case _ -> {
       }
     }
@@ -2841,59 +2912,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
     }
     pv = pv + 1
   }
-  // Phase B.0: Reserve MethodDef rows for synthesised SM classes.
-  // Each async func that uses SM synthesis (isAsync, no yield, no @externTarget)
-  // contributes 3 MethodDef rows emitted by MPRecord *before* MPFuncs:
-  //   .ctor (no-arg), MoveNext, SetStateMachine.
-  // These rows appear in the MethodDef table before the host-class .cctor and
-  // kickoff functions, so we must advance methodDefRow past them here so that
-  // funcTok for each kickoff (and main) points to the correct actual row.
-  var smClassCountPts = 0
-  var smkPts = 0
-  while smkPts < file.items.count {
-    match file.items[smkPts].kind {
-      case IFunc(decl) -> {
-        if decl.isAsync and not funcBodyContainsYieldMsil(decl) and not hasExternTargetMsil(decl.annotations) {
-          smClassCountPts = smClassCountPts + 1
-        }
-      }
-      case _ -> {
-      }
-    }
-    smkPts = smkPts + 1
-  }
-  methodDefRow = methodDefRow + smClassCountPts * 3
-  // Reserve MethodDef rows for synthesised generator classes (Phase 5, Epic #2070).
-  // Each async generator contributes 6 rows before MPFuncs:
-  //   .ctor (useDefaultCtor), MoveNext, SetStateMachine, GetAsyncEnumerator, MoveNextAsync, get_Current, DisposeAsync.
-  //
-  // Ordering note (#2466): this pre-scan reserves ALL SM rows then ALL generator rows,
-  // but codegenMPackage emits SM and generator MPRecord items in source-declaration order
-  // (interleaved).  The ordering mismatch is safe because addPackageTokens never assigns
-  // specific MethodDef tokens to individual SM/generator class methods — it only advances
-  // methodDefRow by the total count (smClassCount*3 + genClassCount*6) so that the
-  // IFunc kickoff token assignments start at the correct offset.  lowerMPackageWithCtx
-  // assigns the actual SM/generator method rows in the order it encounters MPRecord items,
-  // which is source order; the total reserved count is identical regardless of SM vs
-  // generator interleaving, so IFunc token assignments are unaffected.
-  var genClassCountPts = 0
-  var gkPts = 0
-  while gkPts < file.items.count {
-    match file.items[gkPts].kind {
-      case IFunc(decl) -> {
-        if decl.isAsync and funcBodyContainsYieldMsil(decl) {
-          genClassCountPts = genClassCountPts + 1
-        }
-      }
-      case _ -> {
-      }
-    }
-    gkPts = gkPts + 1
-  }
-  // 7 methods: .ctor, MoveNext, SetStateMachine, GetAsyncEnumerator, MoveNextAsync,
-  //            get_Current, DisposeAsync.
-  methodDefRow = methodDefRow + genClassCountPts * 7
   // Pass 2: MPFuncs — optional .cctor then IFunc items (in source order).
+  // Note: SM and generator class MethodDef rows are now counted inline in
+  // Pass 1 above (source order), so no separate post-pass bulk advance is needed.
   if hasValCctor {
     methodDefRow = methodDefRow + 1
   }
@@ -3085,26 +3106,6 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
       }
     }
     j = j + 1
-  }
-
-  // SM field-count pass: runs after Pass 2 so cctx.funcRetTypes is fully
-  // populated for within-package async functions.  collectAwaitTypesPhaseBMsil
-  // needs those return-type entries to count awaiter fields accurately; doing
-  // this count in the earlier SM pre-scan (before Pass 2) would undercount
-  // awaits on same-package async functions whose return types aren't registered
-  // until Pass 2 runs.
-  var smfk = 0
-  while smfk < file.items.count {
-    match file.items[smfk].kind {
-      case IFunc(decl) -> {
-        if decl.isAsync and not funcBodyContainsYieldMsil(decl) and not hasExternTargetMsil(decl.annotations) {
-          fieldDefRow = fieldDefRow + countSmFieldsMsil(cctx, pkgName, decl)
-        }
-      }
-      case _ -> {
-      }
-    }
-    smfk = smfk + 1
   }
 
   // Sync the persistent counters so a follow-up `addPackageTokens` call
