@@ -70,6 +70,9 @@ version = "0.0.1"
 [project]
 name = "ClosureZeroOverheadTestJvm"
 
+[project.packages]
+"ClosureZeroOverheadTestJvm" = "closure_test.l"
+
 [dependencies]
 Std = "*"
 EOF

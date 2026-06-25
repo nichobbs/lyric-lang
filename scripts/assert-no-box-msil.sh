@@ -55,6 +55,9 @@ version = "0.0.1"
 [project]
 name = "ClosureZeroOverheadTestMsil"
 
+[project.packages]
+"ClosureZeroOverheadTestMsil" = "closure_test.l"
+
 [dependencies]
 Std = "*"
 EOF
