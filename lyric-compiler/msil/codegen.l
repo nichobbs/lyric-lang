@@ -7261,8 +7261,8 @@ func emitCellAssignMsil(
         // Typed array: use ldelem.<type> directly
         match elemTy {
           case MInt -> insns.add(MLdelemI4)
-          case MBool -> insns.add(MLdelemI4)
-          case MChar -> insns.add(MLdelemI4)
+          case MBool -> insns.add(MLdelemU1)
+          case MChar -> insns.add(MLdelemU2)
           case MByte -> insns.add(MLdelemU1)
           case MLong -> insns.add(MLdelemI8)
           case MDouble -> insns.add(MLdelemR8)
