@@ -3509,51 +3509,60 @@ pub func finishHoistedCellMsil(
 ): Unit {
   // Determine if we can use a typed array for this element type.
   // If yes, use stelem.<type>; if no, fall back to List[object].
-  match arrayElemTokenOpt(cctx, elemTy) {
-    case Some(elemToken) -> {
-      // Typed array path: create 1-element array and store unboxed value.
-      // Stack precondition: (array-ref, array-ref, value)
-      // The stelem instruction requires [array-ref, index, value] on the stack.
-      // The caller pushes [array-ref, array-ref, value], so we need to:
-      // 1. Store value in a temp to free stack space
-      // 2. Push index 0
-      // 3. Restore value from temp
-      // 4. Call stelem, leaving one array-ref on stack
-      val tempSlot = allocSlotMsil(fctx, "__finishCell_temp_" + toString(fctx.slotTicker.count), elemTy)
-      insns.add(MStloc(slot = tempSlot - fctx.paramCount))      // Pop value → [array-ref, array-ref]
-      insns.add(MLdcI4(v = 0))                                  // Push index → [array-ref, array-ref, 0]
-      insns.add(MLdloc(slot = tempSlot - fctx.paramCount))      // Push value → [array-ref, array-ref, 0, value]
-      insns.add(MStelem(typeToken = elemToken))                 // Pop 3, store → [array-ref]
-      // Allocate cell slot with array type
-      val arrayTy = match elemTy {
-        case MInt -> MArray(MInt)
-        case MLong -> MArray(MLong)
-        case MDouble -> MArray(MDouble)
-        case MBool -> MArray(MBool)
-        case MChar -> MArray(MChar)
-        case MByte -> MArray(MByte)
-        case MString -> MArray(MString)
-        case MObject -> MArray(MObject)
-        case _ -> MObject  // Fallback (shouldn't reach here if arrayElemTokenOpt succeeded)
+  if canUseTypedArrayLoad(elemTy) {
+    match arrayElemTokenOpt(cctx, elemTy) {
+      case Some(elemToken) -> {
+        // Typed array path: create 1-element array and store unboxed value.
+        // Stack precondition: (array-ref, array-ref, value)
+        // The stelem instruction requires [array-ref, index, value] on the stack.
+        // The caller pushes [array-ref, array-ref, value], so we need to:
+        // 1. Store value in a temp to free stack space
+        // 2. Push index 0
+        // 3. Restore value from temp
+        // 4. Call stelem, leaving one array-ref on stack
+        val tempSlot = allocSlotMsil(fctx, "__finishCell_temp_" + toString(fctx.slotTicker.count), elemTy)
+        insns.add(MStloc(slot = tempSlot - fctx.paramCount))      // Pop value → [array-ref, array-ref]
+        insns.add(MLdcI4(v = 0))                                  // Push index → [array-ref, array-ref, 0]
+        insns.add(MLdloc(slot = tempSlot - fctx.paramCount))      // Push value → [array-ref, array-ref, 0, value]
+        insns.add(MStelem(typeToken = elemToken))                 // Pop 3, store → [array-ref]
+        // Allocate cell slot with array type
+        val arrayTy = match elemTy {
+          case MInt -> MArray(MInt)
+          case MBool -> MArray(MBool)
+          case MChar -> MArray(MChar)
+          case MByte -> MArray(MByte)
+          case MString -> MArray(MString)
+          case MObject -> MArray(MObject)
+          case _ -> MObject  // Fallback
+        }
+        val cellSlot = allocSlotMsil(fctx, name, arrayTy)
+        emitStoreSlot(insns, cellSlot, fctx.paramCount)
+        fctx.mutableLocals.add(name)
+        fctx.hoistedCellSlot.add(name, cellSlot)
+        fctx.hoistedCellType.add(name, elemTy)
       }
-      val cellSlot = allocSlotMsil(fctx, name, arrayTy)
-      emitStoreSlot(insns, cellSlot, fctx.paramCount)
-      fctx.mutableLocals.add(name)
-      fctx.hoistedCellSlot.add(name, cellSlot)
-      fctx.hoistedCellType.add(name, elemTy)
+      case None -> {
+        // Should not reach here since canUseTypedArrayLoad already filtered
+        boxIfNeededMsil(cctx, insns, elemTy)
+        insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
+        val cellSlot = allocSlotMsil(fctx, name, MObject)
+        emitStoreSlot(insns, cellSlot, fctx.paramCount)
+        fctx.mutableLocals.add(name)
+        fctx.hoistedCellSlot.add(name, cellSlot)
+        fctx.hoistedCellType.add(name, elemTy)
+      }
     }
-    case None -> {
-      // Fallback path for complex types: use List[object] (boxing required).
-      // Stack precondition: (List[object], List[object], value)
-      // This path is taken for user-defined types, generics, etc.
-      boxIfNeededMsil(cctx, insns, elemTy)
-      insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
-      val cellSlot = allocSlotMsil(fctx, name, MObject)
-      emitStoreSlot(insns, cellSlot, fctx.paramCount)
-      fctx.mutableLocals.add(name)
-      fctx.hoistedCellSlot.add(name, cellSlot)
-      fctx.hoistedCellType.add(name, elemTy)
-    }
+  } else {
+    // Fallback path for types that can't use typed arrays (Long, Double, complex types).
+    // Use List[object] (boxing required).
+    // Stack precondition: (List[object], List[object], value)
+    boxIfNeededMsil(cctx, insns, elemTy)
+    insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
+    val cellSlot = allocSlotMsil(fctx, name, MObject)
+    emitStoreSlot(insns, cellSlot, fctx.paramCount)
+    fctx.mutableLocals.add(name)
+    fctx.hoistedCellSlot.add(name, cellSlot)
+    fctx.hoistedCellType.add(name, elemTy)
   }
 }
 
@@ -4500,6 +4509,24 @@ func arrayElemTokenOpt(cctx: in CodegenCtx, e: in MsilType): Option[Int] {
   }
 }
 
+// Helper: Check if a type can be loaded from a typed array using available ldelem instructions.
+// The IR only supports MLdelemRef, MLdelemU1, and MLdelemI4, so Long and Double must fall back
+// to object[] (List-backed path). This restriction is temporary: once the IR adds MLdelemI8 and
+// MLdelemR8, this can be relaxed.
+func canUseTypedArrayLoad(ty: in MsilType): Bool {
+  match ty {
+    case MInt -> true
+    case MLong -> false      // No MLdelemI8 in current IR
+    case MDouble -> false    // No MLdelemR8 in current IR
+    case MBool -> true       // Use MLdelemI4
+    case MChar -> true       // Use MLdelemI4
+    case MByte -> true       // Use MLdelemU1
+    case MString -> true     // Use MLdelemRef
+    case MObject -> true     // Use MLdelemRef
+    case _ -> false
+  }
+}
+
 // Convert an `object` on the stack to `ty`: `unbox.any` for value types
 // (`Int`, `Bool`, …), `castclass` for reference types (string / user class /
 // closed generic), no-op for `object` itself.  Used when feeding a
@@ -5113,26 +5140,21 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           emitLoadVarMsil(fctx, insns, cellSlot)
           insns.add(MLdcI4(v = 0))
           // Check if we can use typed ldelem for this element type.
-          match arrayElemTokenOpt(cctx, elemTy) {
-            case Some(_) -> {
-              // Typed array: use ldelem.<type> directly (no unbox needed for value types).
-              match elemTy {
-                case MInt -> insns.add(MLdelemI4)
-                case MLong -> insns.add(MLdelemI8)
-                case MDouble -> insns.add(MLdelemR8)
-                case MBool -> insns.add(MLdelemI4)  // bool is i1, but ldelem.i4 works for i1
-                case MChar -> insns.add(MLdelemI4)  // char is u2, but ldelem.i4 works
-                case MByte -> insns.add(MLdelemU1)
-                case MString -> insns.add(MLdelemRef)
-                case MObject -> insns.add(MLdelemRef)
-                case _ -> insns.add(MLdelemRef)  // Fallback for unknown types
-              }
+          if canUseTypedArrayLoad(elemTy) {
+            // Typed array: use ldelem.<type> directly (no unbox needed for value types).
+            match elemTy {
+              case MInt -> insns.add(MLdelemI4)
+              case MBool -> insns.add(MLdelemI4)  // bool is i1, but ldelem.i4 works for i1
+              case MChar -> insns.add(MLdelemI4)  // char is u2, but ldelem.i4 works
+              case MByte -> insns.add(MLdelemU1)
+              case MString -> insns.add(MLdelemRef)
+              case MObject -> insns.add(MLdelemRef)
+              case _ -> insns.add(MLdelemRef)  // Fallback for unknown types
             }
-            case None -> {
-              // List[object] fallback: use get_Item and cast.
-              insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
-              castObjectToMsil(cctx, insns, elemTy)
-            }
+          } else {
+            // List[object] fallback: use get_Item and cast.
+            insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
+            castObjectToMsil(cctx, insns, elemTy)
           }
           return elemTy
         }
@@ -7154,16 +7176,21 @@ func emitCellAssignMsil(
       emitCellLoadMsil(fctx, insns, isCapture, idx)
       insns.add(MLdcI4(v = 0))
       // For compound ops, read current value based on cell type.
-      match arrayElemTokenOpt(cctx, elemTy) {
-        case Some(elemToken) -> {
-          // Typed array: use ldelem directly
-          insns.add(MLdelem(typeToken = elemToken))
+      if canUseTypedArrayLoad(elemTy) {
+        // Typed array: use ldelem.<type> directly
+        match elemTy {
+          case MInt -> insns.add(MLdelemI4)
+          case MBool -> insns.add(MLdelemI4)
+          case MChar -> insns.add(MLdelemI4)
+          case MByte -> insns.add(MLdelemU1)
+          case MString -> insns.add(MLdelemRef)
+          case MObject -> insns.add(MLdelemRef)
+          case _ -> insns.add(MLdelemRef)
         }
-        case None -> {
-          // List[object]: use get_Item + cast
-          insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
-          castObjectToMsil(cctx, insns, elemTy)
-        }
+      } else {
+        // List[object]: use get_Item + cast
+        insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
+        castObjectToMsil(cctx, insns, elemTy)
       }
       emitCompoundCombineMsil(cctx, fctx, insns, op, elemTy, value)
     }
