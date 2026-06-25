@@ -6243,8 +6243,18 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             buildFuncNCtorTok(cctx, nparams)
           }
           // Delegate target: Phase 2 instantiates a __Closure_N record with typed fields;
-          // falls back to Phase 1 object[] for outer-scope captures not yet supported.
-          if caps.count > 0 {
+          // falls back to Phase 1 object[] for outer-scope captures (nested lambdas).
+          // Check if any captures are outer-scope (not supported in Phase 2 yet).
+          var hasOuterScopeCaptures = false
+          var capCheckI = 0
+          while capCheckI < caps.count and not hasOuterScopeCaptures {
+            if fctx.captureNameToIndex.containsKey(caps[capCheckI]) {
+              hasOuterScopeCaptures = true
+            }
+            capCheckI = capCheckI + 1
+          }
+
+          if caps.count > 0 and not hasOuterScopeCaptures {
             // Phase 2: Instantiate the typed closure class for this lambda.
             // The closure class has typed fields __f<i> for each captured variable.
             val closureClassFqn = fctx.pkgName + ".__Closure_" + toString(idx)
@@ -6255,16 +6265,8 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               insns.add(MDup)
               val capName = caps[capStI]
 
-              // Load the captured value.
-              // Note: For outer-scope captures (from outer lambda's object[]), Phase 2 does not yet
-              // support them — they remain in Phase 1 object[] approach. This is a known limitation
-              // tracked in epic #1877 Stage 1 (no outer-scope captures in initial closure test corpus).
-              if fctx.captureNameToIndex.containsKey(capName) {
-                // Outer-scope capture: not yet supported in Phase 2.
-                // This path would need to unbox the object[] element to the field type, which
-                // requires type information at codegen time that is not available. Deferred to Phase 2.1.
-                panic("Msil.Codegen: Phase 2 does not yet support outer-scope captures in closure classes (captured name '" + capName + "')")
-              } else if nameListContains(capCells, capName) {
+              // Load the captured value (local capture or hoisted cell).
+              if nameListContains(capCells, capName) {
                 // Hoisted var cell: load the cell reference directly.
                 // The closure field stores the cell (a typed array), not the value.
                 match mapGet(fctx.hoistedCellSlot, capName) {
@@ -6283,6 +6285,69 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               // Set the closure field with the captured value.
               val fieldName = "__f" + toString(capStI)
               insns.add(MStfldByName(ownerFqn = closureClassFqn, fieldName = fieldName))
+              capStI = capStI + 1
+            }
+          } else if caps.count > 0 and hasOuterScopeCaptures {
+            // Phase 1: Fall back to object[] for nested lambdas with outer-scope captures.
+            // This is a temporary limitation of Phase 2 (#4229). Nested lambdas that capture
+            // variables from outer functions use the legacy object[] approach.
+
+            // Allocate object[] array for captures
+            insns.add(MLdcI4(v = caps.count))
+            insns.add(MNewarr(elemTypeToken = cctx.tokObject))
+
+            // Store each capture in the object[]
+            var capStI = 0
+            while capStI < caps.count {
+              insns.add(MDup)
+              insns.add(MLdcI4(v = capStI))
+              val capName = caps[capStI]
+
+              // Load the capture value
+              if fctx.captureNameToIndex.containsKey(capName) {
+                // Outer-scope capture: load from parent's __caps[index]
+                match mapGet(fctx.slots, "__caps") {
+                  case Some(capsSlot) -> {
+                    emitLoadVarMsil(fctx, insns, capsSlot)
+                    match mapGet(fctx.captureNameToIndex, capName) {
+                      case Some(parentIdx) -> {
+                        insns.add(MLdcI4(v = parentIdx))
+                        insns.add(MLdelemRef)
+                      }
+                      case None -> panic("Msil.Codegen ICE: capture index not found")
+                    }
+                  }
+                  case None -> panic("Msil.Codegen ICE: parent __caps array not found for nested lambda capture")
+                }
+              } else if nameListContains(capCells, capName) {
+                // Hoisted var cell: box the cell reference
+                match mapGet(fctx.hoistedCellSlot, capName) {
+                  case Some(s) -> emitLoadVarMsil(fctx, insns, s)
+                  case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.hoistedCellSlot")
+                }
+              } else {
+                // Local capture: box the value
+                match mapGet(fctx.slots, capName) {
+                  case Some(s) -> emitLoadVarMsil(fctx, insns, s)
+                  case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots")
+                }
+                match mapGet(fctx.types, capName) {
+                  case Some(t) -> {
+                    match t {
+                      case MInt -> insns.add(MBox(typeToken = cctx.tokInt))
+                      case MLong -> insns.add(MBox(typeToken = cctx.tokLong))
+                      case MFloat -> insns.add(MBox(typeToken = cctx.tokFloat))
+                      case MDouble -> insns.add(MBox(typeToken = cctx.tokDouble))
+                      case MBool -> insns.add(MBox(typeToken = cctx.tokBool))
+                      case MChar -> insns.add(MBox(typeToken = cctx.tokChar))
+                      case _ -> ()
+                    }
+                  }
+                  case None -> ()
+                }
+              }
+
+              insns.add(MStelem(typeToken = cctx.tokObject))
               capStI = capStI + 1
             }
           } else {
