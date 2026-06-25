@@ -637,7 +637,12 @@ test "#4187: SM function between records executes correctly" {
 }
 
 // ── #4266: SM function returning a local enum / distinct type ─────────────────
-union Direction { North; South; East; West }
+union Direction {
+  case North
+  case South
+  case East
+  case West
+}
 
 async func asyncGetDirection(n: in Int): Direction {
   if n == 0 { North } else if n == 1 { South } else if n == 2 { East } else { West }
@@ -659,7 +664,12 @@ async func asyncDoubleDistance(n: in Int): Distance {
   d * 2
 }
 
-union SmallInt { Zero; One; Two; Many }
+union SmallInt {
+  case Zero
+  case One
+  case Two
+  case Many
+}
 
 async func asyncToSmallInt(n: in Int): SmallInt {
   match n {
