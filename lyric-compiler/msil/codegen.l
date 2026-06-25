@@ -6212,7 +6212,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         cctx.lambdaCaptureCells.add(lname, capCells)
         // Phase 2: Synthesize the closure class for this capturing lambda.
         // The closure class has typed fields for each captured variable.
-        val closureClass = synthesizeClosureClassMsil(cctx, lname, fctx.pkgName, caps, capTypes)
+        val closureClass = synthesizeClosureClassMsil(cctx, lname, fctx.pkgName, idx, caps, capTypes)
         cctx.lambdaClosureClasses.add(lname, closureClass)
       }
       // FQN key (#1183 Phase 2): lambdas are package-scoped, registered by
