@@ -635,3 +635,82 @@ test "#4187: SM function between records executes correctly" {
   val result = await smAfterRecord(5)
   assertEqualInt(result, 10, "smAfterRecord(5) = 10")
 }
+
+// ── #4266: SM function returning a local enum / distinct type ─────────────────
+union Direction {
+  case North
+  case South
+  case East
+  case West
+}
+
+async func asyncGetDirection(n: in Int): Direction {
+  if n == 0 { North } else if n == 1 { South } else if n == 2 { East } else { West }
+}
+
+async func asyncDirectionRoundTrip(n: in Int): Direction {
+  val d = await asyncGetDirection(n)
+  d
+}
+
+alias Distance = Int
+
+async func asyncGetDistance(n: in Int): Distance {
+  n * 100
+}
+
+async func asyncDoubleDistance(n: in Int): Distance {
+  val d = await asyncGetDistance(n)
+  d * 2
+}
+
+union SmallInt {
+  case Zero
+  case One
+  case Two
+  case Many
+}
+
+async func asyncToSmallInt(n: in Int): SmallInt {
+  match n {
+    case 0 -> Zero
+    case 1 -> One
+    case 2 -> Two
+    case _ -> Many
+  }
+}
+
+test "#4266: SM func returning local union type (no await)" {
+  val d = await asyncGetDirection(0)
+  assertTrue(match d { case North -> true; case _ -> false }, "asyncGetDirection(0) = North")
+  val d2 = await asyncGetDirection(3)
+  assertTrue(match d2 { case West -> true; case _ -> false }, "asyncGetDirection(3) = West")
+}
+
+test "#4266: SM func returning local union type (with await)" {
+  val d = await asyncDirectionRoundTrip(1)
+  assertTrue(match d { case South -> true; case _ -> false }, "asyncDirectionRoundTrip(1) = South")
+  val d2 = await asyncDirectionRoundTrip(2)
+  assertTrue(match d2 { case East -> true; case _ -> false }, "asyncDirectionRoundTrip(2) = East")
+}
+
+test "#4266: SM func returning local alias type (no await)" {
+  val dist = await asyncGetDistance(3)
+  assertEqualInt(dist, 300, "asyncGetDistance(3) = 300")
+}
+
+test "#4266: SM func returning local alias type (with await)" {
+  val dist = await asyncDoubleDistance(4)
+  assertEqualInt(dist, 800, "asyncDoubleDistance(4): 4*100*2 = 800")
+}
+
+test "#4266: SM func returning local union type: match all arms" {
+  val z = await asyncToSmallInt(0)
+  val o = await asyncToSmallInt(1)
+  val tw = await asyncToSmallInt(2)
+  val m = await asyncToSmallInt(99)
+  assertTrue(match z { case Zero -> true; case _ -> false }, "asyncToSmallInt(0) = Zero")
+  assertTrue(match o { case One -> true; case _ -> false }, "asyncToSmallInt(1) = One")
+  assertTrue(match tw { case Two -> true; case _ -> false }, "asyncToSmallInt(2) = Two")
+  assertTrue(match m { case Many -> true; case _ -> false }, "asyncToSmallInt(99) = Many")
+}

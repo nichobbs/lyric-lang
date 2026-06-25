@@ -2010,17 +2010,14 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
     ipi = ipi + 1
   }
 
-  // Pre-pass 0: register async SM function return types so that
-  // countSmFieldsMsil (called inline in Pass 1 for SM funcs) can accurately
-  // count awaiter fields for same-package async function calls.
-  // inferCallReturnTypePB / isTaskTypeMsil only need to know that a callee IS
-  // a Task — the inner T is irrelevant for counting — so we restrict this
-  // pre-pass to SM functions only.  Non-async and generator functions MUST
-  // wait for Pass 2 (when local enum types are already registered in
-  // cctx.enumTypeNames): calling typeExprToMsilCtx before enumTypeNames is
-  // populated resolves any local-enum type-arg as MClass instead of MInt,
-  // and since Pass 2's containsKey guard skips re-registration the wrong
-  // type persists, causing InvalidProgramException (#4187).
+  // Pre-pass 0: seed funcRetTypes with a Task placeholder for every async SM
+  // function so that countSmFieldsMsil (called inline in Pass 1) can resolve
+  // same-package awaiter types via isTaskTypeMsil.  The inner T is irrelevant
+  // for field counting; Pass 2 always overwrites these placeholders with the
+  // correct Task / Task<T> type once enumTypeNames is fully populated.
+  // (Calling typeExprToMsilCtx here would produce MClass instead of MInt for
+  // local-enum return types, corrupting awaiter TypeSpec / MemberRef signatures
+  // if the Pass 2 overwrite is missing.)
   var pp0 = 0
   while pp0 < file.items.count {
     match file.items[pp0].kind {
@@ -2032,20 +2029,12 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
             val fqn0 = pkgName + "." + decl.name
             val arityKey0 = fqn0 + "/" + toString(decl.params.count)
             if not cctx.funcRetTypes.containsKey(arityKey0) {
-              val bareRetTy0 = match decl.ret {
-                case Some(te) -> {
-                  val r = typeExprToMsilCtx(cctx, te, pkgName)
-                  if elementTypeByte(r) == 0 { MVoid } else { r }
-                }
-                case None -> MVoid
-              }
-              val retTy0 = if bareRetTy0 == MVoid {
-                MClassRef(typeRefCode = tdrTypeRef(cctx.trTask), clrFqn = "System.Threading.Tasks.Task")
-              } else {
-                val kfRetArgs0: List[MsilType] = newList()
-                kfRetArgs0.add(bareRetTy0)
-                MGenericInst(typeRefCode = tdrTypeRef(cctx.trTask1), headFqn = "System.Threading.Tasks.Task`1", typeArgs = kfRetArgs0)
-              }
+              // Guard is always false in practice: each package compilation starts with a
+              // fresh cctx (funcRetTypes empty), and cross-package stdlib/restored registrations
+              // use external FQNs that cannot match this pkgName-qualified key.  Kept defensive.
+              // isTaskTypeMsil only needs a Task typeRefCode — inner T is irrelevant for
+              // countSmFieldsMsil.  Pass 2 always overwrites SM entries after enumTypeNames is ready.
+              val retTy0 = MClassRef(typeRefCode = tdrTypeRef(cctx.trTask), clrFqn = "System.Threading.Tasks.Task")
               cctx.funcRetTypes.add(arityKey0, retTy0)
               if not cctx.funcRetTypes.containsKey(fqn0) {
                 cctx.funcRetTypes.add(fqn0, retTy0)
@@ -3006,10 +2995,14 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           }
         }
         // Mirror funcTokens' arity-qualified key + bare alias so the call site's lookup picks the matching overload's return type.
-        if not cctx.funcRetTypes.containsKey(arityKey) {
+        // SM functions always overwrite the pre-pass 0 Task placeholder with the
+        // correct Task/Task<T> now that enumTypeNames is fully populated.
+        if isSm or not cctx.funcRetTypes.containsKey(arityKey) {
+          if cctx.funcRetTypes.containsKey(arityKey) { cctx.funcRetTypes.remove(arityKey) }
           cctx.funcRetTypes.add(arityKey, retTy)
         }
-        if not cctx.funcRetTypes.containsKey(fqn) {
+        if isSm or not cctx.funcRetTypes.containsKey(fqn) {
+          if cctx.funcRetTypes.containsKey(fqn) { cctx.funcRetTypes.remove(fqn) }
           cctx.funcRetTypes.add(fqn, retTy)
         }
         // Record the declared parameter MsilTypes so call sites can thread an
@@ -6125,30 +6118,18 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // Lambdas that return void use System.Action; those with non-void returns use System.Func.
           val retType = mapGet(cctx.funcRetTypes, lambdaKey)
           val returnsVoid = match retType { case Some(MVoid) -> true; case None -> true; case _ -> false }
-          // Phase 1 strongly-typed lambdas: delegate parameter types match HOF propagation.
-          // Only use types propagated by the type-checker when the lambda is passed to a HOF (T)->R.
-          // Fallback to object-based delegates for generic code compatibility (explicit annotations
-          // are preserved in the method signature, but don't override the delegate TypeSpec to avoid
-          // breaking HOF compatibility when annotations exist outside HOF context - see #4077).
-          var delegateParamTypes = match mapGet(cctx.lambdaParamTypes, lname) { case Some(ts) -> ts; case None -> newList() }
-          // Delegate type selection for Phase 1 lambdas: use Func/Action with actual types.
-          // All lambdas use Func<T1,...,Tn,TResult> or Action<T1,...,Tn> regardless of shape.
-          // Note #4077 (deferred to Phase 2): Predicate[T] and Comparison[T] special-casing
-          // requires context-driven delegate selection at the call site (whether target is FFI
-          // extern delegate vs. Lyric HOF), which is not available during lambda codegen.
-          // Shape-based detection alone breaks HOF: { x: Int -> x > 0 } passed to HOF (T)->Bool
-          // would emit Predicate<Int> but HOF invokes via Func<Int,Bool>::Invoke, causing
-          // InvalidCastException. Proper fix: track at type-check time whether lambda target
-          // is extern delegate; pass that context to codegen. See issue #4077 for details.
+          // All lambdas use an all-object delegate TypeSpec so the ctor, castclass, and
+          // callvirt Invoke all reference the same TypeSpec row (#4266). Typed delegate
+          // instantiation (Predicate<T>, Comparison<T>, context-driven Func<T,R>) is
+          // deferred to Phase 2 — see #4077.
           val ctorTok = if returnsVoid {
             if nparams == 0 {
               cctx.tokActionCtor
             } else {
-              buildActionNCtorTokWithTypes(cctx, nparams, delegateParamTypes)
+              buildActionNCtorTok(cctx, nparams)
             }
           } else {
-            val actualRetType = match retType { case Some(t) -> t; case None -> MObject }
-            buildFuncNCtorTokWithTypes(cctx, nparams, delegateParamTypes, actualRetType)
+            buildFuncNCtorTok(cctx, nparams)
           }
           // Delegate target: Phase 2 tries to instantiate a __Closure<N> record if it
           // exists; falls back to Phase 1 object[] for backwards compatibility.
@@ -12381,42 +12362,6 @@ func buildActionNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
   0x0A000000 + mrRow
 }
 
-// Build a newobj token for System.Action`(nparams)<T1,...,Tn>::.ctor(object, nativeint)
-// with actual parameter types instead of hardcoded object.
-// Used by Phase 1 strongly-typed lambdas to match the method signature.
-func buildActionNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType]): Int {
-  // If we have fewer actual types than expected params, fall back to the object-based version
-  if paramTypes.count < nparams {
-    return buildActionNCtorTok(cctx, nparams)
-  }
-  val trN = internActionTypeRef(cctx, nparams)
-  // TypeDefOrRef coded index for a TypeRef at row R: (R << 2) | 1
-  val codedIdx = (trN * 4) + 1
-  val actualArgs: List[MsilType] = newList()
-  var ai = 0
-  while ai < nparams {
-    // Use object-based parameters for HOF delegate compatibility.
-    // Propagated types influence the lambda method signature but not the delegate type.
-    // The delegate must match the HOF parameter type, which is object-based at the MSIL level.
-    actualArgs.add(MObject)
-    ai = ai + 1
-  }
-  val gblob = buildGenericInstBlob(codedIdx, actualArgs)
-  // Phase 1: Action delegates always use MObject parameters for compatibility.
-  // The cache key is deterministic based on arity alone since blob content
-  // (MObject params) does not vary per call site. This avoids duplicate TypeSpec
-  // rows with identical blob content (issue #4102).
-  val specKey = "ActionSpec_typed_" + toString(nparams)
-  val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
-  val ctorPs: List[MsilType] = newList()
-  ctorPs.add(MObject)
-  ctorPs.add(MNativeInt)
-  val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
-  // MemberRef cache key is arity-based for Phase 1 (MObject params)
-  val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "action_ctor_typed_" + toString(nparams), ctorSig)
-  0x0A000000 + mrRow
-}
-
 // Get or create a TypeRef for System.Func`(nparams+1) where nparams is the lambda parameter count.
 // Reuses the actionTypeRefs map with a "func_N" key to avoid collisions.
 func internFuncTypeRef(cctx: in CodegenCtx, nparams: in Int): Int {
@@ -12470,51 +12415,6 @@ func buildFuncNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
   ctorPs.add(MNativeInt)
   val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
   val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "func_ctor_" + toString(nparams), ctorSig)
-  0x0A000000 + mrRow
-}
-
-// Build a newobj token for System.Func`(nparams+1)<object,...,object,TResult>::.ctor(object, nativeint)
-// with object-based parameter types but actual return type.
-// Phase 1 limitation: delegate must remain object-based for HOF parameter type compatibility,
-// even when HOF type propagation provides concrete parameter types (those are deferred to Phase 2).
-// The return type uses actual type to match the lambda method signature.
-func buildFuncNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType], retType: in MsilType): Int {
-  // If we have fewer actual types than expected params, fall back to the object-based version
-  if paramTypes.count < nparams {
-    return buildFuncNCtorTok(cctx, nparams)
-  }
-  val trN = internFuncTypeRef(cctx, nparams)
-  // TypeDefOrRef coded index for a TypeRef at row R: (R << 2) | 1
-  val codedIdx = (trN * 4) + 1
-  val actualArgs: List[MsilType] = newList()
-  var ai = 0
-  while ai < nparams {
-    // Use object-based parameters for HOF delegate compatibility.
-    // Propagated types influence the lambda method signature but not the delegate type.
-    // The delegate must match the HOF parameter type, which is object-based at the MSIL level.
-    actualArgs.add(MObject)
-    ai = ai + 1
-  }
-  actualArgs.add(retType)
-  val gblob = buildGenericInstBlob(codedIdx, actualArgs)
-  // FIXED #4060/#4088: Cache key must include both parameter types and return type to avoid collision.
-  // Two lambdas with same param count but different types or returns must be distinct:
-  // e.g. {x: Int -> x} (Func<Int,Int>) vs {x: Int -> x > 0} (Func<Int,Bool>).
-  var typeKeySuffix = ""
-  var ti = 0
-  while ti < paramTypes.count and ti < nparams {
-    typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(paramTypes[ti])
-    ti = ti + 1
-  }
-  typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(retType)
-  val specKey = "FuncSpec_typed_" + toString(nparams) + typeKeySuffix
-  val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
-  val ctorPs: List[MsilType] = newList()
-  ctorPs.add(MObject)
-  ctorPs.add(MNativeInt)
-  val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
-  // FIXED #4066: MemberRef cache key must also include type suffix to avoid collision
-  val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "func_ctor_typed_" + toString(nparams) + typeKeySuffix, ctorSig)
   0x0A000000 + mrRow
 }
 
