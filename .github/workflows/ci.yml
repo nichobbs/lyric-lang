@@ -140,9 +140,11 @@ jobs:
         #
         # Use the v0.3.0 release binary as stage-0 (the self-hosted emitter is
         # bug-free and compiles the self-hosted compiler correctly).
+        # v0.3.5 is known to have a corrupted release artifact, so we pin to v0.3.0.
         working-directory: ${{ github.workspace }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LYRIC_BOOTSTRAP_VERSION: v0.3.0
         run: ./scripts/bootstrap.sh --stage 1
 
       # Track A A1.4 (#860) deleted the F# user-facing CLI; the AOT
