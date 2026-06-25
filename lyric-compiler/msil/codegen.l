@@ -14517,6 +14517,24 @@ func collectAwaitTypesExprPB(
         si = si + 1
       }
     }
+    case ERange(bound) -> {
+      match bound {
+        case RBHalfOpen(lo, hi) -> {
+          collectAwaitTypesExprPB(cctx, pkgName, lo, acc, spawnNms, spawnTys)
+          collectAwaitTypesExprPB(cctx, pkgName, hi, acc, spawnNms, spawnTys)
+        }
+        case RBClosed(lo, hi) -> {
+          collectAwaitTypesExprPB(cctx, pkgName, lo, acc, spawnNms, spawnTys)
+          collectAwaitTypesExprPB(cctx, pkgName, hi, acc, spawnNms, spawnTys)
+        }
+        case RBLowerOpen(hi) -> collectAwaitTypesExprPB(cctx, pkgName, hi, acc, spawnNms, spawnTys)
+        case RBUpperOpen(lo) -> collectAwaitTypesExprPB(cctx, pkgName, lo, acc, spawnNms, spawnTys)
+      }
+    }
+    case EAssign(target, _, value) -> {
+      collectAwaitTypesExprPB(cctx, pkgName, target, acc, spawnNms, spawnTys)
+      collectAwaitTypesExprPB(cctx, pkgName, value, acc, spawnNms, spawnTys)
+    }
     case _ -> {
     }
   }

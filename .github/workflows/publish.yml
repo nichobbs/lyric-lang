@@ -667,6 +667,7 @@ jobs:
     needs: [create-release, build-stdlib-bundle, build-standalone, publish-nuget, publish-ecosystem]
     if: >-
       always() &&
+      needs.create-release.result == 'success' &&
       (needs.build-stdlib-bundle.result == 'success' || needs.build-stdlib-bundle.result == 'skipped') &&
       (needs.build-standalone.result == 'success' || needs.build-standalone.result == 'skipped') &&
       (needs.publish-nuget.result == 'success' || needs.publish-nuget.result == 'skipped') &&
