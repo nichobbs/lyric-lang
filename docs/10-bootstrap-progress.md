@@ -25623,3 +25623,45 @@ the PR review landed after the initial merge:
   launcher beside the DLL (no apphost template located, or the file was removed),
   `lyric run` still falls back to `dotnet exec` but now prints a warning naming
   the cause, rather than degrading silently.
+
+### D-progress-533 — #4030 resolved: HTTP/async stdlib surface bundled into single Lyric.Stdlib.dll
+
+The two-part follow-up to D111's HTTP/async hybrid carve-out (#4030) is now
+complete.
+
+**Root-cause 1 — `lyric.full.toml` ordering.** `Std.Http` was listed before
+`Std.HttpHost` in the Tier 4.5 block. Because `addPackageTokens` pre-scans all
+packages in manifest order before `codegenMPackage` processes them, `Std.Http`'s
+Phase A `collectAwaitTypesPhaseBMsil` ran first — counting the cross-package
+`EAwait` points in `http.l` — while `Std.HttpHost`'s `@externTarget` async
+bodies had not yet been registered. The allocated `resumeLabels` array was
+shorter than the Phase B label-access index, producing `ArgumentOutOfRangeException`
+at runtime. Fixed by placing `Std.HttpHost` before `Std.Http` (commit 89a34be).
+
+**Root-cause 2 — `@asyncLocal` synthesis.** `lyric-stdlib/std/_kernel/task.l`
+declares `@asyncLocal val __ambientSlot: AsyncLocal[CancellationToken] = ()`.
+`isLiteralI4ExprMsilWithEnv` returned `true` for `ELiteral(LUnit)`, so the
+`addPackageTokens` pre-scan counted no `.cctor` row and never registered the field
+in `staticValTokens`. The field was therefore emitted as `null` at runtime. The
+`codegenMPackage` IVal branch now detects `@asyncLocal` annotations, skips the
+literal-init fast path, and synthesises a `newobj AsyncLocal<object>..ctor()`
+instruction for the `.cctor`. The `emitGenericExternMember` erases generic type
+arguments to `object` for TypeSpec dispatch; `get_Value()` on `AsyncLocal<object>`
+returns the erased `!0` (object). When the Lyric-declared return type is a value
+type (`MValueTypeRef`), `unbox.any` is now emitted — the `boxTypeRef` helper was
+extended to handle the `MValueTypeRef` case (commit 45a88ab, issue #2972).
+
+**Await-in-try.** The mode checker's V0012 check (`checkAwaitInTry` in
+`modechecker_check.l`) already rejects `await` inside `try`/`catch`/`finally`
+blocks in async functions, so the CLR protected-region constraint (switch dispatch
+cannot branch into a protected region) is enforced at compile time. A stale TODO
+comment in `codegen.l` that said "mode checker does not reject await-in-try yet"
+was corrected to reflect the true state (#2737 is fully covered by V0012).
+
+**Net effect.** `Lyric.Stdlib.dll` — the single bundle produced by
+`lyric.full.toml` — now includes the full HTTP/async surface (`Std.Task`,
+`Std.HttpHost`, `Std.Http`, `Std.HttpServer`, `Std.Rest`), completing the D111
+intent. The per-package hybrid denylist in `stdlibAssemblyName` can be retired
+once the stdlib passes a full self-hosted rebuild (tracked in docs/41 §R7 /
+#2592). `scripts/stage-selfhosted-stdlib.sh` header was updated when the HTTP/async
+surface was added to the bundle.

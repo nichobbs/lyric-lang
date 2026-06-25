@@ -1913,7 +1913,13 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         constEnv.add(decl.name, isLit)
       }
       case IVal(decl) -> {
-        val isLit = isLiteralI4ExprMsilWithEnv(decl.init, constEnv)
+        // @asyncLocal vals require a .cctor (new AsyncLocal<object>()) even though
+        // their declared init is `()` (unit literal), which isLiteralI4ExprMsilWithEnv
+        // would otherwise classify as a literal (no .cctor).  Force isLit=false so
+        // the .cctor MethodDef row is reserved and the field is registered as a
+        // static-val slot (#2972).
+        val isAsyncLocal0 = hasAnnotationMsil(file.items[pi].annotations, "asyncLocal")
+        val isLit = if isAsyncLocal0 { false } else { isLiteralI4ExprMsilWithEnv(decl.init, constEnv) }
         if not isLit {
           hasValCctor = true
         }
@@ -2818,7 +2824,10 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         // synthetic name to avoid a row-count mismatch if the invariant is ever
         // violated.  Each IVal item allocates exactly one FieldDef row.
         val valName = match decl.pattern.kind { case PBinding(n, _) -> n; case _ -> "__val_" + toString(fieldDefRow) }
-        val isLit = isLiteralI4ExprMsilWithEnv(decl.init, constEnv)
+        // @asyncLocal: unit-literal init must not suppress the field token (same
+        // reasoning as the first pre-scan above — see isAsyncLocal0 comment).
+        val isAsyncLocalPv = hasAnnotationMsil(file.items[pv].annotations, "asyncLocal")
+        val isLit = if isAsyncLocalPv { false } else { isLiteralI4ExprMsilWithEnv(decl.init, constEnv) }
         if not isLit {
           val fieldTok = 0x04000000 + fieldDefRow
           val valTy = match decl.ty { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MObject }
@@ -3076,6 +3085,26 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
       }
     }
     j = j + 1
+  }
+
+  // SM field-count pass: runs after Pass 2 so cctx.funcRetTypes is fully
+  // populated for within-package async functions.  collectAwaitTypesPhaseBMsil
+  // needs those return-type entries to count awaiter fields accurately; doing
+  // this count in the earlier SM pre-scan (before Pass 2) would undercount
+  // awaits on same-package async functions whose return types aren't registered
+  // until Pass 2 runs.
+  var smfk = 0
+  while smfk < file.items.count {
+    match file.items[smfk].kind {
+      case IFunc(decl) -> {
+        if decl.isAsync and not funcBodyContainsYieldMsil(decl) and not hasExternTargetMsil(decl.annotations) {
+          fieldDefRow = fieldDefRow + countSmFieldsMsil(cctx, pkgName, decl)
+        }
+      }
+      case _ -> {
+      }
+    }
+    smfk = smfk + 1
   }
 
   // Sync the persistent counters so a follow-up `addPackageTokens` call
@@ -4369,7 +4398,12 @@ func findImportedFqn(cctx: in CodegenCtx, imports: in List[String], funcName: in
   ""
 }
 
-// Return the TypeRef row for boxing the given value type.
+// Return the TypeRef row for boxing (or unboxing) a value type.
+// MValueTypeRef encodes an extern BCL value type; its typeRefCode is a
+// TypeDefOrRef coded index (tdrTypeRef(row) = row*4+1), so the raw row is
+// (code-1)/4, which gives the 0x01000000-token the JIT needs for box/unbox.any.
+// MValueTypeRef is only produced by internFfiTypeRef, which always allocates a
+// TypeRef row (never TypeDef or TypeSpec), so the TypeRef-kind formula is safe.
 func boxTypeRef(cctx: in CodegenCtx, ty: in MsilType): Int {
   match ty {
     case MInt -> cctx.trInt32
@@ -4378,6 +4412,7 @@ func boxTypeRef(cctx: in CodegenCtx, ty: in MsilType): Int {
     case MBool -> cctx.trBoolean
     case MChar -> cctx.trChar
     case MByte -> cctx.trByte
+    case MValueTypeRef(code, _) -> (code - 1) / 4
     case _ -> cctx.lctx.trObject
   }
 }
@@ -5682,10 +5717,12 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     // Non-Task values (blocking @externTarget async, or already-resolved results)
     // are passed through as-is: the value is already on the stack.
     //
-    // TODO(#2737): await inside a try/catch/finally region is unsupported —
-    // the CLR protected region would span a suspend/resume point — and causes
-    // InvalidProgramException at runtime.  The mode checker does not reject it
-    // yet; V0012 covers return-in-try but not await-in-try.
+    // Guard: the mode checker (V0012) rejects `await` inside a try/catch/finally
+    // region in an async function before codegen runs, so the emit paths below never
+    // see an await inside a CLR protected region (#2737).  Exception: `@axiom`
+    // bodies bypass V0012.  Their awaits target `@externTarget async` functions
+    // that return T (not Task<T>), so `isTaskTypeMsil` is false and no SM resume
+    // label is emitted inside the CLR protected region.
     case EAwait(inner) -> {
       val taskTy = lowerExprMsil(cctx, fctx, insns, inner)
       if not isTaskTypeMsil(cctx, taskTy) {
@@ -12793,6 +12830,7 @@ func emitGenericExternMember(
   r: in FfiResolved,
   resolvedFqn: in String,
   paramTypes: in List[MsilType],
+  lyricRetTy: in MsilType,
 ): Bool {
   val arity = genericArityOfName(r.typeName)
   if arity <= 0 {
@@ -13022,6 +13060,16 @@ func emitGenericExternMember(
           insns.add(MLdloc(slot = resIdx))
         }
       }
+      // When the BCL return is a type-variable (STVar, erased to `object` by the
+      // GENERICINST TypeSpec) and the Lyric wrapper declares a BCL value-type return
+      // (e.g. `CancellationToken` from `AsyncLocal`1.get_Value()`), the erased
+      // `object` on the stack must be unboxed back to the concrete value type before
+      // `ret` — otherwise the CLR would refuse a valuetype-returning MethodDef that
+      // leaves a reference on the stack (#2972).
+      val retIsTypeVar = match memberRet { case MTypeVar(_) -> true; case _ -> false }
+      if retIsTypeVar and isValueTypeReceiverMsil(lyricRetTy) {
+        insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, lyricRetTy)))
+      }
       true
     }
   }
@@ -13172,7 +13220,7 @@ func emitExternTargetBody(
       // erases the Lyric `ConcurrentDict[K,V]` value to `MObject`) and marshals
       // `out`/value-type arguments across the erasure boundary (#3392).
       if isKnownFqn and contains(r.typeName, "`") {
-        if emitGenericExternMember(cctx, fctx, insns, decl, r, resolvedFqn, paramTypes) {
+        if emitGenericExternMember(cctx, fctx, insns, decl, r, resolvedFqn, paramTypes, retTy) {
           insns.add(MRet)
           return true
         }
@@ -14243,7 +14291,27 @@ func inferCallReturnTypePB(
           val lastSeg = path.segments[path.segments.count - 1]
           val candidates: List[String] = newList()
           if path.segments.count >= 2 {
-            candidates.add(joinSegsMsil(path.segments, "."))
+            val joinedPath = joinSegsMsil(path.segments, ".")
+            candidates.add(joinedPath)
+            // Alias resolution: `Alias.func(args)` where `import Pkg as Alias`.
+            // Phase B resolves the alias via pkgImportAliases; Phase A must too
+            // or await counts diverge and resumeLabels index faults.
+            if path.segments.count == 2 {
+              match mapGet(cctx.pkgImportAliases, pkgName + "/" + path.segments[0]) {
+                case Some(realPkg) -> candidates.add(realPkg + "." + path.segments[1])
+                case None -> ()
+              }
+            }
+            match mapGet(cctx.pkgImports, pkgName) {
+              case Some(imps) -> {
+                var pfxI = 0
+                while pfxI < imps.count {
+                  candidates.add(imps[pfxI] + "." + joinedPath)
+                  pfxI = pfxI + 1
+                }
+              }
+              case None -> ()
+            }
           }
           candidates.add(pkgName + "." + lastSeg)
           match mapGet(cctx.pkgImports, pkgName) {
@@ -14270,6 +14338,66 @@ func inferCallReturnTypePB(
             ci = ci + 1
           }
           result
+        }
+        // `TypeName.method(recv, args)` parses as
+        // ECall(EMember(EPath(["TypeName"]), "method"), args) — the parser
+        // builds left-to-right postfix so the `.method` becomes an EMember
+        // node before the call `(` is consumed.  Reconstruct the qualified
+        // name from the receiver path and field, then resolve via funcRetTypes
+        // using the same import-prefix expansion as the EPath multi-segment
+        // branch above, so Phase A counts the await correctly and allocates
+        // the SM resume label that Phase B will consume.
+        case EMember(recv, field) -> {
+          match recv.kind {
+            case EPath(recvPath) -> {
+              val cnt = args.count
+              val joinedPath = joinSegsMsil(recvPath.segments, ".") + "." + field
+              val candidates: List[String] = newList()
+              candidates.add(joinedPath)
+              // Alias resolution: `Alias.method(args)` where `import Pkg as Alias`.
+              // Phase B uses pkgImportAliases to resolve the alias; Phase A must do
+              // the same or await counts diverge and resumeLabels index faults.
+              if recvPath.segments.count == 1 {
+                match mapGet(cctx.pkgImportAliases, pkgName + "/" + recvPath.segments[0]) {
+                  case Some(realPkg) -> candidates.add(realPkg + "." + field)
+                  case None -> ()
+                }
+              }
+              match mapGet(cctx.pkgImports, pkgName) {
+                case Some(imps) -> {
+                  var pfxI = 0
+                  while pfxI < imps.count {
+                    candidates.add(imps[pfxI] + "." + joinedPath)
+                    pfxI = pfxI + 1
+                  }
+                }
+                case None -> ()
+              }
+              candidates.add(pkgName + "." + field)
+              match mapGet(cctx.pkgImports, pkgName) {
+                case Some(imps) -> {
+                  val imp = findImportedFqn(cctx, imps, field)
+                  if imp.length > 0 {
+                    candidates.add(imp)
+                  }
+                }
+                case None -> ()
+              }
+              var result = MObject
+              var ci = 0
+              var done = false
+              while ci < candidates.count and not done {
+                val c = candidates[ci]
+                match mapGet(cctx.funcRetTypes, c + "/" + toString(cnt)) {
+                  case Some(ty) -> { result = ty; done = true }
+                  case None -> match mapGet(cctx.funcRetTypes, c) { case Some(ty) -> { result = ty; done = true }; case None -> () }
+                }
+                ci = ci + 1
+              }
+              result
+            }
+            case _ -> MObject
+          }
         }
         case _ -> MObject
       }
@@ -14347,6 +14475,13 @@ func collectAwaitTypesExprPB(
         ami = ami + 1
       }
     }
+    // Phase B's `lowerExprMsil` descends into these expression kinds, so Phase A
+    // must count any awaits nested inside them or the resumeLabels index runs past
+    // the pre-allocated size and faults.
+    case ETry(inner) -> collectAwaitTypesExprPB(cctx, pkgName, inner, acc, spawnNms, spawnTys)
+    case EPropagate(inner) -> collectAwaitTypesExprPB(cctx, pkgName, inner, acc, spawnNms, spawnTys)
+    case EMember(recv, _) -> collectAwaitTypesExprPB(cctx, pkgName, recv, acc, spawnNms, spawnTys)
+    case EPrefix(_, op) -> collectAwaitTypesExprPB(cctx, pkgName, op, acc, spawnNms, spawnTys)
     case _ -> {
     }
   }
@@ -14442,6 +14577,407 @@ func collectAwaitTypesPhaseBMsil(cctx: in CodegenCtx, pkgName: in String, decl: 
     case Some(body) -> match body { case FBBlock(blk) -> collectAwaitTypesBlockPB(cctx, pkgName, blk, result, spawnNms, spawnTys); case FBExpr(e) -> collectAwaitTypesExprPB(cctx, pkgName, e, result, spawnNms, spawnTys) }
   }
   result
+}
+
+// SM-field pre-scan helpers: count the promoted-local and spill SM fields that
+// Phase B synthesizeAsyncSmPhaseBMsil will create for a given async function,
+// without performing full IL codegen.  Used by addPackageTokens to advance
+// fieldDefRow past the SM-class fields that precede the package's regular types.
+
+func countPromotedLocalsExpr(
+  cctx: in CodegenCtx,
+  pkgName: in String,
+  hoistedNms: in List[String],
+  e: in Expr,
+  seen: in List[String],
+): Unit {
+  match e.kind {
+    case EBlock(b) -> countPromotedLocalsBlock(cctx, pkgName, hoistedNms, b, seen)
+    case EUnsafe(b) -> countPromotedLocalsBlock(cctx, pkgName, hoistedNms, b, seen)
+    case EParen(inner) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, inner, seen)
+    case EIf(c, t, el, _) -> {
+      countPromotedLocalsExpr(cctx, pkgName, hoistedNms, c, seen)
+      match t {
+        case EOBBlock(b) -> countPromotedLocalsBlock(cctx, pkgName, hoistedNms, b, seen)
+        case EOBExpr(e2) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, e2, seen)
+      }
+      match el {
+        case Some(eb) -> {
+          match eb {
+            case EOBBlock(b) -> countPromotedLocalsBlock(cctx, pkgName, hoistedNms, b, seen)
+            case EOBExpr(e2) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, e2, seen)
+          }
+        }
+        case None -> ()
+      }
+    }
+    case EMatch(scr, arms) -> {
+      countPromotedLocalsExpr(cctx, pkgName, hoistedNms, scr, seen)
+      var ami = 0
+      while ami < arms.count {
+        match arms[ami].body {
+          case EOBBlock(b) -> countPromotedLocalsBlock(cctx, pkgName, hoistedNms, b, seen)
+          case EOBExpr(e2) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, e2, seen)
+        }
+        ami = ami + 1
+      }
+    }
+    case ECall(callee, args) -> {
+      countPromotedLocalsExpr(cctx, pkgName, hoistedNms, callee, seen)
+      var ai = 0
+      while ai < args.count {
+        val argE = match args[ai] { case CAPositional(ex) -> ex; case CANamed(_, ex, _) -> ex }
+        countPromotedLocalsExpr(cctx, pkgName, hoistedNms, argE, seen)
+        ai = ai + 1
+      }
+    }
+    case EBinop(_, l, r) -> {
+      countPromotedLocalsExpr(cctx, pkgName, hoistedNms, l, seen)
+      countPromotedLocalsExpr(cctx, pkgName, hoistedNms, r, seen)
+    }
+    case EPrefix(_, op) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, op, seen)
+    case EMember(recv, _) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, recv, seen)
+    case EAwait(inner) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, inner, seen)
+    case ESpawn(inner) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, inner, seen)
+    case ETry(inner) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, inner, seen)
+    case EPropagate(inner) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, inner, seen)
+    case EAssign(lhs, _, rhs) -> {
+      countPromotedLocalsExpr(cctx, pkgName, hoistedNms, lhs, seen)
+      countPromotedLocalsExpr(cctx, pkgName, hoistedNms, rhs, seen)
+    }
+    case ETuple(elems) -> {
+      var ti = 0
+      while ti < elems.count {
+        countPromotedLocalsExpr(cctx, pkgName, hoistedNms, elems[ti], seen)
+        ti = ti + 1
+      }
+    }
+    case EList(elems) -> {
+      var li = 0
+      while li < elems.count {
+        countPromotedLocalsExpr(cctx, pkgName, hoistedNms, elems[li], seen)
+        li = li + 1
+      }
+    }
+    case EIndex(recv, indices) -> {
+      countPromotedLocalsExpr(cctx, pkgName, hoistedNms, recv, seen)
+      var idi = 0
+      while idi < indices.count {
+        countPromotedLocalsExpr(cctx, pkgName, hoistedNms, indices[idi], seen)
+        idi = idi + 1
+      }
+    }
+    case EInterpolated(segs) -> {
+      var ipi = 0
+      while ipi < segs.count {
+        match segs[ipi] {
+          case ISExpr(ex) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, ex, seen)
+          case ISText(_, _) -> ()
+        }
+        ipi = ipi + 1
+      }
+    }
+    case ETypeApp(inner, _) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, inner, seen)
+    case ERange(bound) -> {
+      match bound {
+        case RBClosed(lo, hi) -> {
+          countPromotedLocalsExpr(cctx, pkgName, hoistedNms, lo, seen)
+          countPromotedLocalsExpr(cctx, pkgName, hoistedNms, hi, seen)
+        }
+        case RBHalfOpen(lo, hi) -> {
+          countPromotedLocalsExpr(cctx, pkgName, hoistedNms, lo, seen)
+          countPromotedLocalsExpr(cctx, pkgName, hoistedNms, hi, seen)
+        }
+        case RBLowerOpen(hi) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, hi, seen)
+        case RBUpperOpen(lo) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, lo, seen)
+      }
+    }
+    case ELambda(_, _) -> ()
+    case _ -> ()
+  }
+}
+
+func countPromotedLocalsBlock(
+  cctx: in CodegenCtx,
+  pkgName: in String,
+  hoistedNms: in List[String],
+  blk: in Block,
+  seen: in List[String],
+): Unit {
+  var i = 0
+  while i < blk.statements.count {
+    countPromotedLocalsStmt(cctx, pkgName, hoistedNms, blk.statements[i], seen)
+    i = i + 1
+  }
+}
+
+func countPromotedLocalsStmt(
+  cctx: in CodegenCtx,
+  pkgName: in String,
+  hoistedNms: in List[String],
+  stmt: in Statement,
+  seen: in List[String],
+): Unit {
+  match stmt.kind {
+    case SLocal(binding) -> {
+      match binding {
+        case LBLet(name, _, init) -> {
+          // No hoistedNms guard needed: Phase B always calls
+          // phaseBRegisterAndSyncLocal for LBLet unconditionally (the let
+          // handler has no isHoisted branch).  Immutable let bindings are
+          // never put in heap cells when captured by lambdas — they are closed
+          // over by value — so the original binding still needs an SM field to
+          // survive suspension regardless of whether it appears in hoistedNms.
+          if not nameListContains(seen, name) {
+            seen.add(name)
+          }
+          countPromotedLocalsExpr(cctx, pkgName, hoistedNms, init, seen)
+        }
+        case LBVar(name, tyOpt, initOpt) -> {
+          match initOpt {
+            case Some(init) -> {
+              if not nameListContains(hoistedNms, name) {
+                if not nameListContains(seen, name) {
+                  seen.add(name)
+                }
+              }
+              countPromotedLocalsExpr(cctx, pkgName, hoistedNms, init, seen)
+            }
+            case None -> {
+              val ty = match tyOpt { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MInt }
+              if ty != MVoid and not nameListContains(hoistedNms, name) {
+                if not nameListContains(seen, name) {
+                  seen.add(name)
+                }
+              }
+            }
+          }
+        }
+        case LBVal(_, _, init) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, init, seen)
+      }
+    }
+    case SExpr(e) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, e, seen)
+    case SReturn(valOpt) -> {
+      match valOpt {
+        case Some(e) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, e, seen)
+        case None -> ()
+      }
+    }
+    case SAssign(_, _, v) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, v, seen)
+    case SThrow(e) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, e, seen)
+    case SWhile(_, cond, body) -> {
+      countPromotedLocalsExpr(cctx, pkgName, hoistedNms, cond, seen)
+      countPromotedLocalsBlock(cctx, pkgName, hoistedNms, body, seen)
+    }
+    case SFor(_, _, iter, body) -> {
+      countPromotedLocalsExpr(cctx, pkgName, hoistedNms, iter, seen)
+      countPromotedLocalsBlock(cctx, pkgName, hoistedNms, body, seen)
+    }
+    case SLoop(_, body) -> countPromotedLocalsBlock(cctx, pkgName, hoistedNms, body, seen)
+    case SScope(_, body) -> countPromotedLocalsBlock(cctx, pkgName, hoistedNms, body, seen)
+    case SDefer(body) -> countPromotedLocalsBlock(cctx, pkgName, hoistedNms, body, seen)
+    case STry(body, catches, finally_) -> {
+      countPromotedLocalsBlock(cctx, pkgName, hoistedNms, body, seen)
+      var ci = 0
+      while ci < catches.count {
+        countPromotedLocalsBlock(cctx, pkgName, hoistedNms, catches[ci].body, seen)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> countPromotedLocalsBlock(cctx, pkgName, hoistedNms, fb, seen)
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
+func countSpillsExpr(e: in Expr): Int {
+  match e.kind {
+    case EBinop(op, l, r) -> {
+      val spillHere = match op {
+        case BEq | BNeq | BLt | BGt | BLte | BGte | BAdd | BSub | BMul | BDiv | BMod | BXor -> {
+          if exprContainsAwaitMsil(r) { 1 } else { 0 }
+        }
+        case _ -> 0
+      }
+      spillHere + countSpillsExpr(l) + countSpillsExpr(r)
+    }
+    case EBlock(b) -> countSpillsBlock(b)
+    case EUnsafe(b) -> countSpillsBlock(b)
+    case EParen(inner) -> countSpillsExpr(inner)
+    case EIf(c, t, el, _) -> {
+      var n = countSpillsExpr(c)
+      n = n + match t { case EOBBlock(b) -> countSpillsBlock(b); case EOBExpr(e2) -> countSpillsExpr(e2) }
+      n = n + match el {
+        case Some(eb) -> match eb { case EOBBlock(b) -> countSpillsBlock(b); case EOBExpr(e2) -> countSpillsExpr(e2) }
+        case None -> 0
+      }
+      n
+    }
+    case EMatch(scr, arms) -> {
+      var n = countSpillsExpr(scr)
+      var ami = 0
+      while ami < arms.count {
+        n = n + match arms[ami].body { case EOBBlock(b) -> countSpillsBlock(b); case EOBExpr(e2) -> countSpillsExpr(e2) }
+        ami = ami + 1
+      }
+      n
+    }
+    case ECall(callee, args) -> {
+      var n = countSpillsExpr(callee)
+      var ai = 0
+      while ai < args.count {
+        val argE = match args[ai] { case CAPositional(ex) -> ex; case CANamed(_, ex, _) -> ex }
+        n = n + countSpillsExpr(argE)
+        ai = ai + 1
+      }
+      n
+    }
+    case EPrefix(_, op) -> countSpillsExpr(op)
+    case EMember(recv, _) -> countSpillsExpr(recv)
+    case EAwait(inner) -> countSpillsExpr(inner)
+    case ESpawn(inner) -> countSpillsExpr(inner)
+    case ETry(inner) -> countSpillsExpr(inner)
+    case EPropagate(inner) -> countSpillsExpr(inner)
+    case EAssign(lhs, _, rhs) -> countSpillsExpr(lhs) + countSpillsExpr(rhs)
+    case ETuple(elems) -> {
+      var n = 0
+      var ti = 0
+      while ti < elems.count {
+        n = n + countSpillsExpr(elems[ti])
+        ti = ti + 1
+      }
+      n
+    }
+    case EList(elems) -> {
+      var n = 0
+      var li = 0
+      while li < elems.count {
+        n = n + countSpillsExpr(elems[li])
+        li = li + 1
+      }
+      n
+    }
+    case EIndex(recv, indices) -> {
+      var n = countSpillsExpr(recv)
+      var idi = 0
+      while idi < indices.count {
+        n = n + countSpillsExpr(indices[idi])
+        idi = idi + 1
+      }
+      n
+    }
+    case EInterpolated(segs) -> {
+      var n = 0
+      var ipi = 0
+      while ipi < segs.count {
+        match segs[ipi] {
+          case ISExpr(ex) -> { n = n + countSpillsExpr(ex) }
+          case ISText(_, _) -> ()
+        }
+        ipi = ipi + 1
+      }
+      n
+    }
+    case ETypeApp(inner, _) -> countSpillsExpr(inner)
+    case ERange(bound) -> {
+      match bound {
+        case RBClosed(lo, hi) -> countSpillsExpr(lo) + countSpillsExpr(hi)
+        case RBHalfOpen(lo, hi) -> countSpillsExpr(lo) + countSpillsExpr(hi)
+        case RBLowerOpen(hi) -> countSpillsExpr(hi)
+        case RBUpperOpen(lo) -> countSpillsExpr(lo)
+      }
+    }
+    case ELambda(_, _) -> 0
+    case _ -> 0
+  }
+}
+
+func countSpillsBlock(blk: in Block): Int {
+  var n = 0
+  var i = 0
+  while i < blk.statements.count {
+    n = n + countSpillsStmt(blk.statements[i])
+    i = i + 1
+  }
+  n
+}
+
+func countSpillsStmt(stmt: in Statement): Int {
+  match stmt.kind {
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(_, _, init) -> countSpillsExpr(init)
+        case LBLet(_, _, init) -> countSpillsExpr(init)
+        case LBVar(_, _, initOpt) -> match initOpt { case Some(init) -> countSpillsExpr(init); case None -> 0 }
+      }
+    }
+    case SExpr(e) -> countSpillsExpr(e)
+    case SReturn(valOpt) -> match valOpt { case Some(e) -> countSpillsExpr(e); case None -> 0 }
+    case SAssign(_, _, v) -> countSpillsExpr(v)
+    case SThrow(e) -> countSpillsExpr(e)
+    case SWhile(_, c, b) -> countSpillsExpr(c) + countSpillsBlock(b)
+    case SFor(_, _, i, b) -> countSpillsExpr(i) + countSpillsBlock(b)
+    case SLoop(_, b) -> countSpillsBlock(b)
+    case SScope(_, b) -> countSpillsBlock(b)
+    case SDefer(b) -> countSpillsBlock(b)
+    case STry(b, catches, finally_) -> {
+      var n = countSpillsBlock(b)
+      var ci = 0
+      while ci < catches.count {
+        n = n + countSpillsBlock(catches[ci].body)
+        ci = ci + 1
+      }
+      n = n + match finally_ { case None -> 0; case Some(fb) -> countSpillsBlock(fb) }
+      n
+    }
+    case _ -> 0
+  }
+}
+
+// Count the total number of FieldDef rows a Phase-B SM class will emit for
+// `decl`.  Mirrors the field layout of synthesizeAsyncSmPhaseBMsil:
+//   base     = 2 (__state, __builder) + params.count
+//   awCount  = number of awaiter fields (one per distinct await task type)
+//   promoted = deduplicated LBLet/LBVar names that get hoisted to SM fields
+//   spills   = BinopKind spill fields created when RHS of a binop contains await
+func countSmFieldsMsil(cctx: in CodegenCtx, pkgName: in String, decl: in FunctionDecl): Int {
+  val base = 2 + decl.params.count
+  if not funcBodyContainsAwaitMsil(decl) {
+    return base
+  }
+  val awCount = collectAwaitTypesPhaseBMsil(cctx, pkgName, decl).count
+  val hoistedNms: List[String] = newList()
+  match decl.body {
+    case Some(body) -> {
+      match body {
+        case FBBlock(blk) -> collectInLambdaNamesBlock(blk, hoistedNms)
+        case FBExpr(e) -> collectInLambdaNamesExpr(e, hoistedNms)
+      }
+    }
+    case None -> ()
+  }
+  val seen: List[String] = newList()
+  match decl.body {
+    case Some(body) -> {
+      match body {
+        case FBBlock(blk) -> countPromotedLocalsBlock(cctx, pkgName, hoistedNms, blk, seen)
+        case FBExpr(e) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, e, seen)
+      }
+    }
+    case None -> ()
+  }
+  val spillCount = match decl.body {
+    case Some(body) -> {
+      match body {
+        case FBBlock(blk) -> countSpillsBlock(blk)
+        case FBExpr(e) -> countSpillsExpr(e)
+      }
+    }
+    case None -> 0
+  }
+  base + awCount + seen.count + spillCount
 }
 
 // Register a local as a promoted SM field (first time only) and emit a store
@@ -21867,19 +22403,52 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
       }
       case IVal(decl) -> {
         // Module-level runtime value → static readonly field initialized in .cctor.
-        val initFctx = makeFuncCtxMsil(pkgName, pkgName, "__val_init", 0, MVoid)
-        val initInsns: List[MInsn] = newList()
-        val valTy = lowerExprMsil(cctx, initFctx, initInsns, decl.init)
-        val fieldTy = match decl.ty { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> valTy }
+        val isAsyncLocalVal = hasAnnotationMsil(item.annotations, "asyncLocal")
         val fieldName = match decl.pattern.kind {
           case PBinding(name, _) -> name
           case _ -> "__val_" + toString(staticFields.count)
         }
+        val initFctx = makeFuncCtxMsil(pkgName, pkgName, "__val_init", 0, MVoid)
+        val initInsns: List[MInsn] = newList()
+        val valTy = if isAsyncLocalVal {
+          // @asyncLocal: synthesise `new AsyncLocal<object>()` instead of running
+          // lowerExprMsil on the unit-literal stub.  Register the BCL TypeRef eagerly
+          // here (before .cctor lowering) so MNewobjGenericByName / findTypeRefRowByName
+          // can find it, then build the TypeSpec-parented .ctor MemberRef (#2972).
+          val alAsmName = assemblyForTypeMsil(cctx, "System.Threading.AsyncLocal`1")
+          val alTrRow = internFfiTypeRef(cctx, alAsmName, "System.Threading", "AsyncLocal`1")
+          val alObjArgs: List[MsilType] = newList()
+          alObjArgs.add(MObject)
+          val alTsBlob = buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(alTrRow), alObjArgs)
+          val alTsKey = "asynclocal_cctor_ts_" + pkgName + "_" + fieldName
+          val alTsRow = ctxAddTypeSpec(cctx.lctx, alTsKey, alTsBlob)
+          val alCtorParams: List[MsilType] = newList()
+          val alCtorSig = buildInstanceMethodSig(alCtorParams, MVoid)
+          val alMrKey = "asynclocal_cctor_mr_" + pkgName + "_" + fieldName
+          val alMrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, alTsRow, ".ctor", alMrKey, alCtorSig)
+          initInsns.add(MNewobj(ctorToken = 0x0A000000 + alMrRow))
+          MObject
+        } else {
+          lowerExprMsil(cctx, initFctx, initInsns, decl.init)
+        }
+        val fieldTy = match decl.ty { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> valTy }
         // When the init is a single ldc.i4 (literal Int), inline into constValues
         // and pass an empty initInsns to avoid generating a .cctor for this field.
         // All uses of the val in this package will emit ldc.i4 directly.
+        //
+        // Similarly, when the init is `()` (unit literal), lowerExprMsil emits a
+        // single MLdNull.  Reference fields default to null in .NET, so MLdNull +
+        // stsfld is redundant — suppress the .cctor for this case too.  This keeps
+        // the Phase-3 addPackageTokens pre-scan (which treats LUnit as a literal and
+        // never counts a .cctor row) in sync with Phase-4 emit, preventing a
+        // MethodDef-row-count discrepancy that would shift all later packages' tokens
+        // in a multi-package bundle.
+        //
+        // @asyncLocal vals intentionally bypass this block: their initInsns holds the
+        // MNewobj instruction, not MLdNull, and addPackageTokens already reserved the
+        // .cctor row with isLit=false (see isAsyncLocal0 comment in first pre-scan).
         var sfInitInsns = initInsns
-        if initInsns.count == 1 {
+        if not isAsyncLocalVal and initInsns.count == 1 {
           match initInsns[0] {
             case MLdcI4(v) -> {
               // Guard with containsKey: same first-wins semantics as IConst above.
@@ -21894,6 +22463,22 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
               if not cctx.constValues.containsKey(fieldName) {
                 cctx.constValues.add(fieldName, v)
                 sfInitInsns = newList()
+              }
+            }
+            case MLdNull -> {
+              // Unit literal `()` → MLdNull: null is the .NET default for reference
+              // fields, so no .cctor needed (consistent with addPackageTokens treating
+              // LUnit as a literal).  Guard on the source expression so that any
+              // hypothetical future expression that also lowers to MLdNull (but for
+              // which Phase 3 did count a .cctor) does not accidentally suppress it.
+              match decl.init.kind {
+                case ELiteral(lit) -> {
+                  match lit {
+                    case LUnit -> { sfInitInsns = newList() }
+                    case _ -> { }
+                  }
+                }
+                case _ -> { }
               }
             }
             case _ -> {
@@ -23706,6 +24291,7 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
             // non-generic fields) in fieldVarIdx so lowerPatternBindMsil can
             // recover the concrete bound-variable type without byte-level access.
             var fieldVarIdx = -1
+            val fieldTyExpr = match field { case UFNamed(_, ty, _) -> ty; case UFPos(ty, _) -> ty }
             val fieldSig = match field {
               case UFNamed(_, ty, _) -> {
                 val seg = match ty.kind {
@@ -23718,10 +24304,10 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
                       fieldVarIdx = varIdx
                       buildGenericParamFieldSig(varIdx)
                     }
-                    case None -> buildFieldSig(MObject)
+                    case None -> buildFieldSig(typeExprToMsilCtx(cctx, ty, packageName))
                   }
                 } else {
-                  buildFieldSig(MObject)
+                  buildFieldSig(typeExprToMsilCtx(cctx, ty, packageName))
                 }
               }
               case UFPos(ty, _) -> {
@@ -23735,13 +24321,14 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
                       fieldVarIdx = varIdx
                       buildGenericParamFieldSig(varIdx)
                     }
-                    case None -> buildFieldSig(MObject)
+                    case None -> buildFieldSig(typeExprToMsilCtx(cctx, ty, packageName))
                   }
                 } else {
-                  buildFieldSig(MObject)
+                  buildFieldSig(typeExprToMsilCtx(cctx, ty, packageName))
                 }
               }
             }
+            val concreteFieldMsilTy = if fieldVarIdx >= 0 { MObject } else { typeExprToMsilCtx(cctx, fieldTyExpr, packageName) }
             val sigKey = "stdlib_field_" + ctorKey + "_" + declaredName
             val fieldMrRow = ctxAddMemberRef(cctx.lctx, caseRow, declaredName, sigKey, fieldSig)
             val fieldTok = 0x0A000000 + fieldMrRow
@@ -23755,6 +24342,9 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
             if not cctx.fieldVarIndices.containsKey(byNameKey) {
               cctx.fieldVarIndices.add(byNameKey, fieldVarIdx)
             }
+            if not cctx.fieldMsilTypes.containsKey(byNameKey) {
+              cctx.fieldMsilTypes.add(byNameKey, concreteFieldMsilTy)
+            }
             val byPosKey = ctorKey + "/field" + toString(fi)
             if not cctx.fieldTokens.containsKey(byPosKey) {
               cctx.fieldTokens.add(byPosKey, fieldTok)
@@ -23764,6 +24354,9 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
             }
             if not cctx.fieldVarIndices.containsKey(byPosKey) {
               cctx.fieldVarIndices.add(byPosKey, fieldVarIdx)
+            }
+            if not cctx.fieldMsilTypes.containsKey(byPosKey) {
+              cctx.fieldMsilTypes.add(byPosKey, concreteFieldMsilTy)
             }
             if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
               cctx.fieldDeclaredNames.add(byPosKey, declaredName)
@@ -24033,15 +24626,7 @@ func stdlibAssemblyName(packageName: in String): String {
     i = i + 1
   }
   if head == "Std" {
-    // HYBRID (D111): the HTTP/async surface stays PER-PACKAGE.  The self-hosted
-    // emitter cannot yet bundle these async-`Task`/`Result`-heavy packages into
-    // the single `output = "single"` assembly (Phase A undercounts cross-package
-    // `match await` and the bundled `HttpServer` emits invalid IL); they ship as
-    // `Lyric.Stdlib.<X>.dll` deployed alongside the bundle.  Tracked in #4030.
-    if tail == "Http" or tail == "HttpServer" or tail == "Rest" or tail == "Task" or tail == "HttpHost" {
-      return "Lyric.Stdlib." + tail
-    }
-    // Single-DLL stdlib: every other `Std.*` type lives in one `Lyric.Stdlib`.
+    // Single-DLL stdlib: every `Std.*` type lives in one `Lyric.Stdlib` (D111).
     return "Lyric.Stdlib"
   }
   // Non-`Std` heads (compiler packages): per-package `Lyric.<X>` naming.

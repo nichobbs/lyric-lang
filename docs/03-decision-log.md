@@ -6881,6 +6881,20 @@ the per-package nullary-union-case `Instance`-singleton mis-detection (fixed in
 #4020); the stage-2 toolchain now runs and the stage-3 reproducibility fixpoint
 holds (101/101 closure DLLs + stdlib byte-identical). See D-progress-531.
 
+**UPDATE (#4030 resolved — D-progress-533):** The HTTP/async hybrid carve-out is
+now retired. Two root causes were fixed: (1) `Std.Http` was listed before
+`Std.HttpHost` in `lyric.full.toml`'s Tier 4.5 block, causing Phase A
+`collectAwaitTypesPhaseBMsil` to undercount cross-package `EAwait` points and
+produce `ArgumentOutOfRangeException` at `pbc.resumeLabels[N]` — fixed by
+reordering (commit 89a34be); (2) `isLiteralI4ExprMsilWithEnv` returned `true` for
+the `ELiteral(LUnit)` init of `@asyncLocal val __ambientSlot`, so no `.cctor` row
+was counted and the field was emitted as `null` — fixed by detecting `@asyncLocal`
+annotations in both the pre-scan and `codegenMPackage`, synthesising
+`newobj AsyncLocal<object>..ctor()` and extending `boxTypeRef` / `emitGenericExternMember`
+to emit `unbox.any` when `get_Value()` returns an erased value type (commit
+45a88ab, issue #2972). `Lyric.Stdlib.dll` now carries the full HTTP/async surface
+and the per-package hybrid is retired. See D-progress-533 for details.
+
 **Related:** D110, docs/22 §2, docs/34, docs/43.
 
 ---

@@ -84,22 +84,22 @@ output_assembly = "Lyric.Stdlib.dll"
 "Std.Console"          = "std/console.l"
 "Std.Hash"             = "std/hash.l"
 
-# Tier 4.5 — HTTP/async surface: NOT bundled (D111 hybrid).
-# Std.Http, Std.HttpServer, Std.Rest, Std.Task, and Std.HttpHost ship PER-PACKAGE
-# (`Lyric.Stdlib.<X>.dll`, deployed alongside this bundle by
-# stage-selfhosted-stdlib.sh) because the self-hosted emitter cannot yet emit
-# their async-`Task`/`Result`-heavy bodies into a single `output = "single"`
-# assembly: Phase A undercounts a cross-package `match await` (Std.Rest) and a
-# bundled Std.HttpServer emits invalid IL.  They build and run correctly
-# per-package (as they did pre-collapse).  `stdlibAssemblyName` keeps their
-# references on the `Lyric.Stdlib.<X>` identity so consumers bind the per-package
-# DLLs.  Tracked in #4030.
-
 # Tier 5 — structured data, markup, time.
 "Std.Time"             = "std/time.l"
 "Std.Json"             = "std/json.l"
 "Std.Xml"              = "std/xml.l"
 "Std.Yaml"             = "std/yaml.l"
+
+# Tier 5.5 — HTTP/async surface (D111).  Placed after structured-data tiers so
+# that inserting these packages does not shift the MethodDef token indices of
+# Std.Time, Std.Json, Std.Xml, and Std.Yaml in Lyric.Stdlib.dll.  The seed
+# binary resolves those tokens at compile time; reordering them breaks the
+# compiler-self-tests (contract_meta_self_test.l array-enumeration returns empty).
+"Std.Task"             = "std/_kernel/task.l"
+"Std.HttpHost"         = "std/_kernel/http_host.l"
+"Std.Http"             = "std/http.l"
+"Std.HttpServer"       = "std/_kernel/http_server.l"
+"Std.Rest"             = "std/rest.l"
 
 # Tier 6 — regex compatibility shim.
 "Std.RegexSafe"        = "std/regex_safe.l"

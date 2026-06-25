@@ -307,12 +307,18 @@ pub func hostResponseHeader(response: in HttpResponseMessage, name: in String): 
 // ---------------------------------------------------------------------------
 // V0012-safe wrappers — issue #2985.
 //
-// The self-hosted MSIL emitter cannot place an await inside a CLR protected
-// region (try/catch/finally).  Std.Http used to catch Bug inline around each
-// await; those functions now await these wrappers instead, keeping the await
-// outside any try block on the Std.Http side.  This file is @axiom, so it
-// compiles through the F# bootstrap emitter which can hoist awaits — the
-// wrappers below are therefore permitted to use await-in-try.
+// The self-hosted MSIL emitter cannot emit SM resume labels inside CLR
+// protected regions (try/catch/finally): the JIT rejects branches INTO a
+// protected region (#2737).  Std.Http keeps its awaits OUTSIDE try blocks
+// for exactly this reason.
+//
+// The wrappers below are safe despite using await-in-try because every
+// awaited callee (`clientSendAsync`, `clientGetAsync`, etc.) is declared
+// `@externTarget async func` with return type T (not Task<T>).  The MSIL
+// emitter's `isTaskTypeMsil` check therefore returns false for every EAwait
+// in these bodies: Phase A counts zero SM resume points, Phase B emits no
+// SM resume labels, and the `try` block compiles as ordinary (non-SM) IL
+// — no label ever lands inside a CLR protected region.
 // ---------------------------------------------------------------------------
 pub async func hostSendSafe(client: in HttpClientHandle, request: in HttpRequestMessage): Result[HttpResponseMessage, String] {
   return try {
