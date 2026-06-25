@@ -7199,6 +7199,8 @@ func emitCellAssignMsil(
           case MBool -> insns.add(MLdelemI4)
           case MChar -> insns.add(MLdelemI4)
           case MByte -> insns.add(MLdelemU1)
+          case MLong -> insns.add(MLdelemI8)
+          case MDouble -> insns.add(MLdelemR8)
           case MString -> insns.add(MLdelemRef)
           case MObject -> insns.add(MLdelemRef)
           case _ -> insns.add(MLdelemRef)
