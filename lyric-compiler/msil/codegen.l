@@ -6330,12 +6330,12 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 match mapGet(fctx.types, capName) {
                   case Some(t) -> {
                     match t {
-                      case MInt -> insns.add(MBox(typeToken = cctx.tokInt))
-                      case MLong -> insns.add(MBox(typeToken = cctx.tokLong))
-                      case MFloat -> insns.add(MBox(typeToken = cctx.tokFloat))
-                      case MDouble -> insns.add(MBox(typeToken = cctx.tokDouble))
-                      case MBool -> insns.add(MBox(typeToken = cctx.tokBool))
-                      case MChar -> insns.add(MBox(typeToken = cctx.tokChar))
+                      case MInt -> insns.add(MBox(typeToken = cctx.trInt32))
+                      case MLong -> insns.add(MBox(typeToken = cctx.trInt64))
+                      case MFloat -> insns.add(MBox(typeToken = cctx.trDouble))
+                      case MDouble -> insns.add(MBox(typeToken = cctx.trDouble))
+                      case MBool -> insns.add(MBox(typeToken = cctx.trBoolean))
+                      case MChar -> insns.add(MBox(typeToken = cctx.trChar))
                       case _ -> ()
                     }
                   }
