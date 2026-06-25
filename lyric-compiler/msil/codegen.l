@@ -6261,22 +6261,23 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               // Load the capture value
               if fctx.captureNameToIndex.containsKey(capName) {
                 // Outer-scope capture: load from parent's __caps[index]
-                // __caps is always at slot 0 for capturing lambdas (implicit first parameter)
-                emitLoadVarMsil(fctx, insns, 0)
-                val parentIdx = match mapGet(fctx.captureNameToIndex, capName) {
-                  case Some(idx) -> idx
-                  case None -> 0  // Fallback: shouldn't happen if containsKey succeeded
+                match mapGet(fctx.captureNameToIndex, capName) {
+                  case Some(parentIdx) -> {
+                    // __caps is always at slot 0 for capturing lambdas (implicit first parameter)
+                    emitLoadVarMsil(fctx, insns, 0)
+                    insns.add(MLdcI4(v = parentIdx))
+                    insns.add(MLdelemRef)
+                  }
+                  case None -> panic("Msil.Codegen ICE: capture '" + capName + "' found in captureNameToIndex but mapGet failed")
                 }
-                insns.add(MLdcI4(v = parentIdx))
-                insns.add(MLdelemRef)
               } else if nameListContains(capCells, capName) {
-                // Hoisted var cell: box the cell reference
+                // Hoisted var cell: load the cell reference
                 match mapGet(fctx.hoistedCellSlot, capName) {
                   case Some(s) -> emitLoadVarMsil(fctx, insns, s)
                   case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.hoistedCellSlot")
                 }
               } else {
-                // Local capture: box the value
+                // Local capture: load and box the value
                 match mapGet(fctx.slots, capName) {
                   case Some(s) -> emitLoadVarMsil(fctx, insns, s)
                   case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots")
