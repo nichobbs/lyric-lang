@@ -2010,58 +2010,47 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
     ipi = ipi + 1
   }
 
-  // Pre-pass 0: register IFunc return types so that countSmFieldsMsil (called
-  // inline in Pass 1 for SM funcs) can accurately count awaiter fields for
-  // same-package async function calls.  This is the return-type slice of Pass 2;
-  // Pass 2 will skip duplicate registrations via `if not containsKey` guards.
+  // Pre-pass 0: register async SM function return types so that
+  // countSmFieldsMsil (called inline in Pass 1 for SM funcs) can accurately
+  // count awaiter fields for same-package async function calls.
+  // inferCallReturnTypePB / isTaskTypeMsil only need to know that a callee IS
+  // a Task — the inner T is irrelevant for counting — so we restrict this
+  // pre-pass to SM functions only.  Non-async and generator functions MUST
+  // wait for Pass 2 (when local enum types are already registered in
+  // cctx.enumTypeNames): calling typeExprToMsilCtx before enumTypeNames is
+  // populated resolves any local-enum type-arg as MClass instead of MInt,
+  // and since Pass 2's containsKey guard skips re-registration the wrong
+  // type persists, causing InvalidProgramException (#4187).
   var pp0 = 0
   while pp0 < file.items.count {
     match file.items[pp0].kind {
       case IFunc(decl) -> {
-        val fqn0 = pkgName + "." + decl.name
-        val arityKey0 = fqn0 + "/" + toString(decl.params.count)
-        if not cctx.funcRetTypes.containsKey(arityKey0) {
-          val isGen0 = decl.isAsync and funcBodyContainsYieldMsil(decl)
-          val isSm0 = decl.isAsync and not isGen0 and not hasExternTargetMsil(decl.annotations)
-          val declGenerics0 = genericNamesOf(decl.generics)
-          val retTy0 = if isGen0 {
-            val genElemTy0 = match decl.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MObject }
-            MIAsyncEnumerable(elemTy = genElemTy0)
-          } else if isSm0 {
-            val bareRetTy0 = match decl.ret {
-              case Some(te) -> {
-                val r = typeExprToMsilCtx(cctx, te, pkgName)
-                if elementTypeByte(r) == 0 { MVoid } else { r }
-              }
-              case None -> MVoid
-            }
-            if bareRetTy0 == MVoid {
-              MClassRef(typeRefCode = tdrTypeRef(cctx.trTask), clrFqn = "System.Threading.Tasks.Task")
-            } else {
-              val kfRetArgs0: List[MsilType] = newList()
-              kfRetArgs0.add(bareRetTy0)
-              MGenericInst(typeRefCode = tdrTypeRef(cctx.trTask1), headFqn = "System.Threading.Tasks.Task`1", typeArgs = kfRetArgs0)
-            }
-          } else if startsWith(decl.name, "__lambda_") {
-            match decl.ret {
-              case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName)
-              case None -> MVoid
-            }
-          } else {
-            match decl.ret {
-              case Some(te) -> {
-                if declGenerics0.count > 0 {
-                  typeExprToMsilGenBody(cctx, te, pkgName, declGenerics0)
-                } else {
-                  typeExprToMsilCtx(cctx, te, pkgName)
+        if decl.isAsync {
+          val isGen0 = funcBodyContainsYieldMsil(decl)
+          val isSm0 = not isGen0 and not hasExternTargetMsil(decl.annotations)
+          if isSm0 {
+            val fqn0 = pkgName + "." + decl.name
+            val arityKey0 = fqn0 + "/" + toString(decl.params.count)
+            if not cctx.funcRetTypes.containsKey(arityKey0) {
+              val bareRetTy0 = match decl.ret {
+                case Some(te) -> {
+                  val r = typeExprToMsilCtx(cctx, te, pkgName)
+                  if elementTypeByte(r) == 0 { MVoid } else { r }
                 }
+                case None -> MVoid
               }
-              case None -> MVoid
+              val retTy0 = if bareRetTy0 == MVoid {
+                MClassRef(typeRefCode = tdrTypeRef(cctx.trTask), clrFqn = "System.Threading.Tasks.Task")
+              } else {
+                val kfRetArgs0: List[MsilType] = newList()
+                kfRetArgs0.add(bareRetTy0)
+                MGenericInst(typeRefCode = tdrTypeRef(cctx.trTask1), headFqn = "System.Threading.Tasks.Task`1", typeArgs = kfRetArgs0)
+              }
+              cctx.funcRetTypes.add(arityKey0, retTy0)
+              if not cctx.funcRetTypes.containsKey(fqn0) {
+                cctx.funcRetTypes.add(fqn0, retTy0)
+              }
             }
-          }
-          cctx.funcRetTypes.add(arityKey0, retTy0)
-          if not cctx.funcRetTypes.containsKey(fqn0) {
-            cctx.funcRetTypes.add(fqn0, retTy0)
           }
         }
       }
