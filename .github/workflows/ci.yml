@@ -378,7 +378,7 @@ jobs:
     permissions:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
-    continue-on-error: true  # Stage 0: expect-fail; flip to false at Stage 2+
+    continue-on-error: false  # Stage 2+: required gate — zero boxing must be maintained
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -394,11 +394,11 @@ jobs:
           name: build-artifacts
       - name: Restore executable permissions
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
-      - name: Measure MSIL BOX instructions (epic #1877 Stage 0 baseline)
+      - name: Measure MSIL BOX instructions (epic #1877 Stage 2+ zero-overhead gate)
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          bash scripts/assert-no-box-msil.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" 0
+          bash scripts/assert-no-box-msil.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" 2
 
   closure-zero-overhead-jvm:
     runs-on: ubuntu-latest
@@ -406,7 +406,7 @@ jobs:
     permissions:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
-    continue-on-error: true  # Stage 0: expect-fail; flip to false at Stage 2+
+    continue-on-error: false  # Stage 2+: required gate — zero boxing must be maintained
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -427,11 +427,11 @@ jobs:
           name: build-artifacts
       - name: Restore executable permissions
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
-      - name: Measure JVM boxing calls (epic #1877 Stage 0 baseline)
+      - name: Measure JVM boxing calls (epic #1877 Stage 2+ zero-overhead gate)
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          bash scripts/assert-no-box-jvm.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" 0
+          bash scripts/assert-no-box-jvm.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" 2
 
   # Placeholder job retained for workflow structure. The F# test suites
   # (Lexer, Parser, TypeChecker, Emitter, CLI) were deleted when the F#
