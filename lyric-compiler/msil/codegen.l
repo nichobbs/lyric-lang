@@ -6116,30 +6116,18 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // Lambdas that return void use System.Action; those with non-void returns use System.Func.
           val retType = mapGet(cctx.funcRetTypes, lambdaKey)
           val returnsVoid = match retType { case Some(MVoid) -> true; case None -> true; case _ -> false }
-          // Phase 1 strongly-typed lambdas: delegate parameter types match HOF propagation.
-          // Only use types propagated by the type-checker when the lambda is passed to a HOF (T)->R.
-          // Fallback to object-based delegates for generic code compatibility (explicit annotations
-          // are preserved in the method signature, but don't override the delegate TypeSpec to avoid
-          // breaking HOF compatibility when annotations exist outside HOF context - see #4077).
-          var delegateParamTypes = match mapGet(cctx.lambdaParamTypes, lname) { case Some(ts) -> ts; case None -> newList() }
-          // Delegate type selection for Phase 1 lambdas: use Func/Action with actual types.
-          // All lambdas use Func<T1,...,Tn,TResult> or Action<T1,...,Tn> regardless of shape.
-          // Note #4077 (deferred to Phase 2): Predicate[T] and Comparison[T] special-casing
-          // requires context-driven delegate selection at the call site (whether target is FFI
-          // extern delegate vs. Lyric HOF), which is not available during lambda codegen.
-          // Shape-based detection alone breaks HOF: { x: Int -> x > 0 } passed to HOF (T)->Bool
-          // would emit Predicate<Int> but HOF invokes via Func<Int,Bool>::Invoke, causing
-          // InvalidCastException. Proper fix: track at type-check time whether lambda target
-          // is extern delegate; pass that context to codegen. See issue #4077 for details.
+          // All lambdas use an all-object delegate TypeSpec so the ctor, castclass, and
+          // callvirt Invoke all reference the same TypeSpec row (#4266). Typed delegate
+          // instantiation (Predicate<T>, Comparison<T>, context-driven Func<T,R>) is
+          // deferred to Phase 2 — see #4077.
           val ctorTok = if returnsVoid {
             if nparams == 0 {
               cctx.tokActionCtor
             } else {
-              buildActionNCtorTokWithTypes(cctx, nparams, delegateParamTypes)
+              buildActionNCtorTok(cctx, nparams)
             }
           } else {
-            val actualRetType = match retType { case Some(t) -> t; case None -> MObject }
-            buildFuncNCtorTokWithTypes(cctx, nparams, delegateParamTypes, actualRetType)
+            buildFuncNCtorTok(cctx, nparams)
           }
           // Delegate target: Phase 2 tries to instantiate a __Closure<N> record if it
           // exists; falls back to Phase 1 object[] for backwards compatibility.
@@ -12372,15 +12360,6 @@ func buildActionNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
   0x0A000000 + mrRow
 }
 
-// Build a newobj token for System.Action`(nparams)<object,...>::.ctor(object, nativeint).
-// The TypeSpec used here must match the one used for Invoke, so we always delegate to
-// the all-object version. Typed lambda parameter types influence only the lambda method
-// signature; the delegate TypeSpec must remain all-object so the castclass + callvirt
-// at the invocation site references the same TypeSpec row (#4266).
-func buildActionNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType]): Int {
-  buildActionNCtorTok(cctx, nparams)
-}
-
 // Get or create a TypeRef for System.Func`(nparams+1) where nparams is the lambda parameter count.
 // Reuses the actionTypeRefs map with a "func_N" key to avoid collisions.
 func internFuncTypeRef(cctx: in CodegenCtx, nparams: in Int): Int {
@@ -12435,15 +12414,6 @@ func buildFuncNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
   val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
   val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "func_ctor_" + toString(nparams), ctorSig)
   0x0A000000 + mrRow
-}
-
-// Build a newobj token for System.Func`(nparams+1)<object,...,object>::.ctor(object, nativeint).
-// The TypeSpec used here must match the one used by castclass + callvirt Invoke, so we
-// always delegate to the all-object version via internFuncNTypeSpec. Typed return/param
-// types from HOF propagation influence the lambda method signature only; the delegate
-// TypeSpec must be all-object so the invoke site references the same TypeSpec row (#4266).
-func buildFuncNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType], retType: in MsilType): Int {
-  buildFuncNCtorTok(cctx, nparams)
 }
 
 // Build a callvirt token for System.Func`(nparams+1)<object,...,object>::Invoke(object,...): object.
