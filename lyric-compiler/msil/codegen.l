@@ -14481,6 +14481,7 @@ func collectAwaitTypesExprPB(
     // the pre-allocated size and faults.
     case ETry(inner) -> collectAwaitTypesExprPB(cctx, pkgName, inner, acc, spawnNms, spawnTys)
     case EPropagate(inner) -> collectAwaitTypesExprPB(cctx, pkgName, inner, acc, spawnNms, spawnTys)
+    case EUnsafe(block) -> collectAwaitTypesBlockPB(cctx, pkgName, block, acc, spawnNms, spawnTys)
     case EMember(recv, _) -> collectAwaitTypesExprPB(cctx, pkgName, recv, acc, spawnNms, spawnTys)
     case EPrefix(_, op) -> collectAwaitTypesExprPB(cctx, pkgName, op, acc, spawnNms, spawnTys)
     case ETuple(exprs) -> {
