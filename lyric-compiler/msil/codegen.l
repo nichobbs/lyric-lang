@@ -6242,36 +6242,47 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           } else {
             buildFuncNCtorTok(cctx, nparams)
           }
-          // Delegate target: Phase 2 tries to instantiate a __Closure<N> record if it
-          // exists; falls back to Phase 1 object[] for backwards compatibility.
-          // Phase 1: Use object[] for all lambda captures.
-          // Phase 2 (closure class synthesis with instance methods) is deferred to Epic #1877 Part 2.
+          // Delegate target: Phase 2 instantiates a __Closure_N record with typed fields;
+          // falls back to Phase 1 object[] for outer-scope captures not yet supported.
           if caps.count > 0 {
-            insns.add(MLdcI4(v = caps.count))
-            insns.add(MNewarr(typeToken = 0x01000000 + boxTypeRef(cctx, MObject)))
+            // Phase 2: Instantiate the typed closure class for this lambda.
+            // The closure class has typed fields __f<i> for each captured variable.
+            val closureClassFqn = fctx.pkgName + ".__Closure_" + toString(idx)
+            insns.add(MNewobjByName(className = closureClassFqn))
+
             var capStI = 0
             while capStI < caps.count {
               insns.add(MDup)
-              insns.add(MLdcI4(v = capStI))
               val capName = caps[capStI]
+
+              // Load the captured value.
+              // Note: For outer-scope captures (from outer lambda's object[]), Phase 2 does not yet
+              // support them — they remain in Phase 1 object[] approach. This is a known limitation
+              // tracked in epic #1877 Stage 1 (no outer-scope captures in initial closure test corpus).
               if fctx.captureNameToIndex.containsKey(capName) {
-                val outerIdx = match mapGet(fctx.captureNameToIndex, capName) { case Some(n) -> n; case None -> 0 }
-                emitLoadVarMsil(fctx, insns, 0)
-                insns.add(MLdcI4(v = outerIdx))
-                insns.add(MLdelemRef)
+                // Outer-scope capture: not yet supported in Phase 2.
+                // This path would need to unbox the object[] element to the field type, which
+                // requires type information at codegen time that is not available. Deferred to Phase 2.1.
+                panic("Msil.Codegen: Phase 2 does not yet support outer-scope captures in closure classes (captured name '" + capName + "')")
               } else if nameListContains(capCells, capName) {
+                // Hoisted var cell: load the cell reference directly.
+                // The closure field stores the cell (a typed array), not the value.
                 match mapGet(fctx.hoistedCellSlot, capName) {
                   case Some(s) -> emitLoadVarMsil(fctx, insns, s)
                   case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.hoistedCellSlot")
                 }
               } else {
+                // Local capture: load from the function's local variable slot.
+                // No boxing needed — the closure field is typed with the actual capture type.
                 match mapGet(fctx.slots, capName) {
                   case Some(s) -> emitLoadVarMsil(fctx, insns, s)
                   case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots")
                 }
-                boxIfNeededMsil(cctx, insns, capTypes[capStI])
               }
-              insns.add(MStelemRef)
+
+              // Set the closure field with the captured value.
+              val fieldName = "__f" + toString(capStI)
+              insns.add(MStfldByName(ownerFqn = closureClassFqn, fieldName = fieldName))
               capStI = capStI + 1
             }
           } else {
