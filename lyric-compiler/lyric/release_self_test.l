@@ -144,7 +144,10 @@ test "jsonStringField: extracts a root-level string value" {
 
 test "jsonStringField: returns None when key is absent" {
   val json = "{\"other\": \"value\"}"
-  assertTrue(isNone(Release.jsonStringField(json, "packagesPath")), "missing key")
+  assertTrue(
+    match Release.jsonStringField(json, "packagesPath") { case None -> true; case Some(_) -> false },
+    "missing key"
+  )
 }
 
 test "jsonStringField: finds key nested inside an object (project.assets.json shape)" {
@@ -173,12 +176,15 @@ test "parseIlcVersion: extracts the ILC version from a libraries entry" {
 
 test "parseIlcVersion: returns None when the RID has no matching entry" {
   val json = "\"libraries\": {\"runtime.linux-x64.Microsoft.DotNet.ILCompiler/10.0.7\": {}}"
-  assertTrue(isNone(Release.parseIlcVersion(json, "win-x64")), "wrong RID")
+  assertTrue(match Release.parseIlcVersion(json, "win-x64") { case None -> true; case Some(_) -> false }, "wrong RID")
 }
 
 test "parseIlcVersion: returns None when libraries section is absent" {
   val json = "{\"version\": 3}"
-  assertTrue(isNone(Release.parseIlcVersion(json, "linux-x64")), "no libraries key")
+  assertTrue(
+    match Release.parseIlcVersion(json, "linux-x64") { case None -> true; case Some(_) -> false },
+    "no libraries key"
+  )
 }
 
 // ── localDepNotBuiltMessage (#3216) ──────────────────────────────────────────
