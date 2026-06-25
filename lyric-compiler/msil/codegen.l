@@ -20632,6 +20632,15 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
     j = j + 1
   }
 
+  // For Phase 2, insert synthesized closure records into the items list.
+  // These records are created during lambda codegen in lowerExprMsil and stored
+  // in cctx.lambdaClosureRecordList. They must appear before the lambdas that
+  // reference them via newobj.
+  var rc = 0
+  while rc < cctx.lambdaClosureRecordList.count {
+    newItems.add(IRecord(cctx.lambdaClosureRecordList[rc]))
+    rc = rc + 1
+  }
   var k = 0
   while k < synths.count {
     newItems.add(synths[k])
