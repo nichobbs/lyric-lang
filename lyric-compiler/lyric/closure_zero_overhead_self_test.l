@@ -68,6 +68,18 @@ test "closure captures Float primitive" {
   assertEqualInt(f(10), 25, "closure captures Float primitive correctly")
 }
 
+test "closure captures Long primitive" {
+  val largeNum: Long = 1000000000L
+  val f: (Long) -> Long = { x: Long -> x + largeNum }
+  assertEqualLong(f(500000000L), 1500000000L, "closure captures Long primitive correctly")
+}
+
+test "closure captures Double primitive" {
+  val preciseNum = 3.14159
+  val f: (Int) -> Int = { x: Int -> Int.truncate(Float.real(x) * preciseNum) }
+  assertEqualInt(f(100), 314, "closure captures Double primitive correctly")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Multi-argument primitives with nested captures.
 // ─────────────────────────────────────────────────────────────────────────────
