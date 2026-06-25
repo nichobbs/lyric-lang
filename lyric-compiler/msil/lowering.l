@@ -1721,11 +1721,16 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
     // came from another assembly after all), and encode the closed GENERICINST.
     // W0005 if neither resolves — missing TypeRef seeding bug (#2494).
     case MGenericInstByName(headFqn, typeArgs) -> {
-      val defRow = resolveSigTypeDefRow(ctx, headFqn)
+      // The headFqn may have a generic arity suffix (e.g., "Std.Core.Result`2").
+      // Strip it before looking up the TypeDef/TypeRef, as the type tables store
+      // only the plain FQN without arity notation.
+      val backtickPos = headFqn.lastIndexOf("`")
+      val plainFqn = if backtickPos < 0 { headFqn } else { headFqn.substring(0, backtickPos) }
+      val defRow = resolveSigTypeDefRow(ctx, plainFqn)
       val coded = if defRow > 0 {
         tdrTypeDef(defRow)
       } else {
-        val refRow = findTypeRefRowByName(ctx, headFqn)
+        val refRow = findTypeRefRowByName(ctx, plainFqn)
         if refRow > 0 {
           tdrTypeRef(refRow)
         } else {
