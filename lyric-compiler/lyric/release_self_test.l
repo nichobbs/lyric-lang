@@ -135,29 +135,32 @@ test "isValidRid: rejects invalid or dangerous RID strings" {
 // ── jsonStringField ──────────────────────────────────────────────────────────
 test "jsonStringField: extracts a root-level string value" {
   val json = "{\"packagesPath\": \"/home/user/.nuget/packages\", \"version\": 3}"
-  assertTrue(
-    Release.jsonStringField(json, "packagesPath") == Some(value = "/home/user/.nuget/packages"),
+  assertEqual(
+    unwrapOr(Release.jsonStringField(json, "packagesPath"), ""),
+    "/home/user/.nuget/packages",
     "root-level key"
   )
 }
 
 test "jsonStringField: returns None when key is absent" {
   val json = "{\"other\": \"value\"}"
-  assertTrue(Release.jsonStringField(json, "packagesPath") == None, "missing key")
+  assertTrue(isNone(Release.jsonStringField(json, "packagesPath")), "missing key")
 }
 
 test "jsonStringField: finds key nested inside an object (project.assets.json shape)" {
   val json = "{\n  \"version\": 3,\n  \"project\": {\n    \"restore\": {\n      \"packagesPath\": \"/root/.nuget/packages\"\n    }\n  }\n}"
-  assertTrue(
-    Release.jsonStringField(json, "packagesPath") == Some(value = "/root/.nuget/packages"),
+  assertEqual(
+    unwrapOr(Release.jsonStringField(json, "packagesPath"), ""),
+    "/root/.nuget/packages",
     "nested packagesPath"
   )
 }
 
 test "jsonStringField: handles backslash-escaped backslashes in Windows paths" {
   val json = "{\"packagesPath\": \"C:\\\\Users\\\\user\\\\.nuget\\\\packages\"}"
-  assertTrue(
-    Release.jsonStringField(json, "packagesPath") == Some(value = "C:\\Users\\user\\.nuget\\packages"),
+  assertEqual(
+    unwrapOr(Release.jsonStringField(json, "packagesPath"), ""),
+    "C:\\Users\\user\\.nuget\\packages",
     "backslash-escaped Windows path unescaped"
   )
 }
@@ -165,17 +168,17 @@ test "jsonStringField: handles backslash-escaped backslashes in Windows paths" {
 // ── parseIlcVersion ──────────────────────────────────────────────────────────
 test "parseIlcVersion: extracts the ILC version from a libraries entry" {
   val json = "\"libraries\": {\"runtime.linux-x64.Microsoft.DotNet.ILCompiler/10.0.7\": {\"type\": \"package\"}}"
-  assertTrue(Release.parseIlcVersion(json, "linux-x64") == Some(value = "10.0.7"), "linux-x64 10.0.7")
+  assertEqual(unwrapOr(Release.parseIlcVersion(json, "linux-x64"), ""), "10.0.7", "linux-x64 10.0.7")
 }
 
 test "parseIlcVersion: returns None when the RID has no matching entry" {
   val json = "\"libraries\": {\"runtime.linux-x64.Microsoft.DotNet.ILCompiler/10.0.7\": {}}"
-  assertTrue(Release.parseIlcVersion(json, "win-x64") == None, "wrong RID")
+  assertTrue(isNone(Release.parseIlcVersion(json, "win-x64")), "wrong RID")
 }
 
 test "parseIlcVersion: returns None when libraries section is absent" {
   val json = "{\"version\": 3}"
-  assertTrue(Release.parseIlcVersion(json, "linux-x64") == None, "no libraries key")
+  assertTrue(isNone(Release.parseIlcVersion(json, "linux-x64")), "no libraries key")
 }
 
 // ── localDepNotBuiltMessage (#3216) ──────────────────────────────────────────
