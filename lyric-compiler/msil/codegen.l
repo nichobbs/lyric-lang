@@ -3526,14 +3526,14 @@ pub func finishHoistedCellMsil(
       insns.add(MStelem(typeToken = elemToken))                 // Pop 3, store → [array-ref]
       // Allocate cell slot with array type
       val arrayTy = match elemTy {
-        case MInt -> MArray(elem = MInt)
-        case MLong -> MArray(elem = MLong)
-        case MDouble -> MArray(elem = MDouble)
-        case MBool -> MArray(elem = MBool)
-        case MChar -> MArray(elem = MChar)
-        case MByte -> MArray(elem = MByte)
-        case MString -> MArray(elem = MString)
-        case MObject -> MArray(elem = MObject)
+        case MInt -> MArray(MInt)
+        case MLong -> MArray(MLong)
+        case MDouble -> MArray(MDouble)
+        case MBool -> MArray(MBool)
+        case MChar -> MArray(MChar)
+        case MByte -> MArray(MByte)
+        case MString -> MArray(MString)
+        case MObject -> MArray(MObject)
         case _ -> MObject  // Fallback (shouldn't reach here if arrayElemTokenOpt succeeded)
       }
       val cellSlot = allocSlotMsil(fctx, name, arrayTy)
