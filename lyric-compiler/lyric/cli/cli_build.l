@@ -255,7 +255,7 @@ func cmdBuild(argv: in slice[String]): Int {
   match releaseFromDll {
     case Some(dll) -> {
       if positional.count > 0 {
-        printErr("build: warning: source-file arguments are ignored alongside --release-from-dll")
+        printErr("build: warning: source-file arguments are ignored alongside --release-from-dll: " + Str.joinList(", ", positional))
       }
       if not File.fileExists(dll) {
         printErr("build: --release-from-dll: file not found: " + dll)
