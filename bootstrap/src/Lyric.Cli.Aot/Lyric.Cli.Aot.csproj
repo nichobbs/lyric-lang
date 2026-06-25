@@ -43,4 +43,14 @@
     </Reference>
   </ItemGroup>
 
+  <!-- Post-build: copy all Lyric.*.dll files from StageDir to the output directory
+       so the AOT binary can find its dependencies when run from arbitrary working
+       directories (e.g., temp dirs in test scripts). -->
+  <Target Name="CopyStageLibraries" AfterTargets="Build">
+    <ItemGroup>
+      <StageDlls Include="$(StageDir)/Lyric.*.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(StageDlls)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+
 </Project>
