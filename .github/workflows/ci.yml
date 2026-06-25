@@ -138,13 +138,14 @@ jobs:
         # Stage 1 is required: the AOT smoke test, ecosystem tests, and
         # the cli.l re-parse guarantee all depend on the stage-1 bundle.
         #
-        # Use the v0.3.0 release binary as stage-0 (the self-hosted emitter is
-        # bug-free and compiles the self-hosted compiler correctly).
-        # v0.3.5 is known to have a corrupted release artifact, so we pin to v0.3.0.
+        # Stage 0 uses the F# bootstrap compiler to mint a v0.3.0 self-hosted binary.
+        # The released v0.3.0 and v0.3.5 binaries are incompatible with the current
+        # stdlib (async bundling requires a bootstrap binary with Phase B fixes),
+        # so we mint from HEAD instead.
         working-directory: ${{ github.workspace }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LYRIC_BOOTSTRAP_VERSION: v0.3.0
+          LYRIC_BOOTSTRAP_MINT: '1'
         run: ./scripts/bootstrap.sh --stage 1
 
       # Track A A1.4 (#860) deleted the F# user-facing CLI; the AOT
