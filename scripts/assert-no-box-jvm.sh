@@ -108,10 +108,10 @@ DISASM_FILE="$WORK_DIR/disasm.txt"
 echo "[assert-no-box-jvm] disassembling bytecode via javap"
 {
   find "$EXTRACT_DIR" -name "*.class" -type f | while read -r classfile; do
-    # Extract fully-qualified class name from file path
-    # e.g. classes/com/example/ClosureTest.class → com.example.ClosureTest
-    classname=$(echo "$classfile" | sed "s|^$EXTRACT_DIR/||" | sed 's/\.class$//' | tr '/' '.')
-    "$JAVAP" -c -private "$classname" 2>/dev/null || "$JAVAP" -c -private "$classfile" 2>/dev/null || true
+    # Pass the .class file path directly to javap (most reliable).
+    # Javap accepts both class names and file paths, but file paths are
+    # more robust and avoid issues with path extraction and class name format.
+    "$JAVAP" -c -private "$classfile" 2>/dev/null || true
   done
 } > "$DISASM_FILE" 2>&1 || true
 
