@@ -6306,18 +6306,14 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               // Load the capture value
               if fctx.captureNameToIndex.containsKey(capName) {
                 // Outer-scope capture: load from parent's __caps[index]
-                match mapGet(fctx.slots, "__caps") {
-                  case Some(capsSlot) -> {
-                    emitLoadVarMsil(fctx, insns, capsSlot)
-                    match mapGet(fctx.captureNameToIndex, capName) {
-                      case Some(parentIdx) -> {
-                        insns.add(MLdcI4(v = parentIdx))
-                        insns.add(MLdelemRef)
-                      }
-                      case None -> panic("Msil.Codegen ICE: capture index not found")
-                    }
+                // __caps is always at slot 0 for capturing lambdas (implicit first parameter)
+                emitLoadVarMsil(fctx, insns, 0)
+                match mapGet(fctx.captureNameToIndex, capName) {
+                  case Some(parentIdx) -> {
+                    insns.add(MLdcI4(v = parentIdx))
+                    insns.add(MLdelemRef)
                   }
-                  case None -> panic("Msil.Codegen ICE: parent __caps array not found for nested lambda capture")
+                  case None -> panic("Msil.Codegen ICE: capture index not found")
                 }
               } else if nameListContains(capCells, capName) {
                 // Hoisted var cell: box the cell reference
