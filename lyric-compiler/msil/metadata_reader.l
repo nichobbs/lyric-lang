@@ -2691,6 +2691,41 @@ pub func inspectInterfaceTarget(asmPath: in String, typeFqn: in String): Option[
   }
 }
 
+// Detect if a type extends System.Delegate or System.MulticastDelegate (i.e., is a delegate type).
+// Walks the base-type chain via the TypeDef's extendsToken to check if any ancestor is a delegate.
+func isTypeDelegate(img: in PeImage, layout: in TableLayout, th: in TablesHeader, typeFqn: in String): Bool {
+  match findTypeDefByFqn(img, layout, th, typeFqn) {
+    case -1 -> false
+    case tdRow -> {
+      val td = readTypeDefAt(img, layout, th, tdRow)
+      if td.extendsToken == 0 {
+        false
+      } else {
+        val baseName = resolveTypeDefOrRefName(img, layout, th, td.extendsToken)
+        baseName == "System.Delegate" or baseName == "System.MulticastDelegate" or (baseName.length > 0 and isTypeDelegate(img, layout, th, baseName))
+      }
+    }
+  }
+}
+
+// Resolve the Invoke method signature of a delegate type.
+// Returns the DecodedMethodSig of the Invoke method if found.
+pub func getDelegateInvokeSignature(asmPath: in String, delegateFqn: in String): Option[DecodedMethodSig] {
+  match File.readBytes(asmPath) {
+    case Err(_) -> None
+    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> None; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> None; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> None; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> None; case Ok(layout) -> {
+      if not isTypeDelegate(img, layout, th, delegateFqn) {
+        None
+      } else {
+        match resolveOverloadIn(img, layout, th, delegateFqn, "Invoke", newList()) {
+          case None -> None
+          case Some(m) -> Some(value = m.sig)
+        }
+      }
+    } } } } }
+  }
+}
+
 // ── resolveExtern: discovery + resolution composed ───────────────────────────
 //
 // The single entry point the emitter calls to resolve an extern method.  It
