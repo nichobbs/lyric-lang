@@ -664,9 +664,10 @@ jobs:
   # ---------------------------------------------------------------------------
   finalize-release:
     runs-on: ubuntu-latest
-    needs: [create-release, build-standalone, publish-nuget, publish-ecosystem]
+    needs: [create-release, build-stdlib-bundle, build-standalone, publish-nuget, publish-ecosystem]
     if: >-
       always() &&
+      (needs.build-stdlib-bundle.result == 'success' || needs.build-stdlib-bundle.result == 'skipped') &&
       (needs.build-standalone.result == 'success' || needs.build-standalone.result == 'skipped') &&
       (needs.publish-nuget.result == 'success' || needs.publish-nuget.result == 'skipped') &&
       (needs.publish-ecosystem.result == 'success' || needs.publish-ecosystem.result == 'skipped')
