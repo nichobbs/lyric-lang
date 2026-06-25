@@ -5,16 +5,18 @@
 //! zero-overhead optimization stages (Stage 0–5 of epic #1877). Each test case
 //! exercises a distinct capture scenario:
 //!
-//!   • Primitive captures in loops (Int, Bool, Float) — the headline case for
-//!     zero-overhead: captures must NOT box primitives on closure construction;
-//!     the closure must read the primitive directly.
+//!   • Primitive captures: Int, Bool, Float, Long, Double — the headline case for
+//!     zero-overhead. Captures must NOT box primitives on closure construction;
+//!     the closure must read the primitive directly. Tests both by-value and
+//!     by-reference (hoisted-cell) paths for all primitive types.
 //!   • Multi-argument primitives with nested captures — exercises multi-field
 //!     closure representation.
 //!   • Returned/escaping closures — ensures the closure's capture-field layout
 //!     persists across function boundaries.
 //!   • By-ref `var` mutation inside closures — closure must capture by reference
 //!     for mutable `var` bindings, allowing the closure to read/write the
-//!     enclosing variable's current state.
+//!     enclosing variable's current state. Tests hoisted-cell capture for all
+//!     primitive types.
 //!   • Multi-level nesting — verifies captures chain through nested lambdas.
 //!
 //! Each test produces a runnable assertion: runtime values are checked via
