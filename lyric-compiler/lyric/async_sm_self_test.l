@@ -653,7 +653,7 @@ async func asyncDirectionRoundTrip(n: in Int): Direction {
   d
 }
 
-type Distance = Int
+alias Distance = Int
 
 async func asyncGetDistance(n: in Int): Distance {
   n * 100
@@ -694,12 +694,12 @@ test "#4266: SM func returning local union type (with await)" {
   assertTrue(match d2 { case East -> true; case _ -> false }, "asyncDirectionRoundTrip(2) = East")
 }
 
-test "#4266: SM func returning local distinct type (no await)" {
+test "#4266: SM func returning local alias type (no await)" {
   val dist = await asyncGetDistance(3)
   assertEqualInt(dist, 300, "asyncGetDistance(3) = 300")
 }
 
-test "#4266: SM func returning local distinct type (with await)" {
+test "#4266: SM func returning local alias type (with await)" {
   val dist = await asyncDoubleDistance(4)
   assertEqualInt(dist, 800, "asyncDoubleDistance(4): 4*100*2 = 800")
 }
