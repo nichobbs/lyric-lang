@@ -623,14 +623,20 @@ build_stage2() {
   shopt -u nullglob
   ok "  built single Lyric.Stdlib.dll bundle"
 
-  # 4. AOT-link the stage-2 binary from the self-hosted closure.  The
-  #    <Reference Private=true> glob copies every referenced DLL (compiler +
-  #    stdlib) into the build output, so copying that whole directory into
-  #    `$STAGE2_BIN_DIR` yields a self-contained, relocatable toolchain whose
-  #    binary resolves its OWN stdlib from beside itself.
-  info "  AOT-linking the stage-2 binary from the self-hosted closure"
-  build_aot_binary "$STAGE2_LIB_DIR" "$BUILD_DIR/aot-stage2.log"
-  cp -r "$(dirname "$AOT_OUT")/." "$STAGE2_BIN_DIR/"
+  # 4. AOT-link the stage-2 binary from the self-hosted closure.
+  #    The stage-1 binary ($AOT_OUT) was compiled from the current sources and
+  #    supports `lyric build --release-from-dll`.  Use it here so the stage-2
+  #    native binary is produced entirely by the self-hosted Lyric toolchain —
+  #    no C# build step is needed.  The binary lands directly in $STAGE2_BIN_DIR.
+  info "  AOT-linking the stage-2 binary via lyric build --release-from-dll"
+  mkdir -p "$STAGE2_BIN_DIR"
+  "$AOT_OUT" build --release-from-dll "$STAGE2_LIB_DIR/Lyric.Lyric.Cli.dll" \
+    --extra-refs-dir "$STAGE2_LIB_DIR" -o "$STAGE2_BIN_DIR/lyric" \
+    > "$BUILD_DIR/aot-stage2.log" 2>&1 \
+    || { cat "$BUILD_DIR/aot-stage2.log" >&2
+         die "stage-2 AOT build FAILED — see $BUILD_DIR/aot-stage2.log"; }
+  [[ -x "$STAGE2_BIN_DIR/lyric" ]] \
+    || die "stage-2 lyric binary not found at $STAGE2_BIN_DIR/lyric"
 
   # 5. Runnability smoke — NON-FATAL.  A self-hosted-emitter bug surfaces here
   #    as a clean, specific failure rather than as build noise.

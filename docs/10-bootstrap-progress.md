@@ -25666,3 +25666,39 @@ intent. The per-package hybrid denylist in `stdlibAssemblyName` can be retired
 once the stdlib passes a full self-hosted rebuild (tracked in docs/41 §R7 /
 #2592). `scripts/stage-selfhosted-stdlib.sh` header was updated when the HTTP/async
 surface was added to the bundle.
+
+### D-progress-534 — Stage-2 AOT binary built by `lyric build --release-from-dll`
+
+The stage-2 ship binary is now produced entirely by the self-hosted Lyric
+toolchain: no C# build step is needed for it.
+
+**New CLI flags** added to `lyric build` (`lyric-compiler/lyric/cli/cli_build.l`):
+
+- `--release-from-dll <dll>` — link a pre-built managed DLL directly to a
+  native binary via ILC + clang, skipping all source compilation.  The DLL
+  must already exist on disk.
+- `--extra-refs-dir <dir>` — add every `*.dll` file in `<dir>` (except the
+  primary DLL) as an ILC managed reference.  Used to pass the full compiler
+  DLL closure when bootstrapping.
+
+Together these two flags let `bootstrap.sh`'s `build_stage2()` replace the
+old `dotnet build Lyric.Cli.Aot -p:StageDir=$STAGE2_LIB_DIR` step with:
+
+```bash
+"$AOT_OUT" build --release-from-dll "$STAGE2_LIB_DIR/Lyric.Lyric.Cli.dll" \
+  --extra-refs-dir "$STAGE2_LIB_DIR" -o "$STAGE2_BIN_DIR/lyric"
+```
+
+`$AOT_OUT` is the stage-1 binary, which was compiled from the new sources
+and therefore supports `--release-from-dll`.  The stage-2 binary lands
+directly in `$STAGE2_BIN_DIR/lyric` — no intermediate copy.
+
+**What still uses `Lyric.Cli.Aot`:** only the stage-1/development build
+(`build_aot_binary()` in `bootstrap.sh`, and `make lyric` / `make aot` /
+`make mint`).  At that point no `lyric` binary exists yet, so we must use
+the C# trampoline.  Once the release binary that carries `--release-from-dll`
+is the seed, `build_aot_binary()` can switch to the pure-Lyric path and
+`Lyric.Cli.Aot` can be deleted (tracked in #4390).
+
+**See also:** `docs/23-fsharp-shim-elimination.md` §"Remaining F#" entry for
+`Lyric.Cli.Aot`.

@@ -812,6 +812,13 @@ lyric build --release --manifest lyric.toml  # explicit project manifest
 lyric build --release <file.l> --rid <rid>   # override host runtime identifier
 lyric build --release <file.l> -o <bin>      # native binary output path
                                        # (.NET target only; JVM GraalVM native-image: #1975)
+lyric build --release-from-dll <dll>   # link a pre-built managed DLL to a native binary via
+                                       # ILC + clang, skipping source compilation entirely.
+                                       # defaults to <dll-stem> next to the DLL; use -o to override.
+lyric build --release-from-dll <dll> --extra-refs-dir <dir>
+                                       # add every *.dll in <dir> (except the primary DLL)
+                                       # as ILC managed references — used by bootstrap.sh for
+                                       # stage-2 builds.
 lyric build --target dotnet <file.l>   # target .NET (default): writes foo.dll + foo.runtimeconfig.json
 lyric build --target jvm <file.l>      # writes a runnable foo.jar (NO runtimeconfig.json) via the
                                        # self-hosted JVM emitter (`Main-Class` derived from the source
