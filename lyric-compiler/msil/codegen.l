@@ -15319,6 +15319,9 @@ func emitPhaseBAwait(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn
   val lctx = cctx.lctx
   val N = pbc.nextAwaitIndex.count
   pbc.nextAwaitIndex.add(0)  // consume index N
+  if N >= pbc.resumeLabels.count or N >= pbc.awaiterFieldNames.count {
+    panic("emitPhaseBAwait: await index " + toString(N) + " exceeds pre-allocated resume labels (" + toString(pbc.resumeLabels.count) + ") or awaiter fields (" + toString(pbc.awaiterFieldNames.count) + ") — mismatch between await pre-scan count and actual emit count")
+  }
   val resumeL = pbc.resumeLabels[N]
   val awFldName = pbc.awaiterFieldNames[N]
 
@@ -22995,9 +22998,9 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
   // type that was synthesized during code generation (lowerFuncMsil).
   // These records are required at runtime so System.Func/System.Action delegate
   // instances can load their closure type references.
-  mapForEach(cctx.lambdaClosureClasses, (lname, closureRec) -> {
-    items.add(MPRecord(rec = closureRec))
-  })
+  // Note: closure records are emitted in the order they were synthesized, which
+  // corresponds to lambda indices and matches the indices used in the runtime
+  // closure type lookups during System.Func/System.Action construction.
 
   // Emit the host class: functions + static fields (IConst/IVal).
   if fns.count > 0 or staticFields.count > 0 {
