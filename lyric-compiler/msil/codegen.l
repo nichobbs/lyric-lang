@@ -15307,6 +15307,9 @@ func phaseBSpillToLocal(pbc: in PhaseBCtx, fctx: in FuncCtx, insns: in List[MIns
 // Returns the result MsilType.
 // Side-effects: allocates locals, uses and increments phaseBCtx.nextAwaitIndex.
 func emitPhaseBAwait(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], taskTy: in MsilType): MsilType {
+  if fctx.phaseBCtx.count == 0 {
+    panic("emitPhaseBAwait: no Phase B context available — await used outside an async function")
+  }
   val pbc = fctx.phaseBCtx[0]
   val lctx = cctx.lctx
   val N = pbc.nextAwaitIndex.count
