@@ -532,6 +532,26 @@ func computeHoistedVarNamesJvm(
 }
 
 // Collect all `var` declarations in a function body.
+func collectMutableVarsExpr(e: in Expression, acc: in Map[String, Bool]): Unit {
+  match e.kind {
+    case EIf(_, thenBody, elseBodyOpt) -> {
+      collectMutableVarsBlock(thenBody, acc)
+      match elseBodyOpt {
+        case Some(eb) -> collectMutableVarsExpr(eb, acc)
+        case None -> ()
+      }
+    }
+    case EMatch(_, arms) -> {
+      var ai = 0
+      while ai < arms.count {
+        collectMutableVarsBlock(arms[ai].body, acc)
+        ai = ai + 1
+      }
+    }
+    case _ -> ()
+  }
+}
+
 func collectMutableVarsBlock(b: in Block, acc: in Map[String, Bool]): Unit {
   var i = 0
   while i < b.statements.count {
@@ -546,6 +566,7 @@ func collectMutableVarsBlock(b: in Block, acc: in Map[String, Bool]): Unit {
           case _ -> ()
         }
       }
+      case SExpr(e) -> collectMutableVarsExpr(e, acc)
       case SWhile(_, _, body) -> collectMutableVarsBlock(body, acc)
       case SLoop(_, body) -> collectMutableVarsBlock(body, acc)
       case SFor(_, _, _, body) -> collectMutableVarsBlock(body, acc)
