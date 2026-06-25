@@ -103,8 +103,16 @@ if [[ -z "$ILDASM" ]]; then
   echo "  DOTNET_ROOT=$DOTNET_ROOT" >&2
   echo "  install (Linux/macOS): dotnet tool install -g dotnet-ildasm" >&2
   echo "  install (Windows): .NET SDK includes ildasm.exe in <DOTNET_ROOT>/sdk/<version>/bin/" >&2
-  echo "[assert-no-box-msil] SKIP: cannot disassemble (ildasm not available)"
-  exit 77  # skip code
+
+  # At Stage 0 (baseline), we can skip the test if ildasm is unavailable.
+  # At Stage 2+ (gates), we must error because the test is required to verify zero-overhead.
+  if [[ "$STAGE" -eq 0 ]]; then
+    echo "[assert-no-box-msil] SKIP: cannot disassemble (ildasm not available); skipping Stage 0 baseline"
+    exit 77  # skip code
+  else
+    echo "[assert-no-box-msil] FAIL: cannot disassemble (ildasm not available); required for Stage $STAGE gate" >&2
+    exit 1
+  fi
 fi
 
 # Disassemble the DLL and count BOX instructions.

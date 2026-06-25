@@ -51,8 +51,16 @@ fi
 if [[ ! -x "$JAVAP" ]]; then
   echo "ERROR: javap not found" >&2
   echo "  ensure JAVA_HOME is set or javap is in PATH" >&2
-  echo "[assert-no-box-jvm] SKIP: cannot disassemble (javap not available)"
-  exit 77  # skip code
+
+  # At Stage 0 (baseline), we can skip the test if javap is unavailable.
+  # At Stage 2+ (gates), we must error because the test is required to verify zero-overhead.
+  if [[ "$STAGE" -eq 0 ]]; then
+    echo "[assert-no-box-jvm] SKIP: cannot disassemble (javap not available); skipping Stage 0 baseline"
+    exit 77  # skip code
+  else
+    echo "[assert-no-box-jvm] FAIL: cannot disassemble (javap not available); required for Stage $STAGE gate" >&2
+    exit 1
+  fi
 fi
 
 # Create a temporary workspace for the test compilation.
