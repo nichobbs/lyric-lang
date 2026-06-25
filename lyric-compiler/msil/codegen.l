@@ -5154,7 +5154,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             match elemTy {
               case MInt -> insns.add(MLdelemI4)
               case MBool -> insns.add(MLdelemU1)   // bool is i1, ldelem.u1
-              case MChar -> insns.add(MLdelemI2)   // char is i2, ldelem.i2
+              case MChar -> insns.add(MLdelemU2)   // char is u2, ldelem.u2
               case MByte -> insns.add(MLdelemU1)
               case MString -> insns.add(MLdelemRef)
               case MObject -> insns.add(MLdelemRef)
