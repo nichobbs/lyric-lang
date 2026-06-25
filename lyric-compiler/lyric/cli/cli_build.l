@@ -233,12 +233,6 @@ func cmdBuild(argv: in slice[String]): Int {
       i += 1
     }
   }
-  // `--rid` only applies to `--release` (Native AOT); warn rather than ignore
-  // it silently on a normal build (#2022).
-  match ridArg {
-    case Some(_) -> if not release { printErr("build: warning: --rid has no effect without --release") }
-    case None -> ()
-  }
   // `--no-restore` only affects project-mode auto-restore; warn rather than
   // silently ignore it on a single-file build (#2048).
   if noRestore and positional.count > 0 {
@@ -298,6 +292,12 @@ func cmdBuild(argv: in slice[String]): Int {
         allFeatures,
         noRestore
       )
+    }
+    // `--rid` only applies to `--release` / `kind = "aot"` (Native AOT); warn
+    // here — the only project-mode path where ridArg is genuinely unused (#2022).
+    match ridArg {
+      case Some(_) -> printErr("build: warning: --rid has no effect without --release")
+      case None -> ()
     }
     return buildProject(mfPath, explicitOut, target, cliFeatures, noDefaultFeatures, allFeatures, noRestore)
   }

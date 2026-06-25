@@ -4300,6 +4300,11 @@ jobs:
           fi
           echo "CLI project-aware-defaults e2e smoke test passed"
 
+      # clang and zlib1g-dev are required by the ILCompiler linker pass used by
+      # `lyric build --release` (the trampoline-elimination pipeline, #4139).
+      - name: Install clang for Native AOT e2e
+        run: sudo apt-get update -qq && sudo apt-get install -y clang zlib1g-dev
+
       # Release entry-detection self-test — exercises Lyric.Release's pure
       # source-introspection helpers (packageNameOf / declaresEntryMain) via
       # native `lyric test`.  The Lyric.Release compiler-package import is
