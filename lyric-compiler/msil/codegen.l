@@ -17886,7 +17886,7 @@ func synthesizeClosureClassMsil(cctx: in CodegenCtx, lambdaName: in String, pkgN
     baseClass = "System.Object",
     fields = fields,
     methods = newList(),
-    useDefaultCtor = false,
+    useDefaultCtor = true,  // Phase 2: Emit a public parameterless ctor for closure instantiation
     generics = newList()
   )
   closure
