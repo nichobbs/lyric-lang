@@ -166,19 +166,34 @@ try_bootstrap_from_release() {
   fi
 
   if command -v jq &>/dev/null; then
-    # Use jq for robust JSON parsing if available
-    # Find the first non-draft release with a tag_name
-    # Note: draft field defaults to false if missing
+    # Use jq for robust JSON parsing if available.
+    # Strategy: prefer non-draft releases (stable), but fall back to draft releases
+    # (e.g., newly-published releases being finalized by the workflow).
+    # Note: draft field defaults to false if missing.
+
+    # First try non-draft releases
     latest_release=$(echo "$api_response" | jq -r '.[] | select((.draft // false) != true) | .tag_name | select(. != null and . != "")' 2>/dev/null | head -1)
+
+    # If no non-draft found, fall back to the latest draft (in case a fresh release
+    # is being published and not yet finalized)
+    if [[ -z "$latest_release" ]]; then
+      info "  No non-draft release found; checking for draft releases..."
+      latest_release=$(echo "$api_response" | jq -r '.[0] | select(.tag_name != null and .tag_name != "") | .tag_name' 2>/dev/null)
+    fi
   else
-    # Fall back to basic grep+sed for systems without jq
-    # Look for "draft": false, then extract the tag_name from that release block
-    # Use a multi-line approach: find the line with draft:false, then search backward/forward for tag_name
+    # Fall back to basic grep+sed for systems without jq.
+    # Try non-draft releases first
     if echo "$api_response" | grep -q '"draft": false'; then
       # Find the portion with non-draft releases and extract the first tag_name
       # Convert multiline JSON to single line, split on "}, then grep for non-draft
       latest_release=$(printf "%s" "$api_response" | tr '\n' ' ' | sed 's/"}, *"/"}\n"/g' | \
         grep '"draft": false' | head -1 | \
+        sed 's/.*"tag_name": "\([^"]*\)".*/\1/')
+    else
+      # Fall back to the latest release (draft or not)
+      info "  No non-draft release found; checking for draft releases..."
+      latest_release=$(printf "%s" "$api_response" | tr '\n' ' ' | sed 's/"}, *"/"}\n"/g' | \
+        head -1 | \
         sed 's/.*"tag_name": "\([^"]*\)".*/\1/')
     fi
   fi
