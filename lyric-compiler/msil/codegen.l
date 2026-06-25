@@ -24283,18 +24283,23 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
   val typeRefName = if typeArity > 0 { typeName + "`" + toString(typeArity) } else { typeName }
   val typeFqn = packageName + "." + typeName
   val typeRefKey = packageName + "/" + typeFqn
+
+  // Always register the TypeRef (even if cached in ffiTypeRefs) to ensure it's
+  // in the metadata tables. The ffiTypeRefs dictionary is for cross-compilation
+  // bookkeeping; the tables are the canonical source.
+  val row = ctxAddTypeRef(cctx.lctx, packageName, typeRefName, asmRefRow)
   if not cctx.ffiTypeRefs.containsKey(typeRefKey) {
-    val row = ctxAddTypeRef(cctx.lctx, packageName, typeRefName, asmRefRow)
     cctx.ffiTypeRefs.add(typeRefKey, row)
-    // For generic types, also register with the arity-suffixed key so that
-    // cross-package references like "Std.Core.Result`2" can find the TypeRef
-    // (they come in with the arity suffix but were registered with plain key).
-    if typeArity > 0 {
-      val typeFqnWithArity = typeFqn + "`" + toString(typeArity)
-      val typeRefKeyWithArity = packageName + "/" + typeFqnWithArity
-      if not cctx.ffiTypeRefs.containsKey(typeRefKeyWithArity) {
-        cctx.ffiTypeRefs.add(typeRefKeyWithArity, row)
-      }
+  }
+
+  // For generic types, also register with the arity-suffixed key so that
+  // cross-package references like "Std.Core.Result`2" can find the TypeRef
+  // (they come in with the arity suffix but were registered with plain key).
+  if typeArity > 0 {
+    val typeFqnWithArity = typeFqn + "`" + toString(typeArity)
+    val typeRefKeyWithArity = packageName + "/" + typeFqnWithArity
+    if not cctx.ffiTypeRefs.containsKey(typeRefKeyWithArity) {
+      cctx.ffiTypeRefs.add(typeRefKeyWithArity, row)
     }
   }
   registerTypeFqnCandidate(cctx, typeName, typeFqn)
