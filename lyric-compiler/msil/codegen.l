@@ -5153,8 +5153,8 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             // Typed array: use ldelem.<type> directly (no unbox needed for value types).
             match elemTy {
               case MInt -> insns.add(MLdelemI4)
-              case MBool -> insns.add(MLdelemI4)  // bool is i1, but ldelem.i4 works for i1
-              case MChar -> insns.add(MLdelemI4)  // char is u2, but ldelem.i4 works
+              case MBool -> insns.add(MLdelemU1)   // bool is i1, ldelem.u1
+              case MChar -> insns.add(MLdelemI2)   // char is i2, ldelem.i2
               case MByte -> insns.add(MLdelemU1)
               case MString -> insns.add(MLdelemRef)
               case MObject -> insns.add(MLdelemRef)

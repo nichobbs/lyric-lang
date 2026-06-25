@@ -616,6 +616,7 @@ pub union MInsn {
   case MLdlen                          // load array length (pushes native int)
   case MLdelemRef                      // ldelem.ref — reference array element (String[], object[])
   case MLdelemU1                       // ldelem.u1  — byte array element (byte[])
+  case MLdelemI2                       // ldelem.i2  — int16 array element (char[])
   case MLdelemI4                       // ldelem.i4  — int32 array element (int[])
   case MLdftn(methodToken: Int)        // ldftn — load function pointer (ELEMENT_TYPE_I on stack)
 
@@ -2158,6 +2159,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MLdlen -> emitLdlen(mb)
     case MLdelemRef -> emitLdelem_Ref(mb)
     case MLdelemU1 -> emitLdelem_U1(mb)
+    case MLdelemI2 -> emitLdelem_I2(mb)
     case MLdelemI4 -> emitLdelem_I4(mb)
     case MLdftn(tok) -> emitLdftn(mb, tok)
     case MLeave(lbl) -> emitLeave(mb, lbl)
