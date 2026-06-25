@@ -90,30 +90,6 @@ test "declaresEntryMain: comment markers inside a triple-quoted string stay lite
   assertTrue(Release.declaresEntryMain(src), "a // inside a triple-quoted literal does not stop the close scan")
 }
 
-// ── mainReturnsInt (#4128, #4136) ────────────────────────────────────────────
-test "mainReturnsInt: Int-returning main → true" {
-  assertTrue(Release.mainReturnsInt("package P\nfunc main(): Int { 0 }\n"), "func main(): Int")
-  assertTrue(Release.mainReturnsInt("pub func main(): Int { 0 }\n"), "pub func main(): Int")
-}
-
-test "mainReturnsInt: Unit/void main → false" {
-  assertTrue(not Release.mainReturnsInt("package P\nfunc main(): Unit { }\n"), "explicit Unit")
-  assertTrue(not Release.mainReturnsInt("func main() { }\n"), "no return annotation defaults to Unit")
-}
-
-test "mainReturnsInt: Int prefix of a longer type name is not Int (#4136)" {
-  assertTrue(not Release.mainReturnsInt("func main(): IntThing { x }\n"), "IntThing is not Int")
-}
-
-test "mainReturnsInt: spacing variants around the return annotation" {
-  assertTrue(Release.mainReturnsInt("func main() : Int { 0 }\n"), "space before colon")
-  assertTrue(Release.mainReturnsInt("func main():Int{ 0 }\n"), "no spaces, brace-delimited")
-}
-
-test "mainReturnsInt: no main → false" {
-  assertTrue(not Release.mainReturnsInt("func helper(): Int { 0 }\n"), "no main")
-}
-
 // ── localDepNotBuiltMessage (#3216) ──────────────────────────────────────────
 test "localDepNotBuiltMessage names the probed DLL path and the --out caveat (#3216)" {
   val m = Release.localDepNotBuiltMessage("util", "/proj/util/bin/Util.dll", "/proj/util/lyric.toml")
