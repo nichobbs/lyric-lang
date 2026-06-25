@@ -3517,29 +3517,25 @@ pub func finishHoistedCellMsil(
     match arrayElemTokenOpt(cctx, elemTy) {
       case Some(elemToken) -> {
         // Typed array path: create 1-element array and store unboxed value.
-        // Stack precondition: (array-ref-to-store-in, array-ref-for-sm-field, value)
-        // The stelem instruction requires [array-ref, index, value] on the stack.
-        // The caller pushes [array-ref-dup, array-ref-dup, value], so we need to:
-        // 1. Store the second array-ref (dup'd one) as the array-ref for storing
-        // 2. Restore the value
-        // 3. Pop value to preserve first array-ref for the cell slot
-        // 4. Push 0 (index)
-        // 5. Push value back
-        // 6. Call stelem with [second-array-ref, 0, value], leaving first-array-ref on stack
-        val tempSlot = allocSlotMsil(fctx, "__finishCell_temp_" + toString(fctx.slotTicker.count), elemTy)
+        // Stack precondition: (array-ref-1, array-ref-2, value) where both array-refs are the same.
+        // Need to preserve array-ref-1 for the cell slot and use array-ref-2 + value for stelem.
+        // The stelem instruction requires [array-ref, index, value] on the stack (TOS-2, TOS-1, TOS).
+        val valueSlot = allocSlotMsil(fctx, "__finishCell_value_" + toString(fctx.slotTicker.count), elemTy)
         val arraySlot = allocSlotMsil(fctx, "__finishCell_array_" + toString(fctx.slotTicker.count), MObject)
-        insns.add(MStloc(slot = arraySlot - fctx.paramCount))      // Pop 2nd array-ref → [array-ref-1, value]
-        insns.add(MStloc(slot = tempSlot - fctx.paramCount))       // Pop value → [array-ref-1]
-        insns.add(MLdloc(slot = arraySlot - fctx.paramCount))      // Push 2nd array-ref → [array-ref-1, array-ref-2]
+        insns.add(MStloc(slot = valueSlot - fctx.paramCount))      // Pop value → [array-ref-1, array-ref-2]
+        insns.add(MStloc(slot = arraySlot - fctx.paramCount))      // Pop array-ref-2 → [array-ref-1]
+        insns.add(MLdloc(slot = arraySlot - fctx.paramCount))      // Push array-ref-2 → [array-ref-1, array-ref-2]
         insns.add(MLdcI4(v = 0))                                   // Push index → [array-ref-1, array-ref-2, 0]
-        insns.add(MLdloc(slot = tempSlot - fctx.paramCount))       // Push value → [array-ref-1, array-ref-2, 0, value]
-        insns.add(MStelem(typeToken = elemToken))                  // Pop 3, store at [2,0] → [array-ref-1]
+        insns.add(MLdloc(slot = valueSlot - fctx.paramCount))      // Push value → [array-ref-1, array-ref-2, 0, value]
+        insns.add(MStelem(typeToken = elemToken))                  // stelem pops [value, 0, array-ref-2] → [array-ref-1]
         // Allocate cell slot with array type
         val arrayTy = match elemTy {
           case MInt -> MArray(MInt)
           case MBool -> MArray(MBool)
           case MChar -> MArray(MChar)
           case MByte -> MArray(MByte)
+          case MLong -> MArray(MLong)
+          case MDouble -> MArray(MDouble)
           case MString -> MArray(MString)
           case MObject -> MArray(MObject)
           case _ -> MObject  // Fallback
