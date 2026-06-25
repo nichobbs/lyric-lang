@@ -2987,4 +2987,4 @@ pub func dllNullaryInstanceInfo(dllPath: in String): InstanceFieldKind {
     case Ok(raw) -> imageNullaryInstanceInfo(raw.toArray())
   }
 }
-// Return `path + /Lyric.Stdlib.Core.dll` when it exists, else "".
+
