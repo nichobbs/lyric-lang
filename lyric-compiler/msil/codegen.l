@@ -4519,16 +4519,13 @@ func arrayElemTokenOpt(cctx: in CodegenCtx, e: in MsilType): Option[Int] {
 }
 
 // Helper: Check if a type can be loaded from a typed array using available ldelem instructions.
-// The IR only supports MLdelemRef, MLdelemU1, and MLdelemI4, so Long and Double must fall back
-// to object[] (List-backed path). This restriction is temporary: once the IR adds MLdelemI8 and
-// MLdelemR8, this can be relaxed.
 func canUseTypedArrayLoad(ty: in MsilType): Bool {
   match ty {
-    case MInt -> true
-    case MLong -> false      // No MLdelemI8 in current IR
-    case MDouble -> false    // No MLdelemR8 in current IR
+    case MInt -> true        // Use MLdelemI4
+    case MLong -> true       // Use MLdelemI8
+    case MDouble -> true     // Use MLdelemR8
     case MBool -> true       // Use MLdelemI4
-    case MChar -> true       // Use MLdelemI4
+    case MChar -> true       // Use MLdelemU2
     case MByte -> true       // Use MLdelemU1
     case MString -> true     // Use MLdelemRef
     case MObject -> true     // Use MLdelemRef
@@ -5153,6 +5150,8 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             // Typed array: use ldelem.<type> directly (no unbox needed for value types).
             match elemTy {
               case MInt -> insns.add(MLdelemI4)
+              case MLong -> insns.add(MLdelemI8)
+              case MDouble -> insns.add(MLdelemR8)
               case MBool -> insns.add(MLdelemU1)   // bool is i1, ldelem.u1
               case MChar -> insns.add(MLdelemU2)   // char is u2, ldelem.u2
               case MByte -> insns.add(MLdelemU1)
