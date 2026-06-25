@@ -244,6 +244,44 @@ pub func semverMajor(version: in String): Int {
   }
 }
 
+// Attempt to build IlcPaths from an already-populated probe directory.
+// Returns None on any missing file or parse failure so the caller can fall
+// through to a full `dotnet restore`.  Used as the cache-hit fast path.
+func tryLoadCachedIlcPaths(probeDir: in String, rid: in String): Option[IlcPaths] {
+  val assetsPath = Path.join(Path.join(probeDir, "obj"), "project.assets.json")
+  if not File.fileExists(assetsPath) {
+    return None
+  }
+  val assetsJson = match File.readText(assetsPath) { case Err(_) -> return None; case Ok(t) -> t }
+  val pkgsDir = match jsonStringField(assetsJson, "packagesPath") { case None -> return None; case Some(p) -> p }
+  val ilcVersion = match parseIlcVersion(assetsJson, rid) { case None -> return None; case Some(v) -> v }
+  val ilcBin = Path.join(
+    Path.join(
+      Path.join(Path.join(pkgsDir, "runtime." + rid + ".microsoft.dotnet.ilcompiler"), ilcVersion),
+      "tools"
+    ),
+    "ilc"
+  )
+  if not File.fileExists(ilcBin) {
+    return None
+  }
+  val major = semverMajor(ilcVersion)
+  val tfm = "net" + toString(major) + ".0"
+  val nativeaotRoot = Path.join(
+    Path.join(
+      Path.join(Path.join(pkgsDir, "microsoft.netcore.app.runtime.nativeaot." + rid), ilcVersion),
+      "runtimes"
+    ),
+    rid
+  )
+  val sdkPath = Path.join(nativeaotRoot, "native")
+  val frameworkPath = Path.join(Path.join(nativeaotRoot, "lib"), tfm)
+  if not File.dirExists(sdkPath) {
+    return None
+  }
+  Some(value = IlcPaths(ilcBin = ilcBin, sdkPath = sdkPath, frameworkPath = frameworkPath))
+}
+
 // Restore the ILC probe project and return the NuGet packages directory and
 // ILC version.  The probe project lives under `<stageDir>/ilc-probe/`.
 // Returns Err with a diagnostic message on any failure.
@@ -255,6 +293,14 @@ func restoreIlcProbe(stageDir: in String, rid: in String): Result[IlcPaths, Stri
       case Err(e) -> return Err(error = "could not create ILC probe dir: " + IOError.message(e))
     }
   }
+
+  // Fast path: if a previous restore already populated obj/project.assets.json and
+  // the ILC binary is still present in the NuGet cache, skip dotnet restore entirely.
+  match tryLoadCachedIlcPaths(probeDir, rid) {
+    case Some(cached) -> return Ok(value = cached)
+    case None -> ()
+  }
+
   val csprojPath = Path.join(probeDir, "probe.csproj")
   match File.writeText(csprojPath, probeProjectContent(rid)) {
     case Ok(_) -> ()
@@ -598,7 +644,6 @@ func buildLinkerArgsUnix(
   args.add(outBin)
 
   // Optimization / strip (match Release config)
-  args.add("-gz=zlib")
   args.add("-fuse-ld=bfd")
 
   // Native shim static archives (netcoreapp native libs)
