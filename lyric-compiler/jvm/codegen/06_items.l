@@ -532,21 +532,38 @@ func computeHoistedVarNamesJvm(
 }
 
 // Collect all `var` declarations in a function body.
-func collectMutableVarsExpr(e: in Expression, acc: in Map[String, Bool]): Unit {
+func collectMutableVarsExpr(e: in Expr, acc: in Map[String, Bool]): Unit {
   match e.kind {
-    case EIf(_, thenBody, elseBodyOpt) -> {
-      collectMutableVarsBlock(thenBody, acc)
-      match elseBodyOpt {
-        case Some(eb) -> collectMutableVarsExpr(eb, acc)
+    case EIf(cond, thenBranch, elseBranch, thenForm) -> {
+      match thenBranch {
+        case EOBExpr(ex) -> collectMutableVarsExpr(ex, acc)
+        case EOBBlock(blk) -> collectMutableVarsBlock(blk, acc)
+      }
+      match elseBranch {
+        case Some(eb) -> {
+          match eb {
+            case EOBExpr(ex) -> collectMutableVarsExpr(ex, acc)
+            case EOBBlock(blk) -> collectMutableVarsBlock(blk, acc)
+          }
+        }
         case None -> ()
       }
     }
-    case EMatch(_, arms) -> {
+    case EMatch(scr, arms) -> {
       var ai = 0
       while ai < arms.count {
-        collectMutableVarsBlock(arms[ai].body, acc)
+        match arms[ai].body {
+          case EOBExpr(ex) -> collectMutableVarsExpr(ex, acc)
+          case EOBBlock(blk) -> collectMutableVarsBlock(blk, acc)
+        }
         ai = ai + 1
       }
+    }
+    case EBlock(blk) -> {
+      collectMutableVarsBlock(blk, acc)
+    }
+    case EUnsafe(blk) -> {
+      collectMutableVarsBlock(blk, acc)
     }
     case _ -> ()
   }
@@ -562,6 +579,12 @@ func collectMutableVarsBlock(b: in Block, acc: in Map[String, Bool]): Unit {
             if not acc.containsKey(name) {
               acc.add(name, true)
             }
+          }
+          case LBVal(_, _, init) -> {
+            collectMutableVarsExpr(init, acc)
+          }
+          case LBLet(_, _, init) -> {
+            collectMutableVarsExpr(init, acc)
           }
           case _ -> ()
         }

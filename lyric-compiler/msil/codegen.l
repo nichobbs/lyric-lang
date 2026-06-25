@@ -7247,16 +7247,32 @@ func emitCellAssignMsil(
   op: in AssignOp,
   value: in Expr,
 ): Unit {
-  emitCellLoadMsil(fctx, insns, isCapture, idx)
-  insns.add(MLdcI4(v = 0))
   match op {
     case AssEq -> {
-      val _ = lowerExprMsil(cctx, fctx, insns, value)
-    }
-    case _ -> {
+      // Simple assignment: load array, load index, compute value, store
       emitCellLoadMsil(fctx, insns, isCapture, idx)
       insns.add(MLdcI4(v = 0))
-      // For compound ops, read current value based on cell type.
+      val _ = lowerExprMsil(cctx, fctx, insns, value)
+      // Store the value: for typed arrays use stelem, for List[object] use set_Item.
+      match arrayElemTokenOpt(cctx, elemTy) {
+        case Some(elemToken) -> {
+          // Typed array: store directly without boxing
+          insns.add(MStelem(typeToken = elemToken))
+        }
+        case None -> {
+          // List[object]: box and call set_Item
+          boxIfNeededMsil(cctx, insns, elemTy)
+          insns.add(MCallvirt(methodToken = cctx.tokListObjSetItem))
+        }
+      }
+    }
+    case _ -> {
+      // Compound assignment: read, combine, store
+      // We use a temp-slot pattern like the JVM: read from cell, compute combined value,
+      // store to temp, reload cell and index, load temp, then store to cell[0].
+      emitCellLoadMsil(fctx, insns, isCapture, idx)
+      insns.add(MLdcI4(v = 0))
+      // Read current value based on cell type.
       if canUseTypedArrayLoad(elemTy) {
         // Typed array: use ldelem.<type> directly
         match elemTy {
@@ -7275,19 +7291,28 @@ func emitCellAssignMsil(
         insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
         castObjectToMsil(cctx, insns, elemTy)
       }
+      // Compute combined value
       emitCompoundCombineMsil(cctx, fctx, insns, op, elemTy, value)
-    }
-  }
-  // Store the value: for typed arrays use stelem, for List[object] use set_Item.
-  match arrayElemTokenOpt(cctx, elemTy) {
-    case Some(elemToken) -> {
-      // Typed array: store directly without boxing
-      insns.add(MStelem(typeToken = elemToken))
-    }
-    case None -> {
-      // List[object]: box and call set_Item
-      boxIfNeededMsil(cctx, insns, elemTy)
-      insns.add(MCallvirt(methodToken = cctx.tokListObjSetItem))
+      // Store combined value to a temporary local
+      val tempSlot = allocSlotMsil(fctx, "__cell_temp_" + toString(fctx.slots.count), elemTy)
+      emitStoreSlot(insns, tempSlot, fctx.paramCount)
+      // Reload cell array and index
+      emitCellLoadMsil(fctx, insns, isCapture, idx)
+      insns.add(MLdcI4(v = 0))
+      // Load combined value from temp
+      emitLoadSlot(insns, tempSlot, fctx.paramCount)
+      // Store to cell[0]
+      match arrayElemTokenOpt(cctx, elemTy) {
+        case Some(elemToken) -> {
+          // Typed array: store directly without boxing
+          insns.add(MStelem(typeToken = elemToken))
+        }
+        case None -> {
+          // List[object]: box and call set_Item
+          boxIfNeededMsil(cctx, insns, elemTy)
+          insns.add(MCallvirt(methodToken = cctx.tokListObjSetItem))
+        }
+      }
     }
   }
 }

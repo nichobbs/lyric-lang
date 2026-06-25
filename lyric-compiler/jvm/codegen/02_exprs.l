@@ -2022,6 +2022,24 @@ func collectInLambdaNamesStmt(s: in Statement, acc: in List[String]): Unit {
       collectInLambdaNamesExpr(iter, acc)
       collectInLambdaNamesBlock(body, acc)
     }
+    case SScope(_, body) -> {
+      collectInLambdaNamesBlock(body, acc)
+    }
+    case SDefer(body) -> {
+      collectInLambdaNamesBlock(body, acc)
+    }
+    case STry(body, catches, finally_) -> {
+      collectInLambdaNamesBlock(body, acc)
+      var ci = 0
+      while ci < catches.count {
+        collectInLambdaNamesBlock(catches[ci].body, acc)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> collectInLambdaNamesBlock(fb, acc)
+        case None -> ()
+      }
+    }
     case _ -> ()
   }
 }
