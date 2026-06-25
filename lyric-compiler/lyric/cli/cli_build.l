@@ -19,6 +19,7 @@ import Lyric.Generator as Generator
 import Lyric.Emitter as Emitter
 import Lyric.AppHost as AppHost
 import Lyric.CfgGate as CfgGate
+import Std.Sort as Sort
 import Std.Time as Time
 import Std.Format as Format
 
@@ -152,6 +153,8 @@ func cmdBuild(argv: in slice[String]): Int {
   var ridArg: Option[String] = None
   var noRestore: Bool = false
   var watch: Bool = false
+  var releaseFromDll: Option[String] = None
+  var extraRefsDir: Option[String] = None
   val positional: List[String] = newList()
 
   var i = 1
@@ -215,6 +218,22 @@ func cmdBuild(argv: in slice[String]): Int {
     } else if arg == "--watch" {
       watch = true
       i += 1
+    } else if arg == "--release-from-dll" {
+      if i + 1 < argv.length {
+        releaseFromDll = Some(value = argv[i + 1])
+        i += 2
+      } else {
+        printErr("build: --release-from-dll requires an argument")
+        return 1
+      }
+    } else if arg == "--extra-refs-dir" {
+      if i + 1 < argv.length {
+        extraRefsDir = Some(value = argv[i + 1])
+        i += 2
+      } else {
+        printErr("build: --extra-refs-dir requires an argument")
+        return 1
+      }
     } else if arg == "--target" {
       if i + 1 < argv.length {
         val t = argv[i + 1]
@@ -231,6 +250,54 @@ func cmdBuild(argv: in slice[String]): Int {
     } else {
       positional.add(arg)
       i += 1
+    }
+  }
+  match releaseFromDll {
+    case Some(dll) -> {
+      if not File.fileExists(dll) {
+        printErr("build: --release-from-dll: file not found: " + dll)
+        return 1
+      }
+      val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case Dotnet -> Release.DotnetAot }
+      val extraRefs: List[String] = newList()
+      match extraRefsDir {
+        case Some(refsDir) -> {
+          match File.listFiles(refsDir) {
+            case Ok(files) -> {
+              val dllBase = Path.basename(dll)
+              val sorted = Sort.sortStrings(files.toArray())
+              for f in sorted {
+                if Str.endsWith(f, ".dll") and Path.basename(f) != dllBase {
+                  extraRefs.add(f)
+                }
+              }
+            }
+            case Err(e) -> {
+              printErr("build: --extra-refs-dir: " + IOError.message(e))
+              return 1
+            }
+          }
+        }
+        case None -> ()
+      }
+      val absDll = if Path.isAbsolute(dll) { dll } else { Path.join(Environment.currentDirectory(), dll) }
+      val outNative = match explicitOut {
+        case Some(o) -> o
+        case None -> {
+          val base = Path.basename(absDll)
+          Path.join(Path.dirname(absDll), stemOf(base, 4))  // strip ".dll"
+        }
+      }
+      return Release.buildRelease(releaseTarget, absDll, extraRefs, ridArg, outNative)
+    }
+    case None -> {
+      match extraRefsDir {
+        case Some(_) -> {
+          printErr("build: --extra-refs-dir requires --release-from-dll")
+          return 1
+        }
+        case None -> ()
+      }
     }
   }
   // `--no-restore` only affects project-mode auto-restore; warn rather than

@@ -62,7 +62,15 @@ for the existing bootstrap compiler only"):
   unblock stage-0 → stage-1 bootstrap are accepted.
 - The AOT entry point `bootstrap/src/Lyric.Cli.Aot/` is a thin
   trampoline into the Lyric-emitted `Lyric.Cli.Program.main`; it
-  contains no F#.
+  contains no F#.  **The stage-2 (ship) binary is now produced
+  entirely by the self-hosted Lyric toolchain** via
+  `lyric build --release-from-dll` (D-progress-534).
+  `Lyric.Cli.Aot` is retained only as a bootstrap fallback: it is
+  still used for the stage-1/development `make lyric` workflow where
+  no prior `lyric` binary exists to run `--release-from-dll`.  Once
+  the release binary that carries `--release-from-dll` is the seed
+  binary, `Lyric.Cli.Aot` can be deleted entirely (tracked in
+  #4390).
 
 **Implementation:** Phase 5 §M5.4 (stdlib shim elimination shipped
 per D-progress-140). Ecosystem-library shim elimination is ongoing
@@ -86,7 +94,7 @@ blocker is resolved, delete the F# and strike the row. Nothing here is
 | `Lyric.Cli` — `Program.fs` | Bootstrap-only entry point handling the four internal flags `--internal-build`, `--internal-project-build`, `--internal-contract-meta`, `--internal-manifest-build` that stage 1 and the emitProject subprocess hop rely on. The F# *user-facing* CLI dispatcher was already deleted (#860). | The self-hosted MSIL bridge handling project/manifest/contract-meta builds fully in-process (no subprocess hop), so the internal flags are no longer invoked. |
 | `Lyric.Cli` — `Manifest.fs` | TOML parser consumed by `--internal-manifest-build` (stage-1 stdlib bundle). Self-hosted equivalent already exists at `lyric-compiler/lyric/manifest.l`. | Same as the `Program.fs` row — once the in-process bridge drives the manifest build, this goes with it. |
 | `Lyric.Cli` — `SelfHosted*.fs` (`SelfHostedBridge.fs`, `SelfHostedMsil.fs`, `SelfHostedMsilProject.fs`, `SelfHostedJvm.fs`) | Test-infrastructure bridges that drive the self-hosted MSIL/JVM pipeline in-process via reflection (used by `bootstrap/tests/**`). `SelfHostedMsilProject.fs` bridges the project-level compilation path (`compileProjectToMsilWithRestoredEncoded`), used by `SelfHostedRestoredPackageE2ETests.fs`. Not on any compiled program's runtime closure. | Native test harness (Lyric-side) that exercises the self-hosted pipeline without an F# reflection bridge. |
-| `Lyric.Cli.Aot` — `Program.cs` | Thin C# trampoline into the Lyric-emitted `Lyric.Cli.Program.main`. Not F# code; included here so the dependency picture is complete (#1526). | Retires together with the internal-flag handling above; the trampoline itself shrinks to nothing once NativeAOT publishing of the Lyric CLI is the shipping path. |
+| `Lyric.Cli.Aot` — `Program.cs` | Thin C# trampoline into the Lyric-emitted `Lyric.Cli.Program.main`. Not F# code; included here so the dependency picture is complete (#1526). **Stage-2 no longer uses it**: the stage-2 ship binary is built by the stage-1 `lyric build --release-from-dll` (D-progress-534). Still needed for the stage-1/development `make lyric` build where no `lyric` binary exists yet. | Seed binary picks up `--release-from-dll` support; then `build_aot_binary()` in `bootstrap.sh` can switch to the pure-Lyric path and `Lyric.Cli.Aot` can be deleted (#4390). |
 | ~~All ecosystem-library host shims (`Lyric.Storage.Host`, `Lyric.Auth.Host`, `Lyric.Session.Host`, `Lyric.Ws.Host`, `Lyric.Jobs.Host`, `Lyric.Mq.Host`, `Lyric.Web.Host`, `Lyric.Jvm.Hosts`)~~ | All deleted — each library's kernel was ported to native `_kernel/*.l` BCL externs. | ~~Complete~~ — no ecosystem host shim remains. |
 | `bootstrap/tests/Lyric.{Lexer,Parser,TypeChecker,Emitter,Cli}.Tests` | Expecto runners. The Emitter suite also discovers and runs every self-hosted `*_self_test.l`; the Cli suite drives the self-hosted bridges. | Native `lyric test` discovering the `.l` self-tests directly (partially landed; see #1324) plus a Lyric-side runner for the F# unit coverage worth keeping. |
 
