@@ -14483,6 +14483,40 @@ func collectAwaitTypesExprPB(
     case EPropagate(inner) -> collectAwaitTypesExprPB(cctx, pkgName, inner, acc, spawnNms, spawnTys)
     case EMember(recv, _) -> collectAwaitTypesExprPB(cctx, pkgName, recv, acc, spawnNms, spawnTys)
     case EPrefix(_, op) -> collectAwaitTypesExprPB(cctx, pkgName, op, acc, spawnNms, spawnTys)
+    case ETuple(exprs) -> {
+      var ti = 0
+      while ti < exprs.count {
+        collectAwaitTypesExprPB(cctx, pkgName, exprs[ti], acc, spawnNms, spawnTys)
+        ti = ti + 1
+      }
+    }
+    case EList(exprs) -> {
+      var li = 0
+      while li < exprs.count {
+        collectAwaitTypesExprPB(cctx, pkgName, exprs[li], acc, spawnNms, spawnTys)
+        li = li + 1
+      }
+    }
+    case EIndex(recv, indices) -> {
+      collectAwaitTypesExprPB(cctx, pkgName, recv, acc, spawnNms, spawnTys)
+      var indi = 0
+      while indi < indices.count {
+        collectAwaitTypesExprPB(cctx, pkgName, indices[indi], acc, spawnNms, spawnTys)
+        indi = indi + 1
+      }
+    }
+    case ETypeApp(fn, _) -> collectAwaitTypesExprPB(cctx, pkgName, fn, acc, spawnNms, spawnTys)
+    case EInterpolated(segments) -> {
+      var si = 0
+      while si < segments.count {
+        match segments[si] {
+          case ISText(_, _) -> {
+          }
+          case ISExpr(e) -> collectAwaitTypesExprPB(cctx, pkgName, e, acc, spawnNms, spawnTys)
+        }
+        si = si + 1
+      }
+    }
     case _ -> {
     }
   }
