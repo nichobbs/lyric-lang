@@ -5180,22 +5180,42 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           }
         }
         case None -> {
-          // Captured enclosing variable inside a lifted closure body (#1479):
-          // read it from `object[] __caps` (slot 0) and unbox/cast to its type.
-          // A by-reference capture (`captureCellNames`) holds a `List[object]`
-          // cell in that slot — read element 0 of the cell instead of the slot.
+          // Captured enclosing variable inside a lifted closure body (#1479, #1877 Phase 2).
+          // Phase 1: read from `object[] __caps` (slot 0) using array indexing.
+          // Phase 2: read from closure-class instance using typed field access.
+          // A by-reference capture (`captureCellNames`) holds a `List[object>` cell.
           match mapGet(fctx.captureNameToIndex, name) {
             case Some(capIdx) -> {
-              emitLoadVarMsil(fctx, insns, 0)
-              insns.add(MLdcI4(v = capIdx))
-              insns.add(MLdelemRef)
-              val capTy = match mapGet(fctx.captureNameToType, name) { case Some(t) -> t; case None -> MObject }
-              if nameListContains(fctx.captureCellNames, name) {
-                insns.add(MLdcI4(v = 0))
-                insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
+              // Check if __caps is a closure class (Phase 2) or array (Phase 1)
+              val capsType = match mapGet(fctx.types, "__caps") { case Some(t) -> t; case None -> MObject }
+              match capsType {
+                case MClass(closureClassName) -> {
+                  // Phase 2: load from closure class field __f<i>
+                  emitLoadVarMsil(fctx, insns, 0)
+                  val fieldName = "__f" + toString(capIdx)
+                  insns.add(MLdfldByName(ownerFqn = closureClassName, fieldName = fieldName))
+                  val capTy = match mapGet(fctx.captureNameToType, name) { case Some(t) -> t; case None -> MObject }
+                  if nameListContains(fctx.captureCellNames, name) {
+                    insns.add(MLdcI4(v = 0))
+                    insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
+                  }
+                  castObjectToMsil(cctx, insns, capTy)
+                  return capTy
+                }
+                case _ -> {
+                  // Phase 1: load from object[] __caps using array indexing
+                  emitLoadVarMsil(fctx, insns, 0)
+                  insns.add(MLdcI4(v = capIdx))
+                  insns.add(MLdelemRef)
+                  val capTy = match mapGet(fctx.captureNameToType, name) { case Some(t) -> t; case None -> MObject }
+                  if nameListContains(fctx.captureCellNames, name) {
+                    insns.add(MLdcI4(v = 0))
+                    insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
+                  }
+                  castObjectToMsil(cctx, insns, capTy)
+                  return capTy
+                }
               }
-              castObjectToMsil(cctx, insns, capTy)
-              return capTy
             }
             case None -> {
             }
@@ -6243,67 +6263,68 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           } else {
             buildFuncNCtorTok(cctx, nparams)
           }
-          // Delegate target: uses object[] array for all capturing lambdas (Phase 1 approach).
-          // Phase 2 typed closure classes are deferred pending completion of the full ABI migration.
+          // Phase 2: Use typed closure classes instead of object[] arrays.
+          // Each capturing lambda gets a synthesized __Closure_<i> record with typed fields
+          // for each capture (#1877 Phase 2).  Non-capturing lambdas still use null.
 
           if caps.count > 0 {
-            // Allocate object[] array for captures (Phase 1 approach).
-            // Phase 2 typed closure classes are synthesized and emitted for future use,
-            // but the delegate instantiation ABI still uses the object[] array for now (#4223).
-
-            // Allocate object[] array for captures
-            insns.add(MLdcI4(v = caps.count))
-            insns.add(MNewarr(typeToken = 0x01000000 + cctx.lctx.trObject))
-
-            // Store each capture in the object[]
-            var capStI = 0
-            while capStI < caps.count {
-              insns.add(MDup)
-              insns.add(MLdcI4(v = capStI))
-              val capName = caps[capStI]
-
-              // Load the capture value
-              if fctx.captureNameToIndex.containsKey(capName) {
-                // Outer-scope capture: load from parent's __caps[index]
-                match mapGet(fctx.captureNameToIndex, capName) {
-                  case Some(parentIdx) -> {
-                    // __caps is always at slot 0 for capturing lambdas (implicit first parameter)
-                    emitLoadVarMsil(fctx, insns, 0)
-                    insns.add(MLdcI4(v = parentIdx))
-                    insns.add(MLdelemRef)
-                  }
-                  case None -> panic("Msil.Codegen ICE: capture '" + capName + "' found in captureNameToIndex but mapGet failed")
-                }
-              } else if nameListContains(capCells, capName) {
-                // Hoisted var cell: load the cell reference
-                match mapGet(fctx.hoistedCellSlot, capName) {
-                  case Some(s) -> emitLoadVarMsil(fctx, insns, s)
-                  case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.hoistedCellSlot")
-                }
-              } else {
-                // Local capture: load and box the value
-                match mapGet(fctx.slots, capName) {
-                  case Some(s) -> emitLoadVarMsil(fctx, insns, s)
-                  case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots")
-                }
-                match mapGet(fctx.types, capName) {
-                  case Some(t) -> {
-                    match t {
-                      case MInt -> insns.add(MBox(typeToken = cctx.trInt32))
-                      case MLong -> insns.add(MBox(typeToken = cctx.trInt64))
-                      case MFloat -> insns.add(MBox(typeToken = cctx.trDouble))
-                      case MDouble -> insns.add(MBox(typeToken = cctx.trDouble))
-                      case MBool -> insns.add(MBox(typeToken = cctx.trBoolean))
-                      case MChar -> insns.add(MBox(typeToken = cctx.trChar))
-                      case _ -> ()
+            // Phase 2: Instantiate the closure class with typed fields.
+            // The closure class is synthesized and registered in cctx.lambdaClosureClasses
+            // during the ELambda type-checking pass above (lines 6224-6229).
+            match mapGet(cctx.lambdaClosureClasses, lname) {
+              case Some(closureRecord) -> {
+                val closureClassFqn = closureRecord.className
+                // Create closure instance via parameterless constructor
+                // The constructor token is looked up via the closure class FQN
+                match mapGet(cctx.recordCtorTokens, closureClassFqn) {
+                  case Some(closureCtorTok) -> {
+                    // Register the closure constructor so lowerFuncMsil can use it
+                    // to track the closure class type at __caps slot 0
+                    cctx.lambdaClosureCtorTokens.add(lname, closureCtorTok)
+                    insns.add(MNewobj(ctorToken = closureCtorTok))
+                    // Store each capture in the closure class fields
+                    var capStI = 0
+                    while capStI < caps.count {
+                      insns.add(MDup)
+                      val capName = caps[capStI]
+                      val fieldName = "__f" + toString(capStI)
+                      // Load the capture value
+                      if fctx.captureNameToIndex.containsKey(capName) {
+                        // Outer-scope capture: load from parent's closure instance
+                        // For re-captures from a parent Phase 1 lambda, parent's __caps is object[]
+                        // For re-captures from a parent Phase 2 lambda, parent's __caps is a closure class
+                        // Both cases: load __caps (at slot 0) and read the capture
+                        match mapGet(fctx.captureNameToIndex, capName) {
+                          case Some(parentIdx) -> {
+                            emitLoadVarMsil(fctx, insns, 0)
+                            insns.add(MLdcI4(v = parentIdx))
+                            insns.add(MLdelemRef)
+                          }
+                          case None -> panic("Msil.Codegen ICE: capture '" + capName + "' found in captureNameToIndex but mapGet failed")
+                        }
+                      } else if nameListContains(capCells, capName) {
+                        // Hoisted var cell: load the cell reference
+                        match mapGet(fctx.hoistedCellSlot, capName) {
+                          case Some(s) -> emitLoadVarMsil(fctx, insns, s)
+                          case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.hoistedCellSlot")
+                        }
+                      } else {
+                        // Local capture: load the value (no boxing — field type is specific)
+                        match mapGet(fctx.slots, capName) {
+                          case Some(s) -> emitLoadVarMsil(fctx, insns, s)
+                          case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots")
+                        }
+                      }
+                      insns.add(MStfldByName(ownerFqn = closureClassFqn, fieldName = fieldName))
+                      capStI = capStI + 1
                     }
                   }
-                  case None -> ()
+                  case None -> panic("Msil.Codegen: closure constructor token missing for " + closureClassFqn)
                 }
               }
-
-              insns.add(MStelem(typeToken = 0x01000000 + cctx.lctx.trObject))
-              capStI = capStI + 1
+              case None -> {
+                panic("Msil.Codegen: closure class not found for lambda " + lname)
+              }
             }
           } else {
             // Non-capturing lambda: delegate target is null (static method).
@@ -17177,12 +17198,22 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   // Allocate slots for parameters.  These occupy slots 0..N-1 in the
   // combined slot space but are NOT added to fctx.locals.
   val isLambdaFn = startsWith(decl.name, "__lambda_")
-  // Reserve slot 0 for `object[] __caps` and register each captured name's array
-  // index + logical type so EPath reads resolve to `__caps[i]` (#1479).
+  // Reserve slot 0 for `__caps` (Phase 1: object[] array, Phase 2: typed closure class instance).
+  // Register each captured name's field index + logical type so EPath reads resolve correctly (#1479, #1877 Phase 2).
   if hasCaps {
     val capsSlot = fctx.slotTicker.count
     fctx.slots.add("__caps", capsSlot)
-    fctx.types.add("__caps", MArray(elemTy = MObject))
+    // Phase 2 detection: check if this lambda has a closure class
+    match mapGet(cctx.lambdaClosureClasses, decl.name) {
+      case Some(closureRecord) -> {
+        // Phase 2: __caps is the closure class instance
+        fctx.types.add("__caps", MClass(className = closureRecord.className))
+      }
+      case None -> {
+        // Phase 1: __caps is object[] array (fallback for lambdas without closure classes)
+        fctx.types.add("__caps", MArray(elemTy = MObject))
+      }
+    }
     fctx.slotTicker.add(0)
     val capCells = match mapGet(cctx.lambdaCaptureCells, decl.name) { case Some(c) -> c; case None -> newList() }
     var cni = 0
@@ -17195,7 +17226,7 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
           case None -> MObject
         }
       )
-      // A by-reference capture: `__caps[cni]` holds the hoisted `var`'s cell.
+      // A by-reference capture: `__caps[cni]` or `__caps.__fi` holds the hoisted `var`'s cell.
       if nameListContains(capCells, lambdaCaps[cni]) {
         fctx.captureCellNames.add(lambdaCaps[cni])
       }
