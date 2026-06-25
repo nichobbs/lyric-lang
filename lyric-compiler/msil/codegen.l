@@ -24286,6 +24286,16 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
   if not cctx.ffiTypeRefs.containsKey(typeRefKey) {
     val row = ctxAddTypeRef(cctx.lctx, packageName, typeRefName, asmRefRow)
     cctx.ffiTypeRefs.add(typeRefKey, row)
+    // For generic types, also register with the arity-suffixed key so that
+    // cross-package references like "Std.Core.Result`2" can find the TypeRef
+    // (they come in with the arity suffix but were registered with plain key).
+    if typeArity > 0 {
+      val typeFqnWithArity = typeFqn + "`" + toString(typeArity)
+      val typeRefKeyWithArity = packageName + "/" + typeFqnWithArity
+      if not cctx.ffiTypeRefs.containsKey(typeRefKeyWithArity) {
+        cctx.ffiTypeRefs.add(typeRefKeyWithArity, row)
+      }
+    }
   }
   registerTypeFqnCandidate(cctx, typeName, typeFqn)
   match it.kind {
@@ -24328,6 +24338,15 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
         if not cctx.ffiTypeRefs.containsKey(caseRefKey) {
           val caseRow = ctxAddTypeRef(cctx.lctx, packageName, caseClassName, asmRefRow)
           cctx.ffiTypeRefs.add(caseRefKey, caseRow)
+          // For generic cases, also register with the arity-suffixed key so
+          // cross-package references with arity can find the TypeRef.
+          if caseArity > 0 {
+            val ctorKeyWithArity = ctorKey + "`" + toString(caseArity)
+            val caseRefKeyWithArity = packageName + "/" + ctorKeyWithArity
+            if not cctx.ffiTypeRefs.containsKey(caseRefKeyWithArity) {
+              cctx.ffiTypeRefs.add(caseRefKeyWithArity, caseRow)
+            }
+          }
         }
         val caseRow = match mapGet(cctx.ffiTypeRefs, caseRefKey) { case Some(r) -> r; case None -> 0 }
         // Register field MemberRefs so `ldfld` can read fields of cross-assembly
