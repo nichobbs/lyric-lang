@@ -192,7 +192,7 @@ func probeProjectContent(rid: in String): String {
 // Safe for `project.assets.json` because `packagesPath` appears exactly once,
 // inside `project.restore.packagesPath` — no library entry uses this key.
 // Only handles simple string values (no nested objects).
-func jsonStringField(json: in String, key: in String): Option[String] {
+pub func jsonStringField(json: in String, key: in String): Option[String] {
   val tag = "\"" + key + "\":"
   match Str.indexOf(json, tag) {
     case None -> None
@@ -221,7 +221,7 @@ func jsonStringField(json: in String, key: in String): Option[String] {
 
 // Extract the ILC version from the `libraries` section of `project.assets.json`.
 // The key has the form `"runtime.<RID>.Microsoft.DotNet.ILCompiler/<version>"`.
-func parseIlcVersion(assetsJson: in String, rid: in String): Option[String] {
+pub func parseIlcVersion(assetsJson: in String, rid: in String): Option[String] {
   val prefix = "\"runtime." + rid + ".Microsoft.DotNet.ILCompiler/"
   match Str.indexOf(assetsJson, prefix) {
     case None -> None
@@ -237,7 +237,7 @@ func parseIlcVersion(assetsJson: in String, rid: in String): Option[String] {
 }
 
 // Major version number from a semver string like "10.0.7" → 10.
-func semverMajor(version: in String): Int {
+pub func semverMajor(version: in String): Int {
   match Str.indexOf(version, ".") {
     case None -> 0
     case Some(dot) -> match Parse.tryParseInt(Str.substring(version, 0, dot)) { case Ok(n) -> n; case Err(_) -> 0 }
@@ -415,7 +415,7 @@ func appendAotFeatureLines(lines: in List[String]): Unit {
 // lowercase letters, digits, dots, and hyphens.  Rejects XML metacharacters
 // (< > & " ') that would inject into the probe .csproj <RuntimeIdentifier>
 // element if a user-supplied --rid value were passed through unvalidated.
-func isValidRid(rid: in String): Bool {
+pub func isValidRid(rid: in String): Bool {
   val n = Str.length(rid)
   if n == 0 or n > 50 {
     return false
@@ -434,7 +434,7 @@ func isValidRid(rid: in String): Bool {
 
 // Extract the OS component from a .NET RID: "linux-x64" → "linux",
 // "osx-arm64" → "osx", "win-x64" → "windows".
-func ridOs(rid: in String): String {
+pub func ridOs(rid: in String): String {
   match Str.indexOf(rid, "-") {
     case None -> rid
     case Some(i) -> {
@@ -452,7 +452,7 @@ func ridOs(rid: in String): String {
 
 // Extract the arch component from a .NET RID: "linux-x64" → "x64",
 // "linux-arm64" → "arm64", "osx-x64" → "x64".
-func ridArch(rid: in String): String {
+pub func ridArch(rid: in String): String {
   match Str.indexOf(rid, "-") {
     case None -> rid
     case Some(i) -> Str.substring(rid, i + 1, Str.length(rid) - i - 1)
