@@ -187,13 +187,13 @@ func probeProjectContent(rid: in String): String {
     "</Project>\n"
 }
 
-// Extract the value of a top-level `"key": "value"` JSON string field.
-// Searches for `\n  "<key>":` (newline + two-space indent) to match root-level
-// keys in a pretty-printed `project.assets.json` and avoid false matches on
-// identically-named keys inside nested library entries.
+// Extract the value of a `"key": "value"` JSON string field.
+// Finds the first occurrence of `"<key>":` anywhere in the document.
+// Safe for `project.assets.json` because `packagesPath` appears exactly once,
+// inside `project.restore.packagesPath` — no library entry uses this key.
 // Only handles simple string values (no nested objects).
 func jsonStringField(json: in String, key: in String): Option[String] {
-  val tag = "\n  \"" + key + "\":"
+  val tag = "\"" + key + "\":"
   match Str.indexOf(json, tag) {
     case None -> None
     case Some(tagIdx) -> {
@@ -699,7 +699,7 @@ pub func buildReleaseDotnet(
   val clangVersionArgs: List[String] = newList()
   clangVersionArgs.add("--version")
   val clangCheck = PC.runCaptureWithDiagnosticsTimeout("clang", clangVersionArgs, "", 10000)
-  if clangCheck.exitCode != 0 {
+  if clangCheck.timedOut or clangCheck.exitCode != 0 {
     releaseErr(
       "clang not found on PATH; install it before building Native AOT binaries\n" + "  Debian/Ubuntu: apt install clang\n" +
         "  Fedora:        dnf install clang\n" +
@@ -777,6 +777,10 @@ pub func buildReleaseDotnet(
   }
   if linkResult.exitCode != 0 {
     releaseErr("clang linker exited " + toString(linkResult.exitCode))
+    return 1
+  }
+  if not File.fileExists(outPath) {
+    releaseErr("linker exited 0 but output binary was not produced at " + outPath)
     return 1
   }
 
