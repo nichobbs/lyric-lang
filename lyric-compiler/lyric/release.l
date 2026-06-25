@@ -513,9 +513,13 @@ func buildIlcRsp(
   var pi = 0
   while pi < privateDlls.count {
     val p = Path.join(paths.sdkPath, privateDlls[pi])
-    if File.fileExists(p) {
-      lines.add(p)
+    if not File.fileExists(p) {
+      return Err(
+        error = "required ILC input '" + privateDlls[pi] + "' not found at '" + p + "'. " +
+          "The NativeAOT SDK pack may be incomplete — delete the ilc-probe directory and retry."
+      )
     }
+    lines.add(p)
     pi += 1
   }
 
@@ -723,15 +727,30 @@ pub func buildReleaseDotnet(
     return 1
   }
 
-  // Verify clang is on PATH before the slow ILC probe and compile steps.
+  // Verify clang and ld.bfd are on PATH before the slow ILC probe and compile steps.
+  // -fuse-ld=bfd in buildLinkerArgsUnix requires ld.bfd from GNU binutils; without
+  // it clang fails with a cryptic "unable to execute command: No such file or directory".
   val clangVersionArgs: List[String] = newList()
   clangVersionArgs.add("--version")
   val clangCheck = PC.runCaptureWithDiagnosticsTimeout("clang", clangVersionArgs, "", 10000)
   if clangCheck.timedOut or clangCheck.exitCode != 0 {
     releaseErr(
-      "clang not found on PATH; install it before building Native AOT binaries\n" + "  Debian/Ubuntu: apt install clang\n" +
-        "  Fedora:        dnf install clang\n" +
+      "clang not found on PATH; install it before building Native AOT binaries\n" +
+        "  Debian/Ubuntu: apt install clang binutils\n" +
+        "  Fedora:        dnf install clang binutils\n" +
         "  Alpine:        apk add clang binutils"
+    )
+    return 1
+  }
+  val ldBfdArgs: List[String] = newList()
+  ldBfdArgs.add("--version")
+  val ldBfdCheck = PC.runCaptureWithDiagnosticsTimeout("ld.bfd", ldBfdArgs, "", 10000)
+  if ldBfdCheck.timedOut or ldBfdCheck.exitCode != 0 {
+    releaseErr(
+      "ld.bfd (GNU binutils) not found on PATH; it is required by -fuse-ld=bfd\n" +
+        "  Debian/Ubuntu: apt install binutils\n" +
+        "  Fedora:        dnf install binutils\n" +
+        "  Alpine:        apk add binutils"
     )
     return 1
   }
@@ -786,6 +805,10 @@ pub func buildReleaseDotnet(
   }
   if not File.fileExists(objFile) {
     releaseErr("ilc did not produce object file at " + objFile)
+    return 1
+  }
+  if not File.fileExists(exportsFile) {
+    releaseErr("ilc did not produce exports file at " + exportsFile)
     return 1
   }
 
