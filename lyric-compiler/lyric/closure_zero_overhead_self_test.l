@@ -172,6 +172,24 @@ test "closure mutates var in loop" {
   assertEqualInt(sum, 10, "closure mutation accumulates across loop iterations")
 }
 
+test "closure captures and mutates Long var" {
+  var counter: Long = 0L
+  val addToCounter: (Long) -> Unit = { x: Long -> counter = counter + x }
+  addToCounter(100000000L)
+  assertEqualLong(counter, 100000000L, "closure increments Long var to 100000000")
+  addToCounter(200000000L)
+  assertEqualLong(counter, 300000000L, "closure increments Long var again to 300000000")
+}
+
+test "closure captures and mutates Double var" {
+  var accumulator: Double = 0.0
+  val addToAccum: (Double) -> Unit = { x: Double -> accumulator = accumulator + x }
+  addToAccum(1.5)
+  assertEqualDouble(accumulator, 1.5, 0.001, "closure increments Double var to 1.5")
+  addToAccum(2.5)
+  assertEqualDouble(accumulator, 4.0, 0.001, "closure increments Double var again to 4.0")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Multi-level nesting — closures chain through nested lambdas.
 // ─────────────────────────────────────────────────────────────────────────────
