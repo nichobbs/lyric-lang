@@ -237,6 +237,9 @@ pub record CodegenCtx {
   // Stage 1 (#1877): synthesized closure classes for lambda capture.
   // Key = lambda name (e.g. "__lambda_0"); value = corresponding MRecord closure class.
   lambdaClosureClasses: Map[String, MRecord]
+  // Parallel list of closure records in synthesis order (for emission to module).
+  // Maintained in sync with lambdaClosureClasses.add() calls.
+  lambdaClosureRecordList: List[MRecord]
   // Constructor tokens for synthesized closure classes.
   // Key = lambda name (e.g. "__lambda_0"); value = MemberRef token for __Closure_<i>.ctor.
   lambdaClosureCtorTokens: Map[String, Int]
@@ -1616,6 +1619,7 @@ pub func newCodegenCtx(
     lambdaCaptureTypes = newMap(),
     lambdaCaptureCells = newMap(),
     lambdaClosureClasses = newMap(),
+    lambdaClosureRecordList = newList(),
     lambdaClosureCtorTokens = newMap(),
     constValues = newMap(),
     constBareClaimed = newMap(),
@@ -6219,6 +6223,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         // The closure class has typed fields for each captured variable.
         val closureClass = synthesizeClosureClassMsil(cctx, lname, fctx.pkgName, idx, caps, capTypes)
         cctx.lambdaClosureClasses.add(lname, closureClass)
+        cctx.lambdaClosureRecordList.add(closureClass)
       }
       // FQN key (#1183 Phase 2): lambdas are package-scoped, registered by
       // `addPackageTokens` as `<pkg>.__lambda_<idx>`.
@@ -22998,9 +23003,11 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
   // type that was synthesized during code generation (lowerFuncMsil).
   // These records are required at runtime so System.Func/System.Action delegate
   // instances can load their closure type references.
-  // Note: closure records are emitted in the order they were synthesized, which
-  // corresponds to lambda indices and matches the indices used in the runtime
-  // closure type lookups during System.Func/System.Action construction.
+  var ci = 0
+  while ci < cctx.lambdaClosureRecordList.count {
+    items.add(MPRecord(rec = cctx.lambdaClosureRecordList[ci]))
+    ci = ci + 1
+  }
 
   // Emit the host class: functions + static fields (IConst/IVal).
   if fns.count > 0 or staticFields.count > 0 {
