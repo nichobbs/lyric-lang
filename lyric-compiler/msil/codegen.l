@@ -6254,43 +6254,10 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             capCheckI = capCheckI + 1
           }
 
-          if caps.count > 0 and not hasOuterScopeCaptures {
-            // Phase 2: Instantiate the typed closure class for this lambda.
-            // The closure class has typed fields __f<i> for each captured variable.
-            val closureClassFqn = fctx.pkgName + ".__Closure_" + toString(idx)
-            insns.add(MNewobjByName(className = closureClassFqn))
-
-            var capStI = 0
-            while capStI < caps.count {
-              insns.add(MDup)
-              val capName = caps[capStI]
-
-              // Load the captured value (local capture or hoisted cell).
-              if nameListContains(capCells, capName) {
-                // Hoisted var cell: load the cell reference directly.
-                // The closure field stores the cell (a typed array), not the value.
-                match mapGet(fctx.hoistedCellSlot, capName) {
-                  case Some(s) -> emitLoadVarMsil(fctx, insns, s)
-                  case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.hoistedCellSlot")
-                }
-              } else {
-                // Local capture: load from the function's local variable slot.
-                // No boxing needed — the closure field is typed with the actual capture type.
-                match mapGet(fctx.slots, capName) {
-                  case Some(s) -> emitLoadVarMsil(fctx, insns, s)
-                  case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots")
-                }
-              }
-
-              // Set the closure field with the captured value.
-              val fieldName = "__f" + toString(capStI)
-              insns.add(MStfldByName(ownerFqn = closureClassFqn, fieldName = fieldName))
-              capStI = capStI + 1
-            }
-          } else if caps.count > 0 and hasOuterScopeCaptures {
-            // Phase 1: Fall back to object[] for nested lambdas with outer-scope captures.
-            // This is a temporary limitation of Phase 2 (#4229). Nested lambdas that capture
-            // variables from outer functions use the legacy object[] approach.
+          if caps.count > 0 {
+            // Allocate object[] array for captures (Phase 1 approach).
+            // Phase 2 typed closure classes are synthesized and emitted for future use,
+            // but the delegate instantiation ABI still uses the object[] array for now (#4223).
 
             // Allocate object[] array for captures
             insns.add(MLdcI4(v = caps.count))
