@@ -6214,8 +6214,12 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         cctx.lambdaCaptureNames.add(lname, caps)
         cctx.lambdaCaptureTypes.add(lname, capTypes)
         cctx.lambdaCaptureCells.add(lname, capCells)
-        // Phase 2 closure class synthesis disabled pending Phase 1 full completion (#4223).
-        // The closure class is not synthesized or used when Phase 1 object[] approach is in effect.
+        // Synthesize closure class (#1877 Phase 1): emit a __Closure_<i> record with
+        // typed fields for captures instead of object[] array. Store in context for
+        // emission to the module's TypeDef table and use in delegate instantiation.
+        val closureClass = synthesizeClosureClassMsil(cctx, lname, fctx.pkgName, idx, caps, capTypes)
+        cctx.lambdaClosureClasses.add(lname, closureClass)
+        cctx.lambdaClosureRecordList.add(closureClass)
       }
       // FQN key (#1183 Phase 2): lambdas are package-scoped, registered by
       // `addPackageTokens` as `<pkg>.__lambda_<idx>`.
