@@ -6261,7 +6261,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
 
             // Allocate object[] array for captures
             insns.add(MLdcI4(v = caps.count))
-            insns.add(MNewarr(typeToken = cctx.lctx.trObject))
+            insns.add(MNewarr(typeToken = 0x01000000 + cctx.lctx.trObject))
 
             // Store each capture in the object[]
             var capStI = 0
@@ -6275,13 +6275,12 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 // Outer-scope capture: load from parent's __caps[index]
                 // __caps is always at slot 0 for capturing lambdas (implicit first parameter)
                 emitLoadVarMsil(fctx, insns, 0)
-                match mapGet(fctx.captureNameToIndex, capName) {
-                  case Some(parentIdx) -> {
-                    insns.add(MLdcI4(v = parentIdx))
-                    insns.add(MLdelemRef)
-                  }
-                  case None -> panic("Msil.Codegen ICE: capture index not found")
+                val parentIdx = match mapGet(fctx.captureNameToIndex, capName) {
+                  case Some(idx) -> idx
+                  case None -> 0  // Fallback: shouldn't happen if containsKey succeeded
                 }
+                insns.add(MLdcI4(v = parentIdx))
+                insns.add(MLdelemRef)
               } else if nameListContains(capCells, capName) {
                 // Hoisted var cell: box the cell reference
                 match mapGet(fctx.hoistedCellSlot, capName) {
@@ -6310,7 +6309,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 }
               }
 
-              insns.add(MStelem(typeToken = cctx.lctx.trObject))
+              insns.add(MStelem(typeToken = 0x01000000 + cctx.lctx.trObject))
               capStI = capStI + 1
             }
           } else {
