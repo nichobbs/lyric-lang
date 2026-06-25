@@ -397,6 +397,7 @@ jobs:
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
       - name: Measure MSIL BOX instructions (epic #1877 Stage 2+ zero-overhead gate)
         working-directory: ${{ github.workspace }}
+        shell: bash
         run: |
           set -euo pipefail
           bash scripts/assert-no-box-msil.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" 2

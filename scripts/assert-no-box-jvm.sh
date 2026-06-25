@@ -67,6 +67,9 @@ cat > "$WORK_DIR/lyric.toml" <<'EOF'
 name = "ClosureZeroOverheadTestJvm"
 version = "0.0.1"
 
+[project]
+name = "ClosureZeroOverheadTestJvm"
+
 [dependencies]
 Std = "*"
 EOF
