@@ -411,6 +411,27 @@ func appendAotFeatureLines(lines: in List[String]): Unit {
   lines.add("--runtimeknob:System.Linq.Expressions.CanEmitObjectArrayDelegate=false")
 }
 
+// Validate a .NET RID: must be non-empty, at most 50 chars, and contain only
+// lowercase letters, digits, dots, and hyphens.  Rejects XML metacharacters
+// (< > & " ') that would inject into the probe .csproj <RuntimeIdentifier>
+// element if a user-supplied --rid value were passed through unvalidated.
+func isValidRid(rid: in String): Bool {
+  val n = Str.length(rid)
+  if n == 0 or n > 50 {
+    return false
+  }
+  val valid = "abcdefghijklmnopqrstuvwxyz0123456789._-"
+  var i = 0
+  while i < n {
+    val ch = Str.substring(rid, i, 1)
+    if not Str.contains(valid, ch) {
+      return false
+    }
+    i += 1
+  }
+  true
+}
+
 // Extract the OS component from a .NET RID: "linux-x64" → "linux",
 // "osx-arm64" → "osx", "win-x64" → "windows".
 func ridOs(rid: in String): String {
@@ -617,7 +638,6 @@ func buildLinkerArgsUnix(
   args.add("-Wl,--as-needed")
   args.add("-Wl,--strip-debug")
   args.add("-pie")
-  args.add("-Wl,-pie")
   args.add("-Wl,-z,relro")
   args.add("-Wl,-z,now")
 
@@ -680,6 +700,14 @@ pub func buildReleaseDotnet(
       }
       hostRid
     }
+  }
+
+  if not isValidRid(rid) {
+    releaseErr(
+      "invalid RID '" + rid +
+        "': a .NET RID must contain only lowercase letters, digits, dots, and hyphens (e.g. linux-x64)"
+    )
+    return 1
   }
 
   // Reject unsupported OS targets before the slow ILC probe + compile steps
