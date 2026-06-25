@@ -497,9 +497,10 @@ pub func ridOs(rid: in String): String {
 }
 
 // Extract the arch component from a .NET RID: "linux-x64" → "x64",
-// "linux-arm64" → "arm64", "osx-x64" → "x64".
+// "linux-arm64" → "arm64", "osx-x64" → "x64", "linux-musl-x64" → "x64".
+// Uses the LAST dash so multi-segment RIDs (linux-musl-x64) work correctly.
 pub func ridArch(rid: in String): String {
-  match Str.indexOf(rid, "-") {
+  match Str.lastIndexOf(rid, "-") {
     case None -> rid
     case Some(i) -> Str.substring(rid, i + 1, Str.length(rid) - i - 1)
   }

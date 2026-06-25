@@ -102,6 +102,8 @@ test "ridArch: extracts arch component from standard RIDs" {
   assertEqual(Release.ridArch("linux-x64"), "x64", "linux-x64")
   assertEqual(Release.ridArch("linux-arm64"), "arm64", "linux-arm64")
   assertEqual(Release.ridArch("osx-x64"), "x64", "osx-x64")
+  assertEqual(Release.ridArch("linux-musl-x64"), "x64", "linux-musl-x64 (Alpine) uses last segment")
+  assertEqual(Release.ridArch("linux-musl-arm64"), "arm64", "linux-musl-arm64 uses last segment")
 }
 
 // ── semverMajor ──────────────────────────────────────────────────────────────
