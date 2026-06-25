@@ -6294,7 +6294,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
 
             // Allocate object[] array for captures
             insns.add(MLdcI4(v = caps.count))
-            insns.add(MNewarr(typeToken = cctx.tokObject))
+            insns.add(MNewarr(typeToken = cctx.lctx.trObject))
 
             // Store each capture in the object[]
             var capStI = 0
@@ -6343,7 +6343,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 }
               }
 
-              insns.add(MStelem(typeToken = cctx.tokObject))
+              insns.add(MStelem(typeToken = cctx.lctx.trObject))
               capStI = capStI + 1
             }
           } else {
