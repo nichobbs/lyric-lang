@@ -484,6 +484,12 @@ func collectInLambdaNamesBlockStmt(s: in Statement, acc: in List[String]): Unit 
     }
     case SDefer(body) -> collectInLambdaNamesBlockBody(body, acc)
     case SScope(_, body) -> collectInLambdaNamesBlockBody(body, acc)
+    case SReturn(valOpt) -> {
+      match valOpt {
+        case Some(e) -> collectInLambdaNamesExpr(e, acc)
+        case None -> ()
+      }
+    }
     case _ -> ()
   }
 }
