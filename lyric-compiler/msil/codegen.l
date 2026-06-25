@@ -2010,17 +2010,14 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
     ipi = ipi + 1
   }
 
-  // Pre-pass 0: register async SM function return types so that
-  // countSmFieldsMsil (called inline in Pass 1 for SM funcs) can accurately
-  // count awaiter fields for same-package async function calls.
-  // inferCallReturnTypePB / isTaskTypeMsil only need to know that a callee IS
-  // a Task — the inner T is irrelevant for counting — so we restrict this
-  // pre-pass to SM functions only.  Non-async and generator functions MUST
-  // wait for Pass 2 (when local enum types are already registered in
-  // cctx.enumTypeNames): calling typeExprToMsilCtx before enumTypeNames is
-  // populated resolves any local-enum type-arg as MClass instead of MInt,
-  // and since Pass 2's containsKey guard skips re-registration the wrong
-  // type persists, causing InvalidProgramException (#4187).
+  // Pre-pass 0: seed funcRetTypes with a Task placeholder for every async SM
+  // function so that countSmFieldsMsil (called inline in Pass 1) can resolve
+  // same-package awaiter types via isTaskTypeMsil.  The inner T is irrelevant
+  // for field counting; Pass 2 always overwrites these placeholders with the
+  // correct Task / Task<T> type once enumTypeNames is fully populated.
+  // (Calling typeExprToMsilCtx here would produce MClass instead of MInt for
+  // local-enum return types, corrupting awaiter TypeSpec / MemberRef signatures
+  // if the Pass 2 overwrite is missing.)
   var pp0 = 0
   while pp0 < file.items.count {
     match file.items[pp0].kind {
@@ -2032,20 +2029,10 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
             val fqn0 = pkgName + "." + decl.name
             val arityKey0 = fqn0 + "/" + toString(decl.params.count)
             if not cctx.funcRetTypes.containsKey(arityKey0) {
-              val bareRetTy0 = match decl.ret {
-                case Some(te) -> {
-                  val r = typeExprToMsilCtx(cctx, te, pkgName)
-                  if elementTypeByte(r) == 0 { MVoid } else { r }
-                }
-                case None -> MVoid
-              }
-              val retTy0 = if bareRetTy0 == MVoid {
-                MClassRef(typeRefCode = tdrTypeRef(cctx.trTask), clrFqn = "System.Threading.Tasks.Task")
-              } else {
-                val kfRetArgs0: List[MsilType] = newList()
-                kfRetArgs0.add(bareRetTy0)
-                MGenericInst(typeRefCode = tdrTypeRef(cctx.trTask1), headFqn = "System.Threading.Tasks.Task`1", typeArgs = kfRetArgs0)
-              }
+              // isTaskTypeMsil only needs to see a Task typeRefCode — the
+              // inner T is irrelevant for countSmFieldsMsil.  Pass 2 overwrites
+              // this placeholder once enumTypeNames is fully populated.
+              val retTy0 = MClassRef(typeRefCode = tdrTypeRef(cctx.trTask), clrFqn = "System.Threading.Tasks.Task")
               cctx.funcRetTypes.add(arityKey0, retTy0)
               if not cctx.funcRetTypes.containsKey(fqn0) {
                 cctx.funcRetTypes.add(fqn0, retTy0)
@@ -3006,10 +2993,14 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           }
         }
         // Mirror funcTokens' arity-qualified key + bare alias so the call site's lookup picks the matching overload's return type.
-        if not cctx.funcRetTypes.containsKey(arityKey) {
+        // SM functions always overwrite the pre-pass 0 Task placeholder with the
+        // correct Task/Task<T> now that enumTypeNames is fully populated.
+        if isSm or not cctx.funcRetTypes.containsKey(arityKey) {
+          if cctx.funcRetTypes.containsKey(arityKey) { cctx.funcRetTypes.remove(arityKey) }
           cctx.funcRetTypes.add(arityKey, retTy)
         }
-        if not cctx.funcRetTypes.containsKey(fqn) {
+        if isSm or not cctx.funcRetTypes.containsKey(fqn) {
+          if cctx.funcRetTypes.containsKey(fqn) { cctx.funcRetTypes.remove(fqn) }
           cctx.funcRetTypes.add(fqn, retTy)
         }
         // Record the declared parameter MsilTypes so call sites can thread an
