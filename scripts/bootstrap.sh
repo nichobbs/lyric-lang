@@ -357,6 +357,16 @@ stage0() {
     die "publish did not produce a lyric binary in $BUILD_DIR/stage0-publish"
   fi
 
+  # Copy the lib/ directory containing Lyric.Stdlib.dll and other runtime dependencies.
+  # The binary resolves these at runtime via findCompiledStdlibDir(<binary>/lib).
+  if [[ -d "$BUILD_DIR/stage0-publish/lib" ]]; then
+    mkdir -p "$(dirname "$STAGE0_BIN")/lib"
+    cp -r "$BUILD_DIR/stage0-publish/lib"/* "$(dirname "$STAGE0_BIN")/lib/" 2>/dev/null || true
+    info "  copied lib/ directory with runtime dependencies"
+  else
+    info "  WARNING: lib/ directory not found in stage0-publish (binary may fail at runtime)"
+  fi
+
   ok "Stage 0 complete — $STAGE0_BIN"
 
   # Verify the binary exists in one of its expected forms and runtimeconfig.json if needed
