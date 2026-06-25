@@ -254,6 +254,9 @@ func cmdBuild(argv: in slice[String]): Int {
   }
   match releaseFromDll {
     case Some(dll) -> {
+      if positional.count > 0 {
+        printErr("build: warning: source-file arguments are ignored alongside --release-from-dll")
+      }
       if not File.fileExists(dll) {
         printErr("build: --release-from-dll: file not found: " + dll)
         return 1
@@ -267,7 +270,9 @@ func cmdBuild(argv: in slice[String]): Int {
               val dllBase = Path.basename(dll)
               val sorted = Sort.sortStrings(files.toArray())
               for f in sorted {
-                if Str.endsWith(f, ".dll") and Path.basename(f) != dllBase {
+                val fBase = Path.basename(f)
+                // Exclude the primary DLL and Lyric.Stdlib.dll (locateStdlib adds it independently).
+                if Str.endsWith(f, ".dll") and fBase != dllBase and fBase != "Lyric.Stdlib.dll" {
                   extraRefs.add(f)
                 }
               }
