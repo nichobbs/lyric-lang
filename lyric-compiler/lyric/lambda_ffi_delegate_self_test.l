@@ -23,6 +23,25 @@ extern type Action[T] = "System.Action`1"
 
 extern type Obj = "System.Object"
 
+@externTarget("System.Collections.Generic.List`1..ctor")
+func newList[T](): List[T] = ()
+
+@externTarget("System.Collections.Generic.List`1.Add")
+func listAdd[T](xs: in List[T], x: in T): Unit = ()
+
+@externTarget("System.Collections.Generic.List`1.get_Count")
+@externTarget
+func listCount[T](xs: in List[T]): Int = xs.count()
+
+@externTarget("System.Collections.Generic.List`1.RemoveAll")
+func listRemoveAll[T](xs: in List[T], pred: in Predicate[T]): Int = ()
+
+@externTarget("System.Collections.Generic.List`1.ForEach")
+func listForEach[T](xs: in List[T], action: in Action[T]): Unit = ()
+
+// Helper: test a predicate against multiple values and count matches
+@externTarget("System.Linq.Enumerable.Count")
+func linqCount(source: in Obj, predicate: in Func[Obj, Bool]): Int = ()
 test "passing lambda directly to Action[T] FFI parameter" {
   val xs: List[Int] = List[Int].new()
   xs.Add(10)
