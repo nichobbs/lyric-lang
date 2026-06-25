@@ -105,7 +105,7 @@ DISASM_FILE="$WORK_DIR/disasm.txt"
 echo "[assert-no-box-jvm] disassembling bytecode via javap"
 {
   for classfile in $(find "$EXTRACT_DIR" -name "*.class" -type f); do
-    "$JAVAP" -c -private -cp "$EXTRACT_DIR" -classpath "$JAR" "$(basename "$classfile" .class)" 2>/dev/null || true
+    "$JAVAP" -c -private "$classfile" 2>/dev/null || true
   done
 } > "$DISASM_FILE" 2>&1 || true
 
