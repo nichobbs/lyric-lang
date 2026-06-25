@@ -1,11 +1,11 @@
 //! release_self_test.l — exercises the pure helpers of Lyric.Release
 //! (entry-point/package detection) via the native `@test_module` runner.
 //!
-//! These cover the source-introspection that picks the AOT trampoline's entry
-//! type.  The toolchain-driving parts of Lyric.Release (dotnet publish, file
-//! staging) are integration-tested by the "release e2e" CI step against the
-//! real binary — they can't run through `lyric test` (host-backed stdlib at
-//! runtime, #2001).
+//! These cover the source-introspection used to detect entry packages and
+//! validate release builds.  The toolchain-driving parts of Lyric.Release
+//! (ilc + clang invocation, ILC probe restore, file staging) are
+//! integration-tested by the "release e2e" CI step against the real binary —
+//! they can't run through `lyric test` (host-backed stdlib at runtime, #2001).
 //!
 //! Runs in CI via:
 //!
@@ -90,28 +90,101 @@ test "declaresEntryMain: comment markers inside a triple-quoted string stay lite
   assertTrue(Release.declaresEntryMain(src), "a // inside a triple-quoted literal does not stop the close scan")
 }
 
-// ── mainReturnsInt (#4128, #4136) ────────────────────────────────────────────
-test "mainReturnsInt: Int-returning main → true" {
-  assertTrue(Release.mainReturnsInt("package P\nfunc main(): Int { 0 }\n"), "func main(): Int")
-  assertTrue(Release.mainReturnsInt("pub func main(): Int { 0 }\n"), "pub func main(): Int")
+// ── ridOs / ridArch ──────────────────────────────────────────────────────────
+test "ridOs: extracts OS component from standard RIDs" {
+  assertEqual(Release.ridOs("linux-x64"), "linux", "linux-x64")
+  assertEqual(Release.ridOs("linux-arm64"), "linux", "linux-arm64")
+  assertEqual(Release.ridOs("osx-arm64"), "osx", "osx-arm64 stays 'osx'")
+  assertEqual(Release.ridOs("win-x64"), "windows", "win-x64 maps to 'windows'")
 }
 
-test "mainReturnsInt: Unit/void main → false" {
-  assertTrue(not Release.mainReturnsInt("package P\nfunc main(): Unit { }\n"), "explicit Unit")
-  assertTrue(not Release.mainReturnsInt("func main() { }\n"), "no return annotation defaults to Unit")
+test "ridArch: extracts arch component from standard RIDs" {
+  assertEqual(Release.ridArch("linux-x64"), "x64", "linux-x64")
+  assertEqual(Release.ridArch("linux-arm64"), "arm64", "linux-arm64")
+  assertEqual(Release.ridArch("osx-x64"), "x64", "osx-x64")
+  assertEqual(Release.ridArch("linux-musl-x64"), "x64", "linux-musl-x64 (Alpine) uses last segment")
+  assertEqual(Release.ridArch("linux-musl-arm64"), "arm64", "linux-musl-arm64 uses last segment")
 }
 
-test "mainReturnsInt: Int prefix of a longer type name is not Int (#4136)" {
-  assertTrue(not Release.mainReturnsInt("func main(): IntThing { x }\n"), "IntThing is not Int")
+// ── semverMajor ──────────────────────────────────────────────────────────────
+test "semverMajor: extracts the leading integer from a version string" {
+  assertTrue(Release.semverMajor("10.0.7") == 10, "10.0.7 → 10")
+  assertTrue(Release.semverMajor("8.0.0") == 8, "8.0.0 → 8")
+  assertTrue(Release.semverMajor("9.0.3-preview.1") == 9, "9.0.3-preview.1 → 9")
+  assertTrue(Release.semverMajor("nope") == 0, "non-numeric returns 0")
 }
 
-test "mainReturnsInt: spacing variants around the return annotation" {
-  assertTrue(Release.mainReturnsInt("func main() : Int { 0 }\n"), "space before colon")
-  assertTrue(Release.mainReturnsInt("func main():Int{ 0 }\n"), "no spaces, brace-delimited")
+// ── isValidRid ───────────────────────────────────────────────────────────────
+test "isValidRid: accepts well-formed .NET RIDs" {
+  assertTrue(Release.isValidRid("linux-x64"), "linux-x64")
+  assertTrue(Release.isValidRid("linux-arm64"), "linux-arm64")
+  assertTrue(Release.isValidRid("osx-x64"), "osx-x64")
+  assertTrue(Release.isValidRid("win-x64"), "win-x64")
+  assertTrue(Release.isValidRid("linux-musl-x64"), "linux-musl-x64 (Alpine)")
 }
 
-test "mainReturnsInt: no main → false" {
-  assertTrue(not Release.mainReturnsInt("func helper(): Int { 0 }\n"), "no main")
+test "isValidRid: rejects invalid or dangerous RID strings" {
+  assertTrue(not Release.isValidRid(""), "empty string")
+  assertTrue(not Release.isValidRid("Linux-X64"), "uppercase letters rejected")
+  assertTrue(not Release.isValidRid("linux-x64<"), "XML < metacharacter rejected")
+  assertTrue(not Release.isValidRid("linux-x64>tag"), "XML > metacharacter rejected")
+  assertTrue(not Release.isValidRid("linux-x64&amp;"), "XML & metacharacter rejected")
+  assertTrue(not Release.isValidRid("linux x64"), "space rejected")
+}
+
+// ── jsonStringField ──────────────────────────────────────────────────────────
+test "jsonStringField: extracts a root-level string value" {
+  val json = "{\"packagesPath\": \"/home/user/.nuget/packages\", \"version\": 3}"
+  assertEqual(
+    unwrapOr(Release.jsonStringField(json, "packagesPath"), ""),
+    "/home/user/.nuget/packages",
+    "root-level key"
+  )
+}
+
+test "jsonStringField: returns None when key is absent" {
+  val json = "{\"other\": \"value\"}"
+  assertTrue(
+    match Release.jsonStringField(json, "packagesPath") { case None -> true; case Some(_) -> false },
+    "missing key"
+  )
+}
+
+test "jsonStringField: finds key nested inside an object (project.assets.json shape)" {
+  val json = "{\n  \"version\": 3,\n  \"project\": {\n    \"restore\": {\n      \"packagesPath\": \"/root/.nuget/packages\"\n    }\n  }\n}"
+  assertEqual(
+    unwrapOr(Release.jsonStringField(json, "packagesPath"), ""),
+    "/root/.nuget/packages",
+    "nested packagesPath"
+  )
+}
+
+test "jsonStringField: handles backslash-escaped backslashes in Windows paths" {
+  val json = "{\"packagesPath\": \"C:\\\\Users\\\\user\\\\.nuget\\\\packages\"}"
+  assertEqual(
+    unwrapOr(Release.jsonStringField(json, "packagesPath"), ""),
+    "C:\\Users\\user\\.nuget\\packages",
+    "backslash-escaped Windows path unescaped"
+  )
+}
+
+// ── parseIlcVersion ──────────────────────────────────────────────────────────
+test "parseIlcVersion: extracts the ILC version from a libraries entry" {
+  val json = "\"libraries\": {\"runtime.linux-x64.Microsoft.DotNet.ILCompiler/10.0.7\": {\"type\": \"package\"}}"
+  assertEqual(unwrapOr(Release.parseIlcVersion(json, "linux-x64"), ""), "10.0.7", "linux-x64 10.0.7")
+}
+
+test "parseIlcVersion: returns None when the RID has no matching entry" {
+  val json = "\"libraries\": {\"runtime.linux-x64.Microsoft.DotNet.ILCompiler/10.0.7\": {}}"
+  assertTrue(match Release.parseIlcVersion(json, "win-x64") { case None -> true; case Some(_) -> false }, "wrong RID")
+}
+
+test "parseIlcVersion: returns None when libraries section is absent" {
+  val json = "{\"version\": 3}"
+  assertTrue(
+    match Release.parseIlcVersion(json, "linux-x64") { case None -> true; case Some(_) -> false },
+    "no libraries key"
+  )
 }
 
 // ── localDepNotBuiltMessage (#3216) ──────────────────────────────────────────

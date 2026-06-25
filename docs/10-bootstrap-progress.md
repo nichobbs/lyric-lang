@@ -19847,37 +19847,38 @@ regression: emitter 847/847, CLI 84/84.  MSIL target only.
 
 ### D-progress-403 — `lyric build --release`: self-contained Native AOT binaries (#1968 epic; #1975; D079)
 
-**Status:** Shipped for single-file programs on the .NET target (`lyric-compiler/lyric/release.l`, `lyric-compiler/lyric/cli.l`).  Project-mode `--release` and the JVM (GraalVM) target remain (#1975).
+**Status:** Shipped for Linux `x64`/`arm64` on the .NET target (`lyric-compiler/lyric/release.l`, `lyric-compiler/lyric/cli/cli_build.l`).  macOS and Windows (#1975) and the JVM (GraalVM `native-image`) target remain.
 
-`lyric build --release <source.l>` produces a self-contained Native AOT
-executable — no managed runtime required at the deployment target:
+`lyric build --release <source.l>` (and `[build] kind = "aot"` in `lyric.toml`)
+produce a self-contained Native AOT executable — no managed runtime required at
+the deployment target.  The pipeline drives `ilc` and `clang` directly from
+Lyric — no generated C#, no `dotnet publish`:
 
-- **`Lyric.Release`** (`release.l`) mirrors the compiler's own AOT pattern
-  (`bootstrap/src/Lyric.Cli.Aot`): build the managed DLL, generate a host
-  project (`host.csproj` + C# `Trampoline.cs` into the program's emitted
-  `<package>.Program.main()`) referencing the program DLL + `Lyric.Stdlib.dll`,
-  then `dotnet publish -p:PublishAot=true`.  The host assembly is named
-  `__lyric_aot_host` (distinct from any user package — ILC resolves assembly
-  identities case-insensitively, so a same-name host would shadow the program's
-  entry type and fail to load at runtime).  ILC trim/AOT warnings are surfaced,
-  not swallowed.
+- **`Lyric.Release`** (`release.l`) probes for the ILC toolchain via a minimal
+  `dotnet restore` of an in-memory `.csproj`, parses `project.assets.json` to
+  locate the per-RID `microsoft.netcore.app.runtime.nativeaot.<rid>` NuGet pack,
+  builds the ILC RSP file (compiled inputs include `System.Private.*.dll` as
+  plain inputs, not `-r:` references, so `[RuntimeExport]`-attributed managed
+  stubs are compiled into the output object), runs `ilc @<rsp>`, and links with
+  `clang` (GNU ld groups `libbootstrapper.o` + GC/runtime archives in
+  `--start-group`/`--end-group` to resolve circular symbol dependencies).
+  `clang` must be on `PATH`.  ILC trim/AOT warnings are surfaced, not swallowed.
 - **Target seam:** `union ReleaseTarget { DotnetAot | JvmNativeImage }` +
-  target-agnostic `buildRelease`.  `DotnetAot` implemented; `JvmNativeImage`
-  (GraalVM `native-image`) defined but fails loud (#1975) — no silent managed
-  fallback.  Project-mode `--release` likewise emits a clear non-zero error.
+  target-agnostic `buildRelease`.  `DotnetAot` implemented for Linux; macOS
+  (`ld64` flags differ from ELF) and `JvmNativeImage` (GraalVM `native-image`)
+  fail loud (#1975) — no silent managed fallback.
 - **CLI:** `--release` / `--rid <rid>` flags on `lyric build`; default output is
-  the source stem (no extension), `-o` overrides.
+  the source stem (no extension), `-o` overrides.  `[build] kind = "aot"` in the
+  manifest activates the same pipeline via `lyric build`.
 
 Verified end-to-end against `bin/lyric` (full `make lyric`): `lyric build
---release hello.l` (a program exercising `Std.Collections.List` + `Console` +
-`toString`) produces a stripped native ELF that runs and prints the expected
-value; `--rid linux-x64` and `-o <path>` both work; `--release --target jvm` and
-project-mode `--release` fail loud with their tracked-issue messages.  Stage-1 +
+--release hello.l` produces a stripped native ELF that runs; `--rid linux-x64`
+and `-o <path>` both work; `--release --target jvm`, `--release` on macOS, and
+`--release` on Windows fail loud with their tracked-issue messages.  Stage-1 +
 AOT clean.  MSIL target.
 
-Docs: D079 (decision log), language reference §13.1 (AOT note moved from
-"planned" to "shipped single-file/.NET"), book getting-started (native-binaries
-section) + appendix-b CLI reference.
+Docs: D079 (decision log), language reference §3.5 (`kind = "aot"` implemented),
+book getting-started (native-binaries section) + appendix-b CLI reference.
 
 ### D-progress-404 — self-hosted MSIL: capturing closures v2 — by-reference `var` capture via hoisted heap cells (#1479, docs/41 H20, Band 2 complete)
 
@@ -25591,11 +25592,11 @@ by `app_host_self_test.l` (wired into the CI compiler self-test list).
 unchanged), `exe` (this entry), `bundle` (self-contained), and `aot` (native
 AOT). The managed assembly is always emitted as `<name>.dll` on .NET — `exe` adds
 a launcher beside it rather than renaming the assembly (the prior behaviour,
-which renamed the managed PE to `.exe`, is replaced). `bundle` and `aot` parse
-and validate but are not yet emitted: declaring them is a hard build error
-pointing at `exe`/`lib`, not a silent fallback. For a self-contained native
-binary today, `lyric build --release` remains the path (csproj + `dotnet publish`
-Native AOT).
+which renamed the managed PE to `.exe`, is replaced). `bundle` parses and
+validates but is not yet emitted; declaring it is a hard build error. `kind =
+"aot"` is now implemented (D-progress-403 / #4139): `lyric build` invokes `ilc`
++ `clang` directly and produces a self-contained native binary — equivalent to
+`lyric build --release`; Linux `x64`/`arm64` only, `clang` required on `PATH`.
 
 **Why this matters for the C# wrapper.** The framework-dependent apphost is the
 shared prerequisite for both the future `bundle` (runtime bundled) and `aot`

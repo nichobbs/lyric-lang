@@ -233,12 +233,6 @@ func cmdBuild(argv: in slice[String]): Int {
       i += 1
     }
   }
-  // `--rid` only applies to `--release` (Native AOT); warn rather than ignore
-  // it silently on a normal build (#2022).
-  match ridArg {
-    case Some(_) -> if not release { printErr("build: warning: --rid has no effect without --release") }
-    case None -> ()
-  }
   // `--no-restore` only affects project-mode auto-restore; warn rather than
   // silently ignore it on a single-file build (#2048).
   if noRestore and positional.count > 0 {
@@ -280,6 +274,30 @@ func cmdBuild(argv: in slice[String]): Int {
           noRestore = noRestore
         )
       )
+    }
+    // `[build] kind = "aot"` in lyric.toml triggers the native AOT pipeline
+    // even without `--release` on the command line.
+    val autoAot = match target {
+      case Dotnet -> readBuildKindFromManifest(Some(value = mfPath)) == "aot"
+      case Jvm -> false
+    }
+    if autoAot {
+      return buildReleaseProject(
+        mfPath,
+        explicitOut,
+        target,
+        ridArg,
+        cliFeatures,
+        noDefaultFeatures,
+        allFeatures,
+        noRestore
+      )
+    }
+    // `--rid` only applies to `--release` / `kind = "aot"` (Native AOT); warn
+    // here — the only project-mode path where ridArg is genuinely unused (#2022).
+    match ridArg {
+      case Some(_) -> printErr("build: warning: --rid has no effect without --release")
+      case None -> ()
     }
     return buildProject(mfPath, explicitOut, target, cliFeatures, noDefaultFeatures, allFeatures, noRestore)
   }
@@ -333,7 +351,7 @@ func buildReleaseSingle(
   val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case Dotnet -> Release.DotnetAot }
   // JVM (GraalVM) release fails loud without doing a wasted .NET build.
   match releaseTarget {
-    case JvmNativeImage -> return Release.buildRelease(releaseTarget, "", "", newList(), ridArg, "", false)
+    case JvmNativeImage -> return Release.buildRelease(releaseTarget, "", newList(), ridArg, "")
     case DotnetAot -> ()
   }
 
@@ -367,22 +385,14 @@ func buildReleaseSingle(
   }
 
   val outNative = match explicitOut { case Some(o) -> o; case None -> Path.join(srcDir, stem) }
-  Release.buildRelease(
-    releaseTarget,
-    stagingDll,
-    pkgName,
-    newList(),
-    ridArg,
-    outNative,
-    Release.mainReturnsInt(srcText)
-  )
+  Release.buildRelease(releaseTarget, stagingDll, newList(), ridArg, outNative)
 }
 
 // Project-mode `lyric build --release` (no explicit source file): compile every
 // package in [project.packages] into a staging bundle DLL, then produce a
 // self-contained native binary via Lyric.Release.  The entry package — the one
-// whose source declares `func main()` — is detected before the build so the
-// trampoline can be written immediately after `dotnet publish` finishes.
+// whose source declares `func main()` — is validated before the managed build so
+// a project with no entry fails fast without a slow DLL build.
 func buildReleaseProject(
   mfPath: in String,
   explicitOut: in Option[String],
@@ -397,7 +407,7 @@ func buildReleaseProject(
   // fails loud without performing a wasted managed build.
   val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case Dotnet -> Release.DotnetAot }
   match releaseTarget {
-    case JvmNativeImage -> return Release.buildRelease(releaseTarget, "", "", newList(), ridArg, "", false)
+    case JvmNativeImage -> return Release.buildRelease(releaseTarget, "", newList(), ridArg, "")
     case DotnetAot -> ()
   }
 
@@ -430,14 +440,10 @@ func buildReleaseProject(
   val mfDir = Path.dirname(mfPath)
 
   // Scan each package's sources to find the entry package — the one declaring
-  // `func main()`.  Uses the manifest package name (pkgEntry.name) as the
-  // trampoline target, matching how the emitter labels the Program type.
-  // Every entry candidate is collected before reporting so a conflict lists
-  // all offending packages at once instead of one pair per rebuild (#3219).
+  // `func main()`.  Every entry candidate is collected before reporting so a
+  // conflict lists all offending packages at once instead of one pair per
+  // rebuild (#3219).
   val entryPkgNames: List[String] = newList()
-  // Return type of the entry package's `main`, captured alongside the entry
-  // detection so the AOT trampoline matches its emitted signature.
-  var entryReturnsInt = false
   var pi = 0
   while pi < proj.packages.count {
     val pkgEntry = proj.packages[pi]
@@ -480,7 +486,6 @@ func buildReleaseProject(
     }
     if Release.declaresEntryMain(combined) {
       entryPkgNames.add(pkgEntry.name)
-      entryReturnsInt = Release.mainReturnsInt(combined)
     }
     pi += 1
   }
@@ -504,8 +509,6 @@ func buildReleaseProject(
     )
     return 1
   }
-  val entryPkgName = entryPkgNames[0]
-
   // Build to a staging directory so the production `bin/` output is untouched
   // by the intermediate managed DLL.
   val dllBase = match proj.outputAssembly { case Some(s) -> s; case None -> proj.name + ".dll" }
@@ -578,7 +581,7 @@ func buildReleaseProject(
 
   val stem = stemOf(dllBase, 4)
   val outNative = match explicitOut { case Some(o) -> o; case None -> Path.join(mfDir, stem) }
-  Release.buildRelease(releaseTarget, stagingDll, entryPkgName, extraRefs, ridArg, outNative, entryReturnsInt)
+  Release.buildRelease(releaseTarget, stagingDll, extraRefs, ridArg, outNative)
 }
 
 // Deterministic ascending sort of a file-path list.
@@ -694,9 +697,11 @@ func buildProject(
 
   val mfDir = Path.dirname(mfPath)
   val buildKind = getBuildKind(manifest)
-  // `bundle` (self-contained) and `aot` are accepted by the manifest parser
-  // but their emission is not yet implemented; fail loudly rather than
-  // silently producing a plain library.  Only meaningful for the Dotnet target
+  // `bundle` (self-contained) is accepted by the manifest parser but not yet
+  // implemented; fail loudly rather than silently producing a plain library.
+  // `aot` is handled before `buildProject` is called (in `cmdBuild` and
+  // `buildReleaseProject`); here it is treated as a normal managed build
+  // (the staging DLL step).  Only meaningful for the Dotnet target
   // (Jvm treats `kind` as a no-op).
   match target {
     case Dotnet -> {
@@ -704,13 +709,6 @@ func buildProject(
         printErr(
           mfPath +
             ": [build] kind = \"bundle\" (self-contained) is not yet implemented; use \"exe\" for a framework-dependent launcher or \"lib\" for a managed DLL"
-        )
-        return 1
-      }
-      if buildKind == "aot" {
-        printErr(
-          mfPath +
-            ": [build] kind = \"aot\" (native ahead-of-time) is not yet implemented; use \"exe\" for a framework-dependent launcher or \"lib\" for a managed DLL"
         )
         return 1
       }

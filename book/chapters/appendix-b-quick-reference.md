@@ -832,7 +832,8 @@ lyric build --no-restore               # build against the lock as-is (skip auto
 #                       `lyric run` execs the launcher instead of `dotnet exec`; if the
 #                       launcher is missing it warns and falls back to `dotnet exec`.
 #   kind = "bundle"  -> self-contained (runtime bundled) — planned, build errors for now
-#   kind = "aot"     -> native AOT, no runtime — planned; use `lyric build --release` today
+#   kind = "aot"     -> native AOT, no runtime — Linux only (x64/arm64); clang required;
+#                       equivalent to `lyric build --release`; macOS/Windows tracked in #1975
 
 # Build features (compile-time gating; see chapter 20 §20.7)
 lyric build --features X,Y <file.l>    # additive over manifest's [features] default
