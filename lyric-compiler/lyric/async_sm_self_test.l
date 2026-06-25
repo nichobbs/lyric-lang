@@ -586,3 +586,52 @@ test "#2736: await outside try, return from catch after panic (Phase B)" {
   assertEqualInt(await asyncAwaitThenTryCatch(0), 1, "Phase B: await then try-body return = 1")
   assertEqualInt(await asyncAwaitThenTryCatch(5), 99, "Phase B: await then catch-handler return = 99")
 }
+
+// ── #4187: SM FieldDef ordering — async func before record ───────────────────
+// Regression: addPackageTokens post-Pass-2 SM field-count loop placed all SM
+// FieldDef rows AFTER regular-type FieldDef rows, but lowerMPackageWithCtx
+// emits TypeDefs in source order (SM classes interleaved with records).  Any
+// IRecord defined AFTER an async func in source order received wrong
+// cctx.fieldTokens entries → ilverify TokenResolve errors + runtime crashes.
+
+async func smBeforeRecordHelper(n: in Int): Int {
+  n + 10
+}
+
+record RecordAfterSm {
+  x: Int
+  y: Int
+}
+
+async func smAfterRecord(n: in Int): Int {
+  n * 2
+}
+
+record SecondRecordAfterSm {
+  a: Int
+  b: String
+}
+
+test "#4187: record field access after SM class in source order" {
+  val r = RecordAfterSm(x = 3, y = 7)
+  assertEqualInt(r.x, 3, "RecordAfterSm.x = 3")
+  assertEqualInt(r.y, 7, "RecordAfterSm.y = 7")
+}
+
+test "#4187: second record field access after two SM classes" {
+  val s = SecondRecordAfterSm(a = 42, b = "hello")
+  assertEqualInt(s.a, 42, "SecondRecordAfterSm.a = 42")
+  assertEqual(s.b, "hello", "SecondRecordAfterSm.b = hello")
+}
+
+test "#4187: async func between records: record fields remain correct" {
+  val r = RecordAfterSm(x = 100, y = 200)
+  val s = SecondRecordAfterSm(a = r.x + r.y, b = "sum")
+  assertEqualInt(s.a, 300, "sum of RecordAfterSm fields = 300")
+  assertEqual(s.b, "sum", "SecondRecordAfterSm.b = sum")
+}
+
+test "#4187: SM function between records executes correctly" {
+  val result = await smAfterRecord(5)
+  assertEqualInt(result, 10, "smAfterRecord(5) = 10")
+}

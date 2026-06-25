@@ -2010,6 +2010,67 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
     ipi = ipi + 1
   }
 
+  // Pre-pass 0: register IFunc return types so that countSmFieldsMsil (called
+  // inline in Pass 1 for SM funcs) can accurately count awaiter fields for
+  // same-package async function calls.  This is the return-type slice of Pass 2;
+  // Pass 2 will skip duplicate registrations via `if not containsKey` guards.
+  var pp0 = 0
+  while pp0 < file.items.count {
+    match file.items[pp0].kind {
+      case IFunc(decl) -> {
+        val fqn0 = pkgName + "." + decl.name
+        val arityKey0 = fqn0 + "/" + toString(decl.params.count)
+        if not cctx.funcRetTypes.containsKey(arityKey0) {
+          val isGen0 = decl.isAsync and funcBodyContainsYieldMsil(decl)
+          val isSm0 = decl.isAsync and not isGen0 and not hasExternTargetMsil(decl.annotations)
+          val declGenerics0 = genericNamesOf(decl.generics)
+          val retTy0 = if isGen0 {
+            val genElemTy0 = match decl.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MObject }
+            MIAsyncEnumerable(elemTy = genElemTy0)
+          } else if isSm0 {
+            val bareRetTy0 = match decl.ret {
+              case Some(te) -> {
+                val r = typeExprToMsilCtx(cctx, te, pkgName)
+                if elementTypeByte(r) == 0 { MVoid } else { r }
+              }
+              case None -> MVoid
+            }
+            if bareRetTy0 == MVoid {
+              MClassRef(typeRefCode = tdrTypeRef(cctx.trTask), clrFqn = "System.Threading.Tasks.Task")
+            } else {
+              val kfRetArgs0: List[MsilType] = newList()
+              kfRetArgs0.add(bareRetTy0)
+              MGenericInst(typeRefCode = tdrTypeRef(cctx.trTask1), headFqn = "System.Threading.Tasks.Task`1", typeArgs = kfRetArgs0)
+            }
+          } else if startsWith(decl.name, "__lambda_") {
+            match decl.ret {
+              case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName)
+              case None -> MVoid
+            }
+          } else {
+            match decl.ret {
+              case Some(te) -> {
+                if declGenerics0.count > 0 {
+                  typeExprToMsilGenBody(cctx, te, pkgName, declGenerics0)
+                } else {
+                  typeExprToMsilCtx(cctx, te, pkgName)
+                }
+              }
+              case None -> MVoid
+            }
+          }
+          cctx.funcRetTypes.add(arityKey0, retTy0)
+          if not cctx.funcRetTypes.containsKey(fqn0) {
+            cctx.funcRetTypes.add(fqn0, retTy0)
+          }
+        }
+      }
+      case _ -> {
+      }
+    }
+    pp0 = pp0 + 1
+  }
+
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -2792,8 +2853,21 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         registerEnumDeclMsil(cctx, pkgName, decl)
         fieldDefRow = fieldDefRow + 1 + decl.cases.count
       }
-      // IRangeType, IImpl: 0 MethodDef rows in non-MPFuncs.
-      // IConst, IVal, IFunc: handled below (go to MPFuncs, emitted last).
+      case IFunc(decl) -> {
+        // Async SM classes are emitted as MPRecord items in source order
+        // (interleaved with IRecord items) so their FieldDef rows must be
+        // counted here to keep cctx.fieldTokens entries for subsequent
+        // user-defined types correct.  Pre-pass 0 above has already populated
+        // cctx.funcRetTypes so countSmFieldsMsil can resolve same-package
+        // awaiter types accurately.  Generator and non-async functions
+        // contribute no type-section FieldDef rows.
+        val isGenP1 = decl.isAsync and funcBodyContainsYieldMsil(decl)
+        val isSmP1 = decl.isAsync and not isGenP1 and not hasExternTargetMsil(decl.annotations)
+        if isSmP1 {
+          fieldDefRow = fieldDefRow + countSmFieldsMsil(cctx, pkgName, decl)
+        }
+      }
+      // IRangeType, IImpl, IConst, IVal: no FieldDef rows in the TypeDef section.
       case _ -> {
       }
     }
@@ -3085,26 +3159,6 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
       }
     }
     j = j + 1
-  }
-
-  // SM field-count pass: runs after Pass 2 so cctx.funcRetTypes is fully
-  // populated for within-package async functions.  collectAwaitTypesPhaseBMsil
-  // needs those return-type entries to count awaiter fields accurately; doing
-  // this count in the earlier SM pre-scan (before Pass 2) would undercount
-  // awaits on same-package async functions whose return types aren't registered
-  // until Pass 2 runs.
-  var smfk = 0
-  while smfk < file.items.count {
-    match file.items[smfk].kind {
-      case IFunc(decl) -> {
-        if decl.isAsync and not funcBodyContainsYieldMsil(decl) and not hasExternTargetMsil(decl.annotations) {
-          fieldDefRow = fieldDefRow + countSmFieldsMsil(cctx, pkgName, decl)
-        }
-      }
-      case _ -> {
-      }
-    }
-    smfk = smfk + 1
   }
 
   // Sync the persistent counters so a follow-up `addPackageTokens` call
