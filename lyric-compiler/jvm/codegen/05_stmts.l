@@ -34,22 +34,10 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               val cellType = JArray(elem = cellElemTy)
               match op {
                 case AssEq -> {
-                  lowerExpr(ctx, insns, value)
-                  // Stack: [value]
                   emitLoad(insns, cellSlot, cellType)
-                  // Stack: [value, cell]
-                  insns.add(LDup_x1)
-                  // Stack: [cell, value, cell]
                   insns.add(LIconst(v = 0))
-                  // Stack: [cell, value, cell, 0]
-                  insns.add(LDup_x2)
-                  // Stack: [cell, 0, cell, value, 0]
-                  insns.add(LPop)
-                  // Stack: [cell, 0, cell, value]
+                  lowerExpr(ctx, insns, value)
                   emitArrayStore(insns, cellElemTy)
-                  // Stack: [cell]
-                  insns.add(LPop)
-                  // Stack: []
                 }
                 case AssPlus -> {
                   emitLoad(insns, cellSlot, cellType)
@@ -62,12 +50,10 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                     case _ -> insns.add(LIadd)
                   }
                   emitLoad(insns, cellSlot, cellType)
-                  insns.add(LDup_x1)
                   insns.add(LIconst(v = 0))
-                  insns.add(LDup_x2)
+                  insns.add(LDup_x1)
                   insns.add(LPop)
                   emitArrayStore(insns, cellElemTy)
-                  insns.add(LPop)
                 }
                 case AssMinus -> {
                   emitLoad(insns, cellSlot, cellType)
@@ -79,13 +65,12 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                     case JDouble -> insns.add(LDsub)
                     case _ -> insns.add(LIsub)
                   }
+                  val resultSlot = allocSlot(ctx, "__cell_result_" + freshLabel(ctx), cellElemTy)
+                  emitStore(insns, resultSlot, cellElemTy)
                   emitLoad(insns, cellSlot, cellType)
-                  insns.add(LDup_x1)
                   insns.add(LIconst(v = 0))
-                  insns.add(LDup_x2)
-                  insns.add(LPop)
+                  emitLoad(insns, resultSlot, cellElemTy)
                   emitArrayStore(insns, cellElemTy)
-                  insns.add(LPop)
                 }
                 case AssStar -> {
                   emitLoad(insns, cellSlot, cellType)
@@ -97,13 +82,12 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                     case JDouble -> insns.add(LDmul)
                     case _ -> insns.add(LImul)
                   }
+                  val resultSlot = allocSlot(ctx, "__cell_result_" + freshLabel(ctx), cellElemTy)
+                  emitStore(insns, resultSlot, cellElemTy)
                   emitLoad(insns, cellSlot, cellType)
-                  insns.add(LDup_x1)
                   insns.add(LIconst(v = 0))
-                  insns.add(LDup_x2)
-                  insns.add(LPop)
+                  emitLoad(insns, resultSlot, cellElemTy)
                   emitArrayStore(insns, cellElemTy)
-                  insns.add(LPop)
                 }
                 case AssSlash -> {
                   emitLoad(insns, cellSlot, cellType)
@@ -115,13 +99,12 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                     case JDouble -> insns.add(LDdiv)
                     case _ -> insns.add(LIdiv)
                   }
+                  val resultSlot = allocSlot(ctx, "__cell_result_" + freshLabel(ctx), cellElemTy)
+                  emitStore(insns, resultSlot, cellElemTy)
                   emitLoad(insns, cellSlot, cellType)
-                  insns.add(LDup_x1)
                   insns.add(LIconst(v = 0))
-                  insns.add(LDup_x2)
-                  insns.add(LPop)
+                  emitLoad(insns, resultSlot, cellElemTy)
                   emitArrayStore(insns, cellElemTy)
-                  insns.add(LPop)
                 }
                 case AssPercent -> {
                   emitLoad(insns, cellSlot, cellType)
@@ -132,13 +115,12 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                     case JLong -> insns.add(LLrem)
                     case _ -> insns.add(LIrem)
                   }
+                  val resultSlot = allocSlot(ctx, "__cell_result_" + freshLabel(ctx), cellElemTy)
+                  emitStore(insns, resultSlot, cellElemTy)
                   emitLoad(insns, cellSlot, cellType)
-                  insns.add(LDup_x1)
                   insns.add(LIconst(v = 0))
-                  insns.add(LDup_x2)
-                  insns.add(LPop)
+                  emitLoad(insns, resultSlot, cellElemTy)
                   emitArrayStore(insns, cellElemTy)
-                  insns.add(LPop)
                 }
               }
               JVoid
@@ -356,8 +338,9 @@ func emitArrayStore(insns: in List[LInsn], elem: in JvmType): Unit {
   }
 }
 
-// Emit the newarray opcode for a primitive array of element type `elem`.
-// Stack: [count] → [array].  For reference arrays, use LAnewarray instead.
+// Emit the newarray or anewarray opcode for an array of element type `elem`.
+// Stack: [count] → [array].  For primitive arrays uses newarray; for reference
+// arrays uses anewarray with the class name.
 func emitNewarray(insns: in List[LInsn], elem: in JvmType): Unit {
   match elem {
     case JBoolean -> insns.add(LNewarray(typeCode = 4))  // T_BOOLEAN
@@ -368,7 +351,9 @@ func emitNewarray(insns: in List[LInsn], elem: in JvmType): Unit {
     case JShort -> insns.add(LNewarray(typeCode = 9))    // T_SHORT
     case JInt -> insns.add(LNewarray(typeCode = 10))     // T_INT
     case JLong -> insns.add(LNewarray(typeCode = 11))    // T_LONG
-    case _ -> panic("emitNewarray: cannot create primitive array of reference type")
+    case JRef(className) -> insns.add(LAnewarray(className = className))
+    case JArray(_) -> panic("emitNewarray: multi-dimensional array allocation not supported")
+    case JVoid -> panic("emitNewarray: cannot create array of void")
   }
 }
 

@@ -9942,6 +9942,26 @@ func lowerBuiltinOrStaticCallMsil(
             val trackedRetType = mapGet(fctx.funcValRetTypes, funcName)
             val useTypedInvoke = match trackedParamTypes { case Some(pts) -> pts.count == args.count; case None -> false }
 
+            // Emit castclass BEFORE lowering arguments (while funcRef is on top of stack)
+            if useTypedInvoke {
+              match trackedParamTypes {
+                case Some(pts) -> {
+                  match trackedRetType {
+                    case Some(rt) -> {
+                      val typeSpec = buildFuncNTypedTypeSpec(cctx, args.count, pts, rt)
+                      insns.add(MCastclass(typeToken = 0x1B000000 + typeSpec))
+                    }
+                    case None -> {
+                      insns.add(MCastclass(typeToken = 0x1B000000 + internFuncNTypeSpec(cctx, args.count)))
+                    }
+                  }
+                }
+                case None -> {}
+              }
+            } else {
+              insns.add(MCastclass(typeToken = 0x1B000000 + internFuncNTypeSpec(cctx, args.count)))
+            }
+
             // Collect argument types as we lower them
             val argTypes: List[MsilType] = newList()
             var i = 0
@@ -9951,18 +9971,13 @@ func lowerBuiltinOrStaticCallMsil(
               i = i + 1
             }
 
-            // Emit castclass and callvirt with appropriate typing
+            // Emit callvirt with appropriate typing
             if useTypedInvoke {
               // Phase 3: Strongly-typed invoke path — no boxing of arguments.
-              // Cast to the properly-typed delegate and call the typed Invoke method.
               match trackedParamTypes {
                 case Some(pts) -> {
                   match trackedRetType {
                     case Some(rt) -> {
-                      // Build TypeSpec for the strongly-typed delegate and emit castclass
-                      val typeSpec = buildFuncNTypedTypeSpec(cctx, args.count, pts, rt)
-                      insns.add(MCastclass(typeToken = 0x1B000000 + typeSpec))
-                      // Build a typed invoke token and emit the call directly (no boxing)
                       val invokeToken = buildFuncNInvokeTokWithTypes(cctx, args.count, pts, rt)
                       insns.add(MCallvirt(methodToken = invokeToken))
                       // Handle return type: void delegates pop the result, others materialize it
@@ -9972,8 +9987,6 @@ func lowerBuiltinOrStaticCallMsil(
                       }
                     }
                     case None -> {
-                      // Fallback if return type wasn't tracked (should not happen for well-typed code)
-                      insns.add(MCastclass(typeToken = 0x1B000000 + internFuncNTypeSpec(cctx, args.count)))
                       var j = 0
                       while j < argTypes.count {
                         boxIfNeededMsil(cctx, insns, argTypes[j])
@@ -9987,18 +10000,10 @@ func lowerBuiltinOrStaticCallMsil(
                 case None -> MObject
               }
             } else {
-              // Phase 1 fallback: Object-based uniform ABI (keep current behavior for compatibility).
-              // A function-typed parameter / local is declared `object` in the
-              // method signature and LocalVarSig (the uniform lambda ABI erases the
-              // delegate to `object`), but `callvirt Func`(N+1)::Invoke` requires the
-              // receiver to be that concrete `Func` TypeSpec.  Narrow the loaded
-              // `object` to the Func TypeSpec first, or the verifier rejects the
-              // call (`StackUnexpected found object expected Func`2<…>`, #3943:
-              // Std.Core.countWhere invoking its `pred` parameter).
-              insns.add(MCastclass(typeToken = 0x1B000000 + internFuncNTypeSpec(cctx, args.count)))
+              // Phase 1 fallback: Object-based uniform ABI.
+              // Box arguments if needed for the generic Func<object,...> ABI
               var i2 = 0
               while i2 < argTypes.count {
-                // Func<object,...>.Invoke expects object for every param — box value types.
                 boxIfNeededMsil(cctx, insns, argTypes[i2])
                 i2 = i2 + 1
               }
