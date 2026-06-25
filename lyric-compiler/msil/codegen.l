@@ -3513,18 +3513,23 @@ pub func finishHoistedCellMsil(
     match arrayElemTokenOpt(cctx, elemTy) {
       case Some(elemToken) -> {
         // Typed array path: create 1-element array and store unboxed value.
-        // Stack precondition: (array-ref, array-ref, value)
+        // Stack precondition: (array-ref-to-store-in, array-ref-for-sm-field, value)
         // The stelem instruction requires [array-ref, index, value] on the stack.
-        // The caller pushes [array-ref, array-ref, value], so we need to:
-        // 1. Store value in a temp to free stack space
-        // 2. Push index 0
-        // 3. Restore value from temp
-        // 4. Call stelem, leaving one array-ref on stack
+        // The caller pushes [array-ref-dup, array-ref-dup, value], so we need to:
+        // 1. Store the second array-ref (dup'd one) as the array-ref for storing
+        // 2. Restore the value
+        // 3. Pop value to preserve first array-ref for the cell slot
+        // 4. Push 0 (index)
+        // 5. Push value back
+        // 6. Call stelem with [second-array-ref, 0, value], leaving first-array-ref on stack
         val tempSlot = allocSlotMsil(fctx, "__finishCell_temp_" + toString(fctx.slotTicker.count), elemTy)
-        insns.add(MStloc(slot = tempSlot - fctx.paramCount))      // Pop value → [array-ref, array-ref]
-        insns.add(MLdcI4(v = 0))                                  // Push index → [array-ref, array-ref, 0]
-        insns.add(MLdloc(slot = tempSlot - fctx.paramCount))      // Push value → [array-ref, array-ref, 0, value]
-        insns.add(MStelem(typeToken = elemToken))                 // Pop 3, store → [array-ref]
+        val arraySlot = allocSlotMsil(fctx, "__finishCell_array_" + toString(fctx.slotTicker.count), MObject)
+        insns.add(MStloc(slot = arraySlot - fctx.paramCount))      // Pop 2nd array-ref → [array-ref-1, value]
+        insns.add(MStloc(slot = tempSlot - fctx.paramCount))       // Pop value → [array-ref-1]
+        insns.add(MLdloc(slot = arraySlot - fctx.paramCount))      // Push 2nd array-ref → [array-ref-1, array-ref-2]
+        insns.add(MLdcI4(v = 0))                                   // Push index → [array-ref-1, array-ref-2, 0]
+        insns.add(MLdloc(slot = tempSlot - fctx.paramCount))       // Push value → [array-ref-1, array-ref-2, 0, value]
+        insns.add(MStelem(typeToken = elemToken))                  // Pop 3, store at [2,0] → [array-ref-1]
         // Allocate cell slot with array type
         val arrayTy = match elemTy {
           case MInt -> MArray(MInt)
@@ -22984,6 +22989,15 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
     }
     i = i + 1
   }
+
+  // ── Epic #1877 Phase 2: Emit closure records ────────────────────────────────
+  // For each lambda that was synthesized with captures, emit the closure record
+  // type that was synthesized during code generation (lowerFuncMsil).
+  // These records are required at runtime so System.Func/System.Action delegate
+  // instances can load their closure type references.
+  mapForEach(cctx.lambdaClosureClasses, (lname, closureRec) -> {
+    items.add(MPRecord(rec = closureRec))
+  })
 
   // Emit the host class: functions + static fields (IConst/IVal).
   if fns.count > 0 or staticFields.count > 0 {
