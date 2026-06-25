@@ -12372,40 +12372,13 @@ func buildActionNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
   0x0A000000 + mrRow
 }
 
-// Build a newobj token for System.Action`(nparams)<T1,...,Tn>::.ctor(object, nativeint)
-// with actual parameter types instead of hardcoded object.
-// Used by Phase 1 strongly-typed lambdas to match the method signature.
+// Build a newobj token for System.Action`(nparams)<object,...>::.ctor(object, nativeint).
+// The TypeSpec used here must match the one used for Invoke, so we always delegate to
+// the all-object version. Typed lambda parameter types influence only the lambda method
+// signature; the delegate TypeSpec must remain all-object so the castclass + callvirt
+// at the invocation site references the same TypeSpec row (#4266).
 func buildActionNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType]): Int {
-  // If we have fewer actual types than expected params, fall back to the object-based version
-  if paramTypes.count < nparams {
-    return buildActionNCtorTok(cctx, nparams)
-  }
-  val trN = internActionTypeRef(cctx, nparams)
-  // TypeDefOrRef coded index for a TypeRef at row R: (R << 2) | 1
-  val codedIdx = (trN * 4) + 1
-  val actualArgs: List[MsilType] = newList()
-  var ai = 0
-  while ai < nparams {
-    // Use object-based parameters for HOF delegate compatibility.
-    // Propagated types influence the lambda method signature but not the delegate type.
-    // The delegate must match the HOF parameter type, which is object-based at the MSIL level.
-    actualArgs.add(MObject)
-    ai = ai + 1
-  }
-  val gblob = buildGenericInstBlob(codedIdx, actualArgs)
-  // Phase 1: Action delegates always use MObject parameters for compatibility.
-  // The cache key is deterministic based on arity alone since blob content
-  // (MObject params) does not vary per call site. This avoids duplicate TypeSpec
-  // rows with identical blob content (issue #4102).
-  val specKey = "ActionSpec_typed_" + toString(nparams)
-  val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
-  val ctorPs: List[MsilType] = newList()
-  ctorPs.add(MObject)
-  ctorPs.add(MNativeInt)
-  val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
-  // MemberRef cache key is arity-based for Phase 1 (MObject params)
-  val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "action_ctor_typed_" + toString(nparams), ctorSig)
-  0x0A000000 + mrRow
+  buildActionNCtorTok(cctx, nparams)
 }
 
 // Get or create a TypeRef for System.Func`(nparams+1) where nparams is the lambda parameter count.
@@ -12464,49 +12437,13 @@ func buildFuncNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
   0x0A000000 + mrRow
 }
 
-// Build a newobj token for System.Func`(nparams+1)<object,...,object,TResult>::.ctor(object, nativeint)
-// with object-based parameter types but actual return type.
-// Phase 1 limitation: delegate must remain object-based for HOF parameter type compatibility,
-// even when HOF type propagation provides concrete parameter types (those are deferred to Phase 2).
-// The return type uses actual type to match the lambda method signature.
+// Build a newobj token for System.Func`(nparams+1)<object,...,object>::.ctor(object, nativeint).
+// The TypeSpec used here must match the one used by castclass + callvirt Invoke, so we
+// always delegate to the all-object version via internFuncNTypeSpec. Typed return/param
+// types from HOF propagation influence the lambda method signature only; the delegate
+// TypeSpec must be all-object so the invoke site references the same TypeSpec row (#4266).
 func buildFuncNCtorTokWithTypes(cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType], retType: in MsilType): Int {
-  // If we have fewer actual types than expected params, fall back to the object-based version
-  if paramTypes.count < nparams {
-    return buildFuncNCtorTok(cctx, nparams)
-  }
-  val trN = internFuncTypeRef(cctx, nparams)
-  // TypeDefOrRef coded index for a TypeRef at row R: (R << 2) | 1
-  val codedIdx = (trN * 4) + 1
-  val actualArgs: List[MsilType] = newList()
-  var ai = 0
-  while ai < nparams {
-    // Use object-based parameters for HOF delegate compatibility.
-    // Propagated types influence the lambda method signature but not the delegate type.
-    // The delegate must match the HOF parameter type, which is object-based at the MSIL level.
-    actualArgs.add(MObject)
-    ai = ai + 1
-  }
-  actualArgs.add(retType)
-  val gblob = buildGenericInstBlob(codedIdx, actualArgs)
-  // FIXED #4060/#4088: Cache key must include both parameter types and return type to avoid collision.
-  // Two lambdas with same param count but different types or returns must be distinct:
-  // e.g. {x: Int -> x} (Func<Int,Int>) vs {x: Int -> x > 0} (Func<Int,Bool>).
-  var typeKeySuffix = ""
-  var ti = 0
-  while ti < paramTypes.count and ti < nparams {
-    typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(paramTypes[ti])
-    ti = ti + 1
-  }
-  typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(retType)
-  val specKey = "FuncSpec_typed_" + toString(nparams) + typeKeySuffix
-  val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
-  val ctorPs: List[MsilType] = newList()
-  ctorPs.add(MObject)
-  ctorPs.add(MNativeInt)
-  val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
-  // FIXED #4066: MemberRef cache key must also include type suffix to avoid collision
-  val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "func_ctor_typed_" + toString(nparams) + typeKeySuffix, ctorSig)
-  0x0A000000 + mrRow
+  buildFuncNCtorTok(cctx, nparams)
 }
 
 // Build a callvirt token for System.Func`(nparams+1)<object,...,object>::Invoke(object,...): object.
