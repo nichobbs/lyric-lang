@@ -30,7 +30,6 @@ func newList[T](): List[T] = ()
 func listAdd[T](xs: in List[T], x: in T): Unit = ()
 
 @externTarget("System.Collections.Generic.List`1.get_Count")
-@externTarget
 func listCount[T](xs: in List[T]): Int = xs.count()
 
 @externTarget("System.Collections.Generic.List`1.RemoveAll")
