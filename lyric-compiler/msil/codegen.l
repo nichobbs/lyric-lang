@@ -6214,11 +6214,8 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         cctx.lambdaCaptureNames.add(lname, caps)
         cctx.lambdaCaptureTypes.add(lname, capTypes)
         cctx.lambdaCaptureCells.add(lname, capCells)
-        // Phase 2: Synthesize the closure class for this capturing lambda.
-        // The closure class has typed fields for each captured variable.
-        val closureClass = synthesizeClosureClassMsil(cctx, lname, fctx.pkgName, idx, caps, capTypes)
-        cctx.lambdaClosureClasses.add(lname, closureClass)
-        cctx.lambdaClosureRecordList.add(closureClass)
+        // Phase 2 closure class synthesis disabled pending Phase 1 full completion (#4223).
+        // The closure class is not synthesized or used when Phase 1 object[] approach is in effect.
       }
       // FQN key (#1183 Phase 2): lambdas are package-scoped, registered by
       // `addPackageTokens` as `<pkg>.__lambda_<idx>`.
@@ -6242,17 +6239,8 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           } else {
             buildFuncNCtorTok(cctx, nparams)
           }
-          // Delegate target: Phase 2 instantiates a __Closure_N record with typed fields;
-          // falls back to Phase 1 object[] for outer-scope captures (nested lambdas).
-          // Check if any captures are outer-scope (not supported in Phase 2 yet).
-          var hasOuterScopeCaptures = false
-          var capCheckI = 0
-          while capCheckI < caps.count and not hasOuterScopeCaptures {
-            if fctx.captureNameToIndex.containsKey(caps[capCheckI]) {
-              hasOuterScopeCaptures = true
-            }
-            capCheckI = capCheckI + 1
-          }
+          // Delegate target: uses object[] array for all capturing lambdas (Phase 1 approach).
+          // Phase 2 typed closure classes are deferred pending completion of the full ABI migration.
 
           if caps.count > 0 {
             // Allocate object[] array for captures (Phase 1 approach).
