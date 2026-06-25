@@ -47,10 +47,7 @@
        so the AOT binary can find its dependencies when run from arbitrary working
        directories (e.g., temp dirs in test scripts). -->
   <Target Name="CopyStageLibraries" AfterTargets="Build">
-    <ItemGroup>
-      <StageDlls Include="$(StageDir)/Lyric.*.dll" />
-    </ItemGroup>
-    <Copy SourceFiles="@(StageDlls)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Exec Command="cp $(StageDir)/Lyric.*.dll $(OutDir)" />
   </Target>
 
 </Project>
