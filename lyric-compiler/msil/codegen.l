@@ -11667,7 +11667,6 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             case Some(init) -> {
               val annoTy = match tyOpt { case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName); case None -> MObject }
               // Stage 4: Prepare to create typed cell if hoisted.
-              var needsArrayDup = false
               if isHoisted {
                 match arrayElemTokenOpt(cctx, annoTy) {
                   case Some(elemToken) -> {
@@ -11675,7 +11674,6 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                     insns.add(MLdcI4(v = 1))
                     insns.add(MNewarr(typeToken = elemToken))
                     insns.add(MDup)
-                    needsArrayDup = true
                   }
                   case None -> {
                     // Will fall back to List[object]; create and dup.
