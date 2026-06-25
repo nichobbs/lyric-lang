@@ -394,6 +394,7 @@ jobs:
         with:
           name: build-artifacts
       - name: Restore executable permissions
+        shell: bash
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
       - name: Measure MSIL BOX instructions (epic #1877 Stage 2+ zero-overhead gate)
         working-directory: ${{ github.workspace }}
