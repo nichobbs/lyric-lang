@@ -637,15 +637,6 @@ test "#4187: SM function between records executes correctly" {
 }
 
 // ── #4266: SM function returning a local enum / distinct type ─────────────────
-// Regression: pre-pass 0 in addPackageTokens called typeExprToMsilCtx before
-// enumTypeNames was populated.  For SM functions returning a local union type,
-// the return type resolved to MClass("Pkg.Name") instead of the underlying MInt,
-// causing the awaiter TypeSpec / MemberRef signatures to embed the wrong inner T
-// and producing ilverify TokenResolve / "Error while getting method signature"
-// errors across the closure.  The fix ensures pre-pass 0 stores a plain Task
-// placeholder (not a typed Task<inner>) for SM functions, and pass 2 always
-// overwrites SM entries with the correct type after enumTypeNames is ready.
-
 union Direction { North; South; East; West }
 
 async func asyncGetDirection(n: in Int): Direction {

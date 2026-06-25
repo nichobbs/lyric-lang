@@ -2029,9 +2029,11 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
             val fqn0 = pkgName + "." + decl.name
             val arityKey0 = fqn0 + "/" + toString(decl.params.count)
             if not cctx.funcRetTypes.containsKey(arityKey0) {
-              // isTaskTypeMsil only needs to see a Task typeRefCode — the
-              // inner T is irrelevant for countSmFieldsMsil.  Pass 2 overwrites
-              // this placeholder once enumTypeNames is fully populated.
+              // Guard is always false in practice: each package compilation starts with a
+              // fresh cctx (funcRetTypes empty), and cross-package stdlib/restored registrations
+              // use external FQNs that cannot match this pkgName-qualified key.  Kept defensive.
+              // isTaskTypeMsil only needs a Task typeRefCode — inner T is irrelevant for
+              // countSmFieldsMsil.  Pass 2 always overwrites SM entries after enumTypeNames is ready.
               val retTy0 = MClassRef(typeRefCode = tdrTypeRef(cctx.trTask), clrFqn = "System.Threading.Tasks.Task")
               cctx.funcRetTypes.add(arityKey0, retTy0)
               if not cctx.funcRetTypes.containsKey(fqn0) {

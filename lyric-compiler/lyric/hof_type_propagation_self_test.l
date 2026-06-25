@@ -67,3 +67,11 @@ test "String-param propagated lambda" {
   val r = applyS({ s -> s.length }, "hello")
   assertEqualInt(r, 5, "{ s -> s.length }(\"hello\") == 5")
 }
+
+test "#4266: annotated lambda with non-object return type passed to HOF" {
+  val double = { x: Int -> x * 2 }
+  assertEqualInt(apply1(double, 5), 10, "{ x: Int -> x*2 }(5) == 10")
+  val isPos = { x: Int -> x > 0 }
+  assertTrue(applyB(isPos, 3), "{ x: Int -> x>0 }(3) == true")
+  assertTrue(not applyB(isPos, 0 - 1), "{ x: Int -> x>0 }(-1) == false")
+}
