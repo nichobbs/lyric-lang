@@ -6247,19 +6247,20 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // Phase 2 typed closure classes are deferred pending completion of the full ABI migration.
 
           if caps.count > 0 {
-            // Allocate typed closure class instance (Phase 1 #1877 Stage 1).
-            // synthesizeClosureClassMsil has already created a __Closure_<i> record
-            // with typed fields matching captureTypes. We instantiate it here and
-            // store captures as field values (no boxing needed for primitives).
-            val closureClassFqn = fctx.pkgName + ".__Closure_" + toString(idx)
-            insns.add(MNewobjByName(className = closureClassFqn))
+            // Allocate object[] array for captures (Phase 1 approach).
+            // Phase 2 typed closure classes are synthesized and emitted for future use,
+            // but the delegate instantiation ABI still uses the object[] array for now (#4223).
 
-            // Store each capture in the corresponding closure field (__f0, __f1, ...)
+            // Allocate object[] array for captures
+            insns.add(MLdcI4(v = caps.count))
+            insns.add(MNewarr(typeToken = 0x01000000 + cctx.lctx.trObject))
+
+            // Store each capture in the object[]
             var capStI = 0
             while capStI < caps.count {
               insns.add(MDup)
+              insns.add(MLdcI4(v = capStI))
               val capName = caps[capStI]
-              val fieldName = "__f" + toString(capStI)
 
               // Load the capture value
               if fctx.captureNameToIndex.containsKey(capName) {
@@ -6280,15 +6281,28 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                   case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.hoistedCellSlot")
                 }
               } else {
-                // Local capture: load the value (no boxing - typed field)
+                // Local capture: load and box the value
                 match mapGet(fctx.slots, capName) {
                   case Some(s) -> emitLoadVarMsil(fctx, insns, s)
                   case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots")
                 }
+                match mapGet(fctx.types, capName) {
+                  case Some(t) -> {
+                    match t {
+                      case MInt -> insns.add(MBox(typeToken = cctx.trInt32))
+                      case MLong -> insns.add(MBox(typeToken = cctx.trInt64))
+                      case MFloat -> insns.add(MBox(typeToken = cctx.trDouble))
+                      case MDouble -> insns.add(MBox(typeToken = cctx.trDouble))
+                      case MBool -> insns.add(MBox(typeToken = cctx.trBoolean))
+                      case MChar -> insns.add(MBox(typeToken = cctx.trChar))
+                      case _ -> ()
+                    }
+                  }
+                  case None -> ()
+                }
               }
 
-              // Store in typed closure field (no boxing needed)
-              insns.add(MStfldByName(ownerFqn = closureClassFqn, fieldName = fieldName))
+              insns.add(MStelem(typeToken = 0x01000000 + cctx.lctx.trObject))
               capStI = capStI + 1
             }
           } else {
