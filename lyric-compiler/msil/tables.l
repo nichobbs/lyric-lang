@@ -920,7 +920,9 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     pi = pi + 1
   }
 
-  // InterfaceImpl rows (table 0x09)
+  // InterfaceImpl rows (table 0x09).  ECMA-335 §II.22.23 requires the table to be
+  // sorted by (Class, Interface) ascending.  Copy + insertion-sort a local view so
+  // the caller's insertion order is preserved while the wire image is correctly sorted.
   val sortedIfaceImpl: List[InterfaceImplRow] = newList()
   var ifiic = 0
   while ifiic < t.interfaceImpls.count {
