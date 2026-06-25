@@ -37,6 +37,42 @@ pub func main(argv: in slice[String]): Int {
 
   val cmd = argv[0]
 
+  // Internal: project-level JVM compilation via subprocess (JVM bridge workaround).
+  // `--internal-project-build <specPath> -o <outputPath> --target <dotnet|jvm>`.
+  // Not a user-facing command; used internally when JVM project builds are required.
+  // Parses a tab-delimited spec file and routes to the appropriate emitter.
+  if cmd == "--internal-project-build" {
+    if argv.length < 5 {
+      printErr("usage: lyric --internal-project-build <specPath> -o <outputPath> --target <dotnet|jvm>")
+      return 1
+    }
+    val specPath = argv[1]
+    // argv[2] should be "-o"
+    val outputPath = argv[3]
+    // argv[4] should be "--target"
+    val targetStr = if argv.length > 5 { argv[5] } else { "" }
+
+    // Parse the project spec file and emit.
+    match File.readText(specPath) {
+      case Err(e) -> {
+        printErr("internal-project-build: cannot read spec " + specPath + ": " + IOError.message(e))
+        return 1
+      }
+      case Ok(specContent) -> {
+        // Delegate to emitter for spec parsing and project compilation.
+        match Emitter.emitProjectFromSpec(specContent, outputPath, targetStr) {
+          case Err(msg) -> {
+            printErr("project build failed: " + msg)
+            return 1
+          }
+          case Ok(()) -> {
+            return 0
+          }
+        }
+      }
+    }
+  }
+
   // Internal (#2592 stage-2): emit a driver's transitive `Std.*` import closure
   // into per-package `Lyric.Stdlib.<X>.dll` assemblies via the self-hosted
   // emitter.  `--internal-perpackage-build <entry.l> <outDir> [--target jvm]`.

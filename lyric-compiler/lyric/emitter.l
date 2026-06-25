@@ -2085,6 +2085,114 @@ func emitProjectJvmViaSubprocess(req: in EmitProjectRequest): EmitResult {
   result
 }
 
+/// Parse and compile a project from a spec file.
+/// Spec format: lines of TAB-delimited data:
+///   <packageName> TAB <srcPath1> TAB <srcPath2> ...
+///   DEP TAB <name> TAB <dllPath>
+///   FEATURE TAB <name>
+///   DECLARED TAB <name>
+pub func emitProjectFromSpec(specContent: in String, outputPath: in String, targetStr: in String): Result[Unit, String] {
+  val target = match targetStr {
+    case "dotnet" -> Dotnet
+    case "jvm" -> Jvm
+    case _ -> return Err("invalid target: " + targetStr)
+  }
+
+  // Parse spec lines
+  val lines = Str.split(specContent, "\n")
+  val packages: List[ProjectPackage] = newList()
+  val dllPaths: List[String] = newList()
+  val activeFeatures: List[String] = newList()
+  val declaredFeatures: List[String] = newList()
+
+  var li = 0
+  while li < lines.count {
+    val line = lines[li]
+    if Str.isNotEmpty(Str.trim(line)) {
+      val parts = Str.split(line, "\t")
+      if parts.count > 0 {
+        match parts[0] {
+          case "DEP" -> {
+            if parts.count >= 3 {
+              dllPaths.add(parts[1] + "\t" + parts[2])
+            }
+          }
+          case "FEATURE" -> {
+            if parts.count >= 2 {
+              activeFeatures.add(parts[1])
+            }
+          }
+          case "DECLARED" -> {
+            if parts.count >= 2 {
+              declaredFeatures.add(parts[1])
+            }
+          }
+          case _ -> {
+            // Package line: first part is package name, rest are source paths
+            val pkgName = parts[0]
+            val sources: List[String] = newList()
+            var si = 1
+            while si < parts.count {
+              val srcPath = parts[si]
+              match File.readText(srcPath) {
+                case Ok(content) -> {
+                  sources.add(content)
+                }
+                case Err(e) -> {
+                  return Err("cannot read source " + srcPath + ": " + IOError.message(e))
+                }
+              }
+              si += 1
+            }
+            if sources.count > 0 {
+              packages.add(ProjectPackage(name = pkgName, sources = sources))
+            }
+          }
+        }
+      }
+    }
+    li += 1
+  }
+
+  if packages.count == 0 {
+    return Err("no packages in spec")
+  }
+
+  // Build EmitProjectRequest and emit
+  val assemblyName = if packages.count > 0 { packages[0].name } else { "output" }
+  val noDepTemplateSrcs: List[String] = newList()
+  val req = EmitProjectRequest(
+    packages = packages,
+    assemblyName = assemblyName,
+    outputPath = outputPath,
+    target = target,
+    restoredDllPaths = dllPaths,
+    activeFeatures = activeFeatures,
+    declaredFeatures = declaredFeatures,
+    packageVersion = "",
+    depTemplateSrcs = noDepTemplateSrcs
+  )
+
+  val result = match target {
+    case Dotnet -> emitProject(req)
+    case Jvm -> {
+      // JVM project compilation is not yet in-process; emit a clear error
+      failResult("JVM project compilation not yet supported via --internal-project-build; this is a deferred Phase implementation")
+    }
+  }
+
+  match result.outputPath {
+    case Some(_) -> Ok(())
+    case None -> {
+      // Emit diagnostics
+      for d in result.diagnostics.toArray() {
+        // Diagnostics are printed by the underlying emitter
+      }
+      Err("project compilation failed")
+    }
+  }
+}
+
 /// Compile Lyric source to a .NET DLL or JVM JAR.
 ///
 /// `--target dotnet` runs IN-PROCESS via
