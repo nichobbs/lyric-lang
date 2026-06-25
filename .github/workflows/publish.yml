@@ -91,7 +91,6 @@ jobs:
   # packages that are not yet bundleable (#4030) are emitted alongside.
   build-stdlib-bundle:
     needs: [create-release]
-    if: inputs.seed != 'mint'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
@@ -148,11 +147,8 @@ jobs:
   # ---------------------------------------------------------------------------
   build-standalone:
     needs: [create-release, build-stdlib-bundle]
-    # A `mint` seed skips build-stdlib-bundle (its `if: inputs.seed != 'mint'`),
-    # and GitHub Actions skips a job when a needed job is skipped — so a
-    # mint-seeded run produces NO standalone binaries.  That is intentional:
-    # mint is unsupported in this fork (the historical F# commits are absent),
-    # so we never publish a mint-seeded release.  Use `seed: download`.
+    # The build-stdlib-bundle job now runs for all seed types (download and mint),
+    # so this job will also run for both.
     strategy:
       fail-fast: false
       matrix:
