@@ -19,6 +19,7 @@ import Lyric.Generator as Generator
 import Lyric.Emitter as Emitter
 import Lyric.AppHost as AppHost
 import Lyric.CfgGate as CfgGate
+import Std.Sort as Sort
 import Std.Time as Time
 import Std.Format as Format
 
@@ -251,11 +252,6 @@ func cmdBuild(argv: in slice[String]): Int {
       i += 1
     }
   }
-  // `--release-from-dll <dll>` — link a pre-built managed DLL directly to a
-  // native binary, skipping all source compilation.  Used by bootstrap.sh to
-  // build the stage-2 AOT binary from the stage-1 compiler DLL closure without
-  // requiring any C# build step.  `--extra-refs-dir <dir>` adds every `*.dll`
-  // in <dir> (except the primary DLL) as an ILC managed reference.
   match releaseFromDll {
     case Some(dll) -> {
       if not File.fileExists(dll) {
@@ -269,7 +265,8 @@ func cmdBuild(argv: in slice[String]): Int {
           match File.listFiles(refsDir) {
             case Ok(files) -> {
               val dllBase = Path.basename(dll)
-              for f in files.toArray() {
+              val sorted = Sort.sortStrings(files.toArray())
+              for f in sorted {
                 if Str.endsWith(f, ".dll") and Path.basename(f) != dllBase {
                   extraRefs.add(f)
                 }
@@ -288,12 +285,20 @@ func cmdBuild(argv: in slice[String]): Int {
         case Some(o) -> o
         case None -> {
           val base = Path.basename(absDll)
-          Path.join(Path.dirname(absDll), stemOf(base, 4))
+          Path.join(Path.dirname(absDll), stemOf(base, 4))  // strip ".dll"
         }
       }
       return Release.buildRelease(releaseTarget, absDll, extraRefs, ridArg, outNative)
     }
-    case None -> ()
+    case None -> {
+      match extraRefsDir {
+        case Some(_) -> {
+          printErr("build: --extra-refs-dir requires --release-from-dll")
+          return 1
+        }
+        case None -> ()
+      }
+    }
   }
   // `--no-restore` only affects project-mode auto-restore; warn rather than
   // silently ignore it on a single-file build (#2048).
