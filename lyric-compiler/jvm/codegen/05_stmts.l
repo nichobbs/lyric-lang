@@ -49,10 +49,11 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                     case JDouble -> insns.add(LDadd)
                     case _ -> insns.add(LIadd)
                   }
+                  val resultSlot = allocSlot(ctx, "__cell_result_" + freshLabel(ctx), cellElemTy)
+                  emitStore(insns, resultSlot, cellElemTy)
                   emitLoad(insns, cellSlot, cellType)
                   insns.add(LIconst(v = 0))
-                  insns.add(LDup_x1)
-                  insns.add(LPop)
+                  emitLoad(insns, resultSlot, cellElemTy)
                   emitArrayStore(insns, cellElemTy)
                 }
                 case AssMinus -> {
