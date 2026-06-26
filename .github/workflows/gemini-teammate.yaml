@@ -23,6 +23,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Gemini CLI
+        env:
+          GEMINI_CLI_TRUST_WORKSPACE: true
         uses: google-github-actions/run-gemini-cli@v0
         # FIXED: Removed 'github_token' from the 'with:' section
         with:
