@@ -3,15 +3,15 @@ on:
   pull_request:
     types: [opened, synchronize]
   issue_comment:
-    types: [created] # Triggers when someone comments on a PR or issue
+    types: [created]
 
 jobs:
   gemini_review:
     runs-on: ubuntu-latest
-    # Do not run on regular issue comments, only PR comments or when explicitly tagged
+    # Restricts execution to PR creation/updates OR when explicitly mentioned in PR comments
     if: |
       github.event_name == 'pull_request' || 
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@gemini'))
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '@gemini'))
     
     permissions:
       contents: write
@@ -24,15 +24,17 @@ jobs:
 
       - name: Setup Gemini CLI
         uses: google-github-actions/run-gemini-cli@v0
+        # FIXED: Removed 'github_token' from the 'with:' section
         with:
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
           
       - name: Run PR Review & Fixes
         env:
+          # FIXED: Pass GITHUB_TOKEN here as an environment variable so the CLI can use it
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
-          # If triggered by a comment, parse the command, otherwise default to full review
+          # If triggered by a manual PR comment tag
           if [ "${{ github.event_name }}" = "issue_comment" ]; then
             if [[ "$COMMENT_BODY" == *"/fix"* ]]; then
               gemini-cli /pr-code-review --auto-fix
