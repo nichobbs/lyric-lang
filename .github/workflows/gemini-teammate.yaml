@@ -11,7 +11,7 @@ jobs:
     # Do not run on regular issue comments, only PR comments or when explicitly tagged
     if: |
       github.event_name == 'pull_request' || 
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@gemini-cli'))
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@gemini'))
     
     permissions:
       contents: write
