@@ -24,7 +24,21 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$REPO_ROOT/.bootstrap"
 BUILD_CONFIG="${BUILD_CONFIG:-Release}"
-DOTNET_ROOT="${DOTNET_ROOT:-/usr/share/dotnet}"
+if [[ -z "${DOTNET_ROOT:-}" || ! -d "$DOTNET_ROOT" ]]; then
+  if [[ -d "/usr/share/dotnet" ]]; then
+    DOTNET_ROOT="/usr/share/dotnet"
+  elif [[ -d "/opt/homebrew/opt/dotnet/libexec" ]]; then
+    DOTNET_ROOT="/opt/homebrew/opt/dotnet/libexec"
+  elif [[ -d "/usr/local/share/dotnet" ]]; then
+    DOTNET_ROOT="/usr/local/share/dotnet"
+  elif [[ -d "/usr/lib/dotnet" ]]; then
+    DOTNET_ROOT="/usr/lib/dotnet"
+  elif [[ -d "$HOME/.dotnet" ]]; then
+    DOTNET_ROOT="$HOME/.dotnet"
+  else
+    DOTNET_ROOT="/usr/share/dotnet"
+  fi
+fi
 
 LYRIC_BIN="${1:-$REPO_ROOT/bootstrap/src/Lyric.Cli.Aot/bin/$BUILD_CONFIG/net10.0/lyric}"
 if [[ ! -x "$LYRIC_BIN" ]]; then

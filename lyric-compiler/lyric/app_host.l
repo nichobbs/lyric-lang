@@ -181,6 +181,8 @@ func candidateDotnetRoots(): List[String] {
   }
   roots.add("/usr/share/dotnet")
   roots.add("/usr/lib/dotnet")
+  roots.add("/usr/local/share/dotnet")
+  roots.add("/opt/homebrew/opt/dotnet/libexec")
   roots
 }
 

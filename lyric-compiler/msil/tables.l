@@ -777,9 +777,16 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   // Sorted bitmask.  The CLR binary-searches GenericParam by owner, so when
   // GenericParam rows are present they MUST be physically sorted by (owner,
   // number) — done just below before emission — AND the table's sorted-mask
-  // bit (42) MUST be set so the loader trusts the ordering.  No other table is
-  // declared sorted (matching the historical emitter behaviour).
-  val sorted: Long = if t.genericParams.count > 0 { TABLE_BIT_GENERIC_PARAM } else { 0i64 }
+  // bit (42) MUST be set so the loader trusts the ordering.
+  // We also physically sort InterfaceImpl rows (table 0x09) by (class_, interface_)
+  // for CLR compatibility, so we set TABLE_BIT_INTERFACE_IMPL in the sorted mask.
+  var sorted: Long = 0i64
+  if t.genericParams.count > 0 {
+    sorted = sorted + TABLE_BIT_GENERIC_PARAM
+  }
+  if t.interfaceImpls.count > 0 {
+    sorted = sorted + TABLE_BIT_INTERFACE_IMPL
+  }
   w8(buf, sorted)
 
   // Row counts (only for present tables, in table-number order)
@@ -914,9 +921,26 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   }
 
   // InterfaceImpl rows (table 0x09)
+  val sortedIfaceImpl: List[InterfaceImplRow] = newList()
+  var ifiic = 0
+  while ifiic < t.interfaceImpls.count {
+    sortedIfaceImpl.add(t.interfaceImpls[ifiic])
+    ifiic = ifiic + 1
+  }
+  var ifiisi = 1
+  while ifiisi < sortedIfaceImpl.count {
+    val key = sortedIfaceImpl[ifiisi]
+    var ifiisj = ifiisi - 1
+    while ifiisj >= 0 and interfaceImplGreater(sortedIfaceImpl[ifiisj], key) {
+      sortedIfaceImpl[ifiisj + 1] = sortedIfaceImpl[ifiisj]
+      ifiisj = ifiisj - 1
+    }
+    sortedIfaceImpl[ifiisj + 1] = key
+    ifiisi = ifiisi + 1
+  }
   var ifii = 0
-  while ifii < t.interfaceImpls.count {
-    val r = t.interfaceImpls[ifii]
+  while ifii < sortedIfaceImpl.count {
+    val r = sortedIfaceImpl[ifii]
     w2(buf, r.class_)
     w2(buf, r.interface_)
     ifii = ifii + 1
@@ -1080,5 +1104,16 @@ func genericParamGreater(a: in GenericParamRow, b: in GenericParamRow): Bool {
     a.owner > b.owner
   } else {
     a.number > b.number
+  }
+}
+
+// Ordering predicate for InterfaceImpl rows: sort by `class_` ascending, then by
+// `interface_` ascending within the same class_.  Used by serializeTablesStream to
+// produce the CLR-required (class_, interface_) sort.
+func interfaceImplGreater(a: in InterfaceImplRow, b: in InterfaceImplRow): Bool {
+  if a.class_ != b.class_ {
+    a.class_ > b.class_
+  } else {
+    a.interface_ > b.interface_
   }
 }
