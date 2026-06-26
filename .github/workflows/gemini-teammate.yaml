@@ -30,6 +30,7 @@ jobs:
           
       - name: Run PR Review & Fixes
         env:
+          GEMINI_CLI_TRUST_WORKSPACE: true
           # FIXED: Pass GITHUB_TOKEN here as an environment variable so the CLI can use it
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMENT_BODY: ${{ github.event.comment.body }}
