@@ -3735,6 +3735,11 @@ pub func findTypeRefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
     }
     refArity = refArity + 1
   }
+  if ns == "System" {
+    if simpleName.startsWith("Func`") or simpleName.startsWith("Action`") {
+      return ctxAddTypeRef(ctx, "System", simpleName, ctx.arRuntime)
+    }
+  }
   0
 }
 
