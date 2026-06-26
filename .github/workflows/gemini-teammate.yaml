@@ -1,0 +1,27 @@
+name: Gemini AI Teammate
+on:
+  pull_request:
+    types: [opened, synchronize]
+  issue_comment:
+    types: [created]
+
+jobs:
+  gemini_review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Gemini CLI
+        uses: google-gemini/gemini-cli-action@v1 # Use latest version
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Run PR Review & Fixes
+        run: |
+          gemini-cli /pr-code-review --auto-fix
