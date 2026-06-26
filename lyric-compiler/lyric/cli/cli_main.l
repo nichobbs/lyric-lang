@@ -7,6 +7,7 @@ import Std.File as File
 import Std.Path as Path
 import Std.Environment as Environment
 import Std.Errors
+import Std.String as Str
 import Lyric.Emitter as Emitter
 import Lyric.Lexer
 import Lyric.Discovery as Disc
