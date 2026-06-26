@@ -109,7 +109,9 @@ func rdU16(b: in slice[Byte], o: in Int): Int {
 }
 
 func rdU32(b: in slice[Byte], o: in Int): Int {
-  rdU8(b, o) + rdU8(b, o + 1) * 256 + rdU8(b, o + 2) * 65536 + rdU8(b, o + 3) * 16777216
+  val h = rdU8(b, o + 3)
+  val hTerm = if h >= 128 { (h - 256) * 16777216 } else { h * 16777216 }
+  rdU8(b, o) + rdU8(b, o + 1) * 256 + rdU8(b, o + 2) * 65536 + hTerm
 }
 
 // True when bit `bit` (0..7) of the unsigned byte value `byteVal` is set.
@@ -1105,14 +1107,17 @@ pub func getLiteralFieldInt32In(
     val o = layout.dataStart[0x0B] + (crow - 1) * layout.rowSize[0x0B]
     val pVal = rdIdx(b, o + 2, hasConstIdxWidth)
     if pVal == parentIdx {
-      val blobIndex = rdIdx(b, o + 2 + hasConstIdxWidth, layout.blobIdx)
-      val blobBytes = blobAt(img, layout, blobIndex)
-      if blobBytes.length >= 4 {
-        return Some(value = rdU32(blobBytes, 0))
-      } else if blobBytes.length == 2 {
-        return Some(value = rdU16(blobBytes, 0))
-      } else if blobBytes.length == 1 {
-        return Some(value = blobBytes[0].toInt())
+      val typeVal = b[o].toInt()
+      if typeVal == 0x02 or typeVal == 0x03 or typeVal == 0x04 or typeVal == 0x05 or typeVal == 0x06 or typeVal == 0x07 or typeVal == 0x08 or typeVal == 0x09 {
+        val blobIndex = rdIdx(b, o + 2 + hasConstIdxWidth, layout.blobIdx)
+        val blobBytes = blobAt(img, layout, blobIndex)
+        if blobBytes.length >= 4 {
+          return Some(value = rdU32(blobBytes, 0))
+        } else if blobBytes.length == 2 {
+          return Some(value = rdU16(blobBytes, 0))
+        } else if blobBytes.length == 1 {
+          return Some(value = blobBytes[0].toInt())
+        }
       }
     }
     crow = crow + 1

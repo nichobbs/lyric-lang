@@ -4336,15 +4336,29 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
         MClass("System.Action")
         // () -> TReturn (any return type) maps to System.Func<TReturn>
       } else if params.count == 0 and not isVoidRet {
-        MClass("System.Func`1")
+        val objArgs: List[MsilType] = newList()
+        objArgs.add(MObject)
+        MGenericInstByName("System.Func`1", objArgs)
         // (T1, ..., Tn) -> Unit maps to System.Action<T1,...,Tn>
       } else if isVoidRet {
         val sb: String = "System.Action`" + toString(params.count)
-        MClass(sb)
+        val objArgs: List[MsilType] = newList()
+        var ai = 0
+        while ai < params.count {
+          objArgs.add(MObject)
+          ai = ai + 1
+        }
+        MGenericInstByName(sb, objArgs)
         // (T1, ..., Tn) -> TReturn maps to System.Func<T1,...,Tn,TReturn>
       } else {
         val sb: String = "System.Func`" + toString(params.count + 1)
-        MClass(sb)
+        val objArgs: List[MsilType] = newList()
+        var ai = 0
+        while ai < params.count + 1 {
+          objArgs.add(MObject)
+          ai = ai + 1
+        }
+        MGenericInstByName(sb, objArgs)
       }
     }
     case TArray(_, _) -> MObject
@@ -10099,11 +10113,23 @@ func lowerBuiltinOrStaticCallMsil(
               insns.add(MCastclass(typeToken = 0x1B000000 + internFuncNTypeSpec(cctx, args.count)))
             }
 
+            val needBoxing = if useTypedInvoke {
+              match trackedRetType {
+                case Some(_) -> false
+                case None -> true
+              }
+            } else {
+              true
+            }
+
             // Collect argument types as we lower them
             val argTypes: List[MsilType] = newList()
             var i = 0
             while i < args.count {
               val argTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
+              if needBoxing {
+                boxIfNeededMsil(cctx, insns, argTy)
+              }
               argTypes.add(argTy)
               i = i + 1
             }
@@ -10129,11 +10155,6 @@ func lowerBuiltinOrStaticCallMsil(
                       }
                     }
                     case None -> {
-                      var j = 0
-                      while j < argTypes.count {
-                        boxIfNeededMsil(cctx, insns, argTypes[j])
-                        j = j + 1
-                      }
                       insns.add(MCallvirt(methodToken = buildFuncNInvokeTok(cctx, args.count)))
                       MObject
                     }
@@ -10143,12 +10164,6 @@ func lowerBuiltinOrStaticCallMsil(
               }
             } else {
               // Phase 1 fallback: Object-based uniform ABI.
-              // Box arguments if needed for the generic Func<object,...> ABI
-              var i2 = 0
-              while i2 < argTypes.count {
-                boxIfNeededMsil(cctx, insns, argTypes[i2])
-                i2 = i2 + 1
-              }
               insns.add(MCallvirt(methodToken = buildFuncNInvokeTok(cctx, args.count)))
               // The delegate's declared return type (tracked for function-typed
               // params/locals) drives result materialisation: a void delegate
