@@ -35,9 +35,13 @@ LYRIC_BIN="${1:-$REPO_ROOT/bin/lyric}"
 STAGE="${2:-0}"
 
 if [[ ! -x "$LYRIC_BIN" ]]; then
-  echo "FATAL: lyric binary not found at $LYRIC_BIN" >&2
-  echo "  build it first: make lyric" >&2
-  exit 2
+  if [[ -x "${LYRIC_BIN}.exe" ]]; then
+    LYRIC_BIN="${LYRIC_BIN}.exe"
+  else
+    echo "FATAL: lyric binary not found at $LYRIC_BIN" >&2
+    echo "  build it first: make lyric" >&2
+    exit 2
+  fi
 fi
 
 # Create a temporary workspace for the test compilation.
