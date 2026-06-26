@@ -1065,6 +1065,82 @@ pub func isStaticFieldExtern(asmPath: in String, typeFqn: in String, fieldName: 
   }
 }
 
+// Retrieves the constant value of an Int32 literal/enum field declared by typeFqn, or None.
+pub func getLiteralFieldInt32In(
+  img: in PeImage,
+  layout: in TableLayout,
+  th: in TablesHeader,
+  typeFqn: in String,
+  fieldName: in String,
+): Option[Int] {
+  val typeRow = findTypeDefByFqn(img, layout, th, typeFqn)
+  if typeRow < 0 {
+    return None
+  }
+  val fr = fieldRange(img, layout, th, typeRow)
+  val b = img.bytes
+  var row = fr.start
+  var foundFieldRow = -1
+  while row <= fr.endRow {
+    val o = layout.dataStart[0x04] + (row - 1) * layout.rowSize[0x04]
+    val flags = rdU16(b, o)
+    val nameI = rdIdx(b, o + 2, layout.stringIdx)
+    val nm = stringAt(img, layout, nameI)
+    if nm == fieldName {
+      if (flags / 64) % 2 == 1 {
+        foundFieldRow = row
+      }
+      break
+    }
+    row = row + 1
+  }
+  if foundFieldRow < 0 {
+    return None
+  }
+  val parentIdx = foundFieldRow * 4 // HasConstant Field tag = 0
+  val constCount = rowCountOf(th, 0x0B)
+  var crow = 1
+  val hasConstIdxWidth = codedWidthFor(th, tableIds([0x04, 0x08, 0x17]), 2)
+  while crow <= constCount {
+    val o = layout.dataStart[0x0B] + (crow - 1) * layout.rowSize[0x0B]
+    val pVal = rdIdx(b, o + 2, hasConstIdxWidth)
+    if pVal == parentIdx {
+      val blobIndex = rdIdx(b, o + 2 + hasConstIdxWidth, layout.blobIdx)
+      val blobBytes = blobAt(img, layout, blobIndex)
+      if blobBytes.length >= 4 {
+        return Some(value = rdU32(blobBytes, 0))
+      } else if blobBytes.length == 2 {
+        return Some(value = rdU16(blobBytes, 0))
+      } else if blobBytes.length == 1 {
+        return Some(value = blobBytes[0].toInt())
+      }
+    }
+    crow = crow + 1
+  }
+  None
+}
+
+// Read-from-disk wrapper over `getLiteralFieldInt32In`.
+pub func getLiteralFieldInt32(asmPath: in String, typeFqn: in String, fieldName: in String): Option[Int] {
+  match File.readBytes(asmPath) {
+    case Err(_) -> None
+    case Ok(raw) -> match readPe(raw.toArray()) {
+      case Err(_) -> None
+      case Ok(img) -> match readMetadataRoot(img) {
+        case Err(_) -> None
+        case Ok(root) -> match readTablesHeader(img, root) {
+          case Err(_) -> None
+          case Ok(th) -> match computeLayout(img, root, th) {
+            case Err(_) -> None
+            case Ok(layout) -> getLiteralFieldInt32In(img, layout, th, typeFqn, fieldName)
+          }
+        }
+      }
+    }
+  }
+}
+
+
 // ── Layer 5: signature-blob decoder ──────────────────────────────────────────
 //
 // Decodes a MethodDefSig / MethodRefSig blob (ECMA-335 §II.23.2.1) into a

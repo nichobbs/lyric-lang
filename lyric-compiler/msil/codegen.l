@@ -13742,12 +13742,21 @@ func emitExternTargetBody(
         if not isVoidFieldRet {
           match mapGet(cctx.metadataPathIndex, asmName) {
             case Some(asmPath) -> {
-              if Mdr.isStaticFieldExtern(asmPath, resolvedFqn, r.memberName) {
-                val fldSig = buildFieldSigWithCtx(ffiRetTy, cctx.lctx)
-                val frRow = ctxAddMemberRef(cctx.lctx, tRefRow, r.memberName, "ffifld_" + target, fldSig)
-                insns.add(MLdsfld(fieldToken = 0x0A000000 + frRow))
-                insns.add(MRet)
-                return true
+              match Mdr.getLiteralFieldInt32(asmPath, resolvedFqn, r.memberName) {
+                case Some(litVal) -> {
+                  insns.add(MLdcI4(v = litVal))
+                  insns.add(MRet)
+                  return true
+                }
+                case None -> {
+                  if Mdr.isStaticFieldExtern(asmPath, resolvedFqn, r.memberName) {
+                    val fldSig = buildFieldSigWithCtx(ffiRetTy, cctx.lctx)
+                    val frRow = ctxAddMemberRef(cctx.lctx, tRefRow, r.memberName, "ffifld_" + target, fldSig)
+                    insns.add(MLdsfld(fieldToken = 0x0A000000 + frRow))
+                    insns.add(MRet)
+                    return true
+                  }
+                }
               }
             }
             case None -> ()

@@ -119,7 +119,16 @@ func cmdPublish(argv: in slice[String]): Int {
   val mfDir = Path.dirname(mfPath)
   val dllPath = match dllOverride {
     case Some(d) -> d
-    case None -> Path.join(Path.join(mfDir, "bin"), pkg.name + ".dll")
+    case None -> {
+      val defaultDllName = match manifest.project {
+        case Some(proj) -> match proj.outputAssembly {
+          case Some(asm) -> asm
+          case None -> pkg.name + ".dll"
+        }
+        case None -> pkg.name + ".dll"
+      }
+      Path.join(Path.join(mfDir, "bin"), defaultDllName)
+    }
   }
 
   if not File.fileExists(dllPath) {
@@ -186,7 +195,7 @@ func cmdPublish(argv: in slice[String]): Int {
     si += 1
   }
 
-  val absDllPath = if Path.isAbsolute(dllPath) { dllPath } else { Path.join(mfDir, dllPath) }
+  val absDllPath = if Path.isAbsolute(dllPath) { dllPath } else { Path.join(Environment.currentDirectory(), dllPath) }
   val dllBase = Path.basename(absDllPath)
   var csproj = "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
   csproj = csproj + "  <PropertyGroup>\n"
@@ -229,6 +238,43 @@ func cmdPublish(argv: in slice[String]): Int {
       return 1
     }
     case Ok(_) -> ()
+  }
+
+  // Run `dotnet restore` first so that dotnet pack has project.assets.json
+  val restoreArgs: List[String] = newList()
+  restoreArgs.add("restore")
+  restoreArgs.add(tmpCsproj)
+  match registryUrl {
+    case Some(url) -> {
+      restoreArgs.add("--source")
+      restoreArgs.add(url)
+      restoreArgs.add("--source")
+      restoreArgs.add("https://api.nuget.org/v3/index.json")
+    }
+    case None -> {
+      match manifest.registry {
+        case Some(rc) -> match rc.dotnet {
+          case Some(url) -> {
+            restoreArgs.add("--source")
+            restoreArgs.add(url)
+            restoreArgs.add("--source")
+            restoreArgs.add("https://api.nuget.org/v3/index.json")
+          }
+          case None -> ()
+        }
+        case None -> ()
+      }
+    }
+  }
+  val restoreExit = match Process.run("dotnet", restoreArgs) {
+    case Ok(code) -> code
+    case Err(e) -> {
+      printErr("publish: dotnet restore failed: " + IOError.message(e))
+      return 1
+    }
+  }
+  if restoreExit != 0 {
+    return restoreExit
   }
 
   // Run `dotnet pack`.
