@@ -438,6 +438,7 @@ pub record CodegenCtx {
   genericCtorParams: Map[String, List[MsilType]]
   // Synthesised views of restored DLLs the bundle imports but doesn't ship; seeds cross-assembly tokens (#1272).
   restoredArtifacts: List[SynthesisedArtifact]
+  nugetAssemblyPaths: List[String]
   // Nullary union case singletons.  Key = FQN ctor key (e.g. "Pkg.Union$Case");
   // value = FieldDef token (0x04000000 | row) for the static `Instance` field
   // emitted by lowerMNullaryUnionCase.  Construction sites that find a key here
@@ -547,6 +548,7 @@ pub record ImplEntryMsil {
 pub func newCodegenCtx(
   packageName: in String,
   restoredArtifacts: in List[SynthesisedArtifact],
+  nugetAssemblyPaths: in List[String],
   major: in Int,
   minor: in Int,
 ): CodegenCtx {
@@ -1680,6 +1682,7 @@ pub func newCodegenCtx(
     genericTypeArity = newMap(),
     genericCtorParams = newMap(),
     restoredArtifacts = restoredArtifacts,
+    nugetAssemblyPaths = nugetAssemblyPaths,
     singletonFieldTokens = newMap(),
     staticValTokens = newMap(),
     staticValMsilTypes = newMap(),
@@ -21226,6 +21229,21 @@ func ensureMetadataIndex(cctx: in CodegenCtx): Unit {
       Mdr.addAssemblyToIndexesAndValueTypes(cctx.metadataTypeIndex, cctx.metadataPathIndex, cctx.metadataVtypeSet, dllPath)
     }
     ri = ri + 1
+  }
+
+  // Phase 5: feed third-party NuGet package DLLs into the metadata index
+  var ni = 0
+  while ni < cctx.nugetAssemblyPaths.count {
+    val dllPath = cctx.nugetAssemblyPaths[ni]
+    if dllPath.length > 0 {
+      Mdr.addAssemblyToIndexesAndValueTypes(
+        cctx.metadataTypeIndex,
+        cctx.metadataPathIndex,
+        cctx.metadataVtypeSet,
+        dllPath
+      )
+    }
+    ni = ni + 1
   }
 }
 

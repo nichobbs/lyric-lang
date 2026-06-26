@@ -120,6 +120,7 @@ pub record EmitProjectRequest {
   /// aspects to resolve (#3498).  Each entry is a `ProjectPackage`
   /// from the dependency's `[project.packages]` list.
   depTemplateSrcs: List[ProjectPackage]
+  nugetAssemblyPaths: List[String]
   // ─────────────────────────────────────────────────────────────────────────────
   // §2. Subprocess helpers — thin wrappers over Lyric.CliShell.
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1268,6 +1269,7 @@ func emitPerPackagePackage(
   pkgs.add(ProjectPackage(name = name, sources = srcs))
   val noFeatures: List[String] = newList()
   val noDepTemplateSrcs: List[ProjectPackage] = newList()
+  val emptyNugetPaths: List[String] = newList()
   val req = EmitProjectRequest(
     packages = pkgs,
     assemblyName = asmName,
@@ -1277,7 +1279,8 @@ func emitPerPackagePackage(
     activeFeatures = noFeatures,
     declaredFeatures = noFeatures,
     packageVersion = "0.1.0",
-    depTemplateSrcs = noDepTemplateSrcs
+    depTemplateSrcs = noDepTemplateSrcs,
+    nugetAssemblyPaths = emptyNugetPaths
   )
   val res = emitProject(req)
   match res.outputPath {
@@ -1492,6 +1495,7 @@ pub func emitCompilerBundle(entrySource: in String, outPath: in String, target: 
   val noFeatures: List[String] = newList()
   val noRestored: List[String] = newList()
   val noDepTemplateSrcs: List[ProjectPackage] = newList()
+  val emptyNugetPaths: List[String] = newList()
   val req = EmitProjectRequest(
     packages = pkgs,
     assemblyName = "Lyric.Compiler",
@@ -1501,7 +1505,8 @@ pub func emitCompilerBundle(entrySource: in String, outPath: in String, target: 
     activeFeatures = noFeatures,
     declaredFeatures = noFeatures,
     packageVersion = "0.1.0",
-    depTemplateSrcs = noDepTemplateSrcs
+    depTemplateSrcs = noDepTemplateSrcs,
+    nugetAssemblyPaths = emptyNugetPaths
   )
   emitProject(req)
 }
@@ -1723,7 +1728,8 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
     activeFeatures = req.activeFeatures,
     declaredFeatures = req.declaredFeatures,
     packageVersion = req.packageVersion,
-    depTemplateSrcs = req.depTemplateSrcs
+    depTemplateSrcs = req.depTemplateSrcs,
+    nugetAssemblyPaths = req.nugetAssemblyPaths
   )
 
   match req.target {
@@ -1947,6 +1953,7 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
     req.activeFeatures,
     req.declaredFeatures,
     restoredArtifacts,
+    req.nugetAssemblyPaths,
     req.packageVersion,
     depTemplatePkgs
   )
@@ -2036,6 +2043,13 @@ func emitProjectJvmViaSubprocess(req: in EmitProjectRequest): EmitResult {
   while di2 < req.declaredFeatures.count {
     specLines.add("DECLARED\t" + req.declaredFeatures[di2])
     di2 += 1
+  }
+
+  // Append resolved NuGet assembly lines: NUGET\t<path>
+  var ni = 0
+  while ni < req.nugetAssemblyPaths.count {
+    specLines.add("NUGET\t" + req.nugetAssemblyPaths[ni])
+    ni += 1
   }
 
   val specContent = Str.joinList("\n", specLines)
@@ -2204,6 +2218,7 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
         val noFeatures: List[String] = newList()
         val noArtifacts: List[SynthesisedArtifact] = newList()
         val noDepTemplatePkgsPerPkg: List[ProjectPackagePayload] = newList()
+        val emptyNugetPaths: List[String] = newList()
         val ok = MsilBridge.compileProjectToMsilWithRestoredAndVersion(
           allPayloads,
           req.assemblyName,
@@ -2212,6 +2227,7 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
           noFeatures,
           noFeatures,
           noArtifacts,
+          emptyNugetPaths,
           req.packageVersion,
           noDepTemplatePkgsPerPkg
         )

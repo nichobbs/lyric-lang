@@ -71,6 +71,7 @@ func emitTestLinked(
   val activeF: List[String] = newList()
   val declaredF: List[String] = newList()
   val noDepTemplateSrcs: List[ProjectPackage] = newList()
+  val emptyNugetPaths: List[String] = newList()
   Emitter.emitProject(
     EmitProjectRequest(
       packages = testPkgs,
@@ -81,7 +82,8 @@ func emitTestLinked(
       activeFeatures = activeF,
       declaredFeatures = declaredF,
       packageVersion = "",
-      depTemplateSrcs = noDepTemplateSrcs
+      depTemplateSrcs = noDepTemplateSrcs,
+      nugetAssemblyPaths = emptyNugetPaths
     )
   )
 }
@@ -919,6 +921,7 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
     val asmStem = stemOf(Path.basename(testEntry.path), 2)
     val outPath = Path.join(testOutDir, asmStem + testExt)
 
+    val nugetPaths = resolveNugetAssets(mfDir)
     val projReq = EmitProjectRequest(
       packages = allPkgs,
       assemblyName = asmStem,
@@ -928,7 +931,8 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
       activeFeatures = activeFeatures,
       declaredFeatures = mfDeclared,
       packageVersion = manifest.packageSection.version,
-      depTemplateSrcs = depTemplatePkgsList
+      depTemplateSrcs = depTemplatePkgsList,
+      nugetAssemblyPaths = nugetPaths
     )
     val result = Emitter.emitProject(projReq)
     var hadBuildError = false
