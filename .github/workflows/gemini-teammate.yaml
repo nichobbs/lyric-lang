@@ -43,11 +43,11 @@ jobs:
           # If triggered by a manual PR comment tag
           if [ "${{ github.event_name }}" = "issue_comment" ]; then
             if [[ "$COMMENT_BODY" == *"/fix"* ]]; then
-              gemini-cli /pr-code-review --auto-fix
+              npx gemini-cli /pr-code-review --auto-fix
             else
-              gemini-cli /pr-code-review
+              npx gemini-cli /pr-code-review
             fi
           else
             # Default behavior for newly opened or updated PRs
-            gemini-cli /pr-code-review
+            npx gemini-cli /pr-code-review
           fi
