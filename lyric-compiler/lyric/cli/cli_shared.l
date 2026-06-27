@@ -614,15 +614,15 @@ pub func resolveNugetAssets(mfDir: in String): List[String] {
                   val runtimeProp = Json.objectCurrent(runtimeEn)
                   val relPath = Json.propertyName(runtimeProp) // e.g. "lib/net10.0/Microsoft.Data.Sqlite.dll"
                   
-                  val lowerRelPath = Str.toLower(relPath)
+                  val lowerRelPath = relPath.toLower()
                   if Str.endsWith(lowerRelPath, ".dll") {
                     // Split key into name and version
                     val slashPos = pkgKey.indexOf("/")
                     if slashPos > 0 {
-                      val pkgName = pkgKey.substring(0, slashPos)
-                      val pkgVersion = pkgKey.substring(slashPos + 1, pkgKey.length - slashPos - 1)
+                      val pkgName = Str.substring(pkgKey, 0, slashPos)
+                      val pkgVersion = Str.substring(pkgKey, slashPos + 1)
                       
-                      val lowerPkgName = Str.toLower(pkgName)
+                      val lowerPkgName = pkgName.toLower()
                       val fullPath = Path.join(pkgsDir, Path.join(Path.join(lowerPkgName, pkgVersion), relPath))
                       if File.fileExists(fullPath) {
                         result.add(fullPath)
