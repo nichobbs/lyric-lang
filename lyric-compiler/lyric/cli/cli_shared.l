@@ -523,7 +523,7 @@ func copyRestoredDepDlls(outPath: in String, restoredDlls: in List[String]): Uni
 }
 
 pub func resolveNugetAssets(mfDir: in String): List[String] {
-  val result: List[String] = newList()
+  var result: List[String] = newList()
   val assetsPath = Path.join(Path.join(mfDir, "obj"), "project.assets.json")
   if not File.fileExists(assetsPath) {
     return result
