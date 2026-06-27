@@ -620,7 +620,7 @@ pub func resolveNugetAssets(mfDir: in String): List[String] {
                     val slashPos = pkgKey.indexOf("/")
                     if slashPos > 0 {
                       val pkgName = Str.substring(pkgKey, 0, slashPos)
-                      val pkgVersion = Str.substring(pkgKey, slashPos + 1)
+                      val pkgVersion = Str.substring(pkgKey, slashPos + 1, pkgKey.length - slashPos - 1)
                       
                       val lowerPkgName = pkgName.toLower()
                       val fullPath = Path.join(pkgsDir, Path.join(Path.join(lowerPkgName, pkgVersion), relPath))
