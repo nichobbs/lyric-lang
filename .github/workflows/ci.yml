@@ -371,8 +371,6 @@ jobs:
   # These jobs verify that closure class synthesis avoids boxing overhead for primitive
   # captures. Fails if any BOX instructions (MSIL) or valueOf calls (JVM) are found.
   #
-  # Developers run these locally via:
-  #   scripts/assert-no-box-msil.sh ./bin/lyric 2  (Stage 2 gate)
   #   scripts/assert-no-box-jvm.sh ./bin/lyric 2   (Stage 2 gate)
   closure-zero-overhead-msil:
     runs-on: ubuntu-latest

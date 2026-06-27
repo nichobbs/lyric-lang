@@ -78,7 +78,6 @@ DLL="$OUT_DIR/Lyric.ClosureZeroOverheadSelfTest.dll"
 echo "[assert-no-box-msil] compiling closure_zero_overhead_self_test.l with --target dotnet"
 "$LYRIC_BIN" build --manifest "$WORK_DIR/lyric.toml" --target dotnet -o "$DLL" \
   || { echo "FATAL: closure test compilation failed" >&2; exit 1; }
-
 [[ -f "$DLL" ]] || { echo "FATAL: compiled DLL not found at $DLL" >&2; exit 1; }
 
 # Find ildasm (the IL disassembler).
@@ -130,7 +129,6 @@ if [[ -z "$ILDASM" ]] && command -v dotnet >/dev/null 2>&1; then
     ILDASM="$WORK_DIR/tools/dotnet-ildasm"
   fi
 fi
-
 if [[ -z "$ILDASM" ]]; then
   echo "ERROR: ildasm not found" >&2
   echo "  DOTNET_ROOT=$DOTNET_ROOT" >&2
