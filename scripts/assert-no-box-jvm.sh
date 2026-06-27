@@ -100,7 +100,6 @@ JAR="$OUT_DIR/Lyric.ClosureZeroOverheadSelfTest.jar"
 echo "[assert-no-box-jvm] compiling closure_zero_overhead_self_test.l with --target jvm"
 "$LYRIC_BIN" build --manifest "$WORK_DIR/lyric.toml" --target jvm -o "$JAR" \
   || { echo "FATAL: closure test compilation failed" >&2; exit 1; }
-
 [[ -f "$JAR" ]] || { echo "FATAL: compiled JAR not found at $JAR" >&2; exit 1; }
 
 # Extract and disassemble class files from the JAR.

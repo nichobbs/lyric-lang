@@ -109,7 +109,9 @@ func rdU16(b: in slice[Byte], o: in Int): Int {
 }
 
 func rdU32(b: in slice[Byte], o: in Int): Int {
-  rdU8(b, o) + rdU8(b, o + 1) * 256 + rdU8(b, o + 2) * 65536 + rdU8(b, o + 3) * 16777216
+  val h = rdU8(b, o + 3)
+  val hTerm = if h >= 128 { (h - 256) * 16777216 } else { h * 16777216 }
+  rdU8(b, o) + rdU8(b, o + 1) * 256 + rdU8(b, o + 2) * 65536 + hTerm
 }
 
 func rdI32(b: in slice[Byte], o: in Int): Int {

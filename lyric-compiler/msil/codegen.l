@@ -5242,7 +5242,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                       insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
                       castObjectToMsil(cctx, insns, capTy)
                     }
-                   } else {
+                  } else {
                     // Phase 2: non-cell capture field is already typed as capTy, no cast/unbox needed
                   }
                   return capTy
@@ -10135,7 +10135,7 @@ func lowerBuiltinOrStaticCallMsil(
             // to enable strongly-typed invoke (no boxing of arguments).
             val trackedParamTypes = mapGet(fctx.funcValParamTypes, funcName)
             val trackedRetType = mapGet(fctx.funcValRetTypes, funcName)
-            val useTypedInvoke = match trackedParamTypes { case Some(pts) -> pts.count == args.count; case None -> false }
+            val useTypedInvoke = false
 
             // Emit castclass BEFORE lowering arguments (while funcRef is on top of stack)
             if useTypedInvoke {
@@ -11761,6 +11761,26 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           }
         }
         case LBVar(name, tyOpt, initOpt) -> {
+          match tyOpt {
+            case Some(te) -> {
+              match te.kind {
+                case TFunction(paramTes, retTe) -> {
+                  if not fctx.funcValRetTypes.containsKey(name) {
+                    fctx.funcValRetTypes.add(name, typeExprToMsilCtx(cctx, retTe, fctx.pkgName))
+                    val paramMsilTys: List[MsilType] = newList()
+                    var pi = 0
+                    while pi < paramTes.count {
+                      paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pi], fctx.pkgName))
+                      pi = pi + 1
+                    }
+                    fctx.funcValParamTypes.add(name, paramMsilTys)
+                  }
+                }
+                case _ -> ()
+              }
+            }
+            case None -> ()
+          }
           // A `var` captured by a closure is hoisted to a heap cell (#1479 v2):
           // newobj List; dup; <value>; finishHoistedCell.  Reads/writes route
           // through the cell so the closure and this scope share the location.
@@ -12058,6 +12078,26 @@ func lowerLocalPatBindMsil(
       val ty = match tyOpt { case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName); case None -> initTy }
       val slot = allocSlotMsil(fctx, name, ty)
       emitStoreSlot(insns, slot, fctx.paramCount)
+      match tyOpt {
+        case Some(te) -> {
+          match te.kind {
+            case TFunction(paramTes, retTe) -> {
+              if not fctx.funcValRetTypes.containsKey(name) {
+                fctx.funcValRetTypes.add(name, typeExprToMsilCtx(cctx, retTe, fctx.pkgName))
+                val paramMsilTys: List[MsilType] = newList()
+                var pi = 0
+                while pi < paramTes.count {
+                  paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pi], fctx.pkgName))
+                  pi = pi + 1
+                }
+                fctx.funcValParamTypes.add(name, paramMsilTys)
+              }
+            }
+            case _ -> ()
+          }
+        }
+        case None -> ()
+      }
     }
     case PWildcard -> {
       match initTy {
@@ -12960,7 +13000,13 @@ func buildFuncNInvokeTokWithTypes(
   val gblob = buildGenericInstBlob(codedIdx, actualArgs)
   val specKey = "FuncSpec_invoke_typed_" + toString(nparams) + typeKeySuffix
   val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
-  val invokeSig = buildInstanceMethodSig(paramTypes, retType)
+  val invokePs: List[MsilType] = newList()
+  var pi = 0
+  while pi < nparams {
+    invokePs.add(MTypeVar(index = pi))
+    pi = pi + 1
+  }
+  val invokeSig = buildInstanceMethodSig(invokePs, MTypeVar(index = nparams))
   val mrRow = ctxAddMemberRefForTypeSpec(
     cctx.lctx,
     tsRow,
@@ -23312,6 +23358,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
     }
     i = i + 1
   }
+
 
   // Emit the host class: functions + static fields (IConst/IVal).
   if fns.count > 0 or staticFields.count > 0 {
