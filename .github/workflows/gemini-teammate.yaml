@@ -25,6 +25,7 @@ jobs:
       - name: Setup Gemini CLI
         env:
           GEMINI_CLI_TRUST_WORKSPACE: true
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
         uses: google-github-actions/run-gemini-cli@v0
         # FIXED: Removed 'github_token' from the 'with:' section
         with:
