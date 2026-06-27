@@ -36,6 +36,7 @@ jobs:
           # FIXED: Pass GITHUB_TOKEN here as an environment variable so the CLI can use it
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMENT_BODY: ${{ github.event.comment.body }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
         run: |
           # If triggered by a manual PR comment tag
           if [ "${{ github.event_name }}" = "issue_comment" ]; then
