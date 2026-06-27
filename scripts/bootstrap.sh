@@ -134,82 +134,88 @@ try_bootstrap_from_release() {
       ;;
   esac
 
-  # Fetch latest non-draft release version from GitHub API
+  # Check if a specific version is pinned via LYRIC_BOOTSTRAP_VERSION
   local latest_release
-  local api_url="https://api.github.com/repos/nichobbs/lyric-lang/releases"
-  local api_response
-  local curl_opts=()
-
-  # Use GITHUB_TOKEN for authentication if available (increases rate limit from 60 to 5000 req/hr)
-  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-    curl_opts=(-H "Authorization: token $GITHUB_TOKEN")
-    info "  Using authenticated GitHub API (GITHUB_TOKEN set)"
+  if [[ -n "${LYRIC_BOOTSTRAP_VERSION:-}" ]]; then
+    latest_release="${LYRIC_BOOTSTRAP_VERSION#v}"  # Strip 'v' prefix if present
+    info "Using pinned bootstrap version from LYRIC_BOOTSTRAP_VERSION: v${latest_release}"
   else
-    info "  Using unauthenticated GitHub API (GITHUB_TOKEN not set, limited to 60 req/hr)"
-  fi
-
-  # Fetch API response and save to variable for debugging
-  api_response=$(curl -sSL "${curl_opts[@]}" "$api_url" 2>&1)
-
-  # Log the response (first 200 chars for debugging)
-  if [[ -n "$api_response" ]]; then
-    info "  API response (first 200 chars): ${api_response:0:200}"
-  else
-    info "  API returned empty response"
-    return 1
-  fi
-
-  # Check for error responses (e.g., "message": "Bad credentials")
-  if echo "$api_response" | grep -q '"message"'; then
-    info "  GitHub API error response detected"
-    return 1
-  fi
-
-  if command -v jq &>/dev/null; then
-    # Use jq for robust JSON parsing if available.
-    # Strategy: prefer non-draft releases (stable), but fall back to draft releases
-    # (e.g., newly-published releases being finalized by the workflow).
-    # Note: draft field defaults to false if missing.
-
-    # First try non-draft releases
-    latest_release=$(echo "$api_response" | jq -r '.[] | select((.draft // false) != true) | .tag_name | select(. != null and . != "")' 2>/dev/null | head -1)
-
-    # If no non-draft found, fall back to the latest draft (in case a fresh release
-    # is being published and not yet finalized)
-    if [[ -z "$latest_release" ]]; then
-      info "  No non-draft release found; checking for draft releases..."
-      latest_release=$(echo "$api_response" | jq -r '.[0] | select(.tag_name != null and .tag_name != "") | .tag_name' 2>/dev/null)
-    fi
-  else
-    # Fall back to basic grep+sed for systems without jq.
-    # Try non-draft releases first
-    if echo "$api_response" | grep -q '"draft": false'; then
-      # Find the portion with non-draft releases and extract the first tag_name
-      # Convert multiline JSON to single line, split on "}, then grep for non-draft
-      latest_release=$(printf "%s" "$api_response" | tr '\n' ' ' | sed 's/"}, *"/"}\n"/g' | \
-        grep '"draft": false' | head -1 | \
-        sed 's/.*"tag_name": "\([^"]*\)".*/\1/')
+    # Fetch latest non-draft release version from GitHub API
+    local api_url="https://api.github.com/repos/nichobbs/lyric-lang/releases"
+    local api_response
+    local curl_opts=()
+    # Use GITHUB_TOKEN for authentication if available (increases rate limit from 60 to 5000 req/hr)
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+      curl_opts=(-H "Authorization: token $GITHUB_TOKEN")
+      info "  Using authenticated GitHub API (GITHUB_TOKEN set)"
     else
-      # Fall back to the latest release (draft or not)
-      info "  No non-draft release found; checking for draft releases..."
-      latest_release=$(printf "%s" "$api_response" | tr '\n' ' ' | sed 's/"}, *"/"}\n"/g' | \
-        head -1 | \
-        sed 's/.*"tag_name": "\([^"]*\)".*/\1/')
+      info "  Using unauthenticated GitHub API (GITHUB_TOKEN not set, limited to 60 req/hr)"
     fi
+
+    # Fetch API response and save to variable for debugging
+    api_response=$(curl -sSL "${curl_opts[@]}" "$api_url" 2>&1)
+
+    # Log the response (first 200 chars for debugging)
+    if [[ -n "$api_response" ]]; then
+      info "  API response (first 200 chars): ${api_response:0:200}"
+    else
+      info "  API returned empty response"
+      return 1
+    fi
+
+    # Check for error responses (e.g., "message": "Bad credentials")
+    if echo "$api_response" | grep -q '"message"'; then
+      info "  GitHub API error response detected"
+      return 1
+    fi
+
+    if command -v jq &>/dev/null; then
+      # Use jq for robust JSON parsing if available.
+      # Strategy: prefer non-draft releases (stable), but fall back to draft releases
+      # (e.g., newly-published releases being finalized by the workflow).
+      # Note: draft field defaults to false if missing.
+
+      # First try non-draft releases
+      latest_release=$(echo "$api_response" | jq -r '.[] | select((.draft // false) != true) | .tag_name | select(. != null and . != "")' 2>/dev/null | head -1)
+
+      # If no non-draft found, fall back to the latest draft (in case a fresh release
+      # is being published and not yet finalized)
+      if [[ -z "$latest_release" ]]; then
+        info "  No non-draft release found; checking for draft releases..."
+        latest_release=$(echo "$api_response" | jq -r '.[0] | select(.tag_name != null and .tag_name != "") | .tag_name' 2>/dev/null)
+      fi
+    else
+      # Fall back to basic grep+sed for systems without jq.
+      # Try non-draft releases first
+      if echo "$api_response" | grep -q '"draft": false'; then
+        # Find the portion with non-draft releases and extract the first tag_name
+        # Convert multiline JSON to single line, split on "}, then grep for non-draft
+        latest_release=$(printf "%s" "$api_response" | tr '\n' ' ' | sed 's/"}, *"/"}\n"/g' | \
+          grep '"draft": false' | head -1 | \
+          sed 's/.*"tag_name": "\([^"]*\)".*/\1/')
+      else
+        # Fall back to the latest release (draft or not)
+        info "  No non-draft release found; checking for draft releases..."
+        latest_release=$(printf "%s" "$api_response" | tr '\n' ' ' | sed 's/"}, *"/"}\n"/g' | \
+          head -1 | \
+          sed 's/.*"tag_name": "\([^"]*\)".*/\1/')
+      fi
+    fi
+
+    if [[ -z "$latest_release" ]]; then
+      info "  Failed to extract release version from GitHub API response"
+      info "  Full API response: $api_response"
+      return 1
+    fi
+
+    latest_release="${latest_release#v}"  # Strip 'v' prefix if present
   fi
 
-  if [[ -z "$latest_release" ]]; then
-    info "  Failed to extract release version from GitHub API response"
-    info "  Full API response: $api_response"
-    return 1
-  fi
+  # latest_release is now the version without 'v' prefix (e.g., "0.3.0")
+  info "Using bootstrap release: v${latest_release}"
 
-  # Strip 'v' prefix from tag if present (v0.1.0 -> 0.1.0)
-  local version="${latest_release#v}"
-  info "Detected latest non-draft release: $latest_release (version: $version)"
-
-  # Construct the tag name (add 'v' prefix for the tag, keep version for file names)
-  local latest_release="v${version}"
+  # Construct the tag name with 'v' prefix for downloads
+  local release_tag="v${latest_release}"
 
   # Determine archive format based on platform
   local archive_suffix
@@ -218,10 +224,10 @@ try_bootstrap_from_release() {
     *) archive_suffix="tar.gz" ;;
   esac
 
-  local archive_name="lyric-${version}-${platform}.${archive_suffix}"
-  local download_url="https://github.com/nichobbs/lyric-lang/releases/download/${latest_release}/${archive_name}"
+  local archive_name="lyric-${latest_release}-${platform}.${archive_suffix}"
+  local download_url="https://github.com/nichobbs/lyric-lang/releases/download/${release_tag}/${archive_name}"
 
-  info "Bootstrapping from release: $latest_release (platform: $platform)"
+  info "Bootstrapping from release: $release_tag (platform: $platform)"
   info "  Archive: $archive_name"
   info "  Download URL: $download_url"
 

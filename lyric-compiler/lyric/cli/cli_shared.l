@@ -521,3 +521,125 @@ func copyRestoredDepDlls(outPath: in String, restoredDlls: in List[String]): Uni
     }
   }
 }
+
+pub func resolveNugetAssets(mfDir: in String): List[String] {
+  val result: List[String] = newList()
+  val assetsPath = Path.join(Path.join(mfDir, "obj"), "project.assets.json")
+  if not File.fileExists(assetsPath) {
+    return result
+  }
+
+  val content = match File.readText(assetsPath) {
+    case Ok(text) -> text
+    case Err(_) -> ""
+  }
+  if content.length == 0 {
+    return result
+  }
+
+  val doc = Json.parseJson(content)
+  defer {
+    Json.disposeJson(doc)
+  }
+  val root = Json.rootElement(doc)
+
+  // 1. Resolve NuGet packages folder
+  var pkgsDir = ""
+  val envVar = Environment.getVarOrDefault("NUGET_PACKAGES", "")
+  if envVar.length > 0 {
+    pkgsDir = envVar
+  } else {
+    // Try "project" -> "restore" -> "packagesPath"
+    match Json.tryGetProperty(root, "project") {
+      case Some(project) -> {
+        match Json.tryGetProperty(project, "restore") {
+          case Some(restore) -> {
+            match Json.tryGetProperty(restore, "packagesPath") {
+              case Some(pkgsPathProp) -> {
+                pkgsDir = Json.getString(pkgsPathProp)
+              }
+              case None -> ()
+            }
+          }
+          case None -> ()
+        }
+      }
+      case None -> ()
+    }
+    if pkgsDir.length == 0 {
+      val home = match Environment.getVar("HOME") {
+        case Ok(h) -> h
+        case Err(_) -> match Environment.getVar("USERPROFILE") {
+          case Ok(h) -> h
+          case Err(_) -> ""
+        }
+      }
+      if home.length > 0 {
+        pkgsDir = Path.join(home, ".nuget/packages")
+      }
+    }
+  }
+
+  if pkgsDir.length == 0 {
+    return result
+  }
+
+  // 2. Parse targets
+  match Json.tryGetProperty(root, "targets") {
+    case Some(targetsElem) -> {
+      var targetsEn = Json.enumerateObject(targetsElem)
+      while Json.objectMoveNext(targetsEn) {
+        val targetProp = Json.objectCurrent(targetsEn)
+        val targetElem = Json.propertyValue(targetProp)
+        var pkgEn = Json.enumerateObject(targetElem)
+        while Json.objectMoveNext(pkgEn) {
+          val pkgProp = Json.objectCurrent(pkgEn)
+          val pkgKey = Json.propertyName(pkgProp) // e.g. "Microsoft.Data.Sqlite/9.0.0"
+          val pkgElem = Json.propertyValue(pkgProp)
+
+          // Check type == "package"
+          var isPkg = false
+          match Json.tryGetProperty(pkgElem, "type") {
+            case Some(typeElem) -> {
+              isPkg = (Json.getString(typeElem) == "package")
+            }
+            case None -> ()
+          }
+
+          if isPkg {
+            match Json.tryGetProperty(pkgElem, "runtime") {
+              case Some(runtimeElem) -> {
+                var runtimeEn = Json.enumerateObject(runtimeElem)
+                while Json.objectMoveNext(runtimeEn) {
+                  val runtimeProp = Json.objectCurrent(runtimeEn)
+                  val relPath = Json.propertyName(runtimeProp) // e.g. "lib/net10.0/Microsoft.Data.Sqlite.dll"
+                  
+                  val lowerRelPath = relPath.toLower()
+                  if Str.endsWith(lowerRelPath, ".dll") {
+                    // Split key into name and version
+                    val slashPos = pkgKey.indexOf("/")
+                    if slashPos > 0 {
+                      val pkgName = Str.substring(pkgKey, 0, slashPos)
+                      val pkgVersion = Str.substring(pkgKey, slashPos + 1, pkgKey.length - slashPos - 1)
+                      
+                      val lowerPkgName = pkgName.toLower()
+                      val fullPath = Path.join(pkgsDir, Path.join(Path.join(lowerPkgName, pkgVersion), relPath))
+                      if File.fileExists(fullPath) {
+                        result.add(fullPath)
+                      }
+                    }
+                  }
+                }
+              }
+              case None -> ()
+            }
+          }
+        }
+      }
+    }
+    case None -> ()
+  }
+
+  return result
+}
+

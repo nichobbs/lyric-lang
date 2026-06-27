@@ -4,8 +4,10 @@ import Std.Core
 import Std.Collections
 import Std.Console as Console
 import Std.File as File
+import Std.Path as Path
 import Std.Environment as Environment
 import Std.Errors
+import Std.String as Str
 import Lyric.Emitter as Emitter
 import Lyric.Lexer
 import Lyric.Discovery as Disc
@@ -122,6 +124,116 @@ pub func main(argv: in slice[String]): Int {
           }
           case None -> {
             printErr("compiler-bundle: emit failed")
+            return 1
+          }
+        }
+      }
+    }
+  }
+
+  // Internal: compile a project from a spec file.
+  // `--internal-project-build <specPath> -o <outputPath> --target <target>`
+  if cmd == "--internal-project-build" {
+    if argv.length < 6 {
+      printErr("usage: lyric --internal-project-build <specPath> -o <outputPath> --target <target>")
+      return 1
+    }
+    val specPath = argv[1]
+    val outPath = argv[3]
+    val targetStr = argv[5]
+    val tgt = if targetStr == "jvm" { Jvm } else { Dotnet }
+
+    match File.readText(specPath) {
+      case Err(e) -> {
+        printErr("project-build: cannot read spec " + specPath + ": " + IOError.message(e))
+        return 1
+      }
+      case Ok(specContent) -> {
+        val lines = Str.split(specContent, "\n")
+        val pkgs: List[Emitter.ProjectPackage] = newList()
+        val restoredDlls: List[String] = newList()
+        val activeFeatures: List[String] = newList()
+        val declaredFeatures: List[String] = newList()
+        val nugetAssemblyPaths: List[String] = newList()
+
+        var li = 0
+        while li < lines.length {
+          val line = Str.trim(lines[li])
+          if line.length > 0 {
+            val parts = Str.split(line, "\t")
+            if parts.length >= 2 {
+              val tag = parts[0]
+              if tag == "DEP" {
+                var reassembled = parts[1]
+                var pi2 = 2
+                while pi2 < parts.length {
+                  reassembled = reassembled + "\t" + parts[pi2]
+                  pi2 += 1
+                }
+                restoredDlls.add(reassembled)
+              } else if tag == "FEATURE" {
+                activeFeatures.add(parts[1])
+              } else if tag == "DECLARED" {
+                declaredFeatures.add(parts[1])
+              } else if tag == "NUGET" {
+                nugetAssemblyPaths.add(parts[1])
+              } else {
+                val pkgName = parts[0]
+                val sources: List[String] = newList()
+                var si = 1
+                while si < parts.length {
+                  val srcPath = parts[si]
+                  match File.readText(srcPath) {
+                    case Ok(srcText) -> sources.add(srcText)
+                    case Err(e) -> {
+                      printErr("project-build: cannot read source " + srcPath + ": " + IOError.message(e))
+                      return 1
+                    }
+                  }
+                  si += 1
+                }
+                pkgs.add(Emitter.ProjectPackage(name = pkgName, sources = sources))
+              }
+            }
+          }
+          li += 1
+        }
+
+        val base = Path.basename(outPath)
+        val dot = base.indexOf(".")
+        val stem = if dot >= 0 { base.substring(0, dot) } else { base }
+
+        val req = Emitter.EmitProjectRequest(
+          packages = pkgs,
+          assemblyName = stem,
+          outputPath = outPath,
+          target = tgt,
+          restoredDllPaths = restoredDlls,
+          activeFeatures = activeFeatures,
+          declaredFeatures = declaredFeatures,
+          packageVersion = "",
+          depTemplateSrcs = newList(),
+          nugetAssemblyPaths = nugetAssemblyPaths
+        )
+
+        val result = Emitter.emitProject(req)
+        var hadError = false
+        for d in result.diagnostics.toArray() {
+          printDiag(d)
+          match d.severity {
+            case DiagError -> {
+              hadError = true
+            }
+            case DiagWarning -> ()
+          }
+        }
+        if hadError {
+          return 1
+        }
+        match result.outputPath {
+          case Some(_) -> return 0
+          case None -> {
+            printErr("project-build: emit failed")
             return 1
           }
         }

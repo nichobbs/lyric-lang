@@ -227,8 +227,26 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       match lookupSlot(ctx, name) {
         case Some(slot) -> {
           val ty = match lookupType(ctx, name) { case Some(t) -> t; case None -> JRef(className = "java/lang/Object") }
-          emitLoad(insns, slot, ty)
-          ty
+          // Check if this is a hoisted var (by-ref capture in closures)
+          match mapGet(ctx.hoistedCellSlot, name) {
+            case Some(cellSlot) -> {
+              // Load from cell[0]
+              val cellElemTy = match mapGet(ctx.hoistedCellType, name) {
+                case Some(t) -> t
+                case None -> ty
+              }
+              val cellType = JArray(elem = cellElemTy)
+              emitLoad(insns, cellSlot, cellType)
+              insns.add(LIconst(v = 0))
+              emitArrayLoad(insns, cellElemTy)
+              cellElemTy
+            }
+            case None -> {
+              // Normal load
+              emitLoad(insns, slot, ty)
+              ty
+            }
+          }
         }
         case None -> {
           // Inside an instance method (a protected-type entry / helper), a bare
@@ -1864,6 +1882,173 @@ func collectBoundNamesExpr(e: in Expr, acc: in List[String]): Unit {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Hoisting pre-pass: detect `var` bindings referenced inside any lambda in the
+// enclosing function.  These must be hoisted to heap-allocated cells so mutations
+// are observed through the closure (by-ref capture, epic #1877 Stage 2).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Collect all names referenced inside any lambda in an expression.
+func collectInLambdaNamesExpr(e: in Expr, acc: in List[String]): Unit {
+  match e.kind {
+    case ELambda(_, body) -> {
+      // Walk the lambda body and collect all referenced names.
+      collectRefNamesBlock(body, acc)
+    }
+    case ECall(fn, args) -> {
+      collectInLambdaNamesExpr(fn, acc)
+      var ai = 0
+      while ai < args.count {
+        match args[ai] {
+          case CAPositional(ex) -> collectInLambdaNamesExpr(ex, acc)
+          case CANamed(_, ex, _) -> collectInLambdaNamesExpr(ex, acc)
+        }
+        ai = ai + 1
+      }
+    }
+    case EBinop(_, lhs, rhs) -> {
+      collectInLambdaNamesExpr(lhs, acc)
+      collectInLambdaNamesExpr(rhs, acc)
+    }
+    case EPrefix(_, operand) -> collectInLambdaNamesExpr(operand, acc)
+    case EParen(inner) -> collectInLambdaNamesExpr(inner, acc)
+    case EMember(recv, _) -> collectInLambdaNamesExpr(recv, acc)
+    case EIf(cond, thenB, elseOpt, _) -> {
+      collectInLambdaNamesExpr(cond, acc)
+      collectInLambdaNamesOrdBlock(thenB, acc)
+      match elseOpt {
+        case Some(eb) -> collectInLambdaNamesOrdBlock(eb, acc)
+        case None -> ()
+      }
+    }
+    case EBlock(block) -> collectInLambdaNamesBlock(block, acc)
+    case EUnsafe(block) -> collectInLambdaNamesBlock(block, acc)
+    case EMatch(scr, arms) -> {
+      collectInLambdaNamesExpr(scr, acc)
+      var ai = 0
+      while ai < arms.count {
+        match arms[ai].guard {
+          case Some(guardExpr) -> collectInLambdaNamesExpr(guardExpr, acc)
+          case None -> ()
+        }
+        collectInLambdaNamesOrdBlock(arms[ai].body, acc)
+        ai = ai + 1
+      }
+    }
+    case EList(exprs) -> {
+      var ei = 0
+      while ei < exprs.count {
+        collectInLambdaNamesExpr(exprs[ei], acc)
+        ei = ei + 1
+      }
+    }
+    case ETuple(exprs) -> {
+      var ei = 0
+      while ei < exprs.count {
+        collectInLambdaNamesExpr(exprs[ei], acc)
+        ei = ei + 1
+      }
+    }
+    case EIndex(recv, indices) -> {
+      collectInLambdaNamesExpr(recv, acc)
+      var ii = 0
+      while ii < indices.count {
+        collectInLambdaNamesExpr(indices[ii], acc)
+        ii = ii + 1
+      }
+    }
+    case EAwait(inner) -> collectInLambdaNamesExpr(inner, acc)
+    case EYield(inner) -> collectInLambdaNamesExpr(inner, acc)
+    case ESpawn(inner) -> collectInLambdaNamesExpr(inner, acc)
+    case ETry(inner) -> collectInLambdaNamesExpr(inner, acc)
+    case EPropagate(inner) -> collectInLambdaNamesExpr(inner, acc)
+    case EAssign(target, _, v) -> {
+      collectInLambdaNamesExpr(target, acc)
+      collectInLambdaNamesExpr(v, acc)
+    }
+    case EInterpolated(segs) -> {
+      var si = 0
+      while si < segs.count {
+        match segs[si] {
+          case ISExpr(ex) -> collectInLambdaNamesExpr(ex, acc)
+          case _ -> ()
+        }
+        si = si + 1
+      }
+    }
+    case ETypeApp(fn, _) -> collectInLambdaNamesExpr(fn, acc)
+    case _ -> ()
+  }
+}
+
+func collectInLambdaNamesOrdBlock(ob: in ExprOrBlock, acc: in List[String]): Unit {
+  match ob {
+    case EOBExpr(ex) -> collectInLambdaNamesExpr(ex, acc)
+    case EOBBlock(blk) -> collectInLambdaNamesBlock(blk, acc)
+  }
+}
+
+func collectInLambdaNamesBlock(b: in Block, acc: in List[String]): Unit {
+  var i = 0
+  while i < b.statements.count {
+    collectInLambdaNamesStmt(b.statements[i], acc)
+    i = i + 1
+  }
+}
+
+func collectInLambdaNamesStmt(s: in Statement, acc: in List[String]): Unit {
+  match s.kind {
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(_, _, init) -> collectInLambdaNamesExpr(init, acc)
+        case LBLet(_, _, init) -> collectInLambdaNamesExpr(init, acc)
+        case LBVar(_, _, initOpt) -> {
+          match initOpt {
+            case Some(init) -> collectInLambdaNamesExpr(init, acc)
+            case None -> ()
+          }
+        }
+      }
+    }
+    case SAssign(target, _, v) -> {
+      collectInLambdaNamesExpr(target, acc)
+      collectInLambdaNamesExpr(v, acc)
+    }
+    case SReturn(eOpt) -> match eOpt { case Some(e) -> collectInLambdaNamesExpr(e, acc); case None -> () }
+    case SExpr(e) -> collectInLambdaNamesExpr(e, acc)
+    case SThrow(e) -> collectInLambdaNamesExpr(e, acc)
+    case SWhile(_, cond, body) -> {
+      collectInLambdaNamesExpr(cond, acc)
+      collectInLambdaNamesBlock(body, acc)
+    }
+    case SLoop(_, body) -> collectInLambdaNamesBlock(body, acc)
+    case SFor(_, _, iter, body) -> {
+      collectInLambdaNamesExpr(iter, acc)
+      collectInLambdaNamesBlock(body, acc)
+    }
+    case SScope(_, body) -> {
+      collectInLambdaNamesBlock(body, acc)
+    }
+    case SDefer(body) -> {
+      collectInLambdaNamesBlock(body, acc)
+    }
+    case STry(body, catches, finally_) -> {
+      collectInLambdaNamesBlock(body, acc)
+      var ci = 0
+      while ci < catches.count {
+        collectInLambdaNamesBlock(catches[ci].body, acc)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> collectInLambdaNamesBlock(fb, acc)
+        case None -> ()
+      }
+    }
+    case SInvariant(e) -> collectInLambdaNamesExpr(e, acc)
+    case _ -> ()
+  }
+}
+
 // The capture set: free references resolving to an enclosing slot, minus the
 // lambda's own params and any names bound inside the body.  Order-preserving and
 // deduped so capture-field / ctor-arg / load ordering stays consistent.
@@ -1887,7 +2072,13 @@ func lambdaCaptureNamesJvm(ctx: in FuncCtx, lparams: in List[LambdaParam], body:
       // latter occurs when the lambda lives in a record-method / protected-entry
       // body and references a bare field name (#2864).  Both are snapshotted
       // into the closure's ctor-bound capture fields.
+      // Stage 4: Also check for hoisted `var` cells from enclosing scope
+      // (multi-level nesting: a nested lambda may capture a `var` that was hoisted
+      // in the enclosing lambda's scope).
       if ctx.slots.containsKey(nm) {
+        addNameOnceJvm(caps, nm)
+      } else if ctx.hoistedCellSlot.containsKey(nm) {
+        // Hoisted var: re-capture the cell reference for multi-level nesting.
         addNameOnceJvm(caps, nm)
       } else {
         match selfFieldType(ctx, nm) {
@@ -1933,18 +2124,34 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
 
   val caps = lambdaCaptureNamesJvm(ctx, lparams, body)
   // Capture types come from the enclosing scope (by value, per §5.4 / docs/01:
-  // `val` bindings are captured by value).  A captured `var` is currently also
-  // snapshotted by value on the JVM — mutation-after-capture is not reflected
-  // (the by-reference `var` path needs heap-cell hoisting; tracked for J2b+).
+  // `val` bindings are captured by value).  A captured `var` that is hoisted
+  // (referenced inside a lambda) is captured by reference: the closure field
+  // holds the cell array, not the value.  Mutation-after-capture is reflected
+  // through the cell (epic #1877 Stage 2).
   val captures: List[LClosureCapture] = newList()
   var ci = 0
   while ci < caps.count {
     val cn = caps[ci]
-    val cty = match lookupType(ctx, cn) {
-      case Some(t) -> t
-      case None -> match selfFieldType(ctx, cn) { case Some(ft) -> ft; case None -> JRef(className = "java/lang/Object") }
+    // Check if this capture is a hoisted cell
+    match mapGet(ctx.hoistedCellSlot, cn) {
+      case Some(_) -> {
+        // Hoisted var: capture the cell array, not the value
+        val elemTy = match mapGet(ctx.hoistedCellType, cn) {
+          case Some(t) -> t
+          case None -> JRef(className = "java/lang/Object")
+        }
+        val cellType = JArray(elem = elemTy)
+        captures.add(LClosureCapture(captureName = cn, captureType = cellType))
+      }
+      case None -> {
+        // Normal capture: get the enclosing-scope type
+        val cty = match lookupType(ctx, cn) {
+          case Some(t) -> t
+          case None -> match selfFieldType(ctx, cn) { case Some(ft) -> ft; case None -> JRef(className = "java/lang/Object") }
+        }
+        captures.add(LClosureCapture(captureName = cn, captureType = cty))
+      }
     }
-    captures.add(LClosureCapture(captureName = cn, captureType = cty))
     ci = ci + 1
   }
 
@@ -1989,13 +2196,32 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
     pi = pi + 1
   }
   // Read each capture field into a local of the capture's type.
+  // For hoisted cells, the local stores the cell array itself; access inside
+  // the closure body will go through cell[0].
   var cj = 0
   while cj < captures.count {
     val cap = captures[cj]
+    // Check if this capture is a hoisted cell
+    val isHoistedCell = match mapGet(ctx.hoistedCellType, cap.captureName) {
+      case Some(_) -> true
+      case None -> false
+    }
+    if isHoistedCell {
+      bodyCtx.captureCellNames.add(cap.captureName)
+    }
     val cslot = allocSlot(bodyCtx, cap.captureName, cap.captureType)
     bodyInsns.add(LAload(slot = 0))
     bodyInsns.add(LGetfield(owner = closureClass, name = cap.captureName, t = cap.captureType))
     emitStore(bodyInsns, cslot, cap.captureType)
+    // For hoisted cells, also record the cell slot and element type in the body context
+    if isHoistedCell {
+      val elemTy = match mapGet(ctx.hoistedCellType, cap.captureName) {
+        case Some(t) -> t
+        case None -> JRef(className = "java/lang/Object")
+      }
+      bodyCtx.hoistedCellSlot.add(cap.captureName, cslot)
+      bodyCtx.hoistedCellType.add(cap.captureName, elemTy)
+    }
     cj = cj + 1
   }
   // Lower the lambda body in expression position; box the value to Object and
@@ -2030,13 +2256,28 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
     // Load the captured value to pass to the closure ctor.  A local/param is
     // read from its slot; an enclosing-receiver field (`selfClass`) is read via
     // `aload_0; getfield selfClass.<name>` (#2864 — record-method / protected-
-    // entry lambdas capturing a bare field).
-    match lookupSlot(ctx, cap.captureName) {
-      case Some(s) -> emitLoad(insns, s, cap.captureType)
-      case None -> {
-        val selfCls = match ctx.selfClass { case Some(c) -> c; case None -> "" }
-        insns.add(LAload(slot = 0))
-        insns.add(LGetfield(owner = selfCls, name = cap.captureName, t = cap.captureType))
+    // entry lambdas capturing a bare field).  For hoisted vars, the capture type
+    // is the cell array (by reference), so load the cell slot directly.
+    val isHoistedCell = match mapGet(ctx.hoistedCellSlot, cap.captureName) {
+      case Some(_) -> true
+      case None -> false
+    }
+    if isHoistedCell {
+      match mapGet(ctx.hoistedCellSlot, cap.captureName) {
+        case Some(cellSlot) -> {
+          val cellType = cap.captureType
+          emitLoad(insns, cellSlot, cellType)
+        }
+        case None -> insns.add(LAconstNull)
+      }
+    } else {
+      match lookupSlot(ctx, cap.captureName) {
+        case Some(s) -> emitLoad(insns, s, cap.captureType)
+        case None -> {
+          val selfCls = match ctx.selfClass { case Some(c) -> c; case None -> "" }
+          insns.add(LAload(slot = 0))
+          insns.add(LGetfield(owner = selfCls, name = cap.captureName, t = cap.captureType))
+        }
       }
     }
     ck = ck + 1

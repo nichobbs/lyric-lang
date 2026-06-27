@@ -90,6 +90,8 @@ pub union LInsn {
 
   case LPop
   case LDup
+  case LDup_x1
+  case LDup_x2
 
   case LIadd
   case LIsub
@@ -368,6 +370,14 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
     }
     case LDup -> {
       emitDup(asm)
+      trackStack(asm, 1)
+    }
+    case LDup_x1 -> {
+      asm.insns.add(Nullary(op = 0x5A))
+      trackStack(asm, 1)
+    }
+    case LDup_x2 -> {
+      asm.insns.add(Nullary(op = 0x5B))
       trackStack(asm, 1)
     }
 

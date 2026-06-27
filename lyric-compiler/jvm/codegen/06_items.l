@@ -74,7 +74,11 @@ func makeFuncCtx(
     opaqueTypes = opaqueTypes,
     closureAcc = closureAcc,
     holderArraySlot = newMap(),
-    holderElemType = newMap()
+    holderElemType = newMap(),
+    hoistedVarNames = newList(),
+    hoistedCellSlot = newMap(),
+    hoistedCellType = newMap(),
+    captureCellNames = newList()
   )
 }
 
@@ -126,7 +130,11 @@ func makeFuncCtxForGenerator(
     opaqueTypes = opaqueTypes,
     closureAcc = closureAcc,
     holderArraySlot = newMap(),
-    holderElemType = newMap()
+    holderElemType = newMap(),
+    hoistedVarNames = newList(),
+    hoistedCellSlot = newMap(),
+    hoistedCellType = newMap(),
+    captureCellNames = newList()
   )
 }
 
@@ -180,7 +188,11 @@ func makeFuncCtxInstance(
     opaqueTypes = opaqueTypes,
     closureAcc = closureAcc,
     holderArraySlot = newMap(),
-    holderElemType = newMap()
+    holderElemType = newMap(),
+    hoistedVarNames = newList(),
+    hoistedCellSlot = newMap(),
+    hoistedCellType = newMap(),
+    captureCellNames = newList()
   )
 }
 
@@ -428,6 +440,179 @@ pub func setupInstanceParamSlotsAndHolders(
   }
 }
 
+// Collect names referenced inside any lambda in a block statement.
+func collectInLambdaNamesBlockStmt(s: in Statement, acc: in List[String]): Unit {
+  match s.kind {
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(_, _, init) -> collectInLambdaNamesExpr(init, acc)
+        case LBLet(_, _, init) -> collectInLambdaNamesExpr(init, acc)
+        case LBVar(_, _, initOpt) -> {
+          match initOpt {
+            case Some(init) -> collectInLambdaNamesExpr(init, acc)
+            case None -> ()
+          }
+        }
+      }
+    }
+    case SAssign(target, _, v) -> {
+      collectInLambdaNamesExpr(target, acc)
+      collectInLambdaNamesExpr(v, acc)
+    }
+    case SExpr(e) -> collectInLambdaNamesExpr(e, acc)
+    case SThrow(e) -> collectInLambdaNamesExpr(e, acc)
+    case SWhile(_, cond, body) -> {
+      collectInLambdaNamesExpr(cond, acc)
+      collectInLambdaNamesBlockBody(body, acc)
+    }
+    case SLoop(_, body) -> collectInLambdaNamesBlockBody(body, acc)
+    case SFor(_, _, iter, body) -> {
+      collectInLambdaNamesExpr(iter, acc)
+      collectInLambdaNamesBlockBody(body, acc)
+    }
+    case STry(body, catches, finally_) -> {
+      collectInLambdaNamesBlockBody(body, acc)
+      var ci = 0
+      while ci < catches.count {
+        collectInLambdaNamesBlockBody(catches[ci].body, acc)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> collectInLambdaNamesBlockBody(fb, acc)
+        case None -> ()
+      }
+    }
+    case SDefer(body) -> collectInLambdaNamesBlockBody(body, acc)
+    case SScope(_, body) -> collectInLambdaNamesBlockBody(body, acc)
+    case SReturn(valOpt) -> {
+      match valOpt {
+        case Some(e) -> collectInLambdaNamesExpr(e, acc)
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
+func collectInLambdaNamesBlockBody(b: in Block, acc: in List[String]): Unit {
+  var i = 0
+  while i < b.statements.count {
+    collectInLambdaNamesBlockStmt(b.statements[i], acc)
+    i = i + 1
+  }
+}
+
+// Compute the pre-pass set of `var` names referenced inside lambdas
+// in the function body.  These must be hoisted to heap cells for by-ref capture.
+func computeHoistedVarNamesJvm(
+  decl: in FunctionDecl,
+  mutableVars: in Map[String, Bool]
+): List[String] {
+  val inLambdaNames: List[String] = newList()
+  match decl.body {
+    case Some(body) -> {
+      match body {
+        case FBBlock(blk) -> collectInLambdaNamesBlockBody(blk, inLambdaNames)
+        case FBExpr(e) -> collectInLambdaNamesExpr(e, inLambdaNames)
+      }
+    }
+    case None -> ()
+  }
+  // Keep only the names that are `var` declarations in this function.
+  val hoisted: List[String] = newList()
+  var i = 0
+  while i < inLambdaNames.count {
+    val nm = inLambdaNames[i]
+    if mutableVars.containsKey(nm) and not nameInList(hoisted, nm) {
+      hoisted.add(nm)
+    }
+    i = i + 1
+  }
+  hoisted
+}
+
+// Collect all `var` declarations in a function body.
+func collectMutableVarsExpr(e: in Expr, acc: in Map[String, Bool]): Unit {
+  match e.kind {
+    case EIf(cond, thenBranch, elseBranch, thenForm) -> {
+      match thenBranch {
+        case EOBExpr(ex) -> collectMutableVarsExpr(ex, acc)
+        case EOBBlock(blk) -> collectMutableVarsBlock(blk, acc)
+      }
+      match elseBranch {
+        case Some(eb) -> {
+          match eb {
+            case EOBExpr(ex) -> collectMutableVarsExpr(ex, acc)
+            case EOBBlock(blk) -> collectMutableVarsBlock(blk, acc)
+          }
+        }
+        case None -> ()
+      }
+    }
+    case EMatch(scr, arms) -> {
+      var ai = 0
+      while ai < arms.count {
+        match arms[ai].body {
+          case EOBExpr(ex) -> collectMutableVarsExpr(ex, acc)
+          case EOBBlock(blk) -> collectMutableVarsBlock(blk, acc)
+        }
+        ai = ai + 1
+      }
+    }
+    case EBlock(blk) -> {
+      collectMutableVarsBlock(blk, acc)
+    }
+    case EUnsafe(blk) -> {
+      collectMutableVarsBlock(blk, acc)
+    }
+    case _ -> ()
+  }
+}
+
+func collectMutableVarsBlock(b: in Block, acc: in Map[String, Bool]): Unit {
+  var i = 0
+  while i < b.statements.count {
+    match b.statements[i].kind {
+      case SLocal(binding) -> {
+        match binding {
+          case LBVar(name, _, _) -> {
+            if not acc.containsKey(name) {
+              acc.add(name, true)
+            }
+          }
+          case LBVal(_, _, init) -> {
+            collectMutableVarsExpr(init, acc)
+          }
+          case LBLet(_, _, init) -> {
+            collectMutableVarsExpr(init, acc)
+          }
+          case _ -> ()
+        }
+      }
+      case SExpr(e) -> collectMutableVarsExpr(e, acc)
+      case SWhile(_, _, body) -> collectMutableVarsBlock(body, acc)
+      case SLoop(_, body) -> collectMutableVarsBlock(body, acc)
+      case SFor(_, _, _, body) -> collectMutableVarsBlock(body, acc)
+      case STry(body, catches, finally_) -> {
+        collectMutableVarsBlock(body, acc)
+        var ci = 0
+        while ci < catches.count {
+          collectMutableVarsBlock(catches[ci].body, acc)
+          ci = ci + 1
+        }
+        match finally_ {
+          case Some(fb) -> collectMutableVarsBlock(fb, acc)
+          case None -> ()
+        }
+      }
+      case SDefer(body) -> collectMutableVarsBlock(body, acc)
+      case SScope(_, body) -> collectMutableVarsBlock(body, acc)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
 pub func lowerFunc(
   decl: in FunctionDecl,
   pkgName: in String,
@@ -456,6 +641,26 @@ pub func lowerFunc(
     opaqueTypes,
     closureAcc
   )
+
+  // Hoisting pre-pass: detect `var` bindings referenced inside lambdas.
+  // These must be hoisted to heap cells for by-ref capture (epic #1877 Stage 2).
+  val mutableVars: Map[String, Bool] = newMap()
+  match decl.body {
+    case Some(body) -> {
+      match body {
+        case FBBlock(blk) -> collectMutableVarsBlock(blk, mutableVars)
+        case FBExpr(_) -> ()
+      }
+    }
+    case None -> ()
+  }
+  val hoistedVars = computeHoistedVarNamesJvm(decl, mutableVars)
+  var hvi = 0
+  while hvi < hoistedVars.count {
+    ctx.hoistedVarNames.add(hoistedVars[hvi])
+    hvi = hvi + 1
+  }
+
   val insns: List[LInsn] = newList()
 
   // Allocate slots for parameters and set up any `out`/`inout` holder bindings;

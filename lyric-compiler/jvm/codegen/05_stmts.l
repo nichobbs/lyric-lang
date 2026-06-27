@@ -23,62 +23,169 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
       match lookupSlot(ctx, name) {
         case Some(slot) -> {
           val ty = match lookupType(ctx, name) { case Some(t) -> t; case None -> JRef(className = "java/lang/Object") }
-          match op {
-            case AssEq -> {
-              lowerExpr(ctx, insns, value)
-              emitStoreLocalWriteThrough(ctx, insns, slot, ty)
-            }
-            case AssPlus -> {
-              emitLoad(insns, slot, ty)
-              lowerExpr(ctx, insns, value)
-              match ty {
-                case JLong -> insns.add(LLadd)
-                case JDouble -> insns.add(LDadd)
-                case _ -> insns.add(LIadd)
+          // Check if this is a hoisted var (by-ref capture in closures)
+          match mapGet(ctx.hoistedCellSlot, name) {
+            case Some(cellSlot) -> {
+              // Assignment to hoisted var goes through cell[0]
+              val cellElemTy = match mapGet(ctx.hoistedCellType, name) {
+                case Some(t) -> t
+                case None -> ty
               }
-              emitStoreLocalWriteThrough(ctx, insns, slot, ty)
-            }
-            case AssMinus -> {
-              emitLoad(insns, slot, ty)
-              lowerExpr(ctx, insns, value)
-              match ty {
-                case JLong -> insns.add(LLsub)
-                case JDouble -> insns.add(LDsub)
-                case _ -> insns.add(LIsub)
+              val cellType = JArray(elem = cellElemTy)
+              match op {
+                case AssEq -> {
+                  emitLoad(insns, cellSlot, cellType)
+                  insns.add(LIconst(v = 0))
+                  lowerExpr(ctx, insns, value)
+                  emitArrayStore(insns, cellElemTy)
+                }
+                case AssPlus -> {
+                  emitLoad(insns, cellSlot, cellType)
+                  insns.add(LIconst(v = 0))
+                  emitArrayLoad(insns, cellElemTy)
+                  lowerExpr(ctx, insns, value)
+                  match cellElemTy {
+                    case JLong -> insns.add(LLadd)
+                    case JDouble -> insns.add(LDadd)
+                    case _ -> insns.add(LIadd)
+                  }
+                  val resultSlot = allocSlot(ctx, "__cell_result_" + freshLabel(ctx), cellElemTy)
+                  emitStore(insns, resultSlot, cellElemTy)
+                  emitLoad(insns, cellSlot, cellType)
+                  insns.add(LIconst(v = 0))
+                  emitLoad(insns, resultSlot, cellElemTy)
+                  emitArrayStore(insns, cellElemTy)
+                }
+                case AssMinus -> {
+                  emitLoad(insns, cellSlot, cellType)
+                  insns.add(LIconst(v = 0))
+                  emitArrayLoad(insns, cellElemTy)
+                  lowerExpr(ctx, insns, value)
+                  match cellElemTy {
+                    case JLong -> insns.add(LLsub)
+                    case JDouble -> insns.add(LDsub)
+                    case _ -> insns.add(LIsub)
+                  }
+                  val resultSlot = allocSlot(ctx, "__cell_result_" + freshLabel(ctx), cellElemTy)
+                  emitStore(insns, resultSlot, cellElemTy)
+                  emitLoad(insns, cellSlot, cellType)
+                  insns.add(LIconst(v = 0))
+                  emitLoad(insns, resultSlot, cellElemTy)
+                  emitArrayStore(insns, cellElemTy)
+                }
+                case AssStar -> {
+                  emitLoad(insns, cellSlot, cellType)
+                  insns.add(LIconst(v = 0))
+                  emitArrayLoad(insns, cellElemTy)
+                  lowerExpr(ctx, insns, value)
+                  match cellElemTy {
+                    case JLong -> insns.add(LLmul)
+                    case JDouble -> insns.add(LDmul)
+                    case _ -> insns.add(LImul)
+                  }
+                  val resultSlot = allocSlot(ctx, "__cell_result_" + freshLabel(ctx), cellElemTy)
+                  emitStore(insns, resultSlot, cellElemTy)
+                  emitLoad(insns, cellSlot, cellType)
+                  insns.add(LIconst(v = 0))
+                  emitLoad(insns, resultSlot, cellElemTy)
+                  emitArrayStore(insns, cellElemTy)
+                }
+                case AssSlash -> {
+                  emitLoad(insns, cellSlot, cellType)
+                  insns.add(LIconst(v = 0))
+                  emitArrayLoad(insns, cellElemTy)
+                  lowerExpr(ctx, insns, value)
+                  match cellElemTy {
+                    case JLong -> insns.add(LLdiv)
+                    case JDouble -> insns.add(LDdiv)
+                    case _ -> insns.add(LIdiv)
+                  }
+                  val resultSlot = allocSlot(ctx, "__cell_result_" + freshLabel(ctx), cellElemTy)
+                  emitStore(insns, resultSlot, cellElemTy)
+                  emitLoad(insns, cellSlot, cellType)
+                  insns.add(LIconst(v = 0))
+                  emitLoad(insns, resultSlot, cellElemTy)
+                  emitArrayStore(insns, cellElemTy)
+                }
+                case AssPercent -> {
+                  emitLoad(insns, cellSlot, cellType)
+                  insns.add(LIconst(v = 0))
+                  emitArrayLoad(insns, cellElemTy)
+                  lowerExpr(ctx, insns, value)
+                  match cellElemTy {
+                    case JLong -> insns.add(LLrem)
+                    case _ -> insns.add(LIrem)
+                  }
+                  val resultSlot = allocSlot(ctx, "__cell_result_" + freshLabel(ctx), cellElemTy)
+                  emitStore(insns, resultSlot, cellElemTy)
+                  emitLoad(insns, cellSlot, cellType)
+                  insns.add(LIconst(v = 0))
+                  emitLoad(insns, resultSlot, cellElemTy)
+                  emitArrayStore(insns, cellElemTy)
+                }
               }
-              emitStoreLocalWriteThrough(ctx, insns, slot, ty)
+              JVoid
             }
-            case AssStar -> {
-              emitLoad(insns, slot, ty)
-              lowerExpr(ctx, insns, value)
-              match ty {
-                case JLong -> insns.add(LLmul)
-                case JDouble -> insns.add(LDmul)
-                case _ -> insns.add(LImul)
+            case None -> {
+              // Normal (non-hoisted) local var assignment
+              match op {
+                case AssEq -> {
+                  lowerExpr(ctx, insns, value)
+                  emitStoreLocalWriteThrough(ctx, insns, slot, ty)
+                }
+                case AssPlus -> {
+                  emitLoad(insns, slot, ty)
+                  lowerExpr(ctx, insns, value)
+                  match ty {
+                    case JLong -> insns.add(LLadd)
+                    case JDouble -> insns.add(LDadd)
+                    case _ -> insns.add(LIadd)
+                  }
+                  emitStoreLocalWriteThrough(ctx, insns, slot, ty)
+                }
+                case AssMinus -> {
+                  emitLoad(insns, slot, ty)
+                  lowerExpr(ctx, insns, value)
+                  match ty {
+                    case JLong -> insns.add(LLsub)
+                    case JDouble -> insns.add(LDsub)
+                    case _ -> insns.add(LIsub)
+                  }
+                  emitStoreLocalWriteThrough(ctx, insns, slot, ty)
+                }
+                case AssStar -> {
+                  emitLoad(insns, slot, ty)
+                  lowerExpr(ctx, insns, value)
+                  match ty {
+                    case JLong -> insns.add(LLmul)
+                    case JDouble -> insns.add(LDmul)
+                    case _ -> insns.add(LImul)
+                  }
+                  emitStoreLocalWriteThrough(ctx, insns, slot, ty)
+                }
+                case AssSlash -> {
+                  emitLoad(insns, slot, ty)
+                  lowerExpr(ctx, insns, value)
+                  match ty {
+                    case JLong -> insns.add(LLdiv)
+                    case JDouble -> insns.add(LDdiv)
+                    case _ -> insns.add(LIdiv)
+                  }
+                  emitStoreLocalWriteThrough(ctx, insns, slot, ty)
+                }
+                case AssPercent -> {
+                  emitLoad(insns, slot, ty)
+                  lowerExpr(ctx, insns, value)
+                  match ty {
+                    case JLong -> insns.add(LLrem)
+                    case _ -> insns.add(LIrem)
+                  }
+                  emitStoreLocalWriteThrough(ctx, insns, slot, ty)
+                }
               }
-              emitStoreLocalWriteThrough(ctx, insns, slot, ty)
-            }
-            case AssSlash -> {
-              emitLoad(insns, slot, ty)
-              lowerExpr(ctx, insns, value)
-              match ty {
-                case JLong -> insns.add(LLdiv)
-                case JDouble -> insns.add(LDdiv)
-                case _ -> insns.add(LIdiv)
-              }
-              emitStoreLocalWriteThrough(ctx, insns, slot, ty)
-            }
-            case AssPercent -> {
-              emitLoad(insns, slot, ty)
-              lowerExpr(ctx, insns, value)
-              match ty {
-                case JLong -> insns.add(LLrem)
-                case _ -> insns.add(LIrem)
-              }
-              emitStoreLocalWriteThrough(ctx, insns, slot, ty)
+              JVoid
             }
           }
-          JVoid
         }
         case None -> {
           // Inside an instance method (protected-type entry / helper), a bare
@@ -232,6 +339,25 @@ func emitArrayStore(insns: in List[LInsn], elem: in JvmType): Unit {
   }
 }
 
+// Emit the newarray or anewarray opcode for an array of element type `elem`.
+// Stack: [count] → [array].  For primitive arrays uses newarray; for reference
+// arrays uses anewarray with the class name.
+func emitNewarray(insns: in List[LInsn], elem: in JvmType): Unit {
+  match elem {
+    case JBoolean -> insns.add(LNewarray(typeCode = 4))  // T_BOOLEAN
+    case JChar -> insns.add(LNewarray(typeCode = 5))     // T_CHAR
+    case JFloat -> insns.add(LNewarray(typeCode = 6))    // T_FLOAT
+    case JDouble -> insns.add(LNewarray(typeCode = 7))   // T_DOUBLE
+    case JByte -> insns.add(LNewarray(typeCode = 8))     // T_BYTE
+    case JShort -> insns.add(LNewarray(typeCode = 9))    // T_SHORT
+    case JInt -> insns.add(LNewarray(typeCode = 10))     // T_INT
+    case JLong -> insns.add(LNewarray(typeCode = 11))    // T_LONG
+    case JRef(className) -> insns.add(LAnewarray(className = className))
+    case JArray(_) -> panic("emitNewarray: multi-dimensional array allocation not supported")
+    case JVoid -> panic("emitNewarray: cannot create array of void")
+  }
+}
+
 // Emit the element-load opcode for a JVM array of element type `elem`.  Stack:
 // [arrayref, index] → [value].  Used by compound index assignment.
 func emitArrayLoad(insns: in List[LInsn], elem: in JvmType): Unit {
@@ -299,6 +425,8 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           emitStore(insns, slot, ty)
         }
         case LBVar(name, tyOpt, initOpt) -> {
+          // Check if this var is hoisted (referenced inside a lambda).
+          val isHoisted = nameInList(ctx.hoistedVarNames, name)
           match initOpt {
             case Some(init) -> {
               // An un-annotated `var x = e` takes its slot type from the
@@ -306,39 +434,103 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               val initTy = lowerExpr(ctx, insns, init)
               val ty = match tyOpt { case Some(te) -> typeExprToJvm(te, ctx.pkgName); case None -> initTy }
               coerceArgTo(insns, initTy, ty)
-              val slot = allocSlot(ctx, name, ty)
-              emitStore(insns, slot, ty)
+              if isHoisted {
+                // Allocate a heap cell (1-element typed array) for the var.
+                // Stack on entry: [initValue (coerced)]
+                // Strategy: save value to temp, create array, init element, store array to cell slot
+                val cellType = JArray(elem = ty)
+                val tempSlot = allocSlot(ctx, "__hoisted_tmp_" + freshLabel(ctx), ty)
+                emitStore(insns, tempSlot, ty)
+                // Create cell array
+                insns.add(LIconst(v = 1))
+                emitNewarray(insns, ty)
+                val cellSlot = allocSlot(ctx, name, cellType)
+                emitStore(insns, cellSlot, cellType)
+                // Initialize cell[0] with the value
+                emitLoad(insns, cellSlot, cellType)
+                insns.add(LIconst(v = 0))
+                emitLoad(insns, tempSlot, ty)
+                emitArrayStore(insns, ty)
+                ctx.hoistedCellSlot.add(name, cellSlot)
+                ctx.hoistedCellType.add(name, ty)
+              } else {
+                // Normal by-value var: store to local slot
+                val slot = allocSlot(ctx, name, ty)
+                emitStore(insns, slot, ty)
+              }
             }
             case None -> {
               // No initialiser: an annotation is required to know the slot type;
               // default to JInt only as a last resort (matches prior behaviour).
               val ty = match tyOpt { case Some(te) -> typeExprToJvm(te, ctx.pkgName); case None -> JInt }
-              val slot = allocSlot(ctx, name, ty)
-              match ty {
-                case JLong -> {
-                  insns.add(LLconst(v = 0i64))
-                  emitStore(insns, slot, ty)
+              if isHoisted {
+                // Create an empty cell for the hoisted var
+                val cellType = JArray(elem = ty)
+                insns.add(LIconst(v = 1))
+                emitNewarray(insns, ty)
+                val cellSlot = allocSlot(ctx, name, cellType)
+                emitStore(insns, cellSlot, cellType)
+                // Initialize the cell with a default value
+                emitLoad(insns, cellSlot, cellType)
+                insns.add(LIconst(v = 0))
+                match ty {
+                  case JLong -> {
+                    insns.add(LLconst(v = 0i64))
+                    emitArrayStore(insns, ty)
+                  }
+                  case JFloat -> {
+                    insns.add(LFconst(v = 0.0))
+                    emitArrayStore(insns, ty)
+                  }
+                  case JDouble -> {
+                    insns.add(LDconst(v = 0.0))
+                    emitArrayStore(insns, ty)
+                  }
+                  case JRef(_) -> {
+                    insns.add(LAconstNull)
+                    emitArrayStore(insns, ty)
+                  }
+                  case JArray(_) -> {
+                    insns.add(LAconstNull)
+                    emitArrayStore(insns, ty)
+                  }
+                  case JVoid -> insns.add(LNop)
+                  case _ -> {
+                    insns.add(LIconst(v = 0))
+                    emitArrayStore(insns, ty)
+                  }
                 }
-                case JFloat -> {
-                  insns.add(LFconst(v = 0.0))
-                  emitStore(insns, slot, ty)
-                }
-                case JDouble -> {
-                  insns.add(LDconst(v = 0.0))
-                  emitStore(insns, slot, ty)
-                }
-                case JRef(_) -> {
-                  insns.add(LAconstNull)
-                  emitStore(insns, slot, ty)
-                }
-                case JArray(_) -> {
-                  insns.add(LAconstNull)
-                  emitStore(insns, slot, ty)
-                }
-                case JVoid -> insns.add(LNop)
-                case _ -> {
-                  insns.add(LIconst(v = 0))
-                  emitStore(insns, slot, ty)
+                ctx.hoistedCellSlot.add(name, cellSlot)
+                ctx.hoistedCellType.add(name, ty)
+              } else {
+                // Normal by-value var
+                val slot = allocSlot(ctx, name, ty)
+                match ty {
+                  case JLong -> {
+                    insns.add(LLconst(v = 0i64))
+                    emitStore(insns, slot, ty)
+                  }
+                  case JFloat -> {
+                    insns.add(LFconst(v = 0.0))
+                    emitStore(insns, slot, ty)
+                  }
+                  case JDouble -> {
+                    insns.add(LDconst(v = 0.0))
+                    emitStore(insns, slot, ty)
+                  }
+                  case JRef(_) -> {
+                    insns.add(LAconstNull)
+                    emitStore(insns, slot, ty)
+                  }
+                  case JArray(_) -> {
+                    insns.add(LAconstNull)
+                    emitStore(insns, slot, ty)
+                  }
+                  case JVoid -> insns.add(LNop)
+                  case _ -> {
+                    insns.add(LIconst(v = 0))
+                    emitStore(insns, slot, ty)
+                  }
                 }
               }
             }

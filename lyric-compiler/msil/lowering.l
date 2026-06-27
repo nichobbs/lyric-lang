@@ -616,7 +616,11 @@ pub union MInsn {
   case MLdlen                          // load array length (pushes native int)
   case MLdelemRef                      // ldelem.ref — reference array element (String[], object[])
   case MLdelemU1                       // ldelem.u1  — byte array element (byte[])
+  case MLdelemI2                       // ldelem.i2  — int16 array element (short[])
+  case MLdelemU2                       // ldelem.u2  — uint16 array element (char[])
   case MLdelemI4                       // ldelem.i4  — int32 array element (int[])
+  case MLdelemI8                       // ldelem.i8  — int64 array element (long[])
+  case MLdelemR8                       // ldelem.r8  — float64 array element (double[])
   case MLdftn(methodToken: Int)        // ldftn — load function pointer (ELEMENT_TYPE_I on stack)
 
   // Exception-handling instructions and meta-instruction
@@ -2158,7 +2162,11 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MLdlen -> emitLdlen(mb)
     case MLdelemRef -> emitLdelem_Ref(mb)
     case MLdelemU1 -> emitLdelem_U1(mb)
+    case MLdelemI2 -> emitLdelem_I2(mb)
+    case MLdelemU2 -> emitLdelem_U2(mb)
     case MLdelemI4 -> emitLdelem_I4(mb)
+    case MLdelemI8 -> emitLdelem_I8(mb)
+    case MLdelemR8 -> emitLdelem_R8(mb)
     case MLdftn(tok) -> emitLdftn(mb, tok)
     case MLeave(lbl) -> emitLeave(mb, lbl)
     case MEndfinally -> emitEndfinally(mb)
@@ -3726,6 +3734,11 @@ pub func findTypeRefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
       case None -> ()
     }
     refArity = refArity + 1
+  }
+  if ns == "System" {
+    if simpleName.startsWith("Func`") or simpleName.startsWith("Action`") {
+      return ctxAddTypeRef(ctx, "System", simpleName, ctx.arRuntime)
+    }
   }
   0
 }

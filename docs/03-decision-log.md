@@ -6946,6 +6946,48 @@ per-package) passes 67/67 against the bundle, alongside `typechecker` (235),
 
 ---
 
+## D113 — Closure class synthesis for zero-overhead lambda captures (Epic #1877 Phase 2)
+
+**Status:** ACCEPTED
+
+**Decision:** Lambda closures are synthesized as strongly-typed closure records
+(Lyric structs) with typed fields matching the captured variables, eliminating
+the pre-Phase-2 uniform `object[]` array fallback and enabling zero-allocation
+captures for value types (Int, Bool, Char, etc.) without boxing.
+
+**Key mechanisms:**
+- **Capture analysis:** `computeHoistedVarNamesJvm` / `collectMutableVarsBlock` (JVM)
+  and equivalent MSIL pre-passes identify which closure captures are mutable (need
+  by-reference cells).
+- **Closure class generation:** `synthesizeClosureClassMsil` emits a record type
+  with typed fields for each capture. Mutable captures become typed array cells.
+- **Hoisted cell slots:** Mutable captures are stored in strongly-typed array cells
+  (`MArray[T]`) so by-reference semantics work without boxing the array itself.
+- **Dual-target:** Both MSIL and JVM backends generate identical closure class
+  layouts, verified by the `closure_zero_overhead_self_test.l` corpus.
+
+**Alternatives considered:**
+- Keep the uniform `object[]` fallback. Rejected: defeats the zero-overhead goal.
+- Generate closure classes at AST lowering time. Rejected: capture analysis requires
+  full type information (only available post-type-check).
+- Per-call-site specialized Func/Action types. Rejected: explosion of synthetic types.
+
+**Rationale:**
+- Typed closures enable JIT and AOT compilers to avoid boxing value-type captures,
+  reducing memory pressure and GC churn for high-frequency lambda-heavy code.
+- By-reference cell array design allows mutation semantics without forcing boxing
+  of the entire closure; the cell is the array element, not the closure itself.
+- Dual-target test corpus ensures behavioral parity across MSIL and JVM without
+  platform-specific surprises.
+
+**Verification:** The closure test corpus (`closure_zero_overhead_self_test.l`)
+covers 16 cases: primitive captures, escaping closures (returned to caller),
+by-ref mutation, multi-level nesting, and closure-returning-closure patterns.
+All cases run identically on both MSIL and JVM targets.
+
+**Related:** Epic #1877, docs/09-msil-emission.md, docs/18-jvm-emission.md.
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

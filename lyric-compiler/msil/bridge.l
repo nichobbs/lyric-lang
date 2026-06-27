@@ -172,8 +172,9 @@ pub func compileToMsilWithVersion(
   // compile path: no restored artifacts.  `packageVersion` is parsed for
   // the Assembly row; empty string → `0.0.0.0` (legacy default).
   val emptyArtifacts: List[SynthesisedArtifact] = newList()
+  val emptyNugetPaths: List[String] = newList()
   val verParts = parseSemverMajorMinor(packageVersion)
-  val cctx = newCodegenCtx(pkgName, emptyArtifacts, verParts[0], verParts[1])
+  val cctx = newCodegenCtx(pkgName, emptyArtifacts, emptyNugetPaths, verParts[0], verParts[1])
   // Allocate cross-assembly MemberRef rows for every stdlib `pub func`
   // so that user code calling `Std.X.foo(...)` emits a real
   // `call <memberref>` instead of falling through to the `MObject`
@@ -345,6 +346,7 @@ pub func compileProjectToMsilWithRestored(
   // Forwarder to the version-threading variant with an empty version
   // (legacy `0.0.0.0` Assembly row).
   val noDepTemplatePkgs: List[ProjectPackagePayload] = newList()
+  val emptyNugetPaths: List[String] = newList()
   compileProjectToMsilWithRestoredAndVersion(
     packages,
     assemblyName,
@@ -353,6 +355,7 @@ pub func compileProjectToMsilWithRestored(
     activeFeatures,
     declaredFeatures,
     restoredArtifacts,
+    emptyNugetPaths,
     "",
     noDepTemplatePkgs
   )
@@ -370,6 +373,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
   restoredArtifacts: in List[SynthesisedArtifact],
+  nugetAssemblyPaths: in List[String],
   packageVersion: in String,
   depTemplatePkgs: in List[ProjectPackagePayload],
 ): Bool {
@@ -623,7 +627,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // `packageVersion` populates the Assembly row's major/minor; empty
   // falls back to 0.0.0.0.
   val pvParts = parseSemverMajorMinor(packageVersion)
-  val cctx = newCodegenCtx(assemblyName, restoredArtifacts, pvParts[0], pvParts[1])
+  val cctx = newCodegenCtx(assemblyName, restoredArtifacts, nugetAssemblyPaths, pvParts[0], pvParts[1])
   // Allocate cross-assembly AssemblyRef / TypeRef / MemberRef rows for
   // every `pub func` declared in the stdlib so that user code which
   // calls `Std.X.foo(...)` (e.g. `Std.Encoding.tryDecodeBase64`)
@@ -894,6 +898,7 @@ pub func compileProjectToMsilWithRestoredEncoded(
   val activeFeatures: List[String] = newList()
   val declaredFeatures: List[String] = newList()
   val noDepTemplatePkgsEncoded: List[ProjectPackagePayload] = newList()
+  val emptyNugetPaths: List[String] = newList()
   compileProjectToMsilWithRestoredAndVersion(
     packages,
     assemblyName,
@@ -902,6 +907,7 @@ pub func compileProjectToMsilWithRestoredEncoded(
     activeFeatures,
     declaredFeatures,
     restoredArtifacts,
+    emptyNugetPaths,
     packageVersion,
     noDepTemplatePkgsEncoded
   )

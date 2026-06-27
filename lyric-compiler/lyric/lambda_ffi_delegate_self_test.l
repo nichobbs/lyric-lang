@@ -23,6 +23,24 @@ extern type Action[T] = "System.Action`1"
 
 extern type Obj = "System.Object"
 
+@externTarget("System.Collections.Generic.List`1..ctor")
+func newList[T](): List[T] = ()
+
+@externTarget("System.Collections.Generic.List`1.Add")
+func listAdd[T](xs: in List[T], x: in T): Unit = ()
+
+@externTarget("System.Collections.Generic.List`1.get_Count")
+func listCount[T](xs: in List[T]): Int = xs.count()
+
+@externTarget("System.Collections.Generic.List`1.RemoveAll")
+func listRemoveAll[T](xs: in List[T], pred: in Predicate[T]): Int = ()
+
+@externTarget("System.Collections.Generic.List`1.ForEach")
+func listForEach[T](xs: in List[T], action: in Action[T]): Unit = ()
+
+// Helper: test a predicate against multiple values and count matches
+@externTarget("System.Linq.Enumerable.Count")
+func linqCount(source: in Obj, predicate: in Func[Obj, Bool]): Int = ()
 test "passing lambda directly to Action[T] FFI parameter" {
   val xs: List[Int] = List[Int].new()
   xs.Add(10)
@@ -40,6 +58,23 @@ test "passing lambda directly to Action[T] FFI parameter" {
   assertEqualInt(invoked.Count, 3, "lambda was invoked 3 times via delegate")
 }
 
+test "passing strongly-typed lambda to Predicate[T] FFI target" {
+  val xs: List[Obj] = newList()
+  listAdd(xs, 1)
+  listAdd(xs, 2)
+  listAdd(xs, 3)
+  listAdd(xs, 4)
+  listAdd(xs, 5)
+
+  // Test that lambda works with Func delegate type in FFI context.
+  // The lambda returns true for all elements, so RemoveAll with a negated predicate
+  // should remove all elements.
+  val alwaysTrue: Predicate[Obj] = { x: Obj -> true }
+  val removed = listRemoveAll(xs, alwaysTrue)
+  assertEqualInt(removed, 5, "lambda predicate removed all 5 elements")
+  assertEqualInt(xs.count, 0, "list is now empty")
+}
+
 test "assign lambda with type annotation to Func[Obj, Bool]" {
   val xs: List[Obj] = List[Obj].new()
   xs.Add(1)
@@ -52,4 +87,34 @@ test "assign lambda with type annotation to Func[Obj, Bool]" {
   // Invoke the delegate on a list element and verify it returns true.
   val result: Bool = checker(xs[0])
   assertTrue(result, "delegate invoked and returned true for non-null element")
+}
+
+test "passing strongly-typed lambda to Action[Int] parameter" {
+  val ints: List[Int] = newList[Int]()
+  listAdd(ints, 1)
+  listAdd(ints, 2)
+  listAdd(ints, 3)
+
+  // Pass lambda with Int parameter directly as argument.
+  // This exercises strongly-typed lambda method signature (non-object params).
+  listForEach(ints, { i: Int -> () })
+  assertEqualInt(listCount(ints), 3, "all 3 elements present")
+}
+
+test "passing strongly-typed lambda Int->Bool to Func[Int, Bool] parameter" {
+  val ints: List[Int] = newList[Int]()
+  listAdd(ints, 10)
+  listAdd(ints, 20)
+  listAdd(ints, 30)
+
+  // Assign lambda with Int parameter to Func[Int, Bool] delegate type.
+  // This exercises strongly-typed lambda method signature in type-check.
+  val isLarge: Func[Int, Bool] = { x: Int -> x > 15 }
+  // Invoke the delegate on each element to verify it works correctly.
+  val large10 = isLarge(10)
+  val large20 = isLarge(20)
+  val large30 = isLarge(30)
+  assertFalse(large10, "10 is not > 15")
+  assertTrue(large20, "20 is > 15")
+  assertTrue(large30, "30 is > 15")
 }
