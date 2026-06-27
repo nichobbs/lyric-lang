@@ -183,20 +183,48 @@ func yParseHexDigit(c: in Char): Int {
 func yParseUnicode4(st: inout YamlState): Result[Char, YamlError] {
   var value = 0
   var i = 0
-  while i < 4 {
-    if yAtEnd(st) {
-      return Err(error = UnexpectedEof(pos = st.pos, expected = "4 hex digits in \\uXXXX"))
-    }
-    val c = st.src[st.pos]
-    val d = yParseHexDigit(c)
-    if d < 0 {
-      return Err(error = UnexpectedChar(pos = st.pos, expected = "hex digit in \\uXXXX"))
-    }
-    val newValue = value * 16
-    value = newValue + d
-    st.pos = st.pos + 1
-    i += 1
+  var hex1 = 0
+  var hex2 = 0
+  var hex3 = 0
+  var hex4 = 0
+
+  if yAtEnd(st) {
+    return Err(error = UnexpectedEof(pos = st.pos, expected = "4 hex digits in \\uXXXX"))
   }
+  hex1 = yParseHexDigit(st.src[st.pos])
+  if hex1 < 0 {
+    return Err(error = UnexpectedChar(pos = st.pos, expected = "hex digit in \\uXXXX"))
+  }
+  st.pos = st.pos + 1
+
+  if yAtEnd(st) {
+    return Err(error = UnexpectedEof(pos = st.pos, expected = "4 hex digits in \\uXXXX"))
+  }
+  hex2 = yParseHexDigit(st.src[st.pos])
+  if hex2 < 0 {
+    return Err(error = UnexpectedChar(pos = st.pos, expected = "hex digit in \\uXXXX"))
+  }
+  st.pos = st.pos + 1
+
+  if yAtEnd(st) {
+    return Err(error = UnexpectedEof(pos = st.pos, expected = "4 hex digits in \\uXXXX"))
+  }
+  hex3 = yParseHexDigit(st.src[st.pos])
+  if hex3 < 0 {
+    return Err(error = UnexpectedChar(pos = st.pos, expected = "hex digit in \\uXXXX"))
+  }
+  st.pos = st.pos + 1
+
+  if yAtEnd(st) {
+    return Err(error = UnexpectedEof(pos = st.pos, expected = "4 hex digits in \\uXXXX"))
+  }
+  hex4 = yParseHexDigit(st.src[st.pos])
+  if hex4 < 0 {
+    return Err(error = UnexpectedChar(pos = st.pos, expected = "hex digit in \\uXXXX"))
+  }
+  st.pos = st.pos + 1
+
+  value = hex1 * 4096 + hex2 * 256 + hex3 * 16 + hex4
   Ok(value = fromInt(value))
 }
 
