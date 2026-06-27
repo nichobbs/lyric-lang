@@ -529,9 +529,14 @@ pub func resolveNugetAssets(mfDir: in String): List[String] {
     return result
   }
 
-  val content = match File.readText(assetsPath) {
-    case Ok(text) -> text
-    case Err(_) -> return result
+  val contentOpt = match File.readText(assetsPath) {
+    case Ok(text) -> Some(value = text)
+    case Err(_) -> None
+  }
+
+  val content = match contentOpt {
+    case Some(text) -> text
+    case None -> return result
   }
 
   // Resolve NuGet packages folder
