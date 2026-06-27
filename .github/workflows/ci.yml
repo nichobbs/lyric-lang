@@ -375,7 +375,7 @@ jobs:
   #   scripts/assert-no-box-msil.sh ./bin/lyric 2  (Stage 2 gate)
   #   scripts/assert-no-box-jvm.sh ./bin/lyric 2   (Stage 2 gate)
   closure-zero-overhead-msil:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     needs: [build]
     permissions:
       contents: read
