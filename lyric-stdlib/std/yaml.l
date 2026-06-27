@@ -180,44 +180,47 @@ func yParseHexDigit(c: in Char): Int {
   }
 }
 
-// Helper to extract and validate one hex digit at current position, advancing position on success.
-func yParseOneHexDigit(st: inout YamlState): Result[Int, YamlError] {
-  if yAtEnd(st) {
-    return Err(error = UnexpectedEof(pos = st.pos, expected = "hex digit in \\uXXXX"))
+func yParseOneHexDigit(src: in String, pos: inout Int): Result[Int, YamlError] {
+  if pos >= src.length {
+    return Err(error = UnexpectedEof(pos = pos, expected = "hex digit in \\uXXXX"))
   }
-  val hexVal = yParseHexDigit(st.src[st.pos])
+  val hexVal = yParseHexDigit(src[pos])
   if hexVal < 0 {
-    return Err(error = UnexpectedChar(pos = st.pos, expected = "hex digit in \\uXXXX"))
+    return Err(error = UnexpectedChar(pos = pos, expected = "hex digit in \\uXXXX"))
   }
-  st.pos = st.pos + 1
+  pos = pos + 1
   Ok(value = hexVal)
 }
 
 func yParseUnicode4(st: inout YamlState): Result[Char, YamlError] {
-  val hex1Res = yParseOneHexDigit(st)
+  val src = st.src
+  var pos = st.pos
+
+  val hex1Res = yParseOneHexDigit(src, pos)
   val hex1 = match hex1Res {
     case Ok(v) -> v
     case Err(e) -> return Err(error = e)
   }
 
-  val hex2Res = yParseOneHexDigit(st)
+  val hex2Res = yParseOneHexDigit(src, pos)
   val hex2 = match hex2Res {
     case Ok(v) -> v
     case Err(e) -> return Err(error = e)
   }
 
-  val hex3Res = yParseOneHexDigit(st)
+  val hex3Res = yParseOneHexDigit(src, pos)
   val hex3 = match hex3Res {
     case Ok(v) -> v
     case Err(e) -> return Err(error = e)
   }
 
-  val hex4Res = yParseOneHexDigit(st)
+  val hex4Res = yParseOneHexDigit(src, pos)
   val hex4 = match hex4Res {
     case Ok(v) -> v
     case Err(e) -> return Err(error = e)
   }
 
+  st.pos = pos
   val value = hex1 * 4096 + hex2 * 256 + hex3 * 16 + hex4
   Ok(value = fromInt(value))
 }
