@@ -579,14 +579,39 @@ pub func resolveNugetAssets(mfDir: in String): List[String] {
 }
 
 func extractPackagesPathFromYaml(root: in Yaml.YamlValue): String {
+  // packagesPath is at project.restore.packagesPath in project.assets.json
   match root {
-    case Yaml.YMapping(pairs) -> {
+    case Yaml.YMapping(rootPairs) -> {
       var i = 0
-      while i < pairs.count {
-        val pair = pairs[i]
-        if pair.key == "packagesPath" {
+      while i < rootPairs.count {
+        val pair = rootPairs[i]
+        if pair.key == "project" {
           match pair.value {
-            case Yaml.YString(path) -> return path
+            case Yaml.YMapping(projectPairs) -> {
+              var j = 0
+              while j < projectPairs.count {
+                val projPair = projectPairs[j]
+                if projPair.key == "restore" {
+                  match projPair.value {
+                    case Yaml.YMapping(restorePairs) -> {
+                      var k = 0
+                      while k < restorePairs.count {
+                        val restorePair = restorePairs[k]
+                        if restorePair.key == "packagesPath" {
+                          match restorePair.value {
+                            case Yaml.YString(path) -> return path
+                            case _ -> ()
+                          }
+                        }
+                        k += 1
+                      }
+                    }
+                    case _ -> ()
+                  }
+                }
+                j += 1
+              }
+            }
             case _ -> ()
           }
         }
@@ -658,11 +683,12 @@ func extractDllPathsFromYaml(root: in Yaml.YamlValue, pkgsDir: in String): List[
                                       while dIdx < runtimeEntries.count {
                                         val dllEntry = runtimeEntries[dIdx]
                                         val dllPath = dllEntry.key
-                                        if dllPath.length > 4 and
-                                            dllPath[dllPath.length - 4] == '.' and
-                                            dllPath[dllPath.length - 3] == 'd' and
-                                            dllPath[dllPath.length - 2] == 'l' and
-                                            dllPath[dllPath.length - 1] == 'l' {
+                                        val lowerPath = dllPath.toLower()
+                                        if lowerPath.length > 4 and
+                                            lowerPath[lowerPath.length - 4] == '.' and
+                                            lowerPath[lowerPath.length - 3] == 'd' and
+                                            lowerPath[lowerPath.length - 2] == 'l' and
+                                            lowerPath[lowerPath.length - 1] == 'l' {
                                           val pkgName = pkgKey.substring(0, slashPos)
                                           val pkgVersion = pkgKey.substring(slashPos + 1, pkgKey.length - slashPos - 1)
                                           val lowerPkgName = pkgName.toLower()
