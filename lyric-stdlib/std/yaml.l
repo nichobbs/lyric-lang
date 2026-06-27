@@ -182,7 +182,6 @@ func yParseHexDigit(c: in Char): Int {
 
 func yParseUnicode4(st: inout YamlState): Result[Char, YamlError] {
   var value = 0
-  var i = 0
   var hex1 = 0
   var hex2 = 0
   var hex3 = 0
