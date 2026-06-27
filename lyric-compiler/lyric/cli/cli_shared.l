@@ -539,19 +539,10 @@ pub func resolveNugetAssets(mfDir: in String): List[String] {
     case None -> return result
   }
 
-  // Resolve NuGet packages folder
+  // Resolve NuGet packages folder using helper
   var pkgsDir = Environment.getVarOrDefault("NUGET_PACKAGES", "")
   if pkgsDir.length == 0 {
-    // Try to extract packagesPath from the JSON using simple string search
-    val key = "\"packagesPath\": \""
-    val pos = content.indexOf(key)
-    if pos >= 0 {
-      val start = pos + key.length
-      val end = content.indexOf("\"", start)
-      if end > start {
-        pkgsDir = content.substring(start, end - start)
-      }
-    }
+    pkgsDir = extractPackagesPath(content)
   }
   if pkgsDir.length == 0 {
     val home = match Environment.getVar("HOME") {
@@ -570,40 +561,106 @@ pub func resolveNugetAssets(mfDir: in String): List[String] {
     return result
   }
 
-  // Extract DLL paths by searching for patterns in the JSON string
-  // Look for "lib/.../*.dll" patterns in runtime sections
+  // Extract DLL paths using helper
+  extractDllPathsFromJson(content, pkgsDir, result)
+  return result
+}
+
+func extractPackagesPath(content: in String): String {
+  // Look for "packagesPath": "..." in the JSON
+  // This helper avoids binding method call results directly to vals
+  var result = ""
   var searchPos = 0
   while searchPos < content.length {
-    val libPos = content.indexOf("lib/", searchPos)
-    if libPos < 0 {
+    var keyStart = searchPos
+    while keyStart < content.length and content[keyStart] != 'p' {
+      keyStart += 1
+    }
+    if keyStart >= content.length {
+      break
+    }
+    val restKey = "\"packagesPath\": \""
+    if keyStart + restKey.length <= content.length {
+      var matches = true
+      var i = 0
+      while i < restKey.length and matches {
+        if content[keyStart + i] != restKey[i] {
+          matches = false
+        }
+        i += 1
+      }
+      if matches {
+        val valueStart = keyStart + restKey.length
+        var valueEnd = valueStart
+        while valueEnd < content.length and content[valueEnd] != '"' {
+          valueEnd += 1
+        }
+        if valueEnd < content.length and valueEnd > valueStart {
+          result = content.substring(valueStart, valueEnd - valueStart)
+          return result
+        }
+      }
+    }
+    searchPos = keyStart + 1
+  }
+  result
+}
+
+func extractDllPathsFromJson(content: in String, pkgsDir: in String, result: inout List[String]): Unit {
+  // Search for "lib/.../*.dll" patterns in the JSON string
+  var searchPos = 0
+  while searchPos < content.length {
+    // Find next "lib/" pattern
+    var libPos = searchPos
+    while libPos < content.length - 4 {
+      if content[libPos] == 'l' and content[libPos + 1] == 'i' and content[libPos + 2] == 'b' and
+          content[libPos + 3] == '/' {
+        break
+      }
+      libPos += 1
+    }
+    if libPos >= content.length - 4 {
       break
     }
 
-    var dllEnd = content.indexOf(".dll", libPos)
-    if dllEnd < 0 {
+    // Find next ".dll" from this position
+    var dllPos = libPos + 4
+    while dllPos < content.length - 4 {
+      if content[dllPos] == '.' and content[dllPos + 1] == 'd' and content[dllPos + 2] == 'l' and
+          content[dllPos + 3] == 'l' {
+        break
+      }
+      dllPos += 1
+    }
+    if dllPos >= content.length - 4 {
       searchPos = libPos + 1
       continue
     }
-    dllEnd = dllEnd + 4
 
-    // Extract the relative path
+    val dllEnd = dllPos + 4
     val relPath = content.substring(libPos, dllEnd - libPos)
 
-    // Look backwards for the package name/version in the form "PackageName/Version"
-    var keyStart = libPos - 2  // Back up past the quote and colon
-    while keyStart > 0 and content[keyStart - 1] != '"' {
+    // Try to extract package name and version from backwards search
+    var keyStart = libPos - 1
+    while keyStart > 0 and content[keyStart] != '"' {
       keyStart -= 1
     }
 
     if keyStart > 0 {
-      var pkgKeyStart = keyStart - 1
-      while pkgKeyStart > 0 and content[pkgKeyStart - 1] != '"' {
-        pkgKeyStart -= 1
+      var pkgStart = keyStart - 1
+      while pkgStart > 0 and content[pkgStart] != '"' {
+        pkgStart -= 1
       }
 
-      if pkgKeyStart > 0 {
-        val pkgKey = content.substring(pkgKeyStart, keyStart - 1 - pkgKeyStart)
-        val slashPos = pkgKey.indexOf("/")
+      if pkgStart > 0 and pkgStart < keyStart - 1 {
+        val pkgKey = content.substring(pkgStart + 1, keyStart - pkgStart - 2)
+
+        // Find '/' in package key
+        var slashPos = 0
+        while slashPos < pkgKey.length and pkgKey[slashPos] != '/' {
+          slashPos += 1
+        }
+
         if slashPos > 0 and slashPos < pkgKey.length - 1 {
           val pkgName = pkgKey.substring(0, slashPos)
           val pkgVersion = pkgKey.substring(slashPos + 1, pkgKey.length - slashPos - 1)
@@ -618,7 +675,5 @@ pub func resolveNugetAssets(mfDir: in String): List[String] {
 
     searchPos = dllEnd
   }
-
-  return result
 }
 
