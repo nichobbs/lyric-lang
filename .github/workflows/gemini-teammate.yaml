@@ -1,9 +1,9 @@
 name: Gemini AI Teammate
-on:
-  pull_request:
-    types: [opened, synchronize]
-  issue_comment:
-    types: [created]
+#on:
+#  pull_request:
+#    types: [opened, synchronize]
+#  issue_comment:
+#    types: [created]
 
 jobs:
   gemini_review:
