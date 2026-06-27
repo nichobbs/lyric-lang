@@ -84,17 +84,6 @@ echo "[assert-no-box-msil] compiling closure_zero_overhead_self_test.l with --ta
 # Find ildasm (the IL disassembler).
 # Strategy: try command-v first (direct PATH), then SDK paths, then dotnet-ildasm tool,
 # then try to install dotnet-ildasm if dotnet is available.
-echo "=== DEBUG ILDASM SEARCH ==="
-echo "PATH: $PATH"
-echo "HOME: $HOME"
-echo "DOTNET_ROOT: $DOTNET_ROOT"
-if command -v find >/dev/null 2>&1; then
-  echo "Searching for dotnet-ildasm in /home/runner..."
-  find /home/runner -name "dotnet-ildasm" 2>/dev/null || true
-  echo "Searching for ildasm in /usr..."
-  find /usr -name "*ildasm*" 2>/dev/null || true
-fi
-echo "==========================="
 ILDASM=""
 
 # Attempt 1: Check PATH
@@ -108,6 +97,10 @@ elif [[ -n "$DOTNET_ROOT" ]] && [[ -d "$DOTNET_ROOT/sdk" ]]; then
 # Attempt 3: Try dotnet-ildasm tool
 elif ILDASM=$(command -v dotnet-ildasm 2>/dev/null); then
   : # found
+elif [[ -x "$REPO_ROOT/.tools/dotnet-ildasm" ]]; then
+  ILDASM="$REPO_ROOT/.tools/dotnet-ildasm"
+elif [[ -x "./.tools/dotnet-ildasm" ]]; then
+  ILDASM="./.tools/dotnet-ildasm"
 elif [[ -x "/home/runner/.dotnet/tools/dotnet-ildasm" ]]; then
   ILDASM="/home/runner/.dotnet/tools/dotnet-ildasm"
 elif [[ -x "$HOME/.dotnet/tools/dotnet-ildasm" ]]; then
@@ -115,6 +108,12 @@ elif [[ -x "$HOME/.dotnet/tools/dotnet-ildasm" ]]; then
 # Attempt 4: Try 'dotnet ildasm' command (newer .NET SDK versions)
 elif command -v dotnet >/dev/null 2>&1 && dotnet ildasm --help >/dev/null 2>&1; then
   ILDASM="dotnet ildasm"
+# Attempt 5: Try on-the-fly local installation
+elif command -v dotnet >/dev/null 2>&1; then
+  echo "Installing dotnet-ildasm to local tool directory..."
+  if dotnet tool install --tool-path "$WORK_DIR/tools" dotnet-ildasm >/dev/null 2>&1; then
+    ILDASM="$WORK_DIR/tools/dotnet-ildasm"
+  fi
 fi
 
 if [[ -z "$ILDASM" ]]; then

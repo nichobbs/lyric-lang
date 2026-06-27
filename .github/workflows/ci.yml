@@ -398,7 +398,7 @@ jobs:
         shell: bash
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
       - name: Install dotnet-ildasm tool
-        run: dotnet tool install --global dotnet-ildasm || true
+        run: dotnet tool install --tool-path .tools dotnet-ildasm || true
       - name: Measure MSIL BOX instructions (epic #1877 Stage 2+ zero-overhead gate)
         working-directory: ${{ github.workspace }}
         shell: bash
