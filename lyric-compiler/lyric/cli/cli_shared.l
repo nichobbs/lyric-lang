@@ -531,52 +531,33 @@ pub func resolveNugetAssets(mfDir: in String): List[String] {
 
   val content = match File.readText(assetsPath) {
     case Ok(text) -> text
-    case Err(_) -> ""
-  }
-  if content.length == 0 {
-    return result
+    case Err(_) -> return result
   }
 
-  val doc = Json.parseJson(content)
-  defer {
-    Json.disposeJson(doc)
-  }
-  val root = Json.rootElement(doc)
-
-  // 1. Resolve NuGet packages folder
-  var pkgsDir = ""
-  val envVar = Environment.getVarOrDefault("NUGET_PACKAGES", "")
-  if envVar.length > 0 {
-    pkgsDir = envVar
-  } else {
-    // Try "project" -> "restore" -> "packagesPath"
-    match Json.tryGetProperty(root, "project") {
-      case Some(project) -> {
-        match Json.tryGetProperty(project, "restore") {
-          case Some(restore) -> {
-            match Json.tryGetProperty(restore, "packagesPath") {
-              case Some(pkgsPathProp) -> {
-                pkgsDir = Json.getString(pkgsPathProp)
-              }
-              case None -> ()
-            }
-          }
-          case None -> ()
-        }
+  // Resolve NuGet packages folder
+  var pkgsDir = Environment.getVarOrDefault("NUGET_PACKAGES", "")
+  if pkgsDir.length == 0 {
+    // Try to extract packagesPath from the JSON using simple string search
+    val key = "\"packagesPath\": \""
+    val pos = content.indexOf(key)
+    if pos >= 0 {
+      val start = pos + key.length
+      val end = content.indexOf("\"", start)
+      if end > start {
+        pkgsDir = content.substring(start, end - start)
       }
-      case None -> ()
     }
-    if pkgsDir.length == 0 {
-      val home = match Environment.getVar("HOME") {
+  }
+  if pkgsDir.length == 0 {
+    val home = match Environment.getVar("HOME") {
+      case Ok(h) -> h
+      case Err(_) -> match Environment.getVar("USERPROFILE") {
         case Ok(h) -> h
-        case Err(_) -> match Environment.getVar("USERPROFILE") {
-          case Ok(h) -> h
-          case Err(_) -> ""
-        }
+        case Err(_) -> ""
       }
-      if home.length > 0 {
-        pkgsDir = Path.join(home, ".nuget/packages")
-      }
+    }
+    if home.length > 0 {
+      pkgsDir = Path.join(home, ".nuget/packages")
     }
   }
 
@@ -584,60 +565,53 @@ pub func resolveNugetAssets(mfDir: in String): List[String] {
     return result
   }
 
-  // 2. Parse targets
-  match Json.tryGetProperty(root, "targets") {
-    case Some(targetsElem) -> {
-      var targetsEn = Json.enumerateObject(targetsElem)
-      while Json.objectMoveNext(targetsEn) {
-        val targetProp = Json.objectCurrent(targetsEn)
-        val targetElem = Json.propertyValue(targetProp)
-        var pkgEn = Json.enumerateObject(targetElem)
-        while Json.objectMoveNext(pkgEn) {
-          val pkgProp = Json.objectCurrent(pkgEn)
-          val pkgKey = Json.propertyName(pkgProp) // e.g. "Microsoft.Data.Sqlite/9.0.0"
-          val pkgElem = Json.propertyValue(pkgProp)
+  // Extract DLL paths by searching for patterns in the JSON string
+  // Look for "lib/.../*.dll" patterns in runtime sections
+  var searchPos = 0
+  while searchPos < content.length {
+    val libPos = content.indexOf("lib/", searchPos)
+    if libPos < 0 {
+      break
+    }
 
-          // Check type == "package"
-          var isPkg = false
-          match Json.tryGetProperty(pkgElem, "type") {
-            case Some(typeElem) -> {
-              isPkg = (Json.getString(typeElem) == "package")
-            }
-            case None -> ()
-          }
+    var dllEnd = content.indexOf(".dll", libPos)
+    if dllEnd < 0 {
+      searchPos = libPos + 1
+      continue
+    }
+    dllEnd = dllEnd + 4
 
-          if isPkg {
-            match Json.tryGetProperty(pkgElem, "runtime") {
-              case Some(runtimeElem) -> {
-                var runtimeEn = Json.enumerateObject(runtimeElem)
-                while Json.objectMoveNext(runtimeEn) {
-                  val runtimeProp = Json.objectCurrent(runtimeEn)
-                  val relPath = Json.propertyName(runtimeProp) // e.g. "lib/net10.0/Microsoft.Data.Sqlite.dll"
-                  
-                  val lowerRelPath = relPath.toLower()
-                  if Str.endsWith(lowerRelPath, ".dll") {
-                    // Split key into name and version
-                    val slashPos = pkgKey.indexOf("/")
-                    if slashPos > 0 {
-                      val pkgName = Str.substring(pkgKey, 0, slashPos)
-                      val pkgVersion = Str.substring(pkgKey, slashPos + 1, pkgKey.length - slashPos - 1)
-                      
-                      val lowerPkgName = pkgName.toLower()
-                      val fullPath = Path.join(pkgsDir, Path.join(Path.join(lowerPkgName, pkgVersion), relPath))
-                      if File.fileExists(fullPath) {
-                        result.add(fullPath)
-                      }
-                    }
-                  }
-                }
-              }
-              case None -> ()
-            }
+    // Extract the relative path
+    val relPath = content.substring(libPos, dllEnd - libPos)
+
+    // Look backwards for the package name/version in the form "PackageName/Version"
+    var keyStart = libPos - 2  // Back up past the quote and colon
+    while keyStart > 0 and content[keyStart - 1] != '"' {
+      keyStart -= 1
+    }
+
+    if keyStart > 0 {
+      var pkgKeyStart = keyStart - 1
+      while pkgKeyStart > 0 and content[pkgKeyStart - 1] != '"' {
+        pkgKeyStart -= 1
+      }
+
+      if pkgKeyStart > 0 {
+        val pkgKey = content.substring(pkgKeyStart, keyStart - 1 - pkgKeyStart)
+        val slashPos = pkgKey.indexOf("/")
+        if slashPos > 0 and slashPos < pkgKey.length - 1 {
+          val pkgName = pkgKey.substring(0, slashPos)
+          val pkgVersion = pkgKey.substring(slashPos + 1, pkgKey.length - slashPos - 1)
+          val lowerPkgName = pkgName.toLower()
+          val fullPath = Path.join(pkgsDir, Path.join(Path.join(lowerPkgName, pkgVersion), relPath))
+          if File.fileExists(fullPath) {
+            result.add(fullPath)
           }
         }
       }
     }
-    case None -> ()
+
+    searchPos = dllEnd
   }
 
   return result
