@@ -569,7 +569,12 @@ pub func resolveNugetAssets(mfDir: in String): List[String] {
   }
 
   // Extract DLL paths from parsed YAML structure
-  extractDllPathsFromYaml(parseResult, pkgsDir, result)
+  val dlls = extractDllPathsFromYaml(parseResult, pkgsDir)
+  var idx = 0
+  while idx < dlls.count {
+    result.add(dlls[idx])
+    idx += 1
+  }
   return result
 }
 
@@ -593,7 +598,8 @@ func extractPackagesPathFromYaml(root: in Yaml.YamlValue): String {
   ""
 }
 
-func extractDllPathsFromYaml(root: in Yaml.YamlValue, pkgsDir: in String, result: inout List[String]): Unit {
+func extractDllPathsFromYaml(root: in Yaml.YamlValue, pkgsDir: in String): List[String] {
+  var result: List[String] = newList()
   // Navigate to targets[*][*] where type == "package" and extract runtime DLL paths
   match root {
     case Yaml.YMapping(rootPairs) -> {
@@ -694,5 +700,6 @@ func extractDllPathsFromYaml(root: in Yaml.YamlValue, pkgsDir: in String, result
     }
     case _ -> ()
   }
+  result
 }
 
