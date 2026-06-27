@@ -29,6 +29,7 @@ jobs:
         uses: google-github-actions/run-gemini-cli@v0
         # FIXED: Removed 'github_token' from the 'with:' section
         with:
+          gemini_model: ${{ vars.GEMINI_MODEL }}
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
           
       - name: Run PR Review & Fixes
