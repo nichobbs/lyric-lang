@@ -199,9 +199,7 @@ pub func main(argv: in slice[String]): Int {
           li += 1
         }
 
-        val base = Path.basename(outPath)
-        val dot = base.indexOf(".")
-        val stem = if dot >= 0 { base.substring(0, dot) } else { base }
+        val stem = stemOf(Path.basename(outPath), 4)  // strip ".dll"
 
         val req = Emitter.EmitProjectRequest(
           packages = pkgs,

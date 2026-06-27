@@ -108,6 +108,13 @@ func rdU16(b: in slice[Byte], o: in Int): Int {
   rdU8(b, o) + rdU8(b, o + 1) * 256
 }
 
+func rdI16(b: in slice[Byte], o: in Int): Int {
+  val lo = rdU8(b, o)
+  val hi = rdU8(b, o + 1)
+  val result = lo + hi * 256
+  if hi >= 128 { result - 65536 } else { result }
+}
+
 func rdU32(b: in slice[Byte], o: in Int): Int {
   val h = rdU8(b, o + 3)
   val hTerm = if h >= 128 { (h - 256) * 16777216 } else { h * 16777216 }
@@ -1120,7 +1127,8 @@ pub func getLiteralFieldInt32In(
         if blobBytes.length >= 4 {
           return Some(value = rdI32(blobBytes, 0))
         } else if blobBytes.length == 2 {
-          return Some(value = rdU16(blobBytes, 0))
+          val isSigned = typeVal == 0x02 or typeVal == 0x04 or typeVal == 0x06 or typeVal == 0x08
+          return Some(value = if isSigned { rdI16(blobBytes, 0) } else { rdU16(blobBytes, 0) })
         } else if blobBytes.length == 1 {
           return Some(value = blobBytes[0].toInt())
         }

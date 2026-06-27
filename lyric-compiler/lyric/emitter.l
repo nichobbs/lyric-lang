@@ -1990,6 +1990,13 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
     dtpi = dtpi + 1
   }
 
+  val diags: List[Diagnostic] = newList()
+  if req.nugetAssemblyPaths.count > 0 {
+    val msg = "NuGet assembly resolution is not yet supported on the JVM target; NuGet dependencies will be ignored."
+    val sp = pointSpan(initialPosition())
+    diags.add(warningDiagnostic("W0006", msg, sp))
+  }
+
   val ok = JvmBridge.compileToJarBundledWithFeatures(
     source,
     req.outputPath,
@@ -2001,8 +2008,7 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
   )
 
   if ok {
-    val okDiags: List[Diagnostic] = newList()
-    EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
+    EmitResult(outputPath = Some(value = req.outputPath), diagnostics = diags)
   } else {
     failResult("JVM compilation failed (see stderr)")
   }

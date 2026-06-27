@@ -362,16 +362,15 @@ jobs:
           set -euo pipefail
           bash scripts/ilverify-selfhosted.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
 
-  # Epic #1877 Stage 0: Closure zero-overhead baseline measurement (both targets).
+  # Epic #1877 Stage 2+ zero-overhead gate for closure class synthesis (both targets).
   # These jobs compile closure_zero_overhead_self_test.l and disassemble the
   # resulting IL/bytecode to count BOX instructions (MSIL) and boxing calls (JVM).
   #
-  # At Stage 0, these jobs report baselines and exit with continue-on-error=true
   # Stage 2+ required gates: zero-boxing must be maintained (continue-on-error: false).
   # These jobs verify that closure class synthesis avoids boxing overhead for primitive
   # captures. Fails if any BOX instructions (MSIL) or valueOf calls (JVM) are found.
   #
-  #   scripts/assert-no-box-jvm.sh ./bin/lyric 2   (Stage 2 gate)
+  #   scripts/assert-no-box-msil.sh ./bin/lyric 2   (Stage 2 gate)
   closure-zero-overhead-msil:
     runs-on: ubuntu-latest
     needs: [build]
@@ -401,8 +400,8 @@ jobs:
         working-directory: ${{ github.workspace }}
         shell: bash
         run: |
-          bash scripts/assert-no-box-msil.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" 2
-          exit_code=$?
+          bash scripts/assert-no-box-msil.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" 2 || exit_code=$?
+          exit_code=${exit_code:-0}
           # Exit code 77 means skip (ildasm unavailable); this is not a failure
           if [[ $exit_code -eq 77 ]]; then
             echo "INFO: MSIL boxing test skipped (ildasm not available)"
@@ -440,8 +439,8 @@ jobs:
       - name: Measure JVM boxing calls (epic #1877 Stage 2+ zero-overhead gate)
         working-directory: ${{ github.workspace }}
         run: |
-          bash scripts/assert-no-box-jvm.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" 2
-          exit_code=$?
+          bash scripts/assert-no-box-jvm.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" 2 || exit_code=$?
+          exit_code=${exit_code:-0}
           # Exit code 77 means skip (javap unavailable); this is not a failure
           if [[ $exit_code -eq 77 ]]; then
             echo "INFO: JVM boxing test skipped (javap not available)"
