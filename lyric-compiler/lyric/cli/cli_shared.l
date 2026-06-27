@@ -81,6 +81,7 @@ import Std.Environment as Environment
 import Std.Errors
 import Std.Hash as Hash
 import Std.Json as Json
+import Std.Yaml as Yaml
 import Lyric.Manifest as Mf
 import Lyric.Lexer
 import Lyric.Workspace as Ws
@@ -523,60 +524,43 @@ func copyRestoredDepDlls(outPath: in String, restoredDlls: in List[String]): Uni
 }
 
 pub func resolveNugetAssets(mfDir: in String): List[String] {
-  val result: List[String] = newList()
+  var result: List[String] = newList()
   val assetsPath = Path.join(Path.join(mfDir, "obj"), "project.assets.json")
   if not File.fileExists(assetsPath) {
     return result
   }
 
-  val content = match File.readText(assetsPath) {
-    case Ok(text) -> text
-    case Err(_) -> ""
-  }
-  if content.length == 0 {
-    return result
+  val contentOpt = match File.readText(assetsPath) {
+    case Ok(text) -> Some(value = text)
+    case Err(_) -> None
   }
 
-  val doc = Json.parseJson(content)
-  defer {
-    Json.disposeJson(doc)
+  val content = match contentOpt {
+    case Some(text) -> text
+    case None -> return result
   }
-  val root = Json.rootElement(doc)
 
-  // 1. Resolve NuGet packages folder
-  var pkgsDir = ""
-  val envVar = Environment.getVarOrDefault("NUGET_PACKAGES", "")
-  if envVar.length > 0 {
-    pkgsDir = envVar
-  } else {
-    // Try "project" -> "restore" -> "packagesPath"
-    match Json.tryGetProperty(root, "project") {
-      case Some(project) -> {
-        match Json.tryGetProperty(project, "restore") {
-          case Some(restore) -> {
-            match Json.tryGetProperty(restore, "packagesPath") {
-              case Some(pkgsPathProp) -> {
-                pkgsDir = Json.getString(pkgsPathProp)
-              }
-              case None -> ()
-            }
-          }
-          case None -> ()
-        }
-      }
-      case None -> ()
-    }
-    if pkgsDir.length == 0 {
-      val home = match Environment.getVar("HOME") {
+  // Parse the JSON using AOT-safe pure-Lyric parser
+  val parseResult = match Yaml.parseJson(content) {
+    case Ok(value) -> value
+    case Err(_) -> return result
+  }
+
+  // Resolve NuGet packages folder
+  var pkgsDir = Environment.getVarOrDefault("NUGET_PACKAGES", "")
+  if pkgsDir.length == 0 {
+    pkgsDir = extractPackagesPathFromYaml(parseResult)
+  }
+  if pkgsDir.length == 0 {
+    val home = match Environment.getVar("HOME") {
+      case Ok(h) -> h
+      case Err(_) -> match Environment.getVar("USERPROFILE") {
         case Ok(h) -> h
-        case Err(_) -> match Environment.getVar("USERPROFILE") {
-          case Ok(h) -> h
-          case Err(_) -> ""
-        }
+        case Err(_) -> ""
       }
-      if home.length > 0 {
-        pkgsDir = Path.join(home, ".nuget/packages")
-      }
+    }
+    if home.length > 0 {
+      pkgsDir = Path.join(home, ".nuget/packages")
     }
   }
 
@@ -584,62 +568,164 @@ pub func resolveNugetAssets(mfDir: in String): List[String] {
     return result
   }
 
-  // 2. Parse targets
-  match Json.tryGetProperty(root, "targets") {
-    case Some(targetsElem) -> {
-      var targetsEn = Json.enumerateObject(targetsElem)
-      while Json.objectMoveNext(targetsEn) {
-        val targetProp = Json.objectCurrent(targetsEn)
-        val targetElem = Json.propertyValue(targetProp)
-        var pkgEn = Json.enumerateObject(targetElem)
-        while Json.objectMoveNext(pkgEn) {
-          val pkgProp = Json.objectCurrent(pkgEn)
-          val pkgKey = Json.propertyName(pkgProp) // e.g. "Microsoft.Data.Sqlite/9.0.0"
-          val pkgElem = Json.propertyValue(pkgProp)
+  // Extract DLL paths from parsed YAML structure
+  val dlls = extractDllPathsFromYaml(parseResult, pkgsDir)
+  var idx = 0
+  while idx < dlls.count {
+    result.add(dlls[idx])
+    idx += 1
+  }
+  return result
+}
 
-          // Check type == "package"
-          var isPkg = false
-          match Json.tryGetProperty(pkgElem, "type") {
-            case Some(typeElem) -> {
-              isPkg = (Json.getString(typeElem) == "package")
-            }
-            case None -> ()
-          }
-
-          if isPkg {
-            match Json.tryGetProperty(pkgElem, "runtime") {
-              case Some(runtimeElem) -> {
-                var runtimeEn = Json.enumerateObject(runtimeElem)
-                while Json.objectMoveNext(runtimeEn) {
-                  val runtimeProp = Json.objectCurrent(runtimeEn)
-                  val relPath = Json.propertyName(runtimeProp) // e.g. "lib/net10.0/Microsoft.Data.Sqlite.dll"
-                  
-                  val lowerRelPath = relPath.toLower()
-                  if Str.endsWith(lowerRelPath, ".dll") {
-                    // Split key into name and version
-                    val slashPos = pkgKey.indexOf("/")
-                    if slashPos > 0 {
-                      val pkgName = Str.substring(pkgKey, 0, slashPos)
-                      val pkgVersion = Str.substring(pkgKey, slashPos + 1, pkgKey.length - slashPos - 1)
-                      
-                      val lowerPkgName = pkgName.toLower()
-                      val fullPath = Path.join(pkgsDir, Path.join(Path.join(lowerPkgName, pkgVersion), relPath))
-                      if File.fileExists(fullPath) {
-                        result.add(fullPath)
+func extractPackagesPathFromYaml(root: in Yaml.YamlValue): String {
+  // packagesPath is at project.restore.packagesPath in project.assets.json
+  match root {
+    case Yaml.YMapping(rootPairs) -> {
+      var i = 0
+      while i < rootPairs.count {
+        val pair = rootPairs[i]
+        if pair.key == "project" {
+          match pair.value {
+            case Yaml.YMapping(projectPairs) -> {
+              var j = 0
+              while j < projectPairs.count {
+                val projPair = projectPairs[j]
+                if projPair.key == "restore" {
+                  match projPair.value {
+                    case Yaml.YMapping(restorePairs) -> {
+                      var k = 0
+                      while k < restorePairs.count {
+                        val restorePair = restorePairs[k]
+                        if restorePair.key == "packagesPath" {
+                          match restorePair.value {
+                            case Yaml.YString(path) -> return path
+                            case _ -> ()
+                          }
+                        }
+                        k += 1
                       }
                     }
+                    case _ -> ()
                   }
                 }
+                j += 1
               }
-              case None -> ()
             }
+            case _ -> ()
           }
         }
+        i += 1
       }
     }
-    case None -> ()
+    case _ -> ()
   }
+  ""
+}
 
-  return result
+func extractDllPathsFromYaml(root: in Yaml.YamlValue, pkgsDir: in String): List[String] {
+  var result: List[String] = newList()
+  // Navigate to targets[*][*] where type == "package" and extract runtime DLL paths
+  match root {
+    case Yaml.YMapping(rootPairs) -> {
+      var i = 0
+      while i < rootPairs.count {
+        val pair = rootPairs[i]
+        if pair.key == "targets" {
+          match pair.value {
+            case Yaml.YMapping(frameworks) -> {
+              // For each framework (e.g., ".NETFramework,Version=v4.7.2")
+              var fIdx = 0
+              while fIdx < frameworks.count {
+                val fmwkPair = frameworks[fIdx]
+                match fmwkPair.value {
+                  case Yaml.YMapping(packages) -> {
+                    // For each package in this framework
+                    var pIdx = 0
+                    while pIdx < packages.count {
+                      val pkgPair = packages[pIdx]
+                      // Extract the Package/Version key
+                      val pkgKey = pkgPair.key
+                      var slashPos = 0
+                      while slashPos < pkgKey.length and pkgKey[slashPos] != '/' {
+                        slashPos += 1
+                      }
+                      if slashPos > 0 and slashPos < pkgKey.length - 1 {
+                        match pkgPair.value {
+                          case Yaml.YMapping(pkgFields) -> {
+                            // Check if type == "package"
+                            var typeMatch = false
+                            var j = 0
+                            while j < pkgFields.count {
+                              val field = pkgFields[j]
+                              if field.key == "type" {
+                                match field.value {
+                                  case Yaml.YString(t) -> {
+                                    if t == "package" {
+                                      typeMatch = true
+                                    }
+                                  }
+                                  case _ -> ()
+                                }
+                              }
+                              j += 1
+                            }
+                            if typeMatch {
+                              // Look for runtime section
+                              j = 0
+                              while j < pkgFields.count {
+                                val field = pkgFields[j]
+                                if field.key == "runtime" {
+                                  match field.value {
+                                    case Yaml.YMapping(runtimeEntries) -> {
+                                      // Extract each DLL path
+                                      var dIdx = 0
+                                      while dIdx < runtimeEntries.count {
+                                        val dllEntry = runtimeEntries[dIdx]
+                                        val dllPath = dllEntry.key
+                                        val lowerPath = dllPath.toLower()
+                                        if lowerPath.length > 4 and
+                                            lowerPath[lowerPath.length - 4] == '.' and
+                                            lowerPath[lowerPath.length - 3] == 'd' and
+                                            lowerPath[lowerPath.length - 2] == 'l' and
+                                            lowerPath[lowerPath.length - 1] == 'l' {
+                                          val pkgName = pkgKey.substring(0, slashPos)
+                                          val pkgVersion = pkgKey.substring(slashPos + 1, pkgKey.length - slashPos - 1)
+                                          val lowerPkgName = pkgName.toLower()
+                                          val fullPath = Path.join(pkgsDir, Path.join(Path.join(lowerPkgName, pkgVersion), dllPath))
+                                          if File.fileExists(fullPath) {
+                                            result.add(fullPath)
+                                          }
+                                        }
+                                        dIdx += 1
+                                      }
+                                    }
+                                    case _ -> ()
+                                  }
+                                }
+                                j += 1
+                              }
+                            }
+                          }
+                          case _ -> ()
+                        }
+                      }
+                      pIdx += 1
+                    }
+                  }
+                  case _ -> ()
+                }
+                fIdx += 1
+              }
+            }
+            case _ -> ()
+          }
+        }
+        i += 1
+      }
+    }
+    case _ -> ()
+  }
+  result
 }
 
