@@ -17,23 +17,20 @@ extern type Predicate = "System.Predicate`1"
 extern type Func1 = "System.Func`2"
 extern type Func2 = "System.Func`3"
 
-// Test 1: Verify lambdas and basic Lyric function values.
-@test func testBasicLambdaInvocation(): Unit {
+test "lambda basic invocation" {
   val isPositive: (Int) -> Bool = (x: Int) -> x > 0
   assertTrue(isPositive(1), message = "positive number should return true")
   assertFalse(isPositive(-1), message = "negative number should return false")
   assertFalse(isPositive(0), message = "zero should return false")
 }
 
-// Test 2: Multi-parameter lambda function values.
-@test func testMultiParameterLambda(): Unit {
+test "multi-parameter lambda" {
   val add: (Int, Int) -> Int = (x: Int, y: Int) -> x + y
   assertEq(add(1, 2), 3, message = "addition result should be 3")
   assertEq(add(10, 20), 30, message = "addition result should be 30")
 }
 
-// Test 3: Capturing lambdas with mutable reference.
-@test func testCapturingLambda(): Unit {
+test "capturing lambda with mutable reference" {
   var counter = 0
   val increment: () -> Int = () -> {
     counter = counter + 1
@@ -44,8 +41,7 @@ extern type Func2 = "System.Func`3"
   assertEq(counter, 2, message = "counter should be 2 after two increments")
 }
 
-// Test 4: Returned lambda (escaped closure).
-@test func testReturnedLambda(): Unit {
+test "returned lambda (escaped closure)" {
   func makeGreeter(name: in String): (String) -> String {
     (greeting: String) -> greeting + ", " + name
   }
@@ -54,8 +50,7 @@ extern type Func2 = "System.Func`3"
   assertEq(result, "Hello, Alice", message = "greeting should include captured name")
 }
 
-// Test 5: Nested closures with multiple capture levels.
-@test func testNestedClosure(): Unit {
+test "nested closures with multiple capture levels" {
   val outerVal = 10
   val makeAdder: (Int) -> ((Int) -> Int) = (x: Int) -> {
     val inner: (Int) -> Int = (y: Int) -> x + y + outerVal
