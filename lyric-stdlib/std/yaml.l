@@ -187,11 +187,13 @@ func yParseUnicode4(st: inout YamlState): Result[Char, YamlError] {
     if yAtEnd(st) {
       return Err(error = UnexpectedEof(pos = st.pos, expected = "4 hex digits in \\uXXXX"))
     }
-    val d = yParseHexDigit(st.src[st.pos])
+    val c = st.src[st.pos]
+    val d = yParseHexDigit(c)
     if d < 0 {
       return Err(error = UnexpectedChar(pos = st.pos, expected = "hex digit in \\uXXXX"))
     }
-    value = value * 16 + d
+    val newValue = value * 16
+    value = newValue + d
     st.pos = st.pos + 1
     i += 1
   }
