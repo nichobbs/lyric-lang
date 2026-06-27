@@ -438,6 +438,7 @@ pub record CodegenCtx {
   genericCtorParams: Map[String, List[MsilType]]
   // Synthesised views of restored DLLs the bundle imports but doesn't ship; seeds cross-assembly tokens (#1272).
   restoredArtifacts: List[SynthesisedArtifact]
+  nugetAssemblyPaths: List[String]
   // Nullary union case singletons.  Key = FQN ctor key (e.g. "Pkg.Union$Case");
   // value = FieldDef token (0x04000000 | row) for the static `Instance` field
   // emitted by lowerMNullaryUnionCase.  Construction sites that find a key here
@@ -547,6 +548,7 @@ pub record ImplEntryMsil {
 pub func newCodegenCtx(
   packageName: in String,
   restoredArtifacts: in List[SynthesisedArtifact],
+  nugetAssemblyPaths: in List[String],
   major: in Int,
   minor: in Int,
 ): CodegenCtx {
@@ -1680,6 +1682,7 @@ pub func newCodegenCtx(
     genericTypeArity = newMap(),
     genericCtorParams = newMap(),
     restoredArtifacts = restoredArtifacts,
+    nugetAssemblyPaths = nugetAssemblyPaths,
     singletonFieldTokens = newMap(),
     staticValTokens = newMap(),
     staticValMsilTypes = newMap(),
@@ -5223,9 +5226,25 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                   val capTy = match mapGet(fctx.captureNameToType, name) { case Some(t) -> t; case None -> MObject }
                   if nameListContains(fctx.captureCellNames, name) {
                     insns.add(MLdcI4(v = 0))
-                    insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
+                    if canUseTypedArrayLoad(capTy) {
+                      match capTy {
+                        case MInt -> insns.add(MLdelemI4)
+                        case MLong -> insns.add(MLdelemI8)
+                        case MDouble -> insns.add(MLdelemR8)
+                        case MBool -> insns.add(MLdelemU1)
+                        case MChar -> insns.add(MLdelemU2)
+                        case MByte -> insns.add(MLdelemU1)
+                        case MString -> insns.add(MLdelemRef)
+                        case MObject -> insns.add(MLdelemRef)
+                        case _ -> insns.add(MLdelemRef)
+                      }
+                    } else {
+                      insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
+                      castObjectToMsil(cctx, insns, capTy)
+                    }
+                  } else {
+                    // Phase 2: non-cell capture field is already typed as capTy, no cast/unbox needed
                   }
-                  castObjectToMsil(cctx, insns, capTy)
                   return capTy
                 }
                 case _ -> {
@@ -5236,9 +5255,25 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                   val capTy = match mapGet(fctx.captureNameToType, name) { case Some(t) -> t; case None -> MObject }
                   if nameListContains(fctx.captureCellNames, name) {
                     insns.add(MLdcI4(v = 0))
-                    insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
+                    if canUseTypedArrayLoad(capTy) {
+                      match capTy {
+                        case MInt -> insns.add(MLdelemI4)
+                        case MLong -> insns.add(MLdelemI8)
+                        case MDouble -> insns.add(MLdelemR8)
+                        case MBool -> insns.add(MLdelemU1)
+                        case MChar -> insns.add(MLdelemU2)
+                        case MByte -> insns.add(MLdelemU1)
+                        case MString -> insns.add(MLdelemRef)
+                        case MObject -> insns.add(MLdelemRef)
+                        case _ -> insns.add(MLdelemRef)
+                      }
+                    } else {
+                      insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
+                      castObjectToMsil(cctx, insns, capTy)
+                    }
+                  } else {
+                    castObjectToMsil(cctx, insns, capTy)
                   }
-                  castObjectToMsil(cctx, insns, capTy)
                   return capTy
                 }
               }
@@ -6263,7 +6298,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         // Synthesize closure class (#1877 Phase 1): emit a __Closure_<i> record with
         // typed fields for captures instead of object[] array. Store in context for
         // emission to the module's TypeDef table and use in delegate instantiation.
-        val closureClass = synthesizeClosureClassMsil(cctx, lname, fctx.pkgName, idx, caps, capTypes)
+        val closureClass = synthesizeClosureClassMsil(cctx, lname, fctx.pkgName, idx, caps, capTypes, capCells)
         cctx.lambdaClosureClasses.add(lname, closureClass)
         cctx.lambdaClosureRecordList.add(closureClass)
       }
@@ -7230,9 +7265,19 @@ func lowerStmtsExprFromMsil(
 // captured into `object[] __caps` (`isCapture=true`, `idx`=capture index).
 func emitCellLoadMsil(fctx: in FuncCtx, insns: in List[MInsn], isCapture: in Bool, idx: in Int): Unit {
   if isCapture {
-    emitLoadVarMsil(fctx, insns, 0)
-    insns.add(MLdcI4(v = idx))
-    insns.add(MLdelemRef)
+    val capsType = match mapGet(fctx.types, "__caps") { case Some(t) -> t; case None -> MObject }
+    match capsType {
+      case MClass(closureClassName) -> {
+        emitLoadVarMsil(fctx, insns, 0)
+        val fieldName = "__f" + toString(idx)
+        insns.add(MLdfldByName(ownerFqn = closureClassName, fieldName = fieldName))
+      }
+      case _ -> {
+        emitLoadVarMsil(fctx, insns, 0)
+        insns.add(MLdcI4(v = idx))
+        insns.add(MLdelemRef)
+      }
+    }
   } else {
     emitLoadVarMsil(fctx, insns, idx)
   }
@@ -10090,7 +10135,7 @@ func lowerBuiltinOrStaticCallMsil(
             // to enable strongly-typed invoke (no boxing of arguments).
             val trackedParamTypes = mapGet(fctx.funcValParamTypes, funcName)
             val trackedRetType = mapGet(fctx.funcValRetTypes, funcName)
-            val useTypedInvoke = match trackedParamTypes { case Some(pts) -> pts.count == args.count; case None -> false }
+            val useTypedInvoke = false
 
             // Emit castclass BEFORE lowering arguments (while funcRef is on top of stack)
             if useTypedInvoke {
@@ -11716,6 +11761,26 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           }
         }
         case LBVar(name, tyOpt, initOpt) -> {
+          match tyOpt {
+            case Some(te) -> {
+              match te.kind {
+                case TFunction(paramTes, retTe) -> {
+                  if not fctx.funcValRetTypes.containsKey(name) {
+                    fctx.funcValRetTypes.add(name, typeExprToMsilCtx(cctx, retTe, fctx.pkgName))
+                    val paramMsilTys: List[MsilType] = newList()
+                    var pi = 0
+                    while pi < paramTes.count {
+                      paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pi], fctx.pkgName))
+                      pi = pi + 1
+                    }
+                    fctx.funcValParamTypes.add(name, paramMsilTys)
+                  }
+                }
+                case _ -> ()
+              }
+            }
+            case None -> ()
+          }
           // A `var` captured by a closure is hoisted to a heap cell (#1479 v2):
           // newobj List; dup; <value>; finishHoistedCell.  Reads/writes route
           // through the cell so the closure and this scope share the location.
@@ -12013,6 +12078,26 @@ func lowerLocalPatBindMsil(
       val ty = match tyOpt { case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName); case None -> initTy }
       val slot = allocSlotMsil(fctx, name, ty)
       emitStoreSlot(insns, slot, fctx.paramCount)
+      match tyOpt {
+        case Some(te) -> {
+          match te.kind {
+            case TFunction(paramTes, retTe) -> {
+              if not fctx.funcValRetTypes.containsKey(name) {
+                fctx.funcValRetTypes.add(name, typeExprToMsilCtx(cctx, retTe, fctx.pkgName))
+                val paramMsilTys: List[MsilType] = newList()
+                var pi = 0
+                while pi < paramTes.count {
+                  paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pi], fctx.pkgName))
+                  pi = pi + 1
+                }
+                fctx.funcValParamTypes.add(name, paramMsilTys)
+              }
+            }
+            case _ -> ()
+          }
+        }
+        case None -> ()
+      }
     }
     case PWildcard -> {
       match initTy {
@@ -12915,7 +13000,13 @@ func buildFuncNInvokeTokWithTypes(
   val gblob = buildGenericInstBlob(codedIdx, actualArgs)
   val specKey = "FuncSpec_invoke_typed_" + toString(nparams) + typeKeySuffix
   val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
-  val invokeSig = buildInstanceMethodSig(paramTypes, retType)
+  val invokePs: List[MsilType] = newList()
+  var pi = 0
+  while pi < nparams {
+    invokePs.add(MTypeVar(index = pi))
+    pi = pi + 1
+  }
+  val invokeSig = buildInstanceMethodSig(invokePs, MTypeVar(index = nparams))
   val mrRow = ctxAddMemberRefForTypeSpec(
     cctx.lctx,
     tsRow,
@@ -17509,10 +17600,17 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   // in (#1939) — its annotated/inferred logical types live in boxedParamTypes
   // and are unboxed on use, not in the signature.
   val paramTypes: List[MsilType] = newList()
-  // Capturing lambda: the leading `object[] __caps` (closed-over target) is the
-  // method's first parameter (#1479).
+  // Capturing lambda: the leading `__caps` (closed-over target) is the
+  // method's first parameter (#1479, #1877 Phase 2).
   if hasCaps {
-    paramTypes.add(MArray(elemTy = MObject))
+    match mapGet(cctx.lambdaClosureClasses, decl.name) {
+      case Some(closureRecord) -> {
+        paramTypes.add(MClass(className = closureRecord.className))
+      }
+      case None -> {
+        paramTypes.add(MArray(elemTy = MObject))
+      }
+    }
   }
   var pi2 = 0
   while pi2 < decl.params.count {
@@ -18073,13 +18171,35 @@ func synthesizeClosureClassMsil(
   lambdaIdx: in Int,
   capNames: in List[String],
   capTypes: in List[MsilType],
+  capCells: in List[String],
 ): MRecord {
   val closureClassName = pkgName + ".__Closure_" + toString(lambdaIdx)
   val fields: List[MField] = newList()
   var fi = 0
   while fi < capNames.count {
     val fieldName = "__f" + toString(fi)
-    val fieldType = if fi < capTypes.count { capTypes[fi] } else { MObject }
+    val capName = capNames[fi]
+    val isCell = nameListContains(capCells, capName)
+    val fieldType = if isCell {
+      val elemTy = if fi < capTypes.count { capTypes[fi] } else { MObject }
+      if canUseTypedArrayLoad(elemTy) {
+        match elemTy {
+          case MInt -> MArray(elemTy = MInt)
+          case MBool -> MArray(elemTy = MBool)
+          case MChar -> MArray(elemTy = MChar)
+          case MByte -> MArray(elemTy = MByte)
+          case MLong -> MArray(elemTy = MLong)
+          case MDouble -> MArray(elemTy = MDouble)
+          case MString -> MArray(elemTy = MString)
+          case MObject -> MArray(elemTy = MObject)
+          case _ -> MObject
+        }
+      } else {
+        MObject
+      }
+    } else {
+      if fi < capTypes.count { capTypes[fi] } else { MObject }
+    }
     fields.add(MField(flags = 0x0006, name = fieldName, fieldType = fieldType))
     fi = fi + 1
   }
@@ -21227,6 +21347,21 @@ func ensureMetadataIndex(cctx: in CodegenCtx): Unit {
     }
     ri = ri + 1
   }
+
+  // Phase 5: feed third-party NuGet package DLLs into the metadata index
+  var ni = 0
+  while ni < cctx.nugetAssemblyPaths.count {
+    val dllPath = cctx.nugetAssemblyPaths[ni]
+    if dllPath.length > 0 {
+      Mdr.addAssemblyToIndexesAndValueTypes(
+        cctx.metadataTypeIndex,
+        cctx.metadataPathIndex,
+        cctx.metadataVtypeSet,
+        dllPath
+      )
+    }
+    ni = ni + 1
+  }
 }
 
 // Widening rank for the numeric element-type bytes the auto-FFI path maps to
@@ -23224,6 +23359,12 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
     i = i + 1
   }
 
+
+  // Emit the host class: functions + static fields (IConst/IVal).
+  if fns.count > 0 or staticFields.count > 0 {
+    items.add(MPFuncs(hostClass = pkgName, funcs = fns, staticFields = staticFields))
+  }
+
   // ── Epic #1877 Phase 2: Emit closure records ────────────────────────────────
   // For each lambda that was synthesized with captures, emit the closure record
   // type that was synthesized during code generation (lowerFuncMsil).
@@ -23235,10 +23376,6 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
     ci = ci + 1
   }
 
-  // Emit the host class: functions + static fields (IConst/IVal).
-  if fns.count > 0 or staticFields.count > 0 {
-    items.add(MPFuncs(hostClass = pkgName, funcs = fns, staticFields = staticFields))
-  }
 
   // ── #878: MPImpl emission ─────────────────────────────────────────────────
   // After every record/interface/host-class TypeDef has been added to `items`,

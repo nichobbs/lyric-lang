@@ -25,6 +25,7 @@
 #   ~/.dotnet/sdk/<version>/bin/ildasm or via dotnet-ildasm tool)
 # ---------------------------------------------------------------------------
 set -euo pipefail
+export PATH="$HOME/.dotnet/tools:$PATH"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$REPO_ROOT/.bootstrap"
@@ -45,22 +46,21 @@ if [[ ! -x "$LYRIC_BIN" ]]; then
 fi
 
 # Create a temporary workspace for the test compilation.
-TMPDIR="${TMPDIR:-/tmp}"
-WORK_DIR="$TMPDIR/assert-no-box-msil.$$"
+WORK_DIR="$REPO_ROOT/bootstrap/assert-no-box-msil.$$"
 mkdir -p "$WORK_DIR"
 trap "rm -rf '$WORK_DIR'" EXIT
 
 # Create a minimal lyric.toml that imports the closure test module.
 cat > "$WORK_DIR/lyric.toml" <<'EOF'
 [package]
-name = "ClosureZeroOverheadTestMsil"
+name = "Lyric.ClosureZeroOverheadSelfTest"
 version = "0.0.1"
 
 [project]
-name = "ClosureZeroOverheadTestMsil"
+name = "Lyric.ClosureZeroOverheadSelfTest"
 
 [project.packages]
-"ClosureZeroOverheadTestMsil" = "closure_test.l"
+"Lyric.ClosureZeroOverheadSelfTest" = "closure_test.l"
 
 [dependencies]
 Std = "*"
@@ -73,12 +73,11 @@ cp "$REPO_ROOT/lyric-compiler/lyric/closure_zero_overhead_self_test.l" \
 # Compile the test with the self-hosted emitter (--target dotnet).
 OUT_DIR="$WORK_DIR/out"
 mkdir -p "$OUT_DIR"
-echo "[assert-no-box-msil] compiling closure_zero_overhead_self_test.l with --target dotnet"
-"$LYRIC_BIN" build --manifest "$WORK_DIR/lyric.toml" --target dotnet -o "$OUT_DIR" \
-  || { echo "FATAL: closure test compilation failed" >&2; exit 1; }
+DLL="$OUT_DIR/Lyric.ClosureZeroOverheadSelfTest.dll"
 
-# Locate the emitted DLL (should be ClosureZeroOverheadTestMsil.dll).
-DLL="$OUT_DIR/ClosureZeroOverheadTestMsil.dll"
+echo "[assert-no-box-msil] compiling closure_zero_overhead_self_test.l with --target dotnet"
+"$LYRIC_BIN" build --manifest "$WORK_DIR/lyric.toml" --target dotnet -o "$DLL" \
+  || { echo "FATAL: closure test compilation failed" >&2; exit 1; }
 [[ -f "$DLL" ]] || { echo "FATAL: compiled DLL not found at $DLL" >&2; exit 1; }
 
 # Find ildasm (the IL disassembler).
@@ -87,21 +86,49 @@ DLL="$OUT_DIR/ClosureZeroOverheadTestMsil.dll"
 ILDASM=""
 
 # Attempt 1: Check PATH
-if ILDASM=$(command -v ildasm 2>/dev/null); then
-  : # found
-elif ILDASM=$(command -v ildasm.exe 2>/dev/null); then
-  : # found (Windows)
+if [[ -z "$ILDASM" ]]; then
+  if command -v ildasm >/dev/null 2>&1; then
+    ILDASM="ildasm"
+  elif command -v ildasm.exe >/dev/null 2>&1; then
+    ILDASM="ildasm.exe"
+  fi
+fi
+
 # Attempt 2: Check .NET SDK directory structure
-elif [[ -n "$DOTNET_ROOT" ]] && [[ -d "$DOTNET_ROOT/sdk" ]]; then
-  ILDASM=$(find "$DOTNET_ROOT/sdk" -name "ildasm*" -type f 2>/dev/null | head -1)
+if [[ -z "$ILDASM" ]] && [[ -n "$DOTNET_ROOT" ]] && [[ -d "$DOTNET_ROOT/sdk" ]]; then
+  ILDASM_PATH=$(find "$DOTNET_ROOT/sdk" -name "ildasm*" -type f 2>/dev/null | head -1 || true)
+  if [[ -n "$ILDASM_PATH" ]]; then
+    ILDASM="$ILDASM_PATH"
+  fi
+fi
+
 # Attempt 3: Try dotnet-ildasm tool
-elif ILDASM=$(command -v dotnet-ildasm 2>/dev/null); then
-  : # found
+if [[ -z "$ILDASM" ]]; then
+  if command -v dotnet-ildasm >/dev/null 2>&1; then
+    ILDASM="dotnet-ildasm"
+  elif [[ -x "$REPO_ROOT/.tools/dotnet-ildasm" ]]; then
+    ILDASM="$REPO_ROOT/.tools/dotnet-ildasm"
+  elif [[ -x "./.tools/dotnet-ildasm" ]]; then
+    ILDASM="./.tools/dotnet-ildasm"
+  elif [[ -x "/home/runner/.dotnet/tools/dotnet-ildasm" ]]; then
+    ILDASM="/home/runner/.dotnet/tools/dotnet-ildasm"
+  elif [[ -x "$HOME/.dotnet/tools/dotnet-ildasm" ]]; then
+    ILDASM="$HOME/.dotnet/tools/dotnet-ildasm"
+  fi
+fi
+
 # Attempt 4: Try 'dotnet ildasm' command (newer .NET SDK versions)
-elif command -v dotnet >/dev/null 2>&1 && dotnet ildasm --help >/dev/null 2>&1; then
+if [[ -z "$ILDASM" ]] && command -v dotnet >/dev/null 2>&1 && dotnet ildasm --help >/dev/null 2>&1; then
   ILDASM="dotnet ildasm"
 fi
 
+# Attempt 5: Try on-the-fly local installation
+if [[ -z "$ILDASM" ]] && command -v dotnet >/dev/null 2>&1; then
+  echo "Installing dotnet-ildasm to local tool directory..."
+  if dotnet tool install --tool-path "$WORK_DIR/tools" dotnet-ildasm >/dev/null 2>&1; then
+    ILDASM="$WORK_DIR/tools/dotnet-ildasm"
+  fi
+fi
 if [[ -z "$ILDASM" ]]; then
   echo "ERROR: ildasm not found" >&2
   echo "  DOTNET_ROOT=$DOTNET_ROOT" >&2
@@ -123,8 +150,8 @@ fi
 IL_FILE="$WORK_DIR/closure_test.il"
 echo "[assert-no-box-msil] disassembling $DLL via ildasm"
 # Handle both single commands (ildasm) and multi-word commands (dotnet ildasm)
-if [[ "$ILDASM" == *"dotnet"* ]]; then
-  dotnet ildasm "$DLL" -out:"$IL_FILE" >/dev/null 2>&1 || {
+if [[ "$ILDASM" == *"dotnet-ildasm"* ]] || [[ "$ILDASM" == *"dotnet ildasm"* ]]; then
+  DOTNET_ROLL_FORWARD=LatestMajor $ILDASM "$DLL" -o "$IL_FILE" >/dev/null 2>&1 || {
     echo "WARNING: ildasm exited non-zero (expected for some versions)" >&2
   }
 else

@@ -1208,15 +1208,57 @@ pub func emitLdloca_S(b: in MethodBody, n: in Int): Unit = mbEmit(b, iLdloca_S(n
 
 pub func emitStloc_S(b: in MethodBody, n: in Int): Unit = mbEmit(b, iStloc_S(n))
 
-pub func emitLdarg(b: in MethodBody, n: in Int): Unit = mbEmit(b, iLdarg(n))
+pub func emitLdarg(b: in MethodBody, n: in Int): Unit {
+  if n == 0 {
+    mbEmit(b, iLdarg_0())
+  } else if n == 1 {
+    mbEmit(b, iLdarg_1())
+  } else if n == 2 {
+    mbEmit(b, iLdarg_2())
+  } else if n == 3 {
+    mbEmit(b, iLdarg_3())
+  } else if n < 256 {
+    mbEmit(b, iLdarg_S(n))
+  } else {
+    mbEmit(b, iLdarg(n))
+  }
+}
 
 pub func emitLdarga(b: in MethodBody, n: in Int): Unit = mbEmit(b, iLdarga(n))
 
-pub func emitLdloc(b: in MethodBody, n: in Int): Unit = mbEmit(b, iLdloc(n))
+pub func emitLdloc(b: in MethodBody, n: in Int): Unit {
+  if n == 0 {
+    mbEmit(b, iLdloc_0())
+  } else if n == 1 {
+    mbEmit(b, iLdloc_1())
+  } else if n == 2 {
+    mbEmit(b, iLdloc_2())
+  } else if n == 3 {
+    mbEmit(b, iLdloc_3())
+  } else if n < 256 {
+    mbEmit(b, iLdloc_S(n))
+  } else {
+    mbEmit(b, iLdloc(n))
+  }
+}
 
 pub func emitLdloca(b: in MethodBody, n: in Int): Unit = mbEmit(b, iLdloca(n))
 
-pub func emitStloc(b: in MethodBody, n: in Int): Unit = mbEmit(b, iStloc(n))
+pub func emitStloc(b: in MethodBody, n: in Int): Unit {
+  if n == 0 {
+    mbEmit(b, iStloc_0())
+  } else if n == 1 {
+    mbEmit(b, iStloc_1())
+  } else if n == 2 {
+    mbEmit(b, iStloc_2())
+  } else if n == 3 {
+    mbEmit(b, iStloc_3())
+  } else if n < 256 {
+    mbEmit(b, iStloc_S(n))
+  } else {
+    mbEmit(b, iStloc(n))
+  }
+}
 
 pub func emitBr(b: in MethodBody, lbl: in Int): Unit = mbEmit(b, iBr(lbl))
 

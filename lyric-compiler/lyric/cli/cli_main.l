@@ -154,6 +154,7 @@ pub func main(argv: in slice[String]): Int {
         val restoredDlls: List[String] = newList()
         val activeFeatures: List[String] = newList()
         val declaredFeatures: List[String] = newList()
+        val nugetAssemblyPaths: List[String] = newList()
 
         var li = 0
         while li < lines.length {
@@ -174,6 +175,8 @@ pub func main(argv: in slice[String]): Int {
                 activeFeatures.add(parts[1])
               } else if tag == "DECLARED" {
                 declaredFeatures.add(parts[1])
+              } else if tag == "NUGET" {
+                nugetAssemblyPaths.add(parts[1])
               } else {
                 val pkgName = parts[0]
                 val sources: List[String] = newList()
@@ -209,7 +212,8 @@ pub func main(argv: in slice[String]): Int {
           activeFeatures = activeFeatures,
           declaredFeatures = declaredFeatures,
           packageVersion = "",
-          depTemplateSrcs = newList()
+          depTemplateSrcs = newList(),
+          nugetAssemblyPaths = nugetAssemblyPaths
         )
 
         val result = Emitter.emitProject(req)

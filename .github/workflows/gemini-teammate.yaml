@@ -1,0 +1,53 @@
+name: Gemini AI Teammate
+on:
+  pull_request:
+    types: [opened, synchronize]
+  issue_comment:
+    types: [created]
+
+jobs:
+  gemini_review:
+    runs-on: ubuntu-latest
+    # Restricts execution to PR creation/updates OR when explicitly mentioned in PR comments
+    if: |
+      github.event_name == 'pull_request' || 
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '@gemini'))
+    
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Gemini CLI
+        env:
+          GEMINI_CLI_TRUST_WORKSPACE: true
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+        uses: google-github-actions/run-gemini-cli@v0
+        # FIXED: Removed 'github_token' from the 'with:' section
+        with:
+          gemini_model: ${{ vars.GEMINI_MODEL }}
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          
+      - name: Run PR Review & Fixes
+        env:
+          GEMINI_CLI_TRUST_WORKSPACE: true
+          # FIXED: Pass GITHUB_TOKEN here as an environment variable so the CLI can use it
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+        run: |
+          # If triggered by a manual PR comment tag
+          if [ "${{ github.event_name }}" = "issue_comment" ]; then
+            if [[ "$COMMENT_BODY" == *"/fix"* ]]; then
+              npx gemini-cli /pr-code-review --auto-fix
+            else
+              npx gemini-cli /pr-code-review
+            fi
+          else
+            # Default behavior for newly opened or updated PRs
+            npx gemini-cli /pr-code-review
+          fi

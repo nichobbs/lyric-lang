@@ -983,6 +983,7 @@ func buildProject(
     di += 1
   }
 
+  val nugetPaths = resolveNugetAssets(mfDir)
   val asmName = stemOf(Path.basename(outPath), 4)
   val projReq = EmitProjectRequest(
     packages = pkgs,
@@ -993,7 +994,8 @@ func buildProject(
     activeFeatures = activeFeatures,
     declaredFeatures = mfDeclared,
     packageVersion = manifest.packageSection.version,
-    depTemplateSrcs = depTemplatePkgsList
+    depTemplateSrcs = depTemplatePkgsList,
+    nugetAssemblyPaths = nugetPaths
   )
 
   // For JVM builds, inject Maven classpath into LYRIC_FFI_JARS so the JVM
