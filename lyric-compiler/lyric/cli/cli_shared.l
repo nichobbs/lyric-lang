@@ -81,6 +81,7 @@ import Std.Environment as Environment
 import Std.Errors
 import Std.Hash as Hash
 import Std.Json as Json
+import Std.Yaml as Yaml
 import Lyric.Manifest as Mf
 import Lyric.Lexer
 import Lyric.Workspace as Ws
@@ -539,10 +540,16 @@ pub func resolveNugetAssets(mfDir: in String): List[String] {
     case None -> return result
   }
 
-  // Resolve NuGet packages folder using helper
+  // Parse the JSON using AOT-safe pure-Lyric parser
+  val parseResult = match Yaml.parseJson(content) {
+    case Ok(value) -> value
+    case Err(_) -> return result
+  }
+
+  // Resolve NuGet packages folder
   var pkgsDir = Environment.getVarOrDefault("NUGET_PACKAGES", "")
   if pkgsDir.length == 0 {
-    pkgsDir = extractPackagesPath(content)
+    pkgsDir = extractPackagesPathFromYaml(parseResult)
   }
   if pkgsDir.length == 0 {
     val home = match Environment.getVar("HOME") {
@@ -561,129 +568,131 @@ pub func resolveNugetAssets(mfDir: in String): List[String] {
     return result
   }
 
-  // Extract DLL paths using helper
-  extractDllPathsFromJson(content, pkgsDir, result)
+  // Extract DLL paths from parsed YAML structure
+  extractDllPathsFromYaml(parseResult, pkgsDir, result)
   return result
 }
 
-func extractPackagesPath(content: in String): String {
-  // Look for "packagesPath": "..." in the JSON
-  var result = ""
-  var searchPos = 0
-  val pattern = "packagesPath\": \""
-  while searchPos < content.length - pattern.length {
-    // Look for opening quote first
-    var quotePos = searchPos
-    while quotePos < content.length and content[quotePos] != '"' {
-      quotePos += 1
-    }
-    if quotePos >= content.length - pattern.length {
-      break
-    }
-    // Check if pattern matches after the quote
-    var matches = true
-    var i = 0
-    while i < pattern.length and matches {
-      if content[quotePos + 1 + i] != pattern[i] {
-        matches = false
-      }
-      i += 1
-    }
-    if matches {
-      val valueStart = quotePos + 1 + pattern.length
-      var valueEnd = valueStart
-      while valueEnd < content.length and content[valueEnd] != '"' {
-        valueEnd += 1
-      }
-      if valueEnd < content.length and valueEnd > valueStart {
-        result = content.substring(valueStart, valueEnd - valueStart)
-        return result
+func extractPackagesPathFromYaml(root: in Yaml.YamlValue): String {
+  match root {
+    case Yaml.YMapping(pairs) -> {
+      var i = 0
+      while i < pairs.count {
+        val pair = pairs[i]
+        if pair.key == "packagesPath" {
+          match pair.value {
+            case Yaml.YString(path) -> return path
+            case _ -> ()
+          }
+        }
+        i += 1
       }
     }
-    searchPos = quotePos + 1
+    case _ -> ()
   }
-  result
+  ""
 }
 
-func extractDllPathsFromJson(content: in String, pkgsDir: in String, result: inout List[String]): Unit {
-  // Search for "lib/.../*.dll" patterns in the JSON string
-  var searchPos = 0
-  while searchPos < content.length {
-    // Find next "lib/" pattern
-    var libPos = searchPos
-    while libPos < content.length - 4 {
-      if content[libPos] == 'l' and content[libPos + 1] == 'i' and content[libPos + 2] == 'b' and
-          content[libPos + 3] == '/' {
-        break
-      }
-      libPos += 1
-    }
-    if libPos >= content.length - 4 {
-      break
-    }
-
-    // Find next ".dll" from this position
-    var dllPos = libPos + 4
-    while dllPos < content.length - 4 {
-      if content[dllPos] == '.' and content[dllPos + 1] == 'd' and content[dllPos + 2] == 'l' and
-          content[dllPos + 3] == 'l' {
-        break
-      }
-      dllPos += 1
-    }
-    if dllPos >= content.length - 4 {
-      searchPos = libPos + 1
-      continue
-    }
-
-    val dllEnd = dllPos + 4
-    val relPath = content.substring(libPos, dllEnd - libPos)
-
-    // Try to extract package name and version from backwards search
-    // JSON structure: "Package/Version": { "runtime": { "lib/.../.dll": {} } }
-    // Search backward to find the nearest quoted key that contains '/' (package/version format)
-    var pos = libPos - 1
-    var foundPkgKey = false
-    while pos > 1 and not foundPkgKey {
-      // Skip backward to find a quote
-      while pos > 0 and content[pos] != '"' {
-        pos -= 1
-      }
-      if pos <= 0 {
-        break
-      }
-      // Found a closing quote; now find the opening quote
-      val closeQuote = pos
-      pos = pos - 1
-      while pos > 0 and content[pos] != '"' {
-        pos -= 1
-      }
-      if pos > 0 {
-        val openQuote = pos
-        val potentialKey = content.substring(openQuote + 1, closeQuote - openQuote - 1)
-
-        // Check if this key contains '/' (package/version format)
-        var slashPos = 0
-        while slashPos < potentialKey.length and potentialKey[slashPos] != '/' {
-          slashPos += 1
-        }
-
-        if slashPos > 0 and slashPos < potentialKey.length - 1 {
-          val pkgName = potentialKey.substring(0, slashPos)
-          val pkgVersion = potentialKey.substring(slashPos + 1, potentialKey.length - slashPos - 1)
-          val lowerPkgName = pkgName.toLower()
-          val fullPath = Path.join(pkgsDir, Path.join(Path.join(lowerPkgName, pkgVersion), relPath))
-          if File.fileExists(fullPath) {
-            result.add(fullPath)
+func extractDllPathsFromYaml(root: in Yaml.YamlValue, pkgsDir: in String, result: inout List[String]): Unit {
+  // Navigate to targets[*][*] where type == "package" and extract runtime DLL paths
+  match root {
+    case Yaml.YMapping(rootPairs) -> {
+      var i = 0
+      while i < rootPairs.count {
+        val pair = rootPairs[i]
+        if pair.key == "targets" {
+          match pair.value {
+            case Yaml.YMapping(frameworks) -> {
+              // For each framework (e.g., ".NETFramework,Version=v4.7.2")
+              var fIdx = 0
+              while fIdx < frameworks.count {
+                val fmwkPair = frameworks[fIdx]
+                match fmwkPair.value {
+                  case Yaml.YMapping(packages) -> {
+                    // For each package in this framework
+                    var pIdx = 0
+                    while pIdx < packages.count {
+                      val pkgPair = packages[pIdx]
+                      // Extract the Package/Version key
+                      val pkgKey = pkgPair.key
+                      var slashPos = 0
+                      while slashPos < pkgKey.length and pkgKey[slashPos] != '/' {
+                        slashPos += 1
+                      }
+                      if slashPos > 0 and slashPos < pkgKey.length - 1 {
+                        match pkgPair.value {
+                          case Yaml.YMapping(pkgFields) -> {
+                            // Check if type == "package"
+                            var typeMatch = false
+                            var j = 0
+                            while j < pkgFields.count {
+                              val field = pkgFields[j]
+                              if field.key == "type" {
+                                match field.value {
+                                  case Yaml.YString(t) -> {
+                                    if t == "package" {
+                                      typeMatch = true
+                                    }
+                                  }
+                                  case _ -> ()
+                                }
+                              }
+                              j += 1
+                            }
+                            if typeMatch {
+                              // Look for runtime section
+                              j = 0
+                              while j < pkgFields.count {
+                                val field = pkgFields[j]
+                                if field.key == "runtime" {
+                                  match field.value {
+                                    case Yaml.YMapping(runtimeEntries) -> {
+                                      // Extract each DLL path
+                                      var dIdx = 0
+                                      while dIdx < runtimeEntries.count {
+                                        val dllEntry = runtimeEntries[dIdx]
+                                        val dllPath = dllEntry.key
+                                        if dllPath.length > 4 and
+                                            dllPath[dllPath.length - 4] == '.' and
+                                            dllPath[dllPath.length - 3] == 'd' and
+                                            dllPath[dllPath.length - 2] == 'l' and
+                                            dllPath[dllPath.length - 1] == 'l' {
+                                          val pkgName = pkgKey.substring(0, slashPos)
+                                          val pkgVersion = pkgKey.substring(slashPos + 1, pkgKey.length - slashPos - 1)
+                                          val lowerPkgName = pkgName.toLower()
+                                          val fullPath = Path.join(pkgsDir, Path.join(Path.join(lowerPkgName, pkgVersion), dllPath))
+                                          if File.fileExists(fullPath) {
+                                            result.add(fullPath)
+                                          }
+                                        }
+                                        dIdx += 1
+                                      }
+                                    }
+                                    case _ -> ()
+                                  }
+                                }
+                                j += 1
+                              }
+                            }
+                          }
+                          case _ -> ()
+                        }
+                      }
+                      pIdx += 1
+                    }
+                  }
+                  case _ -> ()
+                }
+                fIdx += 1
+              }
+            }
+            case _ -> ()
           }
-          foundPkgKey = true
-        } else {
-          pos = openQuote - 1
         }
+        i += 1
       }
     }
-
-    searchPos = dllEnd
+    case _ -> ()
   }
 }
 
