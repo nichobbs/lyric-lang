@@ -109,6 +109,10 @@ func rdU16(b: in slice[Byte], o: in Int): Int {
 }
 
 func rdU32(b: in slice[Byte], o: in Int): Int {
+  rdU8(b, o) + rdU8(b, o + 1) * 256 + rdU8(b, o + 2) * 65536 + rdU8(b, o + 3) * 16777216
+}
+
+func rdI32(b: in slice[Byte], o: in Int): Int {
   val h = rdU8(b, o + 3)
   val hTerm = if h >= 128 { (h - 256) * 16777216 } else { h * 16777216 }
   rdU8(b, o) + rdU8(b, o + 1) * 256 + rdU8(b, o + 2) * 65536 + hTerm
@@ -1112,7 +1116,7 @@ pub func getLiteralFieldInt32In(
         val blobIndex = rdIdx(b, o + 2 + hasConstIdxWidth, layout.blobIdx)
         val blobBytes = blobAt(img, layout, blobIndex)
         if blobBytes.length >= 4 {
-          return Some(value = rdU32(blobBytes, 0))
+          return Some(value = rdI32(blobBytes, 0))
         } else if blobBytes.length == 2 {
           return Some(value = rdU16(blobBytes, 0))
         } else if blobBytes.length == 1 {
