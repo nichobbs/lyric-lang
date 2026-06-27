@@ -568,40 +568,39 @@ pub func resolveNugetAssets(mfDir: in String): List[String] {
 
 func extractPackagesPath(content: in String): String {
   // Look for "packagesPath": "..." in the JSON
-  // This helper avoids binding method call results directly to vals
   var result = ""
   var searchPos = 0
-  while searchPos < content.length {
-    var keyStart = searchPos
-    while keyStart < content.length and content[keyStart] != 'p' {
-      keyStart += 1
+  val pattern = "packagesPath\": \""
+  while searchPos < content.length - pattern.length {
+    // Look for opening quote first
+    var quotePos = searchPos
+    while quotePos < content.length and content[quotePos] != '"' {
+      quotePos += 1
     }
-    if keyStart >= content.length {
+    if quotePos >= content.length - pattern.length {
       break
     }
-    val restKey = "\"packagesPath\": \""
-    if keyStart + restKey.length <= content.length {
-      var matches = true
-      var i = 0
-      while i < restKey.length and matches {
-        if content[keyStart + i] != restKey[i] {
-          matches = false
-        }
-        i += 1
+    // Check if pattern matches after the quote
+    var matches = true
+    var i = 0
+    while i < pattern.length and matches {
+      if content[quotePos + 1 + i] != pattern[i] {
+        matches = false
       }
-      if matches {
-        val valueStart = keyStart + restKey.length
-        var valueEnd = valueStart
-        while valueEnd < content.length and content[valueEnd] != '"' {
-          valueEnd += 1
-        }
-        if valueEnd < content.length and valueEnd > valueStart {
-          result = content.substring(valueStart, valueEnd - valueStart)
-          return result
-        }
+      i += 1
+    }
+    if matches {
+      val valueStart = quotePos + 1 + pattern.length
+      var valueEnd = valueStart
+      while valueEnd < content.length and content[valueEnd] != '"' {
+        valueEnd += 1
+      }
+      if valueEnd < content.length and valueEnd > valueStart {
+        result = content.substring(valueStart, valueEnd - valueStart)
+        return result
       }
     }
-    searchPos = keyStart + 1
+    searchPos = quotePos + 1
   }
   result
 }
@@ -642,51 +641,46 @@ func extractDllPathsFromJson(content: in String, pkgsDir: in String, result: ino
 
     // Try to extract package name and version from backwards search
     // JSON structure: "Package/Version": { "runtime": { "lib/.../.dll": {} } }
-    // We need to skip back through nested braces to find the Package/Version key
-    var braceDepth = 0
+    // Search backward to find the nearest quoted key that contains '/' (package/version format)
     var pos = libPos - 1
     var foundPkgKey = false
-    var pkgKeyStart = 0
-    var pkgKeyEnd = 0
+    while pos > 1 and not foundPkgKey {
+      // Skip backward to find a quote
+      while pos > 0 and content[pos] != '"' {
+        pos -= 1
+      }
+      if pos <= 0 {
+        break
+      }
+      // Found a closing quote; now find the opening quote
+      val closeQuote = pos
+      pos = pos - 1
+      while pos > 0 and content[pos] != '"' {
+        pos -= 1
+      }
+      if pos > 0 {
+        val openQuote = pos
+        val potentialKey = content.substring(openQuote + 1, closeQuote - openQuote - 1)
 
-    // Skip back through structure, tracking brace nesting depth
-    while pos > 0 and not foundPkgKey {
-      val ch = content[pos]
-      if ch == '}' {
-        braceDepth = braceDepth + 1
-      } else if ch == '{' {
-        braceDepth = braceDepth - 1
-      } else if ch == '"' and braceDepth == 0 {
-        // Found a quote at the target nesting level (where Package/Version lives)
-        // This could be the closing quote of the Package/Version key
-        pkgKeyEnd = pos
-        var searchPos = pos - 1
-        while searchPos > 0 and content[searchPos] != '"' {
-          searchPos -= 1
+        // Check if this key contains '/' (package/version format)
+        var slashPos = 0
+        while slashPos < potentialKey.length and potentialKey[slashPos] != '/' {
+          slashPos += 1
         }
-        if searchPos > 0 {
-          pkgKeyStart = searchPos
-          val pkgKey = content.substring(pkgKeyStart + 1, pkgKeyEnd - pkgKeyStart - 1)
 
-          // Check if this key contains '/' (package/version format)
-          var slashPos = 0
-          while slashPos < pkgKey.length and pkgKey[slashPos] != '/' {
-            slashPos += 1
+        if slashPos > 0 and slashPos < potentialKey.length - 1 {
+          val pkgName = potentialKey.substring(0, slashPos)
+          val pkgVersion = potentialKey.substring(slashPos + 1, potentialKey.length - slashPos - 1)
+          val lowerPkgName = pkgName.toLower()
+          val fullPath = Path.join(pkgsDir, Path.join(Path.join(lowerPkgName, pkgVersion), relPath))
+          if File.fileExists(fullPath) {
+            result.add(fullPath)
           }
-
-          if slashPos > 0 and slashPos < pkgKey.length - 1 {
-            val pkgName = pkgKey.substring(0, slashPos)
-            val pkgVersion = pkgKey.substring(slashPos + 1, pkgKey.length - slashPos - 1)
-            val lowerPkgName = pkgName.toLower()
-            val fullPath = Path.join(pkgsDir, Path.join(Path.join(lowerPkgName, pkgVersion), relPath))
-            if File.fileExists(fullPath) {
-              result.add(fullPath)
-            }
-            foundPkgKey = true
-          }
+          foundPkgKey = true
+        } else {
+          pos = openQuote - 1
         }
       }
-      pos = pos - 1
     }
 
     searchPos = dllEnd
