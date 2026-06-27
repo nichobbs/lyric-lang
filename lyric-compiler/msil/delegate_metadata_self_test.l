@@ -17,28 +17,28 @@ extern type Predicate = "System.Predicate`1"
 extern type Func1 = "System.Func`2"
 extern type Func2 = "System.Func`3"
 
-test "lambda basic invocation" {
+test "basic lambda invocation" {
   val isPositive: (Int) -> Bool = (x: Int) -> x > 0
-  assertTrue(isPositive(1), message = "positive number should return true")
-  assertFalse(isPositive(-1), message = "negative number should return false")
-  assertFalse(isPositive(0), message = "zero should return false")
+  assertTrue(isPositive(1))
+  assertFalse(isPositive(-1))
+  assertFalse(isPositive(0))
 }
 
 test "multi-parameter lambda" {
   val add: (Int, Int) -> Int = (x: Int, y: Int) -> x + y
-  assertEq(add(1, 2), 3, message = "addition result should be 3")
-  assertEq(add(10, 20), 30, message = "addition result should be 30")
+  assertEq(add(1, 2), 3)
+  assertEq(add(10, 20), 30)
 }
 
-test "capturing lambda with mutable reference" {
+test "capturing lambda with mutation" {
   var counter = 0
   val increment: () -> Int = () -> {
     counter = counter + 1
     counter
   }
-  assertEq(increment(), 1, message = "first increment should be 1")
-  assertEq(increment(), 2, message = "second increment should be 2")
-  assertEq(counter, 2, message = "counter should be 2 after two increments")
+  assertEq(increment(), 1)
+  assertEq(increment(), 2)
+  assertEq(counter, 2)
 }
 
 test "returned lambda (escaped closure)" {
@@ -47,16 +47,16 @@ test "returned lambda (escaped closure)" {
   }
   val greet = makeGreeter("Alice")
   val result = greet("Hello")
-  assertEq(result, "Hello, Alice", message = "greeting should include captured name")
+  assertEq(result, "Hello, Alice")
 }
 
-test "nested closures with multiple capture levels" {
+test "nested closures with captures" {
   val outerVal = 10
   val makeAdder: (Int) -> ((Int) -> Int) = (x: Int) -> {
     val inner: (Int) -> Int = (y: Int) -> x + y + outerVal
     inner
   }
   val add5 = makeAdder(5)
-  assertEq(add5(3), 18, message = "nested closure: 5 + 3 + 10 = 18")
-  assertEq(add5(7), 22, message = "nested closure: 5 + 7 + 10 = 22")
+  assertEq(add5(3), 18)
+  assertEq(add5(7), 22)
 }
