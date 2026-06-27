@@ -1,8 +1,8 @@
 //! msil/codegen.l — Msil.Codegen
 //!
-//! Bootstrap-grade AST-to-MSIL-IR lowering for the Lyric self-hosted compiler.
-//! Walks a parsed `SourceFile` (from Lyric.Parser) and produces an `MPackage`
-//! (from Msil.Lowering) suitable for further lowering to PE bytes by
+//! AST-to-MSIL-IR lowering for the Lyric self-hosted compiler. Walks a parsed
+//! `SourceFile` (from Lyric.Parser) and produces an `MPackage` (from
+//! Msil.Lowering) suitable for further lowering to PE bytes by
 //! `Msil.Lowering.lowerMPackageWithCtx`.
 //!
 //! Supported in this bootstrap pass:

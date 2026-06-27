@@ -984,6 +984,24 @@ func buildProject(
   }
 
   val nugetPaths = resolveNugetAssets(mfDir)
+
+  // Warn if manifest has [nuget] entries but no resolved assemblies
+  // (likely because project.assets.json is missing or stale).
+  match manifest.nuget {
+    case Some(nugetSec) -> {
+      if nugetSec.entries.count > 0 and nugetPaths.count == 0 {
+        val assetsPath = Path.join(Path.join(mfDir, "obj"), "project.assets.json")
+        if not File.fileExists(assetsPath) {
+          printErr(
+            "warning: [nuget] dependencies declared but project.assets.json not found. " +
+              "Run 'lyric restore' or 'dotnet restore' to resolve NuGet dependencies."
+          )
+        }
+      }
+    }
+    case None -> ()
+  }
+
   val asmName = stemOf(Path.basename(outPath), 4)
   val projReq = EmitProjectRequest(
     packages = pkgs,
