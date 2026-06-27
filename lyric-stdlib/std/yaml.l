@@ -180,50 +180,45 @@ func yParseHexDigit(c: in Char): Int {
   }
 }
 
+// Helper to extract and validate one hex digit at current position, advancing position on success.
+func yParseOneHexDigit(st: inout YamlState): Result[Int, YamlError] {
+  if yAtEnd(st) {
+    return Err(error = UnexpectedEof(pos = st.pos, expected = "hex digit in \\uXXXX"))
+  }
+  val hexVal = yParseHexDigit(st.src[st.pos])
+  if hexVal < 0 {
+    return Err(error = UnexpectedChar(pos = st.pos, expected = "hex digit in \\uXXXX"))
+  }
+  st.pos = st.pos + 1
+  Ok(value = hexVal)
+}
+
 func yParseUnicode4(st: inout YamlState): Result[Char, YamlError] {
-  var value = 0
-  var hex1 = 0
-  var hex2 = 0
-  var hex3 = 0
-  var hex4 = 0
+  val hex1Res = yParseOneHexDigit(st)
+  val hex1 = match hex1Res {
+    case Ok(v) -> v
+    case Err(e) -> return Err(error = e)
+  }
 
-  if yAtEnd(st) {
-    return Err(error = UnexpectedEof(pos = st.pos, expected = "4 hex digits in \\uXXXX"))
+  val hex2Res = yParseOneHexDigit(st)
+  val hex2 = match hex2Res {
+    case Ok(v) -> v
+    case Err(e) -> return Err(error = e)
   }
-  hex1 = yParseHexDigit(st.src[st.pos])
-  if hex1 < 0 {
-    return Err(error = UnexpectedChar(pos = st.pos, expected = "hex digit in \\uXXXX"))
-  }
-  st.pos = st.pos + 1
 
-  if yAtEnd(st) {
-    return Err(error = UnexpectedEof(pos = st.pos, expected = "4 hex digits in \\uXXXX"))
+  val hex3Res = yParseOneHexDigit(st)
+  val hex3 = match hex3Res {
+    case Ok(v) -> v
+    case Err(e) -> return Err(error = e)
   }
-  hex2 = yParseHexDigit(st.src[st.pos])
-  if hex2 < 0 {
-    return Err(error = UnexpectedChar(pos = st.pos, expected = "hex digit in \\uXXXX"))
-  }
-  st.pos = st.pos + 1
 
-  if yAtEnd(st) {
-    return Err(error = UnexpectedEof(pos = st.pos, expected = "4 hex digits in \\uXXXX"))
+  val hex4Res = yParseOneHexDigit(st)
+  val hex4 = match hex4Res {
+    case Ok(v) -> v
+    case Err(e) -> return Err(error = e)
   }
-  hex3 = yParseHexDigit(st.src[st.pos])
-  if hex3 < 0 {
-    return Err(error = UnexpectedChar(pos = st.pos, expected = "hex digit in \\uXXXX"))
-  }
-  st.pos = st.pos + 1
 
-  if yAtEnd(st) {
-    return Err(error = UnexpectedEof(pos = st.pos, expected = "4 hex digits in \\uXXXX"))
-  }
-  hex4 = yParseHexDigit(st.src[st.pos])
-  if hex4 < 0 {
-    return Err(error = UnexpectedChar(pos = st.pos, expected = "hex digit in \\uXXXX"))
-  }
-  st.pos = st.pos + 1
-
-  value = hex1 * 4096 + hex2 * 256 + hex3 * 16 + hex4
+  val value = hex1 * 4096 + hex2 * 256 + hex3 * 16 + hex4
   Ok(value = fromInt(value))
 }
 
