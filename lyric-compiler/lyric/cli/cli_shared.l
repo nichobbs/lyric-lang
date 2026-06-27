@@ -641,36 +641,52 @@ func extractDllPathsFromJson(content: in String, pkgsDir: in String, result: ino
     val relPath = content.substring(libPos, dllEnd - libPos)
 
     // Try to extract package name and version from backwards search
-    var keyStart = libPos - 1
-    while keyStart > 0 and content[keyStart] != '"' {
-      keyStart -= 1
-    }
+    // JSON structure: "Package/Version": { "runtime": { "lib/.../.dll": {} } }
+    // We need to skip back through nested braces to find the Package/Version key
+    var braceDepth = 0
+    var pos = libPos - 1
+    var foundPkgKey = false
+    var pkgKeyStart = 0
+    var pkgKeyEnd = 0
 
-    if keyStart > 0 {
-      var pkgStart = keyStart - 1
-      while pkgStart > 0 and content[pkgStart] != '"' {
-        pkgStart -= 1
-      }
-
-      if pkgStart > 0 and pkgStart < keyStart - 1 {
-        val pkgKey = content.substring(pkgStart + 1, keyStart - pkgStart - 2)
-
-        // Find '/' in package key
-        var slashPos = 0
-        while slashPos < pkgKey.length and pkgKey[slashPos] != '/' {
-          slashPos += 1
+    // Skip back through structure, tracking brace nesting depth
+    while pos > 0 and not foundPkgKey {
+      val ch = content[pos]
+      if ch == '}' {
+        braceDepth = braceDepth + 1
+      } else if ch == '{' {
+        braceDepth = braceDepth - 1
+      } else if ch == '"' and braceDepth == 0 {
+        // Found a quote at the target nesting level (where Package/Version lives)
+        // This could be the closing quote of the Package/Version key
+        pkgKeyEnd = pos
+        var searchPos = pos - 1
+        while searchPos > 0 and content[searchPos] != '"' {
+          searchPos -= 1
         }
+        if searchPos > 0 {
+          pkgKeyStart = searchPos
+          val pkgKey = content.substring(pkgKeyStart + 1, pkgKeyEnd - pkgKeyStart - 1)
 
-        if slashPos > 0 and slashPos < pkgKey.length - 1 {
-          val pkgName = pkgKey.substring(0, slashPos)
-          val pkgVersion = pkgKey.substring(slashPos + 1, pkgKey.length - slashPos - 1)
-          val lowerPkgName = pkgName.toLower()
-          val fullPath = Path.join(pkgsDir, Path.join(Path.join(lowerPkgName, pkgVersion), relPath))
-          if File.fileExists(fullPath) {
-            result.add(fullPath)
+          // Check if this key contains '/' (package/version format)
+          var slashPos = 0
+          while slashPos < pkgKey.length and pkgKey[slashPos] != '/' {
+            slashPos += 1
+          }
+
+          if slashPos > 0 and slashPos < pkgKey.length - 1 {
+            val pkgName = pkgKey.substring(0, slashPos)
+            val pkgVersion = pkgKey.substring(slashPos + 1, pkgKey.length - slashPos - 1)
+            val lowerPkgName = pkgName.toLower()
+            val fullPath = Path.join(pkgsDir, Path.join(Path.join(lowerPkgName, pkgVersion), relPath))
+            if File.fileExists(fullPath) {
+              result.add(fullPath)
+            }
+            foundPkgKey = true
           }
         }
       }
+      pos = pos - 1
     }
 
     searchPos = dllEnd
