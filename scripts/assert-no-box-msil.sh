@@ -87,29 +87,44 @@ echo "[assert-no-box-msil] compiling closure_zero_overhead_self_test.l with --ta
 ILDASM=""
 
 # Attempt 1: Check PATH
-if ILDASM=$(command -v ildasm 2>/dev/null); then
-  : # found
-elif ILDASM=$(command -v ildasm.exe 2>/dev/null); then
-  : # found (Windows)
+if [[ -z "$ILDASM" ]]; then
+  if command -v ildasm >/dev/null 2>&1; then
+    ILDASM="ildasm"
+  elif command -v ildasm.exe >/dev/null 2>&1; then
+    ILDASM="ildasm.exe"
+  fi
+fi
+
 # Attempt 2: Check .NET SDK directory structure
-elif [[ -n "$DOTNET_ROOT" ]] && [[ -d "$DOTNET_ROOT/sdk" ]]; then
-  ILDASM=$(find "$DOTNET_ROOT/sdk" -name "ildasm*" -type f 2>/dev/null | head -1)
+if [[ -z "$ILDASM" ]] && [[ -n "$DOTNET_ROOT" ]] && [[ -d "$DOTNET_ROOT/sdk" ]]; then
+  ILDASM_PATH=$(find "$DOTNET_ROOT/sdk" -name "ildasm*" -type f 2>/dev/null | head -1 || true)
+  if [[ -n "$ILDASM_PATH" ]]; then
+    ILDASM="$ILDASM_PATH"
+  fi
+fi
+
 # Attempt 3: Try dotnet-ildasm tool
-elif ILDASM=$(command -v dotnet-ildasm 2>/dev/null); then
-  : # found
-elif [[ -x "$REPO_ROOT/.tools/dotnet-ildasm" ]]; then
-  ILDASM="$REPO_ROOT/.tools/dotnet-ildasm"
-elif [[ -x "./.tools/dotnet-ildasm" ]]; then
-  ILDASM="./.tools/dotnet-ildasm"
-elif [[ -x "/home/runner/.dotnet/tools/dotnet-ildasm" ]]; then
-  ILDASM="/home/runner/.dotnet/tools/dotnet-ildasm"
-elif [[ -x "$HOME/.dotnet/tools/dotnet-ildasm" ]]; then
-  ILDASM="$HOME/.dotnet/tools/dotnet-ildasm"
+if [[ -z "$ILDASM" ]]; then
+  if command -v dotnet-ildasm >/dev/null 2>&1; then
+    ILDASM="dotnet-ildasm"
+  elif [[ -x "$REPO_ROOT/.tools/dotnet-ildasm" ]]; then
+    ILDASM="$REPO_ROOT/.tools/dotnet-ildasm"
+  elif [[ -x "./.tools/dotnet-ildasm" ]]; then
+    ILDASM="./.tools/dotnet-ildasm"
+  elif [[ -x "/home/runner/.dotnet/tools/dotnet-ildasm" ]]; then
+    ILDASM="/home/runner/.dotnet/tools/dotnet-ildasm"
+  elif [[ -x "$HOME/.dotnet/tools/dotnet-ildasm" ]]; then
+    ILDASM="$HOME/.dotnet/tools/dotnet-ildasm"
+  fi
+fi
+
 # Attempt 4: Try 'dotnet ildasm' command (newer .NET SDK versions)
-elif command -v dotnet >/dev/null 2>&1 && dotnet ildasm --help >/dev/null 2>&1; then
+if [[ -z "$ILDASM" ]] && command -v dotnet >/dev/null 2>&1 && dotnet ildasm --help >/dev/null 2>&1; then
   ILDASM="dotnet ildasm"
+fi
+
 # Attempt 5: Try on-the-fly local installation
-elif command -v dotnet >/dev/null 2>&1; then
+if [[ -z "$ILDASM" ]] && command -v dotnet >/dev/null 2>&1; then
   echo "Installing dotnet-ildasm to local tool directory..."
   if dotnet tool install --tool-path "$WORK_DIR/tools" dotnet-ildasm >/dev/null 2>&1; then
     ILDASM="$WORK_DIR/tools/dotnet-ildasm"
