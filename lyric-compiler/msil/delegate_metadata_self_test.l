@@ -1,9 +1,9 @@
-//! msil/delegate_metadata_self_test.l — Stage 5 test suite for metadata-driven delegate resolution.
+//! msil/delegate_metadata_self_test.l — Regression test suite for lambda semantics.
 //!
-//! Tests that Lyric lambdas can be converted to .NET delegates with correct
-//! type signatures based on metadata-driven resolution, not hardcoded guesses.
-//! Verifies that lambda-to-delegate conversions preserve type safety and capture
-//! semantics across the FFI boundary.
+//! Exercises lambda and closure behavior: basic invocation, multi-parameter lambdas,
+//! mutable capture, escaped closures (returned from functions), and multi-level
+//! nesting. These tests verify that lambda semantics are preserved when converting
+//! Lyric lambdas to .NET delegates via metadata-driven resolution.
 
 @test_module
 package Msil.DelegateMetadataSelfTest

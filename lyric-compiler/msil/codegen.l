@@ -5,7 +5,7 @@
 //! Msil.Lowering) suitable for further lowering to PE bytes by
 //! `Msil.Lowering.lowerMPackageWithCtx`.
 //!
-//! Supported in this bootstrap pass:
+//! Supported forms:
 //!   • Simple functions — arithmetic, locals, if/else, while
 //!   • Hello-world programs (main with println)
 //!   • Record types with fields

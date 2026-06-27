@@ -1992,8 +1992,9 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
 
   val diags: List[Diagnostic] = newList()
   if req.nugetAssemblyPaths.count > 0 {
-    val msg = "NuGet assembly resolution is not yet supported on the JVM target; NuGet dependencies will be ignored. See issue #4317 for tracking."
-    diags.add(Diagnostic(severity = DiagWarning, message = msg, code = None, span = None))
+    val msg = "NuGet assembly resolution is not yet supported on the JVM target; NuGet dependencies will be ignored."
+    val sp = pointSpan(initialPosition())
+    diags.add(warningDiagnostic("W0006", msg, sp))
   }
 
   val ok = JvmBridge.compileToJarBundledWithFeatures(
