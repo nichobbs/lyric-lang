@@ -68,22 +68,21 @@ if [[ ! -x "$JAVAP" ]]; then
 fi
 
 # Create a temporary workspace for the test compilation.
-TMPDIR="${TMPDIR:-/tmp}"
-WORK_DIR="$TMPDIR/assert-no-box-jvm.$$"
+WORK_DIR="$REPO_ROOT/bootstrap/assert-no-box-jvm.$$"
 mkdir -p "$WORK_DIR"
 trap "rm -rf '$WORK_DIR'" EXIT
 
 # Create a minimal lyric.toml that imports the closure test module.
 cat > "$WORK_DIR/lyric.toml" <<'EOF'
 [package]
-name = "ClosureZeroOverheadTestJvm"
+name = "Lyric.ClosureZeroOverheadSelfTest"
 version = "0.0.1"
 
 [project]
-name = "ClosureZeroOverheadTestJvm"
+name = "Lyric.ClosureZeroOverheadSelfTest"
 
 [project.packages]
-"ClosureZeroOverheadTestJvm" = "closure_test.l"
+"Lyric.ClosureZeroOverheadSelfTest" = "closure_test.l"
 
 [dependencies]
 Std = "*"
@@ -96,12 +95,12 @@ cp "$REPO_ROOT/lyric-compiler/lyric/closure_zero_overhead_self_test.l" \
 # Compile the test with the self-hosted JVM emitter (--target jvm).
 OUT_DIR="$WORK_DIR/out"
 mkdir -p "$OUT_DIR"
+JAR="$OUT_DIR/Lyric.ClosureZeroOverheadSelfTest.jar"
+
 echo "[assert-no-box-jvm] compiling closure_zero_overhead_self_test.l with --target jvm"
-"$LYRIC_BIN" build --manifest "$WORK_DIR/lyric.toml" --target jvm -o "$OUT_DIR" \
+"$LYRIC_BIN" build --manifest "$WORK_DIR/lyric.toml" --target jvm -o "$JAR" \
   || { echo "FATAL: closure test compilation failed" >&2; exit 1; }
 
-# Locate the emitted JAR (should be ClosureZeroOverheadTestJvm.jar).
-JAR="$OUT_DIR/ClosureZeroOverheadTestJvm.jar"
 [[ -f "$JAR" ]] || { echo "FATAL: compiled JAR not found at $JAR" >&2; exit 1; }
 
 # Extract and disassemble class files from the JAR.

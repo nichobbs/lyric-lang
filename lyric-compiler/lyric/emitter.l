@@ -1734,7 +1734,7 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
 
   match req.target {
     case Dotnet -> emitProjectInProcess(mergedReq)
-    case Jvm -> emitProjectJvmViaSubprocess(mergedReq)
+    case Jvm -> emitProjectJvmInProcess(mergedReq)
   }
 }
 
@@ -1962,6 +1962,49 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
   } else {
     failResult("project build failed (see stderr)")
+  }
+}
+
+// In-process single-package JVM project emit — direct call into `Jvm.Bridge.compileToJarBundledWithFeatures`
+// to avoid shelling out and creating infinite loops.
+func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
+  if req.packages.count == 0 {
+    return failResult("no packages specified in project build")
+  }
+  if req.packages.count > 1 {
+    return emitProjectJvmViaSubprocess(req)
+  }
+
+  val pkg = req.packages[0]
+  val pkgName = pkg.name
+  val source = if pkg.sources.count > 0 { pkg.sources[0] } else { "" }
+
+  val stdlibSources = findStdlibSourcesForTarget(true)
+
+  val depTemplateNames: List[String] = newList()
+  var dtpi = 0
+  while dtpi < req.depTemplateSrcs.count {
+    val dtPkg = req.depTemplateSrcs[dtpi]
+    val mergedSrc = mergePackageSources(dtPkg.name, dtPkg.sources)
+    depTemplateNames.add(mergedSrc)
+    dtpi = dtpi + 1
+  }
+
+  val ok = JvmBridge.compileToJarBundledWithFeatures(
+    source,
+    req.outputPath,
+    pkgName,
+    stdlibSources,
+    req.activeFeatures,
+    req.declaredFeatures,
+    depTemplateNames
+  )
+
+  if ok {
+    val okDiags: List[Diagnostic] = newList()
+    EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
+  } else {
+    failResult("JVM compilation failed (see stderr)")
   }
 }
 

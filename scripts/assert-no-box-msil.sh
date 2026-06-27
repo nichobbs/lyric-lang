@@ -25,6 +25,7 @@
 #   ~/.dotnet/sdk/<version>/bin/ildasm or via dotnet-ildasm tool)
 # ---------------------------------------------------------------------------
 set -euo pipefail
+export PATH="$HOME/.dotnet/tools:$PATH"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$REPO_ROOT/.bootstrap"
@@ -45,22 +46,21 @@ if [[ ! -x "$LYRIC_BIN" ]]; then
 fi
 
 # Create a temporary workspace for the test compilation.
-TMPDIR="${TMPDIR:-/tmp}"
-WORK_DIR="$TMPDIR/assert-no-box-msil.$$"
+WORK_DIR="$REPO_ROOT/bootstrap/assert-no-box-msil.$$"
 mkdir -p "$WORK_DIR"
 trap "rm -rf '$WORK_DIR'" EXIT
 
 # Create a minimal lyric.toml that imports the closure test module.
 cat > "$WORK_DIR/lyric.toml" <<'EOF'
 [package]
-name = "ClosureZeroOverheadTestMsil"
+name = "Lyric.ClosureZeroOverheadSelfTest"
 version = "0.0.1"
 
 [project]
-name = "ClosureZeroOverheadTestMsil"
+name = "Lyric.ClosureZeroOverheadSelfTest"
 
 [project.packages]
-"ClosureZeroOverheadTestMsil" = "closure_test.l"
+"Lyric.ClosureZeroOverheadSelfTest" = "closure_test.l"
 
 [dependencies]
 Std = "*"
@@ -73,12 +73,12 @@ cp "$REPO_ROOT/lyric-compiler/lyric/closure_zero_overhead_self_test.l" \
 # Compile the test with the self-hosted emitter (--target dotnet).
 OUT_DIR="$WORK_DIR/out"
 mkdir -p "$OUT_DIR"
+DLL="$OUT_DIR/Lyric.ClosureZeroOverheadSelfTest.dll"
+
 echo "[assert-no-box-msil] compiling closure_zero_overhead_self_test.l with --target dotnet"
-"$LYRIC_BIN" build --manifest "$WORK_DIR/lyric.toml" --target dotnet -o "$OUT_DIR" \
+"$LYRIC_BIN" build --manifest "$WORK_DIR/lyric.toml" --target dotnet -o "$DLL" \
   || { echo "FATAL: closure test compilation failed" >&2; exit 1; }
 
-# Locate the emitted DLL (should be ClosureZeroOverheadTestMsil.dll).
-DLL="$OUT_DIR/ClosureZeroOverheadTestMsil.dll"
 [[ -f "$DLL" ]] || { echo "FATAL: compiled DLL not found at $DLL" >&2; exit 1; }
 
 # Find ildasm (the IL disassembler).
@@ -123,8 +123,8 @@ fi
 IL_FILE="$WORK_DIR/closure_test.il"
 echo "[assert-no-box-msil] disassembling $DLL via ildasm"
 # Handle both single commands (ildasm) and multi-word commands (dotnet ildasm)
-if [[ "$ILDASM" == *"dotnet"* ]]; then
-  dotnet ildasm "$DLL" -out:"$IL_FILE" >/dev/null 2>&1 || {
+if [[ "$ILDASM" == *"dotnet-ildasm"* ]] || [[ "$ILDASM" == *"dotnet ildasm"* ]]; then
+  DOTNET_ROLL_FORWARD=LatestMajor $ILDASM "$DLL" -o "$IL_FILE" >/dev/null 2>&1 || {
     echo "WARNING: ildasm exited non-zero (expected for some versions)" >&2
   }
 else

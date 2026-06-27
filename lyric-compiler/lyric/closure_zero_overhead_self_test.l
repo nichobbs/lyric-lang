@@ -66,19 +66,19 @@ test "closure captures Bool primitive" {
 
 test "closure captures Float primitive" {
   val multiplier = 2.5
-  val f: (Int) -> Int = { x: Int -> Int.truncate(Float.real(x) * multiplier) }
+  val f: (Int) -> Int = { x: Int -> (x.toDouble() * multiplier).toInt() }
   assertEqualInt(f(10), 25, "closure captures Float primitive correctly")
 }
 
 test "closure captures Long primitive" {
-  val largeNum: Long = 1000000000L
+  val largeNum: Long = 1000000000i64
   val f: (Long) -> Long = { x: Long -> x + largeNum }
-  assertEqualLong(f(500000000L), 1500000000L, "closure captures Long primitive correctly")
+  assertEqualLong(f(500000000i64), 1500000000i64, "closure captures Long primitive correctly")
 }
 
 test "closure captures Double primitive" {
   val preciseNum = 3.14159
-  val f: (Int) -> Int = { x: Int -> Int.truncate(Float.real(x) * preciseNum) }
+  val f: (Int) -> Int = { x: Int -> (x.toDouble() * preciseNum).toInt() }
   assertEqualInt(f(100), 314, "closure captures Double primitive correctly")
 }
 
@@ -157,10 +157,10 @@ test "closure mutates enclosing var" {
 
 test "multiple closures share mutable var" {
   var shared = 0
-  val read: (Unit) -> Int = { (): Unit -> shared }
-  val write: (Int) -> Unit = { x: Int -> shared = x }
-  write(42)
-  assertEqualInt(read(()), 42, "second closure reads value written by first closure")
+  val getShared: () -> Int = { -> shared }
+  val setShared: (Int) -> Unit = { x: Int -> shared = x }
+  setShared(42)
+  assertEqualInt(getShared(), 42, "second closure reads value written by first closure")
 }
 
 test "closure mutates var in loop" {
@@ -175,21 +175,21 @@ test "closure mutates var in loop" {
 }
 
 test "closure captures and mutates Long var" {
-  var counter: Long = 0L
+  var counter: Long = 0i64
   val addToCounter: (Long) -> Unit = { x: Long -> counter = counter + x }
-  addToCounter(100000000L)
-  assertEqualLong(counter, 100000000L, "closure increments Long var to 100000000")
-  addToCounter(200000000L)
-  assertEqualLong(counter, 300000000L, "closure increments Long var again to 300000000")
+  addToCounter(100000000i64)
+  assertEqualLong(counter, 100000000i64, "closure increments Long var to 100000000")
+  addToCounter(200000000i64)
+  assertEqualLong(counter, 300000000i64, "closure increments Long var again to 300000000")
 }
 
 test "closure captures and mutates Double var" {
   var accumulator: Double = 0.0
   val addToAccum: (Double) -> Unit = { x: Double -> accumulator = accumulator + x }
   addToAccum(1.5)
-  assertEqualDouble(accumulator, 1.5, 0.001, "closure increments Double var to 1.5")
+  assertTrue(accumulator == 1.5, "closure increments Double var to 1.5")
   addToAccum(2.5)
-  assertEqualDouble(accumulator, 4.0, 0.001, "closure increments Double var again to 4.0")
+  assertTrue(accumulator == 4.0, "closure increments Double var again to 4.0")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
