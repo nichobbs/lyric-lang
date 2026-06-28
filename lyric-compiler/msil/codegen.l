@@ -4494,6 +4494,43 @@ func findImportedFqn(cctx: in CodegenCtx, imports: in List[String], funcName: in
   ""
 }
 
+// Like `findImportedFqn` but uses a return-type hint to break ties when multiple
+// imported packages export the same function name at the same arity.  The canonical
+// example: `Std.String.fromInt(Int): String` and `Std.Char.fromInt(Int): Char` are
+// both importable; without a hint, first-in-wins picks whichever package appears
+// earlier in the import list, which may be wrong.  When `retHint` is non-MObject,
+// we scan all candidates and return the first one whose `funcRetTypes` entry matches;
+// if none matches (or no hint), falls back to first-in-wins (original behavior).
+func findImportedFqnWithHint(
+  cctx: in CodegenCtx, imports: in List[String], funcName: in String,
+  arity: in Int, retHint: in MsilType
+): String {
+  val isHinted = match retHint { case MObject -> false; case _ -> true }
+  var firstMatch = ""
+  var hintMatch = ""
+  var i = 0
+  while i < imports.count {
+    val candidate = imports[i] + "." + funcName
+    if cctx.funcTokens.containsKey(candidate) {
+      if firstMatch.length == 0 {
+        firstMatch = candidate
+      }
+      if isHinted and hintMatch.length == 0 {
+        val arityKey = candidate + "/" + toString(arity)
+        val candRet = match mapGet(cctx.funcRetTypes, arityKey) {
+          case Some(rt) -> rt
+          case None -> match mapGet(cctx.funcRetTypes, candidate) { case Some(rt) -> rt; case None -> MObject }
+        }
+        if candRet == retHint {
+          hintMatch = candidate
+        }
+      }
+    }
+    i = i + 1
+  }
+  if hintMatch.length > 0 { hintMatch } else { firstMatch }
+}
+
 // Return the TypeRef row for boxing (or unboxing) a value type.
 // MValueTypeRef encodes an extern BCL value type; its typeRefCode is a
 // TypeDefOrRef coded index (tdrTypeRef(row) = row*4+1), so the raw row is
@@ -10243,8 +10280,22 @@ func lowerBuiltinOrStaticCallMsil(
             // order.  First hit wins — matches the typechecker's import
             // shadowing rule.  Packages with no recorded imports (e.g. the
             // single-package compile path) skip the loop entirely.
+            // When the surrounding context pushed a return-type hint onto
+            // `collExpect` (e.g. a record/case field typed `Char` pushed
+            // `MChar` before this call-arg was lowered), use it to break ties
+            // between same-named imports that differ only in return type —
+            // e.g. `Std.String.fromInt(Int): String` vs
+            // `Std.Char.fromInt(Int): Char`.  Without the hint, first-in-wins
+            // silently picks the wrong overload when the import order doesn't
+            // match the call-site's required type (yaml.l import-shadowing
+            // regression, #3943).
+            val importRetHint = if fctx.collExpect.count > 0 {
+              fctx.collExpect[fctx.collExpect.count - 1]
+            } else {
+              MObject
+            }
             val importedFqn = match mapGet(cctx.pkgImports, fctx.pkgName) {
-              case Some(imps) -> findImportedFqn(cctx, imps, funcName)
+              case Some(imps) -> findImportedFqnWithHint(cctx, imps, funcName, args.count, importRetHint)
               case None -> ""
             }
             val resolvedFqn = if qualifiedFqn.length > 0 and cctx.funcTokens.containsKey(qualifiedFqn) {
