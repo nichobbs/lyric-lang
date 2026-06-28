@@ -287,10 +287,10 @@ func streamLargeFile(
 ): Result[Unit, Lambda.LambdaError] {
   // Stream response in chunks
   val chunk1 = "chunk of data..."
-  writer = Lambda.Stream.write(writer, chunk1)?
+  Lambda.Stream.write(writer, chunk1)?
   
   val chunk2 = "more data..."
-  writer = Lambda.Stream.write(writer, chunk2)?
+  Lambda.Stream.write(writer, chunk2)?
   
   Lambda.Stream.close(writer)
   Ok(Unit)
