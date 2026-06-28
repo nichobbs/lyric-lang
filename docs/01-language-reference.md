@@ -1672,6 +1672,13 @@ A `@bench` function whose signature does not match `func name(): Unit` passes th
 - With `--nuget`, removes the entry from `[nuget]` instead.
 - The command is rejected if `<name>` is not present in the target table. `lyric remove` is the mirror of `lyric add`.
 
+`lyric publish [--manifest <lyric.toml>] [--registry <url>] [--api-key <key>] [--skip-duplicate] [--package-version <ver>]` packs the current project as a NuGet package and pushes it to the configured registry:
+
+- `--registry <url>` overrides the push target URL (default: `https://api.nuget.org/v3/index.json`).
+- `--api-key <key>` supplies the NuGet push token or GitHub PAT.
+- `--skip-duplicate` silently succeeds if a package with the same name and version already exists on the registry.
+- `--package-version <ver>` overrides the `version` field from `lyric.toml` for the emitted NuGet `<Version>` tag, the `.nupkg` filename, and all cross-library workspace dependency `<PackageReference>` versions. It also passes through to the underlying `lyric build` call so the `Lyric.Contract.*` metadata resource embedded in the DLL carries the override version rather than the `lyric.toml` value. Use this in automated publish pipelines to stamp the git release tag version consistently across all built artifacts.
+
 ---
 
 ## 14. Aspects
