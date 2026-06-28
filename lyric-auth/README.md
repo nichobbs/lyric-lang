@@ -125,10 +125,10 @@ Use constant-time comparison to prevent timing attacks:
 ```lyric
 import Auth
 
-// Store the API key hash, never the plain key
-val userApiKeyHash = computeHash(userProvidedKey)
+// Compare against the stored API key (plain text, not hashed)
+val storedKey = getUserApiKey()
 
-if Auth.verifyApiKey(providedKeyFromRequest, userApiKeyHash) {
+if Auth.verifyApiKey(providedKeyFromRequest, storedKey) {
   // Grant access
 }
 ```

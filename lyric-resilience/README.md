@@ -40,7 +40,7 @@ aspect ApiRetry from Lyric.Resilience.Retry {
     maxAttempts:     Int = 3
     initialDelayMs:  Int = 100
     maxDelayMs:      Int = 5000
-    jitterFraction:  Double = 0.1
+    jitterFraction:  Float = 0.1
   }
 }
 ```
