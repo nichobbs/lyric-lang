@@ -209,7 +209,7 @@ match AwsSecrets.getParameter("/my-service/signing-key") {
 ### `SecretsError`
 
 ```lyric
-enum SecretsError {
+union SecretsError {
   case NotFound
   case AccessDenied
   case InvalidJson
