@@ -2,7 +2,7 @@
 
 Resilience and fault-tolerance library for [Lyric](https://github.com/nichobbs/lyric-lang). Ships aspect templates for retry and circuit-breaker patterns with configurable exponential backoff.
 
-> **Status**: Library source is complete. Both `.NET` and JVM backends are available.
+> **Status**: @experimental — the Retry and CircuitBreaker aspect templates compile and have unit tests, but their end-to-end behaviour under load has not been exercised in CI. Both `.NET` and JVM backends are available.
 
 ## Platform parity
 

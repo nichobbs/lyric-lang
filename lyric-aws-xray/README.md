@@ -257,16 +257,16 @@ Combine X-Ray tracing with structured logging for both real-time observability a
 
 ```lyric
 import AwsXRay
-import Std.Logging
+import Lyric.Logging
 
-val log = Std.Logging.getLogger("MyApp.Service")
+val log = Lyric.Logging.getLogger("MyApp.Service")
 
 func processOrder(orderId: in Long): Result[Unit, String] {
-  Std.Logging.info(log, "processing order")
+  Lyric.Logging.info(log, "processing order")
   
   match AwsXRay.beginSubsegment("processOrder") {
     case Ok(handle) -> {
-      handle = AwsXRay.annotate(handle, "order_id", orderId.toString())
+      var handle = AwsXRay.annotate(handle, "order_id", orderId.toString())
       
       // Do the work
       val result = saveOrder(orderId)
@@ -275,11 +275,11 @@ func processOrder(orderId: in Long): Result[Unit, String] {
       
       match result {
         case Ok(_)  -> {
-          Std.Logging.info(log, "order saved", [Std.Logging.field("order_id", orderId.toString())])
+          Lyric.Logging.info(log, "order saved", [Lyric.Logging.field("order_id", orderId.toString())])
           Ok(Unit)
         }
         case Err(e) -> {
-          Std.Logging.error(log, "order failed", [Std.Logging.field("error", e)])
+          Lyric.Logging.error(log, "order failed", [Lyric.Logging.field("error", e)])
           Err(e)
         }
       }
@@ -318,7 +318,7 @@ lyric-aws-xray/
     xray.l                    AwsXRay  (subsegments, annotations, Tracing aspect)
     _kernel/
       xray_kernel_aws.l       AwsXRay.Kernel.Net @cfg(feature="aws")
-      xray_kernel_jvm.l       AwsXRay.Kernel.Net @cfg(feature="jvm")
+      xray_kernel_jvm.l       AwsXRay.Kernel.Jvm @cfg(feature="jvm")
       xray_kernel_local.l     AwsXRay.Kernel.Net @cfg(feature="local")
   tests/
     *_tests.l                 test modules

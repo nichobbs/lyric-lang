@@ -42,7 +42,14 @@ val audience = "my-app"
 match Auth.verifyJwt(token, secret, issuer, audience, "HS256") {
   case Ok(_) -> {
     // Token is valid
-    val userId = Auth.extractClaim(token, "sub")
+    match Auth.extractClaim(token, "sub") {
+      case Some(userId) -> {
+        // Use userId
+      }
+      case None -> {
+        // "sub" claim not found
+      }
+    }
   }
   case Err(e) -> {
     // Invalid token — check e.code for specific error
@@ -110,12 +117,17 @@ match Auth.verifyJwt(token, secret, issuer, audience, "HS256") {
 
 ### Claims extraction
 
-Extract individual claims from the JWT token:
+Extract individual claims from the JWT token. Claims return `Option[String]` since they may not be present:
 
 ```lyric
-val userId = Auth.extractClaim(token, "sub")  // subject
-val issuer = Auth.extractClaim(token, "iss")  // issuer
-val custom = Auth.extractClaim(token, "org")  // custom claim
+match Auth.extractClaim(token, "sub") {
+  case Some(userId) -> {
+    // Subject claim found
+  }
+  case None -> {
+    // Subject claim not present
+  }
+}
 ```
 
 ## API key verification

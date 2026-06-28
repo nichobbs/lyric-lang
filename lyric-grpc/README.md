@@ -385,14 +385,14 @@ lyric-grpc/
   lyric.toml                  package manifest
   README.md                   this file
   src/
-    grpc.l                    GrpcClient  (channels, RPC invocation)
-    types.l                   GrpcClient  (types, metadata)
-    aspects.l                 GrpcClient.Aspects  (planned aspect templates)
+    grpc.l                    Grpc  (channels, RPC invocation)
+    types.l                   Grpc.Types  (types, metadata)
+    aspects.l                 Grpc.Aspects  (planned aspect templates)
     _kernel/
       net/
-        grpc_kernel.l         GrpcClient.Kernel.Net  (.NET extern boundary)
+        grpc_kernel.l         Grpc.Kernel.Net  (.NET extern boundary)
       jvm/
-        grpc_kernel.l         GrpcClient.Kernel.Jvm  (JVM extern boundary)
+        grpc_kernel.l         Grpc.Kernel.Jvm  (JVM extern boundary)
   tests/
     *_tests.l                 test modules
 ```

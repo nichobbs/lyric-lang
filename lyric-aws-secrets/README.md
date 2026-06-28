@@ -354,7 +354,7 @@ lyric-aws-secrets/
     _kernel/
       secrets_kernel_aws.l    AwsSecrets.Kernel.Net @cfg(feature="aws")
       secrets_kernel_local.l  AwsSecrets.Kernel.Net @cfg(feature="local")
-      secrets_kernel_jvm.l    AwsSecrets.Kernel.Net @cfg(feature="jvm")
+      secrets_kernel_jvm.l    AwsSecrets.Kernel.Jvm @cfg(feature="jvm")
   tests/
     *_tests.l                 test modules
 ```
