@@ -104,7 +104,7 @@ Example with defaults:
 
 ### `Lyric.Resilience.Retry`
 
-Automatically retries failed operations with exponential backoff and jitter.
+Automatically retries failed operations with exponential backoff.
 
 **Applies to**: Functions returning `Result[T, E]`.
 
@@ -132,7 +132,7 @@ aspect ApiRetry from Lyric.Resilience.Retry {
 | `maxAttempts` | `Int` | `3` | Max retries (≥ 1) |
 | `initialDelayMs` | `Int` | `100` | Initial backoff in milliseconds |
 | `maxDelayMs` | `Int` | `5000` | Cap on backoff |
-| `jitterFraction` | `Double` | `0.1` | Jitter as fraction of delay (0.0–1.0, e.g. 0.1 = ±10%) |
+| `jitterFraction` | `Float` | `0.1` | Jitter as fraction of delay (0.0–1.0, e.g. 0.1 = ±10%) |
 
 **Env var**: `LYRIC_ASPECT_<LocalName>_<FIELD>` (e.g., `LYRIC_ASPECT_APIRETRY_MAXATTEMPTS=5`)
 
@@ -181,7 +181,7 @@ aspect Retry from Lyric.Resilience.Retry {
     maxAttempts:    Int = 3
     initialDelayMs: Int = 100
     maxDelayMs:     Int = 2000
-    jitterFraction: Double = 0.1
+    jitterFraction: Float = 0.1
   }
 }
 
