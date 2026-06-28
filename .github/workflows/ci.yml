@@ -126,7 +126,7 @@ jobs:
 
       - name: Cache NuGet packages
         if: steps.changes.outputs.has_code_changes == 'true'
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.nuget/packages
           key: ${{ runner.os }}-nuget-${{ hashFiles('bootstrap/**/*.fsproj', 'bootstrap/**/*.csproj', 'bootstrap/global.json') }}
@@ -476,7 +476,7 @@ jobs:
       - name: Install Z3 (for the Phase 4 verifier smoke tests)
         run: sudo apt-get update && sudo apt-get install -y z3
       - name: Cache NuGet packages
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.nuget/packages
           key: ${{ runner.os }}-nuget-${{ hashFiles('bootstrap/**/*.csproj', 'bootstrap/global.json') }}
@@ -2169,7 +2169,7 @@ jobs:
       # restore-keys fallback on the runner.os prefix so a SDK patch-version bump
       # in global.json reuses the previous cache rather than downloading 200 MB.
       - name: Cache ILCompiler NuGet packages
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.nuget/packages/microsoft.dotnet.ilcompiler
           key: ${{ runner.os }}-ilcompiler-${{ hashFiles('bootstrap/global.json') }}
