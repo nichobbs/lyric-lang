@@ -1474,6 +1474,8 @@ build against the lock as-is. Auto-restore tracks the `[dependencies]` table
 only; changes to `[nuget]`/`[maven]` entries are not detected, so run
 `lyric restore` explicitly after editing those.
 
+**Version override.** `lyric build --package-version <ver>` overrides the `version` field from `lyric.toml` for the version string embedded in the `Lyric.Contract.*` metadata resources inside the built DLL. When absent, the version from `lyric.toml` is used. This flag is intended for automated publish pipelines that must stamp the git release tag version into built artifacts rather than the version stored in `lyric.toml`.
+
 **Watch mode.** `lyric run --watch <source.l>` and `lyric build [--watch]` run the
 action once, then watch the relevant source files and re-run on every change
 until interrupted (Ctrl-C). `run --watch` watches the source file; project
@@ -1677,7 +1679,7 @@ A `@bench` function whose signature does not match `func name(): Unit` passes th
 - `--registry <url>` overrides the push target URL (default: `https://api.nuget.org/v3/index.json`).
 - `--api-key <key>` supplies the NuGet push token or GitHub PAT.
 - `--skip-duplicate` silently succeeds if a package with the same name and version already exists on the registry.
-- `--package-version <ver>` overrides the `version` field from `lyric.toml` for the emitted NuGet `<Version>` tag, the `.nupkg` filename, and all cross-library workspace dependency `<PackageReference>` versions. It also passes through to the underlying `lyric build` call so the `Lyric.Contract.*` metadata resource embedded in the DLL carries the override version rather than the `lyric.toml` value. Use this in automated publish pipelines to stamp the git release tag version consistently across all built artifacts.
+- `--package-version <ver>` overrides the `version` field from `lyric.toml` for the emitted NuGet `<Version>` tag, the `.nupkg` filename, and all cross-library workspace dependency `<PackageReference>` versions. In automated publish pipelines, use this alongside `lyric build --package-version <ver>` (a separate preceding step) so the `Lyric.Contract.*` metadata resource embedded in the DLL and the NuGet package version both carry the same release tag version.
 
 ---
 
