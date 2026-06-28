@@ -85,8 +85,8 @@ The `Retry` aspect uses exponential backoff to increase delays between retry att
 
 ```
 delay_0 = initialDelayMs
-delay_1 = min(initialDelayMs * 2, maxDelayMs)
-delay_2 = min(initialDelayMs * 4, maxDelayMs)
+delay_1 = min(initialDelayMs * backoffFactor, maxDelayMs)
+delay_2 = min(initialDelayMs * backoffFactor^2, maxDelayMs)
 ...
 ```
 
