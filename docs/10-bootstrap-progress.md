@@ -32,9 +32,10 @@ feedback; either produces a correct binary.
 
 `make ilverify` (→ `scripts/ilverify-selfhosted.sh`) emits the **entire
 compiler closure with the self-hosted emitter** and runs `ilverify` over every
-DLL.  The gate now reports **0 errors** (promoted from informational to required
-in #3943), confirming the full self-hosted toolchain emits valid IL.  This is
-what enabled the stage-2 fixpoint (D-progress-531).
+DLL.  The gate exits non-zero on any IL error (promoted from informational to
+required in #3943), making IL regressions visible as blocking CI failures.
+When this gate was at 0 errors it confirmed the full self-hosted toolchain
+emits valid IL, enabling the stage-2 fixpoint (D-progress-531).
 
 ### The isolated stage-2 toolchain (`make stage2`) — D110
 
