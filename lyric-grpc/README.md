@@ -2,7 +2,7 @@
 
 General-purpose gRPC client for [Lyric](https://github.com/nichobbs/lyric-lang). Ships low-level RPC invocation, message framing, and protocol handling for calling gRPC services from Lyric applications.
 
-> **Status**: Library source is complete. `.NET` and JVM backends are available via feature flags.
+> **Status**: @experimental — the API compiles and proto-encoding has unit-level tests, but the end-to-end client + server pair has not been exercised against a real gRPC service in CI. `.NET` and JVM backends are available via feature flags.
 
 ## Platform parity
 
@@ -335,7 +335,7 @@ import Std.Core
 
 // Encode request using Proto field helpers
 val requestFields = [
-  Proto.varField(1, userId.toLong()),
+  Proto.VarField(1, userId.toLong()),
 ]
 val requestBytes = Proto.encodeMessage(requestFields)
 

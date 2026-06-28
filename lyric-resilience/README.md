@@ -48,9 +48,8 @@ aspect ApiRetry from Lyric.Resilience.Retry {
 When a matched function returns `Err(...)`, the aspect:
 
 1. Waits with exponential backoff: `delay = min(initialDelayMs * 2^attempt, maxDelayMs)`
-2. Applies jitter (randomized fraction): `actual = delay * (1 ± jitterFraction * random())`
-3. Retries up to `maxAttempts` times
-4. Returns the result of the final attempt
+2. Retries up to `maxAttempts` times
+3. Returns the result of the final attempt
 
 ### Circuit breaker pattern
 

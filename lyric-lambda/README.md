@@ -2,7 +2,7 @@
 
 AWS Lambda runtime adapter for [Lyric](https://github.com/nichobbs/lyric-lang). Deploy services built with `lyric-web` to Lambda with zero handler-code changes, plus support for all major event sources (SQS, SNS, S3, EventBridge, DynamoDB, Kinesis) and Lambda authorizers.
 
-> **Status**: Library source is complete. Production-ready for `.NET` and JVM targets via feature flags.
+> **Status**: @experimental — the API Gateway v1/v2/ALB bridges compile and unit tests cover the request-shape adapters, but the live AWS Lambda runtime has not been exercised in CI. `.NET` and JVM targets are available via feature flags.
 
 ## Platform parity
 

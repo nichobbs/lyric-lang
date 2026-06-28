@@ -2,7 +2,7 @@
 
 AWS X-Ray integration for [Lyric](https://github.com/nichobbs/lyric-lang). Provides distributed tracing via X-Ray subsegments and a B-mode aspect template for automatic call instrumentation.
 
-> **Status**: Library source is complete. Both `.NET` and JVM targets are supported via feature flags.
+> **Status**: @experimental — the active-tracing aspect compiles and unit tests cover the AWS X-Ray header shape, but the end-to-end pipeline has not been exercised against a live X-Ray segment service in CI. Both `.NET` and JVM targets are supported via feature flags.
 
 ## Platform parity
 

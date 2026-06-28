@@ -143,15 +143,7 @@ pub union ProtoField {
 
 ### Field constructors
 
-Convenience helpers for common field types:
-
-#### `varField`
-
-Create a variable-length integer (varint) field.
-
-```lyric
-pub func varField(number: Int, v: Long): ProtoField
-```
+Convenience helpers for common field types. For varint fields, construct the `VarField` union case directly: `Proto.VarField(number, value)`.
 
 #### `floatField`
 
