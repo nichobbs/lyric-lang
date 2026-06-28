@@ -128,45 +128,48 @@ match Grpc.openChannel("https://grpc.example.com:50051") {
 ### Create a channel
 
 ```lyric
-import GrpcClient
+import Grpc
 
-// HTTP/2 channel to an unencrypted endpoint
-val channel = GrpcClient.createChannel("localhost:50051")
-
-// HTTPS (TLS) channel with system certificate store
-val secureChannel = GrpcClient.createSecureChannel("grpc.example.com:443")
+// HTTP/2 channel (encrypted with HTTPS URL, unencrypted with HTTP URL)
+match Grpc.openChannel("https://grpc.example.com:50051") {
+  case Ok(channel) -> {
+    // Use channel for RPC calls
+  }
+  case Err(e) -> {
+    // Connection failed
+  }
+}
 ```
 
 ### Close a channel
 
 ```lyric
-GrpcClient.closeChannel(channel)
+Grpc.closeChannel(channel)
 ```
 
 Channels pool connections; closing a channel closes all pooled connections.
 
 ### Metadata (headers)
 
-Pass custom metadata (gRPC headers) with requests:
+Pass custom metadata (gRPC headers) with requests using `withMetadata` on options:
 
 ```lyric
-import GrpcClient
+import Grpc
 import Std.Core
 
-val metadata = [
-  GrpcClient.metadataEntry("authorization", "Bearer token123"),
-  GrpcClient.metadataEntry("x-request-id", "abc-def-ghi"),
-]
+var opts = Grpc.defaultOptions()
+opts = Grpc.withMetadata(opts, "authorization", "Bearer token123")
+opts = Grpc.withMetadata(opts, "x-request-id", "abc-def-ghi")
 
-match GrpcClient.invokeUnaryWithMetadata(
+match Grpc.callUnary(
   channel,
   service = "MyService",
   method = "MyMethod",
-  requestData = requestBytes,
-  metadata = metadata
+  payload = requestBytes,
+  opts = opts
 ) {
   case Ok(response) -> { /* handle response */ }
-  case Err(e)       -> { /* handle error */ }
+  case Err(status)  -> { /* handle error */ }
 }
 ```
 
@@ -323,34 +326,47 @@ pub func withMetadata(opts: in GrpcCallOptions, metaKey: in String, metaValue: i
 
 ## Usage with lyric-proto
 
-Combine with `lyric-proto` for automatic message encoding/decoding:
+Combine with `lyric-proto` for message encoding/decoding:
 
 ```lyric
-import GrpcClient
+import Grpc
 import Proto
 import Std.Core
 
-// Encode request
-val reqBuf = Proto.createBuffer()
-reqBuf = Proto.encodeVarint(reqBuf, 1, 0, userId)
-val requestBytes = Proto.bufferBytes(reqBuf)
+// Encode request using Proto field helpers
+val requestFields = [
+  Proto.varField(1, userId.toLong()),
+]
+val requestBytes = Proto.encodeMessage(requestFields)
 
 // Invoke RPC
-match GrpcClient.invokeUnary(channel, "UserService", "GetUser", requestBytes) {
+match Grpc.callUnary(
+  channel,
+  service = "UserService",
+  method = "GetUser",
+  payload = requestBytes,
+  opts = Grpc.defaultOptions()
+) {
   case Ok(responseBytes) -> {
     // Decode response
-    val decoder = Proto.createDecoder(responseBytes)
-    // parse response fields
+    match Proto.decodeMessage(responseBytes) {
+      case Ok(fields) -> {
+        // parse response fields
+      }
+      case Err(e) -> {
+        // decode error
+      }
+    }
   }
-  case Err(e) -> {
-    // handle error
+  case Err(status) -> {
+    // RPC error
   }
 }
 ```
 
 ## Error handling
 
-All RPC calls return `Result[T, GrpcError]`. Common errors:
+All RPC calls return `Result[T, GrpcStatus]`. Common errors:
 
 | Error | Meaning |
 |---|---|

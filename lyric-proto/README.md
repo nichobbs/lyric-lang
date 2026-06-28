@@ -81,18 +81,13 @@ match Proto.decodeMessage(encoded) {
 
 ### Varint encoding
 
-Protocol Buffers encode unsigned integers as varints (variable-length little-endian integers). Each byte encodes 7 bits of data plus a continuation bit.
+Protocol Buffers encode unsigned integers as varints (variable-length little-endian integers). Each byte encodes 7 bits of data plus a continuation bit. Use `varField` helper to create varint fields:
 
 ```lyric
-// Encode a 64-bit unsigned integer
-val encoded = Proto.encodeVarint(buffer, fieldNumber, wireType, value)
-
-// Decode a varint
-match Proto.decodeVarint(decoder) {
-  case Ok((fieldNumber, value)) -> // value is 0..=0xFFFFFFFFFFFFFFFF
-  case Err(e)                   -> // Decode error
-}
+val field = Proto.varField(fieldNumber, value)
 ```
+
+For signed integers, use `sint32Field` or `sint64Field` which apply zigzag encoding before creating a varint field.
 
 ### Wire types
 

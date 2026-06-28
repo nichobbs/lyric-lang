@@ -71,7 +71,7 @@ if Auth.verifyApiKey(providedKey, storedHash) {
 import Auth
 import Std.Core
 
-val userRoles = ["admin", "moderator"]
+val userRoles = "admin,moderator"
 val requiredRole = "admin"
 
 if Auth.rolesContain(userRoles, requiredRole) {
@@ -137,30 +137,26 @@ The `verifyApiKey` function performs constant-time comparison, preventing attack
 
 ## Role-based access control
 
-Validate user roles against required permissions:
+Validate user roles against a required permission:
 
 ```lyric
 import Auth
 
 val userRoles = extractRolesFromToken(claims)
-val requiredRoles = ["admin"]
 
-if Auth.rolesContain(userRoles, requiredRoles) {
+if Auth.rolesContain(userRoles, "admin") {
   // User has admin role
 }
 ```
 
-The `rolesContain` function supports both single-role and multi-role checks:
+The `userRoles` parameter is a comma-separated string of roles; the function checks if it contains the required role:
 
 ```lyric
-// Single role check
-if Auth.rolesContain(userRoles, "admin") {
-  // ...
-}
+// Example with multiple roles
+val userRoles = "user,admin,moderator"
 
-// Multiple acceptable roles
-if Auth.rolesContain(userRoles, ["admin", "moderator"]) {
-  // User has at least one of the roles
+if Auth.rolesContain(userRoles, "admin") {
+  // User has admin role
 }
 ```
 
@@ -243,21 +239,21 @@ pub func verifyApiKey(
 
 ### `rolesContain`
 
-Check if a user's roles contain a required role.
+Check if a comma-separated role string contains a required role.
 
 ```lyric
 pub func rolesContain(
-  userRoles: in [String],
-  requiredRoles: in [String]
+  allowedRoles: in String,
+  role: in String
 ): Bool
 ```
 
 | Parameter | Description |
 |---|---|
-| `userRoles` | The user's assigned roles |
-| `requiredRoles` | The required role(s) |
+| `allowedRoles` | Comma-separated list of roles (e.g., `"admin,user,moderator"`) |
+| `role` | The role to check for (e.g., `"admin"`) |
 
-Returns `true` if the user has at least one of the required roles.
+Returns `true` if `allowedRoles` contains the specified `role`. Whitespace around roles is trimmed automatically.
 
 ## Package layout
 

@@ -1,6 +1,6 @@
 # lyric-resilience
 
-Resilience and fault-tolerance library for [Lyric](https://github.com/nichobbs/lyric-lang). Ships aspect templates for retry and circuit-breaker patterns, plus backoff helpers for implementing configurable failure recovery.
+Resilience and fault-tolerance library for [Lyric](https://github.com/nichobbs/lyric-lang). Ships aspect templates for retry and circuit-breaker patterns with configurable exponential backoff and jitter.
 
 > **Status**: Library source is complete. Both `.NET` and JVM backends are available.
 
@@ -15,7 +15,7 @@ Resilience and fault-tolerance library for [Lyric](https://github.com/nichobbs/l
 
 | Package | Description |
 |---|---|
-| `Lyric.Resilience` | Core: `Retry` and `CircuitBreaker` aspect templates, `backoffDelay` helper |
+| `Lyric.Resilience` | Core: `Retry` and `CircuitBreaker` aspect templates, `sleepMs` helper |
 
 ## Installation
 
@@ -310,7 +310,7 @@ lyric-resilience/
   lyric.toml                  package manifest
   README.md                   this file
   src/
-    resilience.l              Lyric.Resilience  (Retry, CircuitBreaker, backoffDelay)
+    resilience.l              Lyric.Resilience  (Retry, CircuitBreaker, sleepMs)
   tests/
     *_tests.l                 test modules
 ```
