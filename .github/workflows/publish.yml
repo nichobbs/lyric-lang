@@ -508,22 +508,6 @@ jobs:
         with:
           user: ${{ secrets.NUGET_USER }}
 
-      # Verify that the OIDC token exchange produced a valid API key.
-      # If the API key is empty, the NuGet/login action may have failed or
-      # the trusted publishing policy may not be configured on nuget.org.
-      - name: Verify NuGet API key
-        env:
-          NUGET_API_KEY: ${{ steps.nuget-auth.outputs.NUGET_API_KEY }}
-        run: |
-          if [ -z "$NUGET_API_KEY" ]; then
-            echo "ERROR: NuGet/login did not produce an API key."
-            echo "Ensure that:"
-            echo "  1. NUGET_USER secret is set to your nuget.org profile name"
-            echo "  2. Lyric package has a Trusted Publishing policy on nuget.org"
-            echo "  3. The policy is scoped to: Repository Owner 'nichobbs', Repository 'lyric-lang', Workflow File 'publish.yml'"
-            exit 1
-          fi
-
       - name: Push to NuGet.org
         env:
           NUGET_KEY: ${{ steps.nuget-auth.outputs.NUGET_API_KEY }}
@@ -613,22 +597,6 @@ jobs:
         if: env.NUGET_SIGNING_CERT_BASE64 != ''
         run: |
           echo "$NUGET_SIGNING_CERT_BASE64" | base64 --decode > /tmp/nuget-signing.pfx
-
-      # Verify that the OIDC token exchange produced a valid API key.
-      # If the API key is empty, the NuGet/login action may have failed or
-      # the trusted publishing policy may not be configured on nuget.org.
-      - name: Verify NuGet API key
-        env:
-          NUGET_API_KEY: ${{ steps.nuget-auth.outputs.NUGET_API_KEY }}
-        run: |
-          if [ -z "$NUGET_API_KEY" ]; then
-            echo "ERROR: NuGet/login did not produce an API key."
-            echo "Ensure that:"
-            echo "  1. NUGET_USER secret is set to your nuget.org profile name"
-            echo "  2. Ecosystem packages have a Trusted Publishing policy on nuget.org"
-            echo "  3. The policy is scoped to: Repository Owner 'nichobbs', Repository 'lyric-lang', Workflow File 'publish.yml'"
-            exit 1
-          fi
 
       # Build and publish each library in topological dependency order.
       # `lyric build` auto-restores NuGet deps when the lock file is absent or
