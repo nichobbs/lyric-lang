@@ -145,7 +145,7 @@ if Auth.verifyApiKey(providedKeyFromRequest, storedKey) {
 }
 ```
 
-The `verifyApiKey` function performs constant-time comparison, preventing attackers from determining valid characters by measuring response times. Store API keys securely (hashed and salted); `verifyApiKey` compares the provided key directly against the stored value (whether plain or hashed depends on your storage strategy).
+The `verifyApiKey` function performs constant-time string comparison to prevent timing attacks. **Store API keys securely**: hash them before storage (e.g., SHA-256 or HMAC-SHA256 with a salt), then use `verifyApiKey` to compare the provided key (after hashing with the same algorithm and salt) against the stored hash. Never store plaintext API keys.
 
 ## Role-based access control
 
@@ -222,14 +222,14 @@ Extract a claim value from a JWT token.
 ```lyric
 pub func extractClaim(
   token: in String,
-  claimName: in String
+  claimKey: in String
 ): Option[String]
 ```
 
 | Parameter | Description |
 |---|---|
 | `token` | The JWT string (already verified by `verifyJwt`) |
-| `claimName` | The claim name to extract (e.g., `"sub"`, `"iss"`, `"org"`) |
+| `claimKey` | The claim key to extract (e.g., `"sub"`, `"iss"`, `"org"`) |
 
 Returns `Some(value)` if the claim is present; `None` otherwise.
 

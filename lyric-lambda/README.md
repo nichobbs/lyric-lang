@@ -155,7 +155,7 @@ Use `Lambda.Direct` factory functions when compiling with `PublishAot=true`.
 
 ```lyric
 record SqsEvent {
-  records: [SqsRecord]
+  records: slice[SqsRecord]
 }
 
 record SqsRecord {

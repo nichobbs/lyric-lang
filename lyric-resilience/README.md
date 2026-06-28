@@ -92,7 +92,7 @@ delay_2 = min(initialDelayMs * 4, maxDelayMs)
 
 Example with defaults:
 - `initialDelayMs = 100` ms
-- `maxDelayMs = 5000` ms
+- `maxDelayMs = 30000` ms
 
 | Attempt | Delay |
 |---|---|
