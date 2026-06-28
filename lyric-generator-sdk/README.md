@@ -143,7 +143,7 @@ record TypeDescriptor {
 ### `ItemKind`
 
 ```lyric
-enum ItemKind {
+union ItemKind {
   case Record        // regular record
   case ExposedRecord // exposed record (host-visible)
   case Union         // union (discriminated type)
@@ -182,7 +182,7 @@ record FieldType {
 ### `FieldTypeKind`
 
 ```lyric
-enum FieldTypeKind {
+union FieldTypeKind {
   case Primitive    // Bool, Int, Long, UInt, ULong, Float, Double, Char, String
   case Slice        // slice[T]
   case OptionType   // Option[T]
@@ -206,7 +206,7 @@ record AnnotationDescriptor {
 ### `GeneratorDiagnosticSeverity`
 
 ```lyric
-enum GeneratorDiagnosticSeverity {
+union GeneratorDiagnosticSeverity {
   case Error      // fails the build
   case Warning    // reported but build continues
   case Info       // informational, not reported by default
