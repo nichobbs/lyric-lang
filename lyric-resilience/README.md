@@ -140,6 +140,12 @@ aspect ApiRetry from Resilience.Retry {
 | `jitterFraction` | `Float` | `0.1` | Jitter parameter (accepted for API compatibility; not applied) |
 | `logRetries` | `Bool` | `true` | Log each failed attempt at warn level |
 
+**Security warning for `logRetries`**: When `logRetries` is `true` (the default), the raw error message is written to your log aggregator verbatim. If your functions return credentials, tokens, API keys, or personally identifiable information (PII) inside `Err` values, you MUST either:
+1. Set `logRetries: false` in the aspect config, OR
+2. Sanitize your error messages before returning them (strip sensitive data from `Err` values)
+
+Functions handling authentication, payment, or personal data should always do one of these to prevent information disclosure (see lyric-lang #602).
+
 **Env var**: `LYRIC_ASPECT_<LocalName>_<FIELD>` (e.g., `LYRIC_ASPECT_APIRETRY_MAXATTEMPTS=5`)
 
 ### `Resilience.CircuitBreaker`
