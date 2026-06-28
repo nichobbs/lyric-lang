@@ -39,7 +39,7 @@ val token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 val issuer = "https://example.com"
 val audience = "my-app"
 
-match Auth.verifyJwt(token, secret, issuer, audience, "HS256") {
+match Auth.verifyJwt(token, secret, issuer, audience, "HS256,RS256") {
   case Ok(_) -> {
     // Token is valid
     val userId = Auth.extractClaim(token, "sub")
@@ -56,9 +56,9 @@ match Auth.verifyJwt(token, secret, issuer, audience, "HS256") {
 import Auth
 
 val providedKey = "api_key_from_header"
-val storedHash = "hashed_api_key_from_db"
+val storedKey = "expected_api_key"
 
-if Auth.verifyApiKey(providedKey, storedHash) {
+if Auth.verifyApiKey(providedKey, storedKey) {
   // Key is valid
 } else {
   // Key is invalid
@@ -172,7 +172,7 @@ pub func verifyJwt(
   secret: in String,
   issuer: in String,
   audience: in String,
-  allowedAlgorithm: in String
+  allowedAlgorithms: in String
 ): Result[Unit, JwtError]
 ```
 
@@ -182,7 +182,7 @@ pub func verifyJwt(
 | `secret` | The secret (for HS256/HS512) or public key PEM (for RS256/RS512) |
 | `issuer` | Expected `iss` claim value |
 | `audience` | Expected `aud` claim value |
-| `allowedAlgorithm` | Only this algorithm is accepted (e.g., `"HS256"`) |
+| `allowedAlgorithms` | Comma-separated allow-list of JWT `alg` values (e.g., `"HS256"` or `"HS256,RS256"`). Tokens with `alg: none` are always rejected. |
 
 Returns `Ok(Unit)` if signature and claims are valid; `Err(JwtError)` otherwise. The `JwtError.code` field contains fine-grained error information (`ALG_REJECTED`, `BAD_SIGNATURE`, `EXPIRED`, etc.).
 
@@ -196,12 +196,12 @@ pub func verifyJwtWithSkew(
   secret: in String,
   issuer: in String,
   audience: in String,
-  allowedAlgorithm: in String,
+  allowedAlgorithms: in String,
   clockSkewSeconds: in Int
 ): Result[Unit, JwtError]
 ```
 
-Like `verifyJwt`, but uses an explicit clock-skew tolerance (default is 60 seconds).
+Like `verifyJwt`, but accepts an explicit clock-skew tolerance in seconds (default is 60 seconds). `allowedAlgorithms` is a comma-separated allow-list (e.g., `"HS256,RS256"`).
 
 ### `extractClaim`
 
@@ -223,19 +223,21 @@ Returns `Some(value)` if the claim is present; `None` otherwise.
 
 ### `verifyApiKey`
 
-Verify an API key using constant-time comparison.
+Verify an API key using constant-time string comparison to prevent timing attacks.
 
 ```lyric
 pub func verifyApiKey(
-  providedKey: in String,
-  storedHash: in String
+  provided: in String,
+  expected: in String
 ): Bool
 ```
 
 | Parameter | Description |
 |---|---|
-| `providedKey` | The API key provided by the client |
-| `storedHash` | The hash of the valid API key (from storage) |
+| `provided` | The API key provided by the client |
+| `expected` | The valid API key to compare against (from storage) |
+
+**Note**: Both parameters are compared directly as strings using constant-time comparison. Do not hash the API key before comparing; store and compare the plain key material.
 
 ### `rolesContain`
 

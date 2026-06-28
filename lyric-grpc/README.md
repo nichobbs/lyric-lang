@@ -15,9 +15,9 @@ General-purpose gRPC client for [Lyric](https://github.com/nichobbs/lyric-lang).
 
 | Package | Description |
 |---|---|
-| `GrpcClient` | Core: RPC calls, channel management, metadata |
-| `GrpcClient.Kernel.Net` | .NET extern boundary (ASP.NET Core gRPC) |
-| `GrpcClient.Kernel.Jvm` | JVM extern boundary (grpc-java) |
+| `Grpc` | Core: RPC calls, channel management, metadata |
+| `Grpc.Kernel.Net` | .NET extern boundary (ASP.NET Core gRPC) |
+| `Grpc.Kernel.Jvm` | JVM extern boundary (grpc-java) |
 
 ## Installation
 

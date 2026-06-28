@@ -79,28 +79,26 @@ The circuit breaker operates in three states:
 
 ### Backoff strategy
 
-The `Retry` aspect uses exponential backoff with jitter to prevent thundering-herd failures:
+The `Retry` aspect uses exponential backoff to increase delays between retry attempts:
 
 ```
 delay_0 = initialDelayMs
 delay_1 = min(initialDelayMs * 2, maxDelayMs)
 delay_2 = min(initialDelayMs * 4, maxDelayMs)
 ...
-actual_delay = delay_n * (1 ± jitterFraction * random())
 ```
 
 Example with defaults:
 - `initialDelayMs = 100` ms
 - `maxDelayMs = 5000` ms
-- `jitterFraction = 0.1` (±10%)
 
-| Attempt | Base delay | Jittered range |
-|---|---|---|
-| 1 | 100 ms | 90–110 ms |
-| 2 | 200 ms | 180–220 ms |
-| 3 | 400 ms | 360–440 ms |
-| 4 | 800 ms | 720–880 ms |
-| 5 | 1600 ms | 1440–1760 ms |
+| Attempt | Delay |
+|---|---|
+| 1 | 100 ms |
+| 2 | 200 ms |
+| 3 | 400 ms |
+| 4 | 800 ms |
+| 5 | 1600 ms |
 
 ## Aspect templates
 
@@ -121,7 +119,7 @@ aspect ApiRetry from Lyric.Resilience.Retry {
     maxAttempts:    Int = 3
     initialDelayMs: Int = 100
     maxDelayMs:     Int = 5000
-    jitterFraction: Double = 0.1
+    jitterFraction: Float = 0.1
   }
 }
 ```
