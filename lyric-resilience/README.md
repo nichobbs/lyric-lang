@@ -1,6 +1,6 @@
 # lyric-resilience
 
-Resilience and fault-tolerance library for [Lyric](https://github.com/nichobbs/lyric-lang). Ships aspect templates for retry and circuit-breaker patterns with configurable exponential backoff and jitter.
+Resilience and fault-tolerance library for [Lyric](https://github.com/nichobbs/lyric-lang). Ships aspect templates for retry and circuit-breaker patterns with configurable exponential backoff.
 
 > **Status**: Library source is complete. Both `.NET` and JVM backends are available.
 
@@ -15,13 +15,16 @@ Resilience and fault-tolerance library for [Lyric](https://github.com/nichobbs/l
 
 | Package | Description |
 |---|---|
-| `Lyric.Resilience` | Core: `Retry` and `CircuitBreaker` aspect templates, `sleepMs` helper |
+| `Resilience` | Core: `Retry` and `CircuitBreaker` aspect templates, `sleepMs` helper |
 
 ## Installation
 
 ```toml
 [dependencies]
 "Lyric.Resilience" = { path = "../lyric-resilience" }
+
+# Import as:
+# import Resilience
 ```
 
 ## Quick start
@@ -31,16 +34,16 @@ Resilience and fault-tolerance library for [Lyric](https://github.com/nichobbs/l
 The `Retry` aspect template automatically retries failed operations with exponential backoff:
 
 ```lyric
-import Lyric.Resilience
+import Resilience
 import Std.Core
 
-aspect ApiRetry from Lyric.Resilience.Retry {
+aspect ApiRetry from Resilience.Retry {
   matches: name like "callRemote*"
   config {
     maxAttempts:     Int = 3
     initialDelayMs:  Int = 100
-    maxDelayMs:      Int = 5000
-    jitterFraction:  Float = 0.1
+    maxDelayMs:      Int = 30000
+    backoffFactor:   Int = 2
   }
 }
 ```
@@ -56,10 +59,10 @@ When a matched function returns `Err(...)`, the aspect:
 The `CircuitBreaker` aspect template prevents cascading failures by stopping requests when a threshold of failures is exceeded:
 
 ```lyric
-import Lyric.Resilience
+import Resilience
 import Std.Core
 
-aspect ServiceBreaker from Lyric.Resilience.CircuitBreaker {
+aspect ServiceBreaker from Resilience.CircuitBreaker {
   matches: name like "callDownstream*"
   config {
     failureThreshold: Int = 5
@@ -101,7 +104,7 @@ Example with defaults:
 
 ## Aspect templates
 
-### `Lyric.Resilience.Retry`
+### `Resilience.Retry`
 
 Automatically retries failed operations with exponential backoff.
 
@@ -110,15 +113,15 @@ Automatically retries failed operations with exponential backoff.
 **Behavior**: When a matched function returns `Err(...)`, the aspect waits (with backoff) and retries up to `maxAttempts` times. If all retries fail, returns the error from the final attempt.
 
 ```lyric
-import Lyric.Resilience
+import Resilience
 
-aspect ApiRetry from Lyric.Resilience.Retry {
+aspect ApiRetry from Resilience.Retry {
   matches: name like "callRemote*"
   config {
     maxAttempts:    Int = 3
     initialDelayMs: Int = 100
-    maxDelayMs:     Int = 5000
-    jitterFraction: Float = 0.1
+    maxDelayMs:     Int = 30000
+    backoffFactor:  Int = 2
   }
 }
 ```
@@ -130,12 +133,14 @@ aspect ApiRetry from Lyric.Resilience.Retry {
 | `enabled` | `Bool` | `true` | Master switch |
 | `maxAttempts` | `Int` | `3` | Max retries (≥ 1) |
 | `initialDelayMs` | `Int` | `100` | Initial backoff in milliseconds |
-| `maxDelayMs` | `Int` | `5000` | Cap on backoff |
-| `jitterFraction` | `Float` | `0.1` | Jitter as fraction of delay (0.0–1.0, e.g. 0.1 = ±10%) |
+| `maxDelayMs` | `Int` | `30000` | Cap on backoff |
+| `backoffFactor` | `Int` | `2` | Delay multiplier per retry (exponential) |
+| `jitterFraction` | `Float` | `0.1` | Jitter parameter (accepted for API compatibility; not applied) |
+| `logRetries` | `Bool` | `true` | Log each failed attempt at warn level |
 
 **Env var**: `LYRIC_ASPECT_<LocalName>_<FIELD>` (e.g., `LYRIC_ASPECT_APIRETRY_MAXATTEMPTS=5`)
 
-### `Lyric.Resilience.CircuitBreaker`
+### `Resilience.CircuitBreaker`
 
 Stops requests when failure rate exceeds threshold to prevent cascading failures.
 
@@ -174,18 +179,18 @@ import Lyric.Resilience
 import Std.Core
 
 // Inner aspect: retry transient failures
-aspect Retry from Lyric.Resilience.Retry {
+aspect Retry from Resilience.Retry {
   matches: name like "call*Service"
   config {
     maxAttempts:    Int = 3
     initialDelayMs: Int = 100
     maxDelayMs:     Int = 2000
-    jitterFraction: Float = 0.1
+    backoffFactor:  Int = 2
   }
 }
 
 // Outer aspect: circuit breaker stops cascading failures
-aspect CircuitBreak from Lyric.Resilience.CircuitBreaker {
+aspect CircuitBreak from Resilience.CircuitBreaker {
   matches: name like "call*Service"
   inside: Retry
   config {
@@ -233,7 +238,7 @@ pub func sleepMs(ms: in Int): Unit
 **Example**:
 
 ```lyric
-import Lyric.Resilience
+import Resilience
 import Std.Time
 
 func retryWithCustomLogic(target: Unit -> Result[Int, String]): Result[Int, String] {
@@ -243,7 +248,7 @@ func retryWithCustomLogic(target: Unit -> Result[Int, String]): Result[Int, Stri
   while attempt < 3 && result.isErr() {
     // Simple exponential backoff: 100ms, 200ms, 400ms
     val delayMs = 100 * (1 << attempt)
-    Lyric.Resilience.sleepMs(delayMs)
+    Resilience.sleepMs(delayMs)
     attempt = attempt + 1
     result = target()
   }
@@ -259,12 +264,12 @@ func retryWithCustomLogic(target: Unit -> Result[Int, String]): Result[Int, Stri
 Log retry and circuit-breaker events:
 
 ```lyric
-import Lyric.Resilience
-import Std.Logging
+import Resilience
+import Lyric.Logging
 
-val log = Std.Logging.getLogger("MyApp.Resilience")
+val log = Lyric.Logging.getLogger("MyApp.Resilience")
 
-aspect Retry from Lyric.Resilience.Retry {
+aspect Retry from Resilience.Retry {
   matches: name like "call*"
   config {
     maxAttempts: Int = 3
@@ -282,10 +287,10 @@ aspect Retry from Lyric.Resilience.Retry {
 Protect HTTP handlers from downstream failures:
 
 ```lyric
-import Lyric.Resilience
+import Resilience
 import Web
 
-aspect DownstreamRetry from Lyric.Resilience.Retry {
+aspect DownstreamRetry from Resilience.Retry {
   matches: name like "handle*"
   config {
     maxAttempts: Int = 2
@@ -307,7 +312,7 @@ lyric-resilience/
   lyric.toml                  package manifest
   README.md                   this file
   src/
-    resilience.l              Lyric.Resilience  (Retry, CircuitBreaker, sleepMs)
+    resilience.l              Resilience  (Retry, CircuitBreaker, sleepMs)
   tests/
     *_tests.l                 test modules
 ```

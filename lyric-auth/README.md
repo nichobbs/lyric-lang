@@ -39,7 +39,7 @@ val token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 val issuer = "https://example.com"
 val audience = "my-app"
 
-match Auth.verifyJwt(token, secret, issuer, audience, "HS256,RS256") {
+match Auth.verifyJwt(token, secret, issuer, audience, "HS256") {
   case Ok(_) -> {
     // Token is valid
     val userId = Auth.extractClaim(token, "sub")
