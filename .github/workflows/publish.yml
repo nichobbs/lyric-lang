@@ -602,12 +602,14 @@ jobs:
       # If the API key is empty, the NuGet/login action may have failed or
       # the trusted publishing policy may not be configured on nuget.org.
       - name: Verify NuGet API key
+        env:
+          NUGET_API_KEY: ${{ steps.nuget-auth.outputs.NUGET_API_KEY }}
         run: |
-          if [ -z "${{ steps.nuget-auth.outputs.NUGET_API_KEY }}" ]; then
+          if [ -z "$NUGET_API_KEY" ]; then
             echo "ERROR: NuGet/login did not produce an API key."
             echo "Ensure that:"
             echo "  1. NUGET_USER secret is set to your nuget.org profile name"
-            echo "  2. Each ecosystem package has a Trusted Publishing policy on nuget.org"
+            echo "  2. Ecosystem packages have a Trusted Publishing policy on nuget.org"
             echo "  3. The policy is scoped to: Repository Owner 'nichobbs', Repository 'lyric-lang', Workflow File 'publish.yml'"
             exit 1
           fi
