@@ -41,7 +41,7 @@ func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in Com
     case Some(p) -> p
   }
   val mfDir = Path.dirname(mfPath)
-  val buildRc = buildProject(mfPath, None, target, newList(), false, false, false)
+  val buildRc = buildProject(mfPath, None, target, newList(), false, false, false, None)
   if buildRc != 0 {
     return buildRc
   }
