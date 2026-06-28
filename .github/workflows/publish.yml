@@ -11,20 +11,6 @@ on:
       version:
         description: 'Version to publish (e.g. 0.1.0)'
         required: true
-      seed:
-        description: >-
-          Bootstrap stage-0 seed. "download" (default) seeds from the latest
-          published self-hosted release; "mint" seeds from the historical F#
-          bootstrap compiler. Use "mint" for the interim release that first
-          carries the self-host cascade fixes (the current published release
-          predates them and would miscompile); use "download" once a fixed
-          release exists as the seed (the path that drops F#).
-        required: false
-        default: 'download'
-        type: choice
-        options:
-          - download
-          - mint
       publish_ecosystem:
         description: >-
           Publish ecosystem libraries (lyric-web, lyric-auth, lyric-cache, etc.)
@@ -76,82 +62,23 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ---------------------------------------------------------------------------
-  # Build the deployable standard-library bundle (Lyric.Stdlib.dll) ONCE and
-  # share it with every packaging job.  A shipped `lyric` binary carries its
-  # stdlib statically linked for its OWN use, but building USER code needs a
-  # loose Lyric.Stdlib.dll to link against and copy beside the output
-  # (findCompiledStdlibDir -> <binary>/lib).  Without this the standalone
-  # release and the NuGet tool cannot compile user programs.
-  #
-  # The bundle is a managed (RID-independent) assembly, so one build serves
-  # every platform — but it MUST be emitted by the CURRENT compiler source
-  # (the arity-suffix / single-assembly-collapse conventions changed in
-  # #4019/#4025), so we AOT-publish a runnable current-source binary here and
-  # run the same stage-selfhosted-stdlib.sh ci.yml uses.  The five HTTP/async
-  # packages that are not yet bundleable (#4030) are emitted alongside.
-  build-stdlib-bundle:
-    needs: [create-release]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-        with:
-          # Fetch full history to enable mint bootstrap (F# compiler rebuild from git history)
-          fetch-depth: 0
-
-      - name: Set up .NET
-        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
-        with:
-          global-json-file: bootstrap/global.json
-
-      - name: Build stage 1 (self-hosted compiler)
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LYRIC_BOOTSTRAP_MINT: ${{ inputs.seed == 'mint' && '1' || '' }}
-        run: ./scripts/bootstrap.sh --stage 1
-
-      # A self-contained AOT binary runs on this host (the framework-dependent
-      # `dotnet build` binary resolves the smaller bootstrap bundle from disk
-      # and cannot start post-#4025), so use it to emit the full bundle.
-      - name: Publish a runnable current-source binary
-        working-directory: bootstrap
-        run: |
-          dotnet restore src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj --runtime linux-x64
-          dotnet publish src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
-            --configuration Release \
-            --runtime linux-x64 \
-            --self-contained true \
-            -p:PublishSingleFile=true \
-            --output publish/bundle-host \
-            --no-restore
-
-      - name: Emit the stdlib bundle
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p stdlib-out
-          bash scripts/stage-selfhosted-stdlib.sh \
-            bootstrap/publish/bundle-host/lyric "$(pwd)/stdlib-out"
-          echo "=== staged stdlib assemblies ==="
-          ls -la stdlib-out
-
-      - name: Upload stdlib bundle artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: stdlib-bundle
-          path: stdlib-out/Lyric.Stdlib*.dll
-          if-no-files-found: error
-
-  # ---------------------------------------------------------------------------
   # Build self-contained standalone binaries for all supported platforms.
-  # Each matrix leg runs on the native OS, publishes a single-file binary,
-  # optionally signs it, packages it into a zip/tar.gz, and uploads the
-  # archive as a GitHub Release asset.
+  #
+  # Each matrix leg runs `bootstrap.sh --stage 2` so the released binary is
+  # built by the self-hosted Lyric compiler (stage-2 reproducibility fixpoint,
+  # D-progress-531): the stage-1 self-hosted compiler re-emits itself + the
+  # full stdlib into .bootstrap/stage2/lib/ (101 DLLs, byte-for-byte
+  # reproducible), and `dotnet publish -p:StageDir=...stage2/lib` AOT-links
+  # those self-hosted DLLs into a native binary via ILCompiler.  The resulting
+  # binary contains code emitted by the self-hosted Lyric compiler — not by
+  # the F# bootstrap.
+  #
+  # Lyric.Stdlib.dll (the single full bundle, D111) ships in lib/ beside the
+  # binary so `lyric build` resolves the stdlib via findCompiledStdlibDir and
+  # can link user programs against it.
   # ---------------------------------------------------------------------------
   build-standalone:
-    needs: [create-release, build-stdlib-bundle]
-    # The build-stdlib-bundle job now runs for all seed types (download and mint),
-    # so this job will also run for both.
+    needs: [create-release]
     strategy:
       fail-fast: false
       matrix:
@@ -191,10 +118,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-        with:
-          # Full history so a `seed: mint` release can reach the historical F#
-          # bootstrap commit; harmless (just a deeper fetch) for `seed: download`.
-          fetch-depth: 0
 
       - name: Install ARM64 cross-compilation toolchain (Ubuntu)
         if: matrix.os == 'ubuntu-latest' && matrix.rid == 'linux-arm64'
@@ -213,31 +136,18 @@ jobs:
         with:
           global-json-file: bootstrap/global.json
 
-      - name: Build stage 1 (self-hosted compiler)
+      - name: Build stage 2 (self-hosted compiler)
         shell: bash
-        # Stage-0 seed is selected by the `seed` workflow_dispatch input
-        # (default "download"; tag-push releases always use the default).
-        #
-        #   download → seed from the latest published self-hosted release. This
-        #     is the steady-state path that keeps F# out of the bootstrap; it
-        #     requires that the published release already carries the current
-        #     compiler fixes (otherwise it miscompiles the sources).
-        #   mint     → seed from the historical F# bootstrap compiler. Used for
-        #     the INTERIM release that first carries the self-host cascade fixes
-        #     (D107 / docs/10), since the current published release predates them.
-        #     F#'s emitter is correct, so it bakes the fixed self-hosted source
-        #     into a working stage-1 binary.
-        #
-        # `--stage 1` only: the strict `--stage 2` reproducibility gate compares
-        # the seed-emitted stage-1 against the self-hosted-emitted stage-2. For a
-        # mint seed these legitimately diverge (e.g. the generic arity suffix F#
-        # omits); for a download seed they are byte-identical. Re-enabling
-        # `--stage 2` is a follow-up once the download seed is the norm.
+        # Seeds from the latest published self-hosted release (`download`), then
+        # has the stage-1 true compiler re-emit itself + the full stdlib into
+        # .bootstrap/stage2/lib/.  The released binary is AOT-linked from those
+        # self-hosted DLLs — it contains code emitted by the self-hosted Lyric
+        # compiler, not by the F# bootstrap (D-progress-531, 101/101 DLLs
+        # byte-for-byte reproducible at stage-3 fixpoint).
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LYRIC_BOOTSTRAP_MINT: ${{ inputs.seed == 'mint' && '1' || '' }}
         run: |
-          ./scripts/bootstrap.sh --stage 1
+          ./scripts/bootstrap.sh --stage 2
 
       - name: Restore AOT project
         working-directory: bootstrap
@@ -246,6 +156,9 @@ jobs:
       - name: Publish self-contained AOT binary
         shell: bash
         working-directory: bootstrap
+        # StageDir overrides the default .bootstrap/stage1 reference glob to point
+        # at the self-hosted stage-2 DLLs.  ILCompiler cross-compiles those managed
+        # IL assemblies (RID-independent) to the target architecture natively.
         run: |
           dotnet publish src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
             --configuration Release \
@@ -254,6 +167,7 @@ jobs:
             -p:PublishSingleFile=true \
             -p:EnableCompressionInSingleFile=true \
             -p:Version=${{ needs.create-release.outputs.version }} \
+            -p:StageDir="${GITHUB_WORKSPACE}/.bootstrap/stage2/lib" \
             --output publish/${{ matrix.rid }} \
             --no-restore
 
@@ -303,16 +217,17 @@ jobs:
           # Re-archive after signing (archive is created below and submitted).
 
       # ── Bundle the deployable stdlib beside the binary ────────────────────
-      # Place Lyric.Stdlib.dll (+ the per-package HTTP DLLs) in a `lib/` dir so
-      # an installed `lyric` resolves the stdlib via findCompiledStdlibDir's
-      # `<binary>/lib` branch and can compile user code.  The bundle is
-      # RID-independent, so the single artifact from build-stdlib-bundle serves
-      # every platform.
-      - name: Stage stdlib bundle into lib/
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: stdlib-bundle
-          path: bootstrap/publish/${{ matrix.rid }}/lib
+      # Lyric.Stdlib.dll (the single full bundle emitted by stage-2) ships in
+      # lib/ beside the binary so an installed `lyric` resolves the stdlib via
+      # findCompiledStdlibDir's `<binary>/lib` branch and can compile user code.
+      # The bundle is managed IL (RID-independent) so the stage-2 copy on this
+      # runner is identical to the one on any other platform.
+      - name: Stage stdlib into lib/
+        shell: bash
+        run: |
+          mkdir -p bootstrap/publish/${{ matrix.rid }}/lib
+          cp .bootstrap/stage2/lib/Lyric.Stdlib.dll \
+             bootstrap/publish/${{ matrix.rid }}/lib/
 
       # ── Package archive ───────────────────────────────────────────────────
       - name: Package tar.gz archive (Linux / macOS)
@@ -379,14 +294,7 @@ jobs:
   # ---------------------------------------------------------------------------
   publish-nuget:
     runs-on: ubuntu-latest
-    needs: [build-standalone, create-release, build-stdlib-bundle]
-    # A `mint` seed rebuilds stage-0 from the historical F# bootstrap compiler,
-    # which no longer exists in this repository's history (F# was removed in
-    # #3834). Mint-seeded builds therefore cannot produce a publishable package
-    # here, and even if they could we would not push an F#-seeded build to
-    # NuGet. Publish only for the `download` seed (the default, and what tag
-    # pushes use — `inputs.seed` is empty for tag pushes, so != 'mint' is true).
-    if: inputs.seed != 'mint'
+    needs: [build-standalone, create-release]
 
     # Hoist the optional signing secrets into `env` rather than interpolating
     # ${{ secrets.* }} into `run:` scripts: the `secrets` context is not
@@ -407,34 +315,16 @@ jobs:
         working-directory: bootstrap
         run: dotnet restore src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj
 
-      - name: Build stage 1 (for NuGet package)
+      - name: Build stage 2 (for NuGet package)
         shell: bash
+        # Stage-2 produces .bootstrap/stage2/lib/ with the full self-hosted DLL
+        # closure (compiler + Lyric.Stdlib.dll).  The NuGet global tool pack step
+        # uses those DLLs via -p:StageDir so the packed tool ships the complete,
+        # self-hosted-emitted stdlib and can compile user code at runtime.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LYRIC_BOOTSTRAP_MINT: ${{ inputs.seed == 'mint' && '1' || '' }}
         run: |
-          ./scripts/bootstrap.sh --stage 1
-
-      # stage 1 deposits the small bootstrap bundle (lyric-stdlib/lyric.toml,
-      # 15 packages) at .bootstrap/stage1/Lyric.Stdlib.dll, which the AOT
-      # csproj's `Private=true` reference glob would pack into the tool.  That
-      # bundle omits Std.File and other CLI imports, so post-#4025 the
-      # framework-dependent tool would crash on startup (Lyric.Cli references
-      # Std.File@Lyric.Stdlib) AND could not compile user code.  Overlay the
-      # FULL bundle (+ the per-package HTTP DLLs) from build-stdlib-bundle so the
-      # packed tool ships the complete, runnable stdlib.
-      - name: Download the full stdlib bundle
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: stdlib-bundle
-          path: /tmp/stdlib-bundle
-      - name: Overlay the full stdlib bundle into stage 1
-        shell: bash
-        run: |
-          set -euo pipefail
-          cp -f /tmp/stdlib-bundle/Lyric.Stdlib*.dll .bootstrap/stage1/
-          echo "=== .bootstrap/stage1 stdlib assemblies after overlay ==="
-          ls -la .bootstrap/stage1/Lyric.Stdlib*.dll
+          ./scripts/bootstrap.sh --stage 2
 
       - name: Pack NuGet global tool
         working-directory: bootstrap
@@ -443,6 +333,8 @@ jobs:
         # only, no .nupkg) without the IsPackable=true override.  PublishAot is
         # the AOT *standalone binary* concern (build-standalone); a global tool
         # is a portable framework-dependent IL package, so disable AOT here.
+        # StageDir overrides the default .bootstrap/stage1 reference glob to
+        # pack the self-hosted stage-2 DLLs instead.
         run: |
           dotnet pack src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
             --configuration Release \
@@ -452,6 +344,7 @@ jobs:
             -p:PackageId=lyric \
             -p:IsPackable=true \
             -p:PublishAot=false \
+            -p:StageDir="${GITHUB_WORKSPACE}/.bootstrap/stage2/lib" \
             --output nupkgs \
             --no-restore
 
@@ -525,7 +418,7 @@ jobs:
   # Each package ID must have a trusted publisher configured on NuGet.org
   # pointing to this workflow before it can be published this way.
   #
-  # The `lyric` CLI binary (built from stage-1 + AOT) drives `lyric build`
+  # The `lyric` CLI binary (built from stage-2 + AOT) drives `lyric build`
   # and `lyric publish` for each library.  `lyric publish` reads
   # LYRIC_NUGET_API_KEY from the environment and passes it to
   # `dotnet nuget push`.
@@ -536,9 +429,7 @@ jobs:
     # Skipped when workflow_dispatch is used with publish_ecosystem unchecked.
     # Tag-push releases always publish ecosystem libs (inputs.publish_ecosystem
     # is empty for tag pushes, so != 'false' evaluates to true).
-    # Also skipped for a `mint` seed (see the publish-nuget `if:` above): mint
-    # is unsupported in this repository, so we never publish a mint-seeded build.
-    if: inputs.publish_ecosystem != 'false' && inputs.seed != 'mint'
+    if: inputs.publish_ecosystem != 'false'
 
     env:
       NUGET_SIGNING_CERT_BASE64:   ${{ secrets.NUGET_SIGNING_CERT_BASE64 }}
@@ -553,7 +444,7 @@ jobs:
           global-json-file: bootstrap/global.json
 
       # Reuse the self-contained binary build-standalone already published to
-      # this release instead of rebuilding the whole compiler (stage 1 + AOT)
+      # this release instead of rebuilding the whole compiler (stage 2 + AOT)
       # from scratch.  build-standalone runs before this job (via publish-nuget),
       # so the asset exists; `gh release download` works on the still-draft
       # release with GITHUB_TOKEN.  This publishes the ecosystem libraries with
@@ -571,11 +462,11 @@ jobs:
           chmod +x bin/lyric
           ./bin/lyric --version
 
-      # Deploy the full Lyric.Stdlib.dll bundle (+ per-package HTTP DLLs) beside
-      # the binary so `lyric build` can link the ecosystem libraries against it.
-      # The released AOT binary carries its own statically-linked stdlib, so it
-      # runs and can emit the bundle (unlike the framework-dependent `make lyric`
-      # binary, which resolves the smaller bootstrap bundle from disk).
+      # Deploy the full Lyric.Stdlib.dll bundle beside the binary so `lyric
+      # build` can link the ecosystem libraries against it.  The released AOT
+      # binary carries its own statically-linked stdlib, so it runs and can
+      # emit the bundle (unlike the framework-dependent `make lyric` binary,
+      # which resolves the smaller bootstrap bundle from disk).
       - name: Stage the full stdlib bundle beside the binary
         shell: bash
         run: |
@@ -664,11 +555,10 @@ jobs:
   # ---------------------------------------------------------------------------
   finalize-release:
     runs-on: ubuntu-latest
-    needs: [create-release, build-stdlib-bundle, build-standalone, publish-nuget, publish-ecosystem]
+    needs: [create-release, build-standalone, publish-nuget, publish-ecosystem]
     if: >-
       always() &&
       needs.create-release.result == 'success' &&
-      (needs.build-stdlib-bundle.result == 'success' || needs.build-stdlib-bundle.result == 'skipped') &&
       (needs.build-standalone.result == 'success' || needs.build-standalone.result == 'skipped') &&
       (needs.publish-nuget.result == 'success' || needs.publish-nuget.result == 'skipped') &&
       (needs.publish-ecosystem.result == 'success' || needs.publish-ecosystem.result == 'skipped')
