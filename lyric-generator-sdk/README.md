@@ -319,6 +319,7 @@ match req.typeDescriptor.kind {
   case Union | Interface -> {
     return GeneratorResponse(
       lyricSource = "",
+      additionalImports = [],
       diagnostics = [GeneratorDiagnostic(
         severity = GeneratorDiagnosticSeverity.Error,
         message = "Cannot generate for " + req.typeDescriptor.kind.toString(),
