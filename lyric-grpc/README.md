@@ -8,8 +8,8 @@ General-purpose gRPC client for [Lyric](https://github.com/nichobbs/lyric-lang).
 
 | Feature flag | Backend | Status |
 |---|---|---|
-| `dotnet` | `Grpc.Net.Client` via `GrpcClient.Kernel.Net` | Available |
-| `jvm` | `io.grpc:grpc-netty-shaded` via `GrpcClient.Kernel.Jvm` | Available |
+| `dotnet` | `Grpc.Net.Client` via `Grpc.Kernel.Net` | Available |
+| `jvm` | `io.grpc:grpc-netty-shaded` via `Grpc.Kernel.Jvm` | Phase 6 (planned) |
 
 ## Packages
 
@@ -35,59 +35,91 @@ jvm = []       # enable JVM backend
 ### Unary RPC call
 
 ```lyric
-import GrpcClient
-import Std.Core
+import Grpc
+import Proto
 
 // Create a channel to the service
-val channel = GrpcClient.createChannel("grpc.example.com:50051")
+match Grpc.openChannel("https://grpc.example.com:50051") {
+  case Ok(channel) -> {
+    // Prepare the request payload (use lyric-proto for encoding)
+    val requestBytes = Proto.encodeMessage([
+      Proto.VarField(1, 42i64)
+    ])
 
-// Prepare the request payload (use lyric-proto for encoding)
-val requestBytes = ... // slice[Byte] encoded with proto
+    // Call the RPC
+    match Grpc.callUnary(
+      channel,
+      service = "pkg.MyService",
+      method = "MyMethod",
+      payload = requestBytes,
+      opts = Grpc.defaultOptions()
+    ) {
+      case Ok(responseBytes) -> {
+        // Decode the response bytes with lyric-proto
+        val decoded = ... // decode response bytes
+      }
+      case Err(status) -> {
+        // RPC failed; check status.code
+      }
+    }
 
-// Call the RPC
-match GrpcClient.invokeUnary(
-  channel,
-  service = "MyService",
-  method = "MyMethod",
-  requestData = requestBytes
-) {
-  case Ok(response) -> {
-    // Decode the response bytes with lyric-proto
-    val decoded = ... // decode response bytes
+    Grpc.closeChannel(channel)
   }
   case Err(e) -> {
-    // RPC failed
+    // Channel creation failed
   }
 }
 ```
 
-### Streaming RPC call
+### Server-streaming RPC call
 
 ```lyric
-import GrpcClient
-import Std.Core
+import Grpc
+import Proto
 
-// Server-streaming RPC
-match GrpcClient.invokeServerStream(
-  channel,
-  service = "MyService",
-  method = "MyMethod",
-  requestData = requestBytes
-) {
-  case Ok(stream) -> {
-    // Read messages from the stream
-    match GrpcClient.streamRead(stream) {
-      case Some(message) -> {
-        // Process message
+match Grpc.openChannel("https://grpc.example.com:50051") {
+  case Ok(channel) -> {
+    val requestBytes = Proto.encodeMessage([
+      Proto.VarField(1, 42i64)
+    ])
+
+    // Start server-streaming RPC
+    match Grpc.openServerStream(
+      channel,
+      service = "pkg.MyService",
+      method = "MyStream",
+      payload = requestBytes,
+      opts = Grpc.defaultOptions()
+    ) {
+      case Ok(stream) -> {
+        // Read messages from the stream
+        var done = false
+        while !done {
+          match Grpc.nextMessage(stream) {
+            case Ok(Some(message)) -> {
+              // Process message (protobuf-encoded bytes)
+              val decoded = ... // decode with Proto
+            }
+            case Ok(None) -> {
+              // Stream complete
+              done = true
+            }
+            case Err(status) -> {
+              // Stream error
+              done = true
+            }
+          }
+        }
+        Grpc.closeStream(stream)
       }
-      case None -> {
-        // Stream complete
+      case Err(status) -> {
+        // RPC failed
       }
     }
+
+    Grpc.closeChannel(channel)
   }
-  case Err(e) -> {
-    // RPC failed
-  }
+  case Err(e) -> {}
 }
 ```
 
@@ -145,88 +177,57 @@ match GrpcClient.invokeUnaryWithMetadata(
 Single request → single response.
 
 ```lyric
-pub func invokeUnary(
+pub func callUnary(
   channel: in GrpcChannel,
   service: in String,
   method: in String,
-  requestData: in slice[Byte]
-): Result[slice[Byte], GrpcError]
+  payload: in slice[Byte],
+  opts: in GrpcCallOptions
+): Result[slice[Byte], GrpcStatus]
 ```
+
+Returns the protobuf-encoded response payload on success.
 
 ### Server streaming
 
 Single request → stream of responses.
 
 ```lyric
-pub func invokeServerStream(
+pub func openServerStream(
   channel: in GrpcChannel,
   service: in String,
   method: in String,
-  requestData: in slice[Byte]
-): Result[GrpcStream, GrpcError]
+  payload: in slice[Byte],
+  opts: in GrpcCallOptions
+): Result[GrpcStream, GrpcStatus]
 
-pub func streamRead(stream: in GrpcStream): Option[slice[Byte]]
-pub func streamClose(stream: in GrpcStream): Unit
+pub func nextMessage(stream: in GrpcStream): Result[Option[slice[Byte]], GrpcStatus]
+pub func closeStream(stream: in GrpcStream): Unit
 ```
 
-### Client streaming
-
-Stream of requests → single response. (Planned Phase 6 JVM; currently `.NET` only.)
-
-```lyric
-pub func invokeClientStream(
-  channel: in GrpcChannel,
-  service: in String,
-  method: in String
-): Result[GrpcStream, GrpcError]
-
-pub func streamWrite(stream: in GrpcStream, data: in slice[Byte]): Result[Unit, GrpcError]
-pub func streamClose(stream: in GrpcStream): Unit
-```
-
-### Bidirectional streaming
-
-Stream of requests ↔ stream of responses. (Planned Phase 6 JVM; currently `.NET` only.)
-
-```lyric
-pub func invokeBidiStream(
-  channel: in GrpcChannel,
-  service: in String,
-  method: in String
-): Result[GrpcStream, GrpcError]
-
-pub func streamRead(stream: in GrpcStream): Option[slice[Byte]]
-pub func streamWrite(stream: in GrpcStream, data: in slice[Byte]): Result[Unit, GrpcError]
-pub func streamClose(stream: in GrpcStream): Unit
-```
+Call `nextMessage` repeatedly; it returns `Ok(Some(bytes))` for each message, `Ok(None)` when the stream closes cleanly, or `Err(status)` on error.
 
 ## Low-level API
 
 ### Channel operations
 
-#### `createChannel`
+#### `openChannel`
 
-Create an unencrypted HTTP/2 channel.
+Open an HTTP/2 channel to a gRPC service.
 
 ```lyric
-pub func createChannel(target: in String): GrpcChannel
+pub func openChannel(address: in String): Result[GrpcChannel, String]
 ```
 
 | Parameter | Description |
 |---|---|
-| `target` | Host and port: `"host:port"` |
+| `address` | Full URL: `"https://host:port"` or `"http://host:port"` |
 
-#### `createSecureChannel`
-
-Create an HTTPS/TLS-encrypted channel with system certificates.
-
-```lyric
-pub func createSecureChannel(target: in String): GrpcChannel
-```
+Returns `Ok(channel)` on success; `Err(message)` if the address is malformed or connection fails.
 
 #### `closeChannel`
 
-Close a channel and all pooled connections.
+Close a channel and release all pooled HTTP/2 connections.
 
 ```lyric
 pub func closeChannel(channel: in GrpcChannel): Unit
@@ -234,85 +235,90 @@ pub func closeChannel(channel: in GrpcChannel): Unit
 
 ### RPC invocation
 
-#### `invokeUnary`
+#### `callUnary`
 
-Make a unary RPC call.
+Make a unary (single request/response) gRPC call.
 
 ```lyric
-pub func invokeUnary(
+pub func callUnary(
   channel: in GrpcChannel,
   service: in String,
   method: in String,
-  requestData: in slice[Byte]
-): Result[slice[Byte], GrpcError]
+  payload: in slice[Byte],
+  opts: in GrpcCallOptions
+): Result[slice[Byte], GrpcStatus]
 ```
 
-#### `invokeUnaryWithMetadata`
+| Parameter | Description |
+|---|---|
+| `service` | Fully-qualified proto service name: `"pkg.ServiceName"` |
+| `method` | Unqualified RPC method name: `"GetItem"` |
+| `payload` | Protobuf-encoded request body (use `lyric-proto`) |
+| `opts` | Call options (timeout, metadata); use `defaultOptions()` for defaults |
 
-Unary RPC with custom headers.
+Returns the protobuf-encoded response on success; `Err(status)` on failure with detailed error code.
+
+#### `openServerStream`
+
+Start a server-streaming gRPC call.
 
 ```lyric
-pub func invokeUnaryWithMetadata(
+pub func openServerStream(
   channel: in GrpcChannel,
   service: in String,
   method: in String,
-  requestData: in slice[Byte],
-  metadata: in [GrpcMetadataEntry]
-): Result[slice[Byte], GrpcError]
-```
-
-#### `invokeServerStream`
-
-Server-streaming RPC.
-
-```lyric
-pub func invokeServerStream(
-  channel: in GrpcChannel,
-  service: in String,
-  method: in String,
-  requestData: in slice[Byte]
-): Result[GrpcStream, GrpcError]
+  payload: in slice[Byte],
+  opts: in GrpcCallOptions
+): Result[GrpcStream, GrpcStatus]
 ```
 
 ### Stream operations
 
-#### `streamRead`
+#### `nextMessage`
 
-Read the next message from a stream.
+Read the next message from a server-streaming response.
 
 ```lyric
-pub func streamRead(stream: in GrpcStream): Option[slice[Byte]]
+pub func nextMessage(stream: in GrpcStream): Result[Option[slice[Byte]], GrpcStatus]
 ```
 
-Returns `None` when the stream is closed.
+Returns:
+- `Ok(Some(bytes))` — next message (protobuf-encoded)
+- `Ok(None)` — stream ended cleanly
+- `Err(status)` — stream error (check `status.code`)
 
-#### `streamWrite`
+#### `closeStream`
 
-Write a message to a stream (client or bidirectional only).
+Close a stream and release resources. Always call this when done, even if `nextMessage` returned `None`.
 
 ```lyric
-pub func streamWrite(
-  stream: in GrpcStream,
-  data: in slice[Byte]
-): Result[Unit, GrpcError]
+pub func closeStream(stream: in GrpcStream): Unit
 ```
 
-#### `streamClose`
+### Call options
 
-Close a stream and release resources.
+#### `defaultOptions`
+
+Create call options with no deadline or metadata.
 
 ```lyric
-pub func streamClose(stream: in GrpcStream): Unit
+pub func defaultOptions(): GrpcCallOptions
 ```
 
-### Metadata
+#### `withTimeout`
 
-#### `metadataEntry`
-
-Create a metadata header entry.
+Set a deadline (milliseconds from now).
 
 ```lyric
-pub func metadataEntry(key: in String, value: in String): GrpcMetadataEntry
+pub func withTimeout(opts: in GrpcCallOptions, ms: in Int): GrpcCallOptions
+```
+
+#### `withMetadata`
+
+Add a metadata header entry.
+
+```lyric
+pub func withMetadata(opts: in GrpcCallOptions, metaKey: in String, metaValue: in String): GrpcCallOptions
 ```
 
 ## Usage with lyric-proto

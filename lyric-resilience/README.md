@@ -220,46 +220,33 @@ So the circuit breaker guards the entire retry loop, preventing the system from 
 
 ## Low-level API
 
-### `backoffDelay`
+### `sleepMs`
 
-Calculate a backoff delay with jitter for custom retry logic:
+Block the calling thread for a specified number of milliseconds:
 
 ```lyric
-pub func backoffDelay(
-  attempt: in Int,
-  initialDelayMs: in Int,
-  maxDelayMs: in Int,
-  jitterFraction: in Double
-): Int
+pub func sleepMs(ms: in Int): Unit
+  requires: ms >= 0
 ```
 
 | Parameter | Description |
 |---|---|
-| `attempt` | Attempt number (0-indexed) |
-| `initialDelayMs` | Base delay for attempt 0 |
-| `maxDelayMs` | Cap on exponential growth |
-| `jitterFraction` | Randomized fraction (0.0–1.0) |
-
-**Returns**: Milliseconds to wait before the next attempt.
+| `ms` | Milliseconds to sleep |
 
 **Example**:
 
 ```lyric
 import Lyric.Resilience
-import Std.Core
+import Std.Time
 
 func retryWithCustomLogic(target: Unit -> Result[Int, String]): Result[Int, String] {
   var attempt = 0
   var result = target()
 
   while attempt < 3 && result.isErr() {
-    val delayMs = Lyric.Resilience.backoffDelay(
-      attempt,
-      initialDelayMs = 100,
-      maxDelayMs = 5000,
-      jitterFraction = 0.1
-    )
-    Std.Core.sleep(delayMs)
+    // Simple exponential backoff: 100ms, 200ms, 400ms
+    val delayMs = 100 * (1 << attempt)
+    Lyric.Resilience.sleepMs(delayMs)
     attempt = attempt + 1
     result = target()
   }

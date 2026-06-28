@@ -36,15 +36,16 @@ import Std.Core
 
 val secret = "your-secret-key"
 val token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+val issuer = "https://example.com"
+val audience = "my-app"
 
-match Auth.verifyJwt(token, secret, { algorithm: "HS256" }) {
-  case Ok(claims) -> {
-    // Extract claims
-    val userId = Auth.extractClaim(claims, "sub")
-    // Use the verified claims
+match Auth.verifyJwt(token, secret, issuer, audience, "HS256") {
+  case Ok(_) -> {
+    // Token is valid
+    val userId = Auth.extractClaim(token, "sub")
   }
   case Err(e) -> {
-    // Invalid token
+    // Invalid token — check e.code for specific error
   }
 }
 ```
@@ -87,14 +88,14 @@ if Auth.rolesContain(userRoles, requiredRole) {
 JWT verification enforces RFC 8725 §3.1 algorithm pinning to prevent common vulnerabilities:
 
 - **Prevents `alg=none` forgery**: The library rejects tokens with the `none` algorithm regardless of signature validity.
-- **Prevents HS256/RS256 confusion**: The algorithm parameter must match the expected algorithm exactly; symmetric and asymmetric schemes cannot be mixed.
+- **Prevents HS256/RS256 confusion**: The algorithm string must match the expected algorithm exactly; symmetric and asymmetric schemes cannot be mixed.
 
 Specify the expected algorithm when verifying:
 
 ```lyric
-match Auth.verifyJwt(token, secret, { algorithm: "HS256" }) {
-  case Ok(claims) -> // Token is valid
-  case Err(e)     -> // Token is invalid
+match Auth.verifyJwt(token, secret, issuer, audience, "HS256") {
+  case Ok(_)  -> // Token is valid and issuer/audience matched
+  case Err(e) -> // Token invalid; check e.code (ALG_REJECTED, BAD_SIGNATURE, etc.)
 }
 ```
 
@@ -109,12 +110,12 @@ match Auth.verifyJwt(token, secret, { algorithm: "HS256" }) {
 
 ### Claims extraction
 
-Extract individual claims from the verified token:
+Extract individual claims from the JWT token:
 
 ```lyric
-val userId = Auth.extractClaim(verifiedClaims, "sub")  // subject
-val issuer = Auth.extractClaim(verifiedClaims, "iss")  // issuer
-val custom = Auth.extractClaim(verifiedClaims, "org")  // custom claim
+val userId = Auth.extractClaim(token, "sub")  // subject
+val issuer = Auth.extractClaim(token, "iss")  // issuer
+val custom = Auth.extractClaim(token, "org")  // custom claim
 ```
 
 ## API key verification
@@ -167,39 +168,62 @@ if Auth.rolesContain(userRoles, ["admin", "moderator"]) {
 
 ### `verifyJwt`
 
-Verify a JWT token and extract claims.
+Verify a JWT token and validate issuer/audience claims.
 
 ```lyric
 pub func verifyJwt(
   token: in String,
   secret: in String,
-  options: in JwtOptions
-): Result[Claims, AuthError]
+  issuer: in String,
+  audience: in String,
+  allowedAlgorithm: in String
+): Result[Unit, JwtError]
 ```
 
 | Parameter | Description |
 |---|---|
 | `token` | The JWT string to verify |
-| `secret` | The secret or public key (format depends on algorithm) |
-| `options` | Configuration including the expected algorithm |
+| `secret` | The secret (for HS256/HS512) or public key PEM (for RS256/RS512) |
+| `issuer` | Expected `iss` claim value |
+| `audience` | Expected `aud` claim value |
+| `allowedAlgorithm` | Only this algorithm is accepted (e.g., `"HS256"`) |
+
+Returns `Ok(Unit)` if signature and claims are valid; `Err(JwtError)` otherwise. The `JwtError.code` field contains fine-grained error information (`ALG_REJECTED`, `BAD_SIGNATURE`, `EXPIRED`, etc.).
+
+### `verifyJwtWithSkew`
+
+Verify a JWT token with a custom clock-skew leeway.
+
+```lyric
+pub func verifyJwtWithSkew(
+  token: in String,
+  secret: in String,
+  issuer: in String,
+  audience: in String,
+  allowedAlgorithm: in String,
+  clockSkewSeconds: in Int
+): Result[Unit, JwtError]
+```
+
+Like `verifyJwt`, but uses an explicit clock-skew tolerance (default is 60 seconds).
 
 ### `extractClaim`
 
-Extract a claim value from verified claims.
+Extract a claim value from a JWT token.
 
 ```lyric
 pub func extractClaim(
-  claims: in Claims,
+  token: in String,
   claimName: in String
 ): Option[String]
 ```
 
 | Parameter | Description |
 |---|---|
-| `claims` | The verified claims object |
+| `token` | The JWT string (already verified by `verifyJwt`) |
 | `claimName` | The claim name to extract (e.g., `"sub"`, `"iss"`, `"org"`) |
 
-Returns `None` if the claim is not present.
+Returns `Some(value)` if the claim is present; `None` otherwise.
 
 ### `verifyApiKey`
 

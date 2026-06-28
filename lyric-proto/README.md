@@ -33,17 +33,14 @@ Pure-Lyric Protocol Buffer (proto3) wire-format encoder and decoder for [Lyric](
 import Proto
 import Std.Core
 
-// Create a buffer to accumulate encoded bytes
-val buffer = Proto.createBuffer()
+// Construct fields using helper functions
+val fields = [
+  Proto.varField(1, 42i64),              // field 1: varint (42)
+  Proto.stringField(2, "hello".bytes()), // field 2: string ("hello")
+]
 
-// Encode field 1 (varint) with value 42
-buffer = Proto.encodeVarint(buffer, fieldNumber = 1, wireType = 0, value = 42)
-
-// Encode field 2 (string) with value "hello"
-buffer = Proto.encodeString(buffer, fieldNumber = 2, wireType = 2, value = "hello")
-
-// Get the encoded bytes
-val encoded = Proto.bufferBytes(buffer)
+// Encode the message
+val encoded = Proto.encodeMessage(fields)
 ```
 
 ### Decoding a message
@@ -54,13 +51,25 @@ import Std.Core
 
 val encoded = ...  // slice[Byte] from wire
 
-// Create a decoder
-val decoder = Proto.createDecoder(encoded)
-
-// Read fields
-match Proto.decodeVarint(decoder) {
-  case Ok((fieldNumber, value)) -> {
-    // Decoded field fieldNumber with value
+// Decode all fields
+match Proto.decodeMessage(encoded) {
+  case Ok(fields) -> {
+    for field in fields {
+      match field {
+        case DecodedVarint(number, value) -> {
+          // Field number with varint value
+        }
+        case DecodedBytes(number, data) -> {
+          // Field number with bytes (string or embedded message)
+        }
+        case DecodedFixed32(number, bits) -> {
+          // Field number with 32-bit fixed value
+        }
+        case DecodedFixed64(number, bits) -> {
+          // Field number with 64-bit fixed value
+        }
+      }
+    }
   }
   case Err(e) -> {
     // Decode error
@@ -108,140 +117,170 @@ val tag = (2 << 3) | 2
 
 ## Low-level API
 
-### Buffer operations
-
-#### `createBuffer`
-
-Create a new empty buffer for encoding.
-
-```lyric
-pub func createBuffer(): ProtoBuffer
-```
-
-#### `bufferBytes`
-
-Extract the encoded bytes from a buffer.
-
-```lyric
-pub func bufferBytes(buffer: in ProtoBuffer): slice[Byte]
-```
-
 ### Encoding
 
-#### `encodeVarint`
+#### `encodeMessage`
 
-Encode a 64-bit unsigned integer as a varint.
+Encode a proto3 message from a list of fields.
 
 ```lyric
-pub func encodeVarint(
-  buffer: in ProtoBuffer,
-  fieldNumber: in Long,
-  wireType: in Int,
-  value: in Long
-): ProtoBuffer
+pub func encodeMessage(fields: List[ProtoField]): slice[Byte]
 ```
 
-#### `encodeString`
+| Parameter | Description |
+|---|---|
+| `fields` | List of `ProtoField` union values to encode |
 
-Encode a length-delimited string.
+**Returns**: Protobuf wire-format bytes.
+
+### ProtoField union
+
+A discriminated union representing a single encoded field. Construct using the convenience helpers below, or directly via union cases.
 
 ```lyric
-pub func encodeString(
-  buffer: in ProtoBuffer,
-  fieldNumber: in Long,
-  wireType: in Int,
-  value: in String
-): ProtoBuffer
+pub union ProtoField {
+  case VarField(number: Int, v: Long)
+  case Fix32Field(number: Int, bits: Int)
+  case Fix64Field(number: Int, bits: Long)
+  case BytesField(number: Int, data: slice[Byte])
+}
 ```
 
-#### `encodeBytes`
+### Field constructors
 
-Encode a length-delimited byte slice.
+Convenience helpers for common field types:
+
+#### `varField`
+
+Create a variable-length integer (varint) field.
 
 ```lyric
-pub func encodeBytes(
-  buffer: in ProtoBuffer,
-  fieldNumber: in Long,
-  wireType: in Int,
-  value: in slice[Byte]
-): ProtoBuffer
+pub func varField(number: Int, v: Long): ProtoField
 ```
 
-#### `encodeFloat`
+#### `floatField`
 
-Encode a 32-bit float.
+Create a 32-bit float field.
 
 ```lyric
-pub func encodeFloat(
-  buffer: in ProtoBuffer,
-  fieldNumber: in Long,
-  wireType: in Int,
-  value: in Float
-): ProtoBuffer
+pub func floatField(number: Int, v: Float): ProtoField
 ```
 
-#### `encodeDouble`
+#### `doubleField`
 
-Encode a 64-bit double.
+Create a 64-bit double field.
 
 ```lyric
-pub func encodeDouble(
-  buffer: in ProtoBuffer,
-  fieldNumber: in Long,
-  wireType: in Int,
-  value: in Double
-): ProtoBuffer
+pub func doubleField(number: Int, v: Double): ProtoField
+```
+
+#### `boolField`
+
+Create a boolean field (encoded as varint 0 or 1).
+
+```lyric
+pub func boolField(number: Int, v: Bool): ProtoField
+```
+
+#### `enumField`
+
+Create an enum field (encoded as varint ordinal).
+
+```lyric
+pub func enumField(number: Int, ordinal: Int): ProtoField
+```
+
+#### `stringField`
+
+Create a string field (length-delimited bytes).
+
+```lyric
+pub func stringField(number: Int, utf8: slice[Byte]): ProtoField
+```
+
+#### `embeddedField`
+
+Create an embedded message field (length-delimited bytes).
+
+```lyric
+pub func embeddedField(number: Int, inner: slice[Byte]): ProtoField
+```
+
+#### `sint32Field`
+
+Create a signed 32-bit integer field (zigzag-encoded varint).
+
+```lyric
+pub func sint32Field(number: Int, v: Int): ProtoField
+```
+
+#### `sint64Field`
+
+Create a signed 64-bit integer field (zigzag-encoded varint).
+
+```lyric
+pub func sint64Field(number: Int, v: Long): ProtoField
 ```
 
 ### Decoding
 
-#### `createDecoder`
+#### `decodeMessage`
 
-Create a new decoder from encoded bytes.
-
-```lyric
-pub func createDecoder(bytes: in slice[Byte]): ProtoDecoder
-```
-
-#### `decodeVarint`
-
-Decode a varint and return the field number and value.
+Decode all fields from protobuf wire-format bytes.
 
 ```lyric
-pub func decodeVarint(decoder: in ProtoDecoder): Result[(Long, Long), ProtoError]
+pub func decodeMessage(data: in slice[Byte]): Result[List[DecodedField], String]
 ```
 
-#### `decodeString`
+| Parameter | Description |
+|---|---|
+| `data` | Protobuf wire-format bytes |
 
-Decode a length-delimited string.
+**Returns**: A list of decoded fields on success; `Err(message)` on parse error.
+
+#### `decodeStep`
+
+Decode a single field starting at the given offset.
 
 ```lyric
-pub func decodeString(decoder: in ProtoDecoder): Result[(Long, String), ProtoError]
+pub func decodeStep(data: in slice[Byte], offset: Int): Result[DecodeStep, String]
 ```
 
-#### `decodeBytes`
+| Parameter | Description |
+|---|---|
+| `data` | Protobuf wire-format bytes |
+| `offset` | Byte offset to start decoding |
 
-Decode a length-delimited byte slice.
+**Returns**: `Ok(DecodeStep)` with the decoded field and next offset; `Err(message)` on error.
+
+### DecodedField union
+
+The result of decoding a single field.
 
 ```lyric
-pub func decodeBytes(decoder: in ProtoDecoder): Result[(Long, slice[Byte]), ProtoError]
+pub union DecodedField {
+  case DecodedVarint(number: Int, v: Long)
+  case DecodedFixed32(number: Int, bits: Int)
+  case DecodedFixed64(number: Int, bits: Long)
+  case DecodedBytes(number: Int, data: slice[Byte])
+}
 ```
 
-#### `decodeFloat`
+### DecodeStep record
 
-Decode a 32-bit float.
+A single step in decoding; returned by `decodeStep`.
 
 ```lyric
-pub func decodeFloat(decoder: in ProtoDecoder): Result[(Long, Float), ProtoError]
+pub record DecodeStep {
+  field: DecodedField
+  nextOffset: Int
+}
 ```
 
-#### `decodeDouble`
-
-Decode a 64-bit double.
-
-```lyric
-pub func decodeDouble(decoder: in ProtoDecoder): Result[(Long, Double), ProtoError]
-```
+| Field | Description |
+|---|---|
+| `field` | The decoded field |
+| `nextOffset` | Byte offset to continue decoding from |
 
 ## Usage with gRPC and OTLP
 
@@ -251,13 +290,15 @@ This library is commonly used with `lyric-grpc` for payload framing and with Ope
 import Proto
 import Std.Core
 
-// Construct a protobuf message manually
-val buf = Proto.createBuffer()
-buf = Proto.encodeVarint(buf, 1, 0, 42)          // field 1: varint
-buf = Proto.encodeString(buf, 2, 2, "message")   // field 2: string
+// Construct a protobuf message from fields
+val fields = [
+  Proto.varField(1, 42i64),
+  Proto.stringField(2, "message".bytes()),
+]
+
+val payload = Proto.encodeMessage(fields)
 
 // Send via gRPC or store in OTLP batch
-val payload = Proto.bufferBytes(buf)
 ```
 
 ## Package layout

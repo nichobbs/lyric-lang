@@ -301,12 +301,12 @@ This allows the same code to run locally without AWS X-Ray daemon or permission 
 
 ## Production checklist
 
-- ✓ Lambda execution role has `xray:PutTraceSegments` and `xray:PutTelemetryRecords`
-- ✓ X-Ray daemon is running in the VPC (if using VPC; Lambda on public subnets uses AWS-managed X-Ray endpoint)
-- ✓ X-Ray sampling rules are configured (default: 1 request per second)
-- ✓ Subsegment names are meaningful and stable (avoid high-cardinality names like user IDs)
-- ✓ Annotations use low-cardinality values (status, outcome, type) for effective filtering
-- ✓ Metadata is used for high-volume data (full request bodies, config dumps)
+- Lambda execution role has `xray:PutTraceSegments` and `xray:PutTelemetryRecords`
+- X-Ray daemon is running in the VPC (if using VPC; Lambda on public subnets uses AWS-managed X-Ray endpoint)
+- X-Ray sampling rules are configured (default: 1 request per second)
+- Subsegment names are meaningful and stable (avoid high-cardinality names like user IDs)
+- Annotations use low-cardinality values (status, outcome, type) for effective filtering
+- Metadata is used for high-volume data (full request bodies, config dumps)
 
 ## Package layout
 
