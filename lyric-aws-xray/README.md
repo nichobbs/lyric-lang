@@ -63,7 +63,7 @@ func callExternalService(id: String): Result[String, String] {
   match AwsXRay.beginSubsegment("ExternalService.lookup") {
     case Ok(handle) -> {
       // Annotate the subsegment with custom metadata
-      handle = AwsXRay.annotate(handle, "user_id", id)
+      var handle = AwsXRay.annotate(handle, "user_id", id)
       handle = AwsXRay.metadata(handle, "request_type", "lookup")
 
       // Do the work

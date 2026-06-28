@@ -279,7 +279,7 @@ import Std.Core
 
 // Construct a protobuf message from fields
 val fields = [
-  Proto.varField(1, 42i64),
+  Proto.VarField(1, 42i64),
   Proto.stringField(2, "message".bytes()),
 ]
 
