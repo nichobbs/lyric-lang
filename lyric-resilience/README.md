@@ -110,7 +110,7 @@ Example with defaults:
 
 Automatically retries failed operations with exponential backoff.
 
-**Applies to**: Functions returning `Result[T, E]`.
+**Applies to**: Functions returning `Result[T, String]`.
 
 **Behavior**: When a matched function returns `Err(...)`, the aspect waits (with backoff) and retries up to `maxAttempts` times. If all retries fail, returns the error from the final attempt.
 
@@ -146,7 +146,7 @@ aspect ApiRetry from Resilience.Retry {
 
 Stops requests when failure rate exceeds threshold to prevent cascading failures.
 
-**Applies to**: Functions returning `Result[T, E]`.
+**Applies to**: Functions returning `Result[T, String]`.
 
 **Behavior**: Tracks failures and enters "open" state when failures ≥ `failureThreshold`. While open, all requests fail immediately. After `cooldownMs`, allows one trial request ("half-open" state); if it succeeds, closes the circuit; if it fails, reopens.
 

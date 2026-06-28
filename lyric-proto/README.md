@@ -2,14 +2,14 @@
 
 Pure-Lyric Protocol Buffer (proto3) wire-format encoder and decoder for [Lyric](https://github.com/nichobbs/lyric-lang). Ships low-level `slice[Byte]` marshalling suitable for manual message construction and as a foundation for higher-level code generators.
 
-> **Status**: Library source is complete. Both `.NET` and JVM targets are supported.
+> **Status**: Library source is complete. `.NET` target is available; JVM target is Phase 6 (planned).
 
 ## Platform parity
 
 | Target | Status |
 |---|---|
 | `.NET` | Available |
-| JVM | Available |
+| JVM | Phase 6 (planned) |
 
 ## Packages
 
