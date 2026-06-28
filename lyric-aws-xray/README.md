@@ -50,54 +50,43 @@ func handleGetUser(userId: in Int): Result[User, Web.ApiError] {
 }
 ```
 
-### Manual instrumentation
+### Adding annotations and metadata
 
-Create subsegments for custom operations:
+Annotate and metadata the active subsegment:
 
 ```lyric
 import AwsXRay
 import Std.Core
 
 func callExternalService(id: String): Result[String, String] {
-  // Begin a subsegment named "ExternalService.lookup"
-  match AwsXRay.beginSubsegment("ExternalService.lookup") {
-    case Ok(handle) -> {
-      // Annotate the subsegment with custom metadata
-      var handle = AwsXRay.annotate(handle, "user_id", id)
-      handle = AwsXRay.metadata(handle, "request_type", "lookup")
+  // Get the current subsegment (created by the Tracing aspect)
+  val handle = AwsXRay.currentSubsegment()
+  
+  // Add indexed annotation for filtering in X-Ray console
+  AwsXRay.annotate(handle, "user_id", id)
+  
+  // Add unindexed metadata for debugging
+  AwsXRay.metadata(handle, "request_type", "lookup")
 
-      // Do the work
-      val result = makeExternalCall(id)
-
-      // Close the subsegment (automatic timing)
-      AwsXRay.endSubsegment(handle)
-      result
-    }
-    case Err(e) -> {
-      Err(e)
-    }
-  }
+  // Do the work
+  val result = makeExternalCall(id)
+  
+  result
 }
 ```
 
 ## Subsegments
 
-A **subsegment** is a timed unit of work within a Lambda invocation. Each subsegment is named, timed automatically, and can carry custom annotations and metadata.
+A **subsegment** is a timed unit of work within a Lambda invocation. Subsegments are created automatically by the `Tracing` aspect template. You can add annotations and metadata to the active subsegment using the public API.
 
-### Creating a subsegment
+### Getting the active subsegment
+
+Inside a function wrapped by the `Tracing` aspect, get the current subsegment handle:
 
 ```lyric
 import AwsXRay
 
-match AwsXRay.beginSubsegment("operation_name") {
-  case Ok(handle) -> {
-    // Use handle to add annotations/metadata
-    // Close with endSubsegment
-  }
-  case Err(e)     -> {
-    // Failed to create subsegment
-  }
-}
+val handle = AwsXRay.currentSubsegment()
 ```
 
 ### Annotating a subsegment
@@ -107,9 +96,10 @@ Add key-value annotations for filtering and faceting in the X-Ray console:
 ```lyric
 import AwsXRay
 
-handle = AwsXRay.annotate(handle, "user_id", userId.toString())
-handle = AwsXRay.annotate(handle, "request_status", "success")
-handle = AwsXRay.annotate(handle, "cache_hit", cacheHit.toString())
+val handle = AwsXRay.currentSubsegment()
+AwsXRay.annotate(handle, "user_id", userId.toString())
+AwsXRay.annotate(handle, "request_status", "success")
+AwsXRay.annotate(handle, "cache_hit", cacheHit.toString())
 ```
 
 Annotations are indexed and appear as facets in the X-Ray console — use them for operationally important dimensions.
@@ -121,21 +111,12 @@ Store arbitrary structured data for debugging:
 ```lyric
 import AwsXRay
 
-handle = AwsXRay.metadata(handle, "request_body", jsonRequest)
-handle = AwsXRay.metadata(handle, "database_config", dbConfig.toString())
+val handle = AwsXRay.currentSubsegment()
+AwsXRay.metadata(handle, "request_body", jsonRequest)
+AwsXRay.metadata(handle, "database_config", dbConfig.toString())
 ```
 
 Metadata is not indexed and appears only in detailed trace records — use for raw diagnostic data.
-
-### Closing a subsegment
-
-```lyric
-import AwsXRay
-
-AwsXRay.endSubsegment(handle)
-```
-
-Closing automatically records the elapsed time and submits the subsegment to X-Ray.
 
 ## Aspect template
 
@@ -170,57 +151,41 @@ The `namespace` field is prepended to the subsegment name: if `namespace = "MySe
 
 ## Low-level API
 
-### `beginSubsegment(name)`
+### `currentSubsegment()`
 
-Create a new X-Ray subsegment with the given name.
-
-```lyric
-pub func beginSubsegment(name: in String): Result[SubsegmentHandle, XRayError]
-```
-
-| Parameter | Description |
-|---|---|
-| `name` | Name of the subsegment in X-Ray (appears in console) |
-
-**Returns**: A handle for further operations (annotate, metadata, end).
-
-### `endSubsegment(handle)`
-
-Close a subsegment. Automatic timing is recorded and the subsegment is submitted to X-Ray.
+Get the active subsegment opened by the enclosing `Tracing` aspect.
 
 ```lyric
-pub func endSubsegment(handle: in SubsegmentHandle): Unit
+pub func currentSubsegment(): SubsegmentHandle
 ```
+
+**Returns**: A handle to the current subsegment. When called outside an aspect-wrapped function, returns a no-op handle.
 
 ### `annotate(handle, key, value)`
 
-Add a string annotation to the subsegment.
+Add an indexed annotation to the subsegment.
 
 ```lyric
 pub func annotate(
   handle: in SubsegmentHandle,
   key: in String,
   value: in String
-): SubsegmentHandle
+): Unit
 ```
 
-**Returns**: The updated handle (for chaining).
-
-Annotations are **indexed** and appear as facets in the X-Ray console. Use for operationally important dimensions: `user_id`, `status`, `cache_hit`, etc.
+Annotations are **indexed** and appear as facets in the X-Ray console for filtering and faceting. Use for operationally important dimensions: `user_id`, `status`, `cache_hit`, etc.
 
 ### `metadata(handle, key, value)`
 
-Add structured metadata to the subsegment.
+Add unindexed metadata to the subsegment.
 
 ```lyric
 pub func metadata(
   handle: in SubsegmentHandle,
   key: in String,
   value: in String
-): SubsegmentHandle
+): Unit
 ```
-
-**Returns**: The updated handle (for chaining).
 
 Metadata is **not indexed**; it appears in detailed trace records. Use for raw diagnostic data: JSON payloads, config dumps, etc.
 
@@ -261,30 +226,28 @@ import Lyric.Logging
 
 val log = Lyric.Logging.getLogger("MyApp.Service")
 
+aspect TraceOrder from AwsXRay.Tracing {
+  matches: name like "processOrder"
+}
+
 func processOrder(orderId: in Long): Result[Unit, String] {
+  val handle = AwsXRay.currentSubsegment()
+  AwsXRay.annotate(handle, "order_id", orderId.toString())
+  
   Lyric.Logging.info(log, "processing order")
   
-  match AwsXRay.beginSubsegment("processOrder") {
-    case Ok(handle) -> {
-      var handle = AwsXRay.annotate(handle, "order_id", orderId.toString())
-      
-      // Do the work
-      val result = saveOrder(orderId)
-      
-      AwsXRay.endSubsegment(handle)
-      
-      match result {
-        case Ok(_)  -> {
-          Lyric.Logging.info(log, "order saved", [Lyric.Logging.field("order_id", orderId.toString())])
-          Ok(Unit)
-        }
-        case Err(e) -> {
-          Lyric.Logging.error(log, "order failed", [Lyric.Logging.field("error", e)])
-          Err(e)
-        }
-      }
+  // Do the work
+  val result = saveOrder(orderId)
+  
+  match result {
+    case Ok(_)  -> {
+      Lyric.Logging.info(log, "order saved", [Lyric.Logging.field("order_id", orderId.toString())])
+      Ok(Unit)
     }
-    case Err(e) -> Err(e.toString())
+    case Err(e) -> {
+      Lyric.Logging.error(log, "order failed", [Lyric.Logging.field("error", e)])
+      Err(e)
+    }
   }
 }
 ```
