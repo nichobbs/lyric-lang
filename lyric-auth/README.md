@@ -249,7 +249,7 @@ pub func verifyApiKey(
 | `provided` | The API key provided by the client |
 | `expected` | The valid API key to compare against (from storage) |
 
-**Note**: Both parameters are compared directly as strings using constant-time comparison. Do not hash the API key before comparing; store and compare the plain key material.
+**Note**: The function performs constant-time string comparison. For production use, store API keys securely (e.g., hashed with SHA-256 or HMAC-SHA256 using a salt); hash the incoming key and compare the hashes using this function to prevent credential exposure on database compromise.
 
 ### `rolesContain`
 

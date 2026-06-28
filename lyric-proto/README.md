@@ -33,9 +33,9 @@ Pure-Lyric Protocol Buffer (proto3) wire-format encoder and decoder for [Lyric](
 import Proto
 import Std.Core
 
-// Construct fields using helper functions
+// Construct fields using helper functions and union cases
 val fields = [
-  Proto.varField(1, 42i64),              // field 1: varint (42)
+  Proto.VarField(1, 42i64),              // field 1: varint (42)
   Proto.stringField(2, "hello".bytes()), // field 2: string ("hello")
 ]
 
@@ -81,10 +81,10 @@ match Proto.decodeMessage(encoded) {
 
 ### Varint encoding
 
-Protocol Buffers encode unsigned integers as varints (variable-length little-endian integers). Each byte encodes 7 bits of data plus a continuation bit. Use `varField` helper to create varint fields:
+Protocol Buffers encode unsigned integers as varints (variable-length little-endian integers). Each byte encodes 7 bits of data plus a continuation bit. Create varint fields using the `VarField` union case constructor:
 
 ```lyric
-val field = Proto.varField(fieldNumber, value)
+val field = Proto.VarField(fieldNumber, value)
 ```
 
 For signed integers, use `sint32Field` or `sint64Field` which apply zigzag encoding before creating a varint field.

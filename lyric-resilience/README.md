@@ -101,6 +101,8 @@ Example with defaults:
 | 3 | 400 ms |
 | 4 | 800 ms |
 | 5 | 1600 ms |
+| 6 | 3200 ms |
+| 7 | 6400 ms (capped at maxDelayMs = 30000) |
 
 ## Aspect templates
 
@@ -149,9 +151,9 @@ Stops requests when failure rate exceeds threshold to prevent cascading failures
 **Behavior**: Tracks failures and enters "open" state when failures ≥ `failureThreshold`. While open, all requests fail immediately. After `cooldownMs`, allows one trial request ("half-open" state); if it succeeds, closes the circuit; if it fails, reopens.
 
 ```lyric
-import Lyric.Resilience
+import Resilience
 
-aspect ServiceBreaker from Lyric.Resilience.CircuitBreaker {
+aspect ServiceBreaker from Resilience.CircuitBreaker {
   matches: name like "callDownstream*"
   config {
     failureThreshold: Int = 5
@@ -175,7 +177,7 @@ aspect ServiceBreaker from Lyric.Resilience.CircuitBreaker {
 Combine `Retry` and `CircuitBreaker` to implement robust fault tolerance:
 
 ```lyric
-import Lyric.Resilience
+import Resilience
 import Std.Core
 
 // Inner aspect: retry transient failures
