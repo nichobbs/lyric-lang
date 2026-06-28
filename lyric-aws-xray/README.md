@@ -256,9 +256,9 @@ func processOrder(orderId: in Long): Result[Unit, String] {
 
 When built with the `local` feature, X-Ray operations are no-ops:
 
-- `beginSubsegment` returns `Ok` with a dummy handle
-- `annotate` and `metadata` update the dummy handle (no-op)
-- `endSubsegment` does nothing
+- `currentSubsegment()` returns a no-op dummy handle
+- `annotate()` and `metadata()` do nothing when called on the dummy handle
+- The `Tracing` aspect template still wraps matched functions but produces no X-Ray subsegments
 
 This allows the same code to run locally without AWS X-Ray daemon or permission requirements.
 
