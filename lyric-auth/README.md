@@ -186,6 +186,9 @@ pub func verifyJwt(
   audience: in String,
   allowedAlgorithms: in String
 ): Result[Unit, JwtError]
+  requires: secret.length > 0
+  requires: allowedAlgorithms.length > 0
+  requires: not contains(toLower(allowedAlgorithms), "none")
 ```
 
 | Parameter | Description |
@@ -195,6 +198,11 @@ pub func verifyJwt(
 | `issuer` | Expected `iss` claim value |
 | `audience` | Expected `aud` claim value |
 | `allowedAlgorithms` | Comma-separated allow-list of JWT `alg` values (e.g., `"HS256"` or `"HS256,RS256"`). Tokens with `alg: none` are always rejected. |
+
+**Preconditions:**
+- `secret` must be non-empty
+- `allowedAlgorithms` must be a non-empty, comma-separated list of algorithms the caller is prepared to accept (e.g., `"HS256"` or `"RS256,RS512"`)
+- `allowedAlgorithms` must NOT contain the `"none"` algorithm (case-insensitive). Passing `"HS256,none"` violates this precondition and will raise a contract violation at runtime.
 
 Returns `Ok(Unit)` if signature and claims are valid; `Err(JwtError)` otherwise. The `JwtError.code` field contains fine-grained error information (`ALG_REJECTED`, `BAD_SIGNATURE`, `EXPIRED`, etc.).
 
@@ -211,9 +219,17 @@ pub func verifyJwtWithSkew(
   allowedAlgorithms: in String,
   clockSkewSeconds: in Int
 ): Result[Unit, JwtError]
+  requires: secret.length > 0
+  requires: allowedAlgorithms.length > 0
+  requires: not contains(toLower(allowedAlgorithms), "none")
+  requires: clockSkewSeconds >= 0
 ```
 
-Like `verifyJwt`, but accepts an explicit clock-skew tolerance in seconds (default is 60 seconds). `allowedAlgorithms` is a comma-separated allow-list (e.g., `"HS256,RS256"`).
+Like `verifyJwt`, but accepts an explicit clock-skew tolerance in seconds. Pass `0` for strict expiry (no leeway); pass `60` for the industry standard (the `verifyJwt` default).
+
+**Preconditions:**
+- Same as `verifyJwt`: `secret` and `allowedAlgorithms` must be non-empty, and `allowedAlgorithms` must not contain `"none"`
+- `clockSkewSeconds` must be non-negative (0 or greater)
 
 ### `extractClaim`
 
@@ -224,12 +240,16 @@ pub func extractClaim(
   token: in String,
   claimKey: in String
 ): Option[String]
+  requires: claimKey.length > 0
 ```
 
 | Parameter | Description |
 |---|---|
 | `token` | The JWT string (already verified by `verifyJwt`) |
 | `claimKey` | The claim key to extract (e.g., `"sub"`, `"iss"`, `"org"`) |
+
+**Preconditions:**
+- `claimKey` must be non-empty
 
 Returns `Some(value)` if the claim is present; `None` otherwise.
 
@@ -242,12 +262,16 @@ pub func verifyApiKey(
   provided: in String,
   expected: in String
 ): Bool
+  requires: expected.length > 0
 ```
 
 | Parameter | Description |
 |---|---|
 | `provided` | The API key provided by the client |
 | `expected` | The valid API key to compare against (from storage) |
+
+**Preconditions:**
+- `expected` must be non-empty
 
 **Note**: The function performs constant-time string comparison. For production use, store API keys securely (e.g., hashed with SHA-256 or HMAC-SHA256 using a salt); hash the incoming key and compare the hashes using this function to prevent credential exposure on database compromise.
 

@@ -411,4 +411,3 @@ lyric-generator-sdk/
 
 - `docs/40-source-generators.md` — complete design specification
 - `docs/03-decision-log.md` D075 — design decisions
-- `lyric-proto` — an example custom generator (when implemented)
