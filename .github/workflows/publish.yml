@@ -614,13 +614,14 @@ jobs:
         run: |
           set -euo pipefail
           LYRIC=./bin/lyric
+          API_KEY="${{ steps.nuget-auth.outputs.NUGET_API_KEY }}"
 
           publish_lib() {
             local manifest="$1"
             echo "=== Building ${manifest} ==="
             "$LYRIC" build --manifest "$manifest"
             echo "=== Publishing ${manifest} ==="
-            "$LYRIC" publish --manifest "$manifest" --skip-duplicate
+            "$LYRIC" publish --manifest "$manifest" --api-key "$API_KEY" --skip-duplicate
           }
 
           # Tier 1: no Lyric package dependencies.
