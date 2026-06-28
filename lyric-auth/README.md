@@ -137,7 +137,7 @@ Use constant-time comparison to prevent timing attacks:
 ```lyric
 import Auth
 
-// Compare against the stored API key (plain text, not hashed)
+// Compare against the stored API key
 val storedKey = getUserApiKey()
 
 if Auth.verifyApiKey(providedKeyFromRequest, storedKey) {
@@ -145,7 +145,7 @@ if Auth.verifyApiKey(providedKeyFromRequest, storedKey) {
 }
 ```
 
-The `verifyApiKey` function performs constant-time comparison, preventing attackers from determining valid characters by measuring response times.
+The `verifyApiKey` function performs constant-time comparison, preventing attackers from determining valid characters by measuring response times. Store API keys securely (hashed and salted); `verifyApiKey` compares the provided key directly against the stored value (whether plain or hashed depends on your storage strategy).
 
 ## Role-based access control
 

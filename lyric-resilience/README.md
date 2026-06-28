@@ -297,12 +297,15 @@ aspect DownstreamRetry from Resilience.Retry {
   }
 }
 
-@get("/users/{id}")
 pub func handleGetUser(id: in Int): Result[User, ApiError] {
   // Automatically retries callUserService on transient failures
   val user = callUserService(id)?
   Ok(user)
 }
+
+// Wire the handler into a Web router:
+// var router = Web.create()
+// router = Web.addGet(router, "/users/{id}", "MyApp.handleGetUser")
 ```
 
 ## Package layout
