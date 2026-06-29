@@ -501,6 +501,11 @@ jobs:
       - name: Restore executable permissions
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
 
+      # The test steps below use `background: true` to run in parallel, and a
+      # final `wait-all: true` step collects them.  These are native GitHub
+      # Actions runner features shipped 2026-06-25 and available on all
+      # ubuntu-latest runners from that date onwards — no version pin required.
+      # Announcement: https://github.blog/changelog/2026-06-25-actions-steps-can-now-be-run-in-parallel/
       - name: Weaver self-test (native lyric test)
         background: true
         working-directory: ${{ github.workspace }}
