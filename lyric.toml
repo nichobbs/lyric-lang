@@ -15,4 +15,5 @@ exclude = [
   "scripts",
   "resolver",
   ".github",
+  "lyric-stdlib",
 ]

@@ -49,6 +49,7 @@ output_assembly = "Lyric.Stdlib.dll"
 "Std.Stream"           = "std/stream.l"
 
 # Tier 3 — time (environment and logging deferred; see below).
+"Std.TimeHost"         = "std/_kernel/time_host.l"
 "Std.Time"             = "std/time.l"
 
 # Tier 4 — structured data.

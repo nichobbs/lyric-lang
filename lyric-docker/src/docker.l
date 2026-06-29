@@ -18,7 +18,9 @@
 package Lyric.Docker
 
 import Lyric.Docker.Sockets
+import Std.Collections
 import Std.Core
+import Std.Encoding
 import Std.Errors
 import Std.Http
 
@@ -221,10 +223,7 @@ pub async func listImages(client: in DockerClient): Result[String, DockerError] 
 // built as JSON by hand (no reflection); responses are parsed with a small
 // field scanner.
 
-/// Default Docker connection (honours DOCKER_HOST, else the standard socket).
-pub func defaultClient(): DockerClient {
-  makeDockerClient()
-}
+
 
 /// Escape a string for embedding in a JSON string literal.
 func jsonEscapeValue(s: in String): String {
@@ -429,6 +428,40 @@ pub async func removeContainer(client: in DockerClient, containerId: in String):
   )
 }
 
+/// Demultiplex a raw Docker multiplexed stream into a UTF-8 String.
+/// Accepts the raw bytes of a multiplexed stream and decodes combined stdout/stderr.
+pub func demultiplexDockerStream(bytes: in slice[Byte]): Option[String] {
+  val len = bytes.length
+  val outBytes: List[Byte] = newList()
+  var i = 0
+  while i + 8 <= len {
+    val streamType = bytes[i]
+    
+    val size_b3 = bytes[i + 4]
+    val size_b2 = bytes[i + 5]
+    val size_b1 = bytes[i + 6]
+    val size_b0 = bytes[i + 7]
+    
+    val size = size_b3.toInt() * 16777216 + size_b2.toInt() * 65536 + size_b1.toInt() * 256 + size_b0.toInt()
+    
+    if i + 8 + size > len {
+      break
+    }
+    
+    if streamType == 1u8 or streamType == 2u8 {
+      var j = 0
+      while j < size {
+        outBytes.add(bytes[i + 8 + j])
+        j = j + 1
+      }
+    }
+    
+    i = i + 8 + size
+  }
+  
+  Std.Encoding.tryDecodeUtf8(outBytes.toArray())
+}
+
 /// Fetch a container's combined stdout/stderr logs.
 pub async func getContainerLogs(client: in DockerClient, containerId: in String): Result[String, DockerError]
   requires: containerId.length > 0
@@ -442,9 +475,14 @@ pub async func getContainerLogs(client: in DockerClient, containerId: in String)
   }
 
   if response.isSuccess() {
-    val bodyResult = await response.bodyText()
+    val bodyResult = await response.bodyBytes()
     match bodyResult {
-      case Ok(body) -> Ok(value = body)
+      case Ok(bytes) -> {
+        match demultiplexDockerStream(bytes) {
+          case Some(s) -> Ok(value = s)
+          case None -> Err(error = DockerError(statusCode = None, message = "Failed to decode container logs as UTF-8", details = ""))
+        }
+      }
       case Err(ioErr) ->
         Err(error = fromHttpError(
           ConnectionFailed(url = urlStr, message = IOError.message(ioErr)), ""
