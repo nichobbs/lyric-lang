@@ -359,35 +359,34 @@ func jsonUnescapeValue(s: in String): String {
 /// Returns the unescaped value.
 func extractJsonField(json: in String, field: in String): String {
   val target = "\"" + field + "\""
-  match json.indexOf(target) {
-    case Some(pos) -> {
-      val jsonLen = json.length.toInt()
-      var i = pos + target.length.toInt()
-      var inValue = false
-      var start = 0
-      while i < jsonLen {
-        val c = json.substring(i, 1)
-        if not inValue {
-          if c == "\"" {
-            inValue = true
-            start = i + 1
-          }
-          i = i + 1
-        } else {
-          if c == "\"" {
-            val rawValue = json.substring(start, i - start)
-            return jsonUnescapeValue(rawValue)
-          } else if c == "\\" {
-            i = i + 2
-          } else {
-            i = i + 1
-          }
-        }
-      }
-      ""
-    }
-    case None -> ""
+  val pos = json.indexOf(target)
+  if pos < 0 {
+    return ""
   }
+  val jsonLen = json.length
+  var i = pos + target.length
+  var inValue = false
+  var start = 0
+  while i < jsonLen {
+    val c = json.substring(i, 1)
+    if not inValue {
+      if c == "\"" {
+        inValue = true
+        start = i + 1
+      }
+      i = i + 1
+    } else {
+      if c == "\"" {
+        val rawValue = json.substring(start, i - start)
+        return jsonUnescapeValue(rawValue)
+      } else if c == "\\" {
+        i = i + 2
+      } else {
+        i = i + 1
+      }
+    }
+  }
+  ""
 }
 
 /// Validate a Docker container ID: must be a lowercase hex string of length 12

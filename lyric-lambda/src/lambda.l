@@ -140,7 +140,7 @@ pub record AuthorizerHandler {
 /// AOT-safe direct handlers are resolved from directHandlers first; string-
 /// based handlers are the fallback for non-AOT builds.
 @stable(since = "0.1")
-pub record LambdaApp {
+pub opaque type LambdaApp {
   httpRouter: Option[Router]
   streamingHandler: Option[String]           // qualified name of a streaming HTTP handler
   eventHandlers: slice[EventHandler]
@@ -165,7 +165,9 @@ pub func newApp(): LambdaApp {
 /// to the router's method + path and dispatched through the same mechanism
 /// as Web.start().  CORS config is read from the Web.Cors config block.
 /// Cannot be combined with withStreamingHandler in the same LambdaApp.
+/// Requires the `web` feature to be active in the consumer's lyric.toml.
 @stable(since = "0.1")
+@cfg(feature = "web")
 pub func withRouter(app: in LambdaApp, router: in Router): LambdaApp {
   return LambdaApp(
     httpRouter = Some(router),

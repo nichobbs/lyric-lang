@@ -21,6 +21,11 @@
 #                              local feature → lightweight local test HTTP server
 #                              jvm   feature → AWS Java managed runtime handler
 #
+# Feature flags:
+#   aws, local, jvm  — runtime target (exactly one should be active per build).
+#   web              — enables Lambda.withRouter() for lyric-web Router integration.
+#                      Consumers must also declare Lyric.Web in their [dependencies].
+#
 # Composition modes (may be combined in the same LambdaApp):
 #   1. lyric-web router reuse — attach a Web.Router with Lambda.withRouter().
 #   2. Streaming HTTP handler — Lambda.withStreamingHandler(handlerName).
@@ -45,6 +50,8 @@ aws   = []
 local = []
 # JVM: AWS Java managed runtime (com.amazonaws:aws-lambda-java-core).
 jvm   = []
+# lyric-web router integration (withRouter).  Requires Lyric.Web as a dep.
+web   = []
 
 [project]
 name            = "Lyric.Lambda"
