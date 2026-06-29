@@ -96,11 +96,11 @@ jobs:
           - os: macos-latest
             rid: osx-x64
             archive_suffix: tar.gz
-          # win-x64 temporarily disabled: the F# `seed: mint` stage-0 fails on
-          # Windows (the F# emitter's package cache lands in %TEMP% instead of
-          # the script's $FSCACHE, because .NET Path.GetTempPath() reads TMP/TEMP
-          # on Windows, not TMPDIR — so the harvest finds no DLLs).  Re-enable
-          # once fixed.  Tracking: #3941.
+          # win-x64 temporarily disabled: the download-seed bootstrap path has
+          # not been validated on Windows runners.  The former mint-stage-0
+          # Windows failure (#3941) was the original blocker; now that the mint
+          # path is removed, win-x64 needs a fresh validation run with
+          # `bootstrap.sh --stage 2` before re-enabling.  Tracking: #3941.
           # - os: windows-latest
           #   rid: win-x64
           #   archive_suffix: zip
@@ -226,7 +226,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p bootstrap/publish/${{ matrix.rid }}/lib
-          cp .bootstrap/stage2/lib/Lyric.Stdlib.dll \
+          cp .bootstrap/stage2/lib/Lyric.Stdlib*.dll \
              bootstrap/publish/${{ matrix.rid }}/lib/
 
       # ── Package archive ───────────────────────────────────────────────────
@@ -566,7 +566,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v4.2.2
 
       - name: Set up Node.js
-        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3f25af7f  # v4.1.0
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af  # v4.1.0
         with:
           node-version: 20
           cache: 'npm'
