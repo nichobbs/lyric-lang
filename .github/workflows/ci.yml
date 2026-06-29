@@ -2373,6 +2373,168 @@ jobs:
           fi
           echo "IConfig config-block lowering: defaults, env-parse, and G0009 negative checks pass (#2983, #2993)"
 
+  macos-aot-smoke:
+    runs-on: macos-latest
+    needs: [build]
+    permissions:
+      contents: read
+    if: needs.build.outputs.has_code_changes == 'true'
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
+        with:
+          global-json-file: bootstrap/global.json
+      - name: Download build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: build-artifacts
+
+      # ILCompiler package cache — keyed on the .NET SDK version so the
+      # ~200 MB compiler package is not re-downloaded on every run.
+      - name: Cache ILCompiler NuGet packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.nuget/packages/microsoft.dotnet.ilcompiler
+          key: ${{ runner.os }}-ilcompiler-${{ hashFiles('bootstrap/global.json') }}
+          restore-keys: |
+            ${{ runner.os }}-ilcompiler-
+
+      # On macOS, the lyric binary inside the build-artifacts is a Linux binary (ELF)
+      # so we must rebuild the AOT entry-point project (Lyric.Cli.Aot) on macOS.
+      # Rebuilding is extremely fast because all dependencies (the F# compiled DLLs)
+      # are already in .bootstrap/stage1/ from the downloaded build-artifacts.
+      - name: Rebuild AOT entry-point on macOS
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          dotnet build bootstrap/src/Lyric.Cli.Aot --configuration $BUILD_CONFIG
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::Rebuilt lyric binary not found or not executable at $lyric_bin"
+            exit 1
+          fi
+
+      # Build a minimal hello-world Lyric program to a native binary, then run
+      # it and assert the output.  This exercises the full custom lyric release pipeline
+      # on macOS: lyric build --release -> buildLinkerArgsMac -> resolveIlcPaths -> parseSdkPacksDir -> clang -> Mach-O
+      - name: Release Native AOT smoke test (lyric build --release, #4449)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; native AOT smoke test cannot run"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          dir="$(mktemp -d)"
+          src="$dir/hello.l"
+          cat > "$src" <<'LYRIC'
+          package Hello
+          import Std.Core
+          func main(): Int {
+            println("hello-aot")
+            0
+          }
+          LYRIC
+          native_bin="$dir/hello"
+          "$lyric_bin" build --release "$src" -o "$native_bin"
+          if [ ! -x "$native_bin" ]; then
+            echo "::error::native binary not produced at $native_bin"
+            exit 1
+          fi
+          out="$("$native_bin" 2>&1)"
+          echo "native AOT output: $out"
+          if [ "$out" != "hello-aot" ]; then
+            echo "::error::native AOT smoke test produced unexpected output: '$out'"
+            exit 1
+          fi
+          echo "OK: native AOT binary produced and executed correctly on macOS." >> "$GITHUB_STEP_SUMMARY"
+
+      # Native AOT publish of the lyric CLI itself on macOS.
+      - name: Native AOT publish of the lyric CLI on macOS
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          publish_dir="$(mktemp -d)"
+          dotnet publish bootstrap/src/Lyric.Cli.Aot -c Release -r osx-arm64 -o "$publish_dir"
+          native_cli="$publish_dir/lyric"
+          if [ ! -x "$native_cli" ]; then
+            echo "::error::native lyric CLI not produced at $native_cli"
+            exit 1
+          fi
+          file "$native_cli" | grep -q Mach-O || { echo "::error::published lyric CLI is not a native Mach-O binary"; exit 1; }
+          "$native_cli" --version
+          dir="$(mktemp -d)"
+          cat > "$dir/hello.l" <<'LYRIC'
+          package Hello
+          import Std.Core
+          func main(): Int {
+            println("hello-native-cli")
+            0
+          }
+          LYRIC
+          "$native_cli" build "$dir/hello.l" -o "$dir/bin/Hello.dll"
+          cp bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/Lyric.Stdlib*.dll "$dir/bin/"
+          out="$(cd "$dir/bin" && dotnet exec Hello.dll)"
+          echo "native CLI build output: $out"
+          if [ "$out" != "hello-native-cli" ]; then
+            echo "::error::lyric build through the native CLI produced unexpected output: '$out'"
+            exit 1
+          fi
+
+          # Restored-dependency build through the native binary on macOS.
+          work="$(mktemp -d)"
+          mkdir -p "$work/constdep/src" "$work/app/src"
+          cat > "$work/constdep/lyric.toml" <<'TOML'
+          [package]
+          name = "constdep"
+          version = "0.1.0"
+          [project]
+          name = "ConstDep"
+          output_assembly = "Lyric.ConstDep.dll"
+          [project.packages]
+          "ConstDep" = "src"
+          TOML
+          cat > "$work/constdep/src/constdep.l" <<'LYR'
+          package ConstDep
+          pub val ANSWER: Int = 0x002A
+          LYR
+          cat > "$work/app/lyric.toml" <<'TOML'
+          [package]
+          name = "app"
+          version = "0.1.0"
+          [project]
+          name = "App"
+          [project.packages]
+          "App" = "src"
+          [dependencies]
+          constdep = { path = "../constdep" }
+          TOML
+          cat > "$work/app/src/app.l" <<'LYR'
+          package App
+          import ConstDep
+          import Std.Console as Console
+          func main(): Unit {
+            Console.println(toString(ANSWER))
+          }
+          LYR
+          "$native_cli" build --manifest "$work/constdep/lyric.toml"
+          "$native_cli" build --manifest "$work/app/lyric.toml"
+          cp bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/Lyric.Stdlib*.dll "$work/app/bin/"
+          dep_out="$(cd "$work/app/bin" && dotnet exec App.dll | tr -d '\r\n')"
+          echo "restored-dep consumer printed: '$dep_out'"
+          if [ "$dep_out" != "42" ]; then
+            echo "::error::restored-dep build through the native CLI returned '$dep_out', expected '42'"
+            exit 1
+          fi
+
+          size_kb=$(du -k "$native_cli" | cut -f1)
+          echo "OK: Native AOT lyric CLI published on macOS (${size_kb} KB), built+ran an example and a restored-dependency build end-to-end." >> "$GITHUB_STEP_SUMMARY"
+
   compiler-self-tests-jvm:
     runs-on: ubuntu-latest
     needs: [build]
@@ -4800,7 +4962,7 @@ jobs:
 
   build-and-test:
     runs-on: ubuntu-latest
-    needs: [build, test-bootstrap, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, aot-smoke, compiler-self-tests-jvm, ecosystem-security-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests, ilverify-informational]
+    needs: [build, test-bootstrap, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, aot-smoke, macos-aot-smoke, compiler-self-tests-jvm, ecosystem-security-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests, ilverify-informational]
     if: always()
     permissions:
       contents: read
