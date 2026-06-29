@@ -925,7 +925,8 @@ func buildProject(
     val wsEntry = wsDepDlls[wdi]
     restoredDlls.add(wsEntry)
     val wsTab = wsEntry.indexOf("\t")
-    seenDeps.add(if wsTab >= 0 { wsEntry.substring(0, wsTab) } else { wsEntry })
+    val wsName = if wsTab >= 0 { wsEntry.substring(0, wsTab) } else { wsEntry }
+    seenDeps.add(wsName)
     wdi += 1
   }
 

@@ -747,7 +747,8 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
     val wsEntry = wsDepDlls[wi]
     restoredDlls.add(wsEntry)
     val wsTab = wsEntry.indexOf("\t")
-    seenDeps.add(if wsTab >= 0 { wsEntry.substring(0, wsTab) } else { wsEntry })
+    val wsName = if wsTab >= 0 { wsEntry.substring(0, wsTab) } else { wsEntry }
+    seenDeps.add(wsName)
     wi += 1
   }
   val depBinDirs: List[String] = newList()

@@ -117,26 +117,56 @@ func collectTransitiveDepDlls(
   if not File.fileExists(tomlPath) {
     return
   }
-  val mfText = match File.readText(tomlPath) {
-    case Err(_) -> return
-    case Ok(t) -> t
-  }
-  val mf = match Mf.parseManifest(mfText, tomlPath) {
-    case Err(_) -> return
-    case Ok(m) -> m
-  }
-  var ti = 0
-  while ti < mf.deps.count {
-    val tdep = mf.deps[ti]
-    if not stringListContains(seen, tdep.name) {
-      match tdep.source {
-        case Mf.DepSource.Workspace(_) -> {
-          match wsCtxOpt {
-            case None -> ()
-            case Some(wsCtx) -> {
-              match Ws.resolveDep(tdep.name, wsCtx) {
-                case None -> ()
-                case Some(tDepDir) -> {
+  // Restructured to avoid `val x = match { case Err -> return }` which the
+  // F# bootstrap compiler does not support (bare return in a match arm).
+  match File.readText(tomlPath) {
+    case Err(_) -> ()
+    case Ok(mfText) -> {
+      match Mf.parseManifest(mfText, tomlPath) {
+        case Err(_) -> ()
+        case Ok(mf) -> {
+          var ti = 0
+          while ti < mf.deps.count {
+            val tdep = mf.deps[ti]
+            if not stringListContains(seen, tdep.name) {
+              match tdep.source {
+                case Mf.DepSource.Workspace(_) -> {
+                  match wsCtxOpt {
+                    case None -> ()
+                    case Some(wsCtx) -> {
+                      match Ws.resolveDep(tdep.name, wsCtx) {
+                        case None -> ()
+                        case Some(tDepDir) -> {
+                          val tToml = Path.join(tDepDir, "lyric.toml")
+                          if File.fileExists(tToml) {
+                            match File.readText(tToml) {
+                              case Err(_) -> ()
+                              case Ok(tMfText) -> {
+                                match Mf.parseManifest(tMfText, tToml) {
+                                  case Err(_) -> ()
+                                  case Ok(tMf) -> {
+                                    val dllName = match tMf.project {
+                                      case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }
+                                      case None -> tMf.packageSection.name + ".dll"
+                                    }
+                                    val tDllPath = Path.join(Path.join(tDepDir, "bin"), dllName)
+                                    if File.fileExists(tDllPath) {
+                                      result.add(tdep.name + "\t" + tDllPath)
+                                      seen.add(tdep.name)
+                                      collectTransitiveDepDlls(tDepDir, wsCtxOpt, seen, result)
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                case Mf.DepSource.Path(dir) -> {
+                  val tDepDir = if Path.isAbsolute(dir) { dir } else { Path.join(depDir, dir) }
                   val tToml = Path.join(tDepDir, "lyric.toml")
                   if File.fileExists(tToml) {
                     match File.readText(tToml) {
@@ -161,40 +191,14 @@ func collectTransitiveDepDlls(
                     }
                   }
                 }
+                case _ -> ()
               }
             }
+            ti += 1
           }
         }
-        case Mf.DepSource.Path(dir) -> {
-          val tDepDir = if Path.isAbsolute(dir) { dir } else { Path.join(depDir, dir) }
-          val tToml = Path.join(tDepDir, "lyric.toml")
-          if File.fileExists(tToml) {
-            match File.readText(tToml) {
-              case Err(_) -> ()
-              case Ok(tMfText) -> {
-                match Mf.parseManifest(tMfText, tToml) {
-                  case Err(_) -> ()
-                  case Ok(tMf) -> {
-                    val dllName = match tMf.project {
-                      case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }
-                      case None -> tMf.packageSection.name + ".dll"
-                    }
-                    val tDllPath = Path.join(Path.join(tDepDir, "bin"), dllName)
-                    if File.fileExists(tDllPath) {
-                      result.add(tdep.name + "\t" + tDllPath)
-                      seen.add(tdep.name)
-                      collectTransitiveDepDlls(tDepDir, wsCtxOpt, seen, result)
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-        case _ -> ()
       }
     }
-    ti += 1
   }
 }
 
