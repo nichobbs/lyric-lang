@@ -19849,7 +19849,7 @@ regression: emitter 847/847, CLI 84/84.  MSIL target only.
 
 ### D-progress-403 — `lyric build --release`: self-contained Native AOT binaries (#1968 epic; #1975; D079)
 
-**Status:** Shipped for Linux `x64`/`arm64` on the .NET target (`lyric-compiler/lyric/release.l`, `lyric-compiler/lyric/cli/cli_build.l`).  macOS and Windows (#1975) and the JVM (GraalVM `native-image`) target remain.
+**Status:** Shipped for Linux `x64`/`arm64` and macOS (osx `x64`/`arm64`) on the .NET target (`lyric-compiler/lyric/release.l`, `lyric-compiler/lyric/cli/cli_build.l`). Windows (#1975) and the JVM (GraalVM `native-image`) target remain.
 
 `lyric build --release <source.l>` (and `[build] kind = "aot"` in `lyric.toml`)
 produce a self-contained Native AOT executable — no managed runtime required at
@@ -19866,9 +19866,11 @@ Lyric — no generated C#, no `dotnet publish`:
   `--start-group`/`--end-group` to resolve circular symbol dependencies).
   `clang` must be on `PATH`.  ILC trim/AOT warnings are surfaced, not swallowed.
 - **Target seam:** `union ReleaseTarget { DotnetAot | JvmNativeImage }` +
-  target-agnostic `buildRelease`.  `DotnetAot` implemented for Linux; macOS
-  (`ld64` flags differ from ELF) and `JvmNativeImage` (GraalVM `native-image`)
-  fail loud (#1975) — no silent managed fallback.
+  target-agnostic `buildRelease`.  `DotnetAot` implemented for Linux and macOS
+  (which uses a custom macOS `clang` linker command structure, references
+  `libSystem.Security.Cryptography.Native.Apple.a`, and utilizes dead code stripping
+  `-dead_strip` and symbol exporting `-exported_symbols_list` via `ld64`); Windows (#1975)
+  and `JvmNativeImage` (GraalVM `native-image`) fail loud (#1975) — no silent managed fallback.
 - **CLI:** `--release` / `--rid <rid>` flags on `lyric build`; default output is
   the source stem (no extension), `-o` overrides.  `[build] kind = "aot"` in the
   manifest activates the same pipeline via `lyric build`.

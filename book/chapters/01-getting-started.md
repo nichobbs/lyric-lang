@@ -96,7 +96,7 @@ A project can produce a directly-runnable launcher instead of a bare `.dll` by s
 kind = "exe"   # default: "lib"
 ```
 
-This emits a native *apphost* launcher beside the managed DLL — `bin/<name>` (or `<name>.exe` on Windows) — so the program starts with `./<name>` rather than `dotnet <name>.dll`, and `lyric run` execs it directly. It is still framework-dependent (a .NET runtime must be installed). The `bundle` (self-contained) kind is reserved for future use. `kind = "aot"` produces a native binary with no runtime dependency and is equivalent to `lyric build --release` (see §"Native binaries" below); it requires `clang` on `PATH` and is currently Linux-only (`x64`/`arm64`; macOS and Windows tracked in #1975).
+This emits a native *apphost* launcher beside the managed DLL — `bin/<name>` (or `<name>.exe` on Windows) — so the program starts with `./<name>` rather than `dotnet <name>.dll`, and `lyric run` execs it directly. It is still framework-dependent (a .NET runtime must be installed). The `bundle` (self-contained) kind is reserved for future use. `kind = "aot"` produces a native binary with no runtime dependency and is equivalent to `lyric build --release` (see §"Native binaries" below); it requires a system linker (`clang` or `ld64`) on `PATH` and supports Linux (`x64`/`arm64`) and macOS (Windows is tracked in #1975).
 
 Inside a project, you can drop the arguments entirely. Running `lyric` with no
 command builds the current project, and `lyric build` / `lyric restore` find the
@@ -148,8 +148,7 @@ identifier (default: your host), and `-o` overrides the output path.
 This is equivalent to setting `[build] kind = "aot"` in your `lyric.toml` and
 running `lyric build`.
 
-> **Scope today.** `--release` covers Linux `x64` and `arm64`. macOS and
-> Windows are tracked in [#1975] and fail loud rather than emitting a managed
+> **Scope today.** `--release` covers Linux (`x64`/`arm64`) and macOS (`x64`/`arm64`). Windows is tracked in [#1975] and fails loud rather than emitting a managed
 > artifact. The JVM (GraalVM `native-image`) target is also tracked in #1975.
 
 [#1975]: https://github.com/nichobbs/lyric-lang/issues/1975

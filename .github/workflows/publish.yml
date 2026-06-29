@@ -578,9 +578,11 @@ jobs:
           npm run vscode:prepublish
 
       - name: Package extension (.vsix)
+        # Override the package.json version dynamically during release packaging so that
+        # the internal .vsix extension version matches the release versioning exactly.
         run: |
           cd lyric-vscode
-          npx @vscode/vsce package -o ../lyric-lang-${{ needs.create-release.outputs.version }}.vsix
+          npx @vscode/vsce package ${{ needs.create-release.outputs.version }} -o ../lyric-lang-${{ needs.create-release.outputs.version }}.vsix
 
       - name: Upload .vsix to GitHub Release
         shell: bash
