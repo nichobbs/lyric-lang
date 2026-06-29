@@ -59,7 +59,7 @@ function startLsp(context: vscode.ExtensionContext): void {
 
     client.start().catch(async (err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
-        const isNotFound = (err as any)?.code === 'ENOENT' || msg.includes('ENOENT');
+        const isNotFound = (err as NodeJS.ErrnoException)?.code === 'ENOENT' || msg.includes('ENOENT');
         
         let choice: string | undefined;
         if (isNotFound) {
@@ -71,7 +71,8 @@ function startLsp(context: vscode.ExtensionContext): void {
             );
         } else {
             choice = await vscode.window.showErrorMessage(
-                `Lyric: failed to start language server (${serverPath}): ${msg}.`,
+                `Lyric: failed to start language server (${serverPath}): ${msg}. ` +
+                `Set "lyric.serverPath" to the lyric binary (the LSP server runs via "lyric lsp").`,
                 'View Setup Guide'
             );
         }
