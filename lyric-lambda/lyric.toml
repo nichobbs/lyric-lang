@@ -60,7 +60,8 @@ output_assembly = "Lambda.dll"
 
 [project.packages]
 # Core types, LambdaApp builder, and serve() entry point.
-"Lambda"               = "src/lambda.l"
+# lambda_web.l contributes withRouter() when the `web` feature is active.
+"Lambda"               = ["src/lambda.l", "src/lambda_web.l"]
 # API Gateway v1 / v2 / ALB event types and lyric-web bridge.
 "Lambda.ApiGw"         = "src/apigw.l"
 # Non-HTTP event types: SQS, SNS, S3, EventBridge, DynamoDB Streams, Kinesis.
@@ -82,6 +83,9 @@ output_assembly = "Lambda.dll"
   "src/_kernel/lambda_kernel_local.l",
   "src/_kernel/lambda_kernel_jvm.l",
 ]
+# Web bridge extern (compiled only when feature = "web").
+# BCL impl: Lambda.Kernel.Net assembly; ConditionalWeakTable<LambdaRouter, Router>.
+"Lambda.Kernel.WebBridge" = "src/_kernel/lambda_kernel_web.l"
 
 [project.tests]
 "Lambda.LambdaTests" = "tests/lambda_tests.l"
