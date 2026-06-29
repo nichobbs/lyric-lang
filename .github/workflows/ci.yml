@@ -109,7 +109,7 @@ jobs:
 
       - name: Set up .NET (uses bootstrap/global.json)
         if: steps.changes.outputs.has_code_changes == 'true'
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
         with:
           global-json-file: bootstrap/global.json
 
@@ -199,10 +199,10 @@ jobs:
             "$lyric_bin" build "$ex" -o "$out" --force
           done
 
-      # NOTE: the self-hosted-emitter IL-validity check (`ilverify`) is NOT run
-      # here.  It lives in the standalone, non-required `ilverify-informational`
-      # job below — keeping a non-enforcing measurement out of the required build
-      # job (#3956).  Developers run it on demand via `make ilverify`.
+      # NOTE: the self-hosted-emitter IL-validity check (`ilverify`) runs in
+      # the standalone `ilverify-informational` job below and is required by
+      # `build-and-test` — it is a hard gate.  Developers run it on demand
+      # via `make ilverify`.
 
       # Run/test single-file examples to catch runtime regressions.
       - name: Run single-file examples
@@ -324,17 +324,13 @@ jobs:
             bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}
           retention-days: 1
 
-  # Self-hosted-emitter IL-validity measurement (#3943).  This is INTENTIONALLY
-  # a standalone, NON-REQUIRED job: it is not in `build-and-test`'s `needs`, so
-  # it never gates auto-merge.  It emits the whole Lyric.Cli closure with the
-  # self-hosted emitter and runs `ilverify` over every DLL, catching
-  # self-hosted-emitter IL bugs the F# mint build cannot (union match-arm type
-  # tracking, value-erased-to-object, list element-type confusion).  It is
-  # expected RED while the #3943 backlog clears (no `continue-on-error` masking
-  # — the check honestly reflects the count); when it reaches 0 it can be
-  # promoted into the required suite as a hard gate.  Developers run the same
-  # check locally via `make ilverify`.  Kept out of the required `build` job so
-  # a non-enforcing measurement never pollutes the gating CI suite (#3956).
+  # Self-hosted-emitter IL-validity gate (#3943).  Required by `build-and-test`.
+  # Emits the whole Lyric.Cli closure with the self-hosted emitter and runs
+  # `ilverify` over every DLL, catching self-hosted-emitter IL bugs the mint
+  # build cannot (union match-arm type tracking, value-erased-to-object, list
+  # element-type confusion).  Zero IL-validity errors reached at #3943; this
+  # job now gates auto-merge so the emitter cannot regress silently.  Developers
+  # run the same check locally via `make ilverify`.
   ilverify-informational:
     runs-on: ubuntu-latest
     needs: [build]
@@ -347,7 +343,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
@@ -356,7 +352,7 @@ jobs:
           name: build-artifacts
       - name: Restore executable permissions
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
-      - name: ilverify self-hosted emitter IL (#3943 backlog tracking)
+      - name: ilverify self-hosted emitter IL (required gate, #3943)
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -384,7 +380,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
@@ -422,7 +418,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
         with:
           global-json-file: bootstrap/global.json
       - name: Set up Java 21
@@ -465,7 +461,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
         with:
           global-json-file: bootstrap/global.json
       - name: Set up Java 21 (for JVM emitter tests — class files target major version 65)
@@ -495,7 +491,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
@@ -1548,7 +1544,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
@@ -2154,7 +2150,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
@@ -2389,7 +2385,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
         with:
           global-json-file: bootstrap/global.json
       - name: Set up Java 21 (for JVM emitter tests)
@@ -2988,7 +2984,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
@@ -3171,7 +3167,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
@@ -3371,7 +3367,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
@@ -4322,7 +4318,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
@@ -4755,7 +4751,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2  # v5.3.0
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
@@ -4804,7 +4800,7 @@ jobs:
 
   build-and-test:
     runs-on: ubuntu-latest
-    needs: [build, test-bootstrap, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, aot-smoke, compiler-self-tests-jvm, ecosystem-security-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests]
+    needs: [build, test-bootstrap, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, aot-smoke, compiler-self-tests-jvm, ecosystem-security-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests, ilverify-informational]
     if: always()
     permissions:
       contents: read

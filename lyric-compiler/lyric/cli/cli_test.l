@@ -719,7 +719,7 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
       case Ok(info) -> {
         if not File.fileExists(info.dllPath) {
           Console.println("test: building dep '" + info.pkgName + "' ...")
-          val buildRc = buildProject(buildToml, None, testTarget, newList(), false, false, false)
+          val buildRc = buildProject(buildToml, None, testTarget, newList(), false, false, false, None)
           if buildRc != 0 {
             printErr("test: failed to build dep '" + info.pkgName + "'")
             return 1

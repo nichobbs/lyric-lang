@@ -170,7 +170,8 @@ func buildWorkspaceDep(
     // use defaults
     false,
     // no --all-features
-    false
+    false,
+    None
   )       // allow restore
 
   buildStack.removeAt(buildStack.count - 1)
