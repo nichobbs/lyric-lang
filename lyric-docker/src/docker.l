@@ -244,12 +244,13 @@ pub async func listImages(client: in DockerClient): Result[String, DockerError] 
 
 
 
-/// Escape a string for embedding in a JSON string literal.
+/// Escape a string for embedding in a JSON string literal (RFC 8259).
 func jsonEscapeValue(s: in String): String {
   var acc = ""
   var i = 0
   while i < s.length {
     val c = s.substring(i, 1)
+    val code = c.codePointAt(0)
     if c == "\"" {
       acc = acc + "\\\""
     } else if c == "\\" {
@@ -264,6 +265,10 @@ func jsonEscapeValue(s: in String): String {
       acc = acc + "\\b"
     } else if c == "\u{000c}" {
       acc = acc + "\\f"
+    } else if code >= 0 and code < 32 {
+      val hex = toString(code, 16)
+      val padded = if hex.length == 1 { "0" + hex } else { hex }
+      acc = acc + "\\u00" + padded
     } else {
       acc = acc + c
     }
@@ -293,7 +298,65 @@ func createContainerBody(image: in String, env: in slice[String], binds: in slic
     "\"HostConfig\":{\"Binds\":" + jsonStringArray(binds) + "}}"
 }
 
+/// Unescape a JSON string value (reverse of RFC 8259 escape sequences).
+func jsonUnescapeValue(s: in String): String {
+  var acc = ""
+  var i = 0
+  while i < s.length {
+    val c = s.substring(i, 1)
+    if c == "\\" and i + 1 < s.length {
+      val next = s.substring(i + 1, 1)
+      if next == "\"" {
+        acc = acc + "\""
+        i = i + 2
+      } else if next == "\\" {
+        acc = acc + "\\"
+        i = i + 2
+      } else if next == "/" {
+        acc = acc + "/"
+        i = i + 2
+      } else if next == "b" {
+        acc = acc + "\u{0008}"
+        i = i + 2
+      } else if next == "f" {
+        acc = acc + "\u{000c}"
+        i = i + 2
+      } else if next == "n" {
+        acc = acc + "\n"
+        i = i + 2
+      } else if next == "r" {
+        acc = acc + "\r"
+        i = i + 2
+      } else if next == "t" {
+        acc = acc + "\t"
+        i = i + 2
+      } else if next == "u" and i + 5 < s.length {
+        val hexStr = s.substring(i + 2, 4)
+        val codeOpt = Int.parse(hexStr, 16)
+        match codeOpt {
+          case Some(code) -> {
+            acc = acc + fromCodePoint(code)
+            i = i + 6
+          }
+          case None -> {
+            acc = acc + c
+            i = i + 1
+          }
+        }
+      } else {
+        acc = acc + c
+        i = i + 1
+      }
+    } else {
+      acc = acc + c
+      i = i + 1
+    }
+  }
+  return acc
+}
+
 /// Extract a quoted string field's value from a JSON object, or "" if absent.
+/// Returns the unescaped value.
 func extractJsonField(json: in String, field: in String): String {
   val target = "\"" + field + "\""
   match json.indexOf(target) {
@@ -312,7 +375,8 @@ func extractJsonField(json: in String, field: in String): String {
           i = i + 1
         } else {
           if c == "\"" {
-            return json.substring(start, i - start)
+            val rawValue = json.substring(start, i - start)
+            return jsonUnescapeValue(rawValue)
           } else if c == "\\" {
             i = i + 2
           } else {
