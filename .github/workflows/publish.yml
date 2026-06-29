@@ -522,6 +522,7 @@ jobs:
           publish_lib lyric-validation/lyric.toml "$VERSION"
           publish_lib lyric-logging/lyric.toml "$VERSION"
           publish_lib lyric-cache/lyric.toml "$VERSION"
+          publish_lib lyric-docker/lyric.toml "$VERSION"
 
           # Tier 2: depends on Tier 1.
           publish_lib lyric-auth/lyric.toml "$VERSION"
