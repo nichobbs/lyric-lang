@@ -2102,12 +2102,18 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/msil_project_bridge_self_test.l
 
+      # Drain all earlier background steps before the emitter project self-test,
+      # which runs heavy in-process multi-package builds (emitProject) and needs
+      # exclusive access to memory rather than competing with 24+ concurrent
+      # compilation processes.
+      - name: Wait for parallel tests before emitter project self-test
+        wait-all: true
+
       # Emitter project self-test — exercises the Phase 4 in-process routing in
       # Lyric.Emitter.emitProject (multi-package DOTNET builds).  Covers aliased
       # imports, per-package isolation, @cfg erasure via emitProject, restored-dep
       # wiring, and subprocess-fallback routing (#2888).
       - name: Emitter project self-test (native lyric test)
-        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
