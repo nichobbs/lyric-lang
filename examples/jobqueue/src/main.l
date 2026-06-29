@@ -56,12 +56,18 @@ func healthRegistry(): HealthRegistry {
 
 /// GET /health/live — registered by name on the router below.
 pub func healthLive(): Result[String, ApiError] {
-  Health.runLiveness(healthRegistry())
+  match Health.runLiveness(healthRegistry()) {
+    case Ok(body) -> Ok(body)
+    case Err(msg) -> Err(Web.serviceUnavailable(msg))
+  }
 }
 
 /// GET /health/ready — registered by name on the router below.
 pub func healthReady(): Result[String, ApiError] {
-  Health.runReadiness(healthRegistry())
+  match Health.runReadiness(healthRegistry()) {
+    case Ok(body) -> Ok(body)
+    case Err(msg) -> Err(Web.serviceUnavailable(msg))
+  }
 }
 
 pub func main(): Unit {

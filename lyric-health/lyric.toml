@@ -13,8 +13,5 @@ output_assembly = "Health.dll"
 [project.packages]
 "Health" = "src/health.l"
 
-[dependencies]
-"Lyric.Web"    = { workspace = true }
-
 [project.tests]
 "Health.HealthTests" = "tests/health_tests.l"

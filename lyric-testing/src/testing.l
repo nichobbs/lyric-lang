@@ -61,11 +61,18 @@ pub record StoredObject {
   contentType: String
 }
 
+/// A captured message header as recorded by MockMessageQueue.
+@stable(since = "0.1")
+pub record TestMessageHeader {
+  key: String
+  value: String
+}
+
 /// A published message as recorded by MockMessageQueue.
 @stable(since = "0.1")
 pub record PublishedMessage {
   body: String
-  headers: slice[Mq.MessageHeader]
+  headers: slice[TestMessageHeader]
   // ─── TestClock ────────────────────────────────────────────────────────────────
 }
 
@@ -256,7 +263,7 @@ impl Mq.MessageQueue for MockMessageQueue {
   func publish(message: in Mq.Message): Result[Unit, String]
     requires: message.id.length > 0
   {
-    val captured = PublishedMessage(body = message.body, headers = message.headers)
+    val captured = PublishedMessage(body = message.body, headers = toTestHeaders(message.headers))
     self.published.add(captured)
     self.msgCount = self.msgCount + 1
     return Ok(())
@@ -268,12 +275,20 @@ impl Mq.MessageQueue for MockMessageQueue {
     requires: messages.length > 0
   {
     for msg in messages {
-      val captured = PublishedMessage(body = msg.body, headers = msg.headers)
+      val captured = PublishedMessage(body = msg.body, headers = toTestHeaders(msg.headers))
       self.published.add(captured)
       self.msgCount = self.msgCount + 1
     }
     return Ok(())
   }
+}
+
+func toTestHeaders(headers: in slice[Mq.MessageHeader]): slice[TestMessageHeader] {
+  var result: slice[TestMessageHeader] = []
+  for h in headers {
+    result = concat(result, [TestMessageHeader(key = h.key, value = h.value)])
+  }
+  return result
 }
 
 /// Return the most recently published message, or None if none have been published.
@@ -467,6 +482,37 @@ pub func disable(store: inout MockFlagStore, name: in String): Unit
   store.flags[name] = false
 }
 
+// ─── MockCacheStore ───────────────────────────────────────────────────────────
+/// Mock cache store backed by an in-process Map.
+///
+/// All cache operations succeed by default.  TTL values are accepted but not
+/// enforced; the mock store never expires entries.
+@stable(since = "0.1")
+pub record MockCacheStore {
+  var entries: Map[String, String]
+}
+
+impl Cache.CacheStore for MockCacheStore {
+  func get(key: in String): Option[String] {
+    return mapGet(self.entries, key)
+  }
+  func set(key: in String, value: in String, ttlSeconds: in Int): Unit {
+    self.entries[key] = value
+  }
+  func delete(key: in String): Unit {
+    self.entries.remove(key)
+  }
+  func clear(): Unit {
+    self.entries = newMap()
+  }
+}
+
+/// Return the number of entries currently held in the mock cache.
+@stable(since = "0.1")
+pub func cacheSize(store: in MockCacheStore): Int {
+  return store.entries.count
+}
+
 // ─── TestContext ──────────────────────────────────────────────────────────────
 /// A bundle of mock service implementations for use in unit tests.
 ///
@@ -474,7 +520,7 @@ pub func disable(store: inout MockFlagStore, name: in String): Unit
 /// under test instead of real infrastructure clients.
 @stable(since = "0.1")
 pub record TestContext {
-  cache: Cache.InProcessCacheStore
+  cache: MockCacheStore
   mail: MockMailSender
   storage: MockStorageBucket
   queue: MockMessageQueue
@@ -486,9 +532,8 @@ pub record TestContext {
 /// Create a TestContext with all mocks initialised to sensible defaults.
 @stable(since = "0.1")
 pub func newTestContext(): TestContext {
-  val cacheStore = Cache.inProcess()
   return TestContext(
-    cache = cacheStore,
+    cache = MockCacheStore(entries = newMap()),
     mail = MockMailSender(sentEmails = newList(), count = 0),
     storage = MockStorageBucket(
       objects = newMap(),

@@ -21,6 +21,11 @@
 #                              local feature → lightweight local test HTTP server
 #                              jvm   feature → AWS Java managed runtime handler
 #
+# Feature flags:
+#   aws, local, jvm  — runtime target (exactly one should be active per build).
+#   web              — enables Lambda.withRouter() for lyric-web Router integration.
+#                      Consumers must also declare Lyric.Web in their [dependencies].
+#
 # Composition modes (may be combined in the same LambdaApp):
 #   1. lyric-web router reuse — attach a Web.Router with Lambda.withRouter().
 #   2. Streaming HTTP handler — Lambda.withStreamingHandler(handlerName).
@@ -45,6 +50,8 @@ aws   = []
 local = []
 # JVM: AWS Java managed runtime (com.amazonaws:aws-lambda-java-core).
 jvm   = []
+# lyric-web router integration (withRouter).  Requires Lyric.Web as a dep.
+web   = []
 
 [project]
 name            = "Lyric.Lambda"
@@ -52,7 +59,8 @@ output          = "single"
 output_assembly = "Lambda.dll"
 
 [project.packages]
-# Core types, LambdaApp builder, and serve() entry point.
+# Core types, LambdaApp builder, serve() entry point, and (when feature = "web")
+# withRouter() for lyric-web Router integration.
 "Lambda"               = "src/lambda.l"
 # API Gateway v1 / v2 / ALB event types and lyric-web bridge.
 "Lambda.ApiGw"         = "src/apigw.l"
@@ -75,6 +83,9 @@ output_assembly = "Lambda.dll"
   "src/_kernel/lambda_kernel_local.l",
   "src/_kernel/lambda_kernel_jvm.l",
 ]
+# Web bridge extern (compiled only when feature = "web").
+# BCL impl: Lambda.Kernel.Net assembly; ConditionalWeakTable<LambdaRouter, Router>.
+"Lambda.Kernel.WebBridge" = "src/_kernel/lambda_kernel_web.l"
 
 [project.tests]
 "Lambda.LambdaTests" = "tests/lambda_tests.l"
