@@ -603,7 +603,7 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
 
   // Build workspace dependencies first, so their DLLs are available when building
   // path deps and test packages. This mirrors the integration in cli_build.l.
-  val (wsDepDlls, wsHadError) = buildWorkspaceDeps(manifest, mfPath, testTarget)
+  val (wsDepDlls, wsHadError, wsCtxOpt) = buildWorkspaceDeps(manifest, mfPath, testTarget)
   if wsHadError {
     return 1
   }
@@ -740,10 +740,15 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
   // DLLs (e.g. Lyric.Stdlib.Testing) that live in the dep's bin dir but
   // are not merged into the main dep bundle (e.g. Lyric.Stdlib.dll).
   val restoredDlls: List[String] = newList()
-  // Add workspace dependency DLLs first.
+  val seenDeps: List[String] = newList()
+  // Add workspace dependency DLLs (direct + transitive) first.
   var wi = 0
   while wi < wsDepDlls.count {
-    restoredDlls.add(wsDepDlls[wi])
+    val wsEntry = wsDepDlls[wi]
+    restoredDlls.add(wsEntry)
+    val wsTab = wsEntry.indexOf("\t")
+    val wsName = if wsTab >= 0 { wsEntry.substring(0, wsTab) } else { wsEntry }
+    seenDeps.add(wsName)
     wi += 1
   }
   val depBinDirs: List[String] = newList()
@@ -760,7 +765,11 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
             case Ok(info) -> {
               val depBinDir = Path.dirname(info.dllPath)
               if File.fileExists(info.dllPath) {
-                restoredDlls.add(dep.name + "\t" + info.dllPath)
+                if not stringListContains(seenDeps, dep.name) {
+                  restoredDlls.add(dep.name + "\t" + info.dllPath)
+                  seenDeps.add(dep.name)
+                  collectTransitiveDepDlls(depDir, wsCtxOpt, seenDeps, restoredDlls)
+                }
                 // Collect unique dep bin directories for runtime probing.
                 var alreadyHave = false
                 var ddi = 0

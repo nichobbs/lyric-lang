@@ -5,11 +5,12 @@
 //! 1. Discovers the workspace root if it exists
 //! 2. Resolves the dependency name to its directory
 //! 3. Builds the dependency if its DLL is missing or stale
-//! 4. Returns the built DLL path
+//! 4. Returns the built DLL path, plus the paths of all transitive deps
 //!
-//! This ensures that `lyric build` in a workspace automatically builds all
-//! transitive dependencies in correct order, eliminating the manual burden
-//! of building dependencies upfront.
+//! collectTransitiveDepDlls walks a package's dependency tree and adds all
+//! reachable dep DLL paths to a result list.  This ensures that synthesis
+//! preambles include type declarations from transitive dependencies, fixing
+//! T0010 errors on cross-DLL types in restored-package synthesis (issue #4517).
 package Lyric.Cli
 
 import Std.Core
@@ -27,12 +28,13 @@ import Lyric.Emitter as Emitter
 // §1. Public API
 // ─────────────────────────────────────────────────────────────────────────────
 /// Resolve all { workspace = true } dependencies in a manifest, building them
-/// as needed.  Returns (dllPaths, buildErrors).
-/// dllPaths is a list of "name\tdllPath" strings, matching the format used for
-/// path dependencies.  buildErrors is True if any build failed.
+/// as needed.  Returns (dllPaths, buildErrors, wsCtxOpt).
+/// dllPaths is a list of "name\tdllPath" strings for all direct AND transitive
+/// deps; buildErrors is True if any direct dep build failed; wsCtxOpt is the
+/// discovered workspace context (None when not in a workspace).
 pub func buildWorkspaceDeps(
   manifest: in Mf.Manifest, mfPath: in String, target: in Emitter.CompileTarget
-): (List[String], Bool) {
+): (List[String], Bool, Option[Ws.WorkspaceContext]) {
   val result: List[String] = newList()
   var hadError = false
 
@@ -43,11 +45,12 @@ pub func buildWorkspaceDeps(
     case None -> {
       // No workspace found; workspace dependencies cannot be resolved.
       // The caller will diagnose this as an unresolved dependency.
-      return (result, false)
+      return (result, false, None)
     }
   }
 
   val buildStack: List[String] = newList()
+  val seen: List[String] = newList()
   val mfDir = Path.dirname(mfPath)
   var di = 0
   while di < manifest.deps.count {
@@ -60,7 +63,11 @@ pub func buildWorkspaceDeps(
             val buildResult = buildWorkspaceDep(dep.name, depDir, target, versionOpt, buildStack)
             match buildResult {
               case Ok(dllPath) -> {
-                result.add(dep.name + "\t" + dllPath)
+                if not stringListContains(seen, dep.name) {
+                  result.add(dep.name + "\t" + dllPath)
+                  seen.add(dep.name)
+                  collectTransitiveDepDlls(depDir, wsCtxOpt, seen, result)
+                }
               }
               case Err(msg) -> {
                 printErr("build: workspace dep '" + dep.name + "': " + msg)
@@ -79,12 +86,122 @@ pub func buildWorkspaceDeps(
     di += 1
   };
 
-  (result, hadError)
+  (result, hadError, wsCtxOpt)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Private helpers
 // ─────────────────────────────────────────────────────────────────────────────
+func stringListContains(list: in List[String], s: in String): Bool {
+  var i = 0
+  while i < list.count {
+    if list[i] == s {
+      return true
+    }
+    i += 1
+  }
+  false
+}
+
+/// Walk the dependency tree of the package at depDir, adding all transitive
+/// dep DLL paths to result.  seen tracks dep names already added to prevent
+/// duplicates and cycles.  wsCtxOpt resolves workspace-form deps.
+/// Does not build anything — only traverses already-built packages.
+func collectTransitiveDepDlls(
+  depDir: in String,
+  wsCtxOpt: in Option[Ws.WorkspaceContext],
+  seen: in List[String],
+  result: in List[String]
+): Unit {
+  val tomlPath = Path.join(depDir, "lyric.toml")
+  if not File.fileExists(tomlPath) {
+    return
+  }
+  // Restructured to avoid `val x = match { case Err -> return }` which the
+  // F# bootstrap compiler does not support (bare return in a match arm).
+  match File.readText(tomlPath) {
+    case Err(_) -> ()
+    case Ok(mfText) -> {
+      match Mf.parseManifest(mfText, tomlPath) {
+        case Err(_) -> ()
+        case Ok(mf) -> {
+          var ti = 0
+          while ti < mf.deps.count {
+            val tdep = mf.deps[ti]
+            if not stringListContains(seen, tdep.name) {
+              match tdep.source {
+                case Mf.DepSource.Workspace(_) -> {
+                  match wsCtxOpt {
+                    case None -> ()
+                    case Some(wsCtx) -> {
+                      match Ws.resolveDep(tdep.name, wsCtx) {
+                        case None -> ()
+                        case Some(tDepDir) -> {
+                          val tToml = Path.join(tDepDir, "lyric.toml")
+                          if File.fileExists(tToml) {
+                            match File.readText(tToml) {
+                              case Err(_) -> ()
+                              case Ok(tMfText) -> {
+                                match Mf.parseManifest(tMfText, tToml) {
+                                  case Err(_) -> ()
+                                  case Ok(tMf) -> {
+                                    val dllName = match tMf.project {
+                                      case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }
+                                      case None -> tMf.packageSection.name + ".dll"
+                                    }
+                                    val tDllPath = Path.join(Path.join(tDepDir, "bin"), dllName)
+                                    if File.fileExists(tDllPath) {
+                                      result.add(tdep.name + "\t" + tDllPath)
+                                      seen.add(tdep.name)
+                                      collectTransitiveDepDlls(tDepDir, wsCtxOpt, seen, result)
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                case Mf.DepSource.Path(dir) -> {
+                  val tDepDir = if Path.isAbsolute(dir) { dir } else { Path.join(depDir, dir) }
+                  val tToml = Path.join(tDepDir, "lyric.toml")
+                  if File.fileExists(tToml) {
+                    match File.readText(tToml) {
+                      case Err(_) -> ()
+                      case Ok(tMfText) -> {
+                        match Mf.parseManifest(tMfText, tToml) {
+                          case Err(_) -> ()
+                          case Ok(tMf) -> {
+                            val dllName = match tMf.project {
+                              case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }
+                              case None -> tMf.packageSection.name + ".dll"
+                            }
+                            val tDllPath = Path.join(Path.join(tDepDir, "bin"), dllName)
+                            if File.fileExists(tDllPath) {
+                              result.add(tdep.name + "\t" + tDllPath)
+                              seen.add(tdep.name)
+                              collectTransitiveDepDlls(tDepDir, wsCtxOpt, seen, result)
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                case _ -> ()
+              }
+            }
+            ti += 1
+          }
+        }
+      }
+    }
+  }
+}
+
 /// Build a single workspace dependency and return its DLL path.
 /// Returns Err(error) on any failure.
 /// buildStack tracks the dependency chain to detect circular dependencies.
