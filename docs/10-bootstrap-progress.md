@@ -25745,3 +25745,30 @@ closure-returning-closure patterns. All cases run identically on both MSIL and J
 - #4211: MSIL bool/char ldelem instruction selection (resolved)
 - #4214: MLong/MDouble hoisted-var cell boxing (in progress)
 - Remaining: #4189 ✓, #4177 ✓, etc.
+
+### D-progress-536 — `--package-version` flag for `lyric build` and `lyric publish`
+
+Adds a `--package-version <ver>` CLI flag to both `lyric build` and `lyric publish` so that
+automated publish pipelines can stamp the git release version into all built artifacts without
+modifying each library's `lyric.toml`.
+
+**Root cause addressed.** The publish workflow was building ecosystem libraries with the
+`version` string from each library's `lyric.toml` (`0.1.0`), while publishing them under the
+git release tag version. This caused `B0001` failures when a downstream tier (e.g. `lyric-grpc`)
+loaded an upstream tier (e.g. `lyric-auth`) as a restored workspace dependency: the
+`Lyric.Contract.Auth` resource embedded in the DLL carried the wrong version, producing an
+invalid JSON parse result.
+
+**`lyric build --package-version <ver>`** (`cli_build.l`):
+- `buildProject` and `buildReleaseProject` gain a `packageVersionOverride: in Option[String]` parameter.
+- `EmitProjectRequest.packageVersion` uses the override when present, falling back to `manifest.packageSection.version`.
+- All internal call sites (`cli_run.l`, `cli_check.l`, `cli_test.l`, `workspace_builder.l`) thread `None` through.
+
+**`lyric publish --package-version <ver>`** (`cli_publish.l`):
+- `effectiveVersion` replaces `pkg.version` in the NuGet `<Version>` field, the temp `.csproj` filename,
+  the `.nupkg` path, and cross-library workspace dependency `<PackageReference>` versions.
+
+**`.github/workflows/publish.yml`**:
+- `publish_lib()` gains a `version` argument; all 20+ `publish_lib` calls pass
+  `needs.create-release.outputs.version` so the git release tag version is stamped consistently
+  across all four tiers of ecosystem libraries.

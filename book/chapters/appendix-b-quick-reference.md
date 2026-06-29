@@ -831,6 +831,9 @@ lyric build --manifest lyric.toml      # build from project manifest
                                        # auto-restores [dependencies] when lyric.lock is missing/stale
                                        # ([nuget]/[maven] edits aren't detected — run `lyric restore`)
 lyric build --no-restore               # build against the lock as-is (skip auto-restore)
+lyric build --package-version <ver>   # override the version string embedded in Lyric.Contract.*
+                                       # metadata resources (instead of the version in lyric.toml);
+                                       # used by publish pipelines to stamp the git release version
 
 # Build kind (manifest [build] kind, .NET target; default "lib")
 #   kind = "lib"     -> managed foo.dll + foo.runtimeconfig.json (run via `dotnet exec`)
@@ -974,6 +977,11 @@ lyric remove Foo --no-restore          # remove from manifest without restoring
 lyric publish                          # publish package to the configured registry
 lyric publish --registry <url>         # publish to a specific registry feed URL
 lyric publish --api-key <key>          # supply an API key (NuGet push token / GitHub PAT)
+lyric publish --skip-duplicate         # silently succeed if this version already exists on the registry
+lyric publish --package-version <ver>  # override the NuGet <Version>, .nupkg filename, and
+                                       # cross-library <PackageReference> versions; also stamps
+                                       # Lyric.Contract.* metadata resources embedded in the DLL;
+                                       # used by publish pipelines to stamp the git release version
 lyric search <query>                   # search the registry for matching packages
 
 # Interactive REPL

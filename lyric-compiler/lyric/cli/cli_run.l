@@ -41,7 +41,7 @@ func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in Com
     case Some(p) -> p
   }
   val mfDir = Path.dirname(mfPath)
-  val buildRc = buildProject(mfPath, None, target, newList(), false, false, false)
+  val buildRc = buildProject(mfPath, None, target, newList(), false, false, false, None)
   if buildRc != 0 {
     return buildRc
   }
@@ -138,7 +138,7 @@ val WATCH_POLL_MS: Int = 400
 union WatchAction {
   case RunFile(sourcePath: String, userArgs: List[String], target: CompileTarget)
   case RunProj(mfPath: String, userArgs: List[String], target: CompileTarget)
-  case BuildProj(mfPath: String, outArg: Option[String], target: CompileTarget, feats: List[String], noDef: Bool, allF: Bool, noRestore: Bool)
+  case BuildProj(mfPath: String, outArg: Option[String], target: CompileTarget, feats: List[String], noDef: Bool, allF: Bool, noRestore: Bool, pkgVer: Option[String])
   case BuildFile(sourcePath: String, outArg: String, target: CompileTarget, manifest: Option[String])
 }
 
@@ -199,7 +199,7 @@ func runWatchAction(a: in WatchAction): Int {
   match a {
     case RunFile(sp, ua, t) -> runOnce(sp, ua, t)
     case RunProj(mp, ua, t) -> runProjectOnce(mp, ua, t)
-    case BuildProj(mf, o, t, f, nd, af, nr) -> buildProject(mf, o, t, f, nd, af, nr)
+    case BuildProj(mf, o, t, f, nd, af, nr, pv) -> buildProject(mf, o, t, f, nd, af, nr, pv)
     case BuildFile(sp, o, t, m) -> buildOne(sp, o, t, m)
   }
 }
