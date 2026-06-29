@@ -578,7 +578,7 @@ jobs:
       - name: Package extension (.vsix)
         run: |
           cd lyric-vscode
-          npx vsce package -o ../lyric-lang-${{ needs.create-release.outputs.version }}.vsix
+          npx @vscode/vsce package -o ../lyric-lang-${{ needs.create-release.outputs.version }}.vsix
 
       - name: Upload .vsix to GitHub Release
         shell: bash
