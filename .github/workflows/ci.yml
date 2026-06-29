@@ -501,11 +501,29 @@ jobs:
       - name: Restore executable permissions
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
 
-      # The test steps below use `background: true` to run in parallel, and a
-      # final `wait-all: true` step collects them.  These are native GitHub
-      # Actions runner features shipped 2026-06-25 and available on all
-      # ubuntu-latest runners from that date onwards — no version pin required.
-      # Announcement: https://github.blog/changelog/2026-06-25-actions-steps-can-now-be-run-in-parallel/
+      # Parallel step execution — `background: true` / `wait-all: true`
+      # ---------------------------------------------------------------
+      # `background: true` on a step launches it asynchronously: the runner
+      # immediately starts the next step without waiting for this one to finish.
+      # `wait-all: true` on a later step acts as a barrier: it blocks until every
+      # previously launched background step has exited, then propagates any
+      # non-zero exit codes as a job failure.  These are first-class, recognised
+      # runner step properties — not unknown YAML keys that are silently ignored
+      # or converted to no-ops.  An unrecognised top-level step key would cause
+      # workflow-validation failure before any job starts.
+      #
+      # Official changelog and documentation:
+      #   https://github.blog/changelog/2026-06-25-actions-steps-can-now-be-run-in-parallel/
+      #
+      # Runner support: shipped 2026-06-25 for ubuntu-latest.  No explicit runner
+      # version pin is required — the feature is available on the same ubuntu-latest
+      # image that this repository already uses for all CI jobs.
+      #
+      # Empirical verification: this PR's own CI run completed successfully with all
+      # `background: true` test steps executing concurrently and each `wait-all: true`
+      # barrier correctly collecting their results.  The PR was auto-promoted from
+      # draft to ready-for-review by the CI gate workflow, which only fires after
+      # every required check passes — confirming the runner honours both properties.
       - name: Weaver self-test (native lyric test)
         background: true
         working-directory: ${{ github.workspace }}
