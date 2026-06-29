@@ -59,9 +59,9 @@ output          = "single"
 output_assembly = "Lambda.dll"
 
 [project.packages]
-# Core types, LambdaApp builder, and serve() entry point.
-# lambda_web.l contributes withRouter() when the `web` feature is active.
-"Lambda"               = ["src/lambda.l", "src/lambda_web.l"]
+# Core types, LambdaApp builder, serve() entry point, and (when feature = "web")
+# withRouter() for lyric-web Router integration.
+"Lambda"               = "src/lambda.l"
 # API Gateway v1 / v2 / ALB event types and lyric-web bridge.
 "Lambda.ApiGw"         = "src/apigw.l"
 # Non-HTTP event types: SQS, SNS, S3, EventBridge, DynamoDB Streams, Kinesis.
