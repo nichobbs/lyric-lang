@@ -552,18 +552,57 @@ jobs:
         run: rm -f /tmp/nuget-signing.pfx
 
   # ---------------------------------------------------------------------------
+  # Build and package the VS Code extension as a release artifact (.vsix).
+  #
+  # Since the extension runs purely platform-independent JS/TS and delegates all
+  # compiler and LSP tasks to the `lyric lsp` CLI, the resulting .vsix is fully
+  # architecture-independent and can be compiled on any OS runner.
+  # ---------------------------------------------------------------------------
+  publish-vscode:
+    runs-on: ubuntu-latest
+    needs: [create-release]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v4.2.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3f25af7f  # v4.1.0
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: lyric-vscode/package-lock.json
+
+      - name: Install dependencies and compile
+        run: |
+          cd lyric-vscode
+          npm ci
+          npm run vscode:prepublish
+
+      - name: Package extension (.vsix)
+        run: |
+          cd lyric-vscode
+          npx @vscode/vsce package -o ../lyric-lang-${{ needs.create-release.outputs.version }}.vsix
+
+      - name: Upload .vsix to GitHub Release
+        shell: bash
+        run: |
+          gh release upload "v${{ needs.create-release.outputs.version }}" lyric-lang-${{ needs.create-release.outputs.version }}.vsix
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------------------------------
   # Mark the release as ready (non-draft) after all uploads and publishing
   # are complete.  Runs only if all prior jobs succeeded or were skipped.
   # ---------------------------------------------------------------------------
   finalize-release:
     runs-on: ubuntu-latest
-    needs: [create-release, build-standalone, publish-nuget, publish-ecosystem]
+    needs: [create-release, build-standalone, publish-nuget, publish-ecosystem, publish-vscode]
     if: >-
       always() &&
       needs.create-release.result == 'success' &&
       (needs.build-standalone.result == 'success' || needs.build-standalone.result == 'skipped') &&
       (needs.publish-nuget.result == 'success' || needs.publish-nuget.result == 'skipped') &&
-      (needs.publish-ecosystem.result == 'success' || needs.publish-ecosystem.result == 'skipped')
+      (needs.publish-ecosystem.result == 'success' || needs.publish-ecosystem.result == 'skipped') &&
+      (needs.publish-vscode.result == 'success' || needs.publish-vscode.result == 'skipped')
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
