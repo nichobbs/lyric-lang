@@ -224,13 +224,27 @@ pub func jsonStringField(json: in String, key: in String): Option[String] {
 pub func parseIlcVersion(assetsJson: in String, rid: in String): Option[String] {
   val prefix = "\"runtime." + rid + ".Microsoft.DotNet.ILCompiler/"
   match Str.indexOf(assetsJson, prefix) {
-    case None -> None
     case Some(i) -> {
       val start = i + Str.length(prefix)
       val rest = Str.substring(assetsJson, start, Str.length(assetsJson) - start)
       match Str.indexOf(rest, "\"") {
         case None -> None
         case Some(endIdx) -> Some(value = Str.substring(rest, 0, endIdx))
+      }
+    }
+    case None -> {
+      // Fallback: search for the core/main ILCompiler package version
+      val fallbackPrefix = "\"Microsoft.DotNet.ILCompiler/"
+      match Str.indexOf(assetsJson, fallbackPrefix) {
+        case None -> None
+        case Some(i) -> {
+          val start = i + Str.length(fallbackPrefix)
+          val rest = Str.substring(assetsJson, start, Str.length(assetsJson) - start)
+          match Str.indexOf(rest, "\"") {
+            case None -> None
+            case Some(endIdx) -> Some(value = Str.substring(rest, 0, endIdx))
+          }
+        }
       }
     }
   }
@@ -244,6 +258,122 @@ pub func semverMajor(version: in String): Int {
   }
 }
 
+// Extract the SDK packs directory from runtimeIdentifierGraphPath in project.assets.json.
+pub func parseSdkPacksDir(assetsJson: in String): Option[String] {
+  match jsonStringField(assetsJson, "runtimeIdentifierGraphPath") {
+    case None -> None
+    case Some(graphPath) -> {
+      match Str.indexOf(graphPath, "/sdk/") {
+        case Some(idx) -> Some(value = Str.substring(graphPath, 0, idx) + "/packs")
+        case None -> match Str.indexOf(graphPath, "\\sdk\\") {
+          case Some(idx) -> Some(value = Str.substring(graphPath, 0, idx) + "\\packs")
+          case None -> None
+        }
+      }
+    }
+  }
+}
+
+// Helper to search both local NuGet cache and SDK packs for ILC and NativeAOT runtime.
+func resolveIlcPaths(pkgsDir: in String, packsOpt: in Option[String], rid: in String, ilcVersion: in String): Option[IlcPaths] {
+  var ilcBin: String = ""
+  
+  // Try NuGet packages directory
+  val nugetIlc = Path.join(
+    Path.join(
+      Path.join(Path.join(pkgsDir, "runtime." + rid + ".microsoft.dotnet.ilcompiler"), ilcVersion),
+      "tools"
+    ),
+    "ilc"
+  )
+  if File.fileExists(nugetIlc) {
+    ilcBin = nugetIlc
+  } else {
+    match packsOpt {
+      case Some(packsDir) -> {
+        ilcBin = Path.join(
+          Path.join(
+            Path.join(Path.join(packsDir, "runtime." + rid + ".Microsoft.DotNet.ILCompiler"), ilcVersion),
+            "tools"
+          ),
+          "ilc"
+        )
+        if not File.fileExists(ilcBin) {
+          ilcBin = Path.join(
+            Path.join(
+              Path.join(Path.join(packsDir, "runtime." + rid + ".microsoft.dotnet.ilcompiler"), ilcVersion),
+              "tools"
+            ),
+            "ilc"
+          )
+          if not File.fileExists(ilcBin) {
+            ilcBin = ""
+          }
+        }
+      }
+      case None -> ()
+    }
+  }
+  
+  if Str.length(ilcBin) == 0 {
+    return None
+  }
+  
+  var nativeaotRoot: String = ""
+  
+  // Try NuGet packages directory
+  val nugetNativeAot = Path.join(
+    Path.join(
+      Path.join(Path.join(pkgsDir, "microsoft.netcore.app.runtime.nativeaot." + rid), ilcVersion),
+      "runtimes"
+    ),
+    rid
+  )
+  if File.dirExists(nugetNativeAot) {
+    nativeaotRoot = nugetNativeAot
+  } else {
+    match packsOpt {
+      case Some(packsDir) -> {
+        nativeaotRoot = Path.join(
+          Path.join(
+            Path.join(Path.join(packsDir, "Microsoft.NETCore.App.Runtime.NativeAOT." + rid), ilcVersion),
+            "runtimes"
+          ),
+          rid
+        )
+        if not File.dirExists(nativeaotRoot) {
+          nativeaotRoot = Path.join(
+            Path.join(
+              Path.join(Path.join(packsDir, "microsoft.netcore.app.runtime.nativeaot." + rid), ilcVersion),
+              "runtimes"
+            ),
+            rid
+          )
+          if not File.dirExists(nativeaotRoot) {
+            nativeaotRoot = ""
+          }
+        }
+      }
+      case None -> ()
+    }
+  }
+  
+  if Str.length(nativeaotRoot) == 0 {
+    return None
+  }
+  
+  val major = semverMajor(ilcVersion)
+  val tfm = "net" + toString(major) + ".0"
+  val sdkPath = Path.join(nativeaotRoot, "native")
+  val frameworkPath = Path.join(Path.join(nativeaotRoot, "lib"), tfm)
+  
+  if not File.dirExists(sdkPath) {
+    return None
+  }
+  
+  Some(value = IlcPaths(ilcBin = ilcBin, sdkPath = sdkPath, frameworkPath = frameworkPath))
+}
+
 // Attempt to build IlcPaths from an already-populated probe directory.
 // Returns None on any missing file or parse failure so the caller can fall
 // through to a full `dotnet restore`.  Used as the cache-hit fast path.
@@ -255,31 +385,8 @@ func tryLoadCachedIlcPaths(probeDir: in String, rid: in String): Option[IlcPaths
   val assetsJson = match File.readText(assetsPath) { case Err(_) -> return None; case Ok(t) -> t }
   val pkgsDir = match jsonStringField(assetsJson, "packagesPath") { case None -> return None; case Some(p) -> p }
   val ilcVersion = match parseIlcVersion(assetsJson, rid) { case None -> return None; case Some(v) -> v }
-  val ilcBin = Path.join(
-    Path.join(
-      Path.join(Path.join(pkgsDir, "runtime." + rid + ".microsoft.dotnet.ilcompiler"), ilcVersion),
-      "tools"
-    ),
-    "ilc"
-  )
-  if not File.fileExists(ilcBin) {
-    return None
-  }
-  val major = semverMajor(ilcVersion)
-  val tfm = "net" + toString(major) + ".0"
-  val nativeaotRoot = Path.join(
-    Path.join(
-      Path.join(Path.join(pkgsDir, "microsoft.netcore.app.runtime.nativeaot." + rid), ilcVersion),
-      "runtimes"
-    ),
-    rid
-  )
-  val sdkPath = Path.join(nativeaotRoot, "native")
-  val frameworkPath = Path.join(Path.join(nativeaotRoot, "lib"), tfm)
-  if not File.dirExists(sdkPath) {
-    return None
-  }
-  Some(value = IlcPaths(ilcBin = ilcBin, sdkPath = sdkPath, frameworkPath = frameworkPath))
+  val sdkPacksDirOpt = parseSdkPacksDir(assetsJson)
+  resolveIlcPaths(pkgsDir, sdkPacksDirOpt, rid, ilcVersion)
 }
 
 // Restore the ILC probe project and return the NuGet packages directory and
@@ -352,45 +459,15 @@ func restoreIlcProbe(stageDir: in String, rid: in String): Result[IlcPaths, Stri
     )
   }
 
-  // ILC binary: runtime.<RID>.Microsoft.DotNet.ILCompiler/<version>/tools/ilc
-  val ilcBin = Path.join(
-    Path.join(
-      Path.join(Path.join(pkgsDir, "runtime." + rid + ".microsoft.dotnet.ilcompiler"), ilcVersion),
-      "tools"
-    ),
-    "ilc"
-  )
-  if not File.fileExists(ilcBin) {
-    return Err(error = "ILC binary not found at '" + ilcBin + "'")
-  }
-
-  // NativeAOT runtime pack: microsoft.netcore.app.runtime.nativeaot.<RID>/<version>
-  // Version matches the ILC version; this package carries the pre-compiled native libs.
-  val major = semverMajor(ilcVersion)
-  val tfm = "net" + toString(major) + ".0"
-  val nativeaotRoot = Path.join(
-    Path.join(
-      Path.join(Path.join(pkgsDir, "microsoft.netcore.app.runtime.nativeaot." + rid), ilcVersion),
-      "runtimes"
-    ),
-    rid
-  )
-  val sdkPath = Path.join(nativeaotRoot, "native")
-  val frameworkPath = Path.join(Path.join(nativeaotRoot, "lib"), tfm)
-
-  if not File.dirExists(sdkPath) {
-    return Err(
-      error = "NativeAOT runtime pack not found at '" + nativeaotRoot + "'. " +
-        "Expected microsoft.netcore.app.runtime.nativeaot." +
-        rid +
-        "/" +
-        ilcVersion +
-        " in " +
-        pkgsDir
+  val sdkPacksDirOpt = parseSdkPacksDir(assetsJson)
+  match resolveIlcPaths(pkgsDir, sdkPacksDirOpt, rid, ilcVersion) {
+    case Some(paths) -> Ok(value = paths)
+    case None -> Err(
+      error = "could not find ILC paths (ilc binary or native runtime libraries) for RID '" + rid + "'. " +
+        "Searched in local NuGet cache: " + pkgsDir + " and SDK packs directory: " + 
+        (match sdkPacksDirOpt { case Some(d) -> d; case None -> "not found" })
     )
   }
-
-  Ok(value = IlcPaths(ilcBin = ilcBin, sdkPath = sdkPath, frameworkPath = frameworkPath))
 }
 
 // ─── ILC RSP construction ─────────────────────────────────────────────────────
@@ -700,6 +777,86 @@ func buildLinkerArgsUnix(
   args
 }
 
+// Build the clang linker argument list for a macOS native executable.
+func buildLinkerArgsMac(
+  objFile: in String,
+  exportsFile: in String,
+  outBin: in String,
+  sdkPath: in String,
+  arch: in String,
+): List[String] {
+  val sdk = sdkPath
+  val args: List[String] = newList()
+
+  // Input object
+  args.add(objFile)
+  args.add("-o")
+  args.add(outBin)
+
+  // Native shim static archives (netcoreapp native libs)
+  args.add(Path.join(sdk, "libSystem.Native.a"))
+  args.add(Path.join(sdk, "libSystem.Globalization.Native.a"))
+  args.add(Path.join(sdk, "libSystem.IO.Compression.Native.a"))
+  args.add(Path.join(sdk, "libSystem.Net.Security.Native.a"))
+  args.add(Path.join(sdk, "libSystem.Security.Cryptography.Native.Apple.a"))
+
+  // Runtime bootstrapper + GC + minipal.
+  // Note: macOS linker (ld64) does not support --start-group/--end-group.
+  args.add(Path.join(sdk, "libbootstrapper.o"))
+  args.add(Path.join(sdk, "libRuntime.WorkstationGC.a"))
+  args.add(Path.join(sdk, "libeventpipe-disabled.a"))
+  // VxSort support (x64 only)
+  if arch == "x64" {
+    args.add(Path.join(sdk, "libRuntime.VxsortDisabled.a"))
+  }
+  args.add(Path.join(sdk, "libstandalonegc-disabled.a"))
+  args.add(Path.join(sdk, "libaotminipal.a"))
+
+  val stdcppCompat = Path.join(sdk, "libstdc++compat.a")
+  if File.fileExists(stdcppCompat) {
+    args.add(stdcppCompat)
+  }
+
+  // Compression + Brotli (check if present, since on macOS these may not be shipped as static libs in NativeAOT pack)
+  val libz = Path.join(sdk, "libz.a")
+  if File.fileExists(libz) {
+    args.add(libz)
+  } else {
+    args.add("-lz")
+  }
+  
+  val libbrotlienc = Path.join(sdk, "libbrotlienc.a")
+  if File.fileExists(libbrotlienc) {
+    args.add(libbrotlienc)
+  }
+
+  val libbrotlidec = Path.join(sdk, "libbrotlidec.a")
+  if File.fileExists(libbrotlidec) {
+    args.add(libbrotlidec)
+  }
+
+  val libbrotlicommon = Path.join(sdk, "libbrotlicommon.a")
+  if File.fileExists(libbrotlicommon) {
+    args.add(libbrotlicommon)
+  }
+
+  // Linker flags for symbol visibility and dead code stripping
+  args.add("-Wl,-exported_symbols_list," + exportsFile)
+  args.add("-Wl,-dead_strip")
+
+  // Required system libraries and frameworks
+  args.add("-pthread")
+  args.add("-ldl")
+  args.add("-lm")
+  args.add("-liconv")
+  args.add("-framework")
+  args.add("Foundation")
+  args.add("-framework")
+  args.add("Security")
+
+  args
+}
+
 // ─── Top-level release pipeline ──────────────────────────────────────────────
 /// Produce a native binary from an already-built program DLL via .NET Native AOT.
 ///
@@ -768,14 +925,8 @@ pub func buildReleaseDotnet(
     releaseErr("Windows native linking is not yet implemented; tracked in #1975")
     return 1
   }
-  if os == "osx" {
-    releaseErr("macOS native linking is not yet implemented (ld64 flags differ from Linux ELF); tracked in #1975")
-    return 1
-  }
 
-  // Verify clang and ld.bfd are on PATH before the slow ILC probe and compile steps.
-  // -fuse-ld=bfd in buildLinkerArgsUnix requires ld.bfd from GNU binutils; without
-  // it clang fails with a cryptic "unable to execute command: No such file or directory".
+  // Verify clang is on PATH before the slow ILC probe and compile steps.
   val clangVersionArgs: List[String] = newList()
   clangVersionArgs.add("--version")
   val clangCheck = PC.runCaptureWithDiagnosticsTimeout("clang", clangVersionArgs, "", 10000)
@@ -788,17 +939,23 @@ pub func buildReleaseDotnet(
     )
     return 1
   }
-  val ldBfdArgs: List[String] = newList()
-  ldBfdArgs.add("--version")
-  val ldBfdCheck = PC.runCaptureWithDiagnosticsTimeout("ld.bfd", ldBfdArgs, "", 10000)
-  if ldBfdCheck.timedOut or ldBfdCheck.exitCode != 0 {
-    releaseErr(
-      "ld.bfd (GNU binutils) not found on PATH; it is required by -fuse-ld=bfd\n" +
-        "  Debian/Ubuntu: apt install binutils\n" +
-        "  Fedora:        dnf install binutils\n" +
-        "  Alpine:        apk add binutils"
-    )
-    return 1
+
+  // Verify ld.bfd is on PATH for non-macOS Unix platforms before the slow steps.
+  // -fuse-ld=bfd in buildLinkerArgsUnix requires ld.bfd from GNU binutils; without
+  // it clang fails with a cryptic "unable to execute command: No such file or directory".
+  if os != "osx" {
+    val ldBfdArgs: List[String] = newList()
+    ldBfdArgs.add("--version")
+    val ldBfdCheck = PC.runCaptureWithDiagnosticsTimeout("ld.bfd", ldBfdArgs, "", 10000)
+    if ldBfdCheck.timedOut or ldBfdCheck.exitCode != 0 {
+      releaseErr(
+        "ld.bfd (GNU binutils) not found on PATH; it is required by -fuse-ld=bfd\n" +
+          "  Debian/Ubuntu: apt install binutils\n" +
+          "  Fedora:        dnf install binutils\n" +
+          "  Alpine:        apk add binutils"
+      )
+      return 1
+    }
   }
 
   // Ensure the ILC toolchain is present in the NuGet cache and discover its paths.
@@ -860,7 +1017,11 @@ pub func buildReleaseDotnet(
 
   // Run platform linker.
   Console.println("release: linking native binary ...")
-  val linkerArgs = buildLinkerArgsUnix(objFile, exportsFile, outPath, paths.sdkPath, arch)
+  val linkerArgs = if os == "osx" {
+    buildLinkerArgsMac(objFile, exportsFile, outPath, paths.sdkPath, arch)
+  } else {
+    buildLinkerArgsUnix(objFile, exportsFile, outPath, paths.sdkPath, arch)
+  }
   val linkResult = PC.runCaptureWithDiagnosticsTimeout("clang", linkerArgs, "", 300000)
   if linkResult.stdout != "" {
     Console.println(linkResult.stdout)
