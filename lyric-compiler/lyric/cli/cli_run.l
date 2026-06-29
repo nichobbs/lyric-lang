@@ -252,7 +252,7 @@ func projectWatchFiles(mfPath: in String): List[String] {
     case Err(_) -> {
       Console.error("watch: could not read manifest '" + mfPath + "' — watching manifest file only")
     }
-    case Ok(txt) -> match Mf.parseManifest(txt, mfPath) { case Err(_) -> { Console.error("watch: could not parse manifest '" + mfPath + "' — watching manifest file only") }; case Ok(m) -> match m.project { case None -> (); case Some(p) -> { var i = 0; while i < p.packages.count { files.add(Path.join(mfDir, p.packages[i].path)); i += 1 } } } }
+    case Ok(txt) -> match Mf.parseManifest(txt, mfPath) { case Err(_) -> { Console.error("watch: could not parse manifest '" + mfPath + "' — watching manifest file only") }; case Ok(m) -> match m.project { case None -> (); case Some(p) -> { var i = 0; while i < p.packages.count { val pkgEntry = p.packages[i]; if pkgEntry.paths.count > 0 { var fi = 0; while fi < pkgEntry.paths.count { files.add(Path.join(mfDir, pkgEntry.paths[fi])); fi += 1 } } else { files.add(Path.join(mfDir, pkgEntry.path)) }; i += 1 } } } }
   }
   files
 }
