@@ -276,7 +276,7 @@ func parseSdkPacksDir(assetsJson: in String): Option[String] {
 
 // Helper to search both local NuGet cache and SDK packs for ILC and NativeAOT runtime.
 func resolveIlcPaths(pkgsDir: in String, packsOpt: in Option[String], rid: in String, ilcVersion: in String): Result[IlcPaths, String] {
-  var ilcBin: String = ""
+  var ilcBinOpt: Option[String] = None
   
   // Try NuGet packages directory
   val nugetIlc = Path.join(
@@ -290,7 +290,7 @@ func resolveIlcPaths(pkgsDir: in String, packsOpt: in Option[String], rid: in St
   var packIlc2: String = ""
   
   if File.fileExists(nugetIlc) {
-    ilcBin = nugetIlc
+    ilcBinOpt = Some(value = nugetIlc)
   } else {
     match packsOpt {
       case Some(packsDir) -> {
@@ -302,7 +302,7 @@ func resolveIlcPaths(pkgsDir: in String, packsOpt: in Option[String], rid: in St
           "ilc"
         )
         if File.fileExists(packIlc1) {
-          ilcBin = packIlc1
+          ilcBinOpt = Some(value = packIlc1)
         } else {
           packIlc2 = Path.join(
             Path.join(
@@ -312,7 +312,7 @@ func resolveIlcPaths(pkgsDir: in String, packsOpt: in Option[String], rid: in St
             "ilc"
           )
           if File.fileExists(packIlc2) {
-            ilcBin = packIlc2
+            ilcBinOpt = Some(value = packIlc2)
           }
         }
       }
@@ -320,8 +320,9 @@ func resolveIlcPaths(pkgsDir: in String, packsOpt: in Option[String], rid: in St
     }
   }
   
-  if Str.length(ilcBin) == 0 {
-    return Err(
+  val ilcBin = match ilcBinOpt {
+    case Some(path) -> path
+    case None -> return Err(
       error = "ILC binary ('ilc') not found. Probed paths:\n" +
         "  - NuGet cache: " + nugetIlc + "\n" +
         (match packsOpt {
@@ -331,7 +332,7 @@ func resolveIlcPaths(pkgsDir: in String, packsOpt: in Option[String], rid: in St
     )
   }
   
-  var nativeaotRoot: String = ""
+  var nativeaotRootOpt: Option[String] = None
   
   // Try NuGet packages directory
   val nugetNativeAot = Path.join(
@@ -345,7 +346,7 @@ func resolveIlcPaths(pkgsDir: in String, packsOpt: in Option[String], rid: in St
   var packNativeAot2: String = ""
   
   if File.dirExists(nugetNativeAot) {
-    nativeaotRoot = nugetNativeAot
+    nativeaotRootOpt = Some(value = nugetNativeAot)
   } else {
     match packsOpt {
       case Some(packsDir) -> {
@@ -357,7 +358,7 @@ func resolveIlcPaths(pkgsDir: in String, packsOpt: in Option[String], rid: in St
           rid
         )
         if File.dirExists(packNativeAot1) {
-          nativeaotRoot = packNativeAot1
+          nativeaotRootOpt = Some(value = packNativeAot1)
         } else {
           packNativeAot2 = Path.join(
             Path.join(
@@ -367,7 +368,7 @@ func resolveIlcPaths(pkgsDir: in String, packsOpt: in Option[String], rid: in St
             rid
           )
           if File.dirExists(packNativeAot2) {
-            nativeaotRoot = packNativeAot2
+            nativeaotRootOpt = Some(value = packNativeAot2)
           }
         }
       }
@@ -375,8 +376,9 @@ func resolveIlcPaths(pkgsDir: in String, packsOpt: in Option[String], rid: in St
     }
   }
   
-  if Str.length(nativeaotRoot) == 0 {
-    return Err(
+  val nativeaotRoot = match nativeaotRootOpt {
+    case Some(path) -> path
+    case None -> return Err(
       error = "NativeAOT runtime pack directory not found. Probed paths:\n" +
         "  - NuGet cache: " + nugetNativeAot + "\n" +
         (match packsOpt {

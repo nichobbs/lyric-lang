@@ -582,7 +582,7 @@ jobs:
         # the internal .vsix extension version matches the release versioning exactly.
         run: |
           cd lyric-vscode
-          npx vsce package ${{ needs.create-release.outputs.version }} -o ../lyric-lang-${{ needs.create-release.outputs.version }}.vsix
+          npx @vscode/vsce package ${{ needs.create-release.outputs.version }} -o ../lyric-lang-${{ needs.create-release.outputs.version }}.vsix
 
       - name: Upload .vsix to GitHub Release
         shell: bash
