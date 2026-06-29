@@ -21,7 +21,6 @@ import Lyric.Docker.Sockets
 import Std.Collections
 import Std.Core
 import Std.Encoding
-import Std.Errors
 import Std.Http
 
 /// Opaque handle to a Docker daemon connection. Wraps the underlying HTTP
@@ -81,7 +80,12 @@ pub func makeDockerClientAt(socketPath: in String): DockerClient
 
 /// Ping the Docker daemon to verify connectivity.
 pub async func ping(client: in DockerClient): Result[String, DockerError] {
-  val url = unwrapResult(Std.Http.Url.tryFrom("http://docker/v1.40/ping"))
+  val urlStr = "http://docker/v1.40/ping"
+  val urlResult = Std.Http.Url.tryFrom(urlStr)
+  val url = match urlResult {
+    case Err(e) -> return Err(error = fromHttpError(e, ""))
+    case Ok(u) -> u
+  }
   val sent = await client.handle.send(Std.Http.request(Std.Http.GET, url))
   val response = match sent {
     case Err(e) -> return Err(error = fromHttpError(e, ""))
@@ -100,9 +104,9 @@ pub async func ping(client: in DockerClient): Result[String, DockerError] {
           message = "Ping failed",
           details = body
         ))
-      case Err(ioErr) ->
+      case Err(_) ->
         Err(error = fromHttpError(
-          ConnectionFailed(url = "http://docker/v1.40/ping", message = IOError.message(ioErr)), ""
+          ConnectionFailed(url = urlStr, message = "IO error reading response"), ""
         ))
     }
   }
@@ -110,7 +114,12 @@ pub async func ping(client: in DockerClient): Result[String, DockerError] {
 
 /// Get Docker system information (JSON-formatted).
 pub async func systemInfo(client: in DockerClient): Result[String, DockerError] {
-  val url = unwrapResult(Std.Http.Url.tryFrom("http://docker/v1.40/info"))
+  val urlStr = "http://docker/v1.40/info"
+  val urlResult = Std.Http.Url.tryFrom(urlStr)
+  val url = match urlResult {
+    case Err(e) -> return Err(error = fromHttpError(e, ""))
+    case Ok(u) -> u
+  }
   val sent = await client.handle.send(Std.Http.request(Std.Http.GET, url))
   val response = match sent {
     case Err(e) -> return Err(error = fromHttpError(e, ""))
@@ -121,9 +130,9 @@ pub async func systemInfo(client: in DockerClient): Result[String, DockerError] 
     val bodyResult = await response.bodyText()
     match bodyResult {
       case Ok(body) -> Ok(value = body)
-      case Err(ioErr) ->
+      case Err(_) ->
         Err(error = fromHttpError(
-          ConnectionFailed(url = "http://docker/v1.40/info", message = IOError.message(ioErr)), ""
+          ConnectionFailed(url = urlStr, message = "IO error reading response"), ""
         ))
     }
   } else {
@@ -136,9 +145,9 @@ pub async func systemInfo(client: in DockerClient): Result[String, DockerError] 
           message = "System info failed",
           details = body
         ))
-      case Err(ioErr) ->
+      case Err(_) ->
         Err(error = fromHttpError(
-          ConnectionFailed(url = "http://docker/v1.40/info", message = IOError.message(ioErr)), ""
+          ConnectionFailed(url = urlStr, message = "IO error reading response"), ""
         ))
     }
   }
@@ -146,7 +155,12 @@ pub async func systemInfo(client: in DockerClient): Result[String, DockerError] 
 
 /// List all containers (Phase 1 placeholder: returns the JSON array).
 pub async func listContainers(client: in DockerClient): Result[String, DockerError] {
-  val url = unwrapResult(Std.Http.Url.tryFrom("http://docker/v1.40/containers/json"))
+  val urlStr = "http://docker/v1.40/containers/json"
+  val urlResult = Std.Http.Url.tryFrom(urlStr)
+  val url = match urlResult {
+    case Err(e) -> return Err(error = fromHttpError(e, ""))
+    case Ok(u) -> u
+  }
   val sent = await client.handle.send(Std.Http.request(Std.Http.GET, url))
   val response = match sent {
     case Err(e) -> return Err(error = fromHttpError(e, ""))
@@ -157,9 +171,9 @@ pub async func listContainers(client: in DockerClient): Result[String, DockerErr
     val bodyResult = await response.bodyText()
     match bodyResult {
       case Ok(body) -> Ok(value = body)
-      case Err(ioErr) ->
+      case Err(_) ->
         Err(error = fromHttpError(
-          ConnectionFailed(url = "http://docker/v1.40/containers/json", message = IOError.message(ioErr)), ""
+          ConnectionFailed(url = urlStr, message = "IO error reading response"), ""
         ))
     }
   } else {
@@ -172,9 +186,9 @@ pub async func listContainers(client: in DockerClient): Result[String, DockerErr
           message = "List containers failed",
           details = body
         ))
-      case Err(ioErr) ->
+      case Err(_) ->
         Err(error = fromHttpError(
-          ConnectionFailed(url = "http://docker/v1.40/containers/json", message = IOError.message(ioErr)), ""
+          ConnectionFailed(url = urlStr, message = "IO error reading response"), ""
         ))
     }
   }
@@ -182,7 +196,12 @@ pub async func listContainers(client: in DockerClient): Result[String, DockerErr
 
 /// List all images (Phase 1 placeholder: returns the JSON array).
 pub async func listImages(client: in DockerClient): Result[String, DockerError] {
-  val url = unwrapResult(Std.Http.Url.tryFrom("http://docker/v1.40/images/json"))
+  val urlStr = "http://docker/v1.40/images/json"
+  val urlResult = Std.Http.Url.tryFrom(urlStr)
+  val url = match urlResult {
+    case Err(e) -> return Err(error = fromHttpError(e, ""))
+    case Ok(u) -> u
+  }
   val sent = await client.handle.send(Std.Http.request(Std.Http.GET, url))
   val response = match sent {
     case Err(e) -> return Err(error = fromHttpError(e, ""))
@@ -193,9 +212,9 @@ pub async func listImages(client: in DockerClient): Result[String, DockerError] 
     val bodyResult = await response.bodyText()
     match bodyResult {
       case Ok(body) -> Ok(value = body)
-      case Err(ioErr) ->
+      case Err(_) ->
         Err(error = fromHttpError(
-          ConnectionFailed(url = "http://docker/v1.40/images/json", message = IOError.message(ioErr)), ""
+          ConnectionFailed(url = urlStr, message = "IO error reading response"), ""
         ))
     }
   } else {
@@ -208,9 +227,9 @@ pub async func listImages(client: in DockerClient): Result[String, DockerError] 
           message = "List images failed",
           details = body
         ))
-      case Err(ioErr) ->
+      case Err(_) ->
         Err(error = fromHttpError(
-          ConnectionFailed(url = "http://docker/v1.40/images/json", message = IOError.message(ioErr)), ""
+          ConnectionFailed(url = urlStr, message = "IO error reading response"), ""
         ))
     }
   }
@@ -235,6 +254,16 @@ func jsonEscapeValue(s: in String): String {
       acc = acc + "\\\""
     } else if c == "\\" {
       acc = acc + "\\\\"
+    } else if c == "\n" {
+      acc = acc + "\\n"
+    } else if c == "\r" {
+      acc = acc + "\\r"
+    } else if c == "\t" {
+      acc = acc + "\\t"
+    } else if c == "\u{0008}" {
+      acc = acc + "\\b"
+    } else if c == "\u{000c}" {
+      acc = acc + "\\f"
     } else {
       acc = acc + c
     }
@@ -264,62 +293,37 @@ func createContainerBody(image: in String, env: in slice[String], binds: in slic
     "\"HostConfig\":{\"Binds\":" + jsonStringArray(binds) + "}}"
 }
 
-/// First index of `needle` in `hay`, or -1. Manual scan (the compiler's
-/// indexOf/Option path is unreliable at runtime).
-func indexOfSub(hay: in String, needle: in String): Int {
-  val hayLen = hay.length.toInt()
-  val needleLen = needle.length.toInt()
-  if needleLen == 0 {
-    return 0
-  }
-  var i = 0
-  val last = hayLen - needleLen
-  while i <= last {
-    var j = 0
-    var matched = true
-    while j < needleLen {
-      if hay.substring(i + j, 1) != needle.substring(j, 1) {
-        matched = false
-        j = needleLen
-      } else {
-        j = j + 1
-      }
-    }
-    if matched {
-      return i
-    }
-    i = i + 1
-  }
-  return -1
-}
-
 /// Extract a quoted string field's value from a JSON object, or "" if absent.
 func extractJsonField(json: in String, field: in String): String {
   val target = "\"" + field + "\""
-  val pos = indexOfSub(json, target)
-  if pos < 0 {
-    return ""
-  }
-  val jsonLen = json.length.toInt()
-  var i = pos + target.length.toInt()
-  var inValue = false
-  var start = 0
-  while i < jsonLen {
-    val c = json.substring(i, 1)
-    if not inValue {
-      if c == "\"" {
-        inValue = true
-        start = i + 1
+  match json.indexOf(target) {
+    case Some(pos) -> {
+      val jsonLen = json.length.toInt()
+      var i = pos + target.length.toInt()
+      var inValue = false
+      var start = 0
+      while i < jsonLen {
+        val c = json.substring(i, 1)
+        if not inValue {
+          if c == "\"" {
+            inValue = true
+            start = i + 1
+          }
+          i = i + 1
+        } else {
+          if c == "\"" {
+            return json.substring(start, i - start)
+          } else if c == "\\" {
+            i = i + 2
+          } else {
+            i = i + 1
+          }
+        }
       }
-      i = i + 1
-    } else {
-      if c == "\"" {
-        return json.substring(start, i - start)
-      }
-      i = i + 1
+      ""
     }
+    case None -> ""
   }
-  return ""
 }
 
 /// Send a request expecting only success/failure (no useful body on success).
@@ -329,7 +333,11 @@ async func sendExpectSuccess(
   method: in Std.Http.HttpMethod,
   failMsg: in String,
 ): Result[Unit, DockerError] {
-  val url = unwrapResult(Std.Http.Url.tryFrom(urlStr))
+  val urlResult = Std.Http.Url.tryFrom(urlStr)
+  val url = match urlResult {
+    case Err(e) -> return Err(error = fromHttpError(e, ""))
+    case Ok(u) -> u
+  }
   val sent = await client.handle.send(Std.Http.request(method, url))
   val response = match sent {
     case Err(e) -> return Err(error = fromHttpError(e, ""))
@@ -357,7 +365,12 @@ pub async func createContainer(
   env: in slice[String],
   binds: in slice[String]
 ): Result[String, DockerError] {
-  val url = unwrapResult(Std.Http.Url.tryFrom("http://docker/v1.40/containers/create"))
+  val urlStr = "http://docker/v1.40/containers/create"
+  val urlResult = Std.Http.Url.tryFrom(urlStr)
+  val url = match urlResult {
+    case Err(e) -> return Err(error = fromHttpError(e, ""))
+    case Ok(u) -> u
+  }
   val request = Std.Http.withJsonBody(Std.Http.request(Std.Http.POST, url), createContainerBody(image, env, binds))
   val sent = await client.handle.send(request)
   val response = match sent {
@@ -376,9 +389,9 @@ pub async func createContainer(
           Err(error = DockerError(statusCode = None, message = "Create container returned no Id", details = body))
         }
       }
-      case Err(ioErr) ->
+      case Err(_) ->
         Err(error = fromHttpError(
-          ConnectionFailed(url = "http://docker/v1.40/containers/create", message = IOError.message(ioErr)), ""
+          ConnectionFailed(url = urlStr, message = "IO error reading response"), ""
         ))
     }
   } else {
@@ -467,7 +480,11 @@ pub async func getContainerLogs(client: in DockerClient, containerId: in String)
   requires: containerId.length > 0
 {
   val urlStr = "http://docker/v1.40/containers/" + containerId + "/logs?stdout=true&stderr=true"
-  val url = unwrapResult(Std.Http.Url.tryFrom(urlStr))
+  val urlResult = Std.Http.Url.tryFrom(urlStr)
+  val url = match urlResult {
+    case Err(e) -> return Err(error = fromHttpError(e, ""))
+    case Ok(u) -> u
+  }
   val sent = await client.handle.send(Std.Http.request(Std.Http.GET, url))
   val response = match sent {
     case Err(e) -> return Err(error = fromHttpError(e, ""))
@@ -483,9 +500,9 @@ pub async func getContainerLogs(client: in DockerClient, containerId: in String)
           case None -> Err(error = DockerError(statusCode = None, message = "Failed to decode container logs as UTF-8", details = ""))
         }
       }
-      case Err(ioErr) ->
+      case Err(_) ->
         Err(error = fromHttpError(
-          ConnectionFailed(url = urlStr, message = IOError.message(ioErr)), ""
+          ConnectionFailed(url = urlStr, message = "IO error reading response"), ""
         ))
     }
   } else {
