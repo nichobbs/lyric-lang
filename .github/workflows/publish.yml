@@ -517,9 +517,13 @@ jobs:
     runs-on: ubuntu-latest
     needs: [publish-nuget, create-release]
     # Skipped when workflow_dispatch is used with publish_ecosystem unchecked.
-    # Tag-push releases always publish ecosystem libs (inputs.publish_ecosystem
-    # is empty for tag pushes, so != 'false' evaluates to true).
-    if: inputs.publish_ecosystem != 'false'
+    # Tag-push releases always publish ecosystem libs (github.event_name !=
+    # 'workflow_dispatch' short-circuits the check).  Using github.event_name
+    # rather than comparing inputs.publish_ecosystem to 'false' avoids the
+    # boolean-vs-string type mismatch: the `inputs` context returns a boolean
+    # false for unchecked boolean inputs, so `false != 'false'` evaluates to
+    # true (wrong) instead of the intended false.
+    if: github.event_name != 'workflow_dispatch' || inputs.publish_ecosystem
 
     env:
       NUGET_SIGNING_CERT_BASE64:   ${{ secrets.NUGET_SIGNING_CERT_BASE64 }}
