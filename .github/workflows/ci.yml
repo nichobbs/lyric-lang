@@ -502,6 +502,7 @@ jobs:
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
 
       - name: Weaver self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -523,6 +524,7 @@ jobs:
       # recompile-from-source `LYRIC_LOAD_COMPILER=1`.  Run as one step so a
       # missing-stage-1 / missing-binary guard is shared.
       - name: Compiler self-tests (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -576,6 +578,7 @@ jobs:
       # (comment-aware @cfg detection) and #1124 (single stub for all-gated
       # directory packages).
       - name: CfgGate self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -600,6 +603,7 @@ jobs:
       # MSIL half of issue #1611 with no new F#.  No `LYRIC_LOAD_COMPILER=1`
       # here: this module imports only `Std.*`, not the compiler packages.
       - name: Bitwise self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -624,6 +628,7 @@ jobs:
       # in the `compiler-self-tests-jvm` job below (which has JDK 21).  Imports
       # only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Aspect-weave self-test (native lyric test, --target dotnet)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -648,6 +653,7 @@ jobs:
       # null even though T1 implements Thing, causing the match-exhaustiveness
       # guard to panic.  Run via native `lyric test`; imports only `Std.*`.
       - name: stdlib-generic-iface self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -671,6 +677,7 @@ jobs:
       # MSIL-only: the JVM target has no equivalent for `dictGetKeys`/`dictGetValues`
       # (DictKeyCollection is a .NET BCL nested type) — JVM parity tracked in #3676.
       - name: Map-enhancements self-test (native lyric test, --target dotnet)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -694,6 +701,7 @@ jobs:
       # (the same fork that made `Std.Sort` return unsorted).  Run via native
       # `lyric test` (in-process `Msil.Bridge`); imports only `Std.*`.
       - name: Slice array-ABI self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -714,6 +722,7 @@ jobs:
       # F#-built, array-based stdlib (`Std.Core.sumInts`/`maxInt`,
       # `Std.String.join`).  Run via native `lyric test`; imports only `Std.*`.
       - name: toArray array-ABI self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -736,6 +745,7 @@ jobs:
       # exercises the self-hosted production of the per-package stdlib layout,
       # including `Std.Sort` — which the F# stage-0 emitter cannot compile.
       - name: Slice/String self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -761,6 +771,7 @@ jobs:
       # Run via native `lyric test`, which compiles the @test_module in-process
       # through the self-hosted `Msil.Bridge`.  Imports only `Std.*`.
       - name: Generic-slice self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -779,6 +790,7 @@ jobs:
       # works correctly when `xs` is a slice[T] parameter derived from List.toArray().
       # Compiles the @test_module in-process through the self-hosted `Msil.Bridge`.
       - name: For-loop slice self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -808,6 +820,7 @@ jobs:
       # by the JVM kernel's F# host shim) is staged into .bootstrap/stage1 by
       # bootstrap.sh and referenced by the AOT csproj.
       - name: Conversion-method self-test (native lyric test, dotnet)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -823,6 +836,7 @@ jobs:
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/conv_methods_self_test.l
 
       - name: Pattern-lowering self-test (native lyric test, dotnet)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -838,6 +852,7 @@ jobs:
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/pattern_lowering_self_test.l
 
       - name: Auto-FFI metadata self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -853,6 +868,7 @@ jobs:
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/auto_ffi_self_test.l
 
       - name: Extern Option[T] null-coercion self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -868,6 +884,7 @@ jobs:
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/extern_option_self_test.l
 
       - name: FFI interface impl self-test (D105, native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -890,6 +907,7 @@ jobs:
       # @externTarget declares an arity that matches no System.Math.Max
       # overload and asserts the build fails with F0015.
       - name: Auto-FFI F0015 signature-mismatch negative test
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -929,6 +947,7 @@ jobs:
       # validation so a mis-shaped impl fails at build time instead of at first
       # use with `TypeLoadException`.  Each fixture targets one diagnostic.
       - name: FFI iface impl F0020–F0023 + generic-iface negative tests
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1085,6 +1104,7 @@ jobs:
       #            (lowerMethodCallMsil MClass arm now tries funcTokens on miss).
       # Compiled in-process through the self-hosted `Msil.Bridge`; imports only `Std.*`.
       - name: Synthesized-method-resolution self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1107,6 +1127,7 @@ jobs:
       # in-process through the self-hosted `Msil.Bridge`; imports only `Std.*`,
       # so no `LYRIC_LOAD_COMPILER=1`.  The JVM twin runs in the JVM job below.
       - name: Projectable opaque-twin self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1130,6 +1151,7 @@ jobs:
       # no-new-F# rule).  Compiled in-process through the self-hosted
       # `Msil.Bridge`; imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Class-typed package val .cctor self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1156,6 +1178,7 @@ jobs:
       # corrupts multi-field records — both caught here.  Compiled in-process
       # through the self-hosted `Msil.Bridge`; imports only `Std.*`.
       - name: In-bundle generics self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1181,6 +1204,7 @@ jobs:
       # Maybe[Int] Just, Maybe[Int] Nothing, Maybe[String] Just.  Uses
       # `Lyric.Emitter` so LYRIC_LOAD_COMPILER=1 is needed.
       - name: Cross-package generics self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1204,6 +1228,7 @@ jobs:
       # synthesis) is Phase B and tracked in epic #2070.  Imports only Std.*, so
       # no LYRIC_LOAD_COMPILER=1 needed.
       - name: Async extern unwrapping self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1224,6 +1249,7 @@ jobs:
       # local val), sequential calls, and explicit-return paths (#2256).
       # MSIL target only (JVM async is Phase B.1+).  Imports only `Std.*`.
       - name: Async SM synthesis self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1251,6 +1277,7 @@ jobs:
       # under `java` (Java 21 is configured above).  No new F#; imports only
       # `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Match/compound self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1273,6 +1300,7 @@ jobs:
       # methods instead of the false/no-op stubs.  MSIL target only; JVM parity
       # under #1470's JVM-deferral note.  Imports only `Std.*`.
       - name: Loop-EH/collection self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1294,6 +1322,7 @@ jobs:
       # InvalidProgramException). MSIL target only; JVM parity under #1470's
       # JVM-deferral note. Imports only `Std.*`.
       - name: Return-in-try self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1316,6 +1345,7 @@ jobs:
       # MSIL target only; JVM parity under #1470's JVM-deferral note. Imports
       # only `Std.*`.
       - name: Defer self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1338,6 +1368,7 @@ jobs:
       # unblocks the `assertPanics` try/catch shape on the self-hosted backend.
       # MSIL target only; JVM parity under #1470's JVM-deferral note.
       - name: Try-catch-expr self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1358,6 +1389,7 @@ jobs:
       # A holding invariant doesn't interfere; a violated one panics (observed
       # via a try/catch expression). MSIL target only.
       - name: Loop-invariant self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1377,6 +1409,7 @@ jobs:
       # value/string/void HOFs must run and print the correct results, and a
       # parameter-USING lambda must fail loud (#1939, until arg unboxing lands).
       - name: Function-value invocation (#1877)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1462,6 +1495,7 @@ jobs:
       # so reassignments are observable across the closure boundary in both
       # directions (v2).  Both must run and produce correct results.
       - name: Capturing closures (#1479 v1+v2)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1532,6 +1566,9 @@ jobs:
 
 
   # Second half of compiler self-tests (.NET target), running in parallel with job -a.
+
+      - name: Wait for all parallel tests
+        wait-all: true
   compiler-self-tests-dotnet-b:
     runs-on: ubuntu-latest
     needs: [build]
@@ -1566,6 +1603,7 @@ jobs:
       # dictTokensForLowering cache hit/miss logic in Msil.Lowering; it rides
       # the same step because it imports `Msil.*` like M2a-M2d.
       - name: MSIL backend self-tests M2a-M2d (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1598,6 +1636,7 @@ jobs:
       # pointer so a callee's write reaches the caller.  MSIL target only; JVM
       # parity (holder-array lowering) is tracked in #1763.
       - name: Out/inout-parameter self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1616,6 +1655,7 @@ jobs:
       # Named-arg/default-param self-test — pins call-site named-arg reorder and
       # default-param fill (#1503).  JVM analog step is below.
       - name: Named-arg/default-param self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1635,6 +1675,7 @@ jobs:
       # parity is gated on the union case-factory gap, tracked in #1707 (so this
       # step is `--target dotnet` only, unlike the bitwise self-test above).
       - name: Nested-generic self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1655,6 +1696,7 @@ jobs:
       # MSIL target only (the construction-context fix lives in the MSIL
       # codegen); the inference half is target-agnostic.
       - name: Union-ctor return-context self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1674,6 +1716,7 @@ jobs:
       # backend, returning null/the argument instead of the call result.
       # MSIL target only; JVM-target parity is tracked in #1722.
       - name: Self-method-call self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1692,6 +1735,7 @@ jobs:
       # named arguments out of declaration order stored values into the wrong
       # field slots (invalid IL / cross-typed fields).  MSIL target only.
       - name: Named-arg-order self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1711,6 +1755,7 @@ jobs:
       # field's type argument so a later `match` on the field finds the arm.
       # MSIL target only; JVM-target parity is tracked in #1740.
       - name: Record-option-field self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1733,6 +1778,7 @@ jobs:
       # MSIL target only; JVM-target parity for same-package generic
       # specialization is tracked in #1707.
       - name: Generic-specialization self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1754,6 +1800,7 @@ jobs:
       # specialise into a concrete copy.  MSIL target only; JVM parity tracked
       # in #1707.
       - name: Stdlib-generic-mono self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1774,6 +1821,7 @@ jobs:
       # `Dictionary.Remove` (was a pop-only stub).  Together these closed the
       # lyric-session store suite (24/31 -> 31/31).  MSIL target only.
       - name: Map-option self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1795,6 +1843,7 @@ jobs:
       # through the self-hosted `Msil.Bridge`, so the lowering under test is
       # the one that runs.  MSIL target only (epic #1470 defers JVM).
       - name: Propagate self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1814,6 +1863,7 @@ jobs:
       # because the boxed `List<object>` slot wasn't unboxed back to the value
       # type.  Run via native `lyric test` (in-process through Msil.Bridge).
       - name: List-value-compare self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1834,6 +1884,7 @@ jobs:
       # compared by reference.  Run via native `lyric test` (in-process through
       # Msil.Bridge).
       - name: Equality self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1853,6 +1904,7 @@ jobs:
       # overrides, so field-equal instances are the same BCL `Map` key.  Run
       # via native `lyric test` (in-process through Msil.Bridge).
       - name: Map-key self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1872,6 +1924,7 @@ jobs:
       # is tracked + unboxed instead of erasing to `Option<object>`.  Run via
       # native `lyric test` (in-process through Msil.Bridge).
       - name: Map-value self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1891,6 +1944,7 @@ jobs:
       # their bodies — dispatch correctly (value-type args are no longer boxed
       # against the value-type param signature).  Run via native `lyric test`.
       - name: Impl-method self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1913,6 +1967,7 @@ jobs:
       # native `lyric test` (in-process through Msil.Bridge).  Imports only
       # `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Alias-rewriter self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1934,6 +1989,7 @@ jobs:
       # pinned).  Run via native `lyric test` (in-process through Msil.Bridge).
       # Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Ensures self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1956,6 +2012,7 @@ jobs:
       # native `lyric test` (in-process through Msil.Bridge, which seeds the
       # monomorphizer with the stdlib generics as imports).  Imports only `Std.*`.
       - name: Mono-shadow self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1983,6 +2040,7 @@ jobs:
       # Pure logic (Std.Core/Collections only), so it runs cleanly through the
       # in-process bundle.  Part of the ecosystem-DX epic #1968 (#1976/#1988).
       - name: CLI-suggest self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2006,6 +2064,7 @@ jobs:
       # stdlib (Std.File) at runtime (#2001), so we drive the behaviour
       # end-to-end via the compiled CLI instead.
       - name: Release self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2028,6 +2087,7 @@ jobs:
       # so the Msil.Bridge transitive closure does not overflow the F# bootstrap
       # emitter; stage-1 DLLs provide the compiler-package imports (#2888).
       - name: MSIL project bridge self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2047,6 +2107,7 @@ jobs:
       # imports, per-package isolation, @cfg erasure via emitProject, restored-dep
       # wiring, and subprocess-fallback routing (#2888).
       - name: Emitter project self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2062,6 +2123,7 @@ jobs:
           "$lyric_bin" test lyric-compiler/lyric/emitter_project_self_test.l
 
       - name: Init self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2073,6 +2135,7 @@ jobs:
           "$lyric_bin" test lyric-compiler/lyric/init_self_test.l
 
       - name: Union-in-list match self-test (native lyric test, #2126)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2088,6 +2151,7 @@ jobs:
       # Covers both the inline ldc.i4 path (literal Int/Bool) and the ldsfld path
       # (String, binary-op results).  Imports only Std.*; no LYRIC_LOAD_COMPILER.
       - name: Module-val self-test (native lyric test)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2105,6 +2169,7 @@ jobs:
       # in-process through the self-hosted Msil.Bridge.  Imports only Std.*;
       # no LYRIC_LOAD_COMPILER=1 needed.
       - name: Stubbable + StubCounter self-test (native lyric test, #1776)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2122,6 +2187,7 @@ jobs:
       # in-process through the self-hosted `Msil.Bridge`.  Imports only
       # `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: DateTime-toString self-test (native lyric test, #2184)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2138,6 +2204,9 @@ jobs:
   # (#1975 / D079).  Isolated into its own job because it needs clang/lld
   # for the ILCompiler linker pass and downloads the Microsoft.DotNet.ILCompiler
   # NuGet package (~200 MB) on first run.
+
+      - name: Wait for all parallel tests
+        wait-all: true
   aot-smoke:
     runs-on: ubuntu-latest
     needs: [build]
@@ -2563,6 +2632,7 @@ jobs:
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
 
       - name: Bitwise self-test on JVM (native lyric test --target jvm)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2583,6 +2653,7 @@ jobs:
       # longer hits the `(…)Object` guess / NoSuchMethodError.  Needs JDK 21
       # (this job), unlike the dotnet job.  Imports only `Std.*`.
       - name: Aspect-weave self-test on JVM (native lyric test --target jvm)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2606,6 +2677,7 @@ jobs:
       # Named-arg/default-param self-test on JVM — pins call-site reorder and
       # default fill on the JVM target (#1503).  Imports only `Std.*`.
       - name: Named-arg/default-param self-test on JVM (native lyric test --target jvm)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2629,6 +2701,7 @@ jobs:
       # unsigned 0..255 range to match MSIL's `conv.u1`).  Run on BOTH targets —
       # parity is asserted, not deferred.  Imports only `Std.*`.
       - name: Conversion-method self-test on JVM (native lyric test --target jvm)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2651,6 +2724,7 @@ jobs:
       # coercion the JVM target needed to run them.  Run on BOTH targets:
       # parity is asserted, not deferred.  Imports only `Std.*`.
       - name: Pattern-lowering self-test on JVM (native lyric test --target jvm)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2674,6 +2748,7 @@ jobs:
       # compile time, then executed with its runtime values asserted.  No new
       # F#.  Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Auto-FFI metadata self-test on JVM (native lyric test --target jvm)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2695,6 +2770,7 @@ jobs:
       # vectors under `java`.  First native JVM self-test that depends on a
       # `_kernel_jvm`-only module.  Imports only `Std.*`.
       - name: Hash self-test on JVM (native lyric test --target jvm)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2716,6 +2792,7 @@ jobs:
       # #1675) round-tripping through match, and named-argument record-construction
       # reorder (#1793).  Imports only `Std.*`.
       - name: Silent-miscompile guard self-test on JVM (native lyric test --target jvm)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2738,6 +2815,7 @@ jobs:
       # read-modify-write, nested inout forwarding, and mixed-mode signatures.
       # Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: out/inout parameter self-test on JVM (native lyric test --target jvm)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2761,6 +2839,7 @@ jobs:
       # `Result`/`Option` output awaits JVM generics in J4 before it can run
       # under `java`.)  Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Middle-end-passes guard self-test on JVM (native lyric test --target jvm)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2783,6 +2862,7 @@ jobs:
       # early-return, mirroring MSIL #1477) and module-level `val` as a
       # `static final` field.  Imports only `Std.*`.
       - name: J3 lowering self-test on JVM (native lyric test --target jvm)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2804,6 +2884,7 @@ jobs:
       # `?`-propagation runtime runs on the JVM.  Imports only `Std.*`, so no
       # `LYRIC_LOAD_COMPILER=1`.
       - name: Generic-codegen self-test on JVM (native lyric test --target jvm)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2829,6 +2910,7 @@ jobs:
       # lambda — all under `java`.  Imports only `Std.*`, so no
       # `LYRIC_LOAD_COMPILER=1`.
       - name: Closure-codegen self-test on JVM (native lyric test --target jvm)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2854,6 +2936,7 @@ jobs:
       # method (J4 erased generics through an instance method) — all under `java`.
       # Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Record-method self-test on JVM (native lyric test --target jvm)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2878,6 +2961,7 @@ jobs:
       # prove the implicit-return path still works — all under `java`.  Imports
       # only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Control-flow terminator self-test on JVM (native lyric test --target jvm)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2902,6 +2986,7 @@ jobs:
       # (now a source-located `error[J004]` instead of an unlocated panic) and
       # must leave valid try-catch expressions untouched.  Imports only `Std.*`.
       - name: Try/catch-expression self-test on JVM (native lyric test --target jvm)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2926,6 +3011,7 @@ jobs:
       # form failed JVM verification inside match-arm results).  Imports only
       # `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Projectable opaque-twin self-test on JVM (native lyric test --target jvm)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2948,6 +3034,7 @@ jobs:
       # (`Point.equals` -> classfile method name `equals`) to satisfy JVMS §4.2.2
       # (unqualified names may not contain `.`).  Imports only `Std.*`.
       - name: Synthesized-method-resolution self-test on JVM (native lyric test --target jvm)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2970,6 +3057,7 @@ jobs:
       # compiled in-process through the self-hosted `Jvm.Bridge` and run under
       # `java`.  Imports only `Std.*`.
       - name: NaN-comparison self-test on JVM (native lyric test --target jvm)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2991,6 +3079,7 @@ jobs:
       # `java/lang/Object` -> VerifyError).  Compiled in-process through the
       # self-hosted `Jvm.Bridge` and run under `java`.  Imports only `Std.*`.
       - name: Extern-handle-across-loop self-test on JVM (native lyric test --target jvm)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -3012,6 +3101,7 @@ jobs:
       # through the self-hosted `Jvm.Bridge` and run under `java`.  Imports
       # only `Std.*`.
       - name: Extern-type parameter self-test on JVM (native lyric test --target jvm)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -3035,6 +3125,7 @@ jobs:
       # through the self-hosted `Jvm.Bridge` and run under `java`.  Requires
       # POSIX utilities at /bin/echo, /bin/cat, /bin/sh, /bin/true, /bin/false.
       - name: ProcessCapture JVM self-test (native lyric test --target jvm, #1065)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -3058,6 +3149,7 @@ jobs:
       # (Arg-forwarding + Int→exit-code on JVM are tracked in #3303; this step
       # covers the no-arg / output path that #674 asked for.)
       - name: lyric run --target jvm end-to-end smoke (#674)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -3092,6 +3184,7 @@ jobs:
       # harness runs and reports its benchmark count.  (`bench --target jvm`
       # is blocked on Std.Time JVM support, tracked in #3302.)
       - name: lyric bench --target dotnet end-to-end smoke
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -3134,6 +3227,9 @@ jobs:
       # field `+=` no longer drops the operator; `a[i] op= v` is a real
       # read-modify-write).  MSIL target only; JVM parity tracked under #1470's
       # JVM-deferral note.  Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+
+      - name: Wait for all parallel tests
+        wait-all: true
   ecosystem-security-tests:
     runs-on: ubuntu-latest
     needs: [build]
@@ -3540,6 +3636,7 @@ jobs:
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
 
       - name: Single-bundle stdlib (self-hosted Std.Sort)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -3597,6 +3694,7 @@ jobs:
       # absent from the dependency's contract, so the consumer could not
       # even resolve it.
       - name: Cross-package const inlining (#2592 restored-dep consts)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -3666,6 +3764,7 @@ jobs:
       # `Lyric.Stdlib.dll` is copied in so `findCompiledLibDir` honors the
       # LYRIC_STDLIB_BIN override through `dirHasCompiledStdlib`.
       - name: Per-package compiler emit (#2592 self-hosted compiler DLLs)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -3706,6 +3805,7 @@ jobs:
       # the self-hosted-emitted stdlib (self-consistent set) and asserts it sorts.
       # Guards against regressions in stdlib self-host-compilability.
       - name: Full self-hosted stdlib (#2592 all Std.* packages)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -3778,6 +3878,7 @@ jobs:
       # MGenericInstByName and Lyric.Lsp on TyException).  This is the
       # prerequisite for a self-hosted-built toolchain.
       - name: Whole compiler self-host-compiles (R7 front-end completeness)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -3806,6 +3907,7 @@ jobs:
       # a user gets: a self-hosted-compiled program linking the shipped,
       # self-hosted-built Std.Sort against the F#-built Core, and sorting.
       - name: Shipped Std.Sort via default toolchain (#2592)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -3854,6 +3956,7 @@ jobs:
       # fields, then a consumer that reads them across a real assembly boundary,
       # and asserts the values.  Before the fix the read faulted.
       - name: Cross-package record field encoding (D-progress-477)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -3930,6 +4033,7 @@ jobs:
       # facet-1 guard above, which runs the consumer without staging any stdlib
       # runtime DLL (collection literals would pull `Lyric.Stdlib.Core`).
       - name: Cross-package function parameter encoding (D-progress-478)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -4003,6 +4107,7 @@ jobs:
       # Primitive args (e.g. `Result[Int, String]`) were unaffected, so this was
       # latent.  Guards `registerStdlibFunc`'s ctx-aware encoding.
       - name: Cross-package generic-return ref-typed arg (Std.File.readText)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -4044,6 +4149,7 @@ jobs:
       # only to the F#-built-stdlib REFERENCE in `registerStdlibFunc`) leaves the
       # in-bundle object-argument representation untouched.  Guards the encoding.
       - name: Cross-package generic-return Unit arg (Std.File.writeText)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -4088,6 +4194,7 @@ jobs:
       # literals, and asserts the matched/read counts.  Before the fix the union
       # `match` aborted.
       - name: Union/record concrete-collection construct+match (D-progress-480)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -4136,6 +4243,7 @@ jobs:
       # builds the dep + consumer across a real assembly boundary and asserts the
       # producer reads the concrete list it was handed.
       - name: Cross-package record construct-in-consumer (D-progress-481)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -4198,6 +4306,7 @@ jobs:
       # in the consumer correctly stores a concrete `List<int32>` and that the match
       # binding reads back the right count and element values.
       - name: Cross-package union construct+match (#2897)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -4281,6 +4390,7 @@ jobs:
       # `InvalidCastException` when the concrete-typed operation runs at runtime.
       # Guarded by a `.bootstrap/stage1` presence check (::warning if missing).
       - name: Construction-position collExpect coverage (#2592 slice 3, self-hosted)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -4352,6 +4462,7 @@ jobs:
       # Test builds a `List[String]`, converts via `.toArray()`, sorts, and
       # asserts lexicographic order.
       - name: Sort.sortStrings(list.toArray()) end-to-end (#2592 slice 4)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -4432,6 +4543,7 @@ jobs:
       # DLL presence is the authoritative check for slice 4; correctness of the
       # Xml and Yaml APIs is covered by the stdlib emitter test suite.
       - name: Std.Xml and Std.Yaml bundled (#2592 slice 4)
+        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -4468,6 +4580,9 @@ jobs:
       # `slice[T]` parameter, and genuine `String.split` array).  Run via
       # native `lyric test`, which compiles the @test_module in-process
       # through the self-hosted `Msil.Bridge`.  Imports only `Std.*`.
+
+      - name: Wait for all parallel tests
+        wait-all: true
   e2e-cli-tests:
     runs-on: ubuntu-latest
     needs: [build]
