@@ -34,6 +34,16 @@ permissions:
   contents: write   # upload release assets
   id-token: write   # OIDC for NuGet trusted publishing and key-vault signing
 
+# Serialize all publish runs through a single queue. Two dispatches (or a
+# dispatch racing a tag push) must not compute a version, create a tag, and
+# publish concurrently — that races on the auto-incremented version and the
+# new git tag. cancel-in-progress is false: a release in flight must finish
+# (binaries, NuGet, ecosystem) rather than be aborted, and the queued run then
+# reads the now-updated release history and increments from it.
+concurrency:
+  group: publish-release
+  cancel-in-progress: false
+
 env:
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
   DOTNET_NOLOGO: true
@@ -64,14 +74,16 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pass the dispatch input through env rather than interpolating it
+          # into the script body, so workflow inputs never reach the shell as
+          # raw text (script-injection hygiene).
+          RELEASE_TYPE: ${{ github.event.inputs.release_type }}
         run: |
           set -euo pipefail
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
-          RELEASE_TYPE="${{ github.event.inputs.release_type }}"
 
           # Highest clean-semver (X.Y.Z) tag among all non-draft releases.
           # gh release list orders by date; sort -V picks the true semver maximum
