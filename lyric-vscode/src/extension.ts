@@ -59,8 +59,7 @@ function startLsp(context: vscode.ExtensionContext): void {
 
     client.start().catch(async (err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
-        const lowerMsg = msg.toLowerCase();
-        const isNotFound = msg.includes('ENOENT') || lowerMsg.includes('not found') || lowerMsg.includes('no such file');
+        const isNotFound = (err as any)?.code === 'ENOENT' || msg.includes('ENOENT');
         
         let choice: string | undefined;
         if (isNotFound) {
