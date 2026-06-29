@@ -27,6 +27,7 @@ func cmdPublish(argv: in slice[String]): Int {
   var registryUrl: Option[String] = None
   var apiKey: Option[String] = None
   var skipDuplicate = false
+  var packageVersionArg: Option[String] = None
 
   var i = 1
   while i < argv.length {
@@ -74,6 +75,14 @@ func cmdPublish(argv: in slice[String]): Int {
     } else if arg == "--skip-duplicate" {
       skipDuplicate = true
       i += 1
+    } else if arg == "--package-version" {
+      if i + 1 < argv.length {
+        packageVersionArg = Some(value = argv[i + 1])
+        i += 2
+      } else {
+        printErr("publish: --package-version requires an argument")
+        return 1
+      }
     } else {
       printErr("publish: unrecognised flag '" + arg + "'")
       i += 1
@@ -116,6 +125,7 @@ func cmdPublish(argv: in slice[String]): Int {
   }
 
   val pkg: PackageSection = manifest.packageSection
+  val effectiveVersion = match packageVersionArg { case Some(v) -> v; case None -> pkg.version }
   val mfDir = Path.dirname(mfPath)
   val dllPath = match dllOverride {
     case Some(d) -> d
@@ -182,7 +192,7 @@ func cmdPublish(argv: in slice[String]): Int {
             printErr("publish: cannot parse workspace member manifest: " + ManifestError.message(e))
             return 1
           }
-          case Ok(mf) -> mf.packageSection.version
+          case Ok(mf) -> match packageVersionArg { case Some(v) -> v; case None -> mf.packageSection.version }
         }
       }
       case Path(_) -> {
@@ -204,7 +214,7 @@ func cmdPublish(argv: in slice[String]): Int {
   csproj = csproj + "    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>\n"
   csproj = csproj + "    <NoWarn>$(NoWarn);NU5128</NoWarn>\n"
   csproj = csproj + "    <PackageId>" + Pack.xmlEscape(pkg.name) + "</PackageId>\n"
-  csproj = csproj + "    <Version>" + Pack.xmlEscape(pkg.version) + "</Version>\n"
+  csproj = csproj + "    <Version>" + Pack.xmlEscape(effectiveVersion) + "</Version>\n"
   if not Str.isEmpty(pkg.description) {
     csproj = csproj + "    <Description>" + Pack.xmlEscape(pkg.description) + "</Description>\n"
   }
@@ -231,7 +241,7 @@ func cmdPublish(argv: in slice[String]): Int {
   }
   csproj = csproj + "</Project>\n"
 
-  val tmpCsproj = Path.join(mfDir, pkg.name + "-publish.csproj")
+  val tmpCsproj = Path.join(mfDir, pkg.name + "-" + effectiveVersion + "-publish.csproj")
   match File.writeText(tmpCsproj, csproj) {
     case Err(e) -> {
       printErr("publish: cannot write temp csproj: " + IOError.message(e))
@@ -295,7 +305,7 @@ func cmdPublish(argv: in slice[String]): Int {
     return packExit
   }
 
-  val nupkgPath = Path.join(outDir, pkg.name + "." + pkg.version + ".nupkg")
+  val nupkgPath = Path.join(outDir, pkg.name + "." + effectiveVersion + ".nupkg")
   Console.println("publish: packed " + nupkgPath)
 
   // Sign the .nupkg if LYRIC_NUGET_SIGNING_CERT points at a PFX file.
@@ -368,7 +378,7 @@ func cmdPublish(argv: in slice[String]): Int {
     return pushExit
   }
 
-  Console.println("publish: pushed " + pkg.name + " " + pkg.version + " to " + pushRegistry)
+  Console.println("publish: pushed " + pkg.name + " " + effectiveVersion + " to " + pushRegistry)
   0
 }
 

@@ -154,6 +154,7 @@ func cmdBuild(argv: in slice[String]): Int {
   var noRestore: Bool = false
   var watch: Bool = false
   var releaseFromDll: Option[String] = None
+  var packageVersionArg: Option[String] = None
   var extraRefsDir: Option[String] = None
   val positional: List[String] = newList()
 
@@ -232,6 +233,14 @@ func cmdBuild(argv: in slice[String]): Int {
         i += 2
       } else {
         printErr("build: --extra-refs-dir requires an argument")
+        return 1
+      }
+    } else if arg == "--package-version" {
+      if i + 1 < argv.length {
+        packageVersionArg = Some(value = argv[i + 1])
+        i += 2
+      } else {
+        printErr("build: --package-version requires an argument")
         return 1
       }
     } else if arg == "--target" {
@@ -330,7 +339,8 @@ func cmdBuild(argv: in slice[String]): Int {
         cliFeatures,
         noDefaultFeatures,
         allFeatures,
-        noRestore
+        noRestore,
+        packageVersionArg
       )
     }
     if watch {
@@ -343,7 +353,8 @@ func cmdBuild(argv: in slice[String]): Int {
           feats = cliFeatures,
           noDef = noDefaultFeatures,
           allF = allFeatures,
-          noRestore = noRestore
+          noRestore = noRestore,
+          pkgVer = packageVersionArg
         )
       )
     }
@@ -362,7 +373,8 @@ func cmdBuild(argv: in slice[String]): Int {
         cliFeatures,
         noDefaultFeatures,
         allFeatures,
-        noRestore
+        noRestore,
+        packageVersionArg
       )
     }
     // `--rid` only applies to `--release` / `kind = "aot"` (Native AOT); warn
@@ -371,7 +383,7 @@ func cmdBuild(argv: in slice[String]): Int {
       case Some(_) -> printErr("build: warning: --rid has no effect without --release")
       case None -> ()
     }
-    return buildProject(mfPath, explicitOut, target, cliFeatures, noDefaultFeatures, allFeatures, noRestore)
+    return buildProject(mfPath, explicitOut, target, cliFeatures, noDefaultFeatures, allFeatures, noRestore, packageVersionArg)
   }
 
   val sourcePath = positional[0]
@@ -474,6 +486,7 @@ func buildReleaseProject(
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
   noRestore: in Bool,
+  packageVersionOverride: in Option[String],
 ): Int {
   // JVM native-image is not yet implemented; delegate to buildRelease which
   // fails loud without performing a wasted managed build.
@@ -594,7 +607,8 @@ func buildReleaseProject(
     cliFeatures,
     noDefaultFeatures,
     allFeatures,
-    noRestore
+    noRestore,
+    packageVersionOverride
   )
   if buildExit != 0 {
     return buildExit
@@ -697,6 +711,7 @@ func buildProject(
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
   noRestore: in Bool,
+  packageVersionOverride: in Option[String],
 ): Int {
   val buildStart = Time.now()
   val mfText = match File.readText(mfPath) {
@@ -1011,7 +1026,10 @@ func buildProject(
     restoredDllPaths = restoredDlls,
     activeFeatures = activeFeatures,
     declaredFeatures = mfDeclared,
-    packageVersion = manifest.packageSection.version,
+    packageVersion = match packageVersionOverride {
+      case Some(v) -> v
+      case None -> manifest.packageSection.version
+    },
     depTemplateSrcs = depTemplatePkgsList,
     nugetAssemblyPaths = nugetPaths
   )
