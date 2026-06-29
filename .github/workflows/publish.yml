@@ -8,9 +8,19 @@ on:
       - 'v[0-9]*'
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Version to publish (e.g. 0.1.0)'
+      release_type:
+        description: >-
+          Release type. The new version is auto-incremented from the latest
+          non-draft GitHub release (major: X+1.0.0, minor: X.Y+1.0,
+          patch: X.Y.Z+1). The first release defaults to 0.0.1 (patch),
+          0.1.0 (minor), or 1.0.0 (major).
         required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
       publish_ecosystem:
         description: >-
           Publish ecosystem libraries (lyric-web, lyric-auth, lyric-cache, etc.)
@@ -40,22 +50,87 @@ jobs:
       version: ${{ steps.ver.outputs.VERSION }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          # Full history + tags so the auto-increment step can read existing
+          # release tags and the tagging step can create a new annotated tag.
+          fetch-depth: 0
 
+      # Determine the version being released.
+      #   * tag push   → take the version verbatim from refs/tags/vX.Y.Z.
+      #   * dispatch   → auto-increment from the highest non-draft release
+      #                  according to the chosen release_type (major/minor/patch).
       - name: Resolve version
         id: ver
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "VERSION=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          RELEASE_TYPE="${{ github.event.inputs.release_type }}"
+
+          # Highest clean-semver (X.Y.Z) tag among all non-draft releases.
+          # gh release list orders by date; sort -V picks the true semver maximum
+          # so an out-of-order publish can't fool the increment. Tags carrying a
+          # pre-release/build suffix (e.g. v1.0.0-rc) are skipped as a base since
+          # the increment arithmetic only operates on clean X.Y.Z versions.
+          LATEST="$(gh release list --exclude-drafts --limit 1000 \
+              --json tagName --jq '.[].tagName' \
+            | sed 's/^v//' \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V \
+            | tail -1 || true)"
+
+          if [[ -z "${LATEST}" ]]; then
+            BASE="0.0.0"
+            echo "No prior non-draft release found; starting from ${BASE}."
+          else
+            BASE="${LATEST}"
+            echo "Latest non-draft release: v${BASE}."
+          fi
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "${BASE}"
+          MAJOR="${MAJOR:-0}"; MINOR="${MINOR:-0}"; PATCH="${PATCH:-0}"
+          case "${RELEASE_TYPE}" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+            *) echo "Unknown release_type: ${RELEASE_TYPE}" >&2; exit 1 ;;
+          esac
+
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          echo "Bumping ${RELEASE_TYPE}: v${BASE} -> v${NEW_VERSION}"
+          echo "VERSION=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+
+      # For dispatch runs, create and push the annotated git tag for the new
+      # version. (Tag pushes already carry their tag.) Pushing with the default
+      # GITHUB_TOKEN does NOT re-trigger the `push: tags` workflow, so there is
+      # no double-run — this dispatch run carries the release through itself.
+      - name: Create and push git tag
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="v${{ steps.ver.outputs.VERSION }}"
+          if git rev-parse "${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists; refusing to clobber it." >&2
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${TAG}" -m "Release ${TAG}"
+          git push origin "${TAG}"
 
       - name: Create GitHub Release
         shell: bash
         run: |
           gh release create "v${{ steps.ver.outputs.VERSION }}" \
             --draft \
+            --target "${GITHUB_SHA}" \
             --title "v${{ steps.ver.outputs.VERSION }}" \
             --notes "Lyric compiler release"
         env:
@@ -495,6 +570,19 @@ jobs:
       # an already-uploaded version is treated as a no-op.
       # Signing (when LYRIC_NUGET_SIGNING_CERT is set) is performed by
       # `lyric publish` itself after dotnet pack and before dotnet nuget push.
+      # Build + publish every ecosystem library, parallelised within each
+      # dependency tier. The tiers run sequentially (a barrier between them)
+      # because deps resolve from the local workspace build output
+      # (`workspace = true` → `lyric-*/bin/*.dll`): a tier-3 build needs the
+      # tier-1/2 DLLs on disk first. Within a tier there are no intra-tier
+      # deps, so all of a tier's libraries build/publish concurrently.
+      #
+      # Failures do NOT fail-fast: each library runs to completion (or error)
+      # independently, per-library output is captured to its own log, and a
+      # summary of every failure is written to the job summary at the end. The
+      # step exits non-zero only after all tiers have been attempted, so a
+      # single broken library is reported alongside the ones that succeeded
+      # rather than masking them.
       - name: Build and publish ecosystem libraries
         shell: bash
         env:
@@ -503,50 +591,119 @@ jobs:
           LYRIC_NUGET_SIGNING_CERT_PASSWORD: ${{ secrets.NUGET_SIGNING_CERT_PASSWORD }}
           LYRIC_NUGET_SIGNING_TIMESTAMPER: http://timestamp.digicert.com
         run: |
-          set -euo pipefail
+          # Intentionally NOT `set -e`: a failing library must not abort the run.
+          set -uo pipefail
           LYRIC=./bin/lyric
           API_KEY="${{ steps.nuget-auth.outputs.NUGET_API_KEY }}"
           VERSION="${{ needs.create-release.outputs.version }}"
 
+          LOG_DIR="$(mktemp -d)"
+          declare -a SUCCEEDED=()
+          declare -a FAILED=()
+
+          # Build + publish one library, streaming all output to a per-library
+          # log so concurrent tier members don't interleave. Returns non-zero
+          # on the first failing command.
           publish_lib() {
             local manifest="$1"
             local version="$2"
-            echo "=== Building ${manifest} (version ${version}) ==="
-            "$LYRIC" build --manifest "$manifest" --package-version "$version"
-            echo "=== Publishing ${manifest} ==="
-            "$LYRIC" publish --manifest "$manifest" --api-key "$API_KEY" --skip-duplicate --package-version "$version"
+            local log="$3"
+            {
+              echo "=== Building ${manifest} (version ${version}) ==="
+              "$LYRIC" build --manifest "$manifest" --package-version "$version" || return 1
+              echo "=== Publishing ${manifest} ==="
+              "$LYRIC" publish --manifest "$manifest" --api-key "$API_KEY" \
+                --skip-duplicate --package-version "$version" || return 1
+            } > "$log" 2>&1
+          }
+
+          # Run all libraries in a tier concurrently, wait for the barrier, and
+          # record each one's pass/fail. Args: tier label, then manifests.
+          run_tier() {
+            local tier="$1"; shift
+            local -a manifests=("$@")
+            local -a pids=()
+            local -a names=()
+            echo "### Tier ${tier}: starting ${#manifests[@]} libraries in parallel"
+            local m
+            for m in "${manifests[@]}"; do
+              local name; name="$(dirname "$m")"
+              local log="${LOG_DIR}/${name}.log"
+              publish_lib "$m" "$VERSION" "$log" &
+              pids+=("$!")
+              names+=("$name")
+            done
+            local i
+            for i in "${!pids[@]}"; do
+              if wait "${pids[$i]}"; then
+                SUCCEEDED+=("${names[$i]}")
+                echo "::group::PASS ${names[$i]}"
+              else
+                FAILED+=("${names[$i]}")
+                echo "::group::FAIL ${names[$i]}"
+              fi
+              cat "${LOG_DIR}/${names[$i]}.log" || true
+              echo "::endgroup::"
+            done
           }
 
           # Tier 1: no Lyric package dependencies.
-          publish_lib lyric-resilience/lyric.toml "$VERSION"
-          publish_lib lyric-validation/lyric.toml "$VERSION"
-          publish_lib lyric-logging/lyric.toml "$VERSION"
-          publish_lib lyric-cache/lyric.toml "$VERSION"
-          publish_lib lyric-docker/lyric.toml "$VERSION"
+          run_tier 1 \
+            lyric-resilience/lyric.toml \
+            lyric-validation/lyric.toml \
+            lyric-logging/lyric.toml \
+            lyric-cache/lyric.toml \
+            lyric-docker/lyric.toml
 
           # Tier 2: depends on Tier 1.
-          publish_lib lyric-auth/lyric.toml "$VERSION"
-          publish_lib lyric-otel/lyric.toml "$VERSION"
-          publish_lib lyric-proto/lyric.toml "$VERSION"
+          run_tier 2 \
+            lyric-auth/lyric.toml \
+            lyric-otel/lyric.toml \
+            lyric-proto/lyric.toml
 
           # Tier 3: depends on Tier 1–2.
-          publish_lib lyric-grpc/lyric.toml "$VERSION"
-          publish_lib lyric-web/lyric.toml "$VERSION"
-          publish_lib lyric-db/lyric.toml "$VERSION"
-          publish_lib lyric-health/lyric.toml "$VERSION"
-          publish_lib lyric-mq/lyric.toml "$VERSION"
-          publish_lib lyric-jobs/lyric.toml "$VERSION"
-          publish_lib lyric-mail/lyric.toml "$VERSION"
-          publish_lib lyric-storage/lyric.toml "$VERSION"
-          publish_lib lyric-ws/lyric.toml "$VERSION"
-          publish_lib lyric-session/lyric.toml "$VERSION"
-          publish_lib lyric-search/lyric.toml "$VERSION"
-          publish_lib lyric-feature-flags/lyric.toml "$VERSION"
-          publish_lib lyric-i18n/lyric.toml "$VERSION"
-          publish_lib lyric-testing/lyric.toml "$VERSION"
+          run_tier 3 \
+            lyric-grpc/lyric.toml \
+            lyric-web/lyric.toml \
+            lyric-db/lyric.toml \
+            lyric-health/lyric.toml \
+            lyric-mq/lyric.toml \
+            lyric-jobs/lyric.toml \
+            lyric-mail/lyric.toml \
+            lyric-storage/lyric.toml \
+            lyric-ws/lyric.toml \
+            lyric-session/lyric.toml \
+            lyric-search/lyric.toml \
+            lyric-feature-flags/lyric.toml \
+            lyric-i18n/lyric.toml \
+            lyric-testing/lyric.toml
 
           # Tier 4: depends on Tier 3.
-          publish_lib lyric-lambda/lyric.toml "$VERSION"
+          run_tier 4 \
+            lyric-lambda/lyric.toml
+
+          # Final report — to both the log and the GitHub job summary.
+          {
+            echo "## Ecosystem publish summary (v${VERSION})"
+            echo ""
+            echo "Succeeded: ${#SUCCEEDED[@]} · Failed: ${#FAILED[@]}"
+            echo ""
+            if [[ ${#SUCCEEDED[@]} -gt 0 ]]; then
+              echo "### Succeeded"
+              for s in "${SUCCEEDED[@]}"; do echo "- \`${s}\`"; done
+              echo ""
+            fi
+            if [[ ${#FAILED[@]} -gt 0 ]]; then
+              echo "### Failed"
+              for f in "${FAILED[@]}"; do echo "- \`${f}\`"; done
+            fi
+          } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/stderr}"
+
+          if [[ ${#FAILED[@]} -gt 0 ]]; then
+            echo "Ecosystem publish completed with ${#FAILED[@]} failure(s): ${FAILED[*]}" >&2
+            exit 1
+          fi
+          echo "All ${#SUCCEEDED[@]} ecosystem libraries published successfully."
 
       - name: Remove signing certificate
         if: always() && env.NUGET_SIGNING_CERT_BASE64 != ''
