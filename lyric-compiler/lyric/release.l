@@ -259,7 +259,7 @@ pub func semverMajor(version: in String): Int {
 }
 
 // Extract the SDK packs directory from runtimeIdentifierGraphPath in project.assets.json.
-pub func parseSdkPacksDir(assetsJson: in String): Option[String] {
+func parseSdkPacksDir(assetsJson: in String): Option[String] {
   match jsonStringField(assetsJson, "runtimeIdentifierGraphPath") {
     case None -> None
     case Some(graphPath) -> {
