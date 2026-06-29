@@ -90,7 +90,7 @@ file as a reminder. You can disable the formatter entirely with
 cd lyric-vscode
 npm install
 npm run compile          # or: node esbuild.mjs --minify
-npx vsce package         # produces lyric-lang-0.0.1.vsix
+npx @vscode/vsce package         # produces lyric-lang-0.0.1.vsix
 code --install-extension lyric-lang-0.0.1.vsix
 ```
 

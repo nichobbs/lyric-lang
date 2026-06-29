@@ -82,7 +82,7 @@ func cmdCheck(argv: in slice[String]): Int {
     }
     val asmName = match proj.outputAssembly { case Some(s) -> stemOf(s, 4); case None -> proj.name }
     val checkOut = Path.join(checkOutDir, asmName + checkExt)
-    return buildProject(mfPath, Some(value = checkOut), checkTarget, newList(), false, false, true)
+    return buildProject(mfPath, Some(value = checkOut), checkTarget, newList(), false, false, true, None)
   }
 
   // Single-file mode: type-check without writing a permanent artifact.

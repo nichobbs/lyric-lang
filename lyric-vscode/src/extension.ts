@@ -1,3 +1,4 @@
+import * as cp from 'child_process';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
@@ -59,7 +60,7 @@ function startLsp(context: vscode.ExtensionContext): void {
 
     client.start().catch(async (err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
-        const isNotFound = (err as any)?.code === 'ENOENT' || msg.includes('ENOENT');
+        const isNotFound = (err as NodeJS.ErrnoException)?.code === 'ENOENT' || msg.includes('ENOENT');
         
         let choice: string | undefined;
         if (isNotFound) {
@@ -71,24 +72,43 @@ function startLsp(context: vscode.ExtensionContext): void {
             );
         } else {
             choice = await vscode.window.showErrorMessage(
-                `Lyric: failed to start language server (${serverPath}): ${msg}.`,
+                `Lyric: failed to start language server (${serverPath}): ${msg}. ` +
+                `Set "lyric.serverPath" to the lyric binary (the LSP server runs via "lyric lsp").`,
                 'View Setup Guide'
             );
         }
 
         if (choice === 'Install via dotnet') {
-            const terminal = vscode.window.createTerminal('Lyric Installation');
-            terminal.show();
-            terminal.sendText('dotnet tool install -g lyric');
-            
-            const reloadChoice = await vscode.window.showInformationMessage(
-                'Running "dotnet tool install -g lyric" in the integrated terminal. ' +
-                'Once the installation is complete, click "Reload Window" to activate the language server.',
-                'Reload Window'
-            );
-            if (reloadChoice === 'Reload Window') {
-                vscode.commands.executeCommand('workbench.action.reloadWindow');
-            }
+            cp.exec('dotnet --version', (error) => {
+                void (async () => {
+                    if (error) {
+                        const guideChoice = await vscode.window.showErrorMessage(
+                            'The .NET SDK is required to install the Lyric CLI, but "dotnet" was not found on your PATH. ' +
+                            'Please install the .NET SDK and try again.',
+                            'View Setup Guide'
+                        );
+                        if (guideChoice === 'View Setup Guide') {
+                            vscode.env.openExternal(vscode.Uri.parse('https://github.com/nichobbs/lyric-lang#installation'));
+                        }
+                        return;
+                    }
+
+                    const terminal = vscode.window.createTerminal('Lyric Installation');
+                    terminal.show();
+                    terminal.sendText('dotnet tool install -g lyric');
+                    
+                    const reloadChoice = await vscode.window.showInformationMessage(
+                        'Running "dotnet tool install -g lyric" in the integrated terminal. ' +
+                        'Once the installation is complete, click "Reload Window" to activate the language server.',
+                        'Reload Window'
+                    );
+                    if (reloadChoice === 'Reload Window') {
+                        vscode.commands.executeCommand('workbench.action.reloadWindow');
+                    }
+                })().catch(err => {
+                    console.error('Error in install flow:', err);
+                });
+            });
         } else if (choice === 'View Setup Guide') {
             vscode.env.openExternal(vscode.Uri.parse('https://github.com/nichobbs/lyric-lang#installation'));
         }

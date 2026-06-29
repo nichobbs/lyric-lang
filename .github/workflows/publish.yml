@@ -506,44 +506,46 @@ jobs:
           set -euo pipefail
           LYRIC=./bin/lyric
           API_KEY="${{ steps.nuget-auth.outputs.NUGET_API_KEY }}"
+          VERSION="${{ needs.create-release.outputs.version }}"
 
           publish_lib() {
             local manifest="$1"
-            echo "=== Building ${manifest} ==="
-            "$LYRIC" build --manifest "$manifest"
+            local version="$2"
+            echo "=== Building ${manifest} (version ${version}) ==="
+            "$LYRIC" build --manifest "$manifest" --package-version "$version"
             echo "=== Publishing ${manifest} ==="
-            "$LYRIC" publish --manifest "$manifest" --api-key "$API_KEY" --skip-duplicate
+            "$LYRIC" publish --manifest "$manifest" --api-key "$API_KEY" --skip-duplicate --package-version "$version"
           }
 
           # Tier 1: no Lyric package dependencies.
-          publish_lib lyric-resilience/lyric.toml
-          publish_lib lyric-validation/lyric.toml
-          publish_lib lyric-logging/lyric.toml
-          publish_lib lyric-cache/lyric.toml
+          publish_lib lyric-resilience/lyric.toml "$VERSION"
+          publish_lib lyric-validation/lyric.toml "$VERSION"
+          publish_lib lyric-logging/lyric.toml "$VERSION"
+          publish_lib lyric-cache/lyric.toml "$VERSION"
 
           # Tier 2: depends on Tier 1.
-          publish_lib lyric-auth/lyric.toml
-          publish_lib lyric-otel/lyric.toml
-          publish_lib lyric-proto/lyric.toml
+          publish_lib lyric-auth/lyric.toml "$VERSION"
+          publish_lib lyric-otel/lyric.toml "$VERSION"
+          publish_lib lyric-proto/lyric.toml "$VERSION"
 
           # Tier 3: depends on Tier 1–2.
-          publish_lib lyric-grpc/lyric.toml
-          publish_lib lyric-web/lyric.toml
-          publish_lib lyric-db/lyric.toml
-          publish_lib lyric-health/lyric.toml
-          publish_lib lyric-mq/lyric.toml
-          publish_lib lyric-jobs/lyric.toml
-          publish_lib lyric-mail/lyric.toml
-          publish_lib lyric-storage/lyric.toml
-          publish_lib lyric-ws/lyric.toml
-          publish_lib lyric-session/lyric.toml
-          publish_lib lyric-search/lyric.toml
-          publish_lib lyric-feature-flags/lyric.toml
-          publish_lib lyric-i18n/lyric.toml
-          publish_lib lyric-testing/lyric.toml
+          publish_lib lyric-grpc/lyric.toml "$VERSION"
+          publish_lib lyric-web/lyric.toml "$VERSION"
+          publish_lib lyric-db/lyric.toml "$VERSION"
+          publish_lib lyric-health/lyric.toml "$VERSION"
+          publish_lib lyric-mq/lyric.toml "$VERSION"
+          publish_lib lyric-jobs/lyric.toml "$VERSION"
+          publish_lib lyric-mail/lyric.toml "$VERSION"
+          publish_lib lyric-storage/lyric.toml "$VERSION"
+          publish_lib lyric-ws/lyric.toml "$VERSION"
+          publish_lib lyric-session/lyric.toml "$VERSION"
+          publish_lib lyric-search/lyric.toml "$VERSION"
+          publish_lib lyric-feature-flags/lyric.toml "$VERSION"
+          publish_lib lyric-i18n/lyric.toml "$VERSION"
+          publish_lib lyric-testing/lyric.toml "$VERSION"
 
           # Tier 4: depends on Tier 3.
-          publish_lib lyric-lambda/lyric.toml
+          publish_lib lyric-lambda/lyric.toml "$VERSION"
 
       - name: Remove signing certificate
         if: always() && env.NUGET_SIGNING_CERT_BASE64 != ''
