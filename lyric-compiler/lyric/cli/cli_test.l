@@ -426,14 +426,24 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
     while spi < proj.packages.count {
       val pkgEntry = proj.packages[spi]
       spi += 1
-      val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(mfDir, pkgEntry.path) }
-      if File.fileExists(abs) {
-        scanPaths.add(abs)
-      } else if File.dirExists(abs) {
-        val allFiles = match File.listFilesRecursive(abs) { case Ok(fs) -> fs; case Err(_) -> newList() }
-        for f in allFiles.toArray() {
-          if Str.endsWith(f, ".l") {
-            scanPaths.add(f)
+      if pkgEntry.paths.count > 0 {
+        // Explicit file list (TOML array form): add each named file directly.
+        var fi = 0
+        while fi < pkgEntry.paths.count {
+          val absFile = if Path.isAbsolute(pkgEntry.paths[fi]) { pkgEntry.paths[fi] } else { Path.join(mfDir, pkgEntry.paths[fi]) }
+          scanPaths.add(absFile)
+          fi += 1
+        }
+      } else {
+        val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(mfDir, pkgEntry.path) }
+        if File.fileExists(abs) {
+          scanPaths.add(abs)
+        } else if File.dirExists(abs) {
+          val allFiles = match File.listFilesRecursive(abs) { case Ok(fs) -> fs; case Err(_) -> newList() }
+          for f in allFiles.toArray() {
+            if Str.endsWith(f, ".l") {
+              scanPaths.add(f)
+            }
           }
         }
       }
@@ -517,8 +527,35 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
   var pi = 0
   while pi < proj.packages.count {
     val pkgEntry = proj.packages[pi]
-    val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(mfDir, pkgEntry.path) }
     val pkgSources: List[String] = newList()
+    if pkgEntry.paths.count > 0 {
+      // Explicit file list (TOML array form): read each named file and assemble
+      // them with CfgGate so per-file @cfg erasure works the same as for dir packages.
+      val fileEntries: List[CfgGate.CfgGateFile] = newList()
+      var readFailed = false
+      var fi = 0
+      while fi < pkgEntry.paths.count {
+        val absFile = if Path.isAbsolute(pkgEntry.paths[fi]) { pkgEntry.paths[fi] } else { Path.join(mfDir, pkgEntry.paths[fi]) }
+        match File.readText(absFile) {
+          case Ok(t) -> fileEntries.add(CfgGate.CfgGateFile(path = absFile, contents = t))
+          case Err(e) -> {
+            printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
+            hadFatal = true
+            readFailed = true
+          }
+        }
+        fi += 1
+      }
+      if not readFailed {
+        val assembly = CfgGate.assembleDirectoryPackageSources(fileEntries, pkgEntry.name, activeFeatures)
+        var ai = 0
+        while ai < assembly.sources.count {
+          pkgSources.add(assembly.sources[ai])
+          ai += 1
+        }
+      }
+    } else {
+    val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(mfDir, pkgEntry.path) }
     if File.fileExists(abs) {
       match File.readText(abs) {
         case Ok(t) -> {
@@ -591,6 +628,7 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
       printErr("test: package '" + pkgEntry.name + "': path not found: " + abs)
       hadFatal = true
     }
+    }  // end else (single-file/directory path)
     if pkgSources.count > 0 {
       libPkgs.add(ProjectPackage(name = pkgEntry.name, sources = pkgSources))
     }
@@ -794,16 +832,27 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
                       var pki = 0
                       while pki < depProj.packages.count {
                         val pkgEntry = depProj.packages[pki]
-                        val srcPath = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(depDir, pkgEntry.path) }
-                        match File.readText(srcPath) {
-                          case Ok(srcText) -> {
-                            val srcList: List[String] = newList()
-                            srcList.add(srcText)
-                            depTemplatePkgsList.add(ProjectPackage(name = pkgEntry.name, sources = srcList))
+                        val srcList: List[String] = newList()
+                        if pkgEntry.paths.count > 0 {
+                          // Explicit file list (TOML array form).
+                          var fi = 0
+                          while fi < pkgEntry.paths.count {
+                            val srcPath = if Path.isAbsolute(pkgEntry.paths[fi]) { pkgEntry.paths[fi] } else { Path.join(depDir, pkgEntry.paths[fi]) }
+                            match File.readText(srcPath) {
+                              case Ok(srcText) -> srcList.add(srcText)
+                              case Err(e) -> { printErr("test: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e)) }
+                            }
+                            fi += 1
                           }
-                          case Err(e) -> {
-                            printErr("test: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
+                        } else {
+                          val srcPath = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(depDir, pkgEntry.path) }
+                          match File.readText(srcPath) {
+                            case Ok(srcText) -> srcList.add(srcText)
+                            case Err(e) -> { printErr("test: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e)) }
                           }
+                        }
+                        if srcList.count > 0 {
+                          depTemplatePkgsList.add(ProjectPackage(name = pkgEntry.name, sources = srcList))
                         }
                         pki += 1
                       }
