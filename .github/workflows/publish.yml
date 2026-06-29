@@ -128,7 +128,10 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${{ steps.ver.outputs.VERSION }}"
-          if git rev-parse "${TAG}" >/dev/null 2>&1; then
+          # Match the tag ref specifically — `git rev-parse "$TAG"` resolves any
+          # ref, so a branch coincidentally named like the tag would be a false
+          # positive. `refs/tags/$TAG` checks only the tag namespace.
+          if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
             echo "Tag ${TAG} already exists; refusing to clobber it." >&2
             exit 1
           fi
