@@ -60,7 +60,7 @@ function startLsp(context: vscode.ExtensionContext): void {
 
     client.start().catch(async (err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
-        const isNotFound = (err as NodeJS.ErrnoException)?.code === 'ENOENT' || msg.includes('ENOENT');
+        const isNotFound = (typeof err === 'object' && err !== null && 'code' in err && (err as { code: unknown }).code === 'ENOENT') || msg.includes('ENOENT');
         
         let choice: string | undefined;
         if (isNotFound) {
@@ -88,7 +88,7 @@ function startLsp(context: vscode.ExtensionContext): void {
                             'View Setup Guide'
                         );
                         if (guideChoice === 'View Setup Guide') {
-                            vscode.env.openExternal(vscode.Uri.parse('https://github.com/nichobbs/lyric-lang#installation'));
+                            vscode.env.openExternal(vscode.Uri.parse('https://github.com/nichobbs/lyric-lang#quick-start'));
                         }
                         return;
                     }
@@ -110,7 +110,7 @@ function startLsp(context: vscode.ExtensionContext): void {
                 });
             });
         } else if (choice === 'View Setup Guide') {
-            vscode.env.openExternal(vscode.Uri.parse('https://github.com/nichobbs/lyric-lang#installation'));
+            vscode.env.openExternal(vscode.Uri.parse('https://github.com/nichobbs/lyric-lang#quick-start'));
         }
     });
 

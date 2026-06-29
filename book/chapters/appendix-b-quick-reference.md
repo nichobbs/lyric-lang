@@ -842,8 +842,8 @@ lyric build --package-version <ver>   # override the version string embedded in 
 #                       `lyric run` execs the launcher instead of `dotnet exec`; if the
 #                       launcher is missing it warns and falls back to `dotnet exec`.
 #   kind = "bundle"  -> self-contained (runtime bundled) — planned, build errors for now
-#   kind = "aot"     -> native AOT, no runtime — Linux only (x64/arm64); clang required;
-#                       equivalent to `lyric build --release`; macOS/Windows tracked in #1975
+#   kind = "aot"     -> native AOT, no runtime — Linux (`x64`/`arm64`) and macOS; clang/ld64 required;
+#                       equivalent to `lyric build --release`; Windows tracked in #1975
 
 # Build features (compile-time gating; see chapter 20 §20.7)
 lyric build --features X,Y <file.l>    # additive over manifest's [features] default
