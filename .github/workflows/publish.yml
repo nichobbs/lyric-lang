@@ -120,8 +120,8 @@ jobs:
             echo "Tag ${TAG} already exists; refusing to clobber it." >&2
             exit 1
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "${TAG}" -m "Release ${TAG}"
           git push origin "${TAG}"
 
@@ -625,6 +625,13 @@ jobs:
             local -a pids=()
             local -a names=()
             echo "### Tier ${tier}: starting ${#manifests[@]} libraries in parallel"
+            # A library only builds when every workspace dependency's DLL is
+            # already on disk, so a failure in an earlier tier can cascade into
+            # this one (a missing dep DLL makes the dependent build fail too).
+            # Flag that up front so a cascade isn't read as independent breakage.
+            if [[ ${#FAILED[@]} -gt 0 ]]; then
+              echo "::warning::Tier ${tier} starts with ${#FAILED[@]} earlier-tier failure(s) (${FAILED[*]}); failures below may be cascades from a missing dependency DLL rather than independent breakage."
+            fi
             local m
             for m in "${manifests[@]}"; do
               local name; name="$(dirname "$m")"
