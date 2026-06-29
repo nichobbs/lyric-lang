@@ -111,7 +111,16 @@ pub func serializeManifest(text: in String, filePath: in String): String {
           }
           var pi = 0
           while pi < p.packages.count {
-            s = s + "project.pkg=" + p.packages[pi].name + "=" + p.packages[pi].path + "\n"
+            val pkg = p.packages[pi]
+            if pkg.paths.count > 0 {
+              var pf = 0
+              while pf < pkg.paths.count {
+                s = s + "project.pkg.file=" + pkg.name + "=" + pkg.paths[pf] + "\n"
+                pf = pf + 1
+              }
+            } else {
+              s = s + "project.pkg=" + pkg.name + "=" + pkg.path + "\n"
+            }
             pi = pi + 1
           }
         }

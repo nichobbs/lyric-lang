@@ -73,7 +73,12 @@ pub record PackageSection {
 
 pub record PackageEntry {
   name: String
+  /// Non-empty when the entry is a single file or a directory.
   path: String
+  /// Non-empty when the entry is an explicit list of source files
+  /// (TOML array form: `"Pkg" = ["src/a.l", "src/b.l"]`).
+  /// Mutually exclusive with `path`: exactly one of the two is non-empty.
+  paths: List[String]
 }
 
 pub record ProjectSection {
@@ -741,9 +746,14 @@ func collectSectionPairs(entries: in List[Entry], section: in String): List[Pack
   while i < entries.count {
     val e = entries[i]
     if e.section == section {
+      val noPaths: List[String] = newList()
       match e.value {
-        case VStr(s) -> pairs.add(PackageEntry(name = e.key, path = s))
-        case _ -> ()  // non-string values in pair sections are silently ignored
+        case VStr(s) -> pairs.add(PackageEntry(name = e.key, path = s, paths = noPaths))
+        case VStrList(items) -> {
+          val emptyPath = ""
+          pairs.add(PackageEntry(name = e.key, path = emptyPath, paths = items))
+        }
+        case _ -> ()  // non-string, non-list values are silently ignored
       }
     }
     i += 1
