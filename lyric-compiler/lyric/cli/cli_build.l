@@ -911,15 +911,21 @@ func buildProject(
   // Format: "depName\tdllPath" — passed to emitter.l which writes "DEP\t..." lines.
   val restoredDlls: List[String] = newList()
   val depTemplatePkgsList: List[ProjectPackage] = newList()
+  val seenDeps: List[String] = newList()
 
   // First, build all workspace dependencies (if we're in a workspace).
-  val (wsDepDlls, wsHadError) = buildWorkspaceDeps(manifest, mfPath, target)
+  // buildWorkspaceDeps now expands transitive deps so allArts in emitProjectInProcess
+  // covers types from all reachable packages, preventing T0010 on cross-DLL types.
+  val (wsDepDlls, wsHadError, wsCtxOpt) = buildWorkspaceDeps(manifest, mfPath, target)
   if wsHadError {
     return 1
   }
   var wdi = 0
   while wdi < wsDepDlls.count {
-    restoredDlls.add(wsDepDlls[wdi])
+    val wsEntry = wsDepDlls[wdi]
+    restoredDlls.add(wsEntry)
+    val wsTab = wsEntry.indexOf("\t")
+    seenDeps.add(if wsTab >= 0 { wsEntry.substring(0, wsTab) } else { wsEntry })
     wdi += 1
   }
 
@@ -943,7 +949,11 @@ func buildProject(
                   }
                   val dllPath = Path.join(depBinDir, dllName)
                   if File.fileExists(dllPath) {
-                    restoredDlls.add(dep.name + "\t" + dllPath)
+                    if not stringListContains(seenDeps, dep.name) {
+                      restoredDlls.add(dep.name + "\t" + dllPath)
+                      seenDeps.add(dep.name)
+                      collectTransitiveDepDlls(depDir, wsCtxOpt, seenDeps, restoredDlls)
+                    }
                   } else {
                     printErr("build: " + Release.localDepNotBuiltMessage(dep.name, dllPath, depToml))
                   }
