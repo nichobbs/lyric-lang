@@ -59,7 +59,8 @@ function startLsp(context: vscode.ExtensionContext): void {
 
     client.start().catch(async (err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
-        const isNotFound = msg.includes('ENOENT') || msg.includes('not found') || msg.includes('find');
+        const lowerMsg = msg.toLowerCase();
+        const isNotFound = msg.includes('ENOENT') || lowerMsg.includes('not found') || lowerMsg.includes('no such file');
         
         let choice: string | undefined;
         if (isNotFound) {
@@ -72,7 +73,6 @@ function startLsp(context: vscode.ExtensionContext): void {
         } else {
             choice = await vscode.window.showErrorMessage(
                 `Lyric: failed to start language server (${serverPath}): ${msg}.`,
-                'Install via dotnet',
                 'View Setup Guide'
             );
         }
@@ -81,10 +81,15 @@ function startLsp(context: vscode.ExtensionContext): void {
             const terminal = vscode.window.createTerminal('Lyric Installation');
             terminal.show();
             terminal.sendText('dotnet tool install -g lyric');
-            vscode.window.showInformationMessage(
+            
+            const reloadChoice = await vscode.window.showInformationMessage(
                 'Running "dotnet tool install -g lyric" in the integrated terminal. ' +
-                'Once complete, restart VS Code or reload the window to start the Lyric language server.'
+                'Once the installation is complete, click "Reload Window" to activate the language server.',
+                'Reload Window'
             );
+            if (reloadChoice === 'Reload Window') {
+                vscode.commands.executeCommand('workbench.action.reloadWindow');
+            }
         } else if (choice === 'View Setup Guide') {
             vscode.env.openExternal(vscode.Uri.parse('https://github.com/nichobbs/lyric-lang#installation'));
         }
