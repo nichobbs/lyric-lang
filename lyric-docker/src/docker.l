@@ -571,6 +571,11 @@ pub async func getContainerLogs(client: in DockerClient, containerId: in String)
     }
   } else {
     val statusCode = response.statusCode()
-    Err(error = DockerError(statusCode = Some(value = statusCode), message = "Get container logs failed", details = ""))
+    val bodyResult = await response.bodyText()
+    val details = match bodyResult {
+      case Ok(b) -> b
+      case Err(_) -> ""
+    }
+    Err(error = DockerError(statusCode = Some(value = statusCode), message = "Get container logs failed", details = details))
   }
 }
