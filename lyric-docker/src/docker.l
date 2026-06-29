@@ -390,6 +390,26 @@ func extractJsonField(json: in String, field: in String): String {
   }
 }
 
+/// Validate a Docker container ID: must be a lowercase hex string of length 12
+/// (short form) or 64 (full SHA-256), as returned by the Docker API.  Rejects
+/// values containing path-separator or query characters that would silently
+/// reach unintended API endpoints.
+func isValidContainerId(id: in String): Bool {
+  val len = id.length
+  if len != 12 and len != 64 {
+    return false
+  }
+  var i = 0
+  while i < len {
+    val c = id.substring(i, 1)
+    if not ((c >= "0" and c <= "9") or (c >= "a" and c <= "f")) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
 /// Send a request expecting only success/failure (no useful body on success).
 async func sendExpectSuccess(
   client: in DockerClient,
@@ -470,9 +490,10 @@ pub async func createContainer(
 }
 
 /// Start a created container.
-pub async func startContainer(client: in DockerClient, containerId: in String): Result[Unit, DockerError]
-  requires: containerId.length > 0
-{
+pub async func startContainer(client: in DockerClient, containerId: in String): Result[Unit, DockerError] {
+  if not isValidContainerId(containerId) {
+    return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
+  }
   await sendExpectSuccess(
     client,
     "http://docker/v1.40/containers/" + containerId + "/start",
@@ -482,9 +503,10 @@ pub async func startContainer(client: in DockerClient, containerId: in String): 
 }
 
 /// Stop a running container.
-pub async func stopContainer(client: in DockerClient, containerId: in String): Result[Unit, DockerError]
-  requires: containerId.length > 0
-{
+pub async func stopContainer(client: in DockerClient, containerId: in String): Result[Unit, DockerError] {
+  if not isValidContainerId(containerId) {
+    return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
+  }
   await sendExpectSuccess(
     client,
     "http://docker/v1.40/containers/" + containerId + "/stop",
@@ -494,9 +516,10 @@ pub async func stopContainer(client: in DockerClient, containerId: in String): R
 }
 
 /// Remove a container.
-pub async func removeContainer(client: in DockerClient, containerId: in String): Result[Unit, DockerError]
-  requires: containerId.length > 0
-{
+pub async func removeContainer(client: in DockerClient, containerId: in String): Result[Unit, DockerError] {
+  if not isValidContainerId(containerId) {
+    return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
+  }
   await sendExpectSuccess(
     client,
     "http://docker/v1.40/containers/" + containerId + "?force=true",
@@ -540,9 +563,10 @@ pub func demultiplexDockerStream(bytes: in slice[Byte]): Option[String] {
 }
 
 /// Fetch a container's combined stdout/stderr logs.
-pub async func getContainerLogs(client: in DockerClient, containerId: in String): Result[String, DockerError]
-  requires: containerId.length > 0
-{
+pub async func getContainerLogs(client: in DockerClient, containerId: in String): Result[String, DockerError] {
+  if not isValidContainerId(containerId) {
+    return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
+  }
   val urlStr = "http://docker/v1.40/containers/" + containerId + "/logs?stdout=true&stderr=true"
   val urlResult = Std.Http.Url.tryFrom(urlStr)
   val url = match urlResult {
