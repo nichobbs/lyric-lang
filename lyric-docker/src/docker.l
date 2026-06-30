@@ -18,9 +18,11 @@
 package Lyric.Docker
 
 import Lyric.Docker.Sockets
+import Std.Char
 import Std.Collections
 import Std.Core
 import Std.Encoding
+import Std.Format
 import Std.Http
 
 /// Opaque handle to a Docker daemon connection. Wraps the underlying HTTP
@@ -266,7 +268,7 @@ func jsonEscapeValue(s: in String): String {
     } else if c == "\u{000c}" {
       acc = acc + "\\f"
     } else if code >= 0 and code < 32 {
-      val hex = toString(code, 16)
+      val hex = Std.Format.toHexString(code)
       val padded = if hex.length == 1 { "0" + hex } else { hex }
       acc = acc + "\\u00" + padded
     } else {
@@ -335,7 +337,7 @@ func jsonUnescapeValue(s: in String): String {
         val codeOpt = Int.parse(hexStr, 16)
         match codeOpt {
           case Some(code) -> {
-            acc = acc + fromCodePoint(code)
+            acc = acc + ("" + Std.Char.fromInt(code))
             i = i + 6
           }
           case None -> {
