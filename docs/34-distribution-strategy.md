@@ -240,8 +240,22 @@ The GitHub Actions workflow (`ci.yml`) runs after every push to `main`:
 
 ## 7. Release workflow
 
-Releases are published by pushing a version tag (e.g. `git tag v0.1.0 && git push
---tags`).  The `.github/workflows/publish.yml` workflow then:
+Releases are published one of two ways:
+
+- **Tag push** — `git tag v0.1.0 && git push --tags`. The version is taken
+  verbatim from the `vX.Y.Z` tag.
+- **Manual dispatch** — run the workflow from the Actions tab (or
+  `gh workflow run publish.yml -f release_type=patch`) and pick a
+  `release_type` of `major`, `minor`, or `patch`. The workflow reads the
+  highest clean-semver tag among existing **non-draft** GitHub releases,
+  increments it according to the chosen type (`major`: X+1.0.0; `minor`:
+  X.Y+1.0; `patch`: X.Y.Z+1; first release → 1.0.0 / 0.1.0 / 0.0.1
+  respectively), creates and pushes the matching annotated `vX.Y.Z` git
+  tag, and proceeds with that version. (Pushing the tag with the default
+  `GITHUB_TOKEN` does not re-trigger the tag-push path, so there is no
+  double run.)
+
+The `.github/workflows/publish.yml` workflow then:
 
 1. **Builds self-contained binaries** for `linux-x64`, `linux-arm64`, `osx-arm64`,
    `osx-x64`, and `win-x64` using `dotnet publish --self-contained --runtime <RID>
@@ -267,11 +281,20 @@ Releases are published by pushing a version tag (e.g. `git tag v0.1.0 && git pus
    API key is obtained by exchanging the GitHub Actions OIDC token with NuGet.org's
    authentication endpoint — no long-lived `NUGET_API_KEY` secret is required.
 9. **Builds and publishes each ecosystem library** (`lyric-web`, `lyric-auth`,
-   `lyric-cache`, etc.) as an individual NuGet package in topological dependency
-   order, also using NuGet Trusted Publishing.  `lyric build` and `lyric publish`
-   drive the per-library build and pack; `--skip-duplicate` makes the step
-   idempotent on workflow retries.  See `docs/39-package-registry.md` §8 for the
-   full library ordering.
+   `lyric-cache`, etc.) as an individual NuGet package, also using NuGet Trusted
+   Publishing.  `lyric build` and `lyric publish` drive the per-library build and
+   pack; `--skip-duplicate` makes the step idempotent on workflow retries.
+   Libraries are grouped into dependency tiers (Tier 1 has no Lyric-package
+   dependencies; each later tier depends only on earlier ones).  The tiers run
+   sequentially — a tier-3 build needs the tier-1/2 DLLs on disk, since
+   workspace dependencies resolve from the local build output — but **all
+   libraries within a tier build and publish in parallel**.  Failures do **not**
+   fail-fast: every library runs to completion (or error) independently, its
+   output is captured to a per-library log, and the step writes a summary of all
+   succeeded/failed libraries to the GitHub job summary before exiting non-zero
+   if any failed.  This surfaces every broken library in a single run instead of
+   stopping at the first one.  See `docs/39-package-registry.md` §8 for the full
+   library ordering.
 
 ### NuGet Trusted Publishing — one-time setup
 

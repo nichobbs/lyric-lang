@@ -17,16 +17,16 @@ interchangeable, and a failure under one is not a failure under another.
 
 | # | Compiler | Built by | IL validity | Build command | Use it to… |
 |---|----------|----------|-------------|---------------|-----------|
-| 1 | **mint stage-0** | `scripts/mint-stage0-fsharp.sh` (rebuilds the historical F# bootstrap from git history) | valid (F# emitter is correct) | `LYRIC_BOOTSTRAP_MINT=1` seeds it automatically | seed stage-1; never run directly |
-| 2 | **mint stage-1** (the **bootstrap** compiler) | the mint seed compiling the self-hosted `.l` sources | **valid — this is exactly what CI ships** | `make mint` | **all day-to-day dev.** It *runs* the self-hosted codegen, so compiling a program exercises the self-hosted emitter on user code while staying runnable. |
+| 1 | **mint stage-0** _(retired)_ | `scripts/mint-stage0-fsharp.sh` (rebuilds the historical F# bootstrap from git history) | valid (F# emitter is correct) | `LYRIC_BOOTSTRAP_MINT=1` seeds it automatically | seed stage-1; never run directly. **Historical artefact** — the `seed: mint` workflow input and the mint release path were retired in #4387; this is no longer part of the release pipeline. |
+| 2 | **mint stage-1** _(retired)_ | the mint seed compiling the self-hosted `.l` sources | **valid** (historical artefact) | `make mint` | Was used for day-to-day dev before stage-2 was runnable. **Retired in #4387** — the `seed: mint` release path is gone; releases now ship from stage-2 only (row 3). |
 | 3 | **self-hosted stage-2** | the stage-1 true compiler compiling **itself + the full stdlib** into an isolated toolchain (`.bootstrap/stage2/{lib,bin}`) | **runnable — stage-3 byte-reproducibility fixpoint confirmed (101/101 DLLs); D-progress-531** | `make stage2` | **the SHIP toolchain.** Release binaries (standalone and NuGet tool) are AOT-linked from stage-2 DLLs; run things via `make run-stage2 ARGS=…` |
 
 Key consequence: **a bare `make lyric` builds compiler #3 (stage-2)**, which
 is now **fully runnable** (D-progress-531: 101/101 DLLs byte-for-byte
 reproducible at the stage-3 fixpoint; P0040 parser bug fixed in #4020).
 `make stage2` and `make lyric` both produce a working self-hosted toolchain.
-CI also builds #2 (`make mint` / `LYRIC_BOOTSTRAP_MINT=1`) for fast inner-loop
-feedback; either produces a correct binary.
+The mint path (#1, #2) was retired in #4387 — `publish.yml` no longer has a
+`seed: mint` input.  Use `make lyric` (stage-2) for all dev and release work.
 
 ### The IL-validity gate
 
@@ -75,25 +75,22 @@ the runnability gate now exposes.  Run things against the toolchain with
 ### "Is this a real bug?" — one command
 
 ```sh
-make mint                              # build the CI-faithful toolchain once
+make lyric                             # build the stage-2 toolchain once
 make selfhost-check FILE=repro.l       # → scripts/selfhost-check.sh
 ```
 
-`selfhost-check` compiles `repro.l` with compiler #2 (self-hosted codegen),
+`selfhost-check` compiles `repro.l` with compiler #3 (self-hosted stage-2),
 runs it, and `ilverify`s the emitted DLL, printing a verdict:
 
 * **OK** — compiles, runs, valid IL → the emitter handles this construct; a
-  failure seen elsewhere was an environment artifact (wrong binary, stale DLLs,
-  or a suffix-vs-non-suffix stdlib ABI mismatch).
+  failure seen elsewhere was an environment artifact (wrong binary or stale DLLs).
 * **REAL SELF-HOSTED BUG** — compile error, runtime fault, or invalid IL, with
   the pinpointing output inline.
 
-The recurring **ABI artifact** to rule out: the self-hosted emitter names
-generic types with an arity suffix (`Option`1`), while the mint stdlib uses the
-unsuffixed `Option`.  Linking a program emitted by the self-hosted codegen
-against the mint (unsuffixed) stdlib faults with `Could not load type
-'Std.Core.Option`1'`.  `make mint` stages a suffixed `userlib/` stdlib beside
-the binary for exactly this reason; `selfhost-check` co-locates it automatically.
+The historical mint stdlib arity-suffix mismatch (`Could not load type
+'Std.Core.Option\`1'`) no longer applies: since D111 the stdlib is always the
+self-hosted/arity-suffixed single bundle, so there is no seed-vs-self-hosted ABI
+split.  `selfhost-check` co-locates the stage-2 stdlib automatically.
 
 ---
 
@@ -25555,20 +25552,14 @@ migrates the `_kernel/` nullable externs and removes `case null` once a release
 carrying the convention becomes the bootstrap seed. JVM emitter parity (Phase 1
 is MSIL-only) is tracked in #3932.
 
-**Release cutover to fully self-hosted builds.** The published seed used by
-`bootstrap.sh`'s download path predates these cascade fixes and miscompiles the
-current compiler sources, so it cannot bootstrap a fully self-hosted build. The
-path forward: (1) cut an **interim mint-seeded release** — `publish.yml` takes a
-`seed` workflow_dispatch input (`download` default | `mint`); dispatch it with
-`seed: mint` to mint the release binary from the historical F# compiler (correct
-emitter) carrying the current fixes, with `--stage 1`; (2) once that release is
-published, all future releases (tag push, or `seed: download`) seed from it —
-re-enable the strict `--stage 2` reproducibility gate (both stages then
-self-hosted-emitted ⇒ byte-identical) and F# leaves the bootstrap here; (3) land
-D107 Phase 2 so the self-hosted compiler builds the stdlib itself, retiring the
-F# stdlib-reuse path. The interim (`seed: mint`) release skips `--stage 2`
-because an F#-emitted stage-1 and a self-hosted-emitted stage-2 legitimately
-diverge (e.g. the generic arity suffix F# omits).
+**Release cutover to fully self-hosted builds — COMPLETED (#4387).** The
+interim mint-seeded release plan described above was the plan; it is now done.
+The `seed: mint` workflow input and `--stage 1` release path were retired in
+#4387: `publish.yml` now runs `bootstrap.sh --stage 2` on every publish job
+and passes `-p:StageDir=...stage2/lib` to `dotnet publish` so ILCompiler AOT-
+links the self-hosted DLLs (D-progress-531: 101/101 DLLs byte-for-byte
+reproducible at the stage-3 fixpoint).  The released binary contains code
+emitted exclusively by the self-hosted Lyric compiler.
 
 ### D-progress-532 — `[build] kind = "exe"`: native apphost launcher emission
 

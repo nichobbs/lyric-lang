@@ -772,7 +772,87 @@ func indexOfString(list: in List[String], s: in String): Int {
 // pass — without it, file 2's `package` line lands mid-unit and the parser
 // rejects the bundle with a P0040 cascade (#2575).  A single source is
 // returned verbatim so its diagnostics keep exact line numbers.
-func mergePackageSources(fallbackName: in String, sources: in List[String]): String {
+// Like extractFileLevelAnnotations but excludes @cfg(...) lines.  File-level
+// @cfg annotations are per-file gates and must NOT propagate to the merged
+// package header — mergePackageSources applies them per-file via
+// fileIsCfgErasedByFeatures instead.  Non-cfg module-level annotations like
+// @runtime_checked or @proof_required from sources[0] ARE kept in the header
+// because they annotate the whole merged package.
+func extractNonCfgFileLevelAnnotations(source: in String): String {
+  val lines: List[String] = newList()
+  var lineStart = 0
+  var pos = 0
+  var done = false
+  while pos <= source.length and not done {
+    val atEnd = pos == source.length
+    val isNewline = not atEnd and source.substring(pos, 1) == "\n"
+    if atEnd or isNewline {
+      val lineLen = pos - lineStart
+      val line = if lineLen > 0 { source.substring(lineStart, lineLen) } else { "" }
+      if Str.startsWith(line, "package ") {
+        done = true
+      } else if Str.startsWith(line, "@") and not Str.startsWith(line, "@cfg(") {
+        lines.add(line)
+      }
+      lineStart = pos + 1
+    }
+    pos = pos + 1
+  }
+  Str.joinList("\n", lines)
+}
+
+// Returns true if the source file carries a file-level @cfg(feature = "X")
+// annotation where X is absent from activeFeatures (V1 form only: single
+// feature = "X" argument).  Used by mergePackageSources to skip bodies of
+// cfg-erased files so their items don't appear ungated in the merged unit.
+func fileIsCfgErasedByFeatures(source: in String, activeFeatures: in List[String]): Bool {
+  val ann = extractFileLevelAnnotations(source)
+  if Str.length(ann) == 0 {
+    return false
+  }
+  val lines = Str.split(ann, "\n")
+  var i = 0
+  while i < lines.length {
+    val line = Str.trim(lines[i])
+    val prefix = "@cfg(feature = \""
+    if Str.startsWith(line, prefix) {
+      val rest = line.substring(prefix.length, line.length - prefix.length)
+      val quotePos = rest.indexOf("\"")
+      if quotePos >= 0 {
+        val featName = rest.substring(0, quotePos)
+        if not listContainsStr(activeFeatures, featName) {
+          return true
+        }
+      }
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Merge `sources` into a single compilation unit string.  When `sources`
+// has a single entry it is returned verbatim (fast path).  For multiple
+// files:
+//
+//   * Non-@cfg file-level annotations (e.g. @runtime_checked) from
+//     sources[0] are kept in the merged header.
+//   * @cfg(feature = "X") file-level annotations are handled per-file:
+//     any file whose file-level @cfg is not satisfied by `activeFeatures`
+//     is skipped entirely (its items must not appear in the merged unit).
+//     This matches the semantics of Lyric.Cfg.applyCfgErasure operating on
+//     the SourceFile.fileAnnotations field — an erased file contributes
+//     zero declarations and must not suppress sibling files' declarations.
+//   * Import lines are deduplicated across all surviving files.
+//   * Bodies (items) from all surviving files are concatenated.
+//
+// `declaredFeatures` is accepted for API symmetry but unused here; the
+// per-file F0013 typo warning is emitted by applyCfgErasure in the bridge.
+func mergePackageSources(
+  fallbackName: in String,
+  sources: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+): String {
   if sources.count == 0 {
     return ""
   }
@@ -781,15 +861,17 @@ func mergePackageSources(fallbackName: in String, sources: in List[String]): Str
   }
   val declared = extractPackageName(sources[0])
   val name = if Str.length(declared) > 0 { declared } else { fallbackName }
-  val ann = extractFileLevelAnnotations(sources[0])
+  val ann = extractNonCfgFileLevelAnnotations(sources[0])
   val imports: List[String] = newList()
   var bodies = ""
   var i = 0
   while i < sources.count {
     val src = sources[i]
-    collectImportLines(src, imports)
-    val body = stripPackageAndImports(src)
-    bodies = if Str.length(bodies) == 0 { body } else { bodies + "\n" + body }
+    if not fileIsCfgErasedByFeatures(src, activeFeatures) {
+      collectImportLines(src, imports)
+      val body = stripPackageAndImports(src)
+      bodies = if Str.length(bodies) == 0 { body } else { bodies + "\n" + body }
+    }
     i = i + 1
   }
   val header = if Str.length(ann) > 0 { ann + "\n" + "package " + name + "\n" } else { "package " + name + "\n" }
@@ -1712,7 +1794,7 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
     val pkg = req.packages[mi]
     if pkg.sources.count > 1 {
       val merged: List[String] = newList()
-      merged.add(mergePackageSources(pkg.name, pkg.sources))
+      merged.add(mergePackageSources(pkg.name, pkg.sources, req.activeFeatures, req.declaredFeatures))
       mergedPkgs.add(ProjectPackage(name = pkg.name, sources = merged))
     } else {
       mergedPkgs.add(pkg)
@@ -1874,7 +1956,7 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
   var pi = 0
   while pi < req.packages.count {
     val pkg = req.packages[pi]
-    payloads.add(ProjectPackagePayload(name = pkg.name, source = mergePackageSources(pkg.name, pkg.sources)))
+    payloads.add(ProjectPackagePayload(name = pkg.name, source = mergePackageSources(pkg.name, pkg.sources, req.activeFeatures, req.declaredFeatures)))
     pi += 1
   }
   // Auto-resolve `lyric-stdlib/std/*.l` at runtime so the in-process bridge
@@ -1941,7 +2023,7 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
   var dtpi = 0
   while dtpi < req.depTemplateSrcs.count {
     val pkg = req.depTemplateSrcs[dtpi]
-    depTemplatePkgs.add(ProjectPackagePayload(name = pkg.name, source = mergePackageSources(pkg.name, pkg.sources)))
+    depTemplatePkgs.add(ProjectPackagePayload(name = pkg.name, source = mergePackageSources(pkg.name, pkg.sources, req.activeFeatures, req.declaredFeatures)))
     dtpi = dtpi + 1
   }
 
@@ -1985,7 +2067,7 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
   var dtpi = 0
   while dtpi < req.depTemplateSrcs.count {
     val dtPkg = req.depTemplateSrcs[dtpi]
-    val mergedSrc = mergePackageSources(dtPkg.name, dtPkg.sources)
+    val mergedSrc = mergePackageSources(dtPkg.name, dtPkg.sources, req.activeFeatures, req.declaredFeatures)
     depTemplateNames.add(mergedSrc)
     dtpi = dtpi + 1
   }
