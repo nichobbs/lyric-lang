@@ -2557,6 +2557,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
+          publish_dir="$(mktemp -d)"
           arch="$(uname -m)"
           if [ "$arch" = "x86_64" ]; then
             rid="osx-x64"

@@ -31,7 +31,7 @@ on:
         type: boolean
       mint_stage0:
         description: >-
-          Mint Stage-0 compiler from F# history instead of downloading
+          Mint Stage-0 compiler from git history instead of downloading
           previous release (breaks bad-seed cycles).
         required: false
         default: true

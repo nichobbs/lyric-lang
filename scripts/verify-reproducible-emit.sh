@@ -114,8 +114,10 @@ verify_manifest() {
     return 0
   fi
   echo "[repro] FAIL: $asm_name differs between two self-hosted builds" >&2
+  set +o pipefail
   cmp -l "$a" "$b" | head -40 >&2
   echo "[repro] total differing bytes: $(cmp -l "$a" "$b" | wc -l | tr -d ' ')" >&2
+  set -o pipefail
   exit 3
 }
 

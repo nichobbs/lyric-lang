@@ -666,6 +666,8 @@ build_stage2() {
     if [[ -f "$STAGE2_LIB_DIR/Lyric.Stdlib.runtimeconfig.json" ]]; then
       cp "$STAGE2_LIB_DIR/Lyric.Stdlib.runtimeconfig.json" "$STAGE2_LIB_DIR/Lyric.Lyric.Cli.runtimeconfig.json"
       info "  copied runtimeconfig.json for JIT execution"
+    else
+      die "JIT mode requires Lyric.Stdlib.runtimeconfig.json in $STAGE2_LIB_DIR (expected from the stage-2 stdlib build)"
     fi
     cat > "$STAGE2_BIN_DIR/lyric" <<'EOF'
 #!/usr/bin/env bash
