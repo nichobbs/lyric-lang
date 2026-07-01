@@ -188,7 +188,7 @@ func runGithubUpgrade(installDir: in String, version: in Option[String], isDryRu
       }
       case None -> ()
     }
-    Console.println("dry-run: would run fetched script with arguments: sh -s -- " + Process.buildArgString(printArgs))
+    Console.println("dry-run: would write fetched script to temporary file and run: sh <tempFile> " + Process.buildArgString(printArgs))
     return 0
   }
 
