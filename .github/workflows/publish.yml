@@ -785,19 +785,58 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ---------------------------------------------------------------------------
+  # Clean up on core publishing failure: delete the tag and draft release
+  # if build-standalone, publish-nuget, or publish-vscode fail.
+  # Ecosystem publishing failures do NOT trigger cleanup (those are optional).
+  # ---------------------------------------------------------------------------
+  cleanup-on-failure:
+    runs-on: ubuntu-latest
+    needs: [create-release, build-standalone, publish-nuget, publish-vscode]
+    if: >-
+      always() &&
+      needs.create-release.result == 'success' &&
+      (needs.build-standalone.result == 'failure' || needs.build-standalone.result == 'cancelled' ||
+       needs.publish-nuget.result == 'failure' || needs.publish-nuget.result == 'cancelled' ||
+       needs.publish-vscode.result == 'failure' || needs.publish-vscode.result == 'cancelled')
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Delete git tag (dispatch only)
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="v${{ needs.create-release.outputs.version }}"
+          echo "Deleting git tag ${TAG} due to publish failure..."
+          git push origin --delete "${TAG}" || true
+
+      - name: Delete draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.create-release.outputs.version }}"
+          echo "Deleting draft release v${VERSION} due to publish failure..."
+          gh release delete "v${VERSION}" --yes || true
+
+  # ---------------------------------------------------------------------------
   # Mark the release as ready (non-draft) after all uploads and publishing
   # are complete.  Runs only if all prior jobs succeeded or were skipped.
   # ---------------------------------------------------------------------------
   finalize-release:
     runs-on: ubuntu-latest
-    needs: [create-release, build-standalone, publish-nuget, publish-ecosystem, publish-vscode]
+    needs: [create-release, build-standalone, publish-nuget, publish-ecosystem, publish-vscode, cleanup-on-failure]
     if: >-
       always() &&
       needs.create-release.result == 'success' &&
       (needs.build-standalone.result == 'success' || needs.build-standalone.result == 'skipped') &&
       (needs.publish-nuget.result == 'success' || needs.publish-nuget.result == 'skipped') &&
       (needs.publish-ecosystem.result == 'success' || needs.publish-ecosystem.result == 'skipped') &&
-      (needs.publish-vscode.result == 'success' || needs.publish-vscode.result == 'skipped')
+      (needs.publish-vscode.result == 'success' || needs.publish-vscode.result == 'skipped') &&
+      (needs.cleanup-on-failure.result == 'success' || needs.cleanup-on-failure.result == 'skipped')
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
