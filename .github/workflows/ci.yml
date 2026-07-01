@@ -2106,6 +2106,13 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/release_self_test.l
 
+      # Drain all earlier background steps before the heavy project self-tests,
+      # which run heavy in-process multi-package builds and need
+      # exclusive access to memory rather than competing with 24+ concurrent
+      # compilation processes.
+      - name: Wait for parallel tests before heavy project self-tests
+        wait-all: true
+
       # MSIL project bridge self-test — exercises the self-hosted multi-package
       # MSIL bridge (Msil.Bridge.compileProjectToMsil /
       # compileProjectToMsilWithFeatures) end-to-end.  Covers Phases 1–3:
@@ -2114,7 +2121,6 @@ jobs:
       # so the Msil.Bridge transitive closure does not overflow the F# bootstrap
       # emitter; stage-1 DLLs provide the compiler-package imports (#2888).
       - name: MSIL project bridge self-test (native lyric test)
-        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2128,13 +2134,6 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/msil_project_bridge_self_test.l
-
-      # Drain all earlier background steps before the emitter project self-test,
-      # which runs heavy in-process multi-package builds (emitProject) and needs
-      # exclusive access to memory rather than competing with 24+ concurrent
-      # compilation processes.
-      - name: Wait for parallel tests before emitter project self-test
-        wait-all: true
 
       # Emitter project self-test — exercises the Phase 4 in-process routing in
       # Lyric.Emitter.emitProject (multi-package DOTNET builds).  Covers aliased
