@@ -15,6 +15,7 @@ permissions:
 # the AOT smoke + ecosystem test paths from drifting (#1080).
 env:
   BUILD_CONFIG: Debug
+  TMPDIR: ${{ runner.temp }}
 
 jobs:
   build:
