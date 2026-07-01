@@ -2468,11 +2468,11 @@ func weaveItemsCore(items: in List[Item], packagePath: in String): WeaveResult {
             val isBMode = match aspect.from { case Some(_) -> not isTpl; case None -> false }
             val wrapper0 = if isBMode {
               if not bmodeCtxEmitted {
-                result.add(bmodeSynthCallCtxRecordItem())
+                result.add(bmodeSynthCallCtxRecordItem(fn.span))
                 bmodeCtxEmitted = true
               }
               val templateKey = match aspect.from { case Some(fp) -> bmodeTemplateKey(fp); case None -> aspect.name }
-              val info = bmodeGetOrBuildTemplateInfo(bmodeTemplateInfoCache, templateKey, aspect, result)
+              val info = bmodeGetOrBuildTemplateInfo(bmodeTemplateInfoCache, templateKey, aspect, result, fn.span)
               val shapeKey = bmodeShapeKey(fn.params, fn.ret)
               val specName = "__lyric_bmode_" + Str.replace(templateKey, ".", "_") + "__" + shapeKey
               val specKey = templateKey + "::" + shapeKey
@@ -2490,7 +2490,8 @@ func weaveItemsCore(items: in List[Item], packagePath: in String): WeaveResult {
                   paramTypes,
                   fn.ret,
                   targetReturnsUnit,
-                  info.cfgRecordName
+                  info.cfgRecordName,
+                  fn.span
                 )
                 result.add(
                   Item(
@@ -3020,7 +3021,15 @@ func bmodeSliceStringField(name: in String): RecordMember {
   )
 }
 
-func bmodeSynthCallCtxRecordItem(): Item {
+// Synthesised top-level declarations (records, specialised functions) each
+// take the matched function's real span (`span`) rather than a shared zero
+// span (`synSpan()`) — unlike statements/exprs *inside* an existing
+// function body (where every wrapper in this file already reuses a zero
+// span safely), a woven file can now carry SEVERAL brand-new top-level
+// items in one weave (the call-context record, a per-template cfg record,
+// one specialised function per shape) where previously at most one
+// synthesised wrapper function ever existed per match.
+func bmodeSynthCallCtxRecordItem(span: in Span): Item {
   val members: List[RecordMember] = newList()
   members.add(bmodeStringField("shortName"))
   members.add(bmodeStringField("qualifiedName"))
@@ -3028,53 +3037,50 @@ func bmodeSynthCallCtxRecordItem(): Item {
   members.add(bmodeStringField("sourceLocation"))
   members.add(bmodeSliceStringField("annotations"))
   members.add(bmodeStringField("aspectName"))
-  val sp = synSpan()
   val rd = RecordDecl(
     name = bmodeCallCtxRecordName(),
     generics = None,
     whereClause = None,
     members = members,
-    span = sp
+    span = span
   )
   Item(
     docComments = newList(),
     annotations = newList(),
-    visibility = Some(value = VisPub(span = sp)),
+    visibility = Some(value = VisPub(span = span)),
     kind = IRecord(decl = rd),
-    span = sp
+    span = span
   )
 }
 
-func bmodeSynthCfgRecordItem(recordName: in String, fields: in List[ConfigField]): Item {
+func bmodeSynthCfgRecordItem(recordName: in String, fields: in List[ConfigField], span: in Span): Item {
   val members: List[RecordMember] = newList()
   var i = 0
   while i < fields.count {
     val f = fields[i]
-    val sp = synSpan()
     members.add(
       RMField(
         field = FieldDecl(
           docComments = newList(),
           annotations = newList(),
-          visibility = Some(value = VisPub(span = sp)),
+          visibility = Some(value = VisPub(span = span)),
           isMutable = false,
           name = f.name,
           ty = f.ty,
           dflt = None,
-          span = sp
+          span = span
         )
       )
     )
     i = i + 1
   }
-  val sp2 = synSpan()
-  val rd = RecordDecl(name = recordName, generics = None, whereClause = None, members = members, span = sp2)
+  val rd = RecordDecl(name = recordName, generics = None, whereClause = None, members = members, span = span)
   Item(
     docComments = newList(),
     annotations = newList(),
-    visibility = Some(value = VisPub(span = sp2)),
+    visibility = Some(value = VisPub(span = span)),
     kind = IRecord(decl = rd),
-    span = sp2
+    span = span
   )
 }
 
@@ -3250,6 +3256,7 @@ func bmodeGetOrBuildTemplateInfo(
   templateKey: in String,
   aspect: in AspectDecl,
   extraItems: in List[Item],
+  span: in Span,
 ): BModeTemplateInfo {
   match mapGet(cache, templateKey) {
     case Some(info) -> info
@@ -3265,7 +3272,7 @@ func bmodeGetOrBuildTemplateInfo(
         None
       }
       match cfgRecordName {
-        case Some(rn) -> extraItems.add(bmodeSynthCfgRecordItem(rn, referenced))
+        case Some(rn) -> extraItems.add(bmodeSynthCfgRecordItem(rn, referenced, span))
         case None -> ()
       }
       val info = BModeTemplateInfo(cfgRecordName = cfgRecordName, referencedCfgFields = referenced)
@@ -3361,6 +3368,7 @@ func buildBModeSpecializedFunction(
   retTy: in Option[TypeExpr],
   targetReturnsUnit: in Bool,
   cfgRecordName: in Option[String],
+  span: in Span,
 ): FunctionDecl {
   val around = match aspect.around {
     case Some(a) -> a
@@ -3515,7 +3523,7 @@ func buildBModeSpecializedFunction(
     whereClause = None,
     contracts = newList(),
     body = Some(value = FBBlock(block = finalBody)),
-    span = synSpan()
+    span = span
   )
 }
 
@@ -3595,7 +3603,8 @@ func buildBModeCallSite(
   var lp = 0
   while lp < fn.params.count {
     val lname = "q" + toString(lp)
-    lambdaParams.add(LambdaParam(name = lname, ty = Some(value = fn.params[lp].ty), span = synSpan()))
+    val qty = TypeExpr(kind = fn.params[lp].ty.kind, span = fn.params[lp].ty.span)
+    lambdaParams.add(LambdaParam(name = lname, ty = Some(value = qty), span = synSpan()))
     lambdaArgs.add(CAPositional(expr = singleSegPathExpr(lname)))
     lp = lp + 1
   }
