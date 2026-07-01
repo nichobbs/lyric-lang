@@ -1,5 +1,9 @@
 # Strongly-Typed Lambda ABI (Epic #1877 Proposal)
 
+**Status:** Shipped — D113. Verified by `closure_zero_overhead_self_test.l`
+(16 cases, MSIL + JVM parity). See `docs/53-epic-1877-implementation-plan.md`
+for the concrete implementation plan this proposal led to.
+
 Transition Lyric's lambda emission from the interim uniform `Func<object, ..., object>` ABI to a strongly-typed MSIL lambda ABI.
 
 ## Goal Description
