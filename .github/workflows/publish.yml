@@ -795,9 +795,9 @@ jobs:
     if: >-
       always() &&
       needs.create-release.result == 'success' &&
-      (needs.build-standalone.result == 'failure' ||
-       needs.publish-nuget.result == 'failure' ||
-       needs.publish-vscode.result == 'failure')
+      (needs.build-standalone.result == 'failure' || needs.build-standalone.result == 'cancelled' ||
+       needs.publish-nuget.result == 'failure' || needs.publish-nuget.result == 'cancelled' ||
+       needs.publish-vscode.result == 'failure' || needs.publish-vscode.result == 'cancelled')
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
