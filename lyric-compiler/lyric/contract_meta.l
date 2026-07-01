@@ -45,6 +45,7 @@ import Lyric.Lexer
 import Lyric.Parser
 import Msil.MetadataReader as Mdr
 import Lyric.CliShell as CliShell
+import Lyric.Fmt as Fmt
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Subprocess helpers — thin wrappers over Lyric.CliShell.
@@ -1095,6 +1096,124 @@ func reprForExternType(decl: in ExternTypeDecl): String {
   "extern type " + decl.name + renderGenerics(decl.generics) + " = \"" + decl.clrName + "\""
 }
 
+// True iff `anns` carries `@inline_template` (D047/D050): only C-mode
+// aspect templates need their `around` body redistributed in the
+// contract so a consumer's `aspect X from Pkg.Template { ... }` can
+// resolve the template source from a restored dependency (#3543
+// defect 4). Standard (non-template) aspects are woven in the
+// declaring package only and never need to cross a DLL boundary.
+func hasInlineTemplateAnnotation(anns: in List[Annotation]): Bool {
+  var i = 0
+  while i < anns.count {
+    val segs = anns[i].name.segments
+    if segs.count > 0 and segs[segs.count - 1] == "inline_template" {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Render one `config { }` field as `name: Type` / `name: Type = default`.
+func reprForConfigField(f: in ConfigField): String {
+  val defStr = match f.default { case Some(e) -> " = " + Fmt.exprInline(0, e); case None -> "" }
+  f.name + ": " + renderTypeExpr(f.ty) + defStr
+}
+
+// Render an aspect's `config { }` fields as a comma-separated list.
+func reprForConfigFields(fs: in List[ConfigField]): String {
+  var s = ""
+  var i = 0
+  while i < fs.count {
+    if i > 0 {
+      s = s + ", "
+    }
+    s = s + reprForConfigField(fs[i])
+    i = i + 1
+  }
+  s
+}
+
+// Build the `pub aspect Name { config { ... } around(args) -> ret {} }` repr
+// for an `@inline_template` aspect — the signature-level shape (name,
+// config surface, around binder names). The actual advice logic lives
+// in the `body` field of the emitted `ContractDecl` (see `aspectBodyText`);
+// `around(...)` still needs its own (empty) `{}` block here because
+// `restored_packages.l::renderDecl` re-parses `repr` verbatim as a
+// standalone item declaration, and `around(args) -> ret` with no block at
+// all is not a valid aspect item on its own.
+//
+// Known gap: this repr does not encode `matches:` / `exceptNames` /
+// `wraps` / `inside` — only the template's own name/config/around
+// signature. A `from`-instance always supplies its own `matches:`, so
+// this doesn't affect weaving, but it does mean `lyric public-api-diff`
+// can't currently flag a library changing an *instantiation-form*
+// aspect's predicates between versions (tracked in the follow-up work
+// noted in docs/27 §6.2).
+func reprForAspect(decl: in AspectDecl): String {
+  val cfgStr = if decl.config.count > 0 {
+    " config { " + reprForConfigFields(decl.config) + " }"
+  } else {
+    ""
+  }
+  val argsStr = match decl.around { case Some(a) -> a.argsName; case None -> "call" }
+  val retStr = match decl.around {
+    case Some(a) -> match a.retName { case Some(r) -> " -> " + r; case None -> "" }
+    case None -> ""
+  }
+  "pub aspect " + decl.name + " {" + cfgStr + " around(" + argsStr + ")" + retStr + " {} }"
+}
+
+// Render an `@inline_template` aspect's `around` body as re-parseable
+// source text, one statement at a time via `Lyric.Fmt.stmtInline` (the
+// same inline statement printer `lyric fmt` uses).  This is the "raw
+// template body" that a consuming package needs to weave a `from`-instance
+// of the template (D047/D050/#3543).  The returned text is plain source —
+// callers must route it through `escapeJson` (as `renderDecl` already does
+// for every `ContractDecl.body`) before splicing it into JSON; embedding it
+// unescaped would break on any quote, backslash, or newline the body
+// contains (e.g. the string literals in `Auth.Aspects.ValidateKey`).
+func aspectBodyText(decl: in AspectDecl): Option[String] {
+  match decl.around {
+    case None -> None
+    case Some(a) -> {
+      val stmts = a.body.statements
+      var body = ""
+      var i = 0
+      while i < stmts.count {
+        if i > 0 {
+          // A block requires statement separators (`;` or a real
+          // statement-end token); a bare space doesn't parse. Match
+          // `Lyric.Fmt.blockInline`'s "; " join so the rendered body
+          // re-parses as a valid multi-statement block.
+          body = body + "; "
+        }
+        body = body + Fmt.stmtInline(stmts[i])
+        i = i + 1
+      }
+      val retStr = match a.retName { case Some(r) -> " -> " + r; case None -> "" }
+      Some(value = "around(" + a.argsName + ")" + retStr + " { " + body + " }")
+    }
+  }
+}
+
+// Construct a `ContractDecl` carrying a `body` (used for `@inline_template`
+// aspects; every other decl kind passes `body = None` via `basicDecl`).
+func aspectDecl(name: in String, repr: in String, vis: in Option[Visibility], body: in Option[String]): ContractDecl {
+  ContractDecl(
+    kind = "aspect",
+    name = name,
+    repr = repr,
+    visibility = visibilityStr(vis),
+    isPure = false,
+    stability = "",
+    requiresClauses = newList(),
+    ensuresClauses = newList(),
+    body = body,
+    params = newList()
+  )
+}
+
 // Convert an AST Visibility option to the JSON-visible string used by ContractDecl.
 // "pub" for VisPub, "internal" for VisInternal, "" for None (package-private).
 func visibilityStr(vis: in Option[Visibility]): String {
@@ -1294,6 +1413,14 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
         // from the producer's contract; carry it here.
         case IConst(c) -> decls.add(basicDecl("const", c.name, reprForConst(c), it.visibility))
         case IVal(v) -> match reprForInlinableVal(v) { case Some(repr) -> decls.add(basicDecl("val", bindingName(v.pattern), repr, it.visibility)); case None -> () }
+        // Only `@inline_template` aspects carry their advice into the
+        // contract — see `hasInlineTemplateAnnotation`.  A regular aspect
+        // is woven where it's declared and never needs redistribution.
+        case IAspect(ad) -> {
+          if hasInlineTemplateAnnotation(it.annotations) {
+            decls.add(aspectDecl(ad.name, reprForAspect(ad), it.visibility, aspectBodyText(ad)))
+          }
+        }
         case _ -> ()
       }
     }
