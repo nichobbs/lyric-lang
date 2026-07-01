@@ -39,7 +39,10 @@
        direct BCL externs; no Lyric-compiled DLL carries an AssemblyRef to
        either assembly (docs/23-fsharp-shim-elimination.md Band 5). -->
   <ItemGroup>
-    <Reference Include="$(StageDir)/Lyric.*.dll">
+    <Reference Include="$(StageDir)/Lyric.*.dll" Exclude="$(StageDir)/Lyric.Stdlib.*.dll">
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="$(StageDir)/Lyric.Stdlib.dll">
       <Private>true</Private>
     </Reference>
   </ItemGroup>

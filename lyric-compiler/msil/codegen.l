@@ -553,7 +553,7 @@ pub func newCodegenCtx(
   major: in Int,
   minor: in Int,
 ): CodegenCtx {
-  val resolvedAssemblyVersions: Map[String, AssemblyVersion] = newMap()
+  val resolvedAssemblyVersions: Map[String, Mdr.AssemblyVersion] = newMap()
   var i = 0
   while i < nugetAssemblyPaths.count {
     val path = nugetAssemblyPaths[i]
@@ -561,13 +561,8 @@ pub func newCodegenCtx(
     if String.endsWith(baseName, ".dll") {
       val asmName = String.substring(baseName, 0, baseName.length - 4)
       match Mdr.readAssemblyVersion(path) {
-        case Some(verList) -> {
-          resolvedAssemblyVersions.add(asmName, AssemblyVersion(
-            major = verList[0],
-            minor = verList[1],
-            build = verList[2],
-            revision = verList[3]
-          ))
+        case Some(ver) -> {
+          resolvedAssemblyVersions.add(asmName, ver)
         }
         case None -> {}
       }

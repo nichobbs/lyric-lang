@@ -33,6 +33,7 @@ import Msil.Opcodes
 import Msil.Tables
 import Msil.Heaps
 import Msil.Assembler
+import Msil.MetadataReader as Mdr
 import Std.Core
 import Std.Collections
 import Std.Math
@@ -1074,16 +1075,9 @@ pub record LoweringCtx {
   // the discover and real passes always agree on tryInto() eligibility.
   allProjFqns: Map[String, Bool]
   allProjFqnKeys: List[String]
-  resolvedAssemblyVersions: Map[String, AssemblyVersion]
+  resolvedAssemblyVersions: Map[String, Mdr.AssemblyVersion]
 }
 
-// A simple container for Assembly version components.
-pub record AssemblyVersion {
-  major: Int
-  minor: Int
-  build: Int
-  revision: Int
-}
 
 // Build and intern the Microsoft framework public key token blob.
 func internMsKeyToken(bh: in BlobHeap): Int {
@@ -1109,7 +1103,7 @@ pub func newLoweringCtxWithVersions(
   packageName: in String,
   major: in Int,
   minor: in Int,
-  resolvedAssemblyVersions: in Map[String, AssemblyVersion],
+  resolvedAssemblyVersions: in Map[String, Mdr.AssemblyVersion],
 ): LoweringCtx {
   val sh = newStringHeap()
   val bh = newBlobHeap()
@@ -1144,7 +1138,7 @@ pub func newLoweringCtxWithVersions(
   // Find System.Runtime version from resolvedAssemblyVersions, fall back to 10.0.0.0
   val rtVer = match mapGet(resolvedAssemblyVersions, "System.Runtime") {
     case Some(ver) -> ver
-    case None -> AssemblyVersion(major = 10, minor = 0, build = 0, revision = 0)
+    case None -> Mdr.AssemblyVersion(major = 10, minor = 0, build = 0, revision = 0)
   }
 
   // AssemblyRef[1]: System.Runtime
@@ -1363,10 +1357,10 @@ pub func ctxAddAssemblyRef(ctx: in LoweringCtx, name: in String, major: in Int, 
       if Str.startsWith(name, "System.") {
         match mapGet(ctx.resolvedAssemblyVersions, "System.Runtime") {
           case Some(rtV) -> rtV
-          case None -> AssemblyVersion(major = major, minor = minor, build = 0, revision = 0)
+          case None -> Mdr.AssemblyVersion(major = major, minor = minor, build = 0, revision = 0)
         }
       } else {
-        AssemblyVersion(major = major, minor = minor, build = 0, revision = 0)
+        Mdr.AssemblyVersion(major = major, minor = minor, build = 0, revision = 0)
       }
     }
   }
