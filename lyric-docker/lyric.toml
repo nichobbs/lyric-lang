@@ -37,14 +37,13 @@ output_assembly = "Docker.dll"
 "Lyric.Docker.Sockets"  = "src/sockets.l"
 
 [project.tests]
+"Lyric.Docker.BasicOperationsTests" = "tests/basic_operations_tests.l"
 # Integration tests require a running Docker daemon.
 # Run with: lyric test --manifest lyric-docker/lyric.toml
 # (Disabled by default; enable in CI with DOCKER_AVAILABLE=1)
 # "Docker.IntegrationTests" = "tests/integration_tests.l"
 
-[dependencies]
-# Core HTTP client (Unix socket support required).
-"Lyric.Stdlib"    = { workspace = true }
+# No explicit dependencies; uses standard library by default.
 
 [nuget]
 # No additional dependencies; uses System.Net.Http from the .NET SDK.

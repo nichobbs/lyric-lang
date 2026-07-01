@@ -10,7 +10,6 @@
 //! Usage:
 //!
 //!   import Health
-//!   import Web
 //!
 //!   func checkDb(): CheckStatus {
 //!     match Db.ping() {
@@ -28,11 +27,11 @@
 //!
 //!   // Web routes are name-based, so expose the endpoints as ordinary
 //!   // handlers in your own package and register them with addGet:
-//!   pub func healthLive(): Result[String, ApiError] {
+//!   pub func healthLive(): Result[String, String] {
 //!     return Health.runLiveness(buildHealth())
 //!   }
 //!
-//!   pub func healthReady(): Result[String, ApiError] {
+//!   pub func healthReady(): Result[String, String] {
 //!     return Health.runReadiness(buildHealth())
 //!   }
 //!
@@ -47,9 +46,8 @@
 //!   { "status": "ok" | "degraded",
 //!     "checks": { "<name>": { "status": "ok" | "fail", "detail": "..." } } }
 //!
-//! `runLiveness` / `runReadiness` map the aggregated report onto the
-//! lyric-web handler convention: Ok(body) with the JSON above when every
-//! check passes, Err(503 ApiError listing the failing checks) otherwise.
+//! `runLiveness` / `runReadiness` return Ok(body) with the JSON above when
+//! every check passes, or Err(message) listing the failing check names otherwise.
 //!
 //! See docs/03-decision-log.md D057 and D099, and lyric-health/README.md.
 @runtime_checked
@@ -58,7 +56,6 @@ package Health
 import Std.Core
 import Std.Char
 import Std.Iter
-import Web
 
 // ─── Check vocabulary ─────────────────────────────────────────────────────────
 /// The group a health check belongs to.
@@ -181,19 +178,18 @@ pub func runChecks(registry: in HealthRegistry, group: in CheckGroup): HealthRep
   return HealthReport(healthy = run.healthy, body = run.body)
 }
 
-/// Run all liveness checks and map the report onto the lyric-web handler
-/// convention: Ok(JSON body) when healthy, Err(503 ApiError) when degraded.
-/// The ApiError message lists the failing check names; the full per-check
-/// JSON is available via `runChecks` when the caller needs it.
+/// Run all liveness checks and return Ok(JSON body) when healthy, or
+/// Err(message) listing the failing check names when degraded.
+/// The full per-check JSON is available via `runChecks` when the caller needs it.
 @stable(since = "0.1")
-pub func runLiveness(registry: in HealthRegistry): Result[String, ApiError] {
+pub func runLiveness(registry: in HealthRegistry): Result[String, String] {
   return reportToHandlerResult(registry, Liveness)
 }
 
-/// Run all readiness checks and map the report onto the lyric-web handler
-/// convention: Ok(JSON body) when ready, Err(503 ApiError) when degraded.
+/// Run all readiness checks and return Ok(JSON body) when ready, or
+/// Err(message) listing the failing check names when degraded.
 @stable(since = "0.1")
-pub func runReadiness(registry: in HealthRegistry): Result[String, ApiError] {
+pub func runReadiness(registry: in HealthRegistry): Result[String, String] {
   return reportToHandlerResult(registry, Readiness)
 }
 
@@ -238,12 +234,12 @@ func runGroup(registry: in HealthRegistry, group: in CheckGroup): GroupRun {
   return GroupRun(healthy = allHealthy, body = body, failing = failing)
 }
 
-func reportToHandlerResult(registry: in HealthRegistry, group: in CheckGroup): Result[String, ApiError] {
+func reportToHandlerResult(registry: in HealthRegistry, group: in CheckGroup): Result[String, String] {
   val run = runGroup(registry, group)
   if run.healthy {
     return Ok(run.body)
   }
-  return Err(serviceUnavailable("health checks degraded: " + run.failing))
+  return Err("health checks degraded: " + run.failing)
 }
 
 func sameGroup(a: in CheckGroup, b: in CheckGroup): Bool {

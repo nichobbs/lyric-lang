@@ -321,11 +321,15 @@ in the workspace. A future `lyric version --workspace 0.2.0` command will
 automate this (Q-R-004).
 
 **CI publish gate.** The `.github/workflows/publish.yml` workflow runs
-`lyric publish` for each workspace member in dependency order when a version
-tag is pushed.  The `publish-ecosystem` job drives this: it bootstraps the
-`lyric` CLI, then calls `lyric build` + `lyric publish --skip-duplicate` for
-each library in the tier ordering above.  Authentication uses NuGet Trusted
-Publishing (OIDC) — see `docs/34-distribution-strategy.md` §7 for setup.
+`lyric publish` for each workspace member when a version tag is pushed or the
+workflow is dispatched manually with a `release_type`.  The `publish-ecosystem`
+job drives this: it bootstraps the `lyric` CLI, then calls `lyric build` +
+`lyric publish --skip-duplicate` for each library.  The tiers above run
+sequentially (later tiers need earlier tiers' DLLs on disk), but libraries
+**within** a tier build and publish in parallel.  Failures are not fail-fast:
+each library runs independently and the job reports every success/failure in
+its summary before exiting non-zero if any failed.  Authentication uses NuGet
+Trusted Publishing (OIDC) — see `docs/34-distribution-strategy.md` §7 for setup.
 
 ---
 

@@ -455,6 +455,24 @@ func testProject(): Unit {
   }
 }
 
+func testProjectMultiFilePkg(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[project]\nname = \"MyApp\"\noutput = \"exe\"\n\n[project.packages]\nCore = \"../core\"\nLambda = [\"src/lambda.l\", \"src/lambda_web.l\"]\n"
+  val m = parseOk(toml)
+  match m.project {
+    case None -> assertTrue(false, "multi-file pkg: expected Some project")
+    case Some(p) -> {
+      assertEqualInt(p.packages.count, 2, "multi-file pkg: packages count")
+      assertEqual(p.packages[0].name, "Core", "multi-file pkg: pkg[0].name")
+      assertEqual(p.packages[0].path, "../core", "multi-file pkg: pkg[0].path single")
+      assertEqualInt(p.packages[0].paths.count, 0, "multi-file pkg: pkg[0].paths empty for single")
+      assertEqual(p.packages[1].name, "Lambda", "multi-file pkg: pkg[1].name")
+      assertEqualInt(p.packages[1].paths.count, 2, "multi-file pkg: pkg[1].paths count")
+      assertEqual(p.packages[1].paths[0], "src/lambda.l", "multi-file pkg: pkg[1].paths[0]")
+      assertEqual(p.packages[1].paths[1], "src/lambda_web.l", "multi-file pkg: pkg[1].paths[1]")
+    }
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §7. [features] section
 // ─────────────────────────────────────────────────────────────────────────────
@@ -624,6 +642,10 @@ test "maven table missing version" {
 
 test "project section" {
   testProject()
+}
+
+test "project multi-file package (VStrList)" {
+  testProjectMultiFilePkg()
 }
 
 test "features section" {

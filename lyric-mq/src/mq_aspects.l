@@ -95,9 +95,6 @@ pub aspect Idempotent {
 }
 
 // Module-level in-process cache shared by all Idempotent instances.
-// Consumers who need a different TTL or store type should call
-// `Mq.Aspects.configure(idempStore, dlStore)` at startup instead of
-// setting these directly.
 val idempotentStore: CacheStore = Cache.inProcess()
 
 // ─── DeadLetter ───────────────────────────────────────────────────────────────
@@ -165,12 +162,3 @@ pub aspect DeadLetter {
 // aspect fires when persistence or a remote store is required.
 val deadLetterStore: DeadLetterStore = Mq.inProcessDeadLetterStore(10000)
 
-/// Configure the module-level stores used by Idempotent and DeadLetter aspects.
-///
-/// Note: module-level stores are immutable val bindings in the current
-/// implementation; this function is a no-op.  Use per-instance store injection
-/// via the wire block for custom store implementations.
-@stable(since = "0.1")
-pub func configure(idempStore: in CacheStore, dlStore: in DeadLetterStore): Unit {
-  ()
-}

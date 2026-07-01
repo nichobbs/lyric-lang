@@ -11,7 +11,6 @@ package Health.HealthTests
 import Std.Core
 import Std.Testing
 import Health
-import Web
 
 func passingCheck(): CheckStatus {
   return Health.pass()
@@ -185,29 +184,23 @@ test "runLiveness returns Ok with the JSON body when healthy" {
   }
 }
 
-test "runReadiness returns a 503 ApiError naming failing checks when degraded" {
+test "runReadiness returns Err naming failing checks when degraded" {
   var registry = Health.create()
   registry = Health.addReadinessCheck(registry, "db", { -> failingCheck() })
   registry = Health.addReadinessCheck(registry, "cache", { -> Health.fail("cold") })
   match Health.runReadiness(registry) {
     case Ok(_) -> assertTrue(false, "expected Err from a degraded registry")
-    case Err(e) -> {
-      assertEqualInt(e.status, 503, "degraded maps to 503")
-      assertEqual(e.message, "health checks degraded: db, cache", "failing check names")
-    }
+    case Err(msg) -> assertEqual(msg, "health checks degraded: db, cache", "failing check names")
   }
 }
 
-test "runLiveness returns a 503 ApiError naming failing checks when degraded" {
+test "runLiveness returns Err naming failing checks when degraded" {
   var registry = Health.create()
   registry = Health.addLivenessCheck(registry, "self", { -> failingCheck() })
   registry = Health.addLivenessCheck(registry, "disk", { -> Health.fail("full") })
   match Health.runLiveness(registry) {
     case Ok(_) -> assertTrue(false, "expected Err from a degraded liveness registry")
-    case Err(e) -> {
-      assertEqualInt(e.status, 503, "degraded liveness maps to 503")
-      assertEqual(e.message, "health checks degraded: self, disk", "failing check names")
-    }
+    case Err(msg) -> assertEqual(msg, "health checks degraded: self, disk", "failing check names")
   }
 }
 

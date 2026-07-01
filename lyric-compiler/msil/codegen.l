@@ -4354,12 +4354,17 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
         MClass("System.Action")
         // () -> TReturn (any return type) maps to System.Func<TReturn>
       } else if params.count == 0 and not isVoidRet {
+        // Pre-seed the TypeRef so bufMsilTypeWithCtx can resolve MGenericInstByName
+        // during lowering even when no lambda with this arity appears in the body
+        // (e.g. the function type only appears in a record field or return type).
+        val _ = internFuncTypeRef(cctx, 0)
         val objArgs: List[MsilType] = newList()
         objArgs.add(MObject)
         MGenericInstByName("System.Func`1", objArgs)
         // (T1, ..., Tn) -> Unit maps to System.Action<T1,...,Tn>
       } else if isVoidRet {
         val sb: String = "System.Action`" + toString(params.count)
+        val _ = internActionTypeRef(cctx, params.count)
         val objArgs: List[MsilType] = newList()
         var ai = 0
         while ai < params.count {
@@ -4370,6 +4375,7 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
         // (T1, ..., Tn) -> TReturn maps to System.Func<T1,...,Tn,TReturn>
       } else {
         val sb: String = "System.Func`" + toString(params.count + 1)
+        val _ = internFuncTypeRef(cctx, params.count)
         val objArgs: List[MsilType] = newList()
         var ai = 0
         while ai < params.count + 1 {

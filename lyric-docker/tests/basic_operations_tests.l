@@ -1,141 +1,108 @@
 //! Basic Docker client operations tests.
 //!
-//! These tests verify core Docker client functionality:
-//!   - Docker daemon connectivity (ping)
-//!   - System information retrieval
-//!   - Container and image listing
+//! These tests verify core Docker client functionality.
 //!
 //! Run with: lyric test --manifest lyric-docker/lyric.toml
-//!
-//! Note: These tests require a running Docker daemon accessible at
-//! /var/run/docker.sock (or DOCKER_HOST environment variable).
 
 @test_module
-@runtime_checked
 package Lyric.Docker.BasicOperationsTests
 
 import Lyric.Docker
+import Lyric.Docker.Sockets
 import Std.Core
+import Std.Testing
 
-/// Verify Docker daemon connectivity.
-@test
-pub func testPingDockerDaemon(): Unit {
-  val client = Docker.makeDockerClient()
+// ─── Socket Parsing Tests ──────────────────────────────────────────────────
 
-  match await Docker.ping(client) {
-    case Ok(_) -> println("✓ Docker daemon is accessible")
-    case Err(e) -> {
-      println("✗ Failed to ping Docker daemon: " + e.message)
-      if let statusCode = e.statusCode {
-        println("  Status code: " + statusCode.toString())
-      }
-      if e.details.length > 0 {
-        println("  Details: " + e.details)
-      }
-    }
-  }
+test "unix:///var/run/docker.sock parses to Some(/var/run/docker.sock)" {
+  val pathOpt = Lyric.Docker.Sockets.parseUnixSocketUrl("unix:///var/run/docker.sock")
+  assertTrue(isSome(pathOpt), "Expected Some")
+  val path = unwrapOr(pathOpt, "")
+  assertEqual(path, "/var/run/docker.sock", "Parsed socket path for unix:///var/run/docker.sock")
 }
 
-/// Retrieve and display Docker system information.
-@test
-pub func testGetSystemInfo(): Unit {
-  val client = Docker.makeDockerClient()
-
-  match await Docker.systemInfo(client) {
-    case Ok(info) -> {
-      println("✓ Retrieved system information:")
-      // In Phase 2, this would be strongly-typed SystemInfo record.
-      // For now, it's raw JSON.
-      if info.length > 100 {
-        println("  (JSON response: " + info.substring(0, 100) + "...)")
-      } else {
-        println("  " + info)
-      }
-    }
-    case Err(e) -> println("✗ Failed to get system info: " + e.message)
-  }
+test "unix://docker.sock parses to Some(docker.sock)" {
+  val pathOpt = Lyric.Docker.Sockets.parseUnixSocketUrl("unix://docker.sock")
+  assertTrue(isSome(pathOpt), "Expected Some")
+  val path = unwrapOr(pathOpt, "")
+  assertEqual(path, "docker.sock", "Parsed socket path for unix://docker.sock")
 }
 
-/// List all containers on the Docker daemon.
-@test
-pub func testListContainers(): Unit {
-  val client = Docker.makeDockerClient()
-
-  match await Docker.listContainers(client) {
-    case Ok(containersJson) -> {
-      println("✓ Listed containers (raw JSON):")
-      if containersJson.length > 100 {
-        println("  (Response: " + containersJson.substring(0, 100) + "...)")
-      } else {
-        println("  " + containersJson)
-      }
-    }
-    case Err(e) -> println("✗ Failed to list containers: " + e.message)
-  }
+test "unix:////absolute/path.sock parses to Some(/absolute/path.sock)" {
+  val pathOpt = Lyric.Docker.Sockets.parseUnixSocketUrl("unix:////absolute/path.sock")
+  assertTrue(isSome(pathOpt), "Expected Some")
+  val path = unwrapOr(pathOpt, "")
+  assertEqual(path, "/absolute/path.sock", "Parsed socket path for unix:////absolute/path.sock")
 }
 
-/// List all images on the Docker daemon.
-@test
-pub func testListImages(): Unit {
-  val client = Docker.makeDockerClient()
-
-  match await Docker.listImages(client) {
-    case Ok(imagesJson) -> {
-      println("✓ Listed images (raw JSON):")
-      if imagesJson.length > 100 {
-        println("  (Response: " + imagesJson.substring(0, 100) + "...)")
-      } else {
-        println("  " + imagesJson)
-      }
-    }
-    case Err(e) -> println("✗ Failed to list images: " + e.message)
-  }
+test "tcp://localhost:2375 parses to None" {
+  val pathOpt = Lyric.Docker.Sockets.parseUnixSocketUrl("tcp://localhost:2375")
+  assertTrue(isNone(pathOpt), "Expected None")
 }
 
-/// Test rootless Docker connection (skipped if XDG_RUNTIME_DIR not set).
-@test
-pub func testRootlessDockerConnection(): Unit {
-  match Docker.makeRootlessDockerClient() {
-    case Ok(client) -> {
-      println("✓ Connected to rootless Docker")
-      match await Docker.ping(client) {
-        case Ok(_) -> println("✓ Rootless Docker daemon is accessible")
-        case Err(e) -> println("✗ Rootless Docker ping failed: " + e.message)
-      }
-    }
-    case Err(e) -> println("○ Rootless Docker not available: " + e)
-  }
+test "npipe:////.//pipe//docker_engine parses to None" {
+  val pathOpt = Lyric.Docker.Sockets.parseUnixSocketUrl("npipe:////.//pipe//docker_engine")
+  assertTrue(isNone(pathOpt), "Expected None")
 }
 
-/// Test DOCKER_HOST environment variable parsing.
-@test
-pub func testDockerHostParsing(): Unit {
-  // These tests verify socket path extraction without requiring a running daemon
-  println("Testing DOCKER_HOST parsing...")
-
-  // Test various unix:// URL formats
-  testParseUnixUrl("unix:///var/run/docker.sock", "/var/run/docker.sock")
-  testParseUnixUrl("unix://docker.sock", "docker.sock")
-  testParseUnixUrl("unix:////absolute/path.sock", "/absolute/path.sock")
-
-  // Test invalid formats (should not connect)
-  testParseUnixUrl("tcp://localhost:2375", "")
-  testParseUnixUrl("npipe:////.//pipe//docker_engine", "")
-  testParseUnixUrl("", "")
-
-  println("✓ DOCKER_HOST parsing tests completed")
+test "empty URL parses to None" {
+  val pathOpt = Lyric.Docker.Sockets.parseUnixSocketUrl("")
+  assertTrue(isNone(pathOpt), "Expected None")
 }
 
-/// Helper to test unix:// URL parsing.
-/// Empty expectedPath means the URL should be rejected.
-func testParseUnixUrl(dockerHost: in String, expectedPath: in String): Unit {
-  // This is a conceptual test — the actual parseUnixSocketUrl is private.
-  // In practice, we'd need to expose it or test through makeDockerClient behavior.
-  if dockerHost.startsWith("unix://") {
-    println("  ✓ Recognized unix:// URL: " + dockerHost)
-  } else if dockerHost.length > 0 {
-    println("  ✓ Correctly rejected non-unix:// URL: " + dockerHost)
-  } else {
-    println("  ✓ Correctly rejected empty URL")
-  }
+// ─── Stream Demultiplexer Tests ──────────────────────────────────────────────
+
+test "demultiplex empty bytes produces empty string" {
+  val resultOpt = Lyric.Docker.demultiplexDockerStream([])
+  assertTrue(isSome(resultOpt), "Expected Some")
+  val result = unwrapOr(resultOpt, "none")
+  assertEqual(result, "", "Empty stream demultiplexes to empty string")
+}
+
+test "demultiplex single stdout frame" {
+  // stdout (1), size 5, "Hello"
+  val bytes: slice[Byte] = [
+    1u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 5u8,
+    72u8, 101u8, 108u8, 108u8, 111u8
+  ]
+  val resultOpt = Lyric.Docker.demultiplexDockerStream(bytes)
+  assertTrue(isSome(resultOpt), "Expected Some")
+  val result = unwrapOr(resultOpt, "")
+  assertEqual(result, "Hello", "Demultiplexed single frame")
+}
+
+test "demultiplex multiple stdout and stderr frames" {
+  // Frame 1: stdout (1), size 5, "Hello"
+  // Frame 2: stderr (2), size 6, " World"
+  val bytes: slice[Byte] = [
+    1u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 5u8,
+    72u8, 101u8, 108u8, 108u8, 111u8,
+    2u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 6u8,
+    32u8, 87u8, 111u8, 114u8, 108u8, 100u8
+  ]
+  val resultOpt = Lyric.Docker.demultiplexDockerStream(bytes)
+  assertTrue(isSome(resultOpt), "Expected Some")
+  val result = unwrapOr(resultOpt, "")
+  assertEqual(result, "Hello World", "Demultiplexed combined stdout/stderr frames")
+}
+
+test "demultiplex incomplete header is stopped safely" {
+  // 5 bytes, insufficient for 8-byte header
+  val bytes: slice[Byte] = [1u8, 0u8, 0u8, 0u8, 0u8]
+  val resultOpt = Lyric.Docker.demultiplexDockerStream(bytes)
+  assertTrue(isSome(resultOpt), "Expected Some")
+  val result = unwrapOr(resultOpt, "none")
+  assertEqual(result, "", "Incomplete header results in empty string")
+}
+
+test "demultiplex incomplete payload is stopped safely" {
+  // stdout (1), size 5, but only 3 bytes of payload present
+  val bytes: slice[Byte] = [
+    1u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 5u8,
+    72u8, 101u8, 108u8
+  ]
+  val resultOpt = Lyric.Docker.demultiplexDockerStream(bytes)
+  assertTrue(isSome(resultOpt), "Expected Some")
+  val result = unwrapOr(resultOpt, "none")
+  assertEqual(result, "", "Incomplete payload results in empty string")
 }
