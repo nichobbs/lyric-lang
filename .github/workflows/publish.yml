@@ -19,6 +19,13 @@ on:
         required: false
         default: true
         type: boolean
+      mint_stage0:
+        description: >-
+          Mint Stage-0 compiler from F# history instead of downloading
+          previous release (breaks bad-seed cycles).
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write   # upload release assets
@@ -64,7 +71,7 @@ jobs:
   # ---------------------------------------------------------------------------
   # Build self-contained standalone binaries for all supported platforms.
   #
-  # Each matrix leg runs `bootstrap.sh --stage 2` so the released binary is
+  # Each matrix leg runs `bootstrap.sh --stage 3` so the released binary is
   # built by the self-hosted Lyric compiler (stage-2 reproducibility fixpoint,
   # D-progress-531): the stage-1 self-hosted compiler re-emits itself + the
   # full stdlib into .bootstrap/stage2/lib/ (101 DLLs, byte-for-byte
@@ -146,8 +153,9 @@ jobs:
         # byte-for-byte reproducible at stage-3 fixpoint).
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LYRIC_BOOTSTRAP_MINT: ${{ inputs.mint_stage0 != false && '1' || '0' }}
         run: |
-          ./scripts/bootstrap.sh --stage 2
+          ./scripts/bootstrap.sh --stage 3
 
       - name: Restore AOT project
         working-directory: bootstrap
@@ -323,8 +331,9 @@ jobs:
         # self-hosted-emitted stdlib and can compile user code at runtime.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LYRIC_BOOTSTRAP_MINT: ${{ inputs.mint_stage0 != false && '1' || '0' }}
         run: |
-          ./scripts/bootstrap.sh --stage 2
+          ./scripts/bootstrap.sh --stage 3
 
       - name: Pack NuGet global tool
         working-directory: bootstrap

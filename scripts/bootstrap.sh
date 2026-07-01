@@ -84,6 +84,7 @@ MAX_STAGE=2
 SKIP_VERIFY="${SKIP_VERIFY:-0}"
 SKIP_CLI_BUNDLE="${SKIP_CLI_BUNDLE:-0}"
 SKIP_COREREF_REWRITE="${SKIP_COREREF_REWRITE:-0}"
+LYRIC_FORCE_JIT="${LYRIC_FORCE_JIT:-0}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -153,7 +154,7 @@ try_bootstrap_from_release() {
     fi
 
     # Fetch API response and save to variable for debugging
-    api_response=$(curl -sSL "${curl_opts[@]}" "$api_url" 2>&1)
+    api_response=$(curl -sSL ${curl_opts[@]+"${curl_opts[@]}"} "$api_url" 2>&1)
 
     # Log the response (first 200 chars for debugging)
     if [[ -n "$api_response" ]]; then
@@ -659,13 +660,29 @@ build_stage2() {
   #    supports `lyric build --release-from-dll`.  Use it here so the stage-2
   #    native binary is produced entirely by the self-hosted Lyric toolchain —
   #    no C# build step is needed.  The binary lands directly in $STAGE2_BIN_DIR.
-  info "  AOT-linking the stage-2 binary via lyric build --release-from-dll"
-  mkdir -p "$STAGE2_BIN_DIR"
-  "$AOT_OUT" build --release-from-dll "$STAGE2_LIB_DIR/Lyric.Lyric.Cli.dll" \
-    --extra-refs-dir "$STAGE2_LIB_DIR" -o "$STAGE2_BIN_DIR/lyric" \
-    > "$BUILD_DIR/aot-stage2.log" 2>&1 \
-    || { cat "$BUILD_DIR/aot-stage2.log" >&2
-         die "stage-2 AOT build FAILED — see $BUILD_DIR/aot-stage2.log"; }
+  if [[ "$LYRIC_FORCE_JIT" == "1" ]]; then
+    info "  [JIT Mode] Bypassing AOT-linking and creating JIT wrapper at $STAGE2_BIN_DIR/lyric"
+    mkdir -p "$STAGE2_BIN_DIR"
+    if [[ -f "$STAGE2_LIB_DIR/Lyric.Stdlib.runtimeconfig.json" ]]; then
+      cp "$STAGE2_LIB_DIR/Lyric.Stdlib.runtimeconfig.json" "$STAGE2_LIB_DIR/Lyric.Lyric.Cli.runtimeconfig.json"
+      info "  copied runtimeconfig.json for JIT execution"
+    fi
+    cat > "$STAGE2_BIN_DIR/lyric" <<'EOF'
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="$(cd "$SCRIPT_DIR/../lib" && pwd)"
+exec dotnet "$LIB_DIR/Lyric.Lyric.Cli.dll" "$@"
+EOF
+    chmod +x "$STAGE2_BIN_DIR/lyric"
+  else
+    info "  AOT-linking the stage-2 binary via lyric build --release-from-dll"
+    mkdir -p "$STAGE2_BIN_DIR"
+    "$AOT_OUT" build --release-from-dll "$STAGE2_LIB_DIR/Lyric.Lyric.Cli.dll" \
+      --extra-refs-dir "$STAGE2_LIB_DIR" -o "$STAGE2_BIN_DIR/lyric" \
+      > "$BUILD_DIR/aot-stage2.log" 2>&1 \
+      || { cat "$BUILD_DIR/aot-stage2.log" >&2
+           die "stage-2 AOT build FAILED — see $BUILD_DIR/aot-stage2.log"; }
+  fi
   [[ -x "$STAGE2_BIN_DIR/lyric" ]] \
     || die "stage-2 lyric binary not found at $STAGE2_BIN_DIR/lyric"
 
@@ -715,12 +732,26 @@ stage3() {
     return 0
   fi
   rm -rf "$STAGE3_DIR"; mkdir -p "$STAGE3_DIR"
-  if LYRIC_STDLIB_BIN="$STAGE2_LIB_DIR" \
-       "$REPO_ROOT/scripts/verify-reproducible-emit.sh" \
-       manifest "$s2bin" "$STDLIB_DIR/lyric.full.toml" \
-       && LYRIC_STDLIB_BIN="$STAGE2_LIB_DIR" \
-       "$REPO_ROOT/scripts/verify-reproducible-emit.sh" \
-       closure "$s2bin"; then
+  
+  local rc_manifest=0
+  LYRIC_STDLIB_BIN="$STAGE2_LIB_DIR" \
+    "$REPO_ROOT/scripts/verify-reproducible-emit.sh" \
+    manifest "$s2bin" "$STDLIB_DIR/lyric.full.toml" || rc_manifest=$?
+
+  if [[ $rc_manifest -ne 0 && $rc_manifest -ne 3 ]]; then
+    die "Stage 3: manifest build crashed or failed during compilation (exit $rc_manifest)"
+  fi
+
+  local rc_closure=0
+  LYRIC_STDLIB_BIN="$STAGE2_LIB_DIR" \
+    "$REPO_ROOT/scripts/verify-reproducible-emit.sh" \
+    closure "$s2bin" || rc_closure=$?
+
+  if [[ $rc_closure -ne 0 && $rc_closure -ne 3 ]]; then
+    die "Stage 3: closure build crashed or failed during compilation (exit $rc_closure)"
+  fi
+
+  if [[ $rc_manifest -eq 0 && $rc_closure -eq 0 ]]; then
     ok "Stage 3: self-hosted emit is byte-for-byte reproducible (fixpoint holds)"
   else
     info "Stage 3: reproducibility fixpoint DIFFERS — reported, non-blocking (Q-dist-001)"

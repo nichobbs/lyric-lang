@@ -116,7 +116,7 @@ verify_manifest() {
   echo "[repro] FAIL: $asm_name differs between two self-hosted builds" >&2
   cmp -l "$a" "$b" | head -40 >&2
   echo "[repro] total differing bytes: $(cmp -l "$a" "$b" | wc -l | tr -d ' ')" >&2
-  exit 1
+  exit 3
 }
 
 verify_closure() {
@@ -183,7 +183,7 @@ EOF
     return 0
   fi
   echo "[repro] FAIL: self-hosted compiler closure is NOT reproducible ($diffs diff, $missing missing, $extra extra of $total)" >&2
-  exit 1
+  exit 3
 }
 
 case "$MODE" in

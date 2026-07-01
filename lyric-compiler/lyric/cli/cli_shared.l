@@ -209,7 +209,12 @@ func checkSdkVersion(): Int {
     return 0
   }
   val valueStart = keyPos + key.length
-  val closeQuote = text.indexOf("\"", valueStart)
+  val suffix = text.substring(valueStart)
+  val relCloseQuote = suffix.indexOf("\"")
+  if relCloseQuote < 0 {
+    return 0
+  }
+  val closeQuote = valueStart + relCloseQuote
   if closeQuote < 0 {
     return 0
   }
