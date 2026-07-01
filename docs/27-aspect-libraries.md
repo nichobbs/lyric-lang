@@ -282,7 +282,24 @@ pub aspect Logging {
 Marks an aspect for source-template distribution.  The library DLL
 embeds the parsed body as a resource (alongside the contract
 metadata), and the consumer's compiler **re-compiles the body
-inside the consumer's package** at every use site.  This is the
+inside the consumer's package** at every use site.
+
+**Implementation status:** `Lyric.ContractMeta.buildContractFromFile`
+(`lyric-compiler/lyric/contract_meta.l`) embeds a `pub @inline_template`
+aspect's `around` body into its `Lyric.Contract` `ContractDecl.body` field
+(re-rendered as source text via `Lyric.Fmt.stmtInline`, one statement per
+call, then JSON-escaped through the existing `escapeJson` — the same path
+every other contract-decl `body` value takes, so a body containing quotes,
+backslashes, or newlines — e.g. `Auth.Aspects.ValidateKey`'s error-message
+string literals — serialises to valid JSON and round-trips through
+`parseFromJson` unchanged). Only `@inline_template`-annotated `pub`
+aspects are embedded; a non-template aspect is woven where it's declared
+and never crosses a DLL boundary. Wiring the weaver to *consume* this
+body from a restored dependency's contract metadata when resolving a
+consumer's `from`-instance (the other half of #3543 defect 4) is separate,
+not-yet-implemented follow-up work.
+
+This is the
 right pick for tiny / hot-path aspects where:
 
 - Inlining the body into the wrapper unlocks further consumer-side

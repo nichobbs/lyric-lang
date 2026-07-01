@@ -706,6 +706,64 @@ func testBuildVersionThreaded(): Unit {
   assertEqual(c.version, "2.3.4", "buildContractFromFile: version argument carried through")
 }
 
+// `buildContractFromFile` embeds the `around` body of an `@inline_template`
+// aspect (D047/D050) so a consuming package can later resolve a
+// `from`-instance against a restored dependency (#3543 defect 4).  The
+// fixture mirrors `Auth.Aspects.ValidateKey` (lyric-auth): its body
+// contains string-literal error messages with embedded double quotes —
+// exactly the shape that breaks a naive (unescaped) string concatenation
+// into the contract JSON.  `buildContractFromFile` must route the body
+// through `escapeJson` (via `ContractDecl.body` / `renderDecl`), so
+// `contractToJson` produces valid JSON and `parseFromJson` round-trips
+// the body text unchanged.
+func testBuildInlineTemplateAspectBody(): Unit {
+  val src = "@runtime_checked\n" + "package P\n\n" + "@inline_template\n" + "pub aspect ValidateKey {\n" +
+    "  config {\n" + "    enabled: Bool = true\n" + "    expectedKey: String\n" + "  }\n" +
+    "  around(call) -> ret {\n" + "    if not enabled {\n" + "      ret = call.proceed()\n" + "    } else {\n" +
+    "      if args.apiKey == \"\" {\n" + "        ret = Err(\"API key is missing\")\n" + "      } else {\n" +
+    "        val ok = Auth.verifyApiKey(args.apiKey, expectedKey)\n" + "        if ok {\n" +
+    "          ret = call.proceed()\n" + "        } else {\n" + "          ret = Err(\"API key is invalid\")\n" +
+    "        }\n" + "      }\n" + "    }\n" + "  }\n" + "}\n"
+  val pr = parse(src)
+  assertEqualInt(pr.diagnostics.count, 0, "inline_template aspect body: fixture parses cleanly")
+  val c = buildContractFromFile(pr.file, "1.0.0")
+  val d = unwrapDeclOrFail(findDeclByKind(c.decls, "aspect", "ValidateKey"), "buildContractFromFile: aspect ValidateKey missing")
+  match d.body {
+    case None -> panic("inline_template aspect body: body field must be Some(...)")
+    case Some(b) -> {
+      assertTrue(Str.contains(b, "API key is missing"), "inline_template aspect body: message text preserved (got " + b + ")")
+      assertTrue(Str.contains(b, "API key is invalid"), "inline_template aspect body: second message preserved (got " + b + ")")
+    }
+  }
+  // The whole contract must serialise to well-formed JSON and round-trip:
+  // parsing the rendered JSON back must recover the same body text. A
+  // naive unescaped embed would corrupt the JSON at the first `"` inside
+  // the body and either fail to parse or truncate the string.
+  val json = contractToJson(c)
+  val reparsed = unwrapOrFail(parseFromJson(json), "inline_template aspect body: contractToJson output must parse")
+  val d2 = unwrapDeclOrFail(findDeclByKind(reparsed.decls, "aspect", "ValidateKey"), "round-trip: aspect ValidateKey missing")
+  match d2.body {
+    case None -> panic("round-trip: body field lost")
+    case Some(b2) -> {
+      assertTrue(Str.contains(b2, "API key is missing"), "round-trip: message text preserved (got " + b2 + ")")
+      assertTrue(Str.contains(b2, "API key is invalid"), "round-trip: second message preserved (got " + b2 + ")")
+    }
+  }
+}
+
+// A regular (non-`@inline_template`) aspect is woven only in its
+// declaring package and must NOT be redistributed via the contract.
+func testBuildNonTemplateAspectOmitted(): Unit {
+  val src = "package P\n\n" + "pub aspect Local {\n" + "  matches: name like \"h*\"\n" +
+    "  around(call) -> ret {\n" + "    ret = call.proceed()\n" + "  }\n" + "}\n"
+  val pr = parse(src)
+  val c = buildContractFromFile(pr.file, "1.0.0")
+  match findDeclByKind(c.decls, "aspect", "Local") {
+    case None -> ()
+    case Some(_) -> panic("buildContractFromFile: non-template aspect must not appear in contract decls")
+  }
+}
+
 // `buildContractFromFile` filters out non-pub items.
 func testBuildFiltersNonPub(): Unit {
   val src = "package P\n\nfunc internalOnly(): Int { 1 }\n" + "pub func publicOne(): Int { 1 }\n"
@@ -864,4 +922,12 @@ test "buildContractFromFile version threaded" {
 
 test "buildContractFromFile filters non-pub" {
   testBuildFiltersNonPub()
+}
+
+test "buildContractFromFile inline_template aspect body escapes and round-trips" {
+  testBuildInlineTemplateAspectBody()
+}
+
+test "buildContractFromFile omits non-template aspects" {
+  testBuildNonTemplateAspectOmitted()
 }

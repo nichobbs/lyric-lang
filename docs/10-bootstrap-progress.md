@@ -25765,3 +25765,33 @@ invalid JSON parse result.
 - `publish_lib()` gains a `version` argument; all 20+ `publish_lib` calls pass
   `needs.create-release.outputs.version` so the git release tag version is stamped consistently
   across all four tiers of ecosystem libraries.
+
+### D-progress-537 — `@inline_template` aspect bodies embed into contract metadata (docs/27 §6.2)
+
+`Lyric.ContractMeta.buildContractFromFile` (`lyric-compiler/lyric/contract_meta.l`) previously
+dropped every `IAspect` item (`case _ -> ()`), so a library's `@inline_template pub aspect`
+templates (e.g. `Auth.Aspects.ValidateKey` in `lyric-auth`) never appeared in the `Lyric.Contract`
+resource — the "library DLL embeds the parsed body as a resource" half of docs/27 §6.2 was
+unimplemented. Any straightforward fix that spliced the aspect's raw `around` body into the JSON
+`body` field via string concatenation (bypassing `escapeJson`) would corrupt the output the moment
+the body contained a `"` — exactly the shape of `ValidateKey`'s `Err("API key is missing")` /
+`Err("API key is invalid")` literals.
+
+**Fix.** Added a new `ContractDecl` case for `pub` aspects annotated `@inline_template`:
+- `reprForAspect` renders the signature shape (`pub aspect Name { config { ... } around(call) -> ret }`).
+- `aspectBodyText` renders the `around` block's statements via `Lyric.Fmt.stmtInline` (the same
+  inline statement printer `lyric fmt` uses) and returns them as `Some(<source text>)`.
+- The existing `renderDecl` already routes every `ContractDecl.body` through `escapeJson` before
+  splicing it into the JSON string — new code didn't need its own escaping path, it only needed to
+  populate the field correctly.
+- Non-template aspects (no `@inline_template`) are still omitted: they're woven only in their
+  declaring package and never need to cross a DLL boundary.
+
+**Tests.** `contract_meta_self_test.l` gains `testBuildInlineTemplateAspectBody` (a `ValidateKey`-shaped
+fixture with quote-bearing string literals; asserts the body survives `contractToJson` →
+`parseFromJson` unchanged) and `testBuildNonTemplateAspectOmitted`.
+
+**Remaining work.** This ships the *producer* side only (embedding the body in the contract that
+gets built into the library DLL). Wiring `Lyric.Weaver` to *consume* this body from a restored
+dependency's contract metadata when resolving a consumer's `aspect X from Lib.Aspects.Y { ... }`
+is the other half of #3543 defect 4 and is tracked there, not here.
