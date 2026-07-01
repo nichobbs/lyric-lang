@@ -747,6 +747,38 @@ func testBuildInlineTemplateAspectBody(): Unit {
     case Some(b2) -> {
       assertTrue(Str.contains(b2, "API key is missing"), "round-trip: message text preserved (got " + b2 + ")")
       assertTrue(Str.contains(b2, "API key is invalid"), "round-trip: second message preserved (got " + b2 + ")")
+      // The stored body text must itself be re-parseable Lyric source — not
+      // just JSON-safe. Feed it back through `parse` wrapped in a minimal
+      // aspect declaration; a bare-space statement separator (instead of
+      // "; ") would make this fail for any multi-statement `around` body.
+      val rt = parse("package P\n\npub aspect Rt {\n  " + b2 + "\n}\n")
+      assertEqualInt(rt.diagnostics.count, 0, "round-trip: body text re-parses as valid Lyric source (got " + b2 + ")")
+    }
+  }
+  // The repr itself must also re-parse standalone: `restored_packages.l`
+  // synthesises a preamble straight from `repr`, so `around(...)` without
+  // its own `{}` block (even though the real body lives in `.body`) would
+  // fail to parse when a restored dependency's preamble is rebuilt.
+  val reprRt = parse("package P\n\n" + d.repr + "\n")
+  assertEqualInt(reprRt.diagnostics.count, 0, "inline_template aspect repr: re-parses as valid Lyric source (got " + d.repr + ")")
+}
+
+// `aspectBodyText` must separate statements with `"; "` (matching
+// `Lyric.Fmt.blockInline`), not a bare space — Lyric's statement-end
+// insertion only fires at newlines, so an inline single-line block with
+// two or more statements needs an explicit separator to re-parse.
+func testBuildInlineTemplateAspectBodyMultiStatement(): Unit {
+  val src = "package P\n\n" + "@inline_template\n" + "pub aspect TwoStmt {\n" + "  around(call) -> ret {\n" +
+    "    val x = 1\n" + "    ret = call.proceed()\n" + "  }\n" + "}\n"
+  val pr = parse(src)
+  assertEqualInt(pr.diagnostics.count, 0, "multi-statement aspect body: fixture parses cleanly")
+  val c = buildContractFromFile(pr.file, "1.0.0")
+  val d = unwrapDeclOrFail(findDeclByKind(c.decls, "aspect", "TwoStmt"), "buildContractFromFile: aspect TwoStmt missing")
+  match d.body {
+    case None -> panic("multi-statement aspect body: body field must be Some(...)")
+    case Some(b) -> {
+      val rt = parse("package P\n\npub aspect Rt {\n  " + b + "\n}\n")
+      assertEqualInt(rt.diagnostics.count, 0, "multi-statement aspect body: re-parses as valid Lyric source (got " + b + ")")
     }
   }
 }
@@ -926,6 +958,10 @@ test "buildContractFromFile filters non-pub" {
 
 test "buildContractFromFile inline_template aspect body escapes and round-trips" {
   testBuildInlineTemplateAspectBody()
+}
+
+test "buildContractFromFile inline_template aspect body multi-statement separator" {
+  testBuildInlineTemplateAspectBodyMultiStatement()
 }
 
 test "buildContractFromFile omits non-template aspects" {

@@ -1132,10 +1132,22 @@ func reprForConfigFields(fs: in List[ConfigField]): String {
   s
 }
 
-// Build the `pub aspect Name { config { ... } around(args) -> ret }` repr
+// Build the `pub aspect Name { config { ... } around(args) -> ret {} }` repr
 // for an `@inline_template` aspect — the signature-level shape (name,
 // config surface, around binder names). The actual advice logic lives
-// in the `body` field of the emitted `ContractDecl` (see `aspectBodyText`).
+// in the `body` field of the emitted `ContractDecl` (see `aspectBodyText`);
+// `around(...)` still needs its own (empty) `{}` block here because
+// `restored_packages.l::renderDecl` re-parses `repr` verbatim as a
+// standalone item declaration, and `around(args) -> ret` with no block at
+// all is not a valid aspect item on its own.
+//
+// Known gap: this repr does not encode `matches:` / `exceptNames` /
+// `wraps` / `inside` — only the template's own name/config/around
+// signature. A `from`-instance always supplies its own `matches:`, so
+// this doesn't affect weaving, but it does mean `lyric public-api-diff`
+// can't currently flag a library changing an *instantiation-form*
+// aspect's predicates between versions (tracked in the follow-up work
+// noted in docs/27 §6.2).
 func reprForAspect(decl: in AspectDecl): String {
   val cfgStr = if decl.config.count > 0 {
     " config { " + reprForConfigFields(decl.config) + " }"
@@ -1147,7 +1159,7 @@ func reprForAspect(decl: in AspectDecl): String {
     case Some(a) -> match a.retName { case Some(r) -> " -> " + r; case None -> "" }
     case None -> ""
   }
-  "pub aspect " + decl.name + " {" + cfgStr + " around(" + argsStr + ")" + retStr + " }"
+  "pub aspect " + decl.name + " {" + cfgStr + " around(" + argsStr + ")" + retStr + " {} }"
 }
 
 // Render an `@inline_template` aspect's `around` body as re-parseable
@@ -1168,7 +1180,11 @@ func aspectBodyText(decl: in AspectDecl): Option[String] {
       var i = 0
       while i < stmts.count {
         if i > 0 {
-          body = body + " "
+          // A block requires statement separators (`;` or a real
+          // statement-end token); a bare space doesn't parse. Match
+          // `Lyric.Fmt.blockInline`'s "; " join so the rendered body
+          // re-parses as a valid multi-statement block.
+          body = body + "; "
         }
         body = body + Fmt.stmtInline(stmts[i])
         i = i + 1
