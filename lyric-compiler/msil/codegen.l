@@ -11626,8 +11626,11 @@ func emitCollectionForMsil(
       // Cast the collection to System.Collections.IEnumerable and call GetEnumerator.
       insns.add(MCastclass(typeToken = 0x01000000 + cctx.trIEnumerable))
       insns.add(MCallvirt(methodToken = cctx.tokIEnumerableGetEnumerator))
-      // GetEnumerator() return type is IEnumerator; store as MObject slot.
-      val eeEnumSlot = allocSlotMsil(fctx, "__ee_enum_" + toString(fctx.slotTicker.count), MObject)
+      // GetEnumerator() returns IEnumerator; the slot must be declared with that
+      // exact type (not MObject) so ILVerify's static stack tracking matches the
+      // IEnumerator-typed callvirt receivers below (MoveNext/get_Current).
+      val eeEnumTy = MClassRef(typeRefCode = tdrTypeRef(cctx.trIEnumerator), clrFqn = "System.Collections.IEnumerator")
+      val eeEnumSlot = allocSlotMsil(fctx, "__ee_enum_" + toString(fctx.slotTicker.count), eeEnumTy)
       emitStoreSlot(insns, eeEnumSlot, fctx.paramCount)
 
       val eeLoopL = freshLabelMsil(fctx)
