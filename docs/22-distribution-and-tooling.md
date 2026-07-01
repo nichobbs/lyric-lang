@@ -166,6 +166,33 @@ the source's `package` declaration (cross-compatibility check —
 sources targeting an older language version against a newer stdlib are
 fine; the reverse is a warning).
 
+## 5.1. Self-Upgrade (`lyric upgrade`)
+
+The `lyric upgrade` command allows the Lyric CLI to update itself directly from the command line.
+
+### 5.1.1. Channel Auto-Detection Heuristic
+
+By default, the upgrade command auto-detects the active installation environment:
+- **.NET Global Tool (NuGet)**: If the compiler binary directory path (`appBaseDirectory()`) contains `.dotnet`, `dotnet-tools`, or `.store`, the upgrade runs `dotnet tool update -g lyric`.
+- **GitHub Release Installer**: Otherwise, it defaults to the GitHub channel. It downloads the canonical `install.sh` installation script and runs it.
+
+### 5.1.2. Explicit Channel & Options
+
+Users can force a specific channel or configure behavior using explicit command-line flags:
+- `--nuget` / `--dotnet-tool`: Force upgrading the .NET global tool.
+- `--github`: Force upgrading via GitHub Releases.
+- `--version <semver>`: Target a specific version to install (required for non-dry-run GitHub upgrades).
+- `--dir <path>`: Specify a custom installation directory for the GitHub Release script (not supported on NuGet channel).
+- `--dry-run`: Validate the upgrade flow and print what would be executed without making network requests or modifying files.
+
+### 5.1.3. Integrity and Security Controls
+
+The GitHub upgrade path implements strict security and reliability controls:
+1. **Dynamic Checksum Verification**: It fetches both the installation script (`install.sh`) and its corresponding SHA-256 checksum file (`install.sh.sha256`) dynamically from the target tag/ref.
+2. **Case-Insensitive Integrity Check**: The downloaded script's SHA-256 digest is computed using `Hash.sha256OfBytes` and normalized to uppercase, matching the uppercase-normalized checksum from the `.sha256` file.
+3. **Download Exit-Code Validation**: The exit codes of `curl` and `wget` are verified (`exitCode == 0`) before continuing, ensuring error payload pages are never written to disk or executed.
+4. **Symlink/TOCTOU Prevention**: The downloaded script is written to a unique, temporary path containing a randomly-generated UUID (e.g., `lyric-install-<uuid>.sh`) in the system temp directory, preventing predictable path exploits. The file is cleanly removed in both success and failure paths.
+
 ## 6. VS Code extension features
 
 The existing extension (`lyric-vscode/`) provides syntax highlighting,

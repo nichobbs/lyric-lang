@@ -226,7 +226,7 @@ func runGithubUpgrade(installDir: in String, version: in Option[String], isDryRu
   }
 
   val scriptBytes = Encoding.encodeUtf8(scriptContent)
-  val actualHash = Hash.sha256OfBytes(scriptBytes)
+  val actualHash = Hash.sha256OfBytes(scriptBytes).toUpper()
   if actualHash != expectedHash {
     printErr("upgrade: installation script integrity check failed!")
     printErr("Expected SHA-256: " + expectedHash)
