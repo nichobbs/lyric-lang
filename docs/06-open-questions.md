@@ -609,19 +609,19 @@ Tracked in review issue #3549.  Resolution options:
 
 ## FFI ergonomics improvements
 
-**Q47-001–Q47-004 (import extern syntax, open):**
-See `docs/47-import-extern-syntax.md` for the full design sketch. The proposal
-unifies external-type imports with Lyric package imports via `import extern
-Docker.DotNet.{ DockerClient as HostClient }` syntax, replacing scattered
-`extern type` declarations. Open questions:
-- Q47-001: Namespace resolution (full FQN vs. by-namespace search)?
-- Q47-002: Name collision semantics (shadowing vs. error)?
-- Q47-003: Tooling support (doc rendering, API diffs)?
-- Q47-004: Visibility in `pub use` re-exports?
+**Q47-001–Q47-004 (import extern syntax) — resolved, see D115.**
+See `docs/47-import-extern-syntax.md` for the full design and
+`docs/03-decision-log.md` D115 for the resolution of all four questions
+(full-FQN namespace syntax, local-shadows-external collision handling,
+external types excluded from the public API surface, `import extern`
+allowed in `pub use`). Parser support shipped in PR #3728; type-checker
+integration (Phase 2) remains a separate, still-open follow-up.
 
-**Q48-001–Q48-003 (Constructor shorthand):**
-See `docs/48-constructor-shorthand.md`. Propose enabling `.new(args)` calls on external types (already works on JVM; MSIL still requires `@externTarget`
-wrappers). Leverages Phase 3c auto-FFI infrastructure. Design questions:
+**Q48-001–Q48-002 (Constructor shorthand — generic and async constructors, open):**
+See `docs/48-constructor-shorthand.md`. `.new(args)` calls on external types
+now work on both MSIL and JVM (D-progress-530). Remaining open questions:
 - Q48-001: Generic constructors (`List[T].new(capacity)`; requires template instantiation; part of Q022-4).
 - Q48-002: Async constructors (`async T.new(...)`).
-- Q48-003: Static factory methods (already supported via auto-FFI; no special syntax needed).
+
+(Q48-003 — static factory methods — is resolved, see D116: already reachable
+via ordinary auto-FFI method calls, no special syntax needed.)

@@ -853,3 +853,10 @@ closure → AOT-link → build **and run** the full corpus + its `lyric test`, p
 byte-identical (#3217).  Every change here **must** be validated by compiling
 **and running** the corpus — `ilverify` alone passes structurally valid IL that
 still mis-binds at run time.
+
+**Tracked:** the generic-collection erasure ABI decision above is tracked in
+#4601, including the open question of whether it was incidentally resolved by
+the #4020 fix that unblocked D-progress-531 (a different bug class — a
+cross-package nullary-union-case singleton mis-detection, not collection
+erasure) or whether it remains a live gap the D-progress-531 corpus simply
+didn't exercise.
