@@ -82,6 +82,12 @@ pub record ContractDecl {
   ensuresClauses: List[String]
   body: Option[String]
   params: List[ContractParam]
+  bmode: Bool                     // NEW (D114 / docs/55): `kind = "aspect"` only —
+                                   // `true` for a B'-mode library template (`pub
+                                   // aspect` without `@inline_template`), `false`
+                                   // for C-mode (`@inline_template`) and every
+                                   // other decl kind. Additive (no formatVersion
+                                   // bump); absent in JSON defaults to `false`.
 }
 ```
 

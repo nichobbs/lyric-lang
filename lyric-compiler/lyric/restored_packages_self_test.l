@@ -96,7 +96,8 @@ func mkDecl(kind: in String, name: in String, repr: in String): Meta.ContractDec
     requiresClauses = newList(),
     ensuresClauses = newList(),
     body = None,
-    params = newList()
+    params = newList(),
+    bmode = false
   )
 }
 

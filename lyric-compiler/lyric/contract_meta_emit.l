@@ -132,6 +132,12 @@ func emitDecl(d: in Meta.ContractDecl): String {
   // Parameters
   fields.add(("params", emitParams(d.params)))
 
+  // B'-mode discriminator (docs/55) — only emitted when true, matching the
+  // additive/omit-when-false convention `renderDecl` (contract_meta.l) uses.
+  if d.bmode {
+    fields.add(("bmode", jsonBool(true)))
+  }
+
   jsonObject(fields)
 }
 

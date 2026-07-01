@@ -381,7 +381,7 @@ func runMiddleEnd(
   file0: in SourceFile,
   importedPkgs: in List[ImportedPackage],
   stdlibGenFuncs: in List[FunctionDecl],
-  templates: in Map[String, AspectDecl],
+  templates: in Map[String, CollectedTemplate],
   reportTcAdvisories: in Bool,
 ): Option[SourceFile] {
   val tcRes = checkWithImportedPackages(file0, importedPkgs)
@@ -1211,7 +1211,7 @@ pub func compileToJarBundledWithFeatures(
   // Collect cross-package aspect templates from every file in the bundle before
   // the weave loop so that from-instance aspects in any package can resolve
   // their template body (#3414; parity with the MSIL bridge).
-  val allTemplates: Map[String, AspectDecl] = newMap()
+  val allTemplates: Map[String, CollectedTemplate] = newMap()
   Weaver.collectAspectTemplates(userFile.items, dottedPath(userFile.packageDecl.path), allTemplates)
   var ati = 0
   while ati < toBundle.count {

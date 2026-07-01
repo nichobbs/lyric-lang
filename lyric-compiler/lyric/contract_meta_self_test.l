@@ -447,7 +447,8 @@ func testContractToJsonRoundTrip(): Unit {
       requiresClauses = reqClauses,
       ensuresClauses = ensClauses,
       body = Some(value = "x + 1"),
-      params = params
+      params = params,
+      bmode = false
     )
   )
   val original = Contract(
@@ -510,7 +511,8 @@ func testContractToJsonOmitsDefaults(): Unit {
       requiresClauses = empty,
       ensuresClauses = empty,
       body = None,
-      params = noParams
+      params = noParams,
+      bmode = false
     )
   )
   val c = Contract(
@@ -529,6 +531,7 @@ func testContractToJsonOmitsDefaults(): Unit {
   assertTrue(not Str.contains(json, "\"ensures\""), "omits_defaults: empty ensures absent")
   assertTrue(not Str.contains(json, "\"body\""), "omits_defaults: None body absent")
   assertTrue(not Str.contains(json, "\"params\""), "omits_defaults: empty params absent")
+  assertTrue(not Str.contains(json, "\"bmode\""), "omits_defaults: false bmode key absent")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -568,7 +571,8 @@ func unwrapDeclOrFail(opt: in Option[ContractDecl], label: in String): ContractD
         requiresClauses = newList(),
         ensuresClauses = newList(),
         body = None,
-        params = newList()
+        params = newList(),
+        bmode = false
       )
     }
   }
@@ -718,21 +722,45 @@ func testBuildVersionThreaded(): Unit {
 // the body text unchanged.
 func testBuildInlineTemplateAspectBody(): Unit {
   val src = "@runtime_checked\n" + "package P\n\n" + "@inline_template\n" + "pub aspect ValidateKey {\n" +
-    "  config {\n" + "    enabled: Bool = true\n" + "    expectedKey: String\n" + "  }\n" +
-    "  around(call) -> ret {\n" + "    if not enabled {\n" + "      ret = call.proceed()\n" + "    } else {\n" +
-    "      if args.apiKey == \"\" {\n" + "        ret = Err(\"API key is missing\")\n" + "      } else {\n" +
-    "        val ok = Auth.verifyApiKey(args.apiKey, expectedKey)\n" + "        if ok {\n" +
-    "          ret = call.proceed()\n" + "        } else {\n" + "          ret = Err(\"API key is invalid\")\n" +
-    "        }\n" + "      }\n" + "    }\n" + "  }\n" + "}\n"
+    "  config {\n" +
+    "    enabled: Bool = true\n" +
+    "    expectedKey: String\n" +
+    "  }\n" +
+    "  around(call) -> ret {\n" +
+    "    if not enabled {\n" +
+    "      ret = call.proceed()\n" +
+    "    } else {\n" +
+    "      if args.apiKey == \"\" {\n" +
+    "        ret = Err(\"API key is missing\")\n" +
+    "      } else {\n" +
+    "        val ok = Auth.verifyApiKey(args.apiKey, expectedKey)\n" +
+    "        if ok {\n" +
+    "          ret = call.proceed()\n" +
+    "        } else {\n" +
+    "          ret = Err(\"API key is invalid\")\n" +
+    "        }\n" +
+    "      }\n" +
+    "    }\n" +
+    "  }\n" +
+    "}\n"
   val pr = parse(src)
   assertEqualInt(pr.diagnostics.count, 0, "inline_template aspect body: fixture parses cleanly")
   val c = buildContractFromFile(pr.file, "1.0.0")
-  val d = unwrapDeclOrFail(findDeclByKind(c.decls, "aspect", "ValidateKey"), "buildContractFromFile: aspect ValidateKey missing")
+  val d = unwrapDeclOrFail(
+    findDeclByKind(c.decls, "aspect", "ValidateKey"),
+    "buildContractFromFile: aspect ValidateKey missing"
+  )
   match d.body {
     case None -> panic("inline_template aspect body: body field must be Some(...)")
     case Some(b) -> {
-      assertTrue(Str.contains(b, "API key is missing"), "inline_template aspect body: message text preserved (got " + b + ")")
-      assertTrue(Str.contains(b, "API key is invalid"), "inline_template aspect body: second message preserved (got " + b + ")")
+      assertTrue(
+        Str.contains(b, "API key is missing"),
+        "inline_template aspect body: message text preserved (got " + b + ")"
+      )
+      assertTrue(
+        Str.contains(b, "API key is invalid"),
+        "inline_template aspect body: second message preserved (got " + b + ")"
+      )
     }
   }
   // The whole contract must serialise to well-formed JSON and round-trip:
@@ -741,7 +769,10 @@ func testBuildInlineTemplateAspectBody(): Unit {
   // the body and either fail to parse or truncate the string.
   val json = contractToJson(c)
   val reparsed = unwrapOrFail(parseFromJson(json), "inline_template aspect body: contractToJson output must parse")
-  val d2 = unwrapDeclOrFail(findDeclByKind(reparsed.decls, "aspect", "ValidateKey"), "round-trip: aspect ValidateKey missing")
+  val d2 = unwrapDeclOrFail(
+    findDeclByKind(reparsed.decls, "aspect", "ValidateKey"),
+    "round-trip: aspect ValidateKey missing"
+  )
   match d2.body {
     case None -> panic("round-trip: body field lost")
     case Some(b2) -> {
@@ -760,7 +791,11 @@ func testBuildInlineTemplateAspectBody(): Unit {
   // its own `{}` block (even though the real body lives in `.body`) would
   // fail to parse when a restored dependency's preamble is rebuilt.
   val reprRt = parse("package P\n\n" + d.repr + "\n")
-  assertEqualInt(reprRt.diagnostics.count, 0, "inline_template aspect repr: re-parses as valid Lyric source (got " + d.repr + ")")
+  assertEqualInt(
+    reprRt.diagnostics.count,
+    0,
+    "inline_template aspect repr: re-parses as valid Lyric source (got " + d.repr + ")"
+  )
 }
 
 // `aspectBodyText` must separate statements with `"; "` (matching
@@ -769,30 +804,65 @@ func testBuildInlineTemplateAspectBody(): Unit {
 // two or more statements needs an explicit separator to re-parse.
 func testBuildInlineTemplateAspectBodyMultiStatement(): Unit {
   val src = "package P\n\n" + "@inline_template\n" + "pub aspect TwoStmt {\n" + "  around(call) -> ret {\n" +
-    "    val x = 1\n" + "    ret = call.proceed()\n" + "  }\n" + "}\n"
+    "    val x = 1\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
   val pr = parse(src)
   assertEqualInt(pr.diagnostics.count, 0, "multi-statement aspect body: fixture parses cleanly")
   val c = buildContractFromFile(pr.file, "1.0.0")
-  val d = unwrapDeclOrFail(findDeclByKind(c.decls, "aspect", "TwoStmt"), "buildContractFromFile: aspect TwoStmt missing")
+  val d = unwrapDeclOrFail(
+    findDeclByKind(c.decls, "aspect", "TwoStmt"),
+    "buildContractFromFile: aspect TwoStmt missing"
+  )
   match d.body {
     case None -> panic("multi-statement aspect body: body field must be Some(...)")
     case Some(b) -> {
       val rt = parse("package P\n\npub aspect Rt {\n  " + b + "\n}\n")
-      assertEqualInt(rt.diagnostics.count, 0, "multi-statement aspect body: re-parses as valid Lyric source (got " + b + ")")
+      assertEqualInt(
+        rt.diagnostics.count,
+        0,
+        "multi-statement aspect body: re-parses as valid Lyric source (got " + b + ")"
+      )
     }
   }
 }
 
-// A regular (non-`@inline_template`) aspect is woven only in its
-// declaring package and must NOT be redistributed via the contract.
-func testBuildNonTemplateAspectOmitted(): Unit {
-  val src = "package P\n\n" + "pub aspect Local {\n" + "  matches: name like \"h*\"\n" +
-    "  around(call) -> ret {\n" + "    ret = call.proceed()\n" + "  }\n" + "}\n"
+// A private (non-`pub`) aspect never crosses the contract boundary,
+// `around` body or not — only `pub`-visibility aspects are candidates for
+// cross-package `from`-instance resolution.
+func testBuildPrivateAspectOmitted(): Unit {
+  val src = "package P\n\n" + "aspect Local {\n" + "  matches: name like \"h*\"\n" + "  around(call) -> ret {\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
   val pr = parse(src)
   val c = buildContractFromFile(pr.file, "1.0.0")
   match findDeclByKind(c.decls, "aspect", "Local") {
     case None -> ()
-    case Some(_) -> panic("buildContractFromFile: non-template aspect must not appear in contract decls")
+    case Some(_) -> panic("buildContractFromFile: private aspect must not appear in contract decls")
+  }
+}
+
+// A `pub aspect` with an `around` body and no `@inline_template` is a
+// B'-mode template (docs/55): it now carries into the contract (tagged
+// `bmode = true`) so a consuming package's `from`-instance can resolve it
+// from a restored dependency, same as a C-mode (`@inline_template`)
+// template already did.
+func testBuildBModeAspectIncluded(): Unit {
+  val src = "package P\n\n" + "pub aspect Tap {\n" + "  around(call) -> ret {\n" + "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
+  val pr = parse(src)
+  val c = buildContractFromFile(pr.file, "1.0.0")
+  val d = unwrapDeclOrFail(
+    findDeclByKind(c.decls, "aspect", "Tap"),
+    "buildContractFromFile: B'-mode aspect Tap missing"
+  )
+  assertTrue(d.bmode, "B'-mode aspect is tagged bmode = true")
+  match d.body {
+    case Some(_) -> ()
+    case None -> panic("buildContractFromFile: B'-mode aspect body must still be embedded (needed by the weaver either way)")
   }
 }
 
@@ -964,6 +1034,10 @@ test "buildContractFromFile inline_template aspect body multi-statement separato
   testBuildInlineTemplateAspectBodyMultiStatement()
 }
 
-test "buildContractFromFile omits non-template aspects" {
-  testBuildNonTemplateAspectOmitted()
+test "buildContractFromFile omits private aspects" {
+  testBuildPrivateAspectOmitted()
+}
+
+test "buildContractFromFile includes B'-mode pub aspects tagged bmode = true" {
+  testBuildBModeAspectIncluded()
 }

@@ -34,6 +34,7 @@ package Lyric.WeaverSelfTest
 import Std.Core
 import Std.Collections
 import Std.Testing
+import Std.String as Str
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Weaver
@@ -167,6 +168,45 @@ func bodyDefinesLocal(blk: in Block, name: in String): Bool {
     i = i + 1
   }
   false
+}
+
+/// First `IFunc` item whose name starts with `prefix`. Panics if none.
+func firstFunctionWithPrefix(file: in SourceFile, prefix: in String): FunctionDecl {
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(fn) -> {
+        if Str.startsWith(fn.name, prefix) {
+          return fn
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  panic("firstFunctionWithPrefix: no function with prefix '" + prefix + "'")
+}
+
+/// Count `IFunc` items whose name starts with `prefix` — used to assert
+/// B'-mode dedup (docs/55): two matched functions sharing a shape should
+/// produce exactly one `__lyric_bmode_<template>__<shape>`-named
+/// specialised function, not one per match.
+func countFunctionsWithPrefix(file: in SourceFile, prefix: in String): Int {
+  var n = 0
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(fn) -> {
+        if Str.startsWith(fn.name, prefix) {
+          n = n + 1
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  n
 }
 
 // Count `import <seg0>.<seg1>` entries in the file's import list.
@@ -1301,14 +1341,14 @@ test "non-template aspects leave args.<field> alone" {
 // consumer aspect with `from = Some(...)` and no `around` body is resolved
 // against the map and gains the template's `around` before weaving.
 // ─────────────────────────────────────────────────────────────────────────────
-func makeTemplates(src: in String, pkgName: in String): Map[String, AspectDecl] {
+func makeTemplates(src: in String, pkgName: in String): Map[String, CollectedTemplate] {
   val pr = parse(src)
-  val dest: Map[String, AspectDecl] = newMap()
+  val dest: Map[String, CollectedTemplate] = newMap()
   collectAspectTemplates(pr.file.items, pkgName, dest)
   dest
 }
 
-func weaveWithTemplates(consumeSrc: in String, templates: in Map[String, AspectDecl]): WeaveFileResult {
+func weaveWithTemplates(consumeSrc: in String, templates: in Map[String, CollectedTemplate]): WeaveFileResult {
   val pr = parse(consumeSrc)
   weaveFileWithDiagsAndTemplates(pr.file, templates)
 }
@@ -1335,7 +1375,12 @@ test "collectAspectTemplates skips aspect with no around (consumer instance)" {
   assertTrue(not templates.containsKey("Lib.Tap.Tap"), "from-instance not collected as template")
 }
 
-test "from-instance aspect is resolved to template around and weaved" {
+// `Tap`'s body never reads `args.<field>` — a B'-mode candidate (docs/55
+// §3.2) — so a resolved `from`-instance routes through the shared
+// specialisation path (Phase 2) rather than inlining the body directly
+// into `doWork`'s wrapper the way C-mode does.  The `__before` local now
+// lives in the specialised function, not in `doWork`'s own thin wrapper.
+test "from-instance aspect (B'-mode) is resolved to a shared specialised function" {
   val tplSrc = "package Lib.Tap\n" + "pub aspect Tap {\n" + "  matches: name like \"*\"\n" + "  around(args) -> ret {\n" +
     "    val __before = 1\n" +
     "    proceed(args)\n" +
@@ -1347,12 +1392,95 @@ test "from-instance aspect is resolved to template around and weaved" {
   val wr = weaveWithTemplates(consumeSrc, templates)
   assertTrue(wr.diagnostics.count == 0, "no diagnostics")
   val wrapper = firstFunction(wr.file, "doWork")
+  val wrapperBody = functionBody(wrapper)
+  assertTrue(not bodyDefinesLocal(wrapperBody, "__before"), "doWork's own wrapper no longer inlines the template body")
+  assertTrue(countFunctionsWithPrefix(wr.file, "__lyric_bmode_") == 1, "exactly one specialised function emitted")
+  val specFn = firstFunctionWithPrefix(wr.file, "__lyric_bmode_")
+  val specBody = functionBody(specFn)
+  assertTrue(bodyDefinesLocal(specBody, "__before"), "template around body injected into the specialised function")
+}
+
+// Two matched functions with the identical `(Int) -> Int` shape share one
+// specialised function — the dedup property B'-mode buys over C-mode
+// (docs/55 §3.2 point 2, §5 Phase 2).
+test "B'-mode dedups same-shape matches to one specialised function" {
+  val tplSrc = "package Lib.Tap\n" + "pub aspect Tap {\n" + "  matches: name like \"*\"\n" +
+    "  around(call) -> ret { ret = call.proceed() }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Tap")
+  val consumeSrc = "package App\n" + "aspect MyTap from Lib.Tap.Tap {\n" + "  matches: name like \"handle*\"\n" + "}\n" +
+    "func handleOne(x: in Int): Int { x + 1 }\n" +
+    "func handleTwo(y: in Int): Int { y * 2 }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(wr.diagnostics.count == 0, "no diagnostics")
+  assertTrue(
+    countFunctionsWithPrefix(wr.file, "__lyric_bmode_") == 1,
+    "same-shape matches dedup to one specialised function"
+  )
+}
+
+// A different shape gets its own specialised function — dedup keys on
+// shape, not on "any B'-mode match of this template."
+test "B'-mode keeps separate specialised functions for distinct shapes" {
+  val tplSrc = "package Lib.Tap\n" + "pub aspect Tap {\n" + "  matches: name like \"*\"\n" +
+    "  around(call) -> ret { ret = call.proceed() }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Tap")
+  val consumeSrc = "package App\n" + "aspect MyTap from Lib.Tap.Tap {\n" + "  matches: name like \"handle*\"\n" + "}\n" +
+    "func handleInt(x: in Int): Int { x + 1 }\n" +
+    "func handleStr(s: in String): String { s }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(wr.diagnostics.count == 0, "no diagnostics")
+  assertTrue(
+    countFunctionsWithPrefix(wr.file, "__lyric_bmode_") == 2,
+    "distinct shapes get distinct specialised functions"
+  )
+}
+
+// A0046: a B'-mode (non-`@inline_template`) template whose body reads
+// `args.<field>` would otherwise fall through to a confusing downstream
+// "unknown name 'args'" error — the weaver flags it explicitly instead
+// (docs/55 §5 Phase 1).
+test "B'-mode template referencing args.<field> emits A0046" {
+  val tplSrc = "package Lib.Tap\n" + "pub aspect Tap {\n" + "  matches: name like \"*\"\n" + "  around(args) -> ret {\n" +
+    "    val a = args.x\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Tap")
+  val consumeSrc = "package App\n" + "aspect MyTap from Lib.Tap.Tap {\n" + "  matches: name like \"doWork\"\n" + "}\n" +
+    "func doWork(x: in Int): Int { x }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(diagsHaveCode(wr.diagnostics, "A0046"), "A0046 emitted for B'-mode template reading args.<field>")
+}
+
+// A C-mode (`@inline_template`) resolved from-instance is unaffected by
+// B'-mode: it still inlines per match, and never emits A0046 even though
+// its body reads `args.<field>` — that's exactly what `@inline_template`
+// opts into.
+test "C-mode from-instance is unaffected by B'-mode routing" {
+  val tplSrc = "package Lib.Tap\n" + "@inline_template\n" + "pub aspect Tap {\n" + "  matches: name like \"*\"\n" +
+    "  around(args) -> ret {\n" +
+    "    val a = args.x\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Tap")
+  val consumeSrc = "package App\n" + "aspect MyTap from Lib.Tap.Tap {\n" + "  matches: name like \"doWork\"\n" + "}\n" +
+    "func doWork(x: in Int): Int { x }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(not diagsHaveCode(wr.diagnostics, "A0046"), "C-mode template never emits A0046")
+  assertTrue(
+    countFunctionsWithPrefix(wr.file, "__lyric_bmode_") == 0,
+    "C-mode does not route through B'-mode specialisation"
+  )
+  val wrapper = firstFunction(wr.file, "doWork")
   val body = functionBody(wrapper)
-  assertTrue(bodyDefinesLocal(body, "__before"), "template around body injected: val __before defined")
+  assertTrue(not bodyHasMemberAccess(body, "args", "x"), "args.x rewritten away (C-mode inline path)")
 }
 
 test "from-instance aspect with no matching template emits A0045" {
-  val templates: Map[String, AspectDecl] = newMap()
+  val templates: Map[String, CollectedTemplate] = newMap()
   val consumeSrc = "package App\n" + "aspect MyTap from Lib.Tap.Tap {\n" + "  matches: name like \"doWork\"\n" + "}\n" +
     "func doWork(x: in Int): Int { x }\n"
   val wr = weaveWithTemplates(consumeSrc, templates)
@@ -1362,7 +1490,7 @@ test "from-instance aspect with no matching template emits A0045" {
 }
 
 test "weaveFileWithDiagsAndTemplates also weaves inline aspects (no from)" {
-  val templates: Map[String, AspectDecl] = newMap()
+  val templates: Map[String, CollectedTemplate] = newMap()
   val consumeSrc = "package App\n" + "aspect InlineAspect {\n" + "  matches: name like \"*\"\n" +
     "  around(args) -> ret {\n" +
     "    var __inline = 42\n" +
