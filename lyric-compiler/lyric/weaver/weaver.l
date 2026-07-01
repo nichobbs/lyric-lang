@@ -3089,18 +3089,22 @@ func mkCtxFieldRead(paramName: in String, field: in String): Expr {
   Expr(kind = EMember(receiver = singleSegPathExpr(paramName), memberName = field), span = synSpan())
 }
 
+/// `<name> = <value>` named call-arg node at a zero span, for `mkRecordCtor`.
+func mkNamedArg(name: in String, value: in Expr): CallArg {
+  CANamed(name = name, value = value, span = synSpan())
+}
+
 /// `<typeName>(<name1> = <expr1>, ...)` record-construction call at a zero
 /// span.  Lyric has no distinct record-literal AST node — construction is
 /// an ordinary `ECall` with named args against the type's own name.
-func mkRecordCtor(typeName: in String, fields: in List[(String, Expr)]): Expr {
-  val args: List[CallArg] = newList()
-  var i = 0
-  while i < fields.count {
-    val (n, v) = fields[i]
-    args.add(CANamed(name = n, value = v, span = synSpan()))
-    i = i + 1
-  }
-  Expr(kind = ECall(fn = singleSegPathExpr(typeName), args = args), span = synSpan())
+///
+/// Takes already-built `CANamed` args rather than `List[(String, Expr)]`
+/// tuples — a heterogeneous tuple element type (`String` alongside `Expr`)
+/// hits a self-hosted MSIL emitter stack-typing bug on tuple-list element
+/// reads (tracked in #3943); building the named-arg AST node directly at
+/// each call site avoids it.
+func mkRecordCtor(typeName: in String, fields: in List[CallArg]): Expr {
+  Expr(kind = ECall(fn = singleSegPathExpr(typeName), args = fields), span = synSpan())
 }
 
 func singleStmtList(s: in Statement): List[Statement] {
@@ -3555,13 +3559,13 @@ func buildBModeCallSite(
     "<unknown>:" + toString(fn.span.startPos.line)
   }
 
-  val ctxFields: List[(String, Expr)] = newList()
-  ctxFields.add(("shortName", mkStringLit(fn.name)))
-  ctxFields.add(("qualifiedName", mkStringLit(qualified)))
-  ctxFields.add(("modulePath", mkStringLit(site.packagePath)))
-  ctxFields.add(("sourceLocation", mkStringLit(locText)))
-  ctxFields.add(("annotations", mkStringSliceLit(annNames)))
-  ctxFields.add(("aspectName", mkStringLit(aspect.name)))
+  val ctxFields: List[CallArg] = newList()
+  ctxFields.add(mkNamedArg("shortName", mkStringLit(fn.name)))
+  ctxFields.add(mkNamedArg("qualifiedName", mkStringLit(qualified)))
+  ctxFields.add(mkNamedArg("modulePath", mkStringLit(site.packagePath)))
+  ctxFields.add(mkNamedArg("sourceLocation", mkStringLit(locText)))
+  ctxFields.add(mkNamedArg("annotations", mkStringSliceLit(annNames)))
+  ctxFields.add(mkNamedArg("aspectName", mkStringLit(aspect.name)))
 
   val stmts: List[Statement] = newList()
   stmts.add(mkValStmt("__lyric_callctx", None, mkRecordCtor(bmodeCallCtxRecordName(), ctxFields)))
@@ -3576,10 +3580,21 @@ func buildBModeCallSite(
 
   match cfgRecordName {
     case Some(rn) -> {
-      val cfgFields: List[(String, Expr)] = newList()
+      val cfgFields: List[CallArg] = newList()
       var ci = 0
       while ci < referencedCfgFields.count {
-        val f = referencedCfgFields[ci]
+        // `referencedCfgFields` is cached per templateKey (docs/55 §5) and
+        // may carry a *different* from-instance's ConfigField objects — its
+        // field *names* are template-invariant, but its `default` values are
+        // only valid for the instance that first populated the cache.  Every
+        // call site must re-resolve the default from THIS aspect's own
+        // merged config (`aspect.config`, built by `mergeAspectConfig` in
+        // `resolveFromInstanceItem`) or a sibling instance with a narrower
+        // config override silently inherits an unrelated instance's values.
+        val f = match configFieldByName(aspect.config, referencedCfgFields[ci].name) {
+          case Some(cf) -> cf
+          case None -> referencedCfgFields[ci]
+        }
         val valExpr = match f.default {
           case Some(e) -> e
           case None -> {
@@ -3589,7 +3604,7 @@ func buildBModeCallSite(
             )
           }
         }
-        cfgFields.add((f.name, valExpr))
+        cfgFields.add(mkNamedArg(f.name, valExpr))
         ci = ci + 1
       }
       stmts.add(mkValStmt("__lyric_cfg", None, mkRecordCtor(rn, cfgFields)))
