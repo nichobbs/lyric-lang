@@ -1266,6 +1266,24 @@ func aspectDoc(visStr: in String, ad: in AspectDecl, ctx: inout FmtCtx): List[St
   acc
 }
 
+// docs/56 / D115 — ` where TArgs has { field: Type, ... }` row constraint,
+// rendered inline after the return binder and before `{`.  Empty string
+// when the around advice carries no row clause.
+func argsRowClauseStr(rowOpt: in Option[List[ArgsRowField]]): String {
+  match rowOpt {
+    case None -> ""
+    case Some(fields) -> {
+      val parts: List[String] = newList()
+      var i = 0
+      while i < fields.count {
+        parts.add(fields[i].name + ": " + typeStr(fields[i].ty))
+        i = i + 1
+      }
+      " where TArgs has { " + joinStrings(parts, ", ") + " }"
+    }
+  }
+}
+
 // The `around(args) -> ret { … }` advice block.  The `Option[AspectAround]`
 // is matched here as a *function parameter* rather than via
 // `match ad.around { … }` in the caller: the stage-0 bootstrap emitter
@@ -1297,7 +1315,8 @@ func aspectAroundLines(aroundOpt: in Option[AspectAround], ctx: inout FmtCtx): L
         pk = pk + 1
       }
       val retStr = match ar.retName { case Some(r) -> " -> " + r; case None -> "" }
-      acc.add("  around(" + ar.argsName + ")" + retStr + " {")
+      val rowStr = argsRowClauseStr(ar.argsRow)
+      acc.add("  around(" + ar.argsName + ")" + retStr + rowStr + " {")
       val body = blockLines(ar.body, ctx)
       var k = 0
       while k < body.count {

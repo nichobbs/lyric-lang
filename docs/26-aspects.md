@@ -897,6 +897,8 @@ compiler.
 | `A0043` | `call.<field>` references an ambient field the weaver does not recognise.  Recognised fields today: `shortName`, `qualifiedName`, `modulePath`, `sourceLocation`, `annotations`, `aspect`, `elapsed` (runtime-instrumented per #1298 / D100).  `call.caller` is not available — caller-site capture is unimplemented (§4.3) — so it fires A0043 like any unknown field. |
 | `A0044` | `config.<field>` references a `config { }` field declared without a literal default.  Env-var resolution per §8 is not yet wired; until it lands, the field must have a literal default to be referenced from the aspect body.  Surfaced at weave time to replace the confusing downstream "config not declared" type error. |
 | `A0045` | `aspect … from Pkg.Template` template not found in the build.  The `from` path could not be resolved from the available packages; the instance is silently dropped (no weaving).  Ensure the template package is listed in `[dependencies]` in `lyric.toml`. |
+| `A0046` | A `from`-instance resolves to a B′-mode template (no `@inline_template`) whose body references `args.<field>` outside of what a `where TArgs has { ... }` row clause declares (docs/56 / D115) — B′-mode `args` is opaque by default (docs/27 §6.1.1). Mark the template `@inline_template` to opt into C-mode field access, declare the field(s) in a row clause, or remove the reference. |
+| `A0047` | A row-constrained B′-mode template's `where TArgs has { field: Type, ... }` clause is not satisfied by a specific matched function — it has no parameter named `field` of a compatible type (docs/56 / D115). Weaving still proceeds with that field omitted from the args-record construction, so the type-checker also flags the incomplete record literal. |
 
 Plus the runtime contract codes (`C0014` etc.) gain provenance
 fields naming the aspect that introduced the failing clause (§5.3).
@@ -1231,6 +1233,70 @@ types. Standard OTel env vars (`OTEL_EXPORTER_OTLP_ENDPOINT`,
 boundary; Lyric config fields cover Lyric-specific knobs (sampling,
 enabled flag, log level). Operators do not need to learn a Lyric-
 specific naming scheme for the exporter endpoint.
+
+### 18.6 Typed `args` field access: `where TArgs has { ... }` (docs/56 / D115)
+
+A cross-package template with no `@inline_template` (B′-mode, §15's A0046)
+treats `args` as opaque by default — the whole point of B′-mode's dedup is
+that one compiled specialisation serves every consumer, so it cannot read a
+field whose name is specific to one consumer's handler shape. Most library
+templates (tracing, logging, metrics) never need to — they only touch
+`call.<field>` and `config.<field>`. A template that genuinely needs a named
+field off the matched function's own parameters (an API-key guard reading
+`apiKey`, a tenant-scoping aspect reading `tenantId`) declares exactly which
+fields it needs with a `where TArgs has { ... }` row clause on the `around`
+advice, instead of falling back to C-mode's per-use-site recompile:
+
+```lyric
+package Auth.Aspects
+
+import Std.Core
+import Auth
+
+pub aspect ValidateKey {
+  config {
+    enabled: Bool = true
+    @sensitive
+    expectedKey: String
+  }
+  around(call) -> ret where TArgs has { apiKey: String } {
+    if not enabled {
+      ret = call.proceed()
+    } else if args.apiKey == "" {
+      ret = Err("API key is missing")
+    } else if Auth.verifyApiKey(args.apiKey, expectedKey) {
+      ret = call.proceed()
+    } else {
+      ret = Err("API key is invalid")
+    }
+  }
+}
+```
+
+`TArgs` is a fixed, compiler-recognised name here — never a user-declared
+generic parameter — standing for "the matched function's own parameter
+list," so it is never written anywhere else in the language. Each consumer's
+matched function must supply a same-named, same-typed parameter:
+
+```lyric
+package MyApi.Handlers
+
+aspect KeyGuard from Auth.Aspects.ValidateKey {
+  matches: name like "apiKeyGuarded*"
+  config { expectedKey: String = "..." }
+}
+
+pub func apiKeyGuardedHandler(apiKey: in String): Result[String, String] {
+  return Ok("authorized")
+}
+```
+
+If a matched function has no `apiKey` parameter (or a differently-typed
+one), weaving surfaces `A0047` at that specific call site rather than a
+downstream error inside the shared specialised function. A row clause only
+ever widens what `args.<field>` a B′-mode template may read — it never
+requires the matched function's parameter list to be *exactly* the declared
+fields; unrelated parameters are simply ignored.
 
 ---
 

@@ -650,7 +650,7 @@ output_assembly = "myapp.dll"
 | `@generate(Json\|Sql\|Proto)` | `exposed record`, `record`, `union`, `interface` | Invoke built-in source generator for the named target |
 | `@generate(Pkg.Name)` | `exposed record`, `record`, `union`, `interface` | Invoke custom source generator from package `Pkg` |
 | `@experimental` | `pub` item | May change without SemVer major bump |
-| `@inline_template` | `pub aspect` | C-mode template: weaver rewrites `args.<field>` to bare `<field>` paths against the matched function's parameters; mismatches surface as A0042 diagnostics. Without this annotation a `pub aspect` template is B′-mode by default (shared shape-keyed specialisation, no dedicated annotation); `args.<field>` in a B′-mode template body is a hard error (A0046) |
+| `@inline_template` | `pub aspect` | C-mode template: weaver rewrites `args.<field>` to bare `<field>` paths against the matched function's parameters; mismatches surface as A0042 diagnostics. Without this annotation a `pub aspect` template is B′-mode by default (shared shape-keyed specialisation, no dedicated annotation); `args.<field>` in a B′-mode template body is a hard error (A0046) unless the `around` advice declares the field(s) in a `where TArgs has { field: Type, ... }` row clause (chapter 22 §22.7), in which case a matched function missing the field is A0047 instead |
 | `@global_clock_unsafe` | function | Suppresses the proof-system warning for non-`@stubbable` clock access |
 | `@hidden` | field in `@projectable` opaque type | Excluded from generated view type |
 | `@projectable` | `opaque type` | Generate a sibling `exposed record XView` and projection functions |

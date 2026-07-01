@@ -1110,6 +1110,25 @@ func rewriteConfigDecl(aliases: in List[String], d: in ConfigDecl): ConfigDecl {
   ConfigDecl(name = d.name, fields = rewriteConfigFields(aliases, d.fields), span = d.span)
 }
 
+func rewriteArgsRowField(aliases: in List[String], f: in ArgsRowField): ArgsRowField {
+  ArgsRowField(name = f.name, ty = rewriteTypeExpr(aliases, f.ty), span = f.span)
+}
+
+func rewriteArgsRow(aliases: in List[String], row: in Option[List[ArgsRowField]]): Option[List[ArgsRowField]] {
+  match row {
+    case None -> None
+    case Some(fields) -> {
+      val fs: List[ArgsRowField] = newList()
+      var i = 0
+      while i < fields.count {
+        fs.add(rewriteArgsRowField(aliases, fields[i]))
+        i = i + 1
+      }
+      Some(value = fs)
+    }
+  }
+}
+
 func rewriteAspectDecl(aliases: in List[String], d: in AspectDecl): AspectDecl {
   // `someAspectAround` (Lyric.Parser) — NOT a local `Some(value = ...)`:
   // the stage-0 bootstrap emitter miscompiles `Option[AspectAround]`
@@ -1117,7 +1136,7 @@ func rewriteAspectDecl(aliases: in List[String], d: in AspectDecl): AspectDecl {
   // `Some` nor `None` downstream, which silently un-weaves every aspect
   // in an import-bearing file (#1298 investigation).
   val ar = match d.around {
-    case Some(a) -> someAspectAround(AspectAround(argsName = a.argsName, retName = a.retName, body = rewriteBlock(aliases, a.body), span = a.span))
+    case Some(a) -> someAspectAround(AspectAround(argsName = a.argsName, retName = a.retName, argsRow = rewriteArgsRow(aliases, a.argsRow), body = rewriteBlock(aliases, a.body), span = a.span))
     case None -> d.around
   }
   AspectDecl(

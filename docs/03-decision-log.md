@@ -7117,6 +7117,129 @@ docs/56 (row-typed `args`, a follow-on extension of this monomorphisation
 path per docs/55 §4), Q-aspectlib-001, Q-bmode-001–004.
 
 ---
+
+## D115 — Row-typed `args` for B′-mode aspects: Option 1 (`where TArgs has { ... }`) shipped over Option 2 (marker interfaces)
+
+**Status:** ACCEPTED
+
+**Context.** `docs/56-row-typed-aspect-args-sketch.md` (Q-aspectlib-009 in
+`docs/27` §12) pressure-tested two designs for typed, named field access on
+B′-mode `args` — today opaque by contract (docs/27 §6.1.1): any `pub aspect`
+template lacking `@inline_template` that reads `args.<field>` fails closed
+with A0046 (D114), forcing field-accessing library aspects (the canonical
+example, `Auth.Aspects.ValidateKey`) into C-mode, which re-parses/re-compiles
+the template body at every consumer use site instead of sharing B′-mode's
+one-specialised-function-per-shape dedup.
+
+- **Option 1 (row constraint):** new `where TArgs has { field: Type, ... }`
+  syntax on `around` advice, scoped so `TArgs` is never a user-declared
+  generic parameter — always the compiler-synthesised args type for the
+  matched function (docs/56 §3). Row satisfaction is a linear scan at each
+  specialisation site, not general row-polymorphic type theory.
+- **Option 2 (marker interfaces):** auto-synthesise a nominal marker
+  interface per `(aspect, field-shape)` pair, reusing `impl <Interface> for
+  Record` → `InterfaceImpl` emission (D105/docs/51). No new syntax.
+
+**Decision.** Ship **Option 1**, against the sketch's own cost comparison
+(docs/56 §4), which favoured Option 2 on every axis except "generalises
+beyond aspects someday." Two things changed the calculus once implementation
+started:
+
+- Lyric already has a native `interface` / `impl I for Record` construct
+  with `where T: Interface` bounds (`docs/01-language-reference.md`
+  §"interface") distinct from the FFI-external-interface form D105/docs/51
+  actually emits `InterfaceImpl` rows for — so Option 2 as sketched
+  ("auto-synthesise a marker interface … reusing docs/51's emission
+  pattern") would need its own new plumbing (synthesising an *internal*,
+  non-FFI interface + impl per shape) at implementation time, not literally
+  zero new mechanism the sketch's comparison table implied.
+- Once the row clause is scoped to exactly one grammar position (right after
+  an `around` advice's return binder, with `TArgs`/`has` both contextual —
+  recognised only there, reserving neither word globally, mirroring how
+  `from`/`matches`/`around` are already contextual in `parseAspectBody`) and
+  to exactly one semantic gate (does a resolved `from`-instance's `args.<field>`
+  usage set ⊆ the declared row-field set?), the "new user-facing concept"
+  cost docs/56 §4 flagged shrinks to one line in `docs/26-aspects.md`'s
+  worked-example table, not a standing new type-theory surface.
+
+**Design (docs/56 §3, as shipped):**
+
+- Grammar: `AroundAdvice = 'around' '(' IDENT ')' '->' IDENT [ ArgsRowClause ]
+  Block ; ArgsRowClause = 'where' 'TArgs' 'has' '{' ArgsRowField { ',' ArgsRowField } [','] '}' ;
+  ArgsRowField = IDENT ':' Type ;` (`docs/grammar.ebnf`). Parsed into a new
+  `AspectAround.argsRow: Option[List[ArgsRowField]]` field
+  (`lyric-compiler/lyric/parser/parser_ast.l`,
+  `lyric-compiler/lyric/parser/parser_items.l`).
+- Weaver (`lyric-compiler/lyric/weaver/weaver.l`): a template's row clause is
+  read once per `templateKey` in `bmodeGetOrBuildTemplateInfo`, synthesising
+  a `__LyricBModeArgs_<template>` record (one per template, fields = the row
+  clause verbatim — analogous to the existing `__LyricBModeCfg_<template>`
+  record for `config.<field>`) and adding it as an extra `__lyric_args`
+  parameter on the shared specialised function
+  (`buildBModeSpecializedFunction`). `args.<field>` for a declared row field
+  rewrites to `__lyric_args.<field>` (`tryMemberRewrite`, gated by a new
+  `RewriteCtx.argsRowFields` set — empty for local aspects and C-mode, so no
+  existing rewrite path changes). `collectBModeArgsFieldDiags`'s A0046 check
+  is refined: it now fires only when the template's `args.<field>` usage is
+  *not* fully covered by a row clause (`aspectArgsFullyRowCovered`) — a
+  template with no row clause at all keeps the pre-D115 A0046 behaviour
+  unchanged.
+- Row satisfaction is checked per matched function, not per shape
+  (`buildBModeCallSite`): for each declared row field, the matched
+  function's own parameter list must contain a same-name, same-type
+  parameter (compared via the existing `bmodeTypeExprKey` shape-key
+  canonicaliser). A new diagnostic, **A0047**, fires per unsatisfied field;
+  weaving still proceeds with that field omitted from the args-record
+  constructor call, so the downstream type-checker also flags the
+  incomplete record literal — matching the established A0042/A0043/A0044/A0046
+  "diagnostic is additive, not a hard stop" convention.
+- Formatter (`lyric-compiler/lyric/fmt/fmt_items.l`): the row clause renders
+  inline after the return binder (` where TArgs has { f1: T1, f2: T2 }`),
+  loss-checked round-trip verified in `fmt_self_test.l`.
+- No new verifier or JVM-specific work: by the time `vcgen.l` / `jvm/bridge.l`
+  see the woven body, `__lyric_args` is an ordinary concrete record parameter
+  — exactly docs/56 §5/§7's predicted consequence of scoping row satisfaction
+  to compiler-synthesised `TArgs` only.
+
+**Q-row-001–005 resolution:**
+- **Q-row-001 (keyword/spelling):** `has { ... }` as sketched, kept as a
+  contextual (not reserved) word.
+- **Q-row-002 (trigger vs `@inline_template`):** the row clause's presence
+  is the trigger; `@inline_template` stays reserved for genuine C-mode.
+- **Q-row-003 (multiple aspects, different row needs, same target):**
+  resolved for free — each template gets its own synthesised args record
+  and its own per-match satisfaction check; no composition/union logic
+  needed since the checks are independent per `(template, matched-function)`
+  pair.
+- **Q-row-004 (optional fields / row-exclusion operators):** not needed —
+  "has at least these fields" is the only form implemented; extra fields on
+  the matched function are simply ignored, matching every shipped/sketched
+  aspect's actual needs.
+- **Q-row-005 (ship at all, vs Option 2):** resolved above — ship Option 1.
+
+**Alternatives considered:** Option 2 (marker interfaces, see Context);
+declining both and keeping `args` opaque forever for B′-mode (rejected —
+`Auth.Aspects.ValidateKey`, the concrete motivating case, would stay pinned
+to C-mode's per-use-site recompile indefinitely).
+
+**Verification.** `parser_self_test.l` (+4 cases: row clause parses, defaults
+to `None`, P0326/P0327 diagnostics), `fmt_self_test.l` (+1 round-trip case,
+105/105), `weaver_self_test.l` (+4 cases: rewrite to `__lyric_args.<field>`,
+partial-coverage still emits A0046, A0047 on missing/mismatched field,
+42/42), and an ecosystem proof-of-value: `Auth.Aspects.ValidateKey`
+(`lyric-auth/src/auth_aspects.l`) converted from `@inline_template` C-mode to
+this row-constrained B′-mode form; `lyric-auth`'s existing
+`tests/auth_aspect_weaving_tests.l` (a real cross-package `from`-instance
+consuming it) passes unchanged (3/3): correct-key proceeds, wrong-key denies
+with `Err("API key is invalid")` before the handler runs, and the `enabled =
+false` bypass still works — full parse → weave → specialise → codegen →
+runtime coverage with no test-file changes needed on the consumer side.
+
+**Related:** docs/27 §12 (Q-aspectlib-009), docs/51 (D105, InterfaceImpl
+emission — the Option 2 path not taken), docs/55 (D114, B′-mode this extends),
+docs/56 (the sketch this entry backs).
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

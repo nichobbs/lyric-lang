@@ -25841,3 +25841,48 @@ build ("true builds true").
 
 **Related:** D114, docs/55, docs/27 §6.1, docs/43 Q-GEN-002, D-progress-537 (C-mode's producer-side
 predecessor to this).
+
+### D-progress-539 — Row-typed `args` for B′-mode aspects (D115 / docs/56)
+
+Ships Option 1 of `docs/56`'s pressure-test sketch: typed, named field access on B′-mode `args`
+via a `where TArgs has { field: Type, ... }` row clause on `around` advice, closing the gap D114
+left (B′-mode `args` was unconditionally opaque, forcing any field-accessing library aspect —
+`Auth.Aspects.ValidateKey` being the concrete case — into C-mode's per-use-site recompile).
+
+- **Grammar/parser** (`docs/grammar.ebnf`, `parser_ast.l`, `parser_items.l`): `AspectAround` gains
+  `argsRow: Option[List[ArgsRowField]]`. `TArgs` and `has` are contextual words recognised only in
+  this one position (right after the return binder), mirroring how `from`/`matches`/`around` are
+  already contextual in `parseAspectBody` — neither reserves a keyword globally. New parse
+  diagnostics P0324–P0329 (malformed row clause) plus `L0326`/`P0326`-class checks that the
+  where-bound name is literally `TArgs`.
+- **Weaver** (`weaver.l`): `bmodeGetOrBuildTemplateInfo` synthesises a `__LyricBModeArgs_<template>`
+  record (fields = the row clause verbatim) once per template, mirroring the existing per-template
+  `__LyricBModeCfg_<template>` record; `buildBModeSpecializedFunction` threads it in as an extra
+  `__lyric_args` parameter. `args.<field>` for a declared row field rewrites to
+  `__lyric_args.<field>` (`tryMemberRewrite`, gated by a new `RewriteCtx.argsRowFields` set — empty
+  everywhere else, so no existing rewrite path changes). `collectBModeArgsFieldDiags`'s A0046 check
+  now only fires when a template's `args.<field>` usage is not *fully* covered by its row clause
+  (`aspectArgsFullyRowCovered`); an uncovered template keeps the exact pre-D115 A0046 behaviour.
+  Row satisfaction is checked per matched function in `buildBModeCallSite` (not per shape, since two
+  matched functions sharing a positional `(TArgs, TRet)` shape need not share field names): a new
+  diagnostic, **A0047**, fires per field the specific match doesn't provide (name+type match via the
+  existing `bmodeTypeExprKey` canonicaliser); weaving still proceeds with that field omitted from
+  the args-record constructor, so the type-checker also flags the incomplete record literal —
+  matching the A0042/A0043/A0044/A0046 "diagnostic is additive" convention.
+- **Formatter** (`fmt_items.l`): the row clause renders inline after the return binder, loss-checked
+  round-trip verified.
+- **No new verifier or JVM-specific work**: by weave time `__lyric_args` is an ordinary concrete
+  record parameter, exactly as docs/56 §5/§7 predicted from scoping row satisfaction to
+  compiler-synthesised `TArgs` only.
+- **Ecosystem proof-of-value**: `Auth.Aspects.ValidateKey` (`lyric-auth/src/auth_aspects.l`)
+  converted from `@inline_template` C-mode to this row-constrained B′-mode form. No changes needed
+  to its existing cross-package consumer test, `lyric-auth/tests/auth_aspect_weaving_tests.l`.
+
+**Tests.** `parser_self_test.l` (71/71, +4 new: row clause parses, defaults to `None`,
+P0326/P0327 diagnostics), `fmt_self_test.l` (105/105, +1 round-trip case), `weaver_self_test.l`
+(42/42, +4 new: rewrite to `__lyric_args.<field>`, partial row coverage still emits A0046, A0047 on
+a missing field, A0047 on a type mismatch). `lyric-auth`'s `Auth.AuthAspectWeavingTests` (3/3,
+unchanged) confirms the converted `ValidateKey` template still weaves and runs correctly end to end
+(correct key proceeds, wrong key denies with the right error, `enabled = false` still bypasses).
+
+**Related:** D115, docs/56, D114, docs/55, docs/27 §12 (Q-aspectlib-009), docs/26 §18.6.

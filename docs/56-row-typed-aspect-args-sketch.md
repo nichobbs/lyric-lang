@@ -1,12 +1,14 @@
 # 56 — Row-typed `args` for B′-mode aspects (Option 1 sketch)
 
-**Status:** Unbacked exploratory sketch — pressure-test doc, not a committed
-design. Extends `docs/55-bmode-aspect-libraries-plan.md` (B′-mode must ship
-first; this doc assumes B′-mode's Mono-based specialisation path exists —
-see `docs/55` §4 for why row typing composes with monomorphisation and not
-with true reified generics). Cited from `docs/27-aspect-libraries.md` §12 as
-Q-aspectlib-009. **Decision-log entry:** none — this is exactly the kind of
-design tension a sketch exists to surface before anything is decided.
+**Status:** Specced and shipped in D115. Option 1 (the row-constraint design
+below) was chosen over Option 2 (§4's marker-interface alternative) and
+implemented: grammar (`where TArgs has { ... }`, `docs/grammar.ebnf`), weaver
+(`__LyricBModeArgs_<template>` record synthesis, `args.<field>` rewrite,
+A0047 diagnostic), formatter round-trip, and an ecosystem proof-of-value
+(`Auth.Aspects.ValidateKey` converted off `@inline_template`). Extends
+`docs/55-bmode-aspect-libraries-plan.md` (D114's B′-mode). Cited from
+`docs/27-aspect-libraries.md` §12 as Q-aspectlib-009. See D115 for the full
+rationale, the Q-row-001–005 resolutions, and verification.
 
 ---
 
@@ -161,12 +163,17 @@ scoped.
 
 ## 6. Naming and surface questions this sketch leaves open
 
+**All five resolved in D115** (see that entry for full rationale); kept
+below as the pressure-test record per the sketch-doc convention.
+
 - **Q-row-001 — Keyword/spelling.** `has { ... }` is a placeholder.
   Alternatives: `where TArgs: { apiKey: String }` (record-literal-as-type
   syntax, reuses existing `:` bound syntax but risks visual confusion with
   nominal interface bounds); a dedicated marker like
   `where TArgs provides apiKey: String`. Needs a real syntax-design pass,
   not decided here.
+  **Resolved (D115):** shipped `has { ... }` verbatim, as a contextual word
+  recognised only in this grammar position (not a reserved keyword).
 - **Q-row-002 — Does this replace `@inline_template` as the trigger, or
   compose with it?** The sketch example in §2 still carries
   `@inline_template`, which is arguably wrong — a row-constrained B′-mode
@@ -176,6 +183,9 @@ scoped.
   clause itself, with `@inline_template` staying reserved for genuine
   C-mode. Needs reconciling with `docs/55` Q-bmode-004's B′-mode
   inference question.
+  **Resolved (D115):** the row clause's presence is the trigger;
+  `@inline_template` stays reserved for C-mode. The §2 example's
+  `@inline_template` annotation was dropped in the shipped design.
 - **Q-row-003 — Multiple aspects on one target, each with different row
   requirements.** If two B′-mode row-constrained aspects both match the
   same function, do their row constraints compose (union of required
@@ -183,6 +193,11 @@ scoped.
   existing composition model (`docs/26` §5, composed contracts) doesn't
   have an analogous case to generalize from since C-mode's `args.<field>`
   rewrite is per-aspect-per-call, not a shared typed view.
+  **Resolved (D115):** neither — resolved for free. Each template gets its
+  own synthesised args record and its own independent per-match
+  satisfaction check; two templates matching the same function each get
+  their own `__lyric_args` parameter with no composition/union logic
+  needed.
 - **Q-row-004 — Optional fields / row extension operators.** Real row-type
   systems typically need more than "has these fields" (e.g. "has these
   fields and nothing else," or default values for absent fields). Decide
@@ -190,6 +205,8 @@ scoped.
   rest ignored" form in §2, or whether that's sufficient for every
   realistic aspect use case (it likely is — no shipped or sketched aspect
   needs row *exclusion*).
+  **Resolved (D115):** shipped the simplest "at least these fields, rest
+  ignored" form only; no exclusion or default-value operators.
 - **Q-row-005 — Should this ship at all, versus Option 2?** Restating
   `docs/55`'s framing honestly: Option 2 (marker interfaces) gets
   everything in the "what B′-mode + field access needs" column with less
@@ -201,6 +218,9 @@ scoped.
   sketch as declined, not deleted (per the sketch-doc convention:
   keep the pressure-test record, mark it superseded if a decision
   goes the other way).
+  **Resolved (D115):** ship Option 1. See D115's Context/Decision for what
+  changed the calculus (Option 2 turned out to need its own new internal-
+  interface-synthesis plumbing too, not literally zero new mechanism).
 
 ## 7. What this sketch does not cover
 
