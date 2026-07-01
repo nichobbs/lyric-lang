@@ -4,7 +4,6 @@ import Std.Core
 import Std.Collections
 import Std.Console as Console
 import Std.File as File
-import Std.String as Str
 import Std.Path as Path
 import Std.Process as Process
 import Std.Environment as Environment
@@ -103,10 +102,7 @@ pub func cmdUpgrade(argv: in slice[String]): Int {
 }
 
 func containsSubstr(s: in String, needle: in String): Bool {
-  match Str.indexOf(s, needle) {
-    case Some(_) -> true
-    case None -> false
-  }
+  s.indexOf(needle) >= 0
 }
 
 func printUpgradeUsage(): Unit {
@@ -173,7 +169,7 @@ func downloadUrl(url: in String): Option[String] {
 func runGithubUpgrade(installDir: in String, version: in Option[String], isDryRun: in Bool): Int {
   val ref = match version {
     case Some(v) -> {
-      if Str.startsWith(v, "v") then v else "v" + v
+      if v.startsWith("v") then v else "v" + v
     }
     case None -> "main"
   }
@@ -215,9 +211,9 @@ func runGithubUpgrade(installDir: in String, version: in Option[String], isDryRu
   var expectedHash = ""
   match sha256Option {
     case Some(checksumContent) -> {
-      val trimmed = Str.trim(checksumContent)
-      if Str.length(trimmed) >= 64 {
-        expectedHash = Str.toUpper(Str.substring(trimmed, 0, 64))
+      val trimmed = checksumContent.trim()
+      if trimmed.length >= 64 {
+        expectedHash = trimmed.substring(0, 64).toUpper()
       } else {
         printErr("upgrade: downloaded checksum file is malformed (too short)")
         return 1
