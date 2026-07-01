@@ -500,6 +500,27 @@ jobs:
         with:
           user: ${{ secrets.NUGET_USER }}
 
+      # NuGet/login can complete "successfully" (no action error) while still
+      # producing an empty API key output — e.g. an unconfigured Trusted
+      # Publishing policy, an owner/repo/workflow-file mismatch, or a
+      # nuget.org outage during the OIDC exchange. Without this guard an
+      # empty key silently reaches `dotnet nuget push`, which fails with a
+      # generic 401/403 that gives no indication the root cause was the
+      # OIDC exchange rather than the push itself.
+      - name: Verify NuGet API key
+        env:
+          NUGET_KEY: ${{ steps.nuget-auth.outputs.NUGET_API_KEY }}
+        run: |
+          if [ -z "$NUGET_KEY" ]; then
+            echo "::error::NuGet/login produced an empty API key. Check that" \
+              "the NUGET_USER secret matches the nuget.org account owning the" \
+              "Trusted Publishing policy, and that the policy is scoped to" \
+              "Repository Owner 'nichobbs', Repository 'lyric-lang', Workflow" \
+              "File 'publish.yml'. See the publish-nuget job comment above" \
+              "for full setup steps."
+            exit 1
+          fi
+
       - name: Push to NuGet.org
         env:
           NUGET_KEY: ${{ steps.nuget-auth.outputs.NUGET_API_KEY }}
@@ -583,6 +604,19 @@ jobs:
         id: nuget-auth
         with:
           user: ${{ secrets.NUGET_USER }}
+
+      # See publish-nuget's "Verify NuGet API key" step for why this guard
+      # exists: NuGet/login can report success with an empty API key output.
+      - name: Verify NuGet API key
+        env:
+          NUGET_KEY: ${{ steps.nuget-auth.outputs.NUGET_API_KEY }}
+        run: |
+          if [ -z "$NUGET_KEY" ]; then
+            echo "::error::NuGet/login produced an empty API key. Check the" \
+              "Trusted Publishing policy configuration described in" \
+              "publish-nuget's NuGet login step comment."
+            exit 1
+          fi
 
       # Decode the signing certificate so lyric publish can sign each .nupkg
       # immediately after dotnet pack and before dotnet nuget push.
