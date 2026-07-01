@@ -2083,7 +2083,6 @@ jobs:
           "$lyric_bin" test lyric-compiler/lyric/cli_suggest_self_test.l
 
       - name: CLI-upgrade self-test (native lyric test)
-        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail

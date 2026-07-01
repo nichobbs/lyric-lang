@@ -140,6 +140,32 @@ func runNugetUpgrade(version: in Option[String], isDryRun: in Bool): Int {
   }
 }
 
+func downloadUrl(url: in String): Option[String] {
+  // Try curl
+  val curlArgs: List[String] = newList()
+  curlArgs.add("-fsSL")
+  curlArgs.add(url)
+
+  val curlRes = ProcessCapture.runCaptureWithDiagnostics("curl", curlArgs, "")
+  if curlRes.exitCode == 0 and not curlRes.timedOut {
+    return Some(value = curlRes.stdout)
+  }
+
+  // Try wget
+  val wgetArgs: List[String] = newList()
+  wgetArgs.add("-q")
+  wgetArgs.add("-O")
+  wgetArgs.add("-")
+  wgetArgs.add(url)
+
+  val wgetRes = ProcessCapture.runCaptureWithDiagnostics("wget", wgetArgs, "")
+  if wgetRes.exitCode == 0 and not wgetRes.timedOut {
+    return Some(value = wgetRes.stdout)
+  }
+
+  None
+}
+
 func runGithubUpgrade(installDir: in String, version: in Option[String], isDryRun: in Bool): Int {
   val ref = match version {
     case Some(v) -> {
@@ -148,11 +174,6 @@ func runGithubUpgrade(installDir: in String, version: in Option[String], isDryRu
     case None -> "main"
   }
   val scriptUrl = "https://raw.githubusercontent.com/nichobbs/lyric-lang/" + ref + "/scripts/install.sh"
-
-  // Download the install.sh script
-  val curlArgs: List[String] = newList()
-  curlArgs.add("-fsSL")
-  curlArgs.add(scriptUrl)
 
   if isDryRun {
     Console.println("dry-run: would fetch install.sh from: " + scriptUrl)
@@ -172,33 +193,42 @@ func runGithubUpgrade(installDir: in String, version: in Option[String], isDryRu
   }
 
   Console.println("Retrieving installation script from GitHub (" + scriptUrl + ")...")
-  var scriptContent = ProcessCapture.runCapture("curl", curlArgs, "")
-  if Str.isEmpty(scriptContent) {
-    // Try wget
-    val wgetArgs: List[String] = newList()
-    wgetArgs.add("-q")
-    wgetArgs.add("-O")
-    wgetArgs.add("-")
-    wgetArgs.add(scriptUrl)
-    scriptContent = ProcessCapture.runCapture("wget", wgetArgs, "")
-  }
-
-  if Str.isEmpty(scriptContent) {
-    printErr("upgrade: failed to download the installation script (curl and wget failed)")
-    return 1
-  }
-
-  // Verify downloaded script hash matches expected stable install.sh hash only for main channel
-  if ref == "main" {
-    val expectedHash = "675DF2DAAA3BD3D0B86F6E3345099CFADA9FDA3BCD49EAC97358CFFB0EF7FD27"
-    val scriptBytes = Encoding.encodeUtf8(scriptContent)
-    val actualHash = Hash.sha256OfBytes(scriptBytes)
-    if actualHash != expectedHash {
-      printErr("upgrade: installation script integrity check failed!")
-      printErr("Expected SHA-256: " + expectedHash)
-      printErr("Actual SHA-256:   " + actualHash)
+  val scriptContent = match downloadUrl(scriptUrl) {
+    case Some(content) -> content
+    case None -> {
+      printErr("upgrade: failed to download the installation script from " + scriptUrl)
       return 1
     }
+  }
+
+  // Retrieve the checksum of the script
+  val sha256Url = "https://raw.githubusercontent.com/nichobbs/lyric-lang/" + ref + "/scripts/install.sh.sha256"
+  val sha256Option = downloadUrl(sha256Url)
+
+  var expectedHash = ""
+  match sha256Option {
+    case Some(checksumContent) -> {
+      val trimmed = Str.trim(checksumContent)
+      if Str.length(trimmed) >= 64 {
+        expectedHash = Str.toUpper(Str.substring(trimmed, 0, 64))
+      } else {
+        printErr("upgrade: downloaded checksum file is malformed (too short)")
+        return 1
+      }
+    }
+    case None -> {
+      // Fallback to legacy hardcoded checksum
+      expectedHash = "675DF2DAAA3BD3D0B86F6E3345099CFADA9FDA3BCD49EAC97358CFFB0EF7FD27"
+    }
+  }
+
+  val scriptBytes = Encoding.encodeUtf8(scriptContent)
+  val actualHash = Hash.sha256OfBytes(scriptBytes)
+  if actualHash != expectedHash {
+    printErr("upgrade: installation script integrity check failed!")
+    printErr("Expected SHA-256: " + expectedHash)
+    printErr("Actual SHA-256:   " + actualHash)
+    return 1
   }
 
   // Create temporary directory path with unique UUID suffix to prevent symlink/TOCTOU attacks
