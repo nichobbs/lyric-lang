@@ -244,7 +244,7 @@ Lyric, verifier reasons over the parametric body once at publish
 and over the call boundary at consumer-side.  This is the right
 default for stable / large-bodied aspects.
 
-**Implementation note (see Q-aspectlib-009 / `docs/55`):** the CLR
+**Implementation note (shipped as B′-mode, D114 / `docs/55`):** the CLR
 signature above (`static TRet Around<TArgs,TRet>(...)`) reads as a
 single reified generic *method* shared across every consumer — that
 artifact is not buildable today (the self-hosted MSIL backend
@@ -252,13 +252,17 @@ reifies generic *types* only, not generic *methods*; `docs/43`
 Q-GEN-002).  The "per-target × per-use-site monomorphisations land
 in the consumer DLL" sentence directly above is actually describing
 monomorphisation semantics, not a shared-IL artifact — `docs/55`
-formalises this as **B′-mode**: the library ships the parsed
-`around` body via contract metadata, and `Lyric.Mono` (the same
-cross-package monomorphiser D035-era generic functions already use)
-specialises one copy per distinct `(TArgs, TRet)` shape into each
-consumer.  This gets the zero-boxing/type-safety properties described
-above; it does not make the aspect callable from a non-Lyric
-consumer the way a true shared generic method would.
+formalises (and D114 ships) this as **B′-mode**: the library ships
+the parsed `around` body via contract metadata (tagged `bmode = true`),
+and a weaver-native shape cache (`Lyric.Weaver`, not `Lyric.Mono` — an
+aspect body is never itself generic-typed AST, so Mono's
+`TVar`-substitution engine doesn't apply; see D114's "Alternatives
+considered") specialises one ordinary, non-generic function per
+distinct `(TArgs, TRet)` shape, shared across every matched function
+and every `from`-instance of that template in a consumer. This gets
+the zero-boxing/type-safety properties described above; it does not
+make the aspect callable from a non-Lyric consumer the way a true
+shared generic method would.
 
 #### 6.1.1 `args` as an anonymous parametric record
 

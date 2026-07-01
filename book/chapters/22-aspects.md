@@ -201,6 +201,19 @@ mismatches surface as an **A0042** weave-time diagnostic naming the
 aspect, the matched function, and the offending field. The old L006
 lint warning has been removed since the rewriting now lands.
 
+**B′-mode (default for library `pub aspect` templates).** A `pub
+aspect` template consumed via a `from`-instance that is *not*
+annotated `@inline_template` routes through B′-mode: instead of
+recompiling the template body at every matched function, the weaver
+builds one specialised function per distinct parameter/return-type
+shape and shares it across every matched function — and every
+`from`-instance of that template — with that shape. `args` stays
+opaque in B′-mode: a template body may read `call.*` fields, `config`
+fields, and call `proceed()`/`call.proceed()`, but never
+`args.<field>`. A template that references `args.<field>` without
+`@inline_template` fails closed with an **A0046** weave-time
+diagnostic rather than being silently treated as C-mode.
+
 The rest of the aspect system works end-to-end: write an aspect in a package, publish it, consume it in another package, and the compiler weaves it over the matched functions at build time. Aspect templates (`pub aspect` without `matches:`), pointcut predicates (`annotated:`, `visibility:`, `signature: returns`), composition ordering (`wraps:` / `inside:`), and the `except name in { … }` exclusion clause are all fully shipped.
 
 ## Exercises

@@ -1975,11 +1975,14 @@ key points:
     contract in v1, not the cumulative wrapper-so-far.
     v1.x revisit.
 
-  - **Q-aspectlib-001** — Library ABI: hybrid B + C.
-    Default is generic-monomorphised IL distribution; opt
-    individual aspects into source-template via
-    `@inline_template`.  Typed-erased delegate (option A)
-    rejected.  Spec: `docs/27-aspect-libraries.md` §6.
+  - **Q-aspectlib-001** — Library ABI: hybrid B + C, resolved at
+    the *spec* level.  Default is B-mode; opt individual aspects
+    into source-template via `@inline_template` (C-mode).
+    Typed-erased delegate (option A) rejected.  Spec:
+    `docs/27-aspect-libraries.md` §6.  **B-mode's *implementation*
+    is B′-mode** (a monomorphisation-based variant, not the
+    reified-generic-method artifact this note originally
+    described) — see D114 / `docs/55`.
 
   - **Q-aspectlib-002** — Contract-only `pub aspect` (no
     `around` body) uses the same syntax as a body-bearing
@@ -6986,6 +6989,132 @@ by-ref mutation, multi-level nesting, and closure-returning-closure patterns.
 All cases run identically on both MSIL and JVM targets.
 
 **Related:** Epic #1877, docs/09-msil-emission.md, docs/18-jvm-emission.md.
+
+---
+
+## D114 — B′-mode: weaver-native shape-cache specialisation for cross-package aspect library templates (docs/55, Q-aspectlib-001 revision)
+
+**Status:** ACCEPTED
+
+**Context.** Q-aspectlib-001 (2026-05-08 revision, `docs/27-aspect-libraries.md`
+§6) resolved the library aspect ABI as "hybrid B + C": a `pub aspect` without
+`@inline_template` ships as B-mode, described there as *"a generic method in
+the library DLL"* — a reified CLR open generic method (`MVAR`-typed,
+`MethodDef`-owned `GenericParam` rows) instantiated per consumer. That
+framing overclaimed: the self-hosted MSIL backend reifies generic *types*
+only (`docs/43` GenericParam table 0x2A), never generic *methods* — there is
+no `MVAR`/`MethodDef`-`GenericParam` emission path for any generic function,
+aspect or otherwise (`docs/43` Q-GEN-002). Building that epic only to unblock
+aspects would be backwards (docs/55 §2). Consequently, only C-mode
+(`@inline_template`, source-template re-inlining) ever shipped; B-mode
+templates that avoided `args.<field>` happened to compile (the weaver
+inlined their body per matched function just like C-mode, minus the
+`args.<field>` rewrite pass) but got **no dedup** — every match recompiled a
+full copy of the body, the exact per-use-site cost B-mode was supposed to
+avoid.
+
+**Decision.** Ship **B′-mode** (docs/55): a monomorphisation-based variant
+that gets B-mode's zero-boxing/type-safety/dedup properties using
+infrastructure that already exists, explicitly **not** attempting reified
+generic methods.
+
+- **Contract metadata (Phase 0).** `ContractDecl` gains an additive `bmode:
+  Bool` field (format v3, no version bump; absent in JSON defaults to
+  `false`). `Lyric.ContractMeta.buildContractFromFile` now embeds **every**
+  `pub aspect` with an `around` body — not only `@inline_template` ones —
+  tagging B′-mode (`not hasInlineTemplateAnnotation`) vs C-mode.
+- **Weaver ground truth (Phase 1).** `collectAspectTemplates`'s value type
+  changes from bare `AspectDecl` to `CollectedTemplate { decl,
+  isInlineTemplate }`, capturing the declaring `Item`'s actual
+  `@inline_template` annotation at collection time. This replaces a
+  pre-existing **heuristic**: `resolveFromInstanceItem` used to guess
+  "was this template `@inline_template`?" from body content alone
+  (`aspectTemplateIsCMode` — does the body read `args.<field>`?), silently
+  auto-promoting any `args.<field>`-using template to C-mode regardless of
+  whether the annotation was actually present. That heuristic is now
+  reserved for a new diagnostic, **A0046**: a `from`-instance resolving to a
+  template that is *not actually* `@inline_template` but *does* read
+  `args.<field>` fails closed with a clear error instead of being silently
+  reclassified — B′-mode's `args` is opaque (docs/27 §6.1.1) by contract,
+  not by accident.
+- **Shape-keyed specialisation (Phase 2).** A resolved `from`-instance whose
+  template is not C-mode routes through a new weaver-native cache
+  (`weaver.l` §8b) instead of `buildWrapper`'s per-match inlining: one
+  ordinary (non-generic) specialised function per distinct `(TArgs, TRet)`
+  shape, shared across every matched function and every `from`-instance of
+  that template in the file. Ambient `call.<field>` values and `config
+  .<field>` values — baked as literal-valued preludes for C-mode/local
+  aspects — become real parameters instead: a single canonical
+  `__LyricBModeCallContext` record (covering every `call.<field>` field) and
+  a per-template `__LyricBModeCfg_<template>` record (fields = exactly the
+  `config.<field>` names the template body references, so per-instance
+  config overrides can never change the record's shape). `proceed` becomes a
+  real `(T1,...,Tn) -> TRet` closure parameter — the strongly-typed lambda
+  ABI (D113) — rather than a static call substitution; `rewriteBlock`'s
+  existing `proceed(args) -> callTargetName(p1,...,pn)` substitution needed
+  **no changes**, since it already just emits a call to whatever identifier
+  `callTargetName` names, and a lambda-bound parameter name works
+  identically to a real function name there.
+- **Not routed through `Lyric.Mono`.** Despite docs/55's own framing citing
+  `Lyric.Mono` as the reuse target, the shape cache is implemented natively
+  in `weaver.l`, not via `monoFileWithImports`. `Lyric.Mono` specialises a
+  genuinely generic (`TVar`-typed) function AST at a call site; an aspect
+  `around` body is never itself generic-typed AST — the "genericity" is a
+  weave-time fiction over the matched target's shape, with no type
+  parameters ever appearing in the parsed body. Reusing Mono would mean
+  synthesising a fake generic `FunctionDecl` purely to hand it to a
+  specialiser built for real generics, for no behavioural gain over a direct
+  shape-keyed cache. The weaver-native cache gets the identical "one
+  specialised copy per distinct shape" guarantee with less machinery.
+- **Codegen (Phase 3/4).** No new MSIL or JVM emitter primitives: Phase 2's
+  specialised functions are ordinary `FunctionDecl` items: the existing
+  backends already compile lambdas (D113), record construction, and plain
+  function calls. Confirmed by the same self-hosting build (stage 1 mint +
+  stage 2 self-host) that validates every other self-hosted-compiler change.
+- **Ecosystem (Phase 5).** No ecosystem code changes needed: `lyric-logging`'s
+  `CallLogging` / `SlowCallAlert` (`lyric-logging/src/logging_aspects.l`)
+  were already written B′-mode-shaped (no `@inline_template`, no
+  `args.<field>` access, already doc-commented "(B-mode)") — they were
+  simply unreachable via a real dedup path until this change; they now
+  route through it with no source edits.
+- **Q-aspectlib-001 revision.** The "Resolved: hybrid B + C" note
+  (2026-05-08) is corrected: B/C were resolved at the *spec* level then;
+  B-mode's *implementation* is B′-mode, landed here. `docs/27` §6.1's "ships
+  as a generic method" framing already carries a forward-referencing
+  correction note to this entry.
+
+**Alternatives considered:**
+- True reified generic methods (the original B-mode framing). Rejected:
+  needs its own epic (`MethodDef`-owned `GenericParam` rows, `MVAR` operand
+  encoding, call-site `MethodSpec` emission, a JVM erasure-vs-boxing design
+  decision) that benefits every generic function, not just aspects — out of
+  scope here (docs/55 §2, tracked as a standing question, Q-bmode-003).
+- Routing through `Lyric.Mono`'s TVar-substitution engine. Rejected: no
+  genuine generic-typed AST to substitute against; would require
+  synthesising fake generic scaffolding for no behavioural gain (see above).
+- Per-instance (not per-shape) specialisation. Rejected: degenerates to
+  C-mode's per-use-site recompilation, the exact cost B′-mode exists to cut.
+
+**Rationale.** Restores the "`args` is opaque, verified once generically"
+discipline B-mode always intended for the majority of shipped/ecosystem
+aspects (observers like `Logging`/`Tracing`/`Timing`, not field-inspectors
+like `ValidateKey`), and removes their per-call-site recompilation cost,
+independent of whether cross-language (non-Lyric) consumption of library
+aspects is ever pursued (Q-bmode-003).
+
+**Verification.** `weaver_self_test.l` (38/38, including 6 new B′-mode
+cases: shape-key dedup, distinct-shape non-dedup, A0046, C-mode-unaffected,
+and the from-instance-resolution update), `contract_meta_self_test.l`
+(39/39, including the new `bmode` field tests), `aspect_weave_self_test.l`
+(7/7, no regression) and `restored_packages_self_test.l` (15/15) all pass.
+Full self-hosting verified twice: stage 1 (F#-minted seed compiling the
+whole `lyric-compiler/lyric/` + stdlib tree) and stage 2 ("true builds
+true" — the self-hosted compiler, built with this change, rebuilding
+itself and the full stdlib) both complete cleanly.
+
+**Related:** docs/27 §6.1, docs/43 Q-GEN-002, docs/55 (full plan),
+docs/56 (row-typed `args`, a follow-on extension of this monomorphisation
+path per docs/55 §4), Q-aspectlib-001, Q-bmode-001–004.
 
 ---
 ## Decisions deferred to v2 or later

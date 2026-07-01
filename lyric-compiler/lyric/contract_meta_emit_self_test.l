@@ -27,7 +27,8 @@ func testEmitSimpleContract(): Unit {
     requiresClauses = [],
     ensuresClauses = [],
     body = None,
-    params = []
+    params = [],
+    bmode = false
   )
 
   val contract = Meta.Contract(
@@ -43,15 +44,9 @@ func testEmitSimpleContract(): Unit {
   val json = Emit.emitContractMetadata(contract)
   // Verify the JSON is non-empty and contains expected fields
   assertTrue(json.length > 0, "emitted JSON is non-empty")
-  assertTrue(
-    json.contains("\"packageName\":") and json.contains("\"Test.Package\""),
-    "JSON contains packageName field"
-  )
+  assertTrue(json.contains("\"packageName\":") and json.contains("\"Test.Package\""), "JSON contains packageName field")
   // Verify contractHash field is present (contains 64-char SHA-256 hex digest)
-  assertTrue(
-    json.contains("\"contractHash\":\""),
-    "JSON contains contractHash field"
-  )
+  assertTrue(json.contains("\"contractHash\":\""), "JSON contains contractHash field")
   // Verify the two-pass protocol produced a substantial hash: the JSON should be
   // longer than the basic structure (minimum ~110 chars for this minimal contract)
   assertTrue(json.length > 120, "JSON includes 64-char SHA-256 hash")
@@ -70,7 +65,8 @@ func testHashConsistency(): Unit {
     requiresClauses = [],
     ensuresClauses = [],
     body = None,
-    params = []
+    params = [],
+    bmode = false
   )
 
   val contract1 = Meta.Contract(

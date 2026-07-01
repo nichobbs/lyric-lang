@@ -66,6 +66,7 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
 import Std.Char as Char
+import Std.String as Str
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Glob matching (POSIX-ish subset).
@@ -2397,6 +2398,14 @@ func weaveItemsCore(items: in List[Item], packagePath: in String): WeaveResult {
     ci = ci + 1
   }
 
+  // B'-mode shape cache (docs/55 §3.2, §8b above): one specialised
+  // function per distinct `(templateKey, shape)`, one cfg record per
+  // template, one call-context record for the whole file.  Fresh per
+  // `weaveItemsCore` invocation (i.e. per woven file).
+  val bmodeTemplateInfoCache: Map[String, BModeTemplateInfo] = newMap()
+  val bmodeSpecEmitted: Map[String, Bool] = newMap()
+  var bmodeCtxEmitted = false
+
   val result: List[Item] = newList()
   var idx = 0
   while idx < items.count {
@@ -2453,7 +2462,51 @@ func weaveItemsCore(items: in List[Item], packagePath: in String): WeaveResult {
             val wrapperName = if isOutermost { fn.name } else { fn.name + "__aspect_" + aspect.name }
             val isTpl: Bool = inlineTemplateNames.containsKey(aspect.name)
             val site = makeWeaveSite(packagePath, isTpl, weaveDiags)
-            val wrapper0 = buildWrapper(fn, aspect, callTarget, site)
+            // B'-mode: a resolved `from`-instance (docs/55 §3.2) whose
+            // template is not C-mode.  Local aspects (`from = None`) and
+            // C-mode templates keep the existing inline-per-match path.
+            val isBMode = match aspect.from { case Some(_) -> not isTpl; case None -> false }
+            val wrapper0 = if isBMode {
+              if not bmodeCtxEmitted {
+                result.add(bmodeSynthCallCtxRecordItem())
+                bmodeCtxEmitted = true
+              }
+              val templateKey = match aspect.from { case Some(fp) -> bmodeTemplateKey(fp); case None -> aspect.name }
+              val info = bmodeGetOrBuildTemplateInfo(bmodeTemplateInfoCache, templateKey, aspect, result)
+              val shapeKey = bmodeShapeKey(fn.params, fn.ret)
+              val specName = "__lyric_bmode_" + Str.replace(templateKey, ".", "_") + "__" + shapeKey
+              val specKey = templateKey + "::" + shapeKey
+              if not bmodeSpecEmitted.containsKey(specKey) {
+                val paramTypes: List[TypeExpr] = newList()
+                var pti = 0
+                while pti < fn.params.count {
+                  paramTypes.add(fn.params[pti].ty)
+                  pti = pti + 1
+                }
+                val targetReturnsUnit = bmodeIsUnitReturn(fn.ret)
+                val specFn = buildBModeSpecializedFunction(
+                  aspect,
+                  specName,
+                  paramTypes,
+                  fn.ret,
+                  targetReturnsUnit,
+                  info.cfgRecordName
+                )
+                result.add(
+                  Item(
+                    docComments = newList(),
+                    annotations = newList(),
+                    visibility = None,
+                    kind = IFunc(decl = specFn),
+                    span = item.span
+                  )
+                )
+                bmodeSpecEmitted.add(specKey, true)
+              }
+              buildBModeCallSite(fn, aspect, callTarget, site, specName, info.cfgRecordName, info.referencedCfgFields, weaveDiags)
+            } else {
+              buildWrapper(fn, aspect, callTarget, site)
+            }
             val wrapper = FunctionDecl(
               docComments = wrapper0.docComments,
               annotations = wrapper0.annotations,
@@ -2553,8 +2606,25 @@ pub record WeaveFileResult {
 /// there are, an empty map leaves every `from`-instance to be dropped by the
 /// standard weave exactly as before), so this is behaviour-preserving.
 pub func weaveFileWithDiags(file: in SourceFile): WeaveFileResult {
-  val noTemplates: Map[String, AspectDecl] = newMap()
+  val noTemplates: Map[String, CollectedTemplate] = newMap()
   weaveFileWithDiagsAndTemplates(file, noTemplates)
+}
+
+/// One `pub aspect` template collected by `collectAspectTemplates`, paired
+/// with the GROUND TRUTH of whether its declaring `Item` carried
+/// `@inline_template`.  `collectAspectTemplates` stores only the
+/// `AspectDecl` half historically (annotations live on `Item`, which
+/// isn't retained) — `isInlineTemplate` is captured at collection time so
+/// `resolveFromInstanceItem` can restore the *actual* C-mode marker on a
+/// resolved `from`-instance instead of guessing from body content
+/// (`aspectTemplateIsCMode` is a body-content heuristic — a reasonable
+/// proxy before B'-mode existed, since only a C-mode template could use
+/// `args.<field>` at all, but wrong once a body using `args.<field>`
+/// *without* `@inline_template` needs to be a hard error, A0046, rather
+/// than a silent auto-promotion to C-mode — docs/55 §5 Phase 1).
+pub record CollectedTemplate {
+  decl: AspectDecl
+  isInlineTemplate: Bool
 }
 
 /// Collect all `pub` aspect declarations that carry an `around` body from
@@ -2564,7 +2634,7 @@ pub func weaveFileWithDiags(file: in SourceFile): WeaveFileResult {
 /// `pub`-visibility aspects are collected — private/local aspects must not
 /// be visible outside the package they are declared in.  Aspects without
 /// an `around` body (`from`-instance forms) are skipped.
-pub func collectAspectTemplates(items: in List[Item], pkgName: in String, dest: in Map[String, AspectDecl]): Unit {
+pub func collectAspectTemplates(items: in List[Item], pkgName: in String, dest: in Map[String, CollectedTemplate]): Unit {
   var i = 0
   while i < items.count {
     val it = items[i]
@@ -2576,7 +2646,7 @@ pub func collectAspectTemplates(items: in List[Item], pkgName: in String, dest: 
             if isPub {
               val fqn = pkgName + "." + decl.name
               if not dest.containsKey(fqn) {
-                dest.add(fqn, decl)
+                dest.add(fqn, CollectedTemplate(decl = decl, isInlineTemplate = itemHasInlineTemplate(it)))
               }
             }
           }
@@ -2677,7 +2747,9 @@ func mkInlineTemplateAnnotation(span: in Span): Annotation {
 // same-package form (`from X`) is registered under the declaring package's
 // FQN (`pkgName.X`), so retry with the consuming package prefix when the
 // as-written path misses (#3543).
-func lookupFromTemplate(templates: in Map[String, AspectDecl], fqn: in String, pkgName: in String): Option[AspectDecl] {
+func lookupFromTemplate(
+  templates: in Map[String, CollectedTemplate], fqn: in String, pkgName: in String
+): Option[CollectedTemplate] {
   match mapGet(templates, fqn) {
     case Some(t) -> Some(value = t)
     case None -> {
@@ -2696,13 +2768,18 @@ func lookupFromTemplate(templates: in Map[String, AspectDecl], fqn: in String, p
 /// `exceptNames` / `wraps` / `inside`. The effective `config` is the
 /// template's defaults with the instance's `config { }` entries overlaid
 /// (`mergeAspectConfig`), and the template's `@inline_template` marker is
-/// propagated when the template body reads `args.<field>`. An unresolved
-/// `from` reference (template absent from `templates`) is passed through
+/// propagated when the template was ACTUALLY declared `@inline_template`
+/// (`CollectedTemplate.isInlineTemplate`, ground truth captured at
+/// `collectAspectTemplates` time — not re-derived from body content, since
+/// a B'-mode template whose body reads `args.<field>` without the
+/// annotation must fail closed with A0046 rather than be silently
+/// auto-promoted to C-mode; docs/55 §5 Phase 1). An unresolved `from`
+/// reference (template absent from `templates`) is passed through
 /// unchanged so the caller can decide whether to emit a diagnostic.
 func resolveFromInstanceItem(
   it: in Item,
   instDecl: in AspectDecl,
-  templates: in Map[String, AspectDecl],
+  templates: in Map[String, CollectedTemplate],
   pkgName: in String,
 ): Item {
   match instDecl.around {
@@ -2714,7 +2791,8 @@ func resolveFromInstanceItem(
           val fqn = resolveFromPath(fromPath)
           match lookupFromTemplate(templates, fqn, pkgName) {
             case None -> it
-            case Some(tplDecl) -> {
+            case Some(tpl) -> {
+              val tplDecl = tpl.decl
               val instCfg = instDecl.config
               val effectiveConfig = mergeAspectConfig(tplDecl.config, instCfg)
               val effective = AspectDecl(
@@ -2730,11 +2808,12 @@ func resolveFromInstanceItem(
                 span = instDecl.span
               )
               // Propagate the template's `@inline_template` marker — lost
-              // during `collectAspectTemplates` (which stores only the decl)
-              // — so the resolved aspect's `args.<field>` references are
-              // rewritten to the matched function's parameters (#3543).
+              // during `collectAspectTemplates` (which historically stored
+              // only the decl) — so the resolved aspect's `args.<field>`
+              // references are rewritten to the matched function's
+              // parameters (#3543).
               val baseAnns = it.annotations
-              val finalAnns = if aspectTemplateIsCMode(tplDecl) and not annotationsHaveInlineTemplate(baseAnns) {
+              val finalAnns = if tpl.isInlineTemplate and not annotationsHaveInlineTemplate(baseAnns) {
                 val merged: List[Annotation] = newList()
                 var ai = 0
                 while ai < baseAnns.count {
@@ -2783,7 +2862,9 @@ func hasFromInstance(items: in List[Item]): Bool {
   false
 }
 
-func resolveFromInstances(items: in List[Item], templates: in Map[String, AspectDecl], pkgName: in String): List[Item] {
+func resolveFromInstances(
+  items: in List[Item], templates: in Map[String, CollectedTemplate], pkgName: in String
+): List[Item] {
   // Fast-path: if no from-instance exists in items, return the original list.
   if not hasFromInstance(items) {
     return items
@@ -2840,6 +2921,763 @@ func collectUnresolvedFromDiags(items: in List[Item]): List[Diagnostic] {
   diags
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §8b. B'-mode: cross-package aspect specialisation (docs/55).
+//
+// A resolved `from`-instance whose template lacks `@inline_template` is
+// B'-mode by default (docs/27 §6.1).  Unlike C-mode, B'-mode never inlines
+// the template body per matched function: it builds ONE specialised,
+// ordinary (non-generic) function per distinct `(TArgs, TRet)` shape shared
+// by every matched function of that shape — across every `from`-instance of
+// the same template in this file — and each matched function gets a thin
+// wrapper that calls the shared specialised function.  This is what buys
+// B'-mode its dedup property over C-mode (which recompiles the body at
+// every use site).
+//
+// Because the specialised function is shared, the ambient `call.<field>`
+// values and `config.<field>` values (which differ per matched function /
+// per `from`-instance) cannot be baked in as prelude-injected literal
+// locals the way `buildCallPrelude` / `buildConfigPrelude` do for C-mode
+// and local aspects — they must be threaded in as real parameters.  Two
+// synthetic record types carry them: `__LyricBModeCallContext` (one, module-
+// wide, covering every `call.<field>` the weaver recognises) and
+// `__LyricBModeCfg_<template>` (one per template, whose fields are exactly
+// the `config.<field>` names the template body references — instance-only
+// config overrides the template body never reads are never part of the
+// shared shape, so they can't make two instances of the same template
+// diverge in cfg-record type).  `proceed` becomes a real
+// `(T1,...,Tn) -> TRet` closure parameter (the strongly-typed lambda ABI,
+// D113) rather than a static call substitution — `rewriteBlock`'s existing
+// `proceed(args) -> callTargetName(p1,...,pn)` substitution already just
+// emits a call to whatever identifier `callTargetName` names, so passing
+// the fixed parameter name `__lyric_proceed` works unchanged; nothing in
+// `rewriteBlock` / `RewriteCtx` needed to change.
+//
+// This is a weaver-native shape cache, not a `Lyric.Mono` call — see
+// Q-bmode-* in docs/55 §6 and the decision-log entry backing this file's
+// B'-mode support for why: `Lyric.Mono`'s specialiser instantiates a
+// genuinely generic (`TVar`-typed) function AST at a call site; an
+// aspect's `around` body is never itself generic-typed AST (it has no type
+// parameters at all — the "genericity" is a weave-time fiction over the
+// matched target's shape).  Reusing Mono here would mean synthesising a
+// fake generic `FunctionDecl` purely to hand it back to a specialiser
+// whose job is instantiating real generics, for no behavioural gain over
+// a direct shape-keyed cache.  The shared cache below gets the identical
+// "one specialised copy per distinct shape" guarantee with less machinery.
+// ─────────────────────────────────────────────────────────────────────────────
+/// Per-template B'-mode info, cached once per template the first time any
+/// of its `from`-instances is woven in this file.
+record BModeTemplateInfo {
+  /// `None` when the template body references no `config.<field>` /
+  /// bare-config-field name; `Some(recordName)` otherwise.
+  cfgRecordName: Option[String]
+  /// The subset of the template's declared `config { }` fields the body
+  /// actually references — exactly the fields the shared cfg record
+  /// carries, and exactly the fields every `from`-instance's call site
+  /// must supply a value for, regardless of what the instance itself
+  /// overrides or adds.
+  referencedCfgFields: List[ConfigField]
+}
+
+/// Canonical name of the one call-context record type synthesised (lazily,
+/// at most once per weave) into the consumer's item list.  Carries every
+/// `call.<field>` the weaver recognises (`elapsed` excepted — that one
+/// stays a per-invocation local exactly as it is for C-mode / local
+/// aspects, since it's genuinely per-call state, not per-shape data).
+func bmodeCallCtxRecordName(): String {
+  "__LyricBModeCallContext"
+}
+
+func bmodeStringField(name: in String): RecordMember {
+  val sp = synSpan()
+  RMField(
+    field = FieldDecl(
+      docComments = newList(),
+      annotations = newList(),
+      visibility = Some(value = VisPub(span = sp)),
+      isMutable = false,
+      name = name,
+      ty = TypeExpr(kind = TRef(path = ModulePath(segments = singleSeg("String"), span = sp)), span = sp),
+      dflt = None,
+      span = sp
+    )
+  )
+}
+
+func bmodeSliceStringField(name: in String): RecordMember {
+  val sp = synSpan()
+  RMField(
+    field = FieldDecl(
+      docComments = newList(),
+      annotations = newList(),
+      visibility = Some(value = VisPub(span = sp)),
+      isMutable = false,
+      name = name,
+      ty = mkSliceTypeExpr("String"),
+      dflt = None,
+      span = sp
+    )
+  )
+}
+
+func bmodeSynthCallCtxRecordItem(): Item {
+  val members: List[RecordMember] = newList()
+  members.add(bmodeStringField("shortName"))
+  members.add(bmodeStringField("qualifiedName"))
+  members.add(bmodeStringField("modulePath"))
+  members.add(bmodeStringField("sourceLocation"))
+  members.add(bmodeSliceStringField("annotations"))
+  members.add(bmodeStringField("aspectName"))
+  val sp = synSpan()
+  val rd = RecordDecl(
+    name = bmodeCallCtxRecordName(),
+    generics = None,
+    whereClause = None,
+    members = members,
+    span = sp
+  )
+  Item(
+    docComments = newList(),
+    annotations = newList(),
+    visibility = Some(value = VisPub(span = sp)),
+    kind = IRecord(decl = rd),
+    span = sp
+  )
+}
+
+func bmodeSynthCfgRecordItem(recordName: in String, fields: in List[ConfigField]): Item {
+  val members: List[RecordMember] = newList()
+  var i = 0
+  while i < fields.count {
+    val f = fields[i]
+    val sp = synSpan()
+    members.add(
+      RMField(
+        field = FieldDecl(
+          docComments = newList(),
+          annotations = newList(),
+          visibility = Some(value = VisPub(span = sp)),
+          isMutable = false,
+          name = f.name,
+          ty = f.ty,
+          dflt = None,
+          span = sp
+        )
+      )
+    )
+    i = i + 1
+  }
+  val sp2 = synSpan()
+  val rd = RecordDecl(name = recordName, generics = None, whereClause = None, members = members, span = sp2)
+  Item(
+    docComments = newList(),
+    annotations = newList(),
+    visibility = Some(value = VisPub(span = sp2)),
+    kind = IRecord(decl = rd),
+    span = sp2
+  )
+}
+
+/// `<paramName>.<field>` member-read expression at a zero span.
+func mkCtxFieldRead(paramName: in String, field: in String): Expr {
+  Expr(kind = EMember(receiver = singleSegPathExpr(paramName), memberName = field), span = synSpan())
+}
+
+/// `<typeName>(<name1> = <expr1>, ...)` record-construction call at a zero
+/// span.  Lyric has no distinct record-literal AST node — construction is
+/// an ordinary `ECall` with named args against the type's own name.
+func mkRecordCtor(typeName: in String, fields: in List[(String, Expr)]): Expr {
+  val args: List[CallArg] = newList()
+  var i = 0
+  while i < fields.count {
+    val (n, v) = fields[i]
+    args.add(CANamed(name = n, value = v, span = synSpan()))
+    i = i + 1
+  }
+  Expr(kind = ECall(fn = singleSegPathExpr(typeName), args = args), span = synSpan())
+}
+
+func singleStmtList(s: in Statement): List[Statement] {
+  val l: List[Statement] = newList()
+  l.add(s)
+  l
+}
+
+/// Mirrors `buildWrapper`'s own `targetReturnsUnit` check (kept as a
+/// separate function rather than factored out of `buildWrapper` to avoid
+/// touching that well-tested C-mode / local-aspect path at all).
+func bmodeIsUnitReturn(ret: in Option[TypeExpr]): Bool {
+  match ret {
+    case None -> true
+    case Some(te) -> {
+      match te.kind {
+        case TUnit -> true
+        case TRef(mp) -> mp.segments.count == 1 and mp.segments[0] == "Unit"
+        case _ -> false
+      }
+    }
+  }
+}
+
+/// Canonicalise a `TypeExpr` into an identifier-safe fragment for shape-key
+/// mangling.  Coverage mirrors `Lyric.ContractMeta.renderTypeExpr` (not
+/// reusable here — it isn't `pub`) but every separator is an underscore
+/// instead of the source-level punctuation, since the result feeds a
+/// synthesised function name rather than re-parseable source.
+func bmodeTypeExprKey(te: in TypeExpr): String {
+  match te.kind {
+    case TUnit -> "Unit"
+    case TNever -> "Never"
+    case TSelf -> "Self"
+    case TRef(path) -> Str.replace(segmentsJoin(path.segments), ".", "_")
+    case TGenericApp(h, args) -> Str.replace(segmentsJoin(h.segments), ".", "_") + "_of_" + bmodeTypeArgListKey(args)
+    case TSlice(elem) -> "slice_" + bmodeTypeExprKey(elem)
+    case TNullable(inner) -> bmodeTypeExprKey(inner) + "_opt"
+    case TParen(inner) -> bmodeTypeExprKey(inner)
+    case TArray(_, elem) -> "array_" + bmodeTypeExprKey(elem)
+    case TTuple(ts) -> "tuple_" + bmodeTypeExprListKey(ts)
+    case TFunction(ps, r) -> "fn_" + bmodeTypeExprListKey(ps) + "_to_" + bmodeTypeExprKey(r)
+    case TRefined(p, _) -> Str.replace(segmentsJoin(p.segments), ".", "_")
+    case TError -> "Unit"
+  }
+}
+
+func bmodeTypeExprListKey(ts: in List[TypeExpr]): String {
+  var s = ""
+  var i = 0
+  while i < ts.count {
+    if i > 0 {
+      s = s + "_"
+    }
+    s = s + bmodeTypeExprKey(ts[i])
+    i = i + 1
+  }
+  s
+}
+
+func bmodeTypeArgListKey(args: in List[TypeArg]): String {
+  var s = ""
+  var i = 0
+  while i < args.count {
+    if i > 0 {
+      s = s + "_"
+    }
+    match args[i] {
+      case TAType(t) -> {
+        s = s + bmodeTypeExprKey(t)
+      }
+      case TAValue(_) -> {
+        s = s + "v"
+      }
+    }
+    i = i + 1
+  }
+  s
+}
+
+/// `(TArgs, TRet)` shape key for a matched function's signature — the
+/// specialisation identity B'-mode dedups on (docs/55 §3.2 point 2).
+/// Q-bmode-001 (docs/55 §6) leaves structural-vs-nominal equality open;
+/// this is nominal (two records with identical field layout but different
+/// names key differently) — the conservative choice until that question
+/// is resolved.
+func bmodeShapeKey(params: in List[Param], ret: in Option[TypeExpr]): String {
+  var s = ""
+  var i = 0
+  while i < params.count {
+    if i > 0 {
+      s = s + "__"
+    }
+    s = s + bmodeTypeExprKey(params[i].ty)
+    i = i + 1
+  }
+  val retStr = match ret { case Some(t) -> bmodeTypeExprKey(t); case None -> "Unit" }
+  if params.count > 0 {
+    s = s + "___" + retStr
+  } else {
+    s = retStr
+  }
+  s
+}
+
+/// The template's own identity for specialisation-key / cfg-record-name
+/// purposes: the `from` path exactly as the consumer wrote it.  Not fully
+/// qualified/canonicalised — two `from`-instances that name the same
+/// template with different spellings (e.g. one qualified, one relying on
+/// same-package shorthand) key separately today.  Acceptable for a first
+/// cut (tracked as part of Q-bmode-001); it only costs a missed dedup
+/// opportunity, never incorrect behaviour.
+func bmodeTemplateKey(fromPath: in ModulePath): String {
+  resolveFromPath(fromPath)
+}
+
+/// Subset of `aspect.config` whose name the template body references,
+/// either as `config.<name>` or bare `<name>` (mirrors the pre-scan
+/// `buildConfigPrelude` performs for C-mode / local aspects).  This list is
+/// the cfg record's field schema — instance-only config additions (config
+/// fields an instance's `config { }` block adds that the template never
+/// declared) are never included, so every `from`-instance of the same
+/// template produces the identical cfg-record shape regardless of what
+/// each instance overrides.
+func computeReferencedConfigFields(aspect: in AspectDecl, body: in Block): List[ConfigField] {
+  val refs: Map[String, Bool] = newMap()
+  collectMemberRefsBlock(body, "config", refs)
+  val fieldNames: Map[String, Bool] = newMap()
+  var fnI = 0
+  while fnI < aspect.config.count {
+    if not fieldNames.containsKey(aspect.config[fnI].name) {
+      fieldNames.add(aspect.config[fnI].name, true)
+    }
+    fnI = fnI + 1
+  }
+  collectBareRefsBlock(body, fieldNames, refs)
+  val result: List[ConfigField] = newList()
+  var i = 0
+  while i < aspect.config.count {
+    if refs.containsKey(aspect.config[i].name) {
+      result.add(aspect.config[i])
+    }
+    i = i + 1
+  }
+  result
+}
+
+/// Look up (or lazily build) the `BModeTemplateInfo` for `templateKey`,
+/// appending the synthesised cfg-record `Item` to `extraItems` (`result`,
+/// from the caller) the first time this template is encountered.
+func bmodeGetOrBuildTemplateInfo(
+  cache: in Map[String, BModeTemplateInfo],
+  templateKey: in String,
+  aspect: in AspectDecl,
+  extraItems: in List[Item],
+): BModeTemplateInfo {
+  match mapGet(cache, templateKey) {
+    case Some(info) -> info
+    case None -> {
+      val around = match aspect.around {
+        case Some(a) -> a
+        case None -> AspectAround(argsName = "args", retName = None, body = Block(statements = newList(), span = synSpan()), span = synSpan())
+      }
+      val referenced = computeReferencedConfigFields(aspect, around.body)
+      val cfgRecordName: Option[String] = if referenced.count > 0 {
+        Some(value = "__LyricBModeCfg_" + Str.replace(templateKey, ".", "_"))
+      } else {
+        None
+      }
+      match cfgRecordName {
+        case Some(rn) -> extraItems.add(bmodeSynthCfgRecordItem(rn, referenced))
+        case None -> ()
+      }
+      val info = BModeTemplateInfo(cfgRecordName = cfgRecordName, referencedCfgFields = referenced)
+      cache.add(templateKey, info)
+      info
+    }
+  }
+}
+
+/// `call.<field>` prelude for a shared B'-mode specialised function: same
+/// lazy "only materialise what the body reads" shape as `buildCallPrelude`,
+/// but every value (`elapsed` excepted) is read off the `ctxParamName`
+/// parameter instead of baked in as a literal — the specialised function
+/// has no single matched target to bake literals from.
+func buildCallPreludeShared(body: in Block, ctxParamName: in String): (List[Statement], Map[String, Bool]) {
+  val stmts: List[Statement] = newList()
+  val present: Map[String, Bool] = newMap()
+  val refs: Map[String, Bool] = newMap()
+  collectCallRefsBlock(body, refs)
+  if refs.count == 0 {
+    return (stmts, present)
+  }
+  if refs.containsKey("shortName") {
+    stmts.add(mkValStmt("__lyric_call_shortName", None, mkCtxFieldRead(ctxParamName, "shortName")))
+    present.add("shortName", true)
+  }
+  if refs.containsKey("qualifiedName") {
+    stmts.add(mkValStmt("__lyric_call_qualifiedName", None, mkCtxFieldRead(ctxParamName, "qualifiedName")))
+    present.add("qualifiedName", true)
+  }
+  if refs.containsKey("modulePath") {
+    stmts.add(mkValStmt("__lyric_call_modulePath", None, mkCtxFieldRead(ctxParamName, "modulePath")))
+    present.add("modulePath", true)
+  }
+  if refs.containsKey("sourceLocation") {
+    stmts.add(mkValStmt("__lyric_call_sourceLocation", None, mkCtxFieldRead(ctxParamName, "sourceLocation")))
+    present.add("sourceLocation", true)
+  }
+  if refs.containsKey("annotations") {
+    stmts.add(
+      mkValStmt(
+        "__lyric_call_annotations",
+        Some(value = mkSliceTypeExpr("String")),
+        mkCtxFieldRead(ctxParamName, "annotations")
+      )
+    )
+    present.add("annotations", true)
+  }
+  if refs.containsKey("aspect") {
+    stmts.add(mkValStmt("__lyric_call_aspect", None, mkCtxFieldRead(ctxParamName, "aspectName")))
+    present.add("aspect", true)
+  }
+  if refs.containsKey("elapsed") {
+    stmts.add(mkVarStmt("__lyric_call_elapsed", Some(value = mkOptionIntTypeExpr()), singleSegPathExpr("None")))
+    present.add("elapsed", true)
+  }
+  return (stmts, present)
+}
+
+/// `config.<field>` prelude for a shared B'-mode specialised function:
+/// every referenced field is read off `cfgParamName` (no panic-stub branch
+/// — unlike `buildConfigPrelude`, "does this field have a resolved value"
+/// is a per-call-site question here, checked where the cfg record is
+/// constructed, not inside the shared body).
+func buildConfigPreludeShared(
+  aspect: in AspectDecl, body: in Block, cfgParamName: in String
+): (List[Statement], Map[String, Bool]) {
+  val referenced = computeReferencedConfigFields(aspect, body)
+  val stmts: List[Statement] = newList()
+  val materialised: Map[String, Bool] = newMap()
+  var i = 0
+  while i < referenced.count {
+    val f = referenced[i]
+    stmts.add(mkValStmt("__aspect_cfg_" + f.name, Some(value = f.ty), mkCtxFieldRead(cfgParamName, f.name)))
+    materialised.add(f.name, true)
+    i = i + 1
+  }
+  return (stmts, materialised)
+}
+
+/// Build the one specialised, ordinary (non-generic) function shared by
+/// every matched function of shape `(paramTypes, retTy)` for this
+/// template.  Mirrors `buildWrapper`'s body composition (config prelude ++
+/// call prelude ++ rewritten body ++ out-variable lowering) but sources
+/// `call`/`config` from parameters instead of literals, and routes
+/// `proceed(...)` to the `__lyric_proceed` closure parameter instead of a
+/// static call target — `rewriteBlock` needs no changes for either since
+/// both substitutions are already just "reference to a name in scope."
+func buildBModeSpecializedFunction(
+  aspect: in AspectDecl,
+  specName: in String,
+  paramTypes: in List[TypeExpr],
+  retTy: in Option[TypeExpr],
+  targetReturnsUnit: in Bool,
+  cfgRecordName: in Option[String],
+): FunctionDecl {
+  val around = match aspect.around {
+    case Some(a) -> a
+    case None -> AspectAround(argsName = "args", retName = None, body = Block(statements = newList(), span = synSpan()), span = synSpan())
+  }
+
+  val paramNames: List[String] = newList()
+  val params: List[Param] = newList()
+  var pi = 0
+  while pi < paramTypes.count {
+    val pname = "p" + toString(pi)
+    paramNames.add(pname)
+    params.add(
+      Param(
+        mode = PMIn,
+        modeExplicit = false,
+        name = pname,
+        ty = paramTypes[pi],
+        dflt = None,
+        annotations = newList(),
+        span = synSpan()
+      )
+    )
+    pi = pi + 1
+  }
+
+  val (callStmts, callPresent) = buildCallPreludeShared(around.body, "__lyric_callctx")
+  val (cfgStmts, cfgPresent) = buildConfigPreludeShared(aspect, around.body, "__lyric_cfg")
+  val emptyNoDefault: Map[String, Bool] = newMap()
+  val emptyDiags: List[WeaveDiagEntry] = newList()
+
+  val ctx = newRewriteCtx(
+    "__lyric_proceed",
+    paramNames,
+    cfgPresent,
+    emptyNoDefault,
+    callPresent,
+    targetReturnsUnit,
+    false,
+    aspect.name,
+    specName,
+    emptyDiags
+  )
+
+  val rewiredBody = rewriteBlock(ctx, around.body)
+
+  val assignsRet = match around.retName {
+    case Some(retVar) -> blockAssignsToName(rewiredBody, retVar)
+    case None -> false
+  }
+  val effectiveBody = match around.retName {
+    case Some(retVar) -> {
+      if assignsRet and targetReturnsUnit {
+        stripRetAssignments(rewiredBody, retVar)
+      } else {
+        rewiredBody
+      }
+    }
+    case None -> rewiredBody
+  }
+
+  val finalStmts: List[Statement] = newList()
+  var i = 0
+  while i < cfgStmts.count {
+    finalStmts.add(cfgStmts[i])
+    i = i + 1
+  }
+  i = 0
+  while i < callStmts.count {
+    finalStmts.add(callStmts[i])
+    i = i + 1
+  }
+  i = 0
+  while i < effectiveBody.statements.count {
+    finalStmts.add(effectiveBody.statements[i])
+    i = i + 1
+  }
+
+  val loweredStmts = match around.retName {
+    case Some(retVar) -> {
+      if assignsRet and not targetReturnsUnit {
+        val withRet: List[Statement] = newList()
+        withRet.add(mkVarStmtNoInit(retVar, retTy))
+        var ri = 0
+        while ri < finalStmts.count {
+          withRet.add(finalStmts[ri])
+          ri = ri + 1
+        }
+        withRet.add(Statement(kind = SReturn(value = Some(value = singleSegPathExpr(retVar))), span = synSpan()))
+        withRet
+      } else {
+        finalStmts
+      }
+    }
+    case None -> finalStmts
+  }
+  val finalBody = Block(statements = loweredStmts, span = synSpan())
+
+  val retTyOrUnit = match retTy { case Some(t) -> t; case None -> TypeExpr(kind = TUnit, span = synSpan()) }
+  val proceedTy = TypeExpr(kind = TFunction(parameters = paramTypes, retTy = retTyOrUnit), span = synSpan())
+  params.add(
+    Param(
+      mode = PMIn,
+      modeExplicit = false,
+      name = "__lyric_callctx",
+      ty = TypeExpr(
+        kind = TRef(path = ModulePath(segments = singleSeg(bmodeCallCtxRecordName()), span = synSpan())),
+        span = synSpan()
+      ),
+      dflt = None,
+      annotations = newList(),
+      span = synSpan()
+    )
+  )
+  match cfgRecordName {
+    case Some(rn) -> {
+      params.add(
+        Param(
+          mode = PMIn,
+          modeExplicit = false,
+          name = "__lyric_cfg",
+          ty = TypeExpr(kind = TRef(path = ModulePath(segments = singleSeg(rn), span = synSpan())), span = synSpan()),
+          dflt = None,
+          annotations = newList(),
+          span = synSpan()
+        )
+      )
+    }
+    case None -> ()
+  }
+  params.add(
+    Param(
+      mode = PMIn,
+      modeExplicit = false,
+      name = "__lyric_proceed",
+      ty = proceedTy,
+      dflt = None,
+      annotations = newList(),
+      span = synSpan()
+    )
+  )
+
+  FunctionDecl(
+    docComments = newList(),
+    annotations = newList(),
+    visibility = None,
+    isAsync = false,
+    name = specName,
+    generics = None,
+    params = params,
+    ret = retTy,
+    whereClause = None,
+    contracts = newList(),
+    body = Some(value = FBBlock(block = finalBody)),
+    span = synSpan()
+  )
+}
+
+/// Build the thin per-match wrapper that constructs the call-context /
+/// cfg records and a `proceed` closure over `callTarget`, then calls the
+/// shared specialised function `specName`.  Unlike `buildWrapper`, this
+/// wrapper's body never touches `config`/`call`/`args` directly — those
+/// all live inside the (already-built) specialised function.
+func buildBModeCallSite(
+  fn: in FunctionDecl,
+  aspect: in AspectDecl,
+  callTarget: in String,
+  site: in WeaveSite,
+  specName: in String,
+  cfgRecordName: in Option[String],
+  referencedCfgFields: in List[ConfigField],
+  weaveDiags: in List[WeaveDiagEntry],
+): FunctionDecl {
+  val qualified = if site.packagePath.length > 0 { site.packagePath + "." + fn.name } else { fn.name }
+  val annNames: List[String] = newList()
+  var ai = 0
+  while ai < fn.annotations.count {
+    annNames.add(annotationShortName(fn.annotations[ai]))
+    ai = ai + 1
+  }
+  val locText = if site.packagePath.length > 0 {
+    site.packagePath + ":" + toString(fn.span.startPos.line)
+  } else {
+    "<unknown>:" + toString(fn.span.startPos.line)
+  }
+
+  val ctxFields: List[(String, Expr)] = newList()
+  ctxFields.add(("shortName", mkStringLit(fn.name)))
+  ctxFields.add(("qualifiedName", mkStringLit(qualified)))
+  ctxFields.add(("modulePath", mkStringLit(site.packagePath)))
+  ctxFields.add(("sourceLocation", mkStringLit(locText)))
+  ctxFields.add(("annotations", mkStringSliceLit(annNames)))
+  ctxFields.add(("aspectName", mkStringLit(aspect.name)))
+
+  val stmts: List[Statement] = newList()
+  stmts.add(mkValStmt("__lyric_callctx", None, mkRecordCtor(bmodeCallCtxRecordName(), ctxFields)))
+
+  val callArgs: List[CallArg] = newList()
+  var pj = 0
+  while pj < fn.params.count {
+    callArgs.add(CAPositional(expr = singleSegPathExpr(fn.params[pj].name)))
+    pj = pj + 1
+  }
+  callArgs.add(CAPositional(expr = singleSegPathExpr("__lyric_callctx")))
+
+  match cfgRecordName {
+    case Some(rn) -> {
+      val cfgFields: List[(String, Expr)] = newList()
+      var ci = 0
+      while ci < referencedCfgFields.count {
+        val f = referencedCfgFields[ci]
+        val valExpr = match f.default {
+          case Some(e) -> e
+          case None -> {
+            addWeaveDiagOnce(weaveDiags, WDConfigNoDefault, aspect.name, fn.name, f.name, fn.span)
+            mkPanicCall(
+              "config '" + f.name + "' has no default value and runtime env-var resolution is not yet wired (see todo/06 #683)"
+            )
+          }
+        }
+        cfgFields.add((f.name, valExpr))
+        ci = ci + 1
+      }
+      stmts.add(mkValStmt("__lyric_cfg", None, mkRecordCtor(rn, cfgFields)))
+      callArgs.add(CAPositional(expr = singleSegPathExpr("__lyric_cfg")))
+    }
+    case None -> ()
+  }
+
+  val lambdaParams: List[LambdaParam] = newList()
+  val lambdaArgs: List[CallArg] = newList()
+  var lp = 0
+  while lp < fn.params.count {
+    val lname = "q" + toString(lp)
+    lambdaParams.add(LambdaParam(name = lname, ty = Some(value = fn.params[lp].ty), span = synSpan()))
+    lambdaArgs.add(CAPositional(expr = singleSegPathExpr(lname)))
+    lp = lp + 1
+  }
+  val lambdaCallExpr = Expr(kind = ECall(fn = singleSegPathExpr(callTarget), args = lambdaArgs), span = synSpan())
+  val lambdaBody = Block(
+    statements = singleStmtList(Statement(kind = SExpr(expr = lambdaCallExpr), span = synSpan())),
+    span = synSpan()
+  )
+  callArgs.add(
+    CAPositional(expr = Expr(kind = ELambda(lambdaParams = lambdaParams, body = lambdaBody), span = synSpan()))
+  )
+
+  val specCallExpr = Expr(kind = ECall(fn = singleSegPathExpr(specName), args = callArgs), span = synSpan())
+  if bmodeIsUnitReturn(fn.ret) {
+    stmts.add(Statement(kind = SExpr(expr = specCallExpr), span = synSpan()))
+  } else {
+    stmts.add(Statement(kind = SReturn(value = Some(value = specCallExpr)), span = synSpan()))
+  }
+
+  val composed: List[ContractClause] = newList()
+  var cci = 0
+  while cci < aspect.contracts.count {
+    composed.add(aspect.contracts[cci])
+    cci = cci + 1
+  }
+  cci = 0
+  while cci < fn.contracts.count {
+    composed.add(fn.contracts[cci])
+    cci = cci + 1
+  }
+
+  FunctionDecl(
+    docComments = fn.docComments,
+    annotations = newList(),
+    visibility = fn.visibility,
+    isAsync = fn.isAsync,
+    name = fn.name,
+    generics = fn.generics,
+    params = fn.params,
+    ret = fn.ret,
+    whereClause = fn.whereClause,
+    contracts = composed,
+    body = Some(value = FBBlock(block = Block(statements = stmts, span = synSpan()))),
+    span = fn.span
+  )
+}
+
+/// A0046: a `from`-instance resolved to a template that is NOT C-mode
+/// (no `@inline_template`) whose body nonetheless references
+/// `args.<field>` — B'-mode `args` is opaque (docs/27 §6.1.1), so this
+/// would otherwise fall through to a confusing downstream "unknown name
+/// 'args'" type error.  Reuses `aspectTemplateIsCMode`'s exact detector,
+/// inverted, per docs/55 §5 Phase 1.  Weaving still proceeds afterward
+/// (matching the established A0042/A0043/A0044 convention: the early
+/// diagnostic is additive, not a hard stop) so the type-checker's own
+/// position surfaces too.
+func collectBModeArgsFieldDiags(items: in List[Item]): List[Diagnostic] {
+  val diags: List[Diagnostic] = newList()
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IAspect(aDecl) -> {
+        match aDecl.from {
+          case Some(_) -> {
+            if not itemHasInlineTemplate(items[i]) and aspectTemplateIsCMode(aDecl) {
+              val msg = "aspect '" + aDecl.name + "' is B'-mode (no @inline_template) but its template body " +
+                "references args.<field>; B'-mode `args` is opaque (docs/27 §6.1.1). Either mark the " +
+                "library template `@inline_template` to opt into C-mode field access, or remove the " +
+                "args.<field> reference from the template body."
+              diags.add(errorDiagnostic("A0046", msg, items[i].span))
+            }
+          }
+          case None -> ()
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  diags
+}
+
 /// Weave a SourceFile with cross-package aspect template resolution (#3414).
 /// Before running the standard weave, resolves `from`-instance aspects whose
 /// templates are found in `templates` by synthesising concrete `AspectDecl`
@@ -2847,17 +3685,25 @@ func collectUnresolvedFromDiags(items: in List[Item]): List[Diagnostic] {
 /// Unresolved `from` references emit A0045 diagnostics; the standard weave
 /// then drops them (they have no `around` body) so codegen sees only resolved
 /// aspects.
-pub func weaveFileWithDiagsAndTemplates(file: in SourceFile, templates: in Map[String, AspectDecl]): WeaveFileResult {
+pub func weaveFileWithDiagsAndTemplates(
+  file: in SourceFile, templates: in Map[String, CollectedTemplate]
+): WeaveFileResult {
   val file0 = injectWeaveImports(file)
   val pkgPath = packagePathString(file0)
   val resolvedItems = resolveFromInstances(file0.items, templates, pkgPath)
   val unresolvedDiags = collectUnresolvedFromDiags(resolvedItems)
+  val bmodeArgsDiags = collectBModeArgsFieldDiags(resolvedItems)
   val wr = weaveItemsCore(resolvedItems, pkgPath)
   val allDiags: List[Diagnostic] = newList()
   var ui = 0
   while ui < unresolvedDiags.count {
     allDiags.add(unresolvedDiags[ui])
     ui = ui + 1
+  }
+  var bi = 0
+  while bi < bmodeArgsDiags.count {
+    allDiags.add(bmodeArgsDiags[bi])
+    bi = bi + 1
   }
   var di = 0
   while di < wr.diagnostics.count {

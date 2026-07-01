@@ -265,6 +265,15 @@ pub record ContractDecl {
   body: Option[String]
   /// Structured parameters: (name, type-string).
   params: List[ContractParam]
+  /// `kind = "aspect"` only: `true` when this is a B'-mode library
+  /// template (`pub aspect` without `@inline_template`) — the consumer
+  /// routes it through `Lyric.Weaver`'s shape-specialisation path
+  /// instead of the C-mode `args.<field>` inline-rewrite path
+  /// (docs/55). `false` for every other decl kind and for C-mode
+  /// aspects. Additive field (format v3, no version bump); absent in
+  /// JSON defaults to `false` so pre-existing contracts (which only
+  /// ever embedded C-mode aspect bodies) parse as C-mode.
+  bmode: Bool
 }
 
 /// One direct dependency in a contract's dependency manifest (format v3+).
@@ -409,7 +418,8 @@ func parseDecl(el: in JsonElement): ContractDecl {
     requiresClauses = getStrArray(el, "requires"),
     ensuresClauses = getStrArray(el, "ensures"),
     body = getOptStr(el, "body"),
-    params = getParams(el)
+    params = getParams(el),
+    bmode = getBool(el, "bmode")
   )
 }
 
@@ -627,6 +637,9 @@ func renderDecl(d: in ContractDecl, formatVersion: in Int): String {
   }
   if d.params.count > 0 {
     sb = sb + ",\"params\":" + renderParams(d.params)
+  }
+  if d.bmode {
+    sb = sb + ",\"bmode\":true"
   }
   sb + "}"
 }
@@ -1150,11 +1163,7 @@ func reprForConfigFields(fs: in List[ConfigField]): String {
 // aspect's predicates between versions (tracked in the follow-up work
 // noted in docs/27 §6.2).
 func reprForAspect(decl: in AspectDecl): String {
-  val cfgStr = if decl.config.count > 0 {
-    " config { " + reprForConfigFields(decl.config) + " }"
-  } else {
-    ""
-  }
+  val cfgStr = if decl.config.count > 0 { " config { " + reprForConfigFields(decl.config) + " }" } else { "" }
   val argsStr = match decl.around { case Some(a) -> a.argsName; case None -> "call" }
   val retStr = match decl.around {
     case Some(a) -> match a.retName { case Some(r) -> " -> " + r; case None -> "" }
@@ -1198,7 +1207,12 @@ func aspectBodyText(decl: in AspectDecl): Option[String] {
 
 // Construct a `ContractDecl` carrying a `body` (used for `@inline_template`
 // aspects; every other decl kind passes `body = None` via `basicDecl`).
-func aspectDecl(name: in String, repr: in String, vis: in Option[Visibility], body: in Option[String]): ContractDecl {
+// `bmode` is `true` for a B'-mode template (`pub aspect` without
+// `@inline_template`); `false` for a C-mode (`@inline_template`) aspect
+// (docs/55).
+func aspectDecl(
+  name: in String, repr: in String, vis: in Option[Visibility], body: in Option[String], bmode: in Bool
+): ContractDecl {
   ContractDecl(
     kind = "aspect",
     name = name,
@@ -1209,7 +1223,8 @@ func aspectDecl(name: in String, repr: in String, vis: in Option[Visibility], bo
     requiresClauses = newList(),
     ensuresClauses = newList(),
     body = body,
-    params = newList()
+    params = newList(),
+    bmode = bmode
   )
 }
 
@@ -1236,7 +1251,8 @@ func basicDecl(kind: in String, name: in String, repr: in String, vis: in Option
     requiresClauses = newList(),
     ensuresClauses = newList(),
     body = None,
-    params = newList()
+    params = newList(),
+    bmode = false
   )
 }
 
@@ -1412,12 +1428,22 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
         // from the producer's contract; carry it here.
         case IConst(c) -> decls.add(basicDecl("const", c.name, reprForConst(c), it.visibility))
         case IVal(v) -> match reprForInlinableVal(v) { case Some(repr) -> decls.add(basicDecl("val", bindingName(v.pattern), repr, it.visibility)); case None -> () }
-        // Only `@inline_template` aspects carry their advice into the
-        // contract — see `hasInlineTemplateAnnotation`.  A regular aspect
-        // is woven where it's declared and never needs redistribution.
+        // Every `pub aspect` that carries an `around` body (i.e. a
+        // library template, not a bare `matches:`-only consumer instance)
+        // carries its advice into the contract, tagged C-mode
+        // (`@inline_template`, see `hasInlineTemplateAnnotation`) or
+        // B'-mode (docs/55) otherwise — a consuming package's
+        // `from`-instance needs the body either way to resolve the
+        // template from a restored dependency.  A non-`pub`/instance-only
+        // aspect (`decl.around = None`) is woven where it's declared and
+        // never needs redistribution.
         case IAspect(ad) -> {
-          if hasInlineTemplateAnnotation(it.annotations) {
-            decls.add(aspectDecl(ad.name, reprForAspect(ad), it.visibility, aspectBodyText(ad)))
+          match ad.around {
+            case Some(_) -> {
+              val isCMode = hasInlineTemplateAnnotation(it.annotations)
+              decls.add(aspectDecl(ad.name, reprForAspect(ad), it.visibility, aspectBodyText(ad), not isCMode))
+            }
+            case None -> ()
           }
         }
         case _ -> ()

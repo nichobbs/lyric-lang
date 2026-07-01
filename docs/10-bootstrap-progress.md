@@ -25795,3 +25795,49 @@ fixture with quote-bearing string literals; asserts the body survives `contractT
 gets built into the library DLL). Wiring `Lyric.Weaver` to *consume* this body from a restored
 dependency's contract metadata when resolving a consumer's `aspect X from Lib.Aspects.Y { ... }`
 is the other half of #3543 defect 4 and is tracked there, not here.
+
+### D-progress-538 — B′-mode cross-package aspect specialisation (D114 / docs/55)
+
+Ships the *implementation* half of Q-aspectlib-001's "hybrid B + C" library-aspect ABI: a `pub
+aspect` without `@inline_template` (B-mode) previously had no dedup mechanism at all — a resolved
+`from`-instance inlined the template body per matched function exactly like C-mode, just without
+the `args.<field>` rewrite, defeating B-mode's entire "avoid per-use-site recompilation" purpose.
+B′-mode (docs/55's monomorphisation-based variant, since true reified generic methods aren't
+buildable — `docs/43` Q-GEN-002) fixes this:
+
+- **Contract metadata** (`contract_meta.l`, `contract_meta_emit.l`): `ContractDecl` gains an
+  additive `bmode: Bool` field. `buildContractFromFile` now embeds every `pub aspect` with an
+  `around` body (previously only `@inline_template` ones), tagging B′-mode vs C-mode.
+- **Weaver ground truth** (`weaver.l`): `collectAspectTemplates`'s value type changes from bare
+  `AspectDecl` to `CollectedTemplate { decl, isInlineTemplate }`, replacing a pre-existing
+  heuristic (`resolveFromInstanceItem` used to guess "was this `@inline_template`?" from whether
+  the body reads `args.<field>`, silently auto-promoting to C-mode). The heuristic is now reserved
+  for a new diagnostic, **A0046**: a non-`@inline_template` template that reads `args.<field>`
+  fails closed instead of being silently reclassified.
+- **Shape-keyed specialisation**: a resolved `from`-instance whose template is not C-mode routes
+  through a new weaver-native shape cache instead of per-match inlining — one specialised function
+  per distinct `(TArgs, TRet)` shape, shared across every match and every `from`-instance of that
+  template in a file. `call.<field>` / `config.<field>` values (baked as literals for C-mode/local
+  aspects) become real parameters (`__LyricBModeCallContext`, per-template
+  `__LyricBModeCfg_<template>`); `proceed` becomes a real closure parameter (the strongly-typed
+  lambda ABI, D113) instead of a static call substitution — `rewriteBlock` needed no changes, since
+  its `proceed(args) -> callTargetName(...)` substitution already just calls whatever identifier is
+  in scope.
+- **Not routed through `Lyric.Mono`**: an aspect body is never itself generic-typed AST, so Mono's
+  `TVar`-substitution engine doesn't fit; the shape cache is weaver-native (see D114 for the full
+  rationale).
+- **No new codegen**: Phase 2's specialised functions are ordinary `FunctionDecl` items; both MSIL
+  and JVM backends already compile lambdas, record construction, and plain calls.
+- **No ecosystem code changes**: `lyric-logging`'s `CallLogging` / `SlowCallAlert` were already
+  written B′-mode-shaped (no `@inline_template`, no `args.<field>` access) — they simply had no
+  dedup path to route through until now.
+
+**Tests.** `weaver_self_test.l` (38/38, six new B′-mode cases), `contract_meta_self_test.l` (39/39,
+including the new `bmode`-field tests — `testBuildNonTemplateAspectOmitted` renamed
+`testBuildPrivateAspectOmitted` plus a new `testBuildBModeAspectIncluded`), `aspect_weave_self_test.l`
+(7/7, no regression), `restored_packages_self_test.l` (15/15). Verified via both a stage-1 mint
+build (F#-seed compiling the whole `lyric-compiler/lyric/` + stdlib tree) and a stage-2 self-host
+build ("true builds true").
+
+**Related:** D114, docs/55, docs/27 §6.1, docs/43 Q-GEN-002, D-progress-537 (C-mode's producer-side
+predecessor to this).

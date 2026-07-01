@@ -255,7 +255,6 @@ record ParsedUserPkg {
   file: SourceFile
 }
 
-
 /// Compile a list of packages into ONE bundled .NET PE DLL using the
 /// self-hosted MSIL pipeline (#1183, Phase 1 — independent-package bundle).
 ///
@@ -731,7 +730,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // are collected; same-package private aspects are intentionally excluded
   // (#3414 / D050).  The accumulation is a direct `dest.add` walk — no
   // Map-iteration primitives needed.
-  val allTemplates: Map[String, AspectDecl] = newMap()
+  val allTemplates: Map[String, CollectedTemplate] = newMap()
   var tpi = 0
   while tpi < perPkgFiles.count {
     Weaver.collectAspectTemplates(perPkgFiles[tpi].items, perPkgNames[tpi], allTemplates)
