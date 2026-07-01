@@ -32,6 +32,29 @@ lyric --version
 
 The examples in this book use `lyric` as the command name throughout.
 
+### Upgrading the compiler
+
+Once installed, the compiler can easily upgrade itself to the latest released version (or a specific version) using the `lyric upgrade` subcommand:
+
+```sh
+lyric upgrade
+```
+
+By default, the command auto-detects how `lyric` was installed (via `.NET Global Tool` or as a standalone binary) and updates it accordingly.
+
+To force a specific upgrade channel or target a specific version, use:
+
+```sh
+# Upgrade via NuGet global tool
+lyric upgrade --nuget
+
+# Upgrade standalone installation via the GitHub Releases script
+lyric upgrade --github --version 0.4.6
+```
+
+You can also use `--dry-run` to preview the exact upgrade commands that would be run.
+
+
 ## Hello, world
 
 Save this as `hello.l`:

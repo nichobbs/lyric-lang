@@ -10,6 +10,10 @@ import Std.Process as Process
 import Std.Environment as Environment
 import Std.Errors
 import Std.ProcessCapture as ProcessCapture
+import Std.Uuid as Uuid
+import Std.Encoding as Encoding
+import Std.Hash as Hash
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §11i. Upgrade command — self-upgrade Lyric compiler
@@ -137,13 +141,21 @@ func runNugetUpgrade(version: in Option[String], isDryRun: in Bool): Int {
 }
 
 func runGithubUpgrade(installDir: in String, version: in Option[String], isDryRun: in Bool): Int {
+  val ref = match version {
+    case Some(v) -> {
+      if Str.startsWith(v, "v") then v else "v" + v
+    }
+    case None -> "main"
+  }
+  val scriptUrl = "https://raw.githubusercontent.com/nichobbs/lyric-lang/" + ref + "/scripts/install.sh"
+
   // Download the install.sh script
   val curlArgs: List[String] = newList()
   curlArgs.add("-fsSL")
-  curlArgs.add("https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/install.sh")
+  curlArgs.add(scriptUrl)
 
   if isDryRun {
-    Console.println("dry-run: would fetch install.sh from: https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/install.sh")
+    Console.println("dry-run: would fetch install.sh from: " + scriptUrl)
     val printArgs: List[String] = newList()
     printArgs.add("--dir")
     printArgs.add(installDir)
@@ -159,7 +171,7 @@ func runGithubUpgrade(installDir: in String, version: in Option[String], isDryRu
     return 0
   }
 
-  Console.println("Retrieving installation script from GitHub...")
+  Console.println("Retrieving installation script from GitHub (" + scriptUrl + ")...")
   var scriptContent = ProcessCapture.runCapture("curl", curlArgs, "")
   if Str.isEmpty(scriptContent) {
     // Try wget
@@ -167,7 +179,7 @@ func runGithubUpgrade(installDir: in String, version: in Option[String], isDryRu
     wgetArgs.add("-q")
     wgetArgs.add("-O")
     wgetArgs.add("-")
-    wgetArgs.add("https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/install.sh")
+    wgetArgs.add(scriptUrl)
     scriptContent = ProcessCapture.runCapture("wget", wgetArgs, "")
   }
 
@@ -176,9 +188,21 @@ func runGithubUpgrade(installDir: in String, version: in Option[String], isDryRu
     return 1
   }
 
-  // Create temporary directory path
+  // Verify downloaded script hash matches expected stable install.sh hash
+  val expectedHash = "675DF2DAAA3BD3D0B86F6E3345099CFADA9FDA3BCD49EAC97358CFFB0EF7FD27"
+  val scriptBytes = Encoding.encodeUtf8(scriptContent)
+  val actualHash = Hash.sha256OfBytes(scriptBytes)
+  if actualHash != expectedHash {
+    printErr("upgrade: installation script integrity check failed!")
+    printErr("Expected SHA-256: " + expectedHash)
+    printErr("Actual SHA-256:   " + actualHash)
+    return 1
+  }
+
+  // Create temporary directory path with unique UUID suffix to prevent symlink/TOCTOU attacks
   val tempDir = Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", "/tmp"))
-  val tempFile = Path.join(tempDir, "lyric-install.sh")
+  val uuid = Uuid.uuidToString(Uuid.newUuid())
+  val tempFile = Path.join(tempDir, "lyric-install-" + uuid + ".sh")
 
   match File.writeText(tempFile, scriptContent) {
     case Ok(_) -> ()
@@ -219,3 +243,4 @@ func runGithubUpgrade(installDir: in String, version: in Option[String], isDryRu
 
   code
 }
+
