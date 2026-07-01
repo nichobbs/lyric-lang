@@ -1,5 +1,8 @@
 # Strongly-Typed Lambda ABI (Epic #1877)
 
+**Status:** Shipped — D113. Verified by `closure_zero_overhead_self_test.l`
+(16 cases, MSIL + JVM parity). Implements `docs/52-strongly-typed-lambdas-proposal.md`.
+
 Implement a strongly-typed MSIL lambda ABI to replace the interim uniform `Func<object, ..., object>` ABI, fulfilling Epic #1877. This plan implements Option 2A: synthesizing custom MSIL `.class` types for closure environments, completely eliminating primitive boxing and `object[]` arrays.
 
 ## User Review Required
