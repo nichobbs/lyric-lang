@@ -34,7 +34,7 @@ extern type TimeZone = "System.TimeZoneInfo"
 // =====================================================================
 // Construction.
 // =====================================================================
-@externTarget("System.DateTime.UtcNow")
+@externTarget("System.DateTime.get_UtcNow")
 pub func hostNow(): Instant = ()
 
 @externTarget("System.TimeSpan.Zero")

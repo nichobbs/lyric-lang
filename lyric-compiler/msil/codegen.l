@@ -1197,6 +1197,7 @@ pub func newCodegenCtx(
       buildInstanceMethodSig(strIndexOfPs, MInt)
     )
 
+
   val strLastIndexOfPs: List[MsilType] = newList()
   strLastIndexOfPs.add(MString)
   val tokStringLastIndexOf = 0x0A000000 +
@@ -3696,7 +3697,14 @@ func emitCompoundCombineMsil(
   } else {
     lowerExprMsil(cctx, fctx, insns, value)
     match assignOpArithInsnMsil(op) {
-      case Some(arith) -> insns.add(arith)
+      case Some(arith) -> {
+        val concreteArith = match arith {
+          case MDiv -> match curTy { case MByte -> MDivUn; case _ -> MDiv }
+          case MRem -> match curTy { case MByte -> MRemUn; case _ -> MRem }
+          case other -> other
+        }
+        insns.add(concreteArith)
+      }
       case None -> panic("Msil.Codegen: unhandled compound-assignment op in emitCompoundCombineMsil")
     }
   }
@@ -3722,7 +3730,14 @@ func emitCompoundCombineSlotMsil(
     insns.add(MCall(methodToken = cctx.tokConcat2))
   } else {
     match assignOpArithInsnMsil(op) {
-      case Some(arith) -> insns.add(arith)
+      case Some(arith) -> {
+        val concreteArith = match arith {
+          case MDiv -> match rTy { case MByte -> MDivUn; case _ -> MDiv }
+          case MRem -> match rTy { case MByte -> MRemUn; case _ -> MRem }
+          case other -> other
+        }
+        insns.add(concreteArith)
+      }
       case None -> panic("Msil.Codegen: unhandled compound-assignment op in emitCompoundCombineSlotMsil")
     }
   }
@@ -6948,6 +6963,10 @@ func lowerBinopMsil(
           insns.add(MDiv)
           MDouble
         }
+        case MByte -> {
+          insns.add(MDivUn)
+          MByte
+        }
         case _ -> {
           insns.add(MDiv)
           MInt
@@ -6973,6 +6992,10 @@ func lowerBinopMsil(
         case MLong -> {
           insns.add(MRem)
           MLong
+        }
+        case MByte -> {
+          insns.add(MRemUn)
+          MByte
         }
         case _ -> {
           insns.add(MRem)
@@ -7464,7 +7487,12 @@ func lowerAssignExprMsil(
                   insns.add(MDup)
                   insns.add(MLdind(ty = elemTy))
                   lowerExprMsil(cctx, fctx, insns, value)
-                  insns.add(arith)
+                  val concreteArith = match arith {
+                    case MDiv -> match elemTy { case MByte -> MDivUn; case _ -> MDiv }
+                    case MRem -> match elemTy { case MByte -> MRemUn; case _ -> MRem }
+                    case other -> other
+                  }
+                  insns.add(concreteArith)
                 }
               }
               insns.add(MStind(ty = elemTy))
@@ -11192,6 +11220,7 @@ func lowerMethodCallMsil(
     lowerCallArgMsil(cctx, fctx, insns, args[0])
     insns.add(MCallvirt(methodToken = cctx.tokStringIndexOf))
     MInt
+
   } else if memberName == "lastIndexOf" and args.count == 1 {
     lowerCallArgMsil(cctx, fctx, insns, args[0])
     insns.add(MCallvirt(methodToken = cctx.tokStringLastIndexOf))
@@ -12636,8 +12665,8 @@ func insnStackDelta(insn: in MInsn): Int {
     case MAdd -> -1
     case MSub -> -1
     case MMul -> -1
-    case MDiv -> -1
-    case MRem -> -1
+    case MDiv | MDivUn -> -1
+    case MRem | MRemUn -> -1
     case MAnd -> -1
     case MOr -> -1
     case MXor -> -1

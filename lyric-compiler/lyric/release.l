@@ -263,9 +263,9 @@ func parseSdkPacksDir(assetsJson: in String): Option[String] {
   match jsonStringField(assetsJson, "runtimeIdentifierGraphPath") {
     case None -> None
     case Some(graphPath) -> {
-      match Str.indexOf(graphPath, "/sdk/") {
+      match Str.lastIndexOf(graphPath, "/sdk/") {
         case Some(idx) -> Some(value = Str.substring(graphPath, 0, idx) + "/packs")
-        case None -> match Str.indexOf(graphPath, "\\sdk\\") {
+        case None -> match Str.lastIndexOf(graphPath, "\\sdk\\") {
           case Some(idx) -> Some(value = Str.substring(graphPath, 0, idx) + "\\packs")
           case None -> None
         }

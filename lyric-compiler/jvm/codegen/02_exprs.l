@@ -522,6 +522,17 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               insns.add(LFdiv)
               JFloat
             }
+            case JByte -> {
+              val rhsSlot = allocSlot(ctx, "__div_rhs_" + freshLabel(ctx), JInt)
+              emitStore(insns, rhsSlot, JInt)
+              insns.add(LIconst(255))
+              insns.add(LIand)
+              emitLoad(insns, rhsSlot, JInt)
+              insns.add(LIconst(255))
+              insns.add(LIand)
+              insns.add(LIdiv)
+              JInt
+            }
             case _ -> {
               insns.add(LIdiv)
               JInt
@@ -544,6 +555,17 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             case JFloat -> {
               insns.add(LFrem)
               JFloat
+            }
+            case JByte -> {
+              val rhsSlot = allocSlot(ctx, "__rem_rhs_" + freshLabel(ctx), JInt)
+              emitStore(insns, rhsSlot, JInt)
+              insns.add(LIconst(255))
+              insns.add(LIand)
+              emitLoad(insns, rhsSlot, JInt)
+              insns.add(LIconst(255))
+              insns.add(LIand)
+              insns.add(LIrem)
+              JInt
             }
             case _ -> {
               insns.add(LIrem)

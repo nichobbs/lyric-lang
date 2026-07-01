@@ -44,7 +44,12 @@ func validateSemver(v: in String): String {
   if first <= 0 {
     return "invalid semver '" + v + "': expected MAJOR.MINOR.PATCH"
   }
-  val second = v.indexOf(".", first + 1)
+  val suffix = v.substring(first + 1)
+  val relSecond = suffix.indexOf(".")
+  if relSecond < 0 {
+    return "invalid semver '" + v + "': expected MAJOR.MINOR.PATCH"
+  }
+  val second = first + 1 + relSecond
   if second <= first + 1 {
     return "invalid semver '" + v + "': expected MAJOR.MINOR.PATCH"
   }

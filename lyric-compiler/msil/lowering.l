@@ -515,7 +515,9 @@ pub union MInsn {
   case MSub
   case MMul
   case MDiv
+  case MDivUn
   case MRem
+  case MRemUn
   case MAnd
   case MOr
   case MXor
@@ -1880,7 +1882,9 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MSub -> emitSub(mb)
     case MMul -> emitMul(mb)
     case MDiv -> emitDiv(mb)
+    case MDivUn -> emitDivUn(mb)
     case MRem -> emitRem(mb)
+    case MRemUn -> emitRemUn(mb)
     case MAnd -> emitAnd(mb)
     case MOr -> emitOr(mb)
     case MXor -> emitXor(mb)

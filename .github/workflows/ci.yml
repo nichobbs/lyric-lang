@@ -486,6 +486,8 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
     steps:
+      - name: Redirect temporary directory to prevent SIGBUS RAM disk exhaustion
+        run: echo "TMPDIR=${{ runner.temp }}" >> $GITHUB_ENV
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
@@ -1599,6 +1601,8 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
     steps:
+      - name: Redirect temporary directory to prevent SIGBUS RAM disk exhaustion
+        run: echo "TMPDIR=${{ runner.temp }}" >> $GITHUB_ENV
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
@@ -2102,6 +2106,13 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/release_self_test.l
 
+      # Drain all earlier background steps before the heavy project self-tests,
+      # which run heavy in-process multi-package builds and need
+      # exclusive access to memory rather than competing with 24+ concurrent
+      # compilation processes.
+      - name: Wait for parallel tests before heavy project self-tests
+        wait-all: true
+
       # MSIL project bridge self-test — exercises the self-hosted multi-package
       # MSIL bridge (Msil.Bridge.compileProjectToMsil /
       # compileProjectToMsilWithFeatures) end-to-end.  Covers Phases 1–3:
@@ -2110,7 +2121,6 @@ jobs:
       # so the Msil.Bridge transitive closure does not overflow the F# bootstrap
       # emitter; stage-1 DLLs provide the compiler-package imports (#2888).
       - name: MSIL project bridge self-test (native lyric test)
-        background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -2124,13 +2134,6 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/msil_project_bridge_self_test.l
-
-      # Drain all earlier background steps before the emitter project self-test,
-      # which runs heavy in-process multi-package builds (emitProject) and needs
-      # exclusive access to memory rather than competing with 24+ concurrent
-      # compilation processes.
-      - name: Wait for parallel tests before emitter project self-test
-        wait-all: true
 
       # Emitter project self-test — exercises the Phase 4 in-process routing in
       # Lyric.Emitter.emitProject (multi-package DOTNET builds).  Covers aliased
@@ -2503,7 +2506,7 @@ jobs:
 
       # On macOS, the lyric binary inside the build-artifacts is a Linux binary (ELF)
       # so we must rebuild the AOT entry-point project (Lyric.Cli.Aot) on macOS.
-      # Rebuilding is extremely fast because all dependencies (the F# compiled DLLs)
+      # Rebuilding is extremely fast because all dependencies (the lyric-compiled DLLs)
       # are already in .bootstrap/stage1/ from the downloaded build-artifacts.
       - name: Rebuild AOT entry-point on macOS
         working-directory: ${{ github.workspace }}
@@ -2558,7 +2561,13 @@ jobs:
         run: |
           set -euo pipefail
           publish_dir="$(mktemp -d)"
-          dotnet publish bootstrap/src/Lyric.Cli.Aot -c Release -r osx-arm64 -o "$publish_dir"
+          arch="$(uname -m)"
+          if [ "$arch" = "x86_64" ]; then
+            rid="osx-x64"
+          else
+            rid="osx-arm64"
+          fi
+          dotnet publish bootstrap/src/Lyric.Cli.Aot -c Release -r "$rid" -o "$publish_dir"
           native_cli="$publish_dir/lyric"
           if [ ! -x "$native_cli" ]; then
             echo "::error::native lyric CLI not produced at $native_cli"
