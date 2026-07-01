@@ -522,7 +522,7 @@ pub record TableLayout {
   blobBase: Int          // file offset of the #Blob heap (-1 if absent)
 }
 
-pub record TypeDefRow {
+pub record MdrTypeDefRow {
   flags: Int
   name: String
   namespaceName: String
@@ -531,7 +531,7 @@ pub record TypeDefRow {
   methodListStart: Int          // 1-based MethodDef row
 }
 
-pub record MethodDefRow {
+pub record MdrMethodDefRow {
   rva: Int
   implFlags: Int
   flags: Int
@@ -540,7 +540,7 @@ pub record MethodDefRow {
   paramListStart: Int          // 1-based Param row
 }
 
-pub record ParamRow {
+pub record MdrParamRow {
   flags: Int
   sequence: Int
   name: String
@@ -806,7 +806,7 @@ pub func blobAt(img: in PeImage, layout: in TableLayout, blobIndex: in Int): sli
 // Read TypeDef row `row` (1-based).  Columns (ECMA §II.22.37):
 // Flags(u32), Name(#String), Namespace(#String), Extends(TypeDefOrRef),
 // FieldList(Field), MethodList(MethodDef).
-pub func readTypeDef(img: in PeImage, layout: in TableLayout, row: in Int): TypeDefRow {
+pub func readTypeDef(img: in PeImage, layout: in TableLayout, row: in Int): MdrTypeDefRow {
   // Row indices are 1-based per ECMA-335 §II.22; row 0 underflows the table.
   if row < 1 {
     panic("Msil.MetadataReader.readTypeDef: row must be >= 1, got " + toString(row))
@@ -824,7 +824,7 @@ pub func readTypeDef(img: in PeImage, layout: in TableLayout, row: in Int): Type
   val fieldL = rdIdx(b, p, layout.fieldIdx)
   p = p + layout.fieldIdx
   val methodL = rdIdx(b, p, layout.methodIdx)
-  TypeDefRow(
+  MdrTypeDefRow(
     flags = flags,
     name = stringAt(img, layout, nameI),
     namespaceName = stringAt(img, layout, nsI),
@@ -839,7 +839,7 @@ pub func readTypeDef(img: in PeImage, layout: in TableLayout, row: in Int): Type
 // TypeRef carries an EMPTY namespace and its ResolutionScope is the enclosing
 // TypeRef (tag 3 of the ResolutionScope coded index), so the full name is
 // `<enclosing>+<name>`.
-pub record TypeRefRow {
+pub record MdrTypeRefRow {
   name: String
   namespaceName: String
   resolutionScope: Int
@@ -847,7 +847,7 @@ pub record TypeRefRow {
 
 // Read TypeRef row `row` (1-based).  Columns: ResolutionScope(coded),
 // Name(#String), Namespace(#String).
-pub func readTypeRef(img: in PeImage, layout: in TableLayout, row: in Int): TypeRefRow {
+pub func readTypeRef(img: in PeImage, layout: in TableLayout, row: in Int): MdrTypeRefRow {
   val b = img.bytes
   val o = layout.dataStart[0x01] + (row - 1) * layout.rowSize[0x01]
   val rs = rdIdx(b, o, layout.resolutionScopeIdx)
@@ -855,7 +855,7 @@ pub func readTypeRef(img: in PeImage, layout: in TableLayout, row: in Int): Type
   val nameI = rdIdx(b, p, layout.stringIdx)
   p = p + layout.stringIdx
   val nsI = rdIdx(b, p, layout.stringIdx)
-  TypeRefRow(name = stringAt(img, layout, nameI), namespaceName = stringAt(img, layout, nsI), resolutionScope = rs)
+  MdrTypeRefRow(name = stringAt(img, layout, nameI), namespaceName = stringAt(img, layout, nsI), resolutionScope = rs)
 }
 
 // A NestedClass row mapping (ECMA §II.22.32).
@@ -964,7 +964,7 @@ pub func resolveTypeDefOrRefName(
 // Read MethodDef row `row` (1-based).  Columns (ECMA §II.22.26):
 // RVA(u32), ImplFlags(u16), Flags(u16), Name(#String), Signature(#Blob),
 // ParamList(Param).
-pub func readMethodDef(img: in PeImage, layout: in TableLayout, row: in Int): MethodDefRow {
+pub func readMethodDef(img: in PeImage, layout: in TableLayout, row: in Int): MdrMethodDefRow {
   // Row indices are 1-based per ECMA-335 §II.22; row 0 underflows the table.
   if row < 1 {
     panic("Msil.MetadataReader.readMethodDef: row must be >= 1, got " + toString(row))
@@ -980,7 +980,7 @@ pub func readMethodDef(img: in PeImage, layout: in TableLayout, row: in Int): Me
   val sigI = rdIdx(b, p, layout.blobIdx)
   p = p + layout.blobIdx
   val paramL = rdIdx(b, p, layout.paramIdx)
-  MethodDefRow(
+  MdrMethodDefRow(
     rva = rva,
     implFlags = implFlags,
     flags = flags,
@@ -992,7 +992,7 @@ pub func readMethodDef(img: in PeImage, layout: in TableLayout, row: in Int): Me
 
 // Read Param row `row` (1-based).  Columns (ECMA §II.22.33):
 // Flags(u16), Sequence(u16), Name(#String).
-pub func readParam(img: in PeImage, layout: in TableLayout, row: in Int): ParamRow {
+pub func readParam(img: in PeImage, layout: in TableLayout, row: in Int): MdrParamRow {
   // Row indices are 1-based per ECMA-335 §II.22; row 0 underflows the table.
   if row < 1 {
     panic("Msil.MetadataReader.readParam: row must be >= 1, got " + toString(row))
@@ -1002,7 +1002,52 @@ pub func readParam(img: in PeImage, layout: in TableLayout, row: in Int): ParamR
   val flags = rdU16(b, o)
   val seq = rdU16(b, o + 2)
   val nameI = rdIdx(b, o + 4, layout.stringIdx)
-  ParamRow(flags = flags, sequence = seq, name = stringAt(img, layout, nameI))
+  MdrParamRow(flags = flags, sequence = seq, name = stringAt(img, layout, nameI))
+}
+
+// An Assembly row (ECMA-335 §II.22.2).
+pub record MdrAssemblyRow {
+  hashAlgId: Int
+  majorVersion: Int
+  minorVersion: Int
+  buildNumber: Int
+  revisionNumber: Int
+  flags: Int
+  name: String
+  culture: String
+}
+
+// Read Assembly row `row` (1-based). Columns:
+// HashAlgId(u32), MajorVersion(u16), MinorVersion(u16), BuildNumber(u16),
+// RevisionNumber(u16), Flags(u32), PublicKey(#Blob), Name(#String), Culture(#String).
+pub func readAssembly(img: in PeImage, layout: in TableLayout, row: in Int): MdrAssemblyRow {
+  if row < 1 {
+    panic("Msil.MetadataReader.readAssembly: row must be >= 1, got " + toString(row))
+  }
+  val b = img.bytes
+  val o = layout.dataStart[0x20] + (row - 1) * layout.rowSize[0x20]
+  val hashAlgId = rdU32(b, o)
+  val major = rdU16(b, o + 4)
+  val minor = rdU16(b, o + 6)
+  val build = rdU16(b, o + 8)
+  val revision = rdU16(b, o + 10)
+  val flags = rdU32(b, o + 12)
+  var p = o + 16
+  val pkI = rdIdx(b, p, layout.blobIdx)
+  p = p + layout.blobIdx
+  val nameI = rdIdx(b, p, layout.stringIdx)
+  p = p + layout.stringIdx
+  val cultureI = rdIdx(b, p, layout.stringIdx)
+  MdrAssemblyRow(
+    hashAlgId = hashAlgId,
+    majorVersion = major,
+    minorVersion = minor,
+    buildNumber = build,
+    revisionNumber = revision,
+    flags = flags,
+    name = stringAt(img, layout, nameI),
+    culture = stringAt(img, layout, cultureI)
+  )
 }
 
 // Inclusive [start, end] 1-based MethodDef range owned by TypeDef `typeRow`,
@@ -3082,4 +3127,34 @@ pub func dllNullaryInstanceInfo(dllPath: in String): InstanceFieldKind {
     case Ok(raw) -> imageNullaryInstanceInfo(raw.toArray())
   }
 }
+
+// A simple container for Assembly version components.
+pub record AssemblyVersion {
+  major: Int
+  minor: Int
+  build: Int
+  revision: Int
+}
+
+// Read the assembly version from the given .NET assembly file path.
+// Returns Some(AssemblyVersion(major, minor, build, revision)) if found, or None.
+pub func readAssemblyVersion(asmPath: in String): Option[AssemblyVersion] {
+  match openResourceImage(asmPath) {
+    case None -> None
+    case Some(ri) -> {
+      if ri.th.rowCounts[0x20] > 0 {
+        val row = readAssembly(ri.img, ri.layout, 1)
+        Some(value = AssemblyVersion(
+          major = row.majorVersion,
+          minor = row.minorVersion,
+          build = row.buildNumber,
+          revision = row.revisionNumber
+        ))
+      } else {
+        None
+      }
+    }
+  }
+}
+
 

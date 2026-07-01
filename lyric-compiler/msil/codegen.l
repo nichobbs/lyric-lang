@@ -30,7 +30,7 @@ package Msil.Codegen
 
 import Std.Core
 import Std.Collections
-import Std.String
+import Std.String as String
 import Lyric.Parser
 import Lyric.Lexer
 import Lyric.RestoredPackages
@@ -41,6 +41,7 @@ import Msil.Ffi
 import Msil.Kernel
 import Msil.MetadataReader as Mdr
 import Std.Console as Console
+import Std.Path as Path
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. CodegenCtx — package-level context with pre-registered external tokens.
@@ -552,8 +553,25 @@ pub func newCodegenCtx(
   major: in Int,
   minor: in Int,
 ): CodegenCtx {
-  val lctx = newLoweringCtx(packageName, major, minor)
-  // After newLoweringCtx:
+  val resolvedAssemblyVersions: Map[String, Mdr.AssemblyVersion] = newMap()
+  var i = 0
+  while i < nugetAssemblyPaths.count {
+    val path = nugetAssemblyPaths[i]
+    val baseName = Path.basename(path)
+    if String.endsWith(baseName, ".dll") {
+      val asmName = String.substring(baseName, 0, baseName.length - 4)
+      match Mdr.readAssemblyVersion(path) {
+        case Some(ver) -> {
+          resolvedAssemblyVersions.add(asmName, ver)
+        }
+        case None -> {}
+      }
+    }
+    i = i + 1
+  }
+
+  val lctx = newLoweringCtxWithVersions(packageName, major, minor, resolvedAssemblyVersions)
+  // After newLoweringCtxWithVersions:
   //   arRuntime  = 1  (System.Runtime AssemblyRef)
   //   trObject   = 1  (System.Object TypeRef)
 

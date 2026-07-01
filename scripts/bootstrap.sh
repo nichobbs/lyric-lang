@@ -84,7 +84,6 @@ MAX_STAGE=2
 SKIP_VERIFY="${SKIP_VERIFY:-0}"
 SKIP_CLI_BUNDLE="${SKIP_CLI_BUNDLE:-0}"
 SKIP_COREREF_REWRITE="${SKIP_COREREF_REWRITE:-0}"
-LYRIC_FORCE_JIT="${LYRIC_FORCE_JIT:-0}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -660,31 +659,13 @@ build_stage2() {
   #    supports `lyric build --release-from-dll`.  Use it here so the stage-2
   #    native binary is produced entirely by the self-hosted Lyric toolchain —
   #    no C# build step is needed.  The binary lands directly in $STAGE2_BIN_DIR.
-  if [[ "$LYRIC_FORCE_JIT" == "1" ]]; then
-    info "  [JIT Mode] Bypassing AOT-linking and creating JIT wrapper at $STAGE2_BIN_DIR/lyric"
-    mkdir -p "$STAGE2_BIN_DIR"
-    if [[ -f "$STAGE2_LIB_DIR/Lyric.Stdlib.runtimeconfig.json" ]]; then
-      cp "$STAGE2_LIB_DIR/Lyric.Stdlib.runtimeconfig.json" "$STAGE2_LIB_DIR/Lyric.Lyric.Cli.runtimeconfig.json"
-      info "  copied runtimeconfig.json for JIT execution"
-    else
-      die "JIT mode requires Lyric.Stdlib.runtimeconfig.json in $STAGE2_LIB_DIR (expected from the stage-2 stdlib build)"
-    fi
-    cat > "$STAGE2_BIN_DIR/lyric" <<'EOF'
-#!/usr/bin/env bash
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LIB_DIR="$(cd "$SCRIPT_DIR/../lib" && pwd)"
-exec dotnet "$LIB_DIR/Lyric.Lyric.Cli.dll" "$@"
-EOF
-    chmod +x "$STAGE2_BIN_DIR/lyric"
-  else
-    info "  AOT-linking the stage-2 binary via lyric build --release-from-dll"
-    mkdir -p "$STAGE2_BIN_DIR"
-    "$AOT_OUT" build --release-from-dll "$STAGE2_LIB_DIR/Lyric.Lyric.Cli.dll" \
-      --extra-refs-dir "$STAGE2_LIB_DIR" -o "$STAGE2_BIN_DIR/lyric" \
-      > "$BUILD_DIR/aot-stage2.log" 2>&1 \
-      || { cat "$BUILD_DIR/aot-stage2.log" >&2
-           die "stage-2 AOT build FAILED — see $BUILD_DIR/aot-stage2.log"; }
-  fi
+  info "  AOT-linking the stage-2 binary via lyric build --release-from-dll"
+  mkdir -p "$STAGE2_BIN_DIR"
+  "$AOT_OUT" build --release-from-dll "$STAGE2_LIB_DIR/Lyric.Lyric.Cli.dll" \
+    --extra-refs-dir "$STAGE2_LIB_DIR" -o "$STAGE2_BIN_DIR/lyric" \
+    > "$BUILD_DIR/aot-stage2.log" 2>&1 \
+    || { cat "$BUILD_DIR/aot-stage2.log" >&2
+         die "stage-2 AOT build FAILED — see $BUILD_DIR/aot-stage2.log"; }
   [[ -x "$STAGE2_BIN_DIR/lyric" ]] \
     || die "stage-2 lyric binary not found at $STAGE2_BIN_DIR/lyric"
 
@@ -741,12 +722,7 @@ stage3() {
     manifest "$s2bin" "$STDLIB_DIR/lyric.full.toml" || rc_manifest=$?
 
   if [[ $rc_manifest -ne 0 ]]; then
-    if [[ $rc_manifest -eq 3 && "$LYRIC_FORCE_JIT" == "1" ]]; then
-      # Lenient in JIT fallback mode
-      :
-    else
-      die "Stage 3: manifest build crashed or has reproducibility diff (exit $rc_manifest)"
-    fi
+    die "Stage 3: manifest reproducibility check failed (exit $rc_manifest). Exit 3 = reproducibility diff."
   fi
 
   local rc_closure=0
@@ -755,12 +731,7 @@ stage3() {
     closure "$s2bin" || rc_closure=$?
 
   if [[ $rc_closure -ne 0 ]]; then
-    if [[ $rc_closure -eq 3 && "$LYRIC_FORCE_JIT" == "1" ]]; then
-      # Lenient in JIT fallback mode
-      :
-    else
-      die "Stage 3: closure build crashed or has reproducibility diff (exit $rc_closure)"
-    fi
+    die "Stage 3: closure reproducibility check failed (exit $rc_closure). Exit 3 = reproducibility diff."
   fi
 
   if [[ $rc_manifest -eq 0 && $rc_closure -eq 0 ]]; then

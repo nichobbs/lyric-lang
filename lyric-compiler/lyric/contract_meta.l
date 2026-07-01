@@ -41,6 +41,7 @@ import Std.String as Str
 import Std.Json
 import Std.Encoding as Encoding
 import Lyric.Lexer
+
 import Lyric.Parser
 import Msil.MetadataReader as Mdr
 import Lyric.CliShell as CliShell
@@ -509,7 +510,7 @@ pub func parseFromJson(json: in String): Option[Contract] {
   // `with _ -> None` clause).
   return try {
     parseAndWalk(json)
-  } catch Bug as _ {
+  } catch Bug {
     None
   }
 }
