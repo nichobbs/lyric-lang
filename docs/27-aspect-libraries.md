@@ -244,6 +244,22 @@ Lyric, verifier reasons over the parametric body once at publish
 and over the call boundary at consumer-side.  This is the right
 default for stable / large-bodied aspects.
 
+**Implementation note (see Q-aspectlib-009 / `docs/55`):** the CLR
+signature above (`static TRet Around<TArgs,TRet>(...)`) reads as a
+single reified generic *method* shared across every consumer — that
+artifact is not buildable today (the self-hosted MSIL backend
+reifies generic *types* only, not generic *methods*; `docs/43`
+Q-GEN-002).  The "per-target × per-use-site monomorphisations land
+in the consumer DLL" sentence directly above is actually describing
+monomorphisation semantics, not a shared-IL artifact — `docs/55`
+formalises this as **B′-mode**: the library ships the parsed
+`around` body via contract metadata, and `Lyric.Mono` (the same
+cross-package monomorphiser D035-era generic functions already use)
+specialises one copy per distinct `(TArgs, TRet)` shape into each
+consumer.  This gets the zero-boxing/type-safety properties described
+above; it does not make the aspect callable from a non-Lyric
+consumer the way a true shared generic method would.
+
 #### 6.1.1 `args` as an anonymous parametric record
 
 Inside a B-mode `pub aspect` body, `args` is an **anonymous
@@ -578,15 +594,18 @@ The whole doc is exploratory; these are the specific holes I want
 poked.
 
 - **Q-aspectlib-001 — Source distribution vs. IL distribution.**
-  ~~Which trade-off is right?~~ **Resolved.** Hybrid B + C.
-  Default is generic-monomorphised IL distribution (option B);
-  library authors opt individual aspects into source-template
-  distribution (option C) via `@inline_template`.  The
-  typed-erased delegate ABI (option A) is rejected outright as
-  incompatible with Lyric's static-safety stance.  Implementation
-  detail: §6 fully spec'd; library DLL carries both generic IL
-  for B-mode aspects *and* embedded source resources for C-mode
-  aspects; consumer's compiler routes per-aspect at use time.
+  ~~Which trade-off is right?~~ **Resolved at the spec level.**
+  Hybrid B + C.  Default is generic-monomorphised IL distribution
+  (option B); library authors opt individual aspects into
+  source-template distribution (option C) via `@inline_template`.
+  The typed-erased delegate ABI (option A) is rejected outright as
+  incompatible with Lyric's static-safety stance.  §6 specs both
+  modes.  **Implementation status (corrected — see
+  Q-aspectlib-009):** only C-mode is actually implemented.  Every
+  library aspect the ecosystem ships today is C-mode; B-mode was
+  never buildable because reified generic *methods* don't exist in
+  the self-hosted MSIL backend.  `docs/55` proposes a
+  monomorphisation-based B-mode variant that doesn't require them.
 - **Q-aspectlib-002 — `pub aspect` without `around`.**
   ~~Should contract-only library aspects need a different syntax
   (`pub aspect_contract`)?~~ **Resolved.** Same syntax — a
@@ -642,6 +661,26 @@ poked.
   Std.Aspects` should print every `pub aspect` with its
   contract clauses, config schema, and a usage example.  Not
   a v1 blocker but worth tracking.
+- **Q-aspectlib-009 — B-mode is spec'd here but was never
+  implemented.**  This doc's §6.1 and Q-aspectlib-001's
+  "Resolved" note both describe B-mode ("a `pub aspect` ships
+  as a generic method... library DLL carries both generic IL
+  for B-mode aspects *and* embedded source resources for
+  C-mode") as if it shipped.  It didn't — every library aspect
+  in the ecosystem today is C-mode (`@inline_template`), because
+  B-mode was never buildable: true reified generic *methods*
+  don't exist in the self-hosted MSIL backend (only generic
+  *types* are reified; see `docs/43` Q-GEN-002).
+  `docs/55-bmode-aspect-libraries-plan.md` proposes a
+  monomorphisation-based "B′-mode" that gets B-mode's
+  type-safety/zero-boxing motivation without needing reified
+  generic methods, and is explicit that it does *not* solve the
+  "consumable from non-Lyric callers" half of B-mode's original
+  motivation (only true reified generics would).
+  `docs/56-row-typed-aspect-args-sketch.md` sketches a
+  row-polymorphic extension (`args.<field>` access without
+  falling back to C-mode) on top of B′-mode.  Neither doc is
+  backed by a decision-log entry yet.
 
 ---
 
