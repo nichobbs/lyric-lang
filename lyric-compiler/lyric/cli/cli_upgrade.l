@@ -90,6 +90,10 @@ pub func cmdUpgrade(argv: in slice[String]): Int {
     }
     return runNugetUpgrade(targetVersion, isDryRun)
   } else {
+    if not isDryRun and isNone(targetVersion) {
+      printErr("upgrade: --version <version> is required when upgrading via GitHub Releases")
+      return 1
+    }
     val installDir = match targetDir {
       case Some(d) -> d
       case None -> appBase
@@ -193,8 +197,11 @@ func runGithubUpgrade(installDir: in String, version: in Option[String], isDryRu
   }
 
   Console.println("Retrieving installation script from GitHub (" + scriptUrl + ")...")
-  val scriptContent = match downloadUrl(scriptUrl) {
-    case Some(content) -> content
+  var scriptContent = ""
+  match downloadUrl(scriptUrl) {
+    case Some(content) -> {
+      scriptContent = content
+    }
     case None -> {
       printErr("upgrade: failed to download the installation script from " + scriptUrl)
       return 1
@@ -217,8 +224,8 @@ func runGithubUpgrade(installDir: in String, version: in Option[String], isDryRu
       }
     }
     case None -> {
-      // Fallback to legacy hardcoded checksum
-      expectedHash = "675DF2DAAA3BD3D0B86F6E3345099CFADA9FDA3BCD49EAC97358CFFB0EF7FD27"
+      printErr("upgrade: failed to download the installation script checksum file from " + sha256Url)
+      return 1
     }
   }
 

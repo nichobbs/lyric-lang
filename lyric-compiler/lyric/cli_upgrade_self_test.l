@@ -52,3 +52,14 @@ test "cli_upgrade: dry-run github custom dir → success" {
   val argv = ["upgrade", "--dry-run", "--github", "--dir", "/tmp"]
   assertEqualInt(Cli.cmdUpgrade(argv), 0, "dry-run github custom dir")
 }
+
+test "cli_upgrade: github upgrade without version and without dry-run → error" {
+  val argv = ["upgrade", "--github"]
+  assertEqualInt(Cli.cmdUpgrade(argv), 1, "missing version for github upgrade")
+}
+
+test "cli_upgrade: default upgrade without version and without dry-run → error" {
+  val argv = ["upgrade"]
+  assertEqualInt(Cli.cmdUpgrade(argv), 1, "missing version for default upgrade")
+}
+
