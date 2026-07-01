@@ -745,7 +745,7 @@ stage3() {
       # Lenient in JIT fallback mode
       :
     else
-      die "Stage 3: manifest build crashed or has reproducibility diff (exit $rc_manifest)"
+      die "Stage 3: manifest reproducibility check failed (exit $rc_manifest). Exit 3 = reproducibility diff; set LYRIC_FORCE_JIT=1 to allow diffs."
     fi
   fi
 
