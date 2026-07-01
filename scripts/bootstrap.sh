@@ -738,8 +738,13 @@ stage3() {
     "$REPO_ROOT/scripts/verify-reproducible-emit.sh" \
     manifest "$s2bin" "$STDLIB_DIR/lyric.full.toml" || rc_manifest=$?
 
-  if [[ $rc_manifest -ne 0 && $rc_manifest -ne 3 ]]; then
-    die "Stage 3: manifest build crashed or failed during compilation (exit $rc_manifest)"
+  if [[ $rc_manifest -ne 0 ]]; then
+    if [[ $rc_manifest -eq 3 && "$LYRIC_FORCE_JIT" == "1" ]]; then
+      # Lenient in JIT fallback mode
+      :
+    else
+      die "Stage 3: manifest build crashed or has reproducibility diff (exit $rc_manifest)"
+    fi
   fi
 
   local rc_closure=0
@@ -747,8 +752,13 @@ stage3() {
     "$REPO_ROOT/scripts/verify-reproducible-emit.sh" \
     closure "$s2bin" || rc_closure=$?
 
-  if [[ $rc_closure -ne 0 && $rc_closure -ne 3 ]]; then
-    die "Stage 3: closure build crashed or failed during compilation (exit $rc_closure)"
+  if [[ $rc_closure -ne 0 ]]; then
+    if [[ $rc_closure -eq 3 && "$LYRIC_FORCE_JIT" == "1" ]]; then
+      # Lenient in JIT fallback mode
+      :
+    else
+      die "Stage 3: closure build crashed or has reproducibility diff (exit $rc_closure)"
+    fi
   fi
 
   if [[ $rc_manifest -eq 0 && $rc_closure -eq 0 ]]; then

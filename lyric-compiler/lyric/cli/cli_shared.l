@@ -215,9 +215,6 @@ func checkSdkVersion(): Int {
     return 0
   }
   val closeQuote = valueStart + relCloseQuote
-  if closeQuote < 0 {
-    return 0
-  }
   val sdkVer = text.substring(valueStart, closeQuote - valueStart)
   if sdkVer == VERSION() {
     return 0

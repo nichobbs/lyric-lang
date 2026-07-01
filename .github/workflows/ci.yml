@@ -2503,7 +2503,7 @@ jobs:
 
       # On macOS, the lyric binary inside the build-artifacts is a Linux binary (ELF)
       # so we must rebuild the AOT entry-point project (Lyric.Cli.Aot) on macOS.
-      # Rebuilding is extremely fast because all dependencies (the F# compiled DLLs)
+      # Rebuilding is extremely fast because all dependencies (the lyric-compiled DLLs)
       # are already in .bootstrap/stage1/ from the downloaded build-artifacts.
       - name: Rebuild AOT entry-point on macOS
         working-directory: ${{ github.workspace }}
@@ -2557,8 +2557,13 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          publish_dir="$(mktemp -d)"
-          dotnet publish bootstrap/src/Lyric.Cli.Aot -c Release -r osx-arm64 -o "$publish_dir"
+          arch="$(uname -m)"
+          if [ "$arch" = "x86_64" ]; then
+            rid="osx-x64"
+          else
+            rid="osx-arm64"
+          fi
+          dotnet publish bootstrap/src/Lyric.Cli.Aot -c Release -r "$rid" -o "$publish_dir"
           native_cli="$publish_dir/lyric"
           if [ ! -x "$native_cli" ]; then
             echo "::error::native lyric CLI not produced at $native_cli"

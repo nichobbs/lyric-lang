@@ -98,6 +98,16 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   match cellElemTy {
                     case JLong -> insns.add(LLdiv)
                     case JDouble -> insns.add(LDdiv)
+                    case JByte -> {
+                      val rhsSlot = allocSlot(ctx, "__cell_rhs_" + freshLabel(ctx), JInt)
+                      emitStore(insns, rhsSlot, JInt)
+                      insns.add(LIconst(255))
+                      insns.add(LIand)
+                      emitLoad(insns, rhsSlot, JInt)
+                      insns.add(LIconst(255))
+                      insns.add(LIand)
+                      insns.add(LIdiv)
+                    }
                     case _ -> insns.add(LIdiv)
                   }
                   val resultSlot = allocSlot(ctx, "__cell_result_" + freshLabel(ctx), cellElemTy)
@@ -114,6 +124,16 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   lowerExpr(ctx, insns, value)
                   match cellElemTy {
                     case JLong -> insns.add(LLrem)
+                    case JByte -> {
+                      val rhsSlot = allocSlot(ctx, "__cell_rhs_" + freshLabel(ctx), JInt)
+                      emitStore(insns, rhsSlot, JInt)
+                      insns.add(LIconst(255))
+                      insns.add(LIand)
+                      emitLoad(insns, rhsSlot, JInt)
+                      insns.add(LIconst(255))
+                      insns.add(LIand)
+                      insns.add(LIrem)
+                    }
                     case _ -> insns.add(LIrem)
                   }
                   val resultSlot = allocSlot(ctx, "__cell_result_" + freshLabel(ctx), cellElemTy)
@@ -169,6 +189,16 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   match ty {
                     case JLong -> insns.add(LLdiv)
                     case JDouble -> insns.add(LDdiv)
+                    case JByte -> {
+                      val rhsSlot = allocSlot(ctx, "__ass_rhs_" + freshLabel(ctx), JInt)
+                      emitStore(insns, rhsSlot, JInt)
+                      insns.add(LIconst(255))
+                      insns.add(LIand)
+                      emitLoad(insns, rhsSlot, JInt)
+                      insns.add(LIconst(255))
+                      insns.add(LIand)
+                      insns.add(LIdiv)
+                    }
                     case _ -> insns.add(LIdiv)
                   }
                   emitStoreLocalWriteThrough(ctx, insns, slot, ty)
@@ -178,6 +208,16 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   lowerExpr(ctx, insns, value)
                   match ty {
                     case JLong -> insns.add(LLrem)
+                    case JByte -> {
+                      val rhsSlot = allocSlot(ctx, "__ass_rhs_" + freshLabel(ctx), JInt)
+                      emitStore(insns, rhsSlot, JInt)
+                      insns.add(LIconst(255))
+                      insns.add(LIand)
+                      emitLoad(insns, rhsSlot, JInt)
+                      insns.add(LIconst(255))
+                      insns.add(LIand)
+                      insns.add(LIrem)
+                    }
                     case _ -> insns.add(LIrem)
                   }
                   emitStoreLocalWriteThrough(ctx, insns, slot, ty)
@@ -209,7 +249,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   insns.add(LGetfield(owner = selfCls, name = name, t = fty))
                   val vTy = lowerExpr(ctx, insns, value)
                   coerceArgTo(insns, vTy, fty)
-                  emitCompoundArith(insns, op, fty)
+                  emitCompoundArith(ctx, insns, op, fty)
                   insns.add(LPutfield(owner = selfCls, name = name, t = fty))
                 }
               }
@@ -250,7 +290,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               insns.add(LGetfield(owner = cls, name = fieldName, t = fty))
               val vTy = lowerExpr(ctx, insns, value)
               coerceArgTo(insns, vTy, fty)
-              emitCompoundArith(insns, op, fty)
+              emitCompoundArith(ctx, insns, op, fty)
               insns.add(LPutfield(owner = cls, name = fieldName, t = fty))
             }
           }
@@ -297,7 +337,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               emitArrayLoad(insns, elem)
               val vTy = lowerExpr(ctx, insns, value)
               coerceArgTo(insns, vTy, elem)
-              emitCompoundArith(insns, op, elem)
+              emitCompoundArith(ctx, insns, op, elem)
               emitArrayStore(insns, elem)
             }
           }
@@ -393,13 +433,43 @@ func emitListSet(insns: in List[LInsn]): Unit {
 
 // Combine the current target value (already on the stack) with the RHS using
 // the compound-assignment operator, for primitive numeric target type `ty`.
-func emitCompoundArith(insns: in List[LInsn], op: in AssignOp, ty: in JvmType): Unit {
+func emitCompoundArith(ctx: in FuncCtx, insns: in List[LInsn], op: in AssignOp, ty: in JvmType): Unit {
   match op {
     case AssPlus -> match ty { case JLong -> insns.add(LLadd); case JFloat -> insns.add(LFadd); case JDouble -> insns.add(LDadd); case _ -> insns.add(LIadd) }
     case AssMinus -> match ty { case JLong -> insns.add(LLsub); case JFloat -> insns.add(LFsub); case JDouble -> insns.add(LDsub); case _ -> insns.add(LIsub) }
     case AssStar -> match ty { case JLong -> insns.add(LLmul); case JFloat -> insns.add(LFmul); case JDouble -> insns.add(LDmul); case _ -> insns.add(LImul) }
-    case AssSlash -> match ty { case JLong -> insns.add(LLdiv); case JFloat -> insns.add(LFdiv); case JDouble -> insns.add(LDdiv); case _ -> insns.add(LIdiv) }
-    case AssPercent -> match ty { case JLong -> insns.add(LLrem); case JFloat -> insns.add(LFrem); case JDouble -> insns.add(LDrem); case _ -> insns.add(LIrem) }
+    case AssSlash -> match ty {
+      case JLong -> insns.add(LLdiv)
+      case JFloat -> insns.add(LFdiv)
+      case JDouble -> insns.add(LDdiv)
+      case JByte -> {
+        val rhsSlot = allocSlot(ctx, "__comp_rhs_" + freshLabel(ctx), JInt)
+        emitStore(insns, rhsSlot, JInt)
+        insns.add(LIconst(255))
+        insns.add(LIand)
+        emitLoad(insns, rhsSlot, JInt)
+        insns.add(LIconst(255))
+        insns.add(LIand)
+        insns.add(LIdiv)
+      }
+      case _ -> insns.add(LIdiv)
+    }
+    case AssPercent -> match ty {
+      case JLong -> insns.add(LLrem)
+      case JFloat -> insns.add(LFrem)
+      case JDouble -> insns.add(LDrem)
+      case JByte -> {
+        val rhsSlot = allocSlot(ctx, "__comp_rhs_" + freshLabel(ctx), JInt)
+        emitStore(insns, rhsSlot, JInt)
+        insns.add(LIconst(255))
+        insns.add(LIand)
+        emitLoad(insns, rhsSlot, JInt)
+        insns.add(LIconst(255))
+        insns.add(LIand)
+        insns.add(LIrem)
+      }
+      case _ -> insns.add(LIrem)
+    }
     case AssEq -> ()
   }
 }
