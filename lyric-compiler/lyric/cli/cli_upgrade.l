@@ -188,15 +188,17 @@ func runGithubUpgrade(installDir: in String, version: in Option[String], isDryRu
     return 1
   }
 
-  // Verify downloaded script hash matches expected stable install.sh hash
-  val expectedHash = "675DF2DAAA3BD3D0B86F6E3345099CFADA9FDA3BCD49EAC97358CFFB0EF7FD27"
-  val scriptBytes = Encoding.encodeUtf8(scriptContent)
-  val actualHash = Hash.sha256OfBytes(scriptBytes)
-  if actualHash != expectedHash {
-    printErr("upgrade: installation script integrity check failed!")
-    printErr("Expected SHA-256: " + expectedHash)
-    printErr("Actual SHA-256:   " + actualHash)
-    return 1
+  // Verify downloaded script hash matches expected stable install.sh hash only for main channel
+  if ref == "main" {
+    val expectedHash = "675DF2DAAA3BD3D0B86F6E3345099CFADA9FDA3BCD49EAC97358CFFB0EF7FD27"
+    val scriptBytes = Encoding.encodeUtf8(scriptContent)
+    val actualHash = Hash.sha256OfBytes(scriptBytes)
+    if actualHash != expectedHash {
+      printErr("upgrade: installation script integrity check failed!")
+      printErr("Expected SHA-256: " + expectedHash)
+      printErr("Actual SHA-256:   " + actualHash)
+      return 1
+    }
   }
 
   // Create temporary directory path with unique UUID suffix to prevent symlink/TOCTOU attacks
