@@ -1005,6 +1005,51 @@ pub func readParam(img: in PeImage, layout: in TableLayout, row: in Int): ParamR
   ParamRow(flags = flags, sequence = seq, name = stringAt(img, layout, nameI))
 }
 
+// An Assembly row (ECMA-335 §II.22.2).
+pub record AssemblyRow {
+  hashAlgId: Int
+  majorVersion: Int
+  minorVersion: Int
+  buildNumber: Int
+  revisionNumber: Int
+  flags: Int
+  name: String
+  culture: String
+}
+
+// Read Assembly row `row` (1-based). Columns:
+// HashAlgId(u32), MajorVersion(u16), MinorVersion(u16), BuildNumber(u16),
+// RevisionNumber(u16), Flags(u32), PublicKey(#Blob), Name(#String), Culture(#String).
+pub func readAssembly(img: in PeImage, layout: in TableLayout, row: in Int): AssemblyRow {
+  if row < 1 {
+    panic("Msil.MetadataReader.readAssembly: row must be >= 1, got " + toString(row))
+  }
+  val b = img.bytes
+  val o = layout.dataStart[0x20] + (row - 1) * layout.rowSize[0x20]
+  val hashAlgId = rdU32(b, o)
+  val major = rdU16(b, o + 4)
+  val minor = rdU16(b, o + 6)
+  val build = rdU16(b, o + 8)
+  val revision = rdU16(b, o + 10)
+  val flags = rdU32(b, o + 12)
+  var p = o + 16
+  val pkI = rdIdx(b, p, layout.blobIdx)
+  p = p + layout.blobIdx
+  val nameI = rdIdx(b, p, layout.stringIdx)
+  p = p + layout.stringIdx
+  val cultureI = rdIdx(b, p, layout.stringIdx)
+  AssemblyRow(
+    hashAlgId = hashAlgId,
+    majorVersion = major,
+    minorVersion = minor,
+    buildNumber = build,
+    revisionNumber = revision,
+    flags = flags,
+    name = stringAt(img, layout, nameI),
+    culture = stringAt(img, layout, cultureI)
+  )
+}
+
 // Inclusive [start, end] 1-based MethodDef range owned by TypeDef `typeRow`,
 // resolved from the run-length method-list ownership (a TypeDef owns the
 // MethodDef rows from its MethodList up to the next TypeDef's MethodList, or
@@ -3080,6 +3125,27 @@ pub func dllNullaryInstanceInfo(dllPath: in String): InstanceFieldKind {
   match File.readBytes(dllPath) {
     case Err(_) -> InstanceFieldKind(hasInstances = false, isClassTyped = false)
     case Ok(raw) -> imageNullaryInstanceInfo(raw.toArray())
+  }
+}
+
+// Read the assembly version from the given .NET assembly file path.
+// Returns Some([major, minor, build, revision]) if found, or None.
+pub func readAssemblyVersion(asmPath: in String): Option[List[Int]] {
+  match openResourceImage(asmPath) {
+    case None -> None
+    case Some(ri) -> {
+      if ri.th.rowCounts[0x20] > 0 {
+        val row = readAssembly(ri.img, ri.layout, 1)
+        val v: List[Int] = newList()
+        v.add(row.majorVersion)
+        v.add(row.minorVersion)
+        v.add(row.buildNumber)
+        v.add(row.revisionNumber)
+        Some(value = v)
+      } else {
+        None
+      }
+    }
   }
 }
 

@@ -36,6 +36,7 @@ import Msil.Assembler
 import Std.Core
 import Std.Collections
 import Std.Math
+import Std.String as Str
 
 // ── MsilType ──────────────────────────────────────────────────────────────────
 // CLI element types supported by this lowering layer.
@@ -1073,6 +1074,15 @@ pub record LoweringCtx {
   // the discover and real passes always agree on tryInto() eligibility.
   allProjFqns: Map[String, Bool]
   allProjFqnKeys: List[String]
+  resolvedAssemblyVersions: Map[String, AssemblyVersion]
+}
+
+// A simple container for Assembly version components.
+pub record AssemblyVersion {
+  major: Int
+  minor: Int
+  build: Int
+  revision: Int
 }
 
 // Build and intern the Microsoft framework public key token blob.
@@ -1095,7 +1105,12 @@ func internMsKeyToken(bh: in BlobHeap): Int {
 // at the bottom of this function); pass `(0, 0)` for the bootstrap-
 // compatible default.  Consumers thread the manifest's `[package].version`
 // through `Msil.Bridge` (see #1364).
-pub func newLoweringCtx(packageName: in String, major: in Int, minor: in Int): LoweringCtx {
+pub func newLoweringCtxWithVersions(
+  packageName: in String,
+  major: in Int,
+  minor: in Int,
+  resolvedAssemblyVersions: in Map[String, AssemblyVersion],
+): LoweringCtx {
   val sh = newStringHeap()
   val bh = newBlobHeap()
   val uh = newUsHeap()
@@ -1126,14 +1141,20 @@ pub func newLoweringCtx(packageName: in String, major: in Int, minor: in Int): L
     TypeDefRow(flags = 0, typeName = sModule, typeNamespace = 0, extends = 0, fieldList = 1, methodList = 1)
   )
 
+  // Find System.Runtime version from resolvedAssemblyVersions, fall back to 10.0.0.0
+  val rtVer = match mapGet(resolvedAssemblyVersions, "System.Runtime") {
+    case Some(ver) -> ver
+    case None -> AssemblyVersion(major = 10, minor = 0, build = 0, revision = 0)
+  }
+
   // AssemblyRef[1]: System.Runtime
   val arRuntime = addAssemblyRef(
     t,
     AssemblyRefRow(
-      majorVersion = 10,
-      minorVersion = 0,
-      buildNumber = 0,
-      revisionNumber = 0,
+      majorVersion = rtVer.major,
+      minorVersion = rtVer.minor,
+      buildNumber = rtVer.build,
+      revisionNumber = rtVer.revision,
       flags = 0,
       publicKeyToken = msKey,
       name = sRuntime,
@@ -1219,9 +1240,16 @@ pub func newLoweringCtx(packageName: in String, major: in Int, minor: in Int): L
     stdCoreResultErr2Row = newList(),
     stdCoreResultRow = newList(),
     allProjFqns = newMap(),
-    allProjFqnKeys = newList()
+    allProjFqnKeys = newList(),
+    resolvedAssemblyVersions = resolvedAssemblyVersions
   )
 }
+
+// Backward-compatible fallback overload that sets resolvedAssemblyVersions to an empty map.
+pub func newLoweringCtx(packageName: in String, major: in Int, minor: in Int): LoweringCtx {
+  newLoweringCtxWithVersions(packageName, major, minor, newMap())
+}
+
 
 // Return the TypeDefOrRef coded index for System.Object.
 pub func objectTypeToken(ctx: in LoweringCtx): Int {
@@ -1329,13 +1357,26 @@ func semverParseDigit(ch: in String): Int {
 // `ctxAddLyricPackageAssemblyRef` below (no public key token).
 pub func ctxAddAssemblyRef(ctx: in LoweringCtx, name: in String, major: in Int, minor: in Int): Int {
   val sName = ctxInternStr(ctx, name)
+  val ver = match mapGet(ctx.resolvedAssemblyVersions, name) {
+    case Some(v) -> v
+    case None -> {
+      if Str.startsWith(name, "System.") {
+        match mapGet(ctx.resolvedAssemblyVersions, "System.Runtime") {
+          case Some(rtV) -> rtV
+          case None -> AssemblyVersion(major = major, minor = minor, build = 0, revision = 0)
+        }
+      } else {
+        AssemblyVersion(major = major, minor = minor, build = 0, revision = 0)
+      }
+    }
+  }
   addAssemblyRef(
     ctx.tables,
     AssemblyRefRow(
-      majorVersion = major,
-      minorVersion = minor,
-      buildNumber = 0,
-      revisionNumber = 0,
+      majorVersion = ver.major,
+      minorVersion = ver.minor,
+      buildNumber = ver.build,
+      revisionNumber = ver.revision,
       flags = 0,
       publicKeyToken = ctx.sMsKey,
       name = sName,
@@ -1384,10 +1425,9 @@ pub func ctxAddTypeRef(ctx: in LoweringCtx, namespaceName: in String, typeName: 
 // describe nested types (e.g. Dictionary`2+KeyCollection).
 pub func ctxAddNestedTypeRef(ctx: in LoweringCtx, outerTypeRefRow: in Int, nestedTypeName: in String): Int {
   val sName = ctxInternStr(ctx, nestedTypeName)
-  val sEmpty = ctxInternStr(ctx, "")
   addTypeRef(
     ctx.tables,
-    TypeRefRow(resolutionScope = rsTypeRef(outerTypeRefRow), typeName = sName, typeNamespace = sEmpty)
+    TypeRefRow(resolutionScope = rsTypeRef(outerTypeRefRow), typeName = sName, typeNamespace = 0)
   )
 }
 

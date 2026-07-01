@@ -40,6 +40,7 @@ import Std.Environment as Environment
 import Std.String as Str
 import Std.Json
 import Std.Encoding as Encoding
+import Std.Console as Console
 import Lyric.Lexer
 import Lyric.Parser
 import Msil.MetadataReader as Mdr
@@ -508,7 +509,8 @@ pub func parseFromJson(json: in String): Option[Contract] {
   // `with _ -> None` clause).
   return try {
     parseAndWalk(json)
-  } catch Bug as _ {
+  } catch Bug as ex {
+    Console.println("DEBUG JSON PARSE FAILED: " + ex.message)
     None
   }
 }
