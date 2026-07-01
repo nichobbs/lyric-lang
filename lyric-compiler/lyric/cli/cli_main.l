@@ -340,6 +340,10 @@ pub func main(argv: in slice[String]): Int {
     return cmdUpdate(argv)
   }
 
+  if cmd == "upgrade" {
+    return cmdUpgrade(argv)
+  }
+
   if cmd == "deps" {
     return cmdDeps(argv)
   }

@@ -19,6 +19,7 @@
 //!   public-api-diff <old.dll> <new.dll>
 //!   restore [--manifest <lyric.toml>]
 //!   update  [--manifest <lyric.toml>]
+//!   upgrade [--nuget | --dotnet-tool] [--github] [--version <version>] [--dir <dir>] [--dry-run]
 //!   deps    [--manifest <lyric.toml>]
 //!   publish [--manifest <lyric.toml>] [--dll <path>] [-o <dir>]
 //!   test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list]
@@ -128,6 +129,8 @@ func usageText(): String {
     "  lyric restore [--manifest <lyric.toml>] [--locked]\n" +
     "  lyric update  [--manifest <lyric.toml>]\n" +
     "                (re-resolve all deps to latest compatible versions and rewrite lyric.lock)\n" +
+    "  lyric upgrade [--nuget | --dotnet-tool] [--github] [--version <version>] [--dir <dir>] [--dry-run]\n" +
+    "                (self-upgrade the lyric CLI to the latest or specific version)\n" +
     "  lyric deps    [--manifest <lyric.toml>]\n" +
     "                (print the resolved dependency tree from lyric.lock)\n" +
     "  lyric add     <name>[@<version>] [--path <dir>] [--git <url> [--tag|--rev|--branch <ref>]]\n" +

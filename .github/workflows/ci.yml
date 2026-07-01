@@ -2082,6 +2082,21 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/cli_suggest_self_test.l
 
+      - name: CLI-upgrade self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping cli-upgrade self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping cli-upgrade self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/cli_upgrade_self_test.l
+
       # CLI project-aware-defaults end-to-end smoke test — exercises
       # findNearestManifest (Lyric.Discovery), the bare-`lyric` build default,
       # and the did-you-mean / --help UX through the real binary (#1968:

@@ -211,8 +211,10 @@ deferred to Phase 3 by design.
 | M5.3 — project-aware CLI: `run`, `fmt`, `lint`, `prove`, `doc`, `test`, `bench` all auto-discover `lyric.toml` when invoked with no source file; `--manifest` override; `fmt` dry-run/`--write` distinction; `run --target dotnet\|jvm` for project mode | **Shipped** (PR #3063) | — |
 | M5.3 — `bench --target jvm`; `fmt --stdin` + multi-file variadic; `lint` project-mode summary + exit-code fix; `test` `@test_module` fallback scan; `check`, `clean`, `update`, `deps` new commands; `bench` double-read optimization | **Shipped** (PR #3102) | — |
 | D109 / Q-dist-007 — `lyric version` command + `checkSdkVersion()` SDK mismatch guard; `sdk-version.json` side-file written by `make lyric`; `[nuget]` allowed in all manifest types (Q-W-001) | **Shipped** (PR #3960) | — |
+| self-upgrade CLI — `lyric upgrade` command supporting NuGet global tool update, raw GitHub Release installer script, target version, custom directory, and dry-run mode | **Shipped** (PR #4569) | — |
 
 ### Phase 2 — type system completion (complete)
+
 
 | Item | Status | Lands in |
 |---|---|---|

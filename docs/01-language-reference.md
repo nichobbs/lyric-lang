@@ -1660,7 +1660,13 @@ A `@bench` function whose signature does not match `func name(): Unit` passes th
 
 `lyric update [--manifest <lyric.toml>]` re-resolves all dependencies from scratch: deletes the existing `lyric.lock` (workspace-root-aware), then runs a full restore to produce a fresh lock with the latest compatible versions. For git dependencies, this fetches the latest revision of the specified branch/tag.
 
+`lyric upgrade [--nuget | --dotnet-tool] [--github] [--version <version>] [--dir <dir>] [--dry-run]` self-upgrades the `lyric` CLI tool itself:
+- **Auto-detection**: If no upgrade channel is specified, auto-detects how `lyric` is running. If it runs as a `.NET Global Tool` (path contains `.store`, `dotnet-tools`, or `.dotnet`), it uses the NuGet channel; otherwise, it downloads and executes the zero-dependency POSIX installation script (`install.sh`) from GitHub Releases.
+- **Forced Channels**: `--nuget` / `--dotnet-tool` forces upgrading via `.NET Global Tool` (`dotnet tool update -g lyric`). `--github` forces upgrading via the raw GitHub Releases installer script.
+- **Options**: `--version <version>` upgrades to a specific target semver version. `--dir <dir>` specifies the target installation directory when upgrading via GitHub Releases. `--dry-run` performs a dry-run and prints the commands that would be executed without making any modifications.
+
 `lyric deps [--manifest <lyric.toml>]` prints the resolved dependency list from `lyric.lock` (one line per package: `<name> [<version>]  [<source>]`). Exits 1 if no lock file exists; run `lyric restore` first.
+
 
 `lyric add <name>[@<version>] [--path <dir>] [--git <url> [--tag|--rev|--branch <ref>]] [--nuget] [--manifest <lyric.toml>] [--no-restore]` adds or updates a dependency in the discovered manifest and then restores (unless `--no-restore`):
 
