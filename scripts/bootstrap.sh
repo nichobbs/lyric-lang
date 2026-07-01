@@ -759,7 +759,7 @@ stage3() {
       # Lenient in JIT fallback mode
       :
     else
-      die "Stage 3: closure build crashed or has reproducibility diff (exit $rc_closure)"
+      die "Stage 3: closure reproducibility check failed (exit $rc_closure). Exit 3 = reproducibility diff; set LYRIC_FORCE_JIT=1 to allow diffs."
     fi
   fi
 
