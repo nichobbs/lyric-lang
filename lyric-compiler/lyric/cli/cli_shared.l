@@ -192,7 +192,7 @@ func printUsage(): Unit {
 
 // Extract the top-level `compiler_version` string field from a parsed
 // sdk-version.json document.  None when the field is absent or not a string.
-func extractCompilerVersionFromYaml(root: in Yaml.YamlValue): Option[String] {
+func extractCompilerVersionFromJsonValue(root: in Yaml.YamlValue): Option[String] {
   match root {
     case Yaml.YMapping(pairs) -> {
       var i = 0
@@ -237,7 +237,7 @@ func checkSdkVersion(): Int {
   // throws on syntactically invalid JSON, #984) — appropriate since this
   // file's shape is not otherwise validated before we read it.
   val root = match Yaml.parseJson(text) { case Err(_) -> return 0; case Ok(v) -> v }
-  val sdkVer = match extractCompilerVersionFromYaml(root) { case None -> return 0; case Some(v) -> v }
+  val sdkVer = match extractCompilerVersionFromJsonValue(root) { case None -> return 0; case Some(v) -> v }
   if sdkVer == VERSION() {
     return 0
   }
