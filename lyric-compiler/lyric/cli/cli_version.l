@@ -120,7 +120,12 @@ pub func replaceVersionInToml(
   val afterHeader = pkgStart + pkgHeader.length
 
   // End of the [package] section: first "\n[" after the header, or EOF.
-  val nextSection = text.indexOf("\n[", afterHeader)
+  // `.indexOf` only has a 1-arg (no start-offset) intrinsic overload, so
+  // search the tail substring and re-offset the result instead of passing
+  // a start position directly.
+  val afterHeaderTail = text.substring(afterHeader, text.length - afterHeader)
+  val nextSectionRel = afterHeaderTail.indexOf("\n[")
+  val nextSection = if nextSectionRel < 0 { -1 } else { nextSectionRel + afterHeader }
   val sectionLen = if nextSection < 0 {
     text.length - afterHeader
   } else {
