@@ -61,6 +61,17 @@ func fromHttpError(httpError: in HttpError, details: in String): DockerError {
   }
 }
 
+/// Parse `urlStr` into a `Std.Http.Url`, wrapping a parse failure as a
+/// `DockerError`. Callers use `resolveDockerUrl(urlStr)?` to collapse the
+/// parse-and-propagate boilerplate that was previously repeated at every
+/// call site.
+func resolveDockerUrl(urlStr: in String): Result[Std.Http.Url, DockerError] {
+  match Std.Http.Url.tryFrom(urlStr) {
+    case Err(e) -> Err(error = fromHttpError(e, ""))
+    case Ok(u) -> Ok(value = u)
+  }
+}
+
 /// Connect to the Docker daemon, honouring DOCKER_HOST then the default
 /// Unix socket.
 pub func makeDockerClient(): DockerClient {
@@ -124,11 +135,7 @@ async func sendAndReadBody(
 
 /// Send a GET request to `urlStr` and return the response body text.
 async func fetchBodyText(client: in DockerClient, urlStr: in String, failMsg: in String): Result[String, DockerError] {
-  val urlResult = Std.Http.Url.tryFrom(urlStr)
-  val url = match urlResult {
-    case Err(e) -> return Err(error = fromHttpError(e, ""))
-    case Ok(u) -> u
-  }
+  val url = resolveDockerUrl(urlStr)?
   await sendAndReadBody(client, Std.Http.request(Std.Http.GET, url), urlStr, failMsg)
 }
 
@@ -416,11 +423,7 @@ async func sendExpectSuccess(
   method: in Std.Http.HttpMethod,
   failMsg: in String,
 ): Result[Unit, DockerError] {
-  val urlResult = Std.Http.Url.tryFrom(urlStr)
-  val url = match urlResult {
-    case Err(e) -> return Err(error = fromHttpError(e, ""))
-    case Ok(u) -> u
-  }
+  val url = resolveDockerUrl(urlStr)?
   val sent = await client.handle.send(Std.Http.request(method, url))
   val response = match sent {
     case Err(e) -> return Err(error = fromHttpError(e, ""))
@@ -449,11 +452,7 @@ pub async func createContainer(
   binds: in slice[String]
 ): Result[String, DockerError] {
   val urlStr = dockerApiBase + "/containers/create"
-  val urlResult = Std.Http.Url.tryFrom(urlStr)
-  val url = match urlResult {
-    case Err(e) -> return Err(error = fromHttpError(e, ""))
-    case Ok(u) -> u
-  }
+  val url = resolveDockerUrl(urlStr)?
   val request = Std.Http.withJsonBody(Std.Http.request(Std.Http.POST, url), createContainerBody(image, env, binds))
   match await sendAndReadBody(client, request, urlStr, "Create container failed") {
     case Ok(body) -> {
@@ -547,11 +546,7 @@ pub async func getContainerLogs(client: in DockerClient, containerId: in String)
     return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
   }
   val urlStr = dockerApiBase + "/containers/" + containerId + "/logs?stdout=true&stderr=true"
-  val urlResult = Std.Http.Url.tryFrom(urlStr)
-  val url = match urlResult {
-    case Err(e) -> return Err(error = fromHttpError(e, ""))
-    case Ok(u) -> u
-  }
+  val url = resolveDockerUrl(urlStr)?
   val bytesResult = await sendAndReadBytes(
     client, Std.Http.request(Std.Http.GET, url), urlStr, "Get container logs failed"
   )
