@@ -78,13 +78,14 @@ func listContains(list: in List[String], value: in String): Bool {
 
 test "resolveNugetAssets: no obj/project.assets.json yields an empty list" {
   val mfDir = freshTempDir("no-assets")
+  defer { cleanup(mfDir) }
   val paths = Cli.resolveNugetAssets(mfDir)
   assertEqualInt(paths.count, 0, "resolveNugetAssets: missing project.assets.json")
-  cleanup(mfDir)
 }
 
 test "resolveNugetAssets: malformed JSON yields an empty list" {
   val mfDir = freshTempDir("malformed")
+  defer { cleanup(mfDir) }
   val objDir = Path.join(mfDir, "obj")
   match File.createDir(objDir) {
     case Ok(_) -> ()
@@ -93,7 +94,6 @@ test "resolveNugetAssets: malformed JSON yields an empty list" {
   writeFileOrPanic(Path.join(objDir, "project.assets.json"), "{ not valid json ][")
   val paths = Cli.resolveNugetAssets(mfDir)
   assertEqualInt(paths.count, 0, "resolveNugetAssets: malformed JSON")
-  cleanup(mfDir)
 }
 
 // Realistic pretty-printed `dotnet restore` output — packagesPath under
@@ -102,7 +102,9 @@ test "resolveNugetAssets: malformed JSON yields an empty list" {
 // be excluded from the result.
 test "resolveNugetAssets: happy path resolves a real runtime DLL and skips non-package entries" {
   val mfDir = freshTempDir("happy-path")
+  defer { cleanup(mfDir) }
   val pkgsDir = freshTempDir("happy-path-pkgs")
+  defer { cleanup(pkgsDir) }
   val objDir = Path.join(mfDir, "obj")
   match File.createDir(objDir) {
     case Ok(_) -> ()
@@ -123,9 +125,6 @@ test "resolveNugetAssets: happy path resolves a real runtime DLL and skips non-p
   val paths = Cli.resolveNugetAssets(mfDir)
   assertEqualInt(paths.count, 1, "resolveNugetAssets: only the package-typed runtime DLL is resolved")
   assertTrue(listContains(paths, dllPath), "resolveNugetAssets: resolved path matches the fixture DLL on disk")
-
-  cleanup(mfDir)
-  cleanup(pkgsDir)
 }
 
 // A `runtime` entry whose DLL was never materialised on disk (declared in
@@ -133,7 +132,9 @@ test "resolveNugetAssets: happy path resolves a real runtime DLL and skips non-p
 // returned as a dangling path.
 test "resolveNugetAssets: runtime entry with no file on disk is skipped" {
   val mfDir = freshTempDir("missing-dll")
+  defer { cleanup(mfDir) }
   val pkgsDir = freshTempDir("missing-dll-pkgs")
+  defer { cleanup(pkgsDir) }
   val objDir = Path.join(mfDir, "obj")
   match File.createDir(objDir) {
     case Ok(_) -> ()
@@ -150,13 +151,11 @@ test "resolveNugetAssets: runtime entry with no file on disk is skipped" {
 
   val paths = Cli.resolveNugetAssets(mfDir)
   assertEqualInt(paths.count, 0, "resolveNugetAssets: DLL declared but absent on disk yields no paths")
-
-  cleanup(mfDir)
-  cleanup(pkgsDir)
 }
 
 test "resolveNugetAssets: empty targets yields an empty list" {
   val mfDir = freshTempDir("empty-targets")
+  defer { cleanup(mfDir) }
   val objDir = Path.join(mfDir, "obj")
   match File.createDir(objDir) {
     case Ok(_) -> ()
@@ -165,5 +164,4 @@ test "resolveNugetAssets: empty targets yields an empty list" {
   writeFileOrPanic(Path.join(objDir, "project.assets.json"), "{\n  \"targets\": {},\n  \"project\": {}\n}\n")
   val paths = Cli.resolveNugetAssets(mfDir)
   assertEqualInt(paths.count, 0, "resolveNugetAssets: no targets")
-  cleanup(mfDir)
 }

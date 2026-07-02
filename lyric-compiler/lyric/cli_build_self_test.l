@@ -162,6 +162,7 @@ func writeFileOrPanic(path: in String, content: in String): Unit {
 
 test "buildOneNative: a runnable program (declares main) colocates Lyric.Stdlib.dll beside the output" {
   val dir = freshTempDir("exe")
+  defer { cleanup(dir) }
   val srcPath = Path.join(dir, "hello.l")
   writeFileOrPanic(srcPath, "package ExeColocationFixture\n\nfunc main(): Unit {\n  println(1)\n}\n")
   val outPath = Path.join(dir, "hello.dll")
@@ -173,12 +174,11 @@ test "buildOneNative: a runnable program (declares main) colocates Lyric.Stdlib.
     File.fileExists(Path.join(dir, "Lyric.Stdlib.dll")),
     "buildOneNative: Lyric.Stdlib.dll is colocated beside a runnable program's output"
   )
-
-  cleanup(dir)
 }
 
 test "buildOneNative: a library (no main) does NOT colocate Lyric.Stdlib.dll beside the output" {
   val dir = freshTempDir("lib")
+  defer { cleanup(dir) }
   val srcPath = Path.join(dir, "lib.l")
   writeFileOrPanic(srcPath, "package LibColocationFixture\n\npub func helper(): Int {\n  1\n}\n")
   val outPath = Path.join(dir, "lib.dll")
@@ -190,6 +190,4 @@ test "buildOneNative: a library (no main) does NOT colocate Lyric.Stdlib.dll bes
     not File.fileExists(Path.join(dir, "Lyric.Stdlib.dll")),
     "buildOneNative: a library build must not colocate Lyric.Stdlib.dll (would clobber a stdlib self-build)"
   )
-
-  cleanup(dir)
 }
