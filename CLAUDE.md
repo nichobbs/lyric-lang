@@ -571,6 +571,15 @@ hand-format around a refusal**, and never reintroduce an ad-hoc
 formatter (the F# bootstrap formatter that stripped `//` comments was
 removed). Do not use any other formatter on `.l` files.
 
+**Sandbox exception:** a session that cannot build `./bin/lyric` from
+source (network-policy-blocked release download, no working F#
+mint-fallback) has only the published NuGet `lyric` global tool available,
+whose `lyric fmt` has been observed to diverge from `main`'s canonical
+style for at least one file. `docs/03-decision-log.md` D-progress-543
+documents the verified trigger, the interim hand-formatting substitute,
+and the three conditions that must hold before it applies — read that
+entry before skipping or hand-rolling formatting in this situation.
+
 ### Branches
 
 The user assigns the working branch via the session prompt
