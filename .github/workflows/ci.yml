@@ -4626,15 +4626,21 @@ jobs:
             exit 1
           fi
           # strings(1) over the raw PE bytes is a heuristic, not a structural
-          # metadata check -- but grepping a fully-qualified public type name
-          # (rather than just the bare "Std.Xml"/"Std.Yaml" namespace prefix)
-          # makes a coincidental false-positive match astronomically unlikely
-          # without adding a new ildasm/metadata-reader tool dependency here.
-          if ! strings "$bundle" | grep -q "Std.Xml.XmlDoc"; then
+          # metadata check. A TypeDef's namespace and name are separate
+          # string-heap entries, not a single concatenated "Namespace.Name"
+          # string, so grepping a fully-qualified name (e.g. "Std.Xml.XmlDoc")
+          # never matches anything -- confirmed broken in CI (issue #4643).
+          # Requiring both the namespace string AND the public type's own
+          # name string to be present is strictly more specific than the bare
+          # namespace check alone, without inventing a heap string that
+          # doesn't exist and without adding a new ildasm/metadata-reader
+          # tool dependency here.
+          dump="$(strings "$bundle")"
+          if ! grep -q "Std.Xml" <<<"$dump" || ! grep -q "XmlDoc" <<<"$dump"; then
             echo "::error::Std.Xml not present in the Lyric.Stdlib.dll bundle"
             exit 1
           fi
-          if ! strings "$bundle" | grep -q "Std.Yaml.YamlValue"; then
+          if ! grep -q "Std.Yaml" <<<"$dump" || ! grep -q "YamlValue" <<<"$dump"; then
             echo "::error::Std.Yaml not present in the Lyric.Stdlib.dll bundle"
             exit 1
           fi

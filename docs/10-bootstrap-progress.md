@@ -25509,7 +25509,10 @@ Parser support (`lyric-compiler/lyric/parser/parser_*.l`, `fmt_items.l`,
 - `ImportDecl` gains `isExtern: Bool` field.
 - Parser recognizes `import extern Foo.Bar.{ Item, Item as Alias }` syntax.
 - `pub use extern Foo.Bar.{ Item }` re-exports allowed per D116 Q47-004.
-- Missing selector group → P0035 diagnostic (parser-level validation).
+- A selector group is not required: bare `import extern Foo.Bar` imports the
+  single external type named by the trailing path segment (see
+  `docs/grammar.ebnf` §2.1, `parser_self_test.l`'s "import extern without
+  selector" case).
 - Type-checker integration deferred to Phase 2 (both 2a symbol registration and
   2b type resolution together per CLAUDE.md production-quality standard).
 

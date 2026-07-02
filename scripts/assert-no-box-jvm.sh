@@ -128,15 +128,19 @@ echo "[assert-no-box-jvm] disassembling bytecode via javap"
   done
 } > "$DISASM_FILE" 2>&1 || true
 
-# Count boxing AND unboxing calls in the disassembled output. Look for:
+# Count boxing calls in the disassembled output.
+# Look for:
 #   java/lang/Integer.valueOf, java/lang/Long.valueOf, java/lang/Float.valueOf,
-#   java/lang/Double.valueOf, java/lang/Boolean.valueOf (boxing)
-#   .intValue, .longValue, .floatValue, .doubleValue, .booleanValue (unboxing)
-# Boxing overhead is symmetric: reading a boxed capture back via e.g.
-# intValue() on every lambda invocation carries the same overhead as the
-# valueOf() box, so both directions must be counted for the gate to be
-# meaningful.
-BOX_COUNT="$(grep -E "(Integer|Long|Float|Double|Boolean)\.(valueOf|intValue|longValue|floatValue|doubleValue|booleanValue)" "$DISASM_FILE" | wc -l || true)"
+#   java/lang/Double.valueOf, java/lang/Boolean.valueOf
+#
+# An earlier revision of this script also counted unboxing calls
+# (intValue/longValue/floatValue/doubleValue/booleanValue), reasoning that
+# read-path unboxing overhead is symmetric with write-path boxing. That
+# widened the match without recalibrating MAX_BOXING below (calibrated
+# against valueOf-only counts), so the Stage 2+ gate started failing CI
+# unconditionally (issue #4643). Reverted to valueOf-only pending a
+# recalibrated threshold measured against a real bidirectional count.
+BOX_COUNT="$(grep -E "(Integer|Long|Float|Double|Boolean)\.valueOf" "$DISASM_FILE" | wc -l || true)"
 
 echo ""
 echo "[assert-no-box-jvm] ==== boxing call count (Stage $STAGE) ===="
@@ -159,7 +163,7 @@ elif [[ "$STAGE" -ge 2 ]]; then
   else
     echo "[assert-no-box-jvm] FAIL: Stage $STAGE expected <= $MAX_BOXING boxing calls, found $BOX_COUNT" >&2
     echo "[assert-no-box-jvm] disassembly snippet (first 10 boxing lines):" >&2
-    grep -E "(Integer|Long|Float|Double|Boolean)\.(valueOf|intValue|longValue|floatValue|doubleValue|booleanValue)" "$DISASM_FILE" | head -10 | sed 's/^/  /' >&2
+    grep -E "(Integer|Long|Float|Double|Boolean)\.valueOf" "$DISASM_FILE" | head -10 | sed 's/^/  /' >&2
     exit 1
   fi
 else

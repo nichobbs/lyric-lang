@@ -678,7 +678,7 @@ jobs:
           # that file when NUGET_SIGNING_CERT_BASE64 is set, so pointing at it
           # unconditionally would make `lyric publish` try to sign with a
           # nonexistent file instead of skipping signing as intended.
-          LYRIC_NUGET_SIGNING_CERT: ${{ env.NUGET_SIGNING_CERT_BASE64 != '' && '/tmp/nuget-signing.pfx' || '' }}
+          LYRIC_NUGET_SIGNING_CERT: ${{ secrets.NUGET_SIGNING_CERT_BASE64 != '' && '/tmp/nuget-signing.pfx' || '' }}
           LYRIC_NUGET_SIGNING_CERT_PASSWORD: ${{ secrets.NUGET_SIGNING_CERT_PASSWORD }}
           LYRIC_NUGET_SIGNING_TIMESTAMPER: http://timestamp.digicert.com
           RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
