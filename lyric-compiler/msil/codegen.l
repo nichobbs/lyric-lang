@@ -10704,18 +10704,16 @@ func lowerMethodCallMsil(
     }
     if aliasResolvedFqn.length > 0 and (cctx.funcTokens.containsKey(aliasResolvedFqn + "/" + toString(args.count)) or cctx.funcTokens.containsKey(aliasResolvedFqn)) {
       // Build a synthetic EPath carrying the resolved package FQN so the static
-      // lowering sees the real package, not the alias.
+      // lowering sees the real package, not the alias.  `aliasResolvedFqn` is
+      // `realPkg + "." + memberName` (built above); split it and drop the
+      // trailing memberName segment to recover realPkg's segments without a
+      // second pkgImportAliases lookup.
+      val aliasParts = split(aliasResolvedFqn, ".")
       val realSegs: List[String] = newList()
-      match mapGet(cctx.pkgImportAliases, fctx.pkgName + "/" + recvSegs[0]) {
-        case Some(realPkg) -> {
-          val parts = split(realPkg, ".")
-          var pi = 0
-          while pi < parts.length {
-            realSegs.add(parts[pi])
-            pi = pi + 1
-          }
-        }
-        case None -> ()
+      var pi = 0
+      while pi < aliasParts.length - 1 {
+        realSegs.add(aliasParts[pi])
+        pi = pi + 1
       }
       realSegs.add(memberName)
       val aliasPath = ModulePath(segments = realSegs, span = recv.span)
@@ -25445,23 +25443,23 @@ func registerStdlibRecordLikeType(
       match decl.members[fi] {
         case RMField(f) -> {
           val key = typeFqn + "/" + f.name
+          // For generic-param fields (e.g. `key: K`), the var index tells
+          // buildGenericCaseCtorTok which type-arg slot this field resolves.
+          // Shared by both the by-name and by-position field registrations below.
+          val ftySeg = match f.ty.kind {
+            case TRef(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
+            case _ -> ""
+          }
+          val ftyVarIdx = if ftySeg.length > 0 {
+            match mapGet(recTypeParamVarIdx, ftySeg) {
+              case Some(vi) -> vi
+              case None -> -1
+            }
+          } else {
+            -1
+          }
           if not cctx.fieldTokens.containsKey(key) {
-            val rawFty = typeExprToMsilCtx(cctx, f.ty, packageName)
-            // For generic-param fields (e.g. `key: K`), the var index tells
-            // buildGenericCaseCtorTok which type-arg slot this field resolves.
-            val ftySegForVar = match f.ty.kind {
-              case TRef(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
-              case _ -> ""
-            }
-            val ftyVarIdx = if ftySegForVar.length > 0 {
-              match mapGet(recTypeParamVarIdx, ftySegForVar) {
-                case Some(vi) -> vi
-                case None -> -1
-              }
-            } else {
-              -1
-            }
-            val fty = rawFty
+            val fty = typeExprToMsilCtx(cctx, f.ty, packageName)
             val fSig = buildFieldSigWithCtx(fty, cctx.lctx)
             val sigKey = "stdlib_field_" + key
             val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, f.name, sigKey, fSig)
@@ -25478,20 +25476,8 @@ func registerStdlibRecordLikeType(
             cctx.fieldDeclaredNames.add(byPosKey, f.name)
           }
           // Populate positional fieldVarIndices for generic-param fields.
-          val ftySegForPos = match f.ty.kind {
-            case TRef(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
-            case _ -> ""
-          }
-          val ftyVarIdxPos = if ftySegForPos.length > 0 {
-            match mapGet(recTypeParamVarIdx, ftySegForPos) {
-              case Some(vi) -> vi
-              case None -> -1
-            }
-          } else {
-            -1
-          }
-          if ftyVarIdxPos >= 0 and not cctx.fieldVarIndices.containsKey(byPosKey) {
-            cctx.fieldVarIndices.add(byPosKey, ftyVarIdxPos)
+          if ftyVarIdx >= 0 and not cctx.fieldVarIndices.containsKey(byPosKey) {
+            cctx.fieldVarIndices.add(byPosKey, ftyVarIdx)
           }
           fpos = fpos + 1
         }
