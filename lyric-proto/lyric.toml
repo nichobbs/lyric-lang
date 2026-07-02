@@ -34,9 +34,9 @@ output          = "single"
 output_assembly = "Lyric.Proto.dll"
 
 [project.packages]
-# JVM kernel: ProtoBuffer (ByteArrayOutputStream) + IEEE 754 helpers (Phase 6).
-"Proto.Kernel.Jvm" = "src/_kernel/jvm/proto_kernel.l"
 # Merged package: types + encoding + decoding + public API + .NET kernel boundary.
+# JVM target is not yet implemented (tracked as Phase 6, see README "Platform
+# parity"); there is no JVM kernel package to register here until that lands.
 "Proto"            = "src/proto_main.l"
 
 [project.tests]
