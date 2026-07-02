@@ -26213,3 +26213,45 @@ lowered until the N5 stdlib port.
 
 **Related:** D-progress-540, `native/plan/04-arc-design.md`,
 `native/plan/08-work-items.md` §N2, D037 (methods desugar), #4631.
+
+---
+
+### D-progress-542 — Native backend N3.1: generic type monomorphization (records and unions)
+
+**Shipped.** Generic records and unions instantiate on demand in the
+native backend, keyed per concrete type-argument tuple
+(`T.Maybe<i64>`, `T.Maybe<T.Maybe<i32>*>` — quote-free arg mangling so
+nested instantiations stay valid IR):
+
+- **Instantiation** — `typeToN` resolves `Maybe[Int]` / `Box[String]`
+  by substituting type params through an env-aware type mapper and
+  registering the instantiation (struct defn + per-case payload defns
+  + synthesised destructor) lazily via ctx-held module accumulators.
+- **Constructor inference** — `Just(5)` infers `T` from arguments
+  whose declared case/field type is a bare parameter; generic record
+  constructors (`Box(item = x, tag = 2)`) infer the same way.
+- **Expected-type threading** — annotated bindings, returns, call
+  arguments, field stores, and value-position `if`/`match`/block
+  results propagate the consumer's type into construction, which is
+  the only way to type nullary cases (`Nada`, `None`) and cases that
+  mention a subset of params (`Result`'s `Ok`/`Err`).
+- **Pattern resolution by scrutinee** — constructor patterns resolve
+  the case by name within the scrutinee's union instantiation, and a
+  bare identifier that names a case of the scrutinee's union is a
+  nullary constructor pattern, not a binding (the parser cannot
+  distinguish `case Nada ->` from a binding; binding it leaked a
+  bogus local into later name resolution).
+
+**Verification.** Four new `llvm_heap_self_test.l` cases (25 total):
+single/two-param instantiation, `Result`-style expected-type
+construction inside branches, nullary-case flow through return types,
+and an ASan/LSan loop exercising nested generic instantiations with
+string payloads (destructor composition across instantiations verified
+leak-free).
+
+**Not yet lowered:** generic *functions* (bundle-wide monomorphization
+is the next N3.1 slice), interfaces/vtables (N3.2), tuples (N3.3),
+closures (N2.6), `NativeWeak[T]` (N2.5 — now unblocked by
+instantiated `Option[T]`).
+
+**Related:** D-progress-541, `native/plan/08-work-items.md` §N3.1, #4631.
