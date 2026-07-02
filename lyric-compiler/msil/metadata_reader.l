@@ -2009,14 +2009,14 @@ pub func addAssemblyToIndexesAndValueTypes(
       }
       println(
         "W0006: addAssemblyToIndexesAndValueTypes: failed to read '" + asmPath + "' (" + reason +
-          ") — its types will fall back to the default assembly in auto-FFI resolution (#4698)"
+          ") — its types will fall back to the default assembly in auto-FFI resolution"
       )
     }
     case Ok(raw) -> match parseAssemblyImage(raw.toArray()) {
       case None -> {
         println(
           "W0006: addAssemblyToIndexesAndValueTypes: failed to parse '" + asmPath +
-            "' as a .NET assembly — its types will fall back to the default assembly in auto-FFI resolution (#4698)"
+            "' as a .NET assembly — its types will fall back to the default assembly in auto-FFI resolution"
         )
       }
       case Some(ri) -> { scanPublicTypes(ri, nm, typeIndex); scanValueTypes(ri, vtypeSet) }
