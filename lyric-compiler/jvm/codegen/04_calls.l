@@ -189,7 +189,30 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
       val javaClass = replace(substring(target, 0, dotIdx), ".", "/")
       val methodName = substring(target, dotIdx + 1, length(target) - dotIdx - 1)
 
-      val isStatic = isStaticExternByName(decl.name)
+      // Staticness comes from JDK metadata, not the legacy name heuristic
+      // (which mis-classified e.g. `currentTimeMillis` — no underscore — as
+      // an instance call and emitted `invokevirtual` against an empty stack).
+      // If the target class resolves and a static overload matches the full
+      // declared parameter list, emit `invokestatic`; if the class resolves
+      // but no static overload matches, treat the first parameter as the
+      // receiver.  Classes absent from the metadata index keep the name
+      // heuristic.
+      val allParamDescs: List[String] = newList()
+      var apdI = 0
+      while apdI < decl.params.count {
+        allParamDescs.add(jvmTypeToDescStr(typeExprToJvm(decl.params[apdI].ty, ctx.pkgName)))
+        apdI = apdI + 1
+      }
+      val targetFqnDot = replace(javaClass, "/", ".")
+      val isStatic = match loadClass(ctx.autoFfi, targetFqnDot) {
+        case Some(ci) -> {
+          match findBestMethod(ctx.autoFfi, ci, methodName, allParamDescs, true) {
+            case Some(_) -> true
+            case None -> false
+          }
+        }
+        case None -> isStaticExternByName(decl.name)
+      }
       val wrapResult = isResultJvmException(decl.ret)
       val startParam = if isStatic { 0 } else { 1 }
 
