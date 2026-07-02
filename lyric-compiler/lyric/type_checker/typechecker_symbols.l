@@ -104,28 +104,19 @@ pub func symbolTypeIdOpt(s: in Symbol): Option[TypeId] {
 // Phase 1 (M5.2-M5.3) supports only System.Func and System.Action delegates.
 // Other delegate types (Predicate, EventHandler, Comparison, Converter, etc.)
 // are deferred to Phase 2 for proper support with metadata-based detection.
+// For other extern types, conservatively reject to prevent assigning lambdas
+// to non-delegate types (System.Exception, System.String, HttpClientHandler,
+// etc.).  Unknown delegate types should be wrapped in a Lyric interface
+// (docs/51) until metadata-based detection is available.
+// O(1) via `externDelegateFlags`, a side index `symTableAdd` maintains
+// alongside `importedOpaqueNames`/`unionDeclIndex` (#2027, #2178) — this
+// function is called from `argSatisfiesParam` for every `TyUser`-typed call
+// argument, so a full symbol scan per call does not scale (#3903).
 pub func symTableIsExternDelegateType(tbl: in SymbolTable, id: in TypeId): Bool {
-  var i = 0
-  while i < tbl.symbols.count {
-    match tbl.symbols[i].kind {
-      case DKExternType(tid, decl) -> {
-        if typeIdEq(tid, id) {
-          val clr = decl.clrName
-          if clr.startsWith("System.Func") or clr.startsWith("System.Action") {
-            return true
-          }
-          // For other extern types, conservatively reject to prevent assigning
-          // lambdas to non-delegate types (System.Exception, System.String, HttpClientHandler, etc.).
-          // Unknown delegate types should be wrapped in a Lyric interface
-          // (docs/51) until metadata-based detection is available.
-          return false
-        }
-      }
-      case _ -> ()
-    }
-    i = i + 1
+  match mapGet(tbl.externDelegateFlags, toString(id.id)) {
+    case Some(v) -> v
+    case None -> false
   }
-  false
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
