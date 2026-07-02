@@ -520,8 +520,13 @@ pub async func getContainerLogs(client: in DockerClient, containerId: in String)
   val responseResult = await sendAndReadBytes(client, Std.Http.request(Std.Http.GET, url), urlStr, "Get container logs failed")
   val response = match responseResult { case Err(e) -> return Err(error = e); case Ok(r) -> r }
 
+  // A prefix match rather than exact equality (#4767): a future Docker
+  // Engine API version could add media-type parameters (e.g. "; version=1.41")
+  // to this Content-Type header, and an exact match would silently fall
+  // through to demultiplexDockerStream, misinterpreting a raw TTY byte
+  // stream as framed multiplexed data.
   val isRawStream = match response.contentType {
-    case Some(ct) -> ct == "application/vnd.docker.raw-stream"
+    case Some(ct) -> ct.startsWith("application/vnd.docker.raw-stream")
     case None -> false
   }
 
