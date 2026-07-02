@@ -1975,7 +1975,14 @@ pub func addAssemblyToIndexes(
 // Populate the type→assembly-name, assembly-name→path, and value-type indexes
 // from one assembly with a single disk read and a single metadata parse — the
 // merged form of `addAssemblyToIndexes` + `addAssemblyValueTypes` (#2147).
-// First writer wins for every name; malformed assemblies are skipped silently.
+// First writer wins for every name; a malformed assembly is skipped (a single
+// broken DLL must not abort building the index), but the skip is logged
+// (W0006) rather than silent: every type the skipped assembly would have
+// contributed silently falls back to the wrong owning assembly in
+// `assemblyForTypeMsil` (e.g. the CoreLib-forwarding default "System.Runtime",
+// which is wrong for a dedicated facade like System.Console), producing a
+// TypeRef that compiles cleanly but throws `TypeLoadException` at first use —
+// a failure mode with no build-time signal until this warning (#4698).
 pub func addAssemblyToIndexesAndValueTypes(
   typeIndex: in Map[String, String],
   pathIndex: in Map[String, String],
@@ -1989,9 +1996,31 @@ pub func addAssemblyToIndexesAndValueTypes(
     case None -> pathIndex.add(nm, asmPath)
   }
   match File.readBytes(asmPath) {
-    case Err(_) -> {
+    case Err(e) -> {
+      val reason = match e {
+        case InvalidPath(p, r) -> "invalid path: " + p + " (" + r + ")"
+        case FileNotFound(p) -> "file not found: " + p
+        case DirectoryNotFound(p) -> "directory not found: " + p
+        case AlreadyExists(p) -> "already exists: " + p
+        case PermissionDenied(p) -> "permission denied: " + p
+        case IoError(p, msg) -> "I/O error for " + p + ": " + msg
+        case EndOfInput(src) -> "end of input: " + src
+        case KeyNotFound(k) -> "key not found: " + k
+      }
+      println(
+        "W0006: addAssemblyToIndexesAndValueTypes: failed to read '" + asmPath + "' (" + reason +
+          ") — its types will fall back to the default assembly in auto-FFI resolution"
+      )
     }
-    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) { case None -> {  }; case Some(ri) -> { scanPublicTypes(ri, nm, typeIndex); scanValueTypes(ri, vtypeSet) } }
+    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) {
+      case None -> {
+        println(
+          "W0006: addAssemblyToIndexesAndValueTypes: failed to parse '" + asmPath +
+            "' as a .NET assembly — its types will fall back to the default assembly in auto-FFI resolution"
+        )
+      }
+      case Some(ri) -> { scanPublicTypes(ri, nm, typeIndex); scanValueTypes(ri, vtypeSet) }
+    }
   }
 }
 
