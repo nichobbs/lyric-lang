@@ -44,11 +44,17 @@
 //!     scope stacks release locals on block exit, `return`, `break`,
 //!     and `continue`.  `in` params are borrows (Rule 5).
 //!
+//! Later slices lower here too: closures with by-value ARC captures
+//! and synthesised capture-releasing destructors (N2.6),
+//! `NativeWeak[T]` with `upgrade(): Option[T]` (N2.5), generic
+//! records/unions/functions via lazy per-type-argument-tuple
+//! instantiation (N3.1), tuples as synthesised `__tuple<...>` records
+//! (N3.3), and the `nativeAddrOf` builtin (N4.2).
+//!
 //! Not yet lowered (each panics with a construct-naming message, per
-//! the MSIL/JVM backend convention for backend gaps): closures/lambdas
-//! and `NativeWeak[T]` (rest of N2), generics-after-mono leftovers,
-//! tuples/interfaces/protected types (N3), `for`, module-level `val`,
-//! collections (N5), async (Phase 2).
+//! the MSIL/JVM backend convention for backend gaps): interfaces and
+//! protected types (rest of N3), function references (`&f`), `for`,
+//! module-level `val`, collections (N5), async (Phase 2).
 package Lyric.LlvmCodegen
 
 import Std.Core
@@ -1385,7 +1391,7 @@ func lowerPrefix(ctx: in Ctx, insns: in List[NInsn], op: in PrefixOp, operand: i
       insns.add(NXor(dest = dest, ty = NI1, a = v.value, b = NLitInt(v = 1i64, ty = NI1)))
       NVal(ty = NI1, value = NLocal(name = dest))
     }
-    case PreRef -> panic("Lyric.LlvmCodegen: function references (&f) are not yet supported for --target native (closures are Phase N2)")
+    case PreRef -> panic("Lyric.LlvmCodegen: function references (&f) are not yet supported for --target native (pass a lambda instead)")
   }
 }
 
