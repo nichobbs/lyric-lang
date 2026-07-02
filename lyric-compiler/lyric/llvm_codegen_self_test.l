@@ -118,8 +118,11 @@ test "exit code from main" {
 }
 
 test "integer arithmetic" {
+  // The result binds to a local first: a trailing line that begins with
+  // '(' would otherwise continue the previous statement as a call.
   val src = "package T\n" + "func main(): Int {\n" + "  val a = 7\n" + "  val b = 3\n" +
-    "  (a + b) * 2 - a / b - a % b + 1\n" +
+    "  val r = (a + b) * 2 - a / b - a % b + 1\n" +
+    "  r\n" +
     "}\n"
   // (7+3)*2 - 2 - 1 + 1 = 18
   val r = compileAndRun(src)
