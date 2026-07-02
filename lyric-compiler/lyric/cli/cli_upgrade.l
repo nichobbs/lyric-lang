@@ -88,11 +88,20 @@ pub func cmdUpgrade(argv: in slice[String]): Int {
     }
     return runNugetUpgrade(targetVersion, isDryRun)
   } else {
-    // No `--version` required here: `runGithubUpgrade` resolves an omitted
-    // version to the latest published GitHub release (#4589) — a bare
-    // `lyric upgrade` tracks the latest stable release, matching the
-    // documented behavior in book/chapters/01-getting-started.md, rather
-    // than requiring the caller to already know the current version.
+    // `--version` is still required for a REAL (non-dry-run) GitHub
+    // Releases install: `runGithubUpgrade` resolves an omitted version via
+    // a live GitHub API call (#4589), and that call is best-effort (it can
+    // fail offline or when rate-limited) — a real upgrade must not
+    // silently proceed against `main` if the lookup fails, so the explicit
+    // opt-in stays required here.  `--dry-run` does not require it: the
+    // preview resolves (and gracefully degrades) the latest-release lookup
+    // itself, matching the documented `lyric upgrade` example in
+    // book/chapters/01-getting-started.md for previewing what a bare
+    // upgrade would do.
+    if not isDryRun and isNone(targetVersion) {
+      printErr("upgrade: --version <version> is required when upgrading via GitHub Releases")
+      return 1
+    }
     val installDir = match targetDir { case Some(d) -> d; case None -> appBase }
     return runGithubUpgrade(installDir, targetVersion, isDryRun)
   }
@@ -141,7 +150,8 @@ func runNugetUpgrade(version: in Option[String], isDryRun: in Bool): Int {
 // `tag_name` GitHub attaches to a release ("v0.4.6") into the bare semver
 // form ("0.4.6") that `--version` and the install script expect (matching
 // what a caller would type via `lyric upgrade --version 0.4.6`).
-func stripLeadingV(v: in String): String {
+// `pub` so `cli_upgrade_self_test.l` can exercise it without network I/O.
+pub func stripLeadingV(v: in String): String {
   if v.length > 0 and (v[0] == 'v' or v[0] == 'V') {
     v.substring(1)
   } else {
@@ -157,7 +167,8 @@ func stripLeadingV(v: in String): String {
 // subsequent occurrence is located by re-scanning a tail substring and
 // re-offsetting the result — the same idiom `cli_version.l`'s
 // `replaceVersionInToml` uses for the same reason.
-func extractTagNameFromReleaseJson(json: in String): Option[String] {
+// `pub` so `cli_upgrade_self_test.l` can exercise it without network I/O.
+pub func extractTagNameFromReleaseJson(json: in String): Option[String] {
   val key = "\"tag_name\""
   val keyPos = json.indexOf(key)
   if keyPos < 0 {
@@ -228,20 +239,31 @@ func downloadUrl(url: in String): Option[String] {
 func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDryRun: in Bool): Int {
   // Resolve an omitted `--version` to the latest published GitHub release
   // (#4589) instead of defaulting to the `main` branch tip, which is not
-  // guaranteed stable.  This runs for both the dry-run and real paths so a
-  // dry-run preview reports the version that would actually be installed.
-  val version = match versionArg {
-    case Some(v) -> Some(value = v)
-    case None -> match fetchLatestReleaseTag() { case Some(tag) -> Some(value = stripLeadingV(tag)); case None -> None }
-  }
-  match version {
+  // guaranteed stable.  `cmdUpgrade` requires an explicit `--version` for a
+  // REAL (non-dry-run) install, so `versionArg` can only be `None` here
+  // during a `--dry-run` preview — this lookup is therefore best-effort: a
+  // dry-run must stay usable without network access, so a failed lookup
+  // degrades to a placeholder preview rather than failing the dry-run.
+  var version = versionArg
+  var versionUnresolvedOffline = false
+  match versionArg {
     case Some(_) -> ()
     case None -> {
-      printErr(
-        "upgrade: could not determine the latest release from GitHub (network error or API rate limit) — " +
-          "pass --version <version> explicitly, or see https://github.com/nichobbs/lyric-lang/releases"
-      )
-      return 1
+      match fetchLatestReleaseTag() {
+        case Some(tag) -> {
+          version = Some(value = stripLeadingV(tag))
+        }
+        case None -> {
+          if not isDryRun {
+            printErr(
+              "upgrade: could not determine the latest release from GitHub (network error or API rate limit) — " +
+                "pass --version <version> explicitly, or see https://github.com/nichobbs/lyric-lang/releases"
+            )
+            return 1
+          }
+          versionUnresolvedOffline = true
+        }
+      }
     }
   }
 
@@ -249,7 +271,9 @@ func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDr
     case Some(v) -> {
       if v.startsWith("v") then v else "v" + v
     }
-    case None -> "main"  // unreachable: the None case above already returned.
+    // Dry-run only (see above): the latest-release lookup could not be
+    // resolved without network access, so there is no concrete ref to show.
+    case None -> "<latest-release>"
   }
   val scriptUrl = "https://raw.githubusercontent.com/nichobbs/lyric-lang/" + ref + "/scripts/install.sh"
 
@@ -265,7 +289,14 @@ func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDr
   )
 
   if isDryRun {
-    Console.println("dry-run: would fetch install.sh from: " + scriptUrl)
+    if versionUnresolvedOffline {
+      Console.println(
+        "dry-run: no --version given and the latest GitHub release could not be resolved right now " +
+          "(network error or API rate limit) — a real upgrade run resolves and fetches the latest release."
+      )
+    } else {
+      Console.println("dry-run: would fetch install.sh from: " + scriptUrl)
+    }
     val printArgs: List[String] = newList()
     printArgs.add("--dir")
     printArgs.add(installDir)

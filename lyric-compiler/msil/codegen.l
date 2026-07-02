@@ -4302,8 +4302,10 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
         // legacy form only a *value-type* V is tracked (so the boxed `get_Item`
         // result is unboxed back); reference V stays `object`; the key is always
         // boxed for `Dictionary<object,_>`, so K is not tracked.
-        val keyTy = match args[0] { case TAType(kte) -> typeExprToMsilCtx(cctx, kte, pkgName); case TAValue(_) -> MObject }
-        val valTyRaw = match args[1] { case TAType(vte) -> typeExprToMsilCtx(cctx, vte, pkgName); case TAValue(_) -> MObject }
+        // Byte key/value must map to MByte, not the scalar path's MInt — same
+        // `sliceElemMsilCtx` special-case #3472 applied to `List[Byte]` (#3647).
+        val keyTy = match args[0] { case TAType(kte) -> sliceElemMsilCtx(cctx, kte, pkgName); case TAValue(_) -> MObject }
+        val valTyRaw = match args[1] { case TAType(vte) -> sliceElemMsilCtx(cctx, vte, pkgName); case TAValue(_) -> MObject }
         if collElemConcrete(keyTy) and collElemConcrete(valTyRaw) {
           MConcreteMap(keyTy = keyTy, valTy = valTyRaw)
         } else {
@@ -12498,6 +12500,29 @@ func lowerTryCatchExprMsil(
     val catchTy = lowerBlockExprMsil(cctx, fctx, insns, c.body)
     match catchTy {
       case MVoid -> {
+        // A prior branch (the try body, or an earlier catch arm) already
+        // established a non-void result type but this arm yields nothing —
+        // storing would be a no-op that silently leaves `resultSlot` at its
+        // zero-initialised default instead of the value the caller expects
+        // (type-checker gap #2042; JVM rejects the same source shape with a
+        // source-located `error[J004]`, see `jvm/codegen/05_stmts.l`).
+        // Fail loud with a source-located diagnostic instead of silently
+        // miscompiling, so both targets give the user the same signal (#3313).
+        match resultTy {
+          case MVoid -> {
+          }
+          case _ -> {
+            val pos = c.span.startPos
+            panic(
+              "Msil.Codegen: " + toString(pos.line) + ":" + toString(pos.column) +
+                ": try-catch used as an expression, but this catch arm yields Unit while the " +
+                "try body (or an earlier catch arm) yields a value; the MSIL backend cannot " +
+                "route an absent value through the result slot. Give the catch arm a trailing " +
+                "value of the try body's type, or annotate the try-catch result type explicitly " +
+                "(type-checker gap #2042)."
+            )
+          }
+        }
       }
       case _ -> {
         if resultSlot < 0 {
@@ -18253,12 +18278,14 @@ func typeExprToMsilGenBody(
           case TAValue(_) -> MObject
         }
       } else if headSeg == "Map" and args.count == 2 {
+        // Byte key/value must map to MByte, not the scalar path's MInt — same
+        // `sliceElemMsilGenBody` special-case #3472 applied to `List[Byte]` (#3647).
         val keyTy = match args[0] {
-          case TAType(kte) -> typeExprToMsilGenBody(cctx, kte, pkgName, generics)
+          case TAType(kte) -> sliceElemMsilGenBody(cctx, kte, pkgName, generics)
           case TAValue(_) -> MObject
         }
         val valTyRaw = match args[1] {
-          case TAType(vte) -> typeExprToMsilGenBody(cctx, vte, pkgName, generics)
+          case TAType(vte) -> sliceElemMsilGenBody(cctx, vte, pkgName, generics)
           case TAValue(_) -> MObject
         }
         if collElemConcrete(keyTy) and collElemConcrete(valTyRaw) {
@@ -18377,12 +18404,14 @@ func typeExprToMsilGenSig(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Stri
           case TAValue(_) -> MObject
         }
       } else if headSeg == "Map" and args.count == 2 {
+        // Byte key/value must map to MByte, not the scalar path's MInt — same
+        // `sliceElemMsilGenSig` special-case #3473 applied to `List[Byte]` (#3647).
         val keyTy = match args[0] {
-          case TAType(kte) -> typeExprToMsilGenSig(cctx, kte, pkgName, generics)
+          case TAType(kte) -> sliceElemMsilGenSig(cctx, kte, pkgName, generics)
           case TAValue(_) -> MObject
         }
         val valTyRaw = match args[1] {
-          case TAType(vte) -> typeExprToMsilGenSig(cctx, vte, pkgName, generics)
+          case TAType(vte) -> sliceElemMsilGenSig(cctx, vte, pkgName, generics)
           case TAValue(_) -> MObject
         }
         if collElemConcrete(keyTy) and collElemConcrete(valTyRaw) {

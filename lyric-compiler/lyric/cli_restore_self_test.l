@@ -111,15 +111,36 @@ test "extractMavenJarPaths: empty array response yields no paths" {
   assertEqualInt(paths.count, 0, "extractMavenJarPaths: empty response")
 }
 
-test "extractMavenJarPaths: pretty-printed response yields no paths (documented CONTRACT)" {
-  // Regression pin for #3546: the resolver protocol requires compact JSON
-  // (no space after `"jarPath":`). A space-separated pretty-printed form is
-  // documented as unsupported by the function's CONTRACT comment, and the
-  // caller (`restoreMavenJars`) emits a warning in this situation rather
-  // than silently reporting "0 Maven artifact(s) resolved".  This test pins
-  // the current (documented) behaviour so a change in either the parser or
-  // the resolver's output format is caught rather than silently accepted.
+test "extractMavenJarPaths: pretty-printed (single space) response is parsed (#4723)" {
+  // #4723 fixed the whitespace-intolerance pinned by #3546: a single space
+  // after `"jarPath":` (the most common pretty-printer shape) now resolves,
+  // via a manual whitespace-skipping scan rather than `Yaml.parseJson` (see
+  // the CONTRACT comment removed from extractMavenJarPaths — that approach
+  // hit a cross-package `Yaml.YSequence` field-resolution crash tracked in
+  // #4726 and was reverted).
   val json = "[{\"jarPath\": \"/a/one.jar\"}]"
   val paths = Cli.extractMavenJarPaths(json)
-  assertEqualInt(paths.count, 0, "extractMavenJarPaths: pretty-printed input is not matched")
+  assertEqualInt(paths.count, 1, "extractMavenJarPaths: single-space pretty-printed input is matched")
+  assertEqual(paths[0], "/a/one.jar", "extractMavenJarPaths: pretty-printed entry path")
+}
+
+test "extractMavenJarPaths: fully pretty-printed (multi-line, indented) response is parsed" {
+  val json = "[\n  {\n    \"group\": \"com.example\",\n    \"jarPath\": \"/a/one.jar\"\n  },\n" +
+    "  {\n    \"jarPath\":   \"/b/two.jar\"\n  }\n]\n"
+  val paths = Cli.extractMavenJarPaths(json)
+  assertEqualInt(paths.count, 2, "extractMavenJarPaths: multi-line indented entries both matched")
+  assertEqual(paths[0], "/a/one.jar", "extractMavenJarPaths: first multi-line entry")
+  assertEqual(paths[1], "/b/two.jar", "extractMavenJarPaths: second multi-line entry (multiple spaces after colon)")
+}
+
+test "extractMavenJarPaths: 'jarPath' occurring as a string VALUE (not a key) is not misparsed" {
+  // Guards the false-positive-split skip: splitting on the literal
+  // `"jarPath"` token also matches an occurrence where "jarPath" is used as
+  // a VALUE rather than a key (e.g. `"note": "jarPath"`) — that split piece
+  // does not start with `:`, so it must be skipped rather than misread as
+  // the start of a real `jarPath` key's value.
+  val json = "[{\"note\":\"jarPath\"},{\"jarPath\":\"/real/one.jar\"}]"
+  val paths = Cli.extractMavenJarPaths(json)
+  assertEqualInt(paths.count, 1, "extractMavenJarPaths: only the genuine jarPath key is matched")
+  assertEqual(paths[0], "/real/one.jar", "extractMavenJarPaths: the real entry's path")
 }
