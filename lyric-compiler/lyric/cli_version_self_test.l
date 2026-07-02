@@ -143,3 +143,20 @@ test "replaceVersionInToml: trailing inline comment on the version line is prese
     }
   }
 }
+
+test "replaceVersionInToml: CRLF line endings are preserved" {
+  // #4731: replaceVersionInToml splits/rejoins on plain "\n", so each line
+  // retains its own trailing "\r" — the split never separates the "\r" from
+  // its line, so CRLF is preserved end to end without special-casing.
+  val text = "[package]\r\nname = \"Foo\"\r\nversion = \"0.1.0\"\r\n"
+  match Cli.replaceVersionInToml(text, "0.1.0", "0.2.0") {
+    case Err(e) -> panic("replaceVersionInToml: unexpected Err: " + e)
+    case Ok(updated) -> {
+      assertEqual(
+        updated,
+        "[package]\r\nname = \"Foo\"\r\nversion = \"0.2.0\"\r\n",
+        "replaceVersionInToml: CRLF endings preserved"
+      )
+    }
+  }
+}
