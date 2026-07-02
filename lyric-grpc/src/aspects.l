@@ -5,13 +5,14 @@
 //!
 //!   RequiresGrpcAuth    — validates a bearer token; UNAUTHENTICATED (16) /
 //!                         PERMISSION_DENIED (7) on failure.
-//!                         C-mode (@inline_template): reads args.authToken.
+//!                         Row-constrained B'-mode (docs/56): reads
+//!                         args.authToken via `where TArgs has { authToken: String }`.
 //!                         The gRPC kernel extracts the token from the
 //!                         "authorization" metadata header and passes it as
 //!                         the `authToken: String` handler parameter.
 //!
 //!   RequiresGrpcRole    — validates token AND checks a role claim.
-//!                         C-mode: reads args.authToken.
+//!                         Row-constrained B'-mode: reads args.authToken.
 //!
 //!   GrpcRateLimit       — per-method sliding-window rate limit; RESOURCE_EXHAUSTED
 //!                         (8) on excess.  B-mode: uses call.qualifiedName.
@@ -62,7 +63,8 @@ import Resilience
 ///
 /// Delegates to Auth.verifyJwt — the same function used by Web.Aspects.RequiresAuth.
 ///
-/// This is a C-mode template (@inline_template): reads args.authToken.
+/// This is a row-constrained B'-mode template (docs/56 / D115): reads
+/// args.authToken via `where TArgs has { authToken: String }`.
 ///
 /// Config fields:
 ///   enabled            Bool   — master switch (default: true)
@@ -73,7 +75,6 @@ import Resilience
 ///   allowedAlgorithms  String — comma-separated allow-list of `alg` values
 ///                               (default: "HS256").  See RFC 8725 §3.1.
 @stable(since = "0.1")
-@inline_template
 pub aspect RequiresGrpcAuth {
   config {
     enabled: Bool = true
@@ -84,7 +85,7 @@ pub aspect RequiresGrpcAuth {
     allowedAlgorithms: String = "HS256"
   }
   requires: args.authToken != ""
-  around(call) -> ret {
+  around(call) -> ret where TArgs has { authToken: String } {
     if not enabled {
       ret = call.proceed()
     } else {
@@ -114,7 +115,8 @@ pub aspect RequiresGrpcAuth {
 /// First verifies the JWT (same rules as RequiresGrpcAuth), then extracts
 /// the `role` claim and checks it against `allowedRoles`.
 ///
-/// C-mode template (@inline_template): reads args.authToken.
+/// Row-constrained B'-mode template (docs/56 / D115): reads args.authToken
+/// via `where TArgs has { authToken: String }`.
 ///
 /// Config fields:
 ///   enabled            Bool   — master switch (default: true)
@@ -125,7 +127,6 @@ pub aspect RequiresGrpcAuth {
 ///   allowedRoles       String — comma-separated accepted role values (e.g. "admin,editor")
 ///   allowedAlgorithms  String — comma-separated allow-list of `alg` values (default: "HS256")
 @stable(since = "0.1")
-@inline_template
 pub aspect RequiresGrpcRole {
   config {
     enabled: Bool = true
@@ -137,7 +138,7 @@ pub aspect RequiresGrpcRole {
     allowedAlgorithms: String = "HS256"
   }
   requires: args.authToken != ""
-  around(call) -> ret {
+  around(call) -> ret where TArgs has { authToken: String } {
     if not enabled {
       ret = call.proceed()
     } else {
