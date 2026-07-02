@@ -616,8 +616,7 @@ jobs:
               "the NUGET_USER secret matches the nuget.org account owning the" \
               "Trusted Publishing policy, and that the policy is scoped to" \
               "Repository Owner 'nichobbs', Repository 'lyric-lang', Workflow" \
-              "File 'publish.yml'. See the publish-nuget job comment for full" \
-              "setup steps."
+              "File 'publish.yml'."
             exit 1
           fi
 
