@@ -1909,56 +1909,8 @@ func lowerCallArgs(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, args: i
         " (default arguments are not yet supported for --target native)"
     )
   }
-  // Evaluate in source order first (Lyric's evaluation order), keeping
-  // the destination parameter index of each.
-  val vals: List[NVal] = newList()
-  val slots: List[Int] = newList()
-  var i = 0
-  var nextPositional = 0
-  while i < args.count {
-    match args[i] {
-      case CAPositional(ex) -> {
-        vals.add(lowerExprExpecting(ctx, insns, ex, typeToN(ctx, sig.paramTys[nextPositional])))
-        slots.add(nextPositional)
-        nextPositional = nextPositional + 1
-      }
-      case CANamed(argName, value, _) -> {
-        var slot = -1
-        var pi = 0
-        while pi < sig.paramNames.count {
-          if sig.paramNames[pi] == argName {
-            slot = pi
-          }
-          pi = pi + 1
-        }
-        if slot < 0 {
-          panic("Lyric.LlvmCodegen: named argument '" + argName + "' does not match a parameter of '" + sig.irName + "'")
-        }
-        vals.add(lowerExprExpecting(ctx, insns, value, typeToN(ctx, sig.paramTys[slot])))
-        slots.add(slot)
-      }
-    }
-    i = i + 1
-  }
   val ordered: List[NArg] = newList()
-  var pi2 = 0
-  while pi2 < sig.paramTys.count {
-    var found = -1
-    var vi = 0
-    while vi < slots.count {
-      if slots[vi] == pi2 {
-        found = vi
-      }
-      vi = vi + 1
-    }
-    if found < 0 {
-      panic("Lyric.LlvmCodegen: no argument bound for parameter " + pi2.toString() + " of '" + sig.irName + "'")
-    }
-    val declTy = typeToN(ctx, sig.paramTys[pi2])
-    val v = coerceTo(ctx, insns, vals[found], declTy)
-    ordered.add(NArg(ty = declTy, value = v.value))
-    pi2 = pi2 + 1
-  }
+  bindCallArgs(ctx, insns, sig, args, 0, ordered)
   ordered
 }
 
@@ -1982,10 +1934,27 @@ func lowerCallArgsWithReceiver(
   val recvTy = typeToN(ctx, sig.paramTys[0])
   val rv = coerceTo(ctx, insns, recv, recvTy)
   ordered.add(NArg(ty = recvTy, value = rv.value))
-  var i = 0
-  var nextPositional = 1
+  bindCallArgs(ctx, insns, sig, args, 1, ordered)
+  ordered
+}
+
+/// Shared slot-binding body for both call-argument lowerers: evaluates
+/// `args` in source order (Lyric's evaluation order) against `sig`'s
+/// parameters starting at `firstSlot` (0 for free calls; 1 for UFCS
+/// calls, whose pre-lowered receiver already occupies slot 0 in
+/// `ordered`), then appends the slot-ordered, coerced NArgs.
+func bindCallArgs(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  sig: in NFuncSig,
+  args: in List[CallArg],
+  firstSlot: Int,
+  ordered: in List[NArg],
+): Unit {
   val vals: List[NVal] = newList()
   val slots: List[Int] = newList()
+  var i = 0
+  var nextPositional = firstSlot
   while i < args.count {
     match args[i] {
       case CAPositional(ex) -> {
@@ -1995,7 +1964,7 @@ func lowerCallArgsWithReceiver(
       }
       case CANamed(argName, value, _) -> {
         var slot = -1
-        var pi = 1
+        var pi = firstSlot
         while pi < sig.paramNames.count {
           if sig.paramNames[pi] == argName {
             slot = pi
@@ -2011,7 +1980,7 @@ func lowerCallArgsWithReceiver(
     }
     i = i + 1
   }
-  var pi2 = 1
+  var pi2 = firstSlot
   while pi2 < sig.paramTys.count {
     var found = -1
     var vi = 0
@@ -2029,7 +1998,6 @@ func lowerCallArgsWithReceiver(
     ordered.add(NArg(ty = declTy, value = v.value))
     pi2 = pi2 + 1
   }
-  ordered
 }
 
 /// Adapt a value to the declared type: integer literals retype freely;
