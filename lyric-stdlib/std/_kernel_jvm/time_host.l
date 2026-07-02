@@ -8,22 +8,29 @@
 //!   DateTimeOffset = java.time.OffsetDateTime  (instant + UTC offset)
 //!   TimeZone       = java.time.ZoneId          (IANA timezone name)
 //!
-//! Shims are required wherever the JVM API diverges:
+//! Everything routes through the JVM auto-FFI (`extern type` resolved
+//! from JDK metadata at compile time — no F#/Java shim class, no
+//! @externTarget).  API divergences from the .NET host are bridged in
+//! plain Lyric bodies:
 //!
-//!   - Duration constructors: java.time.Duration.ofMillis(long) takes
-//!     long, not Double; shims convert (long)(n) with truncation.
+//!   - Duration constructors: java.time.Duration takes long, not
+//!     Double; fractional inputs are preserved by converting to
+//!     nanoseconds and rounding (Math.round), matching the .NET
+//!     TimeSpan fractional-unit behaviour to 1 ns resolution.
 //!   - hostSince: java.time.Duration.between(start, end) takes the
-//!     earlier arg first, opposite of the .NET op_Subtraction ordering.
-//!   - hostPlus / arithmetic: instance methods on Instant / Duration.
-//!   - hostTotalMillis / hostTotalSeconds: return long, not Double.
-//!   - Calendar arithmetic (addMonths, addYears, addDays): requires
-//!     Instant → OffsetDateTime → manipulate → toInstant roundtrip.
-//!   - Epoch DTO construction: returns OffsetDateTime (UTC offset zero).
-//!   - Comparison: isBefore / isAfter are instance methods; Duration
-//!     comparisons need compareTo.
+//!     earlier arg first, opposite of the .NET op_Subtraction ordering;
+//!     the body swaps the arguments.
+//!   - hostTotalMillis / hostTotalSeconds: derived from toNanos()
+//!     (long) converted to Double in Lyric.  Durations beyond the
+//!     toNanos() range (~292 years) raise the JDK ArithmeticException.
+//!   - Calendar arithmetic (addMonths, addYears): Instant →
+//!     OffsetDateTime(UTC) → plusMonths/plusYears → toInstant roundtrip.
+//!   - Static-field constants (Duration.ZERO, ZoneOffset.UTC) are
+//!     avoided — the auto-FFI resolves methods only — in favour of
+//!     equivalent factory calls (ofMillis(0), ZoneOffset.of("Z")).
 //!
 //! Internal: only Std.Time should import this.
-@axiom("java.time.* / java.lang.Thread operations conform to their documented JVM / ISO 8601 contracts")
+@axiom("java.time.* / java.lang.Math.round / java.lang.System.nanoTime / java.lang.Thread.sleep conform to their documented JVM / ISO 8601 contracts")
 package Std.TimeHost
 
 import Std.Core
@@ -39,148 +46,197 @@ extern type DateTimeOffset = "java.time.OffsetDateTime"
 
 extern type TimeZone = "java.time.ZoneId"
 
+extern type UtcOffset = "java.time.ZoneOffset"
+
+extern type JMath = "java.lang.Math"
+
+extern type JSystem = "java.lang.System"
+
+extern type JThread = "java.lang.Thread"
+
 // =====================================================================
 // Construction.
 // =====================================================================
-// java.time.Instant.now() — UTC clock, nanosecond resolution.
-@externTarget("java.time.Instant.now")
-pub func hostNow(): Instant = ()
+/// Current UTC instant (java.time.Instant.now, nanosecond resolution).
+pub func hostNow(): Instant {
+  Instant.now()
+}
 
-// java.time.Duration.ZERO — static field.
-@externTarget("java.time.Duration.ZERO")
-pub func hostZeroDuration(): Duration = ()
+/// The zero-length duration.  Duration.ZERO is a static field the
+/// auto-FFI cannot resolve; ofMillis(0) is the equivalent factory.
+pub func hostZeroDuration(): Duration {
+  Duration.ofMillis(0)
+}
 
-// Java's Instant.parse throws DateTimeParseException on failure;
-// shim wraps in try/catch and writes result via out parameter.
-@externTarget("lyric.stdlib.jvm.TimeHost.tryParseInstant")
-pub func hostTryParseInstant(s: in String, value: out Instant): Bool = ()
+/// Parse an ISO-8601 instant.  Instant.parse throws
+/// DateTimeParseException on malformed input; the catch arm reports
+/// failure and leaves a placeholder in the out slot (callers ignore
+/// `value` when the result is false).
+pub func hostTryParseInstant(s: in String, value: out Instant): Bool {
+  try {
+    value = Instant.parse(s)
+    true
+  } catch Bug as b {
+    value = Instant.ofEpochMilli(0)
+    false
+  }
+}
 
 // =====================================================================
-// Duration constructors.  All shims convert Double to long via (long).
+// Duration constructors.  java.time factories take long; fractional
+// Double inputs are preserved by rounding to whole nanoseconds.
 // =====================================================================
-@externTarget("lyric.stdlib.jvm.TimeHost.ofMillis")
-pub func hostMillis(n: in Double): Duration = ()
+pub func hostMillis(n: in Double): Duration {
+  Duration.ofNanos(JMath.round(n * 1000000.0))
+}
 
-@externTarget("lyric.stdlib.jvm.TimeHost.ofSeconds")
-pub func hostSeconds(n: in Double): Duration = ()
+pub func hostSeconds(n: in Double): Duration {
+  Duration.ofNanos(JMath.round(n * 1000000000.0))
+}
 
-@externTarget("lyric.stdlib.jvm.TimeHost.ofMinutes")
-pub func hostMinutes(n: in Double): Duration = ()
+pub func hostMinutes(n: in Double): Duration {
+  Duration.ofNanos(JMath.round(n * 60000000000.0))
+}
 
-@externTarget("lyric.stdlib.jvm.TimeHost.ofHours")
-pub func hostHours(n: in Double): Duration = ()
+pub func hostHours(n: in Double): Duration {
+  Duration.ofNanos(JMath.round(n * 3600000000000.0))
+}
 
-@externTarget("lyric.stdlib.jvm.TimeHost.ofDays")
-pub func hostDays(n: in Double): Duration = ()
+pub func hostDays(n: in Double): Duration {
+  Duration.ofNanos(JMath.round(n * 86400000000000.0))
+}
 
 // =====================================================================
 // Duration arithmetic on Instant.
 // =====================================================================
-// Shim: Duration.between(earlier, later) — note argument order inversion
-// vs .NET's op_Subtraction(later, earlier).
-@externTarget("lyric.stdlib.jvm.TimeHost.since")
-pub func hostSince(later: in Instant, earlier: in Instant): Duration = ()
+/// Elapsed time from `earlier` to `later`.  Duration.between takes the
+/// earlier argument first — the reverse of the .NET subtraction order —
+/// so the body swaps them.
+pub func hostSince(later: in Instant, earlier: in Instant): Duration {
+  Duration.between(earlier, later)
+}
 
-// Shim: later.plus(d) — instance method on Instant.
-@externTarget("lyric.stdlib.jvm.TimeHost.plus")
-pub func hostPlus(t: in Instant, d: in Duration): Instant = ()
-
-// =====================================================================
-// Inspection.  Shims convert long return to Double.
-// =====================================================================
-@externTarget("lyric.stdlib.jvm.TimeHost.totalMillis")
-pub func hostTotalMillis(d: in Duration): Double = ()
-
-@externTarget("lyric.stdlib.jvm.TimeHost.totalSeconds")
-pub func hostTotalSeconds(d: in Duration): Double = ()
+pub func hostPlus(t: in Instant, d: in Duration): Instant {
+  t.plus(d)
+}
 
 // =====================================================================
-// Calendar arithmetic.  All require Instant → OffsetDateTime(UTC)
-// → plus/minus → toInstant roundtrip via shims.
+// Inspection.  toNanos() returns long; converted to Double in Lyric.
 // =====================================================================
-@externTarget("lyric.stdlib.jvm.TimeHost.addMonths")
-pub func hostAddMonths(t: in Instant, n: in Int): Instant = ()
+pub func hostTotalMillis(d: in Duration): Double {
+  d.toNanos().toDouble() / 1000000.0
+}
 
-@externTarget("lyric.stdlib.jvm.TimeHost.addYears")
-pub func hostAddYears(t: in Instant, n: in Int): Instant = ()
+pub func hostTotalSeconds(d: in Duration): Double {
+  d.toNanos().toDouble() / 1000000000.0
+}
 
-@externTarget("lyric.stdlib.jvm.TimeHost.addDays")
-pub func hostAddDays(t: in Instant, n: in Double): Instant = ()
+// =====================================================================
+// Calendar arithmetic.  Months/years require the Instant →
+// OffsetDateTime(UTC) → plus → toInstant roundtrip; fractional days
+// are a plain Duration add.
+// =====================================================================
+pub func hostAddMonths(t: in Instant, n: in Int): Instant {
+  t.atOffset(UtcOffset.of("Z")).plusMonths(n).toInstant()
+}
+
+pub func hostAddYears(t: in Instant, n: in Int): Instant {
+  t.atOffset(UtcOffset.of("Z")).plusYears(n).toInstant()
+}
+
+pub func hostAddDays(t: in Instant, n: in Double): Instant {
+  t.plus(hostDays(n))
+}
 
 // =====================================================================
 // Epoch conversions.  Produce OffsetDateTime at UTC offset zero.
 // =====================================================================
-// Shim: OffsetDateTime.ofInstant(Instant.ofEpochMilli(n), ZoneOffset.UTC).
-@externTarget("lyric.stdlib.jvm.TimeHost.dtoFromEpochMillis")
-pub func hostDtoFromEpochMillis(n: in Long): DateTimeOffset = ()
+pub func hostDtoFromEpochMillis(n: in Long): DateTimeOffset {
+  Instant.ofEpochMilli(n).atOffset(UtcOffset.of("Z"))
+}
 
-// Shim: OffsetDateTime.ofInstant(Instant.ofEpochSecond(n), ZoneOffset.UTC).
-@externTarget("lyric.stdlib.jvm.TimeHost.dtoFromEpochSeconds")
-pub func hostDtoFromEpochSeconds(n: in Long): DateTimeOffset = ()
+pub func hostDtoFromEpochSeconds(n: in Long): DateTimeOffset {
+  Instant.ofEpochSecond(n).atOffset(UtcOffset.of("Z"))
+}
 
-// Shim: offsetDateTime.toInstant().
-@externTarget("lyric.stdlib.jvm.TimeHost.dtoToInstant")
-pub func hostDtoUtcDateTime(d: in DateTimeOffset): Instant = ()
+pub func hostDtoUtcDateTime(d: in DateTimeOffset): Instant {
+  d.toInstant()
+}
+
+/// Current UTC time as an OffsetDateTime (offset zero).
+pub func hostDtoUtcNow(): DateTimeOffset {
+  Instant.now().atOffset(UtcOffset.of("Z"))
+}
+
+/// Unix epoch-milliseconds of `d`.
+pub func hostDtoToEpochMillis(d: in DateTimeOffset): Long {
+  d.toInstant().toEpochMilli()
+}
 
 // =====================================================================
 // IANA timezone lookup.
 // =====================================================================
-// java.time.ZoneId.of(id) — throws ZoneRulesException for unknown ids.
-@externTarget("java.time.ZoneId.of")
-pub func hostFindTimeZone(id: in String): TimeZone = ()
+/// java.time.ZoneId.of(id) — throws ZoneRulesException for unknown ids.
+pub func hostFindTimeZone(id: in String): TimeZone {
+  TimeZone.of(id)
+}
 
 // =====================================================================
 // Comparison.
 // =====================================================================
-// java.time.Instant.isBefore(other) — instance method.
-@externTarget("java.time.Instant.isBefore")
-pub func hostInstantBefore(a: in Instant, b: in Instant): Bool = ()
+pub func hostInstantBefore(a: in Instant, b: in Instant): Bool {
+  a.isBefore(b)
+}
 
-// java.time.Instant.isAfter(other) — instance method.
-@externTarget("java.time.Instant.isAfter")
-pub func hostInstantAfter(a: in Instant, b: in Instant): Bool = ()
+pub func hostInstantAfter(a: in Instant, b: in Instant): Bool {
+  a.isAfter(b)
+}
 
-// java.time.Instant.equals(other) — instance method.
-@externTarget("java.time.Instant.equals")
-pub func hostInstantEquals(a: in Instant, b: in Instant): Bool = ()
+pub func hostInstantEquals(a: in Instant, b: in Instant): Bool {
+  a.equals(b)
+}
 
-// Shim: a.compareTo(b) < 0.
-@externTarget("lyric.stdlib.jvm.TimeHost.durationLess")
-pub func hostDurationLess(a: in Duration, b: in Duration): Bool = ()
+/// a < b via compareTo (java.time.Duration has no operator surface).
+pub func hostDurationLess(a: in Duration, b: in Duration): Bool {
+  a.compareTo(b) < 0
+}
 
-// Shim: a.compareTo(b) > 0.
-@externTarget("lyric.stdlib.jvm.TimeHost.durationGreater")
-pub func hostDurationGreater(a: in Duration, b: in Duration): Bool = ()
+/// a > b via compareTo.
+pub func hostDurationGreater(a: in Duration, b: in Duration): Bool {
+  a.compareTo(b) > 0
+}
 
-// java.time.Duration.plus(other) — instance method.
-@externTarget("java.time.Duration.plus")
-pub func hostAddDurations(a: in Duration, b: in Duration): Duration = ()
+pub func hostAddDurations(a: in Duration, b: in Duration): Duration {
+  a.plus(b)
+}
 
-// java.time.Duration.minus(other) — instance method.
-@externTarget("java.time.Duration.minus")
-pub func hostSubDurations(a: in Duration, b: in Duration): Duration = ()
+pub func hostSubDurations(a: in Duration, b: in Duration): Duration {
+  a.minus(b)
+}
 
 // =====================================================================
 // ISO-8601 formatting.
 // =====================================================================
-// java.time.Instant.toString() returns ISO-8601 (e.g. "2021-01-01T00:00:00Z").
-@externTarget("java.time.Instant.toString")
-pub func hostInstantToString(value: in Instant): String = ()
+/// Instant.toString() returns ISO-8601 (e.g. "2021-01-01T00:00:00Z"),
+/// round-trippable via hostTryParseInstant.
+pub func hostInstantToString(value: in Instant): String {
+  value.toString()
+}
 
 // ─── Monotonic clock ──────────────────────────────────────────────────────────
 // System.nanoTime() returns nanoseconds directly; model it as a
 // 1 GHz stopwatch so Std.Time.monotonicNanos uses the same formula on both platforms.
-@externTarget("java.lang.System.nanoTime")
-pub func hostStopwatchTimestamp(): Long = ()
+pub func hostStopwatchTimestamp(): Long {
+  JSystem.nanoTime()
+}
 
 pub func hostStopwatchFrequency(): Long {
-  1000000000
+  1000000000i64
 }
 
 // ─── Synchronous sleep — block the calling thread for `ms` milliseconds ───────
-// Routed through the Phase 6 shim (`static void sleepMillis(int)` →
-// `Thread.sleep((long) ms)`) rather than binding `java.lang.Thread.sleep`
-// directly: that method takes a `long`, so an `Int` argument would mismatch the
-// JVM descriptor.  Backs Std.Time.sleepMillis.
-@externTarget("lyric.stdlib.jvm.TimeHost.sleepMillis")
-pub func hostSleepMillis(ms: in Int): Unit = ()
+// Thread.sleep takes a long; the Int argument widens via the auto-FFI
+// numeric-widening match.  Backs Std.Time.sleepMillis.
+pub func hostSleepMillis(ms: in Int): Unit {
+  JThread.sleep(ms)
+}
