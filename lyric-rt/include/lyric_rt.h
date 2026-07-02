@@ -191,6 +191,11 @@ int32_t lyric_file_close(int32_t fd);
  * Returns NULL if the file cannot be opened or read. */
 LyricString* lyric_file_read_all(const char* path);
 
+/* Status-returning variant for Lyric kernels (out-param via
+ * nativeAddrOf): 0 and *out set on success; -1 on failure with *out
+ * untouched. */
+int32_t lyric_file_read_all_ok(const char* path, LyricString** out);
+
 /* Writes every byte of `data` to `path`, creating the file (mode 0644)
  * if it does not exist.  `append` != 0 appends to an existing file;
  * otherwise the file is truncated first.  Returns 0 on success, -1 on
@@ -231,6 +236,10 @@ LyricList* lyric_dir_list(const char* path);
 /* getenv(3) wrapper.  Returns a fresh rc=1 LyricString copy of the
  * value, or NULL if the variable is unset. */
 LyricString* lyric_env_get(const char* name);
+
+/* Status-returning variant for Lyric kernels: 0 and *out set when the
+ * variable exists; -1 otherwise with *out untouched. */
+int32_t lyric_env_get_ok(const char* name, LyricString** out);
 
 /* setenv(3) wrapper (always overwrites an existing value).  Returns 0
  * on success, -1 on failure. */

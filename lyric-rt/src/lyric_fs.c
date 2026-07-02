@@ -87,6 +87,13 @@ LyricString* lyric_file_read_all(const char* path) {
     return s;
 }
 
+int32_t lyric_file_read_all_ok(const char* path, LyricString** out) {
+    LyricString* s = lyric_file_read_all(path);
+    if (!s) return -1;
+    *out = s;
+    return 0;
+}
+
 int32_t lyric_file_write_all(const char* path, LyricString* data, int32_t append) {
     int flags = O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC);
     int fd;
@@ -180,6 +187,13 @@ LyricString* lyric_env_get(const char* name) {
     const char* v = getenv(name);
     if (!v) return NULL;
     return lyric_string_from_literal((const uint8_t*)v, (int64_t)strlen(v));
+}
+
+int32_t lyric_env_get_ok(const char* name, LyricString** out) {
+    LyricString* s = lyric_env_get(name);
+    if (!s) return -1;
+    *out = s;
+    return 0;
 }
 
 int32_t lyric_env_set(const char* name, const char* value) {

@@ -454,6 +454,31 @@ static void test_process(void) {
     lyric_release(err4);
 }
 
+static void test_ok_variants(void) {
+    char tmpl[] = "/tmp/lyric_rt_ok_XXXXXX";
+    int fd = mkstemp(tmpl);
+    CHECK(fd >= 0);
+    CHECK(write(fd, "hi", 2) == 2);
+    close(fd);
+    LyricString* content = NULL;
+    CHECK(lyric_file_read_all_ok(tmpl, &content) == 0);
+    CHECK(content && lyric_string_len(content) == 2);
+    lyric_release(content);
+    LyricString* missing = NULL;
+    CHECK(lyric_file_read_all_ok("/nonexistent-lyric-ok-path", &missing) == -1);
+    CHECK(missing == NULL);
+    unlink(tmpl);
+
+    CHECK(lyric_env_set("LYRIC_RT_OK_TEST", "v") == 0);
+    LyricString* v = NULL;
+    CHECK(lyric_env_get_ok("LYRIC_RT_OK_TEST", &v) == 0);
+    CHECK(v && lyric_string_len(v) == 1);
+    lyric_release(v);
+    LyricString* nov = NULL;
+    CHECK(lyric_env_get_ok("LYRIC_RT_OK_TEST_MISSING", &nov) == -1);
+    CHECK(nov == NULL);
+}
+
 int main(void) {
     test_alloc_retain_release();
     test_strings();
@@ -463,6 +488,7 @@ int main(void) {
     test_map_int_keys();
     test_map_string_keys();
     test_posix();
+    test_ok_variants();
     test_file_io();
     test_directories();
     test_environment();
