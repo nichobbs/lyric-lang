@@ -89,10 +89,11 @@ pub func cmdUpgrade(argv: in slice[String]): Int {
     }
     return runNugetUpgrade(targetVersion, isDryRun)
   } else {
-    if not isDryRun and isNone(targetVersion) {
-      printErr("upgrade: --version <version> is required when upgrading via GitHub Releases")
-      return 1
-    }
+    // No `--version` required here: `runGithubUpgrade` resolves an omitted
+    // version to the latest published GitHub release (#4589) — a bare
+    // `lyric upgrade` tracks the latest stable release, matching the
+    // documented behavior in book/chapters/01-getting-started.md, rather
+    // than requiring the caller to already know the current version.
     val installDir = match targetDir {
       case Some(d) -> d
       case None -> appBase
@@ -140,6 +141,68 @@ func runNugetUpgrade(version: in Option[String], isDryRun: in Bool): Int {
   }
 }
 
+// Strip a single leading 'v'/'V' from a version-like string, e.g. the
+// `tag_name` GitHub attaches to a release ("v0.4.6") into the bare semver
+// form ("0.4.6") that `--version` and the install script expect (matching
+// what a caller would type via `lyric upgrade --version 0.4.6`).
+func stripLeadingV(v: in String): String {
+  if v.length > 0 and (v[0] == 'v' or v[0] == 'V') {
+    v.substring(1)
+  } else {
+    v
+  }
+}
+
+// Extracts the `tag_name` field's string value from a GitHub Releases API
+// JSON response body (the payload of GET /repos/<owner>/<repo>/releases/latest).
+// Returns None when the field is absent or malformed.
+//
+// `.indexOf` only has a 1-arg (no start-offset) intrinsic overload, so each
+// subsequent occurrence is located by re-scanning a tail substring and
+// re-offsetting the result — the same idiom `cli_version.l`'s
+// `replaceVersionInToml` uses for the same reason.
+func extractTagNameFromReleaseJson(json: in String): Option[String] {
+  val key = "\"tag_name\""
+  val keyPos = json.indexOf(key)
+  if keyPos < 0 {
+    return None
+  }
+  val afterKey = json.substring(keyPos + key.length)
+  val colonRel = afterKey.indexOf(":")
+  if colonRel < 0 {
+    return None
+  }
+  val afterColon = afterKey.substring(colonRel + 1)
+  val openRel = afterColon.indexOf("\"")
+  if openRel < 0 {
+    return None
+  }
+  val afterOpen = afterColon.substring(openRel + 1)
+  val closeRel = afterOpen.indexOf("\"")
+  if closeRel < 0 {
+    return None
+  }
+  val tag = afterOpen.substring(0, closeRel)
+  if tag.length == 0 {
+    None
+  } else {
+    Some(value = tag)
+  }
+}
+
+// Query the GitHub Releases API for the latest published release's tag
+// name.  Used as the default version for `lyric upgrade` on the GitHub
+// Releases channel when no `--version` is given, so an unqualified upgrade
+// tracks the latest stable release rather than the `main` development
+// branch tip (#4589).  None on any network failure or unparseable response
+// — the caller must not silently fall back to `main` in that case.
+func fetchLatestReleaseTag(): Option[String] {
+  match downloadUrl("https://api.github.com/repos/nichobbs/lyric-lang/releases/latest") {
+    case Some(body) -> extractTagNameFromReleaseJson(body)
+    case None -> None
+  }
+}
+
 func downloadUrl(url: in String): Option[String] {
   // Try curl
   val curlArgs: List[String] = newList()
@@ -166,14 +229,47 @@ func downloadUrl(url: in String): Option[String] {
   None
 }
 
-func runGithubUpgrade(installDir: in String, version: in Option[String], isDryRun: in Bool): Int {
+func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDryRun: in Bool): Int {
+  // Resolve an omitted `--version` to the latest published GitHub release
+  // (#4589) instead of defaulting to the `main` branch tip, which is not
+  // guaranteed stable.  This runs for both the dry-run and real paths so a
+  // dry-run preview reports the version that would actually be installed.
+  val version = match versionArg {
+    case Some(v) -> Some(value = v)
+    case None -> match fetchLatestReleaseTag() {
+      case Some(tag) -> Some(value = stripLeadingV(tag))
+      case None -> None
+    }
+  }
+  match version {
+    case Some(_) -> ()
+    case None -> {
+      printErr(
+        "upgrade: could not determine the latest release from GitHub (network error or API rate limit) — " +
+          "pass --version <version> explicitly, or see https://github.com/nichobbs/lyric-lang/releases"
+      )
+      return 1
+    }
+  }
+
   val ref = match version {
     case Some(v) -> {
       if v.startsWith("v") then v else "v" + v
     }
-    case None -> "main"
+    case None -> "main"  // unreachable: the None case above already returned.
   }
   val scriptUrl = "https://raw.githubusercontent.com/nichobbs/lyric-lang/" + ref + "/scripts/install.sh"
+
+  // `--no-path` always applies here: this is an in-place upgrade of an
+  // already-installed binary (the caller's PATH already resolves it), not a
+  // first-time install, so re-running install.sh's shell-startup-file PATH
+  // wiring would be redundant.  Surfaced explicitly (#4611) since the
+  // installer's own output gives no indication that PATH is left untouched
+  // — this matters most for `--dir <other-dir>`, where a user might
+  // otherwise expect their shell to pick up the new location automatically.
+  Console.println(
+    "Note: shell PATH entries will not be modified; the binary at " + installDir + " is updated in place."
+  )
 
   if isDryRun {
     Console.println("dry-run: would fetch install.sh from: " + scriptUrl)
