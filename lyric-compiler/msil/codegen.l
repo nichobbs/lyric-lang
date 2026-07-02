@@ -4970,6 +4970,32 @@ func blockTrailingExprMsil(blk: in Block): Option[Expr] {
   }
 }
 
+// True when a block's trailing statement is a call to the `panic` builtin —
+// the `catch Bug as b { panic(b.message) }` idiom used throughout the stdlib
+// (e.g. `Std.File.readTextOrPanic`).  Such an arm never falls through to the
+// try-catch join point (the runtime call always throws), so it doesn't need
+// to supply a value of the try body's type even though it type-checks as
+// `Never`, which lowers to `MVoid` like a genuine void arm — a real
+// Unit/value mismatch (the type-checker gap #2042 the panic diagnostic in
+// `lowerTryCatchExprMsil` guards against) still fires for every other
+// void-typed catch arm.
+func blockEndsInPanicCallMsil(blk: in Block): Bool {
+  match blockTrailingExprMsil(blk) {
+    case Some(e) -> {
+      match e.kind {
+        case ECall(fn, _) -> {
+          match fn.kind {
+            case EPath(path) -> lastSegmentMsil(path) == "panic"
+            case _ -> false
+          }
+        }
+        case _ -> false
+      }
+    }
+    case None -> false
+  }
+}
+
 func armBodyIsBareNullaryCaseMsil(cctx: in CodegenCtx, fctx: in FuncCtx, body: in ExprOrBlock): Bool {
   match body {
     case EOBExpr(e) -> {
@@ -12512,15 +12538,17 @@ func lowerTryCatchExprMsil(
           case MVoid -> {
           }
           case _ -> {
-            val pos = c.span.startPos
-            panic(
-              "Msil.Codegen: " + toString(pos.line) + ":" + toString(pos.column) +
-                ": try-catch used as an expression, but this catch arm yields Unit while the " +
-                "try body (or an earlier catch arm) yields a value; the MSIL backend cannot " +
-                "route an absent value through the result slot. Give the catch arm a trailing " +
-                "value of the try body's type, or annotate the try-catch result type explicitly " +
-                "(type-checker gap #2042)."
-            )
+            if not blockEndsInPanicCallMsil(c.body) {
+              val pos = c.span.startPos
+              panic(
+                "Msil.Codegen: " + toString(pos.line) + ":" + toString(pos.column) +
+                  ": try-catch used as an expression, but this catch arm yields Unit while the " +
+                  "try body (or an earlier catch arm) yields a value; the MSIL backend cannot " +
+                  "route an absent value through the result slot. Give the catch arm a trailing " +
+                  "value of the try body's type, or annotate the try-catch result type explicitly " +
+                  "(type-checker gap #2042)."
+              )
+            }
           }
         }
       }
