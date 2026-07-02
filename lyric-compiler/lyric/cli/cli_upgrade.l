@@ -167,34 +167,47 @@ pub func stripLeadingV(v: in String): String {
 // subsequent occurrence is located by re-scanning a tail substring and
 // re-offsetting the result — the same idiom `cli_version.l`'s
 // `replaceVersionInToml` uses for the same reason.
+//
+// A single first-occurrence scan would misfire if the release's free-text
+// `body` field (release notes) happened to contain the literal substring
+// `"tag_name"` before the real key — unlikely given the GitHub API's fixed
+// field order (`tag_name` precedes `body`), but not guaranteed by the JSON
+// grammar (#4760).  Each candidate occurrence is therefore verified as a
+// genuine key position — only whitespace between the key and the following
+// `:` — before accepting it; a false match (embedded in surrounding text)
+// is skipped and the scan continues from the next occurrence.
 // `pub` so `cli_upgrade_self_test.l` can exercise it without network I/O.
 pub func extractTagNameFromReleaseJson(json: in String): Option[String] {
   val key = "\"tag_name\""
-  val keyPos = json.indexOf(key)
-  if keyPos < 0 {
-    return None
+  var searchFrom = 0
+  while searchFrom < json.length {
+    val tail = json.substring(searchFrom)
+    val relPos = tail.indexOf(key)
+    if relPos < 0 {
+      return None
+    }
+    val keyPos = searchFrom + relPos
+    val afterKey = json.substring(keyPos + key.length)
+    val colonRel = afterKey.indexOf(":")
+    val isGenuineKey = colonRel >= 0 and afterKey.substring(0, colonRel).trim().length == 0
+    if isGenuineKey {
+      val afterColon = afterKey.substring(colonRel + 1)
+      val openRel = afterColon.indexOf("\"")
+      if openRel >= 0 {
+        val afterOpen = afterColon.substring(openRel + 1)
+        val closeRel = afterOpen.indexOf("\"")
+        if closeRel >= 0 {
+          val tag = afterOpen.substring(0, closeRel)
+          if tag.length > 0 {
+            return Some(value = tag)
+          }
+        }
+      }
+      return None
+    }
+    searchFrom = keyPos + key.length
   }
-  val afterKey = json.substring(keyPos + key.length)
-  val colonRel = afterKey.indexOf(":")
-  if colonRel < 0 {
-    return None
-  }
-  val afterColon = afterKey.substring(colonRel + 1)
-  val openRel = afterColon.indexOf("\"")
-  if openRel < 0 {
-    return None
-  }
-  val afterOpen = afterColon.substring(openRel + 1)
-  val closeRel = afterOpen.indexOf("\"")
-  if closeRel < 0 {
-    return None
-  }
-  val tag = afterOpen.substring(0, closeRel)
-  if tag.length == 0 {
-    None
-  } else {
-    Some(value = tag)
-  }
+  None
 }
 
 // Query the GitHub Releases API for the latest published release's tag
@@ -314,6 +327,15 @@ func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDr
     return 0
   }
 
+  // Invariant: `version` is always `Some` here.  The only way it stays
+  // `None` is via `versionUnresolvedOffline`, which requires `isDryRun`
+  // (the `case None ->` branch above returns 1 when `not isDryRun`), and
+  // the dry-run branch already returned above (#4762).
+  val resolvedVersion = match version {
+    case Some(v) -> v
+    case None -> panic("Lyric.Cli: runGithubUpgrade: version unexpectedly None outside dry-run")
+  }
+
   Console.println("Retrieving installation script from GitHub (" + scriptUrl + ")...")
   var scriptContent = ""
   match downloadUrl(scriptUrl) {
@@ -397,13 +419,8 @@ func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDr
   shArgs.add(installDir)
   shArgs.add("--no-path")
 
-  match version {
-    case Some(v) -> {
-      shArgs.add("--version")
-      shArgs.add(v)
-    }
-    case None -> ()
-  }
+  shArgs.add("--version")
+  shArgs.add(resolvedVersion)
 
   Console.println("Executing installation script...")
   val code = match Process.run("sh", shArgs) {

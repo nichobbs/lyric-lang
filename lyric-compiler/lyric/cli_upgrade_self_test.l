@@ -125,3 +125,16 @@ test "extractTagNameFromReleaseJson: empty tag_name value yields None" {
     case None -> ()
   }
 }
+
+test "extractTagNameFromReleaseJson: 'tag_name' occurring as a string VALUE (not a key) is skipped (#4760)" {
+  // Guards the false-positive-match skip: the literal `"tag_name"` also
+  // matches an occurrence where it's used as a VALUE rather than a key
+  // (e.g. `"other":"tag_name"`) — that occurrence isn't immediately
+  // followed by whitespace-then-`:`, so it must be skipped in favour of
+  // the genuine key that follows.
+  val json = "{\"other\":\"tag_name\",\"tag_name\":\"v2.0.0\"}"
+  match Cli.extractTagNameFromReleaseJson(json) {
+    case Some(tag) -> assertEqual(tag, "v2.0.0", "the genuine tag_name key is matched, not the value occurrence")
+    case None -> assertTrue(false, "expected Some(\"v2.0.0\"), got None")
+  }
+}
