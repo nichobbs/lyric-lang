@@ -1958,6 +1958,25 @@ pub func buildTypeIndex(asmPaths: in List[String]): Map[String, String] {
   index
 }
 
+// Human-readable summary of an IOError for a println diagnostic.  A plain
+// match rather than `Std.Errors`' own `IOError.message` UFCS helper — the
+// legacy F# mint-fallback bootstrap emitter (used when the release-download
+// stage-0 path is unavailable; see scripts/mint-stage0-fsharp.sh) cannot
+// resolve that cross-package UFCS call ("no method 'message' on type
+// IOError"), even though the self-hosted compiler resolves it fine.
+func ioErrorSummary(e: in Errors.IOError): String {
+  match e {
+    case InvalidPath(path, reason) -> "invalid path: " + path + " (" + reason + ")"
+    case FileNotFound(path) -> "file not found: " + path
+    case DirectoryNotFound(path) -> "directory not found: " + path
+    case AlreadyExists(path) -> "already exists: " + path
+    case PermissionDenied(path) -> "permission denied: " + path
+    case IoError(path, msg) -> "I/O error for " + path + ": " + msg
+    case EndOfInput(source) -> "end of input: " + source
+    case KeyNotFound(key) -> "key not found: " + key
+  }
+}
+
 // Populate both a type→assembly-name index and an assembly-name→path index from
 // one assembly, reading the DLL once.  First writer wins for each name.  Lets a
 // caller (e.g. the emitter's lazy index build) fill both maps in a single pass.
@@ -1999,7 +2018,7 @@ pub func addAssemblyToIndexesAndValueTypes(
   match File.readBytes(asmPath) {
     case Err(e) -> {
       println(
-        "W0006: addAssemblyToIndexesAndValueTypes: failed to read '" + asmPath + "' (" + e.message() +
+        "W0006: addAssemblyToIndexesAndValueTypes: failed to read '" + asmPath + "' (" + ioErrorSummary(e) +
           ") — its types will fall back to the default assembly in auto-FFI resolution (#4698)"
       )
     }
