@@ -4983,18 +4983,12 @@ func blockTrailingExprMsil(blk: in Block): Option[Expr] {
 // need to supply a value of the try body's type — a real Unit/value
 // mismatch (the type-checker gap #2042 the panic diagnostic in
 // `lowerTryCatchExprMsil` guards against) still fires for every other
-// void-typed catch arm.
+// void-typed catch arm.  Unlike `blockTrailingExprMsil`, a leading `defer`
+// doesn't disqualify the block: `lowerStmtsExprFromMsil` routes the tail
+// after a `defer` through the same trailing-statement dispatch recursively,
+// so whether the block diverges depends only on its actual last statement,
+// not on whether a `defer` precedes it (#4761).
 func blockDivergesMsil(blk: in Block): Bool {
-  var di = 0
-  while di < blk.statements.count {
-    match blk.statements[di].kind {
-      case SDefer(_) -> {
-        return false
-      }
-      case _ -> ()
-    }
-    di = di + 1
-  }
   if blk.statements.count == 0 {
     false
   } else {
