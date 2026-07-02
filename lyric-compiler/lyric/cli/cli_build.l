@@ -58,7 +58,7 @@ func validatePackageVersionArg(v: in String): Option[String] {
     return Some(
       value = "--package-version '" + v + "' has a leading '" + ("" + v[0]) +
         "' prefix, which NuGet SemVer2 does not accept — use '" +
-        Str.substring(v, 1) +
+        Str.substring(v, 1, v.length - 1) +
         "' instead"
     )
   }
