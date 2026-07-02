@@ -132,6 +132,46 @@ async func fetchBodyText(client: in DockerClient, urlStr: in String, failMsg: in
   await sendAndReadBody(client, Std.Http.request(Std.Http.GET, url), urlStr, failMsg)
 }
 
+/// Send a request and return the response body bytes on success, or a
+/// `DockerError` (carrying the status code and body text) on failure.
+/// Mirrors `sendAndReadBody` for endpoints (like `getContainerLogs`) that
+/// need the raw byte stream on success but the same text-body
+/// error-wrapping on failure.
+async func sendAndReadBytes(
+  client: in DockerClient,
+  request: in Std.Http.HttpRequest,
+  urlStr: in String,
+  failMsg: in String,
+): Result[slice[Byte], DockerError] {
+  val sent = await client.handle.send(request)
+  val response = match sent {
+    case Err(e) -> return Err(error = fromHttpError(e, ""))
+    case Ok(r) -> r
+  }
+
+  if response.isSuccess() {
+    val bodyResult = await response.bodyBytes()
+    match bodyResult {
+      case Ok(bytes) -> Ok(value = bytes)
+      case Err(_) ->
+        Err(error = fromHttpError(
+          ConnectionFailed(url = urlStr, message = "IO error reading response"), ""
+        ))
+    }
+  } else {
+    val bodyResult = await response.bodyText()
+    val details = match bodyResult {
+      case Ok(b) -> b
+      case Err(_) -> ""
+    }
+    Err(error = DockerError(
+      statusCode = Some(value = response.statusCode()),
+      message = failMsg,
+      details = details
+    ))
+  }
+}
+
 /// Ping the Docker daemon to verify connectivity.
 pub async func ping(client: in DockerClient): Result[String, DockerError] {
   match await fetchBodyText(client, dockerApiBase + "/ping", "Ping failed") {
@@ -165,7 +205,7 @@ pub async func listImages(client: in DockerClient): Result[String, DockerError] 
 
 
 /// Escape a string for embedding in a JSON string literal (RFC 8259).
-pub func jsonEscapeValue(s: in String): String {
+func jsonEscapeValue(s: in String): String {
   val parts: List[String] = newList()
   var i = 0
   while i < s.length {
@@ -211,13 +251,12 @@ func jsonStringArray(items: in slice[String]): String {
 
 /// Build the JSON body for POST /containers/create.
 func createContainerBody(image: in String, env: in slice[String], binds: in slice[String]): String {
-  return "{\"Image\":\"" + jsonEscapeValue(image) + "\"," +
-    "\"Env\":" + jsonStringArray(env) + "," +
-    "\"HostConfig\":{\"Binds\":" + jsonStringArray(binds) + "}}"
+  return "{\"Image\":\"" + jsonEscapeValue(image) + "\",\"Env\":" + jsonStringArray(env) +
+    ",\"HostConfig\":{\"Binds\":" + jsonStringArray(binds) + "}}"
 }
 
 /// Unescape a JSON string value (reverse of RFC 8259 escape sequences).
-pub func jsonUnescapeValue(s: in String): String {
+func jsonUnescapeValue(s: in String): String {
   val parts: List[String] = newList()
   var i = 0
   while i < s.length {
@@ -276,7 +315,13 @@ pub func jsonUnescapeValue(s: in String): String {
 /// `true` iff `pos` is a field-key position in `json`: the nearest
 /// non-whitespace character before `pos` is `{` or `,`. Used to reject
 /// matches of a quoted field name that occur inside an earlier string
-/// value rather than at an actual key position.
+/// value rather than at an actual key position. Known limitation: a `,`
+/// separating array elements (e.g. `["retry", "Id"]`) also satisfies this
+/// check, since there's no depth tracking to distinguish it from an
+/// object-key comma. `extractJsonField`'s only caller searches for `"Id"`
+/// in a flat container-create response body, where this collision doesn't
+/// arise; a caller extracting a field name that could plausibly also
+/// appear as an array element would need a depth-tracking rewrite first.
 func isFieldKeyPosition(json: in String, pos: in Int): Bool {
   var i = pos - 1
   while i >= 0 {
@@ -336,7 +381,11 @@ func extractJsonField(json: in String, field: in String): String {
 /// Validate a Docker container ID: must be a lowercase hex string of length 12
 /// (short form) or 64 (full SHA-256), as returned by the Docker API.  Rejects
 /// values containing path-separator or query characters that would silently
-/// reach unintended API endpoints.
+/// reach unintended API endpoints. Public so callers can validate a
+/// caller-supplied container ID (e.g. from user input or a config file)
+/// before it reaches startContainer/stopContainer/removeContainer/
+/// getContainerLogs, unlike jsonEscapeValue/jsonUnescapeValue which are
+/// internal JSON-serialization plumbing with no meaning outside this file.
 pub func isValidContainerId(id: in String): Bool {
   val len = id.length
   if len != 12 and len != 64 {
@@ -496,33 +545,16 @@ pub async func getContainerLogs(client: in DockerClient, containerId: in String)
     case Err(e) -> return Err(error = fromHttpError(e, ""))
     case Ok(u) -> u
   }
-  val sent = await client.handle.send(Std.Http.request(Std.Http.GET, url))
-  val response = match sent {
-    case Err(e) -> return Err(error = fromHttpError(e, ""))
-    case Ok(r) -> r
+  val bytesResult = await sendAndReadBytes(
+    client, Std.Http.request(Std.Http.GET, url), urlStr, "Get container logs failed"
+  )
+  val bytes = match bytesResult {
+    case Err(e) -> return Err(error = e)
+    case Ok(b) -> b
   }
-
-  if response.isSuccess() {
-    val bodyResult = await response.bodyBytes()
-    match bodyResult {
-      case Ok(bytes) -> {
-        match demultiplexDockerStream(bytes) {
-          case Some(s) -> Ok(value = s)
-          case None -> Err(error = DockerError(statusCode = None, message = "Failed to decode container logs as UTF-8", details = ""))
-        }
-      }
-      case Err(_) ->
-        Err(error = fromHttpError(
-          ConnectionFailed(url = urlStr, message = "IO error reading response"), ""
-        ))
-    }
-  } else {
-    val statusCode = response.statusCode()
-    val bodyResult = await response.bodyText()
-    val details = match bodyResult {
-      case Ok(b) -> b
-      case Err(_) -> ""
-    }
-    Err(error = DockerError(statusCode = Some(value = statusCode), message = "Get container logs failed", details = details))
+  match demultiplexDockerStream(bytes) {
+    case Some(s) -> Ok(value = s)
+    case None ->
+      Err(error = DockerError(statusCode = None, message = "Failed to decode container logs as UTF-8", details = ""))
   }
 }
