@@ -1662,6 +1662,21 @@ func coerceToStringForConcat(insns: in List[LInsn], ty: in JvmType): Unit {
     case JVoid -> panic("Jvm.Codegen: string-concatenation operand lowered to void — a Unit-typed operand should have been rejected by the type checker")
     // A void operand left nothing on the stack; silently pushing "" here
     // would mask a type-checker or lowering bug as wrong output (#4685).
+    case JArray(_) -> {
+      // An array is a reference: stringify via Object.toString like any
+      // non-String JRef.  Falling into the primitive arm below would emit
+      // String.valueOf(int) with an array reference on the stack — a
+      // verification failure (#4712).
+      val atPs: List[JvmType] = newList()
+      insns.add(
+        LInvokevirtual(
+          owner = "java/lang/Object",
+          name = "toString",
+          params = atPs,
+          ret = JRef(className = "java/lang/String")
+        )
+      )
+    }
     case _ -> {
       // String.valueOf(<primitive>) — no boxing, unlike Object.toString on a
       // boxed wrapper (keeps the closure zero-overhead boxing gate flat).
