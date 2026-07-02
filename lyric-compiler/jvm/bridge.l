@@ -519,6 +519,54 @@ func externSeedForFile(
   seed
 }
 
+// Import-aware view of the cross-package registry for one file: bare-name
+// keys are re-pointed at the packages the file actually imports (its own
+// package winning last), instead of the global first-registration winner.
+// Two bundled packages exporting the same short name (`Std.Process` and
+// `Std.ProcessCapture` both export `runCapture`) otherwise mis-resolve every
+// unqualified call in every file to whichever package registered first —
+// the #2535 collision class.  Qualified (`owner/name`) and instance
+// (`class#method`) keys are copied unchanged.
+func importAwareRegistry(file: in SourceFile, registry: in Map[String, JvmFuncSig]): Map[String, JvmFuncSig] {
+  val owners: List[String] = newList()
+  var ii = 0
+  while ii < file.imports.count {
+    if not file.imports[ii].isExtern {
+      owners.add(pkgJvmOwner(file.imports[ii].path))
+    }
+    ii = ii + 1
+  }
+  // Own package last, so in-file definitions win over any import.
+  owners.add(pkgJvmOwner(file.packageDecl.path))
+  val overlay: Map[String, JvmFuncSig] = newMap()
+  for k in mapKeys(registry) {
+    match mapGet(registry, k) {
+      case Some(sig) -> overlay.add(k, sig)
+      case None -> ()
+    }
+  }
+  var oi = 0
+  while oi < owners.count {
+    val pfx = owners[oi] + "/"
+    for k2 in mapKeys(registry) {
+      if Str.startsWith(k2, pfx) {
+        val bare = k2.substring(pfx.length, k2.length - pfx.length)
+        if bare.length > 0 and not Str.contains(bare, "/") and not Str.contains(bare, "#") and not Str.contains(bare, ".") {
+          match mapGet(registry, k2) {
+            case Some(sig2) -> {
+              overlay.remove(bare)
+              overlay.add(bare, sig2)
+            }
+            case None -> ()
+          }
+        }
+      }
+    }
+    oi = oi + 1
+  }
+  overlay
+}
+
 // Codegen one (already middle-ended) file against `registry` and append its
 // class files to `out`.  Uses an isolated constant pool per package.
 func codegenPackageInto(
@@ -531,7 +579,7 @@ func codegenPackageInto(
   acc: in List[BuiltClass],
   externSeed: in Map[String, String],
 ): Unit {
-  val pkg = codegenPackageWithSigsSeeded(file, registry, caseReg, ctorReg, autoFfi, allProjFqns, externSeed)
+  val pkg = codegenPackageWithSigsSeeded(file, importAwareRegistry(file, registry), caseReg, ctorReg, autoFfi, allProjFqns, externSeed)
   val pool = poolNew()
   val classFiles = lowerPackage(pkg, pool)
   var j = 0
