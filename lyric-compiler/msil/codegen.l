@@ -13079,13 +13079,27 @@ func buildFuncNInvokeTok(cctx: in CodegenCtx, nparams: in Int): Int {
 // Returns the TypeSpec row index for use in castclass / newobj instructions.
 // Shared cache key logic with buildFuncNCtorTokWithTypes to ensure consistency.
 // (#1877 Phase 3 — Strongly-typed invoke ABI)
-func buildFuncNTypedTypeSpec(
-  cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType], retType: in MsilType
-): Int {
-  // If we have fewer actual types than expected params, fall back to the object-based TypeSpec
-  if paramTypes.count < nparams {
-    return internFuncNTypeSpec(cctx, nparams)
+// Shared by buildFuncNTypedTypeSpec / buildFuncNInvokeTokWithTypes: the
+// `_`-joined cache-key suffix identifying a closed `Func<T1,...,Tn,TReturn>`
+// instantiation by its concrete param/return types.
+func funcNTypedKeySuffix(paramTypes: in List[MsilType], nparams: in Int, retType: in MsilType): String {
+  var typeKeySuffix = ""
+  var ti = 0
+  while ti < paramTypes.count and ti < nparams {
+    typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(paramTypes[ti])
+    ti = ti + 1
   }
+  typeKeySuffix + "_" + msilTypeKeyStr(retType)
+}
+
+// Shared by buildFuncNTypedTypeSpec / buildFuncNInvokeTokWithTypes: the
+// GENERICINST blob for `Func<T1,...,Tn,TReturn>` (ECMA-335 TypeSpec body).
+// Callers keep distinct `specKey` namespaces ("FuncSpec_typed_" vs.
+// "FuncSpec_invoke_typed_") so a TypeSpec-only cast site and an Invoke
+// MemberRef site never collide in the TypeSpec cache.
+func funcNTypedGenericInstBlob(
+  cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType], retType: in MsilType
+): List[Byte] {
   val trN = internFuncTypeRef(cctx, nparams)
   // TypeDefOrRef coded index for a TypeRef at row R: (R << 2) | 1
   val codedIdx = (trN * 4) + 1
@@ -13096,15 +13110,18 @@ func buildFuncNTypedTypeSpec(
     ai = ai + 1
   }
   actualArgs.add(retType)
-  var typeKeySuffix = ""
-  var ti = 0
-  while ti < paramTypes.count and ti < nparams {
-    typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(paramTypes[ti])
-    ti = ti + 1
+  buildGenericInstBlob(codedIdx, actualArgs)
+}
+
+func buildFuncNTypedTypeSpec(
+  cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType], retType: in MsilType
+): Int {
+  // If we have fewer actual types than expected params, fall back to the object-based TypeSpec
+  if paramTypes.count < nparams {
+    return internFuncNTypeSpec(cctx, nparams)
   }
-  typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(retType)
-  val gblob = buildGenericInstBlob(codedIdx, actualArgs)
-  val specKey = "FuncSpec_typed_" + toString(nparams) + typeKeySuffix
+  val gblob = funcNTypedGenericInstBlob(cctx, nparams, paramTypes, retType)
+  val specKey = "FuncSpec_typed_" + toString(nparams) + funcNTypedKeySuffix(paramTypes, nparams, retType)
   ctxAddTypeSpec(cctx.lctx, specKey, gblob)
 }
 
@@ -13122,24 +13139,8 @@ func buildFuncNInvokeTokWithTypes(
   if paramTypes.count < nparams {
     return buildFuncNInvokeTok(cctx, nparams)
   }
-  val trN = internFuncTypeRef(cctx, nparams)
-  // TypeDefOrRef coded index for a TypeRef at row R: (R << 2) | 1
-  val codedIdx = (trN * 4) + 1
-  val actualArgs: List[MsilType] = newList()
-  var ai = 0
-  while ai < nparams {
-    actualArgs.add(paramTypes[ai])
-    ai = ai + 1
-  }
-  actualArgs.add(retType)
-  var typeKeySuffix = ""
-  var ti = 0
-  while ti < paramTypes.count and ti < nparams {
-    typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(paramTypes[ti])
-    ti = ti + 1
-  }
-  typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(retType)
-  val gblob = buildGenericInstBlob(codedIdx, actualArgs)
+  val gblob = funcNTypedGenericInstBlob(cctx, nparams, paramTypes, retType)
+  val typeKeySuffix = funcNTypedKeySuffix(paramTypes, nparams, retType)
   val specKey = "FuncSpec_invoke_typed_" + toString(nparams) + typeKeySuffix
   val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
   val invokePs: List[MsilType] = newList()

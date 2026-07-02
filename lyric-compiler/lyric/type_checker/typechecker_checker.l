@@ -1738,7 +1738,7 @@ func checkWithImportedPackagesCore(
 // `Option[JsonArrayEnumerator]` — both the head name and every type
 // argument, recursively, so a leak nested inside a generic wrapper is still
 // caught rather than silently passing through the outer `Option` (#3964).
-func collectExternLeakTypeNames(te: in TypeExpr, names: inout List[String]): Unit {
+func collectExternLeakTypeNames(te: in TypeExpr, names: in List[String]): Unit {
   match te.kind {
     case TRef(path) -> {
       if path.segments.count > 0 {
@@ -1817,13 +1817,19 @@ func isPubFunctionDecl(fn: in FunctionDecl): Bool {
   }
 }
 
-// Shared by top-level `IFunc` and `impl` block `IMplFunc` methods (#3961):
-// both expose a signature across the FFI boundary once public, so both must
-// be checked for a leaked imported nested extern type.
+// Check every param / return type of `decl` for a leaked imported nested
+// extern type.  Shared by top-level `IFunc` and `impl` block `IMplFunc`
+// methods (#3961), but the two callers gate differently: an `IFunc` is only
+// checked when `pub` (see `isPubFunctionDecl`), while every `IMplFunc` is
+// always checked — per `docs/grammar.ebnf`'s `ImplMember` production, an
+// impl-block method is always a bare `FunctionDecl` with no `pub`/`internal`
+// prefix (`parseImplMemberOpt` has no visibility-keyword arm at all), so
+// `fn.visibility` is unconditionally `None` and can never gate anything.
+// An impl method's reachability instead follows its conformed interface /
+// target type, which are outside the local, per-item scope this pass
+// works in; treating every impl method as checkable is the conservative
+// (over- rather than under-warn) choice for a signature-leak lint.
 func checkExternBoundaryLeaksFunc(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in FunctionDecl): Unit {
-  if not isPubFunctionDecl(decl) {
-    return
-  }
   var p = 0
   while p < decl.params.count {
     checkExternLeakTypeExpr(tbl, diag, decl.params[p].ty, decl.name)
@@ -1840,7 +1846,11 @@ func checkExternBoundaryLeaks(tbl: in SymbolTable, diag: in List[Diagnostic], it
   var i = 0
   while i < items.count {
     match items[i].kind {
-      case IFunc(decl) -> checkExternBoundaryLeaksFunc(tbl, diag, decl)
+      case IFunc(decl) -> {
+        if isPubFunctionDecl(decl) {
+          checkExternBoundaryLeaksFunc(tbl, diag, decl)
+        }
+      }
       case IImpl(decl) -> {
         var mi = 0
         while mi < decl.members.count {

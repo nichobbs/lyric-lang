@@ -1156,14 +1156,15 @@ func parseInterfaceBody(st: inout ParseState, genericsPrefix: Option[GenericPara
 // `stripLeadingSelfParam` before treating the rest of `fn.params` as real
 // parameters — `injectSelfIfNeeded` guarantees that param exists so the
 // strip has something to remove.  `lowerImplMethod` / `lowerImplMethodMsil`
-// take `fn.params` as-is and *always* reserve receiver slot 0 implicitly
-// (matching how the `self` keyword parses to `ESelf`, which compiles
-// straight to `ldarg.0`/ISTORE-independent of any named parameter).
-// Injecting a synthetic self param here would add a real, uninjected extra
-// entry to `fn.params` that neither impl codegen path strips, silently
-// shifting every declared parameter's slot by one. Do not add
-// `injectSelfIfNeeded` to this function without also updating
-// `lowerImplMethod` (JVM) and `lowerImplMethodMsil` (MSIL) to strip it.
+// take `fn.params` as-is and *always* reserve receiver slot 0 implicitly,
+// independent of `fn.params`'s contents (the `self` keyword parses to the
+// dedicated `ESelf` AST node, which always compiles straight to `ldarg.0` —
+// never a named-parameter lookup).  Injecting a synthetic self param here
+// would add a real, un-stripped extra entry to `fn.params` that neither
+// impl codegen path expects, silently shifting every declared parameter's
+// slot by one.  Do not add `injectSelfIfNeeded` to this function without
+// also updating `lowerImplMethod` (JVM) and `lowerImplMethodMsil` (MSIL)
+// to strip it first.
 func parseImplMemberOpt(st: inout ParseState): Option[ImplMember] {
   val docs = parseItemDocComments(st)
   val anns = parseItemAnnotations(st)
