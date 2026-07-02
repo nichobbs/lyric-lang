@@ -76,7 +76,7 @@ pub func hostTryParseInstant(s: in String, value: out Instant): Bool {
   try {
     value = Instant.parse(s)
     true
-  } catch Bug as b {
+  } catch Bug as _ {
     value = Instant.ofEpochMilli(0)
     false
   }
