@@ -359,7 +359,7 @@ ImportItem  = IDENT [ 'as' IDENT ] ;
 
 (* Wildcard imports ('import Foo.*') are rejected by the grammar: there is
  * no production that admits '*' in this position.
- * 'import extern' requires a selector group '{ ... }' per D105 (Q47-001):
+ * 'import extern' requires a selector group '{ ... }' per D116 (Q47-001):
  * bare 'import extern Foo.Bar' is invalid; the '.' ImportTail is mandatory
  * for extern imports. The parser enforces this with P0035 diagnostic. *)
 
