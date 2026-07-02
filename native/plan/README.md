@@ -14,21 +14,21 @@ corrections were required and are codified in `docs/03-decision-log.md`
 §D-N-014 (package head/location, loader-based kernel selection,
 `Native`-suffixed entry points) — read that entry alongside this plan.
 
-Phase N2's core SHIPPED (D-progress-542): records, unions, enums,
+Phase N2's core SHIPPED (D-progress-544): records, unions, enums,
 distinct types, pattern matching, and ARC retain/release insertion per
 `04-arc-design.md` Rules 1–7, verified end-to-end under
 AddressSanitizer/LeakSanitizer (`llvm_heap_self_test.l`).  Closures
-(N2.6) SHIPPED in D-progress-544 (by-value captures, synthesised
+(N2.6) SHIPPED in D-progress-547 (by-value captures, synthesised
 capture-releasing destructors, signature-keyed closure types, indirect
-calls); `NativeWeak[T]` (N2.5) SHIPPED in D-progress-545 — all of
+calls); `NativeWeak[T]` (N2.5) SHIPPED in D-progress-548 — all of
 Phase N2 is complete.
 
-N3.1 SHIPPED (D-progress-542 types, D-progress-543 functions): generic
+N3.1 SHIPPED (D-progress-545 types, D-progress-546 functions): generic
 records/unions instantiate on demand per concrete type-argument tuple
 (constructor-argument inference + expected-type threading), and generic
 functions instantiate per call site with unification-based inference,
 cache-first recursion handling, and generic UFCS.  Tuples (N3.3)
-SHIPPED in D-progress-546 as synthesised records.  Interfaces/vtables
+SHIPPED in D-progress-549 as synthesised records.  Interfaces/vtables
 (N3.2) and protected types (N3.4) remain from N3.
 Remaining work items (rest of N2/N3, the rest of N4/N5/N6, N7 CI)
 execute from `08-work-items.md` as written, modulo the D-N-014 naming

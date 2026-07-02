@@ -26017,7 +26017,7 @@ pipe support.
 
 ---
 
-### D-progress-542 — Native backend Phase N2: records, unions, enums, distinct types, pattern matching, ARC
+### D-progress-544 — Native backend Phase N2: records, unions, enums, distinct types, pattern matching, ARC
 
 **Shipped.** The second slice of the LLVM native backend
 (`native/plan/08-work-items.md` items N2.1–N2.4 plus the ARC insertion
@@ -26087,7 +26087,7 @@ lowered until the N5 stdlib port.
 
 ---
 
-### D-progress-542 — Native backend N3.1: generic type monomorphization (records and unions)
+### D-progress-545 — Native backend N3.1: generic type monomorphization (records and unions)
 
 **Shipped.** Generic records and unions instantiate on demand in the
 native backend, keyed per concrete type-argument tuple
@@ -26125,15 +26125,15 @@ is the next N3.1 slice), interfaces/vtables (N3.2), tuples (N3.3),
 closures (N2.6), `NativeWeak[T]` (N2.5 — now unblocked by
 instantiated `Option[T]`).
 
-**Related:** D-progress-541, `native/plan/08-work-items.md` §N3.1, #4631.
+**Related:** D-progress-544, `native/plan/08-work-items.md` §N3.1, #4631.
 
 ---
 
-### D-progress-543 — Native backend N3.1 (functions): call-site generic function instantiation
+### D-progress-546 — Native backend N3.1 (functions): call-site generic function instantiation
 
 **Shipped.** Generic functions instantiate per concrete type-argument
 tuple at their call sites in the native backend, completing N3.1
-(D-progress-542 covered generic types):
+(D-progress-545 covered generic types):
 
 - Generic declarations register by call key (`Pkg.name/arity`, bare
   `name/arity`) instead of entering the signature registry; the bundle
@@ -26157,11 +26157,11 @@ case (27 total): multi-instantiation (`wrap(40)` / `wrap("hello")`),
 UFCS, identity, and a generic function returning a generic
 instantiation, ASan-verified with the rest of the suite.
 
-**Related:** D-progress-542, `native/plan/08-work-items.md` §N3.1, D-N-010.
+**Related:** D-progress-545, `native/plan/08-work-items.md` §N3.1, D-N-010.
 
 ---
 
-### D-progress-544 — Native backend N2.6: closures
+### D-progress-547 — Native backend N2.6: closures
 
 **Shipped.** Lambda literals lower to ARC-managed closures in the
 native backend:
@@ -26190,11 +26190,11 @@ native backend:
 composition — capture retain/release and the closure destructor
 verified leak-free.
 
-**Related:** D-progress-543, `native/plan/08-work-items.md` §N2.6.
+**Related:** D-progress-546, `native/plan/08-work-items.md` §N2.6.
 
 ---
 
-### D-progress-545 — Native backend N2.5: NativeWeak[T]
+### D-progress-548 — Native backend N2.5: NativeWeak[T]
 
 **Shipped.** Phase N2 is complete: `NativeWeak[T]` lands as the
 plan's non-owning cycle-breaking reference (D-N-005):
@@ -26215,12 +26215,12 @@ plan's non-owning cycle-breaking reference (D-N-005):
 (29 total): upgrades of a live target across 200 iterations plus
 weak-to-temporary nodes, rc balancing leak-free.
 
-**Related:** D-progress-544, `native/plan/04-arc-design.md`
+**Related:** D-progress-547, `native/plan/04-arc-design.md`
 §NativeWeak, D-N-005.
 
 ---
 
-### D-progress-546 — Native backend N3.3: tuples
+### D-progress-549 — Native backend N3.3: tuples
 
 **Shipped.** Tuples lower as synthesised records
 (`__tuple<i32,LyricString*>` with fields `_0.._n`), reusing the record
@@ -26240,11 +26240,11 @@ element-releasing destructors:
 destructuring in a 300-iteration loop with string elements —
 element release verified leak-free.
 
-**Related:** D-progress-545, `native/plan/08-work-items.md` §N3.3.
+**Related:** D-progress-548, `native/plan/08-work-items.md` §N3.3.
 
 ---
 
-### D-progress-547 — Native backend N4.2 (codegen): `nativeAddrOf`
+### D-progress-550 — Native backend N4.2 (codegen): `nativeAddrOf`
 
 **Shipped (codegen half).** `nativeAddrOf(x)` lowers to the local's
 stack-slot pointer (the alloca IS the address — no extra IR), enabling
@@ -26259,5 +26259,5 @@ returned `NativePtr[Byte]`.
 operands, no escaping — is front-end work shared by all targets and
 lands with the mode-checker N4.2 slice.
 
-**Related:** D-progress-546, `native/plan/05-ffi-design.md`
+**Related:** D-progress-549, `native/plan/05-ffi-design.md`
 §nativeAddrOf.
