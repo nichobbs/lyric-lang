@@ -36,6 +36,7 @@ import Std.String as Str
 import Std.Char as Ch
 import Std.Encoding as Enc
 import Std.Environment as Environment
+import Std.Errors
 import Std.File as File
 import Std.Path as Path
 import Std.Parse as Parse
@@ -1975,7 +1976,14 @@ pub func addAssemblyToIndexes(
 // Populate the type→assembly-name, assembly-name→path, and value-type indexes
 // from one assembly with a single disk read and a single metadata parse — the
 // merged form of `addAssemblyToIndexes` + `addAssemblyValueTypes` (#2147).
-// First writer wins for every name; malformed assemblies are skipped silently.
+// First writer wins for every name; a malformed assembly is skipped (a single
+// broken DLL must not abort building the index), but the skip is logged
+// (W0006) rather than silent: every type the skipped assembly would have
+// contributed silently falls back to the wrong owning assembly in
+// `assemblyForTypeMsil` (e.g. the CoreLib-forwarding default "System.Runtime",
+// which is wrong for a dedicated facade like System.Console), producing a
+// TypeRef that compiles cleanly but throws `TypeLoadException` at first use —
+// a failure mode with no build-time signal until this warning (#4698).
 pub func addAssemblyToIndexesAndValueTypes(
   typeIndex: in Map[String, String],
   pathIndex: in Map[String, String],
@@ -1989,9 +1997,21 @@ pub func addAssemblyToIndexesAndValueTypes(
     case None -> pathIndex.add(nm, asmPath)
   }
   match File.readBytes(asmPath) {
-    case Err(_) -> {
+    case Err(e) -> {
+      println(
+        "W0006: addAssemblyToIndexesAndValueTypes: failed to read '" + asmPath + "' (" + e.message() +
+          ") — its types will fall back to the default assembly in auto-FFI resolution (#4698)"
+      )
     }
-    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) { case None -> {  }; case Some(ri) -> { scanPublicTypes(ri, nm, typeIndex); scanValueTypes(ri, vtypeSet) } }
+    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) {
+      case None -> {
+        println(
+          "W0006: addAssemblyToIndexesAndValueTypes: failed to parse '" + asmPath +
+            "' as a .NET assembly — its types will fall back to the default assembly in auto-FFI resolution (#4698)"
+        )
+      }
+      case Some(ri) -> { scanPublicTypes(ri, nm, typeIndex); scanValueTypes(ri, vtypeSet) }
+    }
   }
 }
 
