@@ -359,9 +359,13 @@ ImportItem  = IDENT [ 'as' IDENT ] ;
 
 (* Wildcard imports ('import Foo.*') are rejected by the grammar: there is
  * no production that admits '*' in this position.
- * 'import extern' requires a selector group '{ ... }' per D116 (Q47-001):
- * bare 'import extern Foo.Bar' is invalid; the '.' ImportTail is mandatory
- * for extern imports. The parser enforces this with P0035 diagnostic. *)
+ * 'import extern' does NOT require a selector group '{ ... }': a bare
+ * 'import extern Foo.Bar' imports the single external type named by the
+ * trailing path segment, matching the language reference (docs/01
+ * §9.2, e.g. 'import extern System.DateTime') and D116 (Q47-001,
+ * docs/47). The '.' ImportTail above is optional for both plain and
+ * extern imports; see parser_self_test.l's "import extern without
+ * selector" case. *)
 
 
 (* ============================================================================

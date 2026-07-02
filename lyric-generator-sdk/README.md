@@ -382,7 +382,7 @@ Parse errors in generated source are fatal (compiler diagnostic G0004 points at 
 
 Generators run at compile time. Avoid:
 - Side effects (file I/O, network, environment)
-- Non-deterministic output (relying on `Math.random`, `Date.now`)
+- Non-deterministic output (relying on `Std.Uuid.newUuid`, `Std.Time.now`, or any other runtime-state-dependent function)
 - Dependencies on type-checking state (generators can't call the type checker)
 
 ## Generator discovery

@@ -1089,6 +1089,12 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0111` | Unknown constraint name in a `where` clause (warning) |
 | `T0112` | Refutable pattern in a `for` loop binding (only names, `_`, parentheses, and tuples of those) |
 
+### Type checker warnings (W-series)
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `W0006` | warning | A `pub` function exposes an **imported nested** host extern type (a CLR FQN containing `+`, e.g. `System.Text.Json.JsonElement+ArrayEnumerator`) in its signature. Nested types are host implementation details meant to stay behind the `_kernel/` FFI boundary. A kernel file that declares the extern type locally is exempt. Fix: wrap the host type in an opaque Lyric type (as `Std.Json` does with `JsonArrayCursor` / `JsonObjectCursor`) instead of exposing it directly. Top-level domain extern types are not flagged. |
+
 ### Emitter (E-series)
 
 | Code | Meaning |

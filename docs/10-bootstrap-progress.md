@@ -25745,7 +25745,9 @@ closure-returning-closure patterns. All cases run identically on both MSIL and J
 - #4183: Closure class synthesis wiring (resolved)
 - #4199: finishHoistedCellMsil stelem stack ordering (resolved)
 - #4211: MSIL bool/char ldelem instruction selection (resolved)
-- #4214: MLong/MDouble hoisted-var cell boxing (in progress)
+- #4214: MLong/MDouble hoisted-var cell boxing (resolved — `MLdelemI8`/`MLdelemR8`
+  typed-array loads and `canUseTypedArrayLoad` coverage for `MLong`/`MDouble`
+  shipped in `lyric-compiler/msil/lowering.l`)
 - Remaining: #4189 ✓, #4177 ✓, etc.
 
 ### D-progress-536 — `--package-version` flag for `lyric build` and `lyric publish`
