@@ -297,13 +297,14 @@ func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDr
   // installer's own output gives no indication that PATH is left untouched
   // — this matters most for `--dir <other-dir>`, where a user might
   // otherwise expect their shell to pick up the new location automatically.
-  // Printed before the dry-run gate below, so it must hold for a preview as
-  // well as a real run — "will be" rather than "is" (#4768).
-  Console.println(
-    "Note: shell PATH entries will not be modified; the binary at " + installDir + " will be updated in place."
-  )
+  // Split per-branch (rather than printed unconditionally above the
+  // dry-run gate) so the wording matches what actually happens in each
+  // path — a dry-run does not touch the binary at all (#4768).
 
   if isDryRun {
+    Console.println(
+      "Note: shell PATH entries would not be modified; the binary at " + installDir + " would be updated in place."
+    )
     if versionUnresolvedOffline {
       Console.println(
         "dry-run: no --version given and the latest GitHub release could not be resolved right now " +
@@ -328,6 +329,10 @@ func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDr
     )
     return 0
   }
+
+  Console.println(
+    "Note: shell PATH entries will not be modified; the binary at " + installDir + " will be updated in place."
+  )
 
   // Invariant: `version` is always `Some` here.  The only way it stays
   // `None` is via `versionUnresolvedOffline`, which requires `isDryRun`
