@@ -297,8 +297,10 @@ func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDr
   // installer's own output gives no indication that PATH is left untouched
   // — this matters most for `--dir <other-dir>`, where a user might
   // otherwise expect their shell to pick up the new location automatically.
+  // Printed before the dry-run gate below, so it must hold for a preview as
+  // well as a real run — "will be" rather than "is" (#4768).
   Console.println(
-    "Note: shell PATH entries will not be modified; the binary at " + installDir + " is updated in place."
+    "Note: shell PATH entries will not be modified; the binary at " + installDir + " will be updated in place."
   )
 
   if isDryRun {
