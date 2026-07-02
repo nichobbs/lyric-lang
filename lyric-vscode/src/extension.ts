@@ -84,17 +84,25 @@ function startLsp(context: vscode.ExtensionContext): void {
                     if (error) {
                         // `error` is set for any exec failure (ENOENT, EACCES, EPERM,
                         // a non-zero exit, a timeout, ...), not just "binary missing".
-                        // Only report the .NET-SDK-missing message for the case it
-                        // actually describes; anything else would send a user with a
-                        // working but misbehaving `dotnet` on a wild goose chase.
+                        // Only report the .NET-SDK-missing message -- and only offer
+                        // "View Setup Guide" (which explains installing the SDK) -- for
+                        // the case it actually describes; anything else would send a
+                        // user with a working but misbehaving `dotnet` on a wild goose
+                        // chase to "install" something they already have.
                         const isNotFound = (error as NodeJS.ErrnoException).code === 'ENOENT';
-                        const message = isNotFound
-                            ? 'The .NET SDK is required to install the Lyric CLI, but "dotnet" was not found on your PATH. ' +
-                              'Please install the .NET SDK and try again.'
-                            : `"dotnet --version" failed: ${error.message}. Please resolve this and try again.`;
-                        const guideChoice = await vscode.window.showErrorMessage(message, 'View Setup Guide');
-                        if (guideChoice === 'View Setup Guide') {
-                            vscode.env.openExternal(vscode.Uri.parse('https://github.com/nichobbs/lyric-lang#quick-start'));
+                        if (isNotFound) {
+                            const guideChoice = await vscode.window.showErrorMessage(
+                                'The .NET SDK is required to install the Lyric CLI, but "dotnet" was not found on your PATH. ' +
+                                'Please install the .NET SDK and try again.',
+                                'View Setup Guide'
+                            );
+                            if (guideChoice === 'View Setup Guide') {
+                                vscode.env.openExternal(vscode.Uri.parse('https://github.com/nichobbs/lyric-lang#quick-start'));
+                            }
+                        } else {
+                            await vscode.window.showErrorMessage(
+                                `"dotnet --version" failed: ${error.message}. Please resolve this and try again.`
+                            );
                         }
                         return;
                     }
