@@ -7378,6 +7378,64 @@ D-progress-502 (103/103 measurement on 2026-06-11).
 
 ---
 
+## D-progress-543 — Published NuGet `lyric` 0.4.9's `lyric fmt` diverges from `main`'s canonical match-arm style; hand-formatting is an accepted interim substitute in a source-build-less sandbox
+
+**Context.** `CLAUDE.md`'s "Formatting" section mandates running the
+**self-hosted** formatter (`lyric-compiler/lyric/fmt/`, invoked via
+`./bin/lyric fmt --write`, built from this repo's own source) over every
+changed `.l` file before committing — explicitly *not* any other formatter.
+Some sandboxes used for this repo's automated sessions cannot build
+`./bin/lyric` from source: the release-download bootstrap step is blocked by
+network policy, and the historical F# mint-fallback path no longer exists
+(F# was fully purged from the repo, `scripts/mint-stage0-fsharp.sh` requires
+`git rev-parse 44a0d1e7~1`, which doesn't resolve after history rewrites).
+The only formatter available in that environment is the **published NuGet
+`lyric` 0.4.9 global tool** (`dotnet tool install -g lyric`).
+
+**The problem.** While fixing SUGGESTION-severity review findings in
+`lyric-docker/src/docker.l` (PR #4650), running `lyric fmt --write` from the
+0.4.9 tool collapsed the file's established multi-line `match` block style
+(one `case` arm per line) into single-line semicolon-separated form (e.g.
+`match sent { case Err(e) -> return Err(...); case Ok(r) -> r }`) —
+including for functions the PR never touched (`fromHttpError`, confirmed by
+isolating a reformat run to only that function). Since this collapsed style
+appears nowhere else in the file's history before this run, and the tool's
+`fmt` is idempotent on its own output, this is conclusive evidence the 0.4.9
+tool's formatter has diverged from whatever formatter last produced this
+file's committed state on `main` — not a case of the file having been
+hand-edited without formatting.
+
+**Decision.** In a sandbox that cannot build `./bin/lyric` from source, when
+the published NuGet tool's `lyric fmt --write` output measurably diverges
+from the pre-existing style of a file being edited (verified by isolating
+the reformat to untouched code, as above — not merely "it looks different"),
+hand-formatting new/changed code to match the file's existing established
+style is an accepted **interim substitute** for running the formatter,
+provided:
+
+1. The divergence is verified, not assumed (isolate a reformat run to
+   code outside the actual diff; if untouched code also gets rewritten,
+   that's the signal, not a stylistic hunch).
+2. The PR description documents which files were hand-formatted and why,
+   so reviewers know to check style-consistency manually rather than
+   trusting a `lyric fmt` run happened.
+3. This is not used as a general excuse to skip formatting — it applies
+   only when the tool is demonstrated to actively fight the file's
+   established convention, not merely "unavailable" or "inconvenient."
+
+This does **not** change the standing rule for sessions that *can* build
+`./bin/lyric` from source (the overwhelming majority): those must still run
+the self-hosted formatter per `CLAUDE.md`, unchanged. This decision is
+scoped to source-build-less sandboxes only, and is superseded the moment a
+working self-hosted build is available in that environment.
+
+**Related:** PR #4650 (the fix batch that surfaced this), issue #4658 (the
+review finding that prompted this entry), `CLAUDE.md` "Formatting — run
+`lyric fmt` before every commit", `scripts/mint-stage0-fsharp.sh` (the
+retired F# mint-fallback this sandbox limitation stems from).
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
