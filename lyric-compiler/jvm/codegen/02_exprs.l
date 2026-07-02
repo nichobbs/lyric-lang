@@ -1641,9 +1641,9 @@ func lowerInterpolated(ctx: in FuncCtx, insns: in List[LInsn], segments: in List
 
 // Stringify the top-of-stack value for a StringBuilder `append(String)` call:
 // a String is left as-is; any other reference (an erased `Object` slice
-// element, an extern value) calls `Object.toString`; a primitive boxes first.
-// `JVoid` (nothing on the stack) pushes an empty string so the append stays
-// balanced.
+// element, an extern value) calls `Object.toString`; a primitive goes through
+// `String.valueOf(<primitive>)` (no boxing).  `JVoid` (nothing on the stack)
+// is a type-checker/lowering bug and panics (#4685).
 func coerceToStringForConcat(insns: in List[LInsn], ty: in JvmType): Unit {
   match ty {
     case JRef(c) -> {
