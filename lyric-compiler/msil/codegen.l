@@ -23379,6 +23379,9 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
       }
       case IExternType(_) -> {
       }
+      case IExternFunc(_) -> {
+        // native-target C-ABI decl (D-N-007); only the LLVM backend lowers these
+      }
       case ITest(_) -> {
       }
       case IProperty(_) -> {

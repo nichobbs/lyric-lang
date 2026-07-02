@@ -618,6 +618,7 @@ pub func itemDoc(item: in Item, ctx: inout FmtCtx): List[String] {
     case IVal(vd) -> concatDoc(header, valDoc(visStr, vd))
     case IExtern(ep) -> externDoc(item, ep, ctx)
     case IExternType(et) -> concatDoc(header, externTypeDoc(visStr, et))
+    case IExternFunc(ef) -> concatDoc(header, externFuncDoc(visStr, ef))
     case ITest(td) -> concatDoc(header, testDoc(td, ctx))
     case IProperty(pd) -> concatDoc(header, propertyDoc(pd, ctx))
     case IFixture(fd) -> concatDoc(header, fixtureDoc(fd))
@@ -1036,6 +1037,13 @@ func externDoc(item: in Item, ep: in ExternPackageDecl, ctx: inout FmtCtx): List
 
 func externTypeDoc(visStr: in String, et: in ExternTypeDecl): List[String] {
   singleLineDoc(visStr + "extern type " + et.name + genParamsStr(et.generics) + " = \"" + et.clrName + "\"")
+}
+
+func externFuncDoc(visStr: in String, ef: in ExternFuncDecl): List[String] {
+  val retStr = match ef.ret { case Some(t) -> ": " + typeStr(t); case None -> "" }
+  singleLineDoc(
+    visStr + "extern func " + ef.name + "(" + paramsStr(ef.params) + ")" + retStr + " = \"" + ef.symbol + "\""
+  )
 }
 
 func testDoc(td: in TestDecl, ctx: inout FmtCtx): List[String] {

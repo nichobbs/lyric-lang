@@ -504,10 +504,7 @@ func collectInLambdaNamesBlockBody(b: in Block, acc: in List[String]): Unit {
 
 // Compute the pre-pass set of `var` names referenced inside lambdas
 // in the function body.  These must be hoisted to heap cells for by-ref capture.
-func computeHoistedVarNamesJvm(
-  decl: in FunctionDecl,
-  mutableVars: in Map[String, Bool]
-): List[String] {
+func computeHoistedVarNamesJvm(decl: in FunctionDecl, mutableVars: in Map[String, Bool]): List[String] {
   val inLambdaNames: List[String] = newList()
   match decl.body {
     case Some(body) -> {
@@ -3394,6 +3391,9 @@ pub func codegenPackageWithSigs(
       case IExtern(_) -> {
       }
       case IExternType(_) -> {
+      }
+      case IExternFunc(_) -> {
+        // native-target C-ABI decl (D-N-007); only the LLVM backend lowers these
       }
       case ITest(_) -> {
       }

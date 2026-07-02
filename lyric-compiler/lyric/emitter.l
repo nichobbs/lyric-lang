@@ -881,10 +881,11 @@ func mergePackageSources(
 // True when `pkg` is one of the self-hosted compiler namespaces that
 // `loadCompilerPayloads` discovers from disk (as opposed to a `Std.*`
 // package, which the bridge resolves from `lyric-stdlib/std/`).
-// Includes Native.* for the forthcoming LLVM native backend packages.
+// Llvm.* is the LLVM native backend (`lyric-compiler/llvm/`, docs/03
+// D-N-001..013); Native.* is reserved alongside it.
 func isCompilerPackage(pkg: in String): Bool {
   Str.startsWith(pkg, "Lyric.") or Str.startsWith(pkg, "Msil.") or Str.startsWith(pkg, "Jvm.") or
-    Str.startsWith(pkg, "Native.")
+    Str.startsWith(pkg, "Llvm.") or Str.startsWith(pkg, "Native.")
 }
 
 // Discover the self-hosted compiler packages under `compilerDir` and

@@ -2032,6 +2032,42 @@ func parseExternTypeBody(st: inout ParseState): ExternTypeDecl {
   )
 }
 
+/// `extern func <name>(<params>): <ret> = "<symbol>"` (D-N-007).  The
+/// `= "symbol"` clause is mandatory; the symbol is a bare C identifier.
+func parseExternFuncBody(st: inout ParseState): ExternFuncDecl {
+  val startTok = advance(st)
+  // 'extern'
+  val _ = advance(st)
+  // 'func'
+  val ns = readIdent(st, "extern func")
+  val parameters = parseParamList(st)
+  val returnType = match tryEatPunct(st, Colon) { case Some(_) -> Some(parseTypeExpr(st)); case None -> None }
+  match tryEatPunct(st, Eq) {
+    case Some(_) -> {
+    }
+    case None -> {
+      emitErr(st, "P0275", "expected '= \"symbol\"' after extern func signature", peekSpan(st))
+    }
+  }
+  val symResult = match peekToken(st) {
+    case TString(s) -> {
+      val tok = advance(st)
+      NameAndSpan(name = s, span = tok.span)
+    }
+    case _ -> {
+      emitErr(st, "P0276", "expected a string literal naming the C symbol (e.g. \"write\")", peekSpan(st))
+      NameAndSpan(name = "<error>", span = peekSpan(st))
+    }
+  }
+  ExternFuncDecl(
+    name = ns.name,
+    params = parameters,
+    ret = returnType,
+    symbol = symResult.name,
+    span = joinSpans(startTok.span, symResult.span)
+  )
+}
+
 func parseModuleValBody(st: inout ParseState): ValDecl {
   val startTok = advance(st)
   // 'val'
@@ -3343,6 +3379,9 @@ func parseItemOpt(st: inout ParseState): Option[List[Item]] {
                 }
                 case KwType -> {
                   IExternType(decl = parseExternTypeBody(st))
+                }
+                case KwFunc -> {
+                  IExternFunc(decl = parseExternFuncBody(st))
                 }
                 case _ -> {
                   emitErr(st, "P0040", "expected an item declaration", nextTok.span)
