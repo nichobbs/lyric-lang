@@ -945,12 +945,27 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       lowerInterpolated(ctx, insns, segments)
     }
 
-    // ── Unsupported forms: panic at codegen time ──────────────────────────
+    // ── Quantifiers ───────────────────────────────────────────────────────
+    // `forall`/`exists` are proof-time quantifiers over possibly-unbounded
+    // domains.  In `@runtime_checked` modules they are approximated as `true`
+    // (a sound overapproximation — the assert passes, no false-negative
+    // crash), matching the MSIL backend's resolution (#1506); W0002 informs
+    // the user the clause is not enforced at runtime (#3227).
     case EForall(_, _, _) -> {
-      panic("Jvm.Codegen: EForall not supported in JVM codegen")
+      println(
+        "W0002: forall quantifier in @runtime_checked contract is not evaluated at runtime " +
+          "(sound overapproximation as true; consider restricting the domain or using @proof_required)"
+      )
+      insns.add(LIconst(v = 1))
+      JBoolean
     }
     case EExists(_, _, _) -> {
-      panic("Jvm.Codegen: EExists not supported in JVM codegen")
+      println(
+        "W0002: exists quantifier in @runtime_checked contract is not evaluated at runtime " +
+          "(sound overapproximation as true; consider restricting the domain or using @proof_required)"
+      )
+      insns.add(LIconst(v = 1))
+      JBoolean
     }
     case EOld(_) -> {
       panic("Jvm.Codegen: EOld not supported in JVM codegen")

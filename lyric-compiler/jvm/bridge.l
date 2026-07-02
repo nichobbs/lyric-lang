@@ -495,26 +495,33 @@ func externSeedForFile(
   file: in SourceFile, extPkgNames: in List[String], extPkgMaps: in List[Map[String, String]]
 ): Map[String, String] {
   val seed: Map[String, String] = newMap()
+  // Build the file's import set once, then make a single pass over the
+  // package list — O(imports + packages) instead of the previous
+  // O(imports × packages) nested scan (#4667).
+  val wanted: Map[String, Bool] = newMap()
   var ii = 0
   while ii < file.imports.count {
     val dn = dottedPath(file.imports[ii].path)
-    var pi = 0
-    while pi < extPkgNames.count {
-      if extPkgNames[pi] == dn {
-        for k in mapKeys(extPkgMaps[pi]) {
-          match mapGet(extPkgMaps[pi], k) {
-            case Some(v) -> {
-              if not seed.containsKey(k) {
-                seed.add(k, v)
-              }
-            }
-            case None -> ()
-          }
-        }
-      }
-      pi = pi + 1
+    if not wanted.containsKey(dn) {
+      wanted.add(dn, true)
     }
     ii = ii + 1
+  }
+  var pi = 0
+  while pi < extPkgNames.count {
+    if wanted.containsKey(extPkgNames[pi]) {
+      for k in mapKeys(extPkgMaps[pi]) {
+        match mapGet(extPkgMaps[pi], k) {
+          case Some(v) -> {
+            if not seed.containsKey(k) {
+              seed.add(k, v)
+            }
+          }
+          case None -> ()
+        }
+      }
+    }
+    pi = pi + 1
   }
   seed
 }
@@ -579,7 +586,15 @@ func codegenPackageInto(
   acc: in List[BuiltClass],
   externSeed: in Map[String, String],
 ): Unit {
-  val pkg = codegenPackageWithSigsSeeded(file, importAwareRegistry(file, registry), caseReg, ctorReg, autoFfi, allProjFqns, externSeed)
+  val pkg = codegenPackageWithSigsSeeded(
+    file,
+    importAwareRegistry(file, registry),
+    caseReg,
+    ctorReg,
+    autoFfi,
+    allProjFqns,
+    externSeed
+  )
   val pool = poolNew()
   val classFiles = lowerPackage(pkg, pool)
   var j = 0
@@ -976,6 +991,76 @@ func collectAspectWovenSigs(file: in SourceFile, into: in Map[String, JvmFuncSig
   }
 }
 
+// Detect a monomorphizer-specialised function name.  `Lyric.Mono` mangles a
+// specialised copy as `<base>__<T1>__<T2>` (`specFuncName`), so the name
+// carries a `__` infix.  Aspect-weave names (`__aspect_` infix) and
+// test-synth names (`__lyric_` prefix) also contain `__` but are handled by
+// their own collectors / the pre-middle-end registry pass; exclude them so
+// this stays the mono-only patch.
+func isMonoSpecializedName(name: in String): Bool {
+  Str.contains(name, "__") and not Str.contains(name, "__aspect_") and not Str.startsWith(name, "__lyric_")
+}
+
+// Register the sigs of monomorphizer-specialised functions (`mapKeys__String__Int`,
+// `unwrapOr__Int`, …) from the POST-mono file, patching the registry built from
+// the pre-middle-end sources (#3229).  Mono runs inside `runMiddleEnd`, after
+// the bundle-wide `collectFileSigsSeeded` pass, so without this the specialised
+// copies are emitted but their call sites resolve through the `(…)Object`
+// guess — a descriptor mismatch that fails at class load (the #3676
+// map-iteration symptom).  Specialised copies are called by bare name (the
+// mono call-site rewrite is unqualified), so both the bare and the qualified
+// `owner/name` key are registered — same rationale as `collectAspectWovenSigs`.
+// Param/return types resolve through the file's extern types unioned with the
+// imported `externSeed` (a specialised stdlib sig references `Map[..]` /
+// `List[..]`, whose extern aliases live in `Std.CollectionsHost`).  Empty
+// `paramDefaults` avoids the stage-0 bootstrap `List[Option[Expr]]` `.add()`
+// miscompile (same rationale as `collectDeriveFreeSigs`); mono forwards every
+// argument positionally, so defaults are never consulted at these call sites.
+func collectMonoSpecializedSigs(
+  file: in SourceFile,
+  into: in Map[String, JvmFuncSig],
+  externSeed: in Map[String, String],
+): Unit {
+  val owner = pkgJvmOwner(file.packageDecl.path)
+  val externTypes = mergeExternSeed(collectExternTypesFromFile(file), externSeed)
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(decl) -> {
+        if isMonoSpecializedName(decl.name) {
+          val params: List[JvmType] = newList()
+          val paramNames: List[String] = newList()
+          var pi = 0
+          while pi < decl.params.count {
+            params.add(typeExprToJvmExtern(decl.params[pi].ty, owner, externTypes))
+            paramNames.add(decl.params[pi].name)
+            pi = pi + 1
+          }
+          val ret = match decl.ret { case Some(te) -> typeExprToJvmExtern(te, owner, externTypes); case None -> JVoid }
+          val sig = JvmFuncSig(
+            owner = owner,
+            params = params,
+            ret = ret,
+            paramNames = paramNames,
+            paramDefaults = newList(),
+            paramModes = newList(),
+            isIface = false
+          )
+          val qkey = owner + "/" + decl.name
+          if not into.containsKey(qkey) {
+            into.add(qkey, sig)
+          }
+          if not into.containsKey(decl.name) {
+            into.add(decl.name, sig)
+          }
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
 // Back-compat forwarder: no feature flags, so no `@cfg` erasure runs.  Callers
 // that thread a manifest's `[features]` table (the in-process CLI path) use
 // `compileToJarBundledWithFeatures`.
@@ -1348,6 +1433,10 @@ pub func compileToJarBundledWithFeatures(
       // from the post-weave file so the `proceed(args)` call resolves to the
       // real descriptor instead of the `(…)Object` guess (#3402, JVM analogue).
       collectAspectWovenSigs(f, registry)
+      // Register monomorphizer-specialised copies (`mapKeys__String__Int`, …)
+      // from the post-mono file so their call sites resolve to the real
+      // descriptor (#3229; the #3676 map-iteration symptom).
+      collectMonoSpecializedSigs(f, registry, externSeedForFile(f, extPkgNames, extPkgMaps))
       codegenPackageInto(
         f,
         registry,
@@ -1386,6 +1475,7 @@ pub func compileToJarBundledWithFeatures(
       match runMiddleEnd(f, importedPkgs, stdlibGenFuncs, allTemplates, false) {
         case Some(ff) -> {
           collectAspectWovenSigs(ff, registry)
+          collectMonoSpecializedSigs(ff, registry, externSeedForFile(ff, extPkgNames, extPkgMaps))
           codegenPackageInto(
             ff,
             registry,
