@@ -26126,3 +26126,35 @@ closures (N2.6), `NativeWeak[T]` (N2.5 — now unblocked by
 instantiated `Option[T]`).
 
 **Related:** D-progress-541, `native/plan/08-work-items.md` §N3.1, #4631.
+
+---
+
+### D-progress-543 — Native backend N3.1 (functions): call-site generic function instantiation
+
+**Shipped.** Generic functions instantiate per concrete type-argument
+tuple at their call sites in the native backend, completing N3.1
+(D-progress-542 covered generic types):
+
+- Generic declarations register by call key (`Pkg.name/arity`, bare
+  `name/arity`) instead of entering the signature registry; the bundle
+  loop skips them (they lower on demand).
+- Call resolution: after the concrete-signature miss, a generic hit
+  maps arguments to parameters, lowers them in parameter order, and
+  unifies each declared parameter type against the concrete argument
+  type — bare params bind directly; parameterised types
+  (`Maybe[T]` vs `T.Maybe<i64>`) unify through the instantiation
+  metadata recorded when types instantiate.
+- Instantiation is cache-first (`Pkg.name.arity<args>`): the cache
+  entry registers before the body lowers, so self-recursive generic
+  functions terminate.  Bodies lower once per tuple through a
+  per-function type-parameter environment consulted by the type
+  mapper (no AST substitution).
+- Generic UFCS works: `m.unwrapOr(0)` resolves the generic function
+  with the receiver as the first argument.
+
+**Verification.** `llvm_heap_self_test.l` gains a generic-function
+case (27 total): multi-instantiation (`wrap(40)` / `wrap("hello")`),
+UFCS, identity, and a generic function returning a generic
+instantiation, ASan-verified with the rest of the suite.
+
+**Related:** D-progress-542, `native/plan/08-work-items.md` §N3.1, D-N-010.

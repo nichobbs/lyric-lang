@@ -20,11 +20,11 @@ distinct types, pattern matching, and ARC retain/release insertion per
 AddressSanitizer/LeakSanitizer (`llvm_heap_self_test.l`).  Closures
 (N2.6) and `NativeWeak[T]` (N2.5) remain.
 
-N3.1's generic *type* half SHIPPED (D-progress-542): generic records
-and unions instantiate on demand per concrete type-argument tuple,
-with constructor-argument inference and expected-type threading
-(annotated bindings, returns, call args, and value-position
-if/match/block results).  Generic *functions* are the next N3.1 slice.
+N3.1 SHIPPED (D-progress-542 types, D-progress-543 functions): generic
+records/unions instantiate on demand per concrete type-argument tuple
+(constructor-argument inference + expected-type threading), and generic
+functions instantiate per call site with unification-based inference,
+cache-first recursion handling, and generic UFCS.
 Remaining work items (rest of N2/N3, the rest of N4/N5/N6, N7 CI)
 execute from `08-work-items.md` as written, modulo the D-N-014 naming
 mapping.
