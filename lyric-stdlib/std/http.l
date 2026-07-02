@@ -85,19 +85,40 @@ pub interface HttpClient {
   /// Send a pre-built HTTP request.
   async func send(request: in HttpRequest): Result[HttpResponse, HttpError]
 
+  /// Send a pre-built HTTP request with explicit cancellation, honouring
+  /// *this* client's own configuration (redirects, Unix socket, etc.) —
+  /// unlike the free `sendWithCancelAsync`/`getWithCancelAsync`/
+  /// `postWithCancelAsync` functions, which always operate on the global
+  /// default client and so cannot be used by callers holding an injected
+  /// `HttpClient` built via `clientWithRedirects`/`clientWithUnixSocket`/
+  /// `HttpClientBuilder`. Compose with `request`/`withJsonBody`/
+  /// `withStringBody` to cancel PUT/DELETE/PATCH calls; there is no
+  /// separate `getWithCancel`/`postWithCancel` on this interface since
+  /// `sendWithCancel` covers every verb. Added in the interface's 1.2 slice
+  /// (#4014).
+  async func sendWithCancel(request: in HttpRequest, token: in CancellationToken): Result[HttpResponse, HttpError]
+
   /// GET the given URL.
   async func get(url: in String): Result[HttpResponse, HttpError]
 
   /// POST a UTF-8 text body to the given URL.
+  ///
+  /// Content-Type is fixed at `text/plain; charset=utf-8`. For a JSON
+  /// body, build the request explicitly instead:
+  /// `send(withJsonBody(request(POST, url), json))`.
   async func post(url: in String, body: in String): Result[HttpResponse, HttpError]
 
   /// PUT a UTF-8 text body to the given URL.
+  ///
+  /// Content-Type is fixed at `text/plain; charset=utf-8` (see `post`).
   async func put(url: in String, body: in String): Result[HttpResponse, HttpError]
 
   /// DELETE the resource at the given URL.
   async func delete(url: in String): Result[HttpResponse, HttpError]
 
   /// PATCH a UTF-8 text body to the given URL.
+  ///
+  /// Content-Type is fixed at `text/plain; charset=utf-8` (see `post`).
   async func patch(url: in String, body: in String): Result[HttpResponse, HttpError]
 }
 
@@ -110,6 +131,14 @@ record HttpClientImpl {
 impl HttpClient for HttpClientImpl {
   async func send(request: in HttpRequest): Result[HttpResponse, HttpError] {
     val result = await HostHttp.hostSendSafe(self.handle, request.handle)
+    match result {
+      case Err(message) -> return Err(error = ConnectionFailed(url = request.url, message = message))
+      case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = request.url))
+    }
+  }
+
+  async func sendWithCancel(request: in HttpRequest, token: in CancellationToken): Result[HttpResponse, HttpError] {
+    val result = await HostHttp.hostSendWithCancelSafe(self.handle, request.handle, token)
     match result {
       case Err(message) -> return Err(error = ConnectionFailed(url = request.url, message = message))
       case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = request.url))
