@@ -1245,6 +1245,45 @@ jobs:
           fi
           LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/cross_package_generics_self_test.l
 
+      # Native (LLVM) backend self-tests — N7.1 (docs/10 D-progress-540/541).
+      # Builds lyric-rt (C unit tests under both clang and gcc), then runs the
+      # three llvm self-tests: llvm_ir (serializer), llvm_codegen (N1 scalar
+      # programs compiled through parse -> codegen -> clang -> run), and
+      # llvm_heap (N2 records/unions/enums/distinct/match; its ARC cases build
+      # with -fsanitize=address so a missed/premature/double release fails).
+      # The tests import `Lyric.Llvm*` compiler packages by source, so
+      # LYRIC_LOAD_COMPILER=1.
+      - name: Native backend self-tests (lyric-rt + llvm via native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping native backend self-tests"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping native backend self-tests"
+            exit 1
+          fi
+          command -v clang >/dev/null || { echo "::error::clang not found on the runner"; exit 1; }
+          # ASan preflight: the heap self-test links -fsanitize=address.
+          echo 'int main(void){return 0;}' > /tmp/asan_preflight.c
+          if ! clang -fsanitize=address /tmp/asan_preflight.c -o /tmp/asan_preflight 2>/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq "libclang-rt-$(clang -dumpversion | cut -d. -f1)-dev"
+            clang -fsanitize=address /tmp/asan_preflight.c -o /tmp/asan_preflight
+          fi
+          make -C lyric-rt test
+          make -C lyric-rt clean && make -C lyric-rt test CC=gcc
+          for t in \
+            lyric-compiler/lyric/llvm_ir_self_test.l \
+            lyric-compiler/lyric/llvm_codegen_self_test.l \
+            lyric-compiler/lyric/llvm_heap_self_test.l ; do
+            echo "=== $t ==="
+            LYRIC_LOAD_COMPILER=1 "$lyric_bin" test "$t"
+          done
+
       # Async extern unwrapping self-test — pins the Band 3 Phase A fix for the
       # @externTarget async silent miscompile (epic #2070, D085, D-progress-415).
       # Before this fix, @externTarget async func left Task<T> on the stack where
