@@ -378,6 +378,123 @@ All RPC calls return `Result[T, GrpcStatus]`. Common errors:
 | `Unauthenticated` | Missing or invalid credentials |
 | `PermissionDenied` | Caller lacks permission |
 
+## Server API
+
+> **Status**: @experimental — same caveat as the client API above: this
+> compiles and the routing logic has unit-level coverage, but the
+> client + server pair has not been exercised end-to-end against a real
+> gRPC client in CI.
+
+Build a `ServiceRegistry` mapping proto `(service, method)` pairs to Lyric
+handler functions, then start the server.
+
+```lyric
+import Grpc
+
+// Register RPC methods: proto service name, proto method name, and the
+// qualified Lyric function name the kernel dispatches to.
+var registry = Grpc.create()
+registry = Grpc.addMethod(registry, "pkg.MyService", "MyMethod", "MyPackage.handleMyMethod")
+registry = Grpc.addMethod(registry, "pkg.MyService", "MyOtherMethod", "MyPackage.handleMyOtherMethod")
+
+// Blocking start: runs until SIGTERM / SIGINT.
+Grpc.start(registry)
+```
+
+### Configuration
+
+The server reads its host/port/reflection settings from the `GrpcServer`
+config block (wire it up via the usual `config { }` mechanism):
+
+```lyric
+config GrpcServer {
+  host: String = "0.0.0.0"
+  port: Int = 50051
+  reflectionEnabled: Bool = false
+  maxConnectionIdleMs: Int = 300000
+}
+```
+
+### Non-blocking start and graceful shutdown
+
+Use `startHandle` instead of `start` to run the server in the background
+and retain a handle for graceful shutdown:
+
+```lyric
+import Grpc
+
+val handle = Grpc.startHandle(registry)
+
+// ... application continues running ...
+
+// Drain in-flight RPCs (up to 5s) before forcibly closing connections.
+Grpc.stop(handle, 5000)
+```
+
+### Server API reference
+
+#### `create`
+
+Create an empty service registry.
+
+```lyric
+pub func create(): ServiceRegistry
+```
+
+#### `addMethod`
+
+Register a single RPC method against a handler function.
+
+```lyric
+pub func addMethod(
+  registry: in ServiceRegistry,
+  service: in String,
+  method: in String,
+  handlerName: in String
+): ServiceRegistry
+```
+
+| Parameter | Description |
+|---|---|
+| `service` | Fully-qualified proto service name: `"pkg.MyService"` |
+| `method` | Unqualified RPC method name: `"MyMethod"` |
+| `handlerName` | Qualified Lyric function name the kernel dispatches to (`"MyPackage.handleMyMethod"`) |
+
+#### `start`
+
+Start the gRPC server. Blocks the calling thread until SIGTERM / SIGINT.
+
+```lyric
+pub func start(registry: in ServiceRegistry): Unit
+```
+
+#### `startHandle`
+
+Start the gRPC server without blocking; the server runs in the
+background. Returns a `GrpcServerHandle` for use with `stop`.
+
+```lyric
+pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle
+```
+
+#### `stop`
+
+Stop a server started with `startHandle`, waiting up to
+`drainTimeoutMs` milliseconds for in-flight RPCs to complete before
+forcibly closing connections.
+
+```lyric
+pub func stop(handle: in GrpcServerHandle, drainTimeoutMs: in Int): Unit
+```
+
+### Server types
+
+| Type | Description |
+|---|---|
+| `ServiceRegistry` | Immutable registry of `GrpcRoute`s; built with `addMethod`, passed to `start` / `startHandle` |
+| `GrpcRoute` | Single RPC method registration: proto service name, proto method name, and the dispatched-to handler name |
+| `GrpcServerHandle` | Opaque handle to a running server, created by `startHandle`, passed to `stop` |
+
 ## Package layout
 
 ```

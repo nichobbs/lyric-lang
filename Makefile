@@ -180,6 +180,12 @@ mint: ## Build the CI-faithful mint (bootstrap) toolchain -> ./bin/lyric (valid 
 	@ln -sf "../$(AOT_BIN)" bin/lyric
 	@echo "mint (bootstrap) lyric ready: ./bin/lyric -> $(AOT_BIN)  [valid IL, CI-faithful]"
 	@bash scripts/stage-selfhosted-stdlib.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
+ifeq ($(SKIP_SELFHOSTED_COMPILER),1)
+	@echo "SKIP_SELFHOSTED_COMPILER=1; skipping the self-hosted compiler-DLL staging"
+else
+	@echo "staging self-hosted compiler DLLs for native lyric test (#3086) ..."
+	@bash scripts/stage-selfhosted-compiler.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
+endif
 
 # Measure self-hosted-EMITTER IL validity: emit the whole compiler closure with
 # the self-hosted emitter (the AOT binary routes --target dotnet through

@@ -513,6 +513,10 @@ pub record CodegenCtx {
   tokIEnumerableGetEnumerator: Int  // IEnumerable.GetEnumerator(): IEnumerator  callvirt
   tokIEnumeratorMoveNext: Int  // IEnumerator.MoveNext(): bool  callvirt
   tokIEnumeratorGetCurrent: Int  // IEnumerator.get_Current(): object  callvirt
+  // System.IDisposable — used by the MExternEnumerable for-loop protocol to
+  // dispose the IEnumerator after the loop exits (ECMA-334 §13.9.5; #4594).
+  trIDisposable: Int  // System.IDisposable
+  tokIDisposableDispose: Int  // IDisposable.Dispose(): void  callvirt
   // Erased Dictionary<object,object> get_Keys / get_Values tokens (#3511).
   // Used by the dictGetKeys / dictGetValues special cases when the map type is
   // not concrete (MMapOf / MObject).  For concrete maps (MConcreteMap), the
@@ -912,6 +916,18 @@ pub func newCodegenCtx(
       "get_Current",
       "ie_getcurrent",
       buildInstanceMethodSig(ieGetCurrentPs, MObject)
+    )
+
+  // ── System.IDisposable — MExternEnumerable for-loop disposal (#4594) ──────
+  val trIDisposable = ctxAddTypeRef(lctx, "System", "IDisposable", lctx.arRuntime)
+  val idispDisposePs: List[MsilType] = newList()
+  val tokIDisposableDispose = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trIDisposable,
+      "Dispose",
+      "idisp_dispose",
+      buildInstanceMethodSig(idispDisposePs, MVoid)
     )
 
   // ── Dictionary<object,object> via TypeSpec ────────────────────────────────
@@ -1730,6 +1746,8 @@ pub func newCodegenCtx(
     tokIEnumerableGetEnumerator = tokIEnumerableGetEnumerator,
     tokIEnumeratorMoveNext = tokIEnumeratorMoveNext,
     tokIEnumeratorGetCurrent = tokIEnumeratorGetCurrent,
+    trIDisposable = trIDisposable,
+    tokIDisposableDispose = tokIDisposableDispose,
     tokDictObjGetKeys = tokDictObjGetKeys,
     tokDictObjGetValues = tokDictObjGetValues,
     configFieldTokens = newMap(),

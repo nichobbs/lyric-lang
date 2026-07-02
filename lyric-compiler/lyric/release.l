@@ -209,9 +209,11 @@ pub func jsonStringField(json: in String, key: in String): Option[String] {
         case Some(closeIdx) -> {
           val raw = Str.substring(inner, 0, closeIdx)
           // Minimal JSON string unescape: \\ → \ for Windows NuGet cache paths.
-          // Full Unicode/surrogate-pair decoding is not needed here — only the
-          // packagesPath value is consumed, and its only special chars are
-          // backslash-escaped backslashes on Windows.
+          // Full Unicode/surrogate-pair decoding, and \" unescaping, are not
+          // needed here — only the packagesPath value is consumed, and a
+          // filesystem path cannot contain a double-quote character on
+          // Windows or Linux, so the closing-quote scan above never needs to
+          // skip an escaped one.
           Some(value = Str.replace(raw, "\\\\", "\\"))
         }
       }

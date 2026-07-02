@@ -29,16 +29,19 @@ aspect Throttle from Web.Aspects.RateLimit {
   }
 }
 
-// Auth config env vars:
-//   LYRIC_ASPECT_AUTH_JWTSECRET  — REQUIRED (no default)
-//   LYRIC_ASPECT_AUTH_ISSUER     — default "jobqueue-service"
-//   LYRIC_ASPECT_AUTH_AUDIENCE   — default "jobqueue-api"
+// Env-var resolution (docs/26 §8) is not implemented yet, so
+// LYRIC_ASPECT_AUTH_JWTSECRET / _ISSUER / _AUDIENCE are never read at
+// runtime — the literal defaults below are what actually runs.
 aspect Auth from Web.Aspects.RequiresAuth {
   inside: Throttle
   matches: name in { handleEnqueue }
   config {
     @sensitive
-    jwtSecret: String = ""  // set LYRIC_ASPECT_AUTH_JWTSECRET in production (docs/26 §8)
+    jwtSecret: String = "REPLACE_ME_WITH_A_REAL_SECRET"
+    // Obviously-invalid placeholder: an empty string here would let a JWT
+    // signed with an empty key validate, silently accepting any token. Set
+    // this directly in source before running the example for real — the
+    // env var is not wired up.
     issuer: String = "jobqueue-service"
     audience: String = "jobqueue-api"
   }

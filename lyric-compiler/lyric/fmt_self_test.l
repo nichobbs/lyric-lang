@@ -24,6 +24,34 @@ test "format package and imports" {
   assertEqual(acc, expected, "format: package + imports")
 }
 
+test "import extern with selector group round trips" {
+  // #3728: `importDoc`'s `externKw` logic must not drop the `extern`
+  // keyword when rendering a selector-group import.
+  val src = "package P\n\nimport extern System.Net.Http.{ HttpClient }\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "import extern group: round-trips")
+  val once = format(parse(src))
+  val twice = format(parse(once))
+  assertEqual(once, twice, "import extern group: idempotent")
+  assertTrue(
+    Str.contains(once, "import extern System.Net.Http.{HttpClient}"),
+    "import extern group: extern keyword and selector both preserved"
+  )
+}
+
+test "pub use extern with selector group round trips" {
+  val src = "package P\n\npub use extern Foo.Bar.{ Baz }\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "pub use extern group: round-trips")
+  val once = format(parse(src))
+  val twice = format(parse(once))
+  assertEqual(once, twice, "pub use extern group: idempotent")
+  assertTrue(
+    Str.contains(once, "pub use extern Foo.Bar.{Baz}"),
+    "pub use extern group: extern keyword and selector both preserved"
+  )
+}
+
 test "format type alias" {
   val src = "package P\nalias Name = String\n"
   val pr = parse(src)

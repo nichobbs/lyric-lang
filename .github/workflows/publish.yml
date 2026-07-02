@@ -66,7 +66,7 @@ jobs:
     outputs:
       version: ${{ steps.ver.outputs.VERSION }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           # Full history + tags so the auto-increment step can read existing
           # release tags and the tagging step can create a new annotated tag.
@@ -221,8 +221,14 @@ jobs:
       APPLE_TEAM_ID:       ${{ secrets.APPLE_TEAM_ID }}
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
+          # Full history: "Build stage 2" below runs bootstrap.sh --stage 3
+          # with LYRIC_BOOTSTRAP_MINT=1 (mint_stage0 defaults to true), which
+          # can invoke scripts/mint-stage0-fsharp.sh — it resolves the
+          # historical F# bootstrap commit via `git rev-parse 44a0d1e7~1` and
+          # `git worktree add`s it, both of which require that commit object
+          # to be present locally.  A shallow clone lacks it.
           fetch-depth: 0
 
       - name: Install ARM64 cross-compilation toolchain (Ubuntu)
@@ -418,8 +424,16 @@ jobs:
       NUGET_SIGNING_CERT_PASSWORD: ${{ secrets.NUGET_SIGNING_CERT_PASSWORD }}
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
+          # Full history: "Build stage 2 (for NuGet package)" below runs
+          # bootstrap.sh --stage 3 with LYRIC_BOOTSTRAP_MINT=1 (mint_stage0
+          # defaults to true), which can invoke scripts/mint-stage0-fsharp.sh
+          # — it resolves the historical F# bootstrap commit via `git
+          # rev-parse 44a0d1e7~1` and `git worktree add`s it, both of which
+          # require that commit object to be present locally.  A shallow
+          # clone lacks it.  See build-standalone's checkout step for the
+          # identical rationale.
           fetch-depth: 0
 
       - name: Set up .NET
@@ -503,45 +517,23 @@ jobs:
           rm -f /tmp/nuget-signing.pfx
 
       # Exchange the GitHub Actions OIDC token for a short-lived NuGet API key
-      # via NuGet.org Trusted Publishing:
-      #   https://learn.microsoft.com/nuget/nuget-org/trusted-publishing
-      # There is no public raw token-exchange endpoint — NuGet/login is the
-      # supported client.  One-time setup on nuget.org: create a Trusted
-      # Publishing policy owned by the `secrets.NUGET_USER` account, scoped to
-      # Repository Owner `nichobbs`, Repository `lyric-lang`, Workflow File
-      # `publish.yml`.  `secrets.NUGET_USER` is the nuget.org profile name (NOT
-      # an email).  The workflow-level `id-token: write` permission lets the
-      # action mint the OIDC token.
+      # via NuGet.org Trusted Publishing.  One-time setup on nuget.org: create
+      # a Trusted Publishing policy owned by the `secrets.NUGET_USER` account,
+      # scoped to Repository Owner `nichobbs`, Repository `lyric-lang`,
+      # Workflow File `publish.yml`.  `secrets.NUGET_USER` is the nuget.org
+      # profile name (NOT an email).  The workflow-level `id-token: write`
+      # permission lets the action mint the OIDC token.  See
+      # .github/actions/nuget-oidc-auth/action.yml for the shared
+      # login-and-verify steps (also used by publish-ecosystem below).
       - name: NuGet login (OIDC → short-lived API key)
-        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841  # v1
+        uses: ./.github/actions/nuget-oidc-auth
         id: nuget-auth
         with:
           user: ${{ secrets.NUGET_USER }}
 
-      # NuGet/login can complete "successfully" (no action error) while still
-      # producing an empty API key output — e.g. an unconfigured Trusted
-      # Publishing policy, an owner/repo/workflow-file mismatch, or a
-      # nuget.org outage during the OIDC exchange. Without this guard an
-      # empty key silently reaches `dotnet nuget push`, which fails with a
-      # generic 401/403 that gives no indication the root cause was the
-      # OIDC exchange rather than the push itself.
-      - name: Verify NuGet API key
-        env:
-          NUGET_KEY: ${{ steps.nuget-auth.outputs.NUGET_API_KEY }}
-        run: |
-          if [ -z "$NUGET_KEY" ]; then
-            echo "::error::NuGet/login produced an empty API key. Check that" \
-              "the NUGET_USER secret matches the nuget.org account owning the" \
-              "Trusted Publishing policy, and that the policy is scoped to" \
-              "Repository Owner 'nichobbs', Repository 'lyric-lang', Workflow" \
-              "File 'publish.yml'. See the publish-nuget job comment above" \
-              "for full setup steps."
-            exit 1
-          fi
-
       - name: Push to NuGet.org
         env:
-          NUGET_KEY: ${{ steps.nuget-auth.outputs.NUGET_API_KEY }}
+          NUGET_KEY: ${{ steps.nuget-auth.outputs.api-key }}
         run: |
           dotnet nuget push bootstrap/nupkgs/*.nupkg \
             --api-key "$NUGET_KEY" \
@@ -578,7 +570,7 @@ jobs:
       NUGET_SIGNING_CERT_PASSWORD: ${{ secrets.NUGET_SIGNING_CERT_PASSWORD }}
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Set up .NET
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
@@ -621,28 +613,14 @@ jobs:
           set -euo pipefail
           bash scripts/stage-selfhosted-stdlib.sh ./bin/lyric "$(pwd)/bin"
 
-      # Same Trusted Publishing exchange as publish-nuget — see that job's
-      # NuGet login step for the one-time nuget.org policy setup.
+      # Same Trusted Publishing exchange as publish-nuget — see
+      # .github/actions/nuget-oidc-auth/action.yml for the shared
+      # login-and-verify steps and the one-time nuget.org policy setup.
       - name: NuGet login (OIDC → short-lived API key)
-        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841  # v1
+        uses: ./.github/actions/nuget-oidc-auth
         id: nuget-auth
         with:
           user: ${{ secrets.NUGET_USER }}
-
-      # See publish-nuget's "Verify NuGet API key" step for why this guard
-      # exists: NuGet/login can report success with an empty API key output.
-      - name: Verify NuGet API key
-        env:
-          NUGET_KEY: ${{ steps.nuget-auth.outputs.NUGET_API_KEY }}
-        run: |
-          if [ -z "$NUGET_KEY" ]; then
-            echo "::error::NuGet/login produced an empty API key. Check that" \
-              "the NUGET_USER secret matches the nuget.org account owning the" \
-              "Trusted Publishing policy, and that the policy is scoped to" \
-              "Repository Owner 'nichobbs', Repository 'lyric-lang', Workflow" \
-              "File 'publish.yml'."
-            exit 1
-          fi
 
       # Decode the signing certificate so lyric publish can sign each .nupkg
       # immediately after dotnet pack and before dotnet nuget push.
@@ -676,7 +654,7 @@ jobs:
         # API_KEY/VERSION are read from env, not interpolated into the script
         # body, per GitHub's Security Hardening for GitHub Actions guide.
         env:
-          LYRIC_NUGET_API_KEY: ${{ steps.nuget-auth.outputs.NUGET_API_KEY }}
+          LYRIC_NUGET_API_KEY: ${{ steps.nuget-auth.outputs.api-key }}
           # Empty (not /tmp/nuget-signing.pfx) when no cert secret is configured
           # -- the "Decode NuGet signing certificate" step above only creates
           # that file when NUGET_SIGNING_CERT_BASE64 is set, so pointing at it
@@ -823,7 +801,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [create-release]
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Set up Node.js
         uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a  # v4.2.0
@@ -867,7 +845,7 @@ jobs:
        needs.publish-nuget.result == 'failure' || needs.publish-nuget.result == 'cancelled' ||
        needs.publish-vscode.result == 'failure' || needs.publish-vscode.result == 'cancelled')
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Delete git tag (dispatch only)
         if: github.event_name == 'workflow_dispatch'
@@ -910,7 +888,7 @@ jobs:
       (needs.publish-vscode.result == 'success' || needs.publish-vscode.result == 'skipped') &&
       (needs.cleanup-on-failure.result == 'success' || needs.cleanup-on-failure.result == 'skipped')
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Mark release as ready
         shell: bash

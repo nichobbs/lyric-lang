@@ -655,7 +655,11 @@ test "arc: closures capture by value and release captures" {
   assertEqualInt(r.exitCode, 56, "closures (ASan)")
 }
 
-test "arc: NativeWeak upgrade returns Some while alive" {
+test "arc: NativeWeak upgrade returns Some while alive and None after release" {
+  // makeDeadWeak's `gone` is a function-local strong ref that is not
+  // returned (only the weak handle is), so it is released at the
+  // callee's scope exit (Rule 4/6, native/plan/04-arc-design.md);
+  // upgrade() on the returned handle must therefore observe refcount 0.
   val src = "package T\n" + "union Option[T] {\n" + "  case Some(value: T)\n" + "  case None\n" + "}\n" +
     "record Node {\n" +
     "  name: String\n" +
@@ -665,6 +669,10 @@ test "arc: NativeWeak upgrade returns Some while alive" {
     "    case Some(n) -> n.name.length\n" +
     "    case None -> 0\n" +
     "  }\n" +
+    "}\n" +
+    "func makeDeadWeak(): NativeWeak[Node] {\n" +
+    "  val gone = Node(name = \"gone\")\n" +
+    "  NativeWeak(gone)\n" +
     "}\n" +
     "func main(): Int {\n" +
     "  val strong = Node(name = \"alive\")\n" +
@@ -684,10 +692,15 @@ test "arc: NativeWeak upgrade returns Some while alive" {
     "    }\n" +
     "    i = i + 1\n" +
     "  }\n" +
+    "  val deadWeak = makeDeadWeak()\n" +
+    "  val afterRelease = check(deadWeak)\n" +
+    "  if afterRelease == 0 {\n" +
+    "    score = score + 5\n" +
+    "  }\n" +
     "  score + check(w)\n" +
     "}\n"
   val r = compileAndRunAsan(src)
-  assertEqualInt(r.exitCode, 15, "weak upgrade (ASan)")
+  assertEqualInt(r.exitCode, 20, "weak upgrade Some-then-None (ASan)")
 }
 
 test "arc: tuples construct, destructure, and release elements" {

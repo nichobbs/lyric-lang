@@ -30,7 +30,7 @@
 #   scripts/selfhost-check.sh repro.l
 #   scripts/selfhost-check.sh repro.l --no-run     # skip execution (compile + ilverify only)
 # ---------------------------------------------------------------------------
-set -uo pipefail
+set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_CONFIG="${BUILD_CONFIG:-Release}"
@@ -96,10 +96,14 @@ if [[ -n "$ILVERIFY" ]]; then
   refs=()
   for d in "$WORK"/*.dll; do [[ "$d" == "$OUT_DLL" ]] && continue; refs+=(-r "$d"); done
   # System refs from the .NET ref pack.
-  REFPACK="$(find "${DOTNET_ROOT:-/usr/share/dotnet}" /root/.dotnet -path '*Microsoft.NETCore.App.Ref*/ref/net10.0' -type d 2>/dev/null | head -1)"
+  REFPACK="$(find "${DOTNET_ROOT:-/usr/share/dotnet}" /root/.dotnet -path '*Microsoft.NETCore.App.Ref*/ref/net10.0' -type d 2>/dev/null | head -1 || true)"
   [[ -n "$REFPACK" ]] && for d in "$REFPACK"/*.dll; do refs+=(-r "$d"); done
-  il_out="$("$ILVERIFY" "$OUT_DLL" "${refs[@]}" 2>&1)"
-  echo "$il_out" | grep -E '\[IL\]: Error|All Classes and Methods' | head -20
+  # `|| true` on both: under `set -e`, ilverify's non-zero exit on IL errors (the
+  # very condition we're checking for) would otherwise abort the script here
+  # instead of letting IL_BAD below classify it; ditto the `head`-truncated pipe,
+  # which can SIGPIPE `echo` when there are more than 20 matching lines.
+  il_out="$("$ILVERIFY" "$OUT_DLL" "${refs[@]}" 2>&1)" || true
+  echo "$il_out" | grep -E '\[IL\]: Error|All Classes and Methods' | head -20 || true
   if echo "$il_out" | grep -q '\[IL\]: Error'; then IL_BAD=1; fi
 else
   echo "(ilverify unavailable — skipping IL check)"
@@ -109,8 +113,12 @@ fi
 if [[ "$RUN" -eq 1 ]]; then
   echo
   echo "--- run ---"
-  run_out="$(cd "$WORK" && dotnet "$(basename "$OUT_DLL")" 2>&1)"; run_rc=$?
-  echo "$run_out" | head -30
+  # Capture the exit code via `|| run_rc=$?` (not a trailing `; run_rc=$?`): under
+  # `set -e` a bare failing assignment on its own line would abort the script
+  # before the next line ever ran.
+  run_rc=0
+  run_out="$(cd "$WORK" && dotnet "$(basename "$OUT_DLL")" 2>&1)" || run_rc=$?
+  echo "$run_out" | head -30 || true
   if [[ $run_rc -ne 0 ]]; then
     verdict_real "program faulted at runtime (exit $run_rc) — see output above"
   fi

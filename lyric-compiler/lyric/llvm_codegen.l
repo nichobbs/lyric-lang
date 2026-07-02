@@ -1359,27 +1359,26 @@ func lowerLiteral(ctx: in Ctx, insns: in List[NInsn], lit: in Literal): NVal {
 }
 
 func lowerInterpolated(ctx: in Ctx, insns: in List[NInsn], segments: in List[InterpolatedSegment]): NVal {
-  var acc = emitStringLiteral(ctx, insns, "")
-  var first = true
-  var i = 0
+  if segments.count == 0 {
+    return emitStringLiteral(ctx, insns, "")
+  }
+  var acc = match segments[0] {
+    case ISText(text, _) -> emitStringLiteral(ctx, insns, text)
+    case ISExpr(ex) -> emitToString(ctx, insns, lowerExpr(ctx, insns, ex))
+  }
+  var i = 1
   while i < segments.count {
-    val seg = segments[i]
-    val piece = match seg {
+    val piece = match segments[i] {
       case ISText(text, _) -> emitStringLiteral(ctx, insns, text)
       case ISExpr(ex) -> emitToString(ctx, insns, lowerExpr(ctx, insns, ex))
     }
-    if first {
-      acc = piece
-      first = false
-    } else {
-      acc = callRuntime(
-        ctx,
-        insns,
-        "lyric_string_concat",
-        lyricStringNType(),
-        arg2(lyricStringNType(), acc.value, lyricStringNType(), piece.value)
-      )
-    }
+    acc = callRuntime(
+      ctx,
+      insns,
+      "lyric_string_concat",
+      lyricStringNType(),
+      arg2(lyricStringNType(), acc.value, lyricStringNType(), piece.value)
+    )
     i = i + 1
   }
   acc
