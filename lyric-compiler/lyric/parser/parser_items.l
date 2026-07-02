@@ -1149,6 +1149,21 @@ func parseInterfaceBody(st: inout ParseState, genericsPrefix: Option[GenericPara
   )
 }
 
+// Unlike `parseRecordMembers` (which runs `injectSelfIfNeeded` on every
+// `RMFunc`), `impl` block methods here are intentionally left without an
+// injected `self` param.  The two paths lower through different codegen:
+// `lowerRecordMethod` (JVM) strips a leading self param via
+// `stripLeadingSelfParam` before treating the rest of `fn.params` as real
+// parameters — `injectSelfIfNeeded` guarantees that param exists so the
+// strip has something to remove.  `lowerImplMethod` / `lowerImplMethodMsil`
+// take `fn.params` as-is and *always* reserve receiver slot 0 implicitly
+// (matching how the `self` keyword parses to `ESelf`, which compiles
+// straight to `ldarg.0`/ISTORE-independent of any named parameter).
+// Injecting a synthetic self param here would add a real, uninjected extra
+// entry to `fn.params` that neither impl codegen path strips, silently
+// shifting every declared parameter's slot by one. Do not add
+// `injectSelfIfNeeded` to this function without also updating
+// `lowerImplMethod` (JVM) and `lowerImplMethodMsil` (MSIL) to strip it.
 func parseImplMemberOpt(st: inout ParseState): Option[ImplMember] {
   val docs = parseItemDocComments(st)
   val anns = parseItemAnnotations(st)

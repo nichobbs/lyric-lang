@@ -723,7 +723,7 @@ func cmdRestore(argv: in slice[String]): Int {
 // §10a. Maven artifact restore helpers
 // ─────────────────────────────────────────────────────────────────────────────
 // Escape a string value for embedding in a JSON string literal.
-func jsonEscape(s: in String): String {
+pub func jsonEscape(s: in String): String {
   Str.replace(Str.replace(s, "\\", "\\\\"), "\"", "\\\"")
 }
 
@@ -763,7 +763,7 @@ func findMavenResolverJar(): Option[String] {
 }
 
 // Build the JSON request body for lyric-resolver.jar's stdin protocol.
-func buildMavenResolverRequest(maven: in MavenSection, cacheDir: in String, outputDir: in String): String {
+pub func buildMavenResolverRequest(maven: in MavenSection, cacheDir: in String, outputDir: in String): String {
   var coords = "["
   var ci = 0
   while ci < maven.entries.count {
@@ -804,7 +804,7 @@ func buildMavenResolverRequest(maven: in MavenSection, cacheDir: in String, outp
 // CONTRACT: expects compact JSON (no whitespace between `"jarPath":"` and the
 // value).  Pretty-printed output (`"jarPath": "..."`) will yield zero paths —
 // the resolver protocol requires compact format.
-func extractMavenJarPaths(jsonOutput: in String): List[String] {
+pub func extractMavenJarPaths(jsonOutput: in String): List[String] {
   val paths: List[String] = newList()
   val pieces = Str.split(jsonOutput, "\"jarPath\":\"")
   var pi = 1

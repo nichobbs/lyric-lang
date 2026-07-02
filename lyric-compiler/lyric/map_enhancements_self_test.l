@@ -47,6 +47,15 @@ test "mapSize decreases after removal" {
   assertEqualInt(mapSize(m), 1, "map size is 1 after removing one entry")
 }
 
+test "mapSize unchanged after remove and re-add of same key" {
+  val m: Map[String, Int] = newMap()
+  m.add("key", 1)
+  assertEqualInt(mapSize(m), 1, "initial size is 1")
+  m.remove("key")
+  m.add("key", 2)
+  assertEqualInt(mapSize(m), 1, "size remains 1 after remove+re-add")
+}
+
 test "mapIsEmpty returns true for empty map" {
   val m: Map[String, Int] = newMap()
   assertTrue(mapIsEmpty(m), "empty map is empty")

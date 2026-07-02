@@ -3456,6 +3456,10 @@ func msilTypeIdentical(a: in MsilType, b: in MsilType): Bool {
         case other -> false
       }
     }
+    // NOTE: any new MsilType variant must be added to this outer match (with a
+    // matching arm on the inner `b` match) or it will never compare identical
+    // to itself, causing allocSlotMsil to allocate a redundant slot on every
+    // rebind instead of reusing the existing one.
     case other -> false
   }
 }
@@ -3592,7 +3596,10 @@ pub func finishHoistedCellMsil(
       }
     }
   } else {
-    // Fallback path for types that can't use typed arrays (Long, Double, complex types).
+    // Fallback path for types canUseTypedArrayLoad doesn't cover (e.g. generic
+    // instantiations, class/record types, arrays) — every scalar primitive
+    // (including Long/Double) has a typed-array arm above, so this branch is
+    // unreachable for them; retained as a safety net for future type additions.
     // Use List[object] (boxing required).
     // Stack precondition: (List[object], List[object], value)
     boxIfNeededMsil(cctx, insns, elemTy)
@@ -9732,6 +9739,22 @@ func lowerBuiltinOrStaticCallMsil(
         emitLoadSlot(insns, dvSlot, fctx.paramCount)
         defWant
       }
+      // A generic value-type target — e.g. `var kvp: KeyValuePair[String, Int] =
+      // default()`.  As with MValueTypeRef, `ldnull` would push a null reference
+      // where the unboxed struct is required; `initobj` on a generic value type
+      // additionally needs the CLOSED instantiation (a TypeSpec), not the open
+      // TypeRef, or the CLR rejects it — mirrors the fix in
+      // `emitExternOptionalDefault`.
+      case MValueTypeGenericInst(typeRefCode, _, typeArgs) -> {
+        val tsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, typeRefCode, typeArgs)
+        val tsKey = "default_vtgi_" + msilTypeKeyStr(defWant)
+        val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+        val dvSlot = allocSlotMsil(fctx, "__default_vt_" + toString(fctx.slotTicker.count), defWant)
+        insns.add(MLdloca(slot = dvSlot - fctx.paramCount))
+        insns.add(MInitobj(typeToken = 0x1B000000 + tsRow))
+        emitLoadSlot(insns, dvSlot, fctx.paramCount)
+        defWant
+      }
       case _ -> {
         insns.add(MLdNull)
         MObject
@@ -9887,7 +9910,10 @@ func lowerBuiltinOrStaticCallMsil(
     // sidesteps both problems and works for concrete and object dicts alike.
     // The out slot is written only on the found path — matching `out` semantics
     // for the dominant `if tryGetValue(m, k, slot) { ...use slot... }` idiom.
-    val outNameTgv = match callArgExpr(args[2]).kind { case EPath(p) -> lastSegmentMsil(p); case _ -> "" }
+    val outNameTgv = match callArgExpr(args[2]).kind {
+      case EPath(p) -> lastSegmentMsil(p)
+      case _ -> panic("Msil.Codegen: tryGetValue's 3rd (out) argument must be a simple variable name; got a complex expression")
+    }
     val mSlotTgv = allocSlotMsil(fctx, "__tgv_m_" + toString(fctx.slotTicker.count), MObject)
     val mArgTyTgv = lowerCallArgMsil(cctx, fctx, insns, args[0])
     emitStoreSlot(insns, mSlotTgv, fctx.paramCount)
@@ -13722,6 +13748,20 @@ func emitExternOptionalDefault(
       val slot = allocSlotMsil(fctx, "__opt_default_" + toString(fctx.slotTicker.count), ty)
       insns.add(MLdloca(slot = slot - fctx.paramCount))
       insns.add(MInitobj(typeToken = 0x01000000 + refRow))
+      emitLoadSlot(insns, slot, fctx.paramCount)
+    }
+    // A generic value-type instantiation (e.g. `Nullable<int>`) is zeroed the
+    // same way, but `initobj` needs the CLOSED instantiation: an open TypeRef
+    // token would target the unbound generic definition, which the CLR
+    // rejects.  Build a TypeSpec for the closed instantiation and initobj
+    // against that — the same idiom used for `TaskAwaiter<T>` above.
+    case MValueTypeGenericInst(typeRefCode, _, typeArgs) -> {
+      val tsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, typeRefCode, typeArgs)
+      val tsKey = "extopt_vtgi_" + msilTypeKeyStr(ty)
+      val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+      val slot = allocSlotMsil(fctx, "__opt_default_" + toString(fctx.slotTicker.count), ty)
+      insns.add(MLdloca(slot = slot - fctx.paramCount))
+      insns.add(MInitobj(typeToken = 0x1B000000 + tsRow))
       emitLoadSlot(insns, slot, fctx.paramCount)
     }
     case _ -> panic("Msil.Codegen: @externTarget '" + target + "' on '" + fnName + "' resolves to a BCL overload with a trailing " + "optional parameter of an unsupported type (" + msilTypeKeyStr(ty) + "); declare that parameter explicitly in the wrapper.")
@@ -23905,8 +23945,10 @@ func registerRestoredFunc(cctx: in CodegenCtx, packageName: in String, fn: in Fu
   }
   // Generic public free functions require monomorphized-form MemberRef
   // signatures — a raw type-variable `T` resolves to a non-existent
-  // `<pkg>.T` class and the runtime raises TypeLoadException.  Deferred
-  // until cross-assembly generic call sites are supported.
+  // `<pkg>.T` class and the runtime raises a load/dispatch exception at the
+  // call site (observed as TypeLoadException or MissingMethodException
+  // depending on where CLR resolution fails first).  Deferred until
+  // cross-assembly generic call sites are supported.
   val fnIsGeneric = match fn.generics { case Some(_) -> true; case None -> false }
   if fnIsGeneric {
     return
@@ -25516,8 +25558,10 @@ func registerStdlibFunc(cctx: in CodegenCtx, packageName: in String, hostRefRow:
   }
   // Generic public free functions require monomorphized-form MemberRef
   // signatures — a raw type-variable `T` resolves to a non-existent
-  // `<pkg>.T` class and the runtime raises MissingMethodException.  Deferred
-  // until cross-assembly generic call sites are supported; mirrors
+  // `<pkg>.T` class and the runtime raises a load/dispatch exception at the
+  // call site (observed as TypeLoadException or MissingMethodException
+  // depending on where CLR resolution fails first).  Deferred until
+  // cross-assembly generic call sites are supported; mirrors
   // `registerRestoredFunc`'s identical guard.
   val fnIsGeneric = match fn.generics { case Some(_) -> true; case None -> false }
   if fnIsGeneric {

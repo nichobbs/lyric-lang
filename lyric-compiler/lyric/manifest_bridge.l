@@ -23,6 +23,10 @@
 //!     project.output=<mode>
 //!     project.output_assembly=<asm>
 //!     project.pkg=<name>=<path>       (first '=' is separator)
+//!     project.pkg.file=<name>=<file>  (one per file, for explicit
+//!                                      file-list [project.packages] entries;
+//!                                      emitted instead of project.pkg for
+//!                                      that package)
 //!     feature=<name>
 //!     feature.default=<name>
 package Lyric.ManifestBridge
