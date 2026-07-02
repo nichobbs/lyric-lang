@@ -377,6 +377,16 @@ func typeToN(ctx: in Ctx, te: in TypeExpr): NType {
       }
       typeExprToNType(te)
     }
+    case TTuple(_) -> {
+      val emptyNames: List[String] = newList()
+      val emptyTys: List[NType] = newList()
+      match typeToNEnvOpt(ctx, te, emptyNames, emptyTys) {
+        case Some(t) -> return t
+        case None -> {
+        }
+      }
+      typeExprToNType(te)
+    }
     case TParen(inner) -> typeToN(ctx, inner)
     case _ -> typeExprToNType(te)
   }
@@ -432,6 +442,11 @@ func typeToNOpt(ctx: in Ctx, te: in TypeExpr): Option[NType] {
       typeToNEnvOpt(ctx, te, emptyNames, emptyTys)
     }
     case TFunction(_, _) -> {
+      val emptyNames: List[String] = newList()
+      val emptyTys: List[NType] = newList()
+      typeToNEnvOpt(ctx, te, emptyNames, emptyTys)
+    }
+    case TTuple(_) -> {
       val emptyNames: List[String] = newList()
       val emptyTys: List[NType] = newList()
       typeToNEnvOpt(ctx, te, emptyNames, emptyTys)
@@ -1274,7 +1289,21 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
     // `self` in a record-method body is the desugared receiver param.
     case ESelf -> loadLocal(ctx, insns, "self")
     case ELambda(_, _) -> panic("Lyric.LlvmCodegen: a lambda here has no expected function type; bind it to an annotated val, a typed parameter, or a declared return type")
-    case ETuple(_) -> panic("Lyric.LlvmCodegen: tuples are not yet supported for --target native (Phase N3)")
+    case ETuple(exprs) -> {
+      val elems: List[NVal] = newList()
+      var ti = 0
+      while ti < exprs.count {
+        elems.add(lowerExpr(ctx, insns, exprs[ti]))
+        ti = ti + 1
+      }
+      val elemTys: List[NType] = newList()
+      var tj = 0
+      while tj < elems.count {
+        elemTys.add(elems[tj].ty)
+        tj = tj + 1
+      }
+      lowerRecordConstructVals(ctx, insns, tupleRecInfo(ctx, elemTys), elems)
+    }
     case EList(_) -> panic("Lyric.LlvmCodegen: list literals are not yet supported for --target native (collections are Phase N2/N5)")
     case EIndex(_, _) -> panic("Lyric.LlvmCodegen: indexing is not yet supported for --target native (Phase N2)")
     case _ -> panic("Lyric.LlvmCodegen: this expression form is not yet supported for --target native (Phase N1)")
@@ -3019,6 +3048,51 @@ func weakTargetOfType(ctx: in Ctx, t: in NType): Option[NType] {
   }
 }
 
+/// Tuples are synthesised records `__tuple<elems>` with fields
+/// `_0.._n` (N3.3): construction, field access, destructors, and ARC
+/// reuse the record machinery wholesale.
+func tupleRecInfo(ctx: in Ctx, elemTys: in List[NType]): NRecInfo {
+  var nm = "__tuple<"
+  var i = 0
+  while i < elemTys.count {
+    if i > 0 {
+      nm = nm + ","
+    }
+    nm = nm + mangleNTypeArg(elemTys[i])
+    i = i + 1
+  }
+  nm = nm + ">"
+  match mapGet(ctx.recordDefs, nm) {
+    case Some(existing) -> return existing
+    case None -> {
+    }
+  }
+  val names: List[String] = newList()
+  val dflts: List[Option[Expr]] = newList()
+  var fi = 0
+  while fi < elemTys.count {
+    names.add("_" + fi.toString())
+    val noD: Option[Expr] = None
+    dflts.add(noD)
+    fi = fi + 1
+  }
+  val ri = NRecInfo(irName = nm, fieldNames = names, fieldTys = elemTys, fieldDefaults = dflts)
+  ctx.recordDefs.add(nm, ri)
+  val defnFields: List[NType] = newList()
+  defnFields.add(NI32)
+  defnFields.add(NPtr(pointee = NI8))
+  var di = 0
+  while di < elemTys.count {
+    defnFields.add(elemTys[di])
+    di = di + 1
+  }
+  ctx.moduleTypeDefs.add(NTypeDefn(name = nm, fields = defnFields))
+  if recHasRefFields(ri) {
+    ctx.moduleFns.add(synthRecordDtor(ctx, ri))
+  }
+  ri
+}
+
 func envIndexOf(envNames: in List[String], name: in String): Int {
   var i = 0
   while i < envNames.count {
@@ -3118,6 +3192,18 @@ func typeToNEnvOpt(ctx: in Ctx, te: in TypeExpr, envNames: in List[String], envT
         case Some(rt) -> Some(value = closureNType(ctx, ptys, rt))
         case None -> None
       }
+    }
+    case TTuple(types) -> {
+      val etys: List[NType] = newList()
+      var tti = 0
+      while tti < types.count {
+        match typeToNEnvOpt(ctx, types[tti], envNames, envTys) {
+          case Some(t) -> etys.add(t)
+          case None -> return None
+        }
+        tti = tti + 1
+      }
+      Some(value = recPtrType(tupleRecInfo(ctx, etys)))
     }
     case TParen(inner) -> typeToNEnvOpt(ctx, inner, envNames, envTys)
     case _ -> typeToNOpt(ctx, te)
@@ -5038,6 +5124,35 @@ func emitPatternTest(
       insns.add(NCondBr(cond = NLocal(name = both), thenLabel = okLabel, elseLabel = failLabel))
     }
     case PConstructor(head, subpats) -> emitConstructorTest(ctx, insns, sv, head, subpats, okLabel, failLabel, bindNames, bindVals)
+    case PTuple(patterns) -> {
+      val ri = match recInfoOfType(ctx, sv.ty) {
+        case Some(r) -> r
+        case None -> panic("Lyric.LlvmCodegen: tuple pattern matched against a non-tuple value")
+      }
+      if patterns.count != ri.fieldNames.count {
+        panic("Lyric.LlvmCodegen: tuple pattern arity mismatch")
+      }
+      var pi = 0
+      while pi < patterns.count {
+        val sub = stripPattern(patterns[pi])
+        match sub.kind {
+          case PBinding(bname, binner) -> {
+            match binner {
+              case Some(_) -> panic("Lyric.LlvmCodegen: nested binding patterns are not yet supported for --target native")
+              case None -> {
+                bindNames.add(bname)
+                bindVals.add(lowerRecordFieldLoad(ctx, insns, ri, sv, ri.fieldNames[pi]))
+              }
+            }
+          }
+          case PWildcard -> {
+          }
+          case _ -> panic("Lyric.LlvmCodegen: only bindings and wildcards are supported inside tuple patterns for --target native")
+        }
+        pi = pi + 1
+      }
+      insns.add(NBr(label = okLabel))
+    }
     case _ -> panic("Lyric.LlvmCodegen: this pattern form is not yet supported for --target native (Phase N2 lowers wildcard, binding, literal, range, and constructor patterns)")
   }
 }
@@ -5284,6 +5399,39 @@ func lowerMatch(
   outV
 }
 
+/// Destructure a tuple value into `val (a, b, _)`-style bindings.
+func bindTuplePattern(ctx: in Ctx, insns: in List[NInsn], v: in NVal, patterns: in List[Pattern]): Unit {
+  val ri = match recInfoOfType(ctx, v.ty) {
+    case Some(r) -> r
+    case None -> panic("Lyric.LlvmCodegen: tuple destructuring on a non-tuple value")
+  }
+  if patterns.count != ri.fieldNames.count {
+    panic(
+      "Lyric.LlvmCodegen: tuple pattern arity " + patterns.count.toString() + " does not match the value's arity " +
+        ri.fieldNames.count.toString()
+    )
+  }
+  var i = 0
+  while i < patterns.count {
+    val sub = stripPattern(patterns[i])
+    match sub.kind {
+      case PBinding(name, inner) -> {
+        match inner {
+          case Some(_) -> panic("Lyric.LlvmCodegen: nested binding patterns are not yet supported for --target native")
+          case None -> {
+            val fv = lowerRecordFieldLoad(ctx, insns, ri, v, ri.fieldNames[i])
+            bindLocal(ctx, insns, name, fv)
+          }
+        }
+      }
+      case PWildcard -> {
+      }
+      case _ -> panic("Lyric.LlvmCodegen: only bindings and wildcards are supported inside tuple patterns for --target native")
+    }
+    i = i + 1
+  }
+}
+
 /// Bind pattern names as arm-scoped locals.  Bindings borrow from the
 /// scrutinee (alive for the whole match), so `bindLocal`'s
 /// retain-borrow rule keeps ownership sound if the arm rebinds or the
@@ -5440,7 +5588,8 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
             }
             case PWildcard -> {
             }
-            case _ -> panic("Lyric.LlvmCodegen: destructuring val patterns are not yet supported for --target native (Phase N2)")
+            case PTuple(patterns) -> bindTuplePattern(ctx, insns, v, patterns)
+            case _ -> panic("Lyric.LlvmCodegen: this destructuring val pattern is not yet supported for --target native")
           }
         }
         case LBLet(name, tyOpt, init) -> {

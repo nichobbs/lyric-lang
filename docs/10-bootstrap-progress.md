@@ -26346,3 +26346,27 @@ weak-to-temporary nodes, rc balancing leak-free.
 
 **Related:** D-progress-544, `native/plan/04-arc-design.md`
 §NativeWeak, D-N-005.
+
+---
+
+### D-progress-546 — Native backend N3.3: tuples
+
+**Shipped.** Tuples lower as synthesised records
+(`__tuple<i32,LyricString*>` with fields `_0.._n`), reusing the record
+machinery wholesale — construction, ARC ownership, and synthesised
+element-releasing destructors:
+
+- `(a, b)` literals construct from element types; `(String, Int)`
+  annotations, parameters, and return types map through the same
+  synthesis; tuple-typed values flow through generics and closures
+  like any record.
+- Destructuring binds in `val (lo, hi) = ...` and tuple patterns in
+  `match` arms (bindings and wildcards; nested sub-patterns are
+  rejected with a diagnostic).
+
+**Verification.** `llvm_heap_self_test.l` gains an ASan case
+(30 total): tuple returns from branches, annotated bindings,
+destructuring in a 300-iteration loop with string elements —
+element release verified leak-free.
+
+**Related:** D-progress-545, `native/plan/08-work-items.md` §N3.3.

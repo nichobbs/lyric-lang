@@ -27,7 +27,9 @@ N3.1 SHIPPED (D-progress-542 types, D-progress-543 functions): generic
 records/unions instantiate on demand per concrete type-argument tuple
 (constructor-argument inference + expected-type threading), and generic
 functions instantiate per call site with unification-based inference,
-cache-first recursion handling, and generic UFCS.
+cache-first recursion handling, and generic UFCS.  Tuples (N3.3)
+SHIPPED in D-progress-546 as synthesised records.  Interfaces/vtables
+(N3.2) and protected types (N3.4) remain from N3.
 Remaining work items (rest of N2/N3, the rest of N4/N5/N6, N7 CI)
 execute from `08-work-items.md` as written, modulo the D-N-014 naming
 mapping.
