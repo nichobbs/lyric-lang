@@ -169,6 +169,108 @@ int64_t lyric_monotonic_nanos(void);
  * success, -1 on failure.  getrandom(2) on Linux, getentropy on macOS. */
 int32_t lyric_secure_random(uint8_t* buf, int64_t n);
 
+/* ── Files (lyric_fs.c) ────────────────────────────────────────────────
+ *
+ * `path` (and `old_path`/`new_path`) are NUL-terminated C strings — the
+ * `_kernel_native/` wrapper obtains them via lyric_string_to_cstring /
+ * withCString, the same convention as lyric_file_size above. All of
+ * these are environmental-failure functions: they return -1 or NULL on
+ * any OS-level failure (permissions, missing path, ...) and never panic.
+ */
+
+/* open(2) wrapper; retries on EINTR.  Returns the fd, or -1 on failure. */
+int32_t lyric_file_open(const char* path, int32_t flags, int32_t mode);
+
+/* close(2) wrapper.  Not retried on EINTR: on Linux and macOS the fd is
+ * closed regardless of an EINTR return, so retrying risks closing an
+ * unrelated fd reused by another thread.  Returns 0 on success, -1 on
+ * failure. */
+int32_t lyric_file_close(int32_t fd);
+
+/* Reads the whole file at `path` into one fresh rc=1 LyricString.
+ * Returns NULL if the file cannot be opened or read. */
+LyricString* lyric_file_read_all(const char* path);
+
+/* Status-returning variant for Lyric kernels (out-param via
+ * nativeAddrOf): 0 and *out set on success; -1 on failure with *out
+ * untouched. */
+int32_t lyric_file_read_all_ok(const char* path, LyricString** out);
+
+/* Writes every byte of `data` to `path`, creating the file (mode 0644)
+ * if it does not exist.  `append` != 0 appends to an existing file;
+ * otherwise the file is truncated first.  Returns 0 on success, -1 on
+ * failure. */
+int32_t lyric_file_write_all(const char* path, LyricString* data, int32_t append);
+
+/* unlink(2) wrapper.  Returns 0 on success, -1 on failure. */
+int32_t lyric_file_delete(const char* path);
+
+/* rename(2) wrapper.  Returns 0 on success, -1 on failure. */
+int32_t lyric_file_rename(const char* old_path, const char* new_path);
+
+/* Returns 1 if `path` exists and is a regular file, 0 otherwise
+ * (including a stat(2) failure or a non-regular-file path). */
+int32_t lyric_file_exists(const char* path);
+
+/* ── Directories (lyric_fs.c) ──────────────────────────────────────── */
+
+/* mkdir(2) wrapper; single level only (no `mkdir -p`), mode 0755.
+ * Returns 0 on success, -1 on failure. */
+int32_t lyric_dir_create(const char* path);
+
+/* rmdir(2) wrapper; the directory must be empty.  Returns 0 on success,
+ * -1 on failure. */
+int32_t lyric_dir_remove(const char* path);
+
+/* Returns 1 if `path` exists and is a directory, 0 otherwise. */
+int32_t lyric_dir_exists(const char* path);
+
+/* Lists the entries of the directory at `path` (skipping "." and
+ * ".."), returning a fresh rc=1 LyricList of rc=1 LyricString* names
+ * (list constructed with elems_are_refs = 1). Returns NULL if the
+ * directory cannot be opened or a read error occurs partway through. */
+LyricList* lyric_dir_list(const char* path);
+
+/* ── Environment (lyric_fs.c) ──────────────────────────────────────── */
+
+/* getenv(3) wrapper.  Returns a fresh rc=1 LyricString copy of the
+ * value, or NULL if the variable is unset. */
+LyricString* lyric_env_get(const char* name);
+
+/* Status-returning variant for Lyric kernels: 0 and *out set when the
+ * variable exists; -1 otherwise with *out untouched. */
+int32_t lyric_env_get_ok(const char* name, LyricString** out);
+
+/* setenv(3) wrapper (always overwrites an existing value).  Returns 0
+ * on success, -1 on failure. */
+int32_t lyric_env_set(const char* name, const char* value);
+
+/* getcwd(3) wrapper.  Returns a fresh rc=1 LyricString, or NULL on
+ * failure. */
+LyricString* lyric_env_cwd(void);
+
+/* ── Process execution (lyric_process.c) ───────────────────────────── */
+
+/* Runs `path` via fork + execvp (never a shell — no interpolation of
+ * `path` or any argument), with argv built from `path` (as argv[0])
+ * followed by the LyricString* elements of `args` in order.  `args`
+ * may be NULL, meaning no arguments beyond argv[0].  stdout and stderr
+ * are captured in full into fresh rc=1 LyricStrings.
+ *
+ * Returns 0 when the child was spawned and reaped successfully: then
+ * *out_exit_code holds the child's exit status (a signal-terminated
+ * child reports 128 + signal number, the shell convention),
+ * *out_stdout and *out_stderr hold the captured output (ownership
+ * transferred to the caller).  Returns -1 on a spawn/wait failure
+ * (pipe/fork/waitpid failure); the out-params are left untouched. An
+ * execvp failure inside the child (e.g. `path` not found) is not a
+ * spawn failure: it is reported as exit code 127 with empty output,
+ * matching shell convention. */
+int32_t lyric_process_run(const char* path, LyricList* args,
+                           int32_t* out_exit_code,
+                           LyricString** out_stdout,
+                           LyricString** out_stderr);
+
 #ifdef __cplusplus
 }
 #endif
