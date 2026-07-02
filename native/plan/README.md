@@ -18,7 +18,9 @@ Phase N2's core SHIPPED (D-progress-542): records, unions, enums,
 distinct types, pattern matching, and ARC retain/release insertion per
 `04-arc-design.md` Rules 1–7, verified end-to-end under
 AddressSanitizer/LeakSanitizer (`llvm_heap_self_test.l`).  Closures
-(N2.6) and `NativeWeak[T]` (N2.5) remain.
+(N2.6) SHIPPED in D-progress-544 (by-value captures, synthesised
+capture-releasing destructors, signature-keyed closure types, indirect
+calls); `NativeWeak[T]` (N2.5) remains.
 
 N3.1 SHIPPED (D-progress-542 types, D-progress-543 functions): generic
 records/unions instantiate on demand per concrete type-argument tuple

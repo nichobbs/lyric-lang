@@ -632,3 +632,25 @@ test "generic functions instantiate per call site with ufcs" {
   val r = compileAndRun(src)
   assertEqualInt(r.exitCode, 42, "generic functions")
 }
+
+test "arc: closures capture by value and release captures" {
+  val src = "package T\n" + "func apply(f: in (Int) -> Int, x: in Int): Int {\n" + "  f(x)\n" + "}\n" +
+    "func compose(f: in (Int) -> Int, g: in (Int) -> Int): Int {\n" +
+    "  f(g(3))\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val base = 10\n" +
+    "  val label = \"adder\"\n" +
+    "  val addBase: (Int) -> Int = { n -> n + base + label.length }\n" +
+    "  val double: (Int) -> Int = { n -> n * 2 }\n" +
+    "  var total = 0\n" +
+    "  var i = 0\n" +
+    "  while i < 100 {\n" +
+    "    total = total + apply(addBase, i) - i - base - 5\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  total + apply(double, 10) + compose(double, addBase)\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 56, "closures (ASan)")
+}
