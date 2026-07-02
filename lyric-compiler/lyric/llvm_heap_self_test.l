@@ -654,3 +654,38 @@ test "arc: closures capture by value and release captures" {
   val r = compileAndRunAsan(src)
   assertEqualInt(r.exitCode, 56, "closures (ASan)")
 }
+
+test "arc: NativeWeak upgrade returns Some while alive" {
+  val src = "package T\n" + "union Option[T] {\n" + "  case Some(value: T)\n" + "  case None\n" + "}\n" +
+    "record Node {\n" +
+    "  name: String\n" +
+    "}\n" +
+    "func check(w: in NativeWeak[Node]): Int {\n" +
+    "  match w.upgrade() {\n" +
+    "    case Some(n) -> n.name.length\n" +
+    "    case None -> 0\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val strong = Node(name = \"alive\")\n" +
+    "  val w = NativeWeak(strong)\n" +
+    "  val before = check(w)\n" +
+    "  var score = 0\n" +
+    "  if before == 5 {\n" +
+    "    score = score + 10\n" +
+    "  }\n" +
+    "  var i = 0\n" +
+    "  while i < 200 {\n" +
+    "    val tmp = Node(name = \"temp-\" + i.toString())\n" +
+    "    val wt = NativeWeak(tmp)\n" +
+    "    val hit = check(wt)\n" +
+    "    if hit > 0 {\n" +
+    "      score = score + 0\n" +
+    "    }\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  score + check(w)\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 15, "weak upgrade (ASan)")
+}

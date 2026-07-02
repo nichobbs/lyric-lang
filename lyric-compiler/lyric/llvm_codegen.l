@@ -223,6 +223,8 @@ record Ctx {
   fnTyEnvTys: List[NType]
   // Closure signatures by closure-struct name (N2.6).
   closureSigs: Map[String, NClosureSig]
+  // NativeWeak target types by weak-struct name (N2.5).
+  weakTargets: Map[String, NType]
   // ARC state (per function).  `scopeRefs` stacks the ref-typed locals
   // each lexical scope owns; `tempScopes` stacks the owned temporaries
   // of each evaluation region; the depth lists snapshot both stacks at
@@ -593,7 +595,12 @@ func unionAllocSize(ui: in NUnionInfo): Int {
 /// records, unions).  Raw c-strings (`i8*`) and `NativePtr[T]` are not.
 func isRefNType(t: in NType): Bool {
   match t {
-    case NPtr(pointee) -> match pointee { case NStruct(_, _) -> true; case _ -> false }
+    case NPtr(pointee) -> {
+      match pointee {
+        case NStruct(name, _) -> not Str.startsWith(name, "__weak<")
+        case _ -> false
+      }
+    }
     case _ -> false
   }
 }
@@ -2160,6 +2167,17 @@ func lowerConstructCall(
     case _ -> ""
   }
   if name.length > 0 {
+    if name == "NativeWeak" and args.count == 1 {
+      val target = lowerPositionalArg(ctx, insns, args, 0)
+      if not isRefNType(target.ty) {
+        panic("Lyric.LlvmCodegen: NativeWeak requires an ARC-managed value")
+      }
+      val wty = weakNType(ctx, target.ty)
+      val dest = freshTmp(ctx)
+      insns.add(NBitcast(dest = dest, fromTy = target.ty, value = target.value, toTy = wty))
+      // Non-owning: no retain, never registered as an owned temp.
+      return NVal(ty = wty, value = NLocal(name = dest))
+    }
     match mapGet(ctx.recordDefs, name) {
       case Some(ri) -> return lowerRecordConstructArgs(ctx, insns, ri, args)
       case None -> {
@@ -2223,6 +2241,13 @@ func lowerUfcsCall(
   args: in List[CallArg],
   line: in Int,
 ): NVal {
+  if name == "upgrade" and args.count == 0 {
+    match weakTargetOfType(ctx, recv.ty) {
+      case Some(target) -> return lowerWeakUpgrade(ctx, insns, recv, target)
+      case None -> {
+      }
+    }
+  }
   val arity = (args.count + 1).toString()
   var sigOpt = mapGet(ctx.sigs, ctx.curPkg[0] + "." + name + "/" + arity)
   match sigOpt {
@@ -2969,6 +2994,31 @@ func closureSigOfType(ctx: in Ctx, t: in NType): Option[NClosureSig] {
   }
 }
 
+/// `NativeWeak[T]`: a non-owning pointer sharing T's representation
+/// behind a marker struct name (excluded from ARC by `isRefNType`).
+func weakNType(ctx: in Ctx, target: in NType): NType {
+  val nm = "__weak<" + mangleNTypeArg(target) + ">"
+  if not ctx.weakTargets.containsKey(nm) {
+    ctx.weakTargets.add(nm, target)
+    val noFields: List[NType] = newList()
+    ctx.moduleTypeDefs.add(NTypeDefn(name = nm, fields = noFields))
+  }
+  val noFields2: List[NType] = newList()
+  NPtr(pointee = NStruct(name = nm, fields = noFields2))
+}
+
+func weakTargetOfType(ctx: in Ctx, t: in NType): Option[NType] {
+  match t {
+    case NPtr(pointee) -> {
+      match pointee {
+        case NStruct(name, _) -> mapGet(ctx.weakTargets, name)
+        case _ -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
 func envIndexOf(envNames: in List[String], name: in String): Int {
   var i = 0
   while i < envNames.count {
@@ -3001,6 +3051,17 @@ func typeToNEnvOpt(ctx: in Ctx, te: in TypeExpr, envNames: in List[String], envT
           case TAType(inner) -> {
             match typeToNEnvOpt(ctx, inner, envNames, envTys) {
               case Some(t) -> return Some(value = NPtr(pointee = t))
+              case None -> return None
+            }
+          }
+          case TAValue(_) -> return None
+        }
+      }
+      if bare == "NativeWeak" and args.count == 1 {
+        match args[0] {
+          case TAType(inner) -> {
+            match typeToNEnvOpt(ctx, inner, envNames, envTys) {
+              case Some(t) -> return Some(value = weakNType(ctx, t))
               case None -> return None
             }
           }
@@ -4166,6 +4227,94 @@ func synthClosureDtor(
     body = body,
     attributes = attrs
   )
+}
+
+/// `NativeWeak[T].upgrade()`: `lyric_weak_upgrade` CAS-increments the
+/// target's rc when it is still alive (the +1 transfers here as an
+/// owned temp); the result wraps into `Option[T]`'s `Some`/`None`.
+func lowerWeakUpgrade(ctx: in Ctx, insns: in List[NInsn], recv: in NVal, target: in NType): NVal {
+  val optKey = match resolveGenericUnionKey(ctx, "Option", "Option") {
+    case Some(k) -> k
+    case None -> panic("Lyric.LlvmCodegen: NativeWeak.upgrade() needs a generic union named 'Option' (with cases Some/None) in the import closure")
+  }
+  val argTys: List[NType] = newList()
+  argTys.add(target)
+  val ui = match instantiateGenericUnionOpt(ctx, optKey, argTys) {
+    case Some(u) -> u
+    case None -> panic("Lyric.LlvmCodegen: cannot instantiate Option for NativeWeak.upgrade()")
+  }
+  var someIdx = 0 - 1
+  var noneIdx = 0 - 1
+  var ci = 0
+  while ci < ui.cases.count {
+    if ui.cases[ci].name == "Some" {
+      someIdx = ci
+    }
+    if ui.cases[ci].name == "None" {
+      noneIdx = ci
+    }
+    ci = ci + 1
+  }
+  if someIdx < 0 or noneIdx < 0 {
+    panic("Lyric.LlvmCodegen: the 'Option' union in scope lacks Some/None cases")
+  }
+  val raw = freshTmp(ctx)
+  insns.add(NBitcast(dest = raw, fromTy = recv.ty, value = recv.value, toTy = NPtr(pointee = NI8)))
+  val up = freshTmp(ctx)
+  insns.add(
+    NCall(
+      dest = up,
+      retTy = NPtr(pointee = NI8),
+      fn = NGlobal(name = "lyric_weak_upgrade"),
+      args = arg1(NPtr(pointee = NI8), NLocal(name = raw))
+    )
+  )
+  val isNull = freshTmp(ctx)
+  insns.add(
+    NICmp(
+      dest = isNull,
+      pred = IEq,
+      ty = NPtr(pointee = NI8),
+      a = NLocal(name = up),
+      b = NLitNull(ty = NPtr(pointee = NI8))
+    )
+  )
+  val someL = freshLabel(ctx, "weak.some")
+  val noneL = freshLabel(ctx, "weak.none")
+  val mergeL = freshLabel(ctx, "weak.merge")
+  val slot = "weak.slot." + freshTmp(ctx)
+  val optTy = unionPtrType(ui)
+  ctx.allocas.add(NAlloca(dest = slot, ty = optTy))
+  insns.add(NCondBr(cond = NLocal(name = isNull), thenLabel = noneL, elseLabel = someL))
+  insns.add(NLabel(name = someL))
+  val typed = freshTmp(ctx)
+  insns.add(NBitcast(dest = typed, fromTy = NPtr(pointee = NI8), value = NLocal(name = up), toTy = target))
+  // The CAS +1 transfers to this owned temp; Some's field store retains
+  // its own reference, and the temp releases at region end.
+  pushTempScope(ctx)
+  val upVal = NVal(ty = target, value = NLocal(name = typed))
+  registerTemp(ctx, upVal)
+  val someVals: List[NVal] = newList()
+  someVals.add(upVal)
+  val someV = lowerUnionConstructVals(ctx, insns, ui, someIdx, someVals)
+  ensureOwned(ctx, insns, someV)
+  popTempScope(ctx, insns)
+  insns.add(NStore(ty = optTy, value = someV.value, ptr = NLocal(name = slot)))
+  insns.add(NBr(label = mergeL))
+  insns.add(NLabel(name = noneL))
+  pushTempScope(ctx)
+  val noneVals: List[NVal] = newList()
+  val noneV = lowerUnionConstructVals(ctx, insns, ui, noneIdx, noneVals)
+  ensureOwned(ctx, insns, noneV)
+  popTempScope(ctx, insns)
+  insns.add(NStore(ty = optTy, value = noneV.value, ptr = NLocal(name = slot)))
+  insns.add(NBr(label = mergeL))
+  insns.add(NLabel(name = mergeL))
+  val dest = freshTmp(ctx)
+  insns.add(NLoad(dest = dest, ty = optTy, ptr = NLocal(name = slot)))
+  val outV = NVal(ty = optTy, value = NLocal(name = dest))
+  registerTemp(ctx, outV)
+  outV
 }
 
 /// Indirect call through a closure value.
@@ -5678,6 +5827,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     fnTyEnvNames = newList(),
     fnTyEnvTys = newList(),
     closureSigs = mod.closureSigs,
+    weakTargets = mod.weakTargets,
     scopeRefs = newList(),
     tempScopes = newList(),
     loopVarDepth = newList(),
@@ -5830,6 +5980,7 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl3("lyric_string_substring", sTy, sTy, NI64, NI64))
   decls.add(mkDecl1("lyric_string_to_cstring", NPtr(pointee = NI8), sTy))
   decls.add(mkDecl1("lyric_cstring_free", NVoid, NPtr(pointee = NI8)))
+  decls.add(mkDecl1("lyric_weak_upgrade", NPtr(pointee = NI8), NPtr(pointee = NI8)))
   decls
 }
 
@@ -5945,6 +6096,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   val emptyFnInsts: Map[String, NFnInst] = newMap()
   val emptyInstMeta: Map[String, NInstInfo] = newMap()
   val emptyClosureSigs: Map[String, NClosureSig] = newMap()
+  val emptyWeakTargets: Map[String, NType] = newMap()
   val ctx = Ctx(
     mainPkg = mainPkg,
     tmpTicker = newList(),
@@ -5977,6 +6129,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     fnTyEnvNames = newList(),
     fnTyEnvTys = newList(),
     closureSigs = emptyClosureSigs,
+    weakTargets = emptyWeakTargets,
     scopeRefs = newList(),
     tempScopes = newList(),
     loopVarDepth = newList(),

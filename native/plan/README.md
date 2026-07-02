@@ -20,7 +20,8 @@ distinct types, pattern matching, and ARC retain/release insertion per
 AddressSanitizer/LeakSanitizer (`llvm_heap_self_test.l`).  Closures
 (N2.6) SHIPPED in D-progress-544 (by-value captures, synthesised
 capture-releasing destructors, signature-keyed closure types, indirect
-calls); `NativeWeak[T]` (N2.5) remains.
+calls); `NativeWeak[T]` (N2.5) SHIPPED in D-progress-545 — all of
+Phase N2 is complete.
 
 N3.1 SHIPPED (D-progress-542 types, D-progress-543 functions): generic
 records/unions instantiate on demand per concrete type-argument tuple
