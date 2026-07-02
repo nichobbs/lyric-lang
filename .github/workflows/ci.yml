@@ -586,6 +586,9 @@ jobs:
             lyric-compiler/lyric/restored_packages_self_test.l \
             lyric-compiler/lyric/test_synth_self_test.l \
             lyric-compiler/lyric/manifest_self_test.l \
+            lyric-compiler/lyric/cli_restore_self_test.l \
+            lyric-compiler/lyric/cli_version_self_test.l \
+            lyric-compiler/lyric/cli_workspace_builder_self_test.l \
             lyric-compiler/lyric/verifier_self_test.l \
             lyric-compiler/lyric/closure_correctness_self_test.l \
             lyric-compiler/lyric/pconstructor_typed_binding_self_test.l \
