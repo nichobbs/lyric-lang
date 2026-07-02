@@ -168,7 +168,7 @@ test "exists returns Ok(false) for absent key" {
   val bRes = freshBucket()
   assertTrue(isOk(bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
-  // (using method-call form to avoid `exists` soft-keyword parser ambiguity)
+  // (using method-call form to avoid `exists` soft-keyword parser ambiguity; see #4674)
   assertTrue(isOk(bucket.exists("never-put.txt")),
              "exists call must succeed regardless of presence")
 }
@@ -179,7 +179,7 @@ test "exists returns Ok after put" {
   val bucket = unwrapResultOr(bRes, defaultBucket())
   assertTrue(isOk(put(bucket, "exists/probe.bin", "AAA=", "application/octet-stream")),
              "put must succeed")
-  // (using method-call form to avoid `exists` soft-keyword parser ambiguity)
+  // (using method-call form to avoid `exists` soft-keyword parser ambiguity; see #4674)
   assertTrue(isOk(bucket.exists("exists/probe.bin")),
              "exists must succeed after put")
 }
@@ -314,7 +314,7 @@ test "exists rejects .meta.json-suffixed key" {
   val bRes = freshBucket()
   assertTrue(isOk(bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
-  // Use the method-call form to avoid the `exists` soft-keyword parse ambiguity.
+  // Use the method-call form to avoid the `exists` soft-keyword parse ambiguity (#4674).
   assertTrue(isErr(bucket.exists("archive.meta.json")),
              "exists must reject .meta.json key at the isSafeKey contract gate")
 }
