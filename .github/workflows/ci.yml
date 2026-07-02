@@ -1245,7 +1245,7 @@ jobs:
           fi
           LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/cross_package_generics_self_test.l
 
-      # Native (LLVM) backend self-tests — N7.1 (docs/10 D-progress-540/544).
+      # Native (LLVM) backend self-tests — N7.1 (docs/10 D-progress-540/545).
       # Builds lyric-rt (C unit tests under both clang and gcc), then runs the
       # three llvm self-tests: llvm_ir (serializer), llvm_codegen (N1 scalar
       # programs compiled through parse -> codegen -> clang -> run), and

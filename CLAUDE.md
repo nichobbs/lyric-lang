@@ -1032,12 +1032,12 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
     restored-bundle resolver).  Read D-N-014 and D-progress-540 alongside
     the plan.  Phase N2 is **complete**: its core (records, unions, enums,
     distinct types, pattern matching, ARC insertion per `04-arc-design.md`
-    Rules 1–7) shipped in D-progress-544, closures (N2.6) in
-    D-progress-547, and `NativeWeak[T]` (N2.5) in D-progress-548 — all
+    Rules 1–7) shipped in D-progress-545, closures (N2.6) in
+    D-progress-548, and `NativeWeak[T]` (N2.5) in D-progress-549 — all
     verified by `llvm_heap_self_test.l`, whose ARC cases compile with
     `-fsanitize=address` so leaks / use-after-free / double-release fail
-    the run.  Generic monomorphization (N3.1, D-progress-545/546) and
-    tuples (N3.3, D-progress-549) also ship; interfaces (N3.2) and
+    the run.  Generic monomorphization (N3.1, D-progress-546/547) and
+    tuples (N3.3, D-progress-550) also ship; interfaces (N3.2) and
     protected types (N3.4) remain from N3.
 - `lyric-rt/` — the native runtime C library (`lyric_rt.a`): ARC
   intrinsics, LyricString, NativeWeak upgrade, List/Map kernels, POSIX
