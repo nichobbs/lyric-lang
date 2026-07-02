@@ -36,7 +36,6 @@ import Std.String as Str
 import Std.Char as Ch
 import Std.Encoding as Enc
 import Std.Environment as Environment
-import Std.Errors
 import Std.File as File
 import Std.Path as Path
 import Std.Parse as Parse
@@ -1958,25 +1957,6 @@ pub func buildTypeIndex(asmPaths: in List[String]): Map[String, String] {
   index
 }
 
-// Human-readable summary of an IOError for a println diagnostic.  A plain
-// match rather than `Std.Errors`' own `IOError.message` UFCS helper — the
-// legacy F# mint-fallback bootstrap emitter (used when the release-download
-// stage-0 path is unavailable; see scripts/mint-stage0-fsharp.sh) cannot
-// resolve that cross-package UFCS call ("no method 'message' on type
-// IOError"), even though the self-hosted compiler resolves it fine.
-func ioErrorSummary(e: in Errors.IOError): String {
-  match e {
-    case InvalidPath(path, reason) -> "invalid path: " + path + " (" + reason + ")"
-    case FileNotFound(path) -> "file not found: " + path
-    case DirectoryNotFound(path) -> "directory not found: " + path
-    case AlreadyExists(path) -> "already exists: " + path
-    case PermissionDenied(path) -> "permission denied: " + path
-    case IoError(path, msg) -> "I/O error for " + path + ": " + msg
-    case EndOfInput(source) -> "end of input: " + source
-    case KeyNotFound(key) -> "key not found: " + key
-  }
-}
-
 // Populate both a type→assembly-name index and an assembly-name→path index from
 // one assembly, reading the DLL once.  First writer wins for each name.  Lets a
 // caller (e.g. the emitter's lazy index build) fill both maps in a single pass.
@@ -2017,8 +1997,18 @@ pub func addAssemblyToIndexesAndValueTypes(
   }
   match File.readBytes(asmPath) {
     case Err(e) -> {
+      val reason = match e {
+        case InvalidPath(p, r) -> "invalid path: " + p + " (" + r + ")"
+        case FileNotFound(p) -> "file not found: " + p
+        case DirectoryNotFound(p) -> "directory not found: " + p
+        case AlreadyExists(p) -> "already exists: " + p
+        case PermissionDenied(p) -> "permission denied: " + p
+        case IoError(p, msg) -> "I/O error for " + p + ": " + msg
+        case EndOfInput(src) -> "end of input: " + src
+        case KeyNotFound(k) -> "key not found: " + k
+      }
       println(
-        "W0006: addAssemblyToIndexesAndValueTypes: failed to read '" + asmPath + "' (" + ioErrorSummary(e) +
+        "W0006: addAssemblyToIndexesAndValueTypes: failed to read '" + asmPath + "' (" + reason +
           ") — its types will fall back to the default assembly in auto-FFI resolution (#4698)"
       )
     }
