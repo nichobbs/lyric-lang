@@ -26638,3 +26638,64 @@ parked history and wired into `compiler-self-tests-jvm`), plus #4700 /
 
 **Related:** docs/44 §4/§5 (J4, J6), epic #2663, #3229, #3676, #3227,
 #4700, #4667, PR #4665 (the kernel half and parked test).
+
+---
+
+### D-progress-554 — Fix: macOS publish crash is deterministic, not transient — reproduces with a known-good stage-0 seed; W0006 was blind to it
+
+**Shipped.** Follow-up to D-progress-544 (#4698, #4699). Publish run #1772
+recovered a clean `v0.4.7` release by minting stage-0 from F# history
+(`mint_stage0=true`), sidestepping the buggy `v0.4.6` seed entirely. The very
+next publish run, #1773 — using `v0.4.7` (built from the *same* commit as the
+W0006 fix, on a completely different source commit) as its stage-0 seed —
+crashed on both macOS architectures with the **byte-for-byte identical**
+`System.TypeLoadException: Could not load type 'System.Console' from
+assembly 'System.Runtime'` in `Std.ConsoleHost.consoleErrorWriter()`. This
+invalidates the "`v0.4.6` is a one-off poisoned historical seed" theory from
+D-progress-544: the bug reproduces with *any* self-hosted-compiled `lyric`
+binary used as a macOS stage-0 seed, deterministically, not as a transient
+one-time fluke.
+
+Crucially, **no W0006 warning appeared** in run #1773's log. W0006
+(D-progress-544) only fires when an individual reference-pack assembly fails
+to *read or parse* — but if it never fires while the bug still reproduces,
+the corruption must be happening upstream of the per-file scan entirely.
+Re-reading `Msil.Codegen.ensureMetadataIndex` (`msil/codegen.l`) confirmed
+the actual gap: when `Msil.MetadataReader.refPackDir()` (`msil/metadata_reader.l`)
+returns `None` — the reference pack directory itself was never found on this
+machine — the `case None -> {}` branch is completely silent. So is the case
+where `refPackDir()` succeeds but `enumRefAssemblies()` returns zero `*.dll`
+files. Either failure leaves the *entire* type→assembly metadata index empty
+for the whole compile, silently degrading every unresolved `System.*` extern
+(not just `System.Console`) to the `"System.Runtime"` fallback — consistent
+with a deterministic, macOS-specific difference in how the self-hosted
+compiler's own reference-pack discovery walk (`candidateDotnetRoots()`:
+`DOTNET_ROOT`, `$HOME/.dotnet`, `/usr/share/dotnet`, `/usr/lib/dotnet`,
+`/usr/local/share/dotnet`, `/opt/homebrew/opt/dotnet/libexec`) behaves versus
+Linux, given identical `.dotnet` SDK installs and identical source.
+
+- **`msil/metadata_reader.l`**: new `refPackDirDebugInfo(): String` —
+  mirrors `refPackDir()`'s exact walk over `candidateDotnetRoots()` without
+  returning early, recording the outcome at every candidate root (packs dir
+  missing / empty / version has no `ref/` / `ref/` has no TFM / found) into
+  one descriptive string.
+- **`msil/codegen.l`**: `ensureMetadataIndex` now prints a `W0007` warning
+  when `Mdr.refPackDir()` returns `None` (embedding `refPackDirDebugInfo()`'s
+  trace) or when the found directory contains zero `*.dll` files — both
+  previously-silent paths that leave the whole metadata index empty for the
+  compile.
+
+**Not done / follow-up (tracked in #4698):** this is still a diagnosability
+fix, not a root-cause fix — the *why* `refPackDir()`'s walk differs on macOS
+remains unconfirmed pending the next publish run's W0007 output (or a
+future recurrence). If the next occurrence shows a genuinely empty
+`refPackDirDebugInfo()` trace (every candidate root missing entirely), the
+fix is almost certainly a `candidateDotnetRoots()` gap specific to how the
+macOS GitHub Actions runner's `dotnet` install differs from Linux's. If it
+instead shows a root *was* found with a real ref-pack path, the bug is
+elsewhere (a bug in `File.dirExists`/`File.listFiles`/`pickHighestDir`
+itself, macOS-specific) and this diagnostic will have ruled out the
+"pack not found" theory, redirecting the next investigation.
+
+**Related:** #4698, D-progress-544, run
+https://github.com/nichobbs/lyric-lang/actions/runs/28623090504 (#1773).

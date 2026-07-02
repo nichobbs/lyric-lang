@@ -1813,32 +1813,82 @@ func candidateDotnetRoots(): List[String] {
   roots
 }
 
+// Outcome of probing one candidate root for a usable reference-assembly
+// directory: `found` carries the resolved path on success; `reason`
+// explains the outcome either way.  The single source of truth shared by
+// `refPackDir()` (early-returns on the first `found`) and
+// `refPackDirDebugInfo()` (records `reason` at every root) so the two
+// walks can never drift apart (#4741).
+record RefPackProbe {
+  found: Option[String]
+  reason: String
+}
+
+// Probe a single candidate root for
+// `<root>/packs/Microsoft.NETCore.App.Ref/<version>/ref/<tfm>/`.
+func probeRefPackRoot(root: in String): RefPackProbe {
+  val packs = Path.join(root, "packs/Microsoft.NETCore.App.Ref")
+  if not File.dirExists(packs) {
+    return RefPackProbe(found = None, reason = "no packs/Microsoft.NETCore.App.Ref")
+  }
+  match pickHighestDir(packs) {
+    case None -> RefPackProbe(found = None, reason = "packs/Microsoft.NETCore.App.Ref exists but is empty")
+    case Some(ver) -> {
+      val refDir = Path.join(Path.join(packs, ver), "ref")
+      if not File.dirExists(refDir) {
+        RefPackProbe(found = None, reason = "version " + ver + " has no ref/ subdir")
+      } else {
+        match pickHighestDir(refDir) {
+          case None -> RefPackProbe(found = None, reason = "version " + ver + "'s ref/ subdir is empty (no TFM)")
+          case Some(tfm) -> {
+            val full = Path.join(refDir, tfm)
+            RefPackProbe(found = Some(value = full), reason = "found " + full)
+          }
+        }
+      }
+    }
+  }
+}
+
 // Locate the reference-assembly directory
 // (`<root>/packs/Microsoft.NETCore.App.Ref/<version>/ref/<tfm>/`).
 pub func refPackDir(): Option[String] {
   val roots = candidateDotnetRoots()
   var i = 0
   while i < roots.count {
-    val packs = Path.join(roots[i], "packs/Microsoft.NETCore.App.Ref")
-    if File.dirExists(packs) {
-      match pickHighestDir(packs) {
-        case Some(ver) -> {
-          val refDir = Path.join(Path.join(packs, ver), "ref")
-          if File.dirExists(refDir) {
-            match pickHighestDir(refDir) {
-              case Some(tfm) -> return Some(value = Path.join(refDir, tfm))
-              case None -> {
-              }
-            }
-          }
-        }
-        case None -> {
-        }
+    match probeRefPackRoot(roots[i]).found {
+      case Some(dir) -> return Some(value = dir)
+      case None -> {
       }
     }
     i = i + 1
   }
   None
+}
+
+// Human-readable trace of what `refPackDir()` tried, for the W0007 diagnostic
+// in `Msil.Codegen.ensureMetadataIndex`.  Walks the same `candidateDotnetRoots()`
+// via `probeRefPackRoot()` but never returns early — it records the outcome at
+// every root so a `None` result (reference pack not found on this machine) is
+// actionable instead of a silent "everything falls back to System.Runtime"
+// (#4698: this fallback is wrong for types like System.Console that live in
+// their own dedicated facade, not forwarded via System.Runtime — and the
+// silent failure mode is exactly what turned a single missing reference pack
+// into an unreproducible-looking macOS-only TypeLoadException in
+// Std.ConsoleHost).
+pub func refPackDirDebugInfo(): String {
+  val roots = candidateDotnetRoots()
+  if roots.count == 0 {
+    return "no candidate roots (DOTNET_ROOT and HOME both unset)"
+  }
+  var acc = ""
+  var i = 0
+  while i < roots.count {
+    val line = roots[i] + " -> " + probeRefPackRoot(roots[i]).reason
+    acc = if i == 0 { line } else { acc + "; " + line }
+    i = i + 1
+  }
+  acc
 }
 
 // Full paths of every `*.dll` reference assembly directly inside `refDir`.
