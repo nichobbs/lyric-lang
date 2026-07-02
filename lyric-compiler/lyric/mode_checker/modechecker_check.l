@@ -1415,9 +1415,6 @@ func checkAwaitInTry(file: in SourceFile, fileLevel: in VerificationLevel, diag:
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §10. Public entry points.
-// ─────────────────────────────────────────────────────────────────────────────
-// ─────────────────────────────────────────────────────────────────────────────
 // §10. N0100 — native FFI boundary (native/plan/05-ffi-design.md).
 // ─────────────────────────────────────────────────────────────────────────────
 // `NativePtr[T]` and the `nativeAddrOf` builtin are the raw side of the
@@ -1617,7 +1614,10 @@ func n0100CollectVarsStmt(ctx: in N0100Ctx, sk: in StatementKind): Unit {
 
 func n0100CollectVarsExpr(ctx: in N0100Ctx, e: in Expr): Unit {
   match e.kind {
-    case ELambda(_, body) -> n0100CollectVars(ctx, body)
+    // ELambda deliberately NOT descended: a lambda body is its own
+    // frame, so its `var` locals must not admit nativeAddrOf in the
+    // enclosing function (nor vice versa) — n0100Expr walks lambda
+    // bodies with a freshly scoped ctx instead (#4734).
     case EBlock(block) -> n0100CollectVars(ctx, block)
     case EUnsafe(block) -> n0100CollectVars(ctx, block)
     case EIf(cond, thenBranch, elseBranch, _) -> {
@@ -1751,7 +1751,7 @@ func n0100Expr(ctx: in N0100Ctx, e: in Expr): Unit {
         ai = ai + 1
       }
     }
-    case ELambda(_, body) -> n0100Block(ctx, body)
+    case ELambda(_, body) -> n0100LambdaBody(ctx, body)
     case EBlock(block) -> n0100Block(ctx, block)
     case EUnsafe(block) -> n0100Block(ctx, block)
     case EAwait(inner) -> n0100Expr(ctx, inner)
@@ -1776,6 +1776,16 @@ func n0100Expr(ctx: in N0100Ctx, e: in Expr): Unit {
     case _ -> {
     }
   }
+}
+
+// A lambda body is its own stack frame: nativeAddrOf inside it may
+// target only the lambda's own `var` locals — an enclosing function's
+// `var` reaches the lambda as a by-value capture (a heap field of the
+// closure), whose address is not a stack slot (#4734).
+func n0100LambdaBody(outer: in N0100Ctx, body: in Block): Unit {
+  val inner = N0100Ctx(diag = outer.diag, fnName = outer.fnName, unsafeFfi = outer.unsafeFfi, varNames = newMap())
+  n0100CollectVars(inner, body)
+  n0100Block(inner, body)
 }
 
 func n0100ExprList(ctx: in N0100Ctx, exprs: in List[Expr]): Unit {
@@ -2035,6 +2045,9 @@ pub func checkNativeFfiBoundary(file: in SourceFile, diag: in List[Diagnostic]):
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §11. Public entry points.
+// ─────────────────────────────────────────────────────────────────────────────
 pub func checkFileWithImports(file: in SourceFile, imports: in List[ImportedMeta]): ModeCheckResult {
   val diag: List[Diagnostic] = newList()
   val fileLevel = levelOfFile(file, diag)

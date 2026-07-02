@@ -384,3 +384,23 @@ test "n0100 nativenullptr inside unsafe_ffi admitted" {
   val result = parseCheck(src)
   assertTrue(not (hasDiagCode(result, "N0100")), "nativenullptr-positive: no N0100")
 }
+
+test "n0100 nativeaddrof of a capture inside a lambda rejected" {
+  // An enclosing function's var reaches a lambda as a by-value capture
+  // (a closure heap field), not a stack slot (#4734).
+  val src = "package P\n@unsafe_ffi\nfunc f(): Int {\n  var b = 0\n  val g: () -> Int = { -> w(nativeAddrOf(b), 1) }\n  g()\n}\nfunc w(p: Int, n: Int): Int { n }\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "N0100"), "lambda-capture-addrof: N0100 emitted")
+}
+
+test "n0100 lambda-local var does not admit outer nativeaddrof" {
+  val src = "package P\n@unsafe_ffi\nfunc f(): Int {\n  val g: () -> Int = { ->\n    var inner = 0\n    inner\n  }\n  val r = w(nativeAddrOf(inner), 1)\n  r\n}\nfunc w(p: Int, n: Int): Int { n }\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "N0100"), "outer-addrof-of-lambda-var: N0100 emitted")
+}
+
+test "n0100 lambda-local var admits nativeaddrof inside its own lambda" {
+  val src = "package P\n@unsafe_ffi\nfunc f(): Int {\n  val g: () -> Int = { ->\n    var inner = 0\n    w(nativeAddrOf(inner), 1)\n  }\n  g()\n}\nfunc w(p: Int, n: Int): Int { n }\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "N0100")), "lambda-own-var: no N0100")
+}

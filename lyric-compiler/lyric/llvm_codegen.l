@@ -2040,7 +2040,7 @@ func lowerArgAgainst(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, ex: i
     if isFunctionTypeExpr(sig.paramTys[slot]) {
       return lowerExprExpecting(ctx, insns, ex, externCallbackClosureWant(ctx, sig.paramTys[slot]))
     }
-    if nTypeToIrString(typeToN(ctx, sig.paramTys[slot])) == "i8*" {
+    if isBytePtrNType(typeToN(ctx, sig.paramTys[slot])) {
       return lowerExpr(ctx, insns, ex)
     }
   }
@@ -3100,6 +3100,21 @@ func closureSigOfType(ctx: in Ctx, t: in NType): Option[NClosureSig] {
 // The call-duration borrow needs no retain; a C API that holds the
 // callback beyond the call requires the _kernel_native/ wrapper to
 // retain/release around the registration (native/plan/05-ffi-design.md).
+/// Structural NativePtr[Byte] (i8*) test — string-comparing the IR
+/// spelling would silently stop matching under an opaque-pointer
+/// (`ptr`) rendering (#4733).
+func isBytePtrNType(t: in NType): Bool {
+  match t {
+    case NPtr(pointee) -> {
+      match pointee {
+        case NI8 -> true
+        case _ -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
 func isFunctionTypeExpr(t: in TypeExpr): Bool {
   match t.kind {
     case TFunction(_, _) -> true
@@ -3121,7 +3136,7 @@ func externCallbackClosureWant(ctx: in Ctx, t: in TypeExpr): NType {
         )
       }
       val lastTy = typeExprToNType(parameters[parameters.count - 1])
-      if nTypeToIrString(lastTy) != "i8*" {
+      if not isBytePtrNType(lastTy) {
         panic(
           "Lyric.LlvmCodegen: an extern callback parameter's last parameter must be NativePtr[Byte] (the userdata slot); got " +
             nTypeToIrString(lastTy)
@@ -3246,7 +3261,7 @@ func externAdaptArg(ctx: in Ctx, insns: in List[NInsn], declTyExpr: in TypeExpr,
     case _ -> {
     }
   }
-  if nTypeToIrString(declTy) == "i8*" {
+  if isBytePtrNType(declTy) {
     match closureSigOfType(ctx, v.ty) {
       case Some(_) -> {
         val cast = freshTmp(ctx)
