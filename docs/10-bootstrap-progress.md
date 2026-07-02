@@ -26143,3 +26143,73 @@ lacks a usable `ref/<tfm>`), not confirmed as a contributor here but worth
 hardening opportunistically.
 
 **Related:** #4698, run https://github.com/nichobbs/lyric-lang/actions/runs/28585430193.
+
+---
+
+### D-progress-542 — Native backend Phase N2: records, unions, enums, distinct types, pattern matching, ARC
+
+**Shipped.** The second slice of the LLVM native backend
+(`native/plan/08-work-items.md` items N2.1–N2.4 plus the ARC insertion
+rules of `native/plan/04-arc-design.md`), making heap types a working
+part of `--target native`:
+
+- **Records (N2.1)** — `{ i32 rc, i8* dtor, fields... }` heap structs
+  with synthesised destructors (ARC Rule 7), inline construction
+  (Rules 1/2), field access/assignment (Rule 3 retain-new-then-
+  release-old on ref fields), named/positional/default construction
+  arguments, and methods in record bodies lowering as package
+  functions with the explicit `self` receiver (D037) resolved via
+  UFCS (`p.dist2()` and free-function `p.total(5)` both work).
+- **Unions (N2.2)** — `{ header, i32 disc, i32 pad, [W x i64] }` with
+  per-case payload structs sized by a C-layout calculator; per-case
+  constructor calls (named and positional fields), nullary cases as
+  bare paths (`Nothing`, `MaybeStr.Nothing`), and case-aware
+  destructors that switch on the discriminant.
+- **Enums / distinct types (N2.3)** — enums lower to `i32`
+  discriminants (`Color.Red` as a value or pattern); distinct types
+  share their underlying representation with construction range
+  checks (`type Age = Int range 0 ..= 150`; violations panic) and the
+  `.value` accessor.
+- **Pattern matching (N2.4)** — `match` lowers to sequential
+  discriminant/literal/range/string tests with payload-field binds,
+  guards (with correct arm-scope release on the guard-fail path),
+  wildcard/binding arms, nested constructor sub-patterns, and a
+  non-exhaustive panic backstop.
+- **ARC insertion** — value-provenance bookkeeping: constructors and
+  ref-returning calls yield owned temps (Rule 6) released at region
+  end unless transferred to a binding (Rule 4), heap store, or
+  return; borrows retain on binding; scope stacks release locals on
+  block exit, `return`, `break`, and `continue` (loop-depth-aware);
+  `in` params are borrows (Rule 5).  This also closes the N1 "strings
+  leak by design" gap — string temps now release.
+
+**Verification.** `llvm_heap_self_test.l` (@test_module, 21 cases):
+functional cases assert exit codes and stdout end-to-end (parse →
+codegen → clang → run), and five ARC cases compile with
+`-fsanitize=address` — LeakSanitizer/ASan turn a missed release,
+premature release, or double release into a non-zero exit, so the ARC
+protocol is verified mechanically (allocation loops with
+match/continue, ref-field overwrite churn, returned strings with var
+rebinding, nested record destructor composition, early-return/break
+unwinding).  The N1 string paths were re-verified leak-free under the
+same harness.
+
+**Stage-0 seed gaps worked around** (all in the #4631 family, cited at
+each site): value-position match over `Option` mis-lowers (rewrapped
+`Some` falls through as null) — `resolveFieldArgs`, `registerDistinct`,
+`substSelfInFn`, and `lowerCall` use the var-mutation shape; a `val` +
+`if` statement sequence inside a value-position match arm fails E3 —
+`lowerBlockValue` uses var-mutation; `out`, `scope`, and `old` are
+rejected as binding names by the seed parser; a trailing block
+expression starting with `(` parses as a call continuation.
+
+**Not in this slice** (each still panics with a construct-naming
+message): closures/lambdas and `NativeWeak[T]` (`upgrade()` returns
+`Option[T]`, so weak refs land with generic-union monomorphization in
+N3.1), tuples/interfaces/protected types (N3), `for` loops,
+module-level `val`, collections (N5), async (Phase 2).  Bundled-
+package (stdlib) record methods are collected for registration but not
+lowered until the N5 stdlib port.
+
+**Related:** D-progress-540, `native/plan/04-arc-design.md`,
+`native/plan/08-work-items.md` §N2, D037 (methods desugar), #4631.
