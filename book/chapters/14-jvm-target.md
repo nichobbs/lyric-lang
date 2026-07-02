@@ -5,7 +5,7 @@ Lyric defaults to .NET, but it also targets the JVM. `lyric build --target jvm` 
 The two targets share the same language, the same type system, the same contracts, and the same standard library surface. What differs is the output format and the platform-specific kernel that implements I/O and other runtime services. Switching targets is a compiler flag, not a code change — unless your code imports platform-specific `extern` packages.
 
 ::: note
-**JVM status.** `lyric build --target jvm` is production-ready for the package shapes covered in this chapter. Maven dependency resolution (`[maven]` table in `lyric.toml`), `module-path.txt` generation, and async generators with `await` in their bodies are all fully implemented. Remaining gaps: GraalVM native-image integration and the `lyric run --target jvm` convenience wrapper (run via `java -jar` directly). These are noted inline where they arise.
+**JVM status.** `lyric build --target jvm` is production-ready for the package shapes covered in this chapter. Maven dependency resolution (`[maven]` table in `lyric.toml`), `module-path.txt` generation, async generators with `await` in their bodies, `lyric run --target jvm`, `lyric bench --target jvm`, and the `func main(args: slice[String]): Int` entry point (argv forwarded; the `Int` return becomes the process exit code via `System.exit`) are all implemented. Remaining gap: GraalVM native-image integration. These are noted inline where they arise.
 :::
 
 ## §14.1 Building for the JVM

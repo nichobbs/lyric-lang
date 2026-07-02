@@ -3293,6 +3293,123 @@ jobs:
       # read-modify-write).  MSIL target only; JVM parity tracked under #1470's
       # JVM-deferral note.  Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
 
+      # Instance-method out/inout self-test on JVM (#1763 instance half) —
+      # holder wrap/unwrap on record / impl / protected instance methods.
+      - name: Instance out/inout self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping instance out/inout JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/out_inout_instance_jvm_self_test.l
+      # String instance-method self-test on JVM (#1585) — pins the precise
+      # descriptors of the String intrinsics (trim/indexOf/startsWith/…).
+      - name: String-methods self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping string-methods JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/string_methods_jvm_self_test.l
+      # Intra-impl dispatch self-tests on JVM (#1722) — `self.m(...)` and bare
+      # `m(...)` sibling calls inside impl/record method bodies.
+      - name: Intra-impl dispatch self-tests on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping intra-impl JVM self-tests"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/self_method_call_jvm_self_test.l
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/implicit_self_jvm_self_test.l
+      # Aliased-package-import self-test on JVM (#4606) — pins that the JVM
+      # bridge runs `Lyric.AliasRewriter.rewriteFile` before type-check (parity
+      # with the MSIL bridge), so `import Std.String as Str; Str.trim(s)`
+      # resolves instead of panicking in the auto-FFI Object guess.  Imports
+      # only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+      - name: Aliased-import self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping aliased-import JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/alias_import_jvm_self_test.l
+      # Interface-dispatch self-test on JVM (#3687) — pins that a record
+      # implementing a Lyric `interface` dispatches through an interface-typed
+      # parameter via `invokeinterface` (interface members registered in
+      # funcSigs with isIface = true) instead of the class-format-invalid
+      # `invokevirtual` guess.  Imports only `Std.*`.
+      - name: Interface-dispatch self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping interface-dispatch JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/iface_dispatch_jvm_self_test.l
+      # Std.Time self-test on JVM (#3302 / #3276, band J6) — pins the pure-Lyric
+      # `_kernel_jvm/time_host.l` (java.time via auto-FFI: no static-field
+      # externs, no phantom shim classes): construction, arithmetic, ordering,
+      # epoch/ISO-8601 round-trips, calendar math, monotonic clock, and
+      # sleepMillis.  Unblocks `lyric bench --target jvm` (#680).
+      - name: Std.Time self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Time JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/time_jvm_self_test.l
+      # Entry-point argv / exit-code check on JVM (#3303) — builds a program
+      # whose `func main(args: slice[String]): Int` prints its argv and returns
+      # args.count, runs it with three arguments, and asserts both the output
+      # and the process exit code (the synthesised `main(String[])` wrapper
+      # forwards argv and routes the Int return through System.exit).
+      - name: Entry-point argv/exit-code check on JVM (lyric build --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping entry-args JVM check"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          "$lyric_bin" build lyric-compiler/jvm/entry_args_jvm_main.l --target jvm -o "$work/entryargs.jar"
+          set +e
+          out="$(java -jar "$work/entryargs.jar" one two three)"
+          code=$?
+          set -e
+          echo "$out"
+          if [ "$code" -ne 3 ]; then
+            echo "::error::expected exit code 3 (= argc), got $code"
+            exit 1
+          fi
+          printf '%s\n' "$out" | grep -qx "argc=3" || { echo "::error::argc line missing"; exit 1; }
+          printf '%s\n' "$out" | grep -qx "arg1=two" || { echo "::error::arg1 line missing"; exit 1; }
+
       - name: Wait for all parallel tests
         wait-all: true
   ecosystem-security-tests:

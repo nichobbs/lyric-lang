@@ -49,6 +49,13 @@ pub record JvmFuncSig {
   // to pass that argument as a holder array and copy the callee's write back to
   // the caller's local after the call.  Mirrors the MSIL `funcParamModes`.
   paramModes: List[ParamMode]
+  // True when `owner` is a JVM interface (a Lyric `interface` item), so the
+  // call site must emit `invokeinterface` — `invokevirtual` against an
+  // interface owner fails class-load verification ("Found interface X, but
+  // class was expected", #3687).  No default: a cross-package defaulted
+  // construction miscompiles under the current MSIL emitter, so every
+  // construction site passes it explicitly.
+  isIface: Bool
 }
 
 // One field of a union case class, in declaration order.  A match binding

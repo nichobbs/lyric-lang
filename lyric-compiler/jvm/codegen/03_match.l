@@ -475,7 +475,7 @@ func lowerPatternTest(
     case PTypeTest(_, ty) -> {
       // `case x: T ->` — isinst against T.  Primitive T is a degenerate test
       // (a value of that static type always matches), so emit no test.
-      val testTy = typeExprToJvm(ty, ctx.pkgName)
+      val testTy = typeExprToJvmExtern(ty, ctx.pkgName, ctx.externTypes)
       match testTy {
         case JRef(cls) -> {
           emitLoad(insns, scrutSlot, scrutTy)
@@ -648,7 +648,7 @@ func lowerPatternBind(
     case PTypeTest(inner, ty) -> {
       // Narrow the scrutinee to the tested type, then bind the inner pattern at
       // that precise type.
-      val testTy = typeExprToJvm(ty, ctx.pkgName)
+      val testTy = typeExprToJvmExtern(ty, ctx.pkgName, ctx.externTypes)
       match testTy {
         case JRef(cls) -> {
           emitLoad(insns, scrutSlot, scrutTy)
