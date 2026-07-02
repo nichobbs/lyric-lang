@@ -1798,6 +1798,8 @@ Multiple names may appear in a single `wraps:` or `inside:` clause, comma-separa
 
 Aspects may carry `requires:` and `ensures:` clauses. These are composed additively with the matched function's own contract: all `requires:` clauses (function + every matching aspect) must hold before the call; all `ensures:` clauses must hold after. Aspects cannot weaken or remove a function's own contracts.
 
+An aspect clause may reference the matched function's parameters through `args.<field>` (e.g. `requires: args.apiKey != ""`). At weave time each `args.<field>` reference is rewritten to the matched function's same-named parameter; this works in every aspect mode (local, C-mode, and B′-mode) because composed clauses always land on the per-match wrapper, whose parameters are the matched function's own. A referenced field with no matching parameter surfaces as a weave-time diagnostic (A0042 for C-mode; A0047 for row-constrained B′-mode).
+
 In `@runtime_checked` packages, augmented clauses are runtime assertions. In `@proof_required` packages, they are additional SMT obligations.
 
 ### 14.5 Per-function opt-out
