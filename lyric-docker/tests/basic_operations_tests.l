@@ -3,7 +3,6 @@
 //! These tests verify core Docker client functionality.
 //!
 //! Run with: lyric test --manifest lyric-docker/lyric.toml
-
 @test_module
 package Lyric.Docker.BasicOperationsTests
 
@@ -13,7 +12,6 @@ import Std.Core
 import Std.Testing
 
 // ─── Socket Parsing Tests ──────────────────────────────────────────────────
-
 test "unix:///var/run/docker.sock parses to Some(/var/run/docker.sock)" {
   val pathOpt = Lyric.Docker.Sockets.parseUnixSocketUrl("unix:///var/run/docker.sock")
   assertTrue(isSome(pathOpt), "Expected Some")
@@ -51,7 +49,6 @@ test "empty URL parses to None" {
 }
 
 // ─── Stream Demultiplexer Tests ──────────────────────────────────────────────
-
 test "demultiplex empty bytes produces empty string" {
   val streamResult = Lyric.Docker.demultiplexDockerStream([])
   assertTrue(isOk(streamResult), "Expected Ok")
@@ -61,10 +58,7 @@ test "demultiplex empty bytes produces empty string" {
 
 test "demultiplex single stdout frame" {
   // stdout (1), size 5, "Hello"
-  val bytes: slice[Byte] = [
-    1u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 5u8,
-    72u8, 101u8, 108u8, 108u8, 111u8
-  ]
+  val bytes: slice[Byte] = [1u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 5u8, 72u8, 101u8, 108u8, 108u8, 111u8]
   val streamResult = Lyric.Docker.demultiplexDockerStream(bytes)
   assertTrue(isOk(streamResult), "Expected Ok")
   val result = unwrapResultOr(streamResult, "")
@@ -75,10 +69,33 @@ test "demultiplex multiple stdout and stderr frames" {
   // Frame 1: stdout (1), size 5, "Hello"
   // Frame 2: stderr (2), size 6, " World"
   val bytes: slice[Byte] = [
-    1u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 5u8,
-    72u8, 101u8, 108u8, 108u8, 111u8,
-    2u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 6u8,
-    32u8, 87u8, 111u8, 114u8, 108u8, 100u8
+    1u8,
+    0u8,
+    0u8,
+    0u8,
+    0u8,
+    0u8,
+    0u8,
+    5u8,
+    72u8,
+    101u8,
+    108u8,
+    108u8,
+    111u8,
+    2u8,
+    0u8,
+    0u8,
+    0u8,
+    0u8,
+    0u8,
+    0u8,
+    6u8,
+    32u8,
+    87u8,
+    111u8,
+    114u8,
+    108u8,
+    100u8
   ]
   val streamResult = Lyric.Docker.demultiplexDockerStream(bytes)
   assertTrue(isOk(streamResult), "Expected Ok")
@@ -97,10 +114,7 @@ test "demultiplex incomplete header is stopped safely" {
 
 test "demultiplex incomplete payload is stopped safely" {
   // stdout (1), size 5, but only 3 bytes of payload present
-  val bytes: slice[Byte] = [
-    1u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 5u8,
-    72u8, 101u8, 108u8
-  ]
+  val bytes: slice[Byte] = [1u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 5u8, 72u8, 101u8, 108u8]
   val streamResult = Lyric.Docker.demultiplexDockerStream(bytes)
   assertTrue(isOk(streamResult), "Expected Ok")
   val result = unwrapResultOr(streamResult, "none")
@@ -108,7 +122,6 @@ test "demultiplex incomplete payload is stopped safely" {
 }
 
 // ─── Container ID Validation Tests ─────────────────────────────────────────
-
 test "isValidContainerId rejects empty string" {
   assertFalse(Lyric.Docker.isValidContainerId(""), "Empty string is invalid")
 }

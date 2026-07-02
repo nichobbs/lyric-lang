@@ -11693,7 +11693,8 @@ func emitCollectionForMsil(
       // not IList (e.g. DictKeyCollection, DictValueCollection).  Protocol:
       //   castclass IEnumerable
       //   GetEnumerator() → IEnumerator (non-generic)
-      //   while MoveNext() { elem = get_Current(); body }
+      //   try { while MoveNext() { elem = get_Current(); body } }
+      //   finally { if (enum is IDisposable) ((IDisposable)enum).Dispose(); }
       // Cast the collection to System.Collections.IEnumerable and call GetEnumerator.
       insns.add(MCastclass(typeToken = 0x01000000 + cctx.trIEnumerable))
       insns.add(MCallvirt(methodToken = cctx.tokIEnumerableGetEnumerator))
@@ -11704,15 +11705,30 @@ func emitCollectionForMsil(
       val eeEnumSlot = allocSlotMsil(fctx, "__ee_enum_" + toString(fctx.slotTicker.count), eeEnumTy)
       emitStoreSlot(insns, eeEnumSlot, fctx.paramCount)
 
+      // The loop body is wrapped in a try/finally so the enumerator is disposed
+      // (ECMA-334 §13.9.5) whether the loop runs to exhaustion or exits via
+      // `break` (#4594).  `eeAfterL` is the target for both — it sits outside
+      // the protected region, so `break` (via emitLoopJumpMsil) correctly emits
+      // `leave`, which runs the finally handler on its way out.  Not every
+      // non-generic IEnumerator implementation is disposable (the static
+      // System.Collections.IEnumerator type doesn't require it), so the finally
+      // handler does a runtime `isinst IDisposable` check before calling Dispose.
+      val eeAfterL = freshLabelMsil(fctx)
+      val eeTryStartL = freshLabelMsil(fctx)
+      insns.add(MLabel(id = eeTryStartL))
+      fctx.tryRegionStack.add(0)
+
       val eeLoopL = freshLabelMsil(fctx)
       val eeContL = freshLabelMsil(fctx)
-      val eeAfterL = freshLabelMsil(fctx)
+      val eeDoneL = freshLabelMsil(fctx)
 
       insns.add(MLabel(id = eeLoopL))
-      // IEnumerator.MoveNext() → bool; false → exit loop
+      // IEnumerator.MoveNext() → bool; false → exit loop (still inside the
+      // protected region; a plain conditional branch to a same-region label
+      // is legal, unlike a branch straight out of the region).
       emitLoadSlot(insns, eeEnumSlot, fctx.paramCount)
       insns.add(MCallvirt(methodToken = cctx.tokIEnumeratorMoveNext))
-      insns.add(MBrFalse(label = eeAfterL))
+      insns.add(MBrFalse(label = eeDoneL))
 
       // IEnumerator.get_Current() → object; cast to elemTy if concrete
       emitLoadSlot(insns, eeEnumSlot, fctx.paramCount)
@@ -11732,6 +11748,39 @@ func emitCollectionForMsil(
 
       insns.add(MLabel(id = eeContL))
       insns.add(MBr(label = eeLoopL))
+      insns.add(MLabel(id = eeDoneL))
+      insns.add(MLeave(label = eeAfterL))
+      fctx.tryRegionStack.removeAt(fctx.tryRegionStack.count - 1)
+
+      val eeTryEndL = freshLabelMsil(fctx)
+      insns.add(MLabel(id = eeTryEndL))
+
+      val eeFinallyStartL = freshLabelMsil(fctx)
+      val eeFinallyEndL = freshLabelMsil(fctx)
+      val eeSkipDisposeL = freshLabelMsil(fctx)
+      insns.add(MLabel(id = eeFinallyStartL))
+      emitLoadSlot(insns, eeEnumSlot, fctx.paramCount)
+      insns.add(MIsinst(typeToken = 0x01000000 + cctx.trIDisposable))
+      val eeDisposableSlot = allocSlotMsil(fctx, "__ee_disposable_" + toString(fctx.slotTicker.count), MObject)
+      emitStoreSlot(insns, eeDisposableSlot, fctx.paramCount)
+      emitLoadSlot(insns, eeDisposableSlot, fctx.paramCount)
+      insns.add(MBrFalse(label = eeSkipDisposeL))
+      emitLoadSlot(insns, eeDisposableSlot, fctx.paramCount)
+      insns.add(MCallvirt(methodToken = cctx.tokIDisposableDispose))
+      insns.add(MLabel(id = eeSkipDisposeL))
+      insns.add(MEndfinally)
+      insns.add(MLabel(id = eeFinallyEndL))
+      insns.add(
+        MEHClause(
+          flags = 2,
+          tryStart = eeTryStartL,
+          tryEnd = eeTryEndL,
+          handlerStart = eeFinallyStartL,
+          handlerEnd = eeFinallyEndL,
+          catchToken = 0
+        )
+      )
+
       insns.add(MLabel(id = eeAfterL))
     }
     case _ -> {

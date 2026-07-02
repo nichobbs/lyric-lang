@@ -69,13 +69,15 @@ pub func validatePackageVersionArg(v: in String): Option[String] {
 // Returns the exit code: 0 on success, 1 on error.
 // `manifestPath` is forwarded to the generator pre-processor so custom
 // @generate(Pkg.Name) annotations can resolve their generator DLLs.
-func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarget, manifestPath: in Option[String]): Int {
+// `pub` so `cli_build_self_test.l` can drive the stdlib/restored-dep
+// colocation behavior directly against a temp source file (#4127).
+pub func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarget, manifestPath: in Option[String]): Int {
   buildOneNative(sourcePath, outPath, target, manifestPath, "", "")
 }
 
 // `nativeTriple` / `nativeOpt` only apply to `--target native` (the
 // `--triple` / `--opt` flags); empty strings mean host triple / -O2.
-func buildOneNative(
+pub func buildOneNative(
   sourcePath: in String,
   outPath: in String,
   target: in CompileTarget,
