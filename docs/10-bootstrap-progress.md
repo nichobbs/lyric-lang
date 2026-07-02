@@ -26505,3 +26505,63 @@ lands with the mode-checker N4.2 slice.
 
 **Related:** D-progress-550, `native/plan/05-ffi-design.md`
 §nativeAddrOf, #4697.
+
+---
+
+### D-progress-552 — Native backend N4 remainder: N0100 FFI boundary, callback trampolines, FFI self-test
+
+**Shipped.** The rest of Phase N4 (`native/plan/08-work-items.md` §N4.2
+mode-checker half, §N4.5, §N4.7), plus the #4693 dedup refactor:
+
+- **N0100 (N4.2, mode checker)** — `Lyric.ModeChecker` gains a native
+  FFI boundary pass, run at every verification level on every target's
+  user files (`checkFileWithImports`, before the proof-level early
+  return; `_kernel_native/` files never pass through `checkFile`, so
+  the plan's package exemption holds by construction).  `NativePtr[T]`
+  type expressions in signatures/locals and `nativeAddrOf` /
+  `nativeNullPtr` calls require the enclosing function to carry
+  `@unsafe_ffi`; inside `@unsafe_ffi`, `nativeAddrOf`'s operand must be
+  a bare identifier bound by a `var` local, and the produced pointer
+  must not escape the frame (explicit return, expression body, or
+  trailing block value), with record / exposed-record / union fields
+  typed `NativePtr` rejected unconditionally.  `extern func`
+  parameter/return positions are exempt as the audited boundary.
+  Fourteen new `modechecker_self_test.l` cases.  Closes the
+  implementation half of #4697.
+- **Callback trampolines (N4.5)** — an `extern func` parameter may be
+  declared with a function type whose LAST parameter is
+  `NativePtr[Byte]` (the userdata slot); `typeExprToNType` lowers it to
+  a raw `NFnPtr`.  A Lyric closure argument in that position lowers
+  against the callback's reduced signature (params minus the userdata
+  slot) and is adapted to a synthesised C-ABI trampoline —
+  `__lyric_cb_tramp.N`, cached per callback signature — that rebuilds
+  the Lyric closure calling convention from the raw side (bitcast
+  userdata → closure header, load the fnptr slot, call with the
+  userdata as the environment).  The same closure value passed in a
+  `NativePtr[Byte]` argument position lowers to a bitcast of the
+  closure pointer, so `pthread_create(tidP, attr, worker, worker)`
+  registers and delivers the closure end-to-end.  Call-duration borrows
+  need no retain; APIs that hold the callback across calls put
+  retention on the `_kernel_native/` wrapper
+  (`native/plan/05-ffi-design.md`).  `nativeNullPtr()` ships alongside
+  as the C NULL producer (`NPtr(NI8)` null literal), N0100-gated like
+  `nativeAddrOf`.
+- **FFI self-test (N4.7)** — `llvm_ffi_self_test.l` (6 cases, all but
+  one ASan-linked): extern `write` to stdout with String→C-string
+  bridging, libm `sin`/`sqrt`, `strlen` round-trip, `free(NULL)` via
+  `nativeNullPtr()`, and two pthread trampoline cases — a closure
+  capturing a Lyric String allocates a C buffer ON THE SECOND THREAD
+  and returns it through `pthread_join`'s retval out-param, and a
+  dedup case runs two distinct closures through the same callback
+  signature (one shared trampoline define).  Wired into the CI native
+  step.
+- **#4693** — `lowerCallArgs` / `lowerCallArgsWithReceiver` now share
+  `bindCallArgs`, parameterized by the first bindable slot.
+
+**Remaining from N4:** trampoline parameter forwarding (callbacks with
+non-userdata parameters) is implemented but exercised only with
+zero-parameter closures — a forwarded-parameter case lands with the
+first N5 kernel that needs one.
+
+**Related:** D-progress-551, `native/plan/05-ffi-design.md`,
+`native/plan/08-work-items.md` §N4, #4697, #4693.

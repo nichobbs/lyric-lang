@@ -7,6 +7,7 @@ package Lyric.ModeCheckerSelfTest
 import Std.Core
 import Std.Collections
 import Std.Testing
+import Lyric.Lexer
 import Lyric.Parser
 import Lyric.ModeChecker
 
@@ -294,4 +295,92 @@ test "await in try axiom no v0012" {
   val src = "@axiom\npackage P\nasync func f(): Unit {\n  try {\n    await someTask()\n  } catch (e: Exception) {\n  }\n}\nfunc someTask(): Unit {}\n"
   val result = parseCheck(src)
   assertTrue(not (hasDiagCode(result, "V0012")), "axiom-await-in-try: @axiom is exempt from V0012")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// N0100 — native FFI boundary (NativePtr[T] / nativeAddrOf placement).
+// ─────────────────────────────────────────────────────────────────────────────
+test "n0100 nativeptr param outside unsafe_ffi" {
+  val src = "package P\nfunc f(p: NativePtr[Byte]): Int { 1 }\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "N0100"), "nativeptr-param: N0100 emitted")
+}
+
+test "n0100 nativeptr return outside unsafe_ffi" {
+  val src = "package P\nfunc f(): NativePtr[Byte] { g() }\nfunc g(): NativePtr[Byte] { g() }\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "N0100"), "nativeptr-return: N0100 emitted")
+}
+
+test "n0100 nativeptr local annotation outside unsafe_ffi" {
+  val src = "package P\nfunc f(): Int {\n  var p: NativePtr[Byte] = g()\n  1\n}\nfunc g(): NativePtr[Byte] { g() }\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "N0100"), "nativeptr-local: N0100 emitted")
+}
+
+test "n0100 nativeaddrof outside unsafe_ffi" {
+  val src = "package P\nfunc f(): Int {\n  var b = 0\n  val r = w(nativeAddrOf(b), 1)\n  r\n}\nfunc w(p: Int, n: Int): Int { n }\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "N0100"), "nativeaddrof-placement: N0100 emitted")
+}
+
+test "n0100 unsafe_ffi function is admitted" {
+  val src = "package P\nextern func w(buf: NativePtr[Byte], n: Long): Long = \"write\"\n@unsafe_ffi\nfunc f(): Long {\n  var b = 0\n  w(nativeAddrOf(b), 1)\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "N0100")), "unsafe-ffi-positive: no N0100")
+}
+
+test "n0100 extern func params exempt" {
+  val src = "package P\nextern func w(buf: NativePtr[Byte], n: Long): Long = \"write\"\nextern func m(n: Long): NativePtr[Byte] = \"malloc\"\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "N0100")), "extern-exempt: no N0100")
+}
+
+test "n0100 nativeaddrof operand must be var local" {
+  val src = "package P\n@unsafe_ffi\nfunc f(): Int {\n  val b = 0\n  val r = w(nativeAddrOf(b), 1)\n  r\n}\nfunc w(p: Int, n: Int): Int { n }\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "N0100"), "nativeaddrof-val-operand: N0100 emitted")
+}
+
+test "n0100 nativeaddrof must not be returned" {
+  val src = "package P\n@unsafe_ffi\nfunc f(): NativePtr[Byte] {\n  var b = 0.toByte()\n  return nativeAddrOf(b)\n}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "N0100"), "nativeaddrof-return-escape: N0100 emitted")
+}
+
+test "n0100 nativeaddrof trailing value escape" {
+  val src = "package P\n@unsafe_ffi\nfunc f(): NativePtr[Byte] {\n  var b = 0.toByte()\n  nativeAddrOf(b)\n}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "N0100"), "nativeaddrof-tail-escape: N0100 emitted")
+}
+
+test "n0100 record field nativeptr rejected" {
+  val src = "package P\nrecord Holder {\n  p: NativePtr[Byte]\n}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "N0100"), "record-field: N0100 emitted")
+}
+
+test "n0100 union payload nativeptr rejected" {
+  val src = "package P\nunion U {\n  case Raw(p: NativePtr[Byte])\n  case Empty\n}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "N0100"), "union-payload: N0100 emitted")
+}
+
+test "n0100 clean file no diagnostics" {
+  val src = "package P\nfunc f(x: Int): Int { x + 1 }\nrecord R {\n  n: Int\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "N0100")), "clean: no N0100")
+}
+
+
+test "n0100 nativenullptr outside unsafe_ffi" {
+  val src = "package P\nfunc f(): Int {\n  val p = g(nativeNullPtr())\n  p\n}\nfunc g(x: Int): Int { x }\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "N0100"), "nativenullptr-placement: N0100 emitted")
+}
+
+test "n0100 nativenullptr inside unsafe_ffi admitted" {
+  val src = "package P\nextern func cFree(p: NativePtr[Byte]): Unit = \"free\"\n@unsafe_ffi\nfunc f(): Int {\n  cFree(nativeNullPtr())\n  0\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "N0100")), "nativenullptr-positive: no N0100")
 }

@@ -205,10 +205,14 @@ them explicitly with `NativeWeak[T]`, whose `upgrade()` returns
 > defaults, mutable fields), unions, enums, distinct types (range-checked),
 > and tuples; full pattern matching; generic records, unions, and functions
 > (via call-site monomorphization); closures (by-value captures); and
-> `NativeWeak[T]`. Constructs not yet lowered fail the build with a
-> diagnostic naming the construct rather than miscompiling: interfaces,
-> protected types, `List`/`Map` collections, `for` loops, module-level
-> `val`, `async func`, and manifest (multi-package) native builds.
+> `NativeWeak[T]`. Raw C interop (`extern func`, `NativePtr[T]`,
+> `nativeAddrOf`, `nativeNullPtr`, closures as C callbacks) is confined to
+> `@unsafe_ffi` functions and the standard library's kernel files — the
+> compiler rejects it elsewhere (`N0100`). Constructs not yet lowered fail
+> the build with a diagnostic naming the construct rather than
+> miscompiling: interfaces, protected types, `List`/`Map` collections,
+> `for` loops, module-level `val`, `async func`, and manifest
+> (multi-package) native builds.
 
 ## The anatomy of a Lyric file
 
