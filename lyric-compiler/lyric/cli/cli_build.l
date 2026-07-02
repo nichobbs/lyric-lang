@@ -50,7 +50,7 @@ func readBuildKindFromManifest(manifestOpt: in Option[String]): String {
 // itself: NuGet accepts a wider version syntax (up to 4 numeric components)
 // than strict SemVer, so re-implementing that grammar here risks rejecting
 // versions NuGet would happily accept.
-func validatePackageVersionArg(v: in String): Option[String] {
+pub func validatePackageVersionArg(v: in String): Option[String] {
   if Str.isEmpty(Str.trim(v)) {
     return Some(value = "--package-version requires a non-empty value")
   }

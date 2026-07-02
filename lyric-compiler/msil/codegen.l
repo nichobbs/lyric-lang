@@ -13391,9 +13391,11 @@ func stripBracketSuffix(name: in String): String {
 
 // Parse the concrete type-argument FQNs out of a bracketed generic instantiation
 // suffix: `Task`1[System.String]` -> ["System.String"].  Returns an empty list
-// when there is no `[...]`.  Assumes non-nested args (no generic-of-generic),
-// which covers the BCL extern shapes the kernel declares (Task`1[System.String]).
-func parseBracketArgFqns(name: in String): List[String] {
+// when there is no `[...]`.  Tracks `[`/`]` nesting depth (#4044), so a nested
+// closed-generic arg (e.g. `Dictionary`2[String,Int32]` inside
+// `Tuple`2[Dictionary`2[String,Int32],Boolean]`) is returned as one element
+// rather than split apart at its own internal comma.
+pub func parseBracketArgFqns(name: in String): List[String] {
   val acc: List[String] = newList()
   val br = name.indexOf("[")
   if br < 0 {
