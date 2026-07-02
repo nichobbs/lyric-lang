@@ -683,8 +683,10 @@ poked.
   motivation (only true reified generics would).
   `docs/56-row-typed-aspect-args-sketch.md` sketches a
   row-polymorphic extension (`args.<field>` access without
-  falling back to C-mode) on top of B′-mode.  Neither doc is
-  backed by a decision-log entry yet.
+  falling back to C-mode) on top of B′-mode; this shipped
+  (D115) as `where TArgs has { field: Type, ... }` on `around`
+  advice, with `Auth.Aspects.ValidateKey` converted off
+  `@inline_template` as the ecosystem proof-of-value.
 
 ---
 

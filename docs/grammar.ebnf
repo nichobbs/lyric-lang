@@ -1255,7 +1255,19 @@ ConfigField =
     IDENT ':' Type '=' Expr ;      (* default is ConstExpr in practice *)
 
 AroundAdvice =
-    'around' '(' IDENT ')' '->' IDENT Block ;
+    'around' '(' IDENT ')' '->' IDENT [ ArgsRowClause ] Block ;
+
+(* docs/56 / D115 — row constraint gating typed `args.<field>` access on a
+ * B'-mode `from`-instance template.  'TArgs' and 'has' are contextual
+ * (recognised only in this exact position, immediately after the return
+ * binder), not reserved words; 'TArgs' is never a user-declared generic
+ * parameter — it is always the compiler-synthesised args type for the
+ * matched function. *)
+ArgsRowClause =
+    'where' 'TArgs' 'has' '{' ArgsRowField { ',' ArgsRowField } [ ',' ] '}' ;
+
+ArgsRowField =
+    IDENT ':' Type ;
 
 OrderingClause =
       'inside' ':' IDENT { ',' IDENT }

@@ -209,6 +209,15 @@ record RewriteCtx {
   /// is in `paramNames`; missing names accumulate as diagnostics in
   /// `weaveDiags` (#681).
   isInlineTemplate: Bool
+  /// docs/56 / D115 — field names declared by the template's `where TArgs
+  /// has { ... }` row clause.  `args.<n>` for one of these names rewrites to
+  /// `__lyric_args.<n>` (a read on the per-template synthesised args
+  /// record); other `args.<n>` accesses fall through to the existing
+  /// `isInlineTemplate` handling (or, for a B'-mode template with no row
+  /// clause at all, are left unrewritten so the type-checker's downstream
+  /// "unknown name `args`" surfaces, per A0046).  Empty for local aspects
+  /// and C-mode templates, which never populate this field.
+  argsRowFields: Map[String, Bool]
   /// Short name of the aspect being woven (for diagnostic messages).
   aspectName: String
   /// Short name of the matched function (for diagnostic messages).
@@ -224,6 +233,9 @@ record RewriteCtx {
   ///             `docs/26 §8`).  Surfaced at weave time to replace
   ///             the confusing downstream "config not declared"
   ///             type error.
+  ///   - A0047 — a row-constrained B'-mode `from`-instance's matched
+  ///             function does not provide a field the template's
+  ///             `where TArgs has { ... }` clause declares (docs/56 / D115).
   weaveDiags: List[WeaveDiagEntry]
 }
 
@@ -237,6 +249,8 @@ union WeaveDiagKind {
   // A0043
   case WDConfigNoDefault
   // A0044
+  case WDArgsRowMismatch
+  // A0047 (docs/56 / D115)
 }
 
 record WeaveDiagEntry {
@@ -255,6 +269,7 @@ func newRewriteCtx(
   callFields: in Map[String, Bool],
   targetReturnsUnit: in Bool,
   isInlineTemplate: in Bool,
+  argsRowFields: in Map[String, Bool],
   aspectName: in String,
   funcName: in String,
   weaveDiags: in List[WeaveDiagEntry],
@@ -267,6 +282,7 @@ func newRewriteCtx(
     callFields = callFields,
     targetReturnsUnit = targetReturnsUnit,
     isInlineTemplate = isInlineTemplate,
+    argsRowFields = argsRowFields,
     aspectName = aspectName,
     funcName = funcName,
     weaveDiags = weaveDiags
@@ -503,6 +519,24 @@ func tryMemberRewrite(ctx: in RewriteCtx, expr: in Expr): Option[Expr] {
       case None -> ()
     }
   }
+  // args.<field> → __lyric_args.<field>  (row-constrained B'-mode; docs/56 /
+  // D115).  `argsRowFields` is only non-empty when `buildBModeSpecializedFunction`
+  // built this ctx for a template carrying `where TArgs has { ... }`; row
+  // satisfaction against the matched function's actual parameters is checked
+  // separately, per match, in `weaveItemsCore` (A0047 on mismatch).
+  match matchBareMemberAccess(expr, "args") {
+    case Some(name) -> {
+      if ctx.argsRowFields.containsKey(name) {
+        return Some(
+          value = Expr(
+            kind = EMember(receiver = singleSegPathExpr("__lyric_args"), memberName = name),
+            span = expr.span
+          )
+        )
+      }
+    }
+    case None -> ()
+  }
   // bare <configfield> → __aspect_cfg_<configfield>.  Every shipped aspect
   // template references config fields bare (e.g. `minLen`) rather than via
   // the documented `config.minLen` form; wire both so the materialised
@@ -582,6 +616,7 @@ func sameWeaveDiagKind(a: in WeaveDiagKind, b: in WeaveDiagKind): Bool {
     case WDArgsMismatch -> match b { case WDArgsMismatch -> true; case _ -> false }
     case WDCallUnknown -> match b { case WDCallUnknown -> true; case _ -> false }
     case WDConfigNoDefault -> match b { case WDConfigNoDefault -> true; case _ -> false }
+    case WDArgsRowMismatch -> match b { case WDArgsRowMismatch -> true; case _ -> false }
   }
 }
 
@@ -1611,7 +1646,7 @@ func buildWrapper(
   // `around` presence is verified by the caller.
   val around = match aspect.around {
     case Some(a) -> a
-    case None -> AspectAround(argsName = "args", retName = None, body = Block(statements = newList(), span = synSpan()), span = synSpan())
+    case None -> AspectAround(argsName = "args", retName = None, argsRow = None, body = Block(statements = newList(), span = synSpan()), span = synSpan())
   }
   val paramNames: List[String] = newList()
   var pi = 0
@@ -1644,6 +1679,7 @@ func buildWrapper(
     }
   }
 
+  val noArgsRowFields: Map[String, Bool] = newMap()
   val ctx = newRewriteCtx(
     callTargetName,
     paramNames,
@@ -1652,6 +1688,7 @@ func buildWrapper(
     callPresent,
     targetReturnsUnit,
     site.isInlineTemplate,
+    noArgsRowFields,
     aspect.name,
     originalFn.name,
     site.weaveDiags
@@ -2340,6 +2377,15 @@ func weaveDiagsToDiagnostics(errs: in List[WeaveDiagEntry]): List[Diagnostic] {
           "to the `config { }` block or remove the reference"
         diags.add(errorDiagnostic("A0044", msg, e.span))
       }
+      case WDArgsRowMismatch -> {
+        val msg = "aspect '" + e.aspectName + "' declares `where TArgs has { " + e.fieldName +
+          ": ... }` but matched function '" +
+          e.funcName +
+          "' has no parameter named '" +
+          e.fieldName +
+          "' of a compatible type (docs/56)"
+        diags.add(errorDiagnostic("A0047", msg, e.span))
+      }
     }
     i = i + 1
   }
@@ -2491,6 +2537,7 @@ func weaveItemsCore(items: in List[Item], packagePath: in String): WeaveResult {
                   fn.ret,
                   targetReturnsUnit,
                   info.cfgRecordName,
+                  info.argsRecordName,
                   fn.span
                 )
                 result.add(
@@ -2504,7 +2551,18 @@ func weaveItemsCore(items: in List[Item], packagePath: in String): WeaveResult {
                 )
                 bmodeSpecEmitted.add(specKey, true)
               }
-              buildBModeCallSite(fn, aspect, callTarget, site, specName, info.cfgRecordName, info.referencedCfgFields, weaveDiags)
+              buildBModeCallSite(
+                fn,
+                aspect,
+                callTarget,
+                site,
+                specName,
+                info.cfgRecordName,
+                info.referencedCfgFields,
+                info.argsRecordName,
+                info.argsRowFields,
+                weaveDiags
+              )
             } else {
               buildWrapper(fn, aspect, callTarget, site)
             }
@@ -2724,6 +2782,44 @@ func aspectTemplateIsCMode(decl: in AspectDecl): Bool {
       val refs: Map[String, Bool] = newMap()
       collectMemberRefsBlock(a.body, "args", refs)
       refs.count > 0
+    }
+  }
+}
+
+/// docs/56 / D115 — true when every `args.<field>` the template's body
+/// references is declared by a `where TArgs has { ... }` row clause on the
+/// same `around` advice.  A template satisfying this is B'-mode-with-typed-
+/// args, not C-mode: `collectBModeArgsFieldDiags` must not fire A0046 for
+/// it (the per-match row-satisfaction check in `buildBModeCallSite` — A0047
+/// — is the operative diagnostic instead).  A template with NO row clause
+/// at all is never covered (every `args.<field>` reference falls through to
+/// A0046, matching the pre-D115 behaviour).
+func aspectArgsFullyRowCovered(decl: in AspectDecl): Bool {
+  match decl.around {
+    case None -> false
+    case Some(a) -> {
+      match a.argsRow {
+        case None -> false
+        case Some(rowFields) -> {
+          val declared: Map[String, Bool] = newMap()
+          var i = 0
+          while i < rowFields.count {
+            if not declared.containsKey(rowFields[i].name) {
+              declared.add(rowFields[i].name, true)
+            }
+            i = i + 1
+          }
+          val refs: Map[String, Bool] = newMap()
+          collectMemberRefsBlock(a.body, "args", refs)
+          var allCovered = true
+          for name in mapKeys(refs) {
+            if not declared.containsKey(name) {
+              allCovered = false
+            }
+          }
+          allCovered
+        }
+      }
     }
   }
 }
@@ -2978,6 +3074,15 @@ record BModeTemplateInfo {
   /// must supply a value for, regardless of what the instance itself
   /// overrides or adds.
   referencedCfgFields: List[ConfigField]
+  /// docs/56 / D115 — `None` when the template's `around` carries no
+  /// `where TArgs has { ... }` row clause; `Some(recordName)` otherwise,
+  /// naming the synthesised `__LyricBModeArgs_<template>` record type.
+  argsRecordName: Option[String]
+  /// The row clause's declared fields (empty when `argsRecordName` is
+  /// `None`) — the args record's field schema, the rewrite ctx's
+  /// `argsRowFields` set, and what each matched function's parameter list
+  /// is checked against (A0047 on mismatch).
+  argsRowFields: List[ArgsRowField]
 }
 
 /// Canonical name of the one call-context record type synthesised (lazily,
@@ -3252,9 +3357,47 @@ func computeReferencedConfigFields(aspect: in AspectDecl, body: in Block): List[
   result
 }
 
+// docs/56 / D115 — the args-record's field schema is the `where TArgs has
+// { ... }` row clause verbatim (not a body pre-scan like
+// `computeReferencedConfigFields`): the row clause is the aspect author's
+// explicit declaration of which fields it needs, checked once per
+// specialisation-site match (the row-satisfaction check inlined in
+// `buildBModeCallSite`) rather than inferred from usage.
+func bmodeSynthArgsRecordItem(recordName: in String, fields: in List[ArgsRowField], span: in Span): Item {
+  val members: List[RecordMember] = newList()
+  var i = 0
+  while i < fields.count {
+    val f = fields[i]
+    members.add(
+      RMField(
+        field = FieldDecl(
+          docComments = newList(),
+          annotations = newList(),
+          visibility = Some(value = VisPub(span = span)),
+          isMutable = false,
+          name = f.name,
+          ty = f.ty,
+          dflt = None,
+          span = span
+        )
+      )
+    )
+    i = i + 1
+  }
+  val rd = RecordDecl(name = recordName, generics = None, whereClause = None, members = members, span = span)
+  Item(
+    docComments = newList(),
+    annotations = newList(),
+    visibility = Some(value = VisPub(span = span)),
+    kind = IRecord(decl = rd),
+    span = span
+  )
+}
+
 /// Look up (or lazily build) the `BModeTemplateInfo` for `templateKey`,
-/// appending the synthesised cfg-record `Item` to `extraItems` (`result`,
-/// from the caller) the first time this template is encountered.
+/// appending the synthesised cfg-record / args-record `Item`s to
+/// `extraItems` (`result`, from the caller) the first time this template is
+/// encountered.
 func bmodeGetOrBuildTemplateInfo(
   cache: in Map[String, BModeTemplateInfo],
   templateKey: in String,
@@ -3267,7 +3410,7 @@ func bmodeGetOrBuildTemplateInfo(
     case None -> {
       val around = match aspect.around {
         case Some(a) -> a
-        case None -> AspectAround(argsName = "args", retName = None, body = Block(statements = newList(), span = synSpan()), span = synSpan())
+        case None -> AspectAround(argsName = "args", retName = None, argsRow = None, body = Block(statements = newList(), span = synSpan()), span = synSpan())
       }
       val referenced = computeReferencedConfigFields(aspect, around.body)
       val cfgRecordName: Option[String] = if referenced.count > 0 {
@@ -3279,7 +3422,22 @@ func bmodeGetOrBuildTemplateInfo(
         case Some(rn) -> extraItems.add(bmodeSynthCfgRecordItem(rn, referenced, span))
         case None -> ()
       }
-      val info = BModeTemplateInfo(cfgRecordName = cfgRecordName, referencedCfgFields = referenced)
+      val rowFields: List[ArgsRowField] = match around.argsRow { case Some(fs) -> fs; case None -> newList() }
+      val argsRecordName: Option[String] = if rowFields.count > 0 {
+        Some(value = "__LyricBModeArgs_" + Str.replace(templateKey, ".", "_"))
+      } else {
+        None
+      }
+      match argsRecordName {
+        case Some(rn) -> extraItems.add(bmodeSynthArgsRecordItem(rn, rowFields, span))
+        case None -> ()
+      }
+      val info = BModeTemplateInfo(
+        cfgRecordName = cfgRecordName,
+        referencedCfgFields = referenced,
+        argsRecordName = argsRecordName,
+        argsRowFields = rowFields
+      )
       cache.add(templateKey, info)
       info
     }
@@ -3372,11 +3530,12 @@ func buildBModeSpecializedFunction(
   retTy: in Option[TypeExpr],
   targetReturnsUnit: in Bool,
   cfgRecordName: in Option[String],
+  argsRecordName: in Option[String],
   span: in Span,
 ): FunctionDecl {
   val around = match aspect.around {
     case Some(a) -> a
-    case None -> AspectAround(argsName = "args", retName = None, body = Block(statements = newList(), span = synSpan()), span = synSpan())
+    case None -> AspectAround(argsName = "args", retName = None, argsRow = None, body = Block(statements = newList(), span = synSpan()), span = synSpan())
   }
 
   val paramNames: List[String] = newList()
@@ -3403,6 +3562,19 @@ func buildBModeSpecializedFunction(
   val (cfgStmts, cfgPresent) = buildConfigPreludeShared(aspect, around.body, "__lyric_cfg")
   val emptyNoDefault: Map[String, Bool] = newMap()
   val emptyDiags: List[WeaveDiagEntry] = newList()
+  val argsRowFieldsMap: Map[String, Bool] = newMap()
+  match around.argsRow {
+    case Some(rowFields) -> {
+      var ri = 0
+      while ri < rowFields.count {
+        if not argsRowFieldsMap.containsKey(rowFields[ri].name) {
+          argsRowFieldsMap.add(rowFields[ri].name, true)
+        }
+        ri = ri + 1
+      }
+    }
+    case None -> ()
+  }
 
   val ctx = newRewriteCtx(
     "__lyric_proceed",
@@ -3412,6 +3584,7 @@ func buildBModeSpecializedFunction(
     callPresent,
     targetReturnsUnit,
     false,
+    argsRowFieldsMap,
     aspect.name,
     specName,
     emptyDiags
@@ -3503,6 +3676,22 @@ func buildBModeSpecializedFunction(
     }
     case None -> ()
   }
+  match argsRecordName {
+    case Some(rn) -> {
+      params.add(
+        Param(
+          mode = PMIn,
+          modeExplicit = false,
+          name = "__lyric_args",
+          ty = TypeExpr(kind = TRef(path = ModulePath(segments = singleSeg(rn), span = synSpan())), span = synSpan()),
+          dflt = None,
+          annotations = newList(),
+          span = synSpan()
+        )
+      )
+    }
+    case None -> ()
+  }
   params.add(
     Param(
       mode = PMIn,
@@ -3531,6 +3720,18 @@ func buildBModeSpecializedFunction(
   )
 }
 
+// Find a parameter of `params` named `name`, or `None`.
+func bmodeFindParamByName(params: in List[Param], name: in String): Option[Param] {
+  var i = 0
+  while i < params.count {
+    if params[i].name == name {
+      return Some(value = params[i])
+    }
+    i = i + 1
+  }
+  None
+}
+
 /// Build the thin per-match wrapper that constructs the call-context /
 /// cfg records and a `proceed` closure over `callTarget`, then calls the
 /// shared specialised function `specName`.  Unlike `buildWrapper`, this
@@ -3544,6 +3745,8 @@ func buildBModeCallSite(
   specName: in String,
   cfgRecordName: in Option[String],
   referencedCfgFields: in List[ConfigField],
+  argsRecordName: in Option[String],
+  argsRowFields: in List[ArgsRowField],
   weaveDiags: in List[WeaveDiagEntry],
 ): FunctionDecl {
   val qualified = if site.packagePath.length > 0 { site.packagePath + "." + fn.name } else { fn.name }
@@ -3609,6 +3812,40 @@ func buildBModeCallSite(
       }
       stmts.add(mkValStmt("__lyric_cfg", None, mkRecordCtor(rn, cfgFields)))
       callArgs.add(CAPositional(expr = singleSegPathExpr("__lyric_cfg")))
+    }
+    case None -> ()
+  }
+
+  // docs/56 / D115 — row satisfaction: for each field the template's
+  // `where TArgs has { ... }` clause declares, this specific matched
+  // function must provide a same-named, same-typed parameter.  Checked
+  // per match (not per shape) because two matched functions sharing a
+  // `(TArgs, TRet)` positional shape (`bmodeShapeKey`) need not share
+  // field *names*.  A0047 fires per unsatisfied field; the corresponding
+  // named arg is omitted from the args-record construction so the
+  // downstream type-checker also flags the incomplete record literal
+  // (matching the A0042/A0043/A0044 "diagnostic is additive, weaving still
+  // proceeds" convention).
+  match argsRecordName {
+    case Some(rn) -> {
+      val argFields: List[CallArg] = newList()
+      var ri = 0
+      while ri < argsRowFields.count {
+        val rf = argsRowFields[ri]
+        match bmodeFindParamByName(fn.params, rf.name) {
+          case Some(p) -> {
+            if bmodeTypeExprKey(p.ty) == bmodeTypeExprKey(rf.ty) {
+              argFields.add(mkNamedArg(rf.name, singleSegPathExpr(rf.name)))
+            } else {
+              addWeaveDiagOnce(weaveDiags, WDArgsRowMismatch, aspect.name, fn.name, rf.name, fn.span)
+            }
+          }
+          case None -> addWeaveDiagOnce(weaveDiags, WDArgsRowMismatch, aspect.name, fn.name, rf.name, fn.span)
+        }
+        ri = ri + 1
+      }
+      stmts.add(mkValStmt("__lyric_args", None, mkRecordCtor(rn, argFields)))
+      callArgs.add(CAPositional(expr = singleSegPathExpr("__lyric_args")))
     }
     case None -> ()
   }
@@ -3684,11 +3921,12 @@ func collectBModeArgsFieldDiags(items: in List[Item]): List[Diagnostic] {
       case IAspect(aDecl) -> {
         match aDecl.from {
           case Some(_) -> {
-            if not itemHasInlineTemplate(items[i]) and aspectTemplateIsCMode(aDecl) {
+            if not itemHasInlineTemplate(items[i]) and aspectTemplateIsCMode(aDecl) and not aspectArgsFullyRowCovered(aDecl) {
               val msg = "aspect '" + aDecl.name + "' is B'-mode (no @inline_template) but its template body " +
                 "references args.<field>; B'-mode `args` is opaque (docs/27 §6.1.1). Either mark the " +
-                "library template `@inline_template` to opt into C-mode field access, or remove the " +
-                "args.<field> reference from the template body."
+                "library template `@inline_template` to opt into C-mode field access, declare the field(s) " +
+                "in a `where TArgs has { ... }` row clause (docs/56), or remove the args.<field> reference " +
+                "from the template body."
               diags.add(errorDiagnostic("A0046", msg, items[i].span))
             }
           }

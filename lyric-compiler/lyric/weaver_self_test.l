@@ -1454,6 +1454,92 @@ test "B'-mode template referencing args.<field> emits A0046" {
   assertTrue(diagsHaveCode(wr.diagnostics, "A0046"), "A0046 emitted for B'-mode template reading args.<field>")
 }
 
+// docs/56 / D115 — a row-constrained B'-mode template (`where TArgs has
+// { ... }`) whose declared field is satisfied by the matched function's
+// actual parameter: no A0046 (the row clause covers the reference), the
+// body's `args.<field>` rewrites to `__lyric_args.<field>`, and the
+// specialised function is still shared/deduped exactly like any other
+// B'-mode template.
+test "B'-mode row-constrained template rewrites args.<field> to the args record" {
+  val tplSrc = "package Lib.Auth\n" + "pub aspect ValidateKey {\n" + "  matches: name like \"*\"\n" +
+    "  around(call) -> ret where TArgs has { apiKey: String } {\n" +
+    "    val k = args.apiKey\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Auth")
+  val consumeSrc = "package App\n" + "aspect MyValidate from Lib.Auth.ValidateKey {\n" +
+    "  matches: name like \"handle*\"\n" +
+    "}\n" +
+    "func handleOne(apiKey: in String): Int { 1 }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(not diagsHaveCode(wr.diagnostics, "A0046"), "row clause covers args.apiKey: no A0046")
+  assertTrue(not diagsHaveCode(wr.diagnostics, "A0047"), "matched function provides apiKey: no A0047")
+  assertTrue(countFunctionsWithPrefix(wr.file, "__lyric_bmode_") == 1, "one specialised function emitted")
+  val specFn = firstFunctionWithPrefix(wr.file, "__lyric_bmode_")
+  val specBody = functionBody(specFn)
+  assertTrue(
+    bodyHasMemberAccess(specBody, "__lyric_args", "apiKey"),
+    "args.apiKey rewritten to __lyric_args.apiKey inside the specialised function"
+  )
+}
+
+// The row clause's coverage is per-field: a body that reads a field NOT
+// declared by the row clause still falls through to A0046 (docs/56 §3's
+// "narrow scope", not a blanket opt-out of the opacity rule).
+test "B'-mode row clause covering only some fields still emits A0046 for the rest" {
+  val tplSrc = "package Lib.Auth\n" + "pub aspect ValidateKey {\n" + "  matches: name like \"*\"\n" +
+    "  around(call) -> ret where TArgs has { apiKey: String } {\n" +
+    "    val k = args.apiKey\n" +
+    "    val other = args.unrelated\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Auth")
+  val consumeSrc = "package App\n" + "aspect MyValidate from Lib.Auth.ValidateKey {\n" +
+    "  matches: name like \"handle*\"\n" +
+    "}\n" +
+    "func handleOne(apiKey: in String): Int { 1 }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(diagsHaveCode(wr.diagnostics, "A0046"), "args.unrelated is not covered by the row clause: A0046 fires")
+}
+
+// A0047: the matched function has no parameter matching a declared row
+// field — the row clause is not satisfied at this specialisation site.
+test "B'-mode row-constrained template emits A0047 for a missing field" {
+  val tplSrc = "package Lib.Auth\n" + "pub aspect ValidateKey {\n" + "  matches: name like \"*\"\n" +
+    "  around(call) -> ret where TArgs has { apiKey: String } {\n" +
+    "    val k = args.apiKey\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Auth")
+  val consumeSrc = "package App\n" + "aspect MyValidate from Lib.Auth.ValidateKey {\n" +
+    "  matches: name like \"handle*\"\n" +
+    "}\n" +
+    "func handleOne(userId: in Int): Int { 1 }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(diagsHaveCode(wr.diagnostics, "A0047"), "handleOne has no 'apiKey' parameter: A0047 fires")
+}
+
+// A0047 also fires when the field name matches but the type doesn't — a
+// same-name, different-type parameter does not satisfy the row constraint.
+test "B'-mode row-constrained template emits A0047 for a type mismatch" {
+  val tplSrc = "package Lib.Auth\n" + "pub aspect ValidateKey {\n" + "  matches: name like \"*\"\n" +
+    "  around(call) -> ret where TArgs has { apiKey: String } {\n" +
+    "    val k = args.apiKey\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Auth")
+  val consumeSrc = "package App\n" + "aspect MyValidate from Lib.Auth.ValidateKey {\n" +
+    "  matches: name like \"handle*\"\n" +
+    "}\n" +
+    "func handleOne(apiKey: in Int): Int { 1 }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(diagsHaveCode(wr.diagnostics, "A0047"), "handleOne's 'apiKey' is Int, not String: A0047 fires")
+}
+
 // A C-mode (`@inline_template`) resolved from-instance is unaffected by
 // B'-mode: it still inlines per match, and never emits A0046 even though
 // its body reads `args.<field>` — that's exactly what `@inline_template`

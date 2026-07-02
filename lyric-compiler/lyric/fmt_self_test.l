@@ -1136,6 +1136,22 @@ test "aspect config block round trips" {
   assertTrue(Str.contains(acc, "around(call) -> ret {"), "aspect config: around still present")
 }
 
+// docs/56 / D115 — `where TArgs has { field: Type, ... }` row clause on the
+// `around` advice must round-trip losslessly.
+test "aspect args row clause round trips" {
+  val src = "package P\n\npub aspect ValidateKey {\n" +
+    "  around(call) -> ret where TArgs has { apiKey: String, retries: Int } {\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "aspect args row: round-trips")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "around(call) -> ret where TArgs has { apiKey: String, retries: Int } {"),
+    "aspect args row: clause preserved"
+  )
+}
+
 test "aspect from clause round trips" {
   // The instantiation form `aspect Name from Pkg.Template { … }` must
   // preserve its `from Pkg.Template` header clause.  The renderer dropped

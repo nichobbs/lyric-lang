@@ -207,12 +207,53 @@ annotated `@inline_template` routes through B′-mode: instead of
 recompiling the template body at every matched function, the weaver
 builds one specialised function per distinct parameter/return-type
 shape and shares it across every matched function — and every
-`from`-instance of that template — with that shape. `args` stays
-opaque in B′-mode: a template body may read `call.*` fields, `config`
-fields, and call `proceed()`/`call.proceed()`, but never
-`args.<field>`. A template that references `args.<field>` without
-`@inline_template` fails closed with an **A0046** weave-time
-diagnostic rather than being silently treated as C-mode.
+`from`-instance of that template — with that shape. `args` is opaque
+in B′-mode by default: a template body may read `call.*` fields,
+`config` fields, and call `proceed()`/`call.proceed()`, but not
+`args.<field>` unless the `around` advice declares which fields it
+needs with a `where TArgs has { field: Type, ... }` row clause (see
+§22.7). A template that references `args.<field>` outside of what a
+row clause declares, or that has no row clause at all, fails closed
+with an **A0046** weave-time diagnostic rather than being silently
+treated as C-mode.
+
+## §22.7 Typed `args` access: `where TArgs has { ... }`
+
+A B′-mode template that genuinely needs a named field off the matched
+function's own parameters — an API-key guard reading `apiKey`, a
+tenant-scoping aspect reading `tenantId` — declares exactly which
+fields with a row clause on the `around` advice, instead of falling
+back to `@inline_template`'s per-use-site recompile:
+
+```lyric
+pub aspect ValidateKey {
+  config {
+    enabled: Bool = true
+    @sensitive
+    expectedKey: String
+  }
+  around(call) -> ret where TArgs has { apiKey: String } {
+    if not enabled {
+      ret = call.proceed()
+    } else if args.apiKey == "" {
+      ret = Err("API key is missing")
+    } else if Auth.verifyApiKey(args.apiKey, expectedKey) {
+      ret = call.proceed()
+    } else {
+      ret = Err("API key is invalid")
+    }
+  }
+}
+```
+
+`TArgs` is a fixed, compiler-recognised name — never a user-declared
+generic parameter — so it never appears anywhere else in the
+language. Each consumer's matched function must supply a same-named,
+same-typed parameter (`apiKeyGuardedHandler(apiKey: in String): ...`
+in the shipped `Auth.Aspects.ValidateKey` example); a mismatched or
+missing field surfaces as an **A0047** weave-time diagnostic naming
+the aspect, the matched function, and the offending field, rather
+than a confusing error deep inside the shared specialised function.
 
 The rest of the aspect system works end-to-end: write an aspect in a package, publish it, consume it in another package, and the compiler weaves it over the matched functions at build time. Aspect templates (`pub aspect` without `matches:`), pointcut predicates (`annotated:`, `visibility:`, `signature: returns`), composition ordering (`wraps:` / `inside:`), and the `except name in { … }` exclusion clause are all fully shipped.
 

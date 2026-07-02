@@ -721,9 +721,26 @@ pub union AspectMatcher {
   case AMSignatureReturns(typeGlob: String, span: Span)
 }
 
+/// One `name: Type` member of a `where TArgs has { ... }` row constraint
+/// (docs/56).  `TArgs` is a fixed, compiler-recognised pseudo-name — never
+/// a user-declared generic parameter — so this list is the row constraint's
+/// entire surface: no nesting, no row variables the user can name.
+pub record ArgsRowField {
+  name: String
+  ty: TypeExpr
+  span: Span
+}
+
 pub record AspectAround {
   argsName: String
   retName: Option[String]
+  /// `where TArgs has { field: Type, ... }` (docs/56 D115) — `None` when no
+  /// row clause is present.  Gates B'-mode `args.<field>` access on a
+  /// `from`-instance template: the weaver checks each matched function's
+  /// parameter list against this field list at specialisation time (A0047
+  /// on mismatch) instead of unconditionally rejecting `args.<field>` with
+  /// A0046.
+  argsRow: Option[List[ArgsRowField]]
   body: Block
   span: Span
 }

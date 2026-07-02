@@ -3,14 +3,15 @@
 **Status:** Shipped (D114). Extends `docs/27-aspect-libraries.md` §6.1
 (D047-revision 2026-05-08, Q-aspectlib-001 — "hybrid B + C", spec'd, B-mode's
 *implementation* landed here as B′-mode). Prerequisite for
-`docs/56-row-typed-aspect-args-sketch.md` (Option 1 row-polymorphic `args`).
-**Decision-log entry:** D114. Phases 0–5 below all shipped: contract metadata
-`bmode` discriminator, weaver ground-truth `CollectedTemplate` +  A0046,
-weaver-native shape-cache specialisation (Mono not used — see D114's
-"Alternatives considered"), MSIL/JVM codegen confirmed to need no new
-primitives, and `lyric-logging`'s `CallLogging`/`SlowCallAlert` (already
-B′-mode-shaped) now route through it with no source changes. Q-bmode-001–004
-(§6 below) remain open follow-on questions; none block the shipped slice.
+`docs/56-row-typed-aspect-args-sketch.md` (Option 1 row-polymorphic `args`),
+now also shipped — see D115. **Decision-log entry:** D114. Phases 0–5 below
+all shipped: contract metadata `bmode` discriminator, weaver ground-truth
+`CollectedTemplate` +  A0046, weaver-native shape-cache specialisation (Mono
+not used — see D114's "Alternatives considered"), MSIL/JVM codegen confirmed
+to need no new primitives, and `lyric-logging`'s `CallLogging`/`SlowCallAlert`
+(already B′-mode-shaped) now route through it with no source changes.
+Q-bmode-001–004 (§6 below) remain open follow-on questions; none block the
+shipped slice.
 
 ---
 

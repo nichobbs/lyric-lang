@@ -415,6 +415,80 @@ test "aspect as param name" {
   assertEqual(firstItemKindName(pr), "func", "aspect-as-param: kind is func")
 }
 
+// docs/56 / D115 — `where TArgs has { field: Type, ... }` row constraint on
+// B'-mode `around` advice. `TArgs` and `has` are contextual (recognised only
+// in this position), not reserved words.
+test "aspect around args row clause" {
+  val src = "package P\naspect ValidateKey from X.Y {\n" +
+    "  around(call) -> ret where TArgs has { apiKey: String, retries: Int } {\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "args-row: no diagnostics")
+  match pr.file.items[0].kind {
+    case IAspect(ad) -> {
+      match ad.around {
+        case Some(a) -> {
+          match a.argsRow {
+            case Some(fields) -> {
+              assertEqualInt(fields.count, 2, "args-row: two fields")
+              assertEqual(fields[0].name, "apiKey", "args-row: first field name")
+              assertEqual(testTypeExprName(fields[0].ty), "String", "args-row: first field type")
+              assertEqual(fields[1].name, "retries", "args-row: second field name")
+              assertEqual(testTypeExprName(fields[1].ty), "Int", "args-row: second field type")
+            }
+            case None -> assertTrue(false, "args-row: expected Some(fields)")
+          }
+        }
+        case None -> assertTrue(false, "args-row: expected around present")
+      }
+    }
+    case _ -> assertTrue(false, "args-row: expected IAspect")
+  }
+}
+
+test "aspect around no args row clause defaults to None" {
+  val src = "package P\naspect Logging from X.Y {\n" + "  around(call) -> ret { ret = call.proceed() }\n" + "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "no-args-row: no diagnostics")
+  match pr.file.items[0].kind {
+    case IAspect(ad) -> {
+      match ad.around {
+        case Some(a) -> {
+          match a.argsRow {
+            case None -> {
+            }
+            case Some(_) -> assertTrue(false, "no-args-row: expected None")
+          }
+        }
+        case None -> assertTrue(false, "no-args-row: expected around present")
+      }
+    }
+    case _ -> assertTrue(false, "no-args-row: expected IAspect")
+  }
+}
+
+// P0326 — the where-bound name in around-advice position must be `TArgs`.
+test "aspect args row clause wrong name P0326" {
+  val pr = parse(
+    "package P\naspect A from X.Y {\n" +
+      "  around(call) -> ret where Foo has { apiKey: String } { ret = call.proceed() }\n" +
+      "}\n"
+  )
+  assertTrue(hasDiagCode(pr, "P0326"), "P0326: where-bound name must be 'TArgs'")
+}
+
+// P0327 — `has` must follow `where TArgs`.
+test "aspect args row clause missing has P0327" {
+  val pr = parse(
+    "package P\naspect A from X.Y {\n" +
+      "  around(call) -> ret where TArgs { apiKey: String } { ret = call.proceed() }\n" +
+      "}\n"
+  )
+  assertTrue(hasDiagCode(pr, "P0327"), "P0327: expected 'has' after 'where TArgs'")
+}
+
 func hasDiagCode(pr: in ParseResult, code: in String): Bool {
   var i = 0
   while i < pr.diagnostics.count {
@@ -846,7 +920,6 @@ test "forall as quantifier expression still works" {
 // ─────────────────────────────────────────────────────────────────────────────
 // nested satisfies tests
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testTypeExprName(te: in TypeExpr): String {
   match te.kind {
     case TRef(path) -> modulePathJoin(path.segments)
@@ -856,9 +929,7 @@ func testTypeExprName(te: in TypeExpr): String {
 }
 
 test "nested satisfies basic desugaring" {
-  val src = "package P\n" +
-    "impl PostgresUserRepository {\n" +
-    "  satisfies Repository {\n" +
+  val src = "package P\n" + "impl PostgresUserRepository {\n" + "  satisfies Repository {\n" +
     "    func findById(): Unit {}\n" +
     "  }\n" +
     "  satisfies Disposable {\n" +
@@ -893,10 +964,7 @@ test "nested satisfies basic desugaring" {
 }
 
 test "nested satisfies metadata inheritance" {
-  val src = "package P\n" +
-    "/// Outer class doc\n" +
-    "@outer\n" +
-    "impl PostgresUserRepository {\n" +
+  val src = "package P\n" + "/// Outer class doc\n" + "@outer\n" + "impl PostgresUserRepository {\n" +
     "  /// Inner satisfies doc\n" +
     "  @inner\n" +
     "  satisfies Repository {\n" +
@@ -920,9 +988,7 @@ test "nested satisfies metadata inheritance" {
 }
 
 test "nested satisfies with outer and inner generics" {
-  val src = "package P\n" +
-    "impl[T] UserRepository[T] {\n" +
-    "  satisfies Repository[T] {\n" +
+  val src = "package P\n" + "impl[T] UserRepository[T] {\n" + "  satisfies Repository[T] {\n" +
     "    func findById(): T {}\n" +
     "  }\n" +
     "}\n"
@@ -1003,5 +1069,3 @@ test "flat impl firstItemKindName" {
   val pr = parse(src)
   assertEqual(firstItemKindName(pr), "impl", "flat-basic: first item kind name")
 }
-
-

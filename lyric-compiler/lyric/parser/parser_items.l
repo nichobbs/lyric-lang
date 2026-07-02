@@ -1997,7 +1997,12 @@ func parseExternTypeBody(st: inout ParseState): ExternTypeDecl {
       NameAndSpan(name = modulePathJoin(path.segments), span = path.span)
     }
     case _ -> {
-      emitErr(st, "P0274", "expected a type path or a string literal naming the host type (e.g. \"System.DateTime\")", peekSpan(st))
+      emitErr(
+        st,
+        "P0274",
+        "expected a type path or a string literal naming the host type (e.g. \"System.DateTime\")",
+        peekSpan(st)
+      )
       NameAndSpan(name = "<error>", span = peekSpan(st))
     }
   }
@@ -2446,6 +2451,98 @@ func parseAspectMatchesClause(
   }
 }
 
+// One `name: Type` member of a `where TArgs has { ... }` row constraint.
+func parseArgsRowField(st: inout ParseState): ArgsRowField {
+  val startSpan = peekSpan(st)
+  val ns = readIdent(st, "args row field")
+  match tryEatPunct(st, Colon) {
+    case Some(_) -> {
+    }
+    case None -> {
+      emitErr(st, "P0324", "expected ':' after args row field name", peekSpan(st))
+    }
+  }
+  val ty = parseTypeExpr(st)
+  ArgsRowField(name = ns.name, ty = ty, span = joinSpans(startSpan, ty.span))
+}
+
+// `where TArgs has { field: Type, ... }` (docs/56 D115): a row constraint
+// gating typed `args.<field>` access for a B'-mode `from`-instance template.
+// `TArgs` and `has` are contextual, recognised only in this exact position
+// (right after the around advice's return binder), mirroring how `from` /
+// `matches` / `around` are contextual in `parseAspectBody` rather than
+// reserved keywords — this doesn't reserve either word globally.
+func parseArgsRowClauseOpt(st: inout ParseState): Option[List[ArgsRowField]] {
+  if not isKw(peekToken(st), KwWhere) {
+    None
+  } else {
+    val _ = advance(st)
+    // 'where'
+    val nameTok = peek(st)
+    val name = match tryEatIdent(st) {
+      case Some(ns) -> ns
+      case None -> {
+        emitErr(st, "P0325", "expected 'TArgs' after 'where' in around advice", nameTok.span)
+        NameAndSpan(name = "<error>", span = nameTok.span)
+      }
+    }
+    if name.name != "TArgs" {
+      emitErr(
+        st,
+        "P0326",
+        "expected 'TArgs' in around advice where-clause (only the compiler-synthesised args type may be constrained here)",
+        name.span
+      )
+    }
+    val hasTok = peek(st)
+    match tryEatIdent(st) {
+      case Some(ns) -> {
+        if ns.name != "has" {
+          emitErr(st, "P0327", "expected 'has' after 'where TArgs'", ns.span)
+        }
+      }
+      case None -> {
+        emitErr(st, "P0327", "expected 'has' after 'where TArgs'", hasTok.span)
+      }
+    }
+    match tryEatPunct(st, LBrace) {
+      case Some(_) -> {
+      }
+      case None -> {
+        emitErr(st, "P0328", "expected '{' to start args row constraint", peekSpan(st))
+      }
+    }
+    val _ = skipStmtEnds(st)
+    val fields: List[ArgsRowField] = newList()
+    while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
+      val before = st.pos
+      fields.add(parseArgsRowField(st))
+      val sepTok = peekToken(st)
+      match sepTok {
+        case TStmtEnd -> {
+          val _ = advance(st)
+          val _ = skipStmtEnds(st)
+        }
+        case _ -> {
+          if isPunct(sepTok, Comma) {
+            val _ = advance(st)
+            val _ = skipStmtEnds(st)
+          }
+        }
+      }
+      forceAdvanceIfStuck(st, before)
+    }
+    match tryEatPunct(st, RBrace) {
+      case Some(_) -> {
+      }
+      case None -> {
+        emitErr(st, "P0329", "expected '}' to close args row constraint", peekSpan(st))
+      }
+    }
+    Some(value = fields)
+  }
+}
+
 func parseAspectAround(st: inout ParseState): AspectAround {
   val startTok = advance(st)
   // 'around'
@@ -2475,9 +2572,16 @@ func parseAspectAround(st: inout ParseState): AspectAround {
     val r = readIdent(st, "around return")
     ret = Some(value = r.name)
   }
+  val argsRow = parseArgsRowClauseOpt(st)
   val _ = skipStmtEnds(st)
   val body = parseBlock(st)
-  AspectAround(argsName = args.name, retName = ret, body = body, span = joinSpans(startTok.span, body.span))
+  AspectAround(
+    argsName = args.name,
+    retName = ret,
+    argsRow = argsRow,
+    body = body,
+    span = joinSpans(startTok.span, body.span)
+  )
 }
 
 func parseAspectBody(st: inout ParseState): AspectDecl {
