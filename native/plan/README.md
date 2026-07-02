@@ -30,7 +30,7 @@ functions instantiate per call site with unification-based inference,
 cache-first recursion handling, and generic UFCS.  Tuples (N3.3)
 SHIPPED in D-progress-549 as synthesised records.  Interfaces/vtables
 (N3.2) and protected types (N3.4) remain from N3.
-Remaining work items (rest of N2/N3, the rest of N4/N5/N6, N7 CI)
+Remaining work items (rest of N3, the rest of N4/N5/N6, N7 CI)
 execute from `08-work-items.md` as written, modulo the D-N-014 naming
 mapping.
 
