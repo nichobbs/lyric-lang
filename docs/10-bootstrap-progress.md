@@ -17,8 +17,8 @@ interchangeable, and a failure under one is not a failure under another.
 
 | # | Compiler | Built by | IL validity | Build command | Use it to… |
 |---|----------|----------|-------------|---------------|-----------|
-| 1 | **mint stage-0** _(retired)_ | `scripts/mint-stage0-fsharp.sh` (rebuilds the historical F# bootstrap from git history) | valid (F# emitter is correct) | `LYRIC_BOOTSTRAP_MINT=1` seeds it automatically | seed stage-1; never run directly. **Historical artefact** — the `seed: mint` workflow input and the mint release path were retired in #4387; this is no longer part of the release pipeline. |
-| 2 | **mint stage-1** _(retired)_ | the mint seed compiling the self-hosted `.l` sources | **valid** (historical artefact) | `make mint` | Was used for day-to-day dev before stage-2 was runnable. **Retired in #4387** — the `seed: mint` release path is gone; releases now ship from stage-2 only (row 3). |
+| 1 | **mint stage-0** _(retired)_ | `scripts/mint-stage0-fsharp.sh` (rebuilds the historical F# bootstrap from git history) | valid (F# emitter is correct) | `LYRIC_BOOTSTRAP_MINT=1` seeds it automatically (still functional locally — the Makefile target and env-var code path were **not** removed by #4387) | seed stage-1; never run directly. **Historical artefact** — the `seed: mint` workflow input and the mint release path were retired in #4387; this is no longer part of the release pipeline. |
+| 2 | **mint stage-1** _(retired)_ | the mint seed compiling the self-hosted `.l` sources | **valid** (historical artefact) | `make mint` (still functional locally — not removed by #4387, just no longer used for releases) | Was used for day-to-day dev before stage-2 was runnable. **Retired in #4387** — the `seed: mint` release *path* is gone; releases now ship from stage-2 only (row 3). |
 | 3 | **self-hosted stage-2** | the stage-1 true compiler compiling **itself + the full stdlib** into an isolated toolchain (`.bootstrap/stage2/{lib,bin}`) | **runnable — stage-3 byte-reproducibility fixpoint confirmed (101/101 DLLs); D-progress-531** | `make stage2` | **the SHIP toolchain.** Release binaries (standalone and NuGet tool) are AOT-linked from stage-2 DLLs; run things via `make run-stage2 ARGS=…` |
 
 Key consequence: **a bare `make lyric` builds compiler #3 (stage-2)**, which
@@ -25481,13 +25481,20 @@ analysis; #4020 (the fix); `scripts/bootstrap.sh` stage-1/2/3 comments.
 
 ---
 
-### D105 / D106 — Parser support for `import extern` syntax and constructor shorthand (docs/47, docs/48)
+### D116 / D117 — Parser support for `import extern` syntax and constructor shorthand (docs/47, docs/48)
 
 Phase 1 of docs/47 (`import extern` syntax) and docs/48 (constructor shorthand)
 implementation ships parser support with design finalization. Both sketches are
 now backed by decision-log entries with all open questions resolved.
 
-**D105 — `import extern` syntax for unified external type imports (docs/47)**
+_Numbering note: this entry originally anticipated decision-log entries "D105"
+and "D106" for the two decisions below, but neither number was available by
+the time the entries were actually written — D105 was independently claimed
+by the external-interface-`impl` decision, and D106 was never written at all.
+The entries backing this work are **D116** and **D117**; see those entries in
+`docs/03-decision-log.md` for the full rationale._
+
+**D116 — `import extern` syntax for unified external type imports (docs/47)**
 
 Resolves Q47-001–Q47-004 with the following design decisions:
 
@@ -25501,12 +25508,12 @@ Parser support (`lyric-compiler/lyric/parser/parser_*.l`, `fmt_items.l`,
 
 - `ImportDecl` gains `isExtern: Bool` field.
 - Parser recognizes `import extern Foo.Bar.{ Item, Item as Alias }` syntax.
-- `pub use extern Foo.Bar.{ Item }` re-exports allowed per D105 Q47-004.
+- `pub use extern Foo.Bar.{ Item }` re-exports allowed per D116 Q47-004.
 - Missing selector group → P0035 diagnostic (parser-level validation).
 - Type-checker integration deferred to Phase 2 (both 2a symbol registration and
   2b type resolution together per CLAUDE.md production-quality standard).
 
-**D106 — Constructor shorthand for extern types (docs/48)**
+**D117 — Constructor shorthand for extern types (docs/48)**
 
 Resolves Q48-003; defers Q48-001 (generic constructors) and Q48-002 (async
 constructors) to follow-up.
@@ -25521,9 +25528,9 @@ constructors) to follow-up.
 - `docs/01-language-reference.md` §9.2–§9.3: Added examples and semantics for
   `import extern` and `pub use extern`.
 - `docs/47-import-extern-syntax.md`: Status updated from "Unbacked (D105)" to
-  "Specced (D105)".
+  "Specced (D116)".
 - `docs/48-constructor-shorthand.md`: Status updated from "Unbacked (D106)" to
-  "Specced (D106)".
+  "Specced (D117)".
 - `CLAUDE.md` sketch-list entries updated to reflect decision backing.
 
 ### D107 — self-host cascade fixes + nullable-BCL → `Option[T]` FFI coercion (docs/41 §11)
@@ -25888,3 +25895,38 @@ unchanged) confirms the converted `ValidateKey` template still weaves and runs c
 (correct key proceeds, wrong key denies with the right error, `enabled = false` still bypasses).
 
 **Related:** D115, docs/56, D114, docs/55, docs/27 §12 (Q-aspectlib-009), docs/26 §18.6.
+
+### D-progress-541: `lyric-docker` Phase 1 — Docker Engine API client (docs/54)
+
+**What shipped**
+
+`lyric-docker/` library (docs/54 Phase 1), a type-safe Docker daemon API
+client built on Unix-socket support in `Std.Http`:
+
+- `lyric-docker/lyric.toml` — manifest; depends on `Lyric.Stdlib`.
+- `src/sockets.l` — `Lyric.Docker.Sockets` package: `DOCKER_HOST` URL
+  parsing (`parseDockerHost`), default Unix socket path resolution
+  (`unixSocketPath`), and rootless-Docker socket resolution
+  (`resolveRootlessSocket`, `$XDG_RUNTIME_DIR/docker.sock`).
+- `src/docker.l` — `Lyric.Docker` package: opaque `DockerClient` handle
+  wrapping a `Std.Http.HttpClient` so the underlying transport never
+  crosses the package boundary; `DockerError { statusCode; message;
+  details }`; `makeDockerClient` / `makeRootlessDockerClient` /
+  `makeDockerClientAt`; `ping`, `systemInfo`, container and image listing,
+  all returning `Result[T, DockerError]`.
+- `src/docker_api.l` — `Lyric.Docker.Api` package: low-level Docker Engine
+  REST API request helpers used by `docker.l`, hardcoded to API version
+  `/v1.40/` (docs/54 §"Phase 1 hardcodes `/v1.40/`; Phase 2 negotiates the
+  version dynamically").
+- `tests/basic_operations_tests.l` — connection, ping, system-info, and
+  listing coverage.
+- `lyric-docker/README.md` — overview, Phase 1 feature list, installation,
+  quick start, connection resolution order.
+
+**Not yet shipped (Phase 2, per docs/54):** strongly-typed container/image
+operations generated from the Docker Engine OpenAPI spec, volume/network/
+service management, event subscriptions and log streaming, Windows named
+pipe support.
+
+**Related:** docs/54 (full design), PR #4459 (initial implementation),
+#4488/#4498/#4514/#4532 (follow-up hardening and ecosystem-publish fixes).

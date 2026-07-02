@@ -6659,7 +6659,7 @@ the bound return type of every `@externTarget` in the function.
 
 **Related:** docs/14 (native stdlib / extern boundary), docs/42 (metadata
 resolution), docs/01 §11.3 (`@externTarget` reference), D105 (extern
-interfaces), D106 (constructor shorthand).
+interfaces), D117 (constructor shorthand).
 
 ---
 

@@ -1105,7 +1105,7 @@ import extern System.DateTime
 
 ```
 pub use Money.Amount        // re-exports Amount as part of this package's contract
-pub use extern Docker.DotNet.{DockerClient}  // re-exports external type (D105 Q47-004)
+pub use extern Docker.DotNet.{DockerClient}  // re-exports external type (D116 Q47-004)
 ```
 
 Re-exports surface a name from a dependency (Lyric or external) as if declared in the current package. Useful for facade packages. External re-exports make the external type part of the public API surface; consumers depend on the host runtime's availability.
