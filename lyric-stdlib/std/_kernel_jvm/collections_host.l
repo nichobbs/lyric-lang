@@ -33,16 +33,14 @@ pub func newListWithCapacity[T](capacity: in Int): List[T] = ()
 pub func newMap[K, V](): Map[K, V] = ()
 
 /// Adapts HashMap.get(key): V? to the out-parameter + Bool pattern.
-/// containsKey runs first so a present-but-null value is distinguished
-/// from an absent key; on the miss path the out slot keeps the caller's
-/// value (callers ignore it when the result is false).
+/// The out slot is written on both paths: `get()` returns null on a miss,
+/// matching the .NET twin's `default(V)`-on-miss semantics for the erased
+/// reference representation (#4683).  `containsKey` (not the null sentinel)
+/// decides the result, so a present-but-null value is still distinguished
+/// from an absent key.
 pub func tryGetValue[K, V](m: in Map[K, V], key: in K, value: out V): Bool {
-  if m.containsKey(key) {
-    value = m.get(key)
-    true
-  } else {
-    false
-  }
+  value = m.get(key)
+  m.containsKey(key)
 }
 
 // =====================================================================

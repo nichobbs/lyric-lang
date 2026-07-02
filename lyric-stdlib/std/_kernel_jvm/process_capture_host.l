@@ -153,10 +153,20 @@ func parseArgString(executable: in String, argStr: in String): List[String] {
 // two JNI crossings per drain call regardless of how many bytes arrive.  The
 // previous single-byte loop cost 2×N crossings for N bytes.
 func drainAvailable(stream: in JInputStream, buf: in JBAOS): Unit {
-  val avail = stream.available()
-  if avail > 0 {
-    val chunk = stream.readNBytes(avail)
-    buf.write(chunk)
+  // `destroyForcibly()` closes the child's pipes, after which `available()`
+  // throws `IOException: Stream closed` — both on later poll iterations and
+  // on the final post-loop drain.  A dead stream has nothing left to drain;
+  // swallow and keep whatever was captured before the kill (letting the
+  // IOException escape turned every timeout kill into the spawn-failure
+  // fallback: exitCode -1, timedOut false).
+  try {
+    val avail = stream.available()
+    if avail > 0 {
+      val chunk = stream.readNBytes(avail)
+      buf.write(chunk)
+    }
+  } catch Bug as _ {
+    ()
   }
 }
 

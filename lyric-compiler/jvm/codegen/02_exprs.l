@@ -1396,6 +1396,18 @@ func lowerExprOrBlock(ctx: in FuncCtx, insns: in List[LInsn], eob: in ExprOrBloc
   }
 }
 
+// Discard a computed value from the operand stack with the width-correct
+// opcode: category-2 values (long/double) take two stack slots, so `pop`
+// on them fails verification — they need `pop2`.  No-op for void.
+pub func discardValue(insns: in List[LInsn], ty: in JvmType): Unit {
+  match ty {
+    case JVoid -> ()
+    case JLong -> insns.add(LPop2)
+    case JDouble -> insns.add(LPop2)
+    case _ -> insns.add(LPop)
+  }
+}
+
 func lowerIfExpr(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -1410,8 +1422,15 @@ func lowerIfExpr(
     case None -> {
       // if-without-else is Unit-typed: the then-branch runs for its effect and
       // the join carries no value, so the empty-stack stackmap frame is correct.
+      // The branch's trailing expression may still have produced a value (e.g.
+      // `proc.destroyForcibly()` returns Process) — discard it so the
+      // fall-through edge reaches the join with an empty stack; otherwise the
+      // StackMapTable frames disagree at the join and verification fails.
       lowerBoolCond(ctx, insns, cond, elseL)
-      val _ = lowerExprOrBlock(ctx, insns, thenBranch)
+      val thenTy = lowerExprOrBlock(ctx, insns, thenBranch)
+      if not endsWithReturn(insns) {
+        discardValue(insns, thenTy)
+      }
       insns.add(LLabel(name = elseL))
       JVoid
     }
@@ -1432,8 +1451,14 @@ func lowerIfExpr(
             insns.add(LGoto(label = afterL))
           }
           insns.add(LLabel(name = elseL))
-          val _ = lowerExprOrBlock(ctx, insns, elseBranch)
+          val elseValTy = lowerExprOrBlock(ctx, insns, elseBranch)
           val elseTerminated = endsWithReturn(insns)
+          // The else-arm may still have produced a value even though the
+          // then-arm typed the whole `if` as void — discard it so the join's
+          // empty-stack frame holds (same leak as the if-without-else form).
+          if not elseTerminated {
+            discardValue(insns, elseValTy)
+          }
           // Only land the join label when at least one arm can reach it.  When
           // both arms terminated, the whole `if` is terminating: emitting the
           // join would create the past-end unreachable frame described above.
@@ -1634,7 +1659,9 @@ func coerceToStringForConcat(insns: in List[LInsn], ty: in JvmType): Unit {
         )
       }
     }
-    case JVoid -> insns.add(LPushString(s = ""))
+    case JVoid -> panic("Jvm.Codegen: string-concatenation operand lowered to void — a Unit-typed operand should have been rejected by the type checker")
+    // A void operand left nothing on the stack; silently pushing "" here
+    // would mask a type-checker or lowering bug as wrong output (#4685).
     case _ -> {
       // String.valueOf(<primitive>) — no boxing, unlike Object.toString on a
       // boxed wrapper (keeps the closure zero-overhead boxing gate flat).

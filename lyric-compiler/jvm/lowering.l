@@ -89,6 +89,7 @@ pub union LInsn {
   case LAstoreAs(slot: Int, className: String)
 
   case LPop
+  case LPop2
   case LDup
   case LDup_x1
   case LDup_x2
@@ -367,6 +368,10 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
     case LPop -> {
       emitPop(asm)
       trackStack(asm, -1)
+    }
+    case LPop2 -> {
+      asm.insns.add(Nullary(op = 0x58))
+      trackStack(asm, -2)
     }
     case LDup -> {
       emitDup(asm)

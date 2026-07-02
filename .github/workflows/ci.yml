@@ -3408,7 +3408,9 @@ jobs:
             exit 1
           fi
           printf '%s\n' "$out" | grep -qx "argc=3" || { echo "::error::argc line missing"; exit 1; }
+          printf '%s\n' "$out" | grep -qx "arg0=one" || { echo "::error::arg0 line missing"; exit 1; }
           printf '%s\n' "$out" | grep -qx "arg1=two" || { echo "::error::arg1 line missing"; exit 1; }
+          printf '%s\n' "$out" | grep -qx "arg2=three" || { echo "::error::arg2 line missing"; exit 1; }
 
       - name: Wait for all parallel tests
         wait-all: true

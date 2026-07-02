@@ -26132,11 +26132,48 @@ the `compiler-self-tests-jvm` CI job:
   into the holder; `writeBackHolderArg` `putfield`s the result after the
   call (both static and virtual holder paths).  Tests: field-access cases
   appended to `out_inout_jvm_self_test.l`.
+- **Discarded values at `if` joins (m-22).** An `if`-without-`else` (or a
+  void-typed `if`/`else` whose else-arm produces a value) leaked its arm's
+  trailing expression value onto the operand stack at the join label —
+  inside a loop the leaked value reached a back-edge branch target and
+  failed `StackMapTable` verification (the `Std.ProcessCaptureHost`
+  `proc.destroyForcibly()` poll-loop shape, which blocked
+  `process_capture_jvm_self_test.l`).  Separately, every discard site
+  used `pop`, which fails verification for category-2 `long`/`double`
+  values.  `lowerIfExpr` now discards a non-terminated arm's value in
+  both void-`if` forms via a width-correct `discardValue` helper (`pop2`
+  for `JLong`/`JDouble` via the new `LPop2` instruction, `pop`
+  otherwise); `SExpr` statement and `PWildcard` discards route through
+  the same helper.  Tests: discard cases in
+  `extern_param_jvm_self_test.l`.
+- **Assignment to a local named `result` silently dropped (m-23).**
+  `result` is a contextual keyword that parses as `EResult` even in
+  assignment-target position; `lowerAssignExpr` had no `EResult` arm, so
+  the target fell to a fallback that evaluated the RHS and popped it.
+  The stdlib's own `Std.ProcessCapture.buildArgString` accumulates into
+  a `result` local, so every JVM ProcessCapture argument round-trip
+  produced an empty arg string (children spawned with no arguments).
+  `EResult` targets now route through the named-local path, and the
+  three remaining evaluate-and-drop assignment fallbacks (unknown name,
+  non-reference field receiver, unsupported target shape) `panic` with a
+  diagnostic instead of silently miscompiling.  Tests: `result`-local
+  cases in `silent_miscompile_guard_jvm_self_test.l`.
+- **`substring(start, count)` semantics divergence (m-24).** Two-arg
+  `s.substring(start, count)` on a String receiver passed through
+  auto-FFI to Java's `substring(begin, endIndex)`, silently
+  reinterpreting the count as an end index — wrong results or
+  `StringIndexOutOfBoundsException` for any `start > count` (hit by the
+  kernel's `parseArgString` and the cross-platform `Std.Xml`/`Std.Yaml`/
+  `Std.Rest`/`Std.Log` substring call sites).  A String-receiver
+  intrinsic now translates to (begin, begin + count); the one-arg form
+  is semantics-identical on both platforms.
 - **Smaller fixes:** `x.toString()` on a primitive receiver boxes and
   calls `Object.toString` (was unhandled → `VerifyError`; Java renders
   `1500.0` for whole Doubles where .NET renders `1500` — documented
   formatting divergence); masked `JByte` div/rem yields `JByte` (#4551);
-  `Long`-returning kernel bodies use explicit `i64` literals.
+  `Long`-returning kernel bodies use explicit `i64` literals;
+  `@externTarget` staticness decided from JDK metadata instead of a name
+  heuristic that mis-classified `currentTimeMillis` as an instance call.
 
 Also wired the previously-orphaned `out_inout_instance_jvm_self_test.l`,
 `string_methods_jvm_self_test.l`, `self_method_call_jvm_self_test.l`, and
@@ -26144,7 +26181,7 @@ Also wired the previously-orphaned `out_inout_instance_jvm_self_test.l`,
 already-fixed issues #1675, #1708, #1793, #1833, #2210, #2855, #2864,
 #2865, #2870 with verification comments.
 
-**Related:** docs/44 §4 (M-18, m-16..m-21), epic #2663.
+**Related:** docs/44 §4 (M-18, m-16..m-24), epic #2663.
 
 ---
 

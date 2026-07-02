@@ -163,3 +163,32 @@ test "named-args out of declaration order land in the right fields" {
   assertEqualInt(m.count, 99, "count reads back correctly despite reversed named args")
   assertEqual(m.label, "hello", "label reads back correctly despite reversed named args")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. Assignment to a local named `result` (m-23).
+//    `result` is a contextual keyword that parses as EResult even in
+//    assignment-target position; the JVM assignment lowering dropped the
+//    store on the floor (evaluate + pop), so accumulation loops over a
+//    `result` local — including the stdlib's own
+//    `Std.ProcessCapture.buildArgString` — silently produced their initial
+//    value.
+// ─────────────────────────────────────────────────────────────────────────────
+func accumulateIntoResult(parts: slice[String]): String {
+  var result = ""
+  var i = 0
+  while i < parts.count {
+    if i > 0 {
+      result = result + " "
+    }
+    result = result + parts[i]
+    i = i + 1
+  }
+  result
+}
+
+test "assignment to a local named 'result' is observed" {
+  assertEqual(accumulateIntoResult(["a", "b", "c"]), "a b c", "accumulation into a `result` local survives the loop")
+  var result = 1
+  result = result + 41
+  assertEqualInt(result, 42, "compound-shaped reassignment of a `result` Int local is stored")
+}

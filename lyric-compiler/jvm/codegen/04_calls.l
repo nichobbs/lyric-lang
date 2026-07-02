@@ -2110,6 +2110,36 @@ func lowerMethodCall(
     )
     return JRef(className = "java/lang/String")
   }
+  // Lyric's two-arg `s.substring(start, count)` takes a LENGTH (matching .NET
+  // `String.Substring(start, length)` and `Std.String.substring`), but Java's
+  // `substring(int, int)` takes an END INDEX.  Letting it fall to the auto-FFI
+  // pass-through silently reinterprets the count as an end index (wrong result
+  // or StringIndexOutOfBoundsException — this broke the kernel's
+  // `parseArgString`).  Translate: begin, begin + count.  The one-arg form has
+  // identical semantics on both platforms and passes through auto-FFI.
+  if isStringRecv and args.count == 2 and memberName == "substring" {
+    val startTy = lowerCallArg(ctx, insns, args[0])
+    coerceArgTo(insns, startTy, JInt)
+    val subStartSlot = allocSlot(ctx, "__substr_start_" + freshLabel(ctx), JInt)
+    emitStore(insns, subStartSlot, JInt)
+    emitLoad(insns, subStartSlot, JInt)
+    val countTy = lowerCallArg(ctx, insns, args[1])
+    coerceArgTo(insns, countTy, JInt)
+    emitLoad(insns, subStartSlot, JInt)
+    insns.add(LIadd)
+    val subPs: List[JvmType] = newList()
+    subPs.add(JInt)
+    subPs.add(JInt)
+    insns.add(
+      LInvokevirtual(
+        owner = "java/lang/String",
+        name = "substring",
+        params = subPs,
+        ret = JRef(className = "java/lang/String")
+      )
+    )
+    return JRef(className = "java/lang/String")
+  }
 
   // HashMap intrinsics: Lyric Map[K,V] maps to java/util/HashMap on JVM.
   // BCL Dictionary[K,V] uses `Add(K,V)` / `Remove(K)` / `ContainsKey(K)` /
