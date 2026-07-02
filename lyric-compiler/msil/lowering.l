@@ -38,6 +38,7 @@ import Std.Core
 import Std.Collections
 import Std.Math
 import Std.String as Str
+import Std.Console as Console
 
 // ── MsilType ──────────────────────────────────────────────────────────────────
 // CLI element types supported by this lowering layer.

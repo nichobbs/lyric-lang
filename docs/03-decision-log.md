@@ -7544,7 +7544,7 @@ contract-metadata synthesis.
   an equivalent `ApiError`) at the call site — done for the `jobqueue`,
   `ledger`, and `rbac` examples in the same PR.
 - **`lyric-mq`** (`lyric-mq/src/mq_aspects.l`): `pub func configure(idempStore:
-  in CacheStore, dlStore: in DlStore)` is removed. It was a documented
+  in CacheStore, dlStore: in DeadLetterStore)` is removed. It was a documented
   no-op (the `Idempotent`/`DeadLetter` aspects already resolve their store
   via aspect `config { }`, not this function), so removal has no runtime
   migration — callers simply delete the call. `Lyric.Cache`'s `CacheStore`
