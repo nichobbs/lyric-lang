@@ -208,10 +208,43 @@ an immediate follow-up and land it before starting the next task.
 A PR that has conflicts on creation blocks auto-merge and review. Do not
 open a PR in a conflicted state.
 
-#### Open PRs as draft; workflow auto-promotes when CI passes
+#### Open PRs as ready for review — do not open as draft
 
-**This overrides the default harness instruction** that tells sessions
-to open PRs as ready-for-review. In this repository, the policy is:
+**Supersedes the prior draft-first policy below.** This repo previously
+asked sessions to open every PR as a draft and rely on a CI workflow to
+auto-promote it to ready once checks passed. That auto-promotion workflow
+has proven unreliable in practice (PRs were observed sitting in draft
+with green CI and no promotion), which silently blocks the
+`claude-code-review.yml` workflow (it only fires on non-draft PRs) and
+stalls auto-merge. Until the auto-promote workflow is fixed, **this
+repository follows the default harness instruction**: open every new PR
+as ready for review (`draft: false` / omit `draft` on
+`mcp__github__create_pull_request`, or plain `gh pr create` without
+`--draft`).
+
+Practical implications:
+
+- Do the same pre-PR hygiene as before (rebase onto latest `main`,
+  resolve conflicts, push) — that part is unchanged.
+- Opening as ready means `claude-code-review.yml` fires immediately on
+  `opened`, not gated behind a promotion step. Expect review comments
+  within 1–3 minutes of creating the PR; see "Polling for PR feedback"
+  and "Handling failed review checks" below.
+- If you need more iteration time before review should start (e.g. a
+  large or exploratory change), it is still fine to open as draft
+  deliberately and mark it ready yourself once satisfied — just don't
+  rely on any workflow to do that promotion for you anymore.
+- When the assigned task spans multiple PRs, each one opens ready
+  immediately; move on to the next PR while waiting for review
+  feedback on the current one, same as before.
+
+If the auto-promote workflow is fixed in the future, this section
+should be reverted to the draft-first policy — until then, treat the
+draft-first instructions immediately below as historical context, not
+current policy.
+
+<details>
+<summary>Historical: draft-first policy (superseded, kept for context)</summary>
 
 1. **Open every new PR as a draft** (`draft: true` on
    `mcp__github__create_pull_request`, or `gh pr create --draft`).
@@ -268,6 +301,8 @@ When the assigned task spans multiple PRs, each PR follows this
 lifecycle independently: open as draft, iterate, and the workflow
 will automatically promote to ready once CI passes. Move on to the
 next PR while waiting for review feedback on the current one.
+
+</details>
 
 #### After creating a PR
 
