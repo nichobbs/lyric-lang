@@ -191,3 +191,34 @@ test "#3502: isErr returns false for Ok(interface value)" {
   val r = makeGreeter("fr", "Monde")
   assertFalse(isErr(r), "Ok(FrenchGreeter) should not be Err")
 }
+
+// Direct construction: the concrete record is passed straight into Ok(...)
+// with no intermediate `Greeter`-typed variable, so codegen only sees the
+// concrete EnglishGreeter/FrenchGreeter type at the call site. This is the
+// path that actually exercises the buildGenericCaseCtorTok context-priority
+// fix (the intermediate-variable pattern above widens to `Greeter` before
+// Ok(...) is built and so does not by itself require the fix).
+func makeGreeterDirect(lang: in String, name: in String): Result[Greeter, String] {
+  if lang == "en" {
+    Ok(value = EnglishGreeter(name = name))
+  } else if lang == "fr" {
+    Ok(value = FrenchGreeter(name = name))
+  } else {
+    Err(err = "unknown language: " + lang)
+  }
+}
+
+test "#3502: isOk returns true for Ok(directly-constructed interface value)" {
+  val r = makeGreeterDirect("en", "World")
+  assertTrue(isOk(r), "Ok(EnglishGreeter(...)) should be Ok")
+}
+
+test "#3502: isErr returns false for Ok(directly-constructed interface value)" {
+  val r = makeGreeterDirect("fr", "Monde")
+  assertFalse(isErr(r), "Ok(FrenchGreeter(...)) should not be Err")
+}
+
+test "#3502: isErr returns true for Err from makeGreeterDirect" {
+  val r = makeGreeterDirect("zz", "World")
+  assertTrue(isErr(r), "Err(unknown language) should be Err")
+}

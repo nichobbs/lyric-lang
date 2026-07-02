@@ -1482,10 +1482,12 @@ func isUnitTypeExpr(te: in TypeExpr): Bool {
     case TUnit -> true
     case TRef(path) -> {
       val n = path.segments.count
-      if n == 0 {
-        false
+      if n == 1 {
+        path.segments[0] == "Unit"
+      } else if n == 3 {
+        path.segments[0] == "Std" and path.segments[1] == "Core" and path.segments[2] == "Unit"
       } else {
-        path.segments[n - 1] == "Unit"
+        false
       }
     }
     case TParen(inner) -> isUnitTypeExpr(inner)

@@ -1355,6 +1355,14 @@ pub func ctxAddAssemblyRef(ctx: in LoweringCtx, name: in String, major: in Int, 
     case Some(v) -> v
     case None -> {
       if Str.startsWith(name, "System.") {
+        // .NET's "unified platform" versioning model ships every first-party
+        // System.* reference assembly at the same version per release train
+        // (they're all built and versioned together as one BCL). So when an
+        // unresolved System.* name has no version of its own, System.Runtime's
+        // resolved version is a reliable stand-in — it is never a mismatch in
+        // practice, unlike falling back to the (possibly stale) major/minor
+        // passed in by the caller. This is an intentional policy, not a
+        // fallback of last resort.
         match mapGet(ctx.resolvedAssemblyVersions, "System.Runtime") {
           case Some(rtV) -> rtV
           case None -> Mdr.AssemblyVersion(major = major, minor = minor, build = 0, revision = 0)
@@ -2151,11 +2159,23 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
       // in-bundle TypeDef, then build a TypeSpec-parented `.ctor` MemberRef whose
       // signature uses the VAR-form ctorParams.  Mirrors MNewobjGenericCase but
       // by-name (the TypeDef row is only known at this lowering phase).
-      val defRow = resolveSigTypeDefRow(ctx, headFqn)
+      // Same arity-suffix try-first / plain-FQN fallback as `MGenericInstByName`
+      // (#4296): `headFqn` normally already carries the arity suffix for
+      // in-bundle generics, but degrade gracefully if a cross-package path or a
+      // registration-order change ever produces an unsuffixed name.
+      var defRow = resolveSigTypeDefRow(ctx, headFqn)
+      val backtickPos = headFqn.lastIndexOf("`")
+      val plainFqn = if backtickPos < 0 { headFqn } else { headFqn.substring(0, backtickPos) }
+      if defRow == 0 and plainFqn != headFqn {
+        defRow = resolveSigTypeDefRow(ctx, plainFqn)
+      }
       val coded = if defRow > 0 {
         tdrTypeDef(defRow)
       } else {
-        val refRow = findTypeRefRowByName(ctx, headFqn)
+        var refRow = findTypeRefRowByName(ctx, headFqn)
+        if refRow == 0 and plainFqn != headFqn {
+          refRow = findTypeRefRowByName(ctx, plainFqn)
+        }
         if refRow > 0 {
           tdrTypeRef(refRow)
         } else {
@@ -3684,6 +3704,12 @@ pub func findTypeDefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
   // (`Option`1`), but callers pass the plain dotted name (codegen maps are keyed
   // plainly via `stripGenericArity`).  Probe the suffixed forms so a plain-name
   // lookup still resolves the generic TypeDef.  Read-only `mapGet`.
+  // Ceiling of 9 is deliberate, not arbitrary: no Lyric or stdlib type declares
+  // 10+ type parameters today, and every arity actually reachable through
+  // `internString` at this point is a small, statically-bounded set already
+  // registered by the emitter. Widening this beyond 9 would require driving
+  // the probe from the strings table's `` `N `` entries directly instead of a
+  // fixed range — see #3922.
   var defArity = 1
   while defArity <= 9 {
     match mapGet(ctx.strings.entries, simpleName + "`" + toString(defArity)) {
@@ -3756,6 +3782,10 @@ pub func findTypeRefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
   // dotted case name.  Without this the lookup misses, the caller degrades to
   // System.Object, and `isinst` unconditionally succeeds — breaking match
   // dispatch on cross-package generic unions.  Read-only `mapGet`.
+  // Ceiling of 9 is deliberate, not arbitrary — see `findTypeDefRowByName`'s
+  // matching comment (#3922): no current Lyric/stdlib type has 10+ type
+  // parameters, so this is not a live blocker, but a future one should widen
+  // the probe to the strings table's `` `N `` entries instead of a fixed range.
   var refArity = 1
   while refArity <= 9 {
     match mapGet(ctx.strings.entries, simpleName + "`" + toString(refArity)) {

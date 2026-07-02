@@ -205,19 +205,21 @@ pub func findCompiledStdlibDir(): String {
     return appLib
   }
   val cwd = Environment.currentDirectory()
-  var hit = walkUpForCompiledStdlibDir(appBase, Path.join(".bootstrap", "stage1"))
+  val stage1 = Path.join(".bootstrap", "stage1")
+  val libBin = Path.join("lyric-stdlib", "bin")
+  var hit = walkUpForCompiledStdlibDir(appBase, stage1)
   if hit.length > 0 {
     return hit
   }
-  hit = walkUpForCompiledStdlibDir(cwd, Path.join(".bootstrap", "stage1"))
+  hit = walkUpForCompiledStdlibDir(cwd, stage1)
   if hit.length > 0 {
     return hit
   }
-  hit = walkUpForCompiledStdlibDir(appBase, Path.join("lyric-stdlib", "bin"))
+  hit = walkUpForCompiledStdlibDir(appBase, libBin)
   if hit.length > 0 {
     return hit
   }
-  hit = walkUpForCompiledStdlibDir(cwd, Path.join("lyric-stdlib", "bin"))
+  hit = walkUpForCompiledStdlibDir(cwd, libBin)
   if hit.length > 0 {
     return hit
   }
@@ -842,10 +844,33 @@ func extractNonCfgFileLevelAnnotations(source: in String): String {
   Str.joinList("\n", lines)
 }
 
+// Remove every space and tab character from `s`.  Used to normalise
+// `@cfg(...)` annotation spacing before prefix-matching (#4525) — feature
+// names are plain identifiers, so stripping whitespace throughout the
+// annotation text cannot merge two distinct feature names together.
+func stripSpacesAndTabs(s: in String): String {
+  var result = ""
+  var i = 0
+  while i < s.length {
+    val ch = s.substring(i, 1)
+    if ch != " " and ch != "\t" {
+      result = result + ch
+    }
+    i = i + 1
+  }
+  result
+}
+
 // Returns true if the source file carries a file-level @cfg(feature = "X")
 // annotation where X is absent from activeFeatures (V1 form only: single
 // feature = "X" argument).  Used by mergePackageSources to skip bodies of
 // cfg-erased files so their items don't appear ungated in the merged unit.
+//
+// Matching is whitespace-tolerant: `@cfg(feature="X")`, `@cfg( feature = "X" )`,
+// and the canonical formatter spacing `@cfg(feature = "X")` are all recognised
+// (spaces/tabs are stripped before prefix-matching), so a hand-written or
+// externally-generated file with different spacing conventions doesn't
+// silently skip erasure (#4525).
 func fileIsCfgErasedByFeatures(source: in String, activeFeatures: in List[String]): Bool {
   val ann = extractFileLevelAnnotations(source)
   if Str.length(ann) == 0 {
@@ -854,10 +879,10 @@ func fileIsCfgErasedByFeatures(source: in String, activeFeatures: in List[String
   val lines = Str.split(ann, "\n")
   var i = 0
   while i < lines.length {
-    val line = Str.trim(lines[i])
-    val prefix = "@cfg(feature = \""
-    if Str.startsWith(line, prefix) {
-      val rest = line.substring(prefix.length, line.length - prefix.length)
+    val compact = stripSpacesAndTabs(Str.trim(lines[i]))
+    val prefix = "@cfg(feature=\""
+    if Str.startsWith(compact, prefix) {
+      val rest = compact.substring(prefix.length, compact.length - prefix.length)
       val quotePos = rest.indexOf("\"")
       if quotePos >= 0 {
         val featName = rest.substring(0, quotePos)

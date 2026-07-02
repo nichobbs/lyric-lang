@@ -2255,3 +2255,70 @@ test "const pattern: generic container const rejected before T0071 (#3509)" {
   // refactor that accidentally made it reachable would fail this test (#3517).
   assertTrue(not hasDiagCode(cr, "T0071"), "T0071 is not reached: T0010/T0069 fire first")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// W0006 — extern-boundary leak lint (`checkExternBoundaryLeaks` /
+// `checkExternLeakType`, #3943).  Previously untested (#3957).
+// ─────────────────────────────────────────────────────────────────────────────
+// Reuses `importedItemsOf` (defined above, §1484) to collect the imported
+// package's items into a list suitable for `checkWithImports`, so every item
+// registers with `isImported = true` — the precondition W0006 requires
+// before it will fire on a leaked type.
+test "extern boundary leak fires for imported nested extern type" {
+  val importedItems = importedItemsOf(
+    "package Kernel\npub extern type ArrayEnum = \"System.Text.Json.JsonElement+ArrayEnumerator\"\n"
+  )
+  val src = "package App\npub func f(x: in ArrayEnum): Unit {\n}\n"
+  val cr = checkWithImports(parse(src).file, importedItems)
+  assertTrue(hasDiagCode(cr, "W0006"), "extern-leak: public fn exposing imported nested extern type triggers W0006")
+}
+
+// A kernel file that declares the nested extern type *locally* (not
+// imported) is exempt — the FFI boundary is meant to live in that file.
+test "extern boundary leak exempts kernel-local declaration" {
+  val src = "package Kernel\nextern type ArrayEnum = \"System.Text.Json.JsonElement+ArrayEnumerator\"\npub func f(x: in ArrayEnum): Unit {\n}\n"
+  assertTrue(
+    not hasDiagCode(parseCheck(src), "W0006"),
+    "extern-leak: kernel-local (non-imported) extern type is exempt"
+  )
+}
+
+test "extern boundary leak does not fire for non-pub top-level function" {
+  val importedItems = importedItemsOf(
+    "package Kernel\npub extern type ArrayEnum = \"System.Text.Json.JsonElement+ArrayEnumerator\"\n"
+  )
+  val src = "package App\nfunc f(x: in ArrayEnum): Unit {\n}\n"
+  val cr = checkWithImports(parse(src).file, importedItems)
+  assertTrue(not hasDiagCode(cr, "W0006"), "extern-leak: non-pub top-level function does not trigger W0006")
+}
+
+// #3961: the lint must also catch an `impl` block method, not just
+// top-level `IFunc` items.  Unlike a top-level function, an impl-block
+// method carries no `pub`/`internal` modifier at all (grammar:
+// `ImplMember` is always a bare `FunctionDecl`), so every impl method is
+// checked unconditionally.
+test "extern boundary leak fires for impl block method" {
+  val importedItems = importedItemsOf(
+    "package Kernel\npub extern type ArrayEnum = \"System.Text.Json.JsonElement+ArrayEnumerator\"\n"
+  )
+  val src = "package App\npub interface Scanner {\n  func scan(x: in ArrayEnum): Unit\n}\nrecord S { }\nimpl Scanner for S {\n  func scan(x: in ArrayEnum): Unit {\n  }\n}\n"
+  val cr = checkWithImports(parse(src).file, importedItems)
+  assertTrue(
+    hasDiagCode(cr, "W0006"),
+    "extern-leak: impl-block method exposing imported nested extern type triggers W0006"
+  )
+}
+
+// #3964: a leak nested inside a generic type argument (e.g. `Box[ArrayEnum]`)
+// must also be caught, not just a bare reference to the extern type.
+test "extern boundary leak fires through generic type argument" {
+  val importedItems = importedItemsOf(
+    "package Kernel\npub extern type ArrayEnum = \"System.Text.Json.JsonElement+ArrayEnumerator\"\n"
+  )
+  val src = "package App\nunion Box[T] { case BoxOf(value: T) }\npub func f(x: in Box[ArrayEnum]): Unit {\n}\n"
+  val cr = checkWithImports(parse(src).file, importedItems)
+  assertTrue(
+    hasDiagCode(cr, "W0006"),
+    "extern-leak: nested generic type argument exposing imported nested extern type triggers W0006"
+  )
+}

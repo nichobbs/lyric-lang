@@ -89,6 +89,11 @@ func cmdPublish(argv: in slice[String]): Int {
     }
   }
 
+  match packageVersionArg {
+    case Some(v) -> match validatePackageVersionArg(v) { case Some(msg) -> { printErr("publish: " + msg); return 1 }; case None -> () }
+    case None -> ()
+  }
+
   val mfPath = match manifestArg { case Some(p) -> p; case None -> "lyric.toml" }
 
   val mfText = match File.readText(mfPath) {
@@ -131,10 +136,7 @@ func cmdPublish(argv: in slice[String]): Int {
     case Some(d) -> d
     case None -> {
       val defaultDllName = match manifest.project {
-        case Some(proj) -> match proj.outputAssembly {
-          case Some(asm) -> asm
-          case None -> pkg.name + ".dll"
-        }
+        case Some(proj) -> match proj.outputAssembly { case Some(asm) -> asm; case None -> pkg.name + ".dll" }
         case None -> pkg.name + ".dll"
       }
       Path.join(Path.join(mfDir, "bin"), defaultDllName)
@@ -263,15 +265,7 @@ func cmdPublish(argv: in slice[String]): Int {
     }
     case None -> {
       match manifest.registry {
-        case Some(rc) -> match rc.dotnet {
-          case Some(url) -> {
-            restoreArgs.add("--source")
-            restoreArgs.add(url)
-            restoreArgs.add("--source")
-            restoreArgs.add("https://api.nuget.org/v3/index.json")
-          }
-          case None -> ()
-        }
+        case Some(rc) -> match rc.dotnet { case Some(url) -> { restoreArgs.add("--source"); restoreArgs.add(url); restoreArgs.add("--source"); restoreArgs.add("https://api.nuget.org/v3/index.json") }; case None -> () }
         case None -> ()
       }
     }
@@ -311,14 +305,26 @@ func cmdPublish(argv: in slice[String]): Int {
   // Sign the .nupkg if LYRIC_NUGET_SIGNING_CERT points at a PFX file.
   val signingCert = match Environment.getVar("LYRIC_NUGET_SIGNING_CERT") { case Ok(p) -> p; case Err(_) -> "" }
   if not Str.isEmpty(signingCert) and File.fileExists(signingCert) {
-    val signingPassword = match Environment.getVar("LYRIC_NUGET_SIGNING_CERT_PASSWORD") { case Ok(p) -> p; case Err(_) -> "" }
-    val signingTimestamper = match Environment.getVar("LYRIC_NUGET_SIGNING_TIMESTAMPER") { case Ok(t) -> t; case Err(_) -> "http://timestamp.digicert.com" }
+    val signingPassword = match Environment.getVar("LYRIC_NUGET_SIGNING_CERT_PASSWORD") {
+      case Ok(p) -> p
+      case Err(_) -> ""
+    }
+    val signingTimestamper = match Environment.getVar("LYRIC_NUGET_SIGNING_TIMESTAMPER") {
+      case Ok(t) -> t
+      case Err(_) -> "http://timestamp.digicert.com"
+    }
     val signArgs: List[String] = newList()
     signArgs.add("nuget")
     signArgs.add("sign")
     signArgs.add(nupkgPath)
     signArgs.add("--certificate-path")
     signArgs.add(signingCert)
+    // `dotnet nuget sign` has no env-var or stdin form for the certificate
+    // password (as of the .NET SDK versions this targets) — CLI argument is
+    // the only option. This is a known, brief exposure window (visible via
+    // /proc/<pid>/cmdline or `ps aux` for the duration of this subprocess);
+    // acceptable on ephemeral, isolated CI runners. Migrate to a
+    // `--certificate-password-stdin`-style flag if/when the SDK adds one (#4001).
     if not Str.isEmpty(signingPassword) {
       signArgs.add("--certificate-password")
       signArgs.add(signingPassword)

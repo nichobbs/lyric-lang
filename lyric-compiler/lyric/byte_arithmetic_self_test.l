@@ -73,4 +73,16 @@ test "Byte compound assignments on hoisted closure variables" {
   val res = dummyFunc()
   assertEqualInt(res.toInt(), 66, "hoisted x /= 3 gives 66")
   assertEqualInt(x.toInt(), 66, "hoisted x local is updated to 66")
+
+  var x2: Byte = 200.toByte()
+
+  // Creating a second closure hoists 'x2'
+  val dummyFunc2 = func(): Byte {
+    x2 %= y
+    x2
+  }
+
+  val res2 = dummyFunc2()
+  assertEqualInt(res2.toInt(), 2, "hoisted x2 %= 3 gives 2")
+  assertEqualInt(x2.toInt(), 2, "hoisted x2 local is updated to 2")
 }

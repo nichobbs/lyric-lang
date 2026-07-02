@@ -23,8 +23,14 @@ func getEnvOpt(key: in String): Option[String] = ()
 @externTarget("System.Environment.SetEnvironmentVariable")
 func setEnv(key: in String, value: in String): Unit = ()
 
+// This name is deliberately long and improbable rather than hermetically
+// unset-then-read: the null-free FFI boundary this file exists to test means
+// there is no extern convention yet for passing an Option[String] argument
+// down to a nullable BCL parameter (SetEnvironmentVariable(key, null) would
+// need that), so a genuinely hermetic set/unset round-trip isn't expressible
+// without adding new extern-coercion surface, which is out of scope here.
 test "unset variable coerces null to None" {
-  val isNone = match getEnvOpt("LYRIC_EXTERN_OPTION_UNSET_XYZ_42") { case None -> true; case Some(_) -> false }
+  val isNone = match getEnvOpt("LYRIC_EXTERN_OPTION_TEST_GUARANTEED_UNSET_9f3a1c7e2b4d") { case None -> true; case Some(_) -> false }
   assertTrue(isNone, "an unset env var must coerce the BCL null to None")
 }
 

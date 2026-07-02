@@ -36,7 +36,7 @@ func isNonNegativeInt(s: in String): Bool {
 // Return "" if `v` looks like a valid semver (MAJOR.MINOR.PATCH[+-suffix])
 // where MAJOR, MINOR, and PATCH are non-negative integers, or a human-readable
 // diagnostic string if not.
-func validateSemver(v: in String): String {
+pub func validateSemver(v: in String): String {
   if v.length == 0 {
     return "version cannot be empty"
   }
@@ -79,11 +79,35 @@ func validateSemver(v: in String): String {
   ""
 }
 
+// Return the index of the line inside `lines` whose trimmed left-of-`=`
+// token equals "version" (a TOML key definition — tolerant of any TOML-valid
+// spacing around `=`, e.g. `version="1.0.0"` or `version  =  "1.0.0"`), or
+// -1 if none is found.  Comment lines and table headers never match.
+func indexOfVersionLine(lines: in slice[String]): Int {
+  var i = 0
+  while i < lines.length {
+    val t = Str.trim(lines[i])
+    if not Str.startsWith(t, "#") and not Str.startsWith(t, "[") {
+      val eq = t.indexOf("=")
+      if eq > 0 and Str.trim(t.substring(0, eq)) == "version" {
+        return i
+      }
+    }
+    i += 1
+  }
+  -1
+}
+
 // Replace `version = "<oldVersion>"` with `version = "<newVersion>"` inside
 // the [package] section of a lyric.toml text.  The [package] section boundary
-// is determined by the next section header (`\n[`), or end-of-file.
+// is determined by the next section header (`\n[`), or end-of-file.  Tolerant
+// of any TOML-valid spacing around `=` (`version="x"`, `version  =  "x"`, the
+// canonical `version = "x"`) since all are valid TOML that `Mf.parseManifest`
+// accepts — locates the value's exact quote offsets on the matched line
+// rather than matching a fixed-spacing literal, so indentation and any
+// trailing inline comment on that line are preserved untouched.
 // Returns the updated text or an error string.
-func replaceVersionInToml(
+pub func replaceVersionInToml(
   text: in String,
   oldVersion: in String,
   newVersion: in String,
@@ -96,7 +120,12 @@ func replaceVersionInToml(
   val afterHeader = pkgStart + pkgHeader.length
 
   // End of the [package] section: first "\n[" after the header, or EOF.
-  val nextSection = text.indexOf("\n[", afterHeader)
+  // `.indexOf` only has a 1-arg (no start-offset) intrinsic overload, so
+  // search the tail substring and re-offset the result instead of passing
+  // a start position directly.
+  val afterHeaderTail = text.substring(afterHeader, text.length - afterHeader)
+  val nextSectionRel = afterHeaderTail.indexOf("\n[")
+  val nextSection = if nextSectionRel < 0 { -1 } else { nextSectionRel + afterHeader }
   val sectionLen = if nextSection < 0 {
     text.length - afterHeader
   } else {
@@ -104,23 +133,54 @@ func replaceVersionInToml(
   }
   val sectionBody = text.substring(afterHeader, sectionLen)
 
-  val versionKey = "version = \"" + oldVersion + "\""
-  val vkPos = sectionBody.indexOf(versionKey)
-  if vkPos < 0 {
-    return Err("could not find version = \"" + oldVersion + "\" in [package] section")
+  val lines = Str.split(sectionBody, "\n")
+  val lineIdx = indexOfVersionLine(lines)
+  if lineIdx < 0 {
+    return Err("could not find a 'version = \"...\"' entry in [package] section")
   }
-  val newVersionKey = "version = \"" + newVersion + "\""
+  val line = lines[lineIdx]
 
-  // Reconstruct: prefix + header + section-before-version + new-key +
-  // section-after-version + file-suffix.
+  val eqPos = line.indexOf("=")
+  val afterEq = line.substring(eqPos + 1)
+  val relOpen = afterEq.indexOf("\"")
+  if relOpen < 0 {
+    return Err("version value in [package] section is not a quoted string")
+  }
+  val quoteOpen = eqPos + 1 + relOpen
+  val afterOpen = line.substring(quoteOpen + 1)
+  val relClose = afterOpen.indexOf("\"")
+  if relClose < 0 {
+    return Err("version value in [package] section is not a properly closed quoted string")
+  }
+  val quoteClose = quoteOpen + 1 + relClose
+  val actualOld = line.substring(quoteOpen + 1, quoteClose - quoteOpen - 1)
+  if actualOld != oldVersion {
+    return Err(
+      "could not find version = \"" + oldVersion + "\" in [package] section (found \"" + actualOld +
+        "\" instead)"
+    )
+  }
+
+  val newLine = line.substring(0, quoteOpen + 1) + newVersion + line.substring(quoteClose, line.length - quoteClose)
+
+  val outLines: List[String] = newList()
+  var li = 0
+  while li < lines.length {
+    if li == lineIdx {
+      outLines.add(newLine)
+    } else {
+      outLines.add(lines[li])
+    }
+    li += 1
+  }
+  val newSectionBody = Str.joinList("\n", outLines)
+
+  // Reconstruct: prefix + header + updated-section-body + file-suffix.
   val before = text.substring(0, pkgStart)
-  val bodyBefore = sectionBody.substring(0, vkPos)
-  val bodyAfterStart = vkPos + versionKey.length
-  val bodyAfter = sectionBody.substring(bodyAfterStart, sectionBody.length - bodyAfterStart)
   val suffixStart = afterHeader + sectionLen
   val suffix = text.substring(suffixStart, text.length - suffixStart)
 
-  Ok(before + pkgHeader + bodyBefore + newVersionKey + bodyAfter + suffix)
+  Ok(before + pkgHeader + newSectionBody + suffix)
 }
 
 // Read `filePath`, replace the [package] version, and write the file back.
@@ -222,6 +282,26 @@ func cmdVersionWorkspace(newVersion: in String, startDir: in String): Int {
     if firstVersion.length == 0 {
       firstVersion = ver
     } else if ver != firstVersion {
+      aligned = false
+    }
+  }
+  // The workspace root is folded in symmetrically with the `--set` path
+  // above: a non-virtual root (one that carries its own [package] section)
+  // is printed and included in the alignment check too, so `--set` never
+  // silently touches a file the print path didn't already report on (#3978).
+  val rootText = match File.readText(wsCtx.rootFile) {
+    case Err(_) -> ""
+    case Ok(t) -> t
+  }
+  if rootText.indexOf("[package]") >= 0 {
+    val rootVer = match Mf.parseManifest(rootText, wsCtx.rootFile) {
+      case Err(_) -> "(parse error)"
+      case Ok(m) -> m.packageSection.version
+    }
+    Console.println("  (root) " + rootVer)
+    if firstVersion.length == 0 {
+      firstVersion = rootVer
+    } else if rootVer != firstVersion {
       aligned = false
     }
   }

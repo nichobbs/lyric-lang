@@ -167,6 +167,16 @@ pub func funcDoc(visStr: in String, fn: in FunctionDecl, ctx: inout FmtCtx): Lis
   var pIdx = 0
   while pIdx < fn.params.count {
     val p = fn.params[pIdx]
+    // `offset == 0` is reliable here because `injectSelfIfNeeded`
+    // (parser_items.l) is the only producer of a `self` param without
+    // a real source location, and it always builds that param's span via
+    // `syntheticSpan()`, which is hardcoded to offset 0 — no real source
+    // token can start at byte offset 0 of a file (the file starts with
+    // `package ...`, itself preceded by any leading trivia the lexer
+    // attaches to the first real token). This couples the formatter to
+    // that invariant (#3890); if `syntheticSpan()` ever stops using
+    // offset 0, or a second synthetic-param producer appears, this check
+    // must move to an explicit `isSynthetic`-style marker instead.
     val isInjectedSelf = p.name == "self" and p.span.startPos.offset == 0
     if not isInjectedSelf {
       paramsFiltered.add(p)

@@ -498,6 +498,32 @@ func testComments(): Unit {
   assertEqual(m.packageSection.version, "1.0.0", "comments: version parsed")
 }
 
+// CRLF (`\r\n`) line endings parse identically to LF — regression test for
+// the `skipWhitespace` fix that treats `\r` as horizontal whitespace so a
+// Windows checkout of a manifest doesn't fail with "unexpected character
+// '\r'" (#3940).
+func testCrlfLineEndings(): Unit {
+  val toml = "[package]\r\nname = \"foo\"\r\nversion = \"0.1.0\"\r\n"
+  val m = parseOk(toml)
+  assertEqual(m.packageSection.name, "foo", "crlf: name parsed")
+  assertEqual(m.packageSection.version, "0.1.0", "crlf: version parsed")
+}
+
+// CRLF tolerance also applies past the [package] section: dependencies,
+// comments, and inline tables all sit behind the same `skipWhitespace` call.
+func testCrlfFullManifest(): Unit {
+  val toml = "# top comment\r\n[package]\r\nname = \"app\"\r\nversion = \"0.1.0\"\r\n\r\n" +
+    "[dependencies]\r\nFoo = \"1.2.3\"\r\n\r\n[nuget]\r\nSerilog = \"3.1.1\" # trailing\r\n"
+  val m = parseOk(toml)
+  assertEqual(m.packageSection.name, "app", "crlf-full: name parsed")
+  assertEqualInt(m.deps.count, 1, "crlf-full: one dependency")
+  assertEqual(m.deps[0].name, "Foo", "crlf-full: dep name")
+  match m.nuget {
+    case None -> assertTrue(false, "crlf-full: expected nuget section")
+    case Some(n) -> assertEqualInt(n.entries.count, 1, "crlf-full: one nuget entry")
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §9. Error: missing required [package] section fields
 // ─────────────────────────────────────────────────────────────────────────────
@@ -654,6 +680,14 @@ test "features section" {
 
 test "comments and whitespace" {
   testComments()
+}
+
+test "CRLF line endings" {
+  testCrlfLineEndings()
+}
+
+test "CRLF full manifest" {
+  testCrlfFullManifest()
 }
 
 test "missing name error" {

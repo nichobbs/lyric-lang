@@ -520,6 +520,13 @@ pub record TableLayout {
   dataStart: List[Int]    // length 64, file offset of each table's rows
   stringsBase: Int          // file offset of the #Strings heap (-1 if absent)
   blobBase: Int          // file offset of the #Blob heap (-1 if absent)
+  // NestedClass table (0x29), pre-indexed by enclosing TypeDef row →  the
+  // list of its nested TypeDef rows.  Built once here (a single O(n) scan)
+  // so `findTypeDefByFqn`'s nested-type lookups are O(1) instead of
+  // rescanning the whole NestedClass table per lookup (#3721) — the BCL
+  // reference pack carries thousands of NestedClass rows, and a nested-type
+  // extern reference triggers one lookup per compile.
+  nestedClassByEnclosing: Map[Int, List[Int]]
 }
 
 pub record MdrTypeDefRow {
@@ -740,6 +747,28 @@ pub func computeLayout(img: in PeImage, root: in MetadataRoot, th: in TablesHead
 
   val stringsBase = match findStream(root, "#Strings") { case Some(s) -> s.fileOff; case None -> -1 }
   val blobBase = match findStream(root, "#Blob") { case Some(s) -> s.fileOff; case None -> -1 }
+
+  // Pre-index NestedClass (0x29): enclosing TypeDef row → its nested TypeDef
+  // rows.  One O(n) scan here replaces an O(n) rescan on every nested-type
+  // lookup in `findTypeDefByFqn` (#3721).
+  val nestedClassByEnclosing: Map[Int, List[Int]] = newMap()
+  val nestedRowCount = rowCountOf(th, 0x29)
+  var ncRow = 0
+  while ncRow < nestedRowCount {
+    val ncOff = dataStart[0x29] + ncRow * rowSize[0x29]
+    val nestedTd = rdIdx(img.bytes, ncOff, typeDefIdx)
+    val enclosingTd = rdIdx(img.bytes, ncOff + typeDefIdx, typeDefIdx)
+    match mapGet(nestedClassByEnclosing, enclosingTd) {
+      case Some(existing) -> existing.add(nestedTd)
+      case None -> {
+        val fresh: List[Int] = newList()
+        fresh.add(nestedTd)
+        nestedClassByEnclosing.add(enclosingTd, fresh)
+      }
+    }
+    ncRow = ncRow + 1
+  }
+
   Ok(
     value = TableLayout(
       stringIdx = stringIdx,
@@ -755,7 +784,8 @@ pub func computeLayout(img: in PeImage, root: in MetadataRoot, th: in TablesHead
       rowSize = rowSize,
       dataStart = dataStart,
       stringsBase = stringsBase,
-      blobBase = blobBase
+      blobBase = blobBase,
+      nestedClassByEnclosing = nestedClassByEnclosing
     )
   )
 }
@@ -1033,8 +1063,7 @@ pub func readAssembly(img: in PeImage, layout: in TableLayout, row: in Int): Mdr
   val revision = rdU16(b, o + 10)
   val flags = rdU32(b, o + 12)
   var p = o + 16
-  val pkI = rdIdx(b, p, layout.blobIdx)
-  p = p + layout.blobIdx
+  p = p + layout.blobIdx // skip PublicKey (#Blob index; not needed by MdrAssemblyRow)
   val nameI = rdIdx(b, p, layout.stringIdx)
   p = p + layout.stringIdx
   val cultureI = rdIdx(b, p, layout.stringIdx)
@@ -1172,7 +1201,11 @@ pub func getLiteralFieldInt32In(
         if blobBytes.length >= 4 {
           return Some(value = rdI32(blobBytes, 0))
         } else if blobBytes.length == 2 {
-          val isSigned = typeVal == 0x02 or typeVal == 0x04 or typeVal == 0x06 or typeVal == 0x08
+          // ELEMENT_TYPE_BOOLEAN (0x02) is unsigned per ECMA-335 §II.23.1.16;
+          // I1 (0x04) and I4 (0x08) are signed but never produce a 2-byte blob
+          // in conforming metadata (kept here only for defensiveness). I2
+          // (0x06) is the only signed type that legitimately reaches this arm.
+          val isSigned = typeVal == 0x04 or typeVal == 0x06 or typeVal == 0x08
           return Some(value = if isSigned { rdI16(blobBytes, 0) } else { rdU16(blobBytes, 0) })
         } else if blobBytes.length == 1 {
           return Some(value = blobBytes[0].toInt())
@@ -2268,6 +2301,26 @@ pub func scoreOverload(argTypes: in List[SigType], sig: in DecodedMethodSig): In
   total
 }
 
+// The nested TypeDef row directly under `enclosingRow` named `nestedName`, or
+// -1 when absent.  O(1) average case via `layout.nestedClassByEnclosing`
+// (#3721) instead of a linear NestedClass table scan.
+func findNestedTypeDef(img: in PeImage, layout: in TableLayout, enclosingRow: in Int, nestedName: in String): Int {
+  match mapGet(layout.nestedClassByEnclosing, enclosingRow) {
+    case None -> -1
+    case Some(candidates) -> {
+      var ci = 0
+      while ci < candidates.count {
+        val nestedTd = readTypeDef(img, layout, candidates[ci])
+        if nestedTd.name == nestedName {
+          return candidates[ci]
+        }
+        ci = ci + 1
+      }
+      -1
+    }
+  }
+}
+
 // Find the TypeDef row (1-based) whose fully-qualified name is `typeFqn`, or
 // -1 when absent.
 pub func findTypeDefByFqn(img: in PeImage, layout: in TableLayout, th: in TablesHeader, typeFqn: in String): Int {
@@ -2290,20 +2343,7 @@ pub func findTypeDefByFqn(img: in PeImage, layout: in TableLayout, th: in Tables
     if outerTypeDefIdx < 0 {
       return -1
     }
-    // Search the NestedClass table for a nested type of outerTypeDefIdx with name nestedName.
-    val nestedClassCount = rowCountOf(th, 0x29)
-    var i: Int = 1
-    while i <= nestedClassCount {
-      val nc = readNestedClass(img, layout, i)
-      if nc.enclosingTypeDef == outerTypeDefIdx {
-        val nestedTd = readTypeDef(img, layout, nc.nestedTypeDef)
-        if nestedTd.name == nestedName {
-          return nc.nestedTypeDef
-        }
-      }
-      i = i + 1
-    }
-    return -1
+    return findNestedTypeDef(img, layout, outerTypeDefIdx, nestedName)
   }
 
   // No nested type: regular top-level type lookup.
@@ -2333,18 +2373,7 @@ pub func findTypeDefByFqn(img: in PeImage, layout: in TableLayout, th: in Tables
     val nestedName = typeFqn.substring(dotIdx + 1, typeFqn.length - dotIdx - 1)
     val outerTypeDefIdx = findTypeDefByFqn(img, layout, th, outerFqn)
     if outerTypeDefIdx >= 0 {
-      val nestedClassCount = rowCountOf(th, 0x29)
-      var ncIdx: Int = 1
-      while ncIdx <= nestedClassCount {
-        val nc = readNestedClass(img, layout, ncIdx)
-        if nc.enclosingTypeDef == outerTypeDefIdx {
-          val nestedTd = readTypeDef(img, layout, nc.nestedTypeDef)
-          if nestedTd.name == nestedName {
-            return nc.nestedTypeDef
-          }
-        }
-        ncIdx = ncIdx + 1
-      }
+      return findNestedTypeDef(img, layout, outerTypeDefIdx, nestedName)
     }
   }
 
@@ -3185,5 +3214,3 @@ pub func readAssemblyVersion(asmPath: in String): Option[AssemblyVersion] {
     }
   }
 }
-
-

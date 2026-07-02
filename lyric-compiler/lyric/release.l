@@ -259,25 +259,60 @@ pub func semverMajor(version: in String): Int {
 }
 
 // Extract the SDK packs directory from runtimeIdentifierGraphPath in project.assets.json.
+//
+// Uses `lastIndexOf` (not `indexOf`) to find the "/sdk/" separator between
+// the dotnet install root and the version folder.  The standard SDK layout
+// places exactly one "/sdk/" segment on this path
+// (`<dotnet-root>/sdk/<version>/RuntimeIdentifierGraph.json`), so both
+// functions agree there — but a custom or Homebrew-managed install whose
+// root directory itself happens to contain the substring "/sdk/" earlier
+// in the path (e.g. a user directory or DOTNET_ROOT named with "sdk" in it)
+// would make `indexOf` cut at that spurious earlier occurrence and compute
+// the wrong packs directory. `lastIndexOf` always lands on the "/sdk/" that
+// actually separates the install root from the version folder, which is the
+// rightmost one by construction (#4550).
 func parseSdkPacksDir(assetsJson: in String): Option[String] {
   match jsonStringField(assetsJson, "runtimeIdentifierGraphPath") {
     case None -> None
     case Some(graphPath) -> {
       match Str.lastIndexOf(graphPath, "/sdk/") {
         case Some(idx) -> Some(value = Str.substring(graphPath, 0, idx) + "/packs")
-        case None -> match Str.lastIndexOf(graphPath, "\\sdk\\") {
-          case Some(idx) -> Some(value = Str.substring(graphPath, 0, idx) + "\\packs")
-          case None -> None
-        }
+        case None -> match Str.lastIndexOf(graphPath, "\\sdk\\") { case Some(idx) -> Some(value = Str.substring(graphPath, 0, idx) + "\\packs"); case None -> None }
       }
     }
   }
 }
 
+// Fallback text for a diagnostic path variable that was never computed
+// (the branch that would have populated it was skipped, e.g. `packsOpt`
+// was `None` so the SDK-pack candidates were never probed).  Keeps the
+// "was this path ever attempted?" distinction explicit in error messages
+// rather than relying on an implicit empty-string convention (#4463).
+func optPathOrNotAttempted(o: in Option[String]): String {
+  match o {
+    case Some(v) -> v
+    case None -> "(not attempted)"
+  }
+}
+
+// Explanation appended to a "packs directory" diagnostic when `packsOpt` is
+// `None` — i.e. `parseSdkPacksDir` could not find a `/sdk/` (or `\sdk\`)
+// segment in `runtimeIdentifierGraphPath`.  This can happen with
+// non-standard .NET SDK install layouts; the NuGet cache probe above is
+// still attempted independently, so this only blocks the SDK-pack fallback
+// (#4464).
+func packsNotFoundHint(): String {
+  "  - SDK packs directory: not found (runtimeIdentifierGraphPath in project.assets.json was absent or " +
+    "contained no '/sdk/' segment — check for a non-standard .NET SDK install layout or set DOTNET_ROOT " +
+    "to the SDK install root)"
+}
+
 // Helper to search both local NuGet cache and SDK packs for ILC and NativeAOT runtime.
-func resolveIlcPaths(pkgsDir: in String, packsOpt: in Option[String], rid: in String, ilcVersion: in String): Result[IlcPaths, String] {
+func resolveIlcPaths(
+  pkgsDir: in String, packsOpt: in Option[String], rid: in String, ilcVersion: in String
+): Result[IlcPaths, String] {
   var ilcBinOpt: Option[String] = None
-  
+
   // Try NuGet packages directory
   val nugetIlc = Path.join(
     Path.join(
@@ -286,31 +321,33 @@ func resolveIlcPaths(pkgsDir: in String, packsOpt: in Option[String], rid: in St
     ),
     "ilc"
   )
-  var packIlc1: String = ""
-  var packIlc2: String = ""
-  
+  var packIlc1Opt: Option[String] = None
+  var packIlc2Opt: Option[String] = None
+
   if File.fileExists(nugetIlc) {
     ilcBinOpt = Some(value = nugetIlc)
   } else {
     match packsOpt {
       case Some(packsDir) -> {
-        packIlc1 = Path.join(
+        val packIlc1 = Path.join(
           Path.join(
             Path.join(Path.join(packsDir, "runtime." + rid + ".Microsoft.DotNet.ILCompiler"), ilcVersion),
             "tools"
           ),
           "ilc"
         )
+        packIlc1Opt = Some(value = packIlc1)
         if File.fileExists(packIlc1) {
           ilcBinOpt = Some(value = packIlc1)
         } else {
-          packIlc2 = Path.join(
+          val packIlc2 = Path.join(
             Path.join(
               Path.join(Path.join(packsDir, "runtime." + rid + ".microsoft.dotnet.ilcompiler"), ilcVersion),
               "tools"
             ),
             "ilc"
           )
+          packIlc2Opt = Some(value = packIlc2)
           if File.fileExists(packIlc2) {
             ilcBinOpt = Some(value = packIlc2)
           }
@@ -319,21 +356,22 @@ func resolveIlcPaths(pkgsDir: in String, packsOpt: in Option[String], rid: in St
       case None -> ()
     }
   }
-  
+
   val ilcBin = match ilcBinOpt {
     case Some(path) -> path
     case None -> return Err(
-      error = "ILC binary ('ilc') not found. Probed paths:\n" +
-        "  - NuGet cache: " + nugetIlc + "\n" +
-        (match packsOpt {
-          case Some(packsDir) -> "  - SDK pack 1: " + packIlc1 + "\n  - SDK pack 2: " + packIlc2
-          case None -> "  - SDK packs directory: not found in project.assets.json"
-        })
+      error = "ILC binary ('ilc') not found. Probed paths:\n" + "  - NuGet cache: " + nugetIlc + "\n" +
+        (
+          match packsOpt {
+            case Some(packsDir) -> "  - SDK pack 1: " + optPathOrNotAttempted(packIlc1Opt) + "\n  - SDK pack 2: " + optPathOrNotAttempted(packIlc2Opt)
+            case None -> packsNotFoundHint()
+          }
+        )
     )
   }
-  
+
   var nativeaotRootOpt: Option[String] = None
-  
+
   // Try NuGet packages directory
   val nugetNativeAot = Path.join(
     Path.join(
@@ -342,31 +380,33 @@ func resolveIlcPaths(pkgsDir: in String, packsOpt: in Option[String], rid: in St
     ),
     rid
   )
-  var packNativeAot1: String = ""
-  var packNativeAot2: String = ""
-  
+  var packNativeAot1Opt: Option[String] = None
+  var packNativeAot2Opt: Option[String] = None
+
   if File.dirExists(nugetNativeAot) {
     nativeaotRootOpt = Some(value = nugetNativeAot)
   } else {
     match packsOpt {
       case Some(packsDir) -> {
-        packNativeAot1 = Path.join(
+        val packNativeAot1 = Path.join(
           Path.join(
             Path.join(Path.join(packsDir, "Microsoft.NETCore.App.Runtime.NativeAOT." + rid), ilcVersion),
             "runtimes"
           ),
           rid
         )
+        packNativeAot1Opt = Some(value = packNativeAot1)
         if File.dirExists(packNativeAot1) {
           nativeaotRootOpt = Some(value = packNativeAot1)
         } else {
-          packNativeAot2 = Path.join(
+          val packNativeAot2 = Path.join(
             Path.join(
               Path.join(Path.join(packsDir, "microsoft.netcore.app.runtime.nativeaot." + rid), ilcVersion),
               "runtimes"
             ),
             rid
           )
+          packNativeAot2Opt = Some(value = packNativeAot2)
           if File.dirExists(packNativeAot2) {
             nativeaotRootOpt = Some(value = packNativeAot2)
           }
@@ -375,32 +415,37 @@ func resolveIlcPaths(pkgsDir: in String, packsOpt: in Option[String], rid: in St
       case None -> ()
     }
   }
-  
+
   val nativeaotRoot = match nativeaotRootOpt {
     case Some(path) -> path
     case None -> return Err(
-      error = "NativeAOT runtime pack directory not found. Probed paths:\n" +
-        "  - NuGet cache: " + nugetNativeAot + "\n" +
-        (match packsOpt {
-          case Some(packsDir) -> "  - SDK pack 1: " + packNativeAot1 + "\n  - SDK pack 2: " + packNativeAot2
-          case None -> "  - SDK packs directory: not found"
-        })
+      error = "NativeAOT runtime pack directory not found. Probed paths:\n" + "  - NuGet cache: " + nugetNativeAot +
+        "\n" +
+        (
+          match packsOpt {
+            case Some(packsDir) -> "  - SDK pack 1: " + optPathOrNotAttempted(packNativeAot1Opt) + "\n  - SDK pack 2: " + optPathOrNotAttempted(packNativeAot2Opt)
+            case None -> packsNotFoundHint()
+          }
+        )
     )
   }
-  
+
   val major = semverMajor(ilcVersion)
   val tfm = "net" + toString(major) + ".0"
   val sdkPath = Path.join(nativeaotRoot, "native")
   val frameworkPath = Path.join(Path.join(nativeaotRoot, "lib"), tfm)
-  
+
   if not File.dirExists(sdkPath) {
     return Err(
       error = "NativeAOT runtime SDK directory ('native' subfolder) not found under runtime pack root:\n" +
-        "  Root: " + nativeaotRoot + "\n" +
-        "  Expected: " + sdkPath
+        "  Root: " +
+        nativeaotRoot +
+        "\n" +
+        "  Expected: " +
+        sdkPath
     )
   }
-  
+
   Ok(value = IlcPaths(ilcBin = ilcBin, sdkPath = sdkPath, frameworkPath = frameworkPath))
 }
 
@@ -572,7 +617,7 @@ pub func isValidRid(rid: in String): Bool {
   if n == 0 or n > 50 {
     return false
   }
-  val valid = "abcdefghijklmnopqrstuvwxyz0123456789._-"
+  val valid = "abcdefghijklmnopqrstuvwxyz0123456789.-"
   var i = 0
   while i < n {
     val ch = Str.substring(rid, i, 1)
@@ -852,7 +897,7 @@ func buildLinkerArgsMac(
   } else {
     args.add("-lz")
   }
-  
+
   val libbrotlienc = Path.join(sdkPath, "libbrotlienc.a")
   if File.fileExists(libbrotlienc) {
     args.add(libbrotlienc)
@@ -883,6 +928,23 @@ func buildLinkerArgsMac(
   args.add("Security")
 
   args
+}
+
+// Delete the per-build ILC staging artifacts (the RSP file, the ILC object
+// file, and the linker exports/version-script file) once they are no longer
+// needed — on every return path from the ILC-run point onward, success or
+// failure alike.  Only the final native binary at `outPath` is the
+// deliverable; for programs of any size the `.o` file alone can be hundreds
+// of megabytes, and repeated builds would otherwise accumulate disk usage
+// silently in the staging directory (#4217).  `File.deleteFile` is
+// idempotent on not-found, so this is safe to call even when a given
+// artifact was never produced (e.g. ilc failed before writing objFile).
+// The `ilc-probe/` sub-directory is deliberately left alone — it backs the
+// cache-hit fast path in `tryLoadCachedIlcPaths`.
+func cleanupIlcIntermediates(rspFile: in String, objFile: in String, exportsFile: in String): Unit {
+  val _ = File.deleteFile(rspFile)
+  val _ = File.deleteFile(objFile)
+  val _ = File.deleteFile(exportsFile)
 }
 
 // ─── Top-level release pipeline ──────────────────────────────────────────────
@@ -946,11 +1008,16 @@ pub func buildReleaseDotnet(
   }
 
   // Reject unsupported OS targets before the slow ILC probe + compile steps
-  // so users get an immediate error rather than waiting 10+ minutes.
+  // so users get an immediate error rather than waiting 10+ minutes.  This is
+  // an allowlist (not a blocklist of just "windows") so a RID whose OS is
+  // neither "linux" nor "osx" — e.g. freebsd-x64, illumos-x64, or any future
+  // RID — fails fast with an actionable message instead of falling through
+  // to buildLinkerArgsUnix's Linux-ELF-specific flags and confusing
+  // clang/ld.bfd errors (#4204).
   val os = ridOs(rid)
   val arch = ridArch(rid)
-  if os == "windows" {
-    releaseErr("Windows native linking is not yet implemented; tracked in #1975")
+  if os != "linux" and os != "osx" {
+    releaseErr("'" + rid + "' is not yet supported for native AOT (Linux and macOS only); tracked in #1975")
     return 1
   }
 
@@ -1028,18 +1095,22 @@ pub func buildReleaseDotnet(
   }
   if ilcResult.timedOut {
     releaseErr("ilc timed out after 10 minutes")
+    cleanupIlcIntermediates(rspFile, objFile, exportsFile)
     return 1
   }
   if ilcResult.exitCode != 0 {
     releaseErr("ilc exited " + toString(ilcResult.exitCode))
+    cleanupIlcIntermediates(rspFile, objFile, exportsFile)
     return 1
   }
   if not File.fileExists(objFile) {
     releaseErr("ilc did not produce object file at " + objFile)
+    cleanupIlcIntermediates(rspFile, objFile, exportsFile)
     return 1
   }
   if not File.fileExists(exportsFile) {
     releaseErr("ilc did not produce exports file at " + exportsFile)
+    cleanupIlcIntermediates(rspFile, objFile, exportsFile)
     return 1
   }
 
@@ -1059,17 +1130,21 @@ pub func buildReleaseDotnet(
   }
   if linkResult.timedOut {
     releaseErr("linker timed out after 5 minutes")
+    cleanupIlcIntermediates(rspFile, objFile, exportsFile)
     return 1
   }
   if linkResult.exitCode != 0 {
     releaseErr("clang linker exited " + toString(linkResult.exitCode))
+    cleanupIlcIntermediates(rspFile, objFile, exportsFile)
     return 1
   }
   if not File.fileExists(outPath) {
     releaseErr("linker exited 0 but output binary was not produced at " + outPath)
+    cleanupIlcIntermediates(rspFile, objFile, exportsFile)
     return 1
   }
 
+  cleanupIlcIntermediates(rspFile, objFile, exportsFile)
   Console.println("built native binary " + outPath)
   0
 }

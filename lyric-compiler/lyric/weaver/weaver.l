@@ -3431,6 +3431,21 @@ func bmodeTypeArgListKey(args: in List[TypeArg]): String {
   s
 }
 
+/// Length-prefix `s` as `<decimal length>x<s>`.  Concatenating
+/// length-prefixed blocks is an injective encoding — the decimal-digit
+/// run before the `x` terminator is unambiguous (digits stop at the
+/// first non-digit character) and exactly that many characters are then
+/// consumed as the block's content regardless of what they contain — so
+/// two different sequences of blocks can never concatenate to the same
+/// string.  Used by `bmodeShapeKey` instead of a fixed `"__"` / `"___"`
+/// separator, since `bmodeTypeExprKey` itself is free to emit `_`
+/// sequences (`slice_`, `tuple_`, `_of_`, `fn_..._to_`) or come from a
+/// user type name containing `_`, either of which could otherwise
+/// collide with the separator (#4598).
+func bmodeLenPrefixed(s: in String): String {
+  toString(s.length) + "x" + s
+}
+
 /// `(TArgs, TRet)` shape key for a matched function's signature — the
 /// specialisation identity B'-mode dedups on (docs/55 §3.2 point 2).
 /// Q-bmode-001 (docs/55 §6) leaves structural-vs-nominal equality open;
@@ -3441,19 +3456,11 @@ func bmodeShapeKey(params: in List[Param], ret: in Option[TypeExpr]): String {
   var s = ""
   var i = 0
   while i < params.count {
-    if i > 0 {
-      s = s + "__"
-    }
-    s = s + bmodeTypeExprKey(params[i].ty)
+    s = s + bmodeLenPrefixed(bmodeTypeExprKey(params[i].ty))
     i = i + 1
   }
   val retStr = match ret { case Some(t) -> bmodeTypeExprKey(t); case None -> "Unit" }
-  if params.count > 0 {
-    s = s + "___" + retStr
-  } else {
-    s = retStr
-  }
-  s
+  s + bmodeLenPrefixed(retStr)
 }
 
 /// The template's own identity for specialisation-key / cfg-record-name
@@ -3549,9 +3556,13 @@ func bmodeGetOrBuildTemplateInfo(
   match mapGet(cache, templateKey) {
     case Some(info) -> info
     case None -> {
+      // Unreachable: `collectActiveAspects` only keeps aspects with
+      // `around: Some(_)` (a `from`-instance's effective `around` is
+      // always the resolved template's, which `collectAspectTemplates`
+      // only stores when it is `Some(_)`) — see #4599.
       val around = match aspect.around {
         case Some(a) -> a
-        case None -> AspectAround(argsName = "args", retName = None, argsRow = None, body = Block(statements = newList(), span = synSpan()), span = synSpan())
+        case None -> panic("B'-mode: aspect.around = None is unreachable — template must have an around body")
       }
       val referenced = computeReferencedConfigFields(aspect, around.body)
       val cfgRecordName: Option[String] = if referenced.count > 0 {
@@ -3674,9 +3685,12 @@ func buildBModeSpecializedFunction(
   argsRecordName: in Option[String],
   span: in Span,
 ): FunctionDecl {
+  // Unreachable: see the matching guard in `bmodeGetOrBuildTemplateInfo`
+  // above (#4599) — every B'-mode `aspect` reaching this function has
+  // `around: Some(_)`.
   val around = match aspect.around {
     case Some(a) -> a
-    case None -> AspectAround(argsName = "args", retName = None, argsRow = None, body = Block(statements = newList(), span = synSpan()), span = synSpan())
+    case None -> panic("B'-mode: aspect.around = None is unreachable — template must have an around body")
   }
 
   val paramNames: List[String] = newList()
