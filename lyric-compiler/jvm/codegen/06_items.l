@@ -2521,7 +2521,7 @@ func registerIfaceSig(
 ): Unit {
   val noTps: List[String] = newList()
   val ps = holderAwareParamTypes(params, owner, true, noTps, externTypes)
-  val ret = match retOpt { case Some(te) -> typeExprToJvm(te, owner); case None -> JVoid }
+  val ret = match retOpt { case Some(te) -> typeExprToJvmExtern(te, owner, externTypes); case None -> JVoid }
   val pNames: List[String] = newList()
   val pDefs: List[Option[Expr]] = newList()
   val pModes: List[ParamMode] = newList()
@@ -3480,7 +3480,7 @@ pub func codegenPackageWithSigsSeeded(
             case IMSig(sig) -> {
               val noTpsIface: List[String] = newList()
               val params = holderAwareParamTypes(sig.params, pkgName, true, noTpsIface, externTypes)
-              val ret = match sig.ret { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
+              val ret = match sig.ret { case Some(te) -> typeExprToJvmExtern(te, pkgName, externTypes); case None -> JVoid }
               val desc = buildDescriptor(params, ret)
               abstractMethods.add(makeMethodInfo(ACC_PUBLIC + ACC_ABSTRACT, sig.name, desc, emptyAttrs))
             }

@@ -2100,22 +2100,29 @@ func lowerMethodCall(
       val kPs: List[JvmType] = newList()
       kPs.add(objTy)
       kPs.add(objTy)
-      lowerCallArg(ctx, insns, args[0])
-      lowerCallArg(ctx, insns, args[1])
+      // Box primitive keys/values: put(Object, Object) with a raw int on the
+      // stack fails verification ("Type integer ... not assignable to
+      // 'java/lang/Object'").
+      val kTy = lowerCallArg(ctx, insns, args[0])
+      boxIfNeeded(insns, kTy)
+      val vTy = lowerCallArg(ctx, insns, args[1])
+      boxIfNeeded(insns, vTy)
       insns.add(LInvokevirtual(owner = "java/util/HashMap", name = "put", params = kPs, ret = objTy))
       insns.add(LPop)
       return JVoid
     } else if memberName == "remove" and args.count == 1 {
       val rPs: List[JvmType] = newList()
       rPs.add(objTy)
-      lowerCallArg(ctx, insns, args[0])
+      val rkTy = lowerCallArg(ctx, insns, args[0])
+      boxIfNeeded(insns, rkTy)
       insns.add(LInvokevirtual(owner = "java/util/HashMap", name = "remove", params = rPs, ret = objTy))
       insns.add(LPop)
       return JVoid
     } else if memberName == "containsKey" and args.count == 1 {
       val ckPs: List[JvmType] = newList()
       ckPs.add(objTy)
-      lowerCallArg(ctx, insns, args[0])
+      val ckTy = lowerCallArg(ctx, insns, args[0])
+      boxIfNeeded(insns, ckTy)
       insns.add(LInvokevirtual(owner = "java/util/HashMap", name = "containsKey", params = ckPs, ret = JBoolean))
       return JBoolean
     }
