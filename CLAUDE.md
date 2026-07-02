@@ -1008,7 +1008,7 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
     All 13 decisions are mirrored in `docs/03-decision-log.md` (D-N-001–D-N-013).
     **Agents implementing the native backend must read this directory before starting.**
     Phase 1's first slice (N0, N1, N4.1/N4.6, and the console/math/libc +
-    bridge/CLI subsets) **shipped** in D-progress-539 with three plan
+    bridge/CLI subsets) **shipped** in D-progress-540 with three plan
     corrections codified in D-N-014: the backend lives at
     `lyric-compiler/lyric/llvm_*.l` as `Lyric.Llvm*` packages (a new `Llvm`
     package head is unbootstrappable — every stage-0 seed must already
@@ -1018,7 +1018,7 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
     model) rather than `@cfg`-gated imports, and the entry points are
     `codegenNativePackage`/`codegenNativeBundle`/`lowerNativePackage`
     (bare-name collision with the MSIL/JVM entry points in the
-    restored-bundle resolver).  Read D-N-014 and D-progress-539 alongside
+    restored-bundle resolver).  Read D-N-014 and D-progress-540 alongside
     the plan.
 - `lyric-rt/` — the native runtime C library (`lyric_rt.a`): ARC
   intrinsics, LyricString, NativeWeak upgrade, List/Map kernels, POSIX

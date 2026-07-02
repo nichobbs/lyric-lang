@@ -6,7 +6,7 @@ to the Lyric compiler, producing self-contained binaries via LLVM and clang.
 
 ## Status
 
-Phase 1's first slice SHIPPED (D-progress-539): N0 (lyric-rt + IR layer),
+Phase 1's first slice SHIPPED (D-progress-540): N0 (lyric-rt + IR layer),
 N1 (scalar codegen; `lyric build hello.l --target native -o hello` works
 end-to-end), N4.1 (`extern func`), N4.6 (`@cfg(target = ...)`), and the
 console/math/libc kernel + bridge/CLI subsets of N4.4/N5/N6.  Three plan
