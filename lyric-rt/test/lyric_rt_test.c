@@ -550,6 +550,7 @@ static void test_ok_variants(void) {
     LyricString* nov = NULL;
     CHECK(lyric_env_get_ok("LYRIC_RT_OK_TEST_MISSING", &nov) == -1);
     CHECK(nov == NULL);
+    unsetenv("LYRIC_RT_OK_TEST");
 }
 
 int main(void) {

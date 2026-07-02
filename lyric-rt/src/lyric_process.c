@@ -55,7 +55,11 @@ typedef struct {
 static void procbuf_append(ProcBuf* b, const uint8_t* chunk, int64_t n) {
     if (b->len + n > b->cap) {
         int64_t newcap = b->cap < 4096 ? 4096 : b->cap;
-        while (newcap < b->len + n) newcap *= 2;
+        while (newcap < b->len + n) {
+            if (newcap > INT64_MAX / 2) /* doubling would overflow (UB) */
+                lyric_panic_msg("process output exceeds capacity", "lyric_process.c", __LINE__);
+            newcap *= 2;
+        }
         uint8_t* nd = (uint8_t*)realloc(b->data, (size_t)newcap);
         if (!nd) lyric_panic_msg("OOM capturing process output", "lyric_process.c", __LINE__);
         b->data = nd;

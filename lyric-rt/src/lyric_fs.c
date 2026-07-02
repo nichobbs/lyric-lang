@@ -61,6 +61,11 @@ LyricString* lyric_file_read_all(const char* path) {
     int64_t len = 0;
     for (;;) {
         if (len == cap) {
+            if (cap > INT64_MAX / 2) { /* doubling would overflow (UB) */
+                free(buf);
+                close(fd);
+                return NULL;
+            }
             cap *= 2;
             uint8_t* nb = (uint8_t*)realloc(buf, (size_t)cap);
             if (!nb) {
