@@ -35,6 +35,21 @@ if ! "$LYRIC_BIN" build --manifest "$MANIFEST" -o "$bundle" \
 fi
 [[ -f "$bundle" ]] || { echo "stage-selfhosted-stdlib: bundle not produced at $bundle" >&2; exit 1; }
 
+# Content check: mirror stage-selfhosted-compiler.sh's Lyric.Contract.<Pkg>
+# resource check so a package silently dropped from lyric.full.toml (e.g. by
+# an accidental deletion or a TOML parse error that skips a row) fails here
+# instead of surfacing later as a runtime TypeLoadException in a consumer.
+for pkg in Std.Sort Std.Xml Std.Yaml Std.Collections Std.Json; do
+  # `grep -c` (not `grep -q`) reads all of `strings`' output: `grep -q` exits
+  # on the first match and SIGPIPEs `strings`, which under `set -o pipefail`
+  # fails the pipeline even though the resource is present.
+  found="$(strings -n 8 "$bundle" | grep -cF "Lyric.Contract.$pkg" || true)"
+  if [[ "$found" -eq 0 ]]; then
+    echo "stage-selfhosted-stdlib: bundle is missing the Lyric.Contract.$pkg resource (dropped from lyric.full.toml?)" >&2
+    exit 1
+  fi
+done
+
 # Deploy the bundle to every target lib dir.
 staged=0
 for dir in "${LIB_DIRS[@]}"; do
@@ -42,5 +57,10 @@ for dir in "${LIB_DIRS[@]}"; do
   cp "$bundle" "$dir/Lyric.Stdlib.dll"
   staged=$((staged + 1))
 done
+
+if [[ "$staged" -eq 0 ]]; then
+  echo "stage-selfhosted-stdlib: ERROR: none of the provided lib dirs exist; nothing was staged." >&2
+  exit 1
+fi
 
 echo "stage-selfhosted-stdlib: deployed Lyric.Stdlib.dll into $staged lib dir(s)"
