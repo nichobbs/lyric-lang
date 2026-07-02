@@ -1514,6 +1514,22 @@ func isNativeAddrOfCall(e: in Expr): Bool {
   }
 }
 
+// `nativeNullPtr()` produces a NativePtr[Byte] and is placement-gated
+// like nativeAddrOf (no operand or escape rules — a null pointer
+// references no frame).
+func isNativeNullPtrCall(e: in Expr): Bool {
+  match e.kind {
+    case ECall(fn, _) -> {
+      match fn.kind {
+        case EPath(path) -> path.segments.count == 1 and path.segments[0] == "nativeNullPtr"
+        case _ -> false
+      }
+    }
+    case EParen(inner) -> isNativeNullPtrCall(inner)
+    case _ -> false
+  }
+}
+
 func n0100Placement(ctx: in N0100Ctx, sp: in Span): Unit {
   ctx.diag.add(
     errorDiagnostic(
@@ -1652,6 +1668,12 @@ func n0100CollectVarsEob(ctx: in N0100Ctx, eob: in ExprOrBlock): Unit {
 
 // Walk expressions for nativeAddrOf uses (placement + operand rules).
 func n0100Expr(ctx: in N0100Ctx, e: in Expr): Unit {
+  if isNativeNullPtrCall(e) {
+    if not ctx.unsafeFfi {
+      n0100Placement(ctx, e.span)
+    }
+    return
+  }
   if isNativeAddrOfCall(e) {
     if not ctx.unsafeFfi {
       n0100Placement(ctx, e.span)

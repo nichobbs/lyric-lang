@@ -372,3 +372,15 @@ test "n0100 clean file no diagnostics" {
   assertTrue(not (hasDiagCode(result, "N0100")), "clean: no N0100")
 }
 
+
+test "n0100 nativenullptr outside unsafe_ffi" {
+  val src = "package P\nfunc f(): Int {\n  val p = g(nativeNullPtr())\n  p\n}\nfunc g(x: Int): Int { x }\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "N0100"), "nativenullptr-placement: N0100 emitted")
+}
+
+test "n0100 nativenullptr inside unsafe_ffi admitted" {
+  val src = "package P\nextern func cFree(p: NativePtr[Byte]): Unit = \"free\"\n@unsafe_ffi\nfunc f(): Int {\n  cFree(nativeNullPtr())\n  0\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "N0100")), "nativenullptr-positive: no N0100")
+}

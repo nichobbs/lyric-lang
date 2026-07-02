@@ -1279,7 +1279,8 @@ jobs:
           for t in \
             lyric-compiler/lyric/llvm_ir_self_test.l \
             lyric-compiler/lyric/llvm_codegen_self_test.l \
-            lyric-compiler/lyric/llvm_heap_self_test.l ; do
+            lyric-compiler/lyric/llvm_heap_self_test.l \
+            lyric-compiler/lyric/llvm_ffi_self_test.l ; do
             echo "=== $t ==="
             LYRIC_LOAD_COMPILER=1 "$lyric_bin" test "$t"
           done

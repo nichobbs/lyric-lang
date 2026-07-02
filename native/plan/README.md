@@ -30,7 +30,18 @@ functions instantiate per call site with unification-based inference,
 cache-first recursion handling, and generic UFCS.  Tuples (N3.3)
 SHIPPED in D-progress-550 as synthesised records.  Interfaces/vtables
 (N3.2) and protected types (N3.4) remain from N3.
-Remaining work items (rest of N3, the rest of N4/N5/N6, N7 CI)
+
+Phase N4 is COMPLETE (D-progress-540 shipped N4.1/N4.6 and the
+kernel/CLI subsets; D-progress-551 the nativeAddrOf codegen;
+D-progress-552 the rest): the N0100 mode-checker FFI boundary
+(NativePtr[T]/nativeAddrOf/nativeNullPtr only in `@unsafe_ffi`
+functions and `_kernel_native/` packages, var-only operands, no frame
+escape), callback trampolines (a Lyric closure passed to an extern
+func parameter of function type, the closure riding the callback's
+trailing NativePtr[Byte] userdata slot), and the `llvm_ffi_self_test.l`
+suite (extern libc/libm calls, C-string bridging, pthread trampoline
+round-trips under ASan).
+Remaining work items (rest of N3, N5/N6.4, N7.2)
 execute from `08-work-items.md` as written, modulo the D-N-014 naming
 mapping.
 

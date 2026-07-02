@@ -1038,7 +1038,13 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
     `-fsanitize=address` so leaks / use-after-free / double-release fail
     the run.  Generic monomorphization (N3.1, D-progress-546/547) and
     tuples (N3.3, D-progress-550) also ship; interfaces (N3.2) and
-    protected types (N3.4) remain from N3.
+    protected types (N3.4) remain from N3.  Phase N4 is complete
+    (D-progress-551/552): the N0100 mode-checker FFI boundary
+    (`NativePtr[T]`/`nativeAddrOf`/`nativeNullPtr` only in `@unsafe_ffi`
+    functions and `_kernel_native/` packages), callback trampolines
+    (Lyric closures as C callbacks via a trailing `NativePtr[Byte]`
+    userdata slot), and `llvm_ffi_self_test.l` (pthread round-trips
+    under ASan).
 - `lyric-rt/` — the native runtime C library (`lyric_rt.a`): ARC
   intrinsics, LyricString, NativeWeak upgrade, List/Map kernels, POSIX
   helpers, console writes.  `make -C lyric-rt` builds it;

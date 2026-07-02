@@ -229,6 +229,10 @@ record Ctx {
   fnTyEnvTys: List[NType]
   // Closure signatures by closure-struct name (N2.6).
   closureSigs: Map[String, NClosureSig]
+  // Callback trampolines by raw C-callback signature (N4.5): the ccc
+  // wrapper synthesised when a Lyric closure is passed to an extern
+  // func parameter of function type.
+  trampolines: Map[String, String]
   // NativeWeak target types by weak-struct name (N2.5).
   weakTargets: Map[String, NType]
   // ARC state (per function).  `scopeRefs` stacks the ref-typed locals
@@ -327,6 +331,18 @@ pub func typeExprToNType(te: in TypeExpr): NType {
     }
     case TUnit -> NVoid
     case TParen(inner) -> typeExprToNType(inner)
+    case TFunction(parameters, retTy) -> {
+      // A raw C function-pointer type (N4.5): only meaningful in extern
+      // func parameter positions, where a Lyric closure argument is
+      // wrapped in a synthesised ccc trampoline.
+      val ps: List[NType] = newList()
+      var i = 0
+      while i < parameters.count {
+        ps.add(typeExprToNType(parameters[i]))
+        i = i + 1
+      }
+      NFnPtr(params = ps, ret = typeExprToNType(retTy))
+    }
     case _ -> panic("Lyric.LlvmCodegen: this type form is not yet supported for --target native (Phase N1)")
   }
 }
@@ -1958,7 +1974,7 @@ func bindCallArgs(
   while i < args.count {
     match args[i] {
       case CAPositional(ex) -> {
-        vals.add(lowerExprExpecting(ctx, insns, ex, typeToN(ctx, sig.paramTys[nextPositional])))
+        vals.add(lowerArgAgainst(ctx, insns, sig, ex, nextPositional))
         slots.add(nextPositional)
         nextPositional = nextPositional + 1
       }
@@ -1974,7 +1990,7 @@ func bindCallArgs(
         if slot < 0 {
           panic("Lyric.LlvmCodegen: named argument '" + argName + "' does not match a parameter of '" + sig.irName + "'")
         }
-        vals.add(lowerExprExpecting(ctx, insns, value, typeToN(ctx, sig.paramTys[slot])))
+        vals.add(lowerArgAgainst(ctx, insns, sig, value, slot))
         slots.add(slot)
       }
     }
@@ -1993,11 +2009,42 @@ func bindCallArgs(
     if found < 0 {
       panic("Lyric.LlvmCodegen: no argument bound for parameter " + pi2.toString() + " of '" + sig.irName + "'")
     }
+    if sig.isExternSym and isFunctionTypeExpr(sig.paramTys[pi2]) {
+      val fnDeclTy = typeExprToNType(sig.paramTys[pi2])
+      val fv = externAdaptArg(ctx, insns, sig.paramTys[pi2], fnDeclTy, vals[found])
+      ordered.add(NArg(ty = fnDeclTy, value = fv.value))
+      pi2 = pi2 + 1
+      continue
+    }
     val declTy = typeToN(ctx, sig.paramTys[pi2])
-    val v = coerceTo(ctx, insns, vals[found], declTy)
+    val v = if sig.isExternSym {
+      externAdaptArg(ctx, insns, sig.paramTys[pi2], declTy, vals[found])
+    } else {
+      coerceTo(ctx, insns, vals[found], declTy)
+    }
     ordered.add(NArg(ty = declTy, value = v.value))
     pi2 = pi2 + 1
   }
+}
+
+/// Lower one argument against its declared parameter (N4.5-aware):
+/// normally with the declared type as the expected type; an extern
+/// callback (function-typed) parameter expects the Lyric closure for
+/// the callback's reduced signature, and an extern `NativePtr[Byte]`
+/// parameter lowers with NO expected type — lowerExprExpecting's
+/// fallback coerces eagerly, which would reject the closure value the
+/// ordering pass adapts into the userdata pointer (a genuine i8* value
+/// coerces there as a no-op).
+func lowerArgAgainst(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, ex: in Expr, slot: Int): NVal {
+  if sig.isExternSym {
+    if isFunctionTypeExpr(sig.paramTys[slot]) {
+      return lowerExprExpecting(ctx, insns, ex, externCallbackClosureWant(ctx, sig.paramTys[slot]))
+    }
+    if nTypeToIrString(typeToN(ctx, sig.paramTys[slot])) == "i8*" {
+      return lowerExpr(ctx, insns, ex)
+    }
+  }
+  lowerExprExpecting(ctx, insns, ex, typeToN(ctx, sig.paramTys[slot]))
 }
 
 /// Adapt a value to the declared type: integer literals retype freely;
@@ -2058,6 +2105,12 @@ func lowerCall(ctx: in Ctx, insns: in List[NInsn], fnExpr: in Expr, args: in Lis
           insns.add(NUnreachable)
           insns.add(NLabel(name = freshLabel(ctx, "dead")))
           return NVal(ty = NVoid, value = NUndef(ty = NVoid))
+        }
+        if n == "nativeNullPtr" and args.count == 0 {
+          // The C NULL pointer as a NativePtr[Byte] (N4.5) — e.g. the
+          // attr argument of pthread_create.  Placement is the mode
+          // checker's N0100 charge, like nativeAddrOf.
+          return NVal(ty = NPtr(pointee = NI8), value = NLitNull(ty = NPtr(pointee = NI8)))
         }
         if n == "nativeAddrOf" and args.count == 1 {
           // The address of a local's stack slot (N4.2).  The alloca IS
@@ -3024,6 +3077,187 @@ func closureSigOfType(ctx: in Ctx, t: in NType): Option[NClosureSig] {
     }
     case _ -> None
   }
+}
+
+// ─── Callback trampolines (N4.5) ─────────────────────────────────────────────
+// An extern func parameter of function type takes a Lyric closure.  The
+// callback's C signature must carry the closure pointer as its LAST
+// parameter, declared `NativePtr[Byte]` — the userdata slot every
+// callback-driven C API provides.  The Lyric closure's own signature is
+// the callback's minus that slot: for `start: func(NativePtr[Byte]):
+// NativePtr[Byte]` (pthread_create's start routine) the argument is a
+// `func(): NativePtr[Byte]` closure, and the SAME closure value is
+// passed for the API's userdata argument (a closure in a
+// `NativePtr[Byte]` extern-argument position lowers to a bitcast of the
+// closure pointer).  The synthesised trampoline rebuilds the Lyric
+// calling convention from the raw side:
+//
+//   define <R> @__lyric_cb_tramp.N(<P1..Pk-1>, i8* %ud) {
+//     %fn = load the fnptr slot of (%ud as closure header)
+//     call <R> %fn(i8* %ud, <P1..Pk-1>)
+//   }
+//
+// The call-duration borrow needs no retain; a C API that holds the
+// callback beyond the call requires the _kernel_native/ wrapper to
+// retain/release around the registration (native/plan/05-ffi-design.md).
+func isFunctionTypeExpr(t: in TypeExpr): Bool {
+  match t.kind {
+    case TFunction(_, _) -> true
+    case TParen(inner) -> isFunctionTypeExpr(inner)
+    case _ -> false
+  }
+}
+
+/// The Lyric-side expected type for a closure passed to an extern
+/// callback parameter: the callback signature minus its trailing
+/// userdata slot, as a closure struct pointer.
+func externCallbackClosureWant(ctx: in Ctx, t: in TypeExpr): NType {
+  match t.kind {
+    case TParen(inner) -> externCallbackClosureWant(ctx, inner)
+    case TFunction(parameters, retTy) -> {
+      if parameters.count < 1 {
+        panic(
+          "Lyric.LlvmCodegen: an extern callback parameter must declare a trailing NativePtr[Byte] userdata slot (got a zero-parameter function type)"
+        )
+      }
+      val lastTy = typeExprToNType(parameters[parameters.count - 1])
+      if nTypeToIrString(lastTy) != "i8*" {
+        panic(
+          "Lyric.LlvmCodegen: an extern callback parameter's last parameter must be NativePtr[Byte] (the userdata slot); got " +
+            nTypeToIrString(lastTy)
+        )
+      }
+      val reduced: List[NType] = newList()
+      var i = 0
+      while i < parameters.count - 1 {
+        reduced.add(typeExprToNType(parameters[i]))
+        i = i + 1
+      }
+      closureNType(ctx, reduced, typeExprToNType(retTy))
+    }
+    case _ -> panic("Lyric.LlvmCodegen: internal — externCallbackClosureWant on a non-function type")
+  }
+}
+
+/// Synthesise (or reuse) the ccc trampoline for one callback signature;
+/// returns the trampoline's symbol name.
+func trampolineFor(ctx: in Ctx, t: in TypeExpr): String {
+  match t.kind {
+    case TParen(inner) -> return trampolineFor(ctx, inner)
+    case _ -> {
+    }
+  }
+  match t.kind {
+    case TFunction(parameters, retTy) -> {
+      val rawParams: List[NType] = newList()
+      var i = 0
+      while i < parameters.count {
+        rawParams.add(typeExprToNType(parameters[i]))
+        i = i + 1
+      }
+      val rawRet = typeExprToNType(retTy)
+      val key = nTypeToIrString(NFnPtr(params = rawParams, ret = rawRet))
+      match mapGet(ctx.trampolines, key) {
+        case Some(existing) -> return existing
+        case None -> {
+        }
+      }
+      // The closure type this trampoline unwraps (registers the struct
+      // and its signature as a side effect).
+      val closTy = externCallbackClosureWant(ctx, t)
+      val closStruct = match closTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
+      val name = "__lyric_cb_tramp." + ctx.trampolines.count.toString()
+      val params: List[NParam] = newList()
+      var pi = 0
+      while pi < rawParams.count - 1 {
+        params.add(NParam(name = "p" + pi.toString(), ty = rawParams[pi]))
+        pi = pi + 1
+      }
+      params.add(NParam(name = "ud", ty = NPtr(pointee = NI8)))
+      val body: List[NInsn] = newList()
+      body.add(NBitcast(dest = "hdr", fromTy = NPtr(pointee = NI8), value = NLocal(name = "ud"), toTy = closTy))
+      val gArgs: List[NArg] = newList()
+      gArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+      gArgs.add(NArg(ty = NI32, value = NLitInt(v = 2i64, ty = NI32)))
+      body.add(NGEP(dest = "slot", ty = closStruct, ptr = NLocal(name = "hdr"), indices = gArgs))
+      body.add(NLoad(dest = "fnraw", ty = NPtr(pointee = NI8), ptr = NLocal(name = "slot")))
+      val lyricParams: List[NType] = newList()
+      lyricParams.add(NPtr(pointee = NI8))
+      var li = 0
+      while li < rawParams.count - 1 {
+        lyricParams.add(rawParams[li])
+        li = li + 1
+      }
+      body.add(
+        NBitcast(
+          dest = "fn",
+          fromTy = NPtr(pointee = NI8),
+          value = NLocal(name = "fnraw"),
+          toTy = NPtr(pointee = NFnPtr(params = lyricParams, ret = rawRet))
+        )
+      )
+      val callArgs: List[NArg] = newList()
+      callArgs.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = "ud")))
+      var ci = 0
+      while ci < rawParams.count - 1 {
+        callArgs.add(NArg(ty = rawParams[ci], value = NLocal(name = "p" + ci.toString())))
+        ci = ci + 1
+      }
+      match rawRet {
+        case NVoid -> {
+          body.add(NCallVoid(fn = NLocal(name = "fn"), args = callArgs))
+          body.add(NRetVoid)
+        }
+        case rt -> {
+          body.add(NCall(dest = "r", retTy = rt, fn = NLocal(name = "fn"), args = callArgs))
+          body.add(NRet(ty = rt, value = NLocal(name = "r")))
+        }
+      }
+      ctx.moduleFns.add(
+        NFunc(
+          name = name,
+          params = params,
+          retTy = rawRet,
+          isPublic = false,
+          isExtern = false,
+          body = body,
+          attributes = newList()
+        )
+      )
+      ctx.trampolines.add(key, name)
+      name
+    }
+    case _ -> panic("Lyric.LlvmCodegen: internal — trampolineFor on a non-function type")
+  }
+}
+
+/// Extern-call argument adaptation (N4.5): a closure value meeting a
+/// function-pointer parameter becomes its trampoline symbol; a closure
+/// value meeting a NativePtr[Byte] parameter becomes the closure
+/// pointer itself (the userdata).  Everything else coerces normally.
+func externAdaptArg(ctx: in Ctx, insns: in List[NInsn], declTyExpr: in TypeExpr, declTy: in NType, v: in NVal): NVal {
+  match declTy {
+    case NFnPtr(_, _) -> {
+      match closureSigOfType(ctx, v.ty) {
+        case Some(_) -> return NVal(ty = declTy, value = NGlobal(name = trampolineFor(ctx, declTyExpr)))
+        case None -> panic("Lyric.LlvmCodegen: an extern function-typed parameter takes a Lyric closure argument; got " + nTypeToIrString(v.ty))
+      }
+    }
+    case _ -> {
+    }
+  }
+  if nTypeToIrString(declTy) == "i8*" {
+    match closureSigOfType(ctx, v.ty) {
+      case Some(_) -> {
+        val cast = freshTmp(ctx)
+        insns.add(NBitcast(dest = cast, fromTy = v.ty, value = v.value, toTy = NPtr(pointee = NI8)))
+        return NVal(ty = NPtr(pointee = NI8), value = NLocal(name = cast))
+      }
+      case None -> {
+      }
+    }
+  }
+  coerceTo(ctx, insns, v, declTy)
 }
 
 /// `NativeWeak[T]`: a non-owning pointer sharing T's representation
@@ -5979,6 +6213,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     fnTyEnvNames = newList(),
     fnTyEnvTys = newList(),
     closureSigs = mod.closureSigs,
+    trampolines = mod.trampolines,
     weakTargets = mod.weakTargets,
     scopeRefs = newList(),
     tempScopes = newList(),
@@ -6281,6 +6516,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     fnTyEnvNames = newList(),
     fnTyEnvTys = newList(),
     closureSigs = emptyClosureSigs,
+    trampolines = newMap(),
     weakTargets = emptyWeakTargets,
     scopeRefs = newList(),
     tempScopes = newList(),
