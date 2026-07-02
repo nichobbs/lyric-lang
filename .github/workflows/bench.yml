@@ -41,8 +41,11 @@ jobs:
     runs-on: ubuntu-24.04
 
     env:
-      RUNS:   ${{ github.event.inputs.runs   || '15' }}
-      WARMUP: ${{ github.event.inputs.warmup || '5'  }}
+      RUNS:      ${{ github.event.inputs.runs   || '15' }}
+      WARMUP:    ${{ github.event.inputs.warmup || '5'  }}
+      # Single source of truth for the AOT binary path — was duplicated
+      # verbatim across the staging step and every bench step (#4757).
+      LYRIC_BIN: bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
 
     steps:
       - name: Checkout
@@ -88,9 +91,7 @@ jobs:
         # the harness's Std.* imports (Std.Time, etc.) must resolve against a
         # deployed Lyric.Stdlib.dll beside the binary — mirrors ci.yml's
         # "Build AOT entry-point + smoke-test the examples" step.
-        run: |
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          bash scripts/stage-selfhosted-stdlib.sh "$lyric_bin" "$(dirname "$lyric_bin")"
+        run: bash scripts/stage-selfhosted-stdlib.sh "$LYRIC_BIN" "$(dirname "$LYRIC_BIN")"
 
       - name: Create results directory
         run: mkdir -p bench-results
@@ -104,32 +105,28 @@ jobs:
       - name: bench — numeric kernels
         continue-on-error: true
         run: |
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          "$lyric_bin" bench benchmarks/bench_numeric.l \
+          "$LYRIC_BIN" bench benchmarks/bench_numeric.l \
             --runs "$RUNS" --warmup "$WARMUP" \
             | tee bench-results/bench_numeric.txt
 
       - name: bench — collections throughput
         continue-on-error: true
         run: |
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          "$lyric_bin" bench benchmarks/bench_collections.l \
+          "$LYRIC_BIN" bench benchmarks/bench_collections.l \
             --runs "$RUNS" --warmup "$WARMUP" \
             | tee bench-results/bench_collections.txt
 
       - name: bench — contract overhead
         continue-on-error: true
         run: |
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          "$lyric_bin" bench benchmarks/bench_contracts.l \
+          "$LYRIC_BIN" bench benchmarks/bench_contracts.l \
             --runs "$RUNS" --warmup "$WARMUP" \
             | tee bench-results/bench_contracts.txt
 
       - name: bench — string operations
         continue-on-error: true
         run: |
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          "$lyric_bin" bench benchmarks/bench_string.l \
+          "$LYRIC_BIN" bench benchmarks/bench_string.l \
             --runs "$RUNS" --warmup "$WARMUP" \
             | tee bench-results/bench_string.txt
 
