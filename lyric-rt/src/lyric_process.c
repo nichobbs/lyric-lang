@@ -9,6 +9,8 @@
  * exec.
  */
 #if defined(__linux__)
+/* _GNU_SOURCE for pipe2 (O_CLOEXEC pipe creation without a race). */
+#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
 #endif
@@ -16,11 +18,32 @@
 #include "lyric_rt.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+/* Both capture pipes are created CLOEXEC: without the flag, a fork raced
+ * by another thread (or any other subprocess spawned while this capture
+ * is in flight) inherits the write ends across its own exec, holding the
+ * read loop open past this child's exit.  Linux pipe2 sets the flag
+ * atomically; elsewhere pipe + fcntl is the best available. */
+static int pipe_cloexec(int fds[2]) {
+#if defined(__linux__)
+    return pipe2(fds, O_CLOEXEC);
+#else
+    if (pipe(fds) != 0) return -1;
+    if (fcntl(fds[0], F_SETFD, FD_CLOEXEC) < 0 ||
+        fcntl(fds[1], F_SETFD, FD_CLOEXEC) < 0) {
+        close(fds[0]);
+        close(fds[1]);
+        return -1;
+    }
+    return 0;
+#endif
+}
 
 /* Growable byte buffer used to accumulate one pipe's captured output. */
 typedef struct {
@@ -48,8 +71,8 @@ int32_t lyric_process_run(const char* path, LyricList* args,
                            LyricString** out_stderr) {
     int out_pipe[2];
     int err_pipe[2];
-    if (pipe(out_pipe) != 0) return -1;
-    if (pipe(err_pipe) != 0) {
+    if (pipe_cloexec(out_pipe) != 0) return -1;
+    if (pipe_cloexec(err_pipe) != 0) {
         close(out_pipe[0]);
         close(out_pipe[1]);
         return -1;
@@ -92,14 +115,20 @@ int32_t lyric_process_run(const char* path, LyricList* args,
          * close would then destroy the descriptor we just installed (or, in
          * the cross-aliased case, one installed by the other dup2).  Guard
          * each dup2, and close the source immediately so a later dup2 can
-         * never be clobbered by it. */
+         * never be clobbered by it.  dup2 clears CLOEXEC on the new
+         * descriptor; in the aliased no-dup2 branch the flag must be
+         * cleared by hand or exec would close the just-wired stream. */
         if (out_pipe[1] != STDOUT_FILENO) {
             if (dup2(out_pipe[1], STDOUT_FILENO) < 0) _exit(126);
             close(out_pipe[1]);
+        } else if (fcntl(out_pipe[1], F_SETFD, 0) < 0) {
+            _exit(126);
         }
         if (err_pipe[1] != STDERR_FILENO) {
             if (dup2(err_pipe[1], STDERR_FILENO) < 0) _exit(126);
             close(err_pipe[1]);
+        } else if (fcntl(err_pipe[1], F_SETFD, 0) < 0) {
+            _exit(126);
         }
         execvp(path, argv);
         _exit(127); /* execvp failed (e.g. path not found) */

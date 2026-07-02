@@ -497,6 +497,36 @@ static void test_process_closed_stdio(void) {
     CHECK(WEXITSTATUS(status) == 0);
 }
 
+static void test_process_closed_stdin_stdout(void) {
+    /* With fds 0 and 1 closed, pipe() returns {0,1} for out_pipe, so
+     * out_pipe[1] IS STDOUT_FILENO and the child takes the no-dup2 branch.
+     * The pipes are created CLOEXEC; the child must clear the flag by hand
+     * on that branch or exec closes the just-wired stdout and the capture
+     * comes back empty. */
+    pid_t pid = fork();
+    CHECK(pid >= 0);
+    if (pid == 0) {
+        close(STDIN_FILENO);
+        close(STDOUT_FILENO);
+        LyricList* args = lyric_list_new(1);
+        LyricString* a = lyric_string_from_literal((const uint8_t*)"hi", 2);
+        lyric_list_push(args, (int64_t)(intptr_t)a);
+        lyric_release(a);
+        int32_t code = -99;
+        LyricString* out = NULL;
+        LyricString* err = NULL;
+        if (lyric_process_run("/bin/echo", args, &code, &out, &err) != 0) _exit(1);
+        if (code != 0) _exit(2);
+        if (!out || lyric_string_len(out) != 3) _exit(3);
+        if (memcmp(LYRIC_STRING_DATA(out), "hi\n", 3) != 0) _exit(4);
+        _exit(0);
+    }
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid);
+    CHECK(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 0);
+}
+
 static void test_ok_variants(void) {
     char tmpl[] = "/tmp/lyric_rt_ok_XXXXXX";
     int fd = mkstemp(tmpl);
@@ -537,6 +567,7 @@ int main(void) {
     test_environment();
     test_process();
     test_process_closed_stdio();
+    test_process_closed_stdin_stdout();
     if (failures == 0) {
         printf("lyric_rt_test: all tests passed\n");
         return 0;
