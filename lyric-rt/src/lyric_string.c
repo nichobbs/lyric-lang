@@ -80,6 +80,8 @@ int32_t lyric_string_cmp(LyricString* a, LyricString* b) {
 LyricString* lyric_string_from_int(int64_t v) {
     char buf[24];
     int n = snprintf(buf, sizeof buf, "%" PRId64, v);
+    if (n < 0) n = 0;
+    if (n >= (int)sizeof buf) n = (int)sizeof buf - 1;
     return lyric_string_from_literal((const uint8_t*)buf, (int64_t)n);
 }
 
@@ -92,6 +94,8 @@ LyricString* lyric_string_from_float(double v) {
     if (back != v) {
         n = snprintf(buf, sizeof buf, "%.17g", v);
     }
+    if (n < 0) n = 0;
+    if (n >= (int)sizeof buf) n = (int)sizeof buf - 1;
     return lyric_string_from_literal((const uint8_t*)buf, (int64_t)n);
 }
 

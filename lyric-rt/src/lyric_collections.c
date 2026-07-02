@@ -42,8 +42,8 @@ static void list_grow(LyricList* l, int64_t need) {
     if (need <= l->cap) return;
     int64_t cap = l->cap < 8 ? 8 : l->cap;
     while (cap < need) cap *= 2;
-    int64_t* data = (int64_t*)lyric_alloc((uint64_t)cap * 8);
-    if (l->len > 0) memcpy(data, l->data, (size_t)l->len * 8);
+    int64_t* data = (int64_t*)lyric_alloc((uint64_t)cap * sizeof(int64_t));
+    if (l->len > 0) memcpy(data, l->data, (size_t)l->len * sizeof(int64_t));
     free(l->data);
     l->data = data;
     l->cap = cap;
@@ -80,7 +80,7 @@ void lyric_list_remove_at(LyricList* list, int64_t idx) {
     }
     if (list->elems_are_refs) lyric_release((void*)(intptr_t)list->data[idx]);
     memmove(&list->data[idx], &list->data[idx + 1],
-            (size_t)(list->len - idx - 1) * 8);
+            (size_t)(list->len - idx - 1) * sizeof(int64_t));
     list->len--;
 }
 

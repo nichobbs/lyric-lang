@@ -32,6 +32,7 @@ static void write_all(int32_t fd, const uint8_t* data, int64_t len) {
             if (errno == EINTR) continue;
             return; /* best-effort: console output never panics */
         }
+        if (n == 0) return; /* no progress (unusual fd); don't spin */
         off += n;
     }
 }
