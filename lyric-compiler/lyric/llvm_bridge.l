@@ -676,10 +676,19 @@ func indexFileFns(f: in SourceFile, bodyIndex: in Map[String, FunctionDecl], pkg
 // One package's codegen unit.  `lowerAll` (the user package) takes every
 // function; bundled packages take only the reachable ones.  Extern
 // funcs follow the same rule (an undeclared extern is never called).
+// Type declarations (records/unions/enums/distincts) always collect —
+// registration is cheap and other packages' signatures may reference
+// them.  Record methods lower with the user package (D037 desugar);
+// bundled-package record methods are a Phase N5 follow-up (calling one
+// panics with a resolution message today).
 func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool): CodegenUnit {
   val pkg = dottedPath(f.packageDecl.path)
   val fns: List[FunctionDecl] = newList()
   val externs: List[ExternFuncDecl] = newList()
+  val records: List[RecordDecl] = newList()
+  val unions: List[UnionDecl] = newList()
+  val enums: List[EnumDecl] = newList()
+  val distincts: List[DistinctTypeDecl] = newList()
   var i = 0
   while i < f.items.count {
     match f.items[i].kind {
@@ -695,10 +704,27 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
           externs.add(decl)
         }
       }
+      case IRecord(decl) -> {
+        records.add(decl)
+        if lowerAll {
+          collectRecordMethods(pkg, decl, fns)
+        }
+      }
+      case IUnion(decl) -> unions.add(decl)
+      case IEnum(decl) -> enums.add(decl)
+      case IDistinctType(decl) -> distincts.add(decl)
       case _ -> {
       }
     }
     i = i + 1
   }
-  CodegenUnit(pkgName = pkg, fns = fns, externs = externs)
+  CodegenUnit(
+    pkgName = pkg,
+    fns = fns,
+    externs = externs,
+    records = records,
+    unions = unions,
+    enums = enums,
+    distincts = distincts
+  )
 }

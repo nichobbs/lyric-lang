@@ -26014,3 +26014,250 @@ pipe support.
 
 **Related:** docs/54 (full design), PR #4459 (initial implementation),
 #4488/#4498/#4514/#4532 (follow-up hardening and ecosystem-publish fixes).
+
+---
+
+### D-progress-544 — Native backend Phase N2: records, unions, enums, distinct types, pattern matching, ARC
+
+**Shipped.** The second slice of the LLVM native backend
+(`native/plan/08-work-items.md` items N2.1–N2.4 plus the ARC insertion
+rules of `native/plan/04-arc-design.md`), making heap types a working
+part of `--target native`:
+
+- **Records (N2.1)** — `{ i32 rc, i8* dtor, fields... }` heap structs
+  with synthesised destructors (ARC Rule 7), inline construction
+  (Rules 1/2), field access/assignment (Rule 3 retain-new-then-
+  release-old on ref fields), named/positional/default construction
+  arguments, and methods in record bodies lowering as package
+  functions with the explicit `self` receiver (D037) resolved via
+  UFCS (`p.dist2()` and free-function `p.total(5)` both work).
+- **Unions (N2.2)** — `{ header, i32 disc, i32 pad, [W x i64] }` with
+  per-case payload structs sized by a C-layout calculator; per-case
+  constructor calls (named and positional fields), nullary cases as
+  bare paths (`Nothing`, `MaybeStr.Nothing`), and case-aware
+  destructors that switch on the discriminant.
+- **Enums / distinct types (N2.3)** — enums lower to `i32`
+  discriminants (`Color.Red` as a value or pattern); distinct types
+  share their underlying representation with construction range
+  checks (`type Age = Int range 0 ..= 150`; violations panic) and the
+  `.value` accessor.
+- **Pattern matching (N2.4)** — `match` lowers to sequential
+  discriminant/literal/range/string tests with payload-field binds,
+  guards (with correct arm-scope release on the guard-fail path),
+  wildcard/binding arms, nested constructor sub-patterns, and a
+  non-exhaustive panic backstop.
+- **ARC insertion** — value-provenance bookkeeping: constructors and
+  ref-returning calls yield owned temps (Rule 6) released at region
+  end unless transferred to a binding (Rule 4), heap store, or
+  return; borrows retain on binding; scope stacks release locals on
+  block exit, `return`, `break`, and `continue` (loop-depth-aware);
+  `in` params are borrows (Rule 5).  This also closes the N1 "strings
+  leak by design" gap — string temps now release.
+
+**Verification.** `llvm_heap_self_test.l` (@test_module, 21 cases):
+functional cases assert exit codes and stdout end-to-end (parse →
+codegen → clang → run), and five ARC cases compile with
+`-fsanitize=address` — LeakSanitizer/ASan turn a missed release,
+premature release, or double release into a non-zero exit, so the ARC
+protocol is verified mechanically (allocation loops with
+match/continue, ref-field overwrite churn, returned strings with var
+rebinding, nested record destructor composition, early-return/break
+unwinding).  The N1 string paths were re-verified leak-free under the
+same harness.
+
+**Stage-0 seed gaps worked around** (all in the #4631 family, cited at
+each site): value-position match over `Option` mis-lowers (rewrapped
+`Some` falls through as null) — `resolveFieldArgs`, `registerDistinct`,
+`substSelfInFn`, and `lowerCall` use the var-mutation shape; a `val` +
+`if` statement sequence inside a value-position match arm fails E3 —
+`lowerBlockValue` uses var-mutation; `out`, `scope`, and `old` are
+rejected as binding names by the seed parser; a trailing block
+expression starting with `(` parses as a call continuation.
+
+**Not in this slice** (each still panics with a construct-naming
+message): closures/lambdas and `NativeWeak[T]` (`upgrade()` returns
+`Option[T]`, so weak refs land with generic-union monomorphization in
+N3.1), tuples/interfaces/protected types (N3), `for` loops,
+module-level `val`, collections (N5), async (Phase 2).  Bundled-
+package (stdlib) record methods are collected for registration but not
+lowered until the N5 stdlib port.
+
+**Related:** D-progress-540, `native/plan/04-arc-design.md`,
+`native/plan/08-work-items.md` §N2, D037 (methods desugar), #4631.
+
+---
+
+### D-progress-545 — Native backend N3.1: generic type monomorphization (records and unions)
+
+**Shipped.** Generic records and unions instantiate on demand in the
+native backend, keyed per concrete type-argument tuple
+(`T.Maybe<i64>`, `T.Maybe<T.Maybe<i32>*>` — quote-free arg mangling so
+nested instantiations stay valid IR):
+
+- **Instantiation** — `typeToN` resolves `Maybe[Int]` / `Box[String]`
+  by substituting type params through an env-aware type mapper and
+  registering the instantiation (struct defn + per-case payload defns
+  + synthesised destructor) lazily via ctx-held module accumulators.
+- **Constructor inference** — `Just(5)` infers `T` from arguments
+  whose declared case/field type is a bare parameter; generic record
+  constructors (`Box(item = x, tag = 2)`) infer the same way.
+- **Expected-type threading** — annotated bindings, returns, call
+  arguments, field stores, and value-position `if`/`match`/block
+  results propagate the consumer's type into construction, which is
+  the only way to type nullary cases (`Nada`, `None`) and cases that
+  mention a subset of params (`Result`'s `Ok`/`Err`).
+- **Pattern resolution by scrutinee** — constructor patterns resolve
+  the case by name within the scrutinee's union instantiation, and a
+  bare identifier that names a case of the scrutinee's union is a
+  nullary constructor pattern, not a binding (the parser cannot
+  distinguish `case Nada ->` from a binding; binding it leaked a
+  bogus local into later name resolution).
+
+**Verification.** Four new `llvm_heap_self_test.l` cases (25 total):
+single/two-param instantiation, `Result`-style expected-type
+construction inside branches, nullary-case flow through return types,
+and an ASan/LSan loop exercising nested generic instantiations with
+string payloads (destructor composition across instantiations verified
+leak-free).
+
+**Not yet lowered:** generic *functions* (bundle-wide monomorphization
+is the next N3.1 slice), interfaces/vtables (N3.2), tuples (N3.3),
+closures (N2.6), `NativeWeak[T]` (N2.5 — now unblocked by
+instantiated `Option[T]`).
+
+**Related:** D-progress-544, `native/plan/08-work-items.md` §N3.1, #4631.
+
+---
+
+### D-progress-546 — Native backend N3.1 (functions): call-site generic function instantiation
+
+**Shipped.** Generic functions instantiate per concrete type-argument
+tuple at their call sites in the native backend, completing N3.1
+(D-progress-545 covered generic types):
+
+- Generic declarations register by call key (`Pkg.name/arity`, bare
+  `name/arity`) instead of entering the signature registry; the bundle
+  loop skips them (they lower on demand).
+- Call resolution: after the concrete-signature miss, a generic hit
+  maps arguments to parameters, lowers them in parameter order, and
+  unifies each declared parameter type against the concrete argument
+  type — bare params bind directly; parameterised types
+  (`Maybe[T]` vs `T.Maybe<i64>`) unify through the instantiation
+  metadata recorded when types instantiate.
+- Instantiation is cache-first (`Pkg.name.arity<args>`): the cache
+  entry registers before the body lowers, so self-recursive generic
+  functions terminate.  Bodies lower once per tuple through a
+  per-function type-parameter environment consulted by the type
+  mapper (no AST substitution).
+- Generic UFCS works: `m.unwrapOr(0)` resolves the generic function
+  with the receiver as the first argument.
+
+**Verification.** `llvm_heap_self_test.l` gains a generic-function
+case (27 total): multi-instantiation (`wrap(40)` / `wrap("hello")`),
+UFCS, identity, and a generic function returning a generic
+instantiation, ASan-verified with the rest of the suite.
+
+**Related:** D-progress-545, `native/plan/08-work-items.md` §N3.1, D-N-010.
+
+---
+
+### D-progress-547 — Native backend N2.6: closures
+
+**Shipped.** Lambda literals lower to ARC-managed closures in the
+native backend:
+
+- **Representation** — a heap object `{ i32 rc, i8* dtor, i8* fnptr,
+  captures... }`; the value's static type is a signature-keyed uniform
+  closure type (`__closure<i32(i32)>`) registered so call sites recover
+  the signature; the impl struct is per-lambda.
+- **Captures** — free-variable analysis over the lambda body (arm- and
+  block-scoped binders tracked precisely); captures are by value,
+  retained at construction and released by the synthesised closure
+  destructor.  Mutating a captured variable is rejected with a
+  diagnostic (by-value semantics would silently diverge from the
+  managed targets' shared-mutable capture).
+- **Typing** — lambdas take their parameter/return types from the
+  expected function type (annotated bindings, typed parameters,
+  declared returns — the N3.1 expected-type threading); a lambda with
+  no expected type panics with guidance.
+- **Calls** — `f(x)` on a closure-typed local loads the fnptr, casts
+  to the concrete function-pointer type, and calls with the
+  environment as the leading argument.  Higher-order functions
+  (`apply`, `compose`) work.
+
+**Verification.** `llvm_heap_self_test.l` gains an ASan closure case
+(28 total): scalar + string captures across 100 calls, higher-order
+composition — capture retain/release and the closure destructor
+verified leak-free.
+
+**Related:** D-progress-546, `native/plan/08-work-items.md` §N2.6.
+
+---
+
+### D-progress-548 — Native backend N2.5: NativeWeak[T]
+
+**Shipped.** Phase N2 is complete: `NativeWeak[T]` lands as the
+plan's non-owning cycle-breaking reference (D-N-005):
+
+- **Representation** — the target pointer itself behind a marker
+  struct name (`__weak<T.Node*>`, excluded from ARC by `isRefNType`);
+  a registry maps the marker back to the target type.  `NativeWeak(x)`
+  constructs with no retain and no ownership registration.
+- **`upgrade()`** — calls lyric-rt's CAS loop
+  (`lyric_weak_upgrade`, shipped in N0): a successful upgrade's +1
+  transfers to an owned temp that the `Some(value)` construction
+  retains from and the region release balances; `null` produces
+  `None`.  The result is the instantiated generic union named
+  `Option` from the import closure (`Std.Core.Option` in bridge
+  builds), resolved by name so single-file tests can supply their own.
+
+**Verification.** `llvm_heap_self_test.l` gains an ASan case
+(29 total): upgrades of a live target across 200 iterations plus
+weak-to-temporary nodes, rc balancing leak-free.
+
+**Related:** D-progress-547, `native/plan/04-arc-design.md`
+§NativeWeak, D-N-005.
+
+---
+
+### D-progress-549 — Native backend N3.3: tuples
+
+**Shipped.** Tuples lower as synthesised records
+(`__tuple<i32,LyricString*>` with fields `_0.._n`), reusing the record
+machinery wholesale — construction, ARC ownership, and synthesised
+element-releasing destructors:
+
+- `(a, b)` literals construct from element types; `(String, Int)`
+  annotations, parameters, and return types map through the same
+  synthesis; tuple-typed values flow through generics and closures
+  like any record.
+- Destructuring binds in `val (lo, hi) = ...` and tuple patterns in
+  `match` arms (bindings and wildcards; nested sub-patterns are
+  rejected with a diagnostic).
+
+**Verification.** `llvm_heap_self_test.l` gains an ASan case
+(30 total): tuple returns from branches, annotated bindings,
+destructuring in a 300-iteration loop with string elements —
+element release verified leak-free.
+
+**Related:** D-progress-548, `native/plan/08-work-items.md` §N3.3.
+
+---
+
+### D-progress-550 — Native backend N4.2 (codegen): `nativeAddrOf`
+
+**Shipped (codegen half).** `nativeAddrOf(x)` lowers to the local's
+stack-slot pointer (the alloca IS the address — no extra IR), enabling
+C out-parameter patterns (`waitpid`-style int*, `LyricString**`
+capture buffers) from `_kernel_native/` kernels.  Verified by an ASan
+self-test case (31 total) writing one secure-random byte through the
+returned `NativePtr[Byte]`.
+
+**Remaining (tracked as the rest of N4.2):** the mode checker's
+`N0100` placement enforcement — `NativePtr[T]`/`nativeAddrOf` only in
+`_kernel_native/` packages and `@unsafe_ffi` functions, var-only
+operands, no escaping — is front-end work shared by all targets and
+lands with the mode-checker N4.2 slice.
+
+**Related:** D-progress-549, `native/plan/05-ffi-design.md`
+§nativeAddrOf.

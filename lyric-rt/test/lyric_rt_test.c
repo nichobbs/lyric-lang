@@ -1,6 +1,12 @@
 /* lyric_rt_test.c — unit tests for the lyric-rt runtime (N0.4).
  * Run via `make -C lyric-rt test`.  Exits non-zero on the first failure.
  */
+#if defined(__linux__)
+/* mkstemp/mkdtemp need POSIX.1-2008 / XSI visibility under -std=c11. */
+#define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE
+#endif
+
 #include "lyric_rt.h"
 
 #include <limits.h>
@@ -8,6 +14,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 static int failures = 0;
 
@@ -242,6 +250,278 @@ static void test_posix(void) {
     CHECK(lyric_file_size("/nonexistent-lyric-rt-test-path") == -1);
 }
 
+static void test_file_io(void) {
+    char dir_tmpl[] = "/tmp/lyric_rt_test_fs_XXXXXX";
+    char* dir = mkdtemp(dir_tmpl);
+    CHECK(dir != NULL);
+
+    char path[512];
+    snprintf(path, sizeof path, "%s/a.txt", dir);
+
+    /* Whole-file write + read round trip. */
+    LyricString* content = lyric_string_from_literal((const uint8_t*)"hello, file", 11);
+    CHECK(lyric_file_write_all(path, content, 0) == 0);
+    CHECK(lyric_file_exists(path));
+    CHECK(!lyric_file_exists(dir)); /* a directory is not a "file" */
+
+    LyricString* got = lyric_file_read_all(path);
+    CHECK(got != NULL);
+    CHECK(lyric_string_len(got) == 11);
+    CHECK(memcmp(LYRIC_STRING_DATA(got), "hello, file", 11) == 0);
+    lyric_release(got);
+
+    /* Append mode. */
+    LyricString* more = lyric_string_from_literal((const uint8_t*)"!", 1);
+    CHECK(lyric_file_write_all(path, more, 1) == 0);
+    LyricString* got2 = lyric_file_read_all(path);
+    CHECK(lyric_string_len(got2) == 12);
+    CHECK(memcmp(LYRIC_STRING_DATA(got2), "hello, file!", 12) == 0);
+    lyric_release(got2);
+
+    /* Non-append (truncate) mode overwrites. */
+    LyricString* replaced = lyric_string_from_literal((const uint8_t*)"x", 1);
+    CHECK(lyric_file_write_all(path, replaced, 0) == 0);
+    LyricString* got3 = lyric_file_read_all(path);
+    CHECK(lyric_string_len(got3) == 1);
+    CHECK(LYRIC_STRING_DATA(got3)[0] == 'x');
+    lyric_release(got3);
+
+    /* fd-level open/close. */
+    int32_t fd = lyric_file_open(path, lyric_o_rdonly(), 0);
+    CHECK(fd >= 0);
+    CHECK(lyric_file_close(fd) == 0);
+    CHECK(lyric_file_close(-1) == -1);
+
+    /* Rename. */
+    char path2[512];
+    snprintf(path2, sizeof path2, "%s/b.txt", dir);
+    CHECK(lyric_file_rename(path, path2) == 0);
+    CHECK(!lyric_file_exists(path));
+    CHECK(lyric_file_exists(path2));
+
+    /* Delete. */
+    CHECK(lyric_file_delete(path2) == 0);
+    CHECK(!lyric_file_exists(path2));
+    CHECK(lyric_file_delete(path2) == -1); /* already gone */
+
+    /* Missing-file reads/opens fail cleanly. */
+    CHECK(lyric_file_read_all(path2) == NULL);
+    CHECK(lyric_file_open(path2, lyric_o_rdonly(), 0) == -1);
+
+    lyric_release(content);
+    lyric_release(more);
+    lyric_release(replaced);
+    rmdir(dir);
+}
+
+static void test_directories(void) {
+    char dir_tmpl[] = "/tmp/lyric_rt_test_dir_XXXXXX";
+    char* dir = mkdtemp(dir_tmpl);
+    CHECK(dir != NULL);
+
+    char sub[512];
+    snprintf(sub, sizeof sub, "%s/sub", dir);
+    CHECK(!lyric_dir_exists(sub));
+    CHECK(lyric_dir_create(sub) == 0);
+    CHECK(lyric_dir_exists(sub));
+    CHECK(!lyric_file_exists(sub)); /* a directory is not a "file" */
+    CHECK(lyric_dir_create(sub) == -1); /* already exists */
+
+    /* Populate `dir` with two files and the `sub` directory, then list. */
+    char f1[512], f2[512];
+    snprintf(f1, sizeof f1, "%s/one.txt", dir);
+    snprintf(f2, sizeof f2, "%s/two.txt", dir);
+    LyricString* empty = lyric_string_from_literal((const uint8_t*)"", 0);
+    CHECK(lyric_file_write_all(f1, empty, 0) == 0);
+    CHECK(lyric_file_write_all(f2, empty, 0) == 0);
+    lyric_release(empty);
+
+    LyricList* entries = lyric_dir_list(dir);
+    CHECK(entries != NULL);
+    CHECK(lyric_list_len(entries) == 3); /* one.txt, two.txt, sub — no "." / ".." */
+    int saw_one = 0, saw_two = 0, saw_sub = 0, saw_dot = 0;
+    for (int64_t i = 0; i < lyric_list_len(entries); i++) {
+        LyricString* name = (LyricString*)(intptr_t)lyric_list_get(entries, i);
+        const char* cs = lyric_string_to_cstring(name);
+        if (strcmp(cs, "one.txt") == 0) saw_one = 1;
+        if (strcmp(cs, "two.txt") == 0) saw_two = 1;
+        if (strcmp(cs, "sub") == 0) saw_sub = 1;
+        if (strcmp(cs, ".") == 0 || strcmp(cs, "..") == 0) saw_dot = 1;
+        lyric_cstring_free(cs);
+    }
+    CHECK(saw_one && saw_two && saw_sub && !saw_dot);
+    lyric_release(entries);
+
+    CHECK(lyric_dir_list("/nonexistent-lyric-rt-test-dir") == NULL);
+
+    /* Removal: non-empty dir fails, empty dir succeeds. */
+    CHECK(lyric_dir_remove(dir) == -1); /* not empty */
+    CHECK(lyric_dir_remove(sub) == 0);
+    CHECK(!lyric_dir_exists(sub));
+
+    unlink(f1);
+    unlink(f2);
+    CHECK(lyric_dir_remove(dir) == 0);
+    CHECK(!lyric_dir_exists(dir));
+}
+
+static void test_environment(void) {
+    static const char* name = "LYRIC_RT_TEST_ENV_VAR_UNIQUE";
+    CHECK(lyric_env_get(name) == NULL);
+
+    CHECK(lyric_env_set(name, "first") == 0);
+    LyricString* v1 = lyric_env_get(name);
+    CHECK(v1 != NULL);
+    CHECK(lyric_string_len(v1) == 5);
+    CHECK(memcmp(LYRIC_STRING_DATA(v1), "first", 5) == 0);
+    lyric_release(v1);
+
+    /* setenv always overwrites. */
+    CHECK(lyric_env_set(name, "second") == 0);
+    LyricString* v2 = lyric_env_get(name);
+    CHECK(lyric_string_len(v2) == 6);
+    CHECK(memcmp(LYRIC_STRING_DATA(v2), "second", 6) == 0);
+    lyric_release(v2);
+
+    LyricString* cwd = lyric_env_cwd();
+    CHECK(cwd != NULL);
+    CHECK(lyric_string_len(cwd) > 0);
+    CHECK(LYRIC_STRING_DATA(cwd)[0] == '/'); /* absolute path */
+    lyric_release(cwd);
+
+    unsetenv(name);
+}
+
+static void test_process(void) {
+    /* /bin/echo hello world -> stdout "hello world\n", exit 0, empty stderr. */
+    LyricList* args = lyric_list_new(1);
+    LyricString* a1 = lyric_string_from_literal((const uint8_t*)"hello", 5);
+    LyricString* a2 = lyric_string_from_literal((const uint8_t*)"world", 5);
+    lyric_list_push(args, (int64_t)(intptr_t)a1);
+    lyric_list_push(args, (int64_t)(intptr_t)a2);
+    lyric_release(a1);
+    lyric_release(a2);
+
+    int32_t exit_code = -99;
+    LyricString* out = NULL;
+    LyricString* err = NULL;
+    CHECK(lyric_process_run("/bin/echo", args, &exit_code, &out, &err) == 0);
+    CHECK(exit_code == 0);
+    CHECK(out != NULL);
+    CHECK(lyric_string_len(out) == 12);
+    CHECK(memcmp(LYRIC_STRING_DATA(out), "hello world\n", 12) == 0);
+    CHECK(err != NULL);
+    CHECK(lyric_string_len(err) == 0);
+    lyric_release(out);
+    lyric_release(err);
+    lyric_release(args);
+
+    /* /bin/ls of a nonexistent path -> nonzero exit, non-empty stderr. */
+    LyricList* bad_args = lyric_list_new(1);
+    LyricString* bad_path =
+        lyric_string_from_literal((const uint8_t*)"/nonexistent-lyric-rt-test-path", 32);
+    lyric_list_push(bad_args, (int64_t)(intptr_t)bad_path);
+    lyric_release(bad_path);
+
+    int32_t exit_code2 = -99;
+    LyricString* out2 = NULL;
+    LyricString* err2 = NULL;
+    CHECK(lyric_process_run("/bin/ls", bad_args, &exit_code2, &out2, &err2) == 0);
+    CHECK(exit_code2 != 0);
+    CHECK(lyric_string_len(err2) > 0);
+    lyric_release(out2);
+    lyric_release(err2);
+    lyric_release(bad_args);
+
+    /* No args: argv is just argv[0]. */
+    int32_t exit_code3 = -99;
+    LyricString* out3 = NULL;
+    LyricString* err3 = NULL;
+    CHECK(lyric_process_run("/bin/echo", NULL, &exit_code3, &out3, &err3) == 0);
+    CHECK(exit_code3 == 0);
+    CHECK(lyric_string_len(out3) == 1); /* just the trailing newline */
+    lyric_release(out3);
+    lyric_release(err3);
+
+    /* Spawn failure (path lookup handled by execvp inside the child, so
+     * a missing executable is exit code 127, not a spawn failure): */
+    int32_t exit_code4 = -99;
+    LyricString* out4 = NULL;
+    LyricString* err4 = NULL;
+    CHECK(lyric_process_run("/nonexistent-lyric-rt-test-exe", NULL, &exit_code4, &out4, &err4) ==
+          0);
+    CHECK(exit_code4 == 127);
+    lyric_release(out4);
+    lyric_release(err4);
+}
+
+static void test_process_closed_stdio(void) {
+    /* Regression: with fd 1/2 closed in the caller, pipe() hands the child
+     * those very numbers, dup2 onto itself is a no-op, and the old
+     * unconditional close then destroyed the just-installed descriptor.
+     * Run a capture with stdout/stderr closed and verify the output still
+     * comes back intact.  Assertions in the fork are reported through the
+     * exit status — its stderr is closed by construction. */
+    pid_t pid = fork();
+    CHECK(pid >= 0);
+    if (pid == 0) {
+        close(STDOUT_FILENO);
+        close(STDERR_FILENO);
+        /* With 1/2 closed, pipe() returns {1,2} for out_pipe, so the old
+         * close(out_pipe[1]) destroyed the descriptor stderr had just been
+         * dup2'ed onto.  The command must write to BOTH streams: with the
+         * bug, its stderr writes hit a closed fd and the err capture comes
+         * back empty. */
+        LyricList* args = lyric_list_new(2);
+        LyricString* a1 = lyric_string_from_literal((const uint8_t*)"-c", 2);
+        LyricString* a2 = lyric_string_from_literal(
+            (const uint8_t*)"echo out; echo err 1>&2", 23);
+        lyric_list_push(args, (int64_t)(intptr_t)a1);
+        lyric_list_push(args, (int64_t)(intptr_t)a2);
+        lyric_release(a1);
+        lyric_release(a2);
+        int32_t code = -99;
+        LyricString* out = NULL;
+        LyricString* err = NULL;
+        if (lyric_process_run("/bin/sh", args, &code, &out, &err) != 0) _exit(1);
+        if (code != 0) _exit(2);
+        if (!out || lyric_string_len(out) != 4) _exit(3);
+        if (memcmp(LYRIC_STRING_DATA(out), "out\n", 4) != 0) _exit(4);
+        if (!err || lyric_string_len(err) != 4) _exit(5);
+        if (memcmp(LYRIC_STRING_DATA(err), "err\n", 4) != 0) _exit(6);
+        _exit(0);
+    }
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid);
+    CHECK(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 0);
+}
+
+static void test_ok_variants(void) {
+    char tmpl[] = "/tmp/lyric_rt_ok_XXXXXX";
+    int fd = mkstemp(tmpl);
+    CHECK(fd >= 0);
+    CHECK(write(fd, "hi", 2) == 2);
+    close(fd);
+    LyricString* content = NULL;
+    CHECK(lyric_file_read_all_ok(tmpl, &content) == 0);
+    CHECK(content && lyric_string_len(content) == 2);
+    lyric_release(content);
+    LyricString* missing = NULL;
+    CHECK(lyric_file_read_all_ok("/nonexistent-lyric-ok-path", &missing) == -1);
+    CHECK(missing == NULL);
+    unlink(tmpl);
+
+    CHECK(lyric_env_set("LYRIC_RT_OK_TEST", "v") == 0);
+    LyricString* v = NULL;
+    CHECK(lyric_env_get_ok("LYRIC_RT_OK_TEST", &v) == 0);
+    CHECK(v && lyric_string_len(v) == 1);
+    lyric_release(v);
+    LyricString* nov = NULL;
+    CHECK(lyric_env_get_ok("LYRIC_RT_OK_TEST_MISSING", &nov) == -1);
+    CHECK(nov == NULL);
+}
+
 int main(void) {
     test_alloc_retain_release();
     test_strings();
@@ -251,6 +531,12 @@ int main(void) {
     test_map_int_keys();
     test_map_string_keys();
     test_posix();
+    test_ok_variants();
+    test_file_io();
+    test_directories();
+    test_environment();
+    test_process();
+    test_process_closed_stdio();
     if (failures == 0) {
         printf("lyric_rt_test: all tests passed\n");
         return 0;

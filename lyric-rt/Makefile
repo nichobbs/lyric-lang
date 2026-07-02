@@ -13,7 +13,8 @@ CFLAGS  ?= -O2 -std=c11 -Wall -Wextra -Werror -fPIC
 BUILD   := build
 
 SRCS := src/lyric_rt.c src/lyric_string.c src/lyric_weak.c \
-        src/lyric_posix.c src/lyric_collections.c src/lyric_async.c
+        src/lyric_posix.c src/lyric_collections.c src/lyric_async.c \
+        src/lyric_fs.c src/lyric_process.c
 OBJS := $(SRCS:src/%.c=$(BUILD)/%.o)
 
 .PHONY: all test clean
