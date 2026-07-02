@@ -78,7 +78,7 @@ backing entry's id.
 - `docs/53-epic-1877-implementation-plan.md` — Concrete implementation plan for `docs/52`'s strongly-typed lambda ABI (Option 2A: synthesize custom MSIL `.class` closure-environment types instead of `object[]` arrays). _Shipped (D113); verified by `closure_zero_overhead_self_test.l` (16 cases, MSIL + JVM parity)._
 - `docs/54-docker-client-library-sketch.md` — Design for `lyric-docker`, a type-safe Docker daemon API client over Unix sockets (Linux/macOS) / named pipes (Windows), with OpenAPI-generated bindings and `Result[T, Error]`-returning async operations. _Phase 1 shipped (D-progress-541); Phase 2 planned._
 - `docs/55-bmode-aspect-libraries-plan.md` — implementation plan for cross-package library aspect distribution's B-mode half (extends docs/27 §6.1, Q-aspectlib-001/-009). B-mode was speced (D047-revision 2026-05-08) but, until this shipped, only C-mode (`@inline_template`) existed — reified generic *methods* (MVAR), the originally-envisioned B-mode artifact, aren't buildable (only generic *types* are reified; docs/43 Q-GEN-002). Ships **B′-mode**: a monomorphisation-based variant implemented as a weaver-native shape cache (not `Lyric.Mono` — an aspect body is never itself generic-typed AST, so Mono's `TVar`-substitution engine doesn't apply), getting B-mode's zero-boxing/type-safety/dedup properties without the MVAR prerequisite (but not the "callable from non-Lyric consumers" property, which only true reified generics would provide). _Specced and implemented in D114 (contract-metadata `bmode` discriminator, weaver `CollectedTemplate` ground truth + A0046 diagnostic, shape-keyed specialisation, no new MSIL/JVM codegen needed). `docs/56`'s row-typed `args` is the next follow-on extension of this path._
-- `docs/56-row-typed-aspect-args-sketch.md` — pressure-test sketch for row-polymorphic (`where TArgs has {field: Type}`) named-field access on B′-mode aspect `args`, extending docs/55. Scopes the constraint-satisfaction check to compiler-synthesized `TArgs` only (never user-nameable), keeping it a bounded per-specialisation-site structural check rather than general row-type unification; compares against a narrower "auto-synthesized marker interface" alternative (reusing docs/51's `InterfaceImpl` emission) that gets the same functional result with zero new language surface. _Specced and shipped in D115: Option 1 (the row constraint) was chosen over the marker-interface alternative and implemented end-to-end (grammar, weaver `__LyricBModeArgs_<template>` record synthesis + A0047 diagnostic, formatter), with `Auth.Aspects.ValidateKey` converted off `@inline_template` as the ecosystem proof-of-value. Q-row-001–005 all resolved — see D115._
+- `docs/56-row-typed-aspect-args-sketch.md` — pressure-test sketch for row-polymorphic (`where TArgs has {field: Type}`) named-field access on B′-mode aspect `args`, extending docs/55. Scopes the constraint-satisfaction check to compiler-synthesized `TArgs` only (never user-nameable), keeping it a bounded per-specialisation-site structural check rather than general row-type unification; compares against a narrower "auto-synthesized marker interface" alternative (reusing docs/51's `InterfaceImpl` emission) that gets the same functional result with zero new language surface. _Specced and shipped in D115: Option 1 (the row constraint) was chosen over the marker-interface alternative and implemented end-to-end (grammar, weaver `__LyricBModeArgs_<template>` record synthesis + A0047 diagnostic, formatter), with `Auth.Aspects.ValidateKey` converted off `@inline_template` as the ecosystem proof-of-value. Q-row-001–005 all resolved — see D115. D118 fixed a pre-existing gap where aspect `requires:`/`ensures:` referencing `args.<field>` was never enforced at runtime (in either C-mode or B′-mode), then retired `@inline_template` from every other field-accessing ecosystem library aspect across `lyric-web`, `lyric-validation`, `lyric-mq`, `lyric-ws`, `lyric-grpc`, `lyric-storage`, and `lyric-lambda`._
 
 
 ## Reading order (for Claude)
@@ -801,14 +801,16 @@ need direction and have nothing else productive to do**.  Specifically:
     deferred (each surfaces a real self-hosted gap, tracked in #2580).
   - `weaver_self_test.l` — `@test_module` covering the todo/06
     weaver features (config wiring #683, call context #682,
-    `@inline_template` #681) plus regression cases for the
+    `@inline_template` #681), regression cases for the
     duplicate-key crash (#1296) and duplicate-diagnostic
-    emission (#1299).  **Currently not wired into CI** —
-    requires the in-process MSIL bridge to load
-    `lyric-compiler/lyric/**/*.l` so the test's `Lyric.Weaver`
-    imports resolve when run via `lyric test`.  Tracked in
-    issue #1324.  Manual-run instructions are in the test
-    file's header.
+    emission (#1299), B′-mode/row-clause coverage (D114/D115),
+    and aspect-contract `args.<field>` rewrite + elaboration
+    coverage (D118).  **Runs in CI** via native `lyric test`
+    (the dedicated "Weaver self-test" step in
+    `.github/workflows/ci.yml`), resolving its `Lyric.*`
+    imports by linking the stage-1 bundle DLLs as restored
+    deps (#2364; the former "not wired into CI, tracked in
+    #1324" state is resolved).
   - `weaver_ci_test.l` — regular `func main(): Int` companion program
     (not `@test_module`) that exercises the same three todo/06 weaver
     features: config-block prelude injection (A0044 on missing default),

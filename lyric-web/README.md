@@ -247,7 +247,7 @@ All config fields are env-var-backed, read once at startup, fail-fast if a requi
 
 ### `Web.Aspects.RequiresAuth`
 
-Validates a Bearer JWT on every matched handler.  **C-mode** (`@inline_template`): reads `args.authToken` from the handler's parameter list — apply only to handlers that declare an `authToken: String` parameter.
+Validates a Bearer JWT on every matched handler.  **Row-constrained B'-mode** (docs/56): reads `args.authToken` via a `where TArgs has { authToken: String }` row clause — apply only to handlers that declare an `authToken: String` parameter.
 
 ```lyric
 import Web.Aspects

@@ -3,11 +3,13 @@
 //! Provides five reusable template aspects:
 //!
 //!   RequiresAuth        — validates a bearer token; 401 / 403 on failure.
-//!                         C-mode (@inline_template): reads args.authToken.
+//!                         Row-constrained B'-mode (docs/56): reads
+//!                         args.authToken via `where TArgs has { authToken: String }`.
 //!   RequiresRole        — validates token AND checks a role claim; 403 on
-//!                         insufficient role.  C-mode: reads args.authToken.
+//!                         insufficient role.  Row-constrained B'-mode: reads
+//!                         args.authToken.
 //!   ApiKey              — constant-time API-key check; 401 on mismatch.
-//!                         C-mode: reads args.apiKey.
+//!                         Row-constrained B'-mode: reads args.apiKey.
 //!   RateLimit           — per-endpoint sliding-window rate limit; 429 on
 //!                         excess.  B-mode: uses call.qualifiedName.
 //!   HttpCircuitBreaker  — open-circuit short-circuit; 503 when open.
@@ -59,8 +61,10 @@ import Web.Kernel.Net as HttpKernel
 /// a 401 or 403 error without calling the handler.
 ///
 /// Delegates to Auth.verifyJwt (lyric-auth) for transport-agnostic token
-/// verification.  This is a C-mode template (@inline_template): the body is
-/// re-compiled inside the consumer's package so it can read args.authToken.
+/// verification.  This is a row-constrained B'-mode template (docs/56 /
+/// D115): the `where TArgs has { authToken: String }` clause declares the
+/// field the body needs, so weaving shares one specialised function across
+/// every matched handler while still typed-accessing args.authToken.
 ///
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
 ///   enabled            Bool   — master switch; false passes all calls through (default: true)
@@ -73,7 +77,6 @@ import Web.Kernel.Net as HttpKernel
 ///                               not in this list — including `alg=none` — are
 ///                               rejected.  See RFC 8725 §3.1.
 @stable(since = "0.1")
-@inline_template
 pub aspect RequiresAuth {
   config {
     enabled: Bool = true
@@ -85,7 +88,7 @@ pub aspect RequiresAuth {
   }
   requires: args.authToken != ""
   // handler must have an authToken parameter
-  around(call) -> ret {
+  around(call) -> ret where TArgs has { authToken: String } {
     if not enabled {
       ret = call.proceed()
     } else {
@@ -117,7 +120,8 @@ pub aspect RequiresAuth {
 /// first verifies the JWT (same rules as RequiresAuth), then extracts the
 /// `role` claim and checks it against `allowedRoles`.
 ///
-/// This is a C-mode template (@inline_template): reads args.authToken.
+/// This is a row-constrained B'-mode template (docs/56 / D115): reads
+/// args.authToken via `where TArgs has { authToken: String }`.
 ///
 /// Config fields:
 ///   enabled            Bool   — master switch (default: true)
@@ -128,7 +132,6 @@ pub aspect RequiresAuth {
 ///   allowedRoles       String — comma-separated list of accepted role values (e.g. "admin,manager")
 ///   allowedAlgorithms  String — comma-separated allow-list of `alg` values (default: "HS256")
 @stable(since = "0.1")
-@inline_template
 pub aspect RequiresRole {
   config {
     enabled: Bool = true
@@ -140,7 +143,7 @@ pub aspect RequiresRole {
     allowedAlgorithms: String = "HS256"
   }
   requires: args.authToken != ""
-  around(call) -> ret {
+  around(call) -> ret where TArgs has { authToken: String } {
     if not enabled {
       ret = call.proceed()
     } else {
@@ -180,14 +183,14 @@ pub aspect RequiresRole {
 /// extracted from the X-Api-Key header or query parameter by the dispatcher).
 /// Uses constant-time comparison (Auth.verifyApiKey) to prevent timing attacks.
 ///
-/// This is a C-mode template (@inline_template): reads args.apiKey.
+/// This is a row-constrained B'-mode template (docs/56 / D115): reads
+/// args.apiKey via `where TArgs has { apiKey: String }`.
 ///
 /// Config fields:
 ///   enabled     Bool   — master switch (default: true)
 ///   @sensitive
 ///   expectedKey String — REQUIRED: the accepted API key
 @stable(since = "0.1")
-@inline_template
 pub aspect ApiKey {
   config {
     enabled: Bool = true
@@ -196,7 +199,7 @@ pub aspect ApiKey {
   }
   requires: args.apiKey != ""
   // required — no default
-  around(call) -> ret {
+  around(call) -> ret where TArgs has { apiKey: String } {
     if not enabled {
       ret = call.proceed()
     } else {

@@ -26014,3 +26014,56 @@ pipe support.
 
 **Related:** docs/54 (full design), PR #4459 (initial implementation),
 #4488/#4498/#4514/#4532 (follow-up hardening and ecosystem-publish fixes).
+
+---
+
+### D-progress-542 — Fix: aspect `requires:`/`ensures:` referencing `args.<field>` was never enforced at runtime
+
+**Shipped.** docs/26 §5 ("Contract augmentation") has specified since
+D-progress-208 that an aspect's `requires:`/`ensures:` clauses compose onto
+the matched function's wrapper and are runtime-checked. In practice this
+never worked for any clause referencing `args.<field>`, in both C-mode
+(`@inline_template`) and B′-mode aspects: the weaver spliced
+`aspect.contracts` onto the wrapper's `contracts` field verbatim (leaving
+`args` an unresolved name at the type-checker), and — the deeper half of the
+gap — `Lyric.ContractElaborator` runs *before* weaving in the compile
+pipeline (parse → typecheck → modecheck → elaborate → mono → weave), so even
+a correctly-rewritten wrapper contract was never lowered into a runtime
+`assert(...)`; the wrapper's contracts don't exist until weaving builds the
+wrapper, by which point elaboration has already run and moved on. Discovered
+empirically while scoping the C-mode-aspect retirement work that follows
+D115/docs/56: `Auth.Aspects.ValidateKey`'s `requires: args.apiKey != ""`
+silently never panicked on an empty key.
+
+- **`weaver/weaver.l`**:
+  - `rewriteContractClauseArgs` / `rewriteContractClauseListArgs` — rewrites
+    `args.<field>` to the matched function's bare parameter name inside
+    `CCRequires`/`CCEnsures`/`CCWhen`/`CCDecreases` clauses (`CCRaises`
+    passes through unchanged), reusing `rewriteExpr`'s existing traversal
+    with a `RewriteCtx` that has empty `config`/`call`/row-field maps so
+    only the `args.<field>` path is live. Unconditional for every aspect
+    mode (local, C-mode, B′-mode) — contracts are always composed onto the
+    per-match wrapper, never a shared B′-mode specialised function, so there
+    is no shape-dedup opacity concern to protect.
+  - `elaborateWrapperBodyForAspectContracts` — re-runs
+    `Lyric.ContractElaborator.elaborateFunction`, scoped to *only* the
+    aspect's own (already-rewritten) contracts, directly against the
+    wrapper body after it's built. Scoping to the aspect-only clauses (not
+    the full composed list) avoids double-elaborating the target's own
+    `requires:`/`ensures:`, which were already lowered into the target's own
+    body before weaving ran. A no-op fast path when the aspect declared no
+    contracts.
+  - Wired into both `buildWrapper` (local aspects + C-mode `from`-instances)
+    and `buildBModeCallSite` (B′-mode per-match wrapper) — two independent
+    contract-composition sites that both needed the same fix.
+- **`weaver_self_test.l`**: two new cases —
+  `"local aspect's requires: args.<field> is rewritten and elaborated into a
+  runtime assert"` and `"B'-mode from-instance's requires: args.<field> is
+  elaborated into a runtime assert on the wrapper"` — assert the rewrite
+  removed the `args.<field>` member access and that the wrapper body now
+  contains a runtime `assert` call (44/44 weaver self-tests pass).
+- Verified end-to-end: a `requires: args.apiKey != ""` aspect (both
+  row-constrained B′-mode and C-mode forms) now correctly panics on an empty
+  key at the call site, for both forms.
+
+**Related:** docs/26 §5, D-progress-208, D114, D115, docs/55, docs/56.

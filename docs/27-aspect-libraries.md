@@ -605,11 +605,16 @@ poked.
   The typed-erased delegate ABI (option A) is rejected outright as
   incompatible with Lyric's static-safety stance.  §6 specs both
   modes.  **Implementation status (corrected — see
-  Q-aspectlib-009):** only C-mode is actually implemented.  Every
-  library aspect the ecosystem ships today is C-mode; B-mode was
-  never buildable because reified generic *methods* don't exist in
-  the self-hosted MSIL backend.  `docs/55` proposes a
-  monomorphisation-based B-mode variant that doesn't require them.
+  Q-aspectlib-009):** true B-mode (reified generic *methods*) was
+  never buildable and still isn't; B′-mode (`docs/55`) plus the
+  row-typed `args` extension (`docs/56` / D115) closed the practical
+  gap, and every field-accessing ecosystem library aspect has been
+  converted off C-mode to row-constrained B′-mode (`Auth.Aspects.ValidateKey`,
+  `Web.Aspects.{RequiresAuth,RequiresRole,ApiKey}`,
+  `Validation.Aspects.{ValidateInput,ValidateEmail}`,
+  `Mq.Aspects.{Idempotent,DeadLetter}`, `Ws.Aspects.{WsAuth,WsRateLimit}`,
+  `Grpc.Aspects.{RequiresGrpcAuth,RequiresGrpcRole}`,
+  `Storage.Aspects.ValidateKey`, `Lambda.Aspects.DeadlineGuard`).
 - **Q-aspectlib-002 — `pub aspect` without `around`.**
   ~~Should contract-only library aspects need a different syntax
   (`pub aspect_contract`)?~~ **Resolved.** Same syntax — a
@@ -670,11 +675,9 @@ poked.
   "Resolved" note both describe B-mode ("a `pub aspect` ships
   as a generic method... library DLL carries both generic IL
   for B-mode aspects *and* embedded source resources for
-  C-mode") as if it shipped.  It didn't — every library aspect
-  in the ecosystem today is C-mode (`@inline_template`), because
-  B-mode was never buildable: true reified generic *methods*
-  don't exist in the self-hosted MSIL backend (only generic
-  *types* are reified; see `docs/43` Q-GEN-002).
+  C-mode") as if it shipped.  It didn't: true reified generic
+  *methods* don't exist in the self-hosted MSIL backend (only
+  generic *types* are reified; see `docs/43` Q-GEN-002).
   `docs/55-bmode-aspect-libraries-plan.md` proposes a
   monomorphisation-based "B′-mode" that gets B-mode's
   type-safety/zero-boxing motivation without needing reified
@@ -685,8 +688,12 @@ poked.
   row-polymorphic extension (`args.<field>` access without
   falling back to C-mode) on top of B′-mode; this shipped
   (D115) as `where TArgs has { field: Type, ... }` on `around`
-  advice, with `Auth.Aspects.ValidateKey` converted off
-  `@inline_template` as the ecosystem proof-of-value.
+  advice.  **Status as of the ecosystem retirement pass:** every
+  field-accessing library aspect the ecosystem ships has been
+  converted off `@inline_template` to row-constrained B′-mode —
+  C-mode remains a supported, documented mode (§6.2) for cases
+  outside the row constraint's narrow scope (docs/56 §3), but no
+  shipped ecosystem aspect currently uses it.
 
 ---
 

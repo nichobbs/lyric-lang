@@ -10,8 +10,9 @@
 //!   DeadlineGuard — checks ctx.remainingTimeMs before dispatching the call
 //!                   and short-circuits with LambdaError.TimeoutError if the
 //!                   Lambda deadline is too close.
-//!                   C-mode (@inline_template): reads args.ctx — the matched
-//!                   handler must declare a parameter named
+//!                   Row-constrained B'-mode (docs/56): reads args.ctx via
+//!                   `where TArgs has { ctx: Lambda.LambdaContext }` — the
+//!                   matched handler must declare a parameter named
 //!                   `ctx: Lambda.LambdaContext`.
 //!
 //! Typical consumer instantiation:
@@ -76,9 +77,11 @@ pub aspect EventLogging {
 /// invoking the handler, giving the caller time to log and return cleanly
 /// before the Lambda runtime forcibly terminates the process.
 ///
-/// C-mode (@inline_template): reads args.ctx — every matched handler must
-/// declare a parameter named `ctx: Lambda.LambdaContext`.  The compiler
-/// reports shape error A0042 if the parameter is absent.
+/// Row-constrained B'-mode (docs/56 / D115): reads args.ctx via a
+/// `where TArgs has { ctx: Lambda.LambdaContext }` row clause — every
+/// matched handler must declare a parameter named
+/// `ctx: Lambda.LambdaContext`.  The weaver reports A0047 if the parameter
+/// is absent or mistyped.
 ///
 /// Use inside: EventLogging so deadline rejections appear in the logs.
 ///
@@ -86,7 +89,6 @@ pub aspect EventLogging {
 ///   enabled     Bool — master switch (default: true)
 ///   thresholdMs Long — bail-out threshold in milliseconds (default: 500)
 @stable(since = "0.1")
-@inline_template
 pub aspect DeadlineGuard {
   config {
     enabled: Bool = true
@@ -94,7 +96,7 @@ pub aspect DeadlineGuard {
   }
   requires: args.ctx != null
   // handler must declare ctx: Lambda.LambdaContext
-  around(call) -> ret {
+  around(call) -> ret where TArgs has { ctx: Lambda.LambdaContext } {
     if not enabled {
       ret = call.proceed()
     } else {
