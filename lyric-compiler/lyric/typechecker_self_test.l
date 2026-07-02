@@ -2260,20 +2260,10 @@ test "const pattern: generic container const rejected before T0071 (#3509)" {
 // W0006 — extern-boundary leak lint (`checkExternBoundaryLeaks` /
 // `checkExternLeakType`, #3943).  Previously untested (#3957).
 // ─────────────────────────────────────────────────────────────────────────────
-// Collects `pkgSrc`'s items into an `importedItems` list suitable for
-// `checkWithImports`, so every item registers with `isImported = true` —
-// the precondition W0006 requires before it will fire on a leaked type.
-func importedItemsOf(pkgSrc: in String): List[Item] {
-  val pr = parse(pkgSrc)
-  val items: List[Item] = newList()
-  var i = 0
-  while i < pr.file.items.count {
-    items.add(pr.file.items[i])
-    i = i + 1
-  }
-  items
-}
-
+// Reuses `importedItemsOf` (defined above, §1484) to collect the imported
+// package's items into a list suitable for `checkWithImports`, so every item
+// registers with `isImported = true` — the precondition W0006 requires
+// before it will fire on a leaked type.
 test "extern boundary leak fires for imported nested extern type" {
   val importedItems = importedItemsOf(
     "package Kernel\npub extern type ArrayEnum = \"System.Text.Json.JsonElement+ArrayEnumerator\"\n"
