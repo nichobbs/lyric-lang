@@ -612,9 +612,12 @@ jobs:
           NUGET_KEY: ${{ steps.nuget-auth.outputs.NUGET_API_KEY }}
         run: |
           if [ -z "$NUGET_KEY" ]; then
-            echo "::error::NuGet/login produced an empty API key. Check the" \
-              "Trusted Publishing policy configuration described in" \
-              "publish-nuget's NuGet login step comment."
+            echo "::error::NuGet/login produced an empty API key. Check that" \
+              "the NUGET_USER secret matches the nuget.org account owning the" \
+              "Trusted Publishing policy, and that the policy is scoped to" \
+              "Repository Owner 'nichobbs', Repository 'lyric-lang', Workflow" \
+              "File 'publish.yml'. See the publish-nuget job comment for full" \
+              "setup steps."
             exit 1
           fi
 
