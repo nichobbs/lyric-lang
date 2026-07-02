@@ -26124,7 +26124,9 @@ the `compiler-self-tests-jvm` CI job:
   `.values()` (Iterable path), plus pure-Lyric `tryGetValue` (was a
   phantom-shim reference) and `setToSlice` (`HashSet.toArray()` — the
   erased `slice[T]` representation), and `newListWithCapacity`.
-  Test: `map_iteration_jvm_self_test.l`.
+  End-to-end verification of the iteration helpers is blocked on #3229
+  (JVM cross-package generic specialisation); the acceptance test is
+  parked in PR #4665's history and tracked on #3676.
 - **Field-access `out`/`inout` arguments (#3628)** — JVM analog of MSIL
   #3547: `prepareHolderArg` stashes the receiver and reads `obj.field`
   into the holder; `writeBackHolderArg` `putfield`s the result after the
