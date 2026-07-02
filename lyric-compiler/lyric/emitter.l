@@ -1203,9 +1203,10 @@ func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): List[Proj
     if Str.endsWith(path, "_self_test.l") or Str.endsWith(path, "_ci_test.l") {
       continue
     }
-    // .NET target: drop the JVM-only kernel files (they declare the same
-    // `Std.*Host` packages as `_kernel/` and would otherwise merge / collide).
-    if Str.contains(path, "_kernel_jvm") {
+    // .NET target: drop the JVM-only and native-only kernel files (each
+    // declares the same `Std.*Host` package as its `_kernel/` twin and
+    // would otherwise merge into it, colliding on the host* names).
+    if Str.contains(path, "_kernel_jvm") or Str.contains(path, "_kernel_native") {
       continue
     }
     val base = Path.basename(path)
