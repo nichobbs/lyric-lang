@@ -13,7 +13,6 @@ import Std.Uuid as Uuid
 import Std.Encoding as Encoding
 import Std.Hash as Hash
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // §11i. Upgrade command — self-upgrade Lyric compiler
 // ─────────────────────────────────────────────────────────────────────────────
@@ -94,10 +93,7 @@ pub func cmdUpgrade(argv: in slice[String]): Int {
     // `lyric upgrade` tracks the latest stable release, matching the
     // documented behavior in book/chapters/01-getting-started.md, rather
     // than requiring the caller to already know the current version.
-    val installDir = match targetDir {
-      case Some(d) -> d
-      case None -> appBase
-    }
+    val installDir = match targetDir { case Some(d) -> d; case None -> appBase }
     return runGithubUpgrade(installDir, targetVersion, isDryRun)
   }
 }
@@ -236,10 +232,7 @@ func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDr
   // dry-run preview reports the version that would actually be installed.
   val version = match versionArg {
     case Some(v) -> Some(value = v)
-    case None -> match fetchLatestReleaseTag() {
-      case Some(tag) -> Some(value = stripLeadingV(tag))
-      case None -> None
-    }
+    case None -> match fetchLatestReleaseTag() { case Some(tag) -> Some(value = stripLeadingV(tag)); case None -> None }
   }
   match version {
     case Some(_) -> ()
@@ -284,7 +277,9 @@ func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDr
       }
       case None -> ()
     }
-    Console.println("dry-run: would write fetched script to temporary file and run: sh <tempFile> " + Process.buildArgString(printArgs))
+    Console.println(
+      "dry-run: would write fetched script to temporary file and run: sh <tempFile> " + Process.buildArgString(printArgs)
+    )
     return 0
   }
 
@@ -321,10 +316,32 @@ func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDr
     }
   }
 
+  // Threat model (#4603): `install.sh` and `install.sh.sha256` are both
+  // fetched from this same repository at the same ref, so this comparison
+  // only guards against in-transit corruption and CDN truncation — HTTPS
+  // already covers the former.  It does NOT provide supply-chain integrity:
+  // an attacker who can modify the repository (compromised maintainer
+  // account or CI/CD token) can update both files together and this check
+  // will pass.  Real supply-chain integrity needs an out-of-band signature
+  // (e.g. a GPG key pinned into the binary at build time, or Sigstore) —
+  // tracked as a follow-up; not implemented here.
+  //
+  // `scriptContent` is the String `downloadUrl` decoded from curl/wget's
+  // captured stdout bytes (UTF-8, via `Std.ProcessCapture`'s internal
+  // MemoryStream + StreamReader drain — see process_capture_host.l).
+  // Re-encoding it here to hash is therefore hashing a decode/re-encode
+  // round trip of the downloaded bytes, not the raw bytes themselves
+  // (#4614). For a well-formed UTF-8 file with no byte-order mark this
+  // round trip is lossless, which holds for `scripts/install.sh` today,
+  // but the check has no way to detect a future violation of that
+  // assumption (e.g. CRLF normalization on a different capture backend).
+  // A byte-exact fix needs a raw-bytes capture variant on
+  // `Std.ProcessCapture` (or a dedicated byte-returning download helper);
+  // that's a stdlib-boundary change outside `Lyric.Cli`.
   val scriptBytes = Encoding.encodeUtf8(scriptContent)
   val actualHash = Hash.sha256OfBytes(scriptBytes).toUpper()
   if actualHash != expectedHash {
-    printErr("upgrade: installation script integrity check failed!")
+    printErr("upgrade: installation script hash mismatch (does not match install.sh.sha256) — aborting")
     printErr("Expected SHA-256: " + expectedHash)
     printErr("Actual SHA-256:   " + actualHash)
     return 1
@@ -374,4 +391,3 @@ func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDr
 
   code
 }
-

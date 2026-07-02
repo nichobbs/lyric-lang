@@ -25247,6 +25247,20 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
   // Always register the TypeRef (even if cached in ffiTypeRefs) to ensure it's
   // in the metadata tables. The ffiTypeRefs dictionary is for cross-compilation
   // bookkeeping; the tables are the canonical source.
+  //
+  // `ctxAddTypeRef` is NOT idempotent — it unconditionally appends a row
+  // (`addTypeRef` in tables.l has no dedup) — but that's safe here: this
+  // function is reached only from the Pass-1 loop in
+  // `registerStdlibArtifactTokens`, which walks each stdlib package's items
+  // exactly once per compilation (one fresh `CodegenCtx` per compile; see
+  // its two call sites in bridge.l, each on its own cctx), so each type item
+  // registers exactly one TypeRef row per compile — no accumulation across
+  // "multi-pass" compilation actually occurs today (#4307).  Were that
+  // invariant ever violated, a duplicate TypeRef row would still be valid
+  // PE metadata (ECMA-335 §22.38 permits multiple TypeRef rows resolving to
+  // the same type) — the cost would be table bloat, not corruption; only
+  // the first-registered row is retained in `ffiTypeRefs`, which is what
+  // every lookup elsewhere in this file consults.
   val row = ctxAddTypeRef(cctx.lctx, packageName, typeRefName, asmRefRow)
   if not cctx.ffiTypeRefs.containsKey(typeRefKey) {
     cctx.ffiTypeRefs.add(typeRefKey, row)
