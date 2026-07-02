@@ -106,7 +106,9 @@ func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in Com
             val ridHint = if hostRid.length > 0 { hostRid } else { "<rid>" }
             printErr(
               "run: warning: no native launcher found for this 'kind = \"exe\"' build; " +
-                "falling back to 'dotnet exec' (install a Microsoft.NETCore.App.Host." + ridHint + " " +
+                "falling back to 'dotnet exec' (install a Microsoft.NETCore.App.Host." +
+                ridHint +
+                " " +
                 "runtime pack, or set DOTNET_ROOT to a .NET install that has one, so the " +
                 "apphost template can be located)"
             )

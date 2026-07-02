@@ -4550,6 +4550,14 @@ func findImportedFqn(cctx: in CodegenCtx, imports: in List[String], funcName: in
 // earlier in the import list, which may be wrong.  When `retHint` is non-MObject,
 // we scan all candidates and return the first one whose `funcRetTypes` entry matches;
 // if none matches (or no hint), falls back to first-in-wins (original behavior).
+//
+// `retHint` is a heuristic, not a type-checker-resolved answer: callers pass
+// `fctx.collExpect`'s top entry (see call site below), which is borrowed from
+// collection-element/case-field lowering context and only incidentally reflects
+// the call's required return type.  It can misfire if `collExpect` is non-empty
+// with a stale or unrelated expected type when the call is lowered.  The
+// principled fix is threading the type checker's already-resolved call-target
+// FQN through to the emitter instead of guessing here; tracked in #4424.
 func findImportedFqnWithHint(
   cctx: in CodegenCtx, imports: in List[String], funcName: in String,
   arity: in Int, retHint: in MsilType

@@ -158,6 +158,12 @@ pub record SymbolTable {
   /// `List` read is the established safe pattern.
   unionDeclIndex: Map[String, Int]
   unionDeclList: List[UnionDecl]
+  /// `toString(TypeId.id)` → whether the `DKExternType` with that id is a
+  /// `System.Func`/`System.Action` delegate.  Side index populated by
+  /// `symTableAdd` so `symTableIsExternDelegateType` (called on every
+  /// `TyUser`-typed call argument in `argSatisfiesParam`) is O(1) instead of
+  /// a full symbol scan (#3903).
+  externDelegateFlags: Map[String, Bool]
   // One `impl Iface for Target` conformance, by resolved `TypeId`.
 }
 
@@ -174,7 +180,8 @@ pub func newSymbolTable(): SymbolTable {
     impls = newList(),
     importedOpaqueNames = newMap(),
     unionDeclIndex = newMap(),
-    unionDeclList = newList()
+    unionDeclList = newList(),
+    externDelegateFlags = newMap()
   )
 }
 
@@ -204,9 +211,9 @@ pub func symTableTypeImplements(tbl: in SymbolTable, target: in TypeId, iface: i
 }
 
 pub func symTableAdd(tbl: in SymbolTable, sym: in Symbol): Unit {
-  // Maintain the TypeId-keyed side indexes (#2027, #2178).  Each registration
-  // gets a fresh TypeId, so first-in-wins guards only against pathological
-  // double-adds of the same symbol.
+  // Maintain the TypeId-keyed side indexes (#2027, #2178, #3903).  Each
+  // registration gets a fresh TypeId, so first-in-wins guards only against
+  // pathological double-adds of the same symbol.
   match sym.kind {
     case DKOpaque(oid, _) -> {
       if sym.isImported {
@@ -221,6 +228,14 @@ pub func symTableAdd(tbl: in SymbolTable, sym: in Symbol): Unit {
       if not tbl.unionDeclIndex.containsKey(key) {
         tbl.unionDeclList.add(decl)
         tbl.unionDeclIndex.add(key, tbl.unionDeclList.count - 1)
+      }
+    }
+    case DKExternType(tid, decl) -> {
+      val key = toString(tid.id)
+      if not tbl.externDelegateFlags.containsKey(key) {
+        val clr = decl.clrName
+        val isDelegate = clr.startsWith("System.Func") or clr.startsWith("System.Action")
+        tbl.externDelegateFlags.add(key, isDelegate)
       }
     }
     case _ -> {
