@@ -549,26 +549,40 @@ func lowerBuiltinOrStaticCall(
   args: in List[CallArg],
 ): JvmType {
   if funcName == "println" {
-    insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
+    // Lower the argument BEFORE pushing the PrintStream receiver: a branchy
+    // sub-expression (a comparison, an if-expression) inside the argument
+    // lands branch targets, and the StackMapTable declares an empty operand
+    // stack at every branch target — with the receiver already on the stack
+    // the frames disagree and the class fails verification.  Stash the
+    // lowered argument to a temp, then push the receiver and reload.
     if args.count > 0 {
       val argTy = lowerCallArg(ctx, insns, args[0])
-      // Convert to String if needed for println.
+      val aSlot = allocSlot(ctx, "__println_a_" + freshLabel(ctx), argTy)
+      emitStore(insns, aSlot, argTy)
+      insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
+      emitLoad(insns, aSlot, argTy)
       val printPs: List[JvmType] = newList()
       printPs.add(printArgType(argTy))
       insns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "println", params = printPs, ret = JVoid))
     } else {
+      insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
       val emptyPs: List[JvmType] = newList()
       insns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "println", params = emptyPs, ret = JVoid))
     }
     JVoid
   } else if funcName == "print" {
-    insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
+    // Same receiver-after-argument discipline as println above.
     if args.count > 0 {
       val argTy = lowerCallArg(ctx, insns, args[0])
+      val aSlot = allocSlot(ctx, "__print_a_" + freshLabel(ctx), argTy)
+      emitStore(insns, aSlot, argTy)
+      insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
+      emitLoad(insns, aSlot, argTy)
       val printPs: List[JvmType] = newList()
       printPs.add(printArgType(argTy))
       insns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "print", params = printPs, ret = JVoid))
     } else {
+      insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
       val emptyPs2: List[JvmType] = newList()
       insns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "print", params = emptyPs2, ret = JVoid))
     }
@@ -643,20 +657,59 @@ func lowerBuiltinOrStaticCall(
     insns.add(LInvokespecial(owner = "java/util/HashMap", name = "<init>", params = nmPs, ret = JVoid))
     JRef(className = "java/util/HashMap")
   } else if funcName == "mapGet" {
-    // mapGet(map, key) → Option[V]
+    // mapGet(map, key) → Option[V]: a containsKey-gated Some/None construction
+    // (#3229 / #3676).  The previous lowering returned the raw `HashMap.get`
+    // value — never an Option, so every `case Some(...)` match on a mapGet
+    // result silently failed — and boxed the key as if it were always an Int
+    // (`Integer.valueOf(I)` on a String key fails verification).  The map and
+    // the boxed key are stashed to locals, and the constructed Option routes
+    // through a result local, so the operand stack is empty at every branch
+    // target (the StackMapTable declares an empty stack there).
     if args.count >= 2 {
-      lowerCallArg(ctx, insns, args[0])
-      lowerCallArg(ctx, insns, args[1])
-      boxIfNeeded(insns, JInt)  // key might be primitive
+      val mTy = lowerCallArg(ctx, insns, args[0])
+      coerceArgTo(insns, mTy, JRef(className = "java/util/HashMap"))
+      val mSlot = allocSlot(ctx, "__mapget_m_" + freshLabel(ctx), JRef(className = "java/util/HashMap"))
+      insns.add(LAstoreAs(slot = mSlot, className = "java/util/HashMap"))
+      val kTy = lowerCallArg(ctx, insns, args[1])
+      boxIfNeeded(insns, kTy)
+      val kSlot = allocSlot(ctx, "__mapget_k_" + freshLabel(ctx), JRef(className = "java/lang/Object"))
+      insns.add(LAstore(slot = kSlot))
+      val rSlot = allocSlot(ctx, "__mapget_r_" + freshLabel(ctx), JRef(className = "Std/Core/Option"))
+      val noneL = freshLabel(ctx)
+      val afterMgL = freshLabel(ctx)
+      insns.add(LAload(slot = mSlot))
+      insns.add(LAload(slot = kSlot))
+      val ckPs: List[JvmType] = newList()
+      ckPs.add(JRef(className = "java/lang/Object"))
+      insns.add(LInvokevirtual(owner = "java/util/HashMap", name = "containsKey", params = ckPs, ret = JBoolean))
+      insns.add(LIfeq(label = noneL))
+      insns.add(LNew(className = "Std/Core/Option$Some"))
+      insns.add(LDup)
+      insns.add(LAload(slot = mSlot))
+      insns.add(LAload(slot = kSlot))
       val mgPs: List[JvmType] = newList()
       mgPs.add(JRef(className = "java/lang/Object"))
       insns.add(
         LInvokevirtual(owner = "java/util/HashMap", name = "get", params = mgPs, ret = JRef(className = "java/lang/Object"))
       )
+      val someCtorPs: List[JvmType] = newList()
+      someCtorPs.add(JRef(className = "java/lang/Object"))
+      insns.add(LInvokespecial(owner = "Std/Core/Option$Some", name = "<init>", params = someCtorPs, ret = JVoid))
+      insns.add(LAstoreAs(slot = rSlot, className = "Std/Core/Option"))
+      insns.add(LGoto(label = afterMgL))
+      insns.add(LLabel(name = noneL))
+      insns.add(LNew(className = "Std/Core/Option$None"))
+      insns.add(LDup)
+      val noneCtorPs: List[JvmType] = newList()
+      insns.add(LInvokespecial(owner = "Std/Core/Option$None", name = "<init>", params = noneCtorPs, ret = JVoid))
+      insns.add(LAstoreAs(slot = rSlot, className = "Std/Core/Option"))
+      insns.add(LLabel(name = afterMgL))
+      insns.add(LAload(slot = rSlot))
+      JRef(className = "Std/Core/Option")
     } else {
       insns.add(LAconstNull)
+      JRef(className = "java/lang/Object")
     }
-    JRef(className = "java/lang/Object")
   } else if funcName == "default" {
     insns.add(LAconstNull)
     JRef(className = "java/lang/Object")
@@ -1300,6 +1353,30 @@ func coerceArgTo(insns: in List[LInsn], fromTy: in JvmType, toTy: in JvmType): U
         // verifier accepts the `Ljava/lang/Object;` store.  Match-extraction
         // later checkcasts + unboxes back to the binding's concrete type.
         case _ -> boxIfNeeded(insns, fromTy)
+      }
+    }
+    case JArray(_) -> {
+      // A list value (an `EList` literal or any List-typed expression) flowing
+      // into an erased `slice[T]` parameter (`[Ljava/lang/Object;`) must be
+      // converted: an ArrayList is not assignable to an array and fails
+      // verification at class load (#4700).  `ArrayList.toArray()` yields the
+      // `Object[]` the slice ABI expects.  A value already of array type
+      // needs no conversion (JVM ref-array covariance).
+      match fromTy {
+        case JRef(fromCls) -> {
+          if fromCls == "java/util/ArrayList" {
+            val taPs: List[JvmType] = newList()
+            insns.add(
+              LInvokevirtual(
+                owner = "java/util/ArrayList",
+                name = "toArray",
+                params = taPs,
+                ret = JArray(elem = JRef(className = "java/lang/Object"))
+              )
+            )
+          }
+        }
+        case _ -> ()
       }
     }
     case _ -> ()

@@ -193,3 +193,34 @@ test "reassignment of an Int local named 'result' is stored" {
   result = result + 41
   assertEqualInt(result, 42, "compound-shaped reassignment of a `result` Int local is stored")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. Slice literal passed to a slice[T] parameter (#4700).
+//    The EList literal lowers as an ArrayList; an erased slice parameter is
+//    Object[], so without the call-boundary conversion the class failed
+//    verification at load ("ArrayList is not assignable to
+//    [Ljava/lang/Object;").
+// ─────────────────────────────────────────────────────────────────────────────
+func sliceParamLen(parts: slice[String]): Int {
+  parts.count
+}
+
+test "slice literal coerces to a slice[T] parameter" {
+  assertEqualInt(sliceParamLen(["a", "b", "c"]), 3, "ArrayList literal converts to Object[] at the call boundary")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8. forall in a @runtime_checked contract compiles and passes (#3227).
+//    EForall/EExists previously panicked the JVM codegen; they now lower to
+//    `true` (sound overapproximation, matching MSIL #1506) with a W0002
+//    warning at compile time.
+// ─────────────────────────────────────────────────────────────────────────────
+func quantified(x: in Int): Int
+  ensures: forall (j: Int) { j * 0 == 0 }
+{
+  x + 1
+}
+
+test "forall in a runtime-checked contract lowers to true instead of panicking" {
+  assertEqualInt(quantified(41), 42, "function with a forall ensures clause runs")
+}

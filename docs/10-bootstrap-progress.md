@@ -26565,3 +26565,76 @@ first N5 kernel that needs one.
 
 **Related:** D-progress-551, `native/plan/05-ffi-design.md`,
 `native/plan/08-work-items.md` §N4, #4697, #4693.
+
+---
+
+### D-progress-553 — JVM: cross-package generic specialisation resolves at call sites; mapGet intrinsic constructs Option; mixed void/value match arms (epic #2663, #3229, #3676)
+
+**Shipped.** The remaining half of the JVM cross-package generic story
+(#3229) plus the two latent codegen bugs it uncovered, verified end-to-end
+by the previously parked `map_iteration_jvm_self_test.l` (#3676):
+
+- **Post-mono signature registration (#3229).** In the bundled compile
+  path (`compileToJarBundledWithFeatures` — the path `lyric test --target
+  jvm` uses), the function-signature registry is built from the
+  pre-middle-end sources, and after `runMiddleEnd` only derive- and
+  weave-synthesised sigs were patched in.  Monomorphizer-specialised
+  copies (`mapKeys__String__Int`, `mapSize__String__Int`, …) were emitted
+  as items but their call sites resolved through the `(…)Object` guess —
+  a descriptor mismatch that failed at class load (the "specialisations
+  are not emitted" symptom that parked the #3676 test).  The new
+  `collectMonoSpecializedSigs` patches the registry from the post-mono
+  file at both bundled codegen sites, registering the bare and qualified
+  key with param/return types resolved through the imported extern-type
+  seed (a specialised stdlib sig references `Map[..]`, whose alias lives
+  in `Std.CollectionsHost`).  The single-file path was already correct
+  (it collects sigs from the post-mono file).  Note: the "restored
+  dependencies" half of #3229 is structurally N/A on JVM today — the JVM
+  bridge has no restored-artifact path; that work re-opens with JVM
+  restore/Maven linking.
+- **`mapGet` intrinsic constructed no Option.** The JVM `mapGet(m, k)`
+  intrinsic returned the raw `HashMap.get` value — never an `Option`, so
+  every `case Some(...)` match on a mapGet result silently failed — and
+  boxed the key as if it were always an `Int` (`Integer.valueOf(I)` on a
+  String key fails verification).  It now emits a containsKey-gated
+  `Some(get(m,k))` / `None` construction with the key boxed by its actual
+  type; map and key stash to locals and the result routes through a
+  local, keeping the operand stack empty at every branch target.
+- **Mixed void/value match arms.** A statement-position match legally
+  mixes arms (`case Some(v) -> xs.add(v)` — `add` returns boolean —
+  beside `case None -> ()`).  `lowerMatchExpr` let any arm flip the
+  result type while it was still `JVoid`: a void arm under a value-typed
+  match emitted `istore` on an empty stack (operand-stack underflow), and
+  the reverse order left the result slot unwritten on one path (TOP-merge
+  verification failure).  The first non-terminating arm now fixes the
+  match type; later arms reconcile — a value arm under a void match
+  discards its value (width-correct `discardValue`), a void arm under a
+  value match stores a dummy default.
+- **`forall`/`exists` in `@runtime_checked` contracts (#3227).**
+  `EForall`/`EExists` panicked the JVM codegen; they now lower to `true`
+  (sound overapproximation, matching the MSIL resolution for #1506) with
+  the same W0002 warning text.
+- **Slice literal to `slice[T]` parameter (#4700).** An `EList` literal
+  lowers as `ArrayList`, but an erased slice parameter is `Object[]` —
+  the call site failed verification at class load.  `coerceArgTo` gained
+  a `JArray` arm that converts via `ArrayList.toArray()`.
+- **`externSeedForFile` O(imports × packages) scan (#4667)** replaced by
+  an import-membership set — O(imports + packages), no signature change.
+
+Element consumption in the map-iteration test is count-shaped: iterated
+elements are erased to `Object` on JVM, so element arithmetic
+(`total + v`) and entry field access (`e.value`) wait on the
+typed-erasure work in band J4 (#2667) — the erased-Object member
+fallback resolves `field:<name>` globally and can checkcast to an
+unrelated package's opaque type (observed: `e.value` on a `MapEntry`
+matching `Std.Http.Url.$value`), which is exactly the J4 "make the
+erased model correct" item.  Value-level semantics are covered via
+`mapGet` / `mapPutAll`, whose results carry concrete types after
+monomorphization.
+
+Tests: `map_iteration_jvm_self_test.l` (5 tests, restored from PR #4665's
+parked history and wired into `compiler-self-tests-jvm`), plus #4700 /
+#3227 regression cases in `silent_miscompile_guard_jvm_self_test.l`.
+
+**Related:** docs/44 §4/§5 (J4, J6), epic #2663, #3229, #3676, #3227,
+#4700, #4667, PR #4665 (the kernel half and parked test).

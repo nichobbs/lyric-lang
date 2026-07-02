@@ -35,6 +35,15 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
   // unreachable branch target at the past-end bytecode offset whose
   // StackMapTable frame points past the method body (VerifyError, #2870).
   var anyArmFellThrough = false
+  // Whether the FIRST non-terminating arm has fixed `resultTy`.  Statement-
+  // position matches legally mix void and value arms (`case Some(v) ->
+  // xs.add(v); case None -> ()` — `add` returns boolean); once the first
+  // fall-through arm fixes the type, later arms reconcile to it instead of
+  // flipping it: a value arm under a void match discards its value, and a
+  // void arm under a value match stores a dummy default so the result slot
+  // is written on every path (an unwritten slot merges to TOP and the
+  // `iload` at the join fails verification).
+  var resultTyFixed = false
 
   var i = 0
   while i < arms.count {
@@ -66,24 +75,34 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
     // the result-store / fall-through `goto`: doing so would pop an empty stack
     // (VerifyError) and emit dead, unreachable bytecode after the `areturn`.
     val armTerminated = endsWithReturn(insns)
-    // Fix the result-slot type from the first *value-producing* (non-terminating)
-    // arm, so a leading `return`-only arm does not force the whole match to Unit.
-    match resultTy {
-      case JVoid -> {
-        if not armTerminated {
-          resultTy = armTy
-        }
-      }
-      case _ -> ()
+    // Fix the result-slot type from the first non-terminating arm, so a
+    // leading `return`-only arm does not force the whole match to Unit and a
+    // later arm cannot flip an already-fixed type (see `resultTyFixed`).
+    if not armTerminated and not resultTyFixed {
+      resultTy = armTy
+      resultTyFixed = true
     }
     if not armTerminated {
       match resultTy {
-        case JVoid -> ()
+        case JVoid -> {
+          // Void match: a value-producing arm's result is discarded (the
+          // statement-position `case Some(v) -> xs.add(v)` shape — `add`
+          // returns boolean).
+          discardValue(insns, armTy)
+        }
         case _ -> {
           if rslot < 0 {
             rslot = allocSlot(ctx, rslotName, resultTy)
           }
-          coerceArgTo(insns, armTy, resultTy)
+          match armTy {
+            case JVoid -> {
+              // This arm produced no value but the match is value-typed:
+              // store a dummy default so the result slot is written on
+              // every path reaching the join.
+              pushDefaultValue(insns, resultTy)
+            }
+            case _ -> coerceArgTo(insns, armTy, resultTy)
+          }
           emitStore(insns, rslot, resultTy)
         }
       }
