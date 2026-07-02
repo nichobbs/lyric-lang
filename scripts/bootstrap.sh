@@ -306,6 +306,7 @@ stage0() {
   # otherwise download, and fall back to minting if the download fails.  The
   # mint populates $BUILD_DIR/stage0-publish, which try_bootstrap_from_release
   # then reuses instead of downloading.
+  local stage0_minted=0
   if [[ "${LYRIC_BOOTSTRAP_MINT:-0}" == "1" ]] && \
      [[ ! -f "$BUILD_DIR/stage0-publish/lyric" ]] && \
      [[ ! -f "$BUILD_DIR/stage0-publish/lyric.dll" ]] && \
@@ -313,6 +314,7 @@ stage0() {
     info "Stage 0: LYRIC_BOOTSTRAP_MINT=1 — minting clean stage-0 from F# history"
     FAST="${MINT_FAST:-1}" bash "$REPO_ROOT/scripts/mint-stage0-fsharp.sh" \
       || die "Stage 0: mint failed (scripts/mint-stage0-fsharp.sh)"
+    stage0_minted=1
   fi
 
   # Download self-hosted binary from latest release (reuses a minted
@@ -321,6 +323,7 @@ stage0() {
     info "Stage 0: release download failed — minting clean stage-0 from F# history"
     FAST="${MINT_FAST:-1}" bash "$REPO_ROOT/scripts/mint-stage0-fsharp.sh" \
       || die "Stage 0: download failed AND mint failed (scripts/mint-stage0-fsharp.sh)"
+    stage0_minted=1
   fi
   info "Stage 0: using self-hosted binary"
 
@@ -365,12 +368,23 @@ stage0() {
 
   # Copy the lib/ directory containing Lyric.Stdlib.dll and other runtime dependencies.
   # The binary resolves these at runtime via findCompiledStdlibDir(<binary>/lib).
+  # Only the downloaded release archive ships a lib/ subfolder; the mint path
+  # (scripts/mint-stage0-fsharp.sh) AOT-links straight from $STAGE1_DIR and copies
+  # its DLLs flat into stage0-publish/, with no lib/ subdirectory (D-progress-541
+  # discovered this: LYRIC_BOOTSTRAP_MINT=1 is set in CI, so hard-failing on a
+  # minted build's missing lib/ broke every CI bootstrap). $STAGE0_BIN itself is
+  # never invoked downstream — invoke_stage0() runs the binary straight out of
+  # $STAGE0_PUBLISH_DIR — so a missing lib/ here only matters for someone running
+  # the copied $STAGE0_BIN directly outside this script.
   if [[ -d "$BUILD_DIR/stage0-publish/lib" ]]; then
     mkdir -p "$(dirname "$STAGE0_BIN")/lib"
-    cp -r "$BUILD_DIR/stage0-publish/lib"/* "$(dirname "$STAGE0_BIN")/lib/" 2>/dev/null || true
+    cp -r "$BUILD_DIR/stage0-publish/lib/." "$(dirname "$STAGE0_BIN")/lib/" \
+      || die "Stage 0: failed to copy lib/ directory from stage0-publish"
     info "  copied lib/ directory with runtime dependencies"
+  elif [[ "$stage0_minted" == "1" ]]; then
+    info "  lib/ directory not present in a minted stage0-publish (expected; mint copies DLLs flat)"
   else
-    info "  WARNING: lib/ directory not found in stage0-publish (binary may fail at runtime)"
+    die "lib/ directory not found in stage0-publish — stage-0 binary will not be able to locate Lyric.Stdlib"
   fi
 
   ok "Stage 0 complete — $STAGE0_BIN"

@@ -401,5 +401,5 @@ lyric-grpc/
 
 - `lyric-proto` — Protocol Buffer encoding/decoding (for payloads)
 - [gRPC documentation](https://grpc.io) (external reference)
-- `docs/37-grpc-proto-sketch.md` — design decisions for gRPC and Protobuf
+- `docs/37-grpc-proto-sketch.md` — exploratory design sketch for gRPC and Protobuf; unbacked (Q-G-001–Q-G-007 open)
 - `docs/03-decision-log.md` D068 — design decisions for this library

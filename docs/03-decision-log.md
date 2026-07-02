@@ -6456,9 +6456,9 @@ self-hosted metadata reader already records `TypeDefRow.flags`
 targets without new syntax.
 
 1. **No syntax change.** An external interface is brought into scope via
-   the existing `import extern System.{ IDisposable }` form (D105
-   `import extern`) or `extern type IDisposable = "System.IDisposable"`.
-   Both already register a `DKExternType` symbol with the CLR FQN.
+   the existing `import extern System.{ IDisposable }` form (D116's `import extern`)
+   or `extern type IDisposable = "System.IDisposable"`. Both already register
+   a `DKExternType` symbol with the CLR FQN.
    `impl IDisposable for Record { … }` parses identically to a native
    `impl`; the AST does not distinguish targets.
 
@@ -6703,7 +6703,7 @@ the bound return type of every `@externTarget` in the function.
 
 **Related:** docs/14 (native stdlib / extern boundary), docs/42 (metadata
 resolution), docs/01 §11.3 (`@externTarget` reference), D105 (extern
-interfaces), D106 (constructor shorthand).
+interfaces), D117 (constructor shorthand).
 
 ---
 
@@ -7284,6 +7284,100 @@ emission — the Option 2 path not taken), docs/55 (D114, B′-mode this extends
 docs/56 (the sketch this entry backs).
 
 ---
+
+## D116 — `import extern` syntax unifies package and external-type imports (docs/47, Q47-001–Q47-004)
+
+**Context.** Lyric package imports (`import Std.Core.{Option, Result}`) and
+external-type declarations (`extern type HostClient = "Docker.DotNet.DockerClient"`)
+used unrelated syntax, forcing one line per external type and burying
+aliasing in a separate form. PR #3728 added parser support (`import extern
+Docker.DotNet.{DockerClient as HostClient}`) per the docs/47 design sketch.
+This entry backfills the decision-log record that docs/47 cites as "D105"
+— that number was independently claimed by the external-interface-`impl`
+decision above before this entry was written, and "D115" was independently
+claimed by the row-typed-`args` decision above before this entry was
+rebased past it; D116 is the correct citation going forward for
+Q47-001–Q47-004.
+
+**Decision.** Adopt Option A from docs/47 §6 (import-like syntax) and resolve
+Q47-001 through Q47-004 as follows:
+
+- **Q47-001 (namespace syntax)** — require the full FQN (assembly + namespace).
+  No by-namespace search; ambiguity across reference assemblies is a foot-gun.
+- **Q47-002 (collision handling)** — local types shadow external imports,
+  matching standard Lyric import scoping (a local `Option` shadows
+  `import Std.Core.{Option}` the same way).
+- **Q47-003 (tooling)** — external types imported via `import extern` are not
+  part of the public API surface; `lyric doc` and `lyric public-api-diff`
+  treat them as implementation details, not surfaced members.
+- **Q47-004 (visibility)** — `import extern` is allowed in `pub use`
+  re-exports, with the caveat that downstream consumers of that public API
+  transitively depend on the external assembly's availability.
+
+**Status.** Parser support (Phase 1) shipped in PR #3728. Type-checker
+integration (Phase 2 — resolving `import extern`-bound names through the
+same symbol table path as `extern type`) remains deferred; `extern type`
+continues to be the only form the type checker fully resolves today.
+
+**Related:** docs/47 (full design), docs/42 (metadata-based extern
+resolution), docs/14 (kernel boundary), D105 above (external-interface
+`impl`, a related but independently-numbered decision).
+
+---
+
+## D117 — Constructor shorthand `.new(args)` for extern types; static factory methods need no new syntax (docs/48, Q48-003)
+
+**Context.** MSIL required an `@externTarget` wrapper function to construct
+an external type; JVM already supported `.new(args)` shorthand directly.
+D-progress-530 (above) shipped the MSIL implementation. This entry backfills
+the decision-log record that docs/48 cites as "D106" (see D116 above for why
+the originally-anticipated number was unavailable) and resolves the one
+open design question docs/48 marks as decided, Q48-003.
+
+**Decision.** `TimeSpan.fromMinutes(5.0)`-style static factory methods need
+no special `.new`-adjacent syntax: they are already reachable through
+ordinary auto-FFI method-call resolution (`ExternType.methodName(args)`),
+since a static factory is just a static method returning the type, not a
+constructor. `Q48-003` is resolved as "no action needed."
+
+**Deferred (not part of this decision).** Q48-001 (generic constructors,
+e.g. `List[T].new(capacity)` — requires call-site template instantiation,
+tracked with Q022-4/docs/36) and Q48-002 (async constructors — not planned)
+remain open per docs/48 §5.
+
+**Related:** docs/48 (full design), D-progress-530 (MSIL implementation),
+docs/42 (Phase 3c metadata resolution this reuses).
+
+---
+
+## D-progress-542 — Clarifying the 101/122-DLL counts in D-progress-531 against D-progress-502's 103
+
+_Numbering note: this entry originally claimed "D-progress-540", but that
+number was independently claimed by the LLVM native backend Phase 1 slice
+entry in `docs/10-bootstrap-progress.md`; "D-progress-541" was independently
+claimed by the lyric-docker Phase 1 entry in the same file. D-progress-542 is
+the correct citation going forward._
+
+**Context.** D-progress-531 reports the whole self-hosted compiler closure as
+**101/101 DLLs** byte-for-byte reproducible. D-progress-502 recorded the same
+kind of measurement as **103/103** on 2026-06-11. Read side-by-side without
+context, the two counts look like a regression or a measurement-methodology
+change; this entry records why they differ.
+
+**Clarification.** Both counts are the same `--internal-perpackage-build`
+`Lyric.Cli`-closure measurement — compiler packages plus their *transitive*
+stdlib imports. The two counts differ only because that import closure
+drifted by two packages over the intervening weeks between the two
+measurements, not because of a different build path or methodology. This
+count is also distinct from the 122 DLLs `build_stage2` emits, which
+additionally include every *public* `Std.*` package from `lyric.full.toml`,
+not just `Lyric.Cli`'s import closure.
+
+**Related:** D-progress-531 (101/101 fixpoint measurement this clarifies),
+D-progress-502 (103/103 measurement on 2026-06-11).
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

@@ -132,6 +132,14 @@ echo "[assert-no-box-jvm] disassembling bytecode via javap"
 # Look for:
 #   java/lang/Integer.valueOf, java/lang/Long.valueOf, java/lang/Float.valueOf,
 #   java/lang/Double.valueOf, java/lang/Boolean.valueOf
+#
+# An earlier revision of this script also counted unboxing calls
+# (intValue/longValue/floatValue/doubleValue/booleanValue), reasoning that
+# read-path unboxing overhead is symmetric with write-path boxing. That
+# widened the match without recalibrating MAX_BOXING below (calibrated
+# against valueOf-only counts), so the Stage 2+ gate started failing CI
+# unconditionally (issue #4643). Reverted to valueOf-only pending a
+# recalibrated threshold measured against a real bidirectional count.
 BOX_COUNT="$(grep -E "(Integer|Long|Float|Double|Boolean)\.valueOf" "$DISASM_FILE" | wc -l || true)"
 
 echo ""

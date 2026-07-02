@@ -344,7 +344,7 @@ GenericParamConstraint + MethodSpec + `constrained.`) — see §6 band 4.
 ### 5.5  AOT & F# residue (HIGH band) — **COMPLETE (2026-06-12)**
 
 ~~Two F# DLLs sit on every .NET program's runtime closure (H12).~~ All F# host
-shims have been eliminated (H12 ✅, H13 ✅ — see §10 "Band 5: COMPLETE"). The
+shims have been eliminated (H12 ✅, H13 ✅ — see §10 Band-5 bullet). The
 pure-Lyric byte accumulator shipped (#1492); every stdlib and ecosystem kernel
 (`http`, `process_capture`, `session`, et al.) binds direct BCL externs with no F#
 intermediary; `Lyric.Emitter.dll` + `FSharp.Core.dll` are no longer on the stage-1
@@ -450,7 +450,7 @@ and `process_capture_host.l` bind direct BCL externs (#1576/#3012, #1489/#3016);
 deleted (#3053). `Lyric.Emitter.dll` + `FSharp.Core.dll` removed from the stage-1
 runtime bundle (#3034/#3062). AOT publishing wired and CI smoke test running
 (#3197/#3201/#3206). Stage-1 determinism CI-enforced — 103/103 DLLs byte-identical
-(#3217). See §10 "Band 5: COMPLETE" for the full list.
+(#3217). See the Band 5 entry in §10 for the full list.
 
 ### Band 6 — Acceptance gate
 The self-hosted .NET compiler is production-ready when: every program in
@@ -657,9 +657,10 @@ problem once both sides are suffixed.
 
 ### Validated fixes (7), all toward suffix-consistent self-build
 
-A patch carrying these is saved at `.bootstrap/_selfrepro_fixes.patch` during
-the investigation; each was confirmed by re-minting and advancing the
-reproduction cascade.  They are **not landed** (see "atomicity" below).
+A patch carrying these was created locally at `.bootstrap/_selfrepro_fixes.patch`
+during the investigation (not committed to the repository); each was
+confirmed by re-minting and advancing the reproduction cascade.  They are
+**not landed** (see "atomicity" below).
 
 1. **Consumer head-type suffix** (`codegen.l::registerStdlibTypeItem`): intern
    the cross-package TypeRef for a generic stdlib record/union with its arity
@@ -853,3 +854,10 @@ closure → AOT-link → build **and run** the full corpus + its `lyric test`, p
 byte-identical (#3217).  Every change here **must** be validated by compiling
 **and running** the corpus — `ilverify` alone passes structurally valid IL that
 still mis-binds at run time.
+
+**Tracked:** the generic-collection erasure ABI decision above is tracked in
+#4601, including the open question of whether it was incidentally resolved by
+the #4020 fix that unblocked D-progress-531 (a different bug class — a
+cross-package nullary-union-case singleton mis-detection, not collection
+erasure) or whether it remains a live gap the D-progress-531 corpus simply
+didn't exercise.
