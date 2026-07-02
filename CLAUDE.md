@@ -1007,6 +1007,29 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
     `08-work-items.md` (43 ordered work items, N0–N8).
     All 13 decisions are mirrored in `docs/03-decision-log.md` (D-N-001–D-N-013).
     **Agents implementing the native backend must read this directory before starting.**
+    Phase 1's first slice (N0, N1, N4.1/N4.6, and the console/math/libc +
+    bridge/CLI subsets) **shipped** in D-progress-539 with three plan
+    corrections codified in D-N-014: the backend lives at
+    `lyric-compiler/lyric/llvm_*.l` as `Lyric.Llvm*` packages (a new `Llvm`
+    package head is unbootstrappable — every stage-0 seed must already
+    resolve the head, and only `Lyric`/`Msil`/`Jvm`/`Std` qualify), native
+    kernel selection is loader-based (`_kernel_native/<basename>` preferred
+    over `_kernel/<basename>`, same package name — the `_kernel_jvm/`
+    model) rather than `@cfg`-gated imports, and the entry points are
+    `codegenNativePackage`/`codegenNativeBundle`/`lowerNativePackage`
+    (bare-name collision with the MSIL/JVM entry points in the
+    restored-bundle resolver).  Read D-N-014 and D-progress-539 alongside
+    the plan.
+- `lyric-rt/` — the native runtime C library (`lyric_rt.a`): ARC
+  intrinsics, LyricString, NativeWeak upgrade, List/Map kernels, POSIX
+  helpers, console writes.  `make -C lyric-rt` builds it;
+  `make -C lyric-rt test` runs its C unit tests.  The native bridge
+  resolves it via `$LYRIC_RT_PATH`, the installed `lib/` layout, or the
+  dev tree (`lyric-rt/build/lyric_rt.a`).
+- `lyric-stdlib/std/_kernel_native/` — native-target stdlib kernels
+  (`extern func` C-symbol boundary, D-N-007): each file declares the
+  SAME package as its `_kernel/` twin and wins by basename in the
+  native source loader (`Lyric.Emitter.findStdlibSourcesNative`).
 
 Build: `make lyric`.
 

@@ -1,4 +1,4 @@
-//! llvm_codegen_self_test.l — end-to-end self-test for `Llvm.Codegen`
+//! llvm_codegen_self_test.l — end-to-end self-test for `Lyric.LlvmCodegen`
 //! (N1.2–N1.7): parses small Lyric programs, lowers them to `.ll` via
 //! `codegenNativePackage` + `lowerNativePackage`, compiles with clang against
 //! `lyric-rt/build/lyric_rt.a`, runs the produced binary, and asserts
@@ -6,10 +6,10 @@
 //!
 //! Requires `clang` on PATH and a built runtime (`make -C lyric-rt`).
 //! Run via native `lyric test` with LYRIC_LOAD_COMPILER=1 (the test
-//! imports `Llvm.*` compiler packages):
-//!   make -C lyric-rt && LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/llvm/llvm_codegen_self_test.l
+//! imports `Lyric.Llvm*` compiler packages):
+//!   make -C lyric-rt && LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/lyric/llvm_codegen_self_test.l
 @test_module
-package Llvm.CodegenSelfTest
+package Lyric.LlvmCodegenSelfTest
 
 import Std.Core
 import Std.Collections
@@ -21,10 +21,10 @@ import Std.Environment as Environment
 import Std.String as Str
 import Std.Uuid as Uuid
 import Lyric.Parser
-import Llvm.Types
-import Llvm.Ir
-import Llvm.Codegen
-import Llvm.Lowering
+import Lyric.LlvmTypes
+import Lyric.LlvmIr
+import Lyric.LlvmCodegen
+import Lyric.LlvmLowering
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Harness: compile source text to a native binary and run it.

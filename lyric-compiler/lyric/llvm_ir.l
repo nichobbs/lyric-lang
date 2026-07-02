@@ -18,13 +18,13 @@
 //! Formatting: instructions indent two spaces, labels sit at column 0,
 //! one blank line between function definitions, `target datalayout` /
 //! `target triple` at the top.
-package Llvm.Ir
+package Lyric.LlvmIr
 
 import Std.Core
 import Std.Collections
 import Std.String as Str
 import Std.Char as Ch
-import Llvm.Types
+import Lyric.LlvmTypes
 
 // ── Instruction operand shapes ───────────────────────────────────────────────
 pub record NArg {

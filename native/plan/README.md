@@ -6,8 +6,16 @@ to the Lyric compiler, producing self-contained binaries via LLVM and clang.
 
 ## Status
 
-Pre-implementation. All design decisions are resolved (see `01-design-decisions.md`).
-No code has been written. Work items in `08-work-items.md` are ready to execute.
+Phase 1's first slice SHIPPED (D-progress-539): N0 (lyric-rt + IR layer),
+N1 (scalar codegen; `lyric build hello.l --target native -o hello` works
+end-to-end), N4.1 (`extern func`), N4.6 (`@cfg(target = ...)`), and the
+console/math/libc kernel + bridge/CLI subsets of N4.4/N5/N6.  Three plan
+corrections were required and are codified in `docs/03-decision-log.md`
+§D-N-014 (package head/location, loader-based kernel selection,
+`Native`-suffixed entry points) — read that entry alongside this plan.
+Remaining work items (N2 records/unions/ARC insertion, N3, the rest of
+N4/N5/N6, N7 CI) execute from `08-work-items.md` as written, modulo the
+D-N-014 naming mapping.
 
 ## Reading order
 

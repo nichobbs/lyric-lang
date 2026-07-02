@@ -1,7 +1,7 @@
-//! llvm/codegen.l — Llvm.Codegen: AST → LLVM IR lowering (Phase N1).
+//! llvm/codegen.l — Lyric.LlvmCodegen: AST → LLVM IR lowering (Phase N1).
 //!
 //! Walks parsed + middle-ended `SourceFile`s and produces an `NPackage`
-//! for `Llvm.Lowering.lowerPackage`.  Phase N1 scope (scalar codegen,
+//! for `Lyric.LlvmLowering.lowerPackage`.  Phase N1 scope (scalar codegen,
 //! native/plan/08-work-items.md):
 //!
 //!   * Int/Long/Float/Bool/Char/Byte scalars, String references.
@@ -27,7 +27,7 @@
 //! (`llvm/arc.l`); until then the only heap values are strings, which
 //! are allocated but never released (the plan's N1 sequencing — ARC
 //! insertion rules land with N2.1).
-package Llvm.Codegen
+package Lyric.LlvmCodegen
 
 import Std.Core
 import Std.Collections
@@ -35,8 +35,8 @@ import Std.String as Str
 import Std.Encoding as Encoding
 import Lyric.Lexer
 import Lyric.Parser
-import Llvm.Types
-import Llvm.Ir
+import Lyric.LlvmTypes
+import Lyric.LlvmIr
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Codegen inputs and cross-package call registry.
@@ -163,7 +163,7 @@ pub func typeExprToNType(te: in TypeExpr): NType {
         return lyricStringNType()
       }
       panic(
-        "Llvm.Codegen: type '" + n + "' is not yet supported for --target native (Phase N1 lowers scalars and String only)"
+        "Lyric.LlvmCodegen: type '" + n + "' is not yet supported for --target native (Phase N1 lowers scalars and String only)"
       )
     }
     case TGenericApp(head, args) -> {
@@ -171,14 +171,14 @@ pub func typeExprToNType(te: in TypeExpr): NType {
       if n == "NativePtr" and args.count == 1 {
         match args[0] {
           case TAType(inner) -> return NPtr(pointee = typeExprToNType(inner))
-          case TAValue(_) -> panic("Llvm.Codegen: NativePtr takes a type argument")
+          case TAValue(_) -> panic("Lyric.LlvmCodegen: NativePtr takes a type argument")
         }
       }
-      panic("Llvm.Codegen: generic type '" + n + "' is not yet supported for --target native (Phase N1)")
+      panic("Lyric.LlvmCodegen: generic type '" + n + "' is not yet supported for --target native (Phase N1)")
     }
     case TUnit -> NVoid
     case TParen(inner) -> typeExprToNType(inner)
-    case _ -> panic("Llvm.Codegen: this type form is not yet supported for --target native (Phase N1)")
+    case _ -> panic("Lyric.LlvmCodegen: this type form is not yet supported for --target native (Phase N1)")
   }
 }
 
@@ -437,14 +437,14 @@ func bindLocal(ctx: in Ctx, insns: in List[NInsn], name: in String, v: in NVal):
 func loadLocal(ctx: in Ctx, insns: in List[NInsn], name: in String): NVal {
   val ty = match mapGet(ctx.varTypes, name) {
     case Some(t) -> t
-    case None -> panic("Llvm.Codegen: unknown name '" + name + "' (module-level constants and non-local references are not yet supported for --target native)")
+    case None -> panic("Lyric.LlvmCodegen: unknown name '" + name + "' (module-level constants and non-local references are not yet supported for --target native)")
   }
   match ty {
     case NVoid -> NVal(ty = NVoid, value = NUndef(ty = NVoid))
     case _ -> {
       val slot = match mapGet(ctx.varSlots, name) {
         case Some(s) -> s
-        case None -> panic("Llvm.Codegen: no storage slot for '" + name + "'")
+        case None -> panic("Lyric.LlvmCodegen: no storage slot for '" + name + "'")
       }
       val dest = freshTmp(ctx)
       insns.add(NLoad(dest = dest, ty = ty, ptr = NLocal(name = slot)))
@@ -493,7 +493,7 @@ func unifyOperands(a: in NVal, b: in NVal): NType {
     }
   }
   panic(
-    "Llvm.Codegen: mixed operand types '" + nTypeToIrString(a.ty) + "' and '" + nTypeToIrString(b.ty) +
+    "Lyric.LlvmCodegen: mixed operand types '" + nTypeToIrString(a.ty) + "' and '" + nTypeToIrString(b.ty) +
       "' (insert an explicit conversion such as .toLong()/.toFloat())"
   )
 }
@@ -575,7 +575,7 @@ func emitToString(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NVal {
       if isStringNType(v.ty) {
         return v
       }
-      panic("Llvm.Codegen: .toString() on this type is not yet supported for --target native (Phase N1)")
+      panic("Lyric.LlvmCodegen: .toString() on this type is not yet supported for --target native (Phase N1)")
     }
   }
 }
@@ -598,7 +598,7 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
         return loadLocal(ctx, insns, path.segments[0])
       }
       panic(
-        "Llvm.Codegen: qualified value reference '" + modulePathJoin(path.segments) +
+        "Lyric.LlvmCodegen: qualified value reference '" + modulePathJoin(path.segments) +
           "' is not yet supported for --target native (module-level constants are Phase N2+)"
       )
     }
@@ -613,12 +613,12 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
       lowerAssign(ctx, insns, target, op, value, expr.span.startPos.line)
       NVal(ty = NVoid, value = NUndef(ty = NVoid))
     }
-    case EMatch(_, _) -> panic("Llvm.Codegen: 'match' is not yet supported for --target native (pattern matching is Phase N2)")
-    case ELambda(_, _) -> panic("Llvm.Codegen: lambdas are not yet supported for --target native (closures are Phase N2)")
-    case ETuple(_) -> panic("Llvm.Codegen: tuples are not yet supported for --target native (Phase N3)")
-    case EList(_) -> panic("Llvm.Codegen: list literals are not yet supported for --target native (collections are Phase N2/N5)")
-    case EIndex(_, _) -> panic("Llvm.Codegen: indexing is not yet supported for --target native (Phase N2)")
-    case _ -> panic("Llvm.Codegen: this expression form is not yet supported for --target native (Phase N1)")
+    case EMatch(_, _) -> panic("Lyric.LlvmCodegen: 'match' is not yet supported for --target native (pattern matching is Phase N2)")
+    case ELambda(_, _) -> panic("Lyric.LlvmCodegen: lambdas are not yet supported for --target native (closures are Phase N2)")
+    case ETuple(_) -> panic("Lyric.LlvmCodegen: tuples are not yet supported for --target native (Phase N3)")
+    case EList(_) -> panic("Lyric.LlvmCodegen: list literals are not yet supported for --target native (collections are Phase N2/N5)")
+    case EIndex(_, _) -> panic("Lyric.LlvmCodegen: indexing is not yet supported for --target native (Phase N2)")
+    case _ -> panic("Lyric.LlvmCodegen: this expression form is not yet supported for --target native (Phase N1)")
   }
 }
 
@@ -697,7 +697,7 @@ func lowerPrefix(ctx: in Ctx, insns: in List[NInsn], op: in PrefixOp, operand: i
       insns.add(NXor(dest = dest, ty = NI1, a = v.value, b = NLitInt(v = 1i64, ty = NI1)))
       NVal(ty = NI1, value = NLocal(name = dest))
     }
-    case PreRef -> panic("Llvm.Codegen: function references (&f) are not yet supported for --target native (closures are Phase N2)")
+    case PreRef -> panic("Lyric.LlvmCodegen: function references (&f) are not yet supported for --target native (closures are Phase N2)")
   }
 }
 
@@ -717,7 +717,7 @@ func binIntOp(
       emitDivGuard(ctx, insns, ty, a, b, line)
       insns.add(NSRem(dest = dest, ty = ty, a = a, b = b))
     }
-    case _ -> panic("Llvm.Codegen: unexpected integer binop")
+    case _ -> panic("Lyric.LlvmCodegen: unexpected integer binop")
   }
   NVal(ty = ty, value = NLocal(name = dest))
 }
@@ -730,7 +730,7 @@ func binFloatOp(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, a: in NValue, 
     case BMul -> insns.add(NFMul(dest = dest, a = a, b = b))
     case BDiv -> insns.add(NFDiv(dest = dest, a = a, b = b))
     case BMod -> insns.add(NFRem(dest = dest, a = a, b = b))
-    case _ -> panic("Llvm.Codegen: unexpected float binop")
+    case _ -> panic("Lyric.LlvmCodegen: unexpected float binop")
   }
   NVal(ty = NDouble, value = NLocal(name = dest))
 }
@@ -743,7 +743,7 @@ func icmpPredFor(op: in BinOp): ICmpPred {
     case BLte -> ISle
     case BGt -> ISgt
     case BGte -> ISge
-    case _ -> panic("Llvm.Codegen: unexpected comparison op")
+    case _ -> panic("Lyric.LlvmCodegen: unexpected comparison op")
   }
 }
 
@@ -755,7 +755,7 @@ func fcmpPredFor(op: in BinOp): FCmpPred {
     case BLte -> FOle
     case BGt -> FOgt
     case BGte -> FOge
-    case _ -> panic("Llvm.Codegen: unexpected float comparison op")
+    case _ -> panic("Lyric.LlvmCodegen: unexpected float comparison op")
   }
 }
 
@@ -816,7 +816,7 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
 
 func lowerStringBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, a: in NVal, b: in NVal): NVal {
   if not (isStringNType(a.ty) and isStringNType(b.ty)) {
-    panic("Llvm.Codegen: mixed String/non-String operands (call .toString() explicitly)")
+    panic("Lyric.LlvmCodegen: mixed String/non-String operands (call .toString() explicitly)")
   }
   val sTy = lyricStringNType()
   match op {
@@ -837,7 +837,7 @@ func lowerStringBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, a: in NV
     case BLte -> stringCmpTo(ctx, insns, a, b, ISle)
     case BGt -> stringCmpTo(ctx, insns, a, b, ISgt)
     case BGte -> stringCmpTo(ctx, insns, a, b, ISge)
-    case _ -> panic("Llvm.Codegen: this String operator is not yet supported for --target native")
+    case _ -> panic("Lyric.LlvmCodegen: this String operator is not yet supported for --target native")
   }
 }
 
@@ -885,10 +885,10 @@ func lowerMember(ctx: in Ctx, insns: in List[NInsn], receiver: in Expr, memberNa
       insns.add(NTrunc(dest = dest, fromTy = NI64, value = n.value, toTy = NI32))
       return NVal(ty = NI32, value = NLocal(name = dest))
     }
-    panic("Llvm.Codegen: String member '." + memberName + "' is not yet supported for --target native (Phase N1)")
+    panic("Lyric.LlvmCodegen: String member '." + memberName + "' is not yet supported for --target native (Phase N1)")
   }
   panic(
-    "Llvm.Codegen: member access '." + memberName + "' is not yet supported for --target native (records are Phase N2)"
+    "Lyric.LlvmCodegen: member access '." + memberName + "' is not yet supported for --target native (records are Phase N2)"
   )
 }
 
@@ -1100,7 +1100,7 @@ func isPackagePathExpr(ctx: in Ctx, e: in Expr): Bool {
 func lowerCallArgs(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, args: in List[CallArg]): List[NArg] {
   if args.count != sig.paramTys.count {
     panic(
-      "Llvm.Codegen: call to '" + sig.irName + "' passes " + args.count.toString() +
+      "Lyric.LlvmCodegen: call to '" + sig.irName + "' passes " + args.count.toString() +
         " argument(s) but the declaration has " +
         sig.paramTys.count.toString() +
         " (default arguments are not yet supported for --target native)"
@@ -1129,7 +1129,7 @@ func lowerCallArgs(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, args: i
           pi = pi + 1
         }
         if slot < 0 {
-          panic("Llvm.Codegen: named argument '" + argName + "' does not match a parameter of '" + sig.irName + "'")
+          panic("Lyric.LlvmCodegen: named argument '" + argName + "' does not match a parameter of '" + sig.irName + "'")
         }
         vals.add(lowerExpr(ctx, insns, value))
         slots.add(slot)
@@ -1149,7 +1149,7 @@ func lowerCallArgs(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, args: i
       vi = vi + 1
     }
     if found < 0 {
-      panic("Llvm.Codegen: no argument bound for parameter " + pi2.toString() + " of '" + sig.irName + "'")
+      panic("Lyric.LlvmCodegen: no argument bound for parameter " + pi2.toString() + " of '" + sig.irName + "'")
     }
     val declTy = typeExprToNType(sig.paramTys[pi2])
     val v = coerceTo(ctx, insns, vals[found], declTy)
@@ -1190,7 +1190,7 @@ func coerceTo(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType): N
     return NVal(ty = NI64, value = NLocal(name = dest))
   }
   panic(
-    "Llvm.Codegen: cannot pass a '" + fromStr + "' where '" + wantStr + "' is expected (insert an explicit conversion)"
+    "Lyric.LlvmCodegen: cannot pass a '" + fromStr + "' where '" + wantStr + "' is expected (insert an explicit conversion)"
   )
 }
 
@@ -1234,7 +1234,7 @@ func lowerCall(ctx: in Ctx, insns: in List[NInsn], fnExpr: in Expr, args: in Lis
       if not isPackagePathExpr(ctx, receiver) {
         match lowerScalarMethodCall(ctx, insns, receiver, memberName, args, line) {
           case Some(v) -> return v
-          case None -> panic("Llvm.Codegen: method '." + memberName + "' on this receiver is not yet supported for --target native (Phase N1)")
+          case None -> panic("Lyric.LlvmCodegen: method '." + memberName + "' on this receiver is not yet supported for --target native (Phase N1)")
         }
       }
     }
@@ -1244,7 +1244,7 @@ func lowerCall(ctx: in Ctx, insns: in List[NInsn], fnExpr: in Expr, args: in Lis
   // Static function call through the registry.
   val key = callKeyOf(fnExpr, args.count)
   if key.length == 0 {
-    panic("Llvm.Codegen: indirect calls are not yet supported for --target native (closures are Phase N2)")
+    panic("Lyric.LlvmCodegen: indirect calls are not yet supported for --target native (closures are Phase N2)")
   }
   // Resolution order: self-package qualified, then the key as written.
   val selfKey = ctx.curPkg[0] + "." + key
@@ -1253,7 +1253,7 @@ func lowerCall(ctx: in Ctx, insns: in List[NInsn], fnExpr: in Expr, args: in Lis
     case None -> {
       match mapGet(ctx.sigs, key) {
         case Some(s) -> s
-        case None -> panic("Llvm.Codegen: cannot resolve call target '" + key + "' for --target native (the callee may be outside the bundled import closure)")
+        case None -> panic("Lyric.LlvmCodegen: cannot resolve call target '" + key + "' for --target native (the callee may be outside the bundled import closure)")
       }
     }
   }
@@ -1362,13 +1362,13 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
           match pat.kind {
             case PBinding(name, inner) -> {
               match inner {
-                case Some(_) -> panic("Llvm.Codegen: nested binding patterns are not yet supported for --target native")
+                case Some(_) -> panic("Lyric.LlvmCodegen: nested binding patterns are not yet supported for --target native")
                 case None -> bindLocal(ctx, insns, name, v)
               }
             }
             case PWildcard -> {
             }
-            case _ -> panic("Llvm.Codegen: destructuring val patterns are not yet supported for --target native (Phase N2)")
+            case _ -> panic("Lyric.LlvmCodegen: destructuring val patterns are not yet supported for --target native (Phase N2)")
           }
         }
         case LBLet(name, tyOpt, init) -> {
@@ -1390,7 +1390,7 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
                   val zero = zeroValueOf(ty)
                   bindLocal(ctx, insns, name, NVal(ty = ty, value = zero))
                 }
-                case None -> panic("Llvm.Codegen: 'var' without initializer needs a type annotation")
+                case None -> panic("Lyric.LlvmCodegen: 'var' without initializer needs a type annotation")
               }
             }
           }
@@ -1416,31 +1416,31 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
     }
     case SBreak(label) -> {
       match label {
-        case Some(_) -> panic("Llvm.Codegen: labeled break is not yet supported for --target native")
+        case Some(_) -> panic("Lyric.LlvmCodegen: labeled break is not yet supported for --target native")
         case None -> {
         }
       }
       if ctx.loopBreak.count == 0 {
-        panic("Llvm.Codegen: 'break' outside a loop")
+        panic("Lyric.LlvmCodegen: 'break' outside a loop")
       }
       insns.add(NBr(label = ctx.loopBreak[ctx.loopBreak.count - 1]))
       insns.add(NLabel(name = freshLabel(ctx, "dead")))
     }
     case SContinue(label) -> {
       match label {
-        case Some(_) -> panic("Llvm.Codegen: labeled continue is not yet supported for --target native")
+        case Some(_) -> panic("Lyric.LlvmCodegen: labeled continue is not yet supported for --target native")
         case None -> {
         }
       }
       if ctx.loopCont.count == 0 {
-        panic("Llvm.Codegen: 'continue' outside a loop")
+        panic("Lyric.LlvmCodegen: 'continue' outside a loop")
       }
       insns.add(NBr(label = ctx.loopCont[ctx.loopCont.count - 1]))
       insns.add(NLabel(name = freshLabel(ctx, "dead")))
     }
     case SWhile(label, cond, body) -> {
       match label {
-        case Some(_) -> panic("Llvm.Codegen: labeled while is not yet supported for --target native")
+        case Some(_) -> panic("Lyric.LlvmCodegen: labeled while is not yet supported for --target native")
         case None -> {
         }
       }
@@ -1463,16 +1463,16 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
     case SExpr(ex) -> {
       val _ = lowerExpr(ctx, insns, ex)
     }
-    case SFor(_, _, _, _) -> panic("Llvm.Codegen: 'for' loops are not yet supported for --target native (Phase N2; use 'while')")
-    case SLoop(_, _) -> panic("Llvm.Codegen: 'loop' is not yet supported for --target native (use 'while true')")
-    case SThrow(_) -> panic("Llvm.Codegen: 'throw' is not supported for --target native (D-N-003: panics abort)")
-    case STry(_, _, _) -> panic("Llvm.Codegen: try/catch is not supported for --target native (D-N-003: no unwinding)")
-    case SDefer(_) -> panic("Llvm.Codegen: 'defer' is not yet supported for --target native (Phase 2, D-N-003)")
+    case SFor(_, _, _, _) -> panic("Lyric.LlvmCodegen: 'for' loops are not yet supported for --target native (Phase N2; use 'while')")
+    case SLoop(_, _) -> panic("Lyric.LlvmCodegen: 'loop' is not yet supported for --target native (use 'while true')")
+    case SThrow(_) -> panic("Lyric.LlvmCodegen: 'throw' is not supported for --target native (D-N-003: panics abort)")
+    case STry(_, _, _) -> panic("Lyric.LlvmCodegen: try/catch is not supported for --target native (D-N-003: no unwinding)")
+    case SDefer(_) -> panic("Lyric.LlvmCodegen: 'defer' is not yet supported for --target native (Phase 2, D-N-003)")
     case SInvariant(_) -> {
       // Loop invariants are proof obligations (lyric prove); they carry
       // no runtime lowering here.
     }
-    case _ -> panic("Llvm.Codegen: this statement form is not yet supported for --target native (Phase N1)")
+    case _ -> panic("Lyric.LlvmCodegen: this statement form is not yet supported for --target native (Phase N1)")
   }
 }
 
@@ -1493,9 +1493,9 @@ func assignTargetName(target: in Expr): String {
       if path.segments.count == 1 {
         return path.segments[0]
       }
-      panic("Llvm.Codegen: assignment to a qualified path is not yet supported for --target native")
+      panic("Lyric.LlvmCodegen: assignment to a qualified path is not yet supported for --target native")
     }
-    case _ -> panic("Llvm.Codegen: assignment to this target form is not yet supported for --target native (fields are Phase N2)")
+    case _ -> panic("Lyric.LlvmCodegen: assignment to this target form is not yet supported for --target native (fields are Phase N2)")
   }
 }
 
@@ -1505,11 +1505,11 @@ func lowerAssign(
   val name = assignTargetName(target)
   val ty = match mapGet(ctx.varTypes, name) {
     case Some(t) -> t
-    case None -> panic("Llvm.Codegen: assignment to unknown variable '" + name + "'")
+    case None -> panic("Lyric.LlvmCodegen: assignment to unknown variable '" + name + "'")
   }
   val slot = match mapGet(ctx.varSlots, name) {
     case Some(s) -> s
-    case None -> panic("Llvm.Codegen: no storage slot for '" + name + "'")
+    case None -> panic("Lyric.LlvmCodegen: no storage slot for '" + name + "'")
   }
   val rhs = lowerExpr(ctx, insns, value)
   val newVal = match op {
@@ -1607,7 +1607,7 @@ func lowerFunction(modCtx: in Ctx, pkg: in String, fn: in FunctionDecl, irName: 
     )
   }
   match fn.generics {
-    case Some(_) -> panic("Llvm.Codegen: un-monomorphized generic function '" + fn.name + "' reached the native backend")
+    case Some(_) -> panic("Lyric.LlvmCodegen: un-monomorphized generic function '" + fn.name + "' reached the native backend")
     case None -> {
     }
   }
@@ -1623,7 +1623,7 @@ func lowerFunction(modCtx: in Ctx, pkg: in String, fn: in FunctionDecl, irName: 
     match p.mode {
       case PMIn -> {
       }
-      case _ -> panic("Llvm.Codegen: out/inout parameters are not yet supported for --target native")
+      case _ -> panic("Lyric.LlvmCodegen: out/inout parameters are not yet supported for --target native")
     }
     val pty = typeExprToNType(p.ty)
     params.add(NParam(name = "arg." + p.name, ty = pty))
@@ -1648,7 +1648,7 @@ func lowerFunction(modCtx: in Ctx, pkg: in String, fn: in FunctionDecl, irName: 
         case FBBlock(b) -> lowerBlockValue(ctx, body, b)
       }
     }
-    case None -> panic("Llvm.Codegen: function '" + fn.name + "' has no body")
+    case None -> panic("Lyric.LlvmCodegen: function '" + fn.name + "' has no body")
   }
   // Fall-off return: yield the trailing value (or void).
   match retTy {
@@ -1780,7 +1780,7 @@ func synthCMain(mainPkg: in String, userMainRet: in NType, userMainIr: in String
       body.add(NCallVoid(fn = NGlobal(name = userMainIr), args = noArgs))
       body.add(NRet(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
     }
-    case _ -> panic("Llvm.Codegen: `func main` must return Int or Unit for --target native")
+    case _ -> panic("Lyric.LlvmCodegen: `func main` must return Int or Unit for --target native")
   }
   val attrs: List[String] = newList()
   NFunc(
@@ -1800,7 +1800,7 @@ func synthCMain(mainPkg: in String, userMainRet: in NType, userMainIr: in String
 /// carry the reachable slices of bundled stdlib packages.
 pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NPackage {
   if units.count == 0 {
-    panic("Llvm.Codegen: empty compilation bundle")
+    panic("Lyric.LlvmCodegen: empty compilation bundle")
   }
   val mainPkg = units[0].pkgName
   val sigs = buildSigs(units)
@@ -1895,7 +1895,7 @@ pub func codegenNativePackage(file: in SourceFile, triple: in String): NPackage 
       }
       case IExternType(_) -> {
       }
-      case _ -> panic("Llvm.Codegen: this item form is not yet supported for --target native (Phase N1 lowers functions and extern funcs)")
+      case _ -> panic("Lyric.LlvmCodegen: this item form is not yet supported for --target native (Phase N1 lowers functions and extern funcs)")
     }
     i = i + 1
   }

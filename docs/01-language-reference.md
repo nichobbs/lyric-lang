@@ -1386,6 +1386,47 @@ func useExternalClass(): Unit {
 
 All Lyric code is AOT-compatible. The compiler targets either JIT or Native AOT depending on build configuration. No reflection, no runtime code generation, no `System.Reflection.Emit` usage in compiled output.
 
+### 11.6 Native-target FFI: `extern func` and `NativePtr[T]`
+
+The native backend (`--target native`, D-N-001..014) binds to C symbols
+through a dedicated declaration form, parallel to (not reusing) the
+BCL-specific `@externTarget` machinery:
+
+```
+extern func write(fd: Int, buf: NativePtr[Byte], n: Long): Long = "write"
+extern func strlen(s: NativePtr[Byte]): Long = "strlen"
+```
+
+- The `= "symbol"` clause is **mandatory** (P0275) and names a bare C
+  symbol (P0276 when not a string literal).  The native backend emits an
+  LLVM `declare` for the symbol and calls it directly with the C calling
+  convention; parameter and return types map per
+  `native/plan/03-type-mapping.md` (`Int`→`i32`, `Long`→`i64`,
+  `Float`→`double`, `Bool`→`i1`, `Byte`→`i8`, `String`→`%LyricString*`,
+  `NativePtr[T]`→`T*`).
+- `NativePtr[T]` is a raw, unmanaged pointer: no ARC header, never
+  retained or released.  It may appear only in `extern func` signatures
+  and inside `lyric-stdlib/std/_kernel_native/` packages, whose safe
+  `pub func` wrappers are the supported surface.  (Mode-checker
+  enforcement of this boundary — diagnostic `N0100`, plus the
+  `@unsafe_ffi` opt-out and the `nativeAddrOf` builtin — is specified in
+  `native/plan/05-ffi-design.md` and tracked as Phase N4 follow-up
+  work; until it lands the boundary is enforced by review convention,
+  as the `_kernel/` `@externTarget` boundary originally was.)
+- On the managed targets an `extern func` item is inert: it
+  type-checks like a body-less function and the MSIL/JVM backends emit
+  nothing for it (`_kernel_native/` packages are only loaded by native
+  builds).
+
+Target-specific kernel selection follows the `_kernel_jvm/` precedent:
+`_kernel_native/<module>.l` declares the **same** package as
+`_kernel/<module>.l` (e.g. `Std.ConsoleHost`) and the native source
+loader prefers it by basename, so the public `Std.*` surface is
+identical on every target.  `@cfg(target = "dotnet" | "jvm" | "native")`
+additionally gates individual items per target; the predicate resolves
+against a `target.<name>` pseudo-feature the CLI injects (D-N-013) and
+is exempt from the `F0013` declared-features check.
+
 ## 12. Standard library
 
 The standard library is its own package set, versioned independently of the language. Modules:
@@ -1435,6 +1476,8 @@ method-syntax form.
 ### 13.1 Compiler
 
 `lyric build` — compiles a project to a framework-dependent `.dll` (the fast inner loop). After a successful build the compiler prints elapsed time: `built foo.dll in 342ms` for a single-package build, or `built foo.dll (3 package(s), 1204ms)` for a project build. The default output name and artifacts are **target-aware**: `--target dotnet` (the default) writes `<source-stem>.dll` alongside a `<source-stem>.runtimeconfig.json` for `dotnet exec`, while `--target jvm` writes a self-contained runnable `<source-stem>.jar` (run with `java -jar`) and emits **no** `runtimeconfig.json` (a .NET-only artifact). An explicit `-o <output>` is honoured verbatim for either target. `lyric build --release <source.l>` produces a **self-contained Native AOT binary** (no managed runtime required at the deployment target): the compiler builds the managed DLL, generates a host project that references it plus the stdlib bundle, and runs `dotnet publish -p:PublishAot=true`, surfacing ILC trim/AOT warnings. `--rid <rid>` overrides the host runtime identifier (default: auto-detected). The native binary is written to the source stem (no extension) unless `-o` overrides it.
+
+`lyric build <source.l> --target native [-o <out>] [--triple <llvm-triple>] [--opt 0|1|2|3|s]` — compiles through the **LLVM native backend** (D-N-001..014) to a self-contained POSIX executable: the self-hosted front/middle end lowers the user package plus the reachable slice of its stdlib import closure to LLVM textual IR, then drives `clang` to optimise and link against the `lyric_rt.a` runtime (ARC intrinsics, strings, collections, POSIX helpers), `libm`, and `libpthread`. The default output is the source stem with **no extension**. `--triple` cross-compiles (defaults to the host triple per `clang -print-effective-triple`); `--opt` sets the clang optimisation level (default `2`). When `clang` is not installed the diagnostic (`N0001`) names the missing tool and leaves the emitted `.ll` next to the requested output so it can be compiled manually; `lyric_rt.a` resolves from `$LYRIC_RT_PATH`, the installed `lib/` layout, or the dev tree's `lyric-rt/build/` (`N0003` when absent). Phase 1 scope: Linux x86-64/AArch64 and macOS AArch64; scalar programs and Strings (records, unions, pattern matching, closures, and collections land in Phase N2+, and reachable code using them fails the build with a construct-naming diagnostic); `async func` is rejected with `N0099`; manifest (multi-package) native builds are not yet supported.
 
 `--release` is supported for both **single-file** and **project-mode** (multi-package `lyric.toml`) programs on the **.NET** target. In project mode the entry package — the one whose source declares a zero-argument `func main()` — is auto-detected across all `[project.packages]` entries; exactly one package must declare `func main()` (zero or multiple entries are a hard error). Local path dependencies declared in `[dependencies]` are automatically collected as AOT linker references. The JVM target (GraalVM `native-image`, designed behind the same `ReleaseTarget` seam) is not yet implemented and fails loud rather than silently producing a managed artifact (#1975).
 

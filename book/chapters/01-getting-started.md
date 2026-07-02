@@ -254,10 +254,12 @@ Core commands you will use constantly:
 | `lyric` | Build the current project (discovers the nearest `lyric.toml`) |
 | `lyric build <file.l>` | Compile for .NET (default); produce a `.dll` + `.runtimeconfig.json`; prints elapsed time on success |
 | `lyric build --target jvm <file.l>` | Compile for the JVM; produce a runnable `.jar` (no `runtimeconfig.json`) |
+| `lyric build --target native <file.l>` | Compile to a self-contained POSIX executable via the LLVM backend + clang |
 | `lyric build` | Build the discovered project (no source arg needed) |
 | `lyric run <file.l>` | Compile and immediately execute a single file |
 | `lyric run` | Build and run the discovered project (no source arg needed) |
 | `lyric run --target jvm` | Build and run the project on the JVM target |
+| `lyric run --target native <file.l>` | Build the native binary and run it directly |
 | `lyric --help` | Print the grouped command list |
 | `lyric test <file.l>` | Run `test` declarations in a `@test_module` file (TAP-shaped output, exit 1 on failure) |
 | `lyric test` | Run tests for the discovered project; falls back to scanning packages for `@test_module` |

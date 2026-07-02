@@ -1,4 +1,4 @@
-//! llvm_ir_self_test.l — self-test for `Llvm.Types` + `Llvm.Ir` (N0.2/N0.3).
+//! llvm_ir_self_test.l — self-test for `Lyric.LlvmTypes` + `Lyric.LlvmIr` (N0.2/N0.3).
 //!
 //! Asserts the `.ll` renderings of the type model, SSA operands, every
 //! instruction shape the scalar codegen emits, and a whole minimal module.
@@ -7,17 +7,17 @@
 //! runs anywhere.
 //!
 //! Run via native `lyric test` with LYRIC_LOAD_COMPILER=1 (required because
-//! the test imports the `Llvm.*` compiler packages):
-//!   LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/llvm/llvm_ir_self_test.l
+//! the test imports the `Lyric.Llvm*` compiler packages):
+//!   LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/lyric/llvm_ir_self_test.l
 @test_module
-package Llvm.IrSelfTest
+package Lyric.LlvmIrSelfTest
 
 import Std.Core
 import Std.Collections
 import Std.Testing
 import Std.Encoding as Encoding
-import Llvm.Types
-import Llvm.Ir
+import Lyric.LlvmTypes
+import Lyric.LlvmIr
 
 test "scalar types render" {
   assertEqual(nTypeToIrString(NI32), "i32", "i32")

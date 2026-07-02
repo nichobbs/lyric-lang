@@ -7,14 +7,13 @@
 //!
 //! Naming note: the plan sketches the function-pointer case as `NFunc`,
 //! but that name is taken by the function-definition record in
-//! `Llvm.Lowering` (also from the plan); the case is `NFnPtr` here so the
+//! `Lyric.LlvmLowering` (also from the plan); the case is `NFnPtr` here so the
 //! two can coexist in one importing scope.
-package Llvm.Types
+package Lyric.LlvmTypes
 
 import Std.Core
 import Std.Collections
 import Std.String as Str
-import Llvm.Kernel
 
 pub union NType {
   case NVoid
@@ -71,7 +70,7 @@ pub union FCmpPred {
 
 /// Render an `NType` as its `.ll` spelling.  Struct types render as the
 /// `%Name` reference; the definition line is emitted separately by
-/// `Llvm.Ir.emitTypeDefn`.
+/// `Lyric.LlvmIr.emitTypeDefn`.
 pub func nTypeToIrString(t: in NType): String {
   match t {
     case NVoid -> "void"
@@ -151,17 +150,26 @@ pub func quoteIrIdent(name: in String): String {
   }
 }
 
+// IEEE-754 bit extraction for exact float-constant rendering.  LLVM
+// textual IR requires float constants to be bit-exact; the only
+// always-exact spelling is the 0x-prefixed 16-hex-digit form of the
+// raw double bits.
+@externTarget("System.BitConverter.DoubleToInt64Bits")
+func doubleToInt64Bits(v: in Double): Long = ()
+
+// Two's-complement hex of a signed 64-bit value (lowercase, unpadded).
+// A BCL boundary rather than `.shr`/`.and` bit-fiddling: the bitwise
+// integer methods are self-hosted-only surface (#1610) that the frozen
+// F# mint seed cannot compile, and this package must stay
+// seed-compilable for the bootstrap.
+@externTarget("System.Convert.ToString")
+func longToHexRaw(v: in Long, toBase: in Int): String = ()
+
 /// The 16-hex-digit spelling of a Long's raw bits (no 0x prefix).
 pub func longToHex16(bits: in Long): String {
-  val digits = "0123456789ABCDEF"
-  var acc = ""
-  var shift = 60
-  while shift >= 0 {
-    val nibble = bits.shr(shift).and(15i64)
-    // nibble is 0..15; index into the digit table.
-    val idx = nibble.toInt()
-    acc = acc + Str.substring(digits, idx, 1)
-    shift = shift - 4
+  var acc = Str.toUpper(longToHexRaw(bits, 16))
+  while acc.length < 16 {
+    acc = "0" + acc
   }
   acc
 }

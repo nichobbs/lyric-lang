@@ -52,6 +52,10 @@ func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in Com
     return 1
   }
   match target {
+    case Native -> {
+      printErr("run: --target native does not yet support manifest (multi-package) projects")
+      return 1
+    }
     case Jvm -> {
       val execArgs: List[String] = newList()
       execArgs.add("-jar")
@@ -148,10 +152,21 @@ union WatchAction {
 func runOnce(sourcePath: in String, userArgs: in List[String], target: in CompileTarget): Int {
   val srcDir = Path.dirname(sourcePath)
   val stem = stemOf(Path.basename(sourcePath), 2)
-  val outPath = match target {
-    case Jvm -> Path.join(Path.join(srcDir, ".lyric-run"), stem + ".jar")
-    case Dotnet -> Path.join(Path.join(srcDir, ".lyric-run"), stem + ".dll")
+  // var-mutation shape: a value-position match over CompileTarget
+  // mis-lowers under the stage-0 emitter (see cmdRun's runTarget note).
+  var outExt = ""
+  match target {
+    case Jvm -> {
+      outExt = ".jar"
+    }
+    case Dotnet -> {
+      outExt = ".dll"
+    }
+    case Native -> {
+      outExt = ""
+    }
   }
+  val outPath = Path.join(Path.join(srcDir, ".lyric-run"), stem + outExt)
 
   val buildExit = buildOne(sourcePath, outPath, target, None)
   if buildExit != 0 {
@@ -188,6 +203,20 @@ func runOnce(sourcePath: in String, userArgs: in List[String], target: in Compil
         case Ok(code) -> code
         case Err(e) -> {
           printErr("run: failed to start dotnet: " + IOError.message(e))
+          1
+        }
+      }
+    }
+    case Native -> {
+      // A native build IS the executable; run it directly.
+      val execArgs: List[String] = newList()
+      for a in userArgs.toArray() {
+        execArgs.add(a)
+      }
+      match Process.run(outPath, execArgs) {
+        case Ok(code) -> code
+        case Err(e) -> {
+          printErr("run: failed to start " + outPath + ": " + IOError.message(e))
           1
         }
       }
@@ -311,10 +340,12 @@ func cmdRun(argv: in slice[String]): Int {
     case Some(t) -> {
       if t == "jvm" {
         runTarget = Jvm
+      } else if t == "native" {
+        runTarget = Native
       } else if t == "dotnet" {
         runTarget = Dotnet
       } else {
-        printErr("run: unknown target '" + t + "' — expected dotnet or jvm")
+        printErr("run: unknown target '" + t + "' — expected dotnet, jvm, or native")
         return 1
       }
     }

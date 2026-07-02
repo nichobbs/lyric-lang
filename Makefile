@@ -64,6 +64,7 @@ BUILD_CONFIG ?= Release
 AOT_BIN := bootstrap/src/Lyric.Cli.Aot/bin/$(BUILD_CONFIG)/net10.0/lyric
 
 .PHONY: help stage1 stage1-fast aot lyric selfhosted-compiler \
+        native-rt test-native-rt test-native \
         stage2 stage3 run-stage2 \
         mint ilverify selfhost-check \
         test test-lexer test-parser test-typechecker test-emitter \
@@ -221,6 +222,22 @@ self-test: ## Run one self-hosted self-test, e.g. `make self-test NAME=parser`
 	@if [ -z "$(NAME)" ]; then echo "usage: make self-test NAME=parser"; exit 2; fi
 	dotnet run --project bootstrap/tests/Lyric.Emitter.Tests -c $(BUILD_CONFIG) \
 	  -- --filter-test-case "$(NAME)_self_test_passes"
+
+# ── Native backend (LLVM) ───────────────────────────────────────────────────
+# The Lyric.Llvm* packages build into stage 1 automatically
+# (Lyric.Emitter imports Lyric.LlvmBridge, so they are in the Lyric.Cli
+# closure); these
+# targets cover the C runtime and the backend self-tests.
+
+native-rt: ## Build the native runtime static library (lyric-rt/build/lyric_rt.a)
+	$(MAKE) -C lyric-rt
+
+test-native-rt: ## Run the lyric-rt C unit tests
+	$(MAKE) -C lyric-rt test
+
+test-native: native-rt ## Run the native backend self-tests (needs clang and ./bin/lyric)
+	LYRIC_LOAD_COMPILER=1 ./bin/lyric test lyric-compiler/lyric/llvm_ir_self_test.l
+	LYRIC_LOAD_COMPILER=1 ./bin/lyric test lyric-compiler/lyric/llvm_codegen_self_test.l
 
 # ── Maven resolver ──────────────────────────────────────────────────────────
 

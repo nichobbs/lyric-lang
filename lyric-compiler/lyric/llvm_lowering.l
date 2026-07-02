@@ -1,16 +1,16 @@
-//! llvm/lowering.l — Llvm.Lowering (N1.1).
+//! llvm/lowering.l — Lyric.LlvmLowering (N1.1).
 //!
 //! Thin delegation layer between the codegen's `NPackage` and the `.ll`
 //! text serialiser, mirroring the `Msil.Lowering` / `Jvm.Lowering`
 //! package boundary so the bridge composes the same way on every
-//! backend.  The IR data types live in `Llvm.Ir` (they are shared by
+//! backend.  The IR data types live in `Lyric.LlvmIr` (they are shared by
 //! the serialiser); this package owns the "IR → text" step.
-package Llvm.Lowering
+package Lyric.LlvmLowering
 
 import Std.Core
 import Std.Collections
-import Llvm.Types
-import Llvm.Ir
+import Lyric.LlvmTypes
+import Lyric.LlvmIr
 
 /// Render one function: a `declare` line for externs, a full
 /// `define { ... }` block otherwise.
