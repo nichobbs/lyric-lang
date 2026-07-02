@@ -904,7 +904,7 @@ pub func lowerRecord(
             flags = 0x0001,
             // public
             name = f.name,
-            fieldType = typeExprToJvmErased(f.ty, pkgName, tps)
+            fieldType = typeExprToJvmErasedExtern(f.ty, pkgName, tps, externTypes)
           )
         )
       }
@@ -972,7 +972,7 @@ pub func lowerRecord(
 // ─────────────────────────────────────────────────────────────────────────────
 // §10. Union lowering.
 // ─────────────────────────────────────────────────────────────────────────────
-pub func lowerUnion(decl: in UnionDecl, pkgName: in String): LSealedUnion {
+pub func lowerUnion(decl: in UnionDecl, pkgName: in String, externTypes: in Map[String, String]): LSealedUnion {
   val baseName = pkgName + "/" + decl.name
   // Generic type params erase to `Object` (no reified generics on the JVM —
   // docs/44 M-1 / Q-J001), so a `T`-typed payload field is declared `Object`.
@@ -987,11 +987,17 @@ pub func lowerUnion(decl: in UnionDecl, pkgName: in String): LSealedUnion {
     while fi < c.fields.count {
       match c.fields[fi] {
         case UFNamed(name, ty, _) -> {
-          caseFields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvmErased(ty, pkgName, tps)))
+          caseFields.add(
+            LField(flags = 0x0001, name = name, fieldType = typeExprToJvmErasedExtern(ty, pkgName, tps, externTypes))
+          )
         }
         case UFPos(ty, _) -> {
           caseFields.add(
-            LField(flags = 0x0001, name = "field" + toString(fi), fieldType = typeExprToJvmErased(ty, pkgName, tps))
+            LField(
+              flags = 0x0001,
+              name = "field" + toString(fi),
+              fieldType = typeExprToJvmErasedExtern(ty, pkgName, tps, externTypes)
+            )
           )
         }
       }
@@ -1227,9 +1233,9 @@ func buildProtected(
     match decl.members[mi] {
       case PMField(pf) -> {
         match pf {
-          case PFVar(name, ty, _, _) -> fields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvm(ty, pkgName)))
-          case PFLet(name, ty, _, _) -> fields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvm(ty, pkgName)))
-          case PFImmutable(f) -> fields.add(LField(flags = 0x0001, name = f.name, fieldType = typeExprToJvm(f.ty, pkgName)))
+          case PFVar(name, ty, _, _) -> fields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvmExtern(ty, pkgName, externTypes)))
+          case PFLet(name, ty, _, _) -> fields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvmExtern(ty, pkgName, externTypes)))
+          case PFImmutable(f) -> fields.add(LField(flags = 0x0001, name = f.name, fieldType = typeExprToJvmExtern(f.ty, pkgName, externTypes)))
         }
       }
       case PMEntry(ed) -> {
@@ -2598,6 +2604,18 @@ func wireExposes(decl: in WireDecl, name: in String): Bool {
 // case-class field generation in lowerUnion so the binding-site field names
 // and types agree.  See JvmCaseField.
 pub func collectFileCases(file: in SourceFile, into: in Map[String, List[JvmCaseField]]): Unit {
+  val noExternCfc: Map[String, String] = newMap()
+  collectFileCasesExtern(file, into, noExternCfc)
+}
+
+// As `collectFileCases`, but resolving field types through the file's
+// extern-type table (own declarations + imported seed) so a field typed by
+// an imported extern type registers the real JVM class.
+pub func collectFileCasesExtern(
+  file: in SourceFile,
+  into: in Map[String, List[JvmCaseField]],
+  externTypes: in Map[String, String],
+): Unit {
   val owner = segmentsToJvmPath(file.packageDecl.path.segments)
   var i = 0
   while i < file.items.count {
@@ -2616,8 +2634,8 @@ pub func collectFileCases(file: in SourceFile, into: in Map[String, List[JvmCase
             var fi = 0
             while fi < c.fields.count {
               match c.fields[fi] {
-                case UFNamed(name, ty, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmErased(ty, owner, tps)))
-                case UFPos(ty, _) -> flds.add(JvmCaseField(name = "field" + toString(fi), ty = typeExprToJvmErased(ty, owner, tps)))
+                case UFNamed(name, ty, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmErasedExtern(ty, owner, tps, externTypes)))
+                case UFPos(ty, _) -> flds.add(JvmCaseField(name = "field" + toString(fi), ty = typeExprToJvmErasedExtern(ty, owner, tps, externTypes)))
               }
               fi = fi + 1
             }
@@ -2634,7 +2652,7 @@ pub func collectFileCases(file: in SourceFile, into: in Map[String, List[JvmCase
           var mi = 0
           while mi < decl.members.count {
             match decl.members[mi] {
-              case RMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErased(f.ty, owner, tps)))
+              case RMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErasedExtern(f.ty, owner, tps, externTypes)))
               case _ -> {
               }
             }
@@ -2656,9 +2674,9 @@ pub func collectFileCases(file: in SourceFile, into: in Map[String, List[JvmCase
             match decl.members[mi] {
               case PMField(pf) -> {
                 match pf {
-                  case PFVar(name, ty, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvm(ty, owner)))
-                  case PFLet(name, ty, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvm(ty, owner)))
-                  case PFImmutable(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvm(f.ty, owner)))
+                  case PFVar(name, ty, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes)))
+                  case PFLet(name, ty, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes)))
+                  case PFImmutable(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmExtern(f.ty, owner, externTypes)))
                 }
               }
               case _ -> ()
@@ -2746,6 +2764,20 @@ pub func collectFileCtors(file: in SourceFile, into: in Map[String, String]): Un
 // simple `PBinding` form participates; destructuring module-level vals emit no
 // host field and so are not registered (m-2).
 pub func collectFileVals(file: in SourceFile, owner: in String, into: in Map[String, JvmType]): Unit {
+  val noExtern: Map[String, String] = newMap()
+  collectFileValsExtern(file, owner, into, noExtern)
+}
+
+// As `collectFileVals`, but resolving a module val's declared type through the
+// file's extern-type table so `val rdr: JBufferedReader = …` carries the real
+// JVM class (`java/io/BufferedReader`) instead of the in-package
+// `<pkg>/JBufferedReader` guess (NoClassDefFoundError at <clinit>).
+pub func collectFileValsExtern(
+  file: in SourceFile,
+  owner: in String,
+  into: in Map[String, JvmType],
+  externTypes: in Map[String, String],
+): Unit {
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -2753,7 +2785,10 @@ pub func collectFileVals(file: in SourceFile, owner: in String, into: in Map[Str
         match decl.pattern.kind {
           case PBinding(name, _) -> {
             if not into.containsKey(name) {
-              val vty = match decl.ty { case Some(te) -> typeExprToJvm(te, owner); case None -> inferValType(decl.init, owner) }
+              val vty = match decl.ty {
+                case Some(te) -> typeExprToJvmExtern(te, owner, externTypes)
+                case None -> inferValType(decl.init, owner)
+              }
               into.add(name, vty)
             }
           }
@@ -3006,7 +3041,14 @@ func prelowerModuleVals(
           case PBinding(name, _) -> {
             val initInsns: List[LInsn] = newList()
             val valTy = lowerExpr(valInitCtx, initInsns, decl.init)
-            val fieldTy = match decl.ty { case Some(te) -> typeExprToJvm(te, pkgName); case None -> valTy }
+            // Resolve the declared type through the extern-type table so a
+            // module val of extern type (`val rdr: JBufferedReader = …`)
+            // carries the real JVM class, not the in-package guess
+            // (NoClassDefFoundError at <clinit>).
+            val fieldTy = match decl.ty {
+              case Some(te) -> typeExprToJvmExtern(te, pkgName, valInitCtx.externTypes)
+              case None -> valTy
+            }
             coerceArgTo(initInsns, valTy, fieldTy)
             // Overwrite the `collectFileVals`/`inferValType` guess with the real
             // field type so bare reads emit the matching `getstatic` descriptor.
@@ -3100,7 +3142,7 @@ pub func codegenPackageWithSigsSeeded(
   // type) so a bare reference to one resolves to `getstatic <hostClass>.<name>`
   // in every function of this package.
   val moduleVals: Map[String, JvmType] = newMap()
-  collectFileVals(file, pkgName, moduleVals)
+  collectFileValsExtern(file, pkgName, moduleVals, externTypes)
   // J3 M-3: collect opaque-type class names so field reads on opaque receivers
   // route through the `$<name>()` accessor methods instead of a direct getfield.
   val opaqueTypes: Map[String, Bool] = newMap()
@@ -3369,7 +3411,7 @@ pub func codegenPackageWithSigsSeeded(
         )
       }
       case IUnion(decl) -> {
-        items.add(LPSealedUnion(su = lowerUnion(decl, pkgName)))
+        items.add(LPSealedUnion(su = lowerUnion(decl, pkgName, externTypes)))
       }
       case IConst(_) -> {
       }

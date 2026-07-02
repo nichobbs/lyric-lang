@@ -18,11 +18,12 @@ import Std.Collections
 import Std.Errors
 import Std.FileHost
 
-/// File metadata: last write time (stored as DateTime for comparison).
-extern type DateTime = "System.DateTime"
-
+/// File metadata: last write time, stored as the kernel's opaque
+/// `FileTime` (System.DateTime on .NET, boxed epoch-milliseconds on the
+/// JVM) and compared via `hostDateTimeGreaterThan` — no extern type is
+/// declared here; the kernel owns the boundary.
 pub record FileStat {
-  modifiedAt: DateTime
+  modifiedAt: FileTime
 }
 
 /// Compare two file modification times. Returns true if `a` is newer than `b`.
@@ -294,15 +295,26 @@ pub func listDirs(dir: in String): Result[List[String], IOError] {
   }
 }
 
-/// Get file modification time for `path`.
+/// Get the modification time for `path` (a file or a directory).
 ///
 /// Returns `Err(InvalidPath)` for empty paths, `Err(FileNotFound)` if
-/// the host reports the file is missing, and `Err(IoError)` for any
-/// other host failure (permission, device, …).
+/// the path names neither a file nor a directory, and `Err(IoError)`
+/// for any other host failure (permission, device, …).
+///
+/// The existence probe is explicit because neither host timestamp API
+/// reports a missing path: the BCL's `File.GetLastWriteTimeUtc` returns
+/// the 1601-01-01 sentinel and the JDK's `File.lastModified()` returns
+/// 0 — without the probe a missing path produced `Ok` with a garbage
+/// timestamp.  A path deleted between the probe and the read (TOCTOU)
+/// still yields that sentinel timestamp, matching the pre-probe
+/// behaviour for the racing case only.
 @stable(since = "1.0")
 pub func stat(path: in String): Result[FileStat, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
+  }
+  if not (hostFileExists(path) or hostDirectoryExists(path)) {
+    return Err(error = FileNotFound(path = path))
   }
   return try {
     val modifiedAt = hostGetLastWriteTimeUtc(path)

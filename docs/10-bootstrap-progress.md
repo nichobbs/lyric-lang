@@ -26699,3 +26699,125 @@ itself, macOS-specific) and this diagnostic will have ruled out the
 
 **Related:** #4698, D-progress-544, run
 https://github.com/nichobbs/lyric-lang/actions/runs/28623090504 (#1773).
+### D-progress-555 — JVM: static-field auto-FFI; pure-Lyric file/console kernels; `in`/`out`/`inout` as member names (band J6, epic #2663)
+
+**Shipped.** The band-J6 batch that makes `Std.File` and `Std.Console`
+work end-to-end on `--target jvm`, removing the last two packages the
+bundled compile skipped (the named J003 entries):
+
+- **Static-field auto-FFI.** The pure-Lyric class reader
+  (`jvm/class_reader.l`) now parses public fields (reusing the
+  `ClassMethod` shape with the field descriptor); `Jvm.AutoFfi` gains
+  `findStaticField` (superclass-chain walk, declared class wins); and
+  two codegen sites resolve static fields as `getstatic` from JDK
+  metadata: a bare extern-type member read (`JSystem.in`,
+  `Duration.ZERO`) and a zero-parameter `@externTarget` whose member
+  names a field.  This was the missing FFI primitive noted since the
+  `time_host.l` rewrite (factory calls stood in for constants).
+- **Parser: mode keywords as member names.** `in`/`out`/`inout` are
+  accepted after `.` (member position is unambiguous — only a name can
+  follow), so `System.in` parses; joins the existing `and`/`or`/`xor`
+  member-name carve-out.  All other keywords remain P0081.
+- **`_kernel_jvm/file_host.l` rewrite.** Pure Lyric over `java.io.File`
+  / `FileInputStream` / `FileOutputStream` — the previous version
+  routed every function through a `lyric.stdlib.jvm.FileHost` class
+  that never existed.  UTF-8 text I/O via whole-file bytes +
+  `String(byte[], "UTF-8")`; absolute-path enumeration over
+  `listFiles()` filtered by kind; recursive delete; `mkdirs`.
+- **`FileTime` boundary fix.** `std/file.l` declared
+  `extern type DateTime = "System.DateTime"` outside the kernel — a
+  `_kernel/`-boundary violation and a .NET-only type on the JVM path.
+  Both kernels now export an opaque `FileTime` (System.DateTime on
+  .NET; boxed epoch-milliseconds on JVM) with the comparison beside
+  it, and `FileStat` uses it unchanged on both targets.
+- **`_kernel_jvm/console_host.l` rewrite.** Pure Lyric over
+  `getstatic java.lang.System.{out,err,in}` with a process-shared
+  `BufferedReader` module `val` for stdin (per-call readers would
+  buffer-and-discard lookahead between reads).
+- **Module `val`s of extern type.** `collectFileVals` resolves the
+  declared type through the file's extern-type table
+  (`collectFileValsExtern`), so `val rdr: JBufferedReader = …` carries
+  `java/io/BufferedReader` instead of the in-package guess
+  (NoClassDefFoundError at `<clinit>`).
+- **Typed array elements.** Indexing a reference-typed JVM array
+  (`File.listFiles()[i]`) reports the element class instead of
+  `Object`, so instance auto-FFI calls on elements resolve.
+- **Terminating catch arms in try-expressions (J004).** A catch arm
+  that unconditionally transfers control (a trailing `panic(...)` →
+  `athrow`, a `return`) never produces a value and never reaches the
+  join — but the try-expression lowering demanded a value and aborted
+  with J004.  `Std.File.readTextOrPanic`'s decorated re-panic is
+  exactly this shape and was the ACTUAL `Std.File` bundling blocker.
+  The lowering now skips the result store and the fall-through `goto`
+  for a terminated arm; J004 still fires for a genuinely value-less
+  non-terminating arm (type-checker gap #2042).
+- **`case null` is a null test (JVM).** `null` is not a keyword, so
+  `case null ->` parses as a binding named "null" and bound anything —
+  `Std.Console.readLine` returned `EndOfInput` for real lines.  The
+  JVM pattern test special-cases the name into an `ifnonnull`
+  refutable test (new `LIfnull`/`LIfnonnull` instructions over the
+  pre-existing emitters).  The MSIL side appears to have the same
+  bind-anything semantics — tracked in #4759 pending CI adjudication.
+- **Primitives box into `Object` FFI parameters.**
+  `scoreParamMatch` scores primitive→`Ljava/lang/Object;` at low
+  priority and `emitFfiCoerce` boxes, so `bytes.add(7)` on a
+  `List[Byte]` (JDK `ArrayList.add(Object)`) resolves.
+- **Branching arg coercions never run on a non-empty stack.**  The
+  `Object[]`↔`byte[]` element-copy loops previously ran with values
+  already stacked in three call forms — auto-FFI constructor args
+  (after `new; dup`; `String(byte[], "UTF-8")`), plain static-call
+  args (`hostWriteAllBytes(path, stringToUtf8Bytes(s))`), and the
+  holders-path by-value args — a VerifyError each.  All three sites
+  now pre-lower/coerce arguments into temp slots with an empty stack
+  and reload in order.
+- **Byte-element unboxing accepts Integer.**  An int literal added to
+  a `List[Byte]` boxes as `Integer`; the `Object[]`→`byte[]`
+  conversion and `coerceArgTo`'s byte arm checkcast `Byte` and threw
+  ClassCastException — both now unbox via `Number.intValue()` + `i2b`.
+- **`@externTarget` constructor targets.**  `….<init>` targets had no
+  emission shape (the instance fallback consumed the first argument as
+  a receiver — `newListWithCapacity` → NoSuchMethodError); they now
+  emit `new; dup; <params>; invokespecial; areturn`.  And because
+  *generic* `@externTarget` functions are never emitted as methods at
+  all (excluded from monomorphization, no non-generic body),
+  `newListWithCapacity` itself is additionally an intrinsic
+  (`ArrayList(int)`, capacity stashed to a temp before `new; dup`)
+  like `newList`/`newMap`.
+- **`.count`/`.length` on erased-`Object` receivers.**  A match
+  binding on a generic union payload (`case Ok(rb)` on
+  `Result[List[Byte], _]`) is statically `Object`; the record-field
+  fallback emitted *nothing* for `.count`, leaving the receiver itself
+  as the "value" — the following comparison checkcast'd the collection
+  to `Integer` (runtime CCE).  The fallback now dispatches on the
+  runtime class — `Collection`/`Map` → `size()`, `String` →
+  `length()`, last-resort `Object[]` → `arraylength` — with the
+  receiver stashed to a temp so every branch target sees the empty
+  operand stack.
+- **`Std.File.stat` missing-path contract (both targets).**  Neither
+  host timestamp API reports absence (BCL `GetLastWriteTimeUtc`
+  returns the 1601-01-01 sentinel; JDK `lastModified()` returns 0), so
+  the documented `Err(FileNotFound)` was unreachable and a missing
+  path produced `Ok` with a garbage timestamp.  `stat` now probes
+  `hostFileExists or hostDirectoryExists` first — a cross-target
+  stdlib fix found by the JVM test.
+- **Record fields of imported extern types.**  `FileStat.modifiedAt:
+  FileTime` carried the in-package class guess → NoClassDefFoundError;
+  record emission, protected-type fields, and the bundled case
+  registration resolve through own + imported extern types.
+- **`toArray()` on erased List receivers.** A generic `in List[T]`
+  parameter erases its receiver to `Object`, which reached instance
+  auto-FFI resolution and panicked (`Object` has no `toArray`) — hit
+  by `Std.File.writeBytes`.  A checkcast-ArrayList intrinsic (the
+  `.count` → `size()` precedent) makes it exact.
+- **Dead kernels deleted.** `_kernel/io.l` and `_kernel_jvm/io.l`
+  (package `Std.IO`) had no importers anywhere in the repo — removed
+  rather than rewritten; dead extern surface is unauditable risk.
+
+Tests: `file_jvm_self_test.l` (`@test_module`, the band-J6 acceptance
+criterion — a `_kernel_jvm`-backed module building and running under
+`java` in CI) and `console_roundtrip_jvm_main.l` (piped-stdin echo
+program asserting stdout, stderr, and EOF), both wired into
+`compiler-self-tests-jvm`.
+
+**Related:** docs/44 §5 J6, epic #2663, #2669, D-progress-543 (the
+phantom-shim elimination pattern), D-progress-553.

@@ -117,6 +117,8 @@ pub union LInsn {
 
   case LGoto(label: String)
   case LIfeq(label: String)
+  case LIfnull(label: String)
+  case LIfnonnull(label: String)
   case LIfne(label: String)
   case LIflt(label: String)
   case LIfge(label: String)
@@ -603,6 +605,14 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
       emitIfeq(asm, l)
       trackStack(asm, -1)
     }
+    case LIfnull(l) -> {
+      emitIfnull(asm, l)
+      trackStack(asm, -1)
+    }
+    case LIfnonnull(l) -> {
+      emitIfnonnull(asm, l)
+      trackStack(asm, -1)
+    }
     case LIfne(l) -> {
       emitIfne(asm, l)
       trackStack(asm, -1)
@@ -1039,6 +1049,8 @@ func collectBranchTargets(insns: in List[LInsn]): Map[String, Bool] {
       case LLabel(l) -> addTarget(targets, l)
       case LGoto(l) -> addTarget(targets, l)
       case LIfeq(l) -> addTarget(targets, l)
+      case LIfnull(l) -> addTarget(targets, l)
+      case LIfnonnull(l) -> addTarget(targets, l)
       case LIfne(l) -> addTarget(targets, l)
       case LIflt(l) -> addTarget(targets, l)
       case LIfge(l) -> addTarget(targets, l)

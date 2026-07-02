@@ -262,11 +262,14 @@ pub func tryEatIdentOrContextual(st: inout ParseState): Option[NameAndSpan] {
 }
 
 // Accept an identifier OR one of the allowlisted keywords as a member / method
-// name after `.`.  Only `and`, `or`, and `xor` are accepted as keywords here
-// because they are the only reserved spellings used as built-in method names
-// (the bitwise integer methods).  All other keywords at member position remain
-// a parse error (P0081), preserving clear diagnostics for mistakes like
-// `x.if(...)` or `x.return`.
+// name after `.`.  `and`, `or`, and `xor` are accepted as keywords here
+// because they are reserved spellings used as built-in method names (the
+// bitwise integer methods); the parameter-mode keywords `in`, `out`, and
+// `inout` are accepted because member position is unambiguous (only a name
+// can follow `.`) and JDK auto-FFI code reads fields spelled with them —
+// `System.in` and `System.out` being the canonical cases.  All other
+// keywords at member position remain a parse error (P0081), preserving
+// clear diagnostics for mistakes like `x.if(...)` or `x.return`.
 pub func tryEatMemberName(st: inout ParseState): Option[NameAndSpan] {
   val t = peek(st)
   match t.token {
@@ -275,7 +278,7 @@ pub func tryEatMemberName(st: inout ParseState): Option[NameAndSpan] {
       Some(value = NameAndSpan(name = name, span = t.span))
     }
     case TKeyword(k) -> {
-      val allowed = k == KwAnd or k == KwOr or k == KwXor
+      val allowed = k == KwAnd or k == KwOr or k == KwXor or k == KwIn or k == KwOut or k == KwInout
       if allowed {
         st.pos = st.pos + 1
         Some(value = NameAndSpan(name = keywordSpelling(k), span = t.span))
@@ -750,8 +753,6 @@ func parseImportDecl(st: inout ParseState): Option[ImportDecl] {
     } else {
       None
     }
-
-
 
     var endSp = path.span
     val result = match tryEatKw(st, KwAs) {

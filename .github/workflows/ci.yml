@@ -3426,6 +3426,46 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/time_jvm_self_test.l
+      # Std.File self-test on JVM (band J6, #2669) — the band's acceptance
+      # criterion: a `_kernel_jvm`-backed module (previously one of the two
+      # named J003 bundling skips) builds and runs under java.  Pins the
+      # pure-Lyric `_kernel_jvm/file_host.l` (java.io via auto-FFI), the
+      # kernel-owned opaque `FileTime` boundary, and the static-field
+      # auto-FFI underneath it.
+      - name: Std.File self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.File JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/file_jvm_self_test.l
+      # Std.Console stdin/stdout/stderr round-trip on JVM (band J6, #2669) —
+      # first executable proof of the pure-Lyric `_kernel_jvm/console_host.l`
+      # (`getstatic System.{out,err,in}` via the static-field auto-FFI path,
+      # process-shared BufferedReader).  A plain program because TAP tests
+      # have no stdin.
+      - name: Std.Console round-trip on JVM (lyric build --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping console JVM round-trip"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          "$lyric_bin" build lyric-compiler/jvm/console_roundtrip_jvm_main.l --target jvm -o "$work/console.jar"
+          out="$(printf 'alpha\nbeta\n' | java -jar "$work/console.jar" 2>"$work/err.txt")"
+          echo "$out"
+          printf '%s\n' "$out" | grep -qx "echo:alpha" || { echo "::error::alpha echo missing"; exit 1; }
+          printf '%s\n' "$out" | grep -qx "echo:beta" || { echo "::error::beta echo missing"; exit 1; }
+          printf '%s\n' "$out" | grep -qx "eof-after:2" || { echo "::error::EOF line count wrong"; exit 1; }
+          grep -qx "err-line" "$work/err.txt" || { echo "::error::stderr line missing"; exit 1; }
       # Map-iteration self-test on JVM (#3676, #3229) — pins the completed
       # `_kernel_jvm/collections_host.l` kernel (dictGetKeys/dictGetValues
       # views, pure-Lyric tryGetValue) AND the post-mono signature

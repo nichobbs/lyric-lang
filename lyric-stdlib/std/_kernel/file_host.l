@@ -35,13 +35,16 @@ pub func hostWriteAllText(path: in String, contents: in String): Unit = ()
 // =====================================================================
 // File metadata — modification time via DateTime objects.
 // =====================================================================
-extern type DateTime = "System.DateTime"
+// `FileTime` is the target-neutral name consumers (Std.File's FileStat)
+// use for the opaque last-write timestamp; on .NET it is System.DateTime,
+// on the JVM kernel it is the boxed epoch-milliseconds Long.
+extern type FileTime = "System.DateTime"
 
 @externTarget("System.IO.File.GetLastWriteTimeUtc")
-pub func hostGetLastWriteTimeUtc(path: in String): DateTime = ()
+pub func hostGetLastWriteTimeUtc(path: in String): FileTime = ()
 
 @externTarget("System.DateTime.op_GreaterThan")
-pub func hostDateTimeGreaterThan(a: in DateTime, b: in DateTime): Bool = ()
+pub func hostDateTimeGreaterThan(a: in FileTime, b: in FileTime): Bool = ()
 
 // =====================================================================
 // Directory creation — `CreateDirectory` returns `DirectoryInfo` in

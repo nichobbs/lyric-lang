@@ -1181,7 +1181,13 @@ pub func compileToJarBundledWithFeatures(
   val registry: Map[String, JvmFuncSig] = newMap()
   collectFileSigsSeeded(userFile, registry, externSeedForFile(userFile, extPkgNames, extPkgMaps))
   val caseReg: Map[String, List[JvmCaseField]] = newMap()
-  collectFileCases(userFile, caseReg)
+  // Field types resolve through own + imported extern types so a field like
+  // `FileStat.modifiedAt: FileTime` registers the real JVM class.
+  collectFileCasesExtern(
+    userFile,
+    caseReg,
+    mergeExternSeed(collectExternTypesFromFile(userFile), externSeedForFile(userFile, extPkgNames, extPkgMaps))
+  )
   val ctorReg: Map[String, String] = newMap()
   collectFileCtors(userFile, ctorReg)
   // #3044: complete @projectable pre-scan across the whole compilation, so
@@ -1193,7 +1199,14 @@ pub func compileToJarBundledWithFeatures(
   var ri = 0
   while ri < stdlibFiles.count {
     collectFileSigsSeeded(stdlibFiles[ri], registry, externSeedForFile(stdlibFiles[ri], extPkgNames, extPkgMaps))
-    collectFileCases(stdlibFiles[ri], caseReg)
+    collectFileCasesExtern(
+      stdlibFiles[ri],
+      caseReg,
+      mergeExternSeed(
+        collectExternTypesFromFile(stdlibFiles[ri]),
+        externSeedForFile(stdlibFiles[ri], extPkgNames, extPkgMaps)
+      )
+    )
     collectFileCtors(stdlibFiles[ri], ctorReg)
     collectFileProjectables(stdlibFiles[ri], allProjFqns)
     ri = ri + 1
