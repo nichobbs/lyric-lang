@@ -34,17 +34,14 @@ pub func hostRuntimeDirectory(): String {
 }
 
 // The .NET runtime identifier is a .NET-only concept with no JVM equivalent.
-// Returns "" per the "empty = unavailable" convention; the only caller
-// (apphost pack selection in Lyric.AppHost) is a .NET-only build path, so the
-// JVM empty string is never exercised in practice.
+// Returns "" per the "empty = unavailable" convention.
 pub func hostRuntimeIdentifier(): String {
   ""
 }
 
 // SetEnvironmentVariable has no portable JVM equivalent (the JVM exposes no
 // `setenv(3)` equivalent without unsafe reflection).  This is a no-op stub
-// so JVM programs that import Std.Environment still compile; in practice the
-// Lyric CLI (the only caller of setVar) always runs on .NET.
+// so JVM programs that import Std.Environment still compile.
 pub func hostSetEnvironmentVariable(key: in String, value: in String): Unit {
   ()
 }
