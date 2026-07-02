@@ -8,7 +8,12 @@ A0047 diagnostic), formatter round-trip, and an ecosystem proof-of-value
 (`Auth.Aspects.ValidateKey` converted off `@inline_template`). Extends
 `docs/55-bmode-aspect-libraries-plan.md` (D114's B′-mode). Cited from
 `docs/27-aspect-libraries.md` §12 as Q-aspectlib-009. See D115 for the full
-rationale, the Q-row-001–005 resolutions, and verification.
+rationale, the Q-row-001–005 resolutions, and verification. D118 fixed a
+pre-existing (pre-D115) gap where aspect `requires:`/`ensures:` clauses
+referencing `args.<field>` were never enforced at runtime, then used the fix
+to retire `@inline_template` from every other field-accessing ecosystem
+library aspect (`Web.Aspects`, `Validation.Aspects`, `Mq.Aspects`,
+`Ws.Aspects`, `Grpc.Aspects`, `Storage.Aspects`, `Lambda.Aspects`).
 
 ---
 

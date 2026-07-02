@@ -7436,6 +7436,83 @@ retired F# mint-fallback this sandbox limitation stems from).
 
 ---
 
+## D118 — Fixed aspect `requires:`/`ensures:` runtime enforcement gap; retired C-mode across every field-accessing ecosystem library aspect
+
+**Context.** While scoping whether D115's row-typed `args` let the
+ecosystem retire C-mode (`@inline_template`) entirely, empirical testing
+(not just re-reading the spec) surfaced that docs/26 §5's "Contract
+augmentation" — specified since D-progress-208 and assumed shipped — had
+never actually worked for any `requires:`/`ensures:` clause referencing
+`args.<field>`, in *either* C-mode or B′-mode. `Auth.Aspects.ValidateKey`'s
+`requires: args.apiKey != ""` silently never panicked on an empty key.
+Two independent bugs compounded:
+
+1. The weaver spliced `aspect.contracts` onto the wrapper's `contracts`
+   field verbatim, leaving `args.<field>` an unresolved name.
+2. Even a correctly-rewritten wrapper contract was never lowered into a
+   runtime `assert(...)`: `Lyric.ContractElaborator` runs *before* weaving
+   in the compile pipeline (parse → typecheck → modecheck → elaborate →
+   mono → weave), but a wrapper's contracts don't exist until weaving
+   builds the wrapper — by which point elaboration has already run.
+
+**Decision.** Fix both gaps in `weaver.l`, then use the fix to retire
+`@inline_template` from every ecosystem library aspect that only needed it
+for `args.<field>` access (not to introduce any new language surface).
+
+**Design — the fix:**
+- `rewriteContractClauseArgs` / `rewriteContractClauseListArgs` rewrite
+  `args.<field>` to the matched function's bare parameter name inside
+  `CCRequires`/`CCEnsures`/`CCWhen`/`CCDecreases` (reusing the existing
+  `rewriteExpr` traversal with an otherwise-empty `RewriteCtx`).
+  Unconditional for every aspect mode — contracts always land on the
+  per-match wrapper, never a shared B′-mode specialised function, so
+  there's no shape-dedup opacity concern.
+- `elaborateWrapperBodyForAspectContracts` re-runs
+  `Lyric.ContractElaborator.elaborateFunction` directly against the built
+  wrapper body, scoped to *only* the aspect's own (rewritten) contracts —
+  not the full composed list — so the target's own already-elaborated
+  contracts aren't double-checked.
+- Wired into both `buildWrapper` (local aspects + C-mode `from`-instances)
+  and `buildBModeCallSite` (B′-mode per-match wrapper) — two independent
+  composition sites needed the identical fix.
+- Two new `weaver_self_test.l` cases prove a `requires: args.<field>`
+  clause is both rewritten and elaborated into a runtime `assert()`, for
+  both the local-aspect and B′-mode `from`-instance code paths (44/44
+  weaver self-tests pass); empirically verified end-to-end (both
+  row-constrained B′-mode and C-mode forms of a `requires: args.apiKey !=
+  ""` aspect now correctly panic on an empty key at the call site).
+
+**Design — the retirement, once the fix made it safe:** converted every
+field-accessing ecosystem library aspect off `@inline_template` to
+row-constrained B′-mode (`where TArgs has { field: Type, ... }`):
+`Web.Aspects.{RequiresAuth,RequiresRole,ApiKey}` (single scalar fields),
+`Validation.Aspects.{ValidateInput,ValidateEmail}` (single scalar fields),
+`Mq.Aspects.{Idempotent,DeadLetter}` (nested access — `args.message.id`
+rewrites cleanly to `message.id` since only the leading `args.` segment is
+rewritten; `DeadLetter` needs two row fields, `message: Message` and
+`consumer: QueueConsumer`), `Ws.Aspects.{WsAuth,WsRateLimit}`,
+`Grpc.Aspects.{RequiresGrpcAuth,RequiresGrpcRole}`,
+`Storage.Aspects.ValidateKey`, and `Lambda.Aspects.DeadlineGuard` (row
+field typed with the cross-package qualified name
+`Lambda.LambdaContext`, confirming the row clause's type position accepts
+qualified paths, not just bare same-package names). `Auth.Aspects.ValidateKey`
+was already converted in D115. Each library's own test suite was run
+after conversion; all pre-existing passes stayed green (a handful of
+unrelated pre-existing sandbox failures — `HMACSHA256`/`MD5` type-loading
+and `*.Kernel.Net` type-initializer exceptions — were confirmed identical
+before and after conversion via git-stash A/B testing, so they are not
+regressions from this change).
+
+**Not converted:** `Web.Aspects.RateLimit`/`HttpCircuitBreaker`,
+`Grpc.Aspects.GrpcRateLimit`/`GrpcCircuitBreaker`,
+`Storage.Aspects.AuditAccess`, `Lambda.Aspects.EventLogging` — these are
+already B-mode (no `args.<field>` access at all; they use only
+`call.qualifiedName`), so there was nothing to convert.
+
+**Related:** docs/26 §5, D-progress-208 (original, silently-broken
+contract-augmentation spec), D114, D115, docs/55, docs/56.
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

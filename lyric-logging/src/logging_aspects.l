@@ -7,7 +7,7 @@
 //! Templates:
 //!   CallLogging       — logs function entry / exit with elapsed time (B-mode)
 //!   SlowCallAlert     — logs a warning when a call exceeds a threshold (B-mode)
-//!   ErrorResultLogging — logs when a function returns Err(...) (C-mode, @inline_template)
+//!   ErrorResultLogging — logs when a function returns Err(...) (B-mode)
 //!
 //! Typical consumer instantiation:
 //!
@@ -124,10 +124,12 @@ pub aspect SlowCallAlert {
 // ─── ErrorResultLogging ──────────────────────────────────────────────────────
 /// Log when a matched function returns Err(...).
 ///
-/// This is a C-mode template (@inline_template): the body is re-compiled
-/// inside the consumer's package so it can read ret.isErr directly.
-/// Apply only to functions whose return type is Result[T, E]; the consumer's
-/// compiler reports a shape error otherwise.
+/// B-mode: the body only reads `ret.isErr` (the `around` advice's own return
+/// binder, always in scope regardless of mode) and `call.*` ambient fields —
+/// it never accesses `args`, so it composes generically across every matched
+/// function without needing `@inline_template`.  Apply only to functions
+/// whose return type is Result[T, E]; the consumer's compiler reports a
+/// shape error otherwise.
 ///
 /// On Err the record reads: "ERROR: <shortName> failed after <elapsed>ms"
 /// Successes (Ok) produce no output.
@@ -137,7 +139,6 @@ pub aspect SlowCallAlert {
 ///   level      LogLevel — severity of the error record (default: Error)
 ///   loggerName String   — logger name; if empty, call.modulePath is used (default: "")
 @stable(since = "0.1")
-@inline_template
 pub aspect ErrorResultLogging {
   config {
     enabled: Bool = true
