@@ -115,7 +115,7 @@ func addTransitiveDepFromDir(
   depName: in String,
   wsCtxOpt: in Option[Ws.WorkspaceContext],
   seen: in List[String],
-  result: in List[String],
+  result: in List[String]
 ): Unit {
   val tToml = Path.join(tDepDir, "lyric.toml")
   if File.fileExists(tToml) {
@@ -150,7 +150,7 @@ pub func collectTransitiveDepDlls(
   depDir: in String,
   wsCtxOpt: in Option[Ws.WorkspaceContext],
   seen: in List[String],
-  result: in List[String],
+  result: in List[String]
 ): Unit {
   val tomlPath = Path.join(depDir, "lyric.toml")
   if not File.fileExists(tomlPath) {

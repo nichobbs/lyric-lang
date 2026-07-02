@@ -16,6 +16,7 @@ import Lyric.Discovery as Disc
 // ─────────────────────────────────────────────────────────────────────────────
 // §14. lyric version — print and update package versions
 // ─────────────────────────────────────────────────────────────────────────────
+
 // Return true when `s` is a non-negative decimal integer with no leading zeros
 // (or "0" itself).
 func isNonNegativeInt(s: in String): Bool {
@@ -106,7 +107,11 @@ func indexOfVersionLine(lines: in slice[String]): Int {
 // rather than matching a fixed-spacing literal, so indentation and any
 // trailing inline comment on that line are preserved untouched.
 // Returns the updated text or an error string.
-pub func replaceVersionInToml(text: in String, oldVersion: in String, newVersion: in String): Result[String, String] {
+pub func replaceVersionInToml(
+  text: in String,
+  oldVersion: in String,
+  newVersion: in String,
+): Result[String, String] {
   val pkgHeader = "[package]"
   val pkgStart = text.indexOf(pkgHeader)
   if pkgStart < 0 {
@@ -116,7 +121,11 @@ pub func replaceVersionInToml(text: in String, oldVersion: in String, newVersion
 
   // End of the [package] section: first "\n[" after the header, or EOF.
   val nextSection = text.indexOf("\n[", afterHeader)
-  val sectionLen = if nextSection < 0 { text.length - afterHeader } else { nextSection - afterHeader }
+  val sectionLen = if nextSection < 0 {
+    text.length - afterHeader
+  } else {
+    nextSection - afterHeader
+  }
   val sectionBody = text.substring(afterHeader, sectionLen)
 
   val lines = Str.split(sectionBody, "\n")
@@ -142,7 +151,8 @@ pub func replaceVersionInToml(text: in String, oldVersion: in String, newVersion
   val actualOld = line.substring(quoteOpen + 1, quoteClose - quoteOpen - 1)
   if actualOld != oldVersion {
     return Err(
-      "could not find version = \"" + oldVersion + "\" in [package] section (found \"" + actualOld + "\" instead)"
+      "could not find version = \"" + oldVersion + "\" in [package] section (found \"" + actualOld +
+        "\" instead)"
     )
   }
 
@@ -234,7 +244,10 @@ func cmdVersionWorkspace(newVersion: in String, startDir: in String): Int {
     }
     // Also update the workspace root manifest if it carries a [package] section
     // (non-virtual workspaces only).
-    val rootText = match File.readText(wsCtx.rootFile) { case Err(_) -> ""; case Ok(t) -> t }
+    val rootText = match File.readText(wsCtx.rootFile) {
+      case Err(_) -> ""
+      case Ok(t) -> t
+    }
     if rootText.indexOf("[package]") >= 0 {
       val code = updateVersionInFile(wsCtx.rootFile, newVersion)
       if code != 0 {
@@ -255,7 +268,10 @@ func cmdVersionWorkspace(newVersion: in String, startDir: in String): Int {
     }
     val ver = match File.readText(mfPath) {
       case Err(_) -> "(read error)"
-      case Ok(t) -> match Mf.parseManifest(t, mfPath) { case Err(_) -> "(parse error)"; case Ok(m) -> m.packageSection.version }
+      case Ok(t) -> match Mf.parseManifest(t, mfPath) {
+        case Err(_) -> "(parse error)"
+        case Ok(m) -> m.packageSection.version
+      }
     }
     Console.println("  " + member.name + " " + ver)
     if firstVersion.length == 0 {
@@ -268,7 +284,10 @@ func cmdVersionWorkspace(newVersion: in String, startDir: in String): Int {
   // above: a non-virtual root (one that carries its own [package] section)
   // is printed and included in the alignment check too, so `--set` never
   // silently touches a file the print path didn't already report on (#3978).
-  val rootText = match File.readText(wsCtx.rootFile) { case Err(_) -> ""; case Ok(t) -> t }
+  val rootText = match File.readText(wsCtx.rootFile) {
+    case Err(_) -> ""
+    case Ok(t) -> t
+  }
   if rootText.indexOf("[package]") >= 0 {
     val rootVer = match Mf.parseManifest(rootText, wsCtx.rootFile) {
       case Err(_) -> "(parse error)"
@@ -328,7 +347,10 @@ pub func cmdVersion(argv: in slice[String]): Int {
     }
   }
 
-  val startDir = match manifestPath { case Some(p) -> Path.dirname(p); case None -> Environment.currentDirectory() }
+  val startDir = match manifestPath {
+    case Some(p) -> Path.dirname(p)
+    case None -> Environment.currentDirectory()
+  }
 
   if workspace {
     return cmdVersionWorkspace(newVersion, startDir)
