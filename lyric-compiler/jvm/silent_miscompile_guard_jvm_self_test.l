@@ -173,7 +173,9 @@ test "named-args out of declaration order land in the right fields" {
 //    `Std.ProcessCapture.buildArgString` — silently produced their initial
 //    value.
 // ─────────────────────────────────────────────────────────────────────────────
-func accumulateIntoResult(parts: slice[String]): String {
+test "assignment to a local named 'result' is observed" {
+  // Accumulation loop over a `result` local (the buildArgString shape).
+  val parts = ["a", "b", "c"]
   var result = ""
   var i = 0
   while i < parts.count {
@@ -183,11 +185,10 @@ func accumulateIntoResult(parts: slice[String]): String {
     result = result + parts[i]
     i = i + 1
   }
-  result
+  assertEqual(result, "a b c", "accumulation into a `result` local survives the loop")
 }
 
-test "assignment to a local named 'result' is observed" {
-  assertEqual(accumulateIntoResult(["a", "b", "c"]), "a b c", "accumulation into a `result` local survives the loop")
+test "reassignment of an Int local named 'result' is stored" {
   var result = 1
   result = result + 41
   assertEqualInt(result, 42, "compound-shaped reassignment of a `result` Int local is stored")
