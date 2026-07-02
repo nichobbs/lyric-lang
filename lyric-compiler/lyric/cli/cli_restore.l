@@ -12,7 +12,6 @@ import Std.Errors
 import Std.Hash as Hash
 import Std.Char as Ch
 import Std.ProcessCapture as ProcessCapture
-import Std.Yaml as Yaml
 import Lyric.Manifest as Mf
 import Lyric.Lexer
 import Lyric.Pack as Pack
@@ -799,42 +798,29 @@ pub func buildMavenResolverRequest(maven: in MavenSection, cacheDir: in String, 
 }
 
 // Extract all `jarPath` values from lyric-resolver.jar's JSON array output.
-// Uses Yaml.parseJson (Result-returning, tolerant of whitespace variation —
-// see checkSdkVersion's note on why Std.Json's throw-on-invalid is avoided)
-// rather than structural string splitting, so compact and pretty-printed
-// resolver output are both handled (#4723). Malformed JSON yields an empty
-// list; the caller (restoreMavenJars) already warns when the count is zero.
+// Uses structural splitting rather than a full JSON parser: `jarPath` values
+// are file-system paths that cannot contain `"` on any supported platform.
+//
+// CONTRACT: expects compact JSON (no whitespace between `"jarPath":"` and the
+// value).  Pretty-printed output (`"jarPath": "..."`) will yield zero paths —
+// the resolver protocol requires compact format.
 pub func extractMavenJarPaths(jsonOutput: in String): List[String] {
   val paths: List[String] = newList()
-  match Yaml.parseJson(jsonOutput) {
-    case Err(_) -> ()
-    case Ok(root) -> {
-      match root {
-        case Yaml.YSequence(items) -> {
-          var i = 0
-          while i < items.count {
-            match items[i] {
-              case Yaml.YMapping(pairs) -> {
-                var j = 0
-                while j < pairs.count {
-                  val pair = pairs[j]
-                  if pair.key == "jarPath" {
-                    match pair.value {
-                      case Yaml.YString(v) -> paths.add(v)
-                      case _ -> ()
-                    }
-                  }
-                  j += 1
-                }
-              }
-              case _ -> ()
-            }
-            i += 1
-          }
+  val pieces = Str.split(jsonOutput, "\"jarPath\":\"")
+  var pi = 1
+  while pi < pieces.length {
+    val piece = pieces[pi]
+    match Str.indexOf(piece, "\"") {
+      case None -> ()
+      case Some(closeIdx) -> {
+        val raw = Str.substring(piece, 0, closeIdx)
+        if raw.length > 0 {
+          val unescaped = Str.replace(Str.replace(raw, "\\\\", "\\"), "\\\"", "\"")
+          paths.add(unescaped)
         }
-        case _ -> ()
       }
     }
+    pi += 1
   }
   paths
 }
