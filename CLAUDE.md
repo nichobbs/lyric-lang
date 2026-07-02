@@ -801,14 +801,16 @@ need direction and have nothing else productive to do**.  Specifically:
     deferred (each surfaces a real self-hosted gap, tracked in #2580).
   - `weaver_self_test.l` — `@test_module` covering the todo/06
     weaver features (config wiring #683, call context #682,
-    `@inline_template` #681) plus regression cases for the
+    `@inline_template` #681), regression cases for the
     duplicate-key crash (#1296) and duplicate-diagnostic
-    emission (#1299).  **Currently not wired into CI** —
-    requires the in-process MSIL bridge to load
-    `lyric-compiler/lyric/**/*.l` so the test's `Lyric.Weaver`
-    imports resolve when run via `lyric test`.  Tracked in
-    issue #1324.  Manual-run instructions are in the test
-    file's header.
+    emission (#1299), B′-mode/row-clause coverage (D114/D115),
+    and aspect-contract `args.<field>` rewrite + elaboration
+    coverage (D118).  **Runs in CI** via native `lyric test`
+    (the dedicated "Weaver self-test" step in
+    `.github/workflows/ci.yml`), resolving its `Lyric.*`
+    imports by linking the stage-1 bundle DLLs as restored
+    deps (#2364; the former "not wired into CI, tracked in
+    #1324" state is resolved).
   - `weaver_ci_test.l` — regular `func main(): Int` companion program
     (not `@test_module`) that exercises the same three todo/06 weaver
     features: config-block prelude injection (A0044 on missing default),
