@@ -6412,9 +6412,9 @@ self-hosted metadata reader already records `TypeDefRow.flags`
 targets without new syntax.
 
 1. **No syntax change.** An external interface is brought into scope via
-   the existing `import extern System.{ IDisposable }` form (D115
-   `import extern`) or `extern type IDisposable = "System.IDisposable"`.
-   Both already register a `DKExternType` symbol with the CLR FQN.
+   the existing `import extern System.{ IDisposable }` form (D115's `import extern`)
+   or `extern type IDisposable = "System.IDisposable"`. Both already register
+   a `DKExternType` symbol with the CLR FQN.
    `impl IDisposable for Record { … }` parses identically to a native
    `impl`; the AST does not distinguish targets.
 
