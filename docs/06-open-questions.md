@@ -609,9 +609,9 @@ Tracked in review issue #3549.  Resolution options:
 
 ## FFI ergonomics improvements
 
-**Q47-001–Q47-004 (import extern syntax) — resolved, see D115.**
+**Q47-001–Q47-004 (import extern syntax) — resolved, see D116.**
 See `docs/47-import-extern-syntax.md` for the full design and
-`docs/03-decision-log.md` D115 for the resolution of all four questions
+`docs/03-decision-log.md` D116 for the resolution of all four questions
 (full-FQN namespace syntax, local-shadows-external collision handling,
 external types excluded from the public API surface, `import extern`
 allowed in `pub use`). Parser support shipped in PR #3728; type-checker
@@ -623,5 +623,5 @@ now work on both MSIL and JVM (D-progress-530). Remaining open questions:
 - Q48-001: Generic constructors (`List[T].new(capacity)`; requires template instantiation; part of Q022-4).
 - Q48-002: Async constructors (`async T.new(...)`).
 
-(Q48-003 — static factory methods — is resolved, see D116: already reachable
+(Q48-003 — static factory methods — is resolved, see D117: already reachable
 via ordinary auto-FFI method calls, no special syntax needed.)

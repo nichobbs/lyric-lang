@@ -1,12 +1,12 @@
 # 47 — Import Extern Syntax for External Types
 
-**Status:** Specced (D115). Design questions Q47-001–Q47-004 are resolved.
+**Status:** Specced (D116). Design questions Q47-001–Q47-004 are resolved.
 Parser support is in place (PR #3728). Type-checker integration is deferred
 to Phase 2 (tracked separately).
 
 **Builds on:** `docs/01-language-reference.md` §11 (FFI), `docs/42-extern-metadata-resolution.md` (metadata-based resolution), `docs/14-native-stdlib-plan.md` (kernel boundary).
 
-**Decision-log entry:** D115 (design decisions for Q47-001–Q47-004).
+**Decision-log entry:** D116 (design decisions for Q47-001–Q47-004).
 
 **Goal:** Unify the syntax for importing Lyric packages and external types,
 reducing FFI boilerplate and making the boundary between Lyric and host
