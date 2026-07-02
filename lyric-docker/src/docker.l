@@ -172,7 +172,14 @@ async func sendAndReadBytes(
   }
 }
 
-/// Ping the Docker daemon to verify connectivity.
+/// Ping the Docker daemon to verify connectivity. Note: unlike the pre-#4503
+/// inline implementation (which only read the response body on failure),
+/// this routes through `fetchBodyText`/`sendAndReadBody`, which reads the
+/// body unconditionally. A body-read IO failure on an otherwise-successful
+/// (200) response therefore now surfaces as `Err` instead of the prior
+/// `Ok("connected")` -- an edge case that's effectively unreachable against
+/// Docker's tiny `/ping` payload, and arguably the more honest behavior
+/// (a response whose body can't be read isn't a clean success either way).
 pub async func ping(client: in DockerClient): Result[String, DockerError] {
   match await fetchBodyText(client, dockerApiBase + "/ping", "Ping failed") {
     case Ok(_) -> Ok(value = "connected")
