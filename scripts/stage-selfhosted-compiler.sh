@@ -75,7 +75,6 @@ for pkg in Lyric.Cli Msil.Codegen Jvm.Codegen; do
 done
 
 staged=0
-stdlib_staged=0
 for dir in "${LIB_DIRS[@]}"; do
   [[ -d "$dir" ]] || continue
   mkdir -p "$dir/selfhosted"

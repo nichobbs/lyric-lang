@@ -40,6 +40,10 @@ jvm = []    # JVM managed runtime
 
 ## Quick start
 
+> **Note:** The self-hosted compiler does not yet implement the `|>` pipe
+> operator (tracked in #3520). The examples below use the equivalent nested
+> call form; re-express as a left-to-right pipeline once pipe support lands.
+
 ### HTTP service (API Gateway / ALB)
 
 ```lyric
@@ -53,8 +57,7 @@ func main(): Int {
   router = Web.addPost(router, "/users", "MyApp.Users.createUser")
 
   Lambda.serve(
-    Lambda.newApp()
-      |> Lambda.withRouter(router)
+    Lambda.withRouter(Lambda.newApp(), router)
   )
   
   return 0
@@ -79,8 +82,7 @@ func handleSqsMessage(event: SqsEvent, ctx: Lambda.LambdaContext): Result[Unit, 
 
 func main(): Int {
   Lambda.serve(
-    Lambda.newApp()
-      |> Lambda.onSqs("MyApp.Queue.handleSqsMessage")
+    Lambda.onSqs(Lambda.newApp(), "MyApp.Queue.handleSqsMessage")
   )
   return 0
 }
@@ -99,10 +101,13 @@ func main(): Int {
   router = Web.addGet(router, "/health", "MyApp.Handlers.getHealth")
 
   Lambda.serve(
-    Lambda.newApp()
-      |> Lambda.withRouter(router)                          // API Gateway HTTP
-      |> Lambda.onSqs("MyApp.Queue.handleSqsMessage")       // SQS batches
-      |> Lambda.onTokenAuthorizer("MyApp.Auth.verifyJwt")   // REST API authorizer
+    Lambda.onTokenAuthorizer(
+      Lambda.onSqs(
+        Lambda.withRouter(Lambda.newApp(), router),  // API Gateway HTTP
+        "MyApp.Queue.handleSqsMessage"                // SQS batches
+      ),
+      "MyApp.Auth.verifyJwt"                          // REST API authorizer
+    )
   )
   
   return 0
@@ -111,7 +116,12 @@ func main(): Int {
 
 ## LambdaApp builder
 
-The fluent builder API configures all aspects of the Lambda function:
+The fluent builder API configures all aspects of the Lambda function. Each
+builder below takes the `LambdaApp` as its first argument and returns an
+updated `LambdaApp`; the `|>` pipe form is shown for readability, but the
+self-hosted compiler does not yet implement `|>` (#3520) — chain builders
+with nested calls or intermediate `var` reassignment, as in the Quick start
+examples above.
 
 ### HTTP routing
 

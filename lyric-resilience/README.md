@@ -50,7 +50,7 @@ aspect ApiRetry from Resilience.Retry {
 
 When a matched function returns `Err(...)`, the aspect:
 
-1. Waits with exponential backoff: `delay = min(initialDelayMs * 2^attempt, maxDelayMs)`
+1. Waits with exponential backoff: `delay = min(initialDelayMs * backoffFactor^attempt, maxDelayMs)`
 2. Retries up to `maxAttempts` times
 3. Returns the result of the final attempt
 
@@ -90,7 +90,7 @@ delay_2 = min(initialDelayMs * backoffFactor^2, maxDelayMs)
 ...
 ```
 
-Example with defaults:
+Example with defaults (`backoffFactor = 2`):
 - `initialDelayMs = 100` ms
 - `maxDelayMs = 30000` ms
 

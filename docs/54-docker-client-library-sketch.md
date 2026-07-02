@@ -1,6 +1,6 @@
 # Docker Client Library Design (Sketch)
 
-**Status:** Phase 1 shipped (D-progress-TBD); Phase 2 planned
+**Status:** Phase 1 shipped (D-progress-541); Phase 2 planned
 
 **Requires:** Lyric 0.1.1+ with Unix socket support in `Std.Http` (PR #3863)
 

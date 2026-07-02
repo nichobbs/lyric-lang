@@ -132,9 +132,13 @@ jobs:
       - name: Create and push git tag
         if: github.event_name == 'workflow_dispatch'
         shell: bash
+        # RELEASE_VERSION passed via env, not interpolated into the script
+        # body, per GitHub's Security Hardening for GitHub Actions guide.
+        env:
+          RELEASE_VERSION: ${{ steps.ver.outputs.VERSION }}
         run: |
           set -euo pipefail
-          TAG="v${{ steps.ver.outputs.VERSION }}"
+          TAG="v${RELEASE_VERSION}"
           # Match the tag ref specifically — `git rev-parse "$TAG"` resolves any
           # ref, so a branch coincidentally named like the tag would be a false
           # positive. `refs/tags/$TAG` checks only the tag namespace.
@@ -149,22 +153,25 @@ jobs:
 
       - name: Create GitHub Release
         shell: bash
-        run: |
-          gh release create "v${{ steps.ver.outputs.VERSION }}" \
-            --draft \
-            --target "${GITHUB_SHA}" \
-            --title "v${{ steps.ver.outputs.VERSION }}" \
-            --notes "Lyric compiler release"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ steps.ver.outputs.VERSION }}
+        run: |
+          set -euo pipefail
+          TAG="v${RELEASE_VERSION}"
+          gh release create "$TAG" \
+            --draft \
+            --target "${GITHUB_SHA}" \
+            --title "$TAG" \
+            --notes "Lyric compiler release"
 
   # ---------------------------------------------------------------------------
   # Build self-contained standalone binaries for all supported platforms.
   #
   # Each matrix leg runs `bootstrap.sh --stage 3` so the released binary is
-  # built by the self-hosted Lyric compiler (stage-2 reproducibility fixpoint,
-  # D-progress-531): the stage-1 self-hosted compiler re-emits itself + the
-  # full stdlib into .bootstrap/stage2/lib/ (101 DLLs, byte-for-byte
+  # built by the self-hosted Lyric compiler (verifying the stage-3
+  # reproducibility fixpoint, D-progress-531): the stage-1 self-hosted compiler
+  # re-emits itself + the full stdlib into .bootstrap/stage2/lib/ (101 DLLs, byte-for-byte
   # reproducible), and `dotnet publish -p:StageDir=...stage2/lib` AOT-links
   # those self-hosted DLLs into a native binary via ILCompiler.  The resulting
   # binary contains code emitted by the self-hosted Lyric compiler — not by
@@ -386,6 +393,13 @@ jobs:
   #      "lyric-lang" org) will never match.  The policy applies to every
   #      package owned by that account, so it covers `lyric` and the ecosystem
   #      libraries at once.
+  #   3. Each *new* package ID must be claimed by at least one manual publish
+  #      before OIDC trusted publishing will succeed for it -- an
+  #      account-level Trusted Publishing policy does not retroactively grant
+  #      OIDC-publish rights to a package NuGet.org hasn't seen that account
+  #      publish before. First-time additions to the ecosystem library set
+  #      need one manual `dotnet nuget push` before this workflow can publish
+  #      them.
   #
   # Run after binaries so the release page shows assets before the NuGet
   # package appears on nuget.org.
@@ -577,11 +591,17 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
         run: |
           set -euo pipefail
           mkdir -p bin
-          gh release download "v${{ needs.create-release.outputs.version }}" \
-            --pattern 'lyric-*-linux-x64.tar.gz' --output /tmp/lyric.tgz
+          # Exact filename (matches build-standalone's archive naming,
+          # "lyric-${VERSION}-${rid}.tar.gz") rather than a wildcard pattern
+          # -- the version is already known, so there's no ambiguity to
+          # tolerate and a precise match fails fast if the asset is missing
+          # or misnamed instead of silently matching an unexpected file.
+          gh release download "v${RELEASE_VERSION}" \
+            --pattern "lyric-${RELEASE_VERSION}-linux-x64.tar.gz" --output /tmp/lyric.tgz
           tar -xzf /tmp/lyric.tgz -C bin
           chmod +x bin/lyric
           ./bin/lyric --version
@@ -649,17 +669,25 @@ jobs:
       # rather than masking them.
       - name: Build and publish ecosystem libraries
         shell: bash
+        # API_KEY/VERSION are read from env, not interpolated into the script
+        # body, per GitHub's Security Hardening for GitHub Actions guide.
         env:
           LYRIC_NUGET_API_KEY: ${{ steps.nuget-auth.outputs.NUGET_API_KEY }}
-          LYRIC_NUGET_SIGNING_CERT: /tmp/nuget-signing.pfx
+          # Empty (not /tmp/nuget-signing.pfx) when no cert secret is configured
+          # -- the "Decode NuGet signing certificate" step above only creates
+          # that file when NUGET_SIGNING_CERT_BASE64 is set, so pointing at it
+          # unconditionally would make `lyric publish` try to sign with a
+          # nonexistent file instead of skipping signing as intended.
+          LYRIC_NUGET_SIGNING_CERT: ${{ env.NUGET_SIGNING_CERT_BASE64 != '' && '/tmp/nuget-signing.pfx' || '' }}
           LYRIC_NUGET_SIGNING_CERT_PASSWORD: ${{ secrets.NUGET_SIGNING_CERT_PASSWORD }}
           LYRIC_NUGET_SIGNING_TIMESTAMPER: http://timestamp.digicert.com
+          RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
         run: |
           # Intentionally NOT `set -e`: a failing library must not abort the run.
           set -uo pipefail
           LYRIC=./bin/lyric
-          API_KEY="${{ steps.nuget-auth.outputs.NUGET_API_KEY }}"
-          VERSION="${{ needs.create-release.outputs.version }}"
+          API_KEY="$LYRIC_NUGET_API_KEY"
+          VERSION="$RELEASE_VERSION"
 
           LOG_DIR="$(mktemp -d)"
           declare -a SUCCEEDED=()
@@ -794,7 +822,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v4.2.2
 
       - name: Set up Node.js
-        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af  # v4.1.0
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a  # v4.2.0
         with:
           node-version: 24
           cache: 'npm'
@@ -840,11 +868,14 @@ jobs:
       - name: Delete git tag (dispatch only)
         if: github.event_name == 'workflow_dispatch'
         shell: bash
+        # RELEASE_VERSION passed via env, not interpolated into the script
+        # body, per GitHub's Security Hardening for GitHub Actions guide.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
         run: |
           set -euo pipefail
-          TAG="v${{ needs.create-release.outputs.version }}"
+          TAG="v${RELEASE_VERSION}"
           echo "Deleting git tag ${TAG} due to publish failure..."
           git push origin --delete "${TAG}" || true
 
@@ -852,9 +883,10 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${{ needs.create-release.outputs.version }}"
+          VERSION="$RELEASE_VERSION"
           echo "Deleting draft release v${VERSION} due to publish failure..."
           gh release delete "v${VERSION}" --yes || true
 

@@ -6608,13 +6608,6 @@ sb.Capacity).  The test is wired into CI.
 `opaque type` programs), and `scripts/bootstrap.sh --stage 3` reports the
 reproducibility fixpoint holding: the whole self-hosted compiler closure
 (**101/101 DLLs**) and `Lyric.Stdlib.dll` re-emit **byte-for-byte identical**.
-(The 101 is the same `--internal-perpackage-build` `Lyric.Cli`-closure
-measurement — compiler packages plus their *transitive* stdlib imports — that
-D-progress-502 recorded as 103/103 on 2026-06-11; the two counts differ only
-because that import closure drifted by two packages over the intervening weeks,
-not because of a different build path. It is distinct from the 122 DLLs
-`build_stage2` emits, which additionally include every *public* `Std.*` package
-from `lyric.full.toml`, not just `Lyric.Cli`'s import closure.)
 This records a milestone that landed but was left undocumented; it supersedes the
 D111 keystone note's "full stage-2 self-hosting remains gated by the separate
 parser bug" and the docs/41 §R7 "stdlib self-compile blocked on front-end
@@ -7347,6 +7340,28 @@ remain open per docs/48 §5.
 
 **Related:** docs/48 (full design), D-progress-530 (MSIL implementation),
 docs/42 (Phase 3c metadata resolution this reuses).
+
+---
+
+## D-progress-540 — Clarifying the 101/122-DLL counts in D-progress-531 against D-progress-502's 103
+
+**Context.** D-progress-531 reports the whole self-hosted compiler closure as
+**101/101 DLLs** byte-for-byte reproducible. D-progress-502 recorded the same
+kind of measurement as **103/103** on 2026-06-11. Read side-by-side without
+context, the two counts look like a regression or a measurement-methodology
+change; this entry records why they differ.
+
+**Clarification.** Both counts are the same `--internal-perpackage-build`
+`Lyric.Cli`-closure measurement — compiler packages plus their *transitive*
+stdlib imports. The two counts differ only because that import closure
+drifted by two packages over the intervening weeks between the two
+measurements, not because of a different build path or methodology. This
+count is also distinct from the 122 DLLs `build_stage2` emits, which
+additionally include every *public* `Std.*` package from `lyric.full.toml`,
+not just `Lyric.Cli`'s import closure.
+
+**Related:** D-progress-531 (101/101 fixpoint measurement this clarifies),
+D-progress-502 (103/103 measurement on 2026-06-11).
 
 ---
 ## Decisions deferred to v2 or later

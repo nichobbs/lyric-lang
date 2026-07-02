@@ -1630,6 +1630,17 @@ jobs:
       # lowering_token_self_test.l (#2473) covers the listTokensForLowering /
       # dictTokensForLowering cache hit/miss logic in Msil.Lowering; it rides
       # the same step because it imports `Msil.*` like M2a-M2d.
+      #
+      # INVARIANT: this step stages compiler DLLs into `<libdir>/selfhosted`
+      # while running as a `background: true` step alongside 22+ other
+      # concurrent steps in this job. That's only safe because no other
+      # concurrent step in compiler-self-tests-dotnet-b reads from that path.
+      # If you add a new `LYRIC_LOAD_COMPILER=1` (or otherwise
+      # selfhosted-compiler-dependent) background step to this job, it MUST
+      # either run after this step completes or stage its own copy --
+      # reading `<libdir>/selfhosted` concurrently with this step's staging
+      # write is a race with no failure signal (silently flaky, not a
+      # deterministic error).
       - name: MSIL backend self-tests M2a-M2d (native lyric test)
         background: true
         working-directory: ${{ github.workspace }}
@@ -4614,11 +4625,16 @@ jobs:
             echo "::error::Lyric.Stdlib.dll bundle not staged alongside the AOT binary"
             exit 1
           fi
-          if ! strings "$bundle" | grep -q "Std.Xml"; then
+          # strings(1) over the raw PE bytes is a heuristic, not a structural
+          # metadata check -- but grepping a fully-qualified public type name
+          # (rather than just the bare "Std.Xml"/"Std.Yaml" namespace prefix)
+          # makes a coincidental false-positive match astronomically unlikely
+          # without adding a new ildasm/metadata-reader tool dependency here.
+          if ! strings "$bundle" | grep -q "Std.Xml.XmlDoc"; then
             echo "::error::Std.Xml not present in the Lyric.Stdlib.dll bundle"
             exit 1
           fi
-          if ! strings "$bundle" | grep -q "Std.Yaml"; then
+          if ! strings "$bundle" | grep -q "Std.Yaml.YamlValue"; then
             echo "::error::Std.Yaml not present in the Lyric.Stdlib.dll bundle"
             exit 1
           fi
@@ -4710,8 +4726,12 @@ jobs:
 
       # clang and zlib1g-dev are required by the ILCompiler linker pass used by
       # `lyric build --release` (the trampoline-elimination pipeline, #4139).
+      # binutils provides ld.bfd, which release.l's buildLinkerArgsUnix passes
+      # via -fuse-ld=bfd and explicitly checks for on PATH before linking
+      # (release.l:971-977) -- without it the release e2e step fails at the
+      # ld.bfd preflight check instead of building.
       - name: Install clang for Native AOT e2e
-        run: sudo apt-get update -qq && sudo apt-get install -y clang zlib1g-dev
+        run: sudo apt-get update -qq && sudo apt-get install -y clang zlib1g-dev binutils
 
       # Release entry-detection self-test — exercises Lyric.Release's pure
       # source-introspection helpers (packageNameOf / declaresEntryMain) via
