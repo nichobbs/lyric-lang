@@ -49,6 +49,14 @@ output_assembly = "Lyric.Stdlib.dll"
 "Std.Stream"           = "std/stream.l"
 
 # Tier 3 — time (environment and logging deferred; see below).
+# Std.TimeHost holds Std.Time's extern boundary (System.DateTime/TimeSpan/
+# DateTimeOffset/TimeZone externs, per the audited _kernel/ convention). It
+# must be registered explicitly here -- the bundle builder compiles exactly
+# the packages listed in [project.packages], not whatever a package's source
+# transitively imports -- or Std.Time's `import Std.TimeHost` fails to
+# resolve when building the single-bundle Lyric.Stdlib.dll (the same class
+# of "package silently dropped from lyric.full.toml" gap stage-selfhosted-
+# stdlib.sh's content check now guards against, #4048).
 "Std.TimeHost"         = "std/_kernel/time_host.l"
 "Std.Time"             = "std/time.l"
 
