@@ -561,6 +561,30 @@ func copyRestoredDepDlls(outPath: in String, restoredDlls: in List[String]): Uni
   }
 }
 
+// Warn if the manifest declares `[nuget]` entries but no resolved
+// assemblies — whether because `project.assets.json` is missing (never
+// restored) or present but stale/corrupt (resolves to zero assemblies).
+// Both states leave the build with unresolved NuGet deps, so the
+// file-existence check does not gate the warning to the missing-file case
+// only (#4326).  Shared by `buildProject` (cli_build.l) and
+// `cmdTestManifest` (cli_test.l) so the two build paths give the same
+// diagnostic instead of silently drifting apart (#4325).
+pub func warnIfNugetUnresolved(mfDir: in String, nugetOpt: in Option[Mf.NugetSection], nugetPaths: in List[String]): Unit {
+  match nugetOpt {
+    case Some(nugetSec) -> {
+      if nugetSec.entries.count > 0 and nugetPaths.count == 0 {
+        val assetsPath = Path.join(Path.join(mfDir, "obj"), "project.assets.json")
+        val reason = if File.fileExists(assetsPath) { "is stale or could not be resolved" } else { "was not found" }
+        printErr(
+          "warning: [nuget] dependencies declared but project.assets.json " + reason + ". " +
+            "Run 'lyric restore' or 'dotnet restore' to resolve NuGet dependencies."
+        )
+      }
+    }
+    case None -> ()
+  }
+}
+
 pub func resolveNugetAssets(mfDir: in String): List[String] {
   val assetsPath = Path.join(Path.join(mfDir, "obj"), "project.assets.json")
   if not File.fileExists(assetsPath) {

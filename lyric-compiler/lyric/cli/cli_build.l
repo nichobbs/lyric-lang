@@ -65,6 +65,34 @@ pub func validatePackageVersionArg(v: in String): Option[String] {
   None
 }
 
+// Message for the `--release-from-dll` positional-argument warning: source
+// files passed alongside `--release-from-dll` are ignored (the DLL is
+// already built).  Pulled out of `cmdBuild` so the exact wording is
+// unit-testable without invoking the native AOT release path (#4282).
+pub func releaseFromDllIgnoredArgsWarning(positional: in List[String]): String {
+  "build: warning: source-file arguments are ignored alongside --release-from-dll: " + Str.joinList(", ", positional)
+}
+
+// Filter a `--extra-refs-dir` directory listing down to the extra reference
+// DLLs for `--release-from-dll`: only `.dll` files, excluding the primary
+// DLL itself (`dllBase`, the release target's own basename) and
+// `Lyric.Stdlib.dll` (colocated independently by the release pipeline via
+// `locateStdlib`, so including it here would duplicate it).  Sorted for
+// deterministic ordering.  Pulled out of `cmdBuild` so the filtering logic
+// is unit-testable without invoking the (heavy, toolchain-dependent) native
+// AOT release path (#4282).
+pub func filterExtraRefsDlls(files: in List[String], dllBase: in String): List[String] {
+  val result: List[String] = newList()
+  val sorted = Sort.sortStrings(files.toArray())
+  for f in sorted {
+    val fBase = Path.basename(f)
+    if Str.endsWith(f, ".dll") and fBase != dllBase and fBase != "Lyric.Stdlib.dll" {
+      result.add(f)
+    }
+  }
+  result
+}
+
 // Compile `sourcePath` to a DLL at `outPath`.
 // Returns the exit code: 0 on success, 1 on error.
 // `manifestPath` is forwarded to the generator pre-processor so custom
@@ -344,7 +372,7 @@ func cmdBuild(argv: in slice[String]): Int {
   match releaseFromDll {
     case Some(dll) -> {
       if positional.count > 0 {
-        printErr("build: warning: source-file arguments are ignored alongside --release-from-dll: " + Str.joinList(", ", positional))
+        printErr(releaseFromDllIgnoredArgsWarning(positional))
       }
       if not File.fileExists(dll) {
         printErr("build: --release-from-dll: file not found: " + dll)
@@ -358,28 +386,17 @@ func cmdBuild(argv: in slice[String]): Int {
         case _ -> ()
       }
       val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
-      val extraRefs: List[String] = newList()
-      match extraRefsDir {
+      val extraRefs: List[String] = match extraRefsDir {
         case Some(refsDir) -> {
           match File.listFiles(refsDir) {
-            case Ok(files) -> {
-              val dllBase = Path.basename(dll)
-              val sorted = Sort.sortStrings(files.toArray())
-              for f in sorted {
-                val fBase = Path.basename(f)
-                // Exclude the primary DLL and Lyric.Stdlib.dll (locateStdlib adds it independently).
-                if Str.endsWith(f, ".dll") and fBase != dllBase and fBase != "Lyric.Stdlib.dll" {
-                  extraRefs.add(f)
-                }
-              }
-            }
+            case Ok(files) -> filterExtraRefsDlls(files, Path.basename(dll))
             case Err(e) -> {
               printErr("build: --extra-refs-dir: " + IOError.message(e))
               return 1
             }
           }
         }
-        case None -> ()
+        case None -> newList()
       }
       val absDll = if Path.isAbsolute(dll) { dll } else { Path.join(Environment.currentDirectory(), dll) }
       val outNative = match explicitOut {
@@ -1188,25 +1205,7 @@ func buildProject(
   }
 
   val nugetPaths = resolveNugetAssets(mfDir)
-
-  // Warn if manifest has [nuget] entries but no resolved assemblies — whether
-  // because project.assets.json is missing (never restored) or present but
-  // stale/corrupt (resolves to zero assemblies).  Both states leave the build
-  // with unresolved NuGet deps, so the file-existence check no longer gates
-  // the warning to the missing-file case only (#4326).
-  match manifest.nuget {
-    case Some(nugetSec) -> {
-      if nugetSec.entries.count > 0 and nugetPaths.count == 0 {
-        val assetsPath = Path.join(Path.join(mfDir, "obj"), "project.assets.json")
-        val reason = if File.fileExists(assetsPath) { "is stale or could not be resolved" } else { "was not found" }
-        printErr(
-          "warning: [nuget] dependencies declared but project.assets.json " + reason + ". " +
-            "Run 'lyric restore' or 'dotnet restore' to resolve NuGet dependencies."
-        )
-      }
-    }
-    case None -> ()
-  }
+  warnIfNugetUnresolved(mfDir, manifest.nuget, nugetPaths)
 
   val asmName = stemOf(Path.basename(outPath), 4)
   val projReq = EmitProjectRequest(

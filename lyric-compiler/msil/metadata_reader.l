@@ -39,6 +39,7 @@ import Std.Environment as Environment
 import Std.File as File
 import Std.Path as Path
 import Std.Parse as Parse
+import Std.Console as Console
 
 // ── Parsed shapes ────────────────────────────────────────────────────────────
 // One PE section header (the 40-byte rows after the optional header).  Only

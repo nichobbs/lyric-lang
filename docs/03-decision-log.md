@@ -7513,6 +7513,77 @@ already B-mode (no `args.<field>` access at all; they use only
 contract-augmentation spec), D114, D115, docs/55, docs/56.
 
 ---
+
+## D-progress-553 — Breaking `@stable` API changes across five ecosystem libraries to unblock cross-DLL contract-metadata synthesis (#4514)
+
+**Context.** `lyric publish` was failing contract-metadata synthesis for
+five ecosystem libraries because their `pub` signatures referenced types
+from *other* libraries' DLLs (`Lyric.Web`, `Lyric.Cache`, `Lyric.Mq`) that
+a consumer might not have declared as a direct dependency — a `T0010`-class
+failure. Fixing this required removing those cross-DLL types from the
+affected `@stable(since = "0.1")` public signatures, which is a breaking
+change to each. PR #4514 shipped the fix without a decision-log entry
+recording the rationale or the migration path; this entry closes that gap
+retroactively.
+
+**Decision.** Prefer breaking the `@stable` signatures over leaving
+publish broken. The alternative — keeping the cross-DLL types and forcing
+every consumer to always declare every transitive library as a direct
+dependency — does not scale and defeats the purpose of per-library
+contract-metadata synthesis.
+
+**What actually shipped (verified against the current tree):**
+
+- **`lyric-health`** (`lyric-health/src/health.l`): `runLiveness` /
+  `runReadiness` return `Result[String, String]` instead of
+  `Result[String, ApiError]` (`Lyric.Web`'s `ApiError`). The error string
+  carries the same failing-check information; `import Web` and the
+  `Lyric.Web` dependency are removed from the library entirely.
+  **Migration:** callers that returned the health result directly from an
+  HTTP handler now map `Err(msg)` to `Err(Web.serviceUnavailable(msg))` (or
+  an equivalent `ApiError`) at the call site — done for the `jobqueue`,
+  `ledger`, and `rbac` examples in the same PR.
+- **`lyric-mq`** (`lyric-mq/src/mq_aspects.l`): `pub func configure(idempStore:
+  in CacheStore, dlStore: in DlStore)` is removed. It was a documented
+  no-op (the `Idempotent`/`DeadLetter` aspects already resolve their store
+  via aspect `config { }`, not this function), so removal has no runtime
+  migration — callers simply delete the call. `Lyric.Cache`'s `CacheStore`
+  remains used *inside* the aspect bodies (not in any `pub` signature), so
+  `import Cache` is unaffected.
+- **`lyric-lambda`** (`lyric-lambda/src/lambda.l`): `LambdaApp` stays a
+  `pub record` (an intermediate `pub opaque type LambdaApp` attempt was
+  reverted in the same PR after it broke intra-package field access and
+  13 tests — see the PR's commit history for the false start). What
+  actually changed: the `httpRouter` field's type changes from
+  `Option[Router]` (`Lyric.Web`) to `Option[LambdaRouter]`, a new
+  zero-field `pub opaque type` token defined in `lambda.l` with no
+  `Lyric.Web` reference, so `Router` never appears in `LambdaApp`'s
+  contract metadata. `pub func withRouter` is now gated behind
+  `@cfg(feature = "web")`. **Migration:** consumers that called
+  `withRouter` must add `web = []` to the features they enable (already
+  the case for the `[nuget]`/library-dependency shape) — `Lyric.Web` is
+  in scope for `withRouter`'s parameter/return types only when the `web`
+  feature is active, so `T0010` cannot fire for consumers that don't use
+  it.
+- **`lyric-testing`** (`lyric-testing/src/testing.l`): `PublishedMessage
+  .headers` changes from `slice[Mq.MessageHeader]` to a new
+  `slice[TestMessageHeader]` (a `pub record` local to `lyric-testing` with
+  the same `{key, value}` shape); a `toTestHeaders` helper converts at the
+  `MockMessageQueue` publish boundary. `TestContext.cache` changes from
+  `Cache.InProcessCacheStore` to a new local `pub record MockCacheStore`
+  (implements `Cache.CacheStore`). **Migration:** test code that read
+  `.headers` or `.cache` off these types field-by-field continues to work
+  (same field shapes), but code that passed the value on to an API typed
+  against the original `Mq`/`Cache` types needs the new local record type
+  instead.
+
+**Not a migration concern:** `lyric-docker`'s `extractJsonField` fix in
+the same PR was a compile-error fix (`String.indexOf` returns `Int`, not
+`Option[Int]`), not an API-shape change.
+
+**Related:** #4514, docs/45 (contract-metadata direct resolution), D098.
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
