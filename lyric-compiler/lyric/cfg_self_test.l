@@ -191,3 +191,35 @@ test "cfg overload arity resolution" {
     "cfg_overload_arity: jvm-active leaves only combine/2, 3-arg call is T0042"
   )
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// @cfg(target = "X") — the D-N-013 pseudo-feature form.
+// ─────────────────────────────────────────────────────────────────────────────
+// A target predicate keeps the item when the matching `target.<name>`
+// pseudo-feature is active and erases it otherwise; targets are never
+// declared in [features], so the F0013 typo guard must stay silent.
+test "target predicate keeps and erases by active target" {
+  val src = "package P\n" + "@cfg(target = \"native\")\n" + "pub func onlyNative(): Int { 1 }\n" +
+    "@cfg(target = \"dotnet\")\n" +
+    "pub func onlyDotnet(): Int { 2 }\n" +
+    "pub func always(): Int { 3 }\n"
+  val sf = parseOk(src)
+  val declared = singletonList("realfeature")
+
+  val nativeActive = applyCfgErasure(withTargetFeature(emptyFeatures(), "native"), declared, sf)
+  assertEqualInt(nativeActive.diagnostics.count, 0, "cfg_target: native-active erasure emits no diagnostics")
+  assertEqualInt(nativeActive.file.items.count, 2, "cfg_target: native keeps onlyNative + always")
+
+  val dotnetActive = applyCfgErasure(withTargetFeature(emptyFeatures(), "dotnet"), declared, sf)
+  assertEqualInt(dotnetActive.diagnostics.count, 0, "cfg_target: dotnet-active erasure emits no diagnostics")
+  assertEqualInt(dotnetActive.file.items.count, 2, "cfg_target: dotnet keeps onlyDotnet + always")
+}
+
+// withTargetFeature appends without mutating the caller's list.
+test "withTargetFeature appends the pseudo-feature" {
+  val base = singletonList("payments")
+  val extended = withTargetFeature(base, "jvm")
+  assertEqualInt(base.count, 1, "cfg_target: input list is not mutated")
+  assertEqualInt(extended.count, 2, "cfg_target: output carries base + pseudo-feature")
+  assertEqual(extended[1], "target.jvm", "cfg_target: pseudo-feature spelling")
+}

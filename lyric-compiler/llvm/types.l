@@ -25,6 +25,10 @@ pub union NType {
   case NDouble
   case NPtr(pointee: NType)
   case NStruct(name: String, fields: List[NType])
+  /// Anonymous (literal) struct type — renders as `{ i32, i8* }` inline.
+  /// Used where a value's type is a one-off shape (e.g. a string-literal
+  /// global whose tail is the inline `[N x i8]` data array).
+  case NLitStruct(fields: List[NType])
   case NFnPtr(params: List[NType], ret: NType)
   case NArray(elem: NType, size: Int)
 }
@@ -78,6 +82,7 @@ pub func nTypeToIrString(t: in NType): String {
     case NDouble -> "double"
     case NPtr(pointee) -> nTypeToIrString(pointee) + "*"
     case NStruct(name, _) -> "%" + quoteIrIdent(name)
+    case NLitStruct(fields) -> nStructBodyString(fields)
     case NFnPtr(params, ret) -> {
       var acc = nTypeToIrString(ret) + " ("
       var i = 0

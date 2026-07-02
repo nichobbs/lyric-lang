@@ -441,7 +441,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     if reportAndAbort(parseResult.diagnostics) {
       return false
     }
-    val cfgRes = Cfg.applyCfgErasure(activeFeatures, declaredFeatures, parseResult.file)
+    val cfgRes = Cfg.applyCfgErasure(Cfg.withTargetFeature(activeFeatures, "dotnet"), declaredFeatures, parseResult.file)
     if reportAndAbort(cfgRes.diagnostics) {
       return false
     }

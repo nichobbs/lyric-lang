@@ -123,6 +123,15 @@ int32_t   lyric_map_remove(LyricMap* map, int64_t key);
 int64_t   lyric_map_len(LyricMap* map);
 void      lyric_map_dtor(void* obj);
 
+/* ── Console (lyric_posix.c) ───────────────────────────────────────── */
+
+/* Write the whole string (resp. one '\n') to the file descriptor,
+ * retrying on EINTR and partial writes.  Best-effort: errors other
+ * than EINTR abandon the write (console output is a best-effort
+ * effect in Lyric — see Std.Console). */
+void lyric_console_write(int32_t fd, LyricString* s);
+void lyric_console_write_newline(int32_t fd);
+
 /* ── Platform helpers (lyric_posix.c) ──────────────────────────────── */
 
 /* open(2) flag values differ across platforms (O_CREAT is 0x40 on Linux,

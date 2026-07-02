@@ -10,10 +10,12 @@
 
 #include "lyric_rt.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 #if defined(__linux__)
 #include <sys/random.h>
@@ -21,6 +23,28 @@
 #include <sys/random.h>
 #include <unistd.h>
 #endif
+
+static void write_all(int32_t fd, const uint8_t* data, int64_t len) {
+    int64_t off = 0;
+    while (off < len) {
+        ssize_t n = write(fd, data + off, (size_t)(len - off));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return; /* best-effort: console output never panics */
+        }
+        off += n;
+    }
+}
+
+void lyric_console_write(int32_t fd, LyricString* s) {
+    if (!s || s->len == 0) return;
+    write_all(fd, LYRIC_STRING_DATA(s), s->len);
+}
+
+void lyric_console_write_newline(int32_t fd) {
+    static const uint8_t nl = '\n';
+    write_all(fd, &nl, 1);
+}
 
 int32_t lyric_o_rdonly(void) { return O_RDONLY; }
 int32_t lyric_o_wronly(void) { return O_WRONLY; }
