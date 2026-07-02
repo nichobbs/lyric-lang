@@ -1334,3 +1334,30 @@ test "zero arg closure arrow preserved" {
   assertTrue(not Str.contains(macc, "{\n    // compute"), "zero-arg closure multi: not bare block")
   assertTrue(isFormatted(macc, parse(macc)), "zero-arg closure multi: idempotent")
 }
+
+test "extern func declaration round trips" {
+  // `extern func ... = "symbol"` (D-N-007) renders as a single line and
+  // must round-trip losslessly, including NativePtr[T] parameter types
+  // and the C-symbol string.
+  val src = "package Std.ProbeHost\n\nextern func write(fd: Int, buf: NativePtr[Byte], n: Long): Long = \"write\"\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "extern func: round-trips losslessly")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "extern func write(fd: Int, buf: NativePtr[Byte], n: Long): Long = \"write\""),
+    "extern func: signature and symbol preserved"
+  )
+  assertTrue(isFormatted(acc, parse(acc)), "extern func: idempotent")
+}
+
+test "extern func without return type round trips" {
+  // A Unit-returning extern func omits the `: Ret` clause; the formatter
+  // must not synthesise one (loss-check parses both forms distinctly).
+  val src = "package Std.ProbeHost\n\nextern func free(ptr: NativePtr[Byte]) = \"free\"\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "extern func no-ret: round-trips losslessly")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "extern func free(ptr: NativePtr[Byte]) = \"free\""), "extern func no-ret: preserved")
+  assertTrue(not Str.contains(acc, "free(ptr: NativePtr[Byte]):"), "extern func no-ret: no synthesised return type")
+  assertTrue(isFormatted(acc, parse(acc)), "extern func no-ret: idempotent")
+}

@@ -9,6 +9,7 @@
 #include "lyric_rt.h"
 
 #include <inttypes.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -86,6 +87,13 @@ LyricString* lyric_string_from_int(int64_t v) {
 }
 
 LyricString* lyric_string_from_float(double v) {
+    /* Canonical non-finite spellings, matching the managed targets
+     * (platform printf casing varies: nan/NAN, inf/INF). */
+    if (isnan(v)) return lyric_string_from_literal((const uint8_t*)"NaN", 3);
+    if (isinf(v)) {
+        if (v > 0) return lyric_string_from_literal((const uint8_t*)"Infinity", 8);
+        return lyric_string_from_literal((const uint8_t*)"-Infinity", 9);
+    }
     /* %.17g round-trips every IEEE 754 double; trim to the shortest
      * representation that still round-trips so output reads naturally. */
     char buf[40];

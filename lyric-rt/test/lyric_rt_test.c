@@ -84,6 +84,17 @@ static void test_strings(void) {
     CHECK(lyric_string_len(f) == 3);
     CHECK(memcmp(LYRIC_STRING_DATA(f), "2.5", 3) == 0);
 
+    /* Non-finite values use the managed targets' canonical spellings. */
+    LyricString* fnan = lyric_string_from_float(0.0 / 0.0);
+    CHECK(lyric_string_len(fnan) == 3);
+    CHECK(memcmp(LYRIC_STRING_DATA(fnan), "NaN", 3) == 0);
+    LyricString* finf = lyric_string_from_float(1.0 / 0.0);
+    CHECK(lyric_string_len(finf) == 8);
+    CHECK(memcmp(LYRIC_STRING_DATA(finf), "Infinity", 8) == 0);
+    LyricString* fninf = lyric_string_from_float(-1.0 / 0.0);
+    CHECK(lyric_string_len(fninf) == 9);
+    CHECK(memcmp(LYRIC_STRING_DATA(fninf), "-Infinity", 9) == 0);
+
     LyricString* t = lyric_string_from_bool(1);
     CHECK(memcmp(LYRIC_STRING_DATA(t), "true", 4) == 0);
 
@@ -103,6 +114,9 @@ static void test_strings(void) {
     lyric_release(sub);
     lyric_release(i);
     lyric_release(f);
+    lyric_release(fnan);
+    lyric_release(finf);
+    lyric_release(fninf);
     lyric_release(t);
     lyric_release(ch);
 }

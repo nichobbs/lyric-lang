@@ -19,6 +19,12 @@
 //!   * `panic(msg)` / `assert(cond)` via `lyric_panic_msg`.
 //!   * `func main(): Int | Unit` entry-point synthesis (C `main`).
 //!
+//! Style constraint: value-position if/else whose other branch panics is
+//! written in return style throughout this file — the self-hosted MSIL
+//! emitter miscompiles that shape (ilverify ReturnMissing/StackUnderflow,
+//! #4625); `typeExprToNType`, `lowerExpr`'s EPath arm, and
+//! `assignTargetName` hit it before the rewrite.
+//!
 //! Not yet lowered (each panics with a construct-naming message, per the
 //! MSIL/JVM backend convention for backend gaps): records, unions,
 //! enums, pattern matching, closures/lambdas, generics-after-mono
@@ -163,7 +169,8 @@ pub func typeExprToNType(te: in TypeExpr): NType {
         return lyricStringNType()
       }
       panic(
-        "Lyric.LlvmCodegen: type '" + n + "' is not yet supported for --target native (Phase N1 lowers scalars and String only)"
+        "Lyric.LlvmCodegen: type '" + n +
+          "' is not yet supported for --target native (Phase N1 lowers scalars and String only)"
       )
     }
     case TGenericApp(head, args) -> {
@@ -888,7 +895,8 @@ func lowerMember(ctx: in Ctx, insns: in List[NInsn], receiver: in Expr, memberNa
     panic("Lyric.LlvmCodegen: String member '." + memberName + "' is not yet supported for --target native (Phase N1)")
   }
   panic(
-    "Lyric.LlvmCodegen: member access '." + memberName + "' is not yet supported for --target native (records are Phase N2)"
+    "Lyric.LlvmCodegen: member access '." + memberName +
+      "' is not yet supported for --target native (records are Phase N2)"
   )
 }
 
@@ -1190,7 +1198,8 @@ func coerceTo(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType): N
     return NVal(ty = NI64, value = NLocal(name = dest))
   }
   panic(
-    "Lyric.LlvmCodegen: cannot pass a '" + fromStr + "' where '" + wantStr + "' is expected (insert an explicit conversion)"
+    "Lyric.LlvmCodegen: cannot pass a '" + fromStr + "' where '" + wantStr +
+      "' is expected (insert an explicit conversion)"
   )
 }
 
@@ -1486,7 +1495,8 @@ func zeroValueOf(ty: in NType): NValue {
 
 // The assignable local behind an assignment target (split out of
 // `lowerAssign` in return style: the self-hosted MSIL emitter
-// miscompiles a value-position if/else whose other branch panics).
+// miscompiles a value-position if/else whose other branch panics,
+// #4625).
 func assignTargetName(target: in Expr): String {
   match target.kind {
     case EPath(path) -> {

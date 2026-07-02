@@ -475,7 +475,17 @@ func cmdBuild(argv: in slice[String]): Int {
   if watch {
     val files: List[String] = newList()
     files.add(sourcePath)
-    return watchLoop(files, BuildFile(sourcePath = sourcePath, outArg = outPath, target = target, manifest = manifestArg))
+    return watchLoop(
+      files,
+      BuildFile(
+        sourcePath = sourcePath,
+        outArg = outPath,
+        target = target,
+        manifest = manifestArg,
+        nativeTriple = tripleArg,
+        nativeOpt = optArg
+      )
+    )
   }
 
   buildOneNative(sourcePath, outPath, target, manifestArg, tripleArg, optArg)
