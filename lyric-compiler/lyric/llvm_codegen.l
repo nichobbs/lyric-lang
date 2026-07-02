@@ -178,6 +178,18 @@ record Ctx {
   caseRefs: Map[String, NCaseRef]
   enumDefs: Map[String, Int]
   distinctDefs: Map[String, NDistinctInfo]
+  // Generic type declarations (N3.1): instantiated on demand per
+  // concrete type-argument tuple.  `caseToGenericUnion` maps a case
+  // name to its generic union's registry key for constructor-call
+  // inference; `genericDeclPkg` records the declaring package.
+  genericRecordDefs: Map[String, RecordDecl]
+  genericUnionDefs: Map[String, UnionDecl]
+  genericDeclPkg: Map[String, String]
+  caseToGenericUnion: Map[String, String]
+  // Module accumulators for lazy instantiation: type definitions and
+  // synthesised functions (destructors) appended during lowering.
+  moduleTypeDefs: List[NTypeDefn]
+  moduleFns: List[NFunc]
   // ARC state (per function).  `scopeRefs` stacks the ref-typed locals
   // each lexical scope owns; `tempScopes` stacks the owned temporaries
   // of each evaluation region; the depth lists snapshot both stacks at
@@ -302,6 +314,18 @@ func typeToN(ctx: in Ctx, te: in TypeExpr): NType {
       }
       typeExprToNType(te)
     }
+    case TGenericApp(_, _) -> {
+      // Generic applications (Option[Int], user generics) instantiate
+      // lazily (N3.1); NativePtr passes through typeExprToNType.
+      val emptyNames: List[String] = newList()
+      val emptyTys: List[NType] = newList()
+      match typeToNEnvOpt(ctx, te, emptyNames, emptyTys) {
+        case Some(t) -> return t
+        case None -> {
+        }
+      }
+      typeExprToNType(te)
+    }
     case TParen(inner) -> typeToN(ctx, inner)
     case _ -> typeExprToNType(te)
   }
@@ -345,19 +369,10 @@ func typeToNOpt(ctx: in Ctx, te: in TypeExpr): Option[NType] {
       }
       None
     }
-    case TGenericApp(head, args) -> {
-      if lastSeg(head) == "NativePtr" and args.count == 1 {
-        match args[0] {
-          case TAType(inner) -> {
-            match typeToNOpt(ctx, inner) {
-              case Some(t) -> return Some(value = NPtr(pointee = t))
-              case None -> return None
-            }
-          }
-          case TAValue(_) -> return None
-        }
-      }
-      None
+    case TGenericApp(_, _) -> {
+      val emptyNames: List[String] = newList()
+      val emptyTys: List[NType] = newList()
+      typeToNEnvOpt(ctx, te, emptyNames, emptyTys)
     }
     case TUnit -> Some(value = NVoid)
     case TParen(inner) -> typeToNOpt(ctx, inner)
@@ -1147,6 +1162,12 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
         case None -> {
         }
       }
+      if ctx.caseToGenericUnion.containsKey(joined) and not ctx.varTypes.containsKey(joined) {
+        panic(
+          "Lyric.LlvmCodegen: cannot infer the type arguments of generic union case '" + joined +
+            "' here; annotate the binding, return type, or parameter it flows into"
+        )
+      }
       if path.segments.count == 1 {
         return loadLocal(ctx, insns, path.segments[0])
       }
@@ -1156,7 +1177,10 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
       )
     }
     case EParen(inner) -> lowerExpr(ctx, insns, inner)
-    case EIf(cond, thenBranch, elseBranch, _) -> lowerIf(ctx, insns, cond, thenBranch, elseBranch)
+    case EIf(cond, thenBranch, elseBranch, _) -> {
+      val noWant: Option[NType] = None
+      lowerIf(ctx, insns, cond, thenBranch, elseBranch, noWant)
+    }
     case ECall(fn, args) -> lowerCall(ctx, insns, fn, args, expr.span.startPos.line)
     case EMember(receiver, memberName) -> lowerMember(ctx, insns, receiver, memberName)
     case EPrefix(op, operand) -> lowerPrefix(ctx, insns, op, operand)
@@ -1166,7 +1190,10 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
       lowerAssign(ctx, insns, target, op, value, expr.span.startPos.line)
       NVal(ty = NVoid, value = NUndef(ty = NVoid))
     }
-    case EMatch(scrutinee, arms) -> lowerMatch(ctx, insns, scrutinee, arms, expr.span.startPos.line)
+    case EMatch(scrutinee, arms) -> {
+      val noWant: Option[NType] = None
+      lowerMatch(ctx, insns, scrutinee, arms, expr.span.startPos.line, noWant)
+    }
     // `self` in a record-method body is the desugared receiver param.
     case ESelf -> loadLocal(ctx, insns, "self")
     case ELambda(_, _) -> panic("Lyric.LlvmCodegen: lambdas are not yet supported for --target native (closures are Phase N2)")
@@ -1779,7 +1806,7 @@ func lowerCallArgs(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, args: i
   while i < args.count {
     match args[i] {
       case CAPositional(ex) -> {
-        vals.add(lowerExpr(ctx, insns, ex))
+        vals.add(lowerExprExpecting(ctx, insns, ex, typeToN(ctx, sig.paramTys[nextPositional])))
         slots.add(nextPositional)
         nextPositional = nextPositional + 1
       }
@@ -1795,7 +1822,7 @@ func lowerCallArgs(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, args: i
         if slot < 0 {
           panic("Lyric.LlvmCodegen: named argument '" + argName + "' does not match a parameter of '" + sig.irName + "'")
         }
-        vals.add(lowerExpr(ctx, insns, value))
+        vals.add(lowerExprExpecting(ctx, insns, value, typeToN(ctx, sig.paramTys[slot])))
         slots.add(slot)
       }
     }
@@ -1850,7 +1877,7 @@ func lowerCallArgsWithReceiver(
   while i < args.count {
     match args[i] {
       case CAPositional(ex) -> {
-        vals.add(lowerExpr(ctx, insns, ex))
+        vals.add(lowerExprExpecting(ctx, insns, ex, typeToN(ctx, sig.paramTys[nextPositional])))
         slots.add(nextPositional)
         nextPositional = nextPositional + 1
       }
@@ -1866,7 +1893,7 @@ func lowerCallArgsWithReceiver(
         if slot < 0 {
           panic("Lyric.LlvmCodegen: named argument '" + argName + "' does not match a parameter of '" + sig.irName + "'")
         }
-        vals.add(lowerExpr(ctx, insns, value))
+        vals.add(lowerExprExpecting(ctx, insns, value, typeToN(ctx, sig.paramTys[slot])))
         slots.add(slot)
       }
     }
@@ -2054,6 +2081,20 @@ func lowerConstructCall(
       }
       case None -> {
       }
+    }
+    // Generic union case (`Some(5)`): infer type args, instantiate,
+    // construct (N3.1).
+    match mapGet(ctx.caseToGenericUnion, name) {
+      case Some(gkey) -> {
+        val dotIdx = lastDotIndex(name)
+        val caseName = if dotIdx >= 0 { Str.substring(name, dotIdx + 1, name.length - dotIdx - 1) } else { name }
+        return lowerGenericCaseConstruct(ctx, insns, gkey, caseName, args)
+      }
+      case None -> {
+      }
+    }
+    if ctx.genericRecordDefs.containsKey(name) {
+      return lowerGenericRecordConstruct(ctx, insns, genericQualifiedKey(ctx, name), args)
     }
     match mapGet(ctx.distinctDefs, name) {
       case Some(di) -> return lowerDistinctConstruct(ctx, insns, name, di, args, line)
@@ -2273,8 +2314,7 @@ func registerHeapTypes(
     while ri < u.records.count {
       val rd = u.records[ri]
       match rd.generics {
-        case Some(_) -> {
-        }
+        case Some(_) -> registerGenericRecord(ctx, u.pkgName, rd)
         case None -> {
           val emptyNames: List[String] = newList()
           val emptyTys: List[NType] = newList()
@@ -2295,8 +2335,7 @@ func registerHeapTypes(
     while ci < u.unions.count {
       val ud = u.unions[ci]
       match ud.generics {
-        case Some(_) -> {
-        }
+        case Some(_) -> registerGenericUnion(ctx, u.pkgName, ud)
         case None -> {
           val emptyCases: List[NUnionCaseInfo] = newList()
           val stub = NUnionInfo(irName = u.pkgName + "." + ud.name, cases = emptyCases, payloadWords = 0)
@@ -2664,6 +2703,649 @@ func registerUnionLayout(
   }
 }
 
+// ── Generic type instantiation (N3.1) ────────────────────────────────────────
+func registerGenericRecord(ctx: in Ctx, pkg: in String, rd: in RecordDecl): Unit {
+  val qualified = pkg + "." + rd.name
+  if not ctx.genericRecordDefs.containsKey(qualified) {
+    ctx.genericRecordDefs.add(qualified, rd)
+    ctx.genericDeclPkg.add(qualified, pkg)
+  }
+  if not ctx.genericRecordDefs.containsKey(rd.name) {
+    ctx.genericRecordDefs.add(rd.name, rd)
+    if not ctx.genericDeclPkg.containsKey(rd.name) {
+      ctx.genericDeclPkg.add(rd.name, pkg)
+    }
+  }
+}
+
+func registerGenericUnion(ctx: in Ctx, pkg: in String, ud: in UnionDecl): Unit {
+  val qualified = pkg + "." + ud.name
+  if not ctx.genericUnionDefs.containsKey(qualified) {
+    ctx.genericUnionDefs.add(qualified, ud)
+    ctx.genericDeclPkg.add(qualified, pkg)
+  }
+  if not ctx.genericUnionDefs.containsKey(ud.name) {
+    ctx.genericUnionDefs.add(ud.name, ud)
+    if not ctx.genericDeclPkg.containsKey(ud.name) {
+      ctx.genericDeclPkg.add(ud.name, pkg)
+    }
+  }
+  var ci = 0
+  while ci < ud.cases.count {
+    val caseName = ud.cases[ci].name
+    if not ctx.caseToGenericUnion.containsKey(caseName) {
+      ctx.caseToGenericUnion.add(caseName, qualified)
+    }
+    if not ctx.caseToGenericUnion.containsKey(ud.name + "." + caseName) {
+      ctx.caseToGenericUnion.add(ud.name + "." + caseName, qualified)
+    }
+    if not ctx.caseToGenericUnion.containsKey(qualified + "." + caseName) {
+      ctx.caseToGenericUnion.add(qualified + "." + caseName, qualified)
+    }
+    ci = ci + 1
+  }
+}
+
+func genericParamNamesOf(gp: in Option[GenericParams]): List[String] {
+  val names: List[String] = newList()
+  match gp {
+    case Some(g) -> {
+      var i = 0
+      while i < g.params.count {
+        match g.params[i] {
+          case GPType(name, _) -> names.add(name)
+          case GPValue(_, _, _) -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case None -> {
+    }
+  }
+  names
+}
+
+/// The IR name of one instantiation: `Pkg.Name<i64,LyricString*>`.
+/// Type args mangle without `%`/quotes — nested instantiations would
+/// otherwise nest IR quoting and produce unparsable type names.
+func instIrName(baseIr: in String, argTys: in List[NType]): String {
+  var acc = baseIr + "<"
+  var i = 0
+  while i < argTys.count {
+    if i > 0 {
+      acc = acc + ","
+    }
+    acc = acc + mangleNTypeArg(argTys[i])
+    i = i + 1
+  }
+  acc + ">"
+}
+
+func mangleNTypeArg(t: in NType): String {
+  match t {
+    case NPtr(pointee) -> {
+      match pointee {
+        case NStruct(name, _) -> name + "*"
+        case _ -> mangleNTypeArg(pointee) + "*"
+      }
+    }
+    case NArray(elem, size) -> "arr" + size.toString() + "." + mangleNTypeArg(elem)
+    case _ -> nTypeToIrString(t)
+  }
+}
+
+func envIndexOf(envNames: in List[String], name: in String): Int {
+  var i = 0
+  while i < envNames.count {
+    if envNames[i] == name {
+      return i
+    }
+    i = i + 1
+  }
+  0 - 1
+}
+
+/// `typeToNOpt` with a type-parameter environment: `T` resolves through
+/// the env; generic applications instantiate recursively.
+func typeToNEnvOpt(ctx: in Ctx, te: in TypeExpr, envNames: in List[String], envTys: in List[NType]): Option[NType] {
+  match te.kind {
+    case TRef(path) -> {
+      if path.segments.count == 1 {
+        val idx = envIndexOf(envNames, path.segments[0])
+        if idx >= 0 {
+          return Some(value = envTys[idx])
+        }
+      }
+      typeToNOpt(ctx, te)
+    }
+    case TGenericApp(head, args) -> {
+      val joined = modulePathJoin(head.segments)
+      val bare = lastSeg(head)
+      if bare == "NativePtr" and args.count == 1 {
+        match args[0] {
+          case TAType(inner) -> {
+            match typeToNEnvOpt(ctx, inner, envNames, envTys) {
+              case Some(t) -> return Some(value = NPtr(pointee = t))
+              case None -> return None
+            }
+          }
+          case TAValue(_) -> return None
+        }
+      }
+      val argTys: List[NType] = newList()
+      var ai = 0
+      while ai < args.count {
+        match args[ai] {
+          case TAType(inner) -> {
+            match typeToNEnvOpt(ctx, inner, envNames, envTys) {
+              case Some(t) -> argTys.add(t)
+              case None -> return None
+            }
+          }
+          case TAValue(_) -> return None
+        }
+        ai = ai + 1
+      }
+      match resolveGenericUnionKey(ctx, joined, bare) {
+        case Some(gkey) -> {
+          match instantiateGenericUnionOpt(ctx, gkey, argTys) {
+            case Some(ui) -> return Some(value = unionPtrType(ui))
+            case None -> return None
+          }
+        }
+        case None -> {
+        }
+      }
+      match resolveGenericRecordKey(ctx, joined, bare) {
+        case Some(gkey) -> {
+          match instantiateGenericRecordOpt(ctx, gkey, argTys) {
+            case Some(ri) -> return Some(value = recPtrType(ri))
+            case None -> return None
+          }
+        }
+        case None -> {
+        }
+      }
+      None
+    }
+    case TParen(inner) -> typeToNEnvOpt(ctx, inner, envNames, envTys)
+    case _ -> typeToNOpt(ctx, te)
+  }
+}
+
+func resolveGenericUnionKey(ctx: in Ctx, joined: in String, bare: in String): Option[String] {
+  if ctx.genericUnionDefs.containsKey(joined) {
+    return Some(value = genericQualifiedKey(ctx, joined))
+  }
+  if ctx.genericUnionDefs.containsKey(bare) {
+    return Some(value = genericQualifiedKey(ctx, bare))
+  }
+  None
+}
+
+func resolveGenericRecordKey(ctx: in Ctx, joined: in String, bare: in String): Option[String] {
+  if ctx.genericRecordDefs.containsKey(joined) {
+    return Some(value = genericQualifiedKey(ctx, joined))
+  }
+  if ctx.genericRecordDefs.containsKey(bare) {
+    return Some(value = genericQualifiedKey(ctx, bare))
+  }
+  None
+}
+
+/// Normalise a generic registry key to its declaring-package qualified
+/// form so every instantiation of the same declaration shares a cache
+/// entry regardless of how the source spelled the reference.
+func genericQualifiedKey(ctx: in Ctx, key: in String): String {
+  val pkg = match mapGet(ctx.genericDeclPkg, key) { case Some(p) -> p; case None -> return key }
+  if Str.startsWith(key, pkg + ".") {
+    return key
+  }
+  pkg + "." + key
+}
+
+/// Registry accessors that never bind a pattern under an Option-typed
+/// return context (the stage-0 seed mis-types such bindings, #4631
+/// family — see lookupHeapType's note).
+func mustGetGenericUnion(ctx: in Ctx, key: in String): UnionDecl {
+  match mapGet(ctx.genericUnionDefs, key) {
+    case Some(d) -> d
+    case None -> panic("Lyric.LlvmCodegen: internal — generic union '" + key + "' not registered")
+  }
+}
+
+func mustGetGenericRecord(ctx: in Ctx, key: in String): RecordDecl {
+  match mapGet(ctx.genericRecordDefs, key) {
+    case Some(d) -> d
+    case None -> panic("Lyric.LlvmCodegen: internal — generic record '" + key + "' not registered")
+  }
+}
+
+func instantiateGenericUnionOpt(ctx: in Ctx, gkey: in String, argTys: in List[NType]): Option[NUnionInfo] {
+  if not ctx.genericUnionDefs.containsKey(gkey) {
+    return None
+  }
+  val ud = mustGetGenericUnion(ctx, gkey)
+  val instName = instIrName(gkey, argTys)
+  match mapGet(ctx.unionDefs, instName) {
+    case Some(existing) -> return Some(value = existing)
+    case None -> {
+    }
+  }
+  val envNames = genericParamNamesOf(ud.generics)
+  if envNames.count != argTys.count {
+    return None
+  }
+  val cases: List[NUnionCaseInfo] = newList()
+  var maxBytes = 0
+  var ci = 0
+  while ci < ud.cases.count {
+    val cd = ud.cases[ci]
+    val names: List[String] = newList()
+    val tys: List[NType] = newList()
+    var fi = 0
+    while fi < cd.fields.count {
+      names.add(unionFieldName(cd.fields[fi], fi))
+      match typeToNEnvOpt(ctx, unionFieldTy(cd.fields[fi]), envNames, argTys) {
+        case Some(t) -> tys.add(t)
+        case None -> return None
+      }
+      fi = fi + 1
+    }
+    val sz = structSize(tys)
+    if sz > maxBytes {
+      maxBytes = sz
+    }
+    cases.add(NUnionCaseInfo(name = cd.name, fieldNames = names, fieldTys = tys))
+    ci = ci + 1
+  }
+  val words = (maxBytes + 7) / 8
+  val ui = NUnionInfo(irName = instName, cases = cases, payloadWords = words)
+  ctx.unionDefs.add(instName, ui)
+  ctx.moduleTypeDefs.add(NTypeDefn(name = instName, fields = unionBodyFields(words)))
+  var ci2 = 0
+  while ci2 < cases.count {
+    if cases[ci2].fieldTys.count > 0 {
+      ctx.moduleTypeDefs.add(NTypeDefn(name = casePayloadStructName(ui, cases[ci2].name), fields = cases[ci2].fieldTys))
+    }
+    ci2 = ci2 + 1
+  }
+  if unionHasRefFields(ui) {
+    ctx.moduleFns.add(synthUnionDtor(ctx, ui))
+  }
+  Some(value = ui)
+}
+
+func instantiateGenericRecordOpt(ctx: in Ctx, gkey: in String, argTys: in List[NType]): Option[NRecInfo] {
+  if not ctx.genericRecordDefs.containsKey(gkey) {
+    return None
+  }
+  val rd = mustGetGenericRecord(ctx, gkey)
+  val instName = instIrName(gkey, argTys)
+  match mapGet(ctx.recordDefs, instName) {
+    case Some(existing) -> return Some(value = existing)
+    case None -> {
+    }
+  }
+  val envNames = genericParamNamesOf(rd.generics)
+  if envNames.count != argTys.count {
+    return None
+  }
+  val fields = recFieldsOf(rd)
+  val names: List[String] = newList()
+  val tys: List[NType] = newList()
+  val dflts: List[Option[Expr]] = newList()
+  var i = 0
+  while i < fields.count {
+    names.add(fields[i].name)
+    match typeToNEnvOpt(ctx, fields[i].ty, envNames, argTys) {
+      case Some(t) -> tys.add(t)
+      case None -> return None
+    }
+    dflts.add(fields[i].dflt)
+    i = i + 1
+  }
+  val ri = NRecInfo(irName = instName, fieldNames = names, fieldTys = tys, fieldDefaults = dflts)
+  ctx.recordDefs.add(instName, ri)
+  val defnFields: List[NType] = newList()
+  defnFields.add(NI32)
+  defnFields.add(NPtr(pointee = NI8))
+  var fi = 0
+  while fi < tys.count {
+    defnFields.add(tys[fi])
+    fi = fi + 1
+  }
+  ctx.moduleTypeDefs.add(NTypeDefn(name = instName, fields = defnFields))
+  if recHasRefFields(ri) {
+    ctx.moduleFns.add(synthRecordDtor(ctx, ri))
+  }
+  Some(value = ri)
+}
+
+/// Lower a generic union-case constructor call (`Some(5)`): infer the
+/// type arguments from the case's argument types, instantiate, and
+/// construct.  Params not mentioned by this case's directly-typed
+/// fields cannot be inferred here — the expected-type path
+/// (`lowerExprExpecting`) covers annotated bindings, returns, and
+/// arguments; anything else needs an annotation.
+func lowerGenericCaseConstruct(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  gkey: in String,
+  caseName: in String,
+  args: in List[CallArg],
+): NVal {
+  val ud = mustGetGenericUnion(ctx, gkey)
+  var caseIdx = 0 - 1
+  var ci = 0
+  while ci < ud.cases.count {
+    if ud.cases[ci].name == caseName {
+      caseIdx = ci
+    }
+    ci = ci + 1
+  }
+  if caseIdx < 0 {
+    panic("Lyric.LlvmCodegen: internal — union '" + gkey + "' has no case '" + caseName + "'")
+  }
+  val cd = ud.cases[caseIdx]
+  // Map args to case fields (named by name, positional in order),
+  // recorded as parallel (fieldIdx, expr) lists.
+  val argFieldIdx: List[Int] = newList()
+  val argFieldExpr: List[Expr] = newList()
+  var positionalIdx = 0
+  var ai = 0
+  while ai < args.count {
+    match args[ai] {
+      case CANamed(name, value, _) -> {
+        var target = 0 - 1
+        var fj = 0
+        while fj < cd.fields.count {
+          if unionFieldName(cd.fields[fj], fj) == name {
+            target = fj
+          }
+          fj = fj + 1
+        }
+        if target < 0 {
+          panic("Lyric.LlvmCodegen: union case '" + caseName + "' has no field '" + name + "'")
+        }
+        argFieldIdx.add(target)
+        argFieldExpr.add(value)
+      }
+      case CAPositional(ex) -> {
+        if positionalIdx >= cd.fields.count {
+          panic("Lyric.LlvmCodegen: too many arguments constructing union case '" + caseName + "'")
+        }
+        argFieldIdx.add(positionalIdx)
+        argFieldExpr.add(ex)
+        positionalIdx = positionalIdx + 1
+      }
+    }
+    ai = ai + 1
+  }
+  // Lower per field (declaration order) and infer the type env from
+  // fields whose declared type is a bare parameter reference.
+  val rawVals: List[NVal] = newList()
+  var fi2 = 0
+  while fi2 < cd.fields.count {
+    var found2 = 0 - 1
+    var aj = 0
+    while aj < argFieldIdx.count {
+      if argFieldIdx[aj] == fi2 {
+        found2 = aj
+      }
+      aj = aj + 1
+    }
+    if found2 < 0 {
+      panic(
+        "Lyric.LlvmCodegen: missing field '" + unionFieldName(cd.fields[fi2], fi2) + "' constructing union case '" +
+          caseName +
+          "'"
+      )
+    }
+    rawVals.add(lowerExpr(ctx, insns, argFieldExpr[found2]))
+    fi2 = fi2 + 1
+  }
+  val envNames = genericParamNamesOf(ud.generics)
+  val envTys: List[NType] = newList()
+  var pi = 0
+  while pi < envNames.count {
+    var found = false
+    var fj = 0
+    while fj < cd.fields.count {
+      if not found {
+        match unionFieldTy(cd.fields[fj]).kind {
+          case TRef(path) -> {
+            if path.segments.count == 1 and path.segments[0] == envNames[pi] {
+              envTys.add(rawVals[fj].ty)
+              found = true
+            }
+          }
+          case _ -> {
+          }
+        }
+      }
+      fj = fj + 1
+    }
+    if not found {
+      panic(
+        "Lyric.LlvmCodegen: cannot infer type argument '" + envNames[pi] + "' for union case '" + caseName +
+          "' from its arguments; annotate the binding or pass the value through a typed position"
+      )
+    }
+    pi = pi + 1
+  }
+  val ui = match instantiateGenericUnionOpt(ctx, genericQualifiedKey(ctx, gkey), envTys) {
+    case Some(u) -> u
+    case None -> panic("Lyric.LlvmCodegen: cannot instantiate generic union '" + gkey + "' for --target native (a field type is not yet lowerable)")
+  }
+  lowerUnionConstructVals(ctx, insns, ui, caseIdx, rawVals)
+}
+
+/// Lower a generic record constructor call (`Box(item = x, tag = 2)`):
+/// infer the type args from directly-param-typed fields, instantiate,
+/// construct.
+func lowerGenericRecordConstruct(ctx: in Ctx, insns: in List[NInsn], gkey: in String, args: in List[CallArg]): NVal {
+  val rd = mustGetGenericRecord(ctx, gkey)
+  val fields = recFieldsOf(rd)
+  val argFieldIdx: List[Int] = newList()
+  val argFieldExpr: List[Expr] = newList()
+  var positionalIdx = 0
+  var ai = 0
+  while ai < args.count {
+    match args[ai] {
+      case CANamed(name, value, _) -> {
+        var target = 0 - 1
+        var fj = 0
+        while fj < fields.count {
+          if fields[fj].name == name {
+            target = fj
+          }
+          fj = fj + 1
+        }
+        if target < 0 {
+          panic("Lyric.LlvmCodegen: record '" + rd.name + "' has no field '" + name + "'")
+        }
+        argFieldIdx.add(target)
+        argFieldExpr.add(value)
+      }
+      case CAPositional(ex) -> {
+        if positionalIdx >= fields.count {
+          panic("Lyric.LlvmCodegen: too many arguments constructing record '" + rd.name + "'")
+        }
+        argFieldIdx.add(positionalIdx)
+        argFieldExpr.add(ex)
+        positionalIdx = positionalIdx + 1
+      }
+    }
+    ai = ai + 1
+  }
+  val rawVals: List[NVal] = newList()
+  var fi2 = 0
+  while fi2 < fields.count {
+    var found2 = 0 - 1
+    var aj = 0
+    while aj < argFieldIdx.count {
+      if argFieldIdx[aj] == fi2 {
+        found2 = aj
+      }
+      aj = aj + 1
+    }
+    if found2 >= 0 {
+      rawVals.add(lowerExpr(ctx, insns, argFieldExpr[found2]))
+    } else {
+      match fields[fi2].dflt {
+        case Some(d) -> rawVals.add(lowerExpr(ctx, insns, d))
+        case None -> panic("Lyric.LlvmCodegen: missing field '" + fields[fi2].name + "' constructing record '" + rd.name + "'")
+      }
+    }
+    fi2 = fi2 + 1
+  }
+  val envNames = genericParamNamesOf(rd.generics)
+  val envTys: List[NType] = newList()
+  var pi = 0
+  while pi < envNames.count {
+    var found = false
+    var fj = 0
+    while fj < fields.count {
+      if not found {
+        match fields[fj].ty.kind {
+          case TRef(path) -> {
+            if path.segments.count == 1 and path.segments[0] == envNames[pi] {
+              envTys.add(rawVals[fj].ty)
+              found = true
+            }
+          }
+          case _ -> {
+          }
+        }
+      }
+      fj = fj + 1
+    }
+    if not found {
+      panic(
+        "Lyric.LlvmCodegen: cannot infer type argument '" + envNames[pi] + "' for record '" + rd.name +
+          "' from its constructor arguments; annotate the binding or pass the value through a typed position"
+      )
+    }
+    pi = pi + 1
+  }
+  val ri = match instantiateGenericRecordOpt(ctx, genericQualifiedKey(ctx, gkey), envTys) {
+    case Some(r) -> r
+    case None -> panic("Lyric.LlvmCodegen: cannot instantiate generic record '" + gkey + "' for --target native (a field type is not yet lowerable)")
+  }
+  lowerRecordConstructVals(ctx, insns, ri, rawVals)
+}
+
+/// Lower `e` under a known expected type: generic-union case
+/// constructions resolve against the expected instantiation directly
+/// (the only way to type nullary cases like `None`, and cases that
+/// mention only some type params, like `Result`'s `Ok`/`Err`), then
+/// everything else lowers normally and coerces.
+func lowerExprExpecting(ctx: in Ctx, insns: in List[NInsn], e: in Expr, want: in NType): NVal {
+  match caseConstructForExpected(ctx, insns, e, want) {
+    case Some(v) -> return v
+    case None -> {
+    }
+  }
+  // Structural recursion: the expected type flows into value-position
+  // control flow so branches/arms can construct generic cases.
+  match e.kind {
+    case EIf(cond, thenBranch, elseBranch, _) -> {
+      val w1: Option[NType] = Some(value = want)
+      return coerceTo(ctx, insns, lowerIf(ctx, insns, cond, thenBranch, elseBranch, w1), want)
+    }
+    case EMatch(scrutinee, arms) -> {
+      val w2: Option[NType] = Some(value = want)
+      return coerceTo(ctx, insns, lowerMatch(ctx, insns, scrutinee, arms, e.span.startPos.line, w2), want)
+    }
+    case EBlock(block) -> {
+      val w3: Option[NType] = Some(value = want)
+      return coerceTo(ctx, insns, lowerBlockValueW(ctx, insns, block, w3), want)
+    }
+    case EParen(inner) -> return lowerExprExpecting(ctx, insns, inner, want)
+    case _ -> {
+    }
+  }
+  coerceTo(ctx, insns, lowerExpr(ctx, insns, e), want)
+}
+
+/// The (caseName, args) of `e` when it is a union-case construction
+/// whose case belongs to the expected union instantiation; constructs
+/// it against the concrete case field types.
+func caseConstructForExpected(ctx: in Ctx, insns: in List[NInsn], e: in Expr, want: in NType): Option[NVal] {
+  if not isRefNType(want) {
+    return None
+  }
+  val ui = match unionInfoOfType(ctx, want) { case Some(u) -> u; case None -> return None }
+  var refName = ""
+  val noArgs: List[CallArg] = newList()
+  var callArgs = noArgs
+  match e.kind {
+    case EPath(path) -> {
+      refName = modulePathJoin(path.segments)
+    }
+    case EMember(recv, memberName) -> {
+      if isPackagePathExpr(ctx, recv) {
+        match recv.kind {
+          case EPath(rpath) -> {
+            refName = modulePathJoin(rpath.segments) + "." + memberName
+          }
+          case _ -> {
+          }
+        }
+      }
+    }
+    case ECall(fn, args) -> {
+      match fn.kind {
+        case EPath(path) -> {
+          refName = modulePathJoin(path.segments)
+        }
+        case EMember(recv, memberName) -> {
+          if isPackagePathExpr(ctx, recv) {
+            match recv.kind {
+              case EPath(rpath) -> {
+                refName = modulePathJoin(rpath.segments) + "." + memberName
+              }
+              case _ -> {
+              }
+            }
+          }
+        }
+        case _ -> {
+        }
+      }
+      callArgs = args
+    }
+    case _ -> {
+    }
+  }
+  if refName.length == 0 {
+    return None
+  }
+  // A local shadows a case name.
+  if ctx.varTypes.containsKey(refName) {
+    return None
+  }
+  if not ctx.caseToGenericUnion.containsKey(refName) {
+    return None
+  }
+  val dotIdx = lastDotIndex(refName)
+  val caseName = if dotIdx >= 0 { Str.substring(refName, dotIdx + 1, refName.length - dotIdx - 1) } else { refName }
+  var caseIdx = 0 - 1
+  var ci = 0
+  while ci < ui.cases.count {
+    if ui.cases[ci].name == caseName {
+      caseIdx = ci
+    }
+    ci = ci + 1
+  }
+  if caseIdx < 0 {
+    return None
+  }
+  Some(value = lowerUnionConstruct(ctx, insns, ui, caseIdx, callArgs))
+}
+
 /// `define internal void @<T>.dtor(i8*)`: release each ref-typed field
 /// (ARC Rule 7).  `lyric_release` frees the object afterwards.
 func synthRecordDtor(ctx: in Ctx, ri: in NRecInfo): NFunc {
@@ -2897,10 +3579,7 @@ func resolveFieldArgs(
       }
     }
     match ex {
-      case Some(e) -> {
-        val v = lowerExpr(ctx, insns, e)
-        outV.add(coerceTo(ctx, insns, v, fieldTys[fi]))
-      }
+      case Some(e) -> outV.add(lowerExprExpecting(ctx, insns, e, fieldTys[fi]))
       case None -> panic("Lyric.LlvmCodegen: missing field '" + fieldNames[fi] + "' constructing " + what)
     }
     fi = fi + 1
@@ -2911,6 +3590,17 @@ func resolveFieldArgs(
 func lowerRecordConstructArgs(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInfo, args: in List[CallArg]): NVal {
   val noDflts: List[Option[Expr]] = ri.fieldDefaults
   val vals = resolveFieldArgs(ctx, insns, "record '" + ri.irName + "'", ri.fieldNames, ri.fieldTys, noDflts, args)
+  lowerRecordConstructVals(ctx, insns, ri, vals)
+}
+
+/// Construct a record from pre-lowered field values (coerced here).
+func lowerRecordConstructVals(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInfo, rawVals: in List[NVal]): NVal {
+  val vals: List[NVal] = newList()
+  var vi = 0
+  while vi < rawVals.count {
+    vals.add(coerceTo(ctx, insns, rawVals[vi], ri.fieldTys[vi]))
+    vi = vi + 1
+  }
   val objTy = recPtrType(ri)
   val structTy = match objTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
   val dtorName = if recHasRefFields(ri) { recDtorName(ri) } else { "" }
@@ -2954,6 +3644,25 @@ func lowerUnionConstruct(
     noDflts,
     args
   )
+  lowerUnionConstructVals(ctx, insns, ui, caseIdx, vals)
+}
+
+/// Construct a union case from pre-lowered field values (coerced to the
+/// case's concrete field types here).
+func lowerUnionConstructVals(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  ui: in NUnionInfo,
+  caseIdx: in Int,
+  rawVals: in List[NVal],
+): NVal {
+  val ci = ui.cases[caseIdx]
+  val vals: List[NVal] = newList()
+  var vi = 0
+  while vi < rawVals.count {
+    vals.add(coerceTo(ctx, insns, rawVals[vi], ci.fieldTys[vi]))
+    vi = vi + 1
+  }
   val objTy = unionPtrType(ui)
   val structTy = match objTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
   val dtorName = if unionHasRefFields(ui) { unionDtorName(ui) } else { "" }
@@ -3062,6 +3771,22 @@ func unionInfoOfType(ctx: in Ctx, t: in NType): Option[NUnionInfo] {
   }
 }
 
+func scrutineeHasCase(ctx: in Ctx, t: in NType, name: in String): Bool {
+  match unionInfoOfType(ctx, t) {
+    case Some(ui) -> {
+      var i = 0
+      while i < ui.cases.count {
+        if ui.cases[i].name == name {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case None -> false
+  }
+}
+
 func recInfoOfType(ctx: in Ctx, t: in NType): Option[NRecInfo] {
   match t {
     case NPtr(pointee) -> {
@@ -3102,6 +3827,26 @@ func emitPatternTest(
       match inner {
         case Some(_) -> panic("Lyric.LlvmCodegen: nested binding patterns (name @ pattern) are not yet supported for --target native")
         case None -> {
+          // A bare identifier that names a case of the scrutinee's
+          // union is a nullary constructor pattern, not a binding
+          // (`case Nada ->`): the parser cannot distinguish them.
+          if scrutineeHasCase(ctx, sv.ty, name) {
+            val segs: List[String] = newList()
+            segs.add(name)
+            val noSubs: List[Pattern] = newList()
+            emitConstructorTest(
+              ctx,
+              insns,
+              sv,
+              ModulePath(segments = segs, span = p.span),
+              noSubs,
+              okLabel,
+              failLabel,
+              bindNames,
+              bindVals
+            )
+            return
+          }
           bindNames.add(name)
           bindVals.add(sv)
           insns.add(NBr(label = okLabel))
@@ -3171,17 +3916,26 @@ func emitConstructorTest(
     case None -> {
     }
   }
-  val cref = match mapGet(ctx.caseRefs, joined) {
-    case Some(c) -> c
-    case None -> panic("Lyric.LlvmCodegen: unknown constructor pattern '" + joined + "' for --target native")
-  }
   val ui = match unionInfoOfType(ctx, sv.ty) {
     case Some(u) -> u
     case None -> panic("Lyric.LlvmCodegen: constructor pattern '" + joined + "' matched against a non-union value")
   }
-  if ui.irName != cref.unionKey {
+  // Resolve the case by name within the scrutinee's union: this covers
+  // generic instantiations (whose cases have no caseRefs entries) and
+  // validates non-generic patterns against the actual scrutinee.
+  val caseName = lastSeg(head)
+  var caseIdxFound = 0 - 1
+  var cix = 0
+  while cix < ui.cases.count {
+    if ui.cases[cix].name == caseName {
+      caseIdxFound = cix
+    }
+    cix = cix + 1
+  }
+  if caseIdxFound < 0 {
     panic("Lyric.LlvmCodegen: constructor pattern '" + joined + "' does not belong to union '" + ui.irName + "'")
   }
+  val cref = NCaseRef(unionKey = ui.irName, caseIdx = caseIdxFound)
   val structTy = match unionPtrType(ui) { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
   val discPtr = freshTmp(ctx)
   val dArgs: List[NArg] = newList()
@@ -3277,7 +4031,14 @@ func emitConstructorTest(
 /// sequentially; a fall-through past every arm panics (the type checker
 /// enforces exhaustiveness, so this is a compiled backstop, not a
 /// user-facing path).
-func lowerMatch(ctx: in Ctx, insns: in List[NInsn], scrutinee: in Expr, arms: in List[MatchArm], line: in Int): NVal {
+func lowerMatch(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  scrutinee: in Expr,
+  arms: in List[MatchArm],
+  line: in Int,
+  want: in Option[NType],
+): NVal {
   if arms.count == 0 {
     panic("Lyric.LlvmCodegen: match with no arms")
   }
@@ -3315,7 +4076,7 @@ func lowerMatch(ctx: in Ctx, insns: in List[NInsn], scrutinee: in Expr, arms: in
         releaseVarScopeAt(ctx, insns, ctx.scopeRefs.count - 1)
         insns.add(NBr(label = nextL))
         insns.add(NLabel(name = armBodyL))
-        val armV = lowerArmBody(ctx, insns, arm)
+        val armV = lowerArmBody(ctx, insns, arm, want)
         // Arm value protocol mirrors lowerIf's slot scheme.
         match armV.ty {
           case NVoid -> {
@@ -3338,7 +4099,7 @@ func lowerMatch(ctx: in Ctx, insns: in List[NInsn], scrutinee: in Expr, arms: in
         insns.add(NLabel(name = armBodyL))
         pushVarScope(ctx)
         applyPatternBinds(ctx, insns, bindNames, bindVals)
-        val armV = lowerArmBody(ctx, insns, arm)
+        val armV = lowerArmBody(ctx, insns, arm, want)
         match armV.ty {
           case NVoid -> {
           }
@@ -3388,9 +4149,9 @@ func applyPatternBinds(ctx: in Ctx, insns: in List[NInsn], bindNames: in List[St
 
 /// Lower an arm body producing an OWNED value (ref results retained or
 /// transferred before the arm's scopes unwind).
-func lowerArmBody(ctx: in Ctx, insns: in List[NInsn], arm: in MatchArm): NVal {
+func lowerArmBody(ctx: in Ctx, insns: in List[NInsn], arm: in MatchArm, want: in Option[NType]): NVal {
   pushTempScope(ctx)
-  val v = lowerExprOrBlock(ctx, insns, arm.body)
+  val v = lowerExprOrBlockW(ctx, insns, arm.body, want)
   if isRefNType(v.ty) {
     ensureOwned(ctx, insns, v)
   }
@@ -3402,9 +4163,21 @@ func lowerArmBody(ctx: in Ctx, insns: in List[NInsn], arm: in MatchArm): NVal {
 // §11. Control flow.
 // ─────────────────────────────────────────────────────────────────────────────
 func lowerExprOrBlock(ctx: in Ctx, insns: in List[NInsn], eob: in ExprOrBlock): NVal {
+  val noWant: Option[NType] = None
+  lowerExprOrBlockW(ctx, insns, eob, noWant)
+}
+
+/// Branch lowering with an optional expected type (threaded so generic
+/// union cases in if/match arms resolve against the consumer's type).
+func lowerExprOrBlockW(ctx: in Ctx, insns: in List[NInsn], eob: in ExprOrBlock, want: in Option[NType]): NVal {
   match eob {
-    case EOBExpr(ex) -> lowerExpr(ctx, insns, ex)
-    case EOBBlock(b) -> lowerBlockValue(ctx, insns, b)
+    case EOBExpr(ex) -> {
+      match want {
+        case Some(w) -> lowerExprExpecting(ctx, insns, ex, w)
+        case None -> lowerExpr(ctx, insns, ex)
+      }
+    }
+    case EOBBlock(b) -> lowerBlockValueW(ctx, insns, b, want)
   }
 }
 
@@ -3414,6 +4187,7 @@ func lowerIf(
   cond: in Expr,
   thenBranch: in ExprOrBlock,
   elseBranch: in Option[ExprOrBlock],
+  want: in Option[NType],
 ): NVal {
   val c = lowerExpr(ctx, insns, cond)
   val thenL = freshLabel(ctx, "if.then")
@@ -3430,7 +4204,7 @@ func lowerIf(
       insns.add(NLabel(name = thenL))
       val thenInsns: List[NInsn] = newList()
       pushTempScope(ctx)
-      val tv = lowerExprOrBlock(ctx, thenInsns, thenBranch)
+      val tv = lowerExprOrBlockW(ctx, thenInsns, thenBranch, want)
       match tv.ty {
         case NVoid -> {
           popTempScope(ctx, thenInsns)
@@ -3438,7 +4212,7 @@ func lowerIf(
           insns.add(NBr(label = mergeL))
           insns.add(NLabel(name = elseL))
           pushTempScope(ctx)
-          val ev = lowerExprOrBlock(ctx, insns, eb)
+          val ev = lowerExprOrBlockW(ctx, insns, eb, want)
           val _ = ev
           popTempScope(ctx, insns)
           insns.add(NBr(label = mergeL))
@@ -3457,7 +4231,7 @@ func lowerIf(
           insns.add(NBr(label = mergeL))
           insns.add(NLabel(name = elseL))
           pushTempScope(ctx)
-          val ev = lowerExprOrBlock(ctx, insns, eb)
+          val ev = lowerExprOrBlockW(ctx, insns, eb, want)
           val evc = coerceTo(ctx, insns, ev, vty)
           if isRefNType(vty) {
             ensureOwned(ctx, insns, evc)
@@ -3504,8 +4278,10 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
     case SLocal(binding) -> {
       match binding {
         case LBVal(pat, tyOpt, init) -> {
-          val v0 = lowerExpr(ctx, insns, init)
-          val v = match tyOpt { case Some(te) -> coerceTo(ctx, insns, v0, typeToN(ctx, te)); case None -> v0 }
+          val v = match tyOpt {
+            case Some(te) -> lowerExprExpecting(ctx, insns, init, typeToN(ctx, te))
+            case None -> lowerExpr(ctx, insns, init)
+          }
           match pat.kind {
             case PBinding(name, inner) -> {
               match inner {
@@ -3519,15 +4295,19 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
           }
         }
         case LBLet(name, tyOpt, init) -> {
-          val v0 = lowerExpr(ctx, insns, init)
-          val v = match tyOpt { case Some(te) -> coerceTo(ctx, insns, v0, typeToN(ctx, te)); case None -> v0 }
+          val v = match tyOpt {
+            case Some(te) -> lowerExprExpecting(ctx, insns, init, typeToN(ctx, te))
+            case None -> lowerExpr(ctx, insns, init)
+          }
           bindLocal(ctx, insns, name, v)
         }
         case LBVar(name, tyOpt, initOpt) -> {
           match initOpt {
             case Some(init) -> {
-              val v0 = lowerExpr(ctx, insns, init)
-              val v = match tyOpt { case Some(te) -> coerceTo(ctx, insns, v0, typeToN(ctx, te)); case None -> v0 }
+              val v = match tyOpt {
+                case Some(te) -> lowerExprExpecting(ctx, insns, init, typeToN(ctx, te))
+                case None -> lowerExpr(ctx, insns, init)
+              }
               bindLocal(ctx, insns, name, v)
             }
             case None -> {
@@ -3548,14 +4328,14 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
     case SReturn(valOpt) -> {
       match valOpt {
         case Some(v) -> {
-          val nv = lowerExpr(ctx, insns, v)
           match ctx.curRet[0] {
             case NVoid -> {
+              val _ = lowerExpr(ctx, insns, v)
               releaseAllForReturn(ctx, insns)
               insns.add(NRetVoid)
             }
             case rt -> {
-              val cv = coerceTo(ctx, insns, nv, rt)
+              val cv = lowerExprExpecting(ctx, insns, v, rt)
               // Rule 6: return transfers ownership — owned temps move
               // out unregistered; borrows retain before the scope
               // releases below.
@@ -3689,10 +4469,10 @@ func lowerAssign(
     case Some(s) -> s
     case None -> panic("Lyric.LlvmCodegen: no storage slot for '" + name + "'")
   }
-  val rhs = lowerExpr(ctx, insns, value)
   val newVal = match op {
-    case AssEq -> coerceTo(ctx, insns, rhs, ty)
+    case AssEq -> lowerExprExpecting(ctx, insns, value, ty)
     case _ -> {
+      val rhs = lowerExpr(ctx, insns, value)
       val curDest = freshTmp(ctx)
       insns.add(NLoad(dest = curDest, ty = ty, ptr = NLocal(name = slot)))
       val cur = NVal(ty = ty, value = NLocal(name = curDest))
@@ -3753,10 +4533,10 @@ func lowerFieldAssign(
   fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
   fArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(2 + idx), ty = NI32)))
   insns.add(NGEP(dest = fieldPtr, ty = structTy, ptr = obj.value, indices = fArgs))
-  val rhs = lowerExpr(ctx, insns, value)
   val newVal = match op {
-    case AssEq -> coerceTo(ctx, insns, rhs, fieldTy)
+    case AssEq -> lowerExprExpecting(ctx, insns, value, fieldTy)
     case _ -> {
+      val rhs = lowerExpr(ctx, insns, value)
       val curDest = freshTmp(ctx)
       insns.add(NLoad(dest = curDest, ty = fieldTy, ptr = NLocal(name = fieldPtr)))
       val cur = NVal(ty = fieldTy, value = NLocal(name = curDest))
@@ -3814,6 +4594,11 @@ func lowerBlockStmts(ctx: in Ctx, insns: in List[NInsn], block: in Block): Unit 
 /// leaves the block OWNED (retained if it borrowed from a block-local),
 /// registered as a temp in the enclosing region.
 func lowerBlockValue(ctx: in Ctx, insns: in List[NInsn], block: in Block): NVal {
+  val noWant: Option[NType] = None
+  lowerBlockValueW(ctx, insns, block, noWant)
+}
+
+func lowerBlockValueW(ctx: in Ctx, insns: in List[NInsn], block: in Block, want: in Option[NType]): NVal {
   if block.statements.count == 0 {
     return NVal(ty = NVoid, value = NUndef(ty = NVoid))
   }
@@ -3831,7 +4616,7 @@ func lowerBlockValue(ctx: in Ctx, insns: in List[NInsn], block: in Block): NVal 
   match last.kind {
     case SExpr(ex) -> {
       pushTempScope(ctx)
-      val v = lowerExpr(ctx, insns, ex)
+      val v = match want { case Some(w) -> lowerExprExpecting(ctx, insns, ex, w); case None -> lowerExpr(ctx, insns, ex) }
       if isRefNType(v.ty) {
         ensureOwned(ctx, insns, v)
       }
@@ -3880,6 +4665,12 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     caseRefs = mod.caseRefs,
     enumDefs = mod.enumDefs,
     distinctDefs = mod.distinctDefs,
+    genericRecordDefs = mod.genericRecordDefs,
+    genericUnionDefs = mod.genericUnionDefs,
+    genericDeclPkg = mod.genericDeclPkg,
+    caseToGenericUnion = mod.caseToGenericUnion,
+    moduleTypeDefs = mod.moduleTypeDefs,
+    moduleFns = mod.moduleFns,
     scopeRefs = newList(),
     tempScopes = newList(),
     loopVarDepth = newList(),
@@ -3931,11 +4722,17 @@ func lowerFunction(modCtx: in Ctx, pkg: in String, fn: in FunctionDecl, irName: 
   }
   pushVarScope(ctx)
   pushTempScope(ctx)
+  val tailWant: Option[NType] = match retTy { case NVoid -> None; case rt -> Some(value = rt) }
   val tail = match fn.body {
     case Some(fb) -> {
       match fb {
-        case FBExpr(ex) -> lowerExpr(ctx, body, ex)
-        case FBBlock(b) -> lowerBlockValue(ctx, body, b)
+        case FBExpr(ex) -> {
+          match tailWant {
+            case Some(w) -> lowerExprExpecting(ctx, body, ex, w)
+            case None -> lowerExpr(ctx, body, ex)
+          }
+        }
+        case FBBlock(b) -> lowerBlockValueW(ctx, body, b, tailWant)
       }
     }
     case None -> panic("Lyric.LlvmCodegen: function '" + fn.name + "' has no body")
@@ -4110,6 +4907,10 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   val emptyCases: Map[String, NCaseRef] = newMap()
   val emptyEnums: Map[String, Int] = newMap()
   val emptyDistincts: Map[String, NDistinctInfo] = newMap()
+  val emptyGenRecs: Map[String, RecordDecl] = newMap()
+  val emptyGenUnions: Map[String, UnionDecl] = newMap()
+  val emptyGenPkg: Map[String, String] = newMap()
+  val emptyCaseGen: Map[String, String] = newMap()
   val ctx = Ctx(
     mainPkg = mainPkg,
     tmpTicker = newList(),
@@ -4129,13 +4930,21 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     caseRefs = emptyCases,
     enumDefs = emptyEnums,
     distinctDefs = emptyDistincts,
+    genericRecordDefs = emptyGenRecs,
+    genericUnionDefs = emptyGenUnions,
+    genericDeclPkg = emptyGenPkg,
+    caseToGenericUnion = emptyCaseGen,
+    moduleTypeDefs = newList(),
+    moduleFns = newList(),
     scopeRefs = newList(),
     tempScopes = newList(),
     loopVarDepth = newList(),
     loopTempDepth = newList()
   )
-  val fns: List[NFunc] = newList()
-  val types: List[NTypeDefn] = newList()
+  // Type definitions and synthesised functions accumulate on the ctx so
+  // lazy generic instantiation (typeToN during lowering) can append.
+  val fns = ctx.moduleFns
+  val types = ctx.moduleTypeDefs
   val sFields: List[NType] = newList()
   sFields.add(NI32)
   sFields.add(NPtr(pointee = NI8))

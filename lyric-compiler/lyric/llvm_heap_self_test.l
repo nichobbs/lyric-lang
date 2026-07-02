@@ -499,3 +499,112 @@ test "arc: early return and break unwind scopes" {
   val r = compileAndRunAsan(src)
   assertEqualInt(r.exitCode, 0, "early-exit unwinding leak-free (ASan)")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Generic type monomorphization (N3.1).
+// ─────────────────────────────────────────────────────────────────────────────
+test "generic union and record instantiate from arguments" {
+  val src = "package T\n" + "union Maybe[T] {\n" + "  case Just(v: T)\n" + "  case Nada\n" + "}\n" + "record Box[T] {\n" +
+    "  item: T\n" +
+    "  tag: Int\n" +
+    "}\n" +
+    "func unwrapOr(m: in Maybe[Int], dflt: in Int): Int {\n" +
+    "  match m {\n" +
+    "    case Just(v) -> v\n" +
+    "    case Nada -> dflt\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val a = Just(40)\n" +
+    "  val b: Maybe[Int] = Nada\n" +
+    "  val box = Box(item = \"hi\", tag = 2)\n" +
+    "  unwrapOr(a, 0) + unwrapOr(b, 1) + box.item.length + box.tag - 3\n" +
+    "}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(r.exitCode, 42, "generic instantiation")
+}
+
+test "two-param generic union constructs via expected types" {
+  val src = "package T\n" + "union Res[T, E] {\n" + "  case Good(v: T)\n" + "  case Bad(err: E)\n" + "}\n" +
+    "func parse(n: in Int): Res[Int, String] {\n" +
+    "  if n >= 0 {\n" +
+    "    Good(n * 2)\n" +
+    "  } else {\n" +
+    "    Bad(\"negative\")\n" +
+    "  }\n" +
+    "}\n" +
+    "func score(r: in Res[Int, String]): Int {\n" +
+    "  match r {\n" +
+    "    case Good(v) -> v\n" +
+    "    case Bad(err) -> err.length\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  score(parse(20)) + score(parse(-1))\n" +
+    "}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(r.exitCode, 48, "expected-type construction")
+}
+
+test "arc: nested generic instantiations with string payloads are leak-free" {
+  val src = "package T\n" + "union Maybe[T] {\n" + "  case Just(v: T)\n" + "  case Nada\n" + "}\n" +
+    "func describe(m: in Maybe[String]): Int {\n" +
+    "  match m {\n" +
+    "    case Just(s) -> s.length\n" +
+    "    case Nada -> 0\n" +
+    "  }\n" +
+    "}\n" +
+    "func wrapTwice(n: in Int): Maybe[Maybe[Int]] {\n" +
+    "  Just(Just(n))\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  var total = 0\n" +
+    "  var i = 0\n" +
+    "  while i < 500 {\n" +
+    "    val m = Just(\"payload-\" + i.toString())\n" +
+    "    total = total + describe(m)\n" +
+    "    val nested = wrapTwice(i)\n" +
+    "    match nested {\n" +
+    "      case Just(inner) -> {\n" +
+    "        match inner {\n" +
+    "          case Just(v) -> {\n" +
+    "            if v == 7 {\n" +
+    "              total = total + 1000\n" +
+    "            }\n" +
+    "          }\n" +
+    "          case Nada -> {\n" +
+    "          }\n" +
+    "        }\n" +
+    "      }\n" +
+    "      case Nada -> {\n" +
+    "      }\n" +
+    "    }\n" +
+    "    val empty: Maybe[String] = Nada\n" +
+    "    total = total + describe(empty)\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  if total > 1000 {\n" +
+    "    0\n" +
+    "  } else {\n" +
+    "    1\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 0, "generic ARC leak-free (ASan)")
+}
+
+test "nullary generic case via annotated binding and returns" {
+  val src = "package T\n" + "union Maybe[T] {\n" + "  case Just(v: T)\n" + "  case Nada\n" + "}\n" +
+    "func none(): Maybe[String] {\n" +
+    "  Nada\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val a = none()\n" +
+    "  match a {\n" +
+    "    case Just(s) -> s.length\n" +
+    "    case Nada -> 5\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(r.exitCode, 5, "nullary via return type")
+}
