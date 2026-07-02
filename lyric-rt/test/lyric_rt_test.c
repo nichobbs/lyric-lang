@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static int failures = 0;
@@ -454,6 +455,48 @@ static void test_process(void) {
     lyric_release(err4);
 }
 
+static void test_process_closed_stdio(void) {
+    /* Regression: with fd 1/2 closed in the caller, pipe() hands the child
+     * those very numbers, dup2 onto itself is a no-op, and the old
+     * unconditional close then destroyed the just-installed descriptor.
+     * Run a capture with stdout/stderr closed and verify the output still
+     * comes back intact.  Assertions in the fork are reported through the
+     * exit status — its stderr is closed by construction. */
+    pid_t pid = fork();
+    CHECK(pid >= 0);
+    if (pid == 0) {
+        close(STDOUT_FILENO);
+        close(STDERR_FILENO);
+        /* With 1/2 closed, pipe() returns {1,2} for out_pipe, so the old
+         * close(out_pipe[1]) destroyed the descriptor stderr had just been
+         * dup2'ed onto.  The command must write to BOTH streams: with the
+         * bug, its stderr writes hit a closed fd and the err capture comes
+         * back empty. */
+        LyricList* args = lyric_list_new(2);
+        LyricString* a1 = lyric_string_from_literal((const uint8_t*)"-c", 2);
+        LyricString* a2 = lyric_string_from_literal(
+            (const uint8_t*)"echo out; echo err 1>&2", 23);
+        lyric_list_push(args, (int64_t)(intptr_t)a1);
+        lyric_list_push(args, (int64_t)(intptr_t)a2);
+        lyric_release(a1);
+        lyric_release(a2);
+        int32_t code = -99;
+        LyricString* out = NULL;
+        LyricString* err = NULL;
+        if (lyric_process_run("/bin/sh", args, &code, &out, &err) != 0) _exit(1);
+        if (code != 0) _exit(2);
+        if (!out || lyric_string_len(out) != 4) _exit(3);
+        if (memcmp(LYRIC_STRING_DATA(out), "out\n", 4) != 0) _exit(4);
+        if (!err || lyric_string_len(err) != 4) _exit(5);
+        if (memcmp(LYRIC_STRING_DATA(err), "err\n", 4) != 0) _exit(6);
+        _exit(0);
+    }
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid);
+    CHECK(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 0);
+}
+
 static void test_ok_variants(void) {
     char tmpl[] = "/tmp/lyric_rt_ok_XXXXXX";
     int fd = mkstemp(tmpl);
@@ -493,6 +536,7 @@ int main(void) {
     test_directories();
     test_environment();
     test_process();
+    test_process_closed_stdio();
     if (failures == 0) {
         printf("lyric_rt_test: all tests passed\n");
         return 0;
