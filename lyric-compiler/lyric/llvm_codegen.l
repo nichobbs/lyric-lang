@@ -3100,9 +3100,9 @@ func closureSigOfType(ctx: in Ctx, t: in NType): Option[NClosureSig] {
 // The call-duration borrow needs no retain; a C API that holds the
 // callback beyond the call requires the _kernel_native/ wrapper to
 // retain/release around the registration (native/plan/05-ffi-design.md).
-/// Structural NativePtr[Byte] (i8*) test — string-comparing the IR
-/// spelling would silently stop matching under an opaque-pointer
-/// (`ptr`) rendering (#4733).
+// Structural NativePtr[Byte] (i8*) test — string-comparing the IR
+// spelling would silently stop matching under an opaque-pointer
+// (`ptr`) rendering (#4733).
 func isBytePtrNType(t: in NType): Bool {
   match t {
     case NPtr(pointee) -> {
