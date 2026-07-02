@@ -369,10 +369,39 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                 // primitive width and emit the numeric add.  `String` `+` is the
                 // StringBuilder path below.
                 val rhsTy = lowerExpr(ctx, insns, rhs)
+                match rhsTy {
+                  case JRef(_) -> {
+                    // Both operands are references (e.g. an erased `Object`
+                    // list element concatenated with a String, as in
+                    // `Std.String.joinList`'s `xs[0] + sep`): `+` on
+                    // references is string concatenation — mirror the MSIL
+                    // backend's String.Concat lowering instead of panicking.
+                    val rSlot = allocSlot(ctx, "__cat_rhs_" + freshLabel(ctx), rhsTy)
+                    emitStore(insns, rSlot, rhsTy)
+                    coerceToStringForConcat(insns, lhsTy)
+                    val catSb: List[JvmType] = newList()
+                    val lSlot = allocSlot(ctx, "__cat_lhs_" + freshLabel(ctx), JRef(className = "java/lang/String"))
+                    emitStore(insns, lSlot, JRef(className = "java/lang/String"))
+                    insns.add(LNew(className = "java/lang/StringBuilder"))
+                    insns.add(LDup)
+                    insns.add(LInvokespecial(owner = "java/lang/StringBuilder", name = "<init>", params = catSb, ret = JVoid))
+                    emitLoad(insns, lSlot, JRef(className = "java/lang/String"))
+                    val catAp: List[JvmType] = newList()
+                    catAp.add(JRef(className = "java/lang/String"))
+                    insns.add(LInvokevirtual(owner = "java/lang/StringBuilder", name = "append", params = catAp, ret = JRef(className = "java/lang/StringBuilder")))
+                    emitLoad(insns, rSlot, rhsTy)
+                    coerceToStringForConcat(insns, rhsTy)
+                    insns.add(LInvokevirtual(owner = "java/lang/StringBuilder", name = "append", params = catAp, ret = JRef(className = "java/lang/StringBuilder")))
+                    val catTs: List[JvmType] = newList()
+                    insns.add(LInvokevirtual(owner = "java/lang/StringBuilder", name = "toString", params = catTs, ret = JRef(className = "java/lang/String")))
+                    return JRef(className = "java/lang/String")
+                  }
+                  case _ -> ()
+                }
                 val numTy = reconcileCmpOperands(ctx, insns, lhsTy, rhsTy)
                 match numTy {
                   case JRef(_) -> {
-                    panic("BAdd: both operands are Object — type checker should reject Object+Object (#2870)")
+                    panic("BAdd: reference operand could not be reconciled to a numeric type")
                   }
                   case JLong -> {
                     insns.add(LLadd)
@@ -1545,17 +1574,32 @@ func coerceToStringForConcat(insns: in List[LInsn], ty: in JvmType): Unit {
     }
     case JVoid -> insns.add(LPushString(s = ""))
     case _ -> {
-      boxIfNeeded(insns, ty)
-      val tsPs2: List[JvmType] = newList()
+      // String.valueOf(<primitive>) — no boxing, unlike Object.toString on a
+      // boxed wrapper (keeps the closure zero-overhead boxing gate flat).
+      val voPs: List[JvmType] = newList()
+      voPs.add(stringValueOfParam(ty))
       insns.add(
-        LInvokevirtual(
-          owner = "java/lang/Object",
-          name = "toString",
-          params = tsPs2,
+        LInvokestatic(
+          owner = "java/lang/String",
+          name = "valueOf",
+          params = voPs,
           ret = JRef(className = "java/lang/String")
         )
       )
     }
+  }
+}
+
+// The String.valueOf overload parameter for a primitive operand: byte/short
+// widen to the int overload; everything else uses its exact overload.
+func stringValueOfParam(ty: in JvmType): JvmType {
+  match ty {
+    case JLong -> JLong
+    case JDouble -> JDouble
+    case JFloat -> JFloat
+    case JBoolean -> JBoolean
+    case JChar -> JChar
+    case _ -> JInt
   }
 }
 

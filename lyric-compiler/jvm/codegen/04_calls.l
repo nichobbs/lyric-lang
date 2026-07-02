@@ -2000,12 +2000,14 @@ func lowerMethodCall(
   // divergence, not a correctness gap.
   val recvIsBoxablePrim = isNumericJvm(recvTy) or (match recvTy { case JBoolean -> true; case _ -> false })
   if memberName == "toString" and args.count == 0 and recvIsBoxablePrim {
-    boxIfNeeded(insns, recvTy)
+    // String.valueOf(<primitive>) — no boxing, unlike Object.toString on a
+    // boxed wrapper (keeps the closure zero-overhead boxing gate flat).
     val prTsPs: List[JvmType] = newList()
+    prTsPs.add(stringValueOfParam(recvTy))
     insns.add(
-      LInvokevirtual(
-        owner = "java/lang/Object",
-        name = "toString",
+      LInvokestatic(
+        owner = "java/lang/String",
+        name = "valueOf",
         params = prTsPs,
         ret = JRef(className = "java/lang/String")
       )
