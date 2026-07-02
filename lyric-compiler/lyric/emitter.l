@@ -53,6 +53,7 @@ import Lyric.ContractMeta as Meta
 import Lyric.RestoredPackages as RP
 import Msil.Bridge as MsilBridge
 import Jvm.Bridge as JvmBridge
+import Lyric.LlvmBridge as LlvmBridge
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public types  (mirrors the future-package contract in cli.l)
@@ -60,6 +61,8 @@ import Jvm.Bridge as JvmBridge
 pub union CompileTarget {
   case Dotnet
   case Jvm
+  /// LLVM native backend (`--target native`, D-N-001..013).
+  case Native
 }
 
 pub record EmitRequest {
@@ -393,6 +396,44 @@ func findStdlibSourcesForTarget(forJvm: in Bool): List[String] {
     appendLyricFiles(sources, Path.join(stdlibDir, "_kernel"), true)
   }
   // Public surface: every top-level `*.l` file in `lyric-stdlib/std/`.
+  appendLyricFiles(sources, stdlibDir, false)
+  sources
+}
+
+// Native-target stdlib source loader (mirrors the JVM loader above):
+// `_kernel_native/<module>.l` wins over `_kernel/<module>.l` by
+// basename, the BCL-only `_kernel/` files it supersedes are skipped,
+// and the JVM-only kernels (`_kernel_jvm/`, `_kernel/jvm*.l`) are
+// dropped entirely.  The public surface loads unconditionally; items
+// gated to other targets erase via `@cfg(target = ...)` in the bridge.
+pub func findStdlibSourcesNative(): List[String] {
+  val sources: List[String] = newList()
+  var stdlibDir = ""
+  val envOverride = Environment.getVarOrDefault("LYRIC_STD_PATH", "")
+  if envOverride.length > 0 and File.dirExists(envOverride) {
+    stdlibDir = envOverride
+  }
+  if stdlibDir.length == 0 {
+    stdlibDir = walkUpForStdlib(Environment.appBaseDirectory())
+  }
+  if stdlibDir.length == 0 {
+    stdlibDir = walkUpForStdlib(Environment.currentDirectory())
+  }
+  if stdlibDir.length == 0 {
+    return sources
+  }
+  val nativeKernel = Path.join(stdlibDir, "_kernel_native")
+  val nativeBasenames = appendLyricFilesCollect(sources, nativeKernel, false)
+  // `_kernel/` fallback: skip the files `_kernel_native/` supersedes AND
+  // the JVM-only jvm*.l files.
+  val texts: List[String] = newList()
+  val paths: List[String] = newList()
+  collectLyricFileTexts(Path.join(stdlibDir, "_kernel"), nativeBasenames, true, texts, paths)
+  var ki = 0
+  while ki < texts.count {
+    sources.add(texts[ki])
+    ki = ki + 1
+  }
   appendLyricFiles(sources, stdlibDir, false)
   sources
 }
@@ -881,7 +922,9 @@ func mergePackageSources(
 // True when `pkg` is one of the self-hosted compiler namespaces that
 // `loadCompilerPayloads` discovers from disk (as opposed to a `Std.*`
 // package, which the bridge resolves from `lyric-stdlib/std/`).
-// Includes Native.* for the forthcoming LLVM native backend packages.
+// The LLVM native backend lives under the Lyric.* head
+// (`lyric-compiler/lyric/llvm_*.l`, packages `Lyric.Llvm*`) so every
+// bootstrap seed can resolve it; Native.* is reserved.
 func isCompilerPackage(pkg: in String): Bool {
   Str.startsWith(pkg, "Lyric.") or Str.startsWith(pkg, "Msil.") or Str.startsWith(pkg, "Jvm.") or
     Str.startsWith(pkg, "Native.")
@@ -1110,6 +1153,7 @@ pub func perPackageAssemblyName(pkg: in String, target: in CompileTarget): Strin
   match target {
     case Jvm -> base + ".Jvm"
     case Dotnet -> base
+    case Native -> base + ".Native"
   }
 }
 
@@ -1159,9 +1203,10 @@ func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): List[Proj
     if Str.endsWith(path, "_self_test.l") or Str.endsWith(path, "_ci_test.l") {
       continue
     }
-    // .NET target: drop the JVM-only kernel files (they declare the same
-    // `Std.*Host` packages as `_kernel/` and would otherwise merge / collide).
-    if Str.contains(path, "_kernel_jvm") {
+    // .NET target: drop the JVM-only and native-only kernel files (each
+    // declares the same `Std.*Host` package as its `_kernel/` twin and
+    // would otherwise merge into it, colliding on the host* names).
+    if Str.contains(path, "_kernel_jvm") or Str.contains(path, "_kernel_native") {
       continue
     }
     val base = Path.basename(path)
@@ -1413,6 +1458,9 @@ pub func emitPerPackageClosure(entrySource: in String, outDir: in String, target
     case Jvm -> return failResult(
       "per-package emit: --target jvm is not supported (the JVM toolchain bundles into a single JAR; per-package DLL emit is .NET-only)"
     )
+    case Native -> return failResult(
+      "per-package emit: --target native is not supported (the native toolchain compiles the whole program into one binary)"
+    )
     case Dotnet -> ()
   }
   match File.createDir(outDir) {
@@ -1546,6 +1594,7 @@ pub func emitCompilerBundle(entrySource: in String, outPath: in String, target: 
   // a package's transitive closure into one JAR via `compileToJarBundled`.
   match target {
     case Jvm -> return failResult("compiler bundle emit: --target jvm is not supported (the JVM toolchain bundles into a single JAR)")
+    case Native -> return failResult("compiler bundle emit: --target native is not supported (the native toolchain compiles the whole program into one binary)")
     case Dotnet -> ()
   }
   val outDir = Path.dirname(outPath)
@@ -1817,6 +1866,10 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
   match req.target {
     case Dotnet -> emitProjectInProcess(mergedReq)
     case Jvm -> emitProjectJvmInProcess(mergedReq)
+    // Manifest-driven native project builds are follow-up work; the
+    // single-file path (`lyric build main.l --target native`) is the
+    // Phase N1 surface.
+    case Native -> failResult("--target native does not yet support manifest (multi-package) builds; compile the entry file directly: lyric build <main.l> --target native")
   }
 }
 
@@ -2200,7 +2253,7 @@ func emitProjectJvmViaSubprocess(req: in EmitProjectRequest): EmitResult {
     return failResult(failMsg)
   }
 
-  val targetStr = match req.target { case Dotnet -> "dotnet"; case Jvm -> "jvm" }
+  val targetStr = match req.target { case Dotnet -> "dotnet"; case Jvm -> "jvm"; case Native -> "native" }
 
   val subcmd: List[String] = newList()
   subcmd.add("--internal-project-build")
@@ -2253,6 +2306,34 @@ pub func emit(req: in EmitRequest): EmitResult {
   match req.target {
     case Dotnet -> emitMsilInProcess(req)
     case Jvm -> emitJvmInProcess(req)
+    case Native -> emitNativeInProcess(req, "", "")
+  }
+}
+
+/// In-process single-source native emit — direct call into the
+/// self-hosted `Lyric.LlvmBridge.compileToNative`.  `triple` "" selects the
+/// clang host triple; `optLevel` "" defaults to -O2.  Exposed with the
+/// explicit knobs (`emitNative`) so the CLI can thread `--triple` /
+/// `--opt` without widening EmitRequest for two native-only fields.
+pub func emitNative(req: in EmitRequest, triple: in String, optLevel: in String): EmitResult {
+  val outDir = Path.dirname(req.outputPath)
+  if Str.isNotEmpty(outDir) {
+    match File.createDir(outDir) {
+      case Ok(_) -> ()
+      case Err(_) -> ()
+    }
+  }
+  emitNativeInProcess(req, triple, optLevel)
+}
+
+func emitNativeInProcess(req: in EmitRequest, triple: in String, optLevel: in String): EmitResult {
+  val stdlibSources = findStdlibSourcesNative()
+  val ok = LlvmBridge.compileToNative(req.source, req.outputPath, stdlibSources, triple, optLevel)
+  if ok {
+    val okDiags: List[Diagnostic] = newList()
+    EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
+  } else {
+    failResult("native compilation failed (see stderr)")
   }
 }
 
@@ -2392,7 +2473,7 @@ func emitJvmViaSubprocess(req: in EmitRequest): EmitResult {
     case Err(e) -> return failResult("cannot write temp source: " + IOError.message(e))
   }
 
-  val targetStr = match req.target { case Dotnet -> "dotnet"; case Jvm -> "jvm" }
+  val targetStr = match req.target { case Dotnet -> "dotnet"; case Jvm -> "jvm"; case Native -> "native" }
 
   val subcmd: List[String] = newList()
   subcmd.add("--internal-build")

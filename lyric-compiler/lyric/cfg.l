@@ -71,18 +71,24 @@ func classifyAnnotations(active: in List[String], declared: in List[String], ann
       // v1 only accepts a single `feature = "X"` argument.  Anything
       // else is malformed; we surface an F0012 diagnostic but treat
       // the item as KEPT (less confusing than silent erasure on a typo).
-      val malformedMsg = "@cfg accepts a single 'feature = \"X\"' argument in v1 (boolean composition is deferred)"
+      val malformedMsg = "@cfg accepts a single 'feature = \"X\"' or 'target = \"X\"' argument in v1 (boolean composition is deferred)"
       if a.args.count != 1 {
         diags.add(errorDiagnostic("F0012", malformedMsg, a.span))
       } else {
         match a.args[0] {
           case AAName(argName, value, _) -> {
-            if argName != "feature" {
+            if argName != "feature" and argName != "target" {
               diags.add(errorDiagnostic("F0012", malformedMsg, a.span))
             } else {
               match value {
-                case AVString(featName, _) -> {
-                  if declared.count > 0 and not listContains(declared, featName) {
+                case AVString(rawName, _) -> {
+                  // `@cfg(target = "native")` resolves against the
+                  // pseudo-feature `target.native` the CLI injects into
+                  // the active set (D-N-013); targets are never declared
+                  // in [features], so the F0013 typo guard only applies
+                  // to real features.
+                  val featName = if argName == "target" { "target." + rawName } else { rawName }
+                  if argName == "feature" and declared.count > 0 and not listContains(declared, featName) {
                     diags.add(
                       warningDiagnostic(
                         "F0013",
@@ -112,6 +118,21 @@ record ClassifyOut {
   keep: Bool
   diagnostics: List[Diagnostic]
   // ── Public entry point ─────────────────────────────────────────────────────
+}
+
+/// A copy of `active` with the target pseudo-feature `target.<name>`
+/// appended (D-N-013).  Each backend bridge threads its own target name
+/// (`dotnet` / `jvm` / `native`) so `@cfg(target = "X")` items erase
+/// correctly on every path without new predicate grammar.
+pub func withTargetFeature(active: in List[String], targetName: in String): List[String] {
+  val extended: List[String] = newList()
+  var i = 0
+  while i < active.count {
+    extended.add(active[i])
+    i = i + 1
+  }
+  extended.add("target." + targetName)
+  extended
 }
 
 /// Apply `@cfg`-driven erasure to a parsed `SourceFile`.  Items annotated

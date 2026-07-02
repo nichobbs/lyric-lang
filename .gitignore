@@ -100,3 +100,6 @@ book/*.html
 
 # Claude Code agent worktrees (transient; auto-cleaned)
 .claude/worktrees/
+
+# lyric-rt native runtime build output
+lyric-rt/build/

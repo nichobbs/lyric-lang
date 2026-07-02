@@ -25888,3 +25888,79 @@ unchanged) confirms the converted `ValidateKey` template still weaves and runs c
 (correct key proceeds, wrong key denies with the right error, `enabled = false` still bypasses).
 
 **Related:** D115, docs/56, D114, docs/55, docs/27 §12 (Q-aspectlib-009), docs/26 §18.6.
+
+---
+
+### D-progress-540 — LLVM native backend Phase 1 slice: `lyric build --target native` (D-N-001..014)
+
+**Shipped.** The first end-to-end slice of the native backend
+(`native/plan/`, work items N0.1–N0.4, N1.1–N1.7, N4.1, N4.6, and the
+N4.4/N5.1/N6.1–N6.3/N6.5 subsets a scalar program needs):
+
+- **`lyric-rt/`** — the native runtime C library (`lyric_rt.a`): ARC
+  core (`lyric_alloc`/`lyric_retain`/`lyric_release` with the
+  `INT32_MAX` static sentinel and acquire/release ordering),
+  `LyricString` (inline UTF-8, concat/eq/cmp/substring + scalar
+  formatting), `NativeWeak` cmpxchg upgrade, List/Map collection
+  kernels (SipHash-2-4 string keys), POSIX helpers (open-flag
+  functions, `lyric_file_size`, `lyric_mutex_*`, clocks, secure
+  random), and EINTR-safe console writes.  Builds warning-free under
+  clang and gcc; covered by C unit tests (`make -C lyric-rt test`).
+- **`Lyric.LlvmTypes` / `Lyric.LlvmIr`** — the `.ll` IR model and
+  serialiser (NType/NValue/NInsn/NFunc/NPackage, per-triple
+  datalayouts, exact-bits hex float constants, c-string escaping).
+  Covered by `llvm_ir_self_test.l` (14 cases).
+- **`Lyric.LlvmCodegen` / `Lyric.LlvmLowering`** — Phase N1 scalar
+  codegen: alloca-based locals, checked integer division,
+  short-circuit booleans, bitwise methods, if/else + while +
+  break/continue, cross-package calls (named args, arity-keyed
+  overloads), static `LyricString` literal globals, string
+  ops/interpolation, `.toString()` on scalars, `panic`/`assert`, and
+  the C `main` wrapper.  Covered by `llvm_codegen_self_test.l`
+  (16 programs compiled through parse → codegen → clang → run with
+  exit-code and stdout assertions).
+- **`extern func` (D-N-007)** — new `IExternFunc` item
+  (`extern func name(params): Ret = "symbol"`, P0275/P0276) wired
+  through parser, typechecker, formatter, alias rewriter, and both
+  managed backends (no-op arms).
+- **`@cfg(target = "X")` (D-N-013)** — `Lyric.Cfg` accepts the
+  `target` key as the `target.<name>` pseudo-feature; the MSIL/JVM/
+  native bridges inject their own target name before erasure.
+- **`_kernel_native/`** — native stdlib kernels following the
+  `_kernel_jvm/` loader-preference model (D-N-014): `console_host.l`
+  (Std.ConsoleHost over lyric-rt console writes), `math_host.l`
+  (Std.MathHost over libm; `nearbyint` for round-half-to-even parity),
+  and `libc.l` (Std.LibcHost raw POSIX surface).
+- **`Lyric.LlvmBridge` + CLI** — full pipeline (parse → cfg erasure →
+  alias rewrite → typecheck → modecheck → elaborate → propagate →
+  derives → mono → weave → function-granularity reachability over the
+  bundled stdlib → codegen → `.ll` → clang); `--target native`,
+  `--triple`, `--opt` on `lyric build`; `lyric run --target native`;
+  `Makefile` targets `native-rt` / `test-native-rt` / `test-native`.
+
+Acceptance (N6.2): `lyric build hello.l --target native -o hello &&
+./hello` prints `Hello, world!` through the real stdlib path
+(`Std.Console` → native `Std.ConsoleHost` kernel → `extern func` →
+`lyric_console_write`), in ~400 ms.
+
+**Not yet in this slice** (per the plan's own phasing, each fails loud
+with a construct-naming diagnostic when reached): records/unions/
+pattern-matching/closures + ARC retain-release insertion (N2),
+generics/interfaces/tuples/protected types (N3), the mode-checker
+`N0100` NativePtr boundary + `@unsafe_ffi` + `nativeAddrOf` (N4.2),
+callback trampolines (N4.5), the remaining `_kernel_native/` modules
+and stdlib updates (N5), manifest-driven native project builds (N6.4),
+and the native CI workflow (N7.1).  ARC releases are not yet inserted,
+so strings allocate and leak (the plan sequences ARC insertion with
+N2.1's `llvm/arc.l`).
+
+**Plan deviations** are codified in D-N-014: packages live under the
+`Lyric.Llvm*` head at `lyric-compiler/lyric/llvm_*.l` (every bootstrap
+seed resolves the `Lyric` head; a new `Llvm` head is circularly
+unbootstrappable), kernel selection is loader-based rather than
+`@cfg`-gated imports (imports are not annotatable), and the backend
+entry points carry a `Native` suffix (bare-name collision with the
+MSIL/JVM `codegenPackage`/`lowerPackage` in the restored-bundle
+resolver).
+
+**Related:** D-N-001..014, docs/03 §D-N-014, `native/plan/08-work-items.md`.

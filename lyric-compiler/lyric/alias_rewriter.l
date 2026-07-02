@@ -645,6 +645,20 @@ func rewriteFunctionDecl(aliases: in List[String], fn: in FunctionDecl): Functio
   )
 }
 
+// Param types and the return type of an `extern func` are ordinary
+// TypeExprs (e.g. an aliased `NativePtr[Byte]` spelling) — rewrite them;
+// the C symbol string carries no Lyric names.
+func rewriteExternFuncDecl(aliases: in List[String], ef: in ExternFuncDecl): ExternFuncDecl {
+  val ps: List[Param] = newList()
+  var i = 0
+  while i < ef.params.count {
+    ps.add(rewriteParam(aliases, ef.params[i]))
+    i = i + 1
+  }
+  val ret = match ef.ret { case Some(te) -> Some(value = rewriteTypeExpr(aliases, te)); case None -> ef.ret }
+  ExternFuncDecl(name = ef.name, params = ps, ret = ret, symbol = ef.symbol, span = ef.span)
+}
+
 func rewriteFieldDecl(aliases: in List[String], f: in FieldDecl): FieldDecl {
   val d = match f.dflt { case Some(e) -> Some(value = rewriteExpr(aliases, e)); case None -> f.dflt }
   FieldDecl(
@@ -1214,6 +1228,7 @@ func rewriteItem(aliases: in List[String], it: in Item): Item {
     // IExternType: name + generic-param names + a CLR-name string literal —
     // no TypeExpr to rewrite, passed through.
     case IExternType(decl) -> IExternType(decl = decl)
+    case IExternFunc(decl) -> IExternFunc(decl = rewriteExternFuncDecl(aliases, decl))
     case ITest(decl) -> ITest(decl = rewriteTestDecl(aliases, decl))
     case IProperty(decl) -> IProperty(decl = rewritePropertyDecl(aliases, decl))
     case IFixture(decl) -> IFixture(decl = rewriteFixtureDecl(aliases, decl))

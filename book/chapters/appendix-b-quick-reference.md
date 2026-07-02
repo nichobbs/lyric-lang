@@ -823,6 +823,9 @@ lyric build --target dotnet <file.l>   # target .NET (default): writes foo.dll +
 lyric build --target jvm <file.l>      # writes a runnable foo.jar (NO runtimeconfig.json) via the
                                        # self-hosted JVM emitter (`Main-Class` derived from the source
                                        # `package` declaration; runs under `java -jar foo.jar`)
+lyric build --target native <file.l>   # writes a self-contained POSIX executable (no extension)
+                                       # via the LLVM backend + clang; --triple cross-compiles,
+                                       # --opt 0|1|2|3|s sets the clang -O level (default 2)
 lyric build -o <dir> <file.l>          # write output files to <dir>
 lyric build --manifest lyric.toml      # build from project manifest
                                        # (with [project] output = "single", bundles every
@@ -860,6 +863,7 @@ lyric run                              # project mode: build + run the project's
 lyric run -- arg1 arg2                 # project mode: pass arguments to the program
 lyric run --watch                      # project mode: rebuild & re-run on source changes
 lyric run --target jvm                 # build JVM target and run with java -jar
+lyric run --target native              # build the LLVM native target and run the binary directly
                                        #   (single-file or project; entry main() output is correct.
                                        #    Note: forwarding `-- args` to a slice[String] main and
                                        #    propagating the Int return as the JVM exit code are pending

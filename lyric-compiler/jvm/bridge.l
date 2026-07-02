@@ -947,7 +947,7 @@ pub func compileToJarBundledWithFeatures(
   // drop user-package items gated on inactive features so the rest of the
   // pipeline never sees them.  Mirrors the MSIL bridge, which runs cfg erasure
   // on each user package immediately after parse.
-  val cfgRes = Cfg.applyCfgErasure(activeFeatures, declaredFeatures, parseResult.file)
+  val cfgRes = Cfg.applyCfgErasure(Cfg.withTargetFeature(activeFeatures, "jvm"), declaredFeatures, parseResult.file)
   if reportAndAbort(cfgRes.diagnostics) {
     return false
   }

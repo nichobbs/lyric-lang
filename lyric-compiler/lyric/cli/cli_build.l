@@ -46,6 +46,19 @@ func readBuildKindFromManifest(manifestOpt: in Option[String]): String {
 // `manifestPath` is forwarded to the generator pre-processor so custom
 // @generate(Pkg.Name) annotations can resolve their generator DLLs.
 func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarget, manifestPath: in Option[String]): Int {
+  buildOneNative(sourcePath, outPath, target, manifestPath, "", "")
+}
+
+// `nativeTriple` / `nativeOpt` only apply to `--target native` (the
+// `--triple` / `--opt` flags); empty strings mean host triple / -O2.
+func buildOneNative(
+  sourcePath: in String,
+  outPath: in String,
+  target: in CompileTarget,
+  manifestPath: in Option[String],
+  nativeTriple: in String,
+  nativeOpt: in String,
+): Int {
   val buildStart = Time.now()
   var source = match File.readText(sourcePath) {
     case Ok(text) -> text
@@ -82,7 +95,16 @@ func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarge
     packageVersion = ""
   )
 
-  val result = Emitter.emit(req)
+  // var-mutation shape (stage-0 value-position-match lowering gap,
+  // #4631; see cli_run.l's runTarget note).
+  var isNativeTarget = false
+  match target {
+    case Native -> {
+      isNativeTarget = true
+    }
+    case _ -> ()
+  }
+  val result = if isNativeTarget { Emitter.emitNative(req, nativeTriple, nativeOpt) } else { Emitter.emit(req) }
   var hadError = false
   for d in result.diagnostics.toArray() {
     match d.severity {
@@ -129,6 +151,7 @@ func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarge
       }
     }
     case Jvm -> ()
+    case Native -> ()
   }
   val elapsedMs = Time.totalMillis(Time.since(Time.now(), buildStart))
   Console.println("built " + outPath + " in " + Format.formatFixed(elapsedMs, 0) + "ms")
@@ -143,6 +166,10 @@ func cmdBuild(argv: in slice[String]): Int {
   var explicitOut: Option[String] = None
   var manifestArg: Option[String] = None
   var target: CompileTarget = Dotnet
+  // `--target native` knobs (D-N-001): LLVM triple + clang -O level.
+  var tripleArg = ""
+  var optArg = ""
+
   // D045 build features.  Captured here for spec parity with the F#
   // bootstrap CLI; the self-hosted compiler will consume them once the
   // emitter ships (Phase 5+ stage 7).
@@ -248,12 +275,30 @@ func cmdBuild(argv: in slice[String]): Int {
         val t = argv[i + 1]
         if t == "jvm" {
           target = Jvm
+        } else if t == "native" {
+          target = Native
         } else {
           target = Dotnet
         }
         i += 2
       } else {
         printErr("build: --target requires an argument")
+        return 1
+      }
+    } else if arg == "--triple" {
+      if i + 1 < argv.length {
+        tripleArg = argv[i + 1]
+        i += 2
+      } else {
+        printErr("build: --triple requires an argument (an LLVM target triple, e.g. x86_64-unknown-linux-gnu)")
+        return 1
+      }
+    } else if arg == "--opt" {
+      if i + 1 < argv.length {
+        optArg = argv[i + 1]
+        i += 2
+      } else {
+        printErr("build: --opt requires an argument (0, 1, 2, 3, or s)")
         return 1
       }
     } else {
@@ -270,7 +315,14 @@ func cmdBuild(argv: in slice[String]): Int {
         printErr("build: --release-from-dll: file not found: " + dll)
         return 1
       }
-      val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case Dotnet -> Release.DotnetAot }
+      match target {
+        case Native -> {
+          printErr("build: --release-from-dll does not apply to --target native")
+          return 1
+        }
+        case _ -> ()
+      }
+      val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
       val extraRefs: List[String] = newList()
       match extraRefsDir {
         case Some(refsDir) -> {
@@ -363,6 +415,7 @@ func cmdBuild(argv: in slice[String]): Int {
     val autoAot = match target {
       case Dotnet -> readBuildKindFromManifest(Some(value = mfPath)) == "aot"
       case Jvm -> false
+      case Native -> false
     }
     if autoAot {
       return buildReleaseProject(
@@ -398,6 +451,13 @@ func cmdBuild(argv: in slice[String]): Int {
   }
 
   if release {
+    match target {
+      case Native -> {
+        printErr("build: --release is not needed with --target native (the build already produces a self-contained native binary)")
+        return 1
+      }
+      case _ -> ()
+    }
     return buildReleaseSingle(sourcePath, explicitOut, target, ridArg, manifestArg)
   }
 
@@ -415,10 +475,20 @@ func cmdBuild(argv: in slice[String]): Int {
   if watch {
     val files: List[String] = newList()
     files.add(sourcePath)
-    return watchLoop(files, BuildFile(sourcePath = sourcePath, outArg = outPath, target = target, manifest = manifestArg))
+    return watchLoop(
+      files,
+      BuildFile(
+        sourcePath = sourcePath,
+        outArg = outPath,
+        target = target,
+        manifest = manifestArg,
+        nativeTriple = tripleArg,
+        nativeOpt = optArg
+      )
+    )
   }
 
-  buildOne(sourcePath, outPath, target, manifestArg)
+  buildOneNative(sourcePath, outPath, target, manifestArg, tripleArg, optArg)
 }
 
 // Single-file `lyric build --release <source.l>`: compile to a staging DLL,
@@ -432,7 +502,8 @@ func buildReleaseSingle(
   ridArg: in Option[String],
   manifestArg: in Option[String],
 ): Int {
-  val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case Dotnet -> Release.DotnetAot }
+  // Native is unreachable here (cmdBuild rejects --release + --target native).
+  val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
   // JVM (GraalVM) release fails loud without doing a wasted .NET build.
   match releaseTarget {
     case JvmNativeImage -> return Release.buildRelease(releaseTarget, "", newList(), ridArg, "")
@@ -490,7 +561,8 @@ func buildReleaseProject(
 ): Int {
   // JVM native-image is not yet implemented; delegate to buildRelease which
   // fails loud without performing a wasted managed build.
-  val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case Dotnet -> Release.DotnetAot }
+  // Native is unreachable here (cmdBuild rejects --release + --target native).
+  val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
   match releaseTarget {
     case JvmNativeImage -> return Release.buildRelease(releaseTarget, "", newList(), ridArg, "")
     case DotnetAot -> ()
@@ -817,6 +889,7 @@ func buildProject(
       }
     }
     case Jvm -> ()
+    case Native -> ()
   }
   val outPath = match explicitOut {
     case Some(o) -> o
@@ -1112,6 +1185,10 @@ func buildProject(
   var mavenJarColonSep = ""
   var savedFfiJars: Option[String] = None
   match target {
+    case Native -> {
+      printErr("build: --target native does not yet support manifest (multi-package) builds; compile the entry file directly: lyric build <main.l> --target native")
+      return 1
+    }
     case Jvm -> {
       val classpathFile = Path.join(Path.join(Path.join(mfDir, "target"), "restore"), "jvm-classpath.txt")
       match File.readText(classpathFile) {
@@ -1208,6 +1285,9 @@ func buildProject(
         }
       }
     }
+    // Unreachable: project-mode native builds are rejected before the
+    // emit loop.
+    case Native -> ()
   }
   val elapsedMs = Time.totalMillis(Time.since(Time.now(), buildStart))
   Console.println(

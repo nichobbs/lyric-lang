@@ -306,6 +306,31 @@ func registerItem(
     case IFunc(decl) -> {
       val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKFunc(decl = decl), vis, span)
     }
+    case IExternFunc(decl) -> {
+      // An `extern func` (D-N-007) type-checks at call sites exactly like a
+      // body-less Lyric function with the declared signature; the native
+      // backend resolves the C symbol, other backends never see one (they
+      // only appear in `_kernel_native/` packages, loaded for `--target
+      // native` alone).
+      val emptyDocs: List[DocComment] = newList()
+      val emptyAnns: List[Annotation] = newList()
+      val emptyContracts: List[ContractClause] = newList()
+      val fnDecl = FunctionDecl(
+        docComments = emptyDocs,
+        annotations = emptyAnns,
+        visibility = None,
+        isAsync = false,
+        name = decl.name,
+        generics = None,
+        params = decl.params,
+        ret = decl.ret,
+        whereClause = None,
+        contracts = emptyContracts,
+        body = None,
+        span = decl.span
+      )
+      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKFunc(decl = fnDecl), vis, span)
+    }
     case IConst(decl) -> {
       val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKConst(decl = decl), vis, span)
     }

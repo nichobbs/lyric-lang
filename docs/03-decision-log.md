@@ -4966,6 +4966,50 @@ Full detail: `native/plan/07-stdlib-port.md` §target-conditional imports and
 
 ---
 
+## D-N-014 — Native backend ships under the `Lyric.Llvm*` package head; kernel selection is loader-based
+
+**Status:** ACCEPTED — native backend Phase 1 (N0–N1 + N4/N6 slices shipped).
+
+**Context:** `native/plan/02-architecture.md` sketched the backend as `Llvm.*`
+packages under a new `lyric-compiler/llvm/` directory, mirroring `msil/` and
+`jvm/`.  Implementation surfaced two bootstrap constraints the plan predates:
+
+1. **Every stage-0 seed must resolve the backend's packages**, because
+   `Lyric.Emitter` imports the native bridge and is in the `Lyric.Cli`
+   closure that stage 1 compiles.  The frozen F# mint seed resolves only the
+   hardcoded heads `Std`/`Lyric`/`Msil`/`Jvm` (`Emitter.fs:isBuiltinHead`),
+   and the released self-hosted seed's `isCompilerPackage` predates `Llvm.`
+   too.  A new `Llvm` head is unbootstrappable until a release carrying it
+   ships — a circular dependency.
+2. The plan's `@cfg(target = ...)`-gated kernel **imports** assume imports
+   are annotatable; `ImportDecl` carries no annotations, and the shipped
+   mechanism for target-specific kernels is the loader-preference model
+   (`_kernel_jvm/<basename>` over `_kernel/<basename>`, docs/44 J6 M-10).
+
+**Decision:**
+
+- The backend's packages are `Lyric.LlvmTypes` / `Lyric.LlvmIr` /
+  `Lyric.LlvmCodegen` / `Lyric.LlvmLowering` / `Lyric.LlvmBridge`, at
+  `lyric-compiler/lyric/llvm_*.l`.  The `Lyric` head resolves in every seed
+  generation, so the backend bootstraps with zero build-system gating (the
+  plan's `INCLUDE_LLVM_BRIDGE` flag is not needed and was not implemented).
+- Native kernel selection follows the JVM precedent: `_kernel_native/<x>.l`
+  declares the SAME package as `_kernel/<x>.l` (e.g. `Std.ConsoleHost`) and
+  the native source loader (`Lyric.Emitter.findStdlibSourcesNative`) prefers
+  it by basename.  `@cfg(target = "X")` (D-N-013) still ships for gating
+  ITEMS; it is simply not the kernel-import selection mechanism.
+- Public entry points carry a `Native` suffix (`codegenNativePackage`,
+  `codegenNativeBundle`, `lowerNativePackage`): the restored-bundle symbol
+  resolver matches bare names last-registered-wins, so reusing the MSIL/JVM
+  entry-point names (`codegenPackage`, `lowerPackage`) mis-resolves when the
+  compiler bundle is linked.
+
+**Consequence:** `native/plan/*` file paths and package names are read with
+this mapping in mind; the plan documents remain the design source for
+everything else (IR shape, ARC model, FFI, phasing).
+
+---
+
 ### D086 — `result` is contextual: an in-scope `result` binding shadows the contract return-value keyword (#1488, Band-1 of #1470)
 
 **Context.** `result` is a hard keyword (§1.3): the lexer always tokenises it as

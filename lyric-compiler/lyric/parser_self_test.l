@@ -46,6 +46,7 @@ func firstItemKindName(pr: in ParseResult): String {
     case IScopeKind(_) -> "scope_kind"
     case IExtern(_) -> "extern"
     case IExternType(_) -> "extern_type"
+    case IExternFunc(_) -> "extern_func"
     case ITest(_) -> "test"
     case IProperty(_) -> "property"
     case IFixture(_) -> "fixture"
@@ -1125,4 +1126,70 @@ test "flat impl firstItemKindName" {
   val src = "package P\nimpl Repository for PostgresUserRepository {\n  func findById(): Unit {}\n}\n"
   val pr = parse(src)
   assertEqual(firstItemKindName(pr), "impl", "flat-basic: first item kind name")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `extern func` — the native-target C-ABI declaration form (D-N-007).
+// ─────────────────────────────────────────────────────────────────────────────
+test "extern func parses with params, return type, and symbol" {
+  val src = "package P\nextern func write(fd: Int, buf: NativePtr[Byte], n: Long): Long = \"write\"\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "extern func: no diagnostics")
+  assertEqualInt(itemCount(pr), 1, "extern func: 1 item")
+  assertEqual(firstItemKindName(pr), "extern_func", "extern func: item kind")
+  match pr.file.items[0].kind {
+    case IExternFunc(decl) -> {
+      assertEqual(decl.name, "write", "extern func: name")
+      assertEqualInt(decl.params.count, 3, "extern func: three params")
+      assertEqual(decl.symbol, "write", "extern func: symbol string")
+      match decl.ret {
+        case Some(_) -> assertTrue(true, "extern func: return type present")
+        case None -> assertTrue(false, "extern func: return type present")
+      }
+    }
+    case _ -> assertTrue(false, "extern func: expected IExternFunc")
+  }
+}
+
+test "extern func without return type parses" {
+  val src = "package P\nextern func free(ptr: NativePtr[Byte]) = \"free\"\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "extern func unit: no diagnostics")
+  match pr.file.items[0].kind {
+    case IExternFunc(decl) -> {
+      match decl.ret {
+        case Some(_) -> assertTrue(false, "extern func unit: no declared return type")
+        case None -> assertTrue(true, "extern func unit: no declared return type")
+      }
+    }
+    case _ -> assertTrue(false, "extern func unit: expected IExternFunc")
+  }
+}
+
+test "extern func missing symbol raises P0275" {
+  val src = "package P\nextern func strlen(s: NativePtr[Byte]): Long\n"
+  val pr = parse(src)
+  var sawP0275 = false
+  var i = 0
+  while i < pr.diagnostics.count {
+    if pr.diagnostics[i].code == "P0275" {
+      sawP0275 = true
+    }
+    i = i + 1
+  }
+  assertTrue(sawP0275, "extern func: P0275 raised without '= \"symbol\"'")
+}
+
+test "extern func non-string symbol raises P0276" {
+  val src = "package P\nextern func strlen(s: NativePtr[Byte]): Long = strlen\n"
+  val pr = parse(src)
+  var sawP0276 = false
+  var i = 0
+  while i < pr.diagnostics.count {
+    if pr.diagnostics[i].code == "P0276" {
+      sawP0276 = true
+    }
+    i = i + 1
+  }
+  assertTrue(sawP0276, "extern func: P0276 raised for a bare identifier symbol")
 }

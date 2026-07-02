@@ -117,7 +117,7 @@ func usageText(): String {
     "Project:\n" +
     "  lyric init    [<dir>] [--name <Name>] [--lib] [--force]\n" +
     "                (scaffold a new app (or --lib library) package: lyric.toml + src + .gitignore)\n" +
-    "  lyric build   [<source.l>] [-o <output>] [--force] [--manifest <lyric.toml>] [--target dotnet|jvm] [--no-restore] [--watch]\n" +
+    "  lyric build   [<source.l>] [-o <output>] [--force] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--triple <llvm-triple>] [--opt 0|1|2|3|s] [--no-restore] [--watch]\n" +
     "                (no source: builds the discovered project's [project.packages] into one DLL;\n" +
     "                 auto-restores deps when lyric.lock is missing or stale unless --no-restore)\n" +
     "  lyric build   --release [<source.l>] [--manifest <lyric.toml>] [--rid <rid>] [-o <bin>]\n" +
@@ -148,7 +148,7 @@ func usageText(): String {
     "                (print or update versions for all workspace members; warns on misalignment)\n" +
     "\n" +
     "Dev loop:\n" +
-    "  lyric run     [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm] [--watch] [-- <args>...]\n" +
+    "  lyric run     [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--watch] [-- <args>...]\n" +
     "                (no source: builds and runs the discovered project;\n" +
     "                 --watch: rebuild & re-run on source changes; Ctrl-C to stop)\n" +
     "  lyric test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list] [--fail-fast] [--target dotnet|jvm]\n" +
@@ -301,6 +301,9 @@ func outputExt(target: in Emitter.CompileTarget, kind: in String): String {
   match target {
     case Emitter.Dotnet -> ".dll"
     case Emitter.Jvm -> ".jar"
+    // A native build IS the executable; no extension on the Phase 1
+    // POSIX targets (D-N-008).
+    case Emitter.Native -> ""
   }
 }
 
@@ -535,21 +538,12 @@ pub func resolveNugetAssets(mfDir: in String): List[String] {
     return result
   }
 
-  val contentOpt = match File.readText(assetsPath) {
-    case Ok(text) -> Some(value = text)
-    case Err(_) -> None
-  }
+  val contentOpt = match File.readText(assetsPath) { case Ok(text) -> Some(value = text); case Err(_) -> None }
 
-  val content = match contentOpt {
-    case Some(text) -> text
-    case None -> return result
-  }
+  val content = match contentOpt { case Some(text) -> text; case None -> return result }
 
   // Parse the JSON using AOT-safe pure-Lyric parser
-  val parseResult = match Yaml.parseJson(content) {
-    case Ok(value) -> value
-    case Err(_) -> return result
-  }
+  val parseResult = match Yaml.parseJson(content) { case Ok(value) -> value; case Err(_) -> return result }
 
   // Resolve NuGet packages folder
   var pkgsDir = Environment.getVarOrDefault("NUGET_PACKAGES", "")
@@ -559,10 +553,7 @@ pub func resolveNugetAssets(mfDir: in String): List[String] {
   if pkgsDir.length == 0 {
     val home = match Environment.getVar("HOME") {
       case Ok(h) -> h
-      case Err(_) -> match Environment.getVar("USERPROFILE") {
-        case Ok(h) -> h
-        case Err(_) -> ""
-      }
+      case Err(_) -> match Environment.getVar("USERPROFILE") { case Ok(h) -> h; case Err(_) -> "" }
     }
     if home.length > 0 {
       pkgsDir = Path.join(home, ".nuget/packages")
@@ -689,11 +680,7 @@ func extractDllPathsFromYaml(root: in Yaml.YamlValue, pkgsDir: in String): List[
                                         val dllEntry = runtimeEntries[dIdx]
                                         val dllPath = dllEntry.key
                                         val lowerPath = dllPath.toLower()
-                                        if lowerPath.length > 4 and
-                                            lowerPath[lowerPath.length - 4] == '.' and
-                                            lowerPath[lowerPath.length - 3] == 'd' and
-                                            lowerPath[lowerPath.length - 2] == 'l' and
-                                            lowerPath[lowerPath.length - 1] == 'l' {
+                                        if lowerPath.length > 4 and lowerPath[lowerPath.length - 4] == '.' and lowerPath[lowerPath.length - 3] == 'd' and lowerPath[lowerPath.length - 2] == 'l' and lowerPath[lowerPath.length - 1] == 'l' {
                                           val pkgName = pkgKey.substring(0, slashPos)
                                           val pkgVersion = pkgKey.substring(slashPos + 1, pkgKey.length - slashPos - 1)
                                           val lowerPkgName = pkgName.toLower()
@@ -733,4 +720,3 @@ func extractDllPathsFromYaml(root: in Yaml.YamlValue, pkgsDir: in String): List[
   }
   result
 }
-

@@ -52,6 +52,10 @@ func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in Com
     return 1
   }
   match target {
+    case Native -> {
+      printErr("run: --target native does not yet support manifest (multi-package) projects")
+      return 1
+    }
     case Jvm -> {
       val execArgs: List[String] = newList()
       execArgs.add("-jar")
@@ -97,9 +101,9 @@ func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in Com
           if buildKind == "exe" {
             printErr(
               "run: warning: no native launcher found for this 'kind = \"exe\"' build; " +
-              "falling back to 'dotnet exec' (install a Microsoft.NETCore.App.Host.<rid> " +
-              "runtime pack, or set DOTNET_ROOT to a .NET install that has one, so the " +
-              "apphost template can be located)"
+                "falling back to 'dotnet exec' (install a Microsoft.NETCore.App.Host.<rid> " +
+                "runtime pack, or set DOTNET_ROOT to a .NET install that has one, so the " +
+                "apphost template can be located)"
             )
           }
           val execArgs: List[String] = newList()
@@ -139,7 +143,7 @@ union WatchAction {
   case RunFile(sourcePath: String, userArgs: List[String], target: CompileTarget)
   case RunProj(mfPath: String, userArgs: List[String], target: CompileTarget)
   case BuildProj(mfPath: String, outArg: Option[String], target: CompileTarget, feats: List[String], noDef: Bool, allF: Bool, noRestore: Bool, pkgVer: Option[String])
-  case BuildFile(sourcePath: String, outArg: String, target: CompileTarget, manifest: Option[String])
+  case BuildFile(sourcePath: String, outArg: String, target: CompileTarget, manifest: Option[String], nativeTriple: String, nativeOpt: String)
 }
 
 // Build the program once and execute it.  Target-aware: Dotnet runs via
@@ -148,10 +152,22 @@ union WatchAction {
 func runOnce(sourcePath: in String, userArgs: in List[String], target: in CompileTarget): Int {
   val srcDir = Path.dirname(sourcePath)
   val stem = stemOf(Path.basename(sourcePath), 2)
-  val outPath = match target {
-    case Jvm -> Path.join(Path.join(srcDir, ".lyric-run"), stem + ".jar")
-    case Dotnet -> Path.join(Path.join(srcDir, ".lyric-run"), stem + ".dll")
+  // var-mutation shape: a value-position match over CompileTarget
+  // mis-lowers under the stage-0 emitter (#4631; see cmdRun's runTarget
+  // note).
+  var outExt = ""
+  match target {
+    case Jvm -> {
+      outExt = ".jar"
+    }
+    case Dotnet -> {
+      outExt = ".dll"
+    }
+    case Native -> {
+      outExt = ""
+    }
   }
+  val outPath = Path.join(Path.join(srcDir, ".lyric-run"), stem + outExt)
 
   val buildExit = buildOne(sourcePath, outPath, target, None)
   if buildExit != 0 {
@@ -192,6 +208,20 @@ func runOnce(sourcePath: in String, userArgs: in List[String], target: in Compil
         }
       }
     }
+    case Native -> {
+      // A native build IS the executable; run it directly.
+      val execArgs: List[String] = newList()
+      for a in userArgs.toArray() {
+        execArgs.add(a)
+      }
+      match Process.run(outPath, execArgs) {
+        case Ok(code) -> code
+        case Err(e) -> {
+          printErr("run: failed to start " + outPath + ": " + IOError.message(e))
+          1
+        }
+      }
+    }
   }
 }
 
@@ -200,7 +230,7 @@ func runWatchAction(a: in WatchAction): Int {
     case RunFile(sp, ua, t) -> runOnce(sp, ua, t)
     case RunProj(mp, ua, t) -> runProjectOnce(mp, ua, t)
     case BuildProj(mf, o, t, f, nd, af, nr, pv) -> buildProject(mf, o, t, f, nd, af, nr, pv)
-    case BuildFile(sp, o, t, m) -> buildOne(sp, o, t, m)
+    case BuildFile(sp, o, t, m, tr, op) -> buildOneNative(sp, o, t, m, tr, op)
   }
 }
 
@@ -311,10 +341,12 @@ func cmdRun(argv: in slice[String]): Int {
     case Some(t) -> {
       if t == "jvm" {
         runTarget = Jvm
+      } else if t == "native" {
+        runTarget = Native
       } else if t == "dotnet" {
         runTarget = Dotnet
       } else {
-        printErr("run: unknown target '" + t + "' — expected dotnet or jvm")
+        printErr("run: unknown target '" + t + "' — expected dotnet, jvm, or native")
         return 1
       }
     }

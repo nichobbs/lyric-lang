@@ -621,6 +621,19 @@ pub record ExternTypeDecl {
   span: Span
 }
 
+/// `extern func <name>(<params>): <ret> = "<symbol>"` — a C-ABI foreign
+/// function declaration for the native target (D-N-007).  `symbol` is the
+/// bare C symbol name the native backend `declare`s and calls; parallel
+/// to (not reusing) the BCL-specific `@externTarget` machinery.  Only
+/// `_kernel_native/` packages may declare these (mode checker N0100).
+pub record ExternFuncDecl {
+  name: String
+  params: List[Param]
+  ret: Option[TypeExpr]
+  symbol: String
+  span: Span
+}
+
 pub record TestDecl {
   title: String
   body: Block
@@ -678,6 +691,8 @@ pub union ItemKind {
   case IScopeKind(decl: ScopeKindDecl)
   case IExtern(decl: ExternPackageDecl)
   case IExternType(decl: ExternTypeDecl)
+  /// `extern func ... = "symbol"` C-ABI declaration (native target, D-N-007).
+  case IExternFunc(decl: ExternFuncDecl)
   case ITest(decl: TestDecl)
   case IProperty(decl: PropertyDecl)
   case IFixture(decl: FixtureDecl)
