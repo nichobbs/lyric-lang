@@ -26320,3 +26320,29 @@ composition — capture retain/release and the closure destructor
 verified leak-free.
 
 **Related:** D-progress-543, `native/plan/08-work-items.md` §N2.6.
+
+---
+
+### D-progress-545 — Native backend N2.5: NativeWeak[T]
+
+**Shipped.** Phase N2 is complete: `NativeWeak[T]` lands as the
+plan's non-owning cycle-breaking reference (D-N-005):
+
+- **Representation** — the target pointer itself behind a marker
+  struct name (`__weak<T.Node*>`, excluded from ARC by `isRefNType`);
+  a registry maps the marker back to the target type.  `NativeWeak(x)`
+  constructs with no retain and no ownership registration.
+- **`upgrade()`** — calls lyric-rt's CAS loop
+  (`lyric_weak_upgrade`, shipped in N0): a successful upgrade's +1
+  transfers to an owned temp that the `Some(value)` construction
+  retains from and the region release balances; `null` produces
+  `None`.  The result is the instantiated generic union named
+  `Option` from the import closure (`Std.Core.Option` in bridge
+  builds), resolved by name so single-file tests can supply their own.
+
+**Verification.** `llvm_heap_self_test.l` gains an ASan case
+(29 total): upgrades of a live target across 200 iterations plus
+weak-to-temporary nodes, rc balancing leak-free.
+
+**Related:** D-progress-544, `native/plan/04-arc-design.md`
+§NativeWeak, D-N-005.
