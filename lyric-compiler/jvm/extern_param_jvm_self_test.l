@@ -57,3 +57,38 @@ test "extern handle round-trips through create -> pass -> read (#3334)" {
   fill(sink, 7)
   assertEqualInt(sink.size(), 7, "makeSink() then fill(_, 7) yields size() == 7")
 }
+
+// ── Discarded FFI call values (epic #2663) ────────────────────────────────────
+// An if-without-else whose trailing expression is a non-void FFI call leaked
+// the call's return value onto the operand stack at the join label; inside a
+// loop the leaked value reached a back-edge branch target and failed
+// StackMapTable verification (the Std.ProcessCaptureHost
+// `proc.destroyForcibly()` poll-loop shape).
+extern type JSB = "java.lang.StringBuilder"
+
+extern type JSys = "java.lang.System"
+
+test "if-without-else discards a trailing ref-returning FFI call value" {
+  val sb = JSB.new()
+  var n = 0
+  while n < 3 {
+    if n > 0 {
+      sb.append(",")
+    }
+    sb.append(toString(n))
+    n = n + 1
+  }
+  assertEqual(sb.toString(), "0,1,2", "append() returns StringBuilder; the if-tail value must be discarded at the join")
+}
+
+test "statement-position long-returning FFI call is discarded with pop2" {
+  var i = 0
+  while i < 2 {
+    JSys.nanoTime()
+    if i == 0 {
+      JSys.nanoTime()
+    }
+    i = i + 1
+  }
+  assertEqualInt(i, 2, "loop completed after discarding category-2 long values in statement and if-tail position")
+}

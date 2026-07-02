@@ -1796,9 +1796,30 @@ func segmentsToJvmPath(segs: in List[String]): String {
 }
 
 // Determine whether a function is the JVM entry point:
-// name="main" with no parameters (Lyric convention).
+// name="main" with no parameters, or with a single `slice[String]`
+// argv parameter (both Lyric entry-point conventions, #3303).
 func isMainFunc(decl: in FunctionDecl): Bool {
-  decl.name == "main" and decl.params.count == 0
+  if decl.name != "main" {
+    return false
+  }
+  if decl.params.count == 0 {
+    return true
+  }
+  decl.params.count == 1 and mainParamIsStringSlice(decl.params[0].ty)
+}
+
+// True when a `main` parameter is `slice[String]` (the argv shape).
+func mainParamIsStringSlice(te: in TypeExpr): Bool {
+  match te.kind {
+    case TSlice(elem) -> {
+      match elem.kind {
+        case TRef(path) -> path.segments.count == 1 and path.segments[0] == "String"
+        case _ -> false
+      }
+    }
+    case TParen(inner) -> mainParamIsStringSlice(inner)
+    case _ -> false
+  }
 }
 
 // ── Async generator detection ─────────────────────────────────────────────────
@@ -2174,12 +2195,48 @@ pub func collectExternTypesFromFile(file: in SourceFile): Map[String, String] {
 // cross-package call registry so any package's call sites can resolve a
 // callee's owner + descriptor.  See JvmFuncSig.
 pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]): Unit {
+  val emptySeed: Map[String, String] = newMap()
+  collectFileSigsSeeded(file, into, emptySeed)
+}
+
+// Union of a file's own `extern type` declarations and `seed` (the extern
+// types of the packages it imports).  Own declarations win on alias collision.
+pub func mergeExternSeed(own: in Map[String, String], seed: in Map[String, String]): Map[String, String] {
+  val merged: Map[String, String] = newMap()
+  for k in mapKeys(seed) {
+    match mapGet(seed, k) {
+      case Some(v) -> merged.add(k, v)
+      case None -> ()
+    }
+  }
+  for k2 in mapKeys(own) {
+    match mapGet(own, k2) {
+      case Some(v2) -> {
+        merged.remove(k2)
+        merged.add(k2, v2)
+      }
+      case None -> ()
+    }
+  }
+  merged
+}
+
+// As `collectFileSigs`, but resolving extern-type aliases against the file's
+// own declarations UNION `externSeed` — the extern types of the packages the
+// file imports (own declarations win).  A public signature written against an
+// imported extern type (e.g. `Std.Time.now(): Instant`, where `Instant` is an
+// `extern type` in `Std.TimeHost`) must resolve to the real JVM class in both
+// the registered sig and the emitted descriptor, or the method links against a
+// nonexistent `<pkg>/<Alias>` class at runtime.
+pub func collectFileSigsSeeded(
+  file: in SourceFile, into: in Map[String, JvmFuncSig], externSeed: in Map[String, String]
+): Unit {
   val owner = segmentsToJvmPath(file.packageDecl.path.segments)
   // Resolve `extern type` parameter/return descriptors to the real JVM class
   // (e.g. `JBAOS` -> `java/io/ByteArrayOutputStream`), not `<pkg>/<Alias>`
   // (#3334).  The emitted method descriptor in `lowerFunc` resolves the same
   // way, so the registered sig and the method stay in lockstep.
-  val externTypes = collectExternTypesFromFile(file)
+  val externTypes = mergeExternSeed(collectExternTypesFromFile(file), externSeed)
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -2218,7 +2275,8 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
           ret = ret,
           paramNames = paramNames,
           paramDefaults = paramDefaults,
-          paramModes = paramModes
+          paramModes = paramModes,
+          isIface = false
         )
         // Qualified key (`Std/Testing/assertEqualInt`) is unique across the
         // bundle, so two packages exporting the same short name (e.g.
@@ -2289,6 +2347,28 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
           mi = mi + 1
         }
       }
+      case IInterface(decl) -> {
+        // Register each interface member under `<ifaceClass>#<method>` with
+        // `isIface = true` so a call on an interface-typed receiver emits
+        // `invokeinterface` — the `()Object`-guess `invokevirtual` against an
+        // interface owner fails class-load verification (#3687).  Params and
+        // return mirror the abstract-method emission (`IInterface` arm of
+        // `codegenPackageWithSigs`) exactly so the descriptors stay in lockstep.
+        val ifClass = owner + "/" + decl.name
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMSig(sig) -> {
+              registerIfaceSig(into, ifClass, sig.name, sig.params, sig.ret, owner, externTypes)
+            }
+            case IMFunc(fn) -> {
+              registerIfaceSig(into, ifClass, fn.name, fn.params, fn.ret, owner, externTypes)
+            }
+            case IMAssoc(_) -> ()
+          }
+          mi = mi + 1
+        }
+      }
       case IOpaque(decl) -> {
         // Erased-Object receiver fallback (#3044): register each opaque field
         // under the `field:<name>` key (owner class + declared type) so a
@@ -2314,7 +2394,8 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
                       ret = typeExprToJvm(f.ty, owner),
                       paramNames = newList(),
                       paramDefaults = newList(),
-                      paramModes = newList()
+                      paramModes = newList(),
+                      isIface = false
                     )
                   )
                 }
@@ -2416,7 +2497,53 @@ func registerInstanceSigErased(
         ret = ret,
         paramNames = paramNames,
         paramDefaults = paramDefs,
-        paramModes = modes
+        paramModes = modes,
+        isIface = false
+      )
+    )
+  }
+}
+
+// Register one interface member under `<ifaceClass>#<method>` with
+// `isIface = true` (#3687).  Params and return mirror the abstract-method
+// emission in the `IInterface` arm of `codegenPackageWithSigs` exactly —
+// `holderAwareParamTypes(erase = true, no type params)` and a bare
+// `typeExprToJvm` return — so the registered descriptor and the emitted
+// interface method stay in lockstep.
+func registerIfaceSig(
+  into: in Map[String, JvmFuncSig],
+  ifClass: in String,
+  methodName: in String,
+  params: in List[Param],
+  retOpt: in Option[TypeExpr],
+  owner: in String,
+  externTypes: in Map[String, String],
+): Unit {
+  val noTps: List[String] = newList()
+  val ps = holderAwareParamTypes(params, owner, true, noTps, externTypes)
+  val ret = match retOpt { case Some(te) -> typeExprToJvmExtern(te, owner, externTypes); case None -> JVoid }
+  val pNames: List[String] = newList()
+  val pDefs: List[Option[Expr]] = newList()
+  val pModes: List[ParamMode] = newList()
+  var pi = 0
+  while pi < params.count {
+    pNames.add(params[pi].name)
+    pDefs.add(params[pi].dflt)
+    pModes.add(params[pi].mode)
+    pi = pi + 1
+  }
+  val key = ifClass + "#" + methodName
+  if not into.containsKey(key) {
+    into.add(
+      key,
+      JvmFuncSig(
+        owner = ifClass,
+        params = ps,
+        ret = ret,
+        paramNames = pNames,
+        paramDefaults = pDefs,
+        paramModes = pModes,
+        isIface = true
       )
     )
   }
@@ -2442,7 +2569,8 @@ func registerStaticWireSig(
         ret = ret,
         paramNames = newList(),
         paramDefaults = newList(),
-        paramModes = newList()
+        paramModes = newList(),
+        isIface = false
       )
     )
   }
@@ -2800,7 +2928,8 @@ pub func registerProjectableViews(
                 ret = JRef(className = viewCls),
                 paramNames = newList(),
                 paramDefaults = newList(),
-                paramModes = newList()
+                paramModes = newList(),
+                isIface = false
               )
             )
           }
@@ -2816,7 +2945,8 @@ pub func registerProjectableViews(
                   ret = JRef(className = "Std/Core/Result"),
                   paramNames = newList(),
                   paramDefaults = newList(),
-                  paramModes = newList()
+                  paramModes = newList(),
+                  isIface = false
                 )
               )
             }
@@ -2938,17 +3068,33 @@ pub func codegenPackageWithSigs(
   caseFields: in Map[String, List[JvmCaseField]],
   ctors: in Map[String, String],
   autoFfi: in AutoFfiCtx,
+  allProjFqns: in Map[String, Bool],
+): LPackage {
+  val emptySeed: Map[String, String] = newMap()
+  codegenPackageWithSigsSeeded(file, funcSigs, caseFields, ctors, autoFfi, allProjFqns, emptySeed)
+}
+
+// As `codegenPackageWithSigs`, but resolving extern-type aliases against the
+// file's own declarations UNION `externSeed` (imported packages' extern
+// types; own declarations win) — see `collectFileSigsSeeded`.
+pub func codegenPackageWithSigsSeeded(
+  file: in SourceFile,
+  funcSigs: in Map[String, JvmFuncSig],
+  caseFields: in Map[String, List[JvmCaseField]],
+  ctors: in Map[String, String],
+  autoFfi: in AutoFfiCtx,
   // #3044: complete set of @projectable opaque JVM class names across the
   // whole compilation (pre-scanned via `collectFileProjectables`), so the
   // nested-view substitution and tryInto() eligibility are declaration-order-
   // independent — the JVM counterpart of the MSIL `allProjFqns`.
   allProjFqns: in Map[String, Bool],
+  externSeed: in Map[String, String],
 ): LPackage {
   val pkgName = segmentsToJvmPath(file.packageDecl.path.segments)
   val funcsClass = pkgName
 
   // Collect extern-type declarations: alias → Java FQN.
-  val externTypes = collectExternTypesFromFile(file)
+  val externTypes = mergeExternSeed(collectExternTypesFromFile(file), externSeed)
 
   // m-2: collect the module-level `val NAME` declarations up front (name → JVM
   // type) so a bare reference to one resolves to `getstatic <hostClass>.<name>`
@@ -2993,10 +3139,14 @@ pub func codegenPackageWithSigs(
   var hasMain = false
   // Captured return type of the Lyric `main(): T` so the JVM wrapper can
   // emit a correctly-typed invokestatic.  `JVoid` until / unless a main is
-  // observed.  When the Lyric main returns `Int`, the wrapper pops the int
-  // off the stack (POSIX-style exit code semantics are not propagated yet —
-  // a follow-up can route through `java.lang.System.exit(int)`).
+  // observed.  An `Int` return is routed to `java.lang.System.exit(int)`
+  // so the value becomes the process exit code (#3303); other category-1
+  // returns are popped.
   var mainRet: JvmType = JVoid
+  // True when the Lyric main takes the `argv: slice[String]` parameter —
+  // the wrapper then forwards its incoming `String[]` (covariantly
+  // assignable to the erased `Object[]` slice representation, #3303).
+  var mainHasArgs = false
 
   // ── IImpl pre-pass ──────────────────────────────────────────────────────────
   // Collect all IImpl blocks before the main item loop so that when IRecord
@@ -3110,6 +3260,7 @@ pub func codegenPackageWithSigs(
           )
           if isMainFunc(decl) {
             hasMain = true
+            mainHasArgs = decl.params.count == 1
             // Resolve the Lyric main's declared return type so the JVM
             // wrapper can call it with the matching descriptor.
             mainRet = match decl.ret { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
@@ -3329,7 +3480,7 @@ pub func codegenPackageWithSigs(
             case IMSig(sig) -> {
               val noTpsIface: List[String] = newList()
               val params = holderAwareParamTypes(sig.params, pkgName, true, noTpsIface, externTypes)
-              val ret = match sig.ret { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
+              val ret = match sig.ret { case Some(te) -> typeExprToJvmExtern(te, pkgName, externTypes); case None -> JVoid }
               val desc = buildDescriptor(params, ret)
               abstractMethods.add(makeMethodInfo(ACC_PUBLIC + ACC_ABSTRACT, sig.name, desc, emptyAttrs))
             }
@@ -3454,17 +3605,25 @@ pub func codegenPackageWithSigs(
     jvmMainParams.add(JArray(elem = JRef(className = "java/lang/String")))
     val jvmMainInsns: List[LInsn] = newList()
     val lyricMainPs: List[JvmType] = newList()
-    // Currently emits main():()V regardless of Lyric main's return type.
-    // Long/Double return would require POP2; Int/Bool etc. would require POP.
-    // Tracked as a follow-up once the JVM wrapper records the Lyric main return type.
+    if mainHasArgs {
+      // Forward the JVM `String[]` argv to the Lyric main's erased
+      // `slice[String]` parameter (`Object[]`) — legal by JVM array
+      // covariance, no copy needed (#3303).
+      lyricMainPs.add(JArray(elem = JRef(className = "java/lang/Object")))
+      jvmMainInsns.add(LAload(slot = 0))
+    }
     jvmMainInsns.add(LInvokestatic(owner = funcsClass, name = "main", params = lyricMainPs, ret = mainRet))
-    // Discard the Lyric main's return value (when any) before issuing the
-    // JVM `void` return.  The Long/Double 2-slot cases are rejected above,
-    // so every remaining non-void return is category-1 (Int, Boolean,
-    // references, etc.) — a single `LPop` is correct.  Exposing the value
-    // as a process exit code is a follow-up via java.lang.System.exit.
+    // An `Int` return becomes the process exit code via
+    // `java.lang.System.exit(int)` (#3303) — branchless, so the wrapper
+    // needs no StackMapTable.  The Long/Double 2-slot cases are rejected
+    // above; every other non-void return is category-1 and popped.
     match mainRet {
       case JVoid -> ()
+      case JInt -> {
+        val exitPs: List[JvmType] = newList()
+        exitPs.add(JInt)
+        jvmMainInsns.add(LInvokestatic(owner = "java/lang/System", name = "exit", params = exitPs, ret = JVoid))
+      }
       case _ -> jvmMainInsns.add(LPop)
     }
     jvmMainInsns.add(LReturn)

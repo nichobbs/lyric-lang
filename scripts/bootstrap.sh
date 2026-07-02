@@ -381,7 +381,11 @@ stage0() {
     cp -r "$BUILD_DIR/stage0-publish/lib/." "$(dirname "$STAGE0_BIN")/lib/" \
       || die "Stage 0: failed to copy lib/ directory from stage0-publish"
     info "  copied lib/ directory with runtime dependencies"
-  elif [[ "$stage0_minted" == "1" ]]; then
+  elif [[ "$stage0_minted" == "1" ]] || [[ -f "$BUILD_DIR/stage0-publish/Lyric.Lyric.Cli.dll" ]]; then
+    # A minted publish dir copies its DLLs flat (no lib/ subfolder) — detect
+    # that layout directly so a CACHED minted stage0-publish (second and later
+    # local runs, where try_bootstrap_from_release short-circuits and
+    # stage0_minted stays 0) doesn't hard-fail here.
     info "  lib/ directory not present in a minted stage0-publish (expected; mint copies DLLs flat)"
   else
     die "lib/ directory not found in stage0-publish — stage-0 binary will not be able to locate Lyric.Stdlib"

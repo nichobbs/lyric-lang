@@ -27,10 +27,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
           match mapGet(ctx.hoistedCellSlot, name) {
             case Some(cellSlot) -> {
               // Assignment to hoisted var goes through cell[0]
-              val cellElemTy = match mapGet(ctx.hoistedCellType, name) {
-                case Some(t) -> t
-                case None -> ty
-              }
+              val cellElemTy = match mapGet(ctx.hoistedCellType, name) { case Some(t) -> t; case None -> ty }
               val cellType = JArray(elem = cellElemTy)
               match op {
                 case AssEq -> {
@@ -256,14 +253,27 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               JVoid
             }
             case None -> {
-              // Unknown variable — lower the value but don't store it.
-              lowerExpr(ctx, insns, value)
-              insns.add(LPop)
-              JVoid
+              // No local slot and no receiver field of this name: dropping the
+              // store here silently miscompiles the program (the J3 M-3 and
+              // EResult-target bugs were both this shape) — fail loudly.
+              panic("Jvm.Codegen: assignment target '" + name + "' resolves to no local, parameter, or receiver field")
             }
           }
         }
       }
+    }
+    case EResult -> {
+      // `result` is a contextual keyword: a local or parameter named "result"
+      // parses as EResult even in assignment-target position, so `result = …`
+      // fell through to the unsupported-target fallback below and the store
+      // was silently discarded (the stdlib's own `buildArgString` assigns to
+      // a `result` local, which broke every ProcessCapture argument
+      // round-trip on JVM).  Rebuild the equivalent named-path target and
+      // re-lower through the local-variable path.
+      val segs: List[String] = newList()
+      segs.add("result")
+      val pathTarget = Expr(kind = EPath(path = ModulePath(segments = segs, span = target.span)), span = target.span)
+      lowerAssignExpr(ctx, insns, pathTarget, op, value)
     }
     case EMember(recv, fieldName) -> {
       // Record / opaque field assignment: `recv.field = e` → load receiver, eval
@@ -297,10 +307,9 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
           JVoid
         }
         case _ -> {
-          // Receiver isn't a known reference type — nothing to store into.
-          lowerExpr(ctx, insns, value)
-          insns.add(LPop)
-          JVoid
+          // A field store into a non-reference receiver is a front-end or
+          // lowering bug; dropping the store would silently miscompile.
+          panic("Jvm.Codegen: field assignment '" + fieldName + "' on a non-reference receiver")
         }
       }
     }
@@ -355,10 +364,10 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
       }
     }
     case _ -> {
-      // Other assignment targets (deref, etc.) are not meaningful on the JVM.
-      lowerExpr(ctx, insns, value)
-      insns.add(LPop)
-      JVoid
+      // Any other target shape reaching codegen is a front-end or lowering
+      // bug; evaluating the RHS and dropping the store would silently
+      // miscompile the program (the EResult-target bug was this shape).
+      panic("Jvm.Codegen: unsupported assignment-target expression shape")
     }
   }
 }
@@ -438,38 +447,8 @@ func emitCompoundArith(ctx: in FuncCtx, insns: in List[LInsn], op: in AssignOp, 
     case AssPlus -> match ty { case JLong -> insns.add(LLadd); case JFloat -> insns.add(LFadd); case JDouble -> insns.add(LDadd); case _ -> insns.add(LIadd) }
     case AssMinus -> match ty { case JLong -> insns.add(LLsub); case JFloat -> insns.add(LFsub); case JDouble -> insns.add(LDsub); case _ -> insns.add(LIsub) }
     case AssStar -> match ty { case JLong -> insns.add(LLmul); case JFloat -> insns.add(LFmul); case JDouble -> insns.add(LDmul); case _ -> insns.add(LImul) }
-    case AssSlash -> match ty {
-      case JLong -> insns.add(LLdiv)
-      case JFloat -> insns.add(LFdiv)
-      case JDouble -> insns.add(LDdiv)
-      case JByte -> {
-        val rhsSlot = allocSlot(ctx, "__comp_rhs_" + freshLabel(ctx), JInt)
-        emitStore(insns, rhsSlot, JInt)
-        insns.add(LIconst(255))
-        insns.add(LIand)
-        emitLoad(insns, rhsSlot, JInt)
-        insns.add(LIconst(255))
-        insns.add(LIand)
-        insns.add(LIdiv)
-      }
-      case _ -> insns.add(LIdiv)
-    }
-    case AssPercent -> match ty {
-      case JLong -> insns.add(LLrem)
-      case JFloat -> insns.add(LFrem)
-      case JDouble -> insns.add(LDrem)
-      case JByte -> {
-        val rhsSlot = allocSlot(ctx, "__comp_rhs_" + freshLabel(ctx), JInt)
-        emitStore(insns, rhsSlot, JInt)
-        insns.add(LIconst(255))
-        insns.add(LIand)
-        emitLoad(insns, rhsSlot, JInt)
-        insns.add(LIconst(255))
-        insns.add(LIand)
-        insns.add(LIrem)
-      }
-      case _ -> insns.add(LIrem)
-    }
+    case AssSlash -> match ty { case JLong -> insns.add(LLdiv); case JFloat -> insns.add(LFdiv); case JDouble -> insns.add(LDdiv); case JByte -> { val rhsSlot = allocSlot(ctx, "__comp_rhs_" + freshLabel(ctx), JInt); emitStore(insns, rhsSlot, JInt); insns.add(LIconst(255)); insns.add(LIand); emitLoad(insns, rhsSlot, JInt); insns.add(LIconst(255)); insns.add(LIand); insns.add(LIdiv) }; case _ -> insns.add(LIdiv) }
+    case AssPercent -> match ty { case JLong -> insns.add(LLrem); case JFloat -> insns.add(LFrem); case JDouble -> insns.add(LDrem); case JByte -> { val rhsSlot = allocSlot(ctx, "__comp_rhs_" + freshLabel(ctx), JInt); emitStore(insns, rhsSlot, JInt); insns.add(LIconst(255)); insns.add(LIand); emitLoad(insns, rhsSlot, JInt); insns.add(LIconst(255)); insns.add(LIand); insns.add(LIrem) }; case _ -> insns.add(LIrem) }
     case AssEq -> ()
   }
 }
@@ -489,7 +468,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
         }
         case LBLet(name, tyOpt, init) -> {
           val initTy = lowerExpr(ctx, insns, init)
-          val ty = match tyOpt { case Some(te) -> typeExprToJvm(te, ctx.pkgName); case None -> initTy }
+          val ty = match tyOpt { case Some(te) -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes); case None -> initTy }
           coerceArgTo(insns, initTy, ty)
           val slot = allocSlot(ctx, name, ty)
           emitStore(insns, slot, ty)
@@ -502,7 +481,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               // An un-annotated `var x = e` takes its slot type from the
               // initialiser; an annotated `var x: T = e` coerces `e` to `T`.
               val initTy = lowerExpr(ctx, insns, init)
-              val ty = match tyOpt { case Some(te) -> typeExprToJvm(te, ctx.pkgName); case None -> initTy }
+              val ty = match tyOpt { case Some(te) -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes); case None -> initTy }
               coerceArgTo(insns, initTy, ty)
               if isHoisted {
                 // Allocate a heap cell (1-element typed array) for the var.
@@ -532,7 +511,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
             case None -> {
               // No initialiser: an annotation is required to know the slot type;
               // default to JInt only as a last resort (matches prior behaviour).
-              val ty = match tyOpt { case Some(te) -> typeExprToJvm(te, ctx.pkgName); case None -> JInt }
+              val ty = match tyOpt { case Some(te) -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes); case None -> JInt }
               if isHoisted {
                 // Create an empty cell for the hoisted var
                 val cellType = JArray(elem = ty)
@@ -643,7 +622,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
       val ty = lowerExpr(ctx, insns, e)
       match ty {
         case JVoid -> insns.add(LNop)
-        case _ -> insns.add(LPop)
+        case _ -> discardValue(insns, ty)
       }
     }
 
@@ -877,16 +856,16 @@ func lowerLocalPatBind(
 ): Unit {
   match pat.kind {
     case PBinding(name, _) -> {
-      val ty = match tyOpt { case Some(te) -> typeExprToJvm(te, ctx.pkgName); case None -> initTy }
+      val ty = match tyOpt { case Some(te) -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes); case None -> initTy }
       coerceArgTo(insns, initTy, ty)
       val slot = allocSlot(ctx, name, ty)
       emitStore(insns, slot, ty)
     }
     case PWildcard -> {
-      // Discard the value.
+      // Discard the value (pop2 for category-2 long/double).
       match initTy {
         case JVoid -> insns.add(LNop)
-        case _ -> insns.add(LPop)
+        case _ -> discardValue(insns, initTy)
       }
     }
     case _ -> {
