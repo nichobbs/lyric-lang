@@ -1,13 +1,13 @@
 # 48 — Constructor Shorthand for Extern Types
 
-**Status:** Specced (D116). Design question Q48-003 is resolved (static factory
+**Status:** Specced (D117). Design question Q48-003 is resolved (static factory
 methods already supported). Questions Q48-001 and Q48-002 are deferred (tracked
 separately as generic-FFI and async-constructor design work).
 
 **Builds on:** `docs/01-language-reference.md` §11.4 (auto-FFI extern types),
 `docs/42-extern-metadata-resolution.md` (metadata-based resolution).
 
-**Decision-log entry:** D116 (design decisions and deferred questions).
+**Decision-log entry:** D117 (design decisions and deferred questions).
 
 **Goal:** Enable direct constructor calls on external types via `.new(args)`
 syntax, eliminating boilerplate `@externTarget` wrapper functions and aligning
