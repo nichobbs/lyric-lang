@@ -1819,7 +1819,7 @@ func candidateDotnetRoots(): List[String] {
 // `refPackDir()` (early-returns on the first `found`) and
 // `refPackDirDebugInfo()` (records `reason` at every root) so the two
 // walks can never drift apart (#4741).
-pub record RefPackProbe {
+record RefPackProbe {
   found: Option[String]
   reason: String
 }
