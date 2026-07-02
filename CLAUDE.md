@@ -246,6 +246,10 @@ current policy.
 <details>
 <summary>Historical: draft-first policy (superseded, kept for context)</summary>
 
+> **SUPERSEDED — do not follow.** This is kept for context only; the
+> current policy is "open ready for review" above. Everything below this
+> line, including the numbered steps, describes the old behavior.
+
 1. **Open every new PR as a draft** (`draft: true` on
    `mcp__github__create_pull_request`, or `gh pr create --draft`).
    This applies even when you are confident the work is done — draft
