@@ -148,6 +148,31 @@ Functions handling authentication, payment, or personal data should always do on
 
 **Env var**: `LYRIC_ASPECT_<LocalName>_<FIELD>` (e.g., `LYRIC_ASPECT_APIRETRY_MAXATTEMPTS=5`)
 
+**Testing**: the backoff/jitter math is exposed as a standalone
+`pub func backoffDelay(...)` (like `CircuitBreakerState` below, public so
+tests can exercise it directly rather than only indirectly through a woven
+`Retry` aspect's real sleep timing):
+
+```lyric
+import Resilience
+
+// No jitter: exact exponential backoff.
+Resilience.backoffDelay(100, 2, 0, 30000, 0.0f32) // -> 100
+Resilience.backoffDelay(100, 2, 1, 30000, 0.0f32) // -> 200
+Resilience.backoffDelay(100, 2, 2, 30000, 0.0f32) // -> 400
+
+// With jitter: result falls within [delay*(1-jitterFraction), delay*(1+jitterFraction)],
+// clamped to [0, maxDelayMs].
+Resilience.backoffDelay(1000, 2, 0, 30000, 0.5f32) // -> somewhere in [500, 1500]
+```
+
+| Function | Signature |
+|---|---|
+| `backoffDelay` | `(initialDelayMs: Int, backoffFactor: Int, attempt: Int, maxDelayMs: Int, jitterFraction: Float): Int` |
+
+See `lyric-resilience/tests/resilience_tests.l` for the zero-jitter,
+cap-enforcement, and jitter-clamp-boundary test cases.
+
 ### `Resilience.CircuitBreaker`
 
 Stops requests when failure rate exceeds threshold to prevent cascading failures.
