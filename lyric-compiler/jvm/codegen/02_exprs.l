@@ -388,12 +388,33 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                     emitLoad(insns, lSlot, JRef(className = "java/lang/String"))
                     val catAp: List[JvmType] = newList()
                     catAp.add(JRef(className = "java/lang/String"))
-                    insns.add(LInvokevirtual(owner = "java/lang/StringBuilder", name = "append", params = catAp, ret = JRef(className = "java/lang/StringBuilder")))
+                    insns.add(
+                      LInvokevirtual(
+                        owner = "java/lang/StringBuilder",
+                        name = "append",
+                        params = catAp,
+                        ret = JRef(className = "java/lang/StringBuilder")
+                      )
+                    )
                     emitLoad(insns, rSlot, rhsTy)
                     coerceToStringForConcat(insns, rhsTy)
-                    insns.add(LInvokevirtual(owner = "java/lang/StringBuilder", name = "append", params = catAp, ret = JRef(className = "java/lang/StringBuilder")))
+                    insns.add(
+                      LInvokevirtual(
+                        owner = "java/lang/StringBuilder",
+                        name = "append",
+                        params = catAp,
+                        ret = JRef(className = "java/lang/StringBuilder")
+                      )
+                    )
                     val catTs: List[JvmType] = newList()
-                    insns.add(LInvokevirtual(owner = "java/lang/StringBuilder", name = "toString", params = catTs, ret = JRef(className = "java/lang/String")))
+                    insns.add(
+                      LInvokevirtual(
+                        owner = "java/lang/StringBuilder",
+                        name = "toString",
+                        params = catTs,
+                        ret = JRef(className = "java/lang/String")
+                      )
+                    )
                     return JRef(className = "java/lang/String")
                   }
                   case _ -> ()
@@ -716,6 +737,22 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               )
             )
             JRef(className = "java/lang/String")
+          } else if memberName == "count" and (cls == "java/util/ArrayList" or cls == "java/util/HashMap" or cls == "java/util/HashSet" or cls == "java/util/List" or cls == "java/util/Set" or cls == "java/util/Collection") {
+            // `xs.count` on a collection receiver → `size()` (JInt).  Without
+            // an explicit intrinsic this fell through to the record-field
+            // fallback, which left the receiver itself as the "value" — a
+            // later compare then checkcast'd the collection to Integer and
+            // failed at runtime (the buildArgString regression surfaced by
+            // process_capture_jvm_self_test.l).  ArrayList/HashMap/HashSet
+            // call size() virtually; the interface spellings dispatch via
+            // invokeinterface.
+            val szPs: List[JvmType] = newList()
+            if cls == "java/util/List" or cls == "java/util/Set" or cls == "java/util/Collection" {
+              insns.add(LInvokeinterface(owner = cls, name = "size", params = szPs, ret = JInt, argCount = 1))
+            } else {
+              insns.add(LInvokevirtual(owner = cls, name = "size", params = szPs, ret = JInt))
+            }
+            JInt
           } else if cls == "java/lang/String" and memberName == "length" {
             // String.length() returns int (I), not Object.  Resolving through
             // the generic record-field path below would emit `getfield` (no such
@@ -980,6 +1017,31 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                 insns.add(LAaload)
                 JRef(className = "java/lang/Object")
               }
+            }
+          }
+          case JRef(idxCls) -> {
+            if idxCls == "java/lang/String" {
+              // `s[i]` on a String → charAt(int) (JChar).  Lowering through
+              // the ArrayList.get path below emits an invokevirtual against
+              // the wrong class and fails verification (surfaced by
+              // Std.String.charAt on --target jvm).
+              val caPs: List[JvmType] = newList()
+              caPs.add(JInt)
+              insns.add(LInvokevirtual(owner = "java/lang/String", name = "charAt", params = caPs, ret = JChar))
+              JChar
+            } else {
+              // List-style indexing via ArrayList.get(int).
+              val getPs: List[JvmType] = newList()
+              getPs.add(JInt)
+              insns.add(
+                LInvokevirtual(
+                  owner = "java/util/ArrayList",
+                  name = "get",
+                  params = getPs,
+                  ret = JRef(className = "java/lang/Object")
+                )
+              )
+              JRef(className = "java/lang/Object")
             }
           }
           case _ -> {
