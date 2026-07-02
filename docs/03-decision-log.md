@@ -7282,6 +7282,9 @@ runtime coverage with no test-file changes needed on the consumer side.
 **Related:** docs/27 §12 (Q-aspectlib-009), docs/51 (D105, InterfaceImpl
 emission — the Option 2 path not taken), docs/55 (D114, B′-mode this extends),
 docs/56 (the sketch this entry backs).
+
+---
+
 ## D116 — `import extern` syntax unifies package and external-type imports (docs/47, Q47-001–Q47-004)
 
 **Context.** Lyric package imports (`import Std.Core.{Option, Result}`) and
