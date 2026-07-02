@@ -608,3 +608,27 @@ test "nullary generic case via annotated binding and returns" {
   val r = compileAndRun(src)
   assertEqualInt(r.exitCode, 5, "nullary via return type")
 }
+
+test "generic functions instantiate per call site with ufcs" {
+  val src = "package T\n" + "union Maybe[T] {\n" + "  case Just(v: T)\n" + "  case Nada\n" + "}\n" +
+    "func unwrapOr[T](m: in Maybe[T], dflt: in T): T {\n" +
+    "  match m {\n" +
+    "    case Just(v) -> v\n" +
+    "    case Nada -> dflt\n" +
+    "  }\n" +
+    "}\n" +
+    "func identity[T](x: in T): T {\n" +
+    "  x\n" +
+    "}\n" +
+    "func wrap[T](x: in T): Maybe[T] {\n" +
+    "  Just(x)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val a = wrap(40)\n" +
+    "  val s = wrap(\"hello\")\n" +
+    "  val n: Maybe[Int] = Nada\n" +
+    "  a.unwrapOr(0) + unwrapOr(n, 2) + unwrapOr(s, \"x\").length - identity(5)\n" +
+    "}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(r.exitCode, 42, "generic functions")
+}

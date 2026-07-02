@@ -136,6 +136,20 @@ record NDistinctInfo {
   hi: Long
 }
 
+/// Reverse metadata for a type instantiation: which generic declaration
+/// and argument tuple produced it (drives call-site unification).
+record NInstInfo {
+  gkey: String
+  argTys: List[NType]
+}
+
+/// One generic-function instantiation: concrete signature + IR symbol.
+record NFnInst {
+  irName: String
+  paramTys: List[NType]
+  retTy: NType
+}
+
 /// A ref-typed local owned by a lexical scope (released on scope exit).
 record NOwnedLocal {
   slot: String
@@ -190,6 +204,16 @@ record Ctx {
   // synthesised functions (destructors) appended during lowering.
   moduleTypeDefs: List[NTypeDefn]
   moduleFns: List[NFunc]
+  // Generic functions (N3.1): declarations by call key, instantiation
+  // cache, and reverse instantiation metadata for unification.
+  genericFnDefs: Map[String, FunctionDecl]
+  genericFnPkg: Map[String, String]
+  fnInstCache: Map[String, NFnInst]
+  instMeta: Map[String, NInstInfo]
+  // Per-function type-parameter environment (set when lowering a
+  // generic function instantiation; consulted by typeToN).
+  fnTyEnvNames: List[String]
+  fnTyEnvTys: List[NType]
   // ARC state (per function).  `scopeRefs` stacks the ref-typed locals
   // each lexical scope owns; `tempScopes` stacks the owned temporaries
   // of each evaluation region; the depth lists snapshot both stacks at
@@ -305,6 +329,12 @@ func retTypeToNType(ret: in Option[TypeExpr]): NType {
 func typeToN(ctx: in Ctx, te: in TypeExpr): NType {
   match te.kind {
     case TRef(path) -> {
+      if path.segments.count == 1 {
+        val envIdx = envIndexOf(ctx.fnTyEnvNames, path.segments[0])
+        if envIdx >= 0 {
+          return ctx.fnTyEnvTys[envIdx]
+        }
+      }
       val joined = modulePathJoin(path.segments)
       val n = lastSeg(path)
       match lookupHeapType(ctx, joined, n) {
@@ -339,6 +369,12 @@ func typeToN(ctx: in Ctx, te: in TypeExpr): NType {
 func typeToNOpt(ctx: in Ctx, te: in TypeExpr): Option[NType] {
   match te.kind {
     case TRef(path) -> {
+      if path.segments.count == 1 {
+        val envIdx = envIndexOf(ctx.fnTyEnvNames, path.segments[0])
+        if envIdx >= 0 {
+          return Some(value = ctx.fnTyEnvTys[envIdx])
+        }
+      }
       val joined = modulePathJoin(path.segments)
       val n = lastSeg(path)
       match lookupHeapType(ctx, joined, n) {
@@ -754,12 +790,18 @@ func buildSigs(units: in List[CodegenUnit]): Map[String, NFuncSig] {
     val u = units[ui]
     var fi = 0
     while fi < u.fns.count {
-      val key = u.pkgName + "." + u.fns[fi].name
-      val prior = match mapGet(nameCount, key) { case Some(c) -> c; case None -> 0 }
-      if nameCount.containsKey(key) {
-        nameCount.remove(key)
+      match u.fns[fi].generics {
+        case Some(_) -> {
+        }
+        case None -> {
+          val key = u.pkgName + "." + u.fns[fi].name
+          val prior = match mapGet(nameCount, key) { case Some(c) -> c; case None -> 0 }
+          if nameCount.containsKey(key) {
+            nameCount.remove(key)
+          }
+          nameCount.add(key, prior + 1)
+        }
       }
-      nameCount.add(key, prior + 1)
       fi = fi + 1
     }
     ui = ui + 1
@@ -770,6 +812,10 @@ func buildSigs(units: in List[CodegenUnit]): Map[String, NFuncSig] {
     var fi = 0
     while fi < u.fns.count {
       val fn = u.fns[fi]
+      if isGenericFn(fn) {
+        fi = fi + 1
+        continue
+      }
       val groupKey = u.pkgName + "." + fn.name
       val overloaded = match mapGet(nameCount, groupKey) { case Some(c) -> c > 1; case None -> false }
       val arity = fn.params.count
@@ -2040,7 +2086,17 @@ func lowerCall(ctx: in Ctx, insns: in List[NInsn], fnExpr: in Expr, args: in Lis
         }
       }
     }
-    case None -> lowerConstructCall(ctx, insns, fnExpr, args, key, line)
+    case None -> {
+      // Generic functions instantiate per call site (N3.1).
+      val noPre: List[NVal] = newList()
+      if ctx.genericFnDefs.containsKey(ctx.curPkg[0] + "." + key) {
+        return lowerGenericFnCall(ctx, insns, ctx.curPkg[0] + "." + key, noPre, args, line)
+      }
+      if ctx.genericFnDefs.containsKey(key) {
+        return lowerGenericFnCall(ctx, insns, key, noPre, args, line)
+      }
+      lowerConstructCall(ctx, insns, fnExpr, args, key, line)
+    }
   }
 }
 
@@ -2158,6 +2214,22 @@ func lowerUfcsCall(
     }
     case None -> {
       sigOpt = mapGet(ctx.sigs, name + "/" + arity)
+    }
+  }
+  match sigOpt {
+    case Some(_) -> {
+    }
+    case None -> {
+      // Generic UFCS: `m.unwrapOr(0)` resolves the generic function
+      // with the receiver as its first argument.
+      val pre: List[NVal] = newList()
+      pre.add(recv)
+      if ctx.genericFnDefs.containsKey(ctx.curPkg[0] + "." + name + "/" + arity) {
+        return lowerGenericFnCall(ctx, insns, ctx.curPkg[0] + "." + name + "/" + arity, pre, args, line)
+      }
+      if ctx.genericFnDefs.containsKey(name + "/" + arity) {
+        return lowerGenericFnCall(ctx, insns, name + "/" + arity, pre, args, line)
+      }
     }
   }
   val sig = match sigOpt {
@@ -2344,6 +2416,28 @@ func registerHeapTypes(
         }
       }
       ci = ci + 1
+    }
+    var gfi = 0
+    while gfi < u.fns.count {
+      val gfn = u.fns[gfi]
+      match gfn.generics {
+        case Some(_) -> {
+          val akey = "/" + gfn.params.count.toString()
+          if not ctx.genericFnDefs.containsKey(u.pkgName + "." + gfn.name + akey) {
+            ctx.genericFnDefs.add(u.pkgName + "." + gfn.name + akey, gfn)
+            ctx.genericFnPkg.add(u.pkgName + "." + gfn.name + akey, u.pkgName)
+          }
+          if not ctx.genericFnDefs.containsKey(gfn.name + akey) {
+            ctx.genericFnDefs.add(gfn.name + akey, gfn)
+            if not ctx.genericFnPkg.containsKey(gfn.name + akey) {
+              ctx.genericFnPkg.add(gfn.name + akey, u.pkgName)
+            }
+          }
+        }
+        case None -> {
+        }
+      }
+      gfi = gfi + 1
     }
     var ei = 0
     while ei < u.enums.count {
@@ -2963,6 +3057,7 @@ func instantiateGenericUnionOpt(ctx: in Ctx, gkey: in String, argTys: in List[NT
   val words = (maxBytes + 7) / 8
   val ui = NUnionInfo(irName = instName, cases = cases, payloadWords = words)
   ctx.unionDefs.add(instName, ui)
+  ctx.instMeta.add(instName, NInstInfo(gkey = gkey, argTys = argTys))
   ctx.moduleTypeDefs.add(NTypeDefn(name = instName, fields = unionBodyFields(words)))
   var ci2 = 0
   while ci2 < cases.count {
@@ -3008,6 +3103,7 @@ func instantiateGenericRecordOpt(ctx: in Ctx, gkey: in String, argTys: in List[N
   }
   val ri = NRecInfo(irName = instName, fieldNames = names, fieldTys = tys, fieldDefaults = dflts)
   ctx.recordDefs.add(instName, ri)
+  ctx.instMeta.add(instName, NInstInfo(gkey = gkey, argTys = argTys))
   val defnFields: List[NType] = newList()
   defnFields.add(NI32)
   defnFields.add(NPtr(pointee = NI8))
@@ -3235,6 +3331,229 @@ func lowerGenericRecordConstruct(ctx: in Ctx, insns: in List[NInsn], gkey: in St
     case None -> panic("Lyric.LlvmCodegen: cannot instantiate generic record '" + gkey + "' for --target native (a field type is not yet lowerable)")
   }
   lowerRecordConstructVals(ctx, insns, ri, rawVals)
+}
+
+func isGenericFn(fn: in FunctionDecl): Bool {
+  match fn.generics {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+func mustGetGenericFn(ctx: in Ctx, key: in String): FunctionDecl {
+  match mapGet(ctx.genericFnDefs, key) {
+    case Some(d) -> d
+    case None -> panic("Lyric.LlvmCodegen: internal — generic function '" + key + "' not registered")
+  }
+}
+
+/// Structural unification of a declared (possibly parameterised) type
+/// against a concrete argument NType, extending bound(Names|Tys).
+func unifyTyArg(
+  ctx: in Ctx,
+  declTe: in TypeExpr,
+  argTy: in NType,
+  paramNames: in List[String],
+  boundNames: in List[String],
+  boundTys: in List[NType],
+): Unit {
+  match declTe.kind {
+    case TRef(path) -> {
+      if path.segments.count == 1 {
+        val nm = path.segments[0]
+        if envIndexOf(paramNames, nm) >= 0 and envIndexOf(boundNames, nm) < 0 {
+          boundNames.add(nm)
+          boundTys.add(argTy)
+        }
+      }
+    }
+    case TGenericApp(head, targs) -> {
+      match argTy {
+        case NPtr(pointee) -> {
+          match pointee {
+            case NStruct(instName, _) -> {
+              match mapGet(ctx.instMeta, instName) {
+                case Some(meta) -> {
+                  if targs.count == meta.argTys.count {
+                    var i = 0
+                    while i < targs.count {
+                      match targs[i] {
+                        case TAType(inner) -> unifyTyArg(ctx, inner, meta.argTys[i], paramNames, boundNames, boundTys)
+                        case TAValue(_) -> {
+                        }
+                      }
+                      i = i + 1
+                    }
+                  }
+                }
+                case None -> {
+                }
+              }
+            }
+            case _ -> {
+            }
+          }
+        }
+        case _ -> {
+        }
+      }
+    }
+    case TParen(inner) -> unifyTyArg(ctx, inner, argTy, paramNames, boundNames, boundTys)
+    case _ -> {
+    }
+  }
+}
+
+/// Call a generic function: map arguments to parameters, infer the
+/// type-argument tuple from the argument types, instantiate the
+/// function (lowered once per tuple, cached), and emit the call.
+/// `preVals` are already-lowered leading arguments (the UFCS receiver).
+func lowerGenericFnCall(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  gkey: in String,
+  preVals: in List[NVal],
+  args: in List[CallArg],
+  line: in Int,
+): NVal {
+  val fd = mustGetGenericFn(ctx, gkey)
+  val pkg = match mapGet(ctx.genericFnPkg, gkey) { case Some(pk) -> pk; case None -> ctx.curPkg[0] }
+  val nParams = fd.params.count
+  // Map args to parameter slots.
+  val argSlot: List[Int] = newList()
+  val argExpr: List[Expr] = newList()
+  var nextPositional = preVals.count
+  var ai = 0
+  while ai < args.count {
+    match args[ai] {
+      case CANamed(name, value, _) -> {
+        var slot = 0 - 1
+        var pj = preVals.count
+        while pj < nParams {
+          if fd.params[pj].name == name {
+            slot = pj
+          }
+          pj = pj + 1
+        }
+        if slot < 0 {
+          panic(
+            "Lyric.LlvmCodegen: named argument '" + name + "' does not match a parameter of generic function '" + fd.name + "'"
+          )
+        }
+        argSlot.add(slot)
+        argExpr.add(value)
+      }
+      case CAPositional(ex) -> {
+        if nextPositional >= nParams {
+          panic("Lyric.LlvmCodegen: too many arguments calling generic function '" + fd.name + "'")
+        }
+        argSlot.add(nextPositional)
+        argExpr.add(ex)
+        nextPositional = nextPositional + 1
+      }
+    }
+    ai = ai + 1
+  }
+  // Lower per parameter order.
+  val rawVals: List[NVal] = newList()
+  var pi = 0
+  while pi < nParams {
+    if pi < preVals.count {
+      rawVals.add(preVals[pi])
+    } else {
+      var found = 0 - 1
+      var aj = 0
+      while aj < argSlot.count {
+        if argSlot[aj] == pi {
+          found = aj
+        }
+        aj = aj + 1
+      }
+      if found < 0 {
+        panic(
+          "Lyric.LlvmCodegen: no argument bound for parameter '" + fd.params[pi].name + "' of generic function '" + fd.name +
+            "'"
+        )
+      }
+      rawVals.add(lowerExpr(ctx, insns, argExpr[found]))
+    }
+    pi = pi + 1
+  }
+  // Infer type args.
+  val paramNames = genericParamNamesOf(fd.generics)
+  val boundNames: List[String] = newList()
+  val boundTys: List[NType] = newList()
+  var pi2 = 0
+  while pi2 < nParams {
+    unifyTyArg(ctx, fd.params[pi2].ty, rawVals[pi2].ty, paramNames, boundNames, boundTys)
+    pi2 = pi2 + 1
+  }
+  val envTys: List[NType] = newList()
+  var ti = 0
+  while ti < paramNames.count {
+    val bi = envIndexOf(boundNames, paramNames[ti])
+    if bi < 0 {
+      panic(
+        "Lyric.LlvmCodegen: cannot infer type argument '" + paramNames[ti] + "' for generic function '" + fd.name +
+          "' from its arguments"
+      )
+    }
+    envTys.add(boundTys[bi])
+    ti = ti + 1
+  }
+  // Instantiate (cache-first: recursive generic calls hit the cache).
+  val instIr = instIrName(pkg + "." + fd.name + "." + nParams.toString(), envTys)
+  var haveInst = ctx.fnInstCache.containsKey(instIr)
+  if not haveInst {
+    val paramTys: List[NType] = newList()
+    var pt = 0
+    while pt < nParams {
+      match typeToNEnvOpt(ctx, fd.params[pt].ty, paramNames, envTys) {
+        case Some(t) -> paramTys.add(t)
+        case None -> panic("Lyric.LlvmCodegen: cannot lower parameter type of generic function '" + fd.name + "' for --target native")
+      }
+      pt = pt + 1
+    }
+    var instRet = NVoid
+    match fd.ret {
+      case Some(rte) -> {
+        match typeToNEnvOpt(ctx, rte, paramNames, envTys) {
+          case Some(t) -> {
+            instRet = t
+          }
+          case None -> panic("Lyric.LlvmCodegen: cannot lower return type of generic function '" + fd.name + "' for --target native")
+        }
+      }
+      case None -> {
+      }
+    }
+    ctx.fnInstCache.add(instIr, NFnInst(irName = instIr, paramTys = paramTys, retTy = instRet))
+    ctx.moduleFns.add(lowerFunctionEnv(ctx, pkg, fd, instIr, paramNames, envTys))
+  }
+  val inst = match mapGet(ctx.fnInstCache, instIr) {
+    case Some(fi) -> fi
+    case None -> panic("Lyric.LlvmCodegen: internal — missing fn instantiation '" + instIr + "'")
+  }
+  val callArgs: List[NArg] = newList()
+  var ci = 0
+  while ci < rawVals.count {
+    val cv = coerceTo(ctx, insns, rawVals[ci], inst.paramTys[ci])
+    callArgs.add(NArg(ty = inst.paramTys[ci], value = cv.value))
+    ci = ci + 1
+  }
+  match inst.retTy {
+    case NVoid -> {
+      insns.add(NCallVoid(fn = NGlobal(name = inst.irName), args = callArgs))
+      NVal(ty = NVoid, value = NUndef(ty = NVoid))
+    }
+    case rt -> {
+      val dest = freshTmp(ctx)
+      insns.add(NCall(dest = dest, retTy = rt, fn = NGlobal(name = inst.irName), args = callArgs))
+      val outV = NVal(ty = rt, value = NLocal(name = dest))
+      registerTemp(ctx, outV)
+      outV
+    }
+  }
 }
 
 /// Lower `e` under a known expected type: generic-union case
@@ -4671,6 +4990,12 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     caseToGenericUnion = mod.caseToGenericUnion,
     moduleTypeDefs = mod.moduleTypeDefs,
     moduleFns = mod.moduleFns,
+    genericFnDefs = mod.genericFnDefs,
+    genericFnPkg = mod.genericFnPkg,
+    fnInstCache = mod.fnInstCache,
+    instMeta = mod.instMeta,
+    fnTyEnvNames = newList(),
+    fnTyEnvTys = newList(),
     scopeRefs = newList(),
     tempScopes = newList(),
     loopVarDepth = newList(),
@@ -4679,18 +5004,40 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
 }
 
 func lowerFunction(modCtx: in Ctx, pkg: in String, fn: in FunctionDecl, irName: in String): NFunc {
+  val noNames: List[String] = newList()
+  val noTys: List[NType] = newList()
+  lowerFunctionEnv(modCtx, pkg, fn, irName, noNames, noTys)
+}
+
+/// Lower one function body; a non-empty type env lowers a generic
+/// declaration as one concrete instantiation (N3.1).
+func lowerFunctionEnv(
+  modCtx: in Ctx,
+  pkg: in String,
+  fn: in FunctionDecl,
+  irName: in String,
+  envNames: in List[String],
+  envTys: in List[NType],
+): NFunc {
   if fn.isAsync {
     panic(
       "N0099: async functions are not yet supported for --target native. Use --target dotnet or --target jvm for async programs."
     )
   }
-  match fn.generics {
-    case Some(_) -> panic("Lyric.LlvmCodegen: un-monomorphized generic function '" + fn.name + "' reached the native backend")
-    case None -> {
-    }
+  if isGenericFn(fn) and envNames.count == 0 {
+    panic("Lyric.LlvmCodegen: un-monomorphized generic function '" + fn.name + "' reached the native backend")
   }
-  val retTy = retTypeToN(modCtx, fn.ret)
-  val ctx = freshFnCtx(modCtx, pkg, retTy)
+  val ctx0 = freshFnCtx(modCtx, pkg, NVoid)
+  var ei = 0
+  while ei < envNames.count {
+    ctx0.fnTyEnvNames.add(envNames[ei])
+    ctx0.fnTyEnvTys.add(envTys[ei])
+    ei = ei + 1
+  }
+  val retTy = retTypeToN(ctx0, fn.ret)
+  ctx0.curRet.removeAt(0)
+  ctx0.curRet.add(retTy)
+  val ctx = ctx0
   val params: List[NParam] = newList()
   val body: List[NInsn] = newList()
   // Parameters land in allocas so `var`-style reads/writes and address
@@ -4911,6 +5258,10 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   val emptyGenUnions: Map[String, UnionDecl] = newMap()
   val emptyGenPkg: Map[String, String] = newMap()
   val emptyCaseGen: Map[String, String] = newMap()
+  val emptyGenFns: Map[String, FunctionDecl] = newMap()
+  val emptyGenFnPkg: Map[String, String] = newMap()
+  val emptyFnInsts: Map[String, NFnInst] = newMap()
+  val emptyInstMeta: Map[String, NInstInfo] = newMap()
   val ctx = Ctx(
     mainPkg = mainPkg,
     tmpTicker = newList(),
@@ -4936,6 +5287,12 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     caseToGenericUnion = emptyCaseGen,
     moduleTypeDefs = newList(),
     moduleFns = newList(),
+    genericFnDefs = emptyGenFns,
+    genericFnPkg = emptyGenFnPkg,
+    fnInstCache = emptyFnInsts,
+    instMeta = emptyInstMeta,
+    fnTyEnvNames = newList(),
+    fnTyEnvTys = newList(),
     scopeRefs = newList(),
     tempScopes = newList(),
     loopVarDepth = newList(),
@@ -4978,6 +5335,12 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     var fi = 0
     while fi < u.fns.count {
       val fn = u.fns[fi]
+      // Generic functions lower on demand, per call-site instantiation
+      // (N3.1).
+      if isGenericFn(fn) {
+        fi = fi + 1
+        continue
+      }
       val key = u.pkgName + "." + fn.name + "/" + fn.params.count.toString()
       val irName = match mapGet(sigs, key) { case Some(s) -> s.irName; case None -> u.pkgName + "." + fn.name }
       fns.add(lowerFunction(ctx, u.pkgName, fn, irName))
