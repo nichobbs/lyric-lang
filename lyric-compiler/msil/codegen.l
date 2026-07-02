@@ -13398,11 +13398,22 @@ func parseBracketArgFqns(name: in String): List[String] {
   }
   // Manual comma-scan of the instantiation body.  Avoids `Str.split` /
   // `.length`-on-inferred-value patterns the F# seed emitter mis-types.
+  // Tracks `[`/`]` nesting depth and only splits on commas at depth 0, so a
+  // nested closed-generic arg (e.g. `Dictionary`2[String,Int32]` inside
+  // `Tuple`2[Dictionary`2[String,Int32],Boolean]`) is kept as one element
+  // instead of being sliced apart at its own internal comma (#4044).
   var cur = ""
+  var depth = 0
   var i = br + 1
   while i < close {
     val ch = name.substring(i, 1)
-    if ch == "," {
+    if ch == "[" {
+      depth = depth + 1
+      cur = cur + ch
+    } else if ch == "]" {
+      depth = depth - 1
+      cur = cur + ch
+    } else if ch == "," and depth == 0 {
       val t = cur.trim()
       if t.length > 0 {
         acc.add(t)
@@ -14632,6 +14643,62 @@ func exprContainsAwaitMsil(e: in Expr): Bool {
       }
       false
     }
+    // Mirrors the arms added to collectAwaitTypesExprPB (Phase A) for the
+    // same reason: Phase B's lowering descends into these expression kinds,
+    // so a nested `await` here must be detected or a binop LHS fails to be
+    // spilled to a temporary before the RHS suspends (#4279).
+    case ETuple(exprs) -> {
+      var ti = 0
+      while ti < exprs.count {
+        if exprContainsAwaitMsil(exprs[ti]) {
+          return true
+        }
+        ti = ti + 1
+      }
+      false
+    }
+    case EList(exprs) -> {
+      var li = 0
+      while li < exprs.count {
+        if exprContainsAwaitMsil(exprs[li]) {
+          return true
+        }
+        li = li + 1
+      }
+      false
+    }
+    case EIndex(recv, indices) -> {
+      if exprContainsAwaitMsil(recv) {
+        return true
+      }
+      var indi = 0
+      while indi < indices.count {
+        if exprContainsAwaitMsil(indices[indi]) {
+          return true
+        }
+        indi = indi + 1
+      }
+      false
+    }
+    case ETypeApp(fn, _) -> exprContainsAwaitMsil(fn)
+    case EInterpolated(segments) -> {
+      var si = 0
+      while si < segments.count {
+        val res = match segments[si] { case ISText(_, _) -> false; case ISExpr(e2) -> exprContainsAwaitMsil(e2) }
+        if res {
+          return true
+        }
+        si = si + 1
+      }
+      false
+    }
+    case ERange(bound) -> match bound {
+      case RBHalfOpen(lo, hi) -> exprContainsAwaitMsil(lo) or exprContainsAwaitMsil(hi)
+      case RBClosed(lo, hi) -> exprContainsAwaitMsil(lo) or exprContainsAwaitMsil(hi)
+      case RBLowerOpen(hi) -> exprContainsAwaitMsil(hi)
+      case RBUpperOpen(lo) -> exprContainsAwaitMsil(lo)
+    }
+    case EAssign(target, _, value) -> exprContainsAwaitMsil(target) or exprContainsAwaitMsil(value)
     case _ -> false
   }
 }

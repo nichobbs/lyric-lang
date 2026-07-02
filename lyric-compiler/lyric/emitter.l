@@ -1619,9 +1619,7 @@ pub func emitCompilerBundle(entrySource: in String, outPath: in String, target: 
   // a package's transitive closure into one JAR via `compileToJarBundled`.
   match target {
     case Jvm -> return failResult("compiler bundle emit: --target jvm is not supported (the JVM toolchain bundles into a single JAR)")
-    case Native -> return failResult(
-      "compiler bundle emit: --target native is not supported (the native toolchain compiles the whole program into one binary)"
-    )
+    case Native -> return failResult("compiler bundle emit: --target native is not supported (the native toolchain compiles the whole program into one binary)")
     case Dotnet -> ()
   }
   val outDir = Path.dirname(outPath)
@@ -1925,33 +1923,19 @@ func isTypeDeclKind(kind: in String): Bool {
 func leadingIdent(s: in String): String {
   var cut = Str.length(s)
   val i0 = s.indexOf("(")
-  if i0 >= 0 and i0 < cut {
-    cut = i0
-  }
+  if i0 >= 0 and i0 < cut { cut = i0 }
   val i1 = s.indexOf(" ")
-  if i1 >= 0 and i1 < cut {
-    cut = i1
-  }
+  if i1 >= 0 and i1 < cut { cut = i1 }
   val i2 = s.indexOf(";")
-  if i2 >= 0 and i2 < cut {
-    cut = i2
-  }
+  if i2 >= 0 and i2 < cut { cut = i2 }
   val i3 = s.indexOf(",")
-  if i3 >= 0 and i3 < cut {
-    cut = i3
-  }
+  if i3 >= 0 and i3 < cut { cut = i3 }
   val i4 = s.indexOf("}")
-  if i4 >= 0 and i4 < cut {
-    cut = i4
-  }
+  if i4 >= 0 and i4 < cut { cut = i4 }
   val i5 = s.indexOf("\n")
-  if i5 >= 0 and i5 < cut {
-    cut = i5
-  }
+  if i5 >= 0 and i5 < cut { cut = i5 }
   val i6 = s.indexOf("\t")
-  if i6 >= 0 and i6 < cut {
-    cut = i6
-  }
+  if i6 >= 0 and i6 < cut { cut = i6 }
   Str.substring(s, 0, cut)
 }
 
@@ -2050,12 +2034,7 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
   var pi = 0
   while pi < req.packages.count {
     val pkg = req.packages[pi]
-    payloads.add(
-      ProjectPackagePayload(
-        name = pkg.name,
-        source = mergePackageSources(pkg.name, pkg.sources, req.activeFeatures, req.declaredFeatures)
-      )
-    )
+    payloads.add(ProjectPackagePayload(name = pkg.name, source = mergePackageSources(pkg.name, pkg.sources, req.activeFeatures, req.declaredFeatures)))
     pi += 1
   }
   // Auto-resolve `lyric-stdlib/std/*.l` at runtime so the in-process bridge
@@ -2122,12 +2101,7 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
   var dtpi = 0
   while dtpi < req.depTemplateSrcs.count {
     val pkg = req.depTemplateSrcs[dtpi]
-    depTemplatePkgs.add(
-      ProjectPackagePayload(
-        name = pkg.name,
-        source = mergePackageSources(pkg.name, pkg.sources, req.activeFeatures, req.declaredFeatures)
-      )
-    )
+    depTemplatePkgs.add(ProjectPackagePayload(name = pkg.name, source = mergePackageSources(pkg.name, pkg.sources, req.activeFeatures, req.declaredFeatures)))
     dtpi = dtpi + 1
   }
 

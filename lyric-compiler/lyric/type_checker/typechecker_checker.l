@@ -1732,16 +1732,38 @@ func checkWithImportedPackagesCore(
   CheckResult(file = file, symbols = tbl, sigs = sigs, diagnostics = diag)
 }
 
-// The simple (last-segment) type name a `TypeExpr` names, or "" for a shape
-// that doesn't directly name a type.  `slice[T]` / `T?` unwrap to their element
-// so a leaked extern surfaces through them too.
-func externLeakTypeName(te: in TypeExpr): String {
+// Every candidate type name `checkExternLeakType` should inspect within
+// `te`: the outer name for a plain reference, the element name unwrapped
+// through `slice[T]` / `T?` / `(T)`, and — for a generic instantiation like
+// `Option[JsonArrayEnumerator]` — both the head name and every type
+// argument, recursively, so a leak nested inside a generic wrapper is still
+// caught rather than silently passing through the outer `Option` (#3964).
+func collectExternLeakTypeNames(te: in TypeExpr, names: inout List[String]): Unit {
   match te.kind {
-    case TRef(path) -> if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "" }
-    case TNullable(inner) -> externLeakTypeName(inner)
-    case TSlice(element) -> externLeakTypeName(element)
-    case TParen(inner) -> externLeakTypeName(inner)
-    case _ -> ""
+    case TRef(path) -> {
+      if path.segments.count > 0 {
+        names.add(path.segments[path.segments.count - 1])
+      }
+    }
+    case TNullable(inner) -> collectExternLeakTypeNames(inner, names)
+    case TSlice(element) -> collectExternLeakTypeNames(element, names)
+    case TParen(inner) -> collectExternLeakTypeNames(inner, names)
+    case TGenericApp(head, args) -> {
+      if head.segments.count > 0 {
+        names.add(head.segments[head.segments.count - 1])
+      }
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case TAType(ty) -> collectExternLeakTypeNames(ty, names)
+          case TAValue(_) -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case _ -> {
+    }
   }
 }
 
@@ -1753,8 +1775,64 @@ func checkExternLeakType(
     return
   }
   match symTableTryFindOne(tbl, name) {
-    case None -> ()
-    case Some(sym) -> match sym.kind { case DKExternType(_, d) -> { if sym.isImported and contains(d.clrName, "+") { diag.add(warningDiagnostic("W0006", "public function '" + fnName + "' exposes imported nested extern type '" + name + "' (" + d.clrName + ") in its signature; wrap it in an opaque Lyric type so the FFI boundary stays in _kernel/", sp)) } }; case _ -> () }
+    case None -> {
+    }
+    case Some(sym) -> {
+      match sym.kind {
+        case DKExternType(_, d) -> {
+          if sym.isImported and contains(d.clrName, "+") {
+            diag.add(
+              warningDiagnostic(
+                "W0006",
+                "public function '" + fnName + "' exposes imported nested extern type '" + name + "' (" + d.clrName +
+                  ") in its signature; wrap it in an opaque Lyric type so the FFI boundary stays in _kernel/",
+                sp
+              )
+            )
+          }
+        }
+        case _ -> {
+        }
+      }
+    }
+  }
+}
+
+// Check every name reachable from `te` (including nested generic type
+// arguments — see `collectExternLeakTypeNames`) for an extern-boundary leak.
+func checkExternLeakTypeExpr(tbl: in SymbolTable, diag: in List[Diagnostic], te: in TypeExpr, fnName: in String): Unit {
+  val names: List[String] = newList()
+  collectExternLeakTypeNames(te, names)
+  var i = 0
+  while i < names.count {
+    checkExternLeakType(tbl, diag, names[i], te.span, fnName)
+    i = i + 1
+  }
+}
+
+func isPubFunctionDecl(fn: in FunctionDecl): Bool {
+  match fn.visibility {
+    case Some(v) -> match v { case VisPub(_) -> true; case _ -> false }
+    case None -> false
+  }
+}
+
+// Shared by top-level `IFunc` and `impl` block `IMplFunc` methods (#3961):
+// both expose a signature across the FFI boundary once public, so both must
+// be checked for a leaked imported nested extern type.
+func checkExternBoundaryLeaksFunc(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in FunctionDecl): Unit {
+  if not isPubFunctionDecl(decl) {
+    return
+  }
+  var p = 0
+  while p < decl.params.count {
+    checkExternLeakTypeExpr(tbl, diag, decl.params[p].ty, decl.name)
+    p = p + 1
+  }
+  match decl.ret {
+    case Some(rt) -> checkExternLeakTypeExpr(tbl, diag, rt, decl.name)
+    case None -> {
+    }
   }
 }
 
@@ -1762,24 +1840,20 @@ func checkExternBoundaryLeaks(tbl: in SymbolTable, diag: in List[Diagnostic], it
   var i = 0
   while i < items.count {
     match items[i].kind {
-      case IFunc(decl) -> {
-        val isPub = match decl.visibility {
-          case Some(v) -> match v { case VisPub(_) -> true; case _ -> false }
-          case None -> false
-        }
-        if isPub {
-          var p = 0
-          while p < decl.params.count {
-            checkExternLeakType(tbl, diag, externLeakTypeName(decl.params[p].ty), decl.params[p].ty.span, decl.name)
-            p = p + 1
+      case IFunc(decl) -> checkExternBoundaryLeaksFunc(tbl, diag, decl)
+      case IImpl(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMplFunc(fn) -> checkExternBoundaryLeaksFunc(tbl, diag, fn)
+            case _ -> {
+            }
           }
-          match decl.ret {
-            case Some(rt) -> checkExternLeakType(tbl, diag, externLeakTypeName(rt), rt.span, decl.name)
-            case None -> ()
-          }
+          mi = mi + 1
         }
       }
-      case _ -> ()
+      case _ -> {
+      }
     }
     i = i + 1
   }

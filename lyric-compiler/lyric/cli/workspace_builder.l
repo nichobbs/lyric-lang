@@ -288,8 +288,21 @@ func buildWorkspaceDep(
     false,
     // no --all-features
     false,
+    // allow restore
+    // packageVersionOverride: always None here, intentionally — a workspace
+    // dep built transitively is a standalone artifact resolved from its own
+    // lyric.toml (its version comes from [package].version, not from
+    // whatever --package-version the top-level build was invoked with).
+    // Every current caller of buildWorkspaceDeps (the publish pipeline)
+    // pre-builds each tier's DLL before the next tier runs, so this dep is
+    // already on disk with its own manifest version by the time it would be
+    // consulted here. Passing the top-level override through would only
+    // matter for the out-of-workflow case of a clean-tree `lyric build
+    // --package-version X` that also needs to rebuild a stale workspace dep
+    // (#4428) — not a regression, since that was always the emitted-version
+    // behaviour before --package-version existed.
     None
-  )       // allow restore
+  )
 
   buildStack.removeAt(buildStack.count - 1)
 
