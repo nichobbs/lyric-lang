@@ -1505,46 +1505,46 @@ func canonicalStdCoreUnitPath(sp: in Span): ModulePath {
   ModulePath(segments = segs, span = sp)
 }
 
-// Rewrites a `<alias>.Unit` TRef (where `alias` resolves to `Std.Core`) into
+// Rewrites a `<aliasName>.Unit` TRef (where `aliasName` resolves to `Std.Core`) into
 // the 3-segment `Std.Core.Unit` form.  Recurses through parens; every other
 // shape is returned unchanged.
-func canonicalizeUnitTypeExpr(te: in TypeExpr, alias: in String): TypeExpr {
+func canonicalizeUnitTypeExpr(te: in TypeExpr, aliasName: in String): TypeExpr {
   match te.kind {
     case TRef(path) -> {
-      if path.segments.count == 2 and path.segments[0] == alias and path.segments[1] == "Unit" {
+      if path.segments.count == 2 and path.segments[0] == aliasName and path.segments[1] == "Unit" {
         TypeExpr(kind = TRef(path = canonicalStdCoreUnitPath(path.span)), span = te.span)
       } else {
         te
       }
     }
-    case TParen(inner) -> TypeExpr(kind = TParen(inner = canonicalizeUnitTypeExpr(inner, alias)), span = te.span)
+    case TParen(inner) -> TypeExpr(kind = TParen(inner = canonicalizeUnitTypeExpr(inner, aliasName)), span = te.span)
     case _ -> te
   }
 }
 
-func canonicalizeUnitRetOpt(ret: in Option[TypeExpr], alias: in String): Option[TypeExpr] {
+func canonicalizeUnitRetOpt(ret: in Option[TypeExpr], aliasName: in String): Option[TypeExpr] {
   match ret {
     case None -> ret
-    case Some(te) -> Some(value = canonicalizeUnitTypeExpr(te, alias))
+    case Some(te) -> Some(value = canonicalizeUnitTypeExpr(te, aliasName))
   }
 }
 
-func canonicalizeUnitAliasesInMember(m: in ProtectedMember, alias: in String): ProtectedMember {
+func canonicalizeUnitAliasesInMember(m: in ProtectedMember, aliasName: in String): ProtectedMember {
   match m {
-    case PMEntry(ed) -> PMEntry(entryDecl = EntryDecl(docComments = ed.docComments, annotations = ed.annotations, visibility = ed.visibility, name = ed.name, params = ed.params, ret = canonicalizeUnitRetOpt(ed.ret, alias), contracts = ed.contracts, body = ed.body, span = ed.span))
-    case PMFunc(fn) -> PMFunc(fn = FunctionDecl(docComments = fn.docComments, annotations = fn.annotations, visibility = fn.visibility, isAsync = fn.isAsync, name = fn.name, generics = fn.generics, params = fn.params, ret = canonicalizeUnitRetOpt(fn.ret, alias), whereClause = fn.whereClause, contracts = fn.contracts, body = fn.body, span = fn.span))
+    case PMEntry(ed) -> PMEntry(entryDecl = EntryDecl(docComments = ed.docComments, annotations = ed.annotations, visibility = ed.visibility, name = ed.name, params = ed.params, ret = canonicalizeUnitRetOpt(ed.ret, aliasName), contracts = ed.contracts, body = ed.body, span = ed.span))
+    case PMFunc(fn) -> PMFunc(fn = FunctionDecl(docComments = fn.docComments, annotations = fn.annotations, visibility = fn.visibility, isAsync = fn.isAsync, name = fn.name, generics = fn.generics, params = fn.params, ret = canonicalizeUnitRetOpt(fn.ret, aliasName), whereClause = fn.whereClause, contracts = fn.contracts, body = fn.body, span = fn.span))
     case other -> other
   }
 }
 
-func canonicalizeUnitAliasesInItem(it: in Item, alias: in String): Item {
+func canonicalizeUnitAliasesInItem(it: in Item, aliasName: in String): Item {
   match it.kind {
-    case IFunc(fn) -> Item(docComments = it.docComments, annotations = it.annotations, visibility = it.visibility, kind = IFunc(decl = FunctionDecl(docComments = fn.docComments, annotations = fn.annotations, visibility = fn.visibility, isAsync = fn.isAsync, name = fn.name, generics = fn.generics, params = fn.params, ret = canonicalizeUnitRetOpt(fn.ret, alias), whereClause = fn.whereClause, contracts = fn.contracts, body = fn.body, span = fn.span)), span = it.span)
+    case IFunc(fn) -> Item(docComments = it.docComments, annotations = it.annotations, visibility = it.visibility, kind = IFunc(decl = FunctionDecl(docComments = fn.docComments, annotations = fn.annotations, visibility = fn.visibility, isAsync = fn.isAsync, name = fn.name, generics = fn.generics, params = fn.params, ret = canonicalizeUnitRetOpt(fn.ret, aliasName), whereClause = fn.whereClause, contracts = fn.contracts, body = fn.body, span = fn.span)), span = it.span)
     case IProtected(decl) -> {
       val newMembers: List[ProtectedMember] = newList()
       var mi = 0
       while mi < decl.members.count {
-        newMembers.add(canonicalizeUnitAliasesInMember(decl.members[mi], alias))
+        newMembers.add(canonicalizeUnitAliasesInMember(decl.members[mi], aliasName))
         mi = mi + 1
       }
       Item(
@@ -1575,15 +1575,19 @@ func canonicalizeUnitAliasesInItem(it: in Item, alias: in String): Item {
 // `isUnitTypeExpr` / `isVoidReturnOpt` / `elaborateFunction` need no alias
 // context threaded into their own signatures.  A no-op (returns `file`
 // unchanged) when the file declares no `Std.Core` alias, which is the
-// overwhelmingly common case.
+// overwhelmingly common case.  (Parameter names in the helpers below use
+// `aliasName` rather than the bare word `alias` — `alias` is a Lyric
+// soft keyword (`alias X = Type`), and the F# bootstrap parser used for
+// the one-time stage-0 mint recovery does not disambiguate it from an
+// ordinary identifier in this position, unlike the self-hosted parser.)
 func canonicalizeFileUnitAliases(file: in SourceFile): SourceFile {
   match stdCoreAliasName(file.imports) {
     case None -> file
-    case Some(alias) -> {
+    case Some(aliasName) -> {
       val newItems: List[Item] = newList()
       var i = 0
       while i < file.items.count {
-        newItems.add(canonicalizeUnitAliasesInItem(file.items[i], alias))
+        newItems.add(canonicalizeUnitAliasesInItem(file.items[i], aliasName))
         i = i + 1
       }
       SourceFile(
