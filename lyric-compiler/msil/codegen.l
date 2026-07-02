@@ -22049,6 +22049,27 @@ func emitAutoFfiCallMsil(
     case None -> {
     }
   }
+  // Constructor shorthand (.new()) on a value type: `emitResolvedAutoFfi`
+  // (called by `tryAutoFfiFromMetadata` above) deliberately returns None for
+  // value-type constructors (Q48-004 — value types need `initobj`, not
+  // `newobj`, and are not yet supported).  Without this check, a zero-arg
+  // `.new()` would fall through to the generic static "()-shape" guess below
+  // and register a bogus static MemberRef literally named "new" against the
+  // value type — not a real member, so it fails at MSIL load time with no
+  // indication of the real problem (#3777).  Multi-arg calls already panic
+  // via the `args.count > 0` guard further down, but with a message that
+  // doesn't name the actual (value-type) cause; catching both shapes here
+  // gives one specific, actionable diagnostic instead.
+  if methodName == "new" and Mdr.isValueTypeFqn(cctx.metadataVtypeSet, clrFqn) {
+    panic(
+      "Msil.Codegen: '" + clrFqn + ".new(...)' targets a value type (struct); " +
+        "constructor shorthand (.new()) is only supported for reference types " +
+        "today (Q48-004).  Declare an @externTarget wrapper function instead — " +
+        "e.g. `@externTarget(\"" + clrFqn + "..ctor\") @externStatic func ...`, " +
+        "or, if the type's default value is sufficient, rely on its " +
+        "zero-initialised default rather than calling .new()."
+    )
+  }
   // Reject an extern-type CLR name the FFI cascade can't resolve to a known
   // reference assembly.  The metadata type index is guaranteed to be populated
   // here because `tryAutoFfiFromMetadata` (called above) unconditionally calls

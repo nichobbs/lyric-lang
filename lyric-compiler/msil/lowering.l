@@ -1804,7 +1804,9 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
           gi = gi + 1
         }
       } else {
-        println(
+        // Compiler diagnostics belong on stderr, not stdout, so build tooling
+        // and CI log parsers that capture stdout don't pick up warning text (#4703).
+        Console.error(
           "W0005: bufMsilTypeWithCtx: TypeRef/TypeDef not found for MGenericInstByName '" + headFqn +
             "' — signature degraded to System.Object (#2494)"
         )
