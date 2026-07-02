@@ -113,3 +113,37 @@ test "CircuitBreakerState: failed probe re-opens with fresh cooldown" {
   // Past the new cooldown: probe again.
   assertFalse(Resilience.cbStateCheckOpen(st, 1000, 4100), "after re-open cooldown, fresh probe is allowed")
 }
+
+// ─── backoffDelay ───────────────────────────────────────────────────────────
+test "backoffDelay: zero jitter is exact exponential backoff" {
+  assertEqualInt(Resilience.backoffDelay(100, 2, 0, 30000, 0.0f32), 100, "attempt 0: initial delay")
+  assertEqualInt(Resilience.backoffDelay(100, 2, 1, 30000, 0.0f32), 200, "attempt 1: doubled")
+  assertEqualInt(Resilience.backoffDelay(100, 2, 2, 30000, 0.0f32), 400, "attempt 2: doubled again")
+}
+
+test "backoffDelay: delay is capped at maxDelayMs regardless of attempt count" {
+  assertEqualInt(Resilience.backoffDelay(100, 2, 20, 5000, 0.0f32), 5000, "high attempt count caps at maxDelayMs")
+}
+
+test "backoffDelay: jitter stays within the +/-jitterFraction*delay clamped range" {
+  var i = 0
+  while i < 50 {
+    val jittered = Resilience.backoffDelay(1000, 2, 0, 30000, 0.5f32)
+    // base delay is 1000; +/-50% jitter clamped to [0, maxDelayMs] gives [500, 1500].
+    assertTrue(jittered >= 500, "jittered delay must not go below delay*(1-jitterFraction)")
+    assertTrue(jittered <= 1500, "jittered delay must not exceed delay*(1+jitterFraction)")
+    i = i + 1
+  }
+}
+
+test "backoffDelay: jitter never pushes delay below zero or above maxDelayMs" {
+  var i = 0
+  while i < 50 {
+    // jitterFraction=1.0 means the jitter range equals the delay itself, so an
+    // unlucky low sample could go negative without the explicit clamp.
+    val jittered = Resilience.backoffDelay(1000, 2, 0, 1200, 1.0f32)
+    assertTrue(jittered >= 0, "jittered delay must never be negative")
+    assertTrue(jittered <= 1200, "jittered delay must never exceed maxDelayMs")
+    i = i + 1
+  }
+}
