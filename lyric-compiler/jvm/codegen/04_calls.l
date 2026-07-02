@@ -549,26 +549,40 @@ func lowerBuiltinOrStaticCall(
   args: in List[CallArg],
 ): JvmType {
   if funcName == "println" {
-    insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
+    // Lower the argument BEFORE pushing the PrintStream receiver: a branchy
+    // sub-expression (a comparison, an if-expression) inside the argument
+    // lands branch targets, and the StackMapTable declares an empty operand
+    // stack at every branch target — with the receiver already on the stack
+    // the frames disagree and the class fails verification.  Stash the
+    // lowered argument to a temp, then push the receiver and reload.
     if args.count > 0 {
       val argTy = lowerCallArg(ctx, insns, args[0])
-      // Convert to String if needed for println.
+      val aSlot = allocSlot(ctx, "__println_a_" + freshLabel(ctx), argTy)
+      emitStore(insns, aSlot, argTy)
+      insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
+      emitLoad(insns, aSlot, argTy)
       val printPs: List[JvmType] = newList()
       printPs.add(printArgType(argTy))
       insns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "println", params = printPs, ret = JVoid))
     } else {
+      insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
       val emptyPs: List[JvmType] = newList()
       insns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "println", params = emptyPs, ret = JVoid))
     }
     JVoid
   } else if funcName == "print" {
-    insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
+    // Same receiver-after-argument discipline as println above.
     if args.count > 0 {
       val argTy = lowerCallArg(ctx, insns, args[0])
+      val aSlot = allocSlot(ctx, "__print_a_" + freshLabel(ctx), argTy)
+      emitStore(insns, aSlot, argTy)
+      insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
+      emitLoad(insns, aSlot, argTy)
       val printPs: List[JvmType] = newList()
       printPs.add(printArgType(argTy))
       insns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "print", params = printPs, ret = JVoid))
     } else {
+      insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
       val emptyPs2: List[JvmType] = newList()
       insns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "print", params = emptyPs2, ret = JVoid))
     }

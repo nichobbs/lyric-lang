@@ -1467,6 +1467,7 @@ pub func compileToJarBundledWithFeatures(
   // codegen panics are echoed via the fatal J002 path below.
   var bi = 0
   var skippedCount = 0
+  val skippedNames: List[String] = newList()
   while bi < toBundle.count {
     val f = toBundle[bi]
     val pkgName = dottedPath(f.packageDecl.path)
@@ -1503,9 +1504,11 @@ pub func compileToJarBundledWithFeatures(
         false
       } else {
         // Unreached package whose codegen failed: not a build error because its
-        // bytecode is never invoked, but counted so we can surface a summary note
-        // pointing users toward the root cause if they hit a runtime failure.
+        // bytecode is never invoked, but counted (with the package name and the
+        // panic's own message) so the J003 note below names exactly what was
+        // dropped and why instead of an anonymous count.
         skippedCount = skippedCount + 1
+        skippedNames.add(pkgName + " (" + b.message + ")")
         true
       }
     }
@@ -1520,6 +1523,11 @@ pub func compileToJarBundledWithFeatures(
         "runtime calls into them will fail with NoClassDefFoundError — " +
         "if that happens, please file an issue"
     )
+    var sni = 0
+    while sni < skippedNames.count {
+      Console.error("note[J003]:   skipped: " + skippedNames[sni])
+      sni = sni + 1
+    }
   }
 
   // Main-Class from the user package declaration.

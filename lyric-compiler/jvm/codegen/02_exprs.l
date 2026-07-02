@@ -445,6 +445,18 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               // Store lhs (already on JVM stack) to a slot before building the StringBuilder.
               val lhsSlot = allocSlot(ctx, "__add_lhs_" + freshLabel(ctx), lhsTy)
               emitStore(insns, lhsSlot, lhsTy)
+              // Lower and stringify the rhs BEFORE creating the StringBuilder:
+              // a branchy rhs (a comparison, an if-expression) lands branch
+              // targets, and the StackMapTable declares an empty operand stack
+              // at every branch target — with the builder already on the stack
+              // the frames disagree and the class fails verification.  The rhs
+              // of a String `+` may also be a non-String value (an erased
+              // `Object` slice element, a primitive): stringify before the
+              // `append(String)` call or verification fails at the append.
+              val rhsConcatTy = lowerExpr(ctx, insns, rhs)
+              coerceToStringForConcat(insns, rhsConcatTy)
+              val rhsSlot = allocSlot(ctx, "__add_rhs_" + freshLabel(ctx), JRef(className = "java/lang/String"))
+              emitStore(insns, rhsSlot, JRef(className = "java/lang/String"))
               insns.add(LNew(className = "java/lang/StringBuilder"))
               insns.add(LDup)
               val sbInitPs: List[JvmType] = newList()
@@ -460,11 +472,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                   ret = JRef(className = "java/lang/StringBuilder")
                 )
               )
-              val rhsConcatTy = lowerExpr(ctx, insns, rhs)
-              // The rhs of a String `+` may be a non-String value (an erased
-              // `Object` slice element, a primitive): stringify it before the
-              // `append(String)` call or verification fails at the append.
-              coerceToStringForConcat(insns, rhsConcatTy)
+              emitLoad(insns, rhsSlot, JRef(className = "java/lang/String"))
               val appPs2: List[JvmType] = newList()
               appPs2.add(JRef(className = "java/lang/String"))
               insns.add(
@@ -1575,71 +1583,55 @@ func lowerInterpolated(ctx: in FuncCtx, insns: in List[LInsn], segments: in List
     insns.add(LPushString(s = ""))
     return JRef(className = "java/lang/String")
   }
-  // Build with StringBuilder.
+  // Pass 1: lower every expression segment to a String temp while the operand
+  // stack is empty.  A branchy segment expression (a comparison, an
+  // if-expression) lands branch targets, and the StackMapTable declares an
+  // empty operand stack at every branch target — lowering it with the
+  // StringBuilder already on the stack makes the frames disagree and the
+  // class fails verification (same discipline as the BAdd concat path).
+  val exprSlots: List[Int] = newList()
+  var pi = 0
+  while pi < segments.count {
+    match segments[pi] {
+      case ISExpr(e) -> {
+        val eTy = lowerExpr(ctx, insns, e)
+        coerceToStringForConcat(insns, eTy)
+        val eSlot = allocSlot(ctx, "__interp_" + freshLabel(ctx), JRef(className = "java/lang/String"))
+        emitStore(insns, eSlot, JRef(className = "java/lang/String"))
+        exprSlots.add(eSlot)
+      }
+      case _ -> ()
+    }
+    pi = pi + 1
+  }
+  // Pass 2: build with StringBuilder, appending literal text and the
+  // pre-stringified expression temps in segment order.
   insns.add(LNew(className = "java/lang/StringBuilder"))
   insns.add(LDup)
   val sbInitPs: List[JvmType] = newList()
   insns.add(LInvokespecial(owner = "java/lang/StringBuilder", name = "<init>", params = sbInitPs, ret = JVoid))
+  val appPs: List[JvmType] = newList()
+  appPs.add(JRef(className = "java/lang/String"))
   var i = 0
+  var ei = 0
   while i < segments.count {
     match segments[i] {
       case ISText(text, _) -> {
         insns.add(LPushString(s = text))
-        val appPs: List[JvmType] = newList()
-        appPs.add(JRef(className = "java/lang/String"))
-        insns.add(
-          LInvokevirtual(
-            owner = "java/lang/StringBuilder",
-            name = "append",
-            params = appPs,
-            ret = JRef(className = "java/lang/StringBuilder")
-          )
-        )
       }
-      case ISExpr(e) -> {
-        val eTy = lowerExpr(ctx, insns, e)
-        // Convert to String via toString if not already a String.
-        match eTy {
-          case JRef(cls) -> {
-            if not (cls == "java/lang/String") {
-              val tsPs: List[JvmType] = newList()
-              insns.add(
-                LInvokevirtual(
-                  owner = "java/lang/Object",
-                  name = "toString",
-                  params = tsPs,
-                  ret = JRef(className = "java/lang/String")
-                )
-              )
-            }
-            insns.add(LNop)
-          }
-          case _ -> {
-            // Box and toString.
-            boxIfNeeded(insns, eTy)
-            val tsPs: List[JvmType] = newList()
-            insns.add(
-              LInvokevirtual(
-                owner = "java/lang/Object",
-                name = "toString",
-                params = tsPs,
-                ret = JRef(className = "java/lang/String")
-              )
-            )
-          }
-        }
-        val appPs2: List[JvmType] = newList()
-        appPs2.add(JRef(className = "java/lang/String"))
-        insns.add(
-          LInvokevirtual(
-            owner = "java/lang/StringBuilder",
-            name = "append",
-            params = appPs2,
-            ret = JRef(className = "java/lang/StringBuilder")
-          )
-        )
+      case ISExpr(_) -> {
+        emitLoad(insns, exprSlots[ei], JRef(className = "java/lang/String"))
+        ei = ei + 1
       }
     }
+    insns.add(
+      LInvokevirtual(
+        owner = "java/lang/StringBuilder",
+        name = "append",
+        params = appPs,
+        ret = JRef(className = "java/lang/StringBuilder")
+      )
+    )
     i = i + 1
   }
   val finalTsPs: List[JvmType] = newList()
