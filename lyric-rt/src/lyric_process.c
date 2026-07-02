@@ -87,10 +87,20 @@ int32_t lyric_process_run(const char* path, LyricList* args,
          * async-signal-safe calls from here to exec (or _exit). */
         close(out_pipe[0]);
         close(err_pipe[0]);
-        if (dup2(out_pipe[1], STDOUT_FILENO) < 0) _exit(126);
-        if (dup2(err_pipe[1], STDERR_FILENO) < 0) _exit(126);
-        close(out_pipe[1]);
-        close(err_pipe[1]);
+        /* If the parent had fd 1/2 closed, pipe() may have handed us those
+         * very numbers: dup2 onto itself is a no-op, and an unconditional
+         * close would then destroy the descriptor we just installed (or, in
+         * the cross-aliased case, one installed by the other dup2).  Guard
+         * each dup2, and close the source immediately so a later dup2 can
+         * never be clobbered by it. */
+        if (out_pipe[1] != STDOUT_FILENO) {
+            if (dup2(out_pipe[1], STDOUT_FILENO) < 0) _exit(126);
+            close(out_pipe[1]);
+        }
+        if (err_pipe[1] != STDERR_FILENO) {
+            if (dup2(err_pipe[1], STDERR_FILENO) < 0) _exit(126);
+            close(err_pipe[1]);
+        }
         execvp(path, argv);
         _exit(127); /* execvp failed (e.g. path not found) */
     }
