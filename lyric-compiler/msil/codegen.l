@@ -4970,29 +4970,52 @@ func blockTrailingExprMsil(blk: in Block): Option[Expr] {
   }
 }
 
-// True when a block's trailing statement is a call to the `panic` builtin —
-// the `catch Bug as b { panic(b.message) }` idiom used throughout the stdlib
-// (e.g. `Std.File.readTextOrPanic`).  Such an arm never falls through to the
-// try-catch join point (the runtime call always throws), so it doesn't need
-// to supply a value of the try body's type even though it type-checks as
-// `Never`, which lowers to `MVoid` like a genuine void arm — a real
-// Unit/value mismatch (the type-checker gap #2042 the panic diagnostic in
+// True when a block's trailing statement never falls through to whatever
+// follows it — `return`/`throw`/`break`/`continue`, or a call to the `panic`
+// builtin.  Covers idioms like `catch Bug as b { return Err(...) }` and
+// `catch Bug as b { panic(b.message) }`, both common throughout the stdlib
+// and ecosystem libraries (e.g. `Std.File.readTextOrPanic`,
+// `lyric-storage`'s `putObject`).  A `panic(...)` call type-checks as
+// `Never` (which unifies with any type) but lowers to `MVoid` like a
+// genuine void arm; `return`/`throw`/`break`/`continue` aren't expressions
+// at all, so `blockTrailingExprMsil` sees no trailing expression either way.
+// Either way the arm never reaches the try-catch join point, so it doesn't
+// need to supply a value of the try body's type — a real Unit/value
+// mismatch (the type-checker gap #2042 the panic diagnostic in
 // `lowerTryCatchExprMsil` guards against) still fires for every other
 // void-typed catch arm.
-func blockEndsInPanicCallMsil(blk: in Block): Bool {
-  match blockTrailingExprMsil(blk) {
-    case Some(e) -> {
-      match e.kind {
-        case ECall(fn, _) -> {
-          match fn.kind {
-            case EPath(path) -> lastSegmentMsil(path) == "panic"
-            case _ -> false
-          }
-        }
-        case _ -> false
+func blockDivergesMsil(blk: in Block): Bool {
+  var di = 0
+  while di < blk.statements.count {
+    match blk.statements[di].kind {
+      case SDefer(_) -> {
+        return false
       }
+      case _ -> ()
     }
-    case None -> false
+    di = di + 1
+  }
+  if blk.statements.count == 0 {
+    false
+  } else {
+    match blk.statements[blk.statements.count - 1].kind {
+      case SReturn(_) -> true
+      case SThrow(_) -> true
+      case SBreak(_) -> true
+      case SContinue(_) -> true
+      case SExpr(e) -> {
+        match e.kind {
+          case ECall(fn, _) -> {
+            match fn.kind {
+              case EPath(path) -> lastSegmentMsil(path) == "panic"
+              case _ -> false
+            }
+          }
+          case _ -> false
+        }
+      }
+      case _ -> false
+    }
   }
 }
 
@@ -12538,7 +12561,7 @@ func lowerTryCatchExprMsil(
           case MVoid -> {
           }
           case _ -> {
-            if not blockEndsInPanicCallMsil(c.body) {
+            if not blockDivergesMsil(c.body) {
               val pos = c.span.startPos
               panic(
                 "Msil.Codegen: " + toString(pos.line) + ":" + toString(pos.column) +
