@@ -1396,11 +1396,7 @@ func collectProjectSourcePaths(mfPath: in String): (List[String], Bool) {
       // and gives no diagnostic — #4526).
       var fi = 0
       while fi < pkgEntry.paths.count {
-        val absFile = if Path.isAbsolute(pkgEntry.paths[fi]) {
-          pkgEntry.paths[fi]
-        } else {
-          Path.join(mfDir, pkgEntry.paths[fi])
-        }
+        val absFile = if Path.isAbsolute(pkgEntry.paths[fi]) { pkgEntry.paths[fi] } else { Path.join(mfDir, pkgEntry.paths[fi]) }
         if File.fileExists(absFile) {
           paths.add(absFile)
         } else {
