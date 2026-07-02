@@ -3789,8 +3789,9 @@ func emitLoadVarMsil(fctx: in FuncCtx, insns: in List[MInsn], slot: in Int): Uni
 
 // Push the managed pointer for an `out`/`inout` argument.  The argument must be
 // an assignable variable (the mode checker guarantees this, V0001–V0006): a
-// local → `ldloca`; a by-value parameter → `ldarga`; or an `out`/`inout`
-// parameter being forwarded, whose slot already holds the pointer → `ldarg`.
+// local → `ldloca`; a by-value parameter → `ldarga`; an `out`/`inout`
+// parameter being forwarded, whose slot already holds the pointer → `ldarg`;
+// or a field access (`obj.field`) → `ldflda`.
 // See #1761.
 func emitByrefArgMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], argExpr: in Expr): Unit {
   match argExpr.kind {
@@ -3824,7 +3825,9 @@ func emitByrefArgMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIns
             case None -> panic("Msil.Codegen: out/inout field argument '" + memberName + "' not found in fieldTokens for class '" + cls + "'")
           }
         }
-        case _ -> panic("Msil.Codegen: out/inout field argument receiver must be a class type")
+        // Lyric records are always emitted as MSIL reference types (MClass); a
+        // value-type receiver (e.g. a future Lyric struct) is not yet possible here.
+        case _ -> panic("Msil.Codegen: out/inout field argument receiver must be a class type (value-type structs are not yet supported as inout receiver types)")
       }
     }
     case _ -> panic("Msil.Codegen: out/inout argument must be an assignable variable (path or field access)")
