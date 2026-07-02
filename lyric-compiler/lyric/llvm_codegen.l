@@ -2085,6 +2085,35 @@ func lowerCall(ctx: in Ctx, insns: in List[NInsn], fnExpr: in Expr, args: in Lis
           insns.add(NLabel(name = freshLabel(ctx, "dead")))
           return NVal(ty = NVoid, value = NUndef(ty = NVoid))
         }
+        if n == "nativeAddrOf" and args.count == 1 {
+          // The address of a local's stack slot (N4.2).  The alloca IS
+          // the pointer; mutability and placement rules (var-only,
+          // kernel/@unsafe_ffi contexts, no escaping) are the mode
+          // checker's N0100 charge.
+          match args[0] {
+            case CAPositional(ex) -> {
+              match ex.kind {
+                case EPath(apath) -> {
+                  if apath.segments.count == 1 {
+                    val an = apath.segments[0]
+                    val aty = match mapGet(ctx.varTypes, an) {
+                      case Some(t) -> t
+                      case None -> panic("Lyric.LlvmCodegen: nativeAddrOf target '" + an + "' is not a local variable")
+                    }
+                    val aslot = match mapGet(ctx.varSlots, an) {
+                      case Some(sl) -> sl
+                      case None -> panic("Lyric.LlvmCodegen: nativeAddrOf target '" + an + "' has no stack slot")
+                    }
+                    return NVal(ty = NPtr(pointee = aty), value = NLocal(name = aslot))
+                  }
+                  panic("Lyric.LlvmCodegen: nativeAddrOf takes a local variable")
+                }
+                case _ -> panic("Lyric.LlvmCodegen: nativeAddrOf takes a local variable")
+              }
+            }
+            case CANamed(_, _, _) -> panic("Lyric.LlvmCodegen: nativeAddrOf takes a positional local variable")
+          }
+        }
         if n == "assert" and args.count >= 1 {
           val cond = lowerPositionalArg(ctx, insns, args, 0)
           val okL = freshLabel(ctx, "assert.ok")

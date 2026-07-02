@@ -715,3 +715,18 @@ test "arc: tuples construct, destructure, and release elements" {
   val r = compileAndRunAsan(src)
   assertEqualInt(r.exitCode, 45, "tuples (ASan)")
 }
+
+test "nativeAddrOf passes a local's address to C out-params" {
+  val src = "package T\n" + "extern func secureRandom(buf: NativePtr[Byte], n: Long): Int = \"lyric_secure_random\"\n" +
+    "func main(): Int {\n" +
+    "  var b: Byte = 0.toByte()\n" +
+    "  val rc = secureRandom(nativeAddrOf(b), 1)\n" +
+    "  if rc == 0 {\n" +
+    "    0\n" +
+    "  } else {\n" +
+    "    1\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 0, "nativeAddrOf (ASan)")
+}

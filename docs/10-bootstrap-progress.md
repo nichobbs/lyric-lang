@@ -26241,3 +26241,23 @@ destructuring in a 300-iteration loop with string elements —
 element release verified leak-free.
 
 **Related:** D-progress-545, `native/plan/08-work-items.md` §N3.3.
+
+---
+
+### D-progress-547 — Native backend N4.2 (codegen): `nativeAddrOf`
+
+**Shipped (codegen half).** `nativeAddrOf(x)` lowers to the local's
+stack-slot pointer (the alloca IS the address — no extra IR), enabling
+C out-parameter patterns (`waitpid`-style int*, `LyricString**`
+capture buffers) from `_kernel_native/` kernels.  Verified by an ASan
+self-test case (31 total) writing one secure-random byte through the
+returned `NativePtr[Byte]`.
+
+**Remaining (tracked as the rest of N4.2):** the mode checker's
+`N0100` placement enforcement — `NativePtr[T]`/`nativeAddrOf` only in
+`_kernel_native/` packages and `@unsafe_ffi` functions, var-only
+operands, no escaping — is front-end work shared by all targets and
+lands with the mode-checker N4.2 slice.
+
+**Related:** D-progress-546, `native/plan/05-ffi-design.md`
+§nativeAddrOf.
