@@ -64,6 +64,9 @@ pub union NInsn {
   case NMul(dest: String, ty: NType, a: NValue, b: NValue)
   case NSDiv(dest: String, ty: NType, a: NValue, b: NValue)
   case NSRem(dest: String, ty: NType, a: NValue, b: NValue)
+  /// Unsigned division/remainder — Byte arithmetic (#4628).
+  case NUDiv(dest: String, ty: NType, a: NValue, b: NValue)
+  case NURem(dest: String, ty: NType, a: NValue, b: NValue)
 
   // Float arithmetic
   case NFAdd(dest: String, a: NValue, b: NValue)
@@ -76,6 +79,8 @@ pub union NInsn {
   // Bitwise
   case NShl(dest: String, ty: NType, a: NValue, b: NValue)
   case NAShr(dest: String, ty: NType, a: NValue, b: NValue)
+  /// Logical (zero-filling) right shift — Byte is unsigned (#4628).
+  case NLShr(dest: String, ty: NType, a: NValue, b: NValue)
   case NAnd(dest: String, ty: NType, a: NValue, b: NValue)
   case NOr(dest: String, ty: NType, a: NValue, b: NValue)
   case NXor(dest: String, ty: NType, a: NValue, b: NValue)
@@ -190,19 +195,21 @@ func byteToHex2(b: in Int): String {
 /// Render raw bytes as the body of a `c"..."` array constant.  Printable
 /// ASCII (except `"` and `\`) passes through; everything else escapes as
 /// `\XX` uppercase hex, which is the only escape form `.ll` accepts.
+/// Pieces accumulate into a list joined once at the end — per-byte `+`
+/// concatenation is quadratic on large string literals (#4629).
 pub func escapeIrBytes(bytes: in slice[Byte]): String {
-  var acc = ""
+  val pieces: List[String] = newList()
   var i = 0
   while i < bytes.length {
     val b = bytes[i].toInt()
     if b >= 32 and b <= 126 and b != 34 and b != 92 {
-      acc = acc + ("" + Ch.fromInt(b))
+      pieces.add("" + Ch.fromInt(b))
     } else {
-      acc = acc + "\\" + byteToHex2(b)
+      pieces.add("\\" + byteToHex2(b))
     }
     i = i + 1
   }
-  acc
+  Str.joinList("", pieces)
 }
 
 // ── Rendering ────────────────────────────────────────────────────────────────
@@ -301,6 +308,8 @@ pub func emitInsn(i: in NInsn): String {
     case NMul(dest, ty, a, b) -> renderBin("mul", dest, ty, a, b)
     case NSDiv(dest, ty, a, b) -> renderBin("sdiv", dest, ty, a, b)
     case NSRem(dest, ty, a, b) -> renderBin("srem", dest, ty, a, b)
+    case NUDiv(dest, ty, a, b) -> renderBin("udiv", dest, ty, a, b)
+    case NURem(dest, ty, a, b) -> renderBin("urem", dest, ty, a, b)
     case NFAdd(dest, a, b) -> renderFBin("fadd", dest, a, b)
     case NFSub(dest, a, b) -> renderFBin("fsub", dest, a, b)
     case NFMul(dest, a, b) -> renderFBin("fmul", dest, a, b)
@@ -309,6 +318,7 @@ pub func emitInsn(i: in NInsn): String {
     case NFNeg(dest, a) -> "  %" + quoteIrIdent(dest) + " = fneg double " + nValueOperandString(a)
     case NShl(dest, ty, a, b) -> renderBin("shl", dest, ty, a, b)
     case NAShr(dest, ty, a, b) -> renderBin("ashr", dest, ty, a, b)
+    case NLShr(dest, ty, a, b) -> renderBin("lshr", dest, ty, a, b)
     case NAnd(dest, ty, a, b) -> renderBin("and", dest, ty, a, b)
     case NOr(dest, ty, a, b) -> renderBin("or", dest, ty, a, b)
     case NXor(dest, ty, a, b) -> renderBin("xor", dest, ty, a, b)

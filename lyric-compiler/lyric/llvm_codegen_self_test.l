@@ -225,6 +225,26 @@ test "bitwise methods" {
   assertEqualInt(r.exitCode, 34, "bitwise")
 }
 
+test "byte unsigned shr, compare, div, mod" {
+  // 200 as i8 is 0xC8: signed readings would give shr=252 (ashr), the
+  // comparison false (-56 > 100), div=238 (sdiv wraps) and mod=0 — the
+  // expected 83 only falls out of the unsigned lowerings (#4628).
+  val src = "package T\n" + "func main(): Int {\n" + "  val hi = 200.toByte()\n" + "  val lo = 100.toByte()\n" +
+    "  val sh = hi.shr(4).toInt()\n" +
+    "  val cmp = if hi > lo {\n" +
+    "    1\n" +
+    "  } else {\n" +
+    "    0\n" +
+    "  }\n" +
+    "  val q = (hi / 3.toByte()).toInt()\n" +
+    "  val m = (hi % 7.toByte()).toInt()\n" +
+    "  sh + cmp + q + m\n" +
+    "}\n"
+  // 12 + 1 + 66 + 4 = 83
+  val r = compileAndRun(src)
+  assertEqualInt(r.exitCode, 83, "byte unsigned semantics")
+}
+
 test "division by zero panics" {
   val src = "package T\n" + "func den(): Int {\n" + "  0\n" + "}\n" + "func main(): Int {\n" + "  7 / den()\n" + "}\n"
   val r = compileAndRun(src)

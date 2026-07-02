@@ -3392,8 +3392,15 @@ pub func codegenPackageWithSigs(
       }
       case IExternType(_) -> {
       }
-      case IExternFunc(_) -> {
-        // native-target C-ABI decl (D-N-007); only the LLVM backend lowers these
+      case IExternFunc(decl) -> {
+        // A C-ABI `extern func` (D-N-007) only exists on the native target;
+        // reaching the JVM backend means the source is being compiled for
+        // the wrong target — reject loudly instead of emitting a call to a
+        // function that was silently dropped (#4630).
+        panic(
+          "extern func '" + decl.name +
+            "' is only supported with --target native; on the JVM declare the binding via extern type auto-FFI in a _kernel_jvm/ package instead"
+        )
       }
       case ITest(_) -> {
       }

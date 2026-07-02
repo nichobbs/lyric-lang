@@ -532,6 +532,20 @@ func emitDivGuard(ctx: in Ctx, insns: in List[NInsn], ty: in NType, a: in NValue
   insns.add(NLabel(name = okL))
 }
 
+/// Division guard for unsigned widths (Byte): only division by zero can
+/// trap — there is no MIN / -1 overflow case (#4628).
+func emitDivZeroGuard(ctx: in Ctx, insns: in List[NInsn], ty: in NType, b: in NValue, line: in Int): Unit {
+  val zeroCmp = freshTmp(ctx)
+  insns.add(NICmp(dest = zeroCmp, pred = IEq, ty = ty, a = b, b = NLitInt(v = 0i64, ty = ty)))
+  val trapL = freshLabel(ctx, "div.trap")
+  val okL = freshLabel(ctx, "div.ok")
+  insns.add(NCondBr(cond = NLocal(name = zeroCmp), thenLabel = trapL, elseLabel = okL))
+  insns.add(NLabel(name = trapL))
+  emitPanicRaw(ctx, insns, "integer division by zero", line)
+  insns.add(NBr(label = okL))
+  insns.add(NLabel(name = okL))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §7. Runtime call helper.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -717,12 +731,29 @@ func binIntOp(
     case BSub -> insns.add(NSub(dest = dest, ty = ty, a = a, b = b))
     case BMul -> insns.add(NMul(dest = dest, ty = ty, a = a, b = b))
     case BDiv -> {
-      emitDivGuard(ctx, insns, ty, a, b, line)
-      insns.add(NSDiv(dest = dest, ty = ty, a = a, b = b))
+      // Byte is unsigned: udiv, and only the zero check applies (#4628).
+      match ty {
+        case NI8 -> {
+          emitDivZeroGuard(ctx, insns, ty, b, line)
+          insns.add(NUDiv(dest = dest, ty = ty, a = a, b = b))
+        }
+        case _ -> {
+          emitDivGuard(ctx, insns, ty, a, b, line)
+          insns.add(NSDiv(dest = dest, ty = ty, a = a, b = b))
+        }
+      }
     }
     case BMod -> {
-      emitDivGuard(ctx, insns, ty, a, b, line)
-      insns.add(NSRem(dest = dest, ty = ty, a = a, b = b))
+      match ty {
+        case NI8 -> {
+          emitDivZeroGuard(ctx, insns, ty, b, line)
+          insns.add(NURem(dest = dest, ty = ty, a = a, b = b))
+        }
+        case _ -> {
+          emitDivGuard(ctx, insns, ty, a, b, line)
+          insns.add(NSRem(dest = dest, ty = ty, a = a, b = b))
+        }
+      }
     }
     case _ -> panic("Lyric.LlvmCodegen: unexpected integer binop")
   }
@@ -750,6 +781,19 @@ func icmpPredFor(op: in BinOp): ICmpPred {
     case BLte -> ISle
     case BGt -> ISgt
     case BGte -> ISge
+    case _ -> panic("Lyric.LlvmCodegen: unexpected comparison op")
+  }
+}
+
+/// Byte comparisons use the unsigned predicates (#4628).
+func icmpPredForUnsigned(op: in BinOp): ICmpPred {
+  match op {
+    case BEq -> IEq
+    case BNeq -> INe
+    case BLt -> IUlt
+    case BLte -> IUle
+    case BGt -> IUgt
+    case BGte -> IUge
     case _ -> panic("Lyric.LlvmCodegen: unexpected comparison op")
   }
 }
@@ -796,6 +840,11 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
       case NDouble -> {
         val dest = freshTmp(ctx)
         insns.add(NFCmp(dest = dest, pred = fcmpPredFor(op), a = a.value, b = b.value))
+        return NVal(ty = NI1, value = NLocal(name = dest))
+      }
+      case NI8 -> {
+        val dest = freshTmp(ctx)
+        insns.add(NICmp(dest = dest, pred = icmpPredForUnsigned(op), ty = NI8, a = a.value, b = b.value))
         return NVal(ty = NI1, value = NLocal(name = dest))
       }
       case ty -> {
@@ -1047,7 +1096,12 @@ func lowerScalarMethodCall(
     } else if name == "shl" {
       insns.add(NShl(dest = dest, ty = ty, a = v.value, b = bv))
     } else {
-      insns.add(NAShr(dest = dest, ty = ty, a = v.value, b = bv))
+      // Byte is unsigned (its widenings zero-extend), so its right shift
+      // is logical; the signed widths shift arithmetically (#4628).
+      match ty {
+        case NI8 -> insns.add(NLShr(dest = dest, ty = ty, a = v.value, b = bv))
+        case _ -> insns.add(NAShr(dest = dest, ty = ty, a = v.value, b = bv))
+      }
     }
     return Some(value = NVal(ty = ty, value = NLocal(name = dest)))
   }

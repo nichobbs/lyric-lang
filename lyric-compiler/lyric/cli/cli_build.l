@@ -95,8 +95,8 @@ func buildOneNative(
     packageVersion = ""
   )
 
-  // var-mutation shape (stage-0 value-position-match lowering gap; see
-  // cli_run.l's runTarget note).
+  // var-mutation shape (stage-0 value-position-match lowering gap,
+  // #4631; see cli_run.l's runTarget note).
   var isNativeTarget = false
   match target {
     case Native -> {

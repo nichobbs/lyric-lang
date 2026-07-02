@@ -153,7 +153,8 @@ func runOnce(sourcePath: in String, userArgs: in List[String], target: in Compil
   val srcDir = Path.dirname(sourcePath)
   val stem = stemOf(Path.basename(sourcePath), 2)
   // var-mutation shape: a value-position match over CompileTarget
-  // mis-lowers under the stage-0 emitter (see cmdRun's runTarget note).
+  // mis-lowers under the stage-0 emitter (#4631; see cmdRun's runTarget
+  // note).
   var outExt = ""
   match target {
     case Jvm -> {
