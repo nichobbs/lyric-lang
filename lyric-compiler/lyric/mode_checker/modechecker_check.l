@@ -1417,10 +1417,607 @@ func checkAwaitInTry(file: in SourceFile, fileLevel: in VerificationLevel, diag:
 // ─────────────────────────────────────────────────────────────────────────────
 // §10. Public entry points.
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// §10. N0100 — native FFI boundary (native/plan/05-ffi-design.md).
+// ─────────────────────────────────────────────────────────────────────────────
+// `NativePtr[T]` and the `nativeAddrOf` builtin are the raw side of the
+// native target's FFI.  Outside `_kernel_native/` package files (which
+// never pass through checkFile — the native bridge mode-checks only the
+// user file) they are admitted only inside functions annotated
+// `@unsafe_ffi`:
+//
+//   * a `NativePtr` type expression in a function signature or local
+//     binding requires the enclosing function to carry `@unsafe_ffi`;
+//   * a `nativeAddrOf(x)` call requires `@unsafe_ffi`, and its operand
+//     must be a bare identifier bound by a `var` local of the same
+//     function (a stack slot whose address is meaningful);
+//   * the produced pointer must not escape the function frame: returning
+//     a `nativeAddrOf(...)` expression (explicitly, from an
+//     expression-bodied function, or as a block's trailing value) is
+//     rejected, and record / exposed record / union fields typed
+//     `NativePtr` are rejected unconditionally (heap storage outlives
+//     any frame);
+//   * `extern func` parameter / return positions are exempt — the
+//     declaration itself is the audited boundary.
+//
+// Runs at every verification level.  Deeper escape analysis (aliasing
+// through an intermediate local, container elements) is out of scope
+// here; those pointers are still confined to `@unsafe_ffi` code by the
+// placement rule.
+record N0100Ctx {
+  diag: List[Diagnostic]
+  fnName: String
+  unsafeFfi: Bool
+  varNames: Map[String, Bool]
+}
+
+func typeMentionsNativePtr(t: in TypeExpr): Bool {
+  match t.kind {
+    case TRef(path) -> path.segments.count > 0 and path.segments[path.segments.count - 1] == "NativePtr"
+    case TGenericApp(head, args) -> {
+      if head.segments.count > 0 and head.segments[head.segments.count - 1] == "NativePtr" {
+        return true
+      }
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case TAType(inner) -> {
+            if typeMentionsNativePtr(inner) {
+              return true
+            }
+          }
+          case TAValue(_) -> {
+          }
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TArray(_, element) -> typeMentionsNativePtr(element)
+    case TSlice(element) -> typeMentionsNativePtr(element)
+    case TTuple(types) -> {
+      var i = 0
+      while i < types.count {
+        if typeMentionsNativePtr(types[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TNullable(inner) -> typeMentionsNativePtr(inner)
+    case TFunction(parameters, retTy) -> {
+      var i = 0
+      while i < parameters.count {
+        if typeMentionsNativePtr(parameters[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      typeMentionsNativePtr(retTy)
+    }
+    case TParen(inner) -> typeMentionsNativePtr(inner)
+    case _ -> false
+  }
+}
+
+func isNativeAddrOfCall(e: in Expr): Bool {
+  match e.kind {
+    case ECall(fn, _) -> {
+      match fn.kind {
+        case EPath(path) -> path.segments.count == 1 and path.segments[0] == "nativeAddrOf"
+        case _ -> false
+      }
+    }
+    case EParen(inner) -> isNativeAddrOfCall(inner)
+    case _ -> false
+  }
+}
+
+func n0100Placement(ctx: in N0100Ctx, sp: in Span): Unit {
+  ctx.diag.add(
+    errorDiagnostic(
+      "N0100",
+      "NativePtr[T] and nativeAddrOf are only allowed in @unsafe_ffi functions and _kernel_native/ packages (function '" +
+        ctx.fnName +
+        "')",
+      sp
+    )
+  )
+}
+
+// Collect every `var` local name declared anywhere in the function body
+// (including nested blocks and lambda bodies) as candidate nativeAddrOf
+// operands.
+func n0100CollectVars(ctx: in N0100Ctx, b: in Block): Unit {
+  var i = 0
+  while i < b.statements.count {
+    match b.statements[i].kind {
+      case SLocal(binding) -> {
+        match binding {
+          case LBVar(name, _, _) -> {
+            if not ctx.varNames.containsKey(name) {
+              ctx.varNames.add(name, true)
+            }
+          }
+          case _ -> {
+          }
+        }
+      }
+      case _ -> {
+      }
+    }
+    n0100CollectVarsStmt(ctx, b.statements[i].kind)
+    i = i + 1
+  }
+}
+
+func n0100CollectVarsStmt(ctx: in N0100Ctx, sk: in StatementKind): Unit {
+  match sk {
+    case STry(body, catches, finally_) -> {
+      n0100CollectVars(ctx, body)
+      var ci = 0
+      while ci < catches.count {
+        n0100CollectVars(ctx, catches[ci].body)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> n0100CollectVars(ctx, fb)
+        case None -> {
+        }
+      }
+    }
+    case SDefer(body) -> n0100CollectVars(ctx, body)
+    case SScope(_, body) -> n0100CollectVars(ctx, body)
+    case SFor(_, _, _, body) -> n0100CollectVars(ctx, body)
+    case SWhile(_, _, body) -> n0100CollectVars(ctx, body)
+    case SLoop(_, body) -> n0100CollectVars(ctx, body)
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(_, _, init) -> n0100CollectVarsExpr(ctx, init)
+        case LBVar(_, _, init) -> {
+          match init {
+            case Some(e) -> n0100CollectVarsExpr(ctx, e)
+            case None -> {
+            }
+          }
+        }
+        case LBLet(_, _, init) -> n0100CollectVarsExpr(ctx, init)
+      }
+    }
+    case SExpr(expr) -> n0100CollectVarsExpr(ctx, expr)
+    case SReturn(value) -> {
+      match value {
+        case Some(e) -> n0100CollectVarsExpr(ctx, e)
+        case None -> {
+        }
+      }
+    }
+    case SAssign(_, _, value) -> n0100CollectVarsExpr(ctx, value)
+    case _ -> {
+    }
+  }
+}
+
+func n0100CollectVarsExpr(ctx: in N0100Ctx, e: in Expr): Unit {
+  match e.kind {
+    case ELambda(_, body) -> n0100CollectVars(ctx, body)
+    case EBlock(block) -> n0100CollectVars(ctx, block)
+    case EUnsafe(block) -> n0100CollectVars(ctx, block)
+    case EIf(cond, thenBranch, elseBranch, _) -> {
+      n0100CollectVarsExpr(ctx, cond)
+      n0100CollectVarsEob(ctx, thenBranch)
+      match elseBranch {
+        case Some(eb) -> n0100CollectVarsEob(ctx, eb)
+        case None -> {
+        }
+      }
+    }
+    case EMatch(scrutinee, arms) -> {
+      n0100CollectVarsExpr(ctx, scrutinee)
+      var ai = 0
+      while ai < arms.count {
+        n0100CollectVarsEob(ctx, arms[ai].body)
+        ai = ai + 1
+      }
+    }
+    case ECall(fn, args) -> {
+      n0100CollectVarsExpr(ctx, fn)
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CANamed(_, value, _) -> n0100CollectVarsExpr(ctx, value)
+          case CAPositional(inner) -> n0100CollectVarsExpr(ctx, inner)
+        }
+        i = i + 1
+      }
+    }
+    case EParen(inner) -> n0100CollectVarsExpr(ctx, inner)
+    case EBinop(_, lhs, rhs) -> {
+      n0100CollectVarsExpr(ctx, lhs)
+      n0100CollectVarsExpr(ctx, rhs)
+    }
+    case EPrefix(_, operand) -> n0100CollectVarsExpr(ctx, operand)
+    case _ -> {
+    }
+  }
+}
+
+func n0100CollectVarsEob(ctx: in N0100Ctx, eob: in ExprOrBlock): Unit {
+  match eob {
+    case EOBExpr(expr) -> n0100CollectVarsExpr(ctx, expr)
+    case EOBBlock(block) -> n0100CollectVars(ctx, block)
+  }
+}
+
+// Walk expressions for nativeAddrOf uses (placement + operand rules).
+func n0100Expr(ctx: in N0100Ctx, e: in Expr): Unit {
+  if isNativeAddrOfCall(e) {
+    if not ctx.unsafeFfi {
+      n0100Placement(ctx, e.span)
+      return
+    }
+    match e.kind {
+      case ECall(_, args) -> {
+        var ok = false
+        if args.count == 1 {
+          match args[0] {
+            case CAPositional(operand) -> {
+              match operand.kind {
+                case EPath(path) -> {
+                  if path.segments.count == 1 and ctx.varNames.containsKey(path.segments[0]) {
+                    ok = true
+                  }
+                }
+                case _ -> {
+                }
+              }
+            }
+            case CANamed(_, _, _) -> {
+            }
+          }
+        }
+        if not ok {
+          ctx.diag.add(
+            errorDiagnostic(
+              "N0100",
+              "the operand of nativeAddrOf must be a mutable (var) local of the enclosing function ('" + ctx.fnName + "')",
+              e.span
+            )
+          )
+        }
+      }
+      case _ -> {
+      }
+    }
+    return
+  }
+  match e.kind {
+    case ECall(fn, args) -> {
+      n0100Expr(ctx, fn)
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CANamed(_, value, _) -> n0100Expr(ctx, value)
+          case CAPositional(inner) -> n0100Expr(ctx, inner)
+        }
+        i = i + 1
+      }
+    }
+    case EParen(inner) -> n0100Expr(ctx, inner)
+    case ETuple(exprs) -> n0100ExprList(ctx, exprs)
+    case EList(exprs) -> n0100ExprList(ctx, exprs)
+    case EIf(cond, thenBranch, elseBranch, _) -> {
+      n0100Expr(ctx, cond)
+      n0100Eob(ctx, thenBranch)
+      match elseBranch {
+        case Some(eb) -> n0100Eob(ctx, eb)
+        case None -> {
+        }
+      }
+    }
+    case EMatch(scrutinee, arms) -> {
+      n0100Expr(ctx, scrutinee)
+      var ai = 0
+      while ai < arms.count {
+        match arms[ai].guard {
+          case Some(g) -> n0100Expr(ctx, g)
+          case None -> {
+          }
+        }
+        n0100Eob(ctx, arms[ai].body)
+        ai = ai + 1
+      }
+    }
+    case ELambda(_, body) -> n0100Block(ctx, body)
+    case EBlock(block) -> n0100Block(ctx, block)
+    case EUnsafe(block) -> n0100Block(ctx, block)
+    case EAwait(inner) -> n0100Expr(ctx, inner)
+    case EYield(inner) -> n0100Expr(ctx, inner)
+    case ESpawn(inner) -> n0100Expr(ctx, inner)
+    case ETry(inner) -> n0100Expr(ctx, inner)
+    case EPropagate(inner) -> n0100Expr(ctx, inner)
+    case EPrefix(_, operand) -> n0100Expr(ctx, operand)
+    case EBinop(_, lhs, rhs) -> {
+      n0100Expr(ctx, lhs)
+      n0100Expr(ctx, rhs)
+    }
+    case EIndex(receiver, indices) -> {
+      n0100Expr(ctx, receiver)
+      n0100ExprList(ctx, indices)
+    }
+    case EMember(receiver, _) -> n0100Expr(ctx, receiver)
+    case EAssign(target, _, value) -> {
+      n0100Expr(ctx, target)
+      n0100Expr(ctx, value)
+    }
+    case _ -> {
+    }
+  }
+}
+
+func n0100ExprList(ctx: in N0100Ctx, exprs: in List[Expr]): Unit {
+  var i = 0
+  while i < exprs.count {
+    n0100Expr(ctx, exprs[i])
+    i = i + 1
+  }
+}
+
+func n0100Eob(ctx: in N0100Ctx, eob: in ExprOrBlock): Unit {
+  match eob {
+    case EOBExpr(expr) -> n0100Expr(ctx, expr)
+    case EOBBlock(block) -> n0100Block(ctx, block)
+  }
+}
+
+func n0100Block(ctx: in N0100Ctx, b: in Block): Unit {
+  var i = 0
+  while i < b.statements.count {
+    n0100Stmt(ctx, b.statements[i].kind, b.statements[i].span)
+    i = i + 1
+  }
+}
+
+func n0100Stmt(ctx: in N0100Ctx, sk: in StatementKind, sp: in Span): Unit {
+  match sk {
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(_, tyOpt, init) -> {
+          n0100LocalTy(ctx, tyOpt, sp)
+          n0100Expr(ctx, init)
+        }
+        case LBVar(_, tyOpt, init) -> {
+          n0100LocalTy(ctx, tyOpt, sp)
+          match init {
+            case Some(e) -> n0100Expr(ctx, e)
+            case None -> {
+            }
+          }
+        }
+        case LBLet(_, tyOpt, init) -> {
+          n0100LocalTy(ctx, tyOpt, sp)
+          n0100Expr(ctx, init)
+        }
+      }
+    }
+    case SAssign(target, _, value) -> {
+      n0100Expr(ctx, target)
+      n0100Expr(ctx, value)
+    }
+    case SReturn(value) -> {
+      match value {
+        case Some(e) -> {
+          if ctx.unsafeFfi and isNativeAddrOfCall(e) {
+            ctx.diag.add(
+              errorDiagnostic(
+                "N0100",
+                "the pointer produced by nativeAddrOf must not escape the function frame (returned from '" + ctx.fnName + "')",
+                e.span
+              )
+            )
+          }
+          n0100Expr(ctx, e)
+        }
+        case None -> {
+        }
+      }
+    }
+    case SThrow(expr) -> n0100Expr(ctx, expr)
+    case STry(body, catches, finally_) -> {
+      n0100Block(ctx, body)
+      var ci = 0
+      while ci < catches.count {
+        n0100Block(ctx, catches[ci].body)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> n0100Block(ctx, fb)
+        case None -> {
+        }
+      }
+    }
+    case SDefer(body) -> n0100Block(ctx, body)
+    case SScope(_, body) -> n0100Block(ctx, body)
+    case SFor(_, _, iter, body) -> {
+      n0100Expr(ctx, iter)
+      n0100Block(ctx, body)
+    }
+    case SWhile(_, cond, body) -> {
+      n0100Expr(ctx, cond)
+      n0100Block(ctx, body)
+    }
+    case SLoop(_, body) -> n0100Block(ctx, body)
+    case SInvariant(expr) -> n0100Expr(ctx, expr)
+    case SExpr(expr) -> n0100Expr(ctx, expr)
+    case _ -> {
+    }
+  }
+}
+
+func n0100LocalTy(ctx: in N0100Ctx, tyOpt: in Option[TypeExpr], sp: in Span): Unit {
+  if ctx.unsafeFfi {
+    return
+  }
+  match tyOpt {
+    case Some(t) -> {
+      if typeMentionsNativePtr(t) {
+        n0100Placement(ctx, sp)
+      }
+    }
+    case None -> {
+    }
+  }
+}
+
+func n0100CheckFn(diag: in List[Diagnostic], fn: in FunctionDecl): Unit {
+  var unsafeFfi = false
+  match findAnnotation("unsafe_ffi", fn.annotations) {
+    case Some(_) -> {
+      unsafeFfi = true
+    }
+    case None -> {
+    }
+  }
+  val ctx = N0100Ctx(diag = diag, fnName = fn.name, unsafeFfi = unsafeFfi, varNames = newMap())
+  if not unsafeFfi {
+    var pi = 0
+    while pi < fn.params.count {
+      if typeMentionsNativePtr(fn.params[pi].ty) {
+        n0100Placement(ctx, fn.span)
+      }
+      pi = pi + 1
+    }
+    match fn.ret {
+      case Some(rt) -> {
+        if typeMentionsNativePtr(rt) {
+          n0100Placement(ctx, fn.span)
+        }
+      }
+      case None -> {
+      }
+    }
+  }
+  match fn.body {
+    case Some(fb) -> {
+      match fb {
+        case FBBlock(block) -> {
+          if unsafeFfi {
+            n0100CollectVars(ctx, block)
+            // A trailing nativeAddrOf expression is the function's value —
+            // the same frame escape as an explicit return of it.
+            if block.statements.count > 0 {
+              match block.statements[block.statements.count - 1].kind {
+                case SExpr(tail) -> {
+                  if isNativeAddrOfCall(tail) {
+                    ctx.diag.add(
+                      errorDiagnostic(
+                        "N0100",
+                        "the pointer produced by nativeAddrOf must not escape the function frame (returned from '" + fn.name + "')",
+                        tail.span
+                      )
+                    )
+                  }
+                }
+                case _ -> {
+                }
+              }
+            }
+          }
+          n0100Block(ctx, block)
+        }
+        case FBExpr(expr) -> {
+          if unsafeFfi and isNativeAddrOfCall(expr) {
+            ctx.diag.add(
+              errorDiagnostic(
+                "N0100",
+                "the pointer produced by nativeAddrOf must not escape the function frame (returned from '" + fn.name + "')",
+                expr.span
+              )
+            )
+          }
+          n0100Expr(ctx, expr)
+        }
+      }
+    }
+    case None -> {
+    }
+  }
+}
+
+func n0100CheckRecordFields(diag: in List[Diagnostic], typeName: in String, members: in List[RecordMember]): Unit {
+  var i = 0
+  while i < members.count {
+    match members[i] {
+      case RMField(field) -> {
+        if typeMentionsNativePtr(field.ty) {
+          diag.add(
+            errorDiagnostic(
+              "N0100",
+              "field '" + field.name + "' of '" + typeName +
+                "' is typed NativePtr[T]; raw pointers must not be stored in heap types",
+              field.span
+            )
+          )
+        }
+      }
+      case RMFunc(fn) -> n0100CheckFn(diag, fn)
+      case RMInvariant(_) -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
+pub func checkNativeFfiBoundary(file: in SourceFile, diag: in List[Diagnostic]): Unit {
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(fn) -> n0100CheckFn(diag, fn)
+      case IRecord(decl) -> n0100CheckRecordFields(diag, decl.name, decl.members)
+      case IExposedRec(decl) -> n0100CheckRecordFields(diag, decl.name, decl.members)
+      case IUnion(decl) -> {
+        var ci = 0
+        while ci < decl.cases.count {
+          val c = decl.cases[ci]
+          var fi = 0
+          while fi < c.fields.count {
+            var fieldTy = TypeExpr(kind = TUnit, span = c.span)
+            match c.fields[fi] {
+              case UFNamed(_, ty, _) -> {
+                fieldTy = ty
+              }
+              case UFPos(ty, _) -> {
+                fieldTy = ty
+              }
+            }
+            if typeMentionsNativePtr(fieldTy) {
+              diag.add(
+                errorDiagnostic(
+                  "N0100",
+                  "case '" + c.name + "' of '" + decl.name +
+                    "' carries a NativePtr[T] payload; raw pointers must not be stored in heap types",
+                  c.span
+                )
+              )
+            }
+            fi = fi + 1
+          }
+          ci = ci + 1
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
 pub func checkFileWithImports(file: in SourceFile, imports: in List[ImportedMeta]): ModeCheckResult {
   val diag: List[Diagnostic] = newList()
   val fileLevel = levelOfFile(file, diag)
   checkAwaitInTry(file, fileLevel, diag)
+  checkNativeFfiBoundary(file, diag)
   if not vlIsProofRequired(fileLevel) {
     return ModeCheckResult(level = fileLevel, diagnostics = diag)
   }
