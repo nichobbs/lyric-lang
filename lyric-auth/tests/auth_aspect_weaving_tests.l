@@ -44,6 +44,13 @@ test "ValidateKey aspect: wrong key is denied before the handler runs" {
   }
 }
 
+test "ValidateKey aspect: empty key is rejected with the missing-key message" {
+  match apiKeyGuardedHandler("") {
+    case Ok(_) -> assertTrue(false, "empty key must be rejected before the handler runs")
+    case Err(e) -> assertEqual(e, "API key is missing", "empty key short-circuits with the missing-key message")
+  }
+}
+
 // The `enabled` master switch must bypass the guard entirely when false — a
 // regression that dropped the bypass would silently start rejecting traffic on
 // call sites the operator deliberately left unguarded.

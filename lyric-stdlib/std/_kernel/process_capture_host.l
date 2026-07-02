@@ -113,7 +113,6 @@ func writerClose(w: in ProcWriter): Unit = ()
 // underlying Stream into a MemoryStream via CopyToAsync() → Task (non-
 // generic base class).  Both drains start concurrently before WaitForExit,
 // preventing the pipe-buffer-full deadlock (#3029).
-
 // The underlying raw Stream from a StreamReader — the drain target for
 // CopyToAsync so we bypass the generic Task<string> problem.
 @externInstance
@@ -125,10 +124,12 @@ func readerBaseStream(r: in ProcReader): Stream = ()
 func newMemStream(): MemStream = ()
 
 // Drain `src` into `dst` asynchronously and return a non-generic Task.
-// `dst` is declared as MemStream (not Stream) so the F# stage-0 bootstrap
-// type-checker accepts call sites that pass MemStream values.  The self-hosted
-// auto-FFI resolver uses scoreSigTypeLenient to match STNamed(MemStream) against
-// BCL's Stream parameter and emits the correct MemberRef for
+// `dst` is declared as MemStream (not Stream) because the self-hosted
+// type-checker doesn't recognize MemStream as a subtype of Stream, so a
+// call site passing a MemStream value needs the parameter typed as
+// MemStream to type-check. The self-hosted auto-FFI resolver then uses
+// scoreSigTypeLenient to match STNamed(MemStream) against BCL's Stream
+// parameter and emits the correct MemberRef for
 // Stream.CopyToAsync(Stream destination) at compile time.
 @externInstance
 @externTarget("System.IO.Stream.CopyToAsync")
@@ -147,9 +148,9 @@ func drainWaitMs(t: in Task, ms: in Int): Bool = ()
 func memStreamResetPos(ms: in MemStream, pos: in Long): Unit = ()
 
 // Wrap a MemStream in a new StreamReader for decoding.  Reuses the ProcReader
-// extern type (same CLR type).  `s` is declared as MemStream (not Stream) so
-// the F# stage-0 bootstrap type-checker accepts call sites passing MemStream
-// values.  scoreSigTypeLenient resolves the correct BCL StreamReader(Stream)
+// extern type (same CLR type).  `s` is declared as MemStream (not Stream) for
+// the same self-hosted-type-checker reason as streamCopyTo above.
+// scoreSigTypeLenient resolves the correct BCL StreamReader(Stream)
 // MemberRef at compile time via the self-hosted auto-FFI path.
 @externTarget("System.IO.StreamReader..ctor")
 func newProcReaderFrom(s: in MemStream): ProcReader = ()
@@ -230,6 +231,18 @@ func runImpl(exe: in String, args: in String, stdinContent: in String, timeoutMs
   // a slow kernel reap or a race between kill and child writes cannot block
   // the calling thread indefinitely (#3029).  After the task completes,
   // reset the MemStream position and wrap in a StreamReader to decode.
+  //
+  // This timeout applies on BOTH the timed-out-process path and the
+  // normal-exit path (#4046): a process that exits normally closes its
+  // stdout/stderr pipe write-ends, so the drain tasks (already running
+  // since before WaitForExit, see above) have nothing left to wait on and
+  // finish reading whatever was already buffered almost immediately --
+  // the 5s cap is a safety net against a slow kernel reap or scheduling
+  // stall, not an expected wait on the normal-exit path. If a real
+  // regression is ever observed where legitimate output gets truncated on
+  // normal exit, that's a sign the drain task genuinely didn't keep up
+  // with the child's output rate, which would warrant revisiting this
+  // rather than silently extending the cap.
   val drainTimeoutMs = 5000
   val stdout = try {
     if drainWaitMs(stdoutTask, drainTimeoutMs) {

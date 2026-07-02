@@ -82,11 +82,17 @@ function startLsp(context: vscode.ExtensionContext): void {
             cp.exec('dotnet --version', (error) => {
                 void (async () => {
                     if (error) {
-                        const guideChoice = await vscode.window.showErrorMessage(
-                            'The .NET SDK is required to install the Lyric CLI, but "dotnet" was not found on your PATH. ' +
-                            'Please install the .NET SDK and try again.',
-                            'View Setup Guide'
-                        );
+                        // `error` is set for any exec failure (ENOENT, EACCES, EPERM,
+                        // a non-zero exit, a timeout, ...), not just "binary missing".
+                        // Only report the .NET-SDK-missing message for the case it
+                        // actually describes; anything else would send a user with a
+                        // working but misbehaving `dotnet` on a wild goose chase.
+                        const isNotFound = (error as NodeJS.ErrnoException).code === 'ENOENT';
+                        const message = isNotFound
+                            ? 'The .NET SDK is required to install the Lyric CLI, but "dotnet" was not found on your PATH. ' +
+                              'Please install the .NET SDK and try again.'
+                            : `"dotnet --version" failed: ${error.message}. Please resolve this and try again.`;
+                        const guideChoice = await vscode.window.showErrorMessage(message, 'View Setup Guide');
                         if (guideChoice === 'View Setup Guide') {
                             vscode.env.openExternal(vscode.Uri.parse('https://github.com/nichobbs/lyric-lang#quick-start'));
                         }
@@ -96,15 +102,19 @@ function startLsp(context: vscode.ExtensionContext): void {
                     const terminal = vscode.window.createTerminal('Lyric Installation');
                     terminal.show();
                     terminal.sendText('dotnet tool install -g lyric');
-                    
-                    const reloadChoice = await vscode.window.showInformationMessage(
+
+                    // VS Code exposes no reliable terminal process-exit event for a
+                    // command sent via `sendText`, so there is no safe way to know
+                    // when the install actually finishes. Rather than offer a
+                    // "Reload Window" button that races the install (clicking it
+                    // before `dotnet tool install` completes reloads into the same
+                    // broken state), just point the user at reloading manually once
+                    // the terminal confirms success.
+                    await vscode.window.showInformationMessage(
                         'Running "dotnet tool install -g lyric" in the integrated terminal. ' +
-                        'Once the installation is complete, click "Reload Window" to activate the language server.',
-                        'Reload Window'
+                        'Once the terminal shows the installation succeeded, reload the window ' +
+                        '(Command Palette -> "Developer: Reload Window") to activate the language server.'
                     );
-                    if (reloadChoice === 'Reload Window') {
-                        vscode.commands.executeCommand('workbench.action.reloadWindow');
-                    }
                 })().catch(err => {
                     console.error('Error in install flow:', err);
                 });

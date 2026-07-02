@@ -15,5 +15,10 @@ exclude = [
   "scripts",
   "resolver",
   ".github",
+  # lyric-stdlib is resolved specially -- every package's `import Std.*`
+  # goes through the dedicated stdlib-path/bundle mechanism (LYRIC_STD_PATH,
+  # the single Lyric.Stdlib.dll bundle), not a normal `{ workspace = true }`
+  # dependency declaration -- so it doesn't fit the workspace-member model
+  # ordinary ecosystem libraries use and is excluded from auto-discovery.
   "lyric-stdlib",
 ]
