@@ -511,6 +511,14 @@ test "aspect args row clause empty emits P0330" {
   assertTrue(hasDiagCode(pr, "P0330"), "P0330: args row constraint must declare at least one field")
 }
 
+// A missing `}` (P0329) must not also trigger a misleading P0330 — the
+// clause is malformed, not merely empty, and P0329 alone names the problem.
+test "aspect args row clause missing close brace emits only P0329" {
+  val pr = parse("package P\naspect A from X.Y {\n  around(call) -> ret where TArgs has {")
+  assertTrue(hasDiagCode(pr, "P0329"), "P0329: expected '}' to close args row constraint")
+  assertTrue(not hasDiagCode(pr, "P0330"), "P0330 must not also fire when '}' is missing")
+}
+
 // #4619 — a row clause on its own line (after the stmt-end the lexer inserts
 // following `ret`) must still be recognised, not silently dropped.
 test "aspect args row clause on its own line still parses" {

@@ -2606,18 +2606,22 @@ func parseArgsRowClauseOpt(st: inout ParseState): Option[List[ArgsRowField]] {
     val closeSpan = peekSpan(st)
     match tryEatPunct(st, RBrace) {
       case Some(_) -> {
+        // Only diagnose an empty clause once the `}` is actually confirmed:
+        // when it's missing entirely, P0329 already names the problem, and a
+        // fields.count == 0 check here would fire a second, misleading
+        // diagnostic on the same malformed input.
+        if fields.count == 0 {
+          emitErr(
+            st,
+            "P0330",
+            "args row constraint must declare at least one field (`where TArgs has { field: Type }`)",
+            closeSpan
+          )
+        }
       }
       case None -> {
         emitErr(st, "P0329", "expected '}' to close args row constraint", peekSpan(st))
       }
-    }
-    if fields.count == 0 {
-      emitErr(
-        st,
-        "P0330",
-        "args row constraint must declare at least one field (`where TArgs has { field: Type }`)",
-        closeSpan
-      )
     }
     emitDuplicateArgsRowFieldDiags(st, fields)
     Some(value = fields)

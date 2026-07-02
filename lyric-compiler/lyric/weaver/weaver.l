@@ -2388,9 +2388,9 @@ func weaveDiagsToDiagnostics(errs: in List[WeaveDiagEntry]): List[Diagnostic] {
         val msg = "aspect '" + e.aspectName + "' declares `where TArgs has { " + e.fieldName +
           ": ... }` but matched function '" +
           e.funcName +
-          "'s parameter '" +
+          "' has a parameter '" +
           e.fieldName +
-          "' has a different type — fix the parameter's type, or the row clause's declared type (docs/56)"
+          "' of a different type — fix the parameter's type, or the row clause's declared type (docs/56)"
         diags.add(errorDiagnostic("A0047", msg, e.span))
       }
     }
