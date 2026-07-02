@@ -1537,9 +1537,74 @@ func canonicalizeUnitAliasesInMember(m: in ProtectedMember, aliasName: in String
   }
 }
 
+// #4766: `impl`/`interface` method return types carry the same aliased
+// `Std.Core.Unit` shape as top-level funcs and protected entries, so they
+// need the same rewrite — mirrors `canonicalizeUnitAliasesInMember`.
+func canonicalizeUnitAliasesInImplMember(m: in ImplMember, aliasName: in String): ImplMember {
+  match m {
+    case IMplFunc(fn) -> IMplFunc(fn = FunctionDecl(docComments = fn.docComments, annotations = fn.annotations, visibility = fn.visibility, isAsync = fn.isAsync, name = fn.name, generics = fn.generics, params = fn.params, ret = canonicalizeUnitRetOpt(fn.ret, aliasName), whereClause = fn.whereClause, contracts = fn.contracts, body = fn.body, span = fn.span))
+    case other -> other
+  }
+}
+
+func canonicalizeUnitAliasesInInterfaceMember(m: in InterfaceMember, aliasName: in String): InterfaceMember {
+  match m {
+    case IMSig(sig) -> IMSig(sig = FunctionSig(docComments = sig.docComments, isAsync = sig.isAsync, name = sig.name, generics = sig.generics, params = sig.params, ret = canonicalizeUnitRetOpt(sig.ret, aliasName), whereClause = sig.whereClause, contracts = sig.contracts, span = sig.span))
+    case IMFunc(fn) -> IMFunc(fn = FunctionDecl(docComments = fn.docComments, annotations = fn.annotations, visibility = fn.visibility, isAsync = fn.isAsync, name = fn.name, generics = fn.generics, params = fn.params, ret = canonicalizeUnitRetOpt(fn.ret, aliasName), whereClause = fn.whereClause, contracts = fn.contracts, body = fn.body, span = fn.span))
+    case other -> other
+  }
+}
+
 func canonicalizeUnitAliasesInItem(it: in Item, aliasName: in String): Item {
   match it.kind {
     case IFunc(fn) -> Item(docComments = it.docComments, annotations = it.annotations, visibility = it.visibility, kind = IFunc(decl = FunctionDecl(docComments = fn.docComments, annotations = fn.annotations, visibility = fn.visibility, isAsync = fn.isAsync, name = fn.name, generics = fn.generics, params = fn.params, ret = canonicalizeUnitRetOpt(fn.ret, aliasName), whereClause = fn.whereClause, contracts = fn.contracts, body = fn.body, span = fn.span)), span = it.span)
+    case IImpl(decl) -> {
+      val newMembers: List[ImplMember] = newList()
+      var mi = 0
+      while mi < decl.members.count {
+        newMembers.add(canonicalizeUnitAliasesInImplMember(decl.members[mi], aliasName))
+        mi = mi + 1
+      }
+      Item(
+        docComments = it.docComments,
+        annotations = it.annotations,
+        visibility = it.visibility,
+        kind = IImpl(
+          decl = ImplDecl(
+            generics = decl.generics,
+            iface = decl.iface,
+            target = decl.target,
+            whereClause = decl.whereClause,
+            members = newMembers,
+            span = decl.span
+          )
+        ),
+        span = it.span
+      )
+    }
+    case IInterface(decl) -> {
+      val newMembers: List[InterfaceMember] = newList()
+      var mi = 0
+      while mi < decl.members.count {
+        newMembers.add(canonicalizeUnitAliasesInInterfaceMember(decl.members[mi], aliasName))
+        mi = mi + 1
+      }
+      Item(
+        docComments = it.docComments,
+        annotations = it.annotations,
+        visibility = it.visibility,
+        kind = IInterface(
+          decl = InterfaceDecl(
+            name = decl.name,
+            generics = decl.generics,
+            whereClause = decl.whereClause,
+            members = newMembers,
+            span = decl.span
+          )
+        ),
+        span = it.span
+      )
+    }
     case IProtected(decl) -> {
       val newMembers: List[ProtectedMember] = newList()
       var mi = 0
