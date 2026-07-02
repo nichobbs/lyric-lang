@@ -26014,3 +26014,77 @@ pipe support.
 
 **Related:** docs/54 (full design), PR #4459 (initial implementation),
 #4488/#4498/#4514/#4532 (follow-up hardening and ecosystem-publish fixes).
+
+### D-progress-542 — JVM parity batch: Std.Time, alias imports, interface dispatch, argv entry point, Map iteration, field-access holders (epic #2663)
+
+**Shipped.** A production-parity batch for `--target jvm` closing seven
+user-visible gaps, each guarded by a new or extended self-test wired into
+the `compiler-self-tests-jvm` CI job:
+
+- **Aliased package imports (#4606).** The JVM bridge skipped
+  `Lyric.AliasRewriter`, so `import Std.String as Str; Str.trim(s)` (and
+  the implicit alias of any bare `import Std.X`) panicked in the auto-FFI
+  `Object` guess.  Both `Jvm.Bridge.compileToJar` and
+  `compileToJarBundledWithFeatures` now run `Aliases.rewriteFile` between
+  parse and `@stubbable` synthesis (MSIL-bridge parity).  Fixing this
+  exposed a latent `lastSegOfKey` substring bug on qualified registry keys
+  (length argument passed the full string length), also fixed.
+  Test: `alias_import_jvm_self_test.l`.
+- **`Std.Time` on JVM (#3302, #3276).** `_kernel_jvm/time_host.l` mixed an
+  unresolvable static-field extern (`java.time.Duration.ZERO`) with
+  `@externTarget` references to a `lyric.stdlib.jvm.TimeHost` shim class
+  that never existed, so any JVM program importing `Std.Time` failed
+  codegen.  The host is now pure Lyric over the JVM auto-FFI: factory
+  calls replace static fields (`ofMillis(0)`; `ZoneOffset.of("Z")` for
+  UTC), argument-order and unit divergences are bridged in Lyric bodies
+  (`Duration.between` arg swap; fractional durations preserved via
+  `ofNanos` + `Math.round`; `toNanos().toDouble()` totals), parse failure
+  is caught in Lyric (`try`/`catch Bug` around `Instant.parse`), and the
+  previously missing `hostDtoUtcNow`/`hostDtoToEpochMillis` are
+  implemented.  Unblocks `lyric bench --target jvm` (#680) and aspect
+  `call.elapsed`.  Test: `time_jvm_self_test.l` (9 tests).
+- **Cross-package extern-type aliasing.** A signature or local written
+  against an *imported* extern type (`Std.Time.now(): Instant`) resolved
+  to the nonexistent `<pkg>/<Alias>` class → `NoClassDefFoundError`.  The
+  bundled compile now seeds each file's signature registration and codegen
+  with the union of its imports' extern-type maps
+  (`externSeedForFile` → `collectFileSigsSeeded` /
+  `codegenPackageWithSigsSeeded`; own declarations win), and body-lowering
+  sites (local `val`/`var` annotations, type tests, result-wrap returns)
+  resolve through `typeExprToJvmExtern`.
+- **Entry-point argv + exit code (#3303).** `func main(args:
+  slice[String]): Int` is now a recognised JVM entry point: the
+  synthesised `main(String[])` wrapper forwards the incoming `String[]`
+  directly to the erased `Object[]` slice parameter (JVM array
+  covariance), `args.count` lowers to `arraylength`, and an `Int` return
+  routes through `java.lang.System.exit(int)` (branchless).  Program:
+  `entry_args_jvm_main.l` + a CI argv/exit-code check.
+- **Interface dispatch (#3687).** Interface members are registered under
+  `<ifaceClass>#<method>` with `isIface = true` and dispatched via
+  `invokeinterface`; previously the call fell to the `()Object`-guess
+  `invokevirtual`, a class-format violation against an interface owner.
+  Test: `iface_dispatch_jvm_self_test.l`.
+- **Map iteration helpers (#3676).** `_kernel_jvm/collections_host.l` now
+  implements `dictGetKeys`/`dictGetValues` over `HashMap.keySet()` /
+  `.values()` (Iterable path), plus pure-Lyric `tryGetValue` (was a
+  phantom-shim reference) and `setToSlice` (`HashSet.toArray()` — the
+  erased `slice[T]` representation), and `newListWithCapacity`.
+  Test: `map_iteration_jvm_self_test.l`.
+- **Field-access `out`/`inout` arguments (#3628)** — JVM analog of MSIL
+  #3547: `prepareHolderArg` stashes the receiver and reads `obj.field`
+  into the holder; `writeBackHolderArg` `putfield`s the result after the
+  call (both static and virtual holder paths).  Tests: field-access cases
+  appended to `out_inout_jvm_self_test.l`.
+- **Smaller fixes:** `x.toString()` on a primitive receiver boxes and
+  calls `Object.toString` (was unhandled → `VerifyError`; Java renders
+  `1500.0` for whole Doubles where .NET renders `1500` — documented
+  formatting divergence); masked `JByte` div/rem yields `JByte` (#4551);
+  `Long`-returning kernel bodies use explicit `i64` literals.
+
+Also wired the previously-orphaned `out_inout_instance_jvm_self_test.l`,
+`string_methods_jvm_self_test.l`, `self_method_call_jvm_self_test.l`, and
+`implicit_self_jvm_self_test.l` into CI, and closed the stale
+already-fixed issues #1675, #1708, #1793, #1833, #2210, #2855, #2864,
+#2865, #2870 with verification comments.
+
+**Related:** docs/44 §4 (M-18, m-16..m-21), epic #2663.

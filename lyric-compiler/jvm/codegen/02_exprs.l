@@ -231,10 +231,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           match mapGet(ctx.hoistedCellSlot, name) {
             case Some(cellSlot) -> {
               // Load from cell[0]
-              val cellElemTy = match mapGet(ctx.hoistedCellType, name) {
-                case Some(t) -> t
-                case None -> ty
-              }
+              val cellElemTy = match mapGet(ctx.hoistedCellType, name) { case Some(t) -> t; case None -> ty }
               val cellType = JArray(elem = cellElemTy)
               emitLoad(insns, cellSlot, cellType)
               insns.add(LIconst(v = 0))
@@ -413,7 +410,11 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                   ret = JRef(className = "java/lang/StringBuilder")
                 )
               )
-              lowerExpr(ctx, insns, rhs)
+              val rhsConcatTy = lowerExpr(ctx, insns, rhs)
+              // The rhs of a String `+` may be a non-String value (an erased
+              // `Object` slice element, a primitive): stringify it before the
+              // `append(String)` call or verification fails at the append.
+              coerceToStringForConcat(insns, rhsConcatTy)
               val appPs2: List[JvmType] = newList()
               appPs2.add(JRef(className = "java/lang/String"))
               insns.add(
@@ -531,7 +532,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               insns.add(LIconst(255))
               insns.add(LIand)
               insns.add(LIdiv)
-              JInt
+              JByte
             }
             case _ -> {
               insns.add(LIdiv)
@@ -565,7 +566,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               insns.add(LIconst(255))
               insns.add(LIand)
               insns.add(LIrem)
-              JInt
+              JByte
             }
             case _ -> {
               insns.add(LIrem)
@@ -741,11 +742,14 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           }
         }
         case JArray(_) -> {
-          // `arr.length` on a JVM array → `arraylength` (JInt).  Without
-          // this, array length fell through to the JVoid arm below and
-          // mis-stacked (e.g. a `byte[]` returned by an auto-FFI digest
-          // call).  Any other member on an array is not meaningful.
-          if memberName == "length" {
+          // `arr.length` / `arr.count` on a JVM array → `arraylength` (JInt).
+          // `count` is the Lyric slice-length member (`args.count` on the
+          // entry point's `slice[String]` argv, #3303); `length` covers raw
+          // JVM arrays such as a `byte[]` returned by an auto-FFI digest
+          // call.  Without this, the member fell through to the JVoid arm
+          // below and mis-stacked.  Any other member on an array is not
+          // meaningful.
+          if memberName == "length" or memberName == "count" {
             insns.add(LArraylength)
             JInt
           } else {
@@ -1519,6 +1523,42 @@ func lowerInterpolated(ctx: in FuncCtx, insns: in List[LInsn], segments: in List
   JRef(className = "java/lang/String")
 }
 
+// Stringify the top-of-stack value for a StringBuilder `append(String)` call:
+// a String is left as-is; any other reference (an erased `Object` slice
+// element, an extern value) calls `Object.toString`; a primitive boxes first.
+// `JVoid` (nothing on the stack) pushes an empty string so the append stays
+// balanced.
+func coerceToStringForConcat(insns: in List[LInsn], ty: in JvmType): Unit {
+  match ty {
+    case JRef(c) -> {
+      if not (c == "java/lang/String") {
+        val tsPs: List[JvmType] = newList()
+        insns.add(
+          LInvokevirtual(
+            owner = "java/lang/Object",
+            name = "toString",
+            params = tsPs,
+            ret = JRef(className = "java/lang/String")
+          )
+        )
+      }
+    }
+    case JVoid -> insns.add(LPushString(s = ""))
+    case _ -> {
+      boxIfNeeded(insns, ty)
+      val tsPs2: List[JvmType] = newList()
+      insns.add(
+        LInvokevirtual(
+          owner = "java/lang/Object",
+          name = "toString",
+          params = tsPs2,
+          ret = JRef(className = "java/lang/String")
+        )
+      )
+    }
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §5g. Boxing helper.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1909,7 +1949,6 @@ func collectBoundNamesExpr(e: in Expr, acc: in List[String]): Unit {
 // enclosing function.  These must be hoisted to heap-allocated cells so mutations
 // are observed through the closure (by-ref capture, epic #1877 Stage 2).
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Collect all names referenced inside any lambda in an expression.
 func collectInLambdaNamesExpr(e: in Expr, acc: in List[String]): Unit {
   match e.kind {
@@ -2205,7 +2244,7 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
   while pi < lparams.count {
     val lp = lparams[pi]
     val pty = match lp.ty {
-      case Some(te) -> typeExprToJvm(te, ctx.pkgName)
+      case Some(te) -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes)
       case None -> JRef(className = "java/lang/Object")
     }
     val pslot = allocSlot(bodyCtx, lp.name, pty)
@@ -2224,10 +2263,7 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
   while cj < captures.count {
     val cap = captures[cj]
     // Check if this capture is a hoisted cell
-    val isHoistedCell = match mapGet(ctx.hoistedCellType, cap.captureName) {
-      case Some(_) -> true
-      case None -> false
-    }
+    val isHoistedCell = match mapGet(ctx.hoistedCellType, cap.captureName) { case Some(_) -> true; case None -> false }
     if isHoistedCell {
       bodyCtx.captureCellNames.add(cap.captureName)
     }
@@ -2280,10 +2316,7 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
     // `aload_0; getfield selfClass.<name>` (#2864 — record-method / protected-
     // entry lambdas capturing a bare field).  For hoisted vars, the capture type
     // is the cell array (by reference), so load the cell slot directly.
-    val isHoistedCell = match mapGet(ctx.hoistedCellSlot, cap.captureName) {
-      case Some(_) -> true
-      case None -> false
-    }
+    val isHoistedCell = match mapGet(ctx.hoistedCellSlot, cap.captureName) { case Some(_) -> true; case None -> false }
     if isHoistedCell {
       match mapGet(ctx.hoistedCellSlot, cap.captureName) {
         case Some(cellSlot) -> {

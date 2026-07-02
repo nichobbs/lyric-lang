@@ -16,6 +16,7 @@ import Lyric.ModeChecker
 import Lyric.ContractElaborator
 import Lyric.Propagate
 import Lyric.Cfg as Cfg
+import Lyric.AliasRewriter as Aliases
 import Lyric.Weaver as Weaver
 import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.Mono
@@ -158,7 +159,7 @@ pub func compileToJar(
   // `injectWeaveImports` ensures `import Std.Time` is present before any
   // import-driven resolution when an aspect references `call.elapsed`
   // (#1298) — the weave itself runs later, in `runMiddleEnd`.
-  val file0 = Weaver.injectWeaveImports(Stubbable.stubbableRewriteFile(parseResult.file))
+  val file0 = Weaver.injectWeaveImports(Stubbable.stubbableRewriteFile(Aliases.rewriteFile(parseResult.file)))
 
   val tcRes = checkWithImportedPackages(file0, importedPkgs)
   reportDiagnostics(tcRes.diagnostics)
@@ -484,6 +485,40 @@ func annsBlockSpecializationJvm(anns: in List[Annotation]): Bool {
   false
 }
 
+// Extern-type maps of every parsed package, keyed by dotted package name
+// (parallel lists — a record-valued map trips the stage-0 bootstrap
+// emitter).  `externSeedForFile` unions the maps of the packages `file`
+// imports so signatures written against imported extern types (e.g.
+// `Std.Time.now(): Instant` with `Instant` declared in `Std.TimeHost`)
+// resolve to the real JVM class instead of `<pkg>/<Alias>`.
+func externSeedForFile(
+  file: in SourceFile, extPkgNames: in List[String], extPkgMaps: in List[Map[String, String]]
+): Map[String, String] {
+  val seed: Map[String, String] = newMap()
+  var ii = 0
+  while ii < file.imports.count {
+    val dn = dottedPath(file.imports[ii].path)
+    var pi = 0
+    while pi < extPkgNames.count {
+      if extPkgNames[pi] == dn {
+        for k in mapKeys(extPkgMaps[pi]) {
+          match mapGet(extPkgMaps[pi], k) {
+            case Some(v) -> {
+              if not seed.containsKey(k) {
+                seed.add(k, v)
+              }
+            }
+            case None -> ()
+          }
+        }
+      }
+      pi = pi + 1
+    }
+    ii = ii + 1
+  }
+  seed
+}
+
 // Codegen one (already middle-ended) file against `registry` and append its
 // class files to `out`.  Uses an isolated constant pool per package.
 func codegenPackageInto(
@@ -494,8 +529,9 @@ func codegenPackageInto(
   autoFfi: in AutoFfiCtx,
   allProjFqns: in Map[String, Bool],
   acc: in List[BuiltClass],
+  externSeed: in Map[String, String],
 ): Unit {
-  val pkg = codegenPackageWithSigs(file, registry, caseReg, ctorReg, autoFfi, allProjFqns)
+  val pkg = codegenPackageWithSigsSeeded(file, registry, caseReg, ctorReg, autoFfi, allProjFqns, externSeed)
   val pool = poolNew()
   val classFiles = lowerPackage(pkg, pool)
   var j = 0
@@ -550,7 +586,7 @@ func lastSegOfKey(key: in String): String {
   if lastSlash < 0 {
     key
   } else {
-    key.substring(lastSlash + 1, key.length)
+    key.substring(lastSlash + 1, key.length - lastSlash - 1)
   }
 }
 
@@ -815,7 +851,8 @@ func collectDeriveFreeSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]
             ret = ret,
             paramNames = paramNames,
             paramDefaults = newList(),
-            paramModes = newList()
+            paramModes = newList(),
+            isIface = false
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -873,7 +910,8 @@ func collectAspectWovenSigs(file: in SourceFile, into: in Map[String, JvmFuncSig
             ret = ret,
             paramNames = paramNames,
             paramDefaults = newList(),
-            paramModes = newList()
+            paramModes = newList(),
+            isIface = false
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -956,7 +994,7 @@ pub func compileToJarBundledWithFeatures(
   // import-closure walk below — so that an aspect referencing
   // `call.elapsed` (#1298) gets `Std.Time` bundled into the JAR for the
   // `monotonicNanos` calls the weave synthesises later in `runMiddleEnd`.
-  val userFile = Weaver.injectWeaveImports(Stubbable.stubbableRewriteFile(cfgRes.file))
+  val userFile = Weaver.injectWeaveImports(Stubbable.stubbableRewriteFile(Aliases.rewriteFile(cfgRes.file)))
 
   // Parse every stdlib source once: collect its type items (for cross-package
   // type resolution) and index the whole file by dotted package name (for the
@@ -991,10 +1029,24 @@ pub func compileToJarBundledWithFeatures(
     si = si + 1
   }
 
+  // Extern-type map per parsed package (parallel lists), so signatures and
+  // descriptors written against an imported extern type resolve through
+  // `externSeedForFile` (e.g. `Std.Time`'s `Instant` from `Std.TimeHost`).
+  val extPkgNames: List[String] = newList()
+  val extPkgMaps: List[Map[String, String]] = newList()
+  extPkgNames.add(dottedPath(userFile.packageDecl.path))
+  extPkgMaps.add(collectExternTypesFromFile(userFile))
+  var xi = 0
+  while xi < stdlibFiles.count {
+    extPkgNames.add(dottedPath(stdlibFiles[xi].packageDecl.path))
+    extPkgMaps.add(collectExternTypesFromFile(stdlibFiles[xi]))
+    xi = xi + 1
+  }
+
   // Build the cross-package call registry across the user file and *every*
   // stdlib file (resolution is cheap and harmless for packages we don't bundle).
   val registry: Map[String, JvmFuncSig] = newMap()
-  collectFileSigs(userFile, registry)
+  collectFileSigsSeeded(userFile, registry, externSeedForFile(userFile, extPkgNames, extPkgMaps))
   val caseReg: Map[String, List[JvmCaseField]] = newMap()
   collectFileCases(userFile, caseReg)
   val ctorReg: Map[String, String] = newMap()
@@ -1007,7 +1059,7 @@ pub func compileToJarBundledWithFeatures(
   collectFileProjectables(userFile, allProjFqns)
   var ri = 0
   while ri < stdlibFiles.count {
-    collectFileSigs(stdlibFiles[ri], registry)
+    collectFileSigsSeeded(stdlibFiles[ri], registry, externSeedForFile(stdlibFiles[ri], extPkgNames, extPkgMaps))
     collectFileCases(stdlibFiles[ri], caseReg)
     collectFileCtors(stdlibFiles[ri], ctorReg)
     collectFileProjectables(stdlibFiles[ri], allProjFqns)
@@ -1248,7 +1300,16 @@ pub func compileToJarBundledWithFeatures(
       // from the post-weave file so the `proceed(args)` call resolves to the
       // real descriptor instead of the `(…)Object` guess (#3402, JVM analogue).
       collectAspectWovenSigs(f, registry)
-      codegenPackageInto(f, registry, caseReg, ctorReg, autoFfi, allProjFqns, allClasses)
+      codegenPackageInto(
+        f,
+        registry,
+        caseReg,
+        ctorReg,
+        autoFfi,
+        allProjFqns,
+        allClasses,
+        externSeedForFile(f, extPkgNames, extPkgMaps)
+      )
     }
     case None -> return false
   }
@@ -1277,7 +1338,16 @@ pub func compileToJarBundledWithFeatures(
       match runMiddleEnd(f, importedPkgs, stdlibGenFuncs, allTemplates, false) {
         case Some(ff) -> {
           collectAspectWovenSigs(ff, registry)
-          codegenPackageInto(ff, registry, caseReg, ctorReg, autoFfi, allProjFqns, allClasses)
+          codegenPackageInto(
+            ff,
+            registry,
+            caseReg,
+            ctorReg,
+            autoFfi,
+            allProjFqns,
+            allClasses,
+            externSeedForFile(ff, extPkgNames, extPkgMaps)
+          )
           true
         }
         // A fatal middle-end diagnostic (already reported) aborts the build only
