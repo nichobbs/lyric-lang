@@ -26110,15 +26110,36 @@ that exact codepath ran.
   transient-file-read regression like this one is immediately visible in the
   build log instead of requiring cross-run log archaeology.
 
-**Not done / follow-up (tracked in #4698):** the actual root cause of *why*
-`System.Console.dll` failed to read/parse on that specific macOS runner
-remains unconfirmed (no macOS reproduction available). `assemblyForTypeMsil`
-defaulting *any* unresolved `System.*` type to `"System.Runtime"` remains a
-latent correctness gap beyond Console — a convention-based fallback or a
-retry-once-on-read-failure for ref-pack files would close it further.
-`Msil.MetadataReader.refPackDir`'s `pickHighestDir` also has a latent
-robustness gap (gives up instead of trying the next-highest version when the
-chosen `Microsoft.NETCore.App.Ref/<version>` lacks a usable `ref/<tfm>`), not
-confirmed as a contributor here but worth hardening opportunistically.
+**Investigation update:** follow-up digging (see #4698) ruled out transient
+per-run I/O flakiness as the leading theory. Run #1770 dispatched with
+`mint_stage0` unset (`LYRIC_BOOTSTRAP_MINT=0` on both platforms), so Linux and
+both macOS jobs used the *identical* `v0.4.6` release binary as their stage-0
+seed against the *identical* commit — Linux succeeded, `osx-arm64` and
+`osx-x64` both crashed with the byte-for-byte identical stack trace at
+matching points in "Stage 2". Two independent macOS VMs (different CPU
+architectures) hitting the same failure in the same run is much better
+explained by a deterministic macOS(Darwin)-specific behavior than by random
+transient flakiness independently striking both — and since arm64 and x64
+fail identically, it isn't architecture/JIT-specific either. The reference
+pack's MSIL content is platform-agnostic (same NuGet-sourced bytes regardless
+of RID), so the divergence most likely lives in how `System.IO.File.ReadAllBytes`
+(or a path-construction step upstream of it) behaves on macOS specifically for
+`System.Console.dll`, not in the file's bytes. Practical implication: a
+retry-on-read-failure mitigation is unlikely to help a deterministic failure —
+deprioritized in favor of just waiting for the W0006 warning (shipped in
+#4699) to surface the exact underlying `.NET` exception on the next
+`mint_stage0=false` publish run that hits this.
+
+**Not done / follow-up (tracked in #4698):** the exact mechanism on the macOS
+side (read failure vs. parse failure, and why) remains unconfirmed — no macOS
+reproduction available in any environment used for this investigation so far.
+`assemblyForTypeMsil` defaulting *any* unresolved `System.*` type to
+`"System.Runtime"` remains a latent correctness gap beyond Console — a
+convention-based fallback would close it further (a retry is no longer
+expected to help, per above). `Msil.MetadataReader.refPackDir`'s
+`pickHighestDir` also has a latent robustness gap (gives up instead of trying
+the next-highest version when the chosen `Microsoft.NETCore.App.Ref/<version>`
+lacks a usable `ref/<tfm>`), not confirmed as a contributor here but worth
+hardening opportunistically.
 
 **Related:** #4698, run https://github.com/nichobbs/lyric-lang/actions/runs/28585430193.
