@@ -150,6 +150,13 @@ record NFnInst {
   retTy: NType
 }
 
+/// The call signature behind a closure type (keyed by the closure
+/// struct name).
+record NClosureSig {
+  paramTys: List[NType]
+  retTy: NType
+}
+
 /// A ref-typed local owned by a lexical scope (released on scope exit).
 record NOwnedLocal {
   slot: String
@@ -214,6 +221,8 @@ record Ctx {
   // generic function instantiation; consulted by typeToN).
   fnTyEnvNames: List[String]
   fnTyEnvTys: List[NType]
+  // Closure signatures by closure-struct name (N2.6).
+  closureSigs: Map[String, NClosureSig]
   // ARC state (per function).  `scopeRefs` stacks the ref-typed locals
   // each lexical scope owns; `tempScopes` stacks the owned temporaries
   // of each evaluation region; the depth lists snapshot both stacks at
@@ -356,6 +365,16 @@ func typeToN(ctx: in Ctx, te: in TypeExpr): NType {
       }
       typeExprToNType(te)
     }
+    case TFunction(_, _) -> {
+      val emptyNames: List[String] = newList()
+      val emptyTys: List[NType] = newList()
+      match typeToNEnvOpt(ctx, te, emptyNames, emptyTys) {
+        case Some(t) -> return t
+        case None -> {
+        }
+      }
+      typeExprToNType(te)
+    }
     case TParen(inner) -> typeToN(ctx, inner)
     case _ -> typeExprToNType(te)
   }
@@ -406,6 +425,11 @@ func typeToNOpt(ctx: in Ctx, te: in TypeExpr): Option[NType] {
       None
     }
     case TGenericApp(_, _) -> {
+      val emptyNames: List[String] = newList()
+      val emptyTys: List[NType] = newList()
+      typeToNEnvOpt(ctx, te, emptyNames, emptyTys)
+    }
+    case TFunction(_, _) -> {
       val emptyNames: List[String] = newList()
       val emptyTys: List[NType] = newList()
       typeToNEnvOpt(ctx, te, emptyNames, emptyTys)
@@ -1242,7 +1266,7 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
     }
     // `self` in a record-method body is the desugared receiver param.
     case ESelf -> loadLocal(ctx, insns, "self")
-    case ELambda(_, _) -> panic("Lyric.LlvmCodegen: lambdas are not yet supported for --target native (closures are Phase N2)")
+    case ELambda(_, _) -> panic("Lyric.LlvmCodegen: a lambda here has no expected function type; bind it to an annotated val, a typed parameter, or a declared return type")
     case ETuple(_) -> panic("Lyric.LlvmCodegen: tuples are not yet supported for --target native (Phase N3)")
     case EList(_) -> panic("Lyric.LlvmCodegen: list literals are not yet supported for --target native (collections are Phase N2/N5)")
     case EIndex(_, _) -> panic("Lyric.LlvmCodegen: indexing is not yet supported for --target native (Phase N2)")
@@ -2050,10 +2074,24 @@ func lowerCall(ctx: in Ctx, insns: in List[NInsn], fnExpr: in Expr, args: in Lis
     case _ -> {
     }
   }
+  // Indirect call through a closure-typed local (N2.6).
+  match fnExpr.kind {
+    case EPath(cpath) -> {
+      if cpath.segments.count == 1 and ctx.varTypes.containsKey(cpath.segments[0]) {
+        val clos = loadLocal(ctx, insns, cpath.segments[0])
+        match closureSigOfType(ctx, clos.ty) {
+          case Some(cs) -> return lowerClosureCall(ctx, insns, clos, cs, args)
+          case None -> panic("Lyric.LlvmCodegen: '" + cpath.segments[0] + "' is not callable (only function-typed values support indirect calls)")
+        }
+      }
+    }
+    case _ -> {
+    }
+  }
   // Static function call through the registry.
   val key = callKeyOf(fnExpr, args.count)
   if key.length == 0 {
-    panic("Lyric.LlvmCodegen: indirect calls are not yet supported for --target native (closures are Phase N2)")
+    panic("Lyric.LlvmCodegen: indirect calls are not yet supported for --target native (rest of Phase N2.6)")
   }
   // Resolution order: self-package qualified, then the key as written,
   // then heap-type constructors (records, union cases, distinct types).
@@ -2889,6 +2927,48 @@ func mangleNTypeArg(t: in NType): String {
   }
 }
 
+/// The uniform closure type for a call signature: a heap object
+/// `{ rc, dtor, fnptr }` (captures live behind it in the per-lambda
+/// impl struct).  Registered by struct name so call sites recover the
+/// signature.
+func closureNType(ctx: in Ctx, paramTys: in List[NType], retTy: in NType): NType {
+  var nm = "__closure<" + mangleNTypeArg(retTy) + "("
+  var i = 0
+  while i < paramTys.count {
+    if i > 0 {
+      nm = nm + ","
+    }
+    nm = nm + mangleNTypeArg(paramTys[i])
+    i = i + 1
+  }
+  nm = nm + ")>"
+  if not ctx.closureSigs.containsKey(nm) {
+    ctx.closureSigs.add(nm, NClosureSig(paramTys = paramTys, retTy = retTy))
+    ctx.moduleTypeDefs.add(NTypeDefn(name = nm, fields = closureHeaderFields()))
+  }
+  NPtr(pointee = NStruct(name = nm, fields = closureHeaderFields()))
+}
+
+func closureHeaderFields(): List[NType] {
+  val fields: List[NType] = newList()
+  fields.add(NI32)
+  fields.add(NPtr(pointee = NI8))
+  fields.add(NPtr(pointee = NI8))
+  fields
+}
+
+func closureSigOfType(ctx: in Ctx, t: in NType): Option[NClosureSig] {
+  match t {
+    case NPtr(pointee) -> {
+      match pointee {
+        case NStruct(name, _) -> mapGet(ctx.closureSigs, name)
+        case _ -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
 func envIndexOf(envNames: in List[String], name: in String): Int {
   var i = 0
   while i < envNames.count {
@@ -2962,6 +3042,21 @@ func typeToNEnvOpt(ctx: in Ctx, te: in TypeExpr, envNames: in List[String], envT
         }
       }
       None
+    }
+    case TFunction(parameters, retTy) -> {
+      val ptys: List[NType] = newList()
+      var pi = 0
+      while pi < parameters.count {
+        match typeToNEnvOpt(ctx, parameters[pi], envNames, envTys) {
+          case Some(t) -> ptys.add(t)
+          case None -> return None
+        }
+        pi = pi + 1
+      }
+      match typeToNEnvOpt(ctx, retTy, envNames, envTys) {
+        case Some(rt) -> Some(value = closureNType(ctx, ptys, rt))
+        case None -> None
+      }
     }
     case TParen(inner) -> typeToNEnvOpt(ctx, inner, envNames, envTys)
     case _ -> typeToNOpt(ctx, te)
@@ -3556,6 +3651,585 @@ func lowerGenericFnCall(
   }
 }
 
+// ── Closures (N2.6) ──────────────────────────────────────────────────────────
+func namesContains(xs: in List[String], name: in String): Bool {
+  var i = 0
+  while i < xs.count {
+    if xs[i] == name {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+func truncateNames(xs: in List[String], n: in Int): Unit {
+  while xs.count > n {
+    xs.removeAt(xs.count - 1)
+  }
+}
+
+/// Free-variable analysis over a lambda body: `free` accumulates outer
+/// locals referenced (captures); `assigned` accumulates assignment
+/// targets (mutating a capture is rejected — captures are by-value).
+func fvExpr(ctx: in Ctx, e: in Expr, bound: in List[String], free: in List[String], assigned: in List[String]): Unit {
+  match e.kind {
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        val n = path.segments[0]
+        if ctx.varTypes.containsKey(n) and not namesContains(bound, n) and not namesContains(free, n) {
+          free.add(n)
+        }
+      }
+    }
+    case EInterpolated(segments) -> {
+      var i = 0
+      while i < segments.count {
+        match segments[i] {
+          case ISExpr(ex) -> fvExpr(ctx, ex, bound, free, assigned)
+          case ISText(_, _) -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case EParen(inner) -> fvExpr(ctx, inner, bound, free, assigned)
+    case ETuple(exprs) -> fvExprList(ctx, exprs, bound, free, assigned)
+    case EList(exprs) -> fvExprList(ctx, exprs, bound, free, assigned)
+    case EIf(cond, thenBranch, elseBranch, _) -> {
+      fvExpr(ctx, cond, bound, free, assigned)
+      fvEob(ctx, thenBranch, bound, free, assigned)
+      match elseBranch {
+        case Some(eb) -> fvEob(ctx, eb, bound, free, assigned)
+        case None -> {
+        }
+      }
+    }
+    case EMatch(scrutinee, arms) -> {
+      fvExpr(ctx, scrutinee, bound, free, assigned)
+      var i = 0
+      while i < arms.count {
+        val mark = bound.count
+        fvPattern(arms[i].pattern, bound)
+        match arms[i].guard {
+          case Some(g) -> fvExpr(ctx, g, bound, free, assigned)
+          case None -> {
+          }
+        }
+        fvEob(ctx, arms[i].body, bound, free, assigned)
+        truncateNames(bound, mark)
+        i = i + 1
+      }
+    }
+    case ELambda(lambdaParams, body) -> {
+      val mark = bound.count
+      var i = 0
+      while i < lambdaParams.count {
+        bound.add(lambdaParams[i].name)
+        i = i + 1
+      }
+      fvBlock(ctx, body, bound, free, assigned)
+      truncateNames(bound, mark)
+    }
+    case ECall(fn, args) -> {
+      // A static callee path is not a value reference; member callees
+      // walk their receiver.
+      match fn.kind {
+        case EPath(_) -> {
+        }
+        case EMember(recv, _) -> {
+          if not isPackagePathExpr(ctx, recv) {
+            fvExpr(ctx, recv, bound, free, assigned)
+          }
+        }
+        case _ -> fvExpr(ctx, fn, bound, free, assigned)
+      }
+      match fn.kind {
+        case EPath(path) -> {
+          // A single-segment callee naming a local is an indirect call.
+          if path.segments.count == 1 and ctx.varTypes.containsKey(path.segments[0]) {
+            fvExpr(ctx, fn, bound, free, assigned)
+          }
+        }
+        case _ -> {
+        }
+      }
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CANamed(_, value, _) -> fvExpr(ctx, value, bound, free, assigned)
+          case CAPositional(ex) -> fvExpr(ctx, ex, bound, free, assigned)
+        }
+        i = i + 1
+      }
+    }
+    case ETypeApp(fn, _) -> fvExpr(ctx, fn, bound, free, assigned)
+    case EIndex(receiver, indices) -> {
+      fvExpr(ctx, receiver, bound, free, assigned)
+      fvExprList(ctx, indices, bound, free, assigned)
+    }
+    case EMember(recv, _) -> {
+      if not isPackagePathExpr(ctx, recv) {
+        fvExpr(ctx, recv, bound, free, assigned)
+      }
+    }
+    case EPropagate(inner) -> fvExpr(ctx, inner, bound, free, assigned)
+    case EPrefix(_, operand) -> fvExpr(ctx, operand, bound, free, assigned)
+    case EBinop(_, lhs, rhs) -> {
+      fvExpr(ctx, lhs, bound, free, assigned)
+      fvExpr(ctx, rhs, bound, free, assigned)
+    }
+    case EAssign(target, _, value) -> {
+      match target.kind {
+        case EPath(tp) -> {
+          if tp.segments.count == 1 and not namesContains(assigned, tp.segments[0]) {
+            assigned.add(tp.segments[0])
+          }
+        }
+        case _ -> fvExpr(ctx, target, bound, free, assigned)
+      }
+      fvExpr(ctx, value, bound, free, assigned)
+    }
+    case EBlock(block) -> fvBlock(ctx, block, bound, free, assigned)
+    case _ -> {
+    }
+  }
+}
+
+func fvExprList(
+  ctx: in Ctx,
+  exprs: in List[Expr],
+  bound: in List[String],
+  free: in List[String],
+  assigned: in List[String],
+): Unit {
+  var i = 0
+  while i < exprs.count {
+    fvExpr(ctx, exprs[i], bound, free, assigned)
+    i = i + 1
+  }
+}
+
+func fvEob(
+  ctx: in Ctx, eob: in ExprOrBlock, bound: in List[String], free: in List[String], assigned: in List[String]
+): Unit {
+  match eob {
+    case EOBExpr(ex) -> fvExpr(ctx, ex, bound, free, assigned)
+    case EOBBlock(b) -> fvBlock(ctx, b, bound, free, assigned)
+  }
+}
+
+func fvPattern(pat: in Pattern, bound: in List[String]): Unit {
+  match pat.kind {
+    case PBinding(name, inner) -> {
+      bound.add(name)
+      match inner {
+        case Some(ip) -> fvPattern(ip, bound)
+        case None -> {
+        }
+      }
+    }
+    case PConstructor(_, subs) -> {
+      var i = 0
+      while i < subs.count {
+        fvPattern(subs[i], bound)
+        i = i + 1
+      }
+    }
+    case PParen(inner) -> fvPattern(inner, bound)
+    case _ -> {
+    }
+  }
+}
+
+func fvBlock(
+  ctx: in Ctx, block: in Block, bound: in List[String], free: in List[String], assigned: in List[String]
+): Unit {
+  val mark = bound.count
+  var i = 0
+  while i < block.statements.count {
+    fvStmt(ctx, block.statements[i], bound, free, assigned)
+    i = i + 1
+  }
+  truncateNames(bound, mark)
+}
+
+func fvStmt(
+  ctx: in Ctx, stmt: in Statement, bound: in List[String], free: in List[String], assigned: in List[String]
+): Unit {
+  match stmt.kind {
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(pat, _, init) -> {
+          fvExpr(ctx, init, bound, free, assigned)
+          fvPattern(pat, bound)
+        }
+        case LBLet(name, _, init) -> {
+          fvExpr(ctx, init, bound, free, assigned)
+          bound.add(name)
+        }
+        case LBVar(name, _, initOpt) -> {
+          match initOpt {
+            case Some(init) -> fvExpr(ctx, init, bound, free, assigned)
+            case None -> {
+            }
+          }
+          bound.add(name)
+        }
+      }
+    }
+    case SAssign(target, _, value) -> {
+      match target.kind {
+        case EPath(tp) -> {
+          if tp.segments.count == 1 and not namesContains(bound, tp.segments[0]) and not namesContains(assigned, tp.segments[0]) {
+            assigned.add(tp.segments[0])
+          }
+        }
+        case _ -> fvExpr(ctx, target, bound, free, assigned)
+      }
+      fvExpr(ctx, value, bound, free, assigned)
+    }
+    case SReturn(valOpt) -> {
+      match valOpt {
+        case Some(v) -> fvExpr(ctx, v, bound, free, assigned)
+        case None -> {
+        }
+      }
+    }
+    case SWhile(_, cond, body) -> {
+      fvExpr(ctx, cond, bound, free, assigned)
+      fvBlock(ctx, body, bound, free, assigned)
+    }
+    case SExpr(ex) -> fvExpr(ctx, ex, bound, free, assigned)
+    case _ -> {
+    }
+  }
+}
+
+/// Lower a lambda literal against a known closure signature: synthesise
+/// the impl struct (header + captures), the body function, and the
+/// capture-releasing destructor; construct the closure heap object.
+func lowerLambda(
+  ctx: in Ctx, insns: in List[NInsn], lambdaParams: in List[LambdaParam], body: in Block, sigTy: in NType
+): NVal {
+  val sig = match closureSigOfType(ctx, sigTy) {
+    case Some(cs) -> cs
+    case None -> panic("Lyric.LlvmCodegen: internal — lambda lowered without a closure signature")
+  }
+  if lambdaParams.count != sig.paramTys.count {
+    panic(
+      "Lyric.LlvmCodegen: lambda takes " + lambdaParams.count.toString() +
+        " parameter(s) but the expected function type has " +
+        sig.paramTys.count.toString()
+    )
+  }
+  // Captures: free variables of the body (minus params).
+  val bound: List[String] = newList()
+  var bi = 0
+  while bi < lambdaParams.count {
+    bound.add(lambdaParams[bi].name)
+    bi = bi + 1
+  }
+  val free: List[String] = newList()
+  val assigned: List[String] = newList()
+  fvBlock(ctx, body, bound, free, assigned)
+  var ci = 0
+  while ci < assigned.count {
+    if namesContains(free, assigned[ci]) {
+      panic(
+        "Lyric.LlvmCodegen: lambda mutates captured variable '" + assigned[ci] +
+          "'; native closures capture by value (rebind inside the lambda instead)"
+      )
+    }
+    ci = ci + 1
+  }
+  val capTys: List[NType] = newList()
+  var fi = 0
+  while fi < free.count {
+    match mapGet(ctx.varTypes, free[fi]) {
+      case Some(t) -> capTys.add(t)
+      case None -> panic("Lyric.LlvmCodegen: internal — capture '" + free[fi] + "' has no type")
+    }
+    fi = fi + 1
+  }
+  val lamId = ctx.moduleFns.count.toString() + "." + ctx.moduleTypeDefs.count.toString()
+  val implName = "__closureimpl." + lamId
+  val implFields: List[NType] = newList()
+  implFields.add(NI32)
+  implFields.add(NPtr(pointee = NI8))
+  implFields.add(NPtr(pointee = NI8))
+  var ti = 0
+  while ti < capTys.count {
+    implFields.add(capTys[ti])
+    ti = ti + 1
+  }
+  ctx.moduleTypeDefs.add(NTypeDefn(name = implName, fields = implFields))
+  val implTy = NPtr(pointee = NStruct(name = implName, fields = implFields))
+  // Body function.
+  val bodyFnName = "__lyric.lambda." + lamId
+  ctx.moduleFns.add(synthLambdaBody(ctx, bodyFnName, implName, implFields, lambdaParams, body, sig, free, capTys))
+  // Capture-releasing destructor (only when a capture is ARC-managed).
+  var anyRefCap = false
+  var ri = 0
+  while ri < capTys.count {
+    if isRefNType(capTys[ri]) {
+      anyRefCap = true
+    }
+    ri = ri + 1
+  }
+  var dtorName = ""
+  if anyRefCap {
+    dtorName = implName + ".dtor"
+    ctx.moduleFns.add(synthClosureDtor(ctx, dtorName, implName, implFields, capTys))
+  }
+  // Construct.
+  val obj = emitHeapAlloc(ctx, insns, implTy, structSize(implFields), dtorName)
+  val structTy = NStruct(name = implName, fields = implFields)
+  val fnParamTys: List[NType] = newList()
+  fnParamTys.add(NPtr(pointee = NI8))
+  var pi = 0
+  while pi < sig.paramTys.count {
+    fnParamTys.add(sig.paramTys[pi])
+    pi = pi + 1
+  }
+  val fnPtrCast = freshTmp(ctx)
+  insns.add(
+    NBitcast(
+      dest = fnPtrCast,
+      fromTy = NPtr(pointee = NFnPtr(params = fnParamTys, ret = sig.retTy)),
+      value = NGlobal(name = bodyFnName),
+      toTy = NPtr(pointee = NI8)
+    )
+  )
+  val fnSlot = freshTmp(ctx)
+  val fArgs: List[NArg] = newList()
+  fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  fArgs.add(NArg(ty = NI32, value = NLitInt(v = 2i64, ty = NI32)))
+  insns.add(NGEP(dest = fnSlot, ty = structTy, ptr = NLocal(name = obj), indices = fArgs))
+  insns.add(NStore(ty = NPtr(pointee = NI8), value = NLocal(name = fnPtrCast), ptr = NLocal(name = fnSlot)))
+  var si = 0
+  while si < free.count {
+    val capVal = loadLocal(ctx, insns, free[si])
+    if isRefNType(capTys[si]) {
+      emitRetain(ctx, insns, capVal)
+    }
+    val capSlot = freshTmp(ctx)
+    val cArgs: List[NArg] = newList()
+    cArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+    cArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(3 + si), ty = NI32)))
+    insns.add(NGEP(dest = capSlot, ty = structTy, ptr = NLocal(name = obj), indices = cArgs))
+    insns.add(NStore(ty = capTys[si], value = capVal.value, ptr = NLocal(name = capSlot)))
+    si = si + 1
+  }
+  val castOut = freshTmp(ctx)
+  insns.add(NBitcast(dest = castOut, fromTy = implTy, value = NLocal(name = obj), toTy = sigTy))
+  val outV = NVal(ty = sigTy, value = NLocal(name = castOut))
+  registerTemp(ctx, outV)
+  outV
+}
+
+func synthLambdaBody(
+  modCtx: in Ctx,
+  fnName: in String,
+  implName: in String,
+  implFields: in List[NType],
+  lambdaParams: in List[LambdaParam],
+  body: in Block,
+  sig: in NClosureSig,
+  free: in List[String],
+  capTys: in List[NType],
+): NFunc {
+  val ctx = freshFnCtx(modCtx, modCtx.curPkg[0], sig.retTy)
+  val params: List[NParam] = newList()
+  params.add(NParam(name = "env", ty = NPtr(pointee = NI8)))
+  val bodyInsns: List[NInsn] = newList()
+  val structTy = NStruct(name = implName, fields = implFields)
+  bodyInsns.add(
+    NBitcast(
+      dest = "self.env",
+      fromTy = NPtr(pointee = NI8),
+      value = NLocal(name = "env"),
+      toTy = NPtr(pointee = structTy)
+    )
+  )
+  // Captures load as borrows (the closure owns them; the call keeps the
+  // closure alive for the duration).
+  var ci = 0
+  while ci < free.count {
+    val capPtr = freshTmp(ctx)
+    val gArgs: List[NArg] = newList()
+    gArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+    gArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(3 + ci), ty = NI32)))
+    bodyInsns.add(NGEP(dest = capPtr, ty = structTy, ptr = NLocal(name = "self.env"), indices = gArgs))
+    val capVal = freshTmp(ctx)
+    bodyInsns.add(NLoad(dest = capVal, ty = capTys[ci], ptr = NLocal(name = capPtr)))
+    val slot = free[ci] + ".cap." + freshTmp(ctx)
+    ctx.allocas.add(NAlloca(dest = slot, ty = capTys[ci]))
+    bodyInsns.add(NStore(ty = capTys[ci], value = NLocal(name = capVal), ptr = NLocal(name = slot)))
+    ctx.varSlots.add(free[ci], slot)
+    ctx.varTypes.add(free[ci], capTys[ci])
+    ci = ci + 1
+  }
+  var pi = 0
+  while pi < lambdaParams.count {
+    val pn = lambdaParams[pi].name
+    val pty = sig.paramTys[pi]
+    params.add(NParam(name = "arg." + pn, ty = pty))
+    val slot = pn + ".slot." + freshTmp(ctx)
+    ctx.allocas.add(NAlloca(dest = slot, ty = pty))
+    bodyInsns.add(NStore(ty = pty, value = NLocal(name = "arg." + pn), ptr = NLocal(name = slot)))
+    ctx.varSlots.add(pn, slot)
+    ctx.varTypes.add(pn, pty)
+    pi = pi + 1
+  }
+  pushVarScope(ctx)
+  pushTempScope(ctx)
+  val tailWant: Option[NType] = match sig.retTy { case NVoid -> None; case rt -> Some(value = rt) }
+  val tail = lowerBlockValueW(ctx, bodyInsns, body, tailWant)
+  match sig.retTy {
+    case NVoid -> {
+      releaseAllForReturn(ctx, bodyInsns)
+      bodyInsns.add(NRetVoid)
+    }
+    case rt -> {
+      match tail.ty {
+        case NVoid -> {
+          releaseAllForReturn(ctx, bodyInsns)
+          bodyInsns.add(NRet(ty = rt, value = zeroValueOf(rt)))
+        }
+        case _ -> {
+          val cv = coerceTo(ctx, bodyInsns, tail, rt)
+          if isRefNType(rt) {
+            ensureOwned(ctx, bodyInsns, cv)
+          }
+          releaseAllForReturn(ctx, bodyInsns)
+          bodyInsns.add(NRet(ty = rt, value = cv.value))
+        }
+      }
+    }
+  }
+  val insnsOut: List[NInsn] = newList()
+  insnsOut.add(NLabel(name = "entry"))
+  appendInsns(insnsOut, ctx.allocas)
+  appendInsns(insnsOut, bodyInsns)
+  val attrs: List[String] = newList()
+  NFunc(
+    name = fnName,
+    params = params,
+    retTy = sig.retTy,
+    isPublic = false,
+    isExtern = false,
+    body = insnsOut,
+    attributes = attrs
+  )
+}
+
+func synthClosureDtor(
+  ctx: in Ctx,
+  dtorName: in String,
+  implName: in String,
+  implFields: in List[NType],
+  capTys: in List[NType],
+): NFunc {
+  val body: List[NInsn] = newList()
+  body.add(NLabel(name = "entry"))
+  val structTy = NStruct(name = implName, fields = implFields)
+  body.add(
+    NBitcast(dest = "obj", fromTy = NPtr(pointee = NI8), value = NLocal(name = "raw"), toTy = NPtr(pointee = structTy))
+  )
+  var i = 0
+  while i < capTys.count {
+    if isRefNType(capTys[i]) {
+      val fieldPtr = freshTmp(ctx)
+      val gArgs: List[NArg] = newList()
+      gArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+      gArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(3 + i), ty = NI32)))
+      body.add(NGEP(dest = fieldPtr, ty = structTy, ptr = NLocal(name = "obj"), indices = gArgs))
+      val fieldVal = freshTmp(ctx)
+      body.add(NLoad(dest = fieldVal, ty = capTys[i], ptr = NLocal(name = fieldPtr)))
+      val cast = freshTmp(ctx)
+      body.add(NBitcast(dest = cast, fromTy = capTys[i], value = NLocal(name = fieldVal), toTy = NPtr(pointee = NI8)))
+      body.add(NCallVoid(fn = NGlobal(name = "lyric_release"), args = arg1(NPtr(pointee = NI8), NLocal(name = cast))))
+    }
+    i = i + 1
+  }
+  body.add(NRetVoid)
+  val params: List[NParam] = newList()
+  params.add(NParam(name = "raw", ty = NPtr(pointee = NI8)))
+  val attrs: List[String] = newList()
+  NFunc(
+    name = dtorName,
+    params = params,
+    retTy = NVoid,
+    isPublic = false,
+    isExtern = false,
+    body = body,
+    attributes = attrs
+  )
+}
+
+/// Indirect call through a closure value.
+func lowerClosureCall(
+  ctx: in Ctx, insns: in List[NInsn], clos: in NVal, sig: in NClosureSig, args: in List[CallArg]
+): NVal {
+  if args.count != sig.paramTys.count {
+    panic(
+      "Lyric.LlvmCodegen: closure call passes " + args.count.toString() + " argument(s) but the function type has " +
+        sig.paramTys.count.toString()
+    )
+  }
+  val structTy = match clos.ty { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
+  val fnSlot = freshTmp(ctx)
+  val gArgs: List[NArg] = newList()
+  gArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  gArgs.add(NArg(ty = NI32, value = NLitInt(v = 2i64, ty = NI32)))
+  insns.add(NGEP(dest = fnSlot, ty = structTy, ptr = clos.value, indices = gArgs))
+  val fnRaw = freshTmp(ctx)
+  insns.add(NLoad(dest = fnRaw, ty = NPtr(pointee = NI8), ptr = NLocal(name = fnSlot)))
+  val fnParamTys: List[NType] = newList()
+  fnParamTys.add(NPtr(pointee = NI8))
+  var i = 0
+  while i < sig.paramTys.count {
+    fnParamTys.add(sig.paramTys[i])
+    i = i + 1
+  }
+  val fnTyped = freshTmp(ctx)
+  insns.add(
+    NBitcast(
+      dest = fnTyped,
+      fromTy = NPtr(pointee = NI8),
+      value = NLocal(name = fnRaw),
+      toTy = NPtr(pointee = NFnPtr(params = fnParamTys, ret = sig.retTy))
+    )
+  )
+  val envCast = freshTmp(ctx)
+  insns.add(NBitcast(dest = envCast, fromTy = clos.ty, value = clos.value, toTy = NPtr(pointee = NI8)))
+  val callArgs: List[NArg] = newList()
+  callArgs.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = envCast)))
+  var ai = 0
+  while ai < args.count {
+    val av = match args[ai] {
+      case CAPositional(ex) -> lowerExprExpecting(ctx, insns, ex, sig.paramTys[ai])
+      case CANamed(_, value, _) -> lowerExprExpecting(ctx, insns, value, sig.paramTys[ai])
+    }
+    callArgs.add(NArg(ty = sig.paramTys[ai], value = av.value))
+    ai = ai + 1
+  }
+  match sig.retTy {
+    case NVoid -> {
+      insns.add(NCallVoid(fn = NLocal(name = fnTyped), args = callArgs))
+      NVal(ty = NVoid, value = NUndef(ty = NVoid))
+    }
+    case rt -> {
+      val dest = freshTmp(ctx)
+      insns.add(NCall(dest = dest, retTy = rt, fn = NLocal(name = fnTyped), args = callArgs))
+      val outV = NVal(ty = rt, value = NLocal(name = dest))
+      registerTemp(ctx, outV)
+      outV
+    }
+  }
+}
+
 /// Lower `e` under a known expected type: generic-union case
 /// constructions resolve against the expected instantiation directly
 /// (the only way to type nullary cases like `None`, and cases that
@@ -3570,6 +4244,13 @@ func lowerExprExpecting(ctx: in Ctx, insns: in List[NInsn], e: in Expr, want: in
   // Structural recursion: the expected type flows into value-position
   // control flow so branches/arms can construct generic cases.
   match e.kind {
+    case ELambda(lambdaParams, body) -> {
+      match closureSigOfType(ctx, want) {
+        case Some(_) -> return lowerLambda(ctx, insns, lambdaParams, body, want)
+        case None -> {
+        }
+      }
+    }
     case EIf(cond, thenBranch, elseBranch, _) -> {
       val w1: Option[NType] = Some(value = want)
       return coerceTo(ctx, insns, lowerIf(ctx, insns, cond, thenBranch, elseBranch, w1), want)
@@ -4996,6 +5677,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     instMeta = mod.instMeta,
     fnTyEnvNames = newList(),
     fnTyEnvTys = newList(),
+    closureSigs = mod.closureSigs,
     scopeRefs = newList(),
     tempScopes = newList(),
     loopVarDepth = newList(),
@@ -5262,6 +5944,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   val emptyGenFnPkg: Map[String, String] = newMap()
   val emptyFnInsts: Map[String, NFnInst] = newMap()
   val emptyInstMeta: Map[String, NInstInfo] = newMap()
+  val emptyClosureSigs: Map[String, NClosureSig] = newMap()
   val ctx = Ctx(
     mainPkg = mainPkg,
     tmpTicker = newList(),
@@ -5293,6 +5976,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     instMeta = emptyInstMeta,
     fnTyEnvNames = newList(),
     fnTyEnvTys = newList(),
+    closureSigs = emptyClosureSigs,
     scopeRefs = newList(),
     tempScopes = newList(),
     loopVarDepth = newList(),

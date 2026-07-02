@@ -26158,3 +26158,36 @@ UFCS, identity, and a generic function returning a generic
 instantiation, ASan-verified with the rest of the suite.
 
 **Related:** D-progress-542, `native/plan/08-work-items.md` §N3.1, D-N-010.
+
+---
+
+### D-progress-544 — Native backend N2.6: closures
+
+**Shipped.** Lambda literals lower to ARC-managed closures in the
+native backend:
+
+- **Representation** — a heap object `{ i32 rc, i8* dtor, i8* fnptr,
+  captures... }`; the value's static type is a signature-keyed uniform
+  closure type (`__closure<i32(i32)>`) registered so call sites recover
+  the signature; the impl struct is per-lambda.
+- **Captures** — free-variable analysis over the lambda body (arm- and
+  block-scoped binders tracked precisely); captures are by value,
+  retained at construction and released by the synthesised closure
+  destructor.  Mutating a captured variable is rejected with a
+  diagnostic (by-value semantics would silently diverge from the
+  managed targets' shared-mutable capture).
+- **Typing** — lambdas take their parameter/return types from the
+  expected function type (annotated bindings, typed parameters,
+  declared returns — the N3.1 expected-type threading); a lambda with
+  no expected type panics with guidance.
+- **Calls** — `f(x)` on a closure-typed local loads the fnptr, casts
+  to the concrete function-pointer type, and calls with the
+  environment as the leading argument.  Higher-order functions
+  (`apply`, `compose`) work.
+
+**Verification.** `llvm_heap_self_test.l` gains an ASan closure case
+(28 total): scalar + string captures across 100 calls, higher-order
+composition — capture retain/release and the closure destructor
+verified leak-free.
+
+**Related:** D-progress-543, `native/plan/08-work-items.md` §N2.6.
