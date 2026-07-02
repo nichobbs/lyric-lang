@@ -1841,6 +1841,57 @@ pub func refPackDir(): Option[String] {
   None
 }
 
+// Human-readable trace of what `refPackDir()` tried, for the W0007 diagnostic
+// in `Msil.Codegen.ensureMetadataIndex`.  Mirrors `refPackDir()`'s walk over
+// `candidateDotnetRoots()` exactly but never returns early — it records the
+// outcome at every root so a `None` result (reference pack not found on this
+// machine) is actionable instead of a silent "everything falls back to
+// System.Runtime" (#4698: this fallback is wrong for types like
+// System.Console that live in their own dedicated facade, not forwarded via
+// System.Runtime — and the silent failure mode is exactly what turned a
+// single missing reference pack into an unreproducible-looking macOS-only
+// TypeLoadException in Std.ConsoleHost).
+pub func refPackDirDebugInfo(): String {
+  val roots = candidateDotnetRoots()
+  if roots.count == 0 {
+    return "no candidate roots (DOTNET_ROOT and HOME both unset)"
+  }
+  var acc = ""
+  var i = 0
+  while i < roots.count {
+    val root = roots[i]
+    val packs = Path.join(root, "packs/Microsoft.NETCore.App.Ref")
+    var line = root + " -> "
+    if not File.dirExists(packs) {
+      line = line + "no packs/Microsoft.NETCore.App.Ref"
+    } else {
+      match pickHighestDir(packs) {
+        case None -> {
+          line = line + "packs/Microsoft.NETCore.App.Ref exists but is empty"
+        }
+        case Some(ver) -> {
+          val refDir = Path.join(Path.join(packs, ver), "ref")
+          if not File.dirExists(refDir) {
+            line = line + "version " + ver + " has no ref/ subdir"
+          } else {
+            match pickHighestDir(refDir) {
+              case None -> {
+                line = line + "version " + ver + "'s ref/ subdir is empty (no TFM)"
+              }
+              case Some(tfm) -> {
+                line = line + "found " + Path.join(refDir, tfm)
+              }
+            }
+          }
+        }
+      }
+    }
+    acc = if i == 0 { line } else { acc + "; " + line }
+    i = i + 1
+  }
+  acc
+}
+
 // Full paths of every `*.dll` reference assembly directly inside `refDir`.
 pub func enumRefAssemblies(refDir: in String): List[String] {
   val acc: List[String] = newList()

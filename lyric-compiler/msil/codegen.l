@@ -21549,9 +21549,21 @@ func ensureMetadataIndex(cctx: in CodegenCtx): Unit {
   cctx.metadataReady.add(true)
   match Mdr.refPackDir() {
     case None -> {
+      println(
+        "W0007: ensureMetadataIndex: Mdr.refPackDir() found no .NET reference pack — " +
+          "auto-FFI resolution is completely disabled for this compile; every unresolved " +
+          "System.* extern will silently fall back to \"System.Runtime\" (wrong for types " +
+          "with their own facade, e.g. System.Console). Diagnostics: " + Mdr.refPackDirDebugInfo()
+      )
     }
     case Some(dir) -> {
       val asms = Mdr.enumRefAssemblies(dir)
+      if asms.count == 0 {
+        println(
+          "W0007: ensureMetadataIndex: reference pack directory '" + dir +
+            "' contains no *.dll files — auto-FFI resolution is completely disabled for this compile"
+        )
+      }
       var i = 0
       while i < asms.count {
         // Single read + parse per assembly fills the type, path, and
