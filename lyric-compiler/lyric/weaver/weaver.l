@@ -243,14 +243,11 @@ record RewriteCtx {
 /// today; new kinds can be added without changing the rewriter's
 /// signature.
 union WeaveDiagKind {
-  case WDArgsMismatch
-  // A0042
-  case WDCallUnknown
-  // A0043
-  case WDConfigNoDefault
-  // A0044
-  case WDArgsRowMismatch
-  // A0047 (docs/56 / D115)
+  case WDArgsMismatch // A0042
+  case WDCallUnknown // A0043
+  case WDConfigNoDefault // A0044
+  case WDArgsRowMissing // A0047 (docs/56 / D115) — matched function has no parameter of this name
+  case WDArgsRowTypeMismatch // A0047 (docs/56 / D115) — parameter exists but its type doesn't match
 }
 
 record WeaveDiagEntry {
@@ -616,7 +613,8 @@ func sameWeaveDiagKind(a: in WeaveDiagKind, b: in WeaveDiagKind): Bool {
     case WDArgsMismatch -> match b { case WDArgsMismatch -> true; case _ -> false }
     case WDCallUnknown -> match b { case WDCallUnknown -> true; case _ -> false }
     case WDConfigNoDefault -> match b { case WDConfigNoDefault -> true; case _ -> false }
-    case WDArgsRowMismatch -> match b { case WDArgsRowMismatch -> true; case _ -> false }
+    case WDArgsRowMissing -> match b { case WDArgsRowMissing -> true; case _ -> false }
+    case WDArgsRowTypeMismatch -> match b { case WDArgsRowTypeMismatch -> true; case _ -> false }
   }
 }
 
@@ -2377,13 +2375,22 @@ func weaveDiagsToDiagnostics(errs: in List[WeaveDiagEntry]): List[Diagnostic] {
           "to the `config { }` block or remove the reference"
         diags.add(errorDiagnostic("A0044", msg, e.span))
       }
-      case WDArgsRowMismatch -> {
+      case WDArgsRowMissing -> {
         val msg = "aspect '" + e.aspectName + "' declares `where TArgs has { " + e.fieldName +
           ": ... }` but matched function '" +
           e.funcName +
           "' has no parameter named '" +
           e.fieldName +
-          "' of a compatible type (docs/56)"
+          "' — add one, or remove the field from the row clause (docs/56)"
+        diags.add(errorDiagnostic("A0047", msg, e.span))
+      }
+      case WDArgsRowTypeMismatch -> {
+        val msg = "aspect '" + e.aspectName + "' declares `where TArgs has { " + e.fieldName +
+          ": ... }` but matched function '" +
+          e.funcName +
+          "'s parameter '" +
+          e.fieldName +
+          "' has a different type — fix the parameter's type, or the row clause's declared type (docs/56)"
         diags.add(errorDiagnostic("A0047", msg, e.span))
       }
     }
@@ -3837,10 +3844,10 @@ func buildBModeCallSite(
             if bmodeTypeExprKey(p.ty) == bmodeTypeExprKey(rf.ty) {
               argFields.add(mkNamedArg(rf.name, singleSegPathExpr(rf.name)))
             } else {
-              addWeaveDiagOnce(weaveDiags, WDArgsRowMismatch, aspect.name, fn.name, rf.name, fn.span)
+              addWeaveDiagOnce(weaveDiags, WDArgsRowTypeMismatch, aspect.name, fn.name, rf.name, fn.span)
             }
           }
-          case None -> addWeaveDiagOnce(weaveDiags, WDArgsRowMismatch, aspect.name, fn.name, rf.name, fn.span)
+          case None -> addWeaveDiagOnce(weaveDiags, WDArgsRowMissing, aspect.name, fn.name, rf.name, fn.span)
         }
         ri = ri + 1
       }

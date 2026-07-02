@@ -722,6 +722,18 @@ func diagsHaveCode(diags: in List[Diagnostic], code: in String): Bool {
   false
 }
 
+// #4621 — find the message of the first diagnostic with `code`, or "" if none.
+func diagMessageForCode(diags: in List[Diagnostic], code: in String): String {
+  var i = 0
+  while i < diags.count {
+    if diags[i].code == code {
+      return diags[i].message
+    }
+    i = i + 1
+  }
+  ""
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Baseline: no aspects → identity (just IAspect items dropped).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1520,6 +1532,11 @@ test "B'-mode row-constrained template emits A0047 for a missing field" {
     "func handleOne(userId: in Int): Int { 1 }\n"
   val wr = weaveWithTemplates(consumeSrc, templates)
   assertTrue(diagsHaveCode(wr.diagnostics, "A0047"), "handleOne has no 'apiKey' parameter: A0047 fires")
+  // #4621 — the missing-field message must say so, not "different type"
+  // (that wording belongs to the type-mismatch case, tested separately).
+  val msg = diagMessageForCode(wr.diagnostics, "A0047")
+  assertTrue(Str.contains(msg, "has no parameter named"), "A0047 missing-field message names the gap")
+  assertTrue(not Str.contains(msg, "different type"), "A0047 missing-field message must not claim a type mismatch")
 }
 
 // A0047 also fires when the field name matches but the type doesn't — a
@@ -1538,6 +1555,14 @@ test "B'-mode row-constrained template emits A0047 for a type mismatch" {
     "func handleOne(apiKey: in Int): Int { 1 }\n"
   val wr = weaveWithTemplates(consumeSrc, templates)
   assertTrue(diagsHaveCode(wr.diagnostics, "A0047"), "handleOne's 'apiKey' is Int, not String: A0047 fires")
+  // #4621 — the type-mismatch message must say so, not "no parameter named"
+  // (handleOne DOES have an 'apiKey' parameter — it's just the wrong type).
+  val msg = diagMessageForCode(wr.diagnostics, "A0047")
+  assertTrue(Str.contains(msg, "different type"), "A0047 type-mismatch message names the gap")
+  assertTrue(
+    not Str.contains(msg, "has no parameter named"),
+    "A0047 type-mismatch message must not claim a missing parameter"
+  )
 }
 
 // A C-mode (`@inline_template`) resolved from-instance is unaffected by

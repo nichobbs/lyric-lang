@@ -489,6 +489,63 @@ test "aspect args row clause missing has P0327" {
   assertTrue(hasDiagCode(pr, "P0327"), "P0327: expected 'has' after 'where TArgs'")
 }
 
+// Missing identifier after `where` must emit P0325 alone, not also a
+// misleading P0326 ("expected 'TArgs'") against the synthesised error name.
+test "aspect args row clause missing identifier emits only P0325" {
+  val pr = parse(
+    "package P\naspect A from X.Y {\n" +
+      "  around(call) -> ret where { apiKey: String } { ret = call.proceed() }\n" +
+      "}\n"
+  )
+  assertTrue(hasDiagCode(pr, "P0325"), "P0325: expected 'TArgs' after 'where'")
+  assertTrue(not hasDiagCode(pr, "P0326"), "P0326 must not also fire on a missing identifier")
+}
+
+// P0330 — a row clause must declare at least one field.
+test "aspect args row clause empty emits P0330" {
+  val pr = parse(
+    "package P\naspect A from X.Y {\n" + "  around(call) -> ret where TArgs has { } { ret = call.proceed() }\n" +
+      "}\n"
+  )
+  assertTrue(hasDiagCode(pr, "P0330"), "P0330: args row constraint must declare at least one field")
+}
+
+// #4619 — a row clause on its own line (after the stmt-end the lexer inserts
+// following `ret`) must still be recognised, not silently dropped.
+test "aspect args row clause on its own line still parses" {
+  val src = "package P\naspect ValidateKey from X.Y {\n" + "  around(call) -> ret\n" +
+    "  where TArgs has { apiKey: String } {\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "args-row-newline: no diagnostics")
+  match pr.file.items[0].kind {
+    case IAspect(ad) -> {
+      match ad.around {
+        case Some(a) -> {
+          match a.argsRow {
+            case Some(fields) -> assertEqualInt(fields.count, 1, "args-row-newline: row clause recognised across the line break")
+            case None -> assertTrue(false, "args-row-newline: expected Some(fields), clause was dropped")
+          }
+        }
+        case None -> assertTrue(false, "args-row-newline: expected around present")
+      }
+    }
+    case _ -> assertTrue(false, "args-row-newline: expected IAspect")
+  }
+}
+
+// P0331 — a row clause must not declare the same field name twice (#4620).
+test "aspect args row clause duplicate field emits P0331" {
+  val pr = parse(
+    "package P\naspect A from X.Y {\n" +
+      "  around(call) -> ret where TArgs has { apiKey: String, apiKey: Int } { ret = call.proceed() }\n" +
+      "}\n"
+  )
+  assertTrue(hasDiagCode(pr, "P0331"), "P0331: duplicate field in args row constraint")
+}
+
 func hasDiagCode(pr: in ParseResult, code: in String): Bool {
   var i = 0
   while i < pr.diagnostics.count {
