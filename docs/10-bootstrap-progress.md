@@ -25855,8 +25855,8 @@ left (B′-mode `args` was unconditionally opaque, forcing any field-accessing l
   `argsRow: Option[List[ArgsRowField]]`. `TArgs` and `has` are contextual words recognised only in
   this one position (right after the return binder), mirroring how `from`/`matches`/`around` are
   already contextual in `parseAspectBody` — neither reserves a keyword globally. New parse
-  diagnostics P0324–P0329 (malformed row clause) plus `L0326`/`P0326`-class checks that the
-  where-bound name is literally `TArgs`.
+  diagnostics P0324–P0330 (malformed row clause; P0330 added post-review for the empty-clause
+  case, `where TArgs has { }`), including `P0326` for a where-bound name that isn't `TArgs`.
 - **Weaver** (`weaver.l`): `bmodeGetOrBuildTemplateInfo` synthesises a `__LyricBModeArgs_<template>`
   record (fields = the row clause verbatim) once per template, mirroring the existing per-template
   `__LyricBModeCfg_<template>` record; `buildBModeSpecializedFunction` threads it in as an extra

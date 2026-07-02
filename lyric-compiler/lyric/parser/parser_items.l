@@ -2466,33 +2466,68 @@ func parseArgsRowField(st: inout ParseState): ArgsRowField {
   ArgsRowField(name = ns.name, ty = ty, span = joinSpans(startSpan, ty.span))
 }
 
+// P0331 — a row clause declares the same field name twice (#4620). Left
+// undetected, `bmodeSynthArgsRecordItem` (weaver.l) would emit two same-named
+// `RMField` members into the synthesised args record, surfacing as a
+// confusing downstream type-checker error instead of a clear parse-time one.
+func emitDuplicateArgsRowFieldDiags(st: inout ParseState, fields: in List[ArgsRowField]): Unit {
+  var i = 1
+  while i < fields.count {
+    var j = 0
+    var isDup = false
+    while j < i {
+      if fields[j].name == fields[i].name {
+        isDup = true
+      }
+      j = j + 1
+    }
+    if isDup {
+      emitErr(st, "P0331", "duplicate field '" + fields[i].name + "' in args row constraint", fields[i].span)
+    }
+    i = i + 1
+  }
+}
+
 // `where TArgs has { field: Type, ... }` (docs/56 D115): a row constraint
 // gating typed `args.<field>` access for a B'-mode `from`-instance template.
 // `TArgs` and `has` are contextual, recognised only in this exact position
 // (right after the around advice's return binder), mirroring how `from` /
 // `matches` / `around` are contextual in `parseAspectBody` rather than
 // reserved keywords — this doesn't reserve either word globally.
+//
+// Leading statement-ends are skipped before checking for `where` (#4619):
+// without this, a row clause written on its own line (the lexer inserts a
+// `TStmtEnd` after `ret`) would never be recognised — `where` would be
+// mistaken for the start of the next statement and the clause silently
+// dropped, with no diagnostic pointing at why. `parseAspectAround`'s own
+// `skipStmtEnds` call right after this one (for the "no row clause" case,
+// stmt-end before `{`) still runs; skipping twice is a harmless no-op.
 func parseArgsRowClauseOpt(st: inout ParseState): Option[List[ArgsRowField]] {
+  val _ = skipStmtEnds(st)
   if not isKw(peekToken(st), KwWhere) {
     None
   } else {
     val _ = advance(st)
     // 'where'
     val nameTok = peek(st)
-    val name = match tryEatIdent(st) {
-      case Some(ns) -> ns
-      case None -> {
-        emitErr(st, "P0325", "expected 'TArgs' after 'where' in around advice", nameTok.span)
-        NameAndSpan(name = "<error>", span = nameTok.span)
+    match tryEatIdent(st) {
+      case Some(ns) -> {
+        if ns.name != "TArgs" {
+          emitErr(
+            st,
+            "P0326",
+            "expected 'TArgs' in around advice where-clause (only the compiler-synthesised args type may be constrained here)",
+            ns.span
+          )
+        }
       }
-    }
-    if name.name != "TArgs" {
-      emitErr(
-        st,
-        "P0326",
-        "expected 'TArgs' in around advice where-clause (only the compiler-synthesised args type may be constrained here)",
-        name.span
-      )
+      case None -> {
+        // Missing identifier entirely — P0325 alone is the diagnostic; don't
+        // also fire P0326 for a synthesized "<error>" name that trivially
+        // isn't "TArgs" (that would be a second, misleading diagnostic on
+        // already-bad input).
+        emitErr(st, "P0325", "expected 'TArgs' after 'where' in around advice", nameTok.span)
+      }
     }
     val hasTok = peek(st)
     match tryEatIdent(st) {
@@ -2532,6 +2567,7 @@ func parseArgsRowClauseOpt(st: inout ParseState): Option[List[ArgsRowField]] {
       }
       forceAdvanceIfStuck(st, before)
     }
+    val closeSpan = peekSpan(st)
     match tryEatPunct(st, RBrace) {
       case Some(_) -> {
       }
@@ -2539,6 +2575,15 @@ func parseArgsRowClauseOpt(st: inout ParseState): Option[List[ArgsRowField]] {
         emitErr(st, "P0329", "expected '}' to close args row constraint", peekSpan(st))
       }
     }
+    if fields.count == 0 {
+      emitErr(
+        st,
+        "P0330",
+        "args row constraint must declare at least one field (`where TArgs has { field: Type }`)",
+        closeSpan
+      )
+    }
+    emitDuplicateArgsRowFieldDiags(st, fields)
     Some(value = fields)
   }
 }
