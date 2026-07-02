@@ -1032,7 +1032,7 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
     restored-bundle resolver).  Read D-N-014 and D-progress-540 alongside
     the plan.  Phase N2's core (records, unions, enums, distinct types,
     pattern matching, ARC insertion per `04-arc-design.md` Rules 1–7)
-    **shipped** in D-progress-542, verified by `llvm_heap_self_test.l`
+    **shipped** in D-progress-544, verified by `llvm_heap_self_test.l`
     whose ARC cases compile with `-fsanitize=address` so leaks /
     use-after-free / double-release fail the run; closures (N2.6) and
     `NativeWeak[T]` (N2.5, needs monomorphized `Option[T]`) remain.
