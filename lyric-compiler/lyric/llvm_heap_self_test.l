@@ -689,3 +689,29 @@ test "arc: NativeWeak upgrade returns Some while alive" {
   val r = compileAndRunAsan(src)
   assertEqualInt(r.exitCode, 15, "weak upgrade (ASan)")
 }
+
+test "arc: tuples construct, destructure, and release elements" {
+  val src = "package T\n" + "func minMax(a: in Int, b: in Int): (Int, Int) {\n" + "  if a < b {\n" + "    (a, b)\n" +
+    "  } else {\n" +
+    "    (b, a)\n" +
+    "  }\n" +
+    "}\n" +
+    "func labeled(n: in Int): (String, Int) {\n" +
+    "  (\"item-\" + n.toString(), n * 2)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val (lo, hi) = minMax(9, 4)\n" +
+    "  val pair: (String, Int) = labeled(5)\n" +
+    "  val (name, doubled) = pair\n" +
+    "  var acc = 0\n" +
+    "  var i = 0\n" +
+    "  while i < 300 {\n" +
+    "    val (s, d) = labeled(i)\n" +
+    "    acc = acc + s.length - s.length + d - i * 2\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  lo * 10 + hi + name.length + doubled + acc - 20\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 45, "tuples (ASan)")
+}
