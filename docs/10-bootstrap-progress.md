@@ -26382,11 +26382,11 @@ capture buffers) from `_kernel_native/` kernels.  Verified by an ASan
 self-test case (31 total) writing one secure-random byte through the
 returned `NativePtr[Byte]`.
 
-**Remaining (tracked as the rest of N4.2):** the mode checker's
+**Remaining (tracked in #4697):** the mode checker's
 `N0100` placement enforcement — `NativePtr[T]`/`nativeAddrOf` only in
 `_kernel_native/` packages and `@unsafe_ffi` functions, var-only
 operands, no escaping — is front-end work shared by all targets and
 lands with the mode-checker N4.2 slice.
 
 **Related:** D-progress-550, `native/plan/05-ffi-design.md`
-§nativeAddrOf.
+§nativeAddrOf, #4697.
