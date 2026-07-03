@@ -27658,8 +27658,10 @@ construct-naming diagnostic.
   lowers to `loadLocal("self")`).
 - **Tests**: new `llvm_self_test_n3.l` — nullary + parameterised dispatch,
   polymorphism (vtable selection), return-position upcast, String-returning
-  dispatch, and two ASan/LSan cases proving the interface box releases its
-  object leak-/double-free-free.
+  dispatch, Unit-returning dispatch (`void` ABI), one record implementing two
+  interfaces, and three ASan/LSan cases proving the interface box releases its
+  object leak-/double-free-free (single release, a 50-upcast loop, and an
+  interface stored in a record field). 10/10.
 - **Docs**: language reference native-surface paragraph; book
   `appendix-b-quick-reference.md`; decision log D-N-016; `native/plan`
   README + `08-work-items.md` marked shipped.

@@ -215,6 +215,14 @@ The synthesised destructor for a record/union/closure:
 
 ### Rule 8: Interface fat pointer values
 
+> **Superseded by D-N-016 (shipped, D-progress-568):** the value-type fat
+> pointer described here was **not** implemented. The shipped interface value
+> is a **heap-boxed** fat pointer `{ i32 rc, i8* dtor, i8* obj, vtable* }` — an
+> ordinary RC-managed object with an ARC header. Its retain/release accounting
+> is therefore the standard heap-object rules (Rule 1–7), not the special
+> value-type protocol below; the box's bespoke destructor releases the embedded
+> `obj`. See `docs/03-decision-log.md` §D-N-016.
+
 An interface fat pointer (`%Lyric.IAnimal = type { i8*, vtable* }`) is a
 **value type** — it has no ARC header and is never heap-allocated. However, the
 `i8* obj_ptr` field inside it points to an ARC-managed heap object. The
