@@ -7,6 +7,7 @@
 @runtime_checked
 package Std.Console
 
+import Std.Core
 import Std.Errors
 import Std.ConsoleHost
 
@@ -48,9 +49,9 @@ pub func error(s: in String): Unit {
 @stable(since = "1.0")
 pub func readLine(): Result[String, IOError] {
   return try {
-    match hostConsoleReadLine() {
-      case null -> Err(error = EndOfInput(source = "stdin"))
-      case line -> Ok(value = line)
+    match hostReadLineOpt() {
+      case Some(line) -> Ok(value = line)
+      case None -> Err(error = EndOfInput(source = "stdin"))
     }
   } catch Bug as b {
     Err(error = IoError(path = "stdin", message = b.message))

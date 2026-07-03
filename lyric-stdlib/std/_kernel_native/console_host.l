@@ -7,10 +7,10 @@
 //! which loop on EINTR/partial writes; console output stays a
 //! best-effort effect per Std.Console's contract.
 //!
-//! Console INPUT (`hostConsoleRead` / `hostConsoleReadLine`) is not yet
-//! available on the native target: `String?` nullable returns need the
-//! Phase N2 heap-type lowering.  `Std.Console.readLine` is therefore
-//! compile-time-unreachable on native until then (tracked in the
+//! Console INPUT (`hostConsoleRead` / `hostConsoleReadLine` / `hostReadLineOpt`,
+//! #4816) is not yet available on the native target: `String?` nullable
+//! returns need the Phase N2 heap-type lowering.  `Std.Console.readLine` is
+//! therefore compile-time-unreachable on native until then (tracked in the
 //! docs/10 native milestone notes).
 @axiom("POSIX write(2) via lyric-rt conforms to its documented contract")
 package Std.ConsoleHost

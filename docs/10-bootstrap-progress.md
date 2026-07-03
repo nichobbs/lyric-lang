@@ -27185,3 +27185,120 @@ regressions.
 
 **Related:** docs/44 m-67–m-69, epic #2663, #2669, #4799,
 D-progress-558.
+
+---
+
+### D-progress-560 — Migrate the remaining `case null` call sites off the self-hosted catch-all miscompile (issue #4775 item 1)
+
+**Shipped.** #4750/#4752 fixed `Std.Environment.getVar`'s `case null`
+miscompile (issue #4775: `null` is an ordinary identifier under the
+self-hosted lexer, so `case null -> ...` parses as `PBinding("null")` — a
+catch-all that always wins the first arm on both the MSIL and JVM
+backends) by routing it through a NUL-string-marker `??` seam
+(`hostGetVarOpt`) instead. That fix's own investigation flagged three
+more call sites still using the broken idiom directly; this closes item 1
+of #4775's remaining-work list for two of them and fixes a third,
+previously-undiscovered instance found while auditing the JVM kernel for
+more `case null` uses:
+
+- **`Std.Console.readLine` (`std/console.l`).** `case null -> Err(EndOfInput)`
+  as the first arm meant `readLine()` reported EOF on *every* call in any
+  self-hosted-compiled binary — real stdin input was never observed. New
+  `hostReadLineOpt(): Option[String]` seams in both `_kernel/console_host.l`
+  and `_kernel_jvm/console_host.l` mirror `hostGetVarOpt`'s `?? "\u{0000}"`
+  marker (a NUL byte cannot appear in a line `Console.ReadLine()` /
+  `BufferedReader.readLine()` actually returns — it terminates the read).
+  `readLine()` now matches `Some`/`None` instead of `null`/a bare binding.
+  Covered by the existing `console_roundtrip_jvm_main.l` CI job (pipes
+  `alpha\nbeta\n` and asserts the echoed lines + `eof-after:2`), which this
+  fix should turn from red to green.
+- **`_kernel_jvm/file_host.l`'s `listChildren` / `deleteRecursively`
+  (previously undocumented instance of the same bug).** Both used
+  `match d.listFiles() { case null -> ...; case _ -> ...iterate... }` —
+  the `case null` arm always won, so `hostEnumerateFiles`/
+  `hostEnumerateDirectories` (backing `Std.File.listFiles`/`listDirs`)
+  always returned empty, and `deleteRecursively` (backing
+  `Std.File.deleteDirRecursive`) never recursed into subdirectories,
+  silently leaving every descendant behind before the final `d.delete()`
+  no-oped on the non-empty directory. Both null/wildcard matches are
+  replaced with `d.listFiles() ?? []` — coalescing null straight to an
+  empty slice needs no branch at all here, since "no children" and "null"
+  were already handled identically. Covered by the existing
+  `file_jvm_self_test.l` "directory create, list, and recursive delete"
+  case (asserts `listFiles`/`listDirs` counts and that `deleteDirRecursive`
+  actually empties the tree), also CI-wired.
+
+**Bonus find: `??`'s JVM codegen had its own latent bug — three rounds.**
+The `file_host.l` fix's `d.listFiles() ?? []` was the first `??` use in
+the tree over a non-`String` lhs on `--target jvm`, and CI immediately
+caught a real `VerifyError` (`Operand stack underflow`) in
+`Std/FileHost.listChildren`. `BCoalesce`'s JVM lowering
+(`jvm/codegen/02_exprs.l`) `dup`-ed the lhs then ran straight into
+`if_acmpne` — a *binary* reference comparison that pops two operands —
+with no second value ever pushed; the declared-but-unused `nullL` label
+was the tell that this path was unfinished. Comparing lhs against its own
+duplicate is always reference-equal, so the branch never fired, and the
+unconditional `pop` on fallthrough popped an already-empty stack.
+
+The first fix attempt (pushing `aconst_null` before the compare,
+mirroring MSIL's one-operand `brfalse`) cleared the underflow but traded
+it for a second, subtler `VerifyError`: `Inconsistent stackmap frames`.
+`bytecode.l`'s `assembleCodeWithFrames` documents (and `LLabel`'s
+`resetStack` enforces) that **every branch target's StackMapTable frame
+is generated assuming an empty operand stack** — no codegen elsewhere in
+the JVM backend leaves a value on the stack across a branch to a shared
+join label; every existing ternary-shaped construct (`lowerMatchExpr`,
+`lowerIfExpr`) routes the join through a result *local slot* instead.
+`dup` + `if_acmpne`/`if_acmpeq` inherently leaves the tested value on the
+stack at the branch target, violating that invariant regardless of which
+comparison instruction is used. Final fix: store the lhs to a slot
+immediately, reload-and-test with the unary `ifnull` (which consumes
+its operand identically on both the branch and fallthrough paths, so no
+residual value survives to either target), and route both arms through a
+second result slot — matching the established pattern exactly. This was
+silently broken for every non-`String` `??` on JVM until this PR
+exercised one; `String` uses (`hostGetVarOpt`) happened to be the only
+shape previously compiled — same accidental narrow test coverage pattern
+as the original `case null` bug.
+
+That slot-based fix made the `Std.Console` (`String`) case pass, but
+`Std.File` (an array-typed `??`) hit a *third* `VerifyError`:
+`Instruction type does not match stack map` — `Object[]` vs `File[]` on
+the same result slot across the two arms. `coerceArgTo`'s existing
+`JArray` case (used for coercing List-typed values into `slice[T]`
+parameters, #4700) documents why: this codebase's uniform "slice ABI"
+for array-shaped values is `Object[]`, never the concrete element type —
+`d.listFiles()`'s auto-FFI-resolved concrete `File[]` return type and an
+empty-list-literal `[]` RHS (which can only ever lower to `ArrayList` →
+`.toArray(): Object[]`) can never agree on a *concrete* element type, but
+both are Object[]-covariant. Final fix: when the join type is an array,
+normalize the result slot (and `BCoalesce`'s own reported type) to
+`JArray(Object)` and route both arms through `coerceArgTo` — a no-op
+bytecode-wise for the already-array lhs (ref-array covariance needs no
+cast) and the existing `ArrayList.toArray()` conversion for the rhs. The
+`String`/general-object path is unaffected (`coerceArgTo`'s normalization
+only triggers for `JArray` lhs types).
+
+That normalization traded the `VerifyError` for a *compile-time* one:
+`Std.FileHost.listChildren`'s `children[i].isFile()` now failed auto-FFI
+resolution (`no matching instance or inherited method for
+'java.lang.Object.isFile()'`) — `children`'s erasure to `Object[]` means
+an unannotated `val c = children[i]` carries the erased `Object` static
+type into the member call. `LBLet`/`LBVal`'s existing lowering (05_stmts.l)
+already `coerceArgTo`s an initialiser to an explicit annotation's type,
+inserting a `checkcast` when they differ — so `val c: JFile =
+children[i]` (rather than the unannotated `val c = ...`) is enough to
+recover the concrete type at the one place each loop needs it, with no
+further codegen changes. Both `listChildren` and `deleteRecursively`
+needed the annotation.
+
+**Not done (out of scope here, still tracked in #4775):** `std/path.l:73`'s
+`hostPathGetDirectoryName` uses `?? ""` rather than `case null`, so it
+doesn't hit this exact miscompile, but conflates an empty result with an
+unset one (item 1's third bullet) — left for a follow-up. Item 3 (reject
+`null` in pattern position once no real usage remains) and item 4
+(D107 Option-coercion in-bundle wiring) are unaffected by this change.
+
+**Related:** #4775, #4750, #4752, #4698, #4738 (W0007 — the diagnostic that
+led to discovering this class of bug via publish run #1774→#1775),
+D-progress-544, D-progress-553, D-progress-554.

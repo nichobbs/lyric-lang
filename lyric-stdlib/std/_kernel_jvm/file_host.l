@@ -143,16 +143,15 @@ func listChildren(path: in String, kind: in Int): slice[String] {
   // `listFiles()` returns NULL (not an empty array) for a non-directory or
   // an I/O error (#4781) — treat both as "no children" rather than NPE;
   // Std.File's callers surface missing directories via their own probes.
-  val children = d.listFiles()
-  match children {
-    case null -> {
-      return out2.toArray()
-    }
-    case _ -> ()
-  }
+  // Coalesced to [] rather than tested via `case null`, a catch-all miscompile (#4775).
+  val children = d.listFiles() ?? []
   var i = 0
   while i < children.count {
-    val c = children[i]
+    // Explicit annotation forces a checkcast: the ?? coalesce normalizes
+    // `children` to the Object[] slice ABI (#4816), so an unannotated
+    // binding here would carry an erased Object receiver into `.isFile()`/
+    // `.isDirectory()`/`.getPath()`, which auto-FFI cannot resolve.
+    val c: JFile = children[i]
     var keep = true
     if kind == 1 {
       keep = c.isFile()
@@ -257,16 +256,14 @@ pub func hostDeleteDirectoryRecursive(path: in String, recursive: in Bool): Unit
 func deleteRecursively(path: in String): Unit {
   val d = JFile.new(path)
   if d.isDirectory() {
-    val children = d.listFiles()
-    match children {
-      case null -> ()
-      case _ -> {
-        var i = 0
-        while i < children.count {
-          deleteRecursively(children[i].getPath())
-          i = i + 1
-        }
-      }
+    // Coalesced to [] rather than tested via `case null`, a catch-all miscompile (#4775).
+    val children = d.listFiles() ?? []
+    var i = 0
+    while i < children.count {
+      // Explicit annotation forces a checkcast — see listChildren (#4816).
+      val c: JFile = children[i]
+      deleteRecursively(c.getPath())
+      i = i + 1
     }
   }
   d.delete()

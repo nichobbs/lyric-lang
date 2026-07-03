@@ -2326,6 +2326,34 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/datetime_tostring_self_test.l
 
+      # Std.Console stdin/stdout/stderr round-trip on --target dotnet (#4816/
+      # #4817) — the MSIL-target counterpart to the JVM job's
+      # `console_roundtrip_jvm_main.l` check.  First executable proof that
+      # `_kernel/console_host.l`'s `hostReadLineOpt` seam (added in #4816 to
+      # replace the `case null` idiom the self-hosted MSIL/JVM backends
+      # miscompile as an unconditional catch-all, #4775) actually observes
+      # real stdin input rather than reporting EOF on every call.  A plain
+      # program because TAP tests have no stdin.
+      - name: Std.Console round-trip on dotnet (lyric build --target dotnet)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping console dotnet round-trip"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          "$lyric_bin" build lyric-compiler/msil/console_roundtrip_msil_main.l --target dotnet -o "$work/console.dll"
+          cp bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/Lyric.Stdlib*.dll "$work/"
+          out="$(cd "$work" && printf 'alpha\nbeta\n' | dotnet exec console.dll 2>"$work/err.txt")"
+          echo "$out"
+          printf '%s\n' "$out" | grep -qx "echo:alpha" || { echo "::error::alpha echo missing"; exit 1; }
+          printf '%s\n' "$out" | grep -qx "echo:beta" || { echo "::error::beta echo missing"; exit 1; }
+          printf '%s\n' "$out" | grep -qx "eof-after:2" || { echo "::error::EOF line count wrong"; exit 1; }
+          grep -qx "err-line" "$work/err.txt" || { echo "::error::stderr line missing"; exit 1; }
+
   # Release Native AOT end-to-end — `lyric build --release` compiles a
   # hello-world Lyric program to a self-contained native binary via
   # `dotnet publish -p:PublishAot=true` and asserts it executes correctly

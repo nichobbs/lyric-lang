@@ -54,6 +54,16 @@ pub func hostConsoleReadLine(): String? {
   stdinReader.readLine()
 }
 
+// Option seam avoiding `case null`'s catch-all miscompile (#4775); NUL-marker mirrors `hostGetVarOpt` (#4750).
+pub func hostReadLineOpt(): Option[String] {
+  val v = hostConsoleReadLine() ?? "\u{0000}"
+  if v == "\u{0000}" {
+    None
+  } else {
+    Some(value = v)
+  }
+}
+
 pub func hostConsoleErrorWriteLine(text: in String): Unit {
   val e = JSystem.err
   e.println(text)
