@@ -1691,6 +1691,10 @@ jobs:
       # lowering_token_self_test.l (#2473) covers the listTokensForLowering /
       # dictTokensForLowering cache hit/miss logic in Msil.Lowering; it rides
       # the same step because it imports `Msil.*` like M2a-M2d.
+      # metadata_reader_self_test.l (#4751, #4786) verifies refPackDir() and
+      # refPackDirDebugInfo() agree via Msil.MetadataReader; converted from a
+      # plain `func main` program requiring LYRIC_LOAD_COMPILER=1 to
+      # @test_module, so it now rides this step for the same reason.
       #
       # INVARIANT: this step stages compiler DLLs into `<libdir>/selfhosted`
       # while running as a `background: true` step alongside 22+ other
@@ -1725,7 +1729,8 @@ jobs:
             lyric-compiler/msil/msil_self_test_m2d.l \
             lyric-compiler/msil/msil_self_test_m88.l \
             lyric-compiler/msil/msil_bracket_arg_self_test.l \
-            lyric-compiler/msil/lowering_token_self_test.l ; do
+            lyric-compiler/msil/lowering_token_self_test.l \
+            lyric-compiler/msil/metadata_reader_self_test.l ; do
             echo "=== $t ==="
             "$lyric_bin" test --target dotnet "$t"
             ran="$ran $t"
