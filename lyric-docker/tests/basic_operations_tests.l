@@ -154,3 +154,53 @@ test "isValidContainerId accepts a valid 64-char lowercase hex ID" {
   val fullId = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   assertTrue(Lyric.Docker.isValidContainerId(fullId), "Valid full-form ID is accepted")
 }
+
+// ─── JSON escape / unescape Tests ───────────────────────────────────────────
+// jsonEscapeValue/jsonUnescapeValue are private; exercised indirectly through
+// createContainerBody (escape direction) and extractJsonField (decode
+// direction), the same public entry points createContainer uses (#4535).
+
+test "createContainerBody escapes a control character as a 4-digit unicode escape" {
+  // 0x01 (SOH) is not one of the named escapes (quote, backslash, newline,
+  // carriage return, tab, backspace, form feed), so it must fall through
+  // jsonEscapeValue's `code >= 0 and code < 32` branch and render as a
+  // literal backslash-u-zero-zero-zero-one escape sequence.
+  val body = Lyric.Docker.createContainerBody("\u{0001}", [], [])
+  val expected = "{\"Image\":\"" + "\\u0001" + "\",\"Env\":[],\"HostConfig\":{\"Binds\":[]}}"
+  assertEqual(body, expected, "Control character 0x01 is escaped as a 4-digit unicode escape in the JSON body")
+}
+
+test "createContainerBody round-trips control characters through extractJsonField" {
+  // Round-trip through the real escape (createContainerBody) and decode
+  // (extractJsonField) paths together, so the assertion doesn't depend on
+  // guessing jsonUnescapeValue's exact intermediate hex formatting.
+  val image = "abc\u{0001}def\u{001f}ghi"
+  val body = Lyric.Docker.createContainerBody(image, [], [])
+  val extracted = Lyric.Docker.extractJsonField(body, "Image")
+  assertEqual(extracted, image, "Control characters round-trip through escape + decode unchanged")
+}
+
+test "createContainerBody round-trips a named escape (backspace) through extractJsonField" {
+  val image = "foo\u{0008}bar"
+  val body = Lyric.Docker.createContainerBody(image, [], [])
+  val extracted = Lyric.Docker.extractJsonField(body, "Image")
+  assertEqual(extracted, image, "Named escape \\b round-trips through escape + decode unchanged")
+}
+
+test "extractJsonField decodes a \\uXXXX escape for a control character" {
+  val body = "{\"Id\":\"a\\u0001b\"}"
+  val extracted = Lyric.Docker.extractJsonField(body, "Id")
+  assertEqual(extracted, "a\u{0001}b", "\\u0001 decodes back to the raw control character")
+}
+
+test "extractJsonField decodes a \\uXXXX escape for a non-ASCII character" {
+  val body = "{\"Id\":\"caf\\u00e9\"}"
+  val extracted = Lyric.Docker.extractJsonField(body, "Id")
+  assertEqual(extracted, "caf\u{00e9}", "\\u00e9 decodes back to the Unicode character e-acute")
+}
+
+test "extractJsonField returns empty string when the field is absent" {
+  val body = "{\"Other\":\"value\"}"
+  val extracted = Lyric.Docker.extractJsonField(body, "Id")
+  assertEqual(extracted, "", "Missing field yields an empty string")
+}

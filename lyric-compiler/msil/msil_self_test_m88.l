@@ -6,6 +6,7 @@
 package Lyric.ConstructorShorthand
 
 import Std.Core
+import Std.Collections
 import Std.Testing
 
 extern type SBld = "System.Text.StringBuilder"
@@ -99,5 +100,32 @@ test "String.trimStart() removes only leading whitespace" {
 test "String.trimEnd() removes only trailing whitespace" {
   assertEqual("  hello  ".trimEnd(), "  hello", "trimEnd trims trailing only")
   assertEqual("hello".trimEnd(), "hello", "trimEnd is a no-op with no trailing whitespace")
+}
+
+// Regression coverage for `break` inside a `for` loop over an
+// `MExternEnumerable` (the non-generic `IEnumerable`/`IEnumerator` protocol
+// used by `mapKeys`/`mapValues`, #3511).  PR #4754 wrapped this loop shape in
+// a try/finally so the `IEnumerator` is disposed on exhaustion or early
+// `break` (#4594).  `break` exits the try/finally via `emitLoopJumpMsil`,
+// which must emit `leave` (not a plain `br`) to cross the protected-region
+// boundary — a `br` straight out of a try/finally is invalid MSIL that
+// throws at assembly load time (#4769).  This test does not (and cannot,
+// from within the language) directly observe which opcode was emitted; it
+// exercises the path end-to-end — if `emitLoopJumpMsil` emitted `br` here,
+// the compiled assembly would fail IL verification before this test body
+// ever ran, rather than merely producing the wrong count.
+test "break inside an extern-enumerable for-loop (mapKeys) exits early" {
+  val m: Map[String, Int] = newMap()
+  m.add("a", 1)
+  m.add("b", 2)
+  m.add("c", 3)
+  var count = 0
+  for _k in mapKeys(m) {
+    count = count + 1
+    if count == 2 {
+      break
+    }
+  }
+  assertEqualInt(count, 2, "loop stops after the second key regardless of enumeration order")
 }
 

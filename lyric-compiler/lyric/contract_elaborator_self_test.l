@@ -808,6 +808,99 @@ test "multiple old() snapshots get distinct names" {
   assertEqual(letName(blk.statements[1]), "__old_1", "multi-old: stmt[1] is __old_1")
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// #4776: `canonicalizeFileUnitAliases` pre-pass (fix for #4717) — an
+// `import Std.Core as X` alias used as `X.Unit` in a return-type position
+// must be rewritten to the canonical 3-segment `Std.Core.Unit` path before
+// elaboration, so `isVoidReturn` sees it as a void return exactly like the
+// unaliased `Unit` / `Std.Core.Unit` spellings.  Before the pre-pass,
+// `isUnitTypeExpr` didn't recognise the 2-segment aliased form, so a
+// function with `ensures:` and an aliased `Core.Unit` return type was
+// treated as *non*-void by `rewriteTrailingSExpr`: it wrapped the trailing
+// expression in `let __lyric_result_N = <trailing-expr>` (the value-typed
+// path) instead of emitting the expression as a bare statement followed by
+// a result-free ensures assert (the void path) — see `rewriteTrailingSExpr`
+// (elaborator.l) for both branches.  These tests pin the void-path shape
+// (no synthetic `let`, ensures assert comes after the trailing statement)
+// for both aliased spellings, and pin the *absence* of canonicalization
+// for a non-`Std.Core` alias (guards the #3636 false-positive regression).
+// ─────────────────────────────────────────────────────────────────────────────
+func retIsThreeSegmentStdCoreUnit(fn: in FunctionDecl): Bool {
+  match fn.ret {
+    case Some(te) -> {
+      match te.kind {
+        case TRef(path) -> path.segments.count == 3 and path.segments[0] == "Std" and path.segments[1] == "Core" and path.segments[2] == "Unit"
+        case _ -> false
+      }
+    }
+    case None -> false
+  }
+}
+
+func retIsTwoSegmentPath(fn: in FunctionDecl, seg0: in String, seg1: in String): Bool {
+  match fn.ret {
+    case Some(te) -> {
+      match te.kind {
+        case TRef(path) -> path.segments.count == 2 and path.segments[0] == seg0 and path.segments[1] == seg1
+        case _ -> false
+      }
+    }
+    case None -> false
+  }
+}
+
+test "aliased Std.Core.Unit return (default alias name) is canonicalized" {
+  val src = "package P\n" + "import Std.Core as Core\n" + "func f(): Core.Unit\n" + "  ensures: true\n" + "{\n" +
+    "  7\n" +
+    "}\n"
+  val file = parseAndElaborate(src)
+  val fn = firstFunction(file, "f")
+  // The return-type annotation itself must be rewritten to the canonical
+  // 3-segment `Std.Core.Unit` form.
+  assertTrue(retIsThreeSegmentStdCoreUnit(fn), "core-alias: ret rewritten to Std.Core.Unit")
+  val blk = bodyBlockOf(fn)
+  // Void path: [0] = SExpr(7) (no synthetic let), [1] = assert(true).
+  // A dropped/misgated pre-pass would instead produce the non-void shape:
+  // [let __lyric_result_0 = 7, assert(true), __lyric_result_0] (3 stmts).
+  assertEqualInt(blk.statements.count, 2, "core-alias: void-path shape (2 stmts, no result binding)")
+  assertTrue(not isLetBinding(blk.statements[0]), "core-alias: stmt[0] is not a synthetic let-binding")
+  assertTrue(isAssertCall(blk.statements[1]), "core-alias: stmt[1] is the ensures assert")
+}
+
+test "aliased Std.Core.Unit return (custom alias name) is canonicalized" {
+  val src = "package P\n" + "import Std.Core as SC\n" + "func f(): SC.Unit\n" + "  ensures: true\n" + "{\n" +
+    "  7\n" +
+    "}\n"
+  val file = parseAndElaborate(src)
+  val fn = firstFunction(file, "f")
+  assertTrue(retIsThreeSegmentStdCoreUnit(fn), "custom-alias: ret rewritten to Std.Core.Unit")
+  val blk = bodyBlockOf(fn)
+  assertEqualInt(blk.statements.count, 2, "custom-alias: void-path shape (2 stmts, no result binding)")
+  assertTrue(not isLetBinding(blk.statements[0]), "custom-alias: stmt[0] is not a synthetic let-binding")
+  assertTrue(isAssertCall(blk.statements[1]), "custom-alias: stmt[1] is the ensures assert")
+}
+
+test "non-Std.Core alias is not canonicalized" {
+  // Guards the #3636 false-positive regression: a 2-segment `Core.Unit`
+  // path whose alias resolves to a package other than `Std.Core` must be
+  // left untouched, and the function must take the non-void elaboration
+  // path (result-binding + result-typed ensures assert).
+  val src = "package P\n" + "import SomeOtherPkg as Core\n" + "func f(): Core.Unit\n" + "  ensures: true\n" + "{\n" +
+    "  7\n" +
+    "}\n"
+  val file = parseAndElaborate(src)
+  val fn = firstFunction(file, "f")
+  // ret must remain the original 2-segment `Core.Unit` path — unchanged.
+  assertTrue(retIsTwoSegmentPath(fn, "Core", "Unit"), "non-core-alias: ret left as 2-segment Core.Unit")
+  val blk = bodyBlockOf(fn)
+  // Non-void path: [let __lyric_result_0 = 7, assert(true), __lyric_result_0].
+  assertEqualInt(blk.statements.count, 3, "non-core-alias: non-void-path shape (3 stmts, result binding present)")
+  assertTrue(isLetBinding(blk.statements[0]), "non-core-alias: stmt[0] is a synthetic let-binding")
+  assertEqual(letName(blk.statements[0]), "__lyric_result_0", "non-core-alias: synthetic result name")
+  assertTrue(isAssertCall(blk.statements[1]), "non-core-alias: stmt[1] is the ensures assert")
+  assertTrue(isTrailingPathSExpr(blk.statements[2], "__lyric_result_0"), "non-core-alias: stmt[2] yields synthetic local")
+}
+
 test "old() in range bounds creates snapshot" {
   // Regression for #2990: replaceOldExpr had a shadowing `case ERange(_) -> e`
   // arm that prevented the recursive arm from ever running, leaving EOld nodes

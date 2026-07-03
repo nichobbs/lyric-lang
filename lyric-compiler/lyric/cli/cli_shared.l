@@ -561,6 +561,29 @@ func copyRestoredDepDlls(outPath: in String, restoredDlls: in List[String]): Uni
   }
 }
 
+// Pure decision logic behind `warnIfNugetUnresolved`: `Some(reason)` when
+// the manifest declares `[nuget]` entries but no assemblies resolved,
+// `None` when there is nothing to warn about.  `reason` distinguishes
+// "was not found" (no `project.assets.json` — never restored) from "is
+// stale or could not be resolved" (the file exists but parsed to zero
+// assemblies — stale or corrupt), per #4326.  Split out from
+// `warnIfNugetUnresolved` so the decision can be asserted directly in
+// tests without capturing stderr output (#4770).
+pub func nugetUnresolvedReason(mfDir: in String, nugetOpt: in Option[Mf.NugetSection], nugetPaths: in List[String]): Option[String] {
+  match nugetOpt {
+    case Some(nugetSec) -> {
+      if nugetSec.entries.count > 0 and nugetPaths.count == 0 {
+        val assetsPath = Path.join(Path.join(mfDir, "obj"), "project.assets.json")
+        val reason = if File.fileExists(assetsPath) { "is stale or could not be resolved" } else { "was not found" }
+        Some(value = reason)
+      } else {
+        None
+      }
+    }
+    case None -> None
+  }
+}
+
 // Warn if the manifest declares `[nuget]` entries but no resolved
 // assemblies — whether because `project.assets.json` is missing (never
 // restored) or present but stale/corrupt (resolves to zero assemblies).
@@ -570,16 +593,12 @@ func copyRestoredDepDlls(outPath: in String, restoredDlls: in List[String]): Uni
 // `cmdTestManifest` (cli_test.l) so the two build paths give the same
 // diagnostic instead of silently drifting apart (#4325).
 pub func warnIfNugetUnresolved(mfDir: in String, nugetOpt: in Option[Mf.NugetSection], nugetPaths: in List[String]): Unit {
-  match nugetOpt {
-    case Some(nugetSec) -> {
-      if nugetSec.entries.count > 0 and nugetPaths.count == 0 {
-        val assetsPath = Path.join(Path.join(mfDir, "obj"), "project.assets.json")
-        val reason = if File.fileExists(assetsPath) { "is stale or could not be resolved" } else { "was not found" }
-        printErr(
-          "warning: [nuget] dependencies declared but project.assets.json " + reason + ". " +
-            "Run 'lyric restore' or 'dotnet restore' to resolve NuGet dependencies."
-        )
-      }
+  match nugetUnresolvedReason(mfDir, nugetOpt, nugetPaths) {
+    case Some(reason) -> {
+      printErr(
+        "warning: [nuget] dependencies declared but project.assets.json " + reason + ". " +
+          "Run 'lyric restore' or 'dotnet restore' to resolve NuGet dependencies."
+      )
     }
     case None -> ()
   }

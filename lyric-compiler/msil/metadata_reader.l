@@ -2543,6 +2543,16 @@ pub func decodeExternMethodSigIn(
   val mr = methodRange(img, layout, th, typeRow)
   var instanceMatch: Option[DecodedMethodSig] = None
   var staticMatch: Option[DecodedMethodSig] = None
+  // Selection here is by (name, arity) only — it cannot distinguish two BCL
+  // overloads with the same name and the same parameter count (e.g.
+  // `ConcurrentDictionary.GetOrAdd(TKey,TValue)` vs `GetOrAdd(TKey,Func)`).
+  // The first arity-matching row wins silently.  These counters detect that
+  // ambiguity (without changing which overload is picked, to avoid
+  // disturbing the resolution every currently-exercised extern relies on)
+  // so an ambiguous case fails loudly via W0008 instead of silently binding
+  // to whichever overload happens to come first in the Method table (#3436).
+  var instanceMatchCount = 0
+  var staticMatchCount = 0
   var mi = mr.start
   while mi <= mr.endRow {
     val md = readMethodDef(img, layout, mi)
@@ -2567,6 +2577,7 @@ pub func decodeExternMethodSigIn(
           // Instance overload: the receiver is the implicit `this`, so the BCL
           // method has one fewer parameter than the Lyric wrapper.
           if normParams.count == declArity - 1 {
+            instanceMatchCount = instanceMatchCount + 1
             match instanceMatch {
               case None -> {
                 instanceMatch = Some(value = normSig)
@@ -2574,6 +2585,7 @@ pub func decodeExternMethodSigIn(
               case Some(_) -> ()
             }
           } else if normParams.count == declArity {
+            staticMatchCount = staticMatchCount + 1
             match staticMatch {
               case None -> {
                 staticMatch = Some(value = normSig)
@@ -2585,6 +2597,24 @@ pub func decodeExternMethodSigIn(
       }
     }
     mi = mi + 1
+  }
+  // Only the resolution path actually taken below (instance wins over static
+  // when both are present) can be ambiguous in a way that matters — a
+  // multi-candidate static count is irrelevant when an unambiguous instance
+  // match was returned instead, and vice versa (#4792).
+  val takenCount = match instanceMatch {
+    case Some(_) -> instanceMatchCount
+    case None -> staticMatchCount
+  }
+  if takenCount > 1 {
+    Console.error(
+      "W0008: decodeExternMethodSigIn: '" + typeFqn + "." + member + "' has " +
+        toString(takenCount) +
+        " overloads matching the declared arity — arity-only selection cannot " +
+        "distinguish same-name same-arity BCL overloads (e.g. GetOrAdd(TKey,TValue) vs " +
+        "GetOrAdd(TKey,Func)); the first one found in the Method table was used, which " +
+        "may not be the intended overload"
+    )
   }
   match instanceMatch {
     case Some(s) -> Some(value = s)
