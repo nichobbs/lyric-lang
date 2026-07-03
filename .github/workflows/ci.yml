@@ -536,13 +536,16 @@ jobs:
       # draft to ready-for-review by the CI gate workflow, which only fires after
       # every required check passes — confirming the runner honours both properties.
       #
-      # Peak concurrency (#4486): this job currently launches 38 `background: true`
+      # Peak concurrency (#4486, #4841): this job launches ~20 `background: true`
       # steps before its first `wait-all: true` barrier, each running an in-process
-      # self-hosted compilation (Msil.Bridge / Jvm.Bridge) via `lyric test`.  CI has
-      # been green at this concurrency on the standard `ubuntu-latest` runner; if a
-      # future addition here starts producing non-deterministic OOM-kill failures,
-      # the fix is to split this step list across two or more `wait-all: true`
-      # barriers (sub-batching) rather than reverting to fully sequential steps.
+      # self-hosted compilation (Msil.Bridge / Jvm.Bridge) via `lyric test`.  This
+      # group was previously a single ~36-38-step batch; PR #4810 hit exactly the
+      # failure mode this comment anticipated (concurrent-output/status corruption
+      # for unrelated, already-passing steps, reproducible across CI runs) and
+      # split it into two ~18-step batches (this one, then a second below its
+      # barrier) per the sub-batching contingency already documented here. If a
+      # future addition reproduces the same symptom again, split further rather
+      # than reverting to fully sequential steps.
       - name: Weaver self-test (native lyric test)
         background: true
         working-directory: ${{ github.workspace }}
@@ -1155,6 +1158,19 @@ jobs:
           LYR
           run_fixture "F0024" "f0024_fixture.l"
           echo "all F0020–F0024 negative tests passed"
+
+      # Sub-batch barrier (#4841): the 36-step background:true group above
+      # reproducibly corrupted output/status tracking for unrelated,
+      # already-passing steps under this job's full peak concurrency — two
+      # different steps across two CI runs on PR #4810 showed clean TAP
+      # output (0 failures) yet were reported "Failed" by wait-all, and one
+      # run showed a step's captured output containing another step's TAP
+      # stream, indicating concurrent-output misattribution rather than a
+      # real test defect. Splitting into two ~18-step batches (this barrier,
+      # then the group below, then the existing barrier further down) halves
+      # peak concurrency for this job's parallel section.
+      - name: Wait for first half of parallel tests
+        wait-all: true
 
       # Synthesized-method-resolution self-test (#1499, #1507).
       # Verifies that compiler-synthesized named methods (protected-type entries,
