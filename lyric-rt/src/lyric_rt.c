@@ -16,6 +16,14 @@ void* lyric_alloc(uint64_t size) {
     return p;
 }
 
+/* Free a raw buffer obtained from lyric_alloc that is NOT an ARC object with a
+ * header (e.g. a protected type's runtime-sized pthread_mutex_t buffer, which
+ * is pointed to by the object rather than embedded — see D-N-017). ARC objects
+ * are freed by lyric_release, never this. */
+void lyric_free(void* p) {
+    free(p);
+}
+
 void lyric_retain(void* obj) {
     if (!obj) return;
     LyricObjectHeader* h = (LyricObjectHeader*)obj;
