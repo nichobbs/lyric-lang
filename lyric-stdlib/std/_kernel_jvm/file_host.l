@@ -254,6 +254,12 @@ pub func hostDeleteDirectoryRecursive(path: in String, recursive: in Bool): Unit
   }
 }
 
+// KNOWN LIMITATION (#4840): `File.isDirectory()` follows symlinks, so a
+// symlink pointing at a directory is recursed into and its target's
+// contents deleted — the same hazard the native twin guards against with
+// an lstat probe (#4833).  The parity fix (gate on
+// `java.nio.file.Files.isSymbolicLink`) is tracked in #4840; the leaf
+// `d.delete()` already removes a symlink as a link.
 func deleteRecursively(path: in String): Unit {
   val d = JFile.new(path)
   if d.isDirectory() {
