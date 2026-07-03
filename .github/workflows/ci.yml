@@ -1931,6 +1931,32 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/self_method_call_self_test.l
 
+      # Implicit-self record-method self-test on the MSIL target (mirrors
+      # implicit_self_jvm_self_test.l, already wired below for --target jvm).
+      # Pins #4947: a D037 in-body method (a bare `func` inside a record
+      # body) was silently dropped from MSIL emission while the entry-point
+      # pre-scan still reserved a MethodDef row for it, desyncing every
+      # MethodDef token computed afterwards — including the `@test_module`'s
+      # synthesised `main` — and corrupting the assembly's EntryPointToken
+      # (`dotnet exec` then threw `MissingMethodException: Entry point not
+      # found`).  This is the first --target dotnet self-test to exercise an
+      # in-body method, so it is the regression guard for that class of bug.
+      - name: Implicit-self record-method self-test (native lyric test, #4947)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping implicit-self record-method self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping implicit-self record-method self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/implicit_self_msil_self_test.l
+
       # Named-arg-order self-test — pins D-progress-357: record construction with
       # named arguments out of declaration order stored values into the wrong
       # field slots (invalid IL / cross-typed fields).  MSIL target only.

@@ -49,6 +49,38 @@ record Rect {
   }
 }
 
+// 4. Intra-record sibling method dispatch: one in-body method calling
+// another, via `self.other(arg)` and bare `other(arg)`.  Exercises the same
+// `cctx.methodTokens` / `methodParamTypes` registry external calls use
+// (#4947) — including the argument-taking case that previously
+// mis-registered parameter types when `self` was accidentally counted as a
+// real parameter.
+record Wrapper {
+  base: Int
+  func addTo(x: in Int): Int {
+    return self.base + x
+  }
+  func viaSelf(x: in Int): Int {
+    return self.addTo(x) * 2
+  }
+  func viaBare(x: in Int): Int {
+    return addTo(x) * 2
+  }
+}
+
+// 5. Exposed record (host-visible DTO) with in-body methods — exercises the
+// IExposedRec arm of `addPackageTokens` / the shared `lowerRecordMsil`, not
+// just IRecord (#4947).
+exposed record Money {
+  cents: Int
+  func dollars(): Int {
+    return self.cents / 100
+  }
+  func plus(extraCents: in Int): Int {
+    return self.cents + extraCents
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -76,4 +108,24 @@ test "implicit self vs explicit self" {
   val r = Rect(width = 5, height = 10)
   assertEqualInt(r.area(), 50, "Rect(5, 10).area() == 50")
   assertEqualInt(r.perimeter(), 30, "Rect(5, 10).perimeter() == 30")
+}
+
+test "intra-record sibling dispatch: self.other(arg)" {
+  val w = Wrapper(base = 10)
+  assertEqualInt(w.viaSelf(5), 30, "Wrapper(10).viaSelf(5) == (10+5)*2 == 30")
+}
+
+test "intra-record sibling dispatch: bare other(arg)" {
+  val w = Wrapper(base = 10)
+  assertEqualInt(w.viaBare(5), 30, "Wrapper(10).viaBare(5) == (10+5)*2 == 30")
+}
+
+test "exposed record: implicit self zero-arg method" {
+  val m = Money(cents = 1050)
+  assertEqualInt(m.dollars(), 10, "Money(1050).dollars() == 10")
+}
+
+test "exposed record: implicit self method with argument" {
+  val m = Money(cents = 1050)
+  assertEqualInt(m.plus(25), 1075, "Money(1050).plus(25) == 1075")
 }

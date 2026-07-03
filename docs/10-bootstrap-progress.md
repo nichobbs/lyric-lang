@@ -27769,3 +27769,88 @@ source-build sandbox `System.Convert.ToSingle(Double)` is AOT-trimmed from the
 CLI binary (D-progress-543), so a `Float` literal cannot be JVM-compiled to
 verify locally; the `JFloat` unbox path is structurally identical to the tested
 `JDouble` one (#4932 Float half tracked).  Resolves docs/44 m-79.
+
+### D-progress-572 — MSIL: in-body record method (D037) no longer corrupts entry-point emission (#4947)
+
+**Shipped.** Fixes #4947: on `--target dotnet`, any program that both defined
+a D037 in-body method (a bare `func` directly inside a `record`/type body)
+and had an executable `main` failed at runtime with `System.MissingMethodException:
+Entry point not found`, even though the build itself succeeded. `--target
+jvm` was unaffected.
+
+**Root cause.** `addPackageTokens` (`msil/codegen.l`) pre-scans the AST to
+predict every MethodDef row number before real codegen runs — including
+reserving one row per `RMFunc` (in-body method) member and, separately,
+capturing `main`'s predicted token for the assembly's `EntryPointToken`.
+`lowerRecordMsil` never actually lowered `RMFunc` members: it silently
+dropped them, always returning an empty `methods` list for the record's
+`MRecord`. Every in-body method therefore inflated the pre-scan's row
+counter by one with no matching MethodDef row ever written, desyncing every
+token computed afterwards in source order — including `main`'s — from the
+row it would actually occupy. The `EntryPointToken` baked into the PE ended
+up naming the wrong (or a nonexistent) MethodDef row, so the CLR loader
+rejected the assembly before any IL ran.
+
+**Fix.** `lowerRecordMsil` now lowers each `RMFunc` member via a new
+`lowerRecordMethodMsil`, appending one real `MFunc` per member (in
+declaration order) to the record's `methods` list — bringing real emission
+back in sync with the row budget `addPackageTokens` already reserved.
+`lowerRecordMethodMsil` mirrors `lowerImplMethodMsil`'s slot-0-is-`this`
+convention (the parser's `injectSelfIfNeeded` already prepends an explicit
+`self: in Type` as `decl.params[0]`, and `self` references in the body parse
+as the dedicated `ESelf` node, which reads `ldarg.0` regardless of any name
+binding), but emits a plain public instance method — no `Virtual`/`Final`/
+`NewSlot`, since an in-body method satisfies no interface slot (the call-site
+dispatch through `cctx.methodTokens` always emits `callvirt`, which is legal
+against a non-virtual instance method too).
+
+**Second, previously-latent bug found by CI running the new test.** Fixing
+the entry-point corruption let `implicit_self_msil_self_test.l` actually run
+for the first time on `--target dotnet`, which surfaced a second, independent
+bug: calls to an in-body method taking ≥1 real parameter (`a.add(20)`,
+`a.fma(6, 7)`) crashed with `InvalidProgramException`, while zero-real-param
+methods (`c.get()`) worked. `addPackageTokens`' RMFunc reservation called
+`registerMethodParamTypes`/`registerMethodParamModes` with `fn.params`
+as-is — which, unlike an `impl` method's params, includes the injected
+`self` at index 0 — so the registered type/mode at index *i* was really the
+*(i-1)*th real parameter's (index 0 held `self`'s class type). The call-site
+dispatch in `lowerMethodCallMsil` indexes by real-argument position
+(`args.count`, `args[i]`, never counting the receiver), so every lookup was
+off by one: an `Int` argument's slot returned `self`'s reference-type class,
+`isValueType` said "not a value type", and `boxIfNeededMsil` boxed an
+already-unboxed `int32` being passed to the method's real `int32` parameter
+— invalid IL. Fixed by a new `realMethodParamsOf` helper (drops
+`params[0]`) used consistently by both RMFunc reservation sites (`IRecord`
+and `IExposedRec`) and by `lowerRecordMethodMsil`'s real emission, mirroring
+the JVM backend's existing `stripLeadingSelfParam` (`jvm/codegen/06_items.l`)
+— the established pattern for this exact self-parameter-exclusion problem.
+Also corrects the arity-dispatch key (previously `fn.params.count`, which
+counted `self`) to the real parameter count, matching call sites'
+`args.count` — a latent overload-resolution bug for multi-arity in-body
+methods that happened to be masked by the bare-key fallback in every
+existing (single-overload) test, but is now correct for the general case.
+
+**Tests.** `implicit_self_msil_self_test.l` (`lyric-compiler/lyric/`) already
+covered in-body methods end-to-end via `@test_module` but was never wired
+into CI for `--target dotnet` — its synthesised `main` is exactly the
+function whose entry-point token the first bug corrupted, and its
+`Accumulator.add`/`fma` cases are what caught the second, so it is the
+natural regression guard for both. Wired into the `compiler-self-tests-dotnet-b`
+CI job alongside its existing JVM-target counterpart (`implicit_self_jvm_self_test.l`).
+Review passes on the fixing PR (#4958) identified two coverage gaps, both
+closed in the same test file: a `Wrapper` record whose methods call each
+other via `self.other(arg)` and bare `other(arg)` (the intra-record sibling
+dispatch path shares the same `cctx.methodTokens` / `methodParamTypes`
+registry the second bug fixed, so it needed its own case), and a `Money`
+`exposed record` with in-body methods (the `IExposedRec` arm of
+`addPackageTokens` was fixed symmetrically with `IRecord` but previously had
+no dedicated test).
+
+**Follow-up unblocked:** docs/44 m-78's `method_scrutinee_jvm_self_test.l`
+was JVM-only specifically because its repro needs an in-body method and
+#4947 broke that on MSIL; it can now move to a dual-target file, though that
+migration is left as separate follow-up work, not bundled into this fix.
+
+**Related:** #4947, #4933 (docs/44 m-78, the JVM-only test this unblocks),
+D037 (`docs/49-methods-in-types.md`), `lowerImplMethodMsil` (the impl-method
+lowering this mirrors).
