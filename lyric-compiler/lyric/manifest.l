@@ -148,6 +148,18 @@ pub record MavenSection {
   javaVersion: Option[String]
 }
 
+/// `[native]` section (N6.4): defaults for `--target native` builds.
+/// `triple` is the LLVM target triple (empty = auto-detect the host);
+/// `optLevel` is the clang `-O` level (empty = the built-in default "2");
+/// `extraLibs` are additional `-l<name>` link flags for clang.  The CLI
+/// `--triple` / `--opt` flags override the manifest triple / optLevel;
+/// `extraLibs` has no CLI counterpart and is applied unconditionally.
+pub record NativeConfig {
+  triple: String
+  optLevel: String
+  extraLibs: List[String]
+}
+
 /// `[features]` section per `docs/24-build-features.md` (D045).  v1
 /// implementation accepts only empty implication arrays per declared
 /// feature; non-empty implications are deferred to v1.1.
@@ -220,6 +232,8 @@ pub record Manifest {
   /// Non-None when this manifest also declares a `[workspace]` table.
   workspace: Option[WorkspaceSection]
   registry: Option[RegistryConfig]
+  /// Non-None when this manifest also declares a `[native]` table (N6.4).
+  native: Option[NativeConfig]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1134,6 +1148,31 @@ func assembleMaven(entries: in List[Entry]): Result[Option[MavenSection], Manife
   Ok(value = Some(value = MavenSection(entries = mavenEntries, repositories = repositories, javaVersion = javaVersion)))
 }
 
+/// `[native]` (N6.4): `triple` (LLVM target triple, default host),
+/// `opt_level` (clang `-O` level, default "2"), and `extra_libs` (a
+/// string array of additional `-l<name>` link flags).  `opt_level` is
+/// validated against the same set the `--opt` CLI flag accepts
+/// (0/1/2/3/s); any other value is `Err(InvalidField)`.  Returns
+/// `Ok(None)` when no `[native]` table is present.
+func assembleNative(entries: in List[Entry]): Result[Option[NativeConfig], ManifestError] {
+  if not hasSection(entries, "native") {
+    return Ok(value = None)
+  }
+  val triple = unwrapOr(findString(entries, "native", "triple"), "")
+  val opt = unwrapOr(findString(entries, "native", "opt_level"), "")
+  if opt != "" and opt != "0" and opt != "1" and opt != "2" and opt != "3" and opt != "s" {
+    return Err(
+      error = InvalidField(
+        section = "native",
+        field = "opt_level",
+        message = "must be \"0\", \"1\", \"2\", \"3\", or \"s\", got \"" + opt + "\""
+      )
+    )
+  }
+  val libs: List[String] = unwrapOr(findStringList(entries, "native", "extra_libs"), newList())
+  Ok(value = Some(value = NativeConfig(triple = triple, optLevel = opt, extraLibs = libs)))
+}
+
 func assembleWorkspace(entries: in List[Entry]): Option[WorkspaceSection] {
   if not hasSection(entries, "workspace") {
     return None
@@ -1180,7 +1219,7 @@ func assembleRegistry(entries: in List[Entry]): Option[RegistryConfig] {
 pub func parseManifest(text: in String, filePath: in String): Result[Manifest, ManifestError] {
   match collectEntries(text, filePath) {
     case Err(e) -> Err(error = e)
-    case Ok(entries) -> match assemblePackage(entries) { case Err(e) -> Err(error = e); case Ok(pkg) -> { val project = assembleProject(entries); val ws = assembleWorkspace(entries); val reg = assembleRegistry(entries); match assembleNuget(entries) { case Err(e) -> Err(error = e); case Ok(nuget) -> match assembleDeps(entries) { case Err(e) -> Err(error = e); case Ok(deps) -> match assembleFeatures(entries) { case Err(e) -> Err(error = e); case Ok(featuresOpt) -> match assembleMaven(entries) { case Err(e) -> Err(error = e); case Ok(mavenOpt) -> match assembleBuild(entries) { case Err(e) -> Err(error = e); case Ok(buildOpt) -> Ok(value = Manifest(filePath = filePath, packageSection = pkg, project = project, deps = deps, nuget = nuget, maven = mavenOpt, features = featuresOpt, build = buildOpt, workspace = ws, registry = reg)) } } } } } } }
+    case Ok(entries) -> match assemblePackage(entries) { case Err(e) -> Err(error = e); case Ok(pkg) -> { val project = assembleProject(entries); val ws = assembleWorkspace(entries); val reg = assembleRegistry(entries); match assembleNuget(entries) { case Err(e) -> Err(error = e); case Ok(nuget) -> match assembleDeps(entries) { case Err(e) -> Err(error = e); case Ok(deps) -> match assembleFeatures(entries) { case Err(e) -> Err(error = e); case Ok(featuresOpt) -> match assembleMaven(entries) { case Err(e) -> Err(error = e); case Ok(mavenOpt) -> match assembleBuild(entries) { case Err(e) -> Err(error = e); case Ok(buildOpt) -> match assembleNative(entries) { case Err(e) -> Err(error = e); case Ok(nativeOpt) -> Ok(value = Manifest(filePath = filePath, packageSection = pkg, project = project, deps = deps, nuget = nuget, maven = mavenOpt, features = featuresOpt, build = buildOpt, workspace = ws, registry = reg, native = nativeOpt)) } } } } } } } }
   }
 }
 

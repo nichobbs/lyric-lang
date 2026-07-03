@@ -396,6 +396,56 @@ func testMavenSnapshotRejected(): Unit {
   assertTrue(isInvalidField(e, "maven", "org.example:lib"), "maven-snapshot: InvalidField(maven, org.example:lib)")
 }
 
+// [native] table: triple, opt_level, extra_libs (N6.4).
+func testNativeSection(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[native]\ntriple = \"x86_64-unknown-linux-gnu\"\nopt_level = \"3\"\nextra_libs = [\"ssl\", \"crypto\"]\n"
+  val m = parseOk(toml)
+  match m.native {
+    case None -> assertTrue(false, "native: expected Some")
+    case Some(nc) -> {
+      assertEqual(nc.triple, "x86_64-unknown-linux-gnu", "native: triple")
+      assertEqual(nc.optLevel, "3", "native: opt_level")
+      assertEqualInt(nc.extraLibs.count, 2, "native: extra_libs count")
+      assertEqual(nc.extraLibs[0], "ssl", "native: extra_libs[0]")
+      assertEqual(nc.extraLibs[1], "crypto", "native: extra_libs[1]")
+    }
+  }
+}
+
+// Partial [native] table: fields not set take their defaults (empty
+// triple/opt, no libs) — the build layer then substitutes host triple and
+// -O2.  (A header-only [native] table with no keys parses to None, like
+// an empty [maven]/[nuget]; that is the `native absent` case.)
+func testNativeDefaults(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[native]\ntriple = \"aarch64-apple-darwin\"\n"
+  val m = parseOk(toml)
+  match m.native {
+    case None -> assertTrue(false, "native-defaults: expected Some when [native] sets a key")
+    case Some(nc) -> {
+      assertEqual(nc.triple, "aarch64-apple-darwin", "native-defaults: triple")
+      assertEqual(nc.optLevel, "", "native-defaults: opt_level defaults to empty")
+      assertEqualInt(nc.extraLibs.count, 0, "native-defaults: no extra_libs")
+    }
+  }
+}
+
+// Absence of a [native] table -> None.
+func testNativeAbsent(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n"
+  val m = parseOk(toml)
+  match m.native {
+    case None -> ()
+    case Some(_) -> assertTrue(false, "native-absent: expected None when no [native] table")
+  }
+}
+
+// An out-of-range opt_level is rejected at parse time.
+func testNativeInvalidOpt(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[native]\nopt_level = \"9\"\n"
+  val e = parseErr(toml)
+  assertTrue(isInvalidField(e, "native", "opt_level"), "native-invalid-opt: InvalidField(native, opt_level)")
+}
+
 // Malformed coordinate keys (no ':' or more than one ':') are rejected.
 func testMavenMalformedCoordinate(): Unit {
   val noColon = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[maven]\n\"just-an-artifact\" = \"1.0.0\"\n"
@@ -664,6 +714,22 @@ test "maven invalid value type" {
 
 test "maven table missing version" {
   testMavenTableMissingVersion()
+}
+
+test "native section" {
+  testNativeSection()
+}
+
+test "native defaults" {
+  testNativeDefaults()
+}
+
+test "native absent" {
+  testNativeAbsent()
+}
+
+test "native invalid opt_level" {
+  testNativeInvalidOpt()
 }
 
 test "project section" {

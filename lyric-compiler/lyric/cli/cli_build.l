@@ -42,6 +42,28 @@ func readBuildKindFromManifest(manifestOpt: in Option[String]): String {
   }
 }
 
+// Resolve the `[native]` config for a `--target native` build (N6.4):
+// honour an explicit `--manifest`, else discover the nearest lyric.toml.
+// Returns None when no manifest is found, it cannot be read/parsed, or it
+// has no `[native]` table — a native single-file build is never blocked
+// by an unrelated malformed lyric.toml discovered up the tree.
+func resolveNativeConfig(manifestPath: in Option[String]): Option[Mf.NativeConfig] {
+  val mfOpt = match manifestPath {
+    case Some(p) -> Some(value = p)
+    case None -> discoverManifest(None)
+  }
+  match mfOpt {
+    case None -> None
+    case Some(mf) -> match File.readText(mf) {
+      case Err(_) -> None
+      case Ok(mfText) -> match Mf.parseManifest(mfText, mf) {
+        case Err(_) -> None
+        case Ok(m) -> m.native
+      }
+    }
+  }
+}
+
 // Rejects the two unambiguous foot-guns from `--package-version` (#4426): an
 // empty value (which would embed a blank <Version> and fail cryptically
 // inside contract metadata / `dotnet pack`) and a leading 'v'/'V' prefix (a
@@ -158,7 +180,29 @@ pub func buildOneNative(
     }
     case _ -> ()
   }
-  val result = if isNativeTarget { Emitter.emitNative(req, nativeTriple, nativeOpt) } else { Emitter.emit(req) }
+  // Merge [native] manifest defaults with the CLI knobs (N6.4): the
+  // --triple/--opt flags (non-empty) override the manifest triple/opt_level;
+  // extra_libs is manifest-only and applied unconditionally.
+  var effTriple = nativeTriple
+  var effOpt = nativeOpt
+  val effLibs: List[String] = newList()
+  if isNativeTarget {
+    match resolveNativeConfig(manifestPath) {
+      case Some(nc) -> {
+        if effTriple == "" {
+          effTriple = nc.triple
+        }
+        if effOpt == "" {
+          effOpt = nc.optLevel
+        }
+        for lib in nc.extraLibs {
+          effLibs.add(lib)
+        }
+      }
+      case None -> ()
+    }
+  }
+  val result = if isNativeTarget { Emitter.emitNative(req, effTriple, effOpt, effLibs) } else { Emitter.emit(req) }
   var hadError = false
   for d in result.diagnostics.toArray() {
     match d.severity {

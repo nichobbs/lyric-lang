@@ -27470,3 +27470,35 @@ one-type-per-slot invariant globally, the `Std.JsonHost` distinct-name
 workaround is no longer required (kept as-is; harmless).
 
 **Related:** docs/44 m-57 / m-72, epic #2663, #2667 (band J4).
+### D-progress-564 — Native backend N6.4: `[native]` manifest table (triple / opt_level / extra_libs)
+
+**Shipped.** `lyric.toml` gains an optional `[native]` table that supplies
+defaults for `--target native` (LLVM backend) builds, closing work item
+N6.4 from `native/plan/08-work-items.md`.
+
+- **Parsing** (`manifest.l`): a new `NativeConfig` record (`triple`,
+  `optLevel`, `extraLibs`) and `Option[NativeConfig]` field on `Manifest`,
+  parsed by `assembleNative` (mirroring `assembleMaven`) and threaded into
+  `parseManifest`. `opt_level` is validated against the same set the `--opt`
+  CLI flag accepts (`0`/`1`/`2`/`3`/`s`); any other value is
+  `InvalidField(native, opt_level)`. An absent table parses to `None`.
+- **Build wiring** (`cli/cli_build.l` + `emitter.l`): `buildOneNative` reads
+  `[native]` via `resolveNativeConfig` (honouring an explicit `--manifest`,
+  else the nearest discovered `lyric.toml`) and merges it with the CLI knobs
+  — `--triple` / `--opt` override the manifest `triple` / `opt_level` when
+  non-empty; `extra_libs` is manifest-only and additive. `emitNative` /
+  `emitNativeInProcess` gained an `extraLibs` parameter that becomes
+  `-l<name>` clang flags routed through the existing `extraClangFlags` slot
+  on `LlvmBridge.compileToNativeWithFlags` (no bridge signature change). A
+  malformed or unrelated discovered manifest never aborts a single-file
+  native build — the `[native]` defaults are simply not applied.
+- **Tests**: `manifest_self_test.l` gains `native section` (all three keys),
+  `native defaults` (empty table → empty triple/opt, no libs), `native
+  absent` (no table → `None`), and `native invalid opt_level`
+  (`InvalidField`).
+- **Docs**: language reference §3.6 (`[native]` table + CLI-override
+  precedence) and the `--target native` CLI paragraph; book
+  `appendix-b-quick-reference.md` (manifest table + native build note).
+
+**Related:** D-progress-540/562 (native backend), `native/plan/08-work-items.md`
+§N6.4, `docs/20-project-as-dll.md`.

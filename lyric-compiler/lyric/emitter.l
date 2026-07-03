@@ -2239,7 +2239,7 @@ pub func emit(req: in EmitRequest): EmitResult {
   match req.target {
     case Dotnet -> emitMsilInProcess(req)
     case Jvm -> emitJvmInProcess(req)
-    case Native -> emitNativeInProcess(req, "", "")
+    case Native -> emitNativeInProcess(req, "", "", newList())
   }
 }
 
@@ -2248,7 +2248,7 @@ pub func emit(req: in EmitRequest): EmitResult {
 /// clang host triple; `optLevel` "" defaults to -O2.  Exposed with the
 /// explicit knobs (`emitNative`) so the CLI can thread `--triple` /
 /// `--opt` without widening EmitRequest for two native-only fields.
-pub func emitNative(req: in EmitRequest, triple: in String, optLevel: in String): EmitResult {
+pub func emitNative(req: in EmitRequest, triple: in String, optLevel: in String, extraLibs: in List[String]): EmitResult {
   val outDir = Path.dirname(req.outputPath)
   if Str.isNotEmpty(outDir) {
     match File.createDir(outDir) {
@@ -2256,12 +2256,20 @@ pub func emitNative(req: in EmitRequest, triple: in String, optLevel: in String)
       case Err(_) -> ()
     }
   }
-  emitNativeInProcess(req, triple, optLevel)
+  emitNativeInProcess(req, triple, optLevel, extraLibs)
 }
 
-func emitNativeInProcess(req: in EmitRequest, triple: in String, optLevel: in String): EmitResult {
+func emitNativeInProcess(
+  req: in EmitRequest, triple: in String, optLevel: in String, extraLibs: in List[String]
+): EmitResult {
   val stdlibSources = findStdlibSourcesNative()
-  val ok = LlvmBridge.compileToNative(req.source, req.outputPath, stdlibSources, triple, optLevel)
+  // `[native].extra_libs` (N6.4) become `-l<name>` clang flags, threaded
+  // through the existing extra-clang-flags slot on compileToNativeWithFlags.
+  val clangFlags: List[String] = newList()
+  for lib in extraLibs {
+    clangFlags.add("-l" + lib)
+  }
+  val ok = LlvmBridge.compileToNativeWithFlags(req.source, req.outputPath, stdlibSources, triple, optLevel, clangFlags)
   if ok {
     val okDiags: List[Diagnostic] = newList()
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)

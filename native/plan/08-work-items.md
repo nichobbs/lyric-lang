@@ -874,6 +874,11 @@ automatically available to the user without F# changes.
 
 ### N6.4 — Manifest `[native]` section
 
+**SHIPPED (D-progress-564):** `NativeConfig` record + `assembleNative` in
+`manifest.l`; `cli_build.l`/`emitter.l` read `[native]`, merge with the
+CLI `--triple`/`--opt` (which override), and thread `extra_libs` into the
+clang link via the existing `compileToNativeWithFlags` extra-flags slot.
+
 **Depends on:** N6.3
 
 **Files to modify:** `lyric-compiler/lyric/manifest.l`
