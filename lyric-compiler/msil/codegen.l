@@ -564,7 +564,8 @@ pub func newCodegenCtx(
         case Some(ver) -> {
           resolvedAssemblyVersions.add(asmName, ver)
         }
-        case None -> {}
+        case None -> {
+        }
       }
     }
     i = i + 1
@@ -1214,7 +1215,6 @@ pub func newCodegenCtx(
       "str_indexof",
       buildInstanceMethodSig(strIndexOfPs, MInt)
     )
-
 
   val strLastIndexOfPs: List[MsilType] = newList()
   strLastIndexOfPs.add(MString)
@@ -3044,11 +3044,15 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         // SM functions always overwrite the pre-pass 0 Task placeholder with the
         // correct Task/Task<T> now that enumTypeNames is fully populated.
         if isSm or not cctx.funcRetTypes.containsKey(arityKey) {
-          if cctx.funcRetTypes.containsKey(arityKey) { cctx.funcRetTypes.remove(arityKey) }
+          if cctx.funcRetTypes.containsKey(arityKey) {
+            cctx.funcRetTypes.remove(arityKey)
+          }
           cctx.funcRetTypes.add(arityKey, retTy)
         }
         if isSm or not cctx.funcRetTypes.containsKey(fqn) {
-          if cctx.funcRetTypes.containsKey(fqn) { cctx.funcRetTypes.remove(fqn) }
+          if cctx.funcRetTypes.containsKey(fqn) {
+            cctx.funcRetTypes.remove(fqn)
+          }
           cctx.funcRetTypes.add(fqn, retTy)
         }
         // Record the declared parameter MsilTypes so call sites can thread an
@@ -4559,8 +4563,11 @@ func findImportedFqn(cctx: in CodegenCtx, imports: in List[String], funcName: in
 // principled fix is threading the type checker's already-resolved call-target
 // FQN through to the emitter instead of guessing here; tracked in #4424.
 func findImportedFqnWithHint(
-  cctx: in CodegenCtx, imports: in List[String], funcName: in String,
-  arity: in Int, retHint: in MsilType
+  cctx: in CodegenCtx,
+  imports: in List[String],
+  funcName: in String,
+  arity: in Int,
+  retHint: in MsilType,
 ): String {
   val isHinted = match retHint { case MObject -> false; case _ -> true }
   var firstMatch = ""
@@ -4585,7 +4592,11 @@ func findImportedFqnWithHint(
     }
     i = i + 1
   }
-  if hintMatch.length > 0 { hintMatch } else { firstMatch }
+  if hintMatch.length > 0 {
+    hintMatch
+  } else {
+    firstMatch
+  }
 }
 
 // Return the TypeRef row for boxing (or unboxing) a value type.
@@ -6229,7 +6240,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     // (a sound overapproximation — the assert passes, no false-negative crash).
     // W0002 informs the user so they aren't surprised by the unenforced clause.
     case EForall(_, _, _) -> {
-      println(
+      Console.error(
         "W0002: forall quantifier in @runtime_checked contract is not evaluated at runtime " +
           "(sound overapproximation as true; consider restricting the domain or using @proof_required)"
       )
@@ -6237,7 +6248,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       MBool
     }
     case EExists(_, _, _) -> {
-      println(
+      Console.error(
         "W0002: exists quantifier in @runtime_checked contract is not evaluated at runtime " +
           "(sound overapproximation as true; consider restricting the domain or using @proof_required)"
       )
@@ -10284,14 +10295,7 @@ func lowerBuiltinOrStaticCallMsil(
               insns.add(MCastclass(typeToken = 0x1B000000 + internFuncNTypeSpec(cctx, args.count)))
             }
 
-            val needBoxing = if useTypedInvoke {
-              match trackedRetType {
-                case Some(_) -> false
-                case None -> true
-              }
-            } else {
-              true
-            }
+            val needBoxing = if useTypedInvoke { match trackedRetType { case Some(_) -> false; case None -> true } } else { true }
 
             // Collect argument types as we lower them
             val argTypes: List[MsilType] = newList()
@@ -10378,11 +10382,7 @@ func lowerBuiltinOrStaticCallMsil(
             // silently picks the wrong overload when the import order doesn't
             // match the call-site's required type (yaml.l import-shadowing
             // regression, #3943).
-            val importRetHint = if fctx.collExpect.count > 0 {
-              fctx.collExpect[fctx.collExpect.count - 1]
-            } else {
-              MObject
-            }
+            val importRetHint = if fctx.collExpect.count > 0 { fctx.collExpect[fctx.collExpect.count - 1] } else { MObject }
             val importedFqn = match mapGet(cctx.pkgImports, fctx.pkgName) {
               case Some(imps) -> findImportedFqnWithHint(cctx, imps, funcName, args.count, importRetHint)
               case None -> ""
@@ -11273,7 +11273,6 @@ func lowerMethodCallMsil(
     lowerCallArgMsil(cctx, fctx, insns, args[0])
     insns.add(MCallvirt(methodToken = cctx.tokStringIndexOf))
     MInt
-
   } else if memberName == "lastIndexOf" and args.count == 1 {
     lowerCallArgMsil(cctx, fctx, insns, args[0])
     insns.add(MCallvirt(methodToken = cctx.tokStringLastIndexOf))
@@ -13058,6 +13057,7 @@ func buildFuncNCtorTokWithTypes(
   )
   0x0A000000 + mrRow
 }
+
 // Build a callvirt token for System.Func`(nparams+1)<object,...,object>::Invoke(object,...): object.
 // Params are type vars 0..nparams-1; the return type is the last type var (nparams).
 func buildFuncNInvokeTok(cctx: in CodegenCtx, nparams: in Int): Int {
@@ -14701,12 +14701,7 @@ func exprContainsAwaitMsil(e: in Expr): Bool {
       }
       false
     }
-    case ERange(bound) -> match bound {
-      case RBHalfOpen(lo, hi) -> exprContainsAwaitMsil(lo) or exprContainsAwaitMsil(hi)
-      case RBClosed(lo, hi) -> exprContainsAwaitMsil(lo) or exprContainsAwaitMsil(hi)
-      case RBLowerOpen(hi) -> exprContainsAwaitMsil(hi)
-      case RBUpperOpen(lo) -> exprContainsAwaitMsil(lo)
-    }
+    case ERange(bound) -> match bound { case RBHalfOpen(lo, hi) -> exprContainsAwaitMsil(lo) or exprContainsAwaitMsil(hi); case RBClosed(lo, hi) -> exprContainsAwaitMsil(lo) or exprContainsAwaitMsil(hi); case RBLowerOpen(hi) -> exprContainsAwaitMsil(hi); case RBUpperOpen(lo) -> exprContainsAwaitMsil(lo) }
     case EAssign(target, _, value) -> exprContainsAwaitMsil(target) or exprContainsAwaitMsil(value)
     case _ -> false
   }
@@ -18424,7 +18419,11 @@ func synthesizeClosureClassMsil(
         MObject
       }
     } else {
-      if fi < capTypes.count { capTypes[fi] } else { MObject }
+      if fi < capTypes.count {
+        capTypes[fi]
+      } else {
+        MObject
+      }
     }
     fields.add(MField(flags = 0x0006, name = fieldName, fieldType = fieldType))
     fi = fi + 1
@@ -21122,7 +21121,6 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
     j = j + 1
   }
 
-
   var k = 0
   while k < synths.count {
     newItems.add(synths[k])
@@ -21553,7 +21551,8 @@ func ensureMetadataIndex(cctx: in CodegenCtx): Unit {
         "W0007: ensureMetadataIndex: Mdr.refPackDir() found no .NET reference pack — " +
           "auto-FFI resolution is completely disabled for this compile; every unresolved " +
           "System.* extern will silently fall back to \"System.Runtime\" (wrong for types " +
-          "with their own facade, e.g. System.Console). Diagnostics: " + Mdr.refPackDirDebugInfo()
+          "with their own facade, e.g. System.Console). Diagnostics: " +
+          Mdr.refPackDirDebugInfo()
       )
     }
     case Some(dir) -> {
@@ -21591,12 +21590,7 @@ func ensureMetadataIndex(cctx: in CodegenCtx): Unit {
   while ni < cctx.nugetAssemblyPaths.count {
     val dllPath = cctx.nugetAssemblyPaths[ni]
     if dllPath.length > 0 {
-      Mdr.addAssemblyToIndexesAndValueTypes(
-        cctx.metadataTypeIndex,
-        cctx.metadataPathIndex,
-        cctx.metadataVtypeSet,
-        dllPath
-      )
+      Mdr.addAssemblyToIndexesAndValueTypes(cctx.metadataTypeIndex, cctx.metadataPathIndex, cctx.metadataVtypeSet, dllPath)
     }
     ni = ni + 1
   }
@@ -23607,7 +23601,6 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
     i = i + 1
   }
 
-
   // Emit the host class: functions + static fields (IConst/IVal).
   if fns.count > 0 or staticFields.count > 0 {
     items.add(MPFuncs(hostClass = pkgName, funcs = fns, staticFields = staticFields))
@@ -23623,7 +23616,6 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
     items.add(MPRecord(rec = cctx.lambdaClosureRecordList[ci]))
     ci = ci + 1
   }
-
 
   // ── #878: MPImpl emission ─────────────────────────────────────────────────
   // After every record/interface/host-class TypeDef has been added to `items`,

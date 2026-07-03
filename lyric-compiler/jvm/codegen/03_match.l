@@ -284,6 +284,17 @@ func lowerPatternTest(
       match innerOpt {
         case Some(inner) -> lowerPatternTest(ctx, insns, inner, scrutSlot, scrutTy, failLabel)
         case None -> {
+          // `case null ->` on a nullable scrutinee (`String?`) parses as a
+          // binding named "null" ("null" is not a keyword); the spec intent —
+          // and the stdlib's usage in Std.Console.readLine / Std.Environment
+          // — is a refutable null TEST.  Without this the arm bound anything
+          // and hijacked every later arm (Std.Console.readLine returned
+          // EndOfInput for real lines).
+          if name == "null" {
+            emitLoad(insns, scrutSlot, scrutTy)
+            insns.add(LIfnonnull(label = failLabel))
+            return
+          }
           // A single-segment `case Foo ->` parses as a binding; if `Foo` names a
           // known union case, emit the isinst test that `PConstructor` would, so
           // it does not behave as an unconditional catch-all and hijack later

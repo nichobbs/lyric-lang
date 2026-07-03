@@ -51,30 +51,6 @@ file.
 
 ## 2. I/O
 
-### `Std.IO` — `lyric-stdlib/std/_kernel/io.l`
-
-```
-@axiom("System.Console and System.IO operations conform to their documented .NET contracts")
-```
-
-**BCL surface**: `System.Console` (write, writeLine, errorWriteLine,
-readLine) and `System.IO` (File static helpers, Directory static
-helpers, Path static helpers).
-
-**Gap**: Console I/O and file I/O have observable side-effects and
-depend on OS state that cannot be modelled in first-order logic without
-an explicit I/O monad (out of scope for M4.x).  Path helpers are pure
-but involve host-OS string conventions (Windows vs. POSIX) that the
-prover does not model.
-
-**Caller obligation**: None for the Console write path (postcondition
-is `Unit`).  For the file-read/write operations, callers must ensure
-`path.length > 0` (enforced by the kernel's own `requires:` clauses).
-
-**Review**: Stable.
-
----
-
 ### `Std.ConsoleHost` — `lyric-stdlib/std/_kernel/console_host.l`
 
 ```
@@ -277,10 +253,7 @@ of the 30 known category values and not as an arbitrary integer.
 **BCL surface**: `System.IO.File` (ReadAllText, WriteAllText,
 ReadAllBytes, WriteAllBytes, Exists, Delete), `System.IO.Directory`
 (Exists, CreateDirectory, GetFiles, GetDirectories, Delete),
-`System.IO.Path` helpers.  Note: these are separate from `Std.IO`'s
-declarations — `FileHost` handles the typed `Result`-returning
-wrappers; `Std.IO`'s file functions are the raw thin shims used
-internally.
+`System.IO.Path` helpers.
 
 **Gap**: Filesystem state is observable shared mutable state;
 pre/postconditions depend on OS state that the prover does not model.
@@ -776,7 +749,6 @@ All are provisional pending weaver integration.
 
 | Kernel package           | File                         | Stable | Provisional |
 |--------------------------|------------------------------|--------|-------------|
-| `Std.IO`                 | `io.l`                       | 1      | 0           |
 | `Std.ConsoleHost`        | `console_host.l`             | 1      | 0           |
 | `Std.CollectionsHost`    | `collections_host.l`         | 1      | 0           |
 | `Std.MathHost`           | `math_host.l`                | 1      | 0           |
@@ -800,7 +772,7 @@ All are provisional pending weaver integration.
 | `Std.RegexHost`          | `regex_host.l`               | 1      | 0           |
 | `Std.Jvm`                | `jvm.l`                      | 0      | 1           |
 | `Std.JvmExceptionHost`   | `jvm_exception.l`            | 0      | 1           |
-| **Total**                |                              | **24** | **2**       |
+| **Total**                |                              | **23** | **2**       |
 
 ### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
 
@@ -811,7 +783,6 @@ recorded in the §19 baseline.
 
 | Kernel package           | File                         | Stable | Provisional |
 |--------------------------|------------------------------|--------|-------------|
-| `Std.IO` (JVM)           | `io.l`                       | 1      | 0           |
 | `Std.CharHost`           | `char_host.l`                | 1      | 0           |
 | `Std.CollectionsHost`    | `collections_host.l`         | 1      | 0           |
 | `Std.ConsoleHost`        | `console_host.l`             | 1      | 0           |
@@ -834,11 +805,11 @@ recorded in the §19 baseline.
 | `Std.UnicodeHost`        | `unicode_host.l`             | 1      | 0           |
 | `Std.UuidHost`           | `uuid_host.l`                | 1      | 0           |
 | `Std.RegexHost`          | `regex_host.l`               | 1      | 0           |
-| **Total**                |                              | **23** | **0**       |
+| **Total**                |                              | **22** | **0**       |
 
 ### Combined total
 
-24 + 23 = **47** stable + **2** provisional = **49** `@axiom`
+23 + 22 = **45** stable + **2** provisional = **47** `@axiom`
 annotations covering the entire extern boundary across both
 targets.
 
@@ -849,7 +820,7 @@ entries) moved every BCL extern to `lyric-stdlib/std/_kernel/`, replacing
 per-function `@axiom` annotations with package-level annotations that
 cover the entire extern boundary of each kernel file.  The axiom count
 grew from 11 (M4.3 baseline) → 16 (after D-progress-140) → 22 + 2 JVM
-→ 25 + 22 + 2 → 27 + 23 + 2 → 26 + 23 + 2 → 24 + 23 + 2 (current) as additional BCL surfaces
+→ 25 + 22 + 2 → 27 + 23 + 2 → 26 + 23 + 2 → 24 + 23 + 2 → 23 + 22 + 2 (current) as additional BCL surfaces
 were added (Console, Path, ProcessCapture, VerifierEnv, Random, SecureRandom,
 Hash, Regex/RegexHost) and the JVM target boundary was brought under the
 same audit framework, the JVM kernel gaining its own SHA-512 `Std.HashHost`.
@@ -884,7 +855,6 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.FormatHost` | `format_host.l` | System.Globalization.CultureInfo and System.String/Int/Double formatting operations conform to their documented .NET contracts |
 | `dotnet` | `Std.HashHost` | `hash_host.l` | System.Security.Cryptography.SHA256.HashData + System.Security.Cryptography.SHA512.HashData + System.Convert.ToHexString conform to documented .NET semantics; all are pure functions |
 | `dotnet` | `Std.HttpHost` | `http_host.l` | System.Net.Http operations conform to their documented .NET contracts |
-| `dotnet` | `Std.IO` | `io.l` | System.Console and System.IO operations conform to their documented .NET contracts |
 | `dotnet` | `Std.JsonHost` | `json_host.l` | System.Text.Json operations conform to their documented .NET contracts |
 | `dotnet` | `Std.Jvm` | `jvm.l` | Std.Jvm provides JVM-target escape hatches for interoperating with Java exception semantics per docs/31-maven-linking.md Q-J012 |
 | `dotnet` | `Std.JvmExceptionHost` | `jvm_exception.l` | java.lang.Exception is the Java checked-exception root; JvmException wraps it for Lyric callers at the FFI boundary per docs/31-maven-linking.md §5 |
@@ -901,14 +871,13 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.UuidHost` | `uuid_host.l` | System.Guid conforms to its documented .NET contract |
 | `jvm` | `Std.CharHost` | `char_host.l` | java.lang.Character character operations conform to their documented JVM contracts |
 | `jvm` | `Std.CollectionsHost` | `collections_host.l` | java.util.ArrayList / HashMap conform to their documented JVM contracts |
-| `jvm` | `Std.ConsoleHost` | `console_host.l` | lyric.stdlib.jvm.ConsoleHost operations conform to their documented JVM contracts |
+| `jvm` | `Std.ConsoleHost` | `console_host.l` | java.lang.System.{out,err,in} and java.io.BufferedReader conform to their documented JVM contracts |
 | `jvm` | `Std.EncodingHost` | `encoding_host.l` | JVM List[Byte].toArray() produces a properly typed byte array; pure-Lyric accumulators are safe on JVM |
 | `jvm` | `Std.EnvironmentHost` | `environment_host.l` | lyric.stdlib.jvm.EnvHost operations conform to their documented JVM contracts |
-| `jvm` | `Std.FileHost` | `file_host.l` | lyric.stdlib.jvm.FileHost operations conform to their documented JVM contracts |
+| `jvm` | `Std.FileHost` | `file_host.l` | java.io.File / FileInputStream / FileOutputStream conform to their documented JVM contracts |
 | `jvm` | `Std.FormatHost` | `format_host.l` | lyric.stdlib.jvm.FormatHost formatting operations conform to their documented JVM contracts |
 | `jvm` | `Std.HashHost` | `hash_host.l` | java.security.MessageDigest.getInstance(\"SHA-256\") and getInstance(\"SHA-512\") conform to documented JDK SHA-256/SHA-512 semantics and are pure functions of their input bytes |
 | `jvm` | `Std.HttpHost` | `http_host.l` | lyric.stdlib.jvm.HttpClientHost operations conform to their documented JVM / java.net.http contracts |
-| `jvm` | `Std.IO` | `io.l` | lyric.stdlib.jvm ConsoleHost and FileHost operations conform to their documented JVM contracts |
 | `jvm` | `Std.JsonHost` | `json_host.l` | lyric.stdlib.jvm.JsonHost operations conform to their documented JVM contracts |
 | `jvm` | `Std.LogHost` | `log_host.l` | lyric.stdlib.jvm.LogHost writes diagnostic messages via java.util.logging.Logger |
 | `jvm` | `Std.MathHost` | `math_host.l` | java.lang.Math and java.lang.Double operations conform to their documented JVM / IEEE 754 contracts |

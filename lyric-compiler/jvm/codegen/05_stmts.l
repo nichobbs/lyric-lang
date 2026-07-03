@@ -919,6 +919,13 @@ func lowerTryCatchExpr(ctx: in FuncCtx, insns: in List[LInsn], body: in Block, c
       case None -> insns.add(LPop)
     }
     val catchBodyTy = lowerBlockExpr(ctx, insns, c.body)
+    // A catch arm that unconditionally transfers control (a trailing
+    // `panic(...)` → athrow, a `return`) never produces a value and never
+    // reaches the join: skip the result store AND the fall-through `goto`
+    // (dead code after `athrow` breaks verification).  This is the
+    // `readTextOrPanic` shape — a value-yielding try body whose catch arm
+    // re-panics with a decorated message.
+    val catchTerminated = lastInsnIsTerminator(insns)
     match resultTy {
       case JVoid -> ()
       case _ -> {
@@ -933,31 +940,39 @@ func lowerTryCatchExpr(ctx: in FuncCtx, insns: in List[LInsn], body: in Block, c
         // the type-checker normally guarantees.
         match catchBodyTy {
           case JVoid -> {
-            // The catch body produced nothing (statement mode) but the try
-            // body produced a value — emitting a store here would pop a
-            // value that isn't on the stack and produce a VerifyError.
-            // Abort codegen with a source-located diagnostic so the user
-            // sees a pointed compile error rather than an untyped crash
-            // with no line number (#3193, supersedes the bare panic from
-            // #2690).  The Jvm.Bridge `Bug` catch re-emits this message
-            // under `error[J002]`; the `error[J004]` code and `line:col`
-            // prefix below name the offending catch arm precisely.  Code
-            // is threaded through the panic message because the codegen
-            // tree returns `JvmType`, not a diagnostic-collecting Result.
-            val pos = c.span.startPos
-            panic(
-              "error[J004]: " + pos.line.toString() + ":" + pos.column.toString() +
-                ": try-catch used as an expression, but this catch arm yields Unit while the " +
-                "try body yields a value; the JVM backend cannot route an absent value through " +
-                "the result slot. Give the catch arm a trailing value of the try body's type, or " +
-                "annotate the try-catch result type explicitly (type-checker gap #2042)."
-            )
+            if not catchTerminated {
+              // The catch body produced nothing (statement mode) but the try
+              // body produced a value — emitting a store here would pop a
+              // value that isn't on the stack and produce a VerifyError.
+              // Abort codegen with a source-located diagnostic so the user
+              // sees a pointed compile error rather than an untyped crash
+              // with no line number (#3193, supersedes the bare panic from
+              // #2690).  The Jvm.Bridge `Bug` catch re-emits this message
+              // under `error[J002]`; the `error[J004]` code and `line:col`
+              // prefix below name the offending catch arm precisely.  Code
+              // is threaded through the panic message because the codegen
+              // tree returns `JvmType`, not a diagnostic-collecting Result.
+              val pos = c.span.startPos
+              panic(
+                "error[J004]: " + pos.line.toString() + ":" + pos.column.toString() +
+                  ": try-catch used as an expression, but this catch arm yields Unit while the " +
+                  "try body yields a value; the JVM backend cannot route an absent value through " +
+                  "the result slot. Give the catch arm a trailing value of the try body's type, or " +
+                  "annotate the try-catch result type explicitly (type-checker gap #2042)."
+              )
+            }
           }
-          case _ -> emitStore(insns, rslot, catchBodyTy)
+          case _ -> {
+            if not catchTerminated {
+              emitStore(insns, rslot, catchBodyTy)
+            }
+          }
         }
       }
     }
-    insns.add(LGoto(label = afterL))
+    if not catchTerminated {
+      insns.add(LGoto(label = afterL))
+    }
     val catchClass = if c.typeName == "Bug" { "java/lang/Throwable" } else { lyricNameToJvm(c.typeName) }
     insns.add(LTryCatch(startLabel = startL, endLabel = endL, handlerLabel = handlerL, catchClass = catchClass))
     i = i + 1

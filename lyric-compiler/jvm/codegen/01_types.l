@@ -404,6 +404,29 @@ pub func typeExprToJvmErased(te: in TypeExpr, pkgName: in String, typeParams: in
   }
 }
 
+// As `typeExprToJvmErased`, but resolving extern-type aliases (a record field
+// typed by an IMPORTED extern type — `FileStat.modifiedAt: FileTime` — must
+// carry the real JVM class, not the in-package `<pkg>/<name>` guess).
+pub func typeExprToJvmErasedExtern(
+  te: in TypeExpr,
+  pkgName: in String,
+  typeParams: in List[String],
+  externTypes: in Map[String, String],
+): JvmType {
+  match te.kind {
+    case TRef(path) -> {
+      val seg = lastSegment(path)
+      if listContainsStr(typeParams, seg) {
+        JRef(className = "java/lang/Object")
+      } else {
+        typeExprToJvmExtern(te, pkgName, externTypes)
+      }
+    }
+    case TParen(inner) -> typeExprToJvmErasedExtern(inner, pkgName, typeParams, externTypes)
+    case _ -> typeExprToJvmExtern(te, pkgName, externTypes)
+  }
+}
+
 // Map a Lyric TypeExpr to a JvmType, resolving an `extern type` alias (e.g.
 // `JBAOS` -> `java/io/ByteArrayOutputStream`) via `externTypes` instead of the
 // same-package `<pkg>/<name>` fallback `typeExprToJvm` would pick (#3334).

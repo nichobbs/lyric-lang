@@ -324,7 +324,8 @@ pub func loadClass(ctx: in AutoFfiCtx, javaFqn: in String): Option[ClassInfo] {
           idx = idx + 1
         }
         if lastDotIdx >= 0 {
-          currentFqn = currentFqn.substring(0, lastDotIdx) + "$" + currentFqn.substring(lastDotIdx + 1, currentFqn.length - lastDotIdx - 1)
+          currentFqn = currentFqn.substring(0, lastDotIdx) + "$" +
+            currentFqn.substring(lastDotIdx + 1, currentFqn.length - lastDotIdx - 1)
         } else {
           done = true
         }
@@ -393,6 +394,15 @@ func scoreParamMatch(argDesc: in String, paramDesc: in String): Int {
     return 10
   }
   // exact match
+  // Primitive → java/lang/Object: valid via boxing (`emitFfiCoerce` boxes),
+  // low priority so an exact-primitive overload always wins.  Lets JDK
+  // collection methods take raw primitives (`ArrayList.add(7)`,
+  // `bytes.add(0xFF)` on a List[Byte]).
+  if paramDesc == "Ljava/lang/Object;" {
+    if argDesc == "I" or argDesc == "J" or argDesc == "D" or argDesc == "F" or argDesc == "Z" or argDesc == "B" or argDesc == "C" or argDesc == "S" {
+      return 2
+    }
+  }
   // Numeric widening
   if argDesc == "I" {
     if paramDesc == "J" {
@@ -696,6 +706,59 @@ pub func findBestInstanceMethod(
     k = k + 1
   }
   best
+}
+
+// Locate a public STATIC field named `fieldName` on `ci` or a superclass.
+// Exact-name match, no overloads (JVMS forbids same-name fields in one class);
+// the declared class wins over inherited fields.  Lets the codegen resolve JDK
+// constants (`System.out`, `Duration.ZERO`, `System.in`) as `getstatic` where
+// method resolution finds nothing.
+pub func findStaticField(autoFfi: in AutoFfiCtx, ci: in ClassInfo, fieldName: in String): Option[ClassMethod] {
+  match fieldInClass(ci, fieldName) {
+    case Some(f) -> {
+      return Some(value = f)
+    }
+    case None -> ()
+  }
+  // Walk the superclass chain through the cache (same shape as
+  // findBestInstanceMethod; fields on java/lang/Object don't exist, so the
+  // Object cutoff loses nothing here).
+  var superBin = ci.superName
+  while superBin.length > 0 and superBin != "java/lang/Object" {
+    val superFqn = superBin.replace("/", ".")
+    loadClass(autoFfi, superFqn)
+    val superIdx = findCacheIdx(autoFfi, superBin)
+    if superIdx < 0 {
+      return None
+    }
+    match fieldInClass(autoFfi.cacheVals[superIdx], fieldName) {
+      case Some(f) -> {
+        return Some(value = f)
+      }
+      case None -> ()
+    }
+    superBin = superNameOf(autoFfi.cacheVals[superIdx])
+  }
+  None
+}
+
+// The declared static field named `fieldName` on exactly this class, if any.
+func fieldInClass(ci: in ClassInfo, fieldName: in String): Option[ClassMethod] {
+  var i = 0
+  while i < ci.fields.count {
+    val f = ci.fields[i]
+    if f.name == fieldName and f.isStatic {
+      return Some(value = f)
+    }
+    i = i + 1
+  }
+  None
+}
+
+// Superclass accessor kept as a function so the record field is read off a
+// direct argument (the stage-0-safe pattern for cross-package record types).
+func superNameOf(ci: in ClassInfo): String {
+  ci.superName
 }
 
 // Verify that a declared @externTarget signature has a matching overload in JDK

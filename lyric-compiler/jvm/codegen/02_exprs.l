@@ -7,6 +7,7 @@ package Jvm.Codegen
 
 import Std.Core
 import Std.Collections
+import Std.Console as Console
 import Std.String
 import Lyric.Parser
 import Jvm.Classfile
@@ -710,6 +711,40 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
 
     // ── Member access ─────────────────────────────────────────────────────
     case EMember(recv, memberName) -> {
+      // Static-field read on an extern type (`JSystem.out`, `Duration.ZERO`):
+      // when the receiver is a bare extern-type name (and not shadowed by a
+      // local), resolve the member as a public static FIELD from JDK metadata
+      // and emit `getstatic` — auto-FFI method resolution can't see fields,
+      // and lowering a type name as a value has no meaning.
+      match recv.kind {
+        case EPath(rp) -> {
+          val rn = lastSegment(rp)
+          match lookupSlot(ctx, rn) {
+            case Some(_) -> ()
+            case None -> {
+              match mapGet(ctx.externTypes, rn) {
+                case Some(fqnDot) -> {
+                  match loadClass(ctx.autoFfi, fqnDot) {
+                    case Some(ci) -> {
+                      match findStaticField(ctx.autoFfi, ci, memberName) {
+                        case Some(f) -> {
+                          val fTy = descStrToJvmType(f.descriptor)
+                          insns.add(LGetstatic(owner = ci.binaryName, name = memberName, t = fTy))
+                          return fTy
+                        }
+                        case None -> ()
+                      }
+                    }
+                    case None -> ()
+                  }
+                }
+                case None -> ()
+              }
+            }
+          }
+        }
+        case _ -> ()
+      }
       val recvTy = lowerExpr(ctx, insns, recv)
       match recvTy {
         case JRef(cls) -> {
@@ -806,7 +841,68 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                       insns.add(LInvokevirtual(owner = fsig.owner, name = "$" + memberName, params = fbPs, ret = fsig.ret))
                       fsig.ret
                     }
-                    case None -> JRef(className = "java/lang/Object")
+                    case None -> {
+                      if memberName == "count" or memberName == "length" {
+                        // `.count` / `.length` on an erased-Object receiver (a
+                        // match binding on a generic union payload, e.g.
+                        // `case Ok(rb)` on `Result[List[Byte], _]`): the precise
+                        // class is unknown statically, so dispatch on the runtime
+                        // class.  Without this the receiver itself was left as
+                        // the "value" and a following comparison checkcast'd the
+                        // collection to Integer (file_jvm_self_test regression).
+                        // Receiver goes to a temp first so every branch target
+                        // sees an empty operand stack.
+                        val cntRecv = allocSlot(ctx, "__cnt_recv_" + freshLabel(ctx), JRef(className = "java/lang/Object"))
+                        insns.add(LAstore(slot = cntRecv))
+                        val cntRes = allocSlot(ctx, "__cnt_res_" + freshLabel(ctx), JInt)
+                        val cntMapL = freshLabel(ctx)
+                        val cntStrL = freshLabel(ctx)
+                        val cntArrL = freshLabel(ctx)
+                        val cntEndL = freshLabel(ctx)
+                        insns.add(LAload(slot = cntRecv))
+                        insns.add(LInstanceof(className = "java/util/Collection"))
+                        insns.add(LIfeq(label = cntMapL))
+                        insns.add(LAload(slot = cntRecv))
+                        insns.add(LCheckcast(className = "java/util/Collection"))
+                        val cntSzPs: List[JvmType] = newList()
+                        insns.add(LInvokeinterface(owner = "java/util/Collection", name = "size", params = cntSzPs, ret = JInt, argCount = 1))
+                        insns.add(LIstore(slot = cntRes))
+                        insns.add(LGoto(label = cntEndL))
+                        insns.add(LLabel(name = cntMapL))
+                        insns.add(LAload(slot = cntRecv))
+                        insns.add(LInstanceof(className = "java/util/Map"))
+                        insns.add(LIfeq(label = cntStrL))
+                        insns.add(LAload(slot = cntRecv))
+                        insns.add(LCheckcast(className = "java/util/Map"))
+                        val cntMapPs: List[JvmType] = newList()
+                        insns.add(LInvokeinterface(owner = "java/util/Map", name = "size", params = cntMapPs, ret = JInt, argCount = 1))
+                        insns.add(LIstore(slot = cntRes))
+                        insns.add(LGoto(label = cntEndL))
+                        insns.add(LLabel(name = cntStrL))
+                        insns.add(LAload(slot = cntRecv))
+                        insns.add(LInstanceof(className = "java/lang/String"))
+                        insns.add(LIfeq(label = cntArrL))
+                        insns.add(LAload(slot = cntRecv))
+                        insns.add(LCheckcast(className = "java/lang/String"))
+                        val cntLnPs: List[JvmType] = newList()
+                        insns.add(LInvokevirtual(owner = "java/lang/String", name = "length", params = cntLnPs, ret = JInt))
+                        insns.add(LIstore(slot = cntRes))
+                        insns.add(LGoto(label = cntEndL))
+                        // Last resort: a boxed slice (`Object[]`).  Anything else
+                        // fails the checkcast loudly rather than yielding a wrong
+                        // value.
+                        insns.add(LLabel(name = cntArrL))
+                        insns.add(LAload(slot = cntRecv))
+                        insns.add(LCheckcast(className = "[Ljava/lang/Object;"))
+                        insns.add(LArraylength)
+                        insns.add(LIstore(slot = cntRes))
+                        insns.add(LLabel(name = cntEndL))
+                        insns.add(LIload(slot = cntRes))
+                        JInt
+                      } else {
+                        JRef(className = "java/lang/Object")
+                      }
+                    }
                   }
                 } else {
                   JRef(className = "java/lang/Object")
@@ -960,7 +1056,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
     // crash), matching the MSIL backend's resolution (#1506); W0002 informs
     // the user the clause is not enforced at runtime (#3227).
     case EForall(_, _, _) -> {
-      println(
+      Console.error(
         "W0002: forall quantifier in @runtime_checked contract is not evaluated at runtime " +
           "(sound overapproximation as true; consider restricting the domain or using @proof_required)"
       )
@@ -968,7 +1064,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       JBoolean
     }
     case EExists(_, _, _) -> {
-      println(
+      Console.error(
         "W0002: exists quantifier in @runtime_checked contract is not evaluated at runtime " +
           "(sound overapproximation as true; consider restricting the domain or using @proof_required)"
       )
@@ -1035,6 +1131,14 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               case JByte -> {
                 insns.add(LBaload)
                 JByte
+              }
+              case JRef(elemCls) -> {
+                // Preserve the element's reference type (e.g. `File.listFiles()`
+                // yields `java.io.File[]` — indexing must report `java/io/File`,
+                // not `Object`, so instance auto-FFI calls on the element
+                // resolve against the real class).
+                insns.add(LAaload)
+                JRef(className = elemCls)
               }
               case _ -> {
                 insns.add(LAaload)
