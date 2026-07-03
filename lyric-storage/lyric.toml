@@ -36,6 +36,12 @@ output_assembly = "Storage.dll"
 # `dotnet`, `Storage.Kernel.Jvm` on `jvm`.  Both kernels export the same
 # `host*` surface; the inactive one is erased.  The JVM kernel needs
 # nothing beyond `java.base` — no `[maven]` table required.
+#
+# `dotnet` and `jvm` are MUTUALLY EXCLUSIVE: activating both leaves two
+# definitions of every `host*` function in the bundle (ambiguous-symbol
+# build error).  Select exactly one, matching `--target`:
+#   --target dotnet                          (default features)
+#   --target jvm --no-default-features --features jvm
 [features]
 default = ["dotnet"]
 dotnet  = []
