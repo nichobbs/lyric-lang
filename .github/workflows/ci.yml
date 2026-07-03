@@ -946,25 +946,6 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/import_extern_self_test.l
 
-      # await nested inside ETuple/EList/EIndex/EInterpolated/ERange self-test
-      # (#4276): regression coverage for the seven match arms added to
-      # collectAwaitTypesExprPB / exprContainsAwaitMsil. Imports only Std.*.
-      - name: MSIL await-expr-forms self-test (#4276, native lyric test)
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping await-expr-forms self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping await-expr-forms self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/msil/msil_await_expr_forms_self_test.l
-
       - name: FFI interface impl self-test (D105, native lyric test)
         background: true
         working-directory: ${{ github.workspace }}
@@ -1693,6 +1674,31 @@ jobs:
 
       - name: Wait for all parallel tests
         wait-all: true
+
+      # await nested inside ETuple/EList/EIndex/EInterpolated/ERange self-test
+      # (#4276): regression coverage for the seven match arms added to
+      # collectAwaitTypesExprPB / exprContainsAwaitMsil. Imports only Std.*.
+      # Run sequentially (not `background: true`) rather than folded into the
+      # big parallel group above: adding it there as a 38th/39th concurrent
+      # step reproducibly broke two unrelated, already-passing steps in that
+      # group (`import extern self-test`, `Cross-package generics self-test`)
+      # across two separate CI runs, with clean TAP output on both but a
+      # `wait-all`-reported failure — a concurrency ceiling in the group, not
+      # a defect in this test or the other two. See PR #4810.
+      - name: MSIL await-expr-forms self-test (#4276, native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping await-expr-forms self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping await-expr-forms self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/msil/msil_await_expr_forms_self_test.l
   compiler-self-tests-dotnet-b:
     runs-on: ubuntu-latest
     needs: [build]
