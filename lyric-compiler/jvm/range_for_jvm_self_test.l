@@ -40,6 +40,25 @@ func sumLong(n: Long): Long {
   s
 }
 
+// Long counter through a CLOSED range (`lcmp` + `ifgt` exit path).
+func sumLongClosed(lo: Long, hi: Long): Long {
+  var s: Long = 0i64
+  for m in lo ..= hi {
+    s = s + m
+  }
+  s
+}
+
+// Count iterations of a general half-open Long range so the empty cases
+// (`lo == hi` and descending `lo > hi`) exercise the `lcmp` + `ifge` exit path.
+func countLongHalfOpen(lo: Long, hi: Long): Long {
+  var c: Long = 0i64
+  for m in lo ..< hi {
+    c = c + 1i64
+  }
+  c
+}
+
 func sumWithBreakContinue(): Int {
   var s = 0
   for i in 0 ..< 10 {
@@ -96,8 +115,21 @@ test "empty half-open range 3..<3 never runs (lo == hi > 0)" {
   assertEqualInt(countHalfOpen(5, 2), 0, "a descending lo > hi is also empty")
 }
 
-test "Long-counter range sums 0i64..<4i64 to 6" {
+test "Long-counter half-open range sums 0i64..<4i64 to 6" {
   assertEqualLong(sumLong(4i64), 6i64, "0+1+2+3 as Long")
+}
+
+test "Long-counter closed range sums 1i64..=4i64 to 10" {
+  assertEqualLong(sumLongClosed(1i64, 4i64), 10i64, "1+2+3+4 as Long (lcmp/ifgt exit)")
+}
+
+test "Long-counter closed range 3i64..=3i64 runs once" {
+  assertEqualLong(sumLongClosed(3i64, 3i64), 3i64, "single iteration at the Long bound")
+}
+
+test "Long-counter empty ranges never run" {
+  assertEqualLong(countLongHalfOpen(3i64, 3i64), 0i64, "3i64..<3i64 has zero iterations")
+  assertEqualLong(countLongHalfOpen(5i64, 2i64), 0i64, "a descending Long lo > hi is also empty")
 }
 
 test "continue advances the counter, break exits" {

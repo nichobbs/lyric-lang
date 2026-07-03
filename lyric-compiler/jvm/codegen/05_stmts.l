@@ -548,6 +548,21 @@ func emitCountingForJvm(
   val hiTy = lowerExpr(ctx, insns, hi)
   val hiSlot = allocSlot(ctx, "__for_hi_" + freshLabel(ctx), hiTy)
   emitStore(insns, hiSlot, hiTy)
+  // Defensive invariant: `lo` and `hi` share a type (the type checker unifies a
+  // range's bounds).  The comparison-opcode dispatch and increment below are
+  // driven by `loTy` alone; a Long/int-like mismatch would emit `lcmp` against a
+  // single-slot operand (or vice versa) — a class-load `VerifyError` rather than
+  // a diagnostic.  Fail loud at compile time if a future front-end change ever
+  // breaks the invariant.
+  val boundsSameWidth = match loTy {
+    case JLong -> match hiTy { case JLong -> true; case _ -> false }
+    case _ -> match hiTy { case JLong -> false; case _ -> true }
+  }
+  if not boundsSameWidth {
+    panic(
+      "Jvm.Codegen: range `for` bounds have mismatched JVM types (lo is Long xor hi is Long) — the type checker should have unified them"
+    )
+  }
 
   val loopL = freshLabel(ctx)
   val contL = freshLabel(ctx)
