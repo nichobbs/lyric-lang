@@ -242,35 +242,35 @@ func removeDirOne(path: in String): Bool {
   rc == 0
 }
 
-// Depth-first over the enumeration seams, then rmdir(2) on the emptied
-// directory.  A missing path fails at the first listing (parity with
+// Depth-first single-pass delete: list each directory ONCE, probe each
+// entry once (a subdirectory recurses, anything else is a file to
+// unlink), then rmdir(2) the emptied directory.  Going through the
+// two split list seams would read the directory twice per level and
+// stat every child twice; the delete walk cannot afford that on a
+// deep tree.  A missing path fails at the first listing (parity with
 // the managed twin, which reports DirectoryNotFoundException as
 // Err(IoError)).
+@unsafe_ffi
 pub func hostDeleteDirRecursiveResult(path: in String): Result[Unit, IOError] {
-  match hostListFilesResult(path) {
-    case Ok(files) -> {
-      for f in files {
-        match hostDeleteFileResult(f) {
-          case Ok(_) -> {
+  match listEntryNamesNative(path) {
+    case Ok(names) -> {
+      for n in names {
+        val p = path + "/" + n
+        if hostDirectoryExists(p) {
+          match hostDeleteDirRecursiveResult(p) {
+            case Ok(_) -> {
+            }
+            case Err(e) -> {
+              return Err(error = e)
+            }
           }
-          case Err(e) -> {
-            return Err(error = e)
-          }
-        }
-      }
-    }
-    case Err(e) -> {
-      return Err(error = e)
-    }
-  }
-  match hostListDirsResult(path) {
-    case Ok(dirs) -> {
-      for d in dirs {
-        match hostDeleteDirRecursiveResult(d) {
-          case Ok(_) -> {
-          }
-          case Err(e) -> {
-            return Err(error = e)
+        } else {
+          match hostDeleteFileResult(p) {
+            case Ok(_) -> {
+            }
+            case Err(e) -> {
+              return Err(error = e)
+            }
           }
         }
       }

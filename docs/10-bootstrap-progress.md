@@ -27403,9 +27403,11 @@ next tranche of #4752's native-side deferrals: bytes-mode file I/O
   `hostDeleteDirRecursiveResult` seam on all three twins (the same
   conversion as the bytes/enumeration functions — that `try` is
   exactly what cannot lower natively under D-N-003).  The native twin
-  implements it depth-first over the enumeration seams plus a new
-  `rtDirRemove` extern (`lyric_dir_remove` already existed in
-  lyric-rt); the JVM twin additionally gains an `isDirectory` probe so
+  implements it depth-first single-pass (each directory is listed once
+  and every child probed once — a subdirectory recurses, anything else
+  is unlinked; #4827), then `rmdir(2)` via a new `rtDirRemove` extern
+  (`lyric_dir_remove` already existed in lyric-rt); the JVM twin
+  additionally gains an `isDirectory` probe so
   a missing path reports `Err(IoError)` — previously
   `java.io.File.delete()`'s boolean-failure reporting made the JVM
   twin silently return `Ok` there, diverging from both the managed
@@ -27420,4 +27422,4 @@ next tranche of #4752's native-side deferrals: bytes-mode file I/O
 
 **Related:** D-N-015 (`docs/03-decision-log.md`), D-progress-556,
 D-progress-557, `native/plan/03-type-mapping.md`, issues #4752, #4778,
-#4795, #4809.
+#4795, #4809, #4827.
