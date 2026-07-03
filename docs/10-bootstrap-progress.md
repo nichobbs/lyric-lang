@@ -27804,12 +27804,39 @@ binding), but emits a plain public instance method — no `Virtual`/`Final`/
 dispatch through `cctx.methodTokens` always emits `callvirt`, which is legal
 against a non-virtual instance method too).
 
+**Second, previously-latent bug found by CI running the new test.** Fixing
+the entry-point corruption let `implicit_self_msil_self_test.l` actually run
+for the first time on `--target dotnet`, which surfaced a second, independent
+bug: calls to an in-body method taking ≥1 real parameter (`a.add(20)`,
+`a.fma(6, 7)`) crashed with `InvalidProgramException`, while zero-real-param
+methods (`c.get()`) worked. `addPackageTokens`' RMFunc reservation called
+`registerMethodParamTypes`/`registerMethodParamModes` with `fn.params`
+as-is — which, unlike an `impl` method's params, includes the injected
+`self` at index 0 — so the registered type/mode at index *i* was really the
+*(i-1)*th real parameter's (index 0 held `self`'s class type). The call-site
+dispatch in `lowerMethodCallMsil` indexes by real-argument position
+(`args.count`, `args[i]`, never counting the receiver), so every lookup was
+off by one: an `Int` argument's slot returned `self`'s reference-type class,
+`isValueType` said "not a value type", and `boxIfNeededMsil` boxed an
+already-unboxed `int32` being passed to the method's real `int32` parameter
+— invalid IL. Fixed by a new `realMethodParamsOf` helper (drops
+`params[0]`) used consistently by both RMFunc reservation sites (`IRecord`
+and `IExposedRec`) and by `lowerRecordMethodMsil`'s real emission, mirroring
+the JVM backend's existing `stripLeadingSelfParam` (`jvm/codegen/06_items.l`)
+— the established pattern for this exact self-parameter-exclusion problem.
+Also corrects the arity-dispatch key (previously `fn.params.count`, which
+counted `self`) to the real parameter count, matching call sites'
+`args.count` — a latent overload-resolution bug for multi-arity in-body
+methods that happened to be masked by the bare-key fallback in every
+existing (single-overload) test, but is now correct for the general case.
+
 **Tests.** `implicit_self_msil_self_test.l` (`lyric-compiler/lyric/`) already
 covered in-body methods end-to-end via `@test_module` but was never wired
 into CI for `--target dotnet` — its synthesised `main` is exactly the
-function whose entry-point token this bug corrupted, so it is the natural
-regression guard. Wired into the `compiler-self-tests-dotnet-b` CI job
-alongside its existing JVM-target counterpart (`implicit_self_jvm_self_test.l`).
+function whose entry-point token the first bug corrupted, and its
+`Accumulator.add`/`fma` cases are what caught the second, so it is the
+natural regression guard for both. Wired into the `compiler-self-tests-dotnet-b`
+CI job alongside its existing JVM-target counterpart (`implicit_self_jvm_self_test.l`).
 
 **Follow-up unblocked:** docs/44 m-78's `method_scrutinee_jvm_self_test.l`
 was JVM-only specifically because its repro needs an in-body method and

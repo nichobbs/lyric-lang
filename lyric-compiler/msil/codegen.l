@@ -1906,6 +1906,24 @@ pub func registerTypeAliasMsil(cctx: in CodegenCtx, pkgName: in String, decl: in
   }
 }
 
+// An in-body method's `decl.params[0]` is the injected `self: in Type`
+// (`injectSelfIfNeeded`, parser_items.l) — the receiver, mapping to the
+// CLR's implicit `this`.  Everywhere a real-argument count/type/mode is
+// needed (arity-dispatch keys, `registerMethodParamTypes`/`Modes`, the real
+// MSIL signature), it must exclude that synthetic slot: call sites index
+// arguments by real-argument position (`args.count`, `args[i]`), which never
+// counts the receiver.  Used by both `addPackageTokens`' RMFunc reservation
+// and `lowerRecordMethodMsil`'s real emission so the two stay in lockstep.
+func realMethodParamsOf(params: in List[Param]): List[Param] {
+  val real: List[Param] = newList()
+  var i = 1
+  while i < params.count {
+    real.add(params[i])
+    i = i + 1
+  }
+  real
+}
+
 pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in String): Unit {
   // Collect IExternType names so auto-FFI call interception can resolve them.
   scanExternTypesMsil(cctx, file)
@@ -2215,19 +2233,23 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               // makes overloaded-method lookup unambiguous (same pattern as
               // IFunc / registerStdlibFunc — arity key first, bare key as
               // first-overload fallback for call sites that don't arity-disambiguate).
-              val rmArityKey = className + "/" + fn.name + "/" + toString(fn.params.count)
+              // Real-param count/list (excludes the injected `self`, #4947) so
+              // this matches `args.count` at the call site and `registerMethodParamTypes`/
+              // `Modes` register real-argument slots, not `self`'s.
+              val rmRealParams = realMethodParamsOf(fn.params)
+              val rmArityKey = className + "/" + fn.name + "/" + toString(rmRealParams.count)
               val rmKey = className + "/" + fn.name
               if not cctx.methodTokens.containsKey(rmArityKey) {
                 cctx.methodTokens.add(rmArityKey, 0x06000000 + methodDefRow)
                 registerMethodRetTy(cctx, rmArityKey, fn.ret, pkgName)
-                registerMethodParamTypes(cctx, rmArityKey, fn.params, pkgName)
-                registerMethodParamModes(cctx, rmArityKey, fn.params)
+                registerMethodParamTypes(cctx, rmArityKey, rmRealParams, pkgName)
+                registerMethodParamModes(cctx, rmArityKey, rmRealParams)
                 // Bare name: first overload wins so existing unqualified call sites work.
                 if not cctx.methodTokens.containsKey(rmKey) {
                   cctx.methodTokens.add(rmKey, 0x06000000 + methodDefRow)
                   registerMethodRetTy(cctx, rmKey, fn.ret, pkgName)
-                  registerMethodParamTypes(cctx, rmKey, fn.params, pkgName)
-                  registerMethodParamModes(cctx, rmKey, fn.params)
+                  registerMethodParamTypes(cctx, rmKey, rmRealParams, pkgName)
+                  registerMethodParamModes(cctx, rmKey, rmRealParams)
                 }
               }
               methodDefRow = methodDefRow + 1
@@ -2301,19 +2323,21 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         while mi < decl.members.count {
           match decl.members[mi] {
             case RMFunc(fn) -> {
-              // Arity-qualified key; see IRecord RMFunc above.
-              val xrmArityKey = className + "/" + fn.name + "/" + toString(fn.params.count)
+              // Arity-qualified key; see IRecord RMFunc above (real-param
+              // count/list, excluding the injected `self` — #4947).
+              val xrmRealParams = realMethodParamsOf(fn.params)
+              val xrmArityKey = className + "/" + fn.name + "/" + toString(xrmRealParams.count)
               val xrmKey = className + "/" + fn.name
               if not cctx.methodTokens.containsKey(xrmArityKey) {
                 cctx.methodTokens.add(xrmArityKey, 0x06000000 + methodDefRow)
                 registerMethodRetTy(cctx, xrmArityKey, fn.ret, pkgName)
-                registerMethodParamTypes(cctx, xrmArityKey, fn.params, pkgName)
-                registerMethodParamModes(cctx, xrmArityKey, fn.params)
+                registerMethodParamTypes(cctx, xrmArityKey, xrmRealParams, pkgName)
+                registerMethodParamModes(cctx, xrmArityKey, xrmRealParams)
                 if not cctx.methodTokens.containsKey(xrmKey) {
                   cctx.methodTokens.add(xrmKey, 0x06000000 + methodDefRow)
                   registerMethodRetTy(cctx, xrmKey, fn.ret, pkgName)
-                  registerMethodParamTypes(cctx, xrmKey, fn.params, pkgName)
-                  registerMethodParamModes(cctx, xrmKey, fn.params)
+                  registerMethodParamTypes(cctx, xrmKey, xrmRealParams, pkgName)
+                  registerMethodParamModes(cctx, xrmKey, xrmRealParams)
                 }
               }
               methodDefRow = methodDefRow + 1
@@ -18437,12 +18461,7 @@ pub func lowerRecordMethodMsil(
   // slot, so there is no erased-vs-ctx-aware distinction to make: one
   // ctx-aware return type serves both the emitted signature and body inference.
   val retTy = match decl.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid }
-  val realParams: List[Param] = newList()
-  var rpi = 1
-  while rpi < decl.params.count {
-    realParams.add(decl.params[rpi])
-    rpi = rpi + 1
-  }
+  val realParams: List[Param] = realMethodParamsOf(decl.params)
   val fctx = makeFuncCtxMsil(pkgName, targetTypeName, decl.name, decl.params.count, retTy)
   fctx.slotTicker.add(0)  // slot 0 = self ("this"), no name binding — ESelf reads ldarg.0 directly
 
