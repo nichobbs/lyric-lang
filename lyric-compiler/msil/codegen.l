@@ -4284,12 +4284,12 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
         }
       } else if headSeg == "Map" {
         MMapOf(keyTy = MObject, valTy = MObject)
-      } else if headSeg == "DictKeyCollection" and args.count == 2 {
+      } else if (headSeg == "DictKeyCollection" or headSeg == "MapKeyCollection") and args.count == 2 {
         // Extern key-collection view — implements IEnumerable<K>, not IList.
         // Use IEnumerator protocol in emitCollectionForMsil (#3511).
         val keyTy = match args[0] { case TAType(te2) -> typeExprToMsilCtx(cctx, te2, pkgName); case TAValue(_) -> MObject }
         MExternEnumerable(elemTy = keyTy)
-      } else if headSeg == "DictValueCollection" and args.count == 2 {
+      } else if (headSeg == "DictValueCollection" or headSeg == "MapValueCollection") and args.count == 2 {
         // Extern value-collection view — implements IEnumerable<V>, not IList.
         val valTy = match args[1] { case TAType(te2) -> typeExprToMsilCtx(cctx, te2, pkgName); case TAValue(_) -> MObject }
         MExternEnumerable(elemTy = valTy)
@@ -18084,7 +18084,7 @@ func typeExprToMsilGenBody(
         }
       } else if headSeg == "Map" {
         MMapOf(keyTy = MObject, valTy = MObject)
-      } else if headSeg == "DictKeyCollection" and args.count == 2 {
+      } else if (headSeg == "DictKeyCollection" or headSeg == "MapKeyCollection") and args.count == 2 {
         // Extern key-collection view — implements IEnumerable<K>, not IList.
         // Use IEnumerator protocol in emitCollectionForMsil (#3511).
         val keyTy = match args[0] {
@@ -18092,7 +18092,7 @@ func typeExprToMsilGenBody(
           case TAValue(_) -> MObject
         }
         MExternEnumerable(elemTy = keyTy)
-      } else if headSeg == "DictValueCollection" and args.count == 2 {
+      } else if (headSeg == "DictValueCollection" or headSeg == "MapValueCollection") and args.count == 2 {
         // Extern value-collection view — implements IEnumerable<V>, not IList.
         // Use IEnumerator protocol in emitCollectionForMsil (#3511).
         val valTy = match args[1] {

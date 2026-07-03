@@ -199,9 +199,9 @@ pub func checkStatement(
         case TyArray(_, e) -> e
         case TyUser(_, iterName, iterArgs) -> {
           // DictKeyCollection[K,V] iterates over K; DictValueCollection[K,V] over V.
-          if iterName == "DictKeyCollection" and iterArgs.count == 2 {
+          if (iterName == "DictKeyCollection" or iterName == "MapKeyCollection") and iterArgs.count == 2 {
             iterArgs[0]
-          } else if iterName == "DictValueCollection" and iterArgs.count == 2 {
+          } else if (iterName == "DictValueCollection" or iterName == "MapValueCollection") and iterArgs.count == 2 {
             iterArgs[1]
           } else {
             TyError

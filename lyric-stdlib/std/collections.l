@@ -59,17 +59,25 @@ pub record MapEntry[K, V] {
   value: V
 }
 
-/// Return the key collection of `m` as a lazy view (no copy).
-/// The returned `DictKeyCollection[K, V]` can be iterated with `for`.
+/// Opaque wrapper around the host key collection.
 @stable(since = "1.0")
-pub func mapKeys[K, V](m: in Map[K, V]): DictKeyCollection[K, V] {
+pub extern type MapKeyCollection[K, V] = "System.Collections.Generic.Dictionary`2+KeyCollection"
+
+/// Opaque wrapper around the host value collection.
+@stable(since = "1.0")
+pub extern type MapValueCollection[K, V] = "System.Collections.Generic.Dictionary`2+ValueCollection"
+
+/// Return the key collection of `m` as a lazy view (no copy).
+/// The returned `MapKeyCollection[K, V]` can be iterated with `for`.
+@stable(since = "1.0")
+pub func mapKeys[K, V](m: in Map[K, V]): MapKeyCollection[K, V] {
   dictGetKeys(m)
 }
 
 /// Return the value collection of `m` as a lazy view (no copy).
-/// The returned `DictValueCollection[K, V]` can be iterated with `for`.
+/// The returned `MapValueCollection[K, V]` can be iterated with `for`.
 @stable(since = "1.0")
-pub func mapValues[K, V](m: in Map[K, V]): DictValueCollection[K, V] {
+pub func mapValues[K, V](m: in Map[K, V]): MapValueCollection[K, V] {
   dictGetValues(m)
 }
 
