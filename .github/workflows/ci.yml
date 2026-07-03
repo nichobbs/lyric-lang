@@ -3079,6 +3079,29 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/j3_lowering_self_test.l
+      # `defer` self-test on JVM (J4, epic #2663 / #2667, #4878).  The value-
+      # position, trailing/consecutive, and panic-unwind `defer` forms all
+      # produced invalid bytecode on the JVM (VerifyError / "Illegal exception
+      # table range") and this suite was previously run only on `--target dotnet`,
+      # so the breakage went unnoticed.  Pins all six forms (reverse-order fall-
+      # off, early return with value, break, continue, exception unwind, and a
+      # value-producing sub-block) now that the region-boundary StackMapTable and
+      # empty-region/dead-nop fixes have landed.  Imports only `Std.*`.
+      - name: Defer self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping defer JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping defer JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/defer_self_test.l
       # Generic-codegen self-test on JVM (J4 M-1, epic #2663 / #2667 / #1707).
       # Pins the erased-generics correctness fix: generic `Result`/`Option` and
       # user generic records/unions now construct (boxing primitive payloads
