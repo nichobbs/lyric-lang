@@ -608,6 +608,31 @@ test "trailing defer in value-producing block runs and yields Unit" {
   assertEqual(Str.trim(result.stdout), "2", "trailing_defer: stdout=2")
 }
 
+// ─── Regression: void-typed binding shadowing a non-void binding of the
+// same name leaves a stale `fctx.slots` entry (#4943) ──────────────────────
+// `lowerLocalPatBindMsil`'s MVoid arm registered the name's logical type as
+// MVoid in `fctx.types` but left any earlier `fctx.slots` entry for that name
+// in place. The EPath read-site guard checks `fctx.slots` FIRST, so a stale
+// slot bypassed the MVoid no-op and loaded through the (now-void-typed) old
+// slot — a type/slot mismatch that corrupts the emitted IL.
+test "void-typed binding shadowing a non-void binding of the same name does not corrupt codegen state" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "VoidShadow.App",
+      "package VoidShadow.App\n" + "func work(): Int {\n" + "  val x = 5\n" +
+        "  val x = println(\"shadowed\")\n" + "  x\n" + "  6\n" + "}\n" +
+        "func main(): Unit {\n" + "  println(work().toString())\n" + "}\n"
+    )
+  )
+  val result = compileAndRun("void_shadow", packages, "VoidShadow")
+  assertEqualInt(result.exitCode, 0, "void_shadow: exit 0 (stderr=" + result.stderr + ")")
+  val lines = Str.split(Str.trim(result.stdout), "\n")
+  assertEqualInt(lines.length, 2, "void_shadow: two output lines")
+  assertEqual(lines[0], "shadowed", "void_shadow: println inside the void binding ran")
+  assertEqual(lines[1], "6", "void_shadow: work() returns the correct trailing value, uncorrupted by the shadow")
+}
+
 // ─── Regression: alias rewriter resolves qualified call against wrong
 // package scope (#1127) ───────────────────────────────────────────────────
 // `import Kernel as K` then `K.verifyJwt(...)` from a `Wrapper` package that

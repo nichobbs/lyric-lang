@@ -12552,10 +12552,19 @@ func lowerLocalPatBindMsil(
           // the EPath read site resolves it to a no-op instead of emitting a
           // load from a nonexistent slot — mirrors the JVM backend's
           // `JVoid` -> `LNop` emitLoad/emitStore contract. #4886.
+          //
+          // Also clear any stale `fctx.slots` entry for this name (e.g. an
+          // outer-scope non-void binding of the same name, shadowed by this
+          // void one): the EPath read site checks `fctx.slots` FIRST, so a
+          // leftover slot would bypass the MVoid no-op and load the shadowed
+          // outer binding's stale value instead. #4943.
           if fctx.types.containsKey(name) {
             fctx.types.remove(name)
           }
           fctx.types.add(name, MVoid)
+          if fctx.slots.containsKey(name) {
+            fctx.slots.remove(name)
+          }
         }
         case _ -> {
           val slot = allocSlotMsil(fctx, name, ty)
