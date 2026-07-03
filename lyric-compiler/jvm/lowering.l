@@ -866,6 +866,12 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
       )
     }
     case LBoxByte -> {
+      // A `JByte` operand is an int on the stack that may exceed the signed
+      // byte range (e.g. an unsigned `Byte` 200 held as 200, not yet narrowed).
+      // `Byte.valueOf(byte)` indexes a cache at `b + 128`, so an un-narrowed 200
+      // gives index 328 → ArrayIndexOutOfBoundsException.  Narrow with `i2b`
+      // first (200 → -56), matching the value a `byte` field/array store holds.
+      emitI2b(asm)
       val ps: List[JvmType] = newList()
       ps.add(JByte)
       lowerInsn(
@@ -874,6 +880,10 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
       )
     }
     case LBoxChar -> {
+      // Narrow to the char range before boxing so the operand matches the `(C)`
+      // descriptor (`Character.valueOf` does not cache-crash, but keeping the
+      // value in range mirrors the byte/short paths).
+      emitI2c(asm)
       val ps: List[JvmType] = newList()
       ps.add(JChar)
       lowerInsn(
@@ -887,6 +897,8 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
       )
     }
     case LBoxShort -> {
+      // Same cache-index hazard as `Byte.valueOf`: narrow with `i2s` first.
+      emitI2s(asm)
       val ps: List[JvmType] = newList()
       ps.add(JShort)
       lowerInsn(

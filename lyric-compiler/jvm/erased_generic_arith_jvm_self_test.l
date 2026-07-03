@@ -47,6 +47,20 @@ func fillInt(n: Int): Slot[Int] {
   Filled(item = n * 2)
 }
 
+func fillChar(c: Char): Slot[Char] {
+  Filled(item = c)
+}
+
+// A `Byte` payload deliberately above 127, to exercise the signed in-slot
+// representation (`byteValue` yields -56 for 200) plus unsigned widening.
+func fillByte(b: Byte): Slot[Byte] {
+  Filled(item = b)
+}
+
+func fillBool(v: Bool): Slot[Bool] {
+  Filled(item = v)
+}
+
 // Extract-and-add through a match: the headline #4877 shape.
 func addTwoIntResults(a: String, b: String): Int {
   val x = match makeIntResult(a) { case Ok(v) -> v; case Err(_) -> 0 }
@@ -171,4 +185,31 @@ test "guard and binding over an unboxed Int payload" {
   val r = makeIntResult("test")   // length 4
   val picked = match r { case Ok(n) if n > 3 -> n + 100; case Ok(n) -> n; case Err(_) -> -1 }
   assertEqualInt(picked, 104, "4 > 3 guard fires, 4 + 100 == 104")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. Char / Byte / Bool payloads — the remaining `emitUnboxObjectTo` arms
+//    (#4942 Char, #4941 Byte, #4932 Bool).
+// ─────────────────────────────────────────────────────────────────────────────
+test "Char payload unboxes to a real char (#4942)" {
+  val c = match fillChar('A') { case Filled(ch) -> ch; case Blank -> ' ' }
+  // A boxed Character would not compare/convert as a primitive char.
+  assertEqualInt(c.toInt(), 65, "'A' unboxes to char 65")
+  assertTrue(c == 'A', "unboxed char compares equal to the literal")
+}
+
+test "Byte payload above 127 unboxes with the signed representation (#4941)" {
+  // 200 is held as the signed byte -56; `.toInt()` masks to the unsigned 200
+  // (D-progress-566).  A boxed Object payload here would mis-dispatch `.toInt()`.
+  val b = match fillByte(200.toByte()) { case Filled(x) -> x; case Blank -> 0.toByte() }
+  assertEqualInt(b.toInt(), 200, "unboxed Byte 200 -> Int 200 (not -56)")
+  assertEqualLong(b.toLong(), 200i64, "unboxed Byte 200 -> Long 200")
+}
+
+test "Bool payload unboxes to a real boolean (#4932)" {
+  val t = match fillBool(true) { case Filled(v) -> v; case Blank -> false }
+  val f = match fillBool(false) { case Filled(v) -> v; case Blank -> true }
+  assertTrue(t, "unboxed true payload is true")
+  assertFalse(f, "unboxed false payload is false")
+  assertTrue(t and not f, "unboxed booleans combine in a boolean expression")
 }
