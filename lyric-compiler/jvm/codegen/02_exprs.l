@@ -2019,8 +2019,7 @@ func collectRefNamesExpr(e: in Expr, acc: in List[String]): Unit {
       collectRefNamesExpr(rhs, acc)
     }
     case EPrefix(_, operand) -> collectRefNamesExpr(operand, acc)
-    // A name referenced only inside parens was missed by capture collection
-    // and read as the null/zero default (an NPE for a Double/Long unbox; #4798).
+    // Parens were invisible to capture collection; the name read as null/zero (#4798).
     case EParen(inner) -> collectRefNamesExpr(inner, acc)
     case ECall(fn, args) -> {
       collectRefNamesExpr(fn, acc)
