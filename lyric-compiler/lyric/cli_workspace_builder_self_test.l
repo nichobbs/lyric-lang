@@ -25,6 +25,9 @@ import Std.Environment as Environment
 import Std.Uuid
 import Std.Testing
 import Lyric.Cli as Cli
+import Lyric.Manifest as Mf
+import Lyric.Emitter as Emitter
+import Lyric.Workspace as Ws
 
 func tempBase(): String {
   Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
@@ -70,6 +73,13 @@ func touchBinDll(pkgDir: in String, dllFileName: in String): Unit {
     case Err(e) -> panic("cannot create bin dir " + binDir + ": " + IOError.message(e))
   }
   writeFileOrPanic(Path.join(binDir, dllFileName), "")
+}
+
+func isSomeWs(o: in Option[Ws.WorkspaceContext]): Bool {
+  match o {
+    case Some(_) -> true
+    case None -> false
+  }
 }
 
 func listContainsPrefix(list: in List[String], prefix: in String): Bool {
@@ -184,5 +194,36 @@ test "collectTransitiveDepDlls: already-seen name is not re-added" {
   Cli.collectTransitiveDepDlls(bDir, None, seen, result)
 
   assertEqualInt(result.count, 0, "already-seen: pre-seeded name is not re-recorded")
+  cleanup(root)
+}
+
+// buildWorkspaceDeps tuple-return regression; see D-progress-555 (#4925).
+test "buildWorkspaceDeps: tuple's Option element round-trips without crashing on destructure" {
+  val root = freshTempDir("no-workspace")
+  val mfPath = Path.join(root, "lyric.toml")
+  writeFileOrPanic(
+    mfPath,
+    "[package]\nname = \"Fixture.NoWs\"\nversion = \"0.1.0\"\n\n[project]\nname = \"Fixture.NoWs\"\n\n[project.packages]\n\"Fixture\" = \"src/main.l\"\n"
+  )
+  val mfText = match File.readText(mfPath) {
+    case Ok(t) -> t
+    case Err(e) -> panic("cannot read " + mfPath + ": " + IOError.message(e))
+  }
+  val manifest = match Mf.parseManifest(mfText, mfPath) {
+    case Ok(m) -> m
+    case Err(e) -> panic("cannot parse " + mfPath + ": " + ManifestError.message(e))
+  }
+
+  val directIsWorkspace = isSomeWs(Ws.findWorkspaceRoot(Path.dirname(mfPath)))
+  val (dllPaths, hadError, wsCtxOpt) = Cli.buildWorkspaceDeps(manifest, mfPath, Emitter.Dotnet)
+  val tupleIsWorkspace = isSomeWs(wsCtxOpt)
+
+  assertEqualInt(dllPaths.count, 0, "buildWorkspaceDeps: no {workspace = true} deps declared, so nothing is built")
+  assertFalse(hadError, "buildWorkspaceDeps: no build error with no workspace-form deps declared")
+  assertTrue(
+    tupleIsWorkspace == directIsWorkspace,
+    "buildWorkspaceDeps: the tuple's Option element must agree with a direct findWorkspaceRoot call"
+  )
+
   cleanup(root)
 }

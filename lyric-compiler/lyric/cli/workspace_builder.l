@@ -44,8 +44,8 @@ pub func buildWorkspaceDeps(
     case Some(ctx) -> ctx
     case None -> {
       // No workspace found; workspace dependencies cannot be resolved.
-      // The caller will diagnose this as an unresolved dependency.
-      return (result, false, None)
+      // Return the already-typed wsCtxOpt, not a fresh None (#4925).
+      return (result, false, wsCtxOpt)
     }
   }
 
@@ -115,7 +115,7 @@ func addTransitiveDepFromDir(
   depName: in String,
   wsCtxOpt: in Option[Ws.WorkspaceContext],
   seen: in List[String],
-  result: in List[String]
+  result: in List[String],
 ): Unit {
   val tToml = Path.join(tDepDir, "lyric.toml")
   if File.fileExists(tToml) {
@@ -150,7 +150,7 @@ pub func collectTransitiveDepDlls(
   depDir: in String,
   wsCtxOpt: in Option[Ws.WorkspaceContext],
   seen: in List[String],
-  result: in List[String]
+  result: in List[String],
 ): Unit {
   val tomlPath = Path.join(depDir, "lyric.toml")
   if not File.fileExists(tomlPath) {
