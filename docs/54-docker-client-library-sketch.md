@@ -137,7 +137,7 @@ pub async func createContainer(
 
 ### Typed Operations
 
-- **Containers:** `createContainer`, `startContainer`, `stopContainer`, `removeContainer`, `inspectContainer`, `getContainerLogs`, `execContainer`
+- **Containers:** `createContainer`, `startContainer`, `waitContainer`, `stopContainer`, `removeContainer`, `inspectContainer`, `getContainerLogs`, `execContainer`
 - **Images:** `pullImage`, `buildImage`, `pushImage`, `removeImage`, `inspectImage`, `tagImage`
 - **Networks:** `createNetwork`, `listNetworks`, `inspectNetwork`, `removeNetwork`, `connectNetwork`, `disconnectNetwork`
 - **Volumes:** `createVolume`, `listVolumes`, `inspectVolume`, `removeVolume`, `pruneVolumes`
