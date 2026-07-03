@@ -2180,6 +2180,14 @@ func coerceTo(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType): N
           match mapGet(ctx.ifaceVtables, rir + "|" + info.key) {
             case Some(vtGlobal) -> return buildIfaceBox(ctx, insns, v, info, vtGlobal)
             case None -> {
+              // The type checker admitted this record→interface upcast, so
+              // registerImplVtables should have emitted a vtable — a missing
+              // one is a compiler-invariant violation, not a user error, so
+              // fail fast rather than silently mistype the value (#4909).
+              panic(
+                "Lyric.LlvmCodegen: no vtable registered for record '" + rir + "' implementing interface '" + info.key +
+                  "' (registerImplVtables invariant violation)"
+              )
             }
           }
         }
