@@ -251,7 +251,16 @@ pub func allocSlot(ctx: in FuncCtx, name: in String, ty: in JvmType): Int {
   match mapGet(ctx.slots, name) {
     case Some(existing) -> {
       val prevTy = match mapGet(ctx.types, name) { case Some(t) -> t; case None -> ty }
-      if jvmTypeSlotWidth(prevTy) == width {
+      // Reuse the slot only when the previous and new binding share the same
+      // *verifier* slot type, not merely the same width.  This backend frames
+      // each slot with a single verifier type for the whole method
+      // (`storeTypes`), so a slot reused across two DIFFERENT verifier types —
+      // e.g. `case AsDouble(v)` (VDouble) then `case AsLong(v)` (VLong) in
+      // sibling match arms, both width 2 — makes the match-join frame reject
+      // the method (VerifyError; m-57).  Int-like types all frame as VInteger
+      // and still share; Double/Long/Float and distinct ref classes get fresh
+      // slots so each slot carries exactly one verifier type.
+      if sameFrameSlotType(prevTy, ty) {
         ctx.types.remove(name)
         ctx.types.add(name, ty)
         return existing
@@ -273,6 +282,38 @@ pub func allocSlot(ctx: in FuncCtx, name: in String, ty: in JvmType): Int {
     ctx.slotTicker.add(0)
   }
   slot
+}
+
+// True when two JVM types occupy the same StackMapTable verifier slot type —
+// mirrors `Jvm.Lowering.jvmToVerifier` without the cross-package dependency.
+// All int-like primitives collapse to VInteger (so an Int slot may be reused
+// for a Byte binding); Float / Long / Double are distinct; two ref types match
+// only on the same class, two arrays only on the same element type.
+func sameFrameSlotType(a: in JvmType, b: in JvmType): Bool {
+  match a {
+    case JInt -> isIntLikeFrame(b)
+    case JBoolean -> isIntLikeFrame(b)
+    case JByte -> isIntLikeFrame(b)
+    case JChar -> isIntLikeFrame(b)
+    case JShort -> isIntLikeFrame(b)
+    case JFloat -> match b { case JFloat -> true; case _ -> false }
+    case JLong -> match b { case JLong -> true; case _ -> false }
+    case JDouble -> match b { case JDouble -> true; case _ -> false }
+    case JVoid -> match b { case JVoid -> true; case _ -> false }
+    case JRef(ca) -> match b { case JRef(cb) -> ca == cb; case _ -> false }
+    case JArray(ea) -> match b { case JArray(eb) -> sameFrameSlotType(ea, eb); case _ -> false }
+  }
+}
+
+func isIntLikeFrame(t: in JvmType): Bool {
+  match t {
+    case JInt -> true
+    case JBoolean -> true
+    case JByte -> true
+    case JChar -> true
+    case JShort -> true
+    case _ -> false
+  }
 }
 
 // Slot width in JVM local-variable units: 2 for `JLong`/`JDouble`, 1 for

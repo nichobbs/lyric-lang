@@ -37,6 +37,34 @@ union Shape {
   case Square(side: Int)
 }
 
+// ── Mixed-width match bindings — the SAME binding name `v` across sibling arms
+// at DIFFERENT verifier-slot types (Double / Long / Int).  The JVM backend
+// frames each local slot with a single verifier type for the whole method, so
+// reusing one slot across a Double and a Long arm made the match-join frame
+// unmergeable (VerifyError: Inconsistent stackmap frames; m-72).
+union Num {
+  case AsDouble(v: Double)
+  case AsLong(v: Long)
+  case AsInt(v: Int)
+}
+
+func numToDouble(n: in Num): Double {
+  match n {
+    case AsDouble(v) -> v
+    case AsLong(v) -> v.toDouble()
+    case AsInt(v) -> v.toDouble()
+  }
+}
+
+// Same name `v`, result routed through a Long slot (the other two-slot width).
+func numToLong(n: in Num): Long {
+  match n {
+    case AsDouble(v) -> v.toLong()
+    case AsLong(v) -> v
+    case AsInt(v) -> v.toLong()
+  }
+}
+
 // ── PParen — a single parenthesised pattern binds its inner at the scrutinee
 // type, so the bound value stays a usable `Int`.
 func parenId(n: Int): Int {
@@ -228,4 +256,16 @@ test "PLiteral Float pattern selects the matching arm" {
   assertEqualInt(floatBand(1.5), 1, "float arm 1")
   assertEqualInt(floatBand(2.5), 2, "float arm 2 (non-first)")
   assertEqualInt(floatBand(3.5), 0, "float wildcard")
+}
+
+test "mixed-width match bindings: same name across Double/Long/Int arms (m-72)" {
+  assertTrue(numToDouble(AsDouble(v = 2.5)) == 2.5, "Double arm binds v: Double")
+  assertTrue(numToDouble(AsLong(v = 100i64)) == 100.0, "Long arm binds v: Long, widened")
+  assertTrue(numToDouble(AsInt(v = 7)) == 7.0, "Int arm binds v: Int, widened")
+}
+
+test "mixed-width match bindings: result routed through a Long slot (m-72)" {
+  assertEqualLong(numToLong(AsDouble(v = 4.0)), 4i64, "Double arm truncated to Long")
+  assertEqualLong(numToLong(AsLong(v = 42i64)), 42i64, "Long arm binds v: Long")
+  assertEqualLong(numToLong(AsInt(v = 9)), 9i64, "Int arm binds v: Int, widened to Long")
 }
