@@ -557,6 +557,30 @@ test "UFCS chained member read through self" {
   assertEqual(Str.trim(result.stdout), "42", "ufcs_chain: stdout=42")
 }
 
+// ─── Regression: same-package qualified UFCS call (#4651) ───────────────────
+// `Wrapper2.unwrap(w)` (the qualified call form) used to crash with
+// InvalidProgramException: `lowerMethodCallMsil` resolved an imported type's
+// UFCS method (D037) and a cross-package free function, but had no case for
+// a UFCS method declared in the SAME package as the call site. The bare type
+// name `Wrapper2` fell through to value-receiver dispatch, resolved to a
+// bogus null, and produced a stack shape the CLR verifier rejects. Postfix
+// `w.unwrap()` was unaffected (different codegen path — a real local
+// receiver, not a type-name receiver).
+test "same-package qualified UFCS call resolves correctly" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "SamePkgUfcs.App",
+      "package SamePkgUfcs.App\n" + "\n" + "record Wrapper2 { n: Int }\n" +
+        "func Wrapper2.unwrap(w: in Wrapper2): Int { w.n }\n" +
+        "func main(): Unit { println(Wrapper2.unwrap(Wrapper2(n = 99))) }\n"
+    )
+  )
+  val result = compileAndRun("same_pkg_ufcs", packages, "SamePkgUfcs")
+  assertEqualInt(result.exitCode, 0, "same_pkg_ufcs: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "99", "same_pkg_ufcs: stdout=99")
+}
+
 // ─── Regression: qualified enum-case pattern with shared case names (#3349) ──
 // Two packages each declare an enum with a case named `Same`.  A consumer
 // matches on `PackA.Color.Same` and verifies the correct ordinal fires,
