@@ -186,12 +186,12 @@ pub func hostWriteBytesResult(path: in String, bytes: in List[Byte]): Result[Uni
   }
 }
 
-// kind: 1 = files only, 2 = directories only.  lyric_dir_list2 yields
-// bare entry NAMES; the managed twin yields absolute paths, so each
-// kept entry is re-joined onto `dir` and filtered by an existence
-// probe of the requested kind.
+// Bare entry NAMES straight from lyric_dir_list2 (files and dirs
+// mixed); the managed twin yields absolute paths split by kind, so
+// each public seam below re-joins the names onto `dir` and filters by
+// an existence probe of its kind.
 @unsafe_ffi
-func listChildrenNative(dir: in String, kind: in Int): Result[List[String], IOError] {
+func listEntryNamesNative(dir: in String): Result[List[String], IOError] {
   var ok: Int = 0
   val c = toC(dir)
   val names = rtDirList(c, nativeAddrOf(ok))
@@ -199,25 +199,39 @@ func listChildrenNative(dir: in String, kind: in Int): Result[List[String], IOEr
   if ok != 1 {
     return Err(error = IoError(path = dir, message = "the directory could not be listed"))
   }
-  val acc: List[String] = newList()
-  for n in names {
-    val p = dir + "/" + n
-    if kind == 1 and hostFileExists(p) {
-      acc.add(p)
-    }
-    if kind == 2 and hostDirectoryExists(p) {
-      acc.add(p)
-    }
-  }
-  Ok(value = acc)
+  Ok(value = names)
 }
 
 pub func hostListFilesResult(dir: in String): Result[List[String], IOError] {
-  listChildrenNative(dir, 1)
+  match listEntryNamesNative(dir) {
+    case Ok(names) -> {
+      val acc: List[String] = newList()
+      for n in names {
+        val p = dir + "/" + n
+        if hostFileExists(p) {
+          acc.add(p)
+        }
+      }
+      Ok(value = acc)
+    }
+    case Err(e) -> Err(error = e)
+  }
 }
 
 pub func hostListDirsResult(dir: in String): Result[List[String], IOError] {
-  listChildrenNative(dir, 2)
+  match listEntryNamesNative(dir) {
+    case Ok(names) -> {
+      val acc: List[String] = newList()
+      for n in names {
+        val p = dir + "/" + n
+        if hostDirectoryExists(p) {
+          acc.add(p)
+        }
+      }
+      Ok(value = acc)
+    }
+    case Err(e) -> Err(error = e)
+  }
 }
 
 @unsafe_ffi
