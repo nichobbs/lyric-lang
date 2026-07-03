@@ -387,9 +387,13 @@ impl SessionStore for InProcessSessionStore {
 
 // ─── Runtime config ───────────────────────────────────────────────────────────
 // Session lifetime and cookie settings are read from environment variables at
-// runtime: LYRIC_CONFIG_SESSION_TTLSECONDS, LYRIC_CONFIG_SESSION_COOKIENAME,
-// LYRIC_CONFIG_SESSION_SECURE, LYRIC_CONFIG_SESSION_HTTPONLY,
-// LYRIC_CONFIG_SESSION_SAMESITE, LYRIC_CONFIG_REDISSESSION_URL.
+// runtime: LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS, LYRIC_CONFIG_SESSION_SESSION_COOKIENAME,
+// LYRIC_CONFIG_SESSION_SESSION_SECURE, LYRIC_CONFIG_SESSION_SESSION_HTTPONLY,
+// LYRIC_CONFIG_SESSION_SESSION_SAMESITE, LYRIC_CONFIG_SESSION_REDISSESSION_URL — see
+// the module header above and docs/25-config-blocks.md's
+// LYRIC_CONFIG_<PKG>_<BLOCK>_<FIELD> naming rule (pkg "Session" + block
+// "Session" doubles the segment; RedisSession is a distinct block, so it
+// doesn't).
 
 // Parse `LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS`, falling back to
 // `defaultValue` for a malformed or negative value.  Mirrors

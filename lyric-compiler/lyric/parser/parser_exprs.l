@@ -1538,6 +1538,7 @@ pub func parseLambdaExpr(st: inout ParseState): Expr {
     // body) — back all the way out to `saved` and fall through to
     // body-block parsing, exactly like the no-params case below.
     val parenSavePos = mark(st)
+    val lambdaParamsSaveCount = lambdaParams.count
     val _ = advance(st)  // '('
     var parenHeadOk = true
     if not isPunct(peekToken(st), RParen) {
@@ -1574,9 +1575,15 @@ pub func parseLambdaExpr(st: inout ParseState): Expr {
         hasArrow = true
       } else {
         reset(st, parenSavePos)
+        while lambdaParams.count > lambdaParamsSaveCount {
+          lambdaParams.removeAt(lambdaParams.count - 1)
+        }
       }
     } else {
       reset(st, parenSavePos)
+      while lambdaParams.count > lambdaParamsSaveCount {
+        lambdaParams.removeAt(lambdaParams.count - 1)
+      }
     }
   } else {
     // Try comma-separated ident [: type] list.
