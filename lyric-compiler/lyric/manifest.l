@@ -8,6 +8,10 @@
 //!   [dependencies]      — map of package-name -> dep-source (string, inline-table)
 //!   [nuget]             — map of NuGet-id -> version string
 //!   [nuget.options]     — target TFM and allow_native flag
+//!   [maven]             — map of Maven coordinate -> version string (JVM target)
+//!   [maven.options]     — repositories list and java_version
+//!   [features]          — declared feature flags ([] values in v1)
+//!   [native]            — --target native defaults (triple, opt_level, extra_libs)
 //!   [build]             — output kind configuration (kind: "lib" or "exe")
 //!   [workspace]         — workspace root declaration (exclude list, overrides)
 //!   [workspace.overrides] — per-package path overrides for fork/patch workflows
