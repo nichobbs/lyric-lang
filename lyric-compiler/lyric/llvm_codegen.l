@@ -7645,8 +7645,12 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   sFields.add(NI64)
   sFields.add(NI64)
   types.add(NTypeDefn(name = "LyricString", fields = sFields))
+  // Interface box-type names first, so a record with an interface-typed
+  // field resolves the interface during layout (#4917); then records; then
+  // interface method sigs + type defs (may reference records); then impl
+  // vtables (reference registered records).
+  registerInterfaceNames(ctx, units)
   registerHeapTypes(ctx, units, types, fns)
-  // Interfaces after records (impl vtables reference registered records).
   registerInterfaceTypes(ctx, units, types, fns)
   registerImplVtables(ctx, units)
   val externDecls: List[NFunc] = newList()
@@ -8111,13 +8115,11 @@ func synthIfaceBoxDtor(ctx: in Ctx, ii: in NIfaceInfo): NFunc {
   )
 }
 
-/// Register every interface's box + vtable types.  Phase A registers the
-/// box/vtable names and method-name lists (so an interface-typed method
-/// parameter resolves during phase B); phase B computes the method NTypes,
-/// emits the type definitions, and synthesises the box destructor.
-func registerInterfaceTypes(
-  ctx: in Ctx, units: in List[CodegenUnit], types: in List[NTypeDefn], fns: in List[NFunc]
-): Unit {
+/// Register interface box + vtable NAMES and method-name lists (phase A).
+/// Runs BEFORE records are registered so a record with an interface-typed
+/// field resolves the interface to its box type during layout (#4917), and
+/// before phase B so an interface-typed method parameter resolves there.
+func registerInterfaceNames(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
   var ua = 0
   while ua < units.count {
     val u = units[ua]
@@ -8165,6 +8167,14 @@ func registerInterfaceTypes(
     }
     ua = ua + 1
   }
+}
+
+/// Fill interface method signatures and emit the vtable/box type definitions
+/// and box destructors (phase B).  Runs AFTER records are registered so a
+/// method parameter/return type that references a record resolves.
+func registerInterfaceTypes(
+  ctx: in Ctx, units: in List[CodegenUnit], types: in List[NTypeDefn], fns: in List[NFunc]
+): Unit {
   var ub = 0
   while ub < units.count {
     val u = units[ub]

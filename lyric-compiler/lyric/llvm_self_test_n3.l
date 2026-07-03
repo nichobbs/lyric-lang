@@ -231,3 +231,19 @@ test "interface dispatch: one record implementing two interfaces" {
   val r = compileAndRun(src)
   assertEqualInt(r.exitCode, 38, "area 20 + perimeter 18")
 }
+
+// An interface-typed record field exercises the field-position upcast in
+// coerceTo (the concrete record is boxed at construction) and stores the box
+// as a ref field of the outer record; ASan proves the outer record's dtor
+// releases the box, which in turn releases the implementing object (#4917).
+test "interface ARC: interface stored in a record field under ASan" {
+  val src = "package T\n" + "interface Shape {\n  func area(): Int\n}\n" + "record Circle {\n  r: Int\n}\n" +
+    "impl Shape for Circle {\n  func area(): Int {\n    self.r * self.r\n  }\n}\n" +
+    "record Holder {\n  shape: Shape\n  label: String\n}\n" +
+    "func main(): Int {\n" +
+    "  val h = Holder(shape = Circle(r = 7), label = \"c\")\n" +
+    "  h.shape.area() - 49\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 0, "field-position upcast + box-as-field leak-free")
+}
