@@ -2564,13 +2564,21 @@ func lowerUfcsCall(
       }
     }
   }
-  // Interface-typed receiver: dispatch through the vtable (N3.2).
+  // Interface-typed receiver: dispatch through the vtable (N3.2).  A name
+  // absent from the vtable slots reaches here only for a deferred method
+  // form — the type checker already rejects methods not on the interface —
+  // so name it specifically rather than falling through to the generic
+  // "no matching function" panic (#4905).
   match ifaceBoxInfoOfType(ctx, recv.ty) {
     case Some(info) -> {
       val slot = ifaceMethodSlot(info, name)
       if slot >= 0 {
         return lowerIfaceDispatch(ctx, insns, recv, info, slot, args)
       }
+      panic(
+        "Lyric.LlvmCodegen: interface method '." + name + "' on '" + info.key +
+          "' is not yet lowerable for --target native — only non-generic abstract interface methods dispatch through the vtable; default, generic, async, and Self-returning interface methods are deferred (N3.2)."
+      )
     }
     case None -> {
     }
