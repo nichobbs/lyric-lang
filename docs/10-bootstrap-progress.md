@@ -27837,6 +27837,14 @@ function whose entry-point token the first bug corrupted, and its
 `Accumulator.add`/`fma` cases are what caught the second, so it is the
 natural regression guard for both. Wired into the `compiler-self-tests-dotnet-b`
 CI job alongside its existing JVM-target counterpart (`implicit_self_jvm_self_test.l`).
+Review passes on the fixing PR (#4958) identified two coverage gaps, both
+closed in the same test file: a `Wrapper` record whose methods call each
+other via `self.other(arg)` and bare `other(arg)` (the intra-record sibling
+dispatch path shares the same `cctx.methodTokens` / `methodParamTypes`
+registry the second bug fixed, so it needed its own case), and a `Money`
+`exposed record` with in-body methods (the `IExposedRec` arm of
+`addPackageTokens` was fixed symmetrically with `IRecord` but previously had
+no dedicated test).
 
 **Follow-up unblocked:** docs/44 m-78's `method_scrutinee_jvm_self_test.l`
 was JVM-only specifically because its repro needs an in-body method and

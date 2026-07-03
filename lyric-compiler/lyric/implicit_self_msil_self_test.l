@@ -68,6 +68,19 @@ record Wrapper {
   }
 }
 
+// 5. Exposed record (host-visible DTO) with in-body methods — exercises the
+// IExposedRec arm of `addPackageTokens` / the shared `lowerRecordMsil`, not
+// just IRecord (#4947).
+exposed record Money {
+  cents: Int
+  func dollars(): Int {
+    return self.cents / 100
+  }
+  func plus(extraCents: in Int): Int {
+    return self.cents + extraCents
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -105,4 +118,14 @@ test "intra-record sibling dispatch: self.other(arg)" {
 test "intra-record sibling dispatch: bare other(arg)" {
   val w = Wrapper(base = 10)
   assertEqualInt(w.viaBare(5), 30, "Wrapper(10).viaBare(5) == (10+5)*2 == 30")
+}
+
+test "exposed record: implicit self zero-arg method" {
+  val m = Money(cents = 1050)
+  assertEqualInt(m.dollars(), 10, "Money(1050).dollars() == 10")
+}
+
+test "exposed record: implicit self method with argument" {
+  val m = Money(cents = 1050)
+  assertEqualInt(m.plus(25), 1075, "Money(1050).plus(25) == 1075")
 }
