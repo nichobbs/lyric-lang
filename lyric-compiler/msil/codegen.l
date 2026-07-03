@@ -18433,15 +18433,17 @@ pub func lowerImplMethodMsil(
 pub func lowerRecordMethodMsil(
   cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in String, targetTypeName: in String
 ): MFunc {
+  // Unlike `lowerImplMethodMsil`, an in-body method satisfies no interface
+  // slot, so there is no erased-vs-ctx-aware distinction to make: one
+  // ctx-aware return type serves both the emitted signature and body inference.
   val retTy = match decl.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid }
-  val declaredRetTyCtx = match decl.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid }
   val realParams: List[Param] = newList()
   var rpi = 1
   while rpi < decl.params.count {
     realParams.add(decl.params[rpi])
     rpi = rpi + 1
   }
-  val fctx = makeFuncCtxMsil(pkgName, targetTypeName, decl.name, decl.params.count, declaredRetTyCtx)
+  val fctx = makeFuncCtxMsil(pkgName, targetTypeName, decl.name, decl.params.count, retTy)
   fctx.slotTicker.add(0)  // slot 0 = self ("this"), no name binding — ESelf reads ldarg.0 directly
 
   val insns: List[MInsn] = newList()
@@ -18481,7 +18483,7 @@ pub func lowerRecordMethodMsil(
       match body {
         case FBBlock(block) -> {
           if retTy != MVoid {
-            pushCollExpect(fctx, declaredRetTyCtx)
+            pushCollExpect(fctx, retTy)
             val _ = lowerBlockExprMsil(cctx, fctx, insns, block)
             popCollExpect(fctx)
           } else {
@@ -18492,7 +18494,7 @@ pub func lowerRecordMethodMsil(
           }
         }
         case FBExpr(e) -> {
-          pushCollExpect(fctx, declaredRetTyCtx)
+          pushCollExpect(fctx, retTy)
           lowerExprMsil(cctx, fctx, insns, e)
           popCollExpect(fctx)
           insns.add(MRet)
