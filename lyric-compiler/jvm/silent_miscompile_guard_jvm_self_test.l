@@ -224,3 +224,23 @@ func quantified(x: in Int): Int
 test "forall in a runtime-checked contract lowers to true instead of panicking" {
   assertEqualInt(quantified(41), 42, "function with a forall ensures clause runs")
 }
+
+// Unsigned Byte widening (#4855): a JVM `byte` is signed and sign-extends on
+// field / local / array reload (200 -> -56), so `.toInt()` / `.toLong()` /
+// `.toDouble()` must mask to 0..255 to match the unsigned MSIL result.  A
+// silent miscompile before the fix — no error, just a negative value.
+record ByteHolder {
+  b: Byte
+}
+
+test "Byte widening above 127 stays unsigned (#4855)" {
+  val v: Byte = 200.toByte()
+  assertEqualInt(v.toInt(), 200, "local Byte 200 -> Int 200, not -56")
+  assertEqualLong(v.toLong(), 200i64, "local Byte 200 -> Long 200")
+  assertTrue(v.toDouble() == 200.0, "local Byte 200 -> Double 200.0")
+
+  val h = ByteHolder(b = 255.toByte())
+  assertEqualInt(h.b.toInt(), 255, "field Byte 255 -> Int 255, not -1")
+  assertEqualLong(h.b.toLong(), 255i64, "field Byte 255 -> Long 255, not -1")
+  assertTrue(h.b.toDouble() == 255.0, "field Byte 255 -> Double 255.0, not -1.0")
+}

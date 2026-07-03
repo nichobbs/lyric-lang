@@ -2217,17 +2217,26 @@ func isNumericJvm(ty: in JvmType): Bool {
   }
 }
 
-// Normalise a numeric value already on the stack to an `int` (JVM `I`).  Byte /
-// char / short / int already occupy an int slot (no-op); long / float / double
-// narrow with the matching conversion opcode.
+// Zero-extend a signed JVM `byte` to its unsigned Lyric value (`& 0xFF`): Lyric
+// `Byte` is 0..255 but a JVM `byte` sign-extends on reload (200 -> -56), so every
+// Byte-source widening masks first to match MSIL's `conv.u1` (#4855, cf. #4551).
+func maskByteUnsigned(insns: in List[LInsn]): Unit {
+  insns.add(LIconst(v = 255))
+  insns.add(LIand)
+}
+
+// Normalise a numeric value already on the stack to an `int` (JVM `I`).  Char /
+// short / int already occupy an int slot (no-op); long / float / double narrow
+// with the matching conversion opcode; a Byte source zero-extends (`& 0xFF`).
 func emitToIntJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
   match srcTy {
     case JLong -> insns.add(LL2i)
     case JFloat -> insns.add(LF2i)
     case JDouble -> insns.add(LD2i)
+    case JByte -> maskByteUnsigned(insns)
     case _ -> {
     }
-  }   // JByte / JChar / JShort / JInt are int-on-stack
+  }   // JChar / JShort / JInt are int-on-stack
 }
 
 func emitToLongJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
@@ -2236,6 +2245,10 @@ func emitToLongJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
     }            // already long
     case JFloat -> insns.add(LF2l)
     case JDouble -> insns.add(LD2l)
+    case JByte -> {
+      maskByteUnsigned(insns)
+      insns.add(LI2l)
+    }
     case _ -> insns.add(LI2l)
   }   // int-like → long
 }
@@ -2246,6 +2259,10 @@ func emitToDoubleJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
     }            // already double
     case JLong -> insns.add(LL2d)
     case JFloat -> insns.add(LF2d)
+    case JByte -> {
+      maskByteUnsigned(insns)
+      insns.add(LI2d)
+    }
     case _ -> insns.add(LI2d)
   }   // int-like → double
 }
