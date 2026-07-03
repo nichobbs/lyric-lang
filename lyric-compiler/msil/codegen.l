@@ -7344,8 +7344,8 @@ func lowerIfExprMsil(
       val preThenSlotCount = fctx.slotTicker.count
       val thenInsns: List[MInsn] = newList()
       var thenTy = lowerExprOrBlockMsil(cctx, fctx, thenInsns, thenBranch)
-      val elseInsns: List[MInsn] = newList()
-      val elseTy = lowerBranchWithSiblingHintMsil(cctx, fctx, elseInsns, elseBranch, thenTy)
+      var elseInsns: List[MInsn] = newList()
+      var elseTy = lowerBranchWithSiblingHintMsil(cctx, fctx, elseInsns, elseBranch, thenTy)
       if not isConcreteCollTy(thenTy) and msilHeadFqnMsil(thenTy) != "Std.Core.Option" and (isConcreteCollTy(elseTy) or msilHeadFqnMsil(elseTy) == "Std.Core.Option") {
         while thenInsns.count > 0 {
           thenInsns.removeAt(thenInsns.count - 1)
@@ -7358,8 +7358,19 @@ func lowerIfExprMsil(
         // A `then` branch containing `await`/`yield` that also erases to a
         // bare collection/Option is an unaudited pre-existing risk this fix
         // does not address.
+        //
+        // `else` was already lowered (above, against the stale `thenTy`
+        // hint) by the time we get here, so its slot allocations sit ABOVE
+        // `preThenSlotCount` too — the rollback wipes them out along with
+        // the discarded `then` pass's, leaving `elseInsns`'s existing
+        // MLoadLocal/MStoreLocal instructions pointing at slots that no
+        // longer exist in `fctx.locals` (#4826). Re-lower `else` fresh
+        // after `then`'s second pass so its instructions reference the
+        // slots actually allocated this time around.
         rollbackFuncCtxSlotsSinceMsil(fctx, preThenSlotCount)
         thenTy = lowerBranchWithSiblingHintMsil(cctx, fctx, thenInsns, thenBranch, elseTy)
+        elseInsns = newList()
+        elseTy = lowerBranchWithSiblingHintMsil(cctx, fctx, elseInsns, elseBranch, thenTy)
       }
 
       // A branch ending in `return`/`throw` (e.g. a `panic(...)` call, whose
