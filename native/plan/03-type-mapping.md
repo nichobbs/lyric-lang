@@ -262,6 +262,15 @@ At a call site `f(42)`:
 
 ## Interface dispatch (vtable)
 
+> **Superseded by D-N-016 (shipped, D-progress-568):** the by-value fat
+> pointer `{ i8* obj, vtable* }` below was **not** implemented — the native
+> IR layer has no `insertvalue`/`extractvalue` and no by-value-aggregate ABI.
+> The shipped representation is a **heap-boxed** fat pointer
+> `{ i32 rc, i8* dtor, i8* obj, vtable* }` (an ordinary RC'd object), so ARC
+> falls out of the existing owned-temp/destructor machinery. The vtable
+> layout and dispatch shape (GEP → load → bitcast → call with `obj` as arg 0)
+> are otherwise as described. See `docs/03-decision-log.md` §D-N-016.
+
 An interface `IAnimal { func speak(): String }` implemented by `record Dog` lowers
 to a vtable-based dispatch:
 

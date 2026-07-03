@@ -715,6 +715,8 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
   val unions: List[UnionDecl] = newList()
   val enums: List[EnumDecl] = newList()
   val distincts: List[DistinctTypeDecl] = newList()
+  val interfaces: List[InterfaceDecl] = newList()
+  val impls: List[ImplDecl] = newList()
   var i = 0
   while i < f.items.count {
     match f.items[i].kind {
@@ -739,6 +741,21 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
       case IUnion(decl) -> unions.add(decl)
       case IEnum(decl) -> enums.add(decl)
       case IDistinctType(decl) -> distincts.add(decl)
+      // Interface + impl are collected together (N3.2): the impl's vtable
+      // references its methods, so registering one without the other would
+      // dangle.  Gated on `lowerAll` — native interfaces are user-package
+      // only today (no bundled stdlib interfaces to reach).
+      case IInterface(decl) -> {
+        if lowerAll {
+          interfaces.add(decl)
+        }
+      }
+      case IImpl(decl) -> {
+        if lowerAll {
+          impls.add(decl)
+          collectImplMethods(pkg, decl, fns)
+        }
+      }
       case _ -> {
       }
     }
@@ -751,6 +768,8 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
     records = records,
     unions = unions,
     enums = enums,
-    distincts = distincts
+    distincts = distincts,
+    interfaces = interfaces,
+    impls = impls
   )
 }

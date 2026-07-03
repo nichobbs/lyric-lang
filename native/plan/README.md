@@ -29,7 +29,9 @@ records/unions instantiate on demand per concrete type-argument tuple
 functions instantiate per call site with unification-based inference,
 cache-first recursion handling, and generic UFCS.  Tuples (N3.3)
 SHIPPED in D-progress-550 as synthesised records.  Interfaces/vtables
-(N3.2) and protected types (N3.4) remain from N3.
+(N3.2) SHIPPED in D-progress-568 (heap-boxed fat pointer per D-N-016,
+non-generic `impl I for Record`, ASan-verified);  protected types (N3.4)
+remain from N3.
 
 Phase N4 is COMPLETE (D-progress-540 shipped N4.1/N4.6 and the
 kernel/CLI subsets; D-progress-551 the nativeAddrOf codegen;

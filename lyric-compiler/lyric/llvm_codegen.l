@@ -88,6 +88,12 @@ pub record CodegenUnit {
   unions: List[UnionDecl]
   enums: List[EnumDecl]
   distincts: List[DistinctTypeDecl]
+  // Interface declarations and `impl I for T` blocks (N3.2).  Interfaces
+  // synthesise a per-interface vtable struct + heap-boxed fat-pointer type;
+  // impls synthesise a vtable constant and contribute their methods as
+  // self-receiving functions (collected into `fns` by `collectImplMethods`).
+  interfaces: List[InterfaceDecl]
+  impls: List[ImplDecl]
 }
 
 /// Call-registry entry: how a resolvable callee lowers.  `isExternSym`
@@ -121,6 +127,21 @@ record NUnionCaseInfo {
   name: String
   fieldNames: List[String]
   fieldTys: List[NType]
+}
+
+/// Registered (non-generic) interface (N3.2).  `irName` is the heap-boxed
+/// fat-pointer struct name (`__iface.<mangled>`), `vtName` the vtable
+/// struct name (`__ifacevt.<mangled>`).  Methods are in IMSig declaration
+/// order — the vtable slot index.  `methodParamTys` excludes the implicit
+/// `self` receiver (arg 0 at the call site); `methodRetTys` is `NVoid` for
+/// a Unit return.
+record NIfaceInfo {
+  key: String
+  irName: String
+  vtName: String
+  methodNames: List[String]
+  methodParamTys: List[List[NType]]
+  methodRetTys: List[NType]
 }
 
 /// Registered (non-generic) union type: cases plus the payload area
@@ -246,6 +267,12 @@ record Ctx {
   listElems: Map[String, NType]
   mapKeyTys: Map[String, NType]
   mapValTys: Map[String, NType]
+  // Interface registries (N3.2), module-wide.  `ifaceInfos` maps both the
+  // qualified (`Pkg.Name`) and bare (`Name`) interface name to its
+  // NIfaceInfo; `ifaceVtables` maps `<recordIrName>|<ifaceKey>` to the
+  // emitted vtable-constant global name, resolved at upcast sites.
+  ifaceInfos: Map[String, NIfaceInfo]
+  ifaceVtables: Map[String, String]
   // ARC state (per function).  `scopeRefs` stacks the ref-typed locals
   // each lexical scope owns; `tempScopes` stacks the owned temporaries
   // of each evaluation region; the depth lists snapshot both stacks at
@@ -539,6 +566,16 @@ func lookupHeapType(ctx: in Ctx, joined: in String, bare: in String): Option[NTy
   }
   match mapGet(ctx.distinctDefs, bare) {
     case Some(di) -> return Some(value = distinctUnderlying(di))
+    case None -> {
+    }
+  }
+  match mapGet(ctx.ifaceInfos, joined) {
+    case Some(info) -> return Some(value = ifaceBoxPtrType(info))
+    case None -> {
+    }
+  }
+  match mapGet(ctx.ifaceInfos, bare) {
+    case Some(info) -> return Some(value = ifaceBoxPtrType(info))
     case None -> {
     }
   }
@@ -2133,6 +2170,34 @@ func coerceTo(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType): N
   if sameKind {
     return v
   }
+  // Implicit upcast: a concrete record flowing into an interface-typed
+  // position (arg / return / binding / field / match arm) is boxed into a
+  // fat pointer here (N3.2) — the type checker inserts no coercion node.
+  match ifaceBoxInfoOfType(ctx, want) {
+    case Some(info) -> {
+      match recordIrNameOfType(v.ty) {
+        case Some(rir) -> {
+          match mapGet(ctx.ifaceVtables, rir + "|" + info.key) {
+            case Some(vtGlobal) -> return buildIfaceBox(ctx, insns, v, info, vtGlobal)
+            case None -> {
+              // The type checker admitted this record→interface upcast, so
+              // registerImplVtables should have emitted a vtable — a missing
+              // one is a compiler-invariant violation, not a user error, so
+              // fail fast rather than silently mistype the value (#4909).
+              panic(
+                "Lyric.LlvmCodegen: no vtable registered for record '" + rir + "' implementing interface '" + info.key +
+                  "' (registerImplVtables invariant violation)"
+              )
+            }
+          }
+        }
+        case None -> {
+        }
+      }
+    }
+    case None -> {
+    }
+  }
   match v.value {
     case NLitInt(litV, _) -> {
       if isIntNType(want) {
@@ -2505,6 +2570,25 @@ func lowerUfcsCall(
       case Some(target) -> return lowerWeakUpgrade(ctx, insns, recv, target)
       case None -> {
       }
+    }
+  }
+  // Interface-typed receiver: dispatch through the vtable (N3.2).  A name
+  // absent from the vtable slots reaches here only for a deferred method
+  // form — the type checker already rejects methods not on the interface —
+  // so name it specifically rather than falling through to the generic
+  // "no matching function" panic (#4905).
+  match ifaceBoxInfoOfType(ctx, recv.ty) {
+    case Some(info) -> {
+      val slot = ifaceMethodSlot(info, name)
+      if slot >= 0 {
+        return lowerIfaceDispatch(ctx, insns, recv, info, slot, args)
+      }
+      panic(
+        "Lyric.LlvmCodegen: interface method '." + name + "' on '" + info.key +
+          "' is not yet lowerable for --target native — only non-generic abstract interface methods dispatch through the vtable; default, generic, async, and Self-returning interface methods are deferred (N3.2)."
+      )
+    }
+    case None -> {
     }
   }
   val arity = (args.count + 1).toString()
@@ -7204,6 +7288,8 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     listElems = mod.listElems,
     mapKeyTys = mod.mapKeyTys,
     mapValTys = mod.mapValTys,
+    ifaceInfos = mod.ifaceInfos,
+    ifaceVtables = mod.ifaceVtables,
     scopeRefs = newList(),
     tempScopes = newList(),
     loopVarDepth = newList(),
@@ -7542,6 +7628,8 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     listElems = newMap(),
     mapKeyTys = newMap(),
     mapValTys = newMap(),
+    ifaceInfos = newMap(),
+    ifaceVtables = newMap(),
     scopeRefs = newList(),
     tempScopes = newList(),
     loopVarDepth = newList(),
@@ -7557,7 +7645,14 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   sFields.add(NI64)
   sFields.add(NI64)
   types.add(NTypeDefn(name = "LyricString", fields = sFields))
+  // Interface box-type names first, so a record with an interface-typed
+  // field resolves the interface during layout (#4917); then records; then
+  // interface method sigs + type defs (may reference records); then impl
+  // vtables (reference registered records).
+  registerInterfaceNames(ctx, units)
   registerHeapTypes(ctx, units, types, fns)
+  registerInterfaceTypes(ctx, units, types, fns)
+  registerImplVtables(ctx, units)
   val externDecls: List[NFunc] = newList()
   val declaredExterns: Map[String, Bool] = newMap()
   var di = 0
@@ -7632,6 +7727,8 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
   val unions: List[UnionDecl] = newList()
   val enums: List[EnumDecl] = newList()
   val distincts: List[DistinctTypeDecl] = newList()
+  val interfaces: List[InterfaceDecl] = newList()
+  val impls: List[ImplDecl] = newList()
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -7644,11 +7741,16 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
       case IUnion(decl) -> unions.add(decl)
       case IEnum(decl) -> enums.add(decl)
       case IDistinctType(decl) -> distincts.add(decl)
+      case IInterface(decl) -> interfaces.add(decl)
+      case IImpl(decl) -> {
+        impls.add(decl)
+        collectImplMethods(pkgName, decl, fns)
+      }
       case ITypeAlias(_) -> {
       }
       case IExternType(_) -> {
       }
-      case _ -> panic("Lyric.LlvmCodegen: this item form is not yet supported for --target native (Phase N2 lowers functions, extern funcs, records, unions, enums, and distinct types)")
+      case _ -> panic("Lyric.LlvmCodegen: this item form is not yet supported for --target native (Phase N2/N3 lowers functions, extern funcs, records, unions, enums, distinct types, interfaces, and impls)")
     }
     i = i + 1
   }
@@ -7659,7 +7761,9 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
     records = records,
     unions = unions,
     enums = enums,
-    distincts = distincts
+    distincts = distincts,
+    interfaces = interfaces,
+    impls = impls
   )
 }
 
@@ -7747,6 +7851,601 @@ func substSelfInFn(fn: in FunctionDecl, recordName: in String): FunctionDecl {
     body = fn.body,
     span = fn.span
   )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §N3.2  Interface vtable dispatch.
+//
+// An interface value lowers to a heap-boxed fat pointer (uniform with the
+// record/closure representation, since the IR layer has no by-value
+// aggregate ABI): `__iface.<m>` = `{ i32 rc, i8* dtor, i8* obj, vtable* }`.
+// The `obj` slot holds the (type-erased) implementing object; a per-interface
+// dtor releases it, so standard ARC on the box gives Rule-8 semantics for
+// free.  Each interface has a vtable struct of one `i8*` slot per method; each
+// `impl I for R` emits a constant vtable of `bitcast`ed concrete-method
+// pointers.  Dispatch loads the slot, bitcasts to the method's function type,
+// and calls with `obj` as arg 0.  This diverges from the by-value fat pointer
+// in 03-type-mapping.md / 04-arc-design.md Rule 8 — see the decision log.
+// ─────────────────────────────────────────────────────────────────────────────
+func mangleIfaceName(key: in String): String {
+  Str.replace(key, ".", "_")
+}
+
+/// The record name an `impl` targets, when it is a plain (non-generic)
+/// record reference; generic targets are deferred (N3.2 first slice).
+func implTargetRecordName(target: in TypeExpr): Option[String] {
+  match target.kind {
+    case TRef(path) -> Some(value = lastSeg(path))
+    case TParen(inner) -> implTargetRecordName(inner)
+    case _ -> None
+  }
+}
+
+func implIfaceName(iface: in ConstraintRef): String {
+  lastSeg(iface.head)
+}
+
+/// The synthetic, collision-free name of an impl method: qualified by both
+/// the target record and the interface so `impl A for R` and `impl B for R`
+/// (or a record method of the same name) never share an IR symbol.
+func implMethodName(recordName: in String, ifaceName: in String, methodName: in String): String {
+  recordName + "." + ifaceName + "." + methodName
+}
+
+/// Rewrite an `impl I for R` method into a self-receiving package function:
+/// prepend `self: in R` (impl methods parse without an injected receiver —
+/// the body's `self` keyword lowers to `loadLocal("self")`), substitute any
+/// `Self` in the remaining signature, and give it the collision-free name.
+func implMethodToFn(recordName: in String, ifaceName: in String, fn: in FunctionDecl): FunctionDecl {
+  val newParams: List[Param] = newList()
+  newParams.add(
+    Param(
+      mode = PMIn,
+      modeExplicit = false,
+      name = "self",
+      ty = selfTypeRef(recordName, fn.span),
+      dflt = None,
+      annotations = newList(),
+      span = fn.span
+    )
+  )
+  var i = 0
+  while i < fn.params.count {
+    val p = fn.params[i]
+    newParams.add(
+      Param(
+        mode = p.mode,
+        modeExplicit = p.modeExplicit,
+        name = p.name,
+        ty = substSelfInType(p.ty, recordName),
+        dflt = p.dflt,
+        annotations = p.annotations,
+        span = p.span
+      )
+    )
+    i = i + 1
+  }
+  var newRet: Option[TypeExpr] = None
+  match fn.ret {
+    case Some(r) -> {
+      newRet = Some(value = substSelfInType(r, recordName))
+    }
+    case None -> {
+    }
+  }
+  FunctionDecl(
+    docComments = fn.docComments,
+    annotations = fn.annotations,
+    visibility = fn.visibility,
+    isAsync = fn.isAsync,
+    name = implMethodName(recordName, ifaceName, fn.name),
+    generics = fn.generics,
+    params = newParams,
+    ret = newRet,
+    whereClause = fn.whereClause,
+    contracts = fn.contracts,
+    body = fn.body,
+    span = fn.span
+  )
+}
+
+/// Collect an `impl` block's methods as self-receiving functions (mirrors
+/// `collectRecordMethods`).  Generic impls / generic or async methods and
+/// impls for non-record targets are skipped here and rejected at use.
+pub func collectImplMethods(pkgName: in String, decl: in ImplDecl, fns: in List[FunctionDecl]): Unit {
+  match decl.generics {
+    case Some(_) -> {
+      return
+    }
+    case None -> {
+    }
+  }
+  val recordName = match implTargetRecordName(decl.target) { case Some(n) -> n; case None -> { return } }
+  val ifaceName = implIfaceName(decl.iface)
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case IMplFunc(fn) -> {
+        match fn.generics {
+          case Some(_) -> {
+          }
+          case None -> {
+            if not fn.isAsync {
+              fns.add(implMethodToFn(recordName, ifaceName, fn))
+            }
+          }
+        }
+      }
+      case IMplAssoc(_) -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
+/// The vtable struct type for an interface: `{ i8*, i8*, ... }`, one erased
+/// function-pointer slot per method.
+func ifaceVtStructType(ii: in NIfaceInfo): NType {
+  val fields: List[NType] = newList()
+  var i = 0
+  while i < ii.methodNames.count {
+    fields.add(NPtr(pointee = NI8))
+    i = i + 1
+  }
+  NStruct(name = ii.vtName, fields = fields)
+}
+
+/// The heap-boxed fat-pointer type for an interface value:
+/// `{ i32 rc, i8* dtor, i8* obj, vtable* }`.
+func ifaceBoxStructType(ii: in NIfaceInfo): NType {
+  val fields: List[NType] = newList()
+  fields.add(NI32)
+  fields.add(NPtr(pointee = NI8))
+  fields.add(NPtr(pointee = NI8))
+  fields.add(NPtr(pointee = ifaceVtStructType(ii)))
+  NStruct(name = ii.irName, fields = fields)
+}
+
+func ifaceBoxPtrType(ii: in NIfaceInfo): NType {
+  NPtr(pointee = ifaceBoxStructType(ii))
+}
+
+/// If `t` is an interface box pointer, recover its NIfaceInfo.
+func ifaceBoxInfoOfType(ctx: in Ctx, t: in NType): Option[NIfaceInfo] {
+  match t {
+    case NPtr(pointee) -> {
+      match pointee {
+        case NStruct(name, _) -> {
+          if Str.startsWith(name, "__iface.") {
+            mapGet(ctx.ifaceInfos, name)
+          } else {
+            None
+          }
+        }
+        case _ -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+/// The record IR name (`Pkg.Record`) if `t` is a record pointer.
+func recordIrNameOfType(t: in NType): Option[String] {
+  match t {
+    case NPtr(pointee) -> {
+      match pointee {
+        case NStruct(name, _) -> {
+          if Str.startsWith(name, "__") or name == "LyricString" {
+            None
+          } else {
+            Some(value = name)
+          }
+        }
+        case _ -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+func ifaceVtableGlobalName(recordIr: in String, ii: in NIfaceInfo): String {
+  "ifacevt_" + mangleIfaceName(recordIr) + "_" + mangleIfaceName(ii.key)
+}
+
+func ifaceBoxDtorName(ii: in NIfaceInfo): String {
+  ii.irName + ".dtor"
+}
+
+func registerIfaceInfo(ctx: in Ctx, pkg: in String, name: in String, info: in NIfaceInfo): Unit {
+  val qualified = pkg + "." + name
+  if ctx.ifaceInfos.containsKey(qualified) {
+    ctx.ifaceInfos.remove(qualified)
+  }
+  ctx.ifaceInfos.add(qualified, info)
+  // Bare and box-struct-name keys are refreshed on every call so phase B's
+  // full method signatures replace phase A's names-only placeholder.
+  if ctx.ifaceInfos.containsKey(name) {
+    ctx.ifaceInfos.remove(name)
+  }
+  ctx.ifaceInfos.add(name, info)
+  if ctx.ifaceInfos.containsKey(info.irName) {
+    ctx.ifaceInfos.remove(info.irName)
+  }
+  ctx.ifaceInfos.add(info.irName, info)
+}
+
+func ifaceMethodSlot(ii: in NIfaceInfo, name: in String): Int {
+  var i = 0
+  while i < ii.methodNames.count {
+    if ii.methodNames[i] == name {
+      return i
+    }
+    i = i + 1
+  }
+  -1
+}
+
+/// Synthesise the box destructor: release the erased `obj` (slot 2).  The
+/// runtime frees the box itself once its refcount reaches zero.
+func synthIfaceBoxDtor(ctx: in Ctx, ii: in NIfaceInfo): NFunc {
+  val body: List[NInsn] = newList()
+  body.add(NLabel(name = "entry"))
+  val boxTy = ifaceBoxPtrType(ii)
+  val structTy = ifaceBoxStructType(ii)
+  body.add(NBitcast(dest = "obj", fromTy = NPtr(pointee = NI8), value = NLocal(name = "raw"), toTy = boxTy))
+  val objSlot = freshTmp(ctx)
+  val idxArgs: List[NArg] = newList()
+  idxArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  idxArgs.add(NArg(ty = NI32, value = NLitInt(v = 2i64, ty = NI32)))
+  body.add(NGEP(dest = objSlot, ty = structTy, ptr = NLocal(name = "obj"), indices = idxArgs))
+  val objVal = freshTmp(ctx)
+  body.add(NLoad(dest = objVal, ty = NPtr(pointee = NI8), ptr = NLocal(name = objSlot)))
+  body.add(NCallVoid(fn = NGlobal(name = "lyric_release"), args = arg1(NPtr(pointee = NI8), NLocal(name = objVal))))
+  body.add(NRetVoid)
+  val params: List[NParam] = newList()
+  params.add(NParam(name = "raw", ty = NPtr(pointee = NI8)))
+  NFunc(
+    name = ifaceBoxDtorName(ii),
+    params = params,
+    retTy = NVoid,
+    isPublic = false,
+    isExtern = false,
+    body = body,
+    attributes = newList()
+  )
+}
+
+/// Register interface box + vtable NAMES and method-name lists (phase A).
+/// Runs BEFORE records are registered so a record with an interface-typed
+/// field resolves the interface to its box type during layout (#4917), and
+/// before phase B so an interface-typed method parameter resolves there.
+func registerInterfaceNames(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
+  var ua = 0
+  while ua < units.count {
+    val u = units[ua]
+    var ii = 0
+    while ii < u.interfaces.count {
+      val idecl = u.interfaces[ii]
+      match idecl.generics {
+        case Some(_) -> {
+        }
+        case None -> {
+          val qualified = u.pkgName + "." + idecl.name
+          val mangled = mangleIfaceName(qualified)
+          val mnames: List[String] = newList()
+          var mi = 0
+          while mi < idecl.members.count {
+            match idecl.members[mi] {
+              case IMSig(sig) -> {
+                match sig.generics {
+                  case Some(_) -> {
+                  }
+                  case None -> {
+                    if not sig.isAsync {
+                      mnames.add(sig.name)
+                    }
+                  }
+                }
+              }
+              case _ -> {
+              }
+            }
+            mi = mi + 1
+          }
+          val info = NIfaceInfo(
+            key = qualified,
+            irName = "__iface." + mangled,
+            vtName = "__ifacevt." + mangled,
+            methodNames = mnames,
+            methodParamTys = newList(),
+            methodRetTys = newList()
+          )
+          registerIfaceInfo(ctx, u.pkgName, idecl.name, info)
+        }
+      }
+      ii = ii + 1
+    }
+    ua = ua + 1
+  }
+}
+
+/// Fill interface method signatures and emit the vtable/box type definitions
+/// and box destructors (phase B).  Runs AFTER records are registered so a
+/// method parameter/return type that references a record resolves.
+func registerInterfaceTypes(
+  ctx: in Ctx, units: in List[CodegenUnit], types: in List[NTypeDefn], fns: in List[NFunc]
+): Unit {
+  var ub = 0
+  while ub < units.count {
+    val u = units[ub]
+    var ii = 0
+    while ii < u.interfaces.count {
+      val idecl = u.interfaces[ii]
+      match idecl.generics {
+        case Some(_) -> {
+        }
+        case None -> {
+          val qualified = u.pkgName + "." + idecl.name
+          val pre = match mapGet(ctx.ifaceInfos, qualified) {
+            case Some(x) -> x
+            case None -> panic("Lyric.LlvmCodegen: interface '" + qualified + "' lost between registration phases")
+          }
+          val pTys: List[List[NType]] = newList()
+          val rTys: List[NType] = newList()
+          var mi = 0
+          while mi < idecl.members.count {
+            match idecl.members[mi] {
+              case IMSig(sig) -> {
+                match sig.generics {
+                  case Some(_) -> {
+                  }
+                  case None -> {
+                    if not sig.isAsync {
+                      val ps: List[NType] = newList()
+                      var pi = 0
+                      while pi < sig.params.count {
+                        ps.add(typeToN(ctx, sig.params[pi].ty))
+                        pi = pi + 1
+                      }
+                      pTys.add(ps)
+                      rTys.add(retTypeToN(ctx, sig.ret))
+                    }
+                  }
+                }
+              }
+              case _ -> {
+              }
+            }
+            mi = mi + 1
+          }
+          val info = NIfaceInfo(
+            key = pre.key,
+            irName = pre.irName,
+            vtName = pre.vtName,
+            methodNames = pre.methodNames,
+            methodParamTys = pTys,
+            methodRetTys = rTys
+          )
+          registerIfaceInfo(ctx, u.pkgName, idecl.name, info)
+          val vtFields: List[NType] = newList()
+          var vf = 0
+          while vf < info.methodNames.count {
+            vtFields.add(NPtr(pointee = NI8))
+            vf = vf + 1
+          }
+          types.add(NTypeDefn(name = info.vtName, fields = vtFields))
+          val boxFields: List[NType] = newList()
+          boxFields.add(NI32)
+          boxFields.add(NPtr(pointee = NI8))
+          boxFields.add(NPtr(pointee = NI8))
+          boxFields.add(NPtr(pointee = ifaceVtStructType(info)))
+          types.add(NTypeDefn(name = info.irName, fields = boxFields))
+          fns.add(synthIfaceBoxDtor(ctx, info))
+        }
+      }
+      ii = ii + 1
+    }
+    ub = ub + 1
+  }
+}
+
+/// Build the `{ i8* bitcast(...), ... }` constant initialiser for one
+/// `impl I for R` vtable.  Each slot bitcasts the concrete impl method
+/// (whose real first parameter is `R*`) to a raw `i8*`.
+func ifaceVtableInitStr(
+  ctx: in Ctx,
+  pkg: in String,
+  recordName: in String,
+  selfPtrTy: in NType,
+  ifaceName: in String,
+  ii: in NIfaceInfo,
+): String {
+  var acc = "{ "
+  var i = 0
+  while i < ii.methodNames.count {
+    if i > 0 {
+      acc = acc + ", "
+    }
+    val implIr = pkg + "." + implMethodName(recordName, ifaceName, ii.methodNames[i])
+    val fnParams: List[NType] = newList()
+    fnParams.add(selfPtrTy)
+    var pi = 0
+    while pi < ii.methodParamTys[i].count {
+      fnParams.add(ii.methodParamTys[i][pi])
+      pi = pi + 1
+    }
+    val fnTyStr = nTypeToIrString(NFnPtr(params = fnParams, ret = ii.methodRetTys[i]))
+    acc = acc + "i8* bitcast (" + fnTyStr + " @" + quoteIrIdent(implIr) + " to i8*)"
+    i = i + 1
+  }
+  acc + " }"
+}
+
+/// Emit a vtable constant global for every `impl I for R` and record the
+/// `<recordIr>|<ifaceKey>` -> global-name mapping consulted at upcast sites.
+func registerImplVtables(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
+  var ua = 0
+  while ua < units.count {
+    val u = units[ua]
+    var ii = 0
+    while ii < u.impls.count {
+      val decl = u.impls[ii]
+      match decl.generics {
+        case Some(_) -> {
+        }
+        case None -> {
+          match implTargetRecordName(decl.target) {
+            case None -> {
+            }
+            case Some(recordName) -> {
+              val ifaceName = implIfaceName(decl.iface)
+              match mapGet(ctx.ifaceInfos, ifaceName) {
+                case None -> {
+                }
+                case Some(info) -> {
+                  match mapGet(ctx.recordDefs, recordName) {
+                    case None -> {
+                    }
+                    case Some(ri) -> {
+                      val selfPtrTy = recPtrType(ri)
+                      val gname = ifaceVtableGlobalName(ri.irName, info)
+                      if not ctx.ifaceVtables.containsKey(ri.irName + "|" + info.key) {
+                        ctx.globals.add(
+                          NGlobalDef(
+                            name = gname,
+                            linkage = "internal constant",
+                            tyStr = nTypeToIrString(ifaceVtStructType(info)),
+                            initStr = ifaceVtableInitStr(ctx, u.pkgName, recordName, selfPtrTy, ifaceName, info),
+                            align = 8
+                          )
+                        )
+                        ctx.ifaceVtables.add(ri.irName + "|" + info.key, gname)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      ii = ii + 1
+    }
+    ua = ua + 1
+  }
+}
+
+/// Upcast a concrete record value `v` to interface `ii`: box it, retain the
+/// object into the box's `obj` slot, and point its vtable at the concrete
+/// `impl` vtable constant.  The box is an ordinary owned temporary (ARC
+/// releases it, and its destructor releases `obj`).
+func buildIfaceBox(ctx: in Ctx, insns: in List[NInsn], v: in NVal, ii: in NIfaceInfo, vtGlobal: in String): NVal {
+  val boxTy = ifaceBoxPtrType(ii)
+  val structTy = ifaceBoxStructType(ii)
+  val size = structSize(match structTy { case NStruct(_, f) -> f; case _ -> newList() })
+  val box = emitHeapAlloc(ctx, insns, boxTy, size, ifaceBoxDtorName(ii))
+  // obj slot (index 2): retain then store the erased object pointer.
+  val objI8 = freshTmp(ctx)
+  insns.add(NBitcast(dest = objI8, fromTy = v.ty, value = v.value, toTy = NPtr(pointee = NI8)))
+  insns.add(NCallVoid(fn = NGlobal(name = "lyric_retain"), args = arg1(NPtr(pointee = NI8), NLocal(name = objI8))))
+  val objSlot = freshTmp(ctx)
+  val objArgs: List[NArg] = newList()
+  objArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  objArgs.add(NArg(ty = NI32, value = NLitInt(v = 2i64, ty = NI32)))
+  insns.add(NGEP(dest = objSlot, ty = structTy, ptr = NLocal(name = box), indices = objArgs))
+  insns.add(NStore(ty = NPtr(pointee = NI8), value = NLocal(name = objI8), ptr = NLocal(name = objSlot)))
+  // vtable slot (index 3): point at the impl's constant vtable.
+  val vtSlot = freshTmp(ctx)
+  val vtArgs: List[NArg] = newList()
+  vtArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  vtArgs.add(NArg(ty = NI32, value = NLitInt(v = 3i64, ty = NI32)))
+  insns.add(NGEP(dest = vtSlot, ty = structTy, ptr = NLocal(name = box), indices = vtArgs))
+  insns.add(
+    NStore(ty = NPtr(pointee = ifaceVtStructType(ii)), value = NGlobal(name = vtGlobal), ptr = NLocal(name = vtSlot))
+  )
+  val boxVal = NVal(ty = boxTy, value = NLocal(name = box))
+  registerTemp(ctx, boxVal)
+  boxVal
+}
+
+/// Dispatch an interface method call: load `obj` and the vtable pointer,
+/// index the method slot, bitcast the raw pointer to the method's function
+/// type, and call with `obj` (as `i8*`) as the receiver.
+func lowerIfaceDispatch(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  recv: in NVal,
+  ii: in NIfaceInfo,
+  slot: in Int,
+  args: in List[CallArg],
+): NVal {
+  val structTy = ifaceBoxStructType(ii)
+  // Load obj (index 2).
+  val objSlot = freshTmp(ctx)
+  val objArgs: List[NArg] = newList()
+  objArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  objArgs.add(NArg(ty = NI32, value = NLitInt(v = 2i64, ty = NI32)))
+  insns.add(NGEP(dest = objSlot, ty = structTy, ptr = recv.value, indices = objArgs))
+  val objVal = freshTmp(ctx)
+  insns.add(NLoad(dest = objVal, ty = NPtr(pointee = NI8), ptr = NLocal(name = objSlot)))
+  // Load vtable pointer (index 3).
+  val vtSlotPtr = freshTmp(ctx)
+  val vtArgs: List[NArg] = newList()
+  vtArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  vtArgs.add(NArg(ty = NI32, value = NLitInt(v = 3i64, ty = NI32)))
+  insns.add(NGEP(dest = vtSlotPtr, ty = structTy, ptr = recv.value, indices = vtArgs))
+  val vtPtrTy = NPtr(pointee = ifaceVtStructType(ii))
+  val vtbl = freshTmp(ctx)
+  insns.add(NLoad(dest = vtbl, ty = vtPtrTy, ptr = NLocal(name = vtSlotPtr)))
+  // Index the method slot and load the raw function pointer.
+  val fnSlotPtr = freshTmp(ctx)
+  val mArgs: List[NArg] = newList()
+  mArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  mArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(slot), ty = NI32)))
+  insns.add(NGEP(dest = fnSlotPtr, ty = ifaceVtStructType(ii), ptr = NLocal(name = vtbl), indices = mArgs))
+  val fnRaw = freshTmp(ctx)
+  insns.add(NLoad(dest = fnRaw, ty = NPtr(pointee = NI8), ptr = NLocal(name = fnSlotPtr)))
+  // Bitcast to the method's function type (self as i8*).
+  val paramTys = ii.methodParamTys[slot]
+  val retTy = ii.methodRetTys[slot]
+  val fnParamTys: List[NType] = newList()
+  fnParamTys.add(NPtr(pointee = NI8))
+  var pi = 0
+  while pi < paramTys.count {
+    fnParamTys.add(paramTys[pi])
+    pi = pi + 1
+  }
+  val fnTyped = freshTmp(ctx)
+  insns.add(
+    NBitcast(
+      dest = fnTyped,
+      fromTy = NPtr(pointee = NI8),
+      value = NLocal(name = fnRaw),
+      toTy = NPtr(pointee = NFnPtr(params = fnParamTys, ret = retTy))
+    )
+  )
+  // Build call args: obj first, then the coerced declared arguments.
+  val callArgs: List[NArg] = newList()
+  callArgs.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = objVal)))
+  var ai = 0
+  while ai < args.count {
+    val av = lowerCallArgExpecting(ctx, insns, args, ai, paramTys[ai])
+    callArgs.add(NArg(ty = paramTys[ai], value = av.value))
+    ai = ai + 1
+  }
+  match retTy {
+    case NVoid -> {
+      insns.add(NCallVoid(fn = NLocal(name = fnTyped), args = callArgs))
+      NVal(ty = NVoid, value = NUndef(ty = NVoid))
+    }
+    case _ -> {
+      val dest = freshTmp(ctx)
+      insns.add(NCall(dest = dest, retTy = retTy, fn = NLocal(name = fnTyped), args = callArgs))
+      val outV = NVal(ty = retTy, value = NLocal(name = dest))
+      registerTemp(ctx, outV)
+      outV
+    }
+  }
 }
 
 pub func dottedPkgName(file: in SourceFile): String {

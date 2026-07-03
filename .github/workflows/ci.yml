@@ -1312,7 +1312,10 @@ jobs:
       # three llvm self-tests: llvm_ir (serializer), llvm_codegen (N1 scalar
       # programs compiled through parse -> codegen -> clang -> run), and
       # llvm_heap (N2 records/unions/enums/distinct/match; its ARC cases build
-      # with -fsanitize=address so a missed/premature/double release fails).
+      # with -fsanitize=address so a missed/premature/double release fails),
+      # and llvm_self_test_n3 (N3.2 interface vtable dispatch; its ARC cases
+      # likewise build under ASan to prove the interface box releases its
+      # implementing object).
       # The tests import `Lyric.Llvm*` compiler packages by source, so
       # LYRIC_LOAD_COMPILER=1.
       - name: Native backend self-tests (lyric-rt + llvm via native lyric test)
@@ -1344,7 +1347,8 @@ jobs:
             lyric-compiler/lyric/llvm_heap_self_test.l \
             lyric-compiler/lyric/llvm_ffi_self_test.l \
             lyric-compiler/lyric/llvm_collections_self_test.l \
-            lyric-compiler/lyric/llvm_stdlib_self_test.l ; do
+            lyric-compiler/lyric/llvm_stdlib_self_test.l \
+            lyric-compiler/lyric/llvm_self_test_n3.l ; do
             echo "=== $t ==="
             LYRIC_LOAD_COMPILER=1 "$lyric_bin" test "$t"
           done
