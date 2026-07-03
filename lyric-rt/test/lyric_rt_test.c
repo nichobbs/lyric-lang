@@ -414,6 +414,12 @@ static void test_environment(void) {
     CHECK(LYRIC_STRING_DATA(cwd)[0] == '/'); /* absolute path */
     lyric_release(cwd);
 
+    LyricString* cwd2 = NULL;
+    CHECK(lyric_env_cwd_ok(&cwd2) == 0);
+    CHECK(cwd2 != NULL);
+    CHECK(lyric_string_len(cwd2) > 0);
+    lyric_release(cwd2);
+
     unsetenv(name);
 }
 

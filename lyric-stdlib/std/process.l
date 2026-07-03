@@ -39,25 +39,6 @@ func buildArgString(args: in List[String]): String {
   result
 }
 
-// Build a safe argument string for piped-capture spawning.
-// Every argument is always wrapped in double-quotes with full backslash
-// escaping (matching Std.ProcessCapture.buildArgString) so the receiving
-// process tokenises identically on POSIX and Windows.
-func buildCaptureArgString(args: in List[String]): String {
-  var result = ""
-  var i = 0
-  val count = args.count
-  while i < count {
-    if i > 0 {
-      result = result + " "
-    }
-    val escaped = args[i].replace("\\", "\\\\").replace("\"", "\\\"")
-    result = result + "\"" + escaped + "\""
-    i += 1
-  }
-  result
-}
-
 /// Spawn a child process, inheriting the current process's stdio.
 ///
 /// Returns `Ok(exitCode)` when the process exits normally.
@@ -104,10 +85,10 @@ pub record ProcessResult {
   stderr: String
   exitCode: Int
   timedOut: Bool
-  // Project a raw `ProcessCaptureResult` opaque handle into the public
-  // `ProcessResult` record.
 }
 
+// Project a raw `ProcessCaptureResult` kernel record into the public
+// `ProcessResult` record.
 func projectResult(raw: in ProcessCaptureResult): ProcessResult = ProcessResult(stdout = pcResultStdout(raw), stderr = pcResultStderr(raw), exitCode = pcResultExitCode(raw), timedOut = pcResultTimedOut(raw))
 
 /// Spawn `executable` with `args`, capture its stdout and stderr, and return
@@ -117,12 +98,9 @@ func projectResult(raw: in ProcessCaptureResult): ProcessResult = ProcessResult(
 /// Returns `Err` if the executable cannot be started.
 @stable(since = "1.0")
 pub func runCapture(executable: in String, args: in List[String], timeoutMs: in Int): Result[ProcessResult, String] {
-  return try {
-    val argStr = buildCaptureArgString(args)
-    val raw = hostRunCaptureTimeout(executable, argStr, "", timeoutMs)
-    Ok(value = projectResult(raw))
-  } catch Bug as b {
-    Err(error = b.message)
+  match hostRunCaptureList(executable, args, "", timeoutMs) {
+    case Ok(raw) -> Ok(value = projectResult(raw))
+    case Err(e) -> Err(error = e)
   }
 }
 
@@ -134,11 +112,8 @@ pub func runCapture(executable: in String, args: in List[String], timeoutMs: in 
 pub func runCaptureWithInput(
   executable: in String, args: in List[String], stdin: in String, timeoutMs: in Int
 ): Result[ProcessResult, String] {
-  return try {
-    val argStr = buildCaptureArgString(args)
-    val raw = hostRunCaptureTimeout(executable, argStr, stdin, timeoutMs)
-    Ok(value = projectResult(raw))
-  } catch Bug as b {
-    Err(error = b.message)
+  match hostRunCaptureList(executable, args, stdin, timeoutMs) {
+    case Ok(raw) -> Ok(value = projectResult(raw))
+    case Err(e) -> Err(error = e)
   }
 }

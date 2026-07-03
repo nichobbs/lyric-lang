@@ -164,6 +164,26 @@ test "explicit type arguments construct without an annotation" {
   assertEqualInt(r.exitCode, 42, "typeapp-ctor: 20+22")
 }
 
+test "newListWithCapacity: explicit type arguments, capacity evaluates for effect" {
+  val src = "package T\n" + "record Counter {\n" + "  var n: Int\n" + "}\n" + "func bump(c: in Counter): Int {\n" +
+    "  c.n = c.n + 1\n" +
+    "  4\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val c = Counter(n = 0)\n" +
+    "  val xs = newListWithCapacity[Long](bump(c))\n" +
+    "  xs.add(20)\n" +
+    "  xs.add(21)\n" +
+    "  var sum = 0\n" +
+    "  for x in xs {\n" +
+    "    sum = sum + x.toInt()\n" +
+    "  }\n" +
+    "  sum + c.n\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 42, "withcapacity-typeapp: 20+21+1")
+}
+
 test "list of String releases its elements (ASan)" {
   val src = "package T\n" + "func main(): Int {\n" + "  val xs: List[String] = newList()\n" + "  var i = 0\n" +
     "  while i < 100 {\n" +

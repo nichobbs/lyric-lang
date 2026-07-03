@@ -237,7 +237,7 @@ pub func toIsoString(t: in Instant): String {
 /// Current UTC time as Unix milliseconds since the epoch.
 @stable(since = "1.0")
 pub func nowEpochMillis(): Long {
-  hostDtoToEpochMillis(hostDtoUtcNow())
+  hostEpochMillis()
 }
 
 /// Nanoseconds from an unspecified epoch using the platform's monotonic
@@ -250,9 +250,7 @@ pub func nowEpochMillis(): Long {
 /// Two-step formula avoids Int64 overflow for any realistic timer frequency.
 @stable(since = "1.0")
 pub func monotonicNanos(): Long {
-  var nanoTs: Long = hostStopwatchTimestamp()
-  var nanoFreq: Long = hostStopwatchFrequency()
-  return (nanoTs / nanoFreq) * 1000000000i64 + (nanoTs % nanoFreq) * 1000000000i64 / nanoFreq
+  hostMonotonicNanos()
 }
 
 /// Block the calling thread for `ms` milliseconds.  A non-positive `ms` returns

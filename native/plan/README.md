@@ -48,7 +48,19 @@ with `for`-loop lowering over lists, indexing, and the reserved
 `dictGetKeys` / `dictGetValues`; `lyric_map_keys` / `lyric_map_values`
 added to lyric-rt).  Verified ASan-clean by
 `llvm_collections_self_test.l`.
-Remaining work items (rest of N3, the rest of N5, N6.4, N7.2)
+The N5 stdlib kernel files SHIPPED (D-progress-556, issue #4752):
+`_kernel_native/` twins for `Std.FileHost`, `Std.EnvironmentHost`,
+`Std.TimeHost`, and `Std.ProcessCaptureHost` over exception-free
+Result/Option seams both kernel twins implement, plus the codegen
+support they surfaced (Unit-typed union/record payload fields for
+`Result[Unit, E]`, diverging `panic` branches in value-position
+`if`/`match`, type-only bundled units).  Verified ASan-clean by
+`llvm_stdlib_self_test.l`, which compiles real `Std.File` /
+`Std.Environment` / `Std.Process` / `Std.Time` programs through the
+full bridge pipeline.  Native-side deferrals (stdin/timeout in the
+process runner, bytes-mode file I/O, dir enumeration, Std.Uuid, the
+Std.Time calendar surface) are tracked in #4752.
+Remaining work items (rest of N3, `slice[T]`, N6.4, N7.2)
 execute from `08-work-items.md` as written, modulo the D-N-014 naming
 mapping.
 

@@ -207,7 +207,12 @@ them explicitly with `NativeWeak[T]`, whose `upgrade()` returns
 > (via call-site monomorphization); closures (by-value captures); and
 > `NativeWeak[T]`; and `List[T]`/`Map[K, V]` with `for` loops, indexing,
 > and the `Std.Collections` accessors (map keys must be String or a
-> scalar type). Raw C interop (`extern func`, `NativePtr[T]`,
+> scalar type). Standard-library modules with native kernels work out of
+> the box: `Std.Console`, `Std.File` (text I/O, existence probes,
+> directory create/delete), `Std.Environment` (variables, working
+> directory), `Std.Process.runCapture` (argv list, never a shell), and
+> `Std.Time` (epoch millis, monotonic nanos, sleep). Raw C interop
+> (`extern func`, `NativePtr[T]`,
 > `nativeAddrOf`, `nativeNullPtr`, closures as C callbacks) is confined to
 > `@unsafe_ffi` functions and the standard library's kernel files — the
 > compiler rejects it elsewhere (`N0100`). Constructs not yet lowered fail

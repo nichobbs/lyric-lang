@@ -6,6 +6,8 @@
 @axiom("System.Environment operations conform to their documented .NET contracts")
 package Std.EnvironmentHost
 
+import Std.Core
+
 @externTarget("System.Environment.GetEnvironmentVariable")
 pub func hostGetEnvironmentVariable(key: in String): String? = ()
 
@@ -59,3 +61,28 @@ pub func hostSetEnvironmentVariable(key: in String, value: in String): Unit = ()
 // see Never because Environment.Exit does not return in practice.
 @externTarget("System.Environment.Exit")
 pub func hostExit(code: in Int): Never = ()
+
+// =====================================================================
+// Option seam — the exception-free surface both kernel twins implement
+// (issue #4752): absent and error both surface as None here; the pure
+// `Std.Environment` layer maps None to its Result error.
+// =====================================================================
+// The BCL returns null for an unset variable.  Lyric has no null
+// pattern (`case null` parses as a catch-all binding under the
+// self-hosted parser — issue #4775 — and the D107 Option-returning
+// extern form cannot be compiled by the pinned F# mint seed), so
+// unset is detected via `??` with a NUL-string marker: POSIX and
+// Windows environment blocks are NUL-delimited, so no real value can
+// ever equal "\0".
+pub func hostGetVarOpt(key: in String): Option[String] {
+  try {
+    val v = hostGetEnvironmentVariable(key) ?? "\u{0000}"
+    if v == "\u{0000}" {
+      None
+    } else {
+      Some(value = v)
+    }
+  } catch Bug as _ {
+    None
+  }
+}

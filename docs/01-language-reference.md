@@ -1405,14 +1405,15 @@ extern func strlen(s: NativePtr[Byte]): Long = "strlen"
   `Float`→`double`, `Bool`→`i1`, `Byte`→`i8`, `String`→`%LyricString*`,
   `NativePtr[T]`→`T*`).
 - `NativePtr[T]` is a raw, unmanaged pointer: no ARC header, never
-  retained or released.  It may appear only in `extern func` signatures
-  and inside `lyric-stdlib/std/_kernel_native/` packages, whose safe
-  `pub func` wrappers are the supported surface.  (Mode-checker
-  enforcement of this boundary — diagnostic `N0100`, plus the
-  `@unsafe_ffi` opt-out and the `nativeAddrOf` builtin — is specified in
-  `native/plan/05-ffi-design.md` and tracked as Phase N4 follow-up
-  work; until it lands the boundary is enforced by review convention,
-  as the `_kernel/` `@externTarget` boundary originally was.)
+  retained or released.  It may appear only in `extern func` signatures,
+  inside `lyric-stdlib/std/_kernel_native/` packages (whose safe
+  `pub func` wrappers are the supported surface), and inside functions
+  annotated `@unsafe_ffi`.  The mode checker enforces this boundary as
+  diagnostic `N0100`: outside those contexts any `NativePtr[T]` type,
+  `nativeAddrOf(var)` address-of, or `nativeNullPtr()` use is an error;
+  within them, `nativeAddrOf` operands must be local `var`s and the
+  resulting pointer must not escape the frame (no returns, no heap
+  stores).  See `native/plan/05-ffi-design.md`.
 - On the managed targets an `extern func` item is inert: it
   type-checks like a body-less function and the MSIL/JVM backends emit
   nothing for it (`_kernel_native/` packages are only loaded by native
@@ -1426,6 +1427,18 @@ identical on every target.  `@cfg(target = "dotnet" | "jvm" | "native")`
 additionally gates individual items per target; the predicate resolves
 against a `target.<name>` pseudo-feature the CLI injects (D-N-013) and
 is exempt from the `F0013` declared-features check.
+
+Where the managed kernels rely on host exceptions, the shared pure
+layer instead delegates to exception-free **Result/Option seams** that
+both kernel twins implement (issue #4752): `Std.File` text I/O and
+directory operations, `Std.Environment` variable get/set and the
+current working directory, `Std.Process.runCapture` (list-argv, no
+shell), and `Std.Time`'s epoch/monotonic/sleep functions all work on
+`--target native` today.  Native-side gaps are explicit errors, not
+silent drops: `runCaptureWithInput` with non-empty stdin returns `Err`
+on native (no stdin pipe yet) and `timeoutMs` is not enforced there;
+bytes-mode file I/O, directory enumeration, `stat`, and the `Std.Time`
+calendar surface remain unavailable on native (tracked in #4752).
 
 ## 12. Standard library
 

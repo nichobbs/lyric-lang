@@ -253,6 +253,10 @@ int32_t lyric_env_set(const char* name, const char* value);
  * failure. */
 LyricString* lyric_env_cwd(void);
 
+/* Status-returning variant for Lyric kernels: 0 and *out set on
+ * success; -1 on failure with *out untouched. */
+int32_t lyric_env_cwd_ok(LyricString** out);
+
 /* ── Process execution (lyric_process.c) ───────────────────────────── */
 
 /* Runs `path` via fork + execvp (never a shell — no interpolation of
