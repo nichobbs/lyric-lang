@@ -7461,6 +7461,15 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl1("lyric_map_len", NI64, p8))
   decls.add(mkDecl1("lyric_map_keys", p8, p8))
   decls.add(mkDecl1("lyric_map_values", p8, p8))
+  // Protected-type mutex kernel (N3.4) + raw free for the runtime-sized
+  // mutex buffer (D-N-017).  `lyric_mutex_size()` is nullary.
+  val noArgs: List[NType] = newList()
+  decls.add(mkDeclN("lyric_mutex_size", NI32, noArgs))
+  decls.add(mkDecl1("lyric_mutex_init", NVoid, p8))
+  decls.add(mkDecl1("lyric_mutex_lock", NVoid, p8))
+  decls.add(mkDecl1("lyric_mutex_unlock", NVoid, p8))
+  decls.add(mkDecl1("lyric_mutex_destroy", NVoid, p8))
+  decls.add(mkDecl1("lyric_free", NVoid, p8))
   decls
 }
 
