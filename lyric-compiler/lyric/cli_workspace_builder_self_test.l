@@ -25,6 +25,8 @@ import Std.Environment as Environment
 import Std.Uuid
 import Std.Testing
 import Lyric.Cli as Cli
+import Lyric.Manifest as Mf
+import Lyric.Emitter as Emitter
 
 func tempBase(): String {
   Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
@@ -184,5 +186,48 @@ test "collectTransitiveDepDlls: already-seen name is not re-added" {
   Cli.collectTransitiveDepDlls(bDir, None, seen, result)
 
   assertEqualInt(result.count, 0, "already-seen: pre-seeded name is not re-recorded")
+  cleanup(root)
+}
+
+// #4925 regression: `lyric build`/`lyric test` crashed with
+// `System.InvalidCastException: Unable to cast object of type
+// 'Std.Core.Option_None`1[System.Object]' to type
+// 'Std.Core.Option`1[Lyric.Workspace.WorkspaceContext]'` on ANY manifest
+// outside a workspace (not specific to `[nuget]`, contrary to the issue's
+// initial theory — confirmed by reproducing against the published 0.4.10
+// binary with and without a `[nuget]` table).  Root cause: the early-return
+// arm in `buildWorkspaceDeps` returned a bare `None` literal as the third
+// tuple element; a `None` constructed directly inside a tuple loses its
+// type argument under the bootstrap emitter, so the caller's
+// `val (a, b, c) = buildWorkspaceDeps(...)` destructuring failed to cast it
+// back to `Option[Ws.WorkspaceContext]`.  This test destructures the tuple
+// exactly as `buildProject` (cli_build.l) and `cmdTestManifest` (cli_test.l)
+// do, against a manifest with no `[workspace]` ancestor, so it reproduces
+// the crash on the old code and passes on the fix.
+test "buildWorkspaceDeps: outside a workspace returns cleanly instead of crashing on the tuple's Option element" {
+  val root = freshTempDir("no-workspace")
+  val mfPath = Path.join(root, "lyric.toml")
+  writeFileOrPanic(
+    mfPath,
+    "[package]\nname = \"Fixture.NoWs\"\nversion = \"0.1.0\"\n\n[project]\nname = \"Fixture.NoWs\"\n\n[project.packages]\n\"Fixture\" = \"src/main.l\"\n"
+  )
+  val mfText = match File.readText(mfPath) {
+    case Ok(t) -> t
+    case Err(e) -> panic("cannot read " + mfPath + ": " + IOError.message(e))
+  }
+  val manifest = match Mf.parseManifest(mfText, mfPath) {
+    case Ok(m) -> m
+    case Err(e) -> panic("cannot parse " + mfPath + ": " + ManifestError.message(e))
+  }
+
+  val (dllPaths, hadError, wsCtxOpt) = Cli.buildWorkspaceDeps(manifest, mfPath, Emitter.Dotnet)
+
+  assertEqualInt(dllPaths.count, 0, "buildWorkspaceDeps: no workspace deps outside a workspace")
+  assertFalse(hadError, "buildWorkspaceDeps: no build error outside a workspace")
+  match wsCtxOpt {
+    case Some(_) -> panic("buildWorkspaceDeps: expected None outside a workspace")
+    case None -> ()
+  }
+
   cleanup(root)
 }

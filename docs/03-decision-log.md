@@ -7778,6 +7778,97 @@ CI on both targets — `--target jvm` in `compiler-self-tests-jvm` (Java 21),
 (use-site unboxing this extends).
 
 ---
+
+## D-progress-555 — `lyric build`/`lyric test` crashed with `InvalidCastException` on every non-workspace project; root cause was a bare `None` inside a tuple return, not `[nuget]` (#4925)
+
+**Context.** Issue #4925 reported `lyric build` (`cmdBuild` → `buildProject`)
+and `lyric test` (`cmdTestManifest`) crashing with an unhandled
+`System.InvalidCastException: Specified cast is not valid.` on any project
+manifest with a non-empty `[nuget]` table, confirmed against the published
+`0.4.10` release. The issue's own root-cause theory pointed at
+`cli_shared.l`'s `nugetUnresolvedReason`/`warnIfNugetUnresolved` matching
+`manifest.nuget: Option[Mf.NugetSection]` directly — the same
+`Option[RecordSection]`-match shape already worked around for
+`Manifest.features` (see the `readFeatureDefaultsFromToml` comment in
+`cli_build.l`) — and suggested applying the same raw-TOML-scan bypass to
+`.nuget`.
+
+**What actually reproduced.** Installing the published `lyric` `0.4.10`
+NuGet global tool (`dotnet tool install -g lyric`; reachable in a
+source-build-less sandbox because `api.nuget.org` isn't blocked even though
+the GitHub release-download bootstrap path is, per D-progress-543's sandbox
+profile) and running `lyric build` against a minimal non-workspace manifest
+reproduced the exact exception — **with `[nuget]` entirely absent from the
+manifest**:
+
+```
+Unhandled exception. System.InvalidCastException: Unable to cast object of
+type 'Std.Core.Option_None`1[System.Object]' to type
+'Std.Core.Option`1[Lyric.Workspace.WorkspaceContext]'.
+   at Lyric.Cli.Program.buildProject(...)
+```
+
+Stripping `[nuget]` did **not** fix the crash; the exact same manifest
+without `[nuget]` still crashed identically. Wrapping the same package as a
+workspace member (a `[workspace]` root `lyric.toml` with `members = [...]`)
+made the crash disappear — the actual trigger is **"this project has no
+`[workspace]` ancestor,"** not `[nuget]`. The issue's own repro (a
+standalone downstream repo, `cloud-agents`) happened to be a non-workspace
+project; the `lyric-lang` monorepo's own ecosystem libraries never hit this
+because the repo root `lyric.toml` declares `[workspace]` with every library
+as an (excluded-or-member) directory, so `Ws.findWorkspaceRoot` always
+succeeds for in-repo builds and the buggy code path is never exercised in
+this repo's own CI.
+
+**Root cause.** `cli/workspace_builder.l`'s `buildWorkspaceDeps` has
+signature `(List[String], Bool, Option[Ws.WorkspaceContext])`. Its
+not-in-a-workspace early-return path was `return (result, false, None)` —
+a bare `None` literal constructed **inside a tuple literal**. Unlike a
+plain `Option[T]`-returning function returning `None` directly (which
+works fine; `Ws.findWorkspaceRoot` itself does this at its own `None` tail
+position with no issue), a `None` embedded as one element of a multi-value
+tuple loses its type argument under the bootstrap emitter, so the runtime
+value is an untyped `Option_None<Object>`. Both call sites —
+`buildProject` (`cli_build.l:1164`) and `cmdTestManifest`
+(`cli_test.l:707`) — immediately destructure the tuple
+(`val (a, b, c) = buildWorkspaceDeps(...)`), and casting that untyped
+`Option_None<Object>` back to the declared `Option[Ws.WorkspaceContext]`
+throws. A codebase-wide grep confirmed `buildWorkspaceDeps` is the only
+function with an `Option[...]`-typed tuple return element, so this is a
+narrow, fully-fixed instance rather than a broader class needing an audit.
+
+**Decision.** Fix `buildWorkspaceDeps`'s early-return arm to return the
+already-typed `wsCtxOpt` local (bound from the `Ws.findWorkspaceRoot` call
+a few lines above, statically `Option[Ws.WorkspaceContext]`, and `None` by
+construction in that `match` arm) instead of a fresh bare `None` literal —
+`return (result, false, wsCtxOpt)`. No change was made to
+`nugetUnresolvedReason`/`warnIfNugetUnresolved`: the issue's suggested
+`.nuget` raw-TOML-scan bypass would not have fixed this crash (confirmed by
+the nuget-absent repro above), so it was not applied — the `.features`
+raw-TOML-scan bypass in `cli_build.l`/`cli_test.l` remains scoped to its
+original purpose (D045 feature-flag resolution) and this entry does not
+claim it generalizes.
+
+**Coverage.** `cli_workspace_builder_self_test.l` gained a regression test
+that calls `Cli.buildWorkspaceDeps` directly against a manifest with no
+`[workspace]` ancestor and destructures the returned tuple exactly as the
+two production call sites do — it reproduces the crash against the
+pre-fix code and passes against the fix. Could not be verified end-to-end
+against a rebuilt `./bin/lyric` in this session: the sandbox's
+release-download bootstrap is network-policy-blocked and the historical F#
+stage-0 mint path no longer resolves (`scripts/mint-stage0-fsharp.sh`
+requires `git rev-parse 44a0d1e7~1`, unavailable in a shallow clone) — the
+same source-build-less profile D-progress-543 documents. The crash
+reproduction and the post-fix manual reasoning both used the published
+`0.4.10` global tool binary; a future session with a working `./bin/lyric`
+build should confirm the self-test passes under native `lyric test`.
+
+**Related:** #4925, D045 (`cli_build.l`'s `readFeatureDefaultsFromToml`
+bypass, the prior art this issue's own theory drew from), D-progress-543
+(the sandbox profile that made the published-tool repro possible), docs/38
+(`[workspace]` design).
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
