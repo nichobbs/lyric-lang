@@ -27469,7 +27469,9 @@ plus a 13-suite JVM regression sweep.  Because the fix enforces the
 one-type-per-slot invariant globally, the `Std.JsonHost` distinct-name
 workaround is no longer required (kept as-is; harmless).
 
-### D-progress-564 — JVM: unsigned-`Byte` widening on `.toInt()` / `.toLong()` / `.toDouble()` (band J4, epic #2663)
+### D-progress-566 — JVM: unsigned-`Byte` widening on `.toInt()` / `.toLong()` / `.toDouble()` (band J4, epic #2663)
+
+_(Renumbered from D-progress-564 to resolve a parallel-merge collision with the native-backend `[native]` manifest entry that also took 564; the byte fix has the single external reference so it moved.)_
 
 **Shipped.** Resolves docs/44 m-73 (#4855).  Lyric `Byte` is unsigned
 `0..255`, but the JVM stores it as a signed `byte` that sign-extends on
@@ -27520,6 +27522,31 @@ exception unwind, value-producing sub-block); `bitwise` / `pattern_lowering`
 / `aspect_weave` regression-clean.
 
 **Related:** docs/44 m-57 / m-72, epic #2663, #2667 (band J4).
+
+### D-progress-567 — JVM: range-driven `for` (`emitCountingForJvm`) reaches MSIL parity (band J4, epic #2663)
+
+**Shipped.** Resolves docs/44 m-75.  A range-driven `for` (`for i in 0 ..< n`,
+`for i in a ..= b`) panicked at compile time with `Jvm.Codegen: ERange not
+supported in JVM codegen` — the JVM `SFor` lowering ran `lowerExpr` on the
+iterable, which rejects `ERange`, so any counted loop aborted the build.
+
+Fix: `SFor` special-cases an `ERange` iterable (`codegen/05_stmts.l`) and lowers
+it through a new `emitCountingForJvm`, mirroring MSIL's `emitCountingForMsil` —
+evaluate `lo` into a counter slot and `hi` once into a bound slot, then loop
+`while i < hi` (half-open `..<`) / `i <= hi` (closed `..=`), binding the pattern
+from the counter each iteration.  `break` targets the exit, `continue` the
+increment point (so the counter still advances); Int and Long counters are both
+supported (Long compares via `lcmp`).  Open-start (`..< b`) / open-end (`a ..`)
+ranges panic as unbounded, matching MSIL (and the parser rejects the open-end
+form in `for` position anyway).
+
+A new range-only `range_for_jvm_self_test.l` (`lyric-compiler/jvm/`, Int + Long,
+half-open + closed, empty, `break`/`continue`, nesting) pins the feature on
+**both** targets in CI.  `for_loop_slice_self_test.l` — which also covers ranges
+but exercises the JVM slice-iteration erased-element auto-FFI path — stays
+dotnet-only: that path (#2595) is a separate open gap, so the range-only module
+is the JVM-side coverage.  `pattern_lowering` / `bitwise` regression-clean.
+
 ### D-progress-564 — Native backend N6.4: `[native]` manifest table (triple / opt_level / extra_libs)
 
 **Shipped.** `lyric.toml` gains an optional `[native]` table that supplies

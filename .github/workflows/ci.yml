@@ -855,11 +855,36 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/for_loop_slice_self_test.l
 
-      # For-loop slice self-test is dotnet-only (#2595).  The JVM backend does
-      # not yet lower `for x in xs.toArray()` over an erased element type: the
-      # JVM auto-FFI resolver sees the loop element typed as java.lang.Object and
-      # fails to bind the subsequent call, so `--target jvm` aborts.  JVM slice-
-      # iteration parity is tracked under the JVM-backend remediation in docs/41.
+      # For-loop slice self-test stays dotnet-only (#2595): the JVM slice-iteration
+      # erased-element path (auto-FFI on the element's method call) is not yet at
+      # parity, tracked under the JVM-backend remediation in docs/41.  Range-driven
+      # `for` — the JVM half of that suite — reached parity separately via
+      # `emitCountingForJvm` and is pinned by `range_for_jvm_self_test.l` below,
+      # which drives only range counters (no slice iteration) so it runs on both
+      # targets.
+
+      # Range-for self-test on the dotnet target (#4878 follow-up, band J4).  Range
+      # `for` (`for i in lo ..< hi` / `lo ..= hi`) previously panicked with
+      # `ERange not supported in JVM codegen`; `emitCountingForJvm` brought it to
+      # MSIL parity.  Int + Long, half-open + closed, empty, break/continue, and
+      # nesting.  Imports only `Std.*`.  The `--target jvm` run lives in the
+      # `compiler-self-tests-jvm` job (which configures Java 21 — this job does not,
+      # so a JVM-class-version-21 run would `UnsupportedClassVersionError` here).
+      - name: Range-for self-test (native lyric test, dotnet)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping range-for self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping range-for self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/jvm/range_for_jvm_self_test.l
 
       # Bitwise self-test on the JVM target (#1611 JVM half).  Compiles the same
       # @test_module in-process through the self-hosted `Jvm.Bridge`
@@ -3102,6 +3127,29 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/defer_self_test.l
+      # Range-for self-test on JVM (#4878 follow-up, band J4).  Range-driven `for`
+      # (`for i in lo ..< hi` / `lo ..= hi`) reached MSIL parity via
+      # `emitCountingForJvm` (previously `ERange not supported in JVM codegen`).
+      # Runs here — NOT in `compiler-self-tests-dotnet-a` alongside the dotnet run —
+      # because this job configures Java 21; the emitted class targets version 21,
+      # so a job without the Java-21 setup fails with `UnsupportedClassVersionError`.
+      # Int + Long, half-open + closed, empty, break/continue, nesting.  Imports
+      # only `Std.*`.
+      - name: Range-for self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping range-for JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping range-for JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/range_for_jvm_self_test.l
       # Generic-codegen self-test on JVM (J4 M-1, epic #2663 / #2667 / #1707).
       # Pins the erased-generics correctness fix: generic `Result`/`Option` and
       # user generic records/unions now construct (boxing primitive payloads
