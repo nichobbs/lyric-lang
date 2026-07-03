@@ -27140,3 +27140,48 @@ list, driven end-to-end by the lyric-storage JVM parity work (#1444):
 
 **Related:** docs/44 §4 m-46–m-52, epic #2663, #2669, #1444,
 D-progress-555.
+
+### D-progress-559 — JVM: `Std.Parse` works end-to-end (dot-named dispatch order, pure-Lyric parse kernel, generic-sig erasure) (band J6, epic #2663)
+
+**Shipped.** Closes #4799's user-visible half: `Std.Parse` bundles and
+runs on `--target jvm`.
+
+- **Dot-named dispatch before extern FFI.**  The imported-type seed
+  (D-progress-558 m-58) put every bundled package's declared types into
+  the extern-type map, so `ParseError.message(e)` — a dot-named
+  FUNCTION on Std.Errors' union — resolved as a static JDK call on
+  "Std.Errors.ParseError" and panicked in metadata resolution,
+  J003-skipping `Std.Parse`.  `lowerMethodCall` now checks the Lyric
+  dot-named funcSigs registration first; a genuine extern JDK type
+  never has one, so the FFI fast path is unaffected for real externs.
+  The value-receiver form (`e.message()` on a TYPED imported-union
+  binding) already worked post-seed via the qualified
+  `<cls>.<member>` fallback; the erased-receiver form remains J4
+  (#2667).
+- **Pure-Lyric JVM parse kernel on a target-neutral surface.**  The
+  phantom `lyric.stdlib.jvm.ParseHost` shim had a DIFFERENT arity
+  than the .NET twin (2-arg vs 4-arg `hostTryParseDouble`), so
+  `Std.Parse` never compiled on the JVM even once bundled.  Both
+  kernels now export the same 2-arg surface: .NET wraps its
+  invariant-culture 4-arg extern; the JVM twin parses via
+  `Double.parseDouble` with parity guards (hex floats and trailing
+  type suffixes rejected — the .NET parser refuses them;
+  "Infinity"/"NaN" kept) and mirrors `Boolean.TryParse` (trimmed,
+  case-insensitive).  T0086 note: the mode checker requires `out`
+  params assigned on every path and does not credit try/catch arms or
+  out-forwarding — both kernels assign up front.
+- **Generic registry sigs erase their own type params.**  A generic
+  function's registered JVM sig previously mapped `T` through the
+  in-package class guess (`unwrapOr[T]` → `Std/Core/T`), so an
+  unmonomorphized call's descriptor referenced a phantom class —
+  NoClassDefFoundError at link time.  Sigs now erase the decl's own
+  type params to Object, and `unwrapOr` lowers through a synthesised
+  `__lyricUnwrapOr(Object, Object)Object` helper beside
+  `__lyricCount`.
+
+Verified by `lyric-stdlib/tests/parse_tests.l` compiled and run on
+`--target jvm`, plus the storage suite (34/34) and Std.Json probe
+regressions.
+
+**Related:** docs/44 m-67–m-69, epic #2663, #2669, #4799,
+D-progress-558.

@@ -23,7 +23,15 @@ pub func hostNumberStylesFloat(): NumberStyles = ()
 // System.Double.TryParse(string, NumberStyles, IFormatProvider, out double).
 // Arity-4 static overload — invariant culture eliminates locale-dependent failures.
 @externTarget("System.Double.TryParse")
-pub func hostTryParseDouble(s: in String, styles: in NumberStyles, culture: in CultureInfo, value: out Double): Bool = ()
+pub func hostTryParseDoubleRaw(s: in String, styles: in NumberStyles, culture: in CultureInfo, value: out Double): Bool = ()
+
+/// Target-neutral surface consumed by `Std.Parse` (the JVM kernel twin
+/// exports the same two-argument shape): invariant-culture float parse.
+pub func hostTryParseDouble(s: in String, value: out Double): Bool {
+  // T0086 does not credit out-forwarding as an assignment.
+  value = 0.0
+  hostTryParseDoubleRaw(s, hostNumberStylesFloat(), hostInvariantCulture(), value)
+}
 
 @externTarget("System.Boolean.TryParse")
 pub func hostTryParseBool(s: in String, value: out Bool): Bool = ()
