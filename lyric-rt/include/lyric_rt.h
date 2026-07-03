@@ -109,7 +109,8 @@ void       lyric_list_clear(LyricList* list);
 /* Fresh rc=1 shallow copy: same elems_are_refs flag; ref elements are
  * retained by the copy.  Backs slice[T] <-> List[T] bridging (the two
  * share this representation on the native target, D-N-015) and the
- * snapshot semantics of `.toArray()`. */
+ * snapshot semantics of `.toArray()`.  A NULL `src` defensively yields
+ * a fresh empty scalar list rather than crashing (#4851). */
 LyricList* lyric_list_copy(LyricList* src);
 void       lyric_list_dtor(void* obj);
 

@@ -460,6 +460,24 @@ test "toArray snapshot + listFilesRecursive on native (ASan)" {
     "  if found != 2 {\n" +
     "    return 6\n" +
     "  }\n" +
+    "  var dcount = 0\n" +
+    "  var sawInner = false\n" +
+    "  match listDirs(base) {\n" +
+    "    case Ok(dirs) -> {\n" +
+    "      for d in dirs {\n" +
+    "        dcount = dcount + 1\n" +
+    "        if d == nested {\n" +
+    "          sawInner = true\n" +
+    "        }\n" +
+    "      }\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 11\n" +
+    "    }\n" +
+    "  }\n" +
+    "  if dcount != 1 or not sawInner {\n" +
+    "    return 12\n" +
+    "  }\n" +
     "  val xs: List[Int] = newList()\n" +
     "  xs.add(20)\n" +
     "  xs.add(22)\n" +

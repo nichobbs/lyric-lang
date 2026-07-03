@@ -98,6 +98,11 @@ void lyric_list_clear(LyricList* list) {
 }
 
 LyricList* lyric_list_copy(LyricList* src) {
+    /* Defensive: the codegen only calls this on a live list (toArray /
+     * slice bridging), but guard NULL rather than deref it — return a
+     * fresh empty scalar list so a stray NULL degrades to "empty copy"
+     * instead of a crash (#4851). */
+    if (!src) return lyric_list_new(0);
     LyricList* out = lyric_list_new(src->elems_are_refs);
     for (int64_t i = 0; i < src->len; i++) {
         lyric_list_push(out, src->data[i]); /* push retains ref elements */

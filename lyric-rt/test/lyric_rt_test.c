@@ -225,6 +225,12 @@ static void test_list_copy(void) {
     CHECK(lyric_list_get(nums2, 1) == 42);
     lyric_release(nums);
     lyric_release(nums2);
+
+    /* NULL src degrades to a fresh empty list, not a crash (#4851). */
+    LyricList* empty = lyric_list_copy(NULL);
+    CHECK(empty != NULL);
+    CHECK(lyric_list_len(empty) == 0);
+    lyric_release(empty);
 }
 
 static void test_read_bytes(void) {
