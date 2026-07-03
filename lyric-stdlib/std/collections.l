@@ -60,11 +60,10 @@ pub record MapEntry[K, V] {
 }
 
 /// Return the keys of `m` as a `List[K]` snapshot.
-/// Mirrors `mapEntries`: the host key view (`MapKeyCollection`) stays a
-/// `_kernel/`-private FFI detail so the public signature exposes only a
-/// first-class Lyric `List`, never a BCL nested collection type.
 @stable(since = "1.0")
 pub func mapKeys[K, V](m: in Map[K, V]): List[K] {
+  // Snapshot into a List (like `mapEntries`) so the public signature exposes
+  // no BCL nested collection type; the host key view stays kernel-private.
   val result: List[K] = newList()
   for k in dictGetKeys(m) {
     result.add(k)
@@ -73,11 +72,10 @@ pub func mapKeys[K, V](m: in Map[K, V]): List[K] {
 }
 
 /// Return the values of `m` as a `List[V]` snapshot.
-/// Mirrors `mapEntries`: the host value view (`MapValueCollection`) stays a
-/// `_kernel/`-private FFI detail so the public signature exposes only a
-/// first-class Lyric `List`, never a BCL nested collection type.
 @stable(since = "1.0")
 pub func mapValues[K, V](m: in Map[K, V]): List[V] {
+  // Snapshot into a List (like `mapEntries`) so the public signature exposes
+  // no BCL nested collection type; the host value view stays kernel-private.
   val result: List[V] = newList()
   for v in dictGetValues(m) {
     result.add(v)

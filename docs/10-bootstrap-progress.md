@@ -27556,3 +27556,47 @@ N6.4 from `native/plan/08-work-items.md`.
 
 **Related:** D-progress-540/562 (native backend), `native/plan/08-work-items.md`
 §N6.4, `docs/20-project-as-dll.md`.
+
+---
+
+### D-progress-566 — `Std.Collections` map views kept in `_kernel/`; `mapKeys`/`mapValues` return `List` (W0006 / Decision F)
+
+**Shipped.** Follow-up to the #4876 attempt at the `Std.Collections` map
+iteration-helper `W0006` boundary warning; supersedes it with a fix that
+respects the `_kernel/`-only extern-type rule (Decision F / `docs/14`).
+
+- **Kernel extern views** (`_kernel/collections_host.l`,
+  `_kernel_jvm/collections_host.l`): the host key/value collection views
+  (MSIL `Dictionary`2+KeyCollection` / `+ValueCollection`; JVM
+  `java.util.Set` / `Collection`) are renamed `DictKeyCollection`/
+  `DictValueCollection` → `MapKeyCollection`/`MapValueCollection` and stay
+  declared **only** in the kernel. `dictGetKeys`/`dictGetValues` return
+  them for internal iteration.
+- **Public API** (`collections.l`): `mapKeys`/`mapValues` now return a
+  `List[K]`/`List[V]` snapshot, mirroring the sibling `mapEntries` (built
+  by iterating the kernel view internally). The BCL nested collection type
+  no longer appears in any public signature, so the `W0006` boundary
+  warning the #4876 change targeted is eliminated *and* the `T0070` build
+  failure (nominal `MapKeyCollection` vs kernel `DictKeyCollection`
+  mismatch) is fixed. Every caller only iterates the result, so the
+  return-type change is behaviourally transparent.
+- **Std.Time encapsulation**: the four internal FFI helpers made
+  package-private earlier in the #4876 change set
+  (`dtoFromEpochMillis`, `dtoFromEpochSeconds`, `dtoUtcDateTime`,
+  `findTimeZone`) lose their now-contradictory `@stable(since = "1.0")`
+  markers (a stability marker on a private function pollutes
+  `public-api-diff`).
+- **Compiler**: MSIL codegen (`typeExprToMsilCtx` / `typeExprToMsilGenBody`
+  in `codegen.l`) and the statement type checker (`typechecker_stmts.l`)
+  recognise the new `MapKeyCollection`/`MapValueCollection` names for the
+  `MExternEnumerable` for-loop protocol.
+- **Docs**: `docs/10-stdlib-plan.md` stability table corrected for both the
+  shipped map iteration helpers and the now-private `Std.Time` DTO/TZ
+  helpers.
+- **Verification**: full self-hosted rebuild with no `W0006`/`T0070`;
+  `map_enhancements_self_test.l` 22/22 (dotnet), `msil_self_test_m88.l`
+  9/9 (break-inside-`mapKeys`), `map_iteration_jvm_self_test.l` 5/5 (JVM),
+  `typechecker_self_test.l` 240/240.
+
+**Related:** #4876 (superseded), Decision F / `docs/14-native-stdlib-plan.md`,
+codegen epics #3511/#3512.
