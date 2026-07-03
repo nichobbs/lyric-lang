@@ -35,7 +35,9 @@ static void counting_dtor(void* obj) {
 }
 
 static void test_alloc_retain_release(void) {
-    CHECK(lyric_alloc(16) != NULL);
+    void* raw16 = lyric_alloc(16);
+    CHECK(raw16 != NULL);
+    lyric_free(raw16);
 
     /* NULL is a no-op for both. */
     lyric_retain(NULL);
@@ -61,6 +63,24 @@ static void test_alloc_retain_release(void) {
     lyric_release(&stat);
     CHECK(atomic_load(&stat.rc) == INT32_MAX);
     CHECK(dtor_calls == 0);
+}
+
+/* lyric_free frees a raw (non-ARC-header) buffer, e.g. a protected type's
+ * runtime-sized mutex buffer (D-N-017).  A double free or a leak here trips
+ * AddressSanitizer when the suite is built with -fsanitize=address. */
+static void test_free(void) {
+    /* NULL is a no-op. */
+    lyric_free(NULL);
+
+    /* alloc + free a raw buffer sized like a pthread_mutex_t. */
+    void* p = lyric_alloc((uint64_t)lyric_mutex_size());
+    CHECK(p != NULL);
+    lyric_free(p);
+
+    /* A second, differently-sized buffer to catch size-mismatch bookkeeping. */
+    void* q = lyric_alloc(1);
+    CHECK(q != NULL);
+    lyric_free(q);
 }
 
 static void test_strings(void) {
@@ -779,6 +799,7 @@ static void test_ok_variants(void) {
 
 int main(void) {
     test_alloc_retain_release();
+    test_free();
     test_strings();
     test_weak();
     test_list_scalars();

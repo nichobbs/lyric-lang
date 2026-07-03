@@ -35,7 +35,7 @@ void* lyric_alloc(uint64_t size);
 
 /* free() for a raw lyric_alloc buffer that is NOT an ARC object (no header).
  * Used for a protected type's runtime-sized mutex buffer (D-N-017); ARC
- * objects are freed by lyric_release, never this. */
+ * objects are freed by lyric_release, never this.  No-op on NULL. */
 void lyric_free(void* p);
 
 /* Atomic rc increment.  No-op on NULL and on static objects. */
