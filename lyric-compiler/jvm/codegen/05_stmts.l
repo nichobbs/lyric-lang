@@ -706,7 +706,17 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
     case SExpr(e) -> {
       val ty = lowerExpr(ctx, insns, e)
       match ty {
-        case JVoid -> insns.add(LNop)
+        case JVoid -> {
+          // The LNop is only a placeholder so a JVoid expression statement isn't
+          // empty.  Skip it when the expression already TERMINATED (a `panic` →
+          // athrow): a nop after a terminator is unreachable dead code that then
+          // falls through into the following label — e.g. a `defer` catch-all
+          // handler — creating an empty-stack fall-through edge that conflicts
+          // with the handler's {Throwable} frame (VerifyError) (#4878).
+          if not lastInsnIsTerminator(insns) {
+            insns.add(LNop)
+          }
+        }
         case _ -> discardValue(insns, ty)
       }
     }
@@ -1283,6 +1293,16 @@ func lowerDeferRegion(
     case SDefer(b) -> b
     case _ -> panic("Jvm.Codegen: lowerDeferRegion: deferIdx does not point at an SDefer (unreachable)")
   }
+  // A trailing `defer` (nothing follows it in the block — the common case, and
+  // every defer past the first in a run of consecutive defers) has an EMPTY
+  // protected region: emitting a catch-all for it yields an illegal `[X, X)`
+  // exception-table range that fails class verification ("Illegal exception table
+  // range").  Nothing after the defer can throw, so run the deferred block inline
+  // on fall-off with no handler (#4878).
+  if deferIdx + 1 >= stmts.count {
+    lowerBlock(ctx, insns, deferBody)
+    return
+  }
   val startL = freshLabel(ctx)
   val afterL = freshLabel(ctx)
   val normalReplayL = freshLabel(ctx)
@@ -1426,15 +1446,16 @@ pub func lowerBlockExprWithDefer(ctx: in FuncCtx, insns: in List[LInsn], block: 
   // Close the protected region BEFORE the inline normal-path replay so a throw
   // from the deferred block during replay is NOT caught by the catch-all (which
   // would re-run the block — double execution, diverging from try/finally).
-  insns.add(LLabel(name = normalReplayL))
-  // Normal completion path: when the suffix did not unconditionally transfer
-  // control (an early `return` / `break` / `continue` already replayed the
-  // deferred block via `replayDefers`), stash the trailing value, run the
-  // deferred block, reload, and jump over the handler.  When the suffix DID
-  // terminate, the fall-off is unreachable — emit nothing here so no dead code
-  // / stray frame lands before the handler.
+  // Stash the trailing value into a temp BEFORE closing the protected region so
+  // the region-end (`normalReplayL`) frame sees an empty operand stack.  Leaving
+  // the value on the stack across the LTryCatch `end_pc` label made the emitted
+  // StackMapTable frame there (empty) disagree with the actual `{value}` stack —
+  // a VerifyError ("Current frame's stack size doesn't match stackmap") on every
+  // value-position `defer`.  The `emitStore` cannot throw, so lowering it inside
+  // the region does not change exception semantics; the deferred-block replay
+  // stays after `normalReplayL`, preserving the #2855 double-execution guard (#4878).
+  var valSlot = -1
   if not suffixTerminated {
-    var valSlot = -1
     match valTy {
       case JVoid -> ()
       case _ -> {
@@ -1442,11 +1463,21 @@ pub func lowerBlockExprWithDefer(ctx: in FuncCtx, insns: in List[LInsn], block: 
         emitStore(insns, valSlot, valTy)
       }
     }
+  }
+  insns.add(LLabel(name = normalReplayL))
+  // Normal completion path: when the suffix did not unconditionally transfer
+  // control (an early `return` / `break` / `continue` already replayed the
+  // deferred block via `replayDefers`), run the deferred block and jump over the
+  // handler.  The stashed value is reloaded AFTER `afterL` (below), not here, so
+  // the `goto` reaches `afterL` with an empty operand stack: `afterL`'s only
+  // live predecessor is this `goto` (the handler path diverges via `athrow`), and
+  // the frame emitter derives a label's stack from its linear predecessor — an
+  // `athrow`-terminated empty one — so a value carried across the `goto` would
+  // disagree with the emitted empty frame (#4878).  When the suffix DID
+  // terminate, the fall-off is unreachable — emit nothing so no dead code / stray
+  // frame lands before the handler.
+  if not suffixTerminated {
     lowerBlock(ctx, insns, deferBody)
-    match valTy {
-      case JVoid -> ()
-      case _ -> emitLoad(insns, valSlot, valTy)
-    }
     insns.add(LGoto(label = afterL))
   }
   // Exception path: skip the defer body when already replayed by an early
@@ -1475,6 +1506,13 @@ pub func lowerBlockExprWithDefer(ctx: in FuncCtx, insns: in List[LInsn], block: 
   // a spurious (wrong-typed) return after the region.
   if not suffixTerminated {
     insns.add(LLabel(name = afterL))
+    // Reload the stashed trailing value here — past the `afterL` join — so the
+    // block still yields it to the caller while the `goto` above reaches
+    // `afterL` with an empty stack (see the normal-path comment / #4878).
+    match valTy {
+      case JVoid -> ()
+      case _ -> emitLoad(insns, valSlot, valTy)
+    }
   }
   valTy
 }
