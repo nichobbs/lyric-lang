@@ -5415,6 +5415,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     // ── Path (variable or function reference) ─────────────────────────────────
     case EPath(path) -> {
       val name = lastSegmentMsil(path)
+      // A Unit-typed named binding (#4886): registered in `fctx.types` but
+      // never given a real slot (see `lowerLocalPatBindMsil`'s PBinding arm).
+      // Reading it pushes nothing, matching its void nature.
+      if not fctx.slots.containsKey(name) {
+        match mapGet(fctx.types, name) {
+          case Some(MVoid) -> return MVoid
+          case _ -> {
+          }
+        }
+      }
       // A `var` hoisted to a heap cell (#1479 v2, Stage 4: typed cells).
       // Read element 0 of the cell. For typed arrays (int[], long[], etc.),
       // use ldelem.<type> directly (no unbox). For List[object] fallback, use get_Item + cast.
@@ -7534,6 +7544,16 @@ func lowerStmtsExprFromMsil(
   val deferBody = match stmts[deferIdx].kind {
     case SDefer(b) -> b
     case _ -> panic("Msil.Codegen: lowerStmtsExprFromMsil: deferIdx points at non-SDefer statement (compiler bug)")
+  }
+  // A trailing `defer` (last statement of the value block — the block then
+  // yields `Unit`) has an EMPTY protected region: nothing follows it that
+  // could throw, so wrapping it in `try { } finally { D }` produces an
+  // invalid empty try-block (InvalidProgramException at load). Run the
+  // deferred block inline with no handler instead. Mirrors the JVM
+  // `lowerBlockExprWithDefer` guard (#4878/#4885). #4886.
+  if deferIdx + 1 >= n {
+    lowerBlockMsil(cctx, fctx, insns, deferBody)
+    return MVoid
   }
   val tryStartL = freshLabelMsil(fctx)
   val afterL = freshLabelMsil(fctx)
@@ -12524,27 +12544,52 @@ func lowerLocalPatBindMsil(
   match pat.kind {
     case PBinding(name, _) -> {
       val ty = match tyOpt { case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName); case None -> initTy }
-      val slot = allocSlotMsil(fctx, name, ty)
-      emitStoreSlot(insns, slot, fctx.paramCount)
-      match tyOpt {
-        case Some(te) -> {
-          match te.kind {
-            case TFunction(paramTes, retTe) -> {
-              if not fctx.funcValRetTypes.containsKey(name) {
-                fctx.funcValRetTypes.add(name, typeExprToMsilCtx(cctx, retTe, fctx.pkgName))
-                val paramMsilTys: List[MsilType] = newList()
-                var pi = 0
-                while pi < paramTes.count {
-                  paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pi], fctx.pkgName))
-                  pi = pi + 1
-                }
-                fctx.funcValParamTypes.add(name, paramMsilTys)
-              }
-            }
-            case _ -> ()
+      match ty {
+        case MVoid -> {
+          // A Unit-typed named binding (`val u = <void-producing expr>`): there
+          // is no CLR value on the stack to store, and a CLR local cannot
+          // declare type `void`. Register the name's logical type as MVoid so
+          // the EPath read site resolves it to a no-op instead of emitting a
+          // load from a nonexistent slot — mirrors the JVM backend's
+          // `JVoid` -> `LNop` emitLoad/emitStore contract. #4886.
+          //
+          // Also clear any stale `fctx.slots` entry for this name (e.g. an
+          // outer-scope non-void binding of the same name, shadowed by this
+          // void one): the EPath read site checks `fctx.slots` FIRST, so a
+          // leftover slot would bypass the MVoid no-op and load the shadowed
+          // outer binding's stale value instead. #4943.
+          if fctx.types.containsKey(name) {
+            fctx.types.remove(name)
+          }
+          fctx.types.add(name, MVoid)
+          if fctx.slots.containsKey(name) {
+            fctx.slots.remove(name)
           }
         }
-        case None -> ()
+        case _ -> {
+          val slot = allocSlotMsil(fctx, name, ty)
+          emitStoreSlot(insns, slot, fctx.paramCount)
+          match tyOpt {
+            case Some(te) -> {
+              match te.kind {
+                case TFunction(paramTes, retTe) -> {
+                  if not fctx.funcValRetTypes.containsKey(name) {
+                    fctx.funcValRetTypes.add(name, typeExprToMsilCtx(cctx, retTe, fctx.pkgName))
+                    val paramMsilTys: List[MsilType] = newList()
+                    var pi = 0
+                    while pi < paramTes.count {
+                      paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pi], fctx.pkgName))
+                      pi = pi + 1
+                    }
+                    fctx.funcValParamTypes.add(name, paramMsilTys)
+                  }
+                }
+                case _ -> ()
+              }
+            }
+            case None -> ()
+          }
+        }
       }
     }
     case PWildcard -> {

@@ -581,6 +581,154 @@ test "same-package qualified UFCS call resolves correctly" {
   assertEqual(Str.trim(result.stdout), "99", "same_pkg_ufcs: stdout=99")
 }
 
+// ─── Regression: trailing `defer` in a value-producing block (#4886) ────────
+// A `defer` that is the last statement of a value-producing block (the block
+// then yields `Unit`) used to build an empty `try {} finally { D }` protected
+// region — no statements follow it that could throw — which produced an
+// invalid method body (InvalidProgramException at load). The fix runs the
+// deferred block inline with no handler when nothing follows it.
+test "trailing defer in value-producing block runs and yields Unit" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "TrailingDefer.App",
+      "package TrailingDefer.App\n" + "import Std.Collections\n" + "func work(log: in List[Int]): Unit {\n" +
+        "  val u = if true { log.add(1); defer { log.add(2) } } else { () }\n" +
+        "  u\n" +
+        "}\n" +
+        "func main(): Unit {\n" +
+        "  val log: List[Int] = newList()\n" +
+        "  work(log)\n" +
+        "  println(log.count.toString())\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRunWithStdlib("trailing_defer", packages, "TrailingDefer")
+  assertEqualInt(result.exitCode, 0, "trailing_defer: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "2", "trailing_defer: stdout=2")
+}
+
+// ─── Regression: void-typed binding shadowing a non-void binding of the
+// same name leaves a stale `fctx.slots` entry (#4943) ──────────────────────
+// `lowerLocalPatBindMsil`'s MVoid arm registered the name's logical type as
+// MVoid in `fctx.types` but left any earlier `fctx.slots` entry for that name
+// in place. The EPath read-site guard checks `fctx.slots` FIRST, so a stale
+// slot bypassed the MVoid no-op and loaded through the (now-void-typed) old
+// slot — a type/slot mismatch that corrupts the emitted IL.
+test "void-typed binding shadowing a non-void binding of the same name does not corrupt codegen state" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "VoidShadow.App",
+      "package VoidShadow.App\n" + "func work(): Int {\n" + "  val x = 5\n" +
+        "  val x = println(\"shadowed\")\n" + "  x\n" + "  6\n" + "}\n" +
+        "func main(): Unit {\n" + "  println(work().toString())\n" + "}\n"
+    )
+  )
+  val result = compileAndRun("void_shadow", packages, "VoidShadow")
+  assertEqualInt(result.exitCode, 0, "void_shadow: exit 0 (stderr=" + result.stderr + ")")
+  val lines = Str.split(Str.trim(result.stdout), "\n")
+  assertEqualInt(lines.length, 2, "void_shadow: two output lines")
+  assertEqual(lines[0], "shadowed", "void_shadow: println inside the void binding ran")
+  assertEqual(lines[1], "6", "void_shadow: work() returns the correct trailing value, uncorrupted by the shadow")
+}
+
+// ─── Regression: alias rewriter resolves qualified call against wrong
+// package scope (#1127) ───────────────────────────────────────────────────
+// `import Kernel as K` then `K.verifyJwt(...)` from a `Wrapper` package that
+// ALSO declares its own `verifyJwt` wrapping the call. If the alias rewriter
+// (or downstream codegen) resolves the qualified call against the CURRENT
+// package's scope rather than `Kernel`'s, `Wrapper.verifyJwt` calls itself
+// and infinitely recurses (stack overflow) instead of calling the kernel.
+test "alias-qualified call to same-named function in another package resolves to that package" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg("AliasScope.Kernel", "package AliasScope.Kernel\n" + "pub func verifyJwt(x: in Int): Int { x + 1 }\n")
+  )
+  packages.add(
+    mkPkg(
+      "AliasScope.Wrapper",
+      "package AliasScope.Wrapper\n" + "import AliasScope.Kernel as K\n" +
+        "pub func verifyJwt(x: in Int): Int { K.verifyJwt(x) * 10 }\n" +
+        "func main(): Unit { println(verifyJwt(4).toString()) }\n"
+    )
+  )
+  val result = compileAndRun("alias_scope", packages, "AliasScope")
+  assertEqualInt(result.exitCode, 0, "alias_scope: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "50", "alias_scope: stdout=50 (kernel x+1=5, wrapper *10=50)")
+}
+
+// ─── Regression: non-generic alias over Result/Option is a distinct
+// instantiation (#3267) ─────────────────────────────────────────────────────
+// A function whose declared return type is a non-generic type alias over
+// `Result[T, E]` used to construct a differently-instantiated value than
+// `Std.Core.Result`, so a downstream `match` fell through both arms and hit
+// the "match not exhaustive" runtime trap.
+test "function returning non-generic alias over Result matches correctly downstream" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "AliasResult.App",
+      "package AliasResult.App\n" + "import Std.Core\n" + "alias IntResult = Result[Int, String]\n" +
+        "func mk(a: in Int): IntResult {\n" +
+        "  if a > 0 { Ok(a) } else { Err(\"neg\") }\n" +
+        "}\n" +
+        "func show(r: in Result[Int, String]): String {\n" +
+        "  match r {\n" +
+        "    case Ok(v) -> \"ok:\" + v.toString()\n" +
+        "    case Err(e) -> \"err:\" + e\n" +
+        "  }\n" +
+        "}\n" +
+        "func main(): Unit {\n" +
+        "  println(show(mk(3)))\n" +
+        "  println(show(mk(-1)))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRunWithStdlib("alias_result", packages, "AliasResult")
+  assertEqualInt(result.exitCode, 0, "alias_result: exit 0 (stderr=" + result.stderr + ")")
+  val lines = Str.split(Str.trim(result.stdout), "\n")
+  assertEqualInt(lines.length, 2, "alias_result: two output lines")
+  assertEqual(lines[0], "ok:3", "alias_result: Ok branch matches correctly")
+  assertEqual(lines[1], "err:neg", "alias_result: Err branch matches correctly")
+}
+
+// ─── Regression: cross-package recursive union field resolution (#4726) ────
+// A consumer package pattern-matching a recursive union case (whose field
+// type references the union itself, e.g. `YSequence(items: List[YamlValue])`)
+// defined in a DIFFERENT package used to crash with `Field not found` at
+// runtime despite type-checking cleanly. NOTE: this bundles both packages
+// into a single compile unit (same assembly); it does not exercise the
+// genuinely cross-ASSEMBLY restored-dependency path (a separately compiled
+// library DLL linked via metadata restoration) that the original report's
+// `Lyric.Cli` / `Lyric.Stdlib.dll` scenario used — that boundary is still
+// unverified and tracked in #4726.
+test "cross-package recursive union case field binds correctly (same-assembly)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "RecUnion.Lib",
+      "package RecUnion.Lib\n" + "import Std.Collections\n" + "pub union Tree {\n" + "  case Leaf(value: Int)\n" +
+        "  case Branch(items: List[Tree])\n" +
+        "}\n" +
+        "pub func mkBranch(): Tree { Branch(items = [Leaf(value = 1), Leaf(value = 2)]) }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "RecUnion.App",
+      "package RecUnion.App\n" + "import RecUnion.Lib as Lib\n" + "func main(): Unit {\n" + "  match Lib.mkBranch() {\n" +
+        "    case Lib.Branch(items) -> println(items.count.toString())\n" +
+        "    case _ -> println(\"other\")\n" +
+        "  }\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRunWithStdlib("rec_union", packages, "RecUnion")
+  assertEqualInt(result.exitCode, 0, "rec_union: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "2", "rec_union: stdout=2")
+}
+
 // ─── Regression: qualified enum-case pattern with shared case names (#3349) ──
 // Two packages each declare an enum with a case named `Same`.  A consumer
 // matches on `PackA.Color.Same` and verifies the correct ordinal fires,
