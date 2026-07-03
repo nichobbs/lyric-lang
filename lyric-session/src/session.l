@@ -396,12 +396,13 @@ impl SessionStore for InProcessSessionStore {
 // doesn't).
 
 // Parse `LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS`, falling back to
-// `defaultValue` for a malformed or negative value.  Mirrors
+// `defaultValue` for a malformed, zero, or negative value — Redis's
+// SETEX/EXPIRE require a strictly positive TTL (#4828). Mirrors
 // `Web.parseCorsMaxAge`'s fail-soft parsing idiom.  Not `pub` — only used
 // internally by `connectRedis()` in this file.
 func parseSessionTtlSeconds(ttlStr: in String, defaultValue: in Int): Int {
   match tryParseInt(ttlStr) {
-    case Ok(t) -> if t >= 0 { t } else { defaultValue }
+    case Ok(t) -> if t > 0 { t } else { defaultValue }
     case Err(_) -> defaultValue
   }
 }

@@ -1298,3 +1298,15 @@ test "lambda: parenthesised expression body does not leak speculative params" {
   val pr = parse("package P\nfunc f(): Int {\n  val x = 1\n  val y = 2\n  val g = { (x + y) }\n  return 0\n}\n")
   assertEqualInt(diagCount(pr), 0, "lambda: `{ (x + y) }` backtracks to a plain block body cleanly")
 }
+
+// #4829: additional parenthesised-param forms not covered above — the
+// zero-param `()` list, and a param with an explicit type annotation.
+test "lambda: empty parenthesised param list parses clean" {
+  val pr = parse("package P\nfunc f(): Int {\n  val g = { () -> 5 }\n  return 0\n}\n")
+  assertEqualInt(diagCount(pr), 0, "lambda: `{ () -> 5 }` parses clean")
+}
+
+test "lambda: parenthesised param with type annotation parses clean" {
+  val pr = parse("package P\nfunc f(): Int {\n  val g = { (k: String) -> k }\n  return 0\n}\n")
+  assertEqualInt(diagCount(pr), 0, "lambda: `{ (k: String) -> k }` parses clean")
+}
