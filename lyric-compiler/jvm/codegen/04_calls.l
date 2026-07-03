@@ -2217,20 +2217,17 @@ func isNumericJvm(ty: in JvmType): Bool {
   }
 }
 
-// Normalise a numeric value already on the stack to an `int` (JVM `I`).  Byte /
-// char / short / int already occupy an int slot (no-op); long / float / double
-// narrow with the matching conversion opcode.
-// Lyric `Byte` is UNSIGNED (0..255), but a JVM `byte` on the operand stack is
-// signed and sign-extends when reloaded from a field / local / array (200 reads
-// back as -56).  Every widening conversion of a Byte source must mask to the
-// low 8 bits so the wider value is the unsigned one, matching the MSIL backend
-// (`conv.u1`).  Harmless when the byte is already 0..255 (`& 0xFF` is identity);
-// #4855, same unsigned treatment #4551 applied to Byte div/rem.
+// Zero-extend a signed JVM `byte` to its unsigned Lyric value (`& 0xFF`): Lyric
+// `Byte` is 0..255 but a JVM `byte` sign-extends on reload (200 -> -56), so every
+// Byte-source widening masks first to match MSIL's `conv.u1` (#4855, cf. #4551).
 func maskByteUnsigned(insns: in List[LInsn]): Unit {
   insns.add(LIconst(v = 255))
   insns.add(LIand)
 }
 
+// Normalise a numeric value already on the stack to an `int` (JVM `I`).  Char /
+// short / int already occupy an int slot (no-op); long / float / double narrow
+// with the matching conversion opcode; a Byte source zero-extends (`& 0xFF`).
 func emitToIntJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
   match srcTy {
     case JLong -> insns.add(LL2i)

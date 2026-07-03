@@ -241,4 +241,6 @@ test "Byte widening above 127 stays unsigned (#4855)" {
 
   val h = ByteHolder(b = 255.toByte())
   assertEqualInt(h.b.toInt(), 255, "field Byte 255 -> Int 255, not -1")
+  assertEqualLong(h.b.toLong(), 255i64, "field Byte 255 -> Long 255, not -1")
+  assertTrue(h.b.toDouble() == 255.0, "field Byte 255 -> Double 255.0, not -1.0")
 }
