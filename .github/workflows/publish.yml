@@ -707,7 +707,10 @@ jobs:
                 return 1
               fi
               echo "=== NU1102 (NuGet indexing delay) on attempt ${attempt}; retrying after backoff ===" >> "$log"
-              sleep $(( attempt * 15 ))
+              # 30s/60s/90s (180s total before the 4th/final attempt). The
+              # original 15s/30s/45s (90s total) was found too short in
+              # practice for NuGet.org's search-index propagation lag (#4908).
+              sleep $(( attempt * 30 ))
             done
             rm -f "$attempt_log"
             {
