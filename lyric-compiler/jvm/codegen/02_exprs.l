@@ -2301,6 +2301,7 @@ func collectBoundNamesExpr(e: in Expr, acc: in List[String]): Unit {
       }
     }
     case EBlock(block) -> collectBoundNamesBlock(block, acc)
+    case EUnsafe(block) -> collectBoundNamesBlock(block, acc)
     case EList(elems) -> {
       var i = 0
       while i < elems.count {
@@ -2333,6 +2334,15 @@ func collectBoundNamesExpr(e: in Expr, acc: in List[String]): Unit {
         i = i + 1
       }
     }
+    case EAssign(target, _, value) -> {
+      collectBoundNamesExpr(target, acc)
+      collectBoundNamesExpr(value, acc)
+    }
+    case EAwait(inner) -> collectBoundNamesExpr(inner, acc)
+    case ESpawn(inner) -> collectBoundNamesExpr(inner, acc)
+    case ETry(inner) -> collectBoundNamesExpr(inner, acc)
+    case EYield(inner) -> collectBoundNamesExpr(inner, acc)
+    case EPropagate(inner) -> collectBoundNamesExpr(inner, acc)
     case _ -> ()
   }
 }

@@ -10933,6 +10933,31 @@ func lowerMethodCallMsil(
       val aliasPath = ModulePath(segments = realSegs, span = recv.span)
       return lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, memberName, aliasPath, args)
     }
+    // Type-associated function call for a UFCS type-method declared in THIS
+    // package (not imported): `Wrapper2.unwrap(w)` parses as
+    // `EMember(EPath["Wrapper2"], "unwrap")`, and `func Wrapper2.unwrap(...)`
+    // registers under `pkgName + ".Wrapper2.unwrap"` (parser_items.l's
+    // parseFunctionDeclBody joins dotted func-decl segments into one funcTokens
+    // key). `callFqn` built above ("Wrapper2.unwrap") only matches an already
+    // package-qualified receiver, so a same-package call never matches
+    // without this pkgName prefix and falls through to value-receiver
+    // dispatch: `Wrapper2` fails every local/field/const lookup, silently
+    // resolves to a bogus `null`, and crashes with InvalidProgramException
+    // when the CLR verifier rejects the resulting stack shape (#4651).
+    // Postfix `w.unwrap()` is unaffected — its receiver is a real local, so
+    // it never reaches this qualified-receiver dispatch at all.
+    val samePkgFqn = fctx.pkgName + "." + callFqn
+    if cctx.funcTokens.containsKey(samePkgFqn + "/" + toString(args.count)) or cctx.funcTokens.containsKey(samePkgFqn) {
+      val samePkgSegs = split(samePkgFqn, ".")
+      val samePkgPathSegs: List[String] = newList()
+      var spi = 0
+      while spi < samePkgSegs.length {
+        samePkgPathSegs.add(samePkgSegs[spi])
+        spi = spi + 1
+      }
+      val samePkgPath = ModulePath(segments = samePkgPathSegs, span = recv.span)
+      return lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, memberName, samePkgPath, args)
+    }
     // Type-associated function call through an imported type (D037):
     // `IOError.message(e)` parses as `EMember(EPath["IOError"], "message")` and
     // the bare `IOError.message` key is absent (the function registers under its
@@ -12727,7 +12752,7 @@ func lowerTryCatchExprMsil(
             if not blockDivergesMsil(c.body) {
               val pos = c.span.startPos
               panic(
-                "Msil.Codegen: " + toString(pos.line) + ":" + toString(pos.column) +
+                "F0025: " + toString(pos.line) + ":" + toString(pos.column) +
                   ": try-catch used as an expression, but this catch arm yields Unit while the " +
                   "try body (or an earlier catch arm) yields a value; the MSIL backend cannot " +
                   "route an absent value through the result slot. Give the catch arm a trailing " +
