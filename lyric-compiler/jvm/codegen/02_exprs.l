@@ -701,23 +701,24 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           JInt
         }
         case BCoalesce -> {
-          // Null-coalescing: if lhs is non-null use it, else rhs.
-          // `if_acmpne` is a binary comparison (pops two operands) — the
-          // duplicated lhs alone leaves only one operand on the stack, so a
-          // second `aconst_null` push is required before the compare.
-          // Without it, `dup` + `if_acmpne` compared lhs against itself
-          // (always reference-equal, so the branch never fired) and then
-          // unconditionally popped an already-empty stack on fallthrough
-          // (VerifyError: "Operand stack underflow" — found auditing a
-          // non-String `??` use, #4816).
+          // Null-coalescing via a result slot with an empty operand stack at every branch target — every StackMapTable frame here assumes that (#4816); `ifnull`/`ifnonnull` are unary tests so no dup'd value is ever left stranded across a branch the way `if_acmpne`/`if_acmpeq` would.
           val lhsTy = lowerExpr(ctx, insns, lhs)
+          val lhsSlot = allocSlot(ctx, "__coalesce_lhs_" + freshLabel(ctx), lhsTy)
+          emitStore(insns, lhsSlot, lhsTy)
+          val rslot = allocSlot(ctx, "__coalesce_r_" + freshLabel(ctx), lhsTy)
+          val nullL = freshLabel(ctx)
           val afterL = freshLabel(ctx)
-          insns.add(LDup)
-          insns.add(LAconstNull)
-          insns.add(LIfAcmpne(label = afterL))
-          insns.add(LPop)
-          lowerExpr(ctx, insns, rhs)
+          emitLoad(insns, lhsSlot, lhsTy)
+          insns.add(LIfnull(label = nullL))
+          emitLoad(insns, lhsSlot, lhsTy)
+          emitStore(insns, rslot, lhsTy)
+          insns.add(LGoto(label = afterL))
+          insns.add(LLabel(name = nullL))
+          val rhsTy = lowerExpr(ctx, insns, rhs)
+          coerceArgTo(insns, rhsTy, lhsTy)
+          emitStore(insns, rslot, lhsTy)
           insns.add(LLabel(name = afterL))
+          emitResultLoad(insns, rslot, lhsTy)
           lhsTy
         }
         case BImplies -> {

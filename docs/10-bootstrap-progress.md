@@ -27228,24 +27228,38 @@ more `case null` uses:
   case (asserts `listFiles`/`listDirs` counts and that `deleteDirRecursive`
   actually empties the tree), also CI-wired.
 
-**Bonus find: `??`'s JVM codegen had its own latent bug.** The
-`file_host.l` fix's `d.listFiles() ?? []` was the first `??` use in the
-tree over a non-`String` lhs on `--target jvm`, and CI immediately caught
-a real `VerifyError` (`Operand stack underflow`) in `Std/FileHost.
-listChildren`. `BCoalesce`'s JVM lowering (`jvm/codegen/02_exprs.l`)
-`dup`-ed the lhs then ran straight into `if_acmpne` — a *binary* reference
-comparison that pops two operands — with no second value ever pushed; the
-declared-but-unused `nullL` label was the tell that this path was
-unfinished. Comparing lhs against its own duplicate is always
-reference-equal, so the branch never fired, and the unconditional `pop`
-on fallthrough popped an already-empty stack. Fixed by pushing
-`aconst_null` before the compare, mirroring the correct MSIL lowering
-(`msil/codegen.l`'s `BCoalesce`, which already used the equivalent
-one-operand `brfalse` test and was unaffected). This was silently broken
-for every non-`String` `??` on JVM until this PR exercised one; `String`
-uses (`hostGetVarOpt`) happened to be the only shape previously
-compiled — same accidental narrow test coverage pattern as the original
-`case null` bug.
+**Bonus find: `??`'s JVM codegen had its own latent bug — two rounds.**
+The `file_host.l` fix's `d.listFiles() ?? []` was the first `??` use in
+the tree over a non-`String` lhs on `--target jvm`, and CI immediately
+caught a real `VerifyError` (`Operand stack underflow`) in
+`Std/FileHost.listChildren`. `BCoalesce`'s JVM lowering
+(`jvm/codegen/02_exprs.l`) `dup`-ed the lhs then ran straight into
+`if_acmpne` — a *binary* reference comparison that pops two operands —
+with no second value ever pushed; the declared-but-unused `nullL` label
+was the tell that this path was unfinished. Comparing lhs against its own
+duplicate is always reference-equal, so the branch never fired, and the
+unconditional `pop` on fallthrough popped an already-empty stack.
+
+The first fix attempt (pushing `aconst_null` before the compare,
+mirroring MSIL's one-operand `brfalse`) cleared the underflow but traded
+it for a second, subtler `VerifyError`: `Inconsistent stackmap frames`.
+`bytecode.l`'s `assembleCodeWithFrames` documents (and `LLabel`'s
+`resetStack` enforces) that **every branch target's StackMapTable frame
+is generated assuming an empty operand stack** — no codegen elsewhere in
+the JVM backend leaves a value on the stack across a branch to a shared
+join label; every existing ternary-shaped construct (`lowerMatchExpr`,
+`lowerIfExpr`) routes the join through a result *local slot* instead.
+`dup` + `if_acmpne`/`if_acmpeq` inherently leaves the tested value on the
+stack at the branch target, violating that invariant regardless of which
+comparison instruction is used. Final fix: store the lhs to a slot
+immediately, reload-and-test with the unary `ifnull` (which consumes
+its operand identically on both the branch and fallthrough paths, so no
+residual value survives to either target), and route both arms through a
+second result slot — matching the established pattern exactly. This was
+silently broken for every non-`String` `??` on JVM until this PR
+exercised one; `String` uses (`hostGetVarOpt`) happened to be the only
+shape previously compiled — same accidental narrow test coverage pattern
+as the original `case null` bug.
 
 **Not done (out of scope here, still tracked in #4775):** `std/path.l:73`'s
 `hostPathGetDirectoryName` uses `?? ""` rather than `case null`, so it
