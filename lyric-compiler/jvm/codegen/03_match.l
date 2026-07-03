@@ -41,6 +41,43 @@ func optGenericArgs(argsOpt: in Option[List[TypeExpr]]): List[TypeExpr] {
   }
 }
 
+// The JVM class name of a reference type, else None (a primitive / array / void
+// receiver names no in-package method-sig class).  Typed parameter anchors the
+// F# stage-0 inference (D-progress-554).
+func jvmRefClassName(tyOpt: in Option[JvmType]): Option[String] {
+  match tyOpt {
+    case Some(t) -> match t { case JRef(cls) -> Some(value = cls); case _ -> None }
+    case None -> None
+  }
+}
+
+// Resolve a method-call receiver expression to the JVM class whose
+// `<class>#<method>` sig registry entry (with `retGenericArgs`) describes the
+// call.  Only a bare local/parameter reference (its static type is in
+// `ctx.types`) or `self` (`ctx.selfClass`) is resolved; a more complex receiver
+// yields None, degrading the payload to the safe boxed path (#4933).
+func receiverClassOf(ctx: in FuncCtx, recv: in Expr): Option[String] {
+  match recv.kind {
+    case EPath(p) -> {
+      if p.segments.count == 1 {
+        jvmRefClassName(mapGet(ctx.types, p.segments[0]))
+      } else {
+        None
+      }
+    }
+    case ESelf -> ctx.selfClass
+    case _ -> None
+  }
+}
+
+// Look up the `<class>#<method>` instance-method sig's generic return args.
+func instanceMethodRetGenericArgs(ctx: in FuncCtx, recv: in Expr, memberName: in String): List[TypeExpr] {
+  match receiverClassOf(ctx, recv) {
+    case Some(cls) -> funcSigRetGenericArgs(mapGet(ctx.funcSigs, cls + "#" + memberName))
+    case None -> newList()
+  }
+}
+
 // Recover the scrutinee's generic instantiation arguments so a constructor
 // destructure can unbox an erased type-parameter payload to its concrete
 // primitive (#4877).  Handles:
@@ -48,16 +85,23 @@ func optGenericArgs(argsOpt: in Option[List[TypeExpr]]): List[TypeExpr] {
 //     generic args (`Result[Int, String]` → `[Int, String]`) come from its
 //     `JvmFuncSig.retGenericArgs`;
 //   - a variable-bound scrutinee `let r = callee(...); match r { … }`: `r`'s
-//     recorded `ctx.varGenericArgs` (populated at the binding site, #4938).
-// An `EParen` wrapper is unwrapped; anything else — including a method-call
-// scrutinee (`match x.m()`, #4933) — yields an empty list, so the payload stays
-// boxed (the pre-#4877 behaviour).
+//     recorded `ctx.varGenericArgs` (populated at the binding site, #4938);
+//   - a method-call scrutinee `match recv.method(...) { … }`: an in-body /
+//     `impl` method desugars to a UFCS free function keyed by its bare name in
+//     `funcSigs` (D037), so the member name resolves the same `retGenericArgs`
+//     (#4933).
+// An `EParen` wrapper is unwrapped; anything else yields an empty list, so the
+// payload stays boxed (the pre-#4877 behaviour).
 func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
   match scrutinee.kind {
     case EParen(inner) -> scrutineeGenericArgs(ctx, inner)
     case ECall(fn, _) -> {
       match fn.kind {
         case EPath(path) -> funcSigRetGenericArgs(mapGet(ctx.funcSigs, lastSegment(path)))
+        // `recv.method(...)` — an in-body / `impl` method registers under
+        // `<receiverClass>#<method>` with its `retGenericArgs`; resolve the
+        // receiver's class (local/param/`self`) to find it, else stay boxed.
+        case EMember(recv, memberName) -> instanceMethodRetGenericArgs(ctx, recv, memberName)
         case _ -> newList()
       }
     }
