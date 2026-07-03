@@ -656,12 +656,16 @@ test "function returning non-generic alias over Result matches correctly downstr
         "}\n" +
         "func main(): Unit {\n" +
         "  println(show(mk(3)))\n" +
+        "  println(show(mk(-1)))\n" +
         "}\n"
     )
   )
   val result = compileAndRunWithStdlib("alias_result", packages, "AliasResult")
   assertEqualInt(result.exitCode, 0, "alias_result: exit 0 (stderr=" + result.stderr + ")")
-  assertEqual(Str.trim(result.stdout), "ok:3", "alias_result: stdout=ok:3")
+  val lines = Str.split(Str.trim(result.stdout), "\n")
+  assertEqualInt(lines.length, 2, "alias_result: two output lines")
+  assertEqual(lines[0], "ok:3", "alias_result: Ok branch matches correctly")
+  assertEqual(lines[1], "err:neg", "alias_result: Err branch matches correctly")
 }
 
 // ─── Regression: cross-package recursive union field resolution (#4726) ────
