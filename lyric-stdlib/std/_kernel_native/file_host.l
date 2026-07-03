@@ -62,7 +62,9 @@ pub func hostReadTextResult(path: in String): Result[String, IOError] {
   // Classify only after the read has already failed (no TOCTOU on the
   // success path): a path that doesn't stat as a regular file is
   // FileNotFound; everything else (permissions, device errors) is
-  // IoError.
+  // IoError.  The failure-path probe is inherently racy (#4791): a
+  // file created between the failed read and the probe misreports as
+  // IoError — the failure itself is still reported either way.
   val probe = rtFileExists(c)
   freeC(c)
   if probe == 0 {

@@ -150,8 +150,13 @@ func listChildren(path: in String, kind: in Int): slice[String] {
 // Result seams — the exception-free surface every kernel twin
 // implements (issue #4752).  Missing-file classification probes the
 // filesystem after a failed read rather than parsing exception text
-// (no TOCTOU on the success path); JDK failure surfaces vary between
-// java.io.FileNotFoundException and java.nio.file.NoSuchFileException.
+// (JDK failure surfaces vary between java.io.FileNotFoundException and
+// java.nio.file.NoSuchFileException).  The success path has no TOCTOU;
+// the FAILURE path's probe is inherently racy (#4791): a file created
+// or removed between the failed operation and the probe can flip the
+// classification between FileNotFound and IoError — the operation's
+// failure itself is still reported either way, only the error case
+// may be the stale one.
 // =====================================================================
 pub func hostReadTextResult(path: in String): Result[String, IOError] {
   try {

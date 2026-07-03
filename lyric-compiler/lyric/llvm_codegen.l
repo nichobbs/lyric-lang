@@ -4020,6 +4020,14 @@ func lowerCollectionIndex(
 /// own var scope (the element read is a borrow; bindLocal retains it
 /// and the iteration scope releases it), so `break` / `continue`
 /// unwind correctly through the loop-depth snapshots.
+///
+/// KNOWN DIVERGENCE (#4790): the length is read once before the loop,
+/// so mutating the list inside the body silently iterates the stale
+/// bound (a removed tail element panics the OOB check in
+/// lyric_list_get; an appended one is skipped), where the managed
+/// targets throw InvalidOperationException on any mutation during
+/// iteration.  The parity design (a modification counter in LyricList
+/// + a per-iteration check) is tracked in #4790.
 func lowerForOverList(ctx: in Ctx, insns: in List[NInsn], pat: in Pattern, iter: in Expr, body: in Block): Unit {
   val it = lowerExpr(ctx, insns, iter)
   val elem = match listElemOfType(ctx, it.ty) {
