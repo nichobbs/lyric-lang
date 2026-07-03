@@ -702,10 +702,18 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         }
         case BCoalesce -> {
           // Null-coalescing: if lhs is non-null use it, else rhs.
+          // `if_acmpne` is a binary comparison (pops two operands) — the
+          // duplicated lhs alone leaves only one operand on the stack, so a
+          // second `aconst_null` push is required before the compare.
+          // Without it, `dup` + `if_acmpne` compared lhs against itself
+          // (always reference-equal, so the branch never fired) and then
+          // unconditionally popped an already-empty stack on fallthrough
+          // (VerifyError: "Operand stack underflow" — found auditing a
+          // non-String `??` use, #4816).
           val lhsTy = lowerExpr(ctx, insns, lhs)
-          val nullL = freshLabel(ctx)
           val afterL = freshLabel(ctx)
           insns.add(LDup)
+          insns.add(LAconstNull)
           insns.add(LIfAcmpne(label = afterL))
           insns.add(LPop)
           lowerExpr(ctx, insns, rhs)

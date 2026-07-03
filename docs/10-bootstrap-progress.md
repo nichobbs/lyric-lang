@@ -27228,6 +27228,25 @@ more `case null` uses:
   case (asserts `listFiles`/`listDirs` counts and that `deleteDirRecursive`
   actually empties the tree), also CI-wired.
 
+**Bonus find: `??`'s JVM codegen had its own latent bug.** The
+`file_host.l` fix's `d.listFiles() ?? []` was the first `??` use in the
+tree over a non-`String` lhs on `--target jvm`, and CI immediately caught
+a real `VerifyError` (`Operand stack underflow`) in `Std/FileHost.
+listChildren`. `BCoalesce`'s JVM lowering (`jvm/codegen/02_exprs.l`)
+`dup`-ed the lhs then ran straight into `if_acmpne` — a *binary* reference
+comparison that pops two operands — with no second value ever pushed; the
+declared-but-unused `nullL` label was the tell that this path was
+unfinished. Comparing lhs against its own duplicate is always
+reference-equal, so the branch never fired, and the unconditional `pop`
+on fallthrough popped an already-empty stack. Fixed by pushing
+`aconst_null` before the compare, mirroring the correct MSIL lowering
+(`msil/codegen.l`'s `BCoalesce`, which already used the equivalent
+one-operand `brfalse` test and was unaffected). This was silently broken
+for every non-`String` `??` on JVM until this PR exercised one; `String`
+uses (`hostGetVarOpt`) happened to be the only shape previously
+compiled — same accidental narrow test coverage pattern as the original
+`case null` bug.
+
 **Not done (out of scope here, still tracked in #4775):** `std/path.l:73`'s
 `hostPathGetDirectoryName` uses `?? ""` rather than `case null`, so it
 doesn't hit this exact miscompile, but conflates an empty result with an
