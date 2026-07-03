@@ -3,9 +3,11 @@
 //! Covers `mapSize`, `mapIsEmpty` (from main) and the iteration/entry
 //! helpers fixed in #3511 and #3512:
 //!
-//!   - `mapKeys(m)`     → `DictKeyCollection[K,V]` iterated via IEnumerator
+//!   - `mapKeys(m)`     → `List[K]` snapshot, built by iterating the kernel
+//!                         `MapKeyCollection[K,V]` view via the IEnumerator
 //!                         protocol (fix for #3511: extern non-IList iterables)
-//!   - `mapValues(m)`   → `DictValueCollection[K,V]` iterated via IEnumerator
+//!   - `mapValues(m)`   → `List[V]` snapshot, built by iterating the kernel
+//!                         `MapValueCollection[K,V]` view via the IEnumerator
 //!                         protocol (fix for #3511)
 //!   - `mapEntries(m)`  → `List[MapEntry[K,V]]` — construction of generic stdlib
 //!                         record (fix for #3512: generic stdlib record construction)
@@ -120,7 +122,7 @@ test "containsKey still works" {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// mapKeys (#3511) — iterates DictKeyCollection via IEnumerator protocol
+// mapKeys (#3511) — iterates MapKeyCollection via IEnumerator protocol
 // ─────────────────────────────────────────────────────────────────────────────
 test "mapKeys iterates all keys of a two-entry map" {
   val m: Map[String, Int] = newMap()
@@ -147,7 +149,7 @@ test "mapKeys count matches map.count" {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// mapValues (#3511) — iterates DictValueCollection via IEnumerator protocol
+// mapValues (#3511) — iterates MapValueCollection via IEnumerator protocol
 // ─────────────────────────────────────────────────────────────────────────────
 test "mapValues iterates all values of a two-entry map" {
   val m: Map[String, Int] = newMap()

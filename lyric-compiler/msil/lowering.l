@@ -159,7 +159,7 @@ pub union MsilType {
   // Erased-to-object extern type that implements IEnumerable (not IList).
   // emitCollectionForMsil uses the IEnumerator protocol for this type
   // (GetEnumerator/MoveNext/get_Current on non-generic IEnumerable/IEnumerator)
-  // so that extern types like DictKeyCollection[K,V] can be iterated with
+  // so that extern types like MapKeyCollection[K,V] can be iterated with
   // `for x in collection` without requiring the type to implement IList.
   case MExternEnumerable(elemTy: MsilType)
   // Lyric tuple `(A, B, ...)` — runtime representation is List<object>, so this

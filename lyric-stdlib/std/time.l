@@ -128,18 +128,15 @@ pub func addDays(t: in Instant, n: in Double): Instant {
 // Matching extern aliases live alongside `Instant` so the user sees
 // the conversion as a one-call operation.
 // =====================================================================
-@stable(since = "1.0")
-pub func dtoFromEpochMillis(n: in Long): DateTimeOffset {
+func dtoFromEpochMillis(n: in Long): DateTimeOffset {
   hostDtoFromEpochMillis(n)
 }
 
-@stable(since = "1.0")
-pub func dtoFromEpochSeconds(n: in Long): DateTimeOffset {
+func dtoFromEpochSeconds(n: in Long): DateTimeOffset {
   hostDtoFromEpochSeconds(n)
 }
 
-@stable(since = "1.0")
-pub func dtoUtcDateTime(d: in DateTimeOffset): Instant {
+func dtoUtcDateTime(d: in DateTimeOffset): Instant {
   hostDtoUtcDateTime(d)
 }
 
@@ -169,8 +166,7 @@ pub func fromEpochSeconds(n: in Long): Instant {
 // Bootstrap-grade: only the lookup itself; the projection ops
 // (UTC <-> zoned, DST detection) wait until programs need them.
 // =====================================================================
-@stable(since = "1.0")
-pub func findTimeZone(id: in String): TimeZone {
+func findTimeZone(id: in String): TimeZone {
   hostFindTimeZone(id)
 }
 

@@ -59,18 +59,30 @@ pub record MapEntry[K, V] {
   value: V
 }
 
-/// Return the key collection of `m` as a lazy view (no copy).
-/// The returned `DictKeyCollection[K, V]` can be iterated with `for`.
+/// Return the keys of `m` as a `List[K]` snapshot.
+/// Mirrors `mapEntries`: the host key view (`MapKeyCollection`) stays a
+/// `_kernel/`-private FFI detail so the public signature exposes only a
+/// first-class Lyric `List`, never a BCL nested collection type.
 @stable(since = "1.0")
-pub func mapKeys[K, V](m: in Map[K, V]): DictKeyCollection[K, V] {
-  dictGetKeys(m)
+pub func mapKeys[K, V](m: in Map[K, V]): List[K] {
+  val result: List[K] = newList()
+  for k in dictGetKeys(m) {
+    result.add(k)
+  }
+  result
 }
 
-/// Return the value collection of `m` as a lazy view (no copy).
-/// The returned `DictValueCollection[K, V]` can be iterated with `for`.
+/// Return the values of `m` as a `List[V]` snapshot.
+/// Mirrors `mapEntries`: the host value view (`MapValueCollection`) stays a
+/// `_kernel/`-private FFI detail so the public signature exposes only a
+/// first-class Lyric `List`, never a BCL nested collection type.
 @stable(since = "1.0")
-pub func mapValues[K, V](m: in Map[K, V]): DictValueCollection[K, V] {
-  dictGetValues(m)
+pub func mapValues[K, V](m: in Map[K, V]): List[V] {
+  val result: List[V] = newList()
+  for v in dictGetValues(m) {
+    result.add(v)
+  }
+  result
 }
 
 /// Call `action(key, value)` for every entry in `m`.
