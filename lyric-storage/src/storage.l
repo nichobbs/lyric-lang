@@ -26,10 +26,14 @@
 //!   val listing = Storage.list(bucket, "uploads/")?
 //!
 //! Backends:
-//!   * Local filesystem — fully native Lyric implementation against
-//!     `System.IO.File` / `System.IO.Directory` / `System.IO.Path` and
-//!     a minimum BCL extern set in `Storage.Kernel.Net` (Base64, MD5,
-//!     canonical-path resolve).  No host shim.
+//!   * Local filesystem — fully native Lyric implementation on both
+//!     targets: `Storage.Kernel.Net` binds the minimum BCL extern set
+//!     (Base64, MD5, canonical-path resolve, raw file I/O) and
+//!     `Storage.Kernel.Jvm` binds the JDK equivalents (#1444).  The
+//!     kernels export the same `host*` surface and are `@cfg`-gated on
+//!     the `dotnet` / `jvm` features, so the inactive one is erased and
+//!     the unqualified calls below resolve to the survivor.  No host
+//!     shim on either target.
 //!   * S3 (AWSSDK.S3)        — returns `NOT_IMPLEMENTED` until the
 //!     direct `extern type` bindings against the NuGet SDK land.
 //!   * Azure Blob Storage    — same as S3.
@@ -47,6 +51,7 @@ import Std.Math
 import Std.Iter
 import Std.Sort
 import Storage.Kernel.Net
+import Storage.Kernel.Jvm
 
 // ─── Key safety primitives (defense-in-depth against path traversal) ─────────
 //

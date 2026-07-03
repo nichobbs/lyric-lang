@@ -140,20 +140,63 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
 // erased to `Object` / `ArrayList` (e.g. a tuple element), fall back to the
 // constructor registry (keyed by the case's short name).  Returns "" when
 // unresolvable.
+// Simple name of a JVM internal class path (`Std/Yaml/YamlError` ->
+// `YamlError`).
+func jvmSimpleName(cls: in String): String {
+  match lastIndexOf(cls, "/") {
+    case Some(i) -> substring(cls, i + 1)
+    case None -> cls
+  }
+}
+
 func resolveCaseClassJvm(ctx: in FuncCtx, head: in ModulePath, scrutTy: in JvmType): String {
   val caseName = lastSegment(head)
   match scrutTy {
     case JRef(baseCls) -> {
       if not (baseCls == "java/lang/Object") and not (baseCls == "java/util/ArrayList") {
-        baseCls + "$" + caseName
+        // The scrutinee's static class may be the in-package GUESS for an
+        // imported union (a record field typed by another package's union
+        // maps to `<ownPkg>/<Union>` — e.g. `Std/JsonHost/YamlValue` for
+        // Std.Yaml's `YamlValue`).  Deriving `<guess>$<case>` then names a
+        // class that does not exist (VerifyError / NoClassDefFoundError at
+        // load).  The derived name is trusted only when it is a registered
+        // case class; otherwise the ctor registry — built from the actual
+        // union declarations across the whole bundle — is authoritative.
+        val derived = baseCls + "$" + caseName
+        if ctx.caseFields.containsKey(derived) {
+          derived
+        } else {
+          // The guess carries the right UNION name with the wrong package
+          // (`Std/JsonHost/YamlError` for Std.Yaml's `YamlError`): search
+          // the registered case classes for `…/<Union>$<case>` so a match
+          // on an imported union resolves to its declaring package even
+          // when ANOTHER package registered a same-named case first
+          // (`InvalidDocument` exists in both XmlError and YamlError).
+          val unionName = jvmSimpleName(baseCls)
+          val wantSuffix = "/" + unionName + "$" + caseName
+          var found = ""
+          for k in mapKeys(ctx.caseFields) {
+            if found == "" and endsWith(k, wantSuffix) {
+              found = k
+            }
+          }
+          if found != "" {
+            found
+          } else {
+            match ctorClassFor(ctx, caseName) {
+              case Some(cls) -> cls
+              case None -> derived
+            }
+          }
+        }
       } else {
-        match mapGet(ctx.ctors, caseName) {
+        match ctorClassFor(ctx, caseName) {
           case Some(cls) -> cls
           case None -> ""
         }
       }
     }
-    case _ -> match mapGet(ctx.ctors, caseName) { case Some(cls) -> cls; case None -> "" }
+    case _ -> match ctorClassFor(ctx, caseName) { case Some(cls) -> cls; case None -> "" }
   }
 }
 
@@ -299,7 +342,7 @@ func lowerPatternTest(
           // known union case, emit the isinst test that `PConstructor` would, so
           // it does not behave as an unconditional catch-all and hijack later
           // arms.  Otherwise it is a genuine variable bind — always matches.
-          match mapGet(ctx.ctors, name) {
+          match ctorClassFor(ctx, name) {
             case Some(cls) -> {
               if jvmClassIsUnionCase(cls) {
                 emitLoad(insns, scrutSlot, scrutTy)
@@ -467,7 +510,7 @@ func lowerPatternTest(
       // the head via the constructor registry), then recurse each named field's
       // sub-pattern test so refutable field patterns (`Point{x = 0}`) are
       // honoured rather than silently always-matching.
-      match mapGet(ctx.ctors, lastSegment(head)) {
+      match ctorClassFor(ctx, lastSegment(head)) {
         case Some(recClass) -> {
           emitLoad(insns, scrutSlot, scrutTy)
           insns.add(LInstanceof(className = recClass))
@@ -662,7 +705,7 @@ func lowerPatternBind(
         case None -> {
           // A single-segment `case Foo ->` that names a known union case binds
           // nothing (mirrors the test side); otherwise it is a variable bind.
-          val isCase = match mapGet(ctx.ctors, name) { case Some(cls) -> jvmClassIsUnionCase(cls); case None -> false }
+          val isCase = match ctorClassFor(ctx, name) { case Some(cls) -> jvmClassIsUnionCase(cls); case None -> false }
           if not isCase {
             emitLoad(insns, scrutSlot, scrutTy)
             val bindSlot = allocSlot(ctx, name, scrutTy)
@@ -729,7 +772,7 @@ func lowerPatternBind(
       }
     }
     case PRecord(head, fields, _) -> {
-      match mapGet(ctx.ctors, lastSegment(head)) {
+      match ctorClassFor(ctx, lastSegment(head)) {
         case Some(recClass) -> {
           val castSlot = allocSlot(ctx, "__reccast_" + toString(ctx.slotTicker.count), JRef(className = recClass))
           emitLoad(insns, scrutSlot, scrutTy)

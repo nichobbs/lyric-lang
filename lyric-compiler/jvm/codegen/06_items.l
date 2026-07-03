@@ -2298,6 +2298,21 @@ pub func collectFileSigsSeeded(
         if not into.containsKey(decl.name) {
           into.add(decl.name, sig)
         }
+        // Arity-suffixed keys so same-name OVERLOADS in one package resolve
+        // to the right descriptor: with name-only keys, first-wins collision
+        // made a 3-arg call link against the 2-arg overload's descriptor —
+        // VerifyError at class load (`Std.String.substring`'s two overloads,
+        // hit by lyric-storage's `basenameOf`).  Call sites try the exact
+        // arity first and fall back to the name key (which also covers calls
+        // that rely on parameter defaults).
+        val akey = qkey + "@" + toString(decl.params.count)
+        if not into.containsKey(akey) {
+          into.add(akey, sig)
+        }
+        val bkey = decl.name + "@" + toString(decl.params.count)
+        if not into.containsKey(bkey) {
+          into.add(bkey, sig)
+        }
       }
       case IProtected(decl) -> {
         // J3 M-3: register each protected entry / helper method under the
@@ -2717,44 +2732,141 @@ pub func collectFileCasesExtern(
 // into `into`, keyed by its short name.  Mirrors `collectFileCases` (which is
 // keyed by JVM class name); this map drives construction-call lowering, which
 // resolves a head name like `Point` / `Circle` to the class to `new`.
-pub func collectFileCtors(file: in SourceFile, into: in Map[String, String]): Unit {
-  val owner = segmentsToJvmPath(file.packageDecl.path.segments)
+// Register this file's NON-GENERIC declared type names (unions, records,
+// protected and opaque types) as dotted class FQNs (`YamlValue` ->
+// `Std.Yaml.YamlValue`), in the same value format as the extern-type maps.
+// `externSeedForFile` unions these into the seed of every IMPORTING file, so
+// a descriptor written against an imported Lyric type (a record field
+// `node: YamlValue` in Std.JsonHost) resolves to the declaring package's
+// real class instead of the in-package guess (`Std/JsonHost/YamlValue` —
+// NoClassDefFoundError at first use).  Generic declarations are skipped: a
+// bare reference to one erases to Object, and seeding e.g. `Option` would
+// re-type every erased generic field.
+pub func collectFileDeclaredTypeFqns(file: in SourceFile, into: in Map[String, String]): Unit {
+  val pkgDotted = dottedPathOfSegments(file.packageDecl.path.segments)
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
-      case IRecord(decl) -> {
-        if not into.containsKey(decl.name) {
-          into.add(decl.name, owner + "/" + decl.name)
+      case IUnion(decl) -> {
+        match decl.generics {
+          case None -> {
+            if not into.containsKey(decl.name) {
+              into.add(decl.name, pkgDotted + "." + decl.name)
+            }
+          }
+          case Some(_) -> ()
         }
       }
-      case IUnion(decl) -> {
-        var ci = 0
-        while ci < decl.cases.count {
-          val c = decl.cases[ci]
-          if not into.containsKey(c.name) {
-            into.add(c.name, owner + "/" + decl.name + "$" + c.name)
+      case IRecord(decl) -> {
+        match decl.generics {
+          case None -> {
+            if not into.containsKey(decl.name) {
+              into.add(decl.name, pkgDotted + "." + decl.name)
+            }
           }
-          ci = ci + 1
+          case Some(_) -> ()
         }
       }
       case IProtected(decl) -> {
-        // J3 M-3: protected types are constructed like records (`TokenBucket(…)`).
-        if not into.containsKey(decl.name) {
-          into.add(decl.name, owner + "/" + decl.name)
+        match decl.generics {
+          case None -> {
+            if not into.containsKey(decl.name) {
+              into.add(decl.name, pkgDotted + "." + decl.name)
+            }
+          }
+          case Some(_) -> ()
         }
       }
       case IOpaque(decl) -> {
-        // J3 M-3: opaque types are constructed like records (`Counter(value=…)`).
-        if decl.hasBody {
-          if not into.containsKey(decl.name) {
-            into.add(decl.name, owner + "/" + decl.name)
+        match decl.generics {
+          case None -> {
+            if decl.hasBody and not into.containsKey(decl.name) {
+              into.add(decl.name, pkgDotted + "." + decl.name)
+            }
           }
+          case Some(_) -> ()
+        }
+      }
+      case IInterface(decl) -> {
+        // Interfaces are emitted as real JVM interfaces; a consumer's
+        // interface-typed binding (`bucket: StorageBucket` in a test module)
+        // otherwise carries the in-package guess.
+        match decl.generics {
+          case None -> {
+            if not into.containsKey(decl.name) {
+              into.add(decl.name, pkgDotted + "." + decl.name)
+            }
+          }
+          case Some(_) -> ()
         }
       }
       case _ -> {
       }
     }
     i = i + 1
+  }
+}
+
+func dottedPathOfSegments(segments: in List[String]): String {
+  var out2 = ""
+  var i = 0
+  while i < segments.count {
+    if i > 0 {
+      out2 = out2 + "."
+    }
+    out2 = out2 + segments[i]
+    i = i + 1
+  }
+  out2
+}
+
+pub func collectFileCtors(file: in SourceFile, into: in Map[String, String]): Unit {
+  val owner = segmentsToJvmPath(file.packageDecl.path.segments)
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IRecord(decl) -> {
+        addCtorKeys(into, owner, decl.name, owner + "/" + decl.name)
+      }
+      case IUnion(decl) -> {
+        var ci = 0
+        while ci < decl.cases.count {
+          val c = decl.cases[ci]
+          addCtorKeys(into, owner, c.name, owner + "/" + decl.name + "$" + c.name)
+          ci = ci + 1
+        }
+      }
+      case IProtected(decl) -> {
+        // J3 M-3: protected types are constructed like records (`TokenBucket(…)`).
+        addCtorKeys(into, owner, decl.name, owner + "/" + decl.name)
+      }
+      case IOpaque(decl) -> {
+        // J3 M-3: opaque types are constructed like records (`Counter(value=…)`).
+        if decl.hasBody {
+          addCtorKeys(into, owner, decl.name, owner + "/" + decl.name)
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
+// Register a constructable type under both its bare name (bundle-global,
+// first wins — the legacy single-package shape) and a package-scoped key
+// (`<owner>::<name>`).  `ctorClassFor` tries the scoped key first, so a
+// package's OWN case wins over a same-named case another bundled package
+// registered earlier (`InvalidDocument` exists in both `Std.Xml`'s
+// XmlError and `Std.Yaml`'s YamlError — the bare first-wins entry gave
+// Yaml's code Xml's class: NoClassDefFoundError at runtime).
+func addCtorKeys(into: in Map[String, String], owner: in String, name: in String, cls: in String): Unit {
+  if not into.containsKey(name) {
+    into.add(name, cls)
+  }
+  val scopedKey = owner + "::" + name
+  if not into.containsKey(scopedKey) {
+    into.add(scopedKey, cls)
   }
 }
 
@@ -3680,6 +3792,65 @@ pub func codegenPackageWithSigsSeeded(
     )
     fns.add(jvmMain)
   }
+
+  // `__lyricCount(Object)I` — the erased-receiver `.count`/`.length`
+  // dispatch as a synthesised static helper.  Emitting the runtime-class
+  // branches INLINE at the member-access site broke verification whenever
+  // the access ran with values already stacked (`i < pairs.count` in a
+  // while condition evaluates the dispatch with `i` on the stack, and the
+  // StackMapTable declares an empty stack at every branch target).  A
+  // static call is branch-free at the call site; the helper's own frames
+  // start from an empty stack.  Every arm returns directly, so there is
+  // no join.  Unconditionally emitted: ~40 bytes per package class.
+  val lcInsns: List[LInsn] = newList()
+  lcInsns.add(LAload(slot = 0))
+  lcInsns.add(LInstanceof(className = "java/util/Collection"))
+  lcInsns.add(LIfeq(label = "__lc_map"))
+  lcInsns.add(LAload(slot = 0))
+  lcInsns.add(LCheckcast(className = "java/util/Collection"))
+  val lcColPs: List[JvmType] = newList()
+  lcInsns.add(
+    LInvokeinterface(owner = "java/util/Collection", name = "size", params = lcColPs, ret = JInt, argCount = 1)
+  )
+  lcInsns.add(LIreturn)
+  lcInsns.add(LLabel(name = "__lc_map"))
+  lcInsns.add(LAload(slot = 0))
+  lcInsns.add(LInstanceof(className = "java/util/Map"))
+  lcInsns.add(LIfeq(label = "__lc_str"))
+  lcInsns.add(LAload(slot = 0))
+  lcInsns.add(LCheckcast(className = "java/util/Map"))
+  val lcMapPs: List[JvmType] = newList()
+  lcInsns.add(LInvokeinterface(owner = "java/util/Map", name = "size", params = lcMapPs, ret = JInt, argCount = 1))
+  lcInsns.add(LIreturn)
+  lcInsns.add(LLabel(name = "__lc_str"))
+  lcInsns.add(LAload(slot = 0))
+  lcInsns.add(LInstanceof(className = "java/lang/String"))
+  lcInsns.add(LIfeq(label = "__lc_arr"))
+  lcInsns.add(LAload(slot = 0))
+  lcInsns.add(LCheckcast(className = "java/lang/String"))
+  val lcLenPs: List[JvmType] = newList()
+  lcInsns.add(LInvokevirtual(owner = "java/lang/String", name = "length", params = lcLenPs, ret = JInt))
+  lcInsns.add(LIreturn)
+  // Last resort: a boxed slice (`Object[]`).  Anything else fails the
+  // checkcast loudly rather than yielding a wrong value.
+  lcInsns.add(LLabel(name = "__lc_arr"))
+  lcInsns.add(LAload(slot = 0))
+  lcInsns.add(LCheckcast(className = "[Ljava/lang/Object;"))
+  lcInsns.add(LArraylength)
+  lcInsns.add(LIreturn)
+  val lcParams: List[JvmType] = newList()
+  lcParams.add(JRef(className = "java/lang/Object"))
+  fns.add(
+    LFunc(
+      flags = 0x0009,
+      name = "__lyricCount",
+      params = lcParams,
+      ret = JInt,
+      insns = lcInsns,
+      maxStack = 2,
+      maxLocals = 1
+    )
+  )
 
   items.add(LPFuncs(funcsClass = funcsClass, fns = fns, staticVals = staticVals))
 

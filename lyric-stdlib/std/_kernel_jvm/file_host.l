@@ -74,13 +74,11 @@ pub func hostWriteAllText(path: in String, contents: in String): Unit {
 /// here, System.DateTime in the .NET kernel.
 extern type FileTime = "java.lang.Long"
 
-extern type JLong = "java.lang.Long"
-
 /// Boxed epoch-milliseconds of the last modification (0 when the file is
 /// absent), compared via `hostDateTimeGreaterThan`.
 pub func hostGetLastWriteTimeUtc(path: in String): FileTime {
   val f = JFile.new(path)
-  JLong.valueOf(f.lastModified())
+  FileTime.valueOf(f.lastModified())
 }
 
 pub func hostDateTimeGreaterThan(a: in FileTime, b: in FileTime): Bool {
@@ -99,15 +97,30 @@ pub func hostCreateDirectory(path: in String): Unit {
 // ── Bytes-mode I/O ────────────────────────────────────────────────────────────
 pub func hostReadAllBytes(path: in String): slice[Byte] {
   val fis = JFIS.new(path)
-  val all = fis.readAllBytes()
-  fis.close()
-  all
+  // Close on the failure path too (#4780): the wrapper try/catch keeps the
+  // stream from leaking until GC when readAllBytes throws mid-read.  The
+  // constructor's own failure (missing file) needs no close — no stream
+  // exists yet — and propagates unchanged.
+  try {
+    val all = fis.readAllBytes()
+    fis.close()
+    all
+  } catch Bug as b {
+    fis.close()
+    panic(b.message)
+  }
 }
 
 pub func hostWriteAllBytes(path: in String, bytes: in slice[Byte]): Unit {
   val fos = JFOS.new(path)
-  fos.write(bytes)
-  fos.close()
+  // Close on the failure path too (#4780) — see hostReadAllBytes.
+  try {
+    fos.write(bytes)
+    fos.close()
+  } catch Bug as b {
+    fos.close()
+    panic(b.message)
+  }
 }
 
 // ── Enumeration — absolute paths, non-recursive ──────────────────────────────
@@ -126,8 +139,17 @@ pub func hostEnumerateFileSystemEntries(path: in String): slice[String] {
 // kind: 0 = all entries, 1 = files only, 2 = directories only.
 func listChildren(path: in String, kind: in Int): slice[String] {
   val d = JFile.new(path)
-  val children = d.listFiles()
   val out2: List[String] = newList()
+  // `listFiles()` returns NULL (not an empty array) for a non-directory or
+  // an I/O error (#4781) — treat both as "no children" rather than NPE;
+  // Std.File's callers surface missing directories via their own probes.
+  val children = d.listFiles()
+  match children {
+    case null -> {
+      return out2.toArray()
+    }
+    case _ -> ()
+  }
   var i = 0
   while i < children.count {
     val c = children[i]
@@ -236,10 +258,15 @@ func deleteRecursively(path: in String): Unit {
   val d = JFile.new(path)
   if d.isDirectory() {
     val children = d.listFiles()
-    var i = 0
-    while i < children.count {
-      deleteRecursively(children[i].getPath())
-      i = i + 1
+    match children {
+      case null -> ()
+      case _ -> {
+        var i = 0
+        while i < children.count {
+          deleteRecursively(children[i].getPath())
+          i = i + 1
+        }
+      }
     }
   }
   d.delete()

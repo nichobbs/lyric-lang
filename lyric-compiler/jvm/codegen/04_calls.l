@@ -1382,6 +1382,18 @@ func coerceArgTo(insns: in List[LInsn], fromTy: in JvmType, toTy: in JvmType): U
       if fromRef {
         insns.add(LCheckcast(className = "java/lang/Long"))
         insns.add(LUnboxLong)
+      } else {
+        // Primitive widening into a Long slot (mirrors the JDouble arm):
+        // an int-like value widens with i2l.  Without it `value = 0` on an
+        // `out Long` parameter left a one-slot int for a two-slot lstore —
+        // operand-stack underflow at verification.
+        match fromTy {
+          case JInt -> insns.add(LI2l)
+          case JByte -> insns.add(LI2l)
+          case JChar -> insns.add(LI2l)
+          case JShort -> insns.add(LI2l)
+          case _ -> ()
+        }
       }
     }
     case JDouble -> {
@@ -1962,7 +1974,7 @@ func lowerGeneralStaticCall(
 ): JvmType {
   // Construction: a call whose head names a record or union case lowers to a
   // real `new`/`invokespecial` rather than a (non-existent) static method.
-  match mapGet(ctx.ctors, funcName) {
+  match ctorClassFor(ctx, funcName) {
     case Some(cls) -> return lowerConstruction(ctx, insns, cls, args)
     case None -> ()
   }
@@ -2015,6 +2027,11 @@ func lowerGeneralStaticCall(
   // package, even if another package in the bundle exports the same short
   // name; an unqualified call falls back to the bare-name key (the legacy
   // single-package shape).  #1680.
+  // Exact-arity keys (`…@<argc>`) are tried before the name keys so
+  // same-name overloads pick the descriptor matching this call's argument
+  // count; a call that relies on parameter defaults misses the arity key
+  // and falls back to the name key exactly as before.
+  val argcSuffix = "@" + toString(args.count)
   val sigOpt = if path.segments.count > 1 {
     val ownerSegs: List[String] = newList()
     var si = 0
@@ -2023,15 +2040,57 @@ func lowerGeneralStaticCall(
       si = si + 1
     }
     val qkey = joinSegments(ownerSegs, "/") + "/" + funcName
-    match mapGet(ctx.funcSigs, qkey) {
+    match mapGet(ctx.funcSigs, qkey + argcSuffix) {
+      case Some(sig) -> Some(value = sig)
+      case None -> {
+        match mapGet(ctx.funcSigs, qkey) {
+          case Some(sig) -> Some(value = sig)
+          case None -> {
+            match mapGet(ctx.funcSigs, funcName + argcSuffix) {
+              case Some(sig) -> Some(value = sig)
+              case None -> mapGet(ctx.funcSigs, funcName)
+            }
+          }
+        }
+      }
+    }
+  } else {
+    match mapGet(ctx.funcSigs, funcName + argcSuffix) {
       case Some(sig) -> Some(value = sig)
       case None -> mapGet(ctx.funcSigs, funcName)
     }
-  } else {
-    mapGet(ctx.funcSigs, funcName)
   }
   match sigOpt {
     case Some(sig) -> {
+      // Std.Core's generic Option/Result predicates lower to `instanceof`
+      // against the runtime case class.  They are GENERIC functions — never
+      // emitted as JVM methods (excluded from method emission, and the
+      // call-site monomorphizer cannot infer type args from an unannotated
+      // call-result binding) — so the registered erased call
+      // (`Std/Core.isErr(Object)Z`) linked against nothing
+      // (NoSuchMethodError; hit across the lyric-storage suite).
+      if sig.owner == "Std/Core" and args.count == 1 {
+        if funcName == "isErr" {
+          lowerCallArg(ctx, insns, args[0])
+          insns.add(LInstanceof(className = "Std/Core/Result$Err"))
+          return JBoolean
+        }
+        if funcName == "isOk" {
+          lowerCallArg(ctx, insns, args[0])
+          insns.add(LInstanceof(className = "Std/Core/Result$Ok"))
+          return JBoolean
+        }
+        if funcName == "isSome" {
+          lowerCallArg(ctx, insns, args[0])
+          insns.add(LInstanceof(className = "Std/Core/Option$Some"))
+          return JBoolean
+        }
+        if funcName == "isNone" {
+          lowerCallArg(ctx, insns, args[0])
+          insns.add(LInstanceof(className = "Std/Core/Option$None"))
+          return JBoolean
+        }
+      }
       val callArgs = reorderAndFillJvmArgs(sig, args)
       // `out`/`inout` parameters need holder-array wrapping + write-back (#1763).
       if anyHolderMode(sig.paramModes) {

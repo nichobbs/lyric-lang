@@ -1,19 +1,23 @@
 //! std/_kernel_jvm/char_host.l — JVM host boundary for java.lang.Character
 //! and related character operations.
 //!
-//! Mirrors _kernel/char_host.l.  Most operations route directly to
-//! java.lang.Character static methods.  Four require lyric.stdlib.jvm.CharHost
-//! shims because the JVM API differs:
+//! Mirrors _kernel/char_host.l.  Pure JDK bindings — the previous version
+//! routed four operations through a phantom `lyric.stdlib.jvm.CharHost`
+//! class that never existed at runtime (same elimination as the
+//! file/console/math/uuid kernel rewrites, D-progress-555):
 //!
-//!   isPunctuation — absent from java.lang.Character; shim checks
-//!                   Character.getType() against CONNECTOR_PUNCTUATION,
-//!                   DASH_PUNCTUATION, END_PUNCTUATION, FINAL_QUOTE_PUNCTUATION,
-//!                   INITIAL_QUOTE_PUNCTUATION, OTHER_PUNCTUATION,
-//!                   START_PUNCTUATION.
-//!   charToInt     — Java widening cast `(int) c`; shim wraps the cast.
-//!   intToChar     — Java narrowing cast `(char) n`; shim wraps the cast.
-//!   getNumericValue — Java returns `int` (-1 when absent); shim casts
-//!                   to `double` to match the .NET `double` signature.
+//!   isPunctuation — absent from java.lang.Character; a pure body checks
+//!                   Character.getType() against the seven Unicode
+//!                   punctuation categories (matching System.Char).
+//!   charToInt     — the (int) c widening cast has no JDK method form;
+//!                   Character.hashCode(char) is documented to return the
+//!                   char value itself.
+//!   intToChar     — the (char) n narrowing cast likewise;
+//!                   Character.toString(int) + charAt(0) round-trips the
+//!                   BMP code points Lyric Char covers.
+//!   getNumericValue — DELETED on both targets: no consumer anywhere in
+//!                   the repo (dead extern surface is unauditable risk,
+//!                   the Std.IO precedent).
 //!
 //! Java spells several method names differently from .NET:
 //!   isWhitespace (not isWhiteSpace), isUpperCase (not isUpper),
@@ -48,9 +52,19 @@ pub func hostIsUpper(c: in Char): Bool = ()
 @externTarget("java.lang.Character.isLowerCase")
 pub func hostIsLower(c: in Char): Bool = ()
 
-// No isPunctuation in java.lang.Character; shim checks getType() categories.
-@externTarget("lyric.stdlib.jvm.CharHost.isPunctuation")
-pub func hostIsPunctuation(c: in Char): Bool = ()
+// No isPunctuation in java.lang.Character: check getType() against the
+// seven Unicode punctuation categories (Pc/Pd/Ps/Pe/Pi/Pf/Po), matching
+// System.Char.IsPunctuation.  Category ordinals per java.lang.Character:
+// DASH_PUNCTUATION=20, START_PUNCTUATION=21, END_PUNCTUATION=22,
+// CONNECTOR_PUNCTUATION=23, OTHER_PUNCTUATION=24,
+// INITIAL_QUOTE_PUNCTUATION=29, FINAL_QUOTE_PUNCTUATION=30.
+pub func hostIsPunctuation(c: in Char): Bool {
+  val t = hostGetType(c)
+  t == 20 or t == 21 or t == 22 or t == 23 or t == 24 or t == 29 or t == 30
+}
+
+@externTarget("java.lang.Character.getType")
+func hostGetType(c: in Char): Int = ()
 
 // Java spells this isISOControl, not isControl.
 @externTarget("java.lang.Character.isISOControl")
@@ -68,19 +82,17 @@ pub func hostToUpper(c: in Char): Char = ()
 pub func hostToLower(c: in Char): Char = ()
 
 // =====================================================================
-// Code-point bridge.
+// Code-point bridge.  The JDK has no method form of the (int) c / (char) n
+// casts; Character.hashCode(char) is documented to return the char value
+// itself, and Character.toString(int) + String.charAt(0) round-trips the
+// BMP code points Lyric Char covers.
 // =====================================================================
-// Shim: (int) c widening cast.
-@externTarget("lyric.stdlib.jvm.CharHost.charToInt")
+@externTarget("java.lang.Character.hashCode")
 pub func hostCharToInt(c: in Char): Int = ()
 
-// Shim: (char) n narrowing cast.
-@externTarget("lyric.stdlib.jvm.CharHost.intToChar")
-pub func hostIntToChar(n: in Int): Char = ()
+extern type JCharSeq = "java.lang.Character"
 
-// =====================================================================
-// Numeric value (Unicode).
-// =====================================================================
-// Java getNumericValue returns int; shim casts to double.
-@externTarget("lyric.stdlib.jvm.CharHost.getNumericValue")
-pub func hostGetNumericValue(c: in Char): Double = ()
+pub func hostIntToChar(n: in Int): Char {
+  val s = JCharSeq.toString(n)
+  s.charAt(0)
+}

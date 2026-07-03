@@ -14,6 +14,7 @@ output_assembly = "Storage.dll"
 "Storage"            = "src/storage.l"
 "Storage.Aspects"    = "src/storage_aspects.l"
 "Storage.Kernel.Net" = "src/_kernel/net/storage_kernel.l"
+"Storage.Kernel.Jvm" = "src/_kernel/jvm/storage_kernel.l"
 
 # Storage test suite.  Runs via `lyric test --manifest`.
 # - storage_tests.l — pure wire-type surface (StorageError, StorageMetadata,
@@ -30,4 +31,13 @@ output_assembly = "Storage.dll"
 # gated kernel function is gone, so the flags controlled nothing and
 # the NuGet refs were dead weight.  Restore both halves together when
 # the native bindings work picks up the S3 / Azure backends.
+
+# Target-kernel selection (#1444): `Storage.Kernel.Net` is gated on
+# `dotnet`, `Storage.Kernel.Jvm` on `jvm`.  Both kernels export the same
+# `host*` surface; the inactive one is erased.  The JVM kernel needs
+# nothing beyond `java.base` — no `[maven]` table required.
+[features]
+default = ["dotnet"]
+dotnet  = []
+jvm     = []
 

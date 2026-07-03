@@ -894,6 +894,13 @@ lyric test                             # project mode: run every [project.tests]
 lyric test --fail-fast                 # project mode: stop after first failing test entry
 lyric test --manifest <lyric.toml>     # project mode: override manifest discovery
                                        # (v2: --doctests, --update-snapshots, property execution)
+lyric test --features a,b              # project mode: activate manifest [features]
+                                       # (same grammar/precedence as lyric build)
+lyric test --no-default-features       # suppress the manifest's default feature set
+lyric test --all-features              # activate every declared feature
+                                       # e.g. run a suite against the jvm-gated kernel:
+                                       #   lyric test --manifest m.toml --target jvm \
+                                       #     --no-default-features --features jvm
 
 # Format
 lyric fmt <file.l>                     # print formatted source to stdout (no configuration)

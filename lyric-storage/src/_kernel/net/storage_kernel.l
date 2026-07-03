@@ -32,6 +32,7 @@
 //! this; see `docs/14-native-stdlib-plan.md` for the kernel boundary
 //! contract.
 @axiom("System.Convert / System.Security.Cryptography.MD5 / System.IO.Path / System.IO.File / System.IO.Directory conform to documented .NET semantics")
+@cfg(feature = "dotnet")
 package Storage.Kernel.Net
 
 // =====================================================================
