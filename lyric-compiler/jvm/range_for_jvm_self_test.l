@@ -32,6 +32,25 @@ func sumClosed(lo: Int, hi: Int): Int {
   s
 }
 
+// Count iterations of a general closed `lo ..= hi` so a descending `lo > hi`
+// exercises the CLOSED exit path's (`if_icmpgt`) first-check exit — distinct
+// from the half-open `if_icmpge` path.
+func countClosed(lo: Int, hi: Int): Int {
+  var c = 0
+  for i in lo ..= hi {
+    c = c + 1
+  }
+  c
+}
+
+func countLongClosed(lo: Long, hi: Long): Long {
+  var c: Long = 0i64
+  for m in lo ..= hi {
+    c = c + 1i64
+  }
+  c
+}
+
 func sumLong(n: Long): Long {
   var s: Long = 0i64
   for m in 0i64 ..< n {
@@ -130,6 +149,11 @@ test "Long-counter closed range 3i64..=3i64 runs once" {
 test "Long-counter empty ranges never run" {
   assertEqualLong(countLongHalfOpen(3i64, 3i64), 0i64, "3i64..<3i64 has zero iterations")
   assertEqualLong(countLongHalfOpen(5i64, 2i64), 0i64, "a descending Long lo > hi is also empty")
+}
+
+test "descending closed range lo > hi never runs (first-check if_icmpgt/ifgt exit)" {
+  assertEqualInt(countClosed(5, 2), 0, "5..=2 has zero iterations")
+  assertEqualLong(countLongClosed(5i64, 2i64), 0i64, "5i64..=2i64 has zero iterations")
 }
 
 test "continue advances the counter, break exits" {
