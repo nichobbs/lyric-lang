@@ -27469,4 +27469,54 @@ plus a 13-suite JVM regression sweep.  Because the fix enforces the
 one-type-per-slot invariant globally, the `Std.JsonHost` distinct-name
 workaround is no longer required (kept as-is; harmless).
 
+### D-progress-564 — JVM: unsigned-`Byte` widening on `.toInt()` / `.toLong()` / `.toDouble()` (band J4, epic #2663)
+
+**Shipped.** Resolves docs/44 m-73 (#4855).  Lyric `Byte` is unsigned
+`0..255`, but the JVM stores it as a signed `byte` that sign-extends on
+reload from a field / local / array, so `200.toByte().toInt()` returned
+`-56` instead of `200` — a silent miscompile diverging from the (correct,
+`conv.u1`-masked) MSIL backend.
+
+Fix: the three JVM widening emitters (`emitToIntJvm` / `emitToLongJvm` /
+`emitToDoubleJvm`, `codegen/04_calls.l`) mask a `JByte` source with
+`& 0xFF` (`iconst 255; iand`) before widening.  The mask is identity for
+values already in `0..255`, so no correct program changes behaviour;
+`.toChar()` routes through `emitToIntJvm` (now masked) and `.toByte()`
+already masked.  Same unsigned treatment #4551 applied to `JByte` div/rem.
+
+Verified by a "Byte widening above 127 stays unsigned" case in
+`silent_miscompile_guard_jvm_self_test.l` (200 and 255 through a local and
+a record field, all three conversions) on both targets.
+
+### D-progress-565 — JVM: `defer` bytecode across value-position, trailing, and panic forms (band J4, epic #2663)
+
+**Shipped.** Resolves docs/44 m-74 (#4878).  `defer` produced invalid
+bytecode on the JVM for every non-trivial form; `defer_self_test.l` passed
+6/6 on `--target dotnet` but the suite was never run on `--target jvm`, so
+three independent defects went unnoticed.
+
+- **Value-position `defer`** left the block's trailing value on the operand
+  stack across the try-region `end_pc` label, so the StackMapTable frame
+  there (empty) disagreed with the actual `{value}` stack (VerifyError:
+  "Current frame's stack size doesn't match stackmap").  Fix: stash the
+  value into a temp *before* closing the region and reload it *after* the
+  `afterL` join, so both frames see an empty stack.  The `astore` cannot
+  throw, so lowering it inside the region does not change exception
+  semantics.
+- **Trailing / consecutive `defer`** (empty suffix) emitted a catch-all
+  over an empty `[X, X)` protected region (ClassFormatError: "Illegal
+  exception table range").  Fix: when nothing follows the defer, run its
+  block inline with no handler — nothing after it can throw.
+- **`panic`-terminated `defer` body** left a dead `nop` (the JVoid-statement
+  placeholder) after the `athrow`, creating an empty-stack fall-through into
+  the catch-all handler that clashed with its `{Throwable}` frame
+  (VerifyError).  Fix: `SExpr` statement lowering skips the placeholder
+  `nop` when the expression already terminated.
+
+All changes are confined to `codegen/05_stmts.l`.  `defer_self_test.l` now
+passes 6/6 on both targets and is wired into CI on `--target jvm`
+(reverse-order fall-off, early return with value, break, continue,
+exception unwind, value-producing sub-block); `bitwise` / `pattern_lowering`
+/ `aspect_weave` regression-clean.
+
 **Related:** docs/44 m-57 / m-72, epic #2663, #2667 (band J4).
