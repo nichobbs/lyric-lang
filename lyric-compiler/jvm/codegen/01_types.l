@@ -237,21 +237,13 @@ pub func freshLabel(ctx: in FuncCtx): String {
 // Long and Double occupy two consecutive slots; all others occupy one.
 // Returns the assigned slot.
 //
-// Re-binding a name (a shadowed local, or a catch binding reused across
-// sequential `try`/`catch` blocks in one function — e.g. the `__lyric_e`
-// the test-runner synthesises for every `test` block) allocates a *fresh*
-// slot and overwrites the mapping rather than crashing the underlying
-// dictionary with a duplicate-key insert.  When the rebound type has the
-// same width as the original (1 slot for refs/int/float/etc., 2 slots
-// for `JLong`/`JDouble`) the existing slot is reused so `max_locals`
-// doesn't grow per re-bind — keeping the StackMapTable frame-locals
-// list lean (#1682).
+// Re-binding a name (a shadowed local, or a repeated catch/test binding) allocates a fresh slot and overwrites the mapping, reusing the existing slot when the verifier type matches so `max_locals` stays lean (#1682).
 pub func allocSlot(ctx: in FuncCtx, name: in String, ty: in JvmType): Int {
   val width = jvmTypeSlotWidth(ty)
   match mapGet(ctx.slots, name) {
     case Some(existing) -> {
       val prevTy = match mapGet(ctx.types, name) { case Some(t) -> t; case None -> ty }
-      // Reuse the slot only when old and new bindings frame as the same verifier type, not merely the same width: a slot carrying two verifier types (a Double then a Long match-arm binding) makes the join frame unmergeable (docs/44 m-72).
+      // Reuse the slot only when old and new bindings frame as the same verifier type, not merely the same width: a slot carrying two verifier types (a Double then a Long match-arm binding) makes the join frame unmergeable.
       if sameFrameSlotType(prevTy, ty) {
         ctx.types.remove(name)
         ctx.types.add(name, ty)
@@ -276,9 +268,7 @@ pub func allocSlot(ctx: in FuncCtx, name: in String, ty: in JvmType): Int {
   slot
 }
 
-// True when two JVM types occupy the same StackMapTable verifier slot type
-// (mirrors `Jvm.Lowering.jvmToVerifier`): int-likes all collapse to VInteger;
-// Float / Long / Double, distinct ref classes, and distinct array elements differ.
+// True when two JVM types share a StackMapTable verifier slot type (mirrors Jvm.Lowering.jvmToVerifier, no cross-package dep): int-likes share; Float/Long/Double/refs/arrays need exact matches.
 func sameFrameSlotType(a: in JvmType, b: in JvmType): Bool {
   match a {
     case JInt -> isIntLikeFrame(b)

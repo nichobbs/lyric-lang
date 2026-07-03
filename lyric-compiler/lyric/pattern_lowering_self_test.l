@@ -37,11 +37,7 @@ union Shape {
   case Square(side: Int)
 }
 
-// ── Mixed-width match bindings — the SAME binding name `v` across sibling arms
-// at DIFFERENT verifier-slot types (Double / Long / Int).  The JVM backend
-// frames each local slot with a single verifier type for the whole method, so
-// reusing one slot across a Double and a Long arm made the match-join frame
-// unmergeable (VerifyError: Inconsistent stackmap frames; m-72).
+// Mixed-width match bindings: the SAME name `v` bound across sibling arms at DIFFERENT verifier-slot types (Double/Long/Int) used to share one slot, making the match-join frame unmergeable (VerifyError: Inconsistent stackmap frames).
 union Num {
   case AsDouble(v: Double)
   case AsLong(v: Long)
@@ -97,6 +93,19 @@ func wrappedLen(x: in Wrapped): Int {
   match x {
     case AsStr(w) -> w.length
     case AsBoxed(w) -> w.n
+  }
+}
+
+// Boundary: Float frames as its own VFloat verifier slot type, distinct from VInteger, so the same name `v` bound in a Float arm and an Int arm must also get DISTINCT slots.
+union FloatOrInt {
+  case AsFloatV(v: Float)
+  case AsIntV(v: Int)
+}
+
+func floatOrIntToInt(n: in FloatOrInt): Int {
+  match n {
+    case AsFloatV(v) -> if v == 2.5f32 { 1 } else { 0 }
+    case AsIntV(v) -> v
   }
 }
 
@@ -293,19 +302,19 @@ test "PLiteral Float pattern selects the matching arm" {
   assertEqualInt(floatBand(3.5), 0, "float wildcard")
 }
 
-test "mixed-width match bindings: same name across Double/Long/Int arms (m-72)" {
+test "mixed-width match bindings: same name across Double/Long/Int arms" {
   assertTrue(numToDouble(AsDouble(v = 2.5)) == 2.5, "Double arm binds v: Double")
   assertTrue(numToDouble(AsLong(v = 100i64)) == 100.0, "Long arm binds v: Long, widened")
   assertTrue(numToDouble(AsInt(v = 7)) == 7.0, "Int arm binds v: Int, widened")
 }
 
-test "mixed-width match bindings: result routed through a Long slot (m-72)" {
+test "mixed-width match bindings: result routed through a Long slot" {
   assertEqualLong(numToLong(AsDouble(v = 4.0)), 4i64, "Double arm truncated to Long")
   assertEqualLong(numToLong(AsLong(v = 42i64)), 42i64, "Long arm binds v: Long")
   assertEqualLong(numToLong(AsInt(v = 9)), 9i64, "Int arm binds v: Int, widened to Long")
 }
 
-test "mixed-width bindings: int-like arms keep sharing one slot (m-72)" {
+test "mixed-width bindings: int-like arms keep sharing one slot" {
   assertEqualInt(intLikeToInt(FromInt(v = 65)), 65, "Int arm binds v: Int")
   // Value < 128 so signed/unsigned agree — the unsigned-Byte→Int widening
   // above 127 is a separate JVM-backend concern (#4855), not the slot gate.
@@ -313,7 +322,12 @@ test "mixed-width bindings: int-like arms keep sharing one slot (m-72)" {
   assertEqualInt(intLikeToInt(FromChar(v = 'A')), 65, "Char arm binds v: Char")
 }
 
-test "mixed-width bindings: distinct ref classes get distinct slots (m-72)" {
+test "mixed-width bindings: distinct ref classes get distinct slots" {
   assertEqualInt(wrappedLen(AsStr(w = "hello")), 5, "String arm binds w: String")
   assertEqualInt(wrappedLen(AsBoxed(w = Boxed(n = 42))), 42, "record arm binds w: Boxed")
+}
+
+test "mixed-width bindings: Float and Int arms get distinct verifier slots" {
+  assertEqualInt(floatOrIntToInt(AsFloatV(v = 2.5f32)), 1, "Float arm binds v: Float")
+  assertEqualInt(floatOrIntToInt(AsIntV(v = 7)), 7, "Int arm binds v: Int")
 }

@@ -349,7 +349,7 @@ func indexOfFrom(s: in String, target: in String, from: in Int): Int {
     var j = 0
     var matched = true
     while j < tLen {
-      if s.substring(i + j, 1) != target.substring(j, 1) {
+      if s[i + j] != target[j] {
         matched = false
         j = tLen
       } else {
