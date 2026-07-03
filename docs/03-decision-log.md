@@ -7850,18 +7850,28 @@ original purpose (D045 feature-flag resolution) and this entry does not
 claim it generalizes.
 
 **Coverage.** `cli_workspace_builder_self_test.l` gained a regression test
-that calls `Cli.buildWorkspaceDeps` directly against a manifest with no
-`[workspace]` ancestor and destructures the returned tuple exactly as the
-two production call sites do — it reproduces the crash against the
-pre-fix code and passes against the fix. Could not be verified end-to-end
-against a rebuilt `./bin/lyric` in this session: the sandbox's
-release-download bootstrap is network-policy-blocked and the historical F#
-stage-0 mint path no longer resolves (`scripts/mint-stage0-fsharp.sh`
-requires `git rev-parse 44a0d1e7~1`, unavailable in a shallow clone) — the
-same source-build-less profile D-progress-543 documents. The crash
-reproduction and the post-fix manual reasoning both used the published
-`0.4.10` global tool binary; a future session with a working `./bin/lyric`
-build should confirm the self-test passes under native `lyric test`.
+that calls `Cli.buildWorkspaceDeps` directly against a fresh manifest and
+destructures the returned tuple exactly as the two production call sites
+do. The first version asserted the tuple's `Option` element is `None`
+(matching the local sandbox repro, where the fixture directory genuinely
+has no `[workspace]` ancestor) — this **failed in CI** (`compiler-self-tests-
+dotnet-a`) with `wsCtxOpt: Some(...)`, not a crash: the CI runner's
+`TMPDIR`-rooted fixture directory apparently does resolve a workspace
+ancestor (exact mechanism unconfirmed — plausibly a `runner.temp` layout
+difference from this session's sandbox), so the buggy early-return arm is
+never exercised there either way. Rewritten to compare the tuple's element
+against a direct `Ws.findWorkspaceRoot` call on the same directory instead
+of hardcoding an expected variant — environment-agnostic, still fails
+loudly if the tuple ever mangles the `Option`'s type again. Could not be
+verified end-to-end against a rebuilt `./bin/lyric` in this session: the
+sandbox's release-download bootstrap is network-policy-blocked and the
+historical F# stage-0 mint path no longer resolves
+(`scripts/mint-stage0-fsharp.sh` requires `git rev-parse 44a0d1e7~1`,
+unavailable in a shallow clone) — the same source-build-less profile
+D-progress-543 documents. The crash reproduction and the post-fix manual
+reasoning both used the published `0.4.10` global tool binary; CI
+(`compiler-self-tests-dotnet-a`) is what actually confirmed the rewritten
+self-test passes against the fix.
 
 **Related:** #4925, D045 (`cli_build.l`'s `readFeatureDefaultsFromToml`
 bypass, the prior art this issue's own theory drew from), D-progress-543

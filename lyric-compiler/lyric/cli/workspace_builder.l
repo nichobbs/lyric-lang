@@ -44,15 +44,7 @@ pub func buildWorkspaceDeps(
     case Some(ctx) -> ctx
     case None -> {
       // No workspace found; workspace dependencies cannot be resolved.
-      // The caller will diagnose this as an unresolved dependency.
-      // Return `wsCtxOpt` (already `Option[Ws.WorkspaceContext]`-typed from
-      // the `Ws.findWorkspaceRoot` call above) rather than a fresh bare
-      // `None` literal: a `None` constructed directly inside a tuple return
-      // loses its type argument under the bootstrap emitter, producing an
-      // `Option_None<Object>` that fails to cast back to
-      // `Option[Ws.WorkspaceContext]` at every non-workspace call site —
-      // i.e. `lyric build`/`lyric test` crashing with InvalidCastException
-      // on any project outside a workspace (#4925).
+      // Return the already-typed wsCtxOpt, not a fresh None (#4925).
       return (result, false, wsCtxOpt)
     }
   }

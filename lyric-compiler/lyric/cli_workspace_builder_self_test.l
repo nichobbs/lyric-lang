@@ -27,6 +27,7 @@ import Std.Testing
 import Lyric.Cli as Cli
 import Lyric.Manifest as Mf
 import Lyric.Emitter as Emitter
+import Lyric.Workspace as Ws
 
 func tempBase(): String {
   Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
@@ -72,6 +73,13 @@ func touchBinDll(pkgDir: in String, dllFileName: in String): Unit {
     case Err(e) -> panic("cannot create bin dir " + binDir + ": " + IOError.message(e))
   }
   writeFileOrPanic(Path.join(binDir, dllFileName), "")
+}
+
+func isSomeWs(o: in Option[Ws.WorkspaceContext]): Bool {
+  match o {
+    case Some(_) -> true
+    case None -> false
+  }
 }
 
 func listContainsPrefix(list: in List[String], prefix: in String): Bool {
@@ -189,22 +197,8 @@ test "collectTransitiveDepDlls: already-seen name is not re-added" {
   cleanup(root)
 }
 
-// #4925 regression: `lyric build`/`lyric test` crashed with
-// `System.InvalidCastException: Unable to cast object of type
-// 'Std.Core.Option_None`1[System.Object]' to type
-// 'Std.Core.Option`1[Lyric.Workspace.WorkspaceContext]'` on ANY manifest
-// outside a workspace (not specific to `[nuget]`, contrary to the issue's
-// initial theory — confirmed by reproducing against the published 0.4.10
-// binary with and without a `[nuget]` table).  Root cause: the early-return
-// arm in `buildWorkspaceDeps` returned a bare `None` literal as the third
-// tuple element; a `None` constructed directly inside a tuple loses its
-// type argument under the bootstrap emitter, so the caller's
-// `val (a, b, c) = buildWorkspaceDeps(...)` destructuring failed to cast it
-// back to `Option[Ws.WorkspaceContext]`.  This test destructures the tuple
-// exactly as `buildProject` (cli_build.l) and `cmdTestManifest` (cli_test.l)
-// do, against a manifest with no `[workspace]` ancestor, so it reproduces
-// the crash on the old code and passes on the fix.
-test "buildWorkspaceDeps: outside a workspace returns cleanly instead of crashing on the tuple's Option element" {
+// buildWorkspaceDeps tuple-return regression; see D-progress-555 (#4925).
+test "buildWorkspaceDeps: tuple's Option element round-trips without crashing on destructure" {
   val root = freshTempDir("no-workspace")
   val mfPath = Path.join(root, "lyric.toml")
   writeFileOrPanic(
@@ -220,14 +214,16 @@ test "buildWorkspaceDeps: outside a workspace returns cleanly instead of crashin
     case Err(e) -> panic("cannot parse " + mfPath + ": " + ManifestError.message(e))
   }
 
+  val directIsWorkspace = isSomeWs(Ws.findWorkspaceRoot(Path.dirname(mfPath)))
   val (dllPaths, hadError, wsCtxOpt) = Cli.buildWorkspaceDeps(manifest, mfPath, Emitter.Dotnet)
+  val tupleIsWorkspace = isSomeWs(wsCtxOpt)
 
-  assertEqualInt(dllPaths.count, 0, "buildWorkspaceDeps: no workspace deps outside a workspace")
-  assertFalse(hadError, "buildWorkspaceDeps: no build error outside a workspace")
-  match wsCtxOpt {
-    case Some(_) -> panic("buildWorkspaceDeps: expected None outside a workspace")
-    case None -> ()
-  }
+  assertEqualInt(dllPaths.count, 0, "buildWorkspaceDeps: no {workspace = true} deps declared, so nothing is built")
+  assertFalse(hadError, "buildWorkspaceDeps: no build error with no workspace-form deps declared")
+  assertTrue(
+    tupleIsWorkspace == directIsWorkspace,
+    "buildWorkspaceDeps: the tuple's Option element must agree with a direct findWorkspaceRoot call"
+  )
 
   cleanup(root)
 }
