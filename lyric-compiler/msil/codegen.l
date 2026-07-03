@@ -4970,24 +4970,73 @@ func blockTrailingExprMsil(blk: in Block): Option[Expr] {
   }
 }
 
+// True when every path through an `ExprOrBlock` diverges — used to check
+// `if`/`match` arms recursively (#4774).
+func exprOrBlockDivergesMsil(eob: in ExprOrBlock): Bool {
+  match eob {
+    case EOBExpr(e) -> exprDivergesMsil(e)
+    case EOBBlock(blk) -> blockDivergesMsil(blk)
+  }
+}
+
+// True when an expression, used in trailing statement position, never
+// yields control back to whatever follows it: a call to the `panic`
+// builtin, an `if`/`else` whose both branches diverge, or a `match` whose
+// every arm diverges.  An `if` with no `else` can always fall through, so
+// it's never diverging regardless of the `then` branch.  See
+// `blockDivergesMsil` for the statement-level (`return`/`throw`/…) cases.
+func exprDivergesMsil(e: in Expr): Bool {
+  match e.kind {
+    case ECall(fn, _) -> {
+      match fn.kind {
+        case EPath(path) -> lastSegmentMsil(path) == "panic"
+        case _ -> false
+      }
+    }
+    case EIf(_, thenBranch, elseBranchOpt, _) -> {
+      match elseBranchOpt {
+        case Some(elseBranch) -> exprOrBlockDivergesMsil(thenBranch) and exprOrBlockDivergesMsil(elseBranch)
+        case None -> false
+      }
+    }
+    case EMatch(_, arms) -> {
+      if arms.count == 0 {
+        false
+      } else {
+        var i = 0
+        var allDiverge = true
+        while i < arms.count {
+          if not exprOrBlockDivergesMsil(arms[i].body) {
+            allDiverge = false
+          }
+          i = i + 1
+        }
+        allDiverge
+      }
+    }
+    case _ -> false
+  }
+}
+
 // True when a block's trailing statement never falls through to whatever
-// follows it — `return`/`throw`/`break`/`continue`, or a call to the `panic`
-// builtin.  Covers idioms like `catch Bug as b { return Err(...) }` and
-// `catch Bug as b { panic(b.message) }`, both common throughout the stdlib
-// and ecosystem libraries (e.g. `Std.File.readTextOrPanic`,
-// `lyric-storage`'s `putObject`).  A `panic(...)` call type-checks as
-// `Never` (which unifies with any type) but lowers to `MVoid` like a
-// genuine void arm; `return`/`throw`/`break`/`continue` aren't expressions
-// at all, so `blockTrailingExprMsil` sees no trailing expression either way.
-// Either way the arm never reaches the try-catch join point, so it doesn't
-// need to supply a value of the try body's type — a real Unit/value
-// mismatch (the type-checker gap #2042 the panic diagnostic in
-// `lowerTryCatchExprMsil` guards against) still fires for every other
-// void-typed catch arm.  Unlike `blockTrailingExprMsil`, a leading `defer`
-// doesn't disqualify the block: `lowerStmtsExprFromMsil` routes the tail
-// after a `defer` through the same trailing-statement dispatch recursively,
-// so whether the block diverges depends only on its actual last statement,
-// not on whether a `defer` precedes it (#4761).
+// follows it — `return`/`throw`/`break`/`continue`, or an expression that
+// itself diverges (a call to the `panic` builtin, or an `if`/`match` whose
+// every branch diverges, per `exprDivergesMsil`).  Covers idioms like
+// `catch Bug as b { return Err(...) }` and `catch Bug as b { panic(b.message) }`,
+// both common throughout the stdlib and ecosystem libraries (e.g.
+// `Std.File.readTextOrPanic`, `lyric-storage`'s `putObject`).  A
+// `panic(...)` call type-checks as `Never` (which unifies with any type)
+// but lowers to `MVoid` like a genuine void arm; `return`/`throw`/`break`/
+// `continue` aren't expressions at all, so `blockTrailingExprMsil` sees no
+// trailing expression either way.  Either way the arm never reaches the
+// try-catch join point, so it doesn't need to supply a value of the try
+// body's type — a real Unit/value mismatch (the type-checker gap #2042 the
+// panic diagnostic in `lowerTryCatchExprMsil` guards against) still fires
+// for every other void-typed catch arm.  Unlike `blockTrailingExprMsil`, a
+// leading `defer` doesn't disqualify the block: `lowerStmtsExprFromMsil`
+// routes the tail after a `defer` through the same trailing-statement
+// dispatch recursively, so whether the block diverges depends only on its
+// actual last statement, not on whether a `defer` precedes it (#4761).
 func blockDivergesMsil(blk: in Block): Bool {
   if blk.statements.count == 0 {
     false
@@ -4997,17 +5046,7 @@ func blockDivergesMsil(blk: in Block): Bool {
       case SThrow(_) -> true
       case SBreak(_) -> true
       case SContinue(_) -> true
-      case SExpr(e) -> {
-        match e.kind {
-          case ECall(fn, _) -> {
-            match fn.kind {
-              case EPath(path) -> lastSegmentMsil(path) == "panic"
-              case _ -> false
-            }
-          }
-          case _ -> false
-        }
-      }
+      case SExpr(e) -> exprDivergesMsil(e)
       case _ -> false
     }
   }
