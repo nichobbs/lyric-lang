@@ -677,7 +677,7 @@ test "function returning non-generic alias over Result matches correctly downstr
 // genuinely cross-ASSEMBLY restored-dependency path (a separately compiled
 // library DLL linked via metadata restoration) that the original report's
 // `Lyric.Cli` / `Lyric.Stdlib.dll` scenario used — that boundary is still
-// unverified and tracked separately.
+// unverified and tracked in #4726.
 test "cross-package recursive union case field binds correctly (same-assembly)" {
   val packages: List[ProjectPackagePayload] = newList()
   packages.add(
