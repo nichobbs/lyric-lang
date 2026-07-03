@@ -425,7 +425,7 @@ Every `pub` item in `lyric-stdlib/std/` carries either `@stable(since="1.0")` or
 | `Std.Errors` (`errors.l`) | `@stable` | Core error types used everywhere; stable from day one. |
 | `Std.Parse` (`parse.l`) | `@stable` | Primitive parsing is foundational; well-exercised. |
 | `Std.Core` (`core.l`) | no `pub` items | Option/Result are compiler-intrinsic; accessed by all importers without `pub`. |
-| `Std.Collections` (`collections.l`) | mixed | `mapGet` is `@stable` (maps fundamental); `mapSize`, `mapIsEmpty` are `@experimental` (pending JVM parity validation #3577). Iteration functions (`mapKeys`, `mapValues`, `mapEntries`, `mapForEach`, `mapPutAll`) shipped via codegen epics #3511/#3512; `mapKeys`/`mapValues` return `List[K]`/`List[V]` snapshots (the host key/value views stay `_kernel/`-private, no BCL nested type leaks into public signatures). |
+| `Std.Collections` (`collections.l`) | mixed | `mapGet` is `@stable` (maps fundamental); `mapSize`, `mapIsEmpty` are `@experimental` (pending JVM parity validation #3577). Iteration functions `mapKeys`, `mapValues`, `mapEntries`, `mapForEach`, `mapPutAll` are all `@stable(since = "1.0")` (shipped via codegen epics #3511/#3512); `mapKeys`/`mapValues` return `List[K]`/`List[V]` snapshots (the host key/value views stay `_kernel/`-private, no BCL nested type leaks into public signatures). |
 | `Std.String` (`string.l`) | `@stable` | All string helpers; well-tested, stable API. |
 | `Std.Console` (`console.l`) | `@stable` | `print`, `println`, `error`, `readLine` — basic I/O. |
 | `Std.File` (`file.l`) | `@stable` | `readText`, `writeText`, `fileExists`, `dirExists`, `createDir`. |
