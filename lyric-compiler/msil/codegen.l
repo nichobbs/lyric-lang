@@ -7336,6 +7336,12 @@ func lowerIfExprMsil(
       // `else` with `then`'s type as the hint.  If `then` itself erased while
       // `else` came out concrete, re-lower `then` with `else`'s type as the hint
       // (the bare construction is the `then` branch — `if c {newList()} else {a}`).
+      // Snapshot the slot-allocation frontier before the first `then` lowering
+      // pass so it can be rolled back if that pass turns out to be discarded
+      // below (#3987) — otherwise the first pass's slots leak into
+      // `LocalVarSig` as dead, unreferenced entries once the second pass
+      // allocates its own (higher-numbered) replacements.
+      val preThenSlotCount = fctx.slotTicker.count
       val thenInsns: List[MInsn] = newList()
       var thenTy = lowerExprOrBlockMsil(cctx, fctx, thenInsns, thenBranch)
       val elseInsns: List[MInsn] = newList()
@@ -7344,6 +7350,15 @@ func lowerIfExprMsil(
         while thenInsns.count > 0 {
           thenInsns.removeAt(thenInsns.count - 1)
         }
+        // Roll back any slots the discarded pass allocated (#3987) before
+        // re-lowering with `else`'s type as the hint, so the two passes don't
+        // both leave their allocations live. NOTE: this does not roll back
+        // `fctx.phaseBCtx[0].nextAwaitIndex` / `fctx.lazyGenCtx[0].
+        // nextYieldIndex` — see `rollbackFuncCtxSlotsSinceMsil`'s doc comment.
+        // A `then` branch containing `await`/`yield` that also erases to a
+        // bare collection/Option is an unaudited pre-existing risk this fix
+        // does not address.
+        rollbackFuncCtxSlotsSinceMsil(fctx, preThenSlotCount)
         thenTy = lowerBranchWithSiblingHintMsil(cctx, fctx, thenInsns, thenBranch, elseTy)
       }
 
