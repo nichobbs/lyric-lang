@@ -582,10 +582,12 @@ unconditionally (in addition to the always-linked `libm`/`libpthread` and any
 explicit `--manifest` or, failing that, the nearest discovered `lyric.toml`; an
 out-of-range `opt_level` is rejected at parse time. `[native]` applies only to
 `--target native` and is ignored by the .NET and JVM targets. Each
-`extra_libs` entry must be a non-empty, whitespace-free library name (it
-becomes a `-l<name>` flag); a malformed entry is rejected at parse time. A
-header-only `[native]` table with no keys is treated as absent (equivalent to
-declaring no `[native]` table at all), so every default applies.
+`extra_libs` entry must be a non-empty, whitespace-free **bare** library name
+(it becomes a `-l<name>` flag) that does not start with `-` — write `"ssl"`,
+not `"-lssl"`; a malformed entry (empty, containing space/tab/CR/LF, or
+`-`-prefixed) is rejected at parse time. A header-only `[native]` table with no
+keys is treated as absent (equivalent to declaring no `[native]` table at
+all), so every default applies.
 
 ## 4. Expressions
 

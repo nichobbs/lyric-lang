@@ -1149,10 +1149,18 @@ func assembleMaven(entries: in List[Entry]): Result[Option[MavenSection], Manife
 }
 
 // An `extra_libs` entry becomes a `-l<name>` clang flag; reject an empty
-// name or one containing whitespace so a typo surfaces as a clear Lyric
-// diagnostic instead of a cryptic clang/ld error (#4865).
+// name, one containing whitespace (any of space/tab/CR/LF — a stray CR can
+// survive a CRLF-edited manifest, #4874), or one starting with `-` (the
+// `["-lssl"]`-instead-of-`["ssl"]` mistake would yield `-l-lssl`, #4875) so a
+// typo surfaces as a clear Lyric diagnostic instead of a cryptic clang/ld
+// error (#4865).
 func invalidLibName(name: in String): Bool {
-  name.length == 0 or Str.contains(name, " ") or Str.contains(name, "\t") or Str.contains(name, "\n")
+  name.length == 0
+    or Str.startsWith(name, "-")
+    or Str.contains(name, " ")
+    or Str.contains(name, "\t")
+    or Str.contains(name, "\n")
+    or Str.contains(name, "\r")
 }
 
 /// `[native]` (N6.4): `triple` (LLVM target triple, default host),
@@ -1160,8 +1168,9 @@ func invalidLibName(name: in String): Bool {
 /// string array of additional `-l<name>` link flags).  `opt_level` is
 /// validated against the same set the `--opt` CLI flag accepts
 /// (0/1/2/3/s); each `extra_libs` entry must be a non-empty,
-/// whitespace-free library name; any violation is `Err(InvalidField)`.
-/// Returns `Ok(None)` when no `[native]` table is present.
+/// whitespace-free bare library name that does not start with `-`; any
+/// violation is `Err(InvalidField)`.  Returns `Ok(None)` when no
+/// `[native]` table is present.
 func assembleNative(entries: in List[Entry]): Result[Option[NativeConfig], ManifestError] {
   if not hasSection(entries, "native") {
     return Ok(value = None)
@@ -1185,7 +1194,7 @@ func assembleNative(entries: in List[Entry]): Result[Option[NativeConfig], Manif
         error = InvalidField(
           section = "native",
           field = "extra_libs",
-          message = "library name must be non-empty and contain no whitespace, got \"" + libs[li] + "\""
+          message = "library name must be a non-empty, whitespace-free bare name (not a \"-l\" flag), got \"" + libs[li] + "\""
         )
       )
     }

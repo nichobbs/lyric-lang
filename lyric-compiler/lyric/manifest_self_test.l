@@ -474,6 +474,22 @@ func testNativeEmptyLib(): Unit {
   assertTrue(isInvalidField(e, "native", "extra_libs"), "native-empty-lib: InvalidField(native, extra_libs)")
 }
 
+// A `-l`-flag written where a bare name belongs is rejected — it would
+// otherwise become `-l-lssl` at link time (#4875).
+func testNativeFlagLib(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[native]\nextra_libs = [\"-lssl\"]\n"
+  val e = parseErr(toml)
+  assertTrue(isInvalidField(e, "native", "extra_libs"), "native-flag-lib: InvalidField(native, extra_libs)")
+}
+
+// A stray carriage return (from a CRLF-edited manifest) inside a lib name
+// is rejected alongside the other whitespace forms (#4874).
+func testNativeCrLib(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[native]\nextra_libs = [\"ss\rl\"]\n"
+  val e = parseErr(toml)
+  assertTrue(isInvalidField(e, "native", "extra_libs"), "native-cr-lib: InvalidField(native, extra_libs)")
+}
+
 // Malformed coordinate keys (no ':' or more than one ':') are rejected.
 func testMavenMalformedCoordinate(): Unit {
   val noColon = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[maven]\n\"just-an-artifact\" = \"1.0.0\"\n"
@@ -770,6 +786,14 @@ test "native invalid extra_libs" {
 
 test "native empty extra_libs" {
   testNativeEmptyLib()
+}
+
+test "native flag-form extra_libs" {
+  testNativeFlagLib()
+}
+
+test "native carriage-return extra_libs" {
+  testNativeCrLib()
 }
 
 test "project section" {
