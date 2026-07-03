@@ -26839,3 +26839,60 @@ program asserting stdout, stderr, and EOF), both wired into
 
 **Related:** docs/44 §5 J6, epic #2663, #2669, D-progress-543 (the
 phantom-shim elimination pattern), D-progress-553.
+
+---
+
+---
+
+### D-progress-556 — Native backend N5.8: List[T] / Map[K, V] on the lyric-rt kernels, `for` loops, indexing
+
+**Shipped.** `Std.Collections` becomes usable on `--target native`
+(`native/plan/08-work-items.md` §N5.8, plus the `for`-loop lowering the
+plan folds into Phase N2):
+
+- **Type mapping** — `List[T]` / `Map[K, V]` lower to the fixed
+  `LyricList` / `LyricMap` C layouts (every element in a 64-bit slot;
+  ref-typed entries retained by the container itself via the
+  `elems_are_refs` / `keys_are_strings` / `vals_are_refs` construction
+  flags).  Each instantiation gets its own struct name
+  (`__list<i32>`, `__map<%LyricString*,i32>`) so the Lyric-level
+  element types survive to method lowering, but all access goes
+  through `lyric_list_*` / `lyric_map_*` runtime calls — the struct
+  definitions are never GEPed.  Scalars widen to the i64 slot (sext /
+  zext / double bitcast) and narrow back on read; ref elements
+  ptrtoint / inttoptr.  A user-declared generic record or union named
+  `List` / `Map` still wins — the reserved names resolve only after
+  generic lookup fails, mirroring the type checker's convention.
+- **Constructors** — bare `newList()` / `newListWithCapacity(n)` /
+  `newMap()` construct against the expected collection type (the
+  binding annotation), and explicit `newList[Int]()` type applications
+  construct anywhere.  Map keys must be String (SipHash-keyed) or a
+  scalar; other ref-typed keys are a build error.
+- **Methods and members** — `xs.add/set/removeAt/clear/count`,
+  `m.add/containsKey/remove/count`, and `xs[i]` / `m[k]` indexing
+  (a map index panics on a missing key; `mapGet` is the
+  Option-returning accessor, lowered directly against the kernel
+  out-param call since its pure-Lyric body uses an `out`-mode
+  parameter the native backend does not lower).  `dictGetKeys` /
+  `dictGetValues` return fresh snapshot lists via the new
+  `lyric_map_keys` / `lyric_map_values` kernels (added to lyric-rt
+  with C unit tests), which also makes `Std.Collections`' pure-Lyric
+  wrappers (`mapKeys`, `mapValues`, `mapForEach`, …) lowerable.
+- **`for x in xs`** — lowers to an index loop over the kernel
+  length/get calls; the loop variable rebinds per iteration in its own
+  var scope (the element read is a borrow; binding retains, the
+  iteration scope releases), with `break` / `continue` unwinding
+  through the loop-depth snapshots.
+- **Verification** — `llvm_collections_self_test.l` (12 cases, wired
+  into the CI native step): Int/Long/String/record elements, set /
+  removeAt / clear churn under ASan, nested `List[List[Int]]`, lists
+  as record fields crossing dtor chains, function boundaries, scalar-
+  and String-keyed maps, `mapGet` hit/miss, snapshot lists outliving
+  their map, and the missing-key panic.
+
+**Not in this slice:** `slice[T]` (lands with the N5 kernel files that
+produce slices), list literals (`EList`), `Set[T]`, and map iteration
+without a snapshot.
+
+**Related:** D-progress-552, `native/plan/08-work-items.md` §N5.8,
+`native/plan/07-stdlib-port.md` §collections, D-N-012.

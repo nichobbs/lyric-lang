@@ -306,3 +306,24 @@ int32_t lyric_map_remove(LyricMap* map, int64_t key) {
 int64_t lyric_map_len(LyricMap* map) {
     return map->len;
 }
+
+/* Key/value snapshots for iteration (Std.Collections mapKeys/mapValues
+ * and the dictGetKeys/dictGetValues surface).  Fresh rc=1 lists; the
+ * list retains ref-typed entries itself (elems_are_refs from the map's
+ * key/value flags), so the caller owns exactly one reference to the
+ * list and none to the entries. */
+LyricList* lyric_map_keys(LyricMap* map) {
+    LyricList* out = lyric_list_new(map->keys_are_strings);
+    for (int64_t i = 0; i < map->cap; i++) {
+        if (map->slots[i].state == 1) lyric_list_push(out, map->slots[i].key);
+    }
+    return out;
+}
+
+LyricList* lyric_map_values(LyricMap* map) {
+    LyricList* out = lyric_list_new(map->vals_are_refs);
+    for (int64_t i = 0; i < map->cap; i++) {
+        if (map->slots[i].state == 1) lyric_list_push(out, map->slots[i].val);
+    }
+    return out;
+}

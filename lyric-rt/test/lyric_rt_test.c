@@ -199,6 +199,31 @@ static void test_map_int_keys(void) {
     lyric_release(m);
 }
 
+static void test_map_keys_values(void) {
+    /* Scalar keys, ref values: keys list is scalar, values list retains. */
+    LyricMap* m = lyric_map_new(0, 1);
+    LyricString* v1 = lyric_string_from_literal((const uint8_t*)"one", 3);
+    LyricString* v2 = lyric_string_from_literal((const uint8_t*)"two", 3);
+    lyric_map_set(m, 1, (int64_t)(intptr_t)v1);
+    lyric_map_set(m, 2, (int64_t)(intptr_t)v2);
+    lyric_release(v1);
+    lyric_release(v2);
+
+    LyricList* ks = lyric_map_keys(m);
+    LyricList* vs = lyric_map_values(m);
+    CHECK(lyric_list_len(ks) == 2);
+    CHECK(lyric_list_len(vs) == 2);
+    int64_t ksum = lyric_list_get(ks, 0) + lyric_list_get(ks, 1);
+    CHECK(ksum == 3);
+    /* Values list retained its entries: releasing the map first must
+     * leave the strings alive through the list. */
+    lyric_release(m);
+    LyricString* got = (LyricString*)(intptr_t)lyric_list_get(vs, 0);
+    CHECK(lyric_string_len(got) == 3);
+    lyric_release(ks);
+    lyric_release(vs);
+}
+
 static void test_map_string_keys(void) {
     LyricMap* m = lyric_map_new(1, 1);
     LyricString* k1 = lyric_string_from_literal((const uint8_t*)"alpha", 5);
@@ -561,6 +586,7 @@ int main(void) {
     test_list_refs();
     test_map_int_keys();
     test_map_string_keys();
+    test_map_keys_values();
     test_posix();
     test_ok_variants();
     test_file_io();

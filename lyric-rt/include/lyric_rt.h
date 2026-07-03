@@ -121,6 +121,10 @@ int32_t   lyric_map_get(LyricMap* map, int64_t key, int64_t* out_val);
 int32_t   lyric_map_contains(LyricMap* map, int64_t key);
 int32_t   lyric_map_remove(LyricMap* map, int64_t key);
 int64_t   lyric_map_len(LyricMap* map);
+/* Fresh rc=1 snapshot lists of the occupied keys / values (entries
+ * retained by the list when ref-typed). */
+LyricList* lyric_map_keys(LyricMap* map);
+LyricList* lyric_map_values(LyricMap* map);
 void      lyric_map_dtor(void* obj);
 
 /* ── Console (lyric_posix.c) ───────────────────────────────────────── */
