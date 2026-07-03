@@ -2019,10 +2019,8 @@ func collectRefNamesExpr(e: in Expr, acc: in List[String]): Unit {
       collectRefNamesExpr(rhs, acc)
     }
     case EPrefix(_, operand) -> collectRefNamesExpr(operand, acc)
-    // A parenthesised sub-expression: without this, a name referenced ONLY
-    // inside parens in a lambda body — `{ x -> (x.toDouble() * multiplier) }`
-    // — was invisible to capture collection, so it was never captured and read
-    // as the null/zero default (an NPE for a Double/Long unbox; #4798).
+    // A name referenced only inside parens was missed by capture collection
+    // and read as the null/zero default (an NPE for a Double/Long unbox; #4798).
     case EParen(inner) -> collectRefNamesExpr(inner, acc)
     case ECall(fn, args) -> {
       collectRefNamesExpr(fn, acc)
