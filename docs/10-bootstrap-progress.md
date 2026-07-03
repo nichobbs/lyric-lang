@@ -27540,12 +27540,12 @@ supported (Long compares via `lcmp`).  Open-start (`..< b`) / open-end (`a ..`)
 ranges panic as unbounded, matching MSIL (and the parser rejects the open-end
 form in `for` position anyway).
 
-`for_loop_slice_self_test.l` already covered ranges (incl. `1L ..= 5L`) plus
-slice iteration and `break`/`continue`, but ran only on `--target dotnet`
-(the reason the gap went unnoticed); it now passes 10/10 on `--target jvm` and
-is wired into CI on both targets, retiring the stale `#2595` dotnet-only note
-(the erased-element slice path it also exercises was resolved earlier by the
-M-1 use-site unboxing).  `pattern_lowering` / `bitwise` regression-clean.
+A new range-only `range_for_jvm_self_test.l` (`lyric-compiler/jvm/`, Int + Long,
+half-open + closed, empty, `break`/`continue`, nesting) pins the feature on
+**both** targets in CI.  `for_loop_slice_self_test.l` — which also covers ranges
+but exercises the JVM slice-iteration erased-element auto-FFI path — stays
+dotnet-only: that path (#2595) is a separate open gap, so the range-only module
+is the JVM-side coverage.  `pattern_lowering` / `bitwise` regression-clean.
 
 ### D-progress-564 — Native backend N6.4: `[native]` manifest table (triple / opt_level / extra_libs)
 

@@ -853,31 +853,51 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping for-loop slice self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/for_loop_slice_self_test.l
+          "$lyric_bin" test lyric-compiler/lyric/for_loop_slice_self_test.l
 
-      # Same suite on the JVM target.  Previously dotnet-only (#2595): range-driven
-      # `for` was `ERange not supported in JVM codegen` and would abort the whole
-      # module, and the slice-iteration erased-element path needed the M-1 use-site
-      # unboxing.  Both have landed (range `for` via `emitCountingForJvm`), so the
-      # suite now passes on `--target jvm` — pinning it here closes the coverage gap
-      # (the reason the JVM range-for gap went unnoticed).  Compiles the
-      # @test_module in-process through the self-hosted `Jvm.Bridge` and runs under
-      # `java`.
-      - name: For-loop slice self-test on JVM (native lyric test --target jvm)
+      # For-loop slice self-test stays dotnet-only (#2595): the JVM slice-iteration
+      # erased-element path (auto-FFI on the element's method call) is not yet at
+      # parity, tracked under the JVM-backend remediation in docs/41.  Range-driven
+      # `for` — the JVM half of that suite — reached parity separately via
+      # `emitCountingForJvm` and is pinned by `range_for_jvm_self_test.l` below,
+      # which drives only range counters (no slice iteration) so it runs on both
+      # targets.
+
+      # Range-for self-test on both targets (#4878 follow-up, band J4).  Range
+      # `for` (`for i in lo ..< hi` / `lo ..= hi`) previously panicked with
+      # `ERange not supported in JVM codegen`; `emitCountingForJvm` brought it to
+      # MSIL parity.  Int + Long, half-open + closed, empty, break/continue, and
+      # nesting.  Imports only `Std.*`.
+      - name: Range-for self-test (native lyric test, dotnet)
         background: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping for-loop slice JVM self-test"
+            echo "::error::stage 1 bundle missing; skipping range-for self-test"
             exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping for-loop slice JVM self-test"
+            echo "::error::AOT binary not found at $lyric_bin; skipping range-for self-test"
             exit 1
           fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/for_loop_slice_self_test.l
+          "$lyric_bin" test --target dotnet lyric-compiler/jvm/range_for_jvm_self_test.l
+      - name: Range-for self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping range-for JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping range-for JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/range_for_jvm_self_test.l
 
       # Bitwise self-test on the JVM target (#1611 JVM half).  Compiles the same
       # @test_module in-process through the self-hosted `Jvm.Bridge`
