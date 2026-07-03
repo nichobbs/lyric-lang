@@ -47,6 +47,11 @@ extern func rtWriteBytes(path: NativePtr[Byte], data: List[Byte], append: Int): 
 
 extern func rtDirRemove(path: NativePtr[Byte]): Int = "lyric_dir_remove"
 
+// lstat-based: a symlink-to-directory is NOT a directory here, so the
+// recursive delete unlinks the link instead of descending into its
+// target (which may be outside the tree being removed).
+extern func rtIsDirNoFollow(path: NativePtr[Byte]): Int = "lyric_path_is_dir_nofollow"
+
 @unsafe_ffi
 pub func hostFileExists(path: in String): Bool {
   val c = toC(path)
@@ -242,14 +247,28 @@ func removeDirOne(path: in String): Bool {
   rc == 0
 }
 
+// True only for a real directory, not a symlink pointing at one.
+@unsafe_ffi
+func isRealDirNative(path: in String): Bool {
+  val c = toC(path)
+  val rc = rtIsDirNoFollow(c)
+  freeC(c)
+  rc == 1
+}
+
 // Depth-first single-pass delete: list each directory ONCE, probe each
-// entry once (a subdirectory recurses, anything else is a file to
-// unlink), then rmdir(2) the emptied directory.  Going through the
-// two split list seams would read the directory twice per level and
-// stat every child twice; the delete walk cannot afford that on a
-// deep tree.  A missing path fails at the first listing (parity with
-// the managed twin, which reports DirectoryNotFoundException as
-// Err(IoError)).  No `@unsafe_ffi`: this seam touches no FFI primitive
+// entry once (a REAL subdirectory recurses, anything else — a file or
+// a symlink, even one pointing at a directory — is unlinked), then
+// rmdir(2) the emptied directory.  The nofollow probe (`isRealDirNative`,
+// lstat) is essential: descending through a directory symlink would
+// delete files OUTSIDE the tree being removed, and `lyric_file_delete`
+// is `unlink(2)`, which removes the link itself.  This matches
+// `rm -rf` / BCL `Directory.Delete(recursive: true)` on modern .NET.
+// Going through the two split list seams would read the directory twice
+// per level and stat every child twice; the delete walk cannot afford
+// that on a deep tree.  A missing path fails at the first listing
+// (parity with the managed twin, which reports DirectoryNotFoundException
+// as Err(IoError)).  No `@unsafe_ffi`: this seam touches no FFI primitive
 // directly — every call is to another host function (`listEntryNamesNative`,
 // `hostDirectoryExists`, `hostDeleteFileResult`, `removeDirOne`) that
 // already crossed the boundary, matching `hostCreateDirResult` /
@@ -259,7 +278,7 @@ pub func hostDeleteDirRecursiveResult(path: in String): Result[Unit, IOError] {
     case Ok(names) -> {
       for n in names {
         val p = path + "/" + n
-        if hostDirectoryExists(p) {
+        if isRealDirNative(p) {
           match hostDeleteDirRecursiveResult(p) {
             case Ok(_) -> {
             }

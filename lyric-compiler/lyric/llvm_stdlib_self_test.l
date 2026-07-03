@@ -494,3 +494,81 @@ test "toArray snapshot + listFilesRecursive on native (ASan)" {
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "toArray snapshot + recursive traversal + cleanup")
 }
+
+test "recursive delete does not traverse a directory symlink (#4833, ASan)" {
+  val src = "package T\n" + "\n" + "import Std.Core\n" + "import Std.Errors\n" + "import Std.File\n" +
+    "import Std.Process\n" +
+    "\n" +
+    "func main(): Int {\n" +
+    "  val outside = \"" +
+    tempBase() +
+    "/lyric-n5s-outside\"\n" +
+    "  val tree = \"" +
+    tempBase() +
+    "/lyric-n5s-tree\"\n" +
+    "  val _c1 = deleteDirRecursive(outside)\n" +
+    "  val _c2 = deleteDirRecursive(tree)\n" +
+    "  match createDir(outside) {\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 1\n" +
+    "    }\n" +
+    "  }\n" +
+    "  match writeText(outside + \"/keep.txt\", \"KEEP\") {\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 2\n" +
+    "    }\n" +
+    "  }\n" +
+    "  match createDir(tree) {\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 3\n" +
+    "    }\n" +
+    "  }\n" +
+    "  match writeText(tree + \"/inner.txt\", \"I\") {\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 4\n" +
+    "    }\n" +
+    "  }\n" +
+    "  val argv: List[String] = newList()\n" +
+    "  argv.add(\"-s\")\n" +
+    "  argv.add(outside)\n" +
+    "  argv.add(tree + \"/link\")\n" +
+    "  match runCapture(\"ln\", argv, 5000) {\n" +
+    "    case Ok(res) -> {\n" +
+    "      if res.exitCode != 0 {\n" +
+    "        return 5\n" +
+    "      }\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 6\n" +
+    "    }\n" +
+    "  }\n" +
+    "  match deleteDirRecursive(tree) {\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 7\n" +
+    "    }\n" +
+    "  }\n" +
+    "  if dirExists(tree) {\n" +
+    "    return 8\n" +
+    "  }\n" +
+    "  if not dirExists(outside) {\n" +
+    "    return 9\n" +
+    "  }\n" +
+    "  if not fileExists(outside + \"/keep.txt\") {\n" +
+    "    return 10\n" +
+    "  }\n" +
+    "  val _c3 = deleteDirRecursive(outside)\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "directory symlink is unlinked, not traversed")
+}

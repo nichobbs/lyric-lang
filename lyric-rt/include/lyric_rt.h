@@ -245,8 +245,14 @@ int32_t lyric_dir_create(const char* path);
  * -1 on failure. */
 int32_t lyric_dir_remove(const char* path);
 
-/* Returns 1 if `path` exists and is a directory, 0 otherwise. */
+/* Returns 1 if `path` exists and is a directory, 0 otherwise.  Follows
+ * symlinks (stat), so a symlink to a directory counts as a directory. */
 int32_t lyric_dir_exists(const char* path);
+
+/* Returns 1 iff `path` is itself a directory WITHOUT following symlinks
+ * (lstat); a symlink-to-directory returns 0.  Used by recursive delete
+ * to unlink symlinks instead of descending into their targets. */
+int32_t lyric_path_is_dir_nofollow(const char* path);
 
 /* Lists the entries of the directory at `path` (skipping "." and
  * ".."), returning a fresh rc=1 LyricList of rc=1 LyricString* names

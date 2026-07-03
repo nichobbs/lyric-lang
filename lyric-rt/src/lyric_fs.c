@@ -38,7 +38,13 @@ int32_t lyric_file_close(int32_t fd) {
     return close(fd) == 0 ? 0 : -1;
 }
 
-LyricString* lyric_file_read_all(const char* path) {
+/* Read the whole file at `path` into a fresh malloc'd buffer; the caller
+ * owns it and must free().  Writes the byte count through *out_len and
+ * returns the buffer (possibly zero-length, never NULL on success), or
+ * NULL on any open/read/allocation failure.  Shared by
+ * lyric_file_read_all and lyric_file_read_bytes so neither pays for the
+ * other's representation. */
+static uint8_t* read_file_to_buf(const char* path, int64_t* out_len) {
     int fd;
     for (;;) {
         fd = open(path, O_RDONLY);
@@ -86,7 +92,14 @@ LyricString* lyric_file_read_all(const char* path) {
         len += n;
     }
     close(fd);
+    *out_len = len;
+    return buf;
+}
 
+LyricString* lyric_file_read_all(const char* path) {
+    int64_t len = 0;
+    uint8_t* buf = read_file_to_buf(path, &len);
+    if (!buf) return NULL;
     LyricString* s = lyric_string_from_literal(buf, len);
     free(buf);
     return s;
@@ -108,16 +121,17 @@ int32_t lyric_file_read_all_ok(const char* path, LyricString** out) {
  * protocol that would leak a ref-typed initialiser. */
 LyricList* lyric_file_read_bytes(const char* path, int32_t* ok) {
     LyricList* list = lyric_list_new(0);
-    LyricString* s = lyric_file_read_all(path);
-    if (!s) {
+    int64_t len = 0;
+    uint8_t* buf = read_file_to_buf(path, &len);
+    if (!buf) {
         *ok = 0;
         return list;
     }
-    const uint8_t* data = LYRIC_STRING_DATA(s);
-    for (int64_t i = 0; i < s->len; i++) {
-        lyric_list_push(list, (int64_t)data[i]);
+    /* Read straight into the list — no intermediate LyricString (#4834). */
+    for (int64_t i = 0; i < len; i++) {
+        lyric_list_push(list, (int64_t)buf[i]);
     }
-    lyric_release(s);
+    free(buf);
     *ok = 1;
     return list;
 }
@@ -214,6 +228,15 @@ int32_t lyric_dir_remove(const char* path) {
 int32_t lyric_dir_exists(const char* path) {
     struct stat st;
     if (stat(path, &st) != 0) return 0;
+    return S_ISDIR(st.st_mode) ? 1 : 0;
+}
+
+int32_t lyric_path_is_dir_nofollow(const char* path) {
+    /* lstat, so a symlink-to-directory is NOT a directory here — a
+     * recursive delete must unlink such a link, never descend into its
+     * target (which may lie outside the tree being removed). */
+    struct stat st;
+    if (lstat(path, &st) != 0) return 0;
     return S_ISDIR(st.st_mode) ? 1 : 0;
 }
 

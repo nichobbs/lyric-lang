@@ -27415,6 +27415,21 @@ next tranche of #4752's native-side deferrals: bytes-mode file I/O
   documented contract.  The two new self-test programs now clean up
   their temp trees with it (the second deletes a *populated* nested
   tree and asserts not-found on the double delete).
+- **Symlink safety in native recursive delete (#4833)** — the entry
+  classifier must not follow symlinks: `stat(2)` reports a
+  symlink-to-directory as a directory, so a naive recursive delete would
+  descend through the link and wipe files *outside* the tree being
+  removed.  The native twin now gates the recursion on a new
+  `lyric_path_is_dir_nofollow` kernel (`lstat` + `S_ISDIR`), so a
+  directory symlink is removed as a link (`unlink(2)`) instead of
+  traversed, matching `rm -rf` and modern BCL `Directory.Delete`.  A C
+  unit test pins the classifier (symlink-to-dir → 0 under `lstat`, 1
+  under `stat`); a native self-test creates a directory symlink via
+  `ln -s` and asserts the target survives the delete.  The JVM twin's
+  `deleteRecursively` has the same latent symlink-following (pre-existing
+  — `java.io.File.isDirectory()` follows links); the parity fix
+  (`java.nio.file.Files.isSymbolicLink`) is tracked separately because
+  the JVM `lyric test` path could not be validated in this environment.
 - **Formatter note** — two files acquired `result`-named locals that
   #4778's `KwResult` bug renders unformattable (`val result = ...`
   formats to `val  = ...` and the loss-check refuses); the locals
@@ -27422,4 +27437,4 @@ next tranche of #4752's native-side deferrals: bytes-mode file I/O
 
 **Related:** D-N-015 (`docs/03-decision-log.md`), D-progress-556,
 D-progress-557, `native/plan/03-type-mapping.md`, issues #4752, #4778,
-#4795, #4809, #4827.
+#4795, #4809, #4827, #4833.

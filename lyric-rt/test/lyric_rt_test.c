@@ -339,6 +339,37 @@ static void test_dir_list2(void) {
     rmdir(tmpl);
 }
 
+static void test_is_dir_nofollow(void) {
+    /* A real directory is a directory; a file is not. */
+    char tmpl[] = "/tmp/lyric_rt_nofollow_XXXXXX";
+    CHECK(mkdtemp(tmpl) != NULL);
+    CHECK(lyric_path_is_dir_nofollow(tmpl) == 1);
+
+    char filep[512];
+    snprintf(filep, sizeof filep, "%s/f.txt", tmpl);
+    FILE* f = fopen(filep, "w");
+    CHECK(f != NULL);
+    fclose(f);
+    CHECK(lyric_path_is_dir_nofollow(filep) == 0);
+
+    /* A symlink pointing AT the directory is NOT a directory here (the
+     * whole point: recursive delete must unlink it, not descend). */
+    char linkp[512];
+    snprintf(linkp, sizeof linkp, "%s/link", tmpl);
+    CHECK(symlink(tmpl, linkp) == 0);
+    CHECK(lyric_path_is_dir_nofollow(linkp) == 0);
+    /* lyric_dir_exists (stat, follows) DOES see it as a directory — the
+     * exact divergence that made the naive delete unsafe. */
+    CHECK(lyric_dir_exists(linkp) == 1);
+
+    /* Missing path: 0, no crash. */
+    CHECK(lyric_path_is_dir_nofollow("/definitely/missing/lyric-rt-nf") == 0);
+
+    unlink(linkp);
+    unlink(filep);
+    rmdir(tmpl);
+}
+
 static void test_args(void) {
     /* Unset: empty list rather than a crash. */
     LyricList* empty = lyric_args_get();
@@ -752,6 +783,7 @@ int main(void) {
     test_read_bytes();
     test_write_bytes();
     test_dir_list2();
+    test_is_dir_nofollow();
     test_args();
     test_map_keys_values();
     test_posix();
