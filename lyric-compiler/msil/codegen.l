@@ -11799,6 +11799,17 @@ func emitCollectionForMsil(
       val eeAfterL = freshLabelMsil(fctx)
       val eeTryStartL = freshLabelMsil(fctx)
       insns.add(MLabel(id = eeTryStartL))
+      // Capture the try-nesting depth *before* this loop's own protected region
+      // is pushed below, matching every other loop construct's `loopTryDepth`
+      // convention (the ambient depth from the loop's enclosing scope, not
+      // including any region the loop sets up around its own body).  Using
+      // `fctx.tryRegionStack.count` *after* the push here would make a `break`
+      // emitted directly in the loop body compare equal to `loopTryDepth`
+      // (since both would already include this region), so `emitLoopJumpMsil`
+      // would wrongly emit `br` instead of `leave` to exit this try/finally —
+      // invalid MSIL (a branch out of a protected region) that fails
+      // verification at load time (#4769).
+      val eeOuterTryDepth = fctx.tryRegionStack.count
       fctx.tryRegionStack.add(0)
 
       val eeLoopL = freshLabelMsil(fctx)
@@ -11823,7 +11834,7 @@ func emitCollectionForMsil(
 
       fctx.loopBreak.add(eeAfterL)
       fctx.loopCont.add(eeContL)
-      fctx.loopTryDepth.add(fctx.tryRegionStack.count)
+      fctx.loopTryDepth.add(eeOuterTryDepth)
       lowerBlockMsil(cctx, fctx, insns, body)
       fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
       fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
@@ -21734,7 +21745,10 @@ func ensureMetadataIndex(cctx: in CodegenCtx): Unit {
   cctx.metadataReady.add(true)
   match Mdr.refPackDir() {
     case None -> {
-      println(
+      // Diagnostics belong on stderr, not stdout (#4742), matching the
+      // other W0007 sites in metadata_reader.l and every other diagnostic
+      // in this file (e.g. warnFfiIndexEmptyOnceMsil, W0002 above).
+      Console.error(
         "W0007: ensureMetadataIndex: Mdr.refPackDir() found no .NET reference pack — " +
           "auto-FFI resolution is completely disabled for this compile; every unresolved " +
           "System.* extern will silently fall back to \"System.Runtime\" (wrong for types " +
@@ -21745,7 +21759,7 @@ func ensureMetadataIndex(cctx: in CodegenCtx): Unit {
     case Some(dir) -> {
       val asms = Mdr.enumRefAssemblies(dir)
       if asms.count == 0 {
-        println(
+        Console.error(
           "W0007: ensureMetadataIndex: reference pack directory '" + dir +
             "' contains no *.dll files — auto-FFI resolution is completely disabled for this compile"
         )

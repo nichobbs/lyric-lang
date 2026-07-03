@@ -9,38 +9,37 @@
 //! `refPackDir()` finds (or doesn't) on the host running this test,
 //! `refPackDirDebugInfo()`'s trace must agree with it.
 //!
-//! Written as a plain `func main` program rather than `@test_module`,
-//! matching `kernel_self_test.l`'s pattern in this directory.
-//!
-//! Run with the compiler sources loaded so `import Msil.MetadataReader` resolves:
-//!
-//!   LYRIC_LOAD_COMPILER=1 ./bin/lyric run lyric-compiler/msil/metadata_reader_self_test.l
+//! Converted from a plain `func main` program to `@test_module` (#4751).
+//! `Msil.MetadataReader` resolves under native `lyric test` the same way
+//! `Msil.Kernel`/`Msil.Heaps` do for the sibling `msil_self_test_m2a.l`-
+//! `m2d.l`/`m88.l` `@test_module` files: the self-hosted compiler DLLs are
+//! staged as restored deps (see the "MSIL backend self-tests M2a-M2d
+//! (native lyric test)" CI step), so no `LYRIC_LOAD_COMPILER=1` recompile
+//! is needed here either. This file is NOT YET added to that step's file
+//! list in `.github/workflows/ci.yml` — that one-line CI wiring addition is
+//! left for a follow-up, since this triage pass is scoped to
+//! `lyric-compiler/msil/` source files only, not the workflow file.
+@test_module
 package Msil.MetadataReaderSelfTest
 
 import Msil.MetadataReader
 import Std.Core
 import Std.String as Str
+import Std.Testing
 
-func check(label: in String, ok: in Bool): Unit {
-  if ok {
-    println(label + "=true")
-  } else {
-    println(label + "=FAIL")
-  }
+test "refPackDirDebugInfo() returns a non-empty trace" {
+  val debugInfo = refPackDirDebugInfo()
+  assertTrue(debugInfo.length > 0, "debugInfo_nonEmpty")
 }
 
-pub func main(): Int {
+test "refPackDir() and refPackDirDebugInfo() agree on what was found" {
   val debugInfo = refPackDirDebugInfo()
-  check("debugInfo_nonEmpty", debugInfo.length > 0)
-
   match refPackDir() {
     case Some(dir) -> {
-      check("debugInfo_mentionsFoundDir", Str.contains(debugInfo, "found " + dir))
+      assertTrue(Str.contains(debugInfo, "found " + dir), "debugInfo_mentionsFoundDir")
     }
     case None -> {
-      check("debugInfo_hasNoFoundMarker", not Str.contains(debugInfo, "found "))
+      assertTrue(not Str.contains(debugInfo, "found "), "debugInfo_hasNoFoundMarker")
     }
   }
-
-  0
 }

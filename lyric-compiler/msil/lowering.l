@@ -3835,6 +3835,21 @@ pub func recordUserTypeDefRow(ctx: in LoweringCtx, namespace: in String, simpleN
   }
 }
 
+// KNOWN LIMITATION (#3891): keyed by `classFqn + "::" + methodName` only — no
+// arity or signature component.  MSIL allows overloaded methods with the same
+// name but different signatures (e.g. two `from`/`tryFrom` overloads on the
+// same record).  Because of the `containsKey` guard below, only the FIRST
+// registration for a given name is retained; a second same-name overload's
+// row is silently dropped, and any later lookup (`findMethodDefRowOfType`'s
+// predicted-row fallback, `MLdftnByName`) that hits the dropped overload
+// resolves to the WRONG MethodDef row instead.  `findMethodDefRowOfType`'s
+// primary table-scan path has the same name-only-match limitation, so fixing
+// only this map would not fully close the gap.  Not currently known to fire
+// in practice (no exercised caller registers two same-name methods on the
+// same class before the second is looked up), but a proper fix needs an
+// arity or signature-blob component threaded through both the ~10 call sites
+// that write here and the call sites of `findMethodDefRowOfType` that read
+// it — deferred pending verification against a real overloaded-method build.
 pub func recordPredictedMethodRow(ctx: in LoweringCtx, classFqn: in String, methodName: in String, row: in Int): Unit {
   val key = classFqn + "::" + methodName
   if not ctx.predictedMethodRows.containsKey(key) {
