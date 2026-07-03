@@ -682,13 +682,32 @@ jobs:
             local manifest="$1"
             local version="$2"
             local log="$3"
+            local attempt build_rc
+            : > "$log"
+            for attempt in 1 2 3 4; do
+              {
+                echo "=== Building ${manifest} (version ${version}, attempt ${attempt}) ==="
+                "$LYRIC" build --manifest "$manifest" --package-version "$version"
+              } >> "$log" 2>&1
+              build_rc=$?
+              [[ $build_rc -eq 0 ]] && break
+              # NuGet.org's search index can lag behind a `dotnet nuget push`
+              # that already returned success -- a dependency published
+              # earlier in this same run (even a full tier barrier ago) can
+              # still 404/NU1102 for a short window. That's this specific
+              # transient race, not a real dependency problem, so back off
+              # and retry; any other build failure is real and fails fast.
+              if ! grep -q 'NU1102' "$log" || [[ $attempt -eq 4 ]]; then
+                return 1
+              fi
+              echo "=== NU1102 (NuGet indexing delay) on attempt ${attempt}; retrying after backoff ===" >> "$log"
+              sleep $(( attempt * 15 ))
+            done
             {
-              echo "=== Building ${manifest} (version ${version}) ==="
-              "$LYRIC" build --manifest "$manifest" --package-version "$version" || return 1
               echo "=== Publishing ${manifest} ==="
               "$LYRIC" publish --manifest "$manifest" --api-key "$API_KEY" \
-                --skip-duplicate --package-version "$version" || return 1
-            } > "$log" 2>&1
+                --skip-duplicate --package-version "$version"
+            } >> "$log" 2>&1 || return 1
           }
 
           # Run all libraries in a tier concurrently, wait for the barrier, and
@@ -756,12 +775,15 @@ jobs:
             lyric-session/lyric.toml \
             lyric-search/lyric.toml \
             lyric-feature-flags/lyric.toml \
-            lyric-i18n/lyric.toml \
-            lyric-testing/lyric.toml
+            lyric-i18n/lyric.toml
 
-          # Tier 4: depends on Tier 3.
+          # Tier 4: depends on Tier 3. lyric-testing depends on lyric-mq and
+          # lyric-session (both Tier 3), so it cannot safely share their tier
+          # -- it moved here from Tier 3 after that same-tier race caused a
+          # publish failure (NU1102) even with the barrier working correctly.
           run_tier 4 \
-            lyric-lambda/lyric.toml
+            lyric-lambda/lyric.toml \
+            lyric-testing/lyric.toml
 
           # Final report — to both the log and the GitHub job summary.
           {
