@@ -3557,6 +3557,53 @@ pub func allocSlotMsil(fctx: in FuncCtx, name: in String, ty: in MsilType): Int 
   }
 }
 
+// Roll back `FuncCtx` slot-allocation state to what it was before a discarded
+// lowering pass, so a caller that re-lowers the same source expression (e.g.
+// `lowerIfExprMsil`'s then-branch re-lowering with a corrected sibling-type
+// hint, #3987) does not leave the first pass's slots behind as dead,
+// unreferenced `LocalVarSig` entries.
+//
+// Truncating `slotTicker`/`locals` alone is NOT enough: `allocSlotMsil`'s
+// generated names for synthetic temps (e.g. `"__ee_elem_" + toString(fctx.
+// slotTicker.count)`) are derived from the CURRENT ticker value, so a second
+// pass that reaches the same allocation point regenerates the IDENTICAL
+// name — and without also purging the stale `fctx.slots`/`fctx.types`
+// entries, `allocSlotMsil`'s `case Some(existing)` branch would silently
+// return the OLD (now out-of-range relative to the truncated `locals` list)
+// slot number instead of allocating a fresh one, which is a worse bug (a
+// mismatched/out-of-range local reference) than the wasted-slot issue being
+// fixed. This walks `fctx.slots` via `mapEntries` (the caller has no record
+// of which names the discarded pass allocated) and removes every entry whose
+// slot index is >= `preSlotCount`, then truncates the counters to match.
+//
+// Scope: this rolls back slot-table state only. A discarded pass that also
+// contains an `await` (Phase B) or `yield` (lazy generator) advances
+// `fctx.phaseBCtx[0].nextAwaitIndex` / `fctx.lazyGenCtx[0].nextYieldIndex` —
+// monotonic index counters this helper does NOT roll back, since those
+// indices are consumed once and correlated 1:1 with Phase A's pre-sized
+// `resumeLabels`/`awaiterFieldNames` arrays; rolling them back would require
+// also re-deriving which resume label each discarded await/yield claimed.
+// Callers must not discard-and-relower a branch that may contain either.
+pub func rollbackFuncCtxSlotsSinceMsil(fctx: in FuncCtx, preSlotCount: in Int): Unit {
+  val staleEntries = mapEntries(fctx.slots)
+  var sei = 0
+  while sei < staleEntries.count {
+    val entry = staleEntries[sei]
+    if entry.value >= preSlotCount {
+      fctx.slots.remove(entry.key)
+      fctx.types.remove(entry.key)
+    }
+    sei = sei + 1
+  }
+  while fctx.slotTicker.count > preSlotCount {
+    fctx.slotTicker.removeAt(fctx.slotTicker.count - 1)
+  }
+  val targetLocalsCount = preSlotCount - fctx.paramCount
+  while fctx.locals.count > targetLocalsCount {
+    fctx.locals.removeAt(fctx.locals.count - 1)
+  }
+}
+
 // Finish a hoisted-`var` heap cell (#1479 v2, Stage 4: typed cells).
 // Precondition: the stack holds `(value, dup-of-value)` after array creation.
 // Stage 4 improvement: use a typed 1-element array instead of List[object].
@@ -14185,10 +14232,26 @@ func emitExternTargetBody(
             case None -> {
             }
             case Some(_) -> {
-              match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, resolvedFqn, r.memberName, verifySigs) {
-                case Some(_) -> {
+              // A property-typed `@externTarget` (e.g. "System.DateTime.UtcNow")
+              // has no method named `UtcNow` in metadata — only the getter
+              // `get_UtcNow` — so retry against the getter name before
+              // panicking (#4293).  This mirrors the getter fallback the
+              // actual call-emission path below already performs; without it,
+              // any property target that also reaches this explicit-static
+              // verification pre-check (an `@externTarget` with an explicit
+              // static hint) spuriously fails with F0015 even though codegen
+              // would have resolved and emitted the call correctly.
+              val verified = match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, resolvedFqn, r.memberName, verifySigs) {
+                case Some(_) -> true
+                case None -> match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, resolvedFqn, "get_" + r.memberName, verifySigs) {
+                  case Some(_) -> true
+                  case None -> false
                 }
-                case None -> {
+              }
+              match verified {
+                case true -> {
+                }
+                case false -> {
                   var declSigStr = "("
                   var dsi = 0
                   while dsi < verifySigs.count {
