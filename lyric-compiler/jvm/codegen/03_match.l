@@ -31,14 +31,27 @@ func funcSigRetGenericArgs(sigOpt: in Option[JvmFuncSig]): List[TypeExpr] {
   }
 }
 
+// Unwrap a `ctx.varGenericArgs` lookup.  The explicit `Option[List[TypeExpr]]`
+// parameter type keeps the pinned F# stage-0 emitter's inference anchored, as
+// with `funcSigRetGenericArgs` (D-progress-554).
+func optGenericArgs(argsOpt: in Option[List[TypeExpr]]): List[TypeExpr] {
+  match argsOpt {
+    case Some(args) -> args
+    case None -> newList()
+  }
+}
+
 // Recover the scrutinee's generic instantiation arguments so a constructor
 // destructure can unbox an erased type-parameter payload to its concrete
-// primitive (#4877).  Handles a direct `match callee(...) { … }`: the callee's
-// declared return-type generic args (`Result[Int, String]` → `[Int, String]`)
-// come from its `JvmFuncSig.retGenericArgs`.  An `EParen` wrapper is unwrapped;
-// anything else — including a variable-ref scrutinee (`match r`, #4938) or a
-// method-call scrutinee (`match x.m()`, #4933) — yields an empty list, so the
-// payload stays boxed (the pre-#4877 behaviour).
+// primitive (#4877).  Handles:
+//   - a direct `match callee(...) { … }`: the callee's declared return-type
+//     generic args (`Result[Int, String]` → `[Int, String]`) come from its
+//     `JvmFuncSig.retGenericArgs`;
+//   - a variable-bound scrutinee `let r = callee(...); match r { … }`: `r`'s
+//     recorded `ctx.varGenericArgs` (populated at the binding site, #4938).
+// An `EParen` wrapper is unwrapped; anything else — including a method-call
+// scrutinee (`match x.m()`, #4933) — yields an empty list, so the payload stays
+// boxed (the pre-#4877 behaviour).
 func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
   match scrutinee.kind {
     case EParen(inner) -> scrutineeGenericArgs(ctx, inner)
@@ -48,7 +61,30 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
         case _ -> newList()
       }
     }
+    // A bare single-segment path is a local reference; a multi-segment path is a
+    // qualified name with no recorded local args.
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        optGenericArgs(mapGet(ctx.varGenericArgs, path.segments[0]))
+      } else {
+        newList()
+      }
+    }
     case _ -> newList()
+  }
+}
+
+// Record the generic instantiation args of a `let`/`var` binding's initialiser
+// against the bound name, so a later `match <name>` recovers them (#4938).
+// Remove-then-add keeps a shadowing inner binding from inheriting an outer
+// binding's stale args; only non-empty arg lists are stored.
+func recordVarGenericArgs(ctx: in FuncCtx, name: in String, init: in Expr): Unit {
+  val args = scrutineeGenericArgs(ctx, init)
+  if ctx.varGenericArgs.containsKey(name) {
+    ctx.varGenericArgs.remove(name)
+  }
+  if args.count > 0 {
+    ctx.varGenericArgs.add(name, args)
   }
 }
 

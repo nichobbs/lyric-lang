@@ -71,6 +71,26 @@ func subTwoViaPropagate(a: String, b: String): Result[Int, String] {
   Ok(value = x - y)
 }
 
+// Variable-bound scrutinee (#4938): the result is bound to a `val` first, then
+// matched.  `scrutineeGenericArgs` recovers the instantiation from the binding's
+// recorded `ctx.varGenericArgs` rather than from the `match` scrutinee directly.
+func addViaValBinding(a: String, b: String): Int {
+  val ra = makeIntResult(a)
+  val rb = makeIntResult(b)
+  val x = match ra { case Ok(v) -> v; case Err(_) -> 0 }
+  val y = match rb { case Ok(v) -> v; case Err(_) -> 0 }
+  x + y
+}
+
+// Variable-bound Long scrutinee through a `var`, then matched.
+func addViaVarBindingLong(a: Int, b: Int): Long {
+  var ra = makeLongResult(a)
+  var rb = makeLongResult(b)
+  val x = match ra { case Ok(v) -> v; case Err(_) -> 0i64 }
+  val y = match rb { case Ok(v) -> v; case Err(_) -> 0i64 }
+  x + y
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. Int payload — arithmetic on the bound value (the #4877 repro).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -101,6 +121,17 @@ test "? operator + subtraction loads without VerifyError (#4877)" {
   // class both loads and computes.
   val subbed = match subTwoViaPropagate("abc", "de") { case Ok(v) -> v; case Err(_) -> -1 }
   assertEqualInt(subbed, 1, "getInt(abc)? - getInt(de)? == 3 - 2 == 1")
+}
+
+test "variable-bound Int scrutinee unboxes for arithmetic (#4938)" {
+  // `val r = f(); match r { … }` — the bind site records r's generic args so the
+  // match recovers them even though the scrutinee is a plain variable ref.
+  assertEqualInt(addViaValBinding("hi", "yo"), 4, "val-bound: 2 + 2 == 4")
+  assertEqualInt(addViaValBinding("abcd", "e"), 5, "val-bound: 4 + 1 == 5")
+}
+
+test "variable-bound Long scrutinee via var unboxes for arithmetic (#4938)" {
+  assertEqualLong(addViaVarBindingLong(3, 4), 7000i64, "var-bound Long: 3000 + 4000 == 7000")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -629,6 +629,12 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
         case LBVal(pat, tyOpt, init) -> {
           val initTy = lowerExpr(ctx, insns, init)
           lowerLocalPatBind(ctx, insns, pat, initTy, tyOpt)
+          // A simple `val r = <expr>` records `r`'s generic args so a later
+          // `match r` unboxes an erased payload (#4938).
+          match pat.kind {
+            case PBinding(nm, _) -> recordVarGenericArgs(ctx, nm, init)
+            case _ -> ()
+          }
         }
         case LBLet(name, tyOpt, init) -> {
           val annTy = match tyOpt { case Some(te) -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes); case None -> JVoid }
@@ -641,6 +647,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
             coerceArgTo(insns, initTy, ty)
             val slot = allocSlot(ctx, name, ty)
             emitStore(insns, slot, ty)
+            recordVarGenericArgs(ctx, name, init)
           }
         }
         case LBVar(name, tyOpt, initOpt) -> {
@@ -683,6 +690,10 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
                 val slot = allocSlot(ctx, name, ty)
                 emitStore(insns, slot, ty)
               }
+              // Record `name`'s generic args so a later `match name` unboxes an
+              // erased payload (#4938).  The type checker fixes a `var`'s type
+              // across reassignments, so recording at the initialiser is stable.
+              recordVarGenericArgs(ctx, name, init)
             }
             case None -> {
               // No initialiser: an annotation is required to know the slot type;
