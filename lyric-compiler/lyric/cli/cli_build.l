@@ -42,6 +42,42 @@ func readBuildKindFromManifest(manifestOpt: in Option[String]): String {
   }
 }
 
+// Resolve the `[native]` config for a `--target native` build (N6.4):
+// honour an explicit `--manifest`, else discover the nearest lyric.toml.
+// An **explicitly supplied** `--manifest` that cannot be read or parsed
+// (e.g. a malformed `[native]` table, or an out-of-range `opt_level`) is
+// surfaced as `Err(message)` so the build fails loudly — the user pointed
+// at that file on purpose (#4863).  A **discovered** manifest degrades to
+// `Ok(None)` on any read/parse failure so a native single-file build is
+// never blocked by an unrelated malformed lyric.toml found up the tree.
+// `Ok(None)` also covers "no manifest found" and "no `[native]` table".
+func resolveNativeConfig(manifestPath: in Option[String]): Result[Option[Mf.NativeConfig], String] {
+  // Explicitly typed so the emitter cannot mistype a bare `None` arm as
+  // `Option<String>` (the self-hosted lowerMatchExprMsil fall-through bug,
+  // #1663 / #3943, which an earlier draft of this function tripped through
+  // ilverify): every "no config" leaf returns this pinned value.
+  val noneCfg: Option[Mf.NativeConfig] = None
+  match manifestPath {
+    case Some(p) -> match File.readText(p) {
+      case Err(e) -> Err(error = "build: cannot read manifest " + p + ": " + IOError.message(e))
+      case Ok(mfText) -> match Mf.parseManifest(mfText, p) {
+        case Err(me) -> Err(error = "build: " + ManifestError.message(me))
+        case Ok(m) -> Ok(value = m.native)
+      }
+    }
+    case None -> match discoverManifest(None) {
+      case None -> Ok(value = noneCfg)
+      case Some(mf) -> match File.readText(mf) {
+        case Err(_) -> Ok(value = noneCfg)
+        case Ok(mfText) -> match Mf.parseManifest(mfText, mf) {
+          case Err(_) -> Ok(value = noneCfg)
+          case Ok(m) -> Ok(value = m.native)
+        }
+      }
+    }
+  }
+}
+
 // Rejects the two unambiguous foot-guns from `--package-version` (#4426): an
 // empty value (which would embed a blank <Version> and fail cryptically
 // inside contract metadata / `dotnet pack`) and a leading 'v'/'V' prefix (a
@@ -158,7 +194,36 @@ pub func buildOneNative(
     }
     case _ -> ()
   }
-  val result = if isNativeTarget { Emitter.emitNative(req, nativeTriple, nativeOpt) } else { Emitter.emit(req) }
+  // Merge [native] manifest defaults with the CLI knobs (N6.4): the
+  // --triple/--opt flags (non-empty) override the manifest triple/opt_level;
+  // extra_libs is manifest-only and applied unconditionally.
+  var effTriple = nativeTriple
+  var effOpt = nativeOpt
+  val effLibs: List[String] = newList()
+  if isNativeTarget {
+    val ncResult = resolveNativeConfig(manifestPath)
+    match ncResult {
+      case Err(msg) -> {
+        printErr(msg)
+        return 1
+      }
+      case Ok(ncOpt) -> match ncOpt {
+        case Some(nc) -> {
+          if effTriple == "" {
+            effTriple = nc.triple
+          }
+          if effOpt == "" {
+            effOpt = nc.optLevel
+          }
+          for lib in nc.extraLibs {
+            effLibs.add(lib)
+          }
+        }
+        case None -> ()
+      }
+    }
+  }
+  val result = if isNativeTarget { Emitter.emitNative(req, effTriple, effOpt, effLibs) } else { Emitter.emit(req) }
   var hadError = false
   for d in result.diagnostics.toArray() {
     match d.severity {

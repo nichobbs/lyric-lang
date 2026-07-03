@@ -622,6 +622,12 @@ Lyric.Web = { path = "../lyric-web" }  # local-path dep (pre-built DLL in <dep>/
 allow_native = false               # allow packages with native binaries
 target       = "net10.0"           # target framework moniker (default: net10.0)
 
+# Native (--target native / LLVM backend) build defaults — see chapter 20 / lang-ref §3.6
+[native]
+triple     = "x86_64-unknown-linux-gnu"  # default: auto-detect host; overridden by --triple
+opt_level  = "2"                          # clang -O level 0|1|2|3|s; overridden by --opt
+extra_libs = ["ssl", "crypto"]            # extra clang -l<name> link flags (manifest-only)
+
 # Optional — opt in for project-as-DLL bundling (M5.1 stage 2c.2):
 [project]
 name           = "myapp"
@@ -826,6 +832,8 @@ lyric build --target jvm <file.l>      # writes a runnable foo.jar (NO runtimeco
 lyric build --target native <file.l>   # writes a self-contained POSIX executable (no extension)
                                        # via the LLVM backend + clang; --triple cross-compiles,
                                        # --opt 0|1|2|3|s sets the clang -O level (default 2).
+                                       # triple/opt default from the manifest [native] table
+                                       # (CLI flags override); [native].extra_libs adds -l<name>.
                                        # ARC-managed (no GC; cycles need NativeWeak[T]). Surface:
                                        # scalars/strings, records, unions, enums, distinct types,
                                        # tuples, match, generics (monomorphized), closures,

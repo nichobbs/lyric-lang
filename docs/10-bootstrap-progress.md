@@ -27470,3 +27470,39 @@ one-type-per-slot invariant globally, the `Std.JsonHost` distinct-name
 workaround is no longer required (kept as-is; harmless).
 
 **Related:** docs/44 m-57 / m-72, epic #2663, #2667 (band J4).
+### D-progress-564 — Native backend N6.4: `[native]` manifest table (triple / opt_level / extra_libs)
+
+**Shipped.** `lyric.toml` gains an optional `[native]` table that supplies
+defaults for `--target native` (LLVM backend) builds, closing work item
+N6.4 from `native/plan/08-work-items.md`.
+
+- **Parsing** (`manifest.l`): a new `NativeConfig` record (`triple`,
+  `optLevel`, `extraLibs`) and `Option[NativeConfig]` field on `Manifest`,
+  parsed by `assembleNative` (mirroring `assembleMaven`) and threaded into
+  `parseManifest`. `opt_level` is validated against the same set the `--opt`
+  CLI flag accepts (`0`/`1`/`2`/`3`/`s`); each `extra_libs` entry must be a
+  non-empty, whitespace-free library name (#4865); any violation is
+  `InvalidField(native, …)`. An absent table parses to `None`.
+- **Build wiring** (`cli/cli_build.l` + `emitter.l`): `buildOneNative` reads
+  `[native]` via `resolveNativeConfig` (honouring an explicit `--manifest`,
+  else the nearest discovered `lyric.toml`) and merges it with the CLI knobs
+  — `--triple` / `--opt` override the manifest `triple` / `opt_level` when
+  non-empty; `extra_libs` is manifest-only and additive. `emitNative` /
+  `emitNativeInProcess` gained an `extraLibs` parameter that becomes
+  `-l<name>` clang flags routed through the existing `extraClangFlags` slot
+  on `LlvmBridge.compileToNativeWithFlags` (no bridge signature change). An
+  **explicitly supplied** `--manifest` that fails to read/parse (e.g. an
+  invalid `opt_level`) aborts the build with the diagnostic (#4863); a
+  **discovered** manifest degrades silently so a single-file native build
+  is never blocked by an unrelated malformed lyric.toml up the tree.
+- **Tests**: `manifest_self_test.l` gains `native section` (all three keys),
+  `native defaults` (partial table → per-field defaults), `native absent`
+  (no table → `None`), `native empty table` (header-only → `None`, #4862),
+  `native invalid opt_level`, and `native invalid extra_libs` (whitespace in
+  a lib name → `InvalidField`, #4865).
+- **Docs**: language reference §3.6 (`[native]` table + CLI-override
+  precedence) and the `--target native` CLI paragraph; book
+  `appendix-b-quick-reference.md` (manifest table + native build note).
+
+**Related:** D-progress-540/562 (native backend), `native/plan/08-work-items.md`
+§N6.4, `docs/20-project-as-dll.md`.
