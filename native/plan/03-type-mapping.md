@@ -386,6 +386,16 @@ The dtor iterates all `len` elements and releases each.
 
 ## Protected types
 
+> **Superseded by D-N-017 (shipped, D-progress-573).** The mutex is a
+> **pointer to a separately heap-allocated buffer**, not an inline
+> `[N x i8]` struct field as sketched below — `lyric_mutex_size()` is a
+> runtime C call, and the self-hosted compiler (hosted on .NET/JVM) cannot
+> invoke the *target* runtime's C functions at its own codegen time, so
+> there is no way to reserve "however many bytes `lyric_mutex_size()`
+> returns" as a fixed-size LLVM struct field. See D-N-017 for the shipped
+> representation and the wrapper/inner lock/unlock split every `entry`/
+> `func` member lowers to.
+
 `protected type Counter { val: Int; ... }` lowers to:
 
 ```llvm

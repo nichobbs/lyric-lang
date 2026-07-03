@@ -27854,3 +27854,55 @@ migration is left as separate follow-up work, not bundled into this fix.
 **Related:** #4947, #4933 (docs/44 m-78, the JVM-only test this unblocks),
 D037 (`docs/49-methods-in-types.md`), `lowerImplMethodMsil` (the impl-method
 lowering this mirrors).
+
+### D-progress-573 — Native backend N3.4: protected types
+
+**Shipped.** `--target native` now lowers non-generic `protected type`
+declarations, closing work item N3.4 from `native/plan/08-work-items.md`.
+Protected types were previously rejected with a construct-naming diagnostic.
+
+- **Representation** (`llvm_codegen.l`): a protected type is a record-shaped
+  heap object — `ctx.protectedRecNames` marks which `recordDefs` entries need
+  mutex-aware construction/destruction, so `self: in ProtectedType`, field
+  access, and layout registration reuse the exact record machinery unchanged.
+  A trailing `__mutex: i8*` field points at a separately `lyric_alloc`'d
+  buffer sized at runtime via `lyric_mutex_size()` (LLVM structs are
+  fixed-size and the self-hosted compiler cannot call the target runtime's
+  `lyric_mutex_size()` at its own codegen time — D-N-017).
+- **Locking**: the language reference (§7.5) makes both `entry` and `func`
+  mutually exclusive; native has no monitor primitive and emits scattered
+  `NRet`/`NRetVoid` with no unified epilogue, so each member lowers to an
+  "inner" function (`collectProtectedMethods`: implicit `self` receiver
+  injected, bare field references desugared to `self.field`, mirroring the
+  MSIL emitter's `desugarProtectedFuncBody`) plus a hand-built "wrapper"
+  `NFunc` (`registerProtectedMethods`/`synthProtectedWrapper`) that locks,
+  calls the inner function, unlocks, and returns. The wrapper's `NFuncSig` is
+  registered directly into `ctx.sigs` so UFCS call sites (`x.increment()`)
+  resolve to it. Unlike MSIL (which only locks `entry`, a pre-existing spec
+  gap) or JVM (no locking at all, #855/#1833), both `entry` and `func` are
+  locked, matching the language reference.
+- **Construction** (`lowerProtectedConstructArgs`/`lowerProtectedConstructVals`):
+  resolves user fields exactly like a record, then allocates and initialises
+  the mutex buffer for the trailing field the caller never supplies.
+- **Destructor** (`synthProtectedDtor`): always synthesised (unlike a plain
+  record's ARC-only dtor, which is skipped when there are no ref fields) —
+  releases ref-typed user fields, then `lyric_mutex_destroy` +
+  `lyric_free`s the mutex buffer.
+- **Runtime**: `lyric_mutex_size/init/lock/unlock/destroy` externs (already
+  implemented in `lyric-rt/src/lyric_posix.c`) plus a new `lyric_free(void*)`
+  export (frees a raw non-ARC `lyric_alloc` buffer) declared in
+  `runtimeDecls()`.
+- **Tests**: new `llvm_self_test_n34.l` — entry mutate/read, a `func` member
+  locking the same as an `entry`, no-arg construction from field defaults,
+  and an ASan case proving the ref-typed field and mutex buffer are both torn
+  down cleanly across 30 constructions. 4/4.
+- **Docs**: language reference native-surface paragraph; book
+  `appendix-b-quick-reference.md`; decision log D-N-017; `native/plan`
+  README + `08-work-items.md` marked shipped.
+
+Deferred (tracked): `when:` barrier re-evaluation (needs `pthread_cond_t`),
+invariant re-checking after each operation, generic protected types, and the
+read/write concurrency distinction the language reference leaves open.
+
+**Related:** D-N-017, D-progress-568 (N3.2, the same heap-boxing/no-aggregate-
+ABI reasoning), `native/plan/08-work-items.md` §N3.4.

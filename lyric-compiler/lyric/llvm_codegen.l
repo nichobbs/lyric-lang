@@ -94,6 +94,11 @@ pub record CodegenUnit {
   // self-receiving functions (collected into `fns` by `collectImplMethods`).
   interfaces: List[InterfaceDecl]
   impls: List[ImplDecl]
+  // Protected types (N3.4): a record-shaped heap object with a trailing
+  // runtime-sized mutex buffer (D-N-017).  Entries/funcs contribute a
+  // desugared inner body (collected into `fns` by `collectProtectedMethods`)
+  // plus a codegen-synthesised lock/unlock wrapper (`registerProtectedMethods`).
+  protecteds: List[ProtectedTypeDecl]
 }
 
 /// Call-registry entry: how a resolvable callee lowers.  `isExternSym`
@@ -273,6 +278,10 @@ record Ctx {
   // emitted vtable-constant global name, resolved at upcast sites.
   ifaceInfos: Map[String, NIfaceInfo]
   ifaceVtables: Map[String, String]
+  // Protected-type record irNames (N3.4): marks which `recordDefs` entries
+  // are protected types (a trailing `__mutex: i8*` field, construction
+  // routes through `lowerProtectedConstructArgs`) rather than plain records.
+  protectedRecNames: Map[String, Bool]
   // ARC state (per function).  `scopeRefs` stacks the ref-typed locals
   // each lexical scope owns; `tempScopes` stacks the owned temporaries
   // of each evaluation region; the depth lists snapshot both stacks at
@@ -2503,7 +2512,12 @@ func lowerConstructCall(
       return NVal(ty = wty, value = NLocal(name = dest))
     }
     match mapGet(ctx.recordDefs, name) {
-      case Some(ri) -> return lowerRecordConstructArgs(ctx, insns, ri, args)
+      case Some(ri) -> {
+        if ctx.protectedRecNames.containsKey(ri.irName) {
+          return lowerProtectedConstructArgs(ctx, insns, ri, args)
+        }
+        return lowerRecordConstructArgs(ctx, insns, ri, args)
+      }
       case None -> {
       }
     }
@@ -2823,6 +2837,33 @@ func registerHeapTypes(
       }
       ci = ci + 1
     }
+    // Protected types (N3.4) are record-shaped, so they share the record
+    // stub registry — allocates the name before field layouts (Phase B)
+    // resolve, same as records above.
+    var pdi = 0
+    while pdi < u.protecteds.count {
+      val pd = u.protecteds[pdi]
+      match pd.generics {
+        case Some(_) -> {
+          // Generic protected types are deferred (N3.4 first slice); a
+          // use panics with the normal type-resolution message.
+        }
+        case None -> {
+          val emptyNames: List[String] = newList()
+          val emptyTys: List[NType] = newList()
+          val emptyDflts: List[Option[Expr]] = newList()
+          val stub = NRecInfo(
+            irName = u.pkgName + "." + pd.name,
+            fieldNames = emptyNames,
+            fieldTys = emptyTys,
+            fieldDefaults = emptyDflts
+          )
+          addRecKey(ctx, u.pkgName + "." + pd.name, stub)
+          addRecKey(ctx, pd.name, stub)
+        }
+      }
+      pdi = pdi + 1
+    }
     var gfi = 0
     while gfi < u.fns.count {
       val gfn = u.fns[gfi]
@@ -2907,6 +2948,16 @@ func registerHeapTypes(
         case None -> registerUnionLayout(ctx, u.pkgName, ud, typeDefs, fns, strict)
       }
       ci = ci + 1
+    }
+    var pdi2 = 0
+    while pdi2 < u.protecteds.count {
+      val pd = u.protecteds[pdi2]
+      match pd.generics {
+        case Some(_) -> {
+        }
+        case None -> registerProtectedLayout(ctx, u.pkgName, pd, typeDefs, fns, strict)
+      }
+      pdi2 = pdi2 + 1
     }
     ui2 = ui2 + 1
   }
@@ -7290,6 +7341,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     mapValTys = mod.mapValTys,
     ifaceInfos = mod.ifaceInfos,
     ifaceVtables = mod.ifaceVtables,
+    protectedRecNames = mod.protectedRecNames,
     scopeRefs = newList(),
     tempScopes = newList(),
     loopVarDepth = newList(),
@@ -7639,6 +7691,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     mapValTys = newMap(),
     ifaceInfos = newMap(),
     ifaceVtables = newMap(),
+    protectedRecNames = newMap(),
     scopeRefs = newList(),
     tempScopes = newList(),
     loopVarDepth = newList(),
@@ -7662,6 +7715,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   registerHeapTypes(ctx, units, types, fns)
   registerInterfaceTypes(ctx, units, types, fns)
   registerImplVtables(ctx, units)
+  registerProtectedMethods(ctx, units, fns)
   val externDecls: List[NFunc] = newList()
   val declaredExterns: Map[String, Bool] = newMap()
   var di = 0
@@ -7738,6 +7792,7 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
   val distincts: List[DistinctTypeDecl] = newList()
   val interfaces: List[InterfaceDecl] = newList()
   val impls: List[ImplDecl] = newList()
+  val protecteds: List[ProtectedTypeDecl] = newList()
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -7755,11 +7810,15 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
         impls.add(decl)
         collectImplMethods(pkgName, decl, fns)
       }
+      case IProtected(decl) -> {
+        protecteds.add(decl)
+        collectProtectedMethods(pkgName, decl, fns)
+      }
       case ITypeAlias(_) -> {
       }
       case IExternType(_) -> {
       }
-      case _ -> panic("Lyric.LlvmCodegen: this item form is not yet supported for --target native (Phase N2/N3 lowers functions, extern funcs, records, unions, enums, distinct types, interfaces, and impls)")
+      case _ -> panic("Lyric.LlvmCodegen: this item form is not yet supported for --target native (Phase N2/N3 lowers functions, extern funcs, records, unions, enums, distinct types, interfaces, impls, and protected types)")
     }
     i = i + 1
   }
@@ -7772,7 +7831,8 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
     enums = enums,
     distincts = distincts,
     interfaces = interfaces,
-    impls = impls
+    impls = impls,
+    protecteds = protecteds
   )
 }
 
@@ -7859,6 +7919,810 @@ func substSelfInFn(fn: in FunctionDecl, recordName: in String): FunctionDecl {
     contracts = fn.contracts,
     body = fn.body,
     span = fn.span
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §N3.4  Protected types.
+//
+// A protected type lowers to the same record-shaped heap object as a plain
+// record (`{ i32 rc, i8* dtor, ...user fields }`), plus one trailing
+// `__mutex: i8*` field: a pointer to a separately lyric_alloc'd buffer sized
+// at runtime via `lyric_mutex_size()` (LLVM structs are fixed-size, and the
+// self-hosted compiler runs on .NET so it cannot call the target runtime's
+// lyric_mutex_size() at codegen time — see the decision log, D-N-017).
+// `ctx.protectedRecNames` marks which `recordDefs` entries need this
+// treatment; `typeToN` / field access / construction otherwise reuse the
+// exact record machinery unchanged (`self: in ProtectedType` resolves
+// through `ctx.recordDefs` exactly like a record receiver).
+//
+// The language reference (§7.5) makes both `entry` and `func` members
+// mutually exclusive (an Ada-style monitor); native has no built-in
+// monitor primitive (unlike MSIL's `Monitor.Enter(this)`/try/finally or a
+// JVM `ReentrantLock` field), so each member lowers to TWO functions:
+//   - an "inner" function: the desugared body (bare field references
+//     rewritten to `self.field`, mirroring the MSIL emitter's
+//     `desugarProtectedFuncBody`), lowered through the normal
+//     FunctionDecl -> NFunc pipeline like any record/impl method.
+//   - a hand-built "wrapper" NFunc: GEP+load the mutex pointer, call
+//     lyric_mutex_lock, call the inner function, call lyric_mutex_unlock,
+//     return.  Native's statement lowering emits scattered NRet/NRetVoid
+//     with no unified epilogue (no try/finally), so a single lock/unlock
+//     pair around one call site — rather than one per return point —
+//     needs the call boundary the wrapper/inner split provides.
+// UFCS call sites (`x.increment()`) resolve to the wrapper: its NFuncSig is
+// registered directly into `ctx.sigs` (bypassing `buildSigs`, since the
+// wrapper is never parsed Lyric source) under the plain method name,
+// exactly where a record method of that name would be.
+// ─────────────────────────────────────────────────────────────────────────────
+/// Protected-type fields (`PMField` members) as a uniform `FieldDecl` list,
+/// mirroring `recFieldsOf` for records.  `PFVar`/`PFLet` synthesise a
+/// `FieldDecl` (docs/annotations/visibility are unused by codegen);
+/// `PFImmutable` already wraps one.
+func protFieldsOf(decl: in ProtectedTypeDecl): List[FieldDecl] {
+  val fields: List[FieldDecl] = newList()
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case PMField(pf) -> {
+        match pf {
+          case PFVar(name, ty, initOpt, span) -> {
+            fields.add(
+              FieldDecl(
+                docComments = newList(),
+                annotations = newList(),
+                visibility = None,
+                isMutable = true,
+                name = name,
+                ty = ty,
+                dflt = initOpt,
+                span = span
+              )
+            )
+          }
+          case PFLet(name, ty, initOpt, span) -> {
+            fields.add(
+              FieldDecl(
+                docComments = newList(),
+                annotations = newList(),
+                visibility = None,
+                isMutable = false,
+                name = name,
+                ty = ty,
+                dflt = initOpt,
+                span = span
+              )
+            )
+          }
+          case PFImmutable(fd) -> fields.add(fd)
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  fields
+}
+
+/// The set of field names declared on a protected type, used to rewrite
+/// bare references (`n = n + 1`) to `self.n` in entry/func bodies.
+func makeProtectedFieldNames(decl: in ProtectedTypeDecl): Map[String, Bool] {
+  val names: Map[String, Bool] = newMap()
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case PMField(pf) -> {
+        match pf {
+          case PFVar(name, _, _, _) -> names.add(name, true)
+          case PFLet(name, _, _, _) -> names.add(name, true)
+          case PFImmutable(fd) -> names.add(fd.name, true)
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  names
+}
+
+// ── Protected-body desugaring: bare field refs -> self.field ────────────────
+// Mirrors the MSIL emitter's `desugarProtectedExpr`/`desugarProtectedStmt`
+// (lyric-compiler/msil/codegen.l) — same shared AST, same rewrite.
+// Recurses into every expression/statement form native can encounter in a
+// body, including forms native itself does not yet lower (e.g. try/loop):
+// harmless to visit, since those panic during lowering regardless.
+func desugarProtectedExpr(fieldNames: in Map[String, Bool], e: in Expr): Expr {
+  match e.kind {
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        val name = path.segments[0]
+        if fieldNames.containsKey(name) {
+          val selfExpr = Expr(kind = ESelf, span = e.span)
+          return Expr(kind = EMember(receiver = selfExpr, memberName = name), span = e.span)
+        }
+      }
+      return e
+    }
+    case EMember(receiver, memberName) -> {
+      return Expr(
+        kind = EMember(receiver = desugarProtectedExpr(fieldNames, receiver), memberName = memberName),
+        span = e.span
+      )
+    }
+    case EBinop(op, lhs, rhs) -> {
+      return Expr(
+        kind = EBinop(
+          op = op,
+          lhs = desugarProtectedExpr(fieldNames, lhs),
+          rhs = desugarProtectedExpr(fieldNames, rhs)
+        ),
+        span = e.span
+      )
+    }
+    case EPrefix(op, operand) -> {
+      return Expr(kind = EPrefix(op = op, operand = desugarProtectedExpr(fieldNames, operand)), span = e.span)
+    }
+    case EParen(inner) -> {
+      return Expr(kind = EParen(inner = desugarProtectedExpr(fieldNames, inner)), span = e.span)
+    }
+    case ECall(fn, args) -> {
+      val args2: List[CallArg] = newList()
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CAPositional(expr) -> args2.add(CAPositional(expr = desugarProtectedExpr(fieldNames, expr)))
+          case CANamed(name, value, span) -> {
+            args2.add(CANamed(name = name, value = desugarProtectedExpr(fieldNames, value), span = span))
+          }
+        }
+        i = i + 1
+      }
+      return Expr(kind = ECall(fn = desugarProtectedExpr(fieldNames, fn), args = args2), span = e.span)
+    }
+    case EIndex(receiver, indices) -> {
+      val idxs: List[Expr] = newList()
+      var i = 0
+      while i < indices.count {
+        idxs.add(desugarProtectedExpr(fieldNames, indices[i]))
+        i = i + 1
+      }
+      return Expr(kind = EIndex(receiver = desugarProtectedExpr(fieldNames, receiver), indices = idxs), span = e.span)
+    }
+    case EIf(cond, thenBranch, elseBranch, thenForm) -> {
+      val then2 = match thenBranch {
+        case EOBExpr(expr) -> EOBExpr(expr = desugarProtectedExpr(fieldNames, expr))
+        case EOBBlock(block) -> EOBBlock(block = desugarProtectedBlock(fieldNames, block))
+      }
+      val else2 = match elseBranch {
+        case Some(eob) -> {
+          match eob {
+            case EOBExpr(expr) -> Some(value = EOBExpr(expr = desugarProtectedExpr(fieldNames, expr)))
+            case EOBBlock(block) -> Some(value = EOBBlock(block = desugarProtectedBlock(fieldNames, block)))
+          }
+        }
+        case None -> None
+      }
+      return Expr(
+        kind = EIf(
+          cond = desugarProtectedExpr(fieldNames, cond),
+          thenBranch = then2,
+          elseBranch = else2,
+          thenForm = thenForm
+        ),
+        span = e.span
+      )
+    }
+    case EMatch(scrutinee, arms) -> {
+      val arms2: List[MatchArm] = newList()
+      var i = 0
+      while i < arms.count {
+        val arm = arms[i]
+        val g = match arm.guard { case Some(x) -> Some(value = desugarProtectedExpr(fieldNames, x)); case None -> None }
+        val body2 = match arm.body {
+          case EOBExpr(expr) -> EOBExpr(expr = desugarProtectedExpr(fieldNames, expr))
+          case EOBBlock(block) -> EOBBlock(block = desugarProtectedBlock(fieldNames, block))
+        }
+        arms2.add(MatchArm(pattern = arm.pattern, guard = g, body = body2, span = arm.span))
+        i = i + 1
+      }
+      return Expr(kind = EMatch(scrutinee = desugarProtectedExpr(fieldNames, scrutinee), arms = arms2), span = e.span)
+    }
+    case EBlock(block) -> return Expr(kind = EBlock(block = desugarProtectedBlock(fieldNames, block)), span = e.span)
+    case EPropagate(inner) -> {
+      return Expr(kind = EPropagate(inner = desugarProtectedExpr(fieldNames, inner)), span = e.span)
+    }
+    case EAssign(target, op, value) -> {
+      return Expr(
+        kind = EAssign(
+          target = desugarProtectedExpr(fieldNames, target),
+          op = op,
+          value = desugarProtectedExpr(fieldNames, value)
+        ),
+        span = e.span
+      )
+    }
+    case ETuple(exprs) -> {
+      val xs: List[Expr] = newList()
+      var i = 0
+      while i < exprs.count {
+        xs.add(desugarProtectedExpr(fieldNames, exprs[i]))
+        i = i + 1
+      }
+      return Expr(kind = ETuple(exprs = xs), span = e.span)
+    }
+    case EList(exprs) -> {
+      val xs: List[Expr] = newList()
+      var i = 0
+      while i < exprs.count {
+        xs.add(desugarProtectedExpr(fieldNames, exprs[i]))
+        i = i + 1
+      }
+      return Expr(kind = EList(exprs = xs), span = e.span)
+    }
+    case ELambda(lambdaParams, body) -> {
+      return Expr(
+        kind = ELambda(lambdaParams = lambdaParams, body = desugarProtectedBlock(fieldNames, body)),
+        span = e.span
+      )
+    }
+    case EAwait(inner) -> {
+      return Expr(kind = EAwait(inner = desugarProtectedExpr(fieldNames, inner)), span = e.span)
+    }
+    case ESpawn(inner) -> {
+      return Expr(kind = ESpawn(inner = desugarProtectedExpr(fieldNames, inner)), span = e.span)
+    }
+    case _ -> return e
+  }
+  return e
+}
+
+func desugarProtectedBlock(fieldNames: in Map[String, Bool], block: in Block): Block {
+  val ss: List[Statement] = newList()
+  var i = 0
+  while i < block.statements.count {
+    ss.add(desugarProtectedStmt(fieldNames, block.statements[i]))
+    i = i + 1
+  }
+  Block(statements = ss, span = block.span)
+}
+
+func desugarProtectedStmt(fieldNames: in Map[String, Bool], s: in Statement): Statement {
+  match s.kind {
+    case SExpr(expr) -> return Statement(kind = SExpr(expr = desugarProtectedExpr(fieldNames, expr)), span = s.span)
+    case SAssign(target, op, value) -> {
+      return Statement(
+        kind = SAssign(
+          target = desugarProtectedExpr(fieldNames, target),
+          op = op,
+          value = desugarProtectedExpr(fieldNames, value)
+        ),
+        span = s.span
+      )
+    }
+    case SReturn(value) -> {
+      val v = match value { case Some(e) -> Some(value = desugarProtectedExpr(fieldNames, e)); case None -> None }
+      return Statement(kind = SReturn(value = v), span = s.span)
+    }
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(pat, ty, init) -> {
+          return Statement(
+            kind = SLocal(binding = LBVal(pat = pat, ty = ty, init = desugarProtectedExpr(fieldNames, init))),
+            span = s.span
+          )
+        }
+        case LBVar(name, ty, init) -> {
+          val v = match init { case Some(e) -> Some(value = desugarProtectedExpr(fieldNames, e)); case None -> None }
+          return Statement(kind = SLocal(binding = LBVar(name = name, ty = ty, init = v)), span = s.span)
+        }
+        case LBLet(name, ty, init) -> {
+          return Statement(
+            kind = SLocal(binding = LBLet(name = name, ty = ty, init = desugarProtectedExpr(fieldNames, init))),
+            span = s.span
+          )
+        }
+      }
+    }
+    case SWhile(label, cond, body) -> {
+      return Statement(
+        kind = SWhile(
+          label = label,
+          cond = desugarProtectedExpr(fieldNames, cond),
+          body = desugarProtectedBlock(fieldNames, body)
+        ),
+        span = s.span
+      )
+    }
+    case SFor(label, pat, iter, body) -> {
+      return Statement(
+        kind = SFor(
+          label = label,
+          pat = pat,
+          iter = desugarProtectedExpr(fieldNames, iter),
+          body = desugarProtectedBlock(fieldNames, body)
+        ),
+        span = s.span
+      )
+    }
+    case _ -> return s
+  }
+  return s
+}
+
+func desugarProtectedFuncBody(fieldNames: in Map[String, Bool], body: in FunctionBody): FunctionBody {
+  match body {
+    case FBExpr(expr) -> return FBExpr(expr = desugarProtectedExpr(fieldNames, expr))
+    case FBBlock(block) -> return FBBlock(block = desugarProtectedBlock(fieldNames, block))
+  }
+  return body
+}
+
+/// The implicit `self: in <ProtectedType>` receiver injected as the first
+/// parameter of every entry/func's inner function (entries/funcs parse
+/// without an explicit receiver, unlike record/impl methods — D037).
+func protectedSelfParam(pd: in ProtectedTypeDecl, span: in Span): Param {
+  Param(
+    mode = PMIn,
+    modeExplicit = false,
+    name = "self",
+    ty = selfTypeRef(pd.name, span),
+    dflt = None,
+    annotations = newList(),
+    span = span
+  )
+}
+
+/// Collect a protected type's entries/funcs as self-receiving "inner"
+/// functions (mirrors `collectRecordMethods`/`collectImplMethods`): each
+/// gets the implicit self param prepended, its body desugared (bare field
+/// refs -> self.field), and a collision-free `<Type>.<method>.__inner`
+/// name.  The lock/unlock wrapper that UFCS call sites actually resolve to
+/// is built directly as an NFunc by `registerProtectedMethods`, once the
+/// type's NRecInfo (and so its mutex field index) is registered.
+pub func collectProtectedMethods(pkgName: in String, decl: in ProtectedTypeDecl, fns: in List[FunctionDecl]): Unit {
+  match decl.generics {
+    case Some(_) -> {
+      return
+    }
+    case None -> {
+    }
+  }
+  val fieldNames = makeProtectedFieldNames(decl)
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case PMEntry(ed) -> {
+        val params: List[Param] = newList()
+        params.add(protectedSelfParam(decl, ed.span))
+        var pi = 0
+        while pi < ed.params.count {
+          params.add(ed.params[pi])
+          pi = pi + 1
+        }
+        fns.add(
+          FunctionDecl(
+            docComments = ed.docComments,
+            annotations = ed.annotations,
+            visibility = None,
+            isAsync = false,
+            name = decl.name + "." + ed.name + ".__inner",
+            generics = None,
+            params = params,
+            ret = ed.ret,
+            whereClause = None,
+            contracts = newList(),
+            body = Some(value = desugarProtectedFuncBody(fieldNames, ed.body)),
+            span = ed.span
+          )
+        )
+      }
+      case PMFunc(fn) -> {
+        match fn.generics {
+          case Some(_) -> {
+          }
+          case None -> {
+            if not fn.isAsync {
+              val params: List[Param] = newList()
+              params.add(protectedSelfParam(decl, fn.span))
+              var pi = 0
+              while pi < fn.params.count {
+                params.add(fn.params[pi])
+                pi = pi + 1
+              }
+              val newBody = match fn.body {
+                case Some(b) -> Some(value = desugarProtectedFuncBody(fieldNames, b))
+                case None -> None
+              }
+              fns.add(
+                FunctionDecl(
+                  docComments = fn.docComments,
+                  annotations = fn.annotations,
+                  visibility = fn.visibility,
+                  isAsync = fn.isAsync,
+                  name = decl.name + "." + fn.name + ".__inner",
+                  generics = fn.generics,
+                  params = params,
+                  ret = fn.ret,
+                  whereClause = fn.whereClause,
+                  contracts = fn.contracts,
+                  body = newBody,
+                  span = fn.span
+                )
+              )
+            }
+          }
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
+// ── Protected-type layout, destructor, construction ─────────────────────────
+/// Register a non-generic protected type's layout: user fields (from
+/// `PMField` members) plus a trailing `__mutex: i8*` field, then always
+/// synthesise a destructor (a protected type must tear down its mutex
+/// buffer regardless of whether its user fields hold any ARC refs) —
+/// unlike `registerRecordLayout`, which only synthesises one when needed.
+func registerProtectedLayout(
+  ctx: in Ctx,
+  pkg: in String,
+  pd: in ProtectedTypeDecl,
+  typeDefs: in List[NTypeDefn],
+  fns: in List[NFunc],
+  strict: in Bool,
+): Unit {
+  val fields = protFieldsOf(pd)
+  val names: List[String] = newList()
+  val tys: List[NType] = newList()
+  val dflts: List[Option[Expr]] = newList()
+  val irName = pkg + "." + pd.name
+  var i = 0
+  while i < fields.count {
+    names.add(fields[i].name)
+    match typeToNOpt(ctx, fields[i].ty) {
+      case Some(t) -> tys.add(t)
+      case None -> {
+        if strict {
+          tys.add(typeToN(ctx, fields[i].ty))
+        } else {
+          unregisterRecStub(ctx, irName, irName)
+          unregisterRecStub(ctx, pd.name, irName)
+          return
+        }
+      }
+    }
+    dflts.add(fields[i].dflt)
+    i = i + 1
+  }
+  names.add("__mutex")
+  tys.add(NPtr(pointee = NI8))
+  val noDflt: Option[Expr] = None
+  dflts.add(noDflt)
+  val ri = NRecInfo(irName = irName, fieldNames = names, fieldTys = tys, fieldDefaults = dflts)
+  replaceRecKey(ctx, pkg + "." + pd.name, ri)
+  replaceRecKey(ctx, pd.name, ri)
+  if not ctx.protectedRecNames.containsKey(ri.irName) {
+    ctx.protectedRecNames.add(ri.irName, true)
+  }
+  val defnFields: List[NType] = newList()
+  defnFields.add(NI32)
+  defnFields.add(NPtr(pointee = NI8))
+  val layoutTys = layoutFieldTys(tys)
+  var fi = 0
+  while fi < layoutTys.count {
+    defnFields.add(layoutTys[fi])
+    fi = fi + 1
+  }
+  typeDefs.add(NTypeDefn(name = ri.irName, fields = defnFields))
+  fns.add(synthProtectedDtor(ctx, ri))
+}
+
+/// `define internal void @<T>.dtor(i8*)`: release each ref-typed user
+/// field (ARC Rule 7, as `synthRecordDtor`), then destroy and free the
+/// mutex buffer (D-N-017 — `lyric_free`, not `lyric_release`: the buffer
+/// is a raw lyric_alloc, not an ARC object with a header).
+func synthProtectedDtor(ctx: in Ctx, ri: in NRecInfo): NFunc {
+  val body: List[NInsn] = newList()
+  body.add(NLabel(name = "entry"))
+  val objTy = recPtrType(ri)
+  val structTy = match objTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
+  body.add(NBitcast(dest = "obj", fromTy = NPtr(pointee = NI8), value = NLocal(name = "raw"), toTy = objTy))
+  var i = 0
+  while i < ri.fieldTys.count {
+    if isRefNType(ri.fieldTys[i]) {
+      val fieldPtr = freshTmp(ctx)
+      val idxArgs: List[NArg] = newList()
+      idxArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+      idxArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(2 + i), ty = NI32)))
+      body.add(NGEP(dest = fieldPtr, ty = structTy, ptr = NLocal(name = "obj"), indices = idxArgs))
+      val fieldVal = freshTmp(ctx)
+      body.add(NLoad(dest = fieldVal, ty = ri.fieldTys[i], ptr = NLocal(name = fieldPtr)))
+      val cast = freshTmp(ctx)
+      body.add(NBitcast(dest = cast, fromTy = ri.fieldTys[i], value = NLocal(name = fieldVal), toTy = NPtr(pointee = NI8)))
+      body.add(NCallVoid(fn = NGlobal(name = "lyric_release"), args = arg1(NPtr(pointee = NI8), NLocal(name = cast))))
+    }
+    i = i + 1
+  }
+  val mutexIdx = ri.fieldTys.count - 1
+  val mutexFieldPtr = freshTmp(ctx)
+  val mIdxArgs: List[NArg] = newList()
+  mIdxArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  mIdxArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(2 + mutexIdx), ty = NI32)))
+  body.add(NGEP(dest = mutexFieldPtr, ty = structTy, ptr = NLocal(name = "obj"), indices = mIdxArgs))
+  val mutexVal = freshTmp(ctx)
+  body.add(NLoad(dest = mutexVal, ty = NPtr(pointee = NI8), ptr = NLocal(name = mutexFieldPtr)))
+  body.add(
+    NCallVoid(fn = NGlobal(name = "lyric_mutex_destroy"), args = arg1(NPtr(pointee = NI8), NLocal(name = mutexVal)))
+  )
+  body.add(NCallVoid(fn = NGlobal(name = "lyric_free"), args = arg1(NPtr(pointee = NI8), NLocal(name = mutexVal))))
+  body.add(NRetVoid)
+  val params: List[NParam] = newList()
+  params.add(NParam(name = "raw", ty = NPtr(pointee = NI8)))
+  val attrs: List[String] = newList()
+  NFunc(
+    name = recDtorName(ri),
+    params = params,
+    retTy = NVoid,
+    isPublic = false,
+    isExtern = false,
+    body = body,
+    attributes = attrs
+  )
+}
+
+/// Construct a protected type from call-site args: resolves the user
+/// fields normally, then allocates and initialises the runtime-sized mutex
+/// buffer (`lyric_mutex_size` -> `lyric_alloc` -> `lyric_mutex_init`) for
+/// the trailing `__mutex` field the caller never supplies.
+func lowerProtectedConstructArgs(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInfo, args: in List[CallArg]): NVal {
+  val userCount = ri.fieldNames.count - 1
+  val userNames: List[String] = newList()
+  val userTys: List[NType] = newList()
+  val userDflts: List[Option[Expr]] = newList()
+  var i = 0
+  while i < userCount {
+    userNames.add(ri.fieldNames[i])
+    userTys.add(ri.fieldTys[i])
+    userDflts.add(ri.fieldDefaults[i])
+    i = i + 1
+  }
+  val userVals = resolveFieldArgs(ctx, insns, "protected type '" + ri.irName + "'", userNames, userTys, userDflts, args)
+  val sizeI32 = freshTmp(ctx)
+  val noArgs: List[NArg] = newList()
+  insns.add(NCall(dest = sizeI32, retTy = NI32, fn = NGlobal(name = "lyric_mutex_size"), args = noArgs))
+  val sizeI64 = freshTmp(ctx)
+  insns.add(NSExt(dest = sizeI64, fromTy = NI32, value = NLocal(name = sizeI32), toTy = NI64))
+  val mutexBuf = freshTmp(ctx)
+  insns.add(
+    NCall(
+      dest = mutexBuf,
+      retTy = NPtr(pointee = NI8),
+      fn = NGlobal(name = "lyric_alloc"),
+      args = arg1(NI64, NLocal(name = sizeI64))
+    )
+  )
+  insns.add(
+    NCallVoid(fn = NGlobal(name = "lyric_mutex_init"), args = arg1(NPtr(pointee = NI8), NLocal(name = mutexBuf)))
+  )
+  val allVals: List[NVal] = newList()
+  var vi = 0
+  while vi < userVals.count {
+    allVals.add(userVals[vi])
+    vi = vi + 1
+  }
+  allVals.add(NVal(ty = NPtr(pointee = NI8), value = NLocal(name = mutexBuf)))
+  lowerProtectedConstructVals(ctx, insns, ri, allVals)
+}
+
+/// Build the heap object from pre-lowered field values (including the
+/// trailing mutex-buffer pointer) — identical to `lowerRecordConstructVals`
+/// except the dtor is always attached (a protected type always owns a
+/// mutex buffer to tear down, unlike a plain record's ARC-only dtor).
+func lowerProtectedConstructVals(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInfo, rawVals: in List[NVal]): NVal {
+  val vals: List[NVal] = newList()
+  var vi = 0
+  while vi < rawVals.count {
+    match ri.fieldTys[vi] {
+      case NVoid -> vals.add(rawVals[vi])
+      case want -> vals.add(coerceTo(ctx, insns, rawVals[vi], want))
+    }
+    vi = vi + 1
+  }
+  val objTy = recPtrType(ri)
+  val structTy = match objTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
+  val obj = emitHeapAlloc(ctx, insns, objTy, recAllocSize(ri), recDtorName(ri))
+  var fi = 0
+  while fi < vals.count {
+    if isVoidNType(ri.fieldTys[fi]) {
+      fi = fi + 1
+      continue
+    }
+    if isRefNType(ri.fieldTys[fi]) {
+      emitRetain(ctx, insns, vals[fi])
+    }
+    val fieldPtr = freshTmp(ctx)
+    val fArgs: List[NArg] = newList()
+    fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+    fArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(2 + fi), ty = NI32)))
+    insns.add(NGEP(dest = fieldPtr, ty = structTy, ptr = NLocal(name = obj), indices = fArgs))
+    insns.add(NStore(ty = ri.fieldTys[fi], value = vals[fi].value, ptr = NLocal(name = fieldPtr)))
+    fi = fi + 1
+  }
+  val outV = NVal(ty = objTy, value = NLocal(name = obj))
+  registerTemp(ctx, outV)
+  outV
+}
+
+// ── Protected-method wrapper: lock, call inner, unlock ──────────────────────
+/// For every non-generic protected type's entries/funcs, register the
+/// lock/unlock wrapper's `NFuncSig` directly into `ctx.sigs` (so UFCS call
+/// sites resolve to it, exactly where a record method of that name would
+/// be) and hand-build its `NFunc` body.  Must run after `registerHeapTypes`
+/// (the type's `NRecInfo` — and so its mutex field index — has to already
+/// be registered).
+func registerProtectedMethods(ctx: in Ctx, units: in List[CodegenUnit], fns: in List[NFunc]): Unit {
+  var ui = 0
+  while ui < units.count {
+    val u = units[ui]
+    var pi = 0
+    while pi < u.protecteds.count {
+      val pd = u.protecteds[pi]
+      match pd.generics {
+        case Some(_) -> {
+        }
+        case None -> registerProtectedMethodsFor(ctx, u.pkgName, pd, fns)
+      }
+      pi = pi + 1
+    }
+    ui = ui + 1
+  }
+}
+
+func registerProtectedMethodsFor(ctx: in Ctx, pkg: in String, pd: in ProtectedTypeDecl, fns: in List[NFunc]): Unit {
+  val riOpt = mapGet(ctx.recordDefs, pkg + "." + pd.name)
+  val ri = match riOpt { case Some(r) -> r; case None -> { return } }
+  val selfTy = recPtrType(ri)
+  var mi = 0
+  while mi < pd.members.count {
+    match pd.members[mi] {
+      case PMEntry(ed) -> registerProtectedMember(ctx, pkg, pd, ri, selfTy, ed.name, ed.params, ed.ret, fns)
+      case PMFunc(fn) -> {
+        match fn.generics {
+          case Some(_) -> {
+          }
+          case None -> {
+            if not fn.isAsync {
+              registerProtectedMember(ctx, pkg, pd, ri, selfTy, fn.name, fn.params, fn.ret, fns)
+            }
+          }
+        }
+      }
+      case _ -> {
+      }
+    }
+    mi = mi + 1
+  }
+}
+
+func registerProtectedMember(
+  ctx: in Ctx,
+  pkg: in String,
+  pd: in ProtectedTypeDecl,
+  ri: in NRecInfo,
+  selfTy: in NType,
+  methodName: in String,
+  params: in List[Param],
+  ret: in Option[TypeExpr],
+  fns: in List[NFunc],
+): Unit {
+  val arity = 1 + params.count
+  val wrapperIrName = pkg + "." + pd.name + "." + methodName
+  val innerIrName = pkg + "." + pd.name + "." + methodName + ".__inner"
+  val sigParamTys: List[TypeExpr] = newList()
+  sigParamTys.add(selfTypeRef(pd.name, pd.span))
+  val sigParamNames: List[String] = newList()
+  sigParamNames.add("self")
+  var i = 0
+  while i < params.count {
+    sigParamTys.add(params[i].ty)
+    sigParamNames.add(params[i].name)
+    i = i + 1
+  }
+  val sig = NFuncSig(
+    irName = wrapperIrName,
+    pkg = pkg,
+    paramNames = sigParamNames,
+    paramTys = sigParamTys,
+    retTy = ret,
+    isExternSym = false
+  )
+  addSig(ctx.sigs, pkg + "." + methodName + "/" + arity.toString(), sig)
+  addSig(ctx.sigs, methodName + "/" + arity.toString(), sig)
+  val retTyN = retTypeToN(ctx, ret)
+  val paramTysN: List[NType] = newList()
+  val paramNamesN: List[String] = newList()
+  var j = 0
+  while j < params.count {
+    paramTysN.add(typeToN(ctx, params[j].ty))
+    paramNamesN.add(params[j].name)
+    j = j + 1
+  }
+  fns.add(synthProtectedWrapper(ctx, ri, selfTy, wrapperIrName, innerIrName, paramNamesN, paramTysN, retTyN))
+}
+
+/// Hand-built wrapper body: GEP+load the mutex field, lock, call the
+/// inner function (forwarding self and every param unchanged — a plain
+/// forward, not a borrow/ownership transfer, so no extra retain is
+/// needed), unlock, return.
+func synthProtectedWrapper(
+  ctx: in Ctx,
+  ri: in NRecInfo,
+  selfTy: in NType,
+  wrapperIrName: in String,
+  innerIrName: in String,
+  paramNames: in List[String],
+  paramTys: in List[NType],
+  retTy: in NType,
+): NFunc {
+  val body: List[NInsn] = newList()
+  body.add(NLabel(name = "entry"))
+  val structTy = match selfTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
+  val mutexIdx = ri.fieldTys.count - 1
+  val mutexFieldPtr = freshTmp(ctx)
+  val idxArgs: List[NArg] = newList()
+  idxArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  idxArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(2 + mutexIdx), ty = NI32)))
+  body.add(NGEP(dest = mutexFieldPtr, ty = structTy, ptr = NLocal(name = "self"), indices = idxArgs))
+  val mutexVal = freshTmp(ctx)
+  body.add(NLoad(dest = mutexVal, ty = NPtr(pointee = NI8), ptr = NLocal(name = mutexFieldPtr)))
+  body.add(
+    NCallVoid(fn = NGlobal(name = "lyric_mutex_lock"), args = arg1(NPtr(pointee = NI8), NLocal(name = mutexVal)))
+  )
+  val callArgs: List[NArg] = newList()
+  callArgs.add(NArg(ty = selfTy, value = NLocal(name = "self")))
+  var i = 0
+  while i < paramNames.count {
+    callArgs.add(NArg(ty = paramTys[i], value = NLocal(name = paramNames[i])))
+    i = i + 1
+  }
+  match retTy {
+    case NVoid -> {
+      body.add(NCallVoid(fn = NGlobal(name = innerIrName), args = callArgs))
+      body.add(
+        NCallVoid(fn = NGlobal(name = "lyric_mutex_unlock"), args = arg1(NPtr(pointee = NI8), NLocal(name = mutexVal)))
+      )
+      body.add(NRetVoid)
+    }
+    case rt -> {
+      val resTmp = freshTmp(ctx)
+      body.add(NCall(dest = resTmp, retTy = rt, fn = NGlobal(name = innerIrName), args = callArgs))
+      body.add(
+        NCallVoid(fn = NGlobal(name = "lyric_mutex_unlock"), args = arg1(NPtr(pointee = NI8), NLocal(name = mutexVal)))
+      )
+      body.add(NRet(ty = rt, value = NLocal(name = resTmp)))
+    }
+  }
+  val params: List[NParam] = newList()
+  params.add(NParam(name = "self", ty = selfTy))
+  var pi = 0
+  while pi < paramNames.count {
+    params.add(NParam(name = paramNames[pi], ty = paramTys[pi]))
+    pi = pi + 1
+  }
+  val attrs: List[String] = newList()
+  NFunc(
+    name = wrapperIrName,
+    params = params,
+    retTy = retTy,
+    isPublic = false,
+    isExtern = false,
+    body = body,
+    attributes = attrs
   )
 }
 

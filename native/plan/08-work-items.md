@@ -549,9 +549,25 @@ destructuring. ARC follows the same rules as records.
 
 ### N3.4 — Protected types
 
+**SHIPPED** (D-progress-573, D-N-017): non-generic protected types, `entry`
+and `func` members both locking via a codegen-synthesised lock/unlock
+wrapper around a desugared inner body, field-args and no-arg (defaults)
+construction, verified ASan-clean by `llvm_self_test_n34.l`. The mutex is a
+**pointer to a separately heap-allocated buffer**, not an embedded
+`pthread_mutex_t` field (below) — `lyric_mutex_size()` is a runtime C call
+the self-hosted (.NET/JVM-hosted) compiler cannot invoke at its own codegen
+time, and LLVM struct types are fixed-size, so there is no way to reserve a
+runtime-determined number of inline bytes; see D-N-017. This still honours
+the "do not hardcode a table" directive below. `func` members are locked
+too (the language reference makes both `entry` and `func` exclusive),
+unlike MSIL (`entry`-only) or JVM (no locking, #855/#1833) — native has no
+try/finally-equivalent epilogue, hence the wrapper/inner split rather than
+one lock/unlock pair per return site. Deferred: `when:` barriers,
+invariant re-checking, generic protected types.
+
 **Depends on:** N2.1, `lyric_mutex_size()` from N0.4
 
-**What to implement:**
+**What was implemented (original plan):**
 
 `protected type Counter { val: Int; ... }` lowers as a record type with an
 embedded `pthread_mutex_t`. The mutex size is obtained at codegen time by calling
@@ -576,6 +592,14 @@ corruption).
 - Tuple construction and destructuring.
 - Protected type with two concurrent simulated accesses (in a single thread,
   verify mutex prevents double-entry via a re-entrant access attempt).
+
+**Protected-type coverage shipped differently than planned:** a genuine
+re-entrant/concurrent access attempt would deadlock the test process (the
+lock really is exclusive), so `llvm_self_test_n34.l` (not `llvm_self_test_n3.l`)
+instead asserts sequential correctness through the lock/unlock wrapper —
+`entry` mutation, a `func` member locking identically, no-arg construction
+from defaults, and an ASan case proving the mutex buffer and a ref-typed
+field are both torn down cleanly (D-progress-573).
 
 ---
 
