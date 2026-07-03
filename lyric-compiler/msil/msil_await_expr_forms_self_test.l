@@ -77,13 +77,9 @@
 //! `lyric-compiler/lyric/async_sm_self_test.l` does, rather than by
 //! importing `Msil.Codegen` directly.
 //!
-//! NOT YET WIRED INTO CI: this file was added by an issue-triage pass
-//! scoped to `lyric-compiler/msil/{codegen,metadata_reader,lowering}.l`
-//! and their self-test siblings; `.github/workflows/ci.yml` is out of
-//! that scope. A follow-up needs one `"$lyric_bin" test --target dotnet
-//! lyric-compiler/msil/msil_await_expr_forms_self_test.l` step (mirroring
-//! the existing "Async SM synthesis self-test" step for
-//! `async_sm_self_test.l`) before this provides CI protection.
+//! Wired into CI via the "MSIL await-expr-forms self-test" step in
+//! `.github/workflows/ci.yml` (#4812), alongside the other native
+//! `lyric test` self-tests in the same barrier group.
 @test_module
 package Msil.AwaitExprFormsSelfTest
 

@@ -391,10 +391,11 @@ impl SessionStore for InProcessSessionStore {
 // LYRIC_CONFIG_SESSION_SECURE, LYRIC_CONFIG_SESSION_HTTPONLY,
 // LYRIC_CONFIG_SESSION_SAMESITE, LYRIC_CONFIG_REDISSESSION_URL.
 
-/// Parse `LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS`, falling back to
-/// `defaultValue` for a malformed or negative value.  Mirrors
-/// `Web.parseCorsMaxAge`'s fail-soft parsing idiom.
-pub func parseSessionTtlSeconds(ttlStr: in String, defaultValue: in Int): Int {
+// Parse `LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS`, falling back to
+// `defaultValue` for a malformed or negative value.  Mirrors
+// `Web.parseCorsMaxAge`'s fail-soft parsing idiom.  Not `pub` — only used
+// internally by `connectRedis()` in this file.
+func parseSessionTtlSeconds(ttlStr: in String, defaultValue: in Int): Int {
   match tryParseInt(ttlStr) {
     case Ok(t) -> if t >= 0 { t } else { defaultValue }
     case Err(_) -> defaultValue
