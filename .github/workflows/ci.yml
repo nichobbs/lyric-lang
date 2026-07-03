@@ -853,13 +853,31 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping for-loop slice self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/for_loop_slice_self_test.l
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/for_loop_slice_self_test.l
 
-      # For-loop slice self-test is dotnet-only (#2595).  The JVM backend does
-      # not yet lower `for x in xs.toArray()` over an erased element type: the
-      # JVM auto-FFI resolver sees the loop element typed as java.lang.Object and
-      # fails to bind the subsequent call, so `--target jvm` aborts.  JVM slice-
-      # iteration parity is tracked under the JVM-backend remediation in docs/41.
+      # Same suite on the JVM target.  Previously dotnet-only (#2595): range-driven
+      # `for` was `ERange not supported in JVM codegen` and would abort the whole
+      # module, and the slice-iteration erased-element path needed the M-1 use-site
+      # unboxing.  Both have landed (range `for` via `emitCountingForJvm`), so the
+      # suite now passes on `--target jvm` — pinning it here closes the coverage gap
+      # (the reason the JVM range-for gap went unnoticed).  Compiles the
+      # @test_module in-process through the self-hosted `Jvm.Bridge` and runs under
+      # `java`.
+      - name: For-loop slice self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping for-loop slice JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping for-loop slice JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/for_loop_slice_self_test.l
 
       # Bitwise self-test on the JVM target (#1611 JVM half).  Compiles the same
       # @test_module in-process through the self-hosted `Jvm.Bridge`

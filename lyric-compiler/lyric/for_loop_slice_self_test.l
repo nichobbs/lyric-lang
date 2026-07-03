@@ -11,9 +11,13 @@
 //! and that `for i in 1L ..= 5L` emits the correct 64-bit increment via
 //! `MLdcI8` instead of the 32-bit `MLdcI4` path (#1569).
 //!
-//! Run via native `lyric test --target dotnet`.  Imports only `Std.*`.
+//! Run via native `lyric test` on either target — imports only `Std.*`.  Range
+//! `for` on the JVM (`emitCountingForJvm`) reached parity with MSIL in #4878's
+//! follow-up (range-driven `for` was `ERange not supported in JVM codegen`
+//! before), so this suite now runs on `--target jvm` in CI too:
 //!
-//!   lyric test lyric-compiler/lyric/for_loop_slice_self_test.l
+//!   lyric test --target dotnet lyric-compiler/lyric/for_loop_slice_self_test.l
+//!   lyric test --target jvm    lyric-compiler/lyric/for_loop_slice_self_test.l
 //!
 @test_module
 package Lyric.ForLoopSliceSelfTest

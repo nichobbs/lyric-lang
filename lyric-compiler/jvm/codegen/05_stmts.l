@@ -526,6 +526,82 @@ func emitCompoundArith(ctx: in FuncCtx, insns: in List[LInsn], op: in AssignOp, 
   }
 }
 
+// Emit a counted `for` loop for a range-driven `for <pat> in lo ..< hi` (half-
+// open, `inclusive = false`) or `lo ..= hi` (closed, `inclusive = true`).
+// Mirrors the MSIL `emitCountingForMsil` path: evaluate `lo` into a counter slot
+// and `hi` once into a bound slot, then loop `while i < hi` (half-open) / `i <= hi`
+// (closed).  The pattern is bound from the counter each iteration; `continue`
+// targets the increment point so the counter still advances, `break` targets the
+// exit.  Int and Long counters are both supported (Long compares via `lcmp`).
+func emitCountingForJvm(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  pat: in Pattern,
+  lo: in Expr,
+  hi: in Expr,
+  inclusive: in Bool,
+  body: in Block,
+): Unit {
+  val loTy = lowerExpr(ctx, insns, lo)
+  val iSlot = allocSlot(ctx, "__for_i_" + freshLabel(ctx), loTy)
+  emitStore(insns, iSlot, loTy)
+  val hiTy = lowerExpr(ctx, insns, hi)
+  val hiSlot = allocSlot(ctx, "__for_hi_" + freshLabel(ctx), hiTy)
+  emitStore(insns, hiSlot, hiTy)
+
+  val loopL = freshLabel(ctx)
+  val contL = freshLabel(ctx)
+  val endL = freshLabel(ctx)
+
+  insns.add(LLabel(name = loopL))
+  // Exit test: leave the loop once the counter is no longer in range.  For a
+  // half-open range exit when `i >= hi`; for a closed range exit when `i > hi`.
+  emitLoad(insns, iSlot, loTy)
+  emitLoad(insns, hiSlot, hiTy)
+  match loTy {
+    case JLong -> {
+      insns.add(LLcmp)
+      if inclusive {
+        insns.add(LIfgt(label = endL))
+      } else {
+        insns.add(LIfge(label = endL))
+      }
+    }
+    case _ -> {
+      if inclusive {
+        insns.add(LIfIcmpgt(label = endL))
+      } else {
+        insns.add(LIfIcmpge(label = endL))
+      }
+    }
+  }
+  lowerPatternBind(ctx, insns, pat, iSlot, loTy)
+
+  ctx.loopBreak.add(endL)
+  ctx.loopCont.add(contL)
+  ctx.loopDeferDepth.add(ctx.deferStack.count)
+  lowerBlock(ctx, insns, body)
+  ctx.loopDeferDepth.removeAt(ctx.loopDeferDepth.count - 1)
+  ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
+  ctx.loopCont.removeAt(ctx.loopCont.count - 1)
+
+  insns.add(LLabel(name = contL))
+  emitLoad(insns, iSlot, loTy)
+  match loTy {
+    case JLong -> {
+      insns.add(LLconst(v = 1i64))
+      insns.add(LLadd)
+    }
+    case _ -> {
+      insns.add(LIconst(v = 1))
+      insns.add(LIadd)
+    }
+  }
+  emitStore(insns, iSlot, loTy)
+  insns.add(LGoto(label = loopL))
+  insns.add(LLabel(name = endL))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §6. Statement lowering.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -740,109 +816,129 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
 
     // ── For loop (over array) ──────────────────────────────────────────────
     case SFor(_, pat, iter, body) -> {
-      val iterTy = lowerExpr(ctx, insns, iter)
-      match iterTy {
-        case JArray(elemArr) -> {
-          // Array: index-based loop.
-          val arrSlot = allocSlot(ctx, "__arr_" + freshLabel(ctx), iterTy)
-          emitStore(insns, arrSlot, iterTy)
-          val iSlot = allocSlot(ctx, "__for_i_" + freshLabel(ctx), JInt)
-          insns.add(LIconst(v = 0))
-          emitStore(insns, iSlot, JInt)
-          val lenSlot = allocSlot(ctx, "__for_len_" + freshLabel(ctx), JInt)
-          emitLoad(insns, arrSlot, iterTy)
-          insns.add(LArraylength)
-          emitStore(insns, lenSlot, JInt)
-          val loopLA = freshLabel(ctx)
-          val contLA = freshLabel(ctx)
-          val endLA = freshLabel(ctx)
-          insns.add(LLabel(name = loopLA))
-          emitLoad(insns, iSlot, JInt)
-          emitLoad(insns, lenSlot, JInt)
-          insns.add(LIfIcmpge(label = endLA))
-          emitLoad(insns, arrSlot, iterTy)
-          emitLoad(insns, iSlot, JInt)
-          emitArrayLoad(insns, elemArr)
-          val elemSlotA = allocSlot(ctx, "__for_elem_" + freshLabel(ctx), elemArr)
-          emitStore(insns, elemSlotA, elemArr)
-          lowerPatternBind(ctx, insns, pat, elemSlotA, elemArr)
-          // #2854: `continue` targets the index-increment point (`contLA`), not
-          // the loop top, so the loop variable still advances; `break` targets
-          // `endLA`.  `loopDeferDepth` captures the entry depth so a body `defer`
-          // replays on both before the jump.
-          ctx.loopBreak.add(endLA)
-          ctx.loopCont.add(contLA)
-          ctx.loopDeferDepth.add(ctx.deferStack.count)
-          lowerBlock(ctx, insns, body)
-          ctx.loopDeferDepth.removeAt(ctx.loopDeferDepth.count - 1)
-          ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
-          ctx.loopCont.removeAt(ctx.loopCont.count - 1)
-          insns.add(LLabel(name = contLA))
-          emitLoad(insns, iSlot, JInt)
-          insns.add(LIconst(v = 1))
-          insns.add(LIadd)
-          emitStore(insns, iSlot, JInt)
-          insns.add(LGoto(label = loopLA))
-          insns.add(LLabel(name = endLA))
+      match iter.kind {
+        // A range-driven `for` (`for i in 0 ..< n`, `for i in a ..= b`) lowers to
+        // a counted loop — mirrors the MSIL `emitCountingForMsil` path.  Bounded
+        // ranges only: an open start (`..< b`) has nothing to count from and an
+        // open end (`a ..`) is unbounded, so both are rejected (matching MSIL).
+        case ERange(bound) -> {
+          match bound {
+            case RBClosed(lo, hi) -> emitCountingForJvm(ctx, insns, pat, lo, hi, true, body)
+            case RBHalfOpen(lo, hi) -> emitCountingForJvm(ctx, insns, pat, lo, hi, false, body)
+            case RBLowerOpen(_) -> {
+              panic("Jvm.Codegen: an open-start range cannot drive a `for` loop — no lower bound to count from (#1478)")
+            }
+            case RBUpperOpen(_) -> {
+              panic("Jvm.Codegen: an open-end range (`a ..`) cannot drive a `for` loop — it is unbounded (#1478)")
+            }
+          }
         }
         case _ -> {
-          // Iterable<Object>: use iterator()/hasNext()/next().
-          // Works for both ArrayList and async-generator Iterable classes.
-          val iterableClass = "java/lang/Iterable"
-          val iteratorClass = "java/util/Iterator"
-          val objTy = JRef(className = "java/lang/Object")
-          val iterableSlot = allocSlot(ctx, "__iterable_" + freshLabel(ctx), objTy)
-          emitStore(insns, iterableSlot, objTy)
-          // Call .iterator() to get an Iterator.
-          emitLoad(insns, iterableSlot, objTy)
-          val iterPs: List[JvmType] = newList()
-          insns.add(
-            LInvokeinterface(
-              owner = iterableClass,
-              name = "iterator",
-              params = iterPs,
-              ret = JRef(className = iteratorClass),
-              argCount = 1
-            )
-          )
-          val itorSlot = allocSlot(ctx, "__itor_" + freshLabel(ctx), objTy)
-          emitStore(insns, itorSlot, objTy)
-          val loopLB = freshLabel(ctx)
-          val endLB = freshLabel(ctx)
-          insns.add(LLabel(name = loopLB))
-          // hasNext()
-          emitLoad(insns, itorSlot, objTy)
-          val hnPs: List[JvmType] = newList()
-          insns.add(LInvokeinterface(owner = iteratorClass, name = "hasNext", params = hnPs, ret = JBoolean, argCount = 1))
-          insns.add(LIfeq(label = endLB))
-          // next()
-          emitLoad(insns, itorSlot, objTy)
-          val nextPs: List[JvmType] = newList()
-          insns.add(
-            LInvokeinterface(
-              owner = iteratorClass,
-              name = "next",
-              params = nextPs,
-              ret = JRef(className = "java/lang/Object"),
-              argCount = 1
-            )
-          )
-          val elemTyB = JRef(className = "java/lang/Object")
-          val elemSlotB = allocSlot(ctx, "__for_elem_" + freshLabel(ctx), elemTyB)
-          emitStore(insns, elemSlotB, elemTyB)
-          lowerPatternBind(ctx, insns, pat, elemSlotB, elemTyB)
-          // #2854: `continue` targets the loop top (`loopLB`, which re-checks
-          // hasNext()); `break` targets `endLB`.  `loopDeferDepth` captures the
-          // entry depth so a body `defer` replays on both before the jump.
-          ctx.loopBreak.add(endLB)
-          ctx.loopCont.add(loopLB)
-          ctx.loopDeferDepth.add(ctx.deferStack.count)
-          lowerBlock(ctx, insns, body)
-          ctx.loopDeferDepth.removeAt(ctx.loopDeferDepth.count - 1)
-          ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
-          ctx.loopCont.removeAt(ctx.loopCont.count - 1)
-          insns.add(LGoto(label = loopLB))
-          insns.add(LLabel(name = endLB))
+          val iterTy = lowerExpr(ctx, insns, iter)
+          match iterTy {
+            case JArray(elemArr) -> {
+              // Array: index-based loop.
+              val arrSlot = allocSlot(ctx, "__arr_" + freshLabel(ctx), iterTy)
+              emitStore(insns, arrSlot, iterTy)
+              val iSlot = allocSlot(ctx, "__for_i_" + freshLabel(ctx), JInt)
+              insns.add(LIconst(v = 0))
+              emitStore(insns, iSlot, JInt)
+              val lenSlot = allocSlot(ctx, "__for_len_" + freshLabel(ctx), JInt)
+              emitLoad(insns, arrSlot, iterTy)
+              insns.add(LArraylength)
+              emitStore(insns, lenSlot, JInt)
+              val loopLA = freshLabel(ctx)
+              val contLA = freshLabel(ctx)
+              val endLA = freshLabel(ctx)
+              insns.add(LLabel(name = loopLA))
+              emitLoad(insns, iSlot, JInt)
+              emitLoad(insns, lenSlot, JInt)
+              insns.add(LIfIcmpge(label = endLA))
+              emitLoad(insns, arrSlot, iterTy)
+              emitLoad(insns, iSlot, JInt)
+              emitArrayLoad(insns, elemArr)
+              val elemSlotA = allocSlot(ctx, "__for_elem_" + freshLabel(ctx), elemArr)
+              emitStore(insns, elemSlotA, elemArr)
+              lowerPatternBind(ctx, insns, pat, elemSlotA, elemArr)
+              // #2854: `continue` targets the index-increment point (`contLA`), not
+              // the loop top, so the loop variable still advances; `break` targets
+              // `endLA`.  `loopDeferDepth` captures the entry depth so a body `defer`
+              // replays on both before the jump.
+              ctx.loopBreak.add(endLA)
+              ctx.loopCont.add(contLA)
+              ctx.loopDeferDepth.add(ctx.deferStack.count)
+              lowerBlock(ctx, insns, body)
+              ctx.loopDeferDepth.removeAt(ctx.loopDeferDepth.count - 1)
+              ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
+              ctx.loopCont.removeAt(ctx.loopCont.count - 1)
+              insns.add(LLabel(name = contLA))
+              emitLoad(insns, iSlot, JInt)
+              insns.add(LIconst(v = 1))
+              insns.add(LIadd)
+              emitStore(insns, iSlot, JInt)
+              insns.add(LGoto(label = loopLA))
+              insns.add(LLabel(name = endLA))
+            }
+            case _ -> {
+              // Iterable<Object>: use iterator()/hasNext()/next().
+              // Works for both ArrayList and async-generator Iterable classes.
+              val iterableClass = "java/lang/Iterable"
+              val iteratorClass = "java/util/Iterator"
+              val objTy = JRef(className = "java/lang/Object")
+              val iterableSlot = allocSlot(ctx, "__iterable_" + freshLabel(ctx), objTy)
+              emitStore(insns, iterableSlot, objTy)
+              // Call .iterator() to get an Iterator.
+              emitLoad(insns, iterableSlot, objTy)
+              val iterPs: List[JvmType] = newList()
+              insns.add(
+                LInvokeinterface(
+                  owner = iterableClass,
+                  name = "iterator",
+                  params = iterPs,
+                  ret = JRef(className = iteratorClass),
+                  argCount = 1
+                )
+              )
+              val itorSlot = allocSlot(ctx, "__itor_" + freshLabel(ctx), objTy)
+              emitStore(insns, itorSlot, objTy)
+              val loopLB = freshLabel(ctx)
+              val endLB = freshLabel(ctx)
+              insns.add(LLabel(name = loopLB))
+              // hasNext()
+              emitLoad(insns, itorSlot, objTy)
+              val hnPs: List[JvmType] = newList()
+              insns.add(LInvokeinterface(owner = iteratorClass, name = "hasNext", params = hnPs, ret = JBoolean, argCount = 1))
+              insns.add(LIfeq(label = endLB))
+              // next()
+              emitLoad(insns, itorSlot, objTy)
+              val nextPs: List[JvmType] = newList()
+              insns.add(
+                LInvokeinterface(
+                  owner = iteratorClass,
+                  name = "next",
+                  params = nextPs,
+                  ret = JRef(className = "java/lang/Object"),
+                  argCount = 1
+                )
+              )
+              val elemTyB = JRef(className = "java/lang/Object")
+              val elemSlotB = allocSlot(ctx, "__for_elem_" + freshLabel(ctx), elemTyB)
+              emitStore(insns, elemSlotB, elemTyB)
+              lowerPatternBind(ctx, insns, pat, elemSlotB, elemTyB)
+              // #2854: `continue` targets the loop top (`loopLB`, which re-checks
+              // hasNext()); `break` targets `endLB`.  `loopDeferDepth` captures the
+              // entry depth so a body `defer` replays on both before the jump.
+              ctx.loopBreak.add(endLB)
+              ctx.loopCont.add(loopLB)
+              ctx.loopDeferDepth.add(ctx.deferStack.count)
+              lowerBlock(ctx, insns, body)
+              ctx.loopDeferDepth.removeAt(ctx.loopDeferDepth.count - 1)
+              ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
+              ctx.loopCont.removeAt(ctx.loopCont.count - 1)
+              insns.add(LGoto(label = loopLB))
+              insns.add(LLabel(name = endLB))
+            }
+          }
         }
       }
     }
