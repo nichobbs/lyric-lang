@@ -36,6 +36,7 @@
 package Std.FileHost
 
 import Std.Core
+import Std.Errors
 
 // ── JDK extern types ──────────────────────────────────────────────────────────
 extern type JFile = "java.io.File"
@@ -143,6 +144,68 @@ func listChildren(path: in String, kind: in Int): slice[String] {
     i = i + 1
   }
   out2.toArray()
+}
+
+// =====================================================================
+// Result seams — the exception-free surface every kernel twin
+// implements (issue #4752).  Missing-file classification probes the
+// filesystem after a failed read rather than parsing exception text
+// (no TOCTOU on the success path); JDK failure surfaces vary between
+// java.io.FileNotFoundException and java.nio.file.NoSuchFileException.
+// =====================================================================
+pub func hostReadTextResult(path: in String): Result[String, IOError] {
+  try {
+    Ok(value = hostReadAllText(path))
+  } catch Bug as b {
+    if hostFileExists(path) {
+      Err(error = IoError(path = path, message = b.message))
+    } else {
+      Err(error = FileNotFound(path = path))
+    }
+  }
+}
+
+pub func hostWriteTextResult(path: in String, text: in String): Result[Unit, IOError] {
+  try {
+    hostWriteAllText(path, text)
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}
+
+// `mkdirs()` reports failure by returning false (no exception), so the
+// seam probes the result; an already-existing directory stays Ok.
+pub func hostCreateDirResult(path: in String): Result[Unit, IOError] {
+  try {
+    hostCreateDirectory(path)
+    if hostDirectoryExists(path) {
+      Ok(value = ())
+    } else {
+      Err(error = IoError(path = path, message = "the directory could not be created"))
+    }
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}
+
+// `java.io.File.delete()` reports failure by returning false (no
+// exception) and deletes empty DIRECTORIES too — probe first so a
+// directory path errors like the other twins (#4784) and missing
+// files stay idempotent Ok.
+pub func hostDeleteFileResult(path: in String): Result[Unit, IOError] {
+  if hostDirectoryExists(path) {
+    return Err(error = IoError(path = path, message = "the path is a directory"))
+  }
+  if not hostFileExists(path) {
+    return Ok(value = ())
+  }
+  hostDeleteFile(path)
+  if hostFileExists(path) {
+    Err(error = IoError(path = path, message = "the file could not be deleted"))
+  } else {
+    Ok(value = ())
+  }
 }
 
 // ── Deletion ──────────────────────────────────────────────────────────────────
