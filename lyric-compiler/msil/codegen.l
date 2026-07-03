@@ -3588,10 +3588,10 @@ pub func rollbackFuncCtxSlotsSinceMsil(fctx: in FuncCtx, preSlotCount: in Int): 
   val staleEntries = mapEntries(fctx.slots)
   var sei = 0
   while sei < staleEntries.count {
-    val entry = staleEntries[sei]
-    if entry.value >= preSlotCount {
-      fctx.slots.remove(entry.key)
-      fctx.types.remove(entry.key)
+    val staleEntry = staleEntries[sei]
+    if staleEntry.value >= preSlotCount {
+      fctx.slots.remove(staleEntry.key)
+      fctx.types.remove(staleEntry.key)
     }
     sei = sei + 1
   }
