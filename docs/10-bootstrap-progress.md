@@ -27003,3 +27003,140 @@ pure layer becomes a thin target-neutral delegation.
 
 **Related:** D-progress-556, `docs/01-language-reference.md` §11 (FFI),
 `native/plan/07-stdlib-port.md`, issue #4752, D-N-003, D-N-014.
+
+### D-progress-558 — JVM: in-process multi-package project builds; overload/assignment/ldc codegen fixes; math/uuid/char/json kernels; `lyric test --features` (band J6, epic #2663)
+
+**Shipped.** The band-J6 batch that makes multi-package JVM manifest
+builds real and takes four more stdlib kernels off the phantom-shim
+list, driven end-to-end by the lyric-storage JVM parity work (#1444):
+
+- **In-process multi-package JVM project builds.**  The JVM bridge
+  gains a true project entry
+  (`compileProjectToJarBundledWithFeatures`): every project package is
+  compiled into the bundle alongside the transitive stdlib-import
+  closure.  Sibling packages ride the same machinery as stdlib files
+  (registries, extern seeds, call-graph reachability, middle end,
+  codegen) with two deliberate differences — their parse / cfg /
+  middle-end diagnostics are fatal, and a codegen failure is always a
+  build error, never a J003 skip.  The retired
+  `emitProjectJvmViaSubprocess` path was an **unbounded process-spawn
+  loop** (its `--internal-project-build` child re-entered
+  `emitProject` with the same multi-package request and re-spawned
+  itself), masked only because no multi-package JVM manifest build had
+  ever been exercised end-to-end.
+- **Stdlib alias rewrite.**  Bundled stdlib files never got
+  `Aliases.rewriteFile`, so a package calling its kernel through an
+  aliased import (`import Std.CharHost as Host`) fell to the
+  instance-FFI guess and was silently J003-skipped — `Std.Char` and
+  `Std.Parse` had never worked on the JVM target at all.
+- **Overload resolution.**  The cross-package call registry's
+  name-only keys made same-name overloads collide (first wins): a
+  3-arg `Std.String.substring` call linked the 2-arg overload's
+  descriptor (VerifyError).  Arity-suffixed keys (`…@<argc>`) are
+  tried first; defaulted-parameter calls fall back unchanged.
+- **Assignment coercion.**  `contentLength = n` where `n` is an
+  erased-`Object` `Option[Long]` payload stored without unboxing
+  (`lstore` on an Object — VerifyError).  Both `AssEq` arms now
+  coerce with the call-argument `coerceArgTo` discipline.
+- **`ldc_w`.**  `emitPushInt`'s large-literal arm truncated pool
+  indexes past 255 into `ldc`'s single-byte operand (its float/string
+  siblings already had the wide check).
+- **Kernels de-phantomed** (the D-progress-543/555 pattern):
+  `Std.Math` (tau/log2/truncate/sign as pure bodies over the bound
+  JDK externs), `Std.Uuid` (`UUID(0,0)` ctor, `toString()`,
+  `fromString` in try/catch), `Std.Char` (`Character.hashCode` for
+  char→int, `Character.toString(int)+charAt(0)` for int→char,
+  `getType()` category check for isPunctuation), and `Std.Json` —
+  pure Lyric over `Std.Yaml.parseJson` (the JDK ships no JSON API):
+  record-typed `JsonDoc`/`JsonElement`/enumerator handles over the
+  `YamlValue` tree, the same `JsonValueKind` ordinals, a
+  canonical-JSON writer for `GetRawText` (documented divergence from
+  .NET's raw-input-slice semantics), and enumerators that re-assign
+  through their `inout` parameter.  The dead `getNumericValue` extern
+  is deleted on both targets (no consumers anywhere — the Std.IO
+  precedent).
+- **Three more codegen fixes surfaced by the first real bundled
+  consumers.**  (1) Matching on an *imported* union through a typed
+  scrutinee derived the case class from the in-package type guess
+  (`Std/JsonHost/YamlValue$YMapping`) — `resolveCaseClassJvm` now
+  trusts the derivation only when it names a registered case class,
+  falling back to the bundle-wide ctor registry.  (2) List indexing on
+  an imprecisely-typed receiver (an erased match binding) emitted
+  `ArrayList.get` with no cast — the receiver is checkcast before the
+  index is pushed.  (3) An `if` with a value-yielding then-arm and a
+  void else-arm (a trailing `else if` with no `else`) routed a result
+  the else-path never produced — mixed-arm ifs degrade to void.
+- **Erased `.count` dispatch became a synthesised helper.**  The
+  D-progress-555 inline runtime-class dispatch was safe only with an
+  empty operand stack; `i < pairs.count` in a while condition
+  evaluates it with `i` stacked (VerifyError).  Every package class
+  now carries a synthesised `__lyricCount(Object)I` static helper —
+  the branches live in the helper, the member-access site emits one
+  branch-free `invokestatic`.  Also: primitive int→long widening in
+  `coerceArgTo` (`value = 0` on an `out Long` underflowed `lstore`),
+  and a mixed-width match-binding limitation (double and long payloads
+  sharing one named slot) worked around in `Std.JsonHost` with
+  distinct binding names — the general per-arm slot-typing fix is
+  band-J4 scope.
+- **Imported-type descriptors name the real class.**  Each package's
+  non-generic declared types (unions, records, protected, opaque) are
+  exposed as dotted FQNs in the same per-package maps the extern-type
+  seed unions, so a descriptor written against an imported Lyric type
+  (`JsonElement.node: YamlValue`) resolves to `Std/Yaml/YamlValue`
+  instead of the in-package guess (NoClassDefFoundError).
+  Construction resolution gained package-scoped ctor keys
+  (`<pkg>::<name>`, own case wins — `InvalidDocument` exists in both
+  XmlError and YamlError and the bare first-wins entry gave Yaml's
+  code Xml's class), and match tests validate the derived case class
+  against the case registry with a union-name suffix-search fallback.
+- **`default()` into primitive locals.**  Generic `default()` lowers
+  to `aconst_null`; binding it to a primitive-annotated local
+  checkcast+unboxed the null (NPE in `Std.Json.tryGetLong`) — the
+  declared type's zero value is pushed instead.
+- **Relational String comparisons.**  `a < b` on Strings emitted
+  `String.equals` + a `nop` placeholder — wrong result and a stackmap
+  mismatch (VerifyError in Std.Sort's string comparator).  All four
+  relational ops now lower to lexicographic `String.compareTo` vs 0
+  in both branch emitters.
+- **Value equality on erased references (security-relevant).**  `==`
+  on reference operands whose static type is not literally String
+  compared by IDENTITY — `segs[i] == ".."` on a split-segment element
+  reported false for equal strings, letting path traversal through
+  lyric-storage's `isSafeKey`.  Erased/unknown reference `==`/`!=` now
+  dispatch through null-safe `java.util.Objects.equals` (records and
+  unions carry synthesized `equals`, preserving structural semantics).
+  Also in this round: relational String comparison via `compareTo`
+  (was `equals` + a nop placeholder), long-vs-int comparison widening
+  (`nv != 42` fed `lcmp` a mixed pair), interface types joining the
+  imported-type seed, and `Std.Core`'s generic Option/Result
+  predicates (`isErr`/`isOk`/`isSome`/`isNone`) lowering to
+  `instanceof` intrinsics — generic functions are never emitted as
+  JVM methods, so a call the monomorphizer could not specialize
+  linked against nothing.
+- **JVM Json kernel: no `Std.Parse` coupling, explicit Int32 range
+  contract (#4797).**  The numeric accessors converted Long payloads
+  through `Std.Parse` string round-trips; they now convert directly
+  (`toDouble`/`toInt`) with an explicit range check — `GetInt32`
+  panics (the .NET OverflowException contract, a catchable Bug) and
+  `TryGetInt32` reports false for out-of-range values instead of
+  truncating.  This also removes the kernel's only dependency on the
+  J003-skipped `Std.Parse` (#4799), so numeric JSON access works on
+  the JVM regardless of the Parse fix.
+- **`lyric test` feature flags.**  `--features` /
+  `--no-default-features` / `--all-features` (documented for
+  `lyric test` in docs/24 §3 since D045, never implemented) with
+  `lyric build`'s grammar and precedence — how target-gated kernels
+  (`@cfg(feature = "jvm")`) are selected when running a manifest
+  suite on the non-default target.
+- **lyric-storage JVM kernel (#1444).**  `Storage.Kernel.Jvm`
+  rewritten as pure Lyric over the JDK (`java.util.Base64`,
+  `MessageDigest` MD5, `HexFormat` uppercase hex,
+  `File.getCanonicalPath` for the traversal defence, `java.io`
+  streams, `listFiles()` enumeration) mirroring `Storage.Kernel.Net`
+  function-for-function; both kernels `@cfg`-gated (`dotnet` /
+  `jvm`) so the data plane's unqualified `host*` calls resolve to
+  whichever kernel survives erasure; `[features]` table and the JVM
+  kernel registered in `lyric-storage/lyric.toml`.
+
+**Related:** docs/44 §4 m-46–m-52, epic #2663, #2669, #1444,
+D-progress-555.

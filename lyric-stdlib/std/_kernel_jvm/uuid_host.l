@@ -1,16 +1,17 @@
 //! std/_kernel_jvm/uuid_host.l — JVM host boundary for java.util.UUID.
 //!
-//! Mirrors _kernel/uuid_host.l.  Three of the four operations require
-//! lyric.stdlib.jvm.UuidHost shims because the JVM API differs:
+//! Mirrors _kernel/uuid_host.l.  Pure Lyric over the JVM auto-FFI — the
+//! previous version routed three of the four operations through a phantom
+//! `lyric.stdlib.jvm.UuidHost` class that never existed at runtime (same
+//! elimination as the file/console/math kernel rewrites, D-progress-555):
 //!
-//!   hostEmptyGuid    — java.util.UUID has no "Empty" constant; shim
-//!                      returns new UUID(0L, 0L).
-//!   hostGuidToString — UUID.toString() uses lowercase hyphens (same
-//!                      canonical form as .NET), but the JVM method
-//!                      dispatch path needs a shim for the extern shape.
-//!   hostTryParseGuid — UUID.fromString(string) throws
-//!                      IllegalArgumentException on bad input; shim wraps
-//!                      it in a try/catch and returns Bool+out.
+//!   hostEmptyGuid    — java.util.UUID has no "Empty" constant;
+//!                      `UUID(0L, 0L)` via the auto-FFI constructor.
+//!   hostGuidToString — `UUID.toString()` (lowercase-hyphenated, the same
+//!                      canonical form as .NET).
+//!   hostTryParseGuid — `UUID.fromString(s)` throws
+//!                      IllegalArgumentException on bad input; wrapped in
+//!                      `try { … } catch Bug` for the Bool+out shape.
 //!
 //! `hostNewGuid` maps directly to java.util.UUID.randomUUID().
 //!
@@ -24,14 +25,23 @@ extern type Uuid = "java.util.UUID"
 @externTarget("java.util.UUID.randomUUID")
 pub func hostNewGuid(): Uuid = ()
 
-// Shim: new UUID(0L, 0L).
-@externTarget("lyric.stdlib.jvm.UuidHost.emptyUuid")
-pub func hostEmptyGuid(): Uuid = ()
+// java.util.UUID has no "Empty" constant: construct the all-zero UUID.
+pub func hostEmptyGuid(): Uuid {
+  Uuid.new(0, 0)
+}
 
-// Shim: wraps UUID.toString() for the extern dispatch shape.
-@externTarget("lyric.stdlib.jvm.UuidHost.guidToString")
-pub func hostGuidToString(g: in Uuid): String = ()
+pub func hostGuidToString(g: in Uuid): String {
+  g.toString()
+}
 
-// Shim: UUID.fromString(s) wrapped in try/catch.
-@externTarget("lyric.stdlib.jvm.UuidHost.tryParse")
-pub func hostTryParseGuid(s: in String, value: out Uuid): Bool = ()
+// `UUID.fromString` throws IllegalArgumentException (a RuntimeException,
+// catchable as Bug) on malformed input.
+pub func hostTryParseGuid(s: in String, value: out Uuid): Bool {
+  try {
+    value = Uuid.fromString(s)
+    true
+  } catch Bug as b {
+    value = hostEmptyGuid()
+    false
+  }
+}

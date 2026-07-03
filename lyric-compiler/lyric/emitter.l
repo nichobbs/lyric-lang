@@ -46,7 +46,6 @@ import Std.String as Str
 import Std.Path as Path
 import Std.Process as Process
 import Std.Environment as Environment
-import Std.Uuid as Uuid
 import Lyric.Lexer
 import Lyric.CliShell as CliShell
 import Lyric.ContractMeta as Meta
@@ -1619,7 +1618,9 @@ pub func emitCompilerBundle(entrySource: in String, outPath: in String, target: 
   // a package's transitive closure into one JAR via `compileToJarBundled`.
   match target {
     case Jvm -> return failResult("compiler bundle emit: --target jvm is not supported (the JVM toolchain bundles into a single JAR)")
-    case Native -> return failResult("compiler bundle emit: --target native is not supported (the native toolchain compiles the whole program into one binary)")
+    case Native -> return failResult(
+      "compiler bundle emit: --target native is not supported (the native toolchain compiles the whole program into one binary)"
+    )
     case Dotnet -> ()
   }
   val outDir = Path.dirname(outPath)
@@ -1923,19 +1924,33 @@ func isTypeDeclKind(kind: in String): Bool {
 func leadingIdent(s: in String): String {
   var cut = Str.length(s)
   val i0 = s.indexOf("(")
-  if i0 >= 0 and i0 < cut { cut = i0 }
+  if i0 >= 0 and i0 < cut {
+    cut = i0
+  }
   val i1 = s.indexOf(" ")
-  if i1 >= 0 and i1 < cut { cut = i1 }
+  if i1 >= 0 and i1 < cut {
+    cut = i1
+  }
   val i2 = s.indexOf(";")
-  if i2 >= 0 and i2 < cut { cut = i2 }
+  if i2 >= 0 and i2 < cut {
+    cut = i2
+  }
   val i3 = s.indexOf(",")
-  if i3 >= 0 and i3 < cut { cut = i3 }
+  if i3 >= 0 and i3 < cut {
+    cut = i3
+  }
   val i4 = s.indexOf("}")
-  if i4 >= 0 and i4 < cut { cut = i4 }
+  if i4 >= 0 and i4 < cut {
+    cut = i4
+  }
   val i5 = s.indexOf("\n")
-  if i5 >= 0 and i5 < cut { cut = i5 }
+  if i5 >= 0 and i5 < cut {
+    cut = i5
+  }
   val i6 = s.indexOf("\t")
-  if i6 >= 0 and i6 < cut { cut = i6 }
+  if i6 >= 0 and i6 < cut {
+    cut = i6
+  }
   Str.substring(s, 0, cut)
 }
 
@@ -2034,7 +2049,12 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
   var pi = 0
   while pi < req.packages.count {
     val pkg = req.packages[pi]
-    payloads.add(ProjectPackagePayload(name = pkg.name, source = mergePackageSources(pkg.name, pkg.sources, req.activeFeatures, req.declaredFeatures)))
+    payloads.add(
+      ProjectPackagePayload(
+        name = pkg.name,
+        source = mergePackageSources(pkg.name, pkg.sources, req.activeFeatures, req.declaredFeatures)
+      )
+    )
     pi += 1
   }
   // Auto-resolve `lyric-stdlib/std/*.l` at runtime so the in-process bridge
@@ -2101,7 +2121,12 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
   var dtpi = 0
   while dtpi < req.depTemplateSrcs.count {
     val pkg = req.depTemplateSrcs[dtpi]
-    depTemplatePkgs.add(ProjectPackagePayload(name = pkg.name, source = mergePackageSources(pkg.name, pkg.sources, req.activeFeatures, req.declaredFeatures)))
+    depTemplatePkgs.add(
+      ProjectPackagePayload(
+        name = pkg.name,
+        source = mergePackageSources(pkg.name, pkg.sources, req.activeFeatures, req.declaredFeatures)
+      )
+    )
     dtpi = dtpi + 1
   }
 
@@ -2131,13 +2156,6 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
   if req.packages.count == 0 {
     return failResult("no packages specified in project build")
   }
-  if req.packages.count > 1 {
-    return emitProjectJvmViaSubprocess(req)
-  }
-
-  val pkg = req.packages[0]
-  val pkgName = pkg.name
-  val source = if pkg.sources.count > 0 { pkg.sources[0] } else { "" }
 
   val stdlibSources = findStdlibSourcesForTarget(true)
 
@@ -2157,6 +2175,38 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
     diags.add(warningDiagnostic("W0006", msg, sp))
   }
 
+  if req.packages.count > 1 {
+    // Multi-package project: every package rides the in-process bundled
+    // compile (`compileProjectToJarBundledWithFeatures`) — the entry
+    // package first, its `package.name` as the bundle's entry name.  The
+    // former subprocess fallback (`--internal-project-build` shellout)
+    // was an unbounded process-spawn loop and is deleted.
+    val pkgSrcs: List[String] = newList()
+    var mpi = 0
+    while mpi < req.packages.count {
+      val mp = req.packages[mpi]
+      pkgSrcs.add(mergePackageSources(mp.name, mp.sources, req.activeFeatures, req.declaredFeatures))
+      mpi = mpi + 1
+    }
+    val okP = JvmBridge.compileProjectToJarBundledWithFeatures(
+      pkgSrcs,
+      req.outputPath,
+      req.packages[0].name,
+      stdlibSources,
+      req.activeFeatures,
+      req.declaredFeatures,
+      depTemplateNames
+    )
+    if okP {
+      return EmitResult(outputPath = Some(value = req.outputPath), diagnostics = diags)
+    }
+    return failResult("JVM compilation failed (see stderr)")
+  }
+
+  val pkg = req.packages[0]
+  val pkgName = pkg.name
+  val source = if pkg.sources.count > 0 { pkg.sources[0] } else { "" }
+
   val ok = JvmBridge.compileToJarBundledWithFeatures(
     source,
     req.outputPath,
@@ -2174,148 +2224,6 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
   }
 }
 
-// Subprocess project emit — JVM target only.  Writes each package's
-// sources to temp files, builds a tab-encoded spec, and shells to
-// `lyric --internal-project-build`.  Will retire when the self-hosted
-// JVM bridge gains a project-level entry point.
-func emitProjectJvmViaSubprocess(req: in EmitProjectRequest): EmitResult {
-  // Per-invocation subdirectory under lyric-emit/ keyed on a v4 UUID.
-  // Two concurrent builds for the same assemblyName would otherwise
-  // race on the spec / source filenames; the UUID guarantees a unique
-  // namespace and a clean tree to delete on completion.
-  val tmpRoot = Path.join(tempBase(), "lyric-emit")
-  match File.createDir(tmpRoot) {
-    case Ok(_) -> ()
-    case Err(_) -> ()
-  }
-  val tmpDir = Path.join(tmpRoot, Uuid.uuidToString(Uuid.newUuid()))
-  match File.createDir(tmpDir) {
-    case Ok(_) -> ()
-    case Err(e) -> return failResult("cannot create temp build directory: " + IOError.message(e))
-  }
-
-  // Helper: best-effort cleanup of the per-invocation temp directory.
-  // Errors are swallowed so a transient file-handle leak doesn't fail
-  // a successful build; the OS will sweep the parent eventually.
-  // (#837: every early-exit path runs this before returning, so a
-  // write failure never leaves an orphaned UUID directory.)
-
-  // Write each package's sources to temp files and build spec lines.
-  // Spec line format: <packageName> TAB <srcPath1> TAB <srcPath2> ...
-  val specLines: List[String] = newList()
-  var failMsg = ""
-  var pi = 0
-  while pi < req.packages.count and failMsg == "" {
-    val pkg = req.packages[pi]
-    var line = pkg.name
-    var si = 0
-    while si < pkg.sources.count and failMsg == "" {
-      val srcName = req.assemblyName + "__" + pkg.name + "__" + toString(si) + "__src.l"
-      val srcPath = Path.join(tmpDir, srcName)
-      match File.writeText(srcPath, pkg.sources[si]) {
-        case Ok(_) -> ()
-        case Err(e) -> {
-          failMsg = "cannot write temp source: " + IOError.message(e)
-        }
-      }
-      line = line + "\t" + srcPath
-      si += 1
-    }
-    specLines.add(line)
-    pi += 1
-  }
-
-  if failMsg != "" {
-    match File.deleteDirRecursive(tmpDir) {
-      case Ok(_) -> ()
-      case Err(_) -> ()
-    }
-    return failResult(failMsg)
-  }
-
-  // Append restored dependency DLL lines: DEP\t<name>\t<dllPath>
-  var di = 0
-  while di < req.restoredDllPaths.count {
-    specLines.add("DEP\t" + req.restoredDllPaths[di])
-    di += 1
-  }
-
-  // Append active feature lines: FEATURE\t<name>
-  var fi = 0
-  while fi < req.activeFeatures.count {
-    specLines.add("FEATURE\t" + req.activeFeatures[fi])
-    fi += 1
-  }
-
-  // Append declared feature lines: DECLARED\t<name> for F0013 typo guard.
-  var di2 = 0
-  while di2 < req.declaredFeatures.count {
-    specLines.add("DECLARED\t" + req.declaredFeatures[di2])
-    di2 += 1
-  }
-
-  // Append resolved NuGet assembly lines: NUGET\t<path>
-  var ni = 0
-  while ni < req.nugetAssemblyPaths.count {
-    specLines.add("NUGET\t" + req.nugetAssemblyPaths[ni])
-    ni += 1
-  }
-
-  val specContent = Str.joinList("\n", specLines)
-  val specPath = Path.join(tmpDir, req.assemblyName + "__project_spec.txt")
-  match File.writeText(specPath, specContent) {
-    case Ok(_) -> ()
-    case Err(e) -> {
-      failMsg = "cannot write project spec: " + IOError.message(e)
-    }
-  }
-
-  if failMsg != "" {
-    match File.deleteDirRecursive(tmpDir) {
-      case Ok(_) -> ()
-      case Err(_) -> ()
-    }
-    return failResult(failMsg)
-  }
-
-  val targetStr = match req.target { case Dotnet -> "dotnet"; case Jvm -> "jvm"; case Native -> "native" }
-
-  val subcmd: List[String] = newList()
-  subcmd.add("--internal-project-build")
-  subcmd.add(specPath)
-  subcmd.add("-o")
-  subcmd.add(req.outputPath)
-  subcmd.add("--target")
-  subcmd.add(targetStr)
-
-  val result = match Process.run(cliShellExe(), cliShellArgs(subcmd)) {
-    case Ok(code) -> {
-      if code != 0 {
-        failResult("project build failed (see stderr)")
-      } else {
-        val okDiags: List[Diagnostic] = newList()
-        EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
-      }
-    }
-    case Err(e) -> failResult("cannot launch compiler: " + IOError.message(e))
-  }
-
-  match File.deleteDirRecursive(tmpDir) {
-    case Ok(_) -> ()
-    case Err(_) -> ()
-  }
-
-  result
-}
-
-/// Compile Lyric source to a .NET DLL or JVM JAR.
-///
-/// `--target dotnet` runs IN-PROCESS via
-/// `Msil.Bridge.compileToMsilWithVersion`.  `--target jvm` still
-/// shells out to `lyric --internal-build` because the self-hosted JVM
-/// bridge does not yet have a single-file entry point reachable from
-/// here.  Will retire when the JVM in-process bridge lands.
-@stable(since = "0.1")
 pub func emit(req: in EmitRequest): EmitResult {
   // Ensure the output directory exists so the bridges' raw byte-write
   // doesn't fail with ENOENT on the first build into a fresh tree.
@@ -2381,7 +2289,7 @@ func emitJvmInProcess(req: in EmitRequest): EmitResult {
   // MSIL project path applies, now wired on the JVM target via
   // `compileToJarBundledWithFeatures` (J2 / docs/44 §5, #2665).  JVM *project*
   // builds thread the manifest's feature set through
-  // `emitProjectJvmViaSubprocess`'s `FEATURE` spec lines.
+  // `emitProjectJvmInProcess`.
   val noFeatures: List[String] = newList()
   val noDepTemplateSrcsJvm: List[String] = newList()
   val ok = JvmBridge.compileToJarBundledWithFeatures(

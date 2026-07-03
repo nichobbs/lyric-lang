@@ -677,6 +677,17 @@ pub func emitHolderElemStore(insns: in List[LInsn], elemTy: in JvmType): Unit {
 // here, so write-through is centralised.  The value is consumed once; the
 // write-through reloads it from the value slot (cheaper than a `dup` that would
 // have to handle the long/double two-word case).
+// Resolve a constructable type name (record / union case / protected /
+// opaque) to its JVM class, preferring the current package's own
+// declaration (`<pkg>::<name>` scoped key) over the bundle-global
+// first-wins bare entry — see `addCtorKeys`.
+pub func ctorClassFor(ctx: in FuncCtx, name: in String): Option[String] {
+  match mapGet(ctx.ctors, ctx.pkgName + "::" + name) {
+    case Some(cls) -> Some(value = cls)
+    case None -> mapGet(ctx.ctors, name)
+  }
+}
+
 pub func emitStoreLocalWriteThrough(ctx: in FuncCtx, insns: in List[LInsn], slot: in Int, ty: in JvmType): Unit {
   emitStore(insns, slot, ty)
   match mapGet(ctx.holderArraySlot, slot) {

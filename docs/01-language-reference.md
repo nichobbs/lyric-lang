@@ -1550,6 +1550,8 @@ is fixed. The watch loop runs in the CLI process (always the .NET host).
 
 `--filter <substring>` runs only tests whose title contains `<substring>`; non-matching tests are reported as `# skip` lines. `--list` prints titles only without compiling. `--fail-fast` stops after the first test file that has any failing test and prints an early summary; in project mode this means remaining test entries are not run. `property` declarations parse but skip at runtime in v1 (`# skip` line); `fixture name[: T] = expr` declarations are rewritten to module-level `val` declarations in the synthesised source (D-progress-474). v2 adds cross-package non-`pub` access (§3.2), property execution (`--properties`), and doctest extraction. See `docs/24-test-runner-plan.md` for the v1 design and v2 scope.
 
+**Feature selection (project mode).** `--features <a,b>`, `--no-default-features`, and `--all-features` control the active `[features]` set with the same grammar and precedence as `lyric build` (§13.1 / `docs/24-build-features.md`): `--all-features` activates every declared feature; otherwise the manifest's `default` set applies unless `--no-default-features`, and `--features` adds on top. This is how target-gated kernel packages (`@cfg(feature = "dotnet")` / `@cfg(feature = "jvm")`) are selected when running a manifest suite on the non-default target, e.g. `lyric test --manifest lyric-storage/lyric.toml --target jvm --no-default-features --features jvm`. Single-file mode ignores these flags (a standalone `@test_module` has no manifest to declare features in).
+
 ### 13.3 Verifier
 
 `lyric prove [<source.l>]` runs the SMT-backed verifier on `@proof_required` modules. Reports unverified obligations with counterexamples.

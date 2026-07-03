@@ -16,6 +16,67 @@ import Jvm.AutoFfi
 // ─────────────────────────────────────────────────────────────────────────────
 // §5d. Assignment expression lowering.
 // ─────────────────────────────────────────────────────────────────────────────
+// True when `e` is a bare `default()` call.  A generic `default()` lowers to
+// `aconst_null` (the erased model); binding it to a PRIMITIVE-annotated local
+// must not go through the null (checkcast+unbox NPEs at runtime — hit by
+// `var v: Long = default()` in Std.Json.tryGetLong) — the declared type's
+// zero value is pushed instead.
+func isDefaultCall(e: in Expr): Bool {
+  match e.kind {
+    case ECall(fn, args) -> {
+      if args.count == 0 {
+        match fn.kind {
+          case EPath(p) -> lastSegment(p) == "default"
+          case _ -> false
+        }
+      } else {
+        false
+      }
+    }
+    case _ -> false
+  }
+}
+
+// Push the zero value of primitive `ty`; returns false for non-primitives
+// (caller lowers the expression normally).
+func pushPrimitiveZero(insns: in List[LInsn], ty: in JvmType): Bool {
+  match ty {
+    case JLong -> {
+      insns.add(LLconst(v = 0i64))
+      true
+    }
+    case JDouble -> {
+      insns.add(LDconst(v = 0.0))
+      true
+    }
+    case JFloat -> {
+      insns.add(LFconst(v = 0.0))
+      true
+    }
+    case JInt -> {
+      insns.add(LIconst(v = 0))
+      true
+    }
+    case JBoolean -> {
+      insns.add(LIconst(v = 0))
+      true
+    }
+    case JByte -> {
+      insns.add(LIconst(v = 0))
+      true
+    }
+    case JShort -> {
+      insns.add(LIconst(v = 0))
+      true
+    }
+    case JChar -> {
+      insns.add(LIconst(v = 0))
+      true
+    }
+    case _ -> false
+  }
+}
+
 func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op: in AssignOp, value: in Expr): JvmType {
   match target.kind {
     case EPath(path) -> {
@@ -33,7 +94,12 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 case AssEq -> {
                   emitLoad(insns, cellSlot, cellType)
                   insns.add(LIconst(v = 0))
-                  lowerExpr(ctx, insns, value)
+                  val cvTy = lowerExpr(ctx, insns, value)
+                  // The value's static type may not match the cell's element
+                  // type (an erased-Object match payload assigned into a
+                  // primitive-typed var, and vice versa) — same coercion as
+                  // call arguments.
+                  coerceArgTo(insns, cvTy, cellElemTy)
                   emitArrayStore(insns, cellElemTy)
                 }
                 case AssPlus -> {
@@ -147,7 +213,14 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               // Normal (non-hoisted) local var assignment
               match op {
                 case AssEq -> {
-                  lowerExpr(ctx, insns, value)
+                  val vTy = lowerExpr(ctx, insns, value)
+                  // The value's static type may not match the slot's declared
+                  // type: an erased-Object match payload (`case Some(n) ->
+                  // contentLength = n` on Option[Long]) assigned into a
+                  // primitive-typed var left an Object on the stack for an
+                  // lstore — VerifyError (lyric-storage's listEntryForKey).
+                  // Same coercion discipline as call arguments.
+                  coerceArgTo(insns, vTy, ty)
                   emitStoreLocalWriteThrough(ctx, insns, slot, ty)
                 }
                 case AssPlus -> {
@@ -467,11 +540,17 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           lowerLocalPatBind(ctx, insns, pat, initTy, tyOpt)
         }
         case LBLet(name, tyOpt, init) -> {
-          val initTy = lowerExpr(ctx, insns, init)
-          val ty = match tyOpt { case Some(te) -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes); case None -> initTy }
-          coerceArgTo(insns, initTy, ty)
-          val slot = allocSlot(ctx, name, ty)
-          emitStore(insns, slot, ty)
+          val annTy = match tyOpt { case Some(te) -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes); case None -> JVoid }
+          if isDefaultCall(init) and pushPrimitiveZero(insns, annTy) {
+            val slot0 = allocSlot(ctx, name, annTy)
+            emitStore(insns, slot0, annTy)
+          } else {
+            val initTy = lowerExpr(ctx, insns, init)
+            val ty = match tyOpt { case Some(_) -> annTy; case None -> initTy }
+            coerceArgTo(insns, initTy, ty)
+            val slot = allocSlot(ctx, name, ty)
+            emitStore(insns, slot, ty)
+          }
         }
         case LBVar(name, tyOpt, initOpt) -> {
           // Check if this var is hoisted (referenced inside a lambda).
@@ -480,9 +559,15 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
             case Some(init) -> {
               // An un-annotated `var x = e` takes its slot type from the
               // initialiser; an annotated `var x: T = e` coerces `e` to `T`.
-              val initTy = lowerExpr(ctx, insns, init)
-              val ty = match tyOpt { case Some(te) -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes); case None -> initTy }
-              coerceArgTo(insns, initTy, ty)
+              val annTy = match tyOpt { case Some(te) -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes); case None -> JVoid }
+              var ty = annTy
+              if isDefaultCall(init) and pushPrimitiveZero(insns, annTy) {
+                ()
+              } else {
+                val initTy = lowerExpr(ctx, insns, init)
+                ty = match tyOpt { case Some(_) -> annTy; case None -> initTy }
+                coerceArgTo(insns, initTy, ty)
+              }
               if isHoisted {
                 // Allocate a heap cell (1-element typed array) for the var.
                 // Stack on entry: [initValue (coerced)]

@@ -100,18 +100,57 @@ func lowerCmp(
       // equality would wrongly report them unequal.  Other reference types keep
       // identity comparison.  Operands are on the stack as [lhs, rhs].
       if cls == "java/lang/String" {
-        val eqPs: List[JvmType] = newList()
-        eqPs.add(JRef(className = "java/lang/Object"))
-        insns.add(LInvokevirtual(owner = "java/lang/String", name = "equals", params = eqPs, ret = JBoolean))
         match op {
-          case BEq -> insns.add(LIfne(label = trueLabel))
-          case BNeq -> insns.add(LIfeq(label = trueLabel))
+          case BEq -> {
+            val eqPs: List[JvmType] = newList()
+            eqPs.add(JRef(className = "java/lang/Object"))
+            insns.add(LInvokevirtual(owner = "java/lang/String", name = "equals", params = eqPs, ret = JBoolean))
+            insns.add(LIfne(label = trueLabel))
+          }
+          case BNeq -> {
+            val eqPs2: List[JvmType] = newList()
+            eqPs2.add(JRef(className = "java/lang/Object"))
+            insns.add(LInvokevirtual(owner = "java/lang/String", name = "equals", params = eqPs2, ret = JBoolean))
+            insns.add(LIfeq(label = trueLabel))
+          }
+          // Relational String comparison is lexicographic `compareTo` vs 0
+          // (`a < b` in Std.Sort's string comparator previously emitted
+          // `equals` + a nop placeholder — wrong result AND a stackmap
+          // mismatch from the value left on the stack).
+          case BLt -> {
+            emitStringCompareTo(insns)
+            insns.add(LIflt(label = trueLabel))
+          }
+          case BLte -> {
+            emitStringCompareTo(insns)
+            insns.add(LIfle(label = trueLabel))
+          }
+          case BGt -> {
+            emitStringCompareTo(insns)
+            insns.add(LIfgt(label = trueLabel))
+          }
+          case BGte -> {
+            emitStringCompareTo(insns)
+            insns.add(LIfge(label = trueLabel))
+          }
           case _ -> panic("Jvm.Codegen: unsupported String comparison op")
         }
       } else {
+        // Lyric `==` is VALUE equality on every reference type (String
+        // compares by content; records/unions carry synthesized `equals`),
+        // so erased/unknown reference operands dispatch through the
+        // null-safe `Objects.equals` — identity (`if_acmpeq`) wrongly
+        // reported two equal split-segment strings unequal
+        // (`segs[i] == ".."` in lyric-storage's traversal guard).
         match op {
-          case BEq -> insns.add(LIfAcmpeq(label = trueLabel))
-          case BNeq -> insns.add(LIfAcmpne(label = trueLabel))
+          case BEq -> {
+            emitObjectsEquals(insns)
+            insns.add(LIfne(label = trueLabel))
+          }
+          case BNeq -> {
+            emitObjectsEquals(insns)
+            insns.add(LIfeq(label = trueLabel))
+          }
           case _ -> panic("Jvm.Codegen: unsupported reference comparison op")
         }
       }
@@ -129,6 +168,23 @@ func lowerCmp(
       }
     }
   }
+}
+
+// Null-safe value equality on two reference operands already stacked
+// [lhs, rhs]: `java.util.Objects.equals(Object, Object)Z`.
+func emitObjectsEquals(insns: in List[LInsn]): Unit {
+  val oePs: List[JvmType] = newList()
+  oePs.add(JRef(className = "java/lang/Object"))
+  oePs.add(JRef(className = "java/lang/Object"))
+  insns.add(LInvokestatic(owner = "java/util/Objects", name = "equals", params = oePs, ret = JBoolean))
+}
+
+// `String.compareTo(String)I` on two String operands already stacked
+// [lhs, rhs] — the lexicographic base for relational String comparisons.
+func emitStringCompareTo(insns: in List[LInsn]): Unit {
+  val ctPs: List[JvmType] = newList()
+  ctPs.add(JRef(className = "java/lang/String"))
+  insns.add(LInvokevirtual(owner = "java/lang/String", name = "compareTo", params = ctPs, ret = JInt))
 }
 
 // Emit the panic sequence for a string message already on the stack.
@@ -265,7 +321,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               // invokespecial <init>()V`.  Without this the case lowered to null and
               // any downstream `match` saw `instanceof Case == false` → "match not
               // exhaustive" (#1675).
-              match mapGet(ctx.ctors, name) {
+              match ctorClassFor(ctx, name) {
                 case Some(cls) -> {
                   val emptyArgs: List[CallArg] = newList()
                   lowerConstruction(ctx, insns, cls, emptyArgs)
@@ -513,7 +569,12 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               JFloat
             }
             case _ -> {
-              lowerExpr(ctx, insns, rhs)
+              // Coerce like the JDouble/JFloat arms: the rhs may be an
+              // erased-Object value (a lambda invoke's boxed return —
+              // `result + f(1)` in closure_zero_overhead_self_test) and
+              // `iadd` rejects a reference operand at verification.
+              val rTy = lowerExpr(ctx, insns, rhs)
+              coerceArgTo(insns, rTy, JInt)
               insns.add(LIadd)
               JInt
             }
@@ -847,57 +908,15 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                         // match binding on a generic union payload, e.g.
                         // `case Ok(rb)` on `Result[List[Byte], _]`): the precise
                         // class is unknown statically, so dispatch on the runtime
-                        // class.  Without this the receiver itself was left as
-                        // the "value" and a following comparison checkcast'd the
-                        // collection to Integer (file_jvm_self_test regression).
-                        // Receiver goes to a temp first so every branch target
-                        // sees an empty operand stack.
-                        val cntRecv = allocSlot(ctx, "__cnt_recv_" + freshLabel(ctx), JRef(className = "java/lang/Object"))
-                        insns.add(LAstore(slot = cntRecv))
-                        val cntRes = allocSlot(ctx, "__cnt_res_" + freshLabel(ctx), JInt)
-                        val cntMapL = freshLabel(ctx)
-                        val cntStrL = freshLabel(ctx)
-                        val cntArrL = freshLabel(ctx)
-                        val cntEndL = freshLabel(ctx)
-                        insns.add(LAload(slot = cntRecv))
-                        insns.add(LInstanceof(className = "java/util/Collection"))
-                        insns.add(LIfeq(label = cntMapL))
-                        insns.add(LAload(slot = cntRecv))
-                        insns.add(LCheckcast(className = "java/util/Collection"))
-                        val cntSzPs: List[JvmType] = newList()
-                        insns.add(LInvokeinterface(owner = "java/util/Collection", name = "size", params = cntSzPs, ret = JInt, argCount = 1))
-                        insns.add(LIstore(slot = cntRes))
-                        insns.add(LGoto(label = cntEndL))
-                        insns.add(LLabel(name = cntMapL))
-                        insns.add(LAload(slot = cntRecv))
-                        insns.add(LInstanceof(className = "java/util/Map"))
-                        insns.add(LIfeq(label = cntStrL))
-                        insns.add(LAload(slot = cntRecv))
-                        insns.add(LCheckcast(className = "java/util/Map"))
-                        val cntMapPs: List[JvmType] = newList()
-                        insns.add(LInvokeinterface(owner = "java/util/Map", name = "size", params = cntMapPs, ret = JInt, argCount = 1))
-                        insns.add(LIstore(slot = cntRes))
-                        insns.add(LGoto(label = cntEndL))
-                        insns.add(LLabel(name = cntStrL))
-                        insns.add(LAload(slot = cntRecv))
-                        insns.add(LInstanceof(className = "java/lang/String"))
-                        insns.add(LIfeq(label = cntArrL))
-                        insns.add(LAload(slot = cntRecv))
-                        insns.add(LCheckcast(className = "java/lang/String"))
-                        val cntLnPs: List[JvmType] = newList()
-                        insns.add(LInvokevirtual(owner = "java/lang/String", name = "length", params = cntLnPs, ret = JInt))
-                        insns.add(LIstore(slot = cntRes))
-                        insns.add(LGoto(label = cntEndL))
-                        // Last resort: a boxed slice (`Object[]`).  Anything else
-                        // fails the checkcast loudly rather than yielding a wrong
-                        // value.
-                        insns.add(LLabel(name = cntArrL))
-                        insns.add(LAload(slot = cntRecv))
-                        insns.add(LCheckcast(className = "[Ljava/lang/Object;"))
-                        insns.add(LArraylength)
-                        insns.add(LIstore(slot = cntRes))
-                        insns.add(LLabel(name = cntEndL))
-                        insns.add(LIload(slot = cntRes))
+                        // class via the synthesised `__lyricCount(Object)I`
+                        // helper every package class carries.  The call is
+                        // branch-free HERE — the dispatch's branches live in the
+                        // helper, whose frames start from an empty stack — so
+                        // this is safe even mid-expression with values already
+                        // stacked (`i < pairs.count` in a while condition).
+                        val lcPs: List[JvmType] = newList()
+                        lcPs.add(JRef(className = "java/lang/Object"))
+                        insns.add(LInvokestatic(owner = ctx.pkgName, name = "__lyricCount", params = lcPs, ret = JInt))
                         JInt
                       } else {
                         JRef(className = "java/lang/Object")
@@ -1119,7 +1138,24 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
     }
     case EIndex(recv, indices) -> {
       // Array/list indexing.
-      val recvTy = lowerExpr(ctx, insns, recv)
+      val recvTy0 = lowerExpr(ctx, insns, recv)
+      // A list receiver whose static type is imprecise (an erased-`Object`
+      // match binding, or an imported type's in-package guess) must be cast
+      // to `ArrayList` HERE — before the index is pushed, since checkcast
+      // only reaches the stack top.  Without it the `ArrayList.get` below
+      // fails verification ("Object is not assignable to ArrayList"; hit by
+      // `pairs[idx]` on a match-bound `List[YamlPair]` payload).
+      val recvTy = match recvTy0 {
+        case JRef(c0) -> {
+          if c0 == "java/lang/String" or c0 == "java/util/ArrayList" {
+            recvTy0
+          } else {
+            insns.add(LCheckcast(className = "java/util/ArrayList"))
+            JRef(className = "java/util/ArrayList")
+          }
+        }
+        case _ -> recvTy0
+      }
       if indices.count > 0 {
         lowerExpr(ctx, insns, indices[0])
         match recvTy {
@@ -1226,6 +1262,23 @@ func numericPrimTy(ty: in JvmType): JvmType {
 // compare op (lcmp / dcmp / if_icmp…) sees two like-typed primitives rather
 // than an `Object` it would reject at verification.  Both operands are already
 // on the stack as [lhs, rhs]; returns the reconciled comparison type.
+func isLongJvm(ty: in JvmType): Bool {
+  match ty {
+    case JLong -> true
+    case _ -> false
+  }
+}
+
+func isIntLikeJvm(ty: in JvmType): Bool {
+  match ty {
+    case JInt -> true
+    case JByte -> true
+    case JShort -> true
+    case JChar -> true
+    case _ -> false
+  }
+}
+
 func reconcileCmpOperands(ctx: in FuncCtx, insns: in List[LInsn], lhsTy: in JvmType, rhsTy: in JvmType): JvmType {
   val lhsPrim = numericPrimTy(lhsTy)
   val rhsPrim = numericPrimTy(rhsTy)
@@ -1240,6 +1293,18 @@ func reconcileCmpOperands(ctx: in FuncCtx, insns: in List[LInsn], lhsTy: in JvmT
     // Unbox rhs (on top of the stack) directly.
     coerceArgTo(insns, rhsTy, lhsPrim)
     lhsPrim
+  } else if isLongJvm(lhsTy) and isIntLikeJvm(rhsTy) {
+    // long vs int literal (`nv != 42`): widen the int on top with i2l or
+    // `lcmp` sees (long_2nd, int) — VerifyError.
+    insns.add(LI2l)
+    JLong
+  } else if isIntLikeJvm(lhsTy) and isLongJvm(rhsTy) {
+    // int vs long: spill the long, widen the int, reload.
+    val rhsSlotL = allocSlot(ctx, "__cmp_rhs_" + freshLabel(ctx), JLong)
+    emitStore(insns, rhsSlotL, JLong)
+    insns.add(LI2l)
+    emitLoad(insns, rhsSlotL, JLong)
+    JLong
   } else {
     // Both operands have the same primitive type (or both are Object-erased
     // references).  For the primitive case the caller emits the arithmetic
@@ -1332,18 +1397,49 @@ func lowerCmpFail(insns: in List[LInsn], op: in BinOp, lhsTy: in JvmType, failLa
       // String `==`/`!=` is value comparison (`String.equals`), not identity.
       // See the matching note in `lowerCmp`.  Operands on stack as [lhs, rhs].
       if cls == "java/lang/String" {
-        val eqPs: List[JvmType] = newList()
-        eqPs.add(JRef(className = "java/lang/Object"))
-        insns.add(LInvokevirtual(owner = "java/lang/String", name = "equals", params = eqPs, ret = JBoolean))
         match op {
-          case BEq -> insns.add(LIfeq(label = failLabel))
-          case BNeq -> insns.add(LIfne(label = failLabel))
+          case BEq -> {
+            val eqPs: List[JvmType] = newList()
+            eqPs.add(JRef(className = "java/lang/Object"))
+            insns.add(LInvokevirtual(owner = "java/lang/String", name = "equals", params = eqPs, ret = JBoolean))
+            insns.add(LIfeq(label = failLabel))
+          }
+          case BNeq -> {
+            val eqPs2: List[JvmType] = newList()
+            eqPs2.add(JRef(className = "java/lang/Object"))
+            insns.add(LInvokevirtual(owner = "java/lang/String", name = "equals", params = eqPs2, ret = JBoolean))
+            insns.add(LIfne(label = failLabel))
+          }
+          // Relational String comparison — see the trueLabel twin above.
+          case BLt -> {
+            emitStringCompareTo(insns)
+            insns.add(LIfge(label = failLabel))
+          }
+          case BLte -> {
+            emitStringCompareTo(insns)
+            insns.add(LIfgt(label = failLabel))
+          }
+          case BGt -> {
+            emitStringCompareTo(insns)
+            insns.add(LIfle(label = failLabel))
+          }
+          case BGte -> {
+            emitStringCompareTo(insns)
+            insns.add(LIflt(label = failLabel))
+          }
           case _ -> insns.add(LNop)
         }
       } else {
+        // Value equality via `Objects.equals` — see the trueLabel twin.
         match op {
-          case BEq -> insns.add(LIfAcmpne(label = failLabel))
-          case BNeq -> insns.add(LIfAcmpeq(label = failLabel))
+          case BEq -> {
+            emitObjectsEquals(insns)
+            insns.add(LIfeq(label = failLabel))
+          }
+          case BNeq -> {
+            emitObjectsEquals(insns)
+            insns.add(LIfne(label = failLabel))
+          }
           case _ -> insns.add(LNop)
         }
       }
@@ -1613,18 +1709,36 @@ func lowerIfExpr(
           insns.add(LLabel(name = elseL))
           val elseTy = lowerExprOrBlock(ctx, insns, elseBranch)
           val elseTerminated = endsWithReturn(insns)
+          // Mixed-arm if: the then-arm yields a value but the else-arm is
+          // void (e.g. `if a { xs.add(true) } else if b { xs.add(false) }` —
+          // the trailing else-if has no else, so it lowers as JVoid and
+          // leaves NOTHING on the stack).  The checker only admits this
+          // shape in statement position, so the whole `if` degrades to
+          // void: there is no else-value to store, and reloading the
+          // result after the join would hand the caller a value the
+          // else-path never produced (the store below underflowed —
+          // VerifyError, hit by Std.JsonHost's bool slice reader).
+          val elseVoidMixed = match elseTy { case JVoid -> not elseTerminated; case _ -> false }
           if not elseTerminated {
-            coerceArgTo(insns, elseTy, thenTy)
-            emitStore(insns, rslot, thenTy)
+            if not elseVoidMixed {
+              coerceArgTo(insns, elseTy, thenTy)
+              emitStore(insns, rslot, thenTy)
+            }
           }
           // When both arms terminated, the `if` is itself terminating: do not
           // land the join label (and its past-end frame) and do not reload the
           // result, since control never arrives here (#2870).
           if not (thenTerminated and elseTerminated) {
             insns.add(LLabel(name = afterL))
-            emitResultLoad(insns, rslot, thenTy)
+            if not elseVoidMixed {
+              emitResultLoad(insns, rslot, thenTy)
+            }
           }
-          thenTy
+          if elseVoidMixed {
+            JVoid
+          } else {
+            thenTy
+          }
         }
       }
     }
