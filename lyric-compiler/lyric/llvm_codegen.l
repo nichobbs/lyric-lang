@@ -3780,7 +3780,7 @@ func lowerCollectionMethodCall(
       if name == "clear" and args.count == 0 {
         return Some(value = callRuntime(ctx, insns, "lyric_list_clear", NVoid, arg1(NPtr(pointee = NI8), recvP)))
       }
-      if name == "count" and args.count == 0 or name == "length" and args.count == 0 {
+      if (name == "count" or name == "length") and args.count == 0 {
         return Some(value = listCountVal(ctx, insns, recvP))
       }
       // `List.toArray()` and `slice.toList()` are both a fresh shallow

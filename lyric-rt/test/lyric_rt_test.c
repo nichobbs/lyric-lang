@@ -250,6 +250,36 @@ static void test_read_bytes(void) {
     lyric_release(missing);
 }
 
+static void test_dir_list2(void) {
+    /* Missing directory: the ok-flag protocol must report failure with a
+     * fresh empty list, never ok=1 (the native listFiles/listDirs seams
+     * classify IO failures solely from this flag). */
+    int32_t ok = 1;
+    LyricList* missing = lyric_dir_list2("/definitely/missing/lyric-rt-dir", &ok);
+    CHECK(ok == 0);
+    CHECK(lyric_list_len(missing) == 0);
+    lyric_release(missing);
+
+    /* Existing directory: ok=1 and the entry appears by name. */
+    char tmpl[] = "/tmp/lyric_rt_dir2_XXXXXX";
+    CHECK(mkdtemp(tmpl) != NULL);
+    char inner[512];
+    snprintf(inner, sizeof inner, "%s/entry.txt", tmpl);
+    FILE* f = fopen(inner, "w");
+    CHECK(f != NULL);
+    fclose(f);
+    int32_t ok2 = 0;
+    LyricList* names = lyric_dir_list2(tmpl, &ok2);
+    CHECK(ok2 == 1);
+    CHECK(lyric_list_len(names) == 1);
+    LyricString* n0 = (LyricString*)(intptr_t)lyric_list_get(names, 0);
+    CHECK(lyric_string_len(n0) == 9);
+    CHECK(memcmp(LYRIC_STRING_DATA(n0), "entry.txt", 9) == 0);
+    lyric_release(names);
+    unlink(inner);
+    rmdir(tmpl);
+}
+
 static void test_args(void) {
     /* Unset: empty list rather than a crash. */
     LyricList* empty = lyric_args_get();
@@ -661,6 +691,7 @@ int main(void) {
     test_map_string_keys();
     test_list_copy();
     test_read_bytes();
+    test_dir_list2();
     test_args();
     test_map_keys_values();
     test_posix();
