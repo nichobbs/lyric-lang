@@ -735,7 +735,10 @@ need direction and have nothing else productive to do**.  Specifically:
     (M5.3 stage 1, D-progress-129).  Parses the subset of TOML used by the
     Lyric package system (`[package]`, `[project]`, `[dependencies]`,
     `[nuget]`, `[nuget.options]`, `[maven]`, `[maven.options]`,
-    `[features]`).  `[maven]` parsing (D053 / `docs/31-maven-linking.md`;
+    `[features]`, `[native]`).  The `[native]` table (N6.4,
+    D-progress-564) supplies `triple` / `opt_level` / `extra_libs`
+    defaults for `--target native` builds via `assembleNative`.
+    `[maven]` parsing (D053 / `docs/31-maven-linking.md`;
     J5 M-6 parsing slice, #2668) mirrors `[nuget]`: `assembleMaven`
     yields a `MavenSection` of `MavenEntry` coordinate/version pairs
     plus `repositories` (default `["central"]`) and an optional

@@ -1148,12 +1148,20 @@ func assembleMaven(entries: in List[Entry]): Result[Option[MavenSection], Manife
   Ok(value = Some(value = MavenSection(entries = mavenEntries, repositories = repositories, javaVersion = javaVersion)))
 }
 
+// An `extra_libs` entry becomes a `-l<name>` clang flag; reject an empty
+// name or one containing whitespace so a typo surfaces as a clear Lyric
+// diagnostic instead of a cryptic clang/ld error (#4865).
+func invalidLibName(name: in String): Bool {
+  name.length == 0 or Str.contains(name, " ") or Str.contains(name, "\t") or Str.contains(name, "\n")
+}
+
 /// `[native]` (N6.4): `triple` (LLVM target triple, default host),
 /// `opt_level` (clang `-O` level, default "2"), and `extra_libs` (a
 /// string array of additional `-l<name>` link flags).  `opt_level` is
 /// validated against the same set the `--opt` CLI flag accepts
-/// (0/1/2/3/s); any other value is `Err(InvalidField)`.  Returns
-/// `Ok(None)` when no `[native]` table is present.
+/// (0/1/2/3/s); each `extra_libs` entry must be a non-empty,
+/// whitespace-free library name; any violation is `Err(InvalidField)`.
+/// Returns `Ok(None)` when no `[native]` table is present.
 func assembleNative(entries: in List[Entry]): Result[Option[NativeConfig], ManifestError] {
   if not hasSection(entries, "native") {
     return Ok(value = None)
@@ -1170,6 +1178,19 @@ func assembleNative(entries: in List[Entry]): Result[Option[NativeConfig], Manif
     )
   }
   val libs: List[String] = unwrapOr(findStringList(entries, "native", "extra_libs"), newList())
+  var li = 0
+  while li < libs.count {
+    if invalidLibName(libs[li]) {
+      return Err(
+        error = InvalidField(
+          section = "native",
+          field = "extra_libs",
+          message = "library name must be non-empty and contain no whitespace, got \"" + libs[li] + "\""
+        )
+      )
+    }
+    li = li + 1
+  }
   Ok(value = Some(value = NativeConfig(triple = triple, optLevel = opt, extraLibs = libs)))
 }
 
