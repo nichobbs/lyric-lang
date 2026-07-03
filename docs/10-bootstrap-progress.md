@@ -27735,3 +27735,37 @@ impl-method calls on a concrete (non-interface-typed) receiver.
 
 **Related:** D-N-016, D-progress-540/545/562 (native backend),
 `native/plan/08-work-items.md` §N3.2.
+
+### D-progress-571 — JVM: `Char`/`Byte` erased-payload unbox + `Byte`/`Short` boxing narrowing (band J4, #4942/#4941)
+
+**Shipped.** Two related JVM fixes, extending the #4877 erased-generic-payload
+work (D-progress-554/569/570):
+
+- **Unbox (`emitUnboxObjectTo`, `codegen/03_match.l`, #4942/#4941):** the
+  bind-site unbox recognised `JInt`/`JLong`/`JDouble`/`JFloat`/`JBoolean` but
+  fell through to the boxed `Object` path for `JChar` and `JByte`. A
+  `Char`/`Byte` type-parameter payload (`Slot[Char]`, `Result[Byte, E]`) now
+  `checkcast`+unboxes via `Character.charValue()` / `Byte.byteValue()`.  `JByte`
+  unboxes to the SIGNED byte — the canonical in-slot representation this backend
+  uses (an unsigned `Byte` 200 is held as -56 and masked to 0..255 only at
+  widening, D-progress-566) — so no extra mask, avoiding a double-mask at
+  `.toInt()`.
+
+- **Boxing (`LBoxByte`/`LBoxShort`/`LBoxChar`, `lowering.l`):** a pre-existing
+  bug surfaced by the `Byte` unbox test — boxing a `Byte`/`Short` value ≥128
+  into an `Object` (e.g. constructing `Filled(item = 200.toByte())`) called
+  `Byte.valueOf(byte)` / `Short.valueOf(short)` **without narrowing the int
+  operand first**, so `valueOf`'s cache index (`v + 128`) ran past the 256-entry
+  table → `ArrayIndexOutOfBoundsException` at construction. The box paths now
+  emit `i2b`/`i2s`/`i2c` before `valueOf`, narrowing (200 → -56) to match what a
+  `byte` field/array store holds. This fixes `Byte`/`Short` boxing everywhere,
+  not just generic payloads.
+
+Covered by three new cases (Char, Byte-above-127, Bool) in the dual-target
+`erased_generic_arith_jvm_self_test.l` (now 13 tests, both targets).  The
+`Float`/`Boolean` unbox arms were already present (D-progress-554); the `Bool`
+case is now tested, while a `Float`-payload test is deferred — in a
+source-build sandbox `System.Convert.ToSingle(Double)` is AOT-trimmed from the
+CLI binary (D-progress-543), so a `Float` literal cannot be JVM-compiled to
+verify locally; the `JFloat` unbox path is structurally identical to the tested
+`JDouble` one (#4932 Float half tracked).  Resolves docs/44 m-79.

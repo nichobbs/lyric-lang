@@ -814,6 +814,21 @@ func emitUnboxObjectTo(insns: in List[LInsn], target: in JvmType): JvmType {
       insns.add(LInvokevirtual(owner = "java/lang/Boolean", name = "booleanValue", params = newList(), ret = JBoolean))
       JBoolean
     }
+    case JChar -> {
+      insns.add(LCheckcast(className = "java/lang/Character"))
+      insns.add(LInvokevirtual(owner = "java/lang/Character", name = "charValue", params = newList(), ret = JChar))
+      JChar
+    }
+    case JByte -> {
+      // `byteValue()` yields the SIGNED byte — the canonical in-slot `JByte`
+      // representation this backend uses (an unsigned `Byte` value 200 is held
+      // as -56 and masked to 0..255 only at widening, D-progress-566).  No mask
+      // here: masking would make the bound local diverge from every other
+      // `JByte` and double-mask at `.toInt()`.
+      insns.add(LCheckcast(className = "java/lang/Byte"))
+      insns.add(LInvokevirtual(owner = "java/lang/Byte", name = "byteValue", params = newList(), ret = JByte))
+      JByte
+    }
     case _ -> JRef(className = "java/lang/Object")
   }
 }
