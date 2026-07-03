@@ -15,7 +15,7 @@
 //! `mapForEach` is not exercised here: a two-parameter lambda literal
 //! (`(k, v) -> ...`) does not yet parse in call-argument position (the
 //! self-hosted parser reads the parenthesised parameter list as a tuple
-//! expression), so its coverage waits on that parser gap.  Element
+//! expression), so its coverage waits on that parser gap (#4748).  Element
 //! consumption in the mapValues/mapEntries cases is count-shaped: iterated
 //! elements are erased to Object on JVM, so element arithmetic and entry
 //! field access wait on the typed-erasure work in band J4 (#2667).

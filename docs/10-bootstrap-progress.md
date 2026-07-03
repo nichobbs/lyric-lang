@@ -26812,6 +26812,24 @@ bundled compile skipped (the named J003 entries):
 - **Dead kernels deleted.** `_kernel/io.l` and `_kernel_jvm/io.l`
   (package `Std.IO`) had no importers anywhere in the repo — removed
   rather than rewritten; dead extern surface is unauditable risk.
+- **W0002 routed to stderr on both backends (#4739).**  The
+  quantifier-not-enforced warning printed to stdout via `println`;
+  both codegens now call `Console.error`.  Rerouting exposed that
+  `Jvm.Codegen` lacked the `Std.Console` import — stage-1 silently
+  compiled the unresolvable call into a deferred runtime panic
+  (`unsupported method 'error' on the receiver type`) that fired on
+  every quantifier lowering; the import is added, and the
+  silent-deferral behaviour is itself a tracked compiler-quality gap.
+- **Zero-overhead boxing gate scoped to the test's classes.**
+  `assert-no-box-jvm.sh` counted `valueOf` calls across the whole
+  bundled JAR, so any legitimate stdlib box (the new kernel's opaque
+  `FileTime` — a boxed epoch-millis `Long` by design) broke the
+  hand-calibrated budget.  The count is now scoped to
+  `ClosureZeroOverheadSelfTest*` classes with the budget recalibrated
+  to 3 (one deliberate `valueOf` per synthesized `$Lambda$N` — the
+  erased `invoke(Object…)Object` ABI boxes the lambda's primitive
+  return; capture fields stay unboxed, which is the Stage-2 target).
+  The MSIL twin was already naturally scoped (stdlib links as a DLL).
 
 Tests: `file_jvm_self_test.l` (`@test_module`, the band-J6 acceptance
 criterion — a `_kernel_jvm`-backed module building and running under

@@ -7,6 +7,7 @@ package Jvm.Codegen
 
 import Std.Core
 import Std.Collections
+import Std.Console as Console
 import Std.String
 import Lyric.Parser
 import Jvm.Classfile
@@ -1055,7 +1056,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
     // crash), matching the MSIL backend's resolution (#1506); W0002 informs
     // the user the clause is not enforced at runtime (#3227).
     case EForall(_, _, _) -> {
-      println(
+      Console.error(
         "W0002: forall quantifier in @runtime_checked contract is not evaluated at runtime " +
           "(sound overapproximation as true; consider restricting the domain or using @proof_required)"
       )
@@ -1063,7 +1064,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       JBoolean
     }
     case EExists(_, _, _) -> {
-      println(
+      Console.error(
         "W0002: exists quantifier in @runtime_checked contract is not evaluated at runtime " +
           "(sound overapproximation as true; consider restricting the domain or using @proof_required)"
       )
