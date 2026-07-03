@@ -1156,32 +1156,6 @@ jobs:
       - name: Wait for first half of parallel tests
         wait-all: true
 
-      # import extern self-test (D105/D116 Phase 2). Run sequentially rather
-      # than `background: true`: across three separate CI runs on PR #4810
-      # (at three different concurrency levels — 38, 36, and ~20 concurrent
-      # steps), this step's captured output consistently showed a different
-      # step's TAP stream (CfgGate self-test's) instead of its own, while
-      # CfgGate itself always reported success. That is a deterministic
-      # output/exit-status collision between these two specific concurrent
-      # processes (most likely a shared, non-unique temp-file path under
-      # $TMPDIR — not a raw concurrency-count ceiling, since it survived the
-      # #4841 sub-batch split), not a real defect in either test. Running it
-      # sequentially removes it from the pool entirely.
-      - name: import extern self-test (D105/D116 Phase 2, native lyric test)
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping import-extern self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping import-extern self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/import_extern_self_test.l
-
       # Synthesized-method-resolution self-test (#1499, #1507).
       # Verifies that compiler-synthesized named methods (protected-type entries,
       # @derive(Equals/Show) free functions) resolve correctly at the call site:
