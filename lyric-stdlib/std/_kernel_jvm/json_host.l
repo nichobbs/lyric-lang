@@ -38,7 +38,6 @@ package Std.JsonHost
 import Std.Core
 import Std.Collections
 import Std.Char
-import Std.Parse
 import Std.Yaml
 
 // ── Handle types ──────────────────────────────────────────────────────────────
@@ -152,7 +151,15 @@ pub func hostGetString(elem: in JsonElement): String {
 
 pub func hostGetInt32(elem: in JsonElement): Int {
   match elem.node {
-    case YInt(v) -> parseInt(toString(v))
+    case YInt(v) -> {
+      // Explicit range check (#4797): matches the .NET kernel's
+      // OverflowException contract (a catchable Bug) instead of silently
+      // truncating; also keeps this kernel free of Std.Parse (#4799).
+      if v > 2147483647i64 or v < 0i64 - 2147483648i64 {
+        panic("Std.Json: integer value out of Int32 range: " + toString(v))
+      }
+      v.toInt()
+    }
     case _ -> panic("Std.Json: element is not an integer")
   }
 }
@@ -177,7 +184,7 @@ pub func hostGetDouble(elem: in JsonElement): Double {
     // Distinct binding name: a Long and a Double payload sharing one local
     // slot across arms gives the slot two widths — the join's stackmap
     // frame cannot merge them (VerifyError).
-    case YInt(vi) -> parseDouble(toString(vi))
+    case YInt(vi) -> vi.toDouble()
     case _ -> panic("Std.Json: element is not a number")
   }
 }
@@ -185,15 +192,14 @@ pub func hostGetDouble(elem: in JsonElement): Double {
 pub func hostTryGetInt32(elem: in JsonElement, value: out Int): Bool {
   match elem.node {
     case YInt(v) -> {
-      match parseOptInt(toString(v)) {
-        case Some(n) -> {
-          value = n
-          true
-        }
-        case None -> {
-          value = 0
-          false
-        }
+      // Out-of-range reports false (the .NET TryGetInt32 contract) rather
+      // than truncating (#4797); no Std.Parse round-trip (#4799).
+      if v > 2147483647i64 or v < 0i64 - 2147483648i64 {
+        value = 0
+        false
+      } else {
+        value = v.toInt()
+        true
       }
     }
     case _ -> {
@@ -224,7 +230,7 @@ pub func hostTryGetDouble(elem: in JsonElement, value: out Double): Bool {
     }
     // Distinct binding name — see hostGetDouble.
     case YInt(vi) -> {
-      value = parseDouble(toString(vi))
+      value = vi.toDouble()
       true
     }
     case _ -> {

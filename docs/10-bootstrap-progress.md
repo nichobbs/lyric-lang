@@ -27113,6 +27113,15 @@ list, driven end-to-end by the lyric-storage JVM parity work (#1444):
   `instanceof` intrinsics — generic functions are never emitted as
   JVM methods, so a call the monomorphizer could not specialize
   linked against nothing.
+- **JVM Json kernel: no `Std.Parse` coupling, explicit Int32 range
+  contract (#4797).**  The numeric accessors converted Long payloads
+  through `Std.Parse` string round-trips; they now convert directly
+  (`toDouble`/`toInt`) with an explicit range check — `GetInt32`
+  panics (the .NET OverflowException contract, a catchable Bug) and
+  `TryGetInt32` reports false for out-of-range values instead of
+  truncating.  This also removes the kernel's only dependency on the
+  J003-skipped `Std.Parse` (#4799), so numeric JSON access works on
+  the JVM regardless of the Parse fix.
 - **`lyric test` feature flags.**  `--features` /
   `--no-default-features` / `--all-features` (documented for
   `lyric test` in docs/24 §3 since D045, never implemented) with
