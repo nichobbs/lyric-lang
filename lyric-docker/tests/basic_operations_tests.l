@@ -290,3 +290,25 @@ test "jsonFieldIsObject tolerates whitespace between the colon and the brace" {
   val body = "{\"StatusCode\":0,\"Error\": {\"Message\":\"x\"}}"
   assertTrue(Lyric.Docker.jsonFieldIsObject(body, "Error"), "Whitespace before the object value is tolerated")
 }
+
+test "jsonFieldObjectStart scopes a nested extractJsonField lookup to the object, not the whole document (#4929)" {
+  // "Message" appears twice: once outside Error (must not be picked up by
+  // waitContainer's error-message extraction), once inside it (the one
+  // that matters).
+  val body = "{\"Message\":\"outer, should be ignored\",\"Error\":{\"Message\":\"inner\"}}"
+  val startOpt = Lyric.Docker.jsonFieldObjectStart(body, "Error")
+  assertTrue(isSome(startOpt), "Expected Some")
+  val start = unwrapOr(startOpt, -1)
+  val errorObj = body.substring(start, body.length - start)
+  val scopedMessage = Lyric.Docker.extractJsonField(errorObj, "Message")
+  assertEqual(scopedMessage, "inner", "Scoping to the Error object finds the inner Message")
+  // Sanity check that this scenario would otherwise be a real bug: an
+  // unscoped extraction over the full body picks up the wrong field.
+  val unscopedMessage = Lyric.Docker.extractJsonField(body, "Message")
+  assertEqual(unscopedMessage, "outer, should be ignored", "Unscoped extraction picks up the outer field instead")
+}
+
+test "jsonFieldObjectStart returns None when the field is absent" {
+  val body = "{\"StatusCode\":0}"
+  assertTrue(isNone(Lyric.Docker.jsonFieldObjectStart(body, "Error")), "Expected None for a missing field")
+}

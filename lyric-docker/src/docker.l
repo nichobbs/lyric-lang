@@ -479,13 +479,28 @@ pub func extractJsonIntField(json: in String, field: in String): Option[Int] {
 /// position reads as `true`.
 /// Public for the same testability reason as `extractJsonIntField`.
 pub func jsonFieldIsObject(json: in String, field: in String): Bool {
+  match jsonFieldObjectStart(json, field) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+/// Position of the `{` beginning `field`'s object value in `json`, or
+/// `None` if the field is absent or its value isn't an object. Lets a
+/// caller slice `json.substring(pos, json.length - pos)` to scope a
+/// subsequent `extractJsonField`/`extractJsonIntField` call to just that
+/// nested object instead of re-scanning the whole (possibly much larger)
+/// enclosing document, where a same-named field elsewhere could otherwise
+/// be picked up by mistake. Public for the same testability reason as
+/// `extractJsonIntField`.
+pub func jsonFieldObjectStart(json: in String, field: in String): Option[Int] {
   val target = "\"" + field + "\""
   val jsonLen = json.length
   var searchFrom = 0
   while searchFrom < jsonLen {
     val pos = indexOfFrom(json, target, searchFrom)
     if pos < 0 {
-      return false
+      return None
     }
     if isFieldKeyPosition(json, pos) {
       var i = pos + target.length
@@ -493,17 +508,20 @@ pub func jsonFieldIsObject(json: in String, field: in String): Bool {
         i = i + 1
       }
       if i >= jsonLen {
-        return false
+        return None
       }
       i = i + 1
       while i < jsonLen and isJsonWhitespace(json.substring(i, 1)) {
         i = i + 1
       }
-      return i < jsonLen and json.substring(i, 1) == "{"
+      if i < jsonLen and json.substring(i, 1) == "{" {
+        return Some(value = i)
+      }
+      return None
     }
     searchFrom = pos + 1
   }
-  false
+  None
 }
 
 /// Validate a Docker container ID: must be a lowercase hex string of length 12
@@ -602,16 +620,20 @@ pub async func waitContainer(client: in DockerClient, containerId: in String): R
   val urlStr = dockerApiBase + "/containers/" + containerId + "/wait"
   val url = resolveDockerUrl(urlStr)?
   match await sendAndReadBody(client, Std.Http.request(Std.Http.POST, url), urlStr, "Wait for container failed") {
-    case Ok(body) -> {
-      if jsonFieldIsObject(body, "Error") {
-        val message = extractJsonField(body, "Message")
+    case Ok(body) -> match jsonFieldObjectStart(body, "Error") {
+      case Some(errStart) -> {
+        // Scope the Message lookup to the Error object itself, not the
+        // whole response body — a same-named field elsewhere in the body
+        // (unlikely in this response shape today, but not guaranteed by the
+        // API contract) must not be picked up by mistake (#4929).
+        val errorObj = body.substring(errStart, body.length - errStart)
+        val message = extractJsonField(errorObj, "Message")
         val details = if message.length > 0 { message } else { body }
         Err(error = DockerError(statusCode = None, message = "Docker reported an error while waiting for the container", details = details))
-      } else {
-        match extractJsonIntField(body, "StatusCode") {
-          case Some(code) -> Ok(value = code)
-          case None -> Err(error = DockerError(statusCode = None, message = "Wait for container returned no StatusCode", details = body))
-        }
+      }
+      case None -> match extractJsonIntField(body, "StatusCode") {
+        case Some(code) -> Ok(value = code)
+        case None -> Err(error = DockerError(statusCode = None, message = "Wait for container returned no StatusCode", details = body))
       }
     }
     case Err(e) -> Err(error = e)
