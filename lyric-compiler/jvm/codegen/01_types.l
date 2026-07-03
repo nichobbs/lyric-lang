@@ -251,7 +251,8 @@ pub func allocSlot(ctx: in FuncCtx, name: in String, ty: in JvmType): Int {
   match mapGet(ctx.slots, name) {
     case Some(existing) -> {
       val prevTy = match mapGet(ctx.types, name) { case Some(t) -> t; case None -> ty }
-      if jvmTypeSlotWidth(prevTy) == width {
+      // Reuse the slot only when old and new bindings frame as the same verifier type, not merely the same width: a slot carrying two verifier types (a Double then a Long match-arm binding) makes the join frame unmergeable (docs/44 m-72).
+      if sameFrameSlotType(prevTy, ty) {
         ctx.types.remove(name)
         ctx.types.add(name, ty)
         return existing
@@ -273,6 +274,36 @@ pub func allocSlot(ctx: in FuncCtx, name: in String, ty: in JvmType): Int {
     ctx.slotTicker.add(0)
   }
   slot
+}
+
+// True when two JVM types occupy the same StackMapTable verifier slot type
+// (mirrors `Jvm.Lowering.jvmToVerifier`): int-likes all collapse to VInteger;
+// Float / Long / Double, distinct ref classes, and distinct array elements differ.
+func sameFrameSlotType(a: in JvmType, b: in JvmType): Bool {
+  match a {
+    case JInt -> isIntLikeFrame(b)
+    case JBoolean -> isIntLikeFrame(b)
+    case JByte -> isIntLikeFrame(b)
+    case JChar -> isIntLikeFrame(b)
+    case JShort -> isIntLikeFrame(b)
+    case JFloat -> match b { case JFloat -> true; case _ -> false }
+    case JLong -> match b { case JLong -> true; case _ -> false }
+    case JDouble -> match b { case JDouble -> true; case _ -> false }
+    case JVoid -> match b { case JVoid -> true; case _ -> false }
+    case JRef(ca) -> match b { case JRef(cb) -> ca == cb; case _ -> false }
+    case JArray(ea) -> match b { case JArray(eb) -> sameFrameSlotType(ea, eb); case _ -> false }
+  }
+}
+
+func isIntLikeFrame(t: in JvmType): Bool {
+  match t {
+    case JInt -> true
+    case JBoolean -> true
+    case JByte -> true
+    case JChar -> true
+    case JShort -> true
+    case _ -> false
+  }
 }
 
 // Slot width in JVM local-variable units: 2 for `JLong`/`JDouble`, 1 for

@@ -27438,3 +27438,35 @@ next tranche of #4752's native-side deferrals: bytes-mode file I/O
 **Related:** D-N-015 (`docs/03-decision-log.md`), D-progress-556,
 D-progress-557, `native/plan/03-type-mapping.md`, issues #4752, #4778,
 #4795, #4809, #4827, #4833.
+
+### D-progress-563 — JVM: mixed-width match bindings — verifier-type-aware slot reuse (band J4, epic #2663)
+
+**Shipped.** Resolves docs/44 m-57 for real (previously worked around in
+the `Std.JsonHost` kernel with distinct binding names, D-progress-558):
+a `match` binding the SAME name across sibling arms at different
+verifier-slot types — `case AsDouble(v)` (VDouble) then `case AsLong(v)`
+(VLong), both width 2 — now compiles and runs on `--target jvm`.
+
+Root cause: `allocSlot` reused a local slot whenever the *width*
+matched, but this backend frames each slot with a single verifier type
+for the whole method (`storeTypes` drives both the entry pre-init and
+the StackMapTable), so a slot carrying both VDouble and VLong made the
+match-join frame unmergeable (VerifyError: Inconsistent stackmap
+frames).
+
+Fix: a new `sameFrameSlotType` helper (mirroring `Jvm.Lowering.jvmToVerifier`
+without the cross-package dependency) gates slot reuse on verifier-slot-type
+equality rather than width.  All int-like primitives collapse to VInteger
+and still share a slot (an Int binding reused for a Byte is fine);
+`Float`/`Long`/`Double` and distinct ref classes each get a fresh slot, so
+every slot carries exactly one verifier type.  The name is re-registered to
+the new slot automatically, so no call site changes.
+
+Verified by two new cross-target cases in
+`pattern_lowering_self_test.l` (Double/Long/Int arms binding `v`, results
+routed through both a Double and a Long slot — 14/14 on **both** targets)
+plus a 13-suite JVM regression sweep.  Because the fix enforces the
+one-type-per-slot invariant globally, the `Std.JsonHost` distinct-name
+workaround is no longer required (kept as-is; harmless).
+
+**Related:** docs/44 m-57 / m-72, epic #2663, #2667 (band J4).
