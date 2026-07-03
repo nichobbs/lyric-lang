@@ -8504,19 +8504,6 @@ func lowerPatternTestMsil(
           lowerPatternTestMsil(cctx, fctx, insns, inner, scrutSlot, scrutTy, failLabel)
         }
         case None -> {
-          // `case null ->` on a nullable scrutinee (`String?`) parses as a
-          // binding named "null" ("null" is not a keyword); the spec intent —
-          // and the stdlib's usage in Std.Console.readLine / Std.Environment —
-          // is a refutable null TEST.  Mirrors the JVM `lowerPatternTest`
-          // special case (jvm/codegen/03_match.l): without this the arm bound
-          // anything and hijacked every later arm (#4759).
-          if pBindName == "null" {
-            emitLoadSlot(insns, scrutSlot, fctx.paramCount)
-            insns.add(MLdNull)
-            insns.add(MCeq)
-            insns.add(MBrFalse(label = failLabel))
-            return
-          }
           // `case Debug ->` over an enum scrutinee: the parser produced a
           // PBinding, but the name is a known enum case — compare ordinals
           // (mirrors the F# emitter's EnumCases-first lookup).  An MObject
