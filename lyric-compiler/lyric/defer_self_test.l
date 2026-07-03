@@ -1,5 +1,5 @@
-//! defer_self_test.l — executable regression tests for `defer`-at-scope-exit on
-//! the self-hosted MSIL target (#1477; epic #1470, Band 2).
+//! defer_self_test.l — executable regression tests for `defer`-at-scope-exit,
+//! run on BOTH targets (#1477; epic #1470, Band 2 for MSIL; #4878 for JVM parity).
 //!
 //! `defer { D }` runs D on scope exit on EVERY path — normal fall-off, early
 //! `return`, `break`/`continue`, and exception unwind (grammar: "runs on scope
@@ -11,13 +11,14 @@
 //! break/continue-`leave` lowering (D-progress-371) so the finally runs on those
 //! exits too.
 //!
-//! Run via native `lyric test --target dotnet`.  Imports only `Std.*`.
+//! Run via native `lyric test` on either target.  Imports only `Std.*`:
 //!
-//!   lyric test lyric-compiler/lyric/defer_self_test.l
+//!   lyric test --target dotnet lyric-compiler/lyric/defer_self_test.l
+//!   lyric test --target jvm    lyric-compiler/lyric/defer_self_test.l
 //!
 //! Observation uses a `List[Int]` log (a reference type, so appends are visible
-//! to the caller).  MSIL target only; JVM parity is tracked under epic #1470's
-//! JVM-deferral note.
+//! to the caller).  Both MSIL and JVM are exercised in CI; the JVM StackMapTable
+//! / exception-table fixes that brought the JVM to parity are D-progress-565.
 @test_module
 package Lyric.DeferSelfTest
 

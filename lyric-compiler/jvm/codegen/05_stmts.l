@@ -1421,6 +1421,15 @@ pub func lowerBlockExprWithDefer(ctx: in FuncCtx, insns: in List[LInsn], block: 
     case SDefer(b) -> b
     case _ -> panic("Jvm.Codegen: lowerBlockExprWithDefer: deferIdx does not point at an SDefer (unreachable)")
   }
+  // A trailing `defer` (last statement of the value block — the block then yields
+  // `Unit`) has an EMPTY protected region; emitting a catch-all for it produces an
+  // illegal `[X, X)` exception-table range (ClassFormatError), exactly as in
+  // `lowerDeferRegion`.  Nothing follows the defer, so run its block inline with no
+  // handler and yield `JVoid` (#4878, #4885).
+  if deferIdx + 1 >= n {
+    lowerBlock(ctx, insns, deferBody)
+    return JVoid
+  }
   val startL = freshLabel(ctx)
   val afterL = freshLabel(ctx)
   val normalReplayL = freshLabel(ctx)
