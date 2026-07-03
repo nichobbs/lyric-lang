@@ -7300,20 +7300,36 @@ func lowerIfExprMsil(
         thenTy = lowerBranchWithSiblingHintMsil(cctx, fctx, thenInsns, thenBranch, elseTy)
       }
 
+      // A branch ending in `return`/`throw` (e.g. a `panic(...)` call, whose
+      // static type is `Never`) never reaches `afterL` — it must be excluded
+      // from stack-depth reconciliation between the two arms, exactly like
+      // `lowerMatchExprMsil`'s `armRets` exclusion via `endsWithReturnMsil`
+      // (#4605/#4625). Treating its erased MVoid "value type" as a genuine
+      // void arm wrongly popped the OTHER branch's live value and downgraded
+      // the whole expression's type to MVoid, underflowing the stack at any
+      // caller expecting a value.
+      val thenTerm = endsWithReturnMsil(thenInsns)
+      val elseTerm = endsWithReturnMsil(elseInsns)
+
       // Emit the then block.
       var ti = 0
       while ti < thenInsns.count {
         insns.add(thenInsns[ti])
         ti = ti + 1
       }
-      // Case B (then=non-void, else=void): discard the then result BEFORE the
-      // branch to afterL so both paths arrive at afterL with stack depth 0.
-      // Inserting after the else block would leave a type mismatch (value type
-      // vs null reference or similar) that causes PathStackUnexpected at JIT.
-      if thenTy != MVoid and elseTy == MVoid {
-        insns.add(MPop)
+      if not thenTerm {
+        // Case B (then=non-void, else=void): discard the then result BEFORE the
+        // branch to afterL so both paths arrive at afterL with stack depth 0.
+        // Inserting after the else block would leave a type mismatch (value type
+        // vs null reference or similar) that causes PathStackUnexpected at JIT.
+        // Only applies when the else side genuinely falls through as void — a
+        // diverging else (`elseTerm`) never reaches afterL, so the then value
+        // must survive.
+        if thenTy != MVoid and elseTy == MVoid and not elseTerm {
+          insns.add(MPop)
+        }
+        insns.add(MBr(label = afterL))
       }
-      insns.add(MBr(label = afterL))
       insns.add(MLabel(id = elseL))
 
       // Emit the else block.
@@ -7322,13 +7338,28 @@ func lowerIfExprMsil(
         insns.add(elseInsns[ei])
         ei = ei + 1
       }
-      // Case A (then=void, else=non-void): discard the else result.
-      if thenTy == MVoid and elseTy != MVoid {
-        insns.add(MPop)
+      if not elseTerm {
+        // Case A (then=void, else=non-void): discard the else result — only
+        // when `then` genuinely falls through as void; a diverging `then`
+        // (`thenTerm`) never reaches afterL either.
+        if thenTy == MVoid and elseTy != MVoid and not thenTerm {
+          insns.add(MPop)
+        }
       }
       insns.add(MLabel(id = afterL))
-      // Return the effective type: void when branches were normalised, otherwise thenTy.
-      if thenTy == MVoid or elseTy == MVoid {
+      // Return the effective type: the type of whichever branch actually
+      // reaches afterL.  When only one side falls through (the other
+      // diverges via return/throw), its type is the expression's type
+      // outright.  When both fall through, normalise to void if either is
+      // void (legacy behaviour, unchanged).  When both diverge, nothing
+      // reaches afterL and the type is moot — MVoid.
+      if thenTerm and elseTerm {
+        MVoid
+      } else if thenTerm {
+        elseTy
+      } else if elseTerm {
+        thenTy
+      } else if thenTy == MVoid or elseTy == MVoid {
         MVoid
       } else {
         thenTy
@@ -8411,6 +8442,19 @@ func lowerPatternTestMsil(
           lowerPatternTestMsil(cctx, fctx, insns, inner, scrutSlot, scrutTy, failLabel)
         }
         case None -> {
+          // `case null ->` on a nullable scrutinee (`String?`) parses as a
+          // binding named "null" ("null" is not a keyword); the spec intent —
+          // and the stdlib's usage in Std.Console.readLine / Std.Environment —
+          // is a refutable null TEST.  Mirrors the JVM `lowerPatternTest`
+          // special case (jvm/codegen/03_match.l): without this the arm bound
+          // anything and hijacked every later arm (#4759).
+          if pBindName == "null" {
+            emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+            insns.add(MLdNull)
+            insns.add(MCeq)
+            insns.add(MBrFalse(label = failLabel))
+            return
+          }
           // `case Debug ->` over an enum scrutinee: the parser produced a
           // PBinding, but the name is a known enum case — compare ordinals
           // (mirrors the F# emitter's EnumCases-first lookup).  An MObject
@@ -9191,6 +9235,14 @@ func lowerPatternBindMsil(
             case PConstructor(_, _) -> bindPositionalFieldMsil(cctx, fctx, insns, castTy, castSlot, caseClass, caseClassBt, fi, fields[fi], "__nested_")
             // Nested constructor pattern (#3280): the recursive call hits the
             // top-level PConstructor branch, which does the inner isinst-cast.
+            // Nested record pattern (#4608): a `RecordPattern` in a union
+            // constructor's field list must also route through
+            // `bindPositionalFieldMsil` — it loads the field into a slot and
+            // recurses into `lowerPatternBindMsil`'s `PRecord` arm, which does
+            // the downcast + named-field binds.  Without this arm the field was
+            // silently dropped (fell into the wildcard below), so the record's
+            // own fields kept their default value instead of the real one.
+            case PRecord(_, _, _) -> bindPositionalFieldMsil(cctx, fctx, insns, castTy, castSlot, caseClass, caseClassBt, fi, fields[fi], "__rec_fld_")
             case _ -> ()
           }
           fi = fi + 1

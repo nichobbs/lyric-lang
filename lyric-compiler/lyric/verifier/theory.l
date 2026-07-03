@@ -283,30 +283,34 @@ pub func builtinOfPrefix(op: in PrefixOp): Option[Builtin] {
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. Range hypotheses.
 // ─────────────────────────────────────────────────────────────────────────────
-// Generate range-bound hypotheses for a binder of the given sort/range.
-pub func rangeHypotheses(binder: in String, info: in SortInfo): List[Term] {
+// Generate range-bound hypotheses for an arbitrary Term of the given
+// sort/range (#3855) — e.g. a protected-type field, which is bound to a
+// selector `TApp` rather than a plain `TVar`, so the hypothesis must be
+// stated over the same term the body's field references resolve to.
+pub func rangeHypothesesForTerm(v: in Term, info: in SortInfo): List[Term] {
   val result: List[Term] = newList()
   match info.range {
     case RBKNone -> {
     }
     case RBKClosed(lo, hi) -> {
-      val v = TVar(name = binder, sort = info.sort)
       result.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = lo), sort = SInt), v)))
       result.add(TBuiltin(op = BOpLte, args = termList2(v, TLit(value = VLInt(n = hi), sort = SInt))))
     }
     case RBKHalfOpen(lo, hi) -> {
-      val v = TVar(name = binder, sort = info.sort)
       result.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = lo), sort = SInt), v)))
       result.add(TBuiltin(op = BOpLt, args = termList2(v, TLit(value = VLInt(n = hi), sort = SInt))))
     }
     case RBKUpperBound(hi) -> {
-      val v = TVar(name = binder, sort = info.sort)
       result.add(TBuiltin(op = BOpLte, args = termList2(v, TLit(value = VLInt(n = hi), sort = SInt))))
     }
     case RBKLowerBound(lo) -> {
-      val v = TVar(name = binder, sort = info.sort)
       result.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = lo), sort = SInt), v)))
     }
   }
   result
+}
+
+// Generate range-bound hypotheses for a binder of the given sort/range.
+pub func rangeHypotheses(binder: in String, info: in SortInfo): List[Term] {
+  rangeHypothesesForTerm(TVar(name = binder, sort = info.sort), info)
 }
