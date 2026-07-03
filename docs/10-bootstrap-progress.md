@@ -27185,3 +27185,56 @@ regressions.
 
 **Related:** docs/44 m-67–m-69, epic #2663, #2669, #4799,
 D-progress-558.
+
+---
+
+### D-progress-560 — Migrate the remaining `case null` call sites off the self-hosted catch-all miscompile (issue #4775 item 1)
+
+**Shipped.** #4750/#4752 fixed `Std.Environment.getVar`'s `case null`
+miscompile (issue #4775: `null` is an ordinary identifier under the
+self-hosted lexer, so `case null -> ...` parses as `PBinding("null")` — a
+catch-all that always wins the first arm on both the MSIL and JVM
+backends) by routing it through a NUL-string-marker `??` seam
+(`hostGetVarOpt`) instead. That fix's own investigation flagged three
+more call sites still using the broken idiom directly; this closes item 1
+of #4775's remaining-work list for two of them and fixes a third,
+previously-undiscovered instance found while auditing the JVM kernel for
+more `case null` uses:
+
+- **`Std.Console.readLine` (`std/console.l`).** `case null -> Err(EndOfInput)`
+  as the first arm meant `readLine()` reported EOF on *every* call in any
+  self-hosted-compiled binary — real stdin input was never observed. New
+  `hostReadLineOpt(): Option[String]` seams in both `_kernel/console_host.l`
+  and `_kernel_jvm/console_host.l` mirror `hostGetVarOpt`'s `?? "\u{0000}"`
+  marker (a NUL byte cannot appear in a line `Console.ReadLine()` /
+  `BufferedReader.readLine()` actually returns — it terminates the read).
+  `readLine()` now matches `Some`/`None` instead of `null`/a bare binding.
+  Covered by the existing `console_roundtrip_jvm_main.l` CI job (pipes
+  `alpha\nbeta\n` and asserts the echoed lines + `eof-after:2`), which this
+  fix should turn from red to green.
+- **`_kernel_jvm/file_host.l`'s `listChildren` / `deleteRecursively`
+  (previously undocumented instance of the same bug).** Both used
+  `match d.listFiles() { case null -> ...; case _ -> ...iterate... }` —
+  the `case null` arm always won, so `hostEnumerateFiles`/
+  `hostEnumerateDirectories` (backing `Std.File.listFiles`/`listDirs`)
+  always returned empty, and `deleteRecursively` (backing
+  `Std.File.deleteDirRecursive`) never recursed into subdirectories,
+  silently leaving every descendant behind before the final `d.delete()`
+  no-oped on the non-empty directory. Both null/wildcard matches are
+  replaced with `d.listFiles() ?? []` — coalescing null straight to an
+  empty slice needs no branch at all here, since "no children" and "null"
+  were already handled identically. Covered by the existing
+  `file_jvm_self_test.l` "directory create, list, and recursive delete"
+  case (asserts `listFiles`/`listDirs` counts and that `deleteDirRecursive`
+  actually empties the tree), also CI-wired.
+
+**Not done (out of scope here, still tracked in #4775):** `std/path.l:73`'s
+`hostPathGetDirectoryName` uses `?? ""` rather than `case null`, so it
+doesn't hit this exact miscompile, but conflates an empty result with an
+unset one (item 1's third bullet) — left for a follow-up. Item 3 (reject
+`null` in pattern position once no real usage remains) and item 4
+(D107 Option-coercion in-bundle wiring) are unaffected by this change.
+
+**Related:** #4775, #4750, #4752, #4698, #4738 (W0007 — the diagnostic that
+led to discovering this class of bug via publish run #1774→#1775),
+D-progress-544, D-progress-553, D-progress-554.

@@ -11,6 +11,8 @@
 @axiom("System.Console operations conform to their documented .NET contracts")
 package Std.ConsoleHost
 
+import Std.Core
+
 @externTarget("System.Console.Read")
 pub func hostConsoleRead(): Int = ()
 
@@ -22,6 +24,23 @@ pub func hostConsoleWriteLine(text: in String): Unit = ()
 
 @externTarget("System.Console.ReadLine")
 pub func hostConsoleReadLine(): String? = ()
+
+// Option seam over `hostConsoleReadLine` (issue #4775 item 1): `case null`
+// parses as a catch-all binding under the self-hosted compiler, not a null
+// test, so `Std.Console.readLine`'s original `case null -> Err(EndOfInput)`
+// first arm silently reported EOF on every line.  Detect EOF via `??` with a
+// NUL-string marker instead — mirrors `Std.EnvironmentHost.hostGetVarOpt`
+// (#4750/#4752).  A NUL byte cannot appear in a real line read by
+// `Console.ReadLine()` (it terminates the underlying stream read), so `\0` is
+// safe as an unset sentinel here too.
+pub func hostReadLineOpt(): Option[String] {
+  val v = hostConsoleReadLine() ?? "\u{0000}"
+  if v == "\u{0000}" {
+    None
+  } else {
+    Some(value = v)
+  }
+}
 
 // stderr — `Console.Error` is a static property returning a
 // `System.IO.TextWriter`; compose the property getter with the writer's

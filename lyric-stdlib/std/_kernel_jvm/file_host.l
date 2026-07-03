@@ -143,13 +143,11 @@ func listChildren(path: in String, kind: in Int): slice[String] {
   // `listFiles()` returns NULL (not an empty array) for a non-directory or
   // an I/O error (#4781) — treat both as "no children" rather than NPE;
   // Std.File's callers surface missing directories via their own probes.
-  val children = d.listFiles()
-  match children {
-    case null -> {
-      return out2.toArray()
-    }
-    case _ -> ()
-  }
+  // Coalesced to an empty slice rather than tested via `case null` (issue
+  // #4775: `case null` parses as a catch-all binding under the self-hosted
+  // compiler, so the null branch always won and this loop never ran —
+  // `hostEnumerateFiles`/`hostEnumerateDirectories` always returned empty).
+  val children = d.listFiles() ?? []
   var i = 0
   while i < children.count {
     val c = children[i]
@@ -257,16 +255,15 @@ pub func hostDeleteDirectoryRecursive(path: in String, recursive: in Bool): Unit
 func deleteRecursively(path: in String): Unit {
   val d = JFile.new(path)
   if d.isDirectory() {
-    val children = d.listFiles()
-    match children {
-      case null -> ()
-      case _ -> {
-        var i = 0
-        while i < children.count {
-          deleteRecursively(children[i].getPath())
-          i = i + 1
-        }
-      }
+    // Coalesced to an empty slice rather than tested via `case null` (issue
+    // #4775: `case null` parses as a catch-all binding under the self-hosted
+    // compiler, so the null branch always won and this recursion never ran —
+    // recursive directory deletion silently left every descendant behind).
+    val children = d.listFiles() ?? []
+    var i = 0
+    while i < children.count {
+      deleteRecursively(children[i].getPath())
+      i = i + 1
     }
   }
   d.delete()
