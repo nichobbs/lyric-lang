@@ -690,13 +690,7 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
     case LInvokevirtual(owner, name, ps, ret) -> {
       val idx = poolMethodref(asm.pool, owner, name, buildDescriptor(ps, ret))
       emitInvokevirtual(asm, idx)
-      // Precise net delta (see LInvokestatic): `ret` slots pushed minus the
-      // receiver (1) plus arg slots popped.  The flat `trackStack(asm, 0)`
-      // under-counts the peak when the return is WIDER than what it pops —
-      // e.g. `Double.doubleValue()D` / `Long.longValue()J` (pop 1 ref, push a
-      // 2-slot value: net +1) — so a closure body (maxStack inferred from
-      // peakStack) that unboxes a wide value mid-expression was rejected with
-      // "Operand stack overflow" (#4798).
+      // Precise net delta (like LInvokestatic, less the popped receiver): a flat 0 under-counts peakStack when the return is wider than the pops, e.g. a two-slot Double/Long unbox in a closure (#4798, docs/44 m-70).
       trackStack(asm, fieldSlotSize(ret) - slotSum(ps) - 1)
     }
     case LInvokespecial(owner, name, ps, ret) -> {
