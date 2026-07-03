@@ -11811,6 +11811,14 @@ func emitCollectionForMsil(
       emitLoadSlot(insns, eeDisposableSlot, fctx.paramCount)
       insns.add(MBrFalse(label = eeSkipDisposeL))
       emitLoadSlot(insns, eeDisposableSlot, fctx.paramCount)
+      // `eeDisposableSlot` is `MObject`-typed (it holds the `isinst`
+      // result), but `callvirt` requires the stack value to be
+      // assignment-compatible with the declaring type of the called
+      // method — an `object` reference is not compatible with
+      // `IDisposable` (#4772).  `castclass` is safe here: `isinst` above
+      // already confirmed the runtime type implements `IDisposable`, and
+      // the `brfalse` just above confirmed it's non-null.
+      insns.add(MCastclass(typeToken = 0x01000000 + cctx.trIDisposable))
       insns.add(MCallvirt(methodToken = cctx.tokIDisposableDispose))
       insns.add(MLabel(id = eeSkipDisposeL))
       insns.add(MEndfinally)
