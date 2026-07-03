@@ -144,7 +144,9 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
 // `YamlError`).
 func jvmSimpleName(cls: in String): String {
   match lastIndexOf(cls, "/") {
-    case Some(i) -> substring(cls, i + 1)
+    // 3-arg substring: the stage-0 F# mint's checker resolves only one
+    // overload per name and rejects the 2-arg convenience form (T0042).
+    case Some(i) -> substring(cls, i + 1, cls.length - i - 1)
     case None -> cls
   }
 }
