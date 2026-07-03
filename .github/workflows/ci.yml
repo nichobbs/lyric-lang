@@ -3086,6 +3086,23 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/closure_jvm_self_test.l
+      # Zero-overhead closure self-test RUN on JVM (band J4, #4798/#2667).
+      # The no-box gates above only DISASSEMBLE this module; this step runs
+      # its 18 cases under java so the two-slot (Long/Double) capture paths —
+      # tests 3-5 (Float/Long/Double capture) and 14-15 (wide-var mutation),
+      # which regressed with VerifyError / NPE before this band — are caught
+      # at runtime, not just by boxing-count inspection.
+      - name: Zero-overhead closure self-test run on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping zero-overhead closure JVM run"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/closure_zero_overhead_self_test.l
       # Record instance-method self-test on the JVM target (#2865, epic #2663).
       # Pins record instance-method DISPATCH on `--target jvm`: a method declared
       # inside a `record` body (`RMFunc`) is emitted as a true non-static instance

@@ -690,12 +690,14 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
     case LInvokevirtual(owner, name, ps, ret) -> {
       val idx = poolMethodref(asm.pool, owner, name, buildDescriptor(ps, ret))
       emitInvokevirtual(asm, idx)
-      trackStack(asm, 0)
+      // Precise net delta (like LInvokestatic, less the popped receiver): a flat 0 under-counts peakStack when the return is wider than the pops, e.g. a two-slot Double/Long unbox in a closure (#4798, docs/44 m-70).
+      trackStack(asm, fieldSlotSize(ret) - slotSum(ps) - 1)
     }
     case LInvokespecial(owner, name, ps, ret) -> {
       val idx = poolMethodref(asm.pool, owner, name, buildDescriptor(ps, ret))
       emitInvokespecial(asm, idx)
-      trackStack(asm, 0)
+      // Receiver-based, precise net delta — see LInvokevirtual.
+      trackStack(asm, fieldSlotSize(ret) - slotSum(ps) - 1)
     }
     case LInvokestatic(owner, name, ps, ret) -> {
       val idx = poolMethodref(asm.pool, owner, name, buildDescriptor(ps, ret))
@@ -712,7 +714,8 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
     case LInvokeinterface(owner, name, ps, ret, argCount) -> {
       val idx = poolIfaceMethodref(asm.pool, owner, name, buildDescriptor(ps, ret))
       emitInvokeinterface(asm, idx, argCount)
-      trackStack(asm, 0)
+      // Receiver-based, precise net delta — see LInvokevirtual.
+      trackStack(asm, fieldSlotSize(ret) - slotSum(ps) - 1)
     }
 
     case LNew(cls) -> {

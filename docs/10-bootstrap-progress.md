@@ -27302,3 +27302,37 @@ unset one (item 1's third bullet) — left for a follow-up. Item 3 (reject
 **Related:** #4775, #4750, #4752, #4698, #4738 (W0007 — the diagnostic that
 led to discovering this class of bug via publish run #1774→#1775),
 D-progress-544, D-progress-553, D-progress-554.
+
+### D-progress-561 — JVM: two-slot closure captures (Long/Double) — operand-stack tracking + parenthesised-capture collection (band J4, epic #2663)
+
+**Shipped.** Closes #4798: `Long`/`Double` primitives captured by a
+closure now work on `--target jvm`.  Two independent JVM-only bugs, both
+verified against the MSIL backend (which handles both correctly):
+
+- **Operand-stack under-count.**  `LInvokevirtual` / `LInvokespecial` /
+  `LInvokeinterface` tracked their stack effect as a flat `0`, while
+  `LInvokestatic` already used a precise net delta.  A receiver-based
+  call returning a TWO-SLOT value (`Double.doubleValue()D`,
+  `Long.longValue()J`) pops 1 (the receiver) and pushes 2 — net +1 — so
+  the flat `0` under-counted `peakStack`.  Closures pass `maxStack=0`
+  and rely entirely on that inference, so a closure body that produced
+  or unboxed a wide value mid-expression was rejected with
+  `VerifyError: Operand stack overflow`.  All three receiver-based
+  invokes now use `fieldSlotSize(ret) - slotSum(ps) - 1`.  The change
+  only ever RAISES `maxStack` and only affects methods that infer it
+  (closures / factories), so explicitly-sized methods are untouched.
+- **Parenthesised captures dropped.**  `collectRefNamesExpr` (the
+  capture-name walker) had no `EParen` case, so a name referenced ONLY
+  inside parentheses in a lambda body —
+  `{ x -> (x.toDouble() * multiplier) }` — was invisible to capture
+  collection.  It was never captured, allocated no closure field, and
+  read as the null/zero default: harmless for a boxed reference, an NPE
+  for a `Double`/`Long` unbox.  `EParen(inner)` now recurses in
+  `collectRefNamesExpr` and `collectBoundNamesExpr`.
+
+Verified by `closure_zero_overhead_self_test.l` (18/18 on **both**
+targets — tests 3-5 Float/Long/Double capture and 14-15 wide-var
+mutation previously failed on JVM) plus a broad JVM self-test
+regression sweep.
+
+**Related:** docs/44 m-70–m-71, epic #2663, #2667 (band J4), #4798.

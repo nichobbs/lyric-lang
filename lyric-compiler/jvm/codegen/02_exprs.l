@@ -2019,6 +2019,8 @@ func collectRefNamesExpr(e: in Expr, acc: in List[String]): Unit {
       collectRefNamesExpr(rhs, acc)
     }
     case EPrefix(_, operand) -> collectRefNamesExpr(operand, acc)
+    // Parens were invisible to capture collection; the name read as null/zero (#4798).
+    case EParen(inner) -> collectRefNamesExpr(inner, acc)
     case ECall(fn, args) -> {
       collectRefNamesExpr(fn, acc)
       var i = 0
@@ -2272,6 +2274,7 @@ func collectBoundNamesExpr(e: in Expr, acc: in List[String]): Unit {
       collectBoundNamesExpr(rhs, acc)
     }
     case EPrefix(_, operand) -> collectBoundNamesExpr(operand, acc)
+    case EParen(inner) -> collectBoundNamesExpr(inner, acc)
     case EMember(recv, _) -> collectBoundNamesExpr(recv, acc)
     case ETypeApp(fn, _) -> collectBoundNamesExpr(fn, acc)
     case EIf(cond, thenB, elseOpt, _) -> {
