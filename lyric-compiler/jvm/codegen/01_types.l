@@ -56,6 +56,15 @@ pub record JvmFuncSig {
   // construction miscompiles under the current MSIL emitter, so every
   // construction site passes it explicitly.
   isIface: Bool
+  // Generic type arguments of the DECLARED return type, when it is a generic
+  // instantiation (`Result[Int, String]` → `[Int, String]`); empty otherwise.
+  // A `match`/`?` on a call scrutinee recovers a case payload's concrete type
+  // from these args (indexed by the case field's `paramIdx`) so the erased
+  // `Object` payload can be unboxed to its real primitive (#4877).
+  // No default: like `isIface`, a defaulted construction miscompiles under the
+  // current MSIL emitter (InvalidProgramException in `collectDeriveFreeSigs`),
+  // so every construction site passes it explicitly.
+  retGenericArgs: List[TypeExpr]
 }
 
 // One field of a union case class, in declaration order.  A match binding
@@ -69,6 +78,68 @@ pub record JvmFuncSig {
 pub record JvmCaseField {
   name: String
   ty: JvmType
+  // Index into the enclosing generic type's type-parameter list when this
+  // field's DECLARED type is a bare type parameter (`Ok(value: T)` → 0 for
+  // `Result[T, E]`); `-1` when the field has a concrete type.  `ty` is always
+  // the erased `Object` for a `paramIdx >= 0` field; the concrete type is
+  // recovered at a match-bind site from the scrutinee's instantiation so the
+  // payload can be unboxed to its real primitive (#4877).
+  // No default (`-1` passed explicitly at every construction site): the pinned
+  // F# stage-0 emitter that mints the CI bootstrap drops a defaulted record
+  // field from its field registry, so `.paramIdx` access fails with `E5
+  // codegen: record 'JvmCaseField' missing field 'paramIdx'`.  Same constraint
+  // the sibling `JvmFuncSig.retGenericArgs`/`isIface` fields observe.
+  paramIdx: Int
+}
+
+// If `ty` is a bare reference to one of `tps` (a generic type parameter), return
+// its index; otherwise `-1`.  Used to record which case/record fields carry a
+// type-parameter payload that erases to `Object` (#4877).
+pub func typeParamIndexOf(ty: in TypeExpr, tps: in List[String]): Int {
+  match ty.kind {
+    case TRef(path) -> {
+      val seg = lastSegment(path)
+      var i = 0
+      while i < tps.count {
+        if tps[i] == seg {
+          return i
+        }
+        i = i + 1
+      }
+      -1
+    }
+    case TParen(inner) -> typeParamIndexOf(inner, tps)
+    case _ -> -1
+  }
+}
+
+// The generic type arguments of a return type when it is a generic instantiation
+// (`Result[Int, String]` → `[Int, String]`), else an empty list.  A `TAValue`
+// (const-generic) argument makes the whole result bail to empty so a payload's
+// `paramIdx` never mis-indexes into a value argument (#4877).
+pub func returnTypeGenericArgs(retOpt: in Option[TypeExpr]): List[TypeExpr] {
+  match retOpt {
+    case Some(te) -> {
+      match te.kind {
+        case TGenericApp(_, args) -> {
+          val acc: List[TypeExpr] = newList()
+          var i = 0
+          while i < args.count {
+            match args[i] {
+              case TAType(ty) -> acc.add(ty)
+              case TAValue(_) -> {
+                return newList()
+              }
+            }
+            i = i + 1
+          }
+          acc
+        }
+        case _ -> newList()
+      }
+    }
+    case None -> newList()
+  }
 }
 
 // True when a JVM class name denotes a union case (`Pkg/Union$Case`) rather

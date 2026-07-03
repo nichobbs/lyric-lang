@@ -7685,6 +7685,99 @@ the same PR was a compile-error fix (`String.indexOf` returns `Int`, not
 **Related:** #4514, docs/45 (contract-metadata direct resolution), D098.
 
 ---
+## D-progress-554 — JVM: unbox an erased generic payload at the `match`/`?` bind site so arithmetic on it stops string-concatenating / VerifyError-ing (#4877)
+
+**Context.** On `--target jvm`, an unannotated `val` bound to an erased
+generic payload — the value arm of a `match` on a `Result`/`Option`, or the
+result of `?` — was tracked as `java/lang/Object` (a boxed `Integer`),
+because a generic union case's type-parameter field (`Ok(value: T)`) erases
+to `Object` on the JVM (unlike MSIL, which reifies the field). Combining two
+such bindings with an arithmetic operator miscompiled: `x + y` picked the
+reference-typed `+` and **string-concatenated** (`2 + 2` → `"22"`), while
+`x - y` (no string fallback) failed class verification with a
+`java.lang.VerifyError`. This hits the single most common Lyric
+error-handling idiom (`let x = foo()?; let y = bar()?; x + y`), so the issue
+was BLOCKER-class. MSIL was correct throughout.
+
+**Decision.** Implement the issue's preferred fix direction (Option 2): give
+the JVM match-lowering the scrutinee's generic instantiation and unbox the
+payload to its concrete primitive at the bind site. Rejected the runtime
+`instanceof`-dispatched arithmetic alternative (boxes results, regresses the
+hottest idiom) and the join-unification alternative (fixes the direct `match`
+but not the `?` form, whose only value arm is `Object`).
+
+**What actually shipped (verified on both targets):**
+
+- `JvmCaseField` gains `paramIdx: Int` (index into the enclosing generic
+  type's type-parameter list when the field is a bare type parameter, `-1`
+  for a concrete field), populated in `collectFileCasesExtern` via
+  `typeParamIndexOf`. `JvmFuncSig` gains `retGenericArgs: List[TypeExpr]`
+  (the declared return type's generic arguments, e.g. `Result[Int, String]`
+  → `[Int, String]`), populated via `returnTypeGenericArgs`.
+- `lowerMatchExpr` recovers the scrutinee's generic args
+  (`scrutineeGenericArgs`: a direct `match callee(...)` reads the callee's
+  `retGenericArgs`; `EParen` is unwrapped) and threads them through
+  `lowerPatternBind`. In the `PConstructor` arm, a field with `paramIdx >= 0`
+  whose scrutinee supplies a concrete argument at that index resolves the
+  payload's concrete JVM type; `bindCaseField` then `checkcast`+unboxes the
+  boxed `Object` (`Integer.intValue`/`Long.longValue`/`Double.doubleValue`/
+  `Float.floatValue`/`Boolean.booleanValue`) so the bound local is a real
+  primitive. Reference / unresolved payloads stay boxed (pre-fix behaviour).
+- The `?` form is fixed by construction: `propagate.l` desugars `getInt(a)?`
+  to a `match` whose scrutinee is the original `getInt(a)` `ECall`, so
+  `scrutineeGenericArgs` recovers the same instantiation.
+
+**Gotcha codified (cost two failed stage-1 builds).** `retGenericArgs` was
+first declared with a `= newList()` default. Like `isIface` (whose comment
+already warned of this), a **defaulted field on a record constructed
+cross-package miscompiles under the current self-hosted MSIL emitter** —
+stage-1 produced invalid IL for `collectDeriveFreeSigs`, surfacing as a
+runtime `System.InvalidProgramException` when the JVM compile path ran. Fix:
+the field carries **no default**; all ten `JvmFuncSig` construction sites
+pass it explicitly. (A separate first failure was a plain reserved-word slip
+— `val out` in `returnTypeGenericArgs`; `out` is a parameter-mode keyword.)
+
+**Third gotcha codified (cost one CI stage-0 build).** The CI bootstrap
+mints stage 0 from a **pinned F# emitter** (commit `35c0d2e5`), which then
+compiles the current self-hosted compiler source. Its inference is weaker
+than the self-hosted checker: reading `sig.retGenericArgs` where `sig` came
+from a bare `Option[JvmFuncSig]` match-arm destructure (no typed
+intermediate) mis-resolved the receiver to the file's prevalent imported
+`TypeExpr` record and failed with `E5/E7 codegen: imported record 'TypeExpr'
+has no field 'retGenericArgs'`. Sandbox builds passed (newer stage 0), so it
+surfaced only in CI. Fix: the read goes through a helper
+`funcSigRetGenericArgs(sigOpt: in Option[JvmFuncSig])` whose explicit
+parameter type anchors both the `sig` binding and the `mapGet` value type.
+General lesson: bind a `mapGet` result to an explicitly-typed `Option[T]`
+(or pass it to a typed parameter) before any field access the pinned F#
+stage-0 emitter must compile.
+
+**Fourth gotcha codified (cost one more CI stage-0 build).** With the third
+fixed, the same pinned F# emitter then rejected the new `JvmCaseField.paramIdx`
+field with `E5 codegen: record 'JvmCaseField' missing field 'paramIdx'` — it
+**drops a defaulted record field from its field registry**, so `.paramIdx`
+access resolved against a `JvmCaseField` that (to that emitter) had no such
+field. This is the F#-stage-0 manifestation of the second gotcha's
+defaults-are-hostile rule: it broke the self-hosted MSIL emitter as an
+`InvalidProgramException` and the F# stage-0 emitter as a missing-field error.
+Fix: `paramIdx` carries **no default**; all eight `JvmCaseField` construction
+sites pass it explicitly (`-1` for concrete fields). Verified by running the
+pinned mint locally (`LYRIC_BOOTSTRAP_MINT=1 scripts/mint-stage0-fsharp.sh`)
+rather than pushing blind — the general lesson being **no JVM-codegen record
+field may carry a default value**, since neither emitter in the build chain
+handles it.
+
+**Coverage.** `lyric-compiler/jvm/erased_generic_arith_jvm_self_test.l`
+(`@test_module`, 8 tests) asserts runtime values for Int/Long/Double
+payloads, a user-defined generic union, a guard over an unboxed payload, and
+both the `match` and `?` forms (including the `-` VerifyError case). Runs in
+CI on both targets — `--target jvm` in `compiler-self-tests-jvm` (Java 21),
+`--target dotnet` in `compiler-self-tests-dotnet-a`.
+
+**Related:** #4877, #2667 (band J4), docs/44 §5 J4, D-progress-473
+(use-site unboxing this extends).
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

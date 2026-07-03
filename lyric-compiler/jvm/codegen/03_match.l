@@ -16,10 +16,47 @@ import Jvm.AutoFfi
 // §5e. Match expression lowering.
 //      Bootstrap-grade: handles literal and binding patterns only.
 // ─────────────────────────────────────────────────────────────────────────────
+// Unwrap a looked-up func sig to its declared-return generic args.  The
+// explicit `Option[JvmFuncSig]` parameter type is load-bearing: it anchors the
+// `sig` binding so the field access resolves on `JvmFuncSig`, and it fixes the
+// value type of the `mapGet(ctx.funcSigs, …)` call passed in.  Without it the
+// pinned F# stage-0 emitter that mints the bootstrap cannot infer `sig`'s type
+// from a bare `Option[JvmFuncSig]` destructure at `sig.retGenericArgs` in a
+// match arm and mis-resolves it to the imported `TypeExpr` record (E5/E7
+// codegen "imported record 'TypeExpr' has no field 'retGenericArgs'").
+func funcSigRetGenericArgs(sigOpt: in Option[JvmFuncSig]): List[TypeExpr] {
+  match sigOpt {
+    case Some(sig) -> sig.retGenericArgs
+    case None -> newList()
+  }
+}
+
+// Recover the scrutinee's generic instantiation arguments so a constructor
+// destructure can unbox an erased type-parameter payload to its concrete
+// primitive (#4877).  Handles a direct `match callee(...) { … }`: the callee's
+// declared return-type generic args (`Result[Int, String]` → `[Int, String]`)
+// come from its `JvmFuncSig.retGenericArgs`.  An `EParen` wrapper is unwrapped;
+// anything else — including a variable-ref scrutinee (`match r`, #4938) or a
+// method-call scrutinee (`match x.m()`, #4933) — yields an empty list, so the
+// payload stays boxed (the pre-#4877 behaviour).
+func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
+  match scrutinee.kind {
+    case EParen(inner) -> scrutineeGenericArgs(ctx, inner)
+    case ECall(fn, _) -> {
+      match fn.kind {
+        case EPath(path) -> funcSigRetGenericArgs(mapGet(ctx.funcSigs, lastSegment(path)))
+        case _ -> newList()
+      }
+    }
+    case _ -> newList()
+  }
+}
+
 func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, arms: in List[MatchArm]): JvmType {
   val scrutTy = lowerExpr(ctx, insns, scrutinee)
   val scrutSlot = allocSlot(ctx, "__scrut_" + toString(ctx.slotTicker.count), scrutTy)
   emitStore(insns, scrutSlot, scrutTy)
+  val scrutTypeArgs = scrutineeGenericArgs(ctx, scrutinee)
 
   val afterL = freshLabel(ctx)
   var resultTy: JvmType = JVoid
@@ -52,7 +89,7 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
     // Emit pattern test.
     lowerPatternTest(ctx, insns, arm.pattern, scrutSlot, scrutTy, nextArmL)
     // Bind pattern variables.
-    lowerPatternBind(ctx, insns, arm.pattern, scrutSlot, scrutTy)
+    lowerPatternBind(ctx, insns, arm.pattern, scrutSlot, scrutTy, scrutTypeArgs)
     // Emit guard if present.
     match arm.guard {
       case Some(g) -> {
@@ -656,6 +693,51 @@ func lowerPatternTest(
 
 // Bind one positional/named sub-pattern of a constructor/record: read the field
 // into a precisely-typed local, then recurse for nested patterns.
+// True when `ty` is `java/lang/Object` — the erased type of a generic
+// type-parameter payload field.
+func isErasedObject(ty: in JvmType): Bool {
+  match ty {
+    case JRef(cls) -> cls == "java/lang/Object"
+    case _ -> false
+  }
+}
+
+// A boxed `Object` is on the stack; if `target` is a primitive whose boxed
+// wrapper we recognise, emit `checkcast <Wrapper>` + the unbox call and return
+// the primitive type.  Otherwise emit nothing and return `JRef(Object)` (the
+// value stays boxed — the caller keeps the current erased behaviour).  Used to
+// recover a generic payload's concrete primitive at a match-bind site (#4877).
+func emitUnboxObjectTo(insns: in List[LInsn], target: in JvmType): JvmType {
+  match target {
+    case JInt -> {
+      insns.add(LCheckcast(className = "java/lang/Integer"))
+      insns.add(LInvokevirtual(owner = "java/lang/Integer", name = "intValue", params = newList(), ret = JInt))
+      JInt
+    }
+    case JLong -> {
+      insns.add(LCheckcast(className = "java/lang/Long"))
+      insns.add(LInvokevirtual(owner = "java/lang/Long", name = "longValue", params = newList(), ret = JLong))
+      JLong
+    }
+    case JDouble -> {
+      insns.add(LCheckcast(className = "java/lang/Double"))
+      insns.add(LInvokevirtual(owner = "java/lang/Double", name = "doubleValue", params = newList(), ret = JDouble))
+      JDouble
+    }
+    case JFloat -> {
+      insns.add(LCheckcast(className = "java/lang/Float"))
+      insns.add(LInvokevirtual(owner = "java/lang/Float", name = "floatValue", params = newList(), ret = JFloat))
+      JFloat
+    }
+    case JBoolean -> {
+      insns.add(LCheckcast(className = "java/lang/Boolean"))
+      insns.add(LInvokevirtual(owner = "java/lang/Boolean", name = "booleanValue", params = newList(), ret = JBoolean))
+      JBoolean
+    }
+    case _ -> JRef(className = "java/lang/Object")
+  }
+}
+
 func bindCaseField(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -663,16 +745,23 @@ func bindCaseField(
   caseClass: in String,
   realName: in String,
   fty: in JvmType,
+  concreteTy: in JvmType,
   subPat: in Pattern,
 ): Unit {
   match subPat.kind {
     case PBinding(fname, innerOpt) -> {
       emitLoad(insns, castSlot, JRef(className = caseClass))
       insns.add(LGetfield(owner = caseClass, name = realName, t = fty))
-      val fSlot = allocSlot(ctx, fname, fty)
-      emitStore(insns, fSlot, fty)
+      // `fty` is the erased field type (`Object` for a type-parameter payload).
+      // When the scrutinee's instantiation resolves this payload to a concrete
+      // primitive (`concreteTy`), unbox the boxed value so the binding is a real
+      // primitive — otherwise arithmetic on it mis-lowers (`x + y` string-concats
+      // or VerifyErrors) (#4877).  Reference / unresolved payloads stay boxed.
+      val boundTy = if isErasedObject(fty) { emitUnboxObjectTo(insns, concreteTy) } else { fty }
+      val fSlot = allocSlot(ctx, fname, boundTy)
+      emitStore(insns, fSlot, boundTy)
       match innerOpt {
-        case Some(inner) -> lowerPatternBind(ctx, insns, inner, fSlot, fty)
+        case Some(inner) -> lowerPatternBind(ctx, insns, inner, fSlot, boundTy, newList())
         case None -> ()
       }
     }
@@ -680,19 +769,33 @@ func bindCaseField(
     case PLiteral(_) -> ()
     case _ -> {
       // Nested destructuring (tuple / record / constructor) in field position:
-      // read the field into a temp local and recurse.
+      // read the field into a temp local and recurse.  Nested payloads keep the
+      // erased type (scrutinee-arg info does not thread through) — a residual of
+      // the #4877 fix, not a regression.
       emitLoad(insns, castSlot, JRef(className = caseClass))
       insns.add(LGetfield(owner = caseClass, name = realName, t = fty))
       val tSlot = allocSlot(ctx, "__fld_" + realName + "_" + toString(ctx.slotTicker.count), fty)
       emitStore(insns, tSlot, fty)
-      lowerPatternBind(ctx, insns, subPat, tSlot, fty)
+      lowerPatternBind(ctx, insns, subPat, tSlot, fty, newList())
     }
   }
 }
 
 // Bind pattern variables after a successful match.
+//
+// `scrutTypeArgs` carries the scrutinee's generic instantiation arguments (e.g.
+// `[Int]` for a `Result[Int, String]`-typed scrutinee whose `Ok(value: T)`
+// payload should bind as a real `Int`).  It is empty when the instantiation is
+// unknown, in which case erased type-parameter payloads stay boxed `Object`
+// (the pre-#4877 behaviour).  It only applies at the top-level constructor
+// destructure; nested destructures re-enter with an empty list.
 func lowerPatternBind(
-  ctx: in FuncCtx, insns: in List[LInsn], pat: in Pattern, scrutSlot: in Int, scrutTy: in JvmType
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  pat: in Pattern,
+  scrutSlot: in Int,
+  scrutTy: in JvmType,
+  scrutTypeArgs: in List[TypeExpr],
 ): Unit {
   match pat.kind {
     case PWildcard -> insns.add(LNop)
@@ -702,7 +805,7 @@ func lowerPatternBind(
           emitLoad(insns, scrutSlot, scrutTy)
           val bindSlot = allocSlot(ctx, name, scrutTy)
           emitStore(insns, bindSlot, scrutTy)
-          lowerPatternBind(ctx, insns, inner, bindSlot, scrutTy)
+          lowerPatternBind(ctx, insns, inner, bindSlot, scrutTy, scrutTypeArgs)
         }
         case None -> {
           // A single-segment `case Foo ->` that names a known union case binds
@@ -719,7 +822,7 @@ func lowerPatternBind(
     case PLiteral(_) -> insns.add(LNop)
     case PConstRef(_) -> insns.add(LNop)
     case PRange(_, _, _) -> insns.add(LNop)
-    case PParen(inner) -> lowerPatternBind(ctx, insns, inner, scrutSlot, scrutTy)
+    case PParen(inner) -> lowerPatternBind(ctx, insns, inner, scrutSlot, scrutTy, scrutTypeArgs)
     case PTypeTest(inner, ty) -> {
       // Narrow the scrutinee to the tested type, then bind the inner pattern at
       // that precise type.
@@ -730,9 +833,9 @@ func lowerPatternBind(
           insns.add(LCheckcast(className = cls))
           val nSlot = allocSlot(ctx, "__typetest_" + toString(ctx.slotTicker.count), testTy)
           emitStore(insns, nSlot, testTy)
-          lowerPatternBind(ctx, insns, inner, nSlot, testTy)
+          lowerPatternBind(ctx, insns, inner, nSlot, testTy, newList())
         }
-        case _ -> lowerPatternBind(ctx, insns, inner, scrutSlot, scrutTy)
+        case _ -> lowerPatternBind(ctx, insns, inner, scrutSlot, scrutTy, scrutTypeArgs)
       }
     }
     case PConstructor(head, fields) -> {
@@ -756,16 +859,27 @@ func lowerPatternBind(
         while fi < fields.count {
           var realName = match fields[fi].kind { case PBinding(fn, _) -> fn; case _ -> "field" + toString(fi) }
           var fty: JvmType = JRef(className = "java/lang/Object")
+          // When this field is an erased type-parameter payload (`paramIdx >= 0`)
+          // and the scrutinee's instantiation supplies a concrete argument at that
+          // parameter index, resolve the payload's concrete JVM type so the bind
+          // site can unbox it (#4877).  Otherwise leave it as the (erased) field
+          // type and the payload stays boxed `Object`.
+          var concreteTy: JvmType = JRef(className = "java/lang/Object")
           match caseInfo {
             case Some(flds) -> {
               if fi < flds.count {
                 realName = flds[fi].name
                 fty = flds[fi].ty
+                concreteTy = fty
+                val pIdx = flds[fi].paramIdx
+                if pIdx >= 0 and pIdx < scrutTypeArgs.count {
+                  concreteTy = typeExprToJvmExtern(scrutTypeArgs[pIdx], ctx.pkgName, ctx.externTypes)
+                }
               }
             }
             case None -> ()
           }
-          bindCaseField(ctx, insns, castSlot, caseClass, realName, fty, fields[fi])
+          bindCaseField(ctx, insns, castSlot, caseClass, realName, fty, concreteTy, fields[fi])
           fi = fi + 1
         }
         insns.add(LNop)
@@ -790,7 +904,7 @@ func lowerPatternBind(
                   case Some(t) -> t
                   case None -> JRef(className = "java/lang/Object")
                 }
-                bindCaseField(ctx, insns, castSlot, recClass, fieldName, fty, subPat)
+                bindCaseField(ctx, insns, castSlot, recClass, fieldName, fty, fty, subPat)
               }
               case RPFShort(fieldName, _) -> {
                 // `Point{x}` binds local `x` to field `x`.
@@ -816,7 +930,7 @@ func lowerPatternBind(
       var pti = 0
       while pti < patterns.count {
         val elemSlot = extractTupleElem(ctx, insns, scrutSlot, scrutTy, pti)
-        lowerPatternBind(ctx, insns, patterns[pti], elemSlot, JRef(className = "java/lang/Object"))
+        lowerPatternBind(ctx, insns, patterns[pti], elemSlot, JRef(className = "java/lang/Object"), newList())
         pti = pti + 1
       }
     }
@@ -831,7 +945,7 @@ func lowerPatternBind(
       while ai < patterns.count {
         val nextAltL = freshLabel(ctx)
         lowerPatternTest(ctx, insns, patterns[ai], scrutSlot, scrutTy, nextAltL)
-        lowerPatternBind(ctx, insns, patterns[ai], scrutSlot, scrutTy)
+        lowerPatternBind(ctx, insns, patterns[ai], scrutSlot, scrutTy, scrutTypeArgs)
         insns.add(LGoto(label = doneL))
         insns.add(LLabel(name = nextAltL))
         ai = ai + 1
