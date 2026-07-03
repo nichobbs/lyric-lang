@@ -27627,3 +27627,47 @@ respects the `_kernel/`-only extern-type rule (Decision F / `docs/14`).
 
 **Related:** #4876 (superseded), Decision F / `docs/14-native-stdlib-plan.md`,
 codegen epics #3511/#3512.
+
+### D-progress-568 — Native backend N3.2: interface vtable dispatch
+
+**Shipped.** `--target native` now lowers non-generic interfaces and their
+`impl I for Record` blocks, closing work item N3.2 from
+`native/plan/08-work-items.md`. Interfaces were previously rejected with a
+construct-naming diagnostic.
+
+- **Representation** (`llvm_codegen.l`): an interface value is a heap-boxed
+  fat pointer `{ i32 rc, i8* dtor, i8* obj, vtable* }` — an ordinary RC'd
+  object — rather than the by-value fat pointer of
+  `native/plan/03-type-mapping.md` / `04-arc-design.md` Rule 8. This fits the
+  pointer-centric IR (no `insertvalue`/`extractvalue`, no aggregate ABI) and
+  makes ARC fall out of the existing owned-temp/destructor machinery
+  (D-N-016). Each interface synthesises a vtable struct of `i8*` slots; each
+  `impl I for R` emits an `internal constant` vtable of `bitcast`ed
+  concrete-method pointers.
+- **Upcast** is implicit (the type checker inserts no coercion node), so it is
+  detected at the single `coerceTo` chokepoint: a record flowing into an
+  interface-typed argument / return / binding / field / match arm is boxed,
+  retaining the object into the `obj` slot.
+- **Dispatch** (`lowerUfcsCall`): an interface-typed receiver loads `obj` +
+  the vtable pointer, indexes the method slot, `bitcast`s the raw pointer to
+  the method's function type, and calls with `obj` as arg 0 — structurally
+  identical to `lowerClosureCall`.
+- **Impl methods** (`collectImplMethods`): each `impl` method is rewritten to
+  a self-receiving function with a collision-free `Record.Iface.method` name
+  (impl methods parse without an injected `self`; the body's `self` keyword
+  lowers to `loadLocal("self")`).
+- **Tests**: new `llvm_self_test_n3.l` — nullary + parameterised dispatch,
+  polymorphism (vtable selection), return-position upcast, String-returning
+  dispatch, and two ASan/LSan cases proving the interface box releases its
+  object leak-/double-free-free.
+- **Docs**: language reference native-surface paragraph; book
+  `appendix-b-quick-reference.md`; decision log D-N-016; `native/plan`
+  README + `08-work-items.md` marked shipped.
+
+Deferred (tracked): generic interfaces / generic impl methods, default methods
+(`IMFunc`), associated types, `Self`-returning methods, multiple inheritance,
+async interface methods (Phase 2), `impl` for non-record targets, and direct
+impl-method calls on a concrete (non-interface-typed) receiver.
+
+**Related:** D-N-016, D-progress-540/545/562 (native backend),
+`native/plan/08-work-items.md` §N3.2.

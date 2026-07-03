@@ -837,13 +837,15 @@ lyric build --target native <file.l>   # writes a self-contained POSIX executabl
                                        # ARC-managed (no GC; cycles need NativeWeak[T]). Surface:
                                        # scalars/strings, records, unions, enums, distinct types,
                                        # tuples, match, generics (monomorphized), closures,
-                                       # NativeWeak[T], List/Map + for/indexing (map keys String
-                                       # or scalar); raw FFI (NativePtr[T], nativeAddrOf,
-                                       # nativeNullPtr, closure-as-C-callback trampolines) only in
-                                       # @unsafe_ffi functions / _kernel_native packages (N0100).
-                                       # Not yet lowered (build fails naming the
-                                       # construct): interfaces, protected types, slice[T],
-                                       # module-level val, async, manifest builds
+                                       # non-generic interfaces (impl I for Record, vtable
+                                       # dispatch), NativeWeak[T], slice[T], List/Map +
+                                       # for/indexing (map keys String or scalar); raw FFI
+                                       # (NativePtr[T], nativeAddrOf, nativeNullPtr,
+                                       # closure-as-C-callback trampolines) only in @unsafe_ffi
+                                       # functions / _kernel_native packages (N0100).
+                                       # Not yet lowered (build fails naming the construct):
+                                       # interface default/generic methods, protected types,
+                                       # list literals, module-level val, async, manifest builds
 lyric build -o <dir> <file.l>          # write output files to <dir>
 lyric build --manifest lyric.toml      # build from project manifest
                                        # (with [project] output = "single", bundles every

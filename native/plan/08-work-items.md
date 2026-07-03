@@ -506,9 +506,21 @@ already-monomorphized AST.
 
 ### N3.2 — Interface dispatch (vtable)
 
+**SHIPPED** (D-progress-568, D-N-016): non-generic interfaces + `impl I for
+Record`, implicit upcast at argument/return/binding positions, and vtable
+dispatch on interface-typed receivers, verified ASan-clean by
+`llvm_self_test_n3.l`. The shipped representation is a **heap-boxed** fat
+pointer `{ i32 rc, i8* dtor, i8* obj, vtable* }` (not the by-value pair below)
+because the IR layer has no by-value-aggregate ABI — see D-N-016; ARC then
+falls out of the existing owned-temp/destructor machinery. Vtable slots hold
+the concrete method pointer directly (bitcast to `i8*` and back at the call
+site — no wrapper), and `obj` (as `i8*`) is passed as the receiver.
+Deferred: generic/default/`Self`/async interface methods, associated types,
+multiple inheritance, `impl` for non-record targets.
+
 **Depends on:** N2.1, N2.6
 
-**What to implement:**
+**What was implemented (original plan):**
 
 For each interface `I` with method `m`:
 1. Define `%Lyric.I.vtable = type { <m return type>(<args>)* }` — one slot per method.

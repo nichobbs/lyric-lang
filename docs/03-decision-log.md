@@ -5086,6 +5086,64 @@ the initialiser (unlike the immortal `""` used by the string seams).
 issue #4752.
 
 
+## D-N-016 — Native interface values are a heap-boxed fat pointer (revises the by-value fat pointer of 03-type-mapping.md / 04-arc-design.md Rule 8)
+
+**Date:** 2026-07-03
+**Status:** ACCEPTED (N3.2; revises the interface-dispatch representation)
+
+**Decision.** On `--target native`, an interface value lowers to a
+**heap-boxed** fat pointer — an ordinary RC'd object
+`__iface.<m> = { i32 rc, i8* dtor, i8* obj, %__ifacevt.<m>* vtbl }` —
+rather than the by-value `{ i8* obj, vtable* }` aggregate specified in
+`native/plan/03-type-mapping.md` §"Interface dispatch" and
+`04-arc-design.md` Rule 8.  The `obj` slot holds the (type-erased)
+implementing object; a per-interface destructor releases it.  Each
+interface has a vtable struct of one `i8*` slot per method; each
+`impl I for R` emits an `internal constant` vtable of `bitcast`ed
+concrete-method pointers.  Upcast (record → interface) boxes the object
+and retains it into `obj`; dispatch loads `obj` + the vtable pointer,
+indexes the method slot, `bitcast`s the raw pointer to the method's
+function type, and calls with `obj` as arg 0.
+
+**Why boxed instead of by-value.** The native IR layer (`llvm_ir.l`)
+has **no** `insertvalue`/`extractvalue` and no by-value-aggregate call/
+return ABI — the entire value model is pointer-centric (records and
+closures are heap `NPtr(NStruct)` with an ARC header).  A by-value fat
+pointer would require a large new aggregate surface across `coerceTo`,
+call-argument lowering, returns, and locals.  Heap-boxing makes ARC
+"just work": the box is a normal ref (standard retain on copy, release
+on drop via the existing owned-temp/scope machinery), and its
+destructor releases the erased `obj` — Rule 8's retain/release semantics
+fall out of Rule 7 (destructor composition) with zero special-casing.
+
+**Costs accepted.**
+- One extra heap allocation per upcast.  Phase-1 ARC is "correct, not
+  optimal" (no retain/release elision), so this is consistent with the
+  rest of the backend; a by-value representation remains a future
+  optimisation once an aggregate ABI exists.
+- The `obj` slot is `i8*` (type-erased), so the box carries a bespoke
+  destructor (releases `obj`) rather than reusing `synthRecordDtor`
+  (which only releases `NPtr(NStruct)` ref fields, not an `i8*`).
+
+**Scope shipped (N3.2 first slice).** Non-generic interfaces with
+non-generic, non-async body-less methods (`IMSig`); `impl I for R` for a
+plain record `R`; implicit upcast at argument / return / binding / field
+/ match-arm positions (through the single `coerceTo` chokepoint);
+interface-typed method dispatch; ARC verified leak-/double-free-clean
+under AddressSanitizer (`llvm_self_test_n3.l`).
+
+**Deferred (tracked).** Generic interfaces and generic impl methods
+(need `Lyric.Mono` interaction), interface default methods (`IMFunc`),
+associated types (`IMAssoc`), `Self`-returning methods, multiple
+interface inheritance, async interface methods (Phase 2), `impl` for
+non-record targets, and direct impl-method calls on a concrete
+(non-interface-typed) receiver.
+
+**Related:** D-N-014, `native/plan/03-type-mapping.md`,
+`native/plan/04-arc-design.md` Rule 8, `native/plan/08-work-items.md`
+N3.2.
+
+
 ## D086 — Band 3 Phase B.0: `IAsyncStateMachine` synthesis for user-defined `async func` (no-await path, #2070)
 
 **Context:** D085 (Phase A) fixed the `@externTarget async` silent miscompile. The
