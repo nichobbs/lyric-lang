@@ -315,3 +315,169 @@ test "Result[Unit, E] payloads and diverging value-if branches (ASan)" {
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "Unit payloads + diverging branches: 1+2+39")
 }
+
+test "slice[T] via the list repr: bytes round-trip, listFiles, args (ASan)" {
+  val src = "package T\n" + "\n" + "import Std.Core\n" + "import Std.Errors\n" + "import Std.Collections\n" +
+    "import Std.File\n" +
+    "import Std.Environment\n" +
+    "\n" +
+    "func main(): Int {\n" +
+    "  val base = \"" +
+    tempBase() +
+    "/lyric-n5s\"\n" +
+    "  match createDir(base) {\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 1\n" +
+    "    }\n" +
+    "  }\n" +
+    "  val path = base + \"/bytes.bin\"\n" +
+    "  val payload: List[Byte] = newList()\n" +
+    "  payload.add(104)\n" +
+    "  payload.add(0)\n" +
+    "  payload.add(105)\n" +
+    "  match writeBytes(path, payload) {\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 2\n" +
+    "    }\n" +
+    "  }\n" +
+    "  var total = 0\n" +
+    "  match readBytes(path) {\n" +
+    "    case Ok(got) -> {\n" +
+    "      if got.count != 3 {\n" +
+    "        return 3\n" +
+    "      }\n" +
+    "      for b in got {\n" +
+    "        total = total + b.toInt()\n" +
+    "      }\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 4\n" +
+    "    }\n" +
+    "  }\n" +
+    "  if total != 209 {\n" +
+    "    return 5\n" +
+    "  }\n" +
+    "  var seen = 0\n" +
+    "  match listFiles(base) {\n" +
+    "    case Ok(files) -> {\n" +
+    "      for f in files {\n" +
+    "        if f == path {\n" +
+    "          seen = seen + 1\n" +
+    "        }\n" +
+    "        val n = f.length\n" +
+    "        if n < 1 {\n" +
+    "          return 6\n" +
+    "        }\n" +
+    "      }\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 7\n" +
+    "    }\n" +
+    "  }\n" +
+    "  if seen != 1 {\n" +
+    "    return 8\n" +
+    "  }\n" +
+    "  val argv = args()\n" +
+    "  if argv.length < 1 {\n" +
+    "    return 9\n" +
+    "  }\n" +
+    "  val a0 = argv[0]\n" +
+    "  if a0.length < 1 {\n" +
+    "    return 10\n" +
+    "  }\n" +
+    "  match deleteFile(path) {\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 11\n" +
+    "    }\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "slice seams: bytes + enumeration + args")
+}
+
+test "toArray snapshot + listFilesRecursive on native (ASan)" {
+  val src = "package T\n" + "\n" + "import Std.Core\n" + "import Std.Errors\n" + "import Std.Collections\n" +
+    "import Std.File\n" +
+    "\n" +
+    "func main(): Int {\n" +
+    "  val base = \"" +
+    tempBase() +
+    "/lyric-n5s2\"\n" +
+    "  val nested = base + \"/inner\"\n" +
+    "  match createDir(nested) {\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 1\n" +
+    "    }\n" +
+    "  }\n" +
+    "  match writeText(base + \"/a.txt\", \"A\") {\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 2\n" +
+    "    }\n" +
+    "  }\n" +
+    "  match writeText(nested + \"/b.txt\", \"B\") {\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 3\n" +
+    "    }\n" +
+    "  }\n" +
+    "  var found = 0\n" +
+    "  match listFilesRecursive(base) {\n" +
+    "    case Ok(all) -> {\n" +
+    "      for f in all {\n" +
+    "        found = found + 1\n" +
+    "        val n = f.length\n" +
+    "        if n < 1 {\n" +
+    "          return 4\n" +
+    "        }\n" +
+    "      }\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 5\n" +
+    "    }\n" +
+    "  }\n" +
+    "  if found != 2 {\n" +
+    "    return 6\n" +
+    "  }\n" +
+    "  val xs: List[Int] = newList()\n" +
+    "  xs.add(20)\n" +
+    "  xs.add(22)\n" +
+    "  val snap = xs.toArray()\n" +
+    "  xs.set(0, 999)\n" +
+    "  var sum = 0\n" +
+    "  for v in snap {\n" +
+    "    sum = sum + v\n" +
+    "  }\n" +
+    "  if sum != 42 {\n" +
+    "    return 7\n" +
+    "  }\n" +
+    "  match deleteFile(base + \"/a.txt\") {\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 8\n" +
+    "    }\n" +
+    "  }\n" +
+    "  match deleteFile(nested + \"/b.txt\") {\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 9\n" +
+    "    }\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "toArray snapshot + recursive traversal")
+}

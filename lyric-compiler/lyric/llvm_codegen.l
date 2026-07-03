@@ -57,7 +57,8 @@
 //! Not yet lowered (each panics with a construct-naming message, per
 //! the MSIL/JVM backend convention for backend gaps): interfaces and
 //! protected types (rest of N3), function references (`&f`),
-//! module-level `val`, `slice[T]`, async (Phase 2).
+//! module-level `val`, list literals, async (Phase 2).  `slice[T]`
+//! shares the RC'd list representation (D-N-015).
 package Lyric.LlvmCodegen
 
 import Std.Core
@@ -419,6 +420,16 @@ func typeToN(ctx: in Ctx, te: in TypeExpr): NType {
       }
       typeExprToNType(te)
     }
+    case TSlice(_) -> {
+      val emptyNames: List[String] = newList()
+      val emptyTys: List[NType] = newList()
+      match typeToNEnvOpt(ctx, te, emptyNames, emptyTys) {
+        case Some(t) -> return t
+        case None -> {
+        }
+      }
+      typeExprToNType(te)
+    }
     case TParen(inner) -> typeToN(ctx, inner)
     case _ -> typeExprToNType(te)
   }
@@ -479,6 +490,11 @@ func typeToNOpt(ctx: in Ctx, te: in TypeExpr): Option[NType] {
       typeToNEnvOpt(ctx, te, emptyNames, emptyTys)
     }
     case TTuple(_) -> {
+      val emptyNames: List[String] = newList()
+      val emptyTys: List[NType] = newList()
+      typeToNEnvOpt(ctx, te, emptyNames, emptyTys)
+    }
+    case TSlice(_) -> {
       val emptyNames: List[String] = newList()
       val emptyTys: List[NType] = newList()
       typeToNEnvOpt(ctx, te, emptyNames, emptyTys)
@@ -1701,8 +1717,10 @@ func lowerMember(ctx: in Ctx, insns: in List[NInsn], receiver: in Expr, memberNa
     }
     panic("Lyric.LlvmCodegen: String member '." + memberName + "' is not yet supported for --target native (Phase N1)")
   }
-  // Collections (N5.8): `.count` on List/Map receivers.
-  if memberName == "count" {
+  // Collections (N5.8): `.count` on List/Map receivers; `.length` is
+  // the slice spelling of the same read (slices share the list repr,
+  // D-N-015 — the type checker owns which spelling each type admits).
+  if memberName == "count" or memberName == "length" {
     match listElemOfType(ctx, v.ty) {
       case Some(_) -> return listCountVal(ctx, insns, collectionAsI8(ctx, insns, v))
       case None -> {
@@ -3762,8 +3780,24 @@ func lowerCollectionMethodCall(
       if name == "clear" and args.count == 0 {
         return Some(value = callRuntime(ctx, insns, "lyric_list_clear", NVoid, arg1(NPtr(pointee = NI8), recvP)))
       }
-      if name == "count" and args.count == 0 {
+      if name == "count" and args.count == 0 or name == "length" and args.count == 0 {
         return Some(value = listCountVal(ctx, insns, recvP))
+      }
+      // `List.toArray()` and `slice.toList()` are both a fresh shallow
+      // copy on the native target: list and slice share the LyricList
+      // repr (D-N-015), so the snapshot IS the conversion.  Ref
+      // elements are retained by the copy; the result registers as an
+      // owned temp like any other constructor.
+      if (name == "toArray" or name == "toList") and args.count == 0 {
+        val raw = freshTmp(ctx)
+        val cArgs: List[NArg] = newList()
+        cArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+        insns.add(NCall(dest = raw, retTy = NPtr(pointee = NI8), fn = NGlobal(name = "lyric_list_copy"), args = cArgs))
+        val cast = freshTmp(ctx)
+        insns.add(NBitcast(dest = cast, fromTy = NPtr(pointee = NI8), value = NLocal(name = raw), toTy = recv.ty))
+        val outV = NVal(ty = recv.ty, value = NLocal(name = cast))
+        registerTemp(ctx, outV)
+        return Some(value = outV)
       }
       return None
     }
@@ -4277,6 +4311,12 @@ func typeToNEnvOpt(ctx: in Ctx, te: in TypeExpr, envNames: in List[String], envT
       if bare == "Map" and argTys.count == 2 {
         return Some(value = mapNType(ctx, argTys[0], argTys[1]))
       }
+      // NativePtr[T] with a registry-resolved pointee (kernel out-params
+      // like NativePtr[slice[Byte]]; the plain-scalar cases also resolve
+      // here identically to typeExprToNType's arm).
+      if bare == "NativePtr" and argTys.count == 1 {
+        return Some(value = NPtr(pointee = argTys[0]))
+      }
       None
     }
     case TFunction(parameters, retTy) -> {
@@ -4305,6 +4345,19 @@ func typeToNEnvOpt(ctx: in Ctx, te: in TypeExpr, envNames: in List[String], envT
         tti = tti + 1
       }
       Some(value = recPtrType(tupleRecInfo(ctx, etys)))
+    }
+    case TSlice(element) -> {
+      // `slice[T]` shares the RC'd LyricList kernel representation,
+      // immutable by construction (D-N-015 — the plan's borrowed
+      // {ptr,len} fat pointer cannot safely back a returned slice
+      // without lifetime checking; the RC'd repr is memory-safe under
+      // the existing ARC rules with no new runtime code).  The type
+      // checker owns the mutability distinction; here `for`, indexing,
+      // and `.length` reuse the list paths wholesale.
+      match typeToNEnvOpt(ctx, element, envNames, envTys) {
+        case Some(el) -> Some(value = listNType(ctx, el))
+        case None -> None
+      }
     }
     case TParen(inner) -> typeToNEnvOpt(ctx, inner, envNames, envTys)
     case _ -> typeToNOpt(ctx, te)
@@ -7304,6 +7357,8 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl2("lyric_list_remove_at", NVoid, p8, NI64))
   decls.add(mkDecl1("lyric_list_len", NI64, p8))
   decls.add(mkDecl1("lyric_list_clear", NVoid, p8))
+  decls.add(mkDecl1("lyric_list_copy", p8, p8))
+  decls.add(mkDecl2("lyric_args_set", NVoid, NI32, NPtr(pointee = p8)))
   decls.add(mkDecl2("lyric_map_new", p8, NI32, NI32))
   decls.add(mkDecl3("lyric_map_set", NVoid, p8, NI64, NI64))
   decls.add(mkDecl3("lyric_map_get", NI32, p8, NI64, NPtr(pointee = NI64)))
@@ -7360,14 +7415,22 @@ func mkDecl3(name: in String, ret: in NType, t0: in NType, t1: in NType, t2: in 
   mkDeclN(name, ret, tys)
 }
 
-func externDeclOf(ef: in ExternFuncDecl): NFunc {
+func externDeclOf(ctx: in Ctx, ef: in ExternFuncDecl): NFunc {
   val tys: List[NType] = newList()
   var i = 0
   while i < ef.params.count {
-    tys.add(typeExprToNType(ef.params[i].ty))
+    // Function-typed params stay raw C function pointers (N4.5 — the
+    // ctx-aware mapping would produce a closure struct); everything
+    // else resolves through the registry so collection-typed extern
+    // params/returns (slice/List/Map kernels, D-N-015) get the same
+    // struct pointer type their call sites use.
+    match ef.params[i].ty.kind {
+      case TFunction(_, _) -> tys.add(typeExprToNType(ef.params[i].ty))
+      case _ -> tys.add(typeToN(ctx, ef.params[i].ty))
+    }
     i = i + 1
   }
-  mkDeclN(ef.symbol, retTypeToNType(ef.ret), tys)
+  mkDeclN(ef.symbol, retTypeToN(ctx, ef.ret), tys)
 }
 
 /// Synthesise the C-ABI `main` wrapper around the user's `func main`.
@@ -7377,6 +7440,12 @@ func synthCMain(mainPkg: in String, userMainRet: in NType, userMainIr: in String
   params.add(NParam(name = "argv", ty = NPtr(pointee = NPtr(pointee = NI8))))
   val body: List[NInsn] = newList()
   body.add(NLabel(name = "entry"))
+  // Capture argc/argv before Lyric main runs so Std.Environment.args()
+  // can materialise them on demand (lyric_args_get).
+  val argArgs: List[NArg] = newList()
+  argArgs.add(NArg(ty = NI32, value = NLocal(name = "argc")))
+  argArgs.add(NArg(ty = NPtr(pointee = NPtr(pointee = NI8)), value = NLocal(name = "argv")))
+  body.add(NCallVoid(fn = NGlobal(name = "lyric_args_set"), args = argArgs))
   val noArgs: List[NArg] = newList()
   match userMainRet {
     case NI32 -> {
@@ -7500,7 +7569,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
       val ef = u.externs[ei]
       if not declaredExterns.containsKey(ef.symbol) {
         declaredExterns.add(ef.symbol, true)
-        externDecls.add(externDeclOf(ef))
+        externDecls.add(externDeclOf(ctx, ef))
       }
       ei = ei + 1
     }

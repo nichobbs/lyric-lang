@@ -106,6 +106,11 @@ void       lyric_list_set(LyricList* list, int64_t idx, int64_t val);
 void       lyric_list_remove_at(LyricList* list, int64_t idx);
 int64_t    lyric_list_len(LyricList* list);
 void       lyric_list_clear(LyricList* list);
+/* Fresh rc=1 shallow copy: same elems_are_refs flag; ref elements are
+ * retained by the copy.  Backs slice[T] <-> List[T] bridging (the two
+ * share this representation on the native target, D-N-015) and the
+ * snapshot semantics of `.toArray()`. */
+LyricList* lyric_list_copy(LyricList* src);
 void       lyric_list_dtor(void* obj);
 
 /* Map: open-addressing hash map.  Keys are either LyricString* (hashed
@@ -122,7 +127,10 @@ int32_t   lyric_map_contains(LyricMap* map, int64_t key);
 int32_t   lyric_map_remove(LyricMap* map, int64_t key);
 int64_t   lyric_map_len(LyricMap* map);
 /* Fresh rc=1 snapshot lists of the occupied keys / values (entries
- * retained by the list when ref-typed). */
+ * retained by the list when ref-typed).  O(capacity), not O(len):
+ * each walks every bucket of the open-addressing table, occupied or
+ * not — fine for the compiler's small maps, worth knowing before
+ * calling in a hot loop over a map that grew large and then shrank. */
 LyricList* lyric_map_keys(LyricMap* map);
 LyricList* lyric_map_values(LyricMap* map);
 void      lyric_map_dtor(void* obj);
@@ -200,6 +208,17 @@ LyricString* lyric_file_read_all(const char* path);
  * untouched. */
 int32_t lyric_file_read_all_ok(const char* path, LyricString** out);
 
+/* Whole-file read as a scalar LyricList, one byte per 64-bit slot (the
+ * documented Phase-1 tradeoff for the single list layout, D-N-015).
+ * ALWAYS returns a fresh rc=1 list (empty on failure); *ok reports
+ * success (1/0). */
+LyricList* lyric_file_read_bytes(const char* path, int32_t* ok);
+
+/* Write every byte (one per 64-bit slot) of `data` to `path`; append
+ * != 0 appends, else truncate-or-create (0644).  0 on success, -1 on
+ * failure. */
+int32_t lyric_file_write_bytes(const char* path, LyricList* data, int32_t append);
+
 /* Writes every byte of `data` to `path`, creating the file (mode 0644)
  * if it does not exist.  `append` != 0 appends to an existing file;
  * otherwise the file is truncated first.  Returns 0 on success, -1 on
@@ -235,6 +254,10 @@ int32_t lyric_dir_exists(const char* path);
  * directory cannot be opened or a read error occurs partway through. */
 LyricList* lyric_dir_list(const char* path);
 
+/* Entry-name listing with the return-plus-ok-flag protocol: always a
+ * fresh rc=1 list (empty on failure); *ok reports success (1/0). */
+LyricList* lyric_dir_list2(const char* path, int32_t* ok);
+
 /* ── Environment (lyric_fs.c) ──────────────────────────────────────── */
 
 /* getenv(3) wrapper.  Returns a fresh rc=1 LyricString copy of the
@@ -256,6 +279,16 @@ LyricString* lyric_env_cwd(void);
 /* Status-returning variant for Lyric kernels: 0 and *out set on
  * success; -1 on failure with *out untouched. */
 int32_t lyric_env_cwd_ok(LyricString** out);
+
+/* ── Process arguments ─────────────────────────────────────────────── */
+
+/* Capture argc/argv at process entry (the synthesised C main calls
+ * this before Lyric main runs). */
+void lyric_args_set(int32_t argc, char** argv);
+
+/* Fresh rc=1 list of the captured argv strings (including argv[0],
+ * the managed GetCommandLineArgs convention); empty if never set. */
+LyricList* lyric_args_get(void);
 
 /* ── Process execution (lyric_process.c) ───────────────────────────── */
 

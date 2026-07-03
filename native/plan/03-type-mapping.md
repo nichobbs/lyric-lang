@@ -348,8 +348,14 @@ from field types):
 
 ## `slice[T]` and `List[T]`
 
+> **D-N-015 correction:** the borrowed fat pointer below was NOT
+> implemented.  `slice[T]` shares the RC'd `LyricList` representation
+> (immutable by construction; the type checker owns the distinction),
+> because a borrowed pair cannot safely back a returned slice without
+> lifetime checking.  See `docs/03-decision-log.md` §D-N-015.
+
 ```llvm
-; slice[Byte] (borrowed fat pointer, no ARC):
+; slice[Byte] as ORIGINALLY PLANNED (superseded by D-N-015):
 %Lyric.Slice_Byte = type { i8*, i64 }
 ; [0] i8*  ptr
 ; [1] i64  len (element count)

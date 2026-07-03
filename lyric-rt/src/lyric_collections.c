@@ -97,6 +97,14 @@ void lyric_list_clear(LyricList* list) {
     list->len = 0;
 }
 
+LyricList* lyric_list_copy(LyricList* src) {
+    LyricList* out = lyric_list_new(src->elems_are_refs);
+    for (int64_t i = 0; i < src->len; i++) {
+        lyric_list_push(out, src->data[i]); /* push retains ref elements */
+    }
+    return out;
+}
+
 /* ── SipHash-2-4 ───────────────────────────────────────────────────── */
 
 #define SIP_ROTL(x, b) (uint64_t)(((x) << (b)) | ((x) >> (64 - (b))))

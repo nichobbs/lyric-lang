@@ -152,16 +152,7 @@ pub func readBytes(path: in String): Result[List[Byte], IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
   }
-  return try {
-    val raw = hostReadAllBytes(path)
-    val acc: List[Byte] = newListWithCapacity(raw.length)
-    for b in raw {
-      acc.add(b)
-    }
-    Ok(value = acc)
-  } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
-  }
+  hostReadBytesResult(path)
 }
 
 /// Read the entire contents of `path` as a `slice[Byte]`, panicking on an
@@ -215,12 +206,7 @@ pub func writeBytes(path: in String, bytes: in List[Byte]): Result[Unit, IOError
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
   }
-  return try {
-    hostWriteAllBytes(path, bytes.toArray())
-    Ok(value = ())
-  } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
-  }
+  hostWriteBytesResult(path, bytes)
 }
 
 /// List the names of all files directly inside `dir` (non-recursive).
@@ -233,16 +219,7 @@ pub func listFiles(dir: in String): Result[List[String], IOError] {
   if dir.length == 0 {
     return Err(error = InvalidPath(path = dir, reason = "path must not be empty"))
   }
-  return try {
-    val raw = hostEnumerateFiles(dir)
-    val acc: List[String] = newListWithCapacity(raw.length)
-    for f in raw {
-      acc.add(f)
-    }
-    Ok(value = acc)
-  } catch Bug as b {
-    Err(error = IoError(path = dir, message = b.message))
-  }
+  hostListFilesResult(dir)
 }
 
 /// List the names of all sub-directories directly inside `dir` (non-recursive).
@@ -255,16 +232,7 @@ pub func listDirs(dir: in String): Result[List[String], IOError] {
   if dir.length == 0 {
     return Err(error = InvalidPath(path = dir, reason = "path must not be empty"))
   }
-  return try {
-    val raw = hostEnumerateDirectories(dir)
-    val acc: List[String] = newListWithCapacity(raw.length)
-    for d in raw {
-      acc.add(d)
-    }
-    Ok(value = acc)
-  } catch Bug as b {
-    Err(error = IoError(path = dir, message = b.message))
-  }
+  hostListDirsResult(dir)
 }
 
 /// Get the modification time for `path` (a file or a directory).

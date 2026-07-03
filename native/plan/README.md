@@ -60,7 +60,13 @@ support they surfaced (Unit-typed union/record payload fields for
 full bridge pipeline.  Native-side deferrals (stdin/timeout in the
 process runner, bytes-mode file I/O, dir enumeration, Std.Uuid, the
 Std.Time calendar surface) are tracked in #4752.
-Remaining work items (rest of N3, `slice[T]`, N6.4, N7.2)
+`slice[T]` SHIPPED (D-N-015, D-progress-562): slices share the RC'd
+list representation (immutable by construction; the planned borrowed
+fat pointer is superseded — see D-N-015), unlocking bytes-mode file
+I/O, directory enumeration (`listFiles`/`listDirs`/recursive),
+`Std.Environment.args()`, and `toArray()` on the native target,
+verified under ASan by the extended `llvm_stdlib_self_test.l`.
+Remaining work items (rest of N3, N6.4, N7.2)
 execute from `08-work-items.md` as written, modulo the D-N-014 naming
 mapping.
 

@@ -27336,3 +27336,73 @@ mutation previously failed on JVM) plus a broad JVM self-test
 regression sweep.
 
 **Related:** docs/44 m-70–m-71, epic #2663, #2667 (band J4), #4798.
+### D-progress-562 — Native backend: `slice[T]` on the list repr (D-N-015); bytes I/O, dir enumeration, `args()` (issue #4752)
+
+**Shipped.** `slice[T]` now lowers on `--target native`, and with it the
+next tranche of #4752's native-side deferrals: bytes-mode file I/O
+(`Std.File.readBytes` / `writeBytes`), directory enumeration
+(`listFiles` / `listDirs` / `listFilesRecursive` / `listDirsRecursive`),
+`Std.Environment.args()`, and `toArray()` snapshots.
+
+- **D-N-015 (supersedes D-N-012's slice half)** — natively, `slice[T]`
+  shares the RC'd `LyricList` kernel representation instead of the
+  planned borrowed `{ptr, len}` fat pointer.  A borrowed pointer is
+  unsafe without lifetime checking for *returned* slices
+  (`readBytes` hands back a container that must own its storage), and
+  the shared repr costs zero new runtime or ARC machinery: `for`
+  loops, indexing, and `.length` reuse the list paths verbatim.
+  Costs accepted and documented in the decision: `slice[Byte]`
+  spends one 64-bit slot per byte, and `.count` / `.length` become a
+  harmless superset on both container spellings (the type checker
+  still gates the source surface).  Codegen: `TSlice` arms in
+  `typeToN` / `typeToNOpt` / `typeToNEnvOpt` delegate to the list
+  lowering; `.length` joins `.count` in member lowering; `toArray()`
+  / `toList()` lower to a new `lyric_list_copy` kernel (shallow copy
+  with per-element retain, so snapshots are immune to source
+  mutation); `NativePtr[T]` written as `TGenericApp` resolves too
+  (the extern declarations in kernel files spell it that way).
+- **Return-plus-ok-flag kernel protocol** — ref-container results
+  cross the C boundary by *return value* plus an `Int` ok out-param
+  (`lyric_file_read_bytes`, `lyric_dir_list2`), never a container
+  out-param: overwriting a `var xs = newList()` slot from C would
+  leak the rc=1 initialiser (string out-params get away with it only
+  because `""` literals are immortal statics).  The kernels always
+  return a fresh owned list, empty on failure.
+- **lyric-rt** — `lyric_list_copy` (push-based shallow copy),
+  `lyric_file_read_bytes` (whole-file bytes, interior NULs survive),
+  `lyric_dir_list2` (readdir over the ok-flag protocol),
+  `lyric_file_write_bytes` (byte-narrowing buffer, EINTR-safe), and
+  `lyric_args_set` / `lyric_args_get` (the synthesised C `main` now
+  stores argc/argv before dispatching to the Lyric main; `args_get`
+  builds a fresh list including argv[0]).  Each has a C unit test in
+  `lyric_rt_test.c` (rc assertions on copied refs, interior-NUL
+  round-trip, missing-file ok=0, unset-args empty list).
+- **Stdlib seams** — `Std.File.readBytes` / `writeBytes` /
+  `listFiles` / `listDirs` become thin delegations to new
+  exception-free Result seams (`hostReadBytesResult` /
+  `hostWriteBytesResult` / `hostListFilesResult` /
+  `hostListDirsResult`) implemented by all three kernel twins:
+  managed and JVM twins wrap the existing hosts in `try`/`catch`
+  (all failures classify as `IoError`, matching the pre-seam pure
+  layer, which never distinguished FileNotFound for these); the
+  native twin builds on the new kernels, re-joining `lyric_dir_list2`'s
+  bare entry names onto the directory and filtering by
+  existence-probe kind, since the managed twin yields absolute paths
+  split by file/dir kind.  `Std.EnvironmentHost` (native) gains
+  `hostGetCommandLineArgs` over `lyric_args_get`.
+- **Verification** — `llvm_stdlib_self_test.l` grows to 7 cases (all
+  `-fsanitize=address`): bytes round-trip incl. a zero byte,
+  `listFiles` absolute-path membership, `args()[0]` non-empty, and a
+  second program covering nested-dir `listFilesRecursive` plus a
+  `toArray()` snapshot asserted immune to source-list mutation.
+  JVM parity for the new seams is covered by the existing
+  `file_jvm_self_test.l` battery; the managed seams by
+  `lyric-stdlib/tests/`.
+- **Formatter note** — two files acquired `result`-named locals that
+  #4778's `KwResult` bug renders unformattable (`val result = ...`
+  formats to `val  = ...` and the loss-check refuses); the locals
+  were renamed rather than skipped.
+
+**Related:** D-N-015 (`docs/03-decision-log.md`), D-progress-556,
+D-progress-557, `native/plan/03-type-mapping.md`, issues #4752, #4778,
+#4795.

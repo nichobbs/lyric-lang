@@ -36,6 +36,7 @@
 package Std.FileHost
 
 import Std.Core
+import Std.Collections
 import Std.Errors
 
 // ── JDK extern types ──────────────────────────────────────────────────────────
@@ -267,4 +268,54 @@ func deleteRecursively(path: in String): Unit {
     }
   }
   d.delete()
+}
+
+// Bytes-mode and enumeration Result seams (issue #4752, D-N-015
+// slice): every failure reports IoError, matching the managed twin.
+pub func hostReadBytesResult(path: in String): Result[List[Byte], IOError] {
+  try {
+    val raw = hostReadAllBytes(path)
+    val acc: List[Byte] = newListWithCapacity(raw.length)
+    for b in raw {
+      acc.add(b)
+    }
+    Ok(value = acc)
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}
+
+pub func hostWriteBytesResult(path: in String, bytes: in List[Byte]): Result[Unit, IOError] {
+  try {
+    hostWriteAllBytes(path, bytes.toArray())
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}
+
+pub func hostListFilesResult(dir: in String): Result[List[String], IOError] {
+  try {
+    val raw = hostEnumerateFiles(dir)
+    val acc: List[String] = newListWithCapacity(raw.length)
+    for f in raw {
+      acc.add(f)
+    }
+    Ok(value = acc)
+  } catch Bug as b {
+    Err(error = IoError(path = dir, message = b.message))
+  }
+}
+
+pub func hostListDirsResult(dir: in String): Result[List[String], IOError] {
+  try {
+    val raw = hostEnumerateDirectories(dir)
+    val acc: List[String] = newListWithCapacity(raw.length)
+    for d in raw {
+      acc.add(d)
+    }
+    Ok(value = acc)
+  } catch Bug as b {
+    Err(error = IoError(path = dir, message = b.message))
+  }
 }

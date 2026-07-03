@@ -199,6 +199,73 @@ static void test_map_int_keys(void) {
     lyric_release(m);
 }
 
+static void test_list_copy(void) {
+    /* Ref elements: the copy retains; releasing the source leaves the
+     * copy's elements alive. */
+    LyricList* src = lyric_list_new(1);
+    LyricString* a = lyric_string_from_literal((const uint8_t*)"one", 3);
+    lyric_list_push(src, (int64_t)(intptr_t)a);
+    lyric_release(a);
+    LyricList* dup = lyric_list_copy(src);
+    CHECK(lyric_list_len(dup) == 1);
+    CHECK(atomic_load(&a->rc) == 2); /* held by src and dup */
+    lyric_release(src);
+    CHECK(atomic_load(&a->rc) == 1);
+    LyricString* got = (LyricString*)(intptr_t)lyric_list_get(dup, 0);
+    CHECK(memcmp(LYRIC_STRING_DATA(got), "one", 3) == 0);
+    lyric_release(dup);
+
+    /* Scalar elements copy bit-for-bit. */
+    LyricList* nums = lyric_list_new(0);
+    lyric_list_push(nums, 7);
+    lyric_list_push(nums, 42);
+    LyricList* nums2 = lyric_list_copy(nums);
+    lyric_list_set(nums, 0, -1);
+    CHECK(lyric_list_get(nums2, 0) == 7);
+    CHECK(lyric_list_get(nums2, 1) == 42);
+    lyric_release(nums);
+    lyric_release(nums2);
+}
+
+static void test_read_bytes(void) {
+    char tmpl[] = "/tmp/lyric_rt_bytes_XXXXXX";
+    int fd = mkstemp(tmpl);
+    CHECK(fd >= 0);
+    CHECK(write(fd, "hi\x00z", 4) == 4);
+    close(fd);
+    int32_t ok = 0;
+    LyricList* bytes = lyric_file_read_bytes(tmpl, &ok);
+    CHECK(ok == 1);
+    CHECK(lyric_list_len(bytes) == 4);
+    CHECK(lyric_list_get(bytes, 0) == 'h');
+    CHECK(lyric_list_get(bytes, 1) == 'i');
+    CHECK(lyric_list_get(bytes, 2) == 0); /* interior NUL survives */
+    CHECK(lyric_list_get(bytes, 3) == 'z');
+    lyric_release(bytes);
+    unlink(tmpl);
+    int32_t ok2 = 1;
+    LyricList* missing = lyric_file_read_bytes("/definitely/missing/lyric-rt", &ok2);
+    CHECK(ok2 == 0);
+    CHECK(lyric_list_len(missing) == 0);
+    lyric_release(missing);
+}
+
+static void test_args(void) {
+    /* Unset: empty list rather than a crash. */
+    LyricList* empty = lyric_args_get();
+    CHECK(lyric_list_len(empty) == 0);
+    lyric_release(empty);
+
+    char* argv[] = {(char*)"prog", (char*)"alpha", (char*)"beta"};
+    lyric_args_set(3, argv);
+    LyricList* got = lyric_args_get();
+    CHECK(lyric_list_len(got) == 3);
+    LyricString* s1 = (LyricString*)(intptr_t)lyric_list_get(got, 1);
+    CHECK(memcmp(LYRIC_STRING_DATA(s1), "alpha", 5) == 0);
+    lyric_release(got);
+    lyric_args_set(0, NULL);
+}
+
 static void test_map_keys_values(void) {
     /* Scalar keys, ref values: keys list is scalar, values list retains. */
     LyricMap* m = lyric_map_new(0, 1);
@@ -592,6 +659,9 @@ int main(void) {
     test_list_refs();
     test_map_int_keys();
     test_map_string_keys();
+    test_list_copy();
+    test_read_bytes();
+    test_args();
     test_map_keys_values();
     test_posix();
     test_ok_variants();

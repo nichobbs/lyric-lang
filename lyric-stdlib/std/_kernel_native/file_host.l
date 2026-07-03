@@ -6,16 +6,18 @@
 //! audited lyric-rt helpers (`lyric_file_*` / `lyric_dir_*`) — POSIX
 //! status codes instead of exceptions, so no try/catch is needed here.
 //!
-//! Scope: the text-mode Result seams plus the existence probes.  The
-//! bytes-mode surface (`hostReadAllBytes` / `hostWriteAllBytes`), file
-//! stat, and directory enumeration need `slice[Byte]` and DateTime
-//! lowering the native backend doesn't have yet (issue #4752 tracks
-//! them); the `Std.File` functions built on them stay
-//! compile-time-unreachable on native until then.
+//! Scope: the text- and bytes-mode Result seams, existence probes,
+//! create/delete, and directory enumeration (D-N-015: slices share the
+//! RC'd list repr, so the byte and path collections ride the ordinary
+//! list kernels).  Still unavailable natively: file `stat` (needs an
+//! opaque timestamp twin) and the panicking `readTextOrPanic` /
+//! `readBytesOrPanic` variants (pure-layer try/catch) — issue #4752
+//! tracks both.
 @axiom("POSIX file-system calls via lyric-rt conform to their documented contracts")
 package Std.FileHost
 
 import Std.Core
+import Std.Collections
 import Std.Errors
 
 extern func toC(s: String): NativePtr[Byte] = "lyric_string_to_cstring"
@@ -33,6 +35,15 @@ extern func rtWriteAll(path: NativePtr[Byte], data: String, append: Int): Int = 
 extern func rtDelete(path: NativePtr[Byte]): Int = "lyric_file_delete"
 
 extern func rtDirCreate(path: NativePtr[Byte]): Int = "lyric_dir_create"
+
+// Return-plus-ok-flag kernels (a ref-container out-param would leak
+// its initialiser; these always return a fresh owned list, empty on
+// failure, and report success through the Int out-flag).
+extern func rtReadBytes(path: NativePtr[Byte], okOut: NativePtr[Int]): List[Byte] = "lyric_file_read_bytes"
+
+extern func rtDirList(path: NativePtr[Byte], okOut: NativePtr[Int]): List[String] = "lyric_dir_list2"
+
+extern func rtWriteBytes(path: NativePtr[Byte], data: List[Byte], append: Int): Int = "lyric_file_write_bytes"
 
 @unsafe_ffi
 pub func hostFileExists(path: in String): Bool {
@@ -144,4 +155,65 @@ pub func hostDeleteFileResult(path: in String): Result[Unit, IOError] {
   } else {
     Err(error = IoError(path = path, message = "the file could not be deleted"))
   }
+}
+
+// Bytes-mode and enumeration Result seams (issue #4752, D-N-015
+// slice): every failure reports IoError, matching the managed twin.
+@unsafe_ffi
+pub func hostReadBytesResult(path: in String): Result[List[Byte], IOError] {
+  var ok: Int = 0
+  val c = toC(path)
+  val bytes = rtReadBytes(c, nativeAddrOf(ok))
+  freeC(c)
+  if ok == 1 {
+    Ok(value = bytes)
+  } else {
+    Err(error = IoError(path = path, message = "the file could not be read"))
+  }
+}
+
+@unsafe_ffi
+pub func hostWriteBytesResult(path: in String, bytes: in List[Byte]): Result[Unit, IOError] {
+  val c = toC(path)
+  val rc = rtWriteBytes(c, bytes, 0)
+  freeC(c)
+  if rc == 0 {
+    Ok(value = ())
+  } else {
+    Err(error = IoError(path = path, message = "the file could not be written"))
+  }
+}
+
+// kind: 1 = files only, 2 = directories only.  lyric_dir_list2 yields
+// bare entry NAMES; the managed twin yields absolute paths, so each
+// kept entry is re-joined onto `dir` and filtered by an existence
+// probe of the requested kind.
+@unsafe_ffi
+func listChildrenNative(dir: in String, kind: in Int): Result[List[String], IOError] {
+  var ok: Int = 0
+  val c = toC(dir)
+  val names = rtDirList(c, nativeAddrOf(ok))
+  freeC(c)
+  if ok != 1 {
+    return Err(error = IoError(path = dir, message = "the directory could not be listed"))
+  }
+  val acc: List[String] = newList()
+  for n in names {
+    val p = dir + "/" + n
+    if kind == 1 and hostFileExists(p) {
+      acc.add(p)
+    }
+    if kind == 2 and hostDirectoryExists(p) {
+      acc.add(p)
+    }
+  }
+  Ok(value = acc)
+}
+
+pub func hostListFilesResult(dir: in String): Result[List[String], IOError] {
+  listChildrenNative(dir, 1)
+}
+
+pub func hostListDirsResult(dir: in String): Result[List[String], IOError] {
+  listChildrenNative(dir, 2)
 }
