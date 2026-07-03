@@ -64,6 +64,17 @@ func nestedGrid(): Int {
   g
 }
 
+// Count iterations of a general half-open `lo ..< hi` so the empty case with a
+// NON-zero `lo == hi` is exercised directly (the exit test must fire on the very
+// first check).
+func countHalfOpen(lo: Int, hi: Int): Int {
+  var c = 0
+  for i in lo ..< hi {
+    c = c + 1
+  }
+  c
+}
+
 test "half-open range sums 0..<5 to 10" {
   assertEqualInt(sumHalfOpen(5), 10, "0+1+2+3+4")
 }
@@ -80,8 +91,9 @@ test "closed range 3..=3 runs once" {
   assertEqualInt(sumClosed(3, 3), 3, "single iteration at the bound")
 }
 
-test "empty half-open range 3..<3 never runs" {
-  assertEqualInt(sumHalfOpen(3) - sumHalfOpen(3), 0, "3..<3 is empty")
+test "empty half-open range 3..<3 never runs (lo == hi > 0)" {
+  assertEqualInt(countHalfOpen(3, 3), 0, "3..<3 has zero iterations")
+  assertEqualInt(countHalfOpen(5, 2), 0, "a descending lo > hi is also empty")
 }
 
 test "Long-counter range sums 0i64..<4i64 to 6" {
