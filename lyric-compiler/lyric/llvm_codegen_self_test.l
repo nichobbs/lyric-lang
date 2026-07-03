@@ -144,7 +144,6 @@ test "comparisons and booleans" {
 }
 
 test "short-circuit evaluation skips rhs" {
-  val src = "package T\n" + "var hits: Int = 0\n"
   // Module-level vars are unsupported; use a helper returning a marker
   // exit code instead: rhs would panic if evaluated.
   val src2 = "package T\n" + "func boom(): Bool {\n" + "  panic(\"rhs evaluated\")\n" + "  true\n" + "}\n" +

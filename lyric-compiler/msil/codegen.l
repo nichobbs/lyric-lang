@@ -513,6 +513,10 @@ pub record CodegenCtx {
   tokIEnumerableGetEnumerator: Int  // IEnumerable.GetEnumerator(): IEnumerator  callvirt
   tokIEnumeratorMoveNext: Int  // IEnumerator.MoveNext(): bool  callvirt
   tokIEnumeratorGetCurrent: Int  // IEnumerator.get_Current(): object  callvirt
+  // System.IDisposable — used by the MExternEnumerable for-loop protocol to
+  // dispose the IEnumerator after the loop exits (ECMA-334 §13.9.5; #4594).
+  trIDisposable: Int  // System.IDisposable
+  tokIDisposableDispose: Int  // IDisposable.Dispose(): void  callvirt
   // Erased Dictionary<object,object> get_Keys / get_Values tokens (#3511).
   // Used by the dictGetKeys / dictGetValues special cases when the map type is
   // not concrete (MMapOf / MObject).  For concrete maps (MConcreteMap), the
@@ -913,6 +917,18 @@ pub func newCodegenCtx(
       "get_Current",
       "ie_getcurrent",
       buildInstanceMethodSig(ieGetCurrentPs, MObject)
+    )
+
+  // ── System.IDisposable — MExternEnumerable for-loop disposal (#4594) ──────
+  val trIDisposable = ctxAddTypeRef(lctx, "System", "IDisposable", lctx.arRuntime)
+  val idispDisposePs: List[MsilType] = newList()
+  val tokIDisposableDispose = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trIDisposable,
+      "Dispose",
+      "idisp_dispose",
+      buildInstanceMethodSig(idispDisposePs, MVoid)
     )
 
   // ── Dictionary<object,object> via TypeSpec ────────────────────────────────
@@ -1730,6 +1746,8 @@ pub func newCodegenCtx(
     tokIEnumerableGetEnumerator = tokIEnumerableGetEnumerator,
     tokIEnumeratorMoveNext = tokIEnumeratorMoveNext,
     tokIEnumeratorGetCurrent = tokIEnumeratorGetCurrent,
+    trIDisposable = trIDisposable,
+    tokIDisposableDispose = tokIDisposableDispose,
     tokDictObjGetKeys = tokDictObjGetKeys,
     tokDictObjGetValues = tokDictObjGetValues,
     configFieldTokens = newMap(),
@@ -4288,8 +4306,10 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
         // legacy form only a *value-type* V is tracked (so the boxed `get_Item`
         // result is unboxed back); reference V stays `object`; the key is always
         // boxed for `Dictionary<object,_>`, so K is not tracked.
-        val keyTy = match args[0] { case TAType(kte) -> typeExprToMsilCtx(cctx, kte, pkgName); case TAValue(_) -> MObject }
-        val valTyRaw = match args[1] { case TAType(vte) -> typeExprToMsilCtx(cctx, vte, pkgName); case TAValue(_) -> MObject }
+        // Byte key/value must map to MByte, not the scalar path's MInt — same
+        // `sliceElemMsilCtx` special-case #3472 applied to `List[Byte]` (#3647).
+        val keyTy = match args[0] { case TAType(kte) -> sliceElemMsilCtx(cctx, kte, pkgName); case TAValue(_) -> MObject }
+        val valTyRaw = match args[1] { case TAType(vte) -> sliceElemMsilCtx(cctx, vte, pkgName); case TAValue(_) -> MObject }
         if collElemConcrete(keyTy) and collElemConcrete(valTyRaw) {
           MConcreteMap(keyTy = keyTy, valTy = valTyRaw)
         } else {
@@ -4957,6 +4977,88 @@ func blockTrailingExprMsil(blk: in Block): Option[Expr] {
     match blk.statements[blk.statements.count - 1].kind {
       case SExpr(e) -> Some(value = e)
       case _ -> None
+    }
+  }
+}
+
+// True when every path through an `ExprOrBlock` diverges — used to check
+// `if`/`match` arms recursively (#4774).
+func exprOrBlockDivergesMsil(eob: in ExprOrBlock): Bool {
+  match eob {
+    case EOBExpr(e) -> exprDivergesMsil(e)
+    case EOBBlock(blk) -> blockDivergesMsil(blk)
+  }
+}
+
+// True when an expression, used in trailing statement position, never
+// yields control back to whatever follows it: a call to the `panic`
+// builtin, an `if`/`else` whose both branches diverge, or a `match` whose
+// every arm diverges.  An `if` with no `else` can always fall through, so
+// it's never diverging regardless of the `then` branch.  See
+// `blockDivergesMsil` for the statement-level (`return`/`throw`/…) cases.
+func exprDivergesMsil(e: in Expr): Bool {
+  match e.kind {
+    case ECall(fn, _) -> {
+      match fn.kind {
+        case EPath(path) -> lastSegmentMsil(path) == "panic"
+        case _ -> false
+      }
+    }
+    case EIf(_, thenBranch, elseBranchOpt, _) -> {
+      match elseBranchOpt {
+        case Some(elseBranch) -> exprOrBlockDivergesMsil(thenBranch) and exprOrBlockDivergesMsil(elseBranch)
+        case None -> false
+      }
+    }
+    case EMatch(_, arms) -> {
+      if arms.count == 0 {
+        false
+      } else {
+        var i = 0
+        var allDiverge = true
+        while i < arms.count {
+          if not exprOrBlockDivergesMsil(arms[i].body) {
+            allDiverge = false
+          }
+          i = i + 1
+        }
+        allDiverge
+      }
+    }
+    case _ -> false
+  }
+}
+
+// True when a block's trailing statement never falls through to whatever
+// follows it — `return`/`throw`/`break`/`continue`, or an expression that
+// itself diverges (a call to the `panic` builtin, or an `if`/`match` whose
+// every branch diverges, per `exprDivergesMsil`).  Covers idioms like
+// `catch Bug as b { return Err(...) }` and `catch Bug as b { panic(b.message) }`,
+// both common throughout the stdlib and ecosystem libraries (e.g.
+// `Std.File.readTextOrPanic`, `lyric-storage`'s `putObject`).  A
+// `panic(...)` call type-checks as `Never` (which unifies with any type)
+// but lowers to `MVoid` like a genuine void arm; `return`/`throw`/`break`/
+// `continue` aren't expressions at all, so `blockTrailingExprMsil` sees no
+// trailing expression either way.  Either way the arm never reaches the
+// try-catch join point, so it doesn't need to supply a value of the try
+// body's type — a real Unit/value mismatch (the type-checker gap #2042 the
+// panic diagnostic in `lowerTryCatchExprMsil` guards against) still fires
+// for every other void-typed catch arm.  Unlike `blockTrailingExprMsil`, a
+// leading `defer` doesn't disqualify the block: `lowerStmtsExprFromMsil`
+// routes the tail after a `defer` through the same trailing-statement
+// dispatch recursively, so whether the block diverges depends only on its
+// actual last statement, not on whether a `defer` precedes it (#4761).
+func blockDivergesMsil(blk: in Block): Bool {
+  if blk.statements.count == 0 {
+    false
+  } else {
+    match blk.statements[blk.statements.count - 1].kind {
+      case SReturn(_) -> true
+      case SThrow(_) -> true
+      case SBreak(_) -> true
+      case SContinue(_) -> true
+      case SExpr(e) -> exprDivergesMsil(e)
+      case _ -> false
     }
   }
 }
@@ -11674,7 +11776,8 @@ func emitCollectionForMsil(
       // not IList (e.g. DictKeyCollection, DictValueCollection).  Protocol:
       //   castclass IEnumerable
       //   GetEnumerator() → IEnumerator (non-generic)
-      //   while MoveNext() { elem = get_Current(); body }
+      //   try { while MoveNext() { elem = get_Current(); body } }
+      //   finally { if (enum is IDisposable) ((IDisposable)enum).Dispose(); }
       // Cast the collection to System.Collections.IEnumerable and call GetEnumerator.
       insns.add(MCastclass(typeToken = 0x01000000 + cctx.trIEnumerable))
       insns.add(MCallvirt(methodToken = cctx.tokIEnumerableGetEnumerator))
@@ -11685,15 +11788,30 @@ func emitCollectionForMsil(
       val eeEnumSlot = allocSlotMsil(fctx, "__ee_enum_" + toString(fctx.slotTicker.count), eeEnumTy)
       emitStoreSlot(insns, eeEnumSlot, fctx.paramCount)
 
+      // The loop body is wrapped in a try/finally so the enumerator is disposed
+      // (ECMA-334 §13.9.5) whether the loop runs to exhaustion or exits via
+      // `break` (#4594).  `eeAfterL` is the target for both — it sits outside
+      // the protected region, so `break` (via emitLoopJumpMsil) correctly emits
+      // `leave`, which runs the finally handler on its way out.  Not every
+      // non-generic IEnumerator implementation is disposable (the static
+      // System.Collections.IEnumerator type doesn't require it), so the finally
+      // handler does a runtime `isinst IDisposable` check before calling Dispose.
+      val eeAfterL = freshLabelMsil(fctx)
+      val eeTryStartL = freshLabelMsil(fctx)
+      insns.add(MLabel(id = eeTryStartL))
+      fctx.tryRegionStack.add(0)
+
       val eeLoopL = freshLabelMsil(fctx)
       val eeContL = freshLabelMsil(fctx)
-      val eeAfterL = freshLabelMsil(fctx)
+      val eeDoneL = freshLabelMsil(fctx)
 
       insns.add(MLabel(id = eeLoopL))
-      // IEnumerator.MoveNext() → bool; false → exit loop
+      // IEnumerator.MoveNext() → bool; false → exit loop (still inside the
+      // protected region; a plain conditional branch to a same-region label
+      // is legal, unlike a branch straight out of the region).
       emitLoadSlot(insns, eeEnumSlot, fctx.paramCount)
       insns.add(MCallvirt(methodToken = cctx.tokIEnumeratorMoveNext))
-      insns.add(MBrFalse(label = eeAfterL))
+      insns.add(MBrFalse(label = eeDoneL))
 
       // IEnumerator.get_Current() → object; cast to elemTy if concrete
       emitLoadSlot(insns, eeEnumSlot, fctx.paramCount)
@@ -11713,6 +11831,47 @@ func emitCollectionForMsil(
 
       insns.add(MLabel(id = eeContL))
       insns.add(MBr(label = eeLoopL))
+      insns.add(MLabel(id = eeDoneL))
+      insns.add(MLeave(label = eeAfterL))
+      fctx.tryRegionStack.removeAt(fctx.tryRegionStack.count - 1)
+
+      val eeTryEndL = freshLabelMsil(fctx)
+      insns.add(MLabel(id = eeTryEndL))
+
+      val eeFinallyStartL = freshLabelMsil(fctx)
+      val eeFinallyEndL = freshLabelMsil(fctx)
+      val eeSkipDisposeL = freshLabelMsil(fctx)
+      insns.add(MLabel(id = eeFinallyStartL))
+      emitLoadSlot(insns, eeEnumSlot, fctx.paramCount)
+      insns.add(MIsinst(typeToken = 0x01000000 + cctx.trIDisposable))
+      val eeDisposableSlot = allocSlotMsil(fctx, "__ee_disposable_" + toString(fctx.slotTicker.count), MObject)
+      emitStoreSlot(insns, eeDisposableSlot, fctx.paramCount)
+      emitLoadSlot(insns, eeDisposableSlot, fctx.paramCount)
+      insns.add(MBrFalse(label = eeSkipDisposeL))
+      emitLoadSlot(insns, eeDisposableSlot, fctx.paramCount)
+      // `eeDisposableSlot` is `MObject`-typed (it holds the `isinst`
+      // result), but `callvirt` requires the stack value to be
+      // assignment-compatible with the declaring type of the called
+      // method — an `object` reference is not compatible with
+      // `IDisposable` (#4772).  `castclass` is safe here: `isinst` above
+      // already confirmed the runtime type implements `IDisposable`, and
+      // the `brfalse` just above confirmed it's non-null.
+      insns.add(MCastclass(typeToken = 0x01000000 + cctx.trIDisposable))
+      insns.add(MCallvirt(methodToken = cctx.tokIDisposableDispose))
+      insns.add(MLabel(id = eeSkipDisposeL))
+      insns.add(MEndfinally)
+      insns.add(MLabel(id = eeFinallyEndL))
+      insns.add(
+        MEHClause(
+          flags = 2,
+          tryStart = eeTryStartL,
+          tryEnd = eeTryEndL,
+          handlerStart = eeFinallyStartL,
+          handlerEnd = eeFinallyEndL,
+          catchToken = 0
+        )
+      )
+
       insns.add(MLabel(id = eeAfterL))
     }
     case _ -> {
@@ -12430,6 +12589,31 @@ func lowerTryCatchExprMsil(
     val catchTy = lowerBlockExprMsil(cctx, fctx, insns, c.body)
     match catchTy {
       case MVoid -> {
+        // A prior branch (the try body, or an earlier catch arm) already
+        // established a non-void result type but this arm yields nothing —
+        // storing would be a no-op that silently leaves `resultSlot` at its
+        // zero-initialised default instead of the value the caller expects
+        // (type-checker gap #2042; JVM rejects the same source shape with a
+        // source-located `error[J004]`, see `jvm/codegen/05_stmts.l`).
+        // Fail loud with a source-located diagnostic instead of silently
+        // miscompiling, so both targets give the user the same signal (#3313).
+        match resultTy {
+          case MVoid -> {
+          }
+          case _ -> {
+            if not blockDivergesMsil(c.body) {
+              val pos = c.span.startPos
+              panic(
+                "Msil.Codegen: " + toString(pos.line) + ":" + toString(pos.column) +
+                  ": try-catch used as an expression, but this catch arm yields Unit while the " +
+                  "try body (or an earlier catch arm) yields a value; the MSIL backend cannot " +
+                  "route an absent value through the result slot. Give the catch arm a trailing " +
+                  "value of the try body's type, or annotate the try-catch result type explicitly " +
+                  "(type-checker gap #2042)."
+              )
+            }
+          }
+        }
       }
       case _ -> {
         if resultSlot < 0 {
@@ -12768,7 +12952,6 @@ func insnStackDelta(insn: in MInsn): Int {
     case MLdlen -> 0
     case MLdelemRef -> -1
     case MLdelemU1 -> -1
-    case MLdelemI2 -> -1
     case MLdelemU2 -> -1
     case MLdelemI4 -> -1
     case MLdelemI8 -> -1
@@ -18182,12 +18365,14 @@ func typeExprToMsilGenBody(
           case TAValue(_) -> MObject
         }
       } else if headSeg == "Map" and args.count == 2 {
+        // Byte key/value must map to MByte, not the scalar path's MInt — same
+        // `sliceElemMsilGenBody` special-case #3472 applied to `List[Byte]` (#3647).
         val keyTy = match args[0] {
-          case TAType(kte) -> typeExprToMsilGenBody(cctx, kte, pkgName, generics)
+          case TAType(kte) -> sliceElemMsilGenBody(cctx, kte, pkgName, generics)
           case TAValue(_) -> MObject
         }
         val valTyRaw = match args[1] {
-          case TAType(vte) -> typeExprToMsilGenBody(cctx, vte, pkgName, generics)
+          case TAType(vte) -> sliceElemMsilGenBody(cctx, vte, pkgName, generics)
           case TAValue(_) -> MObject
         }
         if collElemConcrete(keyTy) and collElemConcrete(valTyRaw) {
@@ -18306,12 +18491,14 @@ func typeExprToMsilGenSig(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Stri
           case TAValue(_) -> MObject
         }
       } else if headSeg == "Map" and args.count == 2 {
+        // Byte key/value must map to MByte, not the scalar path's MInt — same
+        // `sliceElemMsilGenSig` special-case #3473 applied to `List[Byte]` (#3647).
         val keyTy = match args[0] {
-          case TAType(kte) -> typeExprToMsilGenSig(cctx, kte, pkgName, generics)
+          case TAType(kte) -> sliceElemMsilGenSig(cctx, kte, pkgName, generics)
           case TAValue(_) -> MObject
         }
         val valTyRaw = match args[1] {
-          case TAType(vte) -> typeExprToMsilGenSig(cctx, vte, pkgName, generics)
+          case TAType(vte) -> sliceElemMsilGenSig(cctx, vte, pkgName, generics)
           case TAValue(_) -> MObject
         }
         if collElemConcrete(keyTy) and collElemConcrete(valTyRaw) {
@@ -21988,6 +22175,27 @@ func emitAutoFfiCallMsil(
     case None -> {
     }
   }
+  // Constructor shorthand (.new()) on a value type: `emitResolvedAutoFfi`
+  // (called by `tryAutoFfiFromMetadata` above) deliberately returns None for
+  // value-type constructors (Q48-004 — value types need `initobj`, not
+  // `newobj`, and are not yet supported).  Without this check, a zero-arg
+  // `.new()` would fall through to the generic static "()-shape" guess below
+  // and register a bogus static MemberRef literally named "new" against the
+  // value type — not a real member, so it fails at MSIL load time with no
+  // indication of the real problem (#3777).  Multi-arg calls already panic
+  // via the `args.count > 0` guard further down, but with a message that
+  // doesn't name the actual (value-type) cause; catching both shapes here
+  // gives one specific, actionable diagnostic instead.
+  if methodName == "new" and Mdr.isValueTypeFqn(cctx.metadataVtypeSet, clrFqn) {
+    panic(
+      "Msil.Codegen: '" + clrFqn + ".new(...)' targets a value type (struct); " +
+        "constructor shorthand (.new()) is only supported for reference types " +
+        "today (Q48-004).  Declare an @externTarget wrapper function instead — " +
+        "e.g. `@externTarget(\"" + clrFqn + "..ctor\") @externStatic func ...`, " +
+        "or, if the type's default value is sufficient, rely on its " +
+        "zero-initialised default rather than calling .new()."
+    )
+  }
   // Reject an extern-type CLR name the FFI cascade can't resolve to a known
   // reference assembly.  The metadata type index is guaranteed to be populated
   // here because `tryAutoFfiFromMetadata` (called above) unconditionally calls
@@ -25164,6 +25372,20 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
   // Always register the TypeRef (even if cached in ffiTypeRefs) to ensure it's
   // in the metadata tables. The ffiTypeRefs dictionary is for cross-compilation
   // bookkeeping; the tables are the canonical source.
+  //
+  // `ctxAddTypeRef` is NOT idempotent — it unconditionally appends a row
+  // (`addTypeRef` in tables.l has no dedup) — but that's safe here: this
+  // function is reached only from the Pass-1 loop in
+  // `registerStdlibArtifactTokens`, which walks each stdlib package's items
+  // exactly once per compilation (one fresh `CodegenCtx` per compile; see
+  // its two call sites in bridge.l, each on its own cctx), so each type item
+  // registers exactly one TypeRef row per compile — no accumulation across
+  // "multi-pass" compilation actually occurs today (#4307).  Were that
+  // invariant ever violated, a duplicate TypeRef row would still be valid
+  // PE metadata (ECMA-335 §22.38 permits multiple TypeRef rows resolving to
+  // the same type) — the cost would be table bloat, not corruption; only
+  // the first-registered row is retained in `ffiTypeRefs`, which is what
+  // every lookup elsewhere in this file consults.
   val row = ctxAddTypeRef(cctx.lctx, packageName, typeRefName, asmRefRow)
   if not cctx.ffiTypeRefs.containsKey(typeRefKey) {
     cctx.ffiTypeRefs.add(typeRefKey, row)

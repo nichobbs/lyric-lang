@@ -26,6 +26,12 @@ on:
 permissions:
   contents: read
 
+# Release configuration for the AOT entry-point build below: benchmark timings
+# must reflect an optimized build, not the Debug config CI's build-and-test
+# job uses for fast iteration.
+env:
+  BUILD_CONFIG: Release
+
 jobs:
   bench:
     name: Run benchmarks
@@ -35,25 +41,57 @@ jobs:
     runs-on: ubuntu-24.04
 
     env:
-      RUNS:   ${{ github.event.inputs.runs   || '15' }}
-      WARMUP: ${{ github.event.inputs.warmup || '5'  }}
+      RUNS:      ${{ github.event.inputs.runs   || '15' }}
+      WARMUP:    ${{ github.event.inputs.warmup || '5'  }}
+      # Single source of truth for the AOT binary path — was duplicated
+      # verbatim across the staging step and every bench step (#4757).
+      LYRIC_BIN: bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
 
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          # Full history: LYRIC_BOOTSTRAP_MINT=1 below runs
+          # scripts/mint-stage0-fsharp.sh, which resolves the historical F#
+          # bootstrap commit via `git rev-parse 44a0d1e7~1` (falling back to a
+          # hardcoded SHA) and `git worktree add`s it — both require the
+          # commit object to be present locally, which a shallow clone lacks.
+          fetch-depth: 0
 
       - name: Set up .NET
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
         with:
           global-json-file: bootstrap/global.json
 
-      - name: Restore
-        working-directory: bootstrap
-        run: dotnet restore Bootstrap.sln
+      - name: Cache NuGet packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('bootstrap/**/*.fsproj', 'bootstrap/**/*.csproj', 'bootstrap/global.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
 
-      - name: Build (Release)
-        working-directory: bootstrap
-        run: dotnet build Bootstrap.sln --configuration Release --no-restore
+      # Bootstrap.sln and the F# `src/Lyric.Cli` project were deleted once the
+      # self-hosted compiler became the sole toolchain (see ci.yml's
+      # build-and-test job for the canonical pattern this mirrors). Mint the
+      # stage-1 self-hosted bundle from F# history, then build the AOT
+      # entry-point project — the resulting `lyric` binary is what `lyric
+      # bench` runs through below.
+      - name: Bootstrap stage 1 (mint clean stage-0 from F# history → self-hosted packages)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LYRIC_BOOTSTRAP_MINT: '1'
+        run: ./scripts/bootstrap.sh --stage 1
+
+      - name: Build AOT entry-point
+        run: dotnet build bootstrap/src/Lyric.Cli.Aot --configuration $BUILD_CONFIG
+
+      - name: Stage stdlib bundle beside the binary
+        # `lyric bench` synthesizes and compiles the @bench_module source, so
+        # the harness's Std.* imports (Std.Time, etc.) must resolve against a
+        # deployed Lyric.Stdlib.dll beside the binary — mirrors ci.yml's
+        # "Build AOT entry-point + smoke-test the examples" step.
+        run: bash scripts/stage-selfhosted-stdlib.sh "$LYRIC_BIN" "$(dirname "$LYRIC_BIN")"
 
       - name: Create results directory
         run: mkdir -p bench-results
@@ -66,39 +104,31 @@ jobs:
 
       - name: bench — numeric kernels
         continue-on-error: true
-        working-directory: bootstrap
         run: |
-          dotnet run --project src/Lyric.Cli --no-build --configuration Release -- \
-            bench ../benchmarks/bench_numeric.l \
+          "$LYRIC_BIN" bench benchmarks/bench_numeric.l \
             --runs "$RUNS" --warmup "$WARMUP" \
-            | tee ../bench-results/bench_numeric.txt
+            | tee bench-results/bench_numeric.txt
 
       - name: bench — collections throughput
         continue-on-error: true
-        working-directory: bootstrap
         run: |
-          dotnet run --project src/Lyric.Cli --no-build --configuration Release -- \
-            bench ../benchmarks/bench_collections.l \
+          "$LYRIC_BIN" bench benchmarks/bench_collections.l \
             --runs "$RUNS" --warmup "$WARMUP" \
-            | tee ../bench-results/bench_collections.txt
+            | tee bench-results/bench_collections.txt
 
       - name: bench — contract overhead
         continue-on-error: true
-        working-directory: bootstrap
         run: |
-          dotnet run --project src/Lyric.Cli --no-build --configuration Release -- \
-            bench ../benchmarks/bench_contracts.l \
+          "$LYRIC_BIN" bench benchmarks/bench_contracts.l \
             --runs "$RUNS" --warmup "$WARMUP" \
-            | tee ../bench-results/bench_contracts.txt
+            | tee bench-results/bench_contracts.txt
 
       - name: bench — string operations
         continue-on-error: true
-        working-directory: bootstrap
         run: |
-          dotnet run --project src/Lyric.Cli --no-build --configuration Release -- \
-            bench ../benchmarks/bench_string.l \
+          "$LYRIC_BIN" bench benchmarks/bench_string.l \
             --runs "$RUNS" --warmup "$WARMUP" \
-            | tee ../bench-results/bench_string.txt
+            | tee bench-results/bench_string.txt
 
       # ── Generate HTML report ─────────────────────────────────────────────────
 

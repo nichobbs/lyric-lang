@@ -201,6 +201,18 @@ test "import extern without selector" {
   assertTrue(pr.file.imports[0].isExtern, "import extern without selector: isExtern flag is true")
 }
 
+test "pub use extern without selector" {
+  // Mirrors "import extern without selector": grammar.ebnf §2.1 documents
+  // that a bare selector-less extern import is valid for both the
+  // `import extern` and `pub use extern` forms (D116 Q47-001, docs/01 §9.2),
+  // binding the single external type named by the trailing path segment.
+  val pr = parse("package P\npub use extern Docker.DotNet.DockerClient\n")
+  assertEqualInt(diagCount(pr), 0, "pub use extern without selector: no diagnostics")
+  assertEqualInt(importCount(pr), 1, "pub use extern without selector: one import")
+  assertTrue(pr.file.imports[0].isExtern, "pub use extern without selector: isExtern flag is true")
+  assertTrue(pr.file.imports[0].isPubUse, "pub use extern without selector: isPubUse flag is true")
+}
+
 test "func decl" {
   val pr = parse("package P\nfunc add(x: in Int, y: in Int): Int { x + y }\n")
   assertEqualInt(diagCount(pr), 0, "func: no diagnostics")

@@ -38,6 +38,7 @@ import Std.Core
 import Std.Collections
 import Std.Math
 import Std.String as Str
+import Std.Console as Console
 
 // ── MsilType ──────────────────────────────────────────────────────────────────
 // CLI element types supported by this lowering layer.
@@ -620,7 +621,6 @@ pub union MInsn {
   case MLdlen                          // load array length (pushes native int)
   case MLdelemRef                      // ldelem.ref — reference array element (String[], object[])
   case MLdelemU1                       // ldelem.u1  — byte array element (byte[])
-  case MLdelemI2                       // ldelem.i2  — int16 array element (short[])
   case MLdelemU2                       // ldelem.u2  — uint16 array element (char[])
   case MLdelemI4                       // ldelem.i4  — int32 array element (int[])
   case MLdelemI8                       // ldelem.i8  — int64 array element (long[])
@@ -1803,7 +1803,9 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
           gi = gi + 1
         }
       } else {
-        println(
+        // Compiler diagnostics belong on stderr, not stdout, so build tooling
+        // and CI log parsers that capture stdout don't pick up warning text (#4703).
+        Console.error(
           "W0005: bufMsilTypeWithCtx: TypeRef/TypeDef not found for MGenericInstByName '" + headFqn +
             "' — signature degraded to System.Object (#2494)"
         )
@@ -2220,7 +2222,6 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MLdlen -> emitLdlen(mb)
     case MLdelemRef -> emitLdelem_Ref(mb)
     case MLdelemU1 -> emitLdelem_U1(mb)
-    case MLdelemI2 -> emitLdelem_I2(mb)
     case MLdelemU2 -> emitLdelem_U2(mb)
     case MLdelemI4 -> emitLdelem_I4(mb)
     case MLdelemI8 -> emitLdelem_I8(mb)

@@ -1472,6 +1472,201 @@ func wrapExprBody(e: in Expr): Block {
 //     type entries and interface default methods are picked up in a
 //     follow-up stage.
 // ─────────────────────────────────────────────────────────────────────────────
+// Returns the import alias for `Std.Core` (`import Std.Core as X`) when the
+// file declares one.  Used to canonicalize a 2-segment `X.Unit` return-type
+// path to the 3-segment `Std.Core.Unit` form `isUnitTypeExpr` recognises,
+// without accepting an arbitrary 2-segment `Y.Unit` (which would reintroduce
+// the #3636 false positive for a user-defined `Y.Unit` type) — see #4717.
+func stdCoreAliasName(imports: in List[ImportDecl]): Option[String] {
+  var i = 0
+  var found: Option[String] = None
+  while i < imports.count {
+    val imp = imports[i]
+    val segs = imp.path.segments
+    if segs.count == 2 and segs[0] == "Std" and segs[1] == "Core" {
+      match imp.asAlias {
+        case Some(a) -> {
+          found = Some(a)
+        }
+        case None -> {
+        }
+      }
+    }
+    i = i + 1
+  }
+  found
+}
+
+func canonicalStdCoreUnitPath(sp: in Span): ModulePath {
+  val segs: List[String] = newList()
+  segs.add("Std")
+  segs.add("Core")
+  segs.add("Unit")
+  ModulePath(segments = segs, span = sp)
+}
+
+// Rewrites a `<aliasName>.Unit` TRef (where `aliasName` resolves to `Std.Core`) into
+// the 3-segment `Std.Core.Unit` form.  Recurses through parens; every other
+// shape is returned unchanged.
+func canonicalizeUnitTypeExpr(te: in TypeExpr, aliasName: in String): TypeExpr {
+  match te.kind {
+    case TRef(path) -> {
+      if path.segments.count == 2 and path.segments[0] == aliasName and path.segments[1] == "Unit" {
+        TypeExpr(kind = TRef(path = canonicalStdCoreUnitPath(path.span)), span = te.span)
+      } else {
+        te
+      }
+    }
+    case TParen(inner) -> TypeExpr(kind = TParen(inner = canonicalizeUnitTypeExpr(inner, aliasName)), span = te.span)
+    case _ -> te
+  }
+}
+
+func canonicalizeUnitRetOpt(ret: in Option[TypeExpr], aliasName: in String): Option[TypeExpr] {
+  match ret {
+    case None -> ret
+    case Some(te) -> Some(value = canonicalizeUnitTypeExpr(te, aliasName))
+  }
+}
+
+func canonicalizeUnitAliasesInMember(m: in ProtectedMember, aliasName: in String): ProtectedMember {
+  match m {
+    case PMEntry(ed) -> PMEntry(entryDecl = EntryDecl(docComments = ed.docComments, annotations = ed.annotations, visibility = ed.visibility, name = ed.name, params = ed.params, ret = canonicalizeUnitRetOpt(ed.ret, aliasName), contracts = ed.contracts, body = ed.body, span = ed.span))
+    case PMFunc(fn) -> PMFunc(fn = FunctionDecl(docComments = fn.docComments, annotations = fn.annotations, visibility = fn.visibility, isAsync = fn.isAsync, name = fn.name, generics = fn.generics, params = fn.params, ret = canonicalizeUnitRetOpt(fn.ret, aliasName), whereClause = fn.whereClause, contracts = fn.contracts, body = fn.body, span = fn.span))
+    case other -> other
+  }
+}
+
+// #4766: `impl`/`interface` method return types carry the same aliased
+// `Std.Core.Unit` shape as top-level funcs and protected entries, so they
+// need the same rewrite — mirrors `canonicalizeUnitAliasesInMember`.
+func canonicalizeUnitAliasesInImplMember(m: in ImplMember, aliasName: in String): ImplMember {
+  match m {
+    case IMplFunc(fn) -> IMplFunc(fn = FunctionDecl(docComments = fn.docComments, annotations = fn.annotations, visibility = fn.visibility, isAsync = fn.isAsync, name = fn.name, generics = fn.generics, params = fn.params, ret = canonicalizeUnitRetOpt(fn.ret, aliasName), whereClause = fn.whereClause, contracts = fn.contracts, body = fn.body, span = fn.span))
+    case other -> other
+  }
+}
+
+func canonicalizeUnitAliasesInInterfaceMember(m: in InterfaceMember, aliasName: in String): InterfaceMember {
+  match m {
+    case IMSig(sig) -> IMSig(sig = FunctionSig(docComments = sig.docComments, isAsync = sig.isAsync, name = sig.name, generics = sig.generics, params = sig.params, ret = canonicalizeUnitRetOpt(sig.ret, aliasName), whereClause = sig.whereClause, contracts = sig.contracts, span = sig.span))
+    case IMFunc(fn) -> IMFunc(fn = FunctionDecl(docComments = fn.docComments, annotations = fn.annotations, visibility = fn.visibility, isAsync = fn.isAsync, name = fn.name, generics = fn.generics, params = fn.params, ret = canonicalizeUnitRetOpt(fn.ret, aliasName), whereClause = fn.whereClause, contracts = fn.contracts, body = fn.body, span = fn.span))
+    case other -> other
+  }
+}
+
+func canonicalizeUnitAliasesInItem(it: in Item, aliasName: in String): Item {
+  match it.kind {
+    case IFunc(fn) -> Item(docComments = it.docComments, annotations = it.annotations, visibility = it.visibility, kind = IFunc(decl = FunctionDecl(docComments = fn.docComments, annotations = fn.annotations, visibility = fn.visibility, isAsync = fn.isAsync, name = fn.name, generics = fn.generics, params = fn.params, ret = canonicalizeUnitRetOpt(fn.ret, aliasName), whereClause = fn.whereClause, contracts = fn.contracts, body = fn.body, span = fn.span)), span = it.span)
+    case IImpl(decl) -> {
+      val newMembers: List[ImplMember] = newList()
+      var mi = 0
+      while mi < decl.members.count {
+        newMembers.add(canonicalizeUnitAliasesInImplMember(decl.members[mi], aliasName))
+        mi = mi + 1
+      }
+      Item(
+        docComments = it.docComments,
+        annotations = it.annotations,
+        visibility = it.visibility,
+        kind = IImpl(
+          decl = ImplDecl(
+            generics = decl.generics,
+            iface = decl.iface,
+            target = decl.target,
+            whereClause = decl.whereClause,
+            members = newMembers,
+            span = decl.span
+          )
+        ),
+        span = it.span
+      )
+    }
+    case IInterface(decl) -> {
+      val newMembers: List[InterfaceMember] = newList()
+      var mi = 0
+      while mi < decl.members.count {
+        newMembers.add(canonicalizeUnitAliasesInInterfaceMember(decl.members[mi], aliasName))
+        mi = mi + 1
+      }
+      Item(
+        docComments = it.docComments,
+        annotations = it.annotations,
+        visibility = it.visibility,
+        kind = IInterface(
+          decl = InterfaceDecl(
+            name = decl.name,
+            generics = decl.generics,
+            whereClause = decl.whereClause,
+            members = newMembers,
+            span = decl.span
+          )
+        ),
+        span = it.span
+      )
+    }
+    case IProtected(decl) -> {
+      val newMembers: List[ProtectedMember] = newList()
+      var mi = 0
+      while mi < decl.members.count {
+        newMembers.add(canonicalizeUnitAliasesInMember(decl.members[mi], aliasName))
+        mi = mi + 1
+      }
+      Item(
+        docComments = it.docComments,
+        annotations = it.annotations,
+        visibility = it.visibility,
+        kind = IProtected(
+          decl = ProtectedTypeDecl(
+            name = decl.name,
+            generics = decl.generics,
+            whereClause = decl.whereClause,
+            members = newMembers,
+            span = decl.span
+          )
+        ),
+        span = it.span
+      )
+    }
+    case _ -> it
+  }
+}
+
+// Pre-pass run at the top of `elaborateFile`, BEFORE any call into
+// `elaborateItem` / `elaborateFunction`: canonicalizes every function's
+// (and protected entry's) `Std.Core` return-type alias path so
+// `isUnitTypeExpr` sees only the two forms it already handles.  Resolving
+// the alias here — once, against the file's own import table — means
+// `isUnitTypeExpr` / `isVoidReturnOpt` / `elaborateFunction` need no alias
+// context threaded into their own signatures.  A no-op (returns `file`
+// unchanged) when the file declares no `Std.Core` alias, which is the
+// overwhelmingly common case.  (Parameter names in the helpers below use
+// `aliasName` rather than the bare word `alias` — `alias` is a Lyric
+// soft keyword (`alias X = Type`), and the F# bootstrap parser used for
+// the one-time stage-0 mint recovery does not disambiguate it from an
+// ordinary identifier in this position, unlike the self-hosted parser.)
+func canonicalizeFileUnitAliases(file: in SourceFile): SourceFile {
+  match stdCoreAliasName(file.imports) {
+    case None -> file
+    case Some(aliasName) -> {
+      val newItems: List[Item] = newList()
+      var i = 0
+      while i < file.items.count {
+        newItems.add(canonicalizeUnitAliasesInItem(file.items[i], aliasName))
+        i = i + 1
+      }
+      SourceFile(
+        moduleDoc = file.moduleDoc,
+        fileAnnotations = file.fileAnnotations,
+        packageDecl = file.packageDecl,
+        imports = file.imports,
+        items = newItems,
+        span = file.span
+      )
+    }
+  }
+}
+
 // True if a type expression denotes the Unit type.  Covers the three
 // representations that can appear in a return-type annotation:
 //   TUnit       — the empty-tuple syntax `()`
@@ -1640,31 +1835,32 @@ func elaborateItem(it: in Item): Item {
 }
 
 pub func elaborateFile(file: in SourceFile): SourceFile {
+  val canonFile = canonicalizeFileUnitAliases(file)
   val newItems: List[Item] = newList()
-  val isProofRequired = fileIsProofRequired(file)
+  val isProofRequired = fileIsProofRequired(canonFile)
   var i = 0
-  while i < file.items.count {
+  while i < canonFile.items.count {
     if isProofRequired {
       // @proof_required files: contract clauses are SMT obligations for `lyric prove`,
       // not runtime assertions.  Reconstruct Item wrappers without calling
       // elaborateFunction so no runtime assert() calls are injected.
       // The verifier reads the original clauses from fn.contracts unchanged.
-      val it = file.items[i]
+      val it = canonFile.items[i]
       match it.kind {
         case IFunc(fn) -> newItems.add(Item(docComments = it.docComments, annotations = it.annotations, visibility = it.visibility, kind = IFunc(decl = fn), span = it.span))
         case _ -> newItems.add(it)
       }
     } else {
-      newItems.add(elaborateItem(file.items[i]))
+      newItems.add(elaborateItem(canonFile.items[i]))
     }
     i = i + 1
   }
   SourceFile(
-    moduleDoc = file.moduleDoc,
-    fileAnnotations = file.fileAnnotations,
-    packageDecl = file.packageDecl,
-    imports = file.imports,
+    moduleDoc = canonFile.moduleDoc,
+    fileAnnotations = canonFile.fileAnnotations,
+    packageDecl = canonFile.packageDecl,
+    imports = canonFile.imports,
     items = newItems,
-    span = file.span
+    span = canonFile.span
   )
 }

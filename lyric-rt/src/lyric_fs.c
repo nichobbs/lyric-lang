@@ -215,6 +215,10 @@ LyricString* lyric_env_cwd(void) {
             free(buf);
             return NULL;
         }
+        if (cap > SIZE_MAX / 2) { /* doubling would wrap (getcwd would spin forever) */
+            free(buf);
+            return NULL;
+        }
         cap *= 2;
         char* nb = (char*)realloc(buf, cap);
         if (!nb) {

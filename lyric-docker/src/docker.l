@@ -50,14 +50,10 @@ pub record DockerError {
 /// Create a new Docker error from an HTTP error.
 func fromHttpError(httpError: in HttpError, details: in String): DockerError {
   match httpError {
-    case ConnectionFailed(_, message) ->
-      DockerError(statusCode = None, message = message, details = details)
-    case BadStatus(_, statusCode) ->
-      DockerError(statusCode = Some(value = statusCode), message = "HTTP " + toString(statusCode), details = details)
-    case InvalidUrl(url) ->
-      DockerError(statusCode = None, message = "Invalid Docker URL: " + url, details = details)
-    case _ ->
-      DockerError(statusCode = None, message = "Unknown Docker error", details = details)
+    case ConnectionFailed(_, message) -> DockerError(statusCode = None, message = message, details = details)
+    case BadStatus(_, statusCode) -> DockerError(statusCode = Some(value = statusCode), message = "HTTP " + toString(statusCode), details = details)
+    case InvalidUrl(url) -> DockerError(statusCode = None, message = "Invalid Docker URL: " + url, details = details)
+    case _ -> DockerError(statusCode = None, message = "Unknown Docker error", details = details)
   }
 }
 
@@ -108,28 +104,18 @@ async func sendAndReadBody(
   failMsg: in String,
 ): Result[String, DockerError] {
   val sent = await client.handle.send(request)
-  val response = match sent {
-    case Err(e) -> return Err(error = fromHttpError(e, ""))
-    case Ok(r) -> r
-  }
+  val response = match sent { case Err(e) -> return Err(error = fromHttpError(e, "")); case Ok(r) -> r }
 
   val bodyResult = await response.bodyText()
   val body = match bodyResult {
     case Ok(b) -> b
-    case Err(_) ->
-      return Err(error = fromHttpError(
-        ConnectionFailed(url = urlStr, message = "IO error reading response"), ""
-      ))
+    case Err(_) -> return Err(error = fromHttpError(ConnectionFailed(url = urlStr, message = "IO error reading response"), ""))
   }
 
   if response.isSuccess() {
     Ok(value = body)
   } else {
-    Err(error = DockerError(
-      statusCode = Some(value = response.statusCode()),
-      message = failMsg,
-      details = body
-    ))
+    Err(error = DockerError(statusCode = Some(value = response.statusCode()), message = failMsg, details = body))
   }
 }
 
@@ -139,43 +125,40 @@ async func fetchBodyText(client: in DockerClient, urlStr: in String, failMsg: in
   await sendAndReadBody(client, Std.Http.request(Std.Http.GET, url), urlStr, failMsg)
 }
 
-/// Send a request and return the response body bytes on success, or a
-/// `DockerError` (carrying the status code and body text) on failure.
-/// Mirrors `sendAndReadBody` for endpoints (like `getContainerLogs`) that
-/// need the raw byte stream on success but the same text-body
-/// error-wrapping on failure.
+/// Raw response bytes paired with the response's `Content-Type` header (if
+/// present). `getContainerLogs` uses the header to distinguish a TTY-mode
+/// raw byte stream (`application/vnd.docker.raw-stream`) from the framed
+/// multiplexed format (`application/vnd.docker.multiplexed-stream`) before
+/// deciding whether to run `demultiplexDockerStream`.
+record BytesWithContentType {
+  bytes: slice[Byte]
+  contentType: Option[String]
+}
+
+/// Send a request and return the response body bytes (and Content-Type
+/// header) on success, or a `DockerError` (carrying the status code and
+/// body text) on failure. Mirrors `sendAndReadBody` for endpoints (like
+/// `getContainerLogs`) that need the raw byte stream on success but the
+/// same text-body error-wrapping on failure.
 async func sendAndReadBytes(
   client: in DockerClient,
   request: in Std.Http.HttpRequest,
   urlStr: in String,
   failMsg: in String,
-): Result[slice[Byte], DockerError] {
+): Result[BytesWithContentType, DockerError] {
   val sent = await client.handle.send(request)
-  val response = match sent {
-    case Err(e) -> return Err(error = fromHttpError(e, ""))
-    case Ok(r) -> r
-  }
+  val response = match sent { case Err(e) -> return Err(error = fromHttpError(e, "")); case Ok(r) -> r }
 
   if response.isSuccess() {
     val bodyResult = await response.bodyBytes()
     match bodyResult {
-      case Ok(bytes) -> Ok(value = bytes)
-      case Err(_) ->
-        Err(error = fromHttpError(
-          ConnectionFailed(url = urlStr, message = "IO error reading response"), ""
-        ))
+      case Ok(bytes) -> Ok(value = BytesWithContentType(bytes = bytes, contentType = response.header("Content-Type")))
+      case Err(_) -> Err(error = fromHttpError(ConnectionFailed(url = urlStr, message = "IO error reading response"), ""))
     }
   } else {
     val bodyResult = await response.bodyText()
-    val details = match bodyResult {
-      case Ok(b) -> b
-      case Err(_) -> ""
-    }
-    Err(error = DockerError(
-      statusCode = Some(value = response.statusCode()),
-      message = failMsg,
-      details = details
-    ))
+    val details = match bodyResult { case Ok(b) -> b; case Err(_) -> "" }
+    Err(error = DockerError(statusCode = Some(value = response.statusCode()), message = failMsg, details = details))
   }
 }
 
@@ -215,9 +198,6 @@ pub async func listImages(client: in DockerClient): Result[String, DockerError] 
 // with env + volume binds, start/stop/remove it, and fetch its logs. Bodies are
 // built as JSON by hand (no reflection); responses are parsed with a small
 // field scanner.
-
-
-
 /// Escape a string for embedding in a JSON string literal (RFC 8259).
 func jsonEscapeValue(s: in String): String {
   val parts: List[String] = newList()
@@ -265,8 +245,9 @@ func jsonStringArray(items: in slice[String]): String {
 
 /// Build the JSON body for POST /containers/create.
 func createContainerBody(image: in String, env: in slice[String], binds: in slice[String]): String {
-  return "{\"Image\":\"" + jsonEscapeValue(image) + "\",\"Env\":" + jsonStringArray(env) +
-    ",\"HostConfig\":{\"Binds\":" + jsonStringArray(binds) + "}}"
+  return "{\"Image\":\"" + jsonEscapeValue(image) + "\",\"Env\":" + jsonStringArray(env) + ",\"HostConfig\":{\"Binds\":" +
+    jsonStringArray(binds) +
+    "}}"
 }
 
 /// Unescape a JSON string value (reverse of RFC 8259 escape sequences).
@@ -425,20 +406,14 @@ async func sendExpectSuccess(
 ): Result[Unit, DockerError] {
   val url = resolveDockerUrl(urlStr)?
   val sent = await client.handle.send(Std.Http.request(method, url))
-  val response = match sent {
-    case Err(e) -> return Err(error = fromHttpError(e, ""))
-    case Ok(r) -> r
-  }
+  val response = match sent { case Err(e) -> return Err(error = fromHttpError(e, "")); case Ok(r) -> r }
 
   if response.isSuccess() {
     Ok(value = ())
   } else {
     val statusCode = response.statusCode()
     val bodyResult = await response.bodyText()
-    val details = match bodyResult {
-      case Ok(b) -> b
-      case Err(_) -> ""
-    }
+    val details = match bodyResult { case Ok(b) -> b; case Err(_) -> "" }
     Err(error = DockerError(statusCode = Some(value = statusCode), message = failMsg, details = details))
   }
 }
@@ -446,10 +421,7 @@ async func sendExpectSuccess(
 /// Create a container from an image with environment variables and volume binds.
 /// Returns the new container id.
 pub async func createContainer(
-  client: in DockerClient,
-  image: in String,
-  env: in slice[String],
-  binds: in slice[String]
+  client: in DockerClient, image: in String, env: in slice[String], binds: in slice[String]
 ): Result[String, DockerError] {
   val urlStr = dockerApiBase + "/containers/create"
   val url = resolveDockerUrl(urlStr)?
@@ -472,12 +444,7 @@ pub async func startContainer(client: in DockerClient, containerId: in String): 
   if not isValidContainerId(containerId) {
     return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
   }
-  await sendExpectSuccess(
-    client,
-    dockerApiBase + "/containers/" + containerId + "/start",
-    Std.Http.POST,
-    "Start container failed"
-  )
+  await sendExpectSuccess(client, dockerApiBase + "/containers/" + containerId + "/start", Std.Http.POST, "Start container failed")
 }
 
 /// Stop a running container.
@@ -485,12 +452,7 @@ pub async func stopContainer(client: in DockerClient, containerId: in String): R
   if not isValidContainerId(containerId) {
     return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
   }
-  await sendExpectSuccess(
-    client,
-    dockerApiBase + "/containers/" + containerId + "/stop",
-    Std.Http.POST,
-    "Stop container failed"
-  )
+  await sendExpectSuccess(client, dockerApiBase + "/containers/" + containerId + "/stop", Std.Http.POST, "Stop container failed")
 }
 
 /// Remove a container.
@@ -498,34 +460,31 @@ pub async func removeContainer(client: in DockerClient, containerId: in String):
   if not isValidContainerId(containerId) {
     return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
   }
-  await sendExpectSuccess(
-    client,
-    dockerApiBase + "/containers/" + containerId + "?force=true",
-    Std.Http.DELETE,
-    "Remove container failed"
-  )
+  await sendExpectSuccess(client, dockerApiBase + "/containers/" + containerId + "?force=true", Std.Http.DELETE, "Remove container failed")
 }
 
 /// Demultiplex a raw Docker multiplexed stream into a UTF-8 String.
 /// Accepts the raw bytes of a multiplexed stream and decodes combined stdout/stderr.
-pub func demultiplexDockerStream(bytes: in slice[Byte]): Option[String] {
+/// `Err` carries a description when the demultiplexed bytes are not valid
+/// UTF-8; an empty (or entirely-non-stdout/stderr) stream decodes to `Ok("")`.
+pub func demultiplexDockerStream(bytes: in slice[Byte]): Result[String, String] {
   val len = bytes.length
   val outBytes: List[Byte] = newList()
   var i = 0
   while i + 8 <= len {
     val streamType = bytes[i]
-    
+
     val size_b3 = bytes[i + 4]
     val size_b2 = bytes[i + 5]
     val size_b1 = bytes[i + 6]
     val size_b0 = bytes[i + 7]
-    
+
     val size = size_b3.toInt() * 16777216 + size_b2.toInt() * 65536 + size_b1.toInt() * 256 + size_b0.toInt()
-    
+
     if i + 8 + size > len {
       break
     }
-    
+
     if streamType == 1u8 or streamType == 2u8 {
       var j = 0
       while j < size {
@@ -533,30 +492,53 @@ pub func demultiplexDockerStream(bytes: in slice[Byte]): Option[String] {
         j = j + 1
       }
     }
-    
+
     i = i + 8 + size
   }
-  
-  Std.Encoding.tryDecodeUtf8(outBytes.toArray())
+
+  match Std.Encoding.tryDecodeUtf8(outBytes.toArray()) {
+    case Some(s) -> Ok(value = s)
+    case None -> Err(error = "Demultiplexed Docker stream bytes are not valid UTF-8")
+  }
 }
 
 /// Fetch a container's combined stdout/stderr logs.
+///
+/// Docker sets the response `Content-Type` to
+/// `application/vnd.docker.raw-stream` when the container was started with
+/// a pseudo-TTY (`Tty: true`) and to
+/// `application/vnd.docker.multiplexed-stream` otherwise. A TTY-mode
+/// response is a raw byte stream and must not be run through
+/// `demultiplexDockerStream`, which would misinterpret the bytes as
+/// 8-byte framing headers; it is decoded as UTF-8 directly instead.
 pub async func getContainerLogs(client: in DockerClient, containerId: in String): Result[String, DockerError] {
   if not isValidContainerId(containerId) {
     return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
   }
   val urlStr = dockerApiBase + "/containers/" + containerId + "/logs?stdout=true&stderr=true"
   val url = resolveDockerUrl(urlStr)?
-  val bytesResult = await sendAndReadBytes(
-    client, Std.Http.request(Std.Http.GET, url), urlStr, "Get container logs failed"
-  )
-  val bytes = match bytesResult {
-    case Err(e) -> return Err(error = e)
-    case Ok(b) -> b
+  val responseResult = await sendAndReadBytes(client, Std.Http.request(Std.Http.GET, url), urlStr, "Get container logs failed")
+  val response = match responseResult { case Err(e) -> return Err(error = e); case Ok(r) -> r }
+
+  // A prefix match rather than exact equality (#4767): a future Docker
+  // Engine API version could add media-type parameters (e.g. "; version=1.41")
+  // to this Content-Type header, and an exact match would silently fall
+  // through to demultiplexDockerStream, misinterpreting a raw TTY byte
+  // stream as framed multiplexed data.
+  val isRawStream = match response.contentType {
+    case Some(ct) -> ct.startsWith("application/vnd.docker.raw-stream")
+    case None -> false
   }
-  match demultiplexDockerStream(bytes) {
-    case Some(s) -> Ok(value = s)
-    case None ->
-      Err(error = DockerError(statusCode = None, message = "Failed to decode container logs as UTF-8", details = ""))
+
+  if isRawStream {
+    match Std.Encoding.tryDecodeUtf8(response.bytes) {
+      case Some(s) -> Ok(value = s)
+      case None -> Err(error = DockerError(statusCode = None, message = "Failed to decode container logs as UTF-8", details = ""))
+    }
+  } else {
+    match demultiplexDockerStream(response.bytes) {
+      case Ok(s) -> Ok(value = s)
+      case Err(reason) -> Err(error = DockerError(statusCode = None, message = "Failed to decode container logs as UTF-8", details = reason))
+    }
   }
 }

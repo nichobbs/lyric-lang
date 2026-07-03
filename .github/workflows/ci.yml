@@ -526,6 +526,14 @@ jobs:
       # barrier correctly collecting their results.  The PR was auto-promoted from
       # draft to ready-for-review by the CI gate workflow, which only fires after
       # every required check passes — confirming the runner honours both properties.
+      #
+      # Peak concurrency (#4486): this job currently launches 38 `background: true`
+      # steps before its first `wait-all: true` barrier, each running an in-process
+      # self-hosted compilation (Msil.Bridge / Jvm.Bridge) via `lyric test`.  CI has
+      # been green at this concurrency on the standard `ubuntu-latest` runner; if a
+      # future addition here starts producing non-deterministic OOM-kill failures,
+      # the fix is to split this step list across two or more `wait-all: true`
+      # barriers (sub-batching) rather than reverting to fully sequential steps.
       - name: Weaver self-test (native lyric test)
         background: true
         working-directory: ${{ github.workspace }}
@@ -3922,6 +3930,16 @@ jobs:
       - name: Restore executable permissions
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
 
+      # See compiler-self-tests-dotnet-a's "Parallel step execution" comment above
+      # for how `background: true` / `wait-all: true` work.
+      #
+      # Peak concurrency (#4486): this job currently launches 16 `background: true`
+      # steps before its `wait-all: true` barrier, each running an in-process
+      # self-hosted compilation.  CI has been green at this concurrency on the
+      # standard `ubuntu-latest` runner; if a future addition here starts producing
+      # non-deterministic OOM-kill failures, split the step list across two or more
+      # `wait-all: true` barriers (sub-batching) rather than reverting to fully
+      # sequential steps.
       - name: Single-bundle stdlib (self-hosted Std.Sort)
         background: true
         working-directory: ${{ github.workspace }}

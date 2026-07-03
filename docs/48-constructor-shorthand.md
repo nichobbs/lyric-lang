@@ -207,6 +207,17 @@ The following are **out of scope** for this proposal:
 - **Q48-002 — Async constructors** — `async T.new(...)` is not planned.
 - **Q48-003 — Static factory methods** — `TimeSpan.fromMinutes(5.0)` is already
   supported via auto-FFI method calls; no special syntax needed.
+- **Q48-004 — Value-type constructor result-type inference** — `.new(args)`
+  metadata resolution (`lyric-compiler/msil/codegen.l`,
+  `tryAutoFfiFromMetadata`) detects value-type constructor targets (e.g.
+  `System.DateTime`, `System.Guid`) via `Mdr.isValueTypeFqn` and rejects the
+  fast path outright, falling back to the legacy path so the caller gets a
+  clear error rather than a silent miscompile. The result-type builder used
+  for the reference-type fast path hardcodes `Mdr.STNamed(fqn, valueType =
+  false)` — correct only because value-type targets never reach that line.
+  Proper support (constructing a value type via `.new()` and inferring
+  `valueType = true` for its result signature, which needs `initobj`/`ldloca`
+  emission rather than `newobj`) is deferred; tracked as Q48-004.
 
 ---
 

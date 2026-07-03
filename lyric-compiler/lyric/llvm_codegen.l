@@ -1359,27 +1359,26 @@ func lowerLiteral(ctx: in Ctx, insns: in List[NInsn], lit: in Literal): NVal {
 }
 
 func lowerInterpolated(ctx: in Ctx, insns: in List[NInsn], segments: in List[InterpolatedSegment]): NVal {
-  var acc = emitStringLiteral(ctx, insns, "")
-  var first = true
-  var i = 0
+  if segments.count == 0 {
+    return emitStringLiteral(ctx, insns, "")
+  }
+  var acc = match segments[0] {
+    case ISText(text, _) -> emitStringLiteral(ctx, insns, text)
+    case ISExpr(ex) -> emitToString(ctx, insns, lowerExpr(ctx, insns, ex))
+  }
+  var i = 1
   while i < segments.count {
-    val seg = segments[i]
-    val piece = match seg {
+    val piece = match segments[i] {
       case ISText(text, _) -> emitStringLiteral(ctx, insns, text)
       case ISExpr(ex) -> emitToString(ctx, insns, lowerExpr(ctx, insns, ex))
     }
-    if first {
-      acc = piece
-      first = false
-    } else {
-      acc = callRuntime(
-        ctx,
-        insns,
-        "lyric_string_concat",
-        lyricStringNType(),
-        arg2(lyricStringNType(), acc.value, lyricStringNType(), piece.value)
-      )
-    }
+    acc = callRuntime(
+      ctx,
+      insns,
+      "lyric_string_concat",
+      lyricStringNType(),
+      arg2(lyricStringNType(), acc.value, lyricStringNType(), piece.value)
+    )
     i = i + 1
   }
   acc
@@ -3100,9 +3099,9 @@ func closureSigOfType(ctx: in Ctx, t: in NType): Option[NClosureSig] {
 // The call-duration borrow needs no retain; a C API that holds the
 // callback beyond the call requires the _kernel_native/ wrapper to
 // retain/release around the registration (native/plan/05-ffi-design.md).
-/// Structural NativePtr[Byte] (i8*) test — string-comparing the IR
-/// spelling would silently stop matching under an opaque-pointer
-/// (`ptr`) rendering (#4733).
+// Structural NativePtr[Byte] (i8*) test — string-comparing the IR
+// spelling would silently stop matching under an opaque-pointer
+// (`ptr`) rendering (#4733).
 func isBytePtrNType(t: in NType): Bool {
   match t {
     case NPtr(pointee) -> {
