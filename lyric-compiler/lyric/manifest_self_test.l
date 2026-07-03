@@ -396,6 +396,100 @@ func testMavenSnapshotRejected(): Unit {
   assertTrue(isInvalidField(e, "maven", "org.example:lib"), "maven-snapshot: InvalidField(maven, org.example:lib)")
 }
 
+// [native] table: triple, opt_level, extra_libs (N6.4).
+func testNativeSection(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[native]\ntriple = \"x86_64-unknown-linux-gnu\"\nopt_level = \"3\"\nextra_libs = [\"ssl\", \"crypto\"]\n"
+  val m = parseOk(toml)
+  match m.native {
+    case None -> assertTrue(false, "native: expected Some")
+    case Some(nc) -> {
+      assertEqual(nc.triple, "x86_64-unknown-linux-gnu", "native: triple")
+      assertEqual(nc.optLevel, "3", "native: opt_level")
+      assertEqualInt(nc.extraLibs.count, 2, "native: extra_libs count")
+      assertEqual(nc.extraLibs[0], "ssl", "native: extra_libs[0]")
+      assertEqual(nc.extraLibs[1], "crypto", "native: extra_libs[1]")
+    }
+  }
+}
+
+// Partial [native] table: fields not set take their defaults (empty
+// triple/opt, no libs) — the build layer then substitutes host triple and
+// -O2.  (A header-only [native] table with no keys parses to None, like
+// an empty [maven]/[nuget]; that is the `native absent` case.)
+func testNativeDefaults(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[native]\ntriple = \"aarch64-apple-darwin\"\n"
+  val m = parseOk(toml)
+  match m.native {
+    case None -> assertTrue(false, "native-defaults: expected Some when [native] sets a key")
+    case Some(nc) -> {
+      assertEqual(nc.triple, "aarch64-apple-darwin", "native-defaults: triple")
+      assertEqual(nc.optLevel, "", "native-defaults: opt_level defaults to empty")
+      assertEqualInt(nc.extraLibs.count, 0, "native-defaults: no extra_libs")
+    }
+  }
+}
+
+// Absence of a [native] table -> None.
+func testNativeAbsent(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n"
+  val m = parseOk(toml)
+  match m.native {
+    case None -> ()
+    case Some(_) -> assertTrue(false, "native-absent: expected None when no [native] table")
+  }
+}
+
+// A header-only [native] table with no key-value entries -> None, exactly
+// like an empty [maven]/[nuget] (hasSection needs at least one entry), so
+// the build layer applies its built-in defaults (#4862).
+func testNativeEmptyTable(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[native]\n"
+  val m = parseOk(toml)
+  match m.native {
+    case None -> ()
+    case Some(_) -> assertTrue(false, "native-empty: header-only [native] table parses to None")
+  }
+}
+
+// An out-of-range opt_level is rejected at parse time.
+func testNativeInvalidOpt(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[native]\nopt_level = \"9\"\n"
+  val e = parseErr(toml)
+  assertTrue(isInvalidField(e, "native", "opt_level"), "native-invalid-opt: InvalidField(native, opt_level)")
+}
+
+// An extra_libs entry with whitespace is rejected at parse time (#4865) —
+// it would otherwise become a broken `-l<name>` clang flag.
+func testNativeInvalidLib(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[native]\nextra_libs = [\"ssl bad\"]\n"
+  val e = parseErr(toml)
+  assertTrue(isInvalidField(e, "native", "extra_libs"), "native-invalid-lib: InvalidField(native, extra_libs)")
+}
+
+// An empty extra_libs entry hits the `name.length == 0` branch of
+// invalidLibName, distinct from the whitespace branch above (#4872).
+func testNativeEmptyLib(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[native]\nextra_libs = [\"\"]\n"
+  val e = parseErr(toml)
+  assertTrue(isInvalidField(e, "native", "extra_libs"), "native-empty-lib: InvalidField(native, extra_libs)")
+}
+
+// A `-l`-flag written where a bare name belongs is rejected — it would
+// otherwise become `-l-lssl` at link time (#4875).
+func testNativeFlagLib(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[native]\nextra_libs = [\"-lssl\"]\n"
+  val e = parseErr(toml)
+  assertTrue(isInvalidField(e, "native", "extra_libs"), "native-flag-lib: InvalidField(native, extra_libs)")
+}
+
+// A stray carriage return (from a CRLF-edited manifest) inside a lib name
+// is rejected alongside the other whitespace forms (#4874).
+func testNativeCrLib(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[native]\nextra_libs = [\"ss\rl\"]\n"
+  val e = parseErr(toml)
+  assertTrue(isInvalidField(e, "native", "extra_libs"), "native-cr-lib: InvalidField(native, extra_libs)")
+}
+
 // Malformed coordinate keys (no ':' or more than one ':') are rejected.
 func testMavenMalformedCoordinate(): Unit {
   val noColon = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[maven]\n\"just-an-artifact\" = \"1.0.0\"\n"
@@ -496,6 +590,32 @@ func testComments(): Unit {
   val m = parseOk(toml)
   assertEqual(m.packageSection.name, "hello", "comments: name parsed")
   assertEqual(m.packageSection.version, "1.0.0", "comments: version parsed")
+}
+
+// CRLF (`\r\n`) line endings parse identically to LF — regression test for
+// the `skipWhitespace` fix that treats `\r` as horizontal whitespace so a
+// Windows checkout of a manifest doesn't fail with "unexpected character
+// '\r'" (#3940).
+func testCrlfLineEndings(): Unit {
+  val toml = "[package]\r\nname = \"foo\"\r\nversion = \"0.1.0\"\r\n"
+  val m = parseOk(toml)
+  assertEqual(m.packageSection.name, "foo", "crlf: name parsed")
+  assertEqual(m.packageSection.version, "0.1.0", "crlf: version parsed")
+}
+
+// CRLF tolerance also applies past the [package] section: dependencies,
+// comments, and inline tables all sit behind the same `skipWhitespace` call.
+func testCrlfFullManifest(): Unit {
+  val toml = "# top comment\r\n[package]\r\nname = \"app\"\r\nversion = \"0.1.0\"\r\n\r\n" +
+    "[dependencies]\r\nFoo = \"1.2.3\"\r\n\r\n[nuget]\r\nSerilog = \"3.1.1\" # trailing\r\n"
+  val m = parseOk(toml)
+  assertEqual(m.packageSection.name, "app", "crlf-full: name parsed")
+  assertEqualInt(m.deps.count, 1, "crlf-full: one dependency")
+  assertEqual(m.deps[0].name, "Foo", "crlf-full: dep name")
+  match m.nuget {
+    case None -> assertTrue(false, "crlf-full: expected nuget section")
+    case Some(n) -> assertEqualInt(n.entries.count, 1, "crlf-full: one nuget entry")
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -640,6 +760,42 @@ test "maven table missing version" {
   testMavenTableMissingVersion()
 }
 
+test "native section" {
+  testNativeSection()
+}
+
+test "native defaults" {
+  testNativeDefaults()
+}
+
+test "native absent" {
+  testNativeAbsent()
+}
+
+test "native empty table" {
+  testNativeEmptyTable()
+}
+
+test "native invalid opt_level" {
+  testNativeInvalidOpt()
+}
+
+test "native invalid extra_libs" {
+  testNativeInvalidLib()
+}
+
+test "native empty extra_libs" {
+  testNativeEmptyLib()
+}
+
+test "native flag-form extra_libs" {
+  testNativeFlagLib()
+}
+
+test "native carriage-return extra_libs" {
+  testNativeCrLib()
+}
+
 test "project section" {
   testProject()
 }
@@ -654,6 +810,14 @@ test "features section" {
 
 test "comments and whitespace" {
   testComments()
+}
+
+test "CRLF line endings" {
+  testCrlfLineEndings()
+}
+
+test "CRLF full manifest" {
+  testCrlfFullManifest()
 }
 
 test "missing name error" {

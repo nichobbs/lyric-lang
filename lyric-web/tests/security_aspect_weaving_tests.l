@@ -71,6 +71,8 @@ test "RequiresAuth aspect: an invalid token is denied with 403 before the handle
 // lets us exercise the RequiresAuth *accept* path — a validly-signed token must
 // flow through Auth.verifyJwt and reach the handler — the counterpart to the
 // rejection test above. Regenerate (e.g. after a secret change) with:
+//   (requires GNU coreutils' `basenc`; on macOS: `brew install coreutils`,
+//   then use `gbasenc` or prefix PATH with coreutils' gnubin)
 //   h=$(printf '{"alg":"HS256","typ":"JWT"}' | basenc --base64url | tr -d '=')
 //   p=$(printf '{"sub":"test-user","role":"admin"}' | basenc --base64url | tr -d '=')
 //   s=$(printf '%s.%s' "$h" "$p" | openssl dgst -sha256 -hmac "test-signing-secret" -binary | basenc --base64url | tr -d '=')

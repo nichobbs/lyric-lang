@@ -322,9 +322,9 @@ func pushDiagnostics(uri: in String, diags: in List[Diagnostic]): String {
 // §7. File-system helpers.
 // ─────────────────────────────────────────────────────────────────────────────
 func uriToPath(uri: in String): String {
-  if uri.startsWith("file:///") {
-    uri.substring(7, uri.length - 7)
-  } else if uri.startsWith("file://") {
+  // `file:///` starts with `file://`, so a single check covers both forms
+  // (the two branches previously here produced an identical substring).
+  if uri.startsWith("file://") {
     uri.substring(7, uri.length - 7)
   } else {
     uri

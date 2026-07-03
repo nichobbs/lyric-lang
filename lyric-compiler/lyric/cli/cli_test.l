@@ -94,6 +94,9 @@ func cmdTest(argv: in slice[String]): Int {
   var listMode = false
   var targetJvm = false
   var failFast = false
+  var noDefaultFeatures = false
+  var allFeatures = false
+  val cliFeatures: List[String] = newList()
   val positional: List[String] = newList()
 
   var i = 1
@@ -107,6 +110,29 @@ func cmdTest(argv: in slice[String]): Int {
         printErr("test: --filter requires a value")
         return 1
       }
+    } else if arg == "--features" {
+      if i + 1 < argv.length {
+        val raw = argv[i + 1]
+        // Comma-separated, whitespace-trimmed; empty entries dropped
+        // (same grammar as `lyric build --features`).
+        val pieces = Str.split(raw, ",")
+        for piece in pieces {
+          val trimmed = Str.trim(piece)
+          if Str.length(trimmed) > 0 {
+            cliFeatures.add(trimmed)
+          }
+        }
+        i += 2
+      } else {
+        printErr("test: --features requires a comma-separated list")
+        return 1
+      }
+    } else if arg == "--no-default-features" {
+      noDefaultFeatures = true
+      i += 1
+    } else if arg == "--all-features" {
+      allFeatures = true
+      i += 1
     } else if arg == "--target" {
       if i + 1 < argv.length {
         val t = argv[i + 1]
@@ -149,14 +175,14 @@ func cmdTest(argv: in slice[String]): Int {
   // command's exit code is non-zero if any test fails.
   // Explicit --manifest takes precedence.
   match manifestArg {
-    case Some(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast)
+    case Some(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast, cliFeatures, noDefaultFeatures, allFeatures)
     case None -> ()
   }
 
   if positional.count == 0 {
     // No explicit source file and no --manifest: auto-discover project.
     match Disc.findNearestManifest(Environment.currentDirectory()) {
-      case Some(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast)
+      case Some(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast, cliFeatures, noDefaultFeatures, allFeatures)
       case None -> {
         printErr("test: missing source file and no lyric.toml found")
         return 1
@@ -392,7 +418,15 @@ func resolveDepDllPath(tomlPath: in String, ext: in String): Result[DepDllInfo, 
   Ok(value = DepDllInfo(dllPath = Path.join(binDir, dllName), pkgName = pkgName))
 }
 
-func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm: in Bool, failFast: in Bool): Int {
+func cmdTestManifest(
+  mfPath: in String,
+  filterArg: in Option[String],
+  targetJvm: in Bool,
+  failFast: in Bool,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures: in Bool,
+): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
     case Err(e) -> {
@@ -430,7 +464,11 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
         // Explicit file list (TOML array form): add each named file directly.
         var fi = 0
         while fi < pkgEntry.paths.count {
-          val absFile = if Path.isAbsolute(pkgEntry.paths[fi]) { pkgEntry.paths[fi] } else { Path.join(mfDir, pkgEntry.paths[fi]) }
+          val absFile = if Path.isAbsolute(pkgEntry.paths[fi]) {
+            pkgEntry.paths[fi]
+          } else {
+            Path.join(mfDir, pkgEntry.paths[fi])
+          }
           scanPaths.add(absFile)
           fi += 1
         }
@@ -511,14 +549,35 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
   val testExt = if targetJvm { ".jar" } else { ".dll" }
   val testTarget: CompileTarget = if targetJvm { Jvm } else { Dotnet }
 
-  // Resolve active feature set from manifest defaults (no CLI flags in the test runner).
+  // Resolve active feature set from manifest defaults + CLI flags, mirroring
+  // `lyric build` (D045): `--all-features` activates every declared feature;
+  // otherwise defaults apply unless `--no-default-features`, and
+  // `--features a,b` adds on top.  Needed so target-gated kernels
+  // (`@cfg(feature = "dotnet")` / `@cfg(feature = "jvm")`, e.g.
+  // lyric-storage's Storage.Kernel.Net/Jvm split, #1444) can be selected
+  // when running a manifest suite on the non-default target.
   val mfDefaults = Mf.readFeatureDefaultsFromToml(mfText, mfPath)
   val mfDeclared = Mf.readFeatureDeclaredFromToml(mfText, mfPath)
   val activeFeatures: List[String] = newList()
-  var afi = 0
-  while afi < mfDefaults.count {
-    activeFeatures.add(mfDefaults[afi])
-    afi += 1
+  if allFeatures {
+    var afi = 0
+    while afi < mfDeclared.count {
+      activeFeatures.add(mfDeclared[afi])
+      afi += 1
+    }
+  } else {
+    if not noDefaultFeatures {
+      var afi = 0
+      while afi < mfDefaults.count {
+        activeFeatures.add(mfDefaults[afi])
+        afi += 1
+      }
+    }
+    var cfi = 0
+    while cfi < cliFeatures.count {
+      activeFeatures.add(cliFeatures[cfi])
+      cfi += 1
+    }
   }
 
   // Build ProjectPackage entries from [project.packages], matching buildProject.
@@ -535,7 +594,11 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
       var readFailed = false
       var fi = 0
       while fi < pkgEntry.paths.count {
-        val absFile = if Path.isAbsolute(pkgEntry.paths[fi]) { pkgEntry.paths[fi] } else { Path.join(mfDir, pkgEntry.paths[fi]) }
+        val absFile = if Path.isAbsolute(pkgEntry.paths[fi]) {
+          pkgEntry.paths[fi]
+        } else {
+          Path.join(mfDir, pkgEntry.paths[fi])
+        }
         match File.readText(absFile) {
           case Ok(t) -> fileEntries.add(CfgGate.CfgGateFile(path = absFile, contents = t))
           case Err(e) -> {
@@ -555,79 +618,79 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
         }
       }
     } else {
-    val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(mfDir, pkgEntry.path) }
-    if File.fileExists(abs) {
-      match File.readText(abs) {
-        case Ok(t) -> {
-          if CfgGate.isCfgGatedOut(t, activeFeatures) {
-            // Package is gated by an inactive feature: substitute an empty stub
-            // so that imports of this package from sibling packages resolve, while
-            // the @cfg-gated items in those packages are properly elided.
-            pkgSources.add(CfgGate.emptyPackageStub(pkgEntry.name))
-          } else {
-            pkgSources.add(t)
+      val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(mfDir, pkgEntry.path) }
+      if File.fileExists(abs) {
+        match File.readText(abs) {
+          case Ok(t) -> {
+            if CfgGate.isCfgGatedOut(t, activeFeatures) {
+              // Package is gated by an inactive feature: substitute an empty stub
+              // so that imports of this package from sibling packages resolve, while
+              // the @cfg-gated items in those packages are properly elided.
+              pkgSources.add(CfgGate.emptyPackageStub(pkgEntry.name))
+            } else {
+              pkgSources.add(t)
+            }
+          }
+          case Err(e) -> {
+            printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
+            hadFatal = true
           }
         }
-        case Err(e) -> {
-          printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
+      } else if File.dirExists(abs) {
+        val allFiles = match File.listFilesRecursive(abs) {
+          case Ok(fs) -> fs
+          case Err(e) -> {
+            printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
+            hadFatal = true
+            newList()
+          }
+        }
+        val lFiles: List[String] = newList()
+        for f in allFiles.toArray() {
+          if Str.endsWith(f, ".l") {
+            lFiles.add(f)
+          }
+        }
+        if lFiles.count == 0 {
+          printErr("test: package '" + pkgEntry.name + "': no .l files found in " + abs)
           hadFatal = true
-        }
-      }
-    } else if File.dirExists(abs) {
-      val allFiles = match File.listFilesRecursive(abs) {
-        case Ok(fs) -> fs
-        case Err(e) -> {
-          printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
-          hadFatal = true
-          newList()
-        }
-      }
-      val lFiles: List[String] = newList()
-      for f in allFiles.toArray() {
-        if Str.endsWith(f, ".l") {
-          lFiles.add(f)
-        }
-      }
-      if lFiles.count == 0 {
-        printErr("test: package '" + pkgEntry.name + "': no .l files found in " + abs)
-        hadFatal = true
-      } else {
-        // Read every file first, then hand the (path, contents) list to
-        // CfgGate so the assembly logic adds at most one empty-package
-        // stub when every file is gated — preventing the duplicate-
-        // `package` declaration bug from #1124 when two or more files
-        // in a directory package are each gated out.
-        val fileEntries: List[CfgGate.CfgGateFile] = newList()
-        val sorted = sortFileList(lFiles)
-        var readFailed = false
-        for f in sorted {
-          match File.readText(f) {
-            case Ok(t) -> fileEntries.add(CfgGate.CfgGateFile(path = f, contents = t))
-            case Err(e) -> {
-              printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
-              hadFatal = true
-              readFailed = true
+        } else {
+          // Read every file first, then hand the (path, contents) list to
+          // CfgGate so the assembly logic adds at most one empty-package
+          // stub when every file is gated — preventing the duplicate-
+          // `package` declaration bug from #1124 when two or more files
+          // in a directory package are each gated out.
+          val fileEntries: List[CfgGate.CfgGateFile] = newList()
+          val sorted = sortFileList(lFiles)
+          var readFailed = false
+          for f in sorted {
+            match File.readText(f) {
+              case Ok(t) -> fileEntries.add(CfgGate.CfgGateFile(path = f, contents = t))
+              case Err(e) -> {
+                printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
+                hadFatal = true
+                readFailed = true
+              }
+            }
+          }
+          // All-or-nothing assembly: a partial source list would confuse `@cfg`
+          // detection (one missing file can flip the gated-out decision) and
+          // produce a misleading downstream "unresolved import" cascade instead
+          // of a clear "read failed" error.  `hadFatal` is already set; downstream
+          // packages skip importing this one.
+          if not readFailed {
+            val assembly = CfgGate.assembleDirectoryPackageSources(fileEntries, pkgEntry.name, activeFeatures)
+            var ai = 0
+            while ai < assembly.sources.count {
+              pkgSources.add(assembly.sources[ai])
+              ai += 1
             }
           }
         }
-        // All-or-nothing assembly: a partial source list would confuse `@cfg`
-        // detection (one missing file can flip the gated-out decision) and
-        // produce a misleading downstream "unresolved import" cascade instead
-        // of a clear "read failed" error.  `hadFatal` is already set; downstream
-        // packages skip importing this one.
-        if not readFailed {
-          val assembly = CfgGate.assembleDirectoryPackageSources(fileEntries, pkgEntry.name, activeFeatures)
-          var ai = 0
-          while ai < assembly.sources.count {
-            pkgSources.add(assembly.sources[ai])
-            ai += 1
-          }
-        }
+      } else {
+        printErr("test: package '" + pkgEntry.name + "': path not found: " + abs)
+        hadFatal = true
       }
-    } else {
-      printErr("test: package '" + pkgEntry.name + "': path not found: " + abs)
-      hadFatal = true
-    }
     }  // end else (single-file/directory path)
     if pkgSources.count > 0 {
       libPkgs.add(ProjectPackage(name = pkgEntry.name, sources = pkgSources))
@@ -846,10 +909,16 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
                           // Explicit file list (TOML array form).
                           var fi = 0
                           while fi < pkgEntry.paths.count {
-                            val srcPath = if Path.isAbsolute(pkgEntry.paths[fi]) { pkgEntry.paths[fi] } else { Path.join(depDir, pkgEntry.paths[fi]) }
+                            val srcPath = if Path.isAbsolute(pkgEntry.paths[fi]) {
+                              pkgEntry.paths[fi]
+                            } else {
+                              Path.join(depDir, pkgEntry.paths[fi])
+                            }
                             match File.readText(srcPath) {
                               case Ok(srcText) -> srcList.add(srcText)
-                              case Err(e) -> { printErr("test: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e)) }
+                              case Err(e) -> {
+                                printErr("test: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
+                              }
                             }
                             fi += 1
                           }
@@ -857,7 +926,9 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
                           val srcPath = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(depDir, pkgEntry.path) }
                           match File.readText(srcPath) {
                             case Ok(srcText) -> srcList.add(srcText)
-                            case Err(e) -> { printErr("test: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e)) }
+                            case Err(e) -> {
+                              printErr("test: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
+                            }
                           }
                         }
                         if srcList.count > 0 {
@@ -980,23 +1051,7 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
     val outPath = Path.join(testOutDir, asmStem + testExt)
 
     val nugetPaths = resolveNugetAssets(mfDir)
-
-    // Warn if manifest has [nuget] entries but no resolved assemblies
-    // (likely because project.assets.json is missing or stale).
-    match manifest.nuget {
-      case Some(nugetSec) -> {
-        if nugetSec.entries.count > 0 and nugetPaths.count == 0 {
-          val assetsPath = Path.join(Path.join(mfDir, "obj"), "project.assets.json")
-          if not File.fileExists(assetsPath) {
-            printErr(
-              "warning: [nuget] dependencies declared but project.assets.json not found. " +
-                "Run 'lyric restore' or 'dotnet restore' to resolve NuGet dependencies."
-            )
-          }
-        }
-      }
-      case None -> ()
-    }
+    warnIfNugetUnresolved(mfDir, manifest.nuget, nugetPaths)
 
     val projReq = EmitProjectRequest(
       packages = allPkgs,

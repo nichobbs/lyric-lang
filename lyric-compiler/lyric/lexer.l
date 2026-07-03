@@ -1761,19 +1761,21 @@ func lexEscapeString(state: inout LexerState, startP: in Position): String {
   }
 }
 
-/// Lex a `\u{...}` Unicode escape in a **char literal** context.
-///
-/// Decodes BMP scalar values (`\u{0}`..`\u{FFFF}`, excluding the
-/// surrogate range `\u{D800}`..`\u{DFFF}`) to a single `Char`.
-/// Non-BMP scalars (`\u{10000}`..`\u{10FFFF}`) cannot fit in a single
-/// UTF-16 code unit and are rejected with L0022.  For string contexts
-/// use `lexUnicodeEscapeToString` which emits a surrogate pair instead.
+/// Parse the hex body of a `\u{...}` escape shared by both the char and
+/// string lexing contexts.  Validates brace syntax, digit count/range, and
+/// rejects the UTF-16 surrogate range (`\u{D800}`..`\u{DFFF}`, L0023) —
+/// every check that does not depend on whether the caller is a char literal
+/// (which cannot represent non-BMP scalars) or a string (which encodes them
+/// as a surrogate pair).  Records a diagnostic and returns `None` for any
+/// malformed input; `Some(v)` for any valid Unicode scalar value, BMP or
+/// non-BMP — callers still branch on `v > 65535i64` to pick their
+/// context-specific non-BMP handling.
 ///
 /// The leading `\u` has already been consumed by the caller.
-func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
+func lexUnicodeEscapeValue(state: inout LexerState, startP: in Position): Option[Long] {
   if peek(state) != '{' {
     recordError(state, "L0021", "expected '{' after \\u", makeSpan(startP, currentPosition(state)))
-    return '\u{fffd}'
+    return None
   }
   advance(state)   // '{'
   var hexBody = ""
@@ -1809,7 +1811,7 @@ func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
     } else {
       recordError(state, "L0021", "unterminated unicode escape", makeSpan(startP, currentPosition(state)))
     }
-    return '\u{fffd}'
+    return None
   }
   advance(state)   // '}'
   if n == 0 {
@@ -1819,7 +1821,7 @@ func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
       "empty unicode escape (\\u{} requires 1-6 hex digits)",
       makeSpan(startP, currentPosition(state))
     )
-    return '\u{fffd}'
+    return None
   }
   match parseDigits(hexBody, 16) {
     case Some(v) -> {
@@ -1830,7 +1832,7 @@ func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
           "invalid unicode escape (must be 1-6 hex digits, <= U+10FFFF)",
           makeSpan(startP, currentPosition(state))
         )
-        '\u{fffd}'
+        None
       } else if v >= 55296i64 and v <= 57343i64 {
         // Surrogate range U+D800..U+DFFF: not a valid Unicode scalar value (L0023).
         recordError(
@@ -1839,8 +1841,37 @@ func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
           "invalid unicode escape (surrogate range U+D800..U+DFFF is not a valid scalar)",
           makeSpan(startP, currentPosition(state))
         )
-        '\u{fffd}'
-      } else if v > 65535i64 {
+        None
+      } else {
+        Some(value = v)
+      }
+    }
+    case None -> {
+      recordError(
+        state,
+        "L0022",
+        "invalid unicode escape (must be 1-6 hex digits)",
+        makeSpan(startP, currentPosition(state))
+      )
+      None
+    }
+  }
+}
+
+/// Lex a `\u{...}` Unicode escape in a **char literal** context.
+///
+/// Decodes BMP scalar values (`\u{0}`..`\u{FFFF}`, excluding the
+/// surrogate range `\u{D800}`..`\u{DFFF}`) to a single `Char`.
+/// Non-BMP scalars (`\u{10000}`..`\u{10FFFF}`) cannot fit in a single
+/// UTF-16 code unit and are rejected with L0022.  For string contexts
+/// use `lexUnicodeEscapeToString` which emits a surrogate pair instead.
+///
+/// The leading `\u` has already been consumed by the caller.
+func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
+  match lexUnicodeEscapeValue(state, startP) {
+    case None -> '\u{fffd}'
+    case Some(v) -> {
+      if v > 65535i64 {
         // Non-BMP scalar: cannot appear in a char literal (Char is a
         // single UTF-16 code unit).  L0022; substitute U+FFFD.
         recordError(
@@ -1853,15 +1884,6 @@ func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
       } else {
         longToChar(v)
       }
-    }
-    case None -> {
-      recordError(
-        state,
-        "L0022",
-        "invalid unicode escape (must be 1-6 hex digits)",
-        makeSpan(startP, currentPosition(state))
-      )
-      '\u{fffd}'
     }
   }
 }
@@ -1876,81 +1898,15 @@ func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
 ///
 /// The leading `\u` has already been consumed by the caller.
 func lexUnicodeEscapeToString(state: inout LexerState, startP: in Position): String {
-  if peek(state) != '{' {
-    recordError(state, "L0021", "expected '{' after \\u", makeSpan(startP, currentPosition(state)))
-    return "�"
-  }
-  advance(state)   // '{'
-  var hexBody = ""
-  var n = 0
-  while not isAtEnd(state) and peek(state) != '}' and n < 6 {
-    hexBody = hexBody + charToString(advance(state))
-    n = n + 1
-  }
-  if peek(state) != '}' {
-    if n == 6 {
-      var extra = 0
-      while not isAtEnd(state) and peek(state) != '}' and extra < 16 and isHexDigitChar(peek(state)) {
-        advance(state)
-        extra = extra + 1
-      }
-      if peek(state) == '}' {
-        advance(state)
-      }
-      recordError(
-        state,
-        "L0022",
-        "overlong unicode escape (must be 1-6 hex digits, <= U+10FFFF)",
-        makeSpan(startP, currentPosition(state))
-      )
-    } else {
-      recordError(state, "L0021", "unterminated unicode escape", makeSpan(startP, currentPosition(state)))
-    }
-    return "�"
-  }
-  advance(state)   // '}'
-  if n == 0 {
-    recordError(
-      state,
-      "L0022",
-      "empty unicode escape (\\u{} requires 1-6 hex digits)",
-      makeSpan(startP, currentPosition(state))
-    )
-    return "�"
-  }
-  match parseDigits(hexBody, 16) {
+  match lexUnicodeEscapeValue(state, startP) {
+    case None -> "�"
     case Some(v) -> {
-      if v < 0i64 or v > 1114111i64 {
-        recordError(
-          state,
-          "L0022",
-          "invalid unicode escape (must be 1-6 hex digits, <= U+10FFFF)",
-          makeSpan(startP, currentPosition(state))
-        )
-        "�"
-      } else if v >= 55296i64 and v <= 57343i64 {
-        recordError(
-          state,
-          "L0023",
-          "invalid unicode escape (surrogate range U+D800..U+DFFF is not a valid scalar)",
-          makeSpan(startP, currentPosition(state))
-        )
-        "�"
-      } else if v > 65535i64 {
+      if v > 65535i64 {
         // Non-BMP scalar: emit as a UTF-16 surrogate pair.
         nonBmpToSurrPairString(v)
       } else {
         charToString(longToChar(v))
       }
-    }
-    case None -> {
-      recordError(
-        state,
-        "L0022",
-        "invalid unicode escape (must be 1-6 hex digits)",
-        makeSpan(startP, currentPosition(state))
-      )
-      "�"
     }
   }
 }

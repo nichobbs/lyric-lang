@@ -13,6 +13,10 @@
 @axiom("System.IO.File / Directory operations conform to their documented .NET contracts")
 package Std.FileHost
 
+import Std.Core
+import Std.Collections
+import Std.Errors
+
 // =====================================================================
 // Probes — return Bool, never throw under normal use.
 // =====================================================================
@@ -35,13 +39,16 @@ pub func hostWriteAllText(path: in String, contents: in String): Unit = ()
 // =====================================================================
 // File metadata — modification time via DateTime objects.
 // =====================================================================
-extern type DateTime = "System.DateTime"
+// `FileTime` is the target-neutral name consumers (Std.File's FileStat)
+// use for the opaque last-write timestamp; on .NET it is System.DateTime,
+// on the JVM kernel it is the boxed epoch-milliseconds Long.
+extern type FileTime = "System.DateTime"
 
 @externTarget("System.IO.File.GetLastWriteTimeUtc")
-pub func hostGetLastWriteTimeUtc(path: in String): DateTime = ()
+pub func hostGetLastWriteTimeUtc(path: in String): FileTime = ()
 
 @externTarget("System.DateTime.op_GreaterThan")
-pub func hostDateTimeGreaterThan(a: in DateTime, b: in DateTime): Bool = ()
+pub func hostDateTimeGreaterThan(a: in FileTime, b: in FileTime): Bool = ()
 
 // =====================================================================
 // Directory creation — `CreateDirectory` returns `DirectoryInfo` in
@@ -83,3 +90,118 @@ pub func hostDeleteDirectoryRecursive(path: in String, recursive: in Bool): Unit
 
 @externTarget("System.IO.File.Delete")
 pub func hostDeleteFile(path: in String): Unit = ()
+
+// =====================================================================
+// Result seams — the exception-free surface both kernel twins
+// implement (issue #4752).  On this managed side the try/catch and the
+// BCL exception-message classification live HERE, so the pure
+// `Std.File` layer stays target-neutral; the `_kernel_native/` twin
+// implements the same signatures over lyric-rt without exceptions.
+// =====================================================================
+pub func hostReadTextResult(path: in String): Result[String, IOError] {
+  try {
+    Ok(value = hostReadAllText(path))
+  } catch Bug as b {
+    // Locale caveat: the "Could not find file" prefix match assumes
+    // an English .NET runtime.  On non-English runtimes a real
+    // FileNotFoundException may slip through as IoError until the
+    // host shim is upgraded to return an exception-type tag rather
+    // than the localised message text.  See lyric-lang #601.
+    if b.message.startsWith("Could not find file") or b.message.contains("FileNotFoundException") or b.message.contains("DirectoryNotFoundException") {
+      Err(error = FileNotFound(path = path))
+    } else {
+      Err(error = IoError(path = path, message = b.message))
+    }
+  }
+}
+
+pub func hostWriteTextResult(path: in String, text: in String): Result[Unit, IOError] {
+  try {
+    hostWriteAllText(path, text)
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}
+
+pub func hostCreateDirResult(path: in String): Result[Unit, IOError] {
+  try {
+    hostCreateDirectory(path)
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}
+
+pub func hostDeleteFileResult(path: in String): Result[Unit, IOError] {
+  try {
+    hostDeleteFile(path)
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}
+
+// Bytes-mode and enumeration Result seams (issue #4752, D-N-015 slice):
+// every failure reports IoError, matching the pure wrappers these
+// replaced (readBytes/writeBytes/listFiles/listDirs never classified
+// FileNotFound separately).
+pub func hostReadBytesResult(path: in String): Result[List[Byte], IOError] {
+  try {
+    val raw = hostReadAllBytes(path)
+    val acc: List[Byte] = newListWithCapacity(raw.length)
+    for b in raw {
+      acc.add(b)
+    }
+    Ok(value = acc)
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}
+
+pub func hostWriteBytesResult(path: in String, bytes: in List[Byte]): Result[Unit, IOError] {
+  try {
+    hostWriteAllBytes(path, bytes.toArray())
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}
+
+pub func hostListFilesResult(dir: in String): Result[List[String], IOError] {
+  try {
+    val raw = hostEnumerateFiles(dir)
+    val acc: List[String] = newListWithCapacity(raw.length)
+    for f in raw {
+      acc.add(f)
+    }
+    Ok(value = acc)
+  } catch Bug as b {
+    Err(error = IoError(path = dir, message = b.message))
+  }
+}
+
+pub func hostListDirsResult(dir: in String): Result[List[String], IOError] {
+  try {
+    val raw = hostEnumerateDirectories(dir)
+    val acc: List[String] = newListWithCapacity(raw.length)
+    for d in raw {
+      acc.add(d)
+    }
+    Ok(value = acc)
+  } catch Bug as b {
+    Err(error = IoError(path = dir, message = b.message))
+  }
+}
+
+// Not-found routes into IoError like every other failure (BCL
+// Directory.Delete throws DirectoryNotFoundException; distinguishing
+// it from permission-denied would need an exception-type-aware shim).
+pub func hostDeleteDirRecursiveResult(path: in String): Result[Unit, IOError] {
+  try {
+    hostDeleteDirectoryRecursive(path, true)
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}

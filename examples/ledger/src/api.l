@@ -34,12 +34,14 @@ import OTel
 // the mutation handlers and runs inside the rate limiter so that rejected
 // requests still count against the quota.
 //
-// Config (env vars read at startup):
-//   LYRIC_ASPECT_THROTTLE_REQUESTSPERMINUTE  — default 120
-//   LYRIC_ASPECT_THROTTLE_BURSTSIZE          — default 20
-//   LYRIC_ASPECT_AUTH_JWTSECRET              — REQUIRED (no default)
-//   LYRIC_ASPECT_AUTH_ISSUER                 — default "ledger-service"
-//   LYRIC_ASPECT_AUTH_AUDIENCE               — default "ledger-api"
+// Config: env-var resolution (docs/26 §8) is not implemented yet, so none
+// of the LYRIC_ASPECT_* variables below are actually read at runtime — the
+// literal defaults in each `config { }` block are what runs.
+//   LYRIC_ASPECT_THROTTLE_REQUESTSPERMINUTE  — not yet wired; see default below
+//   LYRIC_ASPECT_THROTTLE_BURSTSIZE          — not yet wired; see default below
+//   LYRIC_ASPECT_AUTH_JWTSECRET              — not yet wired; see default below
+//   LYRIC_ASPECT_AUTH_ISSUER                 — not yet wired; see default below
+//   LYRIC_ASPECT_AUTH_AUDIENCE               — not yet wired; see default below
 aspect Throttle from Web.Aspects.RateLimit {
   matches: name like "handle*"
   config {
@@ -53,7 +55,11 @@ aspect Auth from Web.Aspects.RequiresAuth {
   matches: name in { handleCreateAccount, handleCreateTransfer }
   config {
     @sensitive
-    jwtSecret: String = ""  // set LYRIC_ASPECT_AUTH_JWTSECRET in production (docs/26 §8)
+    jwtSecret: String = "REPLACE_ME_WITH_A_REAL_SECRET"
+    // Obviously-invalid placeholder: an empty string here would let a JWT
+    // signed with an empty key validate, silently accepting any token. Set
+    // this directly in source before running the example for real — the
+    // env var is not wired up.
     issuer: String = "ledger-service"
     audience: String = "ledger-api"
   }

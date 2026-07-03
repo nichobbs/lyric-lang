@@ -48,6 +48,11 @@ pub record ClassInfo {
   interfaces: List[String]      // JVM binary names of directly-declared interfaces, e.g. ["java/util/List", "java/util/RandomAccess"]
   methods: List[ClassMethod]  // public non-synthetic non-constructor methods
   constructors: List[ClassMethod]  // public <init> constructors (isStatic=false)
+  // Public fields, reusing the ClassMethod shape (`descriptor` carries the
+  // FIELD descriptor, e.g. "Ljava/io/PrintStream;").  Static fields let the
+  // auto-FFI resolve JDK constants (`System.out`, `Duration.ZERO`) as
+  // `getstatic` instead of failing method resolution.
+  fields: List[ClassMethod]
   // ACC_ABSTRACT (0x0400): true when the class cannot be instantiated directly.
   // Used by `lowerAutoFfiConstructorCall` to emit a compile-time error instead
   // of bytecode that throws `InstantiationError` at runtime (#2215).
@@ -255,19 +260,37 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
     ii = ii + 1
   }
 
-  // Skip fields (each field_info: access(2) + name(2) + desc(2) + attCount(2) + attrs).
+  // Parse fields (each field_info: access(2) + name(2) + desc(2) + attCount(2) + attrs).
+  // Public fields are collected (reusing the ClassMethod shape with the FIELD
+  // descriptor) so the auto-FFI can resolve static constants like `System.out`
+  // and `Duration.ZERO` as `getstatic`.
   if pos + 2 > b.count {
     return None
   }
   val fieldCount = rdU16(b, pos)
   pos = pos + 2
+  val fields: List[ClassMethod] = newList()
   var fi = 0
   while fi < fieldCount {
     if pos + 8 > b.count {
       return None
     }
+    val fAccess = rdU16(b, pos)
+    val fNameIdx = rdU16(b, pos + 2)
+    val fDescIdx = rdU16(b, pos + 4)
     val attrCount = rdU16(b, pos + 6)
     pos = pos + 8
+    // ACC_PUBLIC=1; ACC_STATIC=8; ACC_SYNTHETIC=4096.
+    val fIsPublic = fAccess % 2 != 0
+    val fIsStatic = (fAccess / 8) % 2 != 0
+    val fIsSynthetic = (fAccess / 4096) % 2 != 0
+    if fIsPublic and not fIsSynthetic {
+      val fName = getSStr(utf8Map, toString(fNameIdx))
+      val fDesc = getSStr(utf8Map, toString(fDescIdx))
+      if fName.length > 0 and fDesc.length > 0 {
+        fields.add(ClassMethod(name = fName, descriptor = fDesc, isStatic = fIsStatic))
+      }
+    }
     var ai = 0
     while ai < attrCount {
       if pos + 6 > b.count {
@@ -311,6 +334,7 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
             interfaces = interfaces,
             methods = methods,
             constructors = constructors,
+            fields = fields,
             isAbstract = isAbstract
           )
         )
@@ -346,6 +370,7 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
       interfaces = interfaces,
       methods = methods,
       constructors = constructors,
+      fields = fields,
       isAbstract = isAbstract
     )
   )

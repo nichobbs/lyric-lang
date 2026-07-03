@@ -65,6 +65,7 @@ import Std.Core
 import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.ContractElaborator as CE
 import Std.Char as Char
 import Std.String as Str
 
@@ -763,6 +764,120 @@ func rewriteBlock(ctx: in RewriteCtx, blk: in Block): Block {
     i = i + 1
   }
   Block(statements = newStmts, span = blk.span)
+}
+
+/// Rewrite `args.<field>` -> bare `<field>` inside an aspect's `requires:` /
+/// `ensures:` clause when composing it onto the matched function's wrapper
+/// (docs/26 §5 — "Contract augmentation" — specifies this but it was never
+/// implemented: contracts were spliced onto the wrapper verbatim, leaving
+/// `args` an unresolved name).  Unlike the `around` body, this rewrite is
+/// unconditional — not gated by `@inline_template` or a row clause — because
+/// contracts are always composed onto the per-match WRAPPER (never the
+/// shared B'-mode specialised function), whose parameters are always the
+/// real matched-function names; there is no shape-dedup opacity concern
+/// here for any aspect mode (local, C-mode, or B'-mode) to protect.
+/// Reuses `rewriteExpr`'s full traversal (built for the `around` body) by
+/// constructing a ctx with only the `args.<field>` -> bare-name path live:
+/// `configFields` / `callFields` / `argsRowFields` are empty, so `config.*`
+/// / `call.*` / already-declared-row `args.*` accesses simply pass through
+/// unmatched rather than being (incorrectly) resolved here.
+func rewriteContractClauseArgs(
+  paramNames: in List[String],
+  aspectName: in String,
+  funcName: in String,
+  weaveDiags: in List[WeaveDiagEntry],
+  cc: in ContractClause,
+): ContractClause {
+  val emptyFields: Map[String, Bool] = newMap()
+  val ctx = newRewriteCtx(
+    "",
+    paramNames,
+    emptyFields,
+    emptyFields,
+    emptyFields,
+    false,
+    true,
+    emptyFields,
+    aspectName,
+    funcName,
+    weaveDiags
+  )
+  match cc {
+    case CCRequires(e, s) -> CCRequires(expr = rewriteExpr(ctx, e), span = s)
+    case CCEnsures(e, s) -> CCEnsures(expr = rewriteExpr(ctx, e), span = s)
+    case CCWhen(e, s) -> CCWhen(expr = rewriteExpr(ctx, e), span = s)
+    case CCDecreases(e, s) -> CCDecreases(expr = rewriteExpr(ctx, e), span = s)
+    case CCRaises(types, s) -> CCRaises(types = types, span = s)
+  }
+}
+
+/// Apply `rewriteContractClauseArgs` to every clause in `contracts`.
+func rewriteContractClauseListArgs(
+  paramNames: in List[String],
+  aspectName: in String,
+  funcName: in String,
+  weaveDiags: in List[WeaveDiagEntry],
+  contracts: in List[ContractClause],
+): List[ContractClause] {
+  val rewritten: List[ContractClause] = newList()
+  var i = 0
+  while i < contracts.count {
+    rewritten.add(rewriteContractClauseArgs(paramNames, aspectName, funcName, weaveDiags, contracts[i]))
+    i = i + 1
+  }
+  rewritten
+}
+
+/// docs/26 §5 ("Contract augmentation") specifies that an aspect's
+/// `requires:`/`ensures:` clauses are runtime-checked, but this was never
+/// actually wired: `Lyric.ContractElaborator` runs BEFORE weaving in the
+/// compile pipeline (parse -> typecheck -> modecheck -> elaborate -> mono
+/// -> weave), so a wrapper's newly-composed aspect contracts — which don't
+/// exist until weaving builds the wrapper — were never elaborated into
+/// runtime `assert(...)` statements.  Re-run elaboration here, directly on
+/// the wrapper body, scoped to ONLY the aspect's own (already
+/// args-rewritten) clauses — not the full `composed` list the wrapper's
+/// `contracts` field carries for the public/verifier-visible surface —
+/// because the target's own `requires:`/`ensures:` were already elaborated
+/// into ITS OWN body before weaving ever ran; re-elaborating them here too
+/// would double-check them (once via the wrapper, once when the wrapper
+/// calls through to the target).  A no-op (returns `body` unchanged) when
+/// the aspect declared no contracts, matching `elaborateFunction`'s own
+/// identity-preserving fast path.
+func elaborateWrapperBodyForAspectContracts(
+  params: in List[Param],
+  ret: in Option[TypeExpr],
+  body: in Block,
+  aspectOnlyContracts: in List[ContractClause],
+  span: in Span,
+): Block {
+  if aspectOnlyContracts.count == 0 {
+    return body
+  }
+  val forElaboration = FunctionDecl(
+    docComments = newList(),
+    annotations = newList(),
+    visibility = None,
+    isAsync = false,
+    name = "__lyric_wrapper_elaborate",
+    generics = None,
+    params = params,
+    ret = ret,
+    whereClause = None,
+    contracts = aspectOnlyContracts,
+    body = Some(value = FBBlock(block = body)),
+    span = span
+  )
+  val elaborated = CE.elaborateFunction(forElaboration)
+  match elaborated.body {
+    case Some(fb) -> {
+      match fb {
+        case FBBlock(blk) -> blk
+        case FBExpr(e) -> Block(statements = singleStmtList(Statement(kind = SExpr(expr = e), span = span)), span = span)
+      }
+    }
+    case None -> body
+  }
 }
 
 func rewriteStmt(ctx: in RewriteCtx, stmt: in Statement): Statement {
@@ -1768,10 +1883,21 @@ func buildWrapper(
   val finalBody = Block(statements = loweredStmts, span = rewiredBody.span)
 
   // Composed contract: aspect.contracts ++ original.contracts (§5).
+  // The aspect's own clauses are rewritten for `args.<field>` (docs/26 §5) —
+  // the target's own clauses never reference `args` (they're written
+  // against the target's own parameter names directly) so they pass
+  // through unchanged.
+  val rewrittenAspectContracts = rewriteContractClauseListArgs(
+    paramNames,
+    aspect.name,
+    originalFn.name,
+    site.weaveDiags,
+    aspect.contracts
+  )
   val composed: List[ContractClause] = newList()
   var ci = 0
-  while ci < aspect.contracts.count {
-    composed.add(aspect.contracts[ci])
+  while ci < rewrittenAspectContracts.count {
+    composed.add(rewrittenAspectContracts[ci])
     ci = ci + 1
   }
   ci = 0
@@ -1782,6 +1908,14 @@ func buildWrapper(
 
   // Strip @no_aspect / aspect-routing annotations from the wrapper.
   val noAnnotations: List[Annotation] = newList()
+
+  val elaboratedBody = elaborateWrapperBodyForAspectContracts(
+    originalFn.params,
+    originalFn.ret,
+    finalBody,
+    rewrittenAspectContracts,
+    originalFn.span
+  )
 
   FunctionDecl(
     docComments = originalFn.docComments,
@@ -1794,7 +1928,7 @@ func buildWrapper(
     ret = originalFn.ret,
     whereClause = originalFn.whereClause,
     contracts = composed,
-    body = Some(value = FBBlock(block = finalBody)),
+    body = Some(value = FBBlock(block = elaboratedBody)),
     span = originalFn.span
   )
 }
@@ -3297,6 +3431,21 @@ func bmodeTypeArgListKey(args: in List[TypeArg]): String {
   s
 }
 
+/// Length-prefix `s` as `<decimal length>x<s>`.  Concatenating
+/// length-prefixed blocks is an injective encoding — the decimal-digit
+/// run before the `x` terminator is unambiguous (digits stop at the
+/// first non-digit character) and exactly that many characters are then
+/// consumed as the block's content regardless of what they contain — so
+/// two different sequences of blocks can never concatenate to the same
+/// string.  Used by `bmodeShapeKey` instead of a fixed `"__"` / `"___"`
+/// separator, since `bmodeTypeExprKey` itself is free to emit `_`
+/// sequences (`slice_`, `tuple_`, `_of_`, `fn_..._to_`) or come from a
+/// user type name containing `_`, either of which could otherwise
+/// collide with the separator (#4598).
+func bmodeLenPrefixed(s: in String): String {
+  toString(s.length) + "x" + s
+}
+
 /// `(TArgs, TRet)` shape key for a matched function's signature — the
 /// specialisation identity B'-mode dedups on (docs/55 §3.2 point 2).
 /// Q-bmode-001 (docs/55 §6) leaves structural-vs-nominal equality open;
@@ -3307,19 +3456,11 @@ func bmodeShapeKey(params: in List[Param], ret: in Option[TypeExpr]): String {
   var s = ""
   var i = 0
   while i < params.count {
-    if i > 0 {
-      s = s + "__"
-    }
-    s = s + bmodeTypeExprKey(params[i].ty)
+    s = s + bmodeLenPrefixed(bmodeTypeExprKey(params[i].ty))
     i = i + 1
   }
   val retStr = match ret { case Some(t) -> bmodeTypeExprKey(t); case None -> "Unit" }
-  if params.count > 0 {
-    s = s + "___" + retStr
-  } else {
-    s = retStr
-  }
-  s
+  s + bmodeLenPrefixed(retStr)
 }
 
 /// The template's own identity for specialisation-key / cfg-record-name
@@ -3415,9 +3556,13 @@ func bmodeGetOrBuildTemplateInfo(
   match mapGet(cache, templateKey) {
     case Some(info) -> info
     case None -> {
+      // Unreachable: `collectActiveAspects` only keeps aspects with
+      // `around: Some(_)` (a `from`-instance's effective `around` is
+      // always the resolved template's, which `collectAspectTemplates`
+      // only stores when it is `Some(_)`) — see #4599.
       val around = match aspect.around {
         case Some(a) -> a
-        case None -> AspectAround(argsName = "args", retName = None, argsRow = None, body = Block(statements = newList(), span = synSpan()), span = synSpan())
+        case None -> panic("B'-mode: aspect.around = None is unreachable — template must have an around body")
       }
       val referenced = computeReferencedConfigFields(aspect, around.body)
       val cfgRecordName: Option[String] = if referenced.count > 0 {
@@ -3540,9 +3685,12 @@ func buildBModeSpecializedFunction(
   argsRecordName: in Option[String],
   span: in Span,
 ): FunctionDecl {
+  // Unreachable: see the matching guard in `bmodeGetOrBuildTemplateInfo`
+  // above (#4599) — every B'-mode `aspect` reaching this function has
+  // `around: Some(_)`.
   val around = match aspect.around {
     case Some(a) -> a
-    case None -> AspectAround(argsName = "args", retName = None, argsRow = None, body = Block(statements = newList(), span = synSpan()), span = synSpan())
+    case None -> panic("B'-mode: aspect.around = None is unreachable — template must have an around body")
   }
 
   val paramNames: List[String] = newList()
@@ -3883,10 +4031,29 @@ func buildBModeCallSite(
     stmts.add(Statement(kind = SReturn(value = Some(value = specCallExpr)), span = synSpan()))
   }
 
+  // Composed contract: aspect.contracts ++ fn.contracts (§5), with the
+  // aspect's own clauses rewritten for `args.<field>` — see
+  // `rewriteContractClauseArgs` for why this is safe/unconditional for
+  // B'-mode too (contracts land on this per-match wrapper, never the
+  // shared specialised function, so there is no shape-dedup opacity
+  // concern to protect here).
+  val bmodeContractParamNames: List[String] = newList()
+  var bcpi = 0
+  while bcpi < fn.params.count {
+    bmodeContractParamNames.add(fn.params[bcpi].name)
+    bcpi = bcpi + 1
+  }
+  val rewrittenBModeAspectContracts = rewriteContractClauseListArgs(
+    bmodeContractParamNames,
+    aspect.name,
+    fn.name,
+    weaveDiags,
+    aspect.contracts
+  )
   val composed: List[ContractClause] = newList()
   var cci = 0
-  while cci < aspect.contracts.count {
-    composed.add(aspect.contracts[cci])
+  while cci < rewrittenBModeAspectContracts.count {
+    composed.add(rewrittenBModeAspectContracts[cci])
     cci = cci + 1
   }
   cci = 0
@@ -3894,6 +4061,15 @@ func buildBModeCallSite(
     composed.add(fn.contracts[cci])
     cci = cci + 1
   }
+
+  val rawBody = Block(statements = stmts, span = synSpan())
+  val elaboratedBody = elaborateWrapperBodyForAspectContracts(
+    fn.params,
+    fn.ret,
+    rawBody,
+    rewrittenBModeAspectContracts,
+    fn.span
+  )
 
   FunctionDecl(
     docComments = fn.docComments,
@@ -3906,7 +4082,7 @@ func buildBModeCallSite(
     ret = fn.ret,
     whereClause = fn.whereClause,
     contracts = composed,
-    body = Some(value = FBBlock(block = Block(statements = stmts, span = synSpan()))),
+    body = Some(value = FBBlock(block = elaboratedBody)),
     span = fn.span
   )
 }

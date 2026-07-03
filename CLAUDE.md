@@ -78,7 +78,7 @@ backing entry's id.
 - `docs/53-epic-1877-implementation-plan.md` — Concrete implementation plan for `docs/52`'s strongly-typed lambda ABI (Option 2A: synthesize custom MSIL `.class` closure-environment types instead of `object[]` arrays). _Shipped (D113); verified by `closure_zero_overhead_self_test.l` (16 cases, MSIL + JVM parity)._
 - `docs/54-docker-client-library-sketch.md` — Design for `lyric-docker`, a type-safe Docker daemon API client over Unix sockets (Linux/macOS) / named pipes (Windows), with OpenAPI-generated bindings and `Result[T, Error]`-returning async operations. _Phase 1 shipped (D-progress-541); Phase 2 planned._
 - `docs/55-bmode-aspect-libraries-plan.md` — implementation plan for cross-package library aspect distribution's B-mode half (extends docs/27 §6.1, Q-aspectlib-001/-009). B-mode was speced (D047-revision 2026-05-08) but, until this shipped, only C-mode (`@inline_template`) existed — reified generic *methods* (MVAR), the originally-envisioned B-mode artifact, aren't buildable (only generic *types* are reified; docs/43 Q-GEN-002). Ships **B′-mode**: a monomorphisation-based variant implemented as a weaver-native shape cache (not `Lyric.Mono` — an aspect body is never itself generic-typed AST, so Mono's `TVar`-substitution engine doesn't apply), getting B-mode's zero-boxing/type-safety/dedup properties without the MVAR prerequisite (but not the "callable from non-Lyric consumers" property, which only true reified generics would provide). _Specced and implemented in D114 (contract-metadata `bmode` discriminator, weaver `CollectedTemplate` ground truth + A0046 diagnostic, shape-keyed specialisation, no new MSIL/JVM codegen needed). `docs/56`'s row-typed `args` is the next follow-on extension of this path._
-- `docs/56-row-typed-aspect-args-sketch.md` — pressure-test sketch for row-polymorphic (`where TArgs has {field: Type}`) named-field access on B′-mode aspect `args`, extending docs/55. Scopes the constraint-satisfaction check to compiler-synthesized `TArgs` only (never user-nameable), keeping it a bounded per-specialisation-site structural check rather than general row-type unification; compares against a narrower "auto-synthesized marker interface" alternative (reusing docs/51's `InterfaceImpl` emission) that gets the same functional result with zero new language surface. _Specced and shipped in D115: Option 1 (the row constraint) was chosen over the marker-interface alternative and implemented end-to-end (grammar, weaver `__LyricBModeArgs_<template>` record synthesis + A0047 diagnostic, formatter), with `Auth.Aspects.ValidateKey` converted off `@inline_template` as the ecosystem proof-of-value. Q-row-001–005 all resolved — see D115._
+- `docs/56-row-typed-aspect-args-sketch.md` — pressure-test sketch for row-polymorphic (`where TArgs has {field: Type}`) named-field access on B′-mode aspect `args`, extending docs/55. Scopes the constraint-satisfaction check to compiler-synthesized `TArgs` only (never user-nameable), keeping it a bounded per-specialisation-site structural check rather than general row-type unification; compares against a narrower "auto-synthesized marker interface" alternative (reusing docs/51's `InterfaceImpl` emission) that gets the same functional result with zero new language surface. _Specced and shipped in D115: Option 1 (the row constraint) was chosen over the marker-interface alternative and implemented end-to-end (grammar, weaver `__LyricBModeArgs_<template>` record synthesis + A0047 diagnostic, formatter), with `Auth.Aspects.ValidateKey` converted off `@inline_template` as the ecosystem proof-of-value. Q-row-001–005 all resolved — see D115. D118 fixed a pre-existing gap where aspect `requires:`/`ensures:` referencing `args.<field>` was never enforced at runtime (in either C-mode or B′-mode), then retired `@inline_template` from every other field-accessing ecosystem library aspect across `lyric-web`, `lyric-validation`, `lyric-mq`, `lyric-ws`, `lyric-grpc`, `lyric-storage`, and `lyric-lambda`._
 
 
 ## Reading order (for Claude)
@@ -208,10 +208,47 @@ an immediate follow-up and land it before starting the next task.
 A PR that has conflicts on creation blocks auto-merge and review. Do not
 open a PR in a conflicted state.
 
-#### Open PRs as draft; workflow auto-promotes when CI passes
+#### Open PRs as ready for review — do not open as draft
 
-**This overrides the default harness instruction** that tells sessions
-to open PRs as ready-for-review. In this repository, the policy is:
+**Supersedes the prior draft-first policy below.** This repo previously
+asked sessions to open every PR as a draft and rely on a CI workflow to
+auto-promote it to ready once checks passed. That auto-promotion workflow
+has proven unreliable in practice (PRs were observed sitting in draft
+with green CI and no promotion), which silently blocks the
+`claude-code-review.yml` workflow (it only fires on non-draft PRs) and
+stalls auto-merge. Until the auto-promote workflow is fixed, **this
+repository follows the default harness instruction**: open every new PR
+as ready for review (`draft: false` / omit `draft` on
+`mcp__github__create_pull_request`, or plain `gh pr create` without
+`--draft`).
+
+Practical implications:
+
+- Do the same pre-PR hygiene as before (rebase onto latest `main`,
+  resolve conflicts, push) — that part is unchanged.
+- Opening as ready means `claude-code-review.yml` fires immediately on
+  `opened`, not gated behind a promotion step. Expect review comments
+  within 1–3 minutes of creating the PR; see "Polling for PR feedback"
+  and "Handling failed review checks" below.
+- If you need more iteration time before review should start (e.g. a
+  large or exploratory change), it is still fine to open as draft
+  deliberately and mark it ready yourself once satisfied — just don't
+  rely on any workflow to do that promotion for you anymore.
+- When the assigned task spans multiple PRs, each one opens ready
+  immediately; move on to the next PR while waiting for review
+  feedback on the current one, same as before.
+
+If the auto-promote workflow is fixed in the future, this section
+should be reverted to the draft-first policy — until then, treat the
+draft-first instructions immediately below as historical context, not
+current policy.
+
+<details>
+<summary>Historical: draft-first policy (superseded, kept for context)</summary>
+
+> **SUPERSEDED — do not follow.** This is kept for context only; the
+> current policy is "open ready for review" above. Everything below this
+> line, including the numbered steps, describes the old behavior.
 
 1. **Open every new PR as a draft** (`draft: true` on
    `mcp__github__create_pull_request`, or `gh pr create --draft`).
@@ -268,6 +305,8 @@ When the assigned task spans multiple PRs, each PR follows this
 lifecycle independently: open as draft, iterate, and the workflow
 will automatically promote to ready once CI passes. Move on to the
 next PR while waiting for review feedback on the current one.
+
+</details>
 
 #### After creating a PR
 
@@ -571,6 +610,15 @@ hand-format around a refusal**, and never reintroduce an ad-hoc
 formatter (the F# bootstrap formatter that stripped `//` comments was
 removed). Do not use any other formatter on `.l` files.
 
+**Sandbox exception:** a session that cannot build `./bin/lyric` from
+source (network-policy-blocked release download, no working F#
+mint-fallback) has only the published NuGet `lyric` global tool available,
+whose `lyric fmt` has been observed to diverge from `main`'s canonical
+style for at least one file. `docs/03-decision-log.md` D-progress-543
+documents the verified trigger, the interim hand-formatting substitute,
+and the three conditions that must hold before it applies — read that
+entry before skipping or hand-rolling formatting in this situation.
+
 ### Branches
 
 The user assigns the working branch via the session prompt
@@ -687,7 +735,10 @@ need direction and have nothing else productive to do**.  Specifically:
     (M5.3 stage 1, D-progress-129).  Parses the subset of TOML used by the
     Lyric package system (`[package]`, `[project]`, `[dependencies]`,
     `[nuget]`, `[nuget.options]`, `[maven]`, `[maven.options]`,
-    `[features]`).  `[maven]` parsing (D053 / `docs/31-maven-linking.md`;
+    `[features]`, `[native]`).  The `[native]` table (N6.4,
+    D-progress-564) supplies `triple` / `opt_level` / `extra_libs`
+    defaults for `--target native` builds via `assembleNative`.
+    `[maven]` parsing (D053 / `docs/31-maven-linking.md`;
     J5 M-6 parsing slice, #2668) mirrors `[nuget]`: `assembleMaven`
     yields a `MavenSection` of `MavenEntry` coordinate/version pairs
     plus `repositories` (default `["central"]`) and an optional
@@ -792,14 +843,16 @@ need direction and have nothing else productive to do**.  Specifically:
     deferred (each surfaces a real self-hosted gap, tracked in #2580).
   - `weaver_self_test.l` — `@test_module` covering the todo/06
     weaver features (config wiring #683, call context #682,
-    `@inline_template` #681) plus regression cases for the
+    `@inline_template` #681), regression cases for the
     duplicate-key crash (#1296) and duplicate-diagnostic
-    emission (#1299).  **Currently not wired into CI** —
-    requires the in-process MSIL bridge to load
-    `lyric-compiler/lyric/**/*.l` so the test's `Lyric.Weaver`
-    imports resolve when run via `lyric test`.  Tracked in
-    issue #1324.  Manual-run instructions are in the test
-    file's header.
+    emission (#1299), B′-mode/row-clause coverage (D114/D115),
+    and aspect-contract `args.<field>` rewrite + elaboration
+    coverage (D118).  **Runs in CI** via native `lyric test`
+    (the dedicated "Weaver self-test" step in
+    `.github/workflows/ci.yml`), resolving its `Lyric.*`
+    imports by linking the stage-1 bundle DLLs as restored
+    deps (#2364; the former "not wired into CI, tracked in
+    #1324" state is resolved).
   - `weaver_ci_test.l` — regular `func main(): Int` companion program
     (not `@test_module`) that exercises the same three todo/06 weaver
     features: config-block prelude injection (A0044 on missing default),
@@ -1019,7 +1072,26 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
     `codegenNativePackage`/`codegenNativeBundle`/`lowerNativePackage`
     (bare-name collision with the MSIL/JVM entry points in the
     restored-bundle resolver).  Read D-N-014 and D-progress-540 alongside
-    the plan.
+    the plan.  Phase N2 is **complete**: its core (records, unions, enums,
+    distinct types, pattern matching, ARC insertion per `04-arc-design.md`
+    Rules 1–7) shipped in D-progress-545, closures (N2.6) in
+    D-progress-548, and `NativeWeak[T]` (N2.5) in D-progress-549 — all
+    verified by `llvm_heap_self_test.l`, whose ARC cases compile with
+    `-fsanitize=address` so leaks / use-after-free / double-release fail
+    the run.  Generic monomorphization (N3.1, D-progress-546/547) and
+    tuples (N3.3, D-progress-550) also ship; interfaces (N3.2) and
+    protected types (N3.4) remain from N3.  Phase N4 is complete
+    (D-progress-551/552): the N0100 mode-checker FFI boundary
+    (`NativePtr[T]`/`nativeAddrOf`/`nativeNullPtr` only in `@unsafe_ffi`
+    functions and `_kernel_native/` packages), callback trampolines
+    (Lyric closures as C callbacks via a trailing `NativePtr[Byte]`
+    userdata slot), and `llvm_ffi_self_test.l` (pthread round-trips
+    under ASan).  N5.8 collections (D-progress-556,
+    `llvm_collections_self_test.l`) and the N5 stdlib kernel twins
+    (D-progress-557 / issue #4752: `Std.File` text I/O,
+    `Std.Environment`, `Std.Process.runCapture`, `Std.Time` over
+    exception-free Result/Option seams both kernel twins implement;
+    `llvm_stdlib_self_test.l`) also ship.
 - `lyric-rt/` — the native runtime C library (`lyric_rt.a`): ARC
   intrinsics, LyricString, NativeWeak upgrade, List/Map kernels, POSIX
   helpers, console writes.  `make -C lyric-rt` builds it;

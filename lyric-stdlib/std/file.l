@@ -18,11 +18,12 @@ import Std.Collections
 import Std.Errors
 import Std.FileHost
 
-/// File metadata: last write time (stored as DateTime for comparison).
-extern type DateTime = "System.DateTime"
-
+/// File metadata: last write time, stored as the kernel's opaque
+/// `FileTime` (System.DateTime on .NET, boxed epoch-milliseconds on the
+/// JVM) and compared via `hostDateTimeGreaterThan` — no extern type is
+/// declared here; the kernel owns the boundary.
 pub record FileStat {
-  modifiedAt: DateTime
+  modifiedAt: FileTime
 }
 
 /// Compare two file modification times. Returns true if `a` is newer than `b`.
@@ -61,20 +62,7 @@ pub func readText(path: in String): Result[String, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
   }
-  return try {
-    Ok(value = hostReadAllText(path))
-  } catch Bug as b {
-    // Locale caveat: the "Could not find file" prefix match assumes
-    // an English .NET runtime.  On non-English runtimes a real
-    // FileNotFoundException may slip through as IoError until the
-    // host shim is upgraded to return an exception-type tag rather
-    // than the localised message text.  See lyric-lang #601.
-    if b.message.startsWith("Could not find file") or b.message.contains("FileNotFoundException") or b.message.contains("DirectoryNotFoundException") {
-      Err(error = FileNotFound(path = path))
-    } else {
-      Err(error = IoError(path = path, message = b.message))
-    }
-  }
+  hostReadTextResult(path)
 }
 
 /// Write `text` to `path` (creating or replacing).
@@ -86,12 +74,7 @@ pub func writeText(path: in String, text: in String): Result[Unit, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
   }
-  return try {
-    hostWriteAllText(path, text)
-    Ok(value = ())
-  } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
-  }
+  hostWriteTextResult(path, text)
 }
 
 /// Probe whether `path` names an existing directory.  Returns false
@@ -114,12 +97,7 @@ pub func createDir(path: in String): Result[Unit, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
   }
-  return try {
-    hostCreateDirectory(path)
-    Ok(value = ())
-  } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
-  }
+  hostCreateDirResult(path)
 }
 
 /// Recursively delete a directory and every file it contains.
@@ -135,13 +113,7 @@ pub func deleteDirRecursive(path: in String): Result[Unit, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
   }
-  return try {
-    hostDeleteDirectoryRecursive(path, true)
-    Ok(value = ())
-  } catch Bug as b {
-    // See doc comment: not-found vs. permission-denied is indistinguishable.
-    Err(error = IoError(path = path, message = b.message))
-  }
+  hostDeleteDirRecursiveResult(path)
 }
 
 /// Delete a single file.  Returns `Ok(())` on success;
@@ -162,12 +134,7 @@ pub func deleteFile(path: in String): Result[Unit, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
   }
-  return try {
-    hostDeleteFile(path)
-    Ok(value = ())
-  } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
-  }
+  hostDeleteFileResult(path)
 }
 
 /// Read the file at `path` as raw bytes.
@@ -179,16 +146,7 @@ pub func readBytes(path: in String): Result[List[Byte], IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
   }
-  return try {
-    val raw = hostReadAllBytes(path)
-    val acc: List[Byte] = newListWithCapacity(raw.length)
-    for b in raw {
-      acc.add(b)
-    }
-    Ok(value = acc)
-  } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
-  }
+  hostReadBytesResult(path)
 }
 
 /// Read the entire contents of `path` as a `slice[Byte]`, panicking on an
@@ -242,12 +200,7 @@ pub func writeBytes(path: in String, bytes: in List[Byte]): Result[Unit, IOError
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
   }
-  return try {
-    hostWriteAllBytes(path, bytes.toArray())
-    Ok(value = ())
-  } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
-  }
+  hostWriteBytesResult(path, bytes)
 }
 
 /// List the names of all files directly inside `dir` (non-recursive).
@@ -260,16 +213,7 @@ pub func listFiles(dir: in String): Result[List[String], IOError] {
   if dir.length == 0 {
     return Err(error = InvalidPath(path = dir, reason = "path must not be empty"))
   }
-  return try {
-    val raw = hostEnumerateFiles(dir)
-    val acc: List[String] = newListWithCapacity(raw.length)
-    for f in raw {
-      acc.add(f)
-    }
-    Ok(value = acc)
-  } catch Bug as b {
-    Err(error = IoError(path = dir, message = b.message))
-  }
+  hostListFilesResult(dir)
 }
 
 /// List the names of all sub-directories directly inside `dir` (non-recursive).
@@ -282,27 +226,29 @@ pub func listDirs(dir: in String): Result[List[String], IOError] {
   if dir.length == 0 {
     return Err(error = InvalidPath(path = dir, reason = "path must not be empty"))
   }
-  return try {
-    val raw = hostEnumerateDirectories(dir)
-    val acc: List[String] = newListWithCapacity(raw.length)
-    for d in raw {
-      acc.add(d)
-    }
-    Ok(value = acc)
-  } catch Bug as b {
-    Err(error = IoError(path = dir, message = b.message))
-  }
+  hostListDirsResult(dir)
 }
 
-/// Get file modification time for `path`.
+/// Get the modification time for `path` (a file or a directory).
 ///
 /// Returns `Err(InvalidPath)` for empty paths, `Err(FileNotFound)` if
-/// the host reports the file is missing, and `Err(IoError)` for any
-/// other host failure (permission, device, …).
+/// the path names neither a file nor a directory, and `Err(IoError)`
+/// for any other host failure (permission, device, …).
+///
+/// The existence probe is explicit because neither host timestamp API
+/// reports a missing path: the BCL's `File.GetLastWriteTimeUtc` returns
+/// the 1601-01-01 sentinel and the JDK's `File.lastModified()` returns
+/// 0 — without the probe a missing path produced `Ok` with a garbage
+/// timestamp.  A path deleted between the probe and the read (TOCTOU)
+/// still yields that sentinel timestamp, matching the pre-probe
+/// behaviour for the racing case only.
 @stable(since = "1.0")
 pub func stat(path: in String): Result[FileStat, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
+  }
+  if not (hostFileExists(path) or hostDirectoryExists(path)) {
+    return Err(error = FileNotFound(path = path))
   }
   return try {
     val modifiedAt = hostGetLastWriteTimeUtc(path)

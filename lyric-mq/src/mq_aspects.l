@@ -2,10 +2,10 @@
 //!
 //! Two templates:
 //!
-//!   Idempotent  — C-mode (@inline_template): deduplicates message handlers
-//!                 using a Cache.CacheStore keyed by `args.message.id`.  Reads
-//!                 `args.message` from the handler argument list, so the handler
-//!                 must declare a `message: Message` parameter.
+//!   Idempotent  — row-constrained B'-mode (docs/56): deduplicates message
+//!                 handlers using a Cache.CacheStore keyed by `args.message.id`.
+//!                 Reads `args.message` from the handler argument list, so the
+//!                 handler must declare a `message: Message` parameter.
 //!
 //!   DeadLetter  — B-mode: after a failed consume (handler returns Err), checks
 //!                 the delivery count against `maxDeliveries` and dead-letters
@@ -44,10 +44,10 @@ import Mq
 // ─── Idempotent ───────────────────────────────────────────────────────────────
 /// Deduplicate message handler calls using a cache keyed by message ID.
 ///
-/// C-mode (@inline_template): reads `args.message.id` from the handler
-/// argument list.  The handler must declare a `message: in Message` (or
-/// `message: Message`) parameter; the compiler reports shape error A0042
-/// if this parameter is absent.
+/// Row-constrained B'-mode (docs/56 / D115): reads `args.message.id` via a
+/// `where TArgs has { message: Message }` row clause.  The handler must
+/// declare a `message: in Message` (or `message: Message`) parameter; the
+/// weaver reports A0047 if this parameter is absent or mistyped.
 ///
 /// Logic:
 ///   1. Compute cache key as `cacheKeyPrefix + args.message.id`.
@@ -64,7 +64,6 @@ import Mq
 ///   cacheKeyPrefix String — prepended to every message ID (default: "mq:idem:")
 ///   ttlSeconds     Int    — how long to remember processed IDs (default: 3600)
 @stable(since = "0.1")
-@inline_template
 pub aspect Idempotent {
   config {
     enabled: Bool = true
@@ -73,7 +72,7 @@ pub aspect Idempotent {
   }
   requires: args.message.id != ""
   // handler must declare a message: Message parameter
-  around(call) -> ret {
+  around(call) -> ret where TArgs has { message: Message } {
     if not enabled {
       ret = call.proceed()
     } else {
@@ -100,13 +99,14 @@ val idempotentStore: CacheStore = Cache.inProcess()
 // ─── DeadLetter ───────────────────────────────────────────────────────────────
 /// Route messages that exceed their delivery limit to a dead-letter store.
 ///
-/// C-mode (@inline_template): reads `args.message` and `args.consumer` from the
-/// concrete handler's parameter list.  Apply only to handlers whose signature
+/// Row-constrained B'-mode (docs/56 / D115): reads `args.message` and
+/// `args.consumer` via a `where TArgs has { message: Message, consumer:
+/// QueueConsumer }` row clause.  Apply only to handlers whose signature
 /// includes both:
 ///   - `message:  in Message`       — provides id and deliveryCount
 ///   - `consumer: in QueueConsumer` — called to nack the message after dead-lettering
 ///
-/// The compiler reports shape error A0042 if either parameter is absent.
+/// The weaver reports A0047 if either parameter is absent or mistyped.
 ///
 /// After the handler returns Err, checks `args.message.deliveryCount + 1`
 /// against `maxDeliveries`.  When the limit is reached, appends a
@@ -124,7 +124,6 @@ val idempotentStore: CacheStore = Cache.inProcess()
 ///   enabled       Bool — master switch (default: true)
 ///   maxDeliveries Int  — delivery attempts before dead-lettering (default: 3)
 @stable(since = "0.1")
-@inline_template
 pub aspect DeadLetter {
   config {
     enabled: Bool = true
@@ -132,8 +131,8 @@ pub aspect DeadLetter {
   }
   requires: args.message.id != ""
   // handler must declare a message: Message parameter
-  // handler must declare a consumer: QueueConsumer parameter (shape checked by A0042)
-  around(call) -> ret {
+  // handler must declare a consumer: QueueConsumer parameter (shape checked by A0047)
+  around(call) -> ret where TArgs has { message: Message, consumer: QueueConsumer } {
     if not enabled {
       ret = call.proceed()
     } else {
@@ -161,4 +160,3 @@ pub aspect DeadLetter {
 // Replace this with a custom DeadLetterStore implementation before the
 // aspect fires when persistence or a remote store is required.
 val deadLetterStore: DeadLetterStore = Mq.inProcessDeadLetterStore(10000)
-

@@ -15,6 +15,8 @@
 @axiom("lyric.stdlib.jvm.EnvHost operations conform to their documented JVM contracts")
 package Std.EnvironmentHost
 
+import Std.Core
+
 extern package lyric.stdlib.jvm.EnvHost {
   pub func getEnvironmentVariable(key: in String): String?
     requires: key.length > 0
@@ -34,17 +36,28 @@ pub func hostRuntimeDirectory(): String {
 }
 
 // The .NET runtime identifier is a .NET-only concept with no JVM equivalent.
-// Returns "" per the "empty = unavailable" convention; the only caller
-// (apphost pack selection in Lyric.AppHost) is a .NET-only build path, so the
-// JVM empty string is never exercised in practice.
+// Returns "" per the "empty = unavailable" convention.
 pub func hostRuntimeIdentifier(): String {
   ""
 }
 
 // SetEnvironmentVariable has no portable JVM equivalent (the JVM exposes no
 // `setenv(3)` equivalent without unsafe reflection).  This is a no-op stub
-// so JVM programs that import Std.Environment still compile; in practice the
-// Lyric CLI (the only caller of setVar) always runs on .NET.
+// so JVM programs that import Std.Environment still compile.
 pub func hostSetEnvironmentVariable(key: in String, value: in String): Unit {
   ()
+}
+
+// Option seam — the exception-free surface every kernel twin implements
+// (issue #4752).  `System.getenv` returns null for an unset variable;
+// Lyric has no null pattern (issue #4775), so unset is detected via
+// `??` with a NUL-string marker: POSIX and Windows environment blocks
+// are NUL-delimited, so no real value can ever equal "\0".
+pub func hostGetVarOpt(key: in String): Option[String] {
+  val v = getEnvironmentVariable(key) ?? "\u{0000}"
+  if v == "\u{0000}" {
+    None
+  } else {
+    Some(value = v)
+  }
 }

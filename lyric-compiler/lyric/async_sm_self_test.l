@@ -636,6 +636,42 @@ test "#4187: SM function between records executes correctly" {
   assertEqualInt(result, 10, "smAfterRecord(5) = 10")
 }
 
+test "#4187: SM function preceding a record executes correctly" {
+  val result = await smBeforeRecordHelper(5)
+  assertEqualInt(result, 15, "smBeforeRecordHelper(5) = 15")
+}
+
+// Forward source-order dependency: smForwardCaller awaits smForwardCallee,
+// which is declared later in source order, with a record interleaved between
+// them.  Regresses the motivating case for pre-pass 0 (countSmFieldsMsil must
+// resolve the same-package awaiter's return type before it has been visited
+// in source order) and confirms the interleaved record's FieldDef rows stay
+// correct alongside a forward-referencing SM pair.
+async func smForwardCaller(n: in Int): Int {
+  val inner = await smForwardCallee(n)
+  inner + 1
+}
+
+record RecordBetweenForwardSm {
+  p: Int
+  q: Int
+}
+
+async func smForwardCallee(n: in Int): Int {
+  n * 3
+}
+
+test "#4187/#4221: SM function awaits a forward-declared SM across an interleaved record" {
+  val result = await smForwardCaller(4)
+  assertEqualInt(result, 13, "smForwardCaller(4) = smForwardCallee(4) + 1 = 4*3 + 1 = 13")
+}
+
+test "#4187/#4221: record interleaved between forward-referencing SM pair" {
+  val r = RecordBetweenForwardSm(p = 9, q = 11)
+  assertEqualInt(r.p, 9, "RecordBetweenForwardSm.p = 9")
+  assertEqualInt(r.q, 11, "RecordBetweenForwardSm.q = 11")
+}
+
 // ── #4266: SM function returning a local enum / distinct type ─────────────────
 union Direction {
   case North

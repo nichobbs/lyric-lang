@@ -39,6 +39,7 @@ import Std.Environment as Environment
 import Std.File as File
 import Std.Path as Path
 import Std.Parse as Parse
+import Std.Console as Console
 
 // ── Parsed shapes ────────────────────────────────────────────────────────────
 // One PE section header (the 40-byte rows after the optional header).  Only
@@ -108,7 +109,10 @@ func rdU16(b: in slice[Byte], o: in Int): Int {
   rdU8(b, o) + rdU8(b, o + 1) * 256
 }
 
-func rdI16(b: in slice[Byte], o: in Int): Int {
+// `pub` so `Msil.MetadataReaderSelfTest` (a separate package) can exercise the
+// sign-extension edge cases directly — the same "expose a cross-package test
+// accessor" pattern `mkPrimSig`/`sigPrimByte` already use below.
+pub func rdI16(b: in slice[Byte], o: in Int): Int {
   val lo = rdU8(b, o)
   val hi = rdU8(b, o + 1)
   val result = lo + hi * 256
@@ -520,6 +524,13 @@ pub record TableLayout {
   dataStart: List[Int]    // length 64, file offset of each table's rows
   stringsBase: Int          // file offset of the #Strings heap (-1 if absent)
   blobBase: Int          // file offset of the #Blob heap (-1 if absent)
+  // NestedClass table (0x29), pre-indexed by enclosing TypeDef row →  the
+  // list of its nested TypeDef rows.  Built once here (a single O(n) scan)
+  // so `findTypeDefByFqn`'s nested-type lookups are O(1) instead of
+  // rescanning the whole NestedClass table per lookup (#3721) — the BCL
+  // reference pack carries thousands of NestedClass rows, and a nested-type
+  // extern reference triggers one lookup per compile.
+  nestedClassByEnclosing: Map[Int, List[Int]]
 }
 
 pub record MdrTypeDefRow {
@@ -740,6 +751,28 @@ pub func computeLayout(img: in PeImage, root: in MetadataRoot, th: in TablesHead
 
   val stringsBase = match findStream(root, "#Strings") { case Some(s) -> s.fileOff; case None -> -1 }
   val blobBase = match findStream(root, "#Blob") { case Some(s) -> s.fileOff; case None -> -1 }
+
+  // Pre-index NestedClass (0x29): enclosing TypeDef row → its nested TypeDef
+  // rows.  One O(n) scan here replaces an O(n) rescan on every nested-type
+  // lookup in `findTypeDefByFqn` (#3721).
+  val nestedClassByEnclosing: Map[Int, List[Int]] = newMap()
+  val nestedRowCount = rowCountOf(th, 0x29)
+  var ncRow = 0
+  while ncRow < nestedRowCount {
+    val ncOff = dataStart[0x29] + ncRow * rowSize[0x29]
+    val nestedTd = rdIdx(img.bytes, ncOff, typeDefIdx)
+    val enclosingTd = rdIdx(img.bytes, ncOff + typeDefIdx, typeDefIdx)
+    match mapGet(nestedClassByEnclosing, enclosingTd) {
+      case Some(existing) -> existing.add(nestedTd)
+      case None -> {
+        val fresh: List[Int] = newList()
+        fresh.add(nestedTd)
+        nestedClassByEnclosing.add(enclosingTd, fresh)
+      }
+    }
+    ncRow = ncRow + 1
+  }
+
   Ok(
     value = TableLayout(
       stringIdx = stringIdx,
@@ -755,7 +788,8 @@ pub func computeLayout(img: in PeImage, root: in MetadataRoot, th: in TablesHead
       rowSize = rowSize,
       dataStart = dataStart,
       stringsBase = stringsBase,
-      blobBase = blobBase
+      blobBase = blobBase,
+      nestedClassByEnclosing = nestedClassByEnclosing
     )
   )
 }
@@ -1033,8 +1067,7 @@ pub func readAssembly(img: in PeImage, layout: in TableLayout, row: in Int): Mdr
   val revision = rdU16(b, o + 10)
   val flags = rdU32(b, o + 12)
   var p = o + 16
-  val pkI = rdIdx(b, p, layout.blobIdx)
-  p = p + layout.blobIdx
+  p = p + layout.blobIdx // skip PublicKey (#Blob index; not needed by MdrAssemblyRow)
   val nameI = rdIdx(b, p, layout.stringIdx)
   p = p + layout.stringIdx
   val cultureI = rdIdx(b, p, layout.stringIdx)
@@ -1169,19 +1202,39 @@ pub func getLiteralFieldInt32In(
       if typeVal == 0x02 or typeVal == 0x03 or typeVal == 0x04 or typeVal == 0x05 or typeVal == 0x06 or typeVal == 0x07 or typeVal == 0x08 or typeVal == 0x09 {
         val blobIndex = rdIdx(b, o + 2 + hasConstIdxWidth, layout.blobIdx)
         val blobBytes = blobAt(img, layout, blobIndex)
-        if blobBytes.length >= 4 {
-          return Some(value = rdI32(blobBytes, 0))
-        } else if blobBytes.length == 2 {
-          val isSigned = typeVal == 0x02 or typeVal == 0x04 or typeVal == 0x06 or typeVal == 0x08
-          return Some(value = if isSigned { rdI16(blobBytes, 0) } else { rdU16(blobBytes, 0) })
-        } else if blobBytes.length == 1 {
-          return Some(value = blobBytes[0].toInt())
+        match decodeInt32ConstantBlob(typeVal, blobBytes) {
+          case Some(v) -> return Some(value = v)
+          case None -> {}
         }
       }
     }
     crow = crow + 1
   }
   None
+}
+
+// Decodes an ECMA-335 `Constant` table blob (§II.22.9) to an `Int` once the
+// caller has confirmed `typeVal` is one of the eight-or-fewer-byte integral
+// ELEMENT_TYPEs (0x02 BOOLEAN..0x09 U4). Widens by blob length rather than
+// solely by `typeVal`, matching how the writer side (`tables.l`) actually
+// sizes these blobs. Split out of `getLiteralFieldInt32In` (#4331) so the
+// sign/unsigned classification can be tested directly with constructed byte
+// blobs, without needing a full PE image fixture.
+pub func decodeInt32ConstantBlob(typeVal: in Int, blobBytes: in slice[Byte]): Option[Int] {
+  if blobBytes.length >= 4 {
+    Some(value = rdI32(blobBytes, 0))
+  } else if blobBytes.length == 2 {
+    // ELEMENT_TYPE_BOOLEAN (0x02) is unsigned per ECMA-335 §II.23.1.16;
+    // I1 (0x04) and I4 (0x08) are signed but never produce a 2-byte blob
+    // in conforming metadata (kept here only for defensiveness). I2
+    // (0x06) is the only signed type that legitimately reaches this arm.
+    val isSigned = typeVal == 0x04 or typeVal == 0x06 or typeVal == 0x08
+    Some(value = if isSigned { rdI16(blobBytes, 0) } else { rdU16(blobBytes, 0) })
+  } else if blobBytes.length == 1 {
+    Some(value = blobBytes[0].toInt())
+  } else {
+    None
+  }
 }
 
 // Read-from-disk wrapper over `getLiteralFieldInt32In`.
@@ -1780,32 +1833,82 @@ func candidateDotnetRoots(): List[String] {
   roots
 }
 
+// Outcome of probing one candidate root for a usable reference-assembly
+// directory: `found` carries the resolved path on success; `reason`
+// explains the outcome either way.  The single source of truth shared by
+// `refPackDir()` (early-returns on the first `found`) and
+// `refPackDirDebugInfo()` (records `reason` at every root) so the two
+// walks can never drift apart (#4741).
+record RefPackProbe {
+  found: Option[String]
+  reason: String
+}
+
+// Probe a single candidate root for
+// `<root>/packs/Microsoft.NETCore.App.Ref/<version>/ref/<tfm>/`.
+func probeRefPackRoot(root: in String): RefPackProbe {
+  val packs = Path.join(root, "packs/Microsoft.NETCore.App.Ref")
+  if not File.dirExists(packs) {
+    return RefPackProbe(found = None, reason = "no packs/Microsoft.NETCore.App.Ref")
+  }
+  match pickHighestDir(packs) {
+    case None -> RefPackProbe(found = None, reason = "packs/Microsoft.NETCore.App.Ref exists but is empty")
+    case Some(ver) -> {
+      val refDir = Path.join(Path.join(packs, ver), "ref")
+      if not File.dirExists(refDir) {
+        RefPackProbe(found = None, reason = "version " + ver + " has no ref/ subdir")
+      } else {
+        match pickHighestDir(refDir) {
+          case None -> RefPackProbe(found = None, reason = "version " + ver + "'s ref/ subdir is empty (no TFM)")
+          case Some(tfm) -> {
+            val full = Path.join(refDir, tfm)
+            RefPackProbe(found = Some(value = full), reason = "found " + full)
+          }
+        }
+      }
+    }
+  }
+}
+
 // Locate the reference-assembly directory
 // (`<root>/packs/Microsoft.NETCore.App.Ref/<version>/ref/<tfm>/`).
 pub func refPackDir(): Option[String] {
   val roots = candidateDotnetRoots()
   var i = 0
   while i < roots.count {
-    val packs = Path.join(roots[i], "packs/Microsoft.NETCore.App.Ref")
-    if File.dirExists(packs) {
-      match pickHighestDir(packs) {
-        case Some(ver) -> {
-          val refDir = Path.join(Path.join(packs, ver), "ref")
-          if File.dirExists(refDir) {
-            match pickHighestDir(refDir) {
-              case Some(tfm) -> return Some(value = Path.join(refDir, tfm))
-              case None -> {
-              }
-            }
-          }
-        }
-        case None -> {
-        }
+    match probeRefPackRoot(roots[i]).found {
+      case Some(dir) -> return Some(value = dir)
+      case None -> {
       }
     }
     i = i + 1
   }
   None
+}
+
+// Human-readable trace of what `refPackDir()` tried, for the W0007 diagnostic
+// in `Msil.Codegen.ensureMetadataIndex`.  Walks the same `candidateDotnetRoots()`
+// via `probeRefPackRoot()` but never returns early — it records the outcome at
+// every root so a `None` result (reference pack not found on this machine) is
+// actionable instead of a silent "everything falls back to System.Runtime"
+// (#4698: this fallback is wrong for types like System.Console that live in
+// their own dedicated facade, not forwarded via System.Runtime — and the
+// silent failure mode is exactly what turned a single missing reference pack
+// into an unreproducible-looking macOS-only TypeLoadException in
+// Std.ConsoleHost).
+pub func refPackDirDebugInfo(): String {
+  val roots = candidateDotnetRoots()
+  if roots.count == 0 {
+    return "no candidate roots (DOTNET_ROOT and HOME both unset)"
+  }
+  var acc = ""
+  var i = 0
+  while i < roots.count {
+    val line = roots[i] + " -> " + probeRefPackRoot(roots[i]).reason
+    acc = if i == 0 { line } else { acc + "; " + line }
+    i = i + 1
+  }
+  acc
 }
 
 // Full paths of every `*.dll` reference assembly directly inside `refDir`.
@@ -1975,7 +2078,18 @@ pub func addAssemblyToIndexes(
 // Populate the type→assembly-name, assembly-name→path, and value-type indexes
 // from one assembly with a single disk read and a single metadata parse — the
 // merged form of `addAssemblyToIndexes` + `addAssemblyValueTypes` (#2147).
-// First writer wins for every name; malformed assemblies are skipped silently.
+// First writer wins for every name; a malformed assembly is skipped (a single
+// broken DLL must not abort building the index), but the skip is logged
+// (W0007) rather than silent: every type the skipped assembly would have
+// contributed silently falls back to the wrong owning assembly in
+// `assemblyForTypeMsil` (e.g. the CoreLib-forwarding default "System.Runtime",
+// which is wrong for a dedicated facade like System.Console), producing a
+// TypeRef that compiles cleanly but throws `TypeLoadException` at first use —
+// a failure mode with no build-time signal until this warning (#4698).  Uses
+// W0007, not W0006 — W0006 is already claimed by an unrelated type-checker
+// FFI-boundary lint and an unrelated JVM-target NuGet-resolution diagnostic
+// (#4708).  Written to stderr via `Console.error`, matching the compiler's
+// other diagnostic output (#4703).
 pub func addAssemblyToIndexesAndValueTypes(
   typeIndex: in Map[String, String],
   pathIndex: in Map[String, String],
@@ -1989,9 +2103,31 @@ pub func addAssemblyToIndexesAndValueTypes(
     case None -> pathIndex.add(nm, asmPath)
   }
   match File.readBytes(asmPath) {
-    case Err(_) -> {
+    case Err(e) -> {
+      val reason = match e {
+        case InvalidPath(p, r) -> "invalid path: " + p + " (" + r + ")"
+        case FileNotFound(p) -> "file not found: " + p
+        case DirectoryNotFound(p) -> "directory not found: " + p
+        case AlreadyExists(p) -> "already exists: " + p
+        case PermissionDenied(p) -> "permission denied: " + p
+        case IoError(p, msg) -> "I/O error for " + p + ": " + msg
+        case EndOfInput(src) -> "end of input: " + src
+        case KeyNotFound(k) -> "key not found: " + k
+      }
+      Console.error(
+        "W0007: addAssemblyToIndexesAndValueTypes: failed to read '" + asmPath + "' (" + reason +
+          ") — its types will fall back to the default assembly in auto-FFI resolution"
+      )
     }
-    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) { case None -> {  }; case Some(ri) -> { scanPublicTypes(ri, nm, typeIndex); scanValueTypes(ri, vtypeSet) } }
+    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) {
+      case None -> {
+        Console.error(
+          "W0007: addAssemblyToIndexesAndValueTypes: failed to parse '" + asmPath +
+            "' as a .NET assembly — its types will fall back to the default assembly in auto-FFI resolution"
+        )
+      }
+      case Some(ri) -> { scanPublicTypes(ri, nm, typeIndex); scanValueTypes(ri, vtypeSet) }
+    }
   }
 }
 
@@ -2239,6 +2375,26 @@ pub func scoreOverload(argTypes: in List[SigType], sig: in DecodedMethodSig): In
   total
 }
 
+// The nested TypeDef row directly under `enclosingRow` named `nestedName`, or
+// -1 when absent.  O(1) average case via `layout.nestedClassByEnclosing`
+// (#3721) instead of a linear NestedClass table scan.
+func findNestedTypeDef(img: in PeImage, layout: in TableLayout, enclosingRow: in Int, nestedName: in String): Int {
+  match mapGet(layout.nestedClassByEnclosing, enclosingRow) {
+    case None -> -1
+    case Some(candidates) -> {
+      var ci = 0
+      while ci < candidates.count {
+        val nestedTd = readTypeDef(img, layout, candidates[ci])
+        if nestedTd.name == nestedName {
+          return candidates[ci]
+        }
+        ci = ci + 1
+      }
+      -1
+    }
+  }
+}
+
 // Find the TypeDef row (1-based) whose fully-qualified name is `typeFqn`, or
 // -1 when absent.
 pub func findTypeDefByFqn(img: in PeImage, layout: in TableLayout, th: in TablesHeader, typeFqn: in String): Int {
@@ -2261,20 +2417,7 @@ pub func findTypeDefByFqn(img: in PeImage, layout: in TableLayout, th: in Tables
     if outerTypeDefIdx < 0 {
       return -1
     }
-    // Search the NestedClass table for a nested type of outerTypeDefIdx with name nestedName.
-    val nestedClassCount = rowCountOf(th, 0x29)
-    var i: Int = 1
-    while i <= nestedClassCount {
-      val nc = readNestedClass(img, layout, i)
-      if nc.enclosingTypeDef == outerTypeDefIdx {
-        val nestedTd = readTypeDef(img, layout, nc.nestedTypeDef)
-        if nestedTd.name == nestedName {
-          return nc.nestedTypeDef
-        }
-      }
-      i = i + 1
-    }
-    return -1
+    return findNestedTypeDef(img, layout, outerTypeDefIdx, nestedName)
   }
 
   // No nested type: regular top-level type lookup.
@@ -2304,18 +2447,7 @@ pub func findTypeDefByFqn(img: in PeImage, layout: in TableLayout, th: in Tables
     val nestedName = typeFqn.substring(dotIdx + 1, typeFqn.length - dotIdx - 1)
     val outerTypeDefIdx = findTypeDefByFqn(img, layout, th, outerFqn)
     if outerTypeDefIdx >= 0 {
-      val nestedClassCount = rowCountOf(th, 0x29)
-      var ncIdx: Int = 1
-      while ncIdx <= nestedClassCount {
-        val nc = readNestedClass(img, layout, ncIdx)
-        if nc.enclosingTypeDef == outerTypeDefIdx {
-          val nestedTd = readTypeDef(img, layout, nc.nestedTypeDef)
-          if nestedTd.name == nestedName {
-            return nc.nestedTypeDef
-          }
-        }
-        ncIdx = ncIdx + 1
-      }
+      return findNestedTypeDef(img, layout, outerTypeDefIdx, nestedName)
     }
   }
 
@@ -2430,6 +2562,16 @@ pub func decodeExternMethodSigIn(
   val mr = methodRange(img, layout, th, typeRow)
   var instanceMatch: Option[DecodedMethodSig] = None
   var staticMatch: Option[DecodedMethodSig] = None
+  // Selection here is by (name, arity) only — it cannot distinguish two BCL
+  // overloads with the same name and the same parameter count (e.g.
+  // `ConcurrentDictionary.GetOrAdd(TKey,TValue)` vs `GetOrAdd(TKey,Func)`).
+  // The first arity-matching row wins silently.  These counters detect that
+  // ambiguity (without changing which overload is picked, to avoid
+  // disturbing the resolution every currently-exercised extern relies on)
+  // so an ambiguous case fails loudly via W0008 instead of silently binding
+  // to whichever overload happens to come first in the Method table (#3436).
+  var instanceMatchCount = 0
+  var staticMatchCount = 0
   var mi = mr.start
   while mi <= mr.endRow {
     val md = readMethodDef(img, layout, mi)
@@ -2454,6 +2596,7 @@ pub func decodeExternMethodSigIn(
           // Instance overload: the receiver is the implicit `this`, so the BCL
           // method has one fewer parameter than the Lyric wrapper.
           if normParams.count == declArity - 1 {
+            instanceMatchCount = instanceMatchCount + 1
             match instanceMatch {
               case None -> {
                 instanceMatch = Some(value = normSig)
@@ -2461,6 +2604,7 @@ pub func decodeExternMethodSigIn(
               case Some(_) -> ()
             }
           } else if normParams.count == declArity {
+            staticMatchCount = staticMatchCount + 1
             match staticMatch {
               case None -> {
                 staticMatch = Some(value = normSig)
@@ -2472,6 +2616,24 @@ pub func decodeExternMethodSigIn(
       }
     }
     mi = mi + 1
+  }
+  // Only the resolution path actually taken below (instance wins over static
+  // when both are present) can be ambiguous in a way that matters — a
+  // multi-candidate static count is irrelevant when an unambiguous instance
+  // match was returned instead, and vice versa (#4792).
+  val takenCount = match instanceMatch {
+    case Some(_) -> instanceMatchCount
+    case None -> staticMatchCount
+  }
+  if takenCount > 1 {
+    Console.error(
+      "W0008: decodeExternMethodSigIn: '" + typeFqn + "." + member + "' has " +
+        toString(takenCount) +
+        " overloads matching the declared arity — arity-only selection cannot " +
+        "distinguish same-name same-arity BCL overloads (e.g. GetOrAdd(TKey,TValue) vs " +
+        "GetOrAdd(TKey,Func)); the first one found in the Method table was used, which " +
+        "may not be the intended overload"
+    )
   }
   match instanceMatch {
     case Some(s) -> Some(value = s)
@@ -3156,5 +3318,3 @@ pub func readAssemblyVersion(asmPath: in String): Option[AssemblyVersion] {
     }
   }
 }
-
-

@@ -92,7 +92,7 @@ Validation.isValid(value, validator)   // Bool
 
 ### ValidateInput
 
-C-mode (`@inline_template`): validates parameters annotated with a validator spec.
+Row-constrained B'-mode (docs/56): validates the `input: String` parameter of a matched handler.
 
 ```lyric
 import Validation.Aspects
@@ -118,7 +118,7 @@ Config fields (env prefix `LYRIC_ASPECT_<INSTANTIATION>_`):
 
 ### ValidateEmail
 
-C-mode: specialized email-format validator with SMTP domain check option.
+Row-constrained B'-mode (docs/56): validates the `email: String` parameter of a matched handler.
 
 ```lyric
 aspect EmailValidation from Validation.Aspects.ValidateEmail {

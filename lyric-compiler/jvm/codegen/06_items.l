@@ -904,7 +904,7 @@ pub func lowerRecord(
             flags = 0x0001,
             // public
             name = f.name,
-            fieldType = typeExprToJvmErased(f.ty, pkgName, tps)
+            fieldType = typeExprToJvmErasedExtern(f.ty, pkgName, tps, externTypes)
           )
         )
       }
@@ -972,7 +972,7 @@ pub func lowerRecord(
 // ─────────────────────────────────────────────────────────────────────────────
 // §10. Union lowering.
 // ─────────────────────────────────────────────────────────────────────────────
-pub func lowerUnion(decl: in UnionDecl, pkgName: in String): LSealedUnion {
+pub func lowerUnion(decl: in UnionDecl, pkgName: in String, externTypes: in Map[String, String]): LSealedUnion {
   val baseName = pkgName + "/" + decl.name
   // Generic type params erase to `Object` (no reified generics on the JVM —
   // docs/44 M-1 / Q-J001), so a `T`-typed payload field is declared `Object`.
@@ -987,11 +987,17 @@ pub func lowerUnion(decl: in UnionDecl, pkgName: in String): LSealedUnion {
     while fi < c.fields.count {
       match c.fields[fi] {
         case UFNamed(name, ty, _) -> {
-          caseFields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvmErased(ty, pkgName, tps)))
+          caseFields.add(
+            LField(flags = 0x0001, name = name, fieldType = typeExprToJvmErasedExtern(ty, pkgName, tps, externTypes))
+          )
         }
         case UFPos(ty, _) -> {
           caseFields.add(
-            LField(flags = 0x0001, name = "field" + toString(fi), fieldType = typeExprToJvmErased(ty, pkgName, tps))
+            LField(
+              flags = 0x0001,
+              name = "field" + toString(fi),
+              fieldType = typeExprToJvmErasedExtern(ty, pkgName, tps, externTypes)
+            )
           )
         }
       }
@@ -1227,9 +1233,9 @@ func buildProtected(
     match decl.members[mi] {
       case PMField(pf) -> {
         match pf {
-          case PFVar(name, ty, _, _) -> fields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvm(ty, pkgName)))
-          case PFLet(name, ty, _, _) -> fields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvm(ty, pkgName)))
-          case PFImmutable(f) -> fields.add(LField(flags = 0x0001, name = f.name, fieldType = typeExprToJvm(f.ty, pkgName)))
+          case PFVar(name, ty, _, _) -> fields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvmExtern(ty, pkgName, externTypes)))
+          case PFLet(name, ty, _, _) -> fields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvmExtern(ty, pkgName, externTypes)))
+          case PFImmutable(f) -> fields.add(LField(flags = 0x0001, name = f.name, fieldType = typeExprToJvmExtern(f.ty, pkgName, externTypes)))
         }
       }
       case PMEntry(ed) -> {
@@ -1796,9 +1802,30 @@ func segmentsToJvmPath(segs: in List[String]): String {
 }
 
 // Determine whether a function is the JVM entry point:
-// name="main" with no parameters (Lyric convention).
+// name="main" with no parameters, or with a single `slice[String]`
+// argv parameter (both Lyric entry-point conventions, #3303).
 func isMainFunc(decl: in FunctionDecl): Bool {
-  decl.name == "main" and decl.params.count == 0
+  if decl.name != "main" {
+    return false
+  }
+  if decl.params.count == 0 {
+    return true
+  }
+  decl.params.count == 1 and mainParamIsStringSlice(decl.params[0].ty)
+}
+
+// True when a `main` parameter is `slice[String]` (the argv shape).
+func mainParamIsStringSlice(te: in TypeExpr): Bool {
+  match te.kind {
+    case TSlice(elem) -> {
+      match elem.kind {
+        case TRef(path) -> path.segments.count == 1 and path.segments[0] == "String"
+        case _ -> false
+      }
+    }
+    case TParen(inner) -> mainParamIsStringSlice(inner)
+    case _ -> false
+  }
 }
 
 // ── Async generator detection ─────────────────────────────────────────────────
@@ -2174,12 +2201,48 @@ pub func collectExternTypesFromFile(file: in SourceFile): Map[String, String] {
 // cross-package call registry so any package's call sites can resolve a
 // callee's owner + descriptor.  See JvmFuncSig.
 pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]): Unit {
+  val emptySeed: Map[String, String] = newMap()
+  collectFileSigsSeeded(file, into, emptySeed)
+}
+
+// Union of a file's own `extern type` declarations and `seed` (the extern
+// types of the packages it imports).  Own declarations win on alias collision.
+pub func mergeExternSeed(own: in Map[String, String], seed: in Map[String, String]): Map[String, String] {
+  val merged: Map[String, String] = newMap()
+  for k in mapKeys(seed) {
+    match mapGet(seed, k) {
+      case Some(v) -> merged.add(k, v)
+      case None -> ()
+    }
+  }
+  for k2 in mapKeys(own) {
+    match mapGet(own, k2) {
+      case Some(v2) -> {
+        merged.remove(k2)
+        merged.add(k2, v2)
+      }
+      case None -> ()
+    }
+  }
+  merged
+}
+
+// As `collectFileSigs`, but resolving extern-type aliases against the file's
+// own declarations UNION `externSeed` — the extern types of the packages the
+// file imports (own declarations win).  A public signature written against an
+// imported extern type (e.g. `Std.Time.now(): Instant`, where `Instant` is an
+// `extern type` in `Std.TimeHost`) must resolve to the real JVM class in both
+// the registered sig and the emitted descriptor, or the method links against a
+// nonexistent `<pkg>/<Alias>` class at runtime.
+pub func collectFileSigsSeeded(
+  file: in SourceFile, into: in Map[String, JvmFuncSig], externSeed: in Map[String, String]
+): Unit {
   val owner = segmentsToJvmPath(file.packageDecl.path.segments)
   // Resolve `extern type` parameter/return descriptors to the real JVM class
   // (e.g. `JBAOS` -> `java/io/ByteArrayOutputStream`), not `<pkg>/<Alias>`
   // (#3334).  The emitted method descriptor in `lowerFunc` resolves the same
   // way, so the registered sig and the method stay in lockstep.
-  val externTypes = collectExternTypesFromFile(file)
+  val externTypes = mergeExternSeed(collectExternTypesFromFile(file), externSeed)
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -2187,8 +2250,13 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
         // An `out`/`inout` parameter is declared as a holder array in the JVM
         // descriptor (#1763), so the registry records the array type and the
         // declared mode; call sites read the modes to wrap holder arguments.
-        val noTypeParams: List[String] = newList()
-        val params = holderAwareParamTypes(decl.params, owner, false, noTypeParams, externTypes)
+        // A generic function's own type parameters erase to Object in the
+        // registered sig — the previous empty list let `T` fall to the
+        // in-package class guess, so an unmonomorphized call's descriptor
+        // referenced the phantom `Std/Core/T` (NoClassDefFoundError at
+        // link time; hit by `unwrapOr` in parse_tests).
+        val sigTps = genericParamNames(decl.generics)
+        val params = holderAwareParamTypes(decl.params, owner, false, sigTps, externTypes)
         val paramNames: List[String] = newList()
         val paramDefaults: List[Option[Expr]] = newList()
         val paramModes: List[ParamMode] = newList()
@@ -2208,7 +2276,7 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
           JRef(className = "java/lang/Object")
         } else {
           match decl.ret {
-            case Some(te) -> typeExprToJvmExtern(te, owner, externTypes)
+            case Some(te) -> typeExprToJvmErasedExtern(te, owner, sigTps, externTypes)
             case None -> JVoid
           }
         }
@@ -2218,7 +2286,8 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
           ret = ret,
           paramNames = paramNames,
           paramDefaults = paramDefaults,
-          paramModes = paramModes
+          paramModes = paramModes,
+          isIface = false
         )
         // Qualified key (`Std/Testing/assertEqualInt`) is unique across the
         // bundle, so two packages exporting the same short name (e.g.
@@ -2233,6 +2302,21 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
         // collision, matching pre-1680 behaviour for compatibility).
         if not into.containsKey(decl.name) {
           into.add(decl.name, sig)
+        }
+        // Arity-suffixed keys so same-name OVERLOADS in one package resolve
+        // to the right descriptor: with name-only keys, first-wins collision
+        // made a 3-arg call link against the 2-arg overload's descriptor —
+        // VerifyError at class load (`Std.String.substring`'s two overloads,
+        // hit by lyric-storage's `basenameOf`).  Call sites try the exact
+        // arity first and fall back to the name key (which also covers calls
+        // that rely on parameter defaults).
+        val akey = qkey + "@" + toString(decl.params.count)
+        if not into.containsKey(akey) {
+          into.add(akey, sig)
+        }
+        val bkey = decl.name + "@" + toString(decl.params.count)
+        if not into.containsKey(bkey) {
+          into.add(bkey, sig)
         }
       }
       case IProtected(decl) -> {
@@ -2289,6 +2373,28 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
           mi = mi + 1
         }
       }
+      case IInterface(decl) -> {
+        // Register each interface member under `<ifaceClass>#<method>` with
+        // `isIface = true` so a call on an interface-typed receiver emits
+        // `invokeinterface` — the `()Object`-guess `invokevirtual` against an
+        // interface owner fails class-load verification (#3687).  Params and
+        // return mirror the abstract-method emission (`IInterface` arm of
+        // `codegenPackageWithSigs`) exactly so the descriptors stay in lockstep.
+        val ifClass = owner + "/" + decl.name
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMSig(sig) -> {
+              registerIfaceSig(into, ifClass, sig.name, sig.params, sig.ret, owner, externTypes)
+            }
+            case IMFunc(fn) -> {
+              registerIfaceSig(into, ifClass, fn.name, fn.params, fn.ret, owner, externTypes)
+            }
+            case IMAssoc(_) -> ()
+          }
+          mi = mi + 1
+        }
+      }
       case IOpaque(decl) -> {
         // Erased-Object receiver fallback (#3044): register each opaque field
         // under the `field:<name>` key (owner class + declared type) so a
@@ -2314,7 +2420,8 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
                       ret = typeExprToJvm(f.ty, owner),
                       paramNames = newList(),
                       paramDefaults = newList(),
-                      paramModes = newList()
+                      paramModes = newList(),
+                      isIface = false
                     )
                   )
                 }
@@ -2416,7 +2523,53 @@ func registerInstanceSigErased(
         ret = ret,
         paramNames = paramNames,
         paramDefaults = paramDefs,
-        paramModes = modes
+        paramModes = modes,
+        isIface = false
+      )
+    )
+  }
+}
+
+// Register one interface member under `<ifaceClass>#<method>` with
+// `isIface = true` (#3687).  Params and return mirror the abstract-method
+// emission in the `IInterface` arm of `codegenPackageWithSigs` exactly —
+// `holderAwareParamTypes(erase = true, no type params)` and a bare
+// `typeExprToJvm` return — so the registered descriptor and the emitted
+// interface method stay in lockstep.
+func registerIfaceSig(
+  into: in Map[String, JvmFuncSig],
+  ifClass: in String,
+  methodName: in String,
+  params: in List[Param],
+  retOpt: in Option[TypeExpr],
+  owner: in String,
+  externTypes: in Map[String, String],
+): Unit {
+  val noTps: List[String] = newList()
+  val ps = holderAwareParamTypes(params, owner, true, noTps, externTypes)
+  val ret = match retOpt { case Some(te) -> typeExprToJvmExtern(te, owner, externTypes); case None -> JVoid }
+  val pNames: List[String] = newList()
+  val pDefs: List[Option[Expr]] = newList()
+  val pModes: List[ParamMode] = newList()
+  var pi = 0
+  while pi < params.count {
+    pNames.add(params[pi].name)
+    pDefs.add(params[pi].dflt)
+    pModes.add(params[pi].mode)
+    pi = pi + 1
+  }
+  val key = ifClass + "#" + methodName
+  if not into.containsKey(key) {
+    into.add(
+      key,
+      JvmFuncSig(
+        owner = ifClass,
+        params = ps,
+        ret = ret,
+        paramNames = pNames,
+        paramDefaults = pDefs,
+        paramModes = pModes,
+        isIface = true
       )
     )
   }
@@ -2442,7 +2595,8 @@ func registerStaticWireSig(
         ret = ret,
         paramNames = newList(),
         paramDefaults = newList(),
-        paramModes = newList()
+        paramModes = newList(),
+        isIface = false
       )
     )
   }
@@ -2470,6 +2624,18 @@ func wireExposes(decl: in WireDecl, name: in String): Bool {
 // case-class field generation in lowerUnion so the binding-site field names
 // and types agree.  See JvmCaseField.
 pub func collectFileCases(file: in SourceFile, into: in Map[String, List[JvmCaseField]]): Unit {
+  val noExternCfc: Map[String, String] = newMap()
+  collectFileCasesExtern(file, into, noExternCfc)
+}
+
+// As `collectFileCases`, but resolving field types through the file's
+// extern-type table (own declarations + imported seed) so a field typed by
+// an imported extern type registers the real JVM class.
+pub func collectFileCasesExtern(
+  file: in SourceFile,
+  into: in Map[String, List[JvmCaseField]],
+  externTypes: in Map[String, String],
+): Unit {
   val owner = segmentsToJvmPath(file.packageDecl.path.segments)
   var i = 0
   while i < file.items.count {
@@ -2488,8 +2654,8 @@ pub func collectFileCases(file: in SourceFile, into: in Map[String, List[JvmCase
             var fi = 0
             while fi < c.fields.count {
               match c.fields[fi] {
-                case UFNamed(name, ty, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmErased(ty, owner, tps)))
-                case UFPos(ty, _) -> flds.add(JvmCaseField(name = "field" + toString(fi), ty = typeExprToJvmErased(ty, owner, tps)))
+                case UFNamed(name, ty, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmErasedExtern(ty, owner, tps, externTypes)))
+                case UFPos(ty, _) -> flds.add(JvmCaseField(name = "field" + toString(fi), ty = typeExprToJvmErasedExtern(ty, owner, tps, externTypes)))
               }
               fi = fi + 1
             }
@@ -2506,7 +2672,7 @@ pub func collectFileCases(file: in SourceFile, into: in Map[String, List[JvmCase
           var mi = 0
           while mi < decl.members.count {
             match decl.members[mi] {
-              case RMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErased(f.ty, owner, tps)))
+              case RMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErasedExtern(f.ty, owner, tps, externTypes)))
               case _ -> {
               }
             }
@@ -2528,9 +2694,9 @@ pub func collectFileCases(file: in SourceFile, into: in Map[String, List[JvmCase
             match decl.members[mi] {
               case PMField(pf) -> {
                 match pf {
-                  case PFVar(name, ty, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvm(ty, owner)))
-                  case PFLet(name, ty, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvm(ty, owner)))
-                  case PFImmutable(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvm(f.ty, owner)))
+                  case PFVar(name, ty, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes)))
+                  case PFLet(name, ty, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes)))
+                  case PFImmutable(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmExtern(f.ty, owner, externTypes)))
                 }
               }
               case _ -> ()
@@ -2571,38 +2737,72 @@ pub func collectFileCases(file: in SourceFile, into: in Map[String, List[JvmCase
 // into `into`, keyed by its short name.  Mirrors `collectFileCases` (which is
 // keyed by JVM class name); this map drives construction-call lowering, which
 // resolves a head name like `Point` / `Circle` to the class to `new`.
-pub func collectFileCtors(file: in SourceFile, into: in Map[String, String]): Unit {
-  val owner = segmentsToJvmPath(file.packageDecl.path.segments)
+// Register this file's NON-GENERIC declared type names (unions, records,
+// protected and opaque types) as dotted class FQNs (`YamlValue` ->
+// `Std.Yaml.YamlValue`), in the same value format as the extern-type maps.
+// `externSeedForFile` unions these into the seed of every IMPORTING file, so
+// a descriptor written against an imported Lyric type (a record field
+// `node: YamlValue` in Std.JsonHost) resolves to the declaring package's
+// real class instead of the in-package guess (`Std/JsonHost/YamlValue` —
+// NoClassDefFoundError at first use).  Generic declarations are skipped: a
+// bare reference to one erases to Object, and seeding e.g. `Option` would
+// re-type every erased generic field.
+pub func collectFileDeclaredTypeFqns(file: in SourceFile, into: in Map[String, String]): Unit {
+  val pkgDotted = dottedPathOfSegments(file.packageDecl.path.segments)
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
-      case IRecord(decl) -> {
-        if not into.containsKey(decl.name) {
-          into.add(decl.name, owner + "/" + decl.name)
+      case IUnion(decl) -> {
+        match decl.generics {
+          case None -> {
+            if not into.containsKey(decl.name) {
+              into.add(decl.name, pkgDotted + "." + decl.name)
+            }
+          }
+          case Some(_) -> ()
         }
       }
-      case IUnion(decl) -> {
-        var ci = 0
-        while ci < decl.cases.count {
-          val c = decl.cases[ci]
-          if not into.containsKey(c.name) {
-            into.add(c.name, owner + "/" + decl.name + "$" + c.name)
+      case IRecord(decl) -> {
+        match decl.generics {
+          case None -> {
+            if not into.containsKey(decl.name) {
+              into.add(decl.name, pkgDotted + "." + decl.name)
+            }
           }
-          ci = ci + 1
+          case Some(_) -> ()
         }
       }
       case IProtected(decl) -> {
-        // J3 M-3: protected types are constructed like records (`TokenBucket(…)`).
-        if not into.containsKey(decl.name) {
-          into.add(decl.name, owner + "/" + decl.name)
+        match decl.generics {
+          case None -> {
+            if not into.containsKey(decl.name) {
+              into.add(decl.name, pkgDotted + "." + decl.name)
+            }
+          }
+          case Some(_) -> ()
         }
       }
       case IOpaque(decl) -> {
-        // J3 M-3: opaque types are constructed like records (`Counter(value=…)`).
-        if decl.hasBody {
-          if not into.containsKey(decl.name) {
-            into.add(decl.name, owner + "/" + decl.name)
+        match decl.generics {
+          case None -> {
+            if decl.hasBody and not into.containsKey(decl.name) {
+              into.add(decl.name, pkgDotted + "." + decl.name)
+            }
           }
+          case Some(_) -> ()
+        }
+      }
+      case IInterface(decl) -> {
+        // Interfaces are emitted as real JVM interfaces; a consumer's
+        // interface-typed binding (`bucket: StorageBucket` in a test module)
+        // otherwise carries the in-package guess.
+        match decl.generics {
+          case None -> {
+            if not into.containsKey(decl.name) {
+              into.add(decl.name, pkgDotted + "." + decl.name)
+            }
+          }
+          case Some(_) -> ()
         }
       }
       case _ -> {
@@ -2612,12 +2812,89 @@ pub func collectFileCtors(file: in SourceFile, into: in Map[String, String]): Un
   }
 }
 
+func dottedPathOfSegments(segments: in List[String]): String {
+  var out2 = ""
+  var i = 0
+  while i < segments.count {
+    if i > 0 {
+      out2 = out2 + "."
+    }
+    out2 = out2 + segments[i]
+    i = i + 1
+  }
+  out2
+}
+
+pub func collectFileCtors(file: in SourceFile, into: in Map[String, String]): Unit {
+  val owner = segmentsToJvmPath(file.packageDecl.path.segments)
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IRecord(decl) -> {
+        addCtorKeys(into, owner, decl.name, owner + "/" + decl.name)
+      }
+      case IUnion(decl) -> {
+        var ci = 0
+        while ci < decl.cases.count {
+          val c = decl.cases[ci]
+          addCtorKeys(into, owner, c.name, owner + "/" + decl.name + "$" + c.name)
+          ci = ci + 1
+        }
+      }
+      case IProtected(decl) -> {
+        // J3 M-3: protected types are constructed like records (`TokenBucket(…)`).
+        addCtorKeys(into, owner, decl.name, owner + "/" + decl.name)
+      }
+      case IOpaque(decl) -> {
+        // J3 M-3: opaque types are constructed like records (`Counter(value=…)`).
+        if decl.hasBody {
+          addCtorKeys(into, owner, decl.name, owner + "/" + decl.name)
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
+// Register a constructable type under both its bare name (bundle-global,
+// first wins — the legacy single-package shape) and a package-scoped key
+// (`<owner>::<name>`).  `ctorClassFor` tries the scoped key first, so a
+// package's OWN case wins over a same-named case another bundled package
+// registered earlier (`InvalidDocument` exists in both `Std.Xml`'s
+// XmlError and `Std.Yaml`'s YamlError — the bare first-wins entry gave
+// Yaml's code Xml's class: NoClassDefFoundError at runtime).
+func addCtorKeys(into: in Map[String, String], owner: in String, name: in String, cls: in String): Unit {
+  if not into.containsKey(name) {
+    into.add(name, cls)
+  }
+  val scopedKey = owner + "::" + name
+  if not into.containsKey(scopedKey) {
+    into.add(scopedKey, cls)
+  }
+}
+
 // Collect every module-level `val NAME [: T] = expr` binding from `file` into
 // `into`, keyed by `NAME` with its JVM field type.  Drives bare-name reads of
 // module-level vals (lowered to `getstatic <hostClass>.<name>`).  Only the
 // simple `PBinding` form participates; destructuring module-level vals emit no
 // host field and so are not registered (m-2).
 pub func collectFileVals(file: in SourceFile, owner: in String, into: in Map[String, JvmType]): Unit {
+  val noExtern: Map[String, String] = newMap()
+  collectFileValsExtern(file, owner, into, noExtern)
+}
+
+// As `collectFileVals`, but resolving a module val's declared type through the
+// file's extern-type table so `val rdr: JBufferedReader = …` carries the real
+// JVM class (`java/io/BufferedReader`) instead of the in-package
+// `<pkg>/JBufferedReader` guess (NoClassDefFoundError at <clinit>).
+pub func collectFileValsExtern(
+  file: in SourceFile,
+  owner: in String,
+  into: in Map[String, JvmType],
+  externTypes: in Map[String, String],
+): Unit {
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -2625,7 +2902,10 @@ pub func collectFileVals(file: in SourceFile, owner: in String, into: in Map[Str
         match decl.pattern.kind {
           case PBinding(name, _) -> {
             if not into.containsKey(name) {
-              val vty = match decl.ty { case Some(te) -> typeExprToJvm(te, owner); case None -> inferValType(decl.init, owner) }
+              val vty = match decl.ty {
+                case Some(te) -> typeExprToJvmExtern(te, owner, externTypes)
+                case None -> inferValType(decl.init, owner)
+              }
               into.add(name, vty)
             }
           }
@@ -2800,7 +3080,8 @@ pub func registerProjectableViews(
                 ret = JRef(className = viewCls),
                 paramNames = newList(),
                 paramDefaults = newList(),
-                paramModes = newList()
+                paramModes = newList(),
+                isIface = false
               )
             )
           }
@@ -2816,7 +3097,8 @@ pub func registerProjectableViews(
                   ret = JRef(className = "Std/Core/Result"),
                   paramNames = newList(),
                   paramDefaults = newList(),
-                  paramModes = newList()
+                  paramModes = newList(),
+                  isIface = false
                 )
               )
             }
@@ -2876,7 +3158,14 @@ func prelowerModuleVals(
           case PBinding(name, _) -> {
             val initInsns: List[LInsn] = newList()
             val valTy = lowerExpr(valInitCtx, initInsns, decl.init)
-            val fieldTy = match decl.ty { case Some(te) -> typeExprToJvm(te, pkgName); case None -> valTy }
+            // Resolve the declared type through the extern-type table so a
+            // module val of extern type (`val rdr: JBufferedReader = …`)
+            // carries the real JVM class, not the in-package guess
+            // (NoClassDefFoundError at <clinit>).
+            val fieldTy = match decl.ty {
+              case Some(te) -> typeExprToJvmExtern(te, pkgName, valInitCtx.externTypes)
+              case None -> valTy
+            }
             coerceArgTo(initInsns, valTy, fieldTy)
             // Overwrite the `collectFileVals`/`inferValType` guess with the real
             // field type so bare reads emit the matching `getstatic` descriptor.
@@ -2938,23 +3227,39 @@ pub func codegenPackageWithSigs(
   caseFields: in Map[String, List[JvmCaseField]],
   ctors: in Map[String, String],
   autoFfi: in AutoFfiCtx,
+  allProjFqns: in Map[String, Bool],
+): LPackage {
+  val emptySeed: Map[String, String] = newMap()
+  codegenPackageWithSigsSeeded(file, funcSigs, caseFields, ctors, autoFfi, allProjFqns, emptySeed)
+}
+
+// As `codegenPackageWithSigs`, but resolving extern-type aliases against the
+// file's own declarations UNION `externSeed` (imported packages' extern
+// types; own declarations win) — see `collectFileSigsSeeded`.
+pub func codegenPackageWithSigsSeeded(
+  file: in SourceFile,
+  funcSigs: in Map[String, JvmFuncSig],
+  caseFields: in Map[String, List[JvmCaseField]],
+  ctors: in Map[String, String],
+  autoFfi: in AutoFfiCtx,
   // #3044: complete set of @projectable opaque JVM class names across the
   // whole compilation (pre-scanned via `collectFileProjectables`), so the
   // nested-view substitution and tryInto() eligibility are declaration-order-
   // independent — the JVM counterpart of the MSIL `allProjFqns`.
   allProjFqns: in Map[String, Bool],
+  externSeed: in Map[String, String],
 ): LPackage {
   val pkgName = segmentsToJvmPath(file.packageDecl.path.segments)
   val funcsClass = pkgName
 
   // Collect extern-type declarations: alias → Java FQN.
-  val externTypes = collectExternTypesFromFile(file)
+  val externTypes = mergeExternSeed(collectExternTypesFromFile(file), externSeed)
 
   // m-2: collect the module-level `val NAME` declarations up front (name → JVM
   // type) so a bare reference to one resolves to `getstatic <hostClass>.<name>`
   // in every function of this package.
   val moduleVals: Map[String, JvmType] = newMap()
-  collectFileVals(file, pkgName, moduleVals)
+  collectFileValsExtern(file, pkgName, moduleVals, externTypes)
   // J3 M-3: collect opaque-type class names so field reads on opaque receivers
   // route through the `$<name>()` accessor methods instead of a direct getfield.
   val opaqueTypes: Map[String, Bool] = newMap()
@@ -2993,10 +3298,14 @@ pub func codegenPackageWithSigs(
   var hasMain = false
   // Captured return type of the Lyric `main(): T` so the JVM wrapper can
   // emit a correctly-typed invokestatic.  `JVoid` until / unless a main is
-  // observed.  When the Lyric main returns `Int`, the wrapper pops the int
-  // off the stack (POSIX-style exit code semantics are not propagated yet —
-  // a follow-up can route through `java.lang.System.exit(int)`).
+  // observed.  An `Int` return is routed to `java.lang.System.exit(int)`
+  // so the value becomes the process exit code (#3303); other category-1
+  // returns are popped.
   var mainRet: JvmType = JVoid
+  // True when the Lyric main takes the `argv: slice[String]` parameter —
+  // the wrapper then forwards its incoming `String[]` (covariantly
+  // assignable to the erased `Object[]` slice representation, #3303).
+  var mainHasArgs = false
 
   // ── IImpl pre-pass ──────────────────────────────────────────────────────────
   // Collect all IImpl blocks before the main item loop so that when IRecord
@@ -3110,6 +3419,7 @@ pub func codegenPackageWithSigs(
           )
           if isMainFunc(decl) {
             hasMain = true
+            mainHasArgs = decl.params.count == 1
             // Resolve the Lyric main's declared return type so the JVM
             // wrapper can call it with the matching descriptor.
             mainRet = match decl.ret { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
@@ -3218,7 +3528,7 @@ pub func codegenPackageWithSigs(
         )
       }
       case IUnion(decl) -> {
-        items.add(LPSealedUnion(su = lowerUnion(decl, pkgName)))
+        items.add(LPSealedUnion(su = lowerUnion(decl, pkgName, externTypes)))
       }
       case IConst(_) -> {
       }
@@ -3329,7 +3639,7 @@ pub func codegenPackageWithSigs(
             case IMSig(sig) -> {
               val noTpsIface: List[String] = newList()
               val params = holderAwareParamTypes(sig.params, pkgName, true, noTpsIface, externTypes)
-              val ret = match sig.ret { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
+              val ret = match sig.ret { case Some(te) -> typeExprToJvmExtern(te, pkgName, externTypes); case None -> JVoid }
               val desc = buildDescriptor(params, ret)
               abstractMethods.add(makeMethodInfo(ACC_PUBLIC + ACC_ABSTRACT, sig.name, desc, emptyAttrs))
             }
@@ -3454,17 +3764,25 @@ pub func codegenPackageWithSigs(
     jvmMainParams.add(JArray(elem = JRef(className = "java/lang/String")))
     val jvmMainInsns: List[LInsn] = newList()
     val lyricMainPs: List[JvmType] = newList()
-    // Currently emits main():()V regardless of Lyric main's return type.
-    // Long/Double return would require POP2; Int/Bool etc. would require POP.
-    // Tracked as a follow-up once the JVM wrapper records the Lyric main return type.
+    if mainHasArgs {
+      // Forward the JVM `String[]` argv to the Lyric main's erased
+      // `slice[String]` parameter (`Object[]`) — legal by JVM array
+      // covariance, no copy needed (#3303).
+      lyricMainPs.add(JArray(elem = JRef(className = "java/lang/Object")))
+      jvmMainInsns.add(LAload(slot = 0))
+    }
     jvmMainInsns.add(LInvokestatic(owner = funcsClass, name = "main", params = lyricMainPs, ret = mainRet))
-    // Discard the Lyric main's return value (when any) before issuing the
-    // JVM `void` return.  The Long/Double 2-slot cases are rejected above,
-    // so every remaining non-void return is category-1 (Int, Boolean,
-    // references, etc.) — a single `LPop` is correct.  Exposing the value
-    // as a process exit code is a follow-up via java.lang.System.exit.
+    // An `Int` return becomes the process exit code via
+    // `java.lang.System.exit(int)` (#3303) — branchless, so the wrapper
+    // needs no StackMapTable.  The Long/Double 2-slot cases are rejected
+    // above; every other non-void return is category-1 and popped.
     match mainRet {
       case JVoid -> ()
+      case JInt -> {
+        val exitPs: List[JvmType] = newList()
+        exitPs.add(JInt)
+        jvmMainInsns.add(LInvokestatic(owner = "java/lang/System", name = "exit", params = exitPs, ret = JVoid))
+      }
       case _ -> jvmMainInsns.add(LPop)
     }
     jvmMainInsns.add(LReturn)
@@ -3479,6 +3797,97 @@ pub func codegenPackageWithSigs(
     )
     fns.add(jvmMain)
   }
+
+  // `__lyricCount(Object)I` — the erased-receiver `.count`/`.length`
+  // dispatch as a synthesised static helper.  Emitting the runtime-class
+  // branches INLINE at the member-access site broke verification whenever
+  // the access ran with values already stacked (`i < pairs.count` in a
+  // while condition evaluates the dispatch with `i` on the stack, and the
+  // StackMapTable declares an empty stack at every branch target).  A
+  // static call is branch-free at the call site; the helper's own frames
+  // start from an empty stack.  Every arm returns directly, so there is
+  // no join.  Unconditionally emitted: ~40 bytes per package class.
+  val lcInsns: List[LInsn] = newList()
+  lcInsns.add(LAload(slot = 0))
+  lcInsns.add(LInstanceof(className = "java/util/Collection"))
+  lcInsns.add(LIfeq(label = "__lc_map"))
+  lcInsns.add(LAload(slot = 0))
+  lcInsns.add(LCheckcast(className = "java/util/Collection"))
+  val lcColPs: List[JvmType] = newList()
+  lcInsns.add(
+    LInvokeinterface(owner = "java/util/Collection", name = "size", params = lcColPs, ret = JInt, argCount = 1)
+  )
+  lcInsns.add(LIreturn)
+  lcInsns.add(LLabel(name = "__lc_map"))
+  lcInsns.add(LAload(slot = 0))
+  lcInsns.add(LInstanceof(className = "java/util/Map"))
+  lcInsns.add(LIfeq(label = "__lc_str"))
+  lcInsns.add(LAload(slot = 0))
+  lcInsns.add(LCheckcast(className = "java/util/Map"))
+  val lcMapPs: List[JvmType] = newList()
+  lcInsns.add(LInvokeinterface(owner = "java/util/Map", name = "size", params = lcMapPs, ret = JInt, argCount = 1))
+  lcInsns.add(LIreturn)
+  lcInsns.add(LLabel(name = "__lc_str"))
+  lcInsns.add(LAload(slot = 0))
+  lcInsns.add(LInstanceof(className = "java/lang/String"))
+  lcInsns.add(LIfeq(label = "__lc_arr"))
+  lcInsns.add(LAload(slot = 0))
+  lcInsns.add(LCheckcast(className = "java/lang/String"))
+  val lcLenPs: List[JvmType] = newList()
+  lcInsns.add(LInvokevirtual(owner = "java/lang/String", name = "length", params = lcLenPs, ret = JInt))
+  lcInsns.add(LIreturn)
+  // Last resort: a boxed slice (`Object[]`).  Anything else fails the
+  // checkcast loudly rather than yielding a wrong value.
+  lcInsns.add(LLabel(name = "__lc_arr"))
+  lcInsns.add(LAload(slot = 0))
+  lcInsns.add(LCheckcast(className = "[Ljava/lang/Object;"))
+  lcInsns.add(LArraylength)
+  lcInsns.add(LIreturn)
+  val lcParams: List[JvmType] = newList()
+  lcParams.add(JRef(className = "java/lang/Object"))
+  fns.add(
+    LFunc(
+      flags = 0x0009,
+      name = "__lyricCount",
+      params = lcParams,
+      ret = JInt,
+      insns = lcInsns,
+      maxStack = 2,
+      maxLocals = 1
+    )
+  )
+
+  // `__lyricUnwrapOr(Object, Object)Object` — Std.Core's generic
+  // `unwrapOr(Option[T], T): T` as a synthesised helper.  Generic
+  // functions are never emitted as JVM methods, and a call the
+  // monomorphizer cannot specialise linked against a phantom
+  // descriptor (see the `__lyricCount` note above for why the
+  // branches must live in a helper, not inline at the call site).
+  val uoInsns: List[LInsn] = newList()
+  uoInsns.add(LAload(slot = 0))
+  uoInsns.add(LInstanceof(className = "Std/Core/Option$Some"))
+  uoInsns.add(LIfeq(label = "__uo_dflt"))
+  uoInsns.add(LAload(slot = 0))
+  uoInsns.add(LCheckcast(className = "Std/Core/Option$Some"))
+  uoInsns.add(LGetfield(owner = "Std/Core/Option$Some", name = "value", t = JRef(className = "java/lang/Object")))
+  uoInsns.add(LAreturn)
+  uoInsns.add(LLabel(name = "__uo_dflt"))
+  uoInsns.add(LAload(slot = 1))
+  uoInsns.add(LAreturn)
+  val uoParams: List[JvmType] = newList()
+  uoParams.add(JRef(className = "java/lang/Object"))
+  uoParams.add(JRef(className = "java/lang/Object"))
+  fns.add(
+    LFunc(
+      flags = 0x0009,
+      name = "__lyricUnwrapOr",
+      params = uoParams,
+      ret = JRef(className = "java/lang/Object"),
+      insns = uoInsns,
+      maxStack = 2,
+      maxLocals = 2
+    )
+  )
 
   items.add(LPFuncs(funcsClass = funcsClass, fns = fns, staticVals = staticVals))
 

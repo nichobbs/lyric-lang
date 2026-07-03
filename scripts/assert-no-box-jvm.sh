@@ -117,10 +117,19 @@ unzip -q "$JAR" -d "$EXTRACT_DIR" || true
 #   invokestatic  #xx   = java/lang/Float.valueOf:(F)Ljava/lang/Float;
 #
 # We search for these patterns in javap output.
+#
+# Scope: ONLY the closure test's own classes (the main class plus its
+# synthesized $Lambda$N closure classes).  The JVM bundled compile packs
+# the transitive stdlib closure into the same JAR, and stdlib kernels
+# contain legitimate boxing that has nothing to do with closure capture
+# overhead (e.g. Std.FileHost's opaque FileTime IS a boxed epoch-millis
+# Long by design) — counting them made every stdlib change shift this
+# gate's calibration.  The MSIL twin is naturally scoped this way
+# because the .NET build links Lyric.Stdlib.dll instead of bundling it.
 DISASM_FILE="$WORK_DIR/disasm.txt"
-echo "[assert-no-box-jvm] disassembling bytecode via javap"
+echo "[assert-no-box-jvm] disassembling bytecode via javap (test classes only)"
 {
-  find "$EXTRACT_DIR" -name "*.class" -type f | while read -r classfile; do
+  find "$EXTRACT_DIR" -path "*ClosureZeroOverheadSelfTest*" -name "*.class" -type f | while read -r classfile; do
     # Pass the .class file path directly to javap (most reliable).
     # Javap accepts both class names and file paths, but file paths are
     # more robust and avoid issues with path extraction and class name format.
@@ -154,9 +163,13 @@ if [[ "$STAGE" -eq 0 ]]; then
   echo "[assert-no-box-jvm] This will be the target to beat in Stage 2+"
   exit 0
 elif [[ "$STAGE" -ge 2 ]]; then
-  # Allow up to 7 boxing calls on JVM due to test helper formatting and lambda interface adaptors.
-  # The zero-overhead target is successfully met for all closure capture fields!
-  MAX_BOXING=7
+  # Allow up to 3 boxing calls on JVM: the uniform closure ABI
+  # (`invoke(Object...)Object`) boxes each lambda's primitive RETURN at the
+  # erased boundary — one valueOf per synthesized $Lambda$N class.  Capture
+  # fields themselves are unboxed (the actual Stage 2 target).  The count is
+  # scoped to the test's own classes (see the disassembly scoping note above),
+  # so stdlib boxing no longer shifts this calibration.
+  MAX_BOXING=3
   if [[ "$BOX_COUNT" -le "$MAX_BOXING" ]]; then
     echo "[assert-no-box-jvm] PASS: Stage $STAGE zero-overhead target met ($BOX_COUNT <= $MAX_BOXING boxing calls)"
     exit 0

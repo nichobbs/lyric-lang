@@ -121,8 +121,8 @@ aspect SlowAlert from Std.Logging.Aspects.SlowCallAlert {
 
 ### ErrorResultLogging
 
-C-mode (`@inline_template`): logs when a matched handler returns `Err`.  Apply
-only to handlers whose return type has an `isErr` field.
+B-mode: logs when a matched handler returns `Err`.  Apply only to handlers
+whose return type has an `isErr` field.
 
 ```lyric
 aspect ErrorLog from Std.Logging.Aspects.ErrorResultLogging {

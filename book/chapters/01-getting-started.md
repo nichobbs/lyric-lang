@@ -176,6 +176,54 @@ running `lyric build`.
 
 [#1975]: https://github.com/nichobbs/lyric-lang/issues/1975
 
+### The LLVM native target — `lyric build --target native`
+
+Distinct from `--release` (which AOT-compiles the *.NET* build with `ilc`),
+`lyric build --target native hello.l` compiles Lyric source directly to LLVM
+IR and drives `clang` to produce a self-contained POSIX executable with no
+managed runtime at all — no .NET, no JVM:
+
+```sh
+lyric build --target native hello.l
+# Produces: hello   (a native executable)
+./hello
+```
+
+`clang` must be on `PATH`; the binary links against the `lyric_rt` runtime
+library (ARC intrinsics, strings, POSIX helpers), `libm`, and `libpthread`.
+`--triple <llvm-triple>` cross-compiles (default: the host triple) and
+`--opt 0|1|2|3|s` sets the clang optimisation level (default `2`).
+`lyric run --target native <file.l>` builds and runs in one step.
+
+Memory on this target is managed by automatic reference counting (ARC) —
+there is no garbage collector. Reference cycles are not collected; break
+them explicitly with `NativeWeak[T]`, whose `upgrade()` returns
+`Option[T]` (`None` once the target has been released).
+
+> **Scope today.** Linux (`x64`/`arm64`) and macOS (`arm64`) are supported.
+> The lowered surface covers scalars and strings; records (methods, field
+> defaults, mutable fields), unions, enums, distinct types (range-checked),
+> and tuples; full pattern matching; generic records, unions, and functions
+> (via call-site monomorphization); closures (by-value captures); and
+> `NativeWeak[T]`; and `List[T]`/`Map[K, V]` with `for` loops, indexing,
+> and the `Std.Collections` accessors (map keys must be String or a
+> scalar type). Standard-library modules with native kernels work out of
+> the box: `Std.Console`, `Std.File` (text I/O, existence probes,
+> directory create/delete), `Std.Environment` (variables, working
+> directory), `Std.Process.runCapture` (argv list, never a shell), and
+> `Std.Time` (epoch millis, monotonic nanos, sleep). Raw C interop
+> (`extern func`, `NativePtr[T]`,
+> `nativeAddrOf`, `nativeNullPtr`, closures as C callbacks) is confined to
+> `@unsafe_ffi` functions and the standard library's kernel files — the
+> compiler rejects it elsewhere (`N0100`). `slice[T]` works and shares
+> the list representation (immutable by construction), so bytes-mode
+> file I/O, directory listing, and `Std.Environment.args()` are
+> available. Constructs not yet lowered fail
+> the build with a diagnostic naming the construct rather than
+> miscompiling: interfaces, protected types, list literals,
+> module-level `val`, `async func`, and manifest (multi-package) native
+> builds.
+
 ## The anatomy of a Lyric file
 
 A slightly more complex program:

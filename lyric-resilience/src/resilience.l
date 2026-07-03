@@ -45,6 +45,7 @@ package Resilience
 import Std.Core
 import Std.Time
 import Std.Log
+import Std.Random
 import Resilience.Kernel.Net as ResKernelNet
 import Resilience.Kernel.Jvm as ResKernelJvm
 
@@ -218,15 +219,18 @@ pub func cbStateCheckOpen(s: in CircuitBreakerState, cooldownMs: in Long, nowMs:
   return s.checkOpen(cooldownMs, nowMs)
 }
 
-// Private: compute exponential backoff delay with a cap and optional jitter.
+// Compute exponential backoff delay with a cap and optional jitter.
 // Without a cap, `initialDelayMs=100, factor=2, attempt=25` overflows Int at
 // ~attempt 22 (2^22 × 100 ≈ 419 ms → 2^30 × 100 overflows Int.maxValue).
 // `maxDelayMs` (default 30000 ms) prevents this and also limits thundering
-// herds.  `jitterFraction` adds ±jitter×delay random jitter; 0.0 = no jitter.
-// `jitterFraction` is accepted for API compatibility but not applied in this
-// implementation (deterministic jitter requires float arithmetic not yet
-// available in the bootstrap emitter).
-func backoffDelay(
+// herds.  `jitterFraction` adds uniform ±jitterFraction×delay random jitter
+// (clamped to `[0, maxDelayMs]`); 0.0 = no jitter. Uses the process-shared
+// RNG (`Std.Random.sharedRandom`) rather than a seeded one: jitter exists to
+// desynchronise concurrent retriers, so it's meant to vary run-to-run, not
+// to be deterministic. Public (like `CircuitBreakerState` above) so tests
+// can exercise the delay/clamping math directly instead of only indirectly
+// through the `Retry` aspect's timing.
+pub func backoffDelay(
   initialDelayMs: in Int,
   backoffFactor: in Int,
   attempt: in Int,
@@ -245,9 +249,17 @@ func backoffDelay(
       i = i + 1
     }
   }
-  // jitterFraction is accepted for API compatibility but not applied here;
-  // deterministic jitter requires float arithmetic not yet available in the bootstrap emitter.
-  delay
+  if jitterFraction <= 0.0f32 {
+    delay
+  } else {
+    val delayD = delay.toDouble()
+    val jitterRange = delayD * jitterFraction.toDouble()
+    val unit = nextDouble(sharedRandom())          // [0.0, 1.0)
+    val offset = (unit * 2.0 - 1.0) * jitterRange  // [-jitterRange, +jitterRange)
+    val jittered = delayD + offset
+    val clamped = if jittered < 0.0 then 0.0 else if jittered > maxDelayMs.toDouble() then maxDelayMs.toDouble() else jittered
+    clamped.toInt()
+  }
 }
 
 // ─── Retry ────────────────────────────────────────────────────────────────────

@@ -26014,3 +26014,1495 @@ pipe support.
 
 **Related:** docs/54 (full design), PR #4459 (initial implementation),
 #4488/#4498/#4514/#4532 (follow-up hardening and ecosystem-publish fixes).
+
+---
+
+### D-progress-542 — Fix: aspect `requires:`/`ensures:` referencing `args.<field>` was never enforced at runtime
+
+**Shipped.** docs/26 §5 ("Contract augmentation") has specified since
+D-progress-208 that an aspect's `requires:`/`ensures:` clauses compose onto
+the matched function's wrapper and are runtime-checked. In practice this
+never worked for any clause referencing `args.<field>`, in both C-mode
+(`@inline_template`) and B′-mode aspects: the weaver spliced
+`aspect.contracts` onto the wrapper's `contracts` field verbatim (leaving
+`args` an unresolved name at the type-checker), and — the deeper half of the
+gap — `Lyric.ContractElaborator` runs *before* weaving in the compile
+pipeline (parse → typecheck → modecheck → elaborate → mono → weave), so even
+a correctly-rewritten wrapper contract was never lowered into a runtime
+`assert(...)`; the wrapper's contracts don't exist until weaving builds the
+wrapper, by which point elaboration has already run and moved on. Discovered
+empirically while scoping the C-mode-aspect retirement work that follows
+D115/docs/56: `Auth.Aspects.ValidateKey`'s `requires: args.apiKey != ""`
+silently never panicked on an empty key.
+
+- **`weaver/weaver.l`**:
+  - `rewriteContractClauseArgs` / `rewriteContractClauseListArgs` — rewrites
+    `args.<field>` to the matched function's bare parameter name inside
+    `CCRequires`/`CCEnsures`/`CCWhen`/`CCDecreases` clauses (`CCRaises`
+    passes through unchanged), reusing `rewriteExpr`'s existing traversal
+    with a `RewriteCtx` that has empty `config`/`call`/row-field maps so
+    only the `args.<field>` path is live. Unconditional for every aspect
+    mode (local, C-mode, B′-mode) — contracts are always composed onto the
+    per-match wrapper, never a shared B′-mode specialised function, so there
+    is no shape-dedup opacity concern to protect.
+  - `elaborateWrapperBodyForAspectContracts` — re-runs
+    `Lyric.ContractElaborator.elaborateFunction`, scoped to *only* the
+    aspect's own (already-rewritten) contracts, directly against the
+    wrapper body after it's built. Scoping to the aspect-only clauses (not
+    the full composed list) avoids double-elaborating the target's own
+    `requires:`/`ensures:`, which were already lowered into the target's own
+    body before weaving ran. A no-op fast path when the aspect declared no
+    contracts.
+  - Wired into both `buildWrapper` (local aspects + C-mode `from`-instances)
+    and `buildBModeCallSite` (B′-mode per-match wrapper) — two independent
+    contract-composition sites that both needed the same fix.
+- **`weaver_self_test.l`**: two new cases —
+  `"local aspect's requires: args.<field> is rewritten and elaborated into a
+  runtime assert"` and `"B'-mode from-instance's requires: args.<field> is
+  elaborated into a runtime assert on the wrapper"` — assert the rewrite
+  removed the `args.<field>` member access and that the wrapper body now
+  contains a runtime `assert` call (44/44 weaver self-tests pass).
+- Verified end-to-end: a `requires: args.apiKey != ""` aspect (both
+  row-constrained B′-mode and C-mode forms) now correctly panics on an empty
+  key at the call site, for both forms.
+
+**Related:** docs/26 §5, D-progress-208, D114, D115, docs/55, docs/56.
+
+---
+
+### D-progress-543 — JVM parity batch: Std.Time, alias imports, interface dispatch, argv entry point, Map iteration, field-access holders (epic #2663)
+
+**Shipped.** A production-parity batch for `--target jvm` closing seven
+user-visible gaps, each guarded by a new or extended self-test wired into
+the `compiler-self-tests-jvm` CI job:
+
+- **Aliased package imports (#4606).** The JVM bridge skipped
+  `Lyric.AliasRewriter`, so `import Std.String as Str; Str.trim(s)` (and
+  the implicit alias of any bare `import Std.X`) panicked in the auto-FFI
+  `Object` guess.  Both `Jvm.Bridge.compileToJar` and
+  `compileToJarBundledWithFeatures` now run `Aliases.rewriteFile` between
+  parse and `@stubbable` synthesis (MSIL-bridge parity).  Fixing this
+  exposed a latent `lastSegOfKey` substring bug on qualified registry keys
+  (length argument passed the full string length), also fixed.
+  Test: `alias_import_jvm_self_test.l`.
+- **`Std.Time` on JVM (#3302, #3276).** `_kernel_jvm/time_host.l` mixed an
+  unresolvable static-field extern (`java.time.Duration.ZERO`) with
+  `@externTarget` references to a `lyric.stdlib.jvm.TimeHost` shim class
+  that never existed, so any JVM program importing `Std.Time` failed
+  codegen.  The host is now pure Lyric over the JVM auto-FFI: factory
+  calls replace static fields (`ofMillis(0)`; `ZoneOffset.of("Z")` for
+  UTC), argument-order and unit divergences are bridged in Lyric bodies
+  (`Duration.between` arg swap; fractional durations preserved via
+  `ofNanos` + `Math.round`; `toNanos().toDouble()` totals), parse failure
+  is caught in Lyric (`try`/`catch Bug` around `Instant.parse`), and the
+  previously missing `hostDtoUtcNow`/`hostDtoToEpochMillis` are
+  implemented.  Unblocks `lyric bench --target jvm` (#680) and aspect
+  `call.elapsed`.  Test: `time_jvm_self_test.l` (9 tests).
+- **Cross-package extern-type aliasing.** A signature or local written
+  against an *imported* extern type (`Std.Time.now(): Instant`) resolved
+  to the nonexistent `<pkg>/<Alias>` class → `NoClassDefFoundError`.  The
+  bundled compile now seeds each file's signature registration and codegen
+  with the union of its imports' extern-type maps
+  (`externSeedForFile` → `collectFileSigsSeeded` /
+  `codegenPackageWithSigsSeeded`; own declarations win), and body-lowering
+  sites (local `val`/`var` annotations, type tests, result-wrap returns)
+  resolve through `typeExprToJvmExtern`.
+- **Entry-point argv + exit code (#3303).** `func main(args:
+  slice[String]): Int` is now a recognised JVM entry point: the
+  synthesised `main(String[])` wrapper forwards the incoming `String[]`
+  directly to the erased `Object[]` slice parameter (JVM array
+  covariance), `args.count` lowers to `arraylength`, and an `Int` return
+  routes through `java.lang.System.exit(int)` (branchless).  Program:
+  `entry_args_jvm_main.l` + a CI argv/exit-code check.
+- **Interface dispatch (#3687).** Interface members are registered under
+  `<ifaceClass>#<method>` with `isIface = true` and dispatched via
+  `invokeinterface`; previously the call fell to the `()Object`-guess
+  `invokevirtual`, a class-format violation against an interface owner.
+  Test: `iface_dispatch_jvm_self_test.l`.
+- **Map iteration helpers (#3676).** `_kernel_jvm/collections_host.l` now
+  implements `dictGetKeys`/`dictGetValues` over `HashMap.keySet()` /
+  `.values()` (Iterable path), plus pure-Lyric `tryGetValue` (was a
+  phantom-shim reference) and `setToSlice` (`HashSet.toArray()` — the
+  erased `slice[T]` representation), and `newListWithCapacity`.
+  End-to-end verification of the iteration helpers is blocked on #3229
+  (JVM cross-package generic specialisation); the acceptance test is
+  parked in PR #4665's history and tracked on #3676.
+- **Field-access `out`/`inout` arguments (#3628)** — JVM analog of MSIL
+  #3547: `prepareHolderArg` stashes the receiver and reads `obj.field`
+  into the holder; `writeBackHolderArg` `putfield`s the result after the
+  call (both static and virtual holder paths).  Tests: field-access cases
+  appended to `out_inout_jvm_self_test.l`.
+- **Discarded values at `if` joins (m-22).** An `if`-without-`else` (or a
+  void-typed `if`/`else` whose else-arm produces a value) leaked its arm's
+  trailing expression value onto the operand stack at the join label —
+  inside a loop the leaked value reached a back-edge branch target and
+  failed `StackMapTable` verification (the `Std.ProcessCaptureHost`
+  `proc.destroyForcibly()` poll-loop shape, which blocked
+  `process_capture_jvm_self_test.l`).  Separately, every discard site
+  used `pop`, which fails verification for category-2 `long`/`double`
+  values.  `lowerIfExpr` now discards a non-terminated arm's value in
+  both void-`if` forms via a width-correct `discardValue` helper (`pop2`
+  for `JLong`/`JDouble` via the new `LPop2` instruction, `pop`
+  otherwise); `SExpr` statement and `PWildcard` discards route through
+  the same helper.  Tests: discard cases in
+  `extern_param_jvm_self_test.l`.
+- **Assignment to a local named `result` silently dropped (m-23).**
+  `result` is a contextual keyword that parses as `EResult` even in
+  assignment-target position; `lowerAssignExpr` had no `EResult` arm, so
+  the target fell to a fallback that evaluated the RHS and popped it.
+  The stdlib's own `Std.ProcessCapture.buildArgString` accumulates into
+  a `result` local, so every JVM ProcessCapture argument round-trip
+  produced an empty arg string (children spawned with no arguments).
+  `EResult` targets now route through the named-local path, and the
+  three remaining evaluate-and-drop assignment fallbacks (unknown name,
+  non-reference field receiver, unsupported target shape) `panic` with a
+  diagnostic instead of silently miscompiling.  Tests: `result`-local
+  cases in `silent_miscompile_guard_jvm_self_test.l`.
+- **`substring(start, count)` semantics divergence (m-24).** Two-arg
+  `s.substring(start, count)` on a String receiver passed through
+  auto-FFI to Java's `substring(begin, endIndex)`, silently
+  reinterpreting the count as an end index — wrong results or
+  `StringIndexOutOfBoundsException` for any `start > count` (hit by the
+  kernel's `parseArgString` and the cross-platform `Std.Xml`/`Std.Yaml`/
+  `Std.Rest`/`Std.Log` substring call sites).  A String-receiver
+  intrinsic now translates to (begin, begin + count); the one-arg form
+  is semantics-identical on both platforms.
+- **Smaller fixes:** `x.toString()` on a primitive receiver boxes and
+  calls `Object.toString` (was unhandled → `VerifyError`; Java renders
+  `1500.0` for whole Doubles where .NET renders `1500` — documented
+  formatting divergence); masked `JByte` div/rem yields `JByte` (#4551);
+  `Long`-returning kernel bodies use explicit `i64` literals;
+  `@externTarget` staticness decided from JDK metadata instead of a name
+  heuristic that mis-classified `currentTimeMillis` as an instance call.
+
+Also wired the previously-orphaned `out_inout_instance_jvm_self_test.l`,
+`string_methods_jvm_self_test.l`, `self_method_call_jvm_self_test.l`, and
+`implicit_self_jvm_self_test.l` into CI, and closed the stale
+already-fixed issues #1675, #1708, #1793, #1833, #2210, #2855, #2864,
+#2865, #2870 with verification comments.
+
+**Related:** docs/44 §4 (M-18, m-16..m-24), epic #2663.
+
+---
+
+### D-progress-544 — Fix: silent reference-assembly read/parse failures in the auto-FFI metadata index (macOS publish #1770 crash)
+
+**Shipped.** Publish run #1770 crashed on both macOS jobs (`osx-arm64`,
+`osx-x64`) at "Build stage 2 (self-hosted compiler)" with
+`System.TypeLoadException: Could not load type 'System.Console' from
+assembly 'System.Runtime'` inside `Std.ConsoleHost.consoleErrorWriter()` —
+the self-hosted compiler crashing the moment it tried to print its first
+diagnostic. `ubuntu-latest` built the identical commit cleanly.
+
+Root cause: `Msil.Codegen.assemblyForTypeMsil` (`msil/codegen.l`) resolves
+an extern's declaring type to its owning assembly via a type→assembly index
+built once per compile by `Msil.MetadataReader.ensureMetadataIndex` over the
+local `Microsoft.NETCore.App.Ref` reference pack. When the index has no
+entry for a type it silently defaults to `"System.Runtime"` — correct for
+CoreLib-forwarded primitives, but wrong for `System.Console`, which (verified
+against the local ref pack) is the *only* one of 167 reference assemblies
+whose `TypeDef` table defines it — it is not System.Runtime-forwarded. The
+index is populated by `Msil.MetadataReader.addAssemblyToIndexesAndValueTypes`
+(`msil/metadata_reader.l`), which read and parsed every ref-pack `*.dll` but
+**silently swallowed both the read and the parse failure path** ("a single
+broken DLL must not abort building the index" — true, but the swallow had no
+log line at all). If `System.Console.dll` alone failed to read/parse on a
+given run (a transient I/O hiccup against a freshly-provisioned macOS
+runner's SDK install is the leading theory — every other BCL-heavy stdlib
+module, e.g. `Std.Json`/`Std.Http`, built and ran fine), the resulting
+`Std.ConsoleHost` DLL carried a `TypeRef` that compiled cleanly but threw
+`TypeLoadException` the instant anything called `Console.Error` — for the
+compiler binary itself, that is the first diagnostic (warning or error) it
+ever needs to print, explaining why the corruption stayed invisible until
+that exact codepath ran.
+
+- **`msil/metadata_reader.l`**: `addAssemblyToIndexesAndValueTypes` now
+  prints a `W0006` warning (matching the existing `W0005` degraded-signature
+  warning style) whenever a reference-pack, restored-dependency, or NuGet
+  assembly fails to read or fails to parse, naming the path and the
+  underlying `IOError`. Diagnosability fix only — resolution still falls
+  back the same way, but the failure is no longer silent, so a
+  transient-file-read regression like this one is immediately visible in the
+  build log instead of requiring cross-run log archaeology.
+
+**Investigation update:** follow-up digging (see #4698) ruled out transient
+per-run I/O flakiness as the leading theory. Run #1770 dispatched with
+`mint_stage0` unset (`LYRIC_BOOTSTRAP_MINT=0` on both platforms), so Linux and
+both macOS jobs used the *identical* `v0.4.6` release binary as their stage-0
+seed against the *identical* commit — Linux succeeded, `osx-arm64` and
+`osx-x64` both crashed with the byte-for-byte identical stack trace at
+matching points in "Stage 2". Two independent macOS VMs (different CPU
+architectures) hitting the same failure in the same run is much better
+explained by a deterministic macOS(Darwin)-specific behavior than by random
+transient flakiness independently striking both — and since arm64 and x64
+fail identically, it isn't architecture/JIT-specific either. The reference
+pack's MSIL content is platform-agnostic (same NuGet-sourced bytes regardless
+of RID), so the divergence most likely lives in how `System.IO.File.ReadAllBytes`
+(or a path-construction step upstream of it) behaves on macOS specifically for
+`System.Console.dll`, not in the file's bytes. Practical implication: a
+retry-on-read-failure mitigation is unlikely to help a deterministic failure —
+deprioritized in favor of just waiting for the W0006 warning (shipped in
+#4699) to surface the exact underlying `.NET` exception on the next
+`mint_stage0=false` publish run that hits this.
+
+**Not done / follow-up (tracked in #4698):** the exact mechanism on the macOS
+side (read failure vs. parse failure, and why) remains unconfirmed — no macOS
+reproduction available in any environment used for this investigation so far.
+`assemblyForTypeMsil` defaulting *any* unresolved `System.*` type to
+`"System.Runtime"` remains a latent correctness gap beyond Console — a
+convention-based fallback would close it further (a retry is no longer
+expected to help, per above). `Msil.MetadataReader.refPackDir`'s
+`pickHighestDir` also has a latent robustness gap (gives up instead of trying
+the next-highest version when the chosen `Microsoft.NETCore.App.Ref/<version>`
+lacks a usable `ref/<tfm>`), not confirmed as a contributor here but worth
+hardening opportunistically.
+
+**Related:** #4698, run https://github.com/nichobbs/lyric-lang/actions/runs/28585430193.
+
+---
+
+### D-progress-545 — Native backend Phase N2: records, unions, enums, distinct types, pattern matching, ARC
+
+**Shipped.** The second slice of the LLVM native backend
+(`native/plan/08-work-items.md` items N2.1–N2.4 plus the ARC insertion
+rules of `native/plan/04-arc-design.md`), making heap types a working
+part of `--target native`:
+
+- **Records (N2.1)** — `{ i32 rc, i8* dtor, fields... }` heap structs
+  with synthesised destructors (ARC Rule 7), inline construction
+  (Rules 1/2), field access/assignment (Rule 3 retain-new-then-
+  release-old on ref fields), named/positional/default construction
+  arguments, and methods in record bodies lowering as package
+  functions with the explicit `self` receiver (D037) resolved via
+  UFCS (`p.dist2()` and free-function `p.total(5)` both work).
+- **Unions (N2.2)** — `{ header, i32 disc, i32 pad, [W x i64] }` with
+  per-case payload structs sized by a C-layout calculator; per-case
+  constructor calls (named and positional fields), nullary cases as
+  bare paths (`Nothing`, `MaybeStr.Nothing`), and case-aware
+  destructors that switch on the discriminant.
+- **Enums / distinct types (N2.3)** — enums lower to `i32`
+  discriminants (`Color.Red` as a value or pattern); distinct types
+  share their underlying representation with construction range
+  checks (`type Age = Int range 0 ..= 150`; violations panic) and the
+  `.value` accessor.
+- **Pattern matching (N2.4)** — `match` lowers to sequential
+  discriminant/literal/range/string tests with payload-field binds,
+  guards (with correct arm-scope release on the guard-fail path),
+  wildcard/binding arms, nested constructor sub-patterns, and a
+  non-exhaustive panic backstop.
+- **ARC insertion** — value-provenance bookkeeping: constructors and
+  ref-returning calls yield owned temps (Rule 6) released at region
+  end unless transferred to a binding (Rule 4), heap store, or
+  return; borrows retain on binding; scope stacks release locals on
+  block exit, `return`, `break`, and `continue` (loop-depth-aware);
+  `in` params are borrows (Rule 5).  This also closes the N1 "strings
+  leak by design" gap — string temps now release.
+
+**Verification.** `llvm_heap_self_test.l` (@test_module, 21 cases):
+functional cases assert exit codes and stdout end-to-end (parse →
+codegen → clang → run), and five ARC cases compile with
+`-fsanitize=address` — LeakSanitizer/ASan turn a missed release,
+premature release, or double release into a non-zero exit, so the ARC
+protocol is verified mechanically (allocation loops with
+match/continue, ref-field overwrite churn, returned strings with var
+rebinding, nested record destructor composition, early-return/break
+unwinding).  The N1 string paths were re-verified leak-free under the
+same harness.
+
+**Stage-0 seed gaps worked around** (all in the #4631 family, cited at
+each site): value-position match over `Option` mis-lowers (rewrapped
+`Some` falls through as null) — `resolveFieldArgs`, `registerDistinct`,
+`substSelfInFn`, and `lowerCall` use the var-mutation shape; a `val` +
+`if` statement sequence inside a value-position match arm fails E3 —
+`lowerBlockValue` uses var-mutation; `out`, `scope`, and `old` are
+rejected as binding names by the seed parser; a trailing block
+expression starting with `(` parses as a call continuation.
+
+**Not in this slice** (each still panics with a construct-naming
+message): closures/lambdas and `NativeWeak[T]` (`upgrade()` returns
+`Option[T]`, so weak refs land with generic-union monomorphization in
+N3.1), tuples/interfaces/protected types (N3), `for` loops,
+module-level `val`, collections (N5), async (Phase 2).  Bundled-
+package (stdlib) record methods are collected for registration but not
+lowered until the N5 stdlib port.
+
+**Related:** D-progress-540, `native/plan/04-arc-design.md`,
+`native/plan/08-work-items.md` §N2, D037 (methods desugar), #4631.
+
+---
+
+### D-progress-546 — Native backend N3.1: generic type monomorphization (records and unions)
+
+**Shipped.** Generic records and unions instantiate on demand in the
+native backend, keyed per concrete type-argument tuple
+(`T.Maybe<i64>`, `T.Maybe<T.Maybe<i32>*>` — quote-free arg mangling so
+nested instantiations stay valid IR):
+
+- **Instantiation** — `typeToN` resolves `Maybe[Int]` / `Box[String]`
+  by substituting type params through an env-aware type mapper and
+  registering the instantiation (struct defn + per-case payload defns
+  + synthesised destructor) lazily via ctx-held module accumulators.
+- **Constructor inference** — `Just(5)` infers `T` from arguments
+  whose declared case/field type is a bare parameter; generic record
+  constructors (`Box(item = x, tag = 2)`) infer the same way.
+- **Expected-type threading** — annotated bindings, returns, call
+  arguments, field stores, and value-position `if`/`match`/block
+  results propagate the consumer's type into construction, which is
+  the only way to type nullary cases (`Nada`, `None`) and cases that
+  mention a subset of params (`Result`'s `Ok`/`Err`).
+- **Pattern resolution by scrutinee** — constructor patterns resolve
+  the case by name within the scrutinee's union instantiation, and a
+  bare identifier that names a case of the scrutinee's union is a
+  nullary constructor pattern, not a binding (the parser cannot
+  distinguish `case Nada ->` from a binding; binding it leaked a
+  bogus local into later name resolution).
+
+**Verification.** Four new `llvm_heap_self_test.l` cases (25 total):
+single/two-param instantiation, `Result`-style expected-type
+construction inside branches, nullary-case flow through return types,
+and an ASan/LSan loop exercising nested generic instantiations with
+string payloads (destructor composition across instantiations verified
+leak-free).
+
+**Not yet lowered:** generic *functions* (bundle-wide monomorphization
+is the next N3.1 slice), interfaces/vtables (N3.2), tuples (N3.3),
+closures (N2.6), `NativeWeak[T]` (N2.5 — now unblocked by
+instantiated `Option[T]`).
+
+**Related:** D-progress-545, `native/plan/08-work-items.md` §N3.1, #4631.
+
+---
+
+### D-progress-547 — Native backend N3.1 (functions): call-site generic function instantiation
+
+**Shipped.** Generic functions instantiate per concrete type-argument
+tuple at their call sites in the native backend, completing N3.1
+(D-progress-546 covered generic types):
+
+- Generic declarations register by call key (`Pkg.name/arity`, bare
+  `name/arity`) instead of entering the signature registry; the bundle
+  loop skips them (they lower on demand).
+- Call resolution: after the concrete-signature miss, a generic hit
+  maps arguments to parameters, lowers them in parameter order, and
+  unifies each declared parameter type against the concrete argument
+  type — bare params bind directly; parameterised types
+  (`Maybe[T]` vs `T.Maybe<i64>`) unify through the instantiation
+  metadata recorded when types instantiate.
+- Instantiation is cache-first (`Pkg.name.arity<args>`): the cache
+  entry registers before the body lowers, so self-recursive generic
+  functions terminate.  Bodies lower once per tuple through a
+  per-function type-parameter environment consulted by the type
+  mapper (no AST substitution).
+- Generic UFCS works: `m.unwrapOr(0)` resolves the generic function
+  with the receiver as the first argument.
+
+**Verification.** `llvm_heap_self_test.l` gains a generic-function
+case (27 total): multi-instantiation (`wrap(40)` / `wrap("hello")`),
+UFCS, identity, and a generic function returning a generic
+instantiation, ASan-verified with the rest of the suite.
+
+**Related:** D-progress-546, `native/plan/08-work-items.md` §N3.1, D-N-010.
+
+---
+
+### D-progress-548 — Native backend N2.6: closures
+
+**Shipped.** Lambda literals lower to ARC-managed closures in the
+native backend:
+
+- **Representation** — a heap object `{ i32 rc, i8* dtor, i8* fnptr,
+  captures... }`; the value's static type is a signature-keyed uniform
+  closure type (`__closure<i32(i32)>`) registered so call sites recover
+  the signature; the impl struct is per-lambda.
+- **Captures** — free-variable analysis over the lambda body (arm- and
+  block-scoped binders tracked precisely); captures are by value,
+  retained at construction and released by the synthesised closure
+  destructor.  Mutating a captured variable is rejected with a
+  diagnostic (by-value semantics would silently diverge from the
+  managed targets' shared-mutable capture).
+- **Typing** — lambdas take their parameter/return types from the
+  expected function type (annotated bindings, typed parameters,
+  declared returns — the N3.1 expected-type threading); a lambda with
+  no expected type panics with guidance.
+- **Calls** — `f(x)` on a closure-typed local loads the fnptr, casts
+  to the concrete function-pointer type, and calls with the
+  environment as the leading argument.  Higher-order functions
+  (`apply`, `compose`) work.
+
+**Verification.** `llvm_heap_self_test.l` gains an ASan closure case
+(28 total): scalar + string captures across 100 calls, higher-order
+composition — capture retain/release and the closure destructor
+verified leak-free.
+
+**Related:** D-progress-547, `native/plan/08-work-items.md` §N2.6.
+
+---
+
+### D-progress-549 — Native backend N2.5: NativeWeak[T]
+
+**Shipped.** Phase N2 is complete: `NativeWeak[T]` lands as the
+plan's non-owning cycle-breaking reference (D-N-005):
+
+- **Representation** — the target pointer itself behind a marker
+  struct name (`__weak<T.Node*>`, excluded from ARC by `isRefNType`);
+  a registry maps the marker back to the target type.  `NativeWeak(x)`
+  constructs with no retain and no ownership registration.
+- **`upgrade()`** — calls lyric-rt's CAS loop
+  (`lyric_weak_upgrade`, shipped in N0): a successful upgrade's +1
+  transfers to an owned temp that the `Some(value)` construction
+  retains from and the region release balances; `null` produces
+  `None`.  The result is the instantiated generic union named
+  `Option` from the import closure (`Std.Core.Option` in bridge
+  builds), resolved by name so single-file tests can supply their own.
+
+**Verification.** `llvm_heap_self_test.l` gains an ASan case
+(29 total): upgrades of a live target across 200 iterations plus
+weak-to-temporary nodes, rc balancing leak-free.
+
+**Related:** D-progress-548, `native/plan/04-arc-design.md`
+§NativeWeak, D-N-005.
+
+---
+
+### D-progress-550 — Native backend N3.3: tuples
+
+**Shipped.** Tuples lower as synthesised records
+(`__tuple<i32,LyricString*>` with fields `_0.._n`), reusing the record
+machinery wholesale — construction, ARC ownership, and synthesised
+element-releasing destructors:
+
+- `(a, b)` literals construct from element types; `(String, Int)`
+  annotations, parameters, and return types map through the same
+  synthesis; tuple-typed values flow through generics and closures
+  like any record.
+- Destructuring binds in `val (lo, hi) = ...` and tuple patterns in
+  `match` arms (bindings and wildcards; nested sub-patterns are
+  rejected with a diagnostic).
+
+**Verification.** `llvm_heap_self_test.l` gains an ASan case
+(30 total): tuple returns from branches, annotated bindings,
+destructuring in a 300-iteration loop with string elements —
+element release verified leak-free.
+
+**Related:** D-progress-549, `native/plan/08-work-items.md` §N3.3.
+
+---
+
+### D-progress-551 — Native backend N4.2 (codegen): `nativeAddrOf`
+
+**Shipped (codegen half).** `nativeAddrOf(x)` lowers to the local's
+stack-slot pointer (the alloca IS the address — no extra IR), enabling
+C out-parameter patterns (`waitpid`-style int*, `LyricString**`
+capture buffers) from `_kernel_native/` kernels.  Verified by an ASan
+self-test case (31 total) writing one secure-random byte through the
+returned `NativePtr[Byte]`.
+
+**Remaining (tracked in #4697):** the mode checker's
+`N0100` placement enforcement — `NativePtr[T]`/`nativeAddrOf` only in
+`_kernel_native/` packages and `@unsafe_ffi` functions, var-only
+operands, no escaping — is front-end work shared by all targets and
+lands with the mode-checker N4.2 slice.
+
+**Related:** D-progress-550, `native/plan/05-ffi-design.md`
+§nativeAddrOf, #4697.
+
+---
+
+### D-progress-552 — Native backend N4 remainder: N0100 FFI boundary, callback trampolines, FFI self-test
+
+**Shipped.** The rest of Phase N4 (`native/plan/08-work-items.md` §N4.2
+mode-checker half, §N4.5, §N4.7), plus the #4693 dedup refactor:
+
+- **N0100 (N4.2, mode checker)** — `Lyric.ModeChecker` gains a native
+  FFI boundary pass, run at every verification level on every target's
+  user files (`checkFileWithImports`, before the proof-level early
+  return; `_kernel_native/` files never pass through `checkFile`, so
+  the plan's package exemption holds by construction).  `NativePtr[T]`
+  type expressions in signatures/locals and `nativeAddrOf` /
+  `nativeNullPtr` calls require the enclosing function to carry
+  `@unsafe_ffi`; inside `@unsafe_ffi`, `nativeAddrOf`'s operand must be
+  a bare identifier bound by a `var` local, and the produced pointer
+  must not escape the frame (explicit return, expression body, or
+  trailing block value), with record / exposed-record / union fields
+  typed `NativePtr` rejected unconditionally.  `extern func`
+  parameter/return positions are exempt as the audited boundary.
+  Fourteen new `modechecker_self_test.l` cases.  Closes the
+  implementation half of #4697.
+- **Callback trampolines (N4.5)** — an `extern func` parameter may be
+  declared with a function type whose LAST parameter is
+  `NativePtr[Byte]` (the userdata slot); `typeExprToNType` lowers it to
+  a raw `NFnPtr`.  A Lyric closure argument in that position lowers
+  against the callback's reduced signature (params minus the userdata
+  slot) and is adapted to a synthesised C-ABI trampoline —
+  `__lyric_cb_tramp.N`, cached per callback signature — that rebuilds
+  the Lyric closure calling convention from the raw side (bitcast
+  userdata → closure header, load the fnptr slot, call with the
+  userdata as the environment).  The same closure value passed in a
+  `NativePtr[Byte]` argument position lowers to a bitcast of the
+  closure pointer, so `pthread_create(tidP, attr, worker, worker)`
+  registers and delivers the closure end-to-end.  Call-duration borrows
+  need no retain; APIs that hold the callback across calls put
+  retention on the `_kernel_native/` wrapper
+  (`native/plan/05-ffi-design.md`).  `nativeNullPtr()` ships alongside
+  as the C NULL producer (`NPtr(NI8)` null literal), N0100-gated like
+  `nativeAddrOf`.
+- **FFI self-test (N4.7)** — `llvm_ffi_self_test.l` (6 cases, all but
+  one ASan-linked): extern `write` to stdout with String→C-string
+  bridging, libm `sin`/`sqrt`, `strlen` round-trip, `free(NULL)` via
+  `nativeNullPtr()`, and two pthread trampoline cases — a closure
+  capturing a Lyric String allocates a C buffer ON THE SECOND THREAD
+  and returns it through `pthread_join`'s retval out-param, and a
+  dedup case runs two distinct closures through the same callback
+  signature (one shared trampoline define).  Wired into the CI native
+  step.
+- **#4693** — `lowerCallArgs` / `lowerCallArgsWithReceiver` now share
+  `bindCallArgs`, parameterized by the first bindable slot.
+
+**Remaining from N4:** trampoline parameter forwarding (callbacks with
+non-userdata parameters) is implemented but exercised only with
+zero-parameter closures — a forwarded-parameter case lands with the
+first N5 kernel that needs one.
+
+**Related:** D-progress-551, `native/plan/05-ffi-design.md`,
+`native/plan/08-work-items.md` §N4, #4697, #4693.
+
+---
+
+### D-progress-553 — JVM: cross-package generic specialisation resolves at call sites; mapGet intrinsic constructs Option; mixed void/value match arms (epic #2663, #3229, #3676)
+
+**Shipped.** The remaining half of the JVM cross-package generic story
+(#3229) plus the two latent codegen bugs it uncovered, verified end-to-end
+by the previously parked `map_iteration_jvm_self_test.l` (#3676):
+
+- **Post-mono signature registration (#3229).** In the bundled compile
+  path (`compileToJarBundledWithFeatures` — the path `lyric test --target
+  jvm` uses), the function-signature registry is built from the
+  pre-middle-end sources, and after `runMiddleEnd` only derive- and
+  weave-synthesised sigs were patched in.  Monomorphizer-specialised
+  copies (`mapKeys__String__Int`, `mapSize__String__Int`, …) were emitted
+  as items but their call sites resolved through the `(…)Object` guess —
+  a descriptor mismatch that failed at class load (the "specialisations
+  are not emitted" symptom that parked the #3676 test).  The new
+  `collectMonoSpecializedSigs` patches the registry from the post-mono
+  file at both bundled codegen sites, registering the bare and qualified
+  key with param/return types resolved through the imported extern-type
+  seed (a specialised stdlib sig references `Map[..]`, whose alias lives
+  in `Std.CollectionsHost`).  The single-file path was already correct
+  (it collects sigs from the post-mono file).  Note: the "restored
+  dependencies" half of #3229 is structurally N/A on JVM today — the JVM
+  bridge has no restored-artifact path; that work re-opens with JVM
+  restore/Maven linking.
+- **`mapGet` intrinsic constructed no Option.** The JVM `mapGet(m, k)`
+  intrinsic returned the raw `HashMap.get` value — never an `Option`, so
+  every `case Some(...)` match on a mapGet result silently failed — and
+  boxed the key as if it were always an `Int` (`Integer.valueOf(I)` on a
+  String key fails verification).  It now emits a containsKey-gated
+  `Some(get(m,k))` / `None` construction with the key boxed by its actual
+  type; map and key stash to locals and the result routes through a
+  local, keeping the operand stack empty at every branch target.
+- **Mixed void/value match arms.** A statement-position match legally
+  mixes arms (`case Some(v) -> xs.add(v)` — `add` returns boolean —
+  beside `case None -> ()`).  `lowerMatchExpr` let any arm flip the
+  result type while it was still `JVoid`: a void arm under a value-typed
+  match emitted `istore` on an empty stack (operand-stack underflow), and
+  the reverse order left the result slot unwritten on one path (TOP-merge
+  verification failure).  The first non-terminating arm now fixes the
+  match type; later arms reconcile — a value arm under a void match
+  discards its value (width-correct `discardValue`), a void arm under a
+  value match stores a dummy default.
+- **`forall`/`exists` in `@runtime_checked` contracts (#3227).**
+  `EForall`/`EExists` panicked the JVM codegen; they now lower to `true`
+  (sound overapproximation, matching the MSIL resolution for #1506) with
+  the same W0002 warning text.
+- **Slice literal to `slice[T]` parameter (#4700).** An `EList` literal
+  lowers as `ArrayList`, but an erased slice parameter is `Object[]` —
+  the call site failed verification at class load.  `coerceArgTo` gained
+  a `JArray` arm that converts via `ArrayList.toArray()`.
+- **`externSeedForFile` O(imports × packages) scan (#4667)** replaced by
+  an import-membership set — O(imports + packages), no signature change.
+
+Element consumption in the map-iteration test is count-shaped: iterated
+elements are erased to `Object` on JVM, so element arithmetic
+(`total + v`) and entry field access (`e.value`) wait on the
+typed-erasure work in band J4 (#2667) — the erased-Object member
+fallback resolves `field:<name>` globally and can checkcast to an
+unrelated package's opaque type (observed: `e.value` on a `MapEntry`
+matching `Std.Http.Url.$value`), which is exactly the J4 "make the
+erased model correct" item.  Value-level semantics are covered via
+`mapGet` / `mapPutAll`, whose results carry concrete types after
+monomorphization.
+
+Tests: `map_iteration_jvm_self_test.l` (5 tests, restored from PR #4665's
+parked history and wired into `compiler-self-tests-jvm`), plus #4700 /
+#3227 regression cases in `silent_miscompile_guard_jvm_self_test.l`.
+
+**Related:** docs/44 §4/§5 (J4, J6), epic #2663, #3229, #3676, #3227,
+#4700, #4667, PR #4665 (the kernel half and parked test).
+
+---
+
+### D-progress-554 — Fix: macOS publish crash is deterministic, not transient — reproduces with a known-good stage-0 seed; W0006 was blind to it
+
+**Shipped.** Follow-up to D-progress-544 (#4698, #4699). Publish run #1772
+recovered a clean `v0.4.7` release by minting stage-0 from F# history
+(`mint_stage0=true`), sidestepping the buggy `v0.4.6` seed entirely. The very
+next publish run, #1773 — using `v0.4.7` (built from the *same* commit as the
+W0006 fix, on a completely different source commit) as its stage-0 seed —
+crashed on both macOS architectures with the **byte-for-byte identical**
+`System.TypeLoadException: Could not load type 'System.Console' from
+assembly 'System.Runtime'` in `Std.ConsoleHost.consoleErrorWriter()`. This
+invalidates the "`v0.4.6` is a one-off poisoned historical seed" theory from
+D-progress-544: the bug reproduces with *any* self-hosted-compiled `lyric`
+binary used as a macOS stage-0 seed, deterministically, not as a transient
+one-time fluke.
+
+Crucially, **no W0006 warning appeared** in run #1773's log. W0006
+(D-progress-544) only fires when an individual reference-pack assembly fails
+to *read or parse* — but if it never fires while the bug still reproduces,
+the corruption must be happening upstream of the per-file scan entirely.
+Re-reading `Msil.Codegen.ensureMetadataIndex` (`msil/codegen.l`) confirmed
+the actual gap: when `Msil.MetadataReader.refPackDir()` (`msil/metadata_reader.l`)
+returns `None` — the reference pack directory itself was never found on this
+machine — the `case None -> {}` branch is completely silent. So is the case
+where `refPackDir()` succeeds but `enumRefAssemblies()` returns zero `*.dll`
+files. Either failure leaves the *entire* type→assembly metadata index empty
+for the whole compile, silently degrading every unresolved `System.*` extern
+(not just `System.Console`) to the `"System.Runtime"` fallback — consistent
+with a deterministic, macOS-specific difference in how the self-hosted
+compiler's own reference-pack discovery walk (`candidateDotnetRoots()`:
+`DOTNET_ROOT`, `$HOME/.dotnet`, `/usr/share/dotnet`, `/usr/lib/dotnet`,
+`/usr/local/share/dotnet`, `/opt/homebrew/opt/dotnet/libexec`) behaves versus
+Linux, given identical `.dotnet` SDK installs and identical source.
+
+- **`msil/metadata_reader.l`**: new `refPackDirDebugInfo(): String` —
+  mirrors `refPackDir()`'s exact walk over `candidateDotnetRoots()` without
+  returning early, recording the outcome at every candidate root (packs dir
+  missing / empty / version has no `ref/` / `ref/` has no TFM / found) into
+  one descriptive string.
+- **`msil/codegen.l`**: `ensureMetadataIndex` now prints a `W0007` warning
+  when `Mdr.refPackDir()` returns `None` (embedding `refPackDirDebugInfo()`'s
+  trace) or when the found directory contains zero `*.dll` files — both
+  previously-silent paths that leave the whole metadata index empty for the
+  compile.
+
+**Not done / follow-up (tracked in #4698):** this is still a diagnosability
+fix, not a root-cause fix — the *why* `refPackDir()`'s walk differs on macOS
+remains unconfirmed pending the next publish run's W0007 output (or a
+future recurrence). If the next occurrence shows a genuinely empty
+`refPackDirDebugInfo()` trace (every candidate root missing entirely), the
+fix is almost certainly a `candidateDotnetRoots()` gap specific to how the
+macOS GitHub Actions runner's `dotnet` install differs from Linux's. If it
+instead shows a root *was* found with a real ref-pack path, the bug is
+elsewhere (a bug in `File.dirExists`/`File.listFiles`/`pickHighestDir`
+itself, macOS-specific) and this diagnostic will have ruled out the
+"pack not found" theory, redirecting the next investigation.
+
+**Related:** #4698, D-progress-544, run
+https://github.com/nichobbs/lyric-lang/actions/runs/28623090504 (#1773).
+### D-progress-555 — JVM: static-field auto-FFI; pure-Lyric file/console kernels; `in`/`out`/`inout` as member names (band J6, epic #2663)
+
+**Shipped.** The band-J6 batch that makes `Std.File` and `Std.Console`
+work end-to-end on `--target jvm`, removing the last two packages the
+bundled compile skipped (the named J003 entries):
+
+- **Static-field auto-FFI.** The pure-Lyric class reader
+  (`jvm/class_reader.l`) now parses public fields (reusing the
+  `ClassMethod` shape with the field descriptor); `Jvm.AutoFfi` gains
+  `findStaticField` (superclass-chain walk, declared class wins); and
+  two codegen sites resolve static fields as `getstatic` from JDK
+  metadata: a bare extern-type member read (`JSystem.in`,
+  `Duration.ZERO`) and a zero-parameter `@externTarget` whose member
+  names a field.  This was the missing FFI primitive noted since the
+  `time_host.l` rewrite (factory calls stood in for constants).
+- **Parser: mode keywords as member names.** `in`/`out`/`inout` are
+  accepted after `.` (member position is unambiguous — only a name can
+  follow), so `System.in` parses; joins the existing `and`/`or`/`xor`
+  member-name carve-out.  All other keywords remain P0081.
+- **`_kernel_jvm/file_host.l` rewrite.** Pure Lyric over `java.io.File`
+  / `FileInputStream` / `FileOutputStream` — the previous version
+  routed every function through a `lyric.stdlib.jvm.FileHost` class
+  that never existed.  UTF-8 text I/O via whole-file bytes +
+  `String(byte[], "UTF-8")`; absolute-path enumeration over
+  `listFiles()` filtered by kind; recursive delete; `mkdirs`.
+- **`FileTime` boundary fix.** `std/file.l` declared
+  `extern type DateTime = "System.DateTime"` outside the kernel — a
+  `_kernel/`-boundary violation and a .NET-only type on the JVM path.
+  Both kernels now export an opaque `FileTime` (System.DateTime on
+  .NET; boxed epoch-milliseconds on JVM) with the comparison beside
+  it, and `FileStat` uses it unchanged on both targets.
+- **`_kernel_jvm/console_host.l` rewrite.** Pure Lyric over
+  `getstatic java.lang.System.{out,err,in}` with a process-shared
+  `BufferedReader` module `val` for stdin (per-call readers would
+  buffer-and-discard lookahead between reads).
+- **Module `val`s of extern type.** `collectFileVals` resolves the
+  declared type through the file's extern-type table
+  (`collectFileValsExtern`), so `val rdr: JBufferedReader = …` carries
+  `java/io/BufferedReader` instead of the in-package guess
+  (NoClassDefFoundError at `<clinit>`).
+- **Typed array elements.** Indexing a reference-typed JVM array
+  (`File.listFiles()[i]`) reports the element class instead of
+  `Object`, so instance auto-FFI calls on elements resolve.
+- **Terminating catch arms in try-expressions (J004).** A catch arm
+  that unconditionally transfers control (a trailing `panic(...)` →
+  `athrow`, a `return`) never produces a value and never reaches the
+  join — but the try-expression lowering demanded a value and aborted
+  with J004.  `Std.File.readTextOrPanic`'s decorated re-panic is
+  exactly this shape and was the ACTUAL `Std.File` bundling blocker.
+  The lowering now skips the result store and the fall-through `goto`
+  for a terminated arm; J004 still fires for a genuinely value-less
+  non-terminating arm (type-checker gap #2042).
+- **`case null` is a null test (JVM).** `null` is not a keyword, so
+  `case null ->` parses as a binding named "null" and bound anything —
+  `Std.Console.readLine` returned `EndOfInput` for real lines.  The
+  JVM pattern test special-cases the name into an `ifnonnull`
+  refutable test (new `LIfnull`/`LIfnonnull` instructions over the
+  pre-existing emitters).  The MSIL side appears to have the same
+  bind-anything semantics — tracked in #4759 pending CI adjudication.
+- **Primitives box into `Object` FFI parameters.**
+  `scoreParamMatch` scores primitive→`Ljava/lang/Object;` at low
+  priority and `emitFfiCoerce` boxes, so `bytes.add(7)` on a
+  `List[Byte]` (JDK `ArrayList.add(Object)`) resolves.
+- **Branching arg coercions never run on a non-empty stack.**  The
+  `Object[]`↔`byte[]` element-copy loops previously ran with values
+  already stacked in three call forms — auto-FFI constructor args
+  (after `new; dup`; `String(byte[], "UTF-8")`), plain static-call
+  args (`hostWriteAllBytes(path, stringToUtf8Bytes(s))`), and the
+  holders-path by-value args — a VerifyError each.  All three sites
+  now pre-lower/coerce arguments into temp slots with an empty stack
+  and reload in order.
+- **Byte-element unboxing accepts Integer.**  An int literal added to
+  a `List[Byte]` boxes as `Integer`; the `Object[]`→`byte[]`
+  conversion and `coerceArgTo`'s byte arm checkcast `Byte` and threw
+  ClassCastException — both now unbox via `Number.intValue()` + `i2b`.
+- **`@externTarget` constructor targets.**  `….<init>` targets had no
+  emission shape (the instance fallback consumed the first argument as
+  a receiver — `newListWithCapacity` → NoSuchMethodError); they now
+  emit `new; dup; <params>; invokespecial; areturn`.  And because
+  *generic* `@externTarget` functions are never emitted as methods at
+  all (excluded from monomorphization, no non-generic body),
+  `newListWithCapacity` itself is additionally an intrinsic
+  (`ArrayList(int)`, capacity stashed to a temp before `new; dup`)
+  like `newList`/`newMap`.
+- **`.count`/`.length` on erased-`Object` receivers.**  A match
+  binding on a generic union payload (`case Ok(rb)` on
+  `Result[List[Byte], _]`) is statically `Object`; the record-field
+  fallback emitted *nothing* for `.count`, leaving the receiver itself
+  as the "value" — the following comparison checkcast'd the collection
+  to `Integer` (runtime CCE).  The fallback now dispatches on the
+  runtime class — `Collection`/`Map` → `size()`, `String` →
+  `length()`, last-resort `Object[]` → `arraylength` — with the
+  receiver stashed to a temp so every branch target sees the empty
+  operand stack.
+- **`Std.File.stat` missing-path contract (both targets).**  Neither
+  host timestamp API reports absence (BCL `GetLastWriteTimeUtc`
+  returns the 1601-01-01 sentinel; JDK `lastModified()` returns 0), so
+  the documented `Err(FileNotFound)` was unreachable and a missing
+  path produced `Ok` with a garbage timestamp.  `stat` now probes
+  `hostFileExists or hostDirectoryExists` first — a cross-target
+  stdlib fix found by the JVM test.
+- **Record fields of imported extern types.**  `FileStat.modifiedAt:
+  FileTime` carried the in-package class guess → NoClassDefFoundError;
+  record emission, protected-type fields, and the bundled case
+  registration resolve through own + imported extern types.
+- **`toArray()` on erased List receivers.** A generic `in List[T]`
+  parameter erases its receiver to `Object`, which reached instance
+  auto-FFI resolution and panicked (`Object` has no `toArray`) — hit
+  by `Std.File.writeBytes`.  A checkcast-ArrayList intrinsic (the
+  `.count` → `size()` precedent) makes it exact.
+- **Dead kernels deleted.** `_kernel/io.l` and `_kernel_jvm/io.l`
+  (package `Std.IO`) had no importers anywhere in the repo — removed
+  rather than rewritten; dead extern surface is unauditable risk.
+- **W0002 routed to stderr on both backends (#4739).**  The
+  quantifier-not-enforced warning printed to stdout via `println`;
+  both codegens now call `Console.error`.  Rerouting exposed that
+  `Jvm.Codegen` lacked the `Std.Console` import — stage-1 silently
+  compiled the unresolvable call into a deferred runtime panic
+  (`unsupported method 'error' on the receiver type`) that fired on
+  every quantifier lowering; the import is added, and the
+  silent-deferral behaviour is itself a tracked compiler-quality gap.
+- **Zero-overhead boxing gate scoped to the test's classes.**
+  `assert-no-box-jvm.sh` counted `valueOf` calls across the whole
+  bundled JAR, so any legitimate stdlib box (the new kernel's opaque
+  `FileTime` — a boxed epoch-millis `Long` by design) broke the
+  hand-calibrated budget.  The count is now scoped to
+  `ClosureZeroOverheadSelfTest*` classes with the budget recalibrated
+  to 3 (one deliberate `valueOf` per synthesized `$Lambda$N` — the
+  erased `invoke(Object…)Object` ABI boxes the lambda's primitive
+  return; capture fields stay unboxed, which is the Stage-2 target).
+  The MSIL twin was already naturally scoped (stdlib links as a DLL).
+
+Tests: `file_jvm_self_test.l` (`@test_module`, the band-J6 acceptance
+criterion — a `_kernel_jvm`-backed module building and running under
+`java` in CI) and `console_roundtrip_jvm_main.l` (piped-stdin echo
+program asserting stdout, stderr, and EOF), both wired into
+`compiler-self-tests-jvm`.
+
+**Related:** docs/44 §5 J6, epic #2663, #2669, D-progress-543 (the
+phantom-shim elimination pattern), D-progress-553.
+
+---
+
+---
+
+### D-progress-556 — Native backend N5.8: List[T] / Map[K, V] on the lyric-rt kernels, `for` loops, indexing
+
+**Shipped.** `Std.Collections` becomes usable on `--target native`
+(`native/plan/08-work-items.md` §N5.8, plus the `for`-loop lowering the
+plan folds into Phase N2):
+
+- **Type mapping** — `List[T]` / `Map[K, V]` lower to the fixed
+  `LyricList` / `LyricMap` C layouts (every element in a 64-bit slot;
+  ref-typed entries retained by the container itself via the
+  `elems_are_refs` / `keys_are_strings` / `vals_are_refs` construction
+  flags).  Each instantiation gets its own struct name
+  (`__list<i32>`, `__map<%LyricString*,i32>`) so the Lyric-level
+  element types survive to method lowering, but all access goes
+  through `lyric_list_*` / `lyric_map_*` runtime calls — the struct
+  definitions are never GEPed.  Scalars widen to the i64 slot (sext /
+  zext / double bitcast) and narrow back on read; ref elements
+  ptrtoint / inttoptr.  A user-declared generic record or union named
+  `List` / `Map` still wins — the reserved names resolve only after
+  generic lookup fails, mirroring the type checker's convention.
+- **Constructors** — bare `newList()` / `newListWithCapacity(n)` /
+  `newMap()` construct against the expected collection type (the
+  binding annotation), and explicit `newList[Int]()` type applications
+  construct anywhere.  Map keys must be String (SipHash-keyed) or a
+  scalar; other ref-typed keys are a build error.
+- **Methods and members** — `xs.add/set/removeAt/clear/count`,
+  `m.add/containsKey/remove/count`, and `xs[i]` / `m[k]` indexing
+  (a map index panics on a missing key; `mapGet` is the
+  Option-returning accessor, lowered directly against the kernel
+  out-param call since its pure-Lyric body uses an `out`-mode
+  parameter the native backend does not lower).  `dictGetKeys` /
+  `dictGetValues` return fresh snapshot lists via the new
+  `lyric_map_keys` / `lyric_map_values` kernels (added to lyric-rt
+  with C unit tests), which also makes `Std.Collections`' pure-Lyric
+  wrappers (`mapKeys`, `mapValues`, `mapForEach`, …) lowerable.
+- **`for x in xs`** — lowers to an index loop over the kernel
+  length/get calls; the loop variable rebinds per iteration in its own
+  var scope (the element read is a borrow; binding retains, the
+  iteration scope releases), with `break` / `continue` unwinding
+  through the loop-depth snapshots.
+- **Verification** — `llvm_collections_self_test.l` (12 cases, wired
+  into the CI native step): Int/Long/String/record elements, set /
+  removeAt / clear churn under ASan, nested `List[List[Int]]`, lists
+  as record fields crossing dtor chains, function boundaries, scalar-
+  and String-keyed maps, `mapGet` hit/miss, snapshot lists outliving
+  their map, and the missing-key panic.
+
+**Not in this slice:** `slice[T]` (lands with the N5 kernel files that
+produce slices), list literals (`EList`), `Set[T]`, and map iteration
+without a snapshot.
+
+**Related:** D-progress-552, `native/plan/08-work-items.md` §N5.8,
+`native/plan/07-stdlib-port.md` §collections, D-N-012.
+
+---
+
+### D-progress-557 — Native backend N5: stdlib kernel twins over exception-free Result/Option seams (issue #4752)
+
+**Shipped.** `Std.File` (text I/O), `Std.Environment`, `Std.Process`
+(`runCapture`), and `Std.Time` (epoch/monotonic/sleep) now work on
+`--target native`, via the seam design from issue #4752: where the
+managed kernels rely on host exceptions (`try`/`catch Bug` in the pure
+layer — unlowerable natively under D-N-003's abort-only panic model),
+error handling moves *into* the kernels behind exception-free
+Result/Option seams that both kernel twins implement, and the shared
+pure layer becomes a thin target-neutral delegation.
+
+- **Managed seams** (`_kernel/`): `hostReadTextResult` /
+  `hostWriteTextResult` / `hostCreateDirResult` / `hostDeleteFileResult`
+  (`Std.FileHost`, with the FileNotFound message classification moved
+  from `Std.File` into the seam), `hostGetVarOpt`
+  (`Std.EnvironmentHost`), `hostEpochMillis` / `hostMonotonicNanos`
+  (`Std.TimeHost`), and `hostRunCaptureList` (list-argv,
+  `Std.ProcessCaptureHost` — the managed side joins to the quoted
+  argument string its BCL runner expects).  `Std.File.readText` and
+  friends, `Std.Environment.getVar`, `Std.Time.nowEpochMillis` /
+  `monotonicNanos`, and `Std.Process.runCapture` /
+  `runCaptureWithInput` now delegate to the seams; the duplicated
+  quoting helper `buildCaptureArgString` is gone from `Std.Process`.
+- **Native twins** (`_kernel_native/`): `file_host.l`,
+  `environment_host.l`, `time_host.l`, `process_capture_host.l` —
+  same package names, selected by basename (D-N-014 loader model),
+  implemented over the audited lyric-rt helpers with `NativePtr`
+  C-string bridging and `nativeAddrOf` out-params.  Recursive
+  directory creation keeps the managed twin's create-with-parents
+  semantics over single-level `mkdir(2)`; file delete stays idempotent
+  on not-found (BCL parity); the native process runner passes the argv
+  list through verbatim (fork/execvp, never a shell).  Explicit
+  native-side deferrals (tracked in #4752, not silent): non-empty
+  stdin to `runCaptureWithInput` returns `Err`; `timeoutMs` is not
+  enforced; bytes-mode file I/O, directory enumeration, `stat`,
+  `Std.Uuid`, and the `Std.Time` calendar surface remain unavailable.
+- **Codegen support the seams surfaced** (`llvm_codegen.l` /
+  `llvm_bridge.l`):
+  - *Unit-typed union/record payload fields* — `Result[Unit, E]`
+    previously panicked at layout (`sizeOfN` on void); a Unit field
+    now occupies one undef byte in the emitted struct
+    (`layoutFieldTys`, slot preserved so GEP indices line up) and
+    construction/pattern reads skip it (`Ok(value = ())` stores
+    nothing; `case Ok(_)` binds the Unit value directly).
+  - *Diverging branches in value position* — `panic(...)` in one arm
+    of a value-`if` previously died coercing `void` to the result
+    type; `lowerIf` now uses `lowerMatch`'s slot protocol (a diverged
+    branch skips its store; the slot is typed by the first
+    value-producing branch), and `lowerExprExpecting` passes diverged
+    values through uncoerced (`coerceUnlessDiverged`).
+  - *Type-only bundled units* — the bridge dropped bundled packages
+    with no reachable functions, losing their type declarations
+    (`Std.Core`'s `Result`/`Option` are referenced by other packages'
+    signatures without any `Std.Core` call); units now also survive on
+    records/unions/enums/distincts.
+  - *Collections as extern userdata* — a `List`/`Map` value meeting an
+    extern `NativePtr[Byte]` parameter passes as its raw kernel
+    pointer (`externAdaptArg`), which is how the native process twin
+    hands its argv `List[String]` to `lyric_process_run`.
+  - `compileToNativeWithFlags` — `compileToNative` with extra clang
+    driver flags (the self-test builds with `-fsanitize=address`).
+- **`case null` catch-all discovery (issue #4775)** — validating the
+  seams end-to-end exposed a silent pre-existing stdlib miscompile:
+  the language has no null pattern (D107), so the self-hosted parser
+  reads `case null` as a catch-all `PBinding("null")` on both managed
+  backends — the pre-seam `Std.Environment.getVar` reported **every**
+  variable as absent in self-hosted-compiled stdlib builds, which
+  breaks `Msil.MetadataReader.refPackDir()` on `DOTNET_ROOT`-only
+  .NET installs and cascades into the W0007 → `System.Runtime`
+  fallback → `Std.ConsoleHost` `TypeLoadException` chain (#4698's
+  likely mechanism).  Fixed for the environment surface in this
+  slice: `hostGetVarOpt` (both managed twins) detects the null via
+  `??` with a NUL-string marker — environment blocks are
+  NUL-delimited on POSIX and Windows, so no real value can equal
+  `"\0"` — a shape both the pinned F# mint seed and the self-hosted
+  emitters lower correctly.  The D107 `Option[String]` extern form
+  was tried first and reverted: the pinned seed predates D107
+  (commit 3b543556 is not an ancestor of the mint pin), so an
+  Option-returning `@externTarget` in the stdlib NREs the stage-0
+  CLI — a hard bootstrap constraint recorded in #4775.
+  `verifier_env_host.l` routes through the seam instead of its own
+  `?? ""` (which conflated empty-set with unset), and
+  `environment_tests.l` gains the present-variable round-trip that
+  would have caught all of this.  Remaining `String?` kernel
+  surfaces (console, path, io), JVM D107 parity (#3932), and a
+  null-pattern rejection diagnostic are tracked in #4775.
+- **lyric-rt**: `lyric_env_cwd_ok` (status-returning getcwd seam,
+  mirroring `lyric_env_get_ok`), with a C unit test.
+- **Verification** — `llvm_stdlib_self_test.l` (5 cases, wired into
+  the CI native step) compiles real programs importing `Std.File` /
+  `Std.Environment` / `Std.Process` / `Std.Time` through the full
+  bridge pipeline (`compileToNativeWithFlags` + the
+  `findStdlibSourcesNative` loader, exactly like `lyric build --target
+  native`) and asserts runtime behaviour via exit codes, all under
+  `-fsanitize=address`: file round-trip with FileNotFound
+  classification and idempotent delete, env set/get/missing/cwd, echo
+  capture with argv passthrough + exec-failure exit 127 + stdin
+  deferral `Err`, clock monotonicity across `sleepMillis`, and a
+  dedicated `Result[Unit, E]` + diverging-value-`if` case pinning the
+  codegen fixes.  The managed-side seam refactors are covered by the
+  existing stdlib test suite (`lyric-stdlib/tests/`) in CI.
+
+**Related:** D-progress-556, `docs/01-language-reference.md` §11 (FFI),
+`native/plan/07-stdlib-port.md`, issue #4752, D-N-003, D-N-014.
+
+### D-progress-558 — JVM: in-process multi-package project builds; overload/assignment/ldc codegen fixes; math/uuid/char/json kernels; `lyric test --features` (band J6, epic #2663)
+
+**Shipped.** The band-J6 batch that makes multi-package JVM manifest
+builds real and takes four more stdlib kernels off the phantom-shim
+list, driven end-to-end by the lyric-storage JVM parity work (#1444):
+
+- **In-process multi-package JVM project builds.**  The JVM bridge
+  gains a true project entry
+  (`compileProjectToJarBundledWithFeatures`): every project package is
+  compiled into the bundle alongside the transitive stdlib-import
+  closure.  Sibling packages ride the same machinery as stdlib files
+  (registries, extern seeds, call-graph reachability, middle end,
+  codegen) with two deliberate differences — their parse / cfg /
+  middle-end diagnostics are fatal, and a codegen failure is always a
+  build error, never a J003 skip.  The retired
+  `emitProjectJvmViaSubprocess` path was an **unbounded process-spawn
+  loop** (its `--internal-project-build` child re-entered
+  `emitProject` with the same multi-package request and re-spawned
+  itself), masked only because no multi-package JVM manifest build had
+  ever been exercised end-to-end.
+- **Stdlib alias rewrite.**  Bundled stdlib files never got
+  `Aliases.rewriteFile`, so a package calling its kernel through an
+  aliased import (`import Std.CharHost as Host`) fell to the
+  instance-FFI guess and was silently J003-skipped — `Std.Char` and
+  `Std.Parse` had never worked on the JVM target at all.
+- **Overload resolution.**  The cross-package call registry's
+  name-only keys made same-name overloads collide (first wins): a
+  3-arg `Std.String.substring` call linked the 2-arg overload's
+  descriptor (VerifyError).  Arity-suffixed keys (`…@<argc>`) are
+  tried first; defaulted-parameter calls fall back unchanged.
+- **Assignment coercion.**  `contentLength = n` where `n` is an
+  erased-`Object` `Option[Long]` payload stored without unboxing
+  (`lstore` on an Object — VerifyError).  Both `AssEq` arms now
+  coerce with the call-argument `coerceArgTo` discipline.
+- **`ldc_w`.**  `emitPushInt`'s large-literal arm truncated pool
+  indexes past 255 into `ldc`'s single-byte operand (its float/string
+  siblings already had the wide check).
+- **Kernels de-phantomed** (the D-progress-543/555 pattern):
+  `Std.Math` (tau/log2/truncate/sign as pure bodies over the bound
+  JDK externs), `Std.Uuid` (`UUID(0,0)` ctor, `toString()`,
+  `fromString` in try/catch), `Std.Char` (`Character.hashCode` for
+  char→int, `Character.toString(int)+charAt(0)` for int→char,
+  `getType()` category check for isPunctuation), and `Std.Json` —
+  pure Lyric over `Std.Yaml.parseJson` (the JDK ships no JSON API):
+  record-typed `JsonDoc`/`JsonElement`/enumerator handles over the
+  `YamlValue` tree, the same `JsonValueKind` ordinals, a
+  canonical-JSON writer for `GetRawText` (documented divergence from
+  .NET's raw-input-slice semantics), and enumerators that re-assign
+  through their `inout` parameter.  The dead `getNumericValue` extern
+  is deleted on both targets (no consumers anywhere — the Std.IO
+  precedent).
+- **Three more codegen fixes surfaced by the first real bundled
+  consumers.**  (1) Matching on an *imported* union through a typed
+  scrutinee derived the case class from the in-package type guess
+  (`Std/JsonHost/YamlValue$YMapping`) — `resolveCaseClassJvm` now
+  trusts the derivation only when it names a registered case class,
+  falling back to the bundle-wide ctor registry.  (2) List indexing on
+  an imprecisely-typed receiver (an erased match binding) emitted
+  `ArrayList.get` with no cast — the receiver is checkcast before the
+  index is pushed.  (3) An `if` with a value-yielding then-arm and a
+  void else-arm (a trailing `else if` with no `else`) routed a result
+  the else-path never produced — mixed-arm ifs degrade to void.
+- **Erased `.count` dispatch became a synthesised helper.**  The
+  D-progress-555 inline runtime-class dispatch was safe only with an
+  empty operand stack; `i < pairs.count` in a while condition
+  evaluates it with `i` stacked (VerifyError).  Every package class
+  now carries a synthesised `__lyricCount(Object)I` static helper —
+  the branches live in the helper, the member-access site emits one
+  branch-free `invokestatic`.  Also: primitive int→long widening in
+  `coerceArgTo` (`value = 0` on an `out Long` underflowed `lstore`),
+  and a mixed-width match-binding limitation (double and long payloads
+  sharing one named slot) worked around in `Std.JsonHost` with
+  distinct binding names — the general per-arm slot-typing fix is
+  band-J4 scope.
+- **Imported-type descriptors name the real class.**  Each package's
+  non-generic declared types (unions, records, protected, opaque) are
+  exposed as dotted FQNs in the same per-package maps the extern-type
+  seed unions, so a descriptor written against an imported Lyric type
+  (`JsonElement.node: YamlValue`) resolves to `Std/Yaml/YamlValue`
+  instead of the in-package guess (NoClassDefFoundError).
+  Construction resolution gained package-scoped ctor keys
+  (`<pkg>::<name>`, own case wins — `InvalidDocument` exists in both
+  XmlError and YamlError and the bare first-wins entry gave Yaml's
+  code Xml's class), and match tests validate the derived case class
+  against the case registry with a union-name suffix-search fallback.
+- **`default()` into primitive locals.**  Generic `default()` lowers
+  to `aconst_null`; binding it to a primitive-annotated local
+  checkcast+unboxed the null (NPE in `Std.Json.tryGetLong`) — the
+  declared type's zero value is pushed instead.
+- **Relational String comparisons.**  `a < b` on Strings emitted
+  `String.equals` + a `nop` placeholder — wrong result and a stackmap
+  mismatch (VerifyError in Std.Sort's string comparator).  All four
+  relational ops now lower to lexicographic `String.compareTo` vs 0
+  in both branch emitters.
+- **Value equality on erased references (security-relevant).**  `==`
+  on reference operands whose static type is not literally String
+  compared by IDENTITY — `segs[i] == ".."` on a split-segment element
+  reported false for equal strings, letting path traversal through
+  lyric-storage's `isSafeKey`.  Erased/unknown reference `==`/`!=` now
+  dispatch through null-safe `java.util.Objects.equals` (records and
+  unions carry synthesized `equals`, preserving structural semantics).
+  Also in this round: relational String comparison via `compareTo`
+  (was `equals` + a nop placeholder), long-vs-int comparison widening
+  (`nv != 42` fed `lcmp` a mixed pair), interface types joining the
+  imported-type seed, and `Std.Core`'s generic Option/Result
+  predicates (`isErr`/`isOk`/`isSome`/`isNone`) lowering to
+  `instanceof` intrinsics — generic functions are never emitted as
+  JVM methods, so a call the monomorphizer could not specialize
+  linked against nothing.
+- **JVM Json kernel: no `Std.Parse` coupling, explicit Int32 range
+  contract (#4797).**  The numeric accessors converted Long payloads
+  through `Std.Parse` string round-trips; they now convert directly
+  (`toDouble`/`toInt`) with an explicit range check — `GetInt32`
+  panics (the .NET OverflowException contract, a catchable Bug) and
+  `TryGetInt32` reports false for out-of-range values instead of
+  truncating.  This also removes the kernel's only dependency on the
+  J003-skipped `Std.Parse` (#4799), so numeric JSON access works on
+  the JVM regardless of the Parse fix.
+- **`lyric test` feature flags.**  `--features` /
+  `--no-default-features` / `--all-features` (documented for
+  `lyric test` in docs/24 §3 since D045, never implemented) with
+  `lyric build`'s grammar and precedence — how target-gated kernels
+  (`@cfg(feature = "jvm")`) are selected when running a manifest
+  suite on the non-default target.
+- **lyric-storage JVM kernel (#1444).**  `Storage.Kernel.Jvm`
+  rewritten as pure Lyric over the JDK (`java.util.Base64`,
+  `MessageDigest` MD5, `HexFormat` uppercase hex,
+  `File.getCanonicalPath` for the traversal defence, `java.io`
+  streams, `listFiles()` enumeration) mirroring `Storage.Kernel.Net`
+  function-for-function; both kernels `@cfg`-gated (`dotnet` /
+  `jvm`) so the data plane's unqualified `host*` calls resolve to
+  whichever kernel survives erasure; `[features]` table and the JVM
+  kernel registered in `lyric-storage/lyric.toml`.
+
+**Related:** docs/44 §4 m-46–m-52, epic #2663, #2669, #1444,
+D-progress-555.
+
+### D-progress-559 — JVM: `Std.Parse` works end-to-end (dot-named dispatch order, pure-Lyric parse kernel, generic-sig erasure) (band J6, epic #2663)
+
+**Shipped.** Closes #4799's user-visible half: `Std.Parse` bundles and
+runs on `--target jvm`.
+
+- **Dot-named dispatch before extern FFI.**  The imported-type seed
+  (D-progress-558 m-58) put every bundled package's declared types into
+  the extern-type map, so `ParseError.message(e)` — a dot-named
+  FUNCTION on Std.Errors' union — resolved as a static JDK call on
+  "Std.Errors.ParseError" and panicked in metadata resolution,
+  J003-skipping `Std.Parse`.  `lowerMethodCall` now checks the Lyric
+  dot-named funcSigs registration first; a genuine extern JDK type
+  never has one, so the FFI fast path is unaffected for real externs.
+  The value-receiver form (`e.message()` on a TYPED imported-union
+  binding) already worked post-seed via the qualified
+  `<cls>.<member>` fallback; the erased-receiver form remains J4
+  (#2667).
+- **Pure-Lyric JVM parse kernel on a target-neutral surface.**  The
+  phantom `lyric.stdlib.jvm.ParseHost` shim had a DIFFERENT arity
+  than the .NET twin (2-arg vs 4-arg `hostTryParseDouble`), so
+  `Std.Parse` never compiled on the JVM even once bundled.  Both
+  kernels now export the same 2-arg surface: .NET wraps its
+  invariant-culture 4-arg extern; the JVM twin parses via
+  `Double.parseDouble` with parity guards (hex floats and trailing
+  type suffixes rejected — the .NET parser refuses them;
+  "Infinity"/"NaN" kept) and mirrors `Boolean.TryParse` (trimmed,
+  case-insensitive).  T0086 note: the mode checker requires `out`
+  params assigned on every path and does not credit try/catch arms or
+  out-forwarding — both kernels assign up front.
+- **Generic registry sigs erase their own type params.**  A generic
+  function's registered JVM sig previously mapped `T` through the
+  in-package class guess (`unwrapOr[T]` → `Std/Core/T`), so an
+  unmonomorphized call's descriptor referenced a phantom class —
+  NoClassDefFoundError at link time.  Sigs now erase the decl's own
+  type params to Object, and `unwrapOr` lowers through a synthesised
+  `__lyricUnwrapOr(Object, Object)Object` helper beside
+  `__lyricCount`.
+
+Verified by `lyric-stdlib/tests/parse_tests.l` compiled and run on
+`--target jvm`, plus the storage suite (34/34) and Std.Json probe
+regressions.
+
+**Related:** docs/44 m-67–m-69, epic #2663, #2669, #4799,
+D-progress-558.
+
+---
+
+### D-progress-560 — Migrate the remaining `case null` call sites off the self-hosted catch-all miscompile (issue #4775 item 1)
+
+**Shipped.** #4750/#4752 fixed `Std.Environment.getVar`'s `case null`
+miscompile (issue #4775: `null` is an ordinary identifier under the
+self-hosted lexer, so `case null -> ...` parses as `PBinding("null")` — a
+catch-all that always wins the first arm on both the MSIL and JVM
+backends) by routing it through a NUL-string-marker `??` seam
+(`hostGetVarOpt`) instead. That fix's own investigation flagged three
+more call sites still using the broken idiom directly; this closes item 1
+of #4775's remaining-work list for two of them and fixes a third,
+previously-undiscovered instance found while auditing the JVM kernel for
+more `case null` uses:
+
+- **`Std.Console.readLine` (`std/console.l`).** `case null -> Err(EndOfInput)`
+  as the first arm meant `readLine()` reported EOF on *every* call in any
+  self-hosted-compiled binary — real stdin input was never observed. New
+  `hostReadLineOpt(): Option[String]` seams in both `_kernel/console_host.l`
+  and `_kernel_jvm/console_host.l` mirror `hostGetVarOpt`'s `?? "\u{0000}"`
+  marker (a NUL byte cannot appear in a line `Console.ReadLine()` /
+  `BufferedReader.readLine()` actually returns — it terminates the read).
+  `readLine()` now matches `Some`/`None` instead of `null`/a bare binding.
+  Covered by the existing `console_roundtrip_jvm_main.l` CI job (pipes
+  `alpha\nbeta\n` and asserts the echoed lines + `eof-after:2`), which this
+  fix should turn from red to green.
+- **`_kernel_jvm/file_host.l`'s `listChildren` / `deleteRecursively`
+  (previously undocumented instance of the same bug).** Both used
+  `match d.listFiles() { case null -> ...; case _ -> ...iterate... }` —
+  the `case null` arm always won, so `hostEnumerateFiles`/
+  `hostEnumerateDirectories` (backing `Std.File.listFiles`/`listDirs`)
+  always returned empty, and `deleteRecursively` (backing
+  `Std.File.deleteDirRecursive`) never recursed into subdirectories,
+  silently leaving every descendant behind before the final `d.delete()`
+  no-oped on the non-empty directory. Both null/wildcard matches are
+  replaced with `d.listFiles() ?? []` — coalescing null straight to an
+  empty slice needs no branch at all here, since "no children" and "null"
+  were already handled identically. Covered by the existing
+  `file_jvm_self_test.l` "directory create, list, and recursive delete"
+  case (asserts `listFiles`/`listDirs` counts and that `deleteDirRecursive`
+  actually empties the tree), also CI-wired.
+
+**Bonus find: `??`'s JVM codegen had its own latent bug — three rounds.**
+The `file_host.l` fix's `d.listFiles() ?? []` was the first `??` use in
+the tree over a non-`String` lhs on `--target jvm`, and CI immediately
+caught a real `VerifyError` (`Operand stack underflow`) in
+`Std/FileHost.listChildren`. `BCoalesce`'s JVM lowering
+(`jvm/codegen/02_exprs.l`) `dup`-ed the lhs then ran straight into
+`if_acmpne` — a *binary* reference comparison that pops two operands —
+with no second value ever pushed; the declared-but-unused `nullL` label
+was the tell that this path was unfinished. Comparing lhs against its own
+duplicate is always reference-equal, so the branch never fired, and the
+unconditional `pop` on fallthrough popped an already-empty stack.
+
+The first fix attempt (pushing `aconst_null` before the compare,
+mirroring MSIL's one-operand `brfalse`) cleared the underflow but traded
+it for a second, subtler `VerifyError`: `Inconsistent stackmap frames`.
+`bytecode.l`'s `assembleCodeWithFrames` documents (and `LLabel`'s
+`resetStack` enforces) that **every branch target's StackMapTable frame
+is generated assuming an empty operand stack** — no codegen elsewhere in
+the JVM backend leaves a value on the stack across a branch to a shared
+join label; every existing ternary-shaped construct (`lowerMatchExpr`,
+`lowerIfExpr`) routes the join through a result *local slot* instead.
+`dup` + `if_acmpne`/`if_acmpeq` inherently leaves the tested value on the
+stack at the branch target, violating that invariant regardless of which
+comparison instruction is used. Final fix: store the lhs to a slot
+immediately, reload-and-test with the unary `ifnull` (which consumes
+its operand identically on both the branch and fallthrough paths, so no
+residual value survives to either target), and route both arms through a
+second result slot — matching the established pattern exactly. This was
+silently broken for every non-`String` `??` on JVM until this PR
+exercised one; `String` uses (`hostGetVarOpt`) happened to be the only
+shape previously compiled — same accidental narrow test coverage pattern
+as the original `case null` bug.
+
+That slot-based fix made the `Std.Console` (`String`) case pass, but
+`Std.File` (an array-typed `??`) hit a *third* `VerifyError`:
+`Instruction type does not match stack map` — `Object[]` vs `File[]` on
+the same result slot across the two arms. `coerceArgTo`'s existing
+`JArray` case (used for coercing List-typed values into `slice[T]`
+parameters, #4700) documents why: this codebase's uniform "slice ABI"
+for array-shaped values is `Object[]`, never the concrete element type —
+`d.listFiles()`'s auto-FFI-resolved concrete `File[]` return type and an
+empty-list-literal `[]` RHS (which can only ever lower to `ArrayList` →
+`.toArray(): Object[]`) can never agree on a *concrete* element type, but
+both are Object[]-covariant. Final fix: when the join type is an array,
+normalize the result slot (and `BCoalesce`'s own reported type) to
+`JArray(Object)` and route both arms through `coerceArgTo` — a no-op
+bytecode-wise for the already-array lhs (ref-array covariance needs no
+cast) and the existing `ArrayList.toArray()` conversion for the rhs. The
+`String`/general-object path is unaffected (`coerceArgTo`'s normalization
+only triggers for `JArray` lhs types).
+
+That normalization traded the `VerifyError` for a *compile-time* one:
+`Std.FileHost.listChildren`'s `children[i].isFile()` now failed auto-FFI
+resolution (`no matching instance or inherited method for
+'java.lang.Object.isFile()'`) — `children`'s erasure to `Object[]` means
+an unannotated `val c = children[i]` carries the erased `Object` static
+type into the member call. `LBLet`/`LBVal`'s existing lowering (05_stmts.l)
+already `coerceArgTo`s an initialiser to an explicit annotation's type,
+inserting a `checkcast` when they differ — so `val c: JFile =
+children[i]` (rather than the unannotated `val c = ...`) is enough to
+recover the concrete type at the one place each loop needs it, with no
+further codegen changes. Both `listChildren` and `deleteRecursively`
+needed the annotation.
+
+**Not done (out of scope here, still tracked in #4775):** `std/path.l:73`'s
+`hostPathGetDirectoryName` uses `?? ""` rather than `case null`, so it
+doesn't hit this exact miscompile, but conflates an empty result with an
+unset one (item 1's third bullet) — left for a follow-up. Item 3 (reject
+`null` in pattern position once no real usage remains) and item 4
+(D107 Option-coercion in-bundle wiring) are unaffected by this change.
+
+**Related:** #4775, #4750, #4752, #4698, #4738 (W0007 — the diagnostic that
+led to discovering this class of bug via publish run #1774→#1775),
+D-progress-544, D-progress-553, D-progress-554.
+
+### D-progress-561 — JVM: two-slot closure captures (Long/Double) — operand-stack tracking + parenthesised-capture collection (band J4, epic #2663)
+
+**Shipped.** Closes #4798: `Long`/`Double` primitives captured by a
+closure now work on `--target jvm`.  Two independent JVM-only bugs, both
+verified against the MSIL backend (which handles both correctly):
+
+- **Operand-stack under-count.**  `LInvokevirtual` / `LInvokespecial` /
+  `LInvokeinterface` tracked their stack effect as a flat `0`, while
+  `LInvokestatic` already used a precise net delta.  A receiver-based
+  call returning a TWO-SLOT value (`Double.doubleValue()D`,
+  `Long.longValue()J`) pops 1 (the receiver) and pushes 2 — net +1 — so
+  the flat `0` under-counted `peakStack`.  Closures pass `maxStack=0`
+  and rely entirely on that inference, so a closure body that produced
+  or unboxed a wide value mid-expression was rejected with
+  `VerifyError: Operand stack overflow`.  All three receiver-based
+  invokes now use `fieldSlotSize(ret) - slotSum(ps) - 1`.  The change
+  only ever RAISES `maxStack` and only affects methods that infer it
+  (closures / factories), so explicitly-sized methods are untouched.
+- **Parenthesised captures dropped.**  `collectRefNamesExpr` (the
+  capture-name walker) had no `EParen` case, so a name referenced ONLY
+  inside parentheses in a lambda body —
+  `{ x -> (x.toDouble() * multiplier) }` — was invisible to capture
+  collection.  It was never captured, allocated no closure field, and
+  read as the null/zero default: harmless for a boxed reference, an NPE
+  for a `Double`/`Long` unbox.  `EParen(inner)` now recurses in
+  `collectRefNamesExpr` and `collectBoundNamesExpr`.
+
+Verified by `closure_zero_overhead_self_test.l` (18/18 on **both**
+targets — tests 3-5 Float/Long/Double capture and 14-15 wide-var
+mutation previously failed on JVM) plus a broad JVM self-test
+regression sweep.
+
+**Related:** docs/44 m-70–m-71, epic #2663, #2667 (band J4), #4798.
+### D-progress-562 — Native backend: `slice[T]` on the list repr (D-N-015); bytes I/O, dir enumeration, `args()` (issue #4752)
+
+**Shipped.** `slice[T]` now lowers on `--target native`, and with it the
+next tranche of #4752's native-side deferrals: bytes-mode file I/O
+(`Std.File.readBytes` / `writeBytes`), directory enumeration
+(`listFiles` / `listDirs` / `listFilesRecursive` / `listDirsRecursive`),
+`Std.Environment.args()`, and `toArray()` snapshots.
+
+- **D-N-015 (supersedes D-N-012's slice half)** — natively, `slice[T]`
+  shares the RC'd `LyricList` kernel representation instead of the
+  planned borrowed `{ptr, len}` fat pointer.  A borrowed pointer is
+  unsafe without lifetime checking for *returned* slices
+  (`readBytes` hands back a container that must own its storage), and
+  the shared repr costs zero new runtime or ARC machinery: `for`
+  loops, indexing, and `.length` reuse the list paths verbatim.
+  Costs accepted and documented in the decision: `slice[Byte]`
+  spends one 64-bit slot per byte, and `.count` / `.length` become a
+  harmless superset on both container spellings (the type checker
+  still gates the source surface).  Codegen: `TSlice` arms in
+  `typeToN` / `typeToNOpt` / `typeToNEnvOpt` delegate to the list
+  lowering; `.length` joins `.count` in member lowering; `toArray()`
+  / `toList()` lower to a new `lyric_list_copy` kernel (shallow copy
+  with per-element retain, so snapshots are immune to source
+  mutation); `NativePtr[T]` written as `TGenericApp` resolves too
+  (the extern declarations in kernel files spell it that way).
+- **Return-plus-ok-flag kernel protocol** — ref-container results
+  cross the C boundary by *return value* plus an `Int` ok out-param
+  (`lyric_file_read_bytes`, `lyric_dir_list2`), never a container
+  out-param: overwriting a `var xs = newList()` slot from C would
+  leak the rc=1 initialiser (string out-params get away with it only
+  because `""` literals are immortal statics).  The kernels always
+  return a fresh owned list, empty on failure.
+- **lyric-rt** — `lyric_list_copy` (push-based shallow copy),
+  `lyric_file_read_bytes` (whole-file bytes, interior NULs survive),
+  `lyric_dir_list2` (readdir over the ok-flag protocol),
+  `lyric_file_write_bytes` (byte-narrowing buffer, EINTR-safe), and
+  `lyric_args_set` / `lyric_args_get` (the synthesised C `main` now
+  stores argc/argv before dispatching to the Lyric main; `args_get`
+  builds a fresh list including argv[0]).  Each has a C unit test in
+  `lyric_rt_test.c` (rc assertions on copied refs, interior-NUL
+  round-trip, missing-file ok=0, unset-args empty list).
+- **Stdlib seams** — `Std.File.readBytes` / `writeBytes` /
+  `listFiles` / `listDirs` become thin delegations to new
+  exception-free Result seams (`hostReadBytesResult` /
+  `hostWriteBytesResult` / `hostListFilesResult` /
+  `hostListDirsResult`) implemented by all three kernel twins:
+  managed and JVM twins wrap the existing hosts in `try`/`catch`
+  (all failures classify as `IoError`, matching the pre-seam pure
+  layer, which never distinguished FileNotFound for these); the
+  native twin builds on the new kernels, re-joining `lyric_dir_list2`'s
+  bare entry names onto the directory and filtering by
+  existence-probe kind, since the managed twin yields absolute paths
+  split by file/dir kind.  `Std.EnvironmentHost` (native) gains
+  `hostGetCommandLineArgs` over `lyric_args_get`.
+- **Verification** — `llvm_stdlib_self_test.l` grows to 7 cases (all
+  `-fsanitize=address`): bytes round-trip incl. a zero byte,
+  `listFiles` absolute-path membership, `args()[0]` non-empty, and a
+  second program covering nested-dir `listFilesRecursive` plus a
+  `toArray()` snapshot asserted immune to source-list mutation.
+  JVM parity for the new seams is covered by the existing
+  `file_jvm_self_test.l` battery; the managed seams by
+  `lyric-stdlib/tests/`.
+- **`deleteDirRecursive` seam (review follow-up, #4809)** — the pure
+  layer's `try`/`catch Bug` body moved into a
+  `hostDeleteDirRecursiveResult` seam on all three twins (the same
+  conversion as the bytes/enumeration functions — that `try` is
+  exactly what cannot lower natively under D-N-003).  The native twin
+  implements it depth-first single-pass (each directory is listed once
+  and every child probed once — a subdirectory recurses, anything else
+  is unlinked; #4827), then `rmdir(2)` via a new `rtDirRemove` extern
+  (`lyric_dir_remove` already existed in lyric-rt); the JVM twin
+  additionally gains an `isDirectory` probe so
+  a missing path reports `Err(IoError)` — previously
+  `java.io.File.delete()`'s boolean-failure reporting made the JVM
+  twin silently return `Ok` there, diverging from both the managed
+  twin (BCL `DirectoryNotFoundException`) and the pure layer's
+  documented contract.  The two new self-test programs now clean up
+  their temp trees with it (the second deletes a *populated* nested
+  tree and asserts not-found on the double delete).
+- **Symlink safety in native recursive delete (#4833)** — the entry
+  classifier must not follow symlinks: `stat(2)` reports a
+  symlink-to-directory as a directory, so a naive recursive delete would
+  descend through the link and wipe files *outside* the tree being
+  removed.  The native twin now gates the recursion on a new
+  `lyric_path_is_dir_nofollow` kernel (`lstat` + `S_ISDIR`), so a
+  directory symlink is removed as a link (`unlink(2)`) instead of
+  traversed, matching `rm -rf` and modern BCL `Directory.Delete`.  A C
+  unit test pins the classifier (symlink-to-dir → 0 under `lstat`, 1
+  under `stat`); a native self-test creates a directory symlink via
+  `ln -s` and asserts the target survives the delete.  The JVM twin's
+  `deleteRecursively` has the same latent symlink-following (pre-existing
+  — `java.io.File.isDirectory()` follows links); the parity fix
+  (`java.nio.file.Files.isSymbolicLink`) is tracked separately because
+  the JVM `lyric test` path could not be validated in this environment.
+- **Formatter note** — two files acquired `result`-named locals that
+  #4778's `KwResult` bug renders unformattable (`val result = ...`
+  formats to `val  = ...` and the loss-check refuses); the locals
+  were renamed rather than skipped.
+
+**Related:** D-N-015 (`docs/03-decision-log.md`), D-progress-556,
+D-progress-557, `native/plan/03-type-mapping.md`, issues #4752, #4778,
+#4795, #4809, #4827, #4833.
+
+### D-progress-563 — JVM: mixed-width match bindings — verifier-type-aware slot reuse (band J4, epic #2663)
+
+**Shipped.** Resolves docs/44 m-57 for real (previously worked around in
+the `Std.JsonHost` kernel with distinct binding names, D-progress-558):
+a `match` binding the SAME name across sibling arms at different
+verifier-slot types — `case AsDouble(v)` (VDouble) then `case AsLong(v)`
+(VLong), both width 2 — now compiles and runs on `--target jvm`.
+
+Root cause: `allocSlot` reused a local slot whenever the *width*
+matched, but this backend frames each slot with a single verifier type
+for the whole method (`storeTypes` drives both the entry pre-init and
+the StackMapTable), so a slot carrying both VDouble and VLong made the
+match-join frame unmergeable (VerifyError: Inconsistent stackmap
+frames).
+
+Fix: a new `sameFrameSlotType` helper (mirroring `Jvm.Lowering.jvmToVerifier`
+without the cross-package dependency) gates slot reuse on verifier-slot-type
+equality rather than width.  All int-like primitives collapse to VInteger
+and still share a slot (an Int binding reused for a Byte is fine);
+`Float`/`Long`/`Double` and distinct ref classes each get a fresh slot, so
+every slot carries exactly one verifier type.  The name is re-registered to
+the new slot automatically, so no call site changes.
+
+Verified by two new cross-target cases in
+`pattern_lowering_self_test.l` (Double/Long/Int arms binding `v`, results
+routed through both a Double and a Long slot — 14/14 on **both** targets)
+plus a 13-suite JVM regression sweep.  Because the fix enforces the
+one-type-per-slot invariant globally, the `Std.JsonHost` distinct-name
+workaround is no longer required (kept as-is; harmless).
+
+**Related:** docs/44 m-57 / m-72, epic #2663, #2667 (band J4).
+### D-progress-564 — Native backend N6.4: `[native]` manifest table (triple / opt_level / extra_libs)
+
+**Shipped.** `lyric.toml` gains an optional `[native]` table that supplies
+defaults for `--target native` (LLVM backend) builds, closing work item
+N6.4 from `native/plan/08-work-items.md`.
+
+- **Parsing** (`manifest.l`): a new `NativeConfig` record (`triple`,
+  `optLevel`, `extraLibs`) and `Option[NativeConfig]` field on `Manifest`,
+  parsed by `assembleNative` (mirroring `assembleMaven`) and threaded into
+  `parseManifest`. `opt_level` is validated against the same set the `--opt`
+  CLI flag accepts (`0`/`1`/`2`/`3`/`s`); each `extra_libs` entry must be a
+  non-empty, whitespace-free library name (#4865); any violation is
+  `InvalidField(native, …)`. An absent table parses to `None`.
+- **Build wiring** (`cli/cli_build.l` + `emitter.l`): `buildOneNative` reads
+  `[native]` via `resolveNativeConfig` (honouring an explicit `--manifest`,
+  else the nearest discovered `lyric.toml`) and merges it with the CLI knobs
+  — `--triple` / `--opt` override the manifest `triple` / `opt_level` when
+  non-empty; `extra_libs` is manifest-only and additive. `emitNative` /
+  `emitNativeInProcess` gained an `extraLibs` parameter that becomes
+  `-l<name>` clang flags routed through the existing `extraClangFlags` slot
+  on `LlvmBridge.compileToNativeWithFlags` (no bridge signature change). An
+  **explicitly supplied** `--manifest` that fails to read/parse (e.g. an
+  invalid `opt_level`) aborts the build with the diagnostic (#4863); a
+  **discovered** manifest degrades silently so a single-file native build
+  is never blocked by an unrelated malformed lyric.toml up the tree.
+- **Tests**: `manifest_self_test.l` gains `native section` (all three keys),
+  `native defaults` (partial table → per-field defaults), `native absent`
+  (no table → `None`), `native empty table` (header-only → `None`, #4862),
+  `native invalid opt_level`, and `native invalid extra_libs` (whitespace in
+  a lib name → `InvalidField`, #4865).
+- **Docs**: language reference §3.6 (`[native]` table + CLI-override
+  precedence) and the `--target native` CLI paragraph; book
+  `appendix-b-quick-reference.md` (manifest table + native build note).
+
+**Related:** D-progress-540/562 (native backend), `native/plan/08-work-items.md`
+§N6.4, `docs/20-project-as-dll.md`.

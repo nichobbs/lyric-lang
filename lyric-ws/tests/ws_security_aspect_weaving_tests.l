@@ -29,8 +29,9 @@ import Ws.Aspects
 // ─── WsAuth ───────────────────────────────────────────────────────────────────
 //
 // Guard any handler named `wsAuthGuarded*` with the WsAuth template.
-// WsAuth is C-mode (@inline_template): it reads args.authToken from the woven
-// handler, so the handler must declare an `authToken: String` parameter.
+// WsAuth is row-constrained B'-mode (docs/56): it reads args.authToken via a
+// `where TArgs has { authToken: String }` row clause, so the handler must
+// declare an `authToken: String` parameter.
 // The woven return type is Result[Unit, Unit] — WsAuth short-circuits with
 // Err(()) on verification failure, so the handler must return Result[Unit, Unit].
 aspect WsAuthGuard from Ws.Aspects.WsAuth {
@@ -87,7 +88,7 @@ test "WsAuth aspect: enabled=false bypasses JWT verification" {
 // ─── WsRateLimit ─────────────────────────────────────────────────────────────
 //
 // Guard any handler named `wsRateLimitGuarded*` with the WsRateLimit template.
-// WsRateLimit is C-mode (@inline_template): it reads args.ctx.connectionId
+// WsRateLimit is row-constrained B'-mode (docs/56): it reads args.ctx.connectionId
 // (a nested field on the `ctx` argument), so the handler must declare a
 // `ctx: WsContext` parameter. The woven return type is Result[Unit, Unit].
 //

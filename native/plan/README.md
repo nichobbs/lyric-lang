@@ -13,9 +13,66 @@ console/math/libc kernel + bridge/CLI subsets of N4.4/N5/N6.  Three plan
 corrections were required and are codified in `docs/03-decision-log.md`
 §D-N-014 (package head/location, loader-based kernel selection,
 `Native`-suffixed entry points) — read that entry alongside this plan.
-Remaining work items (N2 records/unions/ARC insertion, N3, the rest of
-N4/N5/N6, N7 CI) execute from `08-work-items.md` as written, modulo the
-D-N-014 naming mapping.
+
+Phase N2's core SHIPPED (D-progress-545): records, unions, enums,
+distinct types, pattern matching, and ARC retain/release insertion per
+`04-arc-design.md` Rules 1–7, verified end-to-end under
+AddressSanitizer/LeakSanitizer (`llvm_heap_self_test.l`).  Closures
+(N2.6) SHIPPED in D-progress-548 (by-value captures, synthesised
+capture-releasing destructors, signature-keyed closure types, indirect
+calls); `NativeWeak[T]` (N2.5) SHIPPED in D-progress-549 — all of
+Phase N2 is complete.
+
+N3.1 SHIPPED (D-progress-546 types, D-progress-547 functions): generic
+records/unions instantiate on demand per concrete type-argument tuple
+(constructor-argument inference + expected-type threading), and generic
+functions instantiate per call site with unification-based inference,
+cache-first recursion handling, and generic UFCS.  Tuples (N3.3)
+SHIPPED in D-progress-550 as synthesised records.  Interfaces/vtables
+(N3.2) and protected types (N3.4) remain from N3.
+
+Phase N4 is COMPLETE (D-progress-540 shipped N4.1/N4.6 and the
+kernel/CLI subsets; D-progress-551 the nativeAddrOf codegen;
+D-progress-552 the rest): the N0100 mode-checker FFI boundary
+(NativePtr[T]/nativeAddrOf/nativeNullPtr only in `@unsafe_ffi`
+functions and `_kernel_native/` packages, var-only operands, no frame
+escape), callback trampolines (a Lyric closure passed to an extern
+func parameter of function type, the closure riding the callback's
+trailing NativePtr[Byte] userdata slot), and the `llvm_ffi_self_test.l`
+suite (extern libc/libm calls, C-string bridging, pthread trampoline
+round-trips under ASan).
+N5.8 SHIPPED (D-progress-556): `List[T]` / `Map[K, V]` lower to the
+lyric-rt kernels (64-bit slots, container-owned retention flags),
+with `for`-loop lowering over lists, indexing, and the reserved
+`Std.Collections` accessors (`newList` / `newMap` / `mapGet` /
+`dictGetKeys` / `dictGetValues`; `lyric_map_keys` / `lyric_map_values`
+added to lyric-rt).  Verified ASan-clean by
+`llvm_collections_self_test.l`.
+The N5 stdlib kernel files SHIPPED (D-progress-557, issue #4752):
+`_kernel_native/` twins for `Std.FileHost`, `Std.EnvironmentHost`,
+`Std.TimeHost`, and `Std.ProcessCaptureHost` over exception-free
+Result/Option seams both kernel twins implement, plus the codegen
+support they surfaced (Unit-typed union/record payload fields for
+`Result[Unit, E]`, diverging `panic` branches in value-position
+`if`/`match`, type-only bundled units).  Verified ASan-clean by
+`llvm_stdlib_self_test.l`, which compiles real `Std.File` /
+`Std.Environment` / `Std.Process` / `Std.Time` programs through the
+full bridge pipeline.  Native-side deferrals (stdin/timeout in the
+process runner, bytes-mode file I/O, dir enumeration, Std.Uuid, the
+Std.Time calendar surface) are tracked in #4752.
+`slice[T]` SHIPPED (D-N-015, D-progress-562): slices share the RC'd
+list representation (immutable by construction; the planned borrowed
+fat pointer is superseded — see D-N-015), unlocking bytes-mode file
+I/O, directory enumeration (`listFiles`/`listDirs`/recursive),
+`Std.Environment.args()`, and `toArray()` on the native target,
+verified under ASan by the extended `llvm_stdlib_self_test.l`.
+N6.4 SHIPPED (D-progress-564): the `[native]` manifest table
+(`triple` / `opt_level` / `extra_libs`) supplies defaults for
+`--target native` builds, with the `--triple` / `--opt` CLI flags
+overriding and `extra_libs` adding `-l<name>` clang link flags.
+Remaining work items (rest of N3, N7.2)
+execute from `08-work-items.md` as written, modulo the D-N-014 naming
+mapping.
 
 ## Reading order
 

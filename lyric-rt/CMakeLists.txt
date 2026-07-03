@@ -11,6 +11,8 @@ add_library(lyric_rt STATIC
     src/lyric_posix.c
     src/lyric_collections.c
     src/lyric_async.c
+    src/lyric_fs.c
+    src/lyric_process.c
 )
 target_include_directories(lyric_rt PUBLIC include)
 target_compile_options(lyric_rt PRIVATE -Wall -Wextra -Werror)

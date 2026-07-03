@@ -22,6 +22,7 @@ import Lyric.CfgGate as CfgGate
 import Std.Sort as Sort
 import Std.Time as Time
 import Std.Format as Format
+import Std.Char as Ch
 
 // Helper to extract build kind from manifest if available, defaulting to "lib".
 func readBuildKindFromManifest(manifestOpt: in Option[String]): String {
@@ -41,17 +42,106 @@ func readBuildKindFromManifest(manifestOpt: in Option[String]): String {
   }
 }
 
+// Resolve the `[native]` config for a `--target native` build (N6.4):
+// honour an explicit `--manifest`, else discover the nearest lyric.toml.
+// An **explicitly supplied** `--manifest` that cannot be read or parsed
+// (e.g. a malformed `[native]` table, or an out-of-range `opt_level`) is
+// surfaced as `Err(message)` so the build fails loudly — the user pointed
+// at that file on purpose (#4863).  A **discovered** manifest degrades to
+// `Ok(None)` on any read/parse failure so a native single-file build is
+// never blocked by an unrelated malformed lyric.toml found up the tree.
+// `Ok(None)` also covers "no manifest found" and "no `[native]` table".
+func resolveNativeConfig(manifestPath: in Option[String]): Result[Option[Mf.NativeConfig], String] {
+  // Explicitly typed so the emitter cannot mistype a bare `None` arm as
+  // `Option<String>` (the self-hosted lowerMatchExprMsil fall-through bug,
+  // #1663 / #3943, which an earlier draft of this function tripped through
+  // ilverify): every "no config" leaf returns this pinned value.
+  val noneCfg: Option[Mf.NativeConfig] = None
+  match manifestPath {
+    case Some(p) -> match File.readText(p) {
+      case Err(e) -> Err(error = "build: cannot read manifest " + p + ": " + IOError.message(e))
+      case Ok(mfText) -> match Mf.parseManifest(mfText, p) {
+        case Err(me) -> Err(error = "build: " + ManifestError.message(me))
+        case Ok(m) -> Ok(value = m.native)
+      }
+    }
+    case None -> match discoverManifest(None) {
+      case None -> Ok(value = noneCfg)
+      case Some(mf) -> match File.readText(mf) {
+        case Err(_) -> Ok(value = noneCfg)
+        case Ok(mfText) -> match Mf.parseManifest(mfText, mf) {
+          case Err(_) -> Ok(value = noneCfg)
+          case Ok(m) -> Ok(value = m.native)
+        }
+      }
+    }
+  }
+}
+
+// Rejects the two unambiguous foot-guns from `--package-version` (#4426): an
+// empty value (which would embed a blank <Version> and fail cryptically
+// inside contract metadata / `dotnet pack`) and a leading 'v'/'V' prefix (a
+// common git-tag artifact — NuGet SemVer2 does not accept a "v" prefix).
+// Full SemVer2 grammar validation is intentionally left to `dotnet pack`
+// itself: NuGet accepts a wider version syntax (up to 4 numeric components)
+// than strict SemVer, so re-implementing that grammar here risks rejecting
+// versions NuGet would happily accept.
+pub func validatePackageVersionArg(v: in String): Option[String] {
+  if Str.isEmpty(Str.trim(v)) {
+    return Some(value = "--package-version requires a non-empty value")
+  }
+  if v.length > 1 and (v[0] == 'v' or v[0] == 'V') and Ch.isAsciiDigit(v[1]) {
+    return Some(
+      value = "--package-version '" + v + "' has a leading '" + ("" + v[0]) +
+        "' prefix, which NuGet SemVer2 does not accept — use '" +
+        Str.substring(v, 1, v.length - 1) +
+        "' instead"
+    )
+  }
+  None
+}
+
+// Message for the `--release-from-dll` positional-argument warning: source
+// files passed alongside `--release-from-dll` are ignored (the DLL is
+// already built).  Pulled out of `cmdBuild` so the exact wording is
+// unit-testable without invoking the native AOT release path (#4282).
+pub func releaseFromDllIgnoredArgsWarning(positional: in List[String]): String {
+  "build: warning: source-file arguments are ignored alongside --release-from-dll: " + Str.joinList(", ", positional)
+}
+
+// Filter a `--extra-refs-dir` directory listing down to the extra reference
+// DLLs for `--release-from-dll`: only `.dll` files, excluding the primary
+// DLL itself (`dllBase`, the release target's own basename) and
+// `Lyric.Stdlib.dll` (colocated independently by the release pipeline via
+// `locateStdlib`, so including it here would duplicate it).  Sorted for
+// deterministic ordering.  Pulled out of `cmdBuild` so the filtering logic
+// is unit-testable without invoking the (heavy, toolchain-dependent) native
+// AOT release path (#4282).
+pub func filterExtraRefsDlls(files: in List[String], dllBase: in String): List[String] {
+  val result: List[String] = newList()
+  val sorted = Sort.sortStrings(files.toArray())
+  for f in sorted {
+    val fBase = Path.basename(f)
+    if Str.endsWith(f, ".dll") and fBase != dllBase and fBase != "Lyric.Stdlib.dll" {
+      result.add(f)
+    }
+  }
+  result
+}
+
 // Compile `sourcePath` to a DLL at `outPath`.
 // Returns the exit code: 0 on success, 1 on error.
 // `manifestPath` is forwarded to the generator pre-processor so custom
 // @generate(Pkg.Name) annotations can resolve their generator DLLs.
-func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarget, manifestPath: in Option[String]): Int {
+// `pub` so `cli_build_self_test.l` can drive the stdlib/restored-dep
+// colocation behavior directly against a temp source file (#4127).
+pub func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarget, manifestPath: in Option[String]): Int {
   buildOneNative(sourcePath, outPath, target, manifestPath, "", "")
 }
 
 // `nativeTriple` / `nativeOpt` only apply to `--target native` (the
 // `--triple` / `--opt` flags); empty strings mean host triple / -O2.
-func buildOneNative(
+pub func buildOneNative(
   sourcePath: in String,
   outPath: in String,
   target: in CompileTarget,
@@ -104,7 +194,36 @@ func buildOneNative(
     }
     case _ -> ()
   }
-  val result = if isNativeTarget { Emitter.emitNative(req, nativeTriple, nativeOpt) } else { Emitter.emit(req) }
+  // Merge [native] manifest defaults with the CLI knobs (N6.4): the
+  // --triple/--opt flags (non-empty) override the manifest triple/opt_level;
+  // extra_libs is manifest-only and applied unconditionally.
+  var effTriple = nativeTriple
+  var effOpt = nativeOpt
+  val effLibs: List[String] = newList()
+  if isNativeTarget {
+    val ncResult = resolveNativeConfig(manifestPath)
+    match ncResult {
+      case Err(msg) -> {
+        printErr(msg)
+        return 1
+      }
+      case Ok(ncOpt) -> match ncOpt {
+        case Some(nc) -> {
+          if effTriple == "" {
+            effTriple = nc.triple
+          }
+          if effOpt == "" {
+            effOpt = nc.optLevel
+          }
+          for lib in nc.extraLibs {
+            effLibs.add(lib)
+          }
+        }
+        case None -> ()
+      }
+    }
+  }
+  val result = if isNativeTarget { Emitter.emitNative(req, effTriple, effOpt, effLibs) } else { Emitter.emit(req) }
   var hadError = false
   for d in result.diagnostics.toArray() {
     match d.severity {
@@ -146,6 +265,11 @@ func buildOneNative(
       // `lyric run`.  Libraries (no `main`) are left untouched: colocation there
       // is unnecessary and must never run for a stdlib self-build (which has no
       // `main` and would otherwise be clobbered by the seed bundle).
+      // Deliberately does NOT call copyRestoredDepDlls: buildOne is the
+      // single-file compile path and never resolves manifest dependencies to
+      // DLL paths (only buildProject does, via [project.packages] +
+      // [dependencies]).  If buildOne ever grows dep resolution using
+      // `manifestPath`, add a matching copyRestoredDepDlls call here (#4126).
       if Release.declaresEntryMain(source) {
         copyRuntimeDepsBeside(outPath, findCompiledLibDir())
       }
@@ -306,10 +430,14 @@ func cmdBuild(argv: in slice[String]): Int {
       i += 1
     }
   }
+  match packageVersionArg {
+    case Some(v) -> match validatePackageVersionArg(v) { case Some(msg) -> { printErr("build: " + msg); return 1 }; case None -> () }
+    case None -> ()
+  }
   match releaseFromDll {
     case Some(dll) -> {
       if positional.count > 0 {
-        printErr("build: warning: source-file arguments are ignored alongside --release-from-dll: " + Str.joinList(", ", positional))
+        printErr(releaseFromDllIgnoredArgsWarning(positional))
       }
       if not File.fileExists(dll) {
         printErr("build: --release-from-dll: file not found: " + dll)
@@ -323,28 +451,17 @@ func cmdBuild(argv: in slice[String]): Int {
         case _ -> ()
       }
       val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
-      val extraRefs: List[String] = newList()
-      match extraRefsDir {
+      val extraRefs: List[String] = match extraRefsDir {
         case Some(refsDir) -> {
           match File.listFiles(refsDir) {
-            case Ok(files) -> {
-              val dllBase = Path.basename(dll)
-              val sorted = Sort.sortStrings(files.toArray())
-              for f in sorted {
-                val fBase = Path.basename(f)
-                // Exclude the primary DLL and Lyric.Stdlib.dll (locateStdlib adds it independently).
-                if Str.endsWith(f, ".dll") and fBase != dllBase and fBase != "Lyric.Stdlib.dll" {
-                  extraRefs.add(f)
-                }
-              }
-            }
+            case Ok(files) -> filterExtraRefsDlls(files, Path.basename(dll))
             case Err(e) -> {
               printErr("build: --extra-refs-dir: " + IOError.message(e))
               return 1
             }
           }
         }
-        case None -> ()
+        case None -> newList()
       }
       val absDll = if Path.isAbsolute(dll) { dll } else { Path.join(Environment.currentDirectory(), dll) }
       val outNative = match explicitOut {
@@ -395,6 +512,19 @@ func cmdBuild(argv: in slice[String]): Int {
         packageVersionArg
       )
     }
+    // `[build] kind = "aot"` in lyric.toml triggers the native AOT pipeline
+    // even without `--release` on the command line.  Computed before the
+    // `--watch` check so watch mode can reject (rather than silently ignore)
+    // the manifest's AOT directive (#4203).
+    val autoAot = match target {
+      case Dotnet -> readBuildKindFromManifest(Some(value = mfPath)) == "aot"
+      case Jvm -> false
+      case Native -> false
+    }
+    if watch and autoAot {
+      printErr("build: --watch is not supported with [build] kind = \"aot\" in " + mfPath)
+      return 1
+    }
     if watch {
       return watchLoop(
         projectWatchFiles(mfPath),
@@ -409,13 +539,6 @@ func cmdBuild(argv: in slice[String]): Int {
           pkgVer = packageVersionArg
         )
       )
-    }
-    // `[build] kind = "aot"` in lyric.toml triggers the native AOT pipeline
-    // even without `--release` on the command line.
-    val autoAot = match target {
-      case Dotnet -> readBuildKindFromManifest(Some(value = mfPath)) == "aot"
-      case Jvm -> false
-      case Native -> false
     }
     if autoAot {
       return buildReleaseProject(
@@ -459,6 +582,14 @@ func cmdBuild(argv: in slice[String]): Int {
       case _ -> ()
     }
     return buildReleaseSingle(sourcePath, explicitOut, target, ridArg, manifestArg)
+  }
+
+  // `--rid` only applies to `--release` (single-file builds have no
+  // `kind = "aot"` auto-trigger); warn here so the flag isn't silently
+  // dropped, mirroring the project-mode warning above (#4206).
+  match ridArg {
+    case Some(_) -> printErr("build: warning: --rid has no effect without --release")
+    case None -> ()
   }
 
   val outPath = match explicitOut {
@@ -527,11 +658,12 @@ func buildReleaseSingle(
 
   val srcDir = Path.dirname(sourcePath)
   val stem = stemOf(Path.basename(sourcePath), 2)  // strip ".l"
-  // Name the staging assembly after the PACKAGE, not the source filename.  The
-  // AOT trampoline references `<pkgName>.Program.main`, and AOT resolves it
-  // through the assembly's identity; if the assembly were named from the file
-  // stem (e.g. `im.dll` for `package IntMain`) that reference fails to load at
-  // runtime (FileNotFoundException for the package-named assembly).  The native
+  // Name the staging assembly after the PACKAGE, not the source filename, for
+  // consistency with the emitter's assembly-naming convention and with
+  // buildReleaseProject's staging DLL (named from proj.outputAssembly /
+  // proj.name).  `ilc` roots the native build from the PE's `EntryPointToken`
+  // (set by the MSIL emitter), not from the assembly's file name — there is
+  // no C# trampoline in this pipeline (see `Lyric.Release`).  The native
   // output keeps the file-stem name (what the user expects from `foo.l`).
   val stagingDll = Path.join(Path.join(srcDir, ".lyric-release"), pkgName + ".dll")
   val buildExit = buildOne(sourcePath, stagingDll, Dotnet, manifestArg)
@@ -1138,23 +1270,7 @@ func buildProject(
   }
 
   val nugetPaths = resolveNugetAssets(mfDir)
-
-  // Warn if manifest has [nuget] entries but no resolved assemblies
-  // (likely because project.assets.json is missing or stale).
-  match manifest.nuget {
-    case Some(nugetSec) -> {
-      if nugetSec.entries.count > 0 and nugetPaths.count == 0 {
-        val assetsPath = Path.join(Path.join(mfDir, "obj"), "project.assets.json")
-        if not File.fileExists(assetsPath) {
-          printErr(
-            "warning: [nuget] dependencies declared but project.assets.json not found. " +
-              "Run 'lyric restore' or 'dotnet restore' to resolve NuGet dependencies."
-          )
-        }
-      }
-    }
-    case None -> ()
-  }
+  warnIfNugetUnresolved(mfDir, manifest.nuget, nugetPaths)
 
   val asmName = stemOf(Path.basename(outPath), 4)
   val projReq = EmitProjectRequest(
@@ -1277,12 +1393,13 @@ func buildProject(
       }
     }
     case Jvm -> {
-      if mavenJarColonSep.length > 0 {
-        val mpPath = Path.join(outDir, "module-path.txt")
-        match File.writeText(mpPath, mavenJarColonSep) {
-          case Err(e) -> printErr("build: warning: cannot write " + mpPath + ": " + IOError.message(e))
-          case Ok(_) -> ()
-        }
+      // Always written (even empty) so `$(cat bin/module-path.txt)` (book
+      // ch14) never hits a missing-file shell error — only its *contents*
+      // depend on whether Maven deps were declared and restored (#3559).
+      val mpPath = Path.join(outDir, "module-path.txt")
+      match File.writeText(mpPath, mavenJarColonSep) {
+        case Err(e) -> printErr("build: warning: cannot write " + mpPath + ": " + IOError.message(e))
+        case Ok(_) -> ()
       }
     }
     // Unreachable: project-mode native builds are rejected before the
@@ -1339,11 +1456,19 @@ func collectProjectSourcePaths(mfPath: in String): (List[String], Bool) {
   while pi < proj.packages.count {
     val pkgEntry = proj.packages[pi]
     if pkgEntry.paths.count > 0 {
-      // Explicit file list (TOML array form): add each named file.
+      // Explicit file list (TOML array form): add each named file, checked
+      // for existence for parity with the single-path/directory branch below
+      // (silently watching a non-existent file wastes an LSP/watch handle
+      // and gives no diagnostic — #4526).
       var fi = 0
       while fi < pkgEntry.paths.count {
         val absFile = if Path.isAbsolute(pkgEntry.paths[fi]) { pkgEntry.paths[fi] } else { Path.join(mfDir, pkgEntry.paths[fi]) }
-        paths.add(absFile)
+        if File.fileExists(absFile) {
+          paths.add(absFile)
+        } else {
+          printErr("package '" + pkgEntry.name + "': path not found: " + absFile)
+          hadFatal = true
+        }
         fi += 1
       }
     } else {

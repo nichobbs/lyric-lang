@@ -163,3 +163,84 @@ test "named-args out of declaration order land in the right fields" {
   assertEqualInt(m.count, 99, "count reads back correctly despite reversed named args")
   assertEqual(m.label, "hello", "label reads back correctly despite reversed named args")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. Assignment to a local named `result` (m-23).
+//    `result` is a contextual keyword that parses as EResult even in
+//    assignment-target position; the JVM assignment lowering dropped the
+//    store on the floor (evaluate + pop), so accumulation loops over a
+//    `result` local — including the stdlib's own
+//    `Std.ProcessCapture.buildArgString` — silently produced their initial
+//    value.
+// ─────────────────────────────────────────────────────────────────────────────
+test "assignment to a local named 'result' is observed" {
+  // Accumulation loop over a `result` local (the buildArgString shape).
+  val parts = ["a", "b", "c"]
+  var result = ""
+  var i = 0
+  while i < parts.count {
+    if i > 0 {
+      result = result + " "
+    }
+    result = result + parts[i]
+    i = i + 1
+  }
+  assertEqual(result, "a b c", "accumulation into a `result` local survives the loop")
+}
+
+test "reassignment of an Int local named 'result' is stored" {
+  var result = 1
+  result = result + 41
+  assertEqualInt(result, 42, "compound-shaped reassignment of a `result` Int local is stored")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. Slice literal passed to a slice[T] parameter (#4700).
+//    The EList literal lowers as an ArrayList; an erased slice parameter is
+//    Object[], so without the call-boundary conversion the class failed
+//    verification at load ("ArrayList is not assignable to
+//    [Ljava/lang/Object;").
+// ─────────────────────────────────────────────────────────────────────────────
+func sliceParamLen(parts: slice[String]): Int {
+  parts.count
+}
+
+test "slice literal coerces to a slice[T] parameter" {
+  assertEqualInt(sliceParamLen(["a", "b", "c"]), 3, "ArrayList literal converts to Object[] at the call boundary")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8. forall in a @runtime_checked contract compiles and passes (#3227).
+//    EForall/EExists previously panicked the JVM codegen; they now lower to
+//    `true` (sound overapproximation, matching MSIL #1506) with a W0002
+//    warning at compile time.
+// ─────────────────────────────────────────────────────────────────────────────
+func quantified(x: in Int): Int
+  ensures: forall (j: Int) { j * 0 == 0 }
+{
+  x + 1
+}
+
+test "forall in a runtime-checked contract lowers to true instead of panicking" {
+  assertEqualInt(quantified(41), 42, "function with a forall ensures clause runs")
+}
+
+// Unsigned Byte widening (#4855): a JVM `byte` is signed and sign-extends on
+// field / local / array reload (200 -> -56), so `.toInt()` / `.toLong()` /
+// `.toDouble()` must mask to 0..255 to match the unsigned MSIL result.  A
+// silent miscompile before the fix — no error, just a negative value.
+record ByteHolder {
+  b: Byte
+}
+
+test "Byte widening above 127 stays unsigned (#4855)" {
+  val v: Byte = 200.toByte()
+  assertEqualInt(v.toInt(), 200, "local Byte 200 -> Int 200, not -56")
+  assertEqualLong(v.toLong(), 200i64, "local Byte 200 -> Long 200")
+  assertTrue(v.toDouble() == 200.0, "local Byte 200 -> Double 200.0")
+
+  val h = ByteHolder(b = 255.toByte())
+  assertEqualInt(h.b.toInt(), 255, "field Byte 255 -> Int 255, not -1")
+  assertEqualLong(h.b.toLong(), 255i64, "field Byte 255 -> Long 255, not -1")
+  assertTrue(h.b.toDouble() == 255.0, "field Byte 255 -> Double 255.0, not -1.0")
+}

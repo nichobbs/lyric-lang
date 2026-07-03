@@ -1,0 +1,59 @@
+name: NuGet OIDC trusted-publishing login
+description: >-
+  Exchange the GitHub Actions OIDC token for a short-lived NuGet API key via
+  NuGet.org Trusted Publishing, and fail fast if the exchange silently
+  produced an empty key.
+
+# Requires the calling workflow to declare `permissions: id-token: write` —
+# composite actions cannot grant permissions themselves, only consume what
+# the caller already has.
+#
+# One-time setup on nuget.org: create a Trusted Publishing policy owned by
+# the `user` input's account, scoped to Repository Owner `nichobbs`,
+# Repository `lyric-lang`, Workflow File `publish.yml`. The `user` input is
+# the nuget.org profile name (NOT an email).
+
+inputs:
+  user:
+    description: nuget.org profile name owning the Trusted Publishing policy.
+    required: true
+
+outputs:
+  api-key:
+    description: Short-lived NuGet API key exchanged from the OIDC token.
+    value: ${{ steps.nuget-auth.outputs.NUGET_API_KEY }}
+
+runs:
+  using: composite
+  steps:
+    # Exchange the GitHub Actions OIDC token for a short-lived NuGet API key
+    # via NuGet.org Trusted Publishing:
+    #   https://learn.microsoft.com/nuget/nuget-org/trusted-publishing
+    # There is no public raw token-exchange endpoint — NuGet/login is the
+    # supported client.
+    - name: NuGet login (OIDC → short-lived API key)
+      uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841  # v1
+      id: nuget-auth
+      with:
+        user: ${{ inputs.user }}
+
+    # NuGet/login can complete "successfully" (no action error) while still
+    # producing an empty API key output — e.g. an unconfigured Trusted
+    # Publishing policy, an owner/repo/workflow-file mismatch, or a
+    # nuget.org outage during the OIDC exchange. Without this guard an
+    # empty key silently reaches `dotnet nuget push`, which fails with a
+    # generic 401/403 that gives no indication the root cause was the
+    # OIDC exchange rather than the push itself.
+    - name: Verify NuGet API key
+      shell: bash
+      env:
+        NUGET_KEY: ${{ steps.nuget-auth.outputs.NUGET_API_KEY }}
+      run: |
+        if [ -z "$NUGET_KEY" ]; then
+          echo "::error::NuGet/login produced an empty API key. Check that" \
+            "the 'user' input matches the nuget.org account owning the" \
+            "Trusted Publishing policy, and that the policy is scoped to" \
+            "Repository Owner 'nichobbs', Repository 'lyric-lang', Workflow" \
+            "File 'publish.yml'."
+          exit 1
+        fi

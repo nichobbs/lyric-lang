@@ -104,28 +104,19 @@ pub func symbolTypeIdOpt(s: in Symbol): Option[TypeId] {
 // Phase 1 (M5.2-M5.3) supports only System.Func and System.Action delegates.
 // Other delegate types (Predicate, EventHandler, Comparison, Converter, etc.)
 // are deferred to Phase 2 for proper support with metadata-based detection.
+// For other extern types, conservatively reject to prevent assigning lambdas
+// to non-delegate types (System.Exception, System.String, HttpClientHandler,
+// etc.).  Unknown delegate types should be wrapped in a Lyric interface
+// (docs/51) until metadata-based detection is available.
+// O(1) via `externDelegateFlags`, a side index `symTableAdd` maintains
+// alongside `importedOpaqueNames`/`unionDeclIndex` (#2027, #2178) — this
+// function is called from `argSatisfiesParam` for every `TyUser`-typed call
+// argument, so a full symbol scan per call does not scale (#3903).
 pub func symTableIsExternDelegateType(tbl: in SymbolTable, id: in TypeId): Bool {
-  var i = 0
-  while i < tbl.symbols.count {
-    match tbl.symbols[i].kind {
-      case DKExternType(tid, decl) -> {
-        if typeIdEq(tid, id) {
-          val clr = decl.clrName
-          if clr.startsWith("System.Func") or clr.startsWith("System.Action") {
-            return true
-          }
-          // For other extern types, conservatively reject to prevent assigning
-          // lambdas to non-delegate types (System.Exception, System.String, HttpClientHandler, etc.).
-          // Unknown delegate types should be wrapped in a Lyric interface
-          // (docs/51) until metadata-based detection is available.
-          return false
-        }
-      }
-      case _ -> ()
-    }
-    i = i + 1
+  match mapGet(tbl.externDelegateFlags, toString(id.id)) {
+    case Some(v) -> v
+    case None -> false
   }
-  false
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -158,6 +149,12 @@ pub record SymbolTable {
   /// `List` read is the established safe pattern.
   unionDeclIndex: Map[String, Int]
   unionDeclList: List[UnionDecl]
+  /// `toString(TypeId.id)` → whether the `DKExternType` with that id is a
+  /// `System.Func`/`System.Action` delegate.  Side index populated by
+  /// `symTableAdd` so `symTableIsExternDelegateType` (called on every
+  /// `TyUser`-typed call argument in `argSatisfiesParam`) is O(1) instead of
+  /// a full symbol scan (#3903).
+  externDelegateFlags: Map[String, Bool]
   // One `impl Iface for Target` conformance, by resolved `TypeId`.
 }
 
@@ -174,7 +171,8 @@ pub func newSymbolTable(): SymbolTable {
     impls = newList(),
     importedOpaqueNames = newMap(),
     unionDeclIndex = newMap(),
-    unionDeclList = newList()
+    unionDeclList = newList(),
+    externDelegateFlags = newMap()
   )
 }
 
@@ -204,9 +202,9 @@ pub func symTableTypeImplements(tbl: in SymbolTable, target: in TypeId, iface: i
 }
 
 pub func symTableAdd(tbl: in SymbolTable, sym: in Symbol): Unit {
-  // Maintain the TypeId-keyed side indexes (#2027, #2178).  Each registration
-  // gets a fresh TypeId, so first-in-wins guards only against pathological
-  // double-adds of the same symbol.
+  // Maintain the TypeId-keyed side indexes (#2027, #2178, #3903).  Each
+  // registration gets a fresh TypeId, so first-in-wins guards only against
+  // pathological double-adds of the same symbol.
   match sym.kind {
     case DKOpaque(oid, _) -> {
       if sym.isImported {
@@ -221,6 +219,14 @@ pub func symTableAdd(tbl: in SymbolTable, sym: in Symbol): Unit {
       if not tbl.unionDeclIndex.containsKey(key) {
         tbl.unionDeclList.add(decl)
         tbl.unionDeclIndex.add(key, tbl.unionDeclList.count - 1)
+      }
+    }
+    case DKExternType(tid, decl) -> {
+      val key = toString(tid.id)
+      if not tbl.externDelegateFlags.containsKey(key) {
+        val clr = decl.clrName
+        val isDelegate = clr.startsWith("System.Func") or clr.startsWith("System.Action")
+        tbl.externDelegateFlags.add(key, isDelegate)
       }
     }
     case _ -> {

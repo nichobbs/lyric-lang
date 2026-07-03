@@ -137,7 +137,7 @@ aspect ApiRetry from Resilience.Retry {
 | `initialDelayMs` | `Int` | `100` | Initial backoff in milliseconds |
 | `maxDelayMs` | `Int` | `30000` | Cap on backoff |
 | `backoffFactor` | `Int` | `2` | Delay multiplier per retry (exponential) |
-| `jitterFraction` | `Float` | `0.1` | Jitter parameter (accepted for API compatibility; not applied) |
+| `jitterFraction` | `Float` | `0.1` | Uniform ±jitterFraction×delay random jitter added to each backoff delay (clamped to `[0, maxDelayMs]`); `0.0` disables jitter |
 | `logRetries` | `Bool` | `true` | Log each failed attempt at warn level |
 
 **Security warning for `logRetries`**: When `logRetries` is `true` (the default), the raw error message is written to your log aggregator verbatim. If your functions return credentials, tokens, API keys, or personally identifiable information (PII) inside `Err` values, you MUST either:
@@ -147,6 +147,31 @@ aspect ApiRetry from Resilience.Retry {
 Functions handling authentication, payment, or personal data should always do one of these to prevent information disclosure (see lyric-lang #602).
 
 **Env var**: `LYRIC_ASPECT_<LocalName>_<FIELD>` (e.g., `LYRIC_ASPECT_APIRETRY_MAXATTEMPTS=5`)
+
+**Testing**: the backoff/jitter math is exposed as a standalone
+`pub func backoffDelay(...)` (like `CircuitBreakerState` below, public so
+tests can exercise it directly rather than only indirectly through a woven
+`Retry` aspect's real sleep timing):
+
+```lyric
+import Resilience
+
+// No jitter: exact exponential backoff.
+Resilience.backoffDelay(100, 2, 0, 30000, 0.0f32) // -> 100
+Resilience.backoffDelay(100, 2, 1, 30000, 0.0f32) // -> 200
+Resilience.backoffDelay(100, 2, 2, 30000, 0.0f32) // -> 400
+
+// With jitter: result falls within [delay*(1-jitterFraction), delay*(1+jitterFraction)],
+// clamped to [0, maxDelayMs].
+Resilience.backoffDelay(1000, 2, 0, 30000, 0.5f32) // -> somewhere in [500, 1500]
+```
+
+| Function | Signature |
+|---|---|
+| `backoffDelay` | `(initialDelayMs: Int, backoffFactor: Int, attempt: Int, maxDelayMs: Int, jitterFraction: Float): Int` |
+
+See `lyric-resilience/tests/resilience_tests.l` for the zero-jitter,
+cap-enforcement, and jitter-clamp-boundary test cases.
 
 ### `Resilience.CircuitBreaker`
 
@@ -177,6 +202,40 @@ aspect ServiceBreaker from Resilience.CircuitBreaker {
 | `cooldownMs` | `Int` | `30000` | Duration in open state before trying half-open |
 
 **Env var**: `LYRIC_ASPECT_<LocalName>_<FIELD>` (e.g., `LYRIC_ASPECT_SERVICEBREAKER_FAILURETHRESHOLD=10`)
+
+**Testing**: the circuit-breaker state machine is exposed as a standalone
+`pub protected type CircuitBreakerState` with public constructor and
+transition helpers, so tests can exercise the open/half-open/closed
+transitions directly without weaving the aspect or waiting on a real clock —
+`nowMs` is an explicit parameter, not read from the system clock:
+
+```lyric
+import Resilience
+
+val st = Resilience.makeCircuitBreakerState()
+
+// Record failures at explicit timestamps.
+Resilience.cbStateRecordFailure(st, /* threshold */ 3, /* nowMs */ 1000)
+Resilience.cbStateRecordFailure(st, 3, 2000)
+Resilience.cbStateRecordFailure(st, 3, 3000)
+
+// Check whether the circuit is open at a given (also explicit) instant.
+Resilience.cbStateCheckOpen(st, /* cooldownMs */ 10000, /* nowMs */ 3500) // -> true (open)
+
+// A successful probe closes the circuit again.
+Resilience.cbStateRecordSuccess(st)
+```
+
+| Function | Signature |
+|---|---|
+| `makeCircuitBreakerState` | `(): CircuitBreakerState` — a fresh, closed state |
+| `cbStateRecordFailure` | `(s: CircuitBreakerState, threshold: Int, nowMs: Long): Unit` |
+| `cbStateRecordSuccess` | `(s: CircuitBreakerState): Unit` — closes the state |
+| `cbStateCheckOpen` | `(s: CircuitBreakerState, cooldownMs: Long, nowMs: Long): Bool` |
+
+See `lyric-resilience/tests/resilience_tests.l` for the full set of
+transition scenarios these helpers cover (threshold, cooldown, half-open
+probe admission, and probe-failure re-opening).
 
 ## Composition example
 

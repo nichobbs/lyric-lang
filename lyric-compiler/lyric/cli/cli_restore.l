@@ -723,7 +723,7 @@ func cmdRestore(argv: in slice[String]): Int {
 // §10a. Maven artifact restore helpers
 // ─────────────────────────────────────────────────────────────────────────────
 // Escape a string value for embedding in a JSON string literal.
-func jsonEscape(s: in String): String {
+pub func jsonEscape(s: in String): String {
   Str.replace(Str.replace(s, "\\", "\\\\"), "\"", "\\\"")
 }
 
@@ -763,7 +763,7 @@ func findMavenResolverJar(): Option[String] {
 }
 
 // Build the JSON request body for lyric-resolver.jar's stdin protocol.
-func buildMavenResolverRequest(maven: in MavenSection, cacheDir: in String, outputDir: in String): String {
+pub func buildMavenResolverRequest(maven: in MavenSection, cacheDir: in String, outputDir: in String): String {
   var coords = "["
   var ci = 0
   while ci < maven.entries.count {
@@ -801,22 +801,47 @@ func buildMavenResolverRequest(maven: in MavenSection, cacheDir: in String, outp
 // Uses structural splitting rather than a full JSON parser: `jarPath` values
 // are file-system paths that cannot contain `"` on any supported platform.
 //
-// CONTRACT: expects compact JSON (no whitespace between `"jarPath":"` and the
-// value).  Pretty-printed output (`"jarPath": "..."`) will yield zero paths —
-// the resolver protocol requires compact format.
-func extractMavenJarPaths(jsonOutput: in String): List[String] {
+// Tolerant of arbitrary JSON-insignificant whitespace between the `"jarPath"`
+// key and its value's opening quote — i.e. both the resolver's native
+// compact output (`"jarPath":"..."`) and a pretty-printed response
+// (`"jarPath": "..."`, extra spaces/newlines) resolve correctly (#4723).
+// Deliberately NOT implemented via `Yaml.parseJson` + a `Yaml.YSequence`
+// pattern match: that cross-package (this package consuming
+// `Std.Yaml.YamlValue` from the stdlib bundle, mirroring the restored-
+// dependency setup) match crashes at runtime with `Field not found:
+// 'Std.Yaml.YamlValue_YSequence.items'` — see #4726 (a compiler bug in
+// cross-package union-case field resolution, confirmed via CI on a prior
+// attempt at this exact fix). Do not reintroduce that pattern here until
+// #4726 is resolved.
+pub func extractMavenJarPaths(jsonOutput: in String): List[String] {
   val paths: List[String] = newList()
-  val pieces = Str.split(jsonOutput, "\"jarPath\":\"")
+  val pieces = Str.split(jsonOutput, "\"jarPath\"")
   var pi = 1
   while pi < pieces.length {
     val piece = pieces[pi]
-    match Str.indexOf(piece, "\"") {
-      case None -> ()
-      case Some(closeIdx) -> {
-        val raw = Str.substring(piece, 0, closeIdx)
-        if raw.length > 0 {
-          val unescaped = Str.replace(Str.replace(raw, "\\\\", "\\"), "\\\"", "\"")
-          paths.add(unescaped)
+    // Skip a ':' then any run of whitespace before the value's opening
+    // quote.  A piece that doesn't start with ':' is a false-positive split
+    // — e.g. `"jarPath"` occurring as a string VALUE elsewhere in the
+    // document rather than as this key — and is skipped rather than
+    // misparsed.
+    var idx = 0
+    if idx < piece.length and piece[idx] == ':' {
+      idx += 1
+      while idx < piece.length and Ch.isAsciiWhiteSpace(piece[idx]) {
+        idx += 1
+      }
+      if idx < piece.length and piece[idx] == '"' {
+        idx += 1
+        val afterOpenQuote = piece.substring(idx, piece.length - idx)
+        match Str.indexOf(afterOpenQuote, "\"") {
+          case None -> ()
+          case Some(closeIdx) -> {
+            val raw = Str.substring(afterOpenQuote, 0, closeIdx)
+            if raw.length > 0 {
+              val unescaped = Str.replace(Str.replace(raw, "\\\\", "\\"), "\\\"", "\"")
+              paths.add(unescaped)
+            }
+          }
         }
       }
     }

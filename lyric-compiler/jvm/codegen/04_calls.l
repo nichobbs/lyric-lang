@@ -189,7 +189,79 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
       val javaClass = replace(substring(target, 0, dotIdx), ".", "/")
       val methodName = substring(target, dotIdx + 1, length(target) - dotIdx - 1)
 
-      val isStatic = isStaticExternByName(decl.name)
+      // Staticness comes from JDK metadata, not the legacy name heuristic
+      // (which mis-classified e.g. `currentTimeMillis` — no underscore — as
+      // an instance call and emitted `invokevirtual` against an empty stack).
+      // If the target class resolves and a static overload matches the full
+      // declared parameter list, emit `invokestatic`; if the class resolves
+      // but no static overload matches, treat the first parameter as the
+      // receiver.  Classes absent from the metadata index keep the name
+      // heuristic.
+      val allParamDescs: List[String] = newList()
+      var apdI = 0
+      while apdI < decl.params.count {
+        allParamDescs.add(jvmTypeToDescStr(typeExprToJvm(decl.params[apdI].ty, ctx.pkgName)))
+        apdI = apdI + 1
+      }
+      val targetFqnDot = replace(javaClass, "/", ".")
+      // A constructor target (`@externTarget("java.util.ArrayList.<init>")`)
+      // is `new; dup; <args>; invokespecial <init>; areturn` — neither the
+      // static nor the instance method shapes fit it (treating the first
+      // parameter as a receiver consumed a real argument; hit by
+      // `Std.CollectionsHost.newListWithCapacity`).
+      if methodName == "<init>" {
+        val ctorParamTys: List[JvmType] = newList()
+        var cpI = 0
+        while cpI < decl.params.count {
+          ctorParamTys.add(typeExprToJvm(decl.params[cpI].ty, ctx.pkgName))
+          cpI = cpI + 1
+        }
+        insns.add(LNew(className = javaClass))
+        insns.add(LDup)
+        // Parameter slots: long/double occupy two local slots.
+        var cpSlot = 0
+        var cpJ = 0
+        while cpJ < decl.params.count {
+          emitLoad(insns, cpSlot, ctorParamTys[cpJ])
+          val w = match ctorParamTys[cpJ] { case JLong -> 2; case JDouble -> 2; case _ -> 1 }
+          cpSlot = cpSlot + w
+          cpJ = cpJ + 1
+        }
+        insns.add(LInvokespecial(owner = javaClass, name = "<init>", params = ctorParamTys, ret = JVoid))
+        val ctorRet = JRef(className = javaClass)
+        emitReturn(insns, ctorRet)
+        return ctorRet
+      }
+      // A zero-parameter @externTarget whose member resolves to a public
+      // STATIC FIELD (e.g. `java.time.Duration.ZERO`, `java.lang.System.in`)
+      // is a constant read: emit `getstatic` with the field's descriptor and
+      // return.  Checked before method resolution so a field target never
+      // falls into the instance-call guess.
+      if decl.params.count == 0 {
+        match loadClass(ctx.autoFfi, targetFqnDot) {
+          case Some(fci) -> {
+            match findStaticField(ctx.autoFfi, fci, methodName) {
+              case Some(fld) -> {
+                val fldTy = descStrToJvmType(fld.descriptor)
+                insns.add(LGetstatic(owner = javaClass, name = methodName, t = fldTy))
+                emitReturn(insns, fldTy)
+                return fldTy
+              }
+              case None -> ()
+            }
+          }
+          case None -> ()
+        }
+      }
+      val isStatic = match loadClass(ctx.autoFfi, targetFqnDot) {
+        case Some(ci) -> {
+          match findBestMethod(ctx.autoFfi, ci, methodName, allParamDescs, true) {
+            case Some(_) -> true
+            case None -> false
+          }
+        }
+        case None -> isStaticExternByName(decl.name)
+      }
       val wrapResult = isResultJvmException(decl.ret)
       val startParam = if isStatic { 0 } else { 1 }
 
@@ -204,7 +276,7 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
       // Actual Java return type (unwrapped from Result for the invoke descriptor).
       val javaRet = match decl.ret {
         case None -> JVoid
-        case Some(te) -> if wrapResult { extractResultValueType(te, ctx.pkgName) } else { typeExprToJvm(te, ctx.pkgName) }
+        case Some(te) -> if wrapResult { extractResultValueType(te, ctx.pkgName) } else { typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes) }
       }
 
       // F0015-J: verify the declared @externTarget signature against JDK class
@@ -374,6 +446,20 @@ func isLambdaLocal(ctx: in FuncCtx, name: in String): Bool {
   }
 }
 
+// JVM operand slots occupied by a parameter list: long/double take two,
+// everything else one.  Feeds `invokeinterface`'s count operand (JVMS §6.5:
+// receiver slot + argument slots).
+func jvmArgSlotCount(params: in List[JvmType]): Int {
+  var n = 0
+  var i = 0
+  while i < params.count {
+    val w = match params[i] { case JLong -> 2; case JDouble -> 2; case _ -> 1 }
+    n = n + w
+    i = i + 1
+  }
+  n
+}
+
 // Invoke a lambda value held in local `name`: load the closure, checkcast to the
 // shared functional interface, pack the (boxed) args into an `Object[]`, and
 // `invokeinterface invoke([Ljava/lang/Object;)Ljava/lang/Object;`.  The result
@@ -512,26 +598,40 @@ func lowerBuiltinOrStaticCall(
   args: in List[CallArg],
 ): JvmType {
   if funcName == "println" {
-    insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
+    // Lower the argument BEFORE pushing the PrintStream receiver: a branchy
+    // sub-expression (a comparison, an if-expression) inside the argument
+    // lands branch targets, and the StackMapTable declares an empty operand
+    // stack at every branch target — with the receiver already on the stack
+    // the frames disagree and the class fails verification.  Stash the
+    // lowered argument to a temp, then push the receiver and reload.
     if args.count > 0 {
       val argTy = lowerCallArg(ctx, insns, args[0])
-      // Convert to String if needed for println.
+      val aSlot = allocSlot(ctx, "__println_a_" + freshLabel(ctx), argTy)
+      emitStore(insns, aSlot, argTy)
+      insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
+      emitLoad(insns, aSlot, argTy)
       val printPs: List[JvmType] = newList()
       printPs.add(printArgType(argTy))
       insns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "println", params = printPs, ret = JVoid))
     } else {
+      insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
       val emptyPs: List[JvmType] = newList()
       insns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "println", params = emptyPs, ret = JVoid))
     }
     JVoid
   } else if funcName == "print" {
-    insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
+    // Same receiver-after-argument discipline as println above.
     if args.count > 0 {
       val argTy = lowerCallArg(ctx, insns, args[0])
+      val aSlot = allocSlot(ctx, "__print_a_" + freshLabel(ctx), argTy)
+      emitStore(insns, aSlot, argTy)
+      insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
+      emitLoad(insns, aSlot, argTy)
       val printPs: List[JvmType] = newList()
       printPs.add(printArgType(argTy))
       insns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "print", params = printPs, ret = JVoid))
     } else {
+      insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
       val emptyPs2: List[JvmType] = newList()
       insns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "print", params = emptyPs2, ret = JVoid))
     }
@@ -605,21 +705,83 @@ func lowerBuiltinOrStaticCall(
     val nmPs: List[JvmType] = newList()
     insns.add(LInvokespecial(owner = "java/util/HashMap", name = "<init>", params = nmPs, ret = JVoid))
     JRef(className = "java/util/HashMap")
+  } else if funcName == "newListWithCapacity" {
+    // Generic `@externTarget` kernel funcs are not emitted as methods (they
+    // are excluded from monomorphization and have no non-generic body), so
+    // like `newList`/`newMap` this is an intrinsic: ArrayList(int).
+    if args.count > 0 {
+      // Arg lowers to a temp BEFORE `new; dup` (branch-target discipline).
+      val cTy = lowerCallArg(ctx, insns, args[0])
+      coerceArgTo(insns, cTy, JInt)
+      val capSlot = allocSlot(ctx, "__nlc_" + freshLabel(ctx), JInt)
+      emitStore(insns, capSlot, JInt)
+      insns.add(LNew(className = "java/util/ArrayList"))
+      insns.add(LDup)
+      emitLoad(insns, capSlot, JInt)
+      val ncPs: List[JvmType] = newList()
+      ncPs.add(JInt)
+      insns.add(LInvokespecial(owner = "java/util/ArrayList", name = "<init>", params = ncPs, ret = JVoid))
+    } else {
+      insns.add(LNew(className = "java/util/ArrayList"))
+      insns.add(LDup)
+      val ncPs0: List[JvmType] = newList()
+      insns.add(LInvokespecial(owner = "java/util/ArrayList", name = "<init>", params = ncPs0, ret = JVoid))
+    }
+    JRef(className = "java/util/ArrayList")
   } else if funcName == "mapGet" {
-    // mapGet(map, key) → Option[V]
+    // mapGet(map, key) → Option[V]: a containsKey-gated Some/None construction
+    // (#3229 / #3676).  The previous lowering returned the raw `HashMap.get`
+    // value — never an Option, so every `case Some(...)` match on a mapGet
+    // result silently failed — and boxed the key as if it were always an Int
+    // (`Integer.valueOf(I)` on a String key fails verification).  The map and
+    // the boxed key are stashed to locals, and the constructed Option routes
+    // through a result local, so the operand stack is empty at every branch
+    // target (the StackMapTable declares an empty stack there).
     if args.count >= 2 {
-      lowerCallArg(ctx, insns, args[0])
-      lowerCallArg(ctx, insns, args[1])
-      boxIfNeeded(insns, JInt)  // key might be primitive
+      val mTy = lowerCallArg(ctx, insns, args[0])
+      coerceArgTo(insns, mTy, JRef(className = "java/util/HashMap"))
+      val mSlot = allocSlot(ctx, "__mapget_m_" + freshLabel(ctx), JRef(className = "java/util/HashMap"))
+      insns.add(LAstoreAs(slot = mSlot, className = "java/util/HashMap"))
+      val kTy = lowerCallArg(ctx, insns, args[1])
+      boxIfNeeded(insns, kTy)
+      val kSlot = allocSlot(ctx, "__mapget_k_" + freshLabel(ctx), JRef(className = "java/lang/Object"))
+      insns.add(LAstore(slot = kSlot))
+      val rSlot = allocSlot(ctx, "__mapget_r_" + freshLabel(ctx), JRef(className = "Std/Core/Option"))
+      val noneL = freshLabel(ctx)
+      val afterMgL = freshLabel(ctx)
+      insns.add(LAload(slot = mSlot))
+      insns.add(LAload(slot = kSlot))
+      val ckPs: List[JvmType] = newList()
+      ckPs.add(JRef(className = "java/lang/Object"))
+      insns.add(LInvokevirtual(owner = "java/util/HashMap", name = "containsKey", params = ckPs, ret = JBoolean))
+      insns.add(LIfeq(label = noneL))
+      insns.add(LNew(className = "Std/Core/Option$Some"))
+      insns.add(LDup)
+      insns.add(LAload(slot = mSlot))
+      insns.add(LAload(slot = kSlot))
       val mgPs: List[JvmType] = newList()
       mgPs.add(JRef(className = "java/lang/Object"))
       insns.add(
         LInvokevirtual(owner = "java/util/HashMap", name = "get", params = mgPs, ret = JRef(className = "java/lang/Object"))
       )
+      val someCtorPs: List[JvmType] = newList()
+      someCtorPs.add(JRef(className = "java/lang/Object"))
+      insns.add(LInvokespecial(owner = "Std/Core/Option$Some", name = "<init>", params = someCtorPs, ret = JVoid))
+      insns.add(LAstoreAs(slot = rSlot, className = "Std/Core/Option"))
+      insns.add(LGoto(label = afterMgL))
+      insns.add(LLabel(name = noneL))
+      insns.add(LNew(className = "Std/Core/Option$None"))
+      insns.add(LDup)
+      val noneCtorPs: List[JvmType] = newList()
+      insns.add(LInvokespecial(owner = "Std/Core/Option$None", name = "<init>", params = noneCtorPs, ret = JVoid))
+      insns.add(LAstoreAs(slot = rSlot, className = "Std/Core/Option"))
+      insns.add(LLabel(name = afterMgL))
+      insns.add(LAload(slot = rSlot))
+      JRef(className = "Std/Core/Option")
     } else {
       insns.add(LAconstNull)
+      JRef(className = "java/lang/Object")
     }
-    JRef(className = "java/lang/Object")
   } else if funcName == "default" {
     insns.add(LAconstNull)
     JRef(className = "java/lang/Object")
@@ -802,6 +964,18 @@ func emitFfiCoerce(ctx: in FuncCtx, insns: in List[LInsn], fromDesc: in String, 
   if fromDesc == toDesc {
     return ()
   }
+  // Primitive → Object parameter: box (the score-2 arm in scoreParamMatch).
+  if toDesc == "Ljava/lang/Object;" {
+    val fromTy = descStrToJvmType(fromDesc)
+    match fromTy {
+      case JRef(_) -> ()
+      case JArray(_) -> ()
+      case _ -> {
+        boxIfNeeded(insns, fromTy)
+        return ()
+      }
+    }
+  }
   if fromDesc == "I" {
     if toDesc == "J" {
       insns.add(LI2l)
@@ -880,9 +1054,12 @@ func emitFfiCoerce(ctx: in FuncCtx, insns: in List[LInsn], fromDesc: in String, 
     insns.add(LAload(slot = srcSlot))
     insns.add(LIload(slot = idxSlot))
     insns.add(LAaload)
-    insns.add(LCheckcast(className = "java/lang/Byte"))
+    // Elements may be boxed as Byte OR Integer (an int literal added to a
+    // List[Byte] boxes as Integer): unbox through Number.intValue + i2b.
+    insns.add(LCheckcast(className = "java/lang/Number"))
     val bvPs: List[JvmType] = newList()
-    insns.add(LInvokevirtual(owner = "java/lang/Byte", name = "byteValue", params = bvPs, ret = JByte))
+    insns.add(LInvokevirtual(owner = "java/lang/Number", name = "intValue", params = bvPs, ret = JInt))
+    insns.add(LI2b)
     insns.add(LBastore)
     insns.add(LIinc(slot = idxSlot, delta = 1))
     insns.add(LGoto(label = loopL))
@@ -1147,10 +1324,15 @@ func lowerAutoFfiConstructorCall(
       panic("JVM auto-FFI: no matching constructor for 'new " + fqn + "(" + argStr + ")' — check argument types")
     }
     case Some(ctor) -> {
-      insns.add(LNew(className = ci.binaryName))
-      insns.add(LDup)
+      // Lower and coerce every argument into a temp slot BEFORE emitting
+      // `new; dup`: an arg coercion may branch (the `[Ljava/lang/Object;` →
+      // `[B` conversion loop), and the StackMapTable declares an empty
+      // operand stack at every branch target — running it with the
+      // uninitialised receiver refs on the stack fails verification (hit by
+      // `String(byte[], "UTF-8")` in the Std.FileHost kernel).
       val paramDescs = parseDescriptorParams(ctor.descriptor)
       val paramJvms: List[JvmType] = newList()
+      val argSlots: List[Int] = newList()
       var j = 0
       while j < argBufs.count {
         val buf = argBufs[j]
@@ -1161,8 +1343,19 @@ func lowerAutoFfiConstructorCall(
         }
         val paramDesc = if j < paramDescs.count { paramDescs[j] } else { argDescs[j] }
         emitFfiCoerce(ctx, insns, argDescs[j], paramDesc)
-        paramJvms.add(descStrToJvmType(paramDesc))
+        val pj = descStrToJvmType(paramDesc)
+        paramJvms.add(pj)
+        val aslot = allocSlot(ctx, "__ctor_arg_" + freshLabel(ctx), pj)
+        emitStore(insns, aslot, pj)
+        argSlots.add(aslot)
         j = j + 1
+      }
+      insns.add(LNew(className = ci.binaryName))
+      insns.add(LDup)
+      var lj = 0
+      while lj < argSlots.count {
+        emitLoad(insns, argSlots[lj], paramJvms[lj])
+        lj = lj + 1
       }
       insns.add(LInvokespecial(owner = ci.binaryName, name = "<init>", params = paramJvms, ret = JVoid))
       JRef(className = ci.binaryName)
@@ -1189,6 +1382,18 @@ func coerceArgTo(insns: in List[LInsn], fromTy: in JvmType, toTy: in JvmType): U
       if fromRef {
         insns.add(LCheckcast(className = "java/lang/Long"))
         insns.add(LUnboxLong)
+      } else {
+        // Primitive widening into a Long slot (mirrors the JDouble arm):
+        // an int-like value widens with i2l.  Without it `value = 0` on an
+        // `out Long` parameter left a one-slot int for a two-slot lstore —
+        // operand-stack underflow at verification.
+        match fromTy {
+          case JInt -> insns.add(LI2l)
+          case JByte -> insns.add(LI2l)
+          case JChar -> insns.add(LI2l)
+          case JShort -> insns.add(LI2l)
+          case _ -> ()
+        }
       }
     }
     case JDouble -> {
@@ -1236,8 +1441,13 @@ func coerceArgTo(insns: in List[LInsn], fromTy: in JvmType, toTy: in JvmType): U
     }
     case JByte -> {
       if fromRef {
-        insns.add(LCheckcast(className = "java/lang/Byte"))
-        insns.add(LUnboxByte)
+        // The boxed value may be Byte OR Integer (an int literal stored into
+        // a Byte-typed position boxes as Integer): unbox through
+        // Number.intValue + i2b.
+        insns.add(LCheckcast(className = "java/lang/Number"))
+        val nbcPs: List[JvmType] = newList()
+        insns.add(LInvokevirtual(owner = "java/lang/Number", name = "intValue", params = nbcPs, ret = JInt))
+        insns.add(LI2b)
       }
     }
     case JChar -> {
@@ -1263,6 +1473,30 @@ func coerceArgTo(insns: in List[LInsn], fromTy: in JvmType, toTy: in JvmType): U
         // verifier accepts the `Ljava/lang/Object;` store.  Match-extraction
         // later checkcasts + unboxes back to the binding's concrete type.
         case _ -> boxIfNeeded(insns, fromTy)
+      }
+    }
+    case JArray(_) -> {
+      // A list value (an `EList` literal or any List-typed expression) flowing
+      // into an erased `slice[T]` parameter (`[Ljava/lang/Object;`) must be
+      // converted: an ArrayList is not assignable to an array and fails
+      // verification at class load (#4700).  `ArrayList.toArray()` yields the
+      // `Object[]` the slice ABI expects.  A value already of array type
+      // needs no conversion (JVM ref-array covariance).
+      match fromTy {
+        case JRef(fromCls) -> {
+          if fromCls == "java/util/ArrayList" {
+            val taPs: List[JvmType] = newList()
+            insns.add(
+              LInvokevirtual(
+                owner = "java/util/ArrayList",
+                name = "toArray",
+                params = taPs,
+                ret = JArray(elem = JRef(className = "java/lang/Object"))
+              )
+            )
+          }
+        }
+        case _ -> ()
       }
     }
     case _ -> ()
@@ -1418,6 +1652,127 @@ func anyHolderMode(modes: in List[ParamMode]): Bool {
 // pushes either the temp (holder arg) or the lowered value (by-value arg) in
 // declaration order.  `callArgs` is already reordered/defaulted to match
 // `sig.params`.
+// Pre-build one holder argument's single-element array into a temp slot and
+// record it in the parallel bookkeeping lists.  An assignable local reads its
+// current value into `holder[0]`; a field access `obj.field` (#3628, JVM
+// analog of MSIL #3547) stashes the lowered receiver in its own temp slot,
+// reads the field into `holder[0]`, and records the receiver slot + class so
+// `writeBackHolderArg` can `putfield` the updated value.  `hRecvSlot` is -1
+// (and `hRecvCls` "") for the local case.
+func prepareHolderArg(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  calleeLabel: in String,
+  bi: in Int,
+  argExpr: in Expr,
+  elemTy: in JvmType,
+  hArgIdx: in List[Int],
+  hTempSlot: in List[Int],
+  hElemTy: in List[JvmType],
+  hBackName: in List[String],
+  hRecvSlot: in List[Int],
+  hRecvCls: in List[String],
+): Unit {
+  val name = pathExprName(argExpr)
+  if name != "" {
+    match lookupSlot(ctx, name) {
+      case Some(srcSlot) -> {
+        val srcTy = match lookupType(ctx, name) { case Some(t) -> t; case None -> elemTy }
+        // holder := new [elemTy](1); holder[0] := <current value of `name`>
+        emitNewHolder(insns, elemTy)
+        insns.add(LDup)
+        insns.add(LIconst(v = 0))
+        emitLoad(insns, srcSlot, srcTy)
+        coerceArgTo(insns, srcTy, elemTy)
+        emitHolderElemStore(insns, elemTy)
+        // Stash the array reference in a temp slot, typed precisely so the
+        // StackMapTable verifies the later aload + element load.
+        val tmpSlot = allocSlot(ctx, "__holderarg$" + calleeLabel + "$" + toString(bi), holderArrayType(elemTy))
+        insns.add(LAstoreAs(slot = tmpSlot, className = holderArrayDescriptor(elemTy)))
+        hArgIdx.add(bi)
+        hTempSlot.add(tmpSlot)
+        hElemTy.add(elemTy)
+        hBackName.add(name)
+        hRecvSlot.add(0 - 1)
+        hRecvCls.add("")
+      }
+      case None -> panic("Jvm.Codegen: out/inout argument '" + name + "' to '" + calleeLabel + "' is not a local or parameter (the mode checker should have rejected this)")
+    }
+    return
+  }
+  match argExpr.kind {
+    case EMember(recv, fieldName) -> {
+      val recvTy = lowerExpr(ctx, insns, recv)
+      match recvTy {
+        case JRef(cls) -> {
+          val rSlot = allocSlot(ctx, "__holderrecv$" + calleeLabel + "$" + toString(bi), JRef(className = cls))
+          insns.add(LAstoreAs(slot = rSlot, className = cls))
+          val fty = match recordFieldType(ctx, cls, fieldName) {
+            case Some(t) -> t
+            case None -> JRef(className = "java/lang/Object")
+          }
+          emitNewHolder(insns, elemTy)
+          insns.add(LDup)
+          insns.add(LIconst(v = 0))
+          emitLoad(insns, rSlot, JRef(className = cls))
+          insns.add(LGetfield(owner = cls, name = fieldName, t = fty))
+          coerceArgTo(insns, fty, elemTy)
+          emitHolderElemStore(insns, elemTy)
+          val tmpSlot = allocSlot(ctx, "__holderarg$" + calleeLabel + "$" + toString(bi), holderArrayType(elemTy))
+          insns.add(LAstoreAs(slot = tmpSlot, className = holderArrayDescriptor(elemTy)))
+          hArgIdx.add(bi)
+          hTempSlot.add(tmpSlot)
+          hElemTy.add(elemTy)
+          hBackName.add(fieldName)
+          hRecvSlot.add(rSlot)
+          hRecvCls.add(cls)
+        }
+        case _ -> panic("Jvm.Codegen: out/inout argument " + toString(bi) + " to '" + calleeLabel + "' is a field access on a non-reference receiver (the mode checker should have rejected this)")
+      }
+    }
+    case _ -> panic("Jvm.Codegen: out/inout argument " + toString(bi) + " to '" + calleeLabel + "' is not an assignable variable or field (the mode checker should have rejected this)")
+  }
+}
+
+// Copy a holder's element 0 back to its target after the call: the caller's
+// local (write-through so a forwarded out/inout parameter's own holder stays
+// in sync) or, for a field-access argument (#3628), `putfield` through the
+// stashed receiver.
+func writeBackHolderArg(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  ts: in Int,
+  elemTy: in JvmType,
+  name: in String,
+  recvSlot: in Int,
+  recvCls: in String,
+): Unit {
+  if recvSlot >= 0 {
+    val fty = match recordFieldType(ctx, recvCls, name) {
+      case Some(t) -> t
+      case None -> JRef(className = "java/lang/Object")
+    }
+    emitLoad(insns, recvSlot, JRef(className = recvCls))
+    insns.add(LAload(slot = ts))
+    insns.add(LIconst(v = 0))
+    emitHolderElemLoad(insns, elemTy)
+    coerceArgTo(insns, elemTy, fty)
+    insns.add(LPutfield(owner = recvCls, name = name, t = fty))
+    return
+  }
+  match lookupSlot(ctx, name) {
+    case Some(destSlot) -> {
+      val destTy = match lookupType(ctx, name) { case Some(t) -> t; case None -> elemTy }
+      insns.add(LAload(slot = ts))
+      insns.add(LIconst(v = 0))
+      emitHolderElemLoad(insns, elemTy)
+      coerceArgTo(insns, elemTy, destTy)
+      emitStoreLocalWriteThrough(ctx, insns, destSlot, destTy)
+    }
+    case None -> ()
+  }
+}
+
 func lowerStaticCallWithHolders(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -1426,51 +1781,66 @@ func lowerStaticCallWithHolders(
   callArgs: in List[CallArg],
 ): JvmType {
   // Pre-build each holder argument's array into a temp slot.  Parallel lists
-  // (index into callArgs, temp slot, element type, write-back local name)
-  // rather than a record-valued map, matching the bootstrap-safe style used
-  // elsewhere in this file.
+  // (index into callArgs, temp slot, element type, write-back local name or
+  // field name + receiver slot/class) rather than a record-valued map,
+  // matching the bootstrap-safe style used elsewhere in this file.
   val hArgIdx: List[Int] = newList()
   val hTempSlot: List[Int] = newList()
   val hElemTy: List[JvmType] = newList()
   val hBackName: List[String] = newList()
+  val hRecvSlot: List[Int] = newList()
+  val hRecvCls: List[String] = newList()
   var bi = 0
   while bi < callArgs.count {
     val isHolder = if bi < sig.paramModes.count { isHolderMode(sig.paramModes[bi]) } else { false }
     if isHolder {
       val elemTy = match sig.params[bi] { case JArray(el) -> el; case other -> other }
-      val name = pathExprName(callArgExpr(callArgs[bi]))
-      if name == "" {
-        panic(
-          "Jvm.Codegen: out/inout argument " + toString(bi) + " to '" + funcName +
-            "' is not an assignable variable (the mode checker should have rejected this)"
-        )
-      }
-      match lookupSlot(ctx, name) {
-        case Some(srcSlot) -> {
-          val srcTy = match lookupType(ctx, name) { case Some(t) -> t; case None -> elemTy }
-          // holder := new [elemTy](1); holder[0] := <current value of `name`>
-          emitNewHolder(insns, elemTy)
-          insns.add(LDup)
-          insns.add(LIconst(v = 0))
-          emitLoad(insns, srcSlot, srcTy)
-          coerceArgTo(insns, srcTy, elemTy)
-          emitHolderElemStore(insns, elemTy)
-          // Stash the array reference in a temp slot, typed precisely so the
-          // StackMapTable verifies the later aload + element load.
-          val tmpSlot = allocSlot(ctx, "__holderarg$" + funcName + "$" + toString(bi), holderArrayType(elemTy))
-          insns.add(LAstoreAs(slot = tmpSlot, className = holderArrayDescriptor(elemTy)))
-          hArgIdx.add(bi)
-          hTempSlot.add(tmpSlot)
-          hElemTy.add(elemTy)
-          hBackName.add(name)
-        }
-        case None -> panic("Jvm.Codegen: out/inout argument '" + name + "' to '" + funcName + "' is not a local or parameter (the mode checker should have rejected this)")
-      }
+      prepareHolderArg(
+        ctx,
+        insns,
+        funcName,
+        bi,
+        callArgExpr(callArgs[bi]),
+        elemTy,
+        hArgIdx,
+        hTempSlot,
+        hElemTy,
+        hBackName,
+        hRecvSlot,
+        hRecvCls
+      )
     }
     bi = bi + 1
   }
+  // Pre-lower every by-value argument into a temp slot: a byte-array boxing
+  // coercion branches, and branch targets require an empty operand stack
+  // (see the slice-shaped-param stash in `lowerGeneralStaticCall`).  Holder
+  // args already live in temps, so the push loop below is branch-free.
+  val bvSlots: List[Int] = newList()
+  val bvIdx: List[Int] = newList()
+  var pvi = 0
+  while pvi < callArgs.count {
+    val isHolderPre = if pvi < sig.paramModes.count { isHolderMode(sig.paramModes[pvi]) } else { false }
+    if not isHolderPre {
+      val aTy = lowerCallArg(ctx, insns, callArgs[pvi])
+      var slotTy = aTy
+      if pvi < sig.params.count {
+        if isByteArrayToObjectArray(aTy, sig.params[pvi]) {
+          emitBoxByteArray(ctx, insns)
+        } else {
+          coerceArgTo(insns, aTy, sig.params[pvi])
+        }
+        slotTy = sig.params[pvi]
+      }
+      val s = allocSlot(ctx, "__hbv_" + freshLabel(ctx), slotTy)
+      emitStore(insns, s, slotTy)
+      bvSlots.add(s)
+      bvIdx.add(pvi)
+    }
+    pvi = pvi + 1
+  }
   // Push arguments in declaration order: a holder arg reloads its prepared temp
-  // array; a by-value arg is lowered and coerced as usual.
+  // array; a by-value arg reloads its pre-lowered temp.
   var ai = 0
   while ai < callArgs.count {
     val isHolder = if ai < sig.paramModes.count { isHolderMode(sig.paramModes[ai]) } else { false }
@@ -1478,40 +1848,43 @@ func lowerStaticCallWithHolders(
       val ts = holderTempSlotFor(hArgIdx, hTempSlot, ai)
       insns.add(LAload(slot = ts))
     } else {
-      val aTy = lowerCallArg(ctx, insns, callArgs[ai])
-      if ai < sig.params.count {
-        if isByteArrayToObjectArray(aTy, sig.params[ai]) {
-          emitBoxByteArray(ctx, insns)
-        } else {
-          coerceArgTo(insns, aTy, sig.params[ai])
-        }
-      }
+      val bs = holderTempSlotFor(bvIdx, bvSlots, ai)
+      val lTy = if ai < sig.params.count { sig.params[ai] } else { JRef(className = "java/lang/Object") }
+      emitLoad(insns, bs, lTy)
     }
     ai = ai + 1
   }
   insns.add(LInvokestatic(owner = sig.owner, name = funcName, params = sig.params, ret = sig.ret))
-  // Copy each holder's element 0 back into the caller's local.
+  // Copy each holder's element 0 back into its target (caller local or
+  // field-access receiver, #3628).
   var ri = 0
   while ri < hArgIdx.count {
-    val ts = hTempSlot[ri]
-    val elemTy = hElemTy[ri]
-    val name = hBackName[ri]
-    match lookupSlot(ctx, name) {
-      case Some(destSlot) -> {
-        val destTy = match lookupType(ctx, name) { case Some(t) -> t; case None -> elemTy }
-        insns.add(LAload(slot = ts))
-        insns.add(LIconst(v = 0))
-        emitHolderElemLoad(insns, elemTy)
-        coerceArgTo(insns, elemTy, destTy)
-        // Write through the holder binding too, so a forwarded `out`/`inout`
-        // parameter's own holder array stays in sync after a nested call.
-        emitStoreLocalWriteThrough(ctx, insns, destSlot, destTy)
-      }
-      case None -> ()
-    }
+    writeBackHolderArg(ctx, insns, hTempSlot[ri], hElemTy[ri], hBackName[ri], hRecvSlot[ri], hRecvCls[ri])
     ri = ri + 1
   }
   sig.ret
+}
+
+// True when any declared parameter is a reference array — the erased Lyric
+// slice shape whose argument may need the branching byte-array boxing
+// conversion, forcing the stash-all-args-first call form.
+func anyRefArrayParam(params: in List[JvmType]): Bool {
+  var i = 0
+  while i < params.count {
+    match params[i] {
+      case JArray(e) -> {
+        match e {
+          case JRef(_) -> {
+            return true
+          }
+          case _ -> ()
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  false
 }
 
 // Linear lookup of the temp slot prepared for the holder argument at call-arg
@@ -1545,36 +1918,27 @@ func lowerVirtualCallWithHolders(
   val hTempSlot: List[Int] = newList()
   val hElemTy: List[JvmType] = newList()
   val hBackName: List[String] = newList()
+  val hRecvSlot: List[Int] = newList()
+  val hRecvCls: List[String] = newList()
   var bi = 0
   while bi < args.count {
     val isHolder = if bi < sig.paramModes.count { isHolderMode(sig.paramModes[bi]) } else { false }
     if isHolder {
       val elemTy = match sig.params[bi] { case JArray(el) -> el; case other -> other }
-      val name = pathExprName(callArgExpr(args[bi]))
-      if name == "" {
-        panic(
-          "Jvm.Codegen: out/inout argument " + toString(bi) + " to '" + owner + "." + methodName +
-            "' is not an assignable variable (the mode checker should have rejected this)"
-        )
-      }
-      match lookupSlot(ctx, name) {
-        case Some(srcSlot) -> {
-          val srcTy = match lookupType(ctx, name) { case Some(t) -> t; case None -> elemTy }
-          emitNewHolder(insns, elemTy)
-          insns.add(LDup)
-          insns.add(LIconst(v = 0))
-          emitLoad(insns, srcSlot, srcTy)
-          coerceArgTo(insns, srcTy, elemTy)
-          emitHolderElemStore(insns, elemTy)
-          val tmpSlot = allocSlot(ctx, "__holderarg$" + methodName + "$" + toString(bi), holderArrayType(elemTy))
-          insns.add(LAstoreAs(slot = tmpSlot, className = holderArrayDescriptor(elemTy)))
-          hArgIdx.add(bi)
-          hTempSlot.add(tmpSlot)
-          hElemTy.add(elemTy)
-          hBackName.add(name)
-        }
-        case None -> panic("Jvm.Codegen: out/inout argument '" + name + "' to '" + methodName + "' is not a local or parameter (the mode checker should have rejected this)")
-      }
+      prepareHolderArg(
+        ctx,
+        insns,
+        owner + "." + methodName,
+        bi,
+        callArgExpr(args[bi]),
+        elemTy,
+        hArgIdx,
+        hTempSlot,
+        hElemTy,
+        hBackName,
+        hRecvSlot,
+        hRecvCls
+      )
     }
     bi = bi + 1
   }
@@ -1595,20 +1959,7 @@ func lowerVirtualCallWithHolders(
   insns.add(LInvokevirtual(owner = owner, name = methodName, params = sig.params, ret = sig.ret))
   var ri = 0
   while ri < hArgIdx.count {
-    val ts = hTempSlot[ri]
-    val elemTy = hElemTy[ri]
-    val name = hBackName[ri]
-    match lookupSlot(ctx, name) {
-      case Some(destSlot) -> {
-        val destTy = match lookupType(ctx, name) { case Some(t) -> t; case None -> elemTy }
-        insns.add(LAload(slot = ts))
-        insns.add(LIconst(v = 0))
-        emitHolderElemLoad(insns, elemTy)
-        coerceArgTo(insns, elemTy, destTy)
-        emitStoreLocalWriteThrough(ctx, insns, destSlot, destTy)
-      }
-      case None -> ()
-    }
+    writeBackHolderArg(ctx, insns, hTempSlot[ri], hElemTy[ri], hBackName[ri], hRecvSlot[ri], hRecvCls[ri])
     ri = ri + 1
   }
   sig.ret
@@ -1623,7 +1974,7 @@ func lowerGeneralStaticCall(
 ): JvmType {
   // Construction: a call whose head names a record or union case lowers to a
   // real `new`/`invokespecial` rather than a (non-existent) static method.
-  match mapGet(ctx.ctors, funcName) {
+  match ctorClassFor(ctx, funcName) {
     case Some(cls) -> return lowerConstruction(ctx, insns, cls, args)
     case None -> ()
   }
@@ -1676,6 +2027,11 @@ func lowerGeneralStaticCall(
   // package, even if another package in the bundle exports the same short
   // name; an unqualified call falls back to the bare-name key (the legacy
   // single-package shape).  #1680.
+  // Exact-arity keys (`…@<argc>`) are tried before the name keys so
+  // same-name overloads pick the descriptor matching this call's argument
+  // count; a call that relies on parameter defaults misses the arity key
+  // and falls back to the name key exactly as before.
+  val argcSuffix = "@" + toString(args.count)
   val sigOpt = if path.segments.count > 1 {
     val ownerSegs: List[String] = newList()
     var si = 0
@@ -1684,33 +2040,128 @@ func lowerGeneralStaticCall(
       si = si + 1
     }
     val qkey = joinSegments(ownerSegs, "/") + "/" + funcName
-    match mapGet(ctx.funcSigs, qkey) {
+    match mapGet(ctx.funcSigs, qkey + argcSuffix) {
+      case Some(sig) -> Some(value = sig)
+      case None -> {
+        match mapGet(ctx.funcSigs, qkey) {
+          case Some(sig) -> Some(value = sig)
+          case None -> {
+            match mapGet(ctx.funcSigs, funcName + argcSuffix) {
+              case Some(sig) -> Some(value = sig)
+              case None -> mapGet(ctx.funcSigs, funcName)
+            }
+          }
+        }
+      }
+    }
+  } else {
+    match mapGet(ctx.funcSigs, funcName + argcSuffix) {
       case Some(sig) -> Some(value = sig)
       case None -> mapGet(ctx.funcSigs, funcName)
     }
-  } else {
-    mapGet(ctx.funcSigs, funcName)
   }
   match sigOpt {
     case Some(sig) -> {
+      // Std.Core's generic Option/Result predicates lower to `instanceof`
+      // against the runtime case class.  They are GENERIC functions — never
+      // emitted as JVM methods (excluded from method emission, and the
+      // call-site monomorphizer cannot infer type args from an unannotated
+      // call-result binding) — so the registered erased call
+      // (`Std/Core.isErr(Object)Z`) linked against nothing
+      // (NoSuchMethodError; hit across the lyric-storage suite).
+      if sig.owner == "Std/Core" and args.count == 1 {
+        if funcName == "isErr" {
+          lowerCallArg(ctx, insns, args[0])
+          insns.add(LInstanceof(className = "Std/Core/Result$Err"))
+          return JBoolean
+        }
+        if funcName == "isOk" {
+          lowerCallArg(ctx, insns, args[0])
+          insns.add(LInstanceof(className = "Std/Core/Result$Ok"))
+          return JBoolean
+        }
+        if funcName == "isSome" {
+          lowerCallArg(ctx, insns, args[0])
+          insns.add(LInstanceof(className = "Std/Core/Option$Some"))
+          return JBoolean
+        }
+        if funcName == "isNone" {
+          lowerCallArg(ctx, insns, args[0])
+          insns.add(LInstanceof(className = "Std/Core/Option$None"))
+          return JBoolean
+        }
+      }
+      if sig.owner == "Std/Core" and args.count == 2 {
+        if funcName == "unwrapOr" {
+          // Generic Option unwrap via the synthesised `__lyricUnwrapOr`
+          // helper (see codegen 06's emission note) — the erased-call
+          // descriptor otherwise references the phantom `Std/Core/T`.
+          val uoT0 = lowerCallArg(ctx, insns, args[0])
+          boxIfNeeded(insns, uoT0)
+          val uoT1 = lowerCallArg(ctx, insns, args[1])
+          boxIfNeeded(insns, uoT1)
+          val uoPs: List[JvmType] = newList()
+          uoPs.add(JRef(className = "java/lang/Object"))
+          uoPs.add(JRef(className = "java/lang/Object"))
+          insns.add(
+            LInvokestatic(
+              owner = ctx.pkgName,
+              name = "__lyricUnwrapOr",
+              params = uoPs,
+              ret = JRef(className = "java/lang/Object")
+            )
+          )
+          return JRef(className = "java/lang/Object")
+        }
+      }
       val callArgs = reorderAndFillJvmArgs(sig, args)
       // `out`/`inout` parameters need holder-array wrapping + write-back (#1763).
       if anyHolderMode(sig.paramModes) {
         return lowerStaticCallWithHolders(ctx, insns, funcName, sig, callArgs)
       }
+      // A primitive `byte[]` (e.g. a JDK `getBytes()` / `digest()` result)
+      // passed where a Lyric `slice[Byte]` (`[Ljava/lang/Object;`) is
+      // declared is boxed element-by-element by `emitBoxByteArray` — a
+      // BRANCHING conversion, and the StackMapTable declares an empty
+      // operand stack at every branch target, so it must never run with
+      // earlier arguments already stacked.  When any parameter is
+      // slice-shaped (a reference array), lower and coerce EVERY argument
+      // into a temp slot first (the constructor-path pattern), then reload
+      // in order (hit by `hostWriteAllBytes(path, stringToUtf8Bytes(s))`
+      // in Std.FileHost).
+      if anyRefArrayParam(sig.params) {
+        val argSlots: List[Int] = newList()
+        var si = 0
+        while si < callArgs.count {
+          val aTy = lowerCallArg(ctx, insns, callArgs[si])
+          var slotTy = aTy
+          if si < sig.params.count {
+            if isByteArrayToObjectArray(aTy, sig.params[si]) {
+              emitBoxByteArray(ctx, insns)
+            } else {
+              coerceArgTo(insns, aTy, sig.params[si])
+            }
+            slotTy = sig.params[si]
+          }
+          val s = allocSlot(ctx, "__arg_stash_" + freshLabel(ctx), slotTy)
+          emitStore(insns, s, slotTy)
+          argSlots.add(s)
+          si = si + 1
+        }
+        var li = 0
+        while li < argSlots.count {
+          val lTy = if li < sig.params.count { sig.params[li] } else { JRef(className = "java/lang/Object") }
+          emitLoad(insns, argSlots[li], lTy)
+          li = li + 1
+        }
+        insns.add(LInvokestatic(owner = sig.owner, name = funcName, params = sig.params, ret = sig.ret))
+        return sig.ret
+      }
       var ai = 0
       while ai < callArgs.count {
         val aTy = lowerCallArg(ctx, insns, callArgs[ai])
         if ai < sig.params.count {
-          // A primitive `byte[]` (e.g. a JDK `getBytes()` / `digest()`
-          // result) passed where a Lyric `slice[Byte]`
-          // (`[Ljava/lang/Object;`) is declared is boxed element-by-element
-          // so the operand matches the callee's descriptor.
-          if isByteArrayToObjectArray(aTy, sig.params[ai]) {
-            emitBoxByteArray(ctx, insns)
-          } else {
-            coerceArgTo(insns, aTy, sig.params[ai])
-          }
+          coerceArgTo(insns, aTy, sig.params[ai])
         }
         ai = ai + 1
       }
@@ -1766,17 +2217,26 @@ func isNumericJvm(ty: in JvmType): Bool {
   }
 }
 
-// Normalise a numeric value already on the stack to an `int` (JVM `I`).  Byte /
-// char / short / int already occupy an int slot (no-op); long / float / double
-// narrow with the matching conversion opcode.
+// Zero-extend a signed JVM `byte` to its unsigned Lyric value (`& 0xFF`): Lyric
+// `Byte` is 0..255 but a JVM `byte` sign-extends on reload (200 -> -56), so every
+// Byte-source widening masks first to match MSIL's `conv.u1` (#4855, cf. #4551).
+func maskByteUnsigned(insns: in List[LInsn]): Unit {
+  insns.add(LIconst(v = 255))
+  insns.add(LIand)
+}
+
+// Normalise a numeric value already on the stack to an `int` (JVM `I`).  Char /
+// short / int already occupy an int slot (no-op); long / float / double narrow
+// with the matching conversion opcode; a Byte source zero-extends (`& 0xFF`).
 func emitToIntJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
   match srcTy {
     case JLong -> insns.add(LL2i)
     case JFloat -> insns.add(LF2i)
     case JDouble -> insns.add(LD2i)
+    case JByte -> maskByteUnsigned(insns)
     case _ -> {
     }
-  }   // JByte / JChar / JShort / JInt are int-on-stack
+  }   // JChar / JShort / JInt are int-on-stack
 }
 
 func emitToLongJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
@@ -1785,6 +2245,10 @@ func emitToLongJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
     }            // already long
     case JFloat -> insns.add(LF2l)
     case JDouble -> insns.add(LD2l)
+    case JByte -> {
+      maskByteUnsigned(insns)
+      insns.add(LI2l)
+    }
     case _ -> insns.add(LI2l)
   }   // int-like → long
 }
@@ -1795,6 +2259,10 @@ func emitToDoubleJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
     }            // already double
     case JLong -> insns.add(LL2d)
     case JFloat -> insns.add(LF2d)
+    case JByte -> {
+      maskByteUnsigned(insns)
+      insns.add(LI2d)
+    }
     case _ -> insns.add(LI2d)
   }   // int-like → double
 }
@@ -1815,13 +2283,16 @@ func lowerMethodCall(
   // `java/lang/Object.b` guess).  Mirrors `lowerMethodCallMsil`.
   match recv.kind {
     case EPath(path) -> {
-      match mapGet(ctx.externTypes, lastSegment(path)) {
-        case Some(javaFqn) -> return lowerAutoFfiStaticCall(ctx, insns, javaFqn, memberName, args)
-        case None -> ()
-      }
-      // J3 M-3: `AppWire.bootstrap()` / `AppWire.<exposed>()` resolve to a
-      // static call on the wire factory class, registered under the
-      // `<wireShortName>.<method>` key — not an instance dispatch on a value.
+      // The Lyric dot-named registration is checked FIRST: the imported-type
+      // seed (docs/44 m-58) put every bundled package's declared types into
+      // `externTypes`, so `ParseError.message(e)` — a dot-named FUNCTION on
+      // Std.Errors' union — otherwise resolved as a static JDK call on
+      // "Std.Errors.ParseError" and panicked in metadata resolution
+      // (#4799; Std.Parse was J003-skipped by exactly this).  A genuine
+      // extern JDK type never has a dot-named funcSigs registration, so the
+      // FFI fast path below is unaffected for real externs.
+      // J3 M-3: this same key also serves `AppWire.bootstrap()` /
+      // `AppWire.<exposed>()` — a static call on the wire factory class.
       match mapGet(ctx.funcSigs, lastSegment(path) + "." + memberName) {
         case Some(sig) -> {
           var wi = 0
@@ -1835,6 +2306,10 @@ func lowerMethodCall(
           insns.add(LInvokestatic(owner = sig.owner, name = memberName, params = sig.params, ret = sig.ret))
           return sig.ret
         }
+        case None -> ()
+      }
+      match mapGet(ctx.externTypes, lastSegment(path)) {
+        case Some(javaFqn) -> return lowerAutoFfiStaticCall(ctx, insns, javaFqn, memberName, args)
         case None -> ()
       }
     }
@@ -1902,6 +2377,30 @@ func lowerMethodCall(
       emitToIntJvm(insns, recvTy)
       return JInt
     }
+  }
+  // `x.toString()` on a primitive receiver: box and call Object.toString.
+  // Without this the value reaches the generic fallback (or a string-concat
+  // append(String)) still unboxed and fails JVM verification ("Bad type on
+  // operand stack").  Reference receivers fall through to the instance
+  // auto-FFI / registry paths below, which resolve the real toString.
+  // Note: Java's Double.toString renders a trailing ".0" for whole values
+  // where .NET renders none — a documented cross-target formatting
+  // divergence, not a correctness gap.
+  val recvIsBoxablePrim = isNumericJvm(recvTy) or (match recvTy { case JBoolean -> true; case _ -> false })
+  if memberName == "toString" and args.count == 0 and recvIsBoxablePrim {
+    // String.valueOf(<primitive>) — no boxing, unlike Object.toString on a
+    // boxed wrapper (keeps the closure zero-overhead boxing gate flat).
+    val prTsPs: List[JvmType] = newList()
+    prTsPs.add(stringValueOfParam(recvTy))
+    insns.add(
+      LInvokestatic(
+        owner = "java/lang/String",
+        name = "valueOf",
+        params = prTsPs,
+        ret = JRef(className = "java/lang/String")
+      )
+    )
+    return JRef(className = "java/lang/String")
   }
   // String predicate methods return `boolean` (Z), not Object.  Emitting them
   // through the generic path below (ret = Object) makes a following `ifeq`/`ifne`
@@ -1976,6 +2475,36 @@ func lowerMethodCall(
     )
     return JRef(className = "java/lang/String")
   }
+  // Lyric's two-arg `s.substring(start, count)` takes a LENGTH (matching .NET
+  // `String.Substring(start, length)` and `Std.String.substring`), but Java's
+  // `substring(int, int)` takes an END INDEX.  Letting it fall to the auto-FFI
+  // pass-through silently reinterprets the count as an end index (wrong result
+  // or StringIndexOutOfBoundsException — this broke the kernel's
+  // `parseArgString`).  Translate: begin, begin + count.  The one-arg form has
+  // identical semantics on both platforms and passes through auto-FFI.
+  if isStringRecv and args.count == 2 and memberName == "substring" {
+    val startTy = lowerCallArg(ctx, insns, args[0])
+    coerceArgTo(insns, startTy, JInt)
+    val subStartSlot = allocSlot(ctx, "__substr_start_" + freshLabel(ctx), JInt)
+    emitStore(insns, subStartSlot, JInt)
+    emitLoad(insns, subStartSlot, JInt)
+    val countTy = lowerCallArg(ctx, insns, args[1])
+    coerceArgTo(insns, countTy, JInt)
+    emitLoad(insns, subStartSlot, JInt)
+    insns.add(LIadd)
+    val subPs: List[JvmType] = newList()
+    subPs.add(JInt)
+    subPs.add(JInt)
+    insns.add(
+      LInvokevirtual(
+        owner = "java/lang/String",
+        name = "substring",
+        params = subPs,
+        ret = JRef(className = "java/lang/String")
+      )
+    )
+    return JRef(className = "java/lang/String")
+  }
 
   // HashMap intrinsics: Lyric Map[K,V] maps to java/util/HashMap on JVM.
   // BCL Dictionary[K,V] uses `Add(K,V)` / `Remove(K)` / `ContainsKey(K)` /
@@ -1989,24 +2518,58 @@ func lowerMethodCall(
       val kPs: List[JvmType] = newList()
       kPs.add(objTy)
       kPs.add(objTy)
-      lowerCallArg(ctx, insns, args[0])
-      lowerCallArg(ctx, insns, args[1])
+      // Box primitive keys/values: put(Object, Object) with a raw int on the
+      // stack fails verification ("Type integer ... not assignable to
+      // 'java/lang/Object'").
+      val kTy = lowerCallArg(ctx, insns, args[0])
+      boxIfNeeded(insns, kTy)
+      val vTy = lowerCallArg(ctx, insns, args[1])
+      boxIfNeeded(insns, vTy)
       insns.add(LInvokevirtual(owner = "java/util/HashMap", name = "put", params = kPs, ret = objTy))
       insns.add(LPop)
       return JVoid
     } else if memberName == "remove" and args.count == 1 {
       val rPs: List[JvmType] = newList()
       rPs.add(objTy)
-      lowerCallArg(ctx, insns, args[0])
+      val rkTy = lowerCallArg(ctx, insns, args[0])
+      boxIfNeeded(insns, rkTy)
       insns.add(LInvokevirtual(owner = "java/util/HashMap", name = "remove", params = rPs, ret = objTy))
       insns.add(LPop)
       return JVoid
     } else if memberName == "containsKey" and args.count == 1 {
       val ckPs: List[JvmType] = newList()
       ckPs.add(objTy)
-      lowerCallArg(ctx, insns, args[0])
+      val ckTy = lowerCallArg(ctx, insns, args[0])
+      boxIfNeeded(insns, ckTy)
       insns.add(LInvokevirtual(owner = "java/util/HashMap", name = "containsKey", params = ckPs, ret = JBoolean))
       return JBoolean
+    }
+  }
+
+  // `xs.toArray()` on a List receiver — including one erased to `Object`
+  // (a generic `in List[T]` parameter): the Lyric runtime List is always
+  // `java/util/ArrayList`, so checkcast + `toArray()[Ljava/lang/Object;`
+  // is exact.  Same erased-receiver intrinsic precedent as `.count` →
+  // `size()`.  Without this, an Object-typed receiver reached instance
+  // auto-FFI resolution, which panics (`Object` has no `toArray`) — hit by
+  // `Std.File.writeBytes`' `bytes.toArray()`.
+  if memberName == "toArray" and args.count == 0 {
+    val isListRecv = match recvTy {
+      case JRef(c) -> c == "java/lang/Object" or c == "java/util/ArrayList" or c == "java/util/List"
+      case _ -> false
+    }
+    if isListRecv {
+      insns.add(LCheckcast(className = "java/util/ArrayList"))
+      val taPs: List[JvmType] = newList()
+      insns.add(
+        LInvokevirtual(
+          owner = "java/util/ArrayList",
+          name = "toArray",
+          params = taPs,
+          ret = JArray(elem = JRef(className = "java/lang/Object"))
+        )
+      )
+      return JArray(elem = JRef(className = "java/lang/Object"))
     }
   }
 
@@ -2047,7 +2610,22 @@ func lowerMethodCall(
             }
             ai = ai + 1
           }
-          insns.add(LInvokevirtual(owner = cls, name = memberName, params = sig.params, ret = sig.ret))
+          if sig.isIface {
+            // An interface-typed receiver dispatches via `invokeinterface`;
+            // `invokevirtual` against an interface owner fails class-load
+            // verification (#3687).
+            insns.add(
+              LInvokeinterface(
+                owner = cls,
+                name = memberName,
+                params = sig.params,
+                ret = sig.ret,
+                argCount = 1 + jvmArgSlotCount(sig.params)
+              )
+            )
+          } else {
+            insns.add(LInvokevirtual(owner = cls, name = memberName, params = sig.params, ret = sig.ret))
+          }
           return sig.ret
         }
         case None -> ()

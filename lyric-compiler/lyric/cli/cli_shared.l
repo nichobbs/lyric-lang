@@ -190,6 +190,28 @@ func printUsage(): Unit {
   printErr(usageText())
 }
 
+// Extract the top-level `compiler_version` string field from a parsed
+// sdk-version.json document.  None when the field is absent or not a string.
+func extractCompilerVersionFromJsonValue(root: in Yaml.YamlValue): Option[String] {
+  match root {
+    case Yaml.YMapping(pairs) -> {
+      var i = 0
+      while i < pairs.count {
+        val pair = pairs[i]
+        if pair.key == "compiler_version" {
+          match pair.value {
+            case Yaml.YString(v) -> return Some(value = v)
+            case _ -> ()
+          }
+        }
+        i += 1
+      }
+      None
+    }
+    case _ -> None
+  }
+}
+
 // Read the sdk-version.json side-file from beside Lyric.Stdlib.dll and check
 // that its compiler_version matches this binary's VERSION().  Missing file is
 // silently ignored (dev builds and environments without a published SDK do not
@@ -205,20 +227,17 @@ func checkSdkVersion(): Int {
     return 0
   }
   val text = match File.readText(sdkVersionPath) { case Err(_) -> return 0; case Ok(t) -> t }
-  // Minimal extraction: find "compiler_version": "X.Y.Z" in the JSON blob.
-  val key = "\"compiler_version\": \""
-  val keyPos = text.indexOf(key)
-  if keyPos < 0 {
-    return 0
-  }
-  val valueStart = keyPos + key.length
-  val suffix = text.substring(valueStart)
-  val relCloseQuote = suffix.indexOf("\"")
-  if relCloseQuote < 0 {
-    return 0
-  }
-  val closeQuote = valueStart + relCloseQuote
-  val sdkVer = text.substring(valueStart, closeQuote - valueStart)
+  // Parsed via the pure-Lyric Std.Yaml JSON parser (Result-returning) rather
+  // than a manual indexOf extraction, so this is resilient to formatting
+  // variation (pretty- vs compact-printed, reordered fields, extra
+  // whitespace) instead of depending on the exact
+  // `"compiler_version": "X.Y.Z"` byte layout the Makefile happens to emit
+  // today.  Std.Yaml.parseJson is used over Std.Json here because it returns
+  // a Result on malformed input rather than throwing (Std.Json.parseJson
+  // throws on syntactically invalid JSON, #984) — appropriate since this
+  // file's shape is not otherwise validated before we read it.
+  val root = match Yaml.parseJson(text) { case Err(_) -> return 0; case Ok(v) -> v }
+  val sdkVer = match extractCompilerVersionFromJsonValue(root) { case None -> return 0; case Some(v) -> v }
   if sdkVer == VERSION() {
     return 0
   }
@@ -420,8 +439,10 @@ func walkUpForCompiledStdlib(start: in String, rel: in String): String {
 //   3. <appBaseDir>/lib           — installed SDK layout
 //   4. walk up (appBase, cwd) for .bootstrap/stage1   — dev bootstrap output
 //   5. walk up (appBase, cwd) for lyric-stdlib/bin     — dev manifest build
+//   6. walk up (appBase, cwd) for .lyric-test          — lyric test cache dir
 // When $LYRIC_STDLIB_BIN is set it is returned unconditionally; otherwise
-// returns "" when no candidate holds `Lyric.Stdlib.dll`.
+// returns "" when no candidate holds `Lyric.Stdlib.dll`.  Kept in sync with
+// `Lyric.Emitter.findCompiledStdlibDir` (emitter.l), which this mirrors (#3646).
 func findCompiledLibDir(): String {
   val env = Environment.getVarOrDefault("LYRIC_STDLIB_BIN", "")
   if env.length > 0 {
@@ -458,6 +479,15 @@ func findCompiledLibDir(): String {
     return hit
   }
   hit = walkUpForCompiledStdlib(cwd, libBin)
+  if hit.length > 0 {
+    return hit
+  }
+  val testCacheDir = ".lyric-test"
+  hit = walkUpForCompiledStdlib(appBase, testCacheDir)
+  if hit.length > 0 {
+    return hit
+  }
+  hit = walkUpForCompiledStdlib(cwd, testCacheDir)
   if hit.length > 0 {
     return hit
   }
@@ -531,19 +561,61 @@ func copyRestoredDepDlls(outPath: in String, restoredDlls: in List[String]): Uni
   }
 }
 
+// Pure decision logic behind `warnIfNugetUnresolved`: `Some(reason)` when
+// the manifest declares `[nuget]` entries but no assemblies resolved,
+// `None` when there is nothing to warn about.  `reason` distinguishes
+// "was not found" (no `project.assets.json` — never restored) from "is
+// stale or could not be resolved" (the file exists but parsed to zero
+// assemblies — stale or corrupt), per #4326.  Split out from
+// `warnIfNugetUnresolved` so the decision can be asserted directly in
+// tests without capturing stderr output (#4770).
+pub func nugetUnresolvedReason(mfDir: in String, nugetOpt: in Option[Mf.NugetSection], nugetPaths: in List[String]): Option[String] {
+  match nugetOpt {
+    case Some(nugetSec) -> {
+      if nugetSec.entries.count > 0 and nugetPaths.count == 0 {
+        val assetsPath = Path.join(Path.join(mfDir, "obj"), "project.assets.json")
+        val reason = if File.fileExists(assetsPath) { "is stale or could not be resolved" } else { "was not found" }
+        Some(value = reason)
+      } else {
+        None
+      }
+    }
+    case None -> None
+  }
+}
+
+// Warn if the manifest declares `[nuget]` entries but no resolved
+// assemblies — whether because `project.assets.json` is missing (never
+// restored) or present but stale/corrupt (resolves to zero assemblies).
+// Both states leave the build with unresolved NuGet deps, so the
+// file-existence check does not gate the warning to the missing-file case
+// only (#4326).  Shared by `buildProject` (cli_build.l) and
+// `cmdTestManifest` (cli_test.l) so the two build paths give the same
+// diagnostic instead of silently drifting apart (#4325).
+pub func warnIfNugetUnresolved(mfDir: in String, nugetOpt: in Option[Mf.NugetSection], nugetPaths: in List[String]): Unit {
+  match nugetUnresolvedReason(mfDir, nugetOpt, nugetPaths) {
+    case Some(reason) -> {
+      printErr(
+        "warning: [nuget] dependencies declared but project.assets.json " + reason + ". " +
+          "Run 'lyric restore' or 'dotnet restore' to resolve NuGet dependencies."
+      )
+    }
+    case None -> ()
+  }
+}
+
 pub func resolveNugetAssets(mfDir: in String): List[String] {
-  var result: List[String] = newList()
   val assetsPath = Path.join(Path.join(mfDir, "obj"), "project.assets.json")
   if not File.fileExists(assetsPath) {
-    return result
+    return newList()
   }
 
   val contentOpt = match File.readText(assetsPath) { case Ok(text) -> Some(value = text); case Err(_) -> None }
 
-  val content = match contentOpt { case Some(text) -> text; case None -> return result }
+  val content = match contentOpt { case Some(text) -> text; case None -> return newList() }
 
   // Parse the JSON using AOT-safe pure-Lyric parser
-  val parseResult = match Yaml.parseJson(content) { case Ok(value) -> value; case Err(_) -> return result }
+  val parseResult = match Yaml.parseJson(content) { case Ok(value) -> value; case Err(_) -> return newList() }
 
   // Resolve NuGet packages folder
   var pkgsDir = Environment.getVarOrDefault("NUGET_PACKAGES", "")
@@ -561,17 +633,11 @@ pub func resolveNugetAssets(mfDir: in String): List[String] {
   }
 
   if pkgsDir.length == 0 {
-    return result
+    return newList()
   }
 
   // Extract DLL paths from parsed YAML structure
-  val dlls = extractDllPathsFromYaml(parseResult, pkgsDir)
-  var idx = 0
-  while idx < dlls.count {
-    result.add(dlls[idx])
-    idx += 1
-  }
-  return result
+  extractDllPathsFromYaml(parseResult, pkgsDir)
 }
 
 func extractPackagesPathFromYaml(root: in Yaml.YamlValue): String {
@@ -642,10 +708,7 @@ func extractDllPathsFromYaml(root: in Yaml.YamlValue, pkgsDir: in String): List[
                       val pkgPair = packages[pIdx]
                       // Extract the Package/Version key
                       val pkgKey = pkgPair.key
-                      var slashPos = 0
-                      while slashPos < pkgKey.length and pkgKey[slashPos] != '/' {
-                        slashPos += 1
-                      }
+                      val slashPos = pkgKey.indexOf("/")
                       if slashPos > 0 and slashPos < pkgKey.length - 1 {
                         match pkgPair.value {
                           case Yaml.YMapping(pkgFields) -> {
@@ -680,7 +743,7 @@ func extractDllPathsFromYaml(root: in Yaml.YamlValue, pkgsDir: in String): List[
                                         val dllEntry = runtimeEntries[dIdx]
                                         val dllPath = dllEntry.key
                                         val lowerPath = dllPath.toLower()
-                                        if lowerPath.length > 4 and lowerPath[lowerPath.length - 4] == '.' and lowerPath[lowerPath.length - 3] == 'd' and lowerPath[lowerPath.length - 2] == 'l' and lowerPath[lowerPath.length - 1] == 'l' {
+                                        if Str.endsWith(lowerPath, ".dll") {
                                           val pkgName = pkgKey.substring(0, slashPos)
                                           val pkgVersion = pkgKey.substring(slashPos + 1, pkgKey.length - slashPos - 1)
                                           val lowerPkgName = pkgName.toLower()

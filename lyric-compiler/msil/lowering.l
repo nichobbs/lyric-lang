@@ -38,6 +38,7 @@ import Std.Core
 import Std.Collections
 import Std.Math
 import Std.String as Str
+import Std.Console as Console
 
 // ── MsilType ──────────────────────────────────────────────────────────────────
 // CLI element types supported by this lowering layer.
@@ -620,7 +621,6 @@ pub union MInsn {
   case MLdlen                          // load array length (pushes native int)
   case MLdelemRef                      // ldelem.ref — reference array element (String[], object[])
   case MLdelemU1                       // ldelem.u1  — byte array element (byte[])
-  case MLdelemI2                       // ldelem.i2  — int16 array element (short[])
   case MLdelemU2                       // ldelem.u2  — uint16 array element (char[])
   case MLdelemI4                       // ldelem.i4  — int32 array element (int[])
   case MLdelemI8                       // ldelem.i8  — int64 array element (long[])
@@ -1355,6 +1355,14 @@ pub func ctxAddAssemblyRef(ctx: in LoweringCtx, name: in String, major: in Int, 
     case Some(v) -> v
     case None -> {
       if Str.startsWith(name, "System.") {
+        // .NET's "unified platform" versioning model ships every first-party
+        // System.* reference assembly at the same version per release train
+        // (they're all built and versioned together as one BCL). So when an
+        // unresolved System.* name has no version of its own, System.Runtime's
+        // resolved version is a reliable stand-in — it is never a mismatch in
+        // practice, unlike falling back to the (possibly stale) major/minor
+        // passed in by the caller. This is an intentional policy, not a
+        // fallback of last resort.
         match mapGet(ctx.resolvedAssemblyVersions, "System.Runtime") {
           case Some(rtV) -> rtV
           case None -> Mdr.AssemblyVersion(major = major, minor = minor, build = 0, revision = 0)
@@ -1795,7 +1803,9 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
           gi = gi + 1
         }
       } else {
-        println(
+        // Compiler diagnostics belong on stderr, not stdout, so build tooling
+        // and CI log parsers that capture stdout don't pick up warning text (#4703).
+        Console.error(
           "W0005: bufMsilTypeWithCtx: TypeRef/TypeDef not found for MGenericInstByName '" + headFqn +
             "' — signature degraded to System.Object (#2494)"
         )
@@ -2151,11 +2161,23 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
       // in-bundle TypeDef, then build a TypeSpec-parented `.ctor` MemberRef whose
       // signature uses the VAR-form ctorParams.  Mirrors MNewobjGenericCase but
       // by-name (the TypeDef row is only known at this lowering phase).
-      val defRow = resolveSigTypeDefRow(ctx, headFqn)
+      // Same arity-suffix try-first / plain-FQN fallback as `MGenericInstByName`
+      // (#4296): `headFqn` normally already carries the arity suffix for
+      // in-bundle generics, but degrade gracefully if a cross-package path or a
+      // registration-order change ever produces an unsuffixed name.
+      var defRow = resolveSigTypeDefRow(ctx, headFqn)
+      val backtickPos = headFqn.lastIndexOf("`")
+      val plainFqn = if backtickPos < 0 { headFqn } else { headFqn.substring(0, backtickPos) }
+      if defRow == 0 and plainFqn != headFqn {
+        defRow = resolveSigTypeDefRow(ctx, plainFqn)
+      }
       val coded = if defRow > 0 {
         tdrTypeDef(defRow)
       } else {
-        val refRow = findTypeRefRowByName(ctx, headFqn)
+        var refRow = findTypeRefRowByName(ctx, headFqn)
+        if refRow == 0 and plainFqn != headFqn {
+          refRow = findTypeRefRowByName(ctx, plainFqn)
+        }
         if refRow > 0 {
           tdrTypeRef(refRow)
         } else {
@@ -2200,7 +2222,6 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MLdlen -> emitLdlen(mb)
     case MLdelemRef -> emitLdelem_Ref(mb)
     case MLdelemU1 -> emitLdelem_U1(mb)
-    case MLdelemI2 -> emitLdelem_I2(mb)
     case MLdelemU2 -> emitLdelem_U2(mb)
     case MLdelemI4 -> emitLdelem_I4(mb)
     case MLdelemI8 -> emitLdelem_I8(mb)
@@ -3684,6 +3705,12 @@ pub func findTypeDefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
   // (`Option`1`), but callers pass the plain dotted name (codegen maps are keyed
   // plainly via `stripGenericArity`).  Probe the suffixed forms so a plain-name
   // lookup still resolves the generic TypeDef.  Read-only `mapGet`.
+  // Ceiling of 9 is deliberate, not arbitrary: no Lyric or stdlib type declares
+  // 10+ type parameters today, and every arity actually reachable through
+  // `internString` at this point is a small, statically-bounded set already
+  // registered by the emitter. Widening this beyond 9 would require driving
+  // the probe from the strings table's `` `N `` entries directly instead of a
+  // fixed range — see #3922.
   var defArity = 1
   while defArity <= 9 {
     match mapGet(ctx.strings.entries, simpleName + "`" + toString(defArity)) {
@@ -3756,6 +3783,10 @@ pub func findTypeRefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
   // dotted case name.  Without this the lookup misses, the caller degrades to
   // System.Object, and `isinst` unconditionally succeeds — breaking match
   // dispatch on cross-package generic unions.  Read-only `mapGet`.
+  // Ceiling of 9 is deliberate, not arbitrary — see `findTypeDefRowByName`'s
+  // matching comment (#3922): no current Lyric/stdlib type has 10+ type
+  // parameters, so this is not a live blocker, but a future one should widen
+  // the probe to the strings table's `` `N `` entries instead of a fixed range.
   var refArity = 1
   while refArity <= 9 {
     match mapGet(ctx.strings.entries, simpleName + "`" + toString(refArity)) {
@@ -3804,6 +3835,21 @@ pub func recordUserTypeDefRow(ctx: in LoweringCtx, namespace: in String, simpleN
   }
 }
 
+// KNOWN LIMITATION (#3891): keyed by `classFqn + "::" + methodName` only — no
+// arity or signature component.  MSIL allows overloaded methods with the same
+// name but different signatures (e.g. two `from`/`tryFrom` overloads on the
+// same record).  Because of the `containsKey` guard below, only the FIRST
+// registration for a given name is retained; a second same-name overload's
+// row is silently dropped, and any later lookup (`findMethodDefRowOfType`'s
+// predicted-row fallback, `MLdftnByName`) that hits the dropped overload
+// resolves to the WRONG MethodDef row instead.  `findMethodDefRowOfType`'s
+// primary table-scan path has the same name-only-match limitation, so fixing
+// only this map would not fully close the gap.  Not currently known to fire
+// in practice (no exercised caller registers two same-name methods on the
+// same class before the second is looked up), but a proper fix needs an
+// arity or signature-blob component threaded through both the ~10 call sites
+// that write here and the call sites of `findMethodDefRowOfType` that read
+// it — deferred pending verification against a real overloaded-method build.
 pub func recordPredictedMethodRow(ctx: in LoweringCtx, classFqn: in String, methodName: in String, row: in Int): Unit {
   val key = classFqn + "::" + methodName
   if not ctx.predictedMethodRows.containsKey(key) {

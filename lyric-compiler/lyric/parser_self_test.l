@@ -83,6 +83,62 @@ func packageName(pr: in ParseResult): String {
   s
 }
 
+// The alias captured for the first item of the first import's selector
+// group (or the single-item selector's own alias), or a sentinel string
+// when there is no import / no selector / no alias to check.
+func firstImportItemAlias(pr: in ParseResult): String {
+  if pr.file.imports.count == 0 {
+    return "<no-import>"
+  }
+  match pr.file.imports[0].selector {
+    case None -> "<no-selector>"
+    case Some(sel) -> {
+      match sel {
+        case ISSingle(item) -> match item.asAlias { case Some(a) -> a; case None -> "<no-alias>" }
+        case ISGroup(items) -> {
+          if items.count == 0 {
+            "<empty-group>"
+          } else {
+            match items[0].asAlias {
+              case Some(a) -> a
+              case None -> "<no-alias>"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// Number of items in the first import's selector group (1 for a
+// single-item selector, 0 for no selector at all, -1 when there is no
+// import to check).
+func firstImportSelectorItemCount(pr: in ParseResult): Int {
+  if pr.file.imports.count == 0 {
+    return -1
+  }
+  match pr.file.imports[0].selector {
+    case None -> 0
+    case Some(sel) -> match sel { case ISSingle(_) -> 1; case ISGroup(items) -> items.count }
+  }
+}
+
+// The `name` field of the `n`th item in the first import's selector group.
+func nthImportSelectorItemName(pr: in ParseResult, n: in Int): String {
+  if pr.file.imports.count == 0 {
+    return "<no-import>"
+  }
+  match pr.file.imports[0].selector {
+    case None -> "<no-selector>"
+    case Some(sel) -> {
+      match sel {
+        case ISSingle(item) -> if n == 0 { item.name } else { "<out-of-range>" }
+        case ISGroup(items) -> if n >= 0 and n < items.count { items[n].name } else { "<out-of-range>" }
+      }
+    }
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -102,6 +158,7 @@ test "import" {
   val pr = parse("package P\nimport Std.Core\n")
   assertEqualInt(diagCount(pr), 0, "import: no diagnostics")
   assertEqualInt(importCount(pr), 1, "import: one import")
+  assertFalse(pr.file.imports[0].isExtern, "import: isExtern is false for regular import")
 }
 
 test "import extern" {
@@ -116,6 +173,18 @@ test "import extern with alias" {
   assertEqualInt(diagCount(pr), 0, "import extern alias: no diagnostics")
   assertEqualInt(importCount(pr), 1, "import extern alias: one import")
   assertTrue(pr.file.imports[0].isExtern, "import extern alias: isExtern flag is true")
+  assertEqual(firstImportItemAlias(pr), "HostClient", "import extern alias: selector item alias is captured")
+}
+
+test "import extern with multiple items in selector group" {
+  val pr = parse("package P\nimport extern System.Net.Http.{ HttpClient, HttpRequestMessage, HttpResponseMessage }\n")
+  assertEqualInt(diagCount(pr), 0, "import extern multi: no diagnostics")
+  assertEqualInt(importCount(pr), 1, "import extern multi: one import declaration")
+  assertTrue(pr.file.imports[0].isExtern, "import extern multi: isExtern flag is true")
+  assertEqualInt(firstImportSelectorItemCount(pr), 3, "import extern multi: three selector items")
+  assertEqual(nthImportSelectorItemName(pr, 0), "HttpClient", "import extern multi: first item name")
+  assertEqual(nthImportSelectorItemName(pr, 1), "HttpRequestMessage", "import extern multi: second item name")
+  assertEqual(nthImportSelectorItemName(pr, 2), "HttpResponseMessage", "import extern multi: third item name")
 }
 
 test "pub use extern" {
@@ -130,6 +199,18 @@ test "import extern without selector" {
   assertEqualInt(diagCount(pr), 0, "import extern without selector: no diagnostics")
   assertEqualInt(importCount(pr), 1, "import extern without selector: one import")
   assertTrue(pr.file.imports[0].isExtern, "import extern without selector: isExtern flag is true")
+}
+
+test "pub use extern without selector" {
+  // Mirrors "import extern without selector": grammar.ebnf §2.1 documents
+  // that a bare selector-less extern import is valid for both the
+  // `import extern` and `pub use extern` forms (D116 Q47-001, docs/01 §9.2),
+  // binding the single external type named by the trailing path segment.
+  val pr = parse("package P\npub use extern Docker.DotNet.DockerClient\n")
+  assertEqualInt(diagCount(pr), 0, "pub use extern without selector: no diagnostics")
+  assertEqualInt(importCount(pr), 1, "pub use extern without selector: one import")
+  assertTrue(pr.file.imports[0].isExtern, "pub use extern without selector: isExtern flag is true")
+  assertTrue(pr.file.imports[0].isPubUse, "pub use extern without selector: isPubUse flag is true")
 }
 
 test "func decl" {
@@ -1200,4 +1281,32 @@ test "extern func non-string symbol raises P0276" {
     i = i + 1
   }
   assertTrue(sawP0276, "extern func: P0276 raised for a bare identifier symbol")
+}
+
+// #4748/#4820: parenthesised lambda param lists (`{ (k, v) -> ... }`,
+// grammar.ebnf LambdaParams alternative 3).
+test "lambda: parenthesised param list parses clean" {
+  val pr = parse("package P\nfunc f(): Int {\n  val g = { (k, v) -> k + v }\n  return 0\n}\n")
+  assertEqualInt(diagCount(pr), 0, "lambda: `{ (k, v) -> ... }` parses clean")
+}
+
+// #4818: a failed tentative paren-param parse must not leave stale entries
+// in the speculative param list. `(x + y)` looks like a param list up to
+// `x`, then fails at `+` — exercising the backtrack-and-truncate path added
+// alongside the parenthesised-param feature.
+test "lambda: parenthesised expression body does not leak speculative params" {
+  val pr = parse("package P\nfunc f(): Int {\n  val x = 1\n  val y = 2\n  val g = { (x + y) }\n  return 0\n}\n")
+  assertEqualInt(diagCount(pr), 0, "lambda: `{ (x + y) }` backtracks to a plain block body cleanly")
+}
+
+// #4829: additional parenthesised-param forms not covered above — the
+// zero-param `()` list, and a param with an explicit type annotation.
+test "lambda: empty parenthesised param list parses clean" {
+  val pr = parse("package P\nfunc f(): Int {\n  val g = { () -> 5 }\n  return 0\n}\n")
+  assertEqualInt(diagCount(pr), 0, "lambda: `{ () -> 5 }` parses clean")
+}
+
+test "lambda: parenthesised param with type annotation parses clean" {
+  val pr = parse("package P\nfunc f(): Int {\n  val g = { (k: String) -> k }\n  return 0\n}\n")
+  assertEqualInt(diagCount(pr), 0, "lambda: `{ (k: String) -> k }` parses clean")
 }

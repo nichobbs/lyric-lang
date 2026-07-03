@@ -6,9 +6,10 @@
 //!                  to a structured audit log before proceeding.  Uses
 //!                  `call.qualifiedName` as the operation identifier.
 //!
-//!   ValidateKey  — C-mode (@inline_template): rejects empty or path-traversal
-//!                  storage keys before the call reaches the handler.  Reads
-//!                  `args.key` from the concrete handler parameter list.
+//!   ValidateKey  — row-constrained B'-mode (docs/56): rejects empty or
+//!                  path-traversal storage keys before the call reaches the
+//!                  handler.  Reads `args.key` from the concrete handler
+//!                  parameter list.
 //!
 //! Typical consumer usage:
 //!
@@ -65,9 +66,10 @@ pub aspect AuditAccess {
 // ─── ValidateKey ─────────────────────────────────────────────────────────────
 /// Reject empty or path-traversal storage keys before the handler runs.
 ///
-/// C-mode (@inline_template): body reads `args.key` from the concrete handler.
-/// Apply only to handlers that declare a `key: String` parameter; the compiler
-/// reports shape error A0042 otherwise.
+/// Row-constrained B'-mode (docs/56 / D115): body reads `args.key` via a
+/// `where TArgs has { key: String }` row clause.  Apply only to handlers
+/// that declare a `key: String` parameter; the weaver reports A0047
+/// otherwise.
 ///
 /// The aspect checks:
 ///   1. The key must not be empty.
@@ -81,7 +83,6 @@ pub aspect AuditAccess {
 ///   enabled:   Bool — master switch (default: true)
 ///   allowDots: Bool — when false, keys containing ".." are rejected (default: false)
 @stable(since = "0.1")
-@inline_template
 pub aspect ValidateKey {
   config {
     enabled: Bool = true
@@ -89,7 +90,7 @@ pub aspect ValidateKey {
   }
   requires: args.key != ""
   // handler must declare a key: String parameter
-  around(call) -> ret {
+  around(call) -> ret where TArgs has { key: String } {
     if not enabled {
       ret = call.proceed()
     } else {

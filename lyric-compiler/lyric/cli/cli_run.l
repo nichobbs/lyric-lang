@@ -99,9 +99,14 @@ func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in Com
           // file was removed) we still run via `dotnet exec` so `lyric run`
           // keeps working, but say so rather than falling back silently.
           if buildKind == "exe" {
+            // `<rid>` is a literal placeholder fallback for the (Dotnet-only)
+            // rare case where the host RID can't be determined; the interpolated
+            // form lets the user copy-paste the exact runtime-pack name (#4115).
+            val hostRid = Environment.runtimeIdentifier()
+            val ridHint = if hostRid.length > 0 { hostRid } else { "<rid>" }
             printErr(
               "run: warning: no native launcher found for this 'kind = \"exe\"' build; " +
-                "falling back to 'dotnet exec' (install a Microsoft.NETCore.App.Host.<rid> " +
+                "falling back to 'dotnet exec' (install a Microsoft.NETCore.App.Host." + ridHint + " " +
                 "runtime pack, or set DOTNET_ROOT to a .NET install that has one, so the " +
                 "apphost template can be located)"
             )

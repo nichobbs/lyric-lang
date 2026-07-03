@@ -60,8 +60,11 @@ func dottedPath(path: in ModulePath): String {
 }
 
 // True for top-level items that must reach packages importing this one
-// (types + pub module vals) so cross-package names resolve during the
-// advisory typecheck.  Mirrors `Jvm.Bridge.isTypeItem`.
+// (types, pub module vals, and pub funcs) so cross-package names
+// resolve during the advisory typecheck — without the pub funcs every
+// stdlib call in user code prints a spurious T0020 on a successful
+// build.  Extends `Jvm.Bridge.isTypeItem` with the pub-func rule from
+// `Msil.Bridge.collectStdlibPackages`.
 func isTypeItem(it: in Item): Bool {
   val isType = match it.kind {
     case IRecord(_) -> true
@@ -82,6 +85,7 @@ func isTypeItem(it: in Item): Bool {
   }
   match it.kind {
     case IVal(_) -> match it.visibility { case Some(vis) -> match vis { case VisPub(_) -> true; case _ -> false }; case None -> false }
+    case IFunc(decl) -> match decl.visibility { case Some(vis) -> match vis { case VisPub(_) -> true; case _ -> false }; case None -> false }
     case _ -> false
   }
 }
@@ -359,6 +363,20 @@ pub func compileToNative(
   triple: in String,
   optLevel: in String,
 ): Bool {
+  val noFlags: List[String] = newList()
+  compileToNativeWithFlags(source, outputPath, stdlibSources, triple, optLevel, noFlags)
+}
+
+/// `compileToNative` with extra clang driver flags (e.g.
+/// `-fsanitize=address` for the sanitizer-checked self-tests).
+pub func compileToNativeWithFlags(
+  source: in String,
+  outputPath: in String,
+  stdlibSources: in List[String],
+  triple: in String,
+  optLevel: in String,
+  extraClangFlags: in List[String],
+): Bool {
   val parseResult = parse(source)
   if reportAndAbort(parseResult.diagnostics) {
     return false
@@ -546,7 +564,10 @@ pub func compileToNative(
   var bi3 = 0
   while bi3 < toBundle.count {
     val u = unitOf(toBundle[bi3], reachable, false)
-    if u.fns.count > 0 or u.externs.count > 0 {
+    // A unit with no reachable functions still contributes its type
+    // declarations (e.g. Std.Core's Result/Option are referenced by
+    // other packages' signatures without any Std.Core call).
+    if u.fns.count > 0 or u.externs.count > 0 or u.records.count > 0 or u.unions.count > 0 or u.enums.count > 0 or u.distincts.count > 0 {
       units.add(u)
     }
     bi3 = bi3 + 1
@@ -582,6 +603,11 @@ pub func compileToNative(
   val effOpt = if optLevel.length > 0 { optLevel } else { "2" }
   val clangArgs: List[String] = newList()
   clangArgs.add("-O" + effOpt)
+  var xi = 0
+  while xi < extraClangFlags.count {
+    clangArgs.add(extraClangFlags[xi])
+    xi = xi + 1
+  }
   if triple.length > 0 {
     clangArgs.add("--target=" + triple)
   }
@@ -676,10 +702,19 @@ func indexFileFns(f: in SourceFile, bodyIndex: in Map[String, FunctionDecl], pkg
 // One package's codegen unit.  `lowerAll` (the user package) takes every
 // function; bundled packages take only the reachable ones.  Extern
 // funcs follow the same rule (an undeclared extern is never called).
+// Type declarations (records/unions/enums/distincts) always collect —
+// registration is cheap and other packages' signatures may reference
+// them.  Record methods lower with the user package (D037 desugar);
+// bundled-package record methods are a Phase N5 follow-up (calling one
+// panics with a resolution message today).
 func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool): CodegenUnit {
   val pkg = dottedPath(f.packageDecl.path)
   val fns: List[FunctionDecl] = newList()
   val externs: List[ExternFuncDecl] = newList()
+  val records: List[RecordDecl] = newList()
+  val unions: List[UnionDecl] = newList()
+  val enums: List[EnumDecl] = newList()
+  val distincts: List[DistinctTypeDecl] = newList()
   var i = 0
   while i < f.items.count {
     match f.items[i].kind {
@@ -695,10 +730,27 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
           externs.add(decl)
         }
       }
+      case IRecord(decl) -> {
+        records.add(decl)
+        if lowerAll {
+          collectRecordMethods(pkg, decl, fns)
+        }
+      }
+      case IUnion(decl) -> unions.add(decl)
+      case IEnum(decl) -> enums.add(decl)
+      case IDistinctType(decl) -> distincts.add(decl)
       case _ -> {
       }
     }
     i = i + 1
   }
-  CodegenUnit(pkgName = pkg, fns = fns, externs = externs)
+  CodegenUnit(
+    pkgName = pkg,
+    fns = fns,
+    externs = externs,
+    records = records,
+    unions = unions,
+    enums = enums,
+    distincts = distincts
+  )
 }

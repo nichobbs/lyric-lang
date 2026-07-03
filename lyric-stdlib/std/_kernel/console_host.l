@@ -11,6 +11,8 @@
 @axiom("System.Console operations conform to their documented .NET contracts")
 package Std.ConsoleHost
 
+import Std.Core
+
 @externTarget("System.Console.Read")
 pub func hostConsoleRead(): Int = ()
 
@@ -22,6 +24,16 @@ pub func hostConsoleWriteLine(text: in String): Unit = ()
 
 @externTarget("System.Console.ReadLine")
 pub func hostConsoleReadLine(): String? = ()
+
+// Option seam avoiding `case null`'s catch-all miscompile (#4775); NUL-marker mirrors `hostGetVarOpt` (#4750).
+pub func hostReadLineOpt(): Option[String] {
+  val v = hostConsoleReadLine() ?? "\u{0000}"
+  if v == "\u{0000}" {
+    None
+  } else {
+    Some(value = v)
+  }
+}
 
 // stderr — `Console.Error` is a static property returning a
 // `System.IO.TextWriter`; compose the property getter with the writer's

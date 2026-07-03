@@ -16,6 +16,7 @@ import Lyric.ModeChecker
 import Lyric.ContractElaborator
 import Lyric.Propagate
 import Lyric.Cfg as Cfg
+import Lyric.AliasRewriter as Aliases
 import Lyric.Weaver as Weaver
 import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.Mono
@@ -158,7 +159,7 @@ pub func compileToJar(
   // `injectWeaveImports` ensures `import Std.Time` is present before any
   // import-driven resolution when an aspect references `call.elapsed`
   // (#1298) — the weave itself runs later, in `runMiddleEnd`.
-  val file0 = Weaver.injectWeaveImports(Stubbable.stubbableRewriteFile(parseResult.file))
+  val file0 = Weaver.injectWeaveImports(Stubbable.stubbableRewriteFile(Aliases.rewriteFile(parseResult.file)))
 
   val tcRes = checkWithImportedPackages(file0, importedPkgs)
   reportDiagnostics(tcRes.diagnostics)
@@ -484,6 +485,95 @@ func annsBlockSpecializationJvm(anns: in List[Annotation]): Bool {
   false
 }
 
+// Extern-type maps of every parsed package, keyed by dotted package name
+// (parallel lists — a record-valued map trips the stage-0 bootstrap
+// emitter).  `externSeedForFile` unions the maps of the packages `file`
+// imports so signatures written against imported extern types (e.g.
+// `Std.Time.now(): Instant` with `Instant` declared in `Std.TimeHost`)
+// resolve to the real JVM class instead of `<pkg>/<Alias>`.
+func externSeedForFile(
+  file: in SourceFile, extPkgNames: in List[String], extPkgMaps: in List[Map[String, String]]
+): Map[String, String] {
+  val seed: Map[String, String] = newMap()
+  // Build the file's import set once, then make a single pass over the
+  // package list — O(imports + packages) instead of the previous
+  // O(imports × packages) nested scan (#4667).
+  val wanted: Map[String, Bool] = newMap()
+  var ii = 0
+  while ii < file.imports.count {
+    val dn = dottedPath(file.imports[ii].path)
+    if not wanted.containsKey(dn) {
+      wanted.add(dn, true)
+    }
+    ii = ii + 1
+  }
+  var pi = 0
+  while pi < extPkgNames.count {
+    if wanted.containsKey(extPkgNames[pi]) {
+      for k in mapKeys(extPkgMaps[pi]) {
+        match mapGet(extPkgMaps[pi], k) {
+          case Some(v) -> {
+            if not seed.containsKey(k) {
+              seed.add(k, v)
+            }
+          }
+          case None -> ()
+        }
+      }
+    }
+    pi = pi + 1
+  }
+  seed
+}
+
+// Import-aware view of the cross-package registry for one file: bare-name
+// keys are re-pointed at the packages the file actually imports (its own
+// package winning last), instead of the global first-registration winner.
+// Two bundled packages exporting the same short name (`Std.Process` and
+// `Std.ProcessCapture` both export `runCapture`) otherwise mis-resolve every
+// unqualified call in every file to whichever package registered first —
+// the #2535 collision class.  Qualified (`owner/name`) and instance
+// (`class#method`) keys are copied unchanged.
+func importAwareRegistry(file: in SourceFile, registry: in Map[String, JvmFuncSig]): Map[String, JvmFuncSig] {
+  val owners: List[String] = newList()
+  var ii = 0
+  while ii < file.imports.count {
+    if not file.imports[ii].isExtern {
+      owners.add(pkgJvmOwner(file.imports[ii].path))
+    }
+    ii = ii + 1
+  }
+  // Own package last, so in-file definitions win over any import.
+  owners.add(pkgJvmOwner(file.packageDecl.path))
+  val overlay: Map[String, JvmFuncSig] = newMap()
+  for k in mapKeys(registry) {
+    match mapGet(registry, k) {
+      case Some(sig) -> overlay.add(k, sig)
+      case None -> ()
+    }
+  }
+  var oi = 0
+  while oi < owners.count {
+    val pfx = owners[oi] + "/"
+    for k2 in mapKeys(registry) {
+      if Str.startsWith(k2, pfx) {
+        val bare = k2.substring(pfx.length, k2.length - pfx.length)
+        if bare.length > 0 and not Str.contains(bare, "/") and not Str.contains(bare, "#") and not Str.contains(bare, ".") {
+          match mapGet(registry, k2) {
+            case Some(sig2) -> {
+              overlay.remove(bare)
+              overlay.add(bare, sig2)
+            }
+            case None -> ()
+          }
+        }
+      }
+    }
+    oi = oi + 1
+  }
+  overlay
+}
+
 // Codegen one (already middle-ended) file against `registry` and append its
 // class files to `out`.  Uses an isolated constant pool per package.
 func codegenPackageInto(
@@ -494,8 +584,17 @@ func codegenPackageInto(
   autoFfi: in AutoFfiCtx,
   allProjFqns: in Map[String, Bool],
   acc: in List[BuiltClass],
+  externSeed: in Map[String, String],
 ): Unit {
-  val pkg = codegenPackageWithSigs(file, registry, caseReg, ctorReg, autoFfi, allProjFqns)
+  val pkg = codegenPackageWithSigsSeeded(
+    file,
+    importAwareRegistry(file, registry),
+    caseReg,
+    ctorReg,
+    autoFfi,
+    allProjFqns,
+    externSeed
+  )
   val pool = poolNew()
   val classFiles = lowerPackage(pkg, pool)
   var j = 0
@@ -550,7 +649,7 @@ func lastSegOfKey(key: in String): String {
   if lastSlash < 0 {
     key
   } else {
-    key.substring(lastSlash + 1, key.length)
+    key.substring(lastSlash + 1, key.length - lastSlash - 1)
   }
 }
 
@@ -815,7 +914,8 @@ func collectDeriveFreeSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]
             ret = ret,
             paramNames = paramNames,
             paramDefaults = newList(),
-            paramModes = newList()
+            paramModes = newList(),
+            isIface = false
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -873,7 +973,78 @@ func collectAspectWovenSigs(file: in SourceFile, into: in Map[String, JvmFuncSig
             ret = ret,
             paramNames = paramNames,
             paramDefaults = newList(),
-            paramModes = newList()
+            paramModes = newList(),
+            isIface = false
+          )
+          val qkey = owner + "/" + decl.name
+          if not into.containsKey(qkey) {
+            into.add(qkey, sig)
+          }
+          if not into.containsKey(decl.name) {
+            into.add(decl.name, sig)
+          }
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
+// Detect a monomorphizer-specialised function name.  `Lyric.Mono` mangles a
+// specialised copy as `<base>__<T1>__<T2>` (`specFuncName`), so the name
+// carries a `__` infix.  Aspect-weave names (`__aspect_` infix) and
+// test-synth names (`__lyric_` prefix) also contain `__` but are handled by
+// their own collectors / the pre-middle-end registry pass; exclude them so
+// this stays the mono-only patch.
+func isMonoSpecializedName(name: in String): Bool {
+  Str.contains(name, "__") and not Str.contains(name, "__aspect_") and not Str.startsWith(name, "__lyric_")
+}
+
+// Register the sigs of monomorphizer-specialised functions (`mapKeys__String__Int`,
+// `unwrapOr__Int`, …) from the POST-mono file, patching the registry built from
+// the pre-middle-end sources (#3229).  Mono runs inside `runMiddleEnd`, after
+// the bundle-wide `collectFileSigsSeeded` pass, so without this the specialised
+// copies are emitted but their call sites resolve through the `(…)Object`
+// guess — a descriptor mismatch that fails at class load (the #3676
+// map-iteration symptom).  Specialised copies are called by bare name (the
+// mono call-site rewrite is unqualified), so both the bare and the qualified
+// `owner/name` key are registered — same rationale as `collectAspectWovenSigs`.
+// Param/return types resolve through the file's extern types unioned with the
+// imported `externSeed` (a specialised stdlib sig references `Map[..]` /
+// `List[..]`, whose extern aliases live in `Std.CollectionsHost`).  Empty
+// `paramDefaults` avoids the stage-0 bootstrap `List[Option[Expr]]` `.add()`
+// miscompile (same rationale as `collectDeriveFreeSigs`); mono forwards every
+// argument positionally, so defaults are never consulted at these call sites.
+func collectMonoSpecializedSigs(
+  file: in SourceFile,
+  into: in Map[String, JvmFuncSig],
+  externSeed: in Map[String, String],
+): Unit {
+  val owner = pkgJvmOwner(file.packageDecl.path)
+  val externTypes = mergeExternSeed(collectExternTypesFromFile(file), externSeed)
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(decl) -> {
+        if isMonoSpecializedName(decl.name) {
+          val params: List[JvmType] = newList()
+          val paramNames: List[String] = newList()
+          var pi = 0
+          while pi < decl.params.count {
+            params.add(typeExprToJvmExtern(decl.params[pi].ty, owner, externTypes))
+            paramNames.add(decl.params[pi].name)
+            pi = pi + 1
+          }
+          val ret = match decl.ret { case Some(te) -> typeExprToJvmExtern(te, owner, externTypes); case None -> JVoid }
+          val sig = JvmFuncSig(
+            owner = owner,
+            params = params,
+            ret = ret,
+            paramNames = paramNames,
+            paramDefaults = newList(),
+            paramModes = newList(),
+            isIface = false
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -931,11 +1102,98 @@ pub func compileToJarBundledWithFeatures(
   declaredFeatures: in List[String],
   depTemplateSrcs: in List[String],
 ): Bool {
-  val parseResult = parse(source)
-  if reportAndAbort(parseResult.diagnostics) {
+  val one: List[String] = newList()
+  one.add(source)
+  compileProjectToJarBundledWithFeatures(
+    one,
+    outputPath,
+    packageName,
+    stdlibSources,
+    activeFeatures,
+    declaredFeatures,
+    depTemplateSrcs
+  )
+}
+
+// True when the file declares a top-level `func main` — the project entry
+// package marker for multi-package JVM builds.
+func fileHasTopLevelMain(file: in SourceFile): Bool {
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(decl) -> {
+        if decl.name == "main" {
+          return true
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// Multi-package JVM project build (the manifest path, #2669 J6): compiles
+/// every project package plus the transitive stdlib-import closure into one
+/// runnable JAR, in process.  `pkgSrcs` carries one merged source per
+/// project package; the entry package is the one declaring a top-level
+/// `func main` (first package when none does — `lyric test` synthesises its
+/// runner main into the test package).  Sibling packages ride the same
+/// bundling machinery as stdlib packages — same registries, call-graph
+/// reachability, middle end, and codegen — with two deliberate differences:
+/// their parse / cfg / middle-end diagnostics are FATAL (they are the
+/// user's own code, not advisory stdlib noise), and a codegen failure in
+/// one is always a build error (never a J003 silent skip).
+///
+/// This retires the `--internal-project-build` subprocess hop for the JVM
+/// target: the previous `emitProjectJvmViaSubprocess` path re-entered
+/// `emitProject` in the child with the same multi-package request, which
+/// re-spawned the subprocess — an unbounded process loop, masked only
+/// because no multi-package JVM manifest build had been exercised
+/// end-to-end before.
+pub func compileProjectToJarBundledWithFeatures(
+  pkgSrcs: in List[String],
+  outputPath: in String,
+  packageName: in String,
+  stdlibSources: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  depTemplateSrcs: in List[String],
+): Bool {
+  if pkgSrcs.count == 0 {
+    Console.error("error[J001]: JVM project build received no packages")
     return false
   }
-  match mainReturns2SlotType(parseResult.file) {
+  // Parse every project package (fatal diagnostics), then run the user
+  // pre-passes on each: `@cfg` erasure, alias rewrite, `@stubbable`
+  // synthesis, weave-import injection.  `injectWeaveImports` must run
+  // before the transitive import-closure walk below so that an aspect
+  // referencing `call.elapsed` (#1298) gets `Std.Time` bundled into the
+  // JAR for the `monotonicNanos` calls the weave synthesises later in
+  // `runMiddleEnd`.
+  val userFiles: List[SourceFile] = newList()
+  var mainIdx = 0
+  var sawMain = false
+  var psi = 0
+  while psi < pkgSrcs.count {
+    val pr = parse(pkgSrcs[psi])
+    if reportAndAbort(pr.diagnostics) {
+      return false
+    }
+    val cfgRes = Cfg.applyCfgErasure(Cfg.withTargetFeature(activeFeatures, "jvm"), declaredFeatures, pr.file)
+    if reportAndAbort(cfgRes.diagnostics) {
+      return false
+    }
+    val uf = Weaver.injectWeaveImports(Stubbable.stubbableRewriteFile(Aliases.rewriteFile(cfgRes.file)))
+    if not sawMain and fileHasTopLevelMain(uf) {
+      mainIdx = psi
+      sawMain = true
+    }
+    userFiles.add(uf)
+    psi = psi + 1
+  }
+  val userFile = userFiles[mainIdx]
+  match mainReturns2SlotType(userFile) {
     case Some(ty) -> {
       Console.error("error[J001]: `func main(): " + ty + "` is not supported on the JVM target")
       Console.error("  hint: use `func main(): Int` (exit code) or `func main(): Unit`")
@@ -943,20 +1201,6 @@ pub func compileToJarBundledWithFeatures(
     }
     case None -> ()
   }
-  // `@cfg`-driven erasure before `@stubbable` synthesis and type-check (M-4):
-  // drop user-package items gated on inactive features so the rest of the
-  // pipeline never sees them.  Mirrors the MSIL bridge, which runs cfg erasure
-  // on each user package immediately after parse.
-  val cfgRes = Cfg.applyCfgErasure(Cfg.withTargetFeature(activeFeatures, "jvm"), declaredFeatures, parseResult.file)
-  if reportAndAbort(cfgRes.diagnostics) {
-    return false
-  }
-  // `@stubbable` synthesis before type-check (parity with the MSIL bridge).
-  // `injectWeaveImports` must run HERE — before the transitive
-  // import-closure walk below — so that an aspect referencing
-  // `call.elapsed` (#1298) gets `Std.Time` bundled into the JAR for the
-  // `monotonicNanos` calls the weave synthesises later in `runMiddleEnd`.
-  val userFile = Weaver.injectWeaveImports(Stubbable.stubbableRewriteFile(cfgRes.file))
 
   // Parse every stdlib source once: collect its type items (for cross-package
   // type resolution) and index the whole file by dotted package name (for the
@@ -974,29 +1218,98 @@ pub func compileToJarBundledWithFeatures(
     // here leaked self-hosted-parser-gap noise (e.g. `spawn`/`var` keyword
     // P0051s from std/process.l) onto every successful JVM build's output;
     // suppress it so a clean build stays clean.
+    //
+    // The alias rewrite must run here — before registry collection, the
+    // call-graph walk, and codegen all consume the file — so that a
+    // stdlib package calling its kernel through an aliased import
+    // (`import Std.CharHost as Host` → `Host.hostIsLetter(c)`) resolves
+    // like an unaliased call.  Without it every such call fell through
+    // to the instance-FFI guess and the whole package was silently
+    // J003-skipped (Std.Char and Std.Parse — and with them every JVM
+    // consumer of char classification and string→number parsing).
+    val prFile = Aliases.rewriteFile(pr.file)
     val pkgItems: List[Item] = newList()
     var ii = 0
-    while ii < pr.file.items.count {
-      if isTypeItem(pr.file.items[ii]) {
-        pkgItems.add(pr.file.items[ii])
+    while ii < prFile.items.count {
+      if isTypeItem(prFile.items[ii]) {
+        pkgItems.add(prFile.items[ii])
       }
       ii = ii + 1
     }
-    val pn = dottedPath(pr.file.packageDecl.path)
-    importedPkgs.add(ImportedPackage(name = pn, items = pkgItems, imports = collectImportNames(pr.file.imports)))
-    stdlibFiles.add(pr.file)
+    val pn = dottedPath(prFile.packageDecl.path)
+    importedPkgs.add(ImportedPackage(name = pn, items = pkgItems, imports = collectImportNames(prFile.imports)))
+    stdlibFiles.add(prFile)
     if pn.length > 0 and not stdlibByPkg.containsKey(pn) {
-      stdlibByPkg.add(pn, pr.file)
+      stdlibByPkg.add(pn, prFile)
     }
     si = si + 1
+  }
+
+  // Sibling project packages join the same bundle structures as stdlib
+  // files: the import-closure walk resolves `import <Sibling>` through
+  // `stdlibByPkg`, and every downstream loop (extern seeds, registries,
+  // generic-func collection, aspect templates, per-package codegen)
+  // iterates `stdlibFiles`.  `projectOwners` marks their JVM owners so the
+  // bundle loop treats them as the user's own code: middle-end diagnostics
+  // and codegen failures are always fatal (never the stdlib J003 skip),
+  // and their type-check advisories are echoed.
+  val projectOwners: Map[String, Bool] = newMap()
+  var svi = 0
+  while svi < userFiles.count {
+    if svi != mainIdx {
+      val sf = userFiles[svi]
+      val spn = dottedPath(sf.packageDecl.path)
+      val sItems: List[Item] = newList()
+      var sii = 0
+      while sii < sf.items.count {
+        if isTypeItem(sf.items[sii]) {
+          sItems.add(sf.items[sii])
+        }
+        sii = sii + 1
+      }
+      importedPkgs.add(ImportedPackage(name = spn, items = sItems, imports = collectImportNames(sf.imports)))
+      stdlibFiles.add(sf)
+      if spn.length > 0 and not stdlibByPkg.containsKey(spn) {
+        stdlibByPkg.add(spn, sf)
+      }
+      projectOwners.add(pkgJvmOwner(sf.packageDecl.path), true)
+    }
+    svi = svi + 1
+  }
+
+  // Extern-type map per parsed package (parallel lists), so signatures and
+  // descriptors written against an imported extern type resolve through
+  // `externSeedForFile` (e.g. `Std.Time`'s `Instant` from `Std.TimeHost`).
+  val extPkgNames: List[String] = newList()
+  val extPkgMaps: List[Map[String, String]] = newList()
+  extPkgNames.add(dottedPath(userFile.packageDecl.path))
+  val userExtMap = collectExternTypesFromFile(userFile)
+  // Also expose each package's non-generic declared Lyric types (dotted
+  // FQNs, same value format) so importing files' descriptors name the real
+  // class — extern declarations win on name collision (registered first).
+  collectFileDeclaredTypeFqns(userFile, userExtMap)
+  extPkgMaps.add(userExtMap)
+  var xi = 0
+  while xi < stdlibFiles.count {
+    extPkgNames.add(dottedPath(stdlibFiles[xi].packageDecl.path))
+    val xExtMap = collectExternTypesFromFile(stdlibFiles[xi])
+    collectFileDeclaredTypeFqns(stdlibFiles[xi], xExtMap)
+    extPkgMaps.add(xExtMap)
+    xi = xi + 1
   }
 
   // Build the cross-package call registry across the user file and *every*
   // stdlib file (resolution is cheap and harmless for packages we don't bundle).
   val registry: Map[String, JvmFuncSig] = newMap()
-  collectFileSigs(userFile, registry)
+  collectFileSigsSeeded(userFile, registry, externSeedForFile(userFile, extPkgNames, extPkgMaps))
   val caseReg: Map[String, List[JvmCaseField]] = newMap()
-  collectFileCases(userFile, caseReg)
+  // Field types resolve through own + imported extern types so a field like
+  // `FileStat.modifiedAt: FileTime` registers the real JVM class.
+  collectFileCasesExtern(
+    userFile,
+    caseReg,
+    mergeExternSeed(collectExternTypesFromFile(userFile), externSeedForFile(userFile, extPkgNames, extPkgMaps))
+  )
   val ctorReg: Map[String, String] = newMap()
   collectFileCtors(userFile, ctorReg)
   // #3044: complete @projectable pre-scan across the whole compilation, so
@@ -1007,8 +1320,15 @@ pub func compileToJarBundledWithFeatures(
   collectFileProjectables(userFile, allProjFqns)
   var ri = 0
   while ri < stdlibFiles.count {
-    collectFileSigs(stdlibFiles[ri], registry)
-    collectFileCases(stdlibFiles[ri], caseReg)
+    collectFileSigsSeeded(stdlibFiles[ri], registry, externSeedForFile(stdlibFiles[ri], extPkgNames, extPkgMaps))
+    collectFileCasesExtern(
+      stdlibFiles[ri],
+      caseReg,
+      mergeExternSeed(
+        collectExternTypesFromFile(stdlibFiles[ri]),
+        externSeedForFile(stdlibFiles[ri], extPkgNames, extPkgMaps)
+      )
+    )
     collectFileCtors(stdlibFiles[ri], ctorReg)
     collectFileProjectables(stdlibFiles[ri], allProjFqns)
     ri = ri + 1
@@ -1248,7 +1568,20 @@ pub func compileToJarBundledWithFeatures(
       // from the post-weave file so the `proceed(args)` call resolves to the
       // real descriptor instead of the `(…)Object` guess (#3402, JVM analogue).
       collectAspectWovenSigs(f, registry)
-      codegenPackageInto(f, registry, caseReg, ctorReg, autoFfi, allProjFqns, allClasses)
+      // Register monomorphizer-specialised copies (`mapKeys__String__Int`, …)
+      // from the post-mono file so their call sites resolve to the real
+      // descriptor (#3229; the #3676 map-iteration symptom).
+      collectMonoSpecializedSigs(f, registry, externSeedForFile(f, extPkgNames, extPkgMaps))
+      codegenPackageInto(
+        f,
+        registry,
+        caseReg,
+        ctorReg,
+        autoFfi,
+        allProjFqns,
+        allClasses,
+        externSeedForFile(f, extPkgNames, extPkgMaps)
+      )
     }
     case None -> return false
   }
@@ -1269,15 +1602,30 @@ pub func compileToJarBundledWithFeatures(
   // codegen panics are echoed via the fatal J002 path below.
   var bi = 0
   var skippedCount = 0
+  val skippedNames: List[String] = newList()
   while bi < toBundle.count {
     val f = toBundle[bi]
     val pkgName = dottedPath(f.packageDecl.path)
-    val reachable = referencedPkgs.containsKey(pkgJvmOwner(f.packageDecl.path))
+    // A sibling project package is the user's own code: its failures are
+    // always fatal (reachable or not) and its type-check advisories are
+    // echoed, unlike bundled stdlib files.
+    val isProjectPkg = projectOwners.containsKey(pkgJvmOwner(f.packageDecl.path))
+    val reachable = referencedPkgs.containsKey(pkgJvmOwner(f.packageDecl.path)) or isProjectPkg
     val ok = try {
-      match runMiddleEnd(f, importedPkgs, stdlibGenFuncs, allTemplates, false) {
+      match runMiddleEnd(f, importedPkgs, stdlibGenFuncs, allTemplates, isProjectPkg) {
         case Some(ff) -> {
           collectAspectWovenSigs(ff, registry)
-          codegenPackageInto(ff, registry, caseReg, ctorReg, autoFfi, allProjFqns, allClasses)
+          collectMonoSpecializedSigs(ff, registry, externSeedForFile(ff, extPkgNames, extPkgMaps))
+          codegenPackageInto(
+            ff,
+            registry,
+            caseReg,
+            ctorReg,
+            autoFfi,
+            allProjFqns,
+            allClasses,
+            externSeedForFile(ff, extPkgNames, extPkgMaps)
+          )
           true
         }
         // A fatal middle-end diagnostic (already reported) aborts the build only
@@ -1295,9 +1643,11 @@ pub func compileToJarBundledWithFeatures(
         false
       } else {
         // Unreached package whose codegen failed: not a build error because its
-        // bytecode is never invoked, but counted so we can surface a summary note
-        // pointing users toward the root cause if they hit a runtime failure.
+        // bytecode is never invoked, but counted (with the package name and the
+        // panic's own message) so the J003 note below names exactly what was
+        // dropped and why instead of an anonymous count.
         skippedCount = skippedCount + 1
+        skippedNames.add(pkgName + " (" + b.message + ")")
         true
       }
     }
@@ -1312,6 +1662,11 @@ pub func compileToJarBundledWithFeatures(
         "runtime calls into them will fail with NoClassDefFoundError — " +
         "if that happens, please file an issue"
     )
+    var sni = 0
+    while sni < skippedNames.count {
+      Console.error("note[J003]:   skipped: " + skippedNames[sni])
+      sni = sni + 1
+    }
   }
 
   // Main-Class from the user package declaration.

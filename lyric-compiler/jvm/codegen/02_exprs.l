@@ -7,6 +7,7 @@ package Jvm.Codegen
 
 import Std.Core
 import Std.Collections
+import Std.Console as Console
 import Std.String
 import Lyric.Parser
 import Jvm.Classfile
@@ -99,18 +100,57 @@ func lowerCmp(
       // equality would wrongly report them unequal.  Other reference types keep
       // identity comparison.  Operands are on the stack as [lhs, rhs].
       if cls == "java/lang/String" {
-        val eqPs: List[JvmType] = newList()
-        eqPs.add(JRef(className = "java/lang/Object"))
-        insns.add(LInvokevirtual(owner = "java/lang/String", name = "equals", params = eqPs, ret = JBoolean))
         match op {
-          case BEq -> insns.add(LIfne(label = trueLabel))
-          case BNeq -> insns.add(LIfeq(label = trueLabel))
+          case BEq -> {
+            val eqPs: List[JvmType] = newList()
+            eqPs.add(JRef(className = "java/lang/Object"))
+            insns.add(LInvokevirtual(owner = "java/lang/String", name = "equals", params = eqPs, ret = JBoolean))
+            insns.add(LIfne(label = trueLabel))
+          }
+          case BNeq -> {
+            val eqPs2: List[JvmType] = newList()
+            eqPs2.add(JRef(className = "java/lang/Object"))
+            insns.add(LInvokevirtual(owner = "java/lang/String", name = "equals", params = eqPs2, ret = JBoolean))
+            insns.add(LIfeq(label = trueLabel))
+          }
+          // Relational String comparison is lexicographic `compareTo` vs 0
+          // (`a < b` in Std.Sort's string comparator previously emitted
+          // `equals` + a nop placeholder — wrong result AND a stackmap
+          // mismatch from the value left on the stack).
+          case BLt -> {
+            emitStringCompareTo(insns)
+            insns.add(LIflt(label = trueLabel))
+          }
+          case BLte -> {
+            emitStringCompareTo(insns)
+            insns.add(LIfle(label = trueLabel))
+          }
+          case BGt -> {
+            emitStringCompareTo(insns)
+            insns.add(LIfgt(label = trueLabel))
+          }
+          case BGte -> {
+            emitStringCompareTo(insns)
+            insns.add(LIfge(label = trueLabel))
+          }
           case _ -> panic("Jvm.Codegen: unsupported String comparison op")
         }
       } else {
+        // Lyric `==` is VALUE equality on every reference type (String
+        // compares by content; records/unions carry synthesized `equals`),
+        // so erased/unknown reference operands dispatch through the
+        // null-safe `Objects.equals` — identity (`if_acmpeq`) wrongly
+        // reported two equal split-segment strings unequal
+        // (`segs[i] == ".."` in lyric-storage's traversal guard).
         match op {
-          case BEq -> insns.add(LIfAcmpeq(label = trueLabel))
-          case BNeq -> insns.add(LIfAcmpne(label = trueLabel))
+          case BEq -> {
+            emitObjectsEquals(insns)
+            insns.add(LIfne(label = trueLabel))
+          }
+          case BNeq -> {
+            emitObjectsEquals(insns)
+            insns.add(LIfeq(label = trueLabel))
+          }
           case _ -> panic("Jvm.Codegen: unsupported reference comparison op")
         }
       }
@@ -128,6 +168,23 @@ func lowerCmp(
       }
     }
   }
+}
+
+// Null-safe value equality on two reference operands already stacked
+// [lhs, rhs]: `java.util.Objects.equals(Object, Object)Z`.
+func emitObjectsEquals(insns: in List[LInsn]): Unit {
+  val oePs: List[JvmType] = newList()
+  oePs.add(JRef(className = "java/lang/Object"))
+  oePs.add(JRef(className = "java/lang/Object"))
+  insns.add(LInvokestatic(owner = "java/util/Objects", name = "equals", params = oePs, ret = JBoolean))
+}
+
+// `String.compareTo(String)I` on two String operands already stacked
+// [lhs, rhs] — the lexicographic base for relational String comparisons.
+func emitStringCompareTo(insns: in List[LInsn]): Unit {
+  val ctPs: List[JvmType] = newList()
+  ctPs.add(JRef(className = "java/lang/String"))
+  insns.add(LInvokevirtual(owner = "java/lang/String", name = "compareTo", params = ctPs, ret = JInt))
 }
 
 // Emit the panic sequence for a string message already on the stack.
@@ -231,10 +288,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           match mapGet(ctx.hoistedCellSlot, name) {
             case Some(cellSlot) -> {
               // Load from cell[0]
-              val cellElemTy = match mapGet(ctx.hoistedCellType, name) {
-                case Some(t) -> t
-                case None -> ty
-              }
+              val cellElemTy = match mapGet(ctx.hoistedCellType, name) { case Some(t) -> t; case None -> ty }
               val cellType = JArray(elem = cellElemTy)
               emitLoad(insns, cellSlot, cellType)
               insns.add(LIconst(v = 0))
@@ -267,7 +321,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               // invokespecial <init>()V`.  Without this the case lowered to null and
               // any downstream `match` saw `instanceof Case == false` → "match not
               // exhaustive" (#1675).
-              match mapGet(ctx.ctors, name) {
+              match ctorClassFor(ctx, name) {
                 case Some(cls) -> {
                   val emptyArgs: List[CallArg] = newList()
                   lowerConstruction(ctx, insns, cls, emptyArgs)
@@ -372,10 +426,60 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                 // primitive width and emit the numeric add.  `String` `+` is the
                 // StringBuilder path below.
                 val rhsTy = lowerExpr(ctx, insns, rhs)
+                match rhsTy {
+                  case JRef(_) -> {
+                    // Both operands are references (e.g. an erased `Object`
+                    // list element concatenated with a String, as in
+                    // `Std.String.joinList`'s `xs[0] + sep`): `+` on
+                    // references is string concatenation — mirror the MSIL
+                    // backend's String.Concat lowering instead of panicking.
+                    val rSlot = allocSlot(ctx, "__cat_rhs_" + freshLabel(ctx), rhsTy)
+                    emitStore(insns, rSlot, rhsTy)
+                    coerceToStringForConcat(insns, lhsTy)
+                    val catSb: List[JvmType] = newList()
+                    val lSlot = allocSlot(ctx, "__cat_lhs_" + freshLabel(ctx), JRef(className = "java/lang/String"))
+                    emitStore(insns, lSlot, JRef(className = "java/lang/String"))
+                    insns.add(LNew(className = "java/lang/StringBuilder"))
+                    insns.add(LDup)
+                    insns.add(LInvokespecial(owner = "java/lang/StringBuilder", name = "<init>", params = catSb, ret = JVoid))
+                    emitLoad(insns, lSlot, JRef(className = "java/lang/String"))
+                    val catAp: List[JvmType] = newList()
+                    catAp.add(JRef(className = "java/lang/String"))
+                    insns.add(
+                      LInvokevirtual(
+                        owner = "java/lang/StringBuilder",
+                        name = "append",
+                        params = catAp,
+                        ret = JRef(className = "java/lang/StringBuilder")
+                      )
+                    )
+                    emitLoad(insns, rSlot, rhsTy)
+                    coerceToStringForConcat(insns, rhsTy)
+                    insns.add(
+                      LInvokevirtual(
+                        owner = "java/lang/StringBuilder",
+                        name = "append",
+                        params = catAp,
+                        ret = JRef(className = "java/lang/StringBuilder")
+                      )
+                    )
+                    val catTs: List[JvmType] = newList()
+                    insns.add(
+                      LInvokevirtual(
+                        owner = "java/lang/StringBuilder",
+                        name = "toString",
+                        params = catTs,
+                        ret = JRef(className = "java/lang/String")
+                      )
+                    )
+                    return JRef(className = "java/lang/String")
+                  }
+                  case _ -> ()
+                }
                 val numTy = reconcileCmpOperands(ctx, insns, lhsTy, rhsTy)
                 match numTy {
                   case JRef(_) -> {
-                    panic("BAdd: both operands are Object — type checker should reject Object+Object (#2870)")
+                    panic("BAdd: reference operand could not be reconciled to a numeric type")
                   }
                   case JLong -> {
                     insns.add(LLadd)
@@ -398,6 +502,18 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               // Store lhs (already on JVM stack) to a slot before building the StringBuilder.
               val lhsSlot = allocSlot(ctx, "__add_lhs_" + freshLabel(ctx), lhsTy)
               emitStore(insns, lhsSlot, lhsTy)
+              // Lower and stringify the rhs BEFORE creating the StringBuilder:
+              // a branchy rhs (a comparison, an if-expression) lands branch
+              // targets, and the StackMapTable declares an empty operand stack
+              // at every branch target — with the builder already on the stack
+              // the frames disagree and the class fails verification.  The rhs
+              // of a String `+` may also be a non-String value (an erased
+              // `Object` slice element, a primitive): stringify before the
+              // `append(String)` call or verification fails at the append.
+              val rhsConcatTy = lowerExpr(ctx, insns, rhs)
+              coerceToStringForConcat(insns, rhsConcatTy)
+              val rhsSlot = allocSlot(ctx, "__add_rhs_" + freshLabel(ctx), JRef(className = "java/lang/String"))
+              emitStore(insns, rhsSlot, JRef(className = "java/lang/String"))
               insns.add(LNew(className = "java/lang/StringBuilder"))
               insns.add(LDup)
               val sbInitPs: List[JvmType] = newList()
@@ -413,7 +529,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                   ret = JRef(className = "java/lang/StringBuilder")
                 )
               )
-              lowerExpr(ctx, insns, rhs)
+              emitLoad(insns, rhsSlot, JRef(className = "java/lang/String"))
               val appPs2: List[JvmType] = newList()
               appPs2.add(JRef(className = "java/lang/String"))
               insns.add(
@@ -453,7 +569,12 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               JFloat
             }
             case _ -> {
-              lowerExpr(ctx, insns, rhs)
+              // Coerce like the JDouble/JFloat arms: the rhs may be an
+              // erased-Object value (a lambda invoke's boxed return —
+              // `result + f(1)` in closure_zero_overhead_self_test) and
+              // `iadd` rejects a reference operand at verification.
+              val rTy = lowerExpr(ctx, insns, rhs)
+              coerceArgTo(insns, rTy, JInt)
               insns.add(LIadd)
               JInt
             }
@@ -531,7 +652,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               insns.add(LIconst(255))
               insns.add(LIand)
               insns.add(LIdiv)
-              JInt
+              JByte
             }
             case _ -> {
               insns.add(LIdiv)
@@ -565,7 +686,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               insns.add(LIconst(255))
               insns.add(LIand)
               insns.add(LIrem)
-              JInt
+              JByte
             }
             case _ -> {
               insns.add(LIrem)
@@ -580,16 +701,33 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           JInt
         }
         case BCoalesce -> {
-          // Null-coalescing: if lhs is non-null use it, else rhs.
+          // Null-coalescing via a result slot with an empty operand stack at every branch target — every StackMapTable frame here assumes that (#4816); `ifnull`/`ifnonnull` are unary tests so no dup'd value is ever left stranded across a branch the way `if_acmpne`/`if_acmpeq` would.
           val lhsTy = lowerExpr(ctx, insns, lhs)
+          // The join (result) slot uses the uniform Object[] "slice ABI" (see
+          // coerceArgTo's JArray case) rather than lhs's concrete element type
+          // (e.g. File[] from an extern call) — a List-derived rhs (`[]`) can
+          // only ever produce Object[], and a concrete array is verifier-
+          // covariant with Object[] at no bytecode cost, so normalizing here
+          // is always safe and lets both arms agree on one declared type.
+          val slotTy = match lhsTy { case JArray(_) -> JArray(elem = JRef(className = "java/lang/Object")); case _ -> lhsTy }
+          val lhsSlot = allocSlot(ctx, "__coalesce_lhs_" + freshLabel(ctx), lhsTy)
+          emitStore(insns, lhsSlot, lhsTy)
+          val rslot = allocSlot(ctx, "__coalesce_r_" + freshLabel(ctx), slotTy)
           val nullL = freshLabel(ctx)
           val afterL = freshLabel(ctx)
-          insns.add(LDup)
-          insns.add(LIfAcmpne(label = afterL))
-          insns.add(LPop)
-          lowerExpr(ctx, insns, rhs)
+          emitLoad(insns, lhsSlot, lhsTy)
+          insns.add(LIfnull(label = nullL))
+          emitLoad(insns, lhsSlot, lhsTy)
+          coerceArgTo(insns, lhsTy, slotTy)
+          emitStore(insns, rslot, slotTy)
+          insns.add(LGoto(label = afterL))
+          insns.add(LLabel(name = nullL))
+          val rhsTy = lowerExpr(ctx, insns, rhs)
+          coerceArgTo(insns, rhsTy, slotTy)
+          emitStore(insns, rslot, slotTy)
           insns.add(LLabel(name = afterL))
-          lhsTy
+          emitResultLoad(insns, rslot, slotTy)
+          slotTy
         }
         case BImplies -> {
           // p => q == !p || q
@@ -651,6 +789,40 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
 
     // ── Member access ─────────────────────────────────────────────────────
     case EMember(recv, memberName) -> {
+      // Static-field read on an extern type (`JSystem.out`, `Duration.ZERO`):
+      // when the receiver is a bare extern-type name (and not shadowed by a
+      // local), resolve the member as a public static FIELD from JDK metadata
+      // and emit `getstatic` — auto-FFI method resolution can't see fields,
+      // and lowering a type name as a value has no meaning.
+      match recv.kind {
+        case EPath(rp) -> {
+          val rn = lastSegment(rp)
+          match lookupSlot(ctx, rn) {
+            case Some(_) -> ()
+            case None -> {
+              match mapGet(ctx.externTypes, rn) {
+                case Some(fqnDot) -> {
+                  match loadClass(ctx.autoFfi, fqnDot) {
+                    case Some(ci) -> {
+                      match findStaticField(ctx.autoFfi, ci, memberName) {
+                        case Some(f) -> {
+                          val fTy = descStrToJvmType(f.descriptor)
+                          insns.add(LGetstatic(owner = ci.binaryName, name = memberName, t = fTy))
+                          return fTy
+                        }
+                        case None -> ()
+                      }
+                    }
+                    case None -> ()
+                  }
+                }
+                case None -> ()
+              }
+            }
+          }
+        }
+        case _ -> ()
+      }
       val recvTy = lowerExpr(ctx, insns, recv)
       match recvTy {
         case JRef(cls) -> {
@@ -686,6 +858,22 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               )
             )
             JRef(className = "java/lang/String")
+          } else if memberName == "count" and (cls == "java/util/ArrayList" or cls == "java/util/HashMap" or cls == "java/util/HashSet" or cls == "java/util/List" or cls == "java/util/Set" or cls == "java/util/Collection") {
+            // `xs.count` on a collection receiver → `size()` (JInt).  Without
+            // an explicit intrinsic this fell through to the record-field
+            // fallback, which left the receiver itself as the "value" — a
+            // later compare then checkcast'd the collection to Integer and
+            // failed at runtime (the buildArgString regression surfaced by
+            // process_capture_jvm_self_test.l).  ArrayList/HashMap/HashSet
+            // call size() virtually; the interface spellings dispatch via
+            // invokeinterface.
+            val szPs: List[JvmType] = newList()
+            if cls == "java/util/List" or cls == "java/util/Set" or cls == "java/util/Collection" {
+              insns.add(LInvokeinterface(owner = cls, name = "size", params = szPs, ret = JInt, argCount = 1))
+            } else {
+              insns.add(LInvokevirtual(owner = cls, name = "size", params = szPs, ret = JInt))
+            }
+            JInt
           } else if cls == "java/lang/String" and memberName == "length" {
             // String.length() returns int (I), not Object.  Resolving through
             // the generic record-field path below would emit `getfield` (no such
@@ -731,7 +919,26 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                       insns.add(LInvokevirtual(owner = fsig.owner, name = "$" + memberName, params = fbPs, ret = fsig.ret))
                       fsig.ret
                     }
-                    case None -> JRef(className = "java/lang/Object")
+                    case None -> {
+                      if memberName == "count" or memberName == "length" {
+                        // `.count` / `.length` on an erased-Object receiver (a
+                        // match binding on a generic union payload, e.g.
+                        // `case Ok(rb)` on `Result[List[Byte], _]`): the precise
+                        // class is unknown statically, so dispatch on the runtime
+                        // class via the synthesised `__lyricCount(Object)I`
+                        // helper every package class carries.  The call is
+                        // branch-free HERE — the dispatch's branches live in the
+                        // helper, whose frames start from an empty stack — so
+                        // this is safe even mid-expression with values already
+                        // stacked (`i < pairs.count` in a while condition).
+                        val lcPs: List[JvmType] = newList()
+                        lcPs.add(JRef(className = "java/lang/Object"))
+                        insns.add(LInvokestatic(owner = ctx.pkgName, name = "__lyricCount", params = lcPs, ret = JInt))
+                        JInt
+                      } else {
+                        JRef(className = "java/lang/Object")
+                      }
+                    }
                   }
                 } else {
                   JRef(className = "java/lang/Object")
@@ -741,11 +948,14 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           }
         }
         case JArray(_) -> {
-          // `arr.length` on a JVM array → `arraylength` (JInt).  Without
-          // this, array length fell through to the JVoid arm below and
-          // mis-stacked (e.g. a `byte[]` returned by an auto-FFI digest
-          // call).  Any other member on an array is not meaningful.
-          if memberName == "length" {
+          // `arr.length` / `arr.count` on a JVM array → `arraylength` (JInt).
+          // `count` is the Lyric slice-length member (`args.count` on the
+          // entry point's `slice[String]` argv, #3303); `length` covers raw
+          // JVM arrays such as a `byte[]` returned by an auto-FFI digest
+          // call.  Without this, the member fell through to the JVoid arm
+          // below and mis-stacked.  Any other member on an array is not
+          // meaningful.
+          if memberName == "length" or memberName == "count" {
             insns.add(LArraylength)
             JInt
           } else {
@@ -875,12 +1085,27 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       lowerInterpolated(ctx, insns, segments)
     }
 
-    // ── Unsupported forms: panic at codegen time ──────────────────────────
+    // ── Quantifiers ───────────────────────────────────────────────────────
+    // `forall`/`exists` are proof-time quantifiers over possibly-unbounded
+    // domains.  In `@runtime_checked` modules they are approximated as `true`
+    // (a sound overapproximation — the assert passes, no false-negative
+    // crash), matching the MSIL backend's resolution (#1506); W0002 informs
+    // the user the clause is not enforced at runtime (#3227).
     case EForall(_, _, _) -> {
-      panic("Jvm.Codegen: EForall not supported in JVM codegen")
+      Console.error(
+        "W0002: forall quantifier in @runtime_checked contract is not evaluated at runtime " +
+          "(sound overapproximation as true; consider restricting the domain or using @proof_required)"
+      )
+      insns.add(LIconst(v = 1))
+      JBoolean
     }
     case EExists(_, _, _) -> {
-      panic("Jvm.Codegen: EExists not supported in JVM codegen")
+      Console.error(
+        "W0002: exists quantifier in @runtime_checked contract is not evaluated at runtime " +
+          "(sound overapproximation as true; consider restricting the domain or using @proof_required)"
+      )
+      insns.add(LIconst(v = 1))
+      JBoolean
     }
     case EOld(_) -> {
       panic("Jvm.Codegen: EOld not supported in JVM codegen")
@@ -930,7 +1155,24 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
     }
     case EIndex(recv, indices) -> {
       // Array/list indexing.
-      val recvTy = lowerExpr(ctx, insns, recv)
+      val recvTy0 = lowerExpr(ctx, insns, recv)
+      // A list receiver whose static type is imprecise (an erased-`Object`
+      // match binding, or an imported type's in-package guess) must be cast
+      // to `ArrayList` HERE — before the index is pushed, since checkcast
+      // only reaches the stack top.  Without it the `ArrayList.get` below
+      // fails verification ("Object is not assignable to ArrayList"; hit by
+      // `pairs[idx]` on a match-bound `List[YamlPair]` payload).
+      val recvTy = match recvTy0 {
+        case JRef(c0) -> {
+          if c0 == "java/lang/String" or c0 == "java/util/ArrayList" {
+            recvTy0
+          } else {
+            insns.add(LCheckcast(className = "java/util/ArrayList"))
+            JRef(className = "java/util/ArrayList")
+          }
+        }
+        case _ -> recvTy0
+      }
       if indices.count > 0 {
         lowerExpr(ctx, insns, indices[0])
         match recvTy {
@@ -943,10 +1185,43 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                 insns.add(LBaload)
                 JByte
               }
+              case JRef(elemCls) -> {
+                // Preserve the element's reference type (e.g. `File.listFiles()`
+                // yields `java.io.File[]` — indexing must report `java/io/File`,
+                // not `Object`, so instance auto-FFI calls on the element
+                // resolve against the real class).
+                insns.add(LAaload)
+                JRef(className = elemCls)
+              }
               case _ -> {
                 insns.add(LAaload)
                 JRef(className = "java/lang/Object")
               }
+            }
+          }
+          case JRef(idxCls) -> {
+            if idxCls == "java/lang/String" {
+              // `s[i]` on a String → charAt(int) (JChar).  Lowering through
+              // the ArrayList.get path below emits an invokevirtual against
+              // the wrong class and fails verification (surfaced by
+              // Std.String.charAt on --target jvm).
+              val caPs: List[JvmType] = newList()
+              caPs.add(JInt)
+              insns.add(LInvokevirtual(owner = "java/lang/String", name = "charAt", params = caPs, ret = JChar))
+              JChar
+            } else {
+              // List-style indexing via ArrayList.get(int).
+              val getPs: List[JvmType] = newList()
+              getPs.add(JInt)
+              insns.add(
+                LInvokevirtual(
+                  owner = "java/util/ArrayList",
+                  name = "get",
+                  params = getPs,
+                  ret = JRef(className = "java/lang/Object")
+                )
+              )
+              JRef(className = "java/lang/Object")
             }
           }
           case _ -> {
@@ -1004,6 +1279,23 @@ func numericPrimTy(ty: in JvmType): JvmType {
 // compare op (lcmp / dcmp / if_icmp…) sees two like-typed primitives rather
 // than an `Object` it would reject at verification.  Both operands are already
 // on the stack as [lhs, rhs]; returns the reconciled comparison type.
+func isLongJvm(ty: in JvmType): Bool {
+  match ty {
+    case JLong -> true
+    case _ -> false
+  }
+}
+
+func isIntLikeJvm(ty: in JvmType): Bool {
+  match ty {
+    case JInt -> true
+    case JByte -> true
+    case JShort -> true
+    case JChar -> true
+    case _ -> false
+  }
+}
+
 func reconcileCmpOperands(ctx: in FuncCtx, insns: in List[LInsn], lhsTy: in JvmType, rhsTy: in JvmType): JvmType {
   val lhsPrim = numericPrimTy(lhsTy)
   val rhsPrim = numericPrimTy(rhsTy)
@@ -1018,6 +1310,18 @@ func reconcileCmpOperands(ctx: in FuncCtx, insns: in List[LInsn], lhsTy: in JvmT
     // Unbox rhs (on top of the stack) directly.
     coerceArgTo(insns, rhsTy, lhsPrim)
     lhsPrim
+  } else if isLongJvm(lhsTy) and isIntLikeJvm(rhsTy) {
+    // long vs int literal (`nv != 42`): widen the int on top with i2l or
+    // `lcmp` sees (long_2nd, int) — VerifyError.
+    insns.add(LI2l)
+    JLong
+  } else if isIntLikeJvm(lhsTy) and isLongJvm(rhsTy) {
+    // int vs long: spill the long, widen the int, reload.
+    val rhsSlotL = allocSlot(ctx, "__cmp_rhs_" + freshLabel(ctx), JLong)
+    emitStore(insns, rhsSlotL, JLong)
+    insns.add(LI2l)
+    emitLoad(insns, rhsSlotL, JLong)
+    JLong
   } else {
     // Both operands have the same primitive type (or both are Object-erased
     // references).  For the primitive case the caller emits the arithmetic
@@ -1110,18 +1414,49 @@ func lowerCmpFail(insns: in List[LInsn], op: in BinOp, lhsTy: in JvmType, failLa
       // String `==`/`!=` is value comparison (`String.equals`), not identity.
       // See the matching note in `lowerCmp`.  Operands on stack as [lhs, rhs].
       if cls == "java/lang/String" {
-        val eqPs: List[JvmType] = newList()
-        eqPs.add(JRef(className = "java/lang/Object"))
-        insns.add(LInvokevirtual(owner = "java/lang/String", name = "equals", params = eqPs, ret = JBoolean))
         match op {
-          case BEq -> insns.add(LIfeq(label = failLabel))
-          case BNeq -> insns.add(LIfne(label = failLabel))
+          case BEq -> {
+            val eqPs: List[JvmType] = newList()
+            eqPs.add(JRef(className = "java/lang/Object"))
+            insns.add(LInvokevirtual(owner = "java/lang/String", name = "equals", params = eqPs, ret = JBoolean))
+            insns.add(LIfeq(label = failLabel))
+          }
+          case BNeq -> {
+            val eqPs2: List[JvmType] = newList()
+            eqPs2.add(JRef(className = "java/lang/Object"))
+            insns.add(LInvokevirtual(owner = "java/lang/String", name = "equals", params = eqPs2, ret = JBoolean))
+            insns.add(LIfne(label = failLabel))
+          }
+          // Relational String comparison — see the trueLabel twin above.
+          case BLt -> {
+            emitStringCompareTo(insns)
+            insns.add(LIfge(label = failLabel))
+          }
+          case BLte -> {
+            emitStringCompareTo(insns)
+            insns.add(LIfgt(label = failLabel))
+          }
+          case BGt -> {
+            emitStringCompareTo(insns)
+            insns.add(LIfle(label = failLabel))
+          }
+          case BGte -> {
+            emitStringCompareTo(insns)
+            insns.add(LIflt(label = failLabel))
+          }
           case _ -> insns.add(LNop)
         }
       } else {
+        // Value equality via `Objects.equals` — see the trueLabel twin.
         match op {
-          case BEq -> insns.add(LIfAcmpne(label = failLabel))
-          case BNeq -> insns.add(LIfAcmpeq(label = failLabel))
+          case BEq -> {
+            emitObjectsEquals(insns)
+            insns.add(LIfeq(label = failLabel))
+          }
+          case BNeq -> {
+            emitObjectsEquals(insns)
+            insns.add(LIfne(label = failLabel))
+          }
           case _ -> insns.add(LNop)
         }
       }
@@ -1301,6 +1636,18 @@ func lowerExprOrBlock(ctx: in FuncCtx, insns: in List[LInsn], eob: in ExprOrBloc
   }
 }
 
+// Discard a computed value from the operand stack with the width-correct
+// opcode: category-2 values (long/double) take two stack slots, so `pop`
+// on them fails verification — they need `pop2`.  No-op for void.
+pub func discardValue(insns: in List[LInsn], ty: in JvmType): Unit {
+  match ty {
+    case JVoid -> ()
+    case JLong -> insns.add(LPop2)
+    case JDouble -> insns.add(LPop2)
+    case _ -> insns.add(LPop)
+  }
+}
+
 func lowerIfExpr(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -1315,8 +1662,15 @@ func lowerIfExpr(
     case None -> {
       // if-without-else is Unit-typed: the then-branch runs for its effect and
       // the join carries no value, so the empty-stack stackmap frame is correct.
+      // The branch's trailing expression may still have produced a value (e.g.
+      // `proc.destroyForcibly()` returns Process) — discard it so the
+      // fall-through edge reaches the join with an empty stack; otherwise the
+      // StackMapTable frames disagree at the join and verification fails.
       lowerBoolCond(ctx, insns, cond, elseL)
-      val _ = lowerExprOrBlock(ctx, insns, thenBranch)
+      val thenTy = lowerExprOrBlock(ctx, insns, thenBranch)
+      if not endsWithReturn(insns) {
+        discardValue(insns, thenTy)
+      }
       insns.add(LLabel(name = elseL))
       JVoid
     }
@@ -1337,8 +1691,14 @@ func lowerIfExpr(
             insns.add(LGoto(label = afterL))
           }
           insns.add(LLabel(name = elseL))
-          val _ = lowerExprOrBlock(ctx, insns, elseBranch)
+          val elseValTy = lowerExprOrBlock(ctx, insns, elseBranch)
           val elseTerminated = endsWithReturn(insns)
+          // The else-arm may still have produced a value even though the
+          // then-arm typed the whole `if` as void — discard it so the join's
+          // empty-stack frame holds (same leak as the if-without-else form).
+          if not elseTerminated {
+            discardValue(insns, elseValTy)
+          }
           // Only land the join label when at least one arm can reach it.  When
           // both arms terminated, the whole `if` is terminating: emitting the
           // join would create the past-end unreachable frame described above.
@@ -1366,18 +1726,36 @@ func lowerIfExpr(
           insns.add(LLabel(name = elseL))
           val elseTy = lowerExprOrBlock(ctx, insns, elseBranch)
           val elseTerminated = endsWithReturn(insns)
+          // Mixed-arm if: the then-arm yields a value but the else-arm is
+          // void (e.g. `if a { xs.add(true) } else if b { xs.add(false) }` —
+          // the trailing else-if has no else, so it lowers as JVoid and
+          // leaves NOTHING on the stack).  The checker only admits this
+          // shape in statement position, so the whole `if` degrades to
+          // void: there is no else-value to store, and reloading the
+          // result after the join would hand the caller a value the
+          // else-path never produced (the store below underflowed —
+          // VerifyError, hit by Std.JsonHost's bool slice reader).
+          val elseVoidMixed = match elseTy { case JVoid -> not elseTerminated; case _ -> false }
           if not elseTerminated {
-            coerceArgTo(insns, elseTy, thenTy)
-            emitStore(insns, rslot, thenTy)
+            if not elseVoidMixed {
+              coerceArgTo(insns, elseTy, thenTy)
+              emitStore(insns, rslot, thenTy)
+            }
           }
           // When both arms terminated, the `if` is itself terminating: do not
           // land the join label (and its past-end frame) and do not reload the
           // result, since control never arrives here (#2870).
           if not (thenTerminated and elseTerminated) {
             insns.add(LLabel(name = afterL))
-            emitResultLoad(insns, rslot, thenTy)
+            if not elseVoidMixed {
+              emitResultLoad(insns, rslot, thenTy)
+            }
           }
-          thenTy
+          if elseVoidMixed {
+            JVoid
+          } else {
+            thenTy
+          }
         }
       }
     }
@@ -1440,71 +1818,55 @@ func lowerInterpolated(ctx: in FuncCtx, insns: in List[LInsn], segments: in List
     insns.add(LPushString(s = ""))
     return JRef(className = "java/lang/String")
   }
-  // Build with StringBuilder.
+  // Pass 1: lower every expression segment to a String temp while the operand
+  // stack is empty.  A branchy segment expression (a comparison, an
+  // if-expression) lands branch targets, and the StackMapTable declares an
+  // empty operand stack at every branch target — lowering it with the
+  // StringBuilder already on the stack makes the frames disagree and the
+  // class fails verification (same discipline as the BAdd concat path).
+  val exprSlots: List[Int] = newList()
+  var pi = 0
+  while pi < segments.count {
+    match segments[pi] {
+      case ISExpr(e) -> {
+        val eTy = lowerExpr(ctx, insns, e)
+        coerceToStringForConcat(insns, eTy)
+        val eSlot = allocSlot(ctx, "__interp_" + freshLabel(ctx), JRef(className = "java/lang/String"))
+        emitStore(insns, eSlot, JRef(className = "java/lang/String"))
+        exprSlots.add(eSlot)
+      }
+      case _ -> ()
+    }
+    pi = pi + 1
+  }
+  // Pass 2: build with StringBuilder, appending literal text and the
+  // pre-stringified expression temps in segment order.
   insns.add(LNew(className = "java/lang/StringBuilder"))
   insns.add(LDup)
   val sbInitPs: List[JvmType] = newList()
   insns.add(LInvokespecial(owner = "java/lang/StringBuilder", name = "<init>", params = sbInitPs, ret = JVoid))
+  val appPs: List[JvmType] = newList()
+  appPs.add(JRef(className = "java/lang/String"))
   var i = 0
+  var ei = 0
   while i < segments.count {
     match segments[i] {
       case ISText(text, _) -> {
         insns.add(LPushString(s = text))
-        val appPs: List[JvmType] = newList()
-        appPs.add(JRef(className = "java/lang/String"))
-        insns.add(
-          LInvokevirtual(
-            owner = "java/lang/StringBuilder",
-            name = "append",
-            params = appPs,
-            ret = JRef(className = "java/lang/StringBuilder")
-          )
-        )
       }
-      case ISExpr(e) -> {
-        val eTy = lowerExpr(ctx, insns, e)
-        // Convert to String via toString if not already a String.
-        match eTy {
-          case JRef(cls) -> {
-            if not (cls == "java/lang/String") {
-              val tsPs: List[JvmType] = newList()
-              insns.add(
-                LInvokevirtual(
-                  owner = "java/lang/Object",
-                  name = "toString",
-                  params = tsPs,
-                  ret = JRef(className = "java/lang/String")
-                )
-              )
-            }
-            insns.add(LNop)
-          }
-          case _ -> {
-            // Box and toString.
-            boxIfNeeded(insns, eTy)
-            val tsPs: List[JvmType] = newList()
-            insns.add(
-              LInvokevirtual(
-                owner = "java/lang/Object",
-                name = "toString",
-                params = tsPs,
-                ret = JRef(className = "java/lang/String")
-              )
-            )
-          }
-        }
-        val appPs2: List[JvmType] = newList()
-        appPs2.add(JRef(className = "java/lang/String"))
-        insns.add(
-          LInvokevirtual(
-            owner = "java/lang/StringBuilder",
-            name = "append",
-            params = appPs2,
-            ret = JRef(className = "java/lang/StringBuilder")
-          )
-        )
+      case ISExpr(_) -> {
+        emitLoad(insns, exprSlots[ei], JRef(className = "java/lang/String"))
+        ei = ei + 1
       }
     }
+    insns.add(
+      LInvokevirtual(
+        owner = "java/lang/StringBuilder",
+        name = "append",
+        params = appPs,
+        ret = JRef(className = "java/lang/StringBuilder")
+      )
+    )
     i = i + 1
   }
   val finalTsPs: List[JvmType] = newList()
@@ -1517,6 +1879,74 @@ func lowerInterpolated(ctx: in FuncCtx, insns: in List[LInsn], segments: in List
     )
   )
   JRef(className = "java/lang/String")
+}
+
+// Stringify the top-of-stack value for a StringBuilder `append(String)` call:
+// a String is left as-is; any other reference (an erased `Object` slice
+// element, an extern value) calls `Object.toString`; a primitive goes through
+// `String.valueOf(<primitive>)` (no boxing).  `JVoid` (nothing on the stack)
+// is a type-checker/lowering bug and panics (#4685).
+func coerceToStringForConcat(insns: in List[LInsn], ty: in JvmType): Unit {
+  match ty {
+    case JRef(c) -> {
+      if not (c == "java/lang/String") {
+        val tsPs: List[JvmType] = newList()
+        insns.add(
+          LInvokevirtual(
+            owner = "java/lang/Object",
+            name = "toString",
+            params = tsPs,
+            ret = JRef(className = "java/lang/String")
+          )
+        )
+      }
+    }
+    case JVoid -> panic("Jvm.Codegen: string-concatenation operand lowered to void — a Unit-typed operand should have been rejected by the type checker")
+    // A void operand left nothing on the stack; silently pushing "" here
+    // would mask a type-checker or lowering bug as wrong output (#4685).
+    case JArray(_) -> {
+      // An array is a reference: stringify via Object.toString like any
+      // non-String JRef.  Falling into the primitive arm below would emit
+      // String.valueOf(int) with an array reference on the stack — a
+      // verification failure (#4712).
+      val atPs: List[JvmType] = newList()
+      insns.add(
+        LInvokevirtual(
+          owner = "java/lang/Object",
+          name = "toString",
+          params = atPs,
+          ret = JRef(className = "java/lang/String")
+        )
+      )
+    }
+    case _ -> {
+      // String.valueOf(<primitive>) — no boxing, unlike Object.toString on a
+      // boxed wrapper (keeps the closure zero-overhead boxing gate flat).
+      val voPs: List[JvmType] = newList()
+      voPs.add(stringValueOfParam(ty))
+      insns.add(
+        LInvokestatic(
+          owner = "java/lang/String",
+          name = "valueOf",
+          params = voPs,
+          ret = JRef(className = "java/lang/String")
+        )
+      )
+    }
+  }
+}
+
+// The String.valueOf overload parameter for a primitive operand: byte/short
+// widen to the int overload; everything else uses its exact overload.
+func stringValueOfParam(ty: in JvmType): JvmType {
+  match ty {
+    case JLong -> JLong
+    case JDouble -> JDouble
+    case JFloat -> JFloat
+    case JBoolean -> JBoolean
+    case JChar -> JChar
+    case _ -> JInt
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1589,6 +2019,8 @@ func collectRefNamesExpr(e: in Expr, acc: in List[String]): Unit {
       collectRefNamesExpr(rhs, acc)
     }
     case EPrefix(_, operand) -> collectRefNamesExpr(operand, acc)
+    // Parens were invisible to capture collection; the name read as null/zero (#4798).
+    case EParen(inner) -> collectRefNamesExpr(inner, acc)
     case ECall(fn, args) -> {
       collectRefNamesExpr(fn, acc)
       var i = 0
@@ -1842,6 +2274,7 @@ func collectBoundNamesExpr(e: in Expr, acc: in List[String]): Unit {
       collectBoundNamesExpr(rhs, acc)
     }
     case EPrefix(_, operand) -> collectBoundNamesExpr(operand, acc)
+    case EParen(inner) -> collectBoundNamesExpr(inner, acc)
     case EMember(recv, _) -> collectBoundNamesExpr(recv, acc)
     case ETypeApp(fn, _) -> collectBoundNamesExpr(fn, acc)
     case EIf(cond, thenB, elseOpt, _) -> {
@@ -1909,7 +2342,6 @@ func collectBoundNamesExpr(e: in Expr, acc: in List[String]): Unit {
 // enclosing function.  These must be hoisted to heap-allocated cells so mutations
 // are observed through the closure (by-ref capture, epic #1877 Stage 2).
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Collect all names referenced inside any lambda in an expression.
 func collectInLambdaNamesExpr(e: in Expr, acc: in List[String]): Unit {
   match e.kind {
@@ -2205,7 +2637,7 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
   while pi < lparams.count {
     val lp = lparams[pi]
     val pty = match lp.ty {
-      case Some(te) -> typeExprToJvm(te, ctx.pkgName)
+      case Some(te) -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes)
       case None -> JRef(className = "java/lang/Object")
     }
     val pslot = allocSlot(bodyCtx, lp.name, pty)
@@ -2224,10 +2656,7 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
   while cj < captures.count {
     val cap = captures[cj]
     // Check if this capture is a hoisted cell
-    val isHoistedCell = match mapGet(ctx.hoistedCellType, cap.captureName) {
-      case Some(_) -> true
-      case None -> false
-    }
+    val isHoistedCell = match mapGet(ctx.hoistedCellType, cap.captureName) { case Some(_) -> true; case None -> false }
     if isHoistedCell {
       bodyCtx.captureCellNames.add(cap.captureName)
     }
@@ -2280,10 +2709,7 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
     // `aload_0; getfield selfClass.<name>` (#2864 — record-method / protected-
     // entry lambdas capturing a bare field).  For hoisted vars, the capture type
     // is the cell array (by reference), so load the cell slot directly.
-    val isHoistedCell = match mapGet(ctx.hoistedCellSlot, cap.captureName) {
-      case Some(_) -> true
-      case None -> false
-    }
+    val isHoistedCell = match mapGet(ctx.hoistedCellSlot, cap.captureName) { case Some(_) -> true; case None -> false }
     if isHoistedCell {
       match mapGet(ctx.hoistedCellSlot, cap.captureName) {
         case Some(cellSlot) -> {

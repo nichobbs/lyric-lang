@@ -103,11 +103,50 @@ func stringListContains(list: in List[String], s: in String): Bool {
   false
 }
 
+/// Read `tDepDir`'s manifest, infer its DLL's expected output path, and — if
+/// that DLL already exists on disk — record `depName -> tDllPath` in
+/// `result`/`seen` and recurse into `tDepDir`'s own transitive deps.  Shared
+/// by both match arms of `collectTransitiveDepDlls` below: a `Workspace` dep
+/// and a `Path` dep differ only in how `tDepDir` is derived, everything after
+/// that (read manifest, infer DLL name, check existence, record, recurse) was
+/// duplicated between the two arms before this was extracted (#4521).
+func addTransitiveDepFromDir(
+  tDepDir: in String,
+  depName: in String,
+  wsCtxOpt: in Option[Ws.WorkspaceContext],
+  seen: in List[String],
+  result: in List[String]
+): Unit {
+  val tToml = Path.join(tDepDir, "lyric.toml")
+  if File.fileExists(tToml) {
+    match File.readText(tToml) {
+      case Err(_) -> ()
+      case Ok(tMfText) -> {
+        match Mf.parseManifest(tMfText, tToml) {
+          case Err(_) -> ()
+          case Ok(tMf) -> {
+            val dllName = match tMf.project {
+              case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }
+              case None -> tMf.packageSection.name + ".dll"
+            }
+            val tDllPath = Path.join(Path.join(tDepDir, "bin"), dllName)
+            if File.fileExists(tDllPath) {
+              result.add(depName + "\t" + tDllPath)
+              seen.add(depName)
+              collectTransitiveDepDlls(tDepDir, wsCtxOpt, seen, result)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 /// Walk the dependency tree of the package at depDir, adding all transitive
 /// dep DLL paths to result.  seen tracks dep names already added to prevent
 /// duplicates and cycles.  wsCtxOpt resolves workspace-form deps.
 /// Does not build anything — only traverses already-built packages.
-func collectTransitiveDepDlls(
+pub func collectTransitiveDepDlls(
   depDir: in String,
   wsCtxOpt: in Option[Ws.WorkspaceContext],
   seen: in List[String],
@@ -117,8 +156,6 @@ func collectTransitiveDepDlls(
   if not File.fileExists(tomlPath) {
     return
   }
-  // Restructured to avoid `val x = match { case Err -> return }` which the
-  // F# bootstrap compiler does not support (bare return in a match arm).
   match File.readText(tomlPath) {
     case Err(_) -> ()
     case Ok(mfText) -> {
@@ -136,60 +173,14 @@ func collectTransitiveDepDlls(
                     case Some(wsCtx) -> {
                       match Ws.resolveDep(tdep.name, wsCtx) {
                         case None -> ()
-                        case Some(tDepDir) -> {
-                          val tToml = Path.join(tDepDir, "lyric.toml")
-                          if File.fileExists(tToml) {
-                            match File.readText(tToml) {
-                              case Err(_) -> ()
-                              case Ok(tMfText) -> {
-                                match Mf.parseManifest(tMfText, tToml) {
-                                  case Err(_) -> ()
-                                  case Ok(tMf) -> {
-                                    val dllName = match tMf.project {
-                                      case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }
-                                      case None -> tMf.packageSection.name + ".dll"
-                                    }
-                                    val tDllPath = Path.join(Path.join(tDepDir, "bin"), dllName)
-                                    if File.fileExists(tDllPath) {
-                                      result.add(tdep.name + "\t" + tDllPath)
-                                      seen.add(tdep.name)
-                                      collectTransitiveDepDlls(tDepDir, wsCtxOpt, seen, result)
-                                    }
-                                  }
-                                }
-                              }
-                            }
-                          }
-                        }
+                        case Some(tDepDir) -> addTransitiveDepFromDir(tDepDir, tdep.name, wsCtxOpt, seen, result)
                       }
                     }
                   }
                 }
                 case Mf.DepSource.Path(dir) -> {
                   val tDepDir = if Path.isAbsolute(dir) { dir } else { Path.join(depDir, dir) }
-                  val tToml = Path.join(tDepDir, "lyric.toml")
-                  if File.fileExists(tToml) {
-                    match File.readText(tToml) {
-                      case Err(_) -> ()
-                      case Ok(tMfText) -> {
-                        match Mf.parseManifest(tMfText, tToml) {
-                          case Err(_) -> ()
-                          case Ok(tMf) -> {
-                            val dllName = match tMf.project {
-                              case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }
-                              case None -> tMf.packageSection.name + ".dll"
-                            }
-                            val tDllPath = Path.join(Path.join(tDepDir, "bin"), dllName)
-                            if File.fileExists(tDllPath) {
-                              result.add(tdep.name + "\t" + tDllPath)
-                              seen.add(tdep.name)
-                              collectTransitiveDepDlls(tDepDir, wsCtxOpt, seen, result)
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
+                  addTransitiveDepFromDir(tDepDir, tdep.name, wsCtxOpt, seen, result)
                 }
                 case _ -> ()
               }
@@ -288,8 +279,21 @@ func buildWorkspaceDep(
     false,
     // no --all-features
     false,
+    // allow restore
+    // packageVersionOverride: always None here, intentionally — a workspace
+    // dep built transitively is a standalone artifact resolved from its own
+    // lyric.toml (its version comes from [package].version, not from
+    // whatever --package-version the top-level build was invoked with).
+    // Every current caller of buildWorkspaceDeps (the publish pipeline)
+    // pre-builds each tier's DLL before the next tier runs, so this dep is
+    // already on disk with its own manifest version by the time it would be
+    // consulted here. Passing the top-level override through would only
+    // matter for the out-of-workflow case of a clean-tree `lyric build
+    // --package-version X` that also needs to rebuild a stale workspace dep
+    // (#4428) — not a regression, since that was always the emitted-version
+    // behaviour before --package-version existed.
     None
-  )       // allow restore
+  )
 
   buildStack.removeAt(buildStack.count - 1)
 

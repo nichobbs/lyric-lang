@@ -5043,6 +5043,49 @@ in-scope-shadow resolution are now specified.  `docs/01` §1.3 and the grammar
 gain a note to this effect.
 
 ---
+## D-N-015 — Native `slice[T]` shares the RC'd `LyricList` representation (revises the D-N-012 borrowed fat pointer)
+
+**Date:** 2026-07-03
+**Status:** ACCEPTED (revises the `slice[T]` half of D-N-012)
+
+**Decision.** On `--target native`, `slice[T]` lowers to the same RC'd
+`LyricList` kernel representation as `List[T]`, immutable by
+construction.  The type checker owns the mutability and spelling
+distinctions (`.length` vs `.count`, no `add`/`set` on slices); the
+native codegen reuses the list paths wholesale for `for`, indexing,
+`.length`, and the `toArray()` snapshot (`lyric_list_copy`, which is
+also the `slice → List` conversion).
+
+**Why the borrowed fat pointer was dropped.** D-N-012 specified
+`slice[T]` as a borrowed `{ptr, len}` pair.  That representation is
+only memory-safe when every slice's backing store provably outlives
+it, which the language cannot check natively today — and the stdlib
+immediately violates it: `Std.File.readBytesOrPanic` RETURNS a slice
+up the stack, so the buffer must own itself.  An RC'd representation
+is safe under the existing ARC rules (retain on bind, release at scope
+exit, container-owned elements) with zero new runtime or codegen
+machinery.  The borrowed pair remains available as a future
+optimisation once the mode checker can bound slice lifetimes.
+
+**Costs accepted.**
+- `slice[Byte]` stores one byte per 64-bit slot (the single list
+  layout), an 8x width penalty on byte buffers; a packed byte-array
+  representation is a follow-up optimisation.
+- `List[T]` and `slice[T]` are indistinguishable at the NType level,
+  so the native backend accepts `.count` on slices and `.length` on
+  lists (a harmless superset — the checker rejects them in checked
+  contexts).
+
+**Kernel protocol note.** Ref-container results cross the C boundary
+by RETURN VALUE plus an `Int` ok-flag out-param
+(`lyric_file_read_bytes`, `lyric_dir_list2`), never by container
+out-param: overwriting a `var xs = newList()` slot from C would leak
+the initialiser (unlike the immortal `""` used by the string seams).
+
+**Related:** D-N-012, D-N-014, `native/plan/03-type-mapping.md`,
+issue #4752.
+
+
 ## D086 — Band 3 Phase B.0: `IAsyncStateMachine` synthesis for user-defined `async func` (no-await path, #2070)
 
 **Context:** D085 (Phase A) fixed the `@externTarget async` silent miscompile. The
@@ -7378,6 +7421,212 @@ D-progress-502 (103/103 measurement on 2026-06-11).
 
 ---
 
+## D-progress-543 — Published NuGet `lyric` 0.4.9's `lyric fmt` diverges from `main`'s canonical match-arm style; hand-formatting is an accepted interim substitute in a source-build-less sandbox
+
+**Context.** `CLAUDE.md`'s "Formatting" section mandates running the
+**self-hosted** formatter (`lyric-compiler/lyric/fmt/`, invoked via
+`./bin/lyric fmt --write`, built from this repo's own source) over every
+changed `.l` file before committing — explicitly *not* any other formatter.
+Some sandboxes used for this repo's automated sessions cannot build
+`./bin/lyric` from source: the release-download bootstrap step is blocked by
+network policy, and the historical F# mint-fallback path no longer exists
+(F# was fully purged from the repo, `scripts/mint-stage0-fsharp.sh` requires
+`git rev-parse 44a0d1e7~1`, which doesn't resolve after history rewrites).
+The only formatter available in that environment is the **published NuGet
+`lyric` 0.4.9 global tool** (`dotnet tool install -g lyric`).
+
+**The problem.** While fixing SUGGESTION-severity review findings in
+`lyric-docker/src/docker.l` (PR #4650), running `lyric fmt --write` from the
+0.4.9 tool collapsed the file's established multi-line `match` block style
+(one `case` arm per line) into single-line semicolon-separated form (e.g.
+`match sent { case Err(e) -> return Err(...); case Ok(r) -> r }`) —
+including for functions the PR never touched (`fromHttpError`, confirmed by
+isolating a reformat run to only that function). Since this collapsed style
+appears nowhere else in the file's history before this run, and the tool's
+`fmt` is idempotent on its own output, this is conclusive evidence the 0.4.9
+tool's formatter has diverged from whatever formatter last produced this
+file's committed state on `main` — not a case of the file having been
+hand-edited without formatting.
+
+**Decision.** In a sandbox that cannot build `./bin/lyric` from source, when
+the published NuGet tool's `lyric fmt --write` output measurably diverges
+from the pre-existing style of a file being edited (verified by isolating
+the reformat to untouched code, as above — not merely "it looks different"),
+hand-formatting new/changed code to match the file's existing established
+style is an accepted **interim substitute** for running the formatter,
+provided:
+
+1. The divergence is verified, not assumed (isolate a reformat run to
+   code outside the actual diff; if untouched code also gets rewritten,
+   that's the signal, not a stylistic hunch).
+2. The PR description documents which files were hand-formatted and why,
+   so reviewers know to check style-consistency manually rather than
+   trusting a `lyric fmt` run happened.
+3. This is not used as a general excuse to skip formatting — it applies
+   only when the tool is demonstrated to actively fight the file's
+   established convention, not merely "unavailable" or "inconvenient."
+
+This does **not** change the standing rule for sessions that *can* build
+`./bin/lyric` from source (the overwhelming majority): those must still run
+the self-hosted formatter per `CLAUDE.md`, unchanged. This decision is
+scoped to source-build-less sandboxes only, and is superseded the moment a
+working self-hosted build is available in that environment.
+
+**Related:** PR #4650 (the fix batch that surfaced this), issue #4658 (the
+review finding that prompted this entry), `CLAUDE.md` "Formatting — run
+`lyric fmt` before every commit", `scripts/mint-stage0-fsharp.sh` (the
+retired F# mint-fallback this sandbox limitation stems from).
+
+---
+
+## D118 — Fixed aspect `requires:`/`ensures:` runtime enforcement gap; retired C-mode across every field-accessing ecosystem library aspect
+
+**Context.** While scoping whether D115's row-typed `args` let the
+ecosystem retire C-mode (`@inline_template`) entirely, empirical testing
+(not just re-reading the spec) surfaced that docs/26 §5's "Contract
+augmentation" — specified since D-progress-208 and assumed shipped — had
+never actually worked for any `requires:`/`ensures:` clause referencing
+`args.<field>`, in *either* C-mode or B′-mode. `Auth.Aspects.ValidateKey`'s
+`requires: args.apiKey != ""` silently never panicked on an empty key.
+Two independent bugs compounded:
+
+1. The weaver spliced `aspect.contracts` onto the wrapper's `contracts`
+   field verbatim, leaving `args.<field>` an unresolved name.
+2. Even a correctly-rewritten wrapper contract was never lowered into a
+   runtime `assert(...)`: `Lyric.ContractElaborator` runs *before* weaving
+   in the compile pipeline (parse → typecheck → modecheck → elaborate →
+   mono → weave), but a wrapper's contracts don't exist until weaving
+   builds the wrapper — by which point elaboration has already run.
+
+**Decision.** Fix both gaps in `weaver.l`, then use the fix to retire
+`@inline_template` from every ecosystem library aspect that only needed it
+for `args.<field>` access (not to introduce any new language surface).
+
+**Design — the fix:**
+- `rewriteContractClauseArgs` / `rewriteContractClauseListArgs` rewrite
+  `args.<field>` to the matched function's bare parameter name inside
+  `CCRequires`/`CCEnsures`/`CCWhen`/`CCDecreases` (reusing the existing
+  `rewriteExpr` traversal with an otherwise-empty `RewriteCtx`).
+  Unconditional for every aspect mode — contracts always land on the
+  per-match wrapper, never a shared B′-mode specialised function, so
+  there's no shape-dedup opacity concern.
+- `elaborateWrapperBodyForAspectContracts` re-runs
+  `Lyric.ContractElaborator.elaborateFunction` directly against the built
+  wrapper body, scoped to *only* the aspect's own (rewritten) contracts —
+  not the full composed list — so the target's own already-elaborated
+  contracts aren't double-checked.
+- Wired into both `buildWrapper` (local aspects + C-mode `from`-instances)
+  and `buildBModeCallSite` (B′-mode per-match wrapper) — two independent
+  composition sites needed the identical fix.
+- Two new `weaver_self_test.l` cases prove a `requires: args.<field>`
+  clause is both rewritten and elaborated into a runtime `assert()`, for
+  both the local-aspect and B′-mode `from`-instance code paths (44/44
+  weaver self-tests pass); empirically verified end-to-end (both
+  row-constrained B′-mode and C-mode forms of a `requires: args.apiKey !=
+  ""` aspect now correctly panic on an empty key at the call site).
+
+**Design — the retirement, once the fix made it safe:** converted every
+field-accessing ecosystem library aspect off `@inline_template` to
+row-constrained B′-mode (`where TArgs has { field: Type, ... }`):
+`Web.Aspects.{RequiresAuth,RequiresRole,ApiKey}` (single scalar fields),
+`Validation.Aspects.{ValidateInput,ValidateEmail}` (single scalar fields),
+`Mq.Aspects.{Idempotent,DeadLetter}` (nested access — `args.message.id`
+rewrites cleanly to `message.id` since only the leading `args.` segment is
+rewritten; `DeadLetter` needs two row fields, `message: Message` and
+`consumer: QueueConsumer`), `Ws.Aspects.{WsAuth,WsRateLimit}`,
+`Grpc.Aspects.{RequiresGrpcAuth,RequiresGrpcRole}`,
+`Storage.Aspects.ValidateKey`, and `Lambda.Aspects.DeadlineGuard` (row
+field typed with the cross-package qualified name
+`Lambda.LambdaContext`, confirming the row clause's type position accepts
+qualified paths, not just bare same-package names). `Auth.Aspects.ValidateKey`
+was already converted in D115. Each library's own test suite was run
+after conversion; all pre-existing passes stayed green (a handful of
+unrelated pre-existing sandbox failures — `HMACSHA256`/`MD5` type-loading
+and `*.Kernel.Net` type-initializer exceptions — were confirmed identical
+before and after conversion via git-stash A/B testing, so they are not
+regressions from this change).
+
+**Not converted:** `Web.Aspects.RateLimit`/`HttpCircuitBreaker`,
+`Grpc.Aspects.GrpcRateLimit`/`GrpcCircuitBreaker`,
+`Storage.Aspects.AuditAccess`, `Lambda.Aspects.EventLogging` — these are
+already B-mode (no `args.<field>` access at all; they use only
+`call.qualifiedName`), so there was nothing to convert.
+
+**Related:** docs/26 §5, D-progress-208 (original, silently-broken
+contract-augmentation spec), D114, D115, docs/55, docs/56.
+
+---
+
+## D-progress-553 — Breaking `@stable` API changes across five ecosystem libraries to unblock cross-DLL contract-metadata synthesis (#4514)
+
+**Context.** `lyric publish` was failing contract-metadata synthesis for
+five ecosystem libraries because their `pub` signatures referenced types
+from *other* libraries' DLLs (`Lyric.Web`, `Lyric.Cache`, `Lyric.Mq`) that
+a consumer might not have declared as a direct dependency — a `T0010`-class
+failure. Fixing this required removing those cross-DLL types from the
+affected `@stable(since = "0.1")` public signatures, which is a breaking
+change to each. PR #4514 shipped the fix without a decision-log entry
+recording the rationale or the migration path; this entry closes that gap
+retroactively.
+
+**Decision.** Prefer breaking the `@stable` signatures over leaving
+publish broken. The alternative — keeping the cross-DLL types and forcing
+every consumer to always declare every transitive library as a direct
+dependency — does not scale and defeats the purpose of per-library
+contract-metadata synthesis.
+
+**What actually shipped (verified against the current tree):**
+
+- **`lyric-health`** (`lyric-health/src/health.l`): `runLiveness` /
+  `runReadiness` return `Result[String, String]` instead of
+  `Result[String, ApiError]` (`Lyric.Web`'s `ApiError`). The error string
+  carries the same failing-check information; `import Web` and the
+  `Lyric.Web` dependency are removed from the library entirely.
+  **Migration:** callers that returned the health result directly from an
+  HTTP handler now map `Err(msg)` to `Err(Web.serviceUnavailable(msg))` (or
+  an equivalent `ApiError`) at the call site — done for the `jobqueue`,
+  `ledger`, and `rbac` examples in the same PR.
+- **`lyric-mq`** (`lyric-mq/src/mq_aspects.l`): `pub func configure(idempStore:
+  in CacheStore, dlStore: in DeadLetterStore)` is removed. It was a documented
+  no-op (the `Idempotent`/`DeadLetter` aspects already resolve their store
+  via aspect `config { }`, not this function), so removal has no runtime
+  migration — callers simply delete the call. `Lyric.Cache`'s `CacheStore`
+  remains used *inside* the aspect bodies (not in any `pub` signature), so
+  `import Cache` is unaffected.
+- **`lyric-lambda`** (`lyric-lambda/src/lambda.l`): `LambdaApp` stays a
+  `pub record` (an intermediate `pub opaque type LambdaApp` attempt was
+  reverted in the same PR after it broke intra-package field access and
+  13 tests — see the PR's commit history for the false start). What
+  actually changed: the `httpRouter` field's type changes from
+  `Option[Router]` (`Lyric.Web`) to `Option[LambdaRouter]`, a new
+  zero-field `pub opaque type` token defined in `lambda.l` with no
+  `Lyric.Web` reference, so `Router` never appears in `LambdaApp`'s
+  contract metadata. `pub func withRouter` is now gated behind
+  `@cfg(feature = "web")`. **Migration:** consumers that called
+  `withRouter` must add `web = []` to the features they enable (already
+  the case for the `[nuget]`/library-dependency shape) — `Lyric.Web` is
+  in scope for `withRouter`'s parameter/return types only when the `web`
+  feature is active, so `T0010` cannot fire for consumers that don't use
+  it.
+- **`lyric-testing`** (`lyric-testing/src/testing.l`): `PublishedMessage
+  .headers` changes from `slice[Mq.MessageHeader]` to a new
+  `slice[TestMessageHeader]` (a `pub record` local to `lyric-testing` with
+  the same `{key, value}` shape); a `toTestHeaders` helper converts at the
+  `MockMessageQueue` publish boundary. `TestContext.cache` changes from
+  `Cache.InProcessCacheStore` to a new local `pub record MockCacheStore`
+  (implements `Cache.CacheStore`). **Migration:** test code that read
+  `.headers` or `.cache` off these types field-by-field continues to work
+  (same field shapes), but code that passed the value on to an API typed
+  against the original `Mq`/`Cache` types needs the new local record type
+  instead.
+
+**Not a migration concern:** `lyric-docker`'s `extractJsonField` fix in
+the same PR was a compile-error fix (`String.indexOf` returns `Int`, not
+`Option[Int]`), not an API-shape change.
+
+**Related:** #4514, docs/45 (contract-metadata direct resolution), D098.
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

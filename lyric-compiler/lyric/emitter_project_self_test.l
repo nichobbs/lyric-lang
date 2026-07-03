@@ -81,6 +81,10 @@ func mkProjectPkg(name: in String, source: in String): Emitter.ProjectPackage {
   Emitter.ProjectPackage(name = name, sources = srcs)
 }
 
+func mkProjectPkgMulti(name: in String, sources: in List[String]): Emitter.ProjectPackage {
+  Emitter.ProjectPackage(name = name, sources = sources)
+}
+
 func runEmitProjectOpts(
   label: in String,
   projectPkgs: in List[Emitter.ProjectPackage],
@@ -452,6 +456,35 @@ test "cfg erasure file-level erases entire file" {
   val result = runEmitProjectWithFeatures("cfg-file-erase", pkgs, "CfgFileErase", empty, declared)
   assertEqualInt(result.exitCode, 0, "cfg_erasure_file_level: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "survived", "cfg_erasure_file_level: stdout matches expected")
+}
+
+// Multi-source package + file-level `@cfg`: `mergePackageSources` only calls
+// `fileIsCfgErasedByFeatures` on the `sources.count > 1` path (the
+// `sources.count == 1` fast path returns the lone source verbatim), so a
+// single-source erasure test never exercises this branch.  Both files
+// declare a same-named function so an erasure regression (the gated file's
+// body always merging in) is detectable as a compile failure, not merely as
+// an unobserved dead function (#4527).
+test "cfg erasure file-level with multiple sources in one package" {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  val libSources: List[String] = newList()
+  libSources.add("package CfgMultiSrc.Lib\n" + "\n" + "pub func pick(): Int { 1 }\n")
+  libSources.add("@cfg(feature = \"extra\")\n" + "package CfgMultiSrc.Lib\n" + "\n" + "pub func pick(): Int { 999 }\n")
+  pkgs.add(mkProjectPkgMulti("CfgMultiSrc.Lib", libSources))
+  pkgs.add(
+    mkProjectPkg(
+      "CfgMultiSrc.App",
+      "package CfgMultiSrc.App\n" + "\n" + "import CfgMultiSrc.Lib\n" + "\n" + "func main(): Unit {\n" +
+        "  println(pick())\n" +
+        "}\n"
+    )
+  )
+  val empty: List[String] = newList()
+  val declared: List[String] = newList()
+  declared.add("extra")
+  val result = runEmitProjectWithFeatures("cfg-multisrc-file-erase", pkgs, "CfgMultiSrcErase", empty, declared)
+  assertEqualInt(result.exitCode, 0, "cfg_erasure_multisrc_file_level: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "1", "cfg_erasure_multisrc_file_level: stdout matches expected")
 }
 
 // ─── Restored-dep wiring ──────────────────────────────────────────────────────

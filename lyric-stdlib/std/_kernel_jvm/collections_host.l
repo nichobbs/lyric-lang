@@ -4,10 +4,11 @@
 //! Mirrors _kernel/collections_host.l for the JVM target.
 //!
 //! tryGetValue adapts Java's null-sentinel get() to the out-parameter +
-//! Bool pattern that Std.Collections.mapGet expects.  The shim checks
+//! Bool pattern that Std.Collections.mapGet expects; it checks
 //! containsKey before get so it correctly distinguishes a present null
 //! value from an absent key (though Lyric's type system forbids null
-//! values in Map[K, V] when V is non-nullable).
+//! values in Map[K, V] when V is non-nullable).  All bodies here are
+//! plain Lyric over the JVM auto-FFI — no F#/Java shim classes.
 //!
 //! Internal: only Std.Collections should import this.
 @axiom("java.util.ArrayList / HashMap conform to their documented JVM contracts")
@@ -23,15 +24,44 @@ extern type Map[K, V] = "java.util.HashMap"
 @externTarget("java.util.ArrayList.<init>")
 pub func newList[T](): List[T] = ()
 
+// java.util.ArrayList pre-sized constructor (capacity overload).
+@externTarget("java.util.ArrayList.<init>")
+pub func newListWithCapacity[T](capacity: in Int): List[T] = ()
+
 // java.util.HashMap no-arg constructor.
 @externTarget("java.util.HashMap.<init>")
 pub func newMap[K, V](): Map[K, V] = ()
 
-// Adapts HashMap.get(key): V? to the out-parameter + Bool pattern.
-// Shim: if map.containsKey(key) { value = map.get(key); return true }
-// else { return false }.
-@externTarget("lyric.stdlib.jvm.CollectionsHost.tryGetValue")
-pub func tryGetValue[K, V](m: in Map[K, V], key: in K, value: out V): Bool = ()
+/// Adapts HashMap.get(key): V? to the out-parameter + Bool pattern.
+/// The out slot is written on both paths: `get()` returns null on a miss,
+/// matching the .NET twin's `default(V)`-on-miss semantics for the erased
+/// reference representation (#4683).  `containsKey` (not the null sentinel)
+/// decides the result, so a present-but-null value is still distinguished
+/// from an absent key.
+pub func tryGetValue[K, V](m: in Map[K, V], key: in K, value: out V): Bool {
+  value = m.get(key)
+  m.containsKey(key)
+}
+
+// =====================================================================
+// Key / value collection views of a `Map[K, V]` without copying.
+// HashMap.keySet() returns java.util.Set and .values() returns
+// java.util.Collection; both implement Iterable, so `for` iterates
+// them through the emitter's Iterable path.
+// =====================================================================
+extern type DictKeyCollection[K, V] = "java.util.Set"
+
+extern type DictValueCollection[K, V] = "java.util.Collection"
+
+/// Key view of `m` (java.util.HashMap.keySet, no copy).
+pub func dictGetKeys[K, V](m: in Map[K, V]): DictKeyCollection[K, V] {
+  m.keySet()
+}
+
+/// Value view of `m` (java.util.HashMap.values, no copy).
+pub func dictGetValues[K, V](m: in Map[K, V]): DictValueCollection[K, V] {
+  m.values()
+}
 
 // =====================================================================
 // Set[T] — alias over java.util.HashSet.
@@ -50,5 +80,8 @@ extern type Set[T] = "java.util.HashSet"
 @externTarget("java.util.HashSet.<init>")
 pub func newSet[T](): Set[T] = ()
 
-@externTarget("lyric.stdlib.jvm.SetHost.setToArray")
-pub func setToSlice[T](s: in Set[T]): slice[T] = ()
+/// Snapshot of `s` as a slice.  HashSet.toArray() returns Object[],
+/// which is exactly the erased `slice[T]` representation on the JVM.
+pub func setToSlice[T](s: in Set[T]): slice[T] {
+  s.toArray()
+}

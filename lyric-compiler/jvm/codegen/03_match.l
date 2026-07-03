@@ -35,6 +35,15 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
   // unreachable branch target at the past-end bytecode offset whose
   // StackMapTable frame points past the method body (VerifyError, #2870).
   var anyArmFellThrough = false
+  // Whether the FIRST non-terminating arm has fixed `resultTy`.  Statement-
+  // position matches legally mix void and value arms (`case Some(v) ->
+  // xs.add(v); case None -> ()` — `add` returns boolean); once the first
+  // fall-through arm fixes the type, later arms reconcile to it instead of
+  // flipping it: a value arm under a void match discards its value, and a
+  // void arm under a value match stores a dummy default so the result slot
+  // is written on every path (an unwritten slot merges to TOP and the
+  // `iload` at the join fails verification).
+  var resultTyFixed = false
 
   var i = 0
   while i < arms.count {
@@ -66,24 +75,34 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
     // the result-store / fall-through `goto`: doing so would pop an empty stack
     // (VerifyError) and emit dead, unreachable bytecode after the `areturn`.
     val armTerminated = endsWithReturn(insns)
-    // Fix the result-slot type from the first *value-producing* (non-terminating)
-    // arm, so a leading `return`-only arm does not force the whole match to Unit.
-    match resultTy {
-      case JVoid -> {
-        if not armTerminated {
-          resultTy = armTy
-        }
-      }
-      case _ -> ()
+    // Fix the result-slot type from the first non-terminating arm, so a
+    // leading `return`-only arm does not force the whole match to Unit and a
+    // later arm cannot flip an already-fixed type (see `resultTyFixed`).
+    if not armTerminated and not resultTyFixed {
+      resultTy = armTy
+      resultTyFixed = true
     }
     if not armTerminated {
       match resultTy {
-        case JVoid -> ()
+        case JVoid -> {
+          // Void match: a value-producing arm's result is discarded (the
+          // statement-position `case Some(v) -> xs.add(v)` shape — `add`
+          // returns boolean).
+          discardValue(insns, armTy)
+        }
         case _ -> {
           if rslot < 0 {
             rslot = allocSlot(ctx, rslotName, resultTy)
           }
-          coerceArgTo(insns, armTy, resultTy)
+          match armTy {
+            case JVoid -> {
+              // This arm produced no value but the match is value-typed:
+              // store a dummy default so the result slot is written on
+              // every path reaching the join.
+              pushDefaultValue(insns, resultTy)
+            }
+            case _ -> coerceArgTo(insns, armTy, resultTy)
+          }
           emitStore(insns, rslot, resultTy)
         }
       }
@@ -121,20 +140,65 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
 // erased to `Object` / `ArrayList` (e.g. a tuple element), fall back to the
 // constructor registry (keyed by the case's short name).  Returns "" when
 // unresolvable.
+// Simple name of a JVM internal class path (`Std/Yaml/YamlError` ->
+// `YamlError`).
+func jvmSimpleName(cls: in String): String {
+  match lastIndexOf(cls, "/") {
+    // 3-arg substring: the stage-0 F# mint's checker resolves only one
+    // overload per name and rejects the 2-arg convenience form (T0042).
+    case Some(i) -> substring(cls, i + 1, cls.length - i - 1)
+    case None -> cls
+  }
+}
+
 func resolveCaseClassJvm(ctx: in FuncCtx, head: in ModulePath, scrutTy: in JvmType): String {
   val caseName = lastSegment(head)
   match scrutTy {
     case JRef(baseCls) -> {
       if not (baseCls == "java/lang/Object") and not (baseCls == "java/util/ArrayList") {
-        baseCls + "$" + caseName
+        // The scrutinee's static class may be the in-package GUESS for an
+        // imported union (a record field typed by another package's union
+        // maps to `<ownPkg>/<Union>` — e.g. `Std/JsonHost/YamlValue` for
+        // Std.Yaml's `YamlValue`).  Deriving `<guess>$<case>` then names a
+        // class that does not exist (VerifyError / NoClassDefFoundError at
+        // load).  The derived name is trusted only when it is a registered
+        // case class; otherwise the ctor registry — built from the actual
+        // union declarations across the whole bundle — is authoritative.
+        val derived = baseCls + "$" + caseName
+        if ctx.caseFields.containsKey(derived) {
+          derived
+        } else {
+          // The guess carries the right UNION name with the wrong package
+          // (`Std/JsonHost/YamlError` for Std.Yaml's `YamlError`): search
+          // the registered case classes for `…/<Union>$<case>` so a match
+          // on an imported union resolves to its declaring package even
+          // when ANOTHER package registered a same-named case first
+          // (`InvalidDocument` exists in both XmlError and YamlError).
+          val unionName = jvmSimpleName(baseCls)
+          val wantSuffix = "/" + unionName + "$" + caseName
+          var found = ""
+          for k in mapKeys(ctx.caseFields) {
+            if found == "" and endsWith(k, wantSuffix) {
+              found = k
+            }
+          }
+          if found != "" {
+            found
+          } else {
+            match ctorClassFor(ctx, caseName) {
+              case Some(cls) -> cls
+              case None -> derived
+            }
+          }
+        }
       } else {
-        match mapGet(ctx.ctors, caseName) {
+        match ctorClassFor(ctx, caseName) {
           case Some(cls) -> cls
           case None -> ""
         }
       }
     }
-    case _ -> match mapGet(ctx.ctors, caseName) { case Some(cls) -> cls; case None -> "" }
+    case _ -> match ctorClassFor(ctx, caseName) { case Some(cls) -> cls; case None -> "" }
   }
 }
 
@@ -265,11 +329,22 @@ func lowerPatternTest(
       match innerOpt {
         case Some(inner) -> lowerPatternTest(ctx, insns, inner, scrutSlot, scrutTy, failLabel)
         case None -> {
+          // `case null ->` on a nullable scrutinee (`String?`) parses as a
+          // binding named "null" ("null" is not a keyword); the spec intent —
+          // and the stdlib's usage in Std.Console.readLine / Std.Environment
+          // — is a refutable null TEST.  Without this the arm bound anything
+          // and hijacked every later arm (Std.Console.readLine returned
+          // EndOfInput for real lines).
+          if name == "null" {
+            emitLoad(insns, scrutSlot, scrutTy)
+            insns.add(LIfnonnull(label = failLabel))
+            return
+          }
           // A single-segment `case Foo ->` parses as a binding; if `Foo` names a
           // known union case, emit the isinst test that `PConstructor` would, so
           // it does not behave as an unconditional catch-all and hijack later
           // arms.  Otherwise it is a genuine variable bind — always matches.
-          match mapGet(ctx.ctors, name) {
+          match ctorClassFor(ctx, name) {
             case Some(cls) -> {
               if jvmClassIsUnionCase(cls) {
                 emitLoad(insns, scrutSlot, scrutTy)
@@ -437,7 +512,7 @@ func lowerPatternTest(
       // the head via the constructor registry), then recurse each named field's
       // sub-pattern test so refutable field patterns (`Point{x = 0}`) are
       // honoured rather than silently always-matching.
-      match mapGet(ctx.ctors, lastSegment(head)) {
+      match ctorClassFor(ctx, lastSegment(head)) {
         case Some(recClass) -> {
           emitLoad(insns, scrutSlot, scrutTy)
           insns.add(LInstanceof(className = recClass))
@@ -475,7 +550,7 @@ func lowerPatternTest(
     case PTypeTest(_, ty) -> {
       // `case x: T ->` — isinst against T.  Primitive T is a degenerate test
       // (a value of that static type always matches), so emit no test.
-      val testTy = typeExprToJvm(ty, ctx.pkgName)
+      val testTy = typeExprToJvmExtern(ty, ctx.pkgName, ctx.externTypes)
       match testTy {
         case JRef(cls) -> {
           emitLoad(insns, scrutSlot, scrutTy)
@@ -632,7 +707,7 @@ func lowerPatternBind(
         case None -> {
           // A single-segment `case Foo ->` that names a known union case binds
           // nothing (mirrors the test side); otherwise it is a variable bind.
-          val isCase = match mapGet(ctx.ctors, name) { case Some(cls) -> jvmClassIsUnionCase(cls); case None -> false }
+          val isCase = match ctorClassFor(ctx, name) { case Some(cls) -> jvmClassIsUnionCase(cls); case None -> false }
           if not isCase {
             emitLoad(insns, scrutSlot, scrutTy)
             val bindSlot = allocSlot(ctx, name, scrutTy)
@@ -648,7 +723,7 @@ func lowerPatternBind(
     case PTypeTest(inner, ty) -> {
       // Narrow the scrutinee to the tested type, then bind the inner pattern at
       // that precise type.
-      val testTy = typeExprToJvm(ty, ctx.pkgName)
+      val testTy = typeExprToJvmExtern(ty, ctx.pkgName, ctx.externTypes)
       match testTy {
         case JRef(cls) -> {
           emitLoad(insns, scrutSlot, scrutTy)
@@ -699,7 +774,7 @@ func lowerPatternBind(
       }
     }
     case PRecord(head, fields, _) -> {
-      match mapGet(ctx.ctors, lastSegment(head)) {
+      match ctorClassFor(ctx, lastSegment(head)) {
         case Some(recClass) -> {
           val castSlot = allocSlot(ctx, "__reccast_" + toString(ctx.slotTicker.count), JRef(className = recClass))
           emitLoad(insns, scrutSlot, scrutTy)

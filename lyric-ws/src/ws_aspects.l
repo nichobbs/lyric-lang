@@ -11,8 +11,11 @@ import Ws.Kernel.Net as WsKernel
 
 // ─── WsAuth ───────────────────────────────────────────────────────────────────
 /// Validate a bearer token from the WebSocket handshake Authorization header.
+///
+/// Row-constrained B'-mode (docs/56 / D115): reads `args.authToken` via a
+/// `where TArgs has { authToken: String }` row clause.  The handler must
+/// declare an `authToken: String` parameter.
 @stable(since = "0.1")
-@inline_template
 pub aspect WsAuth {
   config {
     enabled: Bool = true
@@ -22,7 +25,7 @@ pub aspect WsAuth {
     audience: String = ""
     allowedAlgorithms: String = "HS256"
   }
-  around(call) -> ret {
+  around(call) -> ret where TArgs has { authToken: String } {
     if not enabled {
       ret = call.proceed()
     } else {
@@ -45,15 +48,18 @@ pub aspect WsAuth {
 
 // ─── WsRateLimit ─────────────────────────────────────────────────────────────
 /// Enforce a per-connection message rate limit on WebSocket message handlers.
+///
+/// Row-constrained B'-mode (docs/56 / D115): reads `args.ctx.connectionId`
+/// via a `where TArgs has { ctx: WsContext }` row clause.  The handler must
+/// declare a `ctx: WsContext` parameter.
 @stable(since = "0.1")
-@inline_template
 pub aspect WsRateLimit {
   config {
     enabled: Bool = true
     messagesPerMinute: Int = 120
     burstSize: Int = 20
   }
-  around(call) -> ret {
+  around(call) -> ret where TArgs has { ctx: WsContext } {
     if not enabled {
       ret = call.proceed()
     } else {

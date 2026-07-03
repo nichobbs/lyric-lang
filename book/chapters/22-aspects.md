@@ -80,13 +80,15 @@ Aspects can add `requires:` and `ensures:` clauses to the functions they match. 
 ```lyric
 aspect Positive {
   matches: name like "add*"
-  requires: true   // trivially-true; illustrates that the clause is evaluated
+  requires: args.amount > 0   // resolved against each matched function's own `amount` parameter
 
   around(args) -> ret {
     proceed(args)
   }
 }
 ```
+
+An aspect clause can reference the matched function's parameters through `args.<field>`. At weave time each reference is rewritten to the matched function's same-named parameter, so `requires: args.amount > 0` above becomes `requires: amount > 0` on every matched function — and in a `@runtime_checked` package the woven wrapper asserts it at runtime before the body runs. This works in every aspect mode, including row-constrained B′-mode library templates (§22.7): a `requires: args.apiKey != ""` on a library's `ValidateKey` template panics at the consumer's call site when the key is empty. A referenced field with no matching parameter is a weave-time diagnostic (A0042 for C-mode, A0047 for row-constrained B′-mode).
 
 The additive composition means aspects cannot remove a function's own contracts. If a function has `requires: amount > 0`, no aspect can weaken or override that precondition — aspects can only add obligations.
 

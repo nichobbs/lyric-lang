@@ -1473,40 +1473,59 @@ func wpLocal(
   sp: in Span,
 ): WpResult {
   match binding {
-    case LBVal(pat, _, init) -> {
+    case LBVal(pat, ty, init) -> {
       val name = match pat.kind { case PBinding(n, _) -> n; case _ -> "?pat" }
       val (initR, initDiags) = translateExpr(env, init)
-      val info = SortInfo(sort = sortOf(initR.term), range = RBKNone)
+      // Honor the declared type's range bound (#3854) instead of always
+      // discarding it in favor of the inferred-from-init RBKNone sort — a
+      // `val x: Percent = ...` binding must carry `0 <= x <= 100` forward.
+      val info = match ty {
+        case Some(t) -> sortOfTypeExprE(env, t)
+        case None -> SortInfo(sort = sortOf(initR.term), range = RBKNone)
+      }
       val env2 = envBindTerm(name, initR.term, info, env)
       val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
       val asList: List[Term] = newList()
       appendTermList(asList, initR.assumed)
+      appendTermList(asList, rangeHypotheses(name, info))
       appendTermList(asList, inner.assumed)
       val di: List[Diagnostic] = newList()
       appendTermList2(di, initDiags)
       appendTermList2(di, inner.diags)
       WpResult(wp = inner.wp, sideGoals = inner.sideGoals, assumed = asList, diags = di)
     }
-    case LBLet(name, _, init) -> {
+    case LBLet(name, ty, init) -> {
       val (initR, initDiags) = translateExpr(env, init)
-      val info = SortInfo(sort = sortOf(initR.term), range = RBKNone)
+      // See LBVal above (#3854): a range-subtype-typed `let` must carry its
+      // bound forward as a hypothesis too.
+      val info = match ty {
+        case Some(t) -> sortOfTypeExprE(env, t)
+        case None -> SortInfo(sort = sortOf(initR.term), range = RBKNone)
+      }
       val env2 = envBindTerm(name, initR.term, info, env)
       val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
       val asList: List[Term] = newList()
       appendTermList(asList, initR.assumed)
+      appendTermList(asList, rangeHypotheses(name, info))
       appendTermList(asList, inner.assumed)
       val di: List[Diagnostic] = newList()
       appendTermList2(di, initDiags)
       appendTermList2(di, inner.diags)
       WpResult(wp = inner.wp, sideGoals = inner.sideGoals, assumed = asList, diags = di)
     }
-    case LBVar(name, _, Some(init)) -> {
+    case LBVar(name, ty, Some(init)) -> {
       val (initR, initDiags) = translateExpr(env, init)
-      val info = SortInfo(sort = sortOf(initR.term), range = RBKNone)
+      // See LBVal above (#3854): an initialized range-subtype-typed `var`
+      // must carry its bound forward as a hypothesis too.
+      val info = match ty {
+        case Some(t) -> sortOfTypeExprE(env, t)
+        case None -> SortInfo(sort = sortOf(initR.term), range = RBKNone)
+      }
       val env2 = envBindTerm(name, initR.term, info, env)
       val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
       val asList: List[Term] = newList()
       appendTermList(asList, initR.assumed)
+      appendTermList(asList, rangeHypotheses(name, info))
       appendTermList(asList, inner.assumed)
       val di: List[Diagnostic] = newList()
       appendTermList2(di, initDiags)
@@ -1939,6 +1958,16 @@ func eobContainsYield(eob: in ExprOrBlock): Bool {
 }
 
 pub func goalsForFunction(env0: in VEnv, decl: in FunctionDecl): (List[Goal], List[Diagnostic]) {
+  val noExtraHyps: List[Term] = newList()
+  goalsForFunctionWithExtraHyps(env0, decl, noExtraHyps)
+}
+
+// Like `goalsForFunction`, but folds `extraHyps` into both the main goal's
+// and every side goal's hypothesis set — e.g. protected-type field range
+// bounds (#3854, #3855), which aren't reachable from `decl.params` since
+// the fields are bound directly into the caller's `env0`/`fnEnv`, not
+// declared as parameters of the synthesized entry/func `decl`.
+pub func goalsForFunctionWithExtraHyps(env0: in VEnv, decl: in FunctionDecl, extraHyps: in List[Term]): (List[Goal], List[Diagnostic]) {
   // Soundness guard: WP/SP has no suspend/resume model; reject contract-bearing async/yield rather than opaquing (#3298).
   if decl.contracts.count > 0 and (decl.isAsync or funcBodyContainsYield(decl)) {
     val asyncDiags: List[Diagnostic] = newList()
@@ -2074,6 +2103,7 @@ pub func goalsForFunction(env0: in VEnv, decl: in FunctionDecl): (List[Goal], Li
   // Main goal hypotheses.
   val hypotheses: List[Term] = newList()
   appendTermList(hypotheses, paramHyps)
+  appendTermList(hypotheses, extraHyps)
   hypotheses.add(preTerm)
   appendTermList(hypotheses, preAssumed)
   appendTermList(hypotheses, postAssumed)
@@ -2098,6 +2128,7 @@ pub func goalsForFunction(env0: in VEnv, decl: in FunctionDecl): (List[Goal], Li
   // Side goals.
   val sideHyps: List[Term] = newList()
   appendTermList(sideHyps, paramHyps)
+  appendTermList(sideHyps, extraHyps)
   sideHyps.add(preTerm)
 
   val goals: List[Goal] = newList()
@@ -2245,6 +2276,11 @@ func goalsForProtectedEntry(
     var fnEnv = freshSymbolsEnv(env0)
     fnEnv = envBind(selfName, selfInfo, fnEnv)
     val selfTerm = TVar(name = selfName, sort = selfSort)
+    // Range-subtype-typed fields (e.g. `var tokens: Percent`) must carry
+    // their bound forward as a hypothesis too (#3854, #3855) — stated over
+    // the field's selector `TApp`, the same term the body's bare-identifier
+    // field references resolve to via `fnEnv` below, not a free `TVar`.
+    val fieldRangeHyps: List[Term] = newList()
     var mfi = 0
     while mfi < protMembers.count {
       match protMembers[mfi] {
@@ -2256,6 +2292,7 @@ func goalsForProtectedEntry(
               args1.add(selfTerm)
               val fTerm = TApp(name = protName + "__" + fname, args = args1, retSort = fInfo.sort)
               fnEnv = envBindTerm(fname, fTerm, fInfo, fnEnv)
+              appendTermList(fieldRangeHyps, rangeHypothesesForTerm(fTerm, fInfo))
             }
             case PFLet(fname, fty, _, _) -> {
               val fInfo = sortOfTypeExprE(env0, fty)
@@ -2263,6 +2300,7 @@ func goalsForProtectedEntry(
               args2.add(selfTerm)
               val fTerm = TApp(name = protName + "__" + fname, args = args2, retSort = fInfo.sort)
               fnEnv = envBindTerm(fname, fTerm, fInfo, fnEnv)
+              appendTermList(fieldRangeHyps, rangeHypothesesForTerm(fTerm, fInfo))
             }
             case PFImmutable(fd) -> {
               val fInfo = sortOfTypeExprE(env0, fd.ty)
@@ -2270,6 +2308,7 @@ func goalsForProtectedEntry(
               args3.add(selfTerm)
               val fTerm = TApp(name = protName + "__" + fd.name, args = args3, retSort = fInfo.sort)
               fnEnv = envBindTerm(fd.name, fTerm, fInfo, fnEnv)
+              appendTermList(fieldRangeHyps, rangeHypothesesForTerm(fTerm, fInfo))
             }
           }
         }
@@ -2277,7 +2316,7 @@ func goalsForProtectedEntry(
       }
       mfi = mfi + 1
     }
-    val (goals, diags) = goalsForFunction(fnEnv, synthDecl)
+    val (goals, diags) = goalsForFunctionWithExtraHyps(fnEnv, synthDecl, fieldRangeHyps)
     var gi = 0
     while gi < goals.count {
       allGoals.add(goals[gi])

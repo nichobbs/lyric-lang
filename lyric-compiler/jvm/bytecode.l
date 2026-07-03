@@ -1359,7 +1359,17 @@ pub func emitPushInt(asm: in MethodAssembler, v: in Int): Unit {
   } else if v >= -32768 and v <= 32767 {
     emitSipush(asm, v)
   } else {
-    emitInsn(asm, Ldc(poolIdx = poolInteger(asm.pool, v)))
+    // `ldc`'s operand is a single byte; a pool index past 255 needs
+    // `ldc_w` or the operand truncates to the low byte and loads an
+    // unrelated entry (VerifyError at class load — hit by a bundled
+    // package whose pool grew past 255 before its first large int
+    // literal, e.g. Storage.presignedUrl's 604800 contract bound).
+    val idx = poolInteger(asm.pool, v)
+    if idx <= 255 {
+      emitInsn(asm, Ldc(poolIdx = idx))
+    } else {
+      emitInsn(asm, LdcW(poolIdx = idx))
+    }
   }
 }
 

@@ -1531,8 +1531,60 @@ pub func parseLambdaExpr(st: inout ParseState): Expr {
     val _ = advance(st)
     hasArrow = true
   } else if isPunct(peekToken(st), LParen) {
-    // Parenthesised param list not handled in prototype; treat as body.
-    reset(st, saved)
+    // Parenthesised param list: `( name [: type] {, name [: type]} ) ->`
+    // (grammar.ebnf `LambdaParams` alternative 3, e.g. `{ (k, v) -> ... }`).
+    // Tentatively parse it; if it doesn't resolve to `) ->`, this wasn't a
+    // param list after all (e.g. a tuple expression opening the lambda
+    // body) — back all the way out to `saved` and fall through to
+    // body-block parsing, exactly like the no-params case below.
+    val parenSavePos = mark(st)
+    val lambdaParamsSaveCount = lambdaParams.count
+    val _ = advance(st)  // '('
+    var parenHeadOk = true
+    if not isPunct(peekToken(st), RParen) {
+      var keepTryingParen = true
+      while keepTryingParen and parenHeadOk {
+        match peekToken(st) {
+          case TIdent(pname) -> {
+            val pNameTok = advance(st)
+            val pTy: Option[TypeExpr] = if isPunct(peekToken(st), Colon) {
+              val _ = advance(st)
+              Some(value = parseTypeExprNoArrow(st))
+            } else {
+              None
+            }
+            val pEndSp = match pTy { case Some(t) -> t.span; case None -> pNameTok.span }
+            lambdaParams.add(LambdaParam(name = pname, ty = pTy, span = joinSpans(pNameTok.span, pEndSp)))
+            if isPunct(peekToken(st), Comma) {
+              val _ = advance(st)
+            } else {
+              keepTryingParen = false
+            }
+          }
+          case _ -> {
+            parenHeadOk = false
+            keepTryingParen = false
+          }
+        }
+      }
+    }
+    if parenHeadOk and isPunct(peekToken(st), RParen) {
+      val _ = advance(st)  // ')'
+      if isPunct(peekToken(st), Arrow) {
+        val _ = advance(st)
+        hasArrow = true
+      } else {
+        reset(st, parenSavePos)
+        while lambdaParams.count > lambdaParamsSaveCount {
+          lambdaParams.removeAt(lambdaParams.count - 1)
+        }
+      }
+    } else {
+      reset(st, parenSavePos)
+      while lambdaParams.count > lambdaParamsSaveCount {
+        lambdaParams.removeAt(lambdaParams.count - 1)
+      }
+    }
   } else {
     // Try comma-separated ident [: type] list.
     val savePos = mark(st)

@@ -139,3 +139,39 @@ test "mixed-mode (in, out, inout) all positions index correctly" {
   assertEqualInt(b, 6, "out param (pos 1): 3*2 = 6")
   assertEqualInt(c, 13, "inout param (pos 2): 10+3 = 13")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Field-access arguments (#3628, JVM analog of MSIL #3547): passing
+// `obj.field` as an out/inout argument copies the field into the holder
+// before the call and putfields the updated value back after it.
+// ─────────────────────────────────────────────────────────────────────────────
+pub record Counter {
+  var hits: Int
+  var label: String
+}
+
+test "out argument that is a record field is written back" {
+  val c = Counter(hits = 0, label = "")
+  setInt(21, c.hits)
+  assertEqualInt(c.hits, 42, "out write through obj.field must reach the record")
+}
+
+test "inout argument that is a record field reads and writes the field" {
+  val c = Counter(hits = 40, label = "x")
+  advance(2, c.hits)
+  assertEqualInt(c.hits, 42, "inout RMW through obj.field must reach the record")
+}
+
+test "inout String field argument" {
+  val c = Counter(hits = 0, label = "hi")
+  appendBang(c.label)
+  assertEqual(c.label, "hi!", "inout String RMW through obj.field")
+}
+
+test "mixed-mode call with field-access out and inout arguments" {
+  val c = Counter(hits = 10, label = "")
+  var b: Int = 0
+  mix(3, b, c.hits)
+  assertEqualInt(b, 6, "local out unaffected by field-access support")
+  assertEqualInt(c.hits, 13, "field inout (pos 2): 10+3 = 13")
+}

@@ -16,21 +16,18 @@ import Std.EnvironmentHost
 ///
 /// # Errors
 /// - `InvalidPath`: key is empty.
-/// - `KeyNotFound`: no environment variable exists for `key`.
-/// - `IoError`: host lookup failed.
+/// - `KeyNotFound`: no environment variable exists for `key` (host
+///   lookup failures also report as `KeyNotFound` — the kernel seam
+///   folds them into the absent case).
 @stable(since = "1.0")
 pub func getVar(key: in String): Result[String, IOError] {
   if key.length == 0 {
     return Err(error = InvalidPath(path = key, reason = "environment key must not be empty"))
   }
 
-  return try {
-    match hostGetEnvironmentVariable(key) {
-      case null -> Err(error = KeyNotFound(key = key))
-      case value -> Ok(value = value)
-    }
-  } catch Bug as b {
-    Err(error = IoError(path = key, message = b.message))
+  match hostGetVarOpt(key) {
+    case Some(value) -> Ok(value = value)
+    case None -> Err(error = KeyNotFound(key = key))
   }
 }
 

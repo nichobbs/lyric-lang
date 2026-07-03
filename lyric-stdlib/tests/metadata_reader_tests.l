@@ -1090,6 +1090,36 @@ func testClrValueTypeAudit(): Unit {
   }
 }
 
+// #4047: `dllNullaryInstanceInfo` scans a DLL's Field table to detect (a)
+// whether any nullary-union-case "Instance" singleton fields exist and (b)
+// whether they use ELEMENT_TYPE_CLASS (0x12, F#-era) vs ELEMENT_TYPE_OBJECT
+// (0x1c, self-hosted).  This local, otherwise-unused nullary case gives this
+// file's own compiled DLL a guaranteed Instance singleton, so the test below
+// can read the DLL back via the same selfBytes()/loadPe() self-referential
+// oracle the rest of this file uses instead of needing a separate fixture
+// DLL.  Naming/typing verified directly against the emitter:
+//   - a nullary case's TypeDef is named "<Union>_<Case>" (contains "_"),
+//     see lyric-compiler/msil/codegen.l ~line 2372.
+//   - its "Instance" singleton field is typed System.Object, see
+//     lyric-compiler/msil/lowering.l::lowerMNullaryUnionCase
+//     (`buildFieldSig(MObject)`).
+// So the self-hosted-emitted case here is expected to report
+// hasInstances=true, isClassTyped=false.  There is no way to construct a
+// CLASS-typed (F#-era) fixture any more — F# has been fully removed from
+// this repo — so only the OBJECT-typed path is covered here.
+union NullaryInstanceProbe {
+  case ProbeCase
+}
+
+func testNullaryInstanceInfoSelf(): Unit {
+  val probe: NullaryInstanceProbe = ProbeCase
+  assertTrue(match probe { case ProbeCase -> true }, "nullary-instance: probe case constructs")
+  val selfDllPath = Path.join(Environment.appBaseDirectory(), "metadata_reader_tests.dll")
+  val info = dllNullaryInstanceInfo(selfDllPath)
+  assertTrue(info.hasInstances, "nullary-instance: self DLL has an Instance singleton field")
+  assertFalse(info.isClassTyped, "nullary-instance: self-hosted DLL uses ELEMENT_TYPE_OBJECT, not CLASS")
+}
+
 // ── Driver ───────────────────────────────────────────────────────────────────
 func main(): Int {
   testPeContainer()
@@ -1114,6 +1144,7 @@ func main(): Int {
   testExtractResourceBytesZeroSizeRegion()
   testMergedIndexEquivalence()
   testClrValueTypeAudit()
+  testNullaryInstanceInfoSelf()
   println("metadata-reader self-test: ok")
   return 0
 }

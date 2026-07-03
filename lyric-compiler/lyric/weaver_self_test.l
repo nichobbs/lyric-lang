@@ -1590,6 +1590,121 @@ test "C-mode from-instance is unaffected by B'-mode routing" {
   assertTrue(not bodyHasMemberAccess(body, "args", "x"), "args.x rewritten away (C-mode inline path)")
 }
 
+// docs/26 §5 specifies that an aspect's `requires:`/`ensures:` clauses are
+// runtime-checked, but until now the wrapper's newly-composed contracts
+// were spliced onto the `contracts` field verbatim and never elaborated
+// into a runtime `assert(...)` — `Lyric.ContractElaborator` runs before
+// weaving, so a wrapper's contracts (which don't exist until weaving
+// builds the wrapper) were skipped entirely.  A local aspect's `requires:
+// args.<field>` must now (a) rewrite `args.<field>` to the matched
+// function's bare parameter name and (b) produce a runtime `assert(...)`
+// in the wrapper body.
+test "local aspect's requires: args.<field> is rewritten and elaborated into a runtime assert" {
+  val src = "package P\n" + "aspect Guard {\n" + "  matches: name like \"handle*\"\n" +
+    "  requires: args.apiKey != \"\"\n" +
+    "  around(args) -> ret {\n" +
+    "    ret = proceed(args)\n" +
+    "  }\n" +
+    "}\n" +
+    "func handleOne(apiKey: in String): Int { 1 }\n"
+  val pr = parse(src)
+  val wr = weaveFileWithDiags(pr.file)
+  assertTrue(wr.diagnostics.count == 0, "no diagnostics")
+  val wrapper = firstFunction(wr.file, "handleOne")
+  val body = functionBody(wrapper)
+  assertTrue(not bodyHasMemberAccess(body, "args", "apiKey"), "args.apiKey rewritten away in the requires: clause")
+  assertTrue(bodyMentionsPath(body, "assert"), "requires: args.apiKey != \"\" is elaborated into a runtime assert()")
+  assertTrue(bodyMentionsPath(body, "apiKey"), "the elaborated assert references the matched function's own parameter")
+}
+
+// Same fix, exercised through a row-constrained B'-mode `from`-instance
+// (docs/56 / D115) — contracts land on the per-match wrapper built by
+// `buildBModeCallSite`, a separate code path from the local-aspect
+// `buildWrapper` case above, and needs its own elaboration wiring.
+test "B'-mode from-instance's requires: args.<field> is elaborated into a runtime assert on the wrapper" {
+  val tplSrc = "package Lib.Auth\n" + "pub aspect ValidateKey {\n" + "  matches: name like \"*\"\n" +
+    "  requires: args.apiKey != \"\"\n" +
+    "  around(call) -> ret where TArgs has { apiKey: String } {\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Auth")
+  val consumeSrc = "package App\n" + "aspect MyValidate from Lib.Auth.ValidateKey {\n" +
+    "  matches: name like \"handle*\"\n" +
+    "}\n" +
+    "func handleOne(apiKey: in String): Int { 1 }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(not diagsHaveCode(wr.diagnostics, "A0046"), "row clause covers args.apiKey: no A0046")
+  assertTrue(not diagsHaveCode(wr.diagnostics, "A0047"), "matched function provides apiKey: no A0047")
+  val wrapper = firstFunction(wr.file, "handleOne")
+  val body = functionBody(wrapper)
+  assertTrue(
+    not bodyHasMemberAccess(body, "args", "apiKey"),
+    "args.apiKey rewritten away in the requires: clause on the wrapper"
+  )
+  assertTrue(bodyMentionsPath(body, "assert"), "requires: args.apiKey != \"\" is elaborated into a runtime assert()")
+  assertTrue(bodyMentionsPath(body, "apiKey"), "the elaborated assert references the matched function's own parameter")
+}
+
+// The ensures: half of the same fix (#4676). Ensures elaboration is a
+// meaningfully different code path from requires: instead of a prepended
+// assert, the elaborator rewrites the wrapper's return site to bind the
+// produced value into a synthetic `__lyric_result_<n>` local, assert every
+// ensures clause against it, then return the local — so this proves the
+// post-weave re-elaboration handles return-path rewriting, not just
+// body-prefix insertion.
+test "local aspect's ensures: args.<field> is rewritten and elaborated at the return site" {
+  val src = "package P\n" + "aspect Guard {\n" + "  matches: name like \"handle*\"\n" + "  ensures: args.floor <= 100\n" +
+    "  around(args) -> ret {\n" +
+    "    ret = proceed(args)\n" +
+    "  }\n" +
+    "}\n" +
+    "func handleOne(floor: in Int): Int { floor + 1 }\n"
+  val pr = parse(src)
+  val wr = weaveFileWithDiags(pr.file)
+  assertTrue(wr.diagnostics.count == 0, "no diagnostics")
+  val wrapper = firstFunction(wr.file, "handleOne")
+  val body = functionBody(wrapper)
+  assertTrue(not bodyHasMemberAccess(body, "args", "floor"), "args.floor rewritten away in the ensures: clause")
+  assertTrue(bodyMentionsPath(body, "assert"), "ensures: args.floor <= 100 is elaborated into a runtime assert()")
+  assertTrue(
+    bodyMentionsPath(body, "__lyric_result_0"),
+    "the return site is rewritten through the synthetic __lyric_result_<n> local"
+  )
+  assertTrue(bodyMentionsPath(body, "floor"), "the elaborated assert references the matched function's own parameter")
+}
+
+// Same ensures: path through the B'-mode per-match wrapper built by
+// `buildBModeCallSite`, whose body ends in `return <spec>(...)` — the
+// elaborator must rewrite that return into the bind-assert-return form.
+test "B'-mode from-instance's ensures: args.<field> is elaborated at the wrapper's return site" {
+  val tplSrc = "package Lib.Auth\n" + "pub aspect ValidateKey {\n" + "  matches: name like \"*\"\n" +
+    "  ensures: args.apiKey != \"\"\n" +
+    "  around(call) -> ret where TArgs has { apiKey: String } {\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Auth")
+  val consumeSrc = "package App\n" + "aspect MyValidate from Lib.Auth.ValidateKey {\n" +
+    "  matches: name like \"handle*\"\n" +
+    "}\n" +
+    "func handleOne(apiKey: in String): Int { 1 }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(not diagsHaveCode(wr.diagnostics, "A0046"), "row clause covers args.apiKey: no A0046")
+  assertTrue(not diagsHaveCode(wr.diagnostics, "A0047"), "matched function provides apiKey: no A0047")
+  val wrapper = firstFunction(wr.file, "handleOne")
+  val body = functionBody(wrapper)
+  assertTrue(
+    not bodyHasMemberAccess(body, "args", "apiKey"),
+    "args.apiKey rewritten away in the ensures: clause on the wrapper"
+  )
+  assertTrue(bodyMentionsPath(body, "assert"), "ensures: args.apiKey != \"\" is elaborated into a runtime assert()")
+  assertTrue(
+    bodyMentionsPath(body, "__lyric_result_0"),
+    "the wrapper's return-the-specialised-call site is rewritten through __lyric_result_<n>"
+  )
+}
+
 test "from-instance aspect with no matching template emits A0045" {
   val templates: Map[String, CollectedTemplate] = newMap()
   val consumeSrc = "package App\n" + "aspect MyTap from Lib.Tap.Tap {\n" + "  matches: name like \"doWork\"\n" + "}\n" +

@@ -2,13 +2,13 @@
 //!
 //! Two templates:
 //!
-//!   ValidateInput — C-mode (@inline_template): validates the `args.input`
-//!                   string parameter of a handler for minimum and maximum
-//!                   length before the handler runs.
+//!   ValidateInput — row-constrained B'-mode (docs/56): validates the
+//!                   `args.input` string parameter of a handler for minimum
+//!                   and maximum length before the handler runs.
 //!
-//!   ValidateEmail — C-mode (@inline_template): validates that `args.email`
-//!                   is a syntactically valid email address before the handler
-//!                   runs.
+//!   ValidateEmail — row-constrained B'-mode (docs/56): validates that
+//!                   `args.email` is a syntactically valid email address
+//!                   before the handler runs.
 //!
 //! Both templates short-circuit and return `Err([ValidationError])` when
 //! validation fails.  The handler's return type must therefore be
@@ -39,8 +39,9 @@ import Validation
 /// Validate the `input: String` parameter of a matched handler for minimum and
 /// maximum length before the handler runs.
 ///
-/// C-mode (@inline_template): body reads `args.input` from the concrete handler.
-/// Apply only to handlers that declare a parameter named `input: String`.
+/// Row-constrained B'-mode (docs/56 / D115): body reads `args.input` via a
+/// `where TArgs has { input: String }` row clause. Apply only to handlers
+/// that declare a parameter named `input: String`.
 ///
 /// When validation fails, the aspect short-circuits and returns
 /// `Err(errors)` without calling the handler.  The handler's return type must
@@ -52,7 +53,6 @@ import Validation
 ///   minLen  Int    — minimum allowed length, inclusive (default: 0)
 ///   maxLen  Int    — maximum allowed length, inclusive (default: 65536)
 @stable(since = "0.1")
-@inline_template
 pub aspect ValidateInput {
   config {
     enabled: Bool = true
@@ -64,7 +64,7 @@ pub aspect ValidateInput {
   // handler must declare an input: String parameter
   // The handler's return type must be Result[T, [ValidationError]] for the
   // short-circuit Err path to type-check correctly at the call site.
-  around(call) -> ret {
+  around(call) -> ret where TArgs has { input: String } {
     if not enabled {
       ret = call.proceed()
     } else {
@@ -84,8 +84,9 @@ pub aspect ValidateInput {
 /// Validate that the `email: String` parameter of a matched handler is a
 /// syntactically valid email address before the handler runs.
 ///
-/// C-mode (@inline_template): body reads `args.email` from the concrete handler.
-/// Apply only to handlers that declare a parameter named `email: String`.
+/// Row-constrained B'-mode (docs/56 / D115): body reads `args.email` via a
+/// `where TArgs has { email: String }` row clause. Apply only to handlers
+/// that declare a parameter named `email: String`.
 ///
 /// When validation fails, the aspect short-circuits and returns
 /// `Err(errors)` without calling the handler.  The handler's return type must
@@ -94,7 +95,6 @@ pub aspect ValidateInput {
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
 ///   enabled Bool — master switch (default: true)
 @stable(since = "0.1")
-@inline_template
 pub aspect ValidateEmail {
   config {
     enabled: Bool = true
@@ -103,7 +103,7 @@ pub aspect ValidateEmail {
   // handler must declare an email: String parameter
   // The handler's return type must be Result[T, [ValidationError]] for the
   // short-circuit Err path to type-check correctly at the call site.
-  around(call) -> ret {
+  around(call) -> ret where TArgs has { email: String } {
     if not enabled {
       ret = call.proceed()
     } else {

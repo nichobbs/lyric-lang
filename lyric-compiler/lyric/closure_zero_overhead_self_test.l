@@ -25,7 +25,12 @@
 //! emitted for primitive captures (Stage 2+), and that closure invoke ABIs are
 //! strongly typed rather than Object[]-packed (Stage 3+).
 //!
-//! Run in CI via the native `lyric test` command on both targets:
+//! Compiled by the disassembly harness in CI (scripts/assert-no-box-msil.sh,
+//! scripts/assert-no-box-jvm.sh) to measure boxing instructions on both
+//! targets; it is not run via `lyric test` in CI. Runtime correctness of the
+//! zero-overhead capture paths is covered separately by
+//! closure_correctness_self_test.l, which IS run via `lyric test` in CI.
+//! To run this module's own assertions locally on both targets:
 //!
 //!   lyric test --target dotnet lyric-compiler/lyric/closure_zero_overhead_self_test.l
 //!   lyric test --target jvm lyric-compiler/lyric/closure_zero_overhead_self_test.l

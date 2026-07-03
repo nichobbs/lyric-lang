@@ -24,6 +24,34 @@ test "format package and imports" {
   assertEqual(acc, expected, "format: package + imports")
 }
 
+test "import extern with selector group round trips" {
+  // #3728: `importDoc`'s `externKw` logic must not drop the `extern`
+  // keyword when rendering a selector-group import.
+  val src = "package P\n\nimport extern System.Net.Http.{ HttpClient }\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "import extern group: round-trips")
+  val once = format(parse(src))
+  val twice = format(parse(once))
+  assertEqual(once, twice, "import extern group: idempotent")
+  assertTrue(
+    Str.contains(once, "import extern System.Net.Http.{HttpClient}"),
+    "import extern group: extern keyword and selector both preserved"
+  )
+}
+
+test "pub use extern with selector group round trips" {
+  val src = "package P\n\npub use extern Foo.Bar.{ Baz }\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "pub use extern group: round-trips")
+  val once = format(parse(src))
+  val twice = format(parse(once))
+  assertEqual(once, twice, "pub use extern group: idempotent")
+  assertTrue(
+    Str.contains(once, "pub use extern Foo.Bar.{Baz}"),
+    "pub use extern group: extern keyword and selector both preserved"
+  )
+}
+
 test "format type alias" {
   val src = "package P\nalias Name = String\n"
   val pr = parse(src)
@@ -1190,6 +1218,25 @@ test "aspect matches name in and except round trips" {
   assertTrue(Str.contains(acc, "name in { foo, bar }"), "aspect name-in: positive set preserved")
   assertTrue(Str.contains(acc, "visibility: pub"), "aspect name-in: and-joined predicate preserved")
   assertTrue(Str.contains(acc, "except name in { baz }"), "aspect name-in: except clause preserved")
+}
+
+test "aspect config before matches preserves source order" {
+  // #3584: when the author writes `config { }` before `matches:`, the
+  // formatter must preserve that order rather than reordering to the
+  // docs/26 §8 canonical `matches:`-then-`config` layout — reordering
+  // changes the token sequence and trips the loss-check refusal.
+  // `aspectDoc` detects this via `aspectMatcherSpanOffset` comparing the
+  // first config field's span to the first matcher's span (#3633).
+  val src = "package P\n\naspect Tap {\n  config {\n    timeoutMs: Int = 5000\n  }\n  matches: name like \"run*\"\n  around(call) -> ret {\n    ret = call.proceed()\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "aspect config-before-matches: round-trips")
+  val once = format(parse(src))
+  val twice = format(parse(once))
+  assertEqual(once, twice, "aspect config-before-matches: idempotent")
+  val cfgIdx = match Str.indexOf(once, "config {") { case Some(i) -> i; case None -> -1 }
+  val matchIdx = match Str.indexOf(once, "matches:") { case Some(i) -> i; case None -> -1 }
+  assertTrue(cfgIdx >= 0 and matchIdx >= 0, "aspect config-before-matches: both clauses emitted")
+  assertTrue(cfgIdx < matchIdx, "aspect config-before-matches: config block precedes matches in output")
 }
 
 test "nested match trailing comment idempotent" {

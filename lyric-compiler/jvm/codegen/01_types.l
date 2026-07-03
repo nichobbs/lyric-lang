@@ -49,6 +49,13 @@ pub record JvmFuncSig {
   // to pass that argument as a holder array and copy the callee's write back to
   // the caller's local after the call.  Mirrors the MSIL `funcParamModes`.
   paramModes: List[ParamMode]
+  // True when `owner` is a JVM interface (a Lyric `interface` item), so the
+  // call site must emit `invokeinterface` — `invokevirtual` against an
+  // interface owner fails class-load verification ("Found interface X, but
+  // class was expected", #3687).  No default: a cross-package defaulted
+  // construction miscompiles under the current MSIL emitter, so every
+  // construction site passes it explicitly.
+  isIface: Bool
 }
 
 // One field of a union case class, in declaration order.  A match binding
@@ -244,7 +251,8 @@ pub func allocSlot(ctx: in FuncCtx, name: in String, ty: in JvmType): Int {
   match mapGet(ctx.slots, name) {
     case Some(existing) -> {
       val prevTy = match mapGet(ctx.types, name) { case Some(t) -> t; case None -> ty }
-      if jvmTypeSlotWidth(prevTy) == width {
+      // Reuse the slot only when old and new bindings frame as the same verifier type, not merely the same width: a slot carrying two verifier types (a Double then a Long match-arm binding) makes the join frame unmergeable (docs/44 m-72).
+      if sameFrameSlotType(prevTy, ty) {
         ctx.types.remove(name)
         ctx.types.add(name, ty)
         return existing
@@ -266,6 +274,36 @@ pub func allocSlot(ctx: in FuncCtx, name: in String, ty: in JvmType): Int {
     ctx.slotTicker.add(0)
   }
   slot
+}
+
+// True when two JVM types occupy the same StackMapTable verifier slot type
+// (mirrors `Jvm.Lowering.jvmToVerifier`): int-likes all collapse to VInteger;
+// Float / Long / Double, distinct ref classes, and distinct array elements differ.
+func sameFrameSlotType(a: in JvmType, b: in JvmType): Bool {
+  match a {
+    case JInt -> isIntLikeFrame(b)
+    case JBoolean -> isIntLikeFrame(b)
+    case JByte -> isIntLikeFrame(b)
+    case JChar -> isIntLikeFrame(b)
+    case JShort -> isIntLikeFrame(b)
+    case JFloat -> match b { case JFloat -> true; case _ -> false }
+    case JLong -> match b { case JLong -> true; case _ -> false }
+    case JDouble -> match b { case JDouble -> true; case _ -> false }
+    case JVoid -> match b { case JVoid -> true; case _ -> false }
+    case JRef(ca) -> match b { case JRef(cb) -> ca == cb; case _ -> false }
+    case JArray(ea) -> match b { case JArray(eb) -> sameFrameSlotType(ea, eb); case _ -> false }
+  }
+}
+
+func isIntLikeFrame(t: in JvmType): Bool {
+  match t {
+    case JInt -> true
+    case JBoolean -> true
+    case JByte -> true
+    case JChar -> true
+    case JShort -> true
+    case _ -> false
+  }
 }
 
 // Slot width in JVM local-variable units: 2 for `JLong`/`JDouble`, 1 for
@@ -394,6 +432,29 @@ pub func typeExprToJvmErased(te: in TypeExpr, pkgName: in String, typeParams: in
     }
     case TParen(inner) -> typeExprToJvmErased(inner, pkgName, typeParams)
     case _ -> typeExprToJvm(te, pkgName)
+  }
+}
+
+// As `typeExprToJvmErased`, but resolving extern-type aliases (a record field
+// typed by an IMPORTED extern type — `FileStat.modifiedAt: FileTime` — must
+// carry the real JVM class, not the in-package `<pkg>/<name>` guess).
+pub func typeExprToJvmErasedExtern(
+  te: in TypeExpr,
+  pkgName: in String,
+  typeParams: in List[String],
+  externTypes: in Map[String, String],
+): JvmType {
+  match te.kind {
+    case TRef(path) -> {
+      val seg = lastSegment(path)
+      if listContainsStr(typeParams, seg) {
+        JRef(className = "java/lang/Object")
+      } else {
+        typeExprToJvmExtern(te, pkgName, externTypes)
+      }
+    }
+    case TParen(inner) -> typeExprToJvmErasedExtern(inner, pkgName, typeParams, externTypes)
+    case _ -> typeExprToJvmExtern(te, pkgName, externTypes)
   }
 }
 
@@ -647,6 +708,17 @@ pub func emitHolderElemStore(insns: in List[LInsn], elemTy: in JvmType): Unit {
 // here, so write-through is centralised.  The value is consumed once; the
 // write-through reloads it from the value slot (cheaper than a `dup` that would
 // have to handle the long/double two-word case).
+// Resolve a constructable type name (record / union case / protected /
+// opaque) to its JVM class, preferring the current package's own
+// declaration (`<pkg>::<name>` scoped key) over the bundle-global
+// first-wins bare entry — see `addCtorKeys`.
+pub func ctorClassFor(ctx: in FuncCtx, name: in String): Option[String] {
+  match mapGet(ctx.ctors, ctx.pkgName + "::" + name) {
+    case Some(cls) -> Some(value = cls)
+    case None -> mapGet(ctx.ctors, name)
+  }
+}
+
 pub func emitStoreLocalWriteThrough(ctx: in FuncCtx, insns: in List[LInsn], slot: in Int, ty: in JvmType): Unit {
   emitStore(insns, slot, ty)
   match mapGet(ctx.holderArraySlot, slot) {

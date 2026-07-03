@@ -557,6 +557,38 @@ kind = "exe"   # default: "lib"
 
 `kind = "exe"` writes a *native* launcher beside the managed DLL by binding the .NET SDK's apphost template (the launcher boots the CLR and runs the assembly), so the program starts with `./myapp` instead of `dotnet myapp.dll`. When several `Microsoft.NETCore.App.Host.<rid>` packs are installed, the one matching the host runtime identifier (`Std.Environment.runtimeIdentifier()`) is preferred, so the correct architecture is selected on cross-compilation machines. It is still framework-dependent — a .NET runtime must be installed. `bundle` is accepted by the manifest parser but not yet emitted; declaring it is a hard build error rather than a silent fallback. `kind = "aot"` is implemented on Linux (`x64` and `arm64`) and macOS: `lyric build` invokes `ilc` and the platform linker (`clang` or `ld64`) directly — no generated C#, no `dotnet publish` — and produces a self-contained native binary with no .NET runtime dependency. A system linker must be on `PATH` (e.g. `apt install clang` on Debian/Ubuntu, or Xcode Command Line Tools on macOS). Windows is tracked in #1975. `lyric build --release` (§ below) is equivalent to using `kind = "aot"` in the manifest. On the **JVM** target, `kind` is currently a no-op (the `.jar` is already self-launching via `java -jar`).
 
+### 3.6 Native build defaults — `[native]`
+
+A project's `lyric.toml` may declare defaults for `--target native` (LLVM
+backend) builds:
+
+```toml
+[native]
+triple     = "x86_64-unknown-linux-gnu"   # default: auto-detect the host triple
+opt_level  = "2"                           # clang -O level (0|1|2|3|s); default "2"
+extra_libs = ["ssl", "crypto"]             # extra clang -l<name> link flags
+```
+
+| key | Effect | Default |
+|---|---|---|
+| `triple` | LLVM target triple passed to clang as `--target=` | empty → host triple (`clang -print-effective-triple`) |
+| `opt_level` | clang optimisation level (`-O<n>`); one of `0`, `1`, `2`, `3`, `s` | empty → `2` |
+| `extra_libs` | additional `-l<name>` flags appended to the clang link line | none |
+
+The CLI `--triple` and `--opt` flags **override** the manifest `triple` /
+`opt_level` when supplied; `extra_libs` has no CLI counterpart and is applied
+unconditionally (in addition to the always-linked `libm`/`libpthread` and any
+`@link`-declared FFI libraries). A native build reads `[native]` from an
+explicit `--manifest` or, failing that, the nearest discovered `lyric.toml`; an
+out-of-range `opt_level` is rejected at parse time. `[native]` applies only to
+`--target native` and is ignored by the .NET and JVM targets. Each
+`extra_libs` entry must be a non-empty, whitespace-free **bare** library name
+(it becomes a `-l<name>` flag) that does not start with `-` — write `"ssl"`,
+not `"-lssl"`; a malformed entry (empty, containing space/tab/CR/LF, or
+`-`-prefixed) is rejected at parse time. A header-only `[native]` table with no
+keys is treated as absent (equivalent to declaring no `[native]` table at
+all), so every default applies.
+
 ## 4. Expressions
 
 ### 4.1 Operator precedence
@@ -1405,14 +1437,15 @@ extern func strlen(s: NativePtr[Byte]): Long = "strlen"
   `Float`→`double`, `Bool`→`i1`, `Byte`→`i8`, `String`→`%LyricString*`,
   `NativePtr[T]`→`T*`).
 - `NativePtr[T]` is a raw, unmanaged pointer: no ARC header, never
-  retained or released.  It may appear only in `extern func` signatures
-  and inside `lyric-stdlib/std/_kernel_native/` packages, whose safe
-  `pub func` wrappers are the supported surface.  (Mode-checker
-  enforcement of this boundary — diagnostic `N0100`, plus the
-  `@unsafe_ffi` opt-out and the `nativeAddrOf` builtin — is specified in
-  `native/plan/05-ffi-design.md` and tracked as Phase N4 follow-up
-  work; until it lands the boundary is enforced by review convention,
-  as the `_kernel/` `@externTarget` boundary originally was.)
+  retained or released.  It may appear only in `extern func` signatures,
+  inside `lyric-stdlib/std/_kernel_native/` packages (whose safe
+  `pub func` wrappers are the supported surface), and inside functions
+  annotated `@unsafe_ffi`.  The mode checker enforces this boundary as
+  diagnostic `N0100`: outside those contexts any `NativePtr[T]` type,
+  `nativeAddrOf(var)` address-of, or `nativeNullPtr()` use is an error;
+  within them, `nativeAddrOf` operands must be local `var`s and the
+  resulting pointer must not escape the frame (no returns, no heap
+  stores).  See `native/plan/05-ffi-design.md`.
 - On the managed targets an `extern func` item is inert: it
   type-checks like a body-less function and the MSIL/JVM backends emit
   nothing for it (`_kernel_native/` packages are only loaded by native
@@ -1426,6 +1459,28 @@ identical on every target.  `@cfg(target = "dotnet" | "jvm" | "native")`
 additionally gates individual items per target; the predicate resolves
 against a `target.<name>` pseudo-feature the CLI injects (D-N-013) and
 is exempt from the `F0013` declared-features check.
+
+Where the managed kernels rely on host exceptions, the shared pure
+layer instead delegates to exception-free **Result/Option seams** that
+both kernel twins implement (issue #4752): `Std.File` text I/O and
+directory operations, `Std.Environment` variable get/set and the
+current working directory, `Std.Process.runCapture` (list-argv, no
+shell), and `Std.Time`'s epoch/monotonic/sleep functions all work on
+`--target native` today.  Native-side gaps are explicit errors, not
+silent drops: `runCaptureWithInput` with non-empty stdin returns `Err`
+on native (no stdin pipe yet) and `timeoutMs` is not enforced there;
+bytes-mode file I/O, directory enumeration, `stat`, and the `Std.Time`
+calendar surface remain unavailable on native (tracked in #4752).
+
+`for x in list { ... }` over a `List[T]` diverges from the managed
+targets in one respect on `--target native`: the list's length is
+snapshot once at loop entry. The managed targets (.NET/JVM) throw on
+concurrent modification during `foreach`; native has no such check —
+mutating the iterated list from within the loop body does not change
+the loop bound, so appended elements past the snapshot length are
+never visited, and removal can shift indices such that an element is
+skipped or an index is revisited (#4790). Don't mutate a `List` you're
+currently iterating over on the native target.
 
 ## 12. Standard library
 
@@ -1477,13 +1532,13 @@ method-syntax form.
 
 `lyric build` — compiles a project to a framework-dependent `.dll` (the fast inner loop). After a successful build the compiler prints elapsed time: `built foo.dll in 342ms` for a single-package build, or `built foo.dll (3 package(s), 1204ms)` for a project build. The default output name and artifacts are **target-aware**: `--target dotnet` (the default) writes `<source-stem>.dll` alongside a `<source-stem>.runtimeconfig.json` for `dotnet exec`, while `--target jvm` writes a self-contained runnable `<source-stem>.jar` (run with `java -jar`) and emits **no** `runtimeconfig.json` (a .NET-only artifact). An explicit `-o <output>` is honoured verbatim for either target. `lyric build --release <source.l>` produces a **self-contained Native AOT binary** (no managed runtime required at the deployment target): the compiler builds the managed DLL, generates a host project that references it plus the stdlib bundle, and runs `dotnet publish -p:PublishAot=true`, surfacing ILC trim/AOT warnings. `--rid <rid>` overrides the host runtime identifier (default: auto-detected). The native binary is written to the source stem (no extension) unless `-o` overrides it.
 
-`lyric build <source.l> --target native [-o <out>] [--triple <llvm-triple>] [--opt 0|1|2|3|s]` — compiles through the **LLVM native backend** (D-N-001..014) to a self-contained POSIX executable: the self-hosted front/middle end lowers the user package plus the reachable slice of its stdlib import closure to LLVM textual IR, then drives `clang` to optimise and link against the `lyric_rt.a` runtime (ARC intrinsics, strings, collections, POSIX helpers), `libm`, and `libpthread`. The default output is the source stem with **no extension**. `--triple` cross-compiles (defaults to the host triple per `clang -print-effective-triple`); `--opt` sets the clang optimisation level (default `2`). When `clang` is not installed the diagnostic (`N0001`) names the missing tool and leaves the emitted `.ll` next to the requested output so it can be compiled manually; `lyric_rt.a` resolves from `$LYRIC_RT_PATH`, the installed `lib/` layout, or the dev tree's `lyric-rt/build/` (`N0003` when absent). Phase 1 scope: Linux x86-64/AArch64 and macOS AArch64; scalar programs and Strings (records, unions, pattern matching, closures, and collections land in Phase N2+, and reachable code using them fails the build with a construct-naming diagnostic); `async func` is rejected with `N0099`; manifest (multi-package) native builds are not yet supported.
+`lyric build <source.l> --target native [-o <out>] [--triple <llvm-triple>] [--opt 0|1|2|3|s]` — compiles through the **LLVM native backend** (D-N-001..014) to a self-contained POSIX executable: the self-hosted front/middle end lowers the user package plus the reachable slice of its stdlib import closure to LLVM textual IR, then drives `clang` to optimise and link against the `lyric_rt.a` runtime (ARC intrinsics, strings, collections, POSIX helpers), `libm`, and `libpthread`. The default output is the source stem with **no extension**. `--triple` cross-compiles (defaults to the host triple per `clang -print-effective-triple`); `--opt` sets the clang optimisation level (default `2`). Both default from the manifest's `[native]` table (§3.6) when present — `triple` / `opt_level` — with the CLI flags overriding; `[native].extra_libs` adds `-l<name>` link flags with no CLI equivalent. When `clang` is not installed the diagnostic (`N0001`) names the missing tool and leaves the emitted `.ll` next to the requested output so it can be compiled manually; `lyric_rt.a` resolves from `$LYRIC_RT_PATH`, the installed `lib/` layout, or the dev tree's `lyric-rt/build/` (`N0003` when absent). Supported surface (Phases N1–N4, D-progress-540 and D-progress-545..552): Linux x86-64/AArch64 and macOS AArch64; scalars and Strings; records (methods, defaults, mutable fields), unions, enums, distinct types (range-checked), tuples, and pattern matching; generic records/unions/functions via call-site monomorphization; closures with by-value ARC captures; `NativeWeak[T]` with `upgrade(): Option[T]`. Memory is ARC-managed per `native/plan/04-arc-design.md` and the emitted protocol is leak-checked under AddressSanitizer in CI. The raw FFI surface is mode-checker-gated (`N0100`): `NativePtr[T]` type expressions, `nativeAddrOf(x)` (address of a `var` local; the pointer must not be returned or stored in a heap type), and `nativeNullPtr()` are admitted only inside functions annotated `@unsafe_ffi` and in `_kernel_native/` package files, with `extern func` parameter/return positions exempt as the audited boundary. An `extern func` parameter may be declared with a function type whose last parameter is `NativePtr[Byte]` (the userdata slot); a Lyric closure passed there is wrapped in a compiler-synthesised C-ABI trampoline, and the same closure value passed in a `NativePtr[Byte]` argument position lowers to the closure pointer itself, so callback-driven C APIs (`pthread_create`-style) work end-to-end. `List[T]`/`Map[K, V]` lower to the lyric-rt kernels (Map keys must be String or a scalar type), with `for` loops over lists, indexing, and the `Std.Collections` accessors (`newList`/`newMap` need their element types from a binding annotation or explicit type arguments; `mapGet` is the Option-returning map read). Not yet lowered (reachable code using them fails the build with a construct-naming diagnostic): interfaces, protected types, `slice[T]` and list literals, `Set[T]`, module-level `val`, and `async func` (`N0099`); manifest (multi-package) native builds are not yet supported.
 
 `--release` is supported for both **single-file** and **project-mode** (multi-package `lyric.toml`) programs on the **.NET** target. In project mode the entry package — the one whose source declares a zero-argument `func main()` — is auto-detected across all `[project.packages]` entries; exactly one package must declare `func main()` (zero or multiple entries are a hard error). Local path dependencies declared in `[dependencies]` are automatically collected as AOT linker references. The JVM target (GraalVM `native-image`, designed behind the same `ReleaseTarget` seam) is not yet implemented and fails loud rather than silently producing a managed artifact (#1975).
 
 `lyric build --release-from-dll <dll> [-o <out>] [--rid <rid>] [--target dotnet|jvm] [--extra-refs-dir <dir>]` — links a pre-built managed DLL to a native binary via ILC + clang, bypassing all Lyric source compilation. The DLL must already exist; a non-existent path is a hard error (exit 1). The output path defaults to the DLL's stem (`.dll` suffix stripped, 4 characters) in the same directory, or is overridden by `-o`. `--extra-refs-dir <dir>` passes every `*.dll` file found in `<dir>` (except the primary DLL itself) as an ILC managed reference, in sorted order for reproducible output; the directory is enumerated non-recursively. `--extra-refs-dir` is only valid alongside `--release-from-dll`; specifying it alone is a hard error (exit 1). `--rid` overrides the target runtime identifier (default: auto-detected from the host). Exit codes: 0 on success; 1 on any error (missing DLL, ILC failure, linker failure, bad flags).
 
-`lyric run [<source.l>] [--target dotnet|jvm]` — compiles and immediately executes, mirroring `lyric build` then running the produced artifact. `--target dotnet` (the default) builds the `.dll` and runs it via `dotnet exec`; `--target jvm` builds the self-contained `.jar` and runs it via `java -jar`. On `--target dotnet`, arguments after `--` are forwarded verbatim to the program and the program's exit code becomes `lyric run`'s exit code. On `--target jvm` this works for a no-argument `main` whose output goes to stdout; a `main(slice[String])` that takes arguments currently hits a JVM `VerifyError`, and the `Int` return is not yet propagated to the process exit code (both tracked in #3303). With no source file, `lyric run` discovers the nearest `lyric.toml` and runs the project's entry artifact; `--target` applies to the project build. For a project whose `[build] kind = "exe"`, `lyric run` executes the native apphost launcher directly rather than via `dotnet exec`; if no launcher is present (no apphost template could be located, or it was removed) it prints a warning and falls back to `dotnet exec` rather than failing. Intermediate artifacts are written under `.lyric-run/`.
+`lyric run [<source.l>] [--target dotnet|jvm]` — compiles and immediately executes, mirroring `lyric build` then running the produced artifact. `--target dotnet` (the default) builds the `.dll` and runs it via `dotnet exec`; `--target jvm` builds the self-contained `.jar` and runs it via `java -jar`. On `--target dotnet`, arguments after `--` are forwarded verbatim to the program and the program's exit code becomes `lyric run`'s exit code. On `--target jvm` arguments are forwarded to a `main(args: slice[String])` entry point (the synthesised JVM `main(String[])` wrapper passes the argv array through), and an `Int`-returning `main` becomes the process exit code via `java.lang.System.exit`. With no source file, `lyric run` discovers the nearest `lyric.toml` and runs the project's entry artifact; `--target` applies to the project build. For a project whose `[build] kind = "exe"`, `lyric run` executes the native apphost launcher directly rather than via `dotnet exec`; if no launcher is present (no apphost template could be located, or it was removed) it prints a warning and falls back to `dotnet exec` rather than failing. Intermediate artifacts are written under `.lyric-run/`.
 
 **Project-aware defaults.** Running `lyric` with no command builds the current
 project: it discovers the nearest `lyric.toml` by walking up from the working
@@ -1536,6 +1591,8 @@ is fixed. The watch loop runs in the CLI process (always the .NET host).
 **`[project.tests]` fallback.** When the manifest has a `[project]` section but no `[project.tests]` entries, `lyric test` scans all source files listed in `[project.packages]` for the `@test_module` annotation and runs each found file as a standalone single-file test. This allows projects that co-locate test modules with their source packages to run tests without explicit `[project.tests]` entries in `lyric.toml`.
 
 `--filter <substring>` runs only tests whose title contains `<substring>`; non-matching tests are reported as `# skip` lines. `--list` prints titles only without compiling. `--fail-fast` stops after the first test file that has any failing test and prints an early summary; in project mode this means remaining test entries are not run. `property` declarations parse but skip at runtime in v1 (`# skip` line); `fixture name[: T] = expr` declarations are rewritten to module-level `val` declarations in the synthesised source (D-progress-474). v2 adds cross-package non-`pub` access (§3.2), property execution (`--properties`), and doctest extraction. See `docs/24-test-runner-plan.md` for the v1 design and v2 scope.
+
+**Feature selection (project mode).** `--features <a,b>`, `--no-default-features`, and `--all-features` control the active `[features]` set with the same grammar and precedence as `lyric build` (§13.1 / `docs/24-build-features.md`): `--all-features` activates every declared feature; otherwise the manifest's `default` set applies unless `--no-default-features`, and `--features` adds on top. This is how target-gated kernel packages (`@cfg(feature = "dotnet")` / `@cfg(feature = "jvm")`) are selected when running a manifest suite on the non-default target, e.g. `lyric test --manifest lyric-storage/lyric.toml --target jvm --no-default-features --features jvm`. Single-file mode ignores these flags (a standalone `@test_module` has no manifest to declare features in).
 
 ### 13.3 Verifier
 
@@ -1797,6 +1854,8 @@ Multiple names may appear in a single `wraps:` or `inside:` clause, comma-separa
 ### 14.4 Contract augmentation
 
 Aspects may carry `requires:` and `ensures:` clauses. These are composed additively with the matched function's own contract: all `requires:` clauses (function + every matching aspect) must hold before the call; all `ensures:` clauses must hold after. Aspects cannot weaken or remove a function's own contracts.
+
+An aspect clause may reference the matched function's parameters through `args.<field>` (e.g. `requires: args.apiKey != ""`). At weave time each `args.<field>` reference is rewritten to the matched function's same-named parameter; this works in every aspect mode (local, C-mode, and B′-mode) because composed clauses always land on the per-match wrapper, whose parameters are the matched function's own. A referenced field with no matching parameter surfaces as a weave-time diagnostic (A0042 for C-mode; A0047 for row-constrained B′-mode).
 
 In `@runtime_checked` packages, augmented clauses are runtime assertions. In `@proof_required` packages, they are additional SMT obligations.
 

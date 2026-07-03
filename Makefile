@@ -126,9 +126,14 @@ lyric: aot ## Build the end-to-end `lyric` binary and symlink it to ./bin/lyric
 	@ln -sf "../$(AOT_BIN)" bin/lyric
 	@echo "lyric binary ready: ./bin/lyric -> $(AOT_BIN)"
 	@echo "writing sdk-version.json to .bootstrap/stage1/ (D109 / Q-dist-007) ..."
-	@printf '{"language_version": "0.1","stdlib_version": "0.1.0","compiler_version": "0.1.0","build_date": "%s"}\n' \
-	    "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-	    > .bootstrap/stage1/sdk-version.json
+	@sdk_ver="$$(./bin/lyric --version 2>/dev/null | head -1 | awk '{print $$2}')"; \
+	    if [ -z "$$sdk_ver" ]; then \
+	        echo "WARNING: could not read version from ./bin/lyric --version; falling back to 0.1.0" >&2; \
+	        sdk_ver="0.1.0"; \
+	    fi; \
+	    printf '{"language_version": "0.1","stdlib_version": "0.1.0","compiler_version": "%s","build_date": "%s"}\n' \
+	        "$$sdk_ver" "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+	        > .bootstrap/stage1/sdk-version.json
 	@echo "deploying the single full Lyric.Stdlib.dll bundle (D111) ..."
 	@bash scripts/stage-selfhosted-stdlib.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
 ifeq ($(SKIP_SELFHOSTED_COMPILER),1)
@@ -180,6 +185,12 @@ mint: ## Build the CI-faithful mint (bootstrap) toolchain -> ./bin/lyric (valid 
 	@ln -sf "../$(AOT_BIN)" bin/lyric
 	@echo "mint (bootstrap) lyric ready: ./bin/lyric -> $(AOT_BIN)  [valid IL, CI-faithful]"
 	@bash scripts/stage-selfhosted-stdlib.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
+ifeq ($(SKIP_SELFHOSTED_COMPILER),1)
+	@echo "SKIP_SELFHOSTED_COMPILER=1; skipping the self-hosted compiler-DLL staging"
+else
+	@echo "staging self-hosted compiler DLLs for native lyric test (#3086) ..."
+	@bash scripts/stage-selfhosted-compiler.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
+endif
 
 # Measure self-hosted-EMITTER IL validity: emit the whole compiler closure with
 # the self-hosted emitter (the AOT binary routes --target dotnet through

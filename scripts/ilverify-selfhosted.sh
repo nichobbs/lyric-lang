@@ -141,6 +141,7 @@ if [[ -f "$LYRIC_DIR/Lyric.Stdlib.dll" ]]; then
   refs+=( -r "$LYRIC_DIR/Lyric.Stdlib.dll" )
 else
   echo "[ilverify] WARNING: Lyric.Stdlib.dll not found beside the AOT binary — FileLoadErrorGeneric errors expected" >&2
+  echo "[ilverify]   Run scripts/stage-selfhosted-stdlib.sh first to produce it" >&2
 fi
 for d in "$LYRIC_DIR"/Lyric.Stdlib.*.dll; do
   [[ -f "$d" ]] && refs+=( -r "$d" )

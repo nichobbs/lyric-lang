@@ -200,7 +200,7 @@ jobs:
           done
 
       # NOTE: the self-hosted-emitter IL-validity check (`ilverify`) runs in
-      # the standalone `ilverify-informational` job below and is required by
+      # the standalone `ilverify-required` job below and is required by
       # `build-and-test` — it is a hard gate.  Developers run it on demand
       # via `make ilverify`.
 
@@ -331,7 +331,16 @@ jobs:
   # element-type confusion).  Zero IL-validity errors reached at #3943; this
   # job now gates auto-merge so the emitter cannot regress silently.  Developers
   # run the same check locally via `make ilverify`.
-  ilverify-informational:
+  #
+  # NOTE (#4370): job id renamed from `ilverify-informational` to
+  # `ilverify-required` — the old name implied a non-blocking/advisory check,
+  # which was wrong even before this job started gating `build-and-test`. Pure
+  # rename; no functional change. If GitHub branch-protection "required status
+  # checks" on `main` reference the literal string `ilverify-informational`,
+  # that setting must be updated to `ilverify-required` (Settings → Branches →
+  # main → required status checks) or PRs will show this check as perpetually
+  # missing/blocked — repo-admin-only, not verifiable or fixable from here.
+  ilverify-required:
     runs-on: ubuntu-latest
     needs: [build]
     permissions:
@@ -526,6 +535,17 @@ jobs:
       # barrier correctly collecting their results.  The PR was auto-promoted from
       # draft to ready-for-review by the CI gate workflow, which only fires after
       # every required check passes — confirming the runner honours both properties.
+      #
+      # Peak concurrency (#4486, #4841): this job launches ~20 `background: true`
+      # steps before its first `wait-all: true` barrier, each running an in-process
+      # self-hosted compilation (Msil.Bridge / Jvm.Bridge) via `lyric test`.  This
+      # group was previously a single ~36-38-step batch; PR #4810 hit exactly the
+      # failure mode this comment anticipated (concurrent-output/status corruption
+      # for unrelated, already-passing steps, reproducible across CI runs) and
+      # split it into two ~18-step batches (this one, then a second below its
+      # barrier) per the sub-batching contingency already documented here. If a
+      # future addition reproduces the same symptom again, split further rather
+      # than reverting to fully sequential steps.
       - name: Weaver self-test (native lyric test)
         background: true
         working-directory: ${{ github.workspace }}
@@ -586,6 +606,10 @@ jobs:
             lyric-compiler/lyric/restored_packages_self_test.l \
             lyric-compiler/lyric/test_synth_self_test.l \
             lyric-compiler/lyric/manifest_self_test.l \
+            lyric-compiler/lyric/cli_restore_self_test.l \
+            lyric-compiler/lyric/cli_version_self_test.l \
+            lyric-compiler/lyric/cli_workspace_builder_self_test.l \
+            lyric-compiler/lyric/cli_build_self_test.l \
             lyric-compiler/lyric/verifier_self_test.l \
             lyric-compiler/lyric/closure_correctness_self_test.l \
             lyric-compiler/lyric/pconstructor_typed_binding_self_test.l \
@@ -1119,6 +1143,19 @@ jobs:
           run_fixture "F0024" "f0024_fixture.l"
           echo "all F0020–F0024 negative tests passed"
 
+      # Sub-batch barrier (#4841): the 36-step background:true group above
+      # reproducibly corrupted output/status tracking for unrelated,
+      # already-passing steps under this job's full peak concurrency — two
+      # different steps across two CI runs on PR #4810 showed clean TAP
+      # output (0 failures) yet were reported "Failed" by wait-all, and one
+      # run showed a step's captured output containing another step's TAP
+      # stream, indicating concurrent-output misattribution rather than a
+      # real test defect. Splitting into two ~18-step batches (this barrier,
+      # then the group below, then the existing barrier further down) halves
+      # peak concurrency for this job's parallel section.
+      - name: Wait for first half of parallel tests
+        wait-all: true
+
       # Synthesized-method-resolution self-test (#1499, #1507).
       # Verifies that compiler-synthesized named methods (protected-type entries,
       # @derive(Equals/Show) free functions) resolve correctly at the call site:
@@ -1244,6 +1281,48 @@ jobs:
             exit 1
           fi
           LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/cross_package_generics_self_test.l
+
+      # Native (LLVM) backend self-tests — N7.1 (docs/10 D-progress-540/545).
+      # Builds lyric-rt (C unit tests under both clang and gcc), then runs the
+      # three llvm self-tests: llvm_ir (serializer), llvm_codegen (N1 scalar
+      # programs compiled through parse -> codegen -> clang -> run), and
+      # llvm_heap (N2 records/unions/enums/distinct/match; its ARC cases build
+      # with -fsanitize=address so a missed/premature/double release fails).
+      # The tests import `Lyric.Llvm*` compiler packages by source, so
+      # LYRIC_LOAD_COMPILER=1.
+      - name: Native backend self-tests (lyric-rt + llvm via native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping native backend self-tests"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping native backend self-tests"
+            exit 1
+          fi
+          command -v clang >/dev/null || { echo "::error::clang not found on the runner"; exit 1; }
+          # ASan preflight: the heap self-test links -fsanitize=address.
+          echo 'int main(void){return 0;}' > /tmp/asan_preflight.c
+          if ! clang -fsanitize=address /tmp/asan_preflight.c -o /tmp/asan_preflight 2>/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq "libclang-rt-$(clang -dumpversion | cut -d. -f1)-dev"
+            clang -fsanitize=address /tmp/asan_preflight.c -o /tmp/asan_preflight
+          fi
+          make -C lyric-rt test
+          make -C lyric-rt clean && make -C lyric-rt test CC=gcc
+          for t in \
+            lyric-compiler/lyric/llvm_ir_self_test.l \
+            lyric-compiler/lyric/llvm_codegen_self_test.l \
+            lyric-compiler/lyric/llvm_heap_self_test.l \
+            lyric-compiler/lyric/llvm_ffi_self_test.l \
+            lyric-compiler/lyric/llvm_collections_self_test.l \
+            lyric-compiler/lyric/llvm_stdlib_self_test.l ; do
+            echo "=== $t ==="
+            LYRIC_LOAD_COMPILER=1 "$lyric_bin" test "$t"
+          done
 
       # Async extern unwrapping self-test — pins the Band 3 Phase A fix for the
       # @externTarget async silent miscompile (epic #2070, D085, D-progress-415).
@@ -1595,6 +1674,31 @@ jobs:
 
       - name: Wait for all parallel tests
         wait-all: true
+
+      # await nested inside ETuple/EList/EIndex/EInterpolated/ERange self-test
+      # (#4276): regression coverage for the seven match arms added to
+      # collectAwaitTypesExprPB / exprContainsAwaitMsil. Imports only Std.*.
+      # Run sequentially (not `background: true`) rather than folded into the
+      # big parallel group above: adding it there as a 38th/39th concurrent
+      # step reproducibly broke two unrelated, already-passing steps in that
+      # group (`import extern self-test`, `Cross-package generics self-test`)
+      # across two separate CI runs, with clean TAP output on both but a
+      # `wait-all`-reported failure — a concurrency ceiling in the group, not
+      # a defect in this test or the other two. See PR #4810.
+      - name: MSIL await-expr-forms self-test (#4276, native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping await-expr-forms self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping await-expr-forms self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/msil/msil_await_expr_forms_self_test.l
   compiler-self-tests-dotnet-b:
     runs-on: ubuntu-latest
     needs: [build]
@@ -1630,6 +1734,10 @@ jobs:
       # lowering_token_self_test.l (#2473) covers the listTokensForLowering /
       # dictTokensForLowering cache hit/miss logic in Msil.Lowering; it rides
       # the same step because it imports `Msil.*` like M2a-M2d.
+      # metadata_reader_self_test.l (#4751, #4786) verifies refPackDir() and
+      # refPackDirDebugInfo() agree via Msil.MetadataReader; converted from a
+      # plain `func main` program requiring LYRIC_LOAD_COMPILER=1 to
+      # @test_module, so it now rides this step for the same reason.
       #
       # INVARIANT: this step stages compiler DLLs into `<libdir>/selfhosted`
       # while running as a `background: true` step alongside 22+ other
@@ -1663,7 +1771,9 @@ jobs:
             lyric-compiler/msil/msil_self_test_m2c.l \
             lyric-compiler/msil/msil_self_test_m2d.l \
             lyric-compiler/msil/msil_self_test_m88.l \
-            lyric-compiler/msil/lowering_token_self_test.l ; do
+            lyric-compiler/msil/msil_bracket_arg_self_test.l \
+            lyric-compiler/msil/lowering_token_self_test.l \
+            lyric-compiler/msil/metadata_reader_self_test.l ; do
             echo "=== $t ==="
             "$lyric_bin" test --target dotnet "$t"
             ran="$ran $t"
@@ -2256,6 +2366,34 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/datetime_tostring_self_test.l
+
+      # Std.Console stdin/stdout/stderr round-trip on --target dotnet (#4816/
+      # #4817) — the MSIL-target counterpart to the JVM job's
+      # `console_roundtrip_jvm_main.l` check.  First executable proof that
+      # `_kernel/console_host.l`'s `hostReadLineOpt` seam (added in #4816 to
+      # replace the `case null` idiom the self-hosted MSIL/JVM backends
+      # miscompile as an unconditional catch-all, #4775) actually observes
+      # real stdin input rather than reporting EOF on every call.  A plain
+      # program because TAP tests have no stdin.
+      - name: Std.Console round-trip on dotnet (lyric build --target dotnet)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping console dotnet round-trip"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          "$lyric_bin" build lyric-compiler/msil/console_roundtrip_msil_main.l --target dotnet -o "$work/console.dll"
+          cp bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/Lyric.Stdlib*.dll "$work/"
+          out="$(cd "$work" && printf 'alpha\nbeta\n' | dotnet exec console.dll 2>"$work/err.txt")"
+          echo "$out"
+          printf '%s\n' "$out" | grep -qx "echo:alpha" || { echo "::error::alpha echo missing"; exit 1; }
+          printf '%s\n' "$out" | grep -qx "echo:beta" || { echo "::error::beta echo missing"; exit 1; }
+          printf '%s\n' "$out" | grep -qx "eof-after:2" || { echo "::error::EOF line count wrong"; exit 1; }
+          grep -qx "err-line" "$work/err.txt" || { echo "::error::stderr line missing"; exit 1; }
 
   # Release Native AOT end-to-end — `lyric build --release` compiles a
   # hello-world Lyric program to a self-contained native binary via
@@ -2989,6 +3127,23 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/closure_jvm_self_test.l
+      # Zero-overhead closure self-test RUN on JVM (band J4, #4798/#2667).
+      # The no-box gates above only DISASSEMBLE this module; this step runs
+      # its 18 cases under java so the two-slot (Long/Double) capture paths —
+      # tests 3-5 (Float/Long/Double capture) and 14-15 (wide-var mutation),
+      # which regressed with VerifyError / NPE before this band — are caught
+      # at runtime, not just by boxing-count inspection.
+      - name: Zero-overhead closure self-test run on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping zero-overhead closure JVM run"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/closure_zero_overhead_self_test.l
       # Record instance-method self-test on the JVM target (#2865, epic #2663).
       # Pins record instance-method DISPATCH on `--target jvm`: a method declared
       # inside a `record` body (`RMFunc`) is emitted as a true non-static instance
@@ -3292,6 +3447,220 @@ jobs:
       # field `+=` no longer drops the operator; `a[i] op= v` is a real
       # read-modify-write).  MSIL target only; JVM parity tracked under #1470's
       # JVM-deferral note.  Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+
+      # Instance-method out/inout self-test on JVM (#1763 instance half) —
+      # holder wrap/unwrap on record / impl / protected instance methods.
+      - name: Instance out/inout self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping instance out/inout JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/out_inout_instance_jvm_self_test.l
+      # String instance-method self-test on JVM (#1585) — pins the precise
+      # descriptors of the String intrinsics (trim/indexOf/startsWith/…).
+      - name: String-methods self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping string-methods JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/string_methods_jvm_self_test.l
+      # Intra-impl dispatch self-tests on JVM (#1722) — `self.m(...)` and bare
+      # `m(...)` sibling calls inside impl/record method bodies.
+      - name: Intra-impl dispatch self-tests on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping intra-impl JVM self-tests"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/self_method_call_jvm_self_test.l
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/implicit_self_jvm_self_test.l
+      # Aliased-package-import self-test on JVM (#4606) — pins that the JVM
+      # bridge runs `Lyric.AliasRewriter.rewriteFile` before type-check (parity
+      # with the MSIL bridge), so `import Std.String as Str; Str.trim(s)`
+      # resolves instead of panicking in the auto-FFI Object guess.  Imports
+      # only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+      - name: Aliased-import self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping aliased-import JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/alias_import_jvm_self_test.l
+      # Interface-dispatch self-test on JVM (#3687) — pins that a record
+      # implementing a Lyric `interface` dispatches through an interface-typed
+      # parameter via `invokeinterface` (interface members registered in
+      # funcSigs with isIface = true) instead of the class-format-invalid
+      # `invokevirtual` guess.  Imports only `Std.*`.
+      - name: Interface-dispatch self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping interface-dispatch JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/iface_dispatch_jvm_self_test.l
+      # Std.Time self-test on JVM (#3302 / #3276, band J6) — pins the pure-Lyric
+      # `_kernel_jvm/time_host.l` (java.time via auto-FFI: no static-field
+      # externs, no phantom shim classes): construction, arithmetic, ordering,
+      # epoch/ISO-8601 round-trips, calendar math, monotonic clock, and
+      # sleepMillis.  Unblocks `lyric bench --target jvm` (#680).
+      - name: Std.Time self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Time JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/time_jvm_self_test.l
+      # Std.File self-test on JVM (band J6, #2669) — the band's acceptance
+      # criterion: a `_kernel_jvm`-backed module (previously one of the two
+      # named J003 bundling skips) builds and runs under java.  Pins the
+      # pure-Lyric `_kernel_jvm/file_host.l` (java.io via auto-FFI), the
+      # kernel-owned opaque `FileTime` boundary, and the static-field
+      # auto-FFI underneath it.
+      - name: Std.File self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.File JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/file_jvm_self_test.l
+      # Std.Console stdin/stdout/stderr round-trip on JVM (band J6, #2669) —
+      # first executable proof of the pure-Lyric `_kernel_jvm/console_host.l`
+      # (`getstatic System.{out,err,in}` via the static-field auto-FFI path,
+      # process-shared BufferedReader).  A plain program because TAP tests
+      # have no stdin.
+      - name: Std.Console round-trip on JVM (lyric build --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping console JVM round-trip"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          "$lyric_bin" build lyric-compiler/jvm/console_roundtrip_jvm_main.l --target jvm -o "$work/console.jar"
+          out="$(printf 'alpha\nbeta\n' | java -jar "$work/console.jar" 2>"$work/err.txt")"
+          echo "$out"
+          printf '%s\n' "$out" | grep -qx "echo:alpha" || { echo "::error::alpha echo missing"; exit 1; }
+          printf '%s\n' "$out" | grep -qx "echo:beta" || { echo "::error::beta echo missing"; exit 1; }
+          printf '%s\n' "$out" | grep -qx "eof-after:2" || { echo "::error::EOF line count wrong"; exit 1; }
+          grep -qx "err-line" "$work/err.txt" || { echo "::error::stderr line missing"; exit 1; }
+      # Std.Parse end-to-end on JVM (band J6, #4799/#2669) — pins the
+      # dot-named-dispatch-before-extern-FFI order, the target-neutral
+      # pure-Lyric parse kernel, and the generic-sig erasure +
+      # __lyricUnwrapOr helper underneath unwrapOr-style call sites.
+      - name: Std.Parse tests on JVM (lyric build --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Parse JVM tests"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          "$lyric_bin" build lyric-stdlib/tests/parse_tests.l --target jvm -o "$work/parse_tests.jar"
+          out="$(java -jar "$work/parse_tests.jar")"
+          echo "$out" | tail -3
+          printf '%s\n' "$out" | grep -q "parse: ok" || { echo "::error::Std.Parse JVM suite did not report success"; exit 1; }
+      # lyric-storage suite on JVM (band J6, #1444/#2669) — the first
+      # multi-package ecosystem manifest exercised on --target jvm.  Pins the
+      # in-process multi-package JVM project build (sibling packages bundled
+      # alongside the stdlib closure), the @cfg dotnet/jvm kernel split
+      # selected via the new `lyric test` feature flags, the pure-Lyric
+      # Storage.Kernel.Jvm (Base64 / MD5 / HexFormat / java.io), and the
+      # Std.Json JVM kernel underneath the sidecar reads.
+      - name: lyric-storage suite on JVM (lyric test --target jvm --features jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping storage JVM suite"
+            exit 1
+          fi
+          "$lyric_bin" test --manifest lyric-storage/lyric.toml --target jvm --no-default-features --features jvm
+      # Map-iteration self-test on JVM (#3676, #3229) — pins the completed
+      # `_kernel_jvm/collections_host.l` kernel (dictGetKeys/dictGetValues
+      # views, pure-Lyric tryGetValue) AND the post-mono signature
+      # registration that lets specialised stdlib generics
+      # (mapKeys__String__Int, mapSize__String__Int, …) resolve at their
+      # call sites, plus the containsKey-gated Option-constructing mapGet
+      # intrinsic and the mixed void/value match-arm lowering.
+      - name: Map-iteration self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping map-iteration JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/map_iteration_jvm_self_test.l
+      # Entry-point argv / exit-code check on JVM (#3303) — builds a program
+      # whose `func main(args: slice[String]): Int` prints its argv and returns
+      # args.count, runs it with three arguments, and asserts both the output
+      # and the process exit code (the synthesised `main(String[])` wrapper
+      # forwards argv and routes the Int return through System.exit).
+      - name: Entry-point argv/exit-code check on JVM (lyric build --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping entry-args JVM check"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          "$lyric_bin" build lyric-compiler/jvm/entry_args_jvm_main.l --target jvm -o "$work/entryargs.jar"
+          set +e
+          out="$(java -jar "$work/entryargs.jar" one two three)"
+          code=$?
+          set -e
+          echo "$out"
+          if [ "$code" -ne 3 ]; then
+            echo "::error::expected exit code 3 (= argc), got $code"
+            exit 1
+          fi
+          printf '%s\n' "$out" | grep -qx "argc=3" || { echo "::error::argc line missing"; exit 1; }
+          printf '%s\n' "$out" | grep -qx "arg0=one" || { echo "::error::arg0 line missing"; exit 1; }
+          printf '%s\n' "$out" | grep -qx "arg1=two" || { echo "::error::arg1 line missing"; exit 1; }
+          printf '%s\n' "$out" | grep -qx "arg2=three" || { echo "::error::arg2 line missing"; exit 1; }
 
       - name: Wait for all parallel tests
         wait-all: true
@@ -3700,6 +4069,16 @@ jobs:
       - name: Restore executable permissions
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
 
+      # See compiler-self-tests-dotnet-a's "Parallel step execution" comment above
+      # for how `background: true` / `wait-all: true` work.
+      #
+      # Peak concurrency (#4486): this job currently launches 16 `background: true`
+      # steps before its `wait-all: true` barrier, each running an in-process
+      # self-hosted compilation.  CI has been green at this concurrency on the
+      # standard `ubuntu-latest` runner; if a future addition here starts producing
+      # non-deterministic OOM-kill failures, split the step list across two or more
+      # `wait-all: true` barriers (sub-batching) rather than reverting to fully
+      # sequential steps.
       - name: Single-bundle stdlib (self-hosted Std.Sort)
         background: true
         working-directory: ${{ github.workspace }}
@@ -5157,7 +5536,7 @@ jobs:
 
   build-and-test:
     runs-on: ubuntu-latest
-    needs: [build, test-bootstrap, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, aot-smoke, macos-aot-smoke, compiler-self-tests-jvm, ecosystem-security-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests, ilverify-informational]
+    needs: [build, test-bootstrap, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, aot-smoke, macos-aot-smoke, compiler-self-tests-jvm, ecosystem-security-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests, ilverify-required]
     if: always()
     permissions:
       contents: read

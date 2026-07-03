@@ -97,3 +97,16 @@ test "endsWith checks suffix" {
   assertTrue(s.endsWith("world"), "endsWith true")
   assertTrue(not s.endsWith("hello"), "endsWith false")
 }
+
+test "two-arg substring takes a count, not a Java end index (m-24)" {
+  val s = "hello world"
+  assertEqual(s.substring(6, 5), "world", "substring(6, 5) yields the 5 chars from index 6")
+  assertEqual(s.substring(4, 1), "o", "substring(start > count) must not throw or reinterpret")
+  assertEqual(s.substring(0, 5), "hello", "substring(0, 5) prefix")
+  assertEqual(s.substring(10, 1), "d", "single trailing char")
+}
+
+test "one-arg substring takes the rest of the string" {
+  val s = "hello world"
+  assertEqual(s.substring(6), "world", "substring(6) rest-of-string")
+}

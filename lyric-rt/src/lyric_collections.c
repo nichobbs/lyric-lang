@@ -97,6 +97,19 @@ void lyric_list_clear(LyricList* list) {
     list->len = 0;
 }
 
+LyricList* lyric_list_copy(LyricList* src) {
+    /* Defensive: the codegen only calls this on a live list (toArray /
+     * slice bridging), but guard NULL rather than deref it — return a
+     * fresh empty scalar list so a stray NULL degrades to "empty copy"
+     * instead of a crash (#4851). */
+    if (!src) return lyric_list_new(0);
+    LyricList* out = lyric_list_new(src->elems_are_refs);
+    for (int64_t i = 0; i < src->len; i++) {
+        lyric_list_push(out, src->data[i]); /* push retains ref elements */
+    }
+    return out;
+}
+
 /* ── SipHash-2-4 ───────────────────────────────────────────────────── */
 
 #define SIP_ROTL(x, b) (uint64_t)(((x) << (b)) | ((x) >> (64 - (b))))
@@ -305,4 +318,35 @@ int32_t lyric_map_remove(LyricMap* map, int64_t key) {
 
 int64_t lyric_map_len(LyricMap* map) {
     return map->len;
+}
+
+/* Key/value snapshots for iteration (Std.Collections mapKeys/mapValues
+ * and the dictGetKeys/dictGetValues surface).  Fresh rc=1 lists; the
+ * list retains ref-typed entries itself (elems_are_refs from the map's
+ * key/value flags), so the caller owns exactly one reference to the
+ * list and none to the entries.
+ *
+ * O(cap), not O(len): every capacity slot is walked regardless of how
+ * many are occupied.  A map's capacity is its high-water mark and never
+ * shrinks on removal (only `map_rehash` on growth reallocates), so a
+ * map populated with many entries and then mostly cleared retains its
+ * peak capacity — a snapshot after that walks every peak-capacity slot
+ * to collect a much smaller live set.  Tracked as a known cost rather
+ * than fixed with an auxiliary occupied-index list, since that would
+ * add bookkeeping overhead to every `lyric_map_set`/`lyric_map_remove`
+ * call to speed up a comparatively rare snapshot operation (#4795). */
+LyricList* lyric_map_keys(LyricMap* map) {
+    LyricList* out = lyric_list_new(map->keys_are_strings);
+    for (int64_t i = 0; i < map->cap; i++) {
+        if (map->slots[i].state == 1) lyric_list_push(out, map->slots[i].key);
+    }
+    return out;
+}
+
+LyricList* lyric_map_values(LyricMap* map) {
+    LyricList* out = lyric_list_new(map->vals_are_refs);
+    for (int64_t i = 0; i < map->cap; i++) {
+        if (map->slots[i].state == 1) lyric_list_push(out, map->slots[i].val);
+    }
+    return out;
 }
