@@ -408,6 +408,16 @@ pub func extractJsonField(json: in String, field: in String): String {
   ""
 }
 
+/// `true` for the four JSON insignificant-whitespace characters (RFC 8259
+/// §2: space, tab, LF, CR). Shared by `extractJsonIntField` and
+/// `jsonFieldIsObject` so both tolerate the same whitespace between a
+/// field's colon and its value — Docker returns compact JSON on `/wait` so
+/// this rarely matters in practice, but a pretty-printed response or a
+/// proxy in between shouldn't silently break field extraction.
+func isJsonWhitespace(c: in String): Bool {
+  c == " " or c == "\t" or c == "\n" or c == "\r"
+}
+
 /// Extract an integer field's value from a JSON object, or `None` if the
 /// field is absent or not a well-formed JSON number. Mirrors
 /// `extractJsonField`'s key-position disambiguation (`isFieldKeyPosition`)
@@ -433,7 +443,7 @@ pub func extractJsonIntField(json: in String, field: in String): Option[Int] {
         return None
       }
       i = i + 1
-      while i < jsonLen and json.substring(i, 1) == " " {
+      while i < jsonLen and isJsonWhitespace(json.substring(i, 1)) {
         i = i + 1
       }
       var digits = ""
@@ -459,6 +469,41 @@ pub func extractJsonIntField(json: in String, field: in String): Option[Int] {
     searchFrom = pos + 1
   }
   None
+}
+
+/// `true` iff `field`'s value in `json` begins with `{` (a JSON object).
+/// Used to detect a non-null `Error` object in Docker's `/wait` response
+/// (`{"StatusCode":0,"Error":{"Message":"..."}|null}`) without a full JSON
+/// parser: both an absent field and an explicit `null` value correctly read
+/// as "no error object present" — only a `{` immediately after the value
+/// position reads as `true`.
+/// Public for the same testability reason as `extractJsonIntField`.
+pub func jsonFieldIsObject(json: in String, field: in String): Bool {
+  val target = "\"" + field + "\""
+  val jsonLen = json.length
+  var searchFrom = 0
+  while searchFrom < jsonLen {
+    val pos = indexOfFrom(json, target, searchFrom)
+    if pos < 0 {
+      return false
+    }
+    if isFieldKeyPosition(json, pos) {
+      var i = pos + target.length
+      while i < jsonLen and json.substring(i, 1) != ":" {
+        i = i + 1
+      }
+      if i >= jsonLen {
+        return false
+      }
+      i = i + 1
+      while i < jsonLen and isJsonWhitespace(json.substring(i, 1)) {
+        i = i + 1
+      }
+      return i < jsonLen and json.substring(i, 1) == "{"
+    }
+    searchFrom = pos + 1
+  }
+  false
 }
 
 /// Validate a Docker container ID: must be a lowercase hex string of length 12
@@ -544,6 +589,12 @@ pub async func startContainer(client: in DockerClient, containerId: in String): 
 /// exit code rather than collapsing to `Unit` on success — a caller
 /// orchestrating a run-to-completion container needs to know whether the
 /// process it waited on actually exited cleanly.
+///
+/// A non-null `Error` object is a daemon-level failure distinct from the
+/// container's own exit code (e.g. the daemon lost track of the container
+/// while waiting) and can be present even when `StatusCode` reads `0` —
+/// checked first and reported as `Err` rather than silently returning
+/// `Ok(0)` as if the wait had gone cleanly.
 pub async func waitContainer(client: in DockerClient, containerId: in String): Result[Int, DockerError] {
   if not isValidContainerId(containerId) {
     return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
@@ -551,9 +602,17 @@ pub async func waitContainer(client: in DockerClient, containerId: in String): R
   val urlStr = dockerApiBase + "/containers/" + containerId + "/wait"
   val url = resolveDockerUrl(urlStr)?
   match await sendAndReadBody(client, Std.Http.request(Std.Http.POST, url), urlStr, "Wait for container failed") {
-    case Ok(body) -> match extractJsonIntField(body, "StatusCode") {
-      case Some(code) -> Ok(value = code)
-      case None -> Err(error = DockerError(statusCode = None, message = "Wait for container returned no StatusCode", details = body))
+    case Ok(body) -> {
+      if jsonFieldIsObject(body, "Error") {
+        val message = extractJsonField(body, "Message")
+        val details = if message.length > 0 { message } else { body }
+        Err(error = DockerError(statusCode = None, message = "Docker reported an error while waiting for the container", details = details))
+      } else {
+        match extractJsonIntField(body, "StatusCode") {
+          case Some(code) -> Ok(value = code)
+          case None -> Err(error = DockerError(statusCode = None, message = "Wait for container returned no StatusCode", details = body))
+        }
+      }
     }
     case Err(e) -> Err(error = e)
   }

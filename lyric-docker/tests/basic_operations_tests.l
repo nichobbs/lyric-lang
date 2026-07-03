@@ -258,3 +258,35 @@ test "extractJsonIntField skips a matching quoted token that isn't a key positio
   assertTrue(isSome(extracted), "Expected Some")
   assertEqual(toString(unwrapOr(extracted, -1)), "7", "Real top-level StatusCode found, not the string occurrence")
 }
+
+test "extractJsonIntField tolerates a tab and newline after the colon" {
+  val body = "{\"StatusCode\":\n\t42}"
+  val extracted = Lyric.Docker.extractJsonIntField(body, "StatusCode")
+  assertTrue(isSome(extracted), "Expected Some")
+  assertEqual(toString(unwrapOr(extracted, -1)), "42", "StatusCode extracted despite tab/newline whitespace")
+}
+
+// ─── Error-object detection Tests ───────────────────────────────────────────
+// jsonFieldIsObject backs waitContainer's daemon-error detection: Docker's
+// /wait response is {"StatusCode":int,"Error":{"Message":string}|null}, and
+// a non-null Error is a daemon-level failure distinct from the exit code.
+
+test "jsonFieldIsObject is false when the field is a null literal" {
+  val body = "{\"StatusCode\":0,\"Error\":null}"
+  assertFalse(Lyric.Docker.jsonFieldIsObject(body, "Error"), "null is not an object")
+}
+
+test "jsonFieldIsObject is true when the field is a JSON object" {
+  val body = "{\"StatusCode\":0,\"Error\":{\"Message\":\"context deadline exceeded\"}}"
+  assertTrue(Lyric.Docker.jsonFieldIsObject(body, "Error"), "A {...} value is an object")
+}
+
+test "jsonFieldIsObject is false when the field is absent" {
+  val body = "{\"StatusCode\":0}"
+  assertFalse(Lyric.Docker.jsonFieldIsObject(body, "Error"), "A missing field is not an object")
+}
+
+test "jsonFieldIsObject tolerates whitespace between the colon and the brace" {
+  val body = "{\"StatusCode\":0,\"Error\": {\"Message\":\"x\"}}"
+  assertTrue(Lyric.Docker.jsonFieldIsObject(body, "Error"), "Whitespace before the object value is tolerated")
+}
