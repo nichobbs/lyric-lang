@@ -27279,6 +27279,19 @@ cast) and the existing `ArrayList.toArray()` conversion for the rhs. The
 `String`/general-object path is unaffected (`coerceArgTo`'s normalization
 only triggers for `JArray` lhs types).
 
+That normalization traded the `VerifyError` for a *compile-time* one:
+`Std.FileHost.listChildren`'s `children[i].isFile()` now failed auto-FFI
+resolution (`no matching instance or inherited method for
+'java.lang.Object.isFile()'`) — `children`'s erasure to `Object[]` means
+an unannotated `val c = children[i]` carries the erased `Object` static
+type into the member call. `LBLet`/`LBVal`'s existing lowering (05_stmts.l)
+already `coerceArgTo`s an initialiser to an explicit annotation's type,
+inserting a `checkcast` when they differ — so `val c: JFile =
+children[i]` (rather than the unannotated `val c = ...`) is enough to
+recover the concrete type at the one place each loop needs it, with no
+further codegen changes. Both `listChildren` and `deleteRecursively`
+needed the annotation.
+
 **Not done (out of scope here, still tracked in #4775):** `std/path.l:73`'s
 `hostPathGetDirectoryName` uses `?? ""` rather than `case null`, so it
 doesn't hit this exact miscompile, but conflates an empty result with an

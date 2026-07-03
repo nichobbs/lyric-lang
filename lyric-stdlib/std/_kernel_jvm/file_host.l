@@ -147,7 +147,11 @@ func listChildren(path: in String, kind: in Int): slice[String] {
   val children = d.listFiles() ?? []
   var i = 0
   while i < children.count {
-    val c = children[i]
+    // Explicit annotation forces a checkcast: the ?? coalesce normalizes
+    // `children` to the Object[] slice ABI (#4816), so an unannotated
+    // binding here would carry an erased Object receiver into `.isFile()`/
+    // `.isDirectory()`/`.getPath()`, which auto-FFI cannot resolve.
+    val c: JFile = children[i]
     var keep = true
     if kind == 1 {
       keep = c.isFile()
@@ -256,7 +260,9 @@ func deleteRecursively(path: in String): Unit {
     val children = d.listFiles() ?? []
     var i = 0
     while i < children.count {
-      deleteRecursively(children[i].getPath())
+      // Explicit annotation forces a checkcast — see listChildren (#4816).
+      val c: JFile = children[i]
+      deleteRecursively(c.getPath())
       i = i + 1
     }
   }
