@@ -2091,6 +2091,29 @@ func lowerGeneralStaticCall(
           return JBoolean
         }
       }
+      if sig.owner == "Std/Core" and args.count == 2 {
+        if funcName == "unwrapOr" {
+          // Generic Option unwrap via the synthesised `__lyricUnwrapOr`
+          // helper (see codegen 06's emission note) — the erased-call
+          // descriptor otherwise references the phantom `Std/Core/T`.
+          val uoT0 = lowerCallArg(ctx, insns, args[0])
+          boxIfNeeded(insns, uoT0)
+          val uoT1 = lowerCallArg(ctx, insns, args[1])
+          boxIfNeeded(insns, uoT1)
+          val uoPs: List[JvmType] = newList()
+          uoPs.add(JRef(className = "java/lang/Object"))
+          uoPs.add(JRef(className = "java/lang/Object"))
+          insns.add(
+            LInvokestatic(
+              owner = ctx.pkgName,
+              name = "__lyricUnwrapOr",
+              params = uoPs,
+              ret = JRef(className = "java/lang/Object")
+            )
+          )
+          return JRef(className = "java/lang/Object")
+        }
+      }
       val callArgs = reorderAndFillJvmArgs(sig, args)
       // `out`/`inout` parameters need holder-array wrapping + write-back (#1763).
       if anyHolderMode(sig.paramModes) {
@@ -2243,13 +2266,16 @@ func lowerMethodCall(
   // `java/lang/Object.b` guess).  Mirrors `lowerMethodCallMsil`.
   match recv.kind {
     case EPath(path) -> {
-      match mapGet(ctx.externTypes, lastSegment(path)) {
-        case Some(javaFqn) -> return lowerAutoFfiStaticCall(ctx, insns, javaFqn, memberName, args)
-        case None -> ()
-      }
-      // J3 M-3: `AppWire.bootstrap()` / `AppWire.<exposed>()` resolve to a
-      // static call on the wire factory class, registered under the
-      // `<wireShortName>.<method>` key — not an instance dispatch on a value.
+      // The Lyric dot-named registration is checked FIRST: the imported-type
+      // seed (docs/44 m-58) put every bundled package's declared types into
+      // `externTypes`, so `ParseError.message(e)` — a dot-named FUNCTION on
+      // Std.Errors' union — otherwise resolved as a static JDK call on
+      // "Std.Errors.ParseError" and panicked in metadata resolution
+      // (#4799; Std.Parse was J003-skipped by exactly this).  A genuine
+      // extern JDK type never has a dot-named funcSigs registration, so the
+      // FFI fast path below is unaffected for real externs.
+      // J3 M-3: this same key also serves `AppWire.bootstrap()` /
+      // `AppWire.<exposed>()` — a static call on the wire factory class.
       match mapGet(ctx.funcSigs, lastSegment(path) + "." + memberName) {
         case Some(sig) -> {
           var wi = 0
@@ -2263,6 +2289,10 @@ func lowerMethodCall(
           insns.add(LInvokestatic(owner = sig.owner, name = memberName, params = sig.params, ret = sig.ret))
           return sig.ret
         }
+        case None -> ()
+      }
+      match mapGet(ctx.externTypes, lastSegment(path)) {
+        case Some(javaFqn) -> return lowerAutoFfiStaticCall(ctx, insns, javaFqn, memberName, args)
         case None -> ()
       }
     }

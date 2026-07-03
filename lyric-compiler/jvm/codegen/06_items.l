@@ -2250,8 +2250,13 @@ pub func collectFileSigsSeeded(
         // An `out`/`inout` parameter is declared as a holder array in the JVM
         // descriptor (#1763), so the registry records the array type and the
         // declared mode; call sites read the modes to wrap holder arguments.
-        val noTypeParams: List[String] = newList()
-        val params = holderAwareParamTypes(decl.params, owner, false, noTypeParams, externTypes)
+        // A generic function's own type parameters erase to Object in the
+        // registered sig — the previous empty list let `T` fall to the
+        // in-package class guess, so an unmonomorphized call's descriptor
+        // referenced the phantom `Std/Core/T` (NoClassDefFoundError at
+        // link time; hit by `unwrapOr` in parse_tests).
+        val sigTps = genericParamNames(decl.generics)
+        val params = holderAwareParamTypes(decl.params, owner, false, sigTps, externTypes)
         val paramNames: List[String] = newList()
         val paramDefaults: List[Option[Expr]] = newList()
         val paramModes: List[ParamMode] = newList()
@@ -2271,7 +2276,7 @@ pub func collectFileSigsSeeded(
           JRef(className = "java/lang/Object")
         } else {
           match decl.ret {
-            case Some(te) -> typeExprToJvmExtern(te, owner, externTypes)
+            case Some(te) -> typeExprToJvmErasedExtern(te, owner, sigTps, externTypes)
             case None -> JVoid
           }
         }
@@ -3849,6 +3854,38 @@ pub func codegenPackageWithSigsSeeded(
       insns = lcInsns,
       maxStack = 2,
       maxLocals = 1
+    )
+  )
+
+  // `__lyricUnwrapOr(Object, Object)Object` — Std.Core's generic
+  // `unwrapOr(Option[T], T): T` as a synthesised helper.  Generic
+  // functions are never emitted as JVM methods, and a call the
+  // monomorphizer cannot specialise linked against a phantom
+  // descriptor (see the `__lyricCount` note above for why the
+  // branches must live in a helper, not inline at the call site).
+  val uoInsns: List[LInsn] = newList()
+  uoInsns.add(LAload(slot = 0))
+  uoInsns.add(LInstanceof(className = "Std/Core/Option$Some"))
+  uoInsns.add(LIfeq(label = "__uo_dflt"))
+  uoInsns.add(LAload(slot = 0))
+  uoInsns.add(LCheckcast(className = "Std/Core/Option$Some"))
+  uoInsns.add(LGetfield(owner = "Std/Core/Option$Some", name = "value", t = JRef(className = "java/lang/Object")))
+  uoInsns.add(LAreturn)
+  uoInsns.add(LLabel(name = "__uo_dflt"))
+  uoInsns.add(LAload(slot = 1))
+  uoInsns.add(LAreturn)
+  val uoParams: List[JvmType] = newList()
+  uoParams.add(JRef(className = "java/lang/Object"))
+  uoParams.add(JRef(className = "java/lang/Object"))
+  fns.add(
+    LFunc(
+      flags = 0x0009,
+      name = "__lyricUnwrapOr",
+      params = uoParams,
+      ret = JRef(className = "java/lang/Object"),
+      insns = uoInsns,
+      maxStack = 2,
+      maxLocals = 2
     )
   )
 

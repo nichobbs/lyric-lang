@@ -879,7 +879,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.HttpHost` | `http_host.l` | lyric.stdlib.jvm.HttpClientHost operations conform to their documented JVM / java.net.http contracts |
 | `jvm` | `Std.LogHost` | `log_host.l` | lyric.stdlib.jvm.LogHost writes diagnostic messages via java.util.logging.Logger |
 | `jvm` | `Std.MathHost` | `math_host.l` | java.lang.Math and java.lang.Double operations conform to their documented JVM / IEEE 754 contracts |
-| `jvm` | `Std.ParseHost` | `parse_host.l` | lyric.stdlib.jvm.ParseHost operations conform to their documented JVM contracts |
+| `jvm` | `Std.ParseHost` | `parse_host.l` | java.lang.Double.parseDouble conforms to its documented JVM contract |
 | `jvm` | `Std.PathHost` | `path_host.l` | lyric.stdlib.jvm.PathHost operations conform to their documented JVM contracts |
 | `jvm` | `Std.ProcessCaptureHost` | `process_capture_host.l` | java.lang.ProcessBuilder + java.lang.Process + java.io stream contracts conform to documented JVM process/IO semantics |
 | `jvm` | `Std.ProcessHost` | `process_host.l` | lyric.stdlib.jvm.ProcessHost operations conform to their documented JVM contracts |

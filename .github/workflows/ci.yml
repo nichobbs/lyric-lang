@@ -3490,6 +3490,25 @@ jobs:
           printf '%s\n' "$out" | grep -qx "echo:beta" || { echo "::error::beta echo missing"; exit 1; }
           printf '%s\n' "$out" | grep -qx "eof-after:2" || { echo "::error::EOF line count wrong"; exit 1; }
           grep -qx "err-line" "$work/err.txt" || { echo "::error::stderr line missing"; exit 1; }
+      # Std.Parse end-to-end on JVM (band J6, #4799/#2669) — pins the
+      # dot-named-dispatch-before-extern-FFI order, the target-neutral
+      # pure-Lyric parse kernel, and the generic-sig erasure +
+      # __lyricUnwrapOr helper underneath unwrapOr-style call sites.
+      - name: Std.Parse tests on JVM (lyric build --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Parse JVM tests"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          "$lyric_bin" build lyric-stdlib/tests/parse_tests.l --target jvm -o "$work/parse_tests.jar"
+          out="$(java -jar "$work/parse_tests.jar")"
+          echo "$out" | tail -3
+          printf '%s\n' "$out" | grep -q "parse: ok" || { echo "::error::Std.Parse JVM suite did not report success"; exit 1; }
       # lyric-storage suite on JVM (band J6, #1444/#2669) — the first
       # multi-package ecosystem manifest exercised on --target jvm.  Pins the
       # in-process multi-package JVM project build (sibling packages bundled
