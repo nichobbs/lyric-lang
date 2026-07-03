@@ -36,6 +36,7 @@
 package Std.FileHost
 
 import Std.Core
+import Std.Collections
 import Std.Errors
 
 // ── JDK extern types ──────────────────────────────────────────────────────────
@@ -253,6 +254,12 @@ pub func hostDeleteDirectoryRecursive(path: in String, recursive: in Bool): Unit
   }
 }
 
+// KNOWN LIMITATION (#4840): `File.isDirectory()` follows symlinks, so a
+// symlink pointing at a directory is recursed into and its target's
+// contents deleted — the same hazard the native twin guards against with
+// an lstat probe (#4833).  The parity fix (gate on
+// `java.nio.file.Files.isSymbolicLink`) is tracked in #4840; the leaf
+// `d.delete()` already removes a symlink as a link.
 func deleteRecursively(path: in String): Unit {
   val d = JFile.new(path)
   if d.isDirectory() {
@@ -267,4 +274,72 @@ func deleteRecursively(path: in String): Unit {
     }
   }
   d.delete()
+}
+
+// Bytes-mode and enumeration Result seams (issue #4752, D-N-015
+// slice): every failure reports IoError, matching the managed twin.
+pub func hostReadBytesResult(path: in String): Result[List[Byte], IOError] {
+  try {
+    val raw = hostReadAllBytes(path)
+    val acc: List[Byte] = newListWithCapacity(raw.length)
+    for b in raw {
+      acc.add(b)
+    }
+    Ok(value = acc)
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}
+
+pub func hostWriteBytesResult(path: in String, bytes: in List[Byte]): Result[Unit, IOError] {
+  try {
+    hostWriteAllBytes(path, bytes.toArray())
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}
+
+pub func hostListFilesResult(dir: in String): Result[List[String], IOError] {
+  try {
+    val raw = hostEnumerateFiles(dir)
+    val acc: List[String] = newListWithCapacity(raw.length)
+    for f in raw {
+      acc.add(f)
+    }
+    Ok(value = acc)
+  } catch Bug as b {
+    Err(error = IoError(path = dir, message = b.message))
+  }
+}
+
+pub func hostListDirsResult(dir: in String): Result[List[String], IOError] {
+  try {
+    val raw = hostEnumerateDirectories(dir)
+    val acc: List[String] = newListWithCapacity(raw.length)
+    for d in raw {
+      acc.add(d)
+    }
+    Ok(value = acc)
+  } catch Bug as b {
+    Err(error = IoError(path = dir, message = b.message))
+  }
+}
+
+// Missing-dir detection is explicit here: java.io.File.delete() reports
+// failure by boolean (never an exception), so without the probe a
+// nonexistent path would silently yield Ok — the managed twin reports
+// Err(IoError) there (BCL DirectoryNotFoundException), and this seam
+// keeps that parity.
+pub func hostDeleteDirRecursiveResult(path: in String): Result[Unit, IOError] {
+  try {
+    val d = JFile.new(path)
+    if not d.isDirectory() {
+      return Err(error = IoError(path = path, message = "the directory could not be deleted"))
+    }
+    hostDeleteDirectoryRecursive(path, true)
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
 }

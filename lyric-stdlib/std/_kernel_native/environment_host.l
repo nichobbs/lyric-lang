@@ -6,13 +6,14 @@
 //! exception-free Option seam (issue #4752) that `Std.Environment`
 //! delegates to, over the audited lyric-rt helpers (`lyric_env_*`).
 //!
-//! Scope: variable get/set and the current working directory.
-//! `hostGetCommandLineArgs` (needs `slice[String]`), `hostExit` (needs
-//! the `Never` return lowering), and the .NET-specific probes
-//! (`hostAppBaseDirectory`, `hostRuntimeDirectory`,
-//! `hostRuntimeIdentifier`) are not available on the native target yet
-//! (issue #4752); the `Std.Environment` functions built on them stay
-//! compile-time-unreachable on native until then.
+//! Scope: variable get/set, the current working directory, and the
+//! command-line arguments (`slice[String]` rides the shared list repr,
+//! D-N-015).  `hostExit` (needs the `Never` return lowering) and the
+//! .NET-specific probes (`hostAppBaseDirectory`,
+//! `hostRuntimeDirectory`, `hostRuntimeIdentifier`) are not available
+//! on the native target yet (issue #4752); the `Std.Environment`
+//! functions built on them stay compile-time-unreachable on native
+//! until then.
 @axiom("POSIX environment calls via lyric-rt conform to their documented contracts")
 package Std.EnvironmentHost
 
@@ -27,6 +28,11 @@ extern func rtEnvGetOk(name: NativePtr[Byte], outp: NativePtr[String]): Int = "l
 extern func rtEnvSet(name: NativePtr[Byte], value: NativePtr[Byte]): Int = "lyric_env_set"
 
 extern func rtEnvCwdOk(outp: NativePtr[String]): Int = "lyric_env_cwd_ok"
+
+// Fresh owned list of the argv strings captured by the synthesised C
+// main (lyric_args_set); the shared list repr IS the slice repr on
+// this target (D-N-015).
+extern func rtArgsGet(): slice[String] = "lyric_args_get"
 
 @unsafe_ffi
 pub func hostGetVarOpt(key: in String): Option[String] {
@@ -65,4 +71,8 @@ pub func hostCurrentDirectory(): String {
     // parity behaviour.
     panic("Std.EnvironmentHost: cannot determine the current working directory")
   }
+}
+
+pub func hostGetCommandLineArgs(): slice[String] {
+  rtArgsGet()
 }

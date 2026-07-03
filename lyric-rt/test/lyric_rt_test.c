@@ -199,6 +199,199 @@ static void test_map_int_keys(void) {
     lyric_release(m);
 }
 
+static void test_list_copy(void) {
+    /* Ref elements: the copy retains; releasing the source leaves the
+     * copy's elements alive. */
+    LyricList* src = lyric_list_new(1);
+    LyricString* a = lyric_string_from_literal((const uint8_t*)"one", 3);
+    lyric_list_push(src, (int64_t)(intptr_t)a);
+    lyric_release(a);
+    LyricList* dup = lyric_list_copy(src);
+    CHECK(lyric_list_len(dup) == 1);
+    CHECK(atomic_load(&a->rc) == 2); /* held by src and dup */
+    lyric_release(src);
+    CHECK(atomic_load(&a->rc) == 1);
+    LyricString* got = (LyricString*)(intptr_t)lyric_list_get(dup, 0);
+    CHECK(memcmp(LYRIC_STRING_DATA(got), "one", 3) == 0);
+    lyric_release(dup);
+
+    /* Scalar elements copy bit-for-bit. */
+    LyricList* nums = lyric_list_new(0);
+    lyric_list_push(nums, 7);
+    lyric_list_push(nums, 42);
+    LyricList* nums2 = lyric_list_copy(nums);
+    lyric_list_set(nums, 0, -1);
+    CHECK(lyric_list_get(nums2, 0) == 7);
+    CHECK(lyric_list_get(nums2, 1) == 42);
+    lyric_release(nums);
+    lyric_release(nums2);
+
+    /* NULL src degrades to a fresh empty list, not a crash (#4851). */
+    LyricList* empty = lyric_list_copy(NULL);
+    CHECK(empty != NULL);
+    CHECK(lyric_list_len(empty) == 0);
+    lyric_release(empty);
+}
+
+static void test_read_bytes(void) {
+    char tmpl[] = "/tmp/lyric_rt_bytes_XXXXXX";
+    int fd = mkstemp(tmpl);
+    CHECK(fd >= 0);
+    CHECK(write(fd, "hi\x00z", 4) == 4);
+    close(fd);
+    int32_t ok = 0;
+    LyricList* bytes = lyric_file_read_bytes(tmpl, &ok);
+    CHECK(ok == 1);
+    CHECK(lyric_list_len(bytes) == 4);
+    CHECK(lyric_list_get(bytes, 0) == 'h');
+    CHECK(lyric_list_get(bytes, 1) == 'i');
+    CHECK(lyric_list_get(bytes, 2) == 0); /* interior NUL survives */
+    CHECK(lyric_list_get(bytes, 3) == 'z');
+    lyric_release(bytes);
+    unlink(tmpl);
+    int32_t ok2 = 1;
+    LyricList* missing = lyric_file_read_bytes("/definitely/missing/lyric-rt", &ok2);
+    CHECK(ok2 == 0);
+    CHECK(lyric_list_len(missing) == 0);
+    lyric_release(missing);
+}
+
+static void test_write_bytes(void) {
+    char tmpl[] = "/tmp/lyric_rt_wbytes_XXXXXX";
+    int fd = mkstemp(tmpl);
+    CHECK(fd >= 0);
+    close(fd);
+
+    /* Truncate-write, interior NUL survives the round-trip. */
+    LyricList* data = lyric_list_new(0);
+    lyric_list_push(data, 'h');
+    lyric_list_push(data, 0);
+    lyric_list_push(data, 'z');
+    CHECK(lyric_file_write_bytes(tmpl, data, 0) == 0);
+    lyric_release(data);
+    int32_t ok = 0;
+    LyricList* back = lyric_file_read_bytes(tmpl, &ok);
+    CHECK(ok == 1);
+    CHECK(lyric_list_len(back) == 3);
+    CHECK(lyric_list_get(back, 0) == 'h');
+    CHECK(lyric_list_get(back, 1) == 0);
+    CHECK(lyric_list_get(back, 2) == 'z');
+    lyric_release(back);
+
+    /* Append flag extends rather than truncates. */
+    LyricList* extra = lyric_list_new(0);
+    lyric_list_push(extra, '!');
+    CHECK(lyric_file_write_bytes(tmpl, extra, 1) == 0);
+    lyric_release(extra);
+    LyricList* back2 = lyric_file_read_bytes(tmpl, &ok);
+    CHECK(ok == 1);
+    CHECK(lyric_list_len(back2) == 4);
+    CHECK(lyric_list_get(back2, 3) == '!');
+    lyric_release(back2);
+
+    /* Empty-list truncate-write leaves an empty file. */
+    LyricList* none = lyric_list_new(0);
+    CHECK(lyric_file_write_bytes(tmpl, none, 0) == 0);
+    lyric_release(none);
+    LyricList* back3 = lyric_file_read_bytes(tmpl, &ok);
+    CHECK(ok == 1);
+    CHECK(lyric_list_len(back3) == 0);
+    lyric_release(back3);
+    unlink(tmpl);
+
+    /* Unwritable path reports failure. */
+    LyricList* d2 = lyric_list_new(0);
+    lyric_list_push(d2, 'x');
+    CHECK(lyric_file_write_bytes("/definitely/missing/lyric-rt-w", d2, 0) == -1);
+    lyric_release(d2);
+}
+
+static void test_dir_list2(void) {
+    /* Missing directory: the ok-flag protocol must report failure with a
+     * fresh empty list, never ok=1 (the native listFiles/listDirs seams
+     * classify IO failures solely from this flag). */
+    int32_t ok = 1;
+    LyricList* missing = lyric_dir_list2("/definitely/missing/lyric-rt-dir", &ok);
+    CHECK(ok == 0);
+    CHECK(lyric_list_len(missing) == 0);
+    lyric_release(missing);
+
+    char tmpl[] = "/tmp/lyric_rt_dir2_XXXXXX";
+    CHECK(mkdtemp(tmpl) != NULL);
+
+    /* Existing but EMPTY directory: ok=1 with zero entries — existence
+     * and content are reported independently. */
+    int32_t ok0 = 0;
+    LyricList* none = lyric_dir_list2(tmpl, &ok0);
+    CHECK(ok0 == 1);
+    CHECK(lyric_list_len(none) == 0);
+    lyric_release(none);
+
+    /* Existing directory with content: ok=1 and the entry appears by name. */
+    char inner[512];
+    snprintf(inner, sizeof inner, "%s/entry.txt", tmpl);
+    FILE* f = fopen(inner, "w");
+    CHECK(f != NULL);
+    fclose(f);
+    int32_t ok2 = 0;
+    LyricList* names = lyric_dir_list2(tmpl, &ok2);
+    CHECK(ok2 == 1);
+    CHECK(lyric_list_len(names) == 1);
+    LyricString* n0 = (LyricString*)(intptr_t)lyric_list_get(names, 0);
+    CHECK(lyric_string_len(n0) == 9);
+    CHECK(memcmp(LYRIC_STRING_DATA(n0), "entry.txt", 9) == 0);
+    lyric_release(names);
+    unlink(inner);
+    rmdir(tmpl);
+}
+
+static void test_is_dir_nofollow(void) {
+    /* A real directory is a directory; a file is not. */
+    char tmpl[] = "/tmp/lyric_rt_nofollow_XXXXXX";
+    CHECK(mkdtemp(tmpl) != NULL);
+    CHECK(lyric_path_is_dir_nofollow(tmpl) == 1);
+
+    char filep[512];
+    snprintf(filep, sizeof filep, "%s/f.txt", tmpl);
+    FILE* f = fopen(filep, "w");
+    CHECK(f != NULL);
+    fclose(f);
+    CHECK(lyric_path_is_dir_nofollow(filep) == 0);
+
+    /* A symlink pointing AT the directory is NOT a directory here (the
+     * whole point: recursive delete must unlink it, not descend). */
+    char linkp[512];
+    snprintf(linkp, sizeof linkp, "%s/link", tmpl);
+    CHECK(symlink(tmpl, linkp) == 0);
+    CHECK(lyric_path_is_dir_nofollow(linkp) == 0);
+    /* lyric_dir_exists (stat, follows) DOES see it as a directory — the
+     * exact divergence that made the naive delete unsafe. */
+    CHECK(lyric_dir_exists(linkp) == 1);
+
+    /* Missing path: 0, no crash. */
+    CHECK(lyric_path_is_dir_nofollow("/definitely/missing/lyric-rt-nf") == 0);
+
+    unlink(linkp);
+    unlink(filep);
+    rmdir(tmpl);
+}
+
+static void test_args(void) {
+    /* Unset: empty list rather than a crash. */
+    LyricList* empty = lyric_args_get();
+    CHECK(lyric_list_len(empty) == 0);
+    lyric_release(empty);
+
+    char* argv[] = {(char*)"prog", (char*)"alpha", (char*)"beta"};
+    lyric_args_set(3, argv);
+    LyricList* got = lyric_args_get();
+    CHECK(lyric_list_len(got) == 3);
+    LyricString* s1 = (LyricString*)(intptr_t)lyric_list_get(got, 1);
+    CHECK(memcmp(LYRIC_STRING_DATA(s1), "alpha", 5) == 0);
+    lyric_release(got);
+    lyric_args_set(0, NULL);
+}
+
 static void test_map_keys_values(void) {
     /* Scalar keys, ref values: keys list is scalar, values list retains. */
     LyricMap* m = lyric_map_new(0, 1);
@@ -592,6 +785,12 @@ int main(void) {
     test_list_refs();
     test_map_int_keys();
     test_map_string_keys();
+    test_list_copy();
+    test_read_bytes();
+    test_write_bytes();
+    test_dir_list2();
+    test_is_dir_nofollow();
+    test_args();
     test_map_keys_values();
     test_posix();
     test_ok_variants();

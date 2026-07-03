@@ -5043,6 +5043,49 @@ in-scope-shadow resolution are now specified.  `docs/01` §1.3 and the grammar
 gain a note to this effect.
 
 ---
+## D-N-015 — Native `slice[T]` shares the RC'd `LyricList` representation (revises the D-N-012 borrowed fat pointer)
+
+**Date:** 2026-07-03
+**Status:** ACCEPTED (revises the `slice[T]` half of D-N-012)
+
+**Decision.** On `--target native`, `slice[T]` lowers to the same RC'd
+`LyricList` kernel representation as `List[T]`, immutable by
+construction.  The type checker owns the mutability and spelling
+distinctions (`.length` vs `.count`, no `add`/`set` on slices); the
+native codegen reuses the list paths wholesale for `for`, indexing,
+`.length`, and the `toArray()` snapshot (`lyric_list_copy`, which is
+also the `slice → List` conversion).
+
+**Why the borrowed fat pointer was dropped.** D-N-012 specified
+`slice[T]` as a borrowed `{ptr, len}` pair.  That representation is
+only memory-safe when every slice's backing store provably outlives
+it, which the language cannot check natively today — and the stdlib
+immediately violates it: `Std.File.readBytesOrPanic` RETURNS a slice
+up the stack, so the buffer must own itself.  An RC'd representation
+is safe under the existing ARC rules (retain on bind, release at scope
+exit, container-owned elements) with zero new runtime or codegen
+machinery.  The borrowed pair remains available as a future
+optimisation once the mode checker can bound slice lifetimes.
+
+**Costs accepted.**
+- `slice[Byte]` stores one byte per 64-bit slot (the single list
+  layout), an 8x width penalty on byte buffers; a packed byte-array
+  representation is a follow-up optimisation.
+- `List[T]` and `slice[T]` are indistinguishable at the NType level,
+  so the native backend accepts `.count` on slices and `.length` on
+  lists (a harmless superset — the checker rejects them in checked
+  contexts).
+
+**Kernel protocol note.** Ref-container results cross the C boundary
+by RETURN VALUE plus an `Int` ok-flag out-param
+(`lyric_file_read_bytes`, `lyric_dir_list2`), never by container
+out-param: overwriting a `var xs = newList()` slot from C would leak
+the initialiser (unlike the immortal `""` used by the string seams).
+
+**Related:** D-N-012, D-N-014, `native/plan/03-type-mapping.md`,
+issue #4752.
+
+
 ## D086 — Band 3 Phase B.0: `IAsyncStateMachine` synthesis for user-defined `async func` (no-await path, #2070)
 
 **Context:** D085 (Phase A) fixed the `@externTarget async` silent miscompile. The

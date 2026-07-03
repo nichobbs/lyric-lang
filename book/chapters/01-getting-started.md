@@ -215,9 +215,12 @@ them explicitly with `NativeWeak[T]`, whose `upgrade()` returns
 > (`extern func`, `NativePtr[T]`,
 > `nativeAddrOf`, `nativeNullPtr`, closures as C callbacks) is confined to
 > `@unsafe_ffi` functions and the standard library's kernel files — the
-> compiler rejects it elsewhere (`N0100`). Constructs not yet lowered fail
+> compiler rejects it elsewhere (`N0100`). `slice[T]` works and shares
+> the list representation (immutable by construction), so bytes-mode
+> file I/O, directory listing, and `Std.Environment.args()` are
+> available. Constructs not yet lowered fail
 > the build with a diagnostic naming the construct rather than
-> miscompiling: interfaces, protected types, `slice[T]`, list literals,
+> miscompiling: interfaces, protected types, list literals,
 > module-level `val`, `async func`, and manifest (multi-package) native
 > builds.
 

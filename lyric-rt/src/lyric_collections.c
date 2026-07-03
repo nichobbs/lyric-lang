@@ -97,6 +97,19 @@ void lyric_list_clear(LyricList* list) {
     list->len = 0;
 }
 
+LyricList* lyric_list_copy(LyricList* src) {
+    /* Defensive: the codegen only calls this on a live list (toArray /
+     * slice bridging), but guard NULL rather than deref it — return a
+     * fresh empty scalar list so a stray NULL degrades to "empty copy"
+     * instead of a crash (#4851). */
+    if (!src) return lyric_list_new(0);
+    LyricList* out = lyric_list_new(src->elems_are_refs);
+    for (int64_t i = 0; i < src->len; i++) {
+        lyric_list_push(out, src->data[i]); /* push retains ref elements */
+    }
+    return out;
+}
+
 /* ── SipHash-2-4 ───────────────────────────────────────────────────── */
 
 #define SIP_ROTL(x, b) (uint64_t)(((x) << (b)) | ((x) >> (64 - (b))))
