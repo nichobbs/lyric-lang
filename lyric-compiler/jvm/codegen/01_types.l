@@ -251,15 +251,7 @@ pub func allocSlot(ctx: in FuncCtx, name: in String, ty: in JvmType): Int {
   match mapGet(ctx.slots, name) {
     case Some(existing) -> {
       val prevTy = match mapGet(ctx.types, name) { case Some(t) -> t; case None -> ty }
-      // Reuse the slot only when the previous and new binding share the same
-      // *verifier* slot type, not merely the same width.  This backend frames
-      // each slot with a single verifier type for the whole method
-      // (`storeTypes`), so a slot reused across two DIFFERENT verifier types —
-      // e.g. `case AsDouble(v)` (VDouble) then `case AsLong(v)` (VLong) in
-      // sibling match arms, both width 2 — makes the match-join frame reject
-      // the method (VerifyError; m-57).  Int-like types all frame as VInteger
-      // and still share; Double/Long/Float and distinct ref classes get fresh
-      // slots so each slot carries exactly one verifier type.
+      // Reuse the slot only when old and new bindings frame as the same verifier type, not merely the same width: a slot carrying two verifier types (a Double then a Long match-arm binding) makes the join frame unmergeable (docs/44 m-72).
       if sameFrameSlotType(prevTy, ty) {
         ctx.types.remove(name)
         ctx.types.add(name, ty)
@@ -284,11 +276,9 @@ pub func allocSlot(ctx: in FuncCtx, name: in String, ty: in JvmType): Int {
   slot
 }
 
-// True when two JVM types occupy the same StackMapTable verifier slot type —
-// mirrors `Jvm.Lowering.jvmToVerifier` without the cross-package dependency.
-// All int-like primitives collapse to VInteger (so an Int slot may be reused
-// for a Byte binding); Float / Long / Double are distinct; two ref types match
-// only on the same class, two arrays only on the same element type.
+// True when two JVM types occupy the same StackMapTable verifier slot type
+// (mirrors `Jvm.Lowering.jvmToVerifier`): int-likes all collapse to VInteger;
+// Float / Long / Double, distinct ref classes, and distinct array elements differ.
 func sameFrameSlotType(a: in JvmType, b: in JvmType): Bool {
   match a {
     case JInt -> isIntLikeFrame(b)

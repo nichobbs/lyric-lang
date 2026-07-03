@@ -65,6 +65,41 @@ func numToLong(n: in Num): Long {
   }
 }
 
+// Boundary: int-like binding types (Int / Byte / Char) all frame as VInteger,
+// so the same name `v` MUST keep sharing one slot (the fix must not over-split).
+union IntLike {
+  case FromInt(v: Int)
+  case FromByte(v: Byte)
+  case FromChar(v: Char)
+}
+
+func intLikeToInt(n: in IntLike): Int {
+  match n {
+    case FromInt(v) -> v
+    case FromByte(v) -> v.toInt()
+    case FromChar(v) -> v.toInt()
+  }
+}
+
+// Boundary: distinct REFERENCE classes bound to the same name `w` across arms
+// frame as different VObject types (width 1 each), so they must get DISTINCT
+// slots — the other half of the verifier-type gate.
+record Boxed {
+  n: Int
+}
+
+union Wrapped {
+  case AsStr(w: String)
+  case AsBoxed(w: Boxed)
+}
+
+func wrappedLen(x: in Wrapped): Int {
+  match x {
+    case AsStr(w) -> w.length
+    case AsBoxed(w) -> w.n
+  }
+}
+
 // ── PParen — a single parenthesised pattern binds its inner at the scrutinee
 // type, so the bound value stays a usable `Int`.
 func parenId(n: Int): Int {
@@ -268,4 +303,17 @@ test "mixed-width match bindings: result routed through a Long slot (m-72)" {
   assertEqualLong(numToLong(AsDouble(v = 4.0)), 4i64, "Double arm truncated to Long")
   assertEqualLong(numToLong(AsLong(v = 42i64)), 42i64, "Long arm binds v: Long")
   assertEqualLong(numToLong(AsInt(v = 9)), 9i64, "Int arm binds v: Int, widened to Long")
+}
+
+test "mixed-width bindings: int-like arms keep sharing one slot (m-72)" {
+  assertEqualInt(intLikeToInt(FromInt(v = 65)), 65, "Int arm binds v: Int")
+  // Value < 128 so signed/unsigned agree — the unsigned-Byte→Int widening
+  // above 127 is a separate JVM-backend concern (#4855), not the slot gate.
+  assertEqualInt(intLikeToInt(FromByte(v = 100.toByte())), 100, "Byte arm binds v: Byte")
+  assertEqualInt(intLikeToInt(FromChar(v = 'A')), 65, "Char arm binds v: Char")
+}
+
+test "mixed-width bindings: distinct ref classes get distinct slots (m-72)" {
+  assertEqualInt(wrappedLen(AsStr(w = "hello")), 5, "String arm binds w: String")
+  assertEqualInt(wrappedLen(AsBoxed(w = Boxed(n = 42))), 42, "record arm binds w: Boxed")
 }
