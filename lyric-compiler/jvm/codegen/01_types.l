@@ -287,6 +287,16 @@ pub record FuncCtx {
   // Reads emit `__caps[i]` then `aaload` + unbox; writes emit `__caps[i]` then
   // `aastore`.
   captureCellNames: List[String]
+  // Local name → the generic instantiation args of the expression it was bound
+  // to (`let r = getInt(x)` records `r → [Int, String]`).  Lets a `match r { … }`
+  // over a variable-bound scrutinee recover the same instantiation the direct
+  // `match getInt(x) { … }` form gets, so an erased type-parameter payload
+  // unboxes to its concrete primitive (#4877 follow-up #4938).  Populated at
+  // `let`/`var` bindings whose initialiser has recoverable args; empty for a
+  // binding with no generic instantiation.  No default per the JVM-codegen
+  // no-defaulted-field rule (see `JvmFuncSig.retGenericArgs`, D-progress-554);
+  // initialised `newMap()` at every `FuncCtx` construction site.
+  varGenericArgs: Map[String, List[TypeExpr]]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

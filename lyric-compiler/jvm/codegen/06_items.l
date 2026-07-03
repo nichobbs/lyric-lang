@@ -78,7 +78,8 @@ func makeFuncCtx(
     hoistedVarNames = newList(),
     hoistedCellSlot = newMap(),
     hoistedCellType = newMap(),
-    captureCellNames = newList()
+    captureCellNames = newList(),
+    varGenericArgs = newMap()
   )
 }
 
@@ -134,7 +135,8 @@ func makeFuncCtxForGenerator(
     hoistedVarNames = newList(),
     hoistedCellSlot = newMap(),
     hoistedCellType = newMap(),
-    captureCellNames = newList()
+    captureCellNames = newList(),
+    varGenericArgs = newMap()
   )
 }
 
@@ -192,7 +194,8 @@ func makeFuncCtxInstance(
     hoistedVarNames = newList(),
     hoistedCellSlot = newMap(),
     hoistedCellType = newMap(),
-    captureCellNames = newList()
+    captureCellNames = newList(),
+    varGenericArgs = newMap()
   )
 }
 

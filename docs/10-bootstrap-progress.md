@@ -27523,6 +27523,36 @@ exception unwind, value-producing sub-block); `bitwise` / `pattern_lowering`
 
 **Related:** docs/44 m-57 / m-72, epic #2663, #2667 (band J4).
 
+### D-progress-569 — JVM: variable-bound `match` scrutinee unboxes an erased generic payload (band J4, #4938)
+
+**Shipped.** Follow-up to D-progress-554 (#4877), which fixed arithmetic on an
+erased generic payload bound from a *direct* `match callee(...) { … }` or the
+`?` operator but left the equally-common `let r = callee(...); match r { … }`
+form still boxing the payload — so `x + y` string-concatenated (`"22"`) and
+`x - y` VerifyError'd, exactly as before the #4877 fix.
+
+Fix: `FuncCtx` gains a `varGenericArgs: Map[String, List[TypeExpr]]` map (name →
+the initialiser's generic instantiation args).  `let`/`var` binding lowering
+(`codegen/05_stmts.l` `LBVal`/`LBLet`/`LBVar`) records `scrutineeGenericArgs`
+of the initialiser against the bound name via `recordVarGenericArgs`
+(remove-then-add so a shadowing inner binding never inherits stale args; only
+non-empty arg lists stored).  `scrutineeGenericArgs` (`codegen/03_match.l`) gains
+a single-segment `EPath` (variable-ref) case that recovers those recorded args
+through the typed `optGenericArgs` helper, so the existing bind-site unbox
+(`bindCaseField`) fires for the variable-scrutinee form too.  The type checker
+fixes a `var`'s type across reassignments, so recording at the initialiser is
+stable.
+
+`varGenericArgs` carries **no default** and `optGenericArgs`/`recordVarGenericArgs`
+follow the typed-helper discipline of D-progress-554 (both the self-hosted MSIL
+emitter and the pinned F# stage-0 mint reject defaulted record fields and
+un-anchored `mapGet`-result field access); verified against the pinned mint
+(`LYRIC_BOOTSTRAP_MINT=1 scripts/mint-stage0-fsharp.sh`) before landing.
+Covered by two new cases (Int `val`-bound, Long `var`-bound) in
+`erased_generic_arith_jvm_self_test.l` (now 10 tests), run on both targets in CI.
+Method-call scrutinees (`match x.m()`, #4933) and `JChar`/`JByte` payload unbox
+(#4942/#4941) remain tracked follow-ups.  Resolves docs/44 m-77.
+
 ### D-progress-567 — JVM: range-driven `for` (`emitCountingForJvm`) reaches MSIL parity (band J4, epic #2663)
 
 **Shipped.** Resolves docs/44 m-75.  A range-driven `for` (`for i in 0 ..< n`,
