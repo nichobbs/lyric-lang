@@ -7,12 +7,12 @@
 //! status codes instead of exceptions, so no try/catch is needed here.
 //!
 //! Scope: the text- and bytes-mode Result seams, existence probes,
-//! create/delete, and directory enumeration (D-N-015: slices share the
-//! RC'd list repr, so the byte and path collections ride the ordinary
-//! list kernels).  Still unavailable natively: file `stat` (needs an
-//! opaque timestamp twin) and the panicking `readTextOrPanic` /
-//! `readBytesOrPanic` variants (pure-layer try/catch) — issue #4752
-//! tracks both.
+//! create/delete (files and recursive directory deletion), and
+//! directory enumeration (D-N-015: slices share the RC'd list repr, so
+//! the byte and path collections ride the ordinary list kernels).
+//! Still unavailable natively: file `stat` (needs an opaque timestamp
+//! twin) and the panicking `readTextOrPanic` / `readBytesOrPanic`
+//! variants (pure-layer try/catch) — issue #4752 tracks both.
 @axiom("POSIX file-system calls via lyric-rt conform to their documented contracts")
 package Std.FileHost
 
@@ -44,6 +44,8 @@ extern func rtReadBytes(path: NativePtr[Byte], okOut: NativePtr[Int]): List[Byte
 extern func rtDirList(path: NativePtr[Byte], okOut: NativePtr[Int]): List[String] = "lyric_dir_list2"
 
 extern func rtWriteBytes(path: NativePtr[Byte], data: List[Byte], append: Int): Int = "lyric_file_write_bytes"
+
+extern func rtDirRemove(path: NativePtr[Byte]): Int = "lyric_dir_remove"
 
 @unsafe_ffi
 pub func hostFileExists(path: in String): Bool {
@@ -216,4 +218,56 @@ pub func hostListFilesResult(dir: in String): Result[List[String], IOError] {
 
 pub func hostListDirsResult(dir: in String): Result[List[String], IOError] {
   listChildrenNative(dir, 2)
+}
+
+@unsafe_ffi
+func removeDirOne(path: in String): Bool {
+  val c = toC(path)
+  val rc = rtDirRemove(c)
+  freeC(c)
+  rc == 0
+}
+
+// Depth-first over the enumeration seams, then rmdir(2) on the emptied
+// directory.  A missing path fails at the first listing (parity with
+// the managed twin, which reports DirectoryNotFoundException as
+// Err(IoError)).
+pub func hostDeleteDirRecursiveResult(path: in String): Result[Unit, IOError] {
+  match hostListFilesResult(path) {
+    case Ok(files) -> {
+      for f in files {
+        match hostDeleteFileResult(f) {
+          case Ok(_) -> {
+          }
+          case Err(e) -> {
+            return Err(error = e)
+          }
+        }
+      }
+    }
+    case Err(e) -> {
+      return Err(error = e)
+    }
+  }
+  match hostListDirsResult(path) {
+    case Ok(dirs) -> {
+      for d in dirs {
+        match hostDeleteDirRecursiveResult(d) {
+          case Ok(_) -> {
+          }
+          case Err(e) -> {
+            return Err(error = e)
+          }
+        }
+      }
+    }
+    case Err(e) -> {
+      return Err(error = e)
+    }
+  }
+  if removeDirOne(path) {
+    Ok(value = ())
+  } else {
+    Err(error = IoError(path = path, message = "the directory could not be deleted"))
+  }
 }

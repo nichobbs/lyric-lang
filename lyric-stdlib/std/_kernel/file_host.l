@@ -193,3 +193,15 @@ pub func hostListDirsResult(dir: in String): Result[List[String], IOError] {
     Err(error = IoError(path = dir, message = b.message))
   }
 }
+
+// Not-found routes into IoError like every other failure (BCL
+// Directory.Delete throws DirectoryNotFoundException; distinguishing
+// it from permission-denied would need an exception-type-aware shim).
+pub func hostDeleteDirRecursiveResult(path: in String): Result[Unit, IOError] {
+  try {
+    hostDeleteDirectoryRecursive(path, true)
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}

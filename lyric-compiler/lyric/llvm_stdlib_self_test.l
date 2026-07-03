@@ -396,6 +396,16 @@ test "slice[T] via the list repr: bytes round-trip, listFiles, args (ASan)" {
     "      return 11\n" +
     "    }\n" +
     "  }\n" +
+    "  match deleteDirRecursive(base) {\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 12\n" +
+    "    }\n" +
+    "  }\n" +
+    "  if dirExists(base) {\n" +
+    "    return 13\n" +
+    "  }\n" +
     "  42\n" +
     "}\n"
   val r = compileAndRunNative(src)
@@ -462,22 +472,25 @@ test "toArray snapshot + listFilesRecursive on native (ASan)" {
     "  if sum != 42 {\n" +
     "    return 7\n" +
     "  }\n" +
-    "  match deleteFile(base + \"/a.txt\") {\n" +
+    "  match deleteDirRecursive(base) {\n" +
     "    case Ok(_) -> {\n" +
     "    }\n" +
     "    case Err(_) -> {\n" +
     "      return 8\n" +
     "    }\n" +
     "  }\n" +
-    "  match deleteFile(nested + \"/b.txt\") {\n" +
+    "  if dirExists(base) or fileExists(base + \"/a.txt\") {\n" +
+    "    return 9\n" +
+    "  }\n" +
+    "  match deleteDirRecursive(base) {\n" +
     "    case Ok(_) -> {\n" +
+    "      return 10\n" +
     "    }\n" +
     "    case Err(_) -> {\n" +
-    "      return 9\n" +
     "    }\n" +
     "  }\n" +
     "  42\n" +
     "}\n"
   val r = compileAndRunNative(src)
-  assertEqualInt(r.exitCode, 42, "toArray snapshot + recursive traversal")
+  assertEqualInt(r.exitCode, 42, "toArray snapshot + recursive traversal + cleanup")
 }

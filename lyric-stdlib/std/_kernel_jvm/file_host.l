@@ -319,3 +319,21 @@ pub func hostListDirsResult(dir: in String): Result[List[String], IOError] {
     Err(error = IoError(path = dir, message = b.message))
   }
 }
+
+// Missing-dir detection is explicit here: java.io.File.delete() reports
+// failure by boolean (never an exception), so without the probe a
+// nonexistent path would silently yield Ok — the managed twin reports
+// Err(IoError) there (BCL DirectoryNotFoundException), and this seam
+// keeps that parity.
+pub func hostDeleteDirRecursiveResult(path: in String): Result[Unit, IOError] {
+  try {
+    val d = JFile.new(path)
+    if not d.isDirectory() {
+      return Err(error = IoError(path = path, message = "the directory could not be deleted"))
+    }
+    hostDeleteDirectoryRecursive(path, true)
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}

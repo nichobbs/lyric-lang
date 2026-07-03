@@ -113,13 +113,7 @@ pub func deleteDirRecursive(path: in String): Result[Unit, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
   }
-  return try {
-    hostDeleteDirectoryRecursive(path, true)
-    Ok(value = ())
-  } catch Bug as b {
-    // See doc comment: not-found vs. permission-denied is indistinguishable.
-    Err(error = IoError(path = path, message = b.message))
-  }
+  hostDeleteDirRecursiveResult(path)
 }
 
 /// Delete a single file.  Returns `Ok(())` on success;
