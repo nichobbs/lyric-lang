@@ -27553,6 +27553,38 @@ Covered by two new cases (Int `val`-bound, Long `var`-bound) in
 Method-call scrutinees (`match x.m()`, #4933) and `JChar`/`JByte` payload unbox
 (#4942/#4941) remain tracked follow-ups.  Resolves docs/44 m-77.
 
+### D-progress-570 — JVM: method-call `match` scrutinee unboxes an erased generic payload (band J4, #4933)
+
+**Shipped.** Third form of the #4877 erased-generic-payload bug (after the
+direct `match callee(...)` / `?` forms in D-progress-554 and the variable-bound
+`let r = callee(...); match r` form in D-progress-569): a method-call scrutinee
+`match recv.method(...) { … }` where the method returns a generic instantiation
+left the payload boxed, so `x + y` string-concatenated (`"22"`) and `x - y`
+VerifyError'd.
+
+Fix: `scrutineeGenericArgs` (`codegen/03_match.l`) gains an `ECall` /
+`EMember`-callee case.  An in-body / `impl` method registers under
+`<receiverClass>#<method>` with its `retGenericArgs` (`registerInstanceSigErased`
+/ `registerInstanceSig`, already carrying them); `receiverClassOf` resolves the
+receiver's JVM class — a bare local/parameter reference (`ctx.types`) or `self`
+(`ctx.selfClass`) — and `instanceMethodRetGenericArgs` looks up
+`<class>#<method>`'s args, so the existing bind-site unbox (`bindCaseField`)
+fires.  A more complex receiver yields no class and degrades to the safe boxed
+path.  The receiver-class helpers use the typed-parameter / union-destructure
+discipline of D-progress-554 (verified against the pinned F# stage-0 mint).
+
+Covered by a new **JVM-only** `method_scrutinee_jvm_self_test.l` (Int + Long +
+Double payloads, add / sub / mul, plus a `self.method()` receiver).  JVM-only —
+unlike the dual-target `erased_generic_arith_jvm_self_test.l` — because the test
+needs an in-body record method to define the callee, and **in-body methods break
+MSIL entry-point emission (#4947)**: any dotnet program combining `main` with an
+in-body method fails at runtime with "Entry point not found".  MSIL reifies
+generics and never had the erased-payload bug this fix addresses, so the JVM run
+alone fully covers it; the module moves into the dual-target file once #4947 is
+fixed.  Resolves docs/44 m-78.  Remaining #4877-family follow-ups: closure /
+generator `varGenericArgs` propagation (#4945), `JChar`/`JByte` unbox
+(#4942/#4941).
+
 ### D-progress-567 — JVM: range-driven `for` (`emitCountingForJvm`) reaches MSIL parity (band J4, epic #2663)
 
 **Shipped.** Resolves docs/44 m-75.  A range-driven `for` (`for i in 0 ..< n`,
