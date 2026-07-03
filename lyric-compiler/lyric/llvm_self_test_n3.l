@@ -203,3 +203,31 @@ test "interface ARC: many upcasts in a loop stay leak-free under ASan" {
   val r = compileAndRunAsan(src)
   assertEqualInt(r.exitCode, 0, "50 upcasts leak-free; sum 0..49 == 1225")
 }
+
+// A Unit-returning interface method exercises the `void` ABI branch of
+// lowerIfaceDispatch (distinct from the value-returning path) (#4901).
+test "interface dispatch: Unit-returning method (void ABI)" {
+  val src = "package T\n" + printlnShim() + "interface Sink {\n  func emit(): Unit\n}\n" +
+    "record Logger {\n  tag: String\n}\n" +
+    "impl Sink for Logger {\n  func emit(): Unit {\n    println(self.tag)\n  }\n}\n" +
+    "func drive(s: in Sink): Unit {\n  s.emit()\n}\n" +
+    "func main(): Unit {\n  drive(Logger(tag = \"tick\"))\n}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(r.exitCode, 0, "Unit-returning dispatch exit")
+  assertEqual(r.stdout, "tick\n", "Unit-returning dispatch side effect")
+}
+
+// One record implementing two interfaces verifies the `<recordIr>|<ifaceKey>`
+// vtable keying registers and selects two separate vtables (#4902).
+test "interface dispatch: one record implementing two interfaces" {
+  val src = "package T\n" + "interface Area {\n  func area(): Int\n}\n" +
+    "interface Perimeter {\n  func perimeter(): Int\n}\n" +
+    "record Rect {\n  w: Int\n  h: Int\n}\n" +
+    "impl Area for Rect {\n  func area(): Int {\n    self.w * self.h\n  }\n}\n" +
+    "impl Perimeter for Rect {\n  func perimeter(): Int {\n    (self.w + self.h) * 2\n  }\n}\n" +
+    "func asArea(a: in Area): Int {\n  a.area()\n}\n" +
+    "func asPerimeter(p: in Perimeter): Int {\n  p.perimeter()\n}\n" +
+    "func main(): Int {\n  asArea(Rect(w = 4, h = 5)) + asPerimeter(Rect(w = 4, h = 5))\n}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(r.exitCode, 38, "area 20 + perimeter 18")
+}
