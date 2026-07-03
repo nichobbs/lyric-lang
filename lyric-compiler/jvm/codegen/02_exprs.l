@@ -2643,16 +2643,16 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
   // param that reuses an outer var name must NOT inherit the outer instantiation;
   // exclude every param name.  A body-local rebind of an outer name is
   // self-correcting: `recordVarGenericArgs` overwrites the entry at the bind site.
-  val __closureParamNames: Map[String, Bool] = newMap()
-  var __cpi = 0
-  while __cpi < lparams.count {
-    __closureParamNames.add(lparams[__cpi].name, true)
-    __cpi = __cpi + 1
+  val closureParamNames: Map[String, Bool] = newMap()
+  var cpi = 0
+  while cpi < lparams.count {
+    closureParamNames.add(lparams[cpi].name, true)
+    cpi = cpi + 1
   }
-  for __vk in mapKeys(ctx.varGenericArgs) {
-    if not __closureParamNames.containsKey(__vk) {
-      match mapGet(ctx.varGenericArgs, __vk) {
-        case Some(__vargs) -> bodyCtx.varGenericArgs.add(__vk, __vargs)
+  for vk in mapKeys(ctx.varGenericArgs) {
+    if not closureParamNames.containsKey(vk) {
+      match mapGet(ctx.varGenericArgs, vk) {
+        case Some(vargs) -> bodyCtx.varGenericArgs.add(vk, vargs)
         case None -> {
         }
       }
