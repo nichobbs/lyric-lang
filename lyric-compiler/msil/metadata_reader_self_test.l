@@ -15,10 +15,8 @@
 //! `m2d.l`/`m88.l` `@test_module` files: the self-hosted compiler DLLs are
 //! staged as restored deps (see the "MSIL backend self-tests M2a-M2d
 //! (native lyric test)" CI step), so no `LYRIC_LOAD_COMPILER=1` recompile
-//! is needed here either. This file is NOT YET added to that step's file
-//! list in `.github/workflows/ci.yml` — that one-line CI wiring addition is
-//! left for a follow-up, since this triage pass is scoped to
-//! `lyric-compiler/msil/` source files only, not the workflow file.
+//! is needed here either. This file is wired into that step's file list in
+//! `.github/workflows/ci.yml` (#4786).
 @test_module
 package Msil.MetadataReaderSelfTest
 
