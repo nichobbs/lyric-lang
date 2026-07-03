@@ -682,14 +682,16 @@ jobs:
             local manifest="$1"
             local version="$2"
             local log="$3"
-            local attempt build_rc
+            local attempt build_rc attempt_log
             : > "$log"
+            attempt_log="$(mktemp)"
             for attempt in 1 2 3 4; do
               {
                 echo "=== Building ${manifest} (version ${version}, attempt ${attempt}) ==="
                 "$LYRIC" build --manifest "$manifest" --package-version "$version"
-              } >> "$log" 2>&1
+              } > "$attempt_log" 2>&1
               build_rc=$?
+              cat "$attempt_log" >> "$log"
               [[ $build_rc -eq 0 ]] && break
               # NuGet.org's search index can lag behind a `dotnet nuget push`
               # that already returned success -- a dependency published
@@ -697,12 +699,17 @@ jobs:
               # still 404/NU1102 for a short window. That's this specific
               # transient race, not a real dependency problem, so back off
               # and retry; any other build failure is real and fails fast.
-              if ! grep -q 'NU1102' "$log" || [[ $attempt -eq 4 ]]; then
+              # Grep only this attempt's output (not the accumulated $log) so
+              # a real error on a later attempt can't hide behind an earlier
+              # attempt's NU1102 and keep retrying forever (#4907).
+              if ! grep -q 'NU1102' "$attempt_log" || [[ $attempt -eq 4 ]]; then
+                rm -f "$attempt_log"
                 return 1
               fi
               echo "=== NU1102 (NuGet indexing delay) on attempt ${attempt}; retrying after backoff ===" >> "$log"
               sleep $(( attempt * 15 ))
             done
+            rm -f "$attempt_log"
             {
               echo "=== Publishing ${manifest} ==="
               "$LYRIC" publish --manifest "$manifest" --api-key "$API_KEY" \
