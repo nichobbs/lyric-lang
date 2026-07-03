@@ -27769,3 +27769,53 @@ source-build sandbox `System.Convert.ToSingle(Double)` is AOT-trimmed from the
 CLI binary (D-progress-543), so a `Float` literal cannot be JVM-compiled to
 verify locally; the `JFloat` unbox path is structurally identical to the tested
 `JDouble` one (#4932 Float half tracked).  Resolves docs/44 m-79.
+
+### D-progress-572 — MSIL: in-body record method (D037) no longer corrupts entry-point emission (#4947)
+
+**Shipped.** Fixes #4947: on `--target dotnet`, any program that both defined
+a D037 in-body method (a bare `func` directly inside a `record`/type body)
+and had an executable `main` failed at runtime with `System.MissingMethodException:
+Entry point not found`, even though the build itself succeeded. `--target
+jvm` was unaffected.
+
+**Root cause.** `addPackageTokens` (`msil/codegen.l`) pre-scans the AST to
+predict every MethodDef row number before real codegen runs — including
+reserving one row per `RMFunc` (in-body method) member and, separately,
+capturing `main`'s predicted token for the assembly's `EntryPointToken`.
+`lowerRecordMsil` never actually lowered `RMFunc` members: it silently
+dropped them, always returning an empty `methods` list for the record's
+`MRecord`. Every in-body method therefore inflated the pre-scan's row
+counter by one with no matching MethodDef row ever written, desyncing every
+token computed afterwards in source order — including `main`'s — from the
+row it would actually occupy. The `EntryPointToken` baked into the PE ended
+up naming the wrong (or a nonexistent) MethodDef row, so the CLR loader
+rejected the assembly before any IL ran.
+
+**Fix.** `lowerRecordMsil` now lowers each `RMFunc` member via a new
+`lowerRecordMethodMsil`, appending one real `MFunc` per member (in
+declaration order) to the record's `methods` list — bringing real emission
+back in sync with the row budget `addPackageTokens` already reserved.
+`lowerRecordMethodMsil` mirrors `lowerImplMethodMsil`'s slot-0-is-`this`
+convention (the parser's `injectSelfIfNeeded` already prepends an explicit
+`self: in Type` as `decl.params[0]`, and `self` references in the body parse
+as the dedicated `ESelf` node, which reads `ldarg.0` regardless of any name
+binding), but emits a plain public instance method — no `Virtual`/`Final`/
+`NewSlot`, since an in-body method satisfies no interface slot (the call-site
+dispatch through `cctx.methodTokens` always emits `callvirt`, which is legal
+against a non-virtual instance method too).
+
+**Tests.** `implicit_self_msil_self_test.l` (`lyric-compiler/lyric/`) already
+covered in-body methods end-to-end via `@test_module` but was never wired
+into CI for `--target dotnet` — its synthesised `main` is exactly the
+function whose entry-point token this bug corrupted, so it is the natural
+regression guard. Wired into the `compiler-self-tests-dotnet-b` CI job
+alongside its existing JVM-target counterpart (`implicit_self_jvm_self_test.l`).
+
+**Follow-up unblocked:** docs/44 m-78's `method_scrutinee_jvm_self_test.l`
+was JVM-only specifically because its repro needs an in-body method and
+#4947 broke that on MSIL; it can now move to a dual-target file, though that
+migration is left as separate follow-up work, not bundled into this fix.
+
+**Related:** #4947, #4933 (docs/44 m-78, the JVM-only test this unblocks),
+D037 (`docs/49-methods-in-types.md`), `lowerImplMethodMsil` (the impl-method
+lowering this mirrors).

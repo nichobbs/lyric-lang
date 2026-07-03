@@ -269,6 +269,13 @@ tracking issue today (band J0 files them).
 | m-78 | ~~m-76/m-77 left the method-call scrutinee form `match recv.method(...) { … }` (method returning a generic instantiation) still boxing the payload — same string-concat / VerifyError miscompile.~~ **Fixed (D-progress-570):** `scrutineeGenericArgs` gains an `EMember`-callee case; an in-body / `impl` method registers under `<receiverClass>#<method>` with its `retGenericArgs`, so `receiverClassOf` (resolving a local/param via `ctx.types` or `self` via `ctx.selfClass`) + `instanceMethodRetGenericArgs` recover them and the bind-site unbox fires. Covered by a new **JVM-only** `method_scrutinee_jvm_self_test.l` — the test needs an in-body method to define the callee, and in-body methods break MSIL entry-point emission (#4947); MSIL reifies generics so never had this bug. | `codegen/03_match.l` | #4933 (J4) ✅ |
 | m-79 | ~~`emitUnboxObjectTo` handled `JInt`/`JLong`/`JDouble`/`JFloat`/`JBoolean` but not `JChar`/`JByte`, so a `Char`/`Byte` erased payload stayed boxed. Surfaced a second bug: `LBoxByte`/`LBoxShort` boxed a value ≥128 via `valueOf` **without narrowing**, so `Byte.valueOf`'s cache index overran → `ArrayIndexOutOfBoundsException` at construction of e.g. `Filled(item = 200.toByte())`.~~ **Fixed (D-progress-571):** `emitUnboxObjectTo` gains `JChar` (`charValue`) and `JByte` (`byteValue`, signed — the canonical in-slot form) arms; `LBoxByte`/`LBoxShort`/`LBoxChar` emit `i2b`/`i2s`/`i2c` before `valueOf`, fixing `Byte`/`Short` boxing everywhere. Covered by Char / Byte-above-127 / Bool cases in the dual-target `erased_generic_arith_jvm_self_test.l` (Float-payload test deferred — `Convert.ToSingle` AOT-trim in source-build sandboxes, #4932 Float half). | `codegen/03_match.l`, `lowering.l` | #4942/#4941 (J4) ✅ |
 
+**Update (D-progress-572):** #4947 (the MSIL entry-point corruption m-78 cites
+as the reason `method_scrutinee_jvm_self_test.l` stayed JVM-only) is fixed —
+`lowerRecordMsil` now emits real MethodDef rows for in-body methods, back in
+sync with the row budget the entry-point pre-scan reserves. Moving
+`method_scrutinee_jvm_self_test.l` to a dual-target file is unblocked but not
+done as part of D-progress-572; it remains open follow-up work.
+
 ---
 
 ## 5. Remediation bands
