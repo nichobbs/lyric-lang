@@ -250,6 +250,56 @@ static void test_read_bytes(void) {
     lyric_release(missing);
 }
 
+static void test_write_bytes(void) {
+    char tmpl[] = "/tmp/lyric_rt_wbytes_XXXXXX";
+    int fd = mkstemp(tmpl);
+    CHECK(fd >= 0);
+    close(fd);
+
+    /* Truncate-write, interior NUL survives the round-trip. */
+    LyricList* data = lyric_list_new(0);
+    lyric_list_push(data, 'h');
+    lyric_list_push(data, 0);
+    lyric_list_push(data, 'z');
+    CHECK(lyric_file_write_bytes(tmpl, data, 0) == 0);
+    lyric_release(data);
+    int32_t ok = 0;
+    LyricList* back = lyric_file_read_bytes(tmpl, &ok);
+    CHECK(ok == 1);
+    CHECK(lyric_list_len(back) == 3);
+    CHECK(lyric_list_get(back, 0) == 'h');
+    CHECK(lyric_list_get(back, 1) == 0);
+    CHECK(lyric_list_get(back, 2) == 'z');
+    lyric_release(back);
+
+    /* Append flag extends rather than truncates. */
+    LyricList* extra = lyric_list_new(0);
+    lyric_list_push(extra, '!');
+    CHECK(lyric_file_write_bytes(tmpl, extra, 1) == 0);
+    lyric_release(extra);
+    LyricList* back2 = lyric_file_read_bytes(tmpl, &ok);
+    CHECK(ok == 1);
+    CHECK(lyric_list_len(back2) == 4);
+    CHECK(lyric_list_get(back2, 3) == '!');
+    lyric_release(back2);
+
+    /* Empty-list truncate-write leaves an empty file. */
+    LyricList* none = lyric_list_new(0);
+    CHECK(lyric_file_write_bytes(tmpl, none, 0) == 0);
+    lyric_release(none);
+    LyricList* back3 = lyric_file_read_bytes(tmpl, &ok);
+    CHECK(ok == 1);
+    CHECK(lyric_list_len(back3) == 0);
+    lyric_release(back3);
+    unlink(tmpl);
+
+    /* Unwritable path reports failure. */
+    LyricList* d2 = lyric_list_new(0);
+    lyric_list_push(d2, 'x');
+    CHECK(lyric_file_write_bytes("/definitely/missing/lyric-rt-w", d2, 0) == -1);
+    lyric_release(d2);
+}
+
 static void test_dir_list2(void) {
     /* Missing directory: the ok-flag protocol must report failure with a
      * fresh empty list, never ok=1 (the native listFiles/listDirs seams
@@ -260,9 +310,18 @@ static void test_dir_list2(void) {
     CHECK(lyric_list_len(missing) == 0);
     lyric_release(missing);
 
-    /* Existing directory: ok=1 and the entry appears by name. */
     char tmpl[] = "/tmp/lyric_rt_dir2_XXXXXX";
     CHECK(mkdtemp(tmpl) != NULL);
+
+    /* Existing but EMPTY directory: ok=1 with zero entries — existence
+     * and content are reported independently. */
+    int32_t ok0 = 0;
+    LyricList* none = lyric_dir_list2(tmpl, &ok0);
+    CHECK(ok0 == 1);
+    CHECK(lyric_list_len(none) == 0);
+    lyric_release(none);
+
+    /* Existing directory with content: ok=1 and the entry appears by name. */
     char inner[512];
     snprintf(inner, sizeof inner, "%s/entry.txt", tmpl);
     FILE* f = fopen(inner, "w");
@@ -691,6 +750,7 @@ int main(void) {
     test_map_string_keys();
     test_list_copy();
     test_read_bytes();
+    test_write_bytes();
     test_dir_list2();
     test_args();
     test_map_keys_values();
