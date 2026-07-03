@@ -458,12 +458,20 @@ func testNativeInvalidOpt(): Unit {
   assertTrue(isInvalidField(e, "native", "opt_level"), "native-invalid-opt: InvalidField(native, opt_level)")
 }
 
-// An extra_libs entry with whitespace (or empty) is rejected at parse time
-// (#4865) — it would otherwise become a broken `-l<name>` clang flag.
+// An extra_libs entry with whitespace is rejected at parse time (#4865) —
+// it would otherwise become a broken `-l<name>` clang flag.
 func testNativeInvalidLib(): Unit {
   val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[native]\nextra_libs = [\"ssl bad\"]\n"
   val e = parseErr(toml)
   assertTrue(isInvalidField(e, "native", "extra_libs"), "native-invalid-lib: InvalidField(native, extra_libs)")
+}
+
+// An empty extra_libs entry hits the `name.length == 0` branch of
+// invalidLibName, distinct from the whitespace branch above (#4872).
+func testNativeEmptyLib(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[native]\nextra_libs = [\"\"]\n"
+  val e = parseErr(toml)
+  assertTrue(isInvalidField(e, "native", "extra_libs"), "native-empty-lib: InvalidField(native, extra_libs)")
 }
 
 // Malformed coordinate keys (no ':' or more than one ':') are rejected.
@@ -758,6 +766,10 @@ test "native invalid opt_level" {
 
 test "native invalid extra_libs" {
   testNativeInvalidLib()
+}
+
+test "native empty extra_libs" {
+  testNativeEmptyLib()
 }
 
 test "project section" {
