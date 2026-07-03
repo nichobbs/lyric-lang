@@ -44,21 +44,35 @@ func readBuildKindFromManifest(manifestOpt: in Option[String]): String {
 
 // Resolve the `[native]` config for a `--target native` build (N6.4):
 // honour an explicit `--manifest`, else discover the nearest lyric.toml.
-// Returns None when no manifest is found, it cannot be read/parsed, or it
-// has no `[native]` table — a native single-file build is never blocked
-// by an unrelated malformed lyric.toml discovered up the tree.
-func resolveNativeConfig(manifestPath: in Option[String]): Option[Mf.NativeConfig] {
-  val mfOpt = match manifestPath {
-    case Some(p) -> Some(value = p)
-    case None -> discoverManifest(None)
-  }
-  match mfOpt {
-    case None -> None
-    case Some(mf) -> match File.readText(mf) {
-      case Err(_) -> None
-      case Ok(mfText) -> match Mf.parseManifest(mfText, mf) {
-        case Err(_) -> None
-        case Ok(m) -> m.native
+// An **explicitly supplied** `--manifest` that cannot be read or parsed
+// (e.g. a malformed `[native]` table, or an out-of-range `opt_level`) is
+// surfaced as `Err(message)` so the build fails loudly — the user pointed
+// at that file on purpose (#4863).  A **discovered** manifest degrades to
+// `Ok(None)` on any read/parse failure so a native single-file build is
+// never blocked by an unrelated malformed lyric.toml found up the tree.
+// `Ok(None)` also covers "no manifest found" and "no `[native]` table".
+func resolveNativeConfig(manifestPath: in Option[String]): Result[Option[Mf.NativeConfig], String] {
+  // Explicitly typed so the emitter cannot mistype a bare `None` arm as
+  // `Option<String>` (the self-hosted lowerMatchExprMsil fall-through bug,
+  // #1663 / #3943, which an earlier draft of this function tripped through
+  // ilverify): every "no config" leaf returns this pinned value.
+  val noneCfg: Option[Mf.NativeConfig] = None
+  match manifestPath {
+    case Some(p) -> match File.readText(p) {
+      case Err(e) -> Err(error = "build: cannot read manifest " + p + ": " + IOError.message(e))
+      case Ok(mfText) -> match Mf.parseManifest(mfText, p) {
+        case Err(me) -> Err(error = "build: " + ManifestError.message(me))
+        case Ok(m) -> Ok(value = m.native)
+      }
+    }
+    case None -> match discoverManifest(None) {
+      case None -> Ok(value = noneCfg)
+      case Some(mf) -> match File.readText(mf) {
+        case Err(_) -> Ok(value = noneCfg)
+        case Ok(mfText) -> match Mf.parseManifest(mfText, mf) {
+          case Err(_) -> Ok(value = noneCfg)
+          case Ok(m) -> Ok(value = m.native)
+        }
       }
     }
   }
@@ -187,19 +201,26 @@ pub func buildOneNative(
   var effOpt = nativeOpt
   val effLibs: List[String] = newList()
   if isNativeTarget {
-    match resolveNativeConfig(manifestPath) {
-      case Some(nc) -> {
-        if effTriple == "" {
-          effTriple = nc.triple
-        }
-        if effOpt == "" {
-          effOpt = nc.optLevel
-        }
-        for lib in nc.extraLibs {
-          effLibs.add(lib)
-        }
+    val ncResult = resolveNativeConfig(manifestPath)
+    match ncResult {
+      case Err(msg) -> {
+        printErr(msg)
+        return 1
       }
-      case None -> ()
+      case Ok(ncOpt) -> match ncOpt {
+        case Some(nc) -> {
+          if effTriple == "" {
+            effTriple = nc.triple
+          }
+          if effOpt == "" {
+            effOpt = nc.optLevel
+          }
+          for lib in nc.extraLibs {
+            effLibs.add(lib)
+          }
+        }
+        case None -> ()
+      }
     }
   }
   val result = if isNativeTarget { Emitter.emitNative(req, effTriple, effOpt, effLibs) } else { Emitter.emit(req) }

@@ -27489,13 +27489,15 @@ N6.4 from `native/plan/08-work-items.md`.
   non-empty; `extra_libs` is manifest-only and additive. `emitNative` /
   `emitNativeInProcess` gained an `extraLibs` parameter that becomes
   `-l<name>` clang flags routed through the existing `extraClangFlags` slot
-  on `LlvmBridge.compileToNativeWithFlags` (no bridge signature change). A
-  malformed or unrelated discovered manifest never aborts a single-file
-  native build — the `[native]` defaults are simply not applied.
+  on `LlvmBridge.compileToNativeWithFlags` (no bridge signature change). An
+  **explicitly supplied** `--manifest` that fails to read/parse (e.g. an
+  invalid `opt_level`) aborts the build with the diagnostic (#4863); a
+  **discovered** manifest degrades silently so a single-file native build
+  is never blocked by an unrelated malformed lyric.toml up the tree.
 - **Tests**: `manifest_self_test.l` gains `native section` (all three keys),
-  `native defaults` (empty table → empty triple/opt, no libs), `native
-  absent` (no table → `None`), and `native invalid opt_level`
-  (`InvalidField`).
+  `native defaults` (partial table → per-field defaults), `native absent`
+  (no table → `None`), `native empty table` (header-only → `None`, #4862),
+  and `native invalid opt_level` (`InvalidField`).
 - **Docs**: language reference §3.6 (`[native]` table + CLI-override
   precedence) and the `--target native` CLI paragraph; book
   `appendix-b-quick-reference.md` (manifest table + native build note).

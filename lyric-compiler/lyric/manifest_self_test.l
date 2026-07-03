@@ -439,6 +439,18 @@ func testNativeAbsent(): Unit {
   }
 }
 
+// A header-only [native] table with no key-value entries -> None, exactly
+// like an empty [maven]/[nuget] (hasSection needs at least one entry), so
+// the build layer applies its built-in defaults (#4862).
+func testNativeEmptyTable(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[native]\n"
+  val m = parseOk(toml)
+  match m.native {
+    case None -> ()
+    case Some(_) -> assertTrue(false, "native-empty: header-only [native] table parses to None")
+  }
+}
+
 // An out-of-range opt_level is rejected at parse time.
 func testNativeInvalidOpt(): Unit {
   val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[native]\nopt_level = \"9\"\n"
@@ -726,6 +738,10 @@ test "native defaults" {
 
 test "native absent" {
   testNativeAbsent()
+}
+
+test "native empty table" {
+  testNativeEmptyTable()
 }
 
 test "native invalid opt_level" {
