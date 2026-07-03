@@ -204,3 +204,57 @@ test "extractJsonField returns empty string when the field is absent" {
   val extracted = Lyric.Docker.extractJsonField(body, "Id")
   assertEqual(extracted, "", "Missing field yields an empty string")
 }
+
+// ─── Integer field extraction Tests ─────────────────────────────────────────
+// extractJsonIntField backs waitContainer's StatusCode parsing (#4535-style
+// public-for-testing rationale — no live Docker daemon needed).
+
+test "extractJsonIntField extracts a zero StatusCode from a clean wait response" {
+  val body = "{\"StatusCode\":0,\"Error\":null}"
+  val extracted = Lyric.Docker.extractJsonIntField(body, "StatusCode")
+  assertTrue(isSome(extracted), "Expected Some")
+  assertEqual(toString(unwrapOr(extracted, -1)), "0", "StatusCode 0 extracted")
+}
+
+test "extractJsonIntField extracts a nonzero StatusCode" {
+  val body = "{\"StatusCode\":137,\"Error\":null}"
+  val extracted = Lyric.Docker.extractJsonIntField(body, "StatusCode")
+  assertTrue(isSome(extracted), "Expected Some")
+  assertEqual(toString(unwrapOr(extracted, -1)), "137", "StatusCode 137 extracted")
+}
+
+test "extractJsonIntField extracts a negative number" {
+  val body = "{\"StatusCode\":-1}"
+  val extracted = Lyric.Docker.extractJsonIntField(body, "StatusCode")
+  assertTrue(isSome(extracted), "Expected Some")
+  assertEqual(toString(unwrapOr(extracted, 0)), "-1", "Negative StatusCode extracted")
+}
+
+test "extractJsonIntField tolerates a space after the colon" {
+  val body = "{\"StatusCode\": 42}"
+  val extracted = Lyric.Docker.extractJsonIntField(body, "StatusCode")
+  assertTrue(isSome(extracted), "Expected Some")
+  assertEqual(toString(unwrapOr(extracted, -1)), "42", "StatusCode extracted despite whitespace")
+}
+
+test "extractJsonIntField returns None when the field is absent" {
+  val body = "{\"Error\":null}"
+  val extracted = Lyric.Docker.extractJsonIntField(body, "StatusCode")
+  assertTrue(isNone(extracted), "Expected None for a missing field")
+}
+
+test "extractJsonIntField returns None when the field's value is a quoted string, not a bare number" {
+  val body = "{\"StatusCode\":\"0\"}"
+  val extracted = Lyric.Docker.extractJsonIntField(body, "StatusCode")
+  assertTrue(isNone(extracted), "A quoted value is not a well-formed JSON number here")
+}
+
+test "extractJsonIntField skips a matching quoted token that isn't a key position" {
+  // The exact quoted token "StatusCode" first appears as a string *value*
+  // (preceded by ':', not '{'/',' — isFieldKeyPosition rejects it) before
+  // the real key. The scan must keep looking past it.
+  val body = "{\"Note\":\"StatusCode\",\"StatusCode\":7}"
+  val extracted = Lyric.Docker.extractJsonIntField(body, "StatusCode")
+  assertTrue(isSome(extracted), "Expected Some")
+  assertEqual(toString(unwrapOr(extracted, -1)), "7", "Real top-level StatusCode found, not the string occurrence")
+}

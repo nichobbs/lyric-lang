@@ -111,7 +111,13 @@ val client = Lyric.Docker.makeDockerClientAt("/custom/path/docker.sock")
 ### Container Operations
 
 - `listContainers(client)` — List all containers
-- Future: `createContainer`, `startContainer`, `stopContainer`, `removeContainer`, etc.
+- `createContainer(client, image, env, binds)` — Create a container from an image with env vars and volume binds
+- `startContainer(client, containerId)` — Start a created container
+- `waitContainer(client, containerId)` — Block until a container exits; returns its exit code
+- `stopContainer(client, containerId)` — Stop a running container
+- `removeContainer(client, containerId)` — Remove a container
+- `getContainerLogs(client, containerId)` — Fetch a container's combined stdout/stderr logs
+- Future: `inspectContainer`, `execContainer`, etc.
 
 ### Image Operations
 

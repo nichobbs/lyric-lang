@@ -408,6 +408,59 @@ pub func extractJsonField(json: in String, field: in String): String {
   ""
 }
 
+/// Extract an integer field's value from a JSON object, or `None` if the
+/// field is absent or not a well-formed JSON number. Mirrors
+/// `extractJsonField`'s key-position disambiguation (`isFieldKeyPosition`)
+/// but reads a bare number instead of a quoted string, for endpoints like
+/// `/wait` that respond `{"StatusCode":0,"Error":null}`.
+/// Public so tests can exercise it directly against hand-built response
+/// bodies without a live Docker daemon (same rationale as `extractJsonField`, #4535).
+pub func extractJsonIntField(json: in String, field: in String): Option[Int] {
+  val target = "\"" + field + "\""
+  val jsonLen = json.length
+  var searchFrom = 0
+  while searchFrom < jsonLen {
+    val pos = indexOfFrom(json, target, searchFrom)
+    if pos < 0 {
+      return None
+    }
+    if isFieldKeyPosition(json, pos) {
+      var i = pos + target.length
+      while i < jsonLen and json.substring(i, 1) != ":" {
+        i = i + 1
+      }
+      if i >= jsonLen {
+        return None
+      }
+      i = i + 1
+      while i < jsonLen and json.substring(i, 1) == " " {
+        i = i + 1
+      }
+      var digits = ""
+      if i < jsonLen and json.substring(i, 1) == "-" {
+        digits = "-"
+        i = i + 1
+      }
+      var scanning = true
+      while scanning and i < jsonLen {
+        val c = json.substring(i, 1)
+        if c >= "0" and c <= "9" {
+          digits = digits + c
+          i = i + 1
+        } else {
+          scanning = false
+        }
+      }
+      if digits.length == 0 or digits == "-" {
+        return None
+      }
+      return Int.parse(digits, 10)
+    }
+    searchFrom = pos + 1
+  }
+  None
+}
+
 /// Validate a Docker container ID: must be a lowercase hex string of length 12
 /// (short form) or 64 (full SHA-256), as returned by the Docker API.  Rejects
 /// values containing path-separator or query characters that would silently
@@ -480,6 +533,30 @@ pub async func startContainer(client: in DockerClient, containerId: in String): 
     return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
   }
   await sendExpectSuccess(client, dockerApiBase + "/containers/" + containerId + "/start", Std.Http.POST, "Start container failed")
+}
+
+/// Block until a container exits, then return its exit code.
+///
+/// Calls the Docker Engine `/containers/{id}/wait` endpoint, which blocks
+/// server-side until the container stops (Docker's default
+/// `condition=not-running`) before responding with
+/// `{"StatusCode":<int>,"Error":{"Message":<string>}|null}`. Surfaces the
+/// exit code rather than collapsing to `Unit` on success — a caller
+/// orchestrating a run-to-completion container needs to know whether the
+/// process it waited on actually exited cleanly.
+pub async func waitContainer(client: in DockerClient, containerId: in String): Result[Int, DockerError] {
+  if not isValidContainerId(containerId) {
+    return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
+  }
+  val urlStr = dockerApiBase + "/containers/" + containerId + "/wait"
+  val url = resolveDockerUrl(urlStr)?
+  match await sendAndReadBody(client, Std.Http.request(Std.Http.POST, url), urlStr, "Wait for container failed") {
+    case Ok(body) -> match extractJsonIntField(body, "StatusCode") {
+      case Some(code) -> Ok(value = code)
+      case None -> Err(error = DockerError(statusCode = None, message = "Wait for container returned no StatusCode", details = body))
+    }
+    case Err(e) -> Err(error = e)
+  }
 }
 
 /// Stop a running container.
