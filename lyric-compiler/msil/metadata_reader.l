@@ -109,7 +109,10 @@ func rdU16(b: in slice[Byte], o: in Int): Int {
   rdU8(b, o) + rdU8(b, o + 1) * 256
 }
 
-func rdI16(b: in slice[Byte], o: in Int): Int {
+// `pub` so `Msil.MetadataReaderSelfTest` (a separate package) can exercise the
+// sign-extension edge cases directly — the same "expose a cross-package test
+// accessor" pattern `mkPrimSig`/`sigPrimByte` already use below.
+pub func rdI16(b: in slice[Byte], o: in Int): Int {
   val lo = rdU8(b, o)
   val hi = rdU8(b, o + 1)
   val result = lo + hi * 256
@@ -1199,23 +1202,39 @@ pub func getLiteralFieldInt32In(
       if typeVal == 0x02 or typeVal == 0x03 or typeVal == 0x04 or typeVal == 0x05 or typeVal == 0x06 or typeVal == 0x07 or typeVal == 0x08 or typeVal == 0x09 {
         val blobIndex = rdIdx(b, o + 2 + hasConstIdxWidth, layout.blobIdx)
         val blobBytes = blobAt(img, layout, blobIndex)
-        if blobBytes.length >= 4 {
-          return Some(value = rdI32(blobBytes, 0))
-        } else if blobBytes.length == 2 {
-          // ELEMENT_TYPE_BOOLEAN (0x02) is unsigned per ECMA-335 §II.23.1.16;
-          // I1 (0x04) and I4 (0x08) are signed but never produce a 2-byte blob
-          // in conforming metadata (kept here only for defensiveness). I2
-          // (0x06) is the only signed type that legitimately reaches this arm.
-          val isSigned = typeVal == 0x04 or typeVal == 0x06 or typeVal == 0x08
-          return Some(value = if isSigned { rdI16(blobBytes, 0) } else { rdU16(blobBytes, 0) })
-        } else if blobBytes.length == 1 {
-          return Some(value = blobBytes[0].toInt())
+        match decodeInt32ConstantBlob(typeVal, blobBytes) {
+          case Some(v) -> return Some(value = v)
+          case None -> {}
         }
       }
     }
     crow = crow + 1
   }
   None
+}
+
+// Decodes an ECMA-335 `Constant` table blob (§II.22.9) to an `Int` once the
+// caller has confirmed `typeVal` is one of the eight-or-fewer-byte integral
+// ELEMENT_TYPEs (0x02 BOOLEAN..0x09 U4). Widens by blob length rather than
+// solely by `typeVal`, matching how the writer side (`tables.l`) actually
+// sizes these blobs. Split out of `getLiteralFieldInt32In` (#4331) so the
+// sign/unsigned classification can be tested directly with constructed byte
+// blobs, without needing a full PE image fixture.
+pub func decodeInt32ConstantBlob(typeVal: in Int, blobBytes: in slice[Byte]): Option[Int] {
+  if blobBytes.length >= 4 {
+    Some(value = rdI32(blobBytes, 0))
+  } else if blobBytes.length == 2 {
+    // ELEMENT_TYPE_BOOLEAN (0x02) is unsigned per ECMA-335 §II.23.1.16;
+    // I1 (0x04) and I4 (0x08) are signed but never produce a 2-byte blob
+    // in conforming metadata (kept here only for defensiveness). I2
+    // (0x06) is the only signed type that legitimately reaches this arm.
+    val isSigned = typeVal == 0x04 or typeVal == 0x06 or typeVal == 0x08
+    Some(value = if isSigned { rdI16(blobBytes, 0) } else { rdU16(blobBytes, 0) })
+  } else if blobBytes.length == 1 {
+    Some(value = blobBytes[0].toInt())
+  } else {
+    None
+  }
 }
 
 // Read-from-disk wrapper over `getLiteralFieldInt32In`.

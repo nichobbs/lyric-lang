@@ -1440,6 +1440,16 @@ on native (no stdin pipe yet) and `timeoutMs` is not enforced there;
 bytes-mode file I/O, directory enumeration, `stat`, and the `Std.Time`
 calendar surface remain unavailable on native (tracked in #4752).
 
+`for x in list { ... }` over a `List[T]` diverges from the managed
+targets in one respect on `--target native`: the list's length is
+snapshot once at loop entry. The managed targets (.NET/JVM) throw on
+concurrent modification during `foreach`; native has no such check —
+mutating the iterated list from within the loop body does not change
+the loop bound, so appended elements past the snapshot length are
+never visited, and removal can shift indices such that an element is
+skipped or an index is revisited (#4790). Don't mutate a `List` you're
+currently iterating over on the native target.
+
 ## 12. Standard library
 
 The standard library is its own package set, versioned independently of the language. Modules:

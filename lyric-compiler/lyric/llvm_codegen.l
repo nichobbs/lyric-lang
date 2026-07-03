@@ -4090,6 +4090,14 @@ func lowerForOverList(ctx: in Ctx, insns: in List[NInsn], pat: in Pattern, iter:
   bindLocal(ctx, insns, itName, it)
   val itVal = loadLocal(ctx, insns, itName)
   val recvP = collectionAsI8(ctx, insns, itVal)
+  // Length is snapshot once here, at loop entry — unlike the managed
+  // targets (.NET/JVM), where a `List` enumerator throws on concurrent
+  // modification, native has no iterator-invalidation check. Adding or
+  // removing elements from the iterated list during the loop body does
+  // not change this bound: added elements past the snapshot length are
+  // never visited, and removal can shift indices so an element is
+  // skipped or the same index revisited (#4790). Don't mutate the
+  // iterated list from within the loop body.
   val lenV = callRuntime(ctx, insns, "lyric_list_len", NI64, arg1(NPtr(pointee = NI8), recvP))
   val idxSlot = "for.idx." + freshTmp(ctx)
   ctx.allocas.add(NAlloca(dest = idxSlot, ty = NI64))

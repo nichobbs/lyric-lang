@@ -48,6 +48,8 @@ import Std.String
 import Std.Time
 import Std.Json
 import Std.Uuid
+import Std.Environment as Env
+import Std.Parse
 import Session.Kernel.Net as SessionKernel
 
 // ─── Session identity ─────────────────────────────────────────────────────────
@@ -129,13 +131,17 @@ pub interface SessionStore {
 @cfg(feature = "redis")
 pub record NativeSessionStore {
   storeHandle: SessionKernel.RedisStoreHandle
+  // Session TTL in seconds, read from `LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS`
+  // by `connectRedis()` (default 3600).  Previously `create`/`touch` hardcoded
+  // 3600 directly and ignored this env var entirely (#3553).
+  ttlSeconds: Int
 }
 
 @experimental
 @cfg(feature = "redis")
 impl SessionStore for NativeSessionStore {
   func create(): Result[String, SessionError] {
-    match SessionKernel.create(self.storeHandle, 3600) {
+    match SessionKernel.create(self.storeHandle, self.ttlSeconds) {
       case Ok(id) -> Ok(id)
       case Err(err) -> Err(SessionError(message = err, code = "CREATE_FAILED"))
     }
@@ -164,7 +170,7 @@ impl SessionStore for NativeSessionStore {
   }
 
   func touch(sessionId: in String): Result[Unit, SessionError] {
-    match SessionKernel.touch(self.storeHandle, sessionId, 3600) {
+    match SessionKernel.touch(self.storeHandle, sessionId, self.ttlSeconds) {
       case Ok(u) -> Ok(u)
       case Err(err) -> Err(SessionError(message = err, code = "TOUCH_FAILED"))
     }
@@ -381,12 +387,34 @@ impl SessionStore for InProcessSessionStore {
 
 // ─── Runtime config ───────────────────────────────────────────────────────────
 // Session lifetime and cookie settings are read from environment variables at
-// runtime: LYRIC_CONFIG_SESSION_TTLSECONDS, LYRIC_CONFIG_SESSION_COOKIENAME,
-// LYRIC_CONFIG_SESSION_SECURE, LYRIC_CONFIG_SESSION_HTTPONLY,
-// LYRIC_CONFIG_SESSION_SAMESITE, LYRIC_CONFIG_REDISSESSION_URL.
+// runtime: LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS, LYRIC_CONFIG_SESSION_SESSION_COOKIENAME,
+// LYRIC_CONFIG_SESSION_SESSION_SECURE, LYRIC_CONFIG_SESSION_SESSION_HTTPONLY,
+// LYRIC_CONFIG_SESSION_SESSION_SAMESITE, LYRIC_CONFIG_SESSION_REDISSESSION_URL — see
+// the module header above and docs/25-config-blocks.md's
+// LYRIC_CONFIG_<PKG>_<BLOCK>_<FIELD> naming rule (pkg "Session" + block
+// "Session" doubles the segment; RedisSession is a distinct block, so it
+// doesn't).
+
+// Parse `LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS`, falling back to
+// `defaultValue` for a malformed, zero, or negative value — Redis's
+// SETEX/EXPIRE require a strictly positive TTL (#4828). Mirrors
+// `Web.parseCorsMaxAge`'s fail-soft parsing idiom.  Not `pub` — only used
+// internally by `connectRedis()` in this file.
+func parseSessionTtlSeconds(ttlStr: in String, defaultValue: in Int): Int {
+  match tryParseInt(ttlStr) {
+    case Ok(t) -> if t > 0 { t } else { defaultValue }
+    case Err(_) -> defaultValue
+  }
+}
+
 // ─── Factory ──────────────────────────────────────────────────────────────────
 /// Connect to Redis and return a distributed session store.
-/// Reads connection settings from the RedisSession config block.
+/// Reads connection settings from the RedisSession config block:
+/// `LYRIC_CONFIG_SESSION_REDISSESSION_URL` (required — `Err(MISSING_REDIS_URL)`
+/// when absent/empty, rather than tripping the kernel's `requires: url.length
+/// > 0` precondition), `LYRIC_CONFIG_SESSION_REDISSESSION_KEYPREFIX` (default
+/// `session:`), and `LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS` (default 3600 —
+/// previously hardcoded and silently ignored by `create`/`touch`, #3553).
 ///
 /// Any error message returned by the kernel is routed through
 /// `maskUrlCredentials` so a connection string the kernel chose to
@@ -396,8 +424,20 @@ impl SessionStore for InProcessSessionStore {
 @stable(since = "0.1")
 @cfg(feature = "redis")
 pub func connectRedis(): Result[SessionStore, SessionError] {
-  match SessionKernel.connect("", "session:") {
-    case Ok(handle) -> Ok(NativeSessionStore(storeHandle = handle))
+  val url = Env.getVarOrDefault("LYRIC_CONFIG_SESSION_REDISSESSION_URL", "")
+  if url.length == 0 {
+    return Err(
+      SessionError(
+        message = "LYRIC_CONFIG_SESSION_REDISSESSION_URL is not set; connectRedis() requires a Redis connection URL",
+        code = "MISSING_REDIS_URL"
+      )
+    )
+  }
+  val keyPrefix = Env.getVarOrDefault("LYRIC_CONFIG_SESSION_REDISSESSION_KEYPREFIX", "session:")
+  val ttlStr = Env.getVarOrDefault("LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS", "3600")
+  val ttlSeconds = parseSessionTtlSeconds(ttlStr, 3600)
+  match SessionKernel.connect(url, keyPrefix) {
+    case Ok(handle) -> Ok(NativeSessionStore(storeHandle = handle, ttlSeconds = ttlSeconds))
     case Err(err) -> Err(SessionError(message = maskUrlCredentials(err), code = "CONNECT_FAILED"))
   }
 }

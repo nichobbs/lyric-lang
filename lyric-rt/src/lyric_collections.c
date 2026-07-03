@@ -324,7 +324,17 @@ int64_t lyric_map_len(LyricMap* map) {
  * and the dictGetKeys/dictGetValues surface).  Fresh rc=1 lists; the
  * list retains ref-typed entries itself (elems_are_refs from the map's
  * key/value flags), so the caller owns exactly one reference to the
- * list and none to the entries. */
+ * list and none to the entries.
+ *
+ * O(cap), not O(len): every capacity slot is walked regardless of how
+ * many are occupied.  A map's capacity is its high-water mark and never
+ * shrinks on removal (only `map_rehash` on growth reallocates), so a
+ * map populated with many entries and then mostly cleared retains its
+ * peak capacity — a snapshot after that walks every peak-capacity slot
+ * to collect a much smaller live set.  Tracked as a known cost rather
+ * than fixed with an auxiliary occupied-index list, since that would
+ * add bookkeeping overhead to every `lyric_map_set`/`lyric_map_remove`
+ * call to speed up a comparatively rare snapshot operation (#4795). */
 LyricList* lyric_map_keys(LyricMap* map) {
     LyricList* out = lyric_list_new(map->keys_are_strings);
     for (int64_t i = 0; i < map->cap; i++) {

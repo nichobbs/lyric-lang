@@ -1282,3 +1282,31 @@ test "extern func non-string symbol raises P0276" {
   }
   assertTrue(sawP0276, "extern func: P0276 raised for a bare identifier symbol")
 }
+
+// #4748/#4820: parenthesised lambda param lists (`{ (k, v) -> ... }`,
+// grammar.ebnf LambdaParams alternative 3).
+test "lambda: parenthesised param list parses clean" {
+  val pr = parse("package P\nfunc f(): Int {\n  val g = { (k, v) -> k + v }\n  return 0\n}\n")
+  assertEqualInt(diagCount(pr), 0, "lambda: `{ (k, v) -> ... }` parses clean")
+}
+
+// #4818: a failed tentative paren-param parse must not leave stale entries
+// in the speculative param list. `(x + y)` looks like a param list up to
+// `x`, then fails at `+` — exercising the backtrack-and-truncate path added
+// alongside the parenthesised-param feature.
+test "lambda: parenthesised expression body does not leak speculative params" {
+  val pr = parse("package P\nfunc f(): Int {\n  val x = 1\n  val y = 2\n  val g = { (x + y) }\n  return 0\n}\n")
+  assertEqualInt(diagCount(pr), 0, "lambda: `{ (x + y) }` backtracks to a plain block body cleanly")
+}
+
+// #4829: additional parenthesised-param forms not covered above — the
+// zero-param `()` list, and a param with an explicit type annotation.
+test "lambda: empty parenthesised param list parses clean" {
+  val pr = parse("package P\nfunc f(): Int {\n  val g = { () -> 5 }\n  return 0\n}\n")
+  assertEqualInt(diagCount(pr), 0, "lambda: `{ () -> 5 }` parses clean")
+}
+
+test "lambda: parenthesised param with type annotation parses clean" {
+  val pr = parse("package P\nfunc f(): Int {\n  val g = { (k: String) -> k }\n  return 0\n}\n")
+  assertEqualInt(diagCount(pr), 0, "lambda: `{ (k: String) -> k }` parses clean")
+}

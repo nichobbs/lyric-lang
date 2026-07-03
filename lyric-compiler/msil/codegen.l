@@ -3557,6 +3557,53 @@ pub func allocSlotMsil(fctx: in FuncCtx, name: in String, ty: in MsilType): Int 
   }
 }
 
+// Roll back `FuncCtx` slot-allocation state to what it was before a discarded
+// lowering pass, so a caller that re-lowers the same source expression (e.g.
+// `lowerIfExprMsil`'s then-branch re-lowering with a corrected sibling-type
+// hint, #3987) does not leave the first pass's slots behind as dead,
+// unreferenced `LocalVarSig` entries.
+//
+// Truncating `slotTicker`/`locals` alone is NOT enough: `allocSlotMsil`'s
+// generated names for synthetic temps (e.g. `"__ee_elem_" + toString(fctx.
+// slotTicker.count)`) are derived from the CURRENT ticker value, so a second
+// pass that reaches the same allocation point regenerates the IDENTICAL
+// name — and without also purging the stale `fctx.slots`/`fctx.types`
+// entries, `allocSlotMsil`'s `case Some(existing)` branch would silently
+// return the OLD (now out-of-range relative to the truncated `locals` list)
+// slot number instead of allocating a fresh one, which is a worse bug (a
+// mismatched/out-of-range local reference) than the wasted-slot issue being
+// fixed. This walks `fctx.slots` via `mapEntries` (the caller has no record
+// of which names the discarded pass allocated) and removes every entry whose
+// slot index is >= `preSlotCount`, then truncates the counters to match.
+//
+// Scope: this rolls back slot-table state only. A discarded pass that also
+// contains an `await` (Phase B) or `yield` (lazy generator) advances
+// `fctx.phaseBCtx[0].nextAwaitIndex` / `fctx.lazyGenCtx[0].nextYieldIndex` —
+// monotonic index counters this helper does NOT roll back, since those
+// indices are consumed once and correlated 1:1 with Phase A's pre-sized
+// `resumeLabels`/`awaiterFieldNames` arrays; rolling them back would require
+// also re-deriving which resume label each discarded await/yield claimed.
+// Callers must not discard-and-relower a branch that may contain either.
+pub func rollbackFuncCtxSlotsSinceMsil(fctx: in FuncCtx, preSlotCount: in Int): Unit {
+  val staleEntries = mapEntries(fctx.slots)
+  var sei = 0
+  while sei < staleEntries.count {
+    val staleEntry = staleEntries[sei]
+    if staleEntry.value >= preSlotCount {
+      fctx.slots.remove(staleEntry.key)
+      fctx.types.remove(staleEntry.key)
+    }
+    sei = sei + 1
+  }
+  while fctx.slotTicker.count > preSlotCount {
+    fctx.slotTicker.removeAt(fctx.slotTicker.count - 1)
+  }
+  val targetLocalsCount = preSlotCount - fctx.paramCount
+  while fctx.locals.count > targetLocalsCount {
+    fctx.locals.removeAt(fctx.locals.count - 1)
+  }
+}
+
 // Finish a hoisted-`var` heap cell (#1479 v2, Stage 4: typed cells).
 // Precondition: the stack holds `(value, dup-of-value)` after array creation.
 // Stage 4 improvement: use a typed 1-element array instead of List[object].
@@ -7289,16 +7336,53 @@ func lowerIfExprMsil(
       // `else` with `then`'s type as the hint.  If `then` itself erased while
       // `else` came out concrete, re-lower `then` with `else`'s type as the hint
       // (the bare construction is the `then` branch — `if c {newList()} else {a}`).
+      // Snapshot the slot-allocation frontier before the first `then` lowering
+      // pass so it can be rolled back if that pass turns out to be discarded
+      // below (#3987) — otherwise the first pass's slots leak into
+      // `LocalVarSig` as dead, unreferenced entries once the second pass
+      // allocates its own (higher-numbered) replacements.
+      val preThenSlotCount = fctx.slotTicker.count
       val thenInsns: List[MInsn] = newList()
       var thenTy = lowerExprOrBlockMsil(cctx, fctx, thenInsns, thenBranch)
-      val elseInsns: List[MInsn] = newList()
-      val elseTy = lowerBranchWithSiblingHintMsil(cctx, fctx, elseInsns, elseBranch, thenTy)
+      var elseInsns: List[MInsn] = newList()
+      var elseTy = lowerBranchWithSiblingHintMsil(cctx, fctx, elseInsns, elseBranch, thenTy)
       if not isConcreteCollTy(thenTy) and msilHeadFqnMsil(thenTy) != "Std.Core.Option" and (isConcreteCollTy(elseTy) or msilHeadFqnMsil(elseTy) == "Std.Core.Option") {
         while thenInsns.count > 0 {
           thenInsns.removeAt(thenInsns.count - 1)
         }
+        // Roll back any slots the discarded pass allocated (#3987) before
+        // re-lowering with `else`'s type as the hint, so the two passes don't
+        // both leave their allocations live. NOTE: this does not roll back
+        // `fctx.phaseBCtx[0].nextAwaitIndex` / `fctx.lazyGenCtx[0].
+        // nextYieldIndex` — see `rollbackFuncCtxSlotsSinceMsil`'s doc comment.
+        // A `then` branch containing `await`/`yield` that also erases to a
+        // bare collection/Option is an unaudited pre-existing risk this fix
+        // does not address.
+        //
+        // `else` was already lowered (above, against the stale `thenTy`
+        // hint) by the time we get here, so its slot allocations sit ABOVE
+        // `preThenSlotCount` too — the rollback wipes them out along with
+        // the discarded `then` pass's, leaving `elseInsns`'s existing
+        // MLoadLocal/MStoreLocal instructions pointing at slots that no
+        // longer exist in `fctx.locals` (#4826). Re-lower `else` fresh
+        // after `then`'s second pass so its instructions reference the
+        // slots actually allocated this time around.
+        rollbackFuncCtxSlotsSinceMsil(fctx, preThenSlotCount)
         thenTy = lowerBranchWithSiblingHintMsil(cctx, fctx, thenInsns, thenBranch, elseTy)
+        elseInsns = newList()
+        elseTy = lowerBranchWithSiblingHintMsil(cctx, fctx, elseInsns, elseBranch, thenTy)
       }
+
+      // A branch ending in `return`/`throw` (e.g. a `panic(...)` call, whose
+      // static type is `Never`) never reaches `afterL` — it must be excluded
+      // from stack-depth reconciliation between the two arms, exactly like
+      // `lowerMatchExprMsil`'s `armRets` exclusion via `endsWithReturnMsil`
+      // (#4605/#4625). Treating its erased MVoid "value type" as a genuine
+      // void arm wrongly popped the OTHER branch's live value and downgraded
+      // the whole expression's type to MVoid, underflowing the stack at any
+      // caller expecting a value.
+      val thenTerm = endsWithReturnMsil(thenInsns)
+      val elseTerm = endsWithReturnMsil(elseInsns)
 
       // Emit the then block.
       var ti = 0
@@ -7306,14 +7390,19 @@ func lowerIfExprMsil(
         insns.add(thenInsns[ti])
         ti = ti + 1
       }
-      // Case B (then=non-void, else=void): discard the then result BEFORE the
-      // branch to afterL so both paths arrive at afterL with stack depth 0.
-      // Inserting after the else block would leave a type mismatch (value type
-      // vs null reference or similar) that causes PathStackUnexpected at JIT.
-      if thenTy != MVoid and elseTy == MVoid {
-        insns.add(MPop)
+      if not thenTerm {
+        // Case B (then=non-void, else=void): discard the then result BEFORE the
+        // branch to afterL so both paths arrive at afterL with stack depth 0.
+        // Inserting after the else block would leave a type mismatch (value type
+        // vs null reference or similar) that causes PathStackUnexpected at JIT.
+        // Only applies when the else side genuinely falls through as void — a
+        // diverging else (`elseTerm`) never reaches afterL, so the then value
+        // must survive.
+        if thenTy != MVoid and elseTy == MVoid and not elseTerm {
+          insns.add(MPop)
+        }
+        insns.add(MBr(label = afterL))
       }
-      insns.add(MBr(label = afterL))
       insns.add(MLabel(id = elseL))
 
       // Emit the else block.
@@ -7322,13 +7411,28 @@ func lowerIfExprMsil(
         insns.add(elseInsns[ei])
         ei = ei + 1
       }
-      // Case A (then=void, else=non-void): discard the else result.
-      if thenTy == MVoid and elseTy != MVoid {
-        insns.add(MPop)
+      if not elseTerm {
+        // Case A (then=void, else=non-void): discard the else result — only
+        // when `then` genuinely falls through as void; a diverging `then`
+        // (`thenTerm`) never reaches afterL either.
+        if thenTy == MVoid and elseTy != MVoid and not thenTerm {
+          insns.add(MPop)
+        }
       }
       insns.add(MLabel(id = afterL))
-      // Return the effective type: void when branches were normalised, otherwise thenTy.
-      if thenTy == MVoid or elseTy == MVoid {
+      // Return the effective type: the type of whichever branch actually
+      // reaches afterL.  When only one side falls through (the other
+      // diverges via return/throw), its type is the expression's type
+      // outright.  When both fall through, normalise to void if either is
+      // void (legacy behaviour, unchanged).  When both diverge, nothing
+      // reaches afterL and the type is moot — MVoid.
+      if thenTerm and elseTerm {
+        MVoid
+      } else if thenTerm {
+        elseTy
+      } else if elseTerm {
+        thenTy
+      } else if thenTy == MVoid or elseTy == MVoid {
         MVoid
       } else {
         thenTy
@@ -9191,6 +9295,14 @@ func lowerPatternBindMsil(
             case PConstructor(_, _) -> bindPositionalFieldMsil(cctx, fctx, insns, castTy, castSlot, caseClass, caseClassBt, fi, fields[fi], "__nested_")
             // Nested constructor pattern (#3280): the recursive call hits the
             // top-level PConstructor branch, which does the inner isinst-cast.
+            // Nested record pattern (#4608): a `RecordPattern` in a union
+            // constructor's field list must also route through
+            // `bindPositionalFieldMsil` — it loads the field into a slot and
+            // recurses into `lowerPatternBindMsil`'s `PRecord` arm, which does
+            // the downcast + named-field binds.  Without this arm the field was
+            // silently dropped (fell into the wildcard below), so the record's
+            // own fields kept their default value instead of the real one.
+            case PRecord(_, _, _) -> bindPositionalFieldMsil(cctx, fctx, insns, castTy, castSlot, caseClass, caseClassBt, fi, fields[fi], "__rec_fld_")
             case _ -> ()
           }
           fi = fi + 1
@@ -14133,10 +14245,26 @@ func emitExternTargetBody(
             case None -> {
             }
             case Some(_) -> {
-              match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, resolvedFqn, r.memberName, verifySigs) {
-                case Some(_) -> {
+              // A property-typed `@externTarget` (e.g. "System.DateTime.UtcNow")
+              // has no method named `UtcNow` in metadata — only the getter
+              // `get_UtcNow` — so retry against the getter name before
+              // panicking (#4293).  This mirrors the getter fallback the
+              // actual call-emission path below already performs; without it,
+              // any property target that also reaches this explicit-static
+              // verification pre-check (an `@externTarget` with an explicit
+              // static hint) spuriously fails with F0015 even though codegen
+              // would have resolved and emitted the call correctly.
+              val verified = match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, resolvedFqn, r.memberName, verifySigs) {
+                case Some(_) -> true
+                case None -> match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, resolvedFqn, "get_" + r.memberName, verifySigs) {
+                  case Some(_) -> true
+                  case None -> false
                 }
-                case None -> {
+              }
+              match verified {
+                case true -> {
+                }
+                case false -> {
                   var declSigStr = "("
                   var dsi = 0
                   while dsi < verifySigs.count {
