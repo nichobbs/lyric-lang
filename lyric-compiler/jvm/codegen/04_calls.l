@@ -2220,14 +2220,26 @@ func isNumericJvm(ty: in JvmType): Bool {
 // Normalise a numeric value already on the stack to an `int` (JVM `I`).  Byte /
 // char / short / int already occupy an int slot (no-op); long / float / double
 // narrow with the matching conversion opcode.
+// Lyric `Byte` is UNSIGNED (0..255), but a JVM `byte` on the operand stack is
+// signed and sign-extends when reloaded from a field / local / array (200 reads
+// back as -56).  Every widening conversion of a Byte source must mask to the
+// low 8 bits so the wider value is the unsigned one, matching the MSIL backend
+// (`conv.u1`).  Harmless when the byte is already 0..255 (`& 0xFF` is identity);
+// #4855, same unsigned treatment #4551 applied to Byte div/rem.
+func maskByteUnsigned(insns: in List[LInsn]): Unit {
+  insns.add(LIconst(v = 255))
+  insns.add(LIand)
+}
+
 func emitToIntJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
   match srcTy {
     case JLong -> insns.add(LL2i)
     case JFloat -> insns.add(LF2i)
     case JDouble -> insns.add(LD2i)
+    case JByte -> maskByteUnsigned(insns)
     case _ -> {
     }
-  }   // JByte / JChar / JShort / JInt are int-on-stack
+  }   // JChar / JShort / JInt are int-on-stack
 }
 
 func emitToLongJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
@@ -2236,6 +2248,10 @@ func emitToLongJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
     }            // already long
     case JFloat -> insns.add(LF2l)
     case JDouble -> insns.add(LD2l)
+    case JByte -> {
+      maskByteUnsigned(insns)
+      insns.add(LI2l)
+    }
     case _ -> insns.add(LI2l)
   }   // int-like → long
 }
@@ -2246,6 +2262,10 @@ func emitToDoubleJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
     }            // already double
     case JLong -> insns.add(LL2d)
     case JFloat -> insns.add(LF2d)
+    case JByte -> {
+      maskByteUnsigned(insns)
+      insns.add(LI2d)
+    }
     case _ -> insns.add(LI2d)
   }   // int-like → double
 }
