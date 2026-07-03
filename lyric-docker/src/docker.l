@@ -244,7 +244,9 @@ func jsonStringArray(items: in slice[String]): String {
 }
 
 /// Build the JSON body for POST /containers/create.
-func createContainerBody(image: in String, env: in slice[String], binds: in slice[String]): String {
+/// Public so tests can exercise `jsonEscapeValue`'s control-character and
+/// named-escape branches without a live Docker daemon (#4535).
+pub func createContainerBody(image: in String, env: in slice[String], binds: in slice[String]): String {
   return "{\"Image\":\"" + jsonEscapeValue(image) + "\",\"Env\":" + jsonStringArray(env) + ",\"HostConfig\":{\"Binds\":" +
     jsonStringArray(binds) +
     "}}"
@@ -330,19 +332,52 @@ func isFieldKeyPosition(json: in String, pos: in Int): Bool {
   false
 }
 
+/// Like `.indexOf`, but resumes scanning at `from` instead of allocating a
+/// substring of the tail on every call. `.indexOf` on the tail costs a fresh
+/// O(remaining-length) copy per call site; a caller re-scanning past false
+/// positions in a loop (see `extractJsonField`) turns that into O(n^2) over
+/// the whole string. This scans char-by-char from `from`, so each candidate
+/// position only costs O(target.length) instead of O(remaining json length).
+func indexOfFrom(s: in String, target: in String, from: in Int): Int {
+  val sLen = s.length
+  val tLen = target.length
+  if tLen == 0 {
+    return from
+  }
+  var i = from
+  while i + tLen <= sLen {
+    var j = 0
+    var matched = true
+    while j < tLen {
+      if s.substring(i + j, 1) != target.substring(j, 1) {
+        matched = false
+        j = tLen
+      } else {
+        j = j + 1
+      }
+    }
+    if matched {
+      return i
+    }
+    i = i + 1
+  }
+  -1
+}
+
 /// Extract a quoted string field's value from a JSON object, or "" if absent.
 /// Returns the unescaped value. Skips occurrences of the quoted field name
 /// that fall inside an earlier string value (not at a key position).
-func extractJsonField(json: in String, field: in String): String {
+/// Public so tests can exercise `jsonUnescapeValue`'s `\uXXXX` decode branch
+/// against hand-built response bodies without a live Docker daemon (#4535).
+pub func extractJsonField(json: in String, field: in String): String {
   val target = "\"" + field + "\""
   val jsonLen = json.length
   var searchFrom = 0
   while searchFrom < jsonLen {
-    val relPos = json.substring(searchFrom).indexOf(target)
-    if relPos < 0 {
+    val pos = indexOfFrom(json, target, searchFrom)
+    if pos < 0 {
       return ""
     }
-    val pos = searchFrom + relPos
     if isFieldKeyPosition(json, pos) {
       var i = pos + target.length
       var inValue = false

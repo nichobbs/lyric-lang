@@ -23,6 +23,7 @@ import Std.Environment as Environment
 import Std.Uuid
 import Std.Testing
 import Lyric.Cli as Cli
+import Lyric.Manifest as Mf
 
 func tempBase(): String {
   Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
@@ -164,4 +165,72 @@ test "resolveNugetAssets: empty targets yields an empty list" {
   writeFileOrPanic(Path.join(objDir, "project.assets.json"), "{\n  \"targets\": {},\n  \"project\": {}\n}\n")
   val paths = Cli.resolveNugetAssets(mfDir)
   assertEqualInt(paths.count, 0, "resolveNugetAssets: no targets")
+}
+
+func oneEntryNugetSection(): Mf.NugetSection {
+  val entries: List[Mf.NugetEntry] = newList()
+  entries.add(Mf.NugetEntry(name = "Widget", version = "1.0.0"))
+  Mf.NugetSection(entries = entries, target = None, allowNative = false)
+}
+
+func expectSome(reason: in Option[String], label: in String): String {
+  match reason {
+    case Some(r) -> r
+    case None -> panic(label + ": expected Some(reason), got None")
+  }
+}
+
+// The scenario #4770 flagged as untested: `project.assets.json` exists and
+// parses cleanly (it is not missing) but resolves to zero package DLLs — the
+// stale/corrupt case `nugetUnresolvedReason` was extended to cover alongside
+// the pre-existing missing-file case (#4326).
+test "nugetUnresolvedReason: assets.json present but resolves to zero paths warns with the stale reason" {
+  val mfDir = freshTempDir("stale-assets")
+  defer { cleanup(mfDir) }
+  val objDir = Path.join(mfDir, "obj")
+  match File.createDir(objDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create " + objDir + ": " + IOError.message(e))
+  }
+  // Parses cleanly (empty targets) — present but stale/corrupt, not missing.
+  writeFileOrPanic(Path.join(objDir, "project.assets.json"), "{\n  \"targets\": {},\n  \"project\": {}\n}\n")
+
+  val reason = Cli.nugetUnresolvedReason(mfDir, Some(value = oneEntryNugetSection()), newList())
+  val r = expectSome(reason, "nugetUnresolvedReason: stale assets.json")
+  assertEqual(r, "is stale or could not be resolved", "nugetUnresolvedReason: stale assets.json reason text")
+}
+
+// The pre-existing behavior #4770 wants preserved alongside the new stale
+// case: no `obj/project.assets.json` at all (never restored).
+test "nugetUnresolvedReason: missing assets.json warns with the not-found reason" {
+  val mfDir = freshTempDir("missing-assets")
+  defer { cleanup(mfDir) }
+
+  val reason = Cli.nugetUnresolvedReason(mfDir, Some(value = oneEntryNugetSection()), newList())
+  val r = expectSome(reason, "nugetUnresolvedReason: missing assets.json")
+  assertEqual(r, "was not found", "nugetUnresolvedReason: missing assets.json reason text")
+}
+
+test "nugetUnresolvedReason: no [nuget] section yields no warning" {
+  val mfDir = freshTempDir("no-nuget-section")
+  defer { cleanup(mfDir) }
+
+  val reason = Cli.nugetUnresolvedReason(mfDir, None, newList())
+  match reason {
+    case Some(_) -> panic("nugetUnresolvedReason: expected None when nugetOpt is None")
+    case None -> ()
+  }
+}
+
+test "nugetUnresolvedReason: resolved paths present yields no warning" {
+  val mfDir = freshTempDir("resolved-paths")
+  defer { cleanup(mfDir) }
+  val resolved: List[String] = newList()
+  resolved.add("/fake/pkgs/widget/1.0.0/lib/netstandard2.0/Widget.dll")
+
+  val reason = Cli.nugetUnresolvedReason(mfDir, Some(value = oneEntryNugetSection()), resolved)
+  match reason {
+    case Some(_) -> panic("nugetUnresolvedReason: expected None when nugetPaths is non-empty")
+    case None -> ()
+  }
 }
