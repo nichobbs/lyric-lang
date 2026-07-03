@@ -49,12 +49,15 @@
 //! `NativeWeak[T]` with `upgrade(): Option[T]` (N2.5), generic
 //! records/unions/functions via lazy per-type-argument-tuple
 //! instantiation (N3.1), tuples as synthesised `__tuple<...>` records
-//! (N3.3), and the `nativeAddrOf` builtin (N4.2).
+//! (N3.3), the `nativeAddrOf` builtin (N4.2), `List[T]` / `Map[K, V]`
+//! on the lyric-rt kernels with `for` over lists (N5.8), Unit-typed
+//! union/record payload fields (`Result[Unit, E]`), and diverging
+//! (`panic`) branches in value-position `if`/`match` (N5.9).
 //!
 //! Not yet lowered (each panics with a construct-naming message, per
 //! the MSIL/JVM backend convention for backend gaps): interfaces and
-//! protected types (rest of N3), function references (`&f`), `for`,
-//! module-level `val`, collections (N5), async (Phase 2).
+//! protected types (rest of N3), function references (`&f`),
+//! module-level `val`, `slice[T]`, async (Phase 2).
 package Lyric.LlvmCodegen
 
 import Std.Core
@@ -235,6 +238,13 @@ record Ctx {
   trampolines: Map[String, String]
   // NativeWeak target types by weak-struct name (N2.5).
   weakTargets: Map[String, NType]
+  // Collection instantiations (N5.8): element type by list-struct name;
+  // key / value types by map-struct name.  All share the fixed
+  // LyricList / LyricMap C layouts — the per-instantiation struct name
+  // only preserves the Lyric-level element typing for method lowering.
+  listElems: Map[String, NType]
+  mapKeyTys: Map[String, NType]
+  mapValTys: Map[String, NType]
   // ARC state (per function).  `scopeRefs` stacks the ref-typed locals
   // each lexical scope owns; `tempScopes` stacks the owned temporaries
   // of each evaluation region; the depth lists snapshot both stacks at
@@ -572,7 +582,35 @@ func sizeOfN(t: in NType): Int {
     case NDouble -> 8
     case NPtr(_) -> 8
     case NArray(elem, size) -> sizeOfN(elem) * size
+    // A Unit field (e.g. `Result[Unit, E]`'s Ok payload) occupies one
+    // undef byte — see layoutFieldTys.
+    case NVoid -> 1
     case _ -> panic("Lyric.LlvmCodegen: by-value aggregate fields are not supported in native heap layouts")
+  }
+}
+
+/// Struct-definition field types for a record/union-case layout:
+/// Unit-typed fields keep their slot (GEP indices must line up with the
+/// NRecInfo/NUnionCaseInfo field positions) but `void` is not a valid
+/// LLVM field type, so each lowers to one undef `i8`.  Construction and
+/// reads skip Unit fields entirely — a Unit value carries no data.
+func layoutFieldTys(tys: in List[NType]): List[NType] {
+  val mapped: List[NType] = newList()
+  var i = 0
+  while i < tys.count {
+    match tys[i] {
+      case NVoid -> mapped.add(NI8)
+      case t -> mapped.add(t)
+    }
+    i = i + 1
+  }
+  mapped
+}
+
+func isVoidNType(t: in NType): Bool {
+  match t {
+    case NVoid -> true
+    case _ -> false
   }
 }
 
@@ -1327,7 +1365,7 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
       lowerRecordConstructVals(ctx, insns, tupleRecInfo(ctx, elemTys), elems)
     }
     case EList(_) -> panic("Lyric.LlvmCodegen: list literals are not yet supported for --target native (collections are Phase N2/N5)")
-    case EIndex(_, _) -> panic("Lyric.LlvmCodegen: indexing is not yet supported for --target native (Phase N2)")
+    case EIndex(receiver, indices) -> lowerCollectionIndex(ctx, insns, receiver, indices, expr.span.startPos.line)
     case _ -> panic("Lyric.LlvmCodegen: this expression form is not yet supported for --target native (Phase N1)")
   }
 }
@@ -1663,6 +1701,24 @@ func lowerMember(ctx: in Ctx, insns: in List[NInsn], receiver: in Expr, memberNa
     }
     panic("Lyric.LlvmCodegen: String member '." + memberName + "' is not yet supported for --target native (Phase N1)")
   }
+  // Collections (N5.8): `.count` on List/Map receivers.
+  if memberName == "count" {
+    match listElemOfType(ctx, v.ty) {
+      case Some(_) -> return listCountVal(ctx, insns, collectionAsI8(ctx, insns, v))
+      case None -> {
+      }
+    }
+    match mapKeyOfType(ctx, v.ty) {
+      case Some(_) -> {
+        val n = callRuntime(ctx, insns, "lyric_map_len", NI64, arg1(NPtr(pointee = NI8), collectionAsI8(ctx, insns, v)))
+        val dest = freshTmp(ctx)
+        insns.add(NTrunc(dest = dest, fromTy = NI64, value = n.value, toTy = NI32))
+        return NVal(ty = NI32, value = NLocal(name = dest))
+      }
+      case None -> {
+      }
+    }
+  }
   // Record field access: GEP + load (a borrow — the record keeps
   // ownership of the field value).
   match recInfoOfType(ctx, v.ty) {
@@ -1696,6 +1752,10 @@ func lowerRecordFieldLoad(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInfo, v
   val idx = recFieldIndex(ri, fieldName)
   if idx < 0 {
     panic("Lyric.LlvmCodegen: record '" + ri.irName + "' has no field '" + fieldName + "'")
+  }
+  // A Unit field has no stored data (layoutFieldTys).
+  if isVoidNType(ri.fieldTys[idx]) {
+    return NVal(ty = NVoid, value = NUndef(ty = NVoid))
   }
   val structTy = match v.ty { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
   val fieldPtr = freshTmp(ctx)
@@ -2111,6 +2171,35 @@ func lowerCall(ctx: in Ctx, insns: in List[NInsn], fnExpr: in Expr, args: in Lis
           // checker's N0100 charge, like nativeAddrOf.
           return NVal(ty = NPtr(pointee = NI8), value = NLitNull(ty = NPtr(pointee = NI8)))
         }
+        if n == "mapGet" and args.count == 2 {
+          // Reserved Std.Collections accessor (N5.8): its pure-Lyric
+          // body routes through an out-mode kernel call the native
+          // backend does not lower.
+          val m = lowerCallArgExpecting0Plain(ctx, insns, args)
+          return lowerMapGetBuiltin(ctx, insns, m, args)
+        }
+        if n == "dictGetKeys" and args.count == 1 {
+          val m = lowerCallArgExpecting0Plain(ctx, insns, args)
+          val kTy = match mapKeyOfType(ctx, m.ty) {
+            case Some(t) -> t
+            case None -> panic("Lyric.LlvmCodegen: 'dictGetKeys' is reserved for Std.Collections maps on --target native")
+          }
+          return lowerMapSnapshotBuiltin(ctx, insns, m, "lyric_map_keys", kTy)
+        }
+        if n == "dictGetValues" and args.count == 1 {
+          val m = lowerCallArgExpecting0Plain(ctx, insns, args)
+          val vTy = match mapValOfType(ctx, m.ty) {
+            case Some(t) -> t
+            case None -> panic("Lyric.LlvmCodegen: 'dictGetValues' is reserved for Std.Collections maps on --target native")
+          }
+          return lowerMapSnapshotBuiltin(ctx, insns, m, "lyric_map_values", vTy)
+        }
+        if n == "newList" or n == "newListWithCapacity" or n == "newMap" {
+          panic(
+            "Lyric.LlvmCodegen: '" + n +
+              "' needs its element types on --target native: annotate the binding (val xs: List[Int] = newList()) or pass explicit type arguments (newList[Int]())"
+          )
+        }
         if n == "nativeAddrOf" and args.count == 1 {
           // The address of a local's stack slot (N4.2).  The alloca IS
           // the pointer; mutability and placement rules (var-only,
@@ -2158,8 +2247,76 @@ func lowerCall(ctx: in Ctx, insns: in List[NInsn], fnExpr: in Expr, args: in Lis
         val recvVal = lowerExpr(ctx, insns, receiver)
         match lowerScalarMethodCall(ctx, insns, recvVal, memberName, args, line) {
           case Some(v) -> return v
+          case None -> {
+          }
+        }
+        match lowerCollectionMethodCall(ctx, insns, recvVal, memberName, args) {
+          case Some(v) -> return v
           case None -> return lowerUfcsCall(ctx, insns, recvVal, memberName, args, line)
         }
+      }
+    }
+    case ETypeApp(tfn, targs) -> {
+      // Explicit collection constructors: newList[Int]() / newMap[K, V]().
+      var tname = ""
+      match tfn.kind {
+        case EPath(tp) -> {
+          if tp.segments.count == 1 {
+            tname = tp.segments[0]
+          }
+        }
+        case _ -> {
+        }
+      }
+      if (tname == "newList" or tname == "newListWithCapacity") and targs.count == 1 {
+        match targs[0] {
+          case TAType(inner) -> {
+            evalCtorArgsForEffect(ctx, insns, args)
+            return constructList(ctx, insns, typeToN(ctx, inner))
+          }
+          case TAValue(_) -> panic("Lyric.LlvmCodegen: newList takes a type argument")
+        }
+      }
+      if tname == "newMap" and targs.count == 2 {
+        var kTy = NVoid
+        var vTy = NVoid
+        match targs[0] {
+          case TAType(inner) -> {
+            kTy = typeToN(ctx, inner)
+          }
+          case TAValue(_) -> panic("Lyric.LlvmCodegen: newMap takes type arguments")
+        }
+        match targs[1] {
+          case TAType(inner) -> {
+            vTy = typeToN(ctx, inner)
+          }
+          case TAValue(_) -> panic("Lyric.LlvmCodegen: newMap takes type arguments")
+        }
+        return constructMap(ctx, insns, kTy, vTy)
+      }
+    }
+    case EIndex(ir, idxs) -> {
+      // `newList[Long]()` parses as a call on an index expression, not
+      // an ETypeApp — recover the type arguments from the index
+      // expressions.
+      var iname = ""
+      match ir.kind {
+        case EPath(ip) -> {
+          if ip.segments.count == 1 {
+            iname = ip.segments[0]
+          }
+        }
+        case _ -> {
+        }
+      }
+      if (iname == "newList" or iname == "newListWithCapacity") and idxs.count == 1 {
+        evalCtorArgsForEffect(ctx, insns, args)
+        return constructList(ctx, insns, typeToN(ctx, exprAsTypeExpr(idxs[0])))
+      }
+      if iname == "newMap" and idxs.count == 2 {
+        val kTy = typeToN(ctx, exprAsTypeExpr(idxs[0]))
+        val vTy = typeToN(ctx, exprAsTypeExpr(idxs[1]))
+        return constructMap(ctx, insns, kTy, vTy)
       }
     }
     case _ -> {
@@ -2836,9 +2993,10 @@ func registerRecordLayout(
   val defnFields: List[NType] = newList()
   defnFields.add(NI32)
   defnFields.add(NPtr(pointee = NI8))
+  val layoutTys = layoutFieldTys(tys)
   var fi = 0
-  while fi < tys.count {
-    defnFields.add(tys[fi])
+  while fi < layoutTys.count {
+    defnFields.add(layoutTys[fi])
     fi = fi + 1
   }
   typeDefs.add(NTypeDefn(name = ri.irName, fields = defnFields))
@@ -2922,7 +3080,9 @@ func registerUnionLayout(
   var ci2 = 0
   while ci2 < cases.count {
     if cases[ci2].fieldTys.count > 0 {
-      typeDefs.add(NTypeDefn(name = casePayloadStructName(ui, cases[ci2].name), fields = cases[ci2].fieldTys))
+      typeDefs.add(
+        NTypeDefn(name = casePayloadStructName(ui, cases[ci2].name), fields = layoutFieldTys(cases[ci2].fieldTys))
+      )
     }
     // Case-name entries resolve constructor calls and patterns.  The
     // unqualified name mirrors source scoping (first-wins).
@@ -3248,7 +3408,10 @@ func trampolineFor(ctx: in Ctx, t: in TypeExpr): String {
 /// Extern-call argument adaptation (N4.5): a closure value meeting a
 /// function-pointer parameter becomes its trampoline symbol; a closure
 /// value meeting a NativePtr[Byte] parameter becomes the closure
-/// pointer itself (the userdata).  Everything else coerces normally.
+/// pointer itself (the userdata).  A List/Map value meeting a
+/// NativePtr[Byte] parameter passes as its raw kernel pointer (the
+/// lyric-rt process/collection helpers take container handles that
+/// way).  Everything else coerces normally.
 func externAdaptArg(ctx: in Ctx, insns: in List[NInsn], declTyExpr: in TypeExpr, declTy: in NType, v: in NVal): NVal {
   match declTy {
     case NFnPtr(_, _) -> {
@@ -3270,12 +3433,690 @@ func externAdaptArg(ctx: in Ctx, insns: in List[NInsn], declTyExpr: in TypeExpr,
       case None -> {
       }
     }
+    match listElemOfType(ctx, v.ty) {
+      case Some(_) -> {
+        val cast = freshTmp(ctx)
+        insns.add(NBitcast(dest = cast, fromTy = v.ty, value = v.value, toTy = NPtr(pointee = NI8)))
+        return NVal(ty = NPtr(pointee = NI8), value = NLocal(name = cast))
+      }
+      case None -> {
+      }
+    }
+    match mapKeyOfType(ctx, v.ty) {
+      case Some(_) -> {
+        val cast = freshTmp(ctx)
+        insns.add(NBitcast(dest = cast, fromTy = v.ty, value = v.value, toTy = NPtr(pointee = NI8)))
+        return NVal(ty = NPtr(pointee = NI8), value = NLocal(name = cast))
+      }
+      case None -> {
+      }
+    }
   }
   coerceTo(ctx, insns, v, declTy)
 }
 
 /// `NativeWeak[T]`: a non-owning pointer sharing T's representation
 /// behind a marker struct name (excluded from ARC by `isRefNType`).
+func listHeaderFields(): List[NType] {
+  // ─── Collections (N5.8) ──────────────────────────────────────────────────────
+  // `List[T]` / `Map[K, V]` lower to the lyric-rt C kernels
+  // (`lyric_list_*` / `lyric_map_*`): a single fixed layout storing every
+  // element in a 64-bit slot, with ref-typed entries retained by the
+  // container itself (`elems_are_refs` / `vals_are_refs`, declared at
+  // construction).  Each instantiation gets its own struct NAME so the
+  // Lyric-level element types survive to method lowering, but the fields
+  // mirror the one C layout and all access goes through runtime calls —
+  // the emitted struct definitions are never GEPed.
+  val fields: List[NType] = newList()
+  fields.add(NI32)
+  fields.add(NPtr(pointee = NI8))
+  fields.add(NPtr(pointee = NI64))
+  fields.add(NI64)
+  fields.add(NI64)
+  fields.add(NI32)
+  fields
+}
+
+func listNType(ctx: in Ctx, elem: in NType): NType {
+  val nm = "__list<" + mangleNTypeArg(elem) + ">"
+  val fields = listHeaderFields()
+  if not ctx.listElems.containsKey(nm) {
+    ctx.listElems.add(nm, elem)
+    ctx.moduleTypeDefs.add(NTypeDefn(name = nm, fields = fields))
+  }
+  NPtr(pointee = NStruct(name = nm, fields = fields))
+}
+
+// The C LyricMap is opaque; only the ARC header prefix is declared.
+func mapHeaderFields(): List[NType] {
+  val fields: List[NType] = newList()
+  fields.add(NI32)
+  fields.add(NPtr(pointee = NI8))
+  fields
+}
+
+func mapNType(ctx: in Ctx, k: in NType, v: in NType): NType {
+  val nm = "__map<" + mangleNTypeArg(k) + "," + mangleNTypeArg(v) + ">"
+  val fields = mapHeaderFields()
+  if not ctx.mapKeyTys.containsKey(nm) {
+    ctx.mapKeyTys.add(nm, k)
+    ctx.mapValTys.add(nm, v)
+    ctx.moduleTypeDefs.add(NTypeDefn(name = nm, fields = fields))
+  }
+  NPtr(pointee = NStruct(name = nm, fields = fields))
+}
+
+func listElemOfType(ctx: in Ctx, t: in NType): Option[NType] {
+  match t {
+    case NPtr(pointee) -> {
+      match pointee {
+        case NStruct(name, _) -> mapGet(ctx.listElems, name)
+        case _ -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+func mapKeyOfType(ctx: in Ctx, t: in NType): Option[NType] {
+  match t {
+    case NPtr(pointee) -> {
+      match pointee {
+        case NStruct(name, _) -> mapGet(ctx.mapKeyTys, name)
+        case _ -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+func mapValOfType(ctx: in Ctx, t: in NType): Option[NType] {
+  match t {
+    case NPtr(pointee) -> {
+      match pointee {
+        case NStruct(name, _) -> mapGet(ctx.mapValTys, name)
+        case _ -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+// Widen a value to the container's 64-bit slot representation.
+func slotOfVal(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NValue {
+  if isRefNType(v.ty) {
+    val dest = freshTmp(ctx)
+    insns.add(NPtrToInt(dest = dest, fromTy = v.ty, value = v.value, toTy = NI64))
+    return NLocal(name = dest)
+  }
+  match v.ty {
+    case NI64 -> v.value
+    case NDouble -> {
+      val dest = freshTmp(ctx)
+      insns.add(NBitcast(dest = dest, fromTy = NDouble, value = v.value, toTy = NI64))
+      NLocal(name = dest)
+    }
+    case NI32 -> {
+      val dest = freshTmp(ctx)
+      insns.add(NSExt(dest = dest, fromTy = NI32, value = v.value, toTy = NI64))
+      NLocal(name = dest)
+    }
+    case NI8 -> {
+      val dest = freshTmp(ctx)
+      insns.add(NZExt(dest = dest, fromTy = NI8, value = v.value, toTy = NI64))
+      NLocal(name = dest)
+    }
+    case NI1 -> {
+      val dest = freshTmp(ctx)
+      insns.add(NZExt(dest = dest, fromTy = NI1, value = v.value, toTy = NI64))
+      NLocal(name = dest)
+    }
+    case _ -> panic("Lyric.LlvmCodegen: this element type cannot be stored in a List/Map slot for --target native: " + nTypeToIrString(v.ty))
+  }
+}
+
+// Narrow a 64-bit slot back to the element type.  Ref-typed results are
+// BORROWS (the kernel get does not retain); binding retains, matching
+// record-field reads.
+func valOfSlot(ctx: in Ctx, insns: in List[NInsn], slot: in NValue, elemTy: in NType): NVal {
+  if isRefNType(elemTy) {
+    val dest = freshTmp(ctx)
+    insns.add(NIntToPtr(dest = dest, fromTy = NI64, value = slot, toTy = elemTy))
+    return NVal(ty = elemTy, value = NLocal(name = dest))
+  }
+  match elemTy {
+    case NI64 -> NVal(ty = NI64, value = slot)
+    case NDouble -> {
+      val dest = freshTmp(ctx)
+      insns.add(NBitcast(dest = dest, fromTy = NI64, value = slot, toTy = NDouble))
+      NVal(ty = NDouble, value = NLocal(name = dest))
+    }
+    case NI32 -> {
+      val dest = freshTmp(ctx)
+      insns.add(NTrunc(dest = dest, fromTy = NI64, value = slot, toTy = NI32))
+      NVal(ty = NI32, value = NLocal(name = dest))
+    }
+    case NI8 -> {
+      val dest = freshTmp(ctx)
+      insns.add(NTrunc(dest = dest, fromTy = NI64, value = slot, toTy = NI8))
+      NVal(ty = NI8, value = NLocal(name = dest))
+    }
+    case NI1 -> {
+      val dest = freshTmp(ctx)
+      insns.add(NTrunc(dest = dest, fromTy = NI64, value = slot, toTy = NI1))
+      NVal(ty = NI1, value = NLocal(name = dest))
+    }
+    case _ -> panic("Lyric.LlvmCodegen: this element type cannot be read from a List/Map slot for --target native: " + nTypeToIrString(elemTy))
+  }
+}
+
+// The list/map receiver as the i8* the runtime functions take.
+func collectionAsI8(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NValue {
+  val dest = freshTmp(ctx)
+  insns.add(NBitcast(dest = dest, fromTy = v.ty, value = v.value, toTy = NPtr(pointee = NI8)))
+  NLocal(name = dest)
+}
+
+func refFlagOf(t: in NType): NValue {
+  if isRefNType(t) {
+    return NLitInt(v = 1i64, ty = NI32)
+  }
+  NLitInt(v = 0i64, ty = NI32)
+}
+
+func constructList(ctx: in Ctx, insns: in List[NInsn], elem: in NType): NVal {
+  val raw = callRuntime(ctx, insns, "lyric_list_new", NPtr(pointee = NI8), arg1(NI32, refFlagOf(elem)))
+  val ty = listNType(ctx, elem)
+  val dest = freshTmp(ctx)
+  insns.add(NBitcast(dest = dest, fromTy = NPtr(pointee = NI8), value = raw.value, toTy = ty))
+  val outV = NVal(ty = ty, value = NLocal(name = dest))
+  registerTemp(ctx, outV)
+  outV
+}
+
+func constructMap(ctx: in Ctx, insns: in List[NInsn], k: in NType, v: in NType): NVal {
+  var keyFlag = NLitInt(v = 0i64, ty = NI32)
+  if isStringNType(k) {
+    keyFlag = NLitInt(v = 1i64, ty = NI32)
+  } else {
+    if isRefNType(k) {
+      panic("Lyric.LlvmCodegen: Map keys on --target native must be String or a scalar type; got " + nTypeToIrString(k))
+    }
+  }
+  val mArgs: List[NArg] = newList()
+  mArgs.add(NArg(ty = NI32, value = keyFlag))
+  mArgs.add(NArg(ty = NI32, value = refFlagOf(v)))
+  val raw = callRuntime(ctx, insns, "lyric_map_new", NPtr(pointee = NI8), mArgs)
+  val ty = mapNType(ctx, k, v)
+  val dest = freshTmp(ctx)
+  insns.add(NBitcast(dest = dest, fromTy = NPtr(pointee = NI8), value = raw.value, toTy = ty))
+  val outV = NVal(ty = ty, value = NLocal(name = dest))
+  registerTemp(ctx, outV)
+  outV
+}
+
+/// The capacity hint of `newListWithCapacity(n)` has no kernel
+/// equivalent (lyric_list_new grows on demand); the argument
+/// expression still evaluates for effect.
+func evalCtorArgsForEffect(ctx: in Ctx, insns: in List[NInsn], ctorArgs: in List[CallArg]): Unit {
+  var ai = 0
+  while ai < ctorArgs.count {
+    match ctorArgs[ai] {
+      case CAPositional(ex) -> {
+        val _ = lowerExpr(ctx, insns, ex)
+      }
+      case CANamed(_, value, _) -> {
+        val _ = lowerExpr(ctx, insns, value)
+      }
+    }
+    ai = ai + 1
+  }
+}
+
+/// Bare `newList()` / `newListWithCapacity(n)` / `newMap()` construct
+/// against the expected collection type — the type arguments live in
+/// the binding annotation, mirroring the managed kernels' generic
+/// constructors.  (Explicit `newList[Int]()` type applications resolve
+/// in lowerCall without an expected type.)
+func collectionConstructForExpected(ctx: in Ctx, insns: in List[NInsn], e: in Expr, want: in NType): Option[NVal] {
+  var nm = ""
+  var ctorArgs: List[CallArg] = newList()
+  match e.kind {
+    case ECall(fn, callArgs) -> {
+      match fn.kind {
+        case EPath(p) -> {
+          if p.segments.count == 1 {
+            nm = p.segments[0]
+          }
+        }
+        case _ -> {
+        }
+      }
+      ctorArgs = callArgs
+    }
+    case _ -> {
+    }
+  }
+  if nm == "newList" or nm == "newListWithCapacity" {
+    match listElemOfType(ctx, want) {
+      case Some(elem) -> {
+        evalCtorArgsForEffect(ctx, insns, ctorArgs)
+        return Some(value = constructList(ctx, insns, elem))
+      }
+      case None -> {
+      }
+    }
+  }
+  if nm == "newMap" and ctorArgs.count == 0 {
+    match mapKeyOfType(ctx, want) {
+      case Some(k) -> {
+        match mapValOfType(ctx, want) {
+          case Some(v) -> return Some(value = constructMap(ctx, insns, k, v))
+          case None -> {
+          }
+        }
+      }
+      case None -> {
+      }
+    }
+  }
+  None
+}
+
+/// Instance methods on List[T] / Map[K, V] receivers, lowered to the
+/// lyric-rt kernels (the collections surface has no Lyric-declared
+/// method bodies — on managed targets these dispatch to the BCL).
+func lowerCollectionMethodCall(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  recv: in NVal,
+  name: in String,
+  args: in List[CallArg],
+): Option[NVal] {
+  match listElemOfType(ctx, recv.ty) {
+    case Some(elem) -> {
+      val recvP = collectionAsI8(ctx, insns, recv)
+      if name == "add" and args.count == 1 {
+        val v = lowerCallArgExpecting(ctx, insns, args, 0, elem)
+        val pArgs: List[NArg] = newList()
+        pArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+        pArgs.add(NArg(ty = NI64, value = slotOfVal(ctx, insns, v)))
+        return Some(value = callRuntime(ctx, insns, "lyric_list_push", NVoid, pArgs))
+      }
+      if name == "set" and args.count == 2 {
+        val idx = lowerCallArgExpecting(ctx, insns, args, 0, NI64)
+        val v = lowerCallArgExpecting(ctx, insns, args, 1, elem)
+        val pArgs: List[NArg] = newList()
+        pArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+        pArgs.add(NArg(ty = NI64, value = idx.value))
+        pArgs.add(NArg(ty = NI64, value = slotOfVal(ctx, insns, v)))
+        return Some(value = callRuntime(ctx, insns, "lyric_list_set", NVoid, pArgs))
+      }
+      if name == "removeAt" and args.count == 1 {
+        val idx = lowerCallArgExpecting(ctx, insns, args, 0, NI64)
+        val pArgs: List[NArg] = newList()
+        pArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+        pArgs.add(NArg(ty = NI64, value = idx.value))
+        return Some(value = callRuntime(ctx, insns, "lyric_list_remove_at", NVoid, pArgs))
+      }
+      if name == "clear" and args.count == 0 {
+        return Some(value = callRuntime(ctx, insns, "lyric_list_clear", NVoid, arg1(NPtr(pointee = NI8), recvP)))
+      }
+      if name == "count" and args.count == 0 {
+        return Some(value = listCountVal(ctx, insns, recvP))
+      }
+      return None
+    }
+    case None -> {
+    }
+  }
+  match mapKeyOfType(ctx, recv.ty) {
+    case Some(k) -> {
+      val vTy = match mapValOfType(ctx, recv.ty) {
+        case Some(t) -> t
+        case None -> panic("Lyric.LlvmCodegen: internal — map type without a value type")
+      }
+      val recvP = collectionAsI8(ctx, insns, recv)
+      if name == "add" and args.count == 2 {
+        val kv = lowerCallArgExpecting(ctx, insns, args, 0, k)
+        val vv = lowerCallArgExpecting(ctx, insns, args, 1, vTy)
+        val pArgs: List[NArg] = newList()
+        pArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+        pArgs.add(NArg(ty = NI64, value = slotOfVal(ctx, insns, kv)))
+        pArgs.add(NArg(ty = NI64, value = slotOfVal(ctx, insns, vv)))
+        return Some(value = callRuntime(ctx, insns, "lyric_map_set", NVoid, pArgs))
+      }
+      if name == "containsKey" and args.count == 1 {
+        val kv = lowerCallArgExpecting(ctx, insns, args, 0, k)
+        val pArgs: List[NArg] = newList()
+        pArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+        pArgs.add(NArg(ty = NI64, value = slotOfVal(ctx, insns, kv)))
+        val r = callRuntime(ctx, insns, "lyric_map_contains", NI32, pArgs)
+        return Some(value = i32ToBool(ctx, insns, r))
+      }
+      if name == "remove" and args.count == 1 {
+        val kv = lowerCallArgExpecting(ctx, insns, args, 0, k)
+        val pArgs: List[NArg] = newList()
+        pArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+        pArgs.add(NArg(ty = NI64, value = slotOfVal(ctx, insns, kv)))
+        val r = callRuntime(ctx, insns, "lyric_map_remove", NI32, pArgs)
+        return Some(value = i32ToBool(ctx, insns, r))
+      }
+      if name == "count" and args.count == 0 {
+        val n = callRuntime(ctx, insns, "lyric_map_len", NI64, arg1(NPtr(pointee = NI8), recvP))
+        val dest = freshTmp(ctx)
+        insns.add(NTrunc(dest = dest, fromTy = NI64, value = n.value, toTy = NI32))
+        return Some(value = NVal(ty = NI32, value = NLocal(name = dest)))
+      }
+      return None
+    }
+    case None -> {
+    }
+  }
+  None
+}
+
+func lowerCallArgExpecting(ctx: in Ctx, insns: in List[NInsn], args: in List[CallArg], i: in Int, want: in NType): NVal {
+  match args[i] {
+    case CAPositional(ex) -> lowerExprExpecting(ctx, insns, ex, want)
+    case CANamed(_, value, _) -> lowerExprExpecting(ctx, insns, value, want)
+  }
+}
+
+// Recover a type expression from an index-position expression: the
+// parser reads `newList[Long]` as indexing, so the "index" is really a
+// type name (possibly a nested generic application, which parses as
+// nested indexing).
+func exprAsTypeExpr(e: in Expr): TypeExpr {
+  match e.kind {
+    case EPath(p) -> TypeExpr(kind = TRef(path = p), span = e.span)
+    case EIndex(ir, idxs) -> {
+      match ir.kind {
+        case EPath(hp) -> {
+          val targs: List[TypeArg] = newList()
+          var i = 0
+          while i < idxs.count {
+            targs.add(TAType(ty = exprAsTypeExpr(idxs[i])))
+            i = i + 1
+          }
+          TypeExpr(kind = TGenericApp(head = hp, args = targs), span = e.span)
+        }
+        case _ -> panic("Lyric.LlvmCodegen: this type argument form is not supported for --target native")
+      }
+    }
+    case EParen(inner) -> exprAsTypeExpr(inner)
+    case _ -> panic("Lyric.LlvmCodegen: this type argument form is not supported for --target native")
+  }
+}
+
+func lowerCallArgExpecting0Plain(ctx: in Ctx, insns: in List[NInsn], args: in List[CallArg]): NVal {
+  match args[0] {
+    case CAPositional(ex) -> lowerExpr(ctx, insns, ex)
+    case CANamed(_, value, _) -> lowerExpr(ctx, insns, value)
+  }
+}
+
+func listCountVal(ctx: in Ctx, insns: in List[NInsn], recvP: in NValue): NVal {
+  val n = callRuntime(ctx, insns, "lyric_list_len", NI64, arg1(NPtr(pointee = NI8), recvP))
+  val dest = freshTmp(ctx)
+  insns.add(NTrunc(dest = dest, fromTy = NI64, value = n.value, toTy = NI32))
+  NVal(ty = NI32, value = NLocal(name = dest))
+}
+
+func i32ToBool(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NVal {
+  val dest = freshTmp(ctx)
+  insns.add(NICmp(dest = dest, pred = INe, ty = NI32, a = v.value, b = NLitInt(v = 0i64, ty = NI32)))
+  NVal(ty = NI1, value = NLocal(name = dest))
+}
+
+/// `mapGet(m, key): Option[V]` — the canonical map accessor from
+/// `Std.Collections`, lowered directly against the kernel out-param
+/// call (its pure-Lyric body uses an `out`-mode parameter the native
+/// backend does not lower).  The read value is a borrow; Some's field
+/// store retains it (the same protocol as lowerWeakUpgrade, minus the
+/// transferred +1).
+func lowerMapGetBuiltin(ctx: in Ctx, insns: in List[NInsn], m: in NVal, args: in List[CallArg]): NVal {
+  val kTy = match mapKeyOfType(ctx, m.ty) {
+    case Some(t) -> t
+    case None -> panic("Lyric.LlvmCodegen: 'mapGet' is reserved for Std.Collections maps on --target native (got " + nTypeToIrString(m.ty) + ")")
+  }
+  val vTy = match mapValOfType(ctx, m.ty) {
+    case Some(t) -> t
+    case None -> panic("Lyric.LlvmCodegen: internal — map type without a value type")
+  }
+  val optKey = match resolveGenericUnionKey(ctx, "Option", "Option") {
+    case Some(kk) -> kk
+    case None -> panic("Lyric.LlvmCodegen: mapGet needs a generic union named 'Option' (with cases Some/None) in the import closure")
+  }
+  val argTys: List[NType] = newList()
+  argTys.add(vTy)
+  val ui = match instantiateGenericUnionOpt(ctx, optKey, argTys) {
+    case Some(u) -> u
+    case None -> panic("Lyric.LlvmCodegen: cannot instantiate Option for mapGet")
+  }
+  var someIdx = 0 - 1
+  var noneIdx = 0 - 1
+  var ci = 0
+  while ci < ui.cases.count {
+    if ui.cases[ci].name == "Some" {
+      someIdx = ci
+    }
+    if ui.cases[ci].name == "None" {
+      noneIdx = ci
+    }
+    ci = ci + 1
+  }
+  if someIdx < 0 or noneIdx < 0 {
+    panic("Lyric.LlvmCodegen: the 'Option' union in scope lacks Some/None cases")
+  }
+  val kv = lowerCallArgExpecting(ctx, insns, args, 1, kTy)
+  val recvP = collectionAsI8(ctx, insns, m)
+  val outSlot = "mapget.out." + freshTmp(ctx)
+  ctx.allocas.add(NAlloca(dest = outSlot, ty = NI64))
+  val gArgs: List[NArg] = newList()
+  gArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+  gArgs.add(NArg(ty = NI64, value = slotOfVal(ctx, insns, kv)))
+  gArgs.add(NArg(ty = NPtr(pointee = NI64), value = NLocal(name = outSlot)))
+  val found = callRuntime(ctx, insns, "lyric_map_get", NI32, gArgs)
+  val hit = freshTmp(ctx)
+  insns.add(NICmp(dest = hit, pred = INe, ty = NI32, a = found.value, b = NLitInt(v = 0i64, ty = NI32)))
+  val someL = freshLabel(ctx, "mapget.some")
+  val noneL = freshLabel(ctx, "mapget.none")
+  val mergeL = freshLabel(ctx, "mapget.merge")
+  val slot = "mapget.slot." + freshTmp(ctx)
+  val optTy = unionPtrType(ui)
+  ctx.allocas.add(NAlloca(dest = slot, ty = optTy))
+  insns.add(NCondBr(cond = NLocal(name = hit), thenLabel = someL, elseLabel = noneL))
+  insns.add(NLabel(name = someL))
+  val rawSlot = freshTmp(ctx)
+  insns.add(NLoad(dest = rawSlot, ty = NI64, ptr = NLocal(name = outSlot)))
+  pushTempScope(ctx)
+  val elemV = valOfSlot(ctx, insns, NLocal(name = rawSlot), vTy)
+  val someVals: List[NVal] = newList()
+  someVals.add(elemV)
+  val someV = lowerUnionConstructVals(ctx, insns, ui, someIdx, someVals)
+  ensureOwned(ctx, insns, someV)
+  popTempScope(ctx, insns)
+  insns.add(NStore(ty = optTy, value = someV.value, ptr = NLocal(name = slot)))
+  insns.add(NBr(label = mergeL))
+  insns.add(NLabel(name = noneL))
+  pushTempScope(ctx)
+  val noneVals: List[NVal] = newList()
+  val noneV = lowerUnionConstructVals(ctx, insns, ui, noneIdx, noneVals)
+  ensureOwned(ctx, insns, noneV)
+  popTempScope(ctx, insns)
+  insns.add(NStore(ty = optTy, value = noneV.value, ptr = NLocal(name = slot)))
+  insns.add(NBr(label = mergeL))
+  insns.add(NLabel(name = mergeL))
+  val dest = freshTmp(ctx)
+  insns.add(NLoad(dest = dest, ty = optTy, ptr = NLocal(name = slot)))
+  val outV = NVal(ty = optTy, value = NLocal(name = dest))
+  registerTemp(ctx, outV)
+  outV
+}
+
+/// `xs[i]` / `m[k]` (N5.8).  A list read is a borrow (like a record
+/// field); a map read panics on a missing key (`mapGet` is the
+/// Option-returning accessor).
+func lowerCollectionIndex(
+  ctx: in Ctx, insns: in List[NInsn], receiver: in Expr, indices: in List[Expr], line: in Int
+): NVal {
+  if indices.count != 1 {
+    panic("Lyric.LlvmCodegen: indexing takes exactly one index for --target native")
+  }
+  val recv = lowerExpr(ctx, insns, receiver)
+  match listElemOfType(ctx, recv.ty) {
+    case Some(elem) -> {
+      val idx = lowerExprExpecting(ctx, insns, indices[0], NI64)
+      val recvP = collectionAsI8(ctx, insns, recv)
+      val gArgs: List[NArg] = newList()
+      gArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+      gArgs.add(NArg(ty = NI64, value = idx.value))
+      val slot = callRuntime(ctx, insns, "lyric_list_get", NI64, gArgs)
+      return valOfSlot(ctx, insns, slot.value, elem)
+    }
+    case None -> {
+    }
+  }
+  match mapKeyOfType(ctx, recv.ty) {
+    case Some(kTy) -> {
+      val vTy = match mapValOfType(ctx, recv.ty) {
+        case Some(t) -> t
+        case None -> panic("Lyric.LlvmCodegen: internal — map type without a value type")
+      }
+      val kv = lowerExprExpecting(ctx, insns, indices[0], kTy)
+      val recvP = collectionAsI8(ctx, insns, recv)
+      val outSlot = "mapidx.out." + freshTmp(ctx)
+      ctx.allocas.add(NAlloca(dest = outSlot, ty = NI64))
+      val gArgs: List[NArg] = newList()
+      gArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+      gArgs.add(NArg(ty = NI64, value = slotOfVal(ctx, insns, kv)))
+      gArgs.add(NArg(ty = NPtr(pointee = NI64), value = NLocal(name = outSlot)))
+      val found = callRuntime(ctx, insns, "lyric_map_get", NI32, gArgs)
+      val hit = freshTmp(ctx)
+      insns.add(NICmp(dest = hit, pred = INe, ty = NI32, a = found.value, b = NLitInt(v = 0i64, ty = NI32)))
+      val okL = freshLabel(ctx, "mapidx.ok")
+      val missL = freshLabel(ctx, "mapidx.miss")
+      insns.add(NCondBr(cond = NLocal(name = hit), thenLabel = okL, elseLabel = missL))
+      insns.add(NLabel(name = missL))
+      emitPanicRaw(ctx, insns, "map key not found (use mapGet for an Option result)", line)
+      insns.add(NBr(label = okL))
+      insns.add(NLabel(name = okL))
+      val raw = freshTmp(ctx)
+      insns.add(NLoad(dest = raw, ty = NI64, ptr = NLocal(name = outSlot)))
+      return valOfSlot(ctx, insns, NLocal(name = raw), vTy)
+    }
+    case None -> {
+    }
+  }
+  panic(
+    "Lyric.LlvmCodegen: indexing on this receiver is not yet supported for --target native (lists and maps index; slices land with N5)"
+  )
+}
+
+/// `for x in xs` over List[T] (N5.8): an index loop over the kernel
+/// length/get calls.  The loop variable rebinds per iteration in its
+/// own var scope (the element read is a borrow; bindLocal retains it
+/// and the iteration scope releases it), so `break` / `continue`
+/// unwind correctly through the loop-depth snapshots.
+///
+/// KNOWN DIVERGENCE (#4790): the length is read once before the loop,
+/// so mutating the list inside the body silently iterates the stale
+/// bound (a removed tail element panics the OOB check in
+/// lyric_list_get; an appended one is skipped), where the managed
+/// targets throw InvalidOperationException on any mutation during
+/// iteration.  The parity design (a modification counter in LyricList
+/// + a per-iteration check) is tracked in #4790.
+func lowerForOverList(ctx: in Ctx, insns: in List[NInsn], pat: in Pattern, iter: in Expr, body: in Block): Unit {
+  val it = lowerExpr(ctx, insns, iter)
+  val elem = match listElemOfType(ctx, it.ty) {
+    case Some(t) -> t
+    case None -> panic("Lyric.LlvmCodegen: 'for' on --target native iterates List[T] (slices land with the N5 stdlib port); got " + nTypeToIrString(it.ty))
+  }
+  var bindName = ""
+  var haveBind = false
+  match pat.kind {
+    case PBinding(nm, inner) -> {
+      match inner {
+        case Some(_) -> panic("Lyric.LlvmCodegen: this for-pattern is not yet supported for --target native (use a plain name)")
+        case None -> {
+          bindName = nm
+          haveBind = true
+        }
+      }
+    }
+    case PWildcard -> {
+    }
+    case _ -> panic("Lyric.LlvmCodegen: this for-pattern is not yet supported for --target native (use a plain name)")
+  }
+  // Keep the iterated list alive across the loop even when it is an
+  // owned temp (e.g. `for k in dictGetKeys(m)`): the hidden binding
+  // takes ownership and the enclosing scope releases it.
+  val itName = "__for.it." + freshTmp(ctx)
+  bindLocal(ctx, insns, itName, it)
+  val itVal = loadLocal(ctx, insns, itName)
+  val recvP = collectionAsI8(ctx, insns, itVal)
+  val lenV = callRuntime(ctx, insns, "lyric_list_len", NI64, arg1(NPtr(pointee = NI8), recvP))
+  val idxSlot = "for.idx." + freshTmp(ctx)
+  ctx.allocas.add(NAlloca(dest = idxSlot, ty = NI64))
+  insns.add(NStore(ty = NI64, value = NLitInt(v = 0i64, ty = NI64), ptr = NLocal(name = idxSlot)))
+  val condL = freshLabel(ctx, "for.cond")
+  val bodyL = freshLabel(ctx, "for.body")
+  val incL = freshLabel(ctx, "for.inc")
+  val exitL = freshLabel(ctx, "for.exit")
+  insns.add(NBr(label = condL))
+  insns.add(NLabel(name = condL))
+  val curIdx = freshTmp(ctx)
+  insns.add(NLoad(dest = curIdx, ty = NI64, ptr = NLocal(name = idxSlot)))
+  val cmp = freshTmp(ctx)
+  insns.add(NICmp(dest = cmp, pred = ISlt, ty = NI64, a = NLocal(name = curIdx), b = lenV.value))
+  insns.add(NCondBr(cond = NLocal(name = cmp), thenLabel = bodyL, elseLabel = exitL))
+  insns.add(NLabel(name = bodyL))
+  ctx.loopBreak.add(exitL)
+  ctx.loopCont.add(incL)
+  ctx.loopVarDepth.add(ctx.scopeRefs.count)
+  ctx.loopTempDepth.add(ctx.tempScopes.count)
+  pushVarScope(ctx)
+  val bodyIdx = freshTmp(ctx)
+  insns.add(NLoad(dest = bodyIdx, ty = NI64, ptr = NLocal(name = idxSlot)))
+  val gArgs: List[NArg] = newList()
+  gArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+  gArgs.add(NArg(ty = NI64, value = NLocal(name = bodyIdx)))
+  val slot = callRuntime(ctx, insns, "lyric_list_get", NI64, gArgs)
+  if haveBind {
+    val elemV = valOfSlot(ctx, insns, slot.value, elem)
+    bindLocal(ctx, insns, bindName, elemV)
+  }
+  lowerBlockStmts(ctx, insns, body)
+  popVarScope(ctx, insns)
+  ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
+  ctx.loopCont.removeAt(ctx.loopCont.count - 1)
+  ctx.loopVarDepth.removeAt(ctx.loopVarDepth.count - 1)
+  ctx.loopTempDepth.removeAt(ctx.loopTempDepth.count - 1)
+  insns.add(NBr(label = incL))
+  insns.add(NLabel(name = incL))
+  val incIdx = freshTmp(ctx)
+  insns.add(NLoad(dest = incIdx, ty = NI64, ptr = NLocal(name = idxSlot)))
+  val nextIdx = freshTmp(ctx)
+  insns.add(NAdd(dest = nextIdx, ty = NI64, a = NLocal(name = incIdx), b = NLitInt(v = 1i64, ty = NI64)))
+  insns.add(NStore(ty = NI64, value = NLocal(name = nextIdx), ptr = NLocal(name = idxSlot)))
+  insns.add(NBr(label = condL))
+  insns.add(NLabel(name = exitL))
+}
+
+/// `dictGetKeys(m)` / `dictGetValues(m)` — fresh rc=1 snapshot lists
+/// (the kernel retains ref-typed entries into the list).
+func lowerMapSnapshotBuiltin(ctx: in Ctx, insns: in List[NInsn], m: in NVal, sym: in String, elem: in NType): NVal {
+  val recvP = collectionAsI8(ctx, insns, m)
+  val raw = callRuntime(ctx, insns, sym, NPtr(pointee = NI8), arg1(NPtr(pointee = NI8), recvP))
+  val ty = listNType(ctx, elem)
+  val dest = freshTmp(ctx)
+  insns.add(NBitcast(dest = dest, fromTy = NPtr(pointee = NI8), value = raw.value, toTy = ty))
+  val outV = NVal(ty = ty, value = NLocal(name = dest))
+  registerTemp(ctx, outV)
+  outV
+}
+
 func weakNType(ctx: in Ctx, target: in NType): NType {
   val nm = "__weak<" + mangleNTypeArg(target) + ">"
   if not ctx.weakTargets.containsKey(nm) {
@@ -3332,9 +4173,10 @@ func tupleRecInfo(ctx: in Ctx, elemTys: in List[NType]): NRecInfo {
   val defnFields: List[NType] = newList()
   defnFields.add(NI32)
   defnFields.add(NPtr(pointee = NI8))
+  val layoutTys = layoutFieldTys(elemTys)
   var di = 0
-  while di < elemTys.count {
-    defnFields.add(elemTys[di])
+  while di < layoutTys.count {
+    defnFields.add(layoutTys[di])
     di = di + 1
   }
   ctx.moduleTypeDefs.add(NTypeDefn(name = nm, fields = defnFields))
@@ -3426,6 +4268,14 @@ func typeToNEnvOpt(ctx: in Ctx, te: in TypeExpr, envNames: in List[String], envT
         }
         case None -> {
         }
+      }
+      // The reserved stdlib collections (N5.8) — user-declared generic
+      // records/unions of the same name win above.
+      if bare == "List" and argTys.count == 1 {
+        return Some(value = listNType(ctx, argTys[0]))
+      }
+      if bare == "Map" and argTys.count == 2 {
+        return Some(value = mapNType(ctx, argTys[0], argTys[1]))
       }
       None
     }
@@ -3555,7 +4405,9 @@ func instantiateGenericUnionOpt(ctx: in Ctx, gkey: in String, argTys: in List[NT
   var ci2 = 0
   while ci2 < cases.count {
     if cases[ci2].fieldTys.count > 0 {
-      ctx.moduleTypeDefs.add(NTypeDefn(name = casePayloadStructName(ui, cases[ci2].name), fields = cases[ci2].fieldTys))
+      ctx.moduleTypeDefs.add(
+        NTypeDefn(name = casePayloadStructName(ui, cases[ci2].name), fields = layoutFieldTys(cases[ci2].fieldTys))
+      )
     }
     ci2 = ci2 + 1
   }
@@ -3600,9 +4452,10 @@ func instantiateGenericRecordOpt(ctx: in Ctx, gkey: in String, argTys: in List[N
   val defnFields: List[NType] = newList()
   defnFields.add(NI32)
   defnFields.add(NPtr(pointee = NI8))
+  val layoutTys = layoutFieldTys(tys)
   var fi = 0
-  while fi < tys.count {
-    defnFields.add(tys[fi])
+  while fi < layoutTys.count {
+    defnFields.add(layoutTys[fi])
     fi = fi + 1
   }
   ctx.moduleTypeDefs.add(NTypeDefn(name = instName, fields = defnFields))
@@ -4721,8 +5574,25 @@ func lowerClosureCall(
 /// (the only way to type nullary cases like `None`, and cases that
 /// mention only some type params, like `Result`'s `Ok`/`Err`), then
 /// everything else lowers normally and coerces.
+/// Coerce `v` to `want` unless the producing expression diverged
+/// (panic / return lower to an NVoid value in value position): `Never`
+/// coerces to anything in a well-typed program, so the NVoid value
+/// passes through untouched and the caller's slot scheme (lowerIf /
+/// lowerMatch) skips its store.
+func coerceUnlessDiverged(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType): NVal {
+  if isVoidNType(v.ty) and not isVoidNType(want) {
+    return v
+  }
+  coerceTo(ctx, insns, v, want)
+}
+
 func lowerExprExpecting(ctx: in Ctx, insns: in List[NInsn], e: in Expr, want: in NType): NVal {
   match caseConstructForExpected(ctx, insns, e, want) {
+    case Some(v) -> return v
+    case None -> {
+    }
+  }
+  match collectionConstructForExpected(ctx, insns, e, want) {
     case Some(v) -> return v
     case None -> {
     }
@@ -4739,21 +5609,21 @@ func lowerExprExpecting(ctx: in Ctx, insns: in List[NInsn], e: in Expr, want: in
     }
     case EIf(cond, thenBranch, elseBranch, _) -> {
       val w1: Option[NType] = Some(value = want)
-      return coerceTo(ctx, insns, lowerIf(ctx, insns, cond, thenBranch, elseBranch, w1), want)
+      return coerceUnlessDiverged(ctx, insns, lowerIf(ctx, insns, cond, thenBranch, elseBranch, w1), want)
     }
     case EMatch(scrutinee, arms) -> {
       val w2: Option[NType] = Some(value = want)
-      return coerceTo(ctx, insns, lowerMatch(ctx, insns, scrutinee, arms, e.span.startPos.line, w2), want)
+      return coerceUnlessDiverged(ctx, insns, lowerMatch(ctx, insns, scrutinee, arms, e.span.startPos.line, w2), want)
     }
     case EBlock(block) -> {
       val w3: Option[NType] = Some(value = want)
-      return coerceTo(ctx, insns, lowerBlockValueW(ctx, insns, block, w3), want)
+      return coerceUnlessDiverged(ctx, insns, lowerBlockValueW(ctx, insns, block, w3), want)
     }
     case EParen(inner) -> return lowerExprExpecting(ctx, insns, inner, want)
     case _ -> {
     }
   }
-  coerceTo(ctx, insns, lowerExpr(ctx, insns, e), want)
+  coerceUnlessDiverged(ctx, insns, lowerExpr(ctx, insns, e), want)
 }
 
 /// The (caseName, args) of `e` when it is a union-case construction
@@ -5084,7 +5954,10 @@ func lowerRecordConstructVals(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInf
   val vals: List[NVal] = newList()
   var vi = 0
   while vi < rawVals.count {
-    vals.add(coerceTo(ctx, insns, rawVals[vi], ri.fieldTys[vi]))
+    match ri.fieldTys[vi] {
+      case NVoid -> vals.add(rawVals[vi])
+      case want -> vals.add(coerceTo(ctx, insns, rawVals[vi], want))
+    }
     vi = vi + 1
   }
   val objTy = recPtrType(ri)
@@ -5093,6 +5966,11 @@ func lowerRecordConstructVals(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInf
   val obj = emitHeapAlloc(ctx, insns, objTy, recAllocSize(ri), dtorName)
   var fi = 0
   while fi < vals.count {
+    // A Unit field's placeholder byte stays undef (layoutFieldTys).
+    if isVoidNType(ri.fieldTys[fi]) {
+      fi = fi + 1
+      continue
+    }
     // Rule 2: the object owns its ref fields — retain before storing.
     if isRefNType(ri.fieldTys[fi]) {
       emitRetain(ctx, insns, vals[fi])
@@ -5146,7 +6024,10 @@ func lowerUnionConstructVals(
   val vals: List[NVal] = newList()
   var vi = 0
   while vi < rawVals.count {
-    vals.add(coerceTo(ctx, insns, rawVals[vi], ci.fieldTys[vi]))
+    match ci.fieldTys[vi] {
+      case NVoid -> vals.add(rawVals[vi])
+      case want -> vals.add(coerceTo(ctx, insns, rawVals[vi], want))
+    }
     vi = vi + 1
   }
   val objTy = unionPtrType(ui)
@@ -5164,6 +6045,11 @@ func lowerUnionConstructVals(
     val caseTy = casePayloadStructType(ui, ci)
     var fi = 0
     while fi < vals.count {
+      // A Unit field's placeholder byte stays undef (layoutFieldTys).
+      if isVoidNType(ci.fieldTys[fi]) {
+        fi = fi + 1
+        continue
+      }
       if isRefNType(ci.fieldTys[fi]) {
         emitRetain(ctx, insns, vals[fi])
       }
@@ -5498,6 +6384,13 @@ func emitConstructorTest(
   // within this block against the loaded field values.
   val fieldVals: List[NVal] = newList()
   while fi < ci.fieldNames.count {
+    // A Unit field has no stored data (layoutFieldTys) — its value is
+    // the Unit value itself.
+    if isVoidNType(ci.fieldTys[fi]) {
+      fieldVals.add(NVal(ty = NVoid, value = NUndef(ty = NVoid)))
+      fi = fi + 1
+      continue
+    }
     val fieldPtr = freshTmp(ctx)
     val fArgs: List[NArg] = newList()
     fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
@@ -5748,8 +6641,14 @@ func lowerIf(
   // merged load re-registers as a single owned temp.
   match elseBranch {
     case Some(eb) -> {
+      // Slot protocol mirrors lowerMatch: a branch producing NVoid in a
+      // value context has diverged (panic / return — Never coerces to
+      // anything in a well-typed program) and simply doesn't store; the
+      // slot is typed by the first value-producing branch.
       insns.add(NCondBr(cond = c.value, thenLabel = thenL, elseLabel = elseL))
       insns.add(NLabel(name = thenL))
+      var slotName = ""
+      var slotTy = NVoid
       val thenInsns: List[NInsn] = newList()
       pushTempScope(ctx)
       val tv = lowerExprOrBlockW(ctx, thenInsns, thenBranch, want)
@@ -5757,15 +6656,6 @@ func lowerIf(
         case NVoid -> {
           popTempScope(ctx, thenInsns)
           appendInsns(insns, thenInsns)
-          insns.add(NBr(label = mergeL))
-          insns.add(NLabel(name = elseL))
-          pushTempScope(ctx)
-          val ev = lowerExprOrBlockW(ctx, insns, eb, want)
-          val _ = ev
-          popTempScope(ctx, insns)
-          insns.add(NBr(label = mergeL))
-          insns.add(NLabel(name = mergeL))
-          NVal(ty = NVoid, value = NUndef(ty = NVoid))
         }
         case vty -> {
           if isRefNType(vty) {
@@ -5773,28 +6663,42 @@ func lowerIf(
           }
           popTempScope(ctx, thenInsns)
           appendInsns(insns, thenInsns)
-          val slot = "if.slot." + freshTmp(ctx)
-          ctx.allocas.add(NAlloca(dest = slot, ty = vty))
-          insns.add(NStore(ty = vty, value = tv.value, ptr = NLocal(name = slot)))
-          insns.add(NBr(label = mergeL))
-          insns.add(NLabel(name = elseL))
-          pushTempScope(ctx)
-          val ev = lowerExprOrBlockW(ctx, insns, eb, want)
-          val evc = coerceTo(ctx, insns, ev, vty)
-          if isRefNType(vty) {
+          slotName = "if.slot." + freshTmp(ctx)
+          slotTy = vty
+          ctx.allocas.add(NAlloca(dest = slotName, ty = vty))
+          insns.add(NStore(ty = vty, value = tv.value, ptr = NLocal(name = slotName)))
+        }
+      }
+      insns.add(NBr(label = mergeL))
+      insns.add(NLabel(name = elseL))
+      pushTempScope(ctx)
+      val ev = lowerExprOrBlockW(ctx, insns, eb, want)
+      match ev.ty {
+        case NVoid -> popTempScope(ctx, insns)
+        case ety -> {
+          if slotName.length == 0 {
+            slotName = "if.slot." + freshTmp(ctx)
+            slotTy = ety
+            ctx.allocas.add(NAlloca(dest = slotName, ty = ety))
+          }
+          val evc = coerceTo(ctx, insns, ev, slotTy)
+          if isRefNType(slotTy) {
             ensureOwned(ctx, insns, evc)
           }
           popTempScope(ctx, insns)
-          insns.add(NStore(ty = vty, value = evc.value, ptr = NLocal(name = slot)))
-          insns.add(NBr(label = mergeL))
-          insns.add(NLabel(name = mergeL))
-          val dest = freshTmp(ctx)
-          insns.add(NLoad(dest = dest, ty = vty, ptr = NLocal(name = slot)))
-          val outV = NVal(ty = vty, value = NLocal(name = dest))
-          registerTemp(ctx, outV)
-          outV
+          insns.add(NStore(ty = slotTy, value = evc.value, ptr = NLocal(name = slotName)))
         }
       }
+      insns.add(NBr(label = mergeL))
+      insns.add(NLabel(name = mergeL))
+      if slotName.length == 0 {
+        return NVal(ty = NVoid, value = NUndef(ty = NVoid))
+      }
+      val dest = freshTmp(ctx)
+      insns.add(NLoad(dest = dest, ty = slotTy, ptr = NLocal(name = slotName)))
+      val outV = NVal(ty = slotTy, value = NLocal(name = dest))
+      registerTemp(ctx, outV)
+      outV
     }
     case None -> {
       insns.add(NCondBr(cond = c.value, thenLabel = thenL, elseLabel = mergeL))
@@ -5961,7 +6865,14 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
     case SExpr(ex) -> {
       val _ = lowerExpr(ctx, insns, ex)
     }
-    case SFor(_, _, _, _) -> panic("Lyric.LlvmCodegen: 'for' loops are not yet supported for --target native (Phase N2; use 'while')")
+    case SFor(label, pat, iter, body) -> {
+      match label {
+        case Some(_) -> panic("Lyric.LlvmCodegen: labeled for is not yet supported for --target native")
+        case None -> {
+        }
+      }
+      lowerForOverList(ctx, insns, pat, iter, body)
+    }
     case SLoop(_, _) -> panic("Lyric.LlvmCodegen: 'loop' is not yet supported for --target native (use 'while true')")
     case SThrow(_) -> panic("Lyric.LlvmCodegen: 'throw' is not supported for --target native (D-N-003: panics abort)")
     case STry(_, _, _) -> panic("Lyric.LlvmCodegen: try/catch is not supported for --target native (D-N-003: no unwinding)")
@@ -6229,6 +7140,9 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     closureSigs = mod.closureSigs,
     trampolines = mod.trampolines,
     weakTargets = mod.weakTargets,
+    listElems = mod.listElems,
+    mapKeyTys = mod.mapKeyTys,
+    mapValTys = mod.mapValTys,
     scopeRefs = newList(),
     tempScopes = newList(),
     loopVarDepth = newList(),
@@ -6382,6 +7296,22 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl1("lyric_string_to_cstring", NPtr(pointee = NI8), sTy))
   decls.add(mkDecl1("lyric_cstring_free", NVoid, NPtr(pointee = NI8)))
   decls.add(mkDecl1("lyric_weak_upgrade", NPtr(pointee = NI8), NPtr(pointee = NI8)))
+  val p8 = NPtr(pointee = NI8)
+  decls.add(mkDecl1("lyric_list_new", p8, NI32))
+  decls.add(mkDecl2("lyric_list_push", NVoid, p8, NI64))
+  decls.add(mkDecl2("lyric_list_get", NI64, p8, NI64))
+  decls.add(mkDecl3("lyric_list_set", NVoid, p8, NI64, NI64))
+  decls.add(mkDecl2("lyric_list_remove_at", NVoid, p8, NI64))
+  decls.add(mkDecl1("lyric_list_len", NI64, p8))
+  decls.add(mkDecl1("lyric_list_clear", NVoid, p8))
+  decls.add(mkDecl2("lyric_map_new", p8, NI32, NI32))
+  decls.add(mkDecl3("lyric_map_set", NVoid, p8, NI64, NI64))
+  decls.add(mkDecl3("lyric_map_get", NI32, p8, NI64, NPtr(pointee = NI64)))
+  decls.add(mkDecl2("lyric_map_contains", NI32, p8, NI64))
+  decls.add(mkDecl2("lyric_map_remove", NI32, p8, NI64))
+  decls.add(mkDecl1("lyric_map_len", NI64, p8))
+  decls.add(mkDecl1("lyric_map_keys", p8, p8))
+  decls.add(mkDecl1("lyric_map_values", p8, p8))
   decls
 }
 
@@ -6532,6 +7462,9 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     closureSigs = emptyClosureSigs,
     trampolines = newMap(),
     weakTargets = emptyWeakTargets,
+    listElems = newMap(),
+    mapKeyTys = newMap(),
+    mapValTys = newMap(),
     scopeRefs = newList(),
     tempScopes = newList(),
     loopVarDepth = newList(),

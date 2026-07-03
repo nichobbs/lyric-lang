@@ -13,6 +13,9 @@
 @axiom("System.IO.File / Directory operations conform to their documented .NET contracts")
 package Std.FileHost
 
+import Std.Core
+import Std.Errors
+
 // =====================================================================
 // Probes — return Bool, never throw under normal use.
 // =====================================================================
@@ -86,3 +89,54 @@ pub func hostDeleteDirectoryRecursive(path: in String, recursive: in Bool): Unit
 
 @externTarget("System.IO.File.Delete")
 pub func hostDeleteFile(path: in String): Unit = ()
+
+// =====================================================================
+// Result seams — the exception-free surface both kernel twins
+// implement (issue #4752).  On this managed side the try/catch and the
+// BCL exception-message classification live HERE, so the pure
+// `Std.File` layer stays target-neutral; the `_kernel_native/` twin
+// implements the same signatures over lyric-rt without exceptions.
+// =====================================================================
+pub func hostReadTextResult(path: in String): Result[String, IOError] {
+  try {
+    Ok(value = hostReadAllText(path))
+  } catch Bug as b {
+    // Locale caveat: the "Could not find file" prefix match assumes
+    // an English .NET runtime.  On non-English runtimes a real
+    // FileNotFoundException may slip through as IoError until the
+    // host shim is upgraded to return an exception-type tag rather
+    // than the localised message text.  See lyric-lang #601.
+    if b.message.startsWith("Could not find file") or b.message.contains("FileNotFoundException") or b.message.contains("DirectoryNotFoundException") {
+      Err(error = FileNotFound(path = path))
+    } else {
+      Err(error = IoError(path = path, message = b.message))
+    }
+  }
+}
+
+pub func hostWriteTextResult(path: in String, text: in String): Result[Unit, IOError] {
+  try {
+    hostWriteAllText(path, text)
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}
+
+pub func hostCreateDirResult(path: in String): Result[Unit, IOError] {
+  try {
+    hostCreateDirectory(path)
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}
+
+pub func hostDeleteFileResult(path: in String): Result[Unit, IOError] {
+  try {
+    hostDeleteFile(path)
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}

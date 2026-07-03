@@ -26839,3 +26839,167 @@ program asserting stdout, stderr, and EOF), both wired into
 
 **Related:** docs/44 §5 J6, epic #2663, #2669, D-progress-543 (the
 phantom-shim elimination pattern), D-progress-553.
+
+---
+
+---
+
+### D-progress-556 — Native backend N5.8: List[T] / Map[K, V] on the lyric-rt kernels, `for` loops, indexing
+
+**Shipped.** `Std.Collections` becomes usable on `--target native`
+(`native/plan/08-work-items.md` §N5.8, plus the `for`-loop lowering the
+plan folds into Phase N2):
+
+- **Type mapping** — `List[T]` / `Map[K, V]` lower to the fixed
+  `LyricList` / `LyricMap` C layouts (every element in a 64-bit slot;
+  ref-typed entries retained by the container itself via the
+  `elems_are_refs` / `keys_are_strings` / `vals_are_refs` construction
+  flags).  Each instantiation gets its own struct name
+  (`__list<i32>`, `__map<%LyricString*,i32>`) so the Lyric-level
+  element types survive to method lowering, but all access goes
+  through `lyric_list_*` / `lyric_map_*` runtime calls — the struct
+  definitions are never GEPed.  Scalars widen to the i64 slot (sext /
+  zext / double bitcast) and narrow back on read; ref elements
+  ptrtoint / inttoptr.  A user-declared generic record or union named
+  `List` / `Map` still wins — the reserved names resolve only after
+  generic lookup fails, mirroring the type checker's convention.
+- **Constructors** — bare `newList()` / `newListWithCapacity(n)` /
+  `newMap()` construct against the expected collection type (the
+  binding annotation), and explicit `newList[Int]()` type applications
+  construct anywhere.  Map keys must be String (SipHash-keyed) or a
+  scalar; other ref-typed keys are a build error.
+- **Methods and members** — `xs.add/set/removeAt/clear/count`,
+  `m.add/containsKey/remove/count`, and `xs[i]` / `m[k]` indexing
+  (a map index panics on a missing key; `mapGet` is the
+  Option-returning accessor, lowered directly against the kernel
+  out-param call since its pure-Lyric body uses an `out`-mode
+  parameter the native backend does not lower).  `dictGetKeys` /
+  `dictGetValues` return fresh snapshot lists via the new
+  `lyric_map_keys` / `lyric_map_values` kernels (added to lyric-rt
+  with C unit tests), which also makes `Std.Collections`' pure-Lyric
+  wrappers (`mapKeys`, `mapValues`, `mapForEach`, …) lowerable.
+- **`for x in xs`** — lowers to an index loop over the kernel
+  length/get calls; the loop variable rebinds per iteration in its own
+  var scope (the element read is a borrow; binding retains, the
+  iteration scope releases), with `break` / `continue` unwinding
+  through the loop-depth snapshots.
+- **Verification** — `llvm_collections_self_test.l` (12 cases, wired
+  into the CI native step): Int/Long/String/record elements, set /
+  removeAt / clear churn under ASan, nested `List[List[Int]]`, lists
+  as record fields crossing dtor chains, function boundaries, scalar-
+  and String-keyed maps, `mapGet` hit/miss, snapshot lists outliving
+  their map, and the missing-key panic.
+
+**Not in this slice:** `slice[T]` (lands with the N5 kernel files that
+produce slices), list literals (`EList`), `Set[T]`, and map iteration
+without a snapshot.
+
+**Related:** D-progress-552, `native/plan/08-work-items.md` §N5.8,
+`native/plan/07-stdlib-port.md` §collections, D-N-012.
+
+---
+
+### D-progress-557 — Native backend N5: stdlib kernel twins over exception-free Result/Option seams (issue #4752)
+
+**Shipped.** `Std.File` (text I/O), `Std.Environment`, `Std.Process`
+(`runCapture`), and `Std.Time` (epoch/monotonic/sleep) now work on
+`--target native`, via the seam design from issue #4752: where the
+managed kernels rely on host exceptions (`try`/`catch Bug` in the pure
+layer — unlowerable natively under D-N-003's abort-only panic model),
+error handling moves *into* the kernels behind exception-free
+Result/Option seams that both kernel twins implement, and the shared
+pure layer becomes a thin target-neutral delegation.
+
+- **Managed seams** (`_kernel/`): `hostReadTextResult` /
+  `hostWriteTextResult` / `hostCreateDirResult` / `hostDeleteFileResult`
+  (`Std.FileHost`, with the FileNotFound message classification moved
+  from `Std.File` into the seam), `hostGetVarOpt`
+  (`Std.EnvironmentHost`), `hostEpochMillis` / `hostMonotonicNanos`
+  (`Std.TimeHost`), and `hostRunCaptureList` (list-argv,
+  `Std.ProcessCaptureHost` — the managed side joins to the quoted
+  argument string its BCL runner expects).  `Std.File.readText` and
+  friends, `Std.Environment.getVar`, `Std.Time.nowEpochMillis` /
+  `monotonicNanos`, and `Std.Process.runCapture` /
+  `runCaptureWithInput` now delegate to the seams; the duplicated
+  quoting helper `buildCaptureArgString` is gone from `Std.Process`.
+- **Native twins** (`_kernel_native/`): `file_host.l`,
+  `environment_host.l`, `time_host.l`, `process_capture_host.l` —
+  same package names, selected by basename (D-N-014 loader model),
+  implemented over the audited lyric-rt helpers with `NativePtr`
+  C-string bridging and `nativeAddrOf` out-params.  Recursive
+  directory creation keeps the managed twin's create-with-parents
+  semantics over single-level `mkdir(2)`; file delete stays idempotent
+  on not-found (BCL parity); the native process runner passes the argv
+  list through verbatim (fork/execvp, never a shell).  Explicit
+  native-side deferrals (tracked in #4752, not silent): non-empty
+  stdin to `runCaptureWithInput` returns `Err`; `timeoutMs` is not
+  enforced; bytes-mode file I/O, directory enumeration, `stat`,
+  `Std.Uuid`, and the `Std.Time` calendar surface remain unavailable.
+- **Codegen support the seams surfaced** (`llvm_codegen.l` /
+  `llvm_bridge.l`):
+  - *Unit-typed union/record payload fields* — `Result[Unit, E]`
+    previously panicked at layout (`sizeOfN` on void); a Unit field
+    now occupies one undef byte in the emitted struct
+    (`layoutFieldTys`, slot preserved so GEP indices line up) and
+    construction/pattern reads skip it (`Ok(value = ())` stores
+    nothing; `case Ok(_)` binds the Unit value directly).
+  - *Diverging branches in value position* — `panic(...)` in one arm
+    of a value-`if` previously died coercing `void` to the result
+    type; `lowerIf` now uses `lowerMatch`'s slot protocol (a diverged
+    branch skips its store; the slot is typed by the first
+    value-producing branch), and `lowerExprExpecting` passes diverged
+    values through uncoerced (`coerceUnlessDiverged`).
+  - *Type-only bundled units* — the bridge dropped bundled packages
+    with no reachable functions, losing their type declarations
+    (`Std.Core`'s `Result`/`Option` are referenced by other packages'
+    signatures without any `Std.Core` call); units now also survive on
+    records/unions/enums/distincts.
+  - *Collections as extern userdata* — a `List`/`Map` value meeting an
+    extern `NativePtr[Byte]` parameter passes as its raw kernel
+    pointer (`externAdaptArg`), which is how the native process twin
+    hands its argv `List[String]` to `lyric_process_run`.
+  - `compileToNativeWithFlags` — `compileToNative` with extra clang
+    driver flags (the self-test builds with `-fsanitize=address`).
+- **`case null` catch-all discovery (issue #4775)** — validating the
+  seams end-to-end exposed a silent pre-existing stdlib miscompile:
+  the language has no null pattern (D107), so the self-hosted parser
+  reads `case null` as a catch-all `PBinding("null")` on both managed
+  backends — the pre-seam `Std.Environment.getVar` reported **every**
+  variable as absent in self-hosted-compiled stdlib builds, which
+  breaks `Msil.MetadataReader.refPackDir()` on `DOTNET_ROOT`-only
+  .NET installs and cascades into the W0007 → `System.Runtime`
+  fallback → `Std.ConsoleHost` `TypeLoadException` chain (#4698's
+  likely mechanism).  Fixed for the environment surface in this
+  slice: `hostGetVarOpt` (both managed twins) detects the null via
+  `??` with a NUL-string marker — environment blocks are
+  NUL-delimited on POSIX and Windows, so no real value can equal
+  `"\0"` — a shape both the pinned F# mint seed and the self-hosted
+  emitters lower correctly.  The D107 `Option[String]` extern form
+  was tried first and reverted: the pinned seed predates D107
+  (commit 3b543556 is not an ancestor of the mint pin), so an
+  Option-returning `@externTarget` in the stdlib NREs the stage-0
+  CLI — a hard bootstrap constraint recorded in #4775.
+  `verifier_env_host.l` routes through the seam instead of its own
+  `?? ""` (which conflated empty-set with unset), and
+  `environment_tests.l` gains the present-variable round-trip that
+  would have caught all of this.  Remaining `String?` kernel
+  surfaces (console, path, io), JVM D107 parity (#3932), and a
+  null-pattern rejection diagnostic are tracked in #4775.
+- **lyric-rt**: `lyric_env_cwd_ok` (status-returning getcwd seam,
+  mirroring `lyric_env_get_ok`), with a C unit test.
+- **Verification** — `llvm_stdlib_self_test.l` (5 cases, wired into
+  the CI native step) compiles real programs importing `Std.File` /
+  `Std.Environment` / `Std.Process` / `Std.Time` through the full
+  bridge pipeline (`compileToNativeWithFlags` + the
+  `findStdlibSourcesNative` loader, exactly like `lyric build --target
+  native`) and asserts runtime behaviour via exit codes, all under
+  `-fsanitize=address`: file round-trip with FileNotFound
+  classification and idempotent delete, env set/get/missing/cwd, echo
+  capture with argv passthrough + exec-failure exit 127 + stdin
+  deferral `Err`, clock monotonicity across `sleepMillis`, and a
+  dedicated `Result[Unit, E]` + diverging-value-`if` case pinning the
+  codegen fixes.  The managed-side seam refactors are covered by the
+  existing stdlib test suite (`lyric-stdlib/tests/`) in CI.
+
+**Related:** D-progress-556, `docs/01-language-reference.md` §11 (FFI),
+`native/plan/07-stdlib-port.md`, issue #4752, D-N-003, D-N-014.

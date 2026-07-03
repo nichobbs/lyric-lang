@@ -62,20 +62,7 @@ pub func readText(path: in String): Result[String, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
   }
-  return try {
-    Ok(value = hostReadAllText(path))
-  } catch Bug as b {
-    // Locale caveat: the "Could not find file" prefix match assumes
-    // an English .NET runtime.  On non-English runtimes a real
-    // FileNotFoundException may slip through as IoError until the
-    // host shim is upgraded to return an exception-type tag rather
-    // than the localised message text.  See lyric-lang #601.
-    if b.message.startsWith("Could not find file") or b.message.contains("FileNotFoundException") or b.message.contains("DirectoryNotFoundException") {
-      Err(error = FileNotFound(path = path))
-    } else {
-      Err(error = IoError(path = path, message = b.message))
-    }
-  }
+  hostReadTextResult(path)
 }
 
 /// Write `text` to `path` (creating or replacing).
@@ -87,12 +74,7 @@ pub func writeText(path: in String, text: in String): Result[Unit, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
   }
-  return try {
-    hostWriteAllText(path, text)
-    Ok(value = ())
-  } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
-  }
+  hostWriteTextResult(path, text)
 }
 
 /// Probe whether `path` names an existing directory.  Returns false
@@ -115,12 +97,7 @@ pub func createDir(path: in String): Result[Unit, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
   }
-  return try {
-    hostCreateDirectory(path)
-    Ok(value = ())
-  } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
-  }
+  hostCreateDirResult(path)
 }
 
 /// Recursively delete a directory and every file it contains.
@@ -163,12 +140,7 @@ pub func deleteFile(path: in String): Result[Unit, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
   }
-  return try {
-    hostDeleteFile(path)
-    Ok(value = ())
-  } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
-  }
+  hostDeleteFileResult(path)
 }
 
 /// Read the file at `path` as raw bytes.

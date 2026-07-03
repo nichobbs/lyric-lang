@@ -11,6 +11,7 @@
 package Std.ProcessCaptureHost
 
 import Std.Core
+import Std.Collections
 
 // ── BCL extern types ───────────────────────────────────────────────────────
 extern type Psi = "System.Diagnostics.ProcessStartInfo"
@@ -297,4 +298,32 @@ pub func hostRunCaptureTimeout(
   executable: in String, arguments: in String, stdinContent: in String, timeoutMs: in Int
 ): ProcessCaptureResult {
   runImpl(executable, arguments, stdinContent, timeoutMs)
+}
+
+// =====================================================================
+// List-argv Result seam — the exception-free surface both kernel twins
+// implement (issue #4752).  The argv rides as a List[String] because
+// the native runner execs argv directly (never a shell string); this
+// managed side joins to the quoted argument string runImpl expects and
+// absorbs the Bug into the error channel.
+// =====================================================================
+pub func hostRunCaptureList(
+  executable: in String, args: in List[String], stdinContent: in String, timeoutMs: in Int
+): Result[ProcessCaptureResult, String] {
+  var argStr = ""
+  var i = 0
+  val count = args.count
+  while i < count {
+    if i > 0 {
+      argStr = argStr + " "
+    }
+    val escaped = args[i].replace("\\", "\\\\").replace("\"", "\\\"")
+    argStr = argStr + "\"" + escaped + "\""
+    i += 1
+  }
+  try {
+    Ok(value = runImpl(executable, argStr, stdinContent, timeoutMs))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
 }

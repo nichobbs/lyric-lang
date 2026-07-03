@@ -205,14 +205,21 @@ them explicitly with `NativeWeak[T]`, whose `upgrade()` returns
 > defaults, mutable fields), unions, enums, distinct types (range-checked),
 > and tuples; full pattern matching; generic records, unions, and functions
 > (via call-site monomorphization); closures (by-value captures); and
-> `NativeWeak[T]`. Raw C interop (`extern func`, `NativePtr[T]`,
+> `NativeWeak[T]`; and `List[T]`/`Map[K, V]` with `for` loops, indexing,
+> and the `Std.Collections` accessors (map keys must be String or a
+> scalar type). Standard-library modules with native kernels work out of
+> the box: `Std.Console`, `Std.File` (text I/O, existence probes,
+> directory create/delete), `Std.Environment` (variables, working
+> directory), `Std.Process.runCapture` (argv list, never a shell), and
+> `Std.Time` (epoch millis, monotonic nanos, sleep). Raw C interop
+> (`extern func`, `NativePtr[T]`,
 > `nativeAddrOf`, `nativeNullPtr`, closures as C callbacks) is confined to
 > `@unsafe_ffi` functions and the standard library's kernel files — the
 > compiler rejects it elsewhere (`N0100`). Constructs not yet lowered fail
 > the build with a diagnostic naming the construct rather than
-> miscompiling: interfaces, protected types, `List`/`Map` collections,
-> `for` loops, module-level `val`, `async func`, and manifest
-> (multi-package) native builds.
+> miscompiling: interfaces, protected types, `slice[T]`, list literals,
+> module-level `val`, `async func`, and manifest (multi-package) native
+> builds.
 
 ## The anatomy of a Lyric file
 

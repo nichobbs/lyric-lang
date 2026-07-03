@@ -231,3 +231,10 @@ LyricString* lyric_env_cwd(void) {
     free(buf);
     return s;
 }
+
+int32_t lyric_env_cwd_ok(LyricString** out) {
+    LyricString* s = lyric_env_cwd();
+    if (!s) return -1;
+    *out = s;
+    return 0;
+}

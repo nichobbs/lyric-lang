@@ -159,3 +159,21 @@ pub func hostDtoToEpochMillis(d: in DateTimeOffset): Long = ()
 // Backs Std.Time.sleepMillis (used by `lyric run/build --watch`'s poll loop).
 @externTarget("System.Threading.Thread.Sleep")
 pub func hostSleepMillis(ms: in Int): Unit = ()
+
+// =====================================================================
+// Epoch/monotonic seams — the exception-free clock surface both kernel
+// twins implement (issue #4752); the native twin backs these with
+// lyric-rt's CLOCK_REALTIME / CLOCK_MONOTONIC helpers.
+// =====================================================================
+pub func hostEpochMillis(): Long {
+  hostDtoToEpochMillis(hostDtoUtcNow())
+}
+
+pub func hostMonotonicNanos(): Long {
+  val nanoTs: Long = hostStopwatchTimestamp()
+  val nanoFreq: Long = hostStopwatchFrequency()
+  // Two-step formula avoids Int64 overflow for any realistic timer
+  // frequency.  `return` binds the leading-`(` line (a bare one would
+  // parse as a call continuing the previous statement).
+  return (nanoTs / nanoFreq) * 1000000000i64 + (nanoTs % nanoFreq) * 1000000000i64 / nanoFreq
+}

@@ -60,8 +60,11 @@ func dottedPath(path: in ModulePath): String {
 }
 
 // True for top-level items that must reach packages importing this one
-// (types + pub module vals) so cross-package names resolve during the
-// advisory typecheck.  Mirrors `Jvm.Bridge.isTypeItem`.
+// (types, pub module vals, and pub funcs) so cross-package names
+// resolve during the advisory typecheck — without the pub funcs every
+// stdlib call in user code prints a spurious T0020 on a successful
+// build.  Extends `Jvm.Bridge.isTypeItem` with the pub-func rule from
+// `Msil.Bridge.collectStdlibPackages`.
 func isTypeItem(it: in Item): Bool {
   val isType = match it.kind {
     case IRecord(_) -> true
@@ -82,6 +85,7 @@ func isTypeItem(it: in Item): Bool {
   }
   match it.kind {
     case IVal(_) -> match it.visibility { case Some(vis) -> match vis { case VisPub(_) -> true; case _ -> false }; case None -> false }
+    case IFunc(decl) -> match decl.visibility { case Some(vis) -> match vis { case VisPub(_) -> true; case _ -> false }; case None -> false }
     case _ -> false
   }
 }
@@ -359,6 +363,20 @@ pub func compileToNative(
   triple: in String,
   optLevel: in String,
 ): Bool {
+  val noFlags: List[String] = newList()
+  compileToNativeWithFlags(source, outputPath, stdlibSources, triple, optLevel, noFlags)
+}
+
+/// `compileToNative` with extra clang driver flags (e.g.
+/// `-fsanitize=address` for the sanitizer-checked self-tests).
+pub func compileToNativeWithFlags(
+  source: in String,
+  outputPath: in String,
+  stdlibSources: in List[String],
+  triple: in String,
+  optLevel: in String,
+  extraClangFlags: in List[String],
+): Bool {
   val parseResult = parse(source)
   if reportAndAbort(parseResult.diagnostics) {
     return false
@@ -546,7 +564,10 @@ pub func compileToNative(
   var bi3 = 0
   while bi3 < toBundle.count {
     val u = unitOf(toBundle[bi3], reachable, false)
-    if u.fns.count > 0 or u.externs.count > 0 {
+    // A unit with no reachable functions still contributes its type
+    // declarations (e.g. Std.Core's Result/Option are referenced by
+    // other packages' signatures without any Std.Core call).
+    if u.fns.count > 0 or u.externs.count > 0 or u.records.count > 0 or u.unions.count > 0 or u.enums.count > 0 or u.distincts.count > 0 {
       units.add(u)
     }
     bi3 = bi3 + 1
@@ -582,6 +603,11 @@ pub func compileToNative(
   val effOpt = if optLevel.length > 0 { optLevel } else { "2" }
   val clangArgs: List[String] = newList()
   clangArgs.add("-O" + effOpt)
+  var xi = 0
+  while xi < extraClangFlags.count {
+    clangArgs.add(extraClangFlags[xi])
+    xi = xi + 1
+  }
   if triple.length > 0 {
     clangArgs.add("--target=" + triple)
   }

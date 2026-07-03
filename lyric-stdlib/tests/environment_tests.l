@@ -1,12 +1,31 @@
 //! stdlib/tests/environment_tests.l — Tests for Std.Environment.
 //!
-//! Covers: getVar for an unknown variable, getVar for an empty key,
-//! getVarOrDefault, and args (returns a slice without panicking).
+//! Covers: a setVar/getVar round-trip for a PRESENT variable (the
+//! guard against the `case null` catch-all miscompile that made every
+//! lookup report absent), getVar for an unknown variable, getVar for
+//! an empty key, getVarOrDefault, and args (returns a slice without
+//! panicking).
 package Std.Environment.Tests
 
 import Std.Core
 import Std.Environment
 import Std.Testing
+
+func testGetVarPresentRoundTrip(): Unit {
+  setVar("LYRIC_TEST_ENV_ROUNDTRIP", "round-trip-value")
+  var got = ""
+  match getVar("LYRIC_TEST_ENV_ROUNDTRIP") {
+    case Ok(v) -> {
+      got = v
+    }
+    case Err(_) -> {
+      got = "<KeyNotFound>"
+    }
+  }
+  assertTrue(got == "round-trip-value", "present var returns its value, got: " + got)
+  val viaDefault = getVarOrDefault("LYRIC_TEST_ENV_ROUNDTRIP", "WRONG")
+  assertTrue(viaDefault == "round-trip-value", "present var ignores the default")
+}
 
 func testGetVarMissing(): Unit {
   match getVar("LYRIC_TEST_DEFINITELY_NONEXISTENT_XYZ123") {
@@ -23,13 +42,13 @@ func testGetVarEmptyKey(): Unit {
 }
 
 func testGetVarOrDefaultFallback(): Unit {
-  val result = getVarOrDefault("LYRIC_TEST_DEFINITELY_NONEXISTENT_XYZ123", "fallback")
-  assertTrue(result == "fallback", "missing var returns default")
+  val fetched = getVarOrDefault("LYRIC_TEST_DEFINITELY_NONEXISTENT_XYZ123", "fallback")
+  assertTrue(fetched == "fallback", "missing var returns default")
 }
 
 func testGetVarOrDefaultEmpty(): Unit {
-  val result = getVarOrDefault("", "def")
-  assertTrue(result == "def", "empty key returns default")
+  val fetched = getVarOrDefault("", "def")
+  assertTrue(fetched == "def", "empty key returns default")
 }
 
 func testArgsReturnsSlice(): Unit {
@@ -38,6 +57,7 @@ func testArgsReturnsSlice(): Unit {
 }
 
 func main(): Unit {
+  testGetVarPresentRoundTrip()
   testGetVarMissing()
   testGetVarEmptyKey()
   testGetVarOrDefaultFallback()
