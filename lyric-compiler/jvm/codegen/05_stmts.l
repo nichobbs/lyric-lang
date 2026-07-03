@@ -590,7 +590,7 @@ func emitCountingForJvm(
       }
     }
   }
-  lowerPatternBind(ctx, insns, pat, iSlot, loTy)
+  lowerPatternBind(ctx, insns, pat, iSlot, loTy, newList())
 
   ctx.loopBreak.add(endL)
   ctx.loopCont.add(contL)
@@ -874,7 +874,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               emitArrayLoad(insns, elemArr)
               val elemSlotA = allocSlot(ctx, "__for_elem_" + freshLabel(ctx), elemArr)
               emitStore(insns, elemSlotA, elemArr)
-              lowerPatternBind(ctx, insns, pat, elemSlotA, elemArr)
+              lowerPatternBind(ctx, insns, pat, elemSlotA, elemArr, newList())
               // #2854: `continue` targets the index-increment point (`contLA`), not
               // the loop top, so the loop variable still advances; `break` targets
               // `endLA`.  `loopDeferDepth` captures the entry depth so a body `defer`
@@ -939,7 +939,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               val elemTyB = JRef(className = "java/lang/Object")
               val elemSlotB = allocSlot(ctx, "__for_elem_" + freshLabel(ctx), elemTyB)
               emitStore(insns, elemSlotB, elemTyB)
-              lowerPatternBind(ctx, insns, pat, elemSlotB, elemTyB)
+              lowerPatternBind(ctx, insns, pat, elemSlotB, elemTyB, newList())
               // #2854: `continue` targets the loop top (`loopLB`, which re-checks
               // hasNext()); `break` targets `endLB`.  `loopDeferDepth` captures the
               // entry depth so a body `defer` replays on both before the jump.
@@ -1078,7 +1078,7 @@ func lowerLocalPatBind(
       // Complex pattern: store to a temp slot then bind.
       val tmpSlot = allocSlot(ctx, "__tmp_" + freshLabel(ctx), initTy)
       emitStore(insns, tmpSlot, initTy)
-      lowerPatternBind(ctx, insns, pat, tmpSlot, initTy)
+      lowerPatternBind(ctx, insns, pat, tmpSlot, initTy, newList())
     }
   }
 }

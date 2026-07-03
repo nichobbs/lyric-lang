@@ -915,7 +915,8 @@ func collectDeriveFreeSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]
             paramNames = paramNames,
             paramDefaults = newList(),
             paramModes = newList(),
-            isIface = false
+            isIface = false,
+            retGenericArgs = returnTypeGenericArgs(decl.ret)
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -974,7 +975,8 @@ func collectAspectWovenSigs(file: in SourceFile, into: in Map[String, JvmFuncSig
             paramNames = paramNames,
             paramDefaults = newList(),
             paramModes = newList(),
-            isIface = false
+            isIface = false,
+            retGenericArgs = returnTypeGenericArgs(decl.ret)
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -1044,7 +1046,8 @@ func collectMonoSpecializedSigs(
             paramNames = paramNames,
             paramDefaults = newList(),
             paramModes = newList(),
-            isIface = false
+            isIface = false,
+            retGenericArgs = returnTypeGenericArgs(decl.ret)
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {

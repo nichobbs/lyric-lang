@@ -886,6 +886,28 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/jvm/range_for_jvm_self_test.l
 
+      # Erased-generic-payload arithmetic self-test on the dotnet target (J4,
+      # #4877).  The bug it guards is JVM-only (MSIL reifies the type-param field,
+      # so arithmetic on a `match`/`?`-bound payload was always correct there),
+      # but running on dotnet too locks in the cross-target parity the fix
+      # restores.  The `--target jvm` run lives in the `compiler-self-tests-jvm`
+      # job (Java 21).  Imports only `Std.*`.
+      - name: Erased-generic-arith self-test (native lyric test, dotnet)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping erased-generic-arith self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping erased-generic-arith self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/jvm/erased_generic_arith_jvm_self_test.l
+
       # Bitwise self-test on the JVM target (#1611 JVM half).  Compiles the same
       # @test_module in-process through the self-hosted `Jvm.Bridge`
       # (`compileToJarBundled` bundles the user package + its stdlib import
@@ -3176,6 +3198,29 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/generic_jvm_self_test.l
+      # Erased-generic-payload arithmetic self-test on JVM (J4, #4877).  An
+      # unannotated `val` bound to an erased generic payload (`match`/`?` on a
+      # `Result`/`Option`) was tracked as `java/lang/Object`, so `x + y`
+      # string-concatenated (`22` for `2 + 2`) and `x - y` failed class
+      # verification.  The bind site now recovers the scrutinee's instantiation
+      # from the matched callee's declared return type and unboxes the payload to
+      # its concrete primitive.  Covers Int/Long/Double payloads, a user generic
+      # union, and both the `match` and `?` forms.  Imports only `Std.*`.
+      - name: Erased-generic-arith self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping erased-generic-arith JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping erased-generic-arith JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/erased_generic_arith_jvm_self_test.l
       # Closure / lambda-value self-test on the JVM target (J2b / B-1, #2665,
       # epic #2663).  Pins the self-hosted JVM closure backend: a general
       # `ELambda` lowers to a `<pkg>$Lambda$<n>` inner class implementing the

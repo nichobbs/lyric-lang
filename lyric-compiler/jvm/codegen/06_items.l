@@ -2287,7 +2287,8 @@ pub func collectFileSigsSeeded(
           paramNames = paramNames,
           paramDefaults = paramDefaults,
           paramModes = paramModes,
-          isIface = false
+          isIface = false,
+          retGenericArgs = returnTypeGenericArgs(decl.ret)
         )
         // Qualified key (`Std/Testing/assertEqualInt`) is unique across the
         // bundle, so two packages exporting the same short name (e.g.
@@ -2421,7 +2422,8 @@ pub func collectFileSigsSeeded(
                       paramNames = newList(),
                       paramDefaults = newList(),
                       paramModes = newList(),
-                      isIface = false
+                      isIface = false,
+                      retGenericArgs = returnTypeGenericArgs(Some(f.ty))
                     )
                   )
                 }
@@ -2524,7 +2526,8 @@ func registerInstanceSigErased(
         paramNames = paramNames,
         paramDefaults = paramDefs,
         paramModes = modes,
-        isIface = false
+        isIface = false,
+        retGenericArgs = returnTypeGenericArgs(retOpt)
       )
     )
   }
@@ -2569,7 +2572,8 @@ func registerIfaceSig(
         paramNames = pNames,
         paramDefaults = pDefs,
         paramModes = pModes,
-        isIface = true
+        isIface = true,
+        retGenericArgs = returnTypeGenericArgs(retOpt)
       )
     )
   }
@@ -2596,7 +2600,8 @@ func registerStaticWireSig(
         paramNames = newList(),
         paramDefaults = newList(),
         paramModes = newList(),
-        isIface = false
+        isIface = false,
+        retGenericArgs = newList()
       )
     )
   }
@@ -2654,8 +2659,8 @@ pub func collectFileCasesExtern(
             var fi = 0
             while fi < c.fields.count {
               match c.fields[fi] {
-                case UFNamed(name, ty, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmErasedExtern(ty, owner, tps, externTypes)))
-                case UFPos(ty, _) -> flds.add(JvmCaseField(name = "field" + toString(fi), ty = typeExprToJvmErasedExtern(ty, owner, tps, externTypes)))
+                case UFNamed(name, ty, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmErasedExtern(ty, owner, tps, externTypes), paramIdx = typeParamIndexOf(ty, tps)))
+                case UFPos(ty, _) -> flds.add(JvmCaseField(name = "field" + toString(fi), ty = typeExprToJvmErasedExtern(ty, owner, tps, externTypes), paramIdx = typeParamIndexOf(ty, tps)))
               }
               fi = fi + 1
             }
@@ -2672,7 +2677,7 @@ pub func collectFileCasesExtern(
           var mi = 0
           while mi < decl.members.count {
             match decl.members[mi] {
-              case RMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErasedExtern(f.ty, owner, tps, externTypes)))
+              case RMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErasedExtern(f.ty, owner, tps, externTypes), paramIdx = -1))
               case _ -> {
               }
             }
@@ -2694,9 +2699,9 @@ pub func collectFileCasesExtern(
             match decl.members[mi] {
               case PMField(pf) -> {
                 match pf {
-                  case PFVar(name, ty, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes)))
-                  case PFLet(name, ty, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes)))
-                  case PFImmutable(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmExtern(f.ty, owner, externTypes)))
+                  case PFVar(name, ty, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes), paramIdx = -1))
+                  case PFLet(name, ty, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes), paramIdx = -1))
+                  case PFImmutable(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmExtern(f.ty, owner, externTypes), paramIdx = -1))
                 }
               }
               case _ -> ()
@@ -2717,7 +2722,7 @@ pub func collectFileCasesExtern(
             var mi = 0
             while mi < decl.members.count {
               match decl.members[mi] {
-                case OMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvm(f.ty, owner)))
+                case OMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvm(f.ty, owner), paramIdx = -1))
                 case OMInvariant(_) -> ()
               }
               mi = mi + 1
@@ -3063,7 +3068,7 @@ pub func registerProjectableViews(
             var fi = 0
             while fi < infos.count {
               if not infos[fi].hidden {
-                vflds.add(JvmCaseField(name = infos[fi].name, ty = projViewFieldType(infos[fi])))
+                vflds.add(JvmCaseField(name = infos[fi].name, ty = projViewFieldType(infos[fi]), paramIdx = -1))
               }
               fi = fi + 1
             }
@@ -3081,7 +3086,8 @@ pub func registerProjectableViews(
                 paramNames = newList(),
                 paramDefaults = newList(),
                 paramModes = newList(),
-                isIface = false
+                isIface = false,
+                retGenericArgs = newList()
               )
             )
           }
@@ -3098,7 +3104,8 @@ pub func registerProjectableViews(
                   paramNames = newList(),
                   paramDefaults = newList(),
                   paramModes = newList(),
-                  isIface = false
+                  isIface = false,
+                  retGenericArgs = newList()
                 )
               )
             }
