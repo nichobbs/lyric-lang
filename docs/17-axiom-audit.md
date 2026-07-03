@@ -674,7 +674,7 @@ use this module directly in application code.
 The directory `lyric-stdlib/std/_kernel_jvm/` mirrors `_kernel/` for the
 JVM target — each file selects a Java BCL extern surface that the
 `@cfg(feature = "jvm")` predicate routes to when compiling
-`--target jvm`.  22 files currently carry `@axiom(...)` annotations
+`--target jvm`.  21 files currently carry `@axiom(...)` annotations
 covering operations on `java.lang.{String,Math,Character,System}`,
 `java.util.{ArrayList,HashMap,Random,UUID,regex.Pattern}`,
 `java.io.{File,FileInputStream,FileOutputStream,Files}`,
@@ -792,7 +792,6 @@ recorded in the §19 baseline.
 | `Std.FormatHost`         | `format_host.l`              | 1      | 0           |
 | `Std.HashHost`           | `hash_host.l`                | 1      | 0           |
 | `Std.HttpHost`           | `http_host.l`                | 1      | 0           |
-| `Std.JsonHost`           | `json_host.l`                | 1      | 0           |
 | `Std.LogHost`            | `log_host.l`                 | 1      | 0           |
 | `Std.MathHost`           | `math_host.l`                | 1      | 0           |
 | `Std.ParseHost`          | `parse_host.l`               | 1      | 0           |
@@ -805,7 +804,7 @@ recorded in the §19 baseline.
 | `Std.UnicodeHost`        | `unicode_host.l`             | 1      | 0           |
 | `Std.UuidHost`           | `uuid_host.l`                | 1      | 0           |
 | `Std.RegexHost`          | `regex_host.l`               | 1      | 0           |
-| **Total**                |                              | **22** | **0**       |
+| **Total**                |                              | **21** | **0**       |
 
 ### Combined total
 
@@ -878,7 +877,6 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.FormatHost` | `format_host.l` | lyric.stdlib.jvm.FormatHost formatting operations conform to their documented JVM contracts |
 | `jvm` | `Std.HashHost` | `hash_host.l` | java.security.MessageDigest.getInstance(\"SHA-256\") and getInstance(\"SHA-512\") conform to documented JDK SHA-256/SHA-512 semantics and are pure functions of their input bytes |
 | `jvm` | `Std.HttpHost` | `http_host.l` | lyric.stdlib.jvm.HttpClientHost operations conform to their documented JVM / java.net.http contracts |
-| `jvm` | `Std.JsonHost` | `json_host.l` | lyric.stdlib.jvm.JsonHost operations conform to their documented JVM contracts |
 | `jvm` | `Std.LogHost` | `log_host.l` | lyric.stdlib.jvm.LogHost writes diagnostic messages via java.util.logging.Logger |
 | `jvm` | `Std.MathHost` | `math_host.l` | java.lang.Math and java.lang.Double operations conform to their documented JVM / IEEE 754 contracts |
 | `jvm` | `Std.ParseHost` | `parse_host.l` | lyric.stdlib.jvm.ParseHost operations conform to their documented JVM contracts |
