@@ -59,18 +59,28 @@ pub record MapEntry[K, V] {
   value: V
 }
 
-/// Return the key collection of `m` as a lazy view (no copy).
-/// The returned `DictKeyCollection[K, V]` can be iterated with `for`.
+/// Return the keys of `m` as a `List[K]` snapshot.
 @stable(since = "1.0")
-pub func mapKeys[K, V](m: in Map[K, V]): DictKeyCollection[K, V] {
-  dictGetKeys(m)
+pub func mapKeys[K, V](m: in Map[K, V]): List[K] {
+  // Snapshot into a List (like `mapEntries`) so the public signature exposes
+  // no BCL nested collection type; the host key view stays kernel-private.
+  val result: List[K] = newList()
+  for k in dictGetKeys(m) {
+    result.add(k)
+  }
+  result
 }
 
-/// Return the value collection of `m` as a lazy view (no copy).
-/// The returned `DictValueCollection[K, V]` can be iterated with `for`.
+/// Return the values of `m` as a `List[V]` snapshot.
 @stable(since = "1.0")
-pub func mapValues[K, V](m: in Map[K, V]): DictValueCollection[K, V] {
-  dictGetValues(m)
+pub func mapValues[K, V](m: in Map[K, V]): List[V] {
+  // Snapshot into a List (like `mapEntries`) so the public signature exposes
+  // no BCL nested collection type; the host value view stays kernel-private.
+  val result: List[V] = newList()
+  for v in dictGetValues(m) {
+    result.add(v)
+  }
+  result
 }
 
 /// Call `action(key, value)` for every entry in `m`.

@@ -507,7 +507,7 @@ pub record CodegenCtx {
   genTicker: List[Int]
   // Non-generic IEnumerable / IEnumerator — used by the MExternEnumerable
   // for-loop protocol to iterate extern types that implement IEnumerable
-  // but not IList (e.g. DictKeyCollection[K,V], DictValueCollection[K,V]).
+  // but not IList (e.g. MapKeyCollection[K,V], MapValueCollection[K,V]).
   trIEnumerable: Int  // System.Collections.IEnumerable (non-generic)
   trIEnumerator: Int  // System.Collections.IEnumerator (non-generic)
   tokIEnumerableGetEnumerator: Int  // IEnumerable.GetEnumerator(): IEnumerator  callvirt
@@ -4365,12 +4365,12 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
         }
       } else if headSeg == "Map" {
         MMapOf(keyTy = MObject, valTy = MObject)
-      } else if headSeg == "DictKeyCollection" and args.count == 2 {
+      } else if headSeg == "MapKeyCollection" and args.count == 2 {
         // Extern key-collection view — implements IEnumerable<K>, not IList.
         // Use IEnumerator protocol in emitCollectionForMsil (#3511).
         val keyTy = match args[0] { case TAType(te2) -> typeExprToMsilCtx(cctx, te2, pkgName); case TAValue(_) -> MObject }
         MExternEnumerable(elemTy = keyTy)
-      } else if headSeg == "DictValueCollection" and args.count == 2 {
+      } else if headSeg == "MapValueCollection" and args.count == 2 {
         // Extern value-collection view — implements IEnumerable<V>, not IList.
         val valTy = match args[1] { case TAType(te2) -> typeExprToMsilCtx(cctx, te2, pkgName); case TAValue(_) -> MObject }
         MExternEnumerable(elemTy = valTy)
@@ -11910,7 +11910,7 @@ func emitCollectionForMsil(
     }
     case MExternEnumerable(eeElemTy) -> {
       // IEnumerator protocol for extern types that implement IEnumerable but
-      // not IList (e.g. DictKeyCollection, DictValueCollection).  Protocol:
+      // not IList (e.g. MapKeyCollection, MapValueCollection).  Protocol:
       //   castclass IEnumerable
       //   GetEnumerator() → IEnumerator (non-generic)
       //   try { while MoveNext() { elem = get_Current(); body } }
@@ -18547,7 +18547,7 @@ func typeExprToMsilGenBody(
         }
       } else if headSeg == "Map" {
         MMapOf(keyTy = MObject, valTy = MObject)
-      } else if headSeg == "DictKeyCollection" and args.count == 2 {
+      } else if headSeg == "MapKeyCollection" and args.count == 2 {
         // Extern key-collection view — implements IEnumerable<K>, not IList.
         // Use IEnumerator protocol in emitCollectionForMsil (#3511).
         val keyTy = match args[0] {
@@ -18555,7 +18555,7 @@ func typeExprToMsilGenBody(
           case TAValue(_) -> MObject
         }
         MExternEnumerable(elemTy = keyTy)
-      } else if headSeg == "DictValueCollection" and args.count == 2 {
+      } else if headSeg == "MapValueCollection" and args.count == 2 {
         // Extern value-collection view — implements IEnumerable<V>, not IList.
         // Use IEnumerator protocol in emitCollectionForMsil (#3511).
         val valTy = match args[1] {

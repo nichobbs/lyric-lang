@@ -49,17 +49,17 @@ pub func tryGetValue[K, V](m: in Map[K, V], key: in K, value: out V): Bool {
 // java.util.Collection; both implement Iterable, so `for` iterates
 // them through the emitter's Iterable path.
 // =====================================================================
-extern type DictKeyCollection[K, V] = "java.util.Set"
+extern type MapKeyCollection[K, V] = "java.util.Set"
 
-extern type DictValueCollection[K, V] = "java.util.Collection"
+extern type MapValueCollection[K, V] = "java.util.Collection"
 
 /// Key view of `m` (java.util.HashMap.keySet, no copy).
-pub func dictGetKeys[K, V](m: in Map[K, V]): DictKeyCollection[K, V] {
+pub func dictGetKeys[K, V](m: in Map[K, V]): MapKeyCollection[K, V] {
   m.keySet()
 }
 
 /// Value view of `m` (java.util.HashMap.values, no copy).
-pub func dictGetValues[K, V](m: in Map[K, V]): DictValueCollection[K, V] {
+pub func dictGetValues[K, V](m: in Map[K, V]): MapValueCollection[K, V] {
   m.values()
 }
 
