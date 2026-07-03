@@ -2598,10 +2598,18 @@ pub func decodeExternMethodSigIn(
     }
     mi = mi + 1
   }
-  if instanceMatchCount > 1 or staticMatchCount > 1 {
+  // Only the resolution path actually taken below (instance wins over static
+  // when both are present) can be ambiguous in a way that matters — a
+  // multi-candidate static count is irrelevant when an unambiguous instance
+  // match was returned instead, and vice versa (#4792).
+  val takenCount = match instanceMatch {
+    case Some(_) -> instanceMatchCount
+    case None -> staticMatchCount
+  }
+  if takenCount > 1 {
     Console.error(
       "W0008: decodeExternMethodSigIn: '" + typeFqn + "." + member + "' has " +
-        toString(instanceMatchCount + staticMatchCount) +
+        toString(takenCount) +
         " overloads matching the declared arity — arity-only selection cannot " +
         "distinguish same-name same-arity BCL overloads (e.g. GetOrAdd(TKey,TValue) vs " +
         "GetOrAdd(TKey,Func)); the first one found in the Method table was used, which " +
