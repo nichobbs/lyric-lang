@@ -249,8 +249,11 @@ func removeDirOne(path: in String): Bool {
 // stat every child twice; the delete walk cannot afford that on a
 // deep tree.  A missing path fails at the first listing (parity with
 // the managed twin, which reports DirectoryNotFoundException as
-// Err(IoError)).
-@unsafe_ffi
+// Err(IoError)).  No `@unsafe_ffi`: this seam touches no FFI primitive
+// directly — every call is to another host function (`listEntryNamesNative`,
+// `hostDirectoryExists`, `hostDeleteFileResult`, `removeDirOne`) that
+// already crossed the boundary, matching `hostCreateDirResult` /
+// `hostListFilesResult` / `hostListDirsResult`.
 pub func hostDeleteDirRecursiveResult(path: in String): Result[Unit, IOError] {
   match listEntryNamesNative(path) {
     case Ok(names) -> {
