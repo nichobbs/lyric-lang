@@ -105,6 +105,27 @@ func addViaVarBindingLong(a: Int, b: Int): Long {
   x + y
 }
 
+// Captured `val`-bound generic result matched INSIDE a lambda (#4945).  The
+// closure body runs in its own codegen ctx; before the fix that ctx started
+// with an empty `varGenericArgs`, so `scrutineeGenericArgs` could not recover
+// `r`'s `Result[Int, String]` instantiation and the `Ok(v)` payload stayed
+// boxed — `x + delta` then string-concatenated / VerifyError'd across the
+// closure ABI, the pre-#4877 bug resurfacing one scope deep.  The fix seeds the
+// closure ctx's `varGenericArgs` from the enclosing scope (excluding shadowing
+// lambda params).
+func addCapturedIntResult(a: String, d: Int): Int {
+  val r = makeIntResult(a)
+  val f: (Int) -> Int = { delta: Int -> val x = match r { case Ok(v) -> v; case Err(_) -> 0 }; x + delta }
+  f(d)
+}
+
+// Same, with a captured Long result and 64-bit arithmetic inside the lambda.
+func addCapturedLongResult(n: Int): Long {
+  val r = makeLongResult(n)
+  val f: (Long) -> Long = { delta: Long -> val x = match r { case Ok(v) -> v; case Err(_) -> 0i64 }; x + delta }
+  f(1i64)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. Int payload — arithmetic on the bound value (the #4877 repro).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -212,4 +233,18 @@ test "Bool payload unboxes to a real boolean (#4932)" {
   assertTrue(t, "unboxed true payload is true")
   assertFalse(f, "unboxed false payload is false")
   assertTrue(t and not f, "unboxed booleans combine in a boolean expression")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. Captured generic scrutinee matched INSIDE a lambda (#4945) — the closure
+//    body inherits the enclosing scope's recorded instantiation.
+// ─────────────────────────────────────────────────────────────────────────────
+test "captured val-bound Int result unboxes inside a lambda (#4945)" {
+  // Ok(2) captured by value, matched in the lambda, then + delta as an int.
+  assertEqualInt(addCapturedIntResult("hi", 10), 12, "captured Ok(2) + 10 == 12 (int add, not concat)")
+  assertEqualInt(addCapturedIntResult("abcd", 1), 5, "captured Ok(4) + 1 == 5")
+}
+
+test "captured val-bound Long result unboxes inside a lambda (#4945)" {
+  assertEqualLong(addCapturedLongResult(3), 3001i64, "captured Ok(3000) + 1 == 3001 (long add)")
 }

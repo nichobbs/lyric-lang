@@ -2635,6 +2635,29 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
     ctx.opaqueTypes,
     ctx.closureAcc
   )
+  // Propagate the enclosing scope's recorded generic instantiations into the
+  // closure body so a captured var-bound `match`/`?` scrutinee still unboxes its
+  // erased payload inside the lambda (#4945) — otherwise the payload stays boxed
+  // and arithmetic on it string-concats or VerifyErrors, the pre-#4877 bug.
+  // Lambda params shadow outer names (they get a fresh slot and identity), so a
+  // param that reuses an outer var name must NOT inherit the outer instantiation;
+  // exclude every param name.  A body-local rebind of an outer name is
+  // self-correcting: `recordVarGenericArgs` overwrites the entry at the bind site.
+  val __closureParamNames: Map[String, Bool] = newMap()
+  var __cpi = 0
+  while __cpi < lparams.count {
+    __closureParamNames.add(lparams[__cpi].name, true)
+    __cpi = __cpi + 1
+  }
+  for __vk in mapKeys(ctx.varGenericArgs) {
+    if not __closureParamNames.containsKey(__vk) {
+      match mapGet(ctx.varGenericArgs, __vk) {
+        case Some(__vargs) -> bodyCtx.varGenericArgs.add(__vk, __vargs)
+        case None -> {
+        }
+      }
+    }
+  }
   // Reserve slot 0 (this) and slot 1 (Object[] args).
   allocSlot(bodyCtx, "__closure_this", JRef(className = closureClass))
   val argsSlot = allocSlot(bodyCtx, "__closure_args", JArray(elem = JRef(className = "java/lang/Object")))
