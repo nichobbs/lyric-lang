@@ -26899,7 +26899,7 @@ without a snapshot.
 
 ---
 
-### D-progress-556 — Native backend N5: stdlib kernel twins over exception-free Result/Option seams (issue #4752)
+### D-progress-557 — Native backend N5: stdlib kernel twins over exception-free Result/Option seams (issue #4752)
 
 **Shipped.** `Std.File` (text I/O), `Std.Environment`, `Std.Process`
 (`runCapture`), and `Std.Time` (epoch/monotonic/sleep) now work on
@@ -27001,5 +27001,5 @@ pure layer becomes a thin target-neutral delegation.
   codegen fixes.  The managed-side seam refactors are covered by the
   existing stdlib test suite (`lyric-stdlib/tests/`) in CI.
 
-**Related:** D-progress-555, `docs/01-language-reference.md` §11 (FFI),
+**Related:** D-progress-556, `docs/01-language-reference.md` §11 (FFI),
 `native/plan/07-stdlib-port.md`, issue #4752, D-N-003, D-N-014.

@@ -130,10 +130,14 @@ pub func hostDeleteFileResult(path: in String): Result[Unit, IOError] {
     return Ok(value = ())
   }
   // Idempotent on not-found, matching the managed twin (BCL
-  // File.Delete succeeds silently when the path doesn't exist).
-  val probe = rtFileExists(c)
+  // File.Delete succeeds silently when the path doesn't exist).  A
+  // directory path is NOT the not-found case (rtFileExists is 0 for
+  // directories too): the managed twin reports it as an error, so the
+  // dir probe keeps parity (#4784).
+  val probeFile = rtFileExists(c)
+  val probeDir = rtDirExists(c)
   freeC(c)
-  if probe == 0 {
+  if probeFile == 0 and probeDir == 0 {
     Ok(value = ())
   } else {
     Err(error = IoError(path = path, message = "the file could not be deleted"))

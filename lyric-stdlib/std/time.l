@@ -246,8 +246,8 @@ pub func nowEpochMillis(): Long {
 /// elapsed time; do not compare values across processes.
 ///
 /// .NET: backed by System.Diagnostics.Stopwatch (GetTimestamp/Frequency).
-/// JVM:  backed by java.lang.System.nanoTime (modelled as freq=1e9).
-/// Two-step formula avoids Int64 overflow for any realistic timer frequency.
+/// JVM:  backed by java.lang.System.nanoTime.
+/// Native: backed by CLOCK_MONOTONIC via lyric-rt.
 @stable(since = "1.0")
 pub func monotonicNanos(): Long {
   hostMonotonicNanos()

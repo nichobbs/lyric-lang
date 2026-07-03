@@ -240,3 +240,15 @@ pub func hostStopwatchFrequency(): Long {
 pub func hostSleepMillis(ms: in Int): Unit {
   JThread.sleep(ms)
 }
+
+// =====================================================================
+// Epoch/monotonic seams — the exception-free clock surface every
+// kernel twin implements (issue #4752).
+// =====================================================================
+pub func hostEpochMillis(): Long {
+  hostDtoToEpochMillis(hostDtoUtcNow())
+}
+
+pub func hostMonotonicNanos(): Long {
+  JSystem.nanoTime()
+}

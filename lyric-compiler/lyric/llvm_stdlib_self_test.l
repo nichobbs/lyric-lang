@@ -138,6 +138,13 @@ test "Std.File seams: round-trip, classification, idempotent delete (ASan)" {
     "      return 10\n" +
     "    }\n" +
     "  }\n" +
+    "  match deleteFile(nested) {\n" +
+    "    case Ok(_) -> {\n" +
+    "      return 11\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "    }\n" +
+    "  }\n" +
     "  42\n" +
     "}\n"
   val r = compileAndRunNative(src)

@@ -172,7 +172,8 @@ pub func hostEpochMillis(): Long {
 pub func hostMonotonicNanos(): Long {
   val nanoTs: Long = hostStopwatchTimestamp()
   val nanoFreq: Long = hostStopwatchFrequency()
-  // `return` binds the leading-`(` line (a bare one would parse as a
-  // call continuing the previous statement).
+  // Two-step formula avoids Int64 overflow for any realistic timer
+  // frequency.  `return` binds the leading-`(` line (a bare one would
+  // parse as a call continuing the previous statement).
   return (nanoTs / nanoFreq) * 1000000000i64 + (nanoTs % nanoFreq) * 1000000000i64 / nanoFreq
 }

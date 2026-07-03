@@ -48,7 +48,7 @@ with `for`-loop lowering over lists, indexing, and the reserved
 `dictGetKeys` / `dictGetValues`; `lyric_map_keys` / `lyric_map_values`
 added to lyric-rt).  Verified ASan-clean by
 `llvm_collections_self_test.l`.
-The N5 stdlib kernel files SHIPPED (D-progress-556, issue #4752):
+The N5 stdlib kernel files SHIPPED (D-progress-557, issue #4752):
 `_kernel_native/` twins for `Std.FileHost`, `Std.EnvironmentHost`,
 `Std.TimeHost`, and `Std.ProcessCaptureHost` over exception-free
 Result/Option seams both kernel twins implement, plus the codegen

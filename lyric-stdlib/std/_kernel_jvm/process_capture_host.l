@@ -91,8 +91,8 @@ pub func pcResultTimedOut(r: in ProcessCaptureResult): Bool {
 // The resulting list is prepended with `executable` so
 // `ProcessBuilder` receives a complete command line.
 func parseArgString(executable: in String, argStr: in String): List[String] {
-  val result: List[String] = newList()
-  result.add(executable)
+  val parsed: List[String] = newList()
+  parsed.add(executable)
   var i = 0
   val n = argStr.length
   while i < n {
@@ -101,7 +101,7 @@ func parseArgString(executable: in String, argStr: in String): List[String] {
       i = i + 1
     }
     if i >= n {
-      return result
+      return parsed
     }
     if argStr[i] == '"' {
       // Quoted token
@@ -129,7 +129,7 @@ func parseArgString(executable: in String, argStr: in String): List[String] {
           i = i + 1
         }
       }
-      result.add(arg)
+      parsed.add(arg)
     } else {
       // Unquoted token (fallback; buildArgString always quotes)
       var arg = ""
@@ -137,10 +137,10 @@ func parseArgString(executable: in String, argStr: in String): List[String] {
         arg = arg + argStr.substring(i, 1)
         i = i + 1
       }
-      result.add(arg)
+      parsed.add(arg)
     }
   }
-  result
+  parsed
 }
 
 // ── Incremental drain ─────────────────────────────────────────────────────────
@@ -239,5 +239,36 @@ pub func hostRunCaptureTimeout(
     runImpl(executable, arguments, stdinContent, timeoutMs)
   } catch Bug as _ {
     ProcessCaptureResult(stdout = "", stderr = "", exitCode = -1, timedOut = false)
+  }
+}
+
+// =====================================================================
+// List-argv Result seam — the exception-free surface every kernel twin
+// implements (issue #4752).  Joins to the quoted argument string
+// `runImpl` expects (`parseArgString` reverses the same escaping
+// convention exactly) and absorbs the Bug into the error channel.
+// =====================================================================
+pub func hostRunCaptureList(
+  executable: in String, args: in List[String], stdinContent: in String, timeoutMs: in Int
+): Result[ProcessCaptureResult, String] {
+  var argStr = ""
+  var i = 0
+  val count = args.count
+  while i < count {
+    if i > 0 {
+      argStr = argStr + " "
+    }
+    // The element read needs the String annotation so `.replace`
+    // resolves against String (an unannotated `args[i]` receiver
+    // erases to Object under the JVM auto-FFI).
+    val arg: String = args[i]
+    val escaped = arg.replace("\\", "\\\\").replace("\"", "\\\"")
+    argStr = argStr + "\"" + escaped + "\""
+    i += 1
+  }
+  try {
+    Ok(value = runImpl(executable, argStr, stdinContent, timeoutMs))
+  } catch Bug as b {
+    Err(error = b.message)
   }
 }

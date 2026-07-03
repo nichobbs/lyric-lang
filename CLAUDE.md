@@ -1083,9 +1083,9 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
     functions and `_kernel_native/` packages), callback trampolines
     (Lyric closures as C callbacks via a trailing `NativePtr[Byte]`
     userdata slot), and `llvm_ffi_self_test.l` (pthread round-trips
-    under ASan).  N5.8 collections (D-progress-555,
+    under ASan).  N5.8 collections (D-progress-556,
     `llvm_collections_self_test.l`) and the N5 stdlib kernel twins
-    (D-progress-556 / issue #4752: `Std.File` text I/O,
+    (D-progress-557 / issue #4752: `Std.File` text I/O,
     `Std.Environment`, `Std.Process.runCapture`, `Std.Time` over
     exception-free Result/Option seams both kernel twins implement;
     `llvm_stdlib_self_test.l`) also ship.
