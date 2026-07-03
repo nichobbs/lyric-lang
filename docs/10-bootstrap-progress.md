@@ -27228,7 +27228,7 @@ more `case null` uses:
   case (asserts `listFiles`/`listDirs` counts and that `deleteDirRecursive`
   actually empties the tree), also CI-wired.
 
-**Bonus find: `??`'s JVM codegen had its own latent bug — two rounds.**
+**Bonus find: `??`'s JVM codegen had its own latent bug — three rounds.**
 The `file_host.l` fix's `d.listFiles() ?? []` was the first `??` use in
 the tree over a non-`String` lhs on `--target jvm`, and CI immediately
 caught a real `VerifyError` (`Operand stack underflow`) in
@@ -27260,6 +27260,24 @@ silently broken for every non-`String` `??` on JVM until this PR
 exercised one; `String` uses (`hostGetVarOpt`) happened to be the only
 shape previously compiled — same accidental narrow test coverage pattern
 as the original `case null` bug.
+
+That slot-based fix made the `Std.Console` (`String`) case pass, but
+`Std.File` (an array-typed `??`) hit a *third* `VerifyError`:
+`Instruction type does not match stack map` — `Object[]` vs `File[]` on
+the same result slot across the two arms. `coerceArgTo`'s existing
+`JArray` case (used for coercing List-typed values into `slice[T]`
+parameters, #4700) documents why: this codebase's uniform "slice ABI"
+for array-shaped values is `Object[]`, never the concrete element type —
+`d.listFiles()`'s auto-FFI-resolved concrete `File[]` return type and an
+empty-list-literal `[]` RHS (which can only ever lower to `ArrayList` →
+`.toArray(): Object[]`) can never agree on a *concrete* element type, but
+both are Object[]-covariant. Final fix: when the join type is an array,
+normalize the result slot (and `BCoalesce`'s own reported type) to
+`JArray(Object)` and route both arms through `coerceArgTo` — a no-op
+bytecode-wise for the already-array lhs (ref-array covariance needs no
+cast) and the existing `ArrayList.toArray()` conversion for the rhs. The
+`String`/general-object path is unaffected (`coerceArgTo`'s normalization
+only triggers for `JArray` lhs types).
 
 **Not done (out of scope here, still tracked in #4775):** `std/path.l:73`'s
 `hostPathGetDirectoryName` uses `?? ""` rather than `case null`, so it

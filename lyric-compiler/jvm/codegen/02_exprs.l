@@ -703,23 +703,31 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         case BCoalesce -> {
           // Null-coalescing via a result slot with an empty operand stack at every branch target — every StackMapTable frame here assumes that (#4816); `ifnull`/`ifnonnull` are unary tests so no dup'd value is ever left stranded across a branch the way `if_acmpne`/`if_acmpeq` would.
           val lhsTy = lowerExpr(ctx, insns, lhs)
+          // The join (result) slot uses the uniform Object[] "slice ABI" (see
+          // coerceArgTo's JArray case) rather than lhs's concrete element type
+          // (e.g. File[] from an extern call) — a List-derived rhs (`[]`) can
+          // only ever produce Object[], and a concrete array is verifier-
+          // covariant with Object[] at no bytecode cost, so normalizing here
+          // is always safe and lets both arms agree on one declared type.
+          val slotTy = match lhsTy { case JArray(_) -> JArray(elem = JRef(className = "java/lang/Object")); case _ -> lhsTy }
           val lhsSlot = allocSlot(ctx, "__coalesce_lhs_" + freshLabel(ctx), lhsTy)
           emitStore(insns, lhsSlot, lhsTy)
-          val rslot = allocSlot(ctx, "__coalesce_r_" + freshLabel(ctx), lhsTy)
+          val rslot = allocSlot(ctx, "__coalesce_r_" + freshLabel(ctx), slotTy)
           val nullL = freshLabel(ctx)
           val afterL = freshLabel(ctx)
           emitLoad(insns, lhsSlot, lhsTy)
           insns.add(LIfnull(label = nullL))
           emitLoad(insns, lhsSlot, lhsTy)
-          emitStore(insns, rslot, lhsTy)
+          coerceArgTo(insns, lhsTy, slotTy)
+          emitStore(insns, rslot, slotTy)
           insns.add(LGoto(label = afterL))
           insns.add(LLabel(name = nullL))
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          coerceArgTo(insns, rhsTy, lhsTy)
-          emitStore(insns, rslot, lhsTy)
+          coerceArgTo(insns, rhsTy, slotTy)
+          emitStore(insns, rslot, slotTy)
           insns.add(LLabel(name = afterL))
-          emitResultLoad(insns, rslot, lhsTy)
-          lhsTy
+          emitResultLoad(insns, rslot, slotTy)
+          slotTy
         }
         case BImplies -> {
           // p => q == !p || q
