@@ -28962,11 +28962,23 @@ here, since the `import extern` line was the file's last import) leaks
 the dangling `.{...}` text into the reconstructed body as a bogus
 top-level item.
 
-**Fix:** `parseImportDecl` now captures the selector group's closing `}`
-span (or the current position on a missing-brace recovery) and uses it
-as the declaration's end span whenever a selector is present, before the
-top-level `as`-alias check runs. Selector *parsing* was already correct;
-only the span bookkeeping was wrong.
+**Fix (two attempts; see docs/57 §8 for the full account):** attempt 1
+captured the closing `}` span in an `Option[Span]` `var` mutated from a
+`match` arm nested inside the selector-parsing `if`-expression. That
+compiled but crashed at runtime —
+`System.NullReferenceException` in `Lyric.Parser.Program.joinSpans`,
+called from `parseImportDecl` — the first sign that this specific
+capture-from-nested-match-inside-if shape isn't reliably supported by
+the self-hosted compiler's current codegen (a possible self-hosted-compiler
+maturity gap, not a logic error in the fix). Attempt 2 sidesteps it:
+selector-group parsing was extracted into `tryParseImportSelectorGroup`,
+returning one `Option[SelectorGroupParse]` helper-record value (pairing
+the parsed group with its end span) with no outer-var mutation at all;
+`parseImportDecl` derives `selector` and `endSp` from that single value
+via two independent top-level `match`es, mirroring the file's existing
+`NameAndSpan` "avoid tuple returns" convention. Selector *parsing* itself
+was correct throughout both attempts; only the span bookkeeping was ever
+wrong.
 
 **Related:** D-progress-586, D-progress-543 (this sandbox's stage-0 build
 constraint), docs/57 §8, `lyric-compiler/lyric/test_synth/test_synth.l`.

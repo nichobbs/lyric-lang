@@ -388,18 +388,46 @@ new self-test — this is why a bug affecting any selector-group import
 combined with `Lyric.TestSynth` has never surfaced before: no existing
 test file happened to combine the two.
 
-**Fix:** `parseImportDecl` now records the selector group's closing `}`
-span (or, on a missing-brace recovery, the current position) and uses it
-as `endSp` whenever a selector is present, before the top-level `as`
-check can override it. This is a narrow, targeted fix — it does not touch
-selector *parsing* (which was always correct; only the span bookkeeping
-around it was wrong).
+**Fix, attempt 1 (reverted):** the first fix recorded the selector group's
+closing `}` span in an `Option[Span]` `var` declared just above the
+`if`-expression that parses the selector, mutated from inside a `match`
+arm nested *inside* that `if`-expression's true branch, then read back
+out after the `if`-expression completed. This compiled cleanly (stage 1
+built without error), but crashed **at runtime** the moment the freshly
+built self-hosted parser actually executed `parseImportDecl` against
+`import_extern_self_test.l`: `System.NullReferenceException` in
+`Lyric.Parser.Program.joinSpans`, called from `parseImportDecl`. Pushing
+a fix that compiles but has never actually been run is exactly the trap
+this section exists to call out — CI caught it (see §7 item 1's
+follow-up push history), but it's worth naming as a mistake made and
+corrected within this same PR, not glossed over.
+
+The likely cause: mutating an outer `var` of an `Option`-of-`record` type
+from within a `match` arm that is itself nested inside an `if`-expression
+branch is a capture/closure pattern this exact shape does not appear to
+be exercised anywhere else in the self-hosted compiler's own source — a
+plausible, still-immature corner of the self-hosted compiler's own
+codegen for mutable-variable capture (the kind of gap `docs/41`/`docs/44`
+catalogue elsewhere), rather than a logic error in the fix itself.
+
+**Fix, attempt 2 (as landed):** sidesteps the question entirely rather
+than chasing the capture bug: the selector-group parsing was pulled out
+into its own function, `tryParseImportSelectorGroup`, returning a single
+`Option[SelectorGroupParse]` value — a small helper record pairing the
+parsed `ImportSelector` with its end span — computed and returned in one
+expression, with no outer `var` mutated from a nested scope. `parseImportDecl`
+then derives both `selector` and `endSp` from that one value via two
+independent top-level `match` expressions, mirroring the file's own
+existing `NameAndSpan` convention ("avoids tuple returns") one function
+up. This is the same semantic fix as attempt 1, restructured to avoid
+whatever attempt 1's capture pattern tripped over.
 
 **Verification note:** this sandbox cannot build stage 0 (`scripts/mint-stage0-fsharp.sh`
 fails — no GitHub API access for the release download, the same
 constraint `docs/03-decision-log.md` D-progress-543 documents for a
-different symptom), so the fix could not be locally compiled and run
-against the failing self-test before pushing. The reasoning above is a
-direct code-level trace (file:line cited throughout) rather than an
-empirical repro, and CI — which *can* build stage 0 — is the actual
-verification for this fix once pushed.
+different symptom), so neither fix attempt could be locally compiled and
+run before pushing. CI — which *can* build stage 0 — is the actual
+verification for this fix, and attempt 1's runtime crash is direct proof
+that "it compiles" is not sufficient evidence of correctness in this
+environment; treat this fix as CI-verified only once the relevant job is
+observed green, not from the reasoning here alone.
