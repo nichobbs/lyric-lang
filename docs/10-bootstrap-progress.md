@@ -27906,3 +27906,29 @@ read/write concurrency distinction the language reference leaves open.
 
 **Related:** D-N-017, D-progress-568 (N3.2, the same heap-boxing/no-aggregate-
 ABI reasoning), `native/plan/08-work-items.md` §N3.4.
+
+### D-progress-574 — JVM: closure body inherits the enclosing scope's generic instantiations (band J4, #4945)
+
+**Shipped.** Final follow-up in the #4877 erased-generic-payload series
+(D-progress-554/569/570/571). A `val`/`var`-bound generic result captured into a
+lambda and matched **inside** the lambda body still boxed its payload: the
+closure body lowers in its own `FuncCtx` (`lowerLambda`, `codegen/02_exprs.l`),
+and that ctx started with an empty `varGenericArgs`, so `scrutineeGenericArgs`
+could not recover the captured binding's instantiation and the bind-site unbox
+never fired — `x + delta` string-concatenated / `VerifyError`'d one scope deep,
+the pre-#4877 bug across the closure ABI.
+
+The fix seeds the closure body ctx's `varGenericArgs` from the enclosing
+`ctx.varGenericArgs` immediately after `makeFuncCtx`, excluding lambda param
+names (a param shadows an outer var with a fresh slot/identity, so it must not
+inherit the outer instantiation). A body-local rebind of an outer name stays
+self-correcting: `recordVarGenericArgs` overwrites the entry at its bind site.
+The generator path (`lowerGeneratorBody`) needs no change — a generator function
+body is top-level, with no enclosing var scope to inherit.
+
+Covered by two new cases (captured `val`-bound `Int` and `Long` results matched
+inside a lambda) in the dual-target `erased_generic_arith_jvm_self_test.l` (now
+15 tests, both targets).  Follow-up #4959 (a `JShort` unbox arm) was closed as
+not-needed: `Short` is not a surface Lyric type, so no generic type can be
+instantiated with it and `emitUnboxObjectTo`'s `concreteTy` is never `JShort` —
+the arm would be unreachable dead code.  Resolves docs/44 m-80.
