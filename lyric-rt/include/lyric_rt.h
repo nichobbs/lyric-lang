@@ -311,6 +311,45 @@ void lyric_args_set(int32_t argc, char** argv);
  * the managed GetCommandLineArgs convention); empty if never set. */
 LyricList* lyric_args_get(void);
 
+/* ── Async task scheduler (lyric_async.c) ──────────────────────────────
+ *
+ * Single-threaded cooperative scheduler for `async func` on the native
+ * target (06-async-design.md; hot-task model — see lyric_async.c's
+ * header comment for the full state machine and rc discipline).
+ * `lyric_coro_resume`/`lyric_coro_destroy` are extern symbols that
+ * generated IR defines as thin llvm.coro.* wrappers (CoroSplit's frame
+ * fn-ptrs are `internal fastcc`, so C never calls them directly).
+ */
+
+typedef struct LyricTask {
+    _Atomic int32_t rc;
+    void (*dtor)(void*);
+    void* coro_handle;        /* LLVM coro frame; destroyed by the dtor  */
+    int32_t state;            /* RUNNING/SLEEPING/WAITING/READY/COMPLETE */
+    int64_t result;           /* 64-bit slot, valid when COMPLETE        */
+    int32_t result_is_ref;    /* task owns a ref on `result` when set    */
+    int64_t wake_deadline_ns; /* monotonic deadline while SLEEPING       */
+    struct LyricTask* waiters; /* tasks parked on this task's completion */
+    struct LyricTask* next;    /* intrusive link (ready/sleeper/waiter)  */
+} LyricTask;
+
+/* Fresh rc=1 RUNNING task (called in the coroutine prologue). */
+LyricTask* lyric_task_new(void* coro_handle);
+void       lyric_task_dtor(void* obj);
+int32_t    lyric_task_is_complete(LyricTask* t);
+/* Raw result slot; a ref-typed result is a borrow (task keeps its ref). */
+int64_t    lyric_task_result(LyricTask* t);
+/* Store the result (ref ownership transfers in) and wake all waiters. */
+void       lyric_task_complete(LyricTask* t, int64_t result, int32_t result_is_ref);
+/* Park the RUNNING task on `dep` / on a timer; suspend right after. */
+void       lyric_async_await(LyricTask* waiter, LyricTask* dep);
+void       lyric_async_sleep(LyricTask* t, int64_t ms);
+/* Drive the scheduler until `root` completes (sync-context await). */
+void       lyric_task_block_on(LyricTask* root);
+/* The task whose frame is executing (codegen reads it inside bodies). */
+LyricTask* lyric_current_task(void);
+void       lyric_set_current_task(LyricTask* t);
+
 /* ── Process execution (lyric_process.c) ───────────────────────────── */
 
 /* Runs `path` via fork + execvp (never a shell — no interpolation of
