@@ -1064,6 +1064,19 @@ func cmdTestManifest(
   var totalPassed = 0
   var totalFailed = 0
 
+  // Resolved once (matching buildProject): a `[nuget]` dependency may itself
+  // be a Lyric package (e.g. `Lyric.Web`), so its contract is routed through
+  // the same restored-dep path a workspace/path dependency uses instead of
+  // leaving it to the auto-FFI metadata guess (#5004).
+  val nugetPaths = resolveNugetAssets(mfDir)
+  warnIfNugetUnresolved(mfDir, manifest.nuget, nugetPaths)
+  val (nugetLyricEntries, nugetThirdPartyPaths) = partitionNugetLyricDeps(nugetPaths)
+  var nli = 0
+  while nli < nugetLyricEntries.count {
+    restoredDlls.add(nugetLyricEntries[nli])
+    nli += 1
+  }
+
   var ti = 0
   while ti < proj.tests.count {
     val testEntry = proj.tests[ti]
@@ -1127,9 +1140,6 @@ func cmdTestManifest(
     val asmStem = stemOf(Path.basename(testEntry.path), 2)
     val outPath = Path.join(testOutDir, asmStem + testExt)
 
-    val nugetPaths = resolveNugetAssets(mfDir)
-    warnIfNugetUnresolved(mfDir, manifest.nuget, nugetPaths)
-
     val projReq = EmitProjectRequest(
       packages = allPkgs,
       assemblyName = asmStem,
@@ -1140,7 +1150,7 @@ func cmdTestManifest(
       declaredFeatures = mfDeclared,
       packageVersion = manifest.packageSection.version,
       depTemplateSrcs = depTemplatePkgsList,
-      nugetAssemblyPaths = nugetPaths
+      nugetAssemblyPaths = nugetThirdPartyPaths
     )
     val result = Emitter.emitProject(projReq)
     var hadBuildError = false

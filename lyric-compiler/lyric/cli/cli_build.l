@@ -58,23 +58,8 @@ func resolveNativeConfig(manifestPath: in Option[String]): Result[Option[Mf.Nati
   // ilverify): every "no config" leaf returns this pinned value.
   val noneCfg: Option[Mf.NativeConfig] = None
   match manifestPath {
-    case Some(p) -> match File.readText(p) {
-      case Err(e) -> Err(error = "build: cannot read manifest " + p + ": " + IOError.message(e))
-      case Ok(mfText) -> match Mf.parseManifest(mfText, p) {
-        case Err(me) -> Err(error = "build: " + ManifestError.message(me))
-        case Ok(m) -> Ok(value = m.native)
-      }
-    }
-    case None -> match discoverManifest(None) {
-      case None -> Ok(value = noneCfg)
-      case Some(mf) -> match File.readText(mf) {
-        case Err(_) -> Ok(value = noneCfg)
-        case Ok(mfText) -> match Mf.parseManifest(mfText, mf) {
-          case Err(_) -> Ok(value = noneCfg)
-          case Ok(m) -> Ok(value = m.native)
-        }
-      }
-    }
+    case Some(p) -> match File.readText(p) { case Err(e) -> Err(error = "build: cannot read manifest " + p + ": " + IOError.message(e)); case Ok(mfText) -> match Mf.parseManifest(mfText, p) { case Err(me) -> Err(error = "build: " + ManifestError.message(me)); case Ok(m) -> Ok(value = m.native) } }
+    case None -> match discoverManifest(None) { case None -> Ok(value = noneCfg); case Some(mf) -> match File.readText(mf) { case Err(_) -> Ok(value = noneCfg); case Ok(mfText) -> match Mf.parseManifest(mfText, mf) { case Err(_) -> Ok(value = noneCfg); case Ok(m) -> Ok(value = m.native) } } }
   }
 }
 
@@ -135,7 +120,9 @@ pub func filterExtraRefsDlls(files: in List[String], dllBase: in String): List[S
 // @generate(Pkg.Name) annotations can resolve their generator DLLs.
 // `pub` so `cli_build_self_test.l` can drive the stdlib/restored-dep
 // colocation behavior directly against a temp source file (#4127).
-pub func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarget, manifestPath: in Option[String]): Int {
+pub func buildOne(
+  sourcePath: in String, outPath: in String, target: in CompileTarget, manifestPath: in Option[String]
+): Int {
   buildOneNative(sourcePath, outPath, target, manifestPath, "", "")
 }
 
@@ -207,20 +194,7 @@ pub func buildOneNative(
         printErr(msg)
         return 1
       }
-      case Ok(ncOpt) -> match ncOpt {
-        case Some(nc) -> {
-          if effTriple == "" {
-            effTriple = nc.triple
-          }
-          if effOpt == "" {
-            effOpt = nc.optLevel
-          }
-          for lib in nc.extraLibs {
-            effLibs.add(lib)
-          }
-        }
-        case None -> ()
-      }
+      case Ok(ncOpt) -> match ncOpt { case Some(nc) -> { if effTriple == "" { effTriple = nc.triple }; if effOpt == "" { effOpt = nc.optLevel }; for lib in nc.extraLibs { effLibs.add(lib) } }; case None -> () }
     }
   }
   val result = if isNativeTarget { Emitter.emitNative(req, effTriple, effOpt, effLibs) } else { Emitter.emit(req) }
@@ -559,7 +533,16 @@ func cmdBuild(argv: in slice[String]): Int {
       case Some(_) -> printErr("build: warning: --rid has no effect without --release")
       case None -> ()
     }
-    return buildProject(mfPath, explicitOut, target, cliFeatures, noDefaultFeatures, allFeatures, noRestore, packageVersionArg)
+    return buildProject(
+      mfPath,
+      explicitOut,
+      target,
+      cliFeatures,
+      noDefaultFeatures,
+      allFeatures,
+      noRestore,
+      packageVersionArg
+    )
   }
 
   val sourcePath = positional[0]
@@ -576,7 +559,9 @@ func cmdBuild(argv: in slice[String]): Int {
   if release {
     match target {
       case Native -> {
-        printErr("build: --release is not needed with --target native (the build already produces a self-contained native binary)")
+        printErr(
+          "build: --release is not needed with --target native (the build already produces a self-contained native binary)"
+        )
         return 1
       }
       case _ -> ()
@@ -741,9 +726,15 @@ func buildReleaseProject(
       // Explicit file list (TOML array form): read each file in order.
       var fi = 0
       while fi < pkgEntry.paths.count {
-        val absFile = if Path.isAbsolute(pkgEntry.paths[fi]) { pkgEntry.paths[fi] } else { Path.join(mfDir, pkgEntry.paths[fi]) }
+        val absFile = if Path.isAbsolute(pkgEntry.paths[fi]) {
+          pkgEntry.paths[fi]
+        } else {
+          Path.join(mfDir, pkgEntry.paths[fi])
+        }
         match File.readText(absFile) {
-          case Ok(raw) -> { combined = combined + "\n" + raw }
+          case Ok(raw) -> {
+            combined = combined + "\n" + raw
+          }
           case Err(e) -> {
             printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
             return 1
@@ -1060,7 +1051,11 @@ func buildProject(
       // Explicit file list (TOML array form): read each named file in order.
       var fi = 0
       while fi < pkgEntry.paths.count {
-        val absFile = if Path.isAbsolute(pkgEntry.paths[fi]) { pkgEntry.paths[fi] } else { Path.join(mfDir, pkgEntry.paths[fi]) }
+        val absFile = if Path.isAbsolute(pkgEntry.paths[fi]) {
+          pkgEntry.paths[fi]
+        } else {
+          Path.join(mfDir, pkgEntry.paths[fi])
+        }
         match File.readText(absFile) {
           case Ok(raw) -> {
             match Generator.preprocess(raw, mfPath, absFile) {
@@ -1271,6 +1266,16 @@ func buildProject(
 
   val nugetPaths = resolveNugetAssets(mfDir)
   warnIfNugetUnresolved(mfDir, manifest.nuget, nugetPaths)
+  // A `[nuget]` dependency may itself be a Lyric package (e.g. `Lyric.Web`),
+  // not just a third-party .NET library — route its contract through the
+  // same restored-dep path a workspace/path dependency uses instead of
+  // leaving it to the auto-FFI metadata guess (#5004).
+  val (nugetLyricEntries, nugetThirdPartyPaths) = partitionNugetLyricDeps(nugetPaths)
+  var nli = 0
+  while nli < nugetLyricEntries.count {
+    restoredDlls.add(nugetLyricEntries[nli])
+    nli += 1
+  }
 
   val asmName = stemOf(Path.basename(outPath), 4)
   val projReq = EmitProjectRequest(
@@ -1286,7 +1291,7 @@ func buildProject(
       case None -> manifest.packageSection.version
     },
     depTemplateSrcs = depTemplatePkgsList,
-    nugetAssemblyPaths = nugetPaths
+    nugetAssemblyPaths = nugetThirdPartyPaths
   )
 
   // For JVM builds, inject Maven classpath into LYRIC_FFI_JARS so the JVM
@@ -1302,7 +1307,9 @@ func buildProject(
   var savedFfiJars: Option[String] = None
   match target {
     case Native -> {
-      printErr("build: --target native does not yet support manifest (multi-package) builds; compile the entry file directly: lyric build <main.l> --target native")
+      printErr(
+        "build: --target native does not yet support manifest (multi-package) builds; compile the entry file directly: lyric build <main.l> --target native"
+      )
       return 1
     }
     case Jvm -> {
@@ -1462,7 +1469,11 @@ func collectProjectSourcePaths(mfPath: in String): (List[String], Bool) {
       // and gives no diagnostic — #4526).
       var fi = 0
       while fi < pkgEntry.paths.count {
-        val absFile = if Path.isAbsolute(pkgEntry.paths[fi]) { pkgEntry.paths[fi] } else { Path.join(mfDir, pkgEntry.paths[fi]) }
+        val absFile = if Path.isAbsolute(pkgEntry.paths[fi]) {
+          pkgEntry.paths[fi]
+        } else {
+          Path.join(mfDir, pkgEntry.paths[fi])
+        }
         if File.fileExists(absFile) {
           paths.add(absFile)
         } else {

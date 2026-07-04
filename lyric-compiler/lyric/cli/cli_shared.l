@@ -89,6 +89,7 @@ import Lyric.Workspace as Ws
 import Lyric.Lockfile as LF
 import Lyric.Discovery as Disc
 import Lyric.Emitter as Emitter
+import Lyric.ContractMeta as Meta
 
 func VERSION(): String {
   "0.1.0"
@@ -569,7 +570,9 @@ func copyRestoredDepDlls(outPath: in String, restoredDlls: in List[String]): Uni
 // assemblies — stale or corrupt), per #4326.  Split out from
 // `warnIfNugetUnresolved` so the decision can be asserted directly in
 // tests without capturing stderr output (#4770).
-pub func nugetUnresolvedReason(mfDir: in String, nugetOpt: in Option[Mf.NugetSection], nugetPaths: in List[String]): Option[String] {
+pub func nugetUnresolvedReason(
+  mfDir: in String, nugetOpt: in Option[Mf.NugetSection], nugetPaths: in List[String]
+): Option[String] {
   match nugetOpt {
     case Some(nugetSec) -> {
       if nugetSec.entries.count > 0 and nugetPaths.count == 0 {
@@ -592,7 +595,9 @@ pub func nugetUnresolvedReason(mfDir: in String, nugetOpt: in Option[Mf.NugetSec
 // only (#4326).  Shared by `buildProject` (cli_build.l) and
 // `cmdTestManifest` (cli_test.l) so the two build paths give the same
 // diagnostic instead of silently drifting apart (#4325).
-pub func warnIfNugetUnresolved(mfDir: in String, nugetOpt: in Option[Mf.NugetSection], nugetPaths: in List[String]): Unit {
+pub func warnIfNugetUnresolved(
+  mfDir: in String, nugetOpt: in Option[Mf.NugetSection], nugetPaths: in List[String]
+): Unit {
   match nugetUnresolvedReason(mfDir, nugetOpt, nugetPaths) {
     case Some(reason) -> {
       printErr(
@@ -638,6 +643,31 @@ pub func resolveNugetAssets(mfDir: in String): List[String] {
 
   // Extract DLL paths from parsed YAML structure
   extractDllPathsFromYaml(parseResult, pkgsDir)
+}
+
+/// Split `resolveNugetAssets`'s output into Lyric-package restored-dep
+/// entries versus genuine third-party .NET assemblies, so a `[nuget]`
+/// dependency on another Lyric package (e.g. `Lyric.Web`) gets its
+/// declared signatures from its embedded `Lyric.Contract` resource — the
+/// same path a workspace/path dependency already uses — instead of only
+/// ever reaching the raw-metadata auto-FFI index, whose signature guesses
+/// can misread a function's arity (#5004). A DLL with no `Lyric.Contract`
+/// resource is a real third-party library and keeps going through
+/// auto-FFI. Returns (restoredDlls entries formatted "name\tpath" — the
+/// same shape workspace/path deps use, appendable directly to that list —
+/// thirdPartyPaths bare paths for `nugetAssemblyPaths`).
+pub func partitionNugetLyricDeps(nugetPaths: in List[String]): (List[String], List[String]) {
+  val restoredEntries: List[String] = newList()
+  val thirdPartyPaths: List[String] = newList()
+  for path in nugetPaths {
+    val contracts = Meta.readAllContractsFromFile(path)
+    if contracts.count > 0 {
+      restoredEntries.add(stemOf(Path.basename(path), 4) + "\t" + path)
+    } else {
+      thirdPartyPaths.add(path)
+    }
+  };
+  (restoredEntries, thirdPartyPaths)
 }
 
 func extractPackagesPathFromYaml(root: in Yaml.YamlValue): String {
