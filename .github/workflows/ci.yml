@@ -1396,12 +1396,18 @@ jobs:
           set -euo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           # The "Native backend self-tests" step above is `background: true`
-          # and does not block — its `make -C lyric-rt test` is not
-          # guaranteed to have finished (or even started) by the time this
-          # step runs, so build lyric_rt.a here too rather than relying on
-          # that step's timing (`make` is idempotent — a no-op if it's
-          # already built).
-          make -C lyric-rt
+          # and does not block, so it can run concurrently with this step —
+          # and it does `make -C lyric-rt clean && make -C lyric-rt test
+          # CC=gcc` partway through its own run, which deletes and rebuilds
+          # the SHARED lyric-rt/build/ directory out from under any other
+          # step reading lyric_rt.a from that same path at the same time
+          # (observed: a clang link failure because the .a was mid-`rm -rf`
+          # when this step tried to read it). Building into a private
+          # directory and pointing the CLI at it via LYRIC_RT_PATH avoids
+          # sharing mutable state with the background step entirely.
+          rt_build_dir="$(mktemp -d)/lyric-rt-build"
+          make -C lyric-rt BUILD="$rt_build_dir"
+          export LYRIC_RT_PATH="$rt_build_dir/lyric_rt.a"
           work="$(mktemp -d)"
           cat > "$work/pass_test.l" <<'LYR'
           @test_module
