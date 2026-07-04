@@ -1291,10 +1291,14 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
   // Long/Double) still occupies `paramSlotCount` slots that the JVM verifier
   // requires `max_locals` to cover regardless of whether the body ever
   // touches them — `ClassFormatError: Arguments can't fit into locals`
-  // otherwise (#5022). Take the max of the two.
+  // otherwise (#5022). The floor applies to BOTH the inferred path and a
+  // caller-supplied explicit `maxLocals` (#5027) — an explicit value smaller
+  // than the real parameter frame would hit the identical crash, and the
+  // floor is a no-op for every existing caller that already accounts for its
+  // own parameters correctly.
   val inferredMaxLocals = inferMaxLocals(f)
-  val floorMaxLocals = if paramSlotCount > inferredMaxLocals { paramSlotCount } else { inferredMaxLocals }
-  val actualMaxLocals = if f.maxLocals > 0 then f.maxLocals else floorMaxLocals
+  val callerMaxLocals = if f.maxLocals > 0 then f.maxLocals else inferredMaxLocals
+  val actualMaxLocals = if paramSlotCount > callerMaxLocals { paramSlotCount } else { callerMaxLocals }
 
   // Assemble: emit pre-initializations for all non-parameter local slots first,
   // then emit the function body.  Pre-initializing every local slot guarantees

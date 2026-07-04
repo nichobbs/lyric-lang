@@ -59,6 +59,10 @@ wire TestWire {
   expose logger
 }
 
+// `bootstrap()` re-runs every binding's init and re-`putstatic`s it on each
+// call — there is no lazy-once guard — so each test below re-bootstraps with
+// its own config before asserting, and the two tests' outcomes are
+// order-independent regardless of execution order (#5028).
 test "wire singleton is constructible" {
   TestWire.bootstrap(WireAppConfig(debug = false))
   val logger = TestWire.logger()
