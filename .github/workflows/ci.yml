@@ -1268,6 +1268,32 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/msil/msil_self_test_m87.l
 
+      # Nested if/match outer-var-mutation regression self-test (issue #5049).
+      # Locks down a control-flow shape (a `var` of `Option[Record]` type
+      # mutated from a `match` arm nested inside an `if`-expression branch,
+      # then read back after the `if` completes) that a real trigger in
+      # `parser_core.l::parseImportDecl` hit and — per an exhaustive
+      # investigation recorded on the issue — could not be reproduced as a
+      # standalone codegen bug, but which was confirmed completely untested
+      # anywhere in the tree. Guards against a future regression regardless
+      # of the original root cause. Imports only `Std.*`, so no
+      # `LYRIC_LOAD_COMPILER=1` is needed.
+      - name: Nested if/match outer-var mutation self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping nested if/match outer-var mutation self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping nested if/match outer-var mutation self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/msil/msil_self_test_m89.l
+
       # Package-level class-typed val .cctor self-test (#1576, wired per #3024).
       # Exercises the self-hosted MSIL lowering for a package-level `val` whose
       # initializer is a non-literal class-typed extern expression: the .cctor

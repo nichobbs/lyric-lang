@@ -452,3 +452,18 @@ environment. **Update:** CI's `compiler-self-tests-dotnet-a` job (which
 builds stage 0/1 from source and then runs `import_extern_self_test.l`
 against it) passed clean on attempt 2 — the fix is confirmed, not just
 reasoned through.
+
+**Follow-up (issue #5049 / D-progress-594):** attempt 1's runtime crash was
+tracked as issue #5049 to investigate whether it indicates a genuine
+self-hosted MSIL codegen gap for this control-flow shape. A follow-up
+session, working from a sandbox that *could* build stage 0 from source
+(via `git fetch --unshallow` + `scripts/mint-stage0-fsharp.sh`, unlike this
+sandbox), restored attempt 1's code verbatim into `parseImportDecl`,
+rebuilt the self-hosted toolchain from it, and ran the rebuilt compiler
+against both a synthetic selector-group import and this exact file
+(`import_extern_self_test.l`) — across six escalating-fidelity attempts,
+none reproduced the crash. See D-progress-594 for the full account. The
+shape is now permanently covered by
+`lyric-compiler/msil/msil_self_test_m89.l` regardless; issue #5049 remains
+open pending someone testing whether the crash was specific to CI's
+non-mint stage-0 bootstrap path.
