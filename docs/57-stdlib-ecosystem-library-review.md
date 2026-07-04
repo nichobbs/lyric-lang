@@ -93,13 +93,20 @@ unless auto-FFI gains property-assignment sugar.
 
 ## 3. Platform parity gaps (.NET / JVM / native / local)
 
-- **lyric-resilience JVM kernel is non-functional stubs**
+- ~~**lyric-resilience JVM kernel is non-functional stubs**
   (`src/_kernel/jvm/resilience_kernel.l:17-32` return `false`/no-op by
   default) while the .NET kernel is fully wired. This is more than a
   documentation gap — `Retry`/`CircuitBreaker` silently do nothing useful
-  on JVM. Either finish the JVM host bridge (tracked under epic #2663) or
-  mark `feature = "jvm"` unsupported in `lyric-resilience/lyric.toml` so
-  consumers get a build-time signal instead of a silent no-op.
+  on JVM.~~ **Fixed (#5037):** `Resilience.Kernel.Jvm` now implements the
+  real circuit-breaker state machine — a process-global
+  `java.util.concurrent.ConcurrentHashMap` (used as its raw, erased type
+  via ordinary `extern type` auto-FFI, no `@externTarget`-style generic
+  member emission needed) plus a per-entry `ReentrantLock` (the JVM has no
+  callable `Monitor.Enter`/`Exit` equivalent — object monitors are only
+  reachable via the `synchronized` keyword, which Lyric source can't
+  express) guarding the same read-modify-write logic as
+  `Resilience.Kernel.Net`. `Retry`/`CircuitBreaker` now work identically
+  on both targets.
 - **lyric-otel JVM kernel is compile-only** (`otel_kernel.l` JVM variant
   header: "Marked `@phase(6)` — not compiled today; present to drive API
   parity"). Accurately documented but worth a runtime-facing note in
