@@ -117,7 +117,7 @@ func buildAndJoin(st: inout St, cond: Bool, pathLine: Int): Pos {
     None
   }
   val _ = selector
-  var endSp = match endPos { case Some(sp) -> sp; case None -> pathPos }
+  val endSp = match endPos { case Some(sp) -> sp; case None -> pathPos }
   val joined = joinPos(pathPos, endSp)
   val _ = flagA
   val _ = flagB
