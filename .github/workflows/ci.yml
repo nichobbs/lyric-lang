@@ -1358,10 +1358,13 @@ jobs:
           fi
           command -v clang >/dev/null || { echo "::error::clang not found on the runner"; exit 1; }
           # ASan preflight: the heap self-test links -fsanitize=address.
-          echo 'int main(void){return 0;}' > /tmp/asan_preflight.c
-          if ! clang -fsanitize=address /tmp/asan_preflight.c -o /tmp/asan_preflight 2>/dev/null; then
+          # Use $TMPDIR (redirected to runner.temp above), not a hardcoded
+          # /tmp, so this step doesn't bypass the SIGBUS/resource-pressure
+          # mitigation the rest of this job relies on (#4975).
+          echo 'int main(void){return 0;}' > "$TMPDIR/asan_preflight.c"
+          if ! clang -fsanitize=address "$TMPDIR/asan_preflight.c" -o "$TMPDIR/asan_preflight" 2>/dev/null; then
             sudo apt-get update -qq && sudo apt-get install -y -qq "libclang-rt-$(clang -dumpversion | cut -d. -f1)-dev"
-            clang -fsanitize=address /tmp/asan_preflight.c -o /tmp/asan_preflight
+            clang -fsanitize=address "$TMPDIR/asan_preflight.c" -o "$TMPDIR/asan_preflight"
           fi
           make -C lyric-rt test
           make -C lyric-rt clean && make -C lyric-rt test CC=gcc
